@@ -558,9 +558,6 @@ pub fn default_config() -> Config {
                     ..Default::default()
                 },
             },
-            cron: CronToolsConfig {
-                exec_timeout_minutes: 5,
-            },
             exec: ExecConfig {
                 enable_deny_patterns: true,
                 ..Default::default()

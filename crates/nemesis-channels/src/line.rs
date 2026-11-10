@@ -20,6 +20,9 @@ use crate::base::{BaseChannel, Channel};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Webhook 请求路径默认值（与 config 模板 `channels.line.webhook_path` 同值）。
+pub const DEFAULT_WEBHOOK_PATH: &str = "/webhook/line";
+
 /// LINE channel configuration.
 #[derive(Debug, Clone)]
 pub struct LineConfig {
@@ -27,10 +30,38 @@ pub struct LineConfig {
     pub channel_access_token: String,
     /// Channel secret (for signature verification).
     pub channel_secret: String,
+    /// Webhook 服务器 bind 主机（空值回落 "0.0.0.0"；反代/隧道场景可配
+    /// "127.0.0.1" 只听回环）。此前该配置侧字段存在但通道侧无对应字段、
+    /// bind 硬编码 "0.0.0.0"——声名未读取的死键（BUG-20261110-055）。
+    pub webhook_host: String,
     /// Webhook server listen port.
     pub webhook_port: u16,
+    /// Webhook 请求路径（LINE 控制台回调 URL 的路径段）。请求路径不匹配
+    /// → 404（wechat `callback_path` 同款家族形态）。此前请求路径从不
+    /// 检查（任意路径照常验签处理）——声名未读取的死键（BUG-20261110-055）。
+    pub webhook_path: String,
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
+}
+
+impl LineConfig {
+    /// bind 主机（trim；空值回落 "0.0.0.0" 保持旧行为）。
+    pub fn webhook_host_resolved(&self) -> &str {
+        let h = self.webhook_host.trim();
+        if h.is_empty() { "0.0.0.0" } else { h }
+    }
+
+    /// 回调路径（trim；空值回落 [`DEFAULT_WEBHOOK_PATH`]；保证以 `/` 开头）。
+    pub fn webhook_path_resolved(&self) -> String {
+        let p = self.webhook_path.trim();
+        if p.is_empty() {
+            DEFAULT_WEBHOOK_PATH.to_string()
+        } else if p.starts_with('/') {
+            p.to_string()
+        } else {
+            format!("/{p}")
+        }
+    }
 }
 
 /// LINE webhook request body.
@@ -237,6 +268,7 @@ impl LineChannel {
         stream: tokio::net::TcpStream,
         bus: &broadcast::Sender<InboundMessage>,
         channel_secret: &str,
+        webhook_path: &str,
         reply_tokens: &Arc<dashmap::DashMap<String, String>>,
         running: &Arc<parking_lot::RwLock<bool>>,
     ) {
@@ -256,6 +288,30 @@ impl LineChannel {
         };
         let request_data = &buf[..n];
         let request_str = String::from_utf8_lossy(request_data);
+
+        // 路径闸（wechat.rs:577 callback_path 同款家族形态）：请求路径与
+        // 配置不匹配 → 404。此前 server 对任意路径的 POST 都照常处理——
+        // config `webhook_path` 是声名未读取的死键（BUG-20261110-055），
+        // 用户在 LINE 控制台/配置里对齐的路径毫无约束力。取请求行第二段
+        // （strip query string）；闸在验签之前（错路径无需先做 HMAC）。
+        let req_path = request_str
+            .lines()
+            .next()
+            .and_then(|l| l.split_ascii_whitespace().nth(1))
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("");
+        if req_path != webhook_path {
+            warn!(
+                "[LineChannel] webhook path mismatch: got `{req_path}`, expected \
+                 `{webhook_path}` — 请对齐 LINE 控制台回调 URL 与 config \
+                 channels.line.webhook_path"
+            );
+            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+            let _ = stream.write_all(resp.as_bytes()).await;
+            return;
+        }
 
         // Extract X-Line-Signature header：扫整个 header 区（到空行为止）。
         // 旧 take(20) 行数上限会把带较多头部的真实请求误判成缺签名；头部名
@@ -384,6 +440,7 @@ impl Channel for LineChannel {
 
         let bus = self.bus_sender.clone();
         let channel_secret = self.config.channel_secret.clone();
+        let webhook_path = self.config.webhook_path_resolved();
         let reply_tokens = self.reply_tokens.clone();
         let running = self.running.clone();
         let port = if self.config.webhook_port == 0 {
@@ -391,20 +448,22 @@ impl Channel for LineChannel {
         } else {
             self.config.webhook_port
         };
+        let host = self.config.webhook_host_resolved().to_string();
 
         // bind 在 spawn **之前**完成并把失败传播给调用方（wechat/wecom 同款）——
         // 此前 bind 失败只在后台任务里 warn，start() 照常报成功，入站能力
-        // 归零而状态面显示运行中。
-        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+        // 归零而状态面显示运行中。bind 主机来自 config（空值回落
+        // "0.0.0.0" 旧行为）——反代/隧道部署可配 "127.0.0.1" 只听回环。
+        let listener = tokio::net::TcpListener::bind((host.as_str(), port))
             .await
             .map_err(|e| {
                 NemesisError::Channel(format!(
-                    "[LineChannel] webhook bind failed on port {port}: {e}"
+                    "[LineChannel] webhook bind failed on {host}:{port}: {e}"
                 ))
             })?;
 
         tokio::spawn(async move {
-            info!("[LineChannel] webhook server listening on port {port}");
+            info!("[LineChannel] webhook server listening on {host}:{port}");
 
             loop {
                 if !*running.read() {
@@ -421,12 +480,20 @@ impl Channel for LineChannel {
 
                 let bus = bus.clone();
                 let secret = channel_secret.clone();
+                let webhook_path = webhook_path.clone();
                 let reply_tokens = reply_tokens.clone();
                 let running = running.clone();
 
                 tokio::spawn(async move {
-                    Self::handle_webhook_connection(stream, &bus, &secret, &reply_tokens, &running)
-                        .await;
+                    Self::handle_webhook_connection(
+                        stream,
+                        &bus,
+                        &secret,
+                        &webhook_path,
+                        &reply_tokens,
+                        &running,
+                    )
+                    .await;
                 });
             }
 

@@ -11,6 +11,8 @@ async fn test_line_channel_new_validates() {
         channel_access_token: String::new(),
         channel_secret: String::new(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     assert!(LineChannel::new(config, test_bus()).is_err());
@@ -24,6 +26,8 @@ async fn test_line_channel_lifecycle() {
         // bind 传播后 start() 真实 bind——临时端口避免并行测试互撞 8080
         //（port 0 映射 8080，测试隔离纪律）
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -42,6 +46,8 @@ fn test_verify_signature_valid() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -58,6 +64,8 @@ fn test_verify_signature_invalid() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -99,6 +107,8 @@ fn test_line_config_fields() {
         channel_secret: "secret".into(),
         channel_access_token: "token".into(),
         webhook_port: 8080,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: vec!["U123".into()],
     };
     assert_eq!(config.channel_secret, "secret");
@@ -144,6 +154,8 @@ fn test_verify_signature_empty_signature() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -156,6 +168,8 @@ fn test_verify_signature_wrong_body() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -174,6 +188,8 @@ fn test_verify_signature_short_signature() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -187,6 +203,8 @@ fn test_store_reply_token() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -268,6 +286,8 @@ async fn test_send_not_running() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -290,6 +310,8 @@ async fn test_start_stop_clears_reply_tokens() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -307,6 +329,8 @@ async fn test_start_stop_idempotent() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -331,6 +355,8 @@ fn test_verify_signature_with_unicode_body() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -347,6 +373,8 @@ fn test_reply_tokens_overwrite() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -361,6 +389,8 @@ fn test_reply_tokens_multiple_chats() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -421,6 +451,8 @@ fn test_line_config_accessors() {
         channel_access_token: "my_token".to_string(),
         channel_secret: "my_secret".to_string(),
         webhook_port: 9090,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: vec!["U123".to_string()],
     };
     assert_eq!(config.channel_access_token, "my_token");
@@ -435,6 +467,8 @@ fn test_verify_signature_with_empty_body() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -451,6 +485,8 @@ fn test_verify_signature_wrong_length_64_char_input() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -467,6 +503,8 @@ fn test_verify_signature_wrong_length() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -480,6 +518,8 @@ fn test_verify_signature_empty_string_signature() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -492,6 +532,8 @@ fn test_line_channel_new_valid_token() {
         channel_access_token: "valid_token".to_string(),
         channel_secret: "valid_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus());
@@ -506,6 +548,8 @@ fn test_line_channel_new_empty_token() {
         channel_access_token: String::new(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     assert!(LineChannel::new(config, test_bus()).is_err());
@@ -517,6 +561,8 @@ fn test_line_channel_new_empty_secret() {
         channel_access_token: "token".to_string(),
         channel_secret: String::new(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     assert!(LineChannel::new(config, test_bus()).is_err());
@@ -583,6 +629,8 @@ fn test_store_and_remove_reply_token() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -600,6 +648,8 @@ async fn test_send_with_reply_token_uses_reply() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -626,6 +676,8 @@ async fn test_send_push_message_on_no_token() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -672,6 +724,8 @@ fn test_line_config_default_port() {
         channel_access_token: "t".to_string(),
         channel_secret: "s".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     assert_eq!(config.webhook_port, 0);
@@ -701,6 +755,8 @@ async fn test_start_stop_running_state() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -717,6 +773,8 @@ fn test_verify_signature_length_mismatch() {
         channel_access_token: "token".to_string(),
         channel_secret: "test_secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -778,6 +836,8 @@ async fn test_line_channel_base_name() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -857,6 +917,8 @@ async fn test_send_uses_push_when_no_reply_token() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -883,12 +945,16 @@ fn test_verify_signature_same_body_different_secret() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret1".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let config2 = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret2".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch1 = LineChannel::new(config1, test_bus()).unwrap();
@@ -940,6 +1006,8 @@ async fn test_line_full_lifecycle_with_real_webhook() {
         channel_access_token: "token".to_string(),
         channel_secret: "my_secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -954,7 +1022,7 @@ async fn test_line_full_lifecycle_with_real_webhook() {
     // 本测试建模的是合法投递全链路，必须带正确签名。
     let sig = make_signature_b64(body.as_bytes(), "my_secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -994,6 +1062,8 @@ async fn test_line_full_lifecycle_invalid_signature() {
         channel_access_token: "token".to_string(),
         channel_secret: "my_secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, _bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1004,7 +1074,7 @@ async fn test_line_full_lifecycle_invalid_signature() {
 
     let body = r#"{"events":[]}"#;
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: invalid_b64_signature\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: invalid_b64_signature\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1023,6 +1093,8 @@ async fn test_line_full_lifecycle_valid_signature() {
         channel_access_token: "token".to_string(),
         channel_secret: secret.to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1034,7 +1106,7 @@ async fn test_line_full_lifecycle_valid_signature() {
     let body = r#"{"events":[{"type":"message","replyToken":"rt1","source":{"type":"user","user_id":"U1"},"message":{"type":"text","text":"Signed"},"timestamp":1}]}"#;
     let sig = make_signature_b64(body.as_bytes(), secret);
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1062,6 +1134,8 @@ async fn test_line_full_lifecycle_lowercase_signature_header() {
         channel_access_token: "token".to_string(),
         channel_secret: secret.to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1074,7 +1148,7 @@ async fn test_line_full_lifecycle_lowercase_signature_header() {
     let sig = make_signature_b64(body.as_bytes(), secret);
     // lowercase header
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nx-line-signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nx-line-signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1101,6 +1175,8 @@ async fn test_line_full_lifecycle_invalid_json_body() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, _bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1113,7 +1189,7 @@ async fn test_line_full_lifecycle_invalid_json_body() {
     // 签名正确 + body 非法 JSON → 验签过、解析失败 → 400（证明验签闸先于解析）
     let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1132,6 +1208,8 @@ async fn test_line_full_lifecycle_group_chat_id() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1143,7 +1221,7 @@ async fn test_line_full_lifecycle_group_chat_id() {
     let body = r#"{"events":[{"type":"message","replyToken":"rt1","source":{"type":"group","user_id":"U1","group_id":"G123"},"message":{"type":"text","text":"group msg"},"timestamp":1}]}"#;
     let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1171,6 +1249,8 @@ async fn test_line_full_lifecycle_room_chat_id() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1182,7 +1262,7 @@ async fn test_line_full_lifecycle_room_chat_id() {
     let body = r#"{"events":[{"type":"message","replyToken":"rt1","source":{"type":"room","user_id":"U1","room_id":"R456"},"message":{"type":"text","text":"room msg"},"timestamp":1}]}"#;
     let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1209,6 +1289,8 @@ async fn test_line_full_lifecycle_skips_non_message_events() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1220,7 +1302,7 @@ async fn test_line_full_lifecycle_skips_non_message_events() {
     let body = r#"{"events":[{"type":"follow","replyToken":"rt1","source":{"type":"user","user_id":"U1"},"timestamp":1}]}"#;
     let sig = make_signature_b64(body.as_bytes(), "secret");
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1242,6 +1324,8 @@ async fn test_line_full_lifecycle_no_body_separator() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, _bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1254,7 +1338,7 @@ async fn test_line_full_lifecycle_no_body_separator() {
     // 签名闸（fail-closed）先于任何 body 解析，直接 401；带合法签名的
     // 无分隔符请求在真实流量中不存在（LINE 恒带分隔符+签名），坏 body
     // → 400 路径由 invalid_json_body / w4c_malformed_body_400 覆盖。
-    let raw = b"GET / HTTP/1.0\nno crlfcrlf here";
+    let raw = b"GET /webhook/line HTTP/1.0\nno crlfcrlf here";
     let response = send_raw_http(port, raw).await;
     assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
 
@@ -1271,6 +1355,8 @@ async fn test_line_full_lifecycle_missing_signature_rejected() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, mut bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1281,7 +1367,7 @@ async fn test_line_full_lifecycle_missing_signature_rejected() {
 
     let body = r#"{"events":[{"type":"message","replyToken":"rt-forge","source":{"type":"user","user_id":"U-attacker"},"message":{"type":"text","text":"forged"},"timestamp":1}]}"#;
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1314,6 +1400,8 @@ async fn test_line_channel_is_running_trait() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: find_free_port(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1333,6 +1421,8 @@ async fn test_line_send_with_reply_token_consumed_in_lifecycle() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let (bus_tx, _bus_rx) = broadcast::channel::<InboundMessage>(64);
@@ -1366,6 +1456,8 @@ async fn test_line_default_port_when_zero() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1427,6 +1519,8 @@ async fn test_line_reply_error_status() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1444,6 +1538,8 @@ async fn test_line_push_error_status() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1458,6 +1554,8 @@ async fn test_line_reply_with_empty_text() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1471,6 +1569,8 @@ async fn test_line_push_with_empty_text() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: 0,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1500,17 +1600,36 @@ async fn w4c_line_webhook_pair(
     reply_tokens: &Arc<dashmap::DashMap<String, String>>,
     running: &Arc<parking_lot::RwLock<bool>>,
 ) -> (tokio::net::TcpStream, std::net::SocketAddr) {
+    w4c_line_webhook_pair_with_path(bus, secret, "/webhook/line", reply_tokens, running).await
+}
+
+/// 同 [`w4c_line_webhook_pair`]，可指定 webhook_path（路径闸回归测试用）。
+async fn w4c_line_webhook_pair_with_path(
+    bus: &broadcast::Sender<InboundMessage>,
+    secret: &str,
+    webhook_path: &str,
+    reply_tokens: &Arc<dashmap::DashMap<String, String>>,
+    running: &Arc<parking_lot::RwLock<bool>>,
+) -> (tokio::net::TcpStream, std::net::SocketAddr) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let bus = bus.clone();
     let secret = secret.to_string();
+    let webhook_path = webhook_path.to_string();
     let reply_tokens = Arc::clone(reply_tokens);
     let running = Arc::clone(running);
     let _accept_task = tokio::spawn(async move {
         if let Ok((stream, _)) = listener.accept().await {
-            LineChannel::handle_webhook_connection(stream, &bus, &secret, &reply_tokens, &running)
-                .await;
+            LineChannel::handle_webhook_connection(
+                stream,
+                &bus,
+                &secret,
+                &webhook_path,
+                &reply_tokens,
+                &running,
+            )
+            .await;
         }
     });
 
@@ -1568,7 +1687,7 @@ async fn test_w4c_line_webhook_valid_signature_delivers_and_stores_token() {
 
     let (mut client, _addr) = w4c_line_webhook_pair(&bus, secret, &reply_tokens, &running).await;
     let req = format!(
-        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1617,7 +1736,7 @@ async fn test_w4c_line_webhook_invalid_signature_401() {
 
     let (mut client, _) = w4c_line_webhook_pair(&bus, "real-secret", &reply_tokens, &running).await;
     let req = format!(
-        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: FORGEDSIG==\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: FORGEDSIG==\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1651,7 +1770,7 @@ async fn test_w4c_line_webhook_malformed_body_400() {
 
     let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
     let req = format!(
-        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1693,7 +1812,7 @@ async fn test_w4c_line_webhook_event_guards_skip_invalid_events() {
 
     let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
     let req = format!(
-        "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );
@@ -1733,7 +1852,7 @@ async fn test_w4c_line_webhook_not_running_closes_without_response() {
 
     let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
     client
-        .write_all(b"POST /callback HTTP/1.1\r\n\r\n{}")
+        .write_all(b"POST /webhook/line HTTP/1.1\r\n\r\n{}")
         .await
         .unwrap();
 
@@ -1763,6 +1882,8 @@ fn s2_line_channel(
         channel_access_token: "s2-token".to_string(),
         channel_secret: "s2-secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: vec![],
     };
     (LineChannel::new(config, bus).unwrap(), rx)
@@ -1798,7 +1919,7 @@ async fn s2_line_webhook_event_without_message_field_is_skipped() {
     let body = r#"{"events":[{"type":"message","replyToken":"rt","source":{"type":"user","userId":"U1"}}]}"#;
     let sig = make_signature_b64(body.as_bytes(), "s2-secret");
     let request = format!(
-        "POST /webhook HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
         sig,
         body.len(),
         body
@@ -1824,7 +1945,7 @@ async fn s2_line_webhook_accept_loop_breaks_after_stop() {
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
     // One real request so the listener is definitely bound and serving.
-    let request = "POST /webhook HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}";
+    let request = "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}";
     let _ = send_raw_http(port, request.as_bytes()).await;
 
     ch.stop().await.unwrap();
@@ -1858,7 +1979,7 @@ async fn test_bug_line_non_utf8_header_no_panic_unsigned_401() {
 
     // 3 个非法字节 → lossy 膨胀 +6；分隔符在原始偏移 n-4 → 字符串偏移
     // n+2 → 旧形态切片 [n+6..n] 必越界 panic
-    let mut raw = b"POST / HTTP/1.1\r\nX-Pad: ".to_vec();
+    let mut raw = b"POST /webhook/line HTTP/1.1\r\nX-Pad: ".to_vec();
     raw.extend_from_slice(&[0xFF, 0xFE, 0xFF]);
     raw.extend_from_slice(b"\r\n\r\n");
 
@@ -1886,6 +2007,8 @@ async fn test_bug_line_bind_failure_propagates_from_start() {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
         webhook_port: port,
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_path: "/webhook/line".to_string(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1897,4 +2020,171 @@ async fn test_bug_line_bind_failure_propagates_from_start() {
         err.to_string().contains("bind"),
         "error must mention bind, got: {err}"
     );
+}
+
+// ============================================================
+// BUG-20261110-055 回归锁：webhook_host / webhook_path 接线
+// 此前两键声名未读取——bind 硬编码 "0.0.0.0"、请求路径从不检查。
+// ============================================================
+
+#[test]
+fn test_bug055_webhook_host_resolved_fallback_and_trim() {
+    let mk = |host: &str| LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_host: host.to_string(),
+        webhook_port: 0,
+        webhook_path: "/webhook/line".to_string(),
+        allow_from: Vec::new(),
+    };
+    // 空/纯空白回落 "0.0.0.0"（旧行为不变）
+    assert_eq!(mk("").webhook_host_resolved(), "0.0.0.0");
+    assert_eq!(mk("   ").webhook_host_resolved(), "0.0.0.0");
+    // 配置值 trim 后原样
+    assert_eq!(mk("127.0.0.1").webhook_host_resolved(), "127.0.0.1");
+    assert_eq!(mk("  192.168.1.5  ").webhook_host_resolved(), "192.168.1.5");
+}
+
+#[test]
+fn test_bug055_webhook_path_resolved_rules() {
+    let mk = |path: &str| LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_host: "0.0.0.0".to_string(),
+        webhook_port: 0,
+        webhook_path: path.to_string(),
+        allow_from: Vec::new(),
+    };
+    // 空值回落默认（与 config 模板同值）
+    assert_eq!(mk("").webhook_path_resolved(), "/webhook/line");
+    assert_eq!(mk("   ").webhook_path_resolved(), "/webhook/line");
+    // 保证前导 /
+    assert_eq!(mk("hook").webhook_path_resolved(), "/hook");
+    assert_eq!(mk("  /cb  ").webhook_path_resolved(), "/cb");
+    // 正常形态原样
+    assert_eq!(mk("/webhook/line").webhook_path_resolved(), "/webhook/line");
+}
+
+/// 路径闸：请求路径不匹配 → 404（**在验签之前**——合法签名 + 错路径
+/// 仍必须 404；旧形态任意路径照常处理）。
+#[tokio::test]
+async fn test_bug055_path_mismatch_404_even_with_valid_signature() {
+    use tokio::io::AsyncWriteExt;
+    let (bus, mut _rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+    let body = br#"{"events":[]}"#;
+    let sig = make_signature_b64(body, "secret");
+    let request = format!(
+        "POST /wrong/path HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
+        body.len(),
+        String::from_utf8_lossy(body)
+    );
+
+    let (mut client, _addr) =
+        w4c_line_webhook_pair_with_path(&bus, "secret", "/webhook/line", &reply_tokens, &running)
+            .await;
+    client.write_all(request.as_bytes()).await.unwrap();
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .expect("no response");
+    assert!(
+        resp.starts_with("HTTP/1.1 404"),
+        "path mismatch must 404 even with valid signature, got: {resp:?}"
+    );
+    assert!(
+        _rx.try_recv().is_err(),
+        "404 path must not publish anything to the bus"
+    );
+}
+
+/// 路径闸容忍 query string（LINE 控制台回调 URL 带查询参数时照常匹配）。
+#[tokio::test]
+async fn test_bug055_path_query_string_tolerated() {
+    use tokio::io::AsyncWriteExt;
+    let (bus, mut rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+    let body = br#"{"destination":"U0","events":[{"type":"message","replyToken":"rt-q","source":{"type":"user","userId":"Uq"},"message":{"type":"text","text":"hi"},"timestamp":1}]}"#;
+    let sig = make_signature_b64(body, "secret");
+    let request = format!(
+        "POST /webhook/line?test=true HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+        sig,
+        body.len(),
+        String::from_utf8_lossy(body)
+    );
+
+    let (mut client, _addr) =
+        w4c_line_webhook_pair_with_path(&bus, "secret", "/webhook/line", &reply_tokens, &running)
+            .await;
+    client.write_all(request.as_bytes()).await.unwrap();
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .expect("no response");
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "query string must be stripped before path match, got: {resp:?}"
+    );
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: 200 must be followed by bus publish")
+        .unwrap();
+    assert_eq!(inbound.content, "hi");
+}
+
+/// start() 全链：bind 主机来自 config（127.0.0.1 只听回环）+ 正确路径
+/// 照常入站 + 错误路径 404。
+#[tokio::test]
+async fn test_bug055_start_binds_configured_host_and_path_gate() {
+    let port = find_free_port();
+    let (bus, mut rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_host: "127.0.0.1".to_string(),
+        webhook_port: port,
+        webhook_path: "/my/callback".to_string(),
+        allow_from: Vec::new(),
+    };
+    let ch = LineChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 错误路径（默认路径也不再匹配——配置已改为 /my/callback）→ 404
+    let resp = send_raw_http(
+        port,
+        "POST /webhook/line HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n{}".as_bytes(),
+    )
+    .await;
+    assert!(
+        resp.starts_with("HTTP/1.1 404"),
+        "configured path /my/callback: default path must 404, got: {resp:?}"
+    );
+
+    // 正确路径 + 合法签名 → 200 + 入站
+    let body = br#"{"destination":"U0","events":[{"type":"message","replyToken":"rt-cb","source":{"type":"user","userId":"Ucb"},"message":{"type":"text","text":"cb"},"timestamp":1}]}"#;
+    let sig = make_signature_b64(body, "secret");
+    let resp = send_raw_http(
+        port,
+        format!(
+            "POST /my/callback HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Line-Signature: {}\r\nContent-Length: {}\r\n\r\n{}",
+            sig,
+            body.len(),
+            String::from_utf8_lossy(body)
+        )
+        .as_bytes(),
+    )
+    .await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "configured path with valid signature must 200, got: {resp:?}"
+    );
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: 200 must be followed by bus publish")
+        .unwrap();
+    assert_eq!(inbound.content, "cb");
+
+    ch.stop().await.unwrap();
 }

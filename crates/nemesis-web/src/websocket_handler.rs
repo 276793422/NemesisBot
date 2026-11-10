@@ -24,6 +24,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// WS 保活 ping 间隔缺省值（秒）——与旧硬编码同值（行为不变缺省）。
+pub const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 30;
+
+/// WS 保活 ping 间隔（秒）——config `channels.web.heartbeat_interval`。
+/// 模块级静态而非 AppState/WebServerConfig 字段：两者分别有 172/49 处
+/// 测试字面量装配，加字段即大面积爆改（79b49a25 教训同族）。进程级
+/// 部署旋钮（单进程单 gateway），static 形态与 RUNNING_APP_STATE /
+/// pty::ensure_manager 同款先例。
+static WS_PING_INTERVAL_SECS: AtomicU64 = AtomicU64::new(DEFAULT_WS_PING_INTERVAL_SECS);
+
+/// 配置 WS 保活 ping 间隔（gateway 装配期调用，早于任意连接建立）。
+/// `0` 视作缺省回落——tokio `interval(0)` 会 panic，这里统一收敛。
+pub fn configure_ws_ping_interval(secs: u64) {
+    let v = if secs == 0 {
+        DEFAULT_WS_PING_INTERVAL_SECS
+    } else {
+        secs
+    };
+    WS_PING_INTERVAL_SECS.store(v, Ordering::Relaxed);
+}
+
+/// 当前生效的 ping 间隔（秒；观测/测试用）。
+pub fn ws_ping_interval_secs() -> u64 {
+    WS_PING_INTERVAL_SECS.load(Ordering::Relaxed)
+}
+
 // Incoming message type
 
 /// Incoming message from a WebSocket client.
@@ -446,7 +472,7 @@ pub async fn handle_websocket(
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
     // Message read loop
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(ws_ping_interval_secs()));
 
     loop {
         tokio::select! {

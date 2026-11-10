@@ -140,8 +140,6 @@ pub struct ToolsConfig {
     #[serde(default)]
     pub web: WebToolsConfig,
     #[serde(default)]
-    pub cron: CronToolsConfig,
-    #[serde(default)]
     pub exec: ExecConfig,
     #[serde(default)]
     pub hardware: HardwareToolsConfig,
@@ -257,12 +255,6 @@ impl Default for PerplexityConfig {
             max_results: default_max_results(),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct CronToolsConfig {
-    #[serde(default)]
-    pub exec_timeout_minutes: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

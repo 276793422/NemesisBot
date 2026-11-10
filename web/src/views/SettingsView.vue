@@ -746,11 +746,6 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
-            <div class="form-group">
-              <label class="form-label">Cron 执行超时（分钟）</label>
-              <input class="form-input" type="number" :value="config.tools?.cron?.exec_timeout_minutes ?? 60"
-                @change="(e: any) => saveField('tools.cron.exec_timeout_minutes', parseInt(e.target.value))" style="max-width: 200px;">
-            </div>
             <!-- exec deny patterns（批次 4 接线激活的死键）：开关 + 自定义词表
                  （替换语义）。装配期一次读——重启 gateway（Agent 重建）生效；
                  executor 分离形态下经 env 透传进子进程同源生效。 -->

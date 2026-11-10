@@ -1800,12 +1800,6 @@ fn test_absent_top_level_keys_converge_with_field_serde_defaults() {
 }
 
 #[test]
-fn test_cron_tools_config_default() {
-    let cfg = CronToolsConfig::default();
-    assert_eq!(cfg.exec_timeout_minutes, 0);
-}
-
-#[test]
 fn test_websocket_channel_config_default() {
     // 缺省收敛出厂真相源（BUG-20261109-017）：host/port/path/sync_to 与
     // 出厂模板同值（127.0.0.1/49001/"/ws"/["web"]）。此前 derive 零值形态
@@ -2887,12 +2881,6 @@ fn test_llm_log_config_defaults_v2() {
     assert!(cfg.log_dir.is_empty());
     // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（"full"）。
     assert_eq!(cfg.detail_level, "full");
-}
-
-#[test]
-fn test_cron_tools_config_defaults_v2() {
-    let cfg = CronToolsConfig::default();
-    assert_eq!(cfg.exec_timeout_minutes, 0);
 }
 
 // Additional tests to improve coverage from 72% to 80%+ ----

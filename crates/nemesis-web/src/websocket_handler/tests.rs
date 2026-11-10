@@ -1087,3 +1087,20 @@ fn test_handle_text_message_empty_string_content() {
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("empty"));
 }
+
+// ---- BUG-20261110-055 回归锁：channels.web.heartbeat_interval 接线 ----
+
+#[test]
+fn test_bug055_ws_ping_interval_configure_and_fallback() {
+    // 0 = 缺省回落 30（tokio interval(0) panic 防护）
+    configure_ws_ping_interval(0);
+    assert_eq!(ws_ping_interval_secs(), DEFAULT_WS_PING_INTERVAL_SECS);
+
+    // 合法值原样生效
+    configure_ws_ping_interval(45);
+    assert_eq!(ws_ping_interval_secs(), 45);
+
+    // 恢复缺省，不污染后续测试
+    configure_ws_ping_interval(DEFAULT_WS_PING_INTERVAL_SECS);
+    assert_eq!(ws_ping_interval_secs(), DEFAULT_WS_PING_INTERVAL_SECS);
+}

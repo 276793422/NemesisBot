@@ -195,9 +195,6 @@
         "max_results": 5
       }
     },
-    "cron": {
-      "exec_timeout_minutes": 5
-    },
     "exec": {
       "max_timeout_secs": 0
     }

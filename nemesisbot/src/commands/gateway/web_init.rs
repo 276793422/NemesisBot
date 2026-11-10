@@ -155,6 +155,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         index_file: "index.html".to_string(),
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    // channels.web.heartbeat_interval → WS 保活 ping 间隔（秒）。此前 server
+    // 侧硬编码 30s、config 键纯装饰（BUG-20261110-055 接线）。负值截 0 后
+    // 由 setter 统一回落缺省（tokio interval(0) panic 防护）。
+    nemesis_web::websocket_handler::configure_ws_ping_interval(
+        cfg.channels.web.heartbeat_interval.max(0) as u64,
+    );
     // CORS 管理器注入（cors.* WSAPI 真实现）：与 skins 同款 setter 形态
     // （不进 WebServerConfig——测试字面量装配面大）；None（配置缺失/加载
     // 失败）不注入，WSAPI handler 诚实报错 not connected。
@@ -512,7 +518,9 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         &cfg.channels.line.channel_secret,
                         "channels.line.channel_secret",
                     ),
+                    webhook_host: cfg.channels.line.webhook_host.clone(),
                     webhook_port: nemesis_config::config_port_to_u16(cfg.channels.line.webhook_port, "channels.line.webhook_port")?,
+                    webhook_path: cfg.channels.line.webhook_path.clone(),
                     allow_from: cfg.channels.line.allow_from.clone(),
                 })
             } else {

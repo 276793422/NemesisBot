@@ -1981,6 +1981,8 @@ fn w4c_valid_init_config() -> ChannelInitConfig {
             channel_access_token: "lt".to_string(),
             channel_secret: "ls".to_string(),
             webhook_port: 0,
+            webhook_host: "0.0.0.0".to_string(),
+            webhook_path: "/webhook/line".to_string(),
             allow_from: vec![],
         });
     }
@@ -2181,6 +2183,8 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             channel_access_token: String::new(),
             channel_secret: String::new(),
             webhook_port: 0,
+            webhook_host: "0.0.0.0".to_string(),
+            webhook_path: "/webhook/line".to_string(),
             allow_from: vec![],
         }),
         #[cfg(feature = "external")]

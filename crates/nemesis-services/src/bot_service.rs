@@ -277,8 +277,6 @@ pub struct BotServiceConfig {
     pub devices_enabled: bool,
     /// Whether USB device monitoring is enabled.
     pub devices_monitor_usb: bool,
-    /// Cron execution timeout in minutes.
-    pub cron_exec_timeout_minutes: u64,
     /// Whether to restrict file operations to workspace.
     pub restrict_to_workspace: bool,
 }
@@ -301,7 +299,6 @@ impl Default for BotServiceConfig {
             forge_learning_enabled: false,
             devices_enabled: false,
             devices_monitor_usb: false,
-            cron_exec_timeout_minutes: 5,
             restrict_to_workspace: true,
         }
     }
@@ -436,26 +433,7 @@ struct AgentsDefaultsConfigFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct ToolsConfigFile {
-    #[serde(default = "default_cron_timeout")]
-    cron: CronToolsConfigFile,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct CronToolsConfigFile {
-    #[serde(default = "default_cron_timeout_minutes")]
-    exec_timeout_minutes: u64,
-}
-
-fn default_cron_timeout_minutes() -> u64 {
-    5
-}
-
-fn default_cron_timeout() -> CronToolsConfigFile {
-    CronToolsConfigFile {
-        exec_timeout_minutes: 5,
-    }
-}
+struct ToolsConfigFile {}
 
 fn default_true() -> bool {
     true
