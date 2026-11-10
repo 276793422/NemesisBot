@@ -61,6 +61,38 @@ async fn fetch_expected_sha256_missing_filename_bails() {
     assert!(format!("{err:#}").contains("not found"), "{err:#}");
 }
 
+// BUG-20261110-058：HTTP 错误状态必须诚实报错，错误页 body 不得被当
+// 成功响应消费。
+#[tokio::test]
+async fn fetch_expected_sha256_http_404_reports_status_not_false_root_cause() {
+    // 404 错误页 body 若无状态闸会被逐行解析 → bail「not found」假根因
+    // （并误触发 download_release 的无校验降级）。修后必须报出真实 404。
+    let url = serve(
+        r#"{"message":"Not Found","documentation_url":"x"}"#,
+        "404 Not Found",
+    )
+    .await;
+    let err = fetch_expected_sha256(&url, "wanted.exe").await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("404"), "{msg}");
+    assert!(!msg.contains("not found in checksums"), "{msg}");
+}
+
+#[tokio::test]
+async fn download_and_verify_http_error_status_bails_without_writing() {
+    // 404/500 错误页字节不得当安装器落盘（旧代码会把错误页写成安装器
+    // 文件、可覆盖旧好包，失败延迟到 7z 解压层才混淆报错）。
+    for status in ["404 Not Found", "500 Internal Server Error"] {
+        let url = serve("error-page-body", status).await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("inst.exe");
+        let err = download_and_verify(&url, None, &dest).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("fetch"), "{msg}");
+        assert!(!dest.exists(), "{status}: 错误页不得落盘");
+    }
+}
+
 #[tokio::test]
 async fn download_and_verify_matching_hash_writes_file() {
     // 装 subscriber 让 info!/warn! 的参数行（bytes.len() 等）
