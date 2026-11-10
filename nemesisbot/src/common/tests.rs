@@ -1103,9 +1103,10 @@ mod r9_zero {
 /// 随机 token，绝不回空串——verify_token(expected=空) 对所有请求放行。
 #[test]
 fn resolve_auth_token_or_random_fail_closed_on_broken_reference() {
-    // 本测试触及全局 vault 解析器槽位（进程单例）——持 crate 根锁，
-    // 防 wave_b 等分发测试并发 install 换槽。
-    let _root = crate::GLOBAL_STATE_LOCK
+    // 本测试触及全局 vault 解析器槽位（进程单例）——持 crate 根统一
+    // VAULT_SLOT_LOCK（BUG-20261110-049 同族：此前持 GLOBAL_STATE_LOCK
+    // 对 reloader/plugin_bridge 的持锁者互不互斥 = 假互斥）。
+    let _root = crate::VAULT_SLOT_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {

@@ -5,17 +5,18 @@
 //! 无闭合字面量保留 / 空别名拒绝 / 结果掩码（长度降序 / 空清单直通）/
 //! 前缀单一真相源格式。
 
+use super::credential_injection_tests::VAULT_SLOT_LOCK;
 use super::session_secrets::{
     MASK_TEXT, expand_session_placeholders, mask_secrets_in_result, received_text,
     session_scope_prefix,
 };
 use nemesis_config::{clear_global_vault_resolver, set_global_vault_resolver};
-use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// 全局解析器是进程单例——触及它的测试互斥（并行测试会互相踩安装，
-/// 实录：resolver 断言收到别人测试的别名）。同 vault_ref/tests.rs 惯例。
-static RESOLVER_LOCK: Mutex<()> = Mutex::new(());
+// 全局解析器是**进程单例**——触及它的测试统一互斥在
+// `credential_injection_tests::VAULT_SLOT_LOCK`（BUG-20261110-049）：并行
+// 测试会互相踩安装（实录：resolver 断言收到别人测试的别名），文件级
+// static 锁对其他文件的持锁者互不互斥 = 假互斥。
 
 /// 测试结束清理全局槽位（panic 路径也要恢复——全局状态 hygiene）。
 struct Cleanup;
@@ -55,7 +56,7 @@ fn passthrough_no_template_byte_identical() {
 
 #[test]
 fn expand_basic_within_scope() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|alias| {
         assert_eq!(alias, "agent/sess-1/token");
@@ -72,7 +73,7 @@ fn expand_basic_within_scope() {
 
 #[test]
 fn expand_embedded_and_multiple() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|alias| match alias {
         "agent/sess-1/a" => Ok("AAA".to_string()),
@@ -92,7 +93,7 @@ fn expand_embedded_and_multiple() {
 
 #[test]
 fn object_keys_not_rewritten() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|_alias| Ok("X".to_string())));
     // 占位符语义是「值里引用凭据」：键名不改写（宁缺毋滥）——值原样、
@@ -105,7 +106,7 @@ fn object_keys_not_rewritten() {
 
 #[test]
 fn out_of_scope_alias_rejected_without_lookup() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     // resolver 一旦被调用即 panic（测试失败）——证明越界臂不查库、
     // 不给别名存在性信号（B4 主防线）。
@@ -133,7 +134,7 @@ fn empty_alias_rejected() {
 
 #[test]
 fn unclosed_template_kept_literal() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     // 无闭合 = 非合法模板形态，按字面量保留（同串后续合法模板照常展开）。
     set_global_vault_resolver(Arc::new(|alias| {
@@ -151,7 +152,7 @@ fn unclosed_template_kept_literal() {
 
 #[test]
 fn unknown_alias_error_propagates() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|_alias| Err("别名不存在".to_string())));
     let raw = r#"{"k":"{{vault:agent/sess-1/missing}}"}"#;
@@ -165,7 +166,7 @@ fn unknown_alias_error_propagates() {
 
 #[test]
 fn empty_secret_expands_but_not_collected() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|_alias| Ok(String::new())));
     let raw = r#"{"k":"{{vault:agent/sess-1/empty}}"}"#;
@@ -177,7 +178,7 @@ fn empty_secret_expands_but_not_collected() {
 
 #[test]
 fn alias_trim_insensitive() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     // 模板内两侧空白容忍（模型书写噪声）；闸面按 trim 后比对。
     set_global_vault_resolver(Arc::new(|alias| {

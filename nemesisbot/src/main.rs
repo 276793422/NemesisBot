@@ -1394,6 +1394,14 @@ pub(crate) static APPROVAL_AUTO_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mut
 #[cfg(test)]
 pub(crate) static WASM_HOST_DLL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// 全局 vault resolver 槽（nemesis_config 进程单例）触碰类测试的共享串行锁
+// ——reloader / common / plugin_bridge 三个测试模块此前各持不同锁（own
+// static / GLOBAL_STATE_LOCK / temp_home 串行锁）互不互斥 = 假互斥
+// （BUG-20261110-049 同族），并行负载下 resolver 闭包被交叉覆写消费。
+// 获取侧 poison-aware，同上约定。
+#[cfg(test)]
+pub(crate) static VAULT_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod bridge_client_tests;
 #[cfg(test)]

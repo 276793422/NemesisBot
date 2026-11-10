@@ -8,15 +8,16 @@
 //!
 //! 需 security feature（nemesis-security 是 optional 依赖）。
 
+use super::credential_injection_tests::VAULT_SLOT_LOCK;
 use super::session_secrets::{expand_session_placeholders, mask_secrets_in_result};
 use nemesis_config::{clear_global_vault_resolver, set_global_vault_resolver};
 use nemesis_security::credential::Scanner as CredentialScanner;
 use nemesis_security::dlp::DlpEngine;
-use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// 全局解析器是进程单例——触及它的测试互斥（同 session_secrets_tests 惯例）。
-static RESOLVER_LOCK: Mutex<()> = Mutex::new(());
+// 全局解析器是**进程单例**——触及它的测试统一互斥在
+// `credential_injection_tests::VAULT_SLOT_LOCK`（BUG-20261110-049，
+// 文件级 static 锁对其他文件的持锁者互不互斥 = 假互斥）。
 
 struct Cleanup;
 impl Drop for Cleanup {
@@ -39,7 +40,7 @@ const PLAIN_ARGS: &str = r#"{"command":"login.sh","env":"password = 'hunter2secr
 /// 三环共享同一 raw args 字符串（dispatch 时序的真实形态）。
 #[test]
 fn pipeline_reference_passes_layer4_then_expands_and_masks() {
-    let _lock = RESOLVER_LOCK.lock();
+    let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
 
     // 环① Layer 4：占位符原文过凭据扫描 → 豁免（不拦）。

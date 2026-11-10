@@ -1337,9 +1337,11 @@ pub mod credential_injection;
 pub mod session_secrets;
 // vault（计划）：声明式量化风险限制（滑动窗口 + 超限升级）。
 pub mod limits;
-// vault：注入机制测试（纯函数 + loop 级四表面防泄漏）。
+// vault：注入机制测试（纯函数 + loop 级四表面防泄漏）。pub(crate) 仅因
+// VAULT_SLOT_LOCK 是全 crate 触全局 vault resolver 槽测试的统一互斥锁
+// （BUG-20261110-049），delegate_registry/tests 也要引用。
 #[cfg(test)]
-mod credential_injection_tests;
+pub(crate) mod credential_injection_tests;
 // B4 会话凭据占位符测试（展开/作用域闸/掩码纯函数 + 收取侧掩码占位）。
 #[cfg(test)]
 mod session_secrets_tests;

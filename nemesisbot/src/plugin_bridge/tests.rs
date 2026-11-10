@@ -855,8 +855,13 @@ impl nemesis_agent::r#loop::Tool for RecordingBuiltin {
 #[allow(clippy::await_holding_lock)]
 async fn takeover_credential_injection_atomic_with_path_decision() {
     let (_lock, _dir, home) = temp_home();
-    // 全局 vault 解析器卫生（对齐 delegate_registry 惯例：clear→断言→clear；
-    // temp_home 串行锁保证本二进制内无并发写者）。
+    // 全局 vault 解析器卫生：统一互斥走 crate 根 VAULT_SLOT_LOCK
+    // （BUG-20261110-049 同族：temp_home 串行锁只互斥同锁持有者，对
+    // reloader/common 的写者无互斥力）。
+    let _slot = crate::VAULT_SLOT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // clear→断言→clear。
     nemesis_config::clear_global_vault_resolver();
     let manager = Arc::new(
         PluginManager::new(
@@ -1312,8 +1317,11 @@ impl nemesis_types::agent::CredentialBroker for CardBroker {
 #[allow(clippy::await_holding_lock)]
 async fn takeover_fallback_raises_card_and_retries_with_truth() {
     let (_lock, _dir, home) = temp_home();
-    // 全局 vault 解析器卫生（用例同款：temp_home 串行锁保证本二进制
-    // 内无并发写者）。
+    // 全局 vault 解析器卫生：统一互斥走 crate 根 VAULT_SLOT_LOCK
+    // （BUG-20261110-049 同族：temp_home 串行锁只互斥同锁持有者）。
+    let _slot = crate::VAULT_SLOT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     nemesis_config::clear_global_vault_resolver();
     let store = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     {
