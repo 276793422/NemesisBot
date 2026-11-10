@@ -22,6 +22,62 @@ use nemesis_utils::line_cap::read_line_capped;
 /// 小 JSON 事件，1MB 已远超任何合法行。
 const MAX_MAIXCAM_LINE_BYTES: usize = 1024 * 1024;
 
+/// 事件字段截断上限（BUG-20261110-054）。类别名语义上是物体类别
+/// （person/cat/vehicle），128 字符已远超任何合法值。
+const MAX_EVENT_FIELD_CHARS: usize = 128;
+
+/// 事件字段清洗（BUG-20261110-054）：class_name 是对端可控字段且直接嵌入
+/// agent prompt 模板（content `Class: {class_name}`），设备协议无鉴权——
+/// 同网段伪造事件可借控制字符/无界长度向 agent prompt 注入任意分段文本。
+/// 去控制字符（含 \n\r\t，模板分段失效）+ 截断收缩注入载体。按 char 迭代
+/// 天然 char-boundary 安全（多字节字符不被撕裂）。伪造传感器事件本身是
+/// 设备通道本征风险（无身份协议不可代码消除），不在本修复面。
+fn sanitize_event_field(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_EVENT_FIELD_CHARS)
+        .collect()
+}
+
+/// 对端准入判定（BUG-20261110-054）：`allow_from` 空 = 放行所有（兼容既有
+/// 部署）；非空 = 对端 IP 必须命中白名单。设备协议无身份握手（sender_id
+/// 硬编码 "maixcam"），按 sender_id 过滤在协议上不可能生效——白名单的
+/// 真实语义是**对端 IP 准入**（accept 时检查；此前 `allow_from` 只是
+/// 声名未读取的装饰配置）。条目支持精确 IP（`192.168.1.50`）与 IPv4
+/// 前缀通配（`192.168.1.*`，尾段通配）。
+fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
+    if allow_from.is_empty() {
+        return true;
+    }
+    let peer_ip = peer_ip.trim();
+    for entry in allow_from {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if let Some(prefix) = entry.strip_suffix('*') {
+            if peer_ip.starts_with(prefix) {
+                return true;
+            }
+        } else if peer_ip == entry {
+            return true;
+        }
+    }
+    false
+}
+
+/// 监听 host 是否确定落在回环（localhost 或回环 IP）。主机名等无法静态
+/// 判定的形态返回 false——告警面取保守方向（宁多勿漏）。
+fn host_is_definitely_loopback(host: &str) -> bool {
+    let h = host.trim();
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
 /// MaixCam channel configuration.
 #[derive(Debug, Clone)]
 pub struct MaixCamConfig {
@@ -29,7 +85,10 @@ pub struct MaixCamConfig {
     pub host: String,
     /// Listen port.
     pub port: u16,
-    /// Allowed sender IDs.
+    /// 对端 IP 白名单（BUG-20261110-054 接线）。设备协议无身份握手
+    /// （sender_id 硬编码 "maixcam"），按 sender 过滤不可能生效——本字段
+    /// 真实语义是 **accept 时检查对端 IP**。空 = 放行所有；条目支持精确
+    /// IP（`192.168.1.50`）与 IPv4 前缀通配（`192.168.1.*`）。
     pub allow_from: Vec<String>,
 }
 
@@ -142,10 +201,13 @@ impl MaixCamChannel {
         match msg_type {
             "person_detected" => {
                 let data = msg.data.as_ref();
+                // BUG-20261110-054：class_name 对端可控且直接进 agent prompt
+                // 模板——清洗（去控制字符）+ 截断后再消费。
                 let class_name = data
                     .and_then(|d| d.get("class_name"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("person");
+                    .map(sanitize_event_field)
+                    .unwrap_or_else(|| "person".to_string());
                 let score = data
                     .and_then(|d| d.get("score"))
                     .and_then(|v| v.as_f64())
@@ -230,6 +292,7 @@ impl MaixCamChannel {
         let client_count = self.client_count.clone();
         let client_writers = self.client_writers.clone();
         let bus_sender = self.bus_sender.clone();
+        let allow_from = self.config.allow_from.clone();
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
@@ -239,6 +302,20 @@ impl MaixCamChannel {
                 "[MaixCamChannel] failed to bind MaixCam TCP listener {addr}: {e}"
             ))
         })?;
+
+        // 暴露面诚实告警（BUG-20261110-054，不阻断）：非回环监听 + 空
+        // 白名单 = 同网段任意主机可连入（设备协议无鉴权，检测事件直通
+        // agent）。IoT 场景设备必然在非回环地址，一刀切拒启会破坏部署
+        // （BUG-20261108-010 静默死通道的同族教训：让用户知情优于让用户
+        // 困惑）；已有白名单即用户显式意志，不再打扰。
+        if allow_from.is_empty() && !host_is_definitely_loopback(&self.config.host) {
+            tracing::warn!(
+                addr = %addr,
+                "[MaixCamChannel] listening on non-loopback address with empty allow_from — \
+                 任意同网段主机可连入（设备协议无鉴权，检测事件直通 agent）。建议在 \
+                 config channels.maixcam.allow_from 配置设备 IP 白名单（如 \"192.168.1.*\"）"
+            );
+        }
 
         tokio::spawn(async move {
             info!(addr = %addr, "[MaixCamChannel] TCP server listening");
@@ -252,7 +329,18 @@ impl MaixCamChannel {
                     }
                     result = listener.accept() => {
                         match result {
-                            Ok((stream, peer)) => {                                debug!(peer = %peer, "[MaixCamChannel] device connected");
+                            Ok((stream, peer)) => {
+                                // 对端准入（BUG-20261110-054）：白名单非空时
+                                // 对端 IP 必须命中——设备无身份协议，这是
+                                // allow_from 唯一可生效的过滤层。
+                                if !peer_allowed(&allow_from, &peer.ip().to_string()) {
+                                    warn!(
+                                        peer = %peer,
+                                        "[MaixCamChannel] connection rejected: peer not in allow_from"
+                                    );
+                                    continue;
+                                }
+                                debug!(peer = %peer, "[MaixCamChannel] device connected");
                                 *client_count.write() += 1;
 
                                 // Spawn per-connection reader

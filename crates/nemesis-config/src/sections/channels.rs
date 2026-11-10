@@ -142,6 +142,9 @@ pub struct MaixCamConfig {
     pub host: String,
     #[serde(default = "default_maixcam_port")]
     pub port: i64,
+    /// 对端 IP 白名单（BUG-20261110-054 接线）：设备协议无身份握手，本字段
+    /// 在通道 accept 时按**对端 IP** 过滤（精确 IP 或 IPv4 前缀通配如
+    /// `192.168.1.*`）。空 = 放行所有。非回环监听 + 空白名单启动时告警。
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
     #[serde(default)]
