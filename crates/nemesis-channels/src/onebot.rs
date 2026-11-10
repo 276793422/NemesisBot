@@ -18,7 +18,8 @@ use nemesis_types::error::{NemesisError, Result};
 use crate::base::{BaseChannel, Channel};
 
 /// OneBot channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：access_token 脱敏（Option 形态）。
+#[derive(Clone)]
 pub struct OneBotConfig {
     /// WebSocket URL.
     pub ws_url: String,
@@ -31,6 +32,12 @@ pub struct OneBotConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(OneBotConfig {
+    plain { ws_url, reconnect_interval, group_trigger_prefix, allow_from }
+    secret {}
+    opt_secret { access_token }
+});
 
 /// Raw OneBot event from WebSocket.
 #[derive(Debug, Deserialize)]

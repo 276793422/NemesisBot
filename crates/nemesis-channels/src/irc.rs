@@ -31,7 +31,8 @@ use nemesis_utils::line_cap::read_line_capped;
 const MAX_IRC_LINE_BYTES: usize = 16 * 1024;
 
 /// IRC channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：server password 脱敏（Option 形态）。
+#[derive(Clone)]
 pub struct IRCConfig {
     /// Server address (e.g. "irc.libera.chat:6697").
     pub server: String,
@@ -50,6 +51,12 @@ pub struct IRCConfig {
     /// Maximum reconnect backoff in seconds (default: 300).
     pub max_reconnect_backoff_secs: u64,
 }
+
+crate::debug_redact::impl_redacted_debug!(IRCConfig {
+    plain { server, use_tls, nick, channel, allow_from, reconnect_backoff_secs, max_reconnect_backoff_secs }
+    secret {}
+    opt_secret { password }
+});
 
 impl Default for IRCConfig {
     fn default() -> Self {

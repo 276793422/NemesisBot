@@ -500,6 +500,18 @@ fn default_search_limit() -> i64 {
 fn default_true() -> bool {
     true
 }
+
+/// SEC-002 Debug 脱敏 helper：凭据字段的 Debug 形态（与 WebChannelConfig /
+/// ModelConfig 手写 Debug 的既有形态逐字一致）。空值 `<empty>`、非空
+/// `<redacted>`——诊断信息（配置了什么）以 config.json / Dashboard 回显
+/// 为准，日志不落明文凭据。
+pub(crate) fn debug_secret_value(v: &str) -> &'static str {
+    if v.is_empty() {
+        "<empty>"
+    } else {
+        "<redacted>"
+    }
+}
 /// `agents.prompt_system` 缺省值 = pro（段落池组装的新体系）。
 fn default_prompt_system() -> String {
     "pro".to_string()
@@ -740,3 +752,8 @@ mod proxy_keys_file_tests;
 // HotReloader force_reload 语义（写方自刷新，绕过 mtime 检测）测试。
 #[cfg(test)]
 mod hot_reload_tests;
+
+// SEC-002 Debug 脱敏回归（BUG-20261111-068）：通道/模型配置结构
+// Debug 输出不落明文凭据。
+#[cfg(test)]
+mod channels_debug_redaction_tests;

@@ -24,7 +24,8 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// QQ channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：app_secret 脱敏。
+#[derive(Clone)]
 pub struct QQConfig {
     /// App ID from QQ Open Platform.
     pub app_id: String,
@@ -35,6 +36,11 @@ pub struct QQConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(QQConfig {
+    plain { app_id, api_base, allow_from }
+    secret { app_secret }
+});
 
 impl Default for QQConfig {
     fn default() -> Self {

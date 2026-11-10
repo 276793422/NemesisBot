@@ -40,7 +40,8 @@ const AUTH_SEQ: u64 = 1;
 // ---------------------------------------------------------------------------
 
 /// Mattermost 通道配置。
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：bot token 脱敏。
+#[derive(Clone)]
 pub struct MattermostConfig {
     /// 服务器基地址（如 `https://mattermost.example.com`，无尾斜杠；http/https）。
     pub base_url: String,
@@ -51,6 +52,11 @@ pub struct MattermostConfig {
     /// 监听的频道 ID / 名称映射（空 = bot 所在全部频道）。
     pub channels: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(MattermostConfig {
+    plain { base_url, allow_from, channels }
+    secret { bot_token }
+});
 
 /// Mattermost `POST /api/v4/posts` 请求体。
 #[derive(Debug, Serialize)]

@@ -56,7 +56,9 @@ impl ThinkingCancel {
 // ---------------------------------------------------------------------------
 
 /// Telegram Bot API configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：token / proxy（可带 userinfo 凭据）脱敏；
+/// `redact_token` 是 reqwest 错误 Display 面的同族防线（BUG-20261109-006）。
+#[derive(Clone)]
 pub struct TelegramConfig {
     /// Bot token from BotFather.
     pub token: String,
@@ -67,6 +69,12 @@ pub struct TelegramConfig {
     /// Telegram API base URL.
     pub api_base: String,
 }
+
+crate::debug_redact::impl_redacted_debug!(TelegramConfig {
+    plain { allow_from, api_base }
+    secret {}
+    opt_secret { proxy }
+});
 
 impl Default for TelegramConfig {
     fn default() -> Self {

@@ -4,6 +4,15 @@
 //! Provides a unified `Channel` trait, a `ChannelManager` for lifecycle management,
 //! and concrete implementations for various messaging platforms.
 
+/// SEC-002 Debug 脱敏共享件（BUG-20261111-068）：带凭据字段的通道配置
+/// 结构手写 Debug 宏 + helper，禁止 derive(Debug)。
+mod debug_redact;
+
+/// SEC-002 Debug 脱敏回归（BUG-20261111-068）：通道配置结构 Debug 输出
+/// 不落明文凭据（每测试按同款通道 feature 门控）。
+#[cfg(test)]
+mod debug_redact_tests;
+
 pub mod base;
 pub mod manager;
 pub mod rpc_channel;

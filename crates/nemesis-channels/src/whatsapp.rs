@@ -22,7 +22,9 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// WhatsApp channel configuration.
-#[derive(Debug, Clone, Default)]
+/// SEC-002（BUG-20261111-068）：api_key / proxy（可带 userinfo 凭据）脱敏
+/// （均为 Option 形态）。
+#[derive(Clone, Default)]
 pub struct WhatsAppConfig {
     /// Bridge URL (HTTP or WebSocket).
     pub bridge_url: String,
@@ -33,6 +35,12 @@ pub struct WhatsAppConfig {
     /// Allowed sender IDs (empty = allow all).
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(WhatsAppConfig {
+    plain { bridge_url, allow_from }
+    secret {}
+    opt_secret { api_key, proxy }
+});
 
 /// WhatsApp inbound message format.
 #[derive(Debug, Deserialize)]

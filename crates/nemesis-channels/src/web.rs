@@ -87,7 +87,11 @@ pub trait WebServerOps: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Web channel configuration.
-#[derive(Debug, Clone)]
+///
+/// SEC-002（BUG-20261111-068）：手写 Debug 替代 derive——auth_token 脱敏
+/// （与 nemesis-config 侧 WebChannelConfig 同字段同威胁模型；本侧此前是
+/// 隔壁漏网）。
+#[derive(Clone)]
 pub struct WebChannelConfig {
     pub host: String,
     pub port: u16,
@@ -96,6 +100,11 @@ pub struct WebChannelConfig {
     pub session_timeout_secs: u64,
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(WebChannelConfig {
+    plain { host, port, ws_path, session_timeout_secs, allow_from }
+    secret { auth_token }
+});
 
 impl Default for WebChannelConfig {
     fn default() -> Self {

@@ -19,7 +19,8 @@ use nemesis_types::error::{NemesisError, Result};
 use crate::base::{BaseChannel, Channel};
 
 /// Webhook inbound channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：api_key 脱敏。
+#[derive(Clone)]
 pub struct WebhookInboundConfig {
     /// Listen address (e.g. ":9090").
     pub listen_addr: String,
@@ -30,6 +31,11 @@ pub struct WebhookInboundConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(WebhookInboundConfig {
+    plain { listen_addr, path, allow_from }
+    secret { api_key }
+});
 
 impl Default for WebhookInboundConfig {
     fn default() -> Self {

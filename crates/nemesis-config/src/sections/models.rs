@@ -81,7 +81,10 @@ impl std::fmt::Debug for ModelConfig {
                     "<redacted>"
                 },
             )
-            .field("proxy", &self.proxy)
+            // SEC-002 同族（BUG-20261111-068）：proxy URL 可携带
+            // userinfo 凭据（http://user:pass@host:port——reqwest
+            // Proxy::all 直接消费），与 api_key 同脱敏面。
+            .field("proxy", &debug_secret_value(&self.proxy))
             .field("auth_method", &self.auth_method)
             .field("connect_mode", &self.connect_mode)
             .field("protocol", &self.protocol)

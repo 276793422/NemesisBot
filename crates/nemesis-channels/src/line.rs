@@ -24,7 +24,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub const DEFAULT_WEBHOOK_PATH: &str = "/webhook/line";
 
 /// LINE channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：channel_access_token / channel_secret 脱敏。
+#[derive(Clone)]
 pub struct LineConfig {
     /// Channel access token.
     pub channel_access_token: String,
@@ -43,6 +44,11 @@ pub struct LineConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(LineConfig {
+    plain { webhook_host, webhook_port, webhook_path, allow_from }
+    secret { channel_access_token, channel_secret }
+});
 
 impl LineConfig {
     /// bind 主机（trim；空值回落 "0.0.0.0" 保持旧行为）。
