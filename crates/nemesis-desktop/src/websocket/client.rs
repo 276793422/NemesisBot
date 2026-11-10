@@ -373,8 +373,9 @@ impl WebSocketClient {
 
     /// Send a request to the parent and wait for a response.
     ///
-    /// Creates a pending channel keyed by message ID, sends the request,
-    /// and awaits the response with a 30-second timeout.
+    /// Registers the pending channel **before** sending the request
+    /// (same ordering as the server-side `call_child`), then awaits the
+    /// response with a 30-second timeout.
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<Message, String> {
         {
             let state = self.state.lock();
@@ -386,16 +387,19 @@ impl WebSocketClient {
         let msg = Message::new_request(method, params);
         let msg_id = msg.id.clone().unwrap_or_default();
 
-        // Send the request first
-        if let Err(e) = self.send_raw(&msg) {
-            return Err(format!("send request: {}", e));
-        }
-
-        // Create a pending channel
+        // 先注册 pending 再发请求（BUG-20261110-052，与 server 侧 call_child
+        // 同序）：send 之后响应可能在任意时刻到达读循环，若此刻 pending
+        // 尚未注册，handle_message 查不到挂起请求会静默丢弃响应（只留
+        // debug 日志），调用方空等 30s 超时。注册先于 try_send 是同线程
+        // 程序序，写任务不早于 try_send 启动，故「请求出线时 pending 必
+        // 已在场」有确定性保证。
         let (tx, rx) = oneshot::channel();
-        {
-            // 插入与读循环共享的 pending map，响应才能路由回来。
-            self.pending.lock().insert(msg_id.clone(), tx);
+        self.pending.lock().insert(msg_id.clone(), tx);
+
+        if let Err(e) = self.send_raw(&msg) {
+            // 发送失败回滚 pending（残留的 oneshot tx 是泄漏的 map 条目）。
+            self.pending.lock().remove(&msg_id);
+            return Err(format!("send request: {}", e));
         }
 
         // Wait for response with timeout
@@ -480,6 +484,8 @@ impl WebSocketClient {
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod call_race_tests;
 #[cfg(test)]
 mod extra_tests;
 #[cfg(test)]
