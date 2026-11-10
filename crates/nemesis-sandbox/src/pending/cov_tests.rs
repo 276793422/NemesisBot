@@ -151,7 +151,10 @@ fn enumerate_box_skips_link_entries() {
     let home = tempfile::tempdir().unwrap();
     let box_root = home.path().join("box");
     let user_profile = home.path().join("profile");
-    let ws_dir = box_root.join(r"user\current\workspace");
+    // 分层 join 而非字面 backslash 字符串：Windows 上二者产物相同路径，
+    // 但 Linux 上 `r"user\current\workspace"` 是字面单目录名，
+    // real_path_for_box 首组件匹配 "user" 失败 → 枚举恒 0 假红（2026-11-10 nightly）。
+    let ws_dir = box_root.join("user").join("current").join("workspace");
     std::fs::create_dir_all(&ws_dir).unwrap();
     std::fs::write(ws_dir.join("a.txt"), b"1").unwrap();
     let outside = home.path().join("outside");
