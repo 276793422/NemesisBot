@@ -143,7 +143,7 @@ parking_lot = "0.12"
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 # UUID
 uuid = { version = "1", features = ["v4", "serde"] }

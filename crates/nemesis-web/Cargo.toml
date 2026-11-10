@@ -191,7 +191,7 @@ nemesis-memory = { workspace = true, features = ["test-fixture"] }
 # board 测试造「存量幽灵引用」行（引用完整性闸 2026-10-17 后 create/update
 # 不再接受不存在的 project/parent，防御臂只能以直接 SQL 复刻存量态）。
 # 仅测试用；feature 与 nemesis-board 声明合并（bundled 加法统一，单次编译）。
-rusqlite = "0.34"
+rusqlite = "0.41"
 
 # BUG-20261025-40 回归锁：session 注册表（share/bindings）损坏装载 loud
 # 警告断言用（fmt subscriber + 缓冲 writer 捕获 warn 日志）。
