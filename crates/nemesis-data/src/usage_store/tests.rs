@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use chrono::{Datelike, TimeZone};
+
 use crate::models::ModelToolHealth;
 use crate::usage_store::DataStore;
 
@@ -263,6 +265,55 @@ fn query_trends_groups_by_hour_and_day() {
         .query_trends(base - 86400, base + 86400, "week")
         .expect("fallback trends");
     assert_eq!(other.len(), 1);
+    let _ = std::fs::remove_file(path);
+}
+
+/// BUG-20261110-045 回归锁：趋势分桶与标签必须走**本地墙钟**（与前端选窗
+/// 「今天」=本地零点同源），不是 UTC——修复前 strftime 无 'localtime'，
+/// UTC+8 机器上小时标签整体偏 8h、日桶在本地 16:00（UTC 零点）切日。
+/// 期望值用 chrono::Local 现场推导（时区无关：任何机器上期望=本机本地
+/// 预期；UTC CI 上新旧行为重合恒绿，非 UTC 机器上修复前必红）。
+#[test]
+fn query_trends_buckets_and_labels_use_local_wall_clock() {
+    let (store, path) = open_store("w4_trends_local");
+    let base = 1_770_000_000_i64; // 秒
+    store
+        .insert_request_log(&w4_log("m/a", base, "s1", 200))
+        .unwrap();
+
+    let local = chrono::Local
+        .timestamp_opt(base, 0)
+        .single()
+        .expect("in-range");
+
+    let hourly = store
+        .query_trends(base - 3600, base + 3600, "hour")
+        .expect("hour trends");
+    assert_eq!(hourly.len(), 1, "同小时聚合为一点：{hourly:?}");
+    assert_eq!(
+        hourly[0].label,
+        local.format("%Y-%m-%dT%H:00:00").to_string(),
+        "小时标签必须是本地墙钟小时：{}",
+        hourly[0].label
+    );
+
+    let daily = store
+        .query_trends(base - 86400, base + 86400, "day")
+        .expect("day trends");
+    assert_eq!(daily.len(), 1, "同天聚合为一点：{daily:?}");
+    let want_day = local.format("%Y-%m-%d").to_string();
+    assert_eq!(daily[0].label, want_day, "日期标签必须是本地日");
+    // ts = 本地零点 epoch（label 与 ts 同一本地日——修复前 ts 是 UTC 零点）。
+    let date = local.date_naive();
+    let midnight = chrono::Local
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+        .single()
+        .expect("local midnight");
+    assert_eq!(
+        daily[0].timestamp,
+        midnight.timestamp(),
+        "日桶起点=本地零点"
+    );
     let _ = std::fs::remove_file(path);
 }
 
