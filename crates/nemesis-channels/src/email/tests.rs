@@ -709,3 +709,80 @@ fn test_r737_smtp_envelope_safe_strips_crlf() {
     );
     assert_eq!(super::smtp_envelope_safe("a\rb@c\nd.com"), "ab@cd.com");
 }
+
+// ----：TLS 接线（2026-11-11）与 poll_interval 收口 ----
+
+/// TLS 显式信任根 fail-closed（mqtt 同原则）：任一 tls=true 而无
+/// ca_cert_path = 构造期响亮拒绝；tls=false 不要求 CA（明文形态不受影响）。
+#[test]
+fn tls_without_explicit_ca_root_is_rejected() {
+    let base = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        ..Default::default()
+    };
+
+    let imap_tls = EmailConfig {
+        imap_tls: true,
+        ..base.clone()
+    };
+    let err = EmailChannel::new(imap_tls, test_sender())
+        .err()
+        .expect("imap_tls=true without ca_cert_path must be rejected at construction");
+    assert!(format!("{err}").contains("ca_cert_path"), "got: {err}");
+
+    let smtp_tls = EmailConfig {
+        smtp_tls: true,
+        ..base.clone()
+    };
+    let err = EmailChannel::new(smtp_tls, test_sender())
+        .err()
+        .expect("smtp_tls=true without ca_cert_path must be rejected at construction");
+    assert!(format!("{err}").contains("ca_cert_path"), "got: {err}");
+
+    // 配了 CA 后两臂都可通过构造。
+    let both_tls = EmailConfig {
+        imap_tls: true,
+        smtp_tls: true,
+        ca_cert_path: "/tmp/ca.pem".to_string(),
+        ..base
+    };
+    EmailChannel::new(both_tls, test_sender()).expect("tls=true with ca_cert_path must construct");
+}
+
+/// poll_interval 收口：0 回落默认 30（tokio interval 零周期 panic 的
+/// 防线），非零原样透传。
+#[test]
+fn effective_poll_interval_zero_falls_back_to_default() {
+    assert_eq!(EmailChannel::effective_poll_interval(0), 30);
+    assert_eq!(EmailChannel::effective_poll_interval(1), 1);
+    assert_eq!(EmailChannel::effective_poll_interval(30), 30);
+    assert_eq!(EmailChannel::effective_poll_interval(600), 600);
+}
+
+/// CA 文件缺失/不可读 = 诚实错误（不静默降级明文）：tls_wrap 在读 CA
+/// 处即失败，错误带路径上下文。
+#[tokio::test]
+async fn tls_wrap_missing_ca_file_is_honest_error() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = listener.local_addr().unwrap();
+    // 先建一条真 TCP 连接（tls_wrap 的入参前提），服务器侧黑洞持有即可。
+    let server = tokio::spawn(async move {
+        let (_s, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    });
+    let tcp = tokio::net::TcpStream::connect(server_addr).await.unwrap();
+
+    let err = tls_wrap("IMAP", "127.0.0.1", "/nonexistent/nemesis_ca.pem", tcp)
+        .await
+        .err()
+        .expect("missing CA file must fail loudly");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("CA 证书读取失败") && msg.contains("/nonexistent/nemesis_ca.pem"),
+        "error must carry CA path context, got: {msg}"
+    );
+    server.abort();
+}

@@ -181,6 +181,63 @@ impl AgentLoop {
         }
     }
 
+    /// B2 锚定定位（2026-11-11 slash 回声漂移机制解）：前端 message_index
+    /// 由「历史批次推导 + live 递增」混合而来——被后端拦截不落盘的 slash
+    /// 命令，其入环回声帧会把前端 live 计行抬高（虚高随 slash 条数累积），
+    /// 直接按 index 截断会错行。`anchor_content` = 前端在 index 处看到的
+    /// 消息正文，后端按**内容**（trim 后相等——前端 planRegenerate 交出
+    /// 的是 trim 后文本）重定位真实行：
+    ///
+    /// - index 处内容已相等 = 无漂移最快路径；
+    /// - 否则全量扫描内容相等行：唯一命中即用；多个命中取距 index 最近
+    ///   （重复提问同一文本时，点击意图由最近性近似）；
+    /// - 零命中 = fail-closed 拒绝（锚不在会话里：会话已切换/已被截断——
+    ///   绝不按可能漂移的 index 盲截）。
+    ///
+    /// `None`/空锚 = 旧前端兼容路径，行为与漂移修复前完全一致。
+    pub(crate) fn resolve_anchor_index(
+        rows: &[serde_json::Value],
+        message_index: usize,
+        anchor_content: Option<&str>,
+    ) -> Result<usize, String> {
+        let Some(anchor) = anchor_content.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(message_index);
+        };
+        fn row_content(r: &serde_json::Value) -> Option<&str> {
+            r.get("content").and_then(|v| v.as_str()).map(str::trim)
+        }
+        if rows.get(message_index).and_then(|r| row_content(r)) == Some(anchor) {
+            return Ok(message_index);
+        }
+        let hits: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| row_content(r) == Some(anchor))
+            .map(|(i, _)| i)
+            .collect();
+        match hits.len() {
+            0 => Err(format!(
+                "锚内容定位失败：message_index {message_index} 处的锚文本与会话中任何行都不匹配\
+                 （会话已切换或已被截断？）——未做任何截断"
+            )),
+            1 => Ok(hits[0]),
+            _ => {
+                let picked = hits
+                    .iter()
+                    .copied()
+                    .min_by_key(|i| i.abs_diff(message_index))
+                    .unwrap_or(message_index);
+                tracing::warn!(
+                    anchor_hits = hits.len(),
+                    requested = message_index,
+                    anchored_at = picked,
+                    "[rewind] anchor_content 多行命中，取距 message_index 最近行"
+                );
+                Ok(picked)
+            }
+        }
+    }
+
     /// 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息
     /// 及其 turn 的回复**保留**，其后所有行截掉），文件恢复到其后第一个
     /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self::redo_rewind`]
@@ -210,15 +267,17 @@ impl AgentLoop {
     /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
     ///
     /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
-    /// 为 blocked 结构）。
+    /// 为 blocked 结构）。`anchor_content` 可选，走 B2 锚定定位
+    /// （[`Self::resolve_anchor_index`]）按内容重定位真实行。
     pub async fn rewind_to_message(
         &self,
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         self.under_history_gate(session_key, "回退", || {
-            self.rewind_to_message_inner(session_key, message_index, force)
+            self.rewind_to_message_inner(session_key, message_index, force, anchor_content)
         })
         .await
     }
@@ -228,6 +287,7 @@ impl AgentLoop {
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
         // 非热路径不改变同步阻塞 IO 占住 tokio worker 的
@@ -243,6 +303,9 @@ impl AgentLoop {
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
+        // 锚定重定位先行（B2）：漂移的 index 在这里被纠正成真实行号；
+        // 零命中 fail-closed，绝不按可能漂移的 index 盲截。
+        let message_index = Self::resolve_anchor_index(&rows, message_index, anchor_content)?;
         if message_index >= rows.len() {
             return Err(format!(
                 "message_index {} 超出范围（会话共 {} 条消息）",
@@ -334,9 +397,10 @@ impl AgentLoop {
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         self.under_history_gate(session_key, "回退", || {
-            self.rewind_before_message_inner(session_key, message_index, force)
+            self.rewind_before_message_inner(session_key, message_index, force, anchor_content)
         })
         .await
     }
@@ -346,6 +410,7 @@ impl AgentLoop {
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         // 全量读同步阻塞 IO 直跑 tokio worker（非热路径
         // 不改变占住 worker 的机制），spawn_blocking 移出。
@@ -360,6 +425,10 @@ impl AgentLoop {
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
+        // 锚定重定位先行（B2）：前端「重新生成/撤销此问」的 turnStart 同
+        // 受 live 计行漂移影响——前端重放 guard 拒绝重发的斜杠命令恰好就
+        // 是漂移源，此入口是漂移的主受害路径。
+        let message_index = Self::resolve_anchor_index(&rows, message_index, anchor_content)?;
         if message_index >= rows.len() {
             return Err(format!(
                 "message_index {} 超出范围（会话共 {} 条消息）",

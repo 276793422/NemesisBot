@@ -1789,6 +1789,11 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
       session_id: sid,
       message_index: plan.turnStart,
       mode: 'before',
+      // B2 锚定（2026-11-11 slash 回声漂移机制解）：turnStart 由
+      // 「历史批次推导 + live 递增」混合而来，被拦截不落盘的斜杠命令回声
+      // 会把 live 计行抬高（虚高累积）→ 按裸 index 截断会错行。带上本行
+      // 正文，后端按内容重定位真实行（零命中 fail-closed 拒绝，不盲截）。
+      anchor_content: plan.content,
     })
     // P20 冲突拒绝 = 零副作用：不重发、不重同步。
     if (resp?.blocked) {

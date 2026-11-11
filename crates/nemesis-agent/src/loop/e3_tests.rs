@@ -26,13 +26,13 @@ async fn review_nov02_original_rewind_commit_failure_keeps_checkpoint() {
         .share_mode(1)
         .open(&log)
         .unwrap();
-    let result = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let result = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(result["reason"], "commit_failed");
     assert_eq!(result["checkpoint_retained"], true);
     assert!(al.checkpoint_list().iter().any(|c| c.turn == 2));
     assert_eq!(read_chat_log(&key, 100, None).1, 4);
     drop(lock);
-    let retry = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let retry = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     println!("REVIEW old_rewind_failure={result} retry={retry}");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("ws/code.txt")).unwrap(),
@@ -52,7 +52,7 @@ async fn review_nov02_redo_file_failure_blocks_and_retains_retry_entry() {
     use std::os::windows::fs::OpenOptionsExt;
     let (al, key, dir) = stage_two_turns_git("nov02-redo-lock").await;
     let code = dir.path().join("ws/code.txt");
-    let rewind = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let rewind = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(rewind["file_restore"], "applied");
     let lock = std::fs::OpenOptions::new()
         .read(true)
@@ -135,7 +135,7 @@ async fn review_nov02_redo_partial_restore_blocks_and_retry_exempts_self_drift()
     let code = dir.path().join("ws/code.txt");
     let side = dir.path().join("ws/side.txt");
 
-    let rewind = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let rewind = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(rewind["file_restore"], "applied", "{rewind}");
     assert!(side.exists(), "rewind 恢复被删的 side.txt");
 
@@ -281,7 +281,7 @@ fn e3_append(key: &str, role: &str, content: &str, turn: Option<usize>) {
 async fn e3_rewind_truncates_turn_aligned_and_restores_files() {
     let (al, key, _dir) = stage_two_turns("rew").await;
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["kept_count"], 2, "turn 1 整 turn 保留: {out}");
     assert_eq!(out["removed_count"], 2);
     assert_eq!(out["restore_turn"], 2);
@@ -323,7 +323,7 @@ async fn rewind_restore_failure_blocks_without_discarding_history() {
         .open(&path)
         .expect("打开锁句柄");
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["blocked"], true, "恢复失败必须 blocked: {out}");
     assert_eq!(out["reason"], "restore_failed");
     assert_eq!(
@@ -352,7 +352,7 @@ async fn rewind_restore_failure_blocks_without_discarding_history() {
 
     // 解锁重试：恢复正常推进（恢复幂等——重写同样内容）。
     drop(lock);
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
     let (_, total, _, _) = read_chat_log(&key, 100, None);
@@ -368,7 +368,7 @@ async fn e3_redo_restores_rows_and_honestly_skips_files() {
     let (al, key, _dir) = stage_two_turns("redo").await;
     let (before, _, _, _) = read_chat_log(&key, 100, None);
 
-    al.rewind_to_message(&key, 0, false).await.unwrap();
+    al.rewind_to_message(&key, 0, false, None).await.unwrap();
     let out = al.redo_rewind(&key).await.unwrap();
     assert_eq!(out["restored_count"], 2, "{out}");
     assert_eq!(out["file_restore"], "skipped", "JSON 形态无影子 tree");
@@ -393,7 +393,7 @@ async fn e3_redo_restores_rows_and_honestly_skips_files() {
 async fn e3_redo_rejects_after_new_activity() {
     let (al, key, _dir) = stage_two_turns("guard").await;
 
-    al.rewind_to_message(&key, 0, false).await.unwrap();
+    al.rewind_to_message(&key, 0, false, None).await.unwrap();
     append_chat_log(&key, "user", "new message after rewind");
 
     let err = al.redo_rewind(&key).await.unwrap_err();
@@ -413,7 +413,7 @@ async fn e3_redo_rejects_after_new_activity() {
 async fn e3_redo_rejects_refilled_same_count_session() {
     let (al, key, _dir) = stage_two_turns("redo-refill").await;
 
-    al.rewind_to_message(&key, 0, false).await.unwrap();
+    al.rewind_to_message(&key, 0, false, None).await.unwrap();
 
     // clear + 同数重填：恰好 2 行（= kept_count），内容与被保留的 turn 1
     // 行完全不同。
@@ -445,7 +445,7 @@ async fn redo_writeback_failure_restores_undo_entry_for_retry() {
     use std::os::windows::fs::OpenOptionsExt;
     let (al, key, _dir) = stage_two_turns("redo-wb").await;
 
-    al.rewind_to_message(&key, 0, false).await.unwrap();
+    al.rewind_to_message(&key, 0, false, None).await.unwrap();
 
     // 锁会话 jsonl：sanitize 与落盘侧同源（chat_log::log_path 同构）。
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&key);
@@ -487,17 +487,20 @@ async fn e3_edge_cases_empty_out_of_range_and_noop() {
     let empty_key = e3_uniq_key("edge-empty");
     delete_chat_log(&empty_key);
     let err = al
-        .rewind_to_message(&empty_key, 0, false)
+        .rewind_to_message(&empty_key, 0, false, None)
         .await
         .unwrap_err();
     assert!(err.contains("没有可回退"), "{err}");
 
     // 越界。
-    let err = al.rewind_to_message(&key, 99, false).await.unwrap_err();
+    let err = al
+        .rewind_to_message(&key, 99, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("超出范围"), "{err}");
 
     // 末尾消息（最后一 turn 的 assistant 行）：nothing after → no-op。
-    let out = al.rewind_to_message(&key, 3, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 3, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 0, "{out}");
     assert_eq!(out["redoable"], false);
     let (_, total, _, _) = read_chat_log(&key, 100, None);
@@ -644,7 +647,7 @@ async fn e3_git_redo_restores_to_live_tree_including_last_turn() {
     let file = dir.path().join("ws").join("code.txt");
 
     // rewind 到 turn 1：文件回 v2（turn 2 begin 树 = turn 1 完成态）。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
 
@@ -672,7 +675,7 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
     // turn 2 期间 shell 副作用产物（无 preview 声明）。
     std::fs::write(ws.join("side_effect.txt"), "boom").unwrap();
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert!(
         !ws.join("side_effect.txt").exists(),
@@ -754,7 +757,7 @@ async fn r71_git_redo_not_blocked_by_other_session_turns() {
     let root = dir.path().join("ws");
 
     // A 回退到 turn 1 的 user 行：A 的 turn 2 截掉（文件回 {v2}），B 存活。
-    let out = al.rewind_to_message(&key_a, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key_a, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 2, "{out}");
     assert_eq!(out["redoable"], true);
     assert_eq!(
@@ -786,7 +789,7 @@ async fn r71_git_redo_still_rejects_after_genuinely_new_turn() {
     let (al, key_a, key_b, cp, dir) = stage_git_sessions_ab("r71stale").await;
     let root = dir.path().join("ws");
 
-    let out = al.rewind_to_message(&key_a, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key_a, 0, false, None).await.unwrap();
     assert_eq!(out["redoable"], true, "{out}");
 
     // undo 之后 B 再开新 turn：先改文件再 begin（begin 捕 {v4} 新树）。
@@ -841,7 +844,10 @@ async fn e3_rewind_before_last_turn_drops_reply_keeps_question() {
     let (al, key, dir) = stage_two_turns("before-last").await;
     let file = dir.path().join("ws").join("code.txt");
 
-    let out = al.rewind_before_message(&key, 2, false).await.unwrap();
+    let out = al
+        .rewind_before_message(&key, 2, false, None)
+        .await
+        .unwrap();
     assert_eq!(out["kept_count"], 2, "turn 1 保留: {out}");
     assert_eq!(out["removed_count"], 2, "turn 2 问+答一并移除: {out}");
     assert_eq!(out["restore_turn"], 2, "锚 = 提问行自带的 begin 标记");
@@ -865,7 +871,10 @@ async fn e3_rewind_before_mid_conversation_drops_question_and_later_turns() {
     let (al, key, dir) = stage_three_turns("before-mid").await;
     let file = dir.path().join("ws").join("code.txt");
 
-    let out = al.rewind_before_message(&key, 2, false).await.unwrap();
+    let out = al
+        .rewind_before_message(&key, 2, false, None)
+        .await
+        .unwrap();
     assert_eq!(out["kept_count"], 2, "{out}");
     assert_eq!(out["removed_count"], 4, "turn 2 + turn 3 各两行: {out}");
     assert_eq!(out["restore_turn"], 2);
@@ -891,7 +900,10 @@ async fn e3_rewind_before_cut_zero_clears_all_and_redo_roundtrips() {
     let (al, key, dir) = stage_two_turns("before-zero").await;
     let file = dir.path().join("ws").join("code.txt");
 
-    let out = al.rewind_before_message(&key, 0, false).await.unwrap();
+    let out = al
+        .rewind_before_message(&key, 0, false, None)
+        .await
+        .unwrap();
     assert_eq!(out["kept_count"], 0, "{out}");
     assert_eq!(out["removed_count"], 4);
     assert_eq!(out["restore_turn"], 1, "锚 = 首个 checkpoint turn");
@@ -919,18 +931,24 @@ async fn e3_rewind_before_rejects_non_user_row_out_of_range_and_empty() {
     let (al, key, _dir) = stage_two_turns("before-guard").await;
 
     // index 1 = assistant 行。
-    let err = al.rewind_before_message(&key, 1, false).await.unwrap_err();
+    let err = al
+        .rewind_before_message(&key, 1, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("不是 user 行"), "{err}");
 
     // 越界（== len 与 > len 同罪）。
-    let err = al.rewind_before_message(&key, 4, false).await.unwrap_err();
+    let err = al
+        .rewind_before_message(&key, 4, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("超出范围"), "{err}");
 
     // 空会话。
     let empty_key = e3_uniq_key("before-guard-empty");
     delete_chat_log(&empty_key);
     let err = al
-        .rewind_before_message(&empty_key, 0, false)
+        .rewind_before_message(&empty_key, 0, false, None)
         .await
         .unwrap_err();
     assert!(err.contains("没有可回退"), "{err}");
@@ -947,14 +965,20 @@ async fn e3_rewind_before_rejects_busy_session() {
     let file = dir.path().join("ws").join("code.txt");
 
     assert!(al.try_acquire_session(&key));
-    let err = al.rewind_before_message(&key, 2, false).await.unwrap_err();
+    let err = al
+        .rewind_before_message(&key, 2, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("正在处理"), "{err}");
     let (_, total, _, _) = read_chat_log(&key, 100, None);
     assert_eq!(total, 4, "零副作用");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
 
     al.release_session(&key);
-    let out = al.rewind_before_message(&key, 2, false).await.unwrap();
+    let out = al
+        .rewind_before_message(&key, 2, false, None)
+        .await
+        .unwrap();
     assert_eq!(out["removed_count"], 2, "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
 
@@ -971,14 +995,17 @@ async fn e3_rewind_to_message_rejects_busy_session() {
     let file = dir.path().join("ws").join("code.txt");
 
     assert!(al.try_acquire_session(&key));
-    let err = al.rewind_to_message(&key, 0, false).await.unwrap_err();
+    let err = al
+        .rewind_to_message(&key, 0, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("正在处理"), "{err}");
     let (_, total, _, _) = read_chat_log(&key, 100, None);
     assert_eq!(total, 4, "零副作用");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
 
     al.release_session(&key);
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 2, "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
 
@@ -1008,12 +1035,15 @@ async fn e3_redo_rejects_busy_session_before_stack_semantics() {
 async fn e3_gate_releases_session_after_inner_error() {
     let (al, key, _dir) = stage_two_turns("gate-err").await;
 
-    let err = al.rewind_to_message(&key, 99, false).await.unwrap_err();
+    let err = al
+        .rewind_to_message(&key, 99, false, None)
+        .await
+        .unwrap_err();
     assert!(!err.contains("正在处理"), "{err}");
     assert!(!al.is_session_busy(&key), "错误路径必须释放 busy 旗标");
 
     // 释放成立：合法回退紧接着可用（若旗标泄漏这里会假拒绝）。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 2, "{out}");
     assert!(!al.is_session_busy(&key), "成功路径也要释放");
 
@@ -1169,7 +1199,7 @@ async fn e3_rewind_to_message_keeps_whole_steered_turn() {
 
     // 回退到 turn 1 轮首（idx 0）：cut = turn 2 轮首（idx 4）→ turn 1 连
     // steer 整轮 4 行保留，turn 2 两行移除。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["kept_count"], 4, "{out}");
     assert_eq!(out["removed_count"], 2);
     assert_eq!(out["restore_turn"], 2);
@@ -1193,7 +1223,10 @@ async fn e3_rewind_before_rejects_steer_row() {
     let (al, key, _dir) = stage_two_turns("before-steer").await;
     e3_append_steer(&key, "补充");
     // steer 行 index = 4（旧行为在此放行并切出破碎半轮）。
-    let err = al.rewind_before_message(&key, 4, false).await.unwrap_err();
+    let err = al
+        .rewind_before_message(&key, 4, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("steer"), "{err}");
     delete_chat_log(&key);
 }
@@ -1211,7 +1244,7 @@ async fn e3_git_redo_conflict_blocks_external_drift_then_force_overrides() {
     let file = dir.path().join("ws").join("code.txt");
 
     // rewind 到 turn 1：文件回 v2。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
 
@@ -1265,7 +1298,7 @@ async fn e3_git_redo_without_drift_reports_not_forced() {
     let (al, key, dir) = stage_two_turns_git("mclean").await;
     let file = dir.path().join("ws").join("code.txt");
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
 
     let out = al.redo_rewind(&key).await.unwrap();
@@ -1286,7 +1319,7 @@ async fn e3_git_redo_without_drift_reports_not_forced() {
 async fn e3_json_redo_conflict_scan_unavailable_honest_skip() {
     let (al, key, _dir) = stage_two_turns("mjson").await;
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
 
     let out = al.redo_rewind(&key).await.unwrap();
@@ -1328,7 +1361,7 @@ async fn e3_redo_force_records_audit_chain_event() {
     let chain = plugin.audit_chain().unwrap();
 
     // rewind（无冲突不记账）→ 外部漂移 → force redo 强过 → 台账一条事件。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     std::fs::write(&file, "external").unwrap();
     let out = al.redo_rewind_with_force(&key, true).await.unwrap();
@@ -1351,7 +1384,7 @@ async fn e3_redo_force_records_audit_chain_event() {
     assert!(chain.verify_range(0, 0).unwrap(), "链校验");
 
     // 无漂移直通的 redo（再撤再重做）不产生假账（链仍只有 1 条）。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
     let out = al.redo_rewind(&key).await.unwrap();
     assert_eq!(out["forced"], false, "{out}");
@@ -1379,7 +1412,10 @@ async fn rewind_rejects_while_continuation_snapshot_pending() {
     )
     .await;
     al.set_continuation_manager(mgr);
-    let err = al.rewind_to_message(&key, 0, false).await.unwrap_err();
+    let err = al
+        .rewind_to_message(&key, 0, false, None)
+        .await
+        .unwrap_err();
     assert!(err.contains("集群"), "rewind 必须拒绝在途续行会话: {err}");
     delete_chat_log(&key);
 }
@@ -1393,13 +1429,16 @@ async fn rewind_rejects_while_continuation_executing_then_releases() {
     al.set_continuation_manager(mgr.clone());
     // guard 借局部 Arc 克隆；set 已持独立克隆，两份并存到本测试结束。
     let guard = mgr.mark_inflight_session(&key);
-    let err = al.rewind_to_message(&key, 0, false).await.unwrap_err();
+    let err = al
+        .rewind_to_message(&key, 0, false, None)
+        .await
+        .unwrap_err();
     assert!(
         err.contains("集群"),
         "rewind 必须拒绝续行执行中的会话: {err}"
     );
     drop(guard);
-    al.rewind_to_message(&key, 0, false)
+    al.rewind_to_message(&key, 0, false, None)
         .await
         .expect("guard 释放后 rewind 应放行");
     delete_chat_log(&key);
@@ -1466,7 +1505,7 @@ async fn gc_enabled_rewind_forward_tree_survives_inline_gc_for_redo() {
 
     // 回退 turn 2 的提问行之后（restore_turn=3）：文件回 turn 3 begin 树
     // （v3），截断触发内联 gc（turn1 掉窗清对象）。
-    let out = al.rewind_to_message(&key, 2, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 2, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 2, "{out}");
     assert_eq!(out["file_restore"], "applied", "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
@@ -1509,7 +1548,7 @@ async fn gc040_redo_pop_window_trees_survive_gc_between_pop_and_restore() {
     let file = dir.path().join("ws").join("code.txt");
 
     // 回退（同 221 场景）：文件回 v3，undo 条目压栈（forward_tree = v4 实时树）。
-    let out = al.rewind_to_message(&key, 2, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 2, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 2, "{out}");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
 
@@ -1548,5 +1587,102 @@ async fn gc040_redo_pop_window_trees_survive_gc_between_pop_and_restore() {
     let (_, total, _, _) = read_chat_log(&key, 100, None);
     assert_eq!(total, 6, "行回填（保留 4 + 回填 2）");
 
+    delete_chat_log(&key);
+}
+
+// ----：B2 锚定定位（2026-11-11 slash 回声漂移机制解）----
+
+/// resolve_anchor_index 纯函数单测：None/空锚直通、快路径命中、漂移后
+/// 唯一命中、多命中取最近、零命中 fail-closed。
+#[test]
+fn anchor_resolve_paths() {
+    use serde_json::json;
+    let mk = |role: &str, content: &str| json!({ "role": role, "content": content });
+    let rows = vec![
+        mk("user", "q1"),
+        mk("assistant", "a1"),
+        mk("user", "q2"),
+        mk("assistant", "a2"),
+        mk("user", "q1"), // 与行 0 同文：多命中场景
+    ];
+
+    // None / 空锚 = 直通（旧前端兼容路径）。
+    assert_eq!(AgentLoop::resolve_anchor_index(&rows, 2, None).unwrap(), 2);
+    assert_eq!(
+        AgentLoop::resolve_anchor_index(&rows, 2, Some("  ")).unwrap(),
+        2
+    );
+    // 快路径：index 处内容已相等（trim 归一）。
+    assert_eq!(
+        AgentLoop::resolve_anchor_index(&rows, 2, Some("q2")).unwrap(),
+        2
+    );
+    // trim 归一：锚带首尾空白也命中。
+    assert_eq!(
+        AgentLoop::resolve_anchor_index(&rows, 2, Some("  q2 ")).unwrap(),
+        2
+    );
+    // 漂移（index=3 处内容是 a2，锚 q2 在行 2）→ 唯一命中纠正。
+    assert_eq!(
+        AgentLoop::resolve_anchor_index(&rows, 3, Some("q2")).unwrap(),
+        2
+    );
+    // 多命中（q1 在行 0/4）：取距 index 最近。
+    assert_eq!(
+        AgentLoop::resolve_anchor_index(&rows, 3, Some("q1")).unwrap(),
+        4
+    );
+    // 零命中 = fail-closed。
+    assert!(AgentLoop::resolve_anchor_index(&rows, 3, Some("ghost")).is_err());
+    // 非 str content 行（对象形态）不参与匹配。
+    let rows_obj = vec![json!({ "role": "user", "content": { "k": 1 } })];
+    assert!(AgentLoop::resolve_anchor_index(&rows_obj, 0, Some("q")).is_err());
+}
+
+/// 漂移场景端到端：前端把 slash 回声计行后 turnStart 虚高（本例真实
+/// turn-2 提问行在 2，前端报 3——把 assistant 回复行当提问行）。
+/// 带锚 = 锚定到行 2 正确截断（mode before 从行 2 起移除）；不带锚 =
+/// 撞 role 校验诚实报错（旧行为，fail-closed 不盲截）。
+#[cfg(windows)]
+#[tokio::test]
+async fn rewind_anchor_relocates_drifted_index() {
+    let (al, key, _dir) = stage_two_turns("b2-anchor-drift").await;
+    // 真实行 2 = turn 2 的 user 行（content "turn 2 q"）。
+    let anchored = al
+        .rewind_before_message(&key, 3, false, Some("turn 2 q"))
+        .await
+        .unwrap();
+    assert_eq!(anchored["removed_count"].as_u64().unwrap(), 2);
+    assert_eq!(anchored["kept_count"].as_u64().unwrap(), 2);
+    assert_eq!(
+        read_chat_log(&key, usize::MAX, None).1,
+        2,
+        "turn 2 起全移除后剩 turn 1 两行"
+    );
+
+    // 不带锚 + 漂移 index=3：行 3 是 assistant（"turn 2 a"）→ role 校验
+    // 拒绝（旧行为保持——None 直通路径未被锚定逻辑改变）。
+    delete_chat_log(&key);
+    let (al, key, _dir) = stage_two_turns("b2-anchor-drift2").await;
+    let err = al
+        .rewind_before_message(&key, 3, false, None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("不是 user 行"), "got: {err}");
+    delete_chat_log(&key);
+}
+
+/// 锚不在会话中 = fail-closed（会话切换/已截断的防错行保险丝）：
+/// 零副作用拒绝，会话行数不变。
+#[cfg(windows)]
+#[tokio::test]
+async fn rewind_anchor_miss_is_fail_closed() {
+    let (al, key, _dir) = stage_two_turns("b2-anchor-miss").await;
+    let err = al
+        .rewind_before_message(&key, 2, false, Some("不存在的锚文本"))
+        .await
+        .unwrap_err();
+    assert!(err.contains("锚内容定位失败"), "got: {err}");
+    assert_eq!(read_chat_log(&key, usize::MAX, None).1, 4, "零副作用");
     delete_chat_log(&key);
 }

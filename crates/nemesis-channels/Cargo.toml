@@ -20,7 +20,7 @@ websocket = []
 external = []
 maixcam = []
 line = []
-email = []
+email = ["dep:rustls", "dep:tokio-rustls"]
 matrix = []
 irc = []
 signal = []
@@ -84,6 +84,9 @@ axum = { workspace = true, optional = true }
 # ring——与 workspace 现网一致，不引 use-rustls 默认链的 aws-lc-rs）。
 rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"], optional = true }
+# email 通道 TLS（implicit TLS 993/465）：tokio-rustls 复用同款 rustls 0.23
+# ring provider（不引默认链的 aws-lc-rs，与 mqtt 同纪律）。
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

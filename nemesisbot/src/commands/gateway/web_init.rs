@@ -432,6 +432,10 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     if cfg.channels.wechat.enabled {
         enabled_channels.push("wechat".to_string());
     }
+    #[cfg(feature = "channels-email")]
+    if cfg.channels.email.enabled {
+        enabled_channels.push("email".to_string());
+    }
 
     {
         let channel_manager = Arc::new(
@@ -994,8 +998,60 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             } else {
                 None
             },
-            // 其余 feature-gated 通道（如 email/webhook_inbound）v1 无 config
-            // 段，维持 Default（None）——装配面按需扩展。
+            #[cfg(feature = "channels-email")] // nemesis-channels 侧 feature 名：email
+            email: if cfg.channels.email.enabled {
+                // 端口 i64 → u16：越界（<1 / >65535）不静默回绕（mqtt 同款
+                // 纪律），越界即拒绝启用该通道并 loud error。
+                let imap_port = cfg.channels.email.imap_port;
+                let smtp_port = cfg.channels.email.smtp_port;
+                if !(1..=65535).contains(&imap_port) || !(1..=65535).contains(&smtp_port) {
+                    tracing::error!(
+                        "[Gateway] channels.email.imap_port={imap_port}/smtp_port={smtp_port} 越界（有效范围 1..=65535），email 通道不启用"
+                    );
+                    None
+                } else {
+                    // SMTP 认证材料：config 空串 = None = 通道侧沿用 IMAP 对。
+                    let smtp_user = crate::common::resolve_secret_or_empty(
+                        &cfg.channels.email.smtp_username,
+                        "channels.email.smtp_username",
+                    );
+                    let smtp_pass = crate::common::resolve_secret_or_empty(
+                        &cfg.channels.email.smtp_password,
+                        "channels.email.smtp_password",
+                    );
+                    Some(nemesis_channels::email::EmailConfig {
+                        imap_host: cfg.channels.email.imap_host.clone(),
+                        imap_port: imap_port as u16,
+                        imap_username: crate::common::resolve_secret_or_empty(
+                            &cfg.channels.email.imap_username,
+                            "channels.email.imap_username",
+                        ),
+                        imap_password: crate::common::resolve_secret_or_empty(
+                            &cfg.channels.email.imap_password,
+                            "channels.email.imap_password",
+                        ),
+                        imap_tls: cfg.channels.email.imap_tls,
+                        smtp_host: cfg.channels.email.smtp_host.clone(),
+                        smtp_port: smtp_port as u16,
+                        smtp_username: (!smtp_user.is_empty()).then_some(smtp_user),
+                        smtp_password: (!smtp_pass.is_empty()).then_some(smtp_pass),
+                        smtp_tls: cfg.channels.email.smtp_tls,
+                        // TLS 显式信任根直透（tls=false 时被通道侧忽略；校验
+                        // 在 EmailChannel::new 构造期 fail-closed）
+                        ca_cert_path: cfg.channels.email.ca_cert_path.clone(),
+                        folder: cfg.channels.email.folder.clone(),
+                        // i64 → u64 钳负值为 0（as 转译负数会回绕）；0 由通
+                        // 道侧 effective_poll_interval 回落默认 30s（tokio
+                        // interval 零周期 panic 防线）。
+                        poll_interval: cfg.channels.email.poll_interval.max(0) as u64,
+                        allow_from: cfg.channels.email.allow_from.clone(),
+                    })
+                }
+            } else {
+                None
+            },
+            // webhook_inbound 等其余 feature-gated 通道仍无 config 段，维持
+            // Default（None）——装配面按需扩展。
             ..Default::default()
         };
 
@@ -1048,6 +1104,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             add_sync!(cfg.channels.nostr, "nostr");
             add_sync!(cfg.channels.mqtt, "mqtt");
             add_sync!(cfg.channels.wechat, "wechat");
+            add_sync!(cfg.channels.email, "email");
             let sync_config = nemesis_channels::manager::ChannelSyncConfig { targets: sync_map };
             channel_manager.setup_sync_targets(&sync_config).await;
         }

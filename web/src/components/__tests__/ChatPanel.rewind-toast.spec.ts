@@ -110,6 +110,7 @@ describe('ChatPanel rewind toast 文件回滚计数（restored_files 嵌套键�
       session_id: 's1',
       message_index: 0,
       mode: 'before',
+      anchor_content: 'q1',
     })
     const toasts = useToast().toasts
     expect(

@@ -132,7 +132,7 @@ async fn ws9_rewind_writes_last_rewind_meta() {
     ws9_seed_turns(&key, 4);
 
     // 回退到第 0 行（turn 1 user 行）：保留 turn 1，遗弃 3 轮 / 6 行。
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 6, "{out}");
 
     let meta = read_session_meta_full(&key).expect("谱系写入应产生 meta");
@@ -147,7 +147,10 @@ async fn ws9_rewind_writes_last_rewind_meta() {
     let (rows, total, _, _) = crate::chat_log::read_chat_log(&key, 100, None);
     assert_eq!(total, 4);
     let _ = rows;
-    let out = al.rewind_to_message(&key, total - 1, false).await.unwrap();
+    let out = al
+        .rewind_to_message(&key, total - 1, false, None)
+        .await
+        .unwrap();
     assert_eq!(out["removed_count"], 0, "{out}");
     let meta2 = read_session_meta_full(&key).expect("meta 应保留");
     assert_eq!(
@@ -176,7 +179,7 @@ async fn ws9_rewind_generates_branch_summary_via_small_model() {
     delete_chat_log(&key);
     ws9_seed_turns(&key, 4);
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 6, "{out}");
 
     // spawn_write 后台落盘——轮询等 meta 出现。
@@ -213,7 +216,7 @@ async fn ws9_rewind_without_small_model_honestly_skips() {
     delete_chat_log(&key);
     ws9_seed_turns(&key, 4);
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["removed_count"], 6, "回退本体不受影响: {out}");
 
     let meta = read_session_meta_full(&key).expect("谱系照写");

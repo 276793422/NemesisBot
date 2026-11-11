@@ -254,6 +254,25 @@ fn wechat_config_debug_redacts_token() {
 }
 
 #[test]
+fn email_config_debug_redacts_both_credential_pairs() {
+    let c = EmailConfig {
+        imap_username: SECRET.into(),
+        imap_password: SECRET.into(),
+        smtp_username: SECRET.into(),
+        smtp_password: SECRET.into(),
+        imap_port: 993,
+        smtp_port: 465,
+        ..Default::default()
+    };
+    let out = format!("{c:?}");
+    assert_redacted(&out, "EmailConfig");
+    assert!(
+        out.contains("993") && out.contains("465"),
+        "EmailConfig: plain 字段应原样输出: {out}"
+    );
+}
+
+#[test]
 fn model_config_debug_redacts_api_key_and_proxy() {
     let c = ModelConfig {
         model_name: "test".into(),

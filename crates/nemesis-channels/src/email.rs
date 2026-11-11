@@ -1,9 +1,16 @@
-//! Email channel (IMAP polling + SMTP sending, pure stdlib).
+//! Email channel (IMAP polling + SMTP sending).
 //!
 //! Uses IMAP for polling inbound emails and SMTP for sending outbound emails.
-//! Implements raw TCP connections with optional TLS. The IMAP implementation
-//! uses a simple line-based protocol for SEARCH, FETCH, and STORE commands.
-//! SMTP uses a simple connection with MAIL FROM / RCPT TO / DATA flow.
+//! Implements raw TCP connections with optional implicit TLS. The IMAP
+//! implementation uses a simple line-based protocol for SEARCH, FETCH, and
+//! STORE commands. SMTP uses a simple connection with MAIL FROM / RCPT TO /
+//! DATA flow.
+//!
+//! TLS 语义（2026-11-11 接线补全）：`imap_tls`/`smtp_tls` = **implicit TLS**
+//! ——连接建立后立即 rustls 握手（IMAP 993 / SMTP 465 端口语义）。587
+//! 的 STARTTLS（明文问候后升级）v1 不支持：587 用户须设 tls=false（明文
+//! 自担）或改用 465。TLS 信任根 = 显式 `ca_cert_path`（mqtt 同原则：
+//! 本仓 TLS 一律不装公共根库，构造期 fail-closed 校验非空）。
 
 #![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
@@ -90,18 +97,24 @@ pub struct EmailConfig {
     pub imap_username: String,
     /// IMAP password.
     pub imap_password: String,
-    /// Whether to use TLS for IMAP.
+    /// Whether to use implicit TLS for IMAP（993 端口语义；默认 false 显式
+    /// opt-in，mqtt use_tls 同语义；true 时 ca_cert_path 必填）。
     pub imap_tls: bool,
     /// SMTP host.
     pub smtp_host: String,
-    /// SMTP port (default: 587).
+    /// SMTP port (default: 465，implicit TLS)。
     pub smtp_port: u16,
     /// SMTP username (defaults to imap_username).
     pub smtp_username: Option<String>,
     /// SMTP password (defaults to imap_password).
     pub smtp_password: Option<String>,
-    /// Whether to use TLS for SMTP.
+    /// Whether to use implicit TLS for SMTP（465 端口语义；默认 false 显式
+    /// opt-in；true 时 ca_cert_path 必填；587 的 STARTTLS v1 不支持——587
+    /// 用户须设 false 或改用 465）。
     pub smtp_tls: bool,
+    /// CA 证书 PEM 路径（imap_tls/smtp_tls 任一为 true 必填；显式信任根，
+    /// mqtt 同原则——本仓 TLS 不装公共根库）。
+    pub ca_cert_path: String,
     /// IMAP mailbox folder (default: "INBOX").
     pub folder: String,
     /// Poll interval in seconds (default: 30).
@@ -111,7 +124,7 @@ pub struct EmailConfig {
 }
 
 crate::debug_redact::impl_redacted_debug!(EmailConfig {
-    plain { imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls, folder, poll_interval, allow_from }
+    plain { imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls, ca_cert_path, folder, poll_interval, allow_from }
     secret { imap_username, imap_password }
     opt_secret { smtp_username, smtp_password }
 });
@@ -123,12 +136,19 @@ impl Default for EmailConfig {
             imap_port: 993,
             imap_username: String::new(),
             imap_password: String::new(),
-            imap_tls: true,
+            // TLS 默认关（mqtt use_tls 同语义：显式 opt-in + CA 必填——
+            // 默认开会让所有不配 CA 的既有构造炸构造器）。推荐生产组合 =
+            // tls=true + 端口 993/465 + ca_cert_path。
+            imap_tls: false,
             smtp_host: String::new(),
-            smtp_port: 587,
+            // 465 = implicit TLS 提交端口（本实现 smtp_tls=true 即 implicit
+            // TLS；587 需 STARTTLS 升级流，v1 不支持——生产推荐端口与 TLS
+            // 开关同语义）。
+            smtp_port: 465,
             smtp_username: None,
             smtp_password: None,
-            smtp_tls: true,
+            smtp_tls: false,
+            ca_cert_path: String::new(),
             folder: "INBOX".to_string(),
             poll_interval: 30,
             allow_from: Vec::new(),
@@ -182,6 +202,13 @@ impl EmailChannel {
         if config.imap_username.is_empty() || config.imap_password.is_empty() {
             return Err(NemesisError::Channel(
                 "email imap_username and imap_password are required".to_string(),
+            ));
+        }
+        // TLS 显式信任根 fail-closed（mqtt 同原则）：声明了 TLS 却无 CA =
+        // 构造期响亮拒绝，不允许「以为是加密实际明文」的静默降级。
+        if (config.imap_tls || config.smtp_tls) && config.ca_cert_path.trim().is_empty() {
+            return Err(NemesisError::Channel(
+                "email imap_tls/smtp_tls=true 时 ca_cert_path 必填（TLS 需显式信任根）".to_string(),
             ));
         }
 
@@ -286,6 +313,13 @@ impl EmailChannel {
                 map.remove(&key);
             }
         }
+    }
+
+    /// poll_interval 有效值：0（显式关/未配置）回落默认 30s——tokio
+    /// interval 零周期 panic，轮询任务里炸 = 任务静默死（通道表现为
+    /// 「永远没有新邮件」），必须在构造周期值处收口。
+    fn effective_poll_interval(configured: u64) -> u64 {
+        if configured == 0 { 30 } else { configured }
     }
 
     /// Marks a message ID as seen.
@@ -430,7 +464,21 @@ impl EmailChannel {
         .await
         .map_err(|e| NemesisError::Channel(format!("SMTP connect failed: {e}")))?;
 
-        let (reader, mut writer) = stream.into_split();
+        // implicit TLS（465 端口语义）：握手先于 SMTP 问候——握手后所有
+        // SMTP 流量（含 AUTH LOGIN 的 base64 凭据）全程加密。
+        let stream = if self.config.smtp_tls {
+            tls_wrap(
+                "SMTP",
+                &self.config.smtp_host,
+                &self.config.ca_cert_path,
+                stream,
+            )
+            .await?
+        } else {
+            EmailStream::Plain(stream)
+        };
+
+        let (reader, mut writer) = tokio::io::split(stream);
         let mut reader = BufReader::new(reader);
 
         // Read greeting（带帽读，BUG-20261108-028）
@@ -452,8 +500,10 @@ impl EmailChannel {
         self.smtp_command(&mut writer, &mut reader, "EHLO nemesisbot.local")
             .await?;
 
-        // For STARTTLS on port 587 (non-TLS mode would upgrade here)
-        // For simplicity, we support direct TLS via separate connection
+        // STARTTLS（587 的明文升级流）v1 不支持：smtp_tls=true 走的是
+        // implicit TLS（连接即握手，见上方 tls_wrap）；587 服务器期望
+        // STARTTLS 命令升级，本实现不发起——用户要么设 tls=false（明文
+        // 自担）要么改用 465。模块头有同样的诚实注记。
 
         // AUTH LOGIN
         self.smtp_command(&mut writer, &mut reader, "AUTH LOGIN")
@@ -596,6 +646,20 @@ impl EmailChannel {
         .await
         .map_err(|e| NemesisError::Channel(format!("IMAP connect failed: {e}")))?;
 
+        // implicit TLS（993 端口语义）：握手先于 IMAP 问候——LOGIN 的
+        // 明文凭据全程加密。
+        let stream = if self.config.imap_tls {
+            tls_wrap(
+                "IMAP",
+                &self.config.imap_host,
+                &self.config.ca_cert_path,
+                stream,
+            )
+            .await?
+        } else {
+            EmailStream::Plain(stream)
+        };
+
         let (reader, writer) = tokio::io::split(stream);
         let mut conn = ImapConnection {
             reader: BufReader::new(reader),
@@ -651,8 +715,16 @@ impl EmailChannel {
         let bus_sender = self.bus_sender.clone();
 
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(config.poll_interval));
+            // 0 → 30s 回落（tokio interval 零周期 panic 见 effective_poll_interval）。
+            let period = Self::effective_poll_interval(config.poll_interval);
+            if period != config.poll_interval {
+                warn!(
+                    configured = config.poll_interval,
+                    effective = period,
+                    "[EmailChannel] poll_interval=0 回落默认 30s"
+                );
+            }
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(period));
             // 默认 Burst 在挂起恢复后把错过的 tick 逐个补发
             // ——IMAP 服务器被密集轮询。Delay 从当前时刻重排。
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -808,10 +880,122 @@ impl EmailChannel {
     }
 }
 
+/// TLS/明文双态流：ImapConnection 与 smtp_send 的统一传输层。rustls 握手
+/// 成功后 `TlsStream<TcpStream>` 与 `TcpStream` 同构（AsyncRead + AsyncWrite
+/// + Unpin），enum 分派即可复用既有行读写代码（两态均 Unpin，`get_mut`
+/// 后 `Pin::new` 委托合法）。
+enum EmailStream {
+    Plain(tokio::net::TcpStream),
+    Tls(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
+}
+
+impl tokio::io::AsyncRead for EmailStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            Self::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for EmailStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            Self::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            Self::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            Self::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+/// rustls ClientConfig 装配（ring provider；显式 CA 信任根，mqtt 同模板
+/// ——CA PEM 解析失败/空文件响亮拒绝，不静默降级为无信任根）。
+fn tls_client_config(ca_pem: &[u8]) -> Result<rustls::ClientConfig> {
+    use rustls::RootCertStore;
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+
+    let mut roots = RootCertStore::empty();
+    let ca_certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(ca_pem)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| NemesisError::Channel(format!("email CA 证书 PEM 解析失败: {e}")))?;
+    if ca_certs.is_empty() {
+        return Err(NemesisError::Channel(
+            "email CA 证书文件不含有效 PEM 证书".to_string(),
+        ));
+    }
+    for cert in ca_certs {
+        roots
+            .add(cert)
+            .map_err(|e| NemesisError::Channel(format!("email CA 证书加入信任库失败: {e}")))?;
+    }
+
+    let provider = rustls::crypto::ring::default_provider();
+    Ok(rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| NemesisError::Channel(format!("email TLS 协议版本装配失败: {e}")))?
+        .with_root_certificates(roots)
+        .with_no_client_auth())
+}
+
+/// implicit TLS 包装：TcpStream → rustls 握手 → EmailStream::Tls。握手
+/// 超时走 CONNECT_TIMEOUT 预算（与 TCP connect 同预算——服务器收包不应答
+/// 同样是黑洞形态）。
+async fn tls_wrap(
+    what: &str,
+    host: &str,
+    ca_cert_path: &str,
+    tcp: tokio::net::TcpStream,
+) -> Result<EmailStream> {
+    let ca_pem = std::fs::read(ca_cert_path).map_err(|e| {
+        NemesisError::Channel(format!("{what} CA 证书读取失败（{ca_cert_path}）: {e}"))
+    })?;
+    let config = tls_client_config(&ca_pem)?;
+    let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| {
+        NemesisError::Channel(format!("{what} TLS SNI 名称解析失败（{host}）: {e}"))
+    })?;
+    let tls = io_timeout(
+        &format!("{what} TLS handshake"),
+        std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        connector.connect(server_name, tcp),
+    )
+    .await
+    .map_err(|e| NemesisError::Channel(format!("{what} TLS 握手失败: {e}")))?;
+    Ok(EmailStream::Tls(tls))
+}
+
 /// IMAP connection state.
 pub struct ImapConnection {
-    reader: BufReader<tokio::io::ReadHalf<tokio::net::TcpStream>>,
-    writer: tokio::io::WriteHalf<tokio::net::TcpStream>,
+    reader: BufReader<tokio::io::ReadHalf<EmailStream>>,
+    writer: tokio::io::WriteHalf<EmailStream>,
     tag_counter: u32,
 }
 
@@ -925,6 +1109,13 @@ async fn imap_connect_static(config: &EmailConfig) -> Result<ImapConnection> {
     )
     .await
     .map_err(|e| NemesisError::Channel(format!("IMAP connect failed: {e}")))?;
+
+    // implicit TLS（993 端口语义），与方法版 imap_connect 同语义。
+    let stream = if config.imap_tls {
+        tls_wrap("IMAP", &config.imap_host, &config.ca_cert_path, stream).await?
+    } else {
+        EmailStream::Plain(stream)
+    };
 
     let (reader, writer) = tokio::io::split(stream);
     let mut conn = ImapConnection {
