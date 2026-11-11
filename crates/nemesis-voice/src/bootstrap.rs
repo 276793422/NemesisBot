@@ -790,6 +790,11 @@ fn find_file(root: &Path, name: &str) -> Result<Option<PathBuf>> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            // 链接条目不入栈（BUG-20261110-059 同族）：Path::is_dir() 跟随
+            // 链接，解压目录内链接环下 stack 无限增长死循环。
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             if path.is_dir() {
                 stack.push(path);
             } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {

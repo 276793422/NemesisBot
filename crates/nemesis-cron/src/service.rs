@@ -820,6 +820,21 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // 改名**出**保留命名空间同闸封死（BUG-20261111-069）：内部作业
+        // （当前名命中保留前缀）的名字是 on_job 按名分派与启动同步按名查找
+        // 的身份键——改名会让 autopilot/dreaming 同步 miss 挂载作业而重复
+        // 装配（双触发）；且内部作业 message 恒空、靠当前名豁免空 message
+        // 闸，改名后豁免依据失真 = enabled + 空 message 的用户名空转僵尸
+        // 绕闸成立。schedule/message/enabled 照常更新（sync 调用形态不传
+        // name，不受影响）。校验在任何变更应用前，Err = 无副作用。
+        if name.is_some() && reserved_prefix_hit(&job.name).is_some() {
+            return Err(format!(
+                "作业 {:?} 是系统内部作业（保留命名空间），不可改名——名字是 \
+                 on_job 按名分派与启动同步的身份键，请用对应专属管理面 \
+                 （autopilot / Memory 设置）管理: {}",
+                job.name, job_id
+            ));
+        }
         // 死排程闸延伸到更新路径（的闸只设
         // 在创建漏斗 add_job_ext）——给启用中的作业换入算不出任何下一次触发
         // 的调度 = 以「已排程」假象成为永不触发的静默僵尸，loud 拒绝。校验
@@ -888,6 +903,18 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
+        // 改名**出**保留命名空间同闸封死（BUG-20261111-069，与 update_job
+        // 同一统一定义）——尤其封 name+message 同 patch 的绕闸形态：
+        // 空 message 闸的内部作业豁免按当前名判定，改名后豁免失真。
+        // 校验在任何变更应用前，Err = 无副作用。
+        if patch.name.is_some() && reserved_prefix_hit(&job.name).is_some() {
+            return Err(format!(
+                "作业 {:?} 是系统内部作业（保留命名空间），不可改名——名字是 \
+                 on_job 按名分派与启动同步的身份键，请用对应专属管理面 \
+                 （autopilot / Memory 设置）管理: {}",
+                job.name, job_id
+            ));
+        }
         // 死排程闸延伸到 patch 路径——按 patch 后的最终
         // (schedule, enabled) 组合判定：enabled 且算不出任何下一次触发 =
         // 永不触发的静默僵尸，loud 拒绝。校验在任何变更应用前，Err = 无副
@@ -914,14 +941,19 @@ impl CronService {
         // 作业 message 恒空但 on_job 在 message 判空**之前**按名分派拦截
         // （add_job_internal 旁路同一理由）——无豁免时 autopilot 启动同步/
         // 规则更新（arm_autopilot_job_with → patch_job）与 dreaming 配置
-        // 跟随全被本闸拒绝，排程更新永不生效。改名进保留命名空间在上方
-        // 保留前缀检查已 loud 拒绝，豁免不会被用户作业借道。
+        // 跟随全被本闸拒绝，排程更新永不生效。豁免依据 = **改名后的最终
+        // 名**（BUG-20261111-069：按 patch 前旧名判定时，name+message 同
+        // patch 可借内部豁免把用户名空 message 作业带出闸——改名出保留
+        // 命名空间已在上方封死，本处按最终名判定是同一不变量的自洽写法）。
+        // 改名进保留命名空间在上方保留前缀检查已 loud 拒绝，豁免不会被
+        // 用户作业借道。
         let final_message = patch
             .message
             .clone()
             .unwrap_or_else(|| job.payload.message.clone());
+        let final_name = patch.name.clone().unwrap_or_else(|| job.name.clone());
         if final_enabled
-            && reserved_prefix_hit(&job.name).is_none()
+            && reserved_prefix_hit(&final_name).is_none()
             && final_message.trim().is_empty()
         {
             return Err(format!(

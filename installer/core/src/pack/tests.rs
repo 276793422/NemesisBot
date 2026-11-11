@@ -5,6 +5,13 @@ fn write_tree(root: &Path) -> Result<()> {
     std::fs::create_dir_all(root.join("bin"))?;
     std::fs::create_dir_all(root.join("share"))?;
     std::fs::create_dir_all(root.join("sub"))?;
+    // tests/ = 构建脚本 stage 的测试工具目录（发行包必须排除——2026-11-10
+    // 用户验收实录：16 文件包混入 ~16MB 测试 exe）。
+    std::fs::create_dir_all(root.join("tests"))?;
+    std::fs::write(root.join("tests/cluster-test.exe"), b"testbin")?;
+    // skins/ = 皮肤目录（支持在线下载，发行包不预置——用户拍板 2026-11-10）。
+    std::fs::create_dir_all(root.join("skins"))?;
+    std::fs::write(root.join("skins/bot.nbskin"), b"skin")?;
     std::fs::write(root.join("nemesisbot.exe"), b"bot")?;
     std::fs::write(root.join("share/icon.png"), b"png")?;
     std::fs::write(root.join("README.md"), b"md")?;
@@ -13,6 +20,10 @@ fn write_tree(root: &Path) -> Result<()> {
     std::fs::write(root.join("bot.lib"), b"lib")?;
     std::fs::write(root.join("bot.exp"), b"exp")?;
     std::fs::write(root.join("sub/intermediate.obj"), b"obj")?;
+    // 桌面/编辑器杂物必须被排除。
+    std::fs::write(root.join("Thumbs.db"), b"t")?;
+    std::fs::write(root.join("share/desktop.ini"), b"i")?;
+    std::fs::write(root.join(".gitignore"), b"gi")?;
     Ok(())
 }
 
@@ -23,8 +34,12 @@ fn collect_sorted_and_excludes_build_intermediates() -> Result<()> {
     write_tree(&root)?;
     let files = collect_files(&root)?;
     let rels: Vec<String> = files.iter().map(|f| rel_path(&root, f).unwrap()).collect();
-    // pdb/lib/exp/obj 全排除，业务文件 3 个。
-    assert_eq!(rels.len(), 3, "编译中间物必须排除: {rels:?}");
+    // pdb/lib/exp/obj + tests/ + skins/ + 杂物全排除，业务文件 3 个。
+    assert_eq!(
+        rels.len(),
+        3,
+        "编译中间物/测试目录/皮肤/杂物必须排除: {rels:?}"
+    );
     assert!(
         rels.iter()
             .all(|r| !r.ends_with(".pdb") && !r.ends_with(".obj"))
@@ -33,6 +48,41 @@ fn collect_sorted_and_excludes_build_intermediates() -> Result<()> {
     let mut sorted = rels.clone();
     sorted.sort();
     assert_eq!(rels, sorted);
+    Ok(())
+}
+
+#[test]
+fn tests_dir_and_desktop_junk_never_packed() -> Result<()> {
+    // 2026-11-10 用户验收实录回归锁：tests/ 目录（构建脚本 stage 的测试工具）
+    // 与桌面/系统杂物绝不进包。目录名大小写不敏感（Windows 语义）。
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("payload");
+    write_tree(&root)?;
+    std::fs::create_dir_all(root.join("Tests"))?;
+    std::fs::write(root.join("Tests/integration-test.exe"), b"t2")?;
+    let files = collect_files(&root)?;
+    let rels: Vec<String> = files.iter().map(|f| rel_path(&root, f).unwrap()).collect();
+    assert!(
+        rels.iter()
+            .all(|r| !r.split('/').any(|seg| seg.eq_ignore_ascii_case("tests"))),
+        "tests 目录任何层级/大小写形态都必须排除: {rels:?}"
+    );
+    assert!(
+        rels.iter()
+            .all(|r| !r.split('/').any(|seg| seg.eq_ignore_ascii_case("skins"))),
+        "skins 目录必须排除（皮肤支持在线下载，发行包不预置）: {rels:?}"
+    );
+    assert!(
+        rels.iter().all(|r| {
+            let name = r.rsplit('/').next().unwrap_or("").to_lowercase();
+            !matches!(
+                name.as_str(),
+                "thumbs.db" | "desktop.ini" | ".ds_store" | ".gitignore"
+            )
+        }),
+        "杂物文件必须排除: {rels:?}"
+    );
+    assert_eq!(rels.len(), 3, "业务文件不受排除影响: {rels:?}");
     Ok(())
 }
 

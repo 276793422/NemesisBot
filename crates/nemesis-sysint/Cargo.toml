@@ -1,0 +1,25 @@
+[package]
+name = "nemesis-sysint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "系统集成注册面：ARP 卸载条目 / 开机自启 / 快捷方式 / 信任根证书库（用户级零 UAC，安装器调用的执行体）"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+winreg = "0.55"
+
+[dev-dependencies]
+tempfile = "3"

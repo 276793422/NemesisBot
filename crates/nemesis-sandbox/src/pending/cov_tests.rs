@@ -142,3 +142,44 @@ fn pending_workspace_filters_to_workspace_subtree() {
         "only workspace files: {scoped:?}"
     );
 }
+
+/// BUG-20261110-059：盒内链接条目曾被 Path::is_dir()（跟随链接）当目录
+/// 递归——agent 可在盒内 `mklink /J` 造环打崩进程。修后链接条目不跟进。
+/// 外指链接钉跳过语义（自指环不可断言；同 gc_tests::dir_size_skips_link_entries 形态）。
+#[test]
+fn enumerate_box_skips_link_entries() {
+    let home = tempfile::tempdir().unwrap();
+    let box_root = home.path().join("box");
+    let user_profile = home.path().join("profile");
+    // 分层 join 而非字面 backslash 字符串：Windows 上二者产物相同路径，
+    // 但 Linux 上 `r"user\current\workspace"` 是字面单目录名，
+    // real_path_for_box 首组件匹配 "user" 失败 → 枚举恒 0 假红（2026-11-10 nightly）。
+    let ws_dir = box_root.join("user").join("current").join("workspace");
+    std::fs::create_dir_all(&ws_dir).unwrap();
+    std::fs::write(ws_dir.join("a.txt"), b"1").unwrap();
+    let outside = home.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("leak.txt"), b"secret").unwrap();
+
+    // workspace/linked -> outside。
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(ws_dir.join("linked"))
+            .arg(&outside)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, ws_dir.join("linked")).expect("symlink");
+
+    let all = enumerate_box(&box_root, &user_profile).expect("walk succeeds");
+    assert_eq!(all.len(), 1, "链接条目不得跟进枚举: {all:?}");
+    assert!(all[0].box_path.ends_with("a.txt"), "{all:?}");
+}

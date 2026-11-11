@@ -329,7 +329,7 @@ async fn steer_mid_serial_batch_skips_remaining_and_injects_next_round() {
         }),
     );
 
-    let (_id, resp, _err) = lp.process_inbound_message(&inbound(key, "do things")).await;
+    let (_id, resp, _err, _) = lp.process_inbound_message(&inbound(key, "do things")).await;
     assert_eq!(resp, "final answer", "跳批后 steer 进下一轮，正常终答");
 
     // 工具 A 真执行了；工具 B 被跳（从未派发）。
@@ -447,7 +447,7 @@ async fn steer_during_parallel_batch_does_not_skip_completed_work() {
         }),
     );
 
-    let (_id, resp, _err) = lp
+    let (_id, resp, _err, _) = lp
         .process_inbound_message(&inbound(key, "do parallel things"))
         .await;
     assert_eq!(resp, "final answer");

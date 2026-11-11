@@ -312,11 +312,15 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
             // 注入失败 = 与 dispatch 层注入同语义（Err 直接作为工具结果，
             // 本轮不执行）；差异面：broker 在场时先走 发卡恢复（发凭据
             // 卡 → Stored 后原地重注入续行），缺席/被拒/超时回落原错误串。
-            let injected = match nemesis_agent::r#loop::credential_injection::inject_credential_aliases_structured(
+            // vault 计划 P2（2026-11-11）：本路径脱离 dispatch 掩码池
+            //（wrapper 对 dispatch 恒见空槽位），故注入解析出的明文在此
+            // 就地掩码（Ok/Err 双臂，空清单零成本直通）——回退态结果
+            // 回显入参片段时不漏真值，与 dispatch 合流面同源。
+            let injected = match nemesis_agent::r#loop::credential_injection::inject_credential_aliases_with_secrets(
                 self.inner.as_ref(),
                 args,
             ) {
-                Ok(a) => a,
+                Ok((a, secrets)) => (a, secrets),
                 Err(inj_err) => {
                     match nemesis_agent::r#loop::credential_injection::try_card_recovery(
                         self.credential_broker.clone(),
@@ -329,12 +333,20 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
                     )
                     .await
                     {
-                        Some(retried) => retried,
+                        Some((retried, secrets)) => (retried, secrets),
                         None => return Err(inj_err.to_string()),
                     }
                 }
             };
-            self.inner.execute(&injected, context).await
+            self.inner
+                .execute(&injected.0, context)
+                .await
+                .map(|r| {
+                    nemesis_agent::r#loop::session_secrets::mask_secrets_in_result(&r, &injected.1)
+                })
+                .map_err(|e| {
+                    nemesis_agent::r#loop::session_secrets::mask_secrets_in_result(&e, &injected.1)
+                })
         }
     }
 

@@ -22,27 +22,33 @@ fn cleanup(path: &Path) {
 }
 
 /// `VaultStore::create` 带瞬态重试：CI runner 上的外力（AV 扫描/临时区保留
-/// 清理）会在 create 的 seal → save 原子写窗口内删掉 temp 目录，rename 报
-/// os error 3（cov_tests 同族：2026-11-06 shard7 首录，2026-11-09 shard9
-/// create_persists_immediately 再实录）。helper 契约
+/// 清理）会在 create 的 seal → save 原子写窗口内删掉 temp 目录。实录两臂：
+/// rename 报 os error 3（cov_tests 同族：2026-11-06 shard7 首录，2026-11-09
+/// shard9 create_persists_immediately 再实录）；atomic write 建临时文件时
+/// 父目录已被删报 `create temp: No such file or directory`（2026-11-11
+/// ET 42950419158 ciphertext_bound_to_alias 实录）。helper 契约
 /// （nemesis-utils/src/file.rs）明示 rename 遇外部占用"由调用方决定重试或
 /// 上报"，测试侧选重试。create 自带 create_dir_all 臂（父目录被外力删掉后
-/// 同路径重试即恢复现场，且 rename 瞬态臂下 vault.enc 尚未落盘、无残留），
-/// 换目录重试反而令调用侧缓存的第一手 path 失效。只吞 Io-rename 瞬态臂，
-/// 业务错误照常上抛——断言力不变。期望失败的 create（FileExists/Crypto 臂）
-/// 原子写根本不发生，不走此 helper。
+/// 同路径重试即恢复现场，且瞬态臂下 vault.enc 尚未落盘、无残留），换目录
+/// 重试反而令调用侧缓存的第一手 path 失效。只吞上述两瞬态臂，业务错误
+/// 照常上抛——断言力不变。期望失败的 create（FileExists/Crypto 臂）原子写
+/// 根本不发生，不走此 helper。
 fn create_retrying(path: &Path, mode: VaultMode, passphrase: Option<&str>) -> VaultStore {
     let mut last_err = String::new();
     for _ in 0..3 {
         match VaultStore::create(path, mode, passphrase) {
             Ok(store) => return store,
-            Err(VaultError::Io(e)) if e.to_string().contains("rename:") => {
+            Err(VaultError::Io(e))
+                if e.to_string().contains("rename:")
+                    || e.to_string()
+                        .contains("create temp: No such file or directory") =>
+            {
                 last_err = e.to_string();
             }
-            Err(err) => panic!("create 失败（非瞬态 rename 噪声）: {err}"),
+            Err(err) => panic!("create 失败（非瞬态外力噪声）: {err}"),
         }
     }
-    panic!("create 连续 3 次遇 rename 瞬态失败: {last_err}");
+    panic!("create 连续 3 次遇瞬态失败: {last_err}");
 }
 
 /// 外力瞬态第二臂的 body 级重跑（2026-11-09 coverage 42558777444 实录）：

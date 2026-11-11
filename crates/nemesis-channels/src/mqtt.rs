@@ -67,7 +67,9 @@ const MAX_LEARNED_REPLY_TOPICS: usize = 1024;
 ///
 /// 由 gateway 装配层从 `config.json` channels 段构造后传入（`ChannelInitConfig.mqtt`）；
 /// username/password 建议走装配层 vault/env 引用，config 明文仅限内网实验。
-#[derive(Debug, Clone, Default)]
+/// SEC-002（BUG-20261111-068）：认证材料对（username/password）脱敏；
+/// 证书路径保留 plain（路径本身非秘密）。
+#[derive(Clone, Default)]
 pub struct MqttChannelConfig {
     /// broker 地址（默认 127.0.0.1）。
     pub broker_host: String,
@@ -102,6 +104,15 @@ pub struct MqttChannelConfig {
     /// 客户端私钥 PEM 路径（mTLS；与 client_cert_path 成对出现）。
     pub client_key_path: String,
 }
+
+crate::debug_redact::impl_redacted_debug!(MqttChannelConfig {
+    plain {
+        broker_host, broker_port, client_id, keep_alive_secs, clean_session,
+        reconnect_delay_secs, qos, topics, default_reply_topic, allow_from,
+        use_tls, ca_cert_path, client_cert_path, client_key_path
+    }
+    secret { username, password }
+});
 
 /// 订阅 topic filter → 回包 topic 映射（topic 映射表条目）。
 #[derive(Debug, Clone, Default)]

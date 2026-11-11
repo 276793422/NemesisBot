@@ -13,8 +13,8 @@ use super::*;
 /// - **凭据形态**（B4，2026-11-08 批次④）：`type: "secret"` 字段——密码
 ///   输入，值**不回灌上下文**，直写 vault 会话作用域别名
 ///   `agent/<会话>/<key>`，回灌掩码占位 + `{{vault:<别名>}}` 使用指引；
-///   后续任意工具参数以占位符引用（展开/闸面见
-///   `loop::session_secrets`）。
+///   后续在工具**声明凭据槽位内**以占位符引用（槽位收紧 2026-11-11；
+///   展开/闸面见 `loop::session_secrets`）。
 ///
 /// 回答以选中项原文 / 表单作答回灌，模型据此继续；超时回灌 "user did not
 /// answer, proceed with your best judgment"（不是错误——轮次照常推进）。
@@ -156,7 +156,10 @@ impl Tool for QuestionTool {
          answers as a JSON object; on timeout returns a note to proceed with your best \
          judgment. secret-type fields collect credentials: the value is stored into the \
          session-scoped credential vault and NEVER echoed into the conversation — later \
-         reference it in any tool argument with {{vault:agent/<session>/<key>}}. Use when \
+         reference it ONLY inside a tool's declared credential slots (top-level string \
+         slots or object-slot leaves, e.g. exec tools' env / web_fetch headers) with \
+         {{vault:agent/<session>/<key>}}; a complete template anywhere else fails the \
+         call. Use when \
          the answer materially changes what you do next. Do NOT use for trivial choices \
          or free-form conversation."
             .to_string()
@@ -193,7 +196,8 @@ impl Tool for QuestionTool {
                             "type": {"type": "string", "enum": ["text", "select", "secret"],
                                      "description": "text = single-line input; select = pick one of options; \
                                      secret = masked credential input, stored to the session credential \
-                                     vault (never echoed) — reference later via {{vault:<alias>}}"},
+                                     vault (never echoed) — reference later via {{vault:<alias>}} \
+                                     inside declared credential slots only"},
                             "required": {"type": "boolean", "default": false,
                                          "description": "true = user must fill this field"},
                             "options": {"type": "array", "items": {"type": "string"},
@@ -353,7 +357,9 @@ impl Tool for QuestionTool {
                 );
                 if !stored.is_empty() {
                     reply.push_str("\n\n以上凭据已存入凭据库（会话作用域），不会再次展示；\
-                        后续任意工具参数中以 {{vault:<别名>}} 占位符引用，值不经对话上下文：");
+                        后续在工具**声明的凭据槽位**内（顶层字符串槽或对象叶子，如 exec 族 \
+                        env / web_fetch headers）以 {{vault:<别名>}} 占位符引用，值不经\
+                        对话上下文；槽位之外的完整占位符会被拒绝：");
                     for (k, alias) in &stored {
                         reply.push_str(&format!("\n- {{{{vault:{alias}}}}}（{k}）"));
                     }

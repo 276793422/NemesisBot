@@ -18,7 +18,8 @@ use nemesis_types::utils::split_message;
 use crate::base::{BaseChannel, Channel};
 
 /// Bluesky channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：app password 脱敏（did 是 plain Option）。
+#[derive(Clone)]
 pub struct BlueskyConfig {
     /// Server URL (e.g. "https://bsky.social").
     pub server: String,
@@ -33,6 +34,11 @@ pub struct BlueskyConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(BlueskyConfig {
+    plain { server, handle, did, poll_interval, allow_from }
+    secret { password }
+});
 
 /// Session response.
 #[derive(Debug, Deserialize)]

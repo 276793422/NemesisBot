@@ -733,6 +733,14 @@ pub struct AgentLoop {
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// vault 域绑定 sidecar 权威路径（`<主workspace>/config/config.vault.json`；
+    /// L26 路径分裂修复 2026-11-11：此前 dispatch 闸从 config.json 同目录
+    /// 推导——与 CLI `vault bind` 写入侧（workspace config 目录）路径分裂，
+    /// 绑定生产永不生效）。装配点显式注入（agent_factory 主/集群/项目三
+    /// builder 同源主 workspace——项目 loop 的 workspace_root 是项目目录，
+    /// 不可作推导根）。`None` = dispatch 闸回落 config.json 同目录（测试/
+    /// 裸装配旁路形态；生产恒注入）。
+    vault_domain_config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// VM 档执行环境注记 resolver（审计收口）。`Some` 时每轮
     /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
     /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
@@ -1034,6 +1042,7 @@ impl AgentLoop {
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            vault_domain_config_path: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,

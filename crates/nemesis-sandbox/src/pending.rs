@@ -93,7 +93,14 @@ fn walk(
         }
         let entry = entry?;
         let path = entry.path();
-        if path.is_dir() {
+        // 链接条目（symlink/junction）不跟进——agent 可在盒内造 junction 环，
+        // Path::is_dir() 跟随链接会让 walk 无限递归栈溢出（entry.file_type()
+        // 不跟随链接，链接环必须在此截断）。
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             walk(&path, box_root, user_profile, out)?;
         } else if let Some(real) = real_path_for_box(&path, box_root, user_profile) {
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);

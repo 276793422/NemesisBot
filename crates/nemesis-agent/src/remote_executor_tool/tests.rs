@@ -369,6 +369,53 @@ fn remote_tool_set_context_reaches_local_impl() {
     assert!(got.load(Ordering::SeqCst), "set_context must be forwarded");
 }
 
+/// 凭据槽转发 drift 锁（vault 计划 P3，2026-11-11）：RemoteExecutorTool
+/// 必须转发 `credential_arg_keys` 到本地实现——漏转发 = executor 分离形态
+/// 下 env 槽注入/域闸/掩码三面全哑（schema 随 parameters() 自动流，唯一
+/// 独立声明面就是 keys）。exec 工具带 env 槽（MOVE_TOOLS 之首）。
+#[test]
+fn remote_tool_forwards_credential_arg_keys() {
+    struct EnvSlotTool;
+    #[async_trait::async_trait]
+    impl Tool for EnvSlotTool {
+        async fn execute(&self, _a: &str, _c: &RequestContext) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn credential_arg_keys(&self) -> &[&str] {
+            &["env"]
+        }
+    }
+    let local = EnvSlotTool;
+    let ch = Arc::new(ExecutorChannel::new(
+        PathBuf::from("/x/nemesisbot.exe"),
+        "/ws".into(),
+        Arc::new(|| false),
+    ));
+    let remote = RemoteExecutorTool::new("exec".to_string(), Box::new(EnvSlotTool), ch);
+    assert_eq!(
+        remote.credential_arg_keys(),
+        local.credential_arg_keys(),
+        "executor wrapper 必须与本地工具同源声明凭据槽"
+    );
+    assert_eq!(remote.credential_arg_keys(), &["env"]);
+
+    // 默认无声明（trait 默认空切片）同样透传——非凭据工具行为不变。
+    struct NoSlotTool;
+    #[async_trait::async_trait]
+    impl Tool for NoSlotTool {
+        async fn execute(&self, _a: &str, _c: &RequestContext) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+    let ch2 = Arc::new(ExecutorChannel::new(
+        PathBuf::from("/x/nemesisbot.exe"),
+        "/ws".into(),
+        Arc::new(|| false),
+    ));
+    let remote2 = RemoteExecutorTool::new("git".to_string(), Box::new(NoSlotTool), ch2);
+    assert!(remote2.credential_arg_keys().is_empty());
+}
+
 #[tokio::test]
 async fn remote_tool_execute_wraps_channel_error() {
     // exe 不存在 → spawn 失败 → execute 映射成 "executor unavailable:..."。

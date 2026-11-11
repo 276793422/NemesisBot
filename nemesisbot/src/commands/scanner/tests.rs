@@ -3666,3 +3666,23 @@ mod wave_a {
         }
     }
 }
+
+/// PowerShell 单引号包裹（BUG-20261111-062）：含 ' 的路径双写转义 ''，
+/// 与 installer/windows ps_quote、board backup SQL 转义同形态。
+#[test]
+fn ps_sq_escapes_single_quotes() {
+    assert_eq!(
+        super::ps_sq(std::path::Path::new(r"C:\Users\o'brien\scans").as_os_str()),
+        r"'C:\Users\o''brien\scans'"
+    );
+    // 无引号路径原样包裹
+    assert_eq!(
+        super::ps_sq(std::path::Path::new(r"C:\scans").as_os_str()),
+        r"'C:\scans'"
+    );
+    // 多引号逐个双写
+    assert_eq!(
+        super::ps_sq(std::path::Path::new("it's a'test").as_os_str()),
+        "'it''s a''test'"
+    );
+}

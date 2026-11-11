@@ -471,3 +471,28 @@ fn md_report_includes_step_details_and_final_text() {
     assert!(md.contains("error: 装配失败"));
     assert!(md.contains("（0 ms）"));
 }
+
+// ---------------------------------------------------------------------------
+// 含 ' 的工作区路径（BUG-20261111-062）：旧 r-string 形态 r'\'' 无法承载
+// 单引号（反斜杠+两个引号而非转义），含 ' 的工作区路径必语法错。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn checker_script_escapes_quote_in_workspace_path() {
+    // 期望值运行时构造（92u8 = '\'）：反斜杠字面量经 shell/heredoc 落盘
+    // 层层转义易错位，char 拼接无歧义。
+    let bs = 92u8 as char;
+    let ws = std::path::Path::new("/mnt/c/Users/o'brien/ws");
+    let script = checker::build_checker_script(ws, "print(1)");
+    let expected =
+        format!("import sys\nsys.path.insert(0, '/mnt/c/Users/o{bs}'brien/ws')\nprint(1)");
+    assert_eq!(script, expected);
+    // Windows 路径正斜杠化 + 转义
+    let ws_win = std::path::Path::new(r"C:\Users\o'brien\ws");
+    let script2 = checker::build_checker_script(ws_win, "pass");
+    assert!(
+        script2.contains(&format!("C:/Users/o{bs}'brien/ws")),
+        "{script2}"
+    );
+    assert!(!script2.contains("r'"), "不得再用 r-string: {script2}");
+}

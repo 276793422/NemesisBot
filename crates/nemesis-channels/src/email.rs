@@ -78,7 +78,9 @@ where
 }
 
 /// Email channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：IMAP/SMTP 认证材料（username/password 对）
+/// 全脱敏——与 config 侧 MqttConfig 同原则。
+#[derive(Clone)]
 pub struct EmailConfig {
     /// IMAP host.
     pub imap_host: String,
@@ -107,6 +109,12 @@ pub struct EmailConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(EmailConfig {
+    plain { imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls, folder, poll_interval, allow_from }
+    secret { imap_username, imap_password }
+    opt_secret { smtp_username, smtp_password }
+});
 
 impl Default for EmailConfig {
     fn default() -> Self {

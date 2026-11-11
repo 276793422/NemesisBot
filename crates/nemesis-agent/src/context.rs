@@ -52,6 +52,14 @@ pub struct RequestContext {
     /// 恒 None——凭条不伪造背书。connector 工具把它写进本次调用的凭条。
     #[serde(skip)]
     pub approval_ref: Option<String>,
+    /// 本调用掩码池（vault 计划 P2 执行中输出流掩码，2026-11-11）：
+    /// dispatch 在 execute 前注入（占位符 + vault 声明槽明文同池）。
+    /// 唯一消费点 = exec 执行中输出流 hook（loop_tools/registry.rs）——
+    /// 实时尾窗经掩码后才进事件广播（ToolOutput 帧先于结果掩码臂流出，
+    /// 不注入则明文随帧直达 Dashboard）。空池 = 零成本直通。
+    /// `#[serde(skip)]`：凭据明文永不序列化出进程；Debug 只露长度。
+    #[serde(skip)]
+    pub secrets: Arc<Vec<String>>,
 }
 
 impl std::fmt::Debug for RequestContext {
@@ -68,6 +76,7 @@ impl std::fmt::Debug for RequestContext {
             )
             .field("tool_path_base", &self.tool_path_base)
             .field("approval_ref", &self.approval_ref)
+            .field("secrets", &self.secrets.len())
             .finish()
     }
 }
@@ -84,6 +93,7 @@ impl RequestContext {
             async_callback: None,
             tool_path_base: None,
             approval_ref: None,
+            secrets: Arc::new(Vec::new()),
         }
     }
 
@@ -104,6 +114,7 @@ impl RequestContext {
             async_callback: None,
             tool_path_base: None,
             approval_ref: None,
+            secrets: Arc::new(Vec::new()),
         }
     }
 
@@ -121,6 +132,7 @@ impl RequestContext {
             async_callback: None,
             tool_path_base: None,
             approval_ref: None,
+            secrets: Arc::new(Vec::new()),
         }
     }
 

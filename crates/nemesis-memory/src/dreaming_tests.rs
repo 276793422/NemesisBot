@@ -18,7 +18,7 @@ use crate::dreaming::{
     SweepReport, apply_decision, build_merged_content, build_signals, compute_relationship_signals,
     is_dream_settled, jaccard, parse_decisions, run_sweep, score_entry, select_candidates,
     signal_age, signal_conflict, signal_decay, signal_recall, signal_redundancy, signal_source,
-    validate_decision,
+    source_reliability_of, validate_decision,
 };
 use crate::manager::{Config, META_LAST_RECALL, META_RECALL_COUNT, MemoryManager};
 use crate::types::{Entry, MemoryType};
@@ -199,6 +199,63 @@ fn build_signals_reads_metadata_and_falls_back_to_age() {
     );
     assert_eq!(sig3.duplicate_count, 2);
     assert_eq!(sig3.conflict_count, 1);
+}
+
+// ---------------------------------------------------------------------------
+// 来源可靠性解析域自守（BUG-20261111-079 回归锁）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn source_reliability_of_rejects_non_finite() {
+    let mk = |v: &str| {
+        let mut e = entry("reliability probe");
+        e.metadata
+            .insert(META_DREAM_SOURCE_RELIABILITY.to_string(), v.to_string());
+        e
+    };
+    // "NaN" 能通过 parse::<f64>（Rust FromStr 接受），且 f64::clamp 对 NaN
+    // 原样放行——修复前 NaN 直接进 score → select_candidates 比较器
+    // 全序违反 → driftsort panic。必须与 parse 失败同语义落缺省 0.5。
+    approx(source_reliability_of(&mk("NaN")), 0.5);
+    approx(source_reliability_of(&mk("nan")), 0.5);
+    // ±inf 同为非有限值，与 NaN 同罪落缺省（自报「无穷可靠性」是畸形值，
+    // 不解读为 1.0 满分）。
+    approx(source_reliability_of(&mk("inf")), 0.5);
+    approx(source_reliability_of(&mk("-inf")), 0.5);
+    // 越界有限值照旧钳制。
+    approx(source_reliability_of(&mk("1.5")), 1.0);
+    approx(source_reliability_of(&mk("-0.2")), 0.0);
+    // 非数字 → 缺省。
+    approx(source_reliability_of(&mk("abc")), 0.5);
+}
+
+/// 端到端全序回归锁：带毒条目（可靠性自报 "NaN"）混入候选集合必须能
+/// 完成排序——修复前其 score 为 NaN，`partial_cmp().unwrap_or(Equal)` +
+/// created_at 键在 NaN/有限混合下构造传递性循环，Rust ≥1.81 的 driftsort
+/// 以 "does not correctly implement a total order" panic；修复后 score
+/// 全有限，排序确定完成且降序。
+#[test]
+fn select_candidates_tolerates_non_finite_reliability() {
+    let now = Local::now();
+    let mut entries: Vec<Entry> = (0..12)
+        .map(|i| {
+            let mut e = entry(&format!("sweep filler {i}"));
+            e.created_at = now - Duration::hours(i);
+            e
+        })
+        .collect();
+    let mut poisoned = entry("poisoned reliability");
+    poisoned.created_at = now - Duration::hours(50);
+    poisoned
+        .metadata
+        .insert(META_DREAM_SOURCE_RELIABILITY.to_string(), "NaN".to_string());
+    entries.push(poisoned);
+    let cands = select_candidates(entries, &DreamingWeights::default(), 8, now);
+    assert!(!cands.is_empty());
+    for w in cands.windows(2) {
+        assert!(w[0].score.is_finite(), "score 必须有限");
+        assert!(w[0].score >= w[1].score, "候选必须按分数降序");
+    }
 }
 
 // ---------------------------------------------------------------------------

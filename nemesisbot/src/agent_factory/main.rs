@@ -287,6 +287,9 @@ pub fn build_agent_loop(
     // workspace instruction chain (AGENTS.md/CLAUDE.md) rides the
     // same merged context-digest injection.
     agent_loop.set_workspace_root(shared.workspace_dir());
+    // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11：与 CLI `vault
+    // bind` 写入侧同点，dispatch 闸 primary 消费）。
+    agent_loop.set_vault_domain_config_path(shared.vault_domain_config_path());
     // Full-review: snapshot role from config ("user" default; "system"
     // for strict chat templates).
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);

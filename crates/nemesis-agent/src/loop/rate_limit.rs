@@ -190,8 +190,10 @@ impl AgentLoop {
                     task_id: None,
                     sync_via: None,
                     note_kind: None,
-                    // 429 重试进度 = 系统进度回执，非回合产物。
+                    // 429 重试进度 = 系统进度回执，非回合产物。瞬态帧
+                    // 不落盘 → 不占行号锚（行号锚漂移根修）。
                     receipt: true,
+                    occupies: Some(false),
                 },
             };
             if let Err(e) = tx.send(outbound).await {

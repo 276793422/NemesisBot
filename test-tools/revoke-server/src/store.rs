@@ -197,7 +197,9 @@ impl RevocationStore for SqliteStore {
                 Ok(CrlEntry {
                     dim: parse_dim(&row.get::<_, String>(0)?),
                     value: row.get(1)?,
-                    revoked_at: row.get(2)?,
+                    // rusqlite 0.41 起移除 u64 的 FromSql（SQLite 整数本征 i64），
+                    // DB 边界显式 cast（时间戳值域不越 i64::MAX）。
+                    revoked_at: row.get::<_, i64>(2)? as u64,
                     reason: row.get(3)?,
                 })
             })?
@@ -220,7 +222,7 @@ impl RevocationStore for SqliteStore {
                     Ok(CrlEntry {
                         dim: parse_dim(&r.get::<_, String>(0)?),
                         value: r.get(1)?,
-                        revoked_at: r.get(2)?,
+                        revoked_at: r.get::<_, i64>(2)? as u64,
                         reason: r.get(3)?,
                     })
                 },
@@ -236,7 +238,7 @@ impl RevocationStore for SqliteStore {
             params![
                 dim_str(entry.dim),
                 entry.value,
-                entry.revoked_at,
+                entry.revoked_at as i64,
                 entry.reason
             ],
         )?;
@@ -264,7 +266,7 @@ impl RevocationStore for SqliteStore {
                 Ok(TrustedKey {
                     key_fp: row.get(0)?,
                     status: parse_status(&row.get::<_, String>(1)?),
-                    not_after: row.get(2)?,
+                    not_after: row.get::<_, Option<i64>>(2)?.map(|v| v as u64),
                 })
             })?
             .filter_map(|r| r.ok())
@@ -280,7 +282,11 @@ impl RevocationStore for SqliteStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO trusted_keys(key_fp, status, not_after) VALUES(?,?,?)",
-            params![key.key_fp, status_str(key.status), key.not_after],
+            params![
+                key.key_fp,
+                status_str(key.status),
+                key.not_after.map(|v| v as i64)
+            ],
         )?;
         conn.execute(
             "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='trusted_keys_version'",
@@ -303,7 +309,7 @@ impl RevocationStore for SqliteStore {
             "INSERT INTO audit(timestamp, action, operator, dim, value, reason, detail)
              VALUES(?,?,?,?,?,?,?)",
             params![
-                record.timestamp,
+                record.timestamp as i64,
                 record.action,
                 record.operator,
                 record.dim,
@@ -325,7 +331,7 @@ impl RevocationStore for SqliteStore {
             .query_map(params![limit as i64], |row| {
                 Ok(AuditRecord {
                     id: row.get(0)?,
-                    timestamp: row.get(1)?,
+                    timestamp: row.get::<_, i64>(1)? as u64,
                     action: row.get(2)?,
                     operator: row.get(3)?,
                     dim: row.get(4)?,
@@ -351,7 +357,7 @@ impl RevocationStore for SqliteStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO users(token, name, publisher, active, created_at, issuer_name) VALUES(?,?,?,?,?,?)",
-            params![token, name, publisher, 1, created_at, issuer_name],
+            params![token, name, publisher, 1, created_at as i64, issuer_name],
         )?;
         Ok(())
     }
@@ -366,7 +372,7 @@ impl RevocationStore for SqliteStore {
                     name: r.get(1)?,
                     publisher: r.get(2)?,
                     active: r.get::<_, i64>(3)? != 0,
-                    created_at: r.get(4)?,
+                    created_at: r.get::<_, i64>(4)? as u64,
                     issuer_name: r.get(5)?,
                 }),
             )
@@ -385,7 +391,7 @@ impl RevocationStore for SqliteStore {
                     name: r.get(1)?,
                     publisher: r.get(2)?,
                     active: r.get::<_, i64>(3)? != 0,
-                    created_at: r.get(4)?,
+                    created_at: r.get::<_, i64>(4)? as u64,
                     issuer_name: r.get(5)?,
                 })
             })?
@@ -399,7 +405,7 @@ impl RevocationStore for SqliteStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO issuers(name, issuer_sk, issuer_pub, issuer_cert, chain, created_at) VALUES(?,?,?,?,?,?)",
-            params![rec.name, rec.issuer_sk, rec.issuer_pub, rec.issuer_cert, rec.chain, rec.created_at],
+            params![rec.name, rec.issuer_sk, rec.issuer_pub, rec.issuer_cert, rec.chain, rec.created_at as i64],
         )?;
         Ok(())
     }
@@ -415,7 +421,7 @@ impl RevocationStore for SqliteStore {
                     issuer_pub: r.get(2)?,
                     issuer_cert: r.get(3)?,
                     chain: r.get(4)?,
-                    created_at: r.get(5)?,
+                    created_at: r.get::<_, i64>(5)? as u64,
                 }),
             )
             .optional()?;
@@ -434,7 +440,7 @@ impl RevocationStore for SqliteStore {
                     issuer_pub: r.get(2)?,
                     issuer_cert: r.get(3)?,
                     chain: r.get(4)?,
-                    created_at: r.get(5)?,
+                    created_at: r.get::<_, i64>(5)? as u64,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -447,7 +453,7 @@ impl RevocationStore for SqliteStore {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT OR REPLACE INTO signatures(sig_hash, key_fp, publisher, signed_at, content_hash, user_name, issuer_name, registered_at) VALUES(?,?,?,?,?,?,?,?)",
-            params![rec.sig_hash, rec.key_fp, rec.publisher, rec.signed_at, rec.content_hash, rec.user_name, rec.issuer_name, rec.registered_at],
+            params![rec.sig_hash, rec.key_fp, rec.publisher, rec.signed_at as i64, rec.content_hash, rec.user_name, rec.issuer_name, rec.registered_at as i64],
         )?;
         Ok(())
     }
@@ -463,11 +469,11 @@ impl RevocationStore for SqliteStore {
                     sig_hash: r.get(0)?,
                     key_fp: r.get(1)?,
                     publisher: r.get(2)?,
-                    signed_at: r.get(3)?,
+                    signed_at: r.get::<_, i64>(3)? as u64,
                     content_hash: r.get(4)?,
                     user_name: r.get(5)?,
                     issuer_name: r.get(6)?,
-                    registered_at: r.get(7)?,
+                    registered_at: r.get::<_, i64>(7)? as u64,
                 })
             })?
             .filter_map(|r| r.ok())

@@ -183,3 +183,8 @@ mod cov_more_tests;
 // 决策表 / register_shared_tools 各注册臂。
 #[cfg(all(test, feature = "lsp"))]
 mod cov_wave6_tests;
+
+// mcp_discover 超时 LLM 输入面硬上界——缺省/显式 0 落 15s 旧行为
+// / 常规值透传 / 巨值 clamp 600（挂死 agent loop 注入面回归锁）。
+#[cfg(test)]
+mod mcp_discover_timeout_tests;

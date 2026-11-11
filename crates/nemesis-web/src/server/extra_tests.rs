@@ -919,6 +919,7 @@ async fn test_send_to_session_with_active_queue_succeeds() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(send_result.is_ok());
@@ -956,6 +957,7 @@ async fn test_send_to_session_includes_model_badge() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -973,6 +975,7 @@ async fn test_send_to_session_includes_model_badge() {
         &session.id,
         "assistant",
         "plain reply",
+        None,
         None,
         None,
         None,
@@ -1001,6 +1004,7 @@ async fn test_send_to_session_includes_model_badge() {
         None,
         Some("node-b"),
         None,
+        None,
     )
     .await
     .unwrap();
@@ -1016,6 +1020,7 @@ async fn test_send_to_session_includes_model_badge() {
         &session.id,
         "assistant",
         "plain reply",
+        None,
         None,
         None,
         None,
@@ -1057,6 +1062,7 @@ async fn test_send_to_session_stamps_agent_session_id() {
         Some("agent:main:session:abc-123"),
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -1077,6 +1083,7 @@ async fn test_send_to_session_stamps_agent_session_id() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -1088,6 +1095,85 @@ async fn test_send_to_session_stamps_agent_session_id() {
     assert!(
         parsed2["data"].get("session_id").is_none(),
         "None session_key must omit the field, not serialize null"
+    );
+}
+
+/// 行号锚漂移根修（2026-11-11）：send_to_session 的 occupies 尾参必须
+/// 落帧键 `data.occupies`（Some(true)/Some(false) 如实出现），None 缺席
+/// ——补拉与实时对同一 jsonl 锚算出同一个数；无键帧走前端旧规则。
+#[tokio::test]
+async fn test_send_to_session_emits_occupies_frame_key() {
+    use crate::websocket_handler::SendQueue;
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
+    mgr.set_send_queue(&session.id, queue);
+
+    // Some(true)（落盘 system 注记）与 Some(false)（瞬态回执）→ 键如实出现。
+    send_to_session(
+        &mgr,
+        &session.id,
+        "system",
+        "[自动压缩] 已折叠…",
+        None,
+        None,
+        None,
+        None,
+        Some(true),
+    )
+    .await
+    .unwrap();
+    let bytes = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["data"]["occupies"], true);
+
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "⏳ 正在处理上一条…",
+        None,
+        None,
+        None,
+        None,
+        Some(false),
+    )
+    .await
+    .unwrap();
+    let bytes2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+    assert_eq!(parsed2["data"]["occupies"], false);
+
+    // None → 键缺席（旧行为逐字节一致，不序列化 null）。
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "plain reply",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let bytes3 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed3: serde_json::Value = serde_json::from_slice(&bytes3).unwrap();
+    assert!(
+        parsed3["data"].get("occupies").is_none(),
+        "None occupies must omit the field, not serialize null"
     );
 }
 

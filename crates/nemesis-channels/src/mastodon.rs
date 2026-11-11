@@ -17,7 +17,8 @@ use nemesis_types::utils::split_message;
 use crate::base::{BaseChannel, Channel};
 
 /// Mastodon channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：OAuth access token 脱敏。
+#[derive(Clone)]
 pub struct MastodonConfig {
     /// Server URL (e.g. "https://mastodon.social").
     pub server: String,
@@ -26,6 +27,11 @@ pub struct MastodonConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(MastodonConfig {
+    plain { server, allow_from }
+    secret { access_token }
+});
 
 /// Mastodon notification.
 #[derive(Debug, Deserialize)]

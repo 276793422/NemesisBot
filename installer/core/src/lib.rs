@@ -12,13 +12,17 @@
 //! - [`pkgfile`]：安装包读取管线（完整性硬域 → 信任分级域）
 //! - [`pack`]：打包 + 外壳签名 + keygen（§7a ⑥⑦）
 //! - [`install`]：安装引擎（staging 原子提交）+ 卸载
+//! - [`procs`]：运行实例路径级识别与强制停止编排（平台中立核心）
+//! - [`console`]：Windows 控制台 UTF-8 代码页（GBK 乱码修复）
 
+pub mod console;
 pub mod format;
 pub mod fsutil;
 pub mod install;
 pub mod manifest;
 pub mod pack;
 pub mod pkgfile;
+pub mod procs;
 pub mod sig;
 pub mod version;
 

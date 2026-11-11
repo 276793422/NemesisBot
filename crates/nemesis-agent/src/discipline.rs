@@ -602,6 +602,7 @@ impl DisciplineFalsificationHook {
             async_callback: None,
             tool_path_base: None,
             approval_ref: None,
+            secrets: std::sync::Arc::new(Vec::new()),
         };
         let outcome = exec.execute(&args, &ctx).await;
         // 成败判定走 loop_tools 统一定义 [`crate::loop_tools:exec_output_passed`]

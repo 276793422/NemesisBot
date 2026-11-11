@@ -97,7 +97,9 @@ impl ServerMessage {
 /// Configuration for the WebSocket channel.
 ///
 /// Passed from `gateway.rs` → `ChannelInitConfig` → `WebSocketChannel::new()`.
-#[derive(Debug, Clone, Default)]
+/// SEC-002（BUG-20261111-068）：auth_token 脱敏（与 WebChannelConfig 同字段名
+/// 隔壁结构，config 侧首审查轮只救了 web 通道）。
+#[derive(Clone, Default)]
 pub struct WebSocketChannelConfig {
     pub host: String,
     pub port: u16,
@@ -106,6 +108,11 @@ pub struct WebSocketChannelConfig {
     pub allow_from: Vec<String>,
     pub sync_to: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(WebSocketChannelConfig {
+    plain { host, port, path, allow_from, sync_to }
+    secret { auth_token }
+});
 
 // ---------------------------------------------------------------------------
 // Active connection (send-queue pattern)

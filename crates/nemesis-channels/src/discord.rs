@@ -55,7 +55,8 @@ const DEFAULT_INTENTS: u64 = 4613;
 // ---------------------------------------------------------------------------
 
 /// Discord channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：bot token 脱敏。
+#[derive(Clone)]
 pub struct DiscordConfig {
     /// Bot token.
     pub token: String,
@@ -66,6 +67,11 @@ pub struct DiscordConfig {
     /// Gateway intents bitmask.
     pub intents: u64,
 }
+
+crate::debug_redact::impl_redacted_debug!(DiscordConfig {
+    plain { allow_from, api_base, intents }
+    secret { token }
+});
 
 impl Default for DiscordConfig {
     fn default() -> Self {

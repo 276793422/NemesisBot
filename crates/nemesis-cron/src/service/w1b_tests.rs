@@ -918,8 +918,35 @@ async fn test_fire_loop_survives_persist_failure() {
 
     // 服务已 start（初始 save 成功）后把 store 文件顶替成同名目录——
     // write_file_atomic 从此恒失败（create_dir_all 目标被文件占位 / open 失败）。
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir(&path).unwrap();
+    // Windows 删除挂起幻影纪律：AV/索引器短暂持有刚写完的 store 文件时，
+    // remove「成功」后名字仍可 delete-pending 残留，紧随的 create_dir 撞
+    // ERROR_ACCESS_DENIED（R812 实录：全量 battery 后 0.3s panic）——两步
+    // 合在同一退避重试循环，create_dir 成功才算顶替完成。
+    let mut toppled = false;
+    let path_ref = std::path::Path::new(&path);
+    for attempt in 0..10u32 {
+        if path_ref.is_file() {
+            let _ = std::fs::remove_file(path_ref);
+        }
+        match std::fs::create_dir(path_ref) {
+            Ok(()) => {
+                toppled = true;
+                break;
+            }
+            // PermissionDenied = delete-pending 残留（或 AV 瞬时句柄）；
+            // AlreadyExists = 上轮 remove 未生效——都退避后重来。
+            Err(e)
+                if e.kind() == std::io::ErrorKind::PermissionDenied
+                    || e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => panic!("store 文件顶替失败: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(100 * (attempt as u64 + 1)));
+    }
+    assert!(
+        toppled,
+        "store 文件顶替为目录失败（Windows 删除挂起窗口耗尽）: {}",
+        path_ref.display()
+    );
 
     // tick 间隔 1s；等 2.5s 保证至少一次 tick 扫到 due（at_ms=+200ms 早过期）。
     tokio::time::sleep(Duration::from_millis(2500)).await;

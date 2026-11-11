@@ -22,6 +22,23 @@ impl McpDiscoverTool {
     }
 }
 
+/// mcp_discover 超时的 LLM 输入面硬上界（生效口径与
+/// `tools.exec.max_timeout_secs` 缺省 600s 同族）。上游
+/// `one_shot_budget` 纯透传（可放大是有意设计，服务 CLI
+/// `mcp discover --timeout` 的用户显式意志）——但工具 args 是模型生成
+/// 输入面，工具执行无外层墙钟（工具内部超时是唯一防线）：无上界时
+/// prompt 注入可传 `timeout=10^12` 让一次 mcp_discover 挂死整个 agent
+/// loop。CLI 路径不经过本函数，不受影响。
+pub(super) const MCP_DISCOVER_MAX_TIMEOUT_SECS: u64 = 600;
+
+/// 缺省/显式 0 → 15s（旧行为）；其余 clamp 到 [1, 600]。
+pub(super) fn resolve_discover_timeout(raw: Option<u64>) -> u64 {
+    match raw {
+        None | Some(0) => 15,
+        Some(v) => v.clamp(1, MCP_DISCOVER_MAX_TIMEOUT_SECS),
+    }
+}
+
 #[async_trait]
 impl Tool for McpDiscoverTool {
     fn description(&self) -> String {
@@ -51,7 +68,7 @@ impl Tool for McpDiscoverTool {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Timeout in seconds (default: 15)"
+                    "description": "Timeout in seconds (default: 15, capped at 600)"
                 }
             }
         })
@@ -63,7 +80,7 @@ impl Tool for McpDiscoverTool {
 
         let url = parsed["url"].as_str();
         let command = parsed["command"].as_str();
-        let timeout_secs = parsed["timeout"].as_u64().unwrap_or(15);
+        let timeout_secs = resolve_discover_timeout(parsed["timeout"].as_u64());
 
         let result = match (url, command) {
             (Some(url), _) => {

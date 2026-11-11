@@ -129,7 +129,7 @@ async fn turn_end_persist_preserves_concurrent_compact_summary() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (_agent_id, response, err) = al.process_inbound_message(&msg).await;
+    let (_agent_id, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none(), "turn 必须正常完成: {err:?}");
     assert_eq!(response, "turn reply");
 
@@ -193,7 +193,7 @@ async fn turn_end_persist_does_not_regress_concurrent_recompact() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (_agent_id, _response, err) = al.process_inbound_message(&msg).await;
+    let (_agent_id, _response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none(), "turn 必须正常完成: {err:?}");
 
     // 核心断言：并发压缩的更新版存活，未被装载时的 stale 旧值覆盖回退。

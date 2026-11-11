@@ -70,12 +70,16 @@ cp -f "$ROOT/web/public/favicon.png" "$ROOT/bin/bin_linux/share/icon.png"
 echo "[2/5] 图标已同步 share/icon.png"
 
 # ③ 安装器构建（本 workspace release；骨架 = 未签名原始二进制）。
-echo "[3/5] 构建安装器（cargo build --release）..."
+# 定 Target 构建——workspace 三成员里 setup-windows 是 win32 依赖
+# （winreg/windows-sys/egui win32），Linux 主机上全量 `cargo build` 必炸
+# E0432（盲区实录 2026-11-10：远程盒首跑即红）。Windows 主机全量无碍。
+# 注意 pack 是 setup-core 包的 [[bin]]（`-p pack` 不存在——包名解析失败实录）。
+echo "[3/5] 构建安装器（cargo build --release -p setup-linux -p setup-core）..."
 cd "$(dirname "$0")"
 if [ -n "$ANCHOR" ]; then
   export NEMESIS_BUILD_ROOT_ANCHOR="$ANCHOR"
 fi
-cargo build --release
+cargo build --release -p setup-linux -p setup-core
 if [ ! -f target/release/nbsetup-linux ]; then
   echo "[ERROR] nbsetup-linux 未产出"
   exit 1

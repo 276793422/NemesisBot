@@ -27,7 +27,8 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 // ---------------------------------------------------------------------------
 
 /// Slack channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：双 token 脱敏。
+#[derive(Clone)]
 pub struct SlackConfig {
     /// Bot token (xoxb-...).
     pub bot_token: String,
@@ -36,6 +37,11 @@ pub struct SlackConfig {
     /// Allowed user IDs (empty = allow all).
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(SlackConfig {
+    plain { allow_from }
+    secret { bot_token, app_token }
+});
 
 /// Slack message event (simplified).
 #[derive(Debug, Deserialize)]

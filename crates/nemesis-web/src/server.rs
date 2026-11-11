@@ -1733,7 +1733,16 @@ impl StaticFiles for DirectoryStaticFiles {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
+                    // 链接条目（symlink/junction）不跟进也不列举——目录内
+                    // junction 环下 Path::is_dir()（跟随链接）会无限递归栈
+                    // 溢出（entry.file_type() 不跟随链接）。
+                    let Ok(ft) = entry.file_type() else {
+                        continue;
+                    };
+                    if ft.is_symlink() {
+                        continue;
+                    }
+                    if ft.is_dir() {
                         walk(&path, base, files);
                     } else if let Ok(rel) = path.strip_prefix(base) {
                         files.push(rel.to_string_lossy().replace('\\', "/"));
@@ -2010,8 +2019,16 @@ pub async fn process_messages_with_router(
             continue;
         }
         if !msg.content.is_empty() && !is_history_request {
-            let seq =
-                crate::chat_event_log::record(&session_key, "user", &msg.content, None, None, None);
+            // user 行占行号锚（旧规则）→ occupies=None 不写帧键。
+            let seq = crate::chat_event_log::record(
+                &session_key,
+                "user",
+                &msg.content,
+                None,
+                None,
+                None,
+                None,
+            );
             // L12：首投登记幂等键（seq = 本次环行原 seq）。
             if let Some(cmid) = client_msg_id {
                 crate::chat_dedup::insert(&session_key, cmid, seq);
@@ -2112,6 +2129,11 @@ pub async fn process_messages_with_router(
 /// `note_kind`（2026-11-09 压缩提示徽标化，optional）是压缩过程系统注记
 /// 标记——帧携带 `note_kind` 键，前端渲染成与工具调用同族的折叠小徽标
 /// （实时与历史重载同形态）；`None` 不写帧键，与历史行为逐字节一致。
+///
+/// `occupies`（2026-11-11 行号锚漂移根修，optional）是帧占行真相——前端
+/// 行号锚（rewind/regenerate 的 message_index）按它计数：`Some(true)` 落盘
+/// 占锚、`Some(false)` 瞬态回执不占锚、`None` 旧规则（user/assistant 占行）。
+/// `None` 不写帧键，与历史行为逐字节一致。
 pub async fn send_to_session(
     session_manager: &SessionManager,
     session_id: &str,
@@ -2121,6 +2143,7 @@ pub async fn send_to_session(
     session_key: Option<&str>,
     source_node: Option<&str>,
     note_kind: Option<&str>,
+    occupies: Option<bool>,
 ) -> Result<(), String> {
     tracing::debug!(
         session_id = %session_id,
@@ -2153,6 +2176,11 @@ pub async fn send_to_session(
     if let Some(kind) = note_kind {
         data["note_kind"] = serde_json::Value::String(kind.to_string());
     }
+    // 帧占行真相（2026-11-11）：前端行号锚三态计数——瞬态回执不占锚、
+    // 落盘注记占锚；None 不写键（旧规则 user/assistant 占行）。
+    if let Some(o) = occupies {
+        data["occupies"] = serde_json::Value::Bool(o);
+    }
     // 语音 relay（realtime P1 G3）：语音对话进行中且热态开时，assistant 回复
     // 由后端接力 TTS。帧标 voice_relayed=true 让发起端跳过自身 tts_playback
     // （防双播）；广播成功后清洗入队播放。热态关/未注册 = false = 零改动。
@@ -2164,8 +2192,15 @@ pub async fn send_to_session(
     // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
     // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。
     let record_key = session_key.unwrap_or(session_id);
-    let seq =
-        crate::chat_event_log::record(record_key, role, content, model, source_node, note_kind);
+    let seq = crate::chat_event_log::record(
+        record_key,
+        role,
+        content,
+        model,
+        source_node,
+        note_kind,
+        occupies,
+    );
     data["seq"] = serde_json::json!(seq);
     let msg = crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(data));
     let data = msg
@@ -2723,6 +2758,7 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                         msg.meta.session_key.as_deref(),
                         msg.meta.source_node.as_deref(),
                         msg.meta.note_kind.as_deref(),
+                        msg.meta.occupies,
                     )
                     .await
                 };

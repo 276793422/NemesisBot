@@ -484,7 +484,9 @@ async fn slash_plan_build_flip_and_publish_event() {
 
     // /plan：Immediate 回执 + 模式翻转 + 事件。
     match al.gate_inbound(&inbound_msg("/plan")) {
-        GateOutcome::Immediate { agent_id, response } => {
+        GateOutcome::Immediate {
+            agent_id, response, ..
+        } => {
             assert!(
                 !agent_id.is_empty(),
                 "agent_id 由 route_message 现取，不该为空: {agent_id:?}"

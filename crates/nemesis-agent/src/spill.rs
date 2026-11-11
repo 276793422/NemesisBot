@@ -253,6 +253,11 @@ pub fn status(root: &Path) -> SpillStatus {
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            // 链接条目不跟进（BUG-20261110-059 同族）：Path::is_dir() 跟随
+            // 链接，spill 目录内链接环下无限递归栈溢出。
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             if path.is_dir() {
                 visit_dir(&path, st, oldest);
                 continue;

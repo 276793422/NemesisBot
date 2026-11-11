@@ -241,9 +241,13 @@ impl GitHubRegistry {
         };
 
         // Use Trees API to download the full skill directory.
+        // BUG-20261111-066：{author} 模式 + bare slug 先反查 author 拼复合键
+        // （resolve_install_slug）——否则 skill_dir_prefix 恒 None 落 legacy
+        // fallback，字面 {author} 留 URL 必 404。
+        let install_slug = self.resolve_install_slug(slug).await;
         if !self.repo.is_empty()
             && !self.skill_path_pattern.is_empty()
-            && let Some(dir_prefix) = self.skill_dir_prefix(slug)
+            && let Some(dir_prefix) = self.skill_dir_prefix(&install_slug)
         {
             download_skill_tree_from_github(
                 &self.client,
@@ -266,7 +270,7 @@ impl GitHubRegistry {
         }
 
         // Legacy fallback: download only SKILL.md.
-        let url = self.build_skill_url(slug);
+        let url = self.build_skill_url(&install_slug);
         let body = self.do_get(&url).await?;
 
         std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
@@ -283,7 +287,29 @@ impl GitHubRegistry {
 
     /// Fetch the SKILL.md content for a skill without installing it.
     pub async fn get_skill_content(&self, slug: &str) -> Result<crate::types::SkillContent> {
-        let url = self.build_skill_url(slug);
+        // BUG-20261111-067：预览面此前裸插 build_skill_url 无任何校验——
+        // `..`/多段路径可探配置仓库内任意路径。分段校验（本面只拼 URL 不落
+        // 盘，逐段 validator）：裸 slug（search 产出形态）走三段式反查
+        // （BUG-20261111-066，否则字面 {author} 进 URL 必 404）；
+        // author/slug 复合形态两段各过 validator 后直用（预览调用方的
+        // 显式 author 形态，免一次树反查）；`..`/空段/三段以上拒绝。
+        let install_slug = match slug.split_once('/') {
+            None => {
+                crate::types::validate_skill_identifier(slug).map_err(|e| {
+                    NemesisError::Validation(format!("invalid slug '{}': {}", slug, e))
+                })?;
+                self.resolve_install_slug(slug).await
+            }
+            Some((author, base)) => {
+                for seg in [author, base] {
+                    crate::types::validate_skill_identifier(seg).map_err(|e| {
+                        NemesisError::Validation(format!("invalid slug '{}': {}", slug, e))
+                    })?;
+                }
+                slug.to_string()
+            }
+        };
+        let url = self.build_skill_url(&install_slug);
         let bytes = self.do_get(&url).await?;
         let content = String::from_utf8(bytes)
             .map_err(|e| NemesisError::Other(format!("invalid utf8: {}", e)))?;
@@ -430,12 +456,9 @@ impl GitHubRegistry {
         Ok(results)
     }
 
-    /// Search using GitHub Trees API (three-layer: skills/{author}/{slug}/SKILL.md).
-    async fn search_three_layer(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SkillSearchResult>> {
+    /// 拉取仓库全树（Trees API recursive）——search_three_layer 与安装期
+    /// slug→author 反查（[`Self::resolve_author`]）共用。
+    async fn fetch_repo_tree(&self) -> Result<GithubTreeResponse> {
         let api_url = format!(
             "{}/repos/{}/git/trees/{}?recursive=1",
             self.api_base_url(),
@@ -461,10 +484,19 @@ impl GitHubRegistry {
             )));
         }
 
-        let tree_response: GithubTreeResponse = response
+        response
             .json()
             .await
-            .map_err(|e| NemesisError::Other(format!("failed to parse tree: {}", e)))?;
+            .map_err(|e| NemesisError::Other(format!("failed to parse tree: {}", e)))
+    }
+
+    /// Search using GitHub Trees API (three-layer: skills/{author}/{slug}/SKILL.md).
+    async fn search_three_layer(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SkillSearchResult>> {
+        let tree_response = self.fetch_repo_tree().await?;
 
         let mut results = Vec::new();
         let mut seen_slugs = std::collections::HashSet::new();
@@ -547,6 +579,53 @@ impl GitHubRegistry {
     /// Check if the skill path pattern uses three layers (contains {author}).
     fn is_three_layer_pattern(&self) -> bool {
         self.skill_path_pattern.contains("{author}")
+    }
+
+    /// 三段式源安装期 slug→author 反查（BUG-20261111-066）。
+    ///
+    /// search 产出的 slug 按安装目录名纪律不带 author（`/` 被
+    /// `validate_skill_identifier` 拒绝），author 只活在
+    /// `SkillSearchResult.download_path` 里且从未被安装路径消费——
+    /// `{author}` 模式源（默认配置的 openclaw）在安装路径
+    /// `skill_dir_prefix` 恒 None、legacy fallback 把字面 `{author}` 留在
+    /// URL → GitHub raw 404，整源搜索可见但不可装。修：安装期拉同一棵树，
+    /// 按与 search 相同的遍历序取首个 `skills/{author}/{slug}/SKILL.md`
+    /// 精确命中的 author（确定性一致：同一响应、同一顺序，search 去重保留
+    /// 的也是首个）。拉树失败/无命中 = None（回落 bare slug 旧行为）。
+    async fn resolve_author(&self, slug: &str) -> Option<String> {
+        let tree = self.fetch_repo_tree().await.ok()?;
+        let suffix = format!("/{slug}/SKILL.md");
+        for entry in &tree.tree {
+            if entry.entry_type != "blob" {
+                continue;
+            }
+            let Some(inner) = entry.path.strip_prefix("skills/") else {
+                continue;
+            };
+            let Some(author) = inner.strip_suffix(&suffix) else {
+                continue;
+            };
+            if author.is_empty() || author.contains('/') {
+                continue;
+            }
+            return Some(author.to_string());
+        }
+        None
+    }
+
+    /// 安装期 slug 解析：`{author}` 模式 + bare slug（search 产出形态）先
+    /// 反查 author 拼成 `author/slug` 复合键——否则 `skill_dir_prefix` 恒
+    /// None 落 legacy fallback，字面 `{author}` 留 URL 必 404
+    /// （BUG-20261111-066）。两段式模式 / 已带 `/` 的复合键原样透传。
+    async fn resolve_install_slug(&self, slug: &str) -> String {
+        if self.is_three_layer_pattern() && !slug.contains('/') {
+            match self.resolve_author(slug).await {
+                Some(author) => format!("{author}/{slug}"),
+                None => slug.to_string(),
+            }
+        } else {
+            slug.to_string()
+        }
     }
 
     /// Calculate the directory prefix for a skill from the path pattern.

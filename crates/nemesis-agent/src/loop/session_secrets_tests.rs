@@ -1,13 +1,16 @@
 //! B4（2026-11-08 批次④）会话凭据占位符测试。
 //!
-//! 覆盖：展开正常路径 / 多处嵌入 / 作用域闸越界**不查库** / 别名不存在
-//! 诚实报错 / 无模板直通（字节级透传）/ 非 JSON 透传 / 键名不改写 /
-//! 无闭合字面量保留 / 空别名拒绝 / 结果掩码（长度降序 / 空清单直通）/
-//! 前缀单一真相源格式。
+//! 覆盖：展开正常路径（顶层字符串槽 / 对象槽叶）/ 多处嵌入 / 作用域闸
+//! 越界**不查库** / 别名不存在诚实报错 / 无模板直通（字节级透传）/
+//! 非 JSON 透传 / 键名不改写 / 无闭合字面量保留 / 空别名拒绝 / 结果掩码
+//!（长度降序 / 空清单直通）/ 前缀单一真相源格式。
+//! 槽位收紧（2026-11-11）：槽外完整模板 fail loud（placement 优先于
+//! scope）/ 无闭合片段槽外不报错 / 槽键下深嵌套与数组属检测面 /
+//! 无声明槽工具任何模板都拒。
 
 use super::credential_injection_tests::VAULT_SLOT_LOCK;
 use super::session_secrets::{
-    MASK_TEXT, expand_session_placeholders, mask_secrets_in_result, received_text,
+    MASK_TEXT, expand_session_placeholders_in_slots, mask_secrets_in_result, received_text,
     session_scope_prefix,
 };
 use nemesis_config::{clear_global_vault_resolver, set_global_vault_resolver};
@@ -39,7 +42,8 @@ fn assert_json_eq(got: &str, want: &str) {
 #[test]
 fn passthrough_non_json_args() {
     let raw = "not json at all {";
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("passthrough");
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("passthrough");
     assert_eq!(out, raw);
     assert!(secrets.is_empty());
 }
@@ -49,13 +53,15 @@ fn passthrough_non_json_args() {
 #[test]
 fn passthrough_no_template_byte_identical() {
     let raw = r#"{"url":"https://example.com","n":3,"nested":{"k":"v"},"f":1.50}"#;
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("passthrough");
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("passthrough");
     assert_eq!(out, raw);
     assert!(secrets.is_empty());
 }
 
+/// 顶层字符串槽（web_fetch headers 同形态）：槽面内展开。
 #[test]
-fn expand_basic_within_scope() {
+fn expand_basic_within_scope_top_level_string_slot() {
     let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|alias| {
@@ -63,7 +69,8 @@ fn expand_basic_within_scope() {
         Ok("sk-real-secret-value".to_string())
     }));
     let raw = r#"{"url":"https://api.example.com","token":"{{vault:agent/sess-1/token}}"}"#;
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("in-scope expands");
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["token"]).expect("in-scope expands");
     assert_json_eq(
         &out,
         r#"{"url":"https://api.example.com","token":"sk-real-secret-value"}"#,
@@ -71,6 +78,7 @@ fn expand_basic_within_scope() {
     assert_eq!(secrets, vec!["sk-real-secret-value".to_string()]);
 }
 
+/// 对象槽叶子（exec 族 env 同形态）：深度恒 1 的字符串叶展开。
 #[test]
 fn expand_embedded_and_multiple() {
     let _g = VAULT_SLOT_LOCK.lock();
@@ -80,12 +88,13 @@ fn expand_embedded_and_multiple() {
         "agent/sess-1/b" => Ok("BBB".to_string()),
         _ => Err("unexpected".to_string()),
     }));
-    // 同串多处 + 跨字段 + 嵌入更长文本。
-    let raw = r#"{"cmd":"login --user u --pass {{vault:agent/sess-1/a}} --extra {{vault:agent/sess-1/b}}","note":"prefix {{vault:agent/sess-1/a}} suffix"}"#;
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("expands");
+    // 同串多处 + 跨字段 + 嵌入更长文本（都在 env 对象槽叶内）。
+    let raw = r#"{"env":{"cmd":"login --user u --pass {{vault:agent/sess-1/a}} --extra {{vault:agent/sess-1/b}}","note":"prefix {{vault:agent/sess-1/a}} suffix"}}"#;
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("expands");
     assert_json_eq(
         &out,
-        r#"{"cmd":"login --user u --pass AAA --extra BBB","note":"prefix AAA suffix"}"#,
+        r#"{"env":{"cmd":"login --user u --pass AAA --extra BBB","note":"prefix AAA suffix"}}"#,
     );
     // 同一明文出现两次也收集两次（掩码按值幂等，重复无害）。
     assert_eq!(secrets.len(), 3);
@@ -96,10 +105,12 @@ fn object_keys_not_rewritten() {
     let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|_alias| Ok("X".to_string())));
-    // 占位符语义是「值里引用凭据」：键名不改写（宁缺毋滥）——值原样、
-    // 无收集（resolver 未触达也能证明改写没发生在键上）。
+    // 占位符语义是「值里引用凭据」：键名不改写（宁缺毋滥）——键上的模板
+    // 形态不触发检测也不展开，值原样、无收集（resolver 未触达也能证明
+    // 改写没发生在键上）。
     let raw = r#"{"{{vault:agent/sess-1/k}}":"v"}"#;
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("keys untouched");
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("keys untouched");
     assert_json_eq(&out, raw);
     assert!(secrets.is_empty());
 }
@@ -113,8 +124,9 @@ fn out_of_scope_alias_rejected_without_lookup() {
     set_global_vault_resolver(Arc::new(|_alias| {
         panic!("out-of-scope alias must not reach the resolver");
     }));
-    let raw = r#"{"k":"{{vault:global/other/token}}"}"#;
-    let err = expand_session_placeholders(raw, "sess-1").expect_err("out of scope rejects");
+    let raw = r#"{"env":{"k":"{{vault:global/other/token}}"}}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &["env"])
+        .expect_err("out of scope rejects");
     assert!(
         err.contains("越界"),
         "error should name the violation: {err}"
@@ -127,8 +139,9 @@ fn out_of_scope_alias_rejected_without_lookup() {
 
 #[test]
 fn empty_alias_rejected() {
-    let raw = r#"{"k":"{{vault:}}"}"#;
-    let err = expand_session_placeholders(raw, "sess-1").expect_err("empty alias rejects");
+    let raw = r#"{"env":{"k":"{{vault:}}"}}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &["env"])
+        .expect_err("empty alias rejects");
     assert!(err.contains("别名为空"), "{err}");
 }
 
@@ -141,11 +154,13 @@ fn unclosed_template_kept_literal() {
         assert_eq!(alias, "agent/sess-1/ok");
         Ok("V".to_string())
     }));
-    let raw = r#"{"a":"head {{vault:agent/sess-1/ok no tail","b":"{{vault:agent/sess-1/ok}}"}"#;
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("expands");
+    let raw =
+        r#"{"env":{"a":"head {{vault:agent/sess-1/ok no tail","b":"{{vault:agent/sess-1/ok}}"}}"#;
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("expands");
     assert_json_eq(
         &out,
-        r#"{"a":"head {{vault:agent/sess-1/ok no tail","b":"V"}"#,
+        r#"{"env":{"a":"head {{vault:agent/sess-1/ok no tail","b":"V"}}"#,
     );
     assert_eq!(secrets, vec!["V".to_string()]);
 }
@@ -155,8 +170,9 @@ fn unknown_alias_error_propagates() {
     let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|_alias| Err("别名不存在".to_string())));
-    let raw = r#"{"k":"{{vault:agent/sess-1/missing}}"}"#;
-    let err = expand_session_placeholders(raw, "sess-1").expect_err("unknown alias");
+    let raw = r#"{"env":{"k":"{{vault:agent/sess-1/missing}}"}}"#;
+    let err =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect_err("unknown alias");
     assert!(err.contains("解析失败"), "{err}");
     assert!(
         err.contains("别名不存在"),
@@ -169,9 +185,10 @@ fn empty_secret_expands_but_not_collected() {
     let _g = VAULT_SLOT_LOCK.lock();
     let _cleanup = Cleanup;
     set_global_vault_resolver(Arc::new(|_alias| Ok(String::new())));
-    let raw = r#"{"k":"{{vault:agent/sess-1/empty}}"}"#;
-    let (out, secrets) = expand_session_placeholders(raw, "sess-1").expect("expands");
-    assert_json_eq(&out, r#"{"k":""}"#);
+    let raw = r#"{"env":{"k":"{{vault:agent/sess-1/empty}}"}}"#;
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("expands");
+    assert_json_eq(&out, r#"{"env":{"k":""}}"#);
     // 空值不收集（掩码空串替换无意义）。
     assert!(secrets.is_empty());
 }
@@ -185,9 +202,91 @@ fn alias_trim_insensitive() {
         assert_eq!(alias, "agent/sess-1/t");
         Ok("T".to_string())
     }));
-    let raw = r#"{"k":"{{vault: agent/sess-1/t }}"}"#;
-    let (out, _) = expand_session_placeholders(raw, "sess-1").expect("expands");
-    assert_json_eq(&out, r#"{"k":"T"}"#);
+    let raw = r#"{"env":{"k":"{{vault: agent/sess-1/t }}"}}"#;
+    let (out, _) = expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("expands");
+    assert_json_eq(&out, r#"{"env":{"k":"T"}}"#);
+}
+
+// ===== 槽位收紧（2026-11-11，用户拍板）：槽外完整模板 fail loud。 =====
+
+/// 槽外（command 普通参数）完整模板 → placement Err，工具不执行、
+/// resolver 不触达（检测先于解析——无查库无存在性信号）。
+#[test]
+fn template_outside_slot_fails_loud() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    let _cleanup = Cleanup;
+    set_global_vault_resolver(Arc::new(|_alias| {
+        panic!("outside-slot template must not reach the resolver");
+    }));
+    let raw =
+        r#"{"command":"curl -H \"Authorization: Bearer {{vault:agent/sess-1/t}}\"","env":{}}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &["env"])
+        .expect_err("outside-slot template rejects");
+    assert!(err.contains("OUTSIDE SLOT"), "{err}");
+    assert!(err.contains("command"), "field path should be named: {err}");
+    assert!(
+        err.contains("agent/sess-1/t"),
+        "alias is model-authored, not secret: {err}"
+    );
+    assert!(err.contains("env"), "declared slots should be named: {err}");
+    // 真"值不进命令行"不变量的自证：报错原文里不含执行后的真值（此处
+    // resolver 根本没跑，无真值可言）。
+    assert!(!err.contains("sk-real"), "{err}");
+}
+
+/// placement 优先于 scope：槽外越界别名报 placement 错（不是越界错）。
+#[test]
+fn placement_precedence_over_scope() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    let _cleanup = Cleanup;
+    set_global_vault_resolver(Arc::new(|_alias| {
+        panic!("must not reach the resolver");
+    }));
+    let raw = r#"{"command":"{{vault:wrong-node/x}}","env":{}}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &["env"])
+        .expect_err("outside-slot template rejects");
+    assert!(err.contains("OUTSIDE SLOT"), "placement wins: {err}");
+    assert!(!err.contains("越界"), "not a scope error: {err}");
+}
+
+/// 槽外无闭合片段 = 字面量保留不报错（文档/示例文本误伤零化）。
+#[test]
+fn unclosed_fragment_outside_slot_is_literal() {
+    let raw = r#"{"command":"docs: {{vault:agent/sess-1/x is an example","env":{}}"#;
+    let (out, secrets) =
+        expand_session_placeholders_in_slots(raw, "sess-1", &["env"]).expect("literal kept");
+    assert_json_eq(&out, raw);
+    assert!(secrets.is_empty());
+}
+
+/// 槽键下深度 >1 的嵌套属检测面（宁缺毋滥，与声明槽改写同形契约）。
+#[test]
+fn deep_nested_under_slot_detected() {
+    let raw = r#"{"env":{"a":{"b":"{{vault:agent/sess-1/x}}"}}}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &["env"])
+        .expect_err("depth>1 under slot is outside surface");
+    assert!(err.contains("OUTSIDE SLOT"), "{err}");
+    assert!(err.contains("env.a.b"), "nested field path: {err}");
+}
+
+/// 槽键下的数组同样属检测面（对象槽只有深度恒 1 的字符串叶是槽面）。
+#[test]
+fn array_under_slot_detected() {
+    let raw = r#"{"env":{"a":["{{vault:agent/sess-1/x}}"]}}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &["env"])
+        .expect_err("array under slot is outside surface");
+    assert!(err.contains("OUTSIDE SLOT"), "{err}");
+    assert!(err.contains("env.a.0"), "array index path: {err}");
+}
+
+/// 无声明槽位工具：任何模板都拒（报错点名「无声明凭据槽位」）。
+#[test]
+fn no_declared_slots_rejects_any_template() {
+    let raw = r#"{"k":"{{vault:agent/sess-1/x}}"}"#;
+    let err = expand_session_placeholders_in_slots(raw, "sess-1", &[])
+        .expect_err("no slots = no placeholder surface");
+    assert!(err.contains("OUTSIDE SLOT"), "{err}");
+    assert!(err.contains("无声明凭据槽位"), "{err}");
 }
 
 #[test]

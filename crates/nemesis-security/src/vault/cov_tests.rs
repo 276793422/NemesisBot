@@ -23,9 +23,11 @@ fn temp_dir(tag: &str) -> PathBuf {
 
 /// `VaultStore::create` 带瞬态重试：CI runner 上的外力（AV 扫描/临时区保留
 /// 清理）会在 create 的 DPAPI/argon2 seal → save 原子写窗口内删掉 temp
-/// 目录，rename 报 os error 3（2026-11-06 15:16Z shard7 实录）。helper 契约
+/// 目录。实录两臂：rename 报 os error 3（2026-11-06 15:16Z shard7 实录）；
+/// atomic write 建临时文件时父目录已被删报 `create temp: No such file or
+/// directory`（tests.rs 同族 2026-11-11 ET 42950419158 实录）。helper 契约
 /// （nemesis-utils/src/file.rs）明示 rename 遇外部占用"由调用方决定重试或
-/// 上报"，此处选重试：换新 temp 目录最多 3 次；只吞 Io-rename 瞬态臂，
+/// 上报"，此处选重试：换新 temp 目录最多 3 次；只吞上述两瞬态臂，
 /// 业务错误照常 panic——断言力不变。`rel` 为 vault 文件相对 temp 目录的
 /// 路径（嵌套路径仍走 create 的 create_dir_all 臂，不被此 helper 吃掉）。
 fn create_store_retrying(
@@ -40,13 +42,17 @@ fn create_store_retrying(
         let p = dir.join(rel);
         match VaultStore::create(&p, mode, passphrase) {
             Ok(store) => return (dir, store),
-            Err(VaultError::Io(e)) if e.to_string().contains("rename:") => {
+            Err(VaultError::Io(e))
+                if e.to_string().contains("rename:")
+                    || e.to_string()
+                        .contains("create temp: No such file or directory") =>
+            {
                 last_err = e.to_string();
             }
-            Err(err) => panic!("create 失败（非瞬态 rename 噪声）: {err}"),
+            Err(err) => panic!("create 失败（非瞬态外力噪声）: {err}"),
         }
     }
-    panic!("create 连续 3 次遇 rename 瞬态失败: {last_err}");
+    panic!("create 连续 3 次遇瞬态失败: {last_err}");
 }
 
 /// Display 两种模式拼写与 serde 落盘一致（76/78-82）。

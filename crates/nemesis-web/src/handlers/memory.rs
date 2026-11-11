@@ -1305,6 +1305,11 @@ fn collect_files(
             format!("{}/{}", base_relative, name)
         };
         if path.is_dir() {
+            // 链接条目不跟进（BUG-20261110-059 同族）：Path::is_dir() 跟随
+            // 链接，工作区内链接环下无限递归栈溢出。
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             collect_files(workspace, &relative, output)?;
         } else {
             let size = path.metadata().map(|m| m.len()).unwrap_or(0);
@@ -1324,6 +1329,11 @@ fn count_files_recursive(dir: &std::path::Path) -> usize {
     if let Ok(read_dir) = std::fs::read_dir(dir) {
         for entry in read_dir.flatten() {
             let path = entry.path();
+            // 链接条目不跟进（BUG-20261110-059 同族）：Path::is_dir() 跟随
+            // 链接，工作区内链接环下无限递归栈溢出。
+            if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             if path.is_dir() {
                 count += count_files_recursive(&path);
             } else {

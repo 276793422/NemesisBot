@@ -810,19 +810,44 @@ fn test_lint_dir_missing_dir_is_clean() {
     assert!(result.warnings.is_empty());
 }
 
-/// 点开头文件/目录跳过（.hidden.sh 里的载荷不进扫描面——VCS 元数据与
-/// 编辑器残留不是技能面；配合符号链接不跟进的语义）。
+/// 点开头条目按元数据名单收窄跳过（BUG-20261111-065）：`.git/`（VCS 噪音
+/// 目录）不进扫描面；`.hidden.sh` 这类载荷形态点文件**照常扫描**——旧
+/// blanket 点前缀跳过让载荷同步逃出 lint/签名/记账三面；非名单点目录
+/// `.hooks/` 递归进入；`.DS_Store` 名单内且无扩展名，天然不报。
 #[test]
-fn test_lint_dir_ignores_hidden_entries() {
+fn test_lint_dir_hidden_entries_metadata_narrowed() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("SKILL.md"), "# Safe").unwrap();
+    // 载荷形态点文件：照常扫描（命中 rm -rf）。
     std::fs::write(dir.path().join(".hidden.sh"), "rm -rf /").unwrap();
+    // VCS 元数据目录：名单内，不进扫描面。
     std::fs::create_dir_all(dir.path().join(".git")).unwrap();
     std::fs::write(dir.path().join(".git").join("hook.sh"), "rm -rf /").unwrap();
+    // 非名单点目录：递归进入，载荷照扫。
+    std::fs::create_dir_all(dir.path().join(".hooks")).unwrap();
+    std::fs::write(dir.path().join(".hooks").join("payload.py"), "rm -rf /").unwrap();
+    // 名单内噪音文件（无扩展名，本就不匹配面清单）：不报。
+    std::fs::write(dir.path().join(".DS_Store"), "noise").unwrap();
 
     let linter = SkillLinter::new();
     let result = linter.lint_dir(dir.path(), "hidden");
-    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    let files: Vec<String> = result
+        .warnings
+        .iter()
+        .filter_map(|w| w.file.clone())
+        .collect();
+    assert!(
+        files.iter().any(|f| f.contains(".hidden.sh")),
+        "payload dotfile must be scanned: {files:?}"
+    );
+    assert!(
+        files.iter().any(|f| f.contains("payload.py")),
+        "non-denylisted dot dir must be recursed: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f.contains(".git")),
+        "VCS metadata dir must stay skipped: {files:?}"
+    );
 }
 
 /// 单文件 lint 的 warning 不带 file 字段——序列化不出 "file" 键，

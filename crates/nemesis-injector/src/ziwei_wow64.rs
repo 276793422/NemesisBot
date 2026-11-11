@@ -182,7 +182,13 @@ pub fn pe_export_rvas(path: &std::path::Path, names: &[&str]) -> Result<Vec<u64>
     for i in 0..n_names {
         let name_rva = u32_at(names_off + i * 4)?;
         let noff = rva_to_off(name_rva)?;
-        let end = data[noff..].iter().position(|&b| b == 0).map(|p| noff + p);
+        // rva_to_off 只做节表算术，返回偏移可能超文件长度（损坏 PE 节表
+        // raw 声称范围 > 实际数据）。裸 `data[noff..]` 在此 panic——与
+        // 全函数 u16_at/u32_at 两段式 get 同哲学，越界与「找不到 NUL」
+        // 同走 continue（该导出名保持缺失，末尾统一 Err）。
+        let end = data
+            .get(noff..)
+            .and_then(|s| s.iter().position(|&b| b == 0).map(|p| noff + p));
         let Some(end) = end else { continue };
         let name = &data[noff..end];
         for (want_idx, want) in names.iter().enumerate() {

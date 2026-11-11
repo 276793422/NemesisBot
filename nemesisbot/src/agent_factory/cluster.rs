@@ -187,6 +187,10 @@ pub fn build_cluster_agent_loop(
     // 任务的相对路径重写静默失效（worker 文件落 workspace 根，变更集丢失）。
     agent_loop.set_workspace_root(shared.workspace_dir());
 
+    // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11）：集群 loop 与
+    // 主 loop 同源主 workspace config（worker 执行远端任务同样走域绑定闸）。
+    agent_loop.set_vault_domain_config_path(shared.vault_domain_config_path());
+
     // ASM-01（横扫存量加固）：集群 loop 同接安全 8 层——此前漏接
     // 使 B 端执行远端任务时整条管线（注入/命令守卫/ABAC/凭据/DLP/SSRF/
     // 病毒扫描/审计链）静默旁路（loop.rs dispatch 对 None=直接跳过）。

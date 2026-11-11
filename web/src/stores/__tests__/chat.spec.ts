@@ -243,10 +243,12 @@ describe('chat store work timeline (2026-10-30)', () => {
 })
 
 // M6（2026-09-07）：行号推导——E3 rewind 菜单的 message_index 数据源。
-// chat_log 与渲染消息按「占行」对应（BUG-20261106-037 修正语义）：user/
-// assistant 恒占行；后端落盘的 system 行（busy 排队回执/compact 注记）
-// 也占行、随历史批次编号；纯前端渲染的 error/system 不占行。历史批次行号
-// 连续（oldest_index + j），live 行从锚顺序递增。
+// chat_log 与渲染消息按「占行」对应（BUG-20261106-037 修正语义；2026-11-11
+// 三态化）：帧带 occupies 键以键为准（true=落盘占行含 system 注记；false=
+// 瞬态回执不占行——⏳ busy/⚡ 插话/slash 确认/维护收据/直派收据）；缺省
+// 走旧规则（user/assistant 占行，纯前端 error/system 不占行；历史批次里
+// 带 rowIndex 的后端 system 行天然占行）。历史批次行号连续
+// （oldest_index + j），live 行从锚顺序递增。
 
 function msg(role: 'user' | 'assistant' | 'error' | 'system', content: string, rowIndex?: number) {
   return { role, content, timestamp: 't', ...(rowIndex !== undefined ? { rowIndex } : {}) }
@@ -355,6 +357,108 @@ describe('chat store rowIndex (M6)', () => {
     store.commandDraft = '/compact '
     store.reset()
     expect(store.commandDraft).toBe('')
+  })
+})
+
+// 2026-11-11 行号锚漂移根修：occupies 三态。修复前 live 路径按 role
+// 二值计数——瞬态 gate 回执（⏳ busy 排队/⚡ 插话/slash 确认，role=
+// assistant 但不落盘）被误计锚超前 +1；落盘 system 注记（压缩完成/
+// snooze 恢复行，role=system）live 到达不被计数锚落后 −1。rewind/
+// regenerate 的 message_index 双向漂移 → 删错行。后端 gate 盖章 +
+// 帧键 occupies 全链透传，前端三态计数。
+describe('chat store rowIndex (occupies 三态, 2026-11-11)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  function frame(
+    role: 'user' | 'assistant' | 'error' | 'system',
+    content: string,
+    occupies: boolean | undefined,
+  ) {
+    return { role, content, timestamp: 't', ...(occupies !== undefined ? { occupies } : {}) }
+  }
+
+  it('transient receipt (occupies=false, role=assistant) skips numbering — anchor stays exact', () => {
+    const store = useChatStore()
+    store.prependHistory([msg('user', 'q1'), msg('assistant', 'a1')], 0)
+    // ⏳ busy 排队回执：role=assistant 但瞬态不落盘。修复前被计锚 →
+    // 下一条 live user 拿 3（实际 jsonl 下一行是 2）→ rewind 删错行。
+    store.addMessage(frame('assistant', '⏳ 正在处理上一条…', false))
+    expect(store.messages[2].rowIndex).toBeUndefined()
+    store.addMessage(msg('user', 'q2'))
+    store.addMessage(msg('assistant', 'a2'))
+    expect(store.messages[3].rowIndex).toBe(2)
+    expect(store.messages[4].rowIndex).toBe(3)
+  })
+
+  it('persisted system note (occupies=true) occupies a live row', () => {
+    const store = useChatStore()
+    store.prependHistory([msg('user', 'q1'), msg('assistant', 'a1')], 0)
+    // 压缩完成注记/snooze 恢复行：role=system 但后端落盘占行。修复前
+    // live 到达不被计数 → 锚落后 1，后续行号全体 −1 撞已落盘行。
+    store.addMessage(frame('system', '[自动压缩] 已折叠…', true))
+    expect(store.messages[2].rowIndex).toBe(2)
+    store.addMessage(msg('user', 'q2'))
+    expect(store.messages[3].rowIndex).toBe(3)
+  })
+
+  it('mixed receipts + notes: live numbering tracks jsonl rows exactly', () => {
+    const store = useChatStore()
+    store.prependHistory([msg('user', 'q1'), msg('assistant', 'a1')], 0)
+    store.addMessage(frame('assistant', '⏳ 正在处理上一条…', false)) // 不落盘
+    store.addMessage(frame('assistant', '/help', false)) // slash 静态确认，不落盘
+    store.addMessage(msg('user', 'q2')) // jsonl 行 2
+    store.addMessage(msg('assistant', 'a2')) // jsonl 行 3
+    store.addMessage(frame('system', '[自动压缩] 已折叠…', true)) // 落盘行 4
+    expect(store.messages.map(m => m.rowIndex)).toEqual([0, 1, undefined, undefined, 2, 3, 4])
+    store.addMessage(msg('user', 'q3')) // jsonl 行 5
+    expect(store.messages[7].rowIndex).toBe(5)
+  })
+
+  it('explicit false wins over role; undefined keeps the legacy rule (wire compat)', () => {
+    const store = useChatStore()
+    store.prependHistory([msg('user', 'q1'), msg('assistant', 'a1')], 0)
+    // 旧网关/本地回显不带键 → 旧规则：assistant 占行、system 不占。
+    store.addMessage(msg('assistant', 'legacy assistant'))
+    store.addMessage(msg('system', 'legacy system'))
+    // 新网关瞬态回执带 false → 即使 role=assistant 也不占。
+    store.addMessage(frame('assistant', '⚡ 已插话', false))
+    expect(store.messages[2].rowIndex).toBe(2)
+    expect(store.messages[3].rowIndex).toBeUndefined()
+    expect(store.messages[4].rowIndex).toBeUndefined()
+    store.addMessage(msg('user', 'q2'))
+    expect(store.messages[5].rowIndex).toBe(3)
+  })
+
+  it('resync recompute counts occupies frames consistently', () => {
+    const store = useChatStore()
+    // 混合列表重推锚：带行号历史（含 system@2）+ 无行号 live 占行（q2/
+    // 注记——watchdog 路径降级形态）+ 瞬态回执。锚 = 首行号 + 占行总数：
+    // 占行 5 帧（q1/a1/sys/q2/note）→ 锚 5，a2 编 5。
+    store.replaceMessages([
+      msg('user', 'q1', 0),
+      msg('assistant', 'a1', 1),
+      msg('system', '排队回执', 2),
+      frame('assistant', '⚡ 已插话', false),
+      msg('user', 'q2'),
+      frame('system', '[自动压缩] 已折叠…', true),
+    ])
+    store.addMessage(msg('assistant', 'a2'))
+    expect(store.messages[6].rowIndex).toBe(5)
+  })
+
+  it('anchorFreshSession numbers persisted notes and skips transient receipts', () => {
+    const store = useChatStore()
+    // 新会话首轮：本地回显 + 瞬态回执 + 落盘注记 + 回复。
+    store.addMessage(msg('user', 'q1'))
+    store.addMessage(frame('assistant', '⏳ 正在处理…', false))
+    store.addMessage(frame('system', '[自动压缩] 已折叠…', true))
+    store.addMessage(msg('assistant', 'a1'))
+    store.anchorFreshSession()
+    // q1=0、瞬态不占、注记=1、a1=2 —— 与 jsonl 行一致。
+    expect(store.messages.map(m => m.rowIndex)).toEqual([0, undefined, 1, 2])
+    expect(store.messages.length).toBe(4)
   })
 })
 

@@ -410,7 +410,8 @@ fn parse_relay_frame(text: &str) -> Option<RelayFrame> {
 // ---------------------------------------------------------------------------
 
 /// nostr 通道配置。
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：private_key（64-hex 私钥）脱敏。
+#[derive(Clone)]
 pub struct NostrConfig {
     /// relay WebSocket 地址列表（`wss://` / `ws://`），至少一条。
     pub relays: Vec<String>,
@@ -423,6 +424,11 @@ pub struct NostrConfig {
     /// 断线重连间隔秒数（默认 5，0 视作缺省）。
     pub reconnect_secs: u64,
 }
+
+crate::debug_redact::impl_redacted_debug!(NostrConfig {
+    plain { relays, allow_from, reconnect_secs }
+    secret { private_key }
+});
 
 /// nostr 通道：relay WebSocket 订阅 + NIP-04 加密 DM。
 pub struct NostrChannel {

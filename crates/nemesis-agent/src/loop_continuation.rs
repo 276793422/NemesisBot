@@ -1755,7 +1755,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         note_kind: None,
                         // 中途工具回执 = 非回合产物（receipt=true），与
                         // 「不挂归属」同语义——按会话键等终局的消费方跳过。
+                        // 瞬态帧不落盘 → 不占行号锚（行号锚漂移根修）。
                         receipt: true,
+                        occupies: Some(false),
                     },
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
@@ -1857,8 +1859,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 task_id: Some(task_id.to_string()),
                 sync_via: None,
                 note_kind: None,
-                // 续行最终回复 = 回合产物（receipt 缺省 false）。
+                // 续行最终回复 = 回合产物（receipt 缺省 false）。已由
+                // persist_final_reply 落盘 → None 旧规则（assistant 占行）。
                 receipt: false,
+                occupies: None,
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {

@@ -34,7 +34,12 @@ pub mod crypto;
 /// 两种工作形态可独立启用：
 /// - 出站：`webhook_url`（群机器人 webhook），可选 `webhooks` 多群路由；
 /// - 入站：`token` + `encoding_aes_key` 齐备时自托管回调端点。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// SEC-002（BUG-20261111-068）：手写 Debug 替代 derive——webhook_url /
+/// token / encoding_aes_key 脱敏；`webhooks` 是 chat_id → webhook URL
+/// 路由表，值含 webhook key query 参数，宏的 `&str` secret 形态罩不住
+/// map，单独实现（空表原样 `{:?}` 无秘密，非空整体 `<redacted>`）。
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WeComConfig {
     /// 群机器人 webhook 地址（出站默认目标）。
     #[serde(default)]
@@ -61,6 +66,37 @@ pub struct WeComConfig {
     /// 允许的发送者 ID（空 = 不限）。
     #[serde(default)]
     pub allow_from: Vec<String>,
+}
+
+impl std::fmt::Debug for WeComConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut st = f.debug_struct("WeComConfig");
+        st.field(
+            "webhook_url",
+            &crate::debug_redact::debug_secret_value(&self.webhook_url),
+        )
+        .field(
+            "webhooks",
+            &if self.webhooks.is_empty() {
+                "<empty>".to_string()
+            } else {
+                "<redacted>".to_string()
+            },
+        )
+        .field(
+            "token",
+            &crate::debug_redact::debug_secret_value(&self.token),
+        )
+        .field(
+            "encoding_aes_key",
+            &crate::debug_redact::debug_secret_value(&self.encoding_aes_key),
+        )
+        .field("corp_id", &self.corp_id)
+        .field("listen_addr", &self.listen_addr)
+        .field("callback_path", &self.callback_path)
+        .field("allow_from", &self.allow_from);
+        st.finish()
+    }
 }
 
 /// 回调监听地址默认值。

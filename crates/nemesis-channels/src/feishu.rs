@@ -26,7 +26,9 @@ const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 30;
 
 /// Feishu channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：app_secret / verification_token /
+/// encrypt_key 脱敏（app_id 保留诊断价值）。
+#[derive(Clone)]
 pub struct FeishuConfig {
     /// App ID from Feishu Open Platform.
     pub app_id: String,
@@ -39,6 +41,11 @@ pub struct FeishuConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(FeishuConfig {
+    plain { app_id, allow_from }
+    secret { app_secret, verification_token, encrypt_key }
+});
 
 /// Feishu message event payload.
 #[derive(Debug, Deserialize)]

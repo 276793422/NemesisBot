@@ -283,3 +283,82 @@ async fn registry_exec_output_tx_broadcasts_tool_output() {
     }
     assert!(found, "broadcast 必须送达含回显的 ToolOutput 事件");
 }
+
+// ---------------------------------------------------------------------------
+// vault 计划 P2（2026-11-11）：ctx.secrets 注入 → 实时尾窗掩码
+// ---------------------------------------------------------------------------
+
+/// ctx.secrets 非空 → registry hook 对实时尾窗就地遮蔽（明文不进事件广播）；
+/// 空池（缺省 ctx）→ 原样直通（既有行为零变化）。
+#[tokio::test]
+async fn registry_hook_masks_ctx_secrets_in_live_tail() {
+    let secret = "E2E-SECRET-VAL-TAILMASK-DO-NOT-USE";
+    let (tx, mut rx) = tokio::sync::broadcast::channel(64);
+    let cfg = SharedToolConfig {
+        workspace: Some(".".to_string()),
+        exec_output_tx: Some(tx),
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let tool = tools.get("exec").expect("exec registered");
+
+    // 臂 1：注入掩码池 → 广播尾窗无明文、含掩码文本。
+    let mut masked_ctx = ctx();
+    masked_ctx.secrets = Arc::new(vec![secret.to_string()]);
+    tool.execute(
+        &serde_json::json!({"command": echo_cmd(secret)}).to_string(),
+        &masked_ctx,
+    )
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut masked_seen = false;
+    while tokio::time::Instant::now() < deadline && !masked_seen {
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Ok(nemesis_types::agent::AgentEvent::ToolOutput { tail, .. })) => {
+                if tail.contains("[凭据已掩码]") {
+                    masked_seen = true;
+                    assert!(!tail.contains(secret), "掩码后的尾窗不得残留明文: {tail}");
+                } else {
+                    assert!(!tail.contains(secret), "实时尾窗出现未掩码明文: {tail}");
+                }
+            }
+            _ => continue,
+        }
+    }
+    assert!(masked_seen, "掩码池注入后广播尾窗必须出现掩码文本");
+
+    // 臂 2：空池 ctx → 原样直通（回显在场，掩码文本不在）。
+    let (tx2, mut rx2) = tokio::sync::broadcast::channel(64);
+    let cfg2 = SharedToolConfig {
+        workspace: Some(".".to_string()),
+        exec_output_tx: Some(tx2),
+        ..Default::default()
+    };
+    let tools2 = register_shared_tools(&cfg2);
+    let tool2 = tools2.get("exec").expect("exec registered");
+    tool2
+        .execute(
+            &serde_json::json!({"command": echo_cmd("tailmask_passthru_b4")}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let deadline2 = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut passthru_seen = false;
+    while tokio::time::Instant::now() < deadline2 && !passthru_seen {
+        match tokio::time::timeout(Duration::from_millis(500), rx2.recv()).await {
+            Ok(Ok(nemesis_types::agent::AgentEvent::ToolOutput { tail, .. })) => {
+                if tail.contains("tailmask_passthru_b4") {
+                    passthru_seen = true;
+                    assert!(
+                        !tail.contains("[凭据已掩码]"),
+                        "空池直通不得出现掩码文本: {tail}"
+                    );
+                }
+            }
+            _ => continue,
+        }
+    }
+    assert!(passthru_seen, "空池 ctx 尾窗必须原样直通");
+}

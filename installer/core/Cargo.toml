@@ -27,5 +27,9 @@ zstd.workspace = true
 ruzstd.workspace = true
 clap.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# 控制台 UTF-8 代码页（console.rs——GBK 控制台乱码修复）
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
 [dev-dependencies]
 tempfile.workspace = true

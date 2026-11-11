@@ -196,6 +196,12 @@ fn silent_install(package: &std::path::Path, target: PathBuf, args: &Args) -> i3
                 o.files_installed,
                 o.install_dir.display()
             );
+            if o.workspace_skipped > 0 {
+                println!(
+                    "升级模式跳过 workspace 数据 {} 个文件（用户数据保留）",
+                    o.workspace_skipped
+                );
+            }
             if o.launched {
                 println!("Dashboard 已启动");
             }
@@ -211,24 +217,33 @@ fn silent_install(package: &std::path::Path, target: PathBuf, args: &Args) -> i3
     }
 }
 
-/// 静默卸载。
+/// 静默卸载（全局实例闸形态——脚本可消费契约；遇运行实例 exit 6）。
 #[cfg(target_os = "linux")]
 fn silent_uninstall(dir: &std::path::Path) -> i32 {
     match ops::run_uninstall(dir) {
         Ok(o) => {
-            println!("卸载完成: 删除 {} 个文件", o.deleted);
-            for f in &o.failures {
-                eprintln!("[WARN] 删除失败 {}: {}", f.0, f.1);
-            }
-            for n in &o.notes {
-                eprintln!("[NOTE] {n}");
-            }
+            report_uninstall(&o);
             0
         }
         Err(e) => {
             eprintln!("[FAIL] {e:#}");
             ops::exit_code_of(&e)
         }
+    }
+}
+
+/// 卸载结果人读汇总（静默/向导共用；强停数 > 0 才打印）。
+#[cfg(target_os = "linux")]
+fn report_uninstall(o: &ops::UninstallOutcome) {
+    println!("卸载完成: 删除 {} 个文件", o.deleted);
+    if o.bots_stopped > 0 {
+        println!("已强制停止 {} 个运行中的进程", o.bots_stopped);
+    }
+    for f in &o.failures {
+        eprintln!("[WARN] 删除失败 {}: {}", f.0, f.1);
+    }
+    for n in &o.notes {
+        eprintln!("[NOTE] {n}");
     }
 }
 
@@ -345,7 +360,7 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
         force_downgrade: args.force,
         no_shortcuts: args.no_shortcuts,
         autostart,
-        launch: false,
+        launch: args.launch,
     };
     let progress = |p: setup_core::pkgfile::Progress| match p {
         setup_core::pkgfile::Progress::Hashing(f) => {
@@ -365,6 +380,12 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
                 o.files_installed,
                 o.install_dir.display()
             );
+            if o.workspace_skipped > 0 {
+                println!(
+                    "升级模式跳过 workspace 数据 {} 个文件（用户数据保留）",
+                    o.workspace_skipped
+                );
+            }
             for n in &o.notes {
                 eprintln!("[NOTE] {n}");
             }
@@ -382,12 +403,15 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
     }
 }
 
-/// 终端卸载向导（uninstall 副本直接运行形态）。
+/// 终端卸载向导（uninstall 副本直接运行形态）。确认后走
+/// [`ops::run_uninstall_confirmed`]——路径级强制停止本目录运行实例
+/// （2026-11-10 用户拍板，与 Windows GUI 同语义）。
 #[cfg(target_os = "linux")]
 fn wizard_uninstall(dir: &std::path::Path) -> i32 {
     println!("NemesisBot 卸载");
     println!("  安装目录: {}", dir.display());
     println!("  用户数据（~/.nemesisbot）保留");
+    println!("  正在运行的 NemesisBot 将被强制停止");
     match ask("确定卸载? [y/N]: ", false) {
         Some(true) => {}
         _ => {
@@ -395,7 +419,16 @@ fn wizard_uninstall(dir: &std::path::Path) -> i32 {
             return 3;
         }
     }
-    silent_uninstall(dir)
+    match ops::run_uninstall_confirmed(dir) {
+        Ok(o) => {
+            report_uninstall(&o);
+            0
+        }
+        Err(e) => {
+            eprintln!("[FAIL] {e:#}");
+            ops::exit_code_of(&e)
+        }
+    }
 }
 
 /// 体积人读文本。

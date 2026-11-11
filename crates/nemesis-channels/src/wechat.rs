@@ -180,7 +180,9 @@ pub fn verify_callback_signature(
 // ---------------------------------------------------------------------------
 
 /// 微信个人微信通道配置（iLink Bot API）。
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：回调鉴权 token 脱敏（contacts 映射非秘密，
+/// plain 保留）。
+#[derive(Clone)]
 pub struct WeChatConfig {
     /// 出站 REST 基址（默认 [`DEFAULT_BASE_URL`]，假设值）。
     pub base_url: String,
@@ -199,6 +201,11 @@ pub struct WeChatConfig {
     /// 联系人映射：user_id → 备注别名（命中时写入 metadata `contact_alias`）。
     pub contacts: HashMap<String, String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(WeChatConfig {
+    plain { base_url, send_path, callback_listen_addr, callback_path, signature_scheme, allow_from, contacts }
+    secret { token }
+});
 
 impl Default for WeChatConfig {
     fn default() -> Self {

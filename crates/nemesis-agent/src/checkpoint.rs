@@ -534,6 +534,11 @@ impl CheckpointStore {
             };
             for ent in entries.flatten() {
                 let p = ent.path();
+                // 链接条目不入栈（BUG-20261110-059 同族）：Path::is_dir()
+                // 跟随链接，影子库内链接环下 stack 无限增长死循环。
+                if ent.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+                    continue;
+                }
                 if p.is_dir() {
                     stack.push(p);
                     continue;

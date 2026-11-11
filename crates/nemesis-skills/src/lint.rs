@@ -573,7 +573,9 @@ pub fn is_surface_file(rel_path: &Path) -> bool {
 ///
 /// - 不跟随符号链接（技能包内 symlink 可指向安装主机任意文件，读取即越界
 ///   ——不扫也不跟进）；
-/// - 点开头的文件/目录跳过（编辑器残留与 VCS 元数据不是技能面）；
+/// - 系统元数据条目跳过（[`crate::types::is_metadata_entry`] 单一真相源——
+///   BUG-20261111-065：旧 blanket 点前缀跳过让 `.payload.sh` 这类载荷逃出
+///   装前扫描；其余点开头条目照常扫描）；
 /// - 非常规文件（fifo 等）天然被 `is_file()` 过滤。
 fn collect_surface_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -583,7 +585,7 @@ fn collect_surface_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(ft) = entry.file_type() else {
             continue;
         };
-        if entry.file_name().to_string_lossy().starts_with('.') {
+        if crate::types::is_metadata_entry(&entry.file_name().to_string_lossy()) {
             continue;
         }
         let path = entry.path();

@@ -22,7 +22,8 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// DingTalk channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：client_secret 脱敏。
+#[derive(Clone)]
 pub struct DingTalkConfig {
     /// Client ID from DingTalk Open Platform.
     pub client_id: String,
@@ -31,6 +32,11 @@ pub struct DingTalkConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(DingTalkConfig {
+    plain { client_id, allow_from }
+    secret { client_secret }
+});
 
 /// DingTalk bot callback data.
 #[derive(Debug, Deserialize)]

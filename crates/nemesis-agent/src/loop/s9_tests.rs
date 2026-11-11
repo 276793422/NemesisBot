@@ -542,6 +542,7 @@ async fn precompute_parallel_batch_validation_arms() {
         async_callback: None,
         tool_path_base: None,
         approval_ref: None,
+        secrets: std::sync::Arc::new(Vec::new()),
     };
 
     let calls = vec![

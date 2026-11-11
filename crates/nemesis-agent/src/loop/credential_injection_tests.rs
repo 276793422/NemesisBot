@@ -6,7 +6,7 @@
 use super::credential_injection::inject_credential_aliases;
 use super::credential_injection::{
     CredentialCardGuard, find_declared_vault_references, inject_credential_aliases_structured,
-    try_card_recovery,
+    inject_credential_aliases_with_secrets, try_card_recovery,
 };
 use super::*;
 use nemesis_types::agent::{CredentialBroker, CredentialOutcome, CredentialRequest};
@@ -242,6 +242,272 @@ fn web_fetch_declares_headers_slot() {
     .unwrap();
     nemesis_config::clear_global_vault_resolver();
     assert!(out.contains("REAL-SECRET"), "生产工具声明应生效: {out}");
+}
+
+// ---------------------------------------------------------------------------
+// env 槽（exec 族对象槽，vault 计划 P3，2026-11-11）：改写 + 明文清单收集
+// ---------------------------------------------------------------------------
+
+/// env 对象槽：`vault:` 叶子改写真值；`inject_credential_aliases_with_secrets`
+/// （P2 掩码合流）带回解析明文清单——只收集 vault 引用，字面量叶不收集。
+#[test]
+fn env_slot_rewritten_and_secrets_collected() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| match alias {
+        "known" => Ok("REAL-SECRET".to_string()),
+        "known2" => Ok("REAL-SECRET-2".to_string()),
+        _ => Err(format!("别名不存在: {alias}")),
+    }));
+    let tool = SlotTool::new(vec!["env"]);
+    let (out, secrets) = inject_credential_aliases_with_secrets(
+        &tool,
+        r#"{"command":"printenv API_TOKEN","env":{"API_TOKEN":"vault:known","OTHER":"vault:known2","DEBUG":"1"}}"#,
+    )
+    .unwrap();
+    nemesis_config::clear_global_vault_resolver();
+    assert!(
+        out.contains(r#""API_TOKEN":"REAL-SECRET""#),
+        "vault 叶应改写: {out}"
+    );
+    assert!(
+        out.contains(r#""OTHER":"REAL-SECRET-2""#),
+        "第二个 vault 叶应改写: {out}"
+    );
+    assert!(out.contains(r#""DEBUG":"1""#), "字面量叶不动: {out}");
+    assert!(
+        out.contains(r#""command":"printenv API_TOKEN""#),
+        "槽外键不动: {out}"
+    );
+    assert_eq!(secrets.len(), 2, "恰两个解析明文: {secrets:?}");
+    assert!(secrets.contains(&"REAL-SECRET".to_string()), "{secrets:?}");
+    assert!(
+        secrets.contains(&"REAL-SECRET-2".to_string()),
+        "{secrets:?}"
+    );
+}
+
+/// env 槽未知别名：fail loud，field 带 `env.<叶键>` 定位（与 headers 同构）。
+#[test]
+fn env_slot_unknown_leaf_fails_loud() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        Err(format!("别名不存在: {alias}"))
+    }));
+    let tool = SlotTool::new(vec!["env"]);
+    let err =
+        inject_credential_aliases(&tool, r#"{"env":{"API_TOKEN":"vault:ghost"}}"#).unwrap_err();
+    nemesis_config::clear_global_vault_resolver();
+    assert!(err.contains("CREDENTIAL REFERENCE FAILED"), "{err}");
+    assert!(
+        err.contains("env.API_TOKEN"),
+        "field 应带 env 叶定位: {err}"
+    );
+}
+
+/// env 槽全字面量：args 原样、明文清单为空——字面量本就在模型上下文里，
+/// P2 收集语义只认 vault 引用（无新增泄漏面）。
+#[test]
+fn env_slot_literal_only_no_secrets_collected() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::clear_global_vault_resolver();
+    let tool = SlotTool::new(vec!["env"]);
+    let args = r#"{"command":"echo hi","env":{"DEBUG":"1","MODE":"x"}}"#;
+    let (out, secrets) = inject_credential_aliases_with_secrets(&tool, args).unwrap();
+    assert_eq!(out, args);
+    assert!(secrets.is_empty(), "字面量不收集: {secrets:?}");
+}
+
+/// env 槽非 JSON 参数：透传（与注入层全局语义同构），零错误零清单。
+#[test]
+fn env_slot_malformed_json_passthrough() {
+    let tool = SlotTool::new(vec!["env"]);
+    let (out, secrets) = inject_credential_aliases_with_secrets(&tool, "not-json").unwrap();
+    assert_eq!(out, "not-json");
+    assert!(secrets.is_empty());
+}
+
+/// 生产声明 drift 锁（vault 计划 P3）：exec 族四工具（exec/run_checks/
+/// run_script/background_start）必须声明 env 槽 + schema 带 env 参数
+/// ——漏声明 = 注入/域闸/掩码三面对该工具全哑。
+#[test]
+fn exec_family_tools_declare_env_slot() {
+    let exec = crate::loop_tools::ExecTool::new("/ws", false);
+    let checks = crate::loop_tools::RunChecksTool::new("/ws");
+    let script = crate::loop_tools::RunScriptTool::new("/ws", false);
+    let registry =
+        std::sync::Arc::new(crate::background_registry::BackgroundProcessRegistry::new());
+    let bg = crate::background_registry::BackgroundStartTool::new("/ws", false, registry);
+    for (name, tool) in [
+        ("exec", &exec as &dyn Tool),
+        ("run_checks", &checks),
+        ("run_script", &script),
+        ("background_start", &bg),
+    ] {
+        assert_eq!(tool.credential_arg_keys(), &["env"], "{name} 应声明 env 槽");
+        let params = tool.parameters();
+        assert!(
+            params
+                .get("properties")
+                .and_then(|p| p.get("env"))
+                .is_some(),
+            "{name} schema 应带 env 参数: {params}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// loop 级：通路 1 掩码合流（vault 计划 P2——注入明文在结果 Ok/Err 两臂遮蔽）
+// ---------------------------------------------------------------------------
+
+/// 事件流拼接（与 credential_domain_tests 同形——本文件自持一份）。
+fn loop_events_text(events: &[AgentEvent]) -> String {
+    let mut dump = String::new();
+    for e in events {
+        match e {
+            AgentEvent::ToolCall(infos) => {
+                for i in infos {
+                    dump.push_str(&i.arguments);
+                    dump.push('\n');
+                }
+            }
+            AgentEvent::ToolResult(r) => dump.push_str(&r.result),
+            AgentEvent::Message(m) | AgentEvent::Error(m) | AgentEvent::Done(m) => dump.push_str(m),
+        }
+        dump.push('\n');
+    }
+    dump
+}
+
+/// 回显实参的工具（捕获 + 结果回显 args——掩码测试的泄漏探针）。
+struct EchoingCredTool {
+    captured: Arc<Mutex<Vec<String>>>,
+    fail: bool,
+}
+#[async_trait]
+impl Tool for EchoingCredTool {
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        self.captured.lock().unwrap().push(args.to_string());
+        if self.fail {
+            Err(format!("boom: {args}"))
+        } else {
+            Ok(format!("result: {args}"))
+        }
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "credential": {"type": "string"}
+            }
+        })
+    }
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["credential"]
+    }
+}
+
+/// Ok 臂：工具结果回显注入明文 → 掩码生效（模型只见 MASK_TEXT）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn loop_masks_vault_secret_in_ok_result() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "leak-test-alias" {
+            Ok(SECRET.to_string())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![
+        tool_call_response("credtool", r#"{"credential":"vault:leak-test-alias"}"#),
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "credtool".to_string(),
+        Box::new(EchoingCredTool {
+            captured: captured.clone(),
+            fail: false,
+        }),
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    nemesis_config::clear_global_vault_resolver();
+
+    let cap = captured.lock().unwrap();
+    assert_eq!(cap.len(), 1, "工具应执行一次");
+    assert!(cap[0].contains(SECRET), "execute 收到真值: {:?}", cap[0]);
+    drop(cap);
+    let dump = loop_events_text(&events);
+    assert!(dump.contains("result:"), "结果应回灌: {dump}");
+    assert!(!dump.contains(SECRET), "事件流不得含真值: {dump}");
+    assert!(dump.contains(ALIAS_REF), "事件流只见别名引用: {dump}");
+    assert!(
+        dump.contains(crate::r#loop::session_secrets::MASK_TEXT),
+        "结果掩码生效（P2 通路 1 合流）: {dump}"
+    );
+}
+
+/// Err 臂：错误串回显注入明文 → 同样掩码（错误串也可能复述入参片段）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn loop_masks_vault_secret_in_err_result() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "leak-test-alias" {
+            Ok(SECRET.to_string())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![
+        tool_call_response("credtool", r#"{"credential":"vault:leak-test-alias"}"#),
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "credtool".to_string(),
+        Box::new(EchoingCredTool {
+            captured: captured.clone(),
+            fail: true,
+        }),
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    nemesis_config::clear_global_vault_resolver();
+
+    assert_eq!(captured.lock().unwrap().len(), 1);
+    let dump = loop_events_text(&events);
+    assert!(dump.contains("boom:"), "错误串应回灌: {dump}");
+    assert!(!dump.contains(SECRET), "错误面不得含真值: {dump}");
+    assert!(
+        dump.contains(crate::r#loop::session_secrets::MASK_TEXT),
+        "Err 臂掩码生效: {dump}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -608,10 +874,15 @@ async fn card_recovery_stored_reinjects_full_args() {
     let guard = CredentialCardGuard::new();
     let out = try_card_recovery(Some(broker), &guard, &tool, args, "s1", "credtool", &err).await;
     nemesis_config::clear_global_vault_resolver();
-    let recovered = out.expect("Stored 应恢复成功");
+    let (recovered, secrets) = out.expect("Stored 应恢复成功");
     assert!(
         recovered.contains(SECRET) && recovered.contains(r#""target":"http://x""#),
         "重注入应含真值且保留其余字段: {recovered}"
+    );
+    assert_eq!(
+        secrets,
+        vec![SECRET],
+        "恢复臂应带回解析明文清单（掩码合流）"
     );
     assert_eq!(*calls.lock().unwrap(), 1, "应恰好发一张卡");
     assert!(

@@ -15,7 +15,8 @@ use nemesis_types::error::{NemesisError, Result};
 use crate::base::{BaseChannel, Channel};
 
 /// Matrix channel configuration.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068）：access_token 脱敏（room_id 是 plain Option）。
+#[derive(Clone)]
 pub struct MatrixConfig {
     /// Homeserver URL (e.g. "https://matrix.org").
     pub homeserver: String,
@@ -28,6 +29,11 @@ pub struct MatrixConfig {
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(MatrixConfig {
+    plain { homeserver, user_id, room_id, allow_from }
+    secret { access_token }
+});
 
 /// Matrix sync response.
 #[derive(Debug, Deserialize)]

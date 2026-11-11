@@ -53,6 +53,12 @@ pub struct ChatEvent {
     /// 形态）。缺省不写键（普通 chat 行）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note_kind: Option<String>,
+    /// 帧占行真相（2026-11-11 行号锚漂移根修）：`Some(bool)` = 帧带
+    /// `occupies` 键，chat.sync 补拉重放的前端按同一三态规则计行号锚
+    /// （与实时帧一致——补拉与实时对同一 jsonl 的锚必须算出同一个数）；
+    /// `None` = 旧规则（user/assistant 占行）。缺省不写键。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occupies: Option<bool>,
 }
 
 struct SessionLog {
@@ -136,6 +142,7 @@ fn insert_event(
     tool: Option<serde_json::Value>,
     source_node: Option<&str>,
     note_kind: Option<&str>,
+    occupies: Option<bool>,
 ) -> u64 {
     let mut table = logs().lock();
     let created = !table.map.contains_key(session_id);
@@ -159,6 +166,7 @@ fn insert_event(
         tool,
         source_node: source_node.map(String::from),
         note_kind: note_kind.map(String::from),
+        occupies,
     });
     entry.buf.push_back(Arc::clone(&event));
     while entry.buf.len() > SESSION_REPLAY_CAP {
@@ -189,6 +197,9 @@ fn insert_event(
 }
 
 /// 记录一帧 chat 推送并返回其 seq（会话内单调，1 起）。
+///
+/// `occupies`：帧占行真相（行号锚漂移根修）——补拉重放的前端按同一
+/// 三态规则计行号锚；None = 旧规则（user/assistant 占行）。
 pub fn record(
     session_id: &str,
     role: &str,
@@ -196,6 +207,7 @@ pub fn record(
     model: Option<&str>,
     source_node: Option<&str>,
     note_kind: Option<&str>,
+    occupies: Option<bool>,
 ) -> u64 {
     insert_event(
         session_id,
@@ -206,6 +218,7 @@ pub fn record(
         None,
         source_node,
         note_kind,
+        occupies,
     )
 }
 
@@ -220,6 +233,7 @@ pub fn record_tool(session_id: &str, tool: serde_json::Value) -> u64 {
         None,
         Some("tool".to_string()),
         Some(tool),
+        None,
         None,
         None,
     )

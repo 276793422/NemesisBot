@@ -148,6 +148,38 @@ fn test_ipv4_mapped_ipv6_blocked() {
     );
 }
 
+/// IPv4-compatible 形态（`::a.b.c.d`，RFC 4291 已废弃）按等价 v4 分类。
+/// `to_ipv4_mapped` 只折映射形态，兼容形态此前保持 IPv6 溜过全部 v4
+/// 分类段——语义上 `::7f00:1` 命名的就是 127.0.0.1。现代 OS 已废弃不
+/// 翻译（连接层诚实失败），本组断言钉的是分类完备性（防未来通路/栈
+/// 行为变化，同 BUG-20261111-076 围栏自洽逻辑）。
+#[test]
+fn test_ipv4_compatible_ipv6_blocked() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    // 回环兼容形态（点分与十六进制两种字面形态）
+    assert!(guard.check_ip("::127.0.0.1").is_err());
+    assert!(guard.check_ip("::7f00:1").is_err());
+    // 私网兼容形态（RFC 1918 三段）
+    assert!(guard.check_ip("::10.0.0.1").is_err());
+    assert!(guard.check_ip("::192.168.1.1").is_err());
+    assert!(guard.check_ip("::172.16.0.1").is_err());
+    // 云元数据兼容形态
+    assert!(guard.check_ip("::169.254.169.254").is_err());
+    // URL 级：bracket 形态走完整 validate_url 管线（无 DNS 参与）
+    assert!(guard.validate_url("http://[::127.0.0.1]:49000/").is_err());
+    assert!(
+        guard
+            .validate_url("http://[::169.254.169.254]/meta")
+            .is_err()
+    );
+    // 专属形态语义不变：`::`（unspecified→reserved）与 `::1`（loopback）
+    // 不被兼容折叠吞掉，各自分类照常拦。
+    assert!(guard.check_ip("::").is_err());
+    assert!(guard.check_ip("::1").is_err());
+    // 非兼容形态的公网 v6 不受折叠影响（首六组非全零）
+    assert!(guard.check_ip("2001:4860:4860::8888").is_ok());
+}
+
 /// 真 IPv6 不受归一影响：公网 字面量（非映射、非保留）照常放行。
 #[test]
 fn test_real_ipv6_unaffected_by_mapping_normalization() {

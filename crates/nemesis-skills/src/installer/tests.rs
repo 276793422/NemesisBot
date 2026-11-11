@@ -1905,3 +1905,47 @@ async fn bug372_install_non_utf8_skill_md_fails_loud_not_silent_pass() {
         "读失败臂必须先清 staging，skills/ 下不得落位"
     );
 }
+
+/// sweep_stale_staging 只清 24h 前遗孤事务目录，不误删当前事务。
+/// 顺带钉住 checked_sub 守卫下的正常路径行为（时钟早于 epoch+24h 的
+/// None 分支需要系统时钟控制，无法单测——守卫失败形态 = 跳过清扫，
+/// 由代码注释与函数文档钉死）。
+#[test]
+fn test_sweep_stale_staging_removes_only_old_tx_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let staging = dir.path().join(".skill-staging");
+    std::fs::create_dir_all(&staging).unwrap();
+
+    let stale = staging.join("demo.tx-old");
+    let fresh = staging.join("demo.tx-new");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::create_dir_all(&fresh).unwrap();
+
+    // 拨 stale 目录 mtime 到 25h 前。Windows 目录句柄需要
+    // FILE_FLAG_BACKUP_SEMANTICS + access_mode（与 web skills tests
+    // 同款先例）；unix 直接 File::open。
+    let old_mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(0x100)
+            .custom_flags(0x02000000)
+            .open(&stale)
+            .unwrap();
+        handle
+            .set_times(std::fs::FileTimes::new().set_modified(old_mtime))
+            .unwrap();
+    }
+    #[cfg(not(windows))]
+    {
+        let handle = std::fs::File::open(&stale).unwrap();
+        handle.set_modified(old_mtime).unwrap();
+    }
+
+    installer.sweep_stale_staging();
+
+    assert!(!stale.exists(), "25h 前的遗孤事务目录应被清扫");
+    assert!(fresh.exists(), "当前事务目录不应被误删");
+}

@@ -70,7 +70,7 @@ async fn gate_short_circuits_approval_replies() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (agent_id, response, err) = al.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none());
     assert!(agent_id.is_empty(), "Immediate short-circuit: no agent");
     assert!(response.contains("同意 deadbeef"), "got: {response}");
@@ -250,7 +250,7 @@ async fn f2_run_and_observe(
 ) -> (String, serde_json::Value) {
     use crate::chat_log::{delete_chat_log, read_chat_log};
     delete_chat_log(key);
-    let (_, resp, err) = al.process_inbound_message(&f2_msg(content, key)).await;
+    let (_, resp, err, _) = al.process_inbound_message(&f2_msg(content, key)).await;
     assert!(err.is_none(), "turn must succeed: resp={resp}");
     let seen_content = seen
         .lock()

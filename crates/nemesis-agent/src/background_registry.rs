@@ -52,6 +52,7 @@ use nemesis_path::paths::canonicalize_for_compare;
 
 use crate::context::RequestContext;
 use crate::r#loop::Tool;
+use crate::loop_tools::{env_slot_schema, parse_env_slot};
 
 /// 注册表默认任务上限（验收：16 上限拒绝）。满员时优先淘汰最旧的
 /// **已完成**任务（输出仍可读期间照常挤占——超出 16 就得腾地方），全部
@@ -236,6 +237,12 @@ struct JobEntry {
     /// 是否以 steerable=true 启动（区分「没开过 stdin」与「开过但已断」
     /// 两种 None 形态，steer 拒绝文案诚实分流）。
     steerable: bool,
+    /// 本 job 掩码池（vault 计划 P2++，2026-11-11）：background_start 调用
+    /// 的 dispatch 注入池（`ctx.secrets`）原样捕获——env 槽注入的凭据真值
+    /// （含会话占位符展开值）若被任务输出回显，`output()` 与完成通告两个
+    /// 读出面据此就地遮蔽（明文不进 session_log / LLM 上下文）。纯内存态：
+    /// JobEntry 不序列化，明文不出进程；空池 = 零成本直通。
+    secrets: Arc<Vec<String>>,
 }
 
 impl JobEntry {
@@ -381,6 +388,25 @@ impl BackgroundProcessRegistry {
         cwd: &str,
         steerable: bool,
     ) -> Result<serde_json::Value, String> {
+        self.start_inner(command, cwd, steerable, None, Arc::new(Vec::new()))
+            .await
+    }
+
+    /// [`Self::start`] 的 env 槽形态（vault 计划方案 A，2026-11-11）：
+    /// `env` = 显式环境变量（`background_start` 工具解析传入；值已由
+    /// dispatch 注入层把 `vault:` 别名改写为真值）。`start()` 原签名保留
+    /// ——基线注册（delegate_registry）与既有测试零改动。
+    /// `secrets`（vault 计划 P2++，2026-11-11）：本调用 dispatch 注入池
+    /// （`ctx.secrets` 原样捕获）——存进 JobEntry，供 output()/完成通告
+    /// 两个读出面遮蔽任务回显的真值；空池 = 零成本直通。
+    async fn start_inner(
+        &self,
+        command: &str,
+        cwd: &str,
+        steerable: bool,
+        env: Option<&[(String, String)]>,
+        secrets: Arc<Vec<String>>,
+    ) -> Result<serde_json::Value, String> {
         // 满员处理：先淘汰最旧的已完成任务；全在跑才拒绝。
         {
             let mut jobs = self.jobs.lock().await;
@@ -408,6 +434,9 @@ impl BackgroundProcessRegistry {
 
         let mut child = build_platform_shell(command)
             .current_dir(cwd)
+            // 显式 env 槽在 sanitize 之后追加（build_platform_shell 内置
+            // sanitize——声明意图语义，同 exec 工具族）。
+            .envs(env.iter().flat_map(|pairs| pairs.iter().cloned()))
             .stdin(if steerable {
                 // 活管道——保留写半端供 background_steer 注入。
                 std::process::Stdio::piped()
@@ -459,6 +488,7 @@ impl BackgroundProcessRegistry {
                 kill_flag,
                 stdin,
                 steerable,
+                secrets,
             },
         );
         debug!(
@@ -511,6 +541,19 @@ impl BackgroundProcessRegistry {
             let safe = utf8_safe_len(&chunk);
             chunk.truncate(safe);
         }
+        // vault 计划 P2++（2026-11-11）：分页读出过本 job 掩码池——env 槽
+        // 真值被任务回显时不随工具结果落 session_log / 进 LLM 上下文。
+        // next_offset 仍按原始字节坐标推进（掩码改写长度不回写坐标）；
+        // 凭据恰被分页边界切开的极端时序尽力而为（同实时尾窗滑窗边界，
+        // 权威面 = 无回显即无暴露）。
+        let chunk_text = {
+            let raw = String::from_utf8_lossy(&chunk).into_owned();
+            if job.secrets.is_empty() {
+                raw
+            } else {
+                crate::r#loop::session_secrets::mask_secrets_in_result(&raw, job.secrets.as_ref())
+            }
+        };
         let mut payload = serde_json::json!({
             "job_id": id,
             "running": running,
@@ -528,7 +571,7 @@ impl BackgroundProcessRegistry {
             "dropped_bytes": buf.dropped,
             "offset": offset,
             "next_offset": buf.next_read_offset(offset, chunk.len()),
-            "chunk": String::from_utf8_lossy(&chunk),
+            "chunk": chunk_text,
         });
         if skipped {
             payload["note"] = serde_json::json!(
@@ -575,6 +618,12 @@ impl BackgroundProcessRegistry {
     /// 管理能力完整保留；note/payload 显式标注静默语义。仅 origin 在场时
     /// 生效（origin 缺席的基线路径本就无唤醒面，notify 被忽略、字节不变）。
     /// 缺省 true = 现行为（开发服务器/长构建退出 = 崩溃信号，必须唤醒）。
+    ///
+    /// `env`（vault 计划方案 A，2026-11-11）：显式环境变量槽（同
+    /// [`Self::start_inner`]；工具 execute 解析传入，None = 零行为变化）。
+    /// `secrets`（vault 计划 P2++，2026-11-11）：本调用 dispatch 注入池
+    /// （`ctx.secrets` 原样捕获）——随 JobEntry 存档 + 传入完成通告
+    /// watcher，两个读出面（output()/完成尾部）据此遮蔽回显真值。
     pub async fn start_with_origin(
         &self,
         command: &str,
@@ -582,8 +631,12 @@ impl BackgroundProcessRegistry {
         steerable: bool,
         origin: Option<JobOrigin>,
         notify: bool,
+        env: Option<&[(String, String)]>,
+        secrets: Arc<Vec<String>>,
     ) -> Result<serde_json::Value, String> {
-        let mut payload = self.start(command, cwd, steerable).await?;
+        let mut payload = self
+            .start_inner(command, cwd, steerable, env, Arc::clone(&secrets))
+            .await?;
         let Some(origin) = origin else {
             return Ok(payload);
         };
@@ -613,6 +666,7 @@ impl BackgroundProcessRegistry {
                         output,
                         origin,
                         Arc::clone(&self.completion_tx),
+                        secrets,
                     ));
                 }
                 _ => {
@@ -806,6 +860,7 @@ async fn completion_watcher(
     output: Arc<Mutex<OutputBuffer>>,
     origin: JobOrigin,
     completion_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionEvent>>>,
+    secrets: Arc<Vec<String>>,
 ) {
     let final_status = loop {
         let snap = status.lock().await.clone();
@@ -818,7 +873,15 @@ async fn completion_watcher(
         let buf = output.lock().await;
         let start = buf.produced().saturating_sub(COMPLETION_TAIL_BYTES as u64);
         let (chunk, _skipped) = buf.read_chunk(start);
-        String::from_utf8_lossy(&chunk).into_owned()
+        let raw = String::from_utf8_lossy(&chunk).into_owned();
+        // vault 计划 P2++（2026-11-11）：完成通告尾部过本 job 掩码池——
+        // env 槽真值被任务回显时不随 CompletionEvent → InboundMessage 进
+        // 会话（session_log / LLM 上下文）。空池零成本直通。
+        if secrets.is_empty() {
+            raw
+        } else {
+            crate::r#loop::session_secrets::mask_secrets_in_result(&raw, secrets.as_ref())
+        }
     };
     if let Some(tx) = completion_tx.get() {
         let _ = tx.send(CompletionEvent {
@@ -1075,7 +1138,9 @@ impl Tool for BackgroundStartTool {
          to keep a live stdin pipe and inject input later with background_steer. \
          Pass notify=false for user-facing GUI apps the user opens and closes \
          themselves (notepad, calc): no completion notice is delivered when they \
-         exit (the job stays manageable via background_output/background_kill)."
+         exit (the job stays manageable via background_output/background_kill). \
+         Credentials/secrets go via the env parameter as vault:<alias> references \
+         — never in the command string (it is echoed back in job listings)."
             .to_string()
     }
 
@@ -1086,10 +1151,18 @@ impl Tool for BackgroundStartTool {
                 "command": {"type": "string", "description": "Shell command to run in the background"},
                 "cwd": {"type": "string", "description": "Working directory (default: workspace root; confined to workspace)"},
                 "steerable": {"type": "boolean", "description": "Keep a live stdin pipe so the job can receive input via background_steer (default false)"},
-                "notify": {"type": "boolean", "description": "Deliver a completion notice into this conversation when the job exits (default true). Set false for user-facing GUI apps the user opens and closes themselves (notepad, calc) — their exit carries no information for you and notifying the chat is noise"}
+                "notify": {"type": "boolean", "description": "Deliver a completion notice into this conversation when the job exits (default true). Set false for user-facing GUI apps the user opens and closes themselves (notepad, calc) — their exit carries no information for you and notifying the chat is noise"},
+                "env": env_slot_schema()
             },
             "required": ["command"]
         })
+    }
+
+    // vault 计划方案 A（2026-11-11）：env 槽承载凭据别名（同 ExecTool——
+    // dispatch 最内层对象叶改写真值，job 条目不记 env，list/output 面
+    // 天然零真值）。
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["env"]
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -1113,6 +1186,9 @@ impl Tool for BackgroundStartTool {
         // boolean false 关闭。非法值（如字符串 "false"）→ 缺省 true，
         // 不静默纠偏——schema 声明 boolean，模型发非布尔即按缺省走。
         let notify = val.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
+        // 显式 env 槽（vault 计划方案 A）：值已由 dispatch 注入层改写
+        // 真值（credential_arg_keys=["env"] 声明槽）。
+        let env_pairs = parse_env_slot(&val)?;
         // [SEALED 2026-11-08] 旧模式（轮询形态）：不带 origin 起任务，返回
         // payload 的 note 指引「poll background_output」——诱发模型
         // background_output→sleep→再读 的空转循环（2026-11-08 用户实测
@@ -1133,7 +1209,18 @@ impl Tool for BackgroundStartTool {
         };
         let payload = self
             .registry
-            .start_with_origin(command, &cwd, steerable, origin, notify)
+            .start_with_origin(
+                command,
+                &cwd,
+                steerable,
+                origin,
+                notify,
+                env_pairs.as_deref(),
+                // vault 计划 P2++（2026-11-11）：本调用 dispatch 注入池
+                // 原样捕获进 JobEntry——任务回显的凭据真值在 output()/
+                // 完成通告两个读出面就地遮蔽（空池零成本直通）。
+                context.secrets.clone(),
+            )
             .await?;
         Ok(payload.to_string())
     }

@@ -1629,3 +1629,38 @@ async fn test_advanced_config_set_missing_values_object() {
         .unwrap_err();
     assert!(err.contains("values"), "err={err}");
 }
+
+// registry.list —— BUG-20261110-057：skill_directories 输出必须按 name
+// 升序（read_dir 顺序是平台实现细节——NTFS 字典序 vs ext4 哈希序；前端
+// 无客户端排序：ForgeView 渲染序 + BehaviorTestPanel 默认选中 skills[0]
+// 都消费此列表顺序）。不变量断言在字典序文件系统上恒真，但钉住输出契约
+// 防回退（顺序敏感消费位点回归时此处先行报红）。
+
+#[tokio::test]
+async fn test_registry_list_skill_directories_sorted_by_name() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+
+    // 故意按非字典序创建 + 混入散文件（非目录必须被跳过）。
+    let skills_dir = dir.path().join("forge").join("skills");
+    std::fs::create_dir_all(&skills_dir).unwrap();
+    for name in ["zeta", "alpha", "midway"] {
+        std::fs::create_dir_all(skills_dir.join(name)).unwrap();
+    }
+    std::fs::write(skills_dir.join("loose.md"), "not a directory").unwrap();
+
+    let result = handler
+        .handle_cmd("registry.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let list = result["skill_directories"].as_array().unwrap();
+
+    let names: Vec<&str> = list.iter().map(|v| v["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["alpha", "midway", "zeta"], "输出必须按 name 升序");
+    assert!(
+        list.iter().all(|v| v["type"] == "directory"),
+        "散文件不得进入 skill_directories"
+    );
+}

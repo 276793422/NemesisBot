@@ -125,7 +125,7 @@ fn test_remove_and_update() {
 }
 
 #[test]
-fn test_compute_dir_hashes_skips_dotfiles() {
+fn test_compute_dir_hashes_metadata_entries_narrowed() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = write_skill_dir(
         tmp.path(),
@@ -134,14 +134,44 @@ fn test_compute_dir_hashes_skips_dotfiles() {
     );
     std::fs::write(dir.join(".signature"), "{}").unwrap();
     std::fs::write(dir.join(".skill-origin.json"), "{}").unwrap();
+    std::fs::write(dir.join(".DS_Store"), "noise").unwrap();
+    // 载荷形态点文件照常记账（BUG-20261111-065——旧 blanket 点前缀跳过让
+    // 它置身 lockfile 记账与漂移检测之外）。
+    std::fs::write(dir.join(".payload.py"), "print('pwn')").unwrap();
 
     let hashes = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
-    assert_eq!(hashes.len(), 2);
+    assert_eq!(hashes.len(), 3);
     assert!(hashes.contains_key("SKILL.md"));
     assert!(hashes.contains_key("sub/ref.md"));
+    assert!(hashes.contains_key(".payload.py"));
     // 确定性：两次计算一致。
     let again = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
     assert_eq!(hashes, again);
+}
+
+/// BUG-20261111-065：装后新增载荷形态点文件必须被漂移检测抓到（`.signature`
+/// / `.skill-origin.json` 名单内照常豁免——安装后落盘的记账文件不是漂移）。
+#[test]
+fn test_verify_drift_catches_dot_payload_but_not_origin_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_skill_dir(tmp.path(), "demo", &[("SKILL.md", "v1")]);
+    let mut lock = SkillsLockfile::new();
+    let hashes = SkillsLockfile::compute_dir_hashes(&tmp.path().join("skills/demo")).unwrap();
+    lock.record(LockedSkill {
+        slug: "demo".to_string(),
+        source: "s".to_string(),
+        commit: String::new(),
+        files: hashes,
+        installed_at: 1,
+        verified_state: "trusted".to_string(),
+    });
+    // 记账后装后投放：载荷点文件 = 漂移；origin 元数据 = 豁免。
+    std::fs::write(tmp.path().join("skills/demo/.payload.py"), "print('pwn')").unwrap();
+    std::fs::write(tmp.path().join("skills/demo/.skill-origin.json"), "{}").unwrap();
+
+    let report = lock.verify_drift(tmp.path(), "demo");
+    assert!(!report.clean, "{:?}", report.summary());
+    assert_eq!(report.new_files, vec![".payload.py".to_string()]);
 }
 
 #[test]
@@ -243,4 +273,71 @@ fn test_binary_file_hash_stable() {
     std::fs::write(dir.join("logo.bin"), [0u8, 159, 146, 150]).unwrap();
     let hashes = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
     assert_eq!(hashes.len(), 1);
+}
+
+// BUG-20261110-059：技能目录内链接条目（symlink/junction）曾被 Path::is_dir()
+// （跟随链接）当目录递归——链接环下无限递归栈溢出打崩进程。修后链接条目
+// 不扫也不记账。外指链接钉跳过语义（自指环不可断言——守卫若失效测试会
+// 挂死而非失败；同 gc_tests::dir_size_skips_link_entries 形态）。
+#[test]
+fn test_compute_dir_hashes_skips_link_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_skill_dir(tmp.path(), "demo", &[("SKILL.md", "hello")]);
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("leak.md"), "secret").unwrap();
+
+    // demo/linked -> outside（外指链接；Windows 用 junction，无需特权）。
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dir.join("linked"))
+            .arg(&outside)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, dir.join("linked")).expect("symlink");
+
+    // 修前：跟随链接把 outside/leak.md 记账（越界读）；环形态更是栈溢出。
+    // 修后：链接条目整体跳过，仅记账真实文件。
+    let hashes = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
+    assert_eq!(hashes.len(), 1, "链接条目不得记账: {hashes:?}");
+    assert!(hashes.contains_key("SKILL.md"));
+}
+
+#[test]
+fn test_compute_dir_hashes_skips_outbound_link_file() {
+    // 链接文件条目不跟随读取（越界面）：外部文件内容不得进记账。
+    // Windows 文件 symlink 需要开发者模式，创建失败时诚实跳过断言
+    //（与 anchor/tests.rs 的容忍形态一致）；junction 环测试已覆盖
+    // Windows 主路径。
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = write_skill_dir(tmp.path(), "demo", &[("SKILL.md", "hello")]);
+    let outside = tmp.path().join("outside.txt");
+    std::fs::write(&outside, "secret").unwrap();
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, dir.join("leak.txt")).unwrap();
+        let hashes = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
+        assert_eq!(hashes.len(), 1, "链接文件不得跟随记账: {hashes:?}");
+        assert!(hashes.contains_key("SKILL.md"));
+    }
+    #[cfg(windows)]
+    {
+        // 文件 symlink 创建可能因缺开发者模式失败——失败则本断言退化
+        // 为普通行为核对（链接创建成功才核对越界防护）。
+        if std::os::windows::fs::symlink_file(&outside, dir.join("leak.txt")).is_ok() {
+            let hashes = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
+            assert_eq!(hashes.len(), 1, "链接文件不得跟随记账: {hashes:?}");
+            assert!(hashes.contains_key("SKILL.md"));
+        }
+    }
 }

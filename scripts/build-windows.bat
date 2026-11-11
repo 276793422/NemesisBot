@@ -656,18 +656,6 @@ if exist "skins" (
 echo.
 
 REM ============================================
-REM Runtime manifest (A1 runtime integrity manifest; generation failure degrades honestly without blocking packaging)
-REM ============================================
-where python >nul 2>&1
-if %errorlevel%==0 (
-    python scripts\gen_runtime_manifest.py --out-dir bin\bin_windows --version %VERSION% --commit %GIT_COMMIT%
-    if errorlevel 1 echo   WARN runtime-manifest generation failed - gateway startup will treat deployment as unchecked ^(manifest absent^)
-) else (
-    echo   WARN python not found in PATH - skipping runtime-manifest generation
-)
-echo.
-
-REM ============================================
 REM Summary
 REM ============================================
 echo ============================================

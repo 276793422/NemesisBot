@@ -178,7 +178,7 @@ async fn user_row_lands_while_llm_turn_in_progress() {
 
     // 放行 → turn 完成。
     let _ = _gate_tx.send(true);
-    let (_agent_id, response, err) = handle.await.unwrap();
+    let (_agent_id, response, err, _) = handle.await.unwrap();
     assert!(err.is_none(), "turn 必须正常完成: {err:?}");
     assert_eq!(response, "gated reply");
 

@@ -364,9 +364,12 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
 }
 
 /// ② 绑定配置路径：`<workspace>/config/config.vault.json`
-/// （`workspace_config_dir` 单一定义；与 gate 侧 config_path.parent()
-/// 推导同点）。
-fn vault_domain_config_path(home: &std::path::Path) -> Result<std::path::PathBuf> {
+/// （`workspace_config_dir` 单一定义；dispatch 闸经装配点
+/// `set_vault_domain_config_path` 消费同一点——L26 路径分裂修复
+/// 2026-11-11，此前闸读 config.json 同目录、绑定生产永不生效）。
+/// `pub(crate)`：agent_factory 公式对齐锁测试消费（闸读=CLI 写同文件
+/// 的回归锁，不许两侧公式再分叉）。
+pub(crate) fn vault_domain_config_path(home: &std::path::Path) -> Result<std::path::PathBuf> {
     let ws = common::workspace_path(home);
     Ok(nemesis_path::workspace_config_dir(&ws).join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE))
 }

@@ -512,6 +512,21 @@ pub fn validate_skill_identifier(slug: &str) -> std::result::Result<(), String> 
     Ok(())
 }
 
+/// 技能包内**系统元数据条目**判定（点开头跳过名单——单一真相源）。
+///
+/// BUG-20261111-065：lint / signer / lockfile 三面旧用 blanket
+/// `starts_with('.')` 跳过——`.payload.sh` 这类载荷文件同步逃出装前扫描、
+/// 签名 manifest、lockfile 记账（漂移检测）三面，装前安全扩面要堵的
+/// 「载荷藏辅助脚本」洞被加一个点前缀复活。收窄：只有下列已知元数据/
+/// 噪音名跳过，其余点开头条目一律按正常技能内容参与扫描/签名/记账。
+/// 点目录同理（`.git` 等跳过，`.hidden` 递归进入）。
+pub fn is_metadata_entry(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | ".svn" | ".hg" | ".DS_Store" | ".signature" | ".skill-origin.json"
+    ) || name.starts_with(".#")
+}
+
 /// Windows reserved device names (classic MS list of 22; base-name compare
 /// before the first '.', case-insensitive -- "con.txt" also hits in Win32
 /// path semantics).

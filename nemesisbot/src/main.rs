@@ -303,12 +303,6 @@ mod plugin_lib;
 /// 走插件（iroh 家族重依赖随迁出主二进制）。
 mod roaming_plugin_loader;
 
-/// 运行时完整性清单：打包部署的
-/// 运行时文件 hash 清单（runtime-manifest.json，构建期由
-/// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
-/// （cargo 开发态 = manifest 缺席态，warn 不阻塞，照常工作）。
-mod runtime_manifest;
-
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
@@ -393,10 +387,6 @@ enum Commands {
         /// 读 config.quic.json relay 段；token 空 = 拒绝启动（fail-closed）。
         #[arg(long)]
         quic_relay: bool,
-        /// 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
-        /// 逃生门；打包部署残缺默认响亮拒启，跳过必须显式输入）。
-        #[arg(long)]
-        skip_runtime_check: bool,
     },
     /// Run a single headless agent task and exit (no ports, no gateway;)
     Run {
@@ -596,6 +586,12 @@ enum Commands {
     Quic {
         #[command(subcommand)]
         action: commands::quic::QuicAction,
+    },
+    /// System integration (register / unregister / status / cert；安装器
+    /// spawn 契约面——安装器只搬文件，系统集成在本命令组执行)
+    System {
+        #[command(subcommand)]
+        action: commands::system::SystemCommand,
     },
     /// VM environment bootstrap (install QEMU / enable accel / status / build image)
     #[cfg(feature = "vm")]
@@ -1028,7 +1024,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                 no_console: false,
                 relay: false,
                 quic_relay: false,
-                skip_runtime_check: false,
             }
         }
     };
@@ -1061,7 +1056,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             no_console,
             relay,
             quic_relay,
-            skip_runtime_check,
         } => {
             // Build extra args for logger from flags
             let mut gateway_args: Vec<String> = Vec::new();
@@ -1074,14 +1068,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             if no_console {
                 gateway_args.push("--no-console".to_string());
             }
-            commands::gateway::run(
-                cli.local,
-                relay,
-                quic_relay,
-                &gateway_args,
-                skip_runtime_check,
-            )
-            .await?;
+            commands::gateway::run(cli.local, relay, quic_relay, &gateway_args).await?;
         }
         Commands::Agent {
             subcommand,
@@ -1216,6 +1203,13 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
             if let Err(e) = commands::quic::run(&home, action).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::System { action } => {
+            common::ensure_default_logger();
+            if let Err(e) = commands::system::run(action) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

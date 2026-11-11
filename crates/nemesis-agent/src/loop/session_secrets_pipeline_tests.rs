@@ -9,7 +9,7 @@
 //! 需 security feature（nemesis-security 是 optional 依赖）。
 
 use super::credential_injection_tests::VAULT_SLOT_LOCK;
-use super::session_secrets::{expand_session_placeholders, mask_secrets_in_result};
+use super::session_secrets::{expand_session_placeholders_in_slots, mask_secrets_in_result};
 use nemesis_config::{clear_global_vault_resolver, set_global_vault_resolver};
 use nemesis_security::credential::Scanner as CredentialScanner;
 use nemesis_security::dlp::DlpEngine;
@@ -58,8 +58,8 @@ fn pipeline_reference_passes_layer4_then_expands_and_masks() {
         assert_eq!(alias, "agent/sess-9/dbpw");
         Ok("pg-real-password-9f8e".to_string())
     }));
-    let (expanded, secrets) =
-        expand_session_placeholders(REF_ARGS, "sess-9").expect("in-scope reference expands");
+    let (expanded, secrets) = expand_session_placeholders_in_slots(REF_ARGS, "sess-9", &["env"])
+        .expect("in-scope reference expands");
     assert!(
         expanded.contains("pg-real-password-9f8e"),
         "工具应收到真值: {expanded}"
@@ -99,7 +99,8 @@ fn pipeline_out_of_scope_fails_loud_after_security_pass() {
     let l4 = scanner.scan_content(args);
     assert!(!l4.has_matches, "引用形态应过 Layer 4: {:?}", l4.matches);
 
-    let err = expand_session_placeholders(args, "sess-9").expect_err("越界别名必须 fail loud");
+    let err = expand_session_placeholders_in_slots(args, "sess-9", &["env"])
+        .expect_err("越界别名必须 fail loud");
     assert!(err.contains("越界"), "报错应含越界语义: {err}");
 }
 
@@ -142,8 +143,8 @@ fn pipeline_bare_reference_passes_and_flows_untouched() {
         );
         // 展开层对无模板形态的 args 零改动（裸引用的值装配归声明槽改写，
         // 见 credential_injection——本断言钉「展开层不碰裸形态」的边界）。
-        let (expanded, secrets) =
-            expand_session_placeholders(args, "sess-9").expect("no template = no expansion");
+        let (expanded, secrets) = expand_session_placeholders_in_slots(args, "sess-9", &["env"])
+            .expect("no template = no expansion");
         assert_eq!(expanded, args, "裸形态必须原样透传（{label}）");
         assert!(secrets.is_empty(), "无模板不应收明文（{label}）");
     }

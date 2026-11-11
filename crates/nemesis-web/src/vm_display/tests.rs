@@ -102,3 +102,49 @@ fn manager_register_full_and_kill_all() {
     mgr.unregister(id2);
     assert_eq!(mgr.session_count(), 0);
 }
+
+/// estop 带外杀链回归锁（PTY BUG-20261031-234 同款失败形态）：会话任务
+/// 停在不可自醒的 await 点（客户端 TCP 背压下的 socket.send——watch 通知
+/// 观察不到）时，kill_all 必须经带外 abort 终止任务，不依赖任务自己
+/// poll 到 kill 通知；注册表同步清空。修复前 track/abort 链不存在，
+/// 本测试无法编译（poll-only 形态不可写）。
+#[tokio::test]
+async fn estop_kill_all_aborts_stalled_session_task() {
+    let mgr = VmDisplayManager::new();
+    let (tx, _rx) = tokio::sync::watch::channel(false);
+    // 会话任务替身：永久 pending、不 select kill watch——等价于主循环
+    // 卡死在 socket.send（任何 watch 通知都观察不到的病态）。
+    let task = tokio::spawn(std::future::pending::<()>());
+    mgr.register(tx, MAX_DISPLAY_SESSIONS).expect("注册");
+    mgr.track(task);
+    assert_eq!(mgr.session_count(), 1);
+    assert_eq!(mgr.tracked_len(), 1);
+    let aborted = mgr.kill_all();
+    assert_eq!(mgr.session_count(), 0, "注册表同步清空");
+    assert_eq!(aborted.len(), 1, "带外句柄随 kill_all 交还");
+    for h in aborted {
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(2), h)
+            .await
+            .expect("abort 后 2s 内必须终止");
+        assert!(
+            matches!(joined, Err(ref e) if e.is_cancelled()),
+            "pending 任务只能被 abort 终止（Cancelled）"
+        );
+    }
+}
+
+/// track 修剪：已完结句柄不留尸（正常退出的会话不随 gateway 寿命累积）。
+#[tokio::test]
+async fn track_prunes_finished_handles() {
+    let mgr = VmDisplayManager::new();
+    let first = tokio::spawn(async {});
+    while !first.is_finished() {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    mgr.track(first);
+    assert_eq!(mgr.tracked_len(), 1);
+    // 第二次 track 修剪已完结的 first，只留新句柄（新句柄即使瞬间跑完
+    // 也是 push 后才可能被下一轮修剪，计数恒 1）。
+    mgr.track(tokio::spawn(async {}));
+    assert_eq!(mgr.tracked_len(), 1);
+}

@@ -1176,6 +1176,10 @@ function handleWSMessage(data: any) {
             // 压缩注记徽标（2026-11-09）：帧 note_kind 透传——compaction=静态
             // 折叠徽标 / compaction_start=进行中动画徽标（不落盘，临时态）。
             noteKind: data.data.note_kind,
+            // 行号锚漂移根修（2026-11-11）：帧占行三态透传——瞬态回执
+            // （occupies=false）不编号、落盘 system 注记（true）编号、
+            // 缺省=旧规则。store addMessage 消费。
+            occupies: data.data.occupies,
             work,
             deliverables,
           })
@@ -1492,6 +1496,9 @@ async function syncMissedChat() {
         // 压缩注记徽标（2026-11-09）：环事件 note_kind 透传（重放窗口内
         // compaction_start 也会重现，随后续回执/assistant 行到场扫除）。
         noteKind: ev.note_kind,
+        // 行号锚漂移根修（2026-11-11）：补拉重放与实时帧对同一 jsonl 锚
+        // 算出同一个数——环事件带键（gate 盖章经 record 落环）原样透传。
+        occupies: ev.occupies,
         work,
         deliverables,
       })

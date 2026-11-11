@@ -583,3 +583,28 @@ fn test_principal_for_channel_empty_sender_unbound() {
     // channel 为空但 sender 在场 → 绑定形态保持诚实（不虚构通道名）。
     assert_eq!(principal_for_channel("", "u1"), "/u1");
 }
+
+// --- OutboundMeta.occupies（2026-11-11 行号锚漂移根修） ---
+
+#[test]
+fn test_outbound_meta_occupies_serde_roundtrip() {
+    // Some(true)/Some(false) → 帧键在 JSON 里如实出现。
+    for occ in [true, false] {
+        let meta = OutboundMeta {
+            occupies: Some(occ),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&meta).unwrap();
+        assert_eq!(json["occupies"], occ, "occupies={occ} 必须落帧键");
+        let back: OutboundMeta = serde_json::from_value(json).unwrap();
+        assert_eq!(back.occupies, Some(occ));
+    }
+    // None → 键缺席（skip_serializing_if，旧行为逐字节兼容——不带键的帧
+    // 不惊动任何消费方）。
+    let meta = OutboundMeta::default();
+    let json = serde_json::to_value(&meta).unwrap();
+    assert!(json.get("occupies").is_none());
+    // 反序列化缺键 → None（旧网关帧 / 手写 JSON 都安全）。
+    let back: OutboundMeta = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(back.occupies, None);
+}

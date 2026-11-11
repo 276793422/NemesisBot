@@ -1072,6 +1072,13 @@ impl Tool for RemoteExecutorTool {
         self.local.parameters()
     }
 
+    // vault 计划方案 A（2026-11-11）：env 槽凭据注入留在 gateway dispatch
+    // （子进程是哑执行体、无 vault 访问）——转发让注入层按本地工具同一
+    // 声明识别 env 槽（schema 随本地 parameters() 自动流，无需另行同步）。
+    fn credential_arg_keys(&self) -> &[&str] {
+        self.local.credential_arg_keys()
+    }
+
     fn preview(&self, args: &str) -> Option<FileChange> {
         self.local.preview(args)
     }

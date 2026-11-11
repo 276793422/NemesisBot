@@ -39,6 +39,11 @@ pub trait WebServerOps: Send + Sync {
     /// `note_kind`（optional，2026-11-09 压缩提示徽标化）为压缩过程系统
     /// 注记标记——实现方以 role="system" 下发并携带帧键，前端渲染折叠
     /// 小徽标；`None` = 正常回合回复（role="assistant" 旧行为不变）。
+    ///
+    /// `occupies`（optional，2026-11-11 行号锚漂移根修）为帧占行真相——
+    /// 前端行号锚三态计数（Some(true) 落盘占锚 / Some(false) 瞬态回执
+    /// 不占锚 / None 旧规则 user/assistant 占行）；实现方以帧键下发，
+    /// chat.sync 补拉同形态。
     fn send_to_session(
         &self,
         session_id: &str,
@@ -48,6 +53,7 @@ pub trait WebServerOps: Send + Sync {
         session_key: Option<&str>,
         source_node: Option<&str>,
         note_kind: Option<&str>,
+        occupies: Option<bool>,
     ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
@@ -87,7 +93,11 @@ pub trait WebServerOps: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Web channel configuration.
-#[derive(Debug, Clone)]
+///
+/// SEC-002（BUG-20261111-068）：手写 Debug 替代 derive——auth_token 脱敏
+/// （与 nemesis-config 侧 WebChannelConfig 同字段同威胁模型；本侧此前是
+/// 隔壁漏网）。
+#[derive(Clone)]
 pub struct WebChannelConfig {
     pub host: String,
     pub port: u16,
@@ -96,6 +106,11 @@ pub struct WebChannelConfig {
     pub session_timeout_secs: u64,
     pub allow_from: Vec<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(WebChannelConfig {
+    plain { host, port, ws_path, session_timeout_secs, allow_from }
+    secret { auth_token }
+});
 
 impl Default for WebChannelConfig {
     fn default() -> Self {
@@ -368,6 +383,7 @@ impl Channel for WebChannel {
             msg.meta.session_key.as_deref(),
             msg.meta.source_node.as_deref(),
             msg.meta.note_kind.as_deref(),
+            msg.meta.occupies,
         ) {
             // （死会话软失败）：目标会话已不在（标签页关闭/
             // 重连换新 session id，ConvRouter latest-wins 残留旧绑定）——

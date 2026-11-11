@@ -828,6 +828,11 @@ fn walkdir_recursive(dir: &Path, paths: &mut Vec<std::path::PathBuf>) -> Result<
     for entry in entries {
         let entry = entry.map_err(|e| format!("dir entry failed: {}", e))?;
         let path = entry.path();
+        // 链接条目不跟进（BUG-20261110-059 同族）：Path::is_dir() 跟随链接，
+        // 工作区内链接环下无限递归栈溢出——扫描层被一个环目录打死。
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+            continue;
+        }
         if path.is_dir() {
             walkdir_recursive(&path, paths)?;
         } else {

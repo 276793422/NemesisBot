@@ -259,6 +259,7 @@ impl AgentLoop {
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            vault_domain_config_path: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -463,6 +464,12 @@ impl AgentLoop {
     /// slash responses) pass false: they can run while the session's turn is
     /// in flight, and touching that turn's sent-in-round flag mid-flight
     /// would corrupt its end-of-turn publish decision.
+    ///
+    /// `occupies`：帧占行真相（OutboundMeta.occupies，行号锚漂移根修）。
+    /// 调用点按落盘真相声明：瞬态回执（⏳/⚡/slash/维护两帧/直派收据）
+    /// `Some(false)`；落盘留痕回执（💤 暂停排队/拒绝弹回——由 gate 侧
+    /// GateOutcome::Immediate 携带）透传；终局回复 None（旧规则：
+    /// user/assistant 占行）。
     pub(crate) async fn finish_message(
         &self,
         msg: &nemesis_types::channel::InboundMessage,
@@ -470,6 +477,7 @@ impl AgentLoop {
         err: Option<String>,
         check_sent_in_round: bool,
         receipt: bool,
+        occupies: Option<bool>,
     ) {
         let response = match err {
             Some(e) => {
@@ -543,6 +551,8 @@ impl AgentLoop {
                     // 回执标记由调用点声明语义（busy 排队/slash 确认=true，
                     // 终局回复=false）——消费方按会话键等终局回复时跳过回执。
                     receipt,
+                    // 帧占行真相由调用点声明（行号锚漂移根修）。
+                    occupies,
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -579,9 +589,11 @@ impl AgentLoop {
                 task_id: None,
                 sync_via: None,
                 // 凭条卡 = connector 写类 op 回执，非回合产物（按会话键等
-                // 终局回复的消费方必须跳过）。
+                // 终局回复的消费方必须跳过）。瞬态帧不落盘 → 不占行号锚
+                // （行号锚漂移根修）。
                 note_kind: None,
                 receipt: true,
+                occupies: Some(false),
             },
         };
         if let Err(e) = tx.send(outbound).await {
@@ -760,8 +772,16 @@ impl AgentLoop {
                     msg.channel, msg.session_key
                 );
             } else {
-                self.finish_message(msg, DRAINING_RECEIPT.to_string(), None, false, true)
-                    .await;
+                // drain 回执 = 瞬态系统回执（不落盘）→ 不占行号锚。
+                self.finish_message(
+                    msg,
+                    DRAINING_RECEIPT.to_string(),
+                    None,
+                    false,
+                    true,
+                    Some(false),
+                )
+                .await;
             }
             return;
         }
@@ -786,6 +806,7 @@ impl AgentLoop {
             GateOutcome::Immediate {
                 agent_id: _,
                 response,
+                occupies,
             } => {
                 // Busy receipt / busy bounce / queue-full / slash
                 // reply — publish inline. Never touches
@@ -794,8 +815,10 @@ impl AgentLoop {
                 // 静态短路回复（零 LLM 内容）→ 一律打 receipt=true：
                 // 按会话键等终局回复的消费方（看板本地派发捕获）必须
                 // 跳过——NB-1 实录：queue-ack 被当终局回复 → 57ms
-                // 空交付 completed。
-                self.finish_message(msg, response, None, false, true).await;
+                // 空交付 completed。occupies 由 gate 侧按落盘真相
+                // 盖章（瞬态回执 Some(false) / 落盘留痕 Some(true)）。
+                self.finish_message(msg, response, None, false, true, occupies)
+                    .await;
             }
             GateOutcome::Coalesced { cron_job_id } => {
                 // C4（2026-10-24 cron 合闸）：重复 tick 静默丢弃——零出站
@@ -824,8 +847,11 @@ impl AgentLoop {
                     // 显式 drop（= 原 release_session）。
                     let _busy_guard = super::admission::SessionBusyGuard::new(&this, &session_key);
                     // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
-                    // （可能是 LLM 摘要）= 终局（receipt=false）。
-                    this.finish_message(&m, receipt, None, false, true).await;
+                    // （可能是 LLM 摘要）= 终局（receipt=false）。两帧都
+                    // 是瞬态回执（落盘只有 user 行）→ Some(false) 不占
+                    // 行号锚（行号锚漂移根修）。
+                    this.finish_message(&m, receipt, None, false, true, Some(false))
+                        .await;
                     let response = this
                         .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
                         .await;
@@ -835,7 +861,8 @@ impl AgentLoop {
                     // 永久滞留 next_turn——与 admitted 尾部共用
                     // drain_next_turn_queue 对称排空。
                     this.drain_next_turn_queue(&session_key).await;
-                    this.finish_message(&m, response, None, false, false).await;
+                    this.finish_message(&m, response, None, false, false, Some(false))
+                        .await;
                 });
             }
             GateOutcome::UserDispatch {
@@ -859,7 +886,9 @@ impl AgentLoop {
                 let m = msg.clone();
                 self.spawn_turn_task(async move {
                     let (_, response, err) = this.process_ungated(&m).await;
-                    this.finish_message(&m, response, err, true, false).await;
+                    // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
+                    this.finish_message(&m, response, err, true, false, None)
+                        .await;
                 });
             }
             GateOutcome::Admitted(admission) => {
@@ -867,7 +896,9 @@ impl AgentLoop {
                 let m = msg.clone();
                 self.spawn_turn_task(async move {
                     let (_, response, err) = this.process_admitted(&m, admission).await;
-                    this.finish_message(&m, response, err, true, false).await;
+                    // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
+                    this.finish_message(&m, response, err, true, false, None)
+                        .await;
                 });
             }
         }

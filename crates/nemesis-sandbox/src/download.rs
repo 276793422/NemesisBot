@@ -37,6 +37,12 @@ pub async fn fetch_expected_sha256(checksums_url: &str, filename: &str) -> Resul
         .send()
         .await
         .with_context(|| format!("fetch checksums {checksums_url}"))?
+        // BUG-20261110-058：状态闸。无闸时 404/5xx 的错误页 body 被当
+        // checksums 文本逐行解析 → 不匹配 → bail「filename not found」
+        // 假根因，并把 download_release 的「无校验降级」误触发在 URL
+        // 已死场景（降级拍板针对 checksums 服务不可得，不是安装器 404）。
+        .error_for_status()
+        .with_context(|| format!("checksums {checksums_url}"))?
         .text()
         .await
         .context("read checksums body")?;
@@ -72,6 +78,11 @@ pub async fn download_and_verify(
         .get(url)
         .send()
         .await
+        .with_context(|| format!("fetch {url}"))?
+        // BUG-20261110-058：状态闸。无闸时 404/5xx 错误页字节被当安装器
+        // 写盘（可覆盖 runtime_dir 里旧的好安装包），失败延迟到 7z 解压层
+        // 才以「非档案」混淆报错——HTTP 层失败必须在 fetch 层诚实暴露。
+        .error_for_status()
         .with_context(|| format!("fetch {url}"))?
         .bytes()
         .await

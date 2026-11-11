@@ -1011,6 +1011,13 @@ pub fn valid_skill_dir_name(name: &str) -> Result<(), String> {
         || name.contains(':')
         || name == "."
         || name == ".."
+        // Win32 归一化族：路径组件的尾随点/空格在 Win32 路径解析中被
+        // 剥除——`.. `、`.. .` 等形态与 `..` 等价（父目录穿越面）；
+        // 首尾空白 trim 后可能落回 `.`/`..`。一律拒绝（消费面虽经
+        // Rust std 字面传 NT 层当前不可穿越，围栏按契约自洽封死，
+        // 不依赖文件系统行为兜底）。
+        || name != name.trim()
+        || name.trim_end_matches(['.', ' ']) != name.trim()
     {
         return Err(format!("invalid skill name: {name}"));
     }

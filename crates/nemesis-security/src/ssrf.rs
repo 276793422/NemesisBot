@@ -404,13 +404,20 @@ impl Guard {
     ///
     /// 全部 IP 分类路径（直查 / DNS 解析结果 / URL 字面量）的唯一漏斗；
     /// 判定前先做 IPv4-mapped IPv6 归一（映射形态在
-    /// 双栈 socket 上按内嵌 IPv4 连接，不归一则 危险段全部漏放）。
+    /// 双栈 socket 上按内嵌 IPv4 连接，不归一则 危险段全部漏放），
+    /// 再折 IPv4-compatible 形态（`::a.b.c.d` 按等价 v4 分类）。
     fn check_ip_locked(
         &self,
         guard: &parking_lot::RwLockReadGuard<'_, Inner>,
         ip: &IpAddr,
     ) -> Result<(), SsrfError> {
-        let ip = &resolver::normalize_ipv4_mapped(ip);
+        let mut normalized = resolver::normalize_ipv4_mapped(ip);
+        if let IpAddr::V6(v6) = normalized
+            && let Some(v4) = resolver::ipv4_compatible_of(v6)
+        {
+            normalized = IpAddr::V4(v4);
+        }
+        let ip = &normalized;
 
         // Block localhost / loopback
         if self.config.block_localhost && resolver::is_loopback_ip(ip) {

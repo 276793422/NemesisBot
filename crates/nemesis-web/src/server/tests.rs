@@ -700,6 +700,7 @@ async fn test_send_to_session_no_queue() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -718,6 +719,7 @@ async fn test_send_to_session_nonexistent() {
         "nonexistent-session",
         "assistant",
         "hello",
+        None,
         None,
         None,
         None,
@@ -1153,6 +1155,7 @@ async fn test_send_to_session_nonexistent_session() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -1328,4 +1331,45 @@ async fn test_usage_log_detail_route_brace_capture_matches() {
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"], "DataStore not configured");
+}
+
+// BUG-20261110-059：静态目录列举 walk 在链接条目（junction/symlink）下曾按
+// 目录递归（Path::is_dir() 跟随链接）——链接环下无限递归栈溢出。修后链接
+// 条目不跟进也不列举。外指链接钉跳过语义（自指环不可断言；
+// 同 gc_tests::dir_size_skips_link_entries 形态）。
+#[test]
+fn directory_static_files_list_files_skips_link_entries() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 链接目标放 base 树外（list_files 遍历 base 全树，树内普通目录本就
+    // 会被列举——放树内会污染断言）。
+    let outside_base = tempfile::tempdir().unwrap();
+    let outside = outside_base.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("leak.txt"), b"secret").unwrap();
+    let sub = tmp.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.txt"), b"1").unwrap();
+
+    // sub/linked -> outside。
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(sub.join("linked"))
+            .arg(&outside)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, sub.join("linked")).expect("symlink");
+
+    let provider = DirectoryStaticFiles::new(tmp.path());
+    let files = StaticFiles::list_files(&provider);
+    assert_eq!(files.len(), 1, "链接条目不得跟进列举: {files:?}");
+    assert_eq!(files[0], "sub/a.txt");
 }

@@ -105,7 +105,7 @@ async fn test_inbox_reject_mode_unchanged() {
     let lp = loop_with(ConcurrentMode::Reject, Box::new(provider));
     // Manually mark busy (the same state try_acquire would produce).
     assert!(lp.try_acquire_session("agent:s1"));
-    let (_id, resp, _err) = lp
+    let (_id, resp, _err, _) = lp
         .process_inbound_message(&inbound("agent:s1", "hello"))
         .await;
     assert_eq!(resp, BUSY_MESSAGE);
@@ -119,7 +119,7 @@ async fn test_inbox_queue_mode_busy_message_queued() {
     let provider = CapturingProvider::new(vec![]);
     let lp = loop_with(ConcurrentMode::Queue, Box::new(provider));
     assert!(lp.try_acquire_session("agent:s2"));
-    let (_id, resp, _err) = lp
+    let (_id, resp, _err, _) = lp
         .process_inbound_message(&inbound("agent:s2", "later message"))
         .await;
     assert_ne!(resp, BUSY_MESSAGE, "queue mode must not bounce");
@@ -180,7 +180,7 @@ async fn test_inbox_steer_mode_interjects_next_step() {
 
     // Run a turn; the sleep tool is unknown → error result → next iteration
     // claims the steer batch and injects before the (final) call.
-    let (_id, _resp, _err) = lp
+    let (_id, _resp, _err, _) = lp
         .process_inbound_message(&inbound("agent:s3", "do things"))
         .await;
 
@@ -258,7 +258,7 @@ async fn test_inbox_capacity_limit() {
         outcome,
         crate::inbox::EnqueueOutcome::RejectedSoft
     ));
-    let (_id, resp, _) = lp
+    let (_id, resp, _, _) = lp
         .process_inbound_message(&inbound("agent:s5", "soft overflow via busy"))
         .await;
     assert!(resp.contains("队列紧张"), "soft receipt: {resp}");
@@ -276,7 +276,7 @@ async fn test_inbox_capacity_limit() {
         crate::inbox::EnqueueOutcome::QueuedForNextTurn
     ));
     // The 5th message through the busy path gets the "full" receipt.
-    let (_id, resp, _) = lp
+    let (_id, resp, _, _) = lp
         .process_inbound_message(&inbound("agent:s5", "overflow"))
         .await;
     assert!(

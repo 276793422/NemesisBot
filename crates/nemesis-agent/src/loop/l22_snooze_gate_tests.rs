@@ -106,7 +106,9 @@ async fn snoozed_user_message_queues_with_receipt() {
     crate::chat_log::write_session_snooze(&key, "2099-01-01T00:00:00+08:00", None);
 
     match al.gate_inbound(&gate_msg(&key, "帮我看看这个")) {
-        GateOutcome::Immediate { agent_id, response } => {
+        GateOutcome::Immediate {
+            agent_id, response, ..
+        } => {
             assert!(!agent_id.is_empty(), "agent_id 由 route_message 现取");
             assert!(
                 response.contains("💤") && response.contains("排队"),

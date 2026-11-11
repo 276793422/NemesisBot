@@ -371,17 +371,40 @@ fn test_sign_and_verify_with_binary_asset() {
 }
 
 #[test]
-fn test_build_manifest_skips_hidden_files() {
+fn test_build_manifest_metadata_entries_narrowed() {
     let dir = tempfile::tempdir().unwrap();
     let skill_dir = dir.path().join("skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("SKILL.md"), "# Main").unwrap();
-    std::fs::write(skill_dir.join(".hidden"), "hidden content").unwrap();
+    // 名单内元数据：仍排除（.signature 自引用 / 安装后 origin 记账 / OS 噪音）。
+    std::fs::write(skill_dir.join(".signature"), "old-sig").unwrap();
+    std::fs::write(skill_dir.join(".skill-origin.json"), "{}").unwrap();
+    std::fs::write(skill_dir.join(".DS_Store"), "noise").unwrap();
+    // 载荷形态点文件：照常入 manifest（BUG-20261111-065——旧 blanket 点
+    // 前缀跳过让它置身签名之外）。
+    std::fs::write(skill_dir.join(".payload.py"), "print('pwn')").unwrap();
 
     let signer = SkillSigner::new();
     let manifest = signer.build_manifest(&skill_dir).unwrap();
-    assert_eq!(manifest.files.len(), 1);
-    assert_eq!(manifest.files[0].path, "SKILL.md");
+    let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(manifest.files.len(), 2, "{paths:?}");
+    assert!(paths.contains(&"SKILL.md"));
+    assert!(
+        paths.contains(&".payload.py"),
+        "payload dotfile must be signed: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.starts_with(".signature")),
+        "{paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.starts_with(".skill-origin.json")),
+        "{paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.starts_with(".DS_Store")),
+        "{paths:?}"
+    );
 }
 
 #[test]

@@ -609,6 +609,18 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             exec_base.with_output_hook({
                 let tx = tx.clone();
                 Arc::new(move |ctx: &RequestContext, tail: &str, total_bytes: u64| {
+                    // vault 计划 P2（2026-11-11）：实时尾窗过本调用掩码池
+                    // （ctx.secrets，dispatch 在 execute 前注入）——明文回显
+                    // 在进事件广播前遮蔽。尽力而为边界：凭据恰被滑窗轮转切
+                    // 半的极端时序仍可能漏帧（权威面=结果掩码臂恒全量）。
+                    let masked = if ctx.secrets.is_empty() {
+                        tail.to_string()
+                    } else {
+                        crate::r#loop::session_secrets::mask_secrets_in_result(
+                            tail,
+                            ctx.secrets.as_ref(),
+                        )
+                    };
                     let _ = tx.send(nemesis_types::agent::AgentEvent::ToolOutput {
                         session_key: ctx.session_key.clone(),
                         chat_id: ctx.chat_id.clone(),
@@ -617,7 +629,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                         // 一个 running exec 行」归属。
                         call_id: String::new(),
                         tool: "exec".to_string(),
-                        tail: tail.to_string(),
+                        tail: masked,
                         total_bytes,
                     });
                 })
