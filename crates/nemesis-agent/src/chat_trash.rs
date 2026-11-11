@@ -743,16 +743,25 @@ pub fn trash_purge_in(loc: &TrashLocations, entry: &str) -> Result<(), String> {
         return Err(format!("回收站条目不存在: {entry}"));
     }
     // 清 live todo：清单在 = 原键可寻址（不按 manifest.todo 闸——旧形态清单
-    // 无 todo 字段但 live 残留同样要清；键是 uuid，误清新会话不可能）。清单
-    // 缺失（孤儿目录）= 原键不可信寻址，跳过（目录本身照样删）。
+    // 无 todo 字段但 live 残留同样要清）。**同键复用守卫（BUG-20261112-100）**：
+    // 「键是 uuid，误清新会话不可能」的前提不成立——复合通道键同节点同 chat
+    // 重开真实可达（BUG-20261107-024 同键复用实证），import 亦接受自定义
+    // sid。目标键已有在世会话（jsonl/meta 在场，与 trash_restore 冲突检测
+    // 同判据）= live todo 归属复用后的**新会话**，purge 旧条目不得清它；
+    // 键无在世会话 = 旧纪元孤儿残留，照旧收口。
     let manifest = std::fs::read_to_string(entry_dir.join("trash.json"))
         .ok()
         .and_then(|raw| serde_json::from_str::<TrashManifest>(&raw).ok());
     if let Some(m) = &manifest {
-        let live_todo = loc.todo_path(&m.original_session_key);
-        if live_todo.exists() {
-            nemesis_utils::fsutil::remove_file_retry(&live_todo)
-                .map_err(|e| format!("清理 live todo 失败（条目保留可重试）: {e}"))?;
+        let original_key = &m.original_session_key;
+        let reincarnated =
+            loc.log_path(original_key).exists() || loc.meta_path(original_key).exists();
+        if !reincarnated {
+            let live_todo = loc.todo_path(original_key);
+            if live_todo.exists() {
+                nemesis_utils::fsutil::remove_file_retry(&live_todo)
+                    .map_err(|e| format!("清理 live todo 失败（条目保留可重试）: {e}"))?;
+            }
         }
     }
     nemesis_utils::fsutil::remove_dir_all_retry(&entry_dir)

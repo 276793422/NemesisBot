@@ -785,6 +785,49 @@ fn purge_all_clears_live_todo_orphans_too() {
     assert!(!t.entry_dir(&entry).exists());
 }
 
+/// BUG-20261112-100 同键复用守卫：目标键已有在世会话（jsonl/meta 在场，
+/// trash_restore 冲突检测同判据）= live todo 归属复用后的**新会话**，
+/// purge 旧条目不得清它；键无在世会话的旧纪元孤儿照旧收口
+/// （purge_clears_live_todo_orphan 锁住）。R841 修正案前提：复合通道键
+/// 同键重开真实可达（BUG-20261107-024 实证）、import 接受自定义 sid——
+/// 「键是 uuid 误清不可能」的旧注释前提不成立。
+#[test]
+fn purge_spares_reincarnated_session_todo() {
+    let t = TempTrash::new("todo-reinc");
+    let k = make_session(&t, "todo-reinc", "被删会话", &["q"]);
+    let entry = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+
+    // 同键复用：新会话在原键上重新物化（jsonl 在场即可，meta 等价判据），
+    // 并写了自己的在用 todo。
+    put_msg(&t, &k, "user", "重生后的第一条消息");
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "新会话在用清单", "status": "pending"})],
+    );
+
+    trash_purge_in(&t.loc, &entry).expect("purge 须成功");
+    assert!(!t.entry_dir(&entry).exists(), "条目本身照常删除");
+    assert!(
+        t.loc.todo_path(&k).exists(),
+        "复用后新会话的在用 todo 不得被旧条目 purge 清掉"
+    );
+
+    // 对照臂：复用会话也删除后（键回到无在世会话态），purge 同形态条目
+    // 照旧清孤儿。
+    let entry2 = trash_chat_log_in(&t.loc, &k, "single").unwrap().unwrap();
+    put_todo(
+        &t,
+        &k,
+        &[serde_json::json!({"content": "又一批孤儿", "status": "pending"})],
+    );
+    trash_purge_in(&t.loc, &entry2).unwrap();
+    assert!(
+        !t.loc.todo_path(&k).exists(),
+        "键无在世会话时孤儿 todo 照旧收口"
+    );
+}
+
 /// 行为锁：boundary 残留覆盖语义。目标键 boundary 残留（log/meta 缺席 =
 /// 不构成冲突，恢复照常放行）被条目版本覆盖落位——std::fs::rename 两平台
 /// 都替换已存在目标（Windows = MoveFileExW + MOVEFILE_REPLACE_EXISTING），
