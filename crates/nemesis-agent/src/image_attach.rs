@@ -558,31 +558,39 @@ pub fn attach_turn_images(
 
     // 来源 1：文本提取路径（T4）。非 Ok 候选按 failure_reason 诚实注明。
     for candidate in image_path_detector::detect_image_paths(text, workspace_dir) {
-        // J6：降采样闸先行——超限候选在开关开时先降采样，产物替代原图走
-        // 后续同一链；不可降 = 诚实拒绝注记；开关关恒 Keep（零行为变化）。
+        // R841（J6 次序副作用根修）：降采样闸只在**验真链会放行或需要它
+        // 救回**的候选上先行（Ok / TooLarge）。NotFound / NotImage /
+        // Unreadable 直走 canonical 诚实注记——降采样闸的错误文案（元数
+        // 据读取/格式嗅探）不得顶替验真链诊断：同一失败面的注记词表不随
+        // `agents.image_downscale` 开关翻转（默认开 = 生产常态，J6 引入
+        // 后所有NotFound候选的「文件不存在」都被顶替成元数据错误文案）。
+        let gate_eligible = candidate.is_attachable()
+            || matches!(candidate.status, CandidateStatus::TooLarge { .. });
         let mut resolved = candidate.resolved.clone();
-        match image_downscale::downscale_gate(&candidate.resolved, downscale_uploads) {
-            Ok(image_downscale::GateVerdict::Replaced {
-                path,
-                from_bytes,
-                to_bytes,
-                longest_side,
-            }) => {
-                outcome.notes.push(format!(
-                    "[图片已降采样: {} ({}→{} 字节, 最长边 {}px)]",
-                    candidate.resolved.display(),
+        if gate_eligible {
+            match image_downscale::downscale_gate(&candidate.resolved, downscale_uploads) {
+                Ok(image_downscale::GateVerdict::Replaced {
+                    path,
                     from_bytes,
                     to_bytes,
-                    longest_side
-                ));
-                resolved = path;
-            }
-            Ok(image_downscale::GateVerdict::Keep) => {}
-            Err(reason) => {
-                outcome
-                    .notes
-                    .push(format!("[图片未附加: {}: {}]", reason, candidate.raw));
-                continue;
+                    longest_side,
+                }) => {
+                    outcome.notes.push(format!(
+                        "[图片已降采样: {} ({}→{} 字节, 最长边 {}px)]",
+                        candidate.resolved.display(),
+                        from_bytes,
+                        to_bytes,
+                        longest_side
+                    ));
+                    resolved = path;
+                }
+                Ok(image_downscale::GateVerdict::Keep) => {}
+                Err(reason) => {
+                    outcome
+                        .notes
+                        .push(format!("[图片未附加: {}: {}]", reason, candidate.raw));
+                    continue;
+                }
             }
         }
         // 降采样产物本身合法（闸内产出 ≤8MB JPEG）→ 跳过原图 attachable 判定。
@@ -636,45 +644,47 @@ pub fn attach_turn_images(
             continue;
         }
         // 本地路径引用（T7/T8 落盘产物）：与文本候选同一验真 + 闸门链。
+        // R841：验真**先行**（canonical 注记不顶替，同文本来源），降采样
+        // 闸只对 Ok / TooLarge 候选接入——J6 闸先行的次序副作用同根修。
         let path = PathBuf::from(url);
-        // J6：降采样闸先行（同文本来源）；产物由闸产出（合法 ≤8MB JPEG），
-        // 以 best-effort 尺寸的 Ok 状态替代原图 verify 状态走既有 match。
+        let mut status = image_path_detector::verify(&path);
         let mut attached_path = path.clone();
-        let mut replaced = false;
-        match image_downscale::downscale_gate(&path, downscale_uploads) {
-            Ok(image_downscale::GateVerdict::Replaced {
-                path: product,
-                from_bytes,
-                to_bytes,
-                longest_side,
-            }) => {
-                outcome.notes.push(format!(
-                    "[图片已降采样: {} ({}→{} 字节, 最长边 {}px)]",
-                    path.display(),
+        if matches!(
+            status,
+            CandidateStatus::Ok { .. } | CandidateStatus::TooLarge { .. }
+        ) {
+            match image_downscale::downscale_gate(&path, downscale_uploads) {
+                Ok(image_downscale::GateVerdict::Replaced {
+                    path: product,
                     from_bytes,
                     to_bytes,
-                    longest_side
-                ));
-                attached_path = product;
-                replaced = true;
-            }
-            Ok(image_downscale::GateVerdict::Keep) => {}
-            Err(reason) => {
-                outcome
-                    .notes
-                    .push(format!("[图片未附加: {}: {}]", reason, url));
-                continue;
+                    longest_side,
+                }) => {
+                    outcome.notes.push(format!(
+                        "[图片已降采样: {} ({}→{} 字节, 最长边 {}px)]",
+                        path.display(),
+                        from_bytes,
+                        to_bytes,
+                        longest_side
+                    ));
+                    attached_path = product;
+                    // 产物由闸产出（合法 ≤8MB JPEG），以 best-effort 尺寸的
+                    // Ok 状态替代原图 verify 状态走下方 match。
+                    status = CandidateStatus::Ok {
+                        size: std::fs::metadata(&attached_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0),
+                    };
+                }
+                Ok(image_downscale::GateVerdict::Keep) => {}
+                Err(reason) => {
+                    outcome
+                        .notes
+                        .push(format!("[图片未附加: {}: {}]", reason, url));
+                    continue;
+                }
             }
         }
-        let status = if replaced {
-            CandidateStatus::Ok {
-                size: std::fs::metadata(&attached_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0),
-            }
-        } else {
-            image_path_detector::verify(&path)
-        };
         match status {
             CandidateStatus::Ok { .. } => {
                 let key = image_path_detector::dedup_key(&attached_path);

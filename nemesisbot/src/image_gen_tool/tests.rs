@@ -159,6 +159,22 @@ fn sanitize_rel_accepts_normal_relative_paths() {
     assert_eq!(GenerateImageTool::sanitize_rel("a/../x.png"), None);
     assert_eq!(GenerateImageTool::sanitize_rel("dir/"), None);
     assert_eq!(GenerateImageTool::sanitize_rel("."), None);
+    // R841：段尾点/空格（Win32 归一族——落盘剥离后返回的 meta.path 指向
+    // 盘上不存在的文件名，下游按路径取资产必失败）。整串首尾空白已由
+    // trim 处理（" x.png " → "x.png" 仍放行），段尾空格只会出现在段中。
+    assert_eq!(GenerateImageTool::sanitize_rel("x.png."), None);
+    assert_eq!(GenerateImageTool::sanitize_rel("x.png.."), None);
+    assert_eq!(GenerateImageTool::sanitize_rel("..."), None);
+    assert_eq!(GenerateImageTool::sanitize_rel("a. /b.png"), None);
+    assert!(
+        GenerateImageTool::sanitize_rel("mockups.dir/x.png").is_some(),
+        "目录段含内部点合法不受影响"
+    );
+    assert_eq!(
+        GenerateImageTool::sanitize_rel("my.image.v2.png"),
+        Some(PathBuf::from("my.image.v2.png")),
+        "内部点合法不受影响"
+    );
     // 保留名全段（与 connectors/manifest.rs、skills/types.rs
     // 同类清单对齐——首版漏 com2-9/lpt2-9）。
     for r in ["com2", "com5", "com9", "lpt2", "lpt7", "lpt9"] {
