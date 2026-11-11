@@ -116,6 +116,27 @@ pub fn normalize_ipv4_mapped(ip: &IpAddr) -> IpAddr {
     }
 }
 
+/// RFC 4291 IPv4-compatible IPv6（`::a.b.c.d`：前六组全零、尾两节非零）
+/// 折叠为内嵌 IPv4；`::`（unspecified）与 `::1`（loopback）各由专属分类
+/// 承担，显式排除以保持其原语义。
+///
+/// [`normalize_ipv4_mapped`] 只折 `:ffff:0:0/96` 映射形态；兼容形态保持
+/// IPv6 会溜过全部 v4 分类段（`::7f00:1` 语义上命名的就是 127.0.0.1）。
+/// 现代 OS 已废弃不翻译该形态（连接层诚实失败），本折叠是分类完备性
+/// 韧化而非可达实害修复——同围栏自洽逻辑（BUG-20261111-076）。
+pub fn ipv4_compatible_of(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    let [a, b, c, d, e, f, hi, lo] = v6.segments();
+    if (a, b, c, d, e, f) == (0, 0, 0, 0, 0, 0) && (hi != 0 || lo > 1) {
+        return Some(Ipv4Addr::new(
+            (hi >> 8) as u8,
+            (hi & 0xff) as u8,
+            (lo >> 8) as u8,
+            (lo & 0xff) as u8,
+        ));
+    }
+    None
+}
+
 fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
     let octets = ip.octets();
 

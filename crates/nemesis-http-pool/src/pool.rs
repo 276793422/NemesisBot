@@ -182,7 +182,12 @@ impl ConnectionPool {
     /// ——原子性由调用方负责（board 资产面走 `.part` 临时名 + finalize
     /// 改名； 修正：旧注释宣称「原子落盘」与实现不符）。重定向行为
     /// 由传入的 client 决定（两个公开入口的唯一差异点）。
-    async fn download_file_capped_on(
+    ///
+    /// `pub`（R829）：board 资产拉取面自建 DNS 钉死 client（SSRF 防
+    /// rebinding TOCTOU——闸解析过的 IP 直接 resolve，连接不再走 DNS），
+    /// 经本方法复用有界下载，语义与 [`Self::download_file_capped_strict`]
+    /// 全同、仅 client 来源不同。
+    pub async fn download_file_capped_on(
         &self,
         client: &reqwest::Client,
         url: &str,

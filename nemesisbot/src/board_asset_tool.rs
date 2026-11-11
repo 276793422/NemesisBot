@@ -368,27 +368,49 @@ impl BoardAssetTool {
         let (url, expected_sha) =
             validate_fetch_params(node_url, asset_ref, asset_token, expires_at, sha256)?;
 
+        // SSRF 闸（R829：validate→fetch 双解析 rebinding TOCTOU 关闭）：
+        // 旧形态 `validate_url` 只在闸内解析一次，落 downloads 走共享池
+        // 再解析一次——两跳之间 DNS 可换面（闸放行公网 IP、连接落
+        // metadata/link-local）。与 loop_tools/connector 同款纪律：collect
+        // 返回验证过的 IP 集直接钉死 client，连接不再走 DNS。本面 guard
+        // 宽松（block_private/localhost=false，集群互拉本态），可绕类=
+        // metadata/link-local/reserved/CIDR——正是钉死要关的窗。
+        // Ok(空集)=白名单直通（无 IP 可钉）；security 关=无闸，strict 纪律
+        // （不跟随重定向）由下方调用承担。
         #[cfg(feature = "security")]
-        fetch_ssrf_guard()
-            .validate_url(&url)
-            .map_err(|e| format!("url blocked by ssrf guard: {e}"))?;
+        let pinned_client = match fetch_ssrf_guard().resolve_and_validate_collect(&url) {
+            Err(e) => return Err(format!("url blocked by ssrf guard: {e}")),
+            Ok(ips) if !ips.is_empty() => {
+                nemesis_agent::image_attach::build_pinned_no_redirect_client(
+                    &url,
+                    &ips,
+                    "nemesisbot-board-asset",
+                    std::time::Duration::from_secs(10),
+                    std::time::Duration::from_secs(30),
+                )
+            }
+            Ok(_) => None,
+        };
         #[cfg(not(feature = "security"))]
-        let _ = &url;
+        let pinned_client: Option<reqwest::Client> = None;
 
         let dest = self.assets_dir().join(format!("{asset_ref}.part"));
         let pool = nemesis_http_pool::pool::shared_pool();
         // HTTP 腿有界下载（Content-Length 预检 + 流式硬上限）——
         // 曾 resp.bytes() 无界缓冲，恶意/失控远端可把任意大响应灌进内存。
         // RPC 兜底腿自带 MAX_RPC_FETCH_BYTES 闸，两腿都有界。
-        // 走 strict（不跟随重定向）——上方 SSRF 闸只查本条
-        // 显式 URL，reqwest 默认策略自动跟随 ≤10 跳会把恶意 peer 的
-        // `302 → metadata/内网端点` 变成第二跳请求，整条绕闸（同类）。
-        // 资产 URL 是 peer 直连地址，重定向无合法用途；对端不可达走下方
-        // 连接级错误 → RPC 兜底，语义不受影响。
-        match pool
-            .download_file_capped_strict(&url, &dest.to_string_lossy(), max_bytes)
-            .await
-        {
+        // 走 strict（不跟随重定向）——reqwest 默认策略自动跟随 ≤10 跳
+        // 会把恶意 peer 的 `302 → metadata/内网端点` 变成第二跳请求，
+        // 整条绕闸（同类）。资产 URL 是 peer 直连地址，重定向无合法用途；
+        // 对端不可达走下方连接级错误 → RPC 兜底，语义不受影响。
+        let download = if let Some(client) = &pinned_client {
+            pool.download_file_capped_on(client, &url, &dest.to_string_lossy(), max_bytes)
+                .await
+        } else {
+            pool.download_file_capped_strict(&url, &dest.to_string_lossy(), max_bytes)
+                .await
+        };
+        match download {
             Ok(()) => {
                 let (final_path, size) = self.finalize_download(&dest, asset_ref, &expected_sha)?;
                 Ok(format!(
