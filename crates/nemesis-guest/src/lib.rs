@@ -346,8 +346,8 @@ pub fn frame_error_line(error: &str) -> String {
 
 /// 工作区边界判定（guest 栖息地 = musl Linux 的最小实现）：
 /// 相对路径 join workspace；绝对路径向上找最深的已存在祖先做
-/// canonicalize（写类工具目标尚不存在时也能判），余下后缀原样拼接，
-/// 前缀不在 workspace 内即拒绝。
+/// canonicalize（写类工具目标尚不存在时也能判），余下后缀原样拼接后
+/// 词法钳制（见 lex_clamp），前缀不在 workspace 内即拒绝。
 pub fn resolve_in_workspace(workspace: &Path, path: &str) -> Result<PathBuf, String> {
     let target = Path::new(path);
     let joined = if target.is_absolute() {
@@ -385,6 +385,9 @@ pub fn resolve_in_workspace(workspace: &Path, path: &str) -> Result<PathBuf, Str
 }
 
 fn check_prefix(resolved: PathBuf, workspace: &Path, original: &str) -> Result<PathBuf, String> {
+    // 重拼后缀可能携带未被内核吸收的 `..`（见 lex_clamp 文档）：先词法
+    // 钳制再判前缀；Ok 路径同样归一，钳制形态返回 ws 内真实路径。
+    let resolved = lex_clamp(resolved);
     let ws = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     if resolved.starts_with(&ws) {
         Ok(resolved)
@@ -393,6 +396,27 @@ fn check_prefix(resolved: PathBuf, workspace: &Path, original: &str) -> Result<P
             "access denied: path '{original}' is outside the workspace"
         ))
     }
+}
+
+/// 重拼路径的词法钳制：解释 `..`/`.`。POSIX VFS 逐组件解析，`..` 弹升
+/// 要求中间组件真实存在——目标组件不存在时爬升循环一路回退到已存在
+/// 锚点、后缀（含 `..`）原样重拼，内核从未吸收这些弹升；NT 对象管理器
+/// 则在词法层处理 `..`，两平台 canonicalize 语义分裂（R837 逃逸矩阵
+/// Windows 绿 / Linux 红的根因）。重拼结果必须词法钳制后再判前缀，
+/// 否则 `ws/a/../../p1.txt`（a 不存在）在 Linux 被原样放行逃出 workspace。
+fn lex_clamp(p: PathBuf) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // 根上再弹升：留在根（starts_with 必然判外）。
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
