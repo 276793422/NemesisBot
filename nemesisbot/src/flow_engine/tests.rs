@@ -1,6 +1,8 @@
 //! flow 引擎单测：状态机纯函数、FlowStore 投影、模板校验、取数解析、
-//! board 绑定（真 BoardStore 临时库）。引擎本体（tick/publish/report）依赖
-//! 常驻 AgentLoop，不在单测面（e2e 覆盖）。
+//! board 绑定（真 BoardStore 临时库），以及引擎本体（tick/answer/推进/
+//! 回写轮询/report/repo_sync——真 BoardStore + TaskDb + 临时工作区，
+//! agent loop 槽置空走停机窗口诚实报错路径）。需要常驻 AgentLoop 的
+//! connector 调用成功链路（取数响应解析、publish 交付执行）归 e2e 覆盖。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -2215,4 +2217,1919 @@ fn save_flow_step_success_leaves_no_degraded_entry() {
         "成功保存不得进降级登记表"
     );
     let _ = std::fs::remove_dir_all(&ws);
+}
+
+// ---------------------------------------------------------------------------
+// 引擎本体（真 BoardStore + TaskDb + 临时工作区；agent loop 槽置空 = 停机
+// 窗口诚实报错路径。需要常驻 AgentLoop 的 connector 成功链路归 e2e）
+// ---------------------------------------------------------------------------
+
+/// 引擎夹具：独立临时树（base/ws 工作区、base/home 主目录、
+/// base/plugins_wasm 载荷目录）。workspace.parent() 即 base——运行期总闸
+/// 读 base/config.json，默认缺席 = 总闸开；总闸关的用例显式写 enabled=false。
+/// FlowEngine 用结构体直构（测试是子模块）：plugins_dir 指向本用例临时目录，
+/// 不碰全局解析面。
+struct EngineFixture {
+    base: PathBuf,
+    ws: PathBuf,
+    plugins_dir: PathBuf,
+    engine: Arc<FlowEngine>,
+    store: Arc<BoardStore>,
+    flows: FlowStore,
+}
+
+fn make_engine(tag: &str, runtime_on: bool) -> EngineFixture {
+    let base = temp_ws(tag);
+    let ws = base.join("ws");
+    let home = base.join("home");
+    let plugins_dir = base.join("plugins_wasm");
+    let cfg_dir = ws.join("config");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    if !runtime_on {
+        // 总闸关：workspace.parent() 的 config.json 声明 plugins.wasm 关。
+        std::fs::write(
+            base.join("config.json"),
+            r#"{"plugins": {"wasm": {"enabled": false}}}"#,
+        )
+        .unwrap();
+    }
+    let store = Arc::new(BoardStore::open(&ws.join("board").join("board.db"), "NB").unwrap());
+    let db = nemesis_taskstore::TaskDb::open(&home.join("tasks.db")).unwrap();
+    #[cfg(feature = "cluster")]
+    let cluster: ClusterOwned = None;
+    #[cfg(not(feature = "cluster"))]
+    let cluster: ClusterOwned = ();
+    let engine = Arc::new(FlowEngine {
+        agent_loop_ref: Arc::new(parking_lot::RwLock::new(None)),
+        store: Arc::clone(&store),
+        db,
+        workspace: ws.clone(),
+        home,
+        plugins_dir: plugins_dir.clone(),
+        config_dir: cfg_dir,
+        estop: Arc::new(EstopState::new()),
+        plugin_manager: None,
+        cluster,
+        flows: FlowStore::new(&ws),
+        actions: tokio::sync::Mutex::new(()),
+        templates: tokio::sync::Mutex::new(TemplatesCache {
+            stamp: (0, 0),
+            templates: Vec::new(),
+        }),
+        last_fetch: tokio::sync::Mutex::new(HashMap::new()),
+        writeback_failures: std::sync::Mutex::new(HashMap::new()),
+    });
+    let flows = FlowStore::new(&ws);
+    EngineFixture {
+        base,
+        ws,
+        plugins_dir,
+        engine,
+        store,
+        flows,
+    }
+}
+
+/// 写一个最小可装载的插件声明（载荷目录形态同 scan 夹具）。非 panel kind
+/// 必须带 wasm-sha256（guest 载荷强制）——`payload` 参数控制是否声明。
+fn write_plugin_toml(
+    plugins_dir: &Path,
+    slug: &str,
+    kind: &str,
+    payload: bool,
+    flow_section: &str,
+) {
+    let dir = plugins_dir.join(slug);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut doc = format!(
+        "api-version = 1\nslug = \"{slug}\"\nkind = \"{kind}\"\nname = \"{slug}\"\nversion = \"0.1.0\"\n"
+    );
+    if payload {
+        doc.push_str(&format!("wasm-sha256 = \"{}\"\n", "ab".repeat(32)));
+    }
+    if kind == "panel" {
+        doc.push_str(&format!(
+            "\n[[ui.page]]\nroute = \"{slug}\"\ntitle = \"{slug}\"\n"
+        ));
+    }
+    if !flow_section.is_empty() {
+        doc.push('\n');
+        doc.push_str(flow_section);
+    }
+    std::fs::write(dir.join("plugin.toml"), doc).unwrap();
+}
+
+/// 覆盖开关文件（整文件重写——各用例独立临时 config 目录）。
+fn enable_switches(cfg_dir: &Path, body: &str) {
+    std::fs::write(cfg_dir.join("config.plugin.wasm.json"), body).unwrap();
+}
+
+/// 引擎用面板模板声明（fetch 首步 + 可调 interval）。
+fn panel_flow_section(interval_secs: u64) -> String {
+    format!(
+        "[[flow.template]]\nid = \"tpl\"\ninterval-secs = {interval_secs}\norigin-type = \"fe\"\norigin-id = \"fe/{{{{key}}}}\"\n\n[[flow.template.steps]]\nid = \"fetch\"\nkind = \"connector_fetch\"\n"
+    )
+}
+
+#[tokio::test]
+async fn answer_views_full_cycle() {
+    let fx = make_engine("answer", true);
+    write_plugin_toml(
+        &fx.plugins_dir,
+        "ans-sample",
+        "panel",
+        false,
+        &panel_flow_section(0),
+    );
+    enable_switches(
+        &fx.ws.join("config"),
+        r#"{ "plugins": { "ans-sample": { "enabled": true } } }"#,
+    );
+
+    // gate 待确认 / 停车两类实例。
+    let mut gate = inst_with_steps("tpl", &[("deliver", KIND_PUBLISH, "manual", "")]);
+    gate.instance = "GA".to_string();
+    fx.flows.save(&gate).unwrap();
+    let mut parked = inst_with_steps("tpl", &[("a", KIND_LAND, "", "park_human")]);
+    parked.instance = "PB".to_string();
+    parked.parked = Some("失败".to_string());
+    fx.flows.save(&parked).unwrap();
+
+    let list = fx.engine.answer("tpl", "list", &json!({})).await.unwrap();
+    assert_eq!(list["rows"].as_array().unwrap().len(), 2);
+    let detail = fx
+        .engine
+        .answer("tpl", "detail", &json!({"instance": "GA"}))
+        .await
+        .unwrap();
+    assert_eq!(detail["instance"], "GA");
+    assert_eq!(detail["state"], "awaiting_gate");
+    let tl = fx
+        .engine
+        .answer("tpl", "timeline", &json!({"instance": "PB"}))
+        .await
+        .unwrap();
+    assert!(tl["events"].as_array().unwrap().len() >= 1);
+
+    let ok = fx
+        .engine
+        .answer("tpl", "confirm", &json!({"instance": "GA"}))
+        .await
+        .unwrap();
+    assert_eq!(ok["ok"], true);
+    assert!(fx.flows.load("tpl", "GA").unwrap().steps[0].gate_confirmed);
+    let ok = fx
+        .engine
+        .answer("tpl", "resume", &json!({"instance": "PB"}))
+        .await
+        .unwrap();
+    assert_eq!(ok["ok"], true);
+    assert!(fx.flows.load("tpl", "PB").unwrap().parked.is_none());
+
+    // 未知 view / 未知模板（含所属插件禁用语义）诚实拒绝。
+    let err = fx
+        .engine
+        .answer("tpl", "nope", &json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("未知 flow view"), "{err}");
+    let err = fx
+        .engine
+        .answer("ghost", "list", &json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("不存在"), "{err}");
+}
+
+#[tokio::test]
+async fn answer_blocks_when_runtime_disabled() {
+    let fx = make_engine("answer-off", false);
+    let err = fx
+        .engine
+        .answer("tpl", "list", &json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("已关闭"), "{err}");
+}
+
+#[tokio::test]
+async fn flow_bridge_delegates_to_answer() {
+    let fx = make_engine("bridge", false);
+    use nemesis_web::handlers::plugins_wasm::FlowEngineBridge as _;
+    let bridge = FlowBridge::new(Arc::clone(&fx.engine));
+    let err = bridge.invoke("tpl", "list", &json!({})).await.unwrap_err();
+    assert!(err.contains("已关闭"), "{err}");
+}
+
+#[tokio::test]
+async fn answer_fetch_missing_template_errors() {
+    let fx = make_engine("fetchghost", true);
+    let err = fx.engine.answer_fetch("ghost").await.unwrap_err();
+    assert!(err.contains("流程模板不存在"), "{err}");
+}
+
+#[tokio::test]
+async fn tick_is_noop_when_runtime_disabled() {
+    let fx = make_engine("tick-off", false);
+    fx.engine.tick().await.unwrap();
+}
+
+#[tokio::test]
+async fn tick_without_templates_is_noop() {
+    let fx = make_engine("tick-empty", true);
+    fx.engine.tick().await.unwrap();
+}
+
+#[tokio::test]
+async fn tick_fetch_due_advance_and_writeback_loops() {
+    let fx = make_engine("tick", true);
+    write_plugin_toml(
+        &fx.plugins_dir,
+        "tick-sample",
+        "panel",
+        false,
+        &panel_flow_section(60),
+    );
+    // 只手动模板（interval 0）→ fetch 循环跳过；回写订阅模板但身份声明
+    // 引用未知 token → 回写轮询诚实报错（tick 内 warn 不上抛）。
+    write_plugin_toml(
+        &fx.plugins_dir,
+        "tick-idle",
+        "panel",
+        false,
+        &panel_flow_section(0),
+    );
+    write_plugin_toml(
+        &fx.plugins_dir,
+        "tick-wb",
+        "panel",
+        false,
+        "[[flow.template]]\nid = \"tpl\"\ninterval-secs = 0\norigin-type = \"fe\"\norigin-id = \"fe/{{arg.missing}}\"\n\n[flow.template.on-transition]\nop = \"issue_comment\"\n\n[[flow.template.steps]]\nid = \"fetch\"\nkind = \"connector_fetch\"\n",
+    );
+    enable_switches(
+        &fx.ws.join("config"),
+        r#"{ "plugins": { "tick-sample": { "enabled": true }, "tick-idle": { "enabled": true }, "tick-wb": { "enabled": true } } }"#,
+    );
+    // 第一轮：到期 → fetch（缺 connector 声明 → warn 不上抛）→ 推进/回写
+    // 空转 → Ok。
+    fx.engine.tick().await.unwrap();
+    // 第二轮：模板缓存命中 + interval 闸未到期 → 零动作 Ok。
+    fx.engine.tick().await.unwrap();
+    // 手动 fetch 代答：命中模板并撞上声明校验（诚实报错）。
+    let err = fx
+        .engine
+        .answer("tpl", "fetch", &json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("缺 connector/op 声明"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// fetch_template 声明校验 + connector/plugin 取数失败面
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn fetch_template_declaration_validation_faces() {
+    let fx = make_engine("fetch-decl", true);
+    // 无步骤。
+    let d0 = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("f0", &[]),
+    };
+    let err = fx.engine.fetch_template(&d0).await.unwrap_err();
+    assert!(err.contains("无步骤"), "{err}");
+    // 首步不是取数入口。
+    let d1 = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("f1", &[KIND_LAND]),
+    };
+    let err = fx.engine.fetch_template(&d1).await.unwrap_err();
+    assert!(err.contains("首步必须是"), "{err}");
+    // 缺 connector/op 声明。
+    let d2 = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("f2", &[KIND_FETCH]),
+    };
+    let err = fx.engine.fetch_template(&d2).await.unwrap_err();
+    assert!(err.contains("缺 connector/op"), "{err}");
+    // args_json 非法 JSON。
+    let mut d3 = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("f3", &[KIND_FETCH]),
+    };
+    d3.template.steps[0].args = BTreeMap::from([
+        ("connector".to_string(), "jira".to_string()),
+        ("op".to_string(), "list".to_string()),
+        ("args_json".to_string(), "{ not json".to_string()),
+    ]);
+    let err = fx.engine.fetch_template(&d3).await.unwrap_err();
+    assert!(err.contains("args_json 非法"), "{err}");
+    // 分页形态 args_json 必须是对象。
+    let mut d4 = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("f4", &[KIND_FETCH]),
+    };
+    d4.template.steps[0].args = BTreeMap::from([
+        ("connector".to_string(), "jira".to_string()),
+        ("op".to_string(), "list".to_string()),
+        ("args_json".to_string(), "[]".to_string()),
+        ("page_size".to_string(), "2".to_string()),
+        ("limit_key".to_string(), "per_page".to_string()),
+        ("page_key".to_string(), "p".to_string()),
+    ]);
+    let err = fx.engine.fetch_template(&d4).await.unwrap_err();
+    assert!(err.contains("必须是对象"), "{err}");
+}
+
+#[tokio::test]
+async fn fetch_template_connector_and_plugin_fetch_faces() {
+    let fx = make_engine("fetch-conn", true);
+    // 单页：connector 调用撞 agent loop 停机窗口 → 诚实 Err。
+    let mut d = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("fc", &[KIND_FETCH]),
+    };
+    d.template.steps[0].args = BTreeMap::from([
+        ("connector".to_string(), "jira".to_string()),
+        ("op".to_string(), "issues".to_string()),
+    ]);
+    let err = fx.engine.fetch_template(&d).await.unwrap_err();
+    assert!(err.contains("agent loop 已停止"), "{err}");
+    // 分页形态：第一页同窗口失败上抛。
+    d.template.steps[0]
+        .args
+        .insert("page_size".to_string(), "2".to_string());
+    let err = fx.engine.fetch_template(&d).await.unwrap_err();
+    assert!(err.contains("agent loop 已停止"), "{err}");
+    // plugin fetch：子系统未装配诚实失败。
+    let dp = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("fp", &["plugin:fe-plugin:fetch"]),
+    };
+    let err = fx.engine.fetch_template(&dp).await.unwrap_err();
+    assert!(err.contains("子系统未装配"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// 推进器：when 条件步 / gate / 发起与观察全路径
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn advance_template_when_gate_and_completed_faces() {
+    let fx = make_engine("advance", true);
+    // 条件成立 → land 同 tick 完成（真 board 单）。
+    let mut w1 = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+    w1.instance = "W1".to_string();
+    w1.steps[0].when = "1 == 1".to_string();
+    fx.flows.save(&w1).unwrap();
+    // 条件不成立 → Skipped 同 tick 推进。
+    let mut w2 = inst_with_steps(
+        "tpl",
+        &[("land", KIND_LAND, "", ""), ("rep", KIND_REPORT, "", "")],
+    );
+    w2.instance = "W2".to_string();
+    w2.steps[0].when = "1 == 2".to_string();
+    fx.flows.save(&w2).unwrap();
+    // 条件式畸形 → 失败停车（诚实不静默）。
+    let mut w3 = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+    w3.instance = "W3".to_string();
+    w3.steps[0].when = "junk".to_string();
+    fx.flows.save(&w3).unwrap();
+    // 条件成立但 manual gate 未放行 → 原地等待。
+    let mut w4 = inst_with_steps("tpl", &[("pub", KIND_PUBLISH, "manual", "")]);
+    w4.instance = "W4".to_string();
+    w4.steps[0].when = "1 == 1".to_string();
+    fx.flows.save(&w4).unwrap();
+    // 无条件 gate 未确认 → 原地等待。
+    let mut w5 = inst_with_steps("tpl", &[("pub", KIND_PUBLISH, "manual", "")]);
+    w5.instance = "W5".to_string();
+    fx.flows.save(&w5).unwrap();
+    // 已完成 / 停车实例跳过。
+    let mut w6 = inst_with_steps("tpl", &[("done", KIND_LAND, "", "")]);
+    w6.instance = "W6".to_string();
+    w6.steps[0].status = StepStatus::Ok;
+    fx.flows.save(&w6).unwrap();
+    let mut w7 = inst_with_steps("tpl", &[("p", KIND_LAND, "", "")]);
+    w7.instance = "W7".to_string();
+    w7.parked = Some("x".to_string());
+    fx.flows.save(&w7).unwrap();
+    // 观察步 Pending（无 gate）→ 发起转 Running（等后续 tick 观察）。
+    let mut w8 = inst_with_steps("tpl", &[("reg", KIND_REGRESS, "", "")]);
+    w8.instance = "W8".to_string();
+    fx.flows.save(&w8).unwrap();
+    // land 带已注册项目归属 → 完成；带未注册项目 → 诚实失败停车。
+    // （ext_key 各自独立——同 origin 幂等去重会遮蔽项目查找分支。）
+    fx.store
+        .create_project("adv-proj", "测试", None, "", "", None, None)
+        .unwrap();
+    let mut w9 = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+    w9.instance = "W9".to_string();
+    w9.ext_key = "EXT-9".to_string();
+    w9.steps[0]
+        .args
+        .insert("project".to_string(), "adv-proj".to_string());
+    fx.flows.save(&w9).unwrap();
+    let mut w10 = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+    w10.instance = "W10".to_string();
+    w10.ext_key = "EXT-10".to_string();
+    w10.steps[0]
+        .args
+        .insert("project".to_string(), "adv-ghost".to_string());
+    fx.flows.save(&w10).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let w1 = fx.flows.load("tpl", "W1").unwrap();
+    assert_eq!(w1.current_step, 1);
+    assert_eq!(w1.steps[0].status, StepStatus::Ok);
+    assert!(w1.steps[0].artifacts["board_issue"].as_str().is_some());
+    let w2 = fx.flows.load("tpl", "W2").unwrap();
+    assert_eq!(w2.steps[0].status, StepStatus::Skipped);
+    assert_eq!(w2.current_step, 1);
+    assert_eq!(w2.steps[0].artifacts["skipped_when"], "1 == 2");
+    let w3 = fx.flows.load("tpl", "W3").unwrap();
+    assert_eq!(w3.steps[0].status, StepStatus::Failed);
+    assert!(
+        w3.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("条件式畸形")
+    );
+    let w4 = fx.flows.load("tpl", "W4").unwrap();
+    assert_eq!(w4.current_step, 0);
+    assert_eq!(w4.steps[0].status, StepStatus::Pending);
+    let w5 = fx.flows.load("tpl", "W5").unwrap();
+    assert_eq!(w5.current_step, 0);
+    // W6/W7 未被推动。
+    let w6 = fx.flows.load("tpl", "W6").unwrap();
+    assert_eq!(w6.current_step, 0);
+    let w8 = fx.flows.load("tpl", "W8").unwrap();
+    assert_eq!(w8.steps[0].status, StepStatus::Running);
+    assert!(w8.steps[0].started_at_ms.is_some());
+    let w9 = fx.flows.load("tpl", "W9").unwrap();
+    assert_eq!(w9.steps[0].status, StepStatus::Ok);
+    let w10 = fx.flows.load("tpl", "W10").unwrap();
+    assert!(
+        w10.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("项目不存在")
+    );
+}
+
+#[tokio::test]
+async fn start_step_unknown_and_repo_sync_validation_park() {
+    let fx = make_engine("start", true);
+    // 未知 kind 不可由推进器启动。
+    let mut u = inst_with_steps("tpl", &[("m", "mystery", "", "")]);
+    u.instance = "U".to_string();
+    fx.flows.save(&u).unwrap();
+    // repo_sync 缺 project。
+    let mut r1 = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    r1.instance = "R1".to_string();
+    fx.flows.save(&r1).unwrap();
+    // repo_sync 缺 url。
+    let mut r2 = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    r2.instance = "R2".to_string();
+    r2.steps[0]
+        .args
+        .insert("project".to_string(), "x".to_string());
+    fx.flows.save(&r2).unwrap();
+    // fixloop：Backlog + 派发不成行 → 停车。
+    let _issue = board_issue_for(&fx.store, "修", "ST-1");
+    let mut f1 = inst_with_steps("tpl", &[("fix", KIND_FIXLOOP, "", "")]);
+    f1.instance = "F1".to_string();
+    f1.ext_key = "ST-1".to_string();
+    fx.flows.save(&f1).unwrap();
+    // fixloop：Blocked 单不可派发（停车/取消单不自动续跑）。
+    let issue2 = board_issue_for(&fx.store, "修二", "ST-2");
+    fx.store
+        .transition_issue(
+            issue2.id,
+            nemesis_board::models::IssueStatus::Blocked,
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+    let mut f2 = inst_with_steps("tpl", &[("fix", KIND_FIXLOOP, "", "")]);
+    f2.instance = "F2".to_string();
+    f2.ext_key = "ST-2".to_string();
+    fx.flows.save(&f2).unwrap();
+    // fixloop：单已在执行中 → 观察态直通发起（转 Running 等观察）。
+    let issue3 = board_issue_for(&fx.store, "修三", "ST-3");
+    fx.store
+        .transition_issue(
+            issue3.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+    let mut f3 = inst_with_steps("tpl", &[("fix", KIND_FIXLOOP, "", "")]);
+    f3.instance = "F3".to_string();
+    f3.ext_key = "ST-3".to_string();
+    fx.flows.save(&f3).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let u = fx.flows.load("tpl", "U").unwrap();
+    assert!(
+        u.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("不可由推进器启动")
+    );
+    let r1 = fx.flows.load("tpl", "R1").unwrap();
+    assert!(
+        r1.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("缺 project")
+    );
+    let r2 = fx.flows.load("tpl", "R2").unwrap();
+    assert!(r2.parked.as_deref().unwrap_or_default().contains("缺 url"));
+    let f1 = fx.flows.load("tpl", "F1").unwrap();
+    assert!(
+        f1.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("派发未成行")
+    );
+    let f2 = fx.flows.load("tpl", "F2").unwrap();
+    assert!(
+        f2.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("不可派发")
+    );
+    let f3 = fx.flows.load("tpl", "F3").unwrap();
+    assert_eq!(f3.steps[0].status, StepStatus::Running);
+    assert!(f3.parked.is_none());
+}
+
+#[tokio::test]
+async fn poll_step_observation_completion_and_restart() {
+    let fx = make_engine("poll", true);
+    let actor = nemesis_board::Actor::system("tests");
+
+    // PL1 fixloop 执行中 → StillRunning 静默保 Running。
+    let issue1 = board_issue_for(&fx.store, "修1", "PL-1");
+    fx.store
+        .transition_issue(
+            issue1.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    let mut p1 = inst_with_steps("tpl", &[("fix", KIND_FIXLOOP, "", "")]);
+    p1.instance = "PL1".to_string();
+    p1.ext_key = "PL-1".to_string();
+    p1.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p1).unwrap();
+    // PL2 fixloop InReview → 工作交付完成。
+    let issue2 = board_issue_for(&fx.store, "修2", "PL-2");
+    fx.store
+        .transition_issue(
+            issue2.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    fx.store
+        .transition_issue(
+            issue2.id,
+            nemesis_board::models::IssueStatus::InReview,
+            &actor,
+        )
+        .unwrap();
+    let mut p2 = inst_with_steps("tpl", &[("fix", KIND_FIXLOOP, "", "")]);
+    p2.instance = "PL2".to_string();
+    p2.ext_key = "PL-2".to_string();
+    p2.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p2).unwrap();
+    // PL3 regress Done → 验收成立。
+    let issue3 = board_issue_for(&fx.store, "修3", "PL-3");
+    fx.store
+        .transition_issue(
+            issue3.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    fx.store
+        .transition_issue(
+            issue3.id,
+            nemesis_board::models::IssueStatus::InReview,
+            &actor,
+        )
+        .unwrap();
+    fx.store
+        .transition_issue(issue3.id, nemesis_board::models::IssueStatus::Done, &actor)
+        .unwrap();
+    let mut p3 = inst_with_steps("tpl", &[("reg", KIND_REGRESS, "", "")]);
+    p3.instance = "PL3".to_string();
+    p3.ext_key = "PL-3".to_string();
+    p3.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p3).unwrap();
+    // PL4 publish 无派发记录 → 停车。
+    let _issue4 = board_issue_for(&fx.store, "发布", "PL-4");
+    let mut p4 = inst_with_steps("tpl", &[("pub", KIND_PUBLISH, "", "")]);
+    p4.instance = "PL4".to_string();
+    p4.ext_key = "PL-4".to_string();
+    p4.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p4).unwrap();
+    // PL5 land Running → 幂等重跑（重启恢复路径）同 tick 完成。
+    let mut p5 = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+    p5.instance = "PL5".to_string();
+    p5.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p5).unwrap();
+    // PL6 未知 kind 观察 → 诚实失败。
+    let mut p6 = inst_with_steps("tpl", &[("m", "mystery", "", "")]);
+    p6.instance = "PL6".to_string();
+    p6.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p6).unwrap();
+    // PL7/PL8 取数身份找不到 board 单 → 观察步诚实失败（fixloop / regress）。
+    let mut p7 = inst_with_steps("tpl", &[("fix", KIND_FIXLOOP, "", "")]);
+    p7.instance = "PL7".to_string();
+    p7.ext_key = "NOPE-7".to_string();
+    p7.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p7).unwrap();
+    let mut p8 = inst_with_steps("tpl", &[("reg", KIND_REGRESS, "", "")]);
+    p8.instance = "PL8".to_string();
+    p8.ext_key = "NOPE-8".to_string();
+    p8.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p8).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let p1 = fx.flows.load("tpl", "PL1").unwrap();
+    assert_eq!(p1.steps[0].status, StepStatus::Running);
+    assert!(p1.parked.is_none());
+    let p2 = fx.flows.load("tpl", "PL2").unwrap();
+    assert_eq!(p2.steps[0].status, StepStatus::Ok);
+    assert_eq!(p2.steps[0].artifacts["delivered"], true);
+    assert_eq!(p2.current_step, 1);
+    let p3 = fx.flows.load("tpl", "PL3").unwrap();
+    assert_eq!(p3.steps[0].artifacts["verdict"], "accepted");
+    let p4 = fx.flows.load("tpl", "PL4").unwrap();
+    assert!(
+        p4.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("无派发记录")
+    );
+    let p5 = fx.flows.load("tpl", "PL5").unwrap();
+    assert_eq!(p5.steps[0].status, StepStatus::Ok);
+    assert!(p5.steps[0].artifacts["board_issue"].as_str().is_some());
+    let p6 = fx.flows.load("tpl", "PL6").unwrap();
+    assert!(
+        p6.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("未知 step kind")
+    );
+    let p7 = fx.flows.load("tpl", "PL7").unwrap();
+    assert!(
+        p7.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("未落 board 单")
+    );
+    let p8 = fx.flows.load("tpl", "PL8").unwrap();
+    assert!(
+        p8.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("未落 board 单")
+    );
+}
+
+#[tokio::test]
+async fn poll_step_publish_with_dispatch_hits_stopped_agent_loop() {
+    let fx = make_engine("pubpoll", true);
+    let issue = board_issue_for(&fx.store, "发布", "PD-1");
+    fx.store
+        .insert_dispatch(
+            "task-1",
+            issue.id,
+            "worker-1",
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+    let mut p = inst_with_steps("tpl", &[("pub", KIND_PUBLISH, "", "")]);
+    p.instance = "PD1".to_string();
+    p.ext_key = "PD-1".to_string();
+    p.steps[0].status = StepStatus::Running;
+    p.steps[0].args = BTreeMap::from([
+        ("create_op".to_string(), "create_pull".to_string()),
+        ("create_args".to_string(), r#"{"head":"h"}"#.to_string()),
+        ("result_ref".to_string(), "$.number".to_string()),
+        ("reconcile_op".to_string(), "pr_list".to_string()),
+        (
+            "reconcile_args".to_string(),
+            r#"{"state":"all"}"#.to_string(),
+        ),
+        ("reconcile_match".to_string(), "$.head.ref == h".to_string()),
+        ("connector".to_string(), "gitea".to_string()),
+        ("owner".to_string(), "acme".to_string()),
+        ("repo".to_string(), "durfmt".to_string()),
+    ]);
+    fx.flows.save(&p).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let p = fx.flows.load("tpl", "PD1").unwrap();
+    assert!(
+        p.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("agent loop 已停止"),
+        "parked: {:?}",
+        p.parked
+    );
+    // 协议声明面已消费：产物未推进（停车在发布执行前）。
+    assert_eq!(p.current_step, 0);
+}
+
+#[tokio::test]
+async fn poll_step_report_export_and_reply_faces() {
+    let fx = make_engine("report", true);
+    // R1 纯导出 → 完成 + report_path 产物。派发记录在场 → dossier usage
+    // 闭包真实求值。
+    let issue1 = board_issue_for(&fx.store, "报告", "RP-1");
+    fx.store
+        .insert_dispatch(
+            "task-rp1",
+            issue1.id,
+            "worker-1",
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+    let mut r1 = inst_with_steps("tpl", &[("rep", KIND_REPORT, "", "")]);
+    r1.instance = "R1".to_string();
+    r1.ext_key = "RP-1".to_string();
+    r1.steps[0].status = StepStatus::Running;
+    fx.flows.save(&r1).unwrap();
+    // R2 connector 回帖 → agent loop 停机 → 报告已导出但回帖失败。
+    let issue2 = board_issue_for(&fx.store, "报告2", "RP-2");
+    let mut r2 = inst_with_steps("tpl", &[("rep", KIND_REPORT, "", "")]);
+    r2.instance = "R2".to_string();
+    r2.ext_key = "RP-2".to_string();
+    r2.steps[0].status = StepStatus::Running;
+    r2.steps[0].args = BTreeMap::from([
+        ("connector".to_string(), "jira".to_string()),
+        ("op".to_string(), "issue_comment".to_string()),
+        (
+            "args_json".to_string(),
+            r#"{"body":"done {{report_path}}"}"#.to_string(),
+        ),
+    ]);
+    fx.flows.save(&r2).unwrap();
+    // R3 plugin 引用回帖 + 子系统未装配。
+    let issue3 = board_issue_for(&fx.store, "报告3", "RP-3");
+    let mut r3 = inst_with_steps("tpl", &[("rep", KIND_REPORT, "", "")]);
+    r3.instance = "R3".to_string();
+    r3.ext_key = "RP-3".to_string();
+    r3.steps[0].status = StepStatus::Running;
+    r3.steps[0].args.insert(
+        "connector".to_string(),
+        "plugin:fe-plugin:comment".to_string(),
+    );
+    fx.flows.save(&r3).unwrap();
+    // R4 plugin 引用非法。
+    let issue4 = board_issue_for(&fx.store, "报告4", "RP-4");
+    let mut r4 = inst_with_steps("tpl", &[("rep", KIND_REPORT, "", "")]);
+    r4.instance = "R4".to_string();
+    r4.ext_key = "RP-4".to_string();
+    r4.steps[0].status = StepStatus::Running;
+    r4.steps[0]
+        .args
+        .insert("connector".to_string(), "plugin:bad".to_string());
+    fx.flows.save(&r4).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let r1 = fx.flows.load("tpl", "R1").unwrap();
+    assert_eq!(r1.steps[0].status, StepStatus::Ok);
+    assert!(
+        r1.steps[0].artifacts["report_path"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("dossiers")
+    );
+    assert!(r1.steps[0].artifacts["issues"].as_i64().unwrap() >= 1);
+    let _ = issue1;
+    let r2 = fx.flows.load("tpl", "R2").unwrap();
+    assert!(
+        r2.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("报告已导出但回帖失败")
+    );
+    let _ = issue2;
+    let r3 = fx.flows.load("tpl", "R3").unwrap();
+    assert!(
+        r3.parked.as_deref().unwrap_or_default().contains("未装配"),
+        "parked: {:?}",
+        r3.parked
+    );
+    let _ = issue3;
+    let r4 = fx.flows.load("tpl", "R4").unwrap();
+    assert!(
+        r4.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("plugin 引用非法")
+    );
+    let _ = issue4;
+}
+
+#[tokio::test]
+async fn plugin_step_without_subsystem_fails_honestly() {
+    let fx = make_engine("plugstep", true);
+    // Pending 发起 → 子系统未装配 → 停车。
+    let mut p1 = inst_with_steps("tpl", &[("run", "plugin:fe-plugin:echo", "", "")]);
+    p1.instance = "PG1".to_string();
+    fx.flows.save(&p1).unwrap();
+    // Running 轮询重投 → 同样诚实失败。
+    let mut p2 = inst_with_steps("tpl", &[("run", "plugin:fe-plugin:echo", "", "")]);
+    p2.instance = "PG2".to_string();
+    p2.steps[0].status = StepStatus::Running;
+    fx.flows.save(&p2).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let p1 = fx.flows.load("tpl", "PG1").unwrap();
+    assert!(
+        p1.parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("投递失败")
+    );
+    assert!(p1.parked.as_deref().unwrap_or_default().contains("未装配"));
+    let p2 = fx.flows.load("tpl", "PG2").unwrap();
+    assert!(p2.parked.is_some());
+}
+
+#[tokio::test]
+async fn repo_sync_clones_local_repository() {
+    let fx = make_engine("reposync", true);
+    // 本地源仓（git2 真仓夹具；ensure_repo 自带首笔基线 commit）。
+    let src = fx.base.join("src-repo");
+    std::fs::create_dir_all(&src).unwrap();
+    nemesis_board::git_repo::ensure_repo(&src).unwrap();
+    std::fs::write(src.join("README.md"), "seed").unwrap();
+    let head = nemesis_board::git_repo::commit_worktree(&src, "seed")
+        .unwrap()
+        .expect("seed commit");
+    // 项目注册：directory 指向尚未存在的目标目录。
+    let dest = fx.base.join("repo-dest");
+    fx.store
+        .create_project(
+            "fe-proj",
+            "测试项目",
+            None,
+            "",
+            "",
+            Some(&dest.to_string_lossy()),
+            None,
+        )
+        .unwrap();
+    let dest2 = fx.base.join("repo-dest2");
+    fx.store
+        .create_project(
+            "fe-cred",
+            "凭据项目",
+            None,
+            "",
+            "",
+            Some(&dest2.to_string_lossy()),
+            None,
+        )
+        .unwrap();
+    // 无目录项目。
+    fx.store
+        .create_project("fe-nodir", "无目录", None, "", "", None, None)
+        .unwrap();
+
+    // OK：克隆成功（匿名，默认分支 → "(default)"）。
+    let mut ok = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    ok.instance = "RSOK".to_string();
+    ok.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-proj".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+    ]);
+    fx.flows.save(&ok).unwrap();
+    // 凭据别名缺席 → 匿名降级 → 仍克隆成功。
+    let mut cred = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    cred.instance = "RSCRED".to_string();
+    cred.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-cred".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+        ("cred_secret".to_string(), "plugin/fe/pat".to_string()),
+    ]);
+    fx.flows.save(&cred).unwrap();
+    // 凭据别名在场且 vault 可解析 → 带凭据继续（本地克隆凭据只是挂件）。
+    let vault_path = nemesis_path::resolve_vault_path_in_workspace(&fx.ws);
+    crate::vault_runtime::write_alias_at(&vault_path, "plugin/fe/pat", "pat-value").unwrap();
+    // 空值别名 → 凭据解析空 → 匿名降级（诚实不猜）。
+    crate::vault_runtime::write_alias_at(&vault_path, "plugin/fe/empty", "").unwrap();
+    let dest3 = fx.base.join("repo-dest3");
+    fx.store
+        .create_project(
+            "fe-vault",
+            "vault 凭据项目",
+            None,
+            "",
+            "",
+            Some(&dest3.to_string_lossy()),
+            None,
+        )
+        .unwrap();
+    let mut cred_ok = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    cred_ok.instance = "RSVAULT".to_string();
+    cred_ok.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-vault".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+        ("cred_secret".to_string(), "plugin/fe/pat".to_string()),
+        ("cred_user".to_string(), "bot".to_string()),
+    ]);
+    fx.flows.save(&cred_ok).unwrap();
+    // 空值凭据别名 → 匿名降级 → 克隆成功。
+    let dest4 = fx.base.join("repo-dest4");
+    fx.store
+        .create_project(
+            "fe-empty",
+            "空凭据项目",
+            None,
+            "",
+            "",
+            Some(&dest4.to_string_lossy()),
+            None,
+        )
+        .unwrap();
+    let mut cred_empty = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    cred_empty.instance = "RSEMPTY".to_string();
+    cred_empty.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-empty".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+        ("cred_secret".to_string(), "plugin/fe/empty".to_string()),
+    ]);
+    fx.flows.save(&cred_empty).unwrap();
+    // 声明分支 dev（本地源仓先行建分支）→ 全新目录克隆后检出 → Checkout。
+    nemesis_board::git_repo::branch_at_head(&src, "dev").unwrap();
+    let dest5 = fx.base.join("repo-dest5");
+    fx.store
+        .create_project(
+            "fe-br",
+            "分支项目",
+            None,
+            "",
+            "",
+            Some(&dest5.to_string_lossy()),
+            None,
+        )
+        .unwrap();
+    let mut br = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    br.instance = "RSBR".to_string();
+    br.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-br".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+        ("branch".to_string(), "dev".to_string()),
+    ]);
+    fx.flows.save(&br).unwrap();
+    // 远端不可达（无 TLS 后端 → https 传输直接报错）→ 同步失败停车。
+    let mut bad = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    bad.instance = "RSBAD".to_string();
+    bad.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-proj".to_string()),
+        ("url".to_string(), "https://nope.invalid/x.git".to_string()),
+    ]);
+    fx.flows.save(&bad).unwrap();
+    // 同目录重跑（远端无新提交）→ UpToDate 零动作。
+    let mut ok2 = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    ok2.instance = "RSOK2".to_string();
+    ok2.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-proj".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+    ]);
+    fx.flows.save(&ok2).unwrap();
+    // 项目不存在。
+    let mut ghost = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    ghost.instance = "RSGHOST".to_string();
+    ghost.steps[0]
+        .args
+        .insert("project".to_string(), "fe-ghost".to_string());
+    ghost.steps[0]
+        .args
+        .insert("url".to_string(), src.to_string_lossy().to_string());
+    fx.flows.save(&ghost).unwrap();
+    // 项目无目录。
+    let mut nodir = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    nodir.instance = "RSNODIR".to_string();
+    nodir.steps[0]
+        .args
+        .insert("project".to_string(), "fe-nodir".to_string());
+    nodir.steps[0]
+        .args
+        .insert("url".to_string(), src.to_string_lossy().to_string());
+    fx.flows.save(&nodir).unwrap();
+
+    fx.engine.advance_template("tpl").await.unwrap();
+    let ok = fx.flows.load("tpl", "RSOK").unwrap();
+    assert_eq!(
+        ok.steps[0].status,
+        StepStatus::Ok,
+        "{:?}",
+        ok.steps[0].error
+    );
+    assert_eq!(ok.steps[0].artifacts["sync_outcome"], "cloned");
+    assert_eq!(ok.steps[0].artifacts["head"], head);
+    assert_eq!(ok.steps[0].artifacts["branch"], "(default)");
+    assert!(dest.join(".git").exists());
+    let cred = fx.flows.load("tpl", "RSCRED").unwrap();
+    assert_eq!(cred.steps[0].status, StepStatus::Ok);
+    assert!(dest2.join(".git").exists());
+    let cred_ok = fx.flows.load("tpl", "RSVAULT").unwrap();
+    assert_eq!(cred_ok.steps[0].status, StepStatus::Ok);
+    assert!(dest3.join(".git").exists());
+    let cred_empty = fx.flows.load("tpl", "RSEMPTY").unwrap();
+    assert_eq!(cred_empty.steps[0].status, StepStatus::Ok);
+    assert!(dest4.join(".git").exists());
+    let br = fx.flows.load("tpl", "RSBR").unwrap();
+    assert_eq!(br.steps[0].artifacts["sync_outcome"], "checkout");
+    assert_eq!(br.steps[0].artifacts["branch"], "dev");
+    assert!(dest5.join(".git").exists());
+    let ok2 = fx.flows.load("tpl", "RSOK2").unwrap();
+    assert_eq!(ok2.steps[0].status, StepStatus::Ok);
+    assert_eq!(ok2.steps[0].artifacts["sync_outcome"], "up_to_date");
+    let bad = fx.flows.load("tpl", "RSBAD").unwrap();
+    assert!(bad.parked.is_some(), "远端不可达必须停车: {:?}", bad.parked);
+    let ghost = fx.flows.load("tpl", "RSGHOST").unwrap();
+    assert!(
+        ghost
+            .parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("项目不存在")
+    );
+    let nodir = fx.flows.load("tpl", "RSNODIR").unwrap();
+    assert!(
+        nodir
+            .parked
+            .as_deref()
+            .unwrap_or_default()
+            .contains("无目录")
+    );
+
+    // 远端推进一笔提交 → 重跑 = 可快进（本地分支推进到远端头）。
+    std::fs::write(src.join("README.md"), "second").unwrap();
+    let head2 = nemesis_board::git_repo::commit_worktree(&src, "second")
+        .unwrap()
+        .expect("second commit");
+    let mut ff = inst_with_steps("tpl", &[("sync", KIND_REPO_SYNC, "", "")]);
+    ff.instance = "RSFF".to_string();
+    ff.steps[0].args = BTreeMap::from([
+        ("project".to_string(), "fe-proj".to_string()),
+        ("url".to_string(), src.to_string_lossy().to_string()),
+    ]);
+    fx.flows.save(&ff).unwrap();
+    fx.engine.advance_template("tpl").await.unwrap();
+    let ff = fx.flows.load("tpl", "RSFF").unwrap();
+    assert_eq!(ff.steps[0].artifacts["sync_outcome"], "fast_forward");
+    assert_eq!(ff.steps[0].artifacts["head"], head2);
+}
+
+// ---------------------------------------------------------------------------
+// 回写轮询（poll_writebacks / compose_writeback / compose_plugin_writeback）
+// ---------------------------------------------------------------------------
+
+/// 回写模板 def：hook.op + hook.args + parse-origin-id + fetch connector。
+fn wb_def(
+    hook_op: &str,
+    hook_args: BTreeMap<String, String>,
+    parse: BTreeMap<String, String>,
+    connector: Option<&str>,
+) -> FlowTemplateDef {
+    let mut fetch = FlowStep {
+        id: "fetch".to_string(),
+        kind: KIND_FETCH.to_string(),
+        gate: String::new(),
+        when: String::new(),
+        on_fail: String::new(),
+        args: BTreeMap::new(),
+    };
+    if let Some(c) = connector {
+        fetch.args.insert("connector".to_string(), c.to_string());
+    }
+    FlowTemplateDef {
+        slug: "fe-wb".to_string(),
+        template: FlowTemplate {
+            id: "wb".to_string(),
+            origin_type: "fe".to_string(),
+            origin_id: "fe/{{key}}".to_string(),
+            steps: vec![fetch],
+            on_transition: FlowTransition {
+                op: hook_op.to_string(),
+                args: hook_args,
+                parse_origin_id: parse,
+            },
+            ..Default::default()
+        },
+    }
+}
+
+/// 回写订阅用 board 单（origin_type "fe"，origin_id "fe/<ext>"）。
+fn wb_issue(
+    store: &Arc<BoardStore>,
+    ext: &str,
+    meta: BTreeMap<String, String>,
+) -> nemesis_board::Issue {
+    store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: format!("回写 {ext}"),
+            description: String::new(),
+            creator: nemesis_board::Actor::system("flow-engine-tests"),
+            origin: Some(nemesis_board::models::TaskOrigin {
+                origin_type: "fe".to_string(),
+                origin_id: format!("fe/{ext}"),
+                origin_meta: meta,
+            }),
+            ..Default::default()
+        })
+        .expect("create wb issue")
+}
+
+fn to_review(store: &Arc<BoardStore>, issue: &nemesis_board::Issue) {
+    let actor = nemesis_board::Actor::system("tests");
+    store
+        .transition_issue(
+            issue.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    store
+        .transition_issue(
+            issue.id,
+            nemesis_board::models::IssueStatus::InReview,
+            &actor,
+        )
+        .unwrap();
+}
+
+fn to_done(store: &Arc<BoardStore>, issue: &nemesis_board::Issue) {
+    to_review(store, issue);
+    store
+        .transition_issue(
+            issue.id,
+            nemesis_board::models::IssueStatus::Done,
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
+    let fx = make_engine("wb1", true);
+    let def = wb_def(
+        "issue_comment",
+        BTreeMap::from([("body".to_string(), "状态 {{transition.status}}".to_string())]),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    // A：meta 在场 → adopt（静默收编）→ noop → done 后 compose。
+    let a = wb_issue(
+        &fx.store,
+        "A",
+        BTreeMap::from([("owner".to_string(), "acme".to_string())]),
+    );
+    to_review(&fx.store, &a);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/A"),
+        Some("in_review".to_string())
+    );
+    let map = fx.engine.writeback_failures.lock().unwrap();
+    assert!(map.is_empty(), "adopt 不计失败: {map:?}");
+    drop(map);
+    // 二轮：游标 == 当前 → noop。
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/A"),
+        Some("in_review".to_string())
+    );
+    // 三轮：转 done → compose → connector 发送撞停机窗口 → Retried 计数 1。
+    to_done(&fx.store, &a);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    let map = fx.engine.writeback_failures.lock().unwrap();
+    assert_eq!(map.get("wb/fe/A"), Some(&1), "map: {map:?}");
+    drop(map);
+
+    // B：todo 状态不订阅三态 → 零动作；无 origin 单同样跳过。
+    let _b = wb_issue(&fx.store, "B", BTreeMap::new());
+    let _plain = fx
+        .store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "无 origin".to_string(),
+            creator: nemesis_board::Actor::system("flow-engine-tests"),
+            ..Default::default()
+        })
+        .unwrap();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    {
+        let map = fx.engine.writeback_failures.lock().unwrap();
+        assert!(!map.contains_key("wb/fe/B"));
+    }
+
+    // C：先 adopt（in_review），预置连续失败 4 次，转 done 触发 compose →
+    // 计数到 5（达熔断线）；再轮询 → 停投不再累加。
+    let c = wb_issue(
+        &fx.store,
+        "C",
+        BTreeMap::from([("owner".to_string(), "acme".to_string())]),
+    );
+    to_review(&fx.store, &c);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/C".to_string(), WRITEBACK_MAX_RETRIES - 1);
+    to_done(&fx.store, &c);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/C"),
+        Some(&WRITEBACK_MAX_RETRIES)
+    );
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/C"),
+        Some(&WRITEBACK_MAX_RETRIES),
+        "熔断后停投不再累加"
+    );
+
+    // D：meta 在场但模板缺 connector 声明 → Retried（游标保留）。
+    let d = wb_issue(
+        &fx.store,
+        "D",
+        BTreeMap::from([("owner".to_string(), "acme".to_string())]),
+    );
+    let def_nc = wb_def("issue_comment", BTreeMap::new(), BTreeMap::new(), None);
+    to_review(&fx.store, &d);
+    fx.engine.poll_writebacks(&def_nc).await.unwrap();
+    to_done(&fx.store, &d);
+    fx.engine.poll_writebacks(&def_nc).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/D"),
+        Some(&1)
+    );
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/D"),
+        Some("in_review".to_string()),
+        "compose 失败游标保留"
+    );
+}
+
+#[tokio::test]
+async fn poll_writebacks_permanent_skip_parse_retry_render_fail() {
+    let fx = make_engine("wb2", true);
+    let def_np = wb_def("issue_comment", BTreeMap::new(), BTreeMap::new(), None);
+    // 永久跳过：先 adopt（in_review），转 done 触发 compose——无 origin_meta
+    // 无 parse 声明 → 游标落盘收口（Advanced，不计失败）。
+    let p = wb_issue(&fx.store, "P", BTreeMap::new());
+    to_review(&fx.store, &p);
+    fx.engine.poll_writebacks(&def_np).await.unwrap();
+    to_done(&fx.store, &p);
+    fx.engine.poll_writebacks(&def_np).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/P"),
+        Some("done".to_string())
+    );
+    assert!(fx.engine.writeback_failures.lock().unwrap().is_empty());
+
+    // 分解失败：无 meta + parse 表达式打不中 → Retry（游标保留计失败）。
+    let r = wb_issue(&fx.store, "R", BTreeMap::new());
+    to_review(&fx.store, &r);
+    fx.engine.poll_writebacks(&def_np).await.unwrap();
+    to_done(&fx.store, &r);
+    let def_parse = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::from([("num".to_string(), "after '#'".to_string())]),
+        None,
+    );
+    fx.engine.poll_writebacks(&def_parse).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/R"),
+        Some(&1)
+    );
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/R"),
+        Some("in_review".to_string()),
+        "compose 失败游标不推进"
+    );
+
+    // 渲染失败：meta 在场但 args 引用未知 token → Retry。
+    let f = wb_issue(
+        &fx.store,
+        "F",
+        BTreeMap::from([("owner".to_string(), "acme".to_string())]),
+    );
+    to_review(&fx.store, &f);
+    fx.engine.poll_writebacks(&def_np).await.unwrap();
+    to_done(&fx.store, &f);
+    let def_render = wb_def(
+        "issue_comment",
+        BTreeMap::from([("body".to_string(), "{{bogus_token}}".to_string())]),
+        BTreeMap::new(),
+        None,
+    );
+    fx.engine.poll_writebacks(&def_render).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/F"),
+        Some(&1)
+    );
+}
+
+#[tokio::test]
+async fn poll_writebacks_plugin_route_faces() {
+    let fx = make_engine("wb3", true);
+    // 先 adopt（in_review），转 done 触发 compose。
+    let def = wb_def(
+        "plugin:fe-plugin:comment",
+        BTreeMap::from([("body".to_string(), "x".to_string())]),
+        BTreeMap::new(),
+        None,
+    );
+    // 合法 plugin 引用 + 子系统未装配 → Retried。
+    let a = wb_issue(
+        &fx.store,
+        "A",
+        BTreeMap::from([("owner".to_string(), "acme".to_string())]),
+    );
+    to_review(&fx.store, &a);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    to_done(&fx.store, &a);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/A"),
+        Some(&1)
+    );
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/A"),
+        Some("in_review".to_string())
+    );
+
+    // 引用形态非法 → Retried（装载期校验是声明面闸，运行期诚实保底）。
+    let b = wb_issue(
+        &fx.store,
+        "B",
+        BTreeMap::from([("owner".to_string(), "acme".to_string())]),
+    );
+    to_review(&fx.store, &b);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    to_done(&fx.store, &b);
+    let def_bad = wb_def(
+        "plugin:Bad",
+        BTreeMap::from([("body".to_string(), "x".to_string())]),
+        BTreeMap::new(),
+        None,
+    );
+    fx.engine.poll_writebacks(&def_bad).await.unwrap();
+    assert_eq!(
+        fx.engine.writeback_failures.lock().unwrap().get("wb/fe/B"),
+        Some(&1)
+    );
+}
+
+#[tokio::test]
+async fn poll_writebacks_declaration_faces() {
+    let fx = make_engine("wb4", true);
+    // 未订阅（hook.op 空）→ 直接 Ok。
+    let def_idle = wb_def("", BTreeMap::new(), BTreeMap::new(), None);
+    fx.engine.poll_writebacks(&def_idle).await.unwrap();
+    // origin_id 声明缺失 → Err（身份映射必声明）。
+    let mut t = tpl("wb", &[KIND_FETCH]);
+    t.origin_id.clear();
+    t.on_transition.op = "issue_comment".to_string();
+    let def_no_origin = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: t,
+    };
+    let err = fx.engine.poll_writebacks(&def_no_origin).await.unwrap_err();
+    assert!(err.contains("origin_id"), "{err}");
+    // 无步骤模板 → Err。
+    let mut t2 = tpl("wb", &[]);
+    t2.on_transition.op = "issue_comment".to_string();
+    let def_no_steps = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: t2,
+    };
+    let err = fx.engine.poll_writebacks(&def_no_steps).await.unwrap_err();
+    assert!(err.contains("无步骤"), "{err}");
+}
+
+// ---------------------------------------------------------------------------
+// FlowStore 投影缺口补面
+// ---------------------------------------------------------------------------
+
+#[test]
+fn answer_detail_projection_fields() {
+    let ws = temp_ws("detail");
+    let flows = FlowStore::new(&ws);
+    let mut inst = inst_with_steps(
+        "tpl",
+        &[
+            ("land", KIND_LAND, "", ""),
+            ("fix", KIND_FIXLOOP, "manual", ""),
+        ],
+    );
+    complete_step(&flows, &mut inst, &json!({ "board_issue": "NB-3" }));
+    inst.steps[1].status = StepStatus::Running;
+    inst.steps[1].started_at_ms = Some(1_234_567);
+    inst.gaps
+        .push(json!({"step": "land", "error": "曾失败", "ts_ms": 5}));
+    inst.parked = Some("等待人工".to_string());
+    flows.save(&inst).unwrap();
+
+    let out = flows.answer_detail("tpl", Some("I-1")).unwrap();
+    assert_eq!(out["instance"], "I-1");
+    assert_eq!(out["ext_key"], "EXT-1");
+    assert_eq!(out["state"], "parked");
+    assert_eq!(out["current_step"], "fix");
+    assert_eq!(out["board_issue"], "NB-3");
+    let steps = out["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0]["status"], "ok");
+    assert_eq!(steps[0]["attempts"], 0);
+    assert_eq!(steps[1]["status"], "running");
+    assert_eq!(steps[1]["gate"], "manual");
+    assert!(steps[1]["started_at"].as_str().unwrap_or_default().len() >= 10);
+    assert!(steps[1]["artifacts"].is_object());
+    assert_eq!(out["gaps"].as_array().unwrap().len(), 1);
+    assert_eq!(out["parked"], "等待人工");
+    // 缺省 = 最近更新的一条。
+    assert!(flows.answer_detail("tpl", None).is_ok());
+}
+
+#[test]
+fn answer_timeline_skip_gap_park_events() {
+    let ws = temp_ws("timeline2");
+    let flows = FlowStore::new(&ws);
+    let mut inst = inst_with_steps(
+        "tpl",
+        &[
+            ("a", KIND_LAND, "", ""),
+            ("b", KIND_LAND, "", ""),
+            ("c", KIND_LAND, "", "continue"),
+            ("d", KIND_LAND, "", ""),
+            ("e", KIND_LAND, "", ""),
+        ],
+    );
+    complete_step(&flows, &mut inst, &json!({})); // a ok
+    skip_step(&flows, &mut inst, "1 == 2"); // b skipped（条件式入产物）
+    fail_step(&flows, &mut inst, "boom"); // c 缺口账 + 带隙续跑
+    inst.parked = Some("等待人工".to_string());
+    inst.steps[3].status = StepStatus::Skipped;
+    inst.steps[3].artifacts = json!({"skipped_when": "0 == 1"});
+    inst.steps[3].finished_at_ms = Some(999);
+    // e：Pending 但带 finished 时间戳 → 非三态终态不出事件（词表外静默）。
+    inst.steps[4].finished_at_ms = Some(12345);
+    flows.save(&inst).unwrap();
+
+    let out = flows.answer_timeline("tpl", Some("I-1")).unwrap();
+    let events = out["events"].as_array().unwrap();
+    assert!(
+        events.iter().any(|e| e["state"] == "skipped"
+            && e["detail"].as_str().unwrap_or_default().contains("0 == 1")),
+        "skipped 事件缺条件式现场: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["state"] == "error" && e["detail"] == "boom"),
+        "缺口事件缺错误文本: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["state"] == "pending" && e["detail"] == "等待人工"),
+        "停车事件缺现场: {events:?}"
+    );
+}
+
+#[test]
+fn answer_confirm_rejects_running_step() {
+    let ws = temp_ws("confirm2");
+    let flows = FlowStore::new(&ws);
+    let mut inst = inst_with_steps("tpl", &[("deliver", KIND_PUBLISH, "manual", "")]);
+    inst.steps[0].status = StepStatus::Running;
+    flows.save(&inst).unwrap();
+    let err = flows.answer_confirm("tpl", Some("I-1")).unwrap_err();
+    assert!(err.contains("非 Pending"), "{err}");
+}
+
+#[test]
+fn list_all_missing_workspace_is_empty() {
+    let ws = temp_ws("missing-dir");
+    let flows = FlowStore::new(&ws);
+    // logs/flows 目录缺席 → 空清单不炸。
+    assert_eq!(flows.list_all("tpl").len(), 0);
+    assert!(
+        flows.answer_list("tpl").unwrap()["rows"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn fail_step_past_cursor_is_noop() {
+    let flows = FlowStore::new(&temp_ws("pastend"));
+    let mut inst = inst_with_steps("tpl", &[("a", KIND_LAND, "", "")]);
+    inst.current_step = 1; // 越界
+    fail_step(&flows, &mut inst, "x");
+    assert!(inst.parked.is_none());
+    assert_eq!(inst.steps[0].status, StepStatus::Pending);
+}
+
+#[test]
+fn skip_step_with_payload_keeps_guest_payload() {
+    let flows = FlowStore::new(&temp_ws("skippl"));
+    let mut inst = inst_with_steps("tpl", &[("a", KIND_LAND, "", ""), ("b", KIND_LAND, "", "")]);
+    skip_step_with_payload(&flows, &mut inst, json!({"why": "已存在"}));
+    assert_eq!(inst.steps[0].status, StepStatus::Skipped);
+    assert_eq!(inst.steps[0].artifacts["why"], "已存在");
+    assert!(inst.steps[0].finished_at_ms.is_some());
+    assert_eq!(inst.current_step, 1);
+    assert!(inst.parked.is_none());
+    assert!(inst.gaps.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 纯函数缺口补面
+// ---------------------------------------------------------------------------
+
+#[test]
+fn step_status_as_str_matches_disk_vocabulary() {
+    assert_eq!(StepStatus::Pending.as_str(), "pending");
+    assert_eq!(StepStatus::Running.as_str(), "running");
+    assert_eq!(StepStatus::Ok.as_str(), "ok");
+    assert_eq!(StepStatus::Failed.as_str(), "failed");
+    assert_eq!(StepStatus::Skipped.as_str(), "skipped");
+}
+
+#[test]
+fn poll_outcome_maps_three_states() {
+    assert_eq!(poll_outcome(PollOutcome::Completed(json!(1))).unwrap(), 1);
+    assert_eq!(
+        poll_outcome(PollOutcome::Failed("e".to_string())).unwrap_err(),
+        "e"
+    );
+    assert_eq!(
+        poll_outcome(PollOutcome::StillRunning).unwrap_err(),
+        FLOW_STILL_RUNNING
+    );
+}
+
+#[test]
+fn json_scalar_and_json_path_faces() {
+    assert_eq!(json_scalar(Some(&json!(true))), "true");
+    assert_eq!(json_scalar(Some(&json!([1, 2]))), "array");
+    assert_eq!(json_scalar(Some(&json!({"a": 1}))), "object");
+    assert_eq!(json_scalar(Some(&json!(null))), "null");
+    assert_eq!(json_scalar(None), "null");
+    assert_eq!(json_scalar(Some(&json!(3.5))), "3.5");
+
+    // 词法：通配段与畸形路径。
+    assert_eq!(json_path_segments("$.a[*].b").unwrap(), vec!["a", "*", "b"]);
+    assert!(json_path_segments("$.").is_none(), "尾随空段");
+    assert!(json_path_segments("$.a..b").is_none(), "连续点空段");
+    assert!(json_path_segments("$[0]").is_none(), "索引语法不支持");
+    assert!(json_path_segments("a.b").is_none(), "缺 $ 前缀");
+
+    // 求值：通配展开、字段缺席、畸形路径。
+    let v = json!({"items": [{"name": "x"}, {"name": "y"}]});
+    let hits = json_path_eval(&v, "$.items[*].name");
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0], &json!("x"));
+    assert!(json_path_eval(&v, "$.nope[*]").is_empty(), "中途落空 = 空");
+    assert!(json_path_eval(&v, "$bad").is_empty(), "畸形路径 = 空");
+}
+
+#[test]
+fn entry_scalar_json_path_forms() {
+    let e = json!({
+        "a": { "b": "嵌套" },
+        "n": 7,
+        "flag": true,
+        "obj": { "x": 1 },
+        "arr": [1],
+    });
+    assert_eq!(entry_scalar(&e, "$.a.b").as_deref(), Some("嵌套"));
+    assert_eq!(entry_scalar(&e, "$.n").as_deref(), Some("7"));
+    assert_eq!(entry_scalar(&e, "$.flag").as_deref(), Some("true"));
+    // 对象/数组不配做键/标题/正文（诚实不猜）。
+    assert_eq!(entry_scalar(&e, "$.obj"), None);
+    assert_eq!(entry_scalar(&e, "$.arr"), None);
+    assert_eq!(entry_scalar(&e, "$.ghost"), None);
+    // 非 $. 前缀回落点路径。
+    assert_eq!(entry_scalar(&e, "a.b").as_deref(), Some("嵌套"));
+}
+
+#[test]
+fn salvage_json_objects_string_escapes() {
+    // 转义引号不打断字符串态、反斜杠转义吞掉后续字符——两腿都不迷惑
+    // 对象配对状态机。
+    let (v, ok) = parse_entries_resilient(r#"[{"key":"a\"b"},{"path":"C:\\t"},{"key":"C"}"#);
+    assert!(!ok);
+    assert_eq!(v.len(), 3);
+    assert_eq!(v[0]["key"], "a\"b");
+    assert_eq!(v[2]["key"], "C");
+}
+
+#[test]
+fn eval_split_expr_more_malformed_faces() {
+    // 分隔子串缺引号包裹。
+    assert!(eval_split_expr("a#b", "after #").is_err());
+    // 空步骤（管道打头）。
+    assert!(eval_split_expr("a", "|after '#'").is_err());
+    // 未知步骤名。
+    assert!(eval_split_expr("a#b", "frobnicate '#'").is_err());
+}
+
+#[test]
+fn resolve_instance_origin_arg_table_forms() {
+    // 非字符串 args_json 值标量化进 arg 表。
+    let mut t = tpl("tpl", &[KIND_FETCH, KIND_LAND]);
+    t.origin_type = "gitea".to_string();
+    t.origin_id = "{{connector}}/{{arg.n}}/{{key}}".to_string();
+    let step = fetch_step("gitea", r#"{"n": 3, "flag": true}"#);
+    let (ot, oid, _) = resolve_instance_origin(&t, &step, "9").unwrap();
+    assert_eq!(ot, "gitea");
+    assert_eq!(oid, "gitea/3/9");
+    // args_json 非法 → arg 表为空（origin 声明不含 arg token 时仍可解析）。
+    let mut t2 = tpl("tpl", &[KIND_FETCH, KIND_LAND]);
+    t2.origin_id = "{{connector}}/{{key}}".to_string();
+    let step_bad = fetch_step("gitea", "{ not json");
+    let (_, oid2, _) = resolve_instance_origin(&t2, &step_bad, "9").unwrap();
+    assert_eq!(oid2, "gitea/9");
+}
+
+#[test]
+fn parse_publish_step_protocol_plugin_ref_shapes() {
+    let noop = |tpl: &str| tpl.to_string();
+    let mut base: BTreeMap<String, String> = BTreeMap::from([
+        ("create_op".to_string(), "plugin:Bad_Slug:op".to_string()),
+        ("create_args".to_string(), r#"{"head":"h"}"#.to_string()),
+        ("result_ref".to_string(), "$.number".to_string()),
+        ("reconcile_op".to_string(), "pr_list".to_string()),
+        (
+            "reconcile_args".to_string(),
+            r#"{"state":"all"}"#.to_string(),
+        ),
+        ("reconcile_match".to_string(), "$.head.ref == h".to_string()),
+    ]);
+    // plugin 引用形态坏 slug = 声明错误诚实报错。
+    let err = {
+        let get = |key: &str| base.get(key).cloned();
+        parse_publish_step_protocol(&get, &noop).unwrap_err()
+    };
+    assert!(err.contains("plugin 引用形态但解析失败"), "{err}");
+    // 合法引用过闸。
+    base.insert(
+        "create_op".to_string(),
+        "plugin:bugfix-flow:create_pull".to_string(),
+    );
+    let get = |key: &str| base.get(key).cloned();
+    let p = parse_publish_step_protocol(&get, &noop).unwrap();
+    assert_eq!(p.create_op, "plugin:bugfix-flow:create_pull");
+}
+
+#[test]
+fn config_token_names_and_missing_stamp_dirs() {
+    // 未闭合 {{ 提前停（不 panic、不产键）。
+    assert!(config_token_names("x {{config.a").is_empty());
+    assert_eq!(
+        config_token_names("{{config.a}} {{config.b}}"),
+        vec!["a", "b"]
+    );
+    assert!(config_token_names("{{not_config.x}}").is_empty());
+    // 目录缺席 → (0, 0)。
+    let ws = temp_ws("stamp2");
+    assert_eq!(template_stamp(&ws.join("absent"), &ws), (0, 0));
+}
+
+#[test]
+fn validate_template_more_honest_rules() {
+    // 模板 id 为空。
+    assert!(validate_template(&tpl("", &[KIND_FETCH, KIND_LAND])).is_err());
+    // publish 步缺必填协议键。
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, KIND_PUBLISH])).is_err());
+    // repo_sync 缺 project/url。
+    assert!(validate_template(&tpl("t", &[KIND_FETCH, KIND_REPO_SYNC])).is_err());
+    // origin_id 未声明。
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.origin_id.clear();
+    assert!(validate_template(&t).is_err());
+}
+
+#[test]
+fn materialize_instances_filter_labels_and_origin_faces() {
+    let ws = temp_ws("mat2");
+    let flows = FlowStore::new(&ws);
+    // filter 声明畸形 → 取数期整批 Err。
+    let mut bad = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("tpl", &[KIND_FETCH, KIND_LAND]),
+    };
+    bad.template.steps[0]
+        .args
+        .insert("filter".to_string(), "no-op".to_string());
+    let err = materialize_instances(&flows, &bad, &[json!({"key": "A"})]).unwrap_err();
+    assert!(err.contains("filter 声明畸形"), "{err}");
+
+    // filter 不命中 / labels 不命中逐条跳过；命中条目正常物化。
+    let mut def = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("tpl", &[KIND_FETCH, KIND_LAND]),
+    };
+    def.template.steps[0].args = BTreeMap::from([
+        ("filter".to_string(), "$.state == open".to_string()),
+        ("labels".to_string(), "bug, ui".to_string()),
+    ]);
+    let entries = vec![
+        json!({"key": "A", "state": "closed"}), // filter false
+        json!({"key": "B", "state": "open"}),   // labels 不命中
+        json!({"key": "C", "state": "open", "labels": [{"name": "ui"}]}),
+    ];
+    assert_eq!(materialize_instances(&flows, &def, &entries).unwrap(), 1);
+    assert!(flows.exists("tpl", "C"));
+    assert!(!flows.exists("tpl", "A"));
+    assert!(!flows.exists("tpl", "B"));
+
+    // 身份解析失败 → 该条目诚实跳过（整批不炸）。
+    let mut broken = FlowTemplateDef {
+        slug: "s".to_string(),
+        template: tpl("tpl", &[KIND_FETCH, KIND_LAND]),
+    };
+    broken.template.origin_id = "{{connector}}/{{arg.owner}}#{{key}}".to_string();
+    let created =
+        materialize_instances(&flows, &broken, &[json!({"key": "D"}), json!({"key": "E"})])
+            .unwrap();
+    assert_eq!(created, 0);
+    assert!(!flows.exists("tpl", "D"));
+}
+
+#[test]
+fn scan_templates_skips_broken_payloads_and_templates() {
+    let ws = temp_ws("scan2");
+    let plugins = ws.join("plugins_wasm");
+    let cfg = ws.join("config");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::create_dir_all(&cfg).unwrap();
+    // 开关开五家：载荷缺席 / 非 panel kind / 模板非法 / config 键未声明 /
+    // 合法（含非字符串 config 值）。
+    enable_switches(
+        &cfg,
+        r#"{
+        "plugins": {
+            "ghost": { "enabled": true },
+            "tooly": { "enabled": true },
+            "broken": { "enabled": true },
+            "cfgbad": { "enabled": true },
+            "good": { "enabled": true, "config": { "owner": 123 } }
+        }
+    }"#,
+    );
+    // tooly：tool kind 带 guest 载荷声明（可装载，被 kind 过滤不进清单）。
+    write_plugin_toml(&plugins, "tooly", "tool", true, "");
+    // broken：panel + 合法 kind 但 fetch 不在首步 → 引擎校验失败跳过。
+    write_plugin_toml(
+        &plugins,
+        "broken",
+        "panel",
+        false,
+        "[[flow.template]]\nid = \"tpl\"\ninterval-secs = 0\norigin-id = \"demo/{{key}}\"\n\n[[flow.template.steps]]\nid = \"land\"\nkind = \"board_land\"\n\n[[flow.template.steps]]\nid = \"fetch\"\nkind = \"connector_fetch\"\n",
+    );
+    // cfgbad：引用未声明的 config 键 → 装载期渲染失败跳过。
+    write_plugin_toml(
+        &plugins,
+        "cfgbad",
+        "panel",
+        false,
+        "[[flow.template]]\nid = \"tpl\"\ninterval-secs = 0\norigin-id = \"demo/{{key}}\"\n\n[[flow.template.steps]]\nid = \"fetch\"\nkind = \"connector_fetch\"\nargs = { owner = \"{{config.nope}}\" }\n",
+    );
+    // good：合法模板 + config-schema（运行值 123 标量化）。
+    write_plugin_toml(
+        &plugins,
+        "good",
+        "panel",
+        false,
+        "[config-schema]\nowner = { desc = \"属主\", default = \"\" }\n\n[[flow.template]]\nid = \"tpl\"\ninterval-secs = 0\norigin-type = \"gitea\"\norigin-id = \"gitea/{{key}}\"\n\n[[flow.template.steps]]\nid = \"fetch\"\nkind = \"connector_fetch\"\nargs = { project = \"gitea/{{config.owner}}\" }\n",
+    );
+    let out = scan_templates(&plugins, &cfg);
+    assert_eq!(out.len(), 1, "只有 good 进清单: {out:?}");
+    assert_eq!(out[0].slug, "good");
+    // 非字符串 config 运行值标量化渲染进步 args。
+    assert_eq!(out[0].template.steps[0].args["project"], "gitea/123");
+}
+
+// ---------------------------------------------------------------------------
+// 装配与杂项缺口补面
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn flow_engine_new_assembles_with_global_plugin_dir() {
+    // 装配走真实构造器（plugins_dir 用全局解析面，测试环境落到 exe 旁）。
+    let base = temp_ws("new");
+    let ws = base.join("ws");
+    let home = base.join("home");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let store = Arc::new(BoardStore::open(&ws.join("board").join("board.db"), "NB").unwrap());
+    let db = nemesis_taskstore::TaskDb::open(&home.join("tasks.db")).unwrap();
+    #[cfg(feature = "cluster")]
+    let cluster: ClusterOwned = None;
+    #[cfg(not(feature = "cluster"))]
+    let cluster: ClusterOwned = ();
+    let engine = Arc::new(FlowEngine::new(
+        Arc::new(parking_lot::RwLock::new(None)),
+        Arc::clone(&store),
+        db,
+        ws.clone(),
+        home,
+        Arc::new(EstopState::new()),
+        None,
+        cluster,
+    ));
+    // 模板清单为空 → 代答诚实拒绝（模板不存在）。
+    let err = engine
+        .answer("ghost", "list", &json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("不存在"), "{err}");
+}
+
+#[test]
+fn safe_external_url_scheme_gate() {
+    // http(s) 放行且保原形；大小写不敏感；其余 scheme / 空 = None。
+    assert_eq!(
+        safe_external_url("https://example.com/p/1").as_deref(),
+        Some("https://example.com/p/1")
+    );
+    assert_eq!(
+        safe_external_url("HTTP://Example.com").as_deref(),
+        Some("HTTP://Example.com")
+    );
+    assert_eq!(
+        safe_external_url("  https://x.y  ").as_deref(),
+        Some("https://x.y")
+    );
+    assert_eq!(safe_external_url("javascript:alert(1)"), None);
+    assert_eq!(safe_external_url("ftp://x"), None);
+    assert_eq!(safe_external_url(""), None);
+}
+
+#[test]
+fn parse_entries_scalar_shapes_error() {
+    // 标量 JSON 形态诚实报错（既非数组也非可解包裹对象）。
+    assert!(parse_entries("42").is_err());
+    assert!(parse_entries("null").is_err());
+    assert!(parse_entries("\"text\"").is_err());
+}
+
+#[test]
+fn compare_str_string_less_than_and_extra_scalars() {
+    // 字符串字典序 `<` 臂。
+    assert!(eval_when("abc < done").unwrap());
+    assert!(!eval_when("done < abc").unwrap());
+    // extra 表非字符串值标量化（保留键与自由键两路）。
+    let ws = temp_ws("extra-scalar");
+    let flows = FlowStore::new(&ws);
+    let mut inst = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+    complete_step(&flows, &mut inst, &json!({}));
+    assert_eq!(substitute_tokens("[{{n}}]", &inst, &json!({"n": 7})), "[7]");
+    assert_eq!(
+        substitute_tokens("[{{board_issue}}]", &inst, &json!({"board_issue": 9})),
+        "[9]"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn resolve_instance_origin_non_object_args_json() {
+    // args_json 合法 JSON 但非对象 → arg 表为空（无 arg token 声明仍可解析）。
+    let mut t = tpl("tpl", &[KIND_FETCH, KIND_LAND]);
+    t.origin_id = "{{connector}}/{{key}}".to_string();
+    let step = fetch_step("gitea", "\"x\"");
+    let (_, oid, _) = resolve_instance_origin(&t, &step, "9").unwrap();
+    assert_eq!(oid, "gitea/9");
+}
+
+#[test]
+fn accounting_helpers_past_cursor_are_noop() {
+    // 游标越界时记账函数不做任何步骤改动（防御面）。
+    let flows = FlowStore::new(&temp_ws("oob"));
+    let mut inst = inst_with_steps("tpl", &[("a", KIND_LAND, "", "")]);
+    inst.current_step = 1;
+    mark_running(&flows, &mut inst);
+    complete_step(&flows, &mut inst, &json!({}));
+    assert_eq!(inst.steps[0].status, StepStatus::Pending);
+    assert!(inst.steps[0].artifacts.is_object());
 }
