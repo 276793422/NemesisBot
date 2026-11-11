@@ -7,7 +7,7 @@ use super::scan_scripts_for_exec;
 use crate::credential::Scanner;
 use crate::pipeline::{SecurityPlugin, SecurityPluginConfig};
 
-const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+const AWS_KEY: &str = "AKIANCDC6VFQTFGRMBKW";
 
 fn scanner() -> Scanner {
     Scanner::new(true, "block")
@@ -33,7 +33,7 @@ fn literal_credential_in_script_is_blocked() {
     assert_eq!(out.literals[0].pattern, "aws_access_key");
     // 默认 KeepPrefix 掩码 = 首 4 +... + 尾 4（credential.rs mask_keep_prefix）。
     assert!(
-        out.literals[0].masked.ends_with("...MPLE")
+        out.literals[0].masked.ends_with("...MBKW")
             && out.literals[0].masked.starts_with("AKIA..."),
         "应为首尾保留掩码形态：{}",
         out.literals[0].masked

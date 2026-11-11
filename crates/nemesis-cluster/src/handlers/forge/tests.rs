@@ -106,9 +106,9 @@ fn test_file_provider_path_traversal_prevention() {
 
 #[test]
 fn test_sanitize_redacts_aws_keys() {
-    let content = r#"{"key": "AKIAIOSFODNN7EXAMPLE", "data": "normal"}"#;
+    let content = r#"{"key": "AKIANCDC6VFQTFGRMBKW", "data": "normal"}"#;
     let sanitized = FileForgeProvider::do_sanitize(content);
-    assert!(!sanitized.contains("AKIAIOSFODNN7EXAMPLE"));
+    assert!(!sanitized.contains("AKIANCDC6VFQTFGRMBKW"));
     assert!(sanitized.contains("[REDACTED_AWS_KEY]"));
 }
 
@@ -233,7 +233,7 @@ fn test_file_provider_clone_boxed() {
 fn test_file_provider_sanitize_content() {
     let dir = tempfile::tempdir().unwrap();
     let provider = FileForgeProvider::new(dir.path());
-    let content = "AKIAIOSFODNN7EXAMPLE key found at 192.168.1.100";
+    let content = "AKIANCDC6VFQTFGRMBKW key found at 192.168.1.100";
     let sanitized = provider.sanitize_content(content);
     assert!(sanitized.contains("[REDACTED_AWS_KEY]"));
     assert!(sanitized.contains("[IP]"));

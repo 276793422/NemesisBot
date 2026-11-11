@@ -12,7 +12,7 @@ use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
 
 /// AWS 示例键：凭据表 `aws_access_key` 与 DLP 表 `aws_access_key`（High）
 /// 双双命中，且不含触发 secret_assignment 等附带规则的关键词。
-const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+const AWS_KEY: &str = "AKIANCDC6VFQTFGRMBKW";
 /// Luhn 合法 visa：DLP `visa`（Medium→block）命中；凭据表无信用卡规则，
 /// 是纯 DLP 侧样本。
 const VISA: &str = "4111111111111111";

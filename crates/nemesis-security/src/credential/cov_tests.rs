@@ -12,7 +12,7 @@ use super::*;
 #[test]
 fn scan_tool_output_warns_and_reports_on_match() {
     let scanner = Scanner::new(true, "block");
-    let secret = "aws_key = AKIAIOSFODNN7EXAMPLE";
+    let secret = "aws_key = AKIANCDC6VFQTFGRMBKW";
     let r = scanner.scan_tool_output("write_file", secret);
     assert!(r.has_matches, "{:?}", r.summary);
     assert!(r.matches.iter().any(|m| m.pattern_name == "aws_access_key"));
@@ -29,6 +29,6 @@ fn scan_tool_output_warns_and_reports_on_match() {
 #[test]
 fn disabled_scanner_passes_through() {
     let scanner = Scanner::new(false, "block");
-    let r = scanner.scan_tool_output("write_file", "AKIAIOSFODNN7EXAMPLE");
+    let r = scanner.scan_tool_output("write_file", "AKIANCDC6VFQTFGRMBKW");
     assert!(!r.has_matches);
 }

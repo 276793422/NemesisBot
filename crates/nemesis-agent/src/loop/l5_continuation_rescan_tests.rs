@@ -13,7 +13,7 @@
 use super::*;
 
 /// AWS 示例键：默认凭据扫描表命中样本（与 output_rescan_tests 同源）。
-const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+const AWS_KEY: &str = "AKIANCDC6VFQTFGRMBKW";
 
 /// 记录每次 chat 收到的 messages 的 mock provider（断言续行 LLM 实际看到的
 /// 上下文，而非只看出站回复）。
