@@ -527,9 +527,19 @@ impl MemoryManager {
             if let Some(ref vs) = *vs_guard {
                 let type_filter: Vec<String> =
                     memory_type.map(|mt| mt.to_string()).into_iter().collect();
-                let result = vs
-                    .query(query, limit, &type_filter)
-                    .map_err(|e| e.to_string())?;
+                // embed 后端故障不毙掉整次搜索：warn + 视作 vector 未命中，
+                // 落到 keyword fallback（与空结果同路径）。
+                let result = vs.query(query, limit, &type_filter).unwrap_or_else(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        "[Memory] vector query failed, falling back to keyword search"
+                    );
+                    crate::vector::QueryResult {
+                        entries: Vec::new(),
+                        total: 0,
+                        query: query.to_string(),
+                    }
+                });
                 if !result.entries.is_empty() {
                     let entries: Vec<ScoredEntry> = result
                         .entries
@@ -588,9 +598,22 @@ impl MemoryManager {
         if *self.vector_enabled.read() {
             let vs_guard = self.vector_store.read();
             if let Some(ref vs) = *vs_guard {
+                // embed 后端故障与 vector inactive 同路径：空结果
+                // （auto-inject 是 vector-only 语义——keyword-only 匹配
+                // 不触发注入，故障时静默跳过本轮注入而非误用 keyword）。
                 let result = vs
                     .query_with_threshold(query, limit, &[], AUTO_INJECT_MIN_SCORE)
-                    .map_err(|e| e.to_string())?;
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            error = %e,
+                            "[Memory] vector query failed; auto-inject suppressed this turn"
+                        );
+                        crate::vector::QueryResult {
+                            entries: Vec::new(),
+                            total: 0,
+                            query: query.to_string(),
+                        }
+                    });
                 let entries: Vec<ScoredEntry> = result
                     .entries
                     .into_iter()
@@ -660,38 +683,53 @@ impl MemoryManager {
         let vector_result = {
             let vs_guard = self.vector_store.read();
             match vs_guard.as_ref() {
-                Some(vs) => {
-                    let result = vs.query(query, limit, &[]).map_err(|e| e.to_string())?;
-
-                    // Convert VectorEntry results to SearchResult.
-                    let entries: Vec<ScoredEntry> = result
-                        .entries
-                        .into_iter()
-                        .map(|ve| {
-                            let entry = Entry {
-                                id: ve.id,
-                                typ: parse_memory_type_from_str(&ve.entry_type),
-                                content: ve.content,
-                                metadata: ve.metadata,
-                                tags: ve.tags,
-                                score: Some(ve.score),
-                                created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
+                Some(vs) => match vs.query(query, limit, &[]) {
+                    Ok(result) => {
+                        // Convert VectorEntry results to SearchResult.
+                        let entries: Vec<ScoredEntry> = result
+                            .entries
+                            .into_iter()
+                            .map(|ve| {
+                                let entry = Entry {
+                                    id: ve.id,
+                                    typ: parse_memory_type_from_str(&ve.entry_type),
+                                    content: ve.content,
+                                    metadata: ve.metadata,
+                                    tags: ve.tags,
+                                    score: Some(ve.score),
+                                    created_at: chrono::DateTime::parse_from_rfc3339(
+                                        &ve.created_at,
+                                    )
                                     .map(|dt| dt.with_timezone(&chrono::Local))
                                     .unwrap_or_else(|_| chrono::Local::now()),
-                                updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
+                                    updated_at: chrono::DateTime::parse_from_rfc3339(
+                                        &ve.updated_at,
+                                    )
                                     .map(|dt| dt.with_timezone(&chrono::Local))
                                     .unwrap_or_else(|_| chrono::Local::now()),
-                            };
-                            ScoredEntry {
-                                entry,
-                                score: ve.score,
-                            }
-                        })
-                        .collect();
+                                };
+                                ScoredEntry {
+                                    entry,
+                                    score: ve.score,
+                                }
+                            })
+                            .collect();
 
-                    let total = entries.len();
-                    Some(Ok(SearchResult { entries, total }))
-                }
+                        let total = entries.len();
+                        Some(Ok(SearchResult { entries, total }))
+                    }
+                    Err(e) => {
+                        // embed 后端故障不毙掉整次查询：warn + 视作 vector
+                        // 不可用（None），落 keyword fallback——与 vs=None
+                        // 同路径。Ok 的空结果仍直接返回（既有语义：vector
+                        // 存在即以 vector 为准）。
+                        tracing::warn!(
+                            error = %e,
+                            "[Memory] vector query failed, falling back to keyword search"
+                        );
+                        None
+                    }
+                },
                 None => None,
             }
         };

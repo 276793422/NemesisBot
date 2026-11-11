@@ -656,3 +656,48 @@ async fn agt_cleanup_rewrites_session_with_partial_removal() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].content, "fresh");
 }
+
+// BUG-20261112-087 回归锁（M4）：保留设备名会话键前缀化——`CON.jsonl`
+// 在 Win32 路径语义里解析成设备，append 恒失败（旧形态该会话在 Windows
+// 上从未落盘成功）。命中真相源名单（22 个保留名）即前缀 `_` 合法化；
+// 既有 9 字符黑名单与普通键行为不变（D-1 不迁白名单的决策不动）。
+#[test]
+fn bug87_reserved_device_session_keys_are_prefixed() {
+    let store = FileEpisodicStore::new(std::env::temp_dir().join("bug87-episodic"));
+
+    // 保留名（大小写不敏感）：CON / nul / Com1 / lpt9 → 前缀化。
+    assert_eq!(
+        store.session_file("CON"),
+        store.data_dir.join("_CON.jsonl"),
+        "reserved device base must be prefixed"
+    );
+    assert_eq!(store.session_file("nul"), store.data_dir.join("_nul.jsonl"));
+    assert_eq!(
+        store.session_file("Com1"),
+        store.data_dir.join("_Com1.jsonl")
+    );
+    assert_eq!(
+        store.session_file("lpt9"),
+        store.data_dir.join("_lpt9.jsonl")
+    );
+    // 带扩展形态：base 段比对（first-dot 前）。
+    assert_eq!(
+        store.session_file("CON.archive"),
+        store.data_dir.join("_CON.archive.jsonl")
+    );
+
+    // 普通键与 9 字符黑名单行为不变。
+    assert_eq!(
+        store.session_file("normal-key"),
+        store.data_dir.join("normal-key.jsonl")
+    );
+    assert_eq!(
+        store.session_file("a/b:c"),
+        store.data_dir.join("a_b_c.jsonl")
+    );
+    // 非保留名含保留子串不误伤。
+    assert_eq!(
+        store.session_file("console"),
+        store.data_dir.join("console.jsonl")
+    );
+}

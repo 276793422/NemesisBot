@@ -119,8 +119,20 @@ impl FileEpisodicStore {
     /// 与真相源统一的前置是带旧名 fallback 的读路径（新名优先、旧名兜底），
     /// 需要时再做。本形态也不在 check-sanitize-discipline.sh 的 grep 覆盖内
     /// （该脚本只守单字符/前缀冒号形态，见其头部注释）。
+    ///
+    /// 保留设备名补丁（BUG-20261112-087）：9 字符黑名单不覆盖 Windows
+    /// 保留设备名——`CON.jsonl` 在 Win32 路径语义里解析成设备，append
+    /// 直接失败（该会话从未在 Windows 上落盘成功）。命中即前缀 `_`
+    /// 合法化（复用真相源名单 [`nemesis_utils::sanitize::is_windows_reserved_device_base`]）；
+    /// Windows 上旧形态本就写不进去，无既有文件失配面。
     fn session_file(&self, session_key: &str) -> PathBuf {
         let safe_name = session_key.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        let base = safe_name.split('.').next().unwrap_or("");
+        let safe_name = if nemesis_utils::sanitize::is_windows_reserved_device_base(base) {
+            format!("_{safe_name}")
+        } else {
+            safe_name
+        };
         self.data_dir.join(format!("{safe_name}.jsonl"))
     }
 }

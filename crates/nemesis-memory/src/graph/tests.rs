@@ -1027,3 +1027,110 @@ async fn graph_reload_matches_mixed_case_queries() {
     );
     assert!(bfs.entities.iter().any(|e| e.name == "Alice"));
 }
+
+// ---- BUG-20261112-087 回归锁：加载失败/坏行留档的数据保全 ----
+
+// M1（graph 版，per-file 粒度）：entities.jsonl 整体不可读 → 该文件覆写
+// 冻结（磁盘字节不变），triples 文件不受牵连照常持久化。旧实现：读失败
+// 整文件静默空库，第一次无关变更全量覆写 = 磁盘历史整体覆没。
+#[tokio::test]
+async fn bug87_graph_load_failure_freezes_entities_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let entities_path = dir.path().join("entities.jsonl");
+    let poisoned: &[u8] = &[0xFF, 0xFE, 0x80, 0x00, 0xC3];
+    std::fs::write(&entities_path, poisoned).unwrap();
+
+    let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+    // 触发懒加载（entities 读失败置旗标；triples 不存在不置）。
+    let _ = store.get_entity("anything").await.unwrap();
+
+    // 内存变更照常 + 触发 persist_entities（被旗标拦）。
+    store
+        .upsert_entity(crate::graph::GraphEntity::new(
+            "mem-only".to_string(),
+            "tool".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let now = std::fs::read(&entities_path).unwrap();
+    assert_eq!(
+        now, poisoned,
+        "entities rewrite must be frozen after failed load (old shape destroyed on-disk history)"
+    );
+
+    // per-file 粒度：triples 侧变更照常持久化（降级不外溢）。
+    store
+        .add_triple(crate::graph::GraphTriple::new(
+            "a".to_string(),
+            "rel".to_string(),
+            "b".to_string(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        dir.path().join("triples.jsonl").exists(),
+        "triples persistence must stay unaffected by entities-side freeze"
+    );
+}
+
+// M2（graph 版）：加载时解析失败行留档；无关变更的覆写把留档行写回
+// （坏行不静默消失——持久层不因无关改写丢历史）。
+#[tokio::test]
+async fn bug87_graph_malformed_lines_survive_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let entity = crate::graph::GraphEntity::new("disk-ent".to_string(), "tool".to_string());
+    let triple =
+        crate::graph::GraphTriple::new("a".to_string(), "rel".to_string(), "b".to_string());
+    std::fs::write(
+        dir.path().join("entities.jsonl"),
+        format!(
+            "{}\nnot-json-entity\n",
+            serde_json::to_string(&entity).unwrap()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("triples.jsonl"),
+        format!(
+            "{}\nnot-json-triple\n",
+            serde_json::to_string(&triple).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
+    let loaded = store.get_entity("disk-ent").await.unwrap();
+    assert!(loaded.is_some(), "valid entity must load");
+
+    // 无关变更触发两侧覆写。
+    store
+        .upsert_entity(crate::graph::GraphEntity::new(
+            "new-ent".to_string(),
+            "tool".to_string(),
+        ))
+        .await
+        .unwrap();
+    store
+        .add_triple(crate::graph::GraphTriple::new(
+            "x".to_string(),
+            "rel".to_string(),
+            "y".to_string(),
+        ))
+        .await
+        .unwrap();
+
+    let raw_ent = std::fs::read_to_string(dir.path().join("entities.jsonl")).unwrap();
+    assert!(
+        raw_ent.contains("not-json-entity"),
+        "malformed entity line must survive rewrites (old shape dropped it): {raw_ent:?}"
+    );
+    assert!(raw_ent.contains("disk-ent") && raw_ent.contains("new-ent"));
+
+    let raw_tri = std::fs::read_to_string(dir.path().join("triples.jsonl")).unwrap();
+    assert!(
+        raw_tri.contains("not-json-triple"),
+        "malformed triple line must survive rewrites (old shape dropped it): {raw_tri:?}"
+    );
+    assert!(raw_tri.contains("\"x\""));
+}

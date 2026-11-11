@@ -659,3 +659,181 @@ fn bug59_rewrite_persist_survives_residue_at_fixed_tmp_path() {
         "rewrite must be applied (old fixed-tmp shape silently skipped it): {raw:?}"
     );
 }
+
+// ============================================================
+// BUG-20261112-087 回归锁：持久层加载失败/单条失败的数据保全
+// ============================================================
+
+// M1：持久文件整体不可读（非 UTF-8 → read_to_string Err）→ load 置降级
+// 旗标 → 此后 rewrite 冻结全量覆写。旧实现：空索引照常覆写 = 磁盘历史
+// 整体覆没（数据销毁）。断言：改写请求后磁盘字节逐位不变。
+#[test]
+fn bug87_load_failure_freezes_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vector_store.jsonl");
+    let poisoned: &[u8] = &[0xFF, 0xFE, 0x80, 0x00, 0xC3];
+    std::fs::write(&path, poisoned).unwrap();
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|_: &str| Ok(vec![0.0; 4]));
+    let config = StoreConfig {
+        storage_path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    // new_from_embed 内部 load_persisted_sync：读失败 → 置旗标（错误被
+    // 吞掉是构造器旧姿态，旗标是本轮新增的降级闸）。
+    let store = VectorStore::new_from_embed(embed, config);
+
+    // 内存操作照常：进一条 → 删掉 → 触发 rewrite（被旗标拦）。
+    store
+        .store_entry(&make_entry("bug87-1", "in-memory only entry"))
+        .unwrap();
+    assert!(store.delete_entry("bug87-1"), "in-memory entry must delete");
+
+    let now = std::fs::read(&path).unwrap();
+    assert_eq!(
+        now, poisoned,
+        "rewrite must be frozen after failed load (old shape destroyed on-disk history)"
+    );
+}
+
+// M2 端到端：单条 embed 失败 → 原始行留档；无关条目的改写把留档行写回
+// （不静默抹掉）。旧实现：失败条目被逐出索引，一次无关 rewrite 后从
+// 磁盘永久消失。
+#[test]
+fn bug87_failed_embed_line_survives_unrelated_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vector_store.jsonl");
+    let good = make_entry("bug87-good", "healthy entry about rust");
+    let bad = make_entry("bug87-bad", "EMBED_FAIL poisoned content");
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}\n",
+            serde_json::to_string(&good).unwrap(),
+            serde_json::to_string(&bad).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|c: &str| {
+        if c.contains("EMBED_FAIL") {
+            Err("embed boom".into())
+        } else {
+            Ok(vec![0.0; 4])
+        }
+    });
+    let config = StoreConfig {
+        storage_path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let store = VectorStore::new_from_embed(embed, config);
+    assert_eq!(store.len(), 1, "only the embedable entry is indexed");
+
+    // 无关改写：进一条新条目再删掉 → rewrite 发生。
+    store
+        .store_entry(&make_entry("bug87-tmp", "temporary entry"))
+        .unwrap();
+    assert!(store.delete_entry("bug87-tmp"));
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        raw.contains("bug87-bad"),
+        "embed-failed line must survive unrelated rewrites (old shape dropped it from disk): {raw:?}"
+    );
+    assert!(
+        raw.contains("bug87-good"),
+        "indexed entry must persist through rewrite: {raw:?}"
+    );
+    assert!(
+        !raw.contains("bug87-tmp"),
+        "deleted entry must be gone: {raw:?}"
+    );
+}
+
+// M2 delete 面：留档行按 id 同步摘除——删除留档条目后 rewrite 不把
+// 原始行写回（否则删除悄悄失效，条目复活）。
+#[test]
+fn bug87_delete_removes_unloaded_line_by_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vector_store.jsonl");
+    let good = make_entry("bug87-good", "healthy entry about rust");
+    let bad = make_entry("bug87-bad", "EMBED_FAIL poisoned content");
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}\n",
+            serde_json::to_string(&good).unwrap(),
+            serde_json::to_string(&bad).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let embed: crate::vector::EmbeddingFunc = Box::new(|c: &str| {
+        if c.contains("EMBED_FAIL") {
+            Err("embed boom".into())
+        } else {
+            Ok(vec![0.0; 4])
+        }
+    });
+    let config = StoreConfig {
+        storage_path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let store = VectorStore::new_from_embed(embed, config);
+
+    // 删除留档条目（未入索引）：必须报命中并从磁盘摘除。
+    assert!(
+        store.delete_entry("bug87-bad"),
+        "unloaded (kept-on-disk) entry must be deletable by id"
+    );
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !raw.contains("bug87-bad"),
+        "deleted unloaded entry must not resurrect via kept raw line: {raw:?}"
+    );
+    assert!(
+        raw.contains("bug87-good"),
+        "unrelated entry must survive: {raw:?}"
+    );
+    assert_eq!(store.len(), 1);
+}
+
+// M3（BUG-20261112-087）证伪钉子：子代理报告「嵌入模型切换维度不配 →
+// cosine 恒 0.0 静默全废」——机制描述与代码结构吻合但运行时不可达：
+// VectorEntry 不持久化 embedding，load 经 store_entry 按当前模型**重新
+// embed** 全部条目，索引维度恒跟随当前模型。本测试钉住该真实行为：
+// 4-d 索引换 8-d 模型重开后 query 正常（条目已按 8-d 重嵌），不存在
+// 维度不配发生路径。若未来改成持久化 embedding，此测试即哨兵。
+#[test]
+fn bug87_reload_reembeds_entries_so_dimensions_follow_current_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vector_store.jsonl");
+
+    let embed4: crate::vector::EmbeddingFunc = Box::new(|_: &str| Ok(vec![0.1; 4]));
+    let config = StoreConfig {
+        storage_path: path.to_string_lossy().to_string(),
+        ..Default::default()
+    };
+    let store = VectorStore::new_from_embed(embed4, config.clone());
+    store
+        .store_entry(&make_entry("bug87-dim", "indexed with 4-d model"))
+        .unwrap();
+    store
+        .persist_entry_sync(&make_entry("bug87-dim", "indexed with 4-d model"))
+        .unwrap();
+
+    // 换 8-d 模型重开同一持久文件：load 重嵌 → 索引条目 8-d。
+    let embed8: crate::vector::EmbeddingFunc = Box::new(|_: &str| Ok(vec![0.1; 8]));
+    let store2 = VectorStore::new_from_embed(embed8, config);
+    assert_eq!(
+        store2.len(),
+        1,
+        "entry must reload (re-embedded, not skipped)"
+    );
+
+    // 与当前模型同维度的 query 照常命中（相似度 1.0，恒 0 分假象不存在）。
+    let res = store2
+        .query("indexed with 4-d model", 5, &[])
+        .expect("reload re-embeds entries; dimension mismatch has no occurrence path");
+    assert!(res.total >= 1, "re-embedded entry must be retrievable");
+}
