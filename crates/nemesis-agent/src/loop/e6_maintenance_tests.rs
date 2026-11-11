@@ -313,7 +313,7 @@ async fn gate_maintenance_busy_falls_back() {
     // 预占会话：模拟同 key 消息正在处理。
     assert!(al.try_acquire_session(&key));
     let msg = inbound_msg("/compact", &key);
-    let (agent_id, response, err) = al.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none());
     assert!(agent_id.is_empty());
     assert!(
@@ -340,7 +340,7 @@ async fn gate_maintenance_end_to_end_serial() {
     // 串行路径：gate 短路 Maintenance → ⏳ 回执 + 压缩 + ✓ 回执均内联发布，
     // 返回空 triple（调用方 finish_message 早退，不重复发布）。
     let msg = inbound_msg("/compact", &key);
-    let (agent_id, response, err) = al.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none());
     assert!(agent_id.is_empty());
     assert!(
@@ -371,7 +371,7 @@ async fn gate_clear_end_to_end_serial() {
     crate::chat_log::append_chat_log(&key, "user", "e6 gate clear");
 
     let msg = inbound_msg("/clear", &key);
-    let (_, response, err) = al.process_inbound_message(&msg).await;
+    let (_, response, err, _) = al.process_inbound_message(&msg).await;
     assert!(err.is_none());
     assert!(response.is_empty());
     assert!(store.get_history(&key).is_empty());

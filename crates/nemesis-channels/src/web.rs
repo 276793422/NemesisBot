@@ -39,6 +39,11 @@ pub trait WebServerOps: Send + Sync {
     /// `note_kind`（optional，2026-11-09 压缩提示徽标化）为压缩过程系统
     /// 注记标记——实现方以 role="system" 下发并携带帧键，前端渲染折叠
     /// 小徽标；`None` = 正常回合回复（role="assistant" 旧行为不变）。
+    ///
+    /// `occupies`（optional，2026-11-11 行号锚漂移根修）为帧占行真相——
+    /// 前端行号锚三态计数（Some(true) 落盘占锚 / Some(false) 瞬态回执
+    /// 不占锚 / None 旧规则 user/assistant 占行）；实现方以帧键下发，
+    /// chat.sync 补拉同形态。
     fn send_to_session(
         &self,
         session_id: &str,
@@ -48,6 +53,7 @@ pub trait WebServerOps: Send + Sync {
         session_key: Option<&str>,
         source_node: Option<&str>,
         note_kind: Option<&str>,
+        occupies: Option<bool>,
     ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
@@ -377,6 +383,7 @@ impl Channel for WebChannel {
             msg.meta.session_key.as_deref(),
             msg.meta.source_node.as_deref(),
             msg.meta.note_kind.as_deref(),
+            msg.meta.occupies,
         ) {
             // （死会话软失败）：目标会话已不在（标签页关闭/
             // 重连换新 session id，ConvRouter latest-wins 残留旧绑定）——

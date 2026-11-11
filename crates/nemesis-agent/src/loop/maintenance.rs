@@ -196,8 +196,10 @@ impl AgentLoop {
         // 出口各显式 drop（= 原 release_session），均先于 drain。
         let _busy_guard = super::admission::SessionBusyGuard::new(self, session_key);
         // ① 收据先发（系统回执 receipt=true——结果回灌才是终局）。
+        // 瞬态帧不落盘（user 行在②落）→ Some(false) 不占行号锚。
         let receipt = format!("⏳ 已把编码任务派发给节点 {node_id}，完成后自动回复结果。");
-        self.finish_message(msg, receipt, None, false, true).await;
+        self.finish_message(msg, receipt, None, false, true, Some(false))
+            .await;
 
         // ② 会话一致性：user 行落盘（原命令原文——派发上下文可追溯）。
         // SB：同正常轮——首行落盘 = 会话物化 → 发布事件。
@@ -265,6 +267,8 @@ impl AgentLoop {
                     );
                 } else {
                     // 无续行管理器（测试/独立模式）：结果无法回灌，诚实告知。
+                    // 本路径零落盘（直派终局只在续行回灌路径落盘）→
+                    // Some(false) 不占行号锚。
                     warn!(
                         "[AgentLoop] User dispatch ACK but no continuation manager; result cannot be delivered"
                     );
@@ -274,6 +278,7 @@ impl AgentLoop {
                         None,
                         true,
                         false,
+                        Some(false),
                     )
                     .await;
                 }
@@ -287,7 +292,10 @@ impl AgentLoop {
         }
 
         // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
-        self.finish_message(msg, result, None, true, false).await;
+        // 本路径零落盘（同步结果不走续行回灌的落盘链）→ Some(false)
+        // 不占行号锚。
+        self.finish_message(msg, result, None, true, false, Some(false))
+            .await;
         drop(_busy_guard); // = release_session（同步出口；panic 展开由守卫兜底）
         // 排队消息排空（与 admitted/维护尾巴同源， 滞留修复）。
         self.drain_next_turn_queue(session_key).await;

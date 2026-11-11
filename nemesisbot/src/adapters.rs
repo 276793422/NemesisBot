@@ -605,6 +605,7 @@ impl WebServerOps for WebServerOpsAdapter {
         session_key: Option<&str>,
         source_node: Option<&str>,
         note_kind: Option<&str>,
+        occupies: Option<bool>,
     ) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
@@ -623,6 +624,7 @@ impl WebServerOps for WebServerOpsAdapter {
                 session_key.as_deref(),
                 source_node.as_deref(),
                 note_kind.as_deref(),
+                occupies,
             ))
         });
         // （真机日志）：assistant 回复推送失败（会话无活动

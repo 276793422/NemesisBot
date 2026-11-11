@@ -171,6 +171,18 @@ pub struct OutboundMeta {
     /// "assistant"（receipt 旧行为逐字节不变）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_kind: Option<String>,
+    /// 帧占行真相（2026-11-11 行号锚漂移根修）：本出站的正文是否对应
+    /// chat_log jsonl 落盘行。`Some(true)` = 落盘（前端行号锚 +1——含
+    /// role="system" 的压缩完成注记、💤 暂停排队回执这类落盘 system 行）；
+    /// `Some(false)` = 瞬态回执（⏳ busy 排队 / ⚡ 插话确认 / slash 静态
+    /// 确认 / 维护 ⏳✓ / ⏳ 直派收据——不落盘，前端**不占行号锚**）；
+    /// `None` = 不带帧键（旧行为：前端按 user/assistant 角色占行）。
+    /// 此前瞬态回执以 role="assistant" 下发被误计入锚、落盘 system 注记
+    /// 以 role="system" 下发被漏计——两个方向的漂移都会让 rewind/regenerate
+    /// 的 message_index 错行（前缀截断删错行）。生产者打标是唯一依据
+    /// （不做内容前缀匹配——note_kind 同款纪律）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occupies: Option<bool>,
 }
 
 /// Outbound message from the agent engine to a channel.

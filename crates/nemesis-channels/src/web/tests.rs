@@ -44,6 +44,7 @@ impl WebServerOps for MockWebServer {
         _session_key: Option<&str>,
         source_node: Option<&str>,
         _: Option<&str>,
+        _: Option<bool>,
     ) -> std::result::Result<(), String> {
         self.sent.lock().unwrap().push((
             session_id.to_string(),
@@ -182,6 +183,7 @@ async fn test_send_to_session_forwards_model_badge() {
             sync_via: None,
             note_kind: None,
             receipt: false,
+            occupies: None,
         },
     };
     let result = ch.send(msg).await;
@@ -468,6 +470,7 @@ impl WebServerOps for FailingMockServer {
         _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
+        _: Option<bool>,
     ) -> std::result::Result<(), String> {
         Err("send failed".to_string())
     }
@@ -789,6 +792,7 @@ impl WebServerOps for FailStartServer {
         _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
+        _: Option<bool>,
     ) -> std::result::Result<(), String> {
         Ok(())
     }
@@ -1166,6 +1170,7 @@ impl WebServerOps for DeadSessionMockServer {
         _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
+        _: Option<bool>,
     ) -> std::result::Result<(), String> {
         Err(format!(
             "failed to broadcast: session not found or no send queue: {session_id}"

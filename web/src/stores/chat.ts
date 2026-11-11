@@ -42,6 +42,13 @@ export interface ChatMessage {
    *  = 进行中动画徽标（每次尝试必发、不落盘，成功/失败回执或 assistant
    *  回复到场即移除）。缺省 = 普通消息。 */
   noteKind?: string
+  /** 帧占行真相（2026-11-11 行号锚漂移根修）：后端 receive 帧 / chat.sync
+   *  事件的 `occupies` 透传。`true` = 本帧正文对应 jsonl 落盘行（占行号锚
+   *  ——含 role="system" 的压缩完成注记/暂停恢复行）；`false` = 瞬态回执
+   *  （⏳ busy 排队/⚡ 插话确认/slash 静态确认/维护 ⏳✓/⏳ 直派收据——
+   *  不落盘，不占行号锚）；`undefined` = 旧规则（user/assistant 占行）。
+   *  缺失该键的帧（旧网关/本地回显）按旧规则算，行为逐字节兼容。 */
+  occupies?: boolean
 }
 
 /** N5：单条交付物（与后端 chat_log PresentedFile serde 字段对齐）。 */
@@ -285,11 +292,7 @@ export const useChatStore = defineStore('chat', () => {
     // system 是纯前端渲染不占行——后端落盘的 system 行只随历史/重同步批
     // 次进视图，锚重推时已在 recomputeNextRowIndex 计入）。无锚（历史未
     // 加载）不编号，诚实降级。
-    if (
-      msg.rowIndex === undefined &&
-      nextRowIndex !== null &&
-      (msg.role === 'user' || msg.role === 'assistant')
-    ) {
+    if (msg.rowIndex === undefined && nextRowIndex !== null && frameOccupiesRow(msg)) {
       msg.rowIndex = nextRowIndex++
     }
     messages.value.push(msg)
@@ -304,20 +307,32 @@ export const useChatStore = defineStore('chat', () => {
     recomputeNextRowIndex()
   }
 
+  /** 帧占行判定（2026-11-11 行号锚漂移根修）：三态单一真相源。
+   *  `occupies === true` 占行（落盘注记——含 role="system" 的压缩完成注记
+   *  /暂停恢复行）；`occupies === false` 不占行（瞬态回执——⏳ busy 排队
+   *  /⚡ 插话确认/slash 静态确认/维护 ⏳✓/⏳ 直派收据，前端不再误计）；
+   *  `undefined` = 旧规则：user/assistant 占行；**带 rowIndex 的任何 role
+   *  也占行**（历史批次里后端 jsonl 的 system 行天然带行号、天然占行——
+   *  无键时行号即铁证）。无键的 error/system 纯前端渲染不占行。 */
+  function frameOccupiesRow(m: Pick<ChatMessage, 'role' | 'occupies' | 'rowIndex'>): boolean {
+    if (m.occupies !== undefined) return m.occupies
+    if (m.rowIndex !== undefined) return true
+    return m.role === 'user' || m.role === 'assistant'
+  }
+
   /** M6：重推 nextRowIndex 锚 = 首条带行号消息的行号 + 其后**占行**消息
-   *  总数。占行判定（BUG-20261106-037）：带 rowIndex 的行 = 后端 jsonl 行
-   *  （含 system——排队回执/compact 注记是后端落盘的合法 system 行，各占
-   *  一行）；不带 rowIndex 的 user/assistant = watchdog 重灌的 fresh 对象
-   *  /本地回显（占行但行号未知）；不带 rowIndex 的 error/system = 纯前端
-   *  渲染（不占行）。无任何行号锚 → null。 */
+   *  总数。占行判定（BUG-20261106-037 + 2026-11-11 三态化）：带 rowIndex
+   *  的行 = 后端 jsonl 行（含 system——排队回执/compact 注记是后端落盘的
+   *  合法 system 行，各占一行）；不带 rowIndex 的 user/assistant = watchdog
+   *  重灌的 fresh 对象/本地回显（占行但行号未知）；瞬态回执（occupies=
+   *  false）与不带 rowIndex 的 error/system = 不占行。无任何行号锚 →
+   *  null。 */
   function recomputeNextRowIndex() {
     nextRowIndex = null
     let rows = 0
     let anchor: number | null = null
     for (const m of messages.value) {
-      const occupies =
-        m.rowIndex !== undefined || m.role === 'user' || m.role === 'assistant'
-      if (!occupies) continue
+      if (!frameOccupiesRow(m)) continue
       if (anchor === null && m.rowIndex !== undefined) anchor = m.rowIndex
       rows++
     }
@@ -330,12 +345,13 @@ export const useChatStore = defineStore('chat', () => {
    *  null，本地回显与后续 live 行全部不编号，回退/重新生成按钮组
    *  （rewindActions 要求 rowIndex）在该会话首轮恒不渲染。此函数由该分支
    *  调用：新会话服务端历史为空是事实，视图内 user/assistant 行就是 jsonl
-   *  的第 0..n-1 行——按序回填编号并把锚推到行尾。error/system 行不占行，
-   *  与 addMessage/prependHistory 语义一致。 */
+   *  的第 0..n-1 行——按序回填编号并把锚推到行尾。占行判定与
+   *  frameOccupiesRow 同源（瞬态回执不编号、落盘 system 注记编号），语义
+   *  与 addMessage/prependHistory 一致。 */
   function anchorFreshSession() {
     let n = 0
     for (const m of messages.value) {
-      if (m.role !== 'user' && m.role !== 'assistant') continue
+      if (!frameOccupiesRow(m)) continue
       m.rowIndex = n++
     }
     nextRowIndex = n

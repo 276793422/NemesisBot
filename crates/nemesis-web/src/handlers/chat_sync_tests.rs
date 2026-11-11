@@ -107,6 +107,7 @@ async fn sync_replays_recorded_frames_with_window_semantics() {
             Some("test-model"),
             None,
             None,
+            None,
         );
     }
     // after=2 → 补 3/4/5

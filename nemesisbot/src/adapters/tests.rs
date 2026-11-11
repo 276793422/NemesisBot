@@ -486,7 +486,16 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
 
     // 未知 session：广播层报 no send queue。
     let err = adapter
-        .send_to_session("no-such-session", "assistant", "hi", None, None, None, None)
+        .send_to_session(
+            "no-such-session",
+            "assistant",
+            "hi",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .unwrap_err();
     assert!(err.contains("no send queue"), "err: {err}");
 
@@ -516,6 +525,7 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
                 "assistant",
                 "hi",
                 Some("prov/model"),
+                None,
                 None,
                 None,
                 None

@@ -4572,7 +4572,7 @@ async fn test_process_inbound_message_system_internal_channel() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "");
     assert!(response.is_empty());
     assert!(err.is_none());
@@ -4610,7 +4610,7 @@ async fn test_process_inbound_message_history_request() {
         },
         voice_playback: None,
     };
-    let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "");
     assert!(response.is_empty());
     assert!(err.is_none());
@@ -4642,7 +4642,7 @@ async fn test_process_inbound_message_session_busy() {
     // First process a message to determine what session key the resolver uses.
     // Then acquire that key and verify the busy check works.
     let msg1 = make_inbound("First", "web", "chat1", "user1", "");
-    let (agent_id, first_response, _) = agent_loop.process_inbound_message(&msg1).await;
+    let (agent_id, first_response, _, _) = agent_loop.process_inbound_message(&msg1).await;
 
     // The first message should have been processed successfully
     assert!(first_response.contains("Mock response"));
@@ -4652,7 +4652,7 @@ async fn test_process_inbound_message_session_busy() {
     assert!(agent_loop.try_acquire_session("agent:main"));
 
     let msg2 = make_inbound("Second", "web", "chat1", "user1", "");
-    let (_, response, _) = agent_loop.process_inbound_message(&msg2).await;
+    let (_, response, _, _) = agent_loop.process_inbound_message(&msg2).await;
 
     // Try multiple possible session key formats
     if !response.contains("try again later") {
@@ -4688,7 +4688,7 @@ async fn test_process_inbound_message_route_resolver() {
     );
 
     let msg = make_inbound("Hello route", "web", "chat1", "user1", "");
-    let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     // Should route to main agent (default)
     assert_eq!(agent_id, "main");
     assert!(response.contains("Routed response"));
@@ -4729,7 +4729,7 @@ async fn test_process_inbound_message_route_with_agent_scoped_key() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "main");
     assert!(response.contains("Agent scoped"));
     assert!(err.is_none());
@@ -4972,7 +4972,7 @@ async fn test_process_system_message_with_result_extraction() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (_, response, _) = agent_loop.process_inbound_message(&msg).await;
+    let (_, response, _, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(response.contains("System processed"));
 }
 
@@ -5010,7 +5010,7 @@ async fn test_process_system_message_without_result_prefix() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (_, response, _) = agent_loop.process_inbound_message(&msg).await;
+    let (_, response, _, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(response.contains("Direct content"));
 }
 
@@ -6630,7 +6630,7 @@ async fn test_process_inbound_message_with_route_resolver_configured() {
         voice_playback: None,
     };
 
-    let (agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    let (agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert_eq!(agent_id, "main");
     assert!(response.contains("Routed!"));
     assert!(err.is_none());
@@ -7160,7 +7160,7 @@ async fn test_history_returns_all_messages() {
     let al = Arc::new(al);
 
     let msg = make_history_inbound("web:sess1", Some(20), None);
-    let (_, resp, err) = al.process_inbound_message(&msg).await;
+    let (_, resp, err, _) = al.process_inbound_message(&msg).await;
     assert_eq!(resp, "");
     assert!(err.is_none());
 
@@ -8836,6 +8836,7 @@ fn test_gate_busy_reject_mode_bounces() {
         GateOutcome::Immediate {
             agent_id: _,
             response,
+            occupies: _,
         } => response,
         _ => panic!("expected Immediate busy bounce in Reject mode"),
     };
@@ -9055,6 +9056,7 @@ fn test_gate_busy_queue_mode_parks_in_next_turn() {
         GateOutcome::Immediate {
             agent_id: _,
             response,
+            occupies: _,
         } => response,
         _ => panic!("expected Immediate queue receipt"),
     };
@@ -9086,6 +9088,7 @@ fn test_gate_busy_steer_mode_parks_bang_in_next_step() {
         GateOutcome::Immediate {
             agent_id: _,
             response,
+            occupies: _,
         } => response,
         _ => panic!("expected Immediate steer receipt"),
     };
@@ -10517,7 +10520,7 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (_agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    let (_agent_id, response, err, _) = agent_loop.process_inbound_message(&msg).await;
     assert!(err.is_none(), "一轮必须正常完成: {err:?}");
     assert_eq!(response, "hd reply");
 
@@ -10543,7 +10546,7 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
         content: "Again".to_string(),
         ..msg.clone()
     };
-    let (_agent_id, _response, err2) = agent_loop.process_inbound_message(&msg2).await;
+    let (_agent_id, _response, err2, _) = agent_loop.process_inbound_message(&msg2).await;
     assert!(err2.is_none(), "第二轮必须正常完成: {err2:?}");
     let content = std::fs::read_to_string(&path).unwrap();
     let rows: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();

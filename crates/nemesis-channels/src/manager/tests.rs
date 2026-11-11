@@ -2457,6 +2457,7 @@ async fn s2_init_channels_web_with_server_ops_sets_server() {
             _: Option<&str>,
             _: Option<&str>,
             _: Option<&str>,
+            _: Option<bool>,
         ) -> std::result::Result<(), String> {
             Ok(())
         }

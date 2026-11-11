@@ -59,7 +59,7 @@ async fn error_ending_flush_does_not_duplicate_terminal_error_row() {
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
     };
-    let (_, resp, err) = al.process_inbound_message(&msg).await;
+    let (_, resp, err, _) = al.process_inbound_message(&msg).await;
     assert!(
         err.is_some(),
         "auth 失败必须以 Error 终局: err={err:?}, resp={resp}"

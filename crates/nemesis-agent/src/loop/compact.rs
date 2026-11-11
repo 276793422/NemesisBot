@@ -909,6 +909,7 @@ impl AgentLoop {
             session_key,
             "compaction_start",
             COMPACT_IN_PROGRESS_NOTE,
+            None,
         )
         .await;
 
@@ -1043,6 +1044,7 @@ impl AgentLoop {
                         session_key,
                         "compaction",
                         COMPACT_DISCARDED_NOTE,
+                        None,
                     )
                     .await;
                 }
@@ -1097,6 +1099,7 @@ impl AgentLoop {
                     session_key,
                     "compaction",
                     COMPACT_FAILED_NOTE,
+                    None,
                 )
                 .await;
             }
@@ -1209,8 +1212,16 @@ impl AgentLoop {
         content: &str,
     ) {
         crate::chat_log::append_compaction_note(session_key, content);
-        self.send_compaction_receipt(channel, chat_id, session_key, "compaction", content)
-            .await;
+        // 完成注记已落盘（system 行占行号锚）→ Some(true)（行号锚漂移根修）。
+        self.send_compaction_receipt(
+            channel,
+            chat_id,
+            session_key,
+            "compaction",
+            content,
+            Some(true),
+        )
+        .await;
     }
 
     /// 实时压缩徽标帧（2026-11-09）：`receipt=true` + note_kind——web 通道
@@ -1219,6 +1230,9 @@ impl AgentLoop {
     /// meta.session_key 传原始会话键——环记录键与帧 session_id 都从它推导
     /// （旧英文回执的 `main:{sk}` 变形键顺带修正）。内部通道不发（无徽标
     /// 渲染面）；其余通道按普通文本送达（IM 用户照旧看到压缩进展）。
+    /// `occupies`：帧占行真相（行号锚漂移根修）——完成注记（落盘
+    /// `append_compaction_note` system 行）传 `Some(true)`；开始/弃用/失败
+    /// 徽标仅实时不落盘传 `None`（system 角色旧规则本就不占行，零/零对齐）。
     async fn send_compaction_receipt(
         &self,
         channel: &str,
@@ -1226,6 +1240,7 @@ impl AgentLoop {
         session_key: &str,
         note_kind: &str,
         content: &str,
+        occupies: Option<bool>,
     ) {
         if is_internal_channel(channel) {
             return;
@@ -1245,6 +1260,7 @@ impl AgentLoop {
                     note_kind: Some(note_kind.to_string()),
                     // 压缩过程注记 = 系统进度回执，非回合产物。
                     receipt: true,
+                    occupies,
                 },
             };
             let _ = tx.send(outbound).await;
@@ -1447,6 +1463,7 @@ impl AgentLoop {
             session_key,
             "compaction_start",
             COMPACT_IN_PROGRESS_NOTE_MANUAL,
+            None,
         )
         .await;
         let result = self.compact_session(session_key).await;

@@ -700,6 +700,7 @@ async fn test_send_to_session_no_queue() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -718,6 +719,7 @@ async fn test_send_to_session_nonexistent() {
         "nonexistent-session",
         "assistant",
         "hello",
+        None,
         None,
         None,
         None,
@@ -1149,6 +1151,7 @@ async fn test_send_to_session_nonexistent_session() {
         "nonexistent-id",
         "assistant",
         "hello world",
+        None,
         None,
         None,
         None,

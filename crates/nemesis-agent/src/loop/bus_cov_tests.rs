@@ -167,15 +167,22 @@ async fn finish_message_skips_publish_when_already_sent() {
     assert!(al.has_sent_in_round(key));
 
     let msg = inbound("hello", "web", "covuser", key);
-    al.finish_message(&msg, "should be skipped".to_string(), None, true, false)
-        .await;
+    al.finish_message(
+        &msg,
+        "should be skipped".to_string(),
+        None,
+        true,
+        false,
+        None,
+    )
+    .await;
     assert!(
         orx.try_recv().is_err(),
         "sent_in_round must suppress publish"
     );
 
     // 标记已按会话清除：下一次发布照常。
-    al.finish_message(&msg, "goes through".to_string(), None, true, false)
+    al.finish_message(&msg, "goes through".to_string(), None, true, false, None)
         .await;
     let got = orx.recv().await.unwrap();
     assert_eq!(got.content, "goes through");
@@ -331,5 +338,86 @@ async fn panic_mid_turn_releases_session_busy() {
     assert!(
         !al.is_session_busy(key),
         "panic between gate acquire and tail release must not brick the session (busy leak)"
+    );
+}
+/// 行号锚漂移根修（2026-11-11）：gate 两臂的 meta.occupies 落盘真相透传
+/// ——维护 ⏳/✓ 回执（瞬态不落盘）恒 Some(false)；Admitted 终局回复
+/// None（旧规则 user/assistant 占行）。前端按帧键计行号锚，rewind/
+/// regenerate 的 message_index 不再双向漂移。
+#[tokio::test]
+async fn pump_stamps_occupies_false_on_maintenance_frames() {
+    let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
+    let (otx, mut orx) = tokio::sync::mpsc::channel(16);
+    al.outbound_tx = Some(otx);
+    let al = std::sync::Arc::new(al);
+
+    let (itx, irx) = tokio::sync::mpsc::channel(4);
+    let pump = tokio::spawn(al.clone().run_bus_arc(irx));
+    itx.send(inbound(
+        "/compact",
+        "web",
+        "covuser",
+        "agent:main:session:covocc-m",
+    ))
+    .await
+    .unwrap();
+    drop(itx);
+    pump.await.unwrap();
+
+    let mut got = Vec::new();
+    while let Ok(o) = orx.try_recv() {
+        got.push(o);
+    }
+    // ⏳ 前置回执：receipt=true + occupies=false（瞬态不落盘）。
+    let pending = got
+        .iter()
+        .find(|o| o.meta.receipt && o.content.contains("正在压缩会话"))
+        .expect("maintenance ⏳ receipt expected");
+    assert_eq!(
+        pending.meta.occupies,
+        Some(false),
+        "维护 ⏳ 回执瞬态不落盘 → occupies=false（修复前无键，前端按 assistant 误计锚）"
+    );
+    // ✓ 压缩结果帧：receipt=false（LLM 摘要）但同样瞬态 → Some(false)。
+    let done = got
+        .iter()
+        .find(|o| !o.meta.receipt)
+        .expect("maintenance ✓ frame expected");
+    assert_eq!(
+        done.meta.occupies,
+        Some(false),
+        "维护 ✓ 帧落盘只有 user 行 → occupies=false 不占锚"
+    );
+}
+
+#[tokio::test]
+async fn pump_final_reply_has_no_occupies_key() {
+    let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
+    let (otx, mut orx) = tokio::sync::mpsc::channel(8);
+    al.outbound_tx = Some(otx);
+    let al = std::sync::Arc::new(al);
+
+    let (itx, irx) = tokio::sync::mpsc::channel(4);
+    let pump = tokio::spawn(al.clone().run_bus_arc(irx));
+    itx.send(inbound(
+        "普通任务",
+        "web",
+        "covuser",
+        "agent:main:session:covocc-f",
+    ))
+    .await
+    .unwrap();
+    drop(itx);
+    pump.await.unwrap();
+
+    let mut got = Vec::new();
+    while let Ok(o) = orx.try_recv() {
+        got.push(o);
+    }
+    let finals: Vec<_> = got.iter().filter(|o| !o.meta.receipt).collect();
+    assert_eq!(finals.len(), 1, "exactly one final reply expected: {got:?}");
+    assert_eq!(
+        finals[0].meta.occupies, None,
+        "终局回复已由 turn 内部落盘 → 无键（旧规则 user/assistant 占行）"
     );
 }

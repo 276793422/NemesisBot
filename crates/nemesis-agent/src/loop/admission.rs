@@ -34,7 +34,17 @@ pub(crate) enum GateOutcome {
     Continuation(String),
     /// Short-circuit reply (busy receipt / busy bounce / queue-full / slash
     /// command response). No session was acquired.
-    Immediate { agent_id: String, response: String },
+    ///
+    /// `occupies`（2026-11-11 行号锚漂移根修）：正文是否对应 jsonl 落盘行
+    /// （帧键语义见 `OutboundMeta.occupies`）。`Some(false)` = 瞬态回执
+    /// （⏳ 排队 / ⚡ 插话 / slash 静态确认——前端不占行号锚）；
+    /// `Some(true)` = 落盘留痕（💤 暂停排队回执的 system 行、忙时回绝
+    /// 成对的 bounce 行）；`None` = 不带帧键（旧行为）。
+    Immediate {
+        agent_id: String,
+        response: String,
+        occupies: Option<bool>,
+    },
     /// （cron 合闸）：同 job 重复 tick 在 busy 闸被丢弃——
     /// 无回执、无落盘（cron tick 是系统自消息，D-2 用户消息留痕契约不适
     /// 用；触发真相源在 cron 服务自身日志 + 触发账本）。泵侧只 debug 记
@@ -396,12 +406,14 @@ impl AgentLoop {
 
     /// Process an inbound message from the bus.
     ///
-    /// Returns (agent_id, response_content, optional_error).
+    /// Returns (agent_id, response_content, optional_error, occupies).
+    /// 第四槽 = 帧占行真相（OutboundMeta.occupies 同源）：调用方发布
+    /// 回复时透传给 finish_message。None = 旧规则（user/assistant 占行）。
     /// Mirrors Go's `processMessage()`.
     pub(crate) async fn process_inbound_message(
         &self,
         msg: &nemesis_types::channel::InboundMessage,
-    ) -> (String, String, Option<String>) {
+    ) -> (String, String, Option<String>, Option<bool>) {
         // 自定义 slash 命令改写（改写型，见 rewrite_custom_command）：在闸门
         // 之前原地展开为提示词，让消息以最终形态走正常会话/LLM 流程。内置
         // 命令不受影响（rewrite 跳过内置名，gate 内的短路检查照常先行）。
@@ -415,8 +427,14 @@ impl AgentLoop {
         // （tests、process_admitted 无 reinject 时的 inline 排队回退）继续
         // 经此进入，行为与 gate 语义一致（含 D-2 忙回绝留痕）。
         match self.gate_inbound(&msg) {
-            GateOutcome::Continuation(task_id) => ("__continuation__".to_string(), task_id, None),
-            GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
+            GateOutcome::Continuation(task_id) => {
+                ("__continuation__".to_string(), task_id, None, None)
+            }
+            GateOutcome::Immediate {
+                agent_id,
+                response,
+                occupies,
+            } => (agent_id, response, None, occupies),
             GateOutcome::Coalesced { cron_job_id } => {
                 // （cron 合闸）：串行回退路径同语义——静默丢弃，
                 // 空串让调用方 finish_message 早退（零出站零落盘）。
@@ -424,7 +442,7 @@ impl AgentLoop {
                     cron_job_id = %cron_job_id,
                     "[AgentLoop] coalesced cron tick dropped at serial tail"
                 );
-                (String::new(), String::new(), None)
+                (String::new(), String::new(), None, None)
             }
             GateOutcome::Maintenance {
                 kind,
@@ -434,14 +452,17 @@ impl AgentLoop {
                 // 串行路径内联执行：⏳ 回执先发（会话已获取），干活，✓ 回执
                 // 随后；返回空串让调用方的 finish_message 早退（不重复发布）。
                 // ⏳ 前置回执打 receipt=true（系统回执非终局），真回复 false。
-                self.finish_message(&msg, receipt, None, false, true).await;
+                // 两帧都是瞬态回执（落盘只有 user 行），occupies=Some(false)
+                // 不占行号锚（行号锚漂移根修）。
+                self.finish_message(&msg, receipt, None, false, true, Some(false))
+                    .await;
                 let response = self
                     .handle_maintenance(kind, &session_key, &msg.channel, &msg.chat_id)
                     .await;
                 self.release_session(&session_key);
-                self.finish_message(&msg, response, None, false, false)
+                self.finish_message(&msg, response, None, false, false, Some(false))
                     .await;
-                (String::new(), String::new(), None)
+                (String::new(), String::new(), None, None)
             }
             GateOutcome::UserDispatch {
                 task_text,
@@ -454,10 +475,16 @@ impl AgentLoop {
                 // 调用方的 finish_message 早退。
                 self.process_user_dispatch(&msg, &task_text, &node_id, &session_key)
                     .await;
-                (String::new(), String::new(), None)
+                (String::new(), String::new(), None, None)
             }
-            GateOutcome::Ungated => self.process_ungated(&msg).await,
-            GateOutcome::Admitted(admission) => self.process_admitted(&msg, admission).await,
+            GateOutcome::Ungated => {
+                let (id, r, e) = self.process_ungated(&msg).await;
+                (id, r, e, None)
+            }
+            GateOutcome::Admitted(admission) => {
+                let (id, r, e) = self.process_admitted(&msg, admission).await;
+                (id, r, e, None)
+            }
         }
     }
 
@@ -734,6 +761,8 @@ impl AgentLoop {
                     agent_id: String::new(),
                     response: "⏳ 会话正在处理消息，本次 /compact /clear 已忽略，请稍后再试"
                         .to_string(),
+                    // 瞬态回执：不落盘，前端不占行号锚。
+                    occupies: Some(false),
                 };
             }
             return GateOutcome::Maintenance {
@@ -753,6 +782,8 @@ impl AgentLoop {
                 return GateOutcome::Immediate {
                     agent_id: String::new(),
                     response: "⏳ 会话正在处理消息，本次远程派发已忽略，请稍后再试".to_string(),
+                    // 瞬态回执：不落盘，前端不占行号锚。
+                    occupies: Some(false),
                 };
             }
             return GateOutcome::UserDispatch {
@@ -772,6 +803,8 @@ impl AgentLoop {
             return GateOutcome::Immediate {
                 agent_id: String::new(),
                 response,
+                // 瞬态回执：不落盘，前端不占行号锚。
+                occupies: Some(false),
             };
         }
 
@@ -806,7 +839,12 @@ impl AgentLoop {
                     "✓ 已切换回 Build 模式：全量工具恢复。".to_string()
                 }
             };
-            return GateOutcome::Immediate { agent_id, response };
+            return GateOutcome::Immediate {
+                agent_id,
+                response,
+                // 瞬态回执：不落盘，前端不占行号锚。
+                occupies: Some(false),
+            };
         }
 
         // 件4：`/discipline on|off [理由]` —
@@ -828,6 +866,8 @@ impl AgentLoop {
                     response: "ℹ️ 纪律模式未启用（config: agents.discipline.enabled=false）。\
                                打开后可用 `/discipline on` 进入、`/discipline off [理由]` 退出。"
                         .to_string(),
+                    // 瞬态回执：不落盘，前端不占行号锚。
+                    occupies: Some(false),
                 };
             };
             let response = match sub {
@@ -857,6 +897,8 @@ impl AgentLoop {
             return GateOutcome::Immediate {
                 agent_id: String::new(),
                 response,
+                // 瞬态回执：不落盘，前端不占行号锚。
+                occupies: Some(false),
             };
         }
 
@@ -865,6 +907,8 @@ impl AgentLoop {
             return GateOutcome::Immediate {
                 agent_id: String::new(),
                 response,
+                // 瞬态回执：不落盘，前端不占行号锚。
+                occupies: Some(false),
             };
         }
 
@@ -903,6 +947,9 @@ impl AgentLoop {
                     return GateOutcome::Immediate {
                         agent_id,
                         response: receipt,
+                        // 落盘留痕：同正文已写 jsonl system 行（persist 前置）——
+                        // 前端占行号锚（帧 role=assistant 但对应落盘行）。
+                        occupies: Some(true),
                     };
                 }
                 Err(why) => {
@@ -924,6 +971,9 @@ impl AgentLoop {
                     return GateOutcome::Immediate {
                         agent_id,
                         response: bounce,
+                        // 落盘留痕：bounce 行已成对落盘（user + assistant）——
+                        // 前端占行号锚（本地回显对应用户行，本帧对应 bounce 行）。
+                        occupies: Some(true),
                     };
                 }
             }
@@ -951,6 +1001,9 @@ impl AgentLoop {
                     return GateOutcome::Immediate {
                         agent_id,
                         response: BUSY_MESSAGE.to_string(),
+                        // 落盘留痕：bounce 行已成对落盘（user + assistant）——
+                        // 前端占行号锚（本地回显对应用户行，本帧对应 bounce 行）。
+                        occupies: Some(true),
                     };
                 }
                 ConcurrentMode::Queue | ConcurrentMode::Steer => {
@@ -1010,6 +1063,9 @@ impl AgentLoop {
                             return GateOutcome::Immediate {
                                 agent_id,
                                 response: "⏳ 当前正在处理上一条消息。你的消息已排队，将在本轮结束后继续处理。".to_string(),
+                                // 瞬态回执：不落盘（排队消息的 user 行由重放
+                                // 时物化，届时也无回声帧——前端本地回显已对账）。
+                                occupies: Some(false),
                             };
                         }
                         crate::inbox::EnqueueOutcome::QueuedForNextStep => {
@@ -1021,6 +1077,9 @@ impl AgentLoop {
                             return GateOutcome::Immediate {
                                 agent_id,
                                 response: "⚡ 已接收为紧急插话（消息以 ! 开头），将在 AI 的下一步思考前注入。非紧急消息请去掉 ! 前缀排队等待。".to_string(),
+                                // 瞬态回执：不落盘（插话 jsonl 行在注入时落，无回声帧
+                                // ——前端本地回显已对账）。
+                                occupies: Some(false),
                             };
                         }
                         crate::inbox::EnqueueOutcome::Rejected => {
@@ -1039,6 +1098,9 @@ impl AgentLoop {
                                 agent_id,
                                 response: "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。"
                                     .to_string(),
+                                // 落盘留痕：bounce 行已成对落盘（user + assistant）——
+                                // 前端占行号锚（本地回显对应用户行，本帧对应 bounce 行）。
+                                occupies: Some(true),
                             };
                         }
                         crate::inbox::EnqueueOutcome::RejectedSoft => {
@@ -1055,6 +1117,8 @@ impl AgentLoop {
                             return GateOutcome::Immediate {
                                 agent_id,
                                 response: SOFT_FULL_MESSAGE.to_string(),
+                                // 落盘留痕：bounce 行已成对落盘（同上）。
+                                occupies: Some(true),
                             };
                         }
                     }
@@ -1447,7 +1511,7 @@ impl AgentLoop {
                             session_key
                         );
                         let fut = Box::pin(self.process_inbound_message(&inbound));
-                        let (_id2, resp2, err2) = fut.await;
+                        let (_id2, resp2, err2, occ2) = fut.await;
                         let content = match err2 {
                             Some(e) => format!("Error processing message: {}", e),
                             None => resp2,
@@ -1473,6 +1537,10 @@ impl AgentLoop {
                                     // 直调方生产不实例化（tests / 排队 inline
                                     // 回退），泵路径经 finish_message 打标。
                                     receipt: false,
+                                    // 闸门重分类的帧占行真相随行（行号锚漂移
+                                    // 根修）：落盘回执 Some(true)、瞬态回执
+                                    // Some(false)、终局回复 None（旧规则）。
+                                    occupies: occ2,
                                 },
                             };
                             let _ = tx.send(outbound).await;

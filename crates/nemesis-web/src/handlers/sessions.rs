@@ -1346,8 +1346,17 @@ pub(crate) fn wake_due_sessions() -> usize {
         // 同域」），chat.sync 按完整键重建桶查。此前传裸 sid——恢复行落进
         // 无人查询的孤儿桶，断线窗口内唤醒的会话重连补拉看不到此行
         // （jsonl 有、补拉无）。publish_activity 内部剥前缀还原裸 sid，
-        // chat.activity 信号形态不变。
-        crate::chat_event_log::record(&session_key, "system", &content, None, None, None);
+        // chat.activity 信号形态不变。恢复行已落盘（上方 append_chat_log
+        // system 行）→ occupies=Some(true) 占行号锚（行号锚漂移根修）。
+        crate::chat_event_log::record(
+            &session_key,
+            "system",
+            &content,
+            None,
+            None,
+            None,
+            Some(true),
+        );
         crate::chat_event_log::publish_global_event(
             "session.updated",
             serde_json::json!({
