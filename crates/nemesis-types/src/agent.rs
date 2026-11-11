@@ -530,11 +530,12 @@ pub trait ApprovalResponder: Send + Sync {
 
     /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：对批号下**全部**未决卡
     /// 送同一裁决（Dashboard 聚合卡「全部允许 / 全部拒绝」）。返回
-    /// `Ok({responded, skipped})` 摘要（responded=裁决生效数；skipped=
-    /// 竞速败方——respond/超时已先裁决，记账让位不计入）；`Err`=批号下
-    /// 没有未决卡、批号为空、或 manager 不支持批量裁决（默认实现，IM 卡 /
-    /// 测试 stub 零改动）。`always`/`note` 语义同 [`Self::respond`]（逐卡
-    /// 生效；不可记忆项 warn 不 fail）。
+    /// `Ok({responded, skipped, responded_ids})` 摘要（responded=裁决生效数；
+    /// skipped=竞速败方——respond/超时已先裁决，记账让位不计入；
+    /// responded_ids=裁决生效卡的 request_id 清单，供装饰器逐卡上行摘
+    /// master 同步卡）；`Err`=批号下没有未决卡、批号为空、或 manager 不
+    /// 支持批量裁决（默认实现，IM 卡 / 测试 stub 零改动）。`always`/`note`
+    /// 语义同 [`Self::respond`]（逐卡生效；不可记忆项 warn 不 fail）。
     fn respond_batch(
         &self,
         _batch_id: &str,
