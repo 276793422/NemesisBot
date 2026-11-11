@@ -3,9 +3,17 @@
 //! 与 [`crate::loop::credential_injection`]（声明槽位 `vault:` 别名，配置
 //! 驱动、跨会话别名、发卡恢复）互补的第二条凭据通路：**模型在执行中途经
 //! question 凭据形态向用户收取的凭据**，落 vault 会话作用域别名
-//! `agent/<会话>/<名>`，随后在**任意工具的任意字符串参数**里以模板
+//! `agent/<会话>/<名>`，随后在**工具声明的凭据槽位**里以模板
 //! `{{vault:<alias>}}` 引用——dispatch 最内层（安全 8 层之后、execute 之前）
 //! 展开替换，值全程不过 LLM 上下文。
+//!
+//! **槽位收紧（2026-11-11，用户拍板）**：占位符只允许出现在工具声明槽位
+//! 的字符串值里（顶层字符串槽 | 对象槽叶子深度恒 1，与声明槽改写
+//! [`crate::loop::credential_injection`] 同形）；槽外任何字符串值出现完整
+//! 模板 = fail loud 工具不执行。此前「任意字符串参数都展开」的语义下，
+//! 模板写进 exec 的 command 等普通参数时真值会进命令行——进程列表全用户
+//! 可见，违反「真值不进命令行」不变量。无闭合片段按字面量保留（文档/
+//! 示例文本里写「{{vault:…」不算引用，不误伤）。
 //!
 //! 安全红线（计划批次④钦定）——**作用域闸是主防线，结果掩码只是纵深**：
 //! 占位符只解析**本会话作用域**别名（`agent/<本会话 sanitize>/` 前缀），
@@ -47,7 +55,11 @@ pub fn session_scope_prefix(session_key: &str) -> String {
     format!("agent/{}/", sanitize_path_segment(session_key))
 }
 
-/// 展开工具 args 中所有字符串值里的 `{{vault:<alias>}}` 占位符。
+/// 展开工具 args 中**声明凭据槽位内**字符串值里的 `{{vault:<alias>}}` 占位符。
+///
+/// `slots` = 工具声明的凭据槽位键（[`crate::loop_tools::tools_trait::Tool::
+/// credential_arg_keys`]）；槽位面与声明槽改写同形：顶层字符串槽 | 对象槽
+/// 叶子深度恒 1（[`super::credential_injection`] `walk_declared_slots` 契约）。
 ///
 /// 返回 `(展开后 args JSON, 本调用出现的凭据明文清单)`——明文清单供
 /// [`mask_secrets_in_result`] 在工具结果上做掩码，不进任何日志/历史。
@@ -55,15 +67,20 @@ pub fn session_scope_prefix(session_key: &str) -> String {
 /// 无占位符 → 原样透传零分配路径。
 ///
 /// 错误（fail loud，工具不执行）：
-/// - **越界别名**：alias 不带本会话 `agent/<会话>/` 前缀——报错含别名
-///   原文（模型自己写的，非机密），**不查库**（无存在性信号）；
+/// - **槽外模板（placement）**：槽外任何字符串值出现**完整模板**（有头有
+///   尾）——报错含字段路径与别名原文（模型自己写的，非机密），**不查库**；
+///   placement 检查优先于作用域检查（槽外越界别名报 placement 错）；
+/// - **越界别名（scope）**：槽内 alias 不带本会话 `agent/<会话>/` 前缀——
+///   同样不查库（无存在性信号）；
 /// - **解析失败**：别名不存在 / vault 锁定 / 解析器未装配——vault 层
 ///   错误透传（诚实报错，不做静默纠偏）。
 ///
-/// `{{vault:` 无 `}}` 闭合 → 按字面量保留（非合法模板形态）。
-pub fn expand_session_placeholders(
+/// `{{vault:` 无 `}}` 闭合 → 按字面量保留（非合法模板形态；槽外同理
+/// 不报错——文档/示例文本误伤零化）。
+pub fn expand_session_placeholders_in_slots(
     args: &str,
     session_key: &str,
+    slots: &[&str],
 ) -> Result<(String, Vec<String>), String> {
     // 快速路径：整串不含模板头 → 原样返回（绝大多数工具调用零成本，
     // 且不经 serde round-trip——Map 重排序/浮点形态等序列化伪影全避开，
@@ -77,37 +94,118 @@ pub fn expand_session_placeholders(
     };
     let mut secrets = Vec::new();
     let scope = session_scope_prefix(session_key);
-    walk_strings(&mut val, &scope, &mut secrets)?;
-    // 占位符已全部替换（ secrets 只收集不残留）→ 序列化输出。此时键序
+    match &mut val {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                let declared = slots.contains(&key.as_str());
+                match v {
+                    // 顶层字符串槽：槽面内，展开。
+                    serde_json::Value::String(s) if declared => {
+                        expand_in_string(s, &scope, &mut secrets)?;
+                    }
+                    // 对象槽：叶子深度恒 1（与声明槽改写同形）——字符串叶
+                    // 展开，更深/非字符串结构一概属槽外检测面（宁缺毋滥）。
+                    serde_json::Value::Object(inner) if declared => {
+                        for (leaf_key, leaf) in inner.iter_mut() {
+                            match leaf {
+                                serde_json::Value::String(s) => {
+                                    expand_in_string(s, &scope, &mut secrets)?;
+                                }
+                                other => {
+                                    let mut path = format!("{key}.{leaf_key}");
+                                    detect_templates_outside_slots(other, &mut path, slots)?;
+                                }
+                            }
+                        }
+                    }
+                    // 其余一切（未声明键 / 声明键下的数组等）都在槽外 → 检测。
+                    other => {
+                        let mut path = key.clone();
+                        detect_templates_outside_slots(other, &mut path, slots)?;
+                    }
+                }
+            }
+        }
+        // 顶层非对象（数组/标量）：不存在顶层键 = 无声明槽面，全在槽外。
+        other => {
+            let mut path = String::new();
+            detect_templates_outside_slots(other, &mut path, slots)?;
+        }
+    }
+    // 槽内占位符已全部替换（secrets 只收集不残留）→ 序列化输出。此时键序
     // 经 serde Map 归一（BTreeMap 字典序）——语义等价（工具按 JSON 解析），
     // 该串只进 execute 不回模型上下文，无缓存面影响。
     let out = serde_json::to_string(&val).map_err(|e| format!("占位符展开序列化失败: {e}"))?;
     Ok((out, secrets))
 }
 
-/// 递归遍历 JSON 值，只改写字符串**值**（键名不动——占位符语义是「值里
-/// 引用凭据」，键名改写会让对象结构漂移，宁缺毋滥）。
-fn walk_strings(
-    val: &mut serde_json::Value,
-    scope: &str,
-    secrets: &mut Vec<String>,
+/// 槽外**完整模板**检测（递归）。只检测不改写——发现即 Err（fail loud，
+/// 工具不执行、无 checkpoint 残留），报错含字段路径与别名原文（模型自写
+/// 非机密，可回显）。无闭合片段不算（按字面量保留，见模块文档）。
+fn detect_templates_outside_slots(
+    val: &serde_json::Value,
+    path: &mut String,
+    slots: &[&str],
 ) -> Result<(), String> {
     match val {
         serde_json::Value::Object(map) => {
-            for v in map.values_mut() {
-                walk_strings(v, scope, secrets)?;
+            for (k, v) in map.iter() {
+                let mark = path.len();
+                path.push('.');
+                path.push_str(k);
+                let r = detect_templates_outside_slots(v, path, slots);
+                path.truncate(mark);
+                r?;
             }
             Ok(())
         }
         serde_json::Value::Array(items) => {
-            for v in items.iter_mut() {
-                walk_strings(v, scope, secrets)?;
+            for (i, v) in items.iter().enumerate() {
+                let mark = path.len();
+                path.push('.');
+                path.push_str(&i.to_string());
+                let r = detect_templates_outside_slots(v, path, slots);
+                path.truncate(mark);
+                r?;
             }
             Ok(())
         }
-        serde_json::Value::String(s) => expand_in_string(s, scope, secrets).map(|_| ()),
+        serde_json::Value::String(s) => {
+            if let Some(alias) = first_complete_template(s) {
+                let declared = if slots.is_empty() {
+                    "本工具无声明凭据槽位".to_string()
+                } else {
+                    format!("声明槽位：{}", slots.join(", "))
+                };
+                return Err(format!(
+                    "⛔ CREDENTIAL TEMPLATE OUTSIDE SLOT [layer:session_secret|field:{path}] \
+                     占位符 {{{{vault:{alias}}}}} 出现在声明凭据槽位之外（{declared}）。\
+                     {OUTSIDE_SLOT_GUIDANCE}"
+                ));
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
+}
+
+/// 槽外模板报错的处置指引（常量串——花括号字面量免转义）。
+const OUTSIDE_SLOT_GUIDANCE: &str = "占位符只允许在工具声明的凭据槽位里引用（顶层字符串槽或\
+     对象叶子，如 exec 族 env / web_fetch headers）——写在命令行/URL/普通参数里会把凭据真值\
+     暴露到进程列表或外发内容。请改走声明槽位（如 exec 的 env 参数放 \
+     {\"KEY\": \"{{vault:agent/<会话>/<名>}}\"}）。工具未执行。";
+
+/// 字符串内首个**完整模板**（有头有尾）的别名；只有无闭合片段 → None。
+fn first_complete_template(s: &str) -> Option<String> {
+    let mut rest = s;
+    while let Some(rel) = rest.find(TEMPLATE_HEAD) {
+        let after_head = &rest[rel + TEMPLATE_HEAD.len()..];
+        if let Some(tail_rel) = after_head.find(TEMPLATE_TAIL) {
+            return Some(after_head[..tail_rel].trim().to_string());
+        }
+        rest = after_head;
+    }
+    None
 }
 
 /// 单个字符串值内的占位符展开（可多处、可嵌入更长字符串）。

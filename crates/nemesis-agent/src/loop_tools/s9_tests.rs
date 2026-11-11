@@ -34,6 +34,7 @@ fn delegation_ctx() -> RequestContext {
         async_callback: None,
         tool_path_base: None,
         approval_ref: None,
+        secrets: std::sync::Arc::new(Vec::new()),
     }
 }
 

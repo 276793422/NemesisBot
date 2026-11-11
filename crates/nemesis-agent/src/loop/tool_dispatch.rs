@@ -1332,6 +1332,11 @@ impl AgentLoop {
         // format-on-save 的 config.json 路径快照（每次 dispatch 新鲜读，
         // 同 current_diagnostics_loop 模式——运行中可翻转开关）。
         let format_cfg_path = self.config_path.read().clone();
+        // vault 域绑定 sidecar 权威路径快照（L26 修复 2026-11-11：装配点
+        // 显式注入 `<主workspace>/config/config.vault.json`，与 CLI `vault
+        // bind` 写入侧同点；None = 回落 config.json 同目录——测试/裸装配
+        // 旁路形态，生产行为不变）。
+        let vault_domain_path = self.vault_domain_config_path.read().clone();
         // 钩子路径解析边界快照（Arc 克隆进 'static 闭包；与工具表同一
         // 实例，dispatch 时刻读一次即可——边界启动期装配、运行期不变）。
         let hook_boundary = self.workspace_boundary.read().clone();
@@ -1363,6 +1368,7 @@ impl AgentLoop {
             let cp = checkpoint_arc.clone();
             let hooks = hooks_arc.clone();
             let format_cfg_path = format_cfg_path.clone();
+            let vault_domain_path = vault_domain_path.clone();
             let turn_fc = turn_fc.clone();
             let hook_boundary = hook_boundary.clone();
             let cred_broker = cred_broker.clone();
@@ -1383,6 +1389,7 @@ impl AgentLoop {
                 let cp = cp.clone();
                 let hooks = hooks.clone();
                 let format_cfg_path = format_cfg_path.clone();
+                let vault_domain_path = vault_domain_path.clone();
                 let turn_fc = turn_fc.clone();
                 let hook_boundary = hook_boundary.clone();
                 let cred_broker = cred_broker.clone();
@@ -1425,10 +1432,19 @@ impl AgentLoop {
                     // 配置不得松弛任何调用）。
                     let mut domain_preauthorized = false;
                     if !gate_refs.is_empty() {
-                        let domain_cfg = format_cfg_path
-                            .as_ref()
-                            .and_then(|p| p.parent())
-                            .map(nemesis_config::vault_domain_config_path_in)
+                        // L26 路径分裂修复（2026-11-11）：primary = 装配点
+                        // 注入的 `<主workspace>/config/config.vault.json`（CLI
+                        // `vault bind` 写入侧同点）；fallback = config.json
+                        // 同目录（修复前唯一形态，现只服务未注入的测试/裸
+                        // 装配——生产三装配点恒注入，fallback 路径在生产恒
+                        // 无文件 = 等价无绑定，fail-safe 不变）。
+                        let domain_cfg_path = vault_domain_path.clone().or_else(|| {
+                            format_cfg_path
+                                .as_ref()
+                                .and_then(|p| p.parent())
+                                .map(nemesis_config::vault_domain_config_path_in)
+                        });
+                        let domain_cfg = domain_cfg_path
                             .and_then(|path| {
                                 match nemesis_config::VaultDomainConfig::load_at(&path) {
                                     Ok(c) => Some(c),
@@ -1644,12 +1660,12 @@ impl AgentLoop {
                         // 缺席/被拒/超时 = 原错误串即工具结果，工具不执行，
                         // fail loud 零回归）。
                         Some(tool) => {
-                            let exec_args =
-                                match credential_injection::inject_credential_aliases_structured(
+                            let (exec_args, vault_secrets) =
+                                match credential_injection::inject_credential_aliases_with_secrets(
                                     tool.as_ref(),
                                     &call.arguments,
                                 ) {
-                                    Ok(a) => a,
+                                    Ok((a, s)) => (a, s),
                                     Err(inj_err) => {
                                         match credential_injection::try_card_recovery(
                                             cred_broker.clone(),
@@ -1662,7 +1678,7 @@ impl AgentLoop {
                                         )
                                         .await
                                         {
-                                            Some(a) => a,
+                                            Some((a, s)) => (a, s),
                                             None => return inj_err.to_string(),
                                         }
                                     }
@@ -1674,15 +1690,35 @@ impl AgentLoop {
                             // nemesis_config::vault_ref::strip_reference_forms），
                             // 此处展开值只进 execute 入参；明文清单带回供
                             // 结果掩码。作用域闸（只解析本会话别名）是防外泄
-                            // 主防线，见 session_secrets 模块文档。
-                            let (exec_args, session_secrets) =
-                                match crate::r#loop::session_secrets::expand_session_placeholders(
-                                    &exec_args,
-                                    &ctx.session_key,
-                                ) {
-                                    Ok(v) => v,
-                                    Err(e) => return e,
-                                };
+                            // 主防线；槽位收紧（2026-11-11）后只在本工具声明
+                            // 槽位内展开、槽外完整模板 fail loud（真值不进
+                            // 命令行不变量），见 session_secrets 模块文档。
+                            let (exec_args, mut session_secrets) = match crate::r#loop::session_secrets::expand_session_placeholders_in_slots(
+                                &exec_args,
+                                &ctx.session_key,
+                                tool.credential_arg_keys(),
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => return e,
+                            };
+                            // vault 计划 P2（2026-11-11）掩码合流：声明槽
+                            // 注入解析出的明文与占位符通路明文同池遮蔽
+                            //（下方掩码臂按非空判定，零额外分支）。
+                            if !vault_secrets.is_empty() {
+                                session_secrets.extend(vault_secrets);
+                            }
+                            // vault 计划 P2（2026-11-11）执行中输出流掩码注
+                            // 入：exec tee 的 ToolOutput 帧在下方结果掩码臂
+                            // **之前**流出（明文随每帧广播到 Dashboard 事件
+                            // 面）——本调用掩码池非空时注入 per-call ctx，
+                            // hook 侧就地遮蔽（空池零成本直通）。
+                            let call_ctx = if session_secrets.is_empty() {
+                                std::sync::Arc::clone(&ctx)
+                            } else {
+                                let mut c = (*ctx).clone();
+                                c.secrets = std::sync::Arc::new(session_secrets.clone());
+                                std::sync::Arc::new(c)
+                            };
                             // 工具 panic 隔离。
                             // 工具在 agent loop task 内联执行，release
                             // panic=unwind 下任一工具 panic 会沿 unwind 炸掉整
@@ -1700,7 +1736,7 @@ impl AgentLoop {
                             // 写了一半 panic）与超时放弃 future 的孤儿语义同级，
                             // 合成串里注明。
                             let exec = futures::FutureExt::catch_unwind(
-                                std::panic::AssertUnwindSafe(tool.execute(&exec_args, &ctx)),
+                                std::panic::AssertUnwindSafe(tool.execute(&exec_args, &call_ctx)),
                             )
                             .await;
                             let exec = match exec {

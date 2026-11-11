@@ -786,6 +786,7 @@ impl AgentLoop {
             async_callback: None,
             tool_path_base: None,
             approval_ref: None,
+            secrets: std::sync::Arc::new(Vec::new()),
         };
         let trace_id = format!("subagent-{}", uuid::Uuid::new_v4().simple());
         // Swarm：detached 路径补合成 ConversationStart/End。run_llm_loop

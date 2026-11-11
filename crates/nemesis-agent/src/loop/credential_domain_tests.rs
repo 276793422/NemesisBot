@@ -1,6 +1,11 @@
 //! ②（2026-11-02 三期）：dispatch 凭据闸 v2——vault 别名域绑定 loop 级测试。
 //!
-//! 判定矩阵（设计，config.vault.json 注入经 `set_config_path`）：
+//! 判定矩阵（设计；config.vault.json 路径 L26 修复 2026-11-11 起**双轨**：
+//! 生产 = 装配点 `set_vault_domain_config_path` 注入 `<主workspace>/config/
+//! config.vault.json`（CLI `vault bind` 写入侧同点）；本文件存量测试走
+//! fallback 臂（`set_config_path` + config.json 同目录 sidecar——只服务
+//! 未注入的测试/裸装配，生产行为不变）。文末两个 split_* 分裂锁用**两处
+//! 独立目录**分别构造写读两侧，钉住「闸读注入路径、只读注入路径」）：
 //! - 出域（绑定别名用在未授权 tool/slot）→ 工具不执行，拒绝串
 //!   `layer:credential_domain` 回模型（audit 链条目只在 security plugin
 //!   在场形态可达，本文件测无插件形态——拒绝串即审计面，诚实降级）；
@@ -76,6 +81,30 @@ impl Tool for HeaderCredTool {
     }
     fn credential_arg_keys(&self) -> &[&str] {
         &["headers"]
+    }
+}
+
+/// env 对象槽工具（exec 族形态，vault 计划 P3：`tool:env` 绑定域测试）。
+struct EnvCredTool {
+    captured: Arc<Mutex<Vec<String>>>,
+}
+#[async_trait]
+impl Tool for EnvCredTool {
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        self.captured.lock().unwrap().push(args.to_string());
+        Ok("executed".to_string())
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "env": {"type": "object"}
+            }
+        })
+    }
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["env"]
     }
 }
 
@@ -484,4 +513,200 @@ async fn out_of_domain_logs_audit_entry_with_plugin() {
     assert_eq!(entries[0].request.source, "credential_domain");
     let all = format!("{entries:?}");
     assert!(!all.contains(SECRET), "审计条目不得含真值: {all}");
+}
+
+// ---------------------------------------------------------------------------
+// env 槽（exec 族，vault 计划 P3，2026-11-11）：`tool:env` 绑定形态
+// ---------------------------------------------------------------------------
+
+/// env 槽域内：绑定 (envtool, env) 精确命中 → 免卡直过，叶字段真值注入。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn env_slot_in_domain_passes_and_executes() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    resolver_for("corp");
+    let dir = setup_config_dir(Some(
+        r#"{"bindings":{"corp":[{"tool":"envtool","slot":"env"}]}}"#,
+    ));
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![
+        tool_call_response(
+            "envtool",
+            r#"{"command":"printenv API_TOKEN","env":{"API_TOKEN":"vault:corp"}}"#,
+        ),
+        done_response(),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), domain_test_config(&["envtool"]));
+    agent_loop.register_tool(
+        "envtool".to_string(),
+        Box::new(EnvCredTool {
+            captured: captured.clone(),
+        }),
+    );
+    agent_loop.set_config_path(dir.path().join("config.json"));
+    let instance = AgentInstance::new(domain_test_config(&["envtool"]));
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    nemesis_config::clear_global_vault_resolver();
+
+    let cap = captured.lock().unwrap();
+    assert_eq!(cap.len(), 1, "域内调用应执行一次");
+    assert!(cap[0].contains(SECRET), "env 叶真值注入: {:?}", cap[0]);
+    drop(cap);
+    assert!(!events_text(&events).contains("OUT OF DOMAIN"));
+}
+
+/// env 槽出域：别名只绑 web_fetch:headers，用在 envtool:env → 拒绝 + 零执行。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn env_slot_out_of_domain_rejects() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    resolver_for("corp");
+    let dir = setup_config_dir(Some(
+        r#"{"bindings":{"corp":[{"tool":"web_fetch","slot":"headers"}]}}"#,
+    ));
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![
+        tool_call_response(
+            "envtool",
+            r#"{"command":"printenv API_TOKEN","env":{"API_TOKEN":"vault:corp"}}"#,
+        ),
+        done_response(),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), domain_test_config(&["envtool"]));
+    agent_loop.register_tool(
+        "envtool".to_string(),
+        Box::new(EnvCredTool {
+            captured: captured.clone(),
+        }),
+    );
+    agent_loop.set_config_path(dir.path().join("config.json"));
+    let instance = AgentInstance::new(domain_test_config(&["envtool"]));
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    nemesis_config::clear_global_vault_resolver();
+
+    assert!(captured.lock().unwrap().is_empty(), "出域必须零执行");
+    let dump = events_text(&events);
+    assert!(dump.contains("OUT OF DOMAIN"), "拒绝串必须可见: {dump}");
+    assert!(!dump.contains(SECRET), "拒绝面不得出现真值: {dump}");
+}
+
+// ===== L26 路径分裂回归锁（2026-11-11，用户拍板案 A）=====
+//
+// BUG 形态：CLI `vault bind` 写 `<workspace>/config/config.vault.json`，
+// 闸读 config.json 同目录——两侧各读各的，绑定生产永不生效。修复 = 闸
+// primary 读装配点注入路径，fallback（config.json 同目录）只服务未注入
+// 形态。headless 下「域内直过」与「无绑定走 v1」执行面同形不可区分，
+// 所以分裂锁用**决定性形态**：两条路径各放相反映射，执行/拒绝的分叉
+// 唯一由「闸读了哪条路径」决定。
+
+/// 分裂锁 A：旧路径放**出域**映射 + 注入路径放**域内**映射 → 必须执行
+/// 且注入真值（证明闸读注入路径；修复前闸读旧路径会 OUT OF DOMAIN 拒绝）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn split_gate_reads_injected_workspace_path() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    resolver_for("corp");
+    // 旧形态目录：config.json 旁的 config.vault.json = corp→web_fetch:headers
+    //（对 credtool 是出域映射——闸若读这里必拒绝）。
+    let legacy_dir = setup_config_dir(Some(
+        r#"{"bindings":{"corp":[{"tool":"web_fetch","slot":"headers"}]}}"#,
+    ));
+    // 注入侧目录：生产布局 `<ws>/config/config.vault.json` = corp→credtool
+    //（域内映射——闸读这里必放行）。
+    let ws_dir = tempfile::tempdir().unwrap();
+    let ws_cfg_dir = ws_dir.path().join("config");
+    std::fs::create_dir(&ws_cfg_dir).unwrap();
+    let injected_path = ws_cfg_dir.join("config.vault.json");
+    std::fs::write(
+        &injected_path,
+        r#"{"bindings":{"corp":[{"tool":"credtool","slot":"credential"}]}}"#,
+    )
+    .unwrap();
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![
+        tool_call_response("credtool", r#"{"credential":"vault:corp"}"#),
+        done_response(),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), domain_test_config(&["credtool"]));
+    agent_loop.register_tool(
+        "credtool".to_string(),
+        Box::new(CapturingCredTool {
+            captured: captured.clone(),
+        }),
+    );
+    agent_loop.set_config_path(legacy_dir.path().join("config.json"));
+    agent_loop.set_vault_domain_config_path(injected_path);
+    let instance = AgentInstance::new(domain_test_config(&["credtool"]));
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    nemesis_config::clear_global_vault_resolver();
+
+    let cap = captured.lock().unwrap();
+    assert_eq!(
+        cap.len(),
+        1,
+        "闸必须读注入路径（域内放行执行）；读旧路径=出域拒绝零执行"
+    );
+    assert!(cap[0].contains(SECRET), "真值注入照常: {:?}", cap[0]);
+    drop(cap);
+    assert!(
+        !events_text(&events).contains("OUT OF DOMAIN"),
+        "注入路径域内不得拒绝"
+    );
+}
+
+/// 分裂锁 B（对偶）：注入路径放**出域**映射 + 旧路径放**域内**映射 →
+/// 必须拒绝且零执行（证明注入路径优先且唯一生效；修复前/读旧路径都会
+/// 经 v1 放行执行）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn split_injected_path_takes_precedence_over_legacy() {
+    let _g = VAULT_SLOT_LOCK.lock();
+    resolver_for("corp");
+    // 旧形态目录：域内映射（闸若读这里会放行执行）。
+    let legacy_dir = setup_config_dir(Some(
+        r#"{"bindings":{"corp":[{"tool":"credtool","slot":"credential"}]}}"#,
+    ));
+    // 注入侧目录：出域映射（闸读这里必拒绝）。
+    let ws_dir = tempfile::tempdir().unwrap();
+    let ws_cfg_dir = ws_dir.path().join("config");
+    std::fs::create_dir(&ws_cfg_dir).unwrap();
+    let injected_path = ws_cfg_dir.join("config.vault.json");
+    std::fs::write(
+        &injected_path,
+        r#"{"bindings":{"corp":[{"tool":"web_fetch","slot":"headers"}]}}"#,
+    )
+    .unwrap();
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![
+        tool_call_response("credtool", r#"{"credential":"vault:corp"}"#),
+        done_response(),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), domain_test_config(&["credtool"]));
+    agent_loop.register_tool(
+        "credtool".to_string(),
+        Box::new(CapturingCredTool {
+            captured: captured.clone(),
+        }),
+    );
+    agent_loop.set_config_path(legacy_dir.path().join("config.json"));
+    agent_loop.set_vault_domain_config_path(injected_path);
+    let instance = AgentInstance::new(domain_test_config(&["credtool"]));
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let events = agent_loop.run(&instance, "go", &context).await;
+    nemesis_config::clear_global_vault_resolver();
+
+    assert!(
+        captured.lock().unwrap().is_empty(),
+        "注入路径出域映射必须拒绝（读旧路径=域内放行执行）"
+    );
+    let dump = events_text(&events);
+    assert!(dump.contains("OUT OF DOMAIN"), "拒绝串必须可见: {dump}");
+    assert!(!dump.contains(SECRET), "拒绝面不得出现真值: {dump}");
 }

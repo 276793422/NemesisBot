@@ -47,6 +47,11 @@ mod midnight_tests;
 #[cfg(test)]
 mod route_resolver_tests;
 
+// L26 vault 域绑定路径公式对齐锁（无 feature 门——闸读/CLI 写两侧
+// 同 home 必须落到同一文件；模块名含 vault_domain 对齐过滤词）。
+#[cfg(test)]
+mod vault_domain_formula_tests;
+
 // ---------------------------------------------------------------------------
 // SharedResources — infrastructure that survives Agent restart
 // ---------------------------------------------------------------------------
@@ -310,6 +315,16 @@ impl SharedResources {
         } else {
             self.workspace.clone()
         }
+    }
+
+    /// vault 域绑定 sidecar 权威路径（`<workspace>/config/config.vault.json`，
+    /// L26 路径分裂修复 2026-11-11 的单一推导点：CLI `vault bind` 写入侧
+    /// 同款公式，dispatch 闸经三装配点 `set_vault_domain_config_path` 消费
+    /// 同一值——写读两侧不再各拼各的路径）。项目 loop 的 workspace_root
+    /// 是项目目录，**不可**从它推导——恒走本 helper（主 workspace 锚）。
+    pub fn vault_domain_config_path(&self) -> PathBuf {
+        nemesis_path::workspace_config_dir(&self.workspace_dir())
+            .join(nemesis_config::VAULT_DOMAIN_CONFIG_FILE)
     }
 }
 

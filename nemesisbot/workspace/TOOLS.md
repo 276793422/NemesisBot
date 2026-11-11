@@ -120,6 +120,22 @@ for (const f of names.filter(x => x.endsWith(".log"))) {
 `fixed ${fixed} files`;
 ```
 
+## 凭据注入（exec 族 `env` 槽 + `vault:` 别名）
+
+需要给命令/脚本传 API key、token 等凭据时，**走 `env` 参数，绝不写进命令字符串**（命令行会出现在进程列表、历史和日志里）：
+
+1. 用户先用 `nemesisbot vault set <别名>` 预存全局凭据（值直接进凭据库，不经过对话）。
+2. `exec` / `run_script` / `run_checks` / `background_start` 四工具都支持 `env` 参数（仅本次命令生效的对象）：
+
+```json
+{"command": "python sync_jira.py", "env": {"JIRA_TOKEN": "vault:jira/token"}}
+```
+
+3. `vault:` 引用在执行前最后一刻替换为真值——你的上下文、对话历史和工具结果里只会看到别名，看不到值。脚本内正常读环境变量即可。
+4. 别名需绑定到该工具才免审批直过（`vault bind <别名> --tool exec --slot env`）；未绑定时会弹凭据卡向用户索取授权；用在未授权的工具上会被直接拒绝。
+5. 工具结果若回显凭据明文会被自动遮蔽（`background_start` 的任务输出同理——`background_output` 分页读与完成通告尾部的回显都遮蔽）；同理 `web_fetch` 的 `headers` 参数也支持 `vault:` 引用。
+6. 经 question 凭据形态收取的会话内凭据用 `{{vault:agent/<会话>/<名>}}` 占位符引用——**同样只能在声明槽位内**（顶层字符串槽或对象叶子）；槽外位置（命令字符串、URL、普通参数）出现完整占位符会被直接拒绝、工具不执行（真值不进命令行），改走声明槽位即可。
+
 ## 消息内 @文件引用
 
 用户消息里可以直接引用工作区文件，内容会自动内联进对话（无需再调 read_file）：

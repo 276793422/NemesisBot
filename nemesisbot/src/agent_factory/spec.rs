@@ -427,6 +427,10 @@ pub fn build_agent_loop_from_spec(
     // 指令链（AGENTS.md/CLAUDE.md）根锚项目目录——项目可带自己的指令
     // 文件，与主 workspace 互不影响。
     agent_loop.set_workspace_root(project_dir.clone());
+    // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11）：**主 workspace
+    // 锚**——项目 loop 的 workspace_root 是项目目录（上面一行），不可作
+    // 推导根；恒走 SharedResources 单一推导点（与 CLI 写入侧同点）。
+    agent_loop.set_vault_domain_config_path(shared.vault_domain_config_path());
     // （项目 home 收编）：plan 模式产物根 = `<agent_home>/
     // plans`（项目目录/plans 高危禁写，计划产物只落 Bot 域 home）。
     // home 缺席（记录缺位降级形态）= 不注入，回落 workspace_root/plans

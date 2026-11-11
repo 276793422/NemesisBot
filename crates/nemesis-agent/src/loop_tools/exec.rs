@@ -178,6 +178,49 @@ fn compile_deny_patterns(custom: Option<&[&str]>) -> Vec<regex::Regex> {
     compiled
 }
 
+/// `env` 槽 schema（vault 计划方案 A，2026-11-11）：exec / run_script /
+/// run_checks / background_start 四工具共用同一份 schema（指引模型凭据
+/// 走槽位引用，勿进命令行——进程列表全用户可见是已知泄漏面）。函数形态
+/// （`json!` 含堆分配进不了 const）。
+pub(crate) fn env_slot_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "description": "Optional environment variables for this command only (never inherited by other calls). Values must be strings; pass credentials as vault:<alias> references (e.g. {\"API_TOKEN\": \"vault:jira/token\"}) — aliases are resolved to real values just before execution and never enter your context, history, or logs. Never put credentials in the command string itself (process lists expose them)",
+        "additionalProperties": {"type": "string"}
+    })
+}
+
+/// 解析工具 args 的 `env` 槽（vault 计划方案 A）：`{"K": "v"}` 字符串
+/// 对象 → (k, v) 对列表。调用时机在 dispatch 凭据注入之后——声明槽
+/// （`credential_arg_keys=["env"]`）里的 `vault:<alias>` 已被改写为真值，
+/// 字面量原样通过；本函数只做形态解析，不认识凭据语义。槽缺席/空对象
+/// → `Ok(None)`（零行为变化）；形态错误（非对象/值非字符串）→ `Err`
+/// fail loud（工具不执行，模型可自纠）。单一真相源：四个 exec 类工具
+/// 共用（background_start 经 loop_tools 再导出引用）。
+pub(crate) fn parse_env_slot(
+    val: &serde_json::Value,
+) -> Result<Option<Vec<(String, String)>>, String> {
+    let Some(env) = val.get("env") else {
+        return Ok(None);
+    };
+    let Some(obj) = env.as_object() else {
+        return Err("Invalid 'env' argument: expected an object of string values".to_string());
+    };
+    if obj.is_empty() {
+        return Ok(None);
+    }
+    let mut pairs = Vec::with_capacity(obj.len());
+    for (k, v) in obj {
+        let Some(s) = v.as_str() else {
+            return Err(format!(
+                "Invalid 'env' argument: value of '{k}' must be a string"
+            ));
+        };
+        pairs.push((k.clone(), s.to_string()));
+    }
+    Ok(Some(pairs))
+}
+
 impl ExecTool {
     /// Create a new exec tool.
     pub fn new(workspace: &str, restrict: bool) -> Self {
@@ -264,7 +307,10 @@ impl ExecTool {
 #[async_trait]
 impl Tool for ExecTool {
     fn description(&self) -> String {
-        "Execute a shell command and wait for completion".to_string()
+        "Execute a shell command and wait for completion. For credentials/secrets, pass \
+         them via the env parameter as vault:<alias> references — never in the command \
+         string (process lists, history, and logs expose it)."
+            .to_string()
     }
 
     // vault（计划）：exec 类工具参与 `security.limits`
@@ -274,7 +320,14 @@ impl Tool for ExecTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":format!("Timeout in seconds (default 30, max {})", self.max_timeout_secs)},"cwd":{"type":"string","description":"Working directory"}},"required":["command"]})
+        serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":format!("Timeout in seconds (default 30, max {})", self.max_timeout_secs)},"cwd":{"type":"string","description":"Working directory"},"env":env_slot_schema()},"required":["command"]})
+    }
+
+    // vault 计划方案 A（2026-11-11）：env 槽承载凭据别名（模型传
+    // {"VAR": "vault:<alias>"}，dispatch 最内层对象叶改写真值——
+    // 上下文/历史/预览/审计只见别名）。
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["env"]
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -338,6 +391,13 @@ impl Tool for ExecTool {
         // 平台 shell 形态抽到 `make_piped_shell_command`（与 run_checks
         // 共用同一定义）。
         let mut cmd = make_piped_shell_command(command);
+        // 显式 env 槽（vault 计划方案 A）：make_piped_shell_command 内置
+        // sanitize（剥继承凭据），显式 args env 在其后追加 = 声明意图语义
+        // （sanitize 管继承面，env 管声明面）。值已由 dispatch 注入层把
+        // `vault:` 别名改写为真值（credential_arg_keys=["env"] 声明槽）。
+        if let Some(env) = parse_env_slot(&val)? {
+            cmd.envs(env);
+        }
         // workspace-dacl 受限模式下 piped→文件重定向
         // （std 匿名管道创建在受限令牌下必死，见 ShellOutputCapture 注释）。
         let mut capture = ShellOutputCapture::current()
@@ -1015,7 +1075,9 @@ impl Tool for RunChecksTool {
         "Run project build/test/lint checks with output focusing: replies contain pass/fail \
          stats plus deduplicated error-signature lines only; the full output is archived to \
          a file (path included in the reply) for read_file/grep retrieval. Use this instead \
-         of `exec` for builds and test suites."
+         of `exec` for builds and test suites. Credentials (e.g. registry tokens needed by \
+         the build) go via the env parameter as vault:<alias> references — never in the \
+         command string."
             .to_string()
     }
 
@@ -1025,9 +1087,15 @@ impl Tool for RunChecksTool {
             "properties":{
                 "scope":{"type":"string","enum":["build","test","lint","all"],"description":"Which checks to run (default \"all\": build → test → lint, stops at first failing stage)"},
                 "filter":{"type":"string","description":"Optional single-test filter passed to the test command (e.g. cargo test <name>, pytest -k <name>)"},
-                "timeout":{"type":"integer","description":"Timeout in seconds, applied PER STAGE independently (default 600, max 600). With scope=all (build → test → lint run sequentially), total wall clock can reach ~3x this value; a timed-out stage is skipped and the next stage still runs."}
+                "timeout":{"type":"integer","description":"Timeout in seconds, applied PER STAGE independently (default 600, max 600). With scope=all (build → test → lint run sequentially), total wall clock can reach ~3x this value; a timed-out stage is skipped and the next stage still runs."},
+                "env":env_slot_schema()
             }
         })
+    }
+
+    // vault 计划方案 A（2026-11-11）：env 槽承载凭据别名（同 ExecTool）。
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["env"]
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -1047,6 +1115,9 @@ impl Tool for RunChecksTool {
             .and_then(|v| v.as_u64())
             .unwrap_or(600)
             .min(600);
+        // 显式 env 槽（vault 计划方案 A）：全部 stage 共用同一份
+        // （值已由 dispatch 注入层改写真值，见 ExecTool 同款注记）。
+        let env_pairs = parse_env_slot(&val)?;
 
         // 项目类型探测：无标记 → 诚实报错（列出查过的标记文件）。
         let root = Path::new(&self.workspace);
@@ -1074,9 +1145,14 @@ impl Tool for RunChecksTool {
         let mut estop_killed_stage = false;
         for (label, command) in stages {
             let started = std::time::Instant::now();
-            let (exit_code, stdout, stderr, timed_out, estop_killed) =
-                run_one_stage_in_session(&command, Some(root), timeout_secs, &context.session_key)
-                    .await;
+            let (exit_code, stdout, stderr, timed_out, estop_killed) = run_one_stage_in_session(
+                &command,
+                Some(root),
+                timeout_secs,
+                &context.session_key,
+                env_pairs.as_deref(),
+            )
+            .await;
             let elapsed = started.elapsed().as_secs_f32();
             let combined =
                 format!("$ {command}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}\n");
@@ -1189,32 +1265,40 @@ pub(crate) async fn run_one_stage(
     timeout_secs: u64,
 ) -> (Option<i32>, String, String, bool) {
     let (code, stdout, stderr, timed_out, _estop_killed) =
-        run_one_stage_guarded(command, cwd, timeout_secs, None).await;
+        run_one_stage_guarded(command, cwd, timeout_secs, None, None).await;
     (code, stdout, stderr, timed_out)
 }
 
 /// 带会话注册的形态（run_checks 消费）——末位 bool = 本阶段
 /// 是否被 estop sweep 收杀（「被 estop 终止」诚实标注的判定源，不记失败/
 /// 超时）。会话键为空串时不注册（守卫的超时/drop 兜底照常生效）。
+/// `env` = 显式 env 槽（vault 计划方案 A；run_checks 全 stage 共用；
+/// None = 零行为变化——`` !`cmd` `` 注入内核走 [`run_one_stage`] 的 None 臂）。
 pub(crate) async fn run_one_stage_in_session(
     command: &str,
     cwd: Option<&Path>,
     timeout_secs: u64,
     session_key: &str,
+    env: Option<&[(String, String)]>,
 ) -> (Option<i32>, String, String, bool, bool) {
-    run_one_stage_guarded(command, cwd, timeout_secs, Some(session_key)).await
+    run_one_stage_guarded(command, cwd, timeout_secs, Some(session_key), env).await
 }
 
 /// 共享执行内核——spawn 挂 `ExecTreeGuard`（超时臂显式 terminate +
 /// drop RAII 兜底 + estop sweep 可达）；其余形态与原 run_one_stage 逐字节
 /// 等价（make_piped_shell_command + dacl capture + 并发排水 + 树杀收尸）。
+/// `env` 在 sanitize 之后应用（声明意图语义，见 [`parse_env_slot`]）。
 async fn run_one_stage_guarded(
     command: &str,
     cwd: Option<&Path>,
     timeout_secs: u64,
     session_key: Option<&str>,
+    env: Option<&[(String, String)]>,
 ) -> (Option<i32>, String, String, bool, bool) {
     let mut cmd = make_piped_shell_command(command);
+    if let Some(env) = env {
+        cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
@@ -1338,7 +1422,9 @@ impl Tool for RunScriptTool {
     fn description(&self) -> String {
         "Run a script with a given interpreter (e.g. `bash -c <script>`, \
          `python3 -c <script>`, `cmd /C <script>`). Returns structured \
-         {stdout, stderr, exit_code}."
+         {stdout, stderr, exit_code}. Credentials/secrets go via the env \
+         parameter as vault:<alias> references — never in the script source \
+         (it is archived in output captures)."
             .to_string()
     }
 
@@ -1365,10 +1451,16 @@ impl Tool for RunScriptTool {
                 "cwd": {
                     "type": "string",
                     "description": "Working directory (default: workspace)"
-                }
+                },
+                "env": env_slot_schema()
             },
             "required": ["interpreter", "script"]
         })
+    }
+
+    // vault 计划方案 A（2026-11-11）：env 槽承载凭据别名（同 ExecTool）。
+    fn credential_arg_keys(&self) -> &[&str] {
+        &["env"]
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -1389,6 +1481,9 @@ impl Tool for RunScriptTool {
             .get("cwd")
             .and_then(|v| v.as_str())
             .unwrap_or(&self.workspace);
+        // 显式 env 槽（vault 计划方案 A；同 ExecTool——值已由 dispatch
+        // 注入层改写真值）。两个 spawn 臂（dacl capture / piped）共用此 cmd。
+        let env_pairs = parse_env_slot(&val)?;
 
         // Workspace restriction (mirrors ExecTool).
         if self.restrict {
@@ -1436,6 +1531,11 @@ impl Tool for RunScriptTool {
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut cmd);
         if stripped > 0 {
             debug!("[Tools] env sanitized: {stripped} vars stripped");
+        }
+        // 显式 env 槽在 sanitize 之后追加（声明意图语义——sanitize 管
+        // 继承面，env 管声明面；同 ExecTool）。
+        if let Some(env) = env_pairs {
+            cmd.envs(env);
         }
         // 树杀前提（Unix；同 make_piped_shell_command）：子进程
         // 自成一进程组（pgid == pid），超时收尸的 tree_kill 才能一锅端

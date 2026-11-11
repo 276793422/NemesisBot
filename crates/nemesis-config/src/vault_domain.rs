@@ -127,7 +127,11 @@ fn slot_covers(slot: &str, field: &str) -> bool {
             .is_some()
 }
 
-/// 绑定文件在 config 目录下的标准路径（`config_path.parent` 消费形态）。
+/// 绑定文件在给定 config 目录下的路径拼装（目录由调用方决定）。
+/// 生产 canonical = `<workspace>/config/`（CLI 写入侧与装配点注入侧
+/// 同款公式）；本函数现仅服务 dispatch 闸的 fallback 臂（loop 未显式
+/// 注入权威路径时按 config.json 同目录推导——测试/裸装配旁路形态，
+/// L26 路径分裂修复 2026-11-11 起生产恒走注入路径）。
 pub fn vault_domain_config_path_in(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join(VAULT_DOMAIN_CONFIG_FILE)
 }

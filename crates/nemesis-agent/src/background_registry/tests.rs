@@ -905,6 +905,8 @@ async fn completion_event_delivered_via_sink() {
             false,
             Some(origin.clone()),
             true,
+            None,
+            Arc::new(Vec::new()),
         )
         .await
         .unwrap();
@@ -934,7 +936,15 @@ async fn completion_sink_absent_is_noop() {
         session_key: String::new(),
     };
     let started = reg
-        .start_with_origin("echo noop_b4", "/", false, Some(origin), true)
+        .start_with_origin(
+            "echo noop_b4",
+            "/",
+            false,
+            Some(origin),
+            true,
+            None,
+            Arc::new(Vec::new()),
+        )
         .await
         .unwrap();
     let id = started["job_id"].as_u64().unwrap();
@@ -953,7 +963,15 @@ async fn start_with_origin_note_matrix() {
         session_key: "sess-note".to_string(),
     };
     let with_o = reg
-        .start_with_origin("echo n1_b4", "/", false, Some(origin), true)
+        .start_with_origin(
+            "echo n1_b4",
+            "/",
+            false,
+            Some(origin),
+            true,
+            None,
+            Arc::new(Vec::new()),
+        )
         .await
         .unwrap();
     assert!(
@@ -965,7 +983,15 @@ async fn start_with_origin_note_matrix() {
         with_o["note"]
     );
     let without_o = reg
-        .start_with_origin("echo n2_b4", "/", false, None, true)
+        .start_with_origin(
+            "echo n2_b4",
+            "/",
+            false,
+            None,
+            true,
+            None,
+            Arc::new(Vec::new()),
+        )
         .await
         .unwrap();
     assert!(
@@ -1048,7 +1074,15 @@ async fn notify_false_suppresses_completion_event() {
         session_key: "sess-silent".to_string(),
     };
     let started = reg
-        .start_with_origin("echo silent_b4", "/", false, Some(origin), false)
+        .start_with_origin(
+            "echo silent_b4",
+            "/",
+            false,
+            Some(origin),
+            false,
+            None,
+            Arc::new(Vec::new()),
+        )
         .await
         .unwrap();
     let id = started["job_id"].as_u64().unwrap();
@@ -1072,6 +1106,81 @@ async fn notify_false_suppresses_completion_event() {
     // 管理面保留：终态照常平铺。
     let v = reg.output(id, 0).await.unwrap();
     assert_eq!(v["success"].as_bool(), Some(true));
+}
+
+/// vault 计划 P2++（2026-11-11）回归锁：env 槽凭据真值被后台任务回显时，
+/// 两个读出面（background_output 分页读 / 完成通告尾部）都必须就地遮蔽
+/// ——明文不落工具结果与 CompletionEvent（session_log / LLM 上下文零暴露）；
+/// 空池 job 原样直通（既有行为零变化）。
+#[tokio::test]
+async fn job_secret_echo_masked_in_output_and_completion_tail() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let secret = "E2E-SECRET-VAL-BGMASK-DO-NOT-USE";
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
+    assert!(reg.set_completion_sink(tx), "首次 set 必须成功");
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat-bgmask".to_string(),
+        session_key: "sess-bgmask".to_string(),
+    };
+    let started = reg
+        .start_with_origin(
+            &format!("echo {}", secret),
+            "/",
+            false,
+            Some(origin),
+            true,
+            None,
+            Arc::new(vec![secret.to_string()]),
+        )
+        .await
+        .unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    let done = wait_done(&reg, id, 15).await;
+
+    // 读出面 1：分页读遮蔽。
+    let chunk = done["chunk"].as_str().unwrap_or_default();
+    assert!(!chunk.contains(secret), "分页读不得残留明文: {}", chunk);
+    assert!(
+        chunk.contains("[凭据已掩码]"),
+        "分页读必须出现掩码文本: {}",
+        chunk
+    );
+
+    // 读出面 2：完成通告尾部遮蔽。
+    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .expect("completion event within 15s")
+        .expect("channel open");
+    assert!(
+        !ev.tail.contains(secret),
+        "完成通告尾部不得残留明文: {}",
+        ev.tail
+    );
+    assert!(
+        ev.tail.contains("[凭据已掩码]"),
+        "完成通告尾部必须出现掩码文本: {}",
+        ev.tail
+    );
+
+    // 空池直通：普通文本原样返回、无掩码文本（既有行为零变化）。
+    let plain = reg
+        .start("echo bgmask_passthru_marker_b4", "/", false)
+        .await
+        .unwrap();
+    let done2 = wait_done(&reg, plain["job_id"].as_u64().unwrap(), 15).await;
+    let chunk2 = done2["chunk"].as_str().unwrap_or_default();
+    assert!(
+        chunk2.contains("bgmask_passthru_marker_b4"),
+        "空池直通不得改写: {}",
+        chunk2
+    );
+    assert!(
+        !chunk2.contains("[凭据已掩码]"),
+        "空池直通不得出现掩码文本: {}",
+        chunk2
+    );
 }
 
 /// 工具层 e2e：notify=false 经 execute 解析 → 静默生效（无完成事件），

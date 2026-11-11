@@ -44,6 +44,7 @@ fn format_rpc_message() {
         async_callback: None,
         tool_path_base: None,
         approval_ref: None,
+        secrets: std::sync::Arc::new(Vec::new()),
     };
     assert_eq!(rpc_no_cid.format_rpc_message("Hello"), "Hello");
 }

@@ -68,6 +68,14 @@ impl AgentLoop {
         *self.workspace_root.write() = Some(root);
     }
 
+    /// 注入 vault 域绑定 sidecar 权威路径（`<主workspace>/config/
+    /// config.vault.json`，L26 路径分裂修复 2026-11-11）。装配点
+    /// （agent_factory 主/集群/项目三 builder）从主 workspace 推导注入；
+    /// 未注入 = dispatch 闸回落 config.json 同目录（测试/裸装配旁路形态）。
+    pub fn set_vault_domain_config_path(&self, path: std::path::PathBuf) {
+        *self.vault_domain_config_path.write() = Some(path);
+    }
+
     /// VM 档执行环境注记 resolver（审计收口）。宿主侧在执行体桥挂载
     /// 成功时安装（见 nemesisbot agent_factory `register_tools_and_mcp`）：
     /// 每轮 build_messages 调用，非空返回值追加进 # Environment 快照；
