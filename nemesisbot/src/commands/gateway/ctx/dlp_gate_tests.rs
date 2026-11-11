@@ -93,7 +93,7 @@ fn mixed_hits_still_redacted() {
     let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
     let slot = Slot::new();
     let _ = slot.set(Some(plugin));
-    let secret = "AKIAIOSFODNN7EXAMPLE";
+    let secret = "AKIANCDC6VFQTFGRMBKW";
     let original = format!("已部署到 10.0.0.5，key is {secret}");
     let mut msg = OutboundMessage::new("web", "chat-1", &original);
     apply_outbound_dlp(&slot, &mut msg);
@@ -120,7 +120,7 @@ fn redaction_writes_audit_event() {
     let _ = slot.set(Some(plugin));
 
     // aws_access_key 形态（AKIA + 16 位大写数字，High 置信）。
-    let secret = "AKIAIOSFODNN7EXAMPLE";
+    let secret = "AKIANCDC6VFQTFGRMBKW";
     let mut msg = OutboundMessage::new("telegram", "42", &format!("key is {secret}"));
     apply_outbound_dlp(&slot, &mut msg);
     assert!(

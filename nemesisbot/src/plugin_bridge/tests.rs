@@ -244,13 +244,13 @@ fn rescan_output_redacts_credentials_on_success_text() {
         .expect("manager"),
     );
     let bridge = PluginToolBridge::new(meta("plugin.x.a", "read", "{}"), manager);
-    let secret_text = "key is AKIAIOSFODNN7EXAMPLE end";
+    let secret_text = "key is AKIANCDC6VFQTFGRMBKW end";
     let out = bridge.rescan_output_credentials(secret_text, "session-1");
     assert!(
         out.contains("[REDACTED_CREDENTIAL]"),
         "命中凭据必须脱敏: {out}"
     );
-    assert!(!out.contains("AKIAIOSFODNN7EXAMPLE"), "原文不得残留: {out}");
+    assert!(!out.contains("AKIANCDC6VFQTFGRMBKW"), "原文不得残留: {out}");
 }
 
 #[test]
