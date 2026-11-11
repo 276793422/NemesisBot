@@ -1800,6 +1800,72 @@ async fn test_s11b_run_seteffort_matrix() {
     assert!(err.to_string().contains("Model not found"));
 }
 
+// BUG-20261111-077 回归锁：七档扩档（EFFORT_TIERS）后 CLI set-effort 校验
+// 词表必须跟进——minimal/xhigh/max 等新档位经 CLI 可设（此前手写四档词表
+// 拒绝，与 Dashboard valid_effort 七档面行为分裂）；校验/文案走
+// nemesis_types::capability 单一真相源，不再手写词表。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
+#[tokio::test]
+async fn test_s11b_run_seteffort_seven_tiers() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model": "zhipu/glm-4.7", "model_name": "glm-4.7"}]}),
+    );
+    // 七档新增档位全部可设（旧四档词表会把它们拒之门外）。
+    for tier in ["minimal", "xhigh", "max"] {
+        super::run(
+            super::ModelAction::SetEffort {
+                name: "glm-4.7".into(),
+                effort: tier.into(),
+            },
+            false,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("set-effort {tier} must be accepted: {e}"));
+        assert_eq!(
+            s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"],
+            tier,
+            "set-effort {tier} must write the tier verbatim"
+        );
+    }
+    // 大小写不敏感归一（与 valid_effort 校验面同语义）：大写档位归一小写落盘。
+    super::run(
+        super::ModelAction::SetEffort {
+            name: "glm-4.7".into(),
+            effort: "XHigh".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"],
+        "xhigh"
+    );
+    // 词表外值仍拒，且错误文案带七档完整清单（单源 EFFORT_TIERS 渲染）。
+    let err = super::run(
+        super::ModelAction::SetEffort {
+            name: "glm-4.7".into(),
+            effort: "extreme".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("Invalid effort"));
+    for tier in nemesis_types::capability::EFFORT_TIERS {
+        assert!(
+            msg.contains(tier),
+            "error text must enumerate tier {tier} (EFFORT_TIERS single source)"
+        );
+    }
+}
+
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_setsize_matrix() {

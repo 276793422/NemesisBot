@@ -107,11 +107,11 @@ pub enum ModelAction {
         tokens: String,
     },
     /// (half): set the reasoning-effort tier for a model.
-    /// "off" clears it (send nothing); low/medium/high set the tier that
-    /// providers translate into their wire format.
+    /// "off" clears it (send nothing); the tier is translated into each
+    /// provider's wire format (see EFFORT_TIERS).
     SetEffort {
         name: String,
-        /// One of: off | low | medium | high
+        /// One of: off | minimal | low | medium | high | xhigh | max
         effort: String,
     },
     /// Run a capability probe — sends 8 short tasks (7 tool-use + 1 vision
@@ -909,10 +909,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
             let e = effort.to_lowercase();
-            if !matches!(e.as_str(), "off" | "low" | "medium" | "high") {
+            if !nemesis_types::capability::valid_effort(&e) {
                 anyhow::bail!(
-                    "Invalid effort '{}'. Use one of: off | low | medium | high",
-                    effort
+                    "Invalid effort '{}'. Use one of: {}",
+                    effort,
+                    nemesis_types::capability::EFFORT_TIERS.join(" | ")
                 );
             }
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
