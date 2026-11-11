@@ -1813,6 +1813,16 @@ fn test_valid_skill_dir_name_fence() {
     // Path::join 整段换基座（新增的拒绝面）。
     assert!(valid_skill_dir_name("C:evil").is_err());
     assert!(valid_skill_dir_name("c:skills").is_err());
+    // Win32 归一化族：尾随点/空格在 Win32 路径解析中被剥——`.. ` ≡
+    // `..`（父目录穿越等价形态）；首尾空白 trim 后可能落回 `.`/`..`。
+    assert!(valid_skill_dir_name(".. ").is_err());
+    assert!(valid_skill_dir_name(".. .").is_err());
+    assert!(valid_skill_dir_name(". ").is_err());
+    assert!(valid_skill_dir_name("a.").is_err());
+    assert!(valid_skill_dir_name("a. ").is_err());
+    assert!(valid_skill_dir_name(" a").is_err());
+    // 中间点无归一化等价形态，仍放行（克制修复：只封穿越/歧义族）。
+    assert!(valid_skill_dir_name("a.b").is_ok());
 }
 
 #[tokio::test]
