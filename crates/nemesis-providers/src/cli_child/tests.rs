@@ -80,3 +80,72 @@ async fn early_exiting_child_does_not_hang_or_error() {
     assert!(!output.status.success());
     assert_eq!(output.status.code(), Some(3));
 }
+
+/// 超时取消（drop future）必须击杀挂死子进程（BUG-20261111-082 回归锁）：
+/// agent loop 首捕统一包 call_timeout，超时即 drop run_with_stdin 的
+/// future——无 kill_on_drop 时子进程成孤儿继续跑（烧 token/持锁）。这里
+/// 用「sleep 后建 marker 文件」的子进程验证击杀：kill_on_drop 生效 →
+/// 子进程死在 sleep 期间 → marker 永不出现；回归（无 kill_on_drop）→
+/// 子进程活过 sleep → marker 出现 → 测试红。
+#[tokio::test]
+async fn timeout_cancellation_kills_hanging_child() {
+    let marker = std::env::temp_dir().join(format!(
+        "nemesis_kod_probe_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    // 清理守卫：无论断言成败，结束前删掉 marker（若回归形态产生了它）。
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(marker.clone());
+
+    let mut cmd = if cfg!(windows) {
+        // 直接子进程 = powershell.exe（不经 cmd 包装：kill_on_drop 只杀
+        // 直接子进程）。路径嵌 PS 单引号字面量（反斜杠字面、免转义）。
+        let mut c = tokio::process::Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Start-Sleep -Seconds 2; New-Item -ItemType File -Path '{}' | Out-Null",
+                marker.display()
+            ),
+        ]);
+        c
+    } else {
+        // sh 被杀 = 脚本死 = touch 不执行（sleep 孙进程孤儿无害）。
+        let mut c = tokio::process::Command::new("sh");
+        c.args(["-c", &format!("sleep 2; touch '{}'", marker.display())]);
+        c
+    };
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // 子进程 sleep 2s > 1.2s 预算 → timeout 必然触发（= loop 层 call_timeout
+    // 截断挂死上游的真实形态）。
+    let fut = run_with_stdin(cmd, "hang");
+    let elapsed = tokio::time::timeout(std::time::Duration::from_millis(1200), fut).await;
+    assert!(
+        elapsed.is_err(),
+        "hanging child must outlive the 1.2s budget (test precondition broken)"
+    );
+
+    // 击杀生效：marker 在子进程的自然寿命（2s）+ 余量内不得出现。
+    for _ in 0..24 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert!(
+            !marker.exists(),
+            "orphan kill failed: child survived past cancellation and created {} \
+             (kill_on_drop missing in run_with_stdin?)",
+            marker.display()
+        );
+    }
+}
