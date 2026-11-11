@@ -172,7 +172,18 @@ fn find_byte(hay: &[u8], needle: u8, from: usize) -> Option<usize> {
 fn replace_urls(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(pos) = rest.find("http://").or_else(|| rest.find("https://")) {
+    loop {
+        // R843：取两种 scheme 的**较早**出现位。旧形态
+        // `find("http://").or_else(|| rest.find("https://"))` 在两种 URL
+        // 并存时恒取 http 位（or_else 只在 None 时求值）——https 更靠前
+        // 时它整体落在 `out.push_str(&rest[..pos])` 段里以字面量残留，
+        // TTS 逐字符念出 scheme。min 修正后先到先替换。
+        let pos = match (rest.find("http://"), rest.find("https://")) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => break,
+        };
         out.push_str(&rest[..pos]);
         let tail = &rest[pos..];
         let end = tail

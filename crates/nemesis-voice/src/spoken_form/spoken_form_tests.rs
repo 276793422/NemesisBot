@@ -69,6 +69,28 @@ fn bare_url_replaced() {
     assert!(!out.contains("example.com"), "{out}");
 }
 
+/// R843 回归锁：裸 https 与裸 http 并存且 **https 更靠前**时两者都必须
+/// 被替换。旧形态 `find("http://").or_else(find("https://"))` 在并存时恒
+/// 取 http 位（or_else 只在 None 时求值）——靠前的 https 落在
+/// `push_str(&rest[..pos])` 段以字面量残留，TTS 逐字符念出 scheme。
+#[test]
+fn mixed_scheme_urls_both_replaced_first_occurrence_wins() {
+    let out = clean_sentence("详见 https://a.com 说明，备用 http://b.com 地址");
+    assert!(!out.contains("https"), "{out}");
+    assert!(!out.contains("http"), "{out}");
+    assert_eq!(
+        out.matches(SPOKEN_LINK).count(),
+        2,
+        "两个链接各产出一条占位话术: {out}"
+    );
+
+    // http 在前的方向同样双替换（对称臂）。
+    let out = clean_sentence("主站 http://a.com，镜像 https://b.com 都可以");
+    assert!(!out.contains("https"), "{out}");
+    assert!(!out.contains("http"), "{out}");
+    assert_eq!(out.matches(SPOKEN_LINK).count(), 2, "{out}");
+}
+
 #[test]
 fn windows_path_replaced() {
     let out = clean_sentence("配置在 C:\\Users\\me\\config.json 里");
