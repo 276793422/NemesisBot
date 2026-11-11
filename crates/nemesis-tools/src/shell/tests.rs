@@ -531,72 +531,62 @@ fn test_normalize_no_paths_unchanged() {
 // Windows command preprocessing tests
 // ============================================================
 
+// BUG-20261111-084 回归锁：curl 字符串级改写（curl->curl.exe 替换 +
+// --max-time 300 注入）已移除——执行 shell 是 `cmd /C`（无 PowerShell 别名，
+// 改写动机不成立），而 `\bcurl\b` 词边界替换不区分命令位与参数位。
+// curl 命令及一切含 curl 词的命令行必须逐字节直通。
+
 #[test]
-fn test_preprocess_replaces_curl_with_curl_exe() {
+fn test_preprocess_curl_passthrough_command_position() {
     let result = ShellTool::preprocess_windows_command("curl http://example.com");
-    assert!(
-        result.contains("curl.exe"),
-        "Expected curl.exe in result, got: {}",
-        result
-    );
-    assert!(
-        !result.contains("curl ") || result.contains("curl.exe"),
-        "Should not contain bare 'curl ', got: {}",
+    assert_eq!(
+        result, "curl http://example.com",
+        "curl command must pass through byte-identical, got: {}",
         result
     );
 }
 
 #[test]
-fn test_preprocess_curl_exe_not_doubled() {
+fn test_preprocess_curl_exe_passthrough() {
     let result = ShellTool::preprocess_windows_command("curl.exe http://example.com");
-    assert!(
-        !result.contains("curl.exe.exe"),
-        "Should not double .exe, got: {}",
-        result
-    );
-}
-
-#[test]
-fn test_preprocess_adds_max_time() {
-    let result = ShellTool::preprocess_windows_command("curl http://example.com");
-    assert!(
-        result.contains("--max-time 300"),
-        "Expected --max-time to be added, got: {}",
-        result
-    );
-}
-
-#[test]
-fn test_preprocess_preserves_existing_max_time() {
-    let result = ShellTool::preprocess_windows_command("curl --max-time 60 http://example.com");
-    assert!(
-        result.contains("--max-time 60"),
-        "Should keep existing --max-time, got: {}",
-        result
-    );
-    // Should NOT add a second --max-time
-    let count = result.matches("--max-time").count();
     assert_eq!(
-        count, 1,
-        "Should have exactly one --max-time, got {}: {}",
-        count, result
+        result, "curl.exe http://example.com",
+        "explicit curl.exe must pass through unchanged, got: {}",
+        result
     );
 }
 
 #[test]
-fn test_preprocess_preserves_existing_short_max_time() {
-    let result = ShellTool::preprocess_windows_command("curl -m 60 http://example.com");
-    assert!(
-        result.contains("-m 60"),
-        "Should keep existing -m flag, got: {}",
-        result
-    );
-    let count = result.matches("--max-time").count();
-    assert_eq!(
-        count, 0,
-        "Should not add --max-time when -m exists, got: {}",
-        result
-    );
+fn test_preprocess_no_max_time_injection() {
+    for cmd in [
+        "curl http://example.com",
+        "curl.exe https://example.com/data -o out.bin",
+        "curl --max-time 60 http://example.com",
+        "curl -m 60 http://example.com",
+    ] {
+        let result = ShellTool::preprocess_windows_command(cmd);
+        assert!(
+            !result.contains("--max-time 300"),
+            "--max-time 300 must not be injected, cmd: {}, got: {}",
+            cmd,
+            result
+        );
+    }
+}
+
+#[test]
+fn test_preprocess_curl_in_argument_position_untouched() {
+    // 历史破坏形态（`\bcurl\b` 全文替换两步连击的实锤受害面）：
+    // `grep curl file.txt` 曾被改写成 `grep curl.exe --max-time 300 file`
+    // （grep 未知选项直接失败）；`echo curl`、`git log --grep=curl` 同类。
+    for cmd in ["grep curl file.txt", "echo curl", "git log --grep=curl"] {
+        let result = ShellTool::preprocess_windows_command(cmd);
+        assert_eq!(
+            result, cmd,
+            "argument-position 'curl' must pass through, cmd: {}, got: {}",
+            cmd, result
+        );
+    }
 }
 
 // ============================================================

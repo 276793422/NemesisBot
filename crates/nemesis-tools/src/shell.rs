@@ -393,41 +393,24 @@ impl ShellTool {
     }
 
     /// Preprocess commands for Windows execution.
-    /// - Replaces 'curl' with 'curl.exe'
-    /// - Adds --max-time to curl commands
-    /// - Normalizes Windows paths
-    /// - Fixes path quoting issues
+    /// - Normalizes Windows drive-letter paths (`C:/x` -> `C:\x`; URLs and
+    ///   git-ssh refs are placeholder-protected first)
+    /// - Fixes path quoting issues for cmd builtins' first quoted arg
+    ///
+    /// BUG-20261111-084（R836）：原步骤「`curl` -> `curl.exe` 替换 +
+    /// `--max-time 300` 注入」已移除。本工具在 Windows 上经 `cmd /C`
+    /// 执行——cmd 没有 PowerShell 的 curl 别名（Win10+ 自带
+    /// System32\curl.exe），改写动机不成立；而 `\bcurl\b` 词边界替换不区分
+    /// 命令位与参数位，`grep curl file` 被两步连击改写成
+    /// `grep curl.exe --max-time 300 file`（grep 未知选项直接失败），
+    /// `echo curl`/`git log --grep=curl` 同类参数位误伤。curl 挂死防护由
+    /// 工具自身 timeout + 树杀承担，无需对 curl 单独注入旗标。
     pub fn preprocess_windows_command(command: &str) -> String {
-        let mut result = command.to_string();
+        // 1. Normalize Windows file paths
+        let result = Self::normalize_windows_paths(command);
 
-        // 1. Replace curl -> curl.exe (avoid PowerShell alias)
-        let curl_exe_re = Regex::new(r"\bcurl\.exe\b").unwrap();
-        if !curl_exe_re.is_match(&result) {
-            let bare_curl_re = Regex::new(r"\bcurl\b").unwrap();
-            result = bare_curl_re.replace_all(&result, "curl.exe").to_string();
-        }
-
-        // 2. Add --max-time to curl if not already present
-        let lower = result.to_lowercase();
-        if lower.contains("curl.exe") {
-            let has_max_time = Regex::new(r"(?:--max-time\s*\d+|-m\s*\d+)")
-                .unwrap()
-                .is_match(&result);
-            if !has_max_time {
-                let curl_exe_re2 = Regex::new(r"\bcurl\.exe\b").unwrap();
-                result = curl_exe_re2
-                    .replace_all(&result, "curl.exe --max-time 300")
-                    .to_string();
-            }
-        }
-
-        // 3. Normalize Windows file paths
-        result = Self::normalize_windows_paths(&result);
-
-        // 4. Fix path quoting for problematic Windows commands
-        result = Self::fix_windows_path_quoting(&result);
-
-        result
+        // 2. Fix path quoting for problematic Windows commands
+        Self::fix_windows_path_quoting(&result)
     }
 
     /// Normalize forward slashes to backslashes in Windows file paths,
