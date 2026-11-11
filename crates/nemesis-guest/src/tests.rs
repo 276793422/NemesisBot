@@ -397,3 +397,112 @@ async fn serve_stream_rejects_oversized_request_after_auth() {
         .expect("eof after overflow");
     let _ = handle.await.unwrap();
 }
+
+// ===========================================================================
+// workspace 边界 `..` 逃逸矩阵（R837 实证固化）：防锚定子代理曾推断
+// 「canonicalize 全链失败 -> 纯词法 fallback 放行 -> 写工具物化逃逸」，
+// 实测否定——爬升循环在 ws/x/../.. 处 canonicalize 成功（内核弹升 ..
+// 不需要中间组件存在），锚点重拼后词法判外拒绝；fallback 臂在本平台
+// 语义下不可达。本矩阵钉住候选形态的拒绝行为与物理落盘真值。
+// ===========================================================================
+#[test]
+fn resolve_dotdot_escape_matrix_denied_and_clamped() {
+    let outer = tempfile::tempdir().expect("outer tempdir");
+    let ws = outer.path().join("ws");
+    std::fs::create_dir_all(&ws).expect("mkdir ws");
+
+    // 逃逸候选：resolve 必须 DENIED（锚点重拼后词法判外）。
+    let denied_cases = [
+        "a/../../p1.txt",      // 单不存在组件 + 单弹升
+        "s/a/../../../p2.txt", // 双不存在组件 + 双弹升
+        "../p3.txt",           // 直接弹升
+    ];
+    for path in denied_cases {
+        let err = resolve_in_workspace(&ws, path).expect_err(path);
+        assert!(err.contains("outside the workspace"), "{path}: {err}");
+    }
+    // 绝对路径形态（ws 前缀 + 不存在组件 + 弹升逃出 ws）。
+    let abs_case = format!("{}/a/../../p4.txt", ws.display());
+    let err = resolve_in_workspace(&ws, &abs_case).expect_err(&abs_case);
+    assert!(err.contains("outside the workspace"), "{abs_case}: {err}");
+
+    // 钳制形态：canonicalize 锚点吸收弹升 -> 返回 ws 内真实路径
+    // （物理安全方向）。断言写工具完整行为（resolve -> create_dir_all
+    // -> 落盘）后文件物理位置留在 ws 内。
+    std::fs::create_dir_all(ws.join("exist/sub")).expect("mkdir exist/sub");
+    let ws_canon = ws.canonicalize().expect("canon ws");
+    for path in ["exist/../p5.txt", "exist/sub/../../p6.txt"] {
+        let p = resolve_in_workspace(&ws, path).expect(path);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(&p, b"x").expect("write");
+        assert!(
+            p.canonicalize()
+                .expect("canon landed")
+                .starts_with(&ws_canon),
+            "钳制形态 {path} 物理落盘应留在 ws 内: {p:?}"
+        );
+    }
+
+    // 物理真值清点：ws 外（outer 根）零落盘。
+    let mut entries: Vec<String> = std::fs::read_dir(outer.path())
+        .expect("read outer")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, vec!["ws".to_string()], "ws 外零外泄: {entries:?}");
+}
+
+// 显式 env 透传（模块文档「差异」节声明的语义；此前实现缺失此消费点，
+// 模型带 env 调 guest exec 时变量被静默丢弃）。
+#[tokio::test]
+async fn exec_explicit_env_is_passed_through() {
+    let (agent, _dir) = agent_with_tmp();
+    let args = if cfg!(windows) {
+        r#"{"command":"echo %GUEST_PROBE_VAR%","env":{"GUEST_PROBE_VAR":"val-42"}}"#
+    } else {
+        r#"{"command":"echo $GUEST_PROBE_VAR","env":{"GUEST_PROBE_VAR":"val-42"}}"#
+    };
+    let resp = agent.serve_line(&v2_line("exec", args)).await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(parsed.ok, "{resp}");
+    assert!(parsed.result.contains("val-42"), "env 未透传: {resp}");
+}
+
+// accept 瞬态错误分类：连接级抖动与资源耗尽族重试，其余传播退出。
+#[test]
+fn transient_accept_errors_classified() {
+    use std::io::Error;
+    let mk = |k: std::io::ErrorKind| Error::new(k, "test");
+    assert!(super::transient_accept_error(&mk(
+        std::io::ErrorKind::ConnectionAborted
+    )));
+    assert!(super::transient_accept_error(&mk(
+        std::io::ErrorKind::ConnectionReset
+    )));
+    assert!(super::transient_accept_error(&mk(
+        std::io::ErrorKind::Interrupted
+    )));
+    // listener 本体坏（kind 不在瞬态表）-> 传播。
+    assert!(!super::transient_accept_error(&mk(
+        std::io::ErrorKind::BrokenPipe
+    )));
+    // 资源耗尽族按 raw OS 错误码判定（musl/glibc 同值）。
+    #[cfg(unix)]
+    {
+        for code in [24, 23, 12, 105] {
+            assert!(
+                super::transient_accept_error(&Error::from_raw_os_error(code)),
+                "code {code} 应瞬态"
+            );
+        }
+        assert!(super::resource_exhausted_accept(&Error::from_raw_os_error(
+            24
+        )));
+        assert!(!super::resource_exhausted_accept(
+            &Error::from_raw_os_error(13)
+        ));
+    }
+}

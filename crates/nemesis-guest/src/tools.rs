@@ -107,6 +107,18 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     };
     let mut cmd = tokio::process::Command::new(shell);
     cmd.arg(flag).arg(command).current_dir(&cwd);
+    // 显式 env 透传（模块文档「差异」节声明的语义；形态对齐宿主
+    // ShellTool——args["env"] 只取字符串值逐键叠加）。此前实现缺失
+    // 此消费点：模型带 env 调 guest exec 时变量被静默丢弃，违反
+    // 「宿主 MOVE_TOOLS 同形语义」锚点。宿主的「先剥继承凭据再叠加」
+    // sanitize 不进来（VM 内无宿主凭据可剥）。
+    if let Some(env_obj) = val.get("env").and_then(|v| v.as_object()) {
+        for (key, value) in env_obj {
+            if let Some(val_str) = value.as_str() {
+                cmd.env(key, val_str);
+            }
+        }
+    }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

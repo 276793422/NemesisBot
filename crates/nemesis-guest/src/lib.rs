@@ -252,7 +252,29 @@ impl GuestAgent {
     /// 隔离），连接内严格串行应答；每连接过首帧鉴权闸（token 随 agent 克隆）。
     pub async fn serve_tcp(self, listener: tokio::net::TcpListener) -> std::io::Result<()> {
         loop {
-            let (stream, _peer) = listener.accept().await?;
+            // 瞬态 accept 错误不杀 daemon：Linux 上 accept 队列中的连接
+            // 被对端重置（ECONNABORTED）是 documented 行为，NAT-TCP
+            // hostfwd per-call 形态下每次调用一条连接——一次连接抖动把
+            // 整个长驻 guest 执行体退出（main 里 accept loop error 退码
+            // 1）是错误的失败粒度。资源耗尽类（fd 耗尽等）warn + 短退避
+            // 防热循环后继续；listener 本体坏（EBADF 等）不在表内，
+            // 原样传播给调用方退出。
+            let (stream, _peer) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    if !transient_accept_error(&e) {
+                        return Err(e);
+                    }
+                    eprintln!("[guest] transient accept error, retrying: {e}");
+                    let backoff = if resource_exhausted_accept(&e) {
+                        std::time::Duration::from_millis(500)
+                    } else {
+                        std::time::Duration::from_millis(10)
+                    };
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+            };
             let agent = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = agent.serve_stream(stream).await {
@@ -261,6 +283,30 @@ impl GuestAgent {
             });
         }
     }
+}
+
+/// accept 瞬态错误判定（`serve_tcp` 韧性）：连接级抖动重试即可恢复；
+/// 不在表内的错误（listener 本体损坏）传播退出。
+fn transient_accept_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
+    ) || resource_exhausted_accept(e)
+}
+
+/// accept 的资源耗尽类错误（EMFILE/ENFILE/ENOMEM/ENOBUFS）：Rust 的
+/// `ErrorKind` 对 fd 耗尽族无稳定映射（落 Uncategorized），按 raw OS
+/// 错误码判定。非 unix 恒 false（Windows accept 无此错误族）。
+#[cfg(unix)]
+fn resource_exhausted_accept(e: &std::io::Error) -> bool {
+    // musl/glibc 同值：EMFILE=24 ENFILE=23 ENOMEM=12 ENOBUFS=105。
+    matches!(e.raw_os_error(), Some(24) | Some(23) | Some(12) | Some(105))
+}
+
+#[cfg(not(unix))]
+fn resource_exhausted_accept(_e: &std::io::Error) -> bool {
+    false
 }
 
 /// 常数时间字符串比较（token 比对用）。XOR 折叠全字节——长度不同立即
