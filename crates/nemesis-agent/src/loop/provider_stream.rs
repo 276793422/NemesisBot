@@ -162,7 +162,10 @@ impl ProviderStreamSink {
         st.r_started = false;
         let pending = !st.rbuf.is_empty();
         let seq = st.seq;
-        st.seq += 1;
+        // pending 时发 think_delta@seq + think_end@seq+1 两帧——计数器必须
+        // 推进 2：只 +1 时 error() 随后的 error 帧从同一号码取号，与
+        // think_end 同号（违反 SinkState「流内全局单调」契约）。
+        st.seq += if pending { 2 } else { 1 };
         let text = std::mem::take(&mut st.rbuf);
         drop(st);
         if pending {
@@ -190,7 +193,11 @@ impl ProviderStreamSink {
             return;
         }
         let seq = st.seq;
-        st.seq += 1;
+        // pending 时发 delta@seq + end@seq+1 两帧——计数器必须推进 2：只
+        // +1 时随后的 finish_reasoning() 从未推进到位的号码取号，end 帧
+        // 与 think_delta/think_end 帧同号（违反 SinkState「流内全局单调」
+        // 契约；BUG-20261111 回归锁见 provider_stream_tests 两则）。
+        st.seq += if pending { 2 } else { 1 };
         let text = std::mem::take(&mut st.buf);
         let elapsed = st.started.elapsed().as_millis() as u64;
         drop(st);

@@ -757,3 +757,89 @@ async fn wrapper_default_reasoning_path_no_think_frames() {
         "缺省思考路径零 think 帧"
     );
 }
+
+// ===========================================================================
+// seq 取号回归锁（BUG-20261111：finish/finish_reasoning pending 分支发两帧
+// 只推进 1——end 帧与 think_delta 帧同号 / error 帧与 think_end 帧同号，
+// 违反 SinkState「流内全局单调」契约）。既有 B3 测试没踩中：缓冲都在
+// finish 前已冲空（pending=false 走单帧臂）。触发形态 = 残尾同时在缓冲。
+// ===========================================================================
+
+/// 正文残尾 + 思考残尾同时进缓冲 → finish 发 delta/end/think_delta/
+/// think_end 四帧，seq 必须严格递增无重复。
+#[tokio::test]
+async fn finish_pending_text_and_think_frame_seqs_unique() {
+    let (sink, mut rx) = make_sink();
+
+    sink.on_delta("hello"); // start@0 + delta@1（首增量立即冲）
+    sink.on_delta("残尾"); // 正文残尾进缓冲（<64 字符、窗内不冲）
+    sink.on_reasoning_delta("思考中"); // think_start@2 + think_delta@3（首片段立即冲）
+    sink.on_reasoning_delta("残思"); // 思考残尾进缓冲
+    sink.finish(); // delta@4 + end@5，随后 think_delta@6 + think_end@7
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec![
+            "start",
+            "delta",
+            "think_start",
+            "think_delta",
+            "delta",
+            "end",
+            "think_delta",
+            "think_end"
+        ],
+        "正文两帧 + 思考两帧按序收口"
+    );
+    let seqs: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            nemesis_types::agent::AgentEvent::ProviderStream { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seqs,
+        vec![0, 1, 2, 3, 4, 5, 6, 7],
+        "共享计数器流内全局单调：修复前 end@5 与 think_delta@5 同号"
+    );
+    assert_eq!(texts(&events)[4], "残尾");
+    assert_eq!(texts(&events)[6], "残思");
+}
+
+/// 思考残尾进缓冲后 error() 收口 → think_delta/think_end/error 三帧
+/// seq 严格递增：修复前 error 帧与 think_end 同号。
+#[tokio::test]
+async fn error_after_residual_think_frame_seq_unique() {
+    let (sink, mut rx) = make_sink();
+
+    sink.on_reasoning_delta("思考"); // think_start@0 + think_delta@1（首片段立即冲）
+    sink.on_reasoning_delta("残"); // 残尾进缓冲
+    sink.error("boom"); // think_delta@2 + think_end@3，error@4
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec![
+            "think_start",
+            "think_delta",
+            "think_delta",
+            "think_end",
+            "error"
+        ],
+        "error 收口前先冲思考残尾（think_delta + think_end）再发 error 终态帧"
+    );
+    let seqs: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            nemesis_types::agent::AgentEvent::ProviderStream { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        seqs,
+        vec![0, 1, 2, 3, 4],
+        "修复前 think_end@3 与 error@3 同号"
+    );
+}
