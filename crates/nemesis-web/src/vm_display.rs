@@ -86,12 +86,19 @@ pub(crate) fn endpoint() -> Option<&'static VmDisplayEndpoint> {
     DISPLAY_ENDPOINT.get()
 }
 
-/// 显示会话管理器：注册表（并发上限 + estop 断连挂点）。kill 语义 =
-/// per-session kill 通道（watch）通知会话循环退出（连接随 future 终止
-/// 关闭）；estop 主断连路径同一通道——注册发生在会话循环起跑前，无
-/// 「kill 晚到漏杀」窗口（watch 种子值再兜一层，PTY 同款纪律）。
+/// 显示会话管理器：注册表（并发上限 + estop 断连挂点）。kill 语义双臂：
+/// per-session kill 通道（watch）通知可轮询的会话循环优雅退出 + 在跑任务
+/// 句柄带外直接 abort（停在 `socket.send().await` 的会话循环——客户端 TCP
+/// 背压，长连接常态——观察不到 watch 通知，PTY BUG-20261031-234 同款失败
+/// 形态；PTY 无子进程可杀的面用直接 abort 等价解）。abort 在 await 点取消
+/// future，SessionGuard Drop 照常执行摘牌，泵任务随通道关闭自然退场。
+/// 注册发生在会话循环起跑前，无「kill 晚到漏杀」窗口（watch 种子值再兜
+/// 一层，PTY 同款纪律）。
 pub struct VmDisplayManager {
     inner: Mutex<HashMap<u64, tokio::sync::watch::Sender<bool>>>,
+    /// 在跑会话任务的带外终止句柄（estop 杀链的执行面）。track 时顺带
+    /// 修剪已完结句柄——正常退出的会话不留尸，Vec 不随 gateway 寿命累积。
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     next_id: AtomicU64,
 }
 
@@ -99,8 +106,24 @@ impl VmDisplayManager {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(HashMap::new()),
+            tasks: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
         })
+    }
+
+    /// 登记会话任务句柄（升级闭包 spawn 会话体后调用）。带外持有——
+    /// [`Self::kill_all`] 直接 abort，不等会话循环自己看到 kill 通知。
+    fn track(&self, task: tokio::task::JoinHandle<()>) {
+        if let Ok(mut list) = self.tasks.lock() {
+            list.retain(|t| !t.is_finished());
+            list.push(task);
+        }
+    }
+
+    /// 在册任务句柄数（测试观测面）。
+    #[cfg(test)]
+    fn tracked_len(&self) -> usize {
+        self.tasks.lock().map(|l| l.len()).unwrap_or(0)
     }
 
     /// 注册会话；满员返回 None。
@@ -124,16 +147,26 @@ impl VmDisplayManager {
         self.inner.lock().map(|m| m.len()).unwrap_or(0)
     }
 
-    /// kill 全部会话（estop / 停机路径）。drain 后逐个 send——接收端已
-    /// 全部 drop 的会话（本就在退出中）send Err 静默跳过。
-    pub fn kill_all(&self) {
-        let txs: Vec<_> = match self.inner.lock() {
-            Ok(mut m) => std::mem::take(&mut *m).into_values().collect(),
-            Err(_) => return,
-        };
-        for tx in txs {
-            let _ = tx.send(true);
+    /// kill 全部会话（estop / 停机路径）。双臂：kill 通知（可轮询的会话
+    /// 循环优雅退出——摘牌走 SessionGuard）+ 带外 abort（停在 send 上的
+    /// 会话循环看不到通知，直接终止任务）。返回被 abort 的任务句柄
+    /// （调用方通常丢弃——abort 已请求，drop 只是 detach；测试 join 验证
+    /// 终止）。接收端已全部 drop 的会话（本就在退出中）send Err 静默跳过。
+    pub fn kill_all(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        if let Ok(mut m) = self.inner.lock() {
+            for tx in m.drain().map(|(_, tx)| tx) {
+                let _ = tx.send(true);
+            }
         }
+        let tasks = self
+            .tasks
+            .lock()
+            .map(|mut l| std::mem::take(&mut *l))
+            .unwrap_or_default();
+        for t in &tasks {
+            t.abort();
+        }
+        tasks
     }
 }
 
@@ -216,8 +249,19 @@ pub(crate) async fn handle_vm_display_upgrade(
         }
     };
     let agent = query.agent.unwrap_or_default();
-    ws.on_upgrade(move |socket| {
-        handle_vm_display_socket(socket, state, ep, agent, mode.to_string())
+    ws.on_upgrade(move |socket| async move {
+        // 会话体自 spawn（不交 axum 内联驱动升级 future）：句柄交 manager
+        // track 带外持有——estop kill_all 直接 abort，不等会话循环从
+        // socket.send 背压里回来自己看到 kill 通知（PTY BUG-20261031-234
+        // 同款失败形态的带外解）。
+        let task = tokio::spawn(handle_vm_display_socket(
+            socket,
+            state,
+            ep,
+            agent,
+            mode.to_string(),
+        ));
+        manager().track(task);
     })
 }
 
