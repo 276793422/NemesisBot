@@ -213,7 +213,14 @@ impl Transport for HttpTransport {
         }
 
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            // R845：错误体**有界摄取**。`response.text()` 无上界——坏服务器
+            // /反代的超大错误体（HTML 错误页/垃圾填充）会整包进内存并全量
+            // 进错误串；错误串直达日志**与模型上下文**（transport 错误经
+            // mcp_discover 原文回给 LLM）。stdio 侧单行响应有 16MB 帽，此
+            // 处无帽是摄取不对称面。读帽 256KB（超帽停读——错误路径响应读
+            // 完即弃，无背压消费义务），进错误串再 prefix 截 8KB（定性信
+            // 息在头部：状态短语/简短 reason；char 边界安全）。
+            let body = capped_error_body(response).await;
             // MCP Streamable HTTP 会话生命周期：server 终止会话（重启/过期）
             // 后，对携带 Mcp-Session-Id 的请求按规范回 404。识别「带会话 id
             // 的 404」= 会话过期（无会话 id 的 404 = 端点/路径错，保持旧错误
@@ -291,6 +298,43 @@ pub(crate) fn sanitize_url_for_log(url: &str) -> String {
     } else {
         sanitized
     }
+}
+
+// ---------------------------------------------------------------------------
+// 错误体有界摄取（R845）
+// ---------------------------------------------------------------------------
+
+/// 错误体读取帽（内存闸；超帽停止消费——错误路径的响应读完即弃，无背压
+/// 排干义务）。
+const MAX_ERROR_BODY_READ_BYTES: usize = 256 * 1024;
+/// 错误体进错误串的上限（错误串直达日志与模型上下文；定性信息在头部）。
+const MAX_ERROR_BODY_MESSAGE_BYTES: usize = 8 * 1024;
+
+/// chunk 循环读到 EOF 或读帽（超帽停止消费），prefix 截到消息帽（char 边
+/// 界安全，`truncate_bytes_at_boundary` 单一真相源），超帽时尾部加诚实截
+/// 断注记。
+async fn capped_error_body(mut response: reqwest::Response) -> String {
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut capped = false;
+    while let Ok(Some(chunk)) = response.chunk().await {
+        if bytes.len() + chunk.len() > MAX_ERROR_BODY_READ_BYTES {
+            let take = MAX_ERROR_BODY_READ_BYTES - bytes.len();
+            bytes.extend_from_slice(&chunk[..take]);
+            capped = true;
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let body = String::from_utf8_lossy(&bytes).into_owned();
+    let mut body = nemesis_utils::string_utils::truncate_bytes_at_boundary(
+        &body,
+        MAX_ERROR_BODY_MESSAGE_BYTES,
+    )
+    .to_string();
+    if capped {
+        body.push_str("\n…[error body truncated]");
+    }
+    body
 }
 
 // ---------------------------------------------------------------------------
