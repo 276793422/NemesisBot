@@ -31,7 +31,10 @@ fn short_name_re() -> &'static regex::Regex {
 /// - 空白折叠为 `_`；Windows 非法字符 `< >: " / \ | ? *` 与控制字符 → `_`；
 /// - 连续 `_` 塌缩；首尾 `._ ` 修剪（Windows 尾点/尾空格陷阱）；
 /// - 截断到 40 字符（多字节安全向下取整，防根级目录名超长）；
-/// - 全空 → `project`。
+/// - 全空 → `project`；
+/// - 保留设备名基名（con/nul 等 22 名单，与 nemesis-utils
+///   `sanitize_path_segment` 出口中和同源，BUG-20261111-083）前缀 `_`
+///   断开——仅保留名情形超 40 上限 1 字符。
 pub fn sanitize_project_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut prev_underscore = false;
@@ -61,9 +64,13 @@ pub fn sanitize_project_name(name: &str) -> String {
     while end > 0 && !trimmed.is_char_boundary(end) {
         end -= 1;
     }
-    trimmed[..end]
+    let final_seg = trimmed[..end]
         .trim_matches(|c| matches!(c, '.' | '_' | ' '))
-        .to_string()
+        .to_string();
+    if nemesis_utils::sanitize::is_windows_reserved_device_base(&final_seg) {
+        return format!("_{final_seg}");
+    }
+    final_seg
 }
 
 /// 自动分配目录：`<workspace>/board-projects/<安全化项目名>/`，重名追加
