@@ -126,12 +126,20 @@ pub fn signal_source(source_reliability: f64) -> f64 {
     1.0 - source_reliability.clamp(0.0, 1.0)
 }
 
-/// 读取条目的来源可靠性自报值（缺省 0.5；越界钳到 [0,1]）。
+/// 读取条目的来源可靠性自报值（缺省 0.5；越界钳到 [0,1]）。解析失败或
+/// 非有限值一律落缺省——`parse::<f64>` 接受 `"NaN"`（Rust FromStr 语义），
+/// 而 `f64::clamp` 对 NaN 原样放行，NaN 一路污染 `score_entry` 后会让
+/// [`select_candidates`] 的 `partial_cmp().unwrap_or(Equal)` 比较器违反
+/// 全序（NaN 对任何有限分都回 Equal、落到 created_at 键形成传递性
+/// 循环），Rust ≥1.81 的 driftsort 会以 "does not correctly implement a
+/// total order" panic 打断 sweep。持久化 JSONL 的 metadata 值是自由
+/// 字符串（workspace 内文件，write 面可达），解析域必须自守有限性。
 pub fn source_reliability_of(entry: &Entry) -> f64 {
     entry
         .metadata
         .get(META_DREAM_SOURCE_RELIABILITY)
         .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
         .map(|v| v.clamp(0.0, 1.0))
         .unwrap_or(0.5)
 }
