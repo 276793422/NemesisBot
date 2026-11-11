@@ -175,7 +175,9 @@ impl ApprovalResponder for RemoteNotifyResponder {
         always: bool,
         note: Option<String>,
     ) -> Result<serde_json::Value, String> {
-        let summary = self.inner.respond_batch(batch_id, approved, always, note.clone())?;
+        let summary = self
+            .inner
+            .respond_batch(batch_id, approved, always, note.clone())?;
         if let Some(ids) = summary.get("responded_ids").and_then(|v| v.as_array()) {
             for id in ids.iter().filter_map(|v| v.as_str()) {
                 spawn_remote_ask_closed(self.cluster.clone(), id, approved, note.as_deref());

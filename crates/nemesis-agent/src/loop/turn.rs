@@ -182,14 +182,21 @@ impl AgentLoop {
 
     /// drain 本 session 的 turn 文件变更缓冲（取走即清 + 按 path 去重，
     /// kind 取最后声明——投影规则见 `chat_log::dedup_file_changes`）。
-    /// assistant 最终回复落盘前调用。
+    /// assistant 最终回复落盘前调用。去重键走 checkpoint comparable
+    /// 归一（store 在手时）——同文件双形态声明（BUG-20261110-047）在
+    /// 消息级投影中合并为一条，与 checkpoint 侧声明收集同源归一。
     pub(crate) fn drain_turn_file_changes(&self, session_key: &str) -> Vec<FileChange> {
         let drained = self
             .turn_file_changes
             .lock()
             .remove(session_key)
             .unwrap_or_default();
-        crate::chat_log::dedup_file_changes(drained)
+        match self.attached_checkpoint() {
+            Some(cp) => crate::chat_log::dedup_file_changes_with_key(drained, |p| {
+                cp.comparable_path_form(p)
+            }),
+            None => crate::chat_log::dedup_file_changes(drained),
+        }
     }
 
     /// drain 本 session 的交付物流水（取走即清 + 按 path 去重，title/note

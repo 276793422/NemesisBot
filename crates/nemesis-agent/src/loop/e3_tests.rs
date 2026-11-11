@@ -604,6 +604,19 @@ async fn e3_undo_public_entry_rejects_busy_session() {
 /// git 形态的两轮摆法（root 带.git 目录 → store 构造期选 git backend）。
 /// turn 2 里写出的 v3 不在任何 begin 树里（begin 树 = 各 turn 开始态）。
 async fn stage_two_turns_git(tag: &str) -> (AgentLoop, String, tempfile::TempDir) {
+    stage_two_turns_git_opt(tag, None).await
+}
+
+/// [`stage_two_turns_git`] 变体：`midturn_side_effect = Some(content)` 时
+/// 在 turn 2 **中途**（user 行与 assistant 行之间）落一个未声明 shell 副
+/// 作用文件 `side_effect.txt`。对齐生产时序（exec 在 user 行与 assistant
+/// 行之间执行）：诞生时刻早于被回退最后行，不在 R840 H-1 空闲期外部新
+/// 文件保护面内——测试体在行落盘后补写会落进行后窗口，被新闸按设计拦
+/// 下，E3 的「无 force 回滚 turn 产物」断言必须在窗口内出生。
+async fn stage_two_turns_git_opt(
+    tag: &str,
+    midturn_side_effect: Option<&str>,
+) -> (AgentLoop, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("ws");
     std::fs::create_dir_all(root.join(".git")).unwrap();
@@ -632,6 +645,9 @@ async fn stage_two_turns_git(tag: &str) -> (AgentLoop, String, tempfile::TempDir
     cp.begin(2, "turn 2");
     std::fs::write(root.join("code.txt"), "v3").unwrap();
     e3_append(&key, "user", "turn 2 q", Some(2));
+    if let Some(content) = midturn_side_effect {
+        std::fs::write(root.join("side_effect.txt"), content).unwrap();
+    }
     e3_append(&key, "assistant", "turn 2 a", None);
 
     (al, key, dir)
@@ -666,14 +682,13 @@ async fn e3_git_redo_restores_to_live_tree_including_last_turn() {
 }
 
 /// git 形态：rewind 恢复覆盖**未声明**的 shell 副作用文件（tree diff 语
-/// 义，对照 JSON 形态的声明路径盲区）；redo 一并恢复。
+/// 义，对照 JSON 形态的声明路径盲区）；redo 一并恢复。副作用文件在
+/// turn 2 中途落盘（staging 变体，对齐生产 exec 时序）——R840 H-1 空闲
+/// 期外部新文件保护只拦「被回退行之后」诞生者，窗口内 turn 产物不拦。
 #[tokio::test]
 async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
-    let (al, key, dir) = stage_two_turns_git("gshell").await;
+    let (al, key, dir) = stage_two_turns_git_opt("gshell", Some("boom")).await;
     let ws = dir.path().join("ws");
-
-    // turn 2 期间 shell 副作用产物（无 preview 声明）。
-    std::fs::write(ws.join("side_effect.txt"), "boom").unwrap();
 
     let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["file_restore"], "applied", "{out}");
@@ -783,7 +798,10 @@ async fn r71_git_redo_not_blocked_by_other_session_turns() {
 }
 
 /// 真阳性保持：undo 之后其他会话又 begin 新 turn（工作区真的变了）→
-/// redo 仍诚实拒绝，行保持截断态（截断后索引基线的陈旧性语义不丢）。
+/// redo 仍被拦截。R840 契约更新：守卫 2 基线改会话收窄口径（其他会话的
+/// 索引活动不再击穿守卫——旧形态 Err 会销毁条目，removed_rows 唯一副本
+/// 随条目永久丢失），B 的真盘面波及改由 redo 冲突预检按路径级 diff 拦截
+/// ——blocked 结构化回执（可重试阻塞点，条目保留），force 可显式强过。
 #[tokio::test]
 async fn r71_git_redo_still_rejects_after_genuinely_new_turn() {
     let (al, key_a, key_b, cp, dir) = stage_git_sessions_ab("r71stale").await;
@@ -796,10 +814,25 @@ async fn r71_git_redo_still_rejects_after_genuinely_new_turn() {
     std::fs::write(root.join("code.txt"), "v4").unwrap();
     cp.begin_for_session(4, "b2", Some(&key_b));
 
-    let err = al.redo_rewind(&key_a).await.unwrap_err();
-    assert!(err.contains("失效"), "{err}");
+    // 冲突预检按路径级 diff 拦截：code.txt 相对 undo 盘面（{v2}）漂移。
+    let out = al.redo_rewind(&key_a).await.unwrap();
+    assert_eq!(out["blocked"], true, "{out}");
+    assert_eq!(out["reason"], "conflict", "{out}");
+    let drifted = out["drifted_paths"].as_array().unwrap();
+    assert!(
+        drifted.iter().any(|p| p == "code.txt"),
+        "B 的盘面波及必须出现在漂移清单: {out}"
+    );
+
+    // 条目保留：行保持截断态 + force 显式强过后 redo 仍可达（前向恢复到
+    // undo 时刻实时树）。
     let (_, total, _, _) = read_chat_log(&key_a, 100, None);
     assert_eq!(total, 2, "行保持截断态");
+    let out = al.redo_rewind_with_force(&key_a, true).await.unwrap();
+    assert_eq!(out["restored_count"], 2, "{out}");
+    assert_eq!(out["forced"], true, "{out}");
+    let (_, total, _, _) = read_chat_log(&key_a, 100, None);
+    assert_eq!(total, 4, "force 强过后行回填");
 
     delete_chat_log(&key_a);
     delete_chat_log(&key_b);

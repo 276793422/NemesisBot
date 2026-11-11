@@ -1637,6 +1637,13 @@ mod aux_ledger_tests;
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p20_tests;
 
+// （R840）：rewind/redo 守卫面回归锁——空闲期外部新文件保护（H-1）/
+// redo 前向恢复整体失败零推进（M-1）/ 双形态声明冲突预检归一（M-2）/
+// 守卫 2 会话收窄（M-3）/ session_file_diff 越界闸（L-2）/ 去重键注入
+// 纯函数（L-3）。git 形态用例随 checkpoint-git 进出。
+#[cfg(all(test, feature = "checkpoint-git"))]
+mod rewind_guard_tests;
+
 // （+）：rewind 谱系落盘（last_rewind）+ 分支摘要生成
 // （small_model 通道 / 无小模型诚实跳过 / build_messages 注入）编排测试。
 #[cfg(test)]

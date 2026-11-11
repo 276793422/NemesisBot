@@ -92,14 +92,28 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
 /// `kind` 取**最后一次**声明（同文件先 Create 后 Modify，对消息级展示的
 /// 语义就是「该文件被动过」；Create/Delete 的恢复语义由 checkpoint 保留，
 /// 不受此投影影响）。AgentLoop drain 时调用（单一投影点，M3 依赖此形状）。
+/// 字面键版——同文件双形态声明（绝对/相对、`\`/`/`，BUG-20261110-047
+/// 实证现象）会产出重复条目；生产路径走
+/// [`dedup_file_changes_with_key`]（checkpoint comparable 归一键）。
 pub fn dedup_file_changes(changes: Vec<FileChange>) -> Vec<FileChange> {
+    dedup_file_changes_with_key(changes, |p| p.to_string())
+}
+
+/// [`dedup_file_changes`] 的归一键版：`key` 把声明串映射到可比形态
+/// （生产传 `CheckpointStore::comparable_path_form`），同文件双形态在
+/// 投影中合并为一条（首现原文保留、kind 取最后）。
+pub fn dedup_file_changes_with_key(
+    changes: Vec<FileChange>,
+    key: impl Fn(&str) -> String,
+) -> Vec<FileChange> {
     let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut out: Vec<FileChange> = Vec::with_capacity(changes.len());
     for c in changes {
-        match seen.get(&c.path) {
+        let k = key(&c.path);
+        match seen.get(&k) {
             Some(&i) => out[i].kind = c.kind,
             None => {
-                seen.insert(c.path.clone(), out.len());
+                seen.insert(k, out.len());
                 out.push(c);
             }
         }

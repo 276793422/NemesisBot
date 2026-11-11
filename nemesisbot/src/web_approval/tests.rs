@@ -694,7 +694,10 @@ fn cross_broker_pending_entry_is_neither_surfaced_nor_adjudicable() {
     let err = mgr
         .respond("req-channel-live", true, false, None)
         .expect_err("cross-broker respond must be refused");
-    assert!(err.contains("channel"), "error names the owning broker: {err}");
+    assert!(
+        err.contains("channel"),
+        "error names the owning broker: {err}"
+    );
     let e = journal.entry("req-channel-live").unwrap();
     assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
 }
@@ -728,7 +731,11 @@ fn web_broker_stale_card_still_surfaced_and_adjudicable() {
         .iter()
         .filter(|c| c["request_id"] == "req-web-stale")
         .collect();
-    assert_eq!(stale.len(), 1, "web-broker leftover must surface: {cards:?}");
+    assert_eq!(
+        stale.len(),
+        1,
+        "web-broker leftover must surface: {cards:?}"
+    );
     assert_eq!(stale[0]["stale"], true);
     assert!(mgr.respond("req-web-stale", true, false, None).unwrap());
 }
@@ -1623,7 +1630,10 @@ async fn respond_batch_denies_all_members_with_shared_note() {
         .map(|v| v.as_str().expect("id is string"))
         .collect();
     assert_eq!(ids.len(), 2);
-    assert!(ids.contains(&"req-d1") && ids.contains(&"req-d2"), "{ids:?}");
+    assert!(
+        ids.contains(&"req-d1") && ids.contains(&"req-d2"),
+        "{ids:?}"
+    );
 
     // 两个等待方都收到拒绝 + 共享备注（verdict.note 面对齐单卡拒绝）。
     for rx in [&r1, &r2] {
