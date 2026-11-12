@@ -126,13 +126,23 @@ pub(crate) fn classify_by_tool(tool: &str, result: &str) -> bool {
 ///
 /// 拒绝文案族（tool_dispatch.rs 各闸的稳定形态， 逐点核对）：
 /// `⛔` 前缀族（ESTOP / RATE LIMIT 拒绝）、`Plan mode:` 写闸、
-/// `Error: Tool '<名>'...`（hidden / allow / min-tier 三闸同前缀——工具
-/// 执行结果不会长这样，工具失败是 `Tool error:...`）、`SECURITY BLOCKED`
-/// （安全层/guardian 拦截，contained 形态）。
+/// `Error: Tool '<名>'...`（hidden / connector / allow / min-tier / tier
+/// 白名单诸闸同前缀——工具执行结果不会长这样，工具失败是
+/// `Tool error:...`）、`Error: Unknown tool '<名>'...`（B18 未知工具轻归因，
+/// 裸名 / mcp_ / plugin. 三形态同前缀）、`Error: args validation failed...`
+/// （workflow 入口 args 校验拒绝）——后两类同属框架回灌文本，工具体从未
+/// 执行。`SECURITY BLOCKED`（安全层/guardian 拦截，contained 形态）。
 ///
 /// `Tool error:` 从 contains 改 **starts_with**——工具
 /// 返回 Err 时 dispatch 层恒以该前缀开头（执行过但失败的形态），而成功
 /// 输出**中途**出现该字样（如测试断言里引用错误文案）不应误判失败。
+///
+/// 其余裸 `Error:` 前缀 = 框架包装的**执行失败**（单次调用墙钟看门狗超时
+/// `Error: tool '<名>' timed out...` 等；tool_dispatch.rs 看门狗注释钉死
+/// 该前缀与 `tool_result_indicates_error` / WAL ok 判定 / doom-loop 签名
+/// 同刻度）→ `Some(false)`：执行过（或已放弃在飞 future）但没成，未识别
+/// 的 Error: 形态宁可判负不假绿（BUG-20261112-109：未知工具拒绝此前漏配
+/// 前缀，落到默认成功臂 → ToolFinished/证据面假绿）。
 pub fn classify_result(tool: &str, result: &str) -> Option<bool> {
     if result.starts_with('⛔') || result.starts_with("Plan mode:") {
         return None;
@@ -140,10 +150,16 @@ pub fn classify_result(tool: &str, result: &str) -> Option<bool> {
     if result.contains("SECURITY BLOCKED") {
         return None;
     }
-    if result.starts_with("Error: Tool '") {
+    if result.starts_with("Error: Tool '")
+        || result.starts_with("Error: Unknown tool '")
+        || result.starts_with("Error: args validation failed")
+    {
         return None;
     }
     if result.starts_with("Tool error:") {
+        return Some(false);
+    }
+    if result.starts_with("Error:") {
         return Some(false);
     }
     Some(classify_by_tool(tool, result))
