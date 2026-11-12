@@ -301,6 +301,11 @@ impl AgentHandler {
             "turn": turn,
             "written": report.written,
             "deleted": report.deleted,
+            // BUG-20261112-110 同族对称：零条目区间（redo 过的区间）restore
+            // 是静默 no-op——flag 透出让调用方区分「文件已在目标态」与
+            // 「无封印可恢复」，与 sessions.rewind_to_message 的
+            // file_restore=skipped 语义同源。
+            "no_checkpoint": report.no_checkpoint_from_turn,
             // 失败项不再被吞——非空 = 工作区部分恢复态。
             "failures": report.failures.iter().map(|(p, e)| {
                 serde_json::json!({ "path": p, "error": e })

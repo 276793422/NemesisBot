@@ -655,11 +655,23 @@ impl AgentLoop {
             if report.ok() {
                 written = report.written;
                 deleted = report.deleted;
-                // 检查点退役（scoped 截断 + post 基线读取）
-                // 不在这里做——退役必须以「全部持久化提交成功」为前提，否则
-                // jsonl 写回失败 = 文件已恢复 + 回退锚已没 + 文案谎称「原会
-                // 话完好」的三输态。移到步骤 2 成功之后（2b）。
-                file_restore = "applied";
+                if report.no_checkpoint_from_turn {
+                    // BUG-20261112-110：区间封印已退役（redo 不重建索引的
+                    // 诚实边界后果——redo 过的区间行标记还在、条目已清），
+                    // restore 是静默 no-op。不得盖「applied」戳（written=[]
+                    // 且无 note 会谎称文件已恢复，实盘留着外部修改）：与
+                    // 无锚臂同待遇，只截断对话不回滚文件，note 说明根因。
+                    file_restore = "skipped";
+                    file_note = Some(
+                        "该区间的 checkpoint 条目已随更早的回退退役（redo 不重建索引），只截断对话不回滚文件".to_string(),
+                    );
+                } else {
+                    // 检查点退役（scoped 截断 + post 基线读取）
+                    // 不在这里做——退役必须以「全部持久化提交成功」为前提，否则
+                    // jsonl 写回失败 = 文件已恢复 + 回退锚已没 + 文案谎称「原会
+                    // 话完好」的三输态。移到步骤 2 成功之后（2b）。
+                    file_restore = "applied";
+                }
             } else {
                 let partial = !report.written.is_empty() || !report.deleted.is_empty();
                 warn!(
