@@ -742,6 +742,117 @@ async fn waiting_pauses_schedule_until_resume_production_path() {
     );
 }
 
+/// BUG-20261112-115 回归：resume 重建 wf_ctx 丢失 WorkflowIdentity——A4
+/// 归因穿透在 human_review 之后断线。fresh 段 identity 从 trigger_source
+/// 构造（`new_with_identity`，engine run 路径）；human_review 挂起 →
+/// resume 重建 wf_ctx 的旧实现用 `WorkflowContext::new`（identity 落全空
+/// 默认值），下游 tool 节点经 SecureExecutor 透传的 RequestContext 三键
+/// （session_key/chat_id/sender_id）全空——审批卡无法回源触发会话、会话
+/// 级豁免按空 session_key 永不命中、归因 metadata（wf_instance/wf_trigger/
+/// wf_depth）清空。本测试钉死：resume 后下游 tool 节点收到的 identity
+/// 七字段必须与 fresh 段同源一致（trigger_source 就在同一 execution 上，
+/// 重启恢复路径 Gap 1 已保证带回）。
+#[tokio::test]
+async fn resume_rebuild_preserves_workflow_identity_for_downstream_tool_node() {
+    use crate::nodes::{RealToolNodeExecutor, SecureExecutor};
+
+    struct IdentityCapturingSecure {
+        captured: Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>>,
+    }
+    #[async_trait::async_trait]
+    impl SecureExecutor for IdentityCapturingSecure {
+        async fn execute(
+            &self,
+            _node_id: &str,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+            identity: &crate::context::WorkflowIdentity,
+        ) -> nemesis_tools::types::ToolResult {
+            *self.captured.lock().unwrap() = Some(identity.clone());
+            nemesis_tools::types::ToolResult::success("ok")
+        }
+    }
+
+    let captured: Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let engine = WorkflowEngine::new_arc();
+    engine.node_executors.register(
+        "tool",
+        Arc::new(RealToolNodeExecutor::new_with_secure_executor(
+            Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+            Arc::new(IdentityCapturingSecure {
+                captured: captured.clone(),
+            }),
+        )),
+    );
+
+    let nodes = vec![
+        make_node("review", "human_review", vec![]),
+        NodeDef {
+            id: "post".to_string(),
+            node_type: "tool".to_string(),
+            config: HashMap::from([("name".to_string(), serde_json::json!("anything"))]),
+            depends_on: vec!["review".to_string()],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        },
+    ];
+    engine
+        .register_workflow(make_workflow("identity_resume_wf", nodes))
+        .unwrap();
+
+    let trigger = TriggerSource::AgentTool {
+        tool_call_id: "tc-115".to_string(),
+        recursion_depth: 2,
+        session_key: "agent:main:session:s-115".to_string(),
+        chat_id: "chat-115".to_string(),
+        sender_id: "user-115".to_string(),
+    };
+    let exec_id = engine
+        .run("identity_resume_wf", HashMap::new(), Some(trigger))
+        .await
+        .unwrap();
+
+    // 等 execution 落定到 Waiting（生产路径 run_async 在 spawn 中执行）。
+    let mut paused = false;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Some(e) = engine.get_execution(&exec_id.id).await
+            && matches!(e.state, ExecutionState::Waiting | ExecutionState::Failed)
+        {
+            paused = e.state == ExecutionState::Waiting;
+            break;
+        }
+    }
+    assert!(paused, "must pause at review");
+
+    let mut review = HashMap::new();
+    review.insert("decision".to_string(), serde_json::json!("approved"));
+    let resumed = engine.resume_execution(&exec_id.id, review).await.unwrap();
+    assert_eq!(resumed.state, ExecutionState::Completed);
+    assert!(
+        resumed.node_results.contains_key("post"),
+        "downstream tool node must run after resume"
+    );
+
+    let got = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("secure executor must have captured the downstream identity");
+    assert_eq!(got.execution_id, exec_id.id);
+    assert_eq!(got.workflow_name, "identity_resume_wf");
+    assert_eq!(got.trigger_label, "agent-tool");
+    assert_eq!(
+        got.session_key, "agent:main:session:s-115",
+        "session_key must survive resume (approval routing / session exemption key)"
+    );
+    assert_eq!(got.chat_id, "chat-115");
+    assert_eq!(got.sender_id, "user-115");
+    assert_eq!(got.recursion_depth, 2);
+}
+
 // -----------------------------------------------------------------------
 // list_executions tests
 // -----------------------------------------------------------------------

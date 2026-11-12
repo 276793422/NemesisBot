@@ -15,12 +15,26 @@ use std::path::{Path, PathBuf};
 
 use crate::chat_log;
 
-/// 会话绑定的资产区 agent id（None = 未绑定/会话不存在/meta 损坏）。
-/// meta 侧车经 path 单例定位，无需 workspace 参数。
+/// 受控形态校验（BUG-20261112-116）：绑定 id 只接受分配点的生成形态——
+/// uuid simple（32 位小写 hex）。meta 是 workspace 内文件（LLM 经
+/// write_file 可触达），无校验的 id 直接拼 `<workspace>/agents/<id>/home`
+/// 会把 meta 污染升级成路径越界：`..`/分隔符注入的 id 让 plans 写放行
+/// 锚点（`plan_products_dir_for`）、uploads/images 落盘、memory 域全部
+/// 同源越界——后三者是内部 fs 写路径不经 WorkspaceBoundary 兜底。
+/// nemesis-path 侧「agent_id 必须是受控生成的 uuid」的调用方契约在本
+/// 解析点落地为代码强制：形态不符 = None（lenient 降级，资产落全局旧
+/// 位置）——与「未绑定」同路径，零新增失败面；后续 `assign_session_home`
+/// 幂等分支走同一校验，污染值会被下次分配自然覆盖自愈。
+fn is_controlled_home_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// 会话绑定的资产区 agent id（None = 未绑定/会话不存在/meta 损坏/形态
+/// 不受控）。meta 侧车经 path 单例定位，无需 workspace 参数。
 pub fn resolve_home_agent_id(session_key: &str) -> Option<String> {
     chat_log::read_session_meta_full(session_key)
         .and_then(|m| m.home_agent_id)
-        .filter(|id| !id.is_empty())
+        .filter(|id| !id.is_empty() && is_controlled_home_id(id))
 }
 
 /// 会话资产区 home 绝对路径（`<workspace>/agents/<id>/home`）。未绑定 =

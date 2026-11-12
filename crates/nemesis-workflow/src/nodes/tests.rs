@@ -147,6 +147,127 @@ async fn test_loop_node_executor_with_registry() {
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 3);
 }
 
+/// BUG-20261112-115 同族回归共用假件：捕获 SecureExecutor 收到的 identity。
+struct Bug115CapturingSecure {
+    captured: std::sync::Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>>,
+}
+
+#[async_trait::async_trait]
+impl SecureExecutor for Bug115CapturingSecure {
+    async fn execute(
+        &self,
+        _node_id: &str,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+        identity: &crate::context::WorkflowIdentity,
+    ) -> nemesis_tools::types::ToolResult {
+        *self.captured.lock().unwrap() = Some(identity.clone());
+        nemesis_tools::types::ToolResult::success("ok")
+    }
+}
+
+/// 带身份的 WorkflowContext（BUG-20261112-115 测试辅助）。
+fn identified_wf_ctx() -> WorkflowContext {
+    WorkflowContext::new_with_identity(
+        crate::context::WorkflowIdentity {
+            execution_id: "exec-115".to_string(),
+            workflow_name: "identity-flow".to_string(),
+            trigger_label: "agent-tool".to_string(),
+            session_key: "agent:main:session:s-115".to_string(),
+            chat_id: "chat-115".to_string(),
+            sender_id: "user-115".to_string(),
+            recursion_depth: 1,
+        },
+        HashMap::new(),
+    )
+}
+
+/// BUG-20261112-115 同族回归（parallel）：parallel 子分支的 local_wf_ctx
+/// 必须继承父 identity——旧实现 `WorkflowContext::new` 落全空默认值，块内
+/// tool 子节点经 SecureExecutor 透传的 RequestContext 三键全空（审批卡无法
+/// 回源触发会话 / 会话级豁免不命中 / 归因清空），fresh run 即中招。
+#[tokio::test]
+async fn parallel_child_tool_node_inherits_workflow_identity() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register(
+        "tool",
+        std::sync::Arc::new(RealToolNodeExecutor::new_with_secure_executor(
+            std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+            std::sync::Arc::new(Bug115CapturingSecure {
+                captured: captured.clone(),
+            }),
+        )),
+    );
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "tool", "config": { "name": "anything" } }
+        ]),
+    );
+    let node = make_node("n1", "parallel", config);
+    let wf_ctx = identified_wf_ctx();
+    let result = exec.execute(&node, &HashMap::new(), &wf_ctx).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let got = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("secure executor must have captured the child identity");
+    assert_eq!(got.session_key, "agent:main:session:s-115");
+    assert_eq!(got.chat_id, "chat-115");
+    assert_eq!(got.sender_id, "user-115");
+    assert_eq!(got.execution_id, "exec-115");
+    assert_eq!(got.trigger_label, "agent-tool");
+}
+
+/// BUG-20261112-115 同族回归（loop）：loop 体子节点的 local_wf_ctx 必须
+/// 继承父 identity（同 parallel——tool 子节点三键全空即 fresh run 中招）。
+#[tokio::test]
+async fn loop_child_tool_node_inherits_workflow_identity() {
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register(
+        "tool",
+        std::sync::Arc::new(RealToolNodeExecutor::new_with_secure_executor(
+            std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+            std::sync::Arc::new(Bug115CapturingSecure {
+                captured: captured.clone(),
+            }),
+        )),
+    );
+    let exec = registry.get("loop").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(2));
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "tool", "config": { "name": "anything" } }
+        ]),
+    );
+    let node = make_node("n1", "loop", config);
+    let wf_ctx = identified_wf_ctx();
+    let result = exec.execute(&node, &HashMap::new(), &wf_ctx).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
+
+    let got = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("secure executor must have captured the child identity");
+    assert_eq!(got.session_key, "agent:main:session:s-115");
+    assert_eq!(got.chat_id, "chat-115");
+    assert_eq!(got.sender_id, "user-115");
+    assert_eq!(got.execution_id, "exec-115");
+    assert_eq!(got.trigger_label, "agent-tool");
+}
+
 #[tokio::test]
 async fn test_loop_node_stub() {
     let exec = LoopNodeStub;

@@ -114,6 +114,12 @@ pub async fn handle_upload_image(
     // 会话资产区（2026-11-12）：可选 `?session_id=` —— 绑定会话落
     // `<workspace>/agents/<id>/home/uploads/`（fork 随分支带走）；缺省落
     // 全局 workspace/uploads（存量行为零变化）。
+    // BUG-20261112-117：根取会话所属 workspace（项目会话 = 项目目录，
+    // `project_root_for_session` 是 L6++ 归属裁决单点）——此前恒主
+    // workspace，项目会话的上传文件落进主树同 id 幽灵 home，与
+    // sessions.create/admission/fork 的资产区根（项目目录）两树分裂：
+    // fork copy-on-fork 只复制项目树（上传文件不随分支带走），主树
+    // 半截 home 靠 7 天 TTL 兜底后悬空。
     let workspace = nemesis_path::default_path_manager().workspace();
     let uploads_dir = params
         .get("session_id")
@@ -124,7 +130,10 @@ pub async fn handle_upload_image(
                 "agent:main:session:{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
-            nemesis_agent::session_home::resolve_session_home(&workspace, &session_key)
+            let root = crate::handlers::projects::project_root_for_session(&session_key)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| workspace.clone());
+            nemesis_agent::session_home::resolve_session_home(&root, &session_key)
                 .map(|h| h.join("uploads"))
         })
         .unwrap_or_else(|| nemesis_path::resolve_uploads_dir_in_workspace(&workspace));
@@ -180,6 +189,10 @@ pub async fn handle_upload_image(
 /// 会话资产区（2026-11-12）：`{id}` 解析 = 会话 home/uploads 优先（新链路
 /// 上传端点带 `?session_id=` 落会话资产区）→ 全局 uploads 兜底（存量上传
 /// / 未绑定会话）。双向兼容：落哪层都能解析回来。
+/// BUG-20261112-117：home 解析根 = 会话所属 workspace（项目会话 = 项目
+/// 目录，与上传落点同源）——恒主 workspace 会在项目会话上 miss 自家
+/// home/uploads（真身在项目树），回落全局也 miss → media 引用诚实注记
+/// 但图片凭空丢失。
 pub fn resolve_media_ref(item: &serde_json::Value, session_key: Option<&str>) -> Option<String> {
     if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
         let id = id.trim();
@@ -194,15 +207,15 @@ pub fn resolve_media_ref(item: &serde_json::Value, session_key: Option<&str>) ->
         {
             return None;
         }
-        if let Some(key) = session_key
-            && let Some(home) = nemesis_agent::session_home::resolve_session_home(
-                &nemesis_path::default_path_manager().workspace(),
-                key,
-            )
-        {
-            let dest = home.join("uploads").join(id);
-            if dest.is_file() {
-                return Some(dest.to_string_lossy().into_owned());
+        if let Some(key) = session_key {
+            let root = crate::handlers::projects::project_root_for_session(key)
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
+            if let Some(home) = nemesis_agent::session_home::resolve_session_home(&root, key) {
+                let dest = home.join("uploads").join(id);
+                if dest.is_file() {
+                    return Some(dest.to_string_lossy().into_owned());
+                }
             }
         }
         let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(

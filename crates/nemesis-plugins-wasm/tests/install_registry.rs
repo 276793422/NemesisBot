@@ -1214,8 +1214,7 @@ fn panel_route_collision_rejected_across_plugins() {
         .0;
     let err = mgr
         .register(b, PluginTrustState::ReviewRequired, 0, None, None, None)
-        .err()
-        .expect("duplicate route must be rejected");
+        .expect_err("duplicate route must be rejected");
     assert!(
         err.to_string().contains("already declared by plugin"),
         "{err}"
