@@ -235,6 +235,132 @@ fn extract_identity_info(content: &str) -> (String, String) {
     (name, emoji)
 }
 
+// ---------------------------------------------------------------------------
+// 超市数据源（在线 / 内置快照降级）
+//
+// 设计拍板（2026-11-12 附加资源 C-ABI 插件设计文档 §4.3/§4.6/拍板①）：
+// GitHub 上游不可达时**必须自动降级**内置快照（不让用户选择；重新拉数据 =
+// 切标签页再切回来 remount 触发 browse）；快照由 plugin_resources C-ABI 插件
+// 承载（gateway 启动时装载，[`nemesis_plugin::resources`] 桥 peek），缺席 =
+// 纯在线（现有行为）。快照内容**永不进** TREE_CACHE/FM_CACHE/CONTENT_CACHE
+// （三级缓存只服务在线臂——快照进缓存会让上游恢复后的 browse 仍展示旧快照，
+// 破坏刷新语义）。
+// ---------------------------------------------------------------------------
+
+/// 快照元信息（shop 命令响应 `snapshot_info` 字段；live → null）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct SnapshotInfo {
+    commit: String,
+    fetched_at: String,
+    file_count: usize,
+    /// 人读标签 `commit 前 7 位 @ YYYY-MM-DD`（前端徽标直用）。
+    label: String,
+}
+
+/// 数据来源：Live（GitHub 在线）/ Snapshot（内置快照降级，带元信息）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShopSource {
+    Live,
+    Snapshot(SnapshotInfo),
+}
+
+impl ShopSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ShopSource::Live => "live",
+            ShopSource::Snapshot(_) => "snapshot",
+        }
+    }
+
+    /// 响应 `snapshot_info` 字段（live → null）。
+    fn info_json(&self) -> serde_json::Value {
+        match self {
+            ShopSource::Live => serde_json::Value::Null,
+            ShopSource::Snapshot(info) => {
+                serde_json::to_value(info).unwrap_or(serde_json::Value::Null)
+            }
+        }
+    }
+}
+
+/// GitHub 上游错误分类（**只影响日志措辞与 refresh 报错文案，不分支降级行为**
+/// ——拍板①：有快照时全部类别一律降级，无快照时全部类别一律报错）。
+/// 输入 = online 臂拼装的错误串（reqwest 错误经 [`reqwest_error_chain`]
+/// 展开 source 链，超时/DNS/连接细节才可见）。pub：CLI persona 臂同源复用
+/// （分类口径单一真相源）。
+pub fn classify_github_error(err: &str) -> &'static str {
+    let e = err.to_lowercase();
+    // 顺序敏感：特定类别先于泛化兜底（rate limit 走 403+专属文案；
+    // upstream_gone = 仓库/分支被删的主形态 404）。
+    if e.contains("rate limit") || (e.contains("403") && e.contains("forbidden")) {
+        "rate_limited"
+    } else if e.contains("404") || e.contains("409") {
+        "upstream_gone"
+    } else if e.contains("timed out")
+        || e.contains("timeout")
+        || e.contains("error sending request")
+        || e.contains("connect")
+        || e.contains("dns")
+        || e.contains("network")
+        || e.contains("broken pipe")
+        || e.contains("connection reset")
+        || e.contains("os error")
+    {
+        "network"
+    } else if ["500", "502", "503", "504"].iter().any(|s| e.contains(s)) {
+        "http_5xx"
+    } else if e.contains("returned 4") {
+        "http_4xx"
+    } else {
+        "other"
+    }
+}
+
+/// reqwest 错误源链展开（Display 只有首环；超时/DNS/连接细节在 source() 链里
+/// ——分类依赖这些词。nemesis-providers transport_error 同款纪律）。
+fn reqwest_error_chain(e: &reqwest::Error) -> String {
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        msg.push_str(": ");
+        msg.push_str(&s.to_string());
+        src = s.source();
+    }
+    msg
+}
+
+/// 内置快照树（插件缺席 / manifest 无该 kind / 过滤后空 = None → 纯在线）。
+/// 语义过滤单一真相源 = [`is_agent_file`]（快照与在线同一枚举口径——设计
+/// 「机械/语义过滤分离」：插件存全量 *.md，语义过滤留消费侧）。size 恒 0
+/// （下游不消费 size；在线树才带真实体积）。
+fn snapshot_tree() -> Option<(Vec<(String, i64)>, nemesis_plugin::resources::ResourceEntry)> {
+    let (paths, entry) = nemesis_plugin::resources::snapshot_tree_filtered(
+        nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+        is_agent_file,
+    )?;
+    Some((paths.into_iter().map(|p| (p, 0)).collect(), entry))
+}
+
+/// 树内查 id → 路径（在线/快照两臂共用的匹配规则单一真相源）。
+fn tree_path_for<'a>(tree: &'a [(String, i64)], id: &str) -> Option<&'a str> {
+    tree.iter()
+        .find(|(p, _)| {
+            let filename = p.rsplit('/').next().unwrap_or("");
+            filename.trim_end_matches(".md") == id || filename == id
+        })
+        .map(|(p, _)| p.as_str())
+}
+
+/// shop.refresh 失败文案（快照在场带标签，缺席诚实说明）。
+fn refresh_failure_message(class: &str, snapshot_label: Option<&str>) -> String {
+    match snapshot_label {
+        Some(label) => format!(
+            "无法刷新：GitHub 上游不可达（{class}）；当前展示为内置快照（{label}），可稍后重试"
+        ),
+        None => format!("无法刷新：GitHub 上游不可达（{class}），且本机无内置快照插件"),
+    }
+}
+
 // GitHub API helpers
 
 fn get_client() -> &'static reqwest::Client {
@@ -260,7 +386,7 @@ fn invalidate_cache() {
     CONTENT_CACHE.lock().unwrap().clear();
 }
 
-async fn fetch_tree() -> Result<Vec<(String, i64)>, String> {
+async fn fetch_tree_online() -> Result<Vec<(String, i64)>, String> {
     {
         let cache = TREE_CACHE.lock().unwrap();
         if let Some(ref tree) = *cache {
@@ -275,7 +401,7 @@ async fn fetch_tree() -> Result<Vec<(String, i64)>, String> {
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("GitHub tree API error: {}", e))?;
+        .map_err(|e| format!("GitHub tree API error: {}", reqwest_error_chain(&e)))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -300,6 +426,36 @@ async fn fetch_tree() -> Result<Vec<(String, i64)>, String> {
     Ok(cache.as_ref().unwrap().clone())
 }
 
+/// 在线优先 / 快照兜底的树获取（拍板①：失败必须自动降级，不让用户选择）。
+/// 快照树**不写 TREE_CACHE**（缓存只服务在线臂）；降级 WARN 留痕类别与快照
+/// 标签；快照缺席时原样返回在线臂错误（纯在线行为不变）。
+async fn fetch_tree() -> Result<(Vec<(String, i64)>, ShopSource), String> {
+    match fetch_tree_online().await {
+        Ok(tree) => Ok((tree, ShopSource::Live)),
+        Err(e) => {
+            let class = classify_github_error(&e);
+            match snapshot_tree() {
+                Some((tree, entry)) => {
+                    tracing::warn!(
+                        "[Persona] GitHub 上游不可达（{class}），超市降级内置快照（{}）",
+                        entry.short_label()
+                    );
+                    Ok((
+                        tree,
+                        ShopSource::Snapshot(SnapshotInfo {
+                            commit: entry.upstream_commit.clone(),
+                            fetched_at: entry.fetched_at_utc.clone(),
+                            file_count: entry.file_count,
+                            label: entry.short_label(),
+                        }),
+                    ))
+                }
+                None => Err(e),
+            }
+        }
+    }
+}
+
 /// cache: frontmatter extracted from downloaded files.
 static FM_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Frontmatter>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
@@ -308,24 +464,59 @@ static FM_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Frontmatte
 static CONTENT_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-async fn fetch_agent_content(id: &str) -> Result<String, String> {
-    // Check cache
+async fn fetch_agent_content(id: &str) -> Result<(String, ShopSource), String> {
+    // 内容缓存命中（只有在线臂写缓存 → 命中必为在线内容，live 语义成立）
     {
         let cache = CONTENT_CACHE.lock().unwrap();
         if let Some(content) = cache.get(id) {
-            return Ok(content.clone());
+            return Ok((content.clone(), ShopSource::Live));
         }
     }
+    match fetch_agent_content_online(id).await {
+        Ok(content) => Ok((content, ShopSource::Live)),
+        Err(e) => {
+            let class = classify_github_error(&e);
+            let Some((tree, entry)) = snapshot_tree() else {
+                return Err(e);
+            };
+            let info = SnapshotInfo {
+                commit: entry.upstream_commit.clone(),
+                fetched_at: entry.fetched_at_utc.clone(),
+                file_count: entry.file_count,
+                label: entry.short_label(),
+            };
+            // 快照两段解析：树内查 id → 读内容；任一环失败维持在线臂原始错误
+            // （id 真缺失 / 快照较旧 / 内容读失败都不该被快照错误遮蔽）。
+            let Some(path) = tree_path_for(&tree, id) else {
+                tracing::warn!(
+                    "[Persona] GitHub 上游不可达（{class}），快照树中也无 '{id}'（快照较旧或 id 真缺失），维持原始错误"
+                );
+                return Err(e);
+            };
+            match nemesis_plugin::resources::snapshot_content(
+                nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+                path,
+            ) {
+                Ok(content) => {
+                    tracing::warn!(
+                        "[Persona] GitHub 上游不可达（{class}），'{id}' 改读内置快照（{}）",
+                        info.label
+                    );
+                    Ok((content, ShopSource::Snapshot(info)))
+                }
+                Err(pe) => {
+                    tracing::warn!("[Persona] 快照读 '{path}' 失败（{pe}），维持原始错误");
+                    Err(e)
+                }
+            }
+        }
+    }
+}
 
+async fn fetch_agent_content_online(id: &str) -> Result<String, String> {
     // Find path from tree
-    let tree = fetch_tree().await?;
-    let path = tree
-        .iter()
-        .find(|(p, _)| {
-            let filename = p.rsplit('/').next().unwrap_or("");
-            filename.trim_end_matches(".md") == id || filename == id
-        })
-        .map(|(p, _)| p.as_str())
+    let tree = fetch_tree_online().await?;
+    let path = tree_path_for(&tree, id)
         .ok_or_else(|| format!("agent '{}' not found in repository", id))?;
 
     let url = format!(
@@ -336,7 +527,7 @@ async fn fetch_agent_content(id: &str) -> Result<String, String> {
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("GitHub contents API error: {}", e))?;
+        .map_err(|e| format!("GitHub contents API error: {}", reqwest_error_chain(&e)))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -376,6 +567,28 @@ async fn fetch_agent_content(id: &str) -> Result<String, String> {
     }
 
     Ok(text)
+}
+
+/// 测试强制 refresh 上游臂结果（0=真实上游 / 1=强制成功 / 2=强制失败）；
+/// 与 SHOP_TEST_LOCK 配合使用，用后归零——refresh 语义会真打上游，测试必须
+/// 离线可控（生产恒 0）。pub(crate)：handlers 级测试文件（persona_extra /
+/// persona_more）也要注入。
+#[cfg(test)]
+pub(crate) static TEST_REFRESH_MODE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+/// refresh 专用上游拉取（语义同 [`fetch_tree_online`]，测试臂见
+/// [`TEST_REFRESH_MODE`]）。
+async fn refresh_fetch_tree() -> Result<Vec<(String, i64)>, String> {
+    #[cfg(test)]
+    {
+        match TEST_REFRESH_MODE.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => return Ok(Vec::new()),
+            2 => return Err("SSL connect error (forced for test)".to_string()),
+            _ => {}
+        }
+    }
+    fetch_tree_online().await
 }
 
 // Frontmatter parsing (simple, no serde_yaml dependency)
@@ -980,7 +1193,16 @@ impl ModuleHandler for PersonaHandler {
             "shop.search" => self.cmd_shop_search(workspace, data.as_ref()).await,
             "shop.refresh" => {
                 invalidate_cache();
-                Ok(Some(serde_json::json!({"refreshed": true})))
+                match refresh_fetch_tree().await {
+                    Ok(_) => Ok(Some(
+                        serde_json::json!({"refreshed": true, "source": "live"}),
+                    )),
+                    Err(e) => {
+                        let class = classify_github_error(&e);
+                        let label = snapshot_tree().map(|(_, entry)| entry.short_label());
+                        Err(refresh_failure_message(class, label.as_deref()))
+                    }
+                }
             }
             "shop.preview" => {
                 let d = data.ok_or("missing data")?;
@@ -1227,7 +1449,7 @@ impl PersonaHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let tree = fetch_tree().await?;
+        let (tree, source) = fetch_tree().await?;
         let fm_cache = FM_CACHE.lock().unwrap();
 
         let mut items = Vec::new();
@@ -1255,7 +1477,11 @@ impl PersonaHandler {
             }));
         }
 
-        Ok(Some(serde_json::json!({"items": items})))
+        Ok(Some(serde_json::json!({
+            "items": items,
+            "source": source.as_str(),
+            "snapshot_info": source.info_json(),
+        })))
     }
 
     async fn cmd_shop_search(
@@ -1269,7 +1495,7 @@ impl PersonaHandler {
             .unwrap_or("")
             .to_lowercase();
 
-        let tree = fetch_tree().await?;
+        let (tree, source) = fetch_tree().await?;
         let fm_cache = FM_CACHE.lock().unwrap();
 
         let mut items = Vec::new();
@@ -1297,7 +1523,11 @@ impl PersonaHandler {
             }));
         }
 
-        Ok(Some(serde_json::json!({"items": items})))
+        Ok(Some(serde_json::json!({
+            "items": items,
+            "source": source.as_str(),
+            "snapshot_info": source.info_json(),
+        })))
     }
 
     async fn cmd_shop_preview(
@@ -1305,7 +1535,7 @@ impl PersonaHandler {
         workspace: &str,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        let content = fetch_agent_content(id).await?;
+        let (content, source) = fetch_agent_content(id).await?;
         let fm = parse_frontmatter(&content);
         let converted = convert_agent_content(&content);
 
@@ -1322,6 +1552,8 @@ impl PersonaHandler {
             "name": name,
             "emoji": emoji,
             "installed": installed,
+            "source": source.as_str(),
+            "snapshot_info": source.info_json(),
             "raw": content,
             "converted": {
                 "IDENTITY.md": converted.identity,
@@ -1348,7 +1580,7 @@ impl PersonaHandler {
             return Err(format!("persona '{}' already installed", id));
         }
 
-        let content = fetch_agent_content(id).await?;
+        let (content, source) = fetch_agent_content(id).await?;
         let fm = parse_frontmatter(&content);
         let converted = convert_agent_content(&content);
 
@@ -1383,6 +1615,8 @@ impl PersonaHandler {
             "downloaded": true,
             "name": display_name,
             "id": id,
+            "source": source.as_str(),
+            "snapshot_info": source.info_json(),
         })))
     }
 
@@ -1390,6 +1624,9 @@ impl PersonaHandler {
     /// 决策与零丢失契约：集群聘用需求评估与决策。
     /// 前置：必须先 shop.download（决策 4）；覆盖前 zip 备份（决策 5）；
     /// 节点身份只换 name（决策 3）；EXPERTISE 保守不动（决策 2）。
+    /// §4.3 source 字段注记：hire 读**本地已下载** personas/{id}（零上游
+    /// 依赖），数据既非 live 也非 snapshot——source/snapshot_info 不适用
+    /// （值集没有第三个值；内容来源由先行的 download 响应承载）。
     #[cfg(feature = "cluster")]
     fn cmd_shop_hire(
         &self,

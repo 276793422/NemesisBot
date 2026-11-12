@@ -716,3 +716,82 @@ mod id_gate {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 快照降级臂的纯逻辑件（离线可测；网络臂由上方 r10 系列 + web 侧测试覆盖）
+// ---------------------------------------------------------------------------
+
+/// write_converted_persona 六文件契约：PERSONA.json 扩展字段 + IDENTITY/
+/// SOUL/AGENT/TOOLS + 空 HEARTBEAT.md（缺失/空 HEARTBEAT.md 会让心跳服务跳
+/// 过 LLM，之后 web activate 清根 HEARTBEAT.md 不补——空文件占位是契约）。
+#[test]
+fn write_converted_persona_writes_six_file_contract() {
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_string_lossy().to_string();
+    // 输入形态 = 上游 agency-agents 真实文件形态（YAML frontmatter，
+    // parse_frontmatter 单一解析口径）
+    let content = "---\nname: Writer\nemoji: ✍️\ndescription: 写作助手\n---\n\n## Identity\n写手\n";
+    write_converted_persona(&workspace, "writer-persona", content).expect("写盘成功");
+
+    let dir = ws.path().join("personas/writer-persona");
+    for name in [
+        "PERSONA.json",
+        "IDENTITY.md",
+        "SOUL.md",
+        "AGENT.md",
+        "TOOLS.md",
+    ] {
+        let p = dir.join(name);
+        assert!(p.is_file(), "{name} 必须在場");
+    }
+    // 空 HEARTBEAT.md 在場（内容为空是刻意契约，不是漏写）
+    let hb = std::fs::read_to_string(dir.join("HEARTBEAT.md")).unwrap();
+    assert!(hb.is_empty(), "HEARTBEAT.md 必须为空占位: {hb:?}");
+    // PERSONA.json 可解析（转换走 web 面单一真相源）
+    let pj: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("PERSONA.json")).unwrap())
+            .expect("PERSONA.json 合法 JSON");
+    assert_eq!(
+        pj["name"].as_str(),
+        Some("Writer"),
+        "frontmatter name 进 PERSONA.json"
+    );
+    assert!(dir.join("AGENT.md").is_file() && dir.join("TOOLS.md").is_file());
+}
+
+/// path_to_result 搜索行推导：id/名称 Title Case/类别映射/query 过滤/
+/// installed 探测——在线/快照两臂共用的行构造单一出口。
+#[test]
+fn path_to_result_derives_row_and_filters_by_query() {
+    let ws = tempfile::tempdir().unwrap();
+    // installed 探测：目录在場 = true
+    std::fs::create_dir_all(ws.path().join("personas/engineering-reviewer")).unwrap();
+
+    let row = path_to_result("engineering/engineering-reviewer.md", "", ws.path())
+        .expect("合法 agent 路径必须出结果");
+    assert_eq!(row.0, "engineering-reviewer");
+    assert_eq!(row.1, "Engineering Reviewer", "kebab-case → Title Case");
+    assert_eq!(
+        row.3, "开发",
+        "engineering 目录 → 开发 类别（map_category 权威表）"
+    );
+    assert!(row.4, "目录在場 = installed");
+
+    // query 过滤（name/id/类别三面匹配，大小写不敏感）
+    assert!(path_to_result("engineering/engineering-reviewer.md", "reviewer", ws.path()).is_some());
+    assert!(
+        path_to_result(
+            "engineering/engineering-reviewer.md",
+            "ENGINEERING",
+            ws.path()
+        )
+        .is_some()
+    );
+    assert!(
+        path_to_result("engineering/engineering-reviewer.md", "nomatch", ws.path()).is_none(),
+        "不命中 query → None"
+    );
+    // 未安装同路径 → installed=false
+    let other = path_to_result("design/design-critic.md", "", ws.path()).unwrap();
+    assert!(!other.4);
+}

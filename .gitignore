@@ -31,6 +31,10 @@ progress.txt
 
 *.profraw
 **/target
+# ABI 不匹配注入测试（nemesisbot resources_plugin_loader tests）的错版
+# fixture 独立编译目录——FIXTURE_ABI_OVERRIDE=2 构建 plugin-resources 落此处
+# （独立 CARGO_TARGET_DIR，不踢正常 fixture 缓存）；纯构建产物不入库。
+**/target-abi-override
 **/.gradle
 /test-tools/android-shell/app/build/intermediates
 /test-tools/android-shell/app/build/outputs

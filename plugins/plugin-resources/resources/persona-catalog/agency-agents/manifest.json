@@ -1,0 +1,9 @@
+{
+  "repo": "msitarzewski/agency-agents",
+  "branch": "main",
+  "commit": "8ae6164602c95ca78828b148b9052460ee426885",
+  "fetched_at_utc": "2026-11-12T12:22:00Z",
+  "file_count": 330,
+  "license": "MIT",
+  "note": "仓库入库基线快照（机械子集：全量 *.md；语义过滤在宿主消费侧）。刷新走 scripts/update-persona-baseline.sh，手动触发。"
+}

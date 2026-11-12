@@ -96,6 +96,9 @@ fn cmd_current(workspace: &std::path::Path) -> Result<()> {
 }
 
 fn cmd_list(workspace: &std::path::Path) -> Result<()> {
+    // §4.4 快照降级面注记：list 列的是**本地已装**人格（读 workspace/personas，
+    // 零网络）——上游不可达降级臂只属于拉取型命令（search/install），本命令
+    // 无上游依赖，快照注记不适用。
     let personas_dir = workspace.join("personas");
 
     if !personas_dir.exists() {
@@ -226,9 +229,28 @@ fn cmd_restore(workspace: &std::path::Path) -> Result<()> {
 // Remote commands (async, GitHub API)
 // ---------------------------------------------------------------------------
 
+/// 快照插件按需装载 + 诚实注记（幂等；缺席 = 静默走纯在线；名册开关关 =
+/// 用户意志，注记一行；被拒 = stderr 留痕——headless CLI 无 tracing 面板，
+/// 用户需要知道为什么没有快照兜底）。
+fn ensure_snapshot_plugin(workspace: &std::path::Path) {
+    use crate::resources_plugin_loader::ResourcesLoadOutcome;
+    let config_dir = nemesis_path::workspace_config_dir(workspace);
+    match crate::resources_plugin_loader::load_resources_plugin(&config_dir) {
+        ResourcesLoadOutcome::Rejected(reason) => {
+            eprintln!("[plugin-resources] 快照插件装载被拒（{reason}）——超市将走纯在线");
+        }
+        ResourcesLoadOutcome::DisabledBySwitch => {
+            eprintln!("[plugin-resources] 快照插件已被本地插件库开关停用——超市将走纯在线");
+        }
+        _ => {}
+    }
+}
+
 fn cmd_search(workspace: &std::path::Path, query: Option<&str>) -> Result<()> {
     let query = query.unwrap_or("");
     println!("正在搜索人格超市...");
+    // 快照插件按需装载（缺席/拒绝/开关关 = 纯在线，装载结果不影响流程）。
+    ensure_snapshot_plugin(workspace);
 
     let rt = tokio::runtime::Handle::current();
     let ws = workspace.to_path_buf();
@@ -276,6 +298,8 @@ fn cmd_install(workspace: &std::path::Path, id: &str) -> Result<()> {
     }
 
     println!("正在下载人格 '{}'...", id);
+    // 快照插件按需装载（上游不可达时 install 走内置快照兜底）。
+    ensure_snapshot_plugin(workspace);
 
     let ws_str = workspace.to_string_lossy().to_string();
     let rt = tokio::runtime::Handle::current();
@@ -291,7 +315,84 @@ fn cmd_install(workspace: &std::path::Path, id: &str) -> Result<()> {
 // GitHub API helpers (reuse persona handler logic)
 // ---------------------------------------------------------------------------
 
+/// 路径 → 搜索结果行（在线/快照两臂共用：id/名/类别推导 + query 过滤 +
+/// installed 探测）。
+fn path_to_result(
+    path: &str,
+    query: &str,
+    workspace: &std::path::Path,
+) -> Option<(String, String, String, String, bool)> {
+    let parts: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
+    let id = parts.last().unwrap_or(&"").to_string();
+    let cat_dir = parts.first().unwrap_or(&"").to_string();
+    let name = id
+        .split('-')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let category = nemesis_web::handlers::persona::map_category(&cat_dir);
+
+    let query_lower = query.to_lowercase();
+    if !query_lower.is_empty() {
+        let haystack = format!("{} {} {}", name, category, id).to_lowercase();
+        if !haystack.contains(&query_lower) {
+            return None;
+        }
+    }
+
+    let installed = workspace.join(format!("personas/{}", id)).exists();
+    Some((id, name, "🤖".to_string(), category.to_string(), installed))
+}
+
+/// 路径清单 → 搜索结果行（快照臂与在线臂的 json 解包分叉点之后共用）。
+fn paths_to_results(
+    paths: &[String],
+    query: &str,
+    workspace: &std::path::Path,
+) -> Vec<(String, String, String, String, bool)> {
+    paths
+        .iter()
+        .filter_map(|p| path_to_result(p, query, workspace))
+        .collect()
+}
+
+/// 快照树（插件缺席 / manifest 无该 kind / 过滤后空 = None → 纯在线）。
+/// 语义过滤与 web 面同源（is_agent_file 单一真相源）。
+fn snapshot_persona_tree() -> Option<(Vec<String>, nemesis_plugin::resources::ResourceEntry)> {
+    nemesis_plugin::resources::snapshot_tree_filtered(
+        nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+        nemesis_web::handlers::persona::is_agent_file,
+    )
+}
+
 async fn search_personas(
+    query: &str,
+    workspace: &std::path::Path,
+) -> Result<Vec<(String, String, String, String, bool)>> {
+    match search_personas_online(query, workspace).await {
+        Ok(results) => Ok(results),
+        Err(e) => {
+            let Some((paths, entry)) = snapshot_persona_tree() else {
+                return Err(e);
+            };
+            let class = nemesis_web::handlers::persona::classify_github_error(&e.to_string());
+            eprintln!(
+                "GitHub 上游不可达（{}），搜索结果来自内置快照（{}）",
+                class,
+                entry.short_label()
+            );
+            Ok(paths_to_results(&paths, query, workspace))
+        }
+    }
+}
+
+async fn search_personas_online(
     query: &str,
     workspace: &std::path::Path,
 ) -> Result<Vec<(String, String, String, String, bool)>> {
@@ -316,39 +417,76 @@ async fn search_personas(
             if !nemesis_web::handlers::persona::is_agent_file(path) {
                 continue;
             }
-            let parts: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
-            let id = parts.last().unwrap_or(&"").to_string();
-            let cat_dir = parts.first().unwrap_or(&"").to_string();
-            let name = id
-                .split('-')
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let category = nemesis_web::handlers::persona::map_category(&cat_dir);
-
-            let query_lower = query.to_lowercase();
-            if !query_lower.is_empty() {
-                let haystack = format!("{} {} {}", name, category, id).to_lowercase();
-                if !haystack.contains(&query_lower) {
-                    continue;
-                }
+            if let Some(row) = path_to_result(path, query, workspace) {
+                results.push(row);
             }
-
-            let installed = workspace.join(format!("personas/{}", id)).exists();
-            results.push((id, name, "🤖".to_string(), category.to_string(), installed));
         }
     }
 
     Ok(results)
 }
 
+/// 内容 → 转换 → 落盘（在线/快照两臂共用；转换与 web shop.download 同源：
+/// convert_agent_content 的 AGENT/TOOLS 拼系统模板、PERSONA.json 含扩展字段
+/// ——前 CLI 简化转换缺字段，web 语义消费方读到空值）。
+fn write_converted_persona(workspace: &str, id: &str, content: &str) -> Result<()> {
+    let converted = nemesis_web::handlers::persona::convert_agent_content(content);
+
+    // Write to disk
+    let dir = std::path::Path::new(workspace).join(format!("personas/{}", id));
+    std::fs::create_dir_all(&dir)?;
+
+    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)?;
+    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)?;
+    std::fs::write(dir.join("SOUL.md"), &converted.soul)?;
+    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)?;
+    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)?;
+
+    // 空心跳文件与 web shop.download 对齐：缺失/空 HEARTBEAT.md 会让心跳
+    // 服务跳过 LLM，之后 web activate 本人格时根 HEARTBEAT.md 被清掉不补。
+    std::fs::write(dir.join("HEARTBEAT.md"), "")?;
+
+    Ok(())
+}
+
 async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
+    match fetch_and_convert_online(workspace, id).await {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let Some((paths, entry)) = snapshot_persona_tree() else {
+                return Err(e);
+            };
+            // 匹配口径与 web 面同源（stem == id || filename == id，且 .md +
+            // is_agent_file——在线臂同款四条件）。
+            let path = paths.iter().find(|p| {
+                let filename = p.rsplit('/').next().unwrap_or("");
+                (filename.trim_end_matches(".md") == id || filename == id)
+                    && p.ends_with(".md")
+                    && nemesis_web::handlers::persona::is_agent_file(p)
+            });
+            let Some(path) = path else {
+                // 快照里也没有该 id（快照较旧或 id 真缺失）→ 维持原始错误。
+                return Err(e);
+            };
+            let class = nemesis_web::handlers::persona::classify_github_error(&e.to_string());
+            eprintln!(
+                "GitHub 上游不可达（{}），'{}' 改读内置快照（{}）",
+                class,
+                id,
+                entry.short_label()
+            );
+            let content = nemesis_plugin::resources::snapshot_content(
+                nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+                path,
+            )
+            .map_err(anyhow::Error::msg)?;
+            write_converted_persona(workspace, id, &content)?;
+            Ok(Ok(()))
+        }
+    }
+}
+
+async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<Result<()>> {
     // Find path from tree
     let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1"
         .to_string();
@@ -403,24 +541,7 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
         .map_err(|e| anyhow::anyhow!("base64 decode error: {}", e))?;
     let content = String::from_utf8(decoded)?;
 
-    // 转换与 web shop.download 同源（convert_agent_content：AGENT/TOOLS 拼
-    // 系统模板、PERSONA.json 含 color/tools/vibe/frontmatter 扩展字段——
-    // 前 CLI 简化转换缺字段，web 语义消费方读到空值）。
-    let converted = nemesis_web::handlers::persona::convert_agent_content(&content);
-
-    // Write to disk
-    let dir = std::path::Path::new(workspace).join(format!("personas/{}", id));
-    std::fs::create_dir_all(&dir)?;
-
-    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)?;
-    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)?;
-    std::fs::write(dir.join("SOUL.md"), &converted.soul)?;
-    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)?;
-    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)?;
-
-    // 空心跳文件与 web shop.download 对齐：缺失/空 HEARTBEAT.md 会让心跳
-    // 服务跳过 LLM，之后 web activate 本人格时根 HEARTBEAT.md 被清掉不补。
-    std::fs::write(dir.join("HEARTBEAT.md"), "")?;
+    write_converted_persona(workspace, id, &content)?;
 
     Ok(Ok(()))
 }

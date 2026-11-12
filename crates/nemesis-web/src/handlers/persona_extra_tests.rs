@@ -776,12 +776,15 @@ async fn test_restore_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// shop.refresh (no network)
+// shop.refresh (no network, upstream forced via TEST_REFRESH_MODE)
 
 #[tokio::test]
 async fn test_shop_refresh_no_network() {
     // refresh 清空三级全局缓存，必须与 persona/tests.rs 的种子测试互斥。
     let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
+    // 上游臂离线确定性：refresh 语义 = invalidate + 真实上游拉取，测试经
+    // TEST_REFRESH_MODE 强制成功（用后归零）。
+    crate::handlers::persona::TEST_REFRESH_MODE.store(1, std::sync::atomic::Ordering::Relaxed);
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
@@ -791,6 +794,27 @@ async fn test_shop_refresh_no_network() {
         .unwrap()
         .unwrap();
     assert!(r["refreshed"].as_bool().unwrap());
+    assert_eq!(r["source"].as_str(), Some("live"));
+    crate::handlers::persona::TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// refresh 失败诚实语义（快照插件缺席形态——测试进程无桥注入）：Err 文案
+/// 带「上游不可达」+ 类别 + 无快照说明。
+#[tokio::test]
+async fn test_shop_refresh_upstream_failure_honest_error() {
+    let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
+    crate::handlers::persona::TEST_REFRESH_MODE.store(2, std::sync::atomic::Ordering::Relaxed);
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let h = PersonaHandler::new();
+    let err = h.handle_cmd("shop.refresh", None, &ctx).await.unwrap_err();
+    assert!(err.contains("无法刷新"), "{err}");
+    assert!(err.contains("上游不可达"), "{err}");
+    // 强制错误串 "SSL connect error (forced for test)" 含 connect → 分类
+    // network（classify 词表见 persona::classify_github_error）。
+    assert!(err.contains("network"), "{err}");
+    assert!(err.contains("无内置快照插件"), "{err}");
+    crate::handlers::persona::TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[tokio::test]

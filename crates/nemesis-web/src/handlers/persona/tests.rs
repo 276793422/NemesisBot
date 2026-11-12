@@ -773,3 +773,189 @@ async fn shop_download_offline_via_content_cache() {
     assert!(err.contains("already installed"), "{err}");
     invalidate_cache();
 }
+
+// ============================================================
+// 覆盖率：超市数据源降级臂（2026-11-12 附加资源 C-ABI 插件）。
+// 分类纯函数 / 消息构造纯函数 / ShopSource 序列化 / tree_path_for 匹配规则 /
+// refresh 强制臂的缓存语义 / 快照树缺席形态（测试进程无桥注入）。
+// ============================================================
+
+#[test]
+fn classify_github_error_category_table() {
+    // 顺序敏感的特定类别：rate limit（403+专属文案）先于泛 4xx。
+    assert_eq!(
+        classify_github_error(
+            "GitHub tree API returned 403 Forbidden: {\"message\":\"API rate limit exceeded\"}"
+        ),
+        "rate_limited"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 403 Forbidden: x"),
+        "rate_limited"
+    );
+    // upstream_gone：404（仓库/分支被删主形态）/ 409。
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 404 Not Found: {}"),
+        "upstream_gone"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 409 Conflict: {}"),
+        "upstream_gone"
+    );
+    // network：reqwest source 链展开后的各形态。
+    assert_eq!(
+        classify_github_error(
+            "GitHub tree API error: error sending request for url (https://api.github.com/...): client error (Connect): dns error"
+        ),
+        "network"
+    );
+    assert_eq!(
+        classify_github_error(
+            "GitHub contents API error: error sending request for url (...): operation timed out"
+        ),
+        "network"
+    );
+    assert_eq!(
+        classify_github_error("connect error (os error 10061)"),
+        "network"
+    );
+    assert_eq!(classify_github_error("connection reset by peer"), "network");
+    assert_eq!(
+        classify_github_error("stream closed: broken pipe"),
+        "network"
+    );
+    // http_5xx / http_4xx / other。
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 502 Bad Gateway: {}"),
+        "http_5xx"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 503 Service Unavailable: {}"),
+        "http_5xx"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 418 Teapot: {}"),
+        "http_4xx"
+    );
+    assert_eq!(
+        classify_github_error("failed to parse tree response: eof"),
+        "other"
+    );
+}
+
+#[test]
+fn refresh_failure_message_both_arms() {
+    let with = refresh_failure_message("network", Some("8ae6164 @ 2026-11-12"));
+    assert!(with.contains("无法刷新"), "{with}");
+    assert!(with.contains("上游不可达（network）"), "{with}");
+    assert!(with.contains("内置快照（8ae6164 @ 2026-11-12）"), "{with}");
+    let without = refresh_failure_message("upstream_gone", None);
+    assert!(without.contains("无法刷新"), "{without}");
+    assert!(without.contains("无内置快照插件"), "{without}");
+    assert!(!without.contains("当前展示"), "{without}");
+}
+
+#[test]
+fn shop_source_serialization_shapes() {
+    // live：as_str=live、info=null。
+    let live = ShopSource::Live;
+    assert_eq!(live.as_str(), "live");
+    assert_eq!(live.info_json(), serde_json::Value::Null);
+    // snapshot：info 四字段齐全。
+    let snap = ShopSource::Snapshot(SnapshotInfo {
+        commit: "8ae6164602c95ca78828b148b9052460ee426885".to_string(),
+        fetched_at: "2026-11-12T12:22:00Z".to_string(),
+        file_count: 330,
+        label: "8ae6164 @ 2026-11-12".to_string(),
+    });
+    assert_eq!(snap.as_str(), "snapshot");
+    let info = snap.info_json();
+    assert_eq!(info["commit"], "8ae6164602c95ca78828b148b9052460ee426885");
+    assert_eq!(info["fetched_at"], "2026-11-12T12:22:00Z");
+    assert_eq!(info["file_count"], 330);
+    assert_eq!(info["label"], "8ae6164 @ 2026-11-12");
+}
+
+#[test]
+fn tree_path_for_matching_rules() {
+    let tree = vec![
+        ("engineering/rust-dev.md".to_string(), 100),
+        ("game-dev/unity/unity-architect.md".to_string(), 200),
+    ];
+    // stem 命中（id 不带 .md）
+    assert_eq!(
+        tree_path_for(&tree, "rust-dev"),
+        Some("engineering/rust-dev.md")
+    );
+    // 深路径 stem 命中
+    assert_eq!(
+        tree_path_for(&tree, "unity-architect"),
+        Some("game-dev/unity/unity-architect.md")
+    );
+    // 完整文件名命中（id 带 .md）
+    assert_eq!(
+        tree_path_for(&tree, "rust-dev.md"),
+        Some("engineering/rust-dev.md")
+    );
+    // 无命中
+    assert_eq!(tree_path_for(&tree, "no-such"), None);
+    // stem 不前缀误命中：另一文件名的前缀子串不算
+    let tree2 = vec![("x/rust-dev-pro.md".to_string(), 1)];
+    assert_eq!(tree_path_for(&tree2, "rust-dev"), None);
+}
+
+#[tokio::test]
+async fn shop_refresh_forced_success_leaves_tree_cache_empty() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    *TREE_CACHE.lock().unwrap() = Some(vec![("x/y.md".to_string(), 1)]);
+    TEST_REFRESH_MODE.store(1, std::sync::atomic::Ordering::Relaxed);
+    invalidate_cache();
+    let ok = refresh_fetch_tree().await;
+    assert!(ok.is_ok(), "强制成功臂必须 Ok");
+    // 强制臂/快照臂都不写 TREE_CACHE（缓存只服务在线臂）→ refresh 后树缓存空。
+    assert!(TREE_CACHE.lock().unwrap().is_none());
+    TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+    invalidate_cache();
+}
+
+#[tokio::test]
+async fn shop_refresh_forced_failure_classifies() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    TEST_REFRESH_MODE.store(2, std::sync::atomic::Ordering::Relaxed);
+    let err = refresh_fetch_tree().await.unwrap_err();
+    assert!(err.contains("forced for test"), "{err}");
+    assert_eq!(
+        classify_github_error(&err),
+        "network",
+        "强制文案必须落 network 类"
+    );
+    TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[test]
+fn snapshot_tree_absent_in_test_process() {
+    // nemesis-web 测试进程从不装载 plugin_resources（桥空）→ None =
+    // 纯在线形态。若未来桥被注入（不应发生），该断言会翻红提示重新审视。
+    assert!(
+        snapshot_tree().is_none(),
+        "测试进程不应有 resources 桥（无 loader 装配）"
+    );
+}
+
+#[tokio::test]
+async fn shop_browse_seeded_cache_reports_live_source() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_tree_and_fm();
+    let h = PersonaHandler::new();
+    let ctx = shop_ctx(&dir);
+    let out = h
+        .handle_cmd("shop.browse", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    // 树缓存命中 = 在线臂（缓存只由在线臂写入）→ source=live、info=null。
+    assert_eq!(out["source"].as_str(), Some("live"));
+    assert_eq!(out["snapshot_info"], serde_json::Value::Null);
+    invalidate_cache();
+}

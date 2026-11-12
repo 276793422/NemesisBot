@@ -742,6 +742,8 @@ async fn test_persona_unknown_command_with_workspace() {
 async fn test_persona_shop_refresh_clears_caches() {
     // refresh 会清空三级全局缓存，必须与种子测试互斥。
     let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
+    // 上游臂离线确定性：TEST_REFRESH_MODE 强制成功（用后归零）。
+    crate::handlers::persona::TEST_REFRESH_MODE.store(1, std::sync::atomic::Ordering::Relaxed);
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
@@ -759,4 +761,5 @@ async fn test_persona_shop_refresh_clears_caches() {
         .unwrap()
         .unwrap();
     assert!(r["refreshed"].as_bool().unwrap());
+    crate::handlers::persona::TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
 }

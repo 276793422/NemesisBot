@@ -260,6 +260,19 @@ impl PluginsHandler {
             "iroh 身份派生"
         ]);
 
+        // 附加资源载体（人格超市上游快照编译期内嵌；gateway 装配期装载，
+        // v4 签名闸 + 名册开关闸双闸，重启后生效——花名册第三例补登记，
+        // 缺登记会被 scan_unrecognized 误列「未识别的库」）。
+        let mut resources = self.native_entry(
+            "plugin_resources",
+            "附加资源载体",
+            "人格超市上游快照（plugin-resources；重启后生效）",
+            &config_dir,
+            sig_of("plugin_resources"),
+        );
+        resources["capabilities"] =
+            serde_json::json!(["persona-catalog 快照（prs_manifest/prs_get 纯数据查询面）"]);
+
         // 管线插件（三段化的进程内插件；启停经 set_metrics_enabled）。
         let metrics = nemesis_agent::hooks::metrics_plugin_slot();
         let pipeline_plugins = serde_json::json!([{
@@ -270,7 +283,7 @@ impl PluginsHandler {
         }]);
 
         Ok(serde_json::json!({
-            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display, roaming],
+            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display, roaming, resources],
             "pipeline_plugins": pipeline_plugins,
             "unrecognized_libraries": unrecognized,
         }))

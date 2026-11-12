@@ -254,6 +254,14 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     let Some(ctx) = GatewayCtx::assemble(local, relay, quic_relay, extra_args).await? else {
         return Ok(());
     };
+    // plugin_resources 装载（附加资源 C-ABI 载体，首例 persona-catalog 快照）。
+    // 缺席 = 静默（人格超市纯在线现状行为）；名册开关关 = DisabledBySwitch
+    // （用户意志，纯在线）；在场拒载/ABI 不匹配 = 装载器内部已留痕
+    // （WARN/ERROR），消费方按缺席诚实降级。幂等；此处晚于 logger 初始化
+    // （装载留痕可见）。结果四变体均为可继续态，不 goto fail。
+    crate::resources_plugin_loader::load_resources_plugin(&nemesis_path::workspace_config_dir(
+        &crate::common::workspace_path(&ctx.home),
+    ));
     // ctx 影子说明：– 各相位 fn 均自行从 ctx 克隆/借取所需字段（建
     // ctx 时的 16 无门影子已随相位迁移逐 PR 删除， 收尾后根部不再持有
     // 任何 ctx 影子）；root 仅保留 wiring 产物局部名供下游调用传参。
