@@ -357,7 +357,13 @@ pub(crate) async fn run_runtime(
         let taiwei_ws = common::workspace_path(&home);
         let taiwei_privacy = taiwei_ws.join("PRIVACY.md");
         if !taiwei_privacy.exists() {
-            let _ = std::fs::write(&taiwei_privacy, crate::taiwei_bridge::privacy_md());
+            // 空串 = taiwei 库侧异常（privacy_md 契约：调用方按缺资产降级）——
+            // 不落盘（写空文件再被 exists() 短路 = 空隐私声明永久驻留，升级
+            // 也不自愈），下次启动重试物化。
+            let privacy = crate::taiwei_bridge::privacy_md();
+            if !privacy.is_empty() {
+                let _ = std::fs::write(&taiwei_privacy, privacy);
+            }
         }
         crate::taiwei_bridge::spawn_startup(&home, &taiwei_ws, common::VERSION_INFO.version);
     }
