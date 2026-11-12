@@ -3289,9 +3289,21 @@ impl WorkflowEngine {
     /// Errors are logged but not propagated -- persistence is best-effort.
     async fn persist_execution(&self, execution: &Execution) {
         if let Some(ref dir) = self.persistence_dir {
+            // BUG-20261112-103：文件名必须 sanitize。`workflow_name` 来自用户
+            // YAML（validate 只查非空、无字符集约束）——原样拼接有两条实害：
+            // ① `..`/路径分隔符拼出逃逸路径，且写盘守卫（guard_engine_write）
+            // 只在执行体分离开启时装配（gateway/CLI 默认关 = 无守卫），
+            // `../../evil` 真落 persistence_dir 之外；② Windows 非法字符
+            // （`:` 等）让 OpenOptions 恒失败——该 workflow 的执行历史每次
+            // 状态转换都 warn 后丢失。与 definitions 落盘同源
+            // （sanitize_workflow_filename 已是 persist_workflow/
+            // delete_workflow_file 的既有纪律）。读侧不受影响：
+            // load_execution_from_disk / sweep_stale_execution_files 都按
+            // 文件内容里的 execution id 匹配，不按文件名。
             let file_path = dir.join(format!(
                 "{}_{}.jsonl",
-                execution.workflow_name, execution.id
+                sanitize_workflow_filename(&execution.workflow_name),
+                execution.id
             ));
             // 控制面写守卫：`workflow_name` 来自用户 YAML（此处**未**
             // sanitize——`../evil` 能拼出逃逸路径），守卫是这条链的唯一
