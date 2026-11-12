@@ -5411,6 +5411,41 @@ fn w4a_compare_values_string_fallbacks() {
     assert!(evaluate_condition("3 != 4", &ctx));
 }
 
+/// BUG-20261112-105 回归锁：字符串型数值的比较走数值路径——LLM 节点
+/// 输出天然是 JSON 字符串（提取的数字字段以 "10" 形态进上下文），裸名
+/// 比较（`count > 5`，count="10"）修复前落字典序（"10" > "5" = false，
+/// 数值应为 true），与同条件的 `{{count}} > 5` 模板形（字面量代入 →
+/// 数值 → true）结论相反。修后两形同结论；引号非数值操作数照旧字典序
+/// （w4a 钉住的形态不变）；数值字符串引号形也走数值（引号被剥后与裸
+/// 值同域，与 w4a 注记「非数值才落字典序臂」自洽）。
+#[test]
+fn bug_105_numeric_string_context_compare() {
+    let mut ctx = HashMap::new();
+    ctx.insert("count".to_string(), serde_json::json!("10"));
+
+    // 裸名形：数值路径（修复前字典序 false）。
+    assert!(evaluate_condition("count > 5", &ctx));
+    assert!(evaluate_condition("count >= 10", &ctx));
+    assert!(!evaluate_condition("count < 5", &ctx));
+    assert!(!evaluate_condition("count < 10", &ctx));
+    assert!(evaluate_condition("count == 10", &ctx));
+    // 模板形同结论（既有行为，两形一致性钉死）。
+    assert!(evaluate_condition("{{count}} > 5", &ctx));
+    assert!(!evaluate_condition("{{count}} < 5", &ctx));
+    // 非数值字符串照旧字典序。
+    assert!(evaluate_condition("'apple' < 'banana'", &ctx));
+    assert!(evaluate_condition("'b' > 'a'", &ctx));
+    // 数值字符串引号形：剥引号后与裸值同域 → 数值路径。
+    assert!(evaluate_condition("'10' > '5'", &ctx));
+    // 带空白的数值字符串 trim 后解析。
+    ctx.insert("ws".to_string(), serde_json::json!(" 42 "));
+    assert!(evaluate_condition("ws >= 42", &ctx));
+    // 真数值上下文不受影响（既有形态回归面）。
+    ctx.insert("n".to_string(), serde_json::json!(7));
+    assert!(evaluate_condition("n > 5", &ctx));
+    assert!(!evaluate_condition("n > 7", &ctx));
+}
+
 #[test]
 fn w4a_resolve_operand_literal_kinds() {
     let mut ctx = HashMap::new();

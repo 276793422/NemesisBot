@@ -643,7 +643,14 @@ fn compare_values(
     let rv = resolve_operand(right, context);
 
     // Numeric comparison when both sides parse as numbers.
-    if let (Some(a), Some(b)) = (lv.as_f64(), rv.as_f64()) {
+    // BUG-20261112-105：数值化覆盖字符串型数值——LLM 节点输出天然是
+    // JSON 字符串（提取的数字字段以 "10" 形态进上下文），旧实现只认
+    // Value::Number（as_f64），裸名比较（`count > 5`，count="10"）落字
+    // 典序——"10" > "5" 字典序为 false（数值应为 true），而同条件的
+    // `{{count}} > 5` 模板形（字面量代入 → 双侧解析数值）为 true：两种
+    // 文档形态给相反路由。引号括起的非数值操作数解析失败仍落字典序臂
+    // （w4a 钉住的形态不变）。
+    if let (Some(a), Some(b)) = (numeric_operand(&lv), numeric_operand(&rv)) {
         return match op {
             ">=" => a >= b,
             "<=" => a <= b,
@@ -673,6 +680,13 @@ fn compare_values(
         "<" => ls < rs,
         _ => false,
     }
+}
+
+/// 数值比较的操作数数值化（BUG-20261112-105）：Number 直取；String 按
+/// 数值解析（trim 后）。解析失败 = None（落字典序臂）。
+fn numeric_operand(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64()
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
 }
 
 /// Resolve one operand (left or right side of a comparison) to a JSON value.
