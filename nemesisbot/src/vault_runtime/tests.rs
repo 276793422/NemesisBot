@@ -154,13 +154,10 @@ fn with_runtime_lock<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// 按平台默认态恢复口令环境变量（argon2 默认平台留给 seed 用值；DPAPI
-/// 平台清掉，不向后续测试泄漏）。
+/// 平台清掉，不向后续测试泄漏）。实现单一真相源在 `super`（flow_engine
+/// 等同 crate 测试同款复用）。
 fn restore_passphrase_env() {
-    if VaultStore::default_mode() == VaultMode::Argon2id {
-        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "rt-test-pw") };
-    } else {
-        unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
-    }
+    super::test_restore_passphrase_env();
 }
 
 /// vault 已解锁但别名不存在 → fail loud 带写入指引（resolve_alias 的

@@ -2371,7 +2371,7 @@ async fn answer_views_full_cycle() {
         .answer("tpl", "timeline", &json!({"instance": "PB"}))
         .await
         .unwrap();
-    assert!(tl["events"].as_array().unwrap().len() >= 1);
+    assert!(!tl["events"].as_array().unwrap().is_empty());
 
     let ok = fx
         .engine
@@ -3124,6 +3124,10 @@ async fn repo_sync_clones_local_repository() {
     ]);
     fx.flows.save(&cred).unwrap();
     // 凭据别名在场且 vault 可解析 → 带凭据继续（本地克隆凭据只是挂件）。
+    // vault 写入纪律：Linux 默认 argon2id，「缺文件自动建库」需口令 env
+    //（无口令 = 诚实 Err 是生产正确语义）；先备 env 再写，值与
+    // vault_runtime 测试统一（rt-test-pw），并发交错 set 同值竞态良性。
+    crate::vault_runtime::test_restore_passphrase_env();
     let vault_path = nemesis_path::resolve_vault_path_in_workspace(&fx.ws);
     crate::vault_runtime::write_alias_at(&vault_path, "plugin/fe/pat", "pat-value").unwrap();
     // 空值别名 → 凭据解析空 → 匿名降级（诚实不猜）。
@@ -3404,9 +3408,11 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         fx.flows.load_transition_state("wb", "fe/A"),
         Some("in_review".to_string())
     );
-    let map = fx.engine.writeback_failures.lock().unwrap();
-    assert!(map.is_empty(), "adopt 不计失败: {map:?}");
-    drop(map);
+    // 块作用域持锁：rustc await_holding_lock 不认显式 drop()，块结束才算释放。
+    {
+        let map = fx.engine.writeback_failures.lock().unwrap();
+        assert!(map.is_empty(), "adopt 不计失败: {map:?}");
+    }
     // 二轮：游标 == 当前 → noop。
     fx.engine.poll_writebacks(&def).await.unwrap();
     assert_eq!(
@@ -3416,9 +3422,10 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
     // 三轮：转 done → compose → connector 发送撞停机窗口 → Retried 计数 1。
     to_done(&fx.store, &a);
     fx.engine.poll_writebacks(&def).await.unwrap();
-    let map = fx.engine.writeback_failures.lock().unwrap();
-    assert_eq!(map.get("wb/fe/A"), Some(&1), "map: {map:?}");
-    drop(map);
+    {
+        let map = fx.engine.writeback_failures.lock().unwrap();
+        assert_eq!(map.get("wb/fe/A"), Some(&1), "map: {map:?}");
+    }
 
     // B：todo 状态不订阅三态 → 零动作；无 origin 单同样跳过。
     let _b = wb_issue(&fx.store, "B", BTreeMap::new());
