@@ -173,6 +173,13 @@ pub struct RestoreReport {
     /// 失败）以 path=`"*"` 单条承载。非空 = 工作区处于部分恢复态，调用方
     /// 不得推进任何截断。
     pub failures: Vec<(String, String)>,
+    /// 零条目信号：`from_turn` 及之后索引里没有任何 checkpoint 条目
+    /// （redo 不重建索引的诚实边界后果：redo 过的区间行标记还在、封印
+    /// 已退役）。true = tree 与 hybrid 双双无源、本次调用**什么都没做**。
+    /// 调用方（rewind 编排）必须把回执诚实化为「只截断对话不回滚文件」
+    /// （与 restore_turn=None 无锚臂同待遇），不得盖「applied」戳——
+    /// 否则用户看到的回执声称文件已恢复，实盘却留着外部修改。
+    pub no_checkpoint_from_turn: bool,
 }
 
 impl RestoreReport {
@@ -1743,7 +1750,10 @@ impl CheckpointStore {
     /// 恢复后按 JSON 语义补写。
     pub async fn restore_code(&self, from_turn: usize) -> RestoreReport {
         // ----：inner 锁内定 target tree + hybrid 集合，随即放锁 ----
-        let (target_hex, hybrid) = {
+        // 第三元 = 零条目信号（见 [`RestoreReport::no_checkpoint_from_turn`]）
+        // ：from_turn 之后索引里没有任何条目 = tree/hybrid 双双无源、本次
+        // 调用什么都没做，回执必须诚实反映（不得谎称「applied」）。
+        let (target_hex, hybrid, no_entries) = {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
             // cur 桶化——所有会话的进行中 turn 都参与全量收集。
@@ -1752,7 +1762,7 @@ impl CheckpointStore {
 
             // 与 JSON 模式同款语义守卫：from_turn 之后没有任何 checkpoint → no-op。
             if !all.iter().any(|c| c.turn >= from_turn) {
-                (None, Vec::new())
+                (None, Vec::new(), true)
             } else {
                 let target = all
                     .iter()
@@ -1785,14 +1795,17 @@ impl CheckpointStore {
                         hybrid.push((f.path.clone(), f.content.clone()));
                     }
                 }
-                (target, hybrid)
+                (target, hybrid, false)
             }
         };
 
         let Some(target_hex) = target_hex else {
-            // 无 tree 可退（纯 JSON 老会话 / from_turn 之前无 git turn）——只做
-            // hybrid 部分（等价 JSON 行为），tree 段跳过。
-            return self.hybrid_restore(hybrid).await;
+            // 无 tree 可退（纯 JSON 老会话 / from_turn 之前无 git turn / 零条
+            // 目）——只做 hybrid 部分（等价 JSON 行为），tree 段跳过。零条目
+            // 时 hybrid 恒空（无源），报告带信号位，调用方诚实化回执。
+            let mut report = self.hybrid_restore(hybrid).await;
+            report.no_checkpoint_from_turn = no_entries;
+            return report;
         };
 
         // ----：repo 锁内做 tree diff + checkout，随即放锁 ----

@@ -1149,7 +1149,8 @@ async fn s2_sync_to_targets_logs_field_arms_with_subscriber() {
 }
 
 // ===========================================================================
-// sync 镜像回环防护（sync_via 标记 + sync_outbound 守卫）
+// sync 镜像语义（sync_via 盖章单一真相源 send_sync_mirror；出站扇出已
+// 集中到 manager dispatch_outbound——守卫/乒乓回归锁在 manager/tests.rs）
 // ===========================================================================
 
 #[tokio::test]
@@ -1168,101 +1169,22 @@ async fn bug57_sync_to_targets_marks_mirror_messages() {
 }
 
 #[tokio::test]
-async fn bug57_sync_outbound_skips_marked_message() {
-    let ch = BaseChannel::new("chan-a");
-    let target = Arc::new(MockChannel::new("target"));
-    ch.add_sync_target("target", Arc::clone(&target) as Arc<dyn Channel>)
-        .unwrap();
-
-    // 带 sync_via 标记的消息（来自别的通道的镜像）→ 守卫直接返回。
-    let mut marked = OutboundMessage::new("target", "c1", "from mirror");
-    marked.meta.sync_via = Some("chan-b".to_string());
-    ch.sync_outbound(&marked).await;
-    assert!(
-        target.sent_messages().is_empty(),
-        "marked message must not re-propagate through sync targets"
-    );
-
-    // 无标记消息照常镜像（守卫不误伤正常出站同步）。
-    ch.sync_outbound(&OutboundMessage::new("chan-a", "c1", "fresh outbound"))
-        .await;
+async fn bug57_send_sync_mirror_stamps_and_web_broadcast() {
+    // 单一真相源直测（通道侧入站扇出与 manager 出站扇出共用）：盖章 +
+    // web:broadcast 特例。回环守卫/乒乓回归锁迁到 manager 层测试。
+    let target = Arc::new(MockChannel::new("web"));
+    send_sync_mirror(
+        "source",
+        "web",
+        Arc::clone(&target) as Arc<dyn Channel>,
+        "mirror payload",
+    )
+    .await;
     let msgs = target.sent_messages();
     assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].content, "fresh outbound");
-    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("chan-a"));
-}
-
-/// 会再同步的 mock——复刻真实镜像通道形态（mattermost/mqtt/nostr/websocket/
-/// wechat/wecom 六通道 send()：记录 + sync 扩散），用于真实回环复现。
-struct SyncingMockChannel {
-    name: String,
-    base: BaseChannel,
-    sent: parking_lot::RwLock<Vec<OutboundMessage>>,
-}
-
-impl SyncingMockChannel {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            base: BaseChannel::new(name),
-            sent: parking_lot::RwLock::new(Vec::new()),
-        }
-    }
-
-    fn sent_messages(&self) -> Vec<OutboundMessage> {
-        self.sent.read().clone()
-    }
-}
-
-#[async_trait]
-impl Channel for SyncingMockChannel {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    async fn start(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        self.sent.write().push(msg.clone());
-        // 与六镜像通道同形：send 末尾出站同步镜像（守卫在场时标记消息止步）。
-        self.base.sync_outbound(&msg).await;
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn bug57_mutual_sync_config_does_not_ping_pong() {
-    // 互配 sync_to（A→B 且 B→A）：旧形态 send 互镜无限乒乓，每轮一次
-    // 真实投递；驱动带 2s 超时——守卫缺失时此处超时红（而非挂死进程）。
-    let a = Arc::new(SyncingMockChannel::new("chan-a"));
-    let b = Arc::new(SyncingMockChannel::new("chan-b"));
-    a.base
-        .add_sync_target("chan-b", Arc::clone(&b) as Arc<dyn Channel>)
-        .unwrap();
-    b.base
-        .add_sync_target("chan-a", Arc::clone(&a) as Arc<dyn Channel>)
-        .unwrap();
-
-    let drive = a.send(OutboundMessage::new("chan-a", "c1", "loop probe"));
-    tokio::time::timeout(std::time::Duration::from_secs(2), drive)
-        .await
-        .expect("mutual sync must terminate (loop guard missing?)")
-        .unwrap();
-
-    // 各收一次即止：A 自己投递 + 镜像到 B；B 的再镜像被守卫拦截。
-    assert_eq!(a.sent_messages().len(), 1);
-    assert_eq!(b.sent_messages().len(), 1);
-    // B 收到的是 A 盖章的镜像。
-    assert_eq!(
-        b.sent_messages()[0].meta.sync_via.as_deref(),
-        Some("chan-a")
-    );
+    assert_eq!(msgs[0].content, "mirror payload");
+    assert_eq!(msgs[0].chat_id, "web:broadcast");
+    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("source"));
 }
 
 // 出站 client 单一构造点必须可构造（TLS backend 初始化

@@ -296,6 +296,58 @@ fn test_s4_write_entry_open_failure_warns_and_skips() {
     drop(inner);
 }
 
+/// BUG-20261112-106 回归锁：打开失败（瞬时成因）不得让当天审计面永久
+/// 静默——旧实现先落 current_date 再开文件，失败后当天所有后续条目
+/// 静默丢弃（「日期相同跳过旋转 + file None 静默跳过」双剑合璧）直到
+/// 次日。新实现失败不落 current_date，下一条即重试；成因解除后自愈
+/// 落盘。阻断物用「普通文件占住日志目录父路径」——create_dir_all 与
+/// open 双双恒定失败，不依赖平台时序锁注入。
+#[test]
+fn test_open_failure_retries_and_self_heals_same_day() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let blocker = temp_dir.path().join("blocker");
+    fs::write(&blocker, b"x").unwrap();
+    // blocker 是普通文件 → 在其下建目录/开文件必败。
+    let log_dir = blocker.join("logs");
+    let writer = ClusterLogWriter::new(log_dir.clone());
+
+    // 第一次写：打开失败，条目丢弃（warn），不得 panic。
+    writer.write_entry("blocked_event", serde_json::json!({"n": 1}));
+
+    let inner = writer.inner.lock();
+    assert!(inner.file.is_none(), "打开失败必须清句柄");
+    assert!(
+        inner.current_date.is_empty(),
+        "打开失败不得落 current_date（否则当天不再重试=BUG-20261112-106 旧行为）"
+    );
+    drop(inner);
+
+    // 成因解除：删除阻断物（writer 从未打开过它，无句柄竞争）。
+    fs::remove_file(&blocker).unwrap();
+
+    // 第二次写：重试打开成功，条目落盘（自愈）。
+    writer.write_entry("healed_event", serde_json::json!({"n": 2}));
+
+    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+    assert!(log_file.exists(), "成因解除后必须自愈建文件");
+    let content = fs::read_to_string(&log_file).unwrap();
+    assert!(content.contains("healed_event"), "自愈后条目必须落盘");
+    assert!(
+        !content.contains("blocked_event"),
+        "失败期间丢弃的条目不回放（观测面尽力而为语义）"
+    );
+
+    // 第三次写：同日常规追加（current_date 已落，不再进旋转分支）。
+    writer.write_entry("third_event", serde_json::json!({"n": 3}));
+    let content = fs::read_to_string(&log_file).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert_eq!(lines.len(), 2, "同日后续条目常规追加");
+    assert!(content.contains("third_event"));
+
+    let _ = fs::remove_dir_all(temp_dir.path());
+}
+
 /// init_cluster_log's info! field line (cluster_log.rs 122-125) executes
 /// when the init succeeds with a subscriber installed. The global lock is
 /// shared with other tests, so a losing init just panics inside

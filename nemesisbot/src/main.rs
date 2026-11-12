@@ -237,6 +237,13 @@ mod selfupdate_tool;
 mod session_group_sweeper;
 /// 会话执行统计聚合器（事件泵 + loop sink + 读侧）。
 mod session_stats;
+/// （devtool-upgrade）：Dashboard 审批管理器——auditor 的
+/// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
+/// 太微子系统 FFI 桥接层（2026-11-13 静态直链形态）：nemesis-taiwei 不再
+/// 是 cargo 依赖——build.rs 探测 slots/taiwei/impl 静态库在场才链接并点亮
+/// nb_taiwei。库缺席（开源构建）= 本模块不编译，taiwei 子命令不存在。
+#[cfg(nb_taiwei)]
+mod taiwei_bridge;
 /// vault（计划）：进程级 `vault:<alias>` 解析器注入。
 /// 门控随 nemesis-security（security feature off 时 `vault:` 引用诚实报
 /// "解析器未安装"，明文/env/yaml 链路不受影响）。
@@ -246,8 +253,6 @@ mod vault_runtime;
 /// + 启动自验单一入口（Cli::parse 后调，enforce 失败 exit 86）+ StartCheck
 /// 快照（gateway 审计链 / WSAPI status / 前端徽标数据源）。
 mod verify_policy;
-/// （devtool-upgrade）：Dashboard 审批管理器——auditor 的
-/// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
 /// 门控随消费方：唯一生产调用点在 gateway 的 security cfg 装配块内，
 /// feature off 时整块消失，本模块必须同门（no-default-features 编译）。
 #[cfg(feature = "security")]
@@ -662,6 +667,14 @@ enum Commands {
         /// Query e-stop status without changing it.
         #[arg(long)]
         status: bool,
+    },
+    /// Taiwei subsystem actions (static-link slot; installer spawn channel +
+    /// transparency status; absent entirely when the TaiWei static lib is
+    /// not built — plain open-source builds never expose this subcommand).
+    #[cfg(nb_taiwei)]
+    Taiwei {
+        #[command(subcommand)]
+        action: crate::taiwei_bridge::TaiweiAction,
     },
     /// Internal test commands (hidden)
     #[cfg(feature = "desktop")]
@@ -1284,6 +1297,20 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
             if let Err(e) = commands::estop::run(&home, release, status).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        #[cfg(nb_taiwei)]
+        Commands::Taiwei { action } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            let default_ws = common::workspace_path(&home);
+            // 动作派发收敛为 FFI 单入口（2026-11-13 静态直链形态）：clap
+            // 解析 → action JSON → taiwei 侧值集校验与执行。Err 文本原样
+            // 打印 + 退码 1；emit 静默语义由 taiwei 侧内部消化（禁用/离线
+            // 不是错误）。
+            if let Err(e) = crate::taiwei_bridge::run_cli_action(action, &home, &default_ws) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

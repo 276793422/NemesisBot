@@ -98,6 +98,9 @@ pub mod request_logger_observer;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;
+/// 会话资产区（session home）解析 —— `agents/<id>/home` per-session 绑定
+/// 的单一解析点（分配 / fork 复制 / 消费方解析全走这里）。
+pub mod session_home;
 /// 会话执行统计 sink——loop 内部计数（重试/校验失败/
 /// 压缩成功）上抛宿主聚合器的 trait 面。
 pub mod session_stats;

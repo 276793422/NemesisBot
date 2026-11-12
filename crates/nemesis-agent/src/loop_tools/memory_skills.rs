@@ -54,7 +54,7 @@ impl Tool for MemorySearchTool {
         memory_tool_def("memory_search").parameters
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let executor = match &self.executor {
             Some(e) => e,
             None => return Err("Memory store is not available".to_string()),
@@ -63,7 +63,9 @@ impl Tool for MemorySearchTool {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
-        let result = executor.execute("memory_search", &val).await;
+        let result = executor
+            .execute("memory_search", &val, &context.session_key)
+            .await;
         if result.success {
             Ok(result.content)
         } else {
@@ -99,7 +101,7 @@ impl Tool for MemoryStoreTool {
         memory_tool_def("memory_store").parameters
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let executor = match &self.executor {
             Some(e) => e,
             None => return Err("Memory store is not available".to_string()),
@@ -108,7 +110,9 @@ impl Tool for MemoryStoreTool {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
-        let result = executor.execute("memory_store", &val).await;
+        let result = executor
+            .execute("memory_store", &val, &context.session_key)
+            .await;
         if result.success {
             Ok(result.content)
         } else {
@@ -144,7 +148,7 @@ impl Tool for MemoryForgetTool {
         memory_tool_def("memory_forget").parameters
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let executor = match &self.executor {
             Some(e) => e,
             None => return Err("Memory store is not available".to_string()),
@@ -153,7 +157,9 @@ impl Tool for MemoryForgetTool {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
-        let result = executor.execute("memory_forget", &val).await;
+        let result = executor
+            .execute("memory_forget", &val, &context.session_key)
+            .await;
         if result.success {
             Ok(result.content)
         } else {
@@ -189,7 +195,7 @@ impl Tool for MemoryListTool {
         memory_tool_def("memory_list").parameters
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let executor = match &self.executor {
             Some(e) => e,
             None => return Err("Memory store is not available".to_string()),
@@ -198,7 +204,9 @@ impl Tool for MemoryListTool {
         let val: serde_json::Value =
             serde_json::from_str(args).unwrap_or_else(|_| serde_json::json!({}));
 
-        let result = executor.execute("memory_list", &val).await;
+        let result = executor
+            .execute("memory_list", &val, &context.session_key)
+            .await;
         if result.success {
             Ok(result.content)
         } else {

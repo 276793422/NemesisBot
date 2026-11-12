@@ -97,3 +97,22 @@ fn footer_size_arithmetic() {
     // 56 = 8 + 8 + 8 + 32；任何漂移都是格式破坏（对端解码立即失配）。
     assert_eq!(FOOTER_SIZE, 56);
 }
+
+/// crafted 溢出尾注（offset+len 回绕）必须干净 Err 而非 panic
+/// （BUG-20261112-112：错误文案裸加法在 debug/overflow-checks 构建
+/// panic；本测试跑 debug 形态，文案改回裸加法即红）。
+#[test]
+fn locate_rejects_overflowing_footer_cleanly() {
+    let bad = Footer {
+        manifest_offset: u64::MAX,
+        manifest_len: 2, // checked_add 回 None → 进错误文案路径
+        manifest_sha256: [0; 32],
+    };
+    let mut file = vec![0u8; 64];
+    file.extend_from_slice(&bad.encode());
+    let err = locate_footer(file.len() as u64, &file).expect_err("溢出尾注必须拒绝");
+    assert!(
+        err.to_string().contains("位置核验失败"),
+        "报错应来自位置核验: {err}"
+    );
+}

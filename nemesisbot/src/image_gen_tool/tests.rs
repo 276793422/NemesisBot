@@ -23,7 +23,11 @@ fn tool(api_base: &str, tmp: &std::path::Path) -> GenerateImageTool {
         "sk-test".to_string(),
         "img-model".to_string(),
         30,
-        tmp.join("images"),
+        // 第 5/6 参 = homes_root + 全局回退根（2026-11-12 资产区改造）：
+        // ctx 的 session_key "sess" 未绑定 → 产物落回退根 images/（= 原
+        // output_dir 行为）；两根同传 tmp 保持断言不变。
+        tmp.to_path_buf(),
+        tmp.to_path_buf(),
     )
 }
 
@@ -261,4 +265,69 @@ fn resolve_alias_and_reject_arms() {
         None,
     );
     assert!(resolve_image_model(&cfg).unwrap_err().contains("api_base"));
+}
+
+// --- 会话资产区（2026-11-12）：绑定会话产物落 home/images ---
+
+// Windows-form helper（singleton_test_home）在 Linux nightly 编译期消失，
+// 测试同形态标记。
+#[cfg(windows)]
+// 持 GLOBAL_STATE_LOCK 跨 await 是刻意的测试串行化（同 agents/tests.rs
+// 纪律：全局态用例与 mock server await 窗口互斥）。
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn bound_session_lands_in_home_images() {
+    let _g = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let home = crate::tests::singleton_test_home();
+    let workspace = home.parent().unwrap().join("ws_imggen");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // 绑定唯一会话键（meta 落沙箱 home 的 session_logs；home 持久目录）。
+    let session_key = format!(
+        "agent:main:session:imggen-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    nemesis_agent::session_home::assign_session_home(&workspace, &session_key)
+        .expect("assign session home");
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/images/generations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"b64_json": TINY_PNG_B64}],
+        })))
+        .mount(&server)
+        .await;
+    let t = GenerateImageTool::new(
+        format!("{}/v1", server.uri()),
+        "sk-test".to_string(),
+        "img-model".to_string(),
+        30,
+        workspace.clone(),
+        workspace.clone(),
+    );
+    let ctx = RequestContext::new("test", "chat", "tester", &session_key);
+    let out = t
+        .execute(r#"{"prompt": "一只猫"}"#, &ctx)
+        .await
+        .expect("成功臂");
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let home_root =
+        nemesis_agent::session_home::resolve_session_home(&workspace, &session_key).expect("bound");
+    let written_root = home_root.join("images");
+    let path = parsed["path"].as_str().unwrap();
+    assert!(
+        std::path::Path::new(path).starts_with(&written_root),
+        "绑定会话产物必须落 home/images: {path}"
+    );
+    assert!(std::path::Path::new(path).is_file(), "产物落盘");
+    assert!(
+        !std::path::Path::new(path).starts_with(workspace.join("images")),
+        "绑定会话产物不得落全局 images"
+    );
 }

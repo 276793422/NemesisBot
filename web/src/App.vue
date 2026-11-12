@@ -7,6 +7,9 @@ import AppLayout from './components/AppLayout.vue'
 // M6（devtool-upgrade 阶段 7）：Ctrl+K 命令面板（三源合一）。
 import CommandPalette from './components/CommandPalette.vue'
 import { useCommandPalette } from './composables/useCommandPalette'
+// 全局自定义右键菜单（2026-11-12 子需求 B）：listener 注册 + 浮层挂载。
+import ContextMenu from './components/ContextMenu.vue'
+import { installContextMenu } from './composables/useContextMenu'
 
 const auth = useAuthStore()
 const appStore = useAppStore()
@@ -28,6 +31,8 @@ function handleKeydown(e: KeyboardEvent) {
 
 onMounted(async () => {
   document.addEventListener('keydown', handleKeydown)
+  // 右键菜单 listener 一次性注册（开关 off 态 = listener 直通，零行为变化）。
+  installContextMenu()
 
   // Dev preview mode: URL 带 ?preview=1 直接绕过认证（仅 dev server 有效，生产构建不会触发）
   const isPreview = new URLSearchParams(location.search).has('preview')
@@ -76,4 +81,6 @@ onUnmounted(() => {
   <AppLayout v-else />
   <!-- M6：Teleport to body，挂哪都行；认证后才有意义，跟随 AppLayout 分支。 -->
   <CommandPalette v-if="auth.authenticated" />
+  <!-- 全局自定义右键菜单浮层（Teleport to body；off 态永不显示）。 -->
+  <ContextMenu />
 </template>

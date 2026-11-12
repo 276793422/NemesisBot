@@ -65,12 +65,15 @@ fn log_buffer_evicts_oldest_and_counts() {
 #[test]
 fn log_line_redacts_credentials_before_truncation() {
     let caps = caps_with(8, 4096);
-    // 假 AWS Key 形态（Scanner 词表命中即脱敏——形态由其词表定）。
-    caps.log_line("info", "AKIAABCDEFGHIJKLMNOP");
+    // 假 AWS Key 形态（Scanner 词表命中即脱敏——形态由其词表定）。夹具
+    // 必须含数字：16 字符值段全大写会命中占位符豁免（SCREAMING 判据——
+    // `YOURACCESSKEY` 类教程形态合法降权不脱敏），裸大写夹具测不出
+    // 词表命中臂。
+    caps.log_line("info", "AKIA1A2B3C4D5E6F7G8H");
     let (lines, _) = caps.logs.snapshot();
     assert_eq!(lines.len(), 1);
     assert!(
-        !lines[0].message.contains("AKIAABCDEFGHIJKLMNOP"),
+        !lines[0].message.contains("AKIA1A2B3C4D5E6F7G8H"),
         "凭据原文必须脱敏: {}",
         lines[0].message
     );
@@ -171,9 +174,25 @@ fn read_workspace_rel_rejects_malformed_paths() {
         assert!(err.contains(needle), "{rel}: {err}");
     };
     reject("", "empty path");
-    reject("C:\\abs\\path.txt", "absolute");
-    // Windows 下 "/x" 是盘符相对（非绝对）：落 cannot resolve 臂。
-    reject("/abs/path.txt", "cannot resolve");
+    // 盘符形态的平台语义分叉：Windows 下 `C:\x` 是绝对路径（落 absolute
+    // 臂）、`/x` 是盘符相对（落 cannot resolve 臂）；POSIX 下 `C:\x` 只是
+    // 含反斜杠的相对文件名（走 resolve → cannot resolve），`/x` 才是绝对。
+    reject(
+        "C:\\abs\\path.txt",
+        if cfg!(windows) {
+            "absolute"
+        } else {
+            "cannot resolve"
+        },
+    );
+    reject(
+        "/abs/path.txt",
+        if cfg!(windows) {
+            "cannot resolve"
+        } else {
+            "absolute"
+        },
+    );
     reject("../escape.txt", "escapes workspace");
     reject("a/../b.txt", "escapes workspace");
     reject("a~b.txt", "malformed");

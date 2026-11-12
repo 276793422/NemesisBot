@@ -820,10 +820,22 @@ fn handle_chat_send(
 
     // media 引用解析——{id} → uploads 落盘文件（裸文件名校验，防穿越）；
     // {path} → 原样引用（用户点名路径语义）。解析失败的项诚实注记进文本。
+    // 会话资产区（2026-11-12）：带会话键解析——home/uploads 优先，全局
+    // 兜底（存量上传/未绑定会话）。
+    let media_session_key = data
+        .session_id
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|sid| {
+            format!(
+                "agent:main:session:{}",
+                nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+            )
+        });
     let mut content = data.content;
     let mut media = Vec::new();
     for item in data.media.unwrap_or_default() {
-        match crate::handlers::upload::resolve_media_ref(&item) {
+        match crate::handlers::upload::resolve_media_ref(&item, media_session_key.as_deref()) {
             Some(path) => media.push(nemesis_types::channel::MediaAttachment {
                 media_type: "image".to_string(),
                 url: path,

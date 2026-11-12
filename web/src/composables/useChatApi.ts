@@ -32,6 +32,9 @@ export interface SessionEntry {
    *  对话组）。显示名由前端以 projects.list 联结（后端不解析名字）。 */
   projectId?: string
   projectPath?: string
+  /** 会话资产区（2026-11-12）：已绑定 home 的解析路径（会话信息模态
+   *  展示行）；未绑定（存量 lenient）后端不加字段。 */
+  home?: string
   /** P2（2026-09-11）：未送达 assistant 回复数（推送失败时后端打点；
    *  拉取历史经 mark_delivered 清零）。0/缺省 = 无未读。 */
   undelivered?: number

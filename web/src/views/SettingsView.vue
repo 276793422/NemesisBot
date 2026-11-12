@@ -22,6 +22,27 @@ const toast = useToast()
 // 零迁移。
 const { theme, setTheme } = useTheme()
 
+// 自定义右键菜单开关（2026-11-12 子需求 B）：真相源 localStorage
+// ["ui.customContextMenu"]（缺省 on）。useContextMenu().enabled() 每次打开
+// 现读——改完即生效，无需事件通知；刷新持久。
+const ctxMenuEnabled = ref(
+  (() => {
+    try {
+      return (localStorage.getItem('ui.customContextMenu') ?? 'on') !== 'off'
+    } catch {
+      return true
+    }
+  })(),
+)
+function toggleContextMenu() {
+  ctxMenuEnabled.value = !ctxMenuEnabled.value
+  try {
+    localStorage.setItem('ui.customContextMenu', ctxMenuEnabled.value ? 'on' : 'off')
+  } catch {
+    // 存储不可用（隐私模式等）——开关只活在本页会话，不炸。
+  }
+}
+
 const activeTab = ref('agent')
 const config = ref<any>({})
 const loading = ref(true)
@@ -1105,6 +1126,16 @@ onMounted(async () => {
               <span class="theme-card-name">深色模式</span>
               <span v-if="theme === 'dark'" class="theme-card-check">✓ 当前</span>
             </div>
+          </div>
+
+          <!-- 自定义右键菜单（2026-11-12 子需求 B）：关 = 浏览器原生菜单
+               原样回归（listener 直通不 preventDefault），即时生效。 -->
+          <div class="form-group" style="flex-direction: row; align-items: center; gap: var(--space-3); margin-top: var(--space-5); margin-bottom: var(--space-2);">
+            <label class="form-label" style="margin: 0;">自定义右键菜单</label>
+            <div class="toggle" :class="{ active: ctxMenuEnabled }" data-test="ctxmenu-toggle" @click="toggleContextMenu()"></div>
+          </div>
+          <div class="form-hint">
+            启用后全局屏蔽浏览器默认右键菜单，按区域定制：输入框=复制/粘贴/全选/撤销，消息区=复制/全选，其余区域静默。关闭即恢复浏览器原生菜单，即时生效。
           </div>
         </div>
 

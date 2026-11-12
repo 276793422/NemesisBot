@@ -1521,8 +1521,42 @@ pub async fn handle_api_chat_session_fork(
     // fork 本体 = 整会话全量读 + 行拷贝落盘（全 jsonl
     // 体量 IO），同步直跑 tokio worker——spawn_blocking 移出（precheck 同
     // 款纪律；「一次性管理操作非热路径」不改变占住 worker 的机制）。
+    // 会话资产区 copy-on-fork（2026-11-12）同块执行：源绑定 → 整树复制 →
+    // 新绑定（fork_copy_session_home 内部先复制后写绑定）。复制失败 =
+    // fork 整体回退（新会话产物三件套删除），诚实报错——分叉点前的资产
+    // 依赖必须随分支带走，半绑定会话（资产仍在源 home）会让历史图片引用
+    // 在新分支静默失效。workspace 未装配 = 降级跳过 + WARN（装配异常下
+    // fork 主流程优先；生产装配 workspace 恒在）。
+    let ws_opt = state.workspace.clone();
     let info = tokio::task::spawn_blocking(move || {
-        nemesis_agent::session_fork::fork_session_opts(&store, &key, None, at_turn, independent)
+        let info = nemesis_agent::session_fork::fork_session_opts(
+            &store,
+            &key,
+            None,
+            at_turn,
+            independent,
+        )?;
+        // 资产树根 = 新会话所属 workspace：fork 血缘把 project_id 一并写入
+        // 新 meta（fork_session_opts），此处按新会话解析项目目录——项目
+        // 会话的 home 在项目目录下（与项目 loop 围栏同根）；对话组 =
+        // 主 workspace。解析不出（未装配/未注册）回落主 workspace。
+        let ws = crate::handlers::projects::project_root_for_session(&info.new_key)
+            .or(ws_opt.clone())
+            .ok_or_else(|| "workspace 未装配".to_string())?;
+        if let Err(e) = nemesis_agent::session_home::fork_copy_session_home(
+            std::path::Path::new(&ws),
+            &info.source_key,
+            &info.new_key,
+        ) {
+            // 回退：新会话全量产物删除（内存 + store json +
+            // chat_log 三件套；血缘 meta 残留为孤儿——无 jsonl，
+            // sessions.list 不可见，无害）。
+            store.delete_session(&info.new_key);
+            return Err(format!(
+                "fork 会话资产区复制失败（已回退，源会话未受影响）: {e}"
+            ));
+        }
+        Ok(info)
     })
     .await
     .map_err(|_| {

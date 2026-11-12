@@ -417,3 +417,114 @@ fn r840_dedup_file_changes_with_key_merges_dual_forms() {
     let out = crate::chat_log::dedup_file_changes(changes);
     assert_eq!(out.len(), 3, "字面键下异形态不得合并: {out:?}");
 }
+
+/// BUG-20261112-110 回归锁：rewind→redo 后对该区间的二次 rewind 必须诚实。
+/// redo 不重建 checkpoint 索引（诚实边界，见 redo_rewind 文档）——redo 过
+/// 的区间行标记还在、封印条目已退役。修复前：第二次 rewind 的 restore 是
+/// 静默 no-op，回执却盖「applied」戳且 note=null（用户以为文件已恢复，
+/// 实盘留着外部修改），冲突预检也因无条目失明。修复后：file_restore=
+/// "skipped" + note 说明退役根因（与无锚臂「只截断对话不回滚文件」同
+/// 待遇），文件保持外部修改态不被谎称恢复。
+#[tokio::test]
+async fn r840_rewind_after_redo_honest_skipped_receipt() {
+    let (al, key, dir) = stage_sealed_git("redo-rewind-honest").await;
+    let ws = dir.path().join("ws");
+
+    // 第一次 rewind：截掉 turn 2 区间（rows 2-3），文件恢复 turn 2 begin
+    // 态 v2；随后 redo 行回填 + 文件前向恢复 v3（封印条目仍退役）。
+    let r1 = al.rewind_to_message(&key, 1, false, None).await.unwrap();
+    assert_eq!(r1["file_restore"], "applied", "首回退正常恢复: {r1}");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("code.txt")).unwrap(),
+        "v2",
+        "首回退文件恢复 v2"
+    );
+    let r2 = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(r2["file_restore"], "applied", "redo 前向恢复: {r2}");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("code.txt")).unwrap(),
+        "v3",
+        "redo 前向恢复 v3"
+    );
+
+    // redo 后窗口内的外部修改（无新封印，预检本就看不见）。
+    std::fs::write(ws.join("code.txt"), "v3-external").unwrap();
+
+    // 第二次 rewind：restore_code 撞零条目区间 → skipped + note，不得谎
+    // 称 applied；文件保持外部修改态。
+    let r3 = al.rewind_to_message(&key, 1, false, None).await.unwrap();
+    assert!(
+        r3["blocked"].is_null(),
+        "零条目区间不再伪装冲突面，回退本身照常: {r3}"
+    );
+    assert_eq!(r3["file_restore"], "skipped", "不得盖 applied 戳: {r3}");
+    let note = r3["file_restore_note"].as_str().unwrap_or("");
+    assert!(note.contains("退役"), "note 必须说明退役根因: {note}");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("code.txt")).unwrap(),
+        "v3-external",
+        "文件保持外部修改态（诚实不恢复）"
+    );
+    // 对话截断照常生效（2b 截断与文件恢复解耦）。
+    let rows = crate::chat_log::read_chat_log(&key, usize::MAX, None).1;
+    assert_eq!(rows, 2, "第二次 rewind 行截断照常");
+}
+
+// BUG-20261112-122 回归锁：gc 在途保护集引用计数语义。
+//
+// GcInflightGuard 与 RedoInflightGuard 可对同一 tree **重叠持有**（真实
+// 形态：多会话 undo 条目捕获同一 undo_disk_tree——两 undo 之间无文件变
+// 化——随后并发 redo 双双 pop 出栈，各自 RedoInflightGuard 持同一 tree）。
+// 修复前 HashSet 集合语义下先 drop 者直接 remove——摘走另一方仍需要的
+// gc 保护；并发 gc（他会话 truncate_from_scoped 内联 gc / gateway 周期拍）
+// 撞进另一方 pop→恢复窗口会把条目引用 tree 当孤儿清掉，restore_to_tree
+// 恒「影子 tree 不可达」→ redo 永久 blocked（F2 族，条目还栈但重试永
+// 败）。同族先例：BUG-20261030-221（rewind 侧注册）、BUG-20261106-040
+// （redo 侧注册）——引用计数是共同原语的最后缺口。
+#[test]
+fn r963_gc_inflight_refcount_same_tree_two_holders() {
+    let al = AgentLoop::new(Box::new(R840NoopProvider), r840_config());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tree_a = format!("r963tree{nanos}a");
+    let tree_b = format!("r963tree{nanos}b");
+    assert!(
+        !al.undo_stack_tree_refs().contains(&tree_a),
+        "前置：空栈+未注册 → 保留集不含测试 tree"
+    );
+
+    // 同一 tree 两个持有者（Gc + Redo 重叠，Redo 另带独占 tree_b）。
+    let mut gc = super::rewind::GcInflightGuard {
+        al: &al,
+        tree: Some(tree_a.clone()),
+    };
+    gc.register();
+    let redo = super::rewind::RedoInflightGuard {
+        al: &al,
+        trees: vec![tree_a.clone(), tree_b.clone()],
+    };
+    redo.register();
+
+    // 重叠期：两 tree 都在 gc 保留集（undo_stack_tree_refs 只读 keys，
+    // 计数不外泄）。
+    let refs = al.undo_stack_tree_refs();
+    assert!(refs.contains(&tree_a), "重叠持有期 tree_a 必须受保护");
+    assert!(refs.contains(&tree_b), "重叠持有期 tree_b 必须受保护");
+
+    // 先 drop 者只减计数：tree_a 仍被另一持有者保护（修复前在此摘除）。
+    drop(gc);
+    let refs = al.undo_stack_tree_refs();
+    assert!(
+        refs.contains(&tree_a),
+        "先 drop 方不得摘走另一持有者的保护（BUG-20261112-122 主断言）"
+    );
+    assert!(refs.contains(&tree_b));
+
+    // 全部 drop 后引用归零：保护解除，gc 可回收（不反向泄漏）。
+    drop(redo);
+    let refs = al.undo_stack_tree_refs();
+    assert!(!refs.contains(&tree_a), "引用归零后保护解除（tree_a）");
+    assert!(!refs.contains(&tree_b), "引用归零后保护解除（tree_b）");
+}

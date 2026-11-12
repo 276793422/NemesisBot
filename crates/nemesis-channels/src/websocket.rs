@@ -553,10 +553,6 @@ impl Channel for WebSocketChannel {
         };
         let _ = json;
 
-        // Outbound sync: forward to other channels (e.g., web dashboard).
-        // sync 镜像来的消息不再二次扩散（回环防护）。
-        self.base.sync_outbound(&msg).await;
-
         Ok(())
     }
 

@@ -2170,17 +2170,12 @@ async fn review_issue(
                 parent_id: None,
                 ctype: CommentType::Comment,
             })?;
-            record_auto_decide(
-                deps,
-                issue_id,
-                "redispatch",
-                output.verdict.as_str(),
-                serde_json::json!({
-                    "round": next_round,
-                    "unlimited": unlimited,
-                    "reasons": render_reasons(&output.reasons),
-                }),
-            );
+            // 审计时序（BUG-20261113-125 回归锁）：此处**不落**「redispatch」
+            // 决策审计——记录只在下方实际派发成功后落（带 target）。此前
+            // （merge 3b1ce444 冲突消解把 510839fb 已删的发车前记录带回）
+            // 在 estop 停车/预算停车/目标决策失败/派发失败的轮次都被记成
+            // 已重派——审计假象，且重启后重放守卫（review_already_concluded）
+            // 误判已定案跳过重放，单据卡死 in_review 无自愈。
             // 停滞可观测（配套，复审补充）：连续重派且差距文本与上一轮
             // 完全相同 → WARN 告警（只告警不停流程，人可观测不干预）。
             // （第 6 轮审计）：comments 是评审入口快照（761

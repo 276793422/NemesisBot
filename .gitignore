@@ -124,3 +124,6 @@ test-tools/product-validation/evaluators/
 /coverage-data/
 /web/coverage/
 /web/coverage-data-vitest.log
+
+# 遥测信封私钥（默认钥/轮换钥）绝不入仓——公钥在构建脚本内建，私钥仓库外保管
+envelope_keys*.json

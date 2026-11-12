@@ -540,7 +540,7 @@ fn text_repetition_third_consecutive_still_nudges() {
     assert!(g.check_text_repetition(base).is_none());
     let a2 = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml 哦。";
     assert!(g.check_text_repetition(a2).is_some());
-    // 仍近似 → repeat_text_count >= 1 的升级文案臂。
+    // 仍近似 → 同级文案逐次重现（⑧ 无计数阶梯，第三轮不升级）。
     let a3 = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml 呀。";
     assert!(g.check_text_repetition(a3).is_some());
 }

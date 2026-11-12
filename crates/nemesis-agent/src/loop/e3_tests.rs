@@ -1417,8 +1417,18 @@ async fn e3_redo_force_records_audit_chain_event() {
     assert!(chain.verify_range(0, 0).unwrap(), "链校验");
 
     // 无漂移直通的 redo（再撤再重做）不产生假账（链仍只有 1 条）。
+    // BUG-20261112-110：第二次 rewind 落在 redo 过的区间——checkpoint 条目
+    // 已随第一次 rewind 退役且 redo 不重建索引，文件恢复诚实 skipped（旧行为
+    // 静默 no-op 却盖 applied 戳）；行截断与 redoable 照常。
     let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
-    assert_eq!(out["file_restore"], "applied", "{out}");
+    assert_eq!(out["file_restore"], "skipped", "{out}");
+    assert!(
+        out["file_restore_note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("退役"),
+        "{out}"
+    );
     let out = al.redo_rewind(&key).await.unwrap();
     assert_eq!(out["forced"], false, "{out}");
     assert_eq!(chain.total_event_count(), 1, "无漂移不得记账");

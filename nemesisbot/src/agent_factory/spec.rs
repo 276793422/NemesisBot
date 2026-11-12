@@ -632,7 +632,23 @@ pub fn build_agent_loop_from_spec(
             } else {
                 memory_manager_for_namespace(shared, &spec.memory_namespace)
             };
-            mgr.map(|mgr| Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)))
+            // 会话资产区（2026-11-12，拍板「只在分叉时分叉」）：项目 loop
+            // 同注 fork 独立域解析器——homes_root = 项目目录（项目会话的
+            // home 树根，与 workspace_root/围栏同根）；非 fork 会话回落
+            // 上面选出的 mgr（主镜像域 / 项目 agent 域，行为零变化）。
+            mgr.map(|mgr| {
+                let homes_root = project_dir.clone();
+                let shared_for_domains = shared.clone();
+                let exec = nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)
+                    .with_session_domain_resolver(Arc::new(move |session_key| {
+                        let dir = nemesis_agent::session_home::resolve_session_memory_domain(
+                            &homes_root,
+                            session_key,
+                        )?;
+                        memory_manager_for_data_dir(&shared_for_domains, &dir)
+                    }));
+                Arc::new(exec)
+            })
         }
         #[cfg(not(feature = "memory"))]
         {

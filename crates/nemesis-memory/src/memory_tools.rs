@@ -147,7 +147,18 @@ pub trait MemoryApprovalGate: Send + Sync {
 pub struct MemoryToolExecutor {
     manager: Arc<MemoryManager>,
     approval_gate: parking_lot::Mutex<Option<Arc<dyn MemoryApprovalGate>>>,
+    /// 会话资产区（2026-11-12，拍板「只在分叉时分叉」）：session_key →
+    /// 分域 manager 解析器。装配侧注入（domain 目录 → manager 构造是
+    /// nemesisbot 装配职责——增强内存开关/config 路径都在那边）；None =
+    /// 恒主域（headless/旧装配，行为零变化）。
+    domain_resolver: parking_lot::Mutex<Option<SessionDomainResolver>>,
+    /// 分域 manager 缓存（每会话一次构造；forked 会话数量有限，无淘汰）。
+    domain_cache: parking_lot::Mutex<std::collections::HashMap<String, Arc<MemoryManager>>>,
 }
+
+/// 分域解析器：session_key → Some(独立域 manager)（fork 产物）/
+/// None（维持主域）。
+pub type SessionDomainResolver = Arc<dyn Fn(&str) -> Option<Arc<MemoryManager>> + Send + Sync>;
 
 impl MemoryToolExecutor {
     /// Create a new executor backed by the given MemoryManager (no approval gate).
@@ -155,6 +166,8 @@ impl MemoryToolExecutor {
         Self {
             manager,
             approval_gate: parking_lot::Mutex::new(None),
+            domain_resolver: parking_lot::Mutex::new(None),
+            domain_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -163,6 +176,37 @@ impl MemoryToolExecutor {
     /// human approval via the gate.
     pub fn set_approval_gate(&self, gate: Arc<dyn MemoryApprovalGate>) {
         *self.approval_gate.lock() = Some(gate);
+    }
+
+    /// 会话资产区：注入分域解析器（装配侧一次性调用）。注入后 fork 产物
+    /// 会话（meta 带血缘 + home 绑定）的 memory_* 四工具读写独立域。
+    pub fn with_session_domain_resolver(self, resolver: SessionDomainResolver) -> Self {
+        *self.domain_resolver.lock() = Some(resolver);
+        self
+    }
+
+    /// session_key → 生效 manager（fork 分域缓存懒构造；空键/无解析器/
+    /// 解析 None = 主域）。锁内调 resolver：resolver 是装配期闭包（读
+    /// session meta 小 JSON + 可能构造 manager），无再入本锁路径。
+    fn manager_for_session(&self, session_key: &str) -> Arc<MemoryManager> {
+        if session_key.is_empty() {
+            return self.manager.clone();
+        }
+        let resolver = self.domain_resolver.lock().clone();
+        let Some(resolver) = resolver else {
+            return self.manager.clone();
+        };
+        let mut cache = self.domain_cache.lock();
+        if let Some(m) = cache.get(session_key) {
+            return m.clone();
+        }
+        match resolver(session_key) {
+            Some(m) => {
+                cache.insert(session_key.to_string(), m.clone());
+                m
+            }
+            None => self.manager.clone(),
+        }
     }
 
     /// Returns true if the store is approved (or no gate is attached). The lock is
@@ -183,8 +227,30 @@ impl MemoryToolExecutor {
         }
     }
 
-    /// Execute a tool by name with the provided arguments.
-    pub async fn execute(&self, tool_name: &str, args: &serde_json::Value) -> MemoryToolResult {
+    /// Execute a tool by name with the provided arguments. `session_key`
+    /// 选域：fork 产物会话 = 独立记忆域（`with_session_domain_resolver`
+    /// 注入解析器后生效），其余 = 主域。视图执行器共享审批闸（同一 Arc）。
+    pub async fn execute(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        session_key: &str,
+    ) -> MemoryToolResult {
+        let manager = self.manager_for_session(session_key);
+        if Arc::ptr_eq(&manager, &self.manager) {
+            return self.dispatch(tool_name, args).await;
+        }
+        let view = MemoryToolExecutor {
+            manager,
+            approval_gate: parking_lot::Mutex::new(self.approval_gate.lock().clone()),
+            domain_resolver: parking_lot::Mutex::new(None),
+            domain_cache: parking_lot::Mutex::new(std::collections::HashMap::new()),
+        };
+        view.dispatch(tool_name, args).await
+    }
+
+    /// 主域分发（execute 的内部路由；视图执行器复用）。
+    async fn dispatch(&self, tool_name: &str, args: &serde_json::Value) -> MemoryToolResult {
         match tool_name {
             "memory_search" => self.execute_search(args).await,
             "memory_store" => self.execute_store(args).await,

@@ -14,6 +14,36 @@
 # 关账且有数轮全绿实证。
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+# 太微子系统 rlib 直连（2026-11-13 静态直链最终形态）：--extern 静态指向
+# 太微侧产出的 rlib（crate 名 nemesis_taiwei）。rlib 缺席 = dangling 路径，
+# rustc 惰性——crate 无引用时零影响（开源构建与从前逐字节同径）；build.rs
+# 探测到 rlib 在场才 emit cfg(nb_taiwei) 点亮引用面。rlib+LTO 路线：宿主
+# lto="thin" 的 ThinLTO 管线吸收 taiwei bitcode（跨 opaque archive 链接
+# 在 LTO 下结构性不可行——std 符号已被内化，链接期无定义可拉）。
+# 相对路径以 workspace root 解析（cargo 以 root 为 rustc cwd）。
+# 路径固定 target/release：bitcode 是 IR，宿主各 profile 最终 codegen，
+# 单一产物服务 release/debug/iotsmall 全 profile。
+rustflags = [
+    "--extern",
+    "nemesis_taiwei=slots/taiwei/impl/target/release/libnemesis_taiwei.rlib",
+    # taiwei 依赖闭包搜索目录（rlib 不自包含——p256/rand/sha2 等传递依赖
+    # 从 taiwei 构建目录解析，metadata hash 分流保证版本一致性；宿主自身
+    # 依赖解析不受影响：hash 不匹配的候选被 rustc 跳过）
+    "-L",
+    "dependency=slots/taiwei/impl/target/release/deps",
+]
+
+# Linux 宿主同款直连（artifact 同名 libnemesis_taiwei.rlib，相对路径同形）。
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "--extern",
+    "nemesis_taiwei=slots/taiwei/impl/target/release/libnemesis_taiwei.rlib",
+    # taiwei 依赖闭包搜索目录（rlib 不自包含——p256/rand/sha2 等传递依赖
+    # 从 taiwei 构建目录解析，metadata hash 分流保证版本一致性；宿主自身
+    # 依赖解析不受影响：hash 不匹配的候选被 rustc 跳过）
+    "-L",
+    "dependency=slots/taiwei/impl/target/release/deps",
+]
 
 # P5 guest agent 交叉编译（scripts/build-guest.sh）：Linux musl 目标同样用
 # toolchain 自带 rust-lld——Windows 宿主没有 musl 交叉 cc/gcc，而 guest 是
@@ -25,3 +55,21 @@ linker = "rust-lld"
 
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
+
+# 太微 rlib 直连的 native 构建段（与上面两个 target 段同一 flag）。
+#
+# 段位规则（实证 2026-11-13 E0463 踩坑）：日常 `cargo build`（不带
+# --target）只应用 [build] rustflags——[target.<host>] 段 rustflags 不生效
+# （linker 有 host 生效规则，rustflags 没有；本文件 linker=rust-lld 因此
+# 从未暴露此坑）。显式 --target 形态由上面两个 target 段覆盖（cargo 规则：
+# target 段 applies 时 [build] 段被忽略）。三段同一 flag，各管一种调用形态。
+[build]
+rustflags = [
+    "--extern",
+    "nemesis_taiwei=slots/taiwei/impl/target/release/libnemesis_taiwei.rlib",
+    # taiwei 依赖闭包搜索目录（rlib 不自包含——p256/rand/sha2 等传递依赖
+    # 从 taiwei 构建目录解析，metadata hash 分流保证版本一致性；宿主自身
+    # 依赖解析不受影响：hash 不匹配的候选被 rustc 跳过）
+    "-L",
+    "dependency=slots/taiwei/impl/target/release/deps",
+]

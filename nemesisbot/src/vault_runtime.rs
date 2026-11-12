@@ -34,6 +34,20 @@ pub fn install(home: &Path) {
     }));
 }
 
+/// 测试纪律（同 crate 测试复用）：按平台默认 vault 模式准备口令 env——
+/// argon2id 平台（Linux 等）设固定测试口令，「缺文件自动建库」臂才有得走
+/// （无口令 = 诚实 Err 是生产正确语义）；DPAPI 平台（Windows）清除。
+/// 值全仓测试统一 `rt-test-pw`：并发测试交错 set 同值，竞态良性。
+#[cfg(test)]
+pub(crate) fn test_restore_passphrase_env() {
+    use nemesis_security::vault::VaultMode;
+    if nemesis_security::vault::VaultStore::default_mode() == VaultMode::Argon2id {
+        unsafe { std::env::set_var("NEMESISBOT_VAULT_PASSPHRASE", "rt-test-pw") };
+    } else {
+        unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
+    }
+}
+
 /// 写入裸别名凭据（每次现开现写现存盘，与解析侧「现查无缓存」同纪律）。
 /// upsert 语义（`VaultStore::set` 保留 created_at）；vault 文件缺失 = 按
 /// 平台默认模式自动建库（DPAPI 免口令；argon2id 无 env 口令 = 诚实 Err）。

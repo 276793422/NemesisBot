@@ -122,12 +122,25 @@ async fn post_upload(
     name: Option<&str>,
     body: Vec<u8>,
 ) -> axum::http::Response<axum::body::Body> {
-    let mut builder = axum::http::Request::builder()
-        .method("POST")
-        .uri(match name {
-            Some(n) => format!("/api/upload/image?name={}", n),
-            None => "/api/upload/image".to_string(),
-        });
+    post_upload_with_session(app, token, name, None, body).await
+}
+
+/// 会话资产区变体：`?session_id=` 走会话 home/uploads 落盘。
+async fn post_upload_with_session(
+    app: axum::Router,
+    token: Option<&str>,
+    name: Option<&str>,
+    session_id: Option<&str>,
+    body: Vec<u8>,
+) -> axum::http::Response<axum::body::Body> {
+    let mut uri = match name {
+        Some(n) => format!("/api/upload/image?name={}", n),
+        None => "/api/upload/image".to_string(),
+    };
+    if let Some(sid) = session_id {
+        uri.push_str(&format!("&session_id={}", sid));
+    }
+    let mut builder = axum::http::Request::builder().method("POST").uri(uri);
     if let Some(t) = token {
         builder = builder.header("X-Auth-Token", t);
     }
@@ -242,7 +255,7 @@ async fn upload_stores_file_and_refs_resolve() {
 
     // 上传返回的 id 可被 resolve_media_ref 解析回同一路径（WSAPI 闭环）。
     assert_eq!(
-        resolve_media_ref(&serde_json::json!({ "id": id })).as_deref(),
+        resolve_media_ref(&serde_json::json!({ "id": id }), None).as_deref(),
         Some(stored.to_string_lossy().as_ref())
     );
 }
@@ -315,20 +328,20 @@ fn resolve_media_ref_rejects_bad_refs() {
         "img pdf.png",
     ] {
         assert_eq!(
-            resolve_media_ref(&serde_json::json!({ "id": bad })),
+            resolve_media_ref(&serde_json::json!({ "id": bad }), None),
             None,
             "id={bad:?}"
         );
     }
     // 未知形状 / 空路径 passthrough 拒绝。
-    assert_eq!(resolve_media_ref(&serde_json::json!({})), None);
+    assert_eq!(resolve_media_ref(&serde_json::json!({}), None), None);
     assert_eq!(
-        resolve_media_ref(&serde_json::json!({ "path": "  " })),
+        resolve_media_ref(&serde_json::json!({ "path": "  " }), None),
         None
     );
     // path 为用户点名语义：非空即原样返回。
     assert_eq!(
-        resolve_media_ref(&serde_json::json!({ "path": "C:/pics/cat.jpg" })).as_deref(),
+        resolve_media_ref(&serde_json::json!({ "path": "C:/pics/cat.jpg" }), None).as_deref(),
         Some("C:/pics/cat.jpg")
     );
 }
@@ -365,4 +378,250 @@ fn sweep_missing_dir_is_zero() {
     let dir = tempfile::tempdir().unwrap();
     let absent = dir.path().join("no_such_uploads");
     assert_eq!(sweep_uploads_older_than(&absent, UPLOADS_TTL), 0);
+}
+
+// --- 会话资产区（2026-11-12）：session_id 上传落 home/uploads + media 解析 ---
+
+#[tokio::test]
+async fn upload_with_session_id_lands_in_session_home() {
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+
+    // 会话绑定（meta 写进重定向 home 的 session_logs；workspace 取单例）。
+    let workspace = nemesis_path::default_path_manager().workspace();
+    let session_id = format!("sesshome-{}", uuid::Uuid::new_v4().simple());
+    let session_key = format!("agent:main:session:{}", session_id);
+    nemesis_agent::session_home::assign_session_home(&workspace, &session_key)
+        .expect("assign session home");
+
+    // 上传带 session_id → 落会话 home/uploads（非全局）。
+    let resp = post_upload_with_session(
+        test_router(make_state("")),
+        Some("ignored"),
+        Some("photo.png"),
+        Some(&session_id),
+        png_bytes(),
+    )
+    .await;
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = json["id"].as_str().unwrap().to_string();
+    let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
+
+    let home =
+        nemesis_agent::session_home::resolve_session_home(&workspace, &session_key).expect("bound");
+    assert!(
+        stored.starts_with(home.join("uploads")),
+        "上传必须落会话 home/uploads: {stored:?}"
+    );
+    assert!(
+        !stored.starts_with(nemesis_path::resolve_uploads_dir_in_workspace(&workspace)),
+        "绑定会话上传不得落全局 uploads"
+    );
+
+    // media 解析：带会话键命中 home；不带会话键（None）→ 全局兜底 miss。
+    assert_eq!(
+        resolve_media_ref(&serde_json::json!({ "id": id }), Some(session_key.as_str())).as_deref(),
+        Some(stored.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        resolve_media_ref(&serde_json::json!({ "id": id }), None),
+        None,
+        "home 内文件不得被全局解析命中"
+    );
+}
+
+#[tokio::test]
+async fn upload_without_session_id_stays_global_and_resolves() {
+    // 存量行为回归：缺省上传落全局 uploads，media 解析（None 会话键）命中。
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+
+    let resp = post_upload(
+        test_router(make_state("")),
+        Some("ignored"),
+        Some("photo.png"),
+        png_bytes(),
+    )
+    .await;
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = json["id"].as_str().unwrap().to_string();
+    let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
+
+    let workspace = nemesis_path::default_path_manager().workspace();
+    assert!(
+        stored.starts_with(nemesis_path::resolve_uploads_dir_in_workspace(&workspace)),
+        "无 session_id 上传落全局: {stored:?}"
+    );
+    assert_eq!(
+        resolve_media_ref(&serde_json::json!({ "id": id }), None).as_deref(),
+        Some(stored.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
+async fn upload_with_unknown_session_id_falls_back_to_global() {
+    // 未绑定会话（存量 lenient）：session_id 解析不出 home → 落全局，行为
+    // 与缺省一致。
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+
+    let unknown_sid = format!("ghost-{}", uuid::Uuid::new_v4().simple());
+    let resp = post_upload_with_session(
+        test_router(make_state("")),
+        Some("ignored"),
+        Some("photo.png"),
+        Some(&unknown_sid),
+        png_bytes(),
+    )
+    .await;
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
+
+    let workspace = nemesis_path::default_path_manager().workspace();
+    assert!(
+        stored.starts_with(nemesis_path::resolve_uploads_dir_in_workspace(&workspace)),
+        "未绑定会话上传落全局: {stored:?}"
+    );
+}
+
+// --- BUG-20261112-117：项目会话上传/media 解析走项目树 home（两树分裂回归） ---
+// 项目会话的资产区根 = 项目目录（sessions.create/admission/fork 同源拍板）。
+// 上传端点与 resolve_media_ref 此前恒用主 workspace，把项目会话的上传文件
+// 落进主树同 id 幽灵 home——fork copy-on-fork 只复制项目树（上传资产不随
+// 分支带走），resolve 在项目树 miss。修复后两处均经 project_root_for_session
+// （L6++ 归属裁决单点）取根。
+
+use crate::handlers::projects::{BRIDGE_TEST_LOCK, ProjectsBridge, set_projects_bridge_for_test};
+
+struct ProjHomeStubBridge {
+    session_key: String,
+    project_id: String,
+    project_dir: std::path::PathBuf,
+}
+impl ProjectsBridge for ProjHomeStubBridge {
+    fn list(&self) -> Vec<crate::handlers::projects::ProjectInfo> {
+        vec![]
+    }
+    fn create(
+        &self,
+        _name: &str,
+        _path: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("stub".to_string())
+    }
+    fn remove(&self, _project_id: &str) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("stub".to_string())
+    }
+    fn rename(
+        &self,
+        _project_id: &str,
+        _new_name: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("stub".to_string())
+    }
+    fn set_trust(
+        &self,
+        _project_id: &str,
+        _trusted: bool,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("stub".to_string())
+    }
+    fn owner_of(&self, key: &str) -> Option<String> {
+        (key == self.session_key).then(|| self.project_id.clone())
+    }
+    fn loop_for_session(&self, _project_id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+        None
+    }
+    fn project_path(&self, project_id: &str) -> Option<std::path::PathBuf> {
+        (project_id == self.project_id).then(|| self.project_dir.clone())
+    }
+    fn bind_session(&self, _session_key: &str, _project_id: &str) -> Result<(), String> {
+        Err("stub".to_string())
+    }
+    fn forget_session(&self, _session_key: &str) {}
+}
+
+#[tokio::test]
+async fn project_session_upload_and_media_ref_use_project_tree() {
+    let _home_lock = uploads_state_lock();
+    let _bridge_lock = BRIDGE_TEST_LOCK.lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    let project_dir = dir.path().join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let session_id = format!("projhome-{}", uuid::Uuid::new_v4().simple());
+    let session_key = format!("agent:main:session:{}", session_id);
+    // 项目会话资产区物化在项目树（sessions.create 同款：根 = 项目目录）。
+    nemesis_agent::session_home::assign_session_home(&project_dir, &session_key)
+        .expect("assign project session home");
+
+    set_projects_bridge_for_test(Some(Arc::new(ProjHomeStubBridge {
+        session_key: session_key.clone(),
+        project_id: "proj-1".to_string(),
+        project_dir: project_dir.clone(),
+    })));
+
+    // 上传带 session_id → 必须落项目树 home/uploads（非主树、非全局）。
+    let resp = post_upload_with_session(
+        test_router(make_state("")),
+        Some("ignored"),
+        Some("photo.png"),
+        Some(&session_id),
+        png_bytes(),
+    )
+    .await;
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = json["id"].as_str().unwrap().to_string();
+    let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
+
+    let proj_home = nemesis_agent::session_home::resolve_session_home(&project_dir, &session_key)
+        .expect("project session bound");
+    assert!(
+        stored.starts_with(proj_home.join("uploads")),
+        "项目会话上传必须落项目树 home/uploads: {stored:?}"
+    );
+    let workspace = nemesis_path::default_path_manager().workspace();
+    assert!(
+        !stored.starts_with(nemesis_path::resolve_uploads_dir_in_workspace(&workspace)),
+        "项目会话上传不得落全局 uploads: {stored:?}"
+    );
+
+    // media 解析（带会话键）→ 项目树命中（修复前在主树 miss → 诚实注记
+    // 但图片丢失）；不带会话键 → 全局兜底 miss（None）。
+    assert_eq!(
+        resolve_media_ref(&serde_json::json!({ "id": id }), Some(session_key.as_str())).as_deref(),
+        Some(stored.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        resolve_media_ref(&serde_json::json!({ "id": id }), None),
+        None
+    );
+
+    // fork copy-on-fork 语义修复面：上传文件随项目树 home 整体可复制
+    // （fork_copy_session_home 以项目目录为根时能带到上传资产）。
+    let new_key = format!(
+        "agent:main:session:projhome-fork-{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    let forked =
+        nemesis_agent::session_home::fork_copy_session_home(&project_dir, &session_key, &new_key)
+            .expect("fork copy should succeed")
+            .expect("project session fork copies home");
+    let new_home = nemesis_path::resolve_agent_home_in_workspace(&project_dir, &forked);
+    let copied = new_home.join("uploads").join(&id);
+    assert!(copied.is_file(), "fork 复制必须带走上传资产: {copied:?}");
+
+    set_projects_bridge_for_test(None);
 }

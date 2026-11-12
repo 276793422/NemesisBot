@@ -1638,6 +1638,33 @@ fn image_route_json(workspace: &Path, arch: &str) -> serde_json::Value {
     })
 }
 
+/// 子进程输出流排水到构建日志（stdout 前缀空 / stderr 带 `[stderr] `
+/// 标记）。成帧走 [`crate::acp::LineReader`]（与 acp/mcp-serve 同一实现
+/// ——BUG-20261113-133 起 crate 内 stdio 行读取单一纪律）：非 UTF-8 行
+/// lossy 收敛（构建工具的 locale 输出在中文 Windows 是常态不是异例）、
+/// 单行超 64MB 截断续读——旧裸 `lines()` 形态遇坏行 Err 即停 → 管道写
+/// 满 → 构建脚本挂死 → join 无超时 → IMAGE_JOB 单飞闸永久持有。读错误
+/// 语义与旧形态一致（停排水，join 的 `child.wait()` 照常推进）。
+pub(crate) async fn drain_child_stream<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    log_path: PathBuf,
+    prefix: &str,
+) {
+    let mut frames = crate::acp::LineReader::new(reader, crate::acp::MAX_FRAME_BYTES);
+    while let Ok(Some((oversized, line))) = frames.next_line().await {
+        let body = if oversized {
+            format!("{line}…[行超 64MB 已截断]")
+        } else {
+            line
+        };
+        if prefix.is_empty() {
+            log_line(&log_path, &body);
+        } else {
+            log_line(&log_path, &format!("[{prefix}] {body}"));
+        }
+    }
+}
+
 /// 镜像构建后台任务：脚本 spawn → 日志逐行落盘 → 成功后 rebase/换装 →
 /// 任务槽清位。任何失败只进日志（页面 tail 可），不 panic。
 /// spawn 主体由 inputs 裁决（native bash / 经 `wsl.exe -e bash`——
@@ -1719,20 +1746,8 @@ async fn run_image_build(
         Ok(mut child) => {
             let mut stdout = child.stdout.take().expect("piped stdout");
             let mut stderr = child.stderr.take().expect("piped stderr");
-            let out_reader = async {
-                use tokio::io::AsyncBufReadExt as _;
-                let mut lines = tokio::io::BufReader::new(&mut stdout).lines();
-                while let Ok(Some(l)) = lines.next_line().await {
-                    log_line(&log_path, &l);
-                }
-            };
-            let err_reader = async {
-                use tokio::io::AsyncBufReadExt as _;
-                let mut lines = tokio::io::BufReader::new(&mut stderr).lines();
-                while let Ok(Some(l)) = lines.next_line().await {
-                    log_line(&log_path, &format!("[stderr] {l}"));
-                }
-            };
+            let out_reader = drain_child_stream(&mut stdout, log_path.clone(), "");
+            let err_reader = drain_child_stream(&mut stderr, log_path.clone(), "stderr");
             let (_, _, status) = tokio::join!(out_reader, err_reader, child.wait());
             status
         }

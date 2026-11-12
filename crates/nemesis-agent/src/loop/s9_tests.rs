@@ -2371,7 +2371,7 @@ async fn emit_observer_sync_reaches_manager_and_callback() {
 
 /// 并行只读批（≥2 个 read-only 调用）→ precomputed 重放两臂
 /// （4613-4618）：全 Valid（reset 0，正常走完）与含 Invalid（+1 → big 档
-/// 预算 1 → 触发校验预算停）。
+/// 预算（P2C 起 2）被连续两批全 Invalid 耗尽 → 触发校验预算停）。
 #[tokio::test]
 async fn parallel_readonly_batch_replays_validation_counters() {
     let _logs = capture_logs();

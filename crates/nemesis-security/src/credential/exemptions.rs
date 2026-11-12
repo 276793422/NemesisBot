@@ -241,9 +241,15 @@ fn is_canonical_placeholder_pass(pass: &str) -> bool {
 /// db_connection 族（Layer 4 四规则 + DLP `database_connection_string`）的
 /// 占位符豁免单一真相源（2026-11-11 横扫批；五批加 SCREAMING 臂）：凭据
 /// 段是教程/模板占位符形态时不构成泄漏。三类形态：
-/// 1. 模板语法字符（`$` `{` `}` `<` `>`，user 或 pass 任一段）：compose /
-///    k8s / envsubst 清单的 `${DB_USER}:${DB_PASSWORD}`、文档尖括号
-///    `<user>:<password>`；
+/// 1. 模板语法**对**（user 或 pass 任一段，is_template_placeholder_pair）：
+///    compose / k8s / envsubst 清单的 `${DB_USER}:${DB_PASSWORD}`、文档
+///    尖括号 `<user>:<password>`。BUG-20261113-124 修正：此处原用裸模板
+///    字符（任含 `$<>{}{` 之一即豁免），与同模块 is_template_placeholder_pair
+///    的既定原理（「刻意用对而非裸模板字符：`pa$$word` 类真实口令含 `$`
+///    但无 `${…}` 对，不受影响」）自相矛盾——`postgres://admin:Pa$$w0rd@host`
+///    类真实口令（`$` 是高频密码字符）被整串豁免，L4 拦截与 DLP demote
+///    双面漏检。改对判据后裸 `$`/`{`（无 `${…}` 配对）照旧拦截；教程
+///    模板形态全部带对，豁免面不变。
 /// 2. 密码段是 SCREAMING_SNAKE 占位（五批，is_screaming_placeholder）：
 ///    `SECRET_PASSWORD` / `CHANGE_ME_PLEASE` / `SUPER_SECRET`——矩阵实测
 ///    大写复合占位此前全拦；
@@ -269,10 +275,7 @@ pub(crate) fn is_placeholder_db_credential(matched: &str) -> bool {
         Some((u, p)) => (u, p),
         None => (cred, ""),
     };
-    const TEMPLATE_CHARS: [char; 5] = ['<', '>', '$', '{', '}'];
-    if user.chars().any(|c| TEMPLATE_CHARS.contains(&c))
-        || pass.chars().any(|c| TEMPLATE_CHARS.contains(&c))
-    {
+    if is_template_placeholder_pair(user) || is_template_placeholder_pair(pass) {
         return true;
     }
     if pass.is_empty() {

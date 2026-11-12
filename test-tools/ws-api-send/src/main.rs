@@ -103,7 +103,13 @@ async fn main() -> Result<()> {
                     Some(Ok(Message::Text(text))) => {
                         let resp: serde_json::Value = match serde_json::from_str(&text) {
                             Ok(v) => v,
-                            Err(_) => { eprintln!("[non-json] {}", &text[..text.len().min(200)]); continue; }
+                            Err(_) => {
+                                // 预览截断走 chars（BUG-20261113-132 横向同族，
+                                // 029 修复先例的漏网点）：服务端非 JSON 文本帧
+                                // 可含中文错误文案，字节切片在多字节 char 中间 panic。
+                                eprintln!("[non-json] {}", text.chars().take(200).collect::<String>());
+                                continue;
+                            }
                         };
                         let r#type = resp.get("type").and_then(|v| v.as_str()).unwrap_or("");
                         match r#type {

@@ -3124,6 +3124,10 @@ async fn repo_sync_clones_local_repository() {
     ]);
     fx.flows.save(&cred).unwrap();
     // 凭据别名在场且 vault 可解析 → 带凭据继续（本地克隆凭据只是挂件）。
+    // vault 写入纪律：Linux 默认 argon2id，「缺文件自动建库」需口令 env
+    //（无口令 = 诚实 Err 是生产正确语义）；先备 env 再写，值与
+    // vault_runtime 测试统一（rt-test-pw），并发交错 set 同值竞态良性。
+    crate::vault_runtime::test_restore_passphrase_env();
     let vault_path = nemesis_path::resolve_vault_path_in_workspace(&fx.ws);
     crate::vault_runtime::write_alias_at(&vault_path, "plugin/fe/pat", "pat-value").unwrap();
     // 空值别名 → 凭据解析空 → 匿名降级（诚实不猜）。

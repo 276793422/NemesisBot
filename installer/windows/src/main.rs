@@ -38,6 +38,8 @@ struct Args {
     no_shortcuts: bool,
     autostart: bool,
     launch: bool,
+    no_taiwei: bool,
+    precise_location: bool,
     package: Option<PathBuf>,
     help: bool,
 }
@@ -61,6 +63,8 @@ fn parse_from(argv: &[String]) -> Args {
             "--no-shortcuts" => args.no_shortcuts = true,
             "--autostart" => args.autostart = true,
             "--launch" => args.launch = true,
+            "--no-taiwei" => args.no_taiwei = true,
+            "--precise-location" => args.precise_location = true,
             "--help" | "-h" => args.help = true,
             _ => {
                 if let Some(v) = a.strip_prefix("--dir=") {
@@ -119,6 +123,8 @@ nbsetup-win — NemesisBot Windows 安装器
   --no-shortcuts               不创建任何快捷方式
   --autostart                  开机自启动（HKCU Run）
   --launch                     安装后启动 Dashboard
+  --no-taiwei               关闭匿名使用统计（缺省开启；勾选页可随时改）
+  --precise-location           开启精确定位（缺省关闭；单独同意 opt-in）
   --accept-signature-risk      签名异常（红色级）时知情继续（缺 = 退出码 5）
   --force                      允许版本降级
   --package <FILE>             安装包路径（缺省 = 本 exe 自身）
@@ -193,6 +199,8 @@ fn main() {
                 no_shortcuts: args.no_shortcuts,
                 autostart: args.autostart,
                 launch: args.launch,
+                taiwei_opt_in: !args.no_taiwei,
+                precise_opt_in: args.precise_location,
             };
             match ops::run_install(&opts, None) {
                 Ok(o) => {
@@ -255,9 +263,13 @@ mod tests {
             "--no-shortcuts",
             "--autostart",
             "--launch",
+            "--no-taiwei",
+            "--precise-location",
         ]));
         assert!(a.silent && a.uninstall && a.accept_risk && a.force);
         assert!(a.desktop_shortcut && a.no_shortcuts && a.autostart && a.launch);
+        assert!(a.no_taiwei, "--no-taiwei 旗标解析生效");
+        assert!(a.precise_location, "--precise-location 旗标解析生效");
     }
 
     #[test]

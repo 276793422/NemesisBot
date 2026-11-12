@@ -145,21 +145,24 @@ impl EventSource for UsbEventSource {
                 let child_slot = std::sync::Arc::clone(&self.child);
                 std::thread::spawn(move || {
                     if let Some(stdout) = stdout {
-                        use std::io::{BufRead, BufReader};
+                        use std::io::BufReader;
                         let reader = BufReader::new(stdout);
                         let mut parser = MonitorParser::default();
-
-                        for line in reader.lines() {
-                            match line {
-                                Ok(l) => {
-                                    if let Some(event) = parser.feed_line(&l)
-                                        && tx.blocking_send(event).is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                Err(_) => break,
+                        let mut emit = |line: &str| -> bool {
+                            match parser.feed_line(line) {
+                                Some(event) => tx.blocking_send(event).is_ok(),
+                                None => true,
                             }
+                        };
+                        // 旧行读形态（BUG-20261113-135）：`reader.lines()` 对
+                        // 非 UTF-8 行产出 `Err` → `Err(_) => break` 一行静默
+                        // 杀死监控（永久停摆零日志），且无字节闸。现在：
+                        // 非 UTF-8 lossy 收敛（属性值 mojibake 降级为最佳
+                        // 努力，监控存活）；真 IO 错误 loud warn 后收尾。
+                        if let Err(e) = pump_monitor_lines(&mut reader, &mut emit) {
+                            tracing::warn!(
+                                "udevadm monitor read failed, USB monitoring stopped: {e}"
+                            );
                         }
                     }
                     // Reader done (stdout EOF after stop()/kill, or receiver
@@ -183,6 +186,44 @@ impl EventSource for UsbEventSource {
         // EOF and reaps whatever it holds. Idempotent (no-op when not started).
         Self::kill_child(&self.child);
         Ok(())
+    }
+}
+
+/// udevadm stdout 单行字节帽（BUG-20261113-135：进程边界行读必须有帽——
+/// BUG-20261108-028 家族纪律）。量纲：kernel uevent env 块 ~2KB、udev
+/// 富集属性行 KB 量级，64KB 留 30× 余量；超帽行截断丢弃至行尾续读，
+/// 监控不因毒丸行中断（对齐 mcp stderr 排水 64KB 先例）。
+#[cfg(any(target_os = "linux", test))]
+const MAX_MONITOR_LINE_BYTES: usize = 64 * 1024;
+
+/// 从 udevadm stdout 泵行给 emit（BUG-20261113-135 读侧修复；plain fn
+/// 与 MonitorParser 同款 cfg——spawn 路径 cfg(linux)-only，解析/泵规则
+/// 跨平台可测）。
+///
+/// - 带帽截断（[`nemesis_utils::line_cap::read_line_capped_sync`] 单一
+///   真相源）：超帽行不再无界进内存，游标对齐下一行行首；
+/// - **非 UTF-8 行不再杀死监控**：旧行读 `lines()` 对非 UTF-8 产出
+///   `Err` → 上层 `Err(_) => break` 静默死亡；现整行收齐后一次 lossy
+///   （属性值 mojibake 是可接受的降级，监控存活）；
+/// - `emit` 返回 false = 下游关闭（receiver drop），诚实提前收尾。
+///
+/// 返回 `Err` = IO 错误（非 EOF）——调用方 loud warn。
+#[cfg(any(target_os = "linux", test))]
+fn pump_monitor_lines<R: std::io::BufRead>(
+    reader: &mut R,
+    emit: &mut dyn FnMut(&str) -> bool,
+) -> std::io::Result<()> {
+    loop {
+        match nemesis_utils::line_cap::read_line_capped_sync(reader, MAX_MONITOR_LINE_BYTES) {
+            Ok(Some((bytes, _truncated))) => {
+                let line = String::from_utf8_lossy(&bytes);
+                if !emit(line.trim_end_matches(['\n', '\r'])) {
+                    return Ok(());
+                }
+            }
+            Ok(None) => return Ok(()),
+            Err(e) => return Err(e),
+        }
     }
 }
 

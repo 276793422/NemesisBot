@@ -165,6 +165,14 @@ pub fn get_or_create_session(
     } else {
         nemesis_agent::chat_log::write_session_meta(&session_key, title);
     }
+    // 会话资产区分配（2026-11-12）：新建即绑 `agents/<id>/home`。失败 =
+    // lenient（WARN，会话照常返回；资产区是增量能力，不得让 create 整体
+    // 失败——与 save_bindings 的硬失败语义刻意分层）。
+    if let Err(e) =
+        nemesis_agent::session_home::assign_session_home(Path::new(workspace), &session_key)
+    {
+        tracing::warn!("[session_bindings] home assign failed for {session_key}: {e}");
+    }
     bindings.insert(
         key,
         SessionBinding {

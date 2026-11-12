@@ -117,6 +117,42 @@ fn classify_result_executed_vs_refused() {
     );
 }
 
+// BUG-20261112-109 回归锁：未知工具拒绝（B18 轻归因：裸名 / mcp_ /
+// plugin. 三形态同前缀）与 workflow 入口 args 校验拒绝 = 工具体从未执行
+// → None（此前漏配前缀落到 classify_by_tool 默认成功臂 → ToolFinished /
+// 检查证据面假绿）。看门狗超时（真实执行过但被放弃）= Some(false)，
+// 与 WAL ok 判定 / tool_result_indicates_error 同刻度。
+#[test]
+fn classify_result_unknown_tool_and_validator_rejections_not_success() {
+    for text in [
+        "Error: Unknown tool 'append_file'",
+        "Error: Unknown tool 'mcp_foo_bar'. It looks like an MCP tool: the MCP server may not be connected/discovered yet. Call mcp_list to see available tools, or inform the user.",
+        "Error: Unknown tool 'plugin.slug.tool'. It looks like a WASM plugin tool: the plugin may not be installed or is disabled. Inform the user.",
+    ] {
+        assert_eq!(
+            classify_result("exec", text),
+            None,
+            "未知工具拒绝不得判成功: {text}"
+        );
+    }
+    assert_eq!(
+        classify_result(
+            "exec",
+            "Error: args validation failed for tool 'exec': missing field `command`. Do NOT retry; the workflow template arguments are invalid."
+        ),
+        None,
+        "args 校验拒绝未执行，不得判成功"
+    );
+    assert_eq!(
+        classify_result(
+            "exec",
+            "Error: tool 'exec' timed out after 30s (agents.executor_tool_timeout_secs wall-clock watchdog)."
+        ),
+        Some(false),
+        "看门狗超时 = 执行过但被放弃，必须判失败（同刻度）"
+    );
+}
+
 // run_checks 阶段状态行判据（行首 ✗/⏱ = 失败；缩进回显不误判）。
 #[test]
 fn classify_result_run_checks_stage_lines() {
@@ -233,4 +269,48 @@ fn record_check_summary_truncated_to_cap() {
     let records = sink.lock();
     assert_eq!(records[0].summary.chars().count(), SUMMARY_CAP + 1);
     assert!(records[0].summary.ends_with('…'));
+}
+
+// BUG-20261112-109 回归锁（证据面）：未知工具 / args 校验拒绝即便带可提取
+// command 字段也不入账（没执行过——记进去 = 谎称检查跑了且通过）；看门狗
+// 超时（真实执行过）入账 ok=false。
+#[test]
+fn record_check_never_executed_rejections_not_recorded_watchdog_is_failure() {
+    let map: ChecksCaptureMap = RwLock::new(HashMap::new());
+    map.write()
+        .insert("sess".into(), Arc::new(Mutex::new(Vec::new())));
+
+    record_check(
+        &map,
+        "sess",
+        "exec",
+        r#"{"command":"cargo test"}"#,
+        "Error: Unknown tool 'exec'",
+    );
+    record_check(
+        &map,
+        "sess",
+        "exec",
+        r#"{"command":"cargo test"}"#,
+        "Error: args validation failed for tool 'exec': missing field `timeout_secs`.",
+    );
+    record_check(
+        &map,
+        "sess",
+        "exec",
+        r#"{"command":"cargo test"}"#,
+        "Error: tool 'exec' timed out after 30s (agents.executor_tool_timeout_secs wall-clock watchdog).",
+    );
+
+    let sink = map.read().get("sess").cloned().unwrap();
+    let records = sink.lock();
+    assert_eq!(
+        records.len(),
+        1,
+        "只有看门狗超时（真实执行过）入账；两类拒绝必须缺席"
+    );
+    assert!(
+        !records[0].ok,
+        "watchdog abort is executed-but-failed evidence"
+    );
 }

@@ -257,7 +257,9 @@ pub fn spawn_task_cancel(
 /// 跳过且不入队，done/cancelled 中间节点之下的死链从此不可见（依赖链
 /// 穿不过已完成的环节）。终态过滤在动作侧：只有非终态节点被取消。
 /// 在途派发连带取消（竞态守卫赢才动派发行 + 集群在则下行 task_cancel）。
-/// 每单系统评论留痕（状态机自带 status_change 评论 + 活动 + 通知）；各
+/// 每单系统评论留痕（**转移成功后**落盘，恒接在状态机自带的 status_change
+/// 评论之后——BUG-20261112-113：先斩后奏会在竞态失败的 done 单上残留
+/// 「已取消」谎言评论）；各
 /// 父单经 [`sync_parent_status`] any_cancelled 分支进 in_review + 缺口
 /// 评论。传导断路：某节点取消失败（竞态输给 worker 完成）则其下游不再
 /// 连带取消（与旧「失败不入队」语义等价）。返回被连带取消的编号列表
@@ -296,16 +298,6 @@ pub fn cascade_cancel_dependents(
         if upstream_blocked {
             continue;
         }
-        let _ = store.add_comment(nemesis_board::NewComment {
-            issue_id: dep.id,
-            author: nemesis_board::Actor::system("board"),
-            content: format!(
-                "⛔ {} 已取消，本单级联取消（父单或依赖取消即死链；可 issue.reopen 复活）",
-                root_issue.number
-            ),
-            parent_id: None,
-            ctype: nemesis_board::CommentType::System,
-        });
         // 在途派发连带取消：竞态守卫（赢 = 终结派发行）→ 集群在则下行
         // task_cancel（worker 不再空烧）。输给 worker 回报/超时 sweep →
         // 不动派发行（随后的 transition 状态机会诚实拒绝）。
@@ -327,6 +319,22 @@ pub fn cascade_cancel_dependents(
             stopped.insert(dep.id);
             continue;
         }
+        // 留痕在转移成功后落盘（BUG-20261112-113）：此前评论先于 transition
+        // 写入——竞态输给 worker 完成（done 终态拒绝 cancelled 转移，传导断路
+        // 文档明言的现实路径）时，done 单上残留「已取消」谎言评论 + 对终态单
+        // 错误的 reopen 建议，审计线程事实性失真（cascaded 清单正确不含失败
+        // 单，但单据自身评论在撒谎）。转移成功才落盘 = 评论恒为事实，且恒接
+        // 在状态机自带的 status_change 评论之后（顺序可断言）。
+        let _ = store.add_comment(nemesis_board::NewComment {
+            issue_id: dep.id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "⛔ {} 已取消，本单级联取消（父单或依赖取消即死链；可 issue.reopen 复活）",
+                root_issue.number
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        });
         cascaded.push(dep.number.clone());
         if let Some(pid) = dep.parent_issue_id
             && let Err(e) = sync_parent_status(store, pid, actor)

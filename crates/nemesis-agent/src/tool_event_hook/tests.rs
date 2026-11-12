@@ -117,6 +117,36 @@ async fn tool_error_and_security_block_mark_ok_false() {
     }
 }
 
+// BUG-20261112-109 回归锁（事件活面）：未知工具拒绝（dispatch registry
+// None 臂回灌 `Error: Unknown tool '<名>'`）经 around 链发 ToolFinished
+// 必须 ok=false——此前 classify_result 漏配该前缀，落到默认成功臂，观测
+// 面假绿（Dashboard 工具卡片把「调用根本没执行」显示成成功）。
+#[tokio::test]
+async fn unknown_tool_rejection_finish_event_is_not_ok() {
+    let (tx, mut rx) = broadcast::channel(16);
+    let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
+
+    let result = hook
+        .around_tool_use(
+            sample_call("{}"),
+            next_returns("Error: Unknown tool 'append_file'"),
+        )
+        .await;
+    assert_eq!(result, "Error: Unknown tool 'append_file'");
+
+    let _started = rx.recv().await.unwrap();
+    let finished = rx.recv().await.unwrap();
+    match finished {
+        AgentEvent::ToolFinished {
+            ok, result_preview, ..
+        } => {
+            assert!(!ok, "未知工具拒绝必须判失败（观测面不得假绿）");
+            assert!(result_preview.contains("Unknown tool"));
+        }
+        other => panic!("expected ToolFinished, got {}", other.kind()),
+    }
+}
+
 #[tokio::test]
 async fn previews_truncated_on_char_boundary() {
     let (tx, mut rx) = broadcast::channel(16);

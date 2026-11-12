@@ -2849,7 +2849,36 @@ impl WorkflowEngine {
 
         // Build context from the current execution state (carries the
         // just-resolved review_result through to downstream nodes).
-        let mut wf_ctx = WorkflowContext::new(execution.input.clone());
+        // BUG-20261112-115：identity 必须与 fresh run 同源重建——旧实现
+        // `WorkflowContext::new` 把 WorkflowIdentity 落全空默认值，resume 后
+        // 下游 tool 节点经 SecureExecutor 透传的 RequestContext 三键
+        // （session_key/chat_id/sender_id）全空：审批卡无法回源触发会话、
+        // 会话级豁免按空 session_key 永不命中、归因 metadata（wf_instance/
+        // wf_trigger/wf_depth）清空。trigger_source 就在同一 execution 上
+        // （checkpoint Gap 1 已保证重启恢复带回），recursion_depth 与
+        // fresh run 同款确定性推导（depth_from_trigger）。
+        let (trig_session, trig_chat, trig_sender) = execution
+            .trigger_source
+            .as_ref()
+            .map(|t| t.identity_triple())
+            .unwrap_or_default();
+        let wf_identity = crate::context::WorkflowIdentity {
+            execution_id: execution.id.clone(),
+            workflow_name: execution.workflow_name.clone(),
+            trigger_label: execution
+                .trigger_source
+                .as_ref()
+                .map(|t| t.label())
+                .unwrap_or("unknown")
+                .to_string(),
+            session_key: trig_session,
+            chat_id: trig_chat,
+            sender_id: trig_sender,
+            recursion_depth: crate::call_stack::CallFrame::depth_from_trigger(
+                &execution.trigger_source,
+            ),
+        };
+        let mut wf_ctx = WorkflowContext::new_with_identity(wf_identity, execution.input.clone());
         for (k, v) in &execution.variables {
             wf_ctx.set_var(k, v.clone());
         }

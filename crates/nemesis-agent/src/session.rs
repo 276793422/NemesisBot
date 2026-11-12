@@ -219,6 +219,10 @@ pub struct StoredSession {
     /// L6++：canonical 项目目录（与 project_id 同批写入的缓存镜像）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    /// 会话资产区绑定缓存镜像（2026-11-12；真相源 = chat_log sidecar meta
+    /// 的 `home_agent_id`）。None = 未绑定（存量 lenient，资产落全局）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_agent_id: Option<String>,
 }
 
 /// A single message in stored session history.
@@ -410,6 +414,9 @@ impl SessionStore {
             updated: Local::now(),
             project_id: None,
             project_path: None,
+            // 新会话默认未绑定；分配点 = sessions.create（写 meta），
+            // 这里只是镜像初值（真相源在 sidecar meta）。
+            home_agent_id: None,
         };
         self.sessions
             .write()
@@ -467,6 +474,9 @@ impl SessionStore {
             updated: Local::now(),
             project_id: meta.as_ref().and_then(|m| m.project_id.clone()),
             project_path: meta.as_ref().and_then(|m| m.project_path.clone()),
+            // L6++ 同款：重建顺带水合 home 绑定镜像（真相源在 sidecar meta，
+            // 防止 TTL 重建后镜像悄悄丢失）。
+            home_agent_id: meta.as_ref().and_then(|m| m.home_agent_id.clone()),
         };
         info!(
             key = %key,
@@ -704,6 +714,24 @@ impl SessionStore {
             .get(key)
             .map(|s| (s.project_id.clone(), s.project_path.clone()))
             .unwrap_or((None, None))
+    }
+
+    /// 会话资产区绑定缓存镜像（2026-11-12；真相源在 chat_log sidecar meta）。
+    /// 内存变更不落盘——调用方 save（同 set_project 契约）。
+    pub fn set_home_agent(&self, key: &str, home_agent_id: Option<String>) {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
+            session.home_agent_id = home_agent_id;
+            session.updated = Local::now();
+        }
+    }
+
+    /// 读取会话资产区绑定缓存镜像（None = 未绑定/会话不存在）。
+    pub fn get_home_agent(&self, key: &str) -> Option<String> {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(key)
+            .and_then(|s| s.home_agent_id.clone())
     }
 
     /// Truncate the history, keeping only the last N messages.

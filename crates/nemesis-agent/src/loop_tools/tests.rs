@@ -345,7 +345,9 @@ async fn test_delete_dir_tool() {
 async fn test_sleep_tool() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({ "duration": 1 }).to_string();
+    // BUG-20261112-107：字段名对齐 schema 单一真相源（`seconds`）——旧
+    // 写法 `duration` 是已删除的 nemesis-tools::sleep 死模块字段名的镜像。
+    let args = serde_json::json!({ "seconds": 1 }).to_string();
 
     let start = std::time::Instant::now();
     let result = tool.execute(&args, &ctx).await.unwrap();
@@ -359,7 +361,7 @@ async fn test_sleep_tool() {
 async fn test_sleep_tool_exceeds_max() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({ "duration": 4000 }).to_string();
+    let args = serde_json::json!({ "seconds": 4000 }).to_string();
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
@@ -370,7 +372,7 @@ async fn test_sleep_tool_exceeds_max() {
 async fn test_sleep_tool_zero_duration() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({ "duration": 0 }).to_string();
+    let args = serde_json::json!({ "seconds": 0 }).to_string();
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
@@ -1296,12 +1298,60 @@ async fn test_append_to_new_file() {
 // --- SleepTool edge cases ---
 
 #[tokio::test]
-async fn test_sleep_tool_raw_number() {
+async fn test_sleep_tool_seconds_object() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({"duration": 1}).to_string();
+    let args = serde_json::json!({"seconds": 1}).to_string();
     let result = tool.execute(&args, &ctx).await.unwrap();
     assert!(result.contains("Slept for 1 seconds"));
+}
+
+/// BUG-20261112-107 回归锁：schema 单一真相源（`seconds`）——
+/// parameters() 不得再出现死模块（已删除的 nemesis-tools::sleep）的
+/// `duration` 字段名；validator 据此拒绝 `duration` 形态（实机 T4 实证
+/// 行为锁定为正确：testai-4.2 夹具发 `{"duration":30}` 被回灌
+/// "missing required field 'seconds'"，夹具须对齐 schema 而非反向放宽）。
+#[test]
+fn test_sleep_tool_schema_single_truth_source() {
+    let tool = SleepTool;
+    let schema = tool.parameters();
+    let required = schema["required"].as_array().expect("required array");
+    assert_eq!(required.len(), 1);
+    assert_eq!(required[0], "seconds");
+    let props = schema["properties"].as_object().expect("properties object");
+    assert!(
+        props.contains_key("seconds"),
+        "schema 必须声明 seconds 字段"
+    );
+    assert!(
+        !props.contains_key("duration"),
+        "schema 不得复活死模块字段名 duration"
+    );
+}
+
+/// BUG-20261112-107 回归锁：validator 端——`duration` 形态被拒且文案
+/// 指向 `seconds`（模型自纠指引与 schema 同源）；`seconds` 形态放行。
+#[test]
+fn test_sleep_tool_validator_rejects_duration_alias() {
+    let tool = SleepTool;
+    let schema = tool.parameters();
+    let rejected =
+        crate::args_validator::check(&schema, &serde_json::json!({ "duration": 30 }).to_string());
+    match rejected {
+        crate::args_validator::Outcome::Invalid { message, .. } => {
+            assert!(
+                message.contains("seconds"),
+                "拒绝文案必须指向 seconds（实得: {message}）"
+            );
+        }
+        other => panic!("duration 别名必须被拒，实得: {other:?}"),
+    }
+    let accepted =
+        crate::args_validator::check(&schema, &serde_json::json!({ "seconds": 30 }).to_string());
+    assert!(
+        matches!(accepted, crate::args_validator::Outcome::Valid),
+        "seconds 形态必须放行，实得: {accepted:?}"
+    );
 }
 
 #[tokio::test]
@@ -2033,7 +2083,8 @@ async fn test_exec_tool_workspace_restriction_denied() {
 async fn test_sleep_tool_duration_field() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({"duration": 1}).to_string();
+    // BUG-20261112-107：字段名对齐 schema 真相源（seconds）。
+    let args = serde_json::json!({"seconds": 1}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok());
     assert!(result.unwrap().contains("Slept for 1 seconds"));
@@ -2043,7 +2094,7 @@ async fn test_sleep_tool_duration_field() {
 async fn test_sleep_tool_exceeds_max_duration() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({"duration": 999999}).to_string();
+    let args = serde_json::json!({"seconds": 999999}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("cannot exceed"));
@@ -3513,7 +3564,8 @@ async fn test_list_directory_tool_with_files_and_dirs() {
 async fn test_sleep_tool_with_json_duration() {
     let tool = SleepTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let args = serde_json::json!({"duration": 1}).to_string();
+    // BUG-20261112-107：字段名对齐 schema 真相源（seconds）。
+    let args = serde_json::json!({"seconds": 1}).to_string();
     let start = std::time::Instant::now();
     let result = tool.execute(&args, &ctx).await.unwrap();
     let elapsed = start.elapsed();

@@ -67,6 +67,7 @@ async fn e2e_gateway_memory_pipeline() {
                 "content": "My name is Alice and I love programming in Rust. I work on AI systems.",
                 "session_key": "e2e-test-session"
             }),
+            "",
         )
         .await;
     assert!(
@@ -83,7 +84,7 @@ async fn e2e_gateway_memory_pipeline() {
                 "memory_type": "episodic",
                 "content": "The Rust programming language provides memory safety without garbage collection.",
                 "session_key": "e2e-test-session-2"
-            }),
+            }), ""
         )
         .await;
     assert!(store_result2.success, "Second store should succeed");
@@ -97,6 +98,7 @@ async fn e2e_gateway_memory_pipeline() {
                 "query": "Alice",
                 "limit": 5
             }),
+            "",
         )
         .await;
     assert!(
@@ -121,6 +123,7 @@ async fn e2e_gateway_memory_pipeline() {
                 "triple_object": "programming in Rust",
                 "confidence": 0.95
             }),
+            "",
         )
         .await;
     assert!(
@@ -139,6 +142,7 @@ async fn e2e_gateway_memory_pipeline() {
                 "memory_type": "graph",
                 "limit": 5
             }),
+            "",
         )
         .await;
     assert!(graph_search.success, "Graph search should succeed");
@@ -156,6 +160,7 @@ async fn e2e_gateway_memory_pipeline() {
                 "query": "Rust",
                 "limit": 5
             }),
+            "",
         )
         .await;
     assert!(search_rust.success, "Rust search should succeed");
@@ -167,7 +172,11 @@ async fn e2e_gateway_memory_pipeline() {
 
     // Step 9: List memory status
     let list_result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(list_result.success, "List should succeed");
     assert!(

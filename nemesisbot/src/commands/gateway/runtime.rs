@@ -28,8 +28,10 @@ use tracing::error;
 use tracing::{info, warn};
 
 // M5（2026-10-10 集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
-// （approval.respond/pending 捕获 web_mgr）。
-#[cfg(all(feature = "cluster", feature = "security"))]
+// （approval.respond/pending 捕获 web_mgr）。无 cfg 门——L07（2026-11-01）
+// estop 挂点（下方**无门控**区域直调 resolve_orphans）是全特征组合下的
+// 必有用点；曾挂 cfg(all(cluster,security)) 使 cluster-off 构建在此处
+// E0599（BUG-20261112-108，check-vm-trim 收窄态实捕）。
 use nemesis_types::agent::ApprovalResponder;
 
 use super::GatewayCtx;
@@ -224,6 +226,11 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "cluster")]
     let mut cluster_adapter = runtime_handoff.cluster_adapter;
 
+    // 太微（taiwei，静态直链子系统）：runtime 相位起点 = exit 事件的
+    // duration 计时原点。
+    #[cfg(nb_taiwei)]
+    let taiwei_started = std::time::Instant::now();
+
     // 签名验证启动自验 → 审计链一条（接入计划 §4；Layer 8 Merkle
     // append-only——事后改日志藏不住）。warn 失败进程仍活着，此处如实记
     // denied；enforce 失败活不到这里（main 阶段已 exit 86）。
@@ -339,6 +346,20 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "health")]
     {
         health_server.set_ready(true);
+    }
+
+    // 太微（taiwei，静态直链子系统）：装配完成即 spawn——先把隐私声明物化
+    // 进工作区（缺才写，best-effort；真相源 = 静态库内嵌资产），再 flush
+    // pending（离线期补发）后发 startup。spawn 不阻塞就绪；禁用/配置不完整
+    // 在任务内静默返回。
+    #[cfg(nb_taiwei)]
+    {
+        let taiwei_ws = common::workspace_path(&home);
+        let taiwei_privacy = taiwei_ws.join("PRIVACY.md");
+        if !taiwei_privacy.exists() {
+            let _ = std::fs::write(&taiwei_privacy, crate::taiwei_bridge::privacy_md());
+        }
+        crate::taiwei_bridge::spawn_startup(&home, &taiwei_ws, common::VERSION_INFO.version);
     }
 
     // Create and start ProcessManager for plugin window lifecycle + dedup
@@ -1753,6 +1774,17 @@ pub(crate) async fn run_runtime(
     println!();
     println!("Shutting down...");
 
+    // 太微（taiwei，静态直链子系统）：exit 事件先行 spawn（与下方 drain
+    // 并行跑，通常在 drain 窗口内就完成）；teardown 收尾处有界等待（3s
+    // 让路预算）。
+    #[cfg(nb_taiwei)]
+    crate::taiwei_bridge::spawn_exit(
+        &home,
+        &common::workspace_path(&home),
+        common::VERSION_INFO.version,
+        taiwei_started.elapsed().as_secs(),
+    );
+
     // W6（2026-10-25 加固）：优雅
     // 停机 drain——先关入口（draining 闸：外部通道新消息诚实回执，内部
     // 通道静默丢），再有界等在途 turn 归零，然后才 teardown。超时明示
@@ -1918,6 +1950,18 @@ pub(crate) async fn run_runtime(
     // event loop forever while the gateway worker had already finished.
     #[cfg(target_os = "macos")]
     nemesis_desktop::main_thread_handoff::request_exit();
+
+    // 太微（taiwei，静态直链子系统）：exit 任务有界收尾（3s 让路——正常
+    // 早已随 drain 完成；超时放弃 = 诚实边界「硬杀场景 exit 丢失」，pending
+    // 兜底不适用本路径，事件不落盘）。
+    #[cfg(nb_taiwei)]
+    {
+        let taiwei_exit_done = crate::taiwei_bridge::wait_exit(3000);
+        tracing::debug!(
+            taiwei_exit_flushed = taiwei_exit_done,
+            "taiwei exit 等待收尾"
+        );
+    }
 
     Ok(())
 }

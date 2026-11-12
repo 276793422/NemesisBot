@@ -617,6 +617,7 @@ fn test_stored_session_serialization() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -995,6 +996,7 @@ fn test_stored_session_debug() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };
@@ -1016,6 +1018,7 @@ fn test_stored_session_legacy_json_loads_covers_none() {
         summary_covers_up_to: Some(7), // set, then strip from JSON below
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -1143,6 +1146,7 @@ fn test_trim_to_limit_drops_oldest_adjusts_covers() {
         summary_covers_up_to: Some(1040),
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -1166,6 +1170,7 @@ fn test_trim_to_limit_no_drop_without_summary() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -1189,6 +1194,7 @@ fn test_trim_to_limit_never_touches_verbatim_tail() {
         summary_covers_up_to: Some(10),
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -1208,6 +1214,7 @@ fn test_trim_to_limit_under_limit_noop() {
         summary_covers_up_to: Some(100),
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };
@@ -1926,6 +1933,7 @@ fn test_get_or_create_no_rebuild_when_store_file_exists() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     })
@@ -2235,6 +2243,7 @@ fn test_load_from_disk_skips_non_json_and_unreadable_entries() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: Local::now(),
         updated: Local::now(),
     };

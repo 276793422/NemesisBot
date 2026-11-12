@@ -25,6 +25,10 @@
 //! - stdout 是协议帧专用通道，任何日志一律 stderr（ACP 同纪律）。
 //! - JSON-RPC 通知（无 id 帧，如 `notifications/initialized`）按 JSON-RPC
 //!   语义不回帧（[`is_notification`] 判定）。
+//! - 入站帧带 64MB 字节闸（[`crate::acp::LineReader`]，acp 同源成帧纪律
+//!   ——BUG-20261029-160 家族）：超限帧回 -32700 继续服务、绝不无限物化
+//!   直到 OOM；非 UTF-8 帧 lossy 替换 → -32700，一行坏字节不再终止整个
+//!   server。
 //! - 无 resources/prompts 实际内容、无增量流式（`run` 整段返回）；MCP
 //!   客户端自带的超时对长任务生效。
 //! - sync ToolHandler → async 桥用 `block_in_place` + `Handle::block_on`
@@ -36,9 +40,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nemesis_mcp::server::{McpServer, ToolHandler};
-use nemesis_mcp::types::{McpTool, ToolCallResult};
+use nemesis_mcp::types::{JSONRPCError, JSONRPCResponse, McpTool, ToolCallResult};
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+
+use crate::acp::{LineReader, MAX_FRAME_BYTES};
 
 /// MCP server 身份名（initialize 的 serverInfo.name）。
 pub const SERVER_NAME: &str = "nemesisbot";
@@ -363,7 +369,12 @@ async fn tool_memory_search(asm: Arc<McpServeAssembly>, args: Value) -> ToolCall
     #[cfg(feature = "memory")]
     if let Some(exec) = &asm.memory_executor {
         let res = exec
-            .execute("memory_search", &json!({"query": query, "limit": limit}))
+            .execute(
+                "memory_search",
+                &json!({"query": query, "limit": limit}),
+                // MCP server 无会话上下文 → 恒主域（与改造前行为一致）。
+                "",
+            )
             .await;
         if res.success {
             sections.push(res.content);
@@ -632,13 +643,43 @@ pub async fn run_server(home: std::path::PathBuf) -> Result<(), String> {
     }
 
     let stdin = tokio::io::stdin();
-    let mut lines = tokio::io::BufReader::new(stdin).lines();
-    let mut stdout = tokio::io::stdout();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|e| format!("stdin read failed: {e}"))?
-    {
+    let stdout = tokio::io::stdout();
+    serve_frames(stdin, stdout, Arc::new(server), MAX_FRAME_BYTES).await
+}
+
+/// stdio 成帧循环：带字节闸的行读取（[`LineReader`]——acp 同源成帧纪律，
+/// BUG-20261029-160 家族）→ 通知不回帧 → [`McpServer::handle_raw`] →
+/// 逐帧写回。超限帧回 -32700 继续服务（绝不无限物化）；非 UTF-8 帧
+/// lossy 收敛为 -32700，一行坏字节不再终止整个 server。生产入口
+/// [`run_server`]；`frame_cap` 是测试 seam（小 cap 直接测超限路径——acp
+/// `serve_with_frame_cap` 同款）。
+async fn serve_frames<R, W>(
+    reader: R,
+    mut writer: W,
+    server: Arc<McpServer>,
+    frame_cap: usize,
+) -> Result<(), String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut frames = LineReader::new(reader, frame_cap);
+    while let Some((oversized, line)) = frames.next_line().await? {
+        if oversized {
+            // 成帧字节闸：超限帧回 -32700（id 未知 → null）并继续服务。
+            let err = JSONRPCError::new(
+                JSONRPCError::PARSE_ERROR,
+                "Parse error: frame exceeds size limit",
+            );
+            let resp = JSONRPCResponse::error(Value::Null, err);
+            let Ok(frame) = serde_json::to_string(&resp) else {
+                continue;
+            };
+            if write_frame(&mut writer, &frame).await.is_err() {
+                break; // stdout 断开 = 客户端退出：安静收尾。
+            }
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -648,17 +689,21 @@ pub async fn run_server(home: std::path::PathBuf) -> Result<(), String> {
             continue;
         }
         // stdout 断开 = 客户端退出：安静收尾。
-        if tokio::io::AsyncWriteExt::write_all(&mut stdout, format!("{resp}\n").as_bytes())
-            .await
-            .is_err()
-        {
-            break;
-        }
-        if tokio::io::AsyncWriteExt::flush(&mut stdout).await.is_err() {
+        if write_frame(&mut writer, &resp).await.is_err() {
             break;
         }
     }
     Ok(())
+}
+
+/// 写一行协议帧（追加换行）+ flush。
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    line: &str,
+) -> std::io::Result<()> {
+    writer.write_all(line.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await
 }
 
 #[cfg(test)]

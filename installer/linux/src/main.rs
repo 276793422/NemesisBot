@@ -34,6 +34,8 @@ struct Args {
     no_shortcuts: bool,
     autostart: bool,
     launch: bool,
+    no_taiwei: bool,
+    precise_location: bool,
     package: Option<PathBuf>,
     help: bool,
 }
@@ -54,6 +56,8 @@ fn parse_from(argv: &[String]) -> Args {
             "--no-shortcuts" => args.no_shortcuts = true,
             "--autostart" => args.autostart = true,
             "--launch" => args.launch = true,
+            "--no-taiwei" => args.no_taiwei = true,
+            "--precise-location" => args.precise_location = true,
             "--help" | "-h" => args.help = true,
             _ => {
                 if let Some(v) = a.strip_prefix("--dir=") {
@@ -110,6 +114,8 @@ nbsetup-linux — NemesisBot Linux 安装器
   --autostart                  开机自启（systemd user unit；systemctl 缺席
                                时 WARN 跳过）
   --launch                     安装后启动 Dashboard
+  --no-taiwei               关闭匿名使用统计（缺省开启；向导可随时改）
+  --precise-location           开启精确定位（缺省关闭；单独同意 opt-in）
   --accept-signature-risk      签名异常（红色级）时知情继续（缺 = 退出码 5）
   --force                      允许版本降级
   --no-shortcuts               不建 ~/.local/bin 符号链接 / .desktop / PATH
@@ -186,6 +192,8 @@ fn silent_install(package: &std::path::Path, target: PathBuf, args: &Args) -> i3
         no_shortcuts: args.no_shortcuts,
         autostart: args.autostart,
         launch: args.launch,
+        taiwei_opt_in: !args.no_taiwei,
+        precise_opt_in: args.precise_location,
     };
     match ops::run_install(&opts, None) {
         Ok(o) => {
@@ -280,6 +288,30 @@ fn ask_dir(default: &std::path::Path) -> Option<PathBuf> {
     })
 }
 
+/// D1 卸载原因问卷（stdin 一问）。返回值与 CLI `taiwei emit uninstall
+/// --reason` 白名单逐字节一致；回车/EOF/非法输入 = 跳过（None）。
+#[cfg(target_os = "linux")]
+fn ask_uninstall_reason() -> Option<&'static str> {
+    print!("方便告诉我们卸载原因吗？[1=没什么用 2=有问题 3=重装 4=其他，回车跳过]: ");
+    use std::io::Write;
+    std::io::stdout().flush().ok()?;
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return None;
+    }
+    let choice = match line.trim() {
+        "1" => Some("not_useful"),
+        "2" => Some("issue"),
+        "3" => Some("reinstall"),
+        "4" => Some("other"),
+        _ => None,
+    };
+    if let Some(r) = choice {
+        eprintln!("已记录卸载原因: {r}");
+    }
+    choice
+}
+
 /// 终端安装向导。
 #[cfg(target_os = "linux")]
 fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) -> i32 {
@@ -330,6 +362,32 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
             }
         }
     }
+    // 匿名使用统计（M4）：向导默认勾选（Y 回车即开）；--no-taiwei 旗标
+    // 或显式 n = 安装完成前持久写 opt-out 权威位。
+    let mut taiwei_opt_in = !args.no_taiwei;
+    if !args.silent && taiwei_opt_in {
+        match ask("匿名使用统计（不含对话内容，可随时关闭） [Y/n]: ", true) {
+            Some(v) => taiwei_opt_in = v,
+            None => {
+                eprintln!("[FAIL] 输入已关闭");
+                return 3;
+            }
+        }
+    }
+    // 精确定位（M6）：单独同意 opt-in，默认不勾（仅总闸勾选时提问）。
+    let mut precise_opt_in = args.precise_location;
+    if !args.silent && taiwei_opt_in && !precise_opt_in {
+        match ask(
+            "精确定位（启动时一次 OS 级定位，默认不开启） [y/N]: ",
+            false,
+        ) {
+            Some(v) => precise_opt_in = v,
+            None => {
+                eprintln!("[FAIL] 输入已关闭");
+                return 3;
+            }
+        }
+    }
     // 红色级知情确认（向导形态 = 显式 y；manifest 红或外壳红任一命中）。
     let accept_risk = if info.sig.grade == setup_core::sig::SigGrade::Red
         || shell.grade == setup_core::sig::SigGrade::Red
@@ -361,6 +419,8 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
         no_shortcuts: args.no_shortcuts,
         autostart,
         launch: args.launch,
+        taiwei_opt_in,
+        precise_opt_in: taiwei_opt_in && precise_opt_in,
     };
     let progress = |p: setup_core::pkgfile::Progress| match p {
         setup_core::pkgfile::Progress::Hashing(f) => {
@@ -419,7 +479,10 @@ fn wizard_uninstall(dir: &std::path::Path) -> i32 {
             return 3;
         }
     }
-    match ops::run_uninstall_confirmed(dir) {
+    // D1 卸载原因问卷：确认后、卸载链前问（emit 后 bot 很快被删，时序契约）。
+    // 回车/EOF/非法输入 = 跳过（None），绝不阻断卸载。
+    let reason = ask_uninstall_reason();
+    match ops::run_uninstall_confirmed(dir, reason) {
         Ok(o) => {
             report_uninstall(&o);
             0
@@ -460,9 +523,13 @@ mod tests {
             "--no-shortcuts",
             "--autostart",
             "--launch",
+            "--no-taiwei",
+            "--precise-location",
         ]));
         assert!(a.silent && a.uninstall && a.accept_risk && a.force);
         assert!(a.desktop_shortcut && a.no_shortcuts && a.autostart && a.launch);
+        assert!(a.no_taiwei, "--no-taiwei 旗标解析生效");
+        assert!(a.precise_location, "--precise-location 旗标解析生效");
     }
 
     #[test]

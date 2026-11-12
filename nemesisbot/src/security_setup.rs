@@ -692,13 +692,35 @@ pub(crate) fn load_security_rules(
 
 /// Load scanner full config from `config.scanner.json`.
 ///
-/// Returns None if the file doesn't exist or can't be parsed.
+/// Returns None if the file doesn't exist or can't be parsed. 读失败/JSON
+/// 损坏 loud warn（BUG-20261113-134）：文件在但读不出来 = 第 7 层链静默
+/// 不装配（fail-open 方向），必须让人看见——与 load_security_rules /
+/// security.limits 对同类损坏的告警纪律同源；返回值语义不变（None =
+/// 未配置），只补可观测性。
 #[cfg(feature = "scanner")]
 pub(crate) fn load_scanner_full_config(
     config_path: &std::path::Path,
 ) -> Option<nemesis_security::scanner::ScannerFullConfig> {
-    let data = nemesis_utils::fsutil::read_config_string(config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+    let data = match nemesis_utils::fsutil::read_config_string(config_path) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(
+                "[Security] Failed to read scanner config: {}, scanner chain not initialized",
+                e
+            );
+            return None;
+        }
+    };
+    let json: serde_json::Value = match serde_json::from_str(&data) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "[Security] Failed to parse scanner config JSON: {}, scanner chain not initialized",
+                e
+            );
+            return None;
+        }
+    };
 
     let enabled: Vec<String> = json
         .get("enabled")

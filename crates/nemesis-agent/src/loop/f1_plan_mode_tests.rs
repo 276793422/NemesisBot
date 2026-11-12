@@ -354,17 +354,17 @@ fn plan_mode_write_allowed_unit_cases() {
     let al = f1_loop();
 
     // 无 workspace_root（standalone）→ 一律拦截（诚实从严）。
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#, "sess"));
 
     al.set_workspace_root(dir.path().to_path_buf());
     // 坏 JSON / 缺 path / 非字符串 → 拒。
-    assert!(!al.plan_mode_write_allowed("write_file", "not json"));
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"content": "x"}"#));
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": 42}"#));
+    assert!(!al.plan_mode_write_allowed("write_file", "not json", "sess"));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"content": "x"}"#, "sess"));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": 42}"#, "sess"));
     // 例外只认 write_file。
-    assert!(!al.plan_mode_write_allowed("grep", r#"{"path": "plans/a.md"}"#));
+    assert!(!al.plan_mode_write_allowed("grep", r#"{"path": "plans/a.md"}"#, "sess"));
     // 命中。
-    assert!(al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#));
+    assert!(al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#, "sess"));
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +387,8 @@ fn plan_products_root_overrides_plans_dir_for_project_sessions() {
         &format!(
             r#"{{"path": {}}}"#,
             serde_json::to_string(&home.path().join("plans").join("p.md")).unwrap()
-        )
+        ),
+        "sess",
     ));
     // home/plans 深层新文件 → 放行（最长存在祖先）。
     assert!(al.plan_mode_write_allowed(
@@ -395,7 +396,8 @@ fn plan_products_root_overrides_plans_dir_for_project_sessions() {
         &format!(
             r#"{{"path": {}}}"#,
             serde_json::to_string(&home.path().join("plans").join("a/b/p.md")).unwrap()
-        )
+        ),
+        "sess",
     ));
     // home 根内但 plans 外 → 拒（例外只认产物目录子树）。
     assert!(!al.plan_mode_write_allowed(
@@ -403,7 +405,8 @@ fn plan_products_root_overrides_plans_dir_for_project_sessions() {
         &format!(
             r#"{{"path": {}}}"#,
             serde_json::to_string(&home.path().join("notes.md")).unwrap()
-        )
+        ),
+        "sess",
     ));
     // 项目目录 plans/ 绝对路径 → 拒（旧放行点被 收紧）。
     assert!(!al.plan_mode_write_allowed(
@@ -411,18 +414,20 @@ fn plan_products_root_overrides_plans_dir_for_project_sessions() {
         &format!(
             r#"{{"path": {}}}"#,
             serde_json::to_string(&project_dir.path().join("plans").join("p.md")).unwrap()
-        )
+        ),
+        "sess",
     ));
     // 相对路径 plans/x.md（解析仍 join workspace_root=项目目录）→ 拒；
     // 模型必须写绝对路径。
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": "plans/x.md"}"#));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path": "plans/x.md"}"#, "sess"));
     // `..` 逃逸（home/plans/../evil 落 home 根）→ 拒。
     assert!(!al.plan_mode_write_allowed(
         "write_file",
         &format!(
             r#"{{"path": {}}}"#,
             serde_json::to_string(&home.path().join("plans").join("..").join("evil.md")).unwrap()
-        )
+        ),
+        "sess",
     ));
 }
 
@@ -438,7 +443,7 @@ fn plan_products_dir_falls_back_to_workspace_plans_without_override() {
         dir.path().join("plans"),
         "无 override 回落 workspace/plans"
     );
-    assert!(al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#));
+    assert!(al.plan_mode_write_allowed("write_file", r#"{"path": "plans/a.md"}"#, "sess"));
 }
 
 #[tokio::test]

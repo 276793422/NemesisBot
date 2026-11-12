@@ -829,7 +829,9 @@ async fn wasm_filename_forms() {
         .err()
         .unwrap_or_else(|| panic!("compile"));
     assert!(matches!(err, PluginError::Compile(_)), "{err:?}");
-    // C: 盘符相对形态拒（文件名纯度闸先于读盘）。
+    // C: 盘符形态的平台语义分叉（文件名纯度闸先于读盘）：Windows 下
+    // `C:x.wasm` 是盘符相对 → 纯文件名闸拒；POSIX 下只是含冒号的合法
+    // 文件名 → 直通读盘，死于编译（与 custom.wasm 同臂）。
     let dir2 = tempfile::tempdir().expect("tmp2");
     let src2 = mk(dir2.path(), "C:evil.wasm", b"garbage wasm");
     let err2 = inst
@@ -837,5 +839,9 @@ async fn wasm_filename_forms() {
         .await
         .err()
         .unwrap_or_else(|| panic!("drive-relative"));
-    assert!(err2.to_string().contains("纯文件名"), "{err2:?}");
+    if cfg!(windows) {
+        assert!(err2.to_string().contains("纯文件名"), "{err2:?}");
+    } else {
+        assert!(matches!(err2, PluginError::Compile(_)), "{err2:?}");
+    }
 }

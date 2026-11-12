@@ -822,12 +822,13 @@ impl AgentLoop {
             let (agent_id, session_key) = self.route_message(msg);
             self.set_mode_with_event(want, &session_key, &msg.chat_id);
             // （项目 home 收编）：回执写明实际放行目录绝对路径
-            // （项目会话 = home/plans，主会话 = workspace/plans）——切 plan
-            // 即知计划产物落哪，不用等一次拒绝回灌。
+            // （绑定会话 = home/plans，项目会话 = 项目 agent home/plans，
+            // 主会话 = workspace/plans）——切 plan 即知计划产物落哪，
+            // 不用等一次拒绝回灌。
             let response = match want {
                 crate::types::AgentMode::Plan => {
                     let plans = self
-                        .plan_products_dir()
+                        .plan_products_dir_for(&session_key)
                         .map(|d| d.display().to_string())
                         .unwrap_or_else(|| "<未配置>".to_string());
                     format!(
@@ -1338,7 +1339,16 @@ impl AgentLoop {
         let ws_for_uploads = self.workspace_root.read().clone();
         let uploads_base =
             ws_for_uploads.unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-        let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base);
+        // 会话资产区（2026-11-12）：不经 sessions.create 到达的会话在此
+        // 惰性补分配（幂等——已绑定零写入）；绑定会话的 URL 预取产物落
+        // 自家 home/uploads，未绑定（存量 lenient / 分配失败）落全局
+        // workspace/uploads——行为零变化。
+        if let Err(e) = crate::session_home::assign_session_home(&uploads_base, &session_key) {
+            tracing::warn!("[admission] lazy home assign failed for {session_key}: {e}");
+        }
+        let uploads_dir = crate::session_home::resolve_session_home(&uploads_base, &session_key)
+            .map(|h| h.join("uploads"))
+            .unwrap_or_else(|| nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base));
         let (media_for_attach, url_notes) = crate::image_attach::fetch_url_media(
             &msg.media,
             &uploads_dir,
@@ -1371,6 +1381,11 @@ impl AgentLoop {
         }
         .merge_into_text(processed_content);
         let image_refs = attach.ref_strings();
+        // PLAN 234 C4 配套：早落盘 user 行彼时引用未产出（见上方早落盘
+        // 注释），现原位回补 `images`——fork 复制 / self-heal 重建据行内
+        // images 还原 image_refs（F-E 语义）；缺 = 分叉会话带图上下文
+        // 凭空丢失（实锤：源 store 有图、fork store 无图、续问 NO_IMAGE）。
+        crate::chat_log::patch_last_user_row_images(&session_key, &image_refs);
         // per-fire tool-round budget set by the gateway cron fire
         // handler from the job's max_rounds payload. Absent/unparsable → None
         // → the turn runs under the global max_turns.

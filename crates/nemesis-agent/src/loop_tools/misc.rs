@@ -429,9 +429,12 @@ impl Tool for SleepTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        // schema 单一真相源：parameters() 钉 `seconds`（required），dispatch
+        // 前置校验（check_tool_args）已把任何其他形态拒之门外——此处的
+        // `duration` 别名兜底永不执行（BUG-20261112-107 横向对齐：镜像
+        // 已删除的 nemesis-tools::sleep 死模块字段名，假兼容已清除）。
         let seconds = if let Ok(val) = serde_json::from_str::<serde_json::Value>(args) {
             val.get("seconds")
-                .or_else(|| val.get("duration"))
                 .and_then(|v| v.as_u64())
                 .ok_or("Missing or invalid 'seconds' field (must be a positive integer)")?
         } else {
