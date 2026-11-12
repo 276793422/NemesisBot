@@ -181,8 +181,9 @@ impl AgentLoop {
     ///    hidden / Plan 闸 / 安全 8 层 / guardian 全部生效（9 层安全零降级，
     ///    这是直接调工具对象被否决的原因）；
     /// ④ `__ASYNC__` ACK → 存自足续行快照（`build_dispatch_snapshot_messages`
-    ///    合成最小合法序列），完成回调复用 `handle_cluster_continuation`
-    ///    全套（续行 LLM / 持久化 / 回原通道 / 崩溃恢复）；
+    ///    合成最小合法序列），完成回调复用 `run_continuation_turn`
+    ///    （续行回主路：快照恢复 / 持久化 / 回原通道 / 崩溃恢复，执行面
+    ///    走主循环 run_llm_loop 全管线）；
     /// ⑤ 同步结果或 Err（集群未启用 / 节点不存在 / 自调用守卫）→ 直接回复。
     pub(crate) async fn process_user_dispatch(
         &self,
@@ -218,6 +219,8 @@ impl AgentLoop {
                 checkpoint_turn: None,
                 steer: false,
                 work: None,
+
+                source_node: None,
             },
         );
         if !log_existed {

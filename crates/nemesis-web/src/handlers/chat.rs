@@ -32,6 +32,7 @@ impl ModuleHandler for ChatHandler {
             "clear",
             "todo_get",
             "context_status",
+            "prompt_segment",
             "set_mode",
             "get_mode",
             "set_effort",
@@ -129,6 +130,23 @@ impl ModuleHandler for ChatHandler {
                 "session_key": session_key,
                 "context": status,
                 "tool_defs": tool_defs,
+            })));
+        }
+        // 提示词内容可视化（2026-11-13）：meter 弹层段按钮 → 独立查看器页
+        // 的取数面。七段之一的全文分解，与 context_status 共享 AgentLoop
+        // 底层取数（session_prompt_segment，单一真相源）；只读、无 LLM。
+        if cmd == "prompt_segment" {
+            let segment = data
+                .as_ref()
+                .and_then(|d| d.get("segment"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing segment".to_string())?
+                .to_string();
+            let result = agent_loop.session_prompt_segment(&session_key, &segment)?;
+            return Ok(Some(serde_json::json!({
+                "session_id": session_id,
+                "session_key": session_key,
+                "prompt_segment": result,
             })));
         }
         // F1（devtool-upgrade 阶段 4）：plan/build 模式切换。与 /plan /build

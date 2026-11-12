@@ -66,6 +66,12 @@ pub struct ChatLogMeta<'a> {
     /// assistant 最终回复行随行落盘（`"work"` 键）。`None` 不写——直答
     /// （无中间轮）与旧条目读侧不受影响（与 file_changes 同一宽容读契约）。
     pub work: Option<&'a WorkTimeline>,
+    /// 集群续行节点徽章（2026-09-23 集群续行归属，2026-11-12 续行回主路
+    /// 收编进 meta）：`"source_node"` 字段 = 实际执行任务的集群节点名
+    /// （`cluster_rpc` 派发的续行回复由主 LLM 转述，干活的是远端节点）。
+    /// `Some` 时 Dashboard 渲染「节点 X」徽章（与模型徽章并列）；`None`
+    /// （普通回复）不写该键——旧 jsonl 条目照常解析，读侧缺字段 = 无徽章。
+    pub source_node: Option<&'a str>,
 }
 
 /// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
@@ -81,7 +87,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.file_changes,
         meta.deliverables,
         meta.checkpoint_turn,
-        None,
+        meta.source_node,
         meta.steer,
         meta.work,
         None,

@@ -1751,7 +1751,13 @@ impl AgentLoop {
                     est_tools,
                     est_mcp,
                     est_summary,
-                    estimated.saturating_sub(est_system_full),
+                    // （BUG 修 2026-11-13，prompt_segment 同源锁暴露）：此处
+                    // 必须用 est_history——内联 `estimated - est_system_full`
+                    // 在 covers≥1 时对本就不含 system turn 的切片二次扣减
+                    // system（摘要在场 + 无锚点形态下 history 段值少算一个
+                    // system prompt 的量）。est_history 已按 covers 分臂正确
+                    // 处理（锚点臂同款消费）。
+                    est_history,
                 )
             };
         // （2026-11-09 展示口径统一）absent 态的 used（信号口径）= 纯历史尾部
@@ -1829,6 +1835,214 @@ impl AgentLoop {
             "compaction_label": in_flight.map(|e| e.label),
         });
         json
+    }
+
+    // （提示词内容可视化 2026-11-13）：七段之一的**全文分解**。与
+    // session_context_status 共享同一底层取数/渲染路径（单一真相源）——
+    // 本函数只是那些渲染函数返回值的原文回传，不复刻渲染逻辑。段
+    // tokens 为估算口径，公式与 meter 估算分量逐段一致（tools/mcp 取
+    // 紧凑序列化、history 取 model_facing 投影、其余取原文估算）——
+    // 唯 system 段有意口径分离：meter 的 system 值 = 全文 − 冻结
+    // SKILL/MEMORY（两段单列计量），查看器回传全文并注记归属。
+    // parts 是通用分解槽：skill/memory 天然两截（冻结+动态）、history
+    // 每轮一条（模型实际看到的 model_facing 原文 + tool_calls/图片
+    // 引用旁注）、tools/mcp 恒一条（空表也回传 "[]"——tokens 与 meter
+    // 的空注册基线对齐）、其余单条。
+    pub fn session_prompt_segment(
+        &self,
+        session_key: &str,
+        segment_key: &str,
+    ) -> Result<serde_json::Value, String> {
+        const SEGMENTS: [&str; 7] = [
+            "system", "skill", "memory", "tools", "mcp", "summary", "history",
+        ];
+        if !SEGMENTS.contains(&segment_key) {
+            return Err(format!(
+                "unknown segment {segment_key:?} (expected one of: {})",
+                SEGMENTS.join("/")
+            ));
+        }
+        let est = |s: &str| crate::session::estimate_tokens(s);
+        let seg_part =
+            |label: &str, kind: &str, content: &str, tokens: usize| -> serde_json::Value {
+                serde_json::json!({
+                    "label": label,
+                    "kind": kind,
+                    "tokens": tokens,
+                    "content": content,
+                })
+            };
+        let instance = self.get_or_create_instance(session_key);
+        let history = instance.get_history();
+        let cache = instance.get_summary_cache();
+        let split = self.config.system_prompt_split.as_ref();
+        let (title, parts) = match segment_key {
+            "system" => {
+                // system turn 全文（meter 单列计量的冻结 SKILL/MEMORY 注入面
+                // 仍在其内——label 注记口径，配比归属看另外两段）。
+                let content = history
+                    .first()
+                    .filter(|t| t.role == "system")
+                    .map(|t| t.content.clone())
+                    .unwrap_or_default();
+                let parts = if content.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![seg_part(
+                        "全文（meter 单列的 SKILL/MEMORY 冻结注入面包含在内）",
+                        "markdown",
+                        &content,
+                        est(&content),
+                    )]
+                };
+                ("系统提示词", parts)
+            }
+            "skill" => {
+                let mut parts = Vec::new();
+                if let Some(s) = split.filter(|s| !s.skills.is_empty()) {
+                    parts.push(seg_part(
+                        "启动冻结 skills 段",
+                        "markdown",
+                        &s.skills,
+                        est(&s.skills),
+                    ));
+                }
+                let loader = self.skills_loader.read().clone();
+                if let Some(l) = loader {
+                    let infos = l.list_skills();
+                    if !infos.is_empty() {
+                        let catalog = crate::skills_digest::catalog_from_skills_infos(&infos);
+                        let text = crate::skills_digest::digest_message(
+                            &crate::skills_digest::render_skills_digest(&catalog),
+                        );
+                        parts.push(seg_part(
+                            "技能目录 digest（每轮注入）",
+                            "markdown",
+                            &text,
+                            est(&text),
+                        ));
+                    }
+                }
+                ("SKILL", parts)
+            }
+            "memory" => {
+                let mut parts = Vec::new();
+                if let Some(s) = split.filter(|s| !s.memory.is_empty()) {
+                    parts.push(seg_part(
+                        "启动冻结 memory 段",
+                        "markdown",
+                        &s.memory,
+                        est(&s.memory),
+                    ));
+                }
+                let profile = self.user_profile_section_now();
+                if !profile.is_empty() {
+                    parts.push(seg_part(
+                        "用户画像（每轮渲染）",
+                        "markdown",
+                        &profile,
+                        est(&profile),
+                    ));
+                }
+                ("MEMORY", parts)
+            }
+            "tools" | "mcp" => {
+                let want_mcp = segment_key == "mcp";
+                let title = if want_mcp {
+                    "MCP 工具定义"
+                } else {
+                    "工具定义"
+                };
+                let defs: Vec<_> = self
+                    .build_tool_defs()
+                    .into_iter()
+                    .filter(|d| d.function.name.starts_with("mcp_") == want_mcp)
+                    .collect();
+                // tokens 与 meter 同公式（紧凑序列化估算）；content 用
+                // pretty 形态便于阅读。空表也回传（"[]"）——与 meter 的
+                // 空注册基线（2 tok）对齐，不造「meter 有值查看器为空」。
+                let tokens = est(&serde_json::to_string(&defs).unwrap_or_default());
+                let content = serde_json::to_string_pretty(&defs).unwrap_or_default();
+                (
+                    title,
+                    vec![seg_part(
+                        "工具 defs JSON（openai wire 形态，每请求注入）",
+                        "json",
+                        &content,
+                        tokens,
+                    )],
+                )
+            }
+            "summary" => {
+                let parts = cache
+                    .as_ref()
+                    .filter(|c| !c.text.is_empty())
+                    .map(|c| vec![seg_part("压缩摘要全文", "markdown", &c.text, est(&c.text))])
+                    .unwrap_or_default();
+                ("历史摘要", parts)
+            }
+            _ => {
+                // history：模型实际看到的逐字尾部（covers 之后；covers==0
+                // 时剔除首部 system turn——meter 的 history 段值同样做了
+                // est_system_full 剔除）。content = model_facing 原文
+                // （tool 轮为投影后的模型视角，与计量字节一致）；
+                // tool_calls/图片引用走旁注字段，不混入被估算的文本。
+                let covers = cache
+                    .as_ref()
+                    .map(|c| c.covers_up_to)
+                    .filter(|&c| c >= 1)
+                    .unwrap_or(0)
+                    .min(history.len());
+                let start = if covers == 0
+                    && history.first().map(|t| t.role == "system").unwrap_or(false)
+                {
+                    1
+                } else {
+                    covers
+                };
+                let parts: Vec<serde_json::Value> = history[start..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let facing = t.model_facing_content();
+                        let role_label = t
+                            .tool_name
+                            .as_deref()
+                            .map(|n| format!("tool({n})"))
+                            .unwrap_or_else(|| t.role.clone());
+                        let mut p = seg_part(
+                            &format!("{role_label} #{}", start + i + 1),
+                            "markdown",
+                            facing.as_ref(),
+                            est(facing.as_ref()),
+                        );
+                        if !t.tool_calls.is_empty() {
+                            let calls: Vec<serde_json::Value> = t
+                                .tool_calls
+                                .iter()
+                                .map(|c| {
+                                    serde_json::json!({"name": c.name, "arguments": c.arguments})
+                                })
+                                .collect();
+                            p["tool_calls"] = serde_json::Value::Array(calls);
+                        }
+                        if !t.image_refs.is_empty() {
+                            p["image_refs_count"] = serde_json::json!(t.image_refs.len());
+                        }
+                        p
+                    })
+                    .collect();
+                ("会话历史", parts)
+            }
+        };
+        let total: u64 = parts.iter().filter_map(|p| p["tokens"].as_u64()).sum();
+        Ok(serde_json::json!({
+            "segment": segment_key,
+            "title": title,
+            "parts": parts,
+            "total_tokens": total,
+            "generated_at": chrono::Local::now().to_rfc3339(),
+        }))
     }
 
     // -----------------------------------------------------------------------

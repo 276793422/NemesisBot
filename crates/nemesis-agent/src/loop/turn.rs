@@ -370,9 +370,61 @@ impl AgentLoop {
             )
             .await;
 
+        // turn 末收尾 = 共享函数 [`Self::finalize_turn_shared`]（续行回主路
+        // B1 抽取：run_agent_loop_internal 与集群/后台续行交接
+        // （bus.rs `run_continuation_turn`）共用同一实现——单一真相源，
+        // 纯搬移，正常路径字节级不变（golden 护住）。
+        self.finalize_turn_shared(
+            &instance,
+            session_key,
+            channel,
+            chat_id,
+            &trace_id,
+            start_time,
+            cron_job_id,
+            cron_job_name,
+            summary_at_load,
+            // node_badge：主路无节点归属（None 字节不变）。
+            None,
+            &events,
+        )
+        .await
+    }
+
+    /// turn 末共享收尾（续行回主路 B1，2026-11-12）：摘要回写判定 →
+    /// store 全量持久化 → chat_log assistant 行 → 交付物/标题 →
+    /// ConversationEnd observer → 最终回复提取。
+    ///
+    /// 从 `run_agent_loop_internal` 尾部**纯搬移**（逐行原样），两个调用方：
+    /// - 主路 turn（run_agent_loop_internal）——`node_badge: None`，行为
+    ///   字节级不变；
+    /// - 续行交接（bus.rs `run_continuation_turn`）——`node_badge` 透传
+    ///   worker 节点名（对齐旧 `persist_final_reply` 的
+    ///   `append_chat_log_with_model_and_node` 分支），store 由浅 append
+    ///   升级为全量 set_history（保真提升，计划 §4.2）。
+    ///
+    /// `session_key` 为空（旧磁盘形态续行快照）时跳过 store/chat_log/
+    /// 交付物/标题四块（旧行为：出站照发、不落库）；observer 恒走。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn finalize_turn_shared(
+        &self,
+        instance: &AgentInstance,
+        session_key: &str,
+        channel: &str,
+        chat_id: &str,
+        trace_id: &str,
+        start_time: std::time::Instant,
+        cron_job_id: Option<&str>,
+        cron_job_name: Option<&str>,
+        summary_at_load: Option<crate::instance::SummaryCache>,
+        node_badge: Option<&str>,
+        events: &[AgentEvent],
+    ) -> Result<String, String> {
         // Maybe trigger summarization.
-        self.maybe_update_summary(&instance, session_key, channel, chat_id)
-            .await;
+        if !session_key.is_empty() {
+            self.maybe_update_summary(instance, session_key, channel, chat_id)
+                .await;
+        }
 
         // Persist to session store. Post-refactor (inline-summarization): the
         // store holds the FULL instance history (system + user + assistant +
@@ -403,7 +455,11 @@ impl AgentLoop {
             })
             .unwrap_or_default();
 
-        if let Some(ref store) = self.session_store {
+        // session_key 为空 = 旧磁盘形态续行快照：跳过落库（旧行为——出站
+        // 照发、store/chat_log 不写），observer 恒走。
+        if let Some(ref store) = self.session_store
+            && !session_key.is_empty()
+        {
             // Ensure session exists in store.
             store.get_or_create(session_key);
 
@@ -496,7 +552,7 @@ impl AgentLoop {
             }),
             Some(true)
         );
-        if abnormal_ending {
+        if !session_key.is_empty() && abnormal_ending {
             // 本轮中间 assistant 正文 = 最后一条 user 行（turn 起点）之后的
             // assistant 条目，排除空正文与最终回复本身（它由下方主路径落盘，
             // 避免双份）。倒序收集正序写出（保 jsonl 时序）。
@@ -554,6 +610,10 @@ impl AgentLoop {
                 checkpoint_turn: None, // 标记只在 user 行（turn 开始锚）
                 steer: false,
                 work: work_timeline.as_ref(),
+                // 集群续行节点徽章（2026-09-23 语义迁移）：续行交接
+                // （bus.rs run_continuation_turn）透传 worker 节点名，
+                // 主路恒 None（与旧行为逐字节一致）。
+                source_node: node_badge,
             },
         );
 
@@ -575,7 +635,7 @@ impl AgentLoop {
             .count() as u32
             + 1;
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
-            trace_id: trace_id.clone(),
+            trace_id: trace_id.to_string(),
             session_key: session_key.to_string(),
             total_rounds: rounds,
             duration_ms,
@@ -908,6 +968,7 @@ impl AgentLoop {
             context,
             trace_id,
             &tokio_util::sync::CancellationToken::new(),
+            None,
         )
         .await
     }
@@ -915,24 +976,33 @@ impl AgentLoop {
     /// `resume_execution` 的带取消令牌变体（per-task cancel）：集群续行
     /// 任务执行前由 cluster_agent 注册 token，cancel_task 下行时可中断 LLM 循环。
     /// 语义与 [`Self::resume_execution`] 相同，仅 token 透传。
+    ///
+    /// 续行回主路（2026-11-12）加 `turn_budget`：None = 沿用全局预算
+    /// （B 端 cluster_agent 行为不变）；A 端续行交接传 Some(20)——续行
+    /// 20 轮预算语义保留（run_llm_loop 的 per-turn 覆盖闸）。
+    ///
+    /// BUG-20261106-039 work 桶收口职责移交调用方：本函数不再 finish——
+    /// A 端续行交接的收尾在 `finalize_turn_shared`（work 键随续行回合落
+    /// chat_log），B 端 cluster_agent 在本函数返回后自行 finish。此处若
+    /// 保留 finish 会抢走桶，finalize 的 finish 拿到 None（work 键丢失）。
     pub async fn resume_execution_with_token(
         &self,
         instance: &AgentInstance,
         context: &RequestContext,
         trace_id: &str,
         cancel_token: &tokio_util::sync::CancellationToken,
+        turn_budget: Option<u32>,
     ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
-        let events = self
-            .run_llm_loop(instance, context, trace_id, false, cancel_token, None)
-            .await;
-        // BUG-20261106-039：集群续行回合不在 run_agent_loop_internal 落盘
-        // 链上（最终回复由 loop_continuation 直接 append，行不带 work 键
-        // ——既有文档语义「续行未消费，下一 begin 丢弃」），桶在此收口：
-        // 不留跨 turn 残余，`chat.work_current` 在续行结束~下一消息之间
-        // 诚实回 None。
-        let _ = self.work_recorder.finish(&context.session_key);
-        events
+        self.run_llm_loop(
+            instance,
+            context,
+            trace_id,
+            false,
+            cancel_token,
+            turn_budget,
+        )
+        .await
     }
 }
 

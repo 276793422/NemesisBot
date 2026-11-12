@@ -215,14 +215,15 @@ impl AgentLoop {
     /// 立即返回此 marker。这里与 __ASYNC__（集群）同构：存续行
     /// 快照 + 中间消息收尾本回合；任务完成时闭包侧向 bus 发布
     /// `subagent_continuation:{task_id}`，gate_inbound 拦截后走
-    /// dispatch_continuation → handle_cluster_continuation 全复用
-    /// （单飞闸认领 + 快照加载 + 续行 + 持久化 + finish_handling
+    /// dispatch_continuation → run_continuation_turn 全复用
+    /// （续行回主路：会话串行闸 + 单飞闸认领 + 快照加载 + 主循环
+    /// run_llm_loop 续行 + 持久化 + finish_handling
     /// 收口自清——磁盘快照保留到最终回复持久化后，发现 F）。
     ///
     /// 快照保存必须 **inline await**（不能像 __ASYNC__ 那样
     /// spawn）：后台子代理毫秒级即可完成并回灌，spawn 式保存要
     /// 等下一个 await 点才落内存，load 端扑空即静默且回复
-    /// （handle_cluster_continuation 的 debug-skip 分支）。inline
+    /// （load-miss 的 debug-skip 分支）。inline
     /// 消除该竞态；一次小盘写的延迟可忽略。
     ///
     /// 格式：`__BG_SPAWN__:{task_id}`（编码端 = agent_factory 注入

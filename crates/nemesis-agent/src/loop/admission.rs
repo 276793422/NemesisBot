@@ -63,8 +63,8 @@ pub(crate) enum GateOutcome {
     /// `/build <task> repo:<node>`。会话已在 gate 获取（Maintenance 同款，
     /// 防并发回合踩会话）；tail 走 `process_user_dispatch`：经
     /// `handle_tool_call` 全管线（安全 8 层 / estop / Plan 闸）提交
-    /// `cluster_rpc`，ACK 后存自足续行快照，完成回调复用
-    /// `handle_cluster_continuation` 呈现结果并回原通道。
+    /// `cluster_rpc`，ACK 后存自足续行快照，完成回调经
+    /// `run_continuation_turn`（续行回主路）呈现结果并回原通道。
     UserDispatch {
         task_text: String,
         node_id: String,
@@ -659,6 +659,8 @@ impl AgentLoop {
                 checkpoint_turn: None, // 回绝消息不开始 turn，无 checkpoint 标记
                 steer: false,
                 work: None,
+
+                source_node: None,
             },
         );
         crate::chat_log::append_chat_log_meta(
@@ -675,6 +677,8 @@ impl AgentLoop {
                 checkpoint_turn: None,
                 steer: false,
                 work: None,
+
+                source_node: None,
             },
         );
         if !log_existed {
@@ -725,8 +729,8 @@ impl AgentLoop {
                 return GateOutcome::Continuation(task_id.to_string());
             }
             // (devtool-upgrade)：后台 subagent 完成回灌 —— 与集群
-            // 续行同构：同走 dispatch_continuation → handle_cluster_continuation
-            // （快照加载 + 续行 + 持久化 + 自清，全复用零新路径）。
+            // 续行同构：同走 dispatch_continuation → run_continuation_turn
+            // （快照加载 + 回主路续行 + 持久化 + 自清，全复用零新路径）。
             if msg
                 .sender_id
                 .starts_with(nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX)
@@ -1155,7 +1159,8 @@ impl AgentLoop {
     /// 接线 adapters/loop_manager/projects manager reinject_tx 恒 Some）。
     /// 未接线（standalone/测试）诚实留痕跳过——消息仍由下一回合尾巴排空，
     /// 与修复前行为一致，不回退。
-    fn kick_orphaned_queue_if_idle(&self, session_key: &str) {
+    /// pub(crate)：bus.rs（兄弟模块）的续行交接排空臂复用（续行回主路 2026-11-12）。
+    pub(crate) fn kick_orphaned_queue_if_idle(&self, session_key: &str) {
         if self.is_session_busy(session_key) {
             return; // 正常路径：在途回合的尾巴负责排空
         }
@@ -1296,6 +1301,8 @@ impl AgentLoop {
                     checkpoint_turn: cp_turn,
                     steer: false,
                     work: None,
+
+                    source_node: None,
                 },
             );
             if !log_existed {
@@ -1787,7 +1794,11 @@ impl AgentLoop {
 
     /// Create and store a cancellation token for a session.
     /// Returns the token for the caller to pass into the processing pipeline.
-    fn create_cancel_token(&self, session_key: &str) -> tokio_util::sync::CancellationToken {
+    /// pub(crate)：bus.rs 续行交接复用（续行回主路 2026-11-12）。
+    pub(crate) fn create_cancel_token(
+        &self,
+        session_key: &str,
+    ) -> tokio_util::sync::CancellationToken {
         let token = tokio_util::sync::CancellationToken::new();
         self.cancel_tokens
             .insert(session_key.to_string(), token.clone());
@@ -1795,7 +1806,8 @@ impl AgentLoop {
     }
 
     /// Remove the cancellation token for a session after processing completes.
-    fn remove_cancel_token(&self, session_key: &str) {
+    /// pub(crate)：bus.rs 续行交接复用（续行回主路 2026-11-12）。
+    pub(crate) fn remove_cancel_token(&self, session_key: &str) {
         self.cancel_tokens.remove(session_key);
     }
 

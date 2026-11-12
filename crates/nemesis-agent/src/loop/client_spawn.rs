@@ -168,6 +168,8 @@ impl AgentLoop {
                     checkpoint_turn: None, // 委派非 loop turn，无 checkpoint 锚
                     steer: false,
                     work: None,
+
+                    source_node: None,
                 },
             );
             if !log_existed {
@@ -256,6 +258,8 @@ impl AgentLoop {
                             checkpoint_turn: None,
                             steer: false,
                             work: None,
+
+                            source_node: None,
                         },
                     );
                     if let Some(ref store) = self.session_store {

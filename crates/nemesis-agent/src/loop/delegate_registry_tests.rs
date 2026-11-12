@@ -153,7 +153,9 @@ async fn delegate_no_begin_on_malformed_marker() {
 
 #[tokio::test]
 async fn delegate_finish_on_continuation_arrival() {
-    let loop_ = AgentLoop::new(Box::new(NeverCalledProvider), d5_config());
+    // dispatch_continuation 现为 `self: &Arc<Self>`（续行回主路 spawn 臂
+    // 要求 'static）——测试经 Arc 驱动。
+    let loop_ = std::sync::Arc::new(AgentLoop::new(Box::new(NeverCalledProvider), d5_config()));
     let instance = AgentInstance::new(d5_config());
     let ctx = RequestContext::new("web", "chat-d5c", "user1", "session-d5c");
     let reg = crate::subagent_registry::global();
@@ -205,7 +207,7 @@ async fn delegate_finish_on_continuation_arrival() {
 
 #[tokio::test]
 async fn delegate_finish_silently_misses_unknown_task() {
-    let loop_ = AgentLoop::new(Box::new(NeverCalledProvider), d5_config());
+    let loop_ = std::sync::Arc::new(AgentLoop::new(Box::new(NeverCalledProvider), d5_config()));
     // 后台子代理续行（`subagent_continuation:{task_id}`）的 task_id 不在
     // 注册表（行 id 是 `subagent:{uuid}`）→ finish 静默 miss =「不在册
     // 不回写」，不得 panic。
@@ -230,7 +232,7 @@ async fn delegate_finish_silently_misses_unknown_task() {
 
 #[tokio::test]
 async fn delegate_real_outcome_overwrites_user_cancel_view() {
-    let loop_ = AgentLoop::new(Box::new(NeverCalledProvider), d5_config());
+    let loop_ = std::sync::Arc::new(AgentLoop::new(Box::new(NeverCalledProvider), d5_config()));
     let instance = AgentInstance::new(d5_config());
     let ctx = RequestContext::new("web", "chat-d5d", "user1", "session-d5d");
     let reg = crate::subagent_registry::global();
