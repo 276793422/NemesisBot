@@ -426,6 +426,32 @@ impl ChannelManager {
                 self.metrics
                     .dispatched
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // BUG-20261112-118：出站镜像集中触发（单一扇出点）。此前
+                // 依赖各通道 send() 末尾自行调 sync_outbound——但 Channel
+                // trait 的 add_sync_target 默认是 Ok(()) 存根（24 通道仅
+                // 6 个 override），setup_sync_targets 经 trait 调用在惰性
+                // 通道上无效：manager 层 sync_targets 表即使配好，通道级
+                // map 恒空 → send 侧无扩散 → sync_to 配置静默断线。现改
+                // 为 manager 在投递成功后按本表扇出，不依赖通道 override。
+                // 回环防护：镜像消息（sync_via 已盖章）不再二次扩散。
+                let mirrors: Vec<(String, Arc<dyn Channel>)> = if msg.meta.sync_via.is_none() {
+                    self.sync_targets
+                        .read()
+                        .await
+                        .get(&channel_name)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(|t| map.get(t).map(|c| (t.clone(), Arc::clone(c))))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                // send 按值收消息：仅在确有镜像义务时预拷贝 content
+                //（无 sync 配置的热路径零拷贝）。
+                let mirror_content = (!mirrors.is_empty()).then(|| msg.content.clone());
                 // 项 C：钩子接线时发消息副本、留原值投递后记账（send 按
                 // 值收消息）；未接线形态零拷贝零回调，与历史行为一致。
                 let hook_wired = self.notify_hook.lock().is_some();
@@ -440,7 +466,20 @@ impl ChannelManager {
                     ch.send(msg).await
                 };
                 match result {
-                    Ok(()) => Ok(()),
+                    Ok(()) => {
+                        if let Some(content) = mirror_content.as_deref() {
+                            for (target_name, target_ch) in mirrors {
+                                crate::base::send_sync_mirror(
+                                    &channel_name,
+                                    &target_name,
+                                    target_ch,
+                                    content,
+                                )
+                                .await;
+                            }
+                        }
+                        Ok(())
+                    }
                     Err(e) => {
                         error!(
                             "[ChannelManager] Failed to dispatch outbound message to {}: {}",

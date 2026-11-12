@@ -53,6 +53,12 @@ pub trait Channel: Send + Sync {
     ///
     /// Returns an error if the target name matches this channel's own name
     /// (self-sync prevention).
+    ///
+    /// 默认实现是**静默 no-op 存根**（`Ok(())`）：未 override 的通道上
+    /// 此调用不落任何状态。出站镜像不依赖它（`ChannelManager`
+    /// dispatch_outbound 集中触发，BUG-20261112-118）；只有带 BaseChannel
+    /// 且有**入站镜像扇出**（读循环 `sync_to_targets`）的通道
+    /// （external/websocket）必须 override 委托固有实现。
     fn add_sync_target(&self, _name: &str, _channel: Arc<dyn Channel>) -> Result<()> {
         Ok(())
     }
@@ -204,6 +210,61 @@ fn split_sender_id(sender_id: &str) -> (&str, &str) {
     }
 }
 
+/// Sends a single sync mirror message to one target channel.
+///
+/// Single truth source for mirror construction (BUG-20261112-118): stamp
+/// `meta.sync_via` with the source channel name (the receiving side's loop
+/// guard), use `"web:broadcast"` as chat ID for the `"web"` target, and
+/// apply a 3-second send timeout. Both mirror origins share this path:
+/// channel-level `sync_to_targets` (inbound-origin fan-outs from
+/// external/websocket read loops) and the manager-level centralized trigger
+/// in `ChannelManager::dispatch_outbound` (outbound-origin fan-outs).
+pub(crate) async fn send_sync_mirror(
+    source_name: &str,
+    target_name: &str,
+    target_ch: Arc<dyn Channel>,
+    content: &str,
+) {
+    let mut chat_id = String::new();
+    if target_name == "web" {
+        chat_id = "web:broadcast".to_string();
+    }
+
+    let mut msg = OutboundMessage::new(target_name, &chat_id, content);
+    // 单一盖章点：接收侧（manager dispatch_outbound 的集中触发）见到
+    // 该标记不再二次扩散——互配 `sync_to` 的两通道会无限乒乓，每轮都是
+    // 一次真实外部投递的消息风暴（BUG-57 回环防护语义，随出站触发点
+    // 迁到 manager 层保持不变）。
+    msg.meta.sync_via = Some(source_name.to_string());
+
+    debug!(
+        channel = %source_name,
+        target = %target_name,
+        content_len = content.len(),
+        chat_id = %chat_id,
+        "[Channel] sending to sync target"
+    );
+
+    match tokio::time::timeout(std::time::Duration::from_secs(3), target_ch.send(msg)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!(
+                channel = %source_name,
+                target = %target_name,
+                error = %e,
+                "[Channel] failed to sync to target"
+            );
+        }
+        Err(_) => {
+            warn!(
+                channel = %source_name,
+                target = %target_name,
+                "[Channel] sync to target timed out"
+            );
+        }
+    }
+}
+
 impl BaseChannel {
     /// Creates a new `BaseChannel` with the given name and an empty allow-list.
     pub fn new(name: impl Into<String>) -> Self {
@@ -339,13 +400,12 @@ impl BaseChannel {
     /// Sends a message to all configured sync targets.
     ///
     /// Skips any target whose name matches this channel's name (double-check).
-    /// For the `"web"` target, uses `"web:broadcast"` as the chat ID.
-    /// Each send has a 3-second timeout to avoid blocking.
+    /// Each send is delegated to [`send_sync_mirror`] (stamp + web:broadcast
+    /// + 3s timeout, single truth source).
     ///
-    /// 构造的镜像消息统一盖 `meta.sync_via` 章（单一盖章
-    /// 点）：接收通道 `send()` 里的出站镜像（`sync_outbound`）见到该标记
-    /// 不再二次扩散——互配 `sync_to` 的两通道会无限乒乓，每轮都是一次
-    /// 真实外部投递的消息风暴。
+    /// 入站镜像起点（external/websocket 读循环）经此扇出；出站镜像的扇出
+    /// 已集中到 `ChannelManager::dispatch_outbound`（send 成功后触发），
+    /// 不再依赖各通道 `send()` 自行扩散。
     pub async fn sync_to_targets(&self, content: &str) {
         // Collect targets into a Vec within a block scope so the RwLockReadGuard
         // is dropped before any.await. parking_lot::RwLockReadGuard is !Send,
@@ -370,63 +430,8 @@ impl BaseChannel {
         );
 
         for (target_name, target_ch) in entries {
-            let mut chat_id = String::new();
-            if target_name == "web" {
-                chat_id = "web:broadcast".to_string();
-            }
-
-            let mut msg = OutboundMessage::new(&target_name, &chat_id, content);
-            msg.meta.sync_via = Some(self.name.clone());
-
-            debug!(
-                channel = %self.name,
-                target = %target_name,
-                content_len = content.len(),
-                chat_id = %chat_id,
-                "[Channel] sending to sync target"
-            );
-
-            match tokio::time::timeout(std::time::Duration::from_secs(3), target_ch.send(msg)).await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    warn!(
-                        channel = %self.name,
-                        target = %target_name,
-                        error = %e,
-                        "[Channel] failed to sync to target"
-                    );
-                }
-                Err(_) => {
-                    warn!(
-                        channel = %self.name,
-                        target = %target_name,
-                        "[Channel] sync to target timed out"
-                    );
-                }
-            }
+            send_sync_mirror(&self.name, &target_name, target_ch, content).await;
         }
-    }
-
-    /// Outbound sync mirror for the `send()` path.
-    ///
-    /// Mirrors a message this channel just delivered to its sync targets —
-    /// but **not** if the message itself arrived via a sync mirror
-    /// (`meta.sync_via` set): channels that mutually configure each other as
-    /// sync targets would ping-pong every mirror forever, each hop being a
-    /// real external delivery (message storm). Inbound-origin fan-outs
-    /// (external/websocket read loops) are the mirror chain's origin and call
-    /// `sync_to_targets` directly.
-    pub async fn sync_outbound(&self, msg: &OutboundMessage) {
-        if msg.meta.sync_via.is_some() {
-            debug!(
-                channel = %self.name,
-                sync_via = msg.meta.sync_via.as_deref().unwrap_or_default(),
-                "[Channel] sync mirror message not re-propagated (loop guard)"
-            );
-            return;
-        }
-        self.sync_to_targets(&msg.content).await;
     }
 
     /// Handles an inbound message after checking the allow-list.
