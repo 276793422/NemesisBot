@@ -808,10 +808,12 @@ fn quoted_secret_not_tutorial(text: &str, start: usize, end: usize) -> bool {
 }
 
 /// aws_access_key 文档 canonical + 占位符豁免（2026-11-11 三次横扫批立闸；
-/// 机制化重构批扩占位符臂）：匹配段含 "example"（AWS 官方文档
-/// `AKIAIOSFODNN7EXAMPLE`）或 16 字符值段全同/SCREAMING 大写占位
-///（`AKIA` + `YOURACCESSKEY…` 教程形态）→ demote。判定单一真相源
-/// `crate::credential::exemptions`（Layer 4 同源判据）。
+/// 机制化重构批扩占位符臂；2026-11-12 占位臂词表收窄）：匹配段含
+/// "example"（AWS 官方文档 `AKIAIOSFODNN7EXAMPLE`）或 16 字符值段全同/
+/// 占位词大写段（`AKIA` + `YOURACCESSKEY…` 教程形态）→ demote。判定
+/// 单一真相源 `crate::credential::exemptions`（Layer 4 同源判据；词表
+/// 收窄理由见 `is_screaming_vocab_placeholder`——base36 真实键全字母形态
+/// 裸 SCREAMING 漏检 ≈0.66%）。
 fn aws_access_not_doc_example(text: &str, start: usize, end: usize) -> bool {
     let Some(seg) = text.get(start..end) else {
         return false;
@@ -821,7 +823,7 @@ fn aws_access_not_doc_example(text: &str, start: usize, end: usize) -> bool {
     }
     // 值段 = 4 字符前缀（AKIA/ASIA…）后的 16 字符。
     let value = seg.get(4..).unwrap_or(seg);
-    !exemptions::is_uniform_char_value(value) && !exemptions::is_screaming_placeholder(value)
+    !exemptions::is_uniform_char_value(value) && !exemptions::is_screaming_vocab_placeholder(value)
 }
 
 /// aws_secret_key 文档 canonical + 占位符豁免（同上批；机制化重构批扩占位

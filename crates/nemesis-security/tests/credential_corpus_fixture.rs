@@ -65,6 +65,16 @@ fn corpus() -> Vec<(&'static str, &'static str, String, bool)> {
         "aws_access_key_id = AKIA0000000000000000".into(),
         false,
     );
+    // 全字母尾段 = 真实键形态（base36 真实键全字母概率 (26/36)^16≈0.66%；
+    // 2026-11-12 词表收窄根修：占位豁免需命中占位词表，顺序字母段不是
+    // 占位词——裸 SCREAMING 误豁免 = 每约 150 把真键漏检一把）。
+    g(
+        &mut c,
+        "aws_access_key",
+        "全字母真实形态",
+        "aws_access_key_id = AKIAABCDEFGHIJKLMNOP".into(),
+        true,
+    );
     // ── aws_secret_key ──
     g(
         &mut c,
