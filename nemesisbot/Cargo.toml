@@ -55,12 +55,6 @@ security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/
 # implies security（管线里第 7 层臂 + clamav + zip 随它进出）；关 = 第 7 层诚实短路。
 scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 
-# 太微子系统（商业装配槽）：feature 开 = 编译 taiwei/ 槽位实现进 exe。
-# 开源构建默认关（槽位为 stub——误开由 stub compile_error 诚实拦下）。
-# 开 = 透传 geoloc-win（Windows WinRT 定位后端；运行期闸在实现内——
-# 配置关 = 零装配零调用）。
-taiwei = ["dep:nemesis-taiwei", "nemesis-taiwei/geoloc-win"]
-
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
@@ -258,12 +252,6 @@ nemesis-logger = { workspace = true }
 nemesis-utils = { workspace = true }
 # 系统集成执行体（system register/unregister/cert 子命令；安装器 spawn 契约面）。
 nemesis-sysint = { workspace = true }
-# 太微子系统协议库（装配槽 path 依赖：slots/taiwei；开源构建 = stub 槽位仅作
-# 解析。cargo 对 optional 依赖恒解析——path/git 依赖无论 feature 开关都会被
-# 读 manifest/拉取（2026-11-12 双实验实证），所以公开 manifest 永远只指向
-# stub，私有实现经 git submodule（slots/taiwei/impl）声明，商业装配在装配
-# 复制体里把 path 改指挂载点后随 feature=taiwei 编译）。
-nemesis-taiwei = { path = "../slots/taiwei", optional = true }
 # Z1 session fork: chat_log copy goes through the process-global path manager;
 # the CLI verifies it agrees with the resolved home (refuses to half-fork).
 nemesis-path = { workspace = true }
