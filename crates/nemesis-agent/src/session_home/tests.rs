@@ -155,6 +155,44 @@ fn test_assign_dir_create_failure_is_err() {
 }
 
 #[test]
+fn test_tampered_home_agent_id_is_rejected() {
+    // BUG-20261112-116 红绿：meta 是 workspace 内文件（LLM 经 write_file
+    // 可触达），home_agent_id 形态不受控时直接拼 <workspace>/agents/<id>/
+    // home 会把 meta 污染升级成路径越界（plans 写放行锚点、uploads/images
+    // 落盘、memory 域同源跟随，且内部 fs 写不经 WorkspaceBoundary）。
+    // 解析点强制受控 uuid simple 形态：污染 = None（lenient 降级）。
+    let key = unique_key("tampered");
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_path_buf();
+
+    for evil in [
+        "../../../evil",                     // 相对越界链
+        "..\\..\\evil",                      // Windows 分隔符越界
+        "sub\\dir",                          // 分隔符注入
+        "0123456789abcdef0123456789abcdefX", // 33 位（长度不符）
+        "0123456789ABCDEF0123456789ABCDEF",  // 大写 hex（非生成形态）
+        "not-a-uuid-at-all",                 // 任意短串
+    ] {
+        crate::chat_log::write_session_home_agent(&key, evil);
+        assert!(
+            resolve_home_agent_id(&key).is_none(),
+            "污染形态 {evil:?} 必须被拒"
+        );
+        assert!(
+            resolve_session_home(&workspace, &key).is_none(),
+            "污染形态 {evil:?} 不得解析出 home 路径"
+        );
+    }
+
+    // 合法生成形态照常通过（uuid simple：32 位小写 hex）。
+    let good = uuid::Uuid::new_v4().simple().to_string();
+    crate::chat_log::write_session_home_agent(&key, &good);
+    assert_eq!(resolve_home_agent_id(&key).as_deref(), Some(good.as_str()));
+    let home = resolve_session_home(&workspace, &key).expect("合法绑定照常解析");
+    assert_eq!(home, workspace.join("agents").join(&good).join("home"));
+}
+
+#[test]
 fn test_memory_domain_fork_bound_is_home_vector() {
     // fork 血缘 + home 绑定 → 独立记忆域 <home>/memory/memory_vector。
     let key = unique_key("mem-fork");
