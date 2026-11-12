@@ -81,7 +81,7 @@ impl NodeExecutor for ParallelNodeExecutor {
         &self,
         node: &NodeDef,
         context: &HashMap<String, serde_json::Value>,
-        _wf_ctx: &WorkflowContext,
+        wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
 
@@ -109,10 +109,17 @@ impl NodeExecutor for ParallelNodeExecutor {
 
         // Spawn a task for each child node
         let mut handles = Vec::new();
+        // BUG-20261112-115 同族：子分支 local_wf_ctx 必须继承父 identity——
+        // 旧实现 `WorkflowContext::new` 落全空默认值，parallel 块里的 tool
+        // 子节点经 SecureExecutor 透传的 RequestContext 三键全空（审批卡
+        // 无法回源触发会话 / 会话级豁免不命中 / 归因清空），fresh run 即
+        // 中招。identity 在 spawn 前克隆，子任务内 new_with_identity 重建。
+        let identity = wf_ctx.identity().clone();
         for (idx, child_def) in children.into_iter().enumerate() {
             let registry = Arc::clone(&self.registry);
             let ctx = context.clone();
             let branch_key = format!("branch_{}", idx);
+            let identity = identity.clone();
 
             handles.push(tokio::spawn(async move {
                 let executor = match registry.get(&child_def.node_type) {
@@ -130,7 +137,8 @@ impl NodeExecutor for ParallelNodeExecutor {
 
                 // Create a local context for the child node since we cannot
                 // borrow the parent's wf_ctx across spawn boundaries.
-                let local_wf_ctx = WorkflowContext::new(ctx.clone());
+                let local_wf_ctx =
+                    WorkflowContext::new_with_identity(identity.clone(), ctx.clone());
                 let result = executor.execute(&child_def, &ctx, &local_wf_ctx).await;
                 (branch_key, result)
             }));
