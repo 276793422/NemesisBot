@@ -352,7 +352,9 @@ details.wt-think-live > summary {
   gap: 4px;
 }
 .wt-round-text {
-  color: var(--text-muted);
+  /* 中间轮叙述与正常回复同色（2026-11-13 用户反馈：muted 灰在明暗两套
+     主题下都看不清；叙述是对话内容不是元数据，应继承主文本色）。 */
+  color: var(--text);
   font-size: var(--text-sm, 13px);
   line-height: 1.5;
   white-space: pre-wrap;
