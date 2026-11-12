@@ -58,8 +58,10 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 /// 入站帧长度上限：成帧层必须有字节闸——失控客户端发一条无换行的超大
 /// 「行」时，`lines()`/`next_line()` 会无限物化直到 OOM。
-/// 64MB 远超合法 ACP 帧（session prompt 随上下文增长）所需。
-const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// 64MB 远超合法帧所需（ACP session prompt 随上下文增长；mcp-serve 的
+/// tools/call 载荷同量级）——两个 stdio 入口共用同帽（BUG-20261113-133
+/// 起 mcp-serve 复用 [`LineReader`]，单一成帧纪律）。
+pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // 纯函数映射层（测试对象）
@@ -781,8 +783,8 @@ async fn read_dispatch_loop(
 ///
 /// 无效 UTF-8 以 lossy 替换（U+FFFD）——后续解析必失败回 -32700，服务
 /// 存活；旧 `lines()` 形态遇无效 UTF-8 直接终止整个 server（同族脆弱点，
-/// 一并收敛）。
-struct LineReader<R: AsyncRead + Unpin> {
+/// 一并收敛）。ACP 与 mcp-serve 两个 stdio 入口共享（crate 内唯一实现）。
+pub(crate) struct LineReader<R: AsyncRead + Unpin> {
     reader: R,
     /// 已从 reader 消费、尚未结算的字节（跨 `next_line` 持久）。
     pending: Vec<u8>,
@@ -792,7 +794,7 @@ struct LineReader<R: AsyncRead + Unpin> {
 }
 
 impl<R: AsyncRead + Unpin> LineReader<R> {
-    fn new(reader: R, cap: usize) -> Self {
+    pub(crate) fn new(reader: R, cap: usize) -> Self {
         Self {
             reader,
             pending: Vec::new(),
@@ -803,7 +805,7 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
 
     /// 结算一行。返回 `Ok(None)` = EOF 且无残余；`Some((oversized, line))`
     /// = 一行（不含 `\n`，超过 cap 截断）；`Err` = IO 错误。
-    async fn next_line(&mut self) -> Result<Option<(bool, String)>, String> {
+    pub(crate) async fn next_line(&mut self) -> Result<Option<(bool, String)>, String> {
         loop {
             if self.dropping {
                 // 超限残余：丢到换行为止。

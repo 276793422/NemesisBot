@@ -469,3 +469,62 @@ async fn r840_rewind_after_redo_honest_skipped_receipt() {
     let rows = crate::chat_log::read_chat_log(&key, usize::MAX, None).1;
     assert_eq!(rows, 2, "第二次 rewind 行截断照常");
 }
+
+// BUG-20261112-122 回归锁：gc 在途保护集引用计数语义。
+//
+// GcInflightGuard 与 RedoInflightGuard 可对同一 tree **重叠持有**（真实
+// 形态：多会话 undo 条目捕获同一 undo_disk_tree——两 undo 之间无文件变
+// 化——随后并发 redo 双双 pop 出栈，各自 RedoInflightGuard 持同一 tree）。
+// 修复前 HashSet 集合语义下先 drop 者直接 remove——摘走另一方仍需要的
+// gc 保护；并发 gc（他会话 truncate_from_scoped 内联 gc / gateway 周期拍）
+// 撞进另一方 pop→恢复窗口会把条目引用 tree 当孤儿清掉，restore_to_tree
+// 恒「影子 tree 不可达」→ redo 永久 blocked（F2 族，条目还栈但重试永
+// 败）。同族先例：BUG-20261030-221（rewind 侧注册）、BUG-20261106-040
+// （redo 侧注册）——引用计数是共同原语的最后缺口。
+#[test]
+fn r963_gc_inflight_refcount_same_tree_two_holders() {
+    let al = AgentLoop::new(Box::new(R840NoopProvider), r840_config());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tree_a = format!("r963tree{nanos}a");
+    let tree_b = format!("r963tree{nanos}b");
+    assert!(
+        !al.undo_stack_tree_refs().contains(&tree_a),
+        "前置：空栈+未注册 → 保留集不含测试 tree"
+    );
+
+    // 同一 tree 两个持有者（Gc + Redo 重叠，Redo 另带独占 tree_b）。
+    let mut gc = super::rewind::GcInflightGuard {
+        al: &al,
+        tree: Some(tree_a.clone()),
+    };
+    gc.register();
+    let redo = super::rewind::RedoInflightGuard {
+        al: &al,
+        trees: vec![tree_a.clone(), tree_b.clone()],
+    };
+    redo.register();
+
+    // 重叠期：两 tree 都在 gc 保留集（undo_stack_tree_refs 只读 keys，
+    // 计数不外泄）。
+    let refs = al.undo_stack_tree_refs();
+    assert!(refs.contains(&tree_a), "重叠持有期 tree_a 必须受保护");
+    assert!(refs.contains(&tree_b), "重叠持有期 tree_b 必须受保护");
+
+    // 先 drop 者只减计数：tree_a 仍被另一持有者保护（修复前在此摘除）。
+    drop(gc);
+    let refs = al.undo_stack_tree_refs();
+    assert!(
+        refs.contains(&tree_a),
+        "先 drop 方不得摘走另一持有者的保护（BUG-20261112-122 主断言）"
+    );
+    assert!(refs.contains(&tree_b));
+
+    // 全部 drop 后引用归零：保护解除，gc 可回收（不反向泄漏）。
+    drop(redo);
+    let refs = al.undo_stack_tree_refs();
+    assert!(!refs.contains(&tree_a), "引用归零后保护解除（tree_a）");
+    assert!(!refs.contains(&tree_b), "引用归零后保护解除（tree_b）");
+}

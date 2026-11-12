@@ -73,6 +73,45 @@ fn detect_unknown_defaults_big() {
     assert_eq!(detect_tier(&h), ModelTier::Big);
 }
 
+// BUG-20261113-131 回归锁：Qwen 云端 API 档位名（qwen*-max/plus/turbo/long，
+// DashScope/百炼 API 专属 tier 词，无尺寸标记）修复前不含任何 big marker、
+// 命中 small 裸前缀 "qwen-"/"qwen2.5-"/"qwen3-" → 旗舰被砍到 Mini（13 工具
+// + 重试预算 3）；dashscope preset 的 default_model 就是 qwen-max，一键接入
+// 首选路径自产自相矛盾。开源权重名带尺寸标记走 parse_size_marker 路径，
+// 行为不受影响。
+#[test]
+fn detect_qwen_cloud_api_tier_names_not_mini() {
+    let tier_of = |full_model: &str| {
+        detect_tier(&TierHint {
+            full_model: Some(full_model.into()),
+            real_name: None,
+            size_b: None,
+        })
+    };
+    for name in [
+        "qwen-max",
+        "dashscope/qwen-max",
+        "qwen-max-latest",
+        "qwen-plus",
+        "qwen-turbo",
+        "qwen-long",
+        "qwen2.5-max",
+        "qwen3-max",
+        "qwen3-max-preview",
+        "qwen-vl-max",
+        "qwen-vl-plus",
+        "qwen3-coder-plus",
+        "qwen-omni-turbo",
+        "DashScope/Qwen-Max", // 大小写漂移同族
+    ] {
+        assert_eq!(tier_of(name), ModelTier::Big, "{name} 须判 Big");
+    }
+    // 开源权重名（尺寸标记路径）行为不变。
+    assert_eq!(tier_of("qwen/qwen3-30b-a3b"), ModelTier::Mini);
+    assert_eq!(tier_of("qwen2.5-7b-instruct"), ModelTier::Mini);
+    assert_eq!(tier_of("qwen2.5-72b-instruct"), ModelTier::Normal);
+}
+
 #[test]
 fn resolve_passes_through_explicit() {
     let h = TierHint {

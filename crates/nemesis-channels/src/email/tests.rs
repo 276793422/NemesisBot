@@ -437,7 +437,7 @@ async fn spawn_fake_imap() -> std::net::SocketAddr {
             } else if line.contains("SEARCH") {
                 "* SEARCH 1\r\nNB003 OK SEARCH\r\n".to_string()
             } else if line.contains("BODY[HEADER") {
-                "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {68}\r\n\
+                "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {85}\r\n\
                  From: Alice <alice@example.com>\r\n\
                  Subject: Hello there\r\n\
                  Message-ID: <m1@example.com>\r\n\
@@ -561,7 +561,7 @@ async fn spawn_fake_imap_with_poison() -> std::net::SocketAddr {
                 resp.push_str("\r\n* SEARCH 1\r\nNB003 OK SEARCH\r\n");
                 resp
             } else if line.contains("BODY[HEADER") {
-                "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {68}\r\n\
+                "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {85}\r\n\
                  From: Alice <alice@example.com>\r\n\
                  Subject: Hello there\r\n\
                  Message-ID: <m1@example.com>\r\n\
@@ -891,5 +891,189 @@ fn test_prepare_smtp_payload_111() {
     assert_eq!(
         prepare_smtp_payload("From: a\r\n\r\nhello"),
         "From: a\r\n\r\nhello"
+    );
+}
+
+// ---- BUG-20261113-126：IMAP literal 字节数核算（假 tag 毒丸失步根修） ----
+
+/// literal 尾标解析形态表：行尾 `{N}` 纯数字合法；空体/超长/非数字/非行尾
+/// 一律 None（非 literal）。
+#[test]
+fn test_trailing_literal_size_shapes() {
+    assert_eq!(
+        trailing_literal_size("* 1 FETCH (BODY[TEXT] {10}"),
+        Some(10)
+    );
+    assert_eq!(trailing_literal_size("x {0}"), Some(0));
+    // 空体 `{}`：None
+    assert_eq!(trailing_literal_size("* 1 FETCH (BODY[] {}"), None);
+    // 11 位数字：溢出防护直接 None
+    assert_eq!(
+        trailing_literal_size("* 1 FETCH (BODY[] {99999999999}"),
+        None
+    );
+    // 非纯数字：None
+    assert_eq!(trailing_literal_size("* 1 FETCH (BODY[] {12a}"), None);
+    // 非行尾：None
+    assert_eq!(trailing_literal_size("{10} tail"), None);
+    assert_eq!(trailing_literal_size("plain line"), None);
+}
+
+/// 核心回归锁：literal 内容里恰为 `{tag} OK ...` 形态的毒丸行**不得**
+/// 终止响应收集——修复前 tagged_line_status 直接吃掉毒丸行（提前 Ok），
+/// 后续 literal 残字被当协议行连锁失步（STORE 对不上下游命令乱串）。
+/// 修复后 literal 按声明字节数精确消费，毒丸行降级为普通 literal 内容，
+/// 收集在真 tagged 行终止、游标对齐（下一条 STORE 干净往返为证）。
+#[tokio::test]
+async fn test_literal_fake_tag_line_does_not_terminate_collection() {
+    let (client, server) = tokio::io::duplex(64 * 1024);
+    let (rd, wr) = tokio::io::split(EmailStream::Test(client));
+    let mut conn = ImapConnection {
+        reader: BufReader::new(rd),
+        writer: wr,
+        tag_counter: 0,
+    };
+    // literal 内嵌假完成行（NB001 = 本命令真 tag，可预测）；字节数如实声明。
+    let literal =
+        "From: Mallory <mallory@example.com>\r\nNB001 OK PWN\r\nMessage-ID: <m2@example.com>\r\n";
+    let resp = format!(
+        "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {{{}}}\r\n{}\r\n)\r\nNB001 OK FETCH\r\n",
+        literal.len(),
+        literal
+    );
+    tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut srv = BufReader::new(server);
+        srv.write_all(resp.as_bytes()).await.unwrap();
+        srv.flush().await.unwrap();
+        // 第一条命令（FETCH）此前已发——收掉。
+        let mut cmd = String::new();
+        srv.read_line(&mut cmd).await.unwrap();
+        // 第二条命令（STORE）只有游标对齐才会以完整一行抵达——失步时
+        // 这里读到的是残字碎片，断言 red。
+        let mut cmd2 = String::new();
+        srv.read_line(&mut cmd2).await.unwrap();
+        assert!(
+            cmd2.contains("STORE"),
+            "protocol desynced: second command arrived as fragment: {cmd2:?}"
+        );
+        srv.write_all(b"NB002 OK STORE\r\n").await.unwrap();
+        srv.flush().await.unwrap();
+    });
+
+    let responses = conn
+        .send_command_multi("FETCH 1 (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)])")
+        .await
+        .expect("collection must terminate at the real tagged line");
+    // 假 tag 行必须作为 literal 内容在场（收集未被它截断）：
+    assert!(
+        responses.iter().any(|l| l == "NB001 OK PWN"),
+        "fake tag line must be collected as literal content: {responses:?}"
+    );
+    assert!(
+        responses
+            .iter()
+            .any(|l| l.contains("Message-ID: <m2@example.com>")),
+        "literal after the fake tag line must still be collected: {responses:?}"
+    );
+    // 头解析照常（毒丸不污染字段）：
+    let (from, _, message_id) = EmailChannel::parse_email_headers(&responses);
+    assert_eq!(
+        EmailChannel::extract_email_address(&from),
+        "mallory@example.com"
+    );
+    assert_eq!(message_id, "m2@example.com");
+    // 游标对齐实证：STORE 干净往返。
+    conn.send_command("STORE 1 +FLAGS (\\Seen)")
+        .await
+        .expect("protocol must stay aligned after literal with fake tag line");
+}
+
+/// 超大 literal 声明（>64MB 帽）诚实 fail-closed：帽检查先于任何字节读
+/// ——不吃字节、不挂起、不无界入内存，Err 断连走下轮重连。
+#[tokio::test]
+async fn test_literal_over_cap_claim_fails_closed() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let (rd, wr) = tokio::io::split(EmailStream::Test(client));
+    let mut conn = ImapConnection {
+        reader: BufReader::new(rd),
+        writer: wr,
+        tag_counter: 0,
+    };
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        // 只喂标记行（70MB 声明 > 64MB 帽），此后不再喂——若实现先读字节
+        // 后查帽，本测试挂死（timeout 兜底红）。
+        let _ = server.write_all(b"* 1 FETCH (BODY[] {70000000}\r\n").await;
+    });
+    let err = conn.send_command_multi("FETCH 1 (BODY[])").await;
+    assert!(
+        err.is_err(),
+        "oversize literal claim must fail closed, got: {err:?}"
+    );
+}
+
+// ---- BUG-20261113-127：sender_map 回复线索表容量帽 ----
+
+/// 家族纪律对齐（seen_uids 同款）：超帽必须修剪有界——插入点在 allow-list
+/// 之前，公开邮箱收垃圾邮件可灌无限唯一地址，无帽 = 长驻进程内存慢漏。
+/// 不变量按家族语义（超帽删固定批量，非删到下限）：生产模式（插入后即
+/// 修剪）任意时刻 len ≤ MAX+1；删 1000 条独有地址持续超帽仍被压回有界
+/// ——无帽实现该断言在第一个超帽插入点即红。
+#[test]
+fn test_sender_map_capped_no_unbounded_growth() {
+    let map: dashmap::DashMap<String, EmailMessageInfo> = dashmap::DashMap::new();
+    let cap = EmailChannel::SENDER_MAP_MAX_ENTRIES;
+    for i in 0..(cap + 1000) {
+        let addr = format!("u{i}@example.com");
+        map.insert(
+            addr.clone(),
+            EmailMessageInfo {
+                sender_email: addr,
+                subject: "s".to_string(),
+            },
+        );
+        EmailChannel::prune_sender_map(&map);
+        assert!(
+            map.len() <= cap + 1,
+            "sender_map must stay bounded (≤ MAX+1): len={} at i={i}",
+            map.len()
+        );
+    }
+    // 修剪确实回收了条目（不是只防上限）：最终远小于灌入总数。
+    assert!(
+        map.len() < cap + 1000,
+        "pruning must actually evict entries: len={}",
+        map.len()
+    );
+}
+
+// ---- BUG-20261113-128：build_imap_login 同族转义（R737 横扫漏收位点） ----
+
+/// 凭据含 `"`/`\`/CRLF 不得破坏 quoted 边界——连接路径（imap_connect /
+/// imap_connect_static）已走 imap_quoted，本编码入口同源对齐。
+#[test]
+fn test_build_imap_login_escapes_quoted_injection() {
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "use\"r".to_string(),
+        imap_password: "pa\\ss\r\nNOPE".to_string(),
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
+    let login = ch.build_imap_login();
+    assert!(login.starts_with("LOGIN "), "got: {login:?}");
+    assert!(
+        login.contains("use\\\"r"),
+        "quote must be escaped: {login:?}"
+    );
+    assert!(
+        login.contains("pa\\\\ss"),
+        "backslash must be escaped: {login:?}"
+    );
+    assert!(
+        !login.contains('\r') && !login.contains('\n'),
+        "CR/LF must be stripped: {login:?}"
     );
 }

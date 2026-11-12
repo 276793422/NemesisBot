@@ -3954,6 +3954,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "serde",
  "serde_json",

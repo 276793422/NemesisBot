@@ -145,7 +145,9 @@ async fn st_bot_memory_search_via_ws() -> Result<()> {
     assert!(
         search_resp.contains("猫"),
         "Search response should contain the stored keyword '猫', got: {}",
-        &search_resp[..search_resp.len().min(200)]
+        // 失败诊断预览走 chars（BUG-20261113-132 横向同族）：内容本身就是
+        // 中文记忆文本，字节切片在诊断路径上再 panic 会吞掉真实断言失败。
+        search_resp.chars().take(200).collect::<String>()
     );
 
     println!("[ST] Memory search via WS — PASS");

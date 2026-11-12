@@ -616,3 +616,91 @@ SUBSYSTEM=usb
     let events = feed_sample(&mut parser, sample);
     assert!(events.is_empty());
 }
+
+// ---------- BUG-20261113-135：udevadm stdout 行读带帽 + 非 UTF-8 不杀监控 ----------
+
+/// 经 pump_monitor_lines 把字节流泵进 parser，收集事件与全部投递行。
+fn pump_bytes(input: &[u8]) -> (Vec<DeviceEvent>, Vec<String>) {
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(input));
+    let mut parser = MonitorParser::default();
+    let mut events = Vec::new();
+    let mut lines = Vec::new();
+    let outcome = pump_monitor_lines(&mut reader, &mut |line: &str| {
+        lines.push(line.to_string());
+        if let Some(event) = parser.feed_line(line) {
+            events.push(event);
+        }
+        true
+    });
+    assert!(
+        outcome.is_ok(),
+        "pump must not die on poison lines: {outcome:?}"
+    );
+    (events, lines)
+}
+
+#[test]
+fn bug135_non_utf8_line_does_not_kill_monitor() {
+    // 旧形态：非 UTF-8 一行 → lines() Err → Err(_) => break → 监控静默
+    // 永久停摆（零日志）。新形态：整行收齐一次 lossy 收敛，监控存活，
+    // 后续块照常解析出事件。
+    let mut input = b"UDEV  [100.0] add      /devices/usb1/1-1 (usb)\n".to_vec();
+    input.extend_from_slice(b"ACTION=add\n");
+    input.extend_from_slice(b"ID_VENDOR=\xff\xfeBad\xfdName\n"); // 非 UTF-8 字节
+    input.extend_from_slice(b"\n"); // 块结束 → add 事件
+    input.extend_from_slice(b"UDEV  [200.0] remove   /devices/usb1/1-1 (usb)\n");
+    input.extend_from_slice(b"ACTION=remove\n");
+    input.extend_from_slice(b"\n");
+    let (events, lines) = pump_bytes(&input);
+    assert_eq!(events.len(), 2, "both blocks must surface: {events:?}");
+    assert_eq!(events[0].action, Action::Add);
+    assert_eq!(events[1].action, Action::Remove);
+    // mojibake 行 lossy 投递（替换符），vendor 值降级但事件仍在。
+    let poisoned = lines
+        .iter()
+        .find(|l| l.starts_with("ID_VENDOR="))
+        .expect("poisoned property line must be delivered");
+    assert!(
+        poisoned.contains('\u{FFFD}'),
+        "non-UTF-8 bytes must become replacement chars: {poisoned:?}"
+    );
+    assert!(events[0].vendor.contains('\u{FFFD}'));
+}
+
+#[test]
+fn bug135_oversized_line_truncated_and_monitor_survives() {
+    // 超 64KB 帽的毒丸行：截断丢弃至行尾，游标对齐下一行行首，
+    // 监控存活、后续块照常出事件。
+    let mut input = b"UDEV  [300.0] add      /devices/usb1/1-2 (usb)\n".to_vec();
+    input.extend(vec![b'A'; MAX_MONITOR_LINE_BYTES + 16]);
+    input.push(b'\n');
+    input.extend_from_slice(b"ACTION=add\nID_MODEL=GoodDevice\n\n");
+    let (events, lines) = pump_bytes(&input);
+    assert_eq!(
+        events.len(),
+        1,
+        "poison oversized line must not kill the monitor: {events:?}"
+    );
+    assert_eq!(events[0].action, Action::Add);
+    assert_eq!(events[0].product, "GoodDevice");
+    assert_eq!(
+        lines[1].len(),
+        MAX_MONITOR_LINE_BYTES,
+        "truncated line delivers exactly cap bytes"
+    );
+}
+
+#[test]
+fn bug135_emit_false_stops_pump_early() {
+    // 下游关闭（receiver drop）：emit 返回 false → 泵诚实提前收尾，
+    // 不再消费后续字节。
+    let input = b"line1\nline2\nline3\n";
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(input));
+    let mut count = 0;
+    let outcome = pump_monitor_lines(&mut reader, &mut |_line| {
+        count += 1;
+        false
+    });
+    assert!(outcome.is_ok());
+    assert_eq!(count, 1, "pump must stop at first false emit");
+}

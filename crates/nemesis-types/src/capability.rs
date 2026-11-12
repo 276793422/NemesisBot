@@ -597,6 +597,19 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
     if big_markers.iter().any(|m| l.contains(m)) {
         return Some(ModelTier::Big);
     }
+    // Qwen 云端 API 档位命名（qwen*-max/plus/turbo/long）是 DashScope/
+    // 百炼 API 专属 tier 词（旗舰/中杯/小杯/长上下文），不是开源权重命名——
+    // 开源权重名必带尺寸标记（7b/30b/72b/…）已在 parse_size_marker 解析，
+    // 到不了这里；而这些 API 名不含任何 big marker，却命中下方 small 裸
+    // 前缀 "qwen-"/"qwen2.5-"/"qwen3-" → qwen-max/qwen2.5-max/qwen3-max/
+    // qwen-vl-max 等旗舰全被砍到 Mini（13 工具 + 重试预算 3）。dashscope
+    // preset 的 default_model 就是 qwen-max（provider_resolver），一键接入
+    // 首选路径即触发。宁大勿小（模块头设计原则：误判强模型为小 = 不可恢复
+    // 的工具面损失）：档位词族按 Big 处理。
+    const QWEN_API_TIER_WORDS: &[&str] = &["-max", "-plus", "-turbo", "-long"];
+    if l.contains("qwen") && QWEN_API_TIER_WORDS.iter().any(|w| l.contains(w)) {
+        return Some(ModelTier::Big);
+    }
     // Known-small local families — absent a size marker, assume small.
     let small_markers = [
         "llama-3-8",
