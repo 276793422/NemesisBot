@@ -146,7 +146,7 @@ impl EventSource for UsbEventSource {
                 std::thread::spawn(move || {
                     if let Some(stdout) = stdout {
                         use std::io::BufReader;
-                        let reader = BufReader::new(stdout);
+                        let mut reader = BufReader::new(stdout);
                         let mut parser = MonitorParser::default();
                         let mut emit = |line: &str| -> bool {
                             match parser.feed_line(line) {
