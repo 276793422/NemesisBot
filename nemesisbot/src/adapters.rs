@@ -451,6 +451,16 @@ impl LifecycleService for AgentLoopServiceAdapter {
                         if let Some(pred) = skip.as_ref()
                             && pred(&msg)
                         {
+                            // debug 留痕（丢失必须留痕纪律）：本臂与项目路由
+                            // ToMain 丢弃臂各自独立查归属索引，forget_session
+                            // （sessions.clear/delete 联动）恰落在两读之间 =
+                            // 本臂让出 + 对臂按 ToMain 丢弃（消息双输窗口）。
+                            // 两侧 debug 配对即可从日志定性该窗口。
+                            tracing::debug!(
+                                channel = %msg.channel,
+                                session_key = %msg.session_key,
+                                "[Main] agent inbound bridge: project-session message skipped (project router owns routing)"
+                            );
                             continue;
                         }
                         // BUG-20261113-138：接收侧（agent loop）已退出，

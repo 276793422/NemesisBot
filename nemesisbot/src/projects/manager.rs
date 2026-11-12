@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_agent::session::SessionStore;
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -444,7 +444,18 @@ impl ProjectLoopManager {
         }
         let owner = self.owner_of(&msg.session_key);
         let RouteDecision::ToProject(pid) = route_decision(msg, owner.as_deref()) else {
-            return; // ToMain：主桥放行，这里丢弃
+            // ToMain：主桥放行，这里丢弃。debug 留痕（丢失必须留痕纪律）：
+            // 主桥 skip 臂与本臂**各自独立查归属索引**，forget_session
+            // （sessions.clear/delete 联动）恰落在两读之间时主桥已让出、
+            // 本臂按 ToMain 丢弃——消息双输。桥侧 skip 臂同样留痕，两侧
+            // debug 对得上即可从日志定性该窗口（结构性消除需单决策点
+            // 重构，代价是路由器成为全部入站的存活单点，不值）。
+            debug!(
+                channel = %msg.channel,
+                session_key = %msg.session_key,
+                "[ProjectLoops] route ToMain drop (main bridge consumes)"
+            );
+            return;
         };
         // 开工闸（VM 档项目）：投递前确保 VM 内工作副本与宿主一致。
         // 拦截/冲突都扣住消息（不出半就绪的工作副本给 agent 撞，不出半
