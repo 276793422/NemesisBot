@@ -65,16 +65,21 @@ fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
 /// [`AgentLoop::gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
 /// 到它），压栈成功后 [`Self::defuse`]（栈条目接管保护）；任何早退路径
 /// （恢复失败 blocked / 提交失败 blocked / no-op 不压栈）drop 自动注销。
-struct GcInflightGuard<'a> {
-    al: &'a AgentLoop,
-    tree: Option<String>,
+/// 注册/注销是**引用计数**语义（BUG-20261112-122）：与
+/// [`RedoInflightGuard`] 可对同一 tree 重叠持有（多会话 undo 条目捕获同
+/// 一 undo_disk_tree 后并发 redo），drop 只减计数、归零才摘除——集合语
+/// 义下先 drop 者会摘走另一方仍需要的保护。
+pub(super) struct GcInflightGuard<'a> {
+    pub(super) al: &'a AgentLoop,
+    pub(super) tree: Option<String>,
 }
 
 impl GcInflightGuard<'_> {
     /// 采集即注册：把 forward_tree 并入在途保护集（gc extras 读得到）。
-    fn register(&mut self) {
+    pub(super) fn register(&mut self) {
         if let Some(t) = &self.tree {
-            self.al.gc_inflight_trees.lock().insert(t.clone());
+            let mut inflight = self.al.gc_inflight_trees.lock();
+            *inflight.entry(t.clone()).or_insert(0) += 1;
         }
     }
     fn defuse(mut self) {
@@ -85,7 +90,13 @@ impl GcInflightGuard<'_> {
 impl Drop for GcInflightGuard<'_> {
     fn drop(&mut self) {
         if let Some(t) = self.tree.take() {
-            self.al.gc_inflight_trees.lock().remove(&t);
+            let mut inflight = self.al.gc_inflight_trees.lock();
+            if let Some(count) = inflight.get_mut(&t) {
+                *count -= 1;
+                if *count == 0 {
+                    inflight.remove(&t);
+                }
+            }
         }
     }
 }
@@ -100,10 +111,12 @@ impl Drop for GcInflightGuard<'_> {
 /// 但重试永败，被回退的对话行滞留内存条目）。rewind 侧同窗口已有
 /// [`GcInflightGuard`]（221），redo 侧漏接。pop 即注册、所有退出路径 Drop
 /// 注销：blocked 路径先还栈（栈条目接管保护）再注销；守卫 1/1b/2 陈旧作废
-/// 路径与成功路径条目已消费，注销即恢复可回收语义。
+/// 路径与成功路径条目已消费，注销即恢复可回收语义。注册/注销为**引用计
+/// 数**语义（BUG-20261112-122，与 [`GcInflightGuard`] 重叠持有同一 tree
+/// 时互不摘除）。
 pub(crate) struct RedoInflightGuard<'a> {
-    al: &'a AgentLoop,
-    trees: Vec<String>,
+    pub(super) al: &'a AgentLoop,
+    pub(super) trees: Vec<String>,
 }
 
 impl RedoInflightGuard<'_> {
@@ -120,10 +133,10 @@ impl RedoInflightGuard<'_> {
             .collect(),
         }
     }
-    fn register(&self) {
+    pub(super) fn register(&self) {
         let mut inflight = self.al.gc_inflight_trees.lock();
         for t in &self.trees {
-            inflight.insert(t.clone());
+            *inflight.entry(t.clone()).or_insert(0) += 1;
         }
     }
 }
@@ -132,7 +145,12 @@ impl Drop for RedoInflightGuard<'_> {
     fn drop(&mut self) {
         let mut inflight = self.al.gc_inflight_trees.lock();
         for t in &self.trees {
-            inflight.remove(t);
+            if let Some(count) = inflight.get_mut(t) {
+                *count -= 1;
+                if *count == 0 {
+                    inflight.remove(t);
+                }
+            }
         }
     }
 }
@@ -865,7 +883,7 @@ impl AgentLoop {
                 .flatten()
                 .collect()
         };
-        refs.extend(self.gc_inflight_trees.lock().iter().cloned());
+        refs.extend(self.gc_inflight_trees.lock().keys().cloned());
         refs
     }
 
