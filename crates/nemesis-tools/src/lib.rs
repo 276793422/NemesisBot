@@ -16,7 +16,6 @@ pub mod registry;
 pub mod screen_capture;
 pub mod shell;
 pub mod skills_ops;
-pub mod sleep;
 pub mod spawn;
 pub mod subagent;
 pub mod toolloop;
