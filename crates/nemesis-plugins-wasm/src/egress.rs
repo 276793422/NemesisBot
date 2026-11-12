@@ -383,3 +383,6 @@ async fn proxy_request_inner(
         body,
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -7778,6 +7778,67 @@ async fn run_runtime_guardian_high_without_small_model_none_arm() {
 // board 派发写回（档案管线在途评论 / 普通完成推进 in_review / 结构化交付
 // Delivery 首评 / 超限截断三形态含多字节边界 / 失败汇报 + fail_class 标记）。
 // ===========================================================================
+// cov-rt：guardian judge 三级阶梯的 guardian_model 专属通道两臂——
+// 可解析（级 1 命中，不走 small/main）与不可解析（warn + 落级 2）。
+// 其余 run_runtime 未覆盖行为事件驱动闭包（审批 RPC 下行 / 工具-策略热
+// 同步 hook 需 plugin_manager 装配 / estop watcher / selfupdate 自动
+// check / 托盘回调 / connector_invoke），归 r10_live 双节点族或豁免。
+// ===========================================================================
+
+/// critical + guardian_model 可解析 → 级 1 命中（不走 small/main 通道）。
+#[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "verify",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cov_rt_guardian_model_lane_resolvable_hits_level_one() {
+    let (_f, plugin) = run_runtime_pipeline(
+        r#"{"model_list":[{"model_name":"cov/guard","model":"openai/gpt-guard","api_key":"k","api_base":"http://127.0.0.1:9/v1"}],"agents":{"guardian_model":"cov/guard","small_model":"cov/guard"}}"#,
+        Some("critical"),
+    )
+    .await;
+    assert_eq!(plugin.guardian_mode(), "critical");
+    assert!(
+        plugin.guardian_should_review("exec", r#"{"cmd":"ls"}"#),
+        "guardian 通道命中后 judge 在场"
+    );
+}
+
+/// critical + guardian_model 不可解析（未知 protocol）→ 级 1 warn 落级 2，
+/// small_model 可解析 → 级 2 命中。
+#[cfg(all(
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "verify",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cov_rt_guardian_model_lane_unresolvable_falls_to_small_model() {
+    let (_f, plugin) = run_runtime_pipeline(
+        r#"{"model_list":[{"model_name":"cov/small","model":"openai/gpt-small","api_key":"k","api_base":"http://127.0.0.1:9/v1"},{"model_name":"cov/guard","model":"openai/gpt-guard","api_key":"k","api_base":"http://127.0.0.1:9/v1","protocol":"bogus-wire"}],"agents":{"guardian_model":"cov/guard","small_model":"cov/small"}}"#,
+        Some("critical"),
+    )
+    .await;
+    assert_eq!(plugin.guardian_mode(), "critical");
+    assert!(
+        plugin.guardian_should_review("exec", r#"{"cmd":"ls"}"#),
+        "级 2 命中后 judge 在场"
+    );
+}
+
+// ===========================================================================
 
 /// relay 空令牌 fail-closed + port 0 全链路真装配（真 bind，后台任务即起
 /// 即弃——WebServer::start 阻塞至关停，spawn + sleep + abort 收尸）。
@@ -8342,4 +8403,55 @@ fn test_migrate_legacy_max_tool_iterations_write_is_atomic() {
         serde_json::json!(0)
     );
     assert_eq!(v["model_list"][0]["model"], serde_json::json!("m1"));
+}
+
+/// cov-ci：peers.toml 的 iroh 形态地址臂——地址原样透传（不拆 host:port）、
+/// rpc_port 缺省占位 1 过闸、静态标记照常。其余 init_cluster 未覆盖行全部
+/// 在 RPC 回调/看板 sweep 闭包内（需要真集群流量或 run_runtime 长驻，
+/// 归 r10_live 双节点族）。
+#[cfg(all(
+    windows, // Windows-form (EnvHomeGuard fixture; Linux nightly: excluded, convention)
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn cov_ci_iroh_peer_address_passthrough_and_rpc_port_placeholder() {
+    let f = gateway_ctx_fixture("{}");
+    let cluster_dir = f.ctx.home.join("workspace").join("cluster");
+    std::fs::create_dir_all(&cluster_dir).expect("cluster dir");
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\n\
+         id = \"cov-node-a\"\n\
+         name = \"CovNodeA\"\n\
+         role = \"worker\"\n\
+         category = \"development\"\n\
+         address = \"127.0.0.1:11950\"\n\
+         \n\
+         [peers.cov-iroh-peer]\n\
+         name = \"CovIrohPeer\"\n\
+         address = \"iroh:abc123def456\"\n\
+         role = \"worker\"\n\
+         category = \"general\"\n",
+    )
+    .expect("write iroh peers.toml");
+
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let (cluster, _task_list, _work_queue, _persister) = wiring
+        .cluster_adapter_refs
+        .expect("adapter refs always built");
+    let nodes = cluster.list_nodes();
+    let iroh = nodes
+        .iter()
+        .find(|n| n.base.id == "cov-iroh-peer")
+        .expect("iroh peer 必须入册");
+    // iroh 地址整串透传（不拆 host:port，node_id 形态不被破坏）。
+    assert_eq!(
+        iroh.base.address, "iroh:abc123def456",
+        "iroh 地址必须原样入册"
+    );
 }

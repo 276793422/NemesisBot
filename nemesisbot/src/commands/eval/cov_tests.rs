@@ -371,3 +371,84 @@ fn monitor_dll_path_dev_shape_missing_dll_bails() {
         "err: {err:#}"
     );
 }
+
+// ===========================================================================
+// cov-lock：acquire_eval_lock 的三臂——活持有者拒绝、崩溃残留抢占、
+// 损坏内容拒绝。其余 eval.rs 未覆盖行全部在 Sandboxie 管线内
+// （Start.exe/SbieIni/注入监控 DLL/真端点），保持既有豁免边界。
+// ===========================================================================
+#[cfg(windows)] // Windows-form (pid_alive Win32; Linux nightly: excluded, sweep)
+mod cov_lock {
+    use super::*;
+
+    /// 活持有者（本测试进程自己的 pid）→ 并发拒绝 bail。
+    #[test]
+    fn cov_lock_rejects_when_holder_alive() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("sbx");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(".eval_lock");
+        std::fs::write(&path, format!("pid={}\nstarted=x\n", std::process::id())).unwrap();
+
+        // EvalLock 不实现 Debug（不改正被测源码）→ 手工拆 Err。
+        let err = match acquire_eval_lock(&root) {
+            Err(e) => e,
+            Ok(_) => panic!("活持有者必须拒绝"),
+        };
+        assert!(
+            err.to_string().contains("另一个 eval 正在运行"),
+            "err: {err:#}"
+        );
+    }
+
+    /// 崩溃残留（持有者 pid 已退出）→ 警告 + 抢占重拿。
+    #[test]
+    fn cov_lock_steals_stale_lock_from_dead_holder() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("sbx");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join(".eval_lock");
+        // 造一个立即退出的子进程拿死 pid（任何现成 pid 都可能被复用）。
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output()
+            .expect("spawn throwaway process");
+        let _ = out;
+        // 用一个几乎必然不存在的 pid（Windows pid 复用窗口内 + 高位段）
+        // 不可靠，改为：起一个 exit 的 cmd 并直接用其 pid 不可得——改为
+        // 通过 job-free 方式拿死 pid：起 cmd /C exit 0，用 wait 后的 pid。
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .expect("spawn dead-holder");
+        let dead_pid = child.id();
+        child.wait().expect("reap");
+        std::fs::write(&path, format!("pid={dead_pid}\nstarted=x\n")).unwrap();
+
+        let lock = acquire_eval_lock(&root).expect("死持有者 → 抢占成功");
+        assert_eq!(lock.path, path, "锁路径一致");
+        // 抢占后锁内容是本进程。
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains(&format!("pid={}", std::process::id())),
+            "抢占后锁必须写本进程 pid: {content}"
+        );
+    }
+
+    /// 锁文件存在但内容无法解析 → 诚实拒绝（损坏形态）。
+    #[test]
+    fn cov_lock_rejects_unparseable_lock_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().join("sbx");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".eval_lock"), "garbage without pid line").unwrap();
+
+        let err = match acquire_eval_lock(&root) {
+            Err(e) => e,
+            Ok(_) => panic!("损坏锁必须拒绝"),
+        };
+        assert!(err.to_string().contains("无法解析"), "err: {err:#}");
+    }
+}

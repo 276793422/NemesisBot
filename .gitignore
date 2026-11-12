@@ -115,3 +115,8 @@ test-tools/product-validation/evaluators/
 # pipeline-eval 运行产物（D4 评测驱动报告；程序在 test-tools/pipeline-eval/，产物不入库）
 .pipeline-eval/
 .tmp-b4-home/
+
+# 覆盖率战役测量产物（cargo-llvm-cov lcov/日志；docs/INFO/2026-11-11_coverage-exemptions 台账在 docs 子模块）
+/coverage-data/
+/web/coverage/
+/web/coverage-data-vitest.log

@@ -199,3 +199,6 @@ pub fn parse_step_metadata(out_json: &str) -> Result<StepMetadata, HostErr> {
         .unwrap_or_default();
     Ok(StepMetadata { kinds })
 }
+
+#[cfg(test)]
+mod tests;

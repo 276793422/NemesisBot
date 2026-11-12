@@ -4204,3 +4204,11 @@ mod w4_tests;
 // stt_stream 条目）。纯 FS 读写不触全局单例，无需 voice_state_lock。
 #[cfg(all(test, target_os = "windows"))]
 mod mc_tests;
+
+// COV 覆盖率批次：状态注入 + 纯逻辑可达面——DialogueSttOutput 缓冲语义、
+// 配置 RMW helper、voice_shutdown 注入收口、barge-in 判定与触发、relay 入队
+// 早退、dialogue/playback 停止状态机、speaker 注册冲突与阈值持久化、
+// engine_status 对话态投影、dispatch 错误面、纯 FS helper。真引擎/麦克风/
+// 下载臂归结构性豁免（台账 VE-voice-1 延续）。
+#[cfg(all(test, target_os = "windows"))]
+mod cov_tests;

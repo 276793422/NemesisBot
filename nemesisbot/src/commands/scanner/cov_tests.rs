@@ -94,3 +94,70 @@ async fn w5_clamav_info_prints_config_offline() {
 
     let _ = std::fs::remove_dir_all(cfg_path.parent().unwrap());
 }
+
+// ===========================================================================
+// cov-w6：吃剩的离线可达臂——save 的父目录补建、enable 对已带安装态
+// 引擎的跳过臂、check 后写盘失败（只读文件 → rename 拒绝）的 warn 臂。
+// ===========================================================================
+
+/// save_scanner_config：目标父目录整链不存在 → create_dir_all 补建。
+#[test]
+fn w6_save_bootstraps_missing_parent_dirs() {
+    let dir = std::env::temp_dir().join(format!("nb-scanner-w6-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cfg_path = dir.join("a").join("b").join("config.scanner.json");
+    save_scanner_config(&cfg_path, &ScannerFullConfig::default()).expect("补建父目录后落盘");
+    assert!(cfg_path.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// enable：引擎 state.install_status 已有值 → 465 判空跳过重写，
+/// enabled 名单照常追加。
+#[test]
+fn w6_enable_keeps_existing_install_status() {
+    let cfg_path = tmp_cfg("enable-keep");
+    let mut ec = ClamAVEngineConfig::default();
+    ec.state.install_status = "failed".to_string();
+    let mut cfg = ScannerFullConfig::default();
+    cfg.engines
+        .insert("clamav".to_string(), serde_json::to_value(ec).unwrap());
+    save_scanner_config(&cfg_path, &cfg).unwrap();
+
+    cmd_enable(&cfg_path, "clamav").expect("enable → Ok");
+
+    let cfg = read_cfg(&cfg_path);
+    assert!(cfg.enabled.iter().any(|n| n == "clamav"));
+    let ec = parse_engine_config(cfg.engines.get("clamav").unwrap());
+    assert_eq!(ec.state.install_status, "failed", "已有安装态不得被改写");
+    let _ = std::fs::remove_dir_all(cfg_path.parent().unwrap());
+}
+
+/// check：引擎状态变化后写盘失败（目标文件只读 → 原子 rename 拒绝）→
+/// warn 臂（不阻断命令）。
+#[tokio::test]
+async fn w6_check_save_failure_warns_without_failing() {
+    let cfg_path = tmp_cfg("check-readonly");
+    let mut cfg = ScannerFullConfig::default();
+    // enabled + 无安装路径 + 系统无 clamav → pending 状态回写 → changed。
+    cfg.enabled.push("clamav".to_string());
+    cfg.engines.insert(
+        "clamav".to_string(),
+        serde_json::to_value(ClamAVEngineConfig::default()).unwrap(),
+    );
+    save_scanner_config(&cfg_path, &cfg).unwrap();
+
+    // 只读属性 → load 可读、原子写 rename 失败。
+    let meta = std::fs::metadata(&cfg_path).unwrap();
+    let mut perms = meta.permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&cfg_path, perms).unwrap();
+
+    cmd_check(&cfg_path).expect("check 主流程不因写盘失败而 Err");
+
+    // 还原只读，便于目录清理。
+    let meta = std::fs::metadata(&cfg_path).unwrap();
+    let mut perms = meta.permissions();
+    perms.set_readonly(false);
+    std::fs::set_permissions(&cfg_path, perms).unwrap();
+    let _ = std::fs::remove_dir_all(cfg_path.parent().unwrap());
+}

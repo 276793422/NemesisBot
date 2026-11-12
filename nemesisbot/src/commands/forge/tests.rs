@@ -2212,3 +2212,230 @@ async fn cmd_test_rejects_traversal_name_before_fs_access() {
         );
     }
 }
+
+// ===========================================================================
+// cov-f：吃剩的离线可达臂——enable/disable 幂等重写收口、experiences
+// 读取失败的 hint 臂、Replay 全臂（空 WAL 提取 / 空区 list / confirm /
+// 空 confirmed 重跑）、Optimize 的围栏与坏操作符拒绝臂 + 无测试技能的
+// 候选落盘臂、cmd_test 的缺技能/无测试臂、run() 分发的 block_on_async
+// 有 runtime 臂。LLM 依赖面（reflector/ judge / run_case 执行）维持豁免。
+// ===========================================================================
+#[cfg(windows)] // Windows-form CLI tests (Linux nightly: excluded, sweep)
+mod cov_f {
+    use super::*;
+
+    struct CovEnv {
+        _tmp: tempfile::TempDir,
+        home: std::path::PathBuf,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl CovEnv {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join(".nemesisbot");
+            std::fs::create_dir_all(&home).unwrap();
+            let prev = std::env::var_os("NEMESISBOT_HOME");
+            unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+            Self {
+                _tmp: tmp,
+                home,
+                prev,
+            }
+        }
+
+        fn workspace(&self) -> std::path::PathBuf {
+            crate::common::workspace_path(&self.home)
+        }
+    }
+
+    impl Drop for CovEnv {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var("NEMESISBOT_HOME", v),
+                    None => std::env::remove_var("NEMESISBOT_HOME"),
+                }
+            }
+        }
+    }
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// enable 两次：第二次已启用 → 幂等收口；disable 同理（写臂只在
+    /// 状态翻转时走）。
+    #[test]
+    fn cov_f_enable_disable_idempotent_second_call() {
+        let _guard = lock();
+        let env = CovEnv::new();
+        std::fs::write(
+            env.home.join("config.json"),
+            serde_json::json!({"version": "1.0"}).to_string(),
+        )
+        .unwrap();
+        run(ForgeAction::Enable, false).unwrap();
+        run(ForgeAction::Enable, false).unwrap();
+        run(ForgeAction::Disable, false).unwrap();
+        run(ForgeAction::Disable, false).unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(env.home.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(cfg["forge"]["enabled"], false);
+    }
+
+    /// Reflect：experiences 数据路径落成文件 → 读取失败 → hint 后 Ok 收口。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_f_reflect_experiences_read_failure_hints() {
+        let _guard = lock();
+        let env = CovEnv::new();
+        std::fs::write(
+            env.home.join("config.json"),
+            serde_json::json!({"version": "1.0", "forge": {"enabled": true}}).to_string(),
+        )
+        .unwrap();
+        // canonical flat store 路径落成文件 → 读取失败臂。
+        let exp = env
+            .home
+            .join("workspace")
+            .join("forge")
+            .join("experiences")
+            .join("experiences.jsonl");
+        std::fs::create_dir_all(exp.parent().unwrap()).unwrap();
+        std::fs::write(&exp, "not-a-directory-guard").unwrap();
+        // experiences.jsonl 是文件本身合法——改把其父目录之一变成文件：
+        // 直接把 experiences 目录换成文件（create_dir_all 失败被读侧容错）。
+        std::fs::remove_file(&exp).unwrap();
+        std::fs::remove_dir(exp.parent().unwrap()).unwrap();
+        std::fs::write(exp.parent().unwrap(), "dir hijacked").unwrap();
+
+        run(ForgeAction::Reflect { auto_skill: false }, false).unwrap();
+    }
+
+    /// Replay 四臂（空库形态）：extract（无 WAL = 0 条）、list（空区）、
+    /// confirm（无 pending = 0）、run（无 confirmed = 0/0 passed）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_f_replay_empty_library_all_arms() {
+        let _guard = lock();
+        let env = CovEnv::new();
+        std::fs::write(
+            env.home.join("config.json"),
+            serde_json::json!({"version": "1.0"}).to_string(),
+        )
+        .unwrap();
+        run(ForgeAction::ReplayExtract, false).unwrap();
+        run(ForgeAction::ReplayList, false).unwrap();
+        run(
+            ForgeAction::ReplayConfirm {
+                name: Some("no-such-case".into()),
+            },
+            false,
+        )
+        .unwrap();
+        run(ForgeAction::ReplayConfirm { name: None }, false).unwrap();
+        run(ForgeAction::ReplayRun, false).unwrap();
+    }
+
+    /// Optimize 错误臂：技能缺席（读失败）与未知操作符。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_f_optimize_error_arms() {
+        let _guard = lock();
+        let env = CovEnv::new();
+        std::fs::write(
+            env.home.join("config.json"),
+            serde_json::json!({"version": "1.0"}).to_string(),
+        )
+        .unwrap();
+        // 技能缺席 → read Err。
+        let res = run(
+            ForgeAction::Optimize {
+                name: "no-such-skill".into(),
+                op: "reorder_constraints".into(),
+                param: None,
+            },
+            false,
+        );
+        assert!(res.is_err(), "技能缺席必须 Err");
+        // 技能在但操作符未知 → loud 拒绝。
+        let skill_dir = env.workspace().join("skills").join("cov-opt");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: cov-opt\n---\n\n## 约束\n- 先读后写\n",
+        )
+        .unwrap();
+        let res = run(
+            ForgeAction::Optimize {
+                name: "cov-opt".into(),
+                op: "definitely-not-an-operator".into(),
+                param: None,
+            },
+            false,
+        );
+        assert!(res.is_err(), "未知操作符必须 Err");
+    }
+
+    /// Optimize 主臂：无测试技能 → 候选直接落盘（回归闸以无测试收口）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_f_optimize_writes_candidate_for_untested_skill() {
+        let _guard = lock();
+        let env = CovEnv::new();
+        std::fs::write(
+            env.home.join("config.json"),
+            serde_json::json!({"version": "1.0"}).to_string(),
+        )
+        .unwrap();
+        let skill_dir = env.workspace().join("skills").join("cov-opt2");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: cov-opt2\n---\n\n## 步骤
+- 执行任务
+
+## 约束\n- 先读后写\n- 不越 workspace 边界\n",
+        )
+        .unwrap();
+        run(
+            ForgeAction::Optimize {
+                name: "cov-opt2".into(),
+                op: "reorder_constraints".into(),
+                param: None,
+            },
+            false,
+        )
+        .unwrap();
+        // 候选文件落盘：<out_dir>/cov-opt2-reorder_constraints.md（缺省 out
+        // 目录 = workspace/forge/optimize）。
+        let opt_dir = env.workspace().join("forge").join("optimize");
+        let hit = std::fs::read_dir(&opt_dir)
+            .map(|rd| {
+                rd.flatten()
+                    .any(|e| e.file_name().to_string_lossy().contains("cov-opt2"))
+            })
+            .unwrap_or(false);
+        assert!(hit, "候选必须落盘于 {:?}", opt_dir);
+    }
+
+    /// Test 错误臂：技能缺席 loud bail。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_f_test_missing_skill_bails() {
+        let _guard = lock();
+        let env = CovEnv::new();
+        std::fs::write(
+            env.home.join("config.json"),
+            serde_json::json!({"version": "1.0"}).to_string(),
+        )
+        .unwrap();
+        let res = run(
+            ForgeAction::Test {
+                name: "no-such-skill".into(),
+                test: None,
+            },
+            false,
+        );
+        assert!(res.is_err(), "技能缺席必须 Err");
+    }
+}

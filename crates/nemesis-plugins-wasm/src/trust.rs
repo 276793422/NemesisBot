@@ -197,3 +197,5 @@ pub fn trust_state_for(
     }
     Ok(state)
 }
+#[cfg(test)]
+mod tests;

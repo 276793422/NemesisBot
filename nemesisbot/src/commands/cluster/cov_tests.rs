@@ -410,3 +410,608 @@ mod wave6 {
         assert!(!main_cluster_flag(&home).unwrap_or(true), "主开关保持关");
     }
 }
+
+// ---------------------------------------------------------------------------
+// wave7：roaming 管理面（trust/mandate 簿 + 开关写）、Status 身份段、
+// init 职能/档位/能力宣告段、firewall 入口、node 空 token fail-closed。
+// 全程进程内 + tempdir，不触网；firewall 用非法端口 0 让 netsh 参数
+// 校验失败（与管理员权限无关，两个平台语义一致地 Err）。
+// ---------------------------------------------------------------------------
+mod wave7 {
+    use super::wave5::{EnvHomeGuard, seed};
+    use super::*;
+
+    /// 真实 ed25519 派生的 node_id hex（trust-add/revoke 走 on-curve
+    /// 校验，任意 hex 会被拒绝；种子固定，断言可复现）。
+    fn valid_node_hex(seed_byte: u8) -> String {
+        let mut seed = [0u8; 32];
+        seed[0] = seed_byte;
+        let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        key.verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    }
+
+    #[tokio::test]
+    async fn w7_status_prints_mandate_and_identity_sections() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        seed(&home);
+        // mandate 配置段 + key 文件在场 → 两个状态段都走「有数据」分支。
+        std::fs::write(
+            common::cluster_config_path(&home),
+            "{\"enabled\":true,\"port\":11949,\"rpc_port\":21949,\"broadcast_interval\":30,\
+             \"mandate\":{\"mode\":\"verify\",\"sign_enabled\":false}}",
+        )
+        .unwrap();
+        std::fs::write(common::cluster_dir(&home).join("mandate_key.json"), "{}").unwrap();
+        let peers_toml = "[node]\nid = \"w7-status\"\nname = \"W7Status\"\nrole = \"worker\"\ncategory = \"development\"\n";
+        std::fs::write(common::cluster_dir(&home).join("peers.toml"), peers_toml).unwrap();
+
+        run(ClusterAction::Status, false)
+            .await
+            .expect("status → Ok");
+    }
+
+    /// Config 更新写盘失败（目标文件只读）：诚实报错不谎报成功，旧配置保留。
+    #[tokio::test]
+    async fn w7_config_write_failure_reports_and_keeps_old() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        seed(&home);
+        let path = common::cluster_config_path(&home);
+        std::fs::write(&path, "{\"port\":11949}").unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let mut perms = meta.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        // 端口值不同 → 进写盘臂 → 只读文件写入失败 → eprintln 后仍 Ok。
+        run(
+            ClusterAction::Config {
+                udp_port: 1,
+                rpc_port: 1,
+                broadcast_interval: 1,
+            },
+            false,
+        )
+        .await
+        .expect("写失败已告警 → Ok");
+
+        // 测试收尾：还原可写，让 TempDir 能清目录。
+        let meta = std::fs::metadata(&path).unwrap();
+        let mut perms = meta.permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        let data = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(data, "{\"port\":11949}", "写失败不得改动旧配置");
+    }
+
+    #[tokio::test]
+    async fn w7_init_writes_professions_tier_capabilities_backend() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        run(
+            ClusterAction::Init {
+                name: Some("W7Node".into()),
+                role: None,
+                category: None,
+                tags: Some("rust, cli".into()),
+                address: None,
+                professions: Some("dev".into()),
+                tier: Some("Mini".into()),
+                capabilities: Some("browser, chrome".into()),
+                runtime_backend: Some("VM".into()),
+            },
+            false,
+        )
+        .await
+        .expect("init 全字段宣告 → Ok");
+        let data = std::fs::read_to_string(common::cluster_dir(&home).join("peers.toml")).unwrap();
+        assert!(data.contains("tier = \"mini\""), "tier 归一小写: {data}");
+        assert!(data.contains("\"dev\""), "职能写入: {data}");
+        assert!(data.contains("browser"), "能力词写入: {data}");
+        assert!(
+            data.contains("runtime_backend = \"vm\""),
+            "后端宣告: {data}"
+        );
+        assert!(data.contains("rust"), "tags 写入: {data}");
+    }
+
+    /// 未显式 --tier 时按职能目录推断（dev → normal）。
+    #[tokio::test]
+    async fn w7_init_infers_tier_from_professions_when_absent() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        run(
+            ClusterAction::Init {
+                name: None,
+                role: None,
+                category: None,
+                tags: None,
+                address: None,
+                professions: Some("dev".into()),
+                tier: None,
+                capabilities: None,
+                runtime_backend: None,
+            },
+            false,
+        )
+        .await
+        .expect("init 推断档位 → Ok");
+        let data = std::fs::read_to_string(common::cluster_dir(&home).join("peers.toml")).unwrap();
+        assert!(data.contains("tier = \"normal\""), "推断档位: {data}");
+    }
+
+    /// config.cluster.json 位置被目录占用 → 系统参数写盘失败 → WARN 不致命，
+    /// peers.toml 照常写（init 继续走完）。
+    #[tokio::test]
+    async fn w7_init_config_write_failure_warns_but_continues() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let cfg_path = common::cluster_config_path(&home);
+        std::fs::create_dir_all(&cfg_path).unwrap();
+
+        run(
+            ClusterAction::Init {
+                name: Some("W7Dir".into()),
+                role: None,
+                category: None,
+                tags: None,
+                address: None,
+                professions: None,
+                tier: None,
+                capabilities: None,
+                runtime_backend: None,
+            },
+            false,
+        )
+        .await
+        .expect("写失败 WARN 不致命 → Ok");
+        assert!(cfg_path.is_dir(), "目录占位不被删除");
+        assert!(
+            common::cluster_dir(&home).join("peers.toml").exists(),
+            "peers.toml 照常落盘"
+        );
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_status_without_key_or_trust_prints_fresh_state() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Status,
+            },
+            false,
+        )
+        .await
+        .expect("status 空状态 → Ok");
+        // 无 key 无簿：开关/密钥/信任名单三段都走「未启用」分支（不失败）。
+        assert!(
+            !common::workspace_path(&home).join("trust.toml").exists(),
+            "status 不得写簿"
+        );
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_status_with_key_and_trust_book() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let workspace = common::workspace_path(&home);
+        std::fs::create_dir_all(workspace.join("cluster")).unwrap();
+        std::fs::write(workspace.join("cluster").join("roaming.key"), "").unwrap();
+        use nemesis_cluster::roaming::trust::{TrustBook, TrustBookData};
+        let mut book = TrustBook::from_data(TrustBookData::default());
+        book.trust(&valid_node_hex(1));
+        book.revoke(&valid_node_hex(2));
+        book.save(&workspace).unwrap();
+
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Status,
+            },
+            false,
+        )
+        .await
+        .expect("status 有簿 → Ok");
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_trust_list_with_entries_prints_book() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let workspace = common::workspace_path(&home);
+        std::fs::create_dir_all(&workspace).unwrap();
+        use nemesis_cluster::roaming::trust::{TrustBook, TrustBookData};
+        let mut book = TrustBook::from_data(TrustBookData::default());
+        book.trust(&valid_node_hex(3));
+        book.revoke(&valid_node_hex(4));
+        book.save(&workspace).unwrap();
+
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::TrustList,
+            },
+            false,
+        )
+        .await
+        .expect("trust-list 有簿 → Ok");
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_trust_list_without_book_prints_hint() {
+        let _g = EnvHomeGuard::new();
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::TrustList,
+            },
+            false,
+        )
+        .await
+        .expect("trust-list 无簿 → Ok");
+    }
+
+    /// revoke/unrevoke 回环：入簿（trust-add 语义同路）、出 revoked、再查簿。
+    #[tokio::test]
+    async fn w7_roaming_revoke_then_unrevoke_roundtrip() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let workspace = common::workspace_path(&home);
+        std::fs::create_dir_all(&workspace).unwrap();
+        use nemesis_cluster::roaming::trust::TrustBook;
+
+        let input = valid_node_hex(5);
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Revoke {
+                    node_id: input.clone(),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("revoke → Ok");
+        let hex = valid_node_hex(5);
+        let book = TrustBook::load(&workspace).unwrap().expect("簿已激活");
+        assert!(book.data().revoked.contains(&hex), "吊销入簿");
+        assert!(!book.data().trusted.contains(&hex), "吊销移出 trusted");
+
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Unrevoke { node_id: input },
+            },
+            false,
+        )
+        .await
+        .expect("unrevoke → Ok");
+        let book = TrustBook::load(&workspace).unwrap().expect("簿在");
+        assert!(!book.data().revoked.contains(&hex), "解除吊销后 revoked 空");
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_mandate_list_with_entries_prints_states() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let workspace = common::workspace_path(&home);
+        std::fs::create_dir_all(&workspace).unwrap();
+        // 先 pin 一条（激活簿），再 revoke 另一条 → mandate-list 同时展示
+        // pinned / revoked / absent 三态 + revoked 段循环。
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandatePin {
+                    node_id: "w7-node-a".into(),
+                    pubkey: format!("02{}", "ab".repeat(32)),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("mandate-pin → Ok");
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandateRevoke {
+                    node_id: "w7-node-b".into(),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("mandate-revoke → Ok");
+
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandateList,
+            },
+            false,
+        )
+        .await
+        .expect("mandate-list → Ok");
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_mandate_list_without_book_prints_hint() {
+        let _g = EnvHomeGuard::new();
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandateList,
+            },
+            false,
+        )
+        .await
+        .expect("mandate-list 无簿 → Ok");
+    }
+
+    /// 非法公钥形态 → loud 报错（66/130 hex 之外一律拒绝）。
+    #[tokio::test]
+    async fn w7_roaming_mandate_pin_bad_pubkey_bails() {
+        let _g = EnvHomeGuard::new();
+        let res = run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandatePin {
+                    node_id: "w7-node-x".into(),
+                    pubkey: "zz-not-hex".into(),
+                },
+            },
+            false,
+        )
+        .await;
+        let err = res.expect_err("非法公钥必须报错");
+        assert!(err.to_string().contains("mandate pin 失败"), "err: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_mandate_unrevoke_restores_state() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let workspace = common::workspace_path(&home);
+        std::fs::create_dir_all(&workspace).unwrap();
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandatePin {
+                    node_id: "w7-node-c".into(),
+                    pubkey: format!("03{}", "cd".repeat(32)),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("mandate-pin → Ok");
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandateRevoke {
+                    node_id: "w7-node-c".into(),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("mandate-revoke → Ok");
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::MandateUnrevoke {
+                    node_id: "w7-node-c".into(),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("mandate-unrevoke → Ok");
+        use nemesis_cluster::roaming::trust::{MandateKeyVerdict, mandate_key_state};
+        assert_eq!(
+            mandate_key_state(&workspace, "w7-node-c"),
+            MandateKeyVerdict::Pinned(format!("03{}", "cd".repeat(32))),
+            "解除吊销后 pin 保留、验签态恢复"
+        );
+    }
+
+    /// enable 先写开关再装载插件：测试环境插件缺席 → 显式报错不降级，
+    /// 但开关已写盘（闸不回滚）。
+    #[tokio::test]
+    async fn w7_roaming_enable_bails_when_plugin_absent_but_switch_persisted() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        seed(&home);
+        let res = run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Enable,
+            },
+            false,
+        )
+        .await;
+        let err = res.expect_err("插件缺席必须显式报错");
+        assert!(err.to_string().contains("plugin_roaming"), "err: {err:#}");
+        let cfg = std::fs::read_to_string(nemesis_path::resolve_cluster_config_path_in_workspace(
+            &common::workspace_path(&home),
+        ))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&cfg).unwrap();
+        assert_eq!(
+            v["roaming"]["enabled"].as_bool(),
+            Some(true),
+            "闸先写盘不回滚"
+        );
+    }
+
+    #[tokio::test]
+    async fn w7_roaming_disable_writes_switch_offline() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Disable,
+            },
+            false,
+        )
+        .await
+        .expect("disable 无需插件 → Ok");
+        let cfg = std::fs::read_to_string(nemesis_path::resolve_cluster_config_path_in_workspace(
+            &common::workspace_path(&home),
+        ))
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&cfg).unwrap();
+        assert_eq!(
+            v["roaming"]["enabled"].as_bool(),
+            Some(false),
+            "开关落盘 false"
+        );
+    }
+
+    /// 损坏的 cluster 配置：读改写环拒绝覆盖（防系统参数整段丢失）。
+    #[tokio::test]
+    async fn w7_roaming_enable_on_corrupt_cluster_config_fails_loud() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let cfg =
+            nemesis_path::resolve_cluster_config_path_in_workspace(&common::workspace_path(&home));
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+        std::fs::write(&cfg, "{broken").unwrap();
+
+        let res = run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Enable,
+            },
+            false,
+        )
+        .await;
+        let err = res.expect_err("损坏配置必须拒绝写入");
+        assert!(err.to_string().contains("解析失败"), "err: {err:#}");
+        assert_eq!(
+            std::fs::read_to_string(&cfg).unwrap(),
+            "{broken",
+            "原配置不变"
+        );
+    }
+
+    /// cluster 配置是目录 → 读失败 → 报错不静默当空对象。
+    #[tokio::test]
+    async fn w7_roaming_disable_on_unreadable_cluster_config_fails_loud() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        let cfg =
+            nemesis_path::resolve_cluster_config_path_in_workspace(&common::workspace_path(&home));
+        std::fs::create_dir_all(&cfg).unwrap();
+
+        let res = run(
+            ClusterAction::Roaming {
+                action: RoamingAction::Disable,
+            },
+            false,
+        )
+        .await;
+        let err = res.expect_err("读失败必须报错");
+        assert!(
+            err.to_string().contains("读取 cluster 配置失败"),
+            "err: {err:#}"
+        );
+    }
+
+    /// firewall add 用端口 0：netsh 参数校验拒绝（与权限无关的确定性失败
+    /// 路径），命令层如实上抛。
+    #[tokio::test]
+    async fn w7_firewall_add_invalid_port_fails_fast() {
+        let g = EnvHomeGuard::new();
+        let _ = &g;
+        let res = run(
+            ClusterAction::Firewall {
+                action: FirewallAction::Add {
+                    udp_port: 0,
+                    tcp_port: 0,
+                },
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "端口 0 必须被 netsh 拒绝");
+        // 兜底清理：即便极端环境把规则加上去了，也顺手删掉。
+        let _ = run(
+            ClusterAction::Firewall {
+                action: FirewallAction::Remove {
+                    udp_port: 0,
+                    tcp_port: 0,
+                },
+            },
+            false,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn w7_firewall_remove_reports_without_bail() {
+        let g = EnvHomeGuard::new();
+        let _ = &g;
+        run(
+            ClusterAction::Firewall {
+                action: FirewallAction::Remove {
+                    udp_port: 11949,
+                    tcp_port: 21949,
+                },
+            },
+            false,
+        )
+        .await
+        .expect("remove 不因规则缺席而失败");
+    }
+
+    /// 空 token fail-closed：node 子命令显式起 worker，无 token 拒绝启动 RPC。
+    #[tokio::test]
+    async fn w7_node_empty_token_fails_closed_before_bind() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        seed(&home);
+        // token 键缺席 = 空 → fail-closed（在 RPC bind 之前）。
+        let action = ClusterAction::Node {
+            udp_port: Some(0),
+            rpc_port: Some(0),
+            name: None,
+            broadcast_interval: 10,
+        };
+        let res =
+            tokio::time::timeout(std::time::Duration::from_secs(20), run(action, false)).await;
+        let res = res.expect("fail-closed 必须快速返回");
+        let err = res.expect_err("空 token 必须拒绝启动");
+        assert!(err.to_string().contains("fail-closed"), "err: {err:#}");
+    }
+
+    /// 空地址 peer 被跳过（continue 臂）+ 正常 peer 装载后进入等待循环；
+    /// 未来 7s 被 timeout 掐掉（等待循环本身只由 Ctrl+C 退出，测试以
+    /// 超时即「未提前 bail」为通过判据）。
+    #[tokio::test]
+    async fn w7_node_runs_wait_loop_until_timeout() {
+        let g = EnvHomeGuard::new();
+        let home = g.home();
+        seed(&home);
+        update_cluster_config(&home, "token", serde_json::json!("w7-node-tok")).unwrap();
+        let peers_toml = r#"
+[node]
+id = "w7-node"
+name = "W7Node"
+role = "worker"
+category = "development"
+
+[peers.w7-empty]
+address = ""
+name = "W7Empty"
+
+[peers.w7-live]
+address = "127.0.0.1:11195"
+name = "W7Live"
+role = "worker"
+rpc_port = 21195
+"#;
+        std::fs::create_dir_all(common::cluster_dir(&home)).unwrap();
+        std::fs::write(common::cluster_dir(&home).join("peers.toml"), peers_toml).unwrap();
+
+        let action = ClusterAction::Node {
+            udp_port: Some(0),
+            rpc_port: Some(0),
+            name: Some("W7Runner".into()),
+            broadcast_interval: 10,
+        };
+        let res = tokio::time::timeout(std::time::Duration::from_secs(7), run(action, false)).await;
+        // 超时 = 走完装载 + RPC 启动 + 发现启动 + 进入等待循环（未被 bail）。
+        assert!(res.is_err(), "node 应进入等待循环直到超时，而非提前退出");
+    }
+}

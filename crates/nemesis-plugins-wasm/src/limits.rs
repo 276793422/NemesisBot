@@ -164,3 +164,6 @@ impl InstanceGate {
             .map_err(|_| crate::error::PluginError::Busy(self.max))
     }
 }
+
+#[cfg(test)]
+mod tests;

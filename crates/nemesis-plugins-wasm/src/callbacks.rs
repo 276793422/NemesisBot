@@ -712,3 +712,8 @@ pub(crate) unsafe extern "C" fn cb_config_set(
         }
     })
 }
+
+/// 测试钩子：私有 shim 经薄包装供 callbacks_tests.rs 直接驱动
+///（cfg(test) 独占，转发调用，无运行期形态变化）。
+#[cfg(test)]
+pub(crate) mod test_only;

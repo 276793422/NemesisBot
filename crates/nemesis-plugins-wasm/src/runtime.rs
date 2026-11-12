@@ -437,3 +437,6 @@ pub(crate) fn extract_session_key(input_json: &str) -> String {
         })
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests;

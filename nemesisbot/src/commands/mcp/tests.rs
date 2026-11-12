@@ -2303,3 +2303,132 @@ async fn r14_test_missing_server_is_loud_error() {
     let err = cmd_test(&cfg, "ghost").await.unwrap_err();
     assert!(err.to_string().contains("not found"), "实际: {err}");
 }
+
+// ===========================================================================
+// cov_m：吃剩的离线可达臂——embedded_ref_headers 无冒号臂、主开关/
+// config.mcp.json 损坏 JSON 的 ? 错误臂、cmd_list HTTP 条目显示、
+// add 的 vault 别名/内嵌引用提示、sanitize 前缀碰撞写面 warn。
+// ===========================================================================
+mod cov_m {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// header 行无冒号（整体不是 "Name: value" 形态）→ split_once None →
+    /// false 臂，不入可疑清单。
+    #[test]
+    fn cov_embedded_ref_headers_skips_lines_without_colon() {
+        let out = embedded_ref_headers(&["no-colon-here".to_string()]);
+        assert!(out.is_empty(), "无冒号行不可能内嵌引用");
+    }
+
+    /// 主开关目标 config.json 是损坏 JSON → parse `?` 错误臂上抛。
+    #[test]
+    fn cov_sync_master_switch_malformed_config_errors() {
+        let tmp = TempDir::new().unwrap();
+        let main_cfg = tmp.path().join("config.json");
+        std::fs::write(&main_cfg, "{{{ not json").unwrap();
+        let res = sync_mcp_master_switch(&main_cfg, true);
+        assert!(
+            res.is_err(),
+            "损坏 config.json 必须 Err，got: {:?}",
+            res.err()
+        );
+    }
+
+    /// cmd_add 读已存在的 config.mcp.json 损坏 → `?` 错误臂上抛（不静默重建）。
+    #[test]
+    fn cov_cmd_add_malformed_mcp_config_errors() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = make_mcp_config(&tmp);
+        std::fs::write(&cfg_path, "{{{ broken").unwrap();
+        let main_cfg = tmp.path().join("config.json");
+        let req = AddRequest::build("cov-x", Some("node"), None, None, &[], None, &[], 30)
+            .expect("stdio request builds");
+        let res = cmd_add(&cfg_path, &main_cfg, &req);
+        assert!(
+            res.is_err(),
+            "损坏 config.mcp.json 必须 Err，got: {:?}",
+            res.err()
+        );
+    }
+
+    /// cmd_list 的 HTTP 条目显示臂：transport_type=http + url + headers。
+    #[test]
+    fn cov_cmd_list_shows_http_entry_url_and_headers() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("config.mcp.json");
+        let config = serde_json::json!({
+            "enabled": true,
+            "servers": [
+                {
+                    "name": "cov-http",
+                    "transport_type": "http",
+                    "url": "http://127.0.0.1:8808/mcp",
+                    "headers": ["Authorization: vault:cov-token"],
+                    "timeout_secs": 15
+                }
+            ]
+        });
+        std::fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+        cmd_list(&cfg_path).expect("list with http entry must succeed");
+    }
+
+    /// cmd_add HTTP 形态：vault 整值引用（别名提示块）+ 内嵌引用
+    /// （loud 警告块）双提示一起命中。
+    #[test]
+    fn cov_cmd_add_http_vault_alias_and_embedded_ref_hints() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = make_empty_mcp_config(&tmp);
+        let main_cfg = tmp.path().join("config.json");
+        // 主开关翻转走写臂 → 主配置必须已存在（缺省 = sync 早退不落盘）。
+        std::fs::write(&main_cfg, r#"{"mcp": {"enabled": false}}"#).unwrap();
+        let req = AddRequest::build(
+            "cov-vault",
+            None,
+            Some("http://127.0.0.1:8808/mcp"),
+            None,
+            &[
+                "X-Api-Key: vault:cov-alias".to_string(),
+                "Authorization: Bearer vault:embedded".to_string(),
+            ],
+            None,
+            &[],
+            15,
+        )
+        .expect("http request builds");
+        cmd_add(&cfg_path, &main_cfg, &req).expect("add with hint headers must succeed");
+        // 落盘面：headers 原样保存。
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert_eq!(saved["servers"][0]["transport_type"], "http");
+        assert_eq!(saved["servers"][0]["headers"].as_array().unwrap().len(), 2);
+        // 主开关被置位。
+        let main: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&main_cfg).unwrap()).unwrap();
+        assert_eq!(main["mcp"]["enabled"], true);
+    }
+
+    /// sanitize 前缀碰撞写面 warn：pet.v2 与 pet-v2 归一同前缀，
+    /// 第二个 add 命中 req.name 在碰撞组 → warn 打印。
+    #[test]
+    fn cov_cmd_add_warns_on_sanitized_prefix_collision() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = make_empty_mcp_config(&tmp);
+        let main_cfg = tmp.path().join("config.json");
+        let first = AddRequest::build("pet.v2", Some("node"), None, None, &[], None, &[], 5)
+            .expect("build first");
+        cmd_add(&cfg_path, &main_cfg, &first).expect("first add ok");
+        let second = AddRequest::build("pet-v2", Some("node"), None, None, &[], None, &[], 5)
+            .expect("build second");
+        cmd_add(&cfg_path, &main_cfg, &second).expect("second add ok");
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert_eq!(
+            saved["servers"].as_array().unwrap().len(),
+            2,
+            "两个名字都要落盘"
+        );
+    }
+}

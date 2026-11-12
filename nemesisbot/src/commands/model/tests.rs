@@ -4015,3 +4015,382 @@ mod n6_role {
         );
     }
 }
+
+// ===========================================================================
+// cov-m4：吃剩的离线可达臂——add 的坏 stream 拒绝/无斜杠别名/图像与
+// 杂务角色守卫提示/无 key 验证未执行、agents.defaults 非对象收口、
+// SetStream/SetCompactContext 全臂、Probe 图像条目拒绝、list 的别名
+// 回落与钳制打印、price-tier 解析错误臂、阶梯价自定义条目 list 显示。
+// ===========================================================================
+#[cfg(windows)] // Windows-form CLI tests (Linux nightly: excluded, sweep)
+mod cov_m4 {
+    use super::super::{ModelAction, PricesAction, parse_price_tiers, run};
+    use super::{s11b_read_cfg, s11b_temp_home_env, s11b_write_cfg};
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[tokio::test]
+    async fn cov_add_invalid_stream_value_bails() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        let res = run(
+            ModelAction::Add {
+                model: Some("openai/gpt-4o".into()),
+                provider: None,
+                key: Some("k".into()),
+                base: None,
+                proxy: None,
+                auth: None,
+                protocol: None,
+                role: None,
+                stream: Some("banana".into()),
+                default: false,
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "非法 --stream 值必须 loud 拒绝");
+    }
+
+    /// 图像协议条目（images-openai）：唯一模型也不自动坐默认对话槽
+    /// （守卫打印臂）+ 保存校验走 unsupported 臂。
+    #[tokio::test]
+    async fn cov_add_image_protocol_entry_skips_auto_default() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        run(
+            ModelAction::Add {
+                model: Some("openai/gpt-image-1".into()),
+                provider: None,
+                key: Some("k".into()),
+                base: Some("http://127.0.0.1:1/v1".into()),
+                proxy: None,
+                auth: None,
+                protocol: Some("images-openai".into()),
+                role: None,
+                stream: None,
+                default: false,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["agents"]["defaults"]["llm"].is_null(),
+            "图像条目不得坐默认槽"
+        );
+    }
+
+    /// utility 角色条目同样不自动坐默认对话槽（守卫第二臂）。
+    #[tokio::test]
+    async fn cov_add_utility_role_entry_skips_auto_default() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        run(
+            ModelAction::Add {
+                model: Some("zhipu/glm-4.7".into()),
+                provider: None,
+                key: Some("k".into()),
+                base: None,
+                proxy: None,
+                auth: None,
+                protocol: None,
+                role: Some("utility".into()),
+                stream: None,
+                default: false,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["agents"]["defaults"]["llm"].is_null(),
+            "utility 条目不得坐默认槽"
+        );
+    }
+
+    /// 无 key 条目 → 保存校验 Err 臂（验证：未执行）。
+    #[tokio::test]
+    async fn cov_add_without_key_verify_reports_not_executed() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        run(
+            ModelAction::Add {
+                model: Some("openai/gpt-4o".into()),
+                provider: None,
+                key: None,
+                base: None,
+                proxy: None,
+                auth: None,
+                protocol: None,
+                role: None,
+                stream: None,
+                default: false,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["model_list"][0]["api_key"].is_null(),
+            "无 key 条目 api_key 缺省"
+        );
+    }
+
+    /// agents.defaults 存在但非对象 → --default 写槽静默收口（不炸）。
+    #[tokio::test]
+    async fn cov_add_default_with_non_object_defaults_is_noop() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({"model_list": [], "agents": {"defaults": "oops"}}),
+        );
+        run(
+            ModelAction::Add {
+                model: Some("openai/gpt-4o".into()),
+                provider: None,
+                key: Some("k".into()),
+                base: None,
+                proxy: None,
+                auth: None,
+                protocol: None,
+                role: None,
+                stream: None,
+                default: true,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_cfg(&th.home);
+        assert_eq!(
+            cfg["agents"]["defaults"], "oops",
+            "非对象 defaults 不得被破坏"
+        );
+        // 条目仍要落盘。
+        assert_eq!(cfg["model_list"].as_array().unwrap().len(), 1);
+    }
+
+    /// SetStream：config 缺失 bail + 模型不存在 bail。
+    #[tokio::test]
+    async fn cov_setstream_error_arms() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        // config 缺失。
+        let res = run(
+            ModelAction::SetStream {
+                name: "x".into(),
+                stream: "yes".into(),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "config 缺失必须 bail");
+        // config 在但模型缺。
+        s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        let res = run(
+            ModelAction::SetStream {
+                name: "nope".into(),
+                stream: "yes".into(),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "模型不存在必须 bail");
+    }
+
+    /// SetCompactContext：缺失/坏值/设置/清除/模型缺 五臂。
+    #[tokio::test]
+    async fn cov_setcompact_context_arms() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        // config 缺失。
+        let res = run(
+            ModelAction::SetCompactContext {
+                name: "m".into(),
+                tokens: "1000".into(),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err());
+        // 坏值。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({"model_list": [{"model": "a/b", "model_name": "b"}]}),
+        );
+        let res = run(
+            ModelAction::SetCompactContext {
+                name: "b".into(),
+                tokens: "abc".into(),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "非数字非 auto 必须 loud 拒绝");
+        // 设置值（超窗口 → 钳制打印臂）。
+        run(
+            ModelAction::SetCompactContext {
+                name: "b".into(),
+                tokens: "999999999".into(),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_cfg(&th.home);
+        assert_eq!(cfg["model_list"][0]["compact_context_tokens"], 999999999u64);
+        // auto 清除 → 移键。
+        run(
+            ModelAction::SetCompactContext {
+                name: "b".into(),
+                tokens: "auto".into(),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["model_list"][0].get("compact_context_tokens").is_none(),
+            "清除必须移键而非写 null"
+        );
+        // 模型缺。
+        let res = run(
+            ModelAction::SetCompactContext {
+                name: "nope".into(),
+                tokens: "100".into(),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "模型不存在必须 bail");
+    }
+
+    /// Probe：images-openai 条目 loud 拒绝（不支持能力探针）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_probe_image_entry_bails() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "model_list": [
+                    {"model": "openai/gpt-image-1", "model_name": "gpt-image-1",
+                     "protocol": "images-openai", "api_key": "k"}
+                ]
+            }),
+        );
+        let res = run(
+            ModelAction::Probe {
+                name: "gpt-image-1".into(),
+            },
+            false,
+        )
+        .await;
+        let err = res.expect_err("图像协议条目必须拒绝探针");
+        assert!(err.to_string().contains("images-openai"), "err: {err:#}");
+    }
+
+    /// list：条目缺 model_name → 窗口解析回落整名臂；compact 阈值超窗 →
+    /// 钳制打印臂。
+    #[tokio::test]
+    async fn cov_list_alias_fallback_and_clamped_compact_print() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "model_list": [
+                    {"model": "bare-alias-x", "api_key": "k"},
+                    {"model": "a/b", "model_name": "b", "api_key": "k",
+                     "compact_context_tokens": 999999999}
+                ],
+                "agents": {"defaults": {"llm": "b"}}
+            }),
+        );
+        run(ModelAction::List { verbose: false }, false)
+            .await
+            .unwrap();
+    }
+
+    /// price-tier 解析错误臂：段数错/阈值非数字/负阈值/输入价非数字/
+    /// 输出价非数字/非有限数值。
+    #[test]
+    fn cov_parse_price_tiers_error_arms() {
+        assert!(parse_price_tiers(&["1:2".to_string()]).is_err(), "段数错");
+        assert!(
+            parse_price_tiers(&["abc:1:2".to_string()]).is_err(),
+            "阈值非数字"
+        );
+        assert!(
+            parse_price_tiers(&["-1:1:2".to_string()]).is_err(),
+            "负阈值"
+        );
+        assert!(
+            parse_price_tiers(&["1:abc:2".to_string()]).is_err(),
+            "输入价非数字"
+        );
+        assert!(
+            parse_price_tiers(&["1:2:abc".to_string()]).is_err(),
+            "输出价非数字"
+        );
+        assert!(
+            parse_price_tiers(&["1:nan:2".to_string()]).is_err(),
+            "非有限输入价"
+        );
+        assert!(
+            parse_price_tiers(&["1:2:inf".to_string()]).is_err(),
+            "非有限输出价"
+        );
+        // 合法形态照常解析。
+        let tiers = parse_price_tiers(&["0:1.5:3".to_string(), "10000:1:2".to_string()])
+            .unwrap()
+            .expect("非空规格必须给阶梯");
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[1].min_prompt_tokens, 10000);
+    }
+
+    /// Prices Add（带阶梯）→ Prices List：自定义条目阶梯明细打印臂。
+    #[tokio::test]
+    async fn cov_prices_list_shows_custom_entry_tiers() {
+        let _guard = lock();
+        let _th = s11b_temp_home_env();
+        run(
+            ModelAction::Prices {
+                action: PricesAction::Add {
+                    model: "cov/tiered".into(),
+                    input: 1.0,
+                    output: 2.0,
+                    cache_read: 0.0,
+                    cache_creation: 0.0,
+                    display: None,
+                    price_tiers: vec!["0:1:2".to_string(), "10000:0.5:1".to_string()],
+                },
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        run(
+            ModelAction::Prices {
+                action: PricesAction::List,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+}
