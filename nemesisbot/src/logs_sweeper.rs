@@ -286,12 +286,19 @@ pub struct SweepStats {
 }
 
 /// 纯函数：mtime 距 `now` 是否超 `ttl_days`（`ttl_days=0` = 族关，恒否）。
+///
+/// `ttl_days` 是 config 值（无上界 u64）——裸乘在 `ttl_days > u64::MAX/86400`
+/// （~2.14e14 天）时溢出：debug panic 杀死清扫任务；release 回绕出不可预测
+/// 乘积，**可精确构造归零**（`2^57 × 86400 = 2^64 × 675 ≡ 0` → `age >= 0`
+/// 恒真 → 该族不分年龄整族误删，trash 回收站同罹）。饱和封顶后巨值语义
+/// 诚实落「保留一切」（同族先例：R735 usage_store 入口钳制、spill.rs
+/// cleanup_expired saturating_mul——本形态第三处漏网）。
 fn is_expired(mtime: SystemTime, ttl_days: u64, now: SystemTime) -> bool {
     if ttl_days == 0 {
         return false;
     }
     now.duration_since(mtime)
-        .map(|age| age.as_secs() >= ttl_days * DAY_SECS)
+        .map(|age| age.as_secs() >= ttl_days.saturating_mul(DAY_SECS))
         .unwrap_or(false)
 }
 
@@ -319,12 +326,25 @@ fn ledger_tail_is_append(bytes: &[u8]) -> bool {
 
 /// 会话目录字节量（request_logs 条目内部文件累计；读不到的项跳过——
 /// 尺寸只服务 INFO 日志，读失败不值得让清扫失败）。
+///
+/// BUG-20261113-137：目录下探判定用 `DirEntry::file_type()`（**非跟随**，
+/// 等价 symlink_metadata）——旧形态 `Path::is_dir()` 跟随链接，条目内
+/// junction/symlink 环（agent 可用 `mklink /J` 无特权在 workspace logs
+/// 子树内种）= 无限递归栈溢出，gateway 崩溃级（stack overflow 不可捕获）；
+/// 外指链接 = 越界统计。BUG-20261110-059 统一守卫形态（checkpoint/gc.rs
+/// dir_size 先例）——该轮 24 位点枚举漏网的第 25 处。
 fn dir_size(dir: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.filter_map(|e| e.ok()) {
             let p = e.path();
-            if p.is_dir() {
+            let Ok(ft) = e.file_type() else {
+                continue; // 消失/不可达条目不计不入栈
+            };
+            if ft.is_symlink() {
+                continue; // 链接条目（含 Windows junction）不跟随
+            }
+            if ft.is_dir() {
                 total += dir_size(&p);
             } else if let Ok(m) = e.metadata() {
                 total += m.len();

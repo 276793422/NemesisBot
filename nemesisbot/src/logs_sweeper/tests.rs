@@ -7,7 +7,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use super::{LogsTtl, is_expired, ledger_tail_is_append, sweep_workspace_logs};
+use super::{LogsTtl, dir_size, is_expired, ledger_tail_is_append, sweep_workspace_logs};
 
 fn now() -> SystemTime {
     SystemTime::now()
@@ -56,6 +56,119 @@ fn ttl_is_expired_boundaries() {
     );
     // 时钟回拨形态（mtime 在未来）：duration_since 出错 = 不超龄。
     assert!(!is_expired(t + Duration::from_secs(3600), 7, t));
+}
+
+/// BUG-20261113-136 回归锁：config 巨值 `ttl_days` 裸乘回绕曾把
+/// `ttl_days * 86400` 精确归零（`2^57 × 86400 = 2^64 × 675 ≡ 0`）→
+/// `age >= 0` 恒真 → 该族不分年龄整族误删。饱和乘后巨值语义 = 保留一切。
+#[test]
+fn ttl_is_expired_huge_config_value_never_expires() {
+    let t = now();
+    // 精确回绕值：2^57 = 144115188075855872（修复前 `* 86400` 溢出归 0，
+    // 100 天前的文件也被判超龄）。
+    let wrap_zero = 144115188075855872u64;
+    assert!(
+        !is_expired(t - Duration::from_secs(100 * 86400), wrap_zero, t),
+        "2^57 天巨值 = 保留一切（回绕归 0 曾误判 100 天前文件超龄）"
+    );
+    assert!(!is_expired(t, wrap_zero, t));
+    // u64::MAX（饱和封顶值的来源形态）：同样恒不超龄。
+    assert!(!is_expired(
+        t - Duration::from_secs(100 * 86400),
+        u64::MAX,
+        t
+    ));
+    // 略超溢出阈值的普通巨值（~2.14e14 天 ≈ 58 万年）：同语义。
+    assert!(!is_expired(
+        t - Duration::from_secs(100 * 86400),
+        30_000_000_000_000,
+        t
+    ));
+}
+
+/// BUG-20261113-136 全链锁：session_logs 族配置巨值 → sweep 全链零删除、
+/// 夹具原样保留（纯函数锁钉谓词，本锁钉「谓词 → sweep_family 消费端」
+/// 不因回绕误删的实际后果面）。
+#[test]
+fn huge_ttl_config_value_sweeps_nothing() {
+    let ws = tempfile::tempdir().unwrap();
+    let sl = ws.path().join("logs").join("session_logs");
+    std::fs::create_dir_all(&sl).unwrap();
+    std::fs::write(sl.join("ancient.jsonl"), "body").unwrap();
+    std::fs::write(sl.join("ancient.meta.json"), "{}").unwrap();
+
+    let ttl = LogsTtl {
+        session_logs: 144115188075855872, // 2^57：修复前裸乘回绕归 0
+        ..LogsTtl::all_disabled_shape()
+    };
+    let stats = sweep_workspace_logs(ws.path(), &ttl, old_now());
+    let session = stats
+        .iter()
+        .find(|(f, _)| f.name() == "session_logs")
+        .unwrap()
+        .1;
+    assert_eq!(session.deleted, 0, "巨值 TTL = 一件不删: {stats:?}");
+    assert_eq!(
+        names(&sl),
+        vec!["ancient.jsonl", "ancient.meta.json"],
+        "夹具原样保留（内容口径）"
+    );
+}
+
+// —— BUG-20261113-137：dir_size 链接条目不跟随 ——
+
+/// 外指链接钉跳过语义（gc_tests::dir_size_skips_link_entries 同款形态：
+/// 自指环在守卫生效时安全、失效则挂死不可断言，外指形态是同一跟随语义
+/// 的可断言推论）。junction（Windows，无特权）/ symlink（unix）种进过期
+/// 会话条目：旧形态 `Path::is_dir()` 跟随 → 无限递归栈溢出（gateway
+/// 崩溃级）+ 外部树字节越界计入；守卫后 sweep 全链零崩溃、只计内部字节。
+#[test]
+fn dir_size_skips_link_entries_in_swept_session_dir() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let base = tempfile::tempdir().unwrap();
+    let outside = base.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("leak.bin"), vec![0u8; 4096]).unwrap();
+
+    // 全链面挂在 request_logs（条目 = 会话目录族，default 14d < 拨前 40d）。
+    // session_logs 是平铺文件族，目录夹具走文件臂删除（os error 5）不适用。
+    let rl = base.path().join("logs").join("request_logs");
+    let entry = rl.join("1730000000_ab12cd34");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(entry.join("00.request.md"), vec![0u8; 100]).unwrap();
+
+    #[cfg(windows)]
+    {
+        let junc = entry.join("link");
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junc)
+            .arg(&outside)
+            .output()
+            .expect("run mklink");
+        assert!(
+            out.status.success(),
+            "mklink /J failed: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, entry.join("link")).expect("symlink");
+
+    // 谓词面：链接目标树字节不计入（守卫失效时此处 = 4196；环形态挂死）。
+    assert_eq!(dir_size(&entry), 100);
+
+    // 全链面：过期会话目录整删（链接条目本身同走——remove_dir_all 不跟随
+    // 链接，删的是链接不是目标树），零崩溃、bytes_freed 不含外部树。
+    let stats = sweep_workspace_logs(base.path(), &LogsTtl::default(), old_now());
+    let req = stats
+        .iter()
+        .find(|(f, _)| f.name() == "request_logs")
+        .unwrap()
+        .1;
+    assert_eq!(req.deleted, 1, "过期会话目录连链接一起删: {stats:?}");
+    assert_eq!(req.bytes_freed, 100, "外部树字节不得计入: {stats:?}");
+    assert!(names(&rl).is_empty(), "内容口径：条目已删");
 }
 
 // —— 账本末行判定 ——
