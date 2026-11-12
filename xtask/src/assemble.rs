@@ -120,8 +120,12 @@ pub fn run(opts: &AssembleOpts) -> Result<()> {
             .unwrap_or("（未取到——exe 版本面将无 hash 后缀）")
     );
     println!(
-        "同步       : 复制 {} 文件 / 跳过未变 {} / 新建目录 {}",
-        stats.copied, stats.skipped_unchanged, stats.dirs_created
+        "同步       : 复制 {} 文件 / 跳过未变 {} / 新建目录 {} / 镜像删除 {} 文件 {} 目录",
+        stats.copied,
+        stats.skipped_unchanged,
+        stats.dirs_created,
+        stats.pruned_files,
+        stats.pruned_dirs
     );
     Ok(())
 }

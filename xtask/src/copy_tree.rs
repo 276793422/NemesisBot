@@ -4,6 +4,12 @@
 //! mtime+size 做 fingerprint，若按复制时刻写时间戳，共享 `assembly/target`
 //! 的增量缓存每轮被打穿（全量重编）。同名跳过规则分两级：任意深度（构建
 //! 产物/依赖树/git 元数据）与仅仓库根（bin/ 产物区、assembly 自身防递归）。
+//!
+//! 同步是三态镜像（BUG-20261112-123）：新增/更新之外还要**删除**——仓库侧
+//! 已不存在的条目从复制体摘除。include_dir! 嵌入面（`nemesisbot/workspace/`
+//! 模板与技能、`crates/nemesis-web/static/` 资产）对「删了但复制体还留着」
+//! 完全失明：增量装配不摘除，陈旧幽灵文件烤进商业交付物。跳过名单（构建
+//! 产物/依赖树/git 元数据）不参与删除——从未同步的条目不归同步管。
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -33,6 +39,10 @@ pub struct SyncStats {
     pub copied: usize,
     pub skipped_unchanged: usize,
     pub dirs_created: usize,
+    /// 镜像删除：仓库侧已删、复制体侧摘除的文件数（BUG-20261112-123）。
+    pub pruned_files: usize,
+    /// 镜像删除：仓库侧已删、复制体侧整目录摘除的目录数（BUG-20261112-123）。
+    pub pruned_dirs: usize,
     pub warnings: Vec<String>,
 }
 
@@ -48,10 +58,14 @@ fn sync_dir(src: &Path, dst: &Path, is_root: bool, stats: &mut SyncStats) -> Res
         fs::create_dir_all(dst).with_context(|| format!("创建目录 {}", dst.display()))?;
         stats.dirs_created += 1;
     }
+    // 镜像删除的 src 名集合：**跳过名单条目也计入**（它们在场、只是不同步
+    // ——dst 对应条目必须存活，删除面只针对 src 真缺席的名字）。
+    let mut src_names: Vec<String> = Vec::new();
     for entry in rd {
         let entry = entry.with_context(|| format!("读目录项 {}", src.display()))?;
         let ft = entry.file_type()?;
         let name = entry.file_name().to_string_lossy().to_string();
+        src_names.push(name.clone());
         if ft.is_symlink() {
             stats
                 .warnings
@@ -83,7 +97,66 @@ fn sync_dir(src: &Path, dst: &Path, is_root: bool, stats: &mut SyncStats) -> Res
             }
         }
     }
+    prune_extraneous(dst, &src_names, is_root, stats)?;
     Ok(())
+}
+
+/// 镜像删除（同步三态的第三态，BUG-20261112-123）：复制体侧 src 缺席的
+/// 条目摘除——文件摘单文件、目录整子树摘除。跳过名单内的名字不摘（与
+/// 同步面同一豁免口径：构建产物/依赖树/git 元数据从未同步，不归同步管，
+/// 保守不越权）。失败即 Err（同步阶段目标文件未被构建占用；韧性退避由
+/// `remove_with_retry` 承担 Windows AV/索引器瞬时句柄）。
+fn prune_extraneous(
+    dst: &Path,
+    src_names: &[String],
+    is_root: bool,
+    stats: &mut SyncStats,
+) -> Result<()> {
+    let rd = fs::read_dir(dst).with_context(|| format!("枚举目标目录 {}", dst.display()))?;
+    for entry in rd {
+        let entry = entry.with_context(|| format!("读目录项 {}", dst.display()))?;
+        let ft = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if SKIP_ANY_DEPTH.contains(&name.as_str())
+            || (is_root && SKIP_ROOT_ONLY.contains(&name.as_str()))
+            || src_names.contains(&name)
+        {
+            continue;
+        }
+        let path = dst.join(&name);
+        if ft.is_dir() {
+            remove_with_retry(&path, true)
+                .with_context(|| format!("镜像删除多余目录 {}", path.display()))?;
+            stats.pruned_dirs += 1;
+        } else {
+            // 符号链接也落此臂（is_dir=false）——remove_file 摘链接本身。
+            remove_with_retry(&path, false)
+                .with_context(|| format!("镜像删除多余文件 {}", path.display()))?;
+            stats.pruned_files += 1;
+        }
+    }
+    Ok(())
+}
+
+/// 韧性删除（Windows AV/索引器瞬时句柄是常态）：3 次重试 + 退避，与
+/// assemble::remove_dir_all_resilient 同口径。
+fn remove_with_retry(path: &Path, is_dir: bool) -> Result<()> {
+    let mut last_err = None;
+    for attempt in 0..3 {
+        let r = if is_dir {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        match r {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
+            }
+        }
+    }
+    Err(anyhow::Error::from(last_err.expect("有错才走到这")))
 }
 
 /// size+mtime 双等 = 视为未变（与 cargo fingerprint 同款口径）。

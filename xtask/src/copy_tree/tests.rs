@@ -147,3 +147,98 @@ fn root_bin_skip_does_not_hit_nested_src_bin() {
     assert!(!dst.join("bin").exists(), "根 bin 必须跳过");
     assert_eq!(stats.copied, 1);
 }
+
+/// BUG-20261112-123 回归锁：镜像删除（同步三态的第三态）。仓库侧删除的
+/// 文件/目录在二轮同步时从复制体摘除——修复前 sync 只加不删，include_dir!
+/// 嵌入面（workspace/ 模板与技能、static/ 资产）对「删了但复制体还留着」
+/// 完全失明：增量装配把陈旧幽灵文件烤进商业交付物（onboard 复活已删模板/
+/// 技能、web 伺服幽灵资产），无警告无检测。
+#[test]
+fn prune_removes_entries_deleted_from_src() {
+    let root = temp_root("prune-del");
+    let src = root.join("src");
+    let dst = root.join("dst");
+    seed_repo_like(&src);
+    // 额外摆两个将来被删的条目：文件一枚 + 目录子树一枚（嵌入面同构）。
+    write_file(&src.join("crates/foo/src/extra.rs"), "pub fn e() {}");
+    write_file(
+        &src.join("nemesisbot/workspace/skills/old-skill/SKILL.md"),
+        "x",
+    );
+
+    sync_repo(&src, &dst).expect("首同步");
+    assert!(dst.join("crates/foo/src/extra.rs").is_file());
+    assert!(
+        dst.join("nemesisbot/workspace/skills/old-skill/SKILL.md")
+            .is_file()
+    );
+
+    // 仓库侧删除。
+    fs::remove_file(src.join("crates/foo/src/extra.rs")).expect("删文件");
+    fs::remove_dir_all(src.join("nemesisbot/workspace/skills/old-skill")).expect("删目录");
+
+    let stats = sync_repo(&src, &dst).expect("二同步");
+    assert!(
+        !dst.join("crates/foo/src/extra.rs").exists(),
+        "仓库侧删除的文件必须镜像摘除"
+    );
+    assert!(
+        !dst.join("nemesisbot/workspace/skills/old-skill").exists(),
+        "仓库侧删除的目录必须整子树镜像摘除"
+    );
+    assert_eq!(stats.pruned_files, 1, "{stats:?}");
+    assert_eq!(stats.pruned_dirs, 1, "{stats:?}");
+    // 既有保留面不受误伤（删除只命中 src 缺席的名字）。
+    assert!(dst.join("crates/foo/src/lib.rs").is_file());
+    assert!(dst.join("nemesisbot/src/main.rs").is_file());
+}
+
+/// 跳过名单不参与镜像删除（同一豁免口径）：复制体侧的 skip 名单条目即便
+/// src 缺席也不摘——构建产物/依赖树/git 元数据从未同步，不归同步管。
+#[test]
+fn prune_respects_skip_names() {
+    let root = temp_root("prune-skip");
+    let src = root.join("src");
+    let dst = root.join("dst");
+    seed_repo_like(&src);
+    sync_repo(&src, &dst).expect("首同步");
+    // 人为在复制体侧造一个 src 缺席的 skip 名单目录（模拟历史遗留产物）。
+    write_file(&dst.join("web/node_modules/legacy/x.js"), "// stale");
+
+    let stats = sync_repo(&src, &dst).expect("二同步");
+    assert!(
+        dst.join("web/node_modules/legacy/x.js").is_file(),
+        "skip 名单内的 dst 条目不得被镜像删除"
+    );
+    assert_eq!(stats.pruned_dirs, 0, "{stats:?}");
+    assert_eq!(stats.pruned_files, 0, "{stats:?}");
+}
+
+/// 改名 = 删除+新增的一轮同步双效应：旧名镜像摘除、新名照常复制——同一
+/// 同步调用内两态都生效，无「先加后删」的中间态要求。
+#[test]
+fn rename_is_delete_plus_add_in_one_pass() {
+    let root = temp_root("prune-rename");
+    let src = root.join("src");
+    let dst = root.join("dst");
+    seed_repo_like(&src);
+    write_file(&src.join("crates/foo/src/old.rs"), "pub fn o() {}");
+    sync_repo(&src, &dst).expect("首同步");
+    assert!(dst.join("crates/foo/src/old.rs").is_file());
+
+    // 仓库侧改名 old.rs → new.rs。
+    fs::rename(
+        src.join("crates/foo/src/old.rs"),
+        src.join("crates/foo/src/new.rs"),
+    )
+    .expect("改名");
+
+    let stats = sync_repo(&src, &dst).expect("二同步");
+    assert!(!dst.join("crates/foo/src/old.rs").exists(), "旧名必须摘除");
+    assert!(
+        dst.join("crates/foo/src/new.rs").is_file(),
+        "新名必须照常复制"
+    );
+    assert_eq!(stats.pruned_files, 1, "{stats:?}");
+    assert_eq!(stats.copied, 1, "{stats:?}");
+}
