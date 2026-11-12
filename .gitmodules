@@ -5,3 +5,7 @@
 [submodule "skins"]
 	path = skins
 	url = https://github.com/276793422/NemesisBot_skins.git
+[submodule "slots/taiwei/impl"]
+	path = slots/taiwei/impl
+	url = https://github.com/276793422/TaiWei.git
+	branch = main

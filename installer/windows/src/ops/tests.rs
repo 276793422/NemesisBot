@@ -84,6 +84,8 @@ fn system_call_shape_matches_bot_cli_flags() {
         no_shortcuts: false,
         autostart: true,
         launch: false,
+        taiwei_opt_in: true,
+        precise_opt_in: false,
     };
     let call = register_call(&target.join("nemesisbot.exe"), target, &opts);
     assert_eq!(call.exe, target.join("nemesisbot.exe"));
@@ -124,6 +126,64 @@ fn system_call_shape_matches_bot_cli_flags() {
             "unregister".to_string(),
             "--dir".to_string(),
             target.to_string_lossy().into_owned(),
+        ]
+    );
+
+    // 遥测 disable 调用形状（M4 opt-out 通道）。
+    let dis = taiwei_disable_call(&target.join("nemesisbot.exe"));
+    assert_eq!(dis.exe, target.join("nemesisbot.exe"));
+    assert_eq!(dis.args, vec!["taiwei".to_string(), "disable".to_string()]);
+
+    // 精确定位 enable-precise 调用形状（M6 opt-in 单独同意通道）。
+    let prec = taiwei_precise_enable_call(&target.join("nemesisbot.exe"));
+    assert_eq!(prec.exe, target.join("nemesisbot.exe"));
+    assert_eq!(
+        prec.args,
+        vec!["taiwei".to_string(), "enable-precise".to_string()]
+    );
+
+    // 设备标识播种/删除调用形状（随机持久 ID 机器存储，2026-11-12）。
+    let mid_ensure = taiwei_machine_id_ensure_call(&target.join("nemesisbot.exe"));
+    assert_eq!(mid_ensure.exe, target.join("nemesisbot.exe"));
+    assert_eq!(
+        mid_ensure.args,
+        vec![
+            "taiwei".to_string(),
+            "machine-id".to_string(),
+            "ensure".to_string()
+        ]
+    );
+    let mid_remove = taiwei_machine_id_remove_call(&target.join("nemesisbot.exe"));
+    assert_eq!(mid_remove.exe, target.join("nemesisbot.exe"));
+    assert_eq!(
+        mid_remove.args,
+        vec![
+            "taiwei".to_string(),
+            "machine-id".to_string(),
+            "remove".to_string()
+        ]
+    );
+
+    // 遥测 uninstall 调用形状（D1：None = 静默/跳过不带旗标；Some = 追加 --reason）。
+    let tu_none = taiwei_uninstall_call(&target.join("nemesisbot.exe"), None);
+    assert_eq!(tu_none.exe, target.join("nemesisbot.exe"));
+    assert_eq!(
+        tu_none.args,
+        vec![
+            "taiwei".to_string(),
+            "emit".to_string(),
+            "uninstall".to_string()
+        ]
+    );
+    let tu_reason = taiwei_uninstall_call(&target.join("nemesisbot.exe"), Some("not_useful"));
+    assert_eq!(
+        tu_reason.args,
+        vec![
+            "taiwei".to_string(),
+            "emit".to_string(),
+            "uninstall".to_string(),
+            "--reason".to_string(),
+            "not_useful".to_string()
         ]
     );
 }
@@ -255,7 +315,8 @@ fn build_fake_package(dir: &Path, version: &str) -> Result<std::path::PathBuf> {
     Ok(out)
 }
 
-/// 模拟安装参数（不碰用户机器面：无快捷方式 / 无自启 / 不启动假 bot）。
+/// 模拟安装参数（不碰用户机器面：无快捷方式 / 无自启 / 不启动假 bot；
+/// 遥测 opt-in 缺省开 = 生产静默默认；precise 缺省关 = 单独同意默认）。
 fn sim_install_options(package: &Path, target: &Path) -> InstallOptions {
     InstallOptions {
         package: package.to_path_buf(),
@@ -266,6 +327,8 @@ fn sim_install_options(package: &Path, target: &Path) -> InstallOptions {
         no_shortcuts: true,
         autostart: false,
         launch: false,
+        taiwei_opt_in: true,
+        precise_opt_in: false,
     }
 }
 
@@ -304,10 +367,15 @@ fn simulated_full_lifecycle_with_fake_process_list() -> Result<()> {
     assert!(target.join("IDENTITY.md").exists());
     assert!(target.join("uninstall.exe").exists(), "卸载副本落位");
     assert!(target.join("install.json").exists());
-    // spawn 契约：恰好一次、且是 register、--dir 指向安装目录。
+    // spawn 契约：恰好三次——register（--dir 指向安装目录）+ machine-id
+    // ensure（emit 之前播种）+ taiwei emit install（--install-id 非空，M3）。
     {
         let got = calls.lock().expect("lock");
-        assert_eq!(got.len(), 1, "安装只 spawn 一次 register: {got:?}");
+        assert_eq!(
+            got.len(),
+            3,
+            "安装 spawn register + machine-id ensure + taiwei install: {got:?}"
+        );
         assert_eq!(got[0].args[1], "register");
         let di = got[0]
             .args
@@ -315,6 +383,24 @@ fn simulated_full_lifecycle_with_fake_process_list() -> Result<()> {
             .position(|a| a == "--dir")
             .expect("--dir");
         assert_eq!(got[0].args[di + 1], target.to_string_lossy());
+        assert_eq!(
+            &got[1].args[..],
+            &["taiwei", "machine-id", "ensure"],
+            "第二发 = machine-id ensure（emit install 之前播种）: {:?}",
+            got[1].args
+        );
+        assert_eq!(
+            &got[2].args[..3],
+            &["taiwei", "emit", "install"],
+            "第三发 = taiwei emit install: {:?}",
+            got[2].args
+        );
+        let ii = got[2]
+            .args
+            .iter()
+            .position(|a| a == "--install-id")
+            .expect("--install-id");
+        assert!(!got[2].args[ii + 1].is_empty(), "install_id 非空透传");
     }
 
     // ② 模拟「有实例」→ 闸拦 exit 6，且闸在引擎与 spawn 之前——目录一字节不动、零调用。
@@ -323,7 +409,7 @@ fn simulated_full_lifecycle_with_fake_process_list() -> Result<()> {
     assert_eq!(exit_code_of(&err), 6);
     let record_after = std::fs::read(target.join("install.json"))?;
     assert_eq!(record_before, record_after, "闸在引擎之前，目录不被触碰");
-    assert_eq!(calls.lock().expect("lock").len(), 1, "闸拦路径不 spawn");
+    assert_eq!(calls.lock().expect("lock").len(), 3, "闸拦路径不 spawn");
 
     // ③ 模拟「无实例」→ 卸载干净（record.files 载荷清空、标记摘除、空目录剪除；
     //    卸载副本摘除：测试宿主不是 uninstall.exe → 走显式删除路径；副本
@@ -357,13 +443,178 @@ fn simulated_full_lifecycle_with_fake_process_list() -> Result<()> {
     assert!(!target.exists(), "副本摘除后目录空壳剪除");
     {
         let got = un_calls.lock().expect("lock");
-        assert_eq!(got.len(), 1, "卸载只 spawn 一次 unregister: {got:?}");
+        assert_eq!(
+            got.len(),
+            3,
+            "卸载 spawn unregister + taiwei uninstall + machine-id remove: {got:?}"
+        );
         assert_eq!(got[0].args[1], "unregister");
+        assert_eq!(
+            &got[1].args[..3],
+            &["taiwei", "emit", "uninstall"],
+            "第二发 = taiwei emit uninstall: {:?}",
+            got[1].args
+        );
+        assert_eq!(
+            &got[2].args[..],
+            &["taiwei", "machine-id", "remove"],
+            "第三发 = machine-id remove（emit 之后、引擎删除之前——卸载不留机器标识）: {:?}",
+            got[2].args
+        );
     }
 
     // ④ 模拟「有实例」→ 卸载同样被拦（闸先于 spawn 与 install.json 缺失检查——exit 6）。
     let err = run_uninstall_with(&target, &fake_bots, &un_runner).expect_err("卸载也要过实例闸");
     assert_eq!(exit_code_of(&err), 6);
+    Ok(())
+}
+
+// ---------- 遥测 opt-out 序列（M4）：取消勾选 = disable 先于 emit ----------
+
+#[test]
+fn taiwei_opt_out_spawns_disable_before_emit() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let package = build_fake_package(tmp.path(), "9.9.9")?;
+    let target = tmp.path().join("root");
+    let mut opts = sim_install_options(&package, &target);
+    opts.taiwei_opt_in = false;
+    let no_bots = || -> Result<Vec<String>> { Ok(vec![]) };
+    let calls: Mutex<Vec<SystemCall>> = Mutex::new(Vec::new());
+    let system = |call: &SystemCall| -> Result<std::process::Output> {
+        calls.lock().expect("lock").push(call.clone());
+        Ok(ok_output())
+    };
+
+    let out = run_install_with(&opts, None, &no_bots, &system)?;
+    assert!(
+        out.warnings.is_empty(),
+        "假执行器恒成功，取消勾选不产生警告: {:?}",
+        out.warnings
+    );
+    let got = calls.lock().expect("lock");
+    assert_eq!(
+        got.len(),
+        4,
+        "取消勾选 = register + taiwei disable + machine-id ensure + taiwei emit install: {got:?}"
+    );
+    assert_eq!(got[0].args[1], "register");
+    assert_eq!(
+        &got[1].args[..],
+        &["taiwei", "disable"],
+        "第二发 = taiwei disable（opt-out 权威位落盘）: {:?}",
+        got[1].args
+    );
+    assert_eq!(
+        &got[2].args[..],
+        &["taiwei", "machine-id", "ensure"],
+        "第三发 = machine-id ensure（设备标识与遥测开关解耦：禁上报≠不留机器标识）: {:?}",
+        got[2].args
+    );
+    assert_eq!(
+        &got[3].args[..3],
+        &["taiwei", "emit", "install"],
+        "第四发 = taiwei emit install（emit 读开关链诚实短路零网络）: {:?}",
+        got[3].args
+    );
+    Ok(())
+}
+
+// ---------- 精确定位序列（M6）：勾选 = enable-precise 先于 emit；默认不勾 ----------
+
+#[test]
+fn taiwei_precise_opt_in_spawns_enable_precise() -> Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let package = build_fake_package(tmp.path(), "9.9.9")?;
+    let target = tmp.path().join("root");
+    let mut opts = sim_install_options(&package, &target);
+    opts.precise_opt_in = true;
+    let no_bots = || -> Result<Vec<String>> { Ok(vec![]) };
+    let calls: Mutex<Vec<SystemCall>> = Mutex::new(Vec::new());
+    let system = |call: &SystemCall| -> Result<std::process::Output> {
+        calls.lock().expect("lock").push(call.clone());
+        Ok(ok_output())
+    };
+
+    let out = run_install_with(&opts, None, &no_bots, &system)?;
+    assert!(
+        out.warnings.is_empty(),
+        "假执行器恒成功: {:?}",
+        out.warnings
+    );
+    let got = calls.lock().expect("lock");
+    assert_eq!(
+        got.len(),
+        4,
+        "勾选精确定位 = register + enable-precise + machine-id ensure + emit install 四发: {got:?}"
+    );
+    assert_eq!(got[0].args[1], "register");
+    assert_eq!(
+        &got[1].args[..],
+        &["taiwei", "enable-precise"],
+        "第二发 = taiwei enable-precise（precise 权威位落盘）: {:?}",
+        got[1].args
+    );
+    assert_eq!(
+        &got[2].args[..],
+        &["taiwei", "machine-id", "ensure"],
+        "第三发 = machine-id ensure: {:?}",
+        got[2].args
+    );
+    assert_eq!(
+        &got[3].args[..3],
+        &["taiwei", "emit", "install"],
+        "第四发 = taiwei emit install: {:?}",
+        got[3].args
+    );
+    Ok(())
+}
+
+#[test]
+fn taiwei_precise_default_off_means_no_enable_precise_spawn() -> Result<()> {
+    // 默认（precise_opt_in=false）：序列不变——register + emit install 两发，
+    // 绝无 enable-precise（单独同意纪律：不勾 = 不写任何 precise 位）。
+    let tmp = tempfile::tempdir()?;
+    let package = build_fake_package(tmp.path(), "9.9.9")?;
+    let target = tmp.path().join("root");
+    let opts = sim_install_options(&package, &target);
+    assert!(
+        !opts.precise_opt_in,
+        "sim 构造默认 precise_opt_in=false（单独同意纪律）"
+    );
+    let no_bots = || -> Result<Vec<String>> { Ok(vec![]) };
+    let calls: Mutex<Vec<SystemCall>> = Mutex::new(Vec::new());
+    let system = |call: &SystemCall| -> Result<std::process::Output> {
+        calls.lock().expect("lock").push(call.clone());
+        Ok(ok_output())
+    };
+
+    let out = run_install_with(&opts, None, &no_bots, &system)?;
+    assert!(
+        out.warnings.is_empty(),
+        "假执行器恒成功: {:?}",
+        out.warnings
+    );
+    let got = calls.lock().expect("lock");
+    assert_eq!(
+        got.len(),
+        3,
+        "默认 = register + machine-id ensure + emit install 三发: {got:?}"
+    );
+    assert_eq!(got[0].args[1], "register");
+    assert_eq!(
+        &got[1].args[..],
+        &["taiwei", "machine-id", "ensure"],
+        "第二发 = machine-id ensure: {:?}",
+        got[1].args
+    );
+    assert_eq!(&got[2].args[..3], &["taiwei", "emit", "install"]);
+    for c in got.iter() {
+        assert!(
+            !c.args.contains(&"enable-precise".to_string()),
+            "默认绝不 spawn enable-precise: {:?}",
+            c.args
+        );
+    }
     Ok(())
 }
 
@@ -468,23 +719,69 @@ fn confirmed_uninstall_stops_then_unregisters_in_order() -> Result<()> {
     };
     let seq_sys = std::sync::Arc::clone(&seq);
     let sys_probe = target.clone();
-    let runner = move |_call: &SystemCall| -> Result<std::process::Output> {
+    let runner = move |call: &SystemCall| -> Result<std::process::Output> {
         assert!(
             sys_probe.join("install.json").exists(),
             "unregister 顺序契约保持"
         );
-        seq_sys.lock().expect("lock").push("unregister");
+        // 按子命令记标签：system unregister 与 taiwei emit（M3 同窗）。
+        let label = match call.args.get(1).map(String::as_str) {
+            Some("unregister") => "unregister",
+            Some("emit") => "taiwei",
+            Some("machine-id") => "hid_remove",
+            other => panic!("意外系统调用: {other:?}"),
+        };
+        seq_sys.lock().expect("lock").push(label);
         Ok(ok_output())
     };
 
-    let out = run_uninstall_confirmed_with(&target, &stop, &runner)?;
+    let out = run_uninstall_confirmed_with(&target, &stop, &runner, None)?;
     assert_eq!(out.bots_stopped, 1, "强停计数进结果");
     assert_eq!(
         *seq.lock().expect("lock"),
-        vec!["stop", "unregister"],
-        "强停先于注销"
+        vec!["stop", "unregister", "taiwei", "hid_remove"],
+        "强停先于注销，遥测随注销同窗，设备标识删除收尾（先于引擎删除）"
     );
     assert!(!target.join("install.json").exists(), "卸载完成账本摘除");
+    Ok(())
+}
+
+#[test]
+#[cfg(windows)]
+fn confirmed_uninstall_forwards_reason_to_taiwei() -> Result<()> {
+    // D1 透传契约：问卷选择经 run_uninstall_confirmed_with 原样进 emit args。
+    let tmp = tempfile::tempdir()?;
+    let package = build_fake_package(tmp.path(), "9.9.9")?;
+    let target = tmp.path().join("root");
+    let opts = sim_install_options(&package, &target);
+    let no_bots = || -> Result<Vec<String>> { Ok(vec![]) };
+    let system = |_: &SystemCall| -> Result<std::process::Output> { Ok(ok_output()) };
+    run_install_with(&opts, None, &no_bots, &system)?;
+
+    let seen: std::sync::Arc<Mutex<Option<Vec<String>>>> = std::sync::Arc::new(Mutex::new(None));
+    let seen_runner = std::sync::Arc::clone(&seen);
+    let stop = || -> Result<Vec<setup_core::procs::BotProcess>> { Ok(vec![]) };
+    let runner = move |call: &SystemCall| -> Result<std::process::Output> {
+        if call.args.get(1).map(String::as_str) == Some("emit") {
+            *seen_runner.lock().expect("lock") = Some(call.args.clone());
+        }
+        Ok(ok_output())
+    };
+    let out = run_uninstall_confirmed_with(&target, &stop, &runner, Some("issue"))?;
+    assert_eq!(out.bots_stopped, 0);
+    assert_eq!(
+        seen.lock().expect("lock").as_ref().map(|a| a.as_slice()),
+        Some(
+            &[
+                "taiwei".to_string(),
+                "emit".to_string(),
+                "uninstall".to_string(),
+                "--reason".to_string(),
+                "issue".to_string()
+            ][..]
+        ),
+        "问卷原因原样透传 emit uninstall args"
+    );
     Ok(())
 }
 
@@ -512,8 +809,8 @@ fn confirmed_uninstall_survivors_block_before_unregister() -> Result<()> {
             },
         ])))
     };
-    let err =
-        run_uninstall_confirmed_with(&target, &stop, &never).expect_err("强停失败必须拦停整链");
+    let err = run_uninstall_confirmed_with(&target, &stop, &never, None)
+        .expect_err("强停失败必须拦停整链");
     assert_eq!(exit_code_of(&err), 6);
     assert_eq!(
         std::fs::read(target.join("install.json"))?,
@@ -537,7 +834,12 @@ fn system_spawn_failure_degrades_to_warning_not_install_failure() -> Result<()> 
         Ok(fail_output("Error: 注册全部失败\nboom 细节"))
     };
     let out = run_install_with(&opts, None, &no_bots, &failing)?;
-    assert_eq!(out.warnings.len(), 1, "单条降级警告: {:?}", out.warnings);
+    assert_eq!(
+        out.warnings.len(),
+        3,
+        "register + machine-id ensure + taiwei 三条降级警告: {:?}",
+        out.warnings
+    );
     assert!(
         out.warnings[0].contains("system register"),
         "警告点名子命令: {}",
@@ -547,6 +849,16 @@ fn system_spawn_failure_degrades_to_warning_not_install_failure() -> Result<()> 
         out.warnings[0].contains("boom 细节"),
         "stderr 尾巴进警告: {}",
         out.warnings[0]
+    );
+    assert!(
+        out.warnings[1].contains("machine-id ensure"),
+        "播种警告点名子命令: {}",
+        out.warnings[1]
+    );
+    assert!(
+        out.warnings[2].contains("taiwei emit install"),
+        "遥测警告点名子命令: {}",
+        out.warnings[1]
     );
     // 文件产物原样在位（不回滚）。
     assert!(target.join("nemesisbot.exe").exists());
@@ -558,7 +870,7 @@ fn system_spawn_failure_degrades_to_warning_not_install_failure() -> Result<()> 
     };
     let opts2 = sim_install_options(&package, &target);
     let out2 = run_install_with(&opts2, None, &no_bots, &spawn_err)?;
-    assert_eq!(out2.warnings.len(), 1, "{:?}", out2.warnings);
+    assert_eq!(out2.warnings.len(), 3, "{:?}", out2.warnings);
     Ok(())
 }
 

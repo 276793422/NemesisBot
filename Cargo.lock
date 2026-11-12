@@ -4431,6 +4431,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-taiwei"
+version = "0.0.0-stub"
+
+[[package]]
 name = "nemesis-taskstore"
 version = "0.1.0"
 dependencies = [
@@ -4762,6 +4766,7 @@ dependencies = [
  "nemesis-skills",
  "nemesis-state",
  "nemesis-sysint",
+ "nemesis-taiwei",
  "nemesis-taskstore",
  "nemesis-tools",
  "nemesis-types",

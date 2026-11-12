@@ -24,7 +24,7 @@ pub enum Outcome {
     /// Args had near-miss field names that were all confidently remapped.
     /// Carries the fixed arguments as a JSON string to feed to the tool.
     Fixed(String),
-    /// Args violate the schema. `class` is the failure class for telemetry:
+    /// Args violate the schema. `class` is the failure class for diagnostics:
     /// `"A"` = args are not valid JSON, `"B"` = schema violation.
     Invalid {
         message: String,

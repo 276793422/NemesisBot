@@ -30,6 +30,8 @@ zstd = "0.13"
 ruzstd = "0.7"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+# 遥测 install_id（M3：安装器生成透传 `taiwei emit install --install-id`）
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 # 与主仓 release 同形：安装器骨架不走 iotsmall（向导 GUI 需要 unwind 优雅降级）

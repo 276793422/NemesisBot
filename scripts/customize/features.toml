@@ -555,6 +555,19 @@ desc = ".nbskin 皮肤包加载/签名验证/设置页「皮肤」tab（/skins/*
 category = "subsystems"
 default = true
 
+# NOTE: 太微子系统（2026-11-12 装配槽化）：本仓只有 cfg(feature="taiwei")
+# 门控调用点与 slots/taiwei 槽位 stub——实现住独立商业仓，商业装配在装配
+# 复制体（assembly/，git 忽略）里挂载实现后以 path 依赖编译进 exe，公开
+# 工作区与私有仓互不写入。feature 关（默认）= 调用点编译出局；未装配误开
+# = stub compile_error 诚实拦下。安装器 spawn 通道与 status 透明面随
+# feature 编译，spawn 失败按警告降级（任何构建形态安装流程不断）。
+[[feature]]
+id = "taiwei"
+label = "太微子系统"
+desc = "装配槽子系统：开源构建为 stub 空实现（不开启），完整实现随商业装配注入槽位后启用。IoT/离线部署建议关"
+category = "subsystems"
+default = false
+
 # ── Build profile (cargo profile, not a feature) ───────────────────────────
 
 [[feature]]
