@@ -95,6 +95,22 @@ async function mountWithS1History() {
   return w
 }
 
+/** 2026-11-12「⋯」菜单迁移：回退按钮收编进三点菜单（Teleport to body →
+ *  wrapper.find 找不到，须经 document.body）。流程 = 点开目标行的触发钮 →
+ *  点菜单项。 */
+async function clickMsgMenuItem(w: any, role: 'user' | 'assistant', itemText: string) {
+  const row = w.findAll('.message.' + role).at(-1)
+  expect(row, role + ' 消息行应存在').toBeTruthy()
+  await row!.find('.msg-menu-trigger').trigger('click')
+  await flushPromises()
+  const item = Array.from(document.querySelectorAll('.msg-menu-item')).find(b =>
+    b.textContent?.includes(itemText),
+  )
+  expect(item, '「⋯」菜单应含「' + itemText + '」项').toBeTruthy()
+  ;(item as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+}
+
 describe('ChatPanel 回退链跨会话守卫（resync 安全超时缝隙）', () => {
   it('重新生成 await 窗口内切换会话：10s 超时放行后中止重发，不把旧会话提问发进新会话', async () => {
     vi.useFakeTimers()
@@ -102,11 +118,9 @@ describe('ChatPanel 回退链跨会话守卫（resync 安全超时缝隙）', ()
     const chat = useChatStore()
     expect(chat.messages).toHaveLength(2)
 
-    // assistant 行（a1）的「↻ 重新生成」→ doRegenerate → rewind 请求落地 →
-    // resyncFromLog 挂起（其响应不喂）。
-    const regenBtn = w.findAll('.msg-action-btn').find(b => b.text().includes('重新生成'))
-    expect(regenBtn, 'assistant 行应有重新生成入口').toBeTruthy()
-    await regenBtn!.trigger('click')
+    // assistant 行（a1）的「↻ 重新生成」（⋯ 菜单内）→ doRegenerate →
+    // rewind 请求落地 → resyncFromLog 挂起（其响应不喂）。
+    await clickMsgMenuItem(w, 'assistant', '重新生成')
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('sessions', 'rewind_to_message', {
       session_id: 's1',
@@ -144,11 +158,9 @@ describe('ChatPanel 回退链跨会话守卫（resync 安全超时缝隙）', ()
   it('切换会话清分支旗标：新会话首个页响应走 page 分支（historyLoaded 落位），不被 resync 分支冒领', async () => {
     const w = await mountWithS1History()
 
-    // user 行（q1）的「⏪ 撤销此问」→ rewind → resyncFromLog 挂起（不喂响应）
-    // → pendingResync = true 残留。
-    const undoBtn = w.findAll('.msg-action-btn').find(b => b.text().includes('撤销此问'))
-    expect(undoBtn, 'user 行应有撤销此问入口').toBeTruthy()
-    await undoBtn!.trigger('click')
+    // user 行（q1）的「⏪ 撤销此问」（⋯ 菜单内）→ rewind → resyncFromLog
+    // 挂起（不喂响应）→ pendingResync = true 残留。
+    await clickMsgMenuItem(w, 'user', '撤销此问')
     await flushPromises()
 
     // 切到 s2（watcher 清旗标）→ 新会话 loadHistory 在飞 → 喂 s2 页响应。

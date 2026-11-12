@@ -1154,6 +1154,12 @@ function relTime(ts: string): string {
         <div class="info-grid">
           <span class="info-k">标题</span><span class="info-v">{{ title(infoSession) }}</span>
           <span class="info-k">归属</span><span class="info-v">{{ projectOf(infoSession) }}</span>
+          <!-- 会话资产区（2026-11-12）：已绑定 home 的会话展示解析路径；
+               未绑定（存量 lenient）后端不加字段 → 行整个不渲染。 -->
+          <template v-if="infoSession.home">
+            <span class="info-k">会话资产区</span>
+            <span class="info-v info-home">{{ infoSession.home }}</span>
+          </template>
           <span class="info-k">创建时间</span><span class="info-v">{{ fmtTime(infoSession.startTime) }}</span>
           <span class="info-k">最后活动</span><span class="info-v">{{ fmtTime(infoSession.lastTime) }}</span>
           <span class="info-k">消息数</span><span class="info-v">{{ infoSession.messageCount }}</span>
@@ -1759,6 +1765,12 @@ function relTime(ts: string): string {
 }
 .info-v {
   word-break: break-all;
+}
+/* 会话资产区路径（2026-11-12）：等宽小字（路径长、可复制语义）。 */
+.info-home {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
 }
 /* WS9/P17：谱系祖先链（↳ 缩进行）——pre-wrap 保住行首缩进空格。 */
 .lineage-chain {

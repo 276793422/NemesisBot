@@ -1807,6 +1807,7 @@ fn test_stored_session_serialization() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };
@@ -1853,6 +1854,7 @@ fn test_stored_session_with_tool_calls() {
         summary_covers_up_to: None,
         project_id: None,
         project_path: None,
+        home_agent_id: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };

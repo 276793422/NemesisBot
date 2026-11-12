@@ -47,13 +47,16 @@ export function validateImageFile(file: File): string | null {
   return null
 }
 
-/** 上传一张图片，成功返回后端给的 `{id, path, size}`（id 用于 chat.send media）。 */
-export async function uploadImage(file: File): Promise<UploadedImage> {
+/** 上传一张图片，成功返回后端给的 `{id, path, size}`（id 用于 chat.send media）。
+ *  sessionId（2026-11-12 会话资产区独立）：传入后文件落该会话的 home/uploads
+ *  （分叉独立语义）；缺省 = 主 workspace uploads（旧行为）。 */
+export async function uploadImage(file: File, sessionId?: string): Promise<UploadedImage> {
   const invalid = validateImageFile(file)
   if (invalid) throw new Error(invalid)
   const auth = useAuthStore()
+  const sidQ = sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ''
   const resp = await fetch(
-    `${backendBase()}/api/upload/image?name=${encodeURIComponent(file.name)}`,
+    `${backendBase()}/api/upload/image?name=${encodeURIComponent(file.name)}${sidQ}`,
     { method: 'POST', headers: { 'X-Auth-Token': auth.token }, body: file },
   )
   if (!resp.ok) {

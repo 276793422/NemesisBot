@@ -105,7 +105,12 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
 
     let mut builder = WebViewBuilder::with_web_context(&mut web_context)
         .with_url(&url)
-        .with_devtools(true);
+        .with_devtools(true)
+        // 剪贴板权限（2026-11-12 会话分叉入口批）：wry 的 clipboard 属性 =
+        // WebView2 PermissionRequested 对 CLIPBOARD_READ 自动 Allow（静默放行，
+        // 不弹权限提示）——自定义右键菜单「粘贴」与 Ctrl+V 依赖
+        // navigator.clipboard.readText，零提示是本批的验收面。
+        .with_clipboard(true);
 
     // Inject init script (e.g. window.__DASHBOARD_TOKEN__) before page loads
     if let Some(ref script) = config.init_script {
@@ -175,6 +180,8 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
     let html_for_protocol = html.clone();
     let _webview = WebViewBuilder::with_web_context(&mut web_context)
         .with_url("nemesis://localhost/__approval_page")
+        // 与 Dashboard 同款剪贴板放行（审批页输入框粘贴路径同依赖）。
+        .with_clipboard(true)
         .with_navigation_handler(|url: String| -> bool {
             // Intercept approval result navigation from JS
             if url.contains("/__approval_result") {

@@ -177,6 +177,7 @@ async fn tool_forget_general_entry_previews_derived_then_archives() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": id_a}),
+            "",
         )
         .await;
     assert!(
@@ -238,6 +239,7 @@ async fn tool_forget_denial_touches_nothing() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": id_a}),
+            "",
         )
         .await;
     assert!(res.content.contains("denied"), "{:?}", res.content);
@@ -264,6 +266,7 @@ async fn tool_forget_plain_entry_previews_no_derived_note() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": plain_id}),
+            "",
         )
         .await;
     assert!(
@@ -292,6 +295,7 @@ async fn tool_forget_unknown_id_honest_not_found_without_cascade_note() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": "no-such-id"}),
+            "",
         )
         .await;
     assert!(
@@ -357,6 +361,7 @@ async fn tool_delete_episodic_id_routes_to_episodic_delete_not_cascade() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": episode_id}),
+            "",
         )
         .await;
     assert!(

@@ -25,6 +25,7 @@ async fn it_search_after_store_via_tools() {
                 "content": "Rust ownership prevents data races at compile time",
                 "session_key": "integration-test"
             }),
+            "",
         )
         .await;
     assert!(store_result.success);
@@ -34,6 +35,7 @@ async fn it_search_after_store_via_tools() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "Rust ownership"}),
+            "",
         )
         .await;
     assert!(search_result.success);
@@ -60,6 +62,7 @@ async fn it_list_multiple_stores() {
                     "content": format!("episodic entry {}", i),
                     "session_key": format!("list-{}", i)
                 }),
+                "",
             )
             .await;
         assert!(result.success, "Store {} should succeed", i);
@@ -67,7 +70,11 @@ async fn it_list_multiple_stores() {
 
     // List status
     let list_result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(list_result.success);
     assert!(list_result.content.contains("Episodic"));
@@ -89,6 +96,7 @@ async fn it_forget_removes_entry() {
                 "content": "temporary information to be forgotten",
                 "session_key": "forget-it"
             }),
+            "",
         )
         .await;
 
@@ -100,6 +108,7 @@ async fn it_forget_removes_entry() {
                 "action": "delete_session",
                 "session_key": "forget-it"
             }),
+            "",
         )
         .await;
     assert!(forget_result.success);
@@ -109,6 +118,7 @@ async fn it_forget_removes_entry() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "temporary information"}),
+            "",
         )
         .await;
     assert!(search_result.success);
@@ -154,6 +164,7 @@ async fn it_tools_with_vector_store() {
                 "content": "semantic search test with vector store",
                 "session_key": "vector-tools"
             }),
+            "",
         )
         .await;
     assert!(store_result.success);
@@ -163,6 +174,7 @@ async fn it_tools_with_vector_store() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "semantic search"}),
+            "",
         )
         .await;
     assert!(search_result.success);

@@ -131,6 +131,30 @@ impl ModuleHandler for SessionsHandler {
                         row["pendingCount"] = serde_json::Value::from(pending);
                     }
                 }
+                // 会话资产区投影（2026-11-12）：已绑定 home 的会话带 `home`
+                // 解析路径（会话信息模态展示行）。根与会话归属同源（L6++
+                // 项目会话 = 项目目录，其余 = 主 workspace——project_root_
+                // for_session 是归属裁决单点）；未绑定（存量 lenient）不加
+                // 字段——前端缺席即不渲染，无假缺省。
+                for row in web.iter_mut() {
+                    let Some(sid) = row["id"].as_str() else {
+                        continue;
+                    };
+                    let key = format!(
+                        "agent:main:session:{}",
+                        nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                    );
+                    let root = crate::handlers::projects::project_root_for_session(&key)
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| std::path::PathBuf::from(&workspace));
+                    if let Some(home) =
+                        nemesis_agent::session_home::resolve_session_home(&root, &key)
+                            .filter(|p| p.is_dir())
+                    {
+                        row["home"] =
+                            serde_json::Value::String(home.to_string_lossy().into_owned());
+                    }
+                }
                 // B（2026-09-23 多会话并行清账）：回带绑定表（仅存活绑定，
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
                 // 上移服务端。
@@ -308,6 +332,11 @@ impl ModuleHandler for SessionsHandler {
                 // （bridge bind_session：项目存在 + 目录在 → sidecar project
                 // 字段 + 内存索引），失败则整个 create 失败、不落任何 meta
                 // （放在 title 写入之前：归属失败不产生半途副作用）。
+                // 会话资产区（2026-11-12）：项目会话的 home 树 = 项目目录
+                // （与项目 loop 的 workspace_root/围栏同根——资产天然在
+                // 项目围栏内；主 workspace 下落点会让项目会话的文件围栏
+                // 拦住自家资产）。
+                let mut home_root: Option<std::path::PathBuf> = None;
                 if let Some(project_id) = data
                     .as_ref()
                     .and_then(|d| d.get("project_id"))
@@ -319,6 +348,7 @@ impl ModuleHandler for SessionsHandler {
                         "项目管理未装配（projects bridge 未接线，无法创建项目会话）".to_string()
                     })?;
                     bridge.bind_session(&session_key, &project_id)?;
+                    home_root = bridge.project_path(&project_id);
                 }
                 // E7：显式命名 = 用户意志（manual，自动标题永不覆盖）；
                 // 未带 title = 默认占位符（自动标题可覆盖）。
@@ -337,6 +367,18 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::chat_log::write_session_meta_manual(&session_key, &title);
                 } else {
                     nemesis_agent::chat_log::write_session_meta(&session_key, &title);
+                }
+                // 会话资产区分配（2026-11-12）：新建即绑 `agents/<id>/home`。
+                // 根 = 会话所属 workspace（项目会话 = 项目目录，其余 = 主
+                // workspace）。失败 = lenient（WARN，会话照常返回；资产区是
+                // 增量能力，不得绑架 create 主流程——存量/失败会话走全局旧位置）。
+                let assign_root = home_root
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new(workspace));
+                if let Err(e) =
+                    nemesis_agent::session_home::assign_session_home(assign_root, &session_key)
+                {
+                    tracing::warn!("[sessions] home assign failed for {session_key}: {e}");
                 }
                 Ok(Some(
                     serde_json::json!({ "session_id": session_id, "title": title }),

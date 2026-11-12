@@ -38,6 +38,7 @@ async fn test_store_denied_when_gate_rejects() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "episodic", "content": "x"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -56,6 +57,7 @@ async fn test_forget_denied_when_gate_rejects() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_session", "session_key": "s1"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -74,6 +76,7 @@ async fn test_store_ungated_when_no_gate_attached() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "episodic", "content": "x"}),
+            "",
         )
         .await;
     assert!(
@@ -95,6 +98,7 @@ async fn test_store_allowed_by_gate_proceeds() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "episodic", "content": "x"}),
+            "",
         )
         .await;
     assert!(
@@ -165,7 +169,7 @@ async fn test_execute_search_missing_query() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_search", &serde_json::json!({}))
+        .execute("memory_search", &serde_json::json!({}), "")
         .await;
     assert!(!result.success);
     assert!(result.content.contains("query is required"));
@@ -179,7 +183,7 @@ async fn test_execute_store_missing_type() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_store", &serde_json::json!({}))
+        .execute("memory_store", &serde_json::json!({}), "")
         .await;
     assert!(!result.success);
     assert!(
@@ -197,7 +201,7 @@ async fn test_execute_forget_missing_action() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_forget", &serde_json::json!({}))
+        .execute("memory_forget", &serde_json::json!({}), "")
         .await;
     assert!(!result.success);
     assert!(result.content.contains("action is required"));
@@ -219,6 +223,7 @@ async fn test_execute_store_episodic() {
                 "role": "user",
                 "session_key": "test-session-1"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -240,6 +245,7 @@ async fn test_execute_store_graph_entity() {
                 "entity_name": "Rust",
                 "entity_type": "language"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -263,6 +269,7 @@ async fn test_execute_store_graph_triple() {
                 "triple_object": "language",
                 "confidence": 0.95
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -277,7 +284,7 @@ async fn test_execute_list_status() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_list", &serde_json::json!({}))
+        .execute("memory_list", &serde_json::json!({}), "")
         .await;
     assert!(result.success);
     assert!(result.content.contains("Memory Store Status"));
@@ -291,7 +298,7 @@ async fn test_execute_unknown_tool() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("unknown_tool", &serde_json::json!({}))
+        .execute("unknown_tool", &serde_json::json!({}), "")
         .await;
     assert!(!result.success);
     assert!(result.content.contains("Unknown memory tool"));
@@ -309,7 +316,11 @@ async fn test_execute_search_valid_query() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_search", &serde_json::json!({"query": "test query"}))
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "test query"}),
+            "",
+        )
         .await;
     assert!(result.success);
     assert!(result.content.contains("test query"));
@@ -326,6 +337,7 @@ async fn test_execute_search_episodic_only() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "test", "memory_type": "episodic"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -344,6 +356,7 @@ async fn test_execute_search_graph_only() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "test", "memory_type": "graph"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -362,6 +375,7 @@ async fn test_execute_store_unknown_memory_type() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "unknown"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -379,6 +393,7 @@ async fn test_store_episodic_empty_content() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "episodic", "content": ""}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -401,6 +416,7 @@ async fn test_store_episodic_with_tags() {
                 "tags": ["rust", "ownership", "memory"],
                 "session_key": "tagged-session"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -415,7 +431,11 @@ async fn test_store_graph_no_data_error() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_store", &serde_json::json!({"memory_type": "graph"}))
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "graph"}),
+            "",
+        )
         .await;
     assert!(!result.success);
     assert!(result.content.contains("entity_name") || result.content.contains("triple"));
@@ -432,6 +452,7 @@ async fn test_execute_forget_delete_session_missing_key() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_session"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -449,6 +470,7 @@ async fn test_execute_forget_cleanup_zero_days_error() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "cleanup", "older_than_days": 0}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -470,6 +492,7 @@ async fn test_execute_forget_unknown_action() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "unknown_action"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -487,6 +510,7 @@ async fn test_execute_forget_delete_entity_missing_name() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_entity"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -504,6 +528,7 @@ async fn test_execute_list_episodes() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "episodes", "session_key": "test-session"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -521,6 +546,7 @@ async fn test_execute_list_unknown_list_type() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "unknown_type"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -571,6 +597,7 @@ async fn test_execute_search_with_limit() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "test", "limit": 5}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -584,7 +611,11 @@ async fn test_execute_list_episodes_missing_session_key() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "episodes"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "episodes"}),
+            "",
+        )
         .await;
     assert!(!result.success);
     assert!(result.content.contains("session_key is required"));
@@ -601,6 +632,7 @@ async fn test_execute_list_graph_related_missing_entity() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_related"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -621,6 +653,7 @@ async fn test_store_episodic_auto_session_key() {
                 "memory_type": "episodic",
                 "content": "Auto session test"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -643,6 +676,7 @@ async fn test_store_graph_entity_with_properties() {
                 "entity_type": "person",
                 "entity_properties": {"age": "30", "city": "Tokyo"}
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -666,6 +700,7 @@ async fn test_store_graph_triple_with_confidence() {
                 "triple_object": "Company",
                 "confidence": 0.85
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -688,6 +723,7 @@ async fn test_store_graph_triple_zero_confidence_clamped() {
                 "triple_object": "Tea",
                 "confidence": 0.0
             }),
+            "",
         )
         .await;
     // confidence=0.0 is not in (0.0, 1.0] range, so it's clamped to 1.0
@@ -714,6 +750,7 @@ async fn test_execute_store_episodic_with_role() {
                 "role": "assistant",
                 "session_key": "role-session"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -735,6 +772,7 @@ async fn test_execute_forget_delete_session_valid() {
                 "content": "test content",
                 "session_key": "delete-session"
             }),
+            "",
         )
         .await;
 
@@ -745,6 +783,7 @@ async fn test_execute_forget_delete_session_valid() {
                 "action": "delete_session",
                 "session_key": "delete-session"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -764,6 +803,7 @@ async fn test_execute_forget_cleanup_valid() {
                 "action": "cleanup",
                 "older_than_days": 30
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -785,6 +825,7 @@ async fn test_execute_forget_delete_entity_valid() {
                 "entity_name": "DeleteMe",
                 "entity_type": "test"
             }),
+            "",
         )
         .await;
 
@@ -795,6 +836,7 @@ async fn test_execute_forget_delete_entity_valid() {
                 "action": "delete_entity",
                 "entity_name": "DeleteMe"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -813,6 +855,7 @@ async fn test_execute_forget_delete_triple_missing_fields() {
             &serde_json::json!({
                 "action": "delete_triple"
             }),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -836,6 +879,7 @@ async fn test_execute_list_graph_query() {
                 "triple_object": "language",
                 "confidence": 0.95
             }),
+            "",
         )
         .await;
 
@@ -843,6 +887,7 @@ async fn test_execute_list_graph_query() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_query", "subject": "Rust"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -864,6 +909,7 @@ async fn test_execute_list_graph_related() {
                 "entity_name": "Rust",
                 "entity_type": "language"
             }),
+            "",
         )
         .await;
     executor
@@ -875,6 +921,7 @@ async fn test_execute_list_graph_related() {
                 "triple_predicate": "is_a",
                 "triple_object": "language"
             }),
+            "",
         )
         .await;
 
@@ -882,6 +929,7 @@ async fn test_execute_list_graph_related() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_related", "entity_name": "Rust"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -905,6 +953,7 @@ async fn test_execute_list_episodes_with_data() {
                     "session_key": "ep-session",
                     "tags": ["test"]
                 }),
+                "",
             )
             .await;
     }
@@ -917,6 +966,7 @@ async fn test_execute_list_episodes_with_data() {
                 "session_key": "ep-session",
                 "limit": 5
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -933,6 +983,7 @@ async fn test_execute_list_graph_query_empty() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_query"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -954,12 +1005,13 @@ async fn test_execute_search_with_stored_data() {
                 "content": "Rust ownership model discussion",
                 "session_key": "search-session"
             }),
+            "",
         )
         .await;
 
     // Search for it
     let result = executor
-        .execute("memory_search", &serde_json::json!({"query": "Rust"}))
+        .execute("memory_search", &serde_json::json!({"query": "Rust"}), "")
         .await;
     assert!(result.success);
 }
@@ -1001,6 +1053,7 @@ async fn test_execute_search_zero_limit() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "test", "limit": 0}),
+            "",
         )
         .await;
     // limit=0 should be treated as default (10)
@@ -1022,6 +1075,7 @@ async fn test_execute_list_episodes_zero_limit() {
                 "session_key": "test",
                 "limit": 0
             }),
+            "",
         )
         .await;
     // limit=0 should be treated as 10
@@ -1043,6 +1097,7 @@ async fn test_execute_list_graph_related_with_depth() {
                 "entity_name": "Test",
                 "depth": 3
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1065,6 +1120,7 @@ async fn test_execute_store_episodic_auto_session_key() {
                 "memory_type": "episodic",
                 "content": "Auto session test"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1087,6 +1143,7 @@ async fn test_execute_store_episodic_with_tags() {
                 "session_key": "tag-session",
                 "tags": ["rust", "memory", "test"]
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1099,6 +1156,7 @@ async fn test_execute_store_episodic_with_tags() {
                 "list_type": "episodes",
                 "session_key": "tag-session"
             }),
+            "",
         )
         .await;
     assert!(list_result.success);
@@ -1114,7 +1172,11 @@ async fn test_execute_store_graph_missing_entity_and_triple() {
 
     // Neither entity_name nor triple_subject provided
     let result = executor
-        .execute("memory_store", &serde_json::json!({"memory_type": "graph"}))
+        .execute(
+            "memory_store",
+            &serde_json::json!({"memory_type": "graph"}),
+            "",
+        )
         .await;
     assert!(!result.success);
     assert!(result.content.contains("entity_name") || result.content.contains("triple"));
@@ -1128,7 +1190,7 @@ async fn test_execute_forget_verify_action_required() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_forget", &serde_json::json!({}))
+        .execute("memory_forget", &serde_json::json!({}), "")
         .await;
     assert!(!result.success);
     assert!(result.content.contains("action is required"));
@@ -1150,6 +1212,7 @@ async fn test_execute_forget_delete_entry() {
                 "content": "Will be forgotten",
                 "session_key": "forget-session"
             }),
+            "",
         )
         .await;
     assert!(store_result.success);
@@ -1162,6 +1225,7 @@ async fn test_execute_forget_delete_entry() {
                 "action": "delete_session",
                 "session_key": "forget-session"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1179,6 +1243,7 @@ async fn test_execute_forget_session_missing_key() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_session"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1202,6 +1267,7 @@ async fn test_execute_list_graph_query_with_results() {
                 "triple_predicate": "is_a",
                 "triple_object": "language"
             }),
+            "",
         )
         .await;
 
@@ -1212,6 +1278,7 @@ async fn test_execute_list_graph_query_with_results() {
                 "list_type": "graph_query",
                 "subject": "Go"
             }),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1226,7 +1293,11 @@ async fn test_execute_list_status_type() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(result.success);
     assert!(result.content.contains("Memory Store"));
@@ -1269,6 +1340,7 @@ async fn test_execute_search_graph_with_results() {
                 "entity_name": "Python",
                 "entity_type": "language"
             }),
+            "",
         )
         .await;
     executor
@@ -1280,6 +1352,7 @@ async fn test_execute_search_graph_with_results() {
                 "triple_predicate": "is_a",
                 "triple_object": "language"
             }),
+            "",
         )
         .await;
 
@@ -1288,6 +1361,7 @@ async fn test_execute_search_graph_with_results() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "Python", "memory_type": "graph"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1305,6 +1379,7 @@ async fn test_execute_store_unknown_type() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "unknown_type"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1319,7 +1394,7 @@ async fn test_execute_store_missing_memory_type() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_store", &serde_json::json!({}))
+        .execute("memory_store", &serde_json::json!({}), "")
         .await;
     assert!(!result.success);
     assert!(result.content.contains("required"));
@@ -1336,6 +1411,7 @@ async fn test_execute_store_episodic_missing_content() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "episodic"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1353,6 +1429,7 @@ async fn test_execute_list_invalid_list_type() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "unknown_list_type"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1367,7 +1444,7 @@ async fn test_execute_list_missing_list_type() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_list", &serde_json::json!({}))
+        .execute("memory_list", &serde_json::json!({}), "")
         .await;
     // Missing list_type may default to summary
     assert!(result.success || result.content.contains("required"));
@@ -1389,6 +1466,7 @@ async fn test_execute_search_all_types() {
                 "content": "Rust ownership discussion",
                 "session_key": "search-all"
             }),
+            "",
         )
         .await;
 
@@ -1397,6 +1475,7 @@ async fn test_execute_search_all_types() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "Rust", "memory_type": "all"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1436,12 +1515,17 @@ async fn test_execute_store_and_search_with_vector_store() {
                 "content": "vector store roundtrip test content",
                 "session_key": "vs-test"
             }),
+            "",
         )
         .await;
 
     // Search via tool (default memory_type="all" → includes vector store semantic search)
     let result = executor
-        .execute("memory_search", &serde_json::json!({"query": "roundtrip"}))
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "roundtrip"}),
+            "",
+        )
         .await;
     assert!(result.success, "search should succeed: {}", result.content);
     // Vector store should find the stored episodic content via semantic search
@@ -1485,13 +1569,18 @@ async fn test_execute_list_with_vector_store_entries() {
                     "content": format!("entry number {}", i),
                     "session_key": "list-test"
                 }),
+                "",
             )
             .await;
     }
 
     // List status
     let result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(result.success);
     assert!(result.content.contains("Memory Store Status"));
@@ -1529,6 +1618,7 @@ async fn test_execute_forget_removes_from_vector_store() {
                 "content": "will be forgotten",
                 "session_key": "forget-test"
             }),
+            "",
         )
         .await;
     assert!(store_result.success);
@@ -1541,13 +1631,18 @@ async fn test_execute_forget_removes_from_vector_store() {
                 "action": "delete_session",
                 "session_key": "forget-test"
             }),
+            "",
         )
         .await;
     assert!(forget_result.success);
 
     // Search should no longer find it
     let search_result = executor
-        .execute("memory_search", &serde_json::json!({"query": "forgotten"}))
+        .execute(
+            "memory_search",
+            &serde_json::json!({"query": "forgotten"}),
+            "",
+        )
         .await;
     assert!(search_result.success);
 
@@ -1830,6 +1925,7 @@ async fn test_search_semantic_error_branch_reports_error() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "rust", "memory_type": "all"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1852,6 +1948,7 @@ async fn test_search_episodic_error_branch_reports_error() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "rust", "memory_type": "all"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1873,6 +1970,7 @@ async fn test_search_graph_error_branch_reports_error() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "rust", "memory_type": "all"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -1895,6 +1993,7 @@ async fn test_store_episodic_error_branch() {
         .execute(
             "memory_store",
             &serde_json::json!({"memory_type": "episodic", "content": "hello"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1915,7 +2014,7 @@ async fn test_store_graph_entity_error_branch() {
     let result = executor
         .execute(
             "memory_store",
-            &serde_json::json!({"memory_type": "graph", "entity_name": "rust", "entity_type": "language"}),
+            &serde_json::json!({"memory_type": "graph", "entity_name": "rust", "entity_type": "language"}), ""
         )
         .await;
     assert!(!result.success);
@@ -1942,6 +2041,7 @@ async fn test_store_graph_triple_error_branch() {
                 "triple_predicate": "relates",
                 "triple_object": "b"
             }),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1964,6 +2064,7 @@ async fn test_forget_delete_session_error_branch() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_session", "session_key": "s1"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -1985,6 +2086,7 @@ async fn test_forget_cleanup_error_branch() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "cleanup", "older_than_days": 30}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2005,6 +2107,7 @@ async fn test_forget_delete_entity_error_branch() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_entity", "entity_name": "rust"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2030,6 +2133,7 @@ async fn test_forget_delete_by_id_true_branch() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": "ep-42"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2049,6 +2153,7 @@ async fn test_forget_delete_by_id_false_branch() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": "missing"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2074,6 +2179,7 @@ async fn test_forget_delete_by_id_error_branch() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id", "id": "ep-1"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2099,7 +2205,11 @@ async fn test_list_status_reports_episodic_and_graph_unavailable() {
     );
     let executor = MemoryToolExecutor::new(mgr);
     let result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(result.success);
     assert!(
@@ -2128,6 +2238,7 @@ async fn test_list_episodes_error_branch() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "episodes", "session_key": "s1"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2149,6 +2260,7 @@ async fn test_list_graph_related_error_branch() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_related", "entity_name": "rust"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2179,6 +2291,7 @@ async fn test_search_displays_semantic_results_with_score_and_tags() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "alpha", "memory_type": "all"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2216,6 +2329,7 @@ async fn test_search_displays_episodic_tags() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "zephyr", "memory_type": "all"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2245,6 +2359,7 @@ async fn test_search_displays_graph_confidence() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "rustlang", "memory_type": "graph"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2279,7 +2394,11 @@ async fn test_list_status_shows_session_keys() {
 
     let executor = MemoryToolExecutor::new(mgr.clone());
     let result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(result.success);
     assert!(
@@ -2315,6 +2434,7 @@ async fn test_list_graph_query_displays_metadata() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_query", "subject": "src-meta"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2349,6 +2469,7 @@ async fn test_list_graph_related_entity_with_properties_and_triples() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_related", "entity_name": "ent-props"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2379,6 +2500,7 @@ async fn test_list_graph_related_unknown_entity_reports_no_relations() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_related", "entity_name": "ghost"}),
+            "",
         )
         .await;
     assert!(result.success);
@@ -2415,6 +2537,7 @@ async fn delete_by_id_requires_an_id() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "delete_by_id"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2433,7 +2556,11 @@ async fn list_status_reports_fresh_manager_counts() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_list", &serde_json::json!({"list_type": "status"}))
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "status"}),
+            "",
+        )
         .await;
     assert!(result.success, "status listing must succeed");
 }
@@ -2512,7 +2639,7 @@ async fn agt_search_output_formats_positive_and_zero_scores() {
     );
     let executor = MemoryToolExecutor::new(std::sync::Arc::new(mgr));
     let result = executor
-        .execute("memory_search", &serde_json::json!({"query": "doc"}))
+        .execute("memory_search", &serde_json::json!({"query": "doc"}), "")
         .await;
     assert!(result.success);
     // 正分条目 → "[75%]" 后缀（score > 0.0 臂）
@@ -2537,6 +2664,7 @@ async fn agt_list_graph_query_backend_error_reports_query_failed() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_query", "subject": "rust"}),
+            "",
         )
         .await;
     assert!(!result.success);
@@ -2574,6 +2702,7 @@ async fn graph_fixture() -> (MemoryToolExecutor, String, tempfile::TempDir) {
                 "triple_predicate": "is_a",
                 "triple_object": "language"
             }),
+            "",
         )
         .await;
     assert!(result.success, "triple store failed: {}", result.content);
@@ -2588,6 +2717,7 @@ async fn agt_search_graph_render_carries_created_at_date() {
         .execute(
             "memory_search",
             &serde_json::json!({"query": "rust", "memory_type": "graph"}),
+            "",
         )
         .await;
     assert!(result.success, "{}", result.content);
@@ -2606,6 +2736,7 @@ async fn agt_list_graph_query_render_carries_created_at_date() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_query", "subject": "Rust"}),
+            "",
         )
         .await;
     assert!(result.success, "{}", result.content);
@@ -2624,6 +2755,7 @@ async fn agt_list_graph_related_render_carries_created_at_date() {
         .execute(
             "memory_list",
             &serde_json::json!({"list_type": "graph_related", "entity_name": "Rust"}),
+            "",
         )
         .await;
     assert!(result.success, "{}", result.content);
@@ -2657,6 +2789,7 @@ async fn r735_forget_cleanup_u64_max_days_success_without_wipe() {
         .execute(
             "memory_forget",
             &serde_json::json!({"action": "cleanup", "older_than_days": u64::MAX}),
+            "",
         )
         .await;
     assert!(result.success, "got: {}", result.content);

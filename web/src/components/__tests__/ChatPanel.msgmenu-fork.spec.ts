@@ -1,0 +1,244 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
+import { mount, flushPromises } from '@vue/test-utils'
+
+// 2026-11-12 会话分叉入口（PLAN 234 批次 5）：message-time 回退按钮组收编为
+// 「⋯」三点菜单 + assistant 行「⑂ 从此分叉」直达 fork。本 spec 钉：
+// - 菜单项构成：rewind 两项原样保留 + 分叉项只在 assistant 行；
+// - 分叉轮次换算：forkTurnIndexOf（非 [steer] user 行计数 +1，与后端 turn
+//   表同构）→ fork(sid, N) 参数正确；
+// - 分叉后链：fetchList(true) + switchTo(新会话) + toast；
+// - 与全局右键菜单互斥单开（双向：右键压掉「⋯」；开「⋯」关右键）；
+// - 点外/Esc 关闭；非 chat 模块无触发钮。
+
+const requestMock = vi.fn()
+vi.mock('../../composables/useWSAPI', () => ({
+  useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
+}))
+
+const forkMock = vi.fn()
+vi.mock('../../composables/useChatApi', () => ({
+  useChatApi: () => ({ fork: (...args: any[]) => forkMock(...args) }),
+}))
+
+/** 捕获槽（vi.hoisted——mock 工厂在 import 期执行，普通顶层 let 会 TDZ）。 */
+const h = vi.hoisted(() => ({
+  wsHandler: null as ((data: any) => void) | null,
+  wsStatus: null as any,
+}))
+
+vi.mock('../../composables/useWebSocket', async () => {
+  const { ref } = await import('vue')
+  h.wsStatus = ref<'connected' | 'disconnected'>('connected')
+  return {
+    connect: vi.fn(),
+    send: vi.fn(),
+    sendHistoryRequest: vi.fn(),
+    onMessage: vi.fn((fn: (data: any) => void) => { h.wsHandler = fn }),
+    addMessageHandler: vi.fn(),
+    removeMessageHandler: vi.fn(),
+    wsStatus: h.wsStatus,
+  }
+})
+
+import ChatPanel from '../ChatPanel.vue'
+import { sendHistoryRequest } from '../../composables/useWebSocket'
+import { useSessionStore } from '../../stores/session'
+import { useToast } from '../../composables/useToast'
+import { installContextMenu, useContextMenu } from '../../composables/useContextMenu'
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+  requestMock.mockReset()
+  requestMock.mockResolvedValue({})
+  forkMock.mockReset()
+  forkMock.mockResolvedValue({ session_id: 's-fork', kept_messages: 1 })
+  h.wsHandler = null
+  h.wsStatus.value = 'connected'
+  useContextMenu().close()
+  document.querySelectorAll('.msg-menu-overlay, .msg-menu, .ctx-menu, .ctx-overlay')
+    .forEach((el) => el.remove())
+})
+
+function prepareSessions() {
+  const s = useSessionStore()
+  s.sessions = [
+    { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'A', model: '' },
+  ] as any
+  s.currentId = 's1'
+}
+
+function feedHistory(requestId: string, messages: any[]) {
+  h.wsHandler!({
+    type: 'message',
+    module: 'chat',
+    cmd: 'history_response',
+    data: { request_id: requestId, messages, has_more: false, oldest_index: 0 },
+  })
+}
+
+function lastHistoryRequestId(): string {
+  const calls = vi.mocked(sendHistoryRequest).mock.calls
+  return calls[calls.length - 1][0] as string
+}
+
+/** 点开目标行「⋯」并返回菜单项文本列表（菜单本体 Teleport to body →
+ *  wrapper.find 找不到，须经 document.body）。 */
+async function openMsgMenu(w: any, role: 'user' | 'assistant'): Promise<string[]> {
+  const row = w.findAll('.message.' + role).at(-1)
+  expect(row, role + ' 消息行应存在').toBeTruthy()
+  await row!.find('.msg-menu-trigger').trigger('click')
+  await flushPromises()
+  return Array.from(document.querySelectorAll('.msg-menu-item')).map((b) =>
+    (b.textContent ?? '').trim(),
+  )
+}
+
+async function mountWithHistory(messages: any[]) {
+  prepareSessions()
+  installContextMenu()
+  const w = mount(ChatPanel)
+  await flushPromises()
+  feedHistory(lastHistoryRequestId(), messages)
+  await flushPromises()
+  return w
+}
+
+describe('ChatPanel「⋯」消息菜单与会话分叉入口', () => {
+  it('菜单项构成：user 行 = rewind 两项；assistant 行 = rewind 两项 + 从此分叉', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+
+    const userItems = await openMsgMenu(w, 'user')
+    expect(userItems.some((t) => t.includes('重新生成'))).toBe(true)
+    expect(userItems.some((t) => t.includes('撤销此问'))).toBe(true)
+    expect(userItems.some((t) => t.includes('从此分叉'))).toBe(false)
+
+    const asstItems = await openMsgMenu(w, 'assistant')
+    expect(asstItems.some((t) => t.includes('删除整轮'))).toBe(true)
+    expect(asstItems.some((t) => t.includes('从此分叉'))).toBe(true)
+    w.unmount()
+  })
+
+  it('分叉直达：assistant 行点击 → fork(sid, 轮号) + fetchList + switchTo + toast', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    const items = await openMsgMenu(w, 'assistant')
+
+    const forkItem = Array.from(document.querySelectorAll('.msg-menu-item')).find((b) =>
+      b.textContent?.includes('从此分叉'),
+    )
+    ;(forkItem as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    // 单轮历史 → a1 所在轮 = 第 1 轮 → fork('s1', 1)（保留前 1 轮）。
+    expect(forkMock).toHaveBeenCalledTimes(1)
+    expect(forkMock).toHaveBeenCalledWith('s1', 1)
+    expect(useSessionStore().currentId, '分叉后应切入新会话').toBe('s-fork')
+    const toasts = useToast().toasts
+    expect(toasts.some((t) => t.message.includes('已分叉出新会话'))).toBe(true)
+    // 菜单已随点击关闭。
+    expect(document.querySelector('.msg-menu-overlay')).toBeNull()
+    expect(items.length).toBeGreaterThan(0)
+    w.unmount()
+  })
+
+  it('分叉轮次换算：steer 插话不占轮号（q1,a1,[steer],a2 → a2 在第 2 轮）', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: '[steer] 插话内容' },
+      { role: 'assistant', content: 'a2' },
+    ])
+    await openMsgMenu(w, 'assistant')
+
+    const forkItem = Array.from(document.querySelectorAll('.msg-menu-item')).find((b) =>
+      b.textContent?.includes('从此分叉'),
+    )
+    ;(forkItem as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(forkMock).toHaveBeenCalledWith('s1', 2)
+    w.unmount()
+  })
+
+  it('互斥单开（右键压「⋯」）：⋯ 菜单开着 → 任意处右键 → ⋯ 菜单关', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    await openMsgMenu(w, 'assistant')
+    expect(document.querySelector('.msg-menu-overlay')).toBeTruthy()
+
+    document.body.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    expect(document.querySelector('.msg-menu-overlay'), '右键应关掉「⋯」菜单').toBeNull()
+    w.unmount()
+  })
+
+  it('互斥单开（「⋯」压右键）：右键菜单开着 → 点触发钮 → 右键菜单关', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    // 右键菜单开在 body（无区域命中也无妨——只要有状态；本 spec 不挂
+    // ContextMenu.vue 渲染体，断言走 composable 状态而非 DOM）。
+    const ctx = useContextMenu()
+    ctx.openAt(10, 10, [{ label: '复制', run: () => {} }])
+    expect(ctx.state.value).not.toBeNull()
+
+    await openMsgMenu(w, 'assistant')
+    await flushPromises()
+
+    expect(ctx.state.value, '开「⋯」应关掉右键菜单').toBeNull()
+    w.unmount()
+  })
+
+  it('点外关闭：overlay click → 菜单关', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    await openMsgMenu(w, 'assistant')
+    const overlay = document.querySelector('.msg-menu-overlay') as HTMLElement
+    expect(overlay).toBeTruthy()
+    overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(document.querySelector('.msg-menu-overlay')).toBeNull()
+    w.unmount()
+  })
+
+  it('Esc 关闭：菜单开着 → window keydown Escape → 菜单关', async () => {
+    const w = await mountWithHistory([
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    await openMsgMenu(w, 'assistant')
+    expect(document.querySelector('.msg-menu-overlay')).toBeTruthy()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.querySelector('.msg-menu-overlay')).toBeNull()
+    w.unmount()
+  })
+
+  it('非 chat 模块（workflow_chat）：无「⋯」触发钮（分叉/回退入口都不出）', async () => {
+    prepareSessions()
+    const w = mount(ChatPanel, { props: { module: 'workflow_chat' } })
+    await flushPromises()
+    feedHistory(lastHistoryRequestId(), [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'a1' },
+    ])
+    await flushPromises()
+    expect(w.findAll('.msg-menu-trigger')).toHaveLength(0)
+    w.unmount()
+  })
+})
