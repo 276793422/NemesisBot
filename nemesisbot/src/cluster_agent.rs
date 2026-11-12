@@ -767,8 +767,13 @@ async fn resume_task(
     // 证据窗口与本轮交付 diff 窗口一致）。
     agent_loop.begin_checks_capture(&task.source.session_key);
     let events = agent_loop
-        .resume_execution_with_token(&instance, &context, &trace_id, &token)
+        // turn_budget=None：B 端沿用全局预算，行为不变（续行回主路 2026-11-12）。
+        .resume_execution_with_token(&instance, &context, &trace_id, &token, None)
         .await;
+    // BUG-20261106-039 work 桶收口：finish 职责已从 resume_execution_with_token
+    // 移交调用方（续行回主路 2026-11-12）——B 端续行回合不在 run_agent_loop_internal
+    // 落盘链上，桶在此收口，不留跨 turn 残余。
+    let _ = agent_loop.work_recorder().finish(&context.session_key);
     // typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
     // b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加）。

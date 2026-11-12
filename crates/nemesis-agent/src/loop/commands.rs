@@ -78,6 +78,8 @@ impl AgentLoop {
                     checkpoint_turn: None, // system 直调不经 gate/preamble，无 checkpoint 标记
                     steer: false,
                     work: None,
+
+                    source_node: None,
                 },
             );
             if !log_existed {

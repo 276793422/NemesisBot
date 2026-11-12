@@ -1409,6 +1409,11 @@ mod diagnostics_session_tests;
 // (devtool-upgrade)：SpawnTool 生产化 + run_detached 测试。
 #[cfg(test)]
 mod spawn_detached_tests;
+// （续行回主路 2026-11-12）：交接函数契约哨兵（LLM 请求带工具定义 /
+// 工具执行走 dispatch 瀑布 / 出站 meta 保真 / estop 交接前冻结 / busy
+// 两臂 / final_persisted 幂等重投递 / 落库保真 / 失败任务错误文本）。
+#[cfg(test)]
+mod continuation_handoff_tests;
 // (devtool-upgrade)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;

@@ -27,6 +27,11 @@ use crate::session::SessionStore;
 use crate::types::{TOOL_OUTCOME_UNKNOWN, ToolCallInfo};
 
 /// Trait for looking up tools by name.
+///
+/// TODO: DEL（续行回主路 2026-11-12）：随 [`handle_cluster_continuation`]
+/// 退役——新路径（`AgentLoop::run_continuation_turn`）经主循环
+/// dispatch 瀑布执行工具，不再按名直查。物理删除延后（tests/truncation/
+/// s9 套件经本面驱动旧路径行为回归，待新路径哨兵覆盖后一并清除）。
 pub trait ToolLookup {
     fn get_tool(&self, name: &str) -> Option<Arc<dyn Tool>>;
 }
@@ -615,7 +620,10 @@ pub struct ContinuationManager {
     /// In-memory continuation data: task_id -> data.
     continuations: Mutex<HashMap<String, Arc<ContinuationData>>>,
     /// Optional disk store for persistence.
-    disk_store: Option<ContinuationStore>,
+    /// 磁盘快照存储（生产 = Some；`new` 测试路径 = None）。
+    /// `pub(crate)`：bus.rs（兄弟模块）的续行回主路交接需要读盘判定
+    /// final_persisted 幂等闸与打标（2026-11-12）。
+    pub(crate) disk_store: Option<ContinuationStore>,
     /// Timeout for waiting on the save barrier.
     barrier_timeout: Duration,
     /// 单飞闸（发现 F 真机根修）：正在处理续行的 task_id 集合。
@@ -1290,6 +1298,143 @@ pub(crate) fn merge_real_tool_result(
     messages
 }
 
+/// 续行回主路（2026-11-12）B1#2：真实任务结果种入**活体历史**
+/// （`ConversationTurn` 形态，与快照 LlmMessage 表征的
+/// [`merge_real_tool_result`] 并列——双表征更新，§4.2）。
+///
+/// 场景表（计划 §4.2 四则 + ⑤ 埋没聚焦）：
+/// ① `__ASYNC__`/`__BG_SPAWN__` marker 轮在场（store 历史尾部 role="tool"
+///    且 tool_call_id 命中）→ **原位替换**（幂等：重复回灌覆盖为最新）；
+/// ② marker 轮已被压缩折叠（covers_up_to 越过，store 里找不到）→ 兜底；
+/// ③ `/build` 直派发合成快照（store 从无 marker 轮）→ 兜底；
+/// ④ 崩溃窗口（快照存了、add_tool_result 未跑）→ 兜底。
+///
+/// ⑤ 埋没聚焦（T8 并发回归根修，2026-11-13）：marker 轮在场但**不在
+///    历史尾部**（并发窗口内后续用户轮先跑完，尾部拖着别的任务的未决
+///    async marker / 后到续行回复）→ 原位替换之外补一条聚焦 user turn
+///    把结果顶到尾部——否则模型按尾部消息作答，回复与被续行任务无关
+///    （T8 实证：三路并发回复全是末位任务的 async marker 原文，原通道
+///    谓词永不命中）。槽位在尾部（顺序续行主形态）不追加，请求字节
+///    不变。返回值枚举只描述主臂；聚焦轮是替换臂/兜底一级的伴随产物，
+///    由 `focus_result_if_buried` 判定追加。
+///
+/// 兜底分两级：
+/// - **assistant 轮带同 id tool_calls 但 tool 轮缺席**（快照恢复/压缩丢
+///   placeholder）→ 紧随其后补 tool 轮（`AppendedToolTurn`）——provider
+///   原生形态（结果=工具输出），同时补齐 assistant tool_calls 的悬挂
+///   （真实 provider 拒绝无 tool_result 的 tool_use）。该 tool 轮前置
+///   assistant 带对应 tool_calls，非 dangling，`repair_tool_message_pairs`
+///   Pass 1 不会删（l5 复扫哨兵依赖此臂：脱敏后结果必须以 tool 消息在场）。
+/// - **tool_call 形态彻底不在场**（合成快照 / 历史已折叠）→ 追加
+///   **user turn**（`AppendedUserTurn`）：此处追加 tool 消息才是 dangling
+///   （前置 assistant 无对应 tool_calls），会被 repair Pass 1 静默删除 =
+///   结果丢失；user turn 恒 wire 合法。
+///
+/// `fallback_images` 补挂图片引用（压缩+续行同窗口的极边缘防丢图——快照
+/// `image_refs_by_user_turn` 取最后一条 user 轮的引用）。
+pub(crate) enum Applied {
+    /// ① marker 轮原位替换。
+    ReplacedMarker,
+    /// 兜底一级：assistant tool_calls 在场 → 紧随其后补 tool 轮。
+    AppendedToolTurn,
+    /// 兜底二级：追加 user turn。
+    AppendedUserTurn,
+}
+
+/// 兜底臂/聚焦臂共用的续行结果 user turn（同文同形态——兜底二级与
+/// 埋没聚焦（下）产出一致，消费方模型视角无差别）。
+fn continuation_result_user_turn(
+    task_id: &str,
+    content: &str,
+    images: &[String],
+) -> crate::types::ConversationTurn {
+    crate::types::ConversationTurn {
+        role: "user".to_string(),
+        content: format!("后台/集群任务 {task_id} 结果：\n{content}"),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: chrono::Local::now().to_rfc3339(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+        image_refs: images.to_vec(),
+    }
+}
+
+/// 埋没聚焦（T8 并发回归根修，2026-11-13）：结果槽位之后仍有后续轮
+/// （并发窗口内用户轮先跑完、历史尾部拖着未决 async marker 或后到续行
+/// 回复）时，原位替换不足以让模型聚焦本任务——模型按尾部消息作答
+/// （cluster-uat T8 实证：回复复述了别的任务的 async marker 文本）。
+/// 补一条聚焦 user turn（与兜底二级同文）把结果顶到历史尾部。
+/// 槽位本在尾部（顺序续行，T4-T7 主形态）不追加——请求字节不变保
+/// prompt cache。调用时聚焦轮尚不在历史中，全量扫描即结果槽位判定。
+fn focus_result_if_buried(
+    history: &mut Vec<crate::types::ConversationTurn>,
+    tool_call_id: &str,
+    task_id: &str,
+    content: &str,
+    images: &[String],
+) {
+    let buried = history
+        .iter()
+        .position(|t| t.role == "tool" && t.tool_call_id.as_deref() == Some(tool_call_id))
+        .is_some_and(|pos| pos + 1 < history.len());
+    if buried {
+        history.push(continuation_result_user_turn(task_id, content, images));
+    }
+}
+
+pub(crate) fn apply_real_result_to_history(
+    history: &mut Vec<crate::types::ConversationTurn>,
+    tool_call_id: &str,
+    task_id: &str,
+    content: &str,
+    fallback_images: &[String],
+) -> Applied {
+    if let Some(slot) = history
+        .iter_mut()
+        .find(|t| t.role == "tool" && t.tool_call_id.as_deref() == Some(tool_call_id))
+    {
+        slot.content = content.to_string();
+        focus_result_if_buried(history, tool_call_id, task_id, content, fallback_images);
+        return Applied::ReplacedMarker;
+    }
+    // 兜底一级：assistant 轮带同 id tool_calls → 紧随其后补 tool 轮。
+    if let Some(pos) = history
+        .iter()
+        .position(|t| t.role == "assistant" && t.tool_calls.iter().any(|c| c.id == tool_call_id))
+    {
+        let tool_name = history[pos]
+            .tool_calls
+            .iter()
+            .find(|c| c.id == tool_call_id)
+            .map(|c| c.name.clone());
+        history.insert(
+            pos + 1,
+            crate::types::ConversationTurn {
+                role: "tool".to_string(),
+                content: content.to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: Some(tool_call_id.to_string()),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                reasoning_content: None,
+                tool_name,
+                tool_result_projection: None,
+                image_refs: fallback_images.to_vec(),
+            },
+        );
+        focus_result_if_buried(history, tool_call_id, task_id, content, fallback_images);
+        return Applied::AppendedToolTurn;
+    }
+    // 兜底二级：tool_call 形态彻底不在场 → user turn（尾插天然聚焦）。
+    history.push(continuation_result_user_turn(
+        task_id,
+        content,
+        fallback_images,
+    ));
+    Applied::AppendedUserTurn
+}
+
 /// max_tokens 长度截断判定（纯函数，双路径对齐主循环器官 6）。
 ///
 /// - 有 usage：数值判定 `completion_tokens >= cap`（精确）。`escalated_to`
@@ -1307,6 +1452,19 @@ fn is_length_truncated(response: &crate::r#loop::LlmResponse, max_tokens_cap: u3
 }
 
 /// Handle a cluster continuation callback.
+///
+/// TODO: DEL（续行回主路 2026-11-12）：**主路径已切换**——bus.rs 的
+/// `run_continuation_turn` 取代本函数成为带会话身份续行的执行体（快照
+/// 恢复/台账语义保留，执行面换主循环 run_llm_loop 全管线）。本函数遗留的
+/// 结构性缺陷即切换动机：LLM 请求硬编码 tools=0、工具执行裸
+/// `execute_tool_for_continuation` 绕过 dispatch 瀑布（安全 8 层/审批/
+/// estop/turn_guard 全部缺席）。仍在生产的唯一入口 = 空键 legacy 分支
+/// （旧磁盘形态快照无会话主体，历史无从水合，整支委托本函数保持改前
+/// 行为——bus.rs `run_continuation_turn` 空键臂；现代快照恒带 session_key，
+/// 不经此处）。物理删除延后：需先裁决空键 legacy 形态终局；tests.rs /
+/// truncation_tests / s9_tests / cov2_tests 仍经本面驱动旧行为回归，
+/// 待新路径哨兵覆盖后连同 ToolLookup / execute_tool_for_continuation
+/// 一并清除。
 ///
 /// This function:
 /// 1. Loads the continuation snapshot.
@@ -1902,6 +2060,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 }
 
 /// Execute a single tool call during continuation processing.
+///
+/// TODO: DEL（续行回主路 2026-11-12）：随 [`handle_cluster_continuation`]
+/// 退役——裸 `tool.execute` 绕过 dispatch 瀑布正是旧路径的结构性缺陷
+/// （安全 8 层/审批/estop 全部缺席），新路径经主循环全管线执行。
 async fn execute_tool_for_continuation<T: ToolLookup>(
     tools: &T,
     tc: &ToolCallInfo,
@@ -1958,3 +2120,9 @@ mod r14_atomic_save_tests;
 // （续写追加 / 空内容 2 连停 / 预算耗尽注记 / 截断带 tool_calls 丢弃）。
 #[cfg(test)]
 mod truncation_tests;
+
+// 续行回主路（2026-11-12）B1#2：apply_real_result_to_history 四场景
+// （marker 原位替换 / 压缩折叠 user 兜底 / 合成快照 user 兜底 /
+// task_failed Error 文本）+ 图片引用补挂 + 幂等覆盖。
+#[cfg(test)]
+mod apply_result_tests;

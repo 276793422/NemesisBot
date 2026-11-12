@@ -346,7 +346,7 @@ async fn completion_message_resumes_with_subagent_result() {
 
     // 第二回合：后台完成回灌（agent_factory 后台路径发布的 bus 消息形状）
     // → gate 拦截 → dispatch_continuation（permits=0 inline）→
-    // handle_cluster_continuation 复用路径 → 续行 LLM → 最终回复出站。
+    // run_continuation_turn（续行回主路 2026-11-12）→ 续行 LLM → 最终回复出站。
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("status".to_string(), "ok".to_string());
     metadata.insert("source".to_string(), "background_subagent".to_string());
@@ -368,7 +368,7 @@ async fn completion_message_resumes_with_subagent_result() {
         "final reply must carry the sub-agent result, got: {}",
         final_msg.content
     );
-    // 快照消费后自清（handle_cluster_continuation → remove_continuation）。
+    // 快照消费后自清（run_continuation_turn → finish_handling）。
     assert!(
         !mgr.has_continuation("bg_r1").await,
         "snapshot must be cleaned up after resume"

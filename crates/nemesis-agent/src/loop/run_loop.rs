@@ -116,8 +116,12 @@ impl AgentLoop {
         // set by run_agent_loop_internal when cron_job_id metadata is
         // present) — a recurring cron on a persistent session grows the
         // boundary sidecar unboundedly otherwise.
+        // 续行回主路（2026-11-12）：user=="continuation"（bus.rs
+        // run_continuation_turn 设置）同样豁免——续行回合落主会话，边界
+        // sidecar 会随每次异步回灌无界增长（与 heartbeat/cron 同一失败形态）。
         let log_boundaries = context.user != "heartbeat"
             && context.user != "cron"
+            && context.user != "continuation"
             && !is_internal_channel(&context.channel);
         if log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_start", "");
