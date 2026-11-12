@@ -71,25 +71,37 @@ impl ClusterLogWriter {
 
         let mut inner = self.inner.lock();
 
-        // Rotate file if date changed.
-        if inner.current_date != date_str {
-            inner.current_date = date_str.clone();
+        // Rotate file if the date changed — or retry the open after a
+        // previous failure（BUG-20261112-106）：旧实现先落 current_date 再开
+        // 文件，一次打开失败（AV/索引器瞬时锁、磁盘满、目录创建失败）=
+        // 当天全部后续条目静默丢弃直到次日——派发审计面假完整（本文件
+        // 注释引用的实盘核对事故正依赖此文件的完整性）。现在打开失败
+        // 不更新 current_date：file 为 None 即在下一条重试（瞬时锁自愈；
+        // 持续失败 = 每条 warn 诚实可见，观测面绝不静默）。
+        if inner.current_date != date_str || inner.file.is_none() {
             let filename = format!("cluster_{}.log", date_str);
             let path = inner.log_dir.join(&filename);
 
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+            if let Some(parent) = path.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                tracing::warn!(
+                    dir = %parent.display(),
+                    error = %e,
+                    "[ClusterLog] Failed to create log directory"
+                );
             }
 
             match OpenOptions::new().create(true).append(true).open(&path) {
                 Ok(f) => {
                     inner.file = Some(f);
+                    inner.current_date = date_str.clone();
                 }
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
                         error = %e,
-                        "[ClusterLog] Failed to open log file"
+                        "[ClusterLog] Failed to open log file (will retry on next entry)"
                     );
                     inner.file = None;
                     return;
