@@ -391,3 +391,6 @@ unsafe fn take_out_string(
         Some(s)
     }
 }
+
+#[cfg(test)]
+mod tests;

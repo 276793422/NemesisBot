@@ -1625,6 +1625,11 @@ mod gated {
         }
     }
 
+    /// `updates/`（测试二进制同目录）是跨测试共享面：download/apply 读
+    /// pending，任何测试遗留 pending 都会改写他人断言——所有触碰方持同一
+    /// 把 crate 级锁串行化。
+    static UPDATES_SHARED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// meta 后写不变量 + 正常往返：zip 先于 meta 在场时 load=None（半截下载
     /// 不产生可装形态——「见 meta 必有 zip」）；meta 落盘后完整读回。
     #[test]
@@ -1687,6 +1692,9 @@ mod gated {
     /// estop 闸是第一道——测试进程 exe 目录无 updates/，不触网）。
     #[tokio::test]
     async fn download_denied_by_estop() {
+        let _shared_updates = UPDATES_SHARED_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
         let m = manager_for(tmp_dir("dl-estop"), estop);
@@ -1701,6 +1709,9 @@ mod gated {
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_denied_by_estop() {
+        let _shared_updates = UPDATES_SHARED_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let ws = tmp_dir("gate-estop");
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
@@ -1713,6 +1724,9 @@ mod gated {
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_denied_by_pending_journal() {
+        let _shared_updates = UPDATES_SHARED_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let ws = tmp_dir("gate-journal");
         save_journal(&ws, &journal("staging", "x", "y")).unwrap();
         let m = manager_for(
@@ -1731,6 +1745,9 @@ mod gated {
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_failure_recorded_and_replaced_by_next_attempt() {
+        let _shared_updates = UPDATES_SHARED_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let ws = tmp_dir("gate-apply-error");
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
@@ -2252,5 +2269,728 @@ mod gated {
         assert_eq!(r.verdict, IntegrityVerdict::BaselineError);
         assert!(r.note.contains("强制更新"), "{}", r.note);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 第三批次：诚实报错臂 / 副本写入链 / 舞步失败臂 / manager 观测面 ──
+
+    /// clear_journal 三臂：在册删除 / 本就不在（NotFound=成功）/ 删除失败
+    ///（journal 路径是目录 → PermissionDenied → false）。
+    #[test]
+    fn clear_journal_three_outcomes() {
+        let ws = tmp_dir("clear-journal");
+        std::fs::create_dir_all(ws.join("state")).unwrap();
+        assert!(clear_journal(&ws), "无 journal = 已不在");
+        save_journal(&ws, &journal("staging", "x", "y")).unwrap();
+        assert!(clear_journal(&ws), "在册删除 = true");
+        std::fs::create_dir_all(journal_path(&ws)).unwrap();
+        assert!(!clear_journal(&ws), "目录占据 = 删除失败 = false");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// clear_journal_logged：失败时走 warn 分支（boot 收口等无审计路径用）。
+    #[test]
+    fn clear_journal_logged_survives_failure() {
+        let ws = tmp_dir("clear-journal-logged");
+        std::fs::create_dir_all(journal_path(&ws)).unwrap(); // 目录占据 → 删除失败
+        super::super::clear_journal_logged(&ws); // 不得 panic（warn 分支）
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// version.txt 的 Commit 行带非法 sha（非 hex）→ 落空继续，不误取。
+    #[test]
+    fn version_txt_invalid_commit_line_falls_through() {
+        assert_eq!(
+            extract_commit_from_version_txt("Commit : zzzz\nCommit : 0123456789abcdef\n"),
+            Some("0123456789abcdef".to_string()),
+            "前一行落空，后一行命中"
+        );
+        assert_eq!(
+            extract_commit_from_version_txt("Commit : abc\n"),
+            None,
+            "过短 sha 落空"
+        );
+    }
+
+    /// 待装包 .part 中转名推导（zip / tar.gz 双资产形态）——与正式名同目录。
+    #[test]
+    fn pending_part_path_derivation() {
+        let exe = Path::new("nemesisbot.exe");
+        let expect = |asset: &str| {
+            updates_dir(exe).join(format!(
+                "pending.{}.part",
+                asset.strip_prefix("nightly-").unwrap_or(asset)
+            ))
+        };
+        assert_eq!(
+            super::super::pending_package_part_path(exe, "nightly-windows.zip"),
+            expect("nightly-windows.zip"),
+            "zip 资产 → pending.windows.zip.part"
+        );
+        assert_eq!(
+            super::super::pending_package_part_path(exe, "nightly-linux.tar.gz"),
+            expect("nightly-linux.tar.gz"),
+            "tar.gz 资产 → pending.linux.tar.gz.part"
+        );
+    }
+
+    /// load_pending 完整性复验失败矩阵：包体读取失败（目录伪装包体）→
+    /// sha256 打不开 → 整清 + None。
+    #[test]
+    fn pending_package_unreadable_clears_updates_dir() {
+        let dir = tmp_dir("pending-unreadable");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        let pending = sample_pending();
+        std::fs::create_dir_all(updates_dir(&exe)).unwrap();
+        std::fs::create_dir_all(pending_package_path(&exe, &pending.asset)).unwrap();
+        save_pending(&exe, &pending).unwrap();
+        assert!(
+            load_pending(&exe).is_none(),
+            "包体不可读 = 复验失败 = 整清 + None"
+        );
+        assert!(updates_dir_is_empty(&exe), "updates/ 已整清");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// load_pending：meta 在场但包体缺席（异常现场）→ 整清 + None。
+    #[test]
+    fn pending_meta_without_package_file_clears() {
+        let dir = tmp_dir("pending-no-pkg");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        let mut pending = sample_pending();
+        pending.asset = "ghost.zip".to_string(); // 与包体名错位
+        save_pending(&exe, &pending).unwrap();
+        assert!(load_pending(&exe).is_none(), "meta 在包不在 = 异常现场");
+        assert!(updates_dir_is_empty(&exe), "整清兜底");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// journal → applied 副本写入链：空清单（旧 journal）= 无事；空锚集 =
+    /// 诚实跳过；坏 base64 = Err；合法载体 = 落盘（写前再验签）。
+    #[test]
+    fn applied_manifest_from_journal_all_arms() {
+        use base64::Engine as _;
+        let dir = tmp_dir("applied-journal");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+
+        let empty_j = journal("restarting", "x", "y");
+        super::super::write_applied_manifest_from_journal(&exe, &empty_j, &[[0u8; 32]])
+            .expect("空清单 = Ok");
+        assert!(!applied_manifest_path(&exe).exists(), "无事不落盘");
+
+        let (carrier, anchors) = sign_manifest(&sample_manifest_json(), now_secs());
+        let mut j = journal("restarting", "x", "y");
+        j.target_manifest = base64::engine::general_purpose::STANDARD.encode(&carrier);
+        super::super::write_applied_manifest_from_journal(&exe, &j, &[]).expect("空锚 = Ok");
+        assert!(!applied_manifest_path(&exe).exists(), "空锚不落盘");
+
+        let mut bad = journal("restarting", "x", "y");
+        bad.target_manifest = "!!not-base64!!".to_string();
+        let err = super::super::write_applied_manifest_from_journal(&exe, &bad, &anchors)
+            .expect_err("坏 base64 必须报错");
+        assert!(err.contains("base64"), "{err}");
+
+        super::super::write_applied_manifest_from_journal(&exe, &j, &anchors)
+            .expect("合法载体落盘");
+        assert_eq!(
+            load_applied_sequence(&exe, &anchors, now_secs() + 120),
+            Some(42),
+            "applied 副本读回 sequence"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 完整性报告：exe 本体不可读（路径缺席）= Unreadable；插件条目是
+    /// 目录（sha256 打不开）= Unreadable；目录条目不算 extra_files。
+    #[test]
+    fn integrity_report_unreadable_and_dir_entry_arms() {
+        let dir = tmp_dir("integrity-unreadable");
+        let exe = dir.join("nemesisbot.exe");
+        let m = crate::selfupdate::UpdateManifest {
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            sequence: 1,
+            exe_sha256: sha256_hex(b"pe"),
+            built_at: "t".into(),
+            plugins_sha256: std::collections::BTreeMap::from([(
+                "plug.dll".to_string(),
+                sha256_hex(b"plug"),
+            )]),
+        };
+        std::fs::create_dir_all(dir.join("plugins").join("plug.dll")).unwrap(); // 插件位是目录
+        std::fs::create_dir_all(dir.join("plugins").join("subdir")).unwrap(); // 目录不算 extra
+        std::fs::write(dir.join("plugins").join("user_extra.dll"), b"x").unwrap();
+        let r = super::super::integrity_report_from_manifest(&exe, &m);
+        assert_eq!(r.verdict, IntegrityVerdict::Mismatch);
+        let exe_row = r.files.iter().find(|f| f.name == "nemesisbot.exe").unwrap();
+        assert_eq!(
+            exe_row.verdict,
+            IntegrityFileVerdict::Unreadable,
+            "exe 缺席 = Unreadable"
+        );
+        let plug_row = r.files.iter().find(|f| f.name == "plug.dll").unwrap();
+        assert_eq!(
+            plug_row.verdict,
+            IntegrityFileVerdict::Unreadable,
+            "插件位是目录 = 读取失败"
+        );
+        assert!(
+            !r.extra_files.iter().any(|n| n == "subdir"),
+            "目录条目不算 extra（只收平面文件）: {:?}",
+            r.extra_files
+        );
+        assert!(r.extra_files.contains(&"user_extra.dll".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// applied 基线在场但读取失败（基线位是目录）= BaselineError 读取臂。
+    #[test]
+    fn integrity_snapshot_baseline_unreadable() {
+        let dir = tmp_dir("integrity-baseline-dir");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        std::fs::create_dir_all(applied_manifest_path(&exe)).unwrap();
+        let r = super::super::integrity_snapshot_at(&exe, &[[0u8; 32]; 1]);
+        assert_eq!(r.verdict, IntegrityVerdict::BaselineError);
+        assert!(r.note.contains("读取失败"), "{}", r.note);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// recover_on_boot 包装层：current_exe 注入 + journal 缺席 = none。
+    #[test]
+    fn recover_on_boot_wrapper_no_journal() {
+        let ws = tmp_dir("boot-wrapper");
+        let r = recover_on_boot(&ws, "0123456789abcdef");
+        assert_eq!(r.action, "none");
+        assert!(r.detail.is_empty());
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// env 接力棒：WAIT_PID 在场且 pid 已死 → 立即放行继续（等旧进程退场的
+    /// 成功臂；env 为进程全局，测试内设置后立即清除）。
+    #[test]
+    fn boot_wait_pid_env_with_dead_pid_continues() {
+        let ws = tmp_dir("boot-wait-env");
+        // SAFETY: 单线程测试片段内设置/清除；其他测试不读该键
+        unsafe {
+            std::env::set_var("NEMESISBOT_SELFUPDATE_WAIT_PID", "4000000000");
+        }
+        let r = recover_on_boot_in(&ws, "0123456789abcdef", &ws.join("nb.exe"));
+        unsafe {
+            std::env::remove_var("NEMESISBOT_SELFUPDATE_WAIT_PID");
+        }
+        assert_eq!(r.action, "none", "死 pid 放行后 journal 缺席 = none");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// update_success 收口：journal 携带坏清单载体 → 写副本失败 warn 但
+    /// 收口继续（诚实边界：副本缺失 = 下次 apply 走 Unknown 拒）。
+    #[test]
+    fn boot_success_with_bad_manifest_carrier_still_succeeds() {
+        let ws = tmp_dir("boot-bad-manifest");
+        let dir = tmp_dir("boot-bad-manifest-exe");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        let mut j = journal("restarting", "0123456789abcdef", "nonexistent-old-path");
+        j.target_manifest = "!!bad!!".to_string();
+        save_journal(&ws, &j).unwrap();
+        let r = recover_on_boot_in(&ws, "0123456789abcdef", &exe);
+        assert_eq!(r.action, "update_success", "副本写失败不阻塞收口: {:?}", r);
+        assert!(load_journal(&ws).is_none(), "journal 已清");
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows 舞步失败臂：让位目标（`.failed` 位）被目录占据 →
+    /// rename(exe → .failed) 撞已存在目录 → Err 且现场原样保留。
+    #[cfg(windows)]
+    #[test]
+    fn rollback_windows_dance_failed_slot_occupied_errors() {
+        let dir = tmp_dir("rb-failed-occupied");
+        let target = dir.join("nemesisbot.exe");
+        std::fs::write(&target, b"running").unwrap();
+        let old = dir.join("nemesisbot.old");
+        std::fs::write(&old, b"old-bytes").unwrap();
+        std::fs::create_dir_all(dir.join("nemesisbot.failed")).unwrap();
+        let err = super::super::rollback_old_exe_to(old.to_str().unwrap(), &target)
+            .expect_err("让位失败必须 Err");
+        assert!(err.contains("让位失败"), "{err}");
+        assert!(target.exists() && old.exists(), "现场原样保留");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 目标位缺席（target 不存在）→ 单步 rename 直通 Ok（Windows 回落臂 /
+    /// 非 Windows 主体臂，同一份代码）。
+    #[test]
+    fn rollback_plain_rename_when_target_absent() {
+        let dir = tmp_dir("rb-target-absent");
+        let target = dir.join("fresh-nemesisbot.exe");
+        let old = dir.join("nemesisbot.old");
+        std::fs::write(&old, b"old").unwrap();
+        let ok =
+            super::super::rollback_old_exe_to(old.to_str().unwrap(), &target).expect("单步回滚");
+        assert!(ok.contains("已回滚"), "{ok}");
+        assert!(target.exists() && !old.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 目标位父目录缺席 → rename 必败 → 残留 .old 诚实报错。
+    #[test]
+    fn rollback_plain_rename_failure_keeps_old() {
+        let dir = tmp_dir("rb-rename-fail");
+        let old = dir.join("nemesisbot.old");
+        std::fs::write(&old, b"old").unwrap();
+        let target = dir.join("missing-sub").join("nemesisbot.exe"); // 父目录不存在
+        let err = super::super::rollback_old_exe_to(old.to_str().unwrap(), &target)
+            .expect_err("父目录缺席 rename 必败");
+        assert!(err.contains("残留 .old"), "{err}");
+        assert!(old.exists(), "失败现场保留");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// rollback_update 单侧失败（exe Ok noop + plugins Err）→ Err 透传
+    ///（不吞 plugins 失败——boot 收口据 Err 保 journal 等下次重试）。
+    #[test]
+    fn rollback_update_plugins_side_error_surfaces() {
+        let dir = tmp_dir("rb-plug-err");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::write(&exe, b"pe").unwrap();
+        let mut j = journal("restarting", "x", "nonexistent-old-path"); // exe noop
+        j.plugins_backup_dir = dir.join("back").join("plugins.old-2").display().to_string();
+        j.plugins_new_dir = dir.join("back").join("plugins.new-2").display().to_string();
+        std::fs::create_dir_all(dir.join("back")).unwrap();
+        std::fs::write(&j.plugins_backup_dir, b"file-not-dir").unwrap(); // legacy read_dir 必败
+        let err = super::super::rollback_update(&j, &exe).expect_err("plugins 失败上抛");
+        assert!(
+            err.contains("备份目录读取失败") || err.contains("plugins"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// plugins staging 三路径形态：真实目录在根 + 让位/新件双目录在 back/
+    /// 抽屉（PID 后缀去固定化）。
+    #[test]
+    fn plugins_staging_paths_shape() {
+        let dir = tmp_dir("plug-paths");
+        let exe = dir.join("nemesisbot.exe");
+        let (real, backup, new) = super::super::plugins_staging_paths(&exe);
+        assert_eq!(real, dir.join("plugins"), "真实插件目录在安装根");
+        let pid = std::process::id();
+        assert_eq!(backup, dir.join("back").join(format!("plugins.old-{pid}")));
+        assert_eq!(new, dir.join("back").join(format!("plugins.new-{pid}")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// install_plugins_files 让位失败臂：backup 目标位被目录占据 →
+    /// rename(existing → backup) 必败 → Err，既有文件未受损。
+    #[test]
+    fn install_plugins_files_backup_slot_occupied_errors() {
+        let dir = tmp_dir("plug-backup-occupied");
+        let plugins = dir.join("plugins");
+        let backup = dir.join("back").join("plugins.old-x");
+        let new = dir.join("back").join("plugins.new-x");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("a.dll"), b"old-a").unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::create_dir_all(backup.join("a.dll")).unwrap(); // 让位目标位是目录
+        let err = super::super::install_plugins_files(
+            &plugins,
+            &backup,
+            &new,
+            &std::collections::BTreeMap::from([("a.dll".to_string(), b"new-a".to_vec())]),
+        )
+        .expect_err("让位失败必须 Err");
+        assert!(err.contains("让位失败"), "{err}");
+        assert_eq!(
+            std::fs::read(plugins.join("a.dll")).unwrap(),
+            b"old-a",
+            "既有文件未受损"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// remove_loaded_file：让位目标（`.failed-{pid}` 位）被目录占据 →
+    /// rename 失败 → Err 上抛。
+    #[test]
+    fn remove_loaded_file_sidecar_slot_occupied_errors() {
+        let dir = tmp_dir("remove-loaded-fail");
+        let target = dir.join("plug.dll");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("inner.bin"), b"x").unwrap(); // 非空目录：remove_file 必败（非 NotFound）→ 走让位臂
+        let pid = std::process::id();
+        let sidecar = dir.join(format!("plug.dll.failed-{pid}"));
+        std::fs::create_dir_all(&sidecar).unwrap();
+        std::fs::write(sidecar.join("occupied.bin"), b"x").unwrap(); // 非空目录占据：dir→dir 替换必败
+        let err = super::super::remove_loaded_file(&target).expect_err("让位失败上抛");
+        assert!(err.contains("让位失败"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 清单驱动回滚：new_install 条目在 plugins/ 在场 → 删除归零；全部
+    /// 条目收敛后重入 = noop 文案。
+    #[test]
+    fn rollback_plugins_manifest_new_install_removal() {
+        let dir = tmp_dir("plug-manifest-new");
+        let plugins = dir.join("plugins");
+        let backup = dir.join("back").join("plugins.old-3");
+        let new = dir.join("back").join("plugins.new-3");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::write(plugins.join("fresh.dll"), b"new-install").unwrap();
+        let manifest = vec![PluginsFileEntry {
+            name: "fresh.dll".to_string(),
+            new_install: true,
+        }];
+        let detail = super::super::rollback_plugins_to(
+            backup.to_str().unwrap(),
+            new.to_str().unwrap(),
+            &manifest,
+            &plugins,
+        )
+        .expect("新装清理成功");
+        assert!(detail.contains("清理新装 1"), "{detail}");
+        assert!(!plugins.join("fresh.dll").exists(), "新装文件已删除归零");
+        let detail2 = super::super::rollback_plugins_to(
+            backup.to_str().unwrap(),
+            new.to_str().unwrap(),
+            &manifest,
+            &plugins,
+        )
+        .expect("重入幂等");
+        assert!(detail2.starts_with("rollback_plugins_noop"), "{detail2}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 旧 journal 保守回滚：dst 在场（替换形态）先让位再归位；new staging
+    /// 一并清理；backup 缺席重入 = noop 文案（保守模式）。
+    #[test]
+    fn rollback_plugins_legacy_dst_present_and_noop_arms() {
+        let dir = tmp_dir("plug-legacy");
+        let plugins = dir.join("plugins");
+        let backup = dir.join("back").join("plugins.old-4");
+        let new = dir.join("back").join("plugins.new-4");
+        std::fs::create_dir_all(&plugins).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(backup.join("old.dll"), b"backup").unwrap();
+        std::fs::write(plugins.join("old.dll"), b"current").unwrap(); // dst 在场 → 让位臂
+        std::fs::write(new.join("stale.bin"), b"stale").unwrap();
+        let detail = super::super::rollback_plugins_to(
+            backup.to_str().unwrap(),
+            new.to_str().unwrap(),
+            &[], // 旧 journal：无清单
+            &plugins,
+        )
+        .expect("保守回滚成功");
+        assert!(
+            detail.contains("归位 1") && detail.contains("未做新装清理"),
+            "{detail}"
+        );
+        assert_eq!(
+            std::fs::read(plugins.join("old.dll")).unwrap(),
+            b"backup",
+            "旧版归位"
+        );
+        assert!(!new.exists(), "new staging 已清");
+
+        let detail2 = super::super::rollback_plugins_to(
+            backup.to_str().unwrap(),
+            new.to_str().unwrap(),
+            &[],
+            &plugins,
+        )
+        .expect("noop");
+        assert!(detail2.starts_with("rollback_plugins_noop"), "{detail2}");
+        assert!(detail2.contains("保守模式"), "{detail2}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// sweep 边界：无父目录 / 无 stem 的 exe 路径诚实 0；父目录是文件 →
+    /// read_dir 失败 0；after_boot 锁失败不抢扫（无 panic）。
+    #[test]
+    fn sweep_edge_paths_return_zero() {
+        assert_eq!(
+            super::super::sweep_stale_staging(Path::new("/")),
+            0,
+            "无父目录 = 0"
+        );
+        assert_eq!(
+            super::super::sweep_stale_staging(Path::new("..")),
+            0,
+            "无 stem = 0"
+        );
+        let dir = tmp_dir("sweep-file-parent");
+        let parent_file = dir.join("not-a-dir");
+        std::fs::write(&parent_file, b"x").unwrap();
+        assert_eq!(
+            super::super::sweep_stale_staging(&parent_file.join("nb.exe")),
+            0,
+            "read_dir 失败 = 0"
+        );
+        super::super::sweep_staging_after_boot(&parent_file.join("nb.exe"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// manager 观测面：cancel_download 置旗；进度快照往返；check 缓存写读；
+    /// integrity_snapshot 真实 exe 投影不 panic（无基线 = NoBaseline）。
+    #[test]
+    fn manager_observation_surface_roundtrip() {
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        let m = manager_for(tmp_dir("mgr-obs"), estop);
+        m.cancel_download();
+        assert!(
+            m.download_cancel.load(std::sync::atomic::Ordering::SeqCst),
+            "取消旗标已置位"
+        );
+        let snap = m.progress_snapshot();
+        assert!(!snap.active && snap.phase == "idle", "默认 idle: {snap:?}");
+
+        let check = UpdateCheck {
+            current_version: "v1".into(),
+            current_commit: "abc".into(),
+            latest_tag: "v2".into(),
+            latest_name: "n".into(),
+            latest_commit: "def".into(),
+            asset: TARGET_ASSET.to_string(),
+            asset_present: true,
+            update_available: true,
+            current_commit_known: true,
+        };
+        m.store_check(check);
+        let (cached, at) = m.cached_check().expect("缓存可读");
+        assert_eq!(cached.latest_tag, "v2");
+        assert!(at > 0);
+        assert!(m.last_apply_error_snapshot().is_none(), "无失败记录");
+        let _report = m.integrity_snapshot();
+    }
+
+    /// download 幂等面矩阵（全部先于网络分叉点收敛；pending 就绪早退臂
+    /// 不在此测——共享 updates/ 不长窗口持包）：
+    /// ① download_flight 被占 + 无活跃进度 = 异常态 Err；
+    /// ② 同持锁 + 活跃进度 = 幂等受理 Ok；
+    /// ③ estop 生效 + force = force 审计文案行后 estop 拒（不碰网络）。
+    #[tokio::test]
+    async fn download_flight_busy_and_force_estop_arms() {
+        let _shared = UPDATES_SHARED_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        let m = manager_for(tmp_dir("dl-matrix"), estop.clone());
+
+        // ① 持锁无进度：异常态
+        let guard = m.download_flight.try_lock().expect("空锁立即得手");
+        let err = m.download("0123456", false).await.unwrap_err();
+        assert!(err.contains("下载通道被占用"), "{err}");
+        drop(guard);
+
+        // ② 持锁有进度：幂等受理
+        {
+            let mut p = m.download_progress.lock();
+            p.active = true;
+            p.phase = "downloading".into();
+        }
+        let guard = m.download_flight.try_lock().expect("锁空闲");
+        let ok = m.download("0123456", false).await.unwrap();
+        assert!(ok.contains("幂等受理"), "{ok}");
+        drop(guard);
+        m.download_progress.lock().active = false;
+
+        // ③ estop + force：force 审计行（audit=None 仅求值）后 estop 拒
+        estop.trigger();
+        let err = m.download("0123456", true).await.unwrap_err();
+        assert!(err.contains("estop"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&m.workspace);
+    }
+
+    /// apply 编排离线可达段（安装锁 → sweep → pending → 解包 → 清单验签拒）：
+    /// pending 三形态 × 确定性 Err 终点。target_commit 留空跳过发布源 stale
+    /// 对账臂，随机 sha 恒不命中「已最新」臂——离线（对账拉取失败按 pending
+    /// 继续）与在线（对账成功也无臂命中）终点一致。验签拒绝 = 内置锚对测试
+    /// 密钥载体恒 Untrusted——确定性离线终点。
+    #[cfg(any(windows, target_os = "linux"))]
+    #[tokio::test]
+    async fn apply_reaches_pending_and_manifest_gates_with_deterministic_denial() {
+        let _shared = UPDATES_SHARED_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // 锚确定性：测试构建无编译期锚时 builtin_root_anchors 回落运行时
+        // NEMESIS_ROOT_ANCHOR——测试内注入已知指纹使锚闸恒通过（终点确定）。
+        let runtime_anchor_hex =
+            "441e577bb0111d305f68fd83c96fd0e1e1c2ccb10f27c7a3dfdc00ff12ab3412".to_string();
+        let _anchor_guard = RuntimeAnchorGuard::new(runtime_anchor_hex);
+        let ws = tmp_dir("apply-pending-gates");
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        let m = manager_for(ws.clone(), estop);
+        let exe_path = std::env::current_exe().unwrap();
+        clear_updates_dir(&exe_path);
+
+        // 阶段①：包体 = 垃圾字节（sha 对齐）→ 解包失败整清 + Err
+        let garbage = b"NOT-A-PACKAGE!".to_vec();
+        seed_updates(&exe_path, &garbage, "", true);
+        let err = m
+            .apply(
+                "v1",
+                "ffffffffffffffffffffffffffffffffffffffff",
+                false,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("解包更新包失败") || err.contains("格式不可识别"),
+            "{err}"
+        );
+        assert!(updates_dir_is_empty(&exe_path), "解包失败整清 updates/");
+
+        // 阶段②：合法 zip + 测试密钥签名清单 → 锚验签 Untrusted → 顺序未知
+        // 默认拒 + downgrade_denied 旗标（签名验真不豁免）
+        let (carrier, _) = sign_manifest(&sample_manifest_json(), now_secs());
+        let zip = zip_bytes(vec![
+            ("nemesisbot.exe", b"pe-bytes".to_vec()),
+            ("manifest.json", carrier),
+        ]);
+        seed_updates(&exe_path, &zip, "", true);
+        let err = m
+            .apply(
+                "v1",
+                "ffffffffffffffffffffffffffffffffffffffff",
+                false,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("无法证明版本顺序") || err.contains("验签"),
+            "{err}"
+        );
+        let rec = m.last_apply_error_snapshot().expect("失败入案");
+        assert!(
+            rec.downgrade_denied,
+            "清单验签失败 = 顺序判定拒绝类: {rec:?}"
+        );
+
+        // 阶段③：无清单无 version.txt + 显式豁免 → 身份缺失无条件拒
+        let zip3 = zip_bytes(vec![("nemesisbot.exe", b"pe-bytes".to_vec())]);
+        seed_updates(&exe_path, &zip3, "", true);
+        let err = m
+            .apply(
+                "v1",
+                "ffffffffffffffffffffffffffffffffffffffff",
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("无任何 commit 身份"), "{err}");
+
+        clear_updates_dir(&exe_path);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// 运行时锚环境守卫：进入设置 NEMESIS_ROOT_ANCHOR，退出（含 panic）
+    /// 恢复原值——不污染并行的其他锚相关测试。
+    struct RuntimeAnchorGuard;
+    impl RuntimeAnchorGuard {
+        fn new(hex: String) -> Self {
+            // SAFETY: 测试生命周期内设置；该键仅锚解析消费
+            unsafe {
+                std::env::set_var("NEMESIS_ROOT_ANCHOR", hex);
+            }
+            RuntimeAnchorGuard
+        }
+    }
+    impl Drop for RuntimeAnchorGuard {
+        fn drop(&mut self) {
+            // SAFETY: 恢复原值/清除；该键仅锚解析消费
+            unsafe {
+                std::env::remove_var("NEMESIS_ROOT_ANCHOR");
+            }
+        }
+    }
+
+    /// updates/ 种子（pending 包体 + sha 对齐 meta）。target_commit 传空串
+    /// 可跳过发布源 stale 对账臂（终点确定性）。
+    fn seed_updates(exe: &Path, pkg_bytes: &[u8], target_commit: &str, with_sha: bool) {
+        clear_updates_dir(exe);
+        let dir = updates_dir(exe);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(pending_package_path(exe, TARGET_ASSET), pkg_bytes).unwrap();
+        let pending = PendingUpdate {
+            asset: TARGET_ASSET.to_string(),
+            release_tag: "v0-test".to_string(),
+            target_commit: target_commit.to_string(),
+            zip_sha256: if with_sha {
+                sha256_hex(pkg_bytes)
+            } else {
+                "deadbeef".to_string()
+            },
+            size_bytes: pkg_bytes.len() as u64,
+            downloaded_at_ms: now_ms(),
+        };
+        save_pending(exe, &pending).unwrap();
+    }
+
+    /// 解包面补臂：zip 目录条目 `plugins/` 走 Ignored；tar 带清单与无关
+    /// 文件（Ignored）；版本描述回退 unknown / version.txt 命中。
+    #[test]
+    fn bundle_ignored_and_manifest_entry_arms() {
+        // zip 目录条目（`plugins/` 本体）+ 随机文件 → Ignored
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut w = zip::ZipWriter::new(&mut buf);
+            let opts: zip::write::SimpleFileOptions = Default::default();
+            w.add_directory("plugins", opts).unwrap();
+            w.start_file("README.md", opts).unwrap();
+            std::io::Write::write_all(&mut w, b"hi").unwrap();
+            w.start_file("nemesisbot.exe", opts).unwrap();
+            std::io::Write::write_all(&mut w, b"pe").unwrap();
+            w.finish().unwrap();
+        }
+        let bytes = buf.into_inner();
+        let b = super::super::extract_update_bundle(&bytes).expect("zip 带目录条目");
+        assert!(b.plugins.is_empty(), "目录条目不进 plugins 映射");
+        assert_eq!(b.commit, None, "无 version.txt = commit 缺席");
+
+        // tar.gz：manifest.json 条目 + 无关文件（Ignored）
+        let (carrier, _) = sign_manifest(&sample_manifest_json(), now_secs());
+        let tar = tar_gz_bytes(vec![
+            (
+                tar::EntryType::Regular,
+                "./nemesisbot",
+                None,
+                b"pe".to_vec(),
+            ),
+            (tar::EntryType::Regular, "./manifest.json", None, carrier),
+            (tar::EntryType::Regular, "./NOTES.txt", None, b"n".to_vec()),
+        ]);
+        let b = super::super::extract_update_bundle(&tar).expect("tar 带清单");
+        assert!(b.manifest_bytes.is_some(), "tar manifest 条目捕获");
+        assert_eq!(
+            super::super::ExtractedBundle::version_txt_commit_desc(&b),
+            "unknown",
+            "无 version.txt → unknown"
+        );
+
+        let tar2 = tar_gz_bytes(vec![
+            (
+                tar::EntryType::Regular,
+                "./nemesisbot",
+                None,
+                b"pe".to_vec(),
+            ),
+            (
+                tar::EntryType::Regular,
+                "./version.txt",
+                None,
+                b"Commit     : 0123456789abcdef0123456789abcdef01234567\n".to_vec(),
+            ),
+        ]);
+        let b2 = super::super::extract_update_bundle(&tar2).expect("tar 带 version.txt");
+        assert_eq!(
+            super::super::ExtractedBundle::version_txt_commit_desc(&b2),
+            "0123456789abcdef0123456789abcdef01234567"
+        );
     }
 }

@@ -132,7 +132,12 @@ async fn r840_rewind_blocks_idle_period_external_new_file() {
     let (al, key, dir) = stage_sealed_git("idle-block").await;
     let ws = dir.path().join("ws");
 
-    // 会话结束（最后行落盘）之后外部放置的文件。
+    // 会话结束（最后行落盘）之后外部放置的文件。间隔纪律（BUG-20261112-106
+    // ）：staging 与落盘之间必须拉开 > fs inode 时间戳粒度（ext4 等本地
+    // fs 走 coarse 时钟记账，实测可滞后 CLOCK_REALTIME 精读 ~10ms）——
+    // 零间隔会让 recorded-born 逆行进 turn 窗口，守卫测不出「之后」。生
+    // 产语义不受影响：真实空闲期 = 秒级之后，精度绰绰有余。
+    std::thread::sleep(std::time::Duration::from_millis(50));
     std::fs::write(ws.join("external.txt"), "user-note").unwrap();
 
     let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
@@ -168,6 +173,8 @@ async fn r840_rewind_force_overrides_idle_period_external_file() {
     let (al, key, dir) = stage_sealed_git("idle-force").await;
     let ws = dir.path().join("ws");
 
+    // 间隔纪律同上（> fs inode 时间戳粒度，否则 recorded-born 逆行）。
+    std::thread::sleep(std::time::Duration::from_millis(50));
     std::fs::write(ws.join("external.txt"), "user-note").unwrap();
 
     // 默认拒绝（同 H-1 A）。

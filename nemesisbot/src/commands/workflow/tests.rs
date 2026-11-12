@@ -1704,3 +1704,210 @@ mod r10 {
         }
     }
 }
+
+// ===========================================================================
+// cov_wf：吃剩的离线可达臂。两条 read_dir Err 收口（文件路径当目录扫）、
+// exe 模板目录回落、执行记录/模板 JSON 写失败 ? 错误臂、ended_at 缺席
+// （human_review 节点 → Waiting 收口，ended_at 置 None）、status 详情的
+// 有 ended 无 started / 节点 output 打印臂。
+// ===========================================================================
+#[cfg(windows)] // Windows-form (exe templates dir layout + EnvHomeGuard; Linux nightly: excluded, sweep)
+mod cov_wf {
+    use super::*;
+
+    /// scan_workflow_files 传入「存在的文件」→ read_dir Err → if-let 空收口。
+    #[test]
+    fn wf_scan_treats_file_path_as_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir.yaml");
+        std::fs::write(&file, "name: x").unwrap();
+        let files = scan_workflow_files(&file);
+        assert!(files.is_empty(), "文件路径不可枚举 → 空结果");
+    }
+
+    /// load_templates_from_disk 的 workspace 搜索目录是文件 → read_dir Err 收口。
+    #[test]
+    fn wf_templates_search_dir_is_file_yields_empty() {
+        let _home = EnvHomeGuard::new();
+        let templates_root = _home._tmp.path().join("workspace").join("workflow");
+        std::fs::create_dir_all(&templates_root).unwrap();
+        // templates 落成文件而非目录 → exists() 为真但 read_dir 失败。
+        std::fs::write(templates_root.join("templates"), "not a dir").unwrap();
+        let found = load_templates_from_disk();
+        assert!(
+            found.iter().all(|(n, _, _)| n != "templates"),
+            "文件型搜索目录不得产出模板"
+        );
+    }
+
+    /// exe_dir/templates 回落查找：workflow 目录缺文件时按 yaml/yml/json
+    /// 顺序命中 exe 旁模板。测试二进制同目录写临时模板，Drop 清理。
+    struct ExeTemplateFile {
+        path: std::path::PathBuf,
+    }
+
+    impl ExeTemplateFile {
+        fn new(name: &str, yaml: &str) -> Self {
+            let exe_dir = std::env::current_exe()
+                .expect("current_exe")
+                .parent()
+                .expect("exe dir")
+                .to_path_buf();
+            let dir = exe_dir.join("templates");
+            std::fs::create_dir_all(&dir).expect("exe templates dir");
+            let path = dir.join(format!("{name}.yaml"));
+            std::fs::write(&path, yaml).expect("write exe template");
+            Self { path }
+        }
+    }
+
+    impl Drop for ExeTemplateFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    // 持全局串行锁：exe_dir/templates 是进程级共享面，get_templates 族
+    // 测试（EnvHomeGuard 同锁）必须与本测试互斥，否则磁盘模板整组替换
+    // 默认集会让并发侧找不到内置模板。
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn wf_run_falls_back_to_exe_templates_dir() {
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let yaml = "name: cov-wfb-fallback\ndescription: exe 模板回落\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
+        let _tpl = ExeTemplateFile::new("cov-wfb-fallback", yaml);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = home.join("workspace").join("workflow").join("definitions");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        // workflow 目录无同名文件 → 437 找不到 → exe_dir/templates 回落命中。
+        cmd_run(&home, &wf_dir, "cov-wfb-fallback", &[])
+            .await
+            .expect("exe 模板回落必须跑通 delay 节点");
+    }
+
+    /// executions 落成文件 → create_dir_all 静默失败 → 执行记录写失败 →
+    /// `?` 错误臂（cmd_run Err 上抛）。
+    #[tokio::test]
+    async fn wf_run_execution_record_write_failure_propagates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = home.join("workspace").join("workflow").join("definitions");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        std::fs::write(
+            wf_dir.join("cov-writefail.json"),
+            serde_json::json!({
+                "name": "cov-writefail",
+                "description": "写失败",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "n1", "node_type": "delay", "config": {"seconds": 0}, "depends_on": []}
+                ],
+                "edges": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(wf_dir.join("executions"), "file not dir").unwrap();
+
+        let res = cmd_run(&home, &wf_dir, "cov-writefail", &[]).await;
+        assert!(
+            res.is_err(),
+            "执行记录写失败必须 Err 上抛，got: {:?}",
+            res.err()
+        );
+    }
+
+    /// human_review 节点 → 执行 Waiting 收口，ended_at 保持空 → cmd_run 的
+    /// ended 时长块整体跳过。
+    #[tokio::test]
+    async fn wf_run_human_review_waiting_skips_ended_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let wf_dir = home.join("workspace").join("workflow").join("definitions");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        std::fs::write(
+            wf_dir.join("cov-wait.json"),
+            serde_json::json!({
+                "name": "cov-wait",
+                "description": "human_review → Waiting",
+                "version": "1.0.0",
+                "nodes": [
+                    {"id": "hr", "node_type": "human_review",
+                     "config": {"message": "需要人工确认"}, "depends_on": []}
+                ],
+                "edges": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        cmd_run(&home, &wf_dir, "cov-wait", &[])
+            .await
+            .expect("Waiting 收口不算命令错误");
+
+        let exec_dir = wf_dir.join("executions");
+        let entries: Vec<_> = std::fs::read_dir(&exec_dir)
+            .expect("executions dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        let rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap();
+        assert_eq!(rec["state"], "waiting", "human_review 必须 Waiting 收口");
+        assert!(
+            rec.get("ended_at").map(|v| v.is_null()).unwrap_or(true),
+            "Waiting 执行 ended_at 必须为空"
+        );
+    }
+
+    /// status 详情两臂：有 ended_at 无 started_at（时长块内层 if-let 空收口）
+    /// + 节点 output 非空（截断阈值内原样打印）。
+    #[test]
+    fn wf_status_detail_ended_without_started_and_node_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exec_dir = tmp.path().join("executions");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+
+        let no_start = serde_json::json!({
+            "id": "cwf-nostart", "workflow_name": "wf", "state": "completed",
+            "ended_at": "2026-01-15T10:00:05Z"
+        });
+        let with_out = serde_json::json!({
+            "id": "cwf-out", "workflow_name": "wf", "state": "completed",
+            "node_results": {
+                "n1": {"state": "completed", "output": {"k": "v"}}
+            }
+        });
+        for (id, data) in [("cwf-nostart", no_start), ("cwf-out", with_out)] {
+            std::fs::write(
+                exec_dir.join(format!("{id}.json")),
+                serde_json::to_string_pretty(&data).unwrap(),
+            )
+            .unwrap();
+            cmd_status(tmp.path(), Some(id)).expect("detail view must succeed");
+        }
+    }
+
+    /// 模板 create 的 JSON 写臂遇缺父目录 → `?` 错误臂上抛。
+    // 持全局串行锁：get_templates 读 exe_dir/templates 共享面（同上互斥）。
+    #[test]
+    fn wf_template_create_json_write_failure_propagates() {
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let wf_dir = tmp.path().join("defs");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        let res = cmd_template_create(&wf_dir, "researcher", Some("missing-sub/out.json"));
+        assert!(
+            res.is_err(),
+            "缺父目录的 JSON 写必须 Err，got: {:?}",
+            res.err()
+        );
+    }
+}

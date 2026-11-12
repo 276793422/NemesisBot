@@ -767,3 +767,118 @@ mod wave_a_selftest {
         assert!(th.workspace.is_dir());
     }
 }
+
+// ===========================================================================
+// cov-b4：吃剩的离线可达臂——SelftestChild 分发臂、box 作用域三臂
+// （缺省/agent 盒/未知盒 bail）、pending/commit 的 enumerate 错误臂
+// （box_root 落成文件）、ensure-ready internal 臂的缺文件 fail。
+// UAC/服务安装/下载臂（start/stop/install/ensure-ready 提权形态）维持
+// 既有豁免边界（弹窗/网络/驱动）。
+// ===========================================================================
+#[cfg(windows)] // Windows-form CLI tests (Linux nightly: excluded, sweep)
+mod cov_b4 {
+    use super::*;
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// SelftestChild 分发臂：子进程自检例程在测试进程内直跑（无沙盒后端
+    /// → None 裁决 JSON + Ok 收尾）。
+    #[tokio::test]
+    async fn cov_b4_dispatch_selftest_child_runs_and_is_ok() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        let _ = th;
+        // workspace 变量清场由 selftest_child 内部处理（wave_a 同款语义）。
+        run(SandboxCommand::SelftestChild, false)
+            .await
+            .expect("selftest child 必须 Ok 收尾");
+    }
+
+    /// Pending 的 agent 盒作用域：NemesisAgent_ 前缀盒 → 作用域切到
+    /// agent home（box_file_root 从 ini 解析）；未知盒名 → loud bail。
+    #[tokio::test]
+    async fn cov_b4_pending_box_scope_agent_and_unknown_arms() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+        std::fs::create_dir_all(paths.ini_path.parent().unwrap()).unwrap();
+        // ini 里写一个 agent 盒段（FileRootPath 指向 base_dir/box/<name>）。
+        let box_name = format!("{}covag1", nemesis_sandbox::ini::AGENT_BOX_PREFIX);
+        let ini_body = format!(
+            "[{box_name}]\nFileRootPath=\\??\\{}\\box\\{box_name}\n",
+            paths.base_dir.display()
+        );
+        std::fs::write(&paths.ini_path, ini_body).unwrap();
+
+        // agent 盒作用域：盒内造一个文件（落在 agent home 的 workspace 树）
+        // → pending 正常枚举打印。
+        let agent_home =
+            nemesis_path::resolve_agent_home_in_workspace(&th.home.join("workspace"), "covag1");
+        let boxed = s11b_box_mirror(&agent_home.join("out.txt"), &paths.box_root);
+        std::fs::create_dir_all(boxed.parent().unwrap()).unwrap();
+        std::fs::write(&boxed, "agent-out").unwrap();
+        run(
+            SandboxCommand::Pending {
+                box_name: Some(box_name.clone()),
+            },
+            false,
+        )
+        .await
+        .expect("agent 盒 pending 必须可达");
+
+        // 未知盒名 → loud bail。
+        let res = run(
+            SandboxCommand::Pending {
+                box_name: Some("totally-unknown-box".to_string()),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "未知盒名必须 bail，got: {:?}", res.err());
+    }
+
+    /// box_root 落成文件 → enumerate walk 失败 → pending/commit 的 `?`
+    /// 错误臂上抛。
+    #[tokio::test]
+    async fn cov_b4_pending_and_commit_enumerate_error_propagates() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        let paths = s11b_paths(&th.home);
+        std::fs::create_dir_all(paths.box_root.parent().unwrap()).unwrap();
+        std::fs::write(&paths.box_root, "file not dir").unwrap();
+
+        let res = run(SandboxCommand::Pending { box_name: None }, false).await;
+        assert!(res.is_err(), "box_root 非目录 → pending 必须 Err");
+        let res = run(
+            SandboxCommand::Commit {
+                all: true,
+                files: vec![],
+                box_name: None,
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "box_root 非目录 → commit 必须 Err");
+    }
+
+    /// ensure-ready internal 臂：runtime 文件缺席 → ensure_installed fail
+    /// → loud Err（无 UAC、无下载）。
+    #[tokio::test]
+    async fn cov_b4_ensure_ready_internal_missing_runtime_bails() {
+        let _guard = lock();
+        let th = s11b_temp_home_env();
+        let res = run(
+            SandboxCommand::EnsureReady {
+                internal: true,
+                home: Some(th.home.to_string_lossy().to_string()),
+            },
+            false,
+        )
+        .await;
+        assert!(res.is_err(), "runtime 缺席的 ensure_installed 必须 Err");
+    }
+}

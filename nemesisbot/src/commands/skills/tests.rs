@@ -1792,7 +1792,7 @@ mod wave_b {
     // 本地 mock HTTP 服务（一次性路由表 + 计数自停）
     // -----------------------------------------------------------------------
 
-    struct WaveBMock {
+    pub(super) struct WaveBMock {
         addr: std::net::SocketAddr,
     }
 
@@ -1800,7 +1800,7 @@ mod wave_b {
         /// `routes`: (请求头子串匹配模式, 响应 body)；按序首个命中生效。
         /// 未命中一律回 `{"results":[]}`。服务满 expected_requests 个请求后
         /// 线程自然退出。
-        fn start(routes: Vec<(&'static str, String)>, expected_requests: usize) -> Self {
+        pub(super) fn start(routes: Vec<(&'static str, String)>, expected_requests: usize) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let rem = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(expected_requests));
@@ -1866,14 +1866,18 @@ mod wave_b {
             WaveBMock { addr }
         }
 
-        fn base_url(&self) -> String {
+        pub(super) fn base_url(&self) -> String {
             format!("http://{}", self.addr)
         }
     }
 
     /// 写一份启用 ClawHub（base 指向 mock）的 config.skills.json。
     /// convex_url 可与 base 不同源（列表端点走 convex、搜索走 base）。
-    fn wave_b_write_clawhub_cfg(home: &std::path::Path, base_url: &str, convex_url: &str) {
+    pub(super) fn wave_b_write_clawhub_cfg(
+        home: &std::path::Path,
+        base_url: &str,
+        convex_url: &str,
+    ) {
         std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
         write_skills_cfg(
             home,
@@ -2892,4 +2896,143 @@ async fn cmd_install_clawhub_output_name_gate() {
     }
     // 闸在网络请求之前：无越界落盘。
     assert!(!tmp.path().join("skills/a").exists());
+}
+
+// ===========================================================================
+// cov-b3：吃剩的离线可达臂——Verify 全臂（无记账/单条未记账）、Validate
+// 干净技能的 Security: OK 臂、Install 消费主配置 skills 段（策略注入臂，
+// 随后以毒化 ref 在任何 socket 前终结）、Learn 的 agent 构造失败臂、
+// Search 空 results 组的 continue 臂（ClawHub base 指 mock）。
+// GitHub 硬编码端点（detect_skill_layout / install_github / clawhub 直装
+// / clawhub 仓库校验）无重定向钩子，维持 wave_b 既有 EXEMPT 纪律。
+// ===========================================================================
+#[cfg(windows)] // Windows-form CLI tests (Linux nightly: excluded, sweep)
+mod cov_b3 {
+    use super::wave_b::{WaveBMock, wave_b_write_clawhub_cfg};
+    use super::*;
+
+    fn cov_home(root: &std::path::Path) -> std::path::PathBuf {
+        let home = root.join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace")).unwrap();
+        home
+    }
+
+    /// Verify：无 lockfile 记账 → 提示臂；单条未记账 slug → NotFound bail。
+    #[test]
+    fn cov_b3_verify_empty_lockfile_and_unknown_slug() {
+        let tmp = TempDir::new().unwrap();
+        let home = cov_home(tmp.path());
+        let workspace = crate::common::workspace_path(&home);
+
+        // 全量：无记账 → 提示 + Ok。
+        cmd_verify(&workspace, None).expect("无记账 verify → Ok");
+
+        // 单条：未记账 → NotFound 上抛。
+        let res = cmd_verify(&workspace, Some("never-installed"));
+        assert!(res.is_err(), "未记账 slug 必须 Err，got: {:?}", res.err());
+    }
+
+    /// Validate：字段齐全且无可疑特征的 SKILL.md → Security: OK 臂。
+    #[test]
+    fn cov_b3_validate_clean_skill_reports_ok() {
+        let tmp = TempDir::new().unwrap();
+        let skill_dir = tmp.path().join("clean-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: clean-skill\ndescription: 无害技能\n---\n\nsteps:\n  - 读文件\n",
+        )
+        .unwrap();
+        cmd_validate(skill_dir.to_str().unwrap()).expect("validate clean → Ok");
+    }
+
+    /// Install：主配置 skills 段被消费（allow_unsigned/龄闸注入臂）——
+    /// 随后 ref 以空格毒化（parse_github_url 在 socket 前 refuse），零出网。
+    #[tokio::test]
+    async fn cov_b3_install_consumes_main_config_skills_section() {
+        let tmp = TempDir::new().unwrap();
+        let home = cov_home(tmp.path());
+        let skills_dir = crate::common::workspace_path(&home).join("skills");
+        // 主配置 skills 段（home 根 config.json）：install_skills 的
+        // set_allow_unsigned / set_age_policy 消费臂。
+        std::fs::write(
+            crate::common::config_path(&home),
+            serde_json::json!({
+                "skills": {"allow_unsigned": true, "min_age_days": 0,
+                            "min_age_policy": "warn"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let err = cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&home),
+            &crate::common::config_path(&home),
+            "clawhub/bad slug",
+            true,
+        )
+        .await
+        .expect_err("毒化 ref 必须在任何 socket 前终结");
+        assert!(
+            err.to_string().contains("invalid github repo"),
+            "err: {err}"
+        );
+    }
+
+    /// Learn：config 无模型条目 → build_agent_loop 失败 → loud Err 臂。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_b3_learn_agent_build_failure_is_loud() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("NEMESISBOT_HOME");
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        // 未知 provider 家族的模型条目 → provider 工厂构造失败 →
+        // build_agent_loop Err（learn 入口的 loud 报错臂）。
+        std::fs::write(
+            crate::common::config_path(&home),
+            serde_json::json!({
+                "model_list": [
+                    {"model": "no-such-vendor/m", "model_name": "m",
+                     "api_key": "k", "api_base": "http://127.0.0.1:1/v1"}
+                ],
+                "agents": {"defaults": {"llm": "m"}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("NEMESISBOT_HOME", tmp.path());
+        }
+        let res = cmd_learn(&home, "notes", None).await;
+        // 还原 env 再断言（guard 纪律）。
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("NEMESISBOT_HOME", v),
+                None => std::env::remove_var("NEMESISBOT_HOME"),
+            }
+        }
+        let err = res.expect_err("provider 工厂失败必须让 learn loud Err");
+        assert!(
+            err.to_string().contains("Failed to initialize agent")
+                || err.to_string().contains("Agent error"),
+            "err: {err:#}"
+        );
+    }
+
+    /// Search：registry 返回空 results → 分组渲染的空组 continue 臂。
+    #[tokio::test]
+    async fn cov_b3_search_empty_results_group_skips_render() {
+        let tmp = TempDir::new().unwrap();
+        let home = cov_home(tmp.path());
+        // 空 results（mock 未命中路由的默认体即 `{"results":[]}`）。
+        let _mock = WaveBMock::start(vec![], 1);
+        wave_b_write_clawhub_cfg(&home, &_mock.base_url(), &_mock.base_url());
+        cmd_search(&skills_cfg_of(&home), "nothing-matches", 5)
+            .await
+            .unwrap();
+    }
 }

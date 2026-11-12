@@ -102,6 +102,7 @@ pub struct StepMetaSnapshot {
 type ObserverSender = tokio::sync::mpsc::Sender<String>;
 
 /// 已注册插件。
+#[derive(Debug)]
 pub struct RegisteredPlugin {
     /// manifest。
     pub manifest: PluginManifest,
@@ -1233,3 +1234,6 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), bytes, 0o644)
         .map_err(std::io::Error::other)
 }
+
+#[cfg(test)]
+mod tests;

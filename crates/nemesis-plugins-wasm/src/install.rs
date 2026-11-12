@@ -148,7 +148,7 @@ pub struct ApprovedInstall {
 }
 
 /// `install` 的返回（第⑨步结果：装载与否由开关决定，调用方按此展示）。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct InstallOutcome {
     /// 插件 slug。
     pub slug: String,
@@ -1133,3 +1133,6 @@ pub fn uninstall_blocking(manager: &PluginManager, slug: &str) -> Result<bool, P
     }
     uninstall_inner(manager, slug)
 }
+
+#[cfg(test)]
+mod tests;

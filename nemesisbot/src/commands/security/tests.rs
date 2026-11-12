@@ -2780,3 +2780,217 @@ mod w5r2 {
         );
     }
 }
+
+// ===========================================================================
+// cov_sec：吃剩的离线可达臂——审批规则清空的父目录补建、空操作数组
+// 跳过臂、allow 规则 + 破坏性 flag 的 ASK 降级显示、非对象主配置的
+// Enable/Disable 收口、audit 日志不可读的静默收口、Calibrate 纯规则层
+// 离线校准（judge 未启用）。
+// ===========================================================================
+#[cfg(windows)] // Windows-form CLI tests (Linux nightly: excluded, sweep)
+mod cov_sec {
+    use super::*;
+
+    fn cov_temp_home() -> S11bTempHomeEnv {
+        s11b_temp_home_env()
+    }
+
+    /// Approvals Clear：workspace/approval 父目录整链不存在 →
+    /// create_dir_all 补建臂 + 空表清空。
+    #[tokio::test]
+    async fn cov_approvals_clear_bootstraps_missing_parent_dirs() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        // 不预建 workspace 子树 → path.parent() 缺失 → 补建臂。
+        run(
+            SecurityAction::Approvals {
+                action: ApprovalsAction::Clear,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let path = nemesis_path::resolve_approval_rules_path_in_workspace(
+            &crate::common::workspace_path(&th.home),
+        );
+        assert!(path.exists(), "清空后空规则表必须落盘");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.trim().starts_with('['), "落盘内容必须是规则数组");
+    }
+
+    /// rules list：分节里操作数组存在但为空 → continue 跳过臂；
+    /// 非空操作照常打印。
+    #[tokio::test]
+    async fn cov_rules_list_skips_empty_op_arrays() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        std::fs::write(
+            &sec_cfg,
+            serde_json::json!({
+                "file_rules": {
+                    "read": [],
+                    "write": [{"pattern": "*", "action": "deny"}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        run(
+            SecurityAction::Rules {
+                action: RulesAction::List { rule_type: None },
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// rules test：process allow 规则命中 + 目标带破坏性 flag（rm -rf）→
+    /// 放行臂二次校验降级显示 ASK + flag_hit。
+    #[tokio::test]
+    async fn cov_rules_test_allow_with_dangerous_flag_degrades_to_ask() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        std::fs::write(
+            &sec_cfg,
+            serde_json::json!({
+                "process_rules": {
+                    "exec": [{"pattern": "*", "action": "allow"}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        run(
+            SecurityAction::Rules {
+                action: RulesAction::Test {
+                    rule_type: "process".to_string(),
+                    operation: "exec".to_string(),
+                    target: "rm -rf /tmp/cov-target".to_string(),
+                },
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Enable：主配置是 JSON 数组（非对象）→ as_object_mut None 收口；
+    /// Disable：主配置无 agents 键 → if-let 空收口。
+    #[tokio::test]
+    async fn cov_enable_disable_armory_of_non_object_and_missing_agents() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        // 数组形态主配置 → Enable 走非对象收口（写段整体跳过）。
+        std::fs::write(crate::common::config_path(&th.home), "[1,2,3]").unwrap();
+        run(SecurityAction::Enable, false).await.unwrap();
+        // 对象形态但无 agents 键 → Disable 走 agents 缺席收口。
+        std::fs::write(
+            crate::common::config_path(&th.home),
+            r#"{"security": {"enabled": true}}"#,
+        )
+        .unwrap();
+        run(SecurityAction::Disable, false).await.unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::common::config_path(&th.home)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg["security"]["enabled"], false);
+    }
+
+    /// Audit Show / Denied：audit_chain.jsonl 落成目录 → read_to_string
+    /// 失败 → 两处静默收口（存在性检查已过、可读性失败）。
+    #[tokio::test]
+    async fn cov_audit_show_and_denied_unreadable_log_silent_close() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
+        std::fs::create_dir_all(&audit_path).unwrap();
+        run(SecurityAction::Audit { action: None }, false)
+            .await
+            .unwrap();
+        run(
+            SecurityAction::Audit {
+                action: Some(AuditAction::Denied),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Status：scanner 段为对象（restrict 打印）+ 规则分节全空
+    /// （op_counts 空 → 仅打印总数的收口）。
+    #[tokio::test]
+    async fn cov_status_scanner_object_and_all_empty_rule_sections() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        std::fs::write(
+            crate::common::config_path(&th.home),
+            serde_json::json!({
+                "security": {"enabled": true},
+                "agents": {"defaults": {"restrict_to_workspace": true}},
+                "scanner": {"enabled": true, "enforce": false, "restrict_to_workspace": true}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let sec_cfg = crate::common::security_config_path(&th.home);
+        std::fs::write(
+            &sec_cfg,
+            serde_json::json!({
+                "file_rules": {"read": [], "write": [], "delete": []},
+                "scanner": {"enabled": true, "enforce": false, "restrict_to_workspace": true}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        run(SecurityAction::Status, false).await.unwrap();
+    }
+
+    /// Calibrate：无 judge 的纯规则层离线校准——样本含 allow/block 两类，
+    /// 全链跑完落报告。
+    // multi_thread：run() 供配链路含 block_in_place（current_thread 会 panic）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cov_calibrate_rule_layer_offline_report() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = cov_temp_home();
+        let samples = th.home.join("cov-samples.jsonl");
+        std::fs::write(
+            &samples,
+            concat!(
+                "{\"tool\":\"exec\",\"args\":{\"command\":\"ls -la\"},\"actual\":\"allow\"}\n",
+                "{\"tool\":\"exec\",\"args\":{\"command\":\"rm -rf /tmp/cov\"},\"actual\":\"block\"}\n",
+                "# 注释行不计数\n",
+                "not json\n",
+            ),
+        )
+        .unwrap();
+        run(
+            SecurityAction::Calibrate {
+                samples: samples.to_string_lossy().to_string(),
+                judge_model: None,
+                judge_interval_ms: 0,
+            },
+            false,
+        )
+        .await
+        .expect("离线校准必须跑通");
+    }
+}

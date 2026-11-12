@@ -374,3 +374,6 @@ pub fn plugin_error_text(e: &PluginError) -> String {
         other => format!("Tool error: {}", truncate_err(&other.to_string(), 300)),
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -3141,3 +3141,38 @@ mod port_flex_cov {
         assert_eq!(read_port_flex(Some(&v), 49001), 49001);
     }
 }
+
+// ===========================================================================
+// cov_ch：WebSocket Set 的端口数字落盘臂（其余未覆盖行全部卡在交互
+// stdin 提示——非 TTY 下 EOF 只能走空输入/取消臂，见各 Setup 测试）。
+// ===========================================================================
+mod cov_ch {
+    use super::*;
+
+    /// WebSocket Set key=port → 数字校验后走 set_channel_config_value
+    /// 数字落盘臂（port==0 在前面已 bail）。
+    #[test]
+    fn cov_ws_set_port_writes_numeric_value() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = temp_home_env();
+        write_main_cfg(&th.home, &serde_json::json!({}));
+        run(
+            ChannelAction::WebSocket {
+                action: WebSocketAction::Set {
+                    key: "port".to_string(),
+                    value: "50123".to_string(),
+                },
+            },
+            false,
+        )
+        .expect("ws set port must succeed");
+        let cfg = read_main_cfg(&th.home);
+        // 数字落盘：JSON number 而非字符串（与 Setup 同契约）。
+        assert_eq!(
+            cfg["channels"]["websocket"]["port"],
+            serde_json::json!(50123)
+        );
+    }
+}

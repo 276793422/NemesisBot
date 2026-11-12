@@ -459,3 +459,76 @@ fn panel_llm_set_validates_and_roundtrips_via_config_truth() {
         "关后 config 真相回落"
     );
 }
+
+// ---- 工具面 / 策略面同步 hook（OnceLock 单发注入；未注入 = 静默略过）----
+
+#[test]
+fn tool_sync_notify_silently_skips_without_hook() {
+    // 未注入 hook 的进程内（其它测试注入过则全局已占——本断言只要求不炸）。
+    notify_tool_sync(ToolSyncEvent {
+        add: true,
+        slug: "demo".into(),
+        tool_name: "plugin.demo.run".into(),
+        operation_type: "spawn".into(),
+    });
+}
+
+#[test]
+fn policy_sync_notify_silently_skips_without_hook() {
+    notify_policy_sync(PolicySyncEvent {
+        add: false,
+        slug: "demo".into(),
+        points: vec!["compact".into()],
+    });
+}
+
+#[test]
+fn tool_sync_hook_receives_event_fields() {
+    use std::sync::Mutex;
+    static SEEN: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    set_tool_sync_hook(Arc::new(|ev: ToolSyncEvent| {
+        SEEN.get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push(format!("{}:{}:{}", ev.add, ev.slug, ev.tool_name));
+    }));
+    notify_tool_sync(ToolSyncEvent {
+        add: true,
+        slug: "weather".into(),
+        tool_name: "plugin.weather.lookup".into(),
+        operation_type: "network".into(),
+    });
+    let seen = SEEN.get().unwrap().lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|s| s == "true:weather:plugin.weather.lookup"),
+        "事件字段透传: {seen:?}"
+    );
+}
+
+#[test]
+fn policy_sync_hook_receives_points() {
+    use std::sync::Mutex;
+    static SEEN: OnceLock<Mutex<Vec<(bool, String, Vec<String>)>>> = OnceLock::new();
+    set_policy_sync_hook(Arc::new(|ev: PolicySyncEvent| {
+        SEEN.get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push((ev.add, ev.slug.clone(), ev.points.clone()));
+    }));
+    notify_policy_sync(PolicySyncEvent {
+        add: true,
+        slug: "writer".into(),
+        points: vec![
+            "compact".into(),
+            "judge-final".into(),
+            "validate-args".into(),
+        ],
+    });
+    let seen = SEEN.get().unwrap().lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|(add, slug, pts)| *add && slug == "writer" && pts.len() == 3),
+        "策略事件字段透传: {seen:?}"
+    );
+}

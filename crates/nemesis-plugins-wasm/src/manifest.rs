@@ -1120,3 +1120,6 @@ fn validate_when(template_id: &str, step: &FlowStep) -> Result<(), PluginError> 
         step.id, step.when
     )))
 }
+
+#[cfg(test)]
+mod tests;

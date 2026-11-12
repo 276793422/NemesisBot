@@ -32,6 +32,8 @@ pub mod manifest;
 pub mod observer;
 pub mod registry;
 pub mod runtime;
+#[cfg(test)]
+mod test_support;
 pub mod trust;
 
 pub use error::PluginError;
@@ -54,3 +56,6 @@ pub const PLUGIN_TOOL_PREFIX: &str = "plugin.";
 pub fn plugin_tool_full_name(slug: &str, base: &str) -> String {
     format!("{PLUGIN_TOOL_PREFIX}{slug}.{base}")
 }
+
+#[cfg(test)]
+mod tests;
