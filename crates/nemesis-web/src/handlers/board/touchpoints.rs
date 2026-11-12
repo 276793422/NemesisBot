@@ -780,8 +780,12 @@ pub fn sweep_touchpoint_timeouts_with_config(
             continue;
         }
         // checkpoint 死等语义：窗口到 → 通报转同步沟通等待；硬顶到 → 默认收口。
+        // 和用 saturating（BUG-20261112-114）：deadline_ms 与 cap_ms 都可被
+        // 配置推到近 i64::MAX，裸加法 debug 构建 panic、release 环绕成负 →
+        // 「巨大硬顶」反向变立即默认收口，恰击穿 blocking_cap_ms 钳制注释
+        // 自述的「巨大值 ≈ 永不到顶」意图（同 R947 BUG-112 数值 panic 面族）。
         let cap_ms = blocking_cap_ms(cfg);
-        if cfg.blocking_cap_secs > 0 && now_ms < tp.deadline_ms + cap_ms {
+        if cfg.blocking_cap_secs > 0 && now_ms < tp.deadline_ms.saturating_add(cap_ms) {
             if !audit_has(&tp.audit, "checkpoint_wait") {
                 if let Err(e) = store.append_touchpoint_audit(
                     tp.id,

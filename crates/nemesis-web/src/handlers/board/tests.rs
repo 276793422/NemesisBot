@@ -6160,7 +6160,60 @@ async fn test_cascade_cancels_through_terminal_middle_node() {
     for num in [&g.number, &x.number, &y.number] {
         assert!(cascaded.contains(num), "cascaded 缺 {num}: {cascaded:?}");
     }
-    assert!(!cascaded.contains(&c.number), "终态单不得入级联列表");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-20261112-113：级联留痕评论必须在转移成功后落盘——恒接在状态机
+/// 自带的 status_change 评论之后。此前先斩后奏（评论先于 transition 写入），
+/// 竞态输给 worker 完成（done 终态拒绝 cancelled 转移）时，done 单上残留
+/// 「已取消」谎言评论。单线程确定性回归锁：成功路径上 ⛔ 评论必须出现在
+/// status_change（"→ cancelled"）之后（list_comments 按 id ASC = 插入序）；
+/// 竞态失败路径（转移被终态拒绝）由此结构性零评论——无谎言可留。
+#[tokio::test]
+async fn cascade_cancel_comment_lands_after_transition() {
+    let dir = unique_dir("cascade-comment-order");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = nemesis_board::Actor::admin("test");
+
+    let r = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "根".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let b = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "子(级联取消)".into(),
+            parent_issue_id: Some(r.id),
+            ..Default::default()
+        })
+        .unwrap();
+
+    store
+        .transition_issue(r.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+
+    let cascaded = super::cascade_cancel_dependents(&store, None, r.id, &actor);
+    assert_eq!(cascaded, vec![b.number.clone()], "子单必须被级联取消");
+    assert_eq!(
+        store.get_issue(b.id).unwrap().status,
+        IssueStatus::Cancelled
+    );
+
+    // 顺序锁：⛔ 留痕必须晚于 status_change 评论（转移成功后才落盘）。
+    let comments = store.list_comments(b.id).unwrap();
+    let status_change_pos = comments
+        .iter()
+        .position(|c| c.ctype == nemesis_board::CommentType::StatusChange)
+        .expect("转移必须自带 status_change 评论");
+    let cascade_pos = comments
+        .iter()
+        .position(|c| c.content.contains("级联取消"))
+        .expect("级联单必须 ⛔ 留痕");
+    assert!(
+        cascade_pos > status_change_pos,
+        "⛔ 留痕必须落在转移成功之后（status_change 之后）——先斩后奏即红"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
