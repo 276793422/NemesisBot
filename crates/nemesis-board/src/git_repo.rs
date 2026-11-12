@@ -1432,29 +1432,54 @@ pub fn merge_changeset(root: &Path, input: &MergeInput) -> Result<MergeOutcome, 
     // 后残留成 ??）。checkpoint.rs 恢复工作区同款教训——删除按 diff 显式补刀。
     if let Some(p) = &parent {
         let old_tree = p.tree().map_err(|e| e.to_string())?;
-        let diff = repo
-            .diff_tree_to_tree(Some(&old_tree), Some(&tree), None)
-            .map_err(|e| e.to_string())?;
-        for delta in diff.deltas() {
-            if delta.status() != git2::Delta::Deleted {
-                continue;
-            }
-            let Some(path) = delta.old_file().path() else {
-                continue;
-            };
-            // 防逃逸（git 相对路径理论不含..，checkpoint.rs 同款防御保留）。
-            let rel = path.to_string_lossy();
-            if rel.split(['/', '\\']).any(|seg| seg == "..") {
-                continue;
-            }
-            let abs = root.join(&*rel);
-            std::fs::remove_file(&abs)
-                .map_err(|e| format!("合并后删除工作区文件 {rel} 失败: {e}"))?;
-        }
+        sweep_deleted_workdir_files(&repo, root, &old_tree, &tree);
     }
     Ok(MergeOutcome::Merged {
         commit_oid: oid.to_string(),
     })
+}
+
+/// 合并提交后的工作区删除补刀（BUG-20261112-104）：**commit 已落库**，
+/// 本函数是卫生动作不是合并语义——任何失败（diff 失败/删除失败）只允许
+/// warn 残留，绝不向上传播（调用方照实返回 Merged；旧形态裸 remove_file
+/// 的硬 Err 会在 commit 已存在时把整个合并误报为失败，且调用方重试只走
+/// 树无变化 no-op、残留 untracked 文件永不被后续 sweep 可见）。删除走
+/// fsutil 韧性包装（重试耗尽 warn 交清扫兜底）——与同文件 export_head_
+/// tree 的 remove_dir_all_retry 同一纪律。
+fn sweep_deleted_workdir_files(
+    repo: &Repository,
+    root: &Path,
+    old_tree: &Tree<'_>,
+    new_tree: &Tree<'_>,
+) {
+    let Ok(diff) = repo.diff_tree_to_tree(Some(old_tree), Some(new_tree), None) else {
+        tracing::warn!(
+            target: "nemesis_board::git_repo",
+            "合并后删除补刀 diff 失败（工作区可能残留旧跟踪文件，交清扫兜底；commit 已落库）"
+        );
+        return;
+    };
+    for delta in diff.deltas() {
+        if delta.status() != git2::Delta::Deleted {
+            continue;
+        }
+        let Some(path) = delta.old_file().path() else {
+            continue;
+        };
+        // 防逃逸（git 相对路径理论不含..，checkpoint.rs 同款防御保留）。
+        let rel = path.to_string_lossy();
+        if rel.split(['/', '\\']).any(|seg| seg == "..") {
+            continue;
+        }
+        let abs = root.join(&*rel);
+        if !nemesis_utils::fsutil::remove_file_resilient(&abs) {
+            tracing::warn!(
+                target: "nemesis_board::git_repo",
+                file = %rel,
+                "合并后工作区删除残留（瞬时句柄/权限），交清扫兜底；commit 已落库，合并结果不受影响"
+            );
+        }
+    }
 }
 
 fn blob_content(repo: &Repository, id: Oid) -> Vec<u8> {
