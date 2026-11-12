@@ -1812,3 +1812,117 @@ async fn test_process_messages_history_request_not_recorded_nor_echoed() {
         .expect("inbound 关闭");
     assert_eq!(inbound.session_key, key);
 }
+
+// ============================================================
+// BUG-20261113-139：慢客户端 hi 满时广播超时隔离（回归锁）
+// ============================================================
+// 旧实现：SessionManager::broadcast 的 queue.send().await 在 hi 通道满时
+// 可等待任意久，而等待宿主经 WebServerOpsAdapter（block_in_place||block_on）
+// 回溯到 manager 出站泵（单任务串行派发全部通道）——一个挂起客户端
+// （TCP 半开/移动端后台，30s 心跳 pong 恒走 hi 约半小时填满 64 槽）
+// 卡死全局出站。修复：send_to_session / send_history_to_session 的
+// broadcast 调用点加 WS_BROADCAST_TIMEOUT（3s）超时，超时沿既有失败
+// 路径接管（chat_dirty hint + adapter 未读标记；帧已入环可补拉）。
+
+#[tokio::test]
+async fn test_send_to_session_times_out_on_saturated_hi_queue() {
+    // chat_event_log 是进程级全局表（record 走 session_key 键）——与其他
+    // 触环测试互斥串行。
+    let _serial = crate::chat_event_log::test_support::GLOBAL_TABLE_LOCK
+        .lock()
+        .await;
+    use crate::websocket_handler::SendQueue;
+
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+
+    // hi cap=1 且预填满、无 writer（from_channels 测试形态）：后续 send
+    // 永久 pending（旧实现从此点卡死调用方）。lo 接收端 drop——测试内
+    // chat_dirty hint 的 broadcast_droppable 走丢弃臂，不阻塞。
+    let (hi_tx, _hi_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let (lo_tx, lo_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    hi_tx.send(b"prewarm".to_vec()).await.unwrap();
+    drop(lo_rx);
+    let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let queue = Arc::new(SendQueue::from_channels(
+        hi_tx,
+        lo_tx,
+        done_rx,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    ));
+    mgr.set_send_queue(&session.id, queue);
+
+    let session_key = "agent:main:session:bug139-timeout";
+    // 外层兜底闸（15s >> 内部 3s）：旧实现会在外层超时命中（红），
+    // 新实现由内部 3s 超时先行返回（外层永不触发）。
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        send_to_session(
+            &mgr,
+            &session.id,
+            "assistant",
+            "hello",
+            None,
+            Some(session_key),
+            None,
+            None,
+            None,
+        ),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "send_to_session 必须在内部超时后返回（BUG-20261113-139：旧实现无限挂起卡死调用方）"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_err(), "hi 满广播应超时失败");
+    let err = inner.unwrap_err();
+    assert!(
+        err.contains("timed out"),
+        "失败文本应带超时标记（供上层定性）: {err}"
+    );
+
+    // 帧已入环（record 先于 broadcast 的不变量）——超时丢弃后 chat.sync
+    // 补拉自愈的前提。
+    let seq = crate::chat_event_log::latest_seq(session_key);
+    assert!(
+        seq >= 1,
+        "超时丢弃的帧必须已入环（补拉自愈前提）；latest_seq={seq}"
+    );
+}
+
+#[tokio::test]
+async fn test_send_history_to_session_times_out_on_saturated_hi_queue() {
+    let _serial = crate::chat_event_log::test_support::GLOBAL_TABLE_LOCK
+        .lock()
+        .await;
+    use crate::websocket_handler::SendQueue;
+
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+
+    let (hi_tx, _hi_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let (lo_tx, _lo_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    hi_tx.send(b"prewarm".to_vec()).await.unwrap();
+    let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let queue = Arc::new(SendQueue::from_channels(
+        hi_tx,
+        lo_tx,
+        done_rx,
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    ));
+    mgr.set_send_queue(&session.id, queue);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        send_history_to_session(&mgr, &session.id, r#"{"messages":[]}"#),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "send_history_to_session 必须在内部超时后返回（BUG-20261113-139）"
+    );
+    let inner = result.unwrap();
+    assert!(inner.is_err(), "hi 满广播应超时失败");
+    assert!(inner.unwrap_err().contains("timed out"));
+}

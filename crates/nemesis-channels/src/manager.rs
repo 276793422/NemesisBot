@@ -164,7 +164,9 @@ impl ChannelManager {
     /// queued backlog (deadline 10s) before exiting, so replies of turns
     /// that completed during the shutdown drain are delivered instead of
     /// being dropped with the receiver; anything left after the deadline
-    /// is logged with an honest count (trace, not silence).
+    /// is logged with an honest count (trace, not silence). Messages
+    /// arriving after the flush ends are not chased (W4C invariant, pinned
+    /// by test) — the outbound bridge leaves a trace for each of them.
     async fn dispatch_loop(&self, mut rx: mpsc::Receiver<OutboundMessage>) {
         info!("[ChannelManager] outbound dispatcher started");
         loop {
@@ -177,7 +179,8 @@ impl ChannelManager {
                 // 成，最后一跳丢弃把 drain 的目的打折；且零痕迹违背
                 // 确立的「丢失必须留痕」不变量。现 bounded
                 // 冲刷：队列清空或截止先到为止，截止后余额 warn 计数（诚实下
-                // 界——此后新推入不追）。
+                // 界——此后新推入不追；出站桥对收摊后的迟到消息留痕，见
+                // web_init spawn_bus_outbound_bridge）。
                 const SHUTDOWN_FLUSH_SECS: u64 = 10;
                 let deadline =
                     std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_FLUSH_SECS);

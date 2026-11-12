@@ -226,9 +226,9 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "cluster")]
     let mut cluster_adapter = runtime_handoff.cluster_adapter;
 
-    // 太微（taiwei，装配槽子系统）：runtime 相位起点 = exit 事件的 duration
-    // 计时原点。
-    #[cfg(feature = "taiwei")]
+    // 太微（taiwei，静态直链子系统）：runtime 相位起点 = exit 事件的
+    // duration 计时原点。
+    #[cfg(nb_taiwei)]
     let taiwei_started = std::time::Instant::now();
 
     // 签名验证启动自验 → 审计链一条（接入计划 §4；Layer 8 Merkle
@@ -348,17 +348,24 @@ pub(crate) async fn run_runtime(
         health_server.set_ready(true);
     }
 
-    // 太微（taiwei）：装配完成即 spawn——先把隐私声明物化进工作区（缺才写，
-    // best-effort；真相源 = 槽位库内嵌资产），再 flush pending（离线期补发）
-    // 后发 startup。spawn 不阻塞就绪；禁用/配置不完整在任务内静默返回。
-    #[cfg(feature = "taiwei")]
+    // 太微（taiwei，静态直链子系统）：装配完成即 spawn——先把隐私声明物化
+    // 进工作区（缺才写，best-effort；真相源 = 静态库内嵌资产），再 flush
+    // pending（离线期补发）后发 startup。spawn 不阻塞就绪；禁用/配置不完整
+    // 在任务内静默返回。
+    #[cfg(nb_taiwei)]
     {
         let taiwei_ws = common::workspace_path(&home);
         let taiwei_privacy = taiwei_ws.join("PRIVACY.md");
         if !taiwei_privacy.exists() {
-            let _ = std::fs::write(&taiwei_privacy, nemesis_taiwei::PRIVACY_MD);
+            // 空串 = taiwei 库侧异常（privacy_md 契约：调用方按缺资产降级）——
+            // 不落盘（写空文件再被 exists() 短路 = 空隐私声明永久驻留，升级
+            // 也不自愈），下次启动重试物化。
+            let privacy = crate::taiwei_bridge::privacy_md();
+            if !privacy.is_empty() {
+                let _ = std::fs::write(&taiwei_privacy, privacy);
+            }
         }
-        nemesis_taiwei::host::spawn_startup(&home, &taiwei_ws, common::VERSION_INFO.version);
+        crate::taiwei_bridge::spawn_startup(&home, &taiwei_ws, common::VERSION_INFO.version);
     }
 
     // Create and start ProcessManager for plugin window lifecycle + dedup
@@ -1773,10 +1780,11 @@ pub(crate) async fn run_runtime(
     println!();
     println!("Shutting down...");
 
-    // 太微（taiwei）：exit 事件先行 spawn（与下方 drain 并行跑，通常
-    // 在 drain 窗口内就完成）；teardown 收尾处有界等待（3s 让路预算）。
-    #[cfg(feature = "taiwei")]
-    let taiwei_exit_task = nemesis_taiwei::host::spawn_exit(
+    // 太微（taiwei，静态直链子系统）：exit 事件先行 spawn（与下方 drain
+    // 并行跑，通常在 drain 窗口内就完成）；teardown 收尾处有界等待（3s
+    // 让路预算）。
+    #[cfg(nb_taiwei)]
+    crate::taiwei_bridge::spawn_exit(
         &home,
         &common::workspace_path(&home),
         common::VERSION_INFO.version,
@@ -1949,12 +1957,16 @@ pub(crate) async fn run_runtime(
     #[cfg(target_os = "macos")]
     nemesis_desktop::main_thread_handoff::request_exit();
 
-    // 太微（taiwei）：exit 任务有界收尾（3s 让路——正常早已随 drain
-    // 完成；超时放弃 = 诚实边界「硬杀场景 exit 丢失」，pending 兜底不适用
-    // 本路径，事件不落盘）。
-    #[cfg(feature = "taiwei")]
+    // 太微（taiwei，静态直链子系统）：exit 任务有界收尾（3s 让路——正常
+    // 早已随 drain 完成；超时放弃 = 诚实边界「硬杀场景 exit 丢失」，pending
+    // 兜底不适用本路径，事件不落盘）。
+    #[cfg(nb_taiwei)]
     {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), taiwei_exit_task).await;
+        let taiwei_exit_done = crate::taiwei_bridge::wait_exit(3000);
+        tracing::debug!(
+            taiwei_exit_flushed = taiwei_exit_done,
+            "taiwei exit 等待收尾"
+        );
     }
 
     Ok(())

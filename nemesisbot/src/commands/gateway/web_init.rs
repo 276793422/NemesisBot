@@ -1172,8 +1172,22 @@ fn spawn_bus_outbound_bridge(
         loop {
             match rx.recv().await {
                 Ok(msg) => {
-                    if cm_outbound_tx.send(msg).await.is_err() {
-                        break; // ChannelManager dispatch loop stopped
+                    // BUG-20261113-138：接收侧（ChannelManager dispatch
+                    // loop）已退出，这条消息无处投递——留痕再断桥。旧形态
+                    // 静默 break，迟到的 turn 回复零痕迹蒸发，违背
+                    // 「丢失必须留痕」（Lagged/Closed 两条姊妹路径都有
+                    // 记录，唯此路径裸奔）。SendError 公开回收消息本体，
+                    // 留痕不引入热路径拷贝。
+                    if let Err(tokio::sync::mpsc::error::SendError(dead_msg)) =
+                        cm_outbound_tx.send(msg).await
+                    {
+                        tracing::warn!(
+                            channel = %dead_msg.channel,
+                            chat_id = %dead_msg.chat_id,
+                            content_len = dead_msg.content.len(),
+                            "[Gateway] outbound bridge: ChannelManager receiver gone — outbound message dropped, breaking bridge"
+                        );
+                        break;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

@@ -136,6 +136,25 @@ fn main() {
     println!("cargo:rerun-if-env-changed=NEMESISBOT_GIT_COMMIT");
 
     // ------------------------------------------------------------------
+    // 太微子系统 rlib 直连探测（2026-11-13 最终形态，取代归档手术直链）：
+    //   slots/taiwei/impl（submodule）的 target/release/libnemesis_taiwei.rlib
+    //   在场 → 四防线版本对质（stamp 两行：git 短 commit + rustc hash）→
+    //   rustc-cfg=nb_taiwei 点亮引用面；缺席 → 零动作（纯开源构建：零 cfg、
+    //   零 taiwei 符号）。
+    // 链接机制：.cargo/config.toml 静态 --extern 把 rlib 挂进 extern 搜
+    // 索面（dangling 未引用 = 零影响），宿主 lto="thin" 的 ThinLTO 管线
+    // 直接吸收 taiwei bitcode——opaque archive 直链在 LTO 下结构性不可行
+    //（std 符号在编译期已被内化，链接期任何输入都无定义可拉，2026-11-13
+    // 实证 20 undefined / /INCLUDE 无效）。rlib 是 IR 载体，宿主各 profile
+    // 最终 codegen，单产物服务全 profile。
+    // 同一条 `cargo build --release`，目录状态自己说话——宿主 manifest/
+    // 依赖图零 taiwei 痕迹。商业形态 = 先在 slots/taiwei/impl 跑一次
+    // `cargo build --release`，再回根目录正常构建（两条命令，编译习惯与
+    // 输出位置不变）。
+    // ------------------------------------------------------------------
+    probe_taiwei_rlib(&manifest_dir);
+
+    // ------------------------------------------------------------------
     // 构建形态清单（system.features WSAPI 数据源）：解析
     // scripts/customize/features.toml（feature 清单单一真相源，50 条），
     // 逐条以 CARGO_FEATURE_<ID 大写下划线> env（cargo 为本包每个启用的
@@ -265,5 +284,248 @@ fn serde_json_string(s: &str) -> String {
         }
     }
     out.push('"');
+    out
+}
+
+/// 太微 rlib 探测 + stale 四防线（详见下方逐段注释）。
+///
+/// 防线（stamp 由 taiwei-impl 自己的 build.rs 落盘，两行：第 1 行 = 短
+/// commit [+ `-dirty`]，第 2 行 = rustc commit-hash；**条件写**——内容
+/// 不变不 touch，mtime 语义可靠的前提）：
+/// - lib 在场 + stamp 缺席 → 硬错（老构建，版本不可对质）；
+/// - stamp 晚于 lib ≥2s → 硬错（上次 taiwei 构建半途而废：版本变了、
+///   lib 未重编；条件写保证 stamp 刷新必然伴随版本 payload 变化）；
+/// - rlib 与 staticlib mtime 差 ≥2s / staticlib 缺席 → 硬错（单产物链接
+///   失败的半途而废形态——两产物同一次 rustc 调用产出，正常构建毫秒级
+///   相邻）；
+/// - stamp git 行 ≠ submodule HEAD → 硬错（taiwei 源更新后未重编 = 旧库假新链）；
+/// - stamp rustc 行 ≠ 宿主 rustc → 硬错（rlib 元数据跨编译器版本无消费
+///   保证——E0514 前置拦截，报错可读）；
+/// - stamp `-dirty` / `unknown` / git 对质不了 → WARN 放行（诚实边界：
+///   该形态版本不可验证，不阻塞无 git 环境）。
+///
+/// 放行后仅 emit `cargo:rustc-cfg=nb_taiwei`——链接交给 .cargo/config.toml
+/// 的静态 --extern 与宿主 ThinLTO 管线（无 link-lib、无归档手术）。
+fn probe_taiwei_rlib(manifest_dir: &str) {
+    // 缺席形态也声明预期 cfg（压掉 rustc unexpected_cfgs 检查）
+    println!("cargo::rustc-check-cfg=cfg(nb_taiwei)");
+
+    // 交叉编译目标不探测：rlib 按宿主三元组编译，元数据跨三元组不可消费
+    //（rustc loud 报错）。直连形态只覆盖本机目标（android/musl 交叉构建
+    // 走各自脚本，天然不受影响）。
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let host = std::env::var("HOST").unwrap_or_default();
+    if target != host {
+        return;
+    }
+
+    let impl_root = Path::new(manifest_dir).join("../slots/taiwei/impl");
+    // 固定 release 目录（不分宿主 profile）：rlib 携带的 bitcode 是 IR，
+    // 宿主 release/debug/iotsmall 各自最终 codegen——单一产物服务全 profile，
+    // 旧 staticlib 形态的 profile 配对问题在 rlib+LTO 路线下不存在。
+    let lib_dir = impl_root.join("target").join("release");
+    let lib_name = "libnemesis_taiwei.rlib"; // Windows/Linux 同名
+    let lib_path = lib_dir.join(lib_name);
+    // profile 目录级 watch：rlib 落库/重链/stamp 更新都能触发重探；目录
+    // 缺席（纯开源常态）= cargo 对缺席路径静默空操作，零开销。
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+    if !lib_path.is_file() {
+        // 其他 profile 目录有库 → 诚实提醒（商业形态契约 = taiwei 侧
+        // `cargo build --release`；debug-only 构建不进直连）
+        let others = sibling_profile_libs(&impl_root, lib_name);
+        if !others.is_empty() {
+            println!(
+                "cargo:warning=taiwei rlib 在 release 目录缺席，但其他 profile 目录已有库: {}——按开源形态构建；需商业形态时先在 slots/taiwei/impl 跑 cargo build --release",
+                others.join(", ")
+            );
+        }
+        return;
+    }
+
+    // ---- 防线 1：stamp 在场性（旧格式/半途删除也在此拦）----
+    let stamp_path = lib_dir.join(format!("{lib_name}.stamp"));
+    let Some(stamp_raw) = std::fs::read_to_string(&stamp_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        error_exit(&[
+            &format!(
+                "taiwei rlib 在场但缺版本戳（{}）——老构建，版本不可对质",
+                stamp_path.display()
+            ),
+            "修复: 在 slots/taiwei/impl 重跑 cargo build --release（或删除该 rlib 恢复开源形态）",
+        ]);
+    };
+    let mut stamp_lines = stamp_raw.lines();
+    let stamp_git = stamp_lines.next().unwrap_or_default().trim().to_string();
+    let stamp_rustc = stamp_lines
+        .next()
+        .map(|l| l.trim().to_string())
+        .unwrap_or_default();
+
+    // ---- 防线 2a：stamp/lib mtime 线（stamp 晚于 lib = 上次构建半途而
+    // 废：版本 payload 变了、lib 未重编。条件写（taiwei build.rs 内容不变
+    // 不 touch）是本线无负响的前提——build.rs 无谓 rerun（如 cargo test
+    // 轮 dev-deps feature 集变化触发重跑）payload 不变 → 跳过写 → stamp
+    // mtime 不动，不制造「stamp 新 lib 旧」假象；2026-11-13 实证误报后
+    // 与条件写配套重设计）----
+    let lib_mt = std::fs::metadata(&lib_path).and_then(|m| m.modified()).ok();
+    let stamp_mt = std::fs::metadata(&stamp_path)
+        .and_then(|m| m.modified())
+        .ok();
+    if let (Some(l), Some(s)) = (lib_mt, stamp_mt)
+        && let Ok(delta) = s.duration_since(l)
+        && delta.as_secs() >= 2
+    {
+        error_exit(&[
+            &format!("taiwei rlib 构建半途而废（版本戳晚于库文件 {delta:?}）"),
+            "修复: 在 slots/taiwei/impl 重跑 cargo build --release",
+        ]);
+    }
+
+    // ---- 防线 2b：双产物 mtime 互证（rlib 与 staticlib 必同轮落盘）----
+    // crate-type = ["rlib","staticlib"] 两产物同一次 rustc 调用产出，正常
+    // 构建 mtime 毫秒级相邻；单侧链接失败则差距拉开——抓住 2a 看不到的
+    // 「版本戳已对齐但编译内部单产物失败」形态。
+    let peer_name = if target.contains("windows") {
+        "nemesis_taiwei.lib"
+    } else {
+        "libnemesis_taiwei.a"
+    };
+    let peer_mt = std::fs::metadata(lib_dir.join(peer_name))
+        .and_then(|m| m.modified())
+        .ok();
+    match (lib_mt, peer_mt) {
+        (Some(l), Some(p)) => {
+            let gap = l.duration_since(p).or_else(|_| p.duration_since(l));
+            if let Ok(gap) = gap
+                && gap.as_secs() >= 2
+            {
+                error_exit(&[
+                    &format!(
+                        "taiwei 构建半途而废（双产物不同轮：rlib 与 {peer_name} 相差 {gap:?}）"
+                    ),
+                    "修复: 在 slots/taiwei/impl 重跑 cargo build --release",
+                ]);
+            }
+        }
+        (Some(_), None) => {
+            error_exit(&[
+                &format!(
+                    "taiwei rlib 在场但 staticlib（{peer_name}）缺席——构建形态不可信（crate-type 不全或产物被删）"
+                ),
+                "修复: 在 slots/taiwei/impl 重跑 cargo build --release",
+            ]);
+        }
+        (None, _) => {
+            error_exit(&[
+                "taiwei rlib mtime 读取失败（探测后被移动/锁定？）",
+                "修复: 重跑构建",
+            ]);
+        }
+    }
+
+    // ---- 防线 3：git 版本线（stamp == submodule HEAD 才放行）----
+    if stamp_git == "unknown" {
+        println!(
+            "cargo:warning=taiwei rlib 版本戳 unknown（taiwei 侧构建时 git 缺席）——链接未经版本对质"
+        );
+    } else {
+        let head = Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(&impl_root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        match head {
+            Some(h) if stamp_git == h => {}
+            Some(h) if stamp_git.strip_suffix("-dirty") == Some(h.as_str()) => {
+                println!(
+                    "cargo:warning=taiwei rlib 来自未提交工作区（stamp={stamp_git}，HEAD={h}）——发布前先在 taiwei 仓提交对齐"
+                );
+            }
+            Some(h) => {
+                error_exit(&[
+                    &format!(
+                        "taiwei rlib 版本错配（stamp={stamp_git} ≠ submodule HEAD={h}）——taiwei 源更新后未重编，旧库假新链"
+                    ),
+                    "修复: 在 slots/taiwei/impl 重跑 cargo build --release",
+                ]);
+            }
+            None => {
+                println!(
+                    "cargo:warning=taiwei rlib 版本戳无法对质（git rev-parse 失败）——链接未经版本验证"
+                );
+            }
+        }
+    }
+
+    // ---- 防线 4：rustc 版本线（rlib 元数据跨版本不可消费）----
+    if stamp_rustc.is_empty() {
+        error_exit(&[
+            "taiwei 版本戳缺 rustc 行（旧格式 stamp）——请重编 taiwei rlib",
+            "修复: 在 slots/taiwei/impl 重跑 cargo build --release",
+        ]);
+    }
+    match host_rustc_commit_hash() {
+        Some(h) if h == stamp_rustc => {}
+        Some(h) => error_exit(&[
+            &format!(
+                "taiwei rlib 与宿主编译器不一致（库 rustc={}，宿主 rustc={h}）——rlib 元数据跨编译器版本无消费保证",
+                stamp_rustc
+            ),
+            "修复: 用与宿主一致的 rustc 工具链重编 slots/taiwei/impl",
+        ]),
+        None => error_exit(&[
+            "宿主 rustc commit-hash 不可解析（发行版自编 rustc？）——无法与 taiwei rlib 对质编译器版本，拒绝链接",
+        ]),
+    }
+
+    println!("cargo:rustc-cfg=nb_taiwei");
+}
+
+/// cargo:error 逐行输出 + 构建失败退出（build.rs 的硬错惯例）。
+fn error_exit(lines: &[&str]) -> ! {
+    for l in lines {
+        println!("cargo:error={l}");
+    }
+    std::process::exit(1);
+}
+
+/// 宿主 rustc 的 commit-hash（40 hex；RUSTC env 由 cargo 注入，比 PATH
+/// 裸名可靠）。`unknown`（发行版自编）→ None = 拒绝对质。
+fn host_rustc_commit_hash() -> Option<String> {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let out = Command::new(rustc)
+        .args(["-vV"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(h) = line.strip_prefix("commit-hash: ") {
+            let h = h.trim();
+            return (h.len() == 40 && h.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| h.to_string());
+        }
+    }
+    None
+}
+
+/// 其他 profile 目录下已存在的 rlib 清单（提示用，排序稳定）。
+fn sibling_profile_libs(impl_root: &Path, lib_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(impl_root.join("target")) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        if e.path().join(lib_name).is_file()
+            && let Some(name) = e.file_name().to_str()
+        {
+            out.push(name.to_string());
+        }
+    }
+    out.sort();
     out
 }
