@@ -531,6 +531,19 @@ impl AgentLoop {
         // turn 窗口内的（exec 落盘等产物）= 回退本意，不拦。最后行时间
         // 戳解析失败 = 本闸降级关闭（不阻塞，保持既有可见性语义，避免
         // 新误伤）；文件已不在盘 = 删无可删，无需保护。
+        //
+        // 诚实边界（BUG-20261112-106 勘定）：born 取自文件系统 inode
+        // 时间戳，ext4 等本地 fs 用 coarse 粗粒度时钟记账（jiffy 量化
+        // ，可滞后 chrono CLOCK_REALTIME 精读约 1 个 tick——WSL2 实测
+        // 1.1ms，HZ=100 内核可达 ~10ms；NTFS 同源时钟无此滞后）。于是
+        // 「末行后 ≤1 tick」诞生的文件在 Linux 上判不出「之后」= 保护
+        // 盲区；「末行前 ≤1 tick」的 turn 产物不受影响（recorded-born
+        // 只会往前偏，恒 ≤ cut_ts，不误拦）。盲区 < 文件系统时间粒度
+        // 量级、威胁模型（用户空闲期手工放置文件 = 秒级之后）覆盖不到
+        // ，生产语义成立。回滚记录：tree_after 结构性判别（封印树在场
+        // = 产物）在 trailing turn 未封印场景误拦自有产物（e3 gshell
+        // 语义），mtime + tick 边界是两难下的正解；r840 测试侧的间隔
+        // 纪律（>fs tick）由 rewind_guard_tests 落实。
         let mut idle_new: Vec<String> = Vec::new();
         if !report.unchecked_new_paths.is_empty()
             && let Some(cp) = self.attached_checkpoint()
