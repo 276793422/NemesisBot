@@ -112,6 +112,7 @@ describe('ChatPanel 回退链跨会话守卫（resync 安全超时缝隙）', ()
       session_id: 's1',
       message_index: 0,
       mode: 'before',
+      anchor_content: 'q1',
     })
 
     // await 窗口内切换到 s2：切换围栏清掉在飞 resync 登记（响应永不到达）。

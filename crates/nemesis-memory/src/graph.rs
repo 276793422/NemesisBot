@@ -201,6 +201,17 @@ pub struct InMemoryGraphStore {
     /// B 端共享，变更入口并发面真实。锁取在 persist 本体内，变更方法结构上
     /// 不可能忘锁；persist_all 持锁调 *_locked 内部版（Mutex 非重入）。
     persist_lock: parking_lot::Mutex<()>,
+    /// entities.jsonl 整体加载失败降级旗标：置位后冻结该文件的覆写
+    /// （空索引覆写会把磁盘历史整体覆没——数据销毁面）。内存变更照常
+    /// 生效，持久化等下次启动文件可读后自然恢复。
+    entities_load_failed: std::sync::atomic::AtomicBool,
+    /// triples.jsonl 整体加载失败降级旗标（语义同上）。
+    triples_load_failed: std::sync::atomic::AtomicBool,
+    /// entities.jsonl 加载时解析失败行的留档（rewrite 时写回，坏行不
+    /// 静默消失——持久层不因无关改写丢历史；坏行不可查询，留存无害）。
+    unloaded_entity_lines: parking_lot::RwLock<Vec<String>>,
+    /// triples.jsonl 加载时解析失败行的留档（语义同上）。
+    unloaded_triple_lines: parking_lot::RwLock<Vec<String>>,
 }
 
 impl InMemoryGraphStore {
@@ -213,6 +224,10 @@ impl InMemoryGraphStore {
             persistence_dir: None,
             load_once: OnceLock::new(),
             persist_lock: parking_lot::Mutex::new(()),
+            entities_load_failed: std::sync::atomic::AtomicBool::new(false),
+            triples_load_failed: std::sync::atomic::AtomicBool::new(false),
+            unloaded_entity_lines: parking_lot::RwLock::new(Vec::new()),
+            unloaded_triple_lines: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
@@ -241,48 +256,78 @@ impl InMemoryGraphStore {
     }
 
     /// Read entities and triples from JSONL files in `dir`.
+    ///
+    /// 加载语义（数据保全优先，与 vector store 同型）：文件整体不可读
+    /// → 置位对应降级旗标并返回 Err（后续该文件覆写冻结）；单行解析
+    /// 失败 → 原始行留档（rewrite 时写回，不静默消失）。
     fn load_from_disk(&self, dir: &Path) -> Result<(), String> {
         // Load entities
         let entities_path = dir.join("entities.jsonl");
-        if entities_path.exists()
-            && let Ok(data) = std::fs::read_to_string(&entities_path)
-        {
+        if entities_path.exists() {
+            let data = std::fs::read_to_string(&entities_path).map_err(|e| {
+                self.entities_load_failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                format!("entities.jsonl unreadable (rewrite frozen): {e}")
+            })?;
             for line in data.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                if let Ok(entity) = serde_json::from_str::<GraphEntity>(trimmed) {
-                    let key = entity.name.to_lowercase();
-                    self.entities.insert(key, entity);
+                match serde_json::from_str::<GraphEntity>(trimmed) {
+                    Ok(entity) => {
+                        let key = entity.name.to_lowercase();
+                        self.entities.insert(key, entity);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %entities_path.display(),
+                            "[GraphStore] unparsable entity line kept on disk at load"
+                        );
+                        self.unloaded_entity_lines.write().push(trimmed.to_string());
+                    }
                 }
             }
         }
 
         // Load triples
         let triples_path = dir.join("triples.jsonl");
-        if triples_path.exists()
-            && let Ok(data) = std::fs::read_to_string(&triples_path)
-        {
+        if triples_path.exists() {
+            let data = std::fs::read_to_string(&triples_path).map_err(|e| {
+                self.triples_load_failed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                format!("triples.jsonl unreadable (rewrite frozen): {e}")
+            })?;
             for line in data.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                if let Ok(triple) = serde_json::from_str::<GraphTriple>(trimmed) {
-                    // 键统一小写归一，与 add_triple 同源。
-                    let subject = triple.subject.to_lowercase();
-                    let object = triple.object.to_lowercase();
+                match serde_json::from_str::<GraphTriple>(trimmed) {
+                    Ok(triple) => {
+                        // 键统一小写归一，与 add_triple 同源。
+                        let subject = triple.subject.to_lowercase();
+                        let object = triple.object.to_lowercase();
 
-                    self.triples_by_subject
-                        .entry(subject)
-                        .or_default()
-                        .push(triple.clone());
+                        self.triples_by_subject
+                            .entry(subject)
+                            .or_default()
+                            .push(triple.clone());
 
-                    self.triples_by_object
-                        .entry(object)
-                        .or_default()
-                        .push(triple);
+                        self.triples_by_object
+                            .entry(object)
+                            .or_default()
+                            .push(triple);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %triples_path.display(),
+                            "[GraphStore] unparsable triple line kept on disk at load"
+                        );
+                        self.unloaded_triple_lines.write().push(trimmed.to_string());
+                    }
                 }
             }
         }
@@ -296,15 +341,26 @@ impl InMemoryGraphStore {
     /// to the final path. This prevents partial writes on crash.
     fn persist_entities(&self) -> Result<(), String> {
         let _serial = self.persist_lock.lock();
-        Self::persist_entities_locked(&self.persistence_dir, &self.entities)
+        self.persist_entities_locked()
     }
 
     /// persist_entities 本体（调用方持 [`Self::persist_lock`]，Mutex 非重入）。
-    fn persist_entities_locked(
-        persistence_dir: &Option<PathBuf>,
-        entities: &DashMap<String, GraphEntity>,
-    ) -> Result<(), String> {
-        let dir = persistence_dir.as_ref().ok_or("no persistence dir")?;
+    fn persist_entities_locked(&self) -> Result<(), String> {
+        // 降级冻结：加载失败的文件禁止全量覆写（空/部分索引覆写会把
+        // 磁盘历史整体覆没）。内存变更已生效，磁盘保持原样，下次启动
+        // 文件可读即自然恢复。Ok 而非 Err——业务操作本身成功，只是
+        // 持久化降级（Err 会让调用方把变更当失败）。
+        if self
+            .entities_load_failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tracing::warn!(
+                "[GraphStore] entities rewrite skipped: file failed to load at startup \
+                 (full overwrite would destroy unloaded history)"
+            );
+            return Ok(());
+        }
+        let dir = self.persistence_dir.as_ref().ok_or("no persistence dir")?;
         std::fs::create_dir_all(dir).map_err(|e| format!("graph: create dir: {e}"))?;
 
         let final_path = dir.join("entities.jsonl");
@@ -312,9 +368,13 @@ impl InMemoryGraphStore {
         // 唯一临时名权威 helper（旧固定 `entities.jsonl.tmp`
         // 双写者同名互踩可产损坏文件；helper 内建 flush+sync+失败清理）。
         // 任一条目序列化失败 = 整体重写放弃（活文件不动，与旧语义一致且
-        // 不再残留半截 tmp）。
+        // 不再残留半截 tmp）。留档行（加载时解析失败）先行写回。
         let mut body = String::new();
-        for entry in entities.iter() {
+        for raw in self.unloaded_entity_lines.read().iter() {
+            body.push_str(raw);
+            body.push('\n');
+        }
+        for entry in self.entities.iter() {
             let json = serde_json::to_string(entry.value())
                 .map_err(|e| format!("graph: serialize entity: {e}"))?;
             body.push_str(&json);
@@ -333,24 +393,37 @@ impl InMemoryGraphStore {
     /// Write all triples to `triples.jsonl` using atomic write.
     fn persist_triples(&self) -> Result<(), String> {
         let _serial = self.persist_lock.lock();
-        Self::persist_triples_locked(&self.persistence_dir, &self.triples_by_subject)
+        self.persist_triples_locked()
     }
 
     /// persist_triples 本体（调用方持 [`Self::persist_lock`]，Mutex 非重入）。
-    fn persist_triples_locked(
-        persistence_dir: &Option<PathBuf>,
-        triples_by_subject: &DashMap<String, Vec<GraphTriple>>,
-    ) -> Result<(), String> {
-        let dir = persistence_dir.as_ref().ok_or("no persistence dir")?;
+    fn persist_triples_locked(&self) -> Result<(), String> {
+        // 降级冻结（语义同 persist_entities_locked）。
+        if self
+            .triples_load_failed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tracing::warn!(
+                "[GraphStore] triples rewrite skipped: file failed to load at startup \
+                 (full overwrite would destroy unloaded history)"
+            );
+            return Ok(());
+        }
+        let dir = self.persistence_dir.as_ref().ok_or("no persistence dir")?;
         std::fs::create_dir_all(dir).map_err(|e| format!("graph: create dir: {e}"))?;
 
         let final_path = dir.join("triples.jsonl");
 
         // 唯一临时名权威 helper（同 persist_entities_locked）。
         // 去重语义不变：同一 (subject, predicate, object) 只落一行。
+        // 留档行（加载时解析失败）先行写回。
         let mut body = String::new();
+        for raw in self.unloaded_triple_lines.read().iter() {
+            body.push_str(raw);
+            body.push('\n');
+        }
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
-        for entry in triples_by_subject.iter() {
+        for entry in self.triples_by_subject.iter() {
             for t in entry.value().iter() {
                 let key = (t.subject.clone(), t.predicate.clone(), t.object.clone());
                 if seen.insert(key) {
@@ -375,8 +448,8 @@ impl InMemoryGraphStore {
     /// 内部版）。
     fn persist_all(&self) -> Result<(), String> {
         let _serial = self.persist_lock.lock();
-        Self::persist_entities_locked(&self.persistence_dir, &self.entities)?;
-        Self::persist_triples_locked(&self.persistence_dir, &self.triples_by_subject)
+        self.persist_entities_locked()?;
+        self.persist_triples_locked()
     }
 }
 
@@ -605,6 +678,9 @@ impl GraphStore for InMemoryGraphStore {
         let name_lower = name.to_lowercase();
 
         // Remove entity
+        // 加载留档的解析失败行不在此摘除（与 vector store 的 delete 不
+        // 同——那边留档行 JSON 合法可按 id 再解析）：坏行无 id 可比对，
+        // 且坏行不可查询（不复活成可见条目），rewrite 写回仅作磁盘留存。
         self.entities.remove(&name_lower);
 
         // Remove all triples where this entity is subject or object.

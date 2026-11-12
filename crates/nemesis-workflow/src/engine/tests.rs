@@ -907,6 +907,73 @@ async fn test_get_execution_loads_from_disk() {
     assert_eq!(loaded.unwrap().id, id);
 }
 
+/// BUG-20261112-103 回归锁：执行 JSONL 文件名必须 sanitize。
+/// `workflow_name` 来自用户 YAML（validate 只查非空、无字符集约束）——
+/// 未 sanitize 时 `../` 拼出逃逸路径（默认配置无写盘守卫：gateway/CLI 的
+/// execution world 挂在 executor 分离开关下），Windows 非法字符（`:`）让
+/// OpenOptions 恒失败 = 该 workflow 的执行历史持续丢失。修后：文件落
+/// persistence_dir 内、文件名只含 `[A-Za-z0-9_.-]`，且读侧（内容匹配）
+/// 照常能从盘载回。
+#[tokio::test]
+async fn test_persist_execution_filename_sanitized() {
+    let outer = tempfile::tempdir().unwrap();
+    let exec_dir = outer.path().join("executions");
+    std::fs::create_dir_all(&exec_dir).unwrap();
+    // 受控父目录基线（逃逸探针落点）。
+    let before: Vec<std::path::PathBuf> = std::fs::read_dir(outer.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+
+    let engine = WorkflowEngine::with_persistence(exec_dir.clone());
+    // 三类敌意名：`../` 逃逸（单层，探针落受控 outer）/ Windows 非法字符 /
+    // 非 ASCII（全被 sanitize 映射成 `_`）。
+    for name in ["../escape_probe", "a:b", "数据:报表"] {
+        engine
+            .register_workflow(make_workflow(name, vec![make_node("n1", "llm", vec![])]))
+            .unwrap_or_else(|e| panic!("register {name:?} failed: {e}"));
+        let execution = engine.start_execution(name, HashMap::new()).await.unwrap();
+        // 读侧契约：全新引擎（同 persistence dir）按内容里的 id 载回。
+        let engine2 = WorkflowEngine::with_persistence(exec_dir.clone());
+        let loaded = engine2.get_execution(&execution.id).await;
+        assert!(
+            loaded.is_some(),
+            "execution of {name:?} must be loadable from disk after sanitize"
+        );
+    }
+
+    // 目录内文件名必须全为安全字符（sanitize 后形态）。
+    let names: Vec<String> = std::fs::read_dir(&exec_dir)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    assert!(
+        !names.is_empty(),
+        "execution files must exist for all three hostile names"
+    );
+    for n in &names {
+        assert!(
+            n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'),
+            "unsanitized filename in execution dir: {n} (all: {names:?})"
+        );
+    }
+    // 逃逸面：受控父目录不得新增任何条目。
+    let after: Vec<std::path::PathBuf> = std::fs::read_dir(outer.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    let new_outside: Vec<&std::path::PathBuf> =
+        after.iter().filter(|p| !before.contains(p)).collect();
+    assert!(
+        new_outside.is_empty(),
+        "files escaped persistence dir: {new_outside:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_register_invalid_workflow_no_nodes() {
     let engine = WorkflowEngine::new();

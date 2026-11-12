@@ -150,10 +150,10 @@ fn test_sanitize_default_creates_sanitizer() {
 #[test]
 fn test_sanitize_aws_key() {
     let sanitizer = Sanitizer::new();
-    let input = "Access key: AKIAIOSFODNN7EXAMPLE";
+    let input = "Access key: AKIANCDC6VFQTFGRMBKW";
     let result = sanitizer.sanitize(input);
     assert!(result.contains("[REDACTED]"));
-    assert!(!result.contains("AKIAIOSFODNN7EXAMPLE"));
+    assert!(!result.contains("AKIANCDC6VFQTFGRMBKW"));
 }
 
 #[test]

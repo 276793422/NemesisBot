@@ -544,14 +544,14 @@ mod credential_extra {
     #[test]
     fn test_mask_mode_key_value_short() {
         let scanner = Scanner::with_mask_mode(true, "block", MaskMode::KeyValue);
-        let result = scanner.scan_content("key=AKIAIOSFODNN7EXAMPLE");
+        let result = scanner.scan_content("key=AKIANCDC6VFQTFGRMBKW");
         assert!(result.has_matches);
     }
 
     #[test]
     fn test_redact_content_disabled() {
         let scanner = Scanner::new(false, "block");
-        let original = "key=AKIAIOSFODNN7EXAMPLE1234567890";
+        let original = "key=AKIANCDC6VFQTFGRMBKW1234567890";
         let redacted = scanner.redact_content(original);
         assert_eq!(redacted, original);
     }
@@ -567,7 +567,7 @@ mod credential_extra {
     #[test]
     fn test_credential_match_has_pattern_name() {
         let scanner = Scanner::new(true, "block");
-        let result = scanner.scan_content("key=AKIAIOSFODNN7EXAMPLE");
+        let result = scanner.scan_content("key=AKIANCDC6VFQTFGRMBKW");
         assert!(result.has_matches);
         for m in &result.matches {
             assert!(!m.pattern_name.is_empty());
@@ -577,7 +577,7 @@ mod credential_extra {
     #[test]
     fn test_credential_result_summary() {
         let scanner = Scanner::new(true, "block");
-        let result = scanner.scan_content("key=AKIAIOSFODNN7EXAMPLE");
+        let result = scanner.scan_content("key=AKIANCDC6VFQTFGRMBKW");
         if result.has_matches {
             assert!(!result.summary.is_empty());
             assert!(result.summary.contains("credential"));
@@ -633,7 +633,9 @@ mod credential_extra {
     #[test]
     fn test_basic_auth_in_header_detected() {
         let scanner = Scanner::new(true, "block");
-        let result = scanner.scan_content("Authorization: Basic dXNlcjpwYXNzd29yZA==");
+        // 真实形态样本（2026-11-11 二次横扫批）：旧样本是 canonical
+        // base64("user:password") 教程示例，结构闸豁免后不再命中。
+        let result = scanner.scan_content("Authorization: Basic c3ZjX2RlcGxveTpLajhuUjJwUTl3WjU=");
         assert!(result.has_matches);
     }
 

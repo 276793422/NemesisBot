@@ -93,6 +93,8 @@ pub struct ChannelsConfig {
     pub mqtt: MqttConfig,
     #[serde(default)]
     pub wechat: WeChatConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
 }
 
 // Channel configuration structs follow below.
@@ -947,6 +949,94 @@ impl Default for WeChatConfig {
 impl_redacted_debug!(WeChatConfig {
     plain { enabled, base_url, send_path, callback_listen_addr, callback_path, signature_scheme, allow_from, contacts, sync_to }
     secret { token }
+});
+
+// 邮件通道配置（IMAP 轮询收件 + SMTP 发件，对应
+// `nemesis_channels::email:EmailConfig`）。Default 对齐通道侧（IMAP 993 /
+// SMTP 465 / folder INBOX / 轮询 30s / TLS 显式 opt-in 默认关——通道侧对
+// imap_host/smtp_host/IMAP 认证材料空值构造期响亮拒绝）。
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmailConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// IMAP 服务器地址（收件轮询；必填）。
+    #[serde(default)]
+    pub imap_host: String,
+    /// IMAP 端口（默认 993）。
+    #[serde(default)]
+    pub imap_port: i64,
+    /// IMAP 用户名（必填；支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub imap_username: String,
+    /// IMAP 密码（必填；支持 vault/env/yaml 引用）。
+    #[serde(default)]
+    pub imap_password: String,
+    /// IMAP implicit TLS（993 端口语义；默认 false 显式 opt-in；true 时
+    /// ca_cert_path 必填）。
+    #[serde(default)]
+    pub imap_tls: bool,
+    /// SMTP 服务器地址（发件；必填）。
+    #[serde(default)]
+    pub smtp_host: String,
+    /// SMTP 端口（默认 465，implicit TLS 提交端口）。
+    #[serde(default)]
+    pub smtp_port: i64,
+    /// SMTP 用户名；空 = 沿用 imap_username。
+    #[serde(default)]
+    pub smtp_username: String,
+    /// SMTP 密码；空 = 沿用 imap_password。
+    #[serde(default)]
+    pub smtp_password: String,
+    /// SMTP implicit TLS（465 端口语义；默认 false 显式 opt-in；true 时
+    /// ca_cert_path 必填；587 的 STARTTLS v1 不支持——587 用户须设 false
+    /// 或改用 465）。
+    #[serde(default)]
+    pub smtp_tls: bool,
+    /// CA 证书 PEM 路径（imap_tls/smtp_tls 任一为 true 必填；显式信任根，
+    /// mqtt 同原则——本仓 TLS 不装公共根库）。
+    #[serde(default)]
+    pub ca_cert_path: String,
+    /// IMAP 收件文件夹（默认 INBOX）。
+    #[serde(default)]
+    pub folder: String,
+    /// 轮询间隔秒数（默认 30；0 = 回落默认 30——通道侧收口，tokio
+    /// interval 零周期 panic 防线）。
+    #[serde(default)]
+    pub poll_interval: i64,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
+    pub allow_from: Vec<String>,
+    #[serde(default)]
+    pub sync_to: Vec<String>,
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            imap_host: String::new(),
+            imap_port: 993,
+            imap_username: String::new(),
+            imap_password: String::new(),
+            imap_tls: false,
+            smtp_host: String::new(),
+            smtp_port: 465,
+            smtp_username: String::new(),
+            smtp_password: String::new(),
+            smtp_tls: false,
+            ca_cert_path: String::new(),
+            folder: "INBOX".to_string(),
+            poll_interval: 30,
+            allow_from: vec![],
+            sync_to: vec![],
+        }
+    }
+}
+// IMAP/SMTP 两对认证材料全脱敏（SEC-002 同原则：username 对部分服务器
+// 即认证主体）。
+impl_redacted_debug!(EmailConfig {
+    plain { enabled, imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls, ca_cert_path, folder, poll_interval, allow_from, sync_to }
+    secret { imap_username, imap_password, smtp_username, smtp_password }
 });
 
 // ============================================================================

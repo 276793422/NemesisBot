@@ -258,3 +258,51 @@ fn model_entry_name_bare_form_is_legal_but_traversal_still_rejected() {
     assert!(validate_model_entry_name("").is_err());
     assert!(validate_model_entry_name("a/").is_err());
 }
+
+#[test]
+fn windows_reserved_device_names_get_underscore_prefix() {
+    use super::is_windows_reserved_device_base;
+    // BUG-20261111-083：裸 `nul` 在 Win11 26200 实测仍设备解析
+    // （File::create 报成功但文件永不落盘）；其余 21 名在旧 Windows
+    // （10/Server）同样解析。出口统一前缀 `_` 断开设备名语义。
+    for name in [
+        "con", "CON", "nul", "Nul", "aux", "prn", "com1", "com9", "lpt1", "lpt9",
+    ] {
+        assert_eq!(
+            sanitize_path_segment(name),
+            format!("_{name}"),
+            "{name} must be neutralized"
+        );
+        assert!(is_windows_reserved_device_base(name), "{name} predicate");
+    }
+    // 扩展名形态按基名命中（经典 Win32 语义）。
+    assert_eq!(sanitize_path_segment("con.txt"), "_con.txt");
+    assert_eq!(sanitize_path_segment("nul.jsonl"), "_nul.jsonl");
+    // 尾点先修剪再判基名。
+    assert_eq!(sanitize_path_segment("con."), "_con");
+    // 非保留词直通不受影响（com0/lpt0/com10 不在名单）。
+    for ok in [
+        "console",
+        "config",
+        "com0",
+        "lpt0",
+        "com10",
+        "con_x",
+        "conx",
+        "auxiliary",
+    ] {
+        assert_eq!(sanitize_path_segment(ok), ok, "{ok} must pass through");
+        assert!(!is_windows_reserved_device_base(ok), "{ok} predicate");
+    }
+    // 会话键族恒含分隔符映射出的 `_`，永不为裸保留名——既有映射不变量不受影响。
+    assert_eq!(
+        sanitize_path_segment("agent:main:session:1"),
+        "agent_main_session_1"
+    );
+    // 前缀把原 ≤80 的保留名输入推进 hash 分支时，输出仍是 78 字符 hash 形态
+    // （分离不变量：hash 形态只出自 hash 分支）。
+    let long = format!("nul.{}", "a".repeat(76)); // 恰 80 字符直通域
+    let out = sanitize_path_segment(&long);
+    assert_eq!(out.chars().count(), 78);
+    assert_eq!(&out[60..62], "__");
+}

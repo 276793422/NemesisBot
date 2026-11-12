@@ -612,6 +612,9 @@ async fn select_files(root: &Path) -> Result<(Vec<FileSync>, bool, &'static str)
 async fn git_available() -> bool {
     let mut probe = tokio::process::Command::new("git");
     probe.arg("--version");
+    // 10s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏挂死的
+    // git 进程（同 check-ignore 位点纪律）。
+    probe.kill_on_drop(true);
     // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
     #[cfg(target_os = "windows")]
     probe.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
@@ -653,6 +656,9 @@ async fn select_files_git(root: &Path) -> Result<Vec<FileSync>, String> {
         async move {
             let mut cmd = tokio::process::Command::new("git");
             cmd.current_dir(&root).args(&args);
+            // 60s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏
+            // 挂死的 git 进程（孤儿还可能持 index.lock 继续写仓库）。
+            cmd.kill_on_drop(true);
             // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
             #[cfg(target_os = "windows")]
             cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
@@ -1113,6 +1119,9 @@ async fn detect_host_changes(
             "-z",
             "--untracked-files=all",
         ]);
+        // 60s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏挂死
+        // 的 git 进程（孤儿还可能持 index.lock 继续写仓库）。
+        cmd.kill_on_drop(true);
         // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
         #[cfg(target_os = "windows")]
         cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
@@ -1373,6 +1382,9 @@ async fn push_files_to_vm(
         let mut cmd = tokio::process::Command::new("git");
         cmd.current_dir(project_path)
             .args(["ls-files", "-s", "-z", "--cached"]);
+        // 60s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏挂死
+        // 的 git 进程（同 check-ignore 位点纪律）。
+        cmd.kill_on_drop(true);
         // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
         #[cfg(target_os = "windows")]
         cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);

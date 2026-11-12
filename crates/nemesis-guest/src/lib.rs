@@ -252,7 +252,29 @@ impl GuestAgent {
     /// 隔离），连接内严格串行应答；每连接过首帧鉴权闸（token 随 agent 克隆）。
     pub async fn serve_tcp(self, listener: tokio::net::TcpListener) -> std::io::Result<()> {
         loop {
-            let (stream, _peer) = listener.accept().await?;
+            // 瞬态 accept 错误不杀 daemon：Linux 上 accept 队列中的连接
+            // 被对端重置（ECONNABORTED）是 documented 行为，NAT-TCP
+            // hostfwd per-call 形态下每次调用一条连接——一次连接抖动把
+            // 整个长驻 guest 执行体退出（main 里 accept loop error 退码
+            // 1）是错误的失败粒度。资源耗尽类（fd 耗尽等）warn + 短退避
+            // 防热循环后继续；listener 本体坏（EBADF 等）不在表内，
+            // 原样传播给调用方退出。
+            let (stream, _peer) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(e) => {
+                    if !transient_accept_error(&e) {
+                        return Err(e);
+                    }
+                    eprintln!("[guest] transient accept error, retrying: {e}");
+                    let backoff = if resource_exhausted_accept(&e) {
+                        std::time::Duration::from_millis(500)
+                    } else {
+                        std::time::Duration::from_millis(10)
+                    };
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+            };
             let agent = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = agent.serve_stream(stream).await {
@@ -261,6 +283,30 @@ impl GuestAgent {
             });
         }
     }
+}
+
+/// accept 瞬态错误判定（`serve_tcp` 韧性）：连接级抖动重试即可恢复；
+/// 不在表内的错误（listener 本体损坏）传播退出。
+fn transient_accept_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
+    ) || resource_exhausted_accept(e)
+}
+
+/// accept 的资源耗尽类错误（EMFILE/ENFILE/ENOMEM/ENOBUFS）：Rust 的
+/// `ErrorKind` 对 fd 耗尽族无稳定映射（落 Uncategorized），按 raw OS
+/// 错误码判定。非 unix 恒 false（Windows accept 无此错误族）。
+#[cfg(unix)]
+fn resource_exhausted_accept(e: &std::io::Error) -> bool {
+    // musl/glibc 同值：EMFILE=24 ENFILE=23 ENOMEM=12 ENOBUFS=105。
+    matches!(e.raw_os_error(), Some(24) | Some(23) | Some(12) | Some(105))
+}
+
+#[cfg(not(unix))]
+fn resource_exhausted_accept(_e: &std::io::Error) -> bool {
+    false
 }
 
 /// 常数时间字符串比较（token 比对用）。XOR 折叠全字节——长度不同立即
@@ -300,8 +346,8 @@ pub fn frame_error_line(error: &str) -> String {
 
 /// 工作区边界判定（guest 栖息地 = musl Linux 的最小实现）：
 /// 相对路径 join workspace；绝对路径向上找最深的已存在祖先做
-/// canonicalize（写类工具目标尚不存在时也能判），余下后缀原样拼接，
-/// 前缀不在 workspace 内即拒绝。
+/// canonicalize（写类工具目标尚不存在时也能判），余下后缀原样拼接后
+/// 词法钳制（见 lex_clamp），前缀不在 workspace 内即拒绝。
 pub fn resolve_in_workspace(workspace: &Path, path: &str) -> Result<PathBuf, String> {
     let target = Path::new(path);
     let joined = if target.is_absolute() {
@@ -339,6 +385,9 @@ pub fn resolve_in_workspace(workspace: &Path, path: &str) -> Result<PathBuf, Str
 }
 
 fn check_prefix(resolved: PathBuf, workspace: &Path, original: &str) -> Result<PathBuf, String> {
+    // 重拼后缀可能携带未被内核吸收的 `..`（见 lex_clamp 文档）：先词法
+    // 钳制再判前缀；Ok 路径同样归一，钳制形态返回 ws 内真实路径。
+    let resolved = lex_clamp(resolved);
     let ws = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     if resolved.starts_with(&ws) {
         Ok(resolved)
@@ -347,6 +396,27 @@ fn check_prefix(resolved: PathBuf, workspace: &Path, original: &str) -> Result<P
             "access denied: path '{original}' is outside the workspace"
         ))
     }
+}
+
+/// 重拼路径的词法钳制：解释 `..`/`.`。POSIX VFS 逐组件解析，`..` 弹升
+/// 要求中间组件真实存在——目标组件不存在时爬升循环一路回退到已存在
+/// 锚点、后缀（含 `..`）原样重拼，内核从未吸收这些弹升；NT 对象管理器
+/// 则在词法层处理 `..`，两平台 canonicalize 语义分裂（R837 逃逸矩阵
+/// Windows 绿 / Linux 红的根因）。重拼结果必须词法钳制后再判前缀，
+/// 否则 `ws/a/../../p1.txt`（a 不存在）在 Linux 被原样放行逃出 workspace。
+fn lex_clamp(p: PathBuf) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // 根上再弹升：留在根（starts_with 必然判外）。
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]

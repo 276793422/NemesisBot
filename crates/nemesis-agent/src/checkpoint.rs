@@ -91,6 +91,14 @@ pub struct CheckpointConflict {
 pub struct CheckpointConflictReport {
     pub conflicts: Vec<CheckpointConflict>,
     pub unchecked_paths: Vec<String>,
+    /// git 全树预检补充：「最后 begin 之后新出现」的未声明路径中
+    /// **target 树不存在**的子集（`unchecked_paths` 的 Added 形态——
+    /// restore 对这类路径做物理删除）。target/reference 双无 = 它们不是
+    /// 任何被回退 turn 开始前已存在的文件：会话结束后新出现的外部文件
+    /// （用户手工放置）被误删即不可逆数据销毁。消费方（rewind_from_cut）
+    /// 按 mtime 与被回退最后行时间戳比对，空闲期诞生的默认拒绝
+    /// （force 显式强过）；被回退 turn 窗口内诞生的（产物）不拦。
+    pub unchecked_new_paths: Vec<String>,
     /// （会话回退波及面收窄）：回退区间内**其他会话**声明过
     /// 变更的路径。restore 的全树恢复会把它们一并碾掉，但它们不属于本次回
     /// 退的会话意图——与 `conflicts` 同为默认拒绝（force 显式强过）。单列而
@@ -1509,9 +1517,14 @@ impl CheckpointStore {
         rewind_session: Option<&str>,
     ) -> CheckpointConflictReport {
         let mut report = CheckpointConflictReport::default();
-        // 锁内收集 (path, sealed, sealed_hash) 快照，放锁后读盘比对
-        // （锁纪律：不带着 inner 锁做文件 IO）。
-        let mut last_declared: Vec<(String, bool, Option<String>)> = Vec::new();
+        // 锁内收集 (comparable, path, sealed, sealed_hash) 快照，放锁后
+        // 读盘比对（锁纪律：不带着 inner 锁做文件 IO）。收集键走
+        // comparable 形态（BUG-20261110-047 同款归一，与 other_paths
+        // 去重同源）——同文件双形态声明（绝对/相对、`\`/`/`）不得算
+        // 两条声明：字面键下旧条目的陈旧指纹会把新 turn 的合法变更
+        // 误报成「外部修改冲突」逼用户 force。指纹仍存原条目
+        // （hash_on_disk 用原文读盘）。
+        let mut last_declared: Vec<(String, String, bool, Option<String>)> = Vec::new();
         // 其他会话声明的路径（保序去重；去重键走 comparable 形态，
         // BUG-20261110-047 同款归一——同文件双形态不得在 blocked 回执里
         // 重复出现两条）。
@@ -1549,19 +1562,20 @@ impl CheckpointStore {
                         .iter()
                         .find(|f| f.path == p)
                         .and_then(|f| f.hash.clone());
-                    if let Some(slot) = last_declared.iter_mut().find(|(lp, _, _)| lp == &p) {
-                        slot.1 = c.sealed;
-                        slot.2 = fp;
+                    let cmp = self.comparable_path_form(&p);
+                    if let Some(slot) = last_declared.iter_mut().find(|(lp, _, _, _)| lp == &cmp) {
+                        slot.2 = c.sealed;
+                        slot.3 = fp;
                     } else {
-                        last_declared.push((p, c.sealed, fp));
+                        last_declared.push((cmp, p, c.sealed, fp));
                     }
                 }
             }
         }
         report.other_session_paths = other_paths;
         let declared: std::collections::HashSet<String> =
-            last_declared.iter().map(|(p, _, _)| p.clone()).collect();
-        for (path, sealed, sealed_hash) in last_declared {
+            last_declared.iter().map(|(_, p, _, _)| p.clone()).collect();
+        for (_, path, sealed, sealed_hash) in last_declared {
             if !sealed {
                 report.unchecked_paths.push(path);
                 continue;
@@ -1613,17 +1627,24 @@ impl CheckpointStore {
                     excluded.insert(r);
                 }
             }
-            let extra = match gb.open() {
+            let (extra, extra_new) = match gb.open() {
                 // open 失败 = 全树 diff 预检不可用，按既有降级语义取空集
                 // （预检不误报，与 tree_diff_unchecked 内部失败同路）。
                 Ok(mut repo) => {
                     Self::tree_diff_unchecked(&mut repo, &target_hex, &reference_hex, &excluded)
                 }
-                Err(_) => Vec::new(),
+                Err(_) => (Vec::new(), Vec::new()),
             };
             for p in extra {
                 if !report.unchecked_paths.contains(&p) {
                     report.unchecked_paths.push(p);
+                }
+            }
+            for p in extra_new {
+                if !report.unchecked_paths.contains(&p) && !report.unchecked_new_paths.contains(&p)
+                {
+                    report.unchecked_paths.push(p.clone());
+                    report.unchecked_new_paths.push(p);
                 }
             }
         }
@@ -1634,7 +1655,10 @@ impl CheckpointStore {
     }
 
     /// target..现状 全树 diff 中「偏离发生在最新 begin 之后」的未声明
-    /// 路径集。参照判定：路径在 target 与 reference（最新 begin tree）里
+    /// 路径集，返回 `(unchecked, unchecked_new)` 双集合：前者 = target
+    /// 树已有该路径（恢复/覆盖历史态）；后者 = target 树没有（Added，
+    /// restore 将物理擦除——「会话结束后新出现」的外部文件保护面）。
+    /// 参照判定：路径在 target 与 reference（最新 begin tree）里
     /// 状态一致 = 偏离在 begin 后产生（trailing/外部，不可区分）；已偏离
     /// = 回退区间内变更（agent 本意）。任何失败 = 空集（预检降级，不误
     /// 报）。libgit2 借用规则同 git_restore：先可变（write_current_tree）
@@ -1645,29 +1669,30 @@ impl CheckpointStore {
         target_hex: &str,
         reference_hex: &str,
         declared: &std::collections::HashSet<String>,
-    ) -> Vec<String> {
+    ) -> (Vec<String>, Vec<String>) {
         let cur_hex = match Self::write_current_tree(repo) {
             Ok(h) => h,
-            Err(_) => return Vec::new(),
+            Err(_) => return (Vec::new(), Vec::new()),
         };
         let (Ok(target_oid), Ok(reference_oid), Ok(cur_oid)) = (
             git2::Oid::from_str(target_hex),
             git2::Oid::from_str(reference_hex),
             git2::Oid::from_str(&cur_hex),
         ) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let (Ok(target_tree), Ok(reference_tree), Ok(cur_tree)) = (
             repo.find_tree(target_oid),
             repo.find_tree(reference_oid),
             repo.find_tree(cur_oid),
         ) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let Ok(diff) = repo.diff_tree_to_tree(Some(&target_tree), Some(&cur_tree), None) else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let mut out = Vec::new();
+        let mut new_out = Vec::new();
         for delta in diff.deltas() {
             let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
                 continue;
@@ -1679,10 +1704,18 @@ impl CheckpointStore {
             let t_state = target_tree.get_path(p).map(|e| e.id()).ok();
             let r_state = reference_tree.get_path(p).map(|e| e.id()).ok();
             if t_state == r_state {
-                out.push(rel);
+                // target 无 = restore 将按 Added **擦除**（子集单列进
+                // new_out，供消费方按「空闲期诞生」收紧为默认拒绝）；
+                // target 有 = 恢复/覆盖历史态（回退语义的自然延伸，
+                // 保持既有可见性语义即可）。
+                if t_state.is_none() {
+                    new_out.push(rel);
+                } else {
+                    out.push(rel);
+                }
             }
         }
-        out
+        (out, new_out)
     }
 
     /// 声明路径是否落在工作区内（git 影子树的覆盖范围）。相对路径恒在内；
@@ -1989,6 +2022,38 @@ impl CheckpointStore {
             .next_back()
     }
 
+    /// 会话收窄变体：`turn <= bound` 里「本会话（或 None 归属）条目」的
+    /// 最后一个带 tree 的。redo 陈旧性守卫的基线口径——其他会话在
+    /// undo 之后新 begin 的 turn（树 = 其 begin 时刻盘面，与 undo 滚回后
+    /// 的全局盘面几乎必然不同）不得击穿本会话的 redo 能力；它们的盘面
+    /// 波及由 redo 冲突预检（`conflict_scan_since_tree`）按路径级 diff
+    /// 拦截（检出即 blocked/force，条目还栈可重试）。None 归属条目
+    /// （旧数据/测试直构造）按「不可归属不惩罚」并入任何 scope。
+    pub fn tree_hex_at_or_before_scoped(
+        &self,
+        bound: usize,
+        session: Option<&str>,
+    ) -> Option<String> {
+        let guard = self.inner.lock();
+        let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
+        all.extend(guard.cur.values());
+        all.sort_by_key(|c| c.turn);
+        all.into_iter()
+            .filter(|c| c.turn <= bound)
+            .filter(|c| match (&c.session, session) {
+                (Some(s), Some(cur)) => s == cur,
+                _ => true,
+            })
+            .filter_map(|c| c.tree.clone())
+            .next_back()
+    }
+
+    /// [`Self::latest_tree_hex`] 的会话收窄版（redo 守卫基线专用，见
+    /// [`Self::tree_hex_at_or_before_scoped`]）。
+    pub fn latest_tree_hex_scoped(&self, session: Option<&str>) -> Option<String> {
+        self.tree_hex_at_or_before_scoped(usize::MAX, session)
+    }
+
     /// 把工作区文件恢复到**指定影子 tree**（绕过 JSON 索引——
     /// `truncate_from` 可能已把对应 turn 从索引清掉，但影子库对象 v1 不
     /// gc，tree 仍然有效）。仅 git 形态；JSON 形态诚实报错（无 tree 可
@@ -2120,8 +2185,9 @@ impl CheckpointStore {
 
     /// `base_for_path` 的可比形态：工作区内 → `rel:<repo 相对>`；界外/
     /// 不可定 → `raw:<字符串归一形态>`。声明侧与查询侧同函数归一，形态差
-    /// 异（绝对 vs 相对、分隔符、`\\?\`）不再造成索引漏匹配。
-    fn comparable_path_form(&self, p: &str) -> String {
+    /// 异（绝对 vs 相对、分隔符、`\\?\`）不再造成索引漏匹配。pub(crate)：
+    /// turn 投影（drain_turn_file_changes 的去重键）与冲突预检收集键共用。
+    pub(crate) fn comparable_path_form(&self, p: &str) -> String {
         match self.repo_relative_path(p) {
             Some(rel) => format!("rel:{rel}"),
             None => format!("raw:{}", Self::norm_path_form(p)),

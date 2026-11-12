@@ -366,6 +366,58 @@ fn merge_upserts_new_file_and_deletes_existing() {
     assert!(!root.join("src/other.h").exists(), "删除必须同步到工作区");
 }
 
+/// BUG-20261112-104 回归锁：删除补刀是提交落库后的卫生动作——删除被
+/// 挡（打开句柄无 FILE_SHARE_DELETE = ERROR_SHARING_VIOLATION，AV/索引
+/// 器瞬时持有的确定性形态）只允许 warn 残留，绝不向上传播（签名返回
+/// ()，合并结果不受影响）。直调补刀函数——实合并流里 reset --hard 先
+/// 行删除目标件，补刀失败态在真实流上探不到，只能以直调钉住韧性纪律。
+/// 注：新 Rust std 的 Windows 删除走 POSIX 语义，只读位不再拦
+/// remove_file——句柄占用才是跨版本稳定的注入形态。
+#[cfg(windows)]
+#[test]
+fn sweep_deleted_files_resilient_to_permission_failures() {
+    let (root, _baseline) = baseline_of("rosweep", "old\n");
+    write(&root, "src/stale.h", "will-be-stale\n");
+    commit_worktree(&root, "add stale").unwrap().unwrap();
+
+    // 构造 old（含 stale.h）/ new（无 stale.h）两棵树。
+    let repo = Repository::open(&root).unwrap();
+    let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+    let old_tree = head_commit.tree().unwrap();
+    let mut index = repo.index().unwrap();
+    index.read_tree(&old_tree).unwrap();
+    index
+        .remove(std::path::Path::new("src/stale.h"), 0)
+        .unwrap();
+    let new_oid = index.write_tree_to(&repo).unwrap();
+    let new_tree = repo.find_tree(new_oid).unwrap();
+
+    // 无 FILE_SHARE_DELETE 的打开句柄 = 删除在句柄存续期间恒
+    // ERROR_SHARING_VIOLATION——韧性重试 10 次耗尽后 warn 残留。
+    // （Rust std File::open 自带 SHARE_DELETE 不拦删除，必须显式收窄。）
+    let stale_path = root.join("src/stale.h");
+    let _blocking_handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2) // FILE_SHARE_READ | FILE_SHARE_WRITE（无 DELETE）
+            .open(&stale_path)
+            .unwrap()
+    };
+
+    // 补刀不得 Err/panic（签名即契约：返回 ()）；失败只落 warn。
+    sweep_deleted_workdir_files(&repo, &root, &old_tree, &new_tree);
+
+    // 残留语义：句柄存续期间文件必须在场（交清扫兜底，不丢内容）。
+    assert!(
+        stale_path.exists(),
+        "删除被句柄挡住时文件应残留（warn + 兜底语义）"
+    );
+    // 收尾：释放句柄后文件可正常清理（tempdir 可删）。
+    drop(_blocking_handle);
+    std::fs::remove_file(&stale_path).unwrap();
+}
+
 #[test]
 fn merge_against_stale_baseline_still_works() {
     // 基线落后两代（master 自己前进了两次）仍可三方合并——3-way 的本职。

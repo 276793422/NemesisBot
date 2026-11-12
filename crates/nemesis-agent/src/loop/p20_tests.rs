@@ -140,7 +140,7 @@ async fn p20_rewind_blocks_on_external_modification_without_force() {
     // 外部修改（绕过 agent 工具——rewind 要防的正是这个）。
     std::fs::write(&file, "v4-external").unwrap();
 
-    let out = al.rewind_to_message(&key, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, false, None).await.unwrap();
     assert_eq!(out["blocked"], true, "{out}");
     assert_eq!(out["reason"], "conflict");
     assert_eq!(out["restore_turn"], 2);
@@ -171,7 +171,7 @@ async fn p20_rewind_force_overrides_and_redo_roundtrip_works() {
 
     // 冲突场景 + force：强过。
     std::fs::write(&file, "v4-external").unwrap();
-    let out = al.rewind_to_message(&key, 0, true).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, true, None).await.unwrap();
     assert_eq!(
         out["blocked"],
         serde_json::Value::Null,
@@ -209,7 +209,7 @@ async fn p20_rewind_passes_through_when_seals_match_disk() {
 
     // 盘面停在 v3（turn 2 收尾态）= 最后封印指纹一致 → 无冲突直通。
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
-    let out = al.rewind_to_message(&key, 0, true).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, true, None).await.unwrap();
     assert_eq!(out["blocked"], serde_json::Value::Null, "{out}");
     assert_eq!(out["forced"], false, "无冲突时 force 不留痕: {out}");
     assert_eq!(out["file_restore"], "applied");
@@ -250,7 +250,7 @@ async fn p20_rewind_force_records_audit_chain_event() {
 
     // 冲突 + force → 台账一条 forced 事件。
     std::fs::write(&file, "v4-external").unwrap();
-    let out = al.rewind_to_message(&key, 0, true).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, true, None).await.unwrap();
     assert_eq!(out["forced"], true, "{out}");
 
     let ev = chain
@@ -273,7 +273,7 @@ async fn p20_rewind_force_records_audit_chain_event() {
     assert!(chain.verify_range(0, 0).unwrap(), "链校验");
 
     // 无冲突直通的 rewind 不产生假账（链仍只有 1 条）。
-    let out = al.rewind_to_message(&key, 0, true).await.unwrap();
+    let out = al.rewind_to_message(&key, 0, true, None).await.unwrap();
     assert_eq!(out["forced"], false, "{out}");
     assert_eq!(chain.total_event_count(), 1, "无冲突不得记账");
 
@@ -345,7 +345,7 @@ async fn r31_rewind_session_scoped_other_session_paths_block_by_default() {
 
     // A 回退保自己的 t1（index 0 所在 turn 之后全截）→ restore_turn=2，
     // 回退区间 [2,∞) 覆盖 B 的 turn3。
-    let out = al.rewind_to_message(&key_a, 0, false).await.unwrap();
+    let out = al.rewind_to_message(&key_a, 0, false, None).await.unwrap();
     assert_eq!(out["blocked"], true, "{out}");
     assert_eq!(out["reason"], "conflict");
     assert_eq!(out["restore_turn"], 2);
@@ -369,7 +369,7 @@ async fn r31_rewind_session_scoped_other_session_paths_block_by_default() {
 
     // force 强过：a.txt 恢复到 t2 begin 树（=t1 完成态 v2）；全树恢复把
     // b.txt 碾掉（force = 用户对波及面的显式意志，与 外部冲突同款）。
-    let out = al.rewind_to_message(&key_a, 0, true).await.unwrap();
+    let out = al.rewind_to_message(&key_a, 0, true, None).await.unwrap();
     assert_eq!(out["blocked"], serde_json::Value::Null, "{out}");
     assert_eq!(out["forced"], true, "波及面 + force = 审计留痕: {out}");
     assert_eq!(out["file_restore"], "applied");

@@ -653,6 +653,93 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
     assert_eq!(mgr.pending().len(), 0);
 }
 
+// 跨 broker 闸（BUG-20261112-090 回归锁）：web/channel/acp 三个 manager
+// 共写同一个 tasks.db pending 表——别的 broker 的 pending 条目是**活**审批
+// （IM 卡在等回复 / ACP 卡在等编辑器授权），不是重启遗留。web 侧不得把它
+// 当 stale 卡下发（诱导 Dashboard 抢裁），respond 也不得走补裁记账路径
+// （抢先记账 → 原通道回执落空、审计与实际结局分叉）。
+#[test]
+fn cross_broker_pending_entry_is_neither_surfaced_nor_adjudicable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("tasks.db");
+    let journal = journal_at(&db_path);
+
+    let mgr = WebApprovalManager::new(None, None);
+    mgr.set_journal(journal.clone());
+
+    // channel broker 的「活」卡直落台账（绕过 web 内存 pending——模拟
+    // ChannelApprovalManager 同库记账后的形态）。
+    let mut entry = WebApprovalManager::journal_entry(
+        "req-channel-live",
+        "process_exec",
+        "cargo publish",
+        "HIGH",
+        "rule: exec-publish",
+        "cargo publish *",
+        "",
+        "",
+        "",
+    );
+    entry.broker = "channel".to_string();
+    journal.record_pending(&entry).unwrap();
+
+    // pending() 不下发他 broker 的活卡（不诱导 Dashboard 抢裁）。
+    let cards = mgr.pending();
+    assert!(
+        cards.iter().all(|c| c["request_id"] != "req-channel-live"),
+        "cross-broker live card must not surface as stale: {cards:?}"
+    );
+
+    // respond 撞他 broker 的活卡 = 诚实拒绝（不抢先记账）；台账保持 pending。
+    let err = mgr
+        .respond("req-channel-live", true, false, None)
+        .expect_err("cross-broker respond must be refused");
+    assert!(
+        err.contains("channel"),
+        "error names the owning broker: {err}"
+    );
+    let e = journal.entry("req-channel-live").unwrap();
+    assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
+}
+
+// web broker 的重启遗留卡照常走 stale 补裁（broker 闸不误伤本侧遗留形态）。
+#[test]
+fn web_broker_stale_card_still_surfaced_and_adjudicable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("tasks.db");
+    let journal = journal_at(&db_path);
+
+    let mgr = WebApprovalManager::new(None, None);
+    mgr.set_journal(journal.clone());
+
+    let mut entry = WebApprovalManager::journal_entry(
+        "req-web-stale",
+        "process_exec",
+        "cargo publish",
+        "HIGH",
+        "rule: exec-publish",
+        "cargo publish *",
+        "",
+        "",
+        "",
+    );
+    entry.broker = "web".to_string();
+    journal.record_pending(&entry).unwrap();
+
+    let cards = mgr.pending();
+    let stale: Vec<&serde_json::Value> = cards
+        .iter()
+        .filter(|c| c["request_id"] == "req-web-stale")
+        .collect();
+    assert_eq!(
+        stale.len(),
+        1,
+        "web-broker leftover must surface: {cards:?}"
+    );
+    assert_eq!(stale[0]["stale"], true);
+    assert!(mgr.respond("req-web-stale", true, false, None).unwrap());
+}
+
 // ---------------------------------------------------------------------------
 // （三方复评）：落库时序与裁决竞争
 // ---------------------------------------------------------------------------
@@ -1535,6 +1622,18 @@ async fn respond_batch_denies_all_members_with_shared_note() {
         .unwrap();
     assert_eq!(out["responded"], 2);
     assert_eq!(out["skipped"], 0);
+    // responded_ids = 裁决生效卡清单（装饰器逐卡上行摘 master 同步卡的依据）。
+    let ids: Vec<&str> = out["responded_ids"]
+        .as_array()
+        .expect("responded_ids present")
+        .iter()
+        .map(|v| v.as_str().expect("id is string"))
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        ids.contains(&"req-d1") && ids.contains(&"req-d2"),
+        "{ids:?}"
+    );
 
     // 两个等待方都收到拒绝 + 共享备注（verdict.note 面对齐单卡拒绝）。
     for rx in [&r1, &r2] {

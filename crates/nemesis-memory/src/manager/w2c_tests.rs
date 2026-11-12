@@ -3,8 +3,9 @@
 //! Targets manager.rs branches not exercised by tests.rs / extra_tests.rs:
 //! - close() error concatenation with a failing general store (mock backend)
 //! - store_entry backend error propagation
-//! - vector-store error propagation in search / query_semantic (contract pin:
-//!   vector errors do NOT silently fall back to keyword search)
+//! - vector-store error handling in search / query_semantic (contract pin,
+//!   BUG-20261112-087 flipped: embed errors fall back to keyword search
+//!   instead of propagating)
 //! - init_vector_store_from_config "already initialized → just enable" arm
 //! - with_config_dir with pre-existing enabled=false config left untouched
 //! - episodic delete/cleanup also removing vector entries (no-plugin path)
@@ -154,32 +155,58 @@ async fn store_entry_propagates_backend_store_error() {
 // Vector error propagation (contract pin)
 // ============================================================
 
+// BUG-20261112-087（M6）：契约翻转——旧契约「vector embed 故障 → Err 上
+// 掺（不静默回落 keyword）」钉住的是缺陷行为：embed 后端故障期间记忆搜
+// 索整体不可用，而 keyword store 完全健康。新契约：Err → warn + 视作
+// vector 未命中，落 keyword fallback（与空结果同路径）；仅
+// search_auto_inject 维持 vector-only 语义（故障 = 本轮注入静默跳过）。
 #[tokio::test]
-async fn search_with_failing_vector_embed_propagates_error() {
-    // Contract: when the vector store is enabled and its embedding backend
-    // fails, search() propagates the error — it does NOT silently fall back
-    // to keyword search (the fallback only happens on EMPTY results).
+async fn search_with_failing_vector_embed_falls_back_to_keyword() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::new(dir.path());
     let mgr = MemoryManager::new(&cfg);
+    mgr.store_fact("keyword searchable fact about apples", vec![])
+        .await
+        .unwrap();
     let vpath = dir.path().join("v.jsonl");
     mgr.init_vector_store_with_embed(failing_embed(), store_cfg_for(&vpath, 0.0))
         .unwrap();
     mgr.set_vector_enabled(true);
-    let err = mgr.search("anything", None, 5).await.unwrap_err();
-    assert_eq!(err, "embed down");
+    let r = mgr
+        .search("apples", None, 5)
+        .await
+        .expect("embed backend failure must not kill the whole search (BUG-20261112-087)");
+    assert!(
+        r.entries
+            .iter()
+            .any(|se| se.entry.content.contains("apples")),
+        "keyword fallback must still hit, got {:?}",
+        r.entries
+    );
 }
 
 #[tokio::test]
-async fn query_semantic_with_failing_vector_embed_propagates_error() {
+async fn query_semantic_with_failing_vector_embed_falls_back_to_keyword() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = Config::new(dir.path());
     let mgr = MemoryManager::new(&cfg);
+    mgr.store_fact("keyword searchable fact about apples", vec![])
+        .await
+        .unwrap();
     let vpath = dir.path().join("v.jsonl");
     mgr.init_vector_store_with_embed(failing_embed(), store_cfg_for(&vpath, 0.0))
         .unwrap();
-    let err = mgr.query_semantic("anything", 5).await.unwrap_err();
-    assert_eq!(err, "embed down");
+    let r = mgr
+        .query_semantic("apples", 5)
+        .await
+        .expect("embed backend failure must not kill query_semantic (BUG-20261112-087)");
+    assert!(
+        r.entries
+            .iter()
+            .any(|se| se.entry.content.contains("apples")),
+        "keyword fallback must still hit, got {:?}",
+        r.entries
+    );
 }
 
 #[tokio::test]

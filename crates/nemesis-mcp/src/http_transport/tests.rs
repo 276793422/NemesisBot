@@ -448,6 +448,53 @@ async fn test_w4c_http_send_error_status_maps_send_failed() {
     t.close().await.unwrap();
 }
 
+/// R845 回归锁：错误体**有界摄取**。超大错误体（>读帽 256KB / >消息帽
+/// 8KB）不得整包进错误串——头部定性信息保留（prefix 截断）、尾部丢弃、
+/// 带诚实截断注记。旧形态 `response.text()` 无上界：坏服务器/反代的巨型
+/// 错误体整包进内存并全量进错误串（错误串直达日志与模型上下文）。
+#[tokio::test]
+async fn test_r845_error_body_bounded_ingestion() {
+    let server = MockServer::start().await;
+    // 512KB 体：头部定性标记 + 尾部标记——断言头部保留、尾部（连同尾部
+    // 标记）被截掉。
+    let body = format!(
+        "upstream failure HEAD-MARKER {} TAIL-MARKER",
+        "x".repeat(512 * 1024)
+    );
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(500).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t.send(&w4c_request("x", 1), 10000).await.unwrap_err();
+    assert!(err.message.contains("HTTP 500"), "{err}");
+    assert!(
+        err.message.contains("HEAD-MARKER"),
+        "头部定性信息须保留: {}",
+        &err.message[..err.message.len().min(200)]
+    );
+    assert!(
+        !err.message.contains("TAIL-MARKER"),
+        "超大错误体尾部不得进错误串: len={}",
+        err.message.len()
+    );
+    assert!(
+        err.message.contains("[error body truncated]"),
+        "截断须诚实注记: len={}",
+        err.message.len()
+    );
+    // 错误串整体有界（消息帽 8KB + 注记 + 状态行）。
+    assert!(
+        err.message.len() < 16 * 1024,
+        "错误串不得接近读取帽量级: len={}",
+        err.message.len()
+    );
+    t.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_w4c_http_send_connection_failure_maps_send_failed() {
     // 指向必然拒绝连接的端口

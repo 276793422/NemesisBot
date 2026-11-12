@@ -164,6 +164,28 @@ impl ApprovalResponder for RemoteNotifyResponder {
         self.inner.pending()
     }
 
+    // 批量裁决透传（并行批聚合「全部允许/全部拒绝」）：内层摘要带
+    // responded_ids（裁决生效卡），逐卡上行 ask_closed 摘 master 同步卡
+    // ——与单体 respond 同姿态（先裁决后上行；旁路 fire-and-forget）。
+    // 不透传 = 集群网关的批量裁决恒 Err("batch respond not supported")。
+    fn respond_batch(
+        &self,
+        batch_id: &str,
+        approved: bool,
+        always: bool,
+        note: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let summary = self
+            .inner
+            .respond_batch(batch_id, approved, always, note.clone())?;
+        if let Some(ids) = summary.get("responded_ids").and_then(|v| v.as_array()) {
+            for id in ids.iter().filter_map(|v| v.as_str()) {
+                spawn_remote_ask_closed(self.cluster.clone(), id, approved, note.as_deref());
+            }
+        }
+        Ok(summary)
+    }
+
     // 孤儿卡清理透传：项目会话经装饰器装配 responder，
     // 不透传 = 项目会话的未决审批卡清不掉。终局裁决仍在 inner（本地
     // pending 为权威依据），装饰器只旁路上行，与本文件 respond 同姿态。

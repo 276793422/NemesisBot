@@ -209,7 +209,7 @@ fn test_amex_card_detected() {
 #[test]
 fn test_aws_access_key_detected() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("aws_access_key=AKIAIOSFODNN7EXAMPLE");
+    let result = engine.scan_text("aws_access_key=AKIANCDC6VFQTFGRMBKW");
     assert!(result.has_matches);
 }
 
@@ -223,21 +223,21 @@ fn test_google_api_key_detected() {
 #[test]
 fn test_rsa_private_key_detected() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA");
+    let result = engine.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7dGd4vWrbO8pRT4dWShvUfCbEAmfPQgeSGkX2a4YvF0OJoAo");
     assert!(result.has_matches);
 }
 
 #[test]
 fn test_openssh_private_key_detected() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA");
+    let result = engine.scan_text("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG9wZW5zc2gtY2VydC12MDEtb3BlbnNzaC1rZX");
     assert!(result.has_matches);
 }
 
 #[test]
 fn test_pkcs8_encrypted_key_detected() {
     let engine = DlpEngine::new(true, "block");
-    let result = engine.scan_text("-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIE6TAbBgkqhkiG9w0B");
+    let result = engine.scan_text("-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIE6TAbBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDdktVWS0ceTWrbO8p");
     assert!(result.has_matches);
 }
 
@@ -302,6 +302,10 @@ fn test_authorization_header_detected() {
 #[test]
 fn test_database_connection_string_detected() {
     let engine = DlpEngine::new(true, "block");
+    // 2026-11-11 横扫批：教程 canonical 形态经 connection_not_placeholder
+    // 降级 Low（只 log 不 block）——检测仍发生（has_matches 保持 true），
+    // block 口径的豁免回归由 test_db_connection_tutorial_placeholders_log_not_block
+    // 承担。
     let result = engine.scan_text("postgres://user:password@localhost:5432/mydb");
     assert!(result.has_matches);
 }
@@ -584,7 +588,7 @@ fn test_low_confidence_ip_version_does_not_block() {
 #[test]
 fn test_high_confidence_private_key_blocks() {
     let engine = DlpEngine::new(true, "block");
-    let r = engine.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA");
+    let r = engine.scan_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7dGd4vWrbO8pRT4dWShvUfCbEAmfPQgeSGkX2a4YvF0OJoAo");
     assert!(r.should_block);
     assert!(
         r.matches
@@ -688,7 +692,7 @@ fn test_scan_text_max_length_multibyte_no_panic() {
         low_confidence_action: "log".to_string(),
     };
     let engine = DlpEngine::with_config(config);
-    let result = engine.scan_text("京京京AKIAIOSFODNN7EXAMPLE"); // must not panic
+    let result = engine.scan_text("京京京AKIANCDC6VFQTFGRMBKW"); // must not panic
     assert!(
         !result.has_matches,
         "content truncated before the key → no match"
@@ -754,7 +758,7 @@ fn test_scan_text_dynamic_rule_disabled_and_filtered_skipped() {
 #[test]
 fn test_redact_content_disabled_returns_unchanged() {
     let engine = DlpEngine::new(false, "block");
-    let text = "AKIAIOSFODNN7EXAMPLE";
+    let text = "AKIANCDC6VFQTFGRMBKW";
     assert_eq!(engine.redact_content(text), text);
 }
 
@@ -826,7 +830,7 @@ fn test_get_rule_names_includes_dynamic() {
 fn test_scan_tool_output_truncates_beyond_5000_bytes() {
     let engine = DlpEngine::new(true, "block");
     // 命中点在 5000 字节之前 → 检出
-    let near = format!("{}{}", "x".repeat(4900), "AKIAIOSFODNN7EXAMPLE");
+    let near = format!("{}{}", "x".repeat(4900), "AKIANCDC6VFQTFGRMBKW");
     let r = engine.scan_tool_output("shell", &near);
     assert!(
         r.matches.iter().any(|m| m.rule_name == "aws_access_key"),
@@ -835,7 +839,7 @@ fn test_scan_tool_output_truncates_beyond_5000_bytes() {
     );
 
     // 命中点在 5000 字节之后 → 被截掉，不检出
-    let far = format!("{}{}", "x".repeat(5010), " AKIAIOSFODNN7EXAMPLE");
+    let far = format!("{}{}", "x".repeat(5010), " AKIANCDC6VFQTFGRMBKW");
     let r2 = engine.scan_tool_output("shell", &far);
     assert!(
         !r2.matches.iter().any(|m| m.rule_name == "aws_access_key"),
@@ -848,7 +852,7 @@ fn test_scan_tool_output_truncates_beyond_5000_bytes() {
 fn test_scan_tool_output_downgrades_critical_to_high() {
     let engine = DlpEngine::new(true, "block");
     // scan_text：credential 类别 → Critical
-    let r = engine.scan_text("key AKIAIOSFODNN7EXAMPLE");
+    let r = engine.scan_text("key AKIANCDC6VFQTFGRMBKW");
     assert!(
         r.matches
             .iter()
@@ -857,7 +861,7 @@ fn test_scan_tool_output_downgrades_critical_to_high() {
         r.matches
     );
     // scan_tool_output：同一命中被降级为 High
-    let r2 = engine.scan_tool_output("shell", "key AKIAIOSFODNN7EXAMPLE");
+    let r2 = engine.scan_tool_output("shell", "key AKIANCDC6VFQTFGRMBKW");
     assert!(
         r2.matches
             .iter()
@@ -877,7 +881,7 @@ fn test_scan_tool_output_downgrades_critical_to_high() {
 #[test]
 fn test_scan_args_extracts_array_elements() {
     let engine = DlpEngine::new(true, "block");
-    let args = serde_json::json!(["AKIAIOSFODNN7EXAMPLE", {"nested": "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}]);
+    let args = serde_json::json!(["AKIANCDC6VFQTFGRMBKW", {"nested": "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}]);
     let r = engine.scan_tool_input("exec", &args);
     assert!(
         r.matches.iter().any(|m| m.rule_name == "aws_access_key"),
@@ -1217,4 +1221,363 @@ fn test_bug046_real_payload_replay_not_blocking() {
         "summary 须按去重规则计数: {}",
         result.summary
     );
+}
+
+// ===== 2026-11-11 实录同族：authorization_header scheme 词散文误拦 =====
+// 与 Layer 4 bearer_token/basic_auth 的长度下限修复同源同语义：无下限时
+// 「Authorization: Basic mode,」散文/文档形态整行命中 Medium→block。
+// 二合一规则取宽闸 20（Basic 12-19 短样本漏检面由 Layer 4 basic_auth 覆盖）。
+#[test]
+fn test_authorization_header_prose_not_flagged() {
+    let engine = DlpEngine::new(true, "block");
+    for text in [
+        "Credentials are read only from JIRA_USERNAME and JIRA_PASSWORD for Basic mode,",
+        "or JIRA_TOKEN for Bearer mode.",
+        "    Authorization: Basic <base64-of-username-colon-password>",
+        "    Authorization: Bearer <token-from-environment>",
+        "Authorization: Bearer abcdefghij123456789", // 19 字符段，低于下限
+    ] {
+        let result = engine.scan_text(text);
+        // 断言收窄到 credential 类：下限边界样本的纯数字串可能命中
+        // 无关的 phone_international 启发（Low→log，与本修复无关）。
+        assert!(
+            !result.matches.iter().any(|m| m.category == "credential"),
+            "scheme 词散文/占位符形态不得命中 credential 规则: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+}
+
+// ===== 2026-11-11 二次横扫批：authorization_header Basic 臂结构闸 validator =====
+// Layer 4 basic_auth 加 RFC 7617 解码结构闸的 DLP 对称面：散文长词（长度
+// 下限挡不住 ≥20 形态）与 canonical 教程示例 demote Low 只 log；真实凭据
+// 仍 block。判定单一真相源 credential/exemptions.rs 的 is_placeholder_basic_auth。
+#[test]
+fn test_authorization_header_basic_placeholder_log_not_block() {
+    let engine = DlpEngine::new(true, "block");
+    for text in [
+        // 散文长词 ≥20：结构闸判散文（base64 解码失败）
+        "Authorization: Basic authentication-header-format-goes-here",
+        // canonical 教程示例（base64("user:mypassword")，无填充 20 类字符
+        // 恰达 {20,}；canonical "user:password" 18 类字符本就不达 DLP 下限）
+        "Authorization: Basic dXNlcjpteXBhc3N3b3Jk",
+    ] {
+        let result = engine.scan_text(text);
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.category == "credential" && m.effective_action == "block"),
+            "authorization Basic 散文/canonical 形态不得 block: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+    // 防修过头对照：真实凭据形态（解码含 `:` 且 pass 非规范词）仍 block。
+    let real = "Authorization: Basic c3ZjX2RlcGxveTpLajhuUjJwUTl3WjU=";
+    let result = engine.scan_text(real);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.category == "credential" && m.effective_action == "block"),
+        "authorization Basic 真实凭据必须仍 block: {:?}",
+        result.matches
+    );
+    // Bearer 臂恒过（validator 不降级真实 token）。
+    let bearer =
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.sig";
+    let result = engine.scan_text(bearer);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.category == "credential" && m.effective_action == "block"),
+        "authorization Bearer 真实凭据必须仍 block: {:?}",
+        result.matches
+    );
+}
+
+#[test]
+fn test_authorization_header_basic_placeholder_redact_preserved() {
+    // redact 面同源豁免：Basic 散文/canonical 形态不被打码；真实凭据照常。
+    let engine = DlpEngine::new(true, "block");
+    let placeholder = "Authorization: Basic authentication-header-format-goes-here";
+    assert_eq!(
+        engine.redact_content(placeholder),
+        placeholder,
+        "Basic 散文形态不得被打码"
+    );
+    let canonical = "Authorization: Basic dXNlcjpteXBhc3N3b3Jk";
+    assert_eq!(
+        engine.redact_content(canonical),
+        canonical,
+        "Basic canonical 教程形态不得被打码"
+    );
+    let real = "Authorization: Basic c3ZjX2RlcGxveTpLajhuUjJwUTl3WjU=";
+    assert_ne!(
+        engine.redact_content(real),
+        real,
+        "Basic 真实凭据必须被打码"
+    );
+}
+
+// ===== 2026-11-11 横扫批：db 连接串教程/模板占位符 demote Low（不 block）=====
+
+#[test]
+fn test_db_connection_tutorial_placeholders_log_not_block() {
+    let engine = DlpEngine::new(true, "block");
+    // 占位符形态：validator 判 false → demote Low → 只 log 不 block
+    //（与 Layer 4 db_connection_* 豁免同源，判定单一真相源
+    // credential/exemptions.rs 的 is_placeholder_db_credential）。
+    for text in [
+        "postgres://user:password@localhost:5432/mydb",
+        "mysql://root:password@127.0.0.1:3306/app",
+        "mongodb://<user>:<password>@host:27017",
+        "postgres://${DB_USER}:${DB_PASSWORD}@db:5432/app",
+        "redis://:secret@redis:6379/0",
+    ] {
+        let result = engine.scan_text(text);
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.category == "credential" && m.effective_action == "block"),
+            "db 连接串教程/模板占位符不得 block: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+    // 防修过头对照：真实凭据形态必须仍 block。
+    let real = "postgres://svc_deploy:Kj8nR2pQ9wZ5@db.internal.example/prod";
+    let result = engine.scan_text(real);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.category == "credential" && m.effective_action == "block"),
+        "db 连接串真实凭据必须仍 block: {:?}",
+        result.matches
+    );
+}
+
+#[test]
+fn test_db_connection_placeholder_redact_preserved() {
+    // redact 面同源豁免：占位符连接串不被打码（与 scan_text 豁免对称，
+    // 教程/模板原文可读性不损毁）；真实凭据照常替换。
+    let engine = DlpEngine::new(true, "block");
+    let placeholder = "DATABASE_URL=postgres://user:password@localhost:5432/mydb";
+    assert_eq!(
+        engine.redact_content(placeholder),
+        placeholder,
+        "占位符连接串不得被打码"
+    );
+    let real = "DATABASE_URL=postgres://svc_deploy:Kj8nR2pQ9wZ5@db.internal.example:5432/prod";
+    assert_ne!(
+        engine.redact_content(real),
+        real,
+        "真实凭据连接串必须被打码"
+    );
+}
+
+// ---- 三次横扫批回归锁（2026-11-11，与 Layer 4 credential.rs 同源判据）----
+// 负样本 = demote Low 只 log 不 block；防修过头对照 = 真实形态保持原档拦截。
+
+#[test]
+fn test_third_sweep_doc_placeholder_forms_demoted() {
+    let engine = DlpEngine::new(true, "block");
+
+    // AWS 文档 canonical（AKIAIOSFODNN7EXAMPLE / EXAMPLEKEY）→ demote。
+    let aws_canonical = [
+        "aws_access_key=AKIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    ];
+    for text in aws_canonical {
+        let result = engine.scan_text(text);
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.category == "credential" && m.effective_action == "block"),
+            "AWS canonical 不得 block: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+    // 防修过头：非 canonical 真实形态仍 block。
+    let real_aws = "aws_access_key=AKIANCDC6VFQTFGRMBKW";
+    let result = engine.scan_text(real_aws);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "aws_access_key" && m.effective_action == "block"),
+        "aws 真实形态必须仍 block: {:?}",
+        result.matches
+    );
+
+    // azure_api_key / generic_base64_key 值段散文占位符 → demote。
+    let prose_values = [
+        "azure_api_key = YOUR_AZURE_SUBSCRIPTION_KEY_REPLACE_WITH_REAL_VALUE",
+        "apikey = YOUR_API_KEY_HERE_MULTIPLIED_FOR_LENGTH_GATE",
+    ];
+    for text in prose_values {
+        let result = engine.scan_text(text);
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.category == "credential" && m.effective_action == "block"),
+            "keyed 值段散文占位符不得 block: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+
+    // github_token 值段散文占位符 → demote；真实混合形态仍 block。
+    let gh_placeholder = "ghp_YOUR_GITHUB_PAT_TOKEN_HERE_REPLACE_ME_WITH_A_REAL_ONE_X";
+    let result = engine.scan_text(gh_placeholder);
+    assert!(
+        !result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "github_token" && m.effective_action == "block"),
+        "github token 占位符不得 block: {:?}",
+        result.matches
+    );
+    let real_gh = "ghp_AbCdEf1234567890AbCdEf1234567890AbCdEf";
+    let result = engine.scan_text(real_gh);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "github_token" && m.effective_action == "block"),
+        "github token 真实形态必须仍 block: {:?}",
+        result.matches
+    );
+
+    // authorization Bearer 臂散文占位符 → demote；真实 JWT 仍 block
+    //（真实 Basic 侧由 test_authorization_header_basic_placeholder_log_not_block 钉死）。
+    let bearer_prose = "Authorization: Bearer your-bearer-token-here-in-documentation";
+    let result = engine.scan_text(bearer_prose);
+    assert!(
+        !result
+            .matches
+            .iter()
+            .any(|m| m.category == "credential" && m.effective_action == "block"),
+        "authorization Bearer 散文不得 block: {:?}",
+        result.matches
+    );
+}
+
+#[test]
+fn test_third_sweep_quoted_tutorial_and_pem_demoted() {
+    let engine = DlpEngine::new(true, "block");
+
+    // secret_*_assignment 教程复合词引号值 → demote Low。
+    let tutorial = [
+        r#"password = "your-password""#,
+        r#"token = "replace-with-your-token""#,
+        r#"client_secret = "my-secret-here""#,
+    ];
+    for text in tutorial {
+        let result = engine.scan_text(text);
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.category == "credential" && m.effective_action == "block"),
+            "教程复合词引号值不得 block: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+    // 防修过头：真实口令引号值保持 Medium block。
+    let real_pw = r#"password = "Kj8nR2pQ9wZ5""#;
+    let result = engine.scan_text(real_pw);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.category == "credential" && m.effective_action == "block"),
+        "真实口令引号值必须仍 block: {:?}",
+        result.matches
+    );
+
+    // private_key 族 PEM 格式示意 → demote；真实 64 字符体仍 block。
+    let illustration = [
+        "-----BEGIN RSA PRIVATE KEY-----\nXXXX\n-----END RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n<your-key-here>",
+    ];
+    for text in illustration {
+        let result = engine.scan_text(text);
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.category == "credential" && m.effective_action == "block"),
+            "PEM 格式示意不得 block: {text:?} -> {:?}",
+            result.matches
+        );
+    }
+    let real_pem = concat!(
+        "-----BEGIN RSA PRIVATE KEY-----\n",
+        "MIIEpAIBAAKCAQEA7dGd4vWrbO8pRT4dWShvUfCbEAmfPQgeSGkX2a4YvF0OJoAo\n"
+    );
+    let result = engine.scan_text(real_pem);
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "private_key_rsa" && m.effective_action == "block"),
+        "真实 PEM 体必须仍 block: {:?}",
+        result.matches
+    );
+}
+
+// ---- 三次横扫批 redact 面对称回归锁（2026-11-11 自查补齐）----
+// 六组 validator 判 false 的教程/文档/模板形态在出站打码路径（redact_content）
+// 照常保留——不打码损毁可读性（与 db/authorization 钩子同型同原则）；
+// 真实形态照常替换 [REDACTED]。
+
+#[test]
+fn test_third_sweep_redact_face_preserves_doc_forms() {
+    let engine = DlpEngine::new(true, "block");
+
+    // 教程/文档/模板形态：redact 后原样保留。
+    let doc_forms = [
+        // aws canonical
+        "aws_access_key=AKIAIOSFODNN7EXAMPLE",
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        // github 占位符
+        "ghp_YOUR_GITHUB_PAT_TOKEN_HERE_REPLACE_ME_WITH_A_REAL_ONE_X",
+        // keyed 值段散文
+        "azure_api_key = YOUR_AZURE_SUBSCRIPTION_KEY_REPLACE_WITH_REAL_VALUE",
+        // 教程引号复合词
+        r#"password = "your-password""#,
+        // PEM 格式示意
+        "-----BEGIN RSA PRIVATE KEY-----\nXXXX\n-----END RSA PRIVATE KEY-----",
+    ];
+    for text in &doc_forms {
+        let redacted = engine.redact_content(text);
+        assert_eq!(
+            redacted, *text,
+            "文档形态不得打码: {text:?} -> {redacted:?}"
+        );
+    }
+
+    // 防修过头：真实形态照常替换。
+    let real_forms = [
+        ("aws_access_key=AKIANCDC6VFQTFGRMBKW", "[REDACTED]"),
+        ("ghp_AbCdEf1234567890AbCdEf1234567890AbCdEf", "[REDACTED]"),
+        (
+            concat!(
+                "-----BEGIN RSA PRIVATE KEY-----\n",
+                "MIIEpAIBAAKCAQEA7dGd4vWrbO8pRT4dWShvUfCbEAmfPQgeSGkX2a4YvF0OJoAo"
+            ),
+            "[REDACTED]",
+        ),
+    ];
+    for (text, _) in &real_forms {
+        let redacted = engine.redact_content(text);
+        assert!(
+            redacted.contains("[REDACTED]") && !redacted.contains(text),
+            "真实形态必须打码: {text:?} -> {redacted:?}"
+        );
+    }
 }

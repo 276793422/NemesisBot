@@ -14,6 +14,8 @@ use std::time::Instant;
 
 use nemesis_types::utils;
 
+pub(crate) mod exemptions;
+
 /// Credential scan result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialResult {
@@ -30,6 +32,13 @@ pub struct CredentialMatch {
     pub redacted: String,
     pub full_match_start: String,
     pub full_match_end: String,
+    /// 命中行号（1 起，2026-11-11 二次横扫批）：拦截反馈此前只有规则名
+    /// 聚合，agent/用户仍无法定位具体行——目标设备二次实录里 agent 明确
+    /// 报告「工具没有给出具体字符位置，尚不能断定命中的确切片段」。行号
+    /// 是元数据不是内容，无泄漏面。serde(default)：字段晚于既有序列化
+    /// 产物，旧 JSON 无此键时反序列化容忍缺失（回退 0 = 未知行）。
+    #[serde(default)]
+    pub line: usize,
 }
 
 /// Mask function configuration.
@@ -84,32 +93,32 @@ impl Scanner {
 
         for (name, re) in patterns {
             for cap in re.captures_iter(content) {
-                let full = cap.get(0).map(|m| m.as_str()).unwrap_or("");
-                // 引用豁免后滤（2026-11-10 B4 会话凭据误拦修复 + 裸形态批，
-                // 用户拍板）：匹配文本剔除全部 vault 引用形态（完整模板
-                // `{{vault:<alias>}}` + 裸引用 `vault:<alias>`）后对同一
-                // 规则重扫——仍命中才算真命中。`password =
-                // "{{vault:agent/x/y}}"` / `password = "vault:zope/main"`
-                // 剔除后不再命中 → 豁免（引用原文 ≠ 明文秘密）；明文、
-                // 混拼（残余仍满足规则）、同串并存的其他秘密照旧拦截。
-                // ⚠ 勿删豁免回到「命中即拦」= 误报回归；根因/防回退/未来
-                // 出路（数据式凭据通道）全文见
-                // nemesis_config::vault_ref::strip_reference_forms 文档。
-                // 语法判定/剔除单一真相源在 vault_ref（与 agent 侧展开共
-                // 享常量）；作用域/条目存在性仍归展开层，本层不查库不触
-                // 真值。
-                // `VAULT_PREFIX`（`vault:`）是两类引用形态的公共子串
-                //（模板 `{{vault:` 必含裸前缀）——守卫只查它即可全覆盖；
-                // 纯明文匹配零成本短路。
-                if full.contains(nemesis_config::vault_ref::VAULT_PREFIX)
-                    && !re.is_match(&nemesis_config::vault_ref::strip_reference_forms(full))
-                {
+                let m0 = cap.get(0);
+                let full = m0.map(|m| m.as_str()).unwrap_or("");
+                // 命中行号（1 起）：反馈定位面（2026-11-11 二次横扫批）。
+                let line = m0
+                    .map(|m| content[..m.start()].bytes().filter(|&b| b == b'\n').count() + 1)
+                    .unwrap_or(1);
+                // 豁免表统一求值（2026-11-11 机制化重构批，用户拍板「一个
+                // 位置定义 + 机制消费」）：全部误报豁免 = 数据表单一定义
+                // 点（credential/exemptions.rs），本面只剩这一行调用——
+                // 新增豁免改表，不再在本 if 链贴钩子。语义与旧 12 组钩子
+                // 链逐条 continue 等价（行间独立，任一判 true 即豁免）。
+                if exemptions::is_exempt(&exemptions::ExemptionCtx {
+                    rule: name,
+                    full,
+                    window: content,
+                    whole: content,
+                    match_end: m0.map(|m| m.end()).unwrap_or(0),
+                    re,
+                }) {
                     continue;
                 }
                 let redacted = self.mask_value(full);
                 matches.push(CredentialMatch {
                     pattern_name: name.to_string(),
                     redacted: redacted.clone(),
+                    line,
                     full_match_start: if full.len() > 4 {
                         // floor/ceil to a char boundary — multibyte matched values
                         // (e.g. a Chinese password) would panic on a naive byte slice.
@@ -130,7 +139,38 @@ impl Scanner {
 
         let has_matches = !matches.is_empty();
         let summary = if has_matches {
-            format!("{} credential(s) detected", matches.len())
+            // 规则名 + 行号聚合（只给规则名/行号与计数，不给匹配值）：拦截
+            // 反馈面第一版只有总数，agent 与用户无从定位命中面；第二版加了
+            // 规则名仍缺行号——目标设备二次实录里 agent 报告「没有给出具体
+            // 字符位置，尚不能断定命中的确切片段」。行号定位后下一轮自检
+            // 不再是盲改重试。
+            let mut by_rule: Vec<(String, Vec<usize>)> = Vec::new();
+            for m in &matches {
+                match by_rule.iter_mut().find(|(n, _)| *n == m.pattern_name) {
+                    Some((_, lines)) => lines.push(m.line),
+                    None => by_rule.push((m.pattern_name.clone(), vec![m.line])),
+                }
+            }
+            let rules = by_rule
+                .iter()
+                .map(|(n, lines)| {
+                    let mut sorted = lines.clone();
+                    sorted.sort_unstable();
+                    sorted.dedup();
+                    let locs = sorted
+                        .iter()
+                        .map(|l| format!("L{}", l))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    if lines.len() > 1 {
+                        format!("{}@{} x{}", n, locs, lines.len())
+                    } else {
+                        format!("{}@{}", n, locs)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{} credential(s) detected [{}]", matches.len(), rules)
         } else {
             String::new()
         };
@@ -152,20 +192,24 @@ impl Scanner {
         let patterns = get_credential_patterns();
         let mut result = content.to_string();
 
-        for (_name, re) in patterns {
-            // 引用豁免后滤（2026-11-10 A 批 redact 面补齐 + 裸形态批，与
-            // scan_content 同源同语义）：vault 引用形态（模板 + 裸引用）
-            // 原样保留，不替换为 [REDACTED_CREDENTIAL]。消费点：工具输出
-            // 复扫改写臂（output_rescan）/ WASM 插件输出复扫（plugin_bridge）
-            // / 插件日志行脱敏（host_impl log_line，无条件 redact）——引用
-            // 原文不构成泄漏，打码只会损毁可读性。根因/防回退/未来出路
-            // 全文见 nemesis_config::vault_ref::strip_reference_forms 文档。
+        for (name, re) in patterns {
+            // 豁免表统一求值（2026-11-11 机制化重构批）与 scan_content
+            // 同源同语义：豁免 = 原样保留不打码（损毁教程/文档可读性）。
+            // 本面只剩这一行调用，表见 credential/exemptions.rs。gcp 上下
+            // 文闸用原始 content（整体真相，不随前序规则打码漂移）；PEM
+            // 窗口闸用当前 result（caps 偏移与被扫串对齐）——两路文本经
+            // ExemptionCtx 的 whole/window 分槽透传。
             result = re
                 .replace_all(&result, |caps: &regex::Captures| {
                     let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                    if full.contains(nemesis_config::vault_ref::VAULT_PREFIX)
-                        && !re.is_match(&nemesis_config::vault_ref::strip_reference_forms(full))
-                    {
+                    if exemptions::is_exempt(&exemptions::ExemptionCtx {
+                        rule: name,
+                        full,
+                        window: &result,
+                        whole: content,
+                        match_end: caps.get(0).map(|m| m.end()).unwrap_or(0),
+                        re,
+                    }) {
                         return full.to_string();
                     }
                     "[REDACTED_CREDENTIAL]".to_string()
@@ -284,9 +328,16 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
             ("aws_session_token", r"(?i)aws_session_token\s*[=:]\s*[A-Za-z0-9/+=]{100,}"),
             // GCP
             ("gcp_service_account", r#"(?i)"type"\s*:\s*"service_account""#),
-            ("gcp_private_key_id", r#"(?i)"private_key_id"\s*:\s*"[a-f0-9]+""#),
+            // private_key_id 真实形态是 32 hex；{16,} 挡住文档 JSON 模板的
+            // 短占位符（"abc123" 类，2026-11-11 横扫批：无下限时 1 个 hex
+            // 字符即命中）。真实 32 ≥ 16，零真实漏检面。
+            ("gcp_private_key_id", r#"(?i)"private_key_id"\s*:\s*"[a-f0-9]{16,}""#),
             // Azure
-            ("azure_connection_string", r"(?i)AccountName=[A-Za-z0-9]+;AccountKey=[A-Za-z0-9+/=]+"),
+            // AccountKey 真实形态是 88 base64；{64,} 挡住连接串模板的短
+            // 占位符（AccountKey=mykey; 类，2026-11-11 横扫批）。Azure 官方
+            // 文档自身的 88 字符示例 key 仍命中——同长度不可分辨，属结构
+            // 规则固有取舍（见修复报告横扫节）。
+            ("azure_connection_string", r"(?i)AccountName=[A-Za-z0-9]+;AccountKey=[A-Za-z0-9+/=]{64,}"),
             ("azure_tenant_id", r"(?i)azure\s*tenant\s*(?:id)?\s*[=:]\s*[a-f0-9-]{36}"),
             // GitHub
             ("github_token", r"gh[pousr]_[A-Za-z0-9_]{36,}"),
@@ -316,8 +367,15 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
             ("db_connection_redis", r"(?i)redis://:[^\s]+@[^\s]+"),
             // Generic API key patterns
             ("api_key_in_url", r"(?i)[?&](?:api[_-]?key|token|secret|password)=([A-Za-z0-9_\-]{20,})"),
-            ("bearer_token", r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"),
-            ("basic_auth", r"(?i)Basic\s+[A-Za-z0-9+/]+=*"),
+            // scheme 词后的 token 段必须有长度下限：无下限时 docstring 散文
+            // 「for Bearer mode.」「for Basic mode,」和 CLI 用法行「--auth bearer
+            // --issue」里的普通英文词/参数名（mode、--issue，字符类内的字面
+            // `-`/`.`）被当成 token 误拦（2026-11-11 实录：通用化 jira skill 脚本
+            // 写入被 credential_scanner 以 2-3 处凭据硬拦，两台设备同族复现）。
+            // 真实 Bearer token（RFC 6750，JWT 典型百字符）≥20；Basic 凭据是
+            // base64(user:password)，user:password 最短 9 字符 → base64 ≥12。
+            ("bearer_token", r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]{20,}=*"),
+            ("basic_auth", r"(?i)Basic\s+[A-Za-z0-9+/]{12,}=*"),
             // Generic secret assignment
             // 值段禁跨行（[^'"\n]）：[^'"] 会连 \n 一起吞，getpass("Jira password: ")
             // 的文案闭引号与下一行 JiraError(" 的开引号被跨行配对，中间两行正常代码
@@ -331,7 +389,13 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
             // Discord
             ("discord_bot_token", r"(?i)discord[_-]?bot[_-]?token\s*[=:]\s*[A-Za-z0-9._-]{50,}"),
             // NPM
-            ("npm_token", r"//registry\.npmjs\.org/:_authToken=[A-Za-z0-9-]+"),
+            // authToken 真实 token ≥36 字符（npm_ 前缀 + 36 [A-Za-z0-9]）；
+            // 类含下划线（真实前缀 npm_ 必含 `_`——旧类漏下划线时真实
+            // token 在类内只剩 "npm" 3 字符，根本匹配不上完整 token），
+            // {20,} 挡住 .npmrc 文档里的短占位符（YOUR_AUTH_TOKEN 类 15
+            // 字符，2026-11-11 横扫批；canonical `${NPM_TOKEN}` 模板因
+            // `$` 在字符类外本就不命中）。
+            ("npm_token", r"//registry\.npmjs\.org/:_authToken=[A-Za-z0-9_-]{20,}"),
         ];
 
         raw.into_iter()

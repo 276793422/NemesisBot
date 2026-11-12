@@ -99,7 +99,7 @@ fn test_credential_in_args_blocked() {
     let plugin = make_plugin();
     let inv = ToolInvocation {
         tool_name: "write_file".to_string(),
-        args: serde_json::json!({"path": "/tmp/test.txt", "content": "AWS key: AKIAIOSFODNN7EXAMPLE12345678"}),
+        args: serde_json::json!({"path": "/tmp/test.txt", "content": "AWS key: AKIANCDC6VFQTFGRMBKW12345678"}),
         user: "test".to_string(),
         source: "cli".to_string(),
         metadata: Default::default(),
@@ -636,7 +636,7 @@ async fn test_plugin_credential_disabled() {
     });
     let inv = ToolInvocation {
         tool_name: "write_file".to_string(),
-        args: serde_json::json!({"content": "AWS key: AKIAIOSFODNN7EXAMPLE12345678"}),
+        args: serde_json::json!({"content": "AWS key: AKIANCDC6VFQTFGRMBKW12345678"}),
         user: "test".to_string(),
         source: "cli".to_string(),
         metadata: Default::default(),
@@ -1181,7 +1181,7 @@ async fn test_dlp_inbound_write_high_confidence_blocked() {
     });
     let inv = ToolInvocation {
         tool_name: "write_file".to_string(),
-        args: serde_json::json!({"path": "/tmp/key.txt", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA"}),
+        args: serde_json::json!({"path": "/tmp/key.txt", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7dGd4vWrbO8pRT4dWShvUfCbEAmfPQgeSGkX2a4YvF0OJoAo"}),
         user: "test".to_string(),
         source: "cli".to_string(),
         metadata: Default::default(),
@@ -1979,7 +1979,7 @@ fn test_deny_info_layer_credential() {
     let plugin = make_plugin();
     let inv = ToolInvocation {
         tool_name: "write_file".to_string(),
-        args: serde_json::json!({"path": "/tmp/test.txt", "content": "AWS key: AKIAIOSFODNN7EXAMPLE12345678"}),
+        args: serde_json::json!({"path": "/tmp/test.txt", "content": "AWS key: AKIANCDC6VFQTFGRMBKW12345678"}),
         user: "test".to_string(),
         source: "cli".to_string(),
         metadata: Default::default(),
@@ -2004,7 +2004,7 @@ fn test_deny_info_layer_dlp() {
     });
     let inv = ToolInvocation {
         tool_name: "write_file".to_string(),
-        args: serde_json::json!({"path": "/tmp/key.txt", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA"}),
+        args: serde_json::json!({"path": "/tmp/key.txt", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7dGd4vWrbO8pRT4dWShvUfCbEAmfPQgeSGkX2a4YvF0OJoAo"}),
         user: "test".to_string(),
         source: "cli".to_string(),
         metadata: Default::default(),

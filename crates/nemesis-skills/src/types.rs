@@ -500,8 +500,9 @@ pub fn validate_skill_identifier(slug: &str) -> std::result::Result<(), String> 
     // drift and uninstall cannot find the directory by name. Checked on the
     // RAW input: callers join the untrimmed slug into paths, so validating
     // the trimmed form would let "foo " through and drift anyway.
-    let base = trimmed.split('.').next().unwrap_or("").to_ascii_lowercase();
-    if WINDOWS_RESERVED_NAMES.contains(&base.as_str()) {
+    // 名单与基名比对规则委托 nemesis-utils 单一真相源
+    // （BUG-20261111-083：与 sanitize_path_segment 出口中和同源）。
+    if nemesis_utils::sanitize::is_windows_reserved_device_base(trimmed) {
         return Err(format!("'{}' is a Windows reserved device name", trimmed));
     }
     if slug.ends_with('.') || slug.ends_with(' ') {
@@ -526,14 +527,6 @@ pub fn is_metadata_entry(name: &str) -> bool {
         ".git" | ".svn" | ".hg" | ".DS_Store" | ".signature" | ".skill-origin.json"
     ) || name.starts_with(".#")
 }
-
-/// Windows reserved device names (classic MS list of 22; base-name compare
-/// before the first '.', case-insensitive -- "con.txt" also hits in Win32
-/// path semantics).
-const WINDOWS_RESERVED_NAMES: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];
 
 /// Case-insensitive substring match.
 pub fn contains_ci(haystack: &str, needle: &str) -> bool {

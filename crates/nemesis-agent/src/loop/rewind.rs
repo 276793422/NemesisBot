@@ -181,6 +181,63 @@ impl AgentLoop {
         }
     }
 
+    /// B2 锚定定位（2026-11-11 slash 回声漂移机制解）：前端 message_index
+    /// 由「历史批次推导 + live 递增」混合而来——被后端拦截不落盘的 slash
+    /// 命令，其入环回声帧会把前端 live 计行抬高（虚高随 slash 条数累积），
+    /// 直接按 index 截断会错行。`anchor_content` = 前端在 index 处看到的
+    /// 消息正文，后端按**内容**（trim 后相等——前端 planRegenerate 交出
+    /// 的是 trim 后文本）重定位真实行：
+    ///
+    /// - index 处内容已相等 = 无漂移最快路径；
+    /// - 否则全量扫描内容相等行：唯一命中即用；多个命中取距 index 最近
+    ///   （重复提问同一文本时，点击意图由最近性近似）；
+    /// - 零命中 = fail-closed 拒绝（锚不在会话里：会话已切换/已被截断——
+    ///   绝不按可能漂移的 index 盲截）。
+    ///
+    /// `None`/空锚 = 旧前端兼容路径，行为与漂移修复前完全一致。
+    pub(crate) fn resolve_anchor_index(
+        rows: &[serde_json::Value],
+        message_index: usize,
+        anchor_content: Option<&str>,
+    ) -> Result<usize, String> {
+        let Some(anchor) = anchor_content.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(message_index);
+        };
+        fn row_content(r: &serde_json::Value) -> Option<&str> {
+            r.get("content").and_then(|v| v.as_str()).map(str::trim)
+        }
+        if rows.get(message_index).and_then(|r| row_content(r)) == Some(anchor) {
+            return Ok(message_index);
+        }
+        let hits: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| row_content(r) == Some(anchor))
+            .map(|(i, _)| i)
+            .collect();
+        match hits.len() {
+            0 => Err(format!(
+                "锚内容定位失败：message_index {message_index} 处的锚文本与会话中任何行都不匹配\
+                 （会话已切换或已被截断？）——未做任何截断"
+            )),
+            1 => Ok(hits[0]),
+            _ => {
+                let picked = hits
+                    .iter()
+                    .copied()
+                    .min_by_key(|i| i.abs_diff(message_index))
+                    .unwrap_or(message_index);
+                tracing::warn!(
+                    anchor_hits = hits.len(),
+                    requested = message_index,
+                    anchored_at = picked,
+                    "[rewind] anchor_content 多行命中，取距 message_index 最近行"
+                );
+                Ok(picked)
+            }
+        }
+    }
+
     /// 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息
     /// 及其 turn 的回复**保留**，其后所有行截掉），文件恢复到其后第一个
     /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self::redo_rewind`]
@@ -210,15 +267,17 @@ impl AgentLoop {
     /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
     ///
     /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
-    /// 为 blocked 结构）。
+    /// 为 blocked 结构）。`anchor_content` 可选，走 B2 锚定定位
+    /// （[`Self::resolve_anchor_index`]）按内容重定位真实行。
     pub async fn rewind_to_message(
         &self,
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         self.under_history_gate(session_key, "回退", || {
-            self.rewind_to_message_inner(session_key, message_index, force)
+            self.rewind_to_message_inner(session_key, message_index, force, anchor_content)
         })
         .await
     }
@@ -228,7 +287,14 @@ impl AgentLoop {
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        // jsonl 重写窗口登记（守卫持至函数退出）——必须在行快照读取
+        // **之前**开启：窗口开启前绕闸追加的行（busy 回绝留痕 / snooze
+        // 唤醒行）不在快照里，随后 rewind_from_cut 按陈旧快照整文件重写
+        // 会把它们静默吞掉（不在 undo 条目，redo 无法恢复）。登记时机
+        // 是本守卫的全部意义所在（BUG-20261031-231 契约延伸）。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
         // 非热路径不改变同步阻塞 IO 占住 tokio worker 的
         // 机制（read_chat_log_async 同款纪律），spawn_blocking 移出。
@@ -243,6 +309,9 @@ impl AgentLoop {
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
+        // 锚定重定位先行（B2）：漂移的 index 在这里被纠正成真实行号；
+        // 零命中 fail-closed，绝不按可能漂移的 index 盲截。
+        let message_index = Self::resolve_anchor_index(&rows, message_index, anchor_content)?;
         if message_index >= rows.len() {
             return Err(format!(
                 "message_index {} 超出范围（会话共 {} 条消息）",
@@ -279,6 +348,9 @@ impl AgentLoop {
         &self,
         session_key: &str,
     ) -> Result<serde_json::Value, String> {
+        // jsonl 重写窗口登记（同 rewind_to_message_inner——必须在行快照
+        // 读取之前开启，见其注释）。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         // 全量读同步阻塞 IO 直跑 tokio worker（非热路径
         // 不改变占住 worker 的机制），spawn_blocking 移出。
         let (rows, _total, _, _) = {
@@ -334,9 +406,10 @@ impl AgentLoop {
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         self.under_history_gate(session_key, "回退", || {
-            self.rewind_before_message_inner(session_key, message_index, force)
+            self.rewind_before_message_inner(session_key, message_index, force, anchor_content)
         })
         .await
     }
@@ -346,7 +419,11 @@ impl AgentLoop {
         session_key: &str,
         message_index: usize,
         force: bool,
+        anchor_content: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        // jsonl 重写窗口登记（同 rewind_to_message_inner——必须在行快照
+        // 读取之前开启，见其注释）。
+        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
         // 全量读同步阻塞 IO 直跑 tokio worker（非热路径
         // 不改变占住 worker 的机制），spawn_blocking 移出。
         let (rows, _total, _, _) = {
@@ -360,6 +437,10 @@ impl AgentLoop {
         if rows.is_empty() {
             return Err("会话没有可回退的消息".to_string());
         }
+        // 锚定重定位先行（B2）：前端「重新生成/撤销此问」的 turnStart 同
+        // 受 live 计行漂移影响——前端重放 guard 拒绝重发的斜杠命令恰好就
+        // 是漂移源，此入口是漂移的主受害路径。
+        let message_index = Self::resolve_anchor_index(&rows, message_index, anchor_content)?;
         if message_index >= rows.len() {
             return Err(format!(
                 "message_index {} 超出范围（会话共 {} 条消息）",
@@ -395,11 +476,13 @@ impl AgentLoop {
         report_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        // jsonl 重写窗口登记（守卫持至函数退出，含全部
-        // 早退路径）。本函数以进闸时刻的快照整文件重写会话 jsonl——窗口内
-        // 绕闸追加（busy 回绝留痕 / snooze 唤醒行）会被截断静默吞掉；登记
-        // 后追加方检查在旗诚实跳过，消灭「写了就被吞」面。
-        let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
+        // jsonl 重写窗口契约：调用方必须在行快照读取**之前**登记
+        // （`history_rewrite_begin`）——本函数以调用方读到的快照整文件
+        // 重写会话 jsonl，窗口开启前绕闸追加的行（busy 回绝留痕 /
+        // snooze 唤醒行）不在快照里，会被截断静默吞掉（不在 undo 条目，
+        // redo 无法恢复）。三个 rewind 入口均已在各自行读取前登记；本
+        // 函数不再重复登记（守卫 RAII 不可重入：内层 drop 会移除注册
+        // 条目，外层守卫变空壳——BUG-20261031-231 契约延伸）。
         // 文件恢复锚：cut 起第一个带 checkpoint_turn 标记的行（第一个仍在
         // 的 checkpoint turn）——恢复到它 begin 之前 = index 所在 turn 完成
         // 时的文件态。None = 之后没有 checkpoint turn（或全是无标记旧行）。
@@ -441,13 +524,78 @@ impl AgentLoop {
                 }));
             }
         }
-        let forced =
-            force && (!report.conflicts.is_empty() || !report.other_session_paths.is_empty());
+        // 空闲期外部新文件保护：unchecked_new（restore 将按 Added 擦除
+        // 的未声明路径）中**诞生时刻晚于被回退最后行时间戳**的 = 会话
+        // 结束后新出现的外部文件（用户手工放置，非任何被回退 turn 的
+        // 产物）——删除不可逆，默认拒绝（force 显式强过）。诞生于被回退
+        // turn 窗口内的（exec 落盘等产物）= 回退本意，不拦。最后行时间
+        // 戳解析失败 = 本闸降级关闭（不阻塞，保持既有可见性语义，避免
+        // 新误伤）；文件已不在盘 = 删无可删，无需保护。
+        //
+        // 诚实边界（BUG-20261112-106 勘定）：born 取自文件系统 inode
+        // 时间戳，ext4 等本地 fs 用 coarse 粗粒度时钟记账（jiffy 量化
+        // ，可滞后 chrono CLOCK_REALTIME 精读约 1 个 tick——WSL2 实测
+        // 1.1ms，HZ=100 内核可达 ~10ms；NTFS 同源时钟无此滞后）。于是
+        // 「末行后 ≤1 tick」诞生的文件在 Linux 上判不出「之后」= 保护
+        // 盲区；「末行前 ≤1 tick」的 turn 产物不受影响（recorded-born
+        // 只会往前偏，恒 ≤ cut_ts，不误拦）。盲区 < 文件系统时间粒度
+        // 量级、威胁模型（用户空闲期手工放置文件 = 秒级之后）覆盖不到
+        // ，生产语义成立。回滚记录：tree_after 结构性判别（封印树在场
+        // = 产物）在 trailing turn 未封印场景误拦自有产物（e3 gshell
+        // 语义），mtime + tick 边界是两难下的正解；r840 测试侧的间隔
+        // 纪律（>fs tick）由 rewind_guard_tests 落实。
+        let mut idle_new: Vec<String> = Vec::new();
+        if !report.unchecked_new_paths.is_empty()
+            && let Some(cp) = self.attached_checkpoint()
+        {
+            let cut_ts = rows[cut.min(rows.len())..]
+                .last()
+                .and_then(|r| r.get("timestamp"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(std::time::SystemTime::from);
+            if let Some(cut_ts) = cut_ts {
+                for rel in &report.unchecked_new_paths {
+                    let Ok(meta) = tokio::fs::metadata(cp.root().join(rel)).await else {
+                        continue;
+                    };
+                    if meta
+                        .created()
+                        .or_else(|_| meta.modified())
+                        .is_ok_and(|born| born > cut_ts)
+                    {
+                        idle_new.push(rel.clone());
+                    }
+                }
+            }
+        }
+        if !idle_new.is_empty() && !force {
+            warn!(
+                "[AgentLoop] rewind 空闲期外部新文件保护拒绝：session={session_key} 检出 {} 个会话结束后新出现的未声明文件（restore 将删除，force 可强过）: {:?}",
+                idle_new.len(),
+                idle_new
+            );
+            return Ok(serde_json::json!({
+                "blocked": true,
+                "reason": "external_new_files",
+                "session_key": session_key,
+                "message_index": report_index,
+                "restore_turn": restore_turn,
+                "external_new_paths": idle_new,
+                "unchecked_paths": report.unchecked_paths,
+                "note": "会话结束后新出现的文件（未声明、非被回退 turn 的产物）将被回退删除——删除不可逆，确认删除请带 force 重试",
+            }));
+        }
+        let forced = force
+            && (!report.conflicts.is_empty()
+                || !report.other_session_paths.is_empty()
+                || !idle_new.is_empty());
         if forced {
             warn!(
-                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突 + {} 个其他会话波及路径",
+                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突 + {} 个其他会话波及路径 + {} 个空闲期新文件删除",
                 report.conflicts.len(),
-                report.other_session_paths.len()
+                report.other_session_paths.len(),
+                idle_new.len()
             );
         }
 
@@ -469,10 +617,12 @@ impl AgentLoop {
             }
             None => None,
         };
-        // post 基线初值：restore 无锚 = 索引不动，基线就是现状；有锚在
-        // scoped 截断后于步骤 1 读取。
+        // post 基线初值：restore 无锚 = 索引不动，基线就是现状（会话
+        // 收窄口径——与 redo 守卫 2 对照侧同源，其他会话条目不参与）；
+        // 有锚在 scoped 截断后于步骤 1 读取。
         let mut post_tree = if restore_turn.is_none() {
-            forward_tree.clone()
+            self.attached_checkpoint()
+                .and_then(|cp| cp.latest_tree_hex_scoped(Some(session_key)))
         } else {
             None
         };
@@ -564,12 +714,14 @@ impl AgentLoop {
         // 2b) 提交成功 → 检查点退役（从步骤 1 移来）。
         // scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）原样
         // 保留，其回退历史不被本会话的回退摧毁。
-        // post 基线 = scoped 截断后的真实索引态，
-        // 两侧同读截断后索引（redo 守卫 2 对照 latest_tree_hex 即同口径；
-        // 截断前其他会话 turn ≥ t 的条目带树会被误判「undo 后工作区变了」）。
+        // post 基线 = scoped 截断后的真实索引态，**会话收窄口径**
+        // （本会话 + None 归属条目），与 redo 守卫 2 对照侧同源——其他
+        // 会话的存量条目两侧同现不构成「变化」；其他会话 undo 后新
+        // begin 的 turn 也不参与本侧口径（其盘面波及归 redo 冲突预检
+        // 按路径级 diff 拦截，不再击穿守卫 2）。
         if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
             cp.truncate_from_scoped(t, Some(session_key));
-            post_tree = cp.latest_tree_hex();
+            post_tree = cp.latest_tree_hex_scoped(Some(session_key));
         }
 
         // force 强过的强恢复动作落审计链台账——跳过冲突
@@ -791,14 +943,33 @@ impl AgentLoop {
         if kept_rows_fingerprint(&rows) != entry.kept_rows_hash {
             return Err("回退后会话内容已变化，redo 已失效（行数未变但内容不同）".to_string());
         }
-        // 守卫 2：工作区 tree 基线未变（undo 后没有新 checkpoint turn）。
-        // 基线两侧同口径：post 在 undo 侧 scoped 截断后采集，其他
-        // 会话的存量条目两侧同现，不构成「变化」。
+        // 守卫 2：工作区 tree 基线未变（本会话 scope 内 undo 后没有新
+        // checkpoint turn）。基线两侧同口径（会话收窄）：post 在 undo 侧
+        // scoped 截断后采集，其他会话的存量条目两侧同现不构成「变化」；
+        // 其他会话 undo 后**新** begin 的 turn 也不参与本侧口径（它们的
+        // 全树 restore 盘面波及由下方冲突预检按路径级 diff 拦截——那里
+        // blocked 可重试，且不影响本会话 redo 能力）。守卫失败 = 还栈 +
+        // blocked（与其他阻塞路径同契约；直接 Err 会销毁条目——
+        // removed_rows 是被回退对话行的唯一副本，随条目丢失 = redo 安全
+        // 网永久失效）。
         let cur_tree = self
             .attached_checkpoint()
-            .and_then(|cp| cp.latest_tree_hex());
+            .and_then(|cp| cp.latest_tree_hex_scoped(Some(session_key)));
         if cur_tree != entry.post_tree {
-            return Err("回退后工作区发生了新的变化，redo 已失效".to_string());
+            self.rewind_undo_stacks
+                .lock()
+                .entry(session_key.to_string())
+                .or_default()
+                .push_back(entry);
+            warn!(
+                "[AgentLoop] redo tree 基线守卫拒绝（会话 checkpoint 基线漂移）——undo 条目已还栈可重试：session={session_key}"
+            );
+            return Ok(serde_json::json!({
+                "blocked": true,
+                "reason": "tree_baseline_changed",
+                "session_key": session_key,
+                "note": "回退后会话 checkpoint 基线发生了未预期的变化，redo 已阻塞——条目已保留，可排查后重试",
+            }));
         }
 
         // redo 冲突预检——undo→redo 窗口内的外部
@@ -914,7 +1085,33 @@ impl AgentLoop {
                         }));
                     }
                 }
-                Err(e) => file_note = Some(e),
+                Err(e) => {
+                    // （续作复评）：Err 臂对齐上方 Ok-不-ok 臂的零推进契约
+                    // ——影子库 open 失败（checkpoints.git 被清理/损坏/被
+                    // 外部进程独占）= 前向恢复整体不可用。旧形态只记 note
+                    // 照常回填 + 消耗条目：文件没恢复、对话已重做、条目被
+                    // 消耗（removed_rows 唯一副本随条目丢失），三态错位且
+                    // 不可重试。现在：条目还栈、回填不做、结构化 blocked
+                    // 回执——解决影子库可用性后可重试。
+                    let restore_turn = entry.restore_turn;
+                    self.rewind_undo_stacks
+                        .lock()
+                        .entry(session_key.to_string())
+                        .or_default()
+                        .push_back(entry);
+                    warn!(
+                        "[AgentLoop] redo 前向恢复整体失败（{e}）——行回填未做、undo 条目已还栈可重试：session={session_key}"
+                    );
+                    return Ok(serde_json::json!({
+                        "blocked": true,
+                        "reason": "restore_failed",
+                        "session_key": session_key,
+                        "restore_turn": restore_turn,
+                        "file_restore": "failed",
+                        "restore_failures": [],
+                        "note": format!("文件恢复失败（{e}），会话对话未改动——解决失败原因后可重试本操作"),
+                    }));
+                }
             },
             (Some(_), None) => file_note = Some("checkpoint store 未挂载，文件未恢复".to_string()),
             (None, _) => {
@@ -1046,6 +1243,18 @@ impl AgentLoop {
         };
 
         // 现盘内容：缺文件 = 空 head（diff 呈全删）+ head_on_disk=false。
+        // `..` 段显式拒绝（Path::join 原样保留 `..` → root 外越界读盘）：
+        // 声明侧在工具执行与边界校验之前登记（tool_dispatch preview 阶段），
+        // 被 WorkspaceBoundary 拒绝的 `..\..\x` 写尝试也会留声明、
+        // base_for_path 同串命中——不挡的话 diff head 会把越界文件现盘
+        // 内容整体带出（safe_path 侧本就拒 `..`，此处补齐同语义）。
+        // rel=Some 的路径不可能含 `..`（repo_relative_path 返 None），
+        // 本闸只拦 raw 形态；界外绝对路径（root.join 整体替换形态）保留
+        // ——工作区外 hybrid 快照的合法 diff 场景依赖它，且需要用户主动
+        // 点名同串路径，非注入面。
+        if path.split(['/', '\\']).any(|seg| seg == "..") {
+            return Err("路径含 `..` 段，拒绝读取（越界防护）".to_string());
+        }
         let abs = cp.root().join(rel.as_deref().unwrap_or(path));
         let (head_content, head_on_disk) = match tokio::fs::read(&abs).await {
             Ok(bytes) => (String::from_utf8_lossy(&bytes).into_owned(), true),

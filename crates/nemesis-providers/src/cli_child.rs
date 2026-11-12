@@ -17,6 +17,15 @@ pub async fn run_with_stdin(
     mut cmd: tokio::process::Command,
     prompt: &str,
 ) -> std::io::Result<std::process::Output> {
+    // 超时弃 future = drop Child → 必须 kill_on_drop（BUG-20261111-082）：
+    // agent loop 首捕统一包 call_timeout（chat_call_escalating →
+    // chat_call_bounded 的 tokio::time::timeout），超时即取消本 future——
+    // 无此标志时 CLI 子进程（claude/codex）成孤儿继续跑：拿着对话内容
+    // 在后台烧 API token，stdout 管道无人读、缓冲写满后子进程自己阻塞
+    // 永不退出；transient 重试还会逐次叠加新孤儿。正常完成路径不受影响
+    // （wait_with_output 已收尸，drop 对已退出进程是 no-op）。同族先例：
+    // cc_hooks.rs / middleware.rs run_shell_bounded / exec.rs。
+    cmd.kill_on_drop(true);
     let mut child = cmd.spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;

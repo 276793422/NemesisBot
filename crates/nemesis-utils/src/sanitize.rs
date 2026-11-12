@@ -12,7 +12,11 @@
 /// Whitelist: ASCII alphanumerics, `-`, `_`, and `.` only when it directly
 /// follows an alphanumeric (so `..`, `a..`, `.x` collapse to `_`).
 /// Everything else — `/`, `\`, `:`, spaces, control chars — becomes `_`.
-/// A result that sanitizes to empty (or a bare dot-form) becomes `_`. The
+/// A result that sanitizes to empty (or a bare dot-form) becomes `_`. A
+/// result whose base name (before the first `.`) is a Windows reserved
+/// device name (`con`/`nul`/… 22 名单) gets a `_` prefix — bare `nul`
+/// still device-resolves on current Windows and silently discards writes.
+/// The
 /// result is capped at 80 chars so a hostile long id cannot blow path
 /// limits — over-limit ids keep a deterministic hash suffix instead of a
 /// bare truncation, which would collide (see fn doc). Trailing `.` is
@@ -41,6 +45,19 @@ pub fn sanitize_path_segment(raw: &str) -> String {
     // Guard against `.`/`..` after sanitization and empty names.
     if out.is_empty() || out == "." || out == ".." {
         out.push('_');
+    }
+    // Windows 保留设备名中和（BUG-20261111-083）：白名单全字母数字的
+    // `con`/`nul` 等此前逐字节直通，而裸 `nul`（无扩展名）在 Win11 26200
+    // 实测仍设备解析——`File::create` 报成功但文件永不落盘（快照/账本类
+    // 写入静默丢数据）；旧 Windows（10/Server）全 22 名 + 扩展名形态均设
+    // 备解析（创建诡误/写入设备）。skills 安装闸
+    // （nemesis-skills `validate_skill_identifier`）先有保留名检查但私有
+    // 于该 crate；出口单一真相源在此统一中和——前缀 `_` 断开设备名解析，
+    // 保留名 ≤4 字符，+1 只可能把原 ≤80 的输入推进既有 hash 分支，输出
+    // 契约与「hash 形态只出自 hash 分支」的分离不变量都不破。运行时键族
+    // （`chan:*`/`agent:*`/`task_*`/uuid）恒含 `_` 或非保留词，映射不变。
+    if is_windows_reserved_device_base(out.trim_end_matches('.')) {
+        out.insert(0, '_');
     }
     // Cap length: a hostile very-long id should not blow path limits. BUT
     // pure truncation collides（UAT 实证：cluster 会话键
@@ -212,6 +229,25 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     h
+}
+
+/// Windows 保留设备名（MS 经典 22 名单）：作为路径段时 Win32 目标管理器
+/// 把它们解析成 DOS 设备而非文件——裸名（无扩展名）在任何 Windows 上都是
+/// 设备语义（`nul` 写入静默丢弃；实测 Win11 26200 唯一存活形态）；带扩展
+/// 名/目录形态在旧 Windows（10/Server）同样命中。消费方：[`sanitize_path_segment`]
+/// 的出口中和与 nemesis-skills 安装闸的入口拒绝同源复用（单一真相源）。
+pub const WINDOWS_RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// 保留设备名判定：取首个 `.` 前的基名，ASCII 小写不敏感比对
+/// [`WINDOWS_RESERVED_DEVICE_NAMES`]（`con.txt` 在经典 Win32 路径语义里
+/// 与 `con` 同样命中）。输入应是**已消毒**的段（无空白/分隔符）——入口
+/// 校验场景先 trim 再传入。
+pub fn is_windows_reserved_device_base(seg: &str) -> bool {
+    let base = seg.split('.').next().unwrap_or("");
+    WINDOWS_RESERVED_DEVICE_NAMES.contains(&base.to_ascii_lowercase().as_str())
 }
 
 #[cfg(test)]

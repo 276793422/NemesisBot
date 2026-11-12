@@ -1599,6 +1599,10 @@ impl ModelsHandler {
                 .arg("model")
                 .arg("catalog-update")
                 .env("NEMESISBOT_HOME", &env_home)
+                // 90s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏
+                // 挂死的子 nemesisbot（孤儿继续跑网络操作，结果被弃）
+                // （BUG-20261111-082 同族）。
+                .kill_on_drop(true)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output(),

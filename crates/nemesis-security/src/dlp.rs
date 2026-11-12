@@ -8,6 +8,8 @@ use std::sync::OnceLock;
 
 use nemesis_types::utils;
 
+use crate::credential::exemptions;
+
 /// DLP scan result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DlpResult {
@@ -359,6 +361,90 @@ impl DlpEngine {
                 {
                     continue;
                 }
+                // db_connection 占位符豁免与 scan_text 同源同语义（2026-11-11
+                // 横扫批）：教程/模板连接串不构成泄漏，照常保留——不打码
+                // 损毁文档/配置可读性。判定单一真相源
+                // crate::credential::exemptions（豁免表单一真相源模块）。
+                if rule.name == "database_connection_string"
+                    && crate::credential::exemptions::is_placeholder_db_credential(matched)
+                {
+                    continue;
+                }
+                // authorization_header 占位符豁免与 scan_text 同源同语义
+                // （2026-11-11 二次横扫批）：Basic 散文/教程形态照常保留，
+                // 不打码损毁文档可读性。判定单一真相源
+                // `credential/exemptions.rs`（validator 臂
+                // authorization_not_placeholder 同源）。
+                if rule.name == "authorization_header"
+                    && !authorization_not_placeholder(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                // 三次横扫 validator 的 redact 面对称（2026-11-11 三次横扫
+                // 批自查补齐；aws 两臂 2026-11-11 机制化重构批拆分）：validator
+                // 判 false（AWS 文档 canonical / 值段散文 / 教程引号复合词 /
+                // PEM 格式示意 / jwt.io demo / stripe 文档测试 key / slack
+                // 文档占位——不构成泄漏）的跨度不进替换集，不打码损毁文档
+                // 可读性。判定单一真相源 = validator 本体（scan_text 阻断面
+                // 同函数，两口径永不分裂）。
+                if rule.name == "aws_access_key"
+                    && !aws_access_not_doc_example(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if rule.name == "aws_secret_key"
+                    && !aws_secret_not_doc_example(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if rule.name == "github_token" && !github_token_not_prose(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if matches!(
+                    rule.name,
+                    "azure_api_key" | "generic_hex_key" | "generic_base64_key"
+                ) && !token_value_not_prose(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if rule.name == "jwt_token" && !jwt_not_known_demo(text, m.start(), m.end()) {
+                    continue;
+                }
+                if rule.name == "stripe_key"
+                    && !stripe_not_docs_or_placeholder(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if rule.name == "slack_token"
+                    && !slack_not_docs_placeholder(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if matches!(
+                    rule.name,
+                    "secret_password_assignment"
+                        | "secret_token_assignment"
+                        | "secret_key_assignment"
+                ) && value_is_quoted(text, m.start(), m.end())
+                    && !quoted_secret_not_tutorial(text, m.start(), m.end())
+                {
+                    // 仅「引号 + 教程复合词」形态保留原文；裸值（validator
+                    // 同判 false）不豁免——裸秘密在出站仍是泄漏面，照常
+                    // 打码（test_bare_secret_redacted_but_not_blocking 钉死
+                    // 的既有语义）。
+                    continue;
+                }
+                if matches!(
+                    rule.name,
+                    "private_key_rsa"
+                        | "private_key_generic"
+                        | "private_key_openssh"
+                        | "private_key_pkcs8"
+                ) && !pem_not_illustration(text, m.start(), m.end())
+                {
+                    continue;
+                }
                 spans.push((m.start(), m.end()));
             }
         }
@@ -632,6 +718,46 @@ fn china_id_valid(text: &str, start: usize, end: usize) -> bool {
     chars[17].to_ascii_uppercase() == expected
 }
 
+/// db 连接串占位符豁免（2026-11-11 横扫批）：教程/模板形态
+/// （`postgres://user:password@localhost`、compose 的 `${DB_USER}:${DB_PASSWORD}@db`、
+/// 文档尖括号 `<user>:<password>@host`）不构成泄漏——判 false → demote Low
+/// → 只 log 不 block。判定单一真相源在 `crate::credential::exemptions`
+/// （豁免表单一真相源模块；Layer 4 四条 db_connection_* 规则同源豁免），
+/// 两口径永不分裂。
+fn connection_not_placeholder(text: &str, start: usize, end: usize) -> bool {
+    match text.get(start..end) {
+        Some(seg) => !crate::credential::exemptions::is_placeholder_db_credential(seg),
+        None => false,
+    }
+}
+
+/// authorization_header 占位符豁免（2026-11-11 二次横扫批；Bearer 臂散文
+/// 闸为三次横扫批扩展）：Basic 臂复用 Layer 4 单一真相源
+/// `is_placeholder_basic_auth`（散文长词 `Basic authentication`、教程示例
+/// base64("user:password") 不构成泄漏 → demote Low 只 log）；Bearer 臂值
+/// 段走 `is_prose_token_value`（无数字且非大小写混排 = 文档占位符
+/// `your-bearer-token-here` 类 → demote）。从小写副本定位 scheme 词——
+/// ASCII 小写化不改字节偏移，切片安全；Bearer token 内偶然含 "basic"/
+/// "bearer" 子串时余段无空白、首词不再等于 scheme 词，对应判定返回
+/// false → 判真占位不成立 → 恒过，无误降级。
+fn authorization_not_placeholder(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    let lower = seg.to_ascii_lowercase();
+    if let Some(pos) = lower.find("basic") {
+        return !crate::credential::exemptions::is_placeholder_basic_auth(seg[pos..].trim_end());
+    }
+    if let Some(pos) = lower.find("bearer") {
+        let after = &seg[pos + "bearer".len()..];
+        return !after
+            .split_whitespace()
+            .next()
+            .is_some_and(crate::credential::exemptions::is_prose_token_value);
+    }
+    true
+}
+
 /// keyed-assignment 值段形态闸（BUG-20261110-046）：值段必须是**引号
 /// 字面量**（与 Layer 4 credential.rs secret_assignment 的 d405ff8b 修后
 /// 形态对齐）。未加引号的值 = 代码表达式/标识符拷贝
@@ -653,6 +779,149 @@ fn value_is_quoted(text: &str, start: usize, end: usize) -> bool {
     )
 }
 
+/// 引号内值段提取（quoted_secret_not_tutorial 辅助）：首个引号与其配对
+/// 引号之间的本体。赋值规则值段单行语义（同 Layer 4 secret_assignment
+/// 的 d405ff8b 修后形态）保证配对成立；不成对返回 None。
+fn extract_quoted_value(seg: &str) -> Option<&str> {
+    let q = seg.chars().find(|c| *c == '"' || *c == '\'')?;
+    let (_, after) = seg.split_once(q)?;
+    after.split_once(q).map(|(value, _)| value)
+}
+
+/// secret_*_assignment 引号 + 占位符值复合双重闸（2026-11-11 三次横扫批
+/// 立闸；机制化重构批换装 Layer 4 复合真相源）：值段无引号（既有
+/// value_is_quoted 语义）**或**引号内是占位符值（`password = "your-password"`
+/// / `"YOUR_PASSWORD_HERE"` / `"${DB_PASSWORD}"` / PEM 示意——
+/// is_placeholder_secret_value 同源判定，五臂复合）→ demote Low 只 log。
+/// 大小写混排/含数字的引号值保持 Medium 照拦。
+fn quoted_secret_not_tutorial(text: &str, start: usize, end: usize) -> bool {
+    if !value_is_quoted(text, start, end) {
+        return false;
+    }
+    let Some(seg) = text.get(start..end) else {
+        return true;
+    };
+    match extract_quoted_value(seg) {
+        Some(value) => !crate::credential::exemptions::is_placeholder_secret_value(value),
+        None => true,
+    }
+}
+
+/// aws_access_key 文档 canonical + 占位符豁免（2026-11-11 三次横扫批立闸；
+/// 机制化重构批扩占位符臂）：匹配段含 "example"（AWS 官方文档
+/// `AKIAIOSFODNN7EXAMPLE`）或 16 字符值段全同/SCREAMING 大写占位
+///（`AKIA` + `YOURACCESSKEY…` 教程形态）→ demote。判定单一真相源
+/// `crate::credential::exemptions`（Layer 4 同源判据）。
+fn aws_access_not_doc_example(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    if exemptions::is_canonical_doc_example(seg) {
+        return false; // 文档 canonical → 豁免（validator false = demote）
+    }
+    // 值段 = 4 字符前缀（AKIA/ASIA…）后的 16 字符。
+    let value = seg.get(4..).unwrap_or(seg);
+    !exemptions::is_uniform_char_value(value) && !exemptions::is_screaming_placeholder(value)
+}
+
+/// aws_secret_key 文档 canonical + 占位符豁免（同上批；机制化重构批扩占位
+/// 符臂）：匹配段含 "example"（`wJalrXUtnFEMI/…EXAMPLEKEY`）或 `=`/`:` 后
+/// 40 字符值段全同/SCREAMING 占位 → demote。
+fn aws_secret_not_doc_example(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    if exemptions::is_canonical_doc_example(seg) {
+        return false; // 文档 canonical → 豁免（validator false = demote）
+    }
+    // `key = VALUE` 分隔符后空格 trim 后再判（与 L4 TailAfter 同语义）。
+    let Some(value) = seg.rsplit(['=', ':']).next().map(str::trim) else {
+        return true;
+    };
+    !exemptions::is_uniform_char_value(value) && !exemptions::is_screaming_placeholder(value)
+}
+
+/// jwt_token 已知 demo 常量豁免（2026-11-11 机制化重构批）：jwt.io 首页
+/// demo token（header/payload 通用 + 签名段 `SflKxwRJSMeKKF2QT4fwpMeJ…`）
+/// 出现在每篇 JWT 教程——签名段精确等于知名常量 → demote（真实凭据与
+/// 常量逐字节相等的概率为零）。L4 豁免表同源（KnownConstant 行）。
+fn jwt_not_known_demo(text: &str, start: usize, end: usize) -> bool {
+    !text
+        .get(start..end)
+        .is_some_and(|seg| seg.contains(exemptions::JWT_IO_DEMO_SIGNATURE))
+}
+
+/// stripe_key 文档测试 key + 占位符豁免（2026-11-11 机制化重构批，§7.3
+/// 挂账「不可分辨」类的机制化精确豁免）：Stripe 官方文档测试 key
+/// `4eC39HqLyjWDarjtT1zdp7dc` 出现在每篇 Stripe 教程——精确子串豁免；
+/// `_` 后值段全同/SCREAMING 占位（`sk_test_YOURSTRIPEKEY…`）同豁免。
+/// 随机形假钥仍拦（不可分辨，记录边界）。
+fn stripe_not_docs_or_placeholder(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    if seg.contains(exemptions::STRIPE_DOCS_TEST_KEY) {
+        return false; // 文档测试 key → 豁免（validator false = demote）
+    }
+    let Some(value) = seg.rsplit('_').next() else {
+        return true;
+    };
+    !exemptions::is_uniform_char_value(value) && !exemptions::is_screaming_placeholder(value)
+}
+
+/// slack_token 文档占位符豁免（2026-11-11 机制化重构批）：末段（秘密承载
+/// 段，`-` 分隔最后一段）全同或 SCREAMING 占位
+///（`…-XXXX…` / `…-YOURSLACKTOKEN…` 教程形态）→ demote（返回 false）。
+/// 中间数字段无判别力（真实团队 ID 与教程递增数字在「非全同非大写」上
+/// 同形）不参与判定——占位信号承载在末段。真实混排末段恒过。
+fn slack_not_docs_placeholder(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    let Some(value) = seg.rsplit('-').next().map(str::trim) else {
+        return true;
+    };
+    !exemptions::is_uniform_char_value(value) && !exemptions::is_screaming_placeholder(value)
+}
+
+/// keyed 赋值规则（azure_api_key / generic_hex_key / generic_base64_key）
+/// 值段散文豁免（2026-11-11 三次横扫批）：`azure_api_key =
+/// YOUR_AZURE_SUBSCRIPTION_KEY...`、纯小写字母 hex 占位
+///（`api_key = abcdef...` 32 字符无数字，hex 类内合法）类文档占位符 →
+/// demote。值段取首个 `=`/`:` 分隔符尾段（与 value_is_quoted 同款提取；
+/// 值类内无空白），判定单一真相源 `is_prose_token_value`（Layer 4 同源）。
+fn token_value_not_prose(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    let Some(pos) = seg.find(['=', ':']) else {
+        return true;
+    };
+    let value = seg[pos + 1..].trim_start();
+    !exemptions::is_prose_token_value(value)
+}
+
+/// github_token 值段散文豁免（2026-11-11 三次横扫批）：`ghp_` 前缀后段
+/// 单一大小写且无数字（`ghp_YOUR_GITHUB_PAT_TOKEN_HERE...` 类文档占位
+/// 符）→ demote。前缀段大小写形态固定，判定必须落在值本体（splitn(2)
+/// 使余段下划线完整保留在值段内）。
+fn github_token_not_prose(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    seg.split_once('_')
+        .is_none_or(|(_, value)| !exemptions::is_prose_token_value(value))
+}
+
+/// private_key 族 PEM 格式示意豁免（2026-11-11 三次横扫批）：marker 后
+/// 300 字符窗口无 ≥48 字符连续 base64 段 = 格式示意文档（真实 PEM marker
+/// 后紧跟 64 字符 base64 行）→ demote Low 只 log。判定单一真相源
+/// `is_pem_illustration`（豁免表模块同源；validator 的 (text, start, end)
+/// 签名天然支持窗口判定）。
+fn pem_not_illustration(text: &str, _start: usize, end: usize) -> bool {
+    !exemptions::is_pem_illustration(text, end)
+}
+
 fn get_dlp_rules() -> &'static DlpRules {
     static RULES: OnceLock<DlpRules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -667,19 +936,24 @@ fn get_dlp_rules() -> &'static DlpRules {
             ("credit_card", "diners", r"\b(?:3(?:0[0-5]|[68][0-9]))[0-9]{11,13}\b", DlpConfidence::Medium, Some(luhn_valid)),
 
             // API keys and tokens (7) — High (fixed prefix + length, near-zero FP)
-            ("credential", "aws_access_key", r"(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}", DlpConfidence::High, None),
-            ("credential", "aws_secret_key", r"(?i)aws[_\-]?secret[_\-]?access[_\-]?key\s*[=:]\s*[A-Za-z0-9/+=]{40}", DlpConfidence::High, None),
+            // aws 文档 canonical + 占位符豁免（2026-11-11 三次横扫批立闸；
+            // 机制化重构批拆两臂扩 uniform/screaming 判据）；keyed 值段散文
+            // 豁免同批。
+            ("credential", "aws_access_key", r"(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}", DlpConfidence::High, Some(aws_access_not_doc_example)),
+            ("credential", "aws_secret_key", r"(?i)aws[_\-]?secret[_\-]?access[_\-]?key\s*[=:]\s*[A-Za-z0-9/+=]{40}", DlpConfidence::High, Some(aws_secret_not_doc_example)),
             ("credential", "google_api_key", r"AIza[0-9A-Za-z\-_]{35}", DlpConfidence::High, None),
             ("credential", "google_oauth_token", r"ya29\.[0-9A-Za-z\-_]+", DlpConfidence::High, None),
-            ("credential", "azure_api_key", r"(?i)azure[_\-]?(?:api|subscription)[_\-]?key\s*[=:]\s*[A-Za-z0-9\-_]{32,}", DlpConfidence::High, None),
-            ("credential", "generic_hex_key", r"(?i)(?:api[_\-]?key|apikey|secret|token|password|auth[_\-]?key)\s*[=:]\s*[0-9a-f]{32,}", DlpConfidence::High, None),
-            ("credential", "generic_base64_key", r"(?i)(?:api[_\-]?key|apikey|secret|token|password|auth[_\-]?key)\s*[=:]\s*[A-Za-z0-9+/=]{40,}", DlpConfidence::High, None),
+            ("credential", "azure_api_key", r"(?i)azure[_\-]?(?:api|subscription)[_\-]?key\s*[=:]\s*[A-Za-z0-9\-_]{32,}", DlpConfidence::High, Some(token_value_not_prose)),
+            ("credential", "generic_hex_key", r"(?i)(?:api[_\-]?key|apikey|secret|token|password|auth[_\-]?key)\s*[=:]\s*[0-9a-f]{32,}", DlpConfidence::High, Some(token_value_not_prose)),
+            ("credential", "generic_base64_key", r"(?i)(?:api[_\-]?key|apikey|secret|token|password|auth[_\-]?key)\s*[=:]\s*[A-Za-z0-9+/=]{40,}", DlpConfidence::High, Some(token_value_not_prose)),
 
             // Private keys (4) — High (fixed PEM header)
-            ("credential", "private_key_rsa", r"-----BEGIN RSA PRIVATE KEY-----", DlpConfidence::High, None),
-            ("credential", "private_key_generic", r"-----BEGIN PRIVATE KEY-----", DlpConfidence::High, None),
-            ("credential", "private_key_openssh", r"-----BEGIN OPENSSH PRIVATE KEY-----", DlpConfidence::High, None),
-            ("credential", "private_key_pkcs8", r"-----BEGIN ENCRYPTED PRIVATE KEY-----", DlpConfidence::High, None),
+            // PEM 格式示意豁免（2026-11-11 三次横扫批）：marker 后无真实
+            // base64 体 = 文档示意 → demote Low 只 log。
+            ("credential", "private_key_rsa", r"-----BEGIN RSA PRIVATE KEY-----", DlpConfidence::High, Some(pem_not_illustration)),
+            ("credential", "private_key_generic", r"-----BEGIN PRIVATE KEY-----", DlpConfidence::High, Some(pem_not_illustration)),
+            ("credential", "private_key_openssh", r"-----BEGIN OPENSSH PRIVATE KEY-----", DlpConfidence::High, Some(pem_not_illustration)),
+            ("credential", "private_key_pkcs8", r"-----BEGIN ENCRYPTED PRIVATE KEY-----", DlpConfidence::High, Some(pem_not_illustration)),
 
             // Personal IDs (4)
             ("pii", "us_ssn", r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b", DlpConfidence::Medium, None),
@@ -697,20 +971,34 @@ fn get_dlp_rules() -> &'static DlpRules {
             ("financial", "iban", r"\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]?){0,16}\b", DlpConfidence::Medium, None),
 
             // Tokens and connection strings (5) — High (fixed prefix/structure)
-            ("credential", "jwt_token", r"\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\b", DlpConfidence::High, None),
-            ("credential", "database_connection_string", r#"(?i)(?:mysql|postgres|postgresql|mongodb|redis|mssql|sqlserver|oracle)://[^\s'"]+:[^\s'"]+@[^\s'"]+"#, DlpConfidence::High, None),
-            ("credential", "github_token", r"gh[ps]_[A-Za-z0-9_]{36,}", DlpConfidence::High, None),
-            ("credential", "slack_token", r"xox[bopsa]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}", DlpConfidence::High, None),
-            ("credential", "stripe_key", r"(?:sk|pk)_(?:test_|live_)[A-Za-z0-9]{24,}", DlpConfidence::High, None),
+            // jwt/stripe/slack 占位与知名常量豁免（2026-11-11 机制化重构
+            // 批，§7.3 挂账「不可分辨」类的机制化精确豁免 + 教程占位判据）。
+            ("credential", "jwt_token", r"\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\b", DlpConfidence::High, Some(jwt_not_known_demo)),
+            // 凭据段无界（教程 canonical user:password@ 形态误拦面）——
+            // 占位符豁免走 connection_not_placeholder（2026-11-11 横扫批，
+            // 与 Layer 4 db_connection_* 同源）。
+            ("credential", "database_connection_string", r#"(?i)(?:mysql|postgres|postgresql|mongodb|redis|mssql|sqlserver|oracle)://[^\s'"]+:[^\s'"]+@[^\s'"]+"#, DlpConfidence::High, Some(connection_not_placeholder)),
+            // 值段散文豁免（2026-11-11 三次横扫批，Layer 4 github_token
+            // 同源判据）：ghp_ 前缀后段单一大小写无数字 = 文档占位符。
+            ("credential", "github_token", r"gh[ps]_[A-Za-z0-9_]{36,}", DlpConfidence::High, Some(github_token_not_prose)),
+            ("credential", "slack_token", r"xox[bopsa]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}", DlpConfidence::High, Some(slack_not_docs_placeholder)),
+            ("credential", "stripe_key", r"(?:sk|pk)_(?:test_|live_)[A-Za-z0-9]{24,}", DlpConfidence::High, Some(stripe_not_docs_or_placeholder)),
 
             // Generic secrets patterns (4) — Medium (keyed assignment).
-            // 三条赋值规则挂 value_is_quoted 闸（BUG-20261110-046）：值段
-            // 无引号（代码表达式/裸标识符）降级 Low 不 block；引号字面量
-            // 保持 Medium 照拦（与 Layer 4 secret_assignment 同款形态约束）。
-            ("credential", "secret_password_assignment", r#"(?i)(?:password|passwd|pwd)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(value_is_quoted)),
-            ("credential", "secret_token_assignment", r#"(?i)(?:token|bearer|access[_\-]?token|auth[_\-]?token|refresh[_\-]?token)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(value_is_quoted)),
-            ("credential", "secret_key_assignment", r#"(?i)(?:secret[_\-]?key|client[_\-]?secret|shared[_\-]?secret|encryption[_\-]?key)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(value_is_quoted)),
-            ("credential", "authorization_header", r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9\-_.~+/]+=*", DlpConfidence::Medium, None),
+            // 三条赋值规则挂 quoted_secret_not_tutorial 双重闸（BUG-20261110-046
+            // 引号闸 + 2026-11-11 三次横扫批教程复合词闸，Layer 4
+            // secret_assignment 同源）：值段无引号（代码表达式/裸标识符）
+            // 或引号内教程复合词（"your-password" 类）降级 Low 不 block；
+            // 其余引号字面量保持 Medium 照拦。
+            ("credential", "secret_password_assignment", r#"(?i)(?:password|passwd|pwd)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(quoted_secret_not_tutorial)),
+            ("credential", "secret_token_assignment", r#"(?i)(?:token|bearer|access[_\-]?token|auth[_\-]?token|refresh[_\-]?token)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(quoted_secret_not_tutorial)),
+            ("credential", "secret_key_assignment", r#"(?i)(?:secret[_\-]?key|client[_\-]?secret|shared[_\-]?secret|encryption[_\-]?key)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(quoted_secret_not_tutorial)),
+            // authorization 值段长度下限与 Layer 4 bearer_token/basic_auth
+            // 同源同语义（2026-11-11 实录同族）：无下限时「Authorization:
+            // Basic mode,」散文/文档形态整行命中 Medium→block。真实 Bearer
+            // token ≥20；Basic base64(user:password) ≥12——二合一规则取宽
+            // 闸 20（Basic 12-19 短样本漏检面由 Layer 4 basic_auth 覆盖）。
+            ("credential", "authorization_header", r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9\-_.~+/]{20,}=*", DlpConfidence::Medium, Some(authorization_not_placeholder)),
         ];
 
         raw.into_iter()

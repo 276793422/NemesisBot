@@ -179,7 +179,10 @@ fn text_source_downscale_error_gets_honest_note() {
     );
 }
 
-/// media 来源 + 降采样开 + 路径不存在 → 同一 Err 注记形态。
+/// media 来源 + 降采样开 + 路径不存在 → canonical「文件不存在」注记。
+/// R841：验真先行后，缺失文件的注记回归 verify 侧 canonical 文案（J6
+/// 闸先行时代它被 downscale_gate 的元数据错误文案顶替——词表不随降采样
+/// 开关翻转）。
 #[test]
 #[cfg(feature = "image-process")]
 fn media_source_downscale_error_gets_honest_note() {
@@ -196,9 +199,74 @@ fn media_source_downscale_error_gets_honest_note() {
     );
     assert!(outcome.attached.is_empty());
     assert_eq!(outcome.notes.len(), 1, "notes: {:?}", outcome.notes);
-    // downscale_gate 对元数据读取失败的诚实理由。
+    // canonical：与降采样关闭时同一词表。
     assert!(
-        outcome.notes[0].contains("无法读取图片元数据"),
+        outcome.notes[0].contains("文件不存在"),
+        "got: {}",
+        outcome.notes[0]
+    );
+    assert!(
+        !outcome.notes[0].contains("无法读取图片元数据"),
+        "降采样闸文案不得顶替验真链诊断: {}",
+        outcome.notes[0]
+    );
+}
+
+/// R841 回归锁：降采样开（默认）下，文本来源缺失文件与伪装文件的注记
+/// 必须是验真链 canonical 文案（「文件不存在」/「文件内容不是图片」），
+/// 不随 `agents.image_downscale` 开关翻转。
+#[test]
+#[cfg(feature = "image-process")]
+fn canonical_failure_notes_survive_downscale_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let uploads = tempfile::tempdir().unwrap();
+
+    // 形态 1：绝对点名但文件不存在 → 「文件不存在」（非元数据错误文案）。
+    let missing = dir.path().join("ghost.png");
+    let text = format!("看图 {}", missing.display());
+    let outcome = attach_turn_images(
+        &text,
+        &[],
+        Some(dir.path()),
+        Some(uploads.path()),
+        "web",
+        None,
+    );
+    assert!(outcome.attached.is_empty());
+    assert_eq!(outcome.notes.len(), 1, "notes: {:?}", outcome.notes);
+    assert!(
+        outcome.notes[0].contains("文件不存在"),
+        "got: {}",
+        outcome.notes[0]
+    );
+    assert!(
+        !outcome.notes[0].contains("无法读取图片元数据"),
+        "got: {}",
+        outcome.notes[0]
+    );
+
+    // 形态 2：扩展名伪装（文本字节命名 .png）→ 「文件内容不是图片」
+    // （magic hex 诊断保留，非「格式嗅探失败」文案）。
+    let disguised = dir.path().join("fake.png");
+    std::fs::write(&disguised, "this is not an image at all").unwrap();
+    let text = format!("看图 {}", disguised.display());
+    let outcome = attach_turn_images(
+        &text,
+        &[],
+        Some(dir.path()),
+        Some(uploads.path()),
+        "web",
+        None,
+    );
+    assert!(outcome.attached.is_empty());
+    assert_eq!(outcome.notes.len(), 1, "notes: {:?}", outcome.notes);
+    assert!(
+        outcome.notes[0].contains("文件内容不是图片"),
+        "got: {}",
+        outcome.notes[0]
+    );
+    assert!(
+        !outcome.notes[0].contains("格式嗅探失败"),
         "got: {}",
         outcome.notes[0]
     );

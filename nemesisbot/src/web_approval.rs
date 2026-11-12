@@ -310,6 +310,19 @@ impl WebApprovalManager {
         // （find_pending 只看 pending 行）。取不到 = 旧条目（payload 无
         // session_key 的历史形态）→ 回灌自然退化。
         let entry = j.find_pending(request_id);
+        // broker 闸：非 web broker 的 pending 条目是**活**审批（IM 卡在等
+        // 回复 / ACP 卡在等编辑器授权），不是重启遗留——本侧裁决 = 抢裁
+        // （原通道回执落空、审计记了 web 的裁决而实际结局由原通道超时/回执
+        // 决定）。诚实拒绝，引导用户去原渠道裁决。
+        if let Some(e) = &entry
+            && e.broker != "web"
+        {
+            return Err(format!(
+                "approval {request_id} belongs to broker '{}' (still pending there); \
+                 adjudicate it in its own channel, not the dashboard",
+                e.broker
+            ));
+        }
         let decision = if approved {
             nemesis_types::approval_journal::ApprovalDecision::Approved
         } else {
@@ -829,12 +842,21 @@ impl ApprovalResponder for WebApprovalManager {
         // 台账里仍 pending、内存已丢（重启前遗留）→ 作为 stale 卡片
         // 一并下发（前端可裁决，respond 走重启补裁记账路径；stale: true
         // 供前端注记「原操作已失效」）。字段对齐 entry_json 形态。
+        // 只取 broker=="web" 的条目：web/channel/acp 三个 manager 共写
+        // 同一个 tasks.db pending 表，别的 broker 在场（IM 卡在等回复、
+        // ACP 卡在等编辑器授权）≠ 本侧重启遗留——下发给 Dashboard 会
+        // 诱导用户在 web 抢裁活通道的审批（respond_stale 抢先记账，
+        // 原通道回执落空、审计与实际结局分叉）。
         if let Some(j) = self.journal() {
             let live_ids: std::collections::HashSet<String> = match self.pending.lock() {
                 Ok(map) => map.keys().cloned().collect(),
                 Err(_) => std::collections::HashSet::new(),
             };
-            for e in j.pending_entries() {
+            for e in j
+                .pending_entries()
+                .into_iter()
+                .filter(|e| e.broker == "web")
+            {
                 if live_ids.contains(&e.id) {
                     continue;
                 }
@@ -905,7 +927,9 @@ impl ApprovalResponder for WebApprovalManager {
     ///   仅 process_exec 豁免 + 安装类）= warn 忽略；写失败 = warn 收集不
     ///   fail（批量语义下单卡规则失败不阻断整批裁决，与单卡 respond 的
     ///   Err 返回刻意分叉——整批裁决已送达的事实优先）。
-    /// - 返回 `{"responded": n, "skipped": m, "always_failed": [target…]}`。
+    /// - 返回 `{"responded": n, "skipped": m, "always_failed": [target…],
+    ///   "responded_ids": [id…]}`（responded_ids = 裁决生效卡，供装饰器
+    ///   逐卡上行摘 master 同步卡）。
     fn respond_batch(
         &self,
         batch_id: &str,
@@ -943,6 +967,9 @@ impl ApprovalResponder for WebApprovalManager {
         let mut responded = 0usize;
         let mut skipped = 0usize;
         let mut always_failed: Vec<String> = Vec::new();
+        // 裁决生效的 request_id 清单（装饰器 RemoteNotifyResponder 据此逐卡
+        // 上行 ask_closed 摘 master 同步卡；单体 respond 语义的批量版）。
+        let mut responded_ids: Vec<String> = Vec::new();
         for (id, entry) in members {
             // 先台账条件更新（幂等先到先得），后送裁决。Err = 台账写失败
             // → 裁决照常送达（审批可用性不绑 tasks.db，审计缺失 loud 留痕）。
@@ -984,6 +1011,7 @@ impl ApprovalResponder for WebApprovalManager {
             }
             self.broadcast_resolved(&id, if approved { "approved" } else { "denied" });
             responded += 1;
+            responded_ids.push(id.clone());
             if approved && always {
                 match self.save_always_rule(&entry.operation, &entry.target, &entry.risk_level) {
                     Ok(Some(pattern)) => tracing::info!(
@@ -1012,6 +1040,7 @@ impl ApprovalResponder for WebApprovalManager {
             "responded": responded,
             "skipped": skipped,
             "always_failed": always_failed,
+            "responded_ids": responded_ids,
         }))
     }
 }

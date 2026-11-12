@@ -195,7 +195,7 @@ mod layers {
     async fn args_with_known_credential_are_flagged_inbound() {
         let (_dir, obs) = observer_in_tmp_home();
         // AWS 访问键样例（credential/tests.rs 钉过的确定性样例）。
-        let args = serde_json::json!({"command": "echo key=AKIAIOSFODNN7EXAMPLE"});
+        let args = serde_json::json!({"command": "echo key=AKIANCDC6VFQTFGRMBKW"});
         let f = obs.run_layers("exec", &args, &args.to_string(), "").await;
         let cin = f
             .credentials_in
@@ -748,7 +748,7 @@ mod wave_b {
         let args = serde_json::json!({"command": "cat secrets.env"});
         // 结果带 AWS 访问键（credential/tests.rs 的确定性样例）→ 出站扫描命中，
         // credentials_out Some(vec![summary])（既有夹具只钉过入站/无命中两态）。
-        let result = "The output is key=AKIAIOSFODNN7EXAMPLE123456";
+        let result = "The output is key=AKIANCDC6VFQTFGRMBKW123456";
         let f = obs
             .run_layers("exec", &args, &args.to_string(), result)
             .await;
@@ -801,9 +801,9 @@ mod wave_b {
         // （credential/dlp tests 钉过的确定性样例口径）。
         let args_str = concat!(
             r#"{"command":"rm -rf /","url":"http://169.254.169.254/latest/meta-data","#,
-            r#""secret":"AKIAIOSFODNN7EXAMPLE"}"#
+            r#""secret":"AKIANCDC6VFQTFGRMBKW"}"#
         );
-        let result = "key=AKIAIOSFODNN7EXAMPLE123456 Card: 4111111111111111";
+        let result = "key=AKIANCDC6VFQTFGRMBKW123456 Card: 4111111111111111";
         let f = obs.run_layers("exec", &args, args_str, result).await;
 
         // 注入：总是产出 finding 结构。

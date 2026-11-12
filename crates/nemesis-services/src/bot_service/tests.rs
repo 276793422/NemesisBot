@@ -48,11 +48,6 @@ fn make_config_with_file(dir: &std::path::Path) -> BotServiceConfig {
             "defaults": {
                 "restrict_to_workspace": true
             }
-        },
-        "tools": {
-            "cron": {
-                "exec_timeout_minutes": 5
-            }
         }
     });
     std::fs::write(
@@ -1656,9 +1651,6 @@ fn test_config_file_with_logging() {
             "enabled": false,
             "trace": { "enabled": true },
             "learning": { "enabled": false }
-        },
-        "tools": {
-            "cron": { "exec_timeout_minutes": 10 }
         },
         "agents": {
             "defaults": { "restrict_to_workspace": false }

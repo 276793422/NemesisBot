@@ -2122,3 +2122,50 @@ async fn r735_cleanup_episodic_i64_max_days_does_not_panic() {
     let sessions = mgr.get_session("s1").await.unwrap();
     assert_eq!(sessions.len(), 1);
 }
+
+// ===================================================================
+// BUG-20261112-087 回归锁：embed 后端故障不毙掉搜索（keyword fallback）
+// ===================================================================
+
+// M6：vector query Err（embed 后端故障）→ search / query_semantic 落
+// keyword fallback 照常命中；search_auto_inject 与 vector inactive 同
+// 路径返回空（vector-only 语义，不误用 keyword）。旧实现：三处全部
+// `.map_err(..)?` 上抛——embed 故障期间记忆搜索整体不可用。
+#[tokio::test]
+async fn bug87_vector_query_failure_falls_back_to_keyword() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    let entry = Entry::new(
+        MemoryType::LongTerm,
+        "Paris is the capital of France".to_string(),
+    );
+    mgr.store_entry(entry).await.unwrap();
+
+    // 注入一个 embed 全故障的 vector store（模拟嵌入后端宕机）。
+    let broken: crate::vector::EmbeddingFunc = Box::new(|_| Err("embed backend down".into()));
+    let vs = Arc::new(VectorStore::new_from_embed(broken, StoreConfig::default()));
+    *mgr.vector_store.write() = Some(vs);
+    *mgr.vector_enabled.write() = true;
+
+    // search：vector 故障 → keyword fallback 照常命中。
+    let res = mgr.search("Paris", None, 10).await.expect(
+        "search must not Err when the embed backend is down (old shape propagated the error)",
+    );
+    assert!(res.total >= 1, "keyword fallback must still find the entry");
+
+    // query_semantic：同样回落 keyword。
+    let res = mgr
+        .query_semantic("Paris", 10)
+        .await
+        .expect("query_semantic must not Err when the embed backend is down");
+    assert!(res.total >= 1);
+
+    // search_auto_inject：vector-only 语义 → 故障 = 本轮注入静默跳过（空）。
+    let res = mgr
+        .search_auto_inject("Paris", 10)
+        .await
+        .expect("search_auto_inject must not Err when the embed backend is down");
+    assert_eq!(res.total, 0, "auto-inject must not fire on embed failure");
+}

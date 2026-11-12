@@ -678,6 +678,14 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|d| d.get("mode"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("turn");
+                // B2 锚定（2026-11-11 slash 回声漂移机制解）：可选锚内容 =
+                // 前端在 message_index 处看到的消息正文——后端按内容重定位
+                // 真实行（漂移的 live 计行不盲信）；缺省 = 旧前端兼容路径。
+                let anchor_content = data
+                    .as_ref()
+                    .and_then(|d| d.get("anchor_content"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let session_key = format!(
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
@@ -689,12 +697,22 @@ impl ModuleHandler for SessionsHandler {
                 let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
                 let mut out = match mode {
                     "turn" => {
-                        al.rewind_to_message(&session_key, message_index, force)
-                            .await?
+                        al.rewind_to_message(
+                            &session_key,
+                            message_index,
+                            force,
+                            anchor_content.as_deref(),
+                        )
+                        .await?
                     }
                     "before" => {
-                        al.rewind_before_message(&session_key, message_index, force)
-                            .await?
+                        al.rewind_before_message(
+                            &session_key,
+                            message_index,
+                            force,
+                            anchor_content.as_deref(),
+                        )
+                        .await?
                     }
                     other => {
                         return Err(format!("未知 mode: {other}（支持 turn | before）"));

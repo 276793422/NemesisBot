@@ -484,6 +484,10 @@ async fn kill_pid(pid: u32) -> bool {
     let mut cmd = {
         let mut c = tokio::process::Command::new("taskkill");
         c.args(["/F", "/PID", &pid.to_string()]);
+        // 10s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏挂死的
+        // taskkill（孤儿稍后完成击杀会让「失败」上报变成状态误报）
+        // （BUG-20261111-082 同族）。
+        c.kill_on_drop(true);
         // release gateway 是 windows 子系统进程（无 console）：taskkill.exe
         // 默认 flags spawn 会被分配新可见 console → 黑窗一闪（纪律见
         // main.rs 头注；同族先例 vm/lifecycle.rs QEMU spawn）。
@@ -494,6 +498,7 @@ async fn kill_pid(pid: u32) -> bool {
     let mut cmd = {
         let mut c = tokio::process::Command::new("kill");
         c.args(["-9", &pid.to_string()]);
+        c.kill_on_drop(true);
         c
     };
     match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
