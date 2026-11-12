@@ -153,3 +153,20 @@ async fn poll_once_non_2xx_is_err() {
         .expect("client");
     assert!(poll_with(&client, &target).await.is_err());
 }
+
+/// 响应缺 engaged 键（2xx 但 envelope 版本漂移）→ Ok(None)——无信号形态
+/// 可辨（spawn 循环对该臂翻转沿 loud，见 estop_follower.rs None 分支）。
+#[tokio::test]
+async fn poll_once_missing_engaged_key_is_none() {
+    let port = spawn_one_shot_http(Arc::new(Mutex::new(None)), r#"{"status":"ok"}"#);
+    let target = FollowerTarget {
+        base_url: format!("http://127.0.0.1:{port}"),
+        auth_token: "sekrit".into(),
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("client");
+    let engaged = poll_with(&client, &target).await.expect("poll ok");
+    assert_eq!(engaged, None, "缺 engaged 键 = None，不得误读为任何状态");
+}

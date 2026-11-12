@@ -453,7 +453,19 @@ impl LifecycleService for AgentLoopServiceAdapter {
                         {
                             continue;
                         }
-                        if agent_inbound_tx.send(msg).await.is_err() {
+                        // BUG-20261113-138：接收侧（agent loop）已退出，
+                        // 这条入站消息无处投递——留痕再断桥。旧形态静默
+                        // break，窗口期用户消息零痕迹蒸发，违背「丢失必须
+                        // 留痕」（同桥 Lagged 臂有 warn + bus 指标）。
+                        // SendError 公开回收消息本体，留痕不引入热路径拷贝。
+                        if let Err(tokio::sync::mpsc::error::SendError(dead_msg)) =
+                            agent_inbound_tx.send(msg).await
+                        {
+                            tracing::warn!(
+                                channel = %dead_msg.channel,
+                                sender_id = %dead_msg.sender_id,
+                                "[Main] Agent inbound bridge: agent receiver gone — inbound message dropped, breaking bridge"
+                            );
                             break; // Agent receiver dropped
                         }
                     }
@@ -669,7 +681,18 @@ impl WebServerOps for WebServerOpsAdapter {
         let sm = self.session_manager.clone();
         for sid in self.active_session_ids() {
             let data_clone = data.clone();
-            tokio::task::block_in_place(|| self.rt.block_on(sm.broadcast(&sid, &data_clone)))?;
+            // BUG-20261113-139：与 server.rs 广播调用点同款慢客户端隔离——
+            // 单个挂起会话（hi 满，可等待任意久）不得卡死整段全广播串行
+            // 循环，更不得卡死调用宿主（manager 出站泵）。超时值与
+            // server.rs 共用 WS_BROADCAST_TIMEOUT 单点。
+            let inner = tokio::task::block_in_place(|| {
+                self.rt.block_on(tokio::time::timeout(
+                    nemesis_web::server::WS_BROADCAST_TIMEOUT,
+                    sm.broadcast(&sid, &data_clone),
+                ))
+            })
+            .map_err(|e| format!("broadcast to {sid}: timed out ({e})"))?;
+            inner.map_err(|e| format!("broadcast to {sid}: {e}"))?;
         }
         Ok(())
     }

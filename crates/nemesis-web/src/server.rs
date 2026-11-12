@@ -2116,11 +2116,29 @@ pub async fn process_messages_with_router(
 // Send to session helpers
 // ---------------------------------------------------------------------------
 
+/// BUG-20261113-139：单帧广播超时（慢/死客户端隔离墙）。
+///
+/// `SessionManager::broadcast` 的 `queue.send().await` 在 hi 通道满时
+/// **可等待任意久**（挂起客户端：TCP 半开、移动端后台——dashboard 30s
+/// 心跳的 pong 恒走 hi，约 32 分钟填满 64 槽，此后只进不出）。此等待
+/// 的宿主经 `WebServerOpsAdapter`（block_in_place‖block_on）回溯到
+/// **manager 出站泵**（dispatch_outbound 单任务串行派发全部通道）——
+/// 泵被卡死 = 全部通道全部会话的出站投递停摆。BUG-20261025-84 只修了
+/// 守卫跨 await 的锁面（不卡同分片写与 GC），「可等待任意久」的等待
+/// 本体保留至今。
+///
+/// 超时放弃是安全的：chat 行帧已入环（`record` 先于 `broadcast` 的
+/// 不变量），`chat.sync` 补拉自愈；超时沿既有失败路径接管——
+/// `chat_dirty` hint 全房间扇出 + adapter 层 `mark_undelivered_reply`
+/// 未读标记。历史响应不入环，但可由前端重拉。3s 与 `send_sync_mirror`
+/// 超时惯例对齐；正常客户端毫秒级入队，永不触及。
+pub const WS_BROADCAST_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Send a chat message to a specific session using the broadcast protocol.
 ///
 /// `model` (optional, `provider/name`) is forwarded into the `receive` frame
 /// so the Dashboard can render a per-message "供应商·模型名" badge; `None`
-/// omits it (non-assistant / badge-less messages).
+/// omits it (non-assistant / badge-less deliveries).
 ///
 /// `session_key`（L2，optional）是 agent 会话键——chat_event_log 环形缓冲的
 /// 记录键。缺省回退到 `session_id`（连接级 id；旧路径/无元数据帧仍可补拉，
@@ -2207,23 +2225,33 @@ pub async fn send_to_session(
         .to_json()
         .map_err(|e| format!("failed to marshal message: {}", e))?;
 
-    session_manager
-        .broadcast(session_id, &data)
-        .await
-        .map_err(|e| {
-            // BUG②（2026-11-05）死房间 hint：目标房间（连接级 chat_id）已随
-            // 页面刷新/断连消亡时（后台子代理续行回复的典型场景——spawn 时
-            // 钉死的连接 id 在刷新后失效），帧投递失败但已进环形缓冲（record
-            // 先于 broadcast 的不变量）。旧链路只有 WS 重连触发 chat.sync，
-            // 活着的其他连接（同会话另一标签页/另一设备）永远看不到这条回复。
-            // 向全部活房间扇出 chat_dirty push（只带会话定位 + 原因，不带
-            // 内容），前端对当前会话节流触发 chat.sync 补拉。session_key
-            // 缺席（无元数据旧帧）不扇出——没有稳定键，前端无法定位会话。
-            if let Some(sk) = session_key {
-                broadcast_chat_dirty_hint(session_manager, sk);
-            }
-            format!("failed to broadcast: {}", e)
-        })?;
+    // BUG-20261113-139：超时放弃（WS_BROADCAST_TIMEOUT 注释论证）——
+    // hi 满时旧实现在此无限期等待，卡死调用宿主（manager 出站泵）。
+    let send_result = match tokio::time::timeout(
+        WS_BROADCAST_TIMEOUT,
+        session_manager.broadcast(session_id, &data),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => Err(format!(
+            "broadcast timed out after {WS_BROADCAST_TIMEOUT:?} (slow/dead client isolation; frame already in ring, chat.sync heals)"
+        )),
+    };
+    send_result.map_err(|e| {
+        // BUG②（2026-11-05）死房间 hint：目标房间（连接级 chat_id）已随
+        // 页面刷新/断连消亡时（后台子代理续行回复的典型场景——spawn 时
+        // 钉死的连接 id 在刷新后失效），帧投递失败但已进环形缓冲（record
+        // 先于 broadcast 的不变量）。旧链路只有 WS 重连触发 chat.sync，
+        // 活着的其他连接（同会话另一标签页/另一设备）永远看不到这条回复。
+        // 向全部活房间扇出 chat_dirty push（只带会话定位 + 原因，不带
+        // 内容），前端对当前会话节流触发 chat.sync 补拉。session_key
+        // 缺席（无元数据旧帧）不扇出——没有稳定键，前端无法定位会话。
+        if let Some(sk) = session_key {
+            broadcast_chat_dirty_hint(session_manager, sk);
+        }
+        format!("failed to broadcast: {}", e)
+    })?;
 
     // 接力入队放在广播成功后：帧先落 UI，TTS 随后出声（顺序可感知）。
     if voice_relay {
@@ -2282,10 +2310,21 @@ pub async fn send_history_to_session(
         .to_json()
         .map_err(|e| format!("failed to create protocol message: {}", e))?;
 
-    session_manager
-        .broadcast(session_id, &bytes)
-        .await
-        .map_err(|e| format!("failed to broadcast: {}", e))
+    // BUG-20261113-139：同款慢客户端隔离（WS_BROADCAST_TIMEOUT 注释论证）
+    // ——本函数同样经 adapter 桥被 manager 出站泵调用。历史响应不入环，
+    // 超时丢弃由前端重拉兜底（本来就有「历史加载失败」重试语义）。
+    match tokio::time::timeout(
+        WS_BROADCAST_TIMEOUT,
+        session_manager.broadcast(session_id, &bytes),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => Err(format!(
+            "broadcast timed out after {WS_BROADCAST_TIMEOUT:?} (slow/dead client isolation; client retries history)"
+        )),
+    }
+    .map_err(|e| format!("failed to broadcast: {}", e))
 }
 
 // ---------------------------------------------------------------------------
