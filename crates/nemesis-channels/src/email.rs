@@ -395,34 +395,24 @@ impl EmailChannel {
                 continue;
             }
 
-            let lower = line.to_lowercase();
-            if lower.starts_with("from:") {
-                from = line.trim_start_matches("From:").trim().to_string();
-            } else if lower.starts_with("subject:") {
-                subject = line.trim_start_matches("Subject:").trim().to_string();
-            } else if lower.starts_with("message-id:") {
-                message_id = line
-                    .trim_start_matches("Message-ID:")
-                    .trim()
-                    .trim_matches(|c| c == '<' || c == '>' || c == ' ')
-                    .to_string();
-            }
+            apply_header_field(
+                line,
+                &mut from,
+                &mut subject,
+                &mut message_id,
+                FieldWriteMode::Overwrite,
+            );
         }
 
         // Also parse from the header literal data if present
         for hdr_line in header_data.split("\r\n") {
-            let lower = hdr_line.to_lowercase();
-            if lower.starts_with("from:") && from.is_empty() {
-                from = hdr_line.trim_start_matches("From:").trim().to_string();
-            } else if lower.starts_with("subject:") && subject.is_empty() {
-                subject = hdr_line.trim_start_matches("Subject:").trim().to_string();
-            } else if lower.starts_with("message-id:") && message_id.is_empty() {
-                message_id = hdr_line
-                    .trim_start_matches("Message-ID:")
-                    .trim()
-                    .trim_matches(|c| c == '<' || c == '>' || c == ' ')
-                    .to_string();
-            }
+            apply_header_field(
+                hdr_line,
+                &mut from,
+                &mut subject,
+                &mut message_id,
+                FieldWriteMode::KeepExisting,
+            );
         }
 
         (from, subject, message_id)
@@ -549,8 +539,7 @@ impl EmailChannel {
 
         // Send message body
         let message = Self::build_smtp_message(self.smtp_username(), to, subject, body);
-        // Escape dot-starting lines
-        let message = message.replace("\r\n.", "\r\n..");
+        let message = prepare_smtp_payload(&message);
         io_timeout(
             "SMTP write body",
             std::time::Duration::from_secs(IO_TIMEOUT_SECS),
@@ -881,9 +870,9 @@ impl EmailChannel {
 }
 
 /// TLS/明文双态流：ImapConnection 与 smtp_send 的统一传输层。rustls 握手
-/// 成功后 `TlsStream<TcpStream>` 与 `TcpStream` 同构（AsyncRead + AsyncWrite
-/// + Unpin），enum 分派即可复用既有行读写代码（两态均 Unpin，`get_mut`
-/// 后 `Pin::new` 委托合法）。
+/// 成功后 `TlsStream<TcpStream>` 与 `TcpStream` 同构（同实现 AsyncRead、
+/// AsyncWrite、Unpin 三 trait），enum 分派即可复用既有行读写代码（两态
+/// 均 Unpin，`get_mut` 后 `Pin::new` 委托合法）。
 enum EmailStream {
     Plain(tokio::net::TcpStream),
     Tls(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
@@ -1060,11 +1049,12 @@ impl ImapConnection {
                 .await
                 .map_err(|e| NemesisError::Channel(format!("IMAP read failed: {e}")))?;
 
-            if line.starts_with(&format!("{tag} ")) {
-                if line.contains("OK") {
-                    return Ok(());
-                }
-                return Err(NemesisError::Channel(format!("IMAP error: {line}")));
+            // BUG-20261112-111①：状态按位置取 token，子串 contains("OK")
+            // 会把 NO/BAD 文本含大写 OK 词素的行误判成功。
+            match tagged_line_status(&line, &tag) {
+                Some(true) => return Ok(()),
+                Some(false) => return Err(NemesisError::Channel(format!("IMAP error: {line}"))),
+                None => {}
             }
         }
     }
@@ -1088,11 +1078,11 @@ impl ImapConnection {
                 .await
                 .map_err(|e| NemesisError::Channel(format!("IMAP read failed: {e}")))?;
 
-            if line.starts_with(&format!("{tag} ")) {
-                if line.contains("OK") {
-                    return Ok(responses);
-                }
-                return Err(NemesisError::Channel(format!("IMAP error: {line}")));
+            // BUG-20261112-111①：同 send_command，状态按位置取 token。
+            match tagged_line_status(&line, &tag) {
+                Some(true) => return Ok(responses),
+                Some(false) => return Err(NemesisError::Channel(format!("IMAP error: {line}"))),
+                None => {}
             }
             responses.push(line);
         }
@@ -1168,6 +1158,79 @@ fn imap_quoted(s: &str) -> String {
 /// 对齐 `build_smtp_message` 的 header_safe 既有形态。
 fn smtp_envelope_safe(v: &str) -> String {
     v.chars().filter(|&c| c != '\r' && c != '\n').collect()
+}
+
+/// DATA 载荷装配（BUG-20261112-111③）：先裸 LF/CR 归一为 CRLF，再点填充。
+/// RFC 5321 会话行终止恒为 CRLF，点填充只覆盖 CRLF-dot——正文中的裸 LF
+/// 行首点不被填充，宽容解析裸 LF 的中继（SMTP smuggling 类）可把它当数据
+/// 终止、后续字节当新命令（冒认证身份发信）。归一后点填充覆盖全部行首。
+fn prepare_smtp_payload(message: &str) -> String {
+    let normalized = message
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    normalized.replace("\r\n.", "\r\n..")
+}
+
+/// IMAP tagged 完成行状态判定（BUG-20261112-111①）：完成行形态恒为
+/// `{tag} SP {OK|NO|BAD} ...`（RFC 3501 §7.1.3）——状态必须按位置取
+/// token。此前 `line.contains("OK")` 子串匹配：NO/BAD 文本恰含大写 OK
+/// 词素的服务器文案（BROKEN/TOKEN/BOOKMARK 类）被误判成功——失败静默
+/// 化为 Ok，LOGIN/SELECT 假成功后下游命令连锁错乱。None = 非本 tag 完
+/// 成行（继续收集 untagged 响应）。
+fn tagged_line_status(line: &str, tag: &str) -> Option<bool> {
+    let rest = line.strip_prefix(tag)?.strip_prefix(' ')?;
+    Some(rest.split(' ').next().is_some_and(|s| s == "OK"))
+}
+
+/// 按「首个冒号」切出 RFC 5322 头字段 (小写字段名, 值)（BUG-20261112-111②）：
+/// 字段名大小写不敏感（RFC 5322 §2.2），判定与截取必须同源——此前判定用
+/// 小写 starts_with、截取用精确大小写 `trim_start_matches("Message-ID:")`，
+/// 「Message-Id:」（实务同义拼写）命中判定后截取失败 → 值整行污染（字段
+/// 名混入去重键）；小写「from:」无尖括号形态则 chat_id 被污染 →
+/// allow-list 误拦 / 回信投递地址错误。
+fn split_header_field(line: &str) -> Option<(String, String)> {
+    let (name, value) = line.split_once(':')?;
+    Some((name.trim().to_lowercase(), value.trim().to_string()))
+}
+
+/// 头字段写入模式（BUG-20261112-111② 语义保真）：直接 untagged 行 =
+/// 后写覆盖（原语义）；literal 头数据 = 首个命中保留（原语义）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldWriteMode {
+    Overwrite,
+    KeepExisting,
+}
+
+/// 解析一行头字段并按模式写入目标槽（字段名/值同源切分，message-id 额外
+/// 剥尖括号与空白）。
+fn apply_header_field(
+    line: &str,
+    from: &mut String,
+    subject: &mut String,
+    message_id: &mut String,
+    mode: FieldWriteMode,
+) {
+    let Some((name, value)) = split_header_field(line) else {
+        return;
+    };
+    let write = |slot: &mut String, v: &str| match mode {
+        FieldWriteMode::Overwrite => *slot = v.to_string(),
+        FieldWriteMode::KeepExisting => {
+            if slot.is_empty() {
+                *slot = v.to_string();
+            }
+        }
+    };
+    match name.as_str() {
+        "from" => write(from, &value),
+        "subject" => write(subject, &value),
+        "message-id" => write(
+            message_id,
+            value.trim_matches(|c| c == '<' || c == '>' || c == ' '),
+        ),
+        _ => {}
+    }
 }
 
 fn parse_search_results_static(responses: &[String]) -> Vec<String> {

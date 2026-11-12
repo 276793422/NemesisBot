@@ -786,3 +786,110 @@ async fn tls_wrap_missing_ca_file_is_honest_error() {
     );
     server.abort();
 }
+
+// ---- BUG-20261112-111：email 协议解析/编码正确性三面 ----
+
+/// ① tagged 完成行状态按位置取 token：`contains("OK")` 会把 NO/BAD 文本
+/// 恰含大写 OK 词素的行（BROKEN/TOKEN/BOOKMARK 类服务器文案）误判成功。
+#[test]
+fn test_tagged_line_status_111() {
+    // 完成行（本 tag）：
+    assert!(tagged_line_status("NB001 OK", "NB001").unwrap());
+    assert!(tagged_line_status("NB001 OK Done", "NB001").unwrap());
+    // NO/BAD 完成行——含大写 OK 词素的文本此前全部误判成功：
+    assert_eq!(
+        tagged_line_status("NB001 NO Broken credentials", "NB001"),
+        Some(false)
+    );
+    assert_eq!(
+        tagged_line_status("NB001 NO [SERVERBUG] Bad TOKEN", "NB001"),
+        Some(false)
+    );
+    assert_eq!(
+        tagged_line_status("NB001 NO Mailbox BOOKMARKED", "NB001"),
+        Some(false)
+    );
+    assert_eq!(
+        tagged_line_status("NB001 BAD Command stream BROKEN", "NB001"),
+        Some(false)
+    );
+    // 非 completion 行（继续收集）：
+    assert_eq!(tagged_line_status("* 1 FETCH (...) {68}", "NB001"), None);
+    assert_eq!(tagged_line_status("* SEARCH 1 2 3", "NB001"), None);
+    assert_eq!(
+        tagged_line_status("NB0012 OK", "NB001"),
+        None,
+        "更长 tag 同前缀非本完成行"
+    );
+    assert_eq!(
+        tagged_line_status("NB001OK", "NB001"),
+        None,
+        "无 SP 分隔非完成行"
+    );
+}
+
+/// ② 头字段判定与截取同源（小写比较 + 冒号切分）：「Message-Id:」实务
+/// 同义拼写此前被整行污染；小写「from:」无尖括号形态污染 chat_id。
+#[test]
+fn test_parse_email_headers_case_insensitive_111() {
+    // Message-Id（小写 d，RFC 5322 注册拼写的常见实务变体）：
+    let responses = vec![
+        "* 1 FETCH (... {40}".to_string(),
+        "Message-Id: <mid42@example.com>".to_string(),
+        "From: Bob <bob@example.com>".to_string(),
+        ")".to_string(),
+    ];
+    let (from, _subject, message_id) = EmailChannel::parse_email_headers(&responses);
+    assert_eq!(
+        message_id, "mid42@example.com",
+        "字段名不得混入值: {message_id}"
+    );
+    assert_eq!(from, "Bob <bob@example.com>");
+
+    // 小写 from + 无尖括号（此前 chat_id = 整行 → allow-list 误拦/回信错址）：
+    let responses = vec![
+        "* 1 FETCH (... {20}".to_string(),
+        "from: carol@example.com".to_string(),
+        "SUBJECT: Uppercase Name".to_string(),
+        ")".to_string(),
+    ];
+    let (from, subject, _) = EmailChannel::parse_email_headers(&responses);
+    assert_eq!(from, "carol@example.com");
+    assert_eq!(subject, "Uppercase Name");
+
+    // 值含冒号（Subject: Re: xxx）——按首个冒号切分不截断：
+    let responses = vec!["Subject: Re: Hello: World".to_string()];
+    let (_, subject, _) = EmailChannel::parse_email_headers(&responses);
+    assert_eq!(subject, "Re: Hello: World");
+
+    // 无空格冒号形态 Message-ID:<x>（此前 trim 后括号残留路径）：
+    let responses = vec!["Message-ID:<nospace@example.com>".to_string()];
+    let (_, _, message_id) = EmailChannel::parse_email_headers(&responses);
+    assert_eq!(message_id, "nospace@example.com");
+}
+
+/// ③ DATA 载荷装配：裸 LF/CR 归一 CRLF 后点填充覆盖全部行首——裸 LF
+/// 「.\n」不再可作数据终止（SMTP smuggling 类）。
+#[test]
+fn test_prepare_smtp_payload_111() {
+    // 裸 LF 行首点：归一 + 填充（此前原样穿透 = 终止注入面）：
+    assert_eq!(
+        prepare_smtp_payload("line1\n.\nline2"),
+        "line1\r\n..\r\nline2"
+    );
+    // smuggling 载荷：正文注入「\n.\nQUIT」被填充为数据行：
+    let out = prepare_smtp_payload("body\n.\nMAIL FROM:<evil@x>\r\n");
+    assert!(out.contains("\r\n..\r\n"), "裸 LF 点行必须被填充: {out:?}");
+    assert!(!out.contains("\n.\n"), "不得残留裸 LF 行首点: {out:?}");
+    // 既有 CRLF 点行行为不变：
+    assert_eq!(prepare_smtp_payload("a\r\n.b\r\nc"), "a\r\n..b\r\nc");
+    // 裸 CR（旧 Mac 形态）同归一：
+    assert_eq!(prepare_smtp_payload("x\r.y"), "x\r\n..y");
+    // 无点纯 LF 正文仅归一：
+    assert_eq!(prepare_smtp_payload("p\nq"), "p\r\nq");
+    // 干净载荷不变：
+    assert_eq!(
+        prepare_smtp_payload("From: a\r\n\r\nhello"),
+        "From: a\r\n\r\nhello"
+    );
+}
