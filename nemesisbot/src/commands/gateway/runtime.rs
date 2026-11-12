@@ -28,8 +28,10 @@ use tracing::error;
 use tracing::{info, warn};
 
 // M5（2026-10-10 集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
-// （approval.respond/pending 捕获 web_mgr）。
-#[cfg(all(feature = "cluster", feature = "security"))]
+// （approval.respond/pending 捕获 web_mgr）。无 cfg 门——L07（2026-11-01）
+// estop 挂点（下方**无门控**区域直调 resolve_orphans）是全特征组合下的
+// 必有用点；曾挂 cfg(all(cluster,security)) 使 cluster-off 构建在此处
+// E0599（BUG-20261112-108，check-vm-trim 收窄态实捕）。
 use nemesis_types::agent::ApprovalResponder;
 
 use super::GatewayCtx;
