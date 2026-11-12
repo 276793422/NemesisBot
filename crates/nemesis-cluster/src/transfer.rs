@@ -1152,6 +1152,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| format!("readdir entry: {e}"))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
+        // 目录链接环守卫（与 nemesis-migrate workspace.rs 同源形态）：
+        // entry.file_type() 不穿越 symlink，目录链接不递归——is_dir()
+        // 跟随链接遇环 = 病态嵌套复制直到 OS 路径上限再 Err。跳过目录
+        // 链接；普通 symlink 文件仍按内容照常拷贝。
+        let ft = entry
+            .file_type()
+            .map_err(|e| format!("entry type {}: {e}", from.display()))?;
+        if ft.is_symlink() && from.is_dir() {
+            continue;
+        }
         if from.is_dir() {
             copy_dir_recursive(&from, &to)?;
         } else {
