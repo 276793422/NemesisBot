@@ -1367,8 +1367,8 @@ async fn run_command(cli: Cli) -> Result<()> {
                         nemesis_taiwei::host::MachineIdAction::Ensure => {
                             nemesis_taiwei::host::run_machine_id_ensure()
                         }
-                        nemesis_taiwei::host::MachineIdAction::Remove => {
-                            nemesis_taiwei::host::run_machine_id_remove()
+                        nemesis_taiwei::host::MachineIdAction::Remove { workspace } => {
+                            nemesis_taiwei::host::run_machine_id_remove(workspace.as_deref())
                         }
                     };
                     if let Err(e) = r {

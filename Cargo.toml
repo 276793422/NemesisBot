@@ -76,6 +76,7 @@ members = [
     "test-tools/fake-qmp",
     "test-tools/verify-probe",
     "test-tools/comment-gate",
+    "xtask",
 ]
 
 # 装配槽区（slots/）：专有/商业子系统槽位一律住这里（未来新增定制不再进根目录）。

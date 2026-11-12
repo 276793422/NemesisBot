@@ -25,3 +25,8 @@ linker = "rust-lld"
 
 [target.aarch64-unknown-linux-musl]
 linker = "rust-lld"
+
+# 商业装配流水线入口：cargo xtask assemble（槽区 slots/taiwei + 私有实现
+# submodule → assembly/ 复制体构建；公开工作区与私有仓零写入）。
+[alias]
+xtask = ["run", "-p", "xtask", "--"]

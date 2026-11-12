@@ -21,10 +21,15 @@ git submodule add --branch main \
   后续太微开发就在挂载点里照常 commit/push（独立 git 仓）。
 - **没权限**：拉不了是正常依赖语义；公开构建完全不受影响（cargo 图里没有
   它），stub 槽位照常解析。
-- **商业构建**（xtask `assemble`）：仓库复制到装配工作区（`assembly/`，git
-  忽略）→ 复制体内把 nemesisbot 的 path 改指 `slots/taiwei/impl/crates/
-  taiwei-impl` 挂载点 → `--features taiwei` 构建。公开工作区零写入，公开仓
-  永远只保留 stub 形态，槽位不丢、`git status` 恒干净。
+- **商业构建**（xtask `assemble`）：`cargo xtask assemble [--endpoint URL]
+  [--pubkey HEX] [--token TOKEN] [--profile release|iotsmall] [--clean]`——
+  仓库复制到装配工作区（`assembly/`，git 忽略，mtime 保持 + 共享 target，
+  重复装配走增量）→ 复制体内把 nemesisbot 的 path 改指
+  `slots/taiwei/impl/crates/taiwei-impl` 挂载点 → `--features taiwei` 构建 →
+  产物验证（实现指纹 + 注入值烤入面）→ 交付物落 `assembly/dist/`。构建期
+  `NEMESIS_TELEMETRY_ENDPOINT/_PUBKEY/_TOKEN` 缺省 = 实现内建默认；显式传参
+  或同名环境变量可覆盖。公开工作区零写入，公开仓永远只保留 stub 形态，槽位
+  不丢、`git status` 恒干净。
 
 当前状态：接线完成且私有仓已推送远端——`impl/` 挂 c92e1ea（origin/main），
 依赖解析走云端 canonical 地址；其他机器 `git submodule update --init
