@@ -709,6 +709,92 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
     delete_chat_log(&key);
 }
 
+/// 回归（BUG-20261113-143）：无锚 undo（被截区间全无 checkpoint 标记的
+/// 旧行——migrate 导入 / feature 前会话）的 redo **不得碰文件**。修复前
+/// forward_tree 在无锚臂回落 `latest_tree_hex()`（loop 全局索引里任意会
+/// 话的最新 begin 树），redo 走 (Some,Some) 臂执行 undo 从未做过的文件
+/// 恢复：把工作区静默回滚到无关会话的 begin 树（Added 路径物理删除）
+/// 还盖「applied」戳——守卫 2（scoped 基线未变）与 drift 扫描（盘面自
+/// undo 后无变化）全部放行。对称语义：undo「只截断对话不回滚文件」，
+/// redo 同样只回填对话。git 形态才有影子 tree，JSON 形态恒 None 不受此
+/// 缺陷影响。
+#[cfg(windows)]
+#[tokio::test]
+async fn e3_git_redo_of_unanchored_undo_never_touches_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(None, root.clone()));
+    assert_eq!(store.backend(), crate::checkpoint::CheckpointBackend::Git);
+    al.set_checkpoint_store(store);
+    let key_a = e3_uniq_key("gunanchor-a");
+    let key_b = e3_uniq_key("gunanchor-b");
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+
+    let cp = al.attached_checkpoint().unwrap();
+
+    // 会话 B：一个带标记的 checkpoint turn（begin 树 = {code.txt: v1}）
+    // ，随后盘面推进（code.txt→v2 + 新增 side.txt，均相对 begin 树是
+    // 变更/Added）。这个 begin 树就是修复前 redo 误恢复的「无关树」。
+    cp.begin_for_session(1, "b1", Some(&key_b));
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    std::fs::write(root.join("side.txt"), "side").unwrap();
+    e3_append(&key_b, "user", "b turn 1 q", Some(1));
+    e3_append(&key_b, "assistant", "b turn 1 a", None);
+
+    // 会话 A：**全部无 checkpoint 标记的旧行**——对它回退
+    // restore_turn=None，undo 回执明示「只截断对话不回滚文件」。
+    e3_append(&key_a, "user", "old q1", None);
+    e3_append(&key_a, "assistant", "old a1", None);
+    e3_append(&key_a, "user", "old q2", None);
+    e3_append(&key_a, "assistant", "old a2", None);
+
+    let ws = root.clone();
+
+    // undo：截掉 turn 2（2 行），文件必须不动。
+    let out = al.rewind_to_message(&key_a, 0, false, None).await.unwrap();
+    assert_eq!(out["restore_turn"], serde_json::Value::Null, "{out}");
+    assert_eq!(out["file_restore"], "skipped", "{out}");
+    assert!(
+        out["file_restore_note"]
+            .as_str()
+            .is_some_and(|s| s.contains("checkpoint 标记")),
+        "无锚 undo 回执必须诚实注记只截断对话: {out}"
+    );
+    assert_eq!(std::fs::read_to_string(ws.join("code.txt")).unwrap(), "v2");
+    assert!(ws.join("side.txt").exists());
+
+    // redo：对称语义——只回填对话，文件不碰。修复前：
+    // restore_to_tree(B begin 树) 把 code.txt 碾回 v1、side.txt 当 Added
+    // 物理删除，file_restore 还盖「applied」戳。
+    let out = al.redo_rewind(&key_a).await.unwrap();
+    assert_eq!(out["file_restore"], "skipped", "{out}");
+    assert!(
+        out["file_restore_note"]
+            .as_str()
+            .is_some_and(|s| s.contains("未回滚文件")),
+        "redo 回执注记该 undo 本就未回滚文件（无锚对称）: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("code.txt")).unwrap(),
+        "v2",
+        "工作区文件不被 redo 恢复到无关会话的 begin 树: {out}"
+    );
+    assert!(
+        ws.join("side.txt").exists(),
+        "Added 路径不被 redo 物理删除: {out}"
+    );
+    let (_, total, _, _) = read_chat_log(&key_a, 100, None);
+    assert_eq!(total, 4, "对话行 verbatim 回填");
+
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+}
+
 // ——： scoped 截断 × redo 守卫口径 ——
 
 /// git 多会话摆法：A 两 turn（v1→v2→v3，turn 边界 begin 捕树）+ B 一

@@ -624,16 +624,17 @@ impl AgentLoop {
         let forward_tree = match self.attached_checkpoint() {
             // redo 前向恢复目标 = rewind 时刻的实时 tree（begin 树只到
             // 各 turn 开始态，最后一个 turn 的变更只在实况里）。仅文件
-            // 恢复路径活跃（有 restore_turn 锚）时采集实时树；无锚时保
-            // 持 begin 树语义（可能 None）。
-            Some(cp) => {
-                if restore_turn.is_some() {
-                    cp.current_tree_hex().or_else(|| cp.latest_tree_hex())
-                } else {
-                    cp.latest_tree_hex()
-                }
+            // 恢复路径活跃（有 restore_turn 锚）时采集实时树。无锚恒
+            // None：该 undo 是「只截断对话不回滚文件」（undo 回执 note
+            // 自证），redo 必须对称（行回填、文件不碰）——此前无锚臂回
+            // 落 latest_tree_hex（loop 全局索引里任意会话的最新 begin
+            // 树），redo 走 (Some,Some) 臂把 undo 从未回滚过的工作区静
+            // 默恢复到一棵无关树上（Added 路径物理删除）还盖「applied」
+            // 戳，守卫 2/drift 扫描全部放行（BUG-20261113-143）。
+            Some(cp) if restore_turn.is_some() => {
+                cp.current_tree_hex().or_else(|| cp.latest_tree_hex())
             }
-            None => None,
+            _ => None,
         };
         // post 基线初值：restore 无锚 = 索引不动，基线就是现状（会话
         // 收窄口径——与 redo 守卫 2 对照侧同源，其他会话条目不参与）；
@@ -1145,7 +1146,16 @@ impl AgentLoop {
             },
             (Some(_), None) => file_note = Some("checkpoint store 未挂载，文件未恢复".to_string()),
             (None, _) => {
-                file_note = Some("无影子 tree（JSON 形态或该区间无变更），文件未恢复".to_string())
+                // 无锚 undo（restore_turn=None：旧行无标记/无 store 时代
+                // 区间）的 redo：对称语义——undo 只截断对话未碰文件，
+                // redo 同样只回填对话不碰文件。有锚但无影子 tree
+                // （JSON 形态/该区间无变更）才走泛化 note。
+                file_note = Some(if entry.restore_turn.is_none() {
+                    "该回退当时未回滚文件（被截区间无 checkpoint 标记），redo 仅回填对话"
+                        .to_string()
+                } else {
+                    "无影子 tree（JSON 形态或该区间无变更），文件未恢复".to_string()
+                })
             }
         }
 
