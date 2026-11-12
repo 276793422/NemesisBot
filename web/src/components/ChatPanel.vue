@@ -590,6 +590,19 @@ const usageTipRows = computed(() => {
     { key: 'history', label: '会话历史', val: `~${fmtTok(bd.history)} tok`, bar: usageMiniBar(bd.history) },
   ]
 })
+
+// 提示词内容可视化（2026-11-13）：段圆点 → 同色按钮，点击新标签页打开
+// 独立查看器页（chat.prompt_segment 取该段全文）。相对路径（base './' +
+// 桥子路径 <base href> 同款语义）；hash 路由不影响 path 解析。
+function openPromptSegment(key: string) {
+  const sid = effectiveSid.value
+  if (!sid) return
+  window.open(
+    `prompt-viewer/index.html?session=${encodeURIComponent(sid)}&segment=${encodeURIComponent(key)}`,
+    '_blank',
+    'noopener',
+  )
+}
 const usageTipHead = computed(() => {
   const bd = ctxBreakdown.value
   const trig = ctxTriggerTok.value
@@ -4005,7 +4018,13 @@ onUnmounted(() => {
             <!-- 行首段色块：与构成条段色一一对应（复用 usage-seg-* 背景类，
                  配色单一真相源；chip 不带基类 .usage-seg，不吃缝隙/高度规则） -->
             <span v-for="row in usageTipRows" :key="row.key" class="usage-tip-row">
-              <span class="usage-tip-chip" :class="`usage-seg-${row.key}`"></span>
+              <button
+                type="button"
+                class="usage-tip-chip"
+                :class="`usage-seg-${row.key}`"
+                :title="`查看${row.label}全文`"
+                @click="openPromptSegment(row.key)"
+              ></button>
               <span class="usage-tip-label">{{ row.label }}</span>
               <span class="usage-tip-val">{{ row.val }}</span>
               <span class="usage-tip-bar">{{ row.bar }}</span>
@@ -4489,12 +4508,21 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
-/* 行首段色块：8×8 圆角方块，背景由复用的 usage-seg-* 类提供 */
+/* 行首段色块：8×8 圆角方块（可点按钮，提示词内容可视化 2026-11-13）——
+   背景由复用的 usage-seg-* 类提供（配色单一真相源）；button 形态的
+   reset（边框/内边距清零）+ hover 提亮 + pointer 光标。 */
 .usage-tip-chip {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: none;
   border-radius: 2px;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.usage-tip-chip:hover {
+  filter: brightness(1.35);
 }
 .usage-tip-label {
   width: 56px;
@@ -4565,32 +4593,8 @@ onUnmounted(() => {
 .usage-seg + .usage-seg {
   border-left: 2px solid var(--bg);
 }
-.usage-seg-system {
-  background: #909399;
-}
-.usage-seg-tools {
-  background: #9a6dd7;
-}
-.usage-seg-mcp {
-  background: #e6a23c;
-}
-.usage-seg-skill {
-  background: #2fbdd9;
-}
-.usage-seg-memory {
-  background: #e0648c;
-}
-.usage-seg-summary {
-  background: #409eff;
-}
-.usage-seg-history {
-  background: #67c23a;
-}
-/* 空闲段（· 空闲）：点状纹理低对比可见 */
-.usage-seg-free {
-  background: repeating-linear-gradient(90deg, var(--text-muted) 0 1px, transparent 1px 4px);
-  opacity: 0.35;
-}
+/* 段配色（usage-seg-{system,tools,mcp,skill,memory,summary,history,free}）
+   在 styles/prompt-segments.css（全局，单一真相源——独立查看器页共用）。 */
 .usage-trigger-line {
   position: absolute;
   top: 0;

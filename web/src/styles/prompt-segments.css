@@ -1,0 +1,31 @@
+/* 提示词分段配色（单一真相源，2026-11-13 提示词内容可视化）：context 构成条
+   段背景（ChatPanel .usage-bar）、构成弹层段色按钮（.usage-tip-chip）、
+   独立查看器页（prompt-viewer MPA 入口）三处共用。
+   ChatPanel 只保留布局规则（.usage-seg 高度/缝隙/压缩线），颜色全部在本文件
+   ——查看器是独立入口，scoped 样式无法跨入口共享，颜色集中于此防漂移。 */
+.usage-seg-system {
+  background: #909399;
+}
+.usage-seg-tools {
+  background: #9a6dd7;
+}
+.usage-seg-mcp {
+  background: #e6a23c;
+}
+.usage-seg-skill {
+  background: #2fbdd9;
+}
+.usage-seg-memory {
+  background: #e0648c;
+}
+.usage-seg-summary {
+  background: #409eff;
+}
+.usage-seg-history {
+  background: #67c23a;
+}
+/* 空闲段（构成条 · 空闲）：点状纹理低对比可见 */
+.usage-seg-free {
+  background: repeating-linear-gradient(90deg, var(--text-muted) 0 1px, transparent 1px 4px);
+  opacity: 0.35;
+}

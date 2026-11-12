@@ -9,6 +9,8 @@ import { installNemesisSkin } from './skins/contract'
 import './styles/theme.css'
 import './styles/layout.css'
 import './styles/components.css'
+// 提示词分段配色（ChatPanel 构成条/弹层按钮 + prompt-viewer 查看器共用）
+import './styles/prompt-segments.css'
 
 // Vue Flow styles MUST be imported globally — importing inside a <style scoped>
 // block via @import does not work (scoped adds attribute hashes to selectors,
