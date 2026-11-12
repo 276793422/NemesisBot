@@ -857,9 +857,6 @@ impl Channel for WeChatChannel {
         self.base.record_sent();
         debug!(chat_id = %msg.chat_id, "[WeChatChannel] sending message");
         self.send_text(&msg.chat_id, &msg.content).await?;
-        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（回环防护）。
-        self.base.sync_outbound(&msg).await;
         Ok(())
     }
 

@@ -1712,6 +1712,63 @@ async fn estop_parks_issue_review_with_kind() {
     );
 }
 
+// BUG-20261113-125 回归锁：发车前检查点③停车（评审 LLM 在飞窗口急停）
+// 不得落「redispatch」决策审计——审计只在实际派发成功后落。此前发车前
+// 已落记录，master 重启后 estop_parked 内存队列丢失 → replay_stuck_reviews
+// → review_already_concluded 把这条记录当「已定案」跳过重放，单据永卡
+// in_review 无自愈。
+#[tokio::test]
+async fn estop_park_at_redispatch_checkpoint_records_no_redispatch_audit() {
+    let (deps, _ws) = review_deps("estop-redispatch-checkpoint3");
+    let issue = delivered_issue(&deps.store, "检查点③停车", "t-estop-c3");
+    let estop = deps.estop.clone();
+    attach_loop(
+        &deps,
+        Arc::new(ScriptedLlm {
+            script: std::sync::Mutex::new(std::collections::VecDeque::from([Ok(review_json(
+                "FAIL",
+                "输出缺运行证明",
+            ))])),
+            fallback: String::new(),
+            // 评审 LLM 调用瞬间拉闸——模拟「评审在飞窗口触发急停」，在途
+            // 轮次走到 FAIL 重派臂的发车前检查点③停车。
+            on_call: Some(Box::new(move || estop.trigger())),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .unwrap();
+    assert!(!reviewed, "检查点③停车轮次不得继续发车");
+    let parked = deps.estop_parked.lock().unwrap().clone();
+    assert_eq!(
+        parked,
+        vec![(ParkedKind::Issue, issue.id)],
+        "必须停在检查点③（Issue 维度入队）: {parked:?}"
+    );
+    // ❌ 差距评论照常落（决策已出、评论在发车前）。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("❌ agent 验收未通过")),
+        "FAIL 差距评论必须已落"
+    );
+    // 核心断言：本单不得有任何 auto_decide 审计行——检查点③停车是
+    // 瞬时态不是终局决策，重启后必须可重放。
+    let decides: Vec<_> = deps
+        .store
+        .list_activity(issue.id)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "auto_decide")
+        .collect();
+    assert!(
+        decides.is_empty(),
+        "检查点③停车不得落任何决策审计行（发车前记录=重放守卫误判已定案的根因）: {decides:?}"
+    );
+}
+
 #[tokio::test]
 async fn estop_parks_project_review_with_kind() {
     let (deps, _ws) = review_deps("estop-project");
@@ -5741,6 +5798,41 @@ async fn llm_fail_within_budget_redispatches_and_records() {
     assert_eq!(
         decided_word(&deps.store, issue.id).as_deref(),
         Some("redispatch")
+    );
+    // BUG-20261113-125 回归锁：成功路径「redispatch」审计恰一条（发车前
+    // 不得有第两条），且带 target 字段（记录在派发成功后落）。
+    let redispatch_rows: Vec<_> = deps
+        .store
+        .list_activity(issue.id)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "auto_decide")
+        .filter(|a| {
+            a.details
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|v| {
+                    v.get("decision")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
+                .as_deref()
+                == Some("redispatch")
+        })
+        .collect();
+    assert_eq!(
+        redispatch_rows.len(),
+        1,
+        "成功重派路径 redispatch 审计必须恰一条（发车前预记=审计假象回归）: {redispatch_rows:?}"
+    );
+    assert!(
+        redispatch_rows[0]
+            .details
+            .as_deref()
+            .map(|d| d.contains("target"))
+            .unwrap_or(false),
+        "redispatch 审计必须带 target（派发成功后落）: {:?}",
+        redispatch_rows[0].details
     );
     let comments = deps.store.list_comments(issue.id).unwrap();
     let gap = comments

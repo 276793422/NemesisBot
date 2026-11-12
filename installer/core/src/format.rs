@@ -89,9 +89,12 @@ pub fn locate_footer(file_len: u64, tail: &[u8]) -> Result<(Footer, u64)> {
     let footer_abs = tail_start + pos as u64;
     // 位置交叉核验：manifest blob 必须紧贴尾注。
     if footer.manifest_offset.checked_add(footer.manifest_len) != Some(footer_abs) {
+        // 错误文案用 u128 算和——溢出样本（u64 边界）进错误路径不能再溢出
+        // panic（与 manifest.rs::validate 同款纪律；裸加法在 debug 构建
+        // 对 crafted 尾注 panic 而非干净报错）。
+        let sum = (footer.manifest_offset as u128) + (footer.manifest_len as u128);
         return Err(anyhow!(
-            "尾注位置核验失败：manifest_offset+len = {} ≠ 尾注位置 {footer_abs}（结构损坏）",
-            footer.manifest_offset + footer.manifest_len
+            "尾注位置核验失败：manifest_offset+len = {sum} ≠ 尾注位置 {footer_abs}（结构损坏）"
         ));
     }
     Ok((footer, footer_abs))

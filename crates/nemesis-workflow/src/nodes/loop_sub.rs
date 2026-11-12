@@ -111,7 +111,12 @@ impl NodeExecutor for LoopNodeExecutor {
 
         // Create a local context for child node execution so loop variables
         // don't pollute the parent context.
-        let local_wf_ctx = WorkflowContext::new(context.clone());
+        // BUG-20261112-115 同族：local_wf_ctx 必须继承父 identity——旧实现
+        // `WorkflowContext::new` 落全空默认值，loop 体里的 tool 子节点经
+        // SecureExecutor 透传的 RequestContext 三键全空（审批卡无法回源触发
+        // 会话 / 会话级豁免不命中 / 归因清空），fresh run 即中招。
+        let local_wf_ctx =
+            WorkflowContext::new_with_identity(wf_ctx.identity().clone(), context.clone());
         let mut local_ctx = context.clone();
         let mut last_output = serde_json::Value::Null;
         let mut actual_iterations: usize = 0;

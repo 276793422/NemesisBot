@@ -1583,3 +1583,71 @@ fn test_guild_team_binding_is_case_insensitive() {
     assert_eq!(route2.matched_by, "binding.team", "team 大小写漂移不得脱靶");
     assert_eq!(route2.agent_id, "team-agent");
 }
+
+// 回归锁：account 归一对称（BUG-20261113-130）。旧实现 binding 侧只
+// trim+lowercase、actual 侧（resolve 入口）走 normalize_account_id
+// （sanitize + 剥端 `-`）——同一账号两种写法经不对称变换永不相等，
+// 绑定静默脱靶落 default。WhatsApp 手机号/email/含空格账号名是真实
+// 可触发形态（`+`/`@`/空格都被 normalize 成 `-`）。
+#[test]
+fn test_matches_account_id_normalize_symmetry() {
+    // binding 写原始形态 vs actual normalize 后形态（生产链方向）
+    assert!(matches_account_id("+8613800138000", "8613800138000"));
+    assert!(matches_account_id("My Bot", "my-bot"));
+    assert!(matches_account_id("user@example.com", "user-example-com"));
+    // 反向（binding 已归一、actual 原始形态）同命中（normalize 幂等对称）
+    assert!(matches_account_id("my-bot", "My Bot"));
+    // 合法形态行为不变（纯放宽）
+    assert!(matches_account_id("work", "work"));
+    assert!(matches_account_id("myaccount", "MyAccount"));
+    assert!(!matches_account_id("other", "myaccount"));
+    // 通配与缺省语义不变
+    assert!(matches_account_id("*", "whatever"));
+    assert!(matches_account_id("", "default"));
+    assert!(!matches_account_id("", "non-default"));
+}
+
+// 端到端：resolve 全链路——binding 写 WhatsApp 手机号原样，入站
+// account_id 同号，必须命中 binding.account 而非脱靶落 default。
+#[test]
+fn test_account_binding_survives_account_id_normalization_drift() {
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "wa-agent".to_string(),
+            match_channel: "whatsapp".to_string(),
+            match_account_id: "+8613800138000".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: None,
+            match_team_id: None,
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "wa-agent".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "whatsapp".to_string(),
+        account_id: "+8613800138000".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("peer-1".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.matched_by, "binding.account",
+        "账号写法漂移不得脱靶（旧实现落 default）"
+    );
+    assert_eq!(route.agent_id, "wa-agent");
+}

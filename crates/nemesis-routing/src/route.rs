@@ -421,7 +421,13 @@ fn matches_account_id(match_account_id: &str, actual: &str) -> bool {
     if trimmed == "*" {
         return true;
     }
-    trimmed.to_lowercase() == actual.to_lowercase()
+    // account 归一对称纪律（peer/guild/team CI 修复同族）：actual 侧
+    // 生产链在 resolve 入口已 normalize_account_id（sanitize `+`/`@`/
+    // 空格等 → `-` + 剥端 `-`），binding 侧此前只 trim+lowercase——
+    // 同一账号两种写法（WhatsApp 手机号 `+86…`、email、含空格账号名）
+    // 经不对称变换永不相等 → 绑定静默脱靶落 default。两侧同走
+    // normalize（幂等；纯放宽——合法形态两式等价，原命中照常命中）。
+    normalize_account_id(trimmed) == normalize_account_id(actual)
 }
 
 #[cfg(test)]

@@ -76,7 +76,15 @@ members = [
     "test-tools/fake-qmp",
     "test-tools/verify-probe",
     "test-tools/comment-gate",
+    "xtask",
 ]
+
+# 装配槽区（slots/）：专有/商业子系统槽位一律住这里（未来新增定制不再进根目录）。
+# 槽内 stub 在仓满足 optional path 依赖解析（cargo 对 path 依赖恒解析、与 feature
+# 开关无关）；exclude 防止槽被自动吸收为成员（stub 的 compile_error 只在未装配
+# 误开 feature 时编译触发）。商业装配发生在装配复制体（assembly/，git 忽略）里
+# ——公开工作区与私有仓永远不被互相写入。
+exclude = ["slots/taiwei"]
 
 [workspace.package]
 version = "0.1.0"

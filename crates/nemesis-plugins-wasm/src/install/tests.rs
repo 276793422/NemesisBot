@@ -114,8 +114,7 @@ async fn install_missing_source_dir_fails() {
     let err = inst
         .install(Path::new("Z:/definitely/absent/src"), true)
         .await
-        .err()
-        .expect("missing source");
+        .expect_err("missing source");
     assert!(err.to_string().contains("source dir"), "{err:?}");
 }
 
@@ -127,8 +126,7 @@ async fn install_missing_manifest_fails() {
     let err = inst
         .install(dir.path(), true)
         .await
-        .err()
-        .expect("no plugin.toml");
+        .expect_err("no plugin.toml");
     assert!(err.to_string().contains("read plugin.toml"));
 }
 
@@ -141,8 +139,7 @@ async fn install_unsigned_strict_rejected() {
     let err = inst
         .install(&src, false)
         .await
-        .err()
-        .expect("unsigned + strict");
+        .expect_err("unsigned + strict");
     assert!(err.to_string().contains("trust check failed"));
     // 零突变：载荷与 lockfile 均未落。
     assert!(!mgr.plugin_dir("decl-panel").join("plugin.toml").exists());
@@ -236,11 +233,7 @@ async fn install_wasm_filename_escape_rejected() {
         .expect("write");
     std::fs::write(dir.path().join("evil.wasm"), b"garbage wasm").expect("write");
     // 文件名纯度闸先于读盘触发（join 逃逸面）。
-    let err = inst
-        .install(&src, true)
-        .await
-        .err()
-        .expect("escape rejected");
+    let err = inst.install(&src, true).await.expect_err("escape rejected");
     assert!(err.to_string().contains("纯文件名"), "{err:?}");
 }
 
@@ -371,8 +364,7 @@ async fn uninstall_semantics_matrix() {
     // 非法 slug。
     let err = crate::install::uninstall(&mgr, "../x")
         .await
-        .err()
-        .expect("invalid slug");
+        .expect_err("invalid slug");
     assert!(err.to_string().contains("invalid slug"));
     let err = crate::install::uninstall_blocking(&mgr, "../x")
         .err()
@@ -401,8 +393,7 @@ async fn hand_copied_payload_refunnels_on_enable() {
     let err = inst
         .set_enabled("decl-panel", true)
         .await
-        .err()
-        .expect("strict refuse");
+        .expect_err("strict refuse");
     assert!(err.to_string().contains("trust check failed"), "{err:?}");
     // 开关已先落盘（诚实可见态）。
     assert!(mgr.get_switch("decl-panel").enabled);
@@ -429,8 +420,7 @@ async fn set_enabled_missing_payload_fails() {
     let err = inst
         .set_enabled("ghost", true)
         .await
-        .err()
-        .expect("not found");
+        .expect_err("not found");
     assert!(err.to_string().contains("not found"));
     let err = inst
         .set_enabled("../x", true)
@@ -601,8 +591,7 @@ async fn tool_payload_funnel_and_metadata_reconcile() {
     let err = inst
         .set_enabled("textstat", true)
         .await
-        .err()
-        .expect("sha drift");
+        .expect_err("sha drift");
     assert!(err.to_string().contains("sha256 mismatch"), "{err:?}");
     // 目录名与 slug 不一致 = 孤儿载荷拒载。
     let orphan = mgr.plugins_dir().join("mislabeled");
@@ -615,8 +604,7 @@ async fn tool_payload_funnel_and_metadata_reconcile() {
     let err = inst
         .set_enabled("textstat2", true)
         .await
-        .err()
-        .expect("orphan");
+        .expect_err("orphan");
     assert!(err.to_string().contains("不一致"), "{err:?}");
     let _ = ws;
 }
@@ -831,7 +819,9 @@ async fn wasm_filename_forms() {
         .err()
         .unwrap_or_else(|| panic!("compile"));
     assert!(matches!(err, PluginError::Compile(_)), "{err:?}");
-    // C: 盘符相对形态拒（文件名纯度闸先于读盘）。
+    // C: 盘符形态的平台语义分叉（文件名纯度闸先于读盘）：Windows 下
+    // `C:x.wasm` 是盘符相对 → 纯文件名闸拒；POSIX 下只是含冒号的合法
+    // 文件名 → 直通读盘，死于编译（与 custom.wasm 同臂）。
     let dir2 = tempfile::tempdir().expect("tmp2");
     let src2 = mk(dir2.path(), "C:evil.wasm", b"garbage wasm");
     let err2 = inst
@@ -839,5 +829,9 @@ async fn wasm_filename_forms() {
         .await
         .err()
         .unwrap_or_else(|| panic!("drive-relative"));
-    assert!(err2.to_string().contains("纯文件名"), "{err2:?}");
+    if cfg!(windows) {
+        assert!(err2.to_string().contains("纯文件名"), "{err2:?}");
+    } else {
+        assert!(matches!(err2, PluginError::Compile(_)), "{err2:?}");
+    }
 }

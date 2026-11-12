@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "商业装配流水线（assembly/ 复制体构建：槽区 slots/taiwei + 私有实现 submodule）"
+
+[dependencies]
+anyhow = "1"
+
+[lints]
+workspace = true

@@ -917,6 +917,43 @@ fn test_sweep_checkpoint_zero_cap_defaults_immediately() {
     );
 }
 
+/// BUG-20261112-114：巨值 blocking_cap_secs 的硬顶比较裸加法溢出——
+/// deadline_ms 与 cap_ms 都可被配置推到近 i64::MAX，`deadline_ms + cap_ms`
+/// debug 构建 panic、release 环绕成负 → 「巨大硬顶」反向变立即默认收口，
+/// 恰击穿 blocking_cap_ms 钳制注释自述的「巨大值 ≈ 永不到顶」意图
+/// （R947 BUG-112 数值 panic 面同族）。saturating 后巨值硬顶 = 永进
+/// 等待通报拍、永不默认收口（本测试跑 debug 形态，改回裸加法即 panic 红）。
+#[test]
+fn test_sweep_checkpoint_huge_cap_never_defaults() {
+    let (_dir, store) = open_store("tp-sweep-cap-huge");
+    let issue = in_review_issue(&store, "巨值硬顶单", None);
+    let tp = hang(
+        &store,
+        issue.id,
+        None,
+        TouchpointKind::Spec,
+        now_ms() - 1_000, // 等待窗已过
+    );
+    // u64::MAX 配置面：blocking_cap_ms 钳制后仍近 i64::MAX，与过去
+    // deadline 相加在裸加法下溢出。
+    let cfg = att_cfg_checkpoint(u64::MAX);
+
+    let stats = sweep_touchpoint_timeouts_with_config(&cfg, &store, now_ms());
+    assert_eq!(stats.defaulted, 0, "巨值硬顶永不默认收口");
+    assert_eq!(stats.parked, 1, "巨值硬顶进等待通报拍");
+    let fresh = store.get_touchpoint(tp.id).unwrap().unwrap();
+    assert_eq!(
+        fresh.status,
+        TouchpointStatus::Pending,
+        "等待拍不动触点状态"
+    );
+    assert!(
+        fresh.audit.contains("\"checkpoint_wait\""),
+        "audit 缺 checkpoint_wait: {}",
+        fresh.audit
+    );
+}
+
 // ---------------------------------------------------------------------------
 // sweep：parked_sync 滞留通报（人工升级留痕，机器不代答）
 // ---------------------------------------------------------------------------

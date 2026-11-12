@@ -658,6 +658,13 @@ enum Commands {
         #[arg(long)]
         status: bool,
     },
+    /// Taiwei subsystem actions (assembly slot; installer spawn channel +
+    /// transparency status; honest absence when not assembled).
+    #[cfg(feature = "taiwei")]
+    Taiwei {
+        #[command(subcommand)]
+        action: nemesis_taiwei::host::TaiweiAction,
+    },
     /// Internal test commands (hidden)
     #[cfg(feature = "desktop")]
     #[command(hide = true)]
@@ -1281,6 +1288,94 @@ async fn run_command(cli: Cli) -> Result<()> {
             if let Err(e) = commands::estop::run(&home, release, status).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
+            }
+        }
+        #[cfg(feature = "taiwei")]
+        Commands::Taiwei { action } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            let default_ws = common::workspace_path(&home);
+            match action {
+                nemesis_taiwei::host::TaiweiAction::Emit {
+                    kind,
+                    install_id,
+                    duration_secs,
+                    exit_reason,
+                    reason,
+                    endpoint,
+                    workspace,
+                } => {
+                    let args = nemesis_taiwei::host::EmitArgs {
+                        kind,
+                        install_id,
+                        duration_secs,
+                        exit_reason,
+                        uninstall_reason: reason,
+                        endpoint,
+                        workspace,
+                    };
+                    // 静默语义：emit 内部禁用/失败都不报错（退出码恒 0）
+                    if let Err(e) = nemesis_taiwei::host::run_emit(
+                        &home,
+                        &default_ws,
+                        common::VERSION_INFO.version,
+                        &args,
+                    )
+                    .await
+                    {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                nemesis_taiwei::host::TaiweiAction::Status { workspace } => {
+                    if let Err(e) = nemesis_taiwei::host::run_status(
+                        &home,
+                        &default_ws,
+                        common::VERSION_INFO.version,
+                        workspace.as_deref(),
+                    ) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                nemesis_taiwei::host::TaiweiAction::Enable => {
+                    if let Err(e) = nemesis_taiwei::host::run_enable(&home) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                nemesis_taiwei::host::TaiweiAction::Disable => {
+                    if let Err(e) = nemesis_taiwei::host::run_disable(&home) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                nemesis_taiwei::host::TaiweiAction::PreciseEnable => {
+                    if let Err(e) = nemesis_taiwei::host::run_precise_enable(&home) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                nemesis_taiwei::host::TaiweiAction::PreciseDisable => {
+                    if let Err(e) = nemesis_taiwei::host::run_precise_disable(&home) {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+                nemesis_taiwei::host::TaiweiAction::MachineId { action } => {
+                    let r = match action {
+                        nemesis_taiwei::host::MachineIdAction::Ensure => {
+                            nemesis_taiwei::host::run_machine_id_ensure()
+                        }
+                        nemesis_taiwei::host::MachineIdAction::Remove { workspace } => {
+                            nemesis_taiwei::host::run_machine_id_remove(workspace.as_deref())
+                        }
+                    };
+                    if let Err(e) = r {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             }
         }
         Commands::Run {

@@ -46,6 +46,11 @@ const MAX_SMTP_LINE_BYTES: usize = 64 * 1024;
 /// 截断版 + warn，对端失控输出不再无界入内存。
 const MAX_IMAP_LINE_BYTES: usize = 8 * 1024 * 1024;
 
+/// IMAP literal 单块字节帽（BUG-20261113-126）：literal 按字节数精确消费
+/// （协议对齐前提），超大 literal（>64MB）诚实报错断连走下轮重连——
+/// 聊天中继场景无合法用例，拒绝优于无界入内存。
+const MAX_IMAP_LITERAL_BYTES: usize = 64 * 1024 * 1024;
+
 /// 包一层超时：超时映射 `io::ErrorKind:TimedOut`，调用方既有 `.map_err`
 /// 照常拿到带上下文的错误（错误面文案 = `{what} timed out after Ns`）。
 async fn io_timeout<T>(
@@ -322,6 +327,29 @@ impl EmailChannel {
         if configured == 0 { 30 } else { configured }
     }
 
+    /// sender_map（回复线索表）容量帽（BUG-20261113-127）：键为发件人
+    /// 地址（每封来件的唯一地址一条目），插入点在 allow-list 检查**之前**
+    /// ——公开邮箱收垃圾邮件即可灌入无限唯一地址、条目永不回收 = 长驻
+    /// 进程内存慢漏（与 seen_uids 同族，家族纪律同款 10000→5000 修剪；
+    /// 线索语义只需覆盖近期通信窗口，修剪后旧联系人回信主题回落默认值，
+    /// 回复投递不受影响——地址仍在 chat_id）。
+    const SENDER_MAP_MAX_ENTRIES: usize = 10_000;
+    const SENDER_MAP_PRUNE_COUNT: usize = 5_000;
+
+    /// 超帽修剪（插入点共用）。
+    fn prune_sender_map(map: &dashmap::DashMap<String, EmailMessageInfo>) {
+        if map.len() > Self::SENDER_MAP_MAX_ENTRIES {
+            let keys: Vec<String> = map
+                .iter()
+                .take(Self::SENDER_MAP_PRUNE_COUNT)
+                .map(|e| e.key().clone())
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        }
+    }
+
     /// Marks a message ID as seen.
     pub fn mark_seen(&self, message_id: &str) {
         let mut map = self.seen_uids.write();
@@ -335,10 +363,17 @@ impl EmailChannel {
     }
 
     /// Builds IMAP LOGIN command arguments.
+    ///
+    /// R737 同族收敛（BUG-20261113-128）：用户名/密码经 `imap_quoted`
+    /// 转义（`"`/`\` 反斜杠转义 + CR/LF 剥除）——裸 quoted 拼接下凭据含
+    /// `"` 即破坏 quoted 边界构成注入面（连接路径 imap_connect /
+    /// imap_connect_static 均已走 imap_quoted，本编码入口同源对齐）。
     pub fn build_imap_login(&self) -> String {
-        let user = &self.config.imap_username;
-        let pass = &self.config.imap_password;
-        format!("LOGIN \"{user}\" \"{pass}\"")
+        format!(
+            "LOGIN {} {}",
+            imap_quoted(&self.config.imap_username),
+            imap_quoted(&self.config.imap_password)
+        )
     }
 
     /// Builds a full email message for SMTP.
@@ -395,34 +430,24 @@ impl EmailChannel {
                 continue;
             }
 
-            let lower = line.to_lowercase();
-            if lower.starts_with("from:") {
-                from = line.trim_start_matches("From:").trim().to_string();
-            } else if lower.starts_with("subject:") {
-                subject = line.trim_start_matches("Subject:").trim().to_string();
-            } else if lower.starts_with("message-id:") {
-                message_id = line
-                    .trim_start_matches("Message-ID:")
-                    .trim()
-                    .trim_matches(|c| c == '<' || c == '>' || c == ' ')
-                    .to_string();
-            }
+            apply_header_field(
+                line,
+                &mut from,
+                &mut subject,
+                &mut message_id,
+                FieldWriteMode::Overwrite,
+            );
         }
 
         // Also parse from the header literal data if present
         for hdr_line in header_data.split("\r\n") {
-            let lower = hdr_line.to_lowercase();
-            if lower.starts_with("from:") && from.is_empty() {
-                from = hdr_line.trim_start_matches("From:").trim().to_string();
-            } else if lower.starts_with("subject:") && subject.is_empty() {
-                subject = hdr_line.trim_start_matches("Subject:").trim().to_string();
-            } else if lower.starts_with("message-id:") && message_id.is_empty() {
-                message_id = hdr_line
-                    .trim_start_matches("Message-ID:")
-                    .trim()
-                    .trim_matches(|c| c == '<' || c == '>' || c == ' ')
-                    .to_string();
-            }
+            apply_header_field(
+                hdr_line,
+                &mut from,
+                &mut subject,
+                &mut message_id,
+                FieldWriteMode::KeepExisting,
+            );
         }
 
         (from, subject, message_id)
@@ -549,8 +574,7 @@ impl EmailChannel {
 
         // Send message body
         let message = Self::build_smtp_message(self.smtp_username(), to, subject, body);
-        // Escape dot-starting lines
-        let message = message.replace("\r\n.", "\r\n..");
+        let message = prepare_smtp_payload(&message);
         io_timeout(
             "SMTP write body",
             std::time::Duration::from_secs(IO_TIMEOUT_SECS),
@@ -805,6 +829,9 @@ impl EmailChannel {
                                                         subject: reply_subject,
                                                     },
                                                 );
+                                                // BUG-20261113-127：插入点容量帽
+                                                //（allow-list 前插入，垃圾邮件可灌唯一地址）。
+                                                Self::prune_sender_map(&sender_map);
                                             }
 
                                             // Mark as seen
@@ -881,12 +908,17 @@ impl EmailChannel {
 }
 
 /// TLS/明文双态流：ImapConnection 与 smtp_send 的统一传输层。rustls 握手
-/// 成功后 `TlsStream<TcpStream>` 与 `TcpStream` 同构（AsyncRead + AsyncWrite
-/// + Unpin），enum 分派即可复用既有行读写代码（两态均 Unpin，`get_mut`
-/// 后 `Pin::new` 委托合法）。
+/// 成功后 `TlsStream<TcpStream>` 与 `TcpStream` 同构（同实现 AsyncRead、
+/// AsyncWrite、Unpin 三 trait），enum 分派即可复用既有行读写代码（两态
+/// 均 Unpin，`get_mut` 后 `Pin::new` 委托合法）。
 enum EmailStream {
     Plain(tokio::net::TcpStream),
     Tls(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
+    /// 测试专用：内存 duplex 直构 ImapConnection（不走 TCP/TLS，驱动
+    /// literal 毒丸/超帽等协议层回归锁）。随 enum 手工 AsyncRead/AsyncWrite
+    /// 分派三臂补齐，测试与生产走同一 split 路径。
+    #[cfg(test)]
+    Test(tokio::io::DuplexStream),
 }
 
 impl tokio::io::AsyncRead for EmailStream {
@@ -898,6 +930,8 @@ impl tokio::io::AsyncRead for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
             Self::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -911,6 +945,8 @@ impl tokio::io::AsyncWrite for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
             Self::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -921,6 +957,8 @@ impl tokio::io::AsyncWrite for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
             Self::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -931,6 +969,8 @@ impl tokio::io::AsyncWrite for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
             Self::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_shutdown(cx),
         }
     }
 }
@@ -1042,6 +1082,65 @@ impl ImapConnection {
         format!("NB{:03}", self.tag_counter)
     }
 
+    /// 按 literal 声明字节数精确消费 literal 块（BUG-20261113-126）：
+    /// fill_buf 字节级读满 N 字节（一个 IO_TIMEOUT 预算内），切行后返回
+    /// ——literal 内容与协议行分流，tagged 完成行判定不再误吃 literal
+    /// 内的 `{tag} OK` 毒丸行（协议游标保持字节对齐）。行切分形态与既有
+    /// read_line 输出同构（CRLF/LF 剥除、UTF-8 lossy），消费方契约不变；
+    /// literal 末尾无换行时尾段独立成行，其后线上的 CRLF 由下一次
+    /// read_line 收成一条空串行——消费方（parse_email_headers /
+    /// parse_email_body）对空串行均无感（无冒号跳过 / join+trim 吸收）。
+    /// 超帽（>MAX_IMAP_LITERAL_BYTES）诚实 Err——协议对齐前提是全量消费，
+    /// 截断续收会失步，断连走下轮重连是唯一诚实形态。
+    async fn read_literal_lines(&mut self, n: usize) -> Result<Vec<String>> {
+        use tokio::io::AsyncBufReadExt; // fill_buf/consume 需 trait 在作用域
+        if n > MAX_IMAP_LITERAL_BYTES {
+            return Err(NemesisError::Channel(format!(
+                "IMAP literal size {n} exceeds cap {MAX_IMAP_LITERAL_BYTES}"
+            )));
+        }
+        let mut bytes: Vec<u8> = Vec::with_capacity(n.min(64 * 1024));
+        io_timeout(
+            "IMAP literal read",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            async {
+                let mut remaining = n;
+                while remaining > 0 {
+                    let buf = self.reader.fill_buf().await?;
+                    if buf.is_empty() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "literal truncated by connection close",
+                        ));
+                    }
+                    let take = remaining.min(buf.len());
+                    bytes.extend_from_slice(&buf[..take]);
+                    self.reader.consume(take);
+                    remaining -= take;
+                }
+                Ok::<(), std::io::Error>(())
+            },
+        )
+        .await?;
+
+        let mut lines = Vec::new();
+        let mut start = 0usize;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\n' {
+                let mut end = i;
+                if end > start && bytes[end - 1] == b'\r' {
+                    end -= 1;
+                }
+                lines.push(String::from_utf8_lossy(&bytes[start..end]).into_owned());
+                start = i + 1;
+            }
+        }
+        if start < bytes.len() {
+            lines.push(String::from_utf8_lossy(&bytes[start..]).into_owned());
+        }
+        Ok(lines)
+    }
+
     /// Sends a tagged IMAP command and reads until the tagged response.
     pub async fn send_command(&mut self, command: &str) -> Result<()> {
         let tag = self.next_tag();
@@ -1060,11 +1159,18 @@ impl ImapConnection {
                 .await
                 .map_err(|e| NemesisError::Channel(format!("IMAP read failed: {e}")))?;
 
-            if line.starts_with(&format!("{tag} ")) {
-                if line.contains("OK") {
-                    return Ok(());
-                }
-                return Err(NemesisError::Channel(format!("IMAP error: {line}")));
+            // BUG-20261112-111①：状态按位置取 token，子串 contains("OK")
+            // 会把 NO/BAD 文本含大写 OK 词素的行误判成功。
+            match tagged_line_status(&line, &tag) {
+                Some(true) => return Ok(()),
+                Some(false) => return Err(NemesisError::Channel(format!("IMAP error: {line}"))),
+                None => {}
+            }
+            // BUG-20261113-126：untagged 行带 literal 尾标 → 按声明字节
+            // 数精确消费（内容丢弃——本路径只等完成行），literal 内容不
+            // 参与完成行判定。
+            if let Some(n) = trailing_literal_size(&line) {
+                self.read_literal_lines(n).await?;
             }
         }
     }
@@ -1088,13 +1194,20 @@ impl ImapConnection {
                 .await
                 .map_err(|e| NemesisError::Channel(format!("IMAP read failed: {e}")))?;
 
-            if line.starts_with(&format!("{tag} ")) {
-                if line.contains("OK") {
-                    return Ok(responses);
-                }
-                return Err(NemesisError::Channel(format!("IMAP error: {line}")));
+            // BUG-20261112-111①：同 send_command，状态按位置取 token。
+            match tagged_line_status(&line, &tag) {
+                Some(true) => return Ok(responses),
+                Some(false) => return Err(NemesisError::Channel(format!("IMAP error: {line}"))),
+                None => {}
             }
-            responses.push(line);
+            responses.push(line.clone());
+            // BUG-20261113-126：literal 标记行照旧入 responses（消费方
+            // in_literal 启发式锚定），literal 内容按声明字节数精确消费
+            // 后切行追加——内容不再流经 tagged 完成行判定（毒丸行失步根因）。
+            if let Some(n) = trailing_literal_size(&line) {
+                let literal_lines = self.read_literal_lines(n).await?;
+                responses.extend(literal_lines);
+            }
         }
     }
 }
@@ -1168,6 +1281,101 @@ fn imap_quoted(s: &str) -> String {
 /// 对齐 `build_smtp_message` 的 header_safe 既有形态。
 fn smtp_envelope_safe(v: &str) -> String {
     v.chars().filter(|&c| c != '\r' && c != '\n').collect()
+}
+
+/// DATA 载荷装配（BUG-20261112-111③）：先裸 LF/CR 归一为 CRLF，再点填充。
+/// RFC 5321 会话行终止恒为 CRLF，点填充只覆盖 CRLF-dot——正文中的裸 LF
+/// 行首点不被填充，宽容解析裸 LF 的中继（SMTP smuggling 类）可把它当数据
+/// 终止、后续字节当新命令（冒认证身份发信）。归一后点填充覆盖全部行首。
+fn prepare_smtp_payload(message: &str) -> String {
+    let normalized = message
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
+    normalized.replace("\r\n.", "\r\n..")
+}
+
+/// IMAP tagged 完成行状态判定（BUG-20261112-111①）：完成行形态恒为
+/// `{tag} SP {OK|NO|BAD} ...`（RFC 3501 §7.1.3）——状态必须按位置取
+/// token。此前 `line.contains("OK")` 子串匹配：NO/BAD 文本恰含大写 OK
+/// 词素的服务器文案（BROKEN/TOKEN/BOOKMARK 类）被误判成功——失败静默
+/// 化为 Ok，LOGIN/SELECT 假成功后下游命令连锁错乱。None = 非本 tag 完
+/// 成行（继续收集 untagged 响应）。
+fn tagged_line_status(line: &str, tag: &str) -> Option<bool> {
+    let rest = line.strip_prefix(tag)?.strip_prefix(' ')?;
+    Some(rest.split(' ').next().is_some_and(|s| s == "OK"))
+}
+
+/// 行尾 literal 尺寸标记解析（BUG-20261113-126）：IMAP literal 形态恒为
+/// 行尾 `{N}`（N 全数字，RFC 3501 literal 语法），N 声明紧随 CRLF 之后
+/// 的字节数。仅接受 ≤10 位纯数字（usize 解析安全）；其余形态（含 `{}`
+/// 空体、超长数字、行中 `{`）= None 非 literal。此前完全不核算 literal
+/// 字节数——literal 内容按行流经同一 read_line 与协议行无差别参与
+/// tagged 完成行判定：攻击者邮件头/正文里一行恰为 `{tag} OK ...`
+///（tag 序列 NB001-999 可预测）即被误判为本命令完成行——响应收集提前
+/// 截断 + 后续 literal 残字被当协议行连锁失步（FETCH 头/正文错乱、
+/// STORE 永不执行、该邮件每轮询周期重处理——单封恶意邮件可持续打毒
+/// 轮询连接）。
+fn trailing_literal_size(line: &str) -> Option<usize> {
+    if !line.ends_with('}') {
+        return None;
+    }
+    let open = line.rfind('{')?;
+    let digits = &line[open + 1..line.len() - 1];
+    if digits.is_empty() || digits.len() > 10 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// 按「首个冒号」切出 RFC 5322 头字段 (小写字段名, 值)（BUG-20261112-111②）：
+/// 字段名大小写不敏感（RFC 5322 §2.2），判定与截取必须同源——此前判定用
+/// 小写 starts_with、截取用精确大小写 `trim_start_matches("Message-ID:")`，
+/// 「Message-Id:」（实务同义拼写）命中判定后截取失败 → 值整行污染（字段
+/// 名混入去重键）；小写「from:」无尖括号形态则 chat_id 被污染 →
+/// allow-list 误拦 / 回信投递地址错误。
+fn split_header_field(line: &str) -> Option<(String, String)> {
+    let (name, value) = line.split_once(':')?;
+    Some((name.trim().to_lowercase(), value.trim().to_string()))
+}
+
+/// 头字段写入模式（BUG-20261112-111② 语义保真）：直接 untagged 行 =
+/// 后写覆盖（原语义）；literal 头数据 = 首个命中保留（原语义）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldWriteMode {
+    Overwrite,
+    KeepExisting,
+}
+
+/// 解析一行头字段并按模式写入目标槽（字段名/值同源切分，message-id 额外
+/// 剥尖括号与空白）。
+fn apply_header_field(
+    line: &str,
+    from: &mut String,
+    subject: &mut String,
+    message_id: &mut String,
+    mode: FieldWriteMode,
+) {
+    let Some((name, value)) = split_header_field(line) else {
+        return;
+    };
+    let write = |slot: &mut String, v: &str| match mode {
+        FieldWriteMode::Overwrite => *slot = v.to_string(),
+        FieldWriteMode::KeepExisting => {
+            if slot.is_empty() {
+                *slot = v.to_string();
+            }
+        }
+    };
+    match name.as_str() {
+        "from" => write(from, &value),
+        "subject" => write(subject, &value),
+        "message-id" => write(
+            message_id,
+            value.trim_matches(|c| c == '<' || c == '>' || c == ' '),
+        ),
+        _ => {}
+    }
 }
 
 fn parse_search_results_static(responses: &[String]) -> Vec<String> {

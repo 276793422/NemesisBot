@@ -120,3 +120,10 @@ test-tools/product-validation/evaluators/
 /coverage-data/
 /web/coverage/
 /web/coverage-data-vitest.log
+
+# 遥测信封私钥（默认钥/轮换钥）绝不入仓——公钥在构建脚本内建，私钥仓库外保管
+envelope_keys*.json
+
+# 商业装配工作区（仓库复制体 + 槽位替换后的构建现场）——装配发生在复制体里，
+# 公开工作区与私有仓互不写入；私有实现的合法声明 = git submodule（slots/taiwei/impl）
+assembly/

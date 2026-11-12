@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 setup-core = { path = "../core" }
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true

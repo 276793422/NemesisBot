@@ -1782,6 +1782,9 @@ pub fn append_session_pending(
 /// 消息不可）。崩溃残留恢复臂：rename 后、删除前进程终止会留 `.taking`，
 /// 下一次 take 优先收走它（Windows rename 不覆盖已存在目标，先收残留是
 /// 顺序必需）；残留臂的并发双读理论可双投（残留只在崩溃后出现），接受。
+/// 「下一次 take」的触发保证 = [`pending_sessions`] 把 `.taking` 纳入扫描
+/// 名单（BUG-20261112-119）——web 侧 drain_orphan_pending 每 10s 依它
+/// 补投，否则标记已摘的会话再无 take 机会（残留永久滞留）。
 pub fn take_session_pending(session_key: &str) -> Vec<nemesis_types::channel::InboundMessage> {
     let path = pending_path(session_key);
     let tmp = path.with_extension("taking");
@@ -1830,6 +1833,12 @@ pub fn session_pending_count(session_key: &str) -> usize {
 /// [`append_session_pending`] 烧入裁决键保证本函数可靠）。空文件/坏首行
 /// 跳过（warn 留痕）。输出按键排序去重（read_dir 顺序是平台实现细节，
 /// 消费与顺序无关，排序只为测试确定性）。
+///
+/// BUG-20261112-119：扫描面同时含 `.taking`（[`take_session_pending`]
+/// rename 后、删除前进程终止的崩溃残留，同格式同首行键还原）。不扫它
+/// 则滞留兜底（web drain_orphan_pending，每 10s）对这种残留失明——唤醒
+/// 流程（snooze 标记已摘）与兜底扫描都没有下一个 take，注释假设的
+/// 「下一次 take 优先收走它」永远不会发生，暂停期排队消息静默永久滞留。
 pub fn pending_sessions() -> Vec<String> {
     let dir = default_path_manager().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -1838,7 +1847,8 @@ pub fn pending_sessions() -> Vec<String> {
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("pending") {
+        let ext = path.extension().and_then(|e| e.to_str());
+        if ext != Some("pending") && ext != Some("taking") {
             continue;
         }
         let Ok(data) = fs::read_to_string(&path) else {

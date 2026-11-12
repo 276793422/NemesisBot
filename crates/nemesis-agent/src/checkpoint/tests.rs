@@ -582,3 +582,40 @@ async fn snapshot_seen_dedupes_path_form_variants() {
     );
     assert_eq!(cp.files[0].content.as_deref(), Some("v0"));
 }
+
+/// BUG-20261112-110 回归锁：restore_code 的零条目信号位。
+/// redo 不重建索引（诚实边界），redo 过的区间行标记还在、条目已退役——
+/// restore_code 撞到这种区间必须带 `no_checkpoint_from_turn=true`（本次
+/// 什么都没做），rewind 编排据此把回执诚实化为「只截断对话不回滚文件」，
+/// 不得盖「applied」戳误导用户（文件实盘留着外部修改）。
+#[tokio::test]
+async fn restore_code_flags_zero_entries_after_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = CheckpointStore::new(None, root.clone());
+
+    // 空索引：from_turn 之后没有任何条目 → 信号位 true。
+    let report = store.restore_code(5).await;
+    assert!(
+        report.no_checkpoint_from_turn,
+        "空索引必须报零条目信号（written/deleted 恒空）"
+    );
+    assert!(report.written.is_empty() && report.deleted.is_empty());
+
+    // 条目在场（turn >= 5）→ 信号位 false，正常恢复路径。
+    store.begin(5, "turn 5");
+    snapshot_modify(&store, "a.txt", "original").await;
+    store.seal_turn(5);
+    tokio::fs::write(root.join("a.txt"), "CHANGED")
+        .await
+        .unwrap();
+    let report = store.restore_code(5).await;
+    assert!(!report.no_checkpoint_from_turn);
+    assert_eq!(report.written, vec!["a.txt".to_string()]);
+
+    // 截断退役 turn >= 5（= rewind 后 redo 区间的索引态）→ 信号位回到 true。
+    store.truncate_from_scoped(5, None);
+    let report = store.restore_code(5).await;
+    assert!(report.no_checkpoint_from_turn, "条目退役后必须报零条目信号");
+    assert!(report.written.is_empty() && report.deleted.is_empty());
+}

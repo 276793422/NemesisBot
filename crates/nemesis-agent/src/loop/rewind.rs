@@ -65,16 +65,21 @@ fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
 /// [`AgentLoop::gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
 /// 到它），压栈成功后 [`Self::defuse`]（栈条目接管保护）；任何早退路径
 /// （恢复失败 blocked / 提交失败 blocked / no-op 不压栈）drop 自动注销。
-struct GcInflightGuard<'a> {
-    al: &'a AgentLoop,
-    tree: Option<String>,
+/// 注册/注销是**引用计数**语义（BUG-20261112-122）：与
+/// [`RedoInflightGuard`] 可对同一 tree 重叠持有（多会话 undo 条目捕获同
+/// 一 undo_disk_tree 后并发 redo），drop 只减计数、归零才摘除——集合语
+/// 义下先 drop 者会摘走另一方仍需要的保护。
+pub(super) struct GcInflightGuard<'a> {
+    pub(super) al: &'a AgentLoop,
+    pub(super) tree: Option<String>,
 }
 
 impl GcInflightGuard<'_> {
     /// 采集即注册：把 forward_tree 并入在途保护集（gc extras 读得到）。
-    fn register(&mut self) {
+    pub(super) fn register(&mut self) {
         if let Some(t) = &self.tree {
-            self.al.gc_inflight_trees.lock().insert(t.clone());
+            let mut inflight = self.al.gc_inflight_trees.lock();
+            *inflight.entry(t.clone()).or_insert(0) += 1;
         }
     }
     fn defuse(mut self) {
@@ -85,7 +90,13 @@ impl GcInflightGuard<'_> {
 impl Drop for GcInflightGuard<'_> {
     fn drop(&mut self) {
         if let Some(t) = self.tree.take() {
-            self.al.gc_inflight_trees.lock().remove(&t);
+            let mut inflight = self.al.gc_inflight_trees.lock();
+            if let Some(count) = inflight.get_mut(&t) {
+                *count -= 1;
+                if *count == 0 {
+                    inflight.remove(&t);
+                }
+            }
         }
     }
 }
@@ -100,10 +111,12 @@ impl Drop for GcInflightGuard<'_> {
 /// 但重试永败，被回退的对话行滞留内存条目）。rewind 侧同窗口已有
 /// [`GcInflightGuard`]（221），redo 侧漏接。pop 即注册、所有退出路径 Drop
 /// 注销：blocked 路径先还栈（栈条目接管保护）再注销；守卫 1/1b/2 陈旧作废
-/// 路径与成功路径条目已消费，注销即恢复可回收语义。
+/// 路径与成功路径条目已消费，注销即恢复可回收语义。注册/注销为**引用计
+/// 数**语义（BUG-20261112-122，与 [`GcInflightGuard`] 重叠持有同一 tree
+/// 时互不摘除）。
 pub(crate) struct RedoInflightGuard<'a> {
-    al: &'a AgentLoop,
-    trees: Vec<String>,
+    pub(super) al: &'a AgentLoop,
+    pub(super) trees: Vec<String>,
 }
 
 impl RedoInflightGuard<'_> {
@@ -120,10 +133,10 @@ impl RedoInflightGuard<'_> {
             .collect(),
         }
     }
-    fn register(&self) {
+    pub(super) fn register(&self) {
         let mut inflight = self.al.gc_inflight_trees.lock();
         for t in &self.trees {
-            inflight.insert(t.clone());
+            *inflight.entry(t.clone()).or_insert(0) += 1;
         }
     }
 }
@@ -132,7 +145,12 @@ impl Drop for RedoInflightGuard<'_> {
     fn drop(&mut self) {
         let mut inflight = self.al.gc_inflight_trees.lock();
         for t in &self.trees {
-            inflight.remove(t);
+            if let Some(count) = inflight.get_mut(t) {
+                *count -= 1;
+                if *count == 0 {
+                    inflight.remove(t);
+                }
+            }
         }
     }
 }
@@ -655,11 +673,23 @@ impl AgentLoop {
             if report.ok() {
                 written = report.written;
                 deleted = report.deleted;
-                // 检查点退役（scoped 截断 + post 基线读取）
-                // 不在这里做——退役必须以「全部持久化提交成功」为前提，否则
-                // jsonl 写回失败 = 文件已恢复 + 回退锚已没 + 文案谎称「原会
-                // 话完好」的三输态。移到步骤 2 成功之后（2b）。
-                file_restore = "applied";
+                if report.no_checkpoint_from_turn {
+                    // BUG-20261112-110：区间封印已退役（redo 不重建索引的
+                    // 诚实边界后果——redo 过的区间行标记还在、条目已清），
+                    // restore 是静默 no-op。不得盖「applied」戳（written=[]
+                    // 且无 note 会谎称文件已恢复，实盘留着外部修改）：与
+                    // 无锚臂同待遇，只截断对话不回滚文件，note 说明根因。
+                    file_restore = "skipped";
+                    file_note = Some(
+                        "该区间的 checkpoint 条目已随更早的回退退役（redo 不重建索引），只截断对话不回滚文件".to_string(),
+                    );
+                } else {
+                    // 检查点退役（scoped 截断 + post 基线读取）
+                    // 不在这里做——退役必须以「全部持久化提交成功」为前提，否则
+                    // jsonl 写回失败 = 文件已恢复 + 回退锚已没 + 文案谎称「原会
+                    // 话完好」的三输态。移到步骤 2 成功之后（2b）。
+                    file_restore = "applied";
+                }
             } else {
                 let partial = !report.written.is_empty() || !report.deleted.is_empty();
                 warn!(
@@ -853,7 +883,7 @@ impl AgentLoop {
                 .flatten()
                 .collect()
         };
-        refs.extend(self.gc_inflight_trees.lock().iter().cloned());
+        refs.extend(self.gc_inflight_trees.lock().keys().cloned());
         refs
     }
 

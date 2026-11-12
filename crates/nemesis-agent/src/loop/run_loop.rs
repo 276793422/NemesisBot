@@ -411,7 +411,9 @@ impl AgentLoop {
         // When completion hits the cap, output is cut mid-way —
         // often mid tool-call JSON, which args_validator would report as
         // "Arguments are not valid JSON" and burn the validation budget
-        // (Big tier = 0 retries → instant force-stop with a misleading
+        // (big tier budget = 2 since P2C — one truncated burn gets the
+        // model a re-feed, but truncated JSON recurs every round, so
+        // consecutive invalid burns still force-stop with a misleading
         // error). Detect it here: drop the truncated tool calls (executing
         // them would write a partial file / run half-formed args), keep
         // partial content, append a "continue" prompt, re-loop. Bounded so
