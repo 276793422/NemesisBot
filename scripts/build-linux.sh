@@ -18,6 +18,10 @@
 #   │   └── libplugin_roaming.so  (QUIC relay server + rendezvous registry; QUIC plugin
 #   │                              M1 — iroh stack lives here, host exe zero increment;
 #   │                              absent = relay honestly degraded)
+#   │   └── libplugin_resources.so  (add-on resource carrier; persona supermarket
+#   │                              upstream snapshot embedded at build time —
+#   │                              FILE cache (pre-downloaded) > baseline fallback;
+#   │                              absent = shop pure online)
 #   ├── plugins_wasm/          (WASM plugin payload dir, preset empty + README;
 #   │                           installed plugins land here, NOT loaded by default)
 #   └── tests/
@@ -252,6 +256,37 @@ if [ "$SKIP_PLUGIN" = true ]; then
 else
     echo "[Step 4/5] Building plugin shared libraries..."
 
+    # --- persona snapshot pre-download（对齐价目表 FILE 模式：脚本在此把上游
+    #     tarball 预下载到缓存 = 本构建会话唯一网络点，成功 ->
+    #     NEMESIS_PERSONA_FILE 指缓存 + NEMESIS_PERSONA_REFRESH=<40位SHA>
+    #     （manifest 溯源 commit + rerun-if-env-changed 重跑信号——同 commit
+    #     的后续 pass 读缓存零网络）；ls-remote 或下载任一失败 -> 两变量落空 =
+    #     plugin-resources build.rs 仓库基线兜底 fail-open（cargo:warning，绝不
+    #     炸构建）。日常 cargo 构建不带这些变量 = 纯离线基线；
+    #     NEMESIS_PERSONA_OFFLINE=1 可强制基线） ---
+    PERSONA_UPSTREAM_COMMIT="$(git ls-remote https://github.com/msitarzewski/agency-agents.git main 2>/dev/null | awk '{print $1; exit}')"
+    if [ -z "$PERSONA_UPSTREAM_COMMIT" ]; then
+        echo "  Persona snapshot: upstream probe failed (offline?) - baseline fallback"
+    elif ! command -v curl >/dev/null 2>&1; then
+        # No curl: fixed refresh still pins the fingerprint - build.rs does its
+        # own single download inside the plugin pass (prices legacy shape).
+        export NEMESIS_PERSONA_REFRESH="$PERSONA_UPSTREAM_COMMIT"
+        echo "  SKIP curl not found - build.rs will fetch once itself"
+    else
+        PERSONA_CACHE="${ROOT_DIR}/target/persona/agency-agents.tar.gz"
+        mkdir -p "${ROOT_DIR}/target/persona"
+        echo "  Persona snapshot: downloading upstream tarball (${PERSONA_UPSTREAM_COMMIT})..."
+        if curl -fsSL --connect-timeout 15 --max-time 300 -o "$PERSONA_CACHE" \
+                "https://codeload.github.com/msitarzewski/agency-agents/tar.gz/refs/heads/main"; then
+            export NEMESIS_PERSONA_FILE="$PERSONA_CACHE"
+            export NEMESIS_PERSONA_REFRESH="$PERSONA_UPSTREAM_COMMIT"
+            echo "  OK persona tarball cached - commit ${PERSONA_UPSTREAM_COMMIT} (plugin pass reads this file, no further downloads)"
+        else
+            rm -f "$PERSONA_CACHE"
+            echo "  WARN persona tarball download failed - baseline fallback"
+        fi
+    fi
+
     # --- plugin-ui ---
     PLUGIN_UI_DIR="plugins/plugin-ui"
     if [ -f "$PLUGIN_UI_DIR/Cargo.toml" ]; then
@@ -349,6 +384,26 @@ else
         echo "  SKIP $PLUGIN_ROAMING_DIR/Cargo.toml not found"
     fi
     echo ""
+
+    # --- plugin-resources（附加资源载体 C-ABI 插件；人格超市上游快照编译期
+    #     内嵌：Step 4 预下载缓存（NEMESIS_PERSONA_FILE）> 缓存缺席 = 仓库基
+    #     线兜底（fail-open，build.rs 内 cargo:warning，绝不炸构建）；插件缺席
+    #     = 人格超市纯在线（现有行为）。dev 产物未签名经 loader 签名闸放行
+    #     仅限 dev 形态，release 出包走签名流程） ---
+    PLUGIN_RESOURCES_DIR="plugins/plugin-resources"
+    if [ -f "$PLUGIN_RESOURCES_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-resources..."
+        RES_START=$SECONDS
+        if (cd "$PLUGIN_RESOURCES_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux/plugins/plugin-resources" cargo build --release 2>&1); then
+            RES_DURATION=$(( SECONDS - RES_START ))
+            echo "  OK Plugin-resources built in ${RES_DURATION}s"
+        else
+            echo "  WARN Plugin-resources build failed (non-fatal — 人格超市快照将不可用)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_RESOURCES_DIR/Cargo.toml not found"
+    fi
+    echo ""
 fi
 
 # ============================================
@@ -435,6 +490,22 @@ for so_path in "target/target_linux/plugins/plugin-roaming/release/libplugin_roa
 done
 if [ "$ROAMING_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_roaming.so not found in build output (QUIC relay server unavailable)"
+fi
+
+# plugin-resources 附加资源载体（exe 旁 plugins/ 查找——缺席 = 人格超市纯在线）
+RESOURCES_DLL_FOUND=false
+for so_path in "target/target_linux/plugins/plugin-resources/release/libplugin_resources.so"; do
+    if [ -f "$so_path" ]; then
+        cp "$so_path" "$BIN_DIR/plugins/"
+        SIZE=$(wc -c < "$so_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("libplugin_resources.so (${SIZE_MB} MB)")
+        RESOURCES_DLL_FOUND=true
+        break
+    fi
+done
+if [ "$RESOURCES_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN libplugin_resources.so not found in build output (人格超市快照将不可用)"
 fi
 
 # 预置空 plugins_wasm/ 目录（2026-10-22 纪律：WASM 插件载荷落用户可见的

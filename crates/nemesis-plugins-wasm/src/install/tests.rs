@@ -807,7 +807,17 @@ async fn wasm_filename_forms() {
                 ),
             )
             .expect("write");
-        std::fs::write(src.join(name), body).expect("write wasm");
+        // 载荷物理名：非纯文件名形态（盘符相对/穿越）不落盘——纯度闸在读盘
+        // 前拒绝，物理文件只需以纯名在场。`C:evil.wasm` 形态经 Path::join 会
+        // 逃出 tempdir、按 CWD（crate 根）落盘 = 源树残留（2026-11-12 实录）。
+        let payload_name = match std::path::Path::new(name)
+            .file_name()
+            .and_then(|f| f.to_str())
+        {
+            Some(pure) if pure == name => name,
+            _ => "payload.wasm",
+        };
+        std::fs::write(src.join(payload_name), body).expect("write wasm");
         src
     };
     // 合法纯文件名过闸（sha 记账正确）——死在编译（垃圾字节）。

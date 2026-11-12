@@ -308,6 +308,11 @@ mod plugin_lib;
 /// 走插件（iroh 家族重依赖随迁出主二进制）。
 mod roaming_plugin_loader;
 
+/// plugin_resources 宿主装载器（C-ABI 解冻第三例：纯数据资源载体——无
+/// init/vtable/停机语义，装载即静止）。附加资源统一载体（首例 persona-catalog
+/// 快照），缺席 = 消费方诚实降级纯在线。
+mod resources_plugin_loader;
+
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 

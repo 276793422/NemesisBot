@@ -2,15 +2,15 @@
   <div class="page-persona-shop">
     <div class="page-header"><h2>人格超市</h2></div>
     <div class="page-body">
-      <!-- Source tabs -->
+      <!-- Source tabs（标签即数据源徽标：在线 / 内置快照降级态） -->
       <div class="tabs">
         <button
           v-for="src in sources"
           :key="src"
           class="tab"
-          :class="{ active: selectedSource === src }"
+          :class="{ active: selectedSource === src, 'tab-snapshot': src === 'Agency Agents' && dataSource === 'snapshot' }"
           @click="selectedSource = src; browse()"
-        >{{ src }}</button>
+        >{{ src === 'Agency Agents' ? sourceLabel : src }}</button>
       </div>
 
       <!-- Search bar -->
@@ -211,6 +211,34 @@ const items = ref<ShopPersona[]>([])
 const loading = ref(false)
 const downloading = ref('')
 const hiring = ref('')
+
+// --- 数据源降级态（后端 shop.* 响应的 source / snapshot_info 字段） ---
+// 设计拍板（2026-11-12 附加资源 C-ABI 插件）：GitHub 上游不可达时后端自动
+// 降级内置快照，前端只负责把来源状态标出来——live = 在线；snapshot =
+// 内置快照（commit 前 7 位 @ 日期）。重新拉数据 = 刷新失败后切换标签页
+// 再切回来（remount 重新触发 refresh + browse）。
+interface SnapshotInfo {
+  commit: string
+  fetched_at: string
+  file_count: number
+  label: string
+}
+const dataSource = ref<'live' | 'snapshot'>('live')
+const snapshotInfo = ref<SnapshotInfo | null>(null)
+
+const sourceLabel = computed(() => {
+  if (dataSource.value === 'snapshot' && snapshotInfo.value) {
+    return `Agency Agents · 内置快照（${snapshotInfo.value.label}）`
+  }
+  return 'Agency Agents · 在线'
+})
+
+/// 从 shop.* 响应捕获数据源状态（browse/search 共用）。
+function applySource(data: any) {
+  dataSource.value = data?.source === 'snapshot' ? 'snapshot' : 'live'
+  snapshotInfo.value = data?.snapshot_info || null
+}
+
 // 集群聘用依赖 cluster WSAPI（裁剪构建可关；shop.browse/download 不依赖恒在）
 // ——与 router 的 VITE_FEATURE_CLUSTER 视图门控同款（web/.env 由 customize 生成）。
 const clusterEnabled = import.meta.env.VITE_FEATURE_CLUSTER !== 'false'
@@ -235,6 +263,7 @@ async function browse() {
     const data = await request('persona', 'shop.browse', {
       division: selectedDivision.value || undefined,
     })
+    applySource(data)
     items.value = data.items || []
   } catch (e: any) {
     toast.error('加载失败: ' + (e.message || e))
@@ -252,6 +281,7 @@ async function search() {
     const data = await request('persona', 'shop.search', {
       query: searchQuery.value,
     })
+    applySource(data)
     items.value = data.items || []
   } catch (e: any) {
     toast.error('搜索失败: ' + (e.message || e))
@@ -323,12 +353,23 @@ function setDivision(d: string) {
 }
 
 onMounted(async () => {
-  try { await request('persona', 'shop.refresh', {}) } catch {}
+  // 挂载即刷新上游（拉最新）。失败 = 诚实报错（后端 shop.refresh 语义：
+  // 上游不可达不再静默吞掉），badge 随后由 browse 的降级响应呈现快照态。
+  try {
+    await request('persona', 'shop.refresh', {})
+  } catch (e: any) {
+    toast.error('刷新人格超市失败: ' + (e.message || e))
+  }
   browse()
 })
 </script>
 
 <style scoped>
+/* 快照降级态标签：琥珀色调提醒「数据来自内置快照」 */
+.tab-snapshot {
+  color: var(--warning, #d97706);
+}
+
 .shop-search-bar {
   display: flex;
   gap: var(--space-3);

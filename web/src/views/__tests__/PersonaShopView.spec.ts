@@ -86,8 +86,27 @@ describe('PersonaShopView 浏览与搜索', () => {
     expect(requestMock).toHaveBeenCalledWith('persona', 'shop.browse', { division: '安全' })
     await w.findAll('.filter-pill').find(p => p.text() === '全部')!.trigger('click')
     expect(requestMock).toHaveBeenCalledWith('persona', 'shop.browse', { division: undefined })
-    await w.findAll('button.tab').find(b => b.text() === 'Agency Agents')!.trigger('click')
+    // live 来源页签带「· 在线」后缀（来源标注拍板 2026-11-12）
+    await w.findAll('button.tab').find(b => b.text() === 'Agency Agents · 在线')!.trigger('click')
     expect((w.vm as any).selectedSource).toBe('Agency Agents')
+  })
+
+  it('快照来源响应：页签标注内置快照（label）+ 警示色类', async () => {
+    requestMock.mockImplementation((_m, cmd) => cmd === 'shop.browse'
+      ? Promise.resolve({ items: [P1], source: 'snapshot', snapshot_info: { commit: 'abc1234', fetched_at: '2026-11-11T00:00:00Z', file_count: 274, label: 'abc1234 @ 2026-11-11' } })
+      : Promise.resolve({}))
+    const w = await mountView()
+    const tab = w.findAll('button.tab').find(b => b.text().includes('Agency Agents'))!
+    expect(tab.text()).toBe('Agency Agents · 内置快照（abc1234 @ 2026-11-11）')
+    expect(tab.classes()).toContain('tab-snapshot')
+    expect((w.vm as any).dataSource).toBe('snapshot')
+    // live 响应（如刷新失败后切标签页回来）恢复「· 在线」且无警示色
+    requestMock.mockImplementation(defaultImpl)
+    await (w.vm as any).browse()
+    await flushPromises()
+    const liveTab = w.findAll('button.tab').find(b => b.text().includes('Agency Agents'))!
+    expect(liveTab.text()).toBe('Agency Agents · 在线')
+    expect(liveTab.classes()).not.toContain('tab-snapshot')
   })
 })
 

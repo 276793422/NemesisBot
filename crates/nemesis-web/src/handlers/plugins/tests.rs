@@ -79,9 +79,10 @@ fn plugins_list_reports_full_native_catalog_without_error() {
     let r = PluginsHandler::new().plugins_list(&ws(&dir)).unwrap();
 
     let arr = r["plugins"].as_array().unwrap();
-    // 目录 = nemesis-config NativePluginId::ALL 六成员（补登记
+    // 目录 = nemesis-config NativePluginId::ALL 七成员（补登记
     // plugin_vm——此前 VM 显示通道被误列「未识别的库」的花名册缺口根修；
-    // 补登记 plugin_roaming——同款缺口第二例）。
+    // 补登记 plugin_roaming——同款缺口第二例；补登记 plugin_resources
+    // ——附加资源载体，第三例 2026-11-12）。
     let ids: Vec<&str> = arr.iter().filter_map(|p| p["id"].as_str()).collect();
     assert_eq!(
         ids,
@@ -91,7 +92,8 @@ fn plugins_list_reports_full_native_catalog_without_error() {
             "eval_monitor_dll",
             "plugin_wasm",
             "plugin_vm",
-            "plugin_roaming"
+            "plugin_roaming",
+            "plugin_resources"
         ]
     );
 

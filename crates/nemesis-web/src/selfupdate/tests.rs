@@ -1691,6 +1691,9 @@ mod gated {
     /// download 前置闸（离线可达）：estop 生效 = 拒绝（pending 未就绪时
     /// estop 闸是第一道——测试进程 exe 目录无 updates/，不触网）。
     #[tokio::test]
+    // 整测试体持锁串行（updates/ 跨测试共享面，见 UPDATES_SHARED_LOCK 注）
+    // ——跨 await 刻意为之（锁语义就是「整个测试独占」），非误用。
+    #[allow(clippy::await_holding_lock)]
     async fn download_denied_by_estop() {
         let _shared_updates = UPDATES_SHARED_LOCK
             .lock()
@@ -1708,6 +1711,8 @@ mod gated {
     // coverage 三连红，——教训保持）。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_denied_by_estop() {
         let _shared_updates = UPDATES_SHARED_LOCK
             .lock()
@@ -1723,6 +1728,8 @@ mod gated {
 
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_denied_by_pending_journal() {
         let _shared_updates = UPDATES_SHARED_LOCK
             .lock()
@@ -1744,6 +1751,8 @@ mod gated {
     /// （前端粘滞态解挂依据）。estop/journal 两闸离线可达，恰好覆盖记录流转。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_failure_recorded_and_replaced_by_next_attempt() {
         let _shared_updates = UPDATES_SHARED_LOCK
             .lock()
@@ -2771,6 +2780,8 @@ mod gated {
     /// ② 同持锁 + 活跃进度 = 幂等受理 Ok；
     /// ③ estop 生效 + force = force 审计文案行后 estop 拒（不碰网络）。
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn download_flight_busy_and_force_estop_arms() {
         let _shared = UPDATES_SHARED_LOCK
             .lock()
@@ -2811,6 +2822,8 @@ mod gated {
     /// 密钥载体恒 Untrusted——确定性离线终点。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_reaches_pending_and_manifest_gates_with_deterministic_denial() {
         let _shared = UPDATES_SHARED_LOCK
             .lock()

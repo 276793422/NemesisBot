@@ -38,6 +38,13 @@ impl PluginLibSpec {
         file_unix: "libplugin_roaming.so",
     };
 
+    /// plugin-resources（附加资源载体——首例 persona-catalog 快照）。
+    pub const RESOURCES: Self = Self {
+        file_windows: "plugin_resources.dll",
+        file_macos: "libplugin_resources.dylib",
+        file_unix: "libplugin_resources.so",
+    };
+
     /// 当前平台的库文件名。
     pub fn filename(&self) -> &'static str {
         if cfg!(windows) {

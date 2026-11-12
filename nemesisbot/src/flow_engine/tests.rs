@@ -3408,7 +3408,8 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         fx.flows.load_transition_state("wb", "fe/A"),
         Some("in_review".to_string())
     );
-    // 块作用域持锁：rustc await_holding_lock 不认显式 drop()，块结束才算释放。
+    // 块作用域持锁（clippy await_holding_lock 不识别显式 drop——守卫视为
+    // 活到作用域末；块收口语义等价且 lint 干净）。
     {
         let map = fx.engine.writeback_failures.lock().unwrap();
         assert!(map.is_empty(), "adopt 不计失败: {map:?}");
