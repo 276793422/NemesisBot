@@ -681,7 +681,18 @@ impl WebServerOps for WebServerOpsAdapter {
         let sm = self.session_manager.clone();
         for sid in self.active_session_ids() {
             let data_clone = data.clone();
-            tokio::task::block_in_place(|| self.rt.block_on(sm.broadcast(&sid, &data_clone)))?;
+            // BUG-20261113-139：与 server.rs 广播调用点同款慢客户端隔离——
+            // 单个挂起会话（hi 满，可等待任意久）不得卡死整段全广播串行
+            // 循环，更不得卡死调用宿主（manager 出站泵）。超时值与
+            // server.rs 共用 WS_BROADCAST_TIMEOUT 单点。
+            let inner = tokio::task::block_in_place(|| {
+                self.rt.block_on(tokio::time::timeout(
+                    nemesis_web::server::WS_BROADCAST_TIMEOUT,
+                    sm.broadcast(&sid, &data_clone),
+                ))
+            })
+            .map_err(|e| format!("broadcast to {sid}: timed out ({e})"))?;
+            inner.map_err(|e| format!("broadcast to {sid}: {e}"))?;
         }
         Ok(())
     }
