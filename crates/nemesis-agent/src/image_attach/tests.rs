@@ -18,7 +18,10 @@
 
 use std::path::PathBuf;
 
-use super::{AttachOutcome, attach_turn_images, hydrate_image_refs, is_data_url, is_http_url};
+use super::{
+    AttachOutcome, attach_turn_images, hydrate_image_refs, hydrate_image_refs_in, is_data_url,
+    is_http_url,
+};
 use nemesis_types::channel::MediaAttachment;
 
 // ---------------------------------------------------------------------------
@@ -659,6 +662,84 @@ fn hydrate_disguised_ref_degrades_to_placeholder() {
     assert!(images.is_empty());
     assert_eq!(placeholders.len(), 1);
     assert!(placeholders[0].starts_with("[图片已失效:"));
+}
+
+// ---------------------------------------------------------------------------
+// ⑥ hydrate 回退查找（会话资产区 fork copy-on-fork 兜底）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hydrate_home_fallback_hits_same_relative_copy() {
+    let bytes = png_bytes();
+    // 字面路径（全局 uploads）缺席；自会话 home 下有 fork 复制的同形副本。
+    let ws = tempfile::tempdir().unwrap();
+    let home = ws.path().join("agents").join("abc").join("home");
+    let uploads = home.join("uploads");
+    std::fs::create_dir_all(&uploads).unwrap();
+    let copy = uploads.join("forked.png");
+    std::fs::write(&copy, &bytes).unwrap();
+
+    let dead = ws.path().join("uploads").join("forked.png");
+    let refs = vec![dead.to_string_lossy().into_owned()];
+    let (images, placeholders) = hydrate_image_refs_in(&refs, Some(&home));
+
+    assert!(
+        placeholders.is_empty(),
+        "home 副本命中 → 不占位: {:?}",
+        placeholders
+    );
+    assert_eq!(images.len(), 1);
+    // path 恒记原引用（快照派生/字节稳定不受物理文件切换扰动）。
+    assert_eq!(images[0].path, refs[0]);
+    assert_eq!(images[0].media_type, "image/png");
+    use base64::Engine as _;
+    assert_eq!(
+        images[0].data,
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+}
+
+#[test]
+fn hydrate_home_fallback_miss_degrades_as_before() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("vanished.png");
+    let refs = vec![missing.to_string_lossy().into_owned()];
+
+    // home 在但没有同名相对文件 → 仍占位（行为零变化）。
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(home.join("uploads")).unwrap();
+    let (images, placeholders) = hydrate_image_refs_in(&refs, Some(&home));
+    assert!(images.is_empty());
+    assert_eq!(placeholders, vec![format!("[图片已失效: {}]", refs[0])]);
+
+    // None（未绑定会话/续行/重放路径）→ 完全旧行为。
+    let (images, placeholders) = hydrate_image_refs_in(&refs, None);
+    assert!(images.is_empty());
+    assert_eq!(placeholders, vec![format!("[图片已失效: {}]", refs[0])]);
+}
+
+#[test]
+fn hydrate_home_fallback_rejects_disguised_and_nonasset_paths() {
+    // 候选是伪装文件（非图）→ 验真不过仍占位；无 uploads/images 资产段的
+    // 路径不做盲目同名搜索（防跨目录误命中）。
+    let ws = tempfile::tempdir().unwrap();
+    let home = ws.path().join("agents").join("abc").join("home");
+    std::fs::create_dir_all(home.join("uploads")).unwrap();
+    std::fs::write(home.join("uploads").join("fake.png"), b"plain text").unwrap();
+
+    let dead = ws.path().join("uploads").join("fake.png");
+    let refs = vec![dead.to_string_lossy().into_owned()];
+    let (images, placeholders) = hydrate_image_refs_in(&refs, Some(&home));
+    assert!(images.is_empty(), "伪装候选验真不过 → 占位");
+    assert_eq!(placeholders.len(), 1);
+
+    // 无资产段路径：即使 home 下有同名文件也不命中。
+    std::fs::write(home.join("stray.png"), png_bytes()).unwrap();
+    let dead2 = ws.path().join("elsewhere").join("stray.png");
+    let refs2 = vec![dead2.to_string_lossy().into_owned()];
+    let (images, placeholders) = hydrate_image_refs_in(&refs2, Some(&home));
+    assert!(images.is_empty(), "无 uploads/images 段 = 不兜底");
+    assert_eq!(placeholders.len(), 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -363,7 +363,12 @@ async fn tool_memory_search(asm: Arc<McpServeAssembly>, args: Value) -> ToolCall
     #[cfg(feature = "memory")]
     if let Some(exec) = &asm.memory_executor {
         let res = exec
-            .execute("memory_search", &json!({"query": query, "limit": limit}))
+            .execute(
+                "memory_search",
+                &json!({"query": query, "limit": limit}),
+                // MCP server 无会话上下文 → 恒主域（与改造前行为一致）。
+                "",
+            )
             .await;
         if res.success {
             sections.push(res.content);

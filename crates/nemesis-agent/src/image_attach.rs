@@ -740,18 +740,46 @@ pub fn attach_turn_images(
 /// 文本行 `[图片已失效: <path>]`（调用方追加进消息文本），不静默、不炸。
 /// 返回 (成功水合的图片, 失效占位行)。
 pub fn hydrate_image_refs(refs: &[String]) -> (Vec<LlmImage>, Vec<String>) {
+    hydrate_image_refs_in(refs, None)
+}
+
+/// 带会话 home 回退查找的水合（⑥ 会话资产区，2026-11-12）。
+///
+/// `fallback_home` = 自会话资产区 home（build_messages 按 session_key 解析
+/// 注入）：字面路径**不存在**（`NotFound`）时在 home 下找同名相对文件命中
+/// 即改用——fork copy-on-fork 语义：分叉点前的资产已整树复制进新 home，
+/// 源路径失效（TTL 清扫/删除）后自 home 副本命中，历史图片不假死。
+/// 命中条限定两类会话资产目录（uploads/images 段）；其余失败形态（超大/
+/// 非图/不可读）不兜底——fork 是字节复制，同形副本结果一致，兜底只换
+/// 查询开销。`None` / 无候选 / 候选验真不过 → 现有占位降级，行为零变化。
+///
+/// `LlmImage.path` 恒记**原引用**（不记候选路径）：快照派生与后续轮字节
+/// 稳定不受 fallback 物理文件切换扰动（同 fork 字节副本，水合产物一致）。
+pub fn hydrate_image_refs_in(
+    refs: &[String],
+    fallback_home: Option<&Path>,
+) -> (Vec<LlmImage>, Vec<String>) {
     let mut images = Vec::new();
     let mut placeholders = Vec::new();
     for raw in refs {
         let path = PathBuf::from(raw);
         let fail = || format!("[图片已失效: {}]", raw);
-        match image_path_detector::verify(&path) {
+        let mut status = image_path_detector::verify(&path);
+        let mut effective = path;
+        if let CandidateStatus::NotFound = status
+            && let Some(cand) =
+                fallback_home.and_then(|home| home_fallback_candidate(home, &effective))
+        {
+            status = image_path_detector::verify(&cand);
+            effective = cand;
+        }
+        match status {
             CandidateStatus::Ok { .. } => {
-                let Some(media_type) = image_path_detector::media_type_for_path(&path) else {
+                let Some(media_type) = image_path_detector::media_type_for_path(&effective) else {
                     placeholders.push(fail());
                     continue;
                 };
-                match std::fs::read(&path) {
+                match std::fs::read(&effective) {
                     Ok(bytes) => {
                         use base64::Engine as _;
                         images.push(LlmImage {
@@ -767,6 +795,25 @@ pub fn hydrate_image_refs(refs: &[String]) -> (Vec<LlmImage>, Vec<String>) {
         }
     }
     (images, placeholders)
+}
+
+/// home 回退候选定位：在原路径组件中找 `uploads` / `images` 资产段，取该
+/// 段起的相对形态拼到 session home 下（`…/uploads/x.png` →
+/// `<home>/uploads/x.png`）。两段都出现时取**最后**一段（更深的段更贴近
+/// home 内真实位置）。无资产段 = None。
+fn home_fallback_candidate(home: &Path, raw: &Path) -> Option<PathBuf> {
+    let comps: Vec<_> = raw.components().collect();
+    let idx = comps
+        .iter()
+        .rposition(|c| matches!(c.as_os_str().to_str(), Some("uploads" | "images")))?;
+    Some(
+        home.join(
+            comps[idx..]
+                .iter()
+                .map(|c| c.as_os_str())
+                .collect::<PathBuf>(),
+        ),
+    )
 }
 
 #[cfg(test)]

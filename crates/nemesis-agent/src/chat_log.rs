@@ -837,6 +837,74 @@ pub fn create_chat_log_exclusive(
     write_chat_log_rows_inner(new_key, rows)
 }
 
+/// PLAN 234 C4 配套（2026-11-12）：早落盘 user 行的 `images` 字段回补。
+///
+/// admission 的 user 行落盘点在预处理链**之前**（聊天切会话竞态修复：前端
+/// 轮中即时可见优先）——彼时 `attach_turn_images` 尚未产出路径引用，行内
+/// `images` 恒缺。带图消息由此在 jsonl 里永远无图，fork 复制 / self-heal
+/// 重建（共享映射 `projected_messages_from_rows`，F-E 语义）据行还原
+/// `image_refs` 时拿到空表——分叉会话的带图上下文凭空消失（实锤：源 store
+/// 有图、fork store 无图、fork 内续问回 NO_IMAGE）。本函数在 attach 产出
+/// 引用后原位回补该行，恢复「一轮带图消息 = 行内 `images` 数组」不变量。
+///
+/// 幂等且保守：只改「末尾起第一行 role=user 且无 `images` 且非 steer」——
+/// 即本轮早落盘行（带图 steer 行与已回补行原样跳过）；文件里任何一行解析
+/// 失败即整体放弃（不做部分改写，防静默丢行）；重写窗口内跳过（与绕闸
+/// 追加方同一守卫）；落盘走 [`truncate_chat_log_rows`] 的原子重写出口
+/// （行数不变；被改写行的原始字节按 T6 保守方向入账一条 Truncate 记录
+/// ——原行确实被替换，审计诚实）。失败仅 warn——历史视图缺图片 chip
+/// 的既有宽容语义，不阻塞轮次。
+pub fn patch_last_user_row_images(session_key: &str, images: &[String]) {
+    if images.is_empty() || history_rewrite_active(session_key) {
+        return;
+    }
+    let path = log_path(session_key);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return;
+    };
+    let mut rows: Vec<Value> = Vec::new();
+    for line in raw.lines().filter(|l| !l.trim().is_empty()) {
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) => rows.push(v),
+            Err(_) => {
+                tracing::warn!(
+                    "[chat_log] images 回补放弃：{} 存在解析不出 JSON 的行，不做部分改写",
+                    path.display()
+                );
+                return;
+            }
+        }
+    }
+    let patched = rows.iter_mut().rev().any(|row| {
+        let is_user = row.get("role").and_then(|r| r.as_str()) == Some("user");
+        let has_images = row.get("images").is_some();
+        let is_steer = row.get("steer").and_then(|s| s.as_bool()).unwrap_or(false);
+        if is_user && !has_images && !is_steer {
+            row["images"] = Value::Array(
+                images
+                    .iter()
+                    .map(|p| Value::String(p.clone()))
+                    .collect::<Vec<_>>(),
+            );
+            true
+        } else {
+            false
+        }
+    });
+    if !patched {
+        return;
+    }
+    let n = truncate_chat_log_rows(session_key, &rows);
+    // E3 调用方同款全量校验（n != cut）：原子写失败返回 0，序列化跳行使
+    // n < len——任一非全量都视为回补未生效（对齐「不做部分改写」契约）。
+    if n != rows.len() {
+        tracing::warn!(
+            "[chat_log] user 行 images 回补未全量落盘（{n}/{} 行）: {session_key}",
+            rows.len()
+        );
+    }
+}
+
 /// E3（devtool-upgrade 阶段 5）：把会话 jsonl **原位截断**为 `kept` 里
 /// 的行（VERBATIM 逐字节保留）。消息级回退/重做（`AgentLoop::rewind_to_message`
 /// / `redo_rewind`）的落盘原语。
@@ -1137,6 +1205,18 @@ pub fn delete_chat_log(session_key: &str) {
     if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&mpath) {
         tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
     }
+    // 审计账本（event_ledger）随会话落盘面级联删除——同键重建的会话（fork
+    // 失败回退后键复用是已知形态：`{orig}__fork_{n}` 按现存 fork 数编号）
+    // 不得继承前任的审计事件；普通会话删除同样受益（否则 ledger 孤儿滞留
+    // 到 30 天 TTL 才被清扫）。
+    let lpath = crate::event_ledger::ledger_path(session_key);
+    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&lpath) {
+        tracing::warn!(
+            "[chat_log] Failed to delete ledger {}: {}",
+            lpath.display(),
+            e
+        );
+    }
     // L22（2026-11-03 snooze 排队）：第四件套——暂停期 pending 队列随会话
     // 删除级联清理（会话没了，重放无主；滞留会被 orphan sweep 无限重试）。
     delete_session_pending(session_key);
@@ -1433,6 +1513,15 @@ pub fn write_session_project(session_key: &str, project_id: &str, project_path: 
     upsert_meta(session_key, |m| {
         m.project_id = Some(project_id.to_string());
         m.project_path = Some(project_path.to_string());
+    });
+}
+
+/// 会话资产区绑定写入（2026-11-12）：`home_agent_id` 落 sidecar meta。
+/// 调用点 = sessions.create / 首条消息惰性分配 / fork 复制成功后（copy-on-fork
+/// 顺序契约：先复制 home 树，成功后才写本字段——绑定即资产已在）。
+pub fn write_session_home_agent(session_key: &str, home_agent_id: &str) {
+    upsert_meta(session_key, |m| {
+        m.home_agent_id = Some(home_agent_id.to_string());
     });
 }
 
@@ -2008,6 +2097,14 @@ pub struct SessionMeta {
     /// 不归零）。全零不落盘，兼容旧文件形态。
     #[serde(default, skip_serializing_if = "is_default_exec_stats")]
     pub stats: SessionExecStats,
+    /// 会话资产区绑定（2026-11-12）：`agents/<home_agent_id>/home` 是本会话
+    /// 专属资产区（plans/uploads/images/memory_vector 落点）。分配点 =
+    /// sessions.create / 首条消息惰性兜底；fork 产物 = 源会话 home 整树
+    /// 复制后的新 id（copy-on-fork）。None = 未绑定（存量会话 lenient，
+    /// 资产落全局旧位置，行为零变化）。消费方 = `session_home::resolve_`
+    /// 系（单一解析点）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_agent_id: Option<String>,
 }
 
 /// L14（2026-11-01）：会话执行统计（session sidecar meta 的 `stats` 字段）。
@@ -2292,6 +2389,11 @@ mod e3_tests;
 // 记账集成测试。
 #[cfg(test)]
 mod t6_tests;
+
+// PLAN 234 C4（2026-11-12）：早落盘 user 行 images 回补——fork/self-heal
+// 链路端到端（行回补 → projected_messages_from_rows 还原 image_refs）。
+#[cfg(test)]
+mod c4_image_patch_tests;
 
 // 覆盖率补充测试（全字段 meta / 行写截断原语 / sidecar meta 分支）。
 #[cfg(test)]

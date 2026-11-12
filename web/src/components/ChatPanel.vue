@@ -19,6 +19,10 @@ import { useToast } from '../composables/useToast'
 import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useSessionAllowAll } from '../composables/useSessionAllowAll'
+// 2026-11-12 会话分叉入口（PLAN 234）：fork 走 HTTP（WSAPI 无 sessions.fork）
+// + 「⋯」菜单与全局右键菜单互斥单开。
+import { useChatApi } from '../composables/useChatApi'
+import { useContextMenu } from '../composables/useContextMenu'
 // 皮肤结构挂载点（主页启动器槽）：skinHasSlot('launcher') 才渲染
 import { skinHasSlot } from '../composables/useSkin'
 import SkinSlot from './SkinSlot.vue'
@@ -93,6 +97,7 @@ const chatStore = useChatStore()
 const appStore = useAppStore()
 const auth = useAuthStore()
 const { request } = useWSAPI()
+const chatApi = useChatApi()
 const sessionStore = useSessionStore()
 
 // Multi-session: in the default chat module, attach the active conversation
@@ -1785,7 +1790,7 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
 
   rewinding.value = true
   try {
-    const resp = await request('sessions', 'rewind_to_message', {
+    let resp = await request('sessions', 'rewind_to_message', {
       session_id: sid,
       message_index: plan.turnStart,
       mode: 'before',
@@ -1795,12 +1800,45 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
       // 正文，后端按内容重定位真实行（零命中 fail-closed 拒绝，不盲截）。
       anchor_content: plan.content,
     })
-    // P20 冲突拒绝 = 零副作用：不重发、不重同步。
+    // P20 冲突拒绝 = 零副作用：不重发、不重同步。M4 对称补全
+    // （2026-11-12）：后端波及面默认拒绝有两个清单——conflicts（checkpoint
+    // 后被外部修改）与 other_session_paths（回退窗口内其他会话声明过的
+    // 路径，语义分列见 checkpoint.rs）。此前前端只数 conflicts：被拦原因
+    // 是其他会话波及时 toast 显示「0 个文件被外部修改」（误导），且 rewind
+    // 无 force 通道（redo 有确认流，不对称），用户被拦后无解。现分列展示 +
+    // window.confirm 确认后带 force 重试（与 doRedo 同构）。
+    // blocked ≠ 只有 conflict（复查 2026-11-12 收窄回归修复）：restore_failed
+    // /commit_failed（rewind.rs 文件恢复/日志写回失败，同样零改动、可处理后
+    // 重试）必须诚实报错终止，不能穿透 rewindToastSummary 假成功——旧代码
+    // 宽条件 if(resp?.blocked) 全拦，窄化时必须保留非 conflict 臂。
     if (resp?.blocked) {
-      toast.error(
-        `回退被冲突预检拒绝：${resp?.conflicts?.length ?? '?'} 个文件在 checkpoint 后被外部修改，未做任何改动`,
+      if (resp?.reason !== 'conflict') {
+        toast.error(`回退未执行：${resp?.note ?? '被后端拒绝，未做任何改动'}`)
+        return null
+      }
+      const conflicts: { path?: string }[] = resp?.conflicts ?? []
+      const others: string[] = resp?.other_session_paths ?? []
+      const lines = [
+        ...conflicts.map((c) => `${c.path ?? '?'}（checkpoint 后被外部修改）`),
+        ...others.map((p) => `${p}（其他会话的改动）`),
+      ].join('\n')
+      if (
+        !window.confirm(
+          `回退窗口内检出文件变更，回退将覆盖以下改动：\n${lines}\n\n确认覆盖并回退？`,
+        )
       )
-      return null
+        return null
+      resp = await request('sessions', 'rewind_to_message', {
+        session_id: sid,
+        message_index: plan.turnStart,
+        mode: 'before',
+        force: true,
+      })
+      // force 只强过 conflict 预检——restore/commit 类失败仍可 blocked。
+      if (resp?.blocked) {
+        toast.error(`强制回退仍被拒绝：${resp?.note ?? '未做任何改动'}`)
+        return null
+      }
     }
     rewindToastSummary(resp)
     // 等重同步落地再续作：本地回显若抢在 replace 前入列，会被整视图替换
@@ -1833,7 +1871,16 @@ async function doRedo() {
   rewinding.value = true
   try {
     let out = await request('sessions', 'redo', { session_id: sid })
-    if (out?.blocked && out?.reason === 'conflict') {
+    // blocked 全拦（复查 2026-11-12 对齐 rewind 臂）：conflict 走确认 + force
+    // 重试；restore_failed 等（redo 前向恢复不完整，rewind.rs 904 起同样零
+    // 推进、条目还栈可重试）诚实报错终止——旧窄条件会穿透到「已重做」假
+    // 成功 toast。force 后仍可 blocked（force 只强过 conflict 预检），二次
+    // 检查同样必要。
+    if (out?.blocked) {
+      if (out?.reason !== 'conflict') {
+        toast.error(`重做未执行：${out?.note ?? '被后端拒绝，未做任何改动'}`)
+        return
+      }
       const paths = (out.drifted_paths ?? []).join('\n')
       if (
         !window.confirm(
@@ -1842,6 +1889,10 @@ async function doRedo() {
       )
         return
       out = await request('sessions', 'redo', { session_id: sid, force: true })
+      if (out?.blocked) {
+        toast.error(`强制重做仍被拒绝：${out?.note ?? '未做任何改动'}`)
+        return
+      }
     }
     toast.success('已重做上一次回退')
     resyncFromLog()
@@ -1925,6 +1976,117 @@ function rewindActions(msg: ChatMessage) {
   }
   return acts
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-12 会话分叉入口（PLAN 234 批次 5）：message-time 的回退按钮组收编
+// 为「⋯」三点菜单——rewind 两项原样入列（语义/非末轮确认护栏零变化），
+// assistant 行追加「⑂ 从此分叉」直达 fork（不开弹窗，分叉入口只在回复
+// 消息上）。与全局右键菜单互斥单开：本菜单打开先关右键菜单；右键方向由
+// registerCloser 登记（useContextMenu 事件开头统一回调）。
+// ---------------------------------------------------------------------------
+
+const { close: closeContextMenu, registerCloser } = useContextMenu()
+
+/** 当前展开「⋯」菜单的消息行号（null=全关；单值天然互斥单开）。 */
+const msgMenuFor = ref<number | null>(null)
+/** 菜单打开时的视口坐标（钉死不跟随滚动——点外即关，跟随无意义）。 */
+const msgMenuPos = ref({ x: 0, y: 0 })
+/** 分叉请求在途（菜单项置灰防双击双 fork）。 */
+const forkingFrom = ref(false)
+
+function closeMsgMenu() {
+  msgMenuFor.value = null
+}
+
+function toggleMsgMenu(msg: ChatMessage, e: MouseEvent) {
+  if (msgMenuFor.value === msg.rowIndex) {
+    closeMsgMenu()
+    return
+  }
+  // 互斥单开：本菜单开 → 先关全局右键菜单。
+  closeContextMenu()
+  msgMenuFor.value = msg.rowIndex ?? null
+  // 贴边收口（小菜单按估宽收——渲染后实测修正的成本高于收益）。
+  msgMenuPos.value = {
+    x: Math.min(e.clientX, window.innerWidth - 190),
+    y: Math.min(e.clientY, window.innerHeight - 150),
+  }
+}
+
+/** 「⋯」菜单项：rewind 组沿用 rewindActions（含 isDefaultChat/行号守卫，
+ *  非默认聊天模块触发钮整个不渲染）+ assistant 行追加「从此分叉」。 */
+function msgMenuActions(msg: ChatMessage) {
+  const acts: { label: string; title: string; disabled?: boolean; run: () => void }[] =
+    rewindActions(msg)
+  if (msg.role === 'assistant') {
+    acts.push({
+      label: '⑂ 从此分叉',
+      title: '以这条回复为界复制出新会话（会话资产/记忆随分叉复制）',
+      disabled: forkingFrom.value,
+      run: () => void doForkFrom(msg),
+    })
+  }
+  return acts
+}
+
+function runMsgMenuAction(a: { run: () => void }) {
+  closeMsgMenu()
+  a.run()
+}
+
+/** assistant 消息所在轮的 1-based 序号（fork at_turn = 保留前 N 轮）：
+ *  planRegenerate 定位轮首 → 其前非插话 user 行计数 +1。与后端 turn 表
+ *  同构（user role 且非 [steer] 前缀；[System:] 触发轮也占轮号）。渲染行
+ *  （error/system，无 rowIndex）天然跳过；零请求本地计数。 */
+function forkTurnIndexOf(msg: ChatMessage): number | null {
+  if (msg.rowIndex === undefined) return null
+  const plan = planRegenerate(chatStore.messages, msg.rowIndex, msg.role)
+  if (!plan) return null
+  let n = 0
+  for (const m of chatStore.messages) {
+    if (m.rowIndex === undefined) continue
+    if (m.rowIndex >= plan.turnStart) break
+    if (m.role === 'user' && !m.content.startsWith('[steer] ')) n++
+  }
+  return n + 1
+}
+
+/** 直达 fork：fork(sid, N) → toast + 会话列表刷新 + 切入新会话。走 HTTP
+ *  /api/chat/sessions/{id}/fork（WSAPI sessions 模块无 fork 命令，
+ *  ForkSessionModal 同款通道）。后端按会话资产区语义整体复制 home。 */
+async function doForkFrom(msg: ChatMessage) {
+  if (forkingFrom.value) return
+  const sid = effectiveSid.value
+  if (!sid) return
+  const n = forkTurnIndexOf(msg)
+  if (!n) {
+    toast.warn('找不到本轮提问行，无法分叉')
+    return
+  }
+  closeMsgMenu()
+  forkingFrom.value = true
+  try {
+    const resp = await chatApi.fork(sid, n)
+    toast.success(`已分叉出新会话（保留 ${resp.kept_messages ?? 0} 条消息）`)
+    await sessionStore.fetchList(true)
+    sessionStore.switchTo(resp.session_id)
+  } catch (e: any) {
+    toast.error(e?.message || String(e))
+  } finally {
+    forkingFrom.value = false
+  }
+}
+
+/** Esc 关菜单（capture 抢在输入框 Esc 语义前；菜单关闭时不拦）。 */
+function onMsgMenuKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && msgMenuFor.value !== null) {
+    closeMsgMenu()
+    e.stopPropagation()
+  }
+}
+
+/** onMounted 装的清理闭包（互斥登记注销 + Esc listener 摘除）；onUnmounted 消费。 */
+let onMsgMenuCleanup: (() => void) | null = null
 
 // M6：命令面板「插入不发送」——草稿追加进输入框并聚焦（消费后清空）。
 watch(
@@ -2429,7 +2591,9 @@ function addImageFiles(files: FileList | File[] | null) {
       continue
     }
     uploadingImages.value++
-    uploadImage(f)
+    // 会话资产区独立（2026-11-12）：默认/项目聊天会话的图片落该会话 home
+    // （分叉独立语义）；非 chat 模块或无会话 id → 主 workspace（旧行为）。
+    uploadImage(f, isDefaultChat.value ? effectiveSid.value || undefined : undefined)
       .then(up => {
         pendingImages.value.push({ ...up, name: f.name })
       })
@@ -3321,6 +3485,15 @@ onMounted(() => {
   // M5: 常驻条初拉 + 30s 兜底轮询（refreshUsage 内部自带 default-chat 守卫）。
   refreshUsage()
   usagePollTimer = setInterval(refreshUsage, 30000)
+
+  // 2026-11-12「⋯」消息菜单：右键菜单互斥登记（右键事件开头统一回调关
+  // 本菜单）+ Esc 关闭（capture）。卸载对称注销。
+  const unregisterMsgMenuCloser = registerCloser(closeMsgMenu)
+  window.addEventListener('keydown', onMsgMenuKeydown, true)
+  onMsgMenuCleanup = () => {
+    unregisterMsgMenuCloser()
+    window.removeEventListener('keydown', onMsgMenuKeydown, true)
+  }
 })
 
 onUnmounted(() => {
@@ -3328,6 +3501,11 @@ onUnmounted(() => {
     chatMessages.value.removeEventListener('scroll', scrollHandler)
   }
   detachScrollFollow()
+  // 2026-11-12「⋯」菜单：互斥登记 + Esc listener 对称注销。
+  if (onMsgMenuCleanup) {
+    onMsgMenuCleanup()
+    onMsgMenuCleanup = null
+  }
   document.removeEventListener('keydown', onGlobalKeydown)
   removeMessageHandler(handleWSMessage)
   offSSE('resync', onSSEResync)
@@ -3500,18 +3678,46 @@ onUnmounted(() => {
             <!-- E2: 并发回执徽章（排队/插话），紧跟模型徽章。
                  用 .badge 基类不用 .model-badge——后者源码序靠后会盖掉徽章配色。 -->
             <span v-if="concurrencyBadge(msg)" class="badge concurrency-badge" :class="concurrencyBadge(msg)!.cls">{{ concurrencyBadge(msg)!.label }}</span>
-            <!-- M6：消息级回退入口（E3 rewind）。行号不可用=诚实不给入口。 -->
+            <!-- 2026-11-12 会话分叉入口（PLAN 234）：回退按钮组收编为「⋯」
+                 三点菜单（rewind 项语义/确认护栏零变化 + assistant 行
+                 「⑂ 从此分叉」直达 fork）。菜单本体 Teleport to body
+                 （fixed 定位不受消息气泡 overflow 裁剪影响）；与全局右键
+                 菜单互斥单开。 -->
             <span v-if="rewindActions(msg).length" class="msg-actions">
               <button
-                v-for="a in rewindActions(msg)"
-                :key="a.label"
-                class="msg-action-btn"
-                :title="a.title"
-                :disabled="rewinding"
-                @click="a.run()"
+                class="msg-menu-trigger"
+                :class="{ active: msgMenuFor === msg.rowIndex }"
+                title="更多操作"
+                @click.stop="toggleMsgMenu(msg, $event)"
               >
-                {{ a.label }}
+                ⋯
               </button>
+              <Teleport to="body">
+                <template v-if="msgMenuFor === msg.rowIndex">
+                  <div
+                    class="msg-menu-overlay"
+                    @click="closeMsgMenu"
+                    @wheel.passive="closeMsgMenu"
+                    @contextmenu.prevent="closeMsgMenu"
+                  />
+                  <div
+                    class="msg-menu"
+                    :style="{ left: msgMenuPos.x + 'px', top: msgMenuPos.y + 'px' }"
+                    @contextmenu.prevent="closeMsgMenu"
+                  >
+                    <button
+                      v-for="a in msgMenuActions(msg)"
+                      :key="a.label"
+                      class="msg-menu-item"
+                      :title="a.title"
+                      :disabled="rewinding || a.disabled"
+                      @click="runMsgMenuAction(a)"
+                    >
+                      {{ a.label }}
+                    </button>
+                  </div>
+                </template>
+              </Teleport>
             </span>
           </div>
         </div>
@@ -4773,7 +4979,9 @@ onUnmounted(() => {
    的瞬态状态指示（用户点名要求一眼可辨），不是装饰性动效；系统关动画时
    照常播放（否则徽标退化为静态蓝字，状态不可辨）。 */
 
-/* M6: 消息级回退入口（时间行内，hover 显现不抢视觉） */
+/* M6: 消息级回退入口（时间行内，hover 显现不抢视觉）。2026-11-12 起按钮
+   组收编为「⋯」菜单（.msg-menu-* 全局样式见文件尾非 scoped 块），本壳仅
+   保留 hover 显现语义。 */
 .msg-actions {
   display: inline-flex;
   gap: 6px;
@@ -4783,24 +4991,6 @@ onUnmounted(() => {
 }
 .message:hover .msg-actions {
   opacity: 1;
-}
-.msg-action-btn {
-  padding: 0 8px;
-  font-size: var(--text-xs);
-  line-height: 1.6;
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-}
-.msg-action-btn:hover:not(:disabled) {
-  color: var(--text-primary, inherit);
-  background: var(--bg-elev, rgba(128, 128, 128, 0.1));
-}
-.msg-action-btn:disabled {
-  opacity: 0.5;
-  cursor: wait;
 }
 
 /* 2026-10-30：旧 tool-cards、tool-group、round-text 系样式随模板拆除——
@@ -4858,5 +5048,61 @@ onUnmounted(() => {
   font-size: var(--text-xs);
   font-family: var(--font-mono);
   white-space: nowrap;
+}
+</style>
+
+<!-- 2026-11-12「⋯」消息菜单：菜单本体 Teleport to body，脱离 scoped
+     作用域 → 全局类名 + 非 scoped 块（ContextMenu.vue 同款形态）。 -->
+<style>
+.msg-menu-trigger {
+  padding: 0 7px;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.msg-menu-trigger:hover,
+.msg-menu-trigger.active {
+  color: var(--text-primary, inherit);
+  background: var(--bg-elev, rgba(128, 128, 128, 0.1));
+}
+.msg-menu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  background: transparent;
+}
+.msg-menu {
+  position: fixed;
+  z-index: 2101;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+}
+.msg-menu-item {
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-primary, inherit);
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.msg-menu-item:hover:not(:disabled) {
+  background: var(--bg-primary, rgba(0, 0, 0, 0.05));
+}
+.msg-menu-item:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 </style>

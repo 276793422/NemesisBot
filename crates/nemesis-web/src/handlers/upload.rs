@@ -111,9 +111,23 @@ pub async fn handle_upload_image(
     };
 
     // 落盘：uploads/web_{millis}.{ext}。写后关 fd 即落盘（纪律 4）。
-    let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
-        &nemesis_path::default_path_manager().workspace(),
-    );
+    // 会话资产区（2026-11-12）：可选 `?session_id=` —— 绑定会话落
+    // `<workspace>/agents/<id>/home/uploads/`（fork 随分支带走）；缺省落
+    // 全局 workspace/uploads（存量行为零变化）。
+    let workspace = nemesis_path::default_path_manager().workspace();
+    let uploads_dir = params
+        .get("session_id")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .and_then(|sid| {
+            let session_key = format!(
+                "agent:main:session:{}",
+                nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+            );
+            nemesis_agent::session_home::resolve_session_home(&workspace, &session_key)
+                .map(|h| h.join("uploads"))
+        })
+        .unwrap_or_else(|| nemesis_path::resolve_uploads_dir_in_workspace(&workspace));
     if let Err(e) = std::fs::create_dir_all(&uploads_dir) {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -162,7 +176,11 @@ pub async fn handle_upload_image(
 /// 裸文件名，防路径穿越）；`{path}` → 原样引用（用户点名路径语义， 附加
 /// 时照常过安全管线）。返回本地路径字符串；解析失败返回 None（调用方诚实
 /// 注记）。
-pub fn resolve_media_ref(item: &serde_json::Value) -> Option<String> {
+///
+/// 会话资产区（2026-11-12）：`{id}` 解析 = 会话 home/uploads 优先（新链路
+/// 上传端点带 `?session_id=` 落会话资产区）→ 全局 uploads 兜底（存量上传
+/// / 未绑定会话）。双向兼容：落哪层都能解析回来。
+pub fn resolve_media_ref(item: &serde_json::Value, session_key: Option<&str>) -> Option<String> {
     if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
         let id = id.trim();
         // 裸文件名白名单：字母数字 + `_` `-` `.`，拒绝分隔符与 `..`。
@@ -175,6 +193,17 @@ pub fn resolve_media_ref(item: &serde_json::Value) -> Option<String> {
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
         {
             return None;
+        }
+        if let Some(key) = session_key
+            && let Some(home) = nemesis_agent::session_home::resolve_session_home(
+                &nemesis_path::default_path_manager().workspace(),
+                key,
+            )
+        {
+            let dest = home.join("uploads").join(id);
+            if dest.is_file() {
+                return Some(dest.to_string_lossy().into_owned());
+            }
         }
         let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
             &nemesis_path::default_path_manager().workspace(),
@@ -224,18 +253,49 @@ pub fn sweep_uploads_older_than(uploads_dir: &std::path::Path, max_age: Duration
 }
 
 /// Gateway 启动 + 周期清扫入口：先扫一次，再每 6 小时扫一次（7 天 TTL 下
-/// 频率远超需要，只是兜底进程常驻场景）。
+/// 频率远超需要，只是兜底进程常驻场景）。会话资产区（2026-11-12）：
+/// 全局 workspace/uploads 之外，逐一扫各会话 home/uploads
+/// （`agents/<id>/home/uploads`，绑定会话的落点；主 workspace 与各注册
+/// 项目目录两棵树都扫——项目会话的资产区根 = 项目目录）——同一 TTL 语义。
+/// 目录列表每轮重枚举（运行期新建的会话 home 也要进清扫；每 6h 一次的
+/// 枚举成本可忽略）。
 pub fn spawn_uploads_sweeper() {
     tokio::spawn(async move {
-        let uploads_dir: PathBuf = nemesis_path::resolve_uploads_dir_in_workspace(
-            &nemesis_path::default_path_manager().workspace(),
-        );
-        sweep_uploads_older_than(&uploads_dir, UPLOADS_TTL);
-        let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
-        interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
+        let workspace = nemesis_path::default_path_manager().workspace();
         loop {
+            let mut dirs: Vec<PathBuf> =
+                vec![nemesis_path::resolve_uploads_dir_in_workspace(&workspace)];
+            // 主 workspace 的会话 home 树 + 各注册项目目录的会话 home 树
+            // （项目会话的资产区根 = 项目目录，2026-11-12 根一致性拍板）。
+            // 项目未装配/注册表损坏 = 静默跳过（清扫是兜底维护，不报警）。
+            let mut roots: Vec<PathBuf> = vec![workspace.clone()];
+            if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+                roots.extend(
+                    bridge
+                        .list()
+                        .iter()
+                        .filter_map(|p| p.path.parse::<PathBuf>().ok()),
+                );
+            }
+            for root in &roots {
+                let agents_root = nemesis_path::resolve_agents_root_in_workspace(root);
+                if let Ok(entries) = std::fs::read_dir(&agents_root) {
+                    // 有序消费 read_dir（遍历序是平台实现细节；清扫结果与顺序
+                    // 无关，排序让行为可复现）。
+                    let mut homes: Vec<PathBuf> = entries
+                        .flatten()
+                        .map(|e| e.path().join("home").join("uploads"))
+                        .collect();
+                    homes.sort();
+                    dirs.extend(homes);
+                }
+            }
+            for dir in &dirs {
+                sweep_uploads_older_than(dir, UPLOADS_TTL);
+            }
+            let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
+            interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
             interval.tick().await;
-            sweep_uploads_older_than(&uploads_dir, UPLOADS_TTL);
         }
     });
 }

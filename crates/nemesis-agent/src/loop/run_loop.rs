@@ -938,7 +938,15 @@ impl AgentLoop {
                 let ws_for_uploads = self.workspace_root.read().clone();
                 let uploads_base = ws_for_uploads
                     .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-                let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base);
+                // 会话资产区（2026-11-12）：steer 与首轮同源——绑定会话的
+                // 预取产物落自家 home/uploads（home 已在首轮 admission 惰性
+                // 分配，此处只消费）；未绑定落全局。
+                let uploads_dir =
+                    crate::session_home::resolve_session_home(&uploads_base, &context.session_key)
+                        .map(|h| h.join("uploads"))
+                        .unwrap_or_else(|| {
+                            nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base)
+                        });
                 let (media_for_attach, url_notes) = crate::image_attach::fetch_url_media(
                     &m.msg.media,
                     &uploads_dir,

@@ -93,6 +93,10 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
 
     if let Some(settings) = WebViewExt::settings(&webview) {
         settings.set_enable_developer_extras(true);
+        // 剪贴板访问（2026-11-12 会话分叉入口批）：与 Windows wry
+        // with_clipboard 同语义——自定义右键菜单「粘贴」依赖
+        // navigator.clipboard，零提示静默放行。
+        settings.set_javascript_can_access_clipboard(true);
     }
 
     // Inject init script (e.g. window.__DASHBOARD_TOKEN__)
@@ -180,6 +184,10 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
 
     if let Some(settings) = WebViewExt::settings(&webview) {
         settings.set_enable_developer_extras(true);
+        // 剪贴板访问（2026-11-12 会话分叉入口批）：与 Windows wry
+        // with_clipboard 同语义——自定义右键菜单「粘贴」依赖
+        // navigator.clipboard，零提示静默放行。
+        settings.set_javascript_can_access_clipboard(true);
     }
 
     // Intercept approval result navigation from JS

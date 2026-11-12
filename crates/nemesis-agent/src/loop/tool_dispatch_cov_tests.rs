@@ -133,7 +133,7 @@ fn lsp_write_call_table() {
 fn plan_write_allowed_requires_workspace_root() {
     let al = AgentLoop::new(Box::new(CovLlmProvider), cov_config());
     // workspace_root 未注入（standalone）→ 无放行锚点，一律拦截。
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"plans/a.md"}"#));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"plans/a.md"}"#, "sess"));
 }
 
 #[test]
@@ -143,35 +143,38 @@ fn plan_write_allowed_table() {
     al.set_workspace_root(dir.path().to_path_buf());
 
     // 只有 write_file 放行；其他写工具一律拦截。
-    assert!(!al.plan_mode_write_allowed("edit_file", r#"{"path":"plans/a.md"}"#));
-    assert!(!al.plan_mode_write_allowed("exec", r#"{"cmd":"echo hi"}"#));
+    assert!(!al.plan_mode_write_allowed("edit_file", r#"{"path":"plans/a.md"}"#, "sess"));
+    assert!(!al.plan_mode_write_allowed("exec", r#"{"cmd":"echo hi"}"#, "sess"));
 
     // 非法 JSON / 缺 path → 拦截。
-    assert!(!al.plan_mode_write_allowed("write_file", "not json"));
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"content":"no path"}"#));
+    assert!(!al.plan_mode_write_allowed("write_file", "not json", "sess"));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"content":"no path"}"#, "sess"));
 
     // 相对路径：plans/ 内放行，外拦。
-    assert!(al.plan_mode_write_allowed("write_file", r#"{"path":"plans/plan-a.md"}"#));
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"src/lib.rs"}"#));
+    assert!(al.plan_mode_write_allowed("write_file", r#"{"path":"plans/plan-a.md"}"#, "sess"));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"src/lib.rs"}"#, "sess"));
     // plans 前缀必须是路径分量（plans-x/ 不是 plans）。
-    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"plans-x/a.md"}"#));
+    assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"plans-x/a.md"}"#, "sess"));
 
     // 绝对路径：落在 <root>/plans 内放行，外拦。
     let inside = dir.path().join("plans").join("abs.md");
     let outside = dir.path().join("src").join("abs.rs");
     assert!(al.plan_mode_write_allowed(
         "write_file",
-        &serde_json::json!({ "path": inside.to_string_lossy() }).to_string()
+        &serde_json::json!({ "path": inside.to_string_lossy() }).to_string(),
+        "sess",
     ));
     assert!(!al.plan_mode_write_allowed(
         "write_file",
-        &serde_json::json!({ "path": outside.to_string_lossy() }).to_string()
+        &serde_json::json!({ "path": outside.to_string_lossy() }).to_string(),
+        "sess",
     ));
 
     // 目标不存在（plans/ 目录未创建）→ 按最长存在祖先解析仍放行。
     assert!(al.plan_mode_write_allowed(
         "write_file",
-        &serde_json::json!({ "path": "plans/deep/new.md" }).to_string()
+        &serde_json::json!({ "path": "plans/deep/new.md" }).to_string(),
+        "sess",
     ));
 }
 

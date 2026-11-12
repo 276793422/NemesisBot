@@ -843,7 +843,11 @@ impl AgentLoop {
         let declared_write = false;
         if *self.mode.read() == crate::types::AgentMode::Plan
             && ((Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
-                && !self.plan_mode_write_allowed(&tool_call.name, &tool_call.arguments))
+                && !self.plan_mode_write_allowed(
+                    &tool_call.name,
+                    &tool_call.arguments,
+                    &context.session_key,
+                ))
                 || Self::is_lsp_write_call(&tool_call.name, &tool_call.arguments)
                 || declared_write)
         {
@@ -852,10 +856,10 @@ impl AgentLoop {
                 tool_call.name
             );
             // （项目 home 收编）：拒绝文案动态携带实际放行目录
-            // 绝对路径——模型据此知道计划产物该写哪（项目会话 = home/plans，
-            // 主会话 = workspace/plans）；无放行锚点（standalone）= 诚实说明
-            // 无例外。
-            let plans_hint = match self.plan_products_dir() {
+            // 绝对路径——模型据此知道计划产物该写哪（绑定会话 = home/plans，
+            // 项目会话 = 项目 agent home/plans，主会话 = workspace/plans）；
+            // 无放行锚点（standalone）= 诚实说明无例外。
+            let plans_hint = match self.plan_products_dir_for(&context.session_key) {
                 Some(dir) => format!(
                     "(Exception: write_file under {} is allowed for saving the plan itself.)",
                     dir.display()
@@ -2209,6 +2213,20 @@ impl AgentLoop {
         )
     }
 
+    /// 会话资产区（2026-11-12）：会话感知产物目录——绑定会话 =
+    /// `<session_home>/plans`（home 在本 loop 的 workspace_root 下），未绑定
+    /// / 解析失败 = 回落 [`Self::plan_products_dir`]（项目 loop = 项目 agent
+    /// home/plans，主 loop = workspace/plans，存量行为零变化）。放行判定、
+    /// 拒绝文案、/plan 回执、模式快照行四处同读本函数，永不漂移。
+    pub(crate) fn plan_products_dir_for(&self, session_key: &str) -> Option<std::path::PathBuf> {
+        if let Some(root) = self.workspace_root.read().clone()
+            && let Some(home) = crate::session_home::resolve_session_home(&root, session_key)
+        {
+            return Some(home.join("plans"));
+        }
+        self.plan_products_dir()
+    }
+
     /// Plan 模式分发端唯一写放行——`write_file` 且目标路径落在
     /// plans 目录前缀内（项目会话 = `<agent_home>/plans`，主会话 =
     /// `<workspace>/plans/`）。路径解析与 [`crate::loop_tools:validate_workspace_path`]
@@ -2217,14 +2235,19 @@ impl AgentLoop {
     /// 未注入（standalone）→ 无放行锚点，一律拦截（诚实从严）。
     /// 项目会话语义：相对路径仍 join workspace_root（=项目目录）解析——
     /// 解析结果不落 home/plans 即拒，模型必须写绝对路径。
-    pub(crate) fn plan_mode_write_allowed(&self, tool_name: &str, arguments: &str) -> bool {
+    pub(crate) fn plan_mode_write_allowed(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+        session_key: &str,
+    ) -> bool {
         if tool_name != "write_file" {
             return false;
         }
         let Some(root) = self.workspace_root.read().clone() else {
             return false;
         };
-        let Some(plans_dir) = self.plan_products_dir() else {
+        let Some(plans_dir) = self.plan_products_dir_for(session_key) else {
             return false;
         };
         let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {

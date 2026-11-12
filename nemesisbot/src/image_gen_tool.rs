@@ -33,8 +33,14 @@ pub struct GenerateImageTool {
     model: String,
     /// 单请求墙钟预算秒数（`tools.image_gen.timeout_secs`）。
     timeout_secs: u64,
-    /// 输出根目录（通常 `<workspace>/images`；绝对路径，装配期定死）。
-    output_dir: PathBuf,
+    /// workspace 根（绝对路径）——绑定会话的 `agents/<id>/home` 所在树
+    /// （本 loop 的 workspace 根：主/集群 = 主 workspace，项目 = 项目目录）。
+    /// 产物根运行时按会话解析（2026-11-12 会话资产区）：绑定会话 =
+    /// `<homes_root>/agents/<id>/home/images`。
+    homes_root: PathBuf,
+    /// 未绑定会话的全局回退根（恒主 workspace——存量行为：产物落
+    /// `<workspace>/images`。项目 loop 存量会话的产物不因改造漂进项目目录）。
+    fallback_root: PathBuf,
 }
 
 impl GenerateImageTool {
@@ -43,15 +49,24 @@ impl GenerateImageTool {
         api_key: String,
         model: String,
         timeout_secs: u64,
-        output_dir: PathBuf,
+        homes_root: PathBuf,
+        fallback_root: PathBuf,
     ) -> Self {
         Self {
             api_base,
             api_key,
             model,
             timeout_secs,
-            output_dir,
+            homes_root,
+            fallback_root,
         }
+    }
+
+    /// 产物根目录（运行时按会话解析——home 随 fork 复制，产物跟会话走）。
+    fn output_root(&self, session_key: &str) -> PathBuf {
+        nemesis_agent::session_home::resolve_session_home(&self.homes_root, session_key)
+            .map(|h| h.join("images"))
+            .unwrap_or_else(|| self.fallback_root.join("images"))
     }
 
     /// 把用户给的 `output` 相对路径钉死在 `output_dir` 内。
@@ -143,6 +158,7 @@ impl GenerateImageTool {
         prompt: &str,
         size: Option<String>,
         rel: PathBuf,
+        output_dir: &Path,
     ) -> Result<(PathBuf, usize), String> {
         let request = nemesis_providers::images::ImageRequest {
             model: self.model.clone(),
@@ -163,7 +179,7 @@ impl GenerateImageTool {
         if bytes.is_empty() {
             return Err("图像字节为空".to_string());
         }
-        let out_path = self.output_dir.join(&rel);
+        let out_path = output_dir.join(&rel);
         if let Some(parent) = out_path.parent()
             && let Err(e) = std::fs::create_dir_all(parent)
         {
@@ -205,7 +221,7 @@ impl nemesis_agent::r#loop::Tool for GenerateImageTool {
         })
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let parsed: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("args 非 JSON: {e}"))?;
         let Some(prompt) = parsed.get("prompt").and_then(|v| v.as_str()) else {
@@ -225,7 +241,8 @@ impl nemesis_agent::r#loop::Tool for GenerateImageTool {
             None => PathBuf::from(Self::default_filename(prompt)),
         };
 
-        let (out_path, n_bytes) = self.run(prompt, size, rel).await?;
+        let output_dir = self.output_root(&context.session_key);
+        let (out_path, n_bytes) = self.run(prompt, size, rel, &output_dir).await?;
 
         // 用量日志（不接计价——图像端点计价口径与 LLM 价目表不同源，
         // 只记次数 + 模型 + 字节数，供日志侧聚合）。

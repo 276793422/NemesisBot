@@ -294,11 +294,26 @@ pub(super) fn build_shared_tool_config(
         forge_executor: shared.forge_executor.clone(),
         forge: shared.forge.clone(),
         #[cfg(feature = "memory")]
-        memory_executor: shared.memory_manager.as_ref().map(|mgr| {
-            Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(
-                mgr.clone(),
-            ))
-        }),
+        memory_executor: {
+            // 会话资产区（2026-11-12，拍板「只在分叉时分叉」）：注入 fork
+            // 独立域解析器——fork 产物会话（meta 血缘 + home 绑定）的
+            // memory_* 四工具读写 `<home>/memory/memory_vector`，其余会话
+            // 回落主域（行为零变化）。homes_root = 主 workspace（对话组
+            // 会话的 home 树根；manager 构造/config 路径同 spec.rs 项目臂）。
+            let homes_root = shared.workspace_dir().to_path_buf();
+            let shared_for_domains = shared.clone();
+            shared.memory_manager.as_ref().map(move |mgr| {
+                let exec = nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr.clone())
+                    .with_session_domain_resolver(Arc::new(move |session_key| {
+                        let dir = nemesis_agent::session_home::resolve_session_memory_domain(
+                            &homes_root,
+                            session_key,
+                        )?;
+                        memory_manager_for_data_dir(&shared_for_domains, &dir)
+                    }));
+                Arc::new(exec)
+            })
+        },
         #[cfg(not(feature = "memory"))]
         memory_executor: None,
         skills_loader: shared.skills_loader.clone(),
@@ -1141,7 +1156,15 @@ pub(super) fn register_tools_and_mcp(
         match resolve_image_model(&cfg_guard) {
             Ok((api_base, api_key, model)) => {
                 let timeout = cfg_guard.tools.image_gen.effective_timeout_secs();
-                let output_dir = shared.workspace_dir().join("images");
+                // 会话资产区（2026-11-12）双根：homes_root = 本 loop 的
+                // workspace 根（绑定会话 home 所在树——主/集群 = 主 workspace，
+                // 项目 = 项目目录，与围栏同根；三 loop 均在注册前
+                // set_workspace_root，此处恒有值）；fallback_root = 主
+                // workspace（未绑定存量会话产物落全局 images/，行为零变化）。
+                let homes_root = agent_loop
+                    .workspace_root()
+                    .unwrap_or_else(|| shared.workspace_dir().to_path_buf());
+                let fallback_root = shared.workspace_dir().to_path_buf();
                 agent_loop.register_tool(
                     crate::image_gen_tool::TOOL_NAME.to_string(),
                     Box::new(crate::image_gen_tool::GenerateImageTool::new(
@@ -1149,7 +1172,8 @@ pub(super) fn register_tools_and_mcp(
                         api_key,
                         model.clone(),
                         timeout,
-                        output_dir,
+                        homes_root,
+                        fallback_root,
                     )),
                 );
                 info!("[AgentFactory] generate_image tool registered (model={model})");

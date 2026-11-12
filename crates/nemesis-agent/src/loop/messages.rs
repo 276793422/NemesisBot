@@ -586,7 +586,17 @@ impl AgentLoop {
 
         // /（多模态）：turn → 请求消息统一走 `turn_to_request_message`
         // （与 replay 重建共用；image_refs 每轮水合重读，失效 → 占位文本）。
-        let turn_to_msg = |turn: &crate::types::ConversationTurn| turn_to_request_message(turn);
+        // ⑥ hydrate 回退查找：fallback 根 = 自会话 home（fork copy-on-fork
+        // 语义——源路径失效时自 home 副本命中）。未绑定/根缺席 = None，
+        // 行为零变化；根一致性同 plans/uploads/images——用本 loop 的
+        // workspace_root（项目会话 home 在项目目录下）。
+        let hydrate_home = session_key.and_then(|sk| {
+            let root = self.workspace_root.read().clone()?;
+            crate::session_home::resolve_session_home(&root, sk)
+        });
+        let turn_to_msg = |turn: &crate::types::ConversationTurn| {
+            turn_to_request_message_in(turn, hydrate_home.as_deref())
+        };
 
         // Inject dyn_msg just before the last user message, but only when there
         // is a system prompt at turns[0] to protect (otherwise there's no
@@ -765,14 +775,17 @@ impl AgentLoop {
             // （devtool-upgrade）：模式进快照——Plan 时模型当轮就
             // 能读到「不许改文件」，与供给/分发双闸互补（提醒是软约束）。
             let mode_now = self.mode();
-            // plan 放行目录动态写入（统一定义 plan_products_dir——
-            // 项目会话 = <agent_home>/plans，主会话 = <workspace>/plans）。
-            // 静态旧文案「plans/」会把项目会话的模型引向已禁写的项目目录
-            // plans/，必吃一次拒绝回灌才能自纠。
-            let plan_dir_line = self
-                .plan_products_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "plans/".to_string());
+            // plan 放行目录动态写入（统一定义 plan_products_dir_for——
+            // 绑定会话 = <session_home>/plans，项目会话 = <agent_home>/plans，
+            // 主会话 = <workspace>/plans）。静态旧文案「plans/」会把项目
+            // 会话的模型引向已禁写的项目目录 plans/，必吃一次拒绝回灌才能
+            // 自纠。session_key 缺席（系统消息）= loop 级回落。
+            let plan_dir_line = (match session_key {
+                Some(sk) => self.plan_products_dir_for(sk),
+                None => self.plan_products_dir(),
+            })
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "plans/".to_string());
             let mode_line = match mode_now {
                 crate::types::AgentMode::Plan => format!(
                     "plan（PLAN mode: do not modify files. Present your plan as text; write_file under {plan_dir_line} is the only write allowed. User can switch back with /build.）"
@@ -963,11 +976,23 @@ pub(crate) fn conversation_turn_to_llm_message(
 /// base64 字节进 `LlmMessage.images`；文件已删/失效 → 占位文本行
 /// `[图片已失效: <path>]` 追加进 content（诚实降级，不静默、不炸）。
 pub(crate) fn turn_to_request_message(turn: &crate::types::ConversationTurn) -> LlmMessage {
+    turn_to_request_message_in(turn, None)
+}
+
+/// 会话 home 感知变体（⑥ hydrate 回退查找，build_messages 生产路径专用）：
+/// `fallback_home` = 自会话资产区 home，字面路径失效时同形相对文件兜底。
+/// replay/摘要路径走单参形态（None）——重放不追认 fallback（审计面诚实
+/// 边界：字面文件被清扫后的重建按占位降级，与既有「活体后删除」同類）。
+pub(crate) fn turn_to_request_message_in(
+    turn: &crate::types::ConversationTurn,
+    fallback_home: Option<&std::path::Path>,
+) -> LlmMessage {
     let mut msg = conversation_turn_to_llm_message(turn);
     if turn.image_refs.is_empty() {
         return msg;
     }
-    let (images, placeholders) = crate::image_attach::hydrate_image_refs(&turn.image_refs);
+    let (images, placeholders) =
+        crate::image_attach::hydrate_image_refs_in(&turn.image_refs, fallback_home);
     if !placeholders.is_empty() {
         msg.content.push('\n');
         msg.content.push_str(&placeholders.join("\n"));
