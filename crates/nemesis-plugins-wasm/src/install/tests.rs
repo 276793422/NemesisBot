@@ -114,8 +114,7 @@ async fn install_missing_source_dir_fails() {
     let err = inst
         .install(Path::new("Z:/definitely/absent/src"), true)
         .await
-        .err()
-        .expect("missing source");
+        .expect_err("missing source");
     assert!(err.to_string().contains("source dir"), "{err:?}");
 }
 
@@ -127,8 +126,7 @@ async fn install_missing_manifest_fails() {
     let err = inst
         .install(dir.path(), true)
         .await
-        .err()
-        .expect("no plugin.toml");
+        .expect_err("no plugin.toml");
     assert!(err.to_string().contains("read plugin.toml"));
 }
 
@@ -141,8 +139,7 @@ async fn install_unsigned_strict_rejected() {
     let err = inst
         .install(&src, false)
         .await
-        .err()
-        .expect("unsigned + strict");
+        .expect_err("unsigned + strict");
     assert!(err.to_string().contains("trust check failed"));
     // 零突变：载荷与 lockfile 均未落。
     assert!(!mgr.plugin_dir("decl-panel").join("plugin.toml").exists());
@@ -236,11 +233,7 @@ async fn install_wasm_filename_escape_rejected() {
         .expect("write");
     std::fs::write(dir.path().join("evil.wasm"), b"garbage wasm").expect("write");
     // 文件名纯度闸先于读盘触发（join 逃逸面）。
-    let err = inst
-        .install(&src, true)
-        .await
-        .err()
-        .expect("escape rejected");
+    let err = inst.install(&src, true).await.expect_err("escape rejected");
     assert!(err.to_string().contains("纯文件名"), "{err:?}");
 }
 
@@ -371,8 +364,7 @@ async fn uninstall_semantics_matrix() {
     // 非法 slug。
     let err = crate::install::uninstall(&mgr, "../x")
         .await
-        .err()
-        .expect("invalid slug");
+        .expect_err("invalid slug");
     assert!(err.to_string().contains("invalid slug"));
     let err = crate::install::uninstall_blocking(&mgr, "../x")
         .err()
@@ -401,8 +393,7 @@ async fn hand_copied_payload_refunnels_on_enable() {
     let err = inst
         .set_enabled("decl-panel", true)
         .await
-        .err()
-        .expect("strict refuse");
+        .expect_err("strict refuse");
     assert!(err.to_string().contains("trust check failed"), "{err:?}");
     // 开关已先落盘（诚实可见态）。
     assert!(mgr.get_switch("decl-panel").enabled);
@@ -429,8 +420,7 @@ async fn set_enabled_missing_payload_fails() {
     let err = inst
         .set_enabled("ghost", true)
         .await
-        .err()
-        .expect("not found");
+        .expect_err("not found");
     assert!(err.to_string().contains("not found"));
     let err = inst
         .set_enabled("../x", true)
@@ -601,8 +591,7 @@ async fn tool_payload_funnel_and_metadata_reconcile() {
     let err = inst
         .set_enabled("textstat", true)
         .await
-        .err()
-        .expect("sha drift");
+        .expect_err("sha drift");
     assert!(err.to_string().contains("sha256 mismatch"), "{err:?}");
     // 目录名与 slug 不一致 = 孤儿载荷拒载。
     let orphan = mgr.plugins_dir().join("mislabeled");
@@ -615,8 +604,7 @@ async fn tool_payload_funnel_and_metadata_reconcile() {
     let err = inst
         .set_enabled("textstat2", true)
         .await
-        .err()
-        .expect("orphan");
+        .expect_err("orphan");
     assert!(err.to_string().contains("不一致"), "{err:?}");
     let _ = ws;
 }
@@ -819,7 +807,17 @@ async fn wasm_filename_forms() {
                 ),
             )
             .expect("write");
-        std::fs::write(src.join(name), body).expect("write wasm");
+        // 载荷物理名：非纯文件名形态（盘符相对/穿越）不落盘——纯度闸在读盘
+        // 前拒绝，物理文件只需以纯名在场。`C:evil.wasm` 形态经 Path::join 会
+        // 逃出 tempdir、按 CWD（crate 根）落盘 = 源树残留（2026-11-12 实录）。
+        let payload_name = match std::path::Path::new(name)
+            .file_name()
+            .and_then(|f| f.to_str())
+        {
+            Some(pure) if pure == name => name,
+            _ => "payload.wasm",
+        };
+        std::fs::write(src.join(payload_name), body).expect("write wasm");
         src
     };
     // 合法纯文件名过闸（sha 记账正确）——死在编译（垃圾字节）。
