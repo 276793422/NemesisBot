@@ -1512,3 +1512,27 @@ async fn bare_lane_ledger_row_legacy_shape_without_caller() {
         "无 caller 请求不得出现 caller 段账行"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-132（横向同族）：strip_data_scheme 前缀比较必须 char 边界安全
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strip_data_scheme_multibyte_head_does_not_panic() {
+    // LLM 幻觉输出的非 ASCII 开头 url：裸 `url[..P.len()]` 切在 char 中间
+    // panic；str::get 形态对非边界恒 None（不 panic、不误判）。
+    assert_eq!(strip_data_scheme("中文数据:data:x"), None);
+    assert_eq!(strip_data_scheme("图片data:image/png;base64,xx"), None);
+
+    // 合法形态不回归：大小写宽容（BUG-20261106-036 契约）+ 正常三向。
+    assert_eq!(
+        strip_data_scheme("data:image/png;base64,AA"),
+        Some("image/png;base64,AA")
+    );
+    assert_eq!(
+        strip_data_scheme("DATA:image/png;base64,AA"),
+        Some("image/png;base64,AA")
+    );
+    assert_eq!(strip_data_scheme("https://example.com/a.png"), None);
+    assert_eq!(strip_data_scheme("da"), None); // 短于前缀
+}

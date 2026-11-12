@@ -1231,8 +1231,16 @@ impl CronService {
         let poisoned = Arc::clone(&self.load_poisoned);
         let store_path = self.store_path.clone();
         let job_id = job_id.to_string();
+        // 线程名截断必须走 char 边界：store 文件是用户可编辑持久化面（legacy
+        // 迁移机制的存在即证明手编 store 在野外存在），非 hex 的合法 UTF-8 id
+        // （如含 CJK）若按字节切片 `&id[..len.min(8)]` 会切在多字节 char 中间
+        // 直接 panic（BUG-20261113-132）——调用方是 web tasks.cron.run handler。
+        // chars().take(8) 对 ASCII hex id 字节级等价，任意 UTF-8 无 panic。
         std::thread::Builder::new()
-            .name(format!("cron-exec-{}", &job_id[..job_id.len().min(8)]))
+            .name(format!(
+                "cron-exec-{}",
+                job_id.chars().take(8).collect::<String>()
+            ))
             .spawn(move || {
                 run_job_execution(
                     &store,
