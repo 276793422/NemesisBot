@@ -681,12 +681,21 @@ impl AnthropicProvider {
                     },
                     None => stream.next().await,
                 };
-                let Some(chunk_result) = next else {
-                    break;
-                };
-                let bytes = match chunk_result {
-                    Ok(b) => b,
-                    Err(e) => {
+                // BUG-20261113-163：EOF（next=None）不再直接 break——服务端在
+                // 末事件文本与终结空行之间断流（半截响应）时，缓冲里的
+                // pending 事件此前被静默丢弃（末段 text/thinking 增量 / 末
+                // message_delta 的真实 stop_reason 与 usage / 收尾
+                // input_json_delta 帧全丢）。SSE 规范：EOF 时 pending 事件必须
+                // 派发。EOF drain 在 push 之后补虚拟终结空行，残余尾经下方
+                // 同一事件分派体走完全部既有闸（message_stop 即真终态照常
+                // return、error 事件照常映射）——零新增分派逻辑；EOF 无
+                // message_stop 的合成 chunk 仍在 drain 之后（唯一终态不双发）。
+                // 截断残尾里的不完整 UTF-8 半字符仍按既有纪律滞留
+                // utf8_pending 不入缓冲。
+                let eof = next.is_none();
+                let bytes = match next {
+                    Some(Ok(b)) => b,
+                    Some(Err(e)) => {
                         tracing::error!(
                             provider = "anthropic",
                             error = %e,
@@ -697,10 +706,17 @@ impl AnthropicProvider {
                         let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
                         return;
                     }
+                    // EOF：bytes 留空（push 为 no-op），drain 见下方 push 后。
+                    None => Default::default(),
                 };
                 // 增量解码：劈在 chunk 边界上的多字节字符先 holdback，
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
+
+                // EOF drain（BUG-20261113-163）：pending 事件补终结空行派发。
+                if eof && !buffer.is_empty() {
+                    buffer.push_str("\n\n");
+                }
 
                 // 事件边界全形态（规范行终止 LF/CR/CRLF 三态逐行独立；
                 // 单一真相源 stream_util::next_event_boundary）。
@@ -932,6 +948,11 @@ impl AnthropicProvider {
                         // ping / content_block_stop / 未知事件：不产 chunk。
                         _ => {}
                     }
+                }
+
+                // EOF（BUG-20261113-163）：drain 已跑完一轮分派，退出循环。
+                if eof {
+                    break;
                 }
             }
 

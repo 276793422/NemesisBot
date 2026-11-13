@@ -1785,6 +1785,107 @@ async fn test_chat_stream_eof_plain_text_synthesizes_stop() {
     assert_eq!(finals, 1, "exactly one synthesized stop chunk");
 }
 
+/// BUG-20261113-163 红证：服务端在末事件文本与终结空行之间断流（半截
+/// 响应的截断形态——body 末尾无 `\n\n`）时，缓冲里的 pending 事件此前被
+/// 静默丢弃（末段正文增量丢失，EOF 合成只补 "stop"）。SSE 规范：EOF 时
+/// pending 事件必须派发。修复后 EOF drain 补虚拟终结空行，残余尾经同一
+/// 分派体正常发射（delta 不丢），随后 EOF 合成照常补唯一终态。
+#[tokio::test]
+async fn test_chat_stream_eof_drains_truncated_pending_event() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // 第二个事件的终结空行缺席（连接在此截断）。
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"keep\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"-tail\"}}]}"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                deltas.push_str(&chunk.delta);
+                if chunk.finish_reason.is_some() {
+                    finals += 1;
+                    assert_eq!(chunk.finish_reason.as_deref(), Some("stop"));
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(
+        deltas, "keep-tail",
+        "truncated final event content must be dispatched at EOF (BUG-20261113-163)"
+    );
+    assert_eq!(finals, 1, "exactly one synthesized stop chunk");
+}
+
+/// BUG-20261113-163 红证（usage 变体）：截断发生在 finish 帧文本与终结
+/// 空行之间时，真实 finish_reason + usage 此前整帧丢失（EOF 合成的
+/// "stop" 不带 usage → 记账缺行）。修复后该帧经 EOF drain 正常派发，
+/// finish_emitted 闸随后让 EOF 合成跳过——终态仍单发，usage 到账。
+#[tokio::test]
+async fn test_chat_stream_eof_drains_truncated_finish_frame_usage_survives() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"body\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":8,\"total_tokens\":15}}"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    let mut usage_total: Option<i64> = None;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                deltas.push_str(&chunk.delta);
+                if chunk.finish_reason.is_some() {
+                    finals += 1;
+                    if let Some(usage) = chunk.usage.as_ref() {
+                        usage_total = Some(usage.total_tokens);
+                    }
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(deltas, "body");
+    assert_eq!(finals, 1, "finish frame must be the single terminal");
+    assert_eq!(
+        usage_total,
+        Some(15),
+        "usage in the truncated finish frame must reach the terminal chunk (BUG-20261113-163)"
+    );
+}
+
 /// J1：SSE 流中途真读错误（Content-Length 谎报 + 提前关闭连接）→ 诚实
 /// connect error（2026-10-13 transport_error 映射），而非旧分类 Format
 /// （不可重试、直接放弃整条链）。可重试性锚点从变体（Timeout）移到

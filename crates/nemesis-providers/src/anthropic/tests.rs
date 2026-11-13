@@ -2387,3 +2387,133 @@ fn s15_build_request_body_updates_timestamp_when_breakpoints_on() {
         "断点关：不进观测块，last_request_ts 保持 0"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-163：EOF pending 事件派发（半截流末事件不再静默丢失）
+// ---------------------------------------------------------------------------
+
+async fn mount_sse(server: &MockServer, body: &str) {
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(server)
+        .await;
+}
+
+fn eof_test_provider(base_url: String) -> AnthropicProvider {
+    let mut cfg = AnthropicConfig::default();
+    cfg.api_key = "test-key".to_string();
+    cfg.base_url = base_url;
+    AnthropicProvider::new(cfg)
+}
+
+fn eof_test_message() -> Message {
+    Message {
+        role: "user".to_string(),
+        content: "hi".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }
+}
+
+/// BUG-20261113-163 红证：末事件文本与终结空行之间断流（body 末尾无
+/// `\n\n`）时，缓冲里的 pending text_delta 此前被静默丢弃（EOF 合成只补
+/// 终态，正文增量丢失）。SSE 规范：EOF 时 pending 事件必须派发。修复后
+/// EOF drain 补虚拟终结空行，残余尾经同一分派体正常发射。
+#[tokio::test]
+async fn test_chat_stream_eof_drains_truncated_pending_event() {
+    let server = MockServer::start().await;
+    let provider = eof_test_provider(server.uri());
+
+    let sse_body = concat!(
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"keep\"}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"-tail\"}}"
+    );
+    mount_sse(&server, sse_body).await;
+
+    let mut rx = provider.chat_stream(
+        &[eof_test_message()],
+        &[],
+        "claude-x",
+        &ChatOptions::default(),
+    );
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                deltas.push_str(&chunk.delta);
+                if chunk.finish_reason.is_some() {
+                    finals += 1;
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(
+        deltas, "keep-tail",
+        "truncated final event content must be dispatched at EOF (BUG-20261113-163)"
+    );
+    assert_eq!(finals, 1, "exactly one synthesized terminal chunk");
+}
+
+/// BUG-20261113-163 红证（usage/stop_reason 变体）：截断发生在
+/// message_delta 与终结空行之间时，真实 stop_reason（end_turn）与
+/// output_tokens（21）此前整帧丢失——EOF 合成拿默认值（stop_reason 空、
+/// output=0）。修复后该帧经 EOF drain 正常派发更新状态，EOF 合成按真实
+/// 值出终态（end_turn→stop 归一 + usage 10+21=31）。
+#[tokio::test]
+async fn test_chat_stream_eof_drains_truncated_message_delta_usage_survives() {
+    let server = MockServer::start().await;
+    let provider = eof_test_provider(server.uri());
+
+    let sse_body = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"body\"}}\n\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":21}}"
+    );
+    mount_sse(&server, sse_body).await;
+
+    let mut rx = provider.chat_stream(
+        &[eof_test_message()],
+        &[],
+        "claude-x",
+        &ChatOptions::default(),
+    );
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    let mut terminal_usage: Option<(i64, i64)> = None;
+    let mut terminal_finish: Option<String> = None;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                deltas.push_str(&chunk.delta);
+                if chunk.finish_reason.is_some() {
+                    finals += 1;
+                    terminal_finish = chunk.finish_reason.clone();
+                    if let Some(usage) = chunk.usage.as_ref() {
+                        terminal_usage = Some((usage.prompt_tokens, usage.completion_tokens));
+                    }
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(deltas, "body");
+    assert_eq!(finals, 1, "exactly one synthesized terminal chunk");
+    assert_eq!(terminal_finish.as_deref(), Some("stop"));
+    assert_eq!(
+        terminal_usage,
+        Some((10, 21)),
+        "usage from the truncated message_delta must reach the terminal chunk (BUG-20261113-163)"
+    );
+}
