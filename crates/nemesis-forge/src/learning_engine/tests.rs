@@ -373,6 +373,43 @@ fn test_fm2a_classify_verdict_respects_configured_threshold() {
     );
 }
 
+#[test]
+fn test_bug20261113_161_explicit_zero_threshold_respected() {
+    // BUG-20261113-161：显式 degrade_threshold=0.0 是合法最严档（observing
+    // 缓冲带 [-0.1, 0) 为空），旧守卫把它当「未配置默认值」静默回落 -0.2
+    // （observing 带 [-0.2, -0.1) 复活）——serde default 自 INIT 起就是
+    // -0.2，`== 0.0` 唯一入口是显式配置。improvement=-0.15：修复后应
+    // "negative"（尊重 0.0），旧代码 → "observing"（被 -0.2 覆盖）。
+    use crate::monitor::DeploymentMonitor;
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let mut config = ForgeConfig::default();
+    config.learning.degrade_threshold = 0.0;
+    let monitor = DeploymentMonitor::new(config, registry);
+    let artifact = Artifact {
+        id: "x".into(),
+        name: "x".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Active,
+        content: "".into(),
+        tool_signature: vec![],
+        created_at: "".into(),
+        updated_at: "".into(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    assert_eq!(
+        monitor.classify_verdict(-0.15, &artifact),
+        "negative",
+        "explicit threshold=0.0 is the strictest setting; -0.15 must be 'negative'"
+    );
+}
+
 #[tokio::test]
 async fn test_run_cycle() {
     let dir = tempfile::tempdir().unwrap();

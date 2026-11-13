@@ -143,10 +143,13 @@ impl DeploymentMonitor {
     /// - otherwise => "negative"
     pub fn classify_verdict(&self, improvement_score: f64, _artifact: &Artifact) -> String {
         let threshold = self.config.learning.degrade_threshold;
-        // F-: only fall back to -0.2 when the threshold is the unset default
-        // (0.0); respect a user-configured stricter/looser threshold instead of
-        // silently overriding any non-negative value.
-        let threshold = if threshold == 0.0 { -0.2 } else { threshold };
+        // BUG-20261113-161：旧守卫在此把 `threshold == 0.0` 当「未配置默认值」
+        // 回落 -0.2——前提自 INIT 起即为假：serde default 与出厂模板都是
+        // -0.2，`== 0.0` 唯一入口是用户显式配置。显式 0.0 是合法最严档
+        // （observing 缓冲带 [-0.1, 0) 为空、低于 -0.1 一律 negative），静默
+        // 改回 -0.2 恰是旧注释声称要消灭的「silently overriding
+        // user-configured threshold」。删除回落臂：未配置走 serde default
+        // -0.2，显式配置值（含 0.0）一律尊重。
 
         if improvement_score > 0.1 {
             "positive"
