@@ -229,24 +229,27 @@ fn invalid_alias_rejected() {
 /// AAD 绑定：把条目密文搬到另一别名下必须解密失败（防置换）。
 #[test]
 fn ciphertext_bound_to_alias() {
-    let path = tmp_vault_path("aad");
-    {
-        let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
-        store.set("real", "secret-value", "", "").unwrap();
-        store.save().unwrap();
-    }
-    // 手工把 real 的密文挪到 decoy 名下。
-    let raw = std::fs::read(&path).unwrap();
-    let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-    let entry = json["entries"]["real"].clone();
-    json["entries"]["decoy"] = entry;
-    std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
-    // 解锁后 decoy 解密必须失败，real 不受影响。
-    let mut store = VaultStore::open(&path).unwrap();
-    store.unlock("pw").unwrap();
-    assert!(matches!(store.get("decoy"), Err(VaultError::Corrupted(_))));
-    assert_eq!(store.get("real").unwrap(), "secret-value");
-    cleanup(&path);
+    // body 级重跑（2026-11-13 coverage 实录：create 返回后的 save 原子写
+    // 窗口遇外力删目录，rename ENOENT——create_retrying 管不了 create
+    // 之后的窗口，同 vault_body_retried 所记 2026-11-09 臂）。
+    vault_body_retried("aad", |path| {
+        {
+            let mut store = create_retrying(path, VaultMode::Argon2id, Some("pw"));
+            store.set("real", "secret-value", "", "").unwrap();
+            store.save().unwrap();
+        }
+        // 手工把 real 的密文挪到 decoy 名下。
+        let raw = std::fs::read(path).unwrap();
+        let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let entry = json["entries"]["real"].clone();
+        json["entries"]["decoy"] = entry;
+        std::fs::write(path, serde_json::to_vec(&json).unwrap()).unwrap();
+        // 解锁后 decoy 解密必须失败，real 不受影响。
+        let mut store = VaultStore::open(path).unwrap();
+        store.unlock("pw").unwrap();
+        assert!(matches!(store.get("decoy"), Err(VaultError::Corrupted(_))));
+        assert_eq!(store.get("real").unwrap(), "secret-value");
+    });
 }
 
 /// 防泄漏：密文与元数据层面都不得出现明文 secret。
