@@ -100,7 +100,16 @@ pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
 #[derive(Default)]
 #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
 pub(crate) struct DiagnosticsTouchRegistry {
-    sessions: std::collections::HashMap<String, Vec<(std::path::PathBuf, std::time::SystemTime)>>,
+    /// (最近 record 时刻, 锚点表)。Instant 用于会话 cap 淘汰最旧**活跃**
+    /// 会话（LRU）——旧实现 `keys().next()` 是 RandomState 随机序，可把
+    /// 刚活跃会话的登记逐掉（注释承诺「旧会话条目」与实现不符）。
+    sessions: std::collections::HashMap<
+        String,
+        (
+            std::time::Instant,
+            Vec<(std::path::PathBuf, std::time::SystemTime)>,
+        ),
+    >,
 }
 
 #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
@@ -115,11 +124,15 @@ impl DiagnosticsTouchRegistry {
         &self,
         session_key: &str,
     ) -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
-        self.sessions.get(session_key).cloned().unwrap_or_default()
+        self.sessions
+            .get(session_key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
     }
 
     /// 回写本轮采集锚点（upsert：已登记文件刷新锚点并移到尾部 = 最近
-    /// 采集序；未登记文件追加）。双 cap 收口。
+    /// 采集序；未登记文件追加）。双 cap 收口；会话 cap 逐出按最近
+    /// record 时刻最旧者（平局回字典序保确定）。
     pub(crate) fn record_anchors(
         &mut self,
         session_key: &str,
@@ -128,20 +141,30 @@ impl DiagnosticsTouchRegistry {
         if anchors.is_empty() {
             return;
         }
-        if !self.sessions.contains_key(session_key)
-            && self.sessions.len() >= Self::MAX_SESSIONS
-            && let Some(k) = self.sessions.keys().next().cloned()
-        {
-            self.sessions.remove(&k);
+        if !self.sessions.contains_key(session_key) && self.sessions.len() >= Self::MAX_SESSIONS {
+            // 淘汰最旧会话（LRU：last_touch 最小；平局取字典序最小键，
+            // min_by_key 前先按键排序语义——复合序显式给出）。
+            if let Some(k) = self
+                .sessions
+                .iter()
+                .min_by_key(|(k, (t, _))| (*t, (*k).clone()))
+                .map(|(k, _)| k.clone())
+            {
+                self.sessions.remove(&k);
+            }
         }
-        let entry = self.sessions.entry(session_key.to_string()).or_default();
+        let entry = self
+            .sessions
+            .entry(session_key.to_string())
+            .or_insert_with(|| (std::time::Instant::now(), Vec::new()));
+        entry.0 = std::time::Instant::now();
         for (path, mtime) in anchors {
-            entry.retain(|(p, _)| p != path);
-            entry.push((path.clone(), *mtime));
+            entry.1.retain(|(p, _)| p != path);
+            entry.1.push((path.clone(), *mtime));
         }
-        let overflow = entry.len().saturating_sub(Self::MAX_FILES_PER_SESSION);
+        let overflow = entry.1.len().saturating_sub(Self::MAX_FILES_PER_SESSION);
         if overflow > 0 {
-            entry.drain(0..overflow);
+            entry.1.drain(0..overflow);
         }
     }
 }

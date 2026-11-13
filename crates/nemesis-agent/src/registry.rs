@@ -78,13 +78,19 @@ impl AgentRegistry {
         agents.get(&id).map(f)
     }
 
-    /// Get the ID of the default agent ("main" if it exists, otherwise the first registered).
+    /// Get the ID of the default agent ("main" if it exists, otherwise the
+    /// lexicographically smallest registered ID).
     pub fn default_agent_id(&self) -> Option<String> {
         let agents = self.agents.read().unwrap();
         if agents.contains_key("main") {
             return Some("main".to_string());
         }
-        agents.keys().next().cloned()
+        // HashMap 无插入序——旧注释「first registered」与实现不符：
+        // keys().next() 是 RandomState 随机序，多 agent 无 main 时同一配置
+        // 重启会换默认 agent（admission standalone 路由 / commands 兜底
+        // 随之漂移）。字典序最小 = 跨进程确定（与 task_result_store
+        // LOW-6 逐出治理同纪律：first-pick 必须确定性）。
+        agents.keys().min().cloned()
     }
 
     /// List all registered agent IDs.
