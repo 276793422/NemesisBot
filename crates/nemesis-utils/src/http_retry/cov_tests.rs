@@ -1,5 +1,8 @@
-// http_retry.rs 覆盖率补充测试（重试预算耗尽且无硬错误时的终局补跑臂
-// 186-188：全程只回可重试状态码 → last_err 恒空 → 尾局再跑一次拿最终态）。
+// http_retry.rs 覆盖率补充测试（泛型版最后一轮可重试 Ok 的终态返回臂）。
+// BUG-20261113-159 修复注记：此前最后一轮拿到可重试状态码时「re-run one
+// final time」补跑一次上游（副作用双执行 + 返回值不验态直接 Ok 出门），
+// 旧测试把 N+1 次调用钉成预期。修复后 = 恰好 max 次请求，最后一轮结果
+// 原样返回（与 simple/reqwest 两版语义对齐）。
 
 use super::*;
 
@@ -14,10 +17,10 @@ impl HasStatusCode for AlwaysRetryable {
     }
 }
 
-/// max 次全部命中可重试 Ok → 循环自然耗尽 → 尾局 request_fn 补跑一次
-/// （186-188 的 None 臂）。
+/// max 次全部命中可重试 Ok → 最后一轮结果原样返回，**无补跑**：调用数
+/// 恰好 = max（N+1 补跑已废）。
 #[tokio::test]
-async fn retryable_ok_exhaustion_falls_to_final_rerun() {
+async fn retryable_ok_exhaustion_returns_last_result_as_is() {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let calls2 = calls.clone();
     let result: Result<AlwaysRetryable, String> = do_request_with_retry(2, move || {
@@ -28,8 +31,8 @@ async fn retryable_ok_exhaustion_falls_to_final_rerun() {
         }
     })
     .await;
-    let resp = result.expect("终局补跑的 Ok 必须原样返回");
+    let resp = result.expect("最后一轮的 Ok 必须原样返回");
     assert_eq!(resp.status_code(), 500);
-    // 2 次循环尝试 + 1 次终局补跑。
-    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+    // 恰好 max 次，无终局补跑（BUG-20261113-159 回归锁）。
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

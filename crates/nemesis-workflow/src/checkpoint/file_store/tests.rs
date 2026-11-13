@@ -358,3 +358,54 @@ async fn sweep_checkpoint_dirs_missing_checkpoints_root_is_zero() {
     let removed = super::sweep_stale_checkpoint_dirs(tmp.path(), std::time::Duration::ZERO);
     assert_eq!(removed, 0);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-157 回归锁：saved_at 等值时 tie-break 确定性。
+// 旧实现 latest() 等值保留 read_dir 先枚举到的（NTFS/ext4 枚举序是平台
+// 实现细节）、list() sort_by_key 等值序随枚举漂移。修复后两处都以
+// checkpoint id 字典序钉死：同内容同盘恒定同结果。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn latest_tie_is_deterministic_regardless_of_save_order() {
+    let (_tmp, store) = make_store();
+    // 同 saved_at 两张（id 字典序 zzz > aaa）；两种保存顺序都必须收敛到
+    // 同一恢复目标（id 字典序最大者）。
+    let early = make_checkpoint("e", "aaa", 0);
+    let mut late = make_checkpoint("e", "zzz", 0);
+    late.saved_at = early.saved_at;
+
+    store.save(early.clone()).await.unwrap();
+    store.save(late.clone()).await.unwrap();
+    let latest = store.latest("e").await.unwrap().unwrap();
+    assert_eq!(latest.id, "zzz", "等值时 id 字典序大者胜（第一次保存序）");
+
+    // 反向保存序——删掉重来，保证读到的不是上一种顺序的残留。
+    store.delete("e", "aaa").await.unwrap();
+    store.delete("e", "zzz").await.unwrap();
+    store.save(late).await.unwrap();
+    store.save(early).await.unwrap();
+    let latest = store.latest("e").await.unwrap().unwrap();
+    assert_eq!(latest.id, "zzz", "等值时 id 字典序大者胜（反向保存序）");
+}
+
+#[tokio::test]
+async fn list_tie_is_deterministic_by_id() {
+    let (_tmp, store) = make_store();
+    let cp_a = make_checkpoint("e", "bbb", 0);
+    let mut cp_b = make_checkpoint("e", "aaa", 0);
+    cp_b.saved_at = cp_a.saved_at;
+    store.save(cp_a).await.unwrap();
+    store.save(cp_b).await.unwrap();
+    // 新时间戳照常排在等值批次之后。
+    store.save(make_checkpoint("e", "ccc", 10)).await.unwrap();
+
+    let metas = store.list("e").await.unwrap();
+    let ids: Vec<&str> = metas.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["aaa", "bbb", "ccc"],
+        "等值批次按 id 字典序，新时间戳殿后"
+    );
+    assert_eq!(metas[0].saved_at, metas[1].saved_at);
+}

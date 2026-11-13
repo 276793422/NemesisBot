@@ -160,7 +160,12 @@ impl CheckpointStore for FileCheckpointStore {
             Err(e) => return Err(StoreError::Io(e)),
         };
 
-        let mut latest: Option<(Checkpoint, chrono::DateTime<Utc>)> = None;
+        // tie-break 用 id 字典序（BUG-20261113-157）：read_dir 枚举序是平台
+        // 实现细节（NTFS 字典序 / ext4 哈希序），saved_at 等值时（同毫秒
+        // 连续 save，Windows 计时器粒度 ~15.6ms 下现实可发生）保留哪个
+        // checkpoint 随平台漂移——恢复目标重启前后不一致。UUID 字典序最大
+        // 者胜 = 同内容同盘恒定同结果（确定性优先于「任意选一个」）。
+        let mut latest: Option<(Checkpoint, chrono::DateTime<Utc>, String)> = None;
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
@@ -198,15 +203,15 @@ impl CheckpointStore for FileCheckpointStore {
                 }
             };
             match &latest {
-                None => latest = Some((cp.clone(), cp.saved_at)),
-                Some((_, ts)) => {
-                    if cp.saved_at > *ts {
-                        latest = Some((cp.clone(), cp.saved_at));
+                None => latest = Some((cp.clone(), cp.saved_at, cp.id.clone())),
+                Some((_, ts, tie_id)) => {
+                    if cp.saved_at > *ts || (cp.saved_at == *ts && cp.id > *tie_id) {
+                        latest = Some((cp.clone(), cp.saved_at, cp.id.clone()));
                     }
                 }
             }
         }
-        Ok(latest.map(|(cp, _)| cp))
+        Ok(latest.map(|(cp, _, _)| cp))
     }
 
     async fn list(&self, execution_id: &str) -> Result<Vec<CheckpointMeta>, StoreError> {
@@ -242,7 +247,10 @@ impl CheckpointStore for FileCheckpointStore {
             metas.push(CheckpointMeta::from(&cp));
         }
         // Oldest first (matches InMemoryCheckpointStore semantics).
-        metas.sort_by_key(|m| m.saved_at);
+        // sort_by_key's equal-key order = read_dir enumeration order
+        // (platform-dependent); the id secondary key pins it deterministically
+        // (BUG-20261113-157: stable sort keeps equal saved_at in id order).
+        metas.sort_by(|a, b| a.saved_at.cmp(&b.saved_at).then_with(|| a.id.cmp(&b.id)));
         Ok(metas)
     }
 

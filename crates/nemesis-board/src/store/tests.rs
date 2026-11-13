@@ -5614,3 +5614,33 @@ fn test_msg_dedup_ttl_sweep_on_open() {
         "过期行必须被清扫，窗口内行保留"
     );
 }
+
+/// BUG-20261113-160 回归锁：search_team_memory 查询侧折叠域必须与 SQL
+/// lower()（仅 ASCII）对齐。旧实现查询词 Unicode 折叠（to_lowercase）——
+/// 全角大写「ＡＢＣ」被折成「ａｂｃ」而存储侧 lower() 不折全角原样保留，
+/// LIKE 永不命中（含全角字母的条目搜不到）。ASCII 折叠后：ASCII 大小写
+/// 不敏感保留（RUST→rust 命中小写存储），非 ASCII 精确匹配（全角可命中）。
+#[test]
+fn search_team_memory_folding_domain_aligned_with_sql_lower() {
+    let (store, dir) = temp_store("team-memory-fold");
+    store
+        .add_team_memory(new_memory("pattern", "rust", "RUST 环境变量"))
+        .unwrap();
+    store
+        .add_team_memory(new_memory("pitfall", "db", "ＡＢＣ 全角大写条目"))
+        .unwrap();
+
+    // ASCII 大小写不敏感语义不变（查询大写命中小写存储）。
+    assert_eq!(
+        store.search_team_memory("RUST").unwrap().len(),
+        1,
+        "ASCII 大小写不敏感语义保留"
+    );
+    // 非 ASCII：全角大写查询词必须命中（旧实现折叠错位 0 命中）。
+    assert_eq!(
+        store.search_team_memory("ＡＢＣ").unwrap().len(),
+        1,
+        "全角大写查询必须命中（折叠域与 SQL lower() 对齐）"
+    );
+    cleanup(&dir);
+}
