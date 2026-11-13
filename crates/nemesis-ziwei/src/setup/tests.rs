@@ -1882,9 +1882,43 @@ fn find_pid_by_name_and_main_module_locate_own_process() {
         .unwrap()
         .to_string_lossy()
         .to_string();
-    // 单实例（自身）：命中且 pid 即本进程
-    let pid = find_pid_by_name(&self_name).expect("自身进程必在册");
-    assert_eq!(pid, std::process::id());
+    // nextest 并行下同二进制的兄弟测试进程与本进程同名是常态——
+    // 「唯一命中即自身」的单实例假设不成立（CI 2026-11-13 实证：兄弟
+    // pid 2828 < 自身 3172，实现按契约取最小 pid 被误判红）。改断言
+    // 契约本身：自身必在册 + 返回值 = 命中集合的最小 pid。
+    let want = self_name.to_lowercase();
+    let mut pids: Vec<u32> = Vec::new();
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        };
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        assert_ne!(snap, INVALID_HANDLE_VALUE, "进程快照创建失败");
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        if Process32FirstW(snap, &mut entry) != 0 {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0)],
+                );
+                if name.to_lowercase() == want {
+                    pids.push(entry.th32ProcessID);
+                }
+                if Process32NextW(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    assert!(
+        pids.contains(&std::process::id()),
+        "自身进程必在册（命中集合 {pids:?}）"
+    );
+    let pid = find_pid_by_name(&self_name).expect("命中集合非空");
+    assert_eq!(pid, *pids.iter().min().unwrap(), "契约：多实例取最小 pid");
     // 不存在的进程名：诚实报错
     let err = find_pid_by_name("no-such-proc-xyz.exe").unwrap_err();
     assert!(err.contains("未找到进程"), "{err}");
