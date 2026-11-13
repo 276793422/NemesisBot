@@ -187,27 +187,16 @@ struct RepoRawData {
 }
 
 /// Percent-encode a URL path segment (RFC 3986 unreserved set).
-/// Dependency-free; mirrors the encoding in `clawhub_registry`.
+/// BUG-20261113-162：实现收敛到共享单点 [`crate::url_enc`]，
+/// 此处保留旧名 delegate（既有调用面/测试面不变）。
 fn url_encode_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+    crate::url_enc::percent_encode_component(s)
 }
 
 /// Percent-encode a multi-segment file path, preserving `/` separators.
 /// Used for `FilePath` query values and repo sub-paths.
 fn url_encode_filepath(p: &str) -> String {
-    p.split('/')
-        .map(url_encode_component)
-        .collect::<Vec<_>>()
-        .join("/")
+    crate::url_enc::percent_encode_path(p)
 }
 
 /// Parse a GitHub `tree` URL into `(owner, repo, branch, path)`.

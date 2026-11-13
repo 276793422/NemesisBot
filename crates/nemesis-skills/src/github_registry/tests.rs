@@ -1397,3 +1397,64 @@ fn test_new_from_config_enabled() {
     let registry = GitHubRegistry::new_from_config(&config);
     assert_eq!(registry.name(), "github");
 }
+
+// ===========================================================================
+// BUG-20261113-162 回归锁：raw URL 构造单点（尾斜杠归一 + 路径段
+// percent-encoding）。`#`/`?` 在 git 文件名与 git ref 中合法，裸插值会
+// 沦为 URL fragment/query 分隔符指向错误资源。
+// ===========================================================================
+
+#[test]
+fn test_build_skill_url_encodes_slug_delimiters() {
+    let registry = GitHubRegistry::new("", 0, 0);
+    // 默认 pattern `skills/{slug}/SKILL.md`；slug 含 `#`/`?`/空格时逐段编码。
+    assert_eq!(
+        registry.build_skill_url("a#b"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/a%23b/SKILL.md"
+    );
+    assert_eq!(
+        registry.build_skill_url("a?b"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/a%3Fb/SKILL.md"
+    );
+    assert_eq!(
+        registry.build_skill_url("my skill"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/my%20skill/SKILL.md"
+    );
+    // 无保留字符 slug 原样直通（不破坏既有 URL 形态）。
+    assert_eq!(
+        registry.build_skill_url("pdf"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"
+    );
+}
+
+#[test]
+fn test_build_skill_url_encodes_branch_delimiter() {
+    // `#` 是合法 git ref 字符（如 `release#1` 分支）；ref 段必须编码否则
+    // fragment 切断。
+    let reg = GitHubRegistry::from_source(&GitHubSourceConfig {
+        name: "t".to_string(),
+        repo: "owner/repo".to_string(),
+        enabled: true,
+        branch: "release#1".to_string(),
+        index_type: "skills_json".to_string(),
+        index_path: "idx/skills.json".to_string(),
+        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+        timeout_secs: 0,
+        max_size: 0,
+    });
+    assert_eq!(
+        reg.build_skill_url("pdf"),
+        "https://raw.githubusercontent.com/owner/repo/release%231/skills/pdf/SKILL.md"
+    );
+}
+
+#[test]
+fn test_new_trailing_slash_base_normalized() {
+    // BUG-20261113-162：legacy config 尾斜杠归一——`//{repo}` 双斜杠路径
+    // 在 raw 端点 404（同族先例 BUG-20261109-012）。
+    let registry = GitHubRegistry::new("https://raw.githubusercontent.com/", 0, 0);
+    assert_eq!(
+        registry.build_skill_url("pdf"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"
+    );
+}

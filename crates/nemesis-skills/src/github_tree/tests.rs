@@ -433,3 +433,51 @@ async fn test_download_skill_tree_no_trailing_slash_prefix() {
     .await;
     assert!(result.is_err());
 }
+
+// ===========================================================================
+// BUG-20261113-162 回归锁：raw URL 构造单点（尾斜杠归一 + 路径段
+// percent-encoding）。blob_path 来自 GitHub trees API（真实文件路径，
+// 可合法含 `#`/`?`/空格），裸插值会被 fragment/query 切断。
+// ===========================================================================
+
+#[test]
+fn test_raw_content_url_encodes_path_segments() {
+    assert_eq!(
+        crate::url_enc::raw_content_url(
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "main",
+            "docs/my skill.md"
+        ),
+        "https://raw.githubusercontent.com/owner/repo/main/docs/my%20skill.md"
+    );
+    assert_eq!(
+        crate::url_enc::raw_content_url(
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "main",
+            "a#b/c?d.md"
+        ),
+        "https://raw.githubusercontent.com/owner/repo/main/a%23b/c%3Fd.md"
+    );
+    // 尾斜杠 base 归一 + 多字节路径按 UTF-8 字节编码。
+    assert_eq!(
+        crate::url_enc::raw_content_url(
+            "https://raw.githubusercontent.com/",
+            "owner/repo",
+            "main",
+            "支/表格.md"
+        ),
+        "https://raw.githubusercontent.com/owner/repo/main/%E6%94%AF/%E8%A1%A8%E6%A0%BC.md"
+    );
+    // 无保留字符路径原样直通（不破坏既有 URL 形态）。
+    assert_eq!(
+        crate::url_enc::raw_content_url(
+            "https://raw.githubusercontent.com",
+            "owner/repo",
+            "v1.2",
+            "skills/pdf/SKILL.md"
+        ),
+        "https://raw.githubusercontent.com/owner/repo/v1.2/skills/pdf/SKILL.md"
+    );
+}

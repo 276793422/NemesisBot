@@ -52,7 +52,11 @@ impl GitHubRegistry {
         let base_url = if base_url.is_empty() {
             "https://raw.githubusercontent.com".to_string()
         } else {
-            base_url.to_string()
+            // BUG-20261113-162：尾斜杠归一——用户从文档复制
+            // `https://raw.githubusercontent.com/` 会拼出 `//{repo}` 双斜杠
+            // 路径（raw 端点 404）。同族先例 = BUG-20261109-012
+            // （telegram/bluesky/mastodon）+ modelscope 构造期归一。
+            base_url.trim_end_matches('/').to_string()
         };
 
         let timeout = if timeout_secs > 0 {
@@ -159,9 +163,13 @@ impl GitHubRegistry {
             .map_err(|e| NemesisError::Validation(format!("invalid slug '{}': {}", slug, e)))?;
 
         if self.index_type == "skills_json" {
-            let url = format!(
-                "{}/{}/{}/{}",
-                self.base_url, self.repo, self.branch, self.index_path
+            // BUG-20261113-162：raw URL 构造单点（尾斜杠归一 + 路径段
+            // percent-encoding，`#`/`?` 不再沦为 fragment/query 分隔符）。
+            let url = crate::url_enc::raw_content_url(
+                &self.base_url,
+                &self.repo,
+                &self.branch,
+                &self.index_path,
             );
 
             let body = self.do_get(&url).await?;
@@ -362,9 +370,12 @@ impl GitHubRegistry {
         query: &str,
         limit: usize,
     ) -> Result<Vec<SkillSearchResult>> {
-        let url = format!(
-            "{}/{}/{}/{}",
-            self.base_url, self.repo, self.branch, self.index_path
+        // BUG-20261113-162：raw URL 构造单点（同 get_skill_meta）。
+        let url = crate::url_enc::raw_content_url(
+            &self.base_url,
+            &self.repo,
+            &self.branch,
+            &self.index_path,
         );
 
         let body = self.do_get(&url).await?;
@@ -663,7 +674,9 @@ impl GitHubRegistry {
             self.skill_path_pattern.replace("{slug}", slug)
         };
 
-        format!("{}/{}/{}/{}", self.base_url, self.repo, self.branch, path)
+        // BUG-20261113-162：raw URL 构造单点（尾斜杠归一 + `#`/`?` 等分段
+        // percent-encoding——分支名与文件名均可合法容纳这两个 URL 保留字）。
+        crate::url_enc::raw_content_url(&self.base_url, &self.repo, &self.branch, &path)
     }
 
     /// Perform an HTTP GET request with error handling.

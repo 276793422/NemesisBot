@@ -2298,3 +2298,24 @@ fn extract_zip_to_dir_capped_passes_normal_package() {
     let out = tmp.path().join("big.bin");
     assert_eq!(std::fs::read(&out).unwrap(), payload);
 }
+
+// ===========================================================================
+// BUG-20261113-162 回归锁：base_url/convex_url 尾斜杠归一——join 形态
+// `{base}/api/v1/...` 对尾斜杠敏感（`//api/...` 路径错配）。同族先例 =
+// BUG-20261109-012（telegram/bluesky/mastodon 构造期归一）。
+// ===========================================================================
+
+#[test]
+fn test_with_urls_trailing_slash_normalized() {
+    let r = ClawHubRegistry::with_urls(
+        "https://api.clawhub.com/",
+        "https://convex.clawhub.com/",
+        "https://clawhub.com",
+    );
+    assert_eq!(r.base_url, "https://api.clawhub.com");
+    assert_eq!(r.convex_url, "https://convex.clawhub.com");
+    // 空值回落默认（既有行为不变）。
+    let d = ClawHubRegistry::with_urls("", "", "");
+    assert_eq!(d.base_url, DEFAULT_CLAWHUB_URL);
+    assert_eq!(d.convex_url, DEFAULT_CONVEX_URL);
+}

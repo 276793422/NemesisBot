@@ -49,12 +49,16 @@ impl ClawHubRegistry {
             base_url: if base_url.is_empty() {
                 DEFAULT_CLAWHUB_URL.to_string()
             } else {
-                base_url.to_string()
+                // BUG-20261113-162：尾斜杠归一——join 形态 `{base}/api/v1/...`
+                // 对尾斜杠敏感（`//api/...` 路径错配）。同族先例 =
+                // BUG-20261109-012（telegram/bluesky/mastodon 构造期归一）。
+                base_url.trim_end_matches('/').to_string()
             },
             convex_url: if convex_url.is_empty() {
                 DEFAULT_CONVEX_URL.to_string()
             } else {
-                convex_url.to_string()
+                // 同上：`{convex}/api/query` 路径 join。
+                convex_url.trim_end_matches('/').to_string()
             },
             convex_site_url: convex_site_url.to_string(),
             client: Client::builder()
@@ -881,23 +885,12 @@ struct ConvexLatestVersion {
 
 /// Minimal URL encoding (avoids extra dependency).
 ///
-/// Percent-encoding operates on bytes, so iteration must be over UTF-8
-/// bytes: iterating chars and casting with `as u8` truncates multibyte
-/// codepoints to their low 8 bits ('中' U+4E2D -> `%2D` = '-'), silently
-/// corrupting every non-ASCII search query / slug / cursor. Same byte-wise
-/// shape as `modelscope_registry::url_encode_component`.
+/// BUG-20261113-162：实现收敛到共享单点 [`crate::url_enc`]，此内嵌模块
+/// 保留旧路径名 delegate（既有调用面不变）。编码按 UTF-8 字节迭代：
+/// 按 char 迭代后 `as u8` 截断多字节码点会静默腐蚀非 ASCII 检索词。
 mod urlencoding {
     pub fn encode(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for &b in s.as_bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                    out.push(b as char)
-                }
-                _ => out.push_str(&format!("%{:02X}", b)),
-            }
-        }
-        out
+        crate::url_enc::percent_encode_component(s)
     }
 }
 

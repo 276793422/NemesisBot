@@ -23,3 +23,4 @@ pub mod security_rules;
 pub mod signer;
 pub mod trust;
 pub mod types;
+pub mod url_enc;

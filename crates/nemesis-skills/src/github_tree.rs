@@ -51,9 +51,13 @@ pub async fn download_skill_tree_from_github(
         max_file_size
     };
 
+    // BUG-20261113-162：api_base 尾斜杠归一 + 分支名 percent-encoding
+    // （分支名可合法含 `#`，裸插值会在 `?recursive=1` 前被 fragment 切断）。
     let api_url = format!(
         "{}/repos/{}/git/trees/{}?recursive=1",
-        api_base_url, repo, branch
+        api_base_url.trim_end_matches('/'),
+        crate::url_enc::percent_encode_path(repo),
+        crate::url_enc::percent_encode_component(branch)
     );
 
     debug!("Fetching GitHub tree: {}", api_url);
@@ -136,7 +140,10 @@ pub async fn download_skill_tree_from_github(
             std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
         }
 
-        let raw_url = format!("{}/{}/{}/{}", raw_base_url, repo, branch, blob_path);
+        // BUG-20261113-162：raw URL 构造单点——blob_path 来自 GitHub
+        // trees API（真实文件路径，可合法含 `#`/`?`/空格），裸插值会被
+        // fragment/query 切断指向错误资源。
+        let raw_url = crate::url_enc::raw_content_url(raw_base_url, repo, branch, blob_path);
 
         let data = download_file(client, &raw_url, max_file_size).await?;
         std::fs::write(&dest_path, &data).map_err(NemesisError::Io)?;

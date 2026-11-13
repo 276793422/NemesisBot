@@ -418,7 +418,14 @@ impl SkillInstaller {
         } else {
             requested_ref
         };
-        let url = format!("{}/repos/{}/commits/{}", api_base, repo, reference);
+        // BUG-20261113-162：ref 段 percent-encoding（sha/HEAD 不受影响，
+        // 分支名/tag 可合法含 `#`，裸插值会被 fragment 切断）。
+        let url = format!(
+            "{}/repos/{}/commits/{}",
+            api_base.trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(repo),
+            crate::url_enc::percent_encode_component(reference)
+        );
         let response = client
             .get(&url)
             .header("User-Agent", USER_AGENT)
