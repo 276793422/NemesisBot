@@ -32,6 +32,7 @@ pub mod chat;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
+pub mod prompt_ticket;
 // 统一工作台 WSAPI（workbench.get / workbench.respond）：触点文档级重页
 // 的取数与动作漏斗路由壳。随 `board` feature 进出（依赖 board store 与
 // board::touchpoints 漏斗）。

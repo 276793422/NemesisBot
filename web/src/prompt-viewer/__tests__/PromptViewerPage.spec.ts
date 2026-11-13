@@ -3,8 +3,9 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 // 提示词内容可视化（2026-11-13）：独立查看器页（prompt-viewer MPA 入口）。
 // 自持最小 WS 客户端（chat.prompt_segment 取数），本套件以假 WebSocket
-// 钉住：URL 参数校验、无 token 错误卡（不白屏）、取数→渲染、错误响应、
-// 刷新重建连接、部分折叠切换。
+// 钉住：URL 参数校验、无 token 错误卡（不白屏）、缺一次性票据错误卡、
+// 取数→渲染、错误响应、部分折叠切换、一次性链接倒计时（10s 归零转
+// 「链接已失效」注记）。刷新按钮已随一次性语义移除（刷新必撞已消费票据）。
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
@@ -94,7 +95,7 @@ describe('PromptViewerPage（段全文查看器）', () => {
     w.unmount()
   })
 
-  it('无登录 token → 错误卡引导先登录 Dashboard，不白屏', () => {
+  it('无登录 token → 错误卡引导先登录 Dashboard，不白屏（凭据闸先于票据闸）', () => {
     localStorage.removeItem('nemesisbot_auth_token')
     const w = mountWithQuery('?session=s1&segment=system')
     expect(w.find('.pv-error-card').exists()).toBe(true)
@@ -103,8 +104,16 @@ describe('PromptViewerPage（段全文查看器）', () => {
     w.unmount()
   })
 
-  it('happy path：连接带 token；请求帧 chat.prompt_segment；渲染 parts', async () => {
+  it('有 token 但缺一次性票据 → 错误卡引导从 Dashboard 段按钮打开，不建连接', () => {
     const w = mountWithQuery('?session=s1&segment=system')
+    expect(w.find('.pv-error-card').exists()).toBe(true)
+    expect(w.text()).toContain('缺少一次性访问票据')
+    expect(FakeWebSocket.instances.length).toBe(0)
+    w.unmount()
+  })
+
+  it('happy path：连接带 token；请求帧 chat.prompt_segment 携票据；渲染 parts', async () => {
+    const w = mountWithQuery('?session=s1&segment=system&ticket=tk-e2e-1')
     expect(FakeWebSocket.instances.length).toBe(1)
     const sock = FakeWebSocket.instances[0]
     expect(sock.url).toContain('token=tok-viewer')
@@ -115,7 +124,7 @@ describe('PromptViewerPage（段全文查看器）', () => {
     expect(frame.type).toBe('request')
     expect(frame.module).toBe('chat')
     expect(frame.cmd).toBe('prompt_segment')
-    expect(frame.data).toEqual({ session_id: 's1', segment: 'system' })
+    expect(frame.data).toEqual({ session_id: 's1', segment: 'system', ticket: 'tk-e2e-1' })
 
     respondOk(sock, SAMPLE_RESULT)
     await flushPromises()
@@ -133,8 +142,37 @@ describe('PromptViewerPage（段全文查看器）', () => {
     w.unmount()
   })
 
+  it('一次性链接倒计时：加载/就绪态显示「10 秒后不可访问」横幅，归零转已失效注记', async () => {
+    vi.useFakeTimers()
+    try {
+      const w = mountWithQuery('?session=s1&segment=system&ticket=tk-e2e-1')
+      // loading 态横幅已在（state !== 'error'）
+      expect(w.find('.pv-timer-bar').exists()).toBe(true)
+      expect(w.text()).toContain('秒后，链接不可访问')
+      expect(w.text()).toContain('页面不刷新、关闭则可持续查看')
+
+      // 完成取数进 ready 态，横幅仍在（内容可持续查看）
+      const sock = FakeWebSocket.instances[0]
+      sock.simulateOpen()
+      respondOk(sock, SAMPLE_RESULT)
+      await flushPromises()
+      expect(w.find('.pv-error-card').exists()).toBe(false)
+      expect(w.find('.pv-timer-bar').exists()).toBe(true)
+
+      // 10 秒归零 → 已失效注记（内容仍驻留，不进错误卡）
+      vi.advanceTimersByTime(10_000)
+      await flushPromises()
+      expect(w.find('.pv-timer-bar').text()).toContain('链接已失效')
+      expect(w.find('.pv-error-card').exists()).toBe(false)
+      expect(w.find('.pv-part').exists()).toBe(true)
+      w.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('错误响应 → 错误卡展示后端错误文本', async () => {
-    const w = mountWithQuery('?session=s1&segment=system')
+    const w = mountWithQuery('?session=s1&segment=system&ticket=tk-e2e-1')
     const sock = FakeWebSocket.instances[0]
     sock.simulateOpen()
     const frame = JSON.parse(sock.sent[0]) as { reqId: string }
@@ -145,31 +183,21 @@ describe('PromptViewerPage（段全文查看器）', () => {
     w.unmount()
   })
 
-  it('WS 连接失败（onerror）→ 错误卡；刷新按钮重建连接', async () => {
-    const w = mountWithQuery('?session=s1&segment=tools')
+  it('WS 连接失败（onerror）→ 错误卡（一次性页面无刷新按钮，重开走 Dashboard）', async () => {
+    const w = mountWithQuery('?session=s1&segment=tools&ticket=tk-e2e-1')
     const sock = FakeWebSocket.instances[0]
     sock.simulateOpen()
     sock.simulateError()
     await flushPromises()
     expect(w.find('.pv-error-card').exists()).toBe(true)
     expect(w.text()).toContain('WebSocket 连接失败')
-
-    // 刷新：重建连接、清错误态
-    await w.find('.pv-refresh').trigger('click')
-    expect(FakeWebSocket.instances.length).toBe(2)
-    const sock2 = FakeWebSocket.instances[1]
-    sock2.simulateOpen()
-    const frame2 = JSON.parse(sock2.sent[0]) as { data: Record<string, string> }
-    expect(frame2.data.segment).toBe('tools')
-    respondOk(sock2, { ...SAMPLE_RESULT, segment: 'tools', title: '工具定义' })
-    await flushPromises()
-    expect(w.find('.pv-error-card').exists()).toBe(false)
-    expect(w.find('.pv-title').text()).toBe('工具定义')
+    // 刷新按钮已随一次性语义移除（刷新必撞已消费票据）
+    expect(w.find('.pv-refresh').exists()).toBe(false)
     w.unmount()
   })
 
   it('历史段渲染：多轮 parts + tool_calls 旁注 + 图片计数；头部点击可折叠', async () => {
-    const w = mountWithQuery('?session=s1&segment=history')
+    const w = mountWithQuery('?session=s1&segment=history&ticket=tk-e2e-1')
     const sock = FakeWebSocket.instances[0]
     sock.simulateOpen()
     respondOk(sock, {
@@ -209,7 +237,7 @@ describe('PromptViewerPage（段全文查看器）', () => {
   })
 
   it('json 段（tools）：hljs 高亮直渲', async () => {
-    const w = mountWithQuery('?session=s1&segment=tools')
+    const w = mountWithQuery('?session=s1&segment=tools&ticket=tk-e2e-1')
     const sock = FakeWebSocket.instances[0]
     sock.simulateOpen()
     respondOk(sock, {

@@ -33,6 +33,7 @@ impl ModuleHandler for ChatHandler {
             "todo_get",
             "context_status",
             "prompt_segment",
+            "prompt_ticket",
             "set_mode",
             "get_mode",
             "set_effort",
@@ -132,9 +133,39 @@ impl ModuleHandler for ChatHandler {
                 "tool_defs": tool_defs,
             })));
         }
+        // 提示词查看器一次性票据（2026-11-13 UX 收口）：段按钮取票 →
+        // 查看器 URL 携 &ticket= → prompt_segment 消费。发票不需要 loop
+        // （绑定的是 sanitize 后的 session_key 字符串），提前返回不占句柄；
+        // 消费时的 loop 归属仍在 prompt_segment 的 resolve 里裁决。
+        if cmd == "prompt_ticket" {
+            let segment = data
+                .as_ref()
+                .and_then(|d| d.get("segment"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "missing segment".to_string())?
+                .to_string();
+            let ticket = uuid::Uuid::new_v4().to_string();
+            let issued = crate::handlers::prompt_ticket::issue(
+                &ticket,
+                &session_key,
+                &segment,
+                std::time::Instant::now(),
+            );
+            return Ok(Some(serde_json::json!({
+                "session_id": session_id,
+                "session_key": session_key,
+                "ticket": issued.ticket,
+                "expires_in_secs": issued.ttl_secs,
+            })));
+        }
         // 提示词内容可视化（2026-11-13）：meter 弹层段按钮 → 独立查看器页
         // 的取数面。七段之一的全文分解，与 context_status 共享 AgentLoop
         // 底层取数（session_prompt_segment，单一真相源）；只读、无 LLM。
+        // 一次性票据（同日）：强制携带 + 单次消费——「链接打开 10 秒后不可
+        // 访问、已打开页面持续可看」在服务端裁决（纯前端倒计时防不了刷新
+        // 重放）。缺票/已用/过期/错配 = 诚实报错（错误文案面向终端用户直显）。
         if cmd == "prompt_segment" {
             let segment = data
                 .as_ref()
@@ -142,6 +173,20 @@ impl ModuleHandler for ChatHandler {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "missing segment".to_string())?
                 .to_string();
+            let ticket = data
+                .as_ref()
+                .and_then(|d| d.get("ticket"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    "缺少一次性访问票据（ticket）：请从 Dashboard 构成条弹层的段按钮打开本页"
+                        .to_string()
+                })?;
+            crate::handlers::prompt_ticket::consume(
+                ticket,
+                &session_key,
+                &segment,
+                std::time::Instant::now(),
+            )?;
             let result = agent_loop.session_prompt_segment(&session_key, &segment)?;
             return Ok(Some(serde_json::json!({
                 "session_id": session_id,

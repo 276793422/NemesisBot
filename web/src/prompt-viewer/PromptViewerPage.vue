@@ -1,13 +1,18 @@
 <script setup lang="ts">
 // 提示词内容可视化（2026-11-13）：段全文独立只读查看器页。
 //
-// 数据链：URL ?session=<会话id>&segment=<段key> → 自持 WS 连接（登录态取同源
-// localStorage nemesisbot_auth_token）→ WSAPI chat.prompt_segment → 渲染。
+// 数据链：URL ?session=<会话id>&segment=<段key>&ticket=<一次性票据> → 自持
+// WS 连接（登录态取同源 localStorage nemesisbot_auth_token）→ WSAPI
+// chat.prompt_segment（ticket 单次消费）→ 渲染。
+// 一次性页面语义（2026-11-13 UX 收口，用户拍板）：链接打开后 10 秒内有效
+// （服务端票据 TTL 单次消费，刷新/重放/转发全失效）；已打开的页面内容
+// 驻留内存可持续查看——顶部横幅倒计时提示，倒计时归零转「链接已失效」常驻
+// 注记。刷新按钮已移除（刷新必撞已消费票据）。
 // 与 meter 同源守护（后端 session_prompt_segment 与 session_context_status 共享
 // 同一底层取数/渲染），本页只做展示、零加工：markdown 段走全局消毒闸
 // renderMarkdownHtml，json/文本按 kind 分支。段配色复用 prompt-segments.css
 // 全局类（与构成条/弹层按钮同一真相源）。
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, onUnmounted } from 'vue'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import typescript from 'highlight.js/lib/languages/typescript'
@@ -66,12 +71,34 @@ type SegmentKey = (typeof SEGMENT_KEYS)[number]
 const params = new URLSearchParams(window.location.search)
 const sessionId = params.get('session') ?? ''
 const segmentKey = params.get('segment') ?? ''
+const ticket = params.get('ticket') ?? ''
 const segmentValid = (SEGMENT_KEYS as readonly string[]).includes(segmentKey)
 
 const state = ref<'loading' | 'error' | 'ready'>('loading')
 const errorMsg = ref('')
 const result = ref<SegmentResult | null>(null)
 const collapsed = ref<Set<number>>(new Set())
+
+// —— 一次性链接倒计时（10s 口径与后端 PROMPT_TICKET_TTL_SECS 同源；前端
+// 只是展示，真正的失效由服务端票据单次消费裁决）——
+const TICKET_TTL_SECS = 10
+const secondsLeft = ref(TICKET_TTL_SECS)
+const linkExpired = ref(false)
+let countdownTimer: ReturnType<typeof setInterval> | null = null
+function startCountdown() {
+  countdownTimer = setInterval(() => {
+    secondsLeft.value -= 1
+    if (secondsLeft.value <= 0) {
+      if (countdownTimer) clearInterval(countdownTimer)
+      countdownTimer = null
+      linkExpired.value = true
+    }
+  }, 1000)
+}
+onUnmounted(() => {
+  if (countdownTimer) clearInterval(countdownTimer)
+})
+startCountdown()
 
 const fmtTok = (n: number): string => n.toLocaleString('en-US')
 
@@ -161,7 +188,7 @@ function fetchSegment() {
   collapsed.value = new Set()
   result.value = null
   if (!sessionId || !segmentKey) {
-    fail('缺少参数：URL 需携带 ?session=<会话id>&segment=<段key>（system / tools / mcp / skill / memory / summary / history）')
+    fail('缺少参数：URL 需携带 ?session=<会话id>&segment=<段key>&ticket=<一次性票据>（system / tools / mcp / skill / memory / summary / history）')
     return
   }
   if (!segmentValid) {
@@ -171,6 +198,10 @@ function fetchSegment() {
   const token = localStorage.getItem('nemesisbot_auth_token') ?? ''
   if (!token) {
     fail('未检测到登录凭据（nemesisbot_auth_token）：请先登录 Dashboard（本页与 Dashboard 同源共享登录态），再从构成条弹层的段按钮打开本页')
+    return
+  }
+  if (!ticket) {
+    fail('缺少一次性访问票据（ticket）：本页为一次性页面，请从 Dashboard 构成条弹层的段按钮打开（直接粘贴的链接不再可用）')
     return
   }
   state.value = 'loading'
@@ -195,7 +226,7 @@ function fetchSegment() {
         module: 'chat',
         cmd: 'prompt_segment',
         reqId,
-        data: { session_id: sessionId, segment: segmentKey },
+        data: { session_id: sessionId, segment: segmentKey, ticket },
       }),
     )
   }
@@ -236,24 +267,28 @@ fetchSegment()
 <template>
   <div class="pv-page">
     <header class="pv-header">
-      <div class="pv-title-block">
-        <span
-          v-if="segmentValid"
-          class="pv-chip"
-          :class="`usage-seg-${segmentKey}`"
-        ></span>
-        <h1 class="pv-title">{{ result?.title ?? '提示词查看器' }}</h1>
-        <span v-if="result" class="pv-meta">{{ headerMeta }}</span>
+      <div class="pv-header-row">
+        <div class="pv-title-block">
+          <span
+            v-if="segmentValid"
+            class="pv-chip"
+            :class="`usage-seg-${segmentKey}`"
+          ></span>
+          <h1 class="pv-title">{{ result?.title ?? '提示词查看器' }}</h1>
+          <span v-if="result" class="pv-meta">{{ headerMeta }}</span>
+        </div>
       </div>
-      <button
-        type="button"
-        class="pv-refresh"
-        :disabled="state === 'loading'"
-        title="重新拉取本段内容"
-        @click="fetchSegment"
-      >
-        ⟳ 刷新
-      </button>
+      <!-- 一次性链接倒计时（2026-11-13 UX 收口）：展示面；真正的链接失效由
+           服务端票据单次消费裁决（刷新/重放后端拒绝）。错误态不显横幅。 -->
+      <div v-if="state !== 'error'" class="pv-timer-bar" :class="{ 'pv-timer-expired': linkExpired }">
+        <template v-if="!linkExpired">
+          <span class="pv-timer-num">{{ secondsLeft }}</span>
+          <span>秒后，链接不可访问（页面不刷新、关闭则可持续查看）</span>
+        </template>
+        <template v-else>
+          <span>🔒 链接已失效（一次性页面）：当前内容仍可持续查看；刷新或关闭后需从 Dashboard 构成条重新打开</span>
+        </template>
+      </div>
     </header>
 
     <main class="pv-body-wrap">
@@ -330,12 +365,35 @@ fetchSegment()
   top: 0;
   z-index: 5;
   display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 16px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.pv-header-row {
+  display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+}
+.pv-timer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.pv-timer-num {
+  min-width: 1.4em;
+  text-align: center;
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: var(--warning, #d9a441);
+}
+.pv-timer-bar.pv-timer-expired {
+  color: var(--text-muted);
 }
 .pv-title-block {
   display: flex;
@@ -361,24 +419,6 @@ fetchSegment()
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.pv-refresh {
-  flex-shrink: 0;
-  padding: 4px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface-hover);
-  color: var(--text-primary);
-  font-size: 12px;
-  cursor: pointer;
-}
-.pv-refresh:hover:not(:disabled) {
-  background: var(--surface-active, var(--surface-hover));
-  filter: brightness(1.15);
-}
-.pv-refresh:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 .pv-body-wrap {
   flex: 1;
@@ -533,5 +573,17 @@ fetchSegment()
   font-size: 12px;
   line-height: 1.6;
   padding: 4px 2px 16px;
+}
+</style>
+
+<style>
+/* 滚动条修复（2026-11-13）：theme.css 的 body { overflow: hidden } 是
+   dashboard 全局布局「自管滚动容器」的语义；查看器独立页导入同一 theme
+   会被连带吞掉文档滚动——段内容超长时页面纹丝不动。本页恢复文档流滚动
+   （sticky header 在文档滚动下照常吸顶）。非 scoped 块：scoped 选择器
+   够不到 body/html。全局选择器只在本 MPA 入口生效，不污染 dashboard。 */
+html,
+body {
+  overflow: auto;
 }
 </style>

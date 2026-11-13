@@ -592,16 +592,25 @@ const usageTipRows = computed(() => {
 })
 
 // 提示词内容可视化（2026-11-13）：段圆点 → 同色按钮，点击新标签页打开
-// 独立查看器页（chat.prompt_segment 取该段全文）。相对路径（base './' +
-// 桥子路径 <base href> 同款语义）；hash 路由不影响 path 解析。
-function openPromptSegment(key: string) {
+// 独立查看器页。一次性页面语义（2026-11-13 UX 收口）：先 chat.prompt_ticket
+// 取一次性票据（服务端 TTL 10s 单次消费，绑定会话+段），URL 携 &ticket=
+// 打开——链接打开一次后即失效，查看器内容驻留内存可持续查看。相对路径
+// （base './' + 桥子路径 <base href> 同款语义）；hash 路由不影响 path 解析。
+async function openPromptSegment(key: string) {
   const sid = effectiveSid.value
   if (!sid) return
-  window.open(
-    `prompt-viewer/index.html?session=${encodeURIComponent(sid)}&segment=${encodeURIComponent(key)}`,
-    '_blank',
-    'noopener',
-  )
+  try {
+    const data = await request('chat', 'prompt_ticket', { session_id: sid, segment: key })
+    const ticket = data?.ticket
+    if (!ticket) throw new Error('未取到一次性访问票据')
+    window.open(
+      `prompt-viewer/index.html?session=${encodeURIComponent(sid)}&segment=${encodeURIComponent(key)}&ticket=${encodeURIComponent(ticket)}`,
+      '_blank',
+      'noopener',
+    )
+  } catch (e) {
+    toast.error(`无法打开提示词查看器：${String((e as Error)?.message ?? e)}`)
+  }
 }
 const usageTipHead = computed(() => {
   const bd = ctxBreakdown.value

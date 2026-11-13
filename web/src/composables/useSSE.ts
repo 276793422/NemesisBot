@@ -53,12 +53,14 @@ export function connectEvents() {
     // 服务端 token 载体优先级补 `?token=` 查询参数；未配置鉴权（空 token）
     // 时参数缺省，行为与此前一致。
     // F1 跟进修复（2026-10-18）：autoLogin 认证链（插件窗口 __DASHBOARD_TOKEN__
-    // 注入 / URL hash token / 桌面 runtime 事件）从不写 localStorage，而下方
+    // 注入 / URL hash token / 桌面 runtime 事件）当时从不写 localStorage，而下方
     // URL 之前只读 localStorage——注入会话生成不带 ?token= 的请求，REST 统一
     // 鉴权（2026-09-22）下 SSE 恒 401（EventSource 对非 200 fail-fast 关闭且
     // 不自动重试），Logs 页「正在连接 SSE…」永挂；同刻 WS 携内存 token 正常，
     // 恰成「WS 连上、SSE 401」的现场指纹。改与 httpGet 同源（useWebSocket
     // 模块级 token，connect() 注入），localStorage 兜底浏览器手动登录路径。
+    // （2026-11-13 起 autoLogin 成功也落盘，见 stores/auth.ts——内存优先保留，
+    // 取最新认证态防 token 轮换后的旧值。）
     const stored = currentAuthToken() || localStorage.getItem('nemesisbot_auth_token')
     const sseUrl = stored ? `${apiUrl('/api/events/stream')}?token=${encodeURIComponent(stored)}` : apiUrl('/api/events/stream')
     eventSource = new EventSource(sseUrl)
