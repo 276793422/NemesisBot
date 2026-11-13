@@ -312,6 +312,27 @@ impl AgentLoop {
             )
             .await;
 
+            // A1（缺陷整改批次 2026-11-14）：会话轨迹的轮次锚点。反思侧
+            // avg_rounds / avg_tool_calls_per_round 从此读真实 LLM 轮数——
+            // tool_call 事件只刻画工具节奏，llm_turn 是「一轮对话完成」的
+            // 标记，build_conversation_traces 把两者合并成完整轨迹。
+            // session_key 与经验台账同格式（tool_dispatch 先例）。
+            #[cfg(feature = "forge")]
+            if let Some(ref forge) = self.forge {
+                // 与经验记录同闸：runtime 主开关关 = 不写观测数据。
+                if forge.is_enabled() {
+                    forge
+                        .record_trace_event(nemesis_forge::trace::TraceEvent {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            event_type: "llm_turn".into(),
+                            session_key: format!("{}:{}", context.channel, context.chat_id),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                            data: serde_json::json!({}),
+                        })
+                        .await;
+                }
+            }
+
             // 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全；B2 实报
             // 锚定）：provider 实报输入 token 进 compaction 混合触发信号
             // 缓存（完整输入 = prompt + cache_creation + cache_read，P8 会

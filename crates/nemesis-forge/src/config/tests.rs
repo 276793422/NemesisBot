@@ -238,12 +238,17 @@ fn test_learning_config_serialization() {
         degrade_threshold: -0.3,
         degradation_cooldown_days: 14,
         llm_budget_tokens: 3000,
+        success_template_skill_threshold: 7,
+        error_recovery_suggest_min: 0.35,
     };
     let json = serde_json::to_string(&lc).unwrap();
     let back: LearningConfig = serde_json::from_str(&json).unwrap();
     assert!(back.enabled);
     assert_eq!(back.min_pattern_frequency, 10);
     assert!((back.high_conf_threshold - 0.9).abs() < 0.001);
+    // B2 决策表新键 round-trip（2026-11-14 缺陷整改批次）
+    assert_eq!(back.success_template_skill_threshold, 7);
+    assert!((back.error_recovery_suggest_min - 0.35).abs() < 0.001);
 }
 
 #[test]

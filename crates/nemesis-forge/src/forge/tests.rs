@@ -670,6 +670,29 @@ fn make_collected_experience(
     }
 }
 
+/// Session-parameterized variant（B1 缺陷整改批次：检测器改会话级——
+/// pattern 检测测试需要跨会话重复同形链才能过 min_freq 闸）。
+fn make_session_experience(
+    session: &str,
+    tool: &str,
+    success: bool,
+    dur: u64,
+) -> crate::types::CollectedExperience {
+    crate::types::CollectedExperience {
+        dedup_hash: format!("test-{}-{}-{}", session, tool, success),
+        experience: nemesis_types::forge::Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tool.to_string(),
+            input_summary: "test input".into(),
+            output_summary: if success { "ok" } else { "error" }.into(),
+            success,
+            duration_ms: dur,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            session_key: session.to_string(),
+        },
+    }
+}
+
 /// Write experiences directly to the ExperienceStore for a forge directory.
 async fn write_test_experiences(forge_dir: &std::path::Path, count: usize) {
     let store = crate::experience_store::ExperienceStore::from_forge_dir(forge_dir);
@@ -785,6 +808,45 @@ async fn test_reflection_cycle_writes_llm_deep_analysis_section() {
     assert!(
         content.contains("mock"),
         "insights body must be rendered into the report"
+    );
+}
+
+/// A4+A5：报告 Period 行反映真实数据窗口（不再硬编码 "today"），
+/// 头部带学习闭环开关状态行（审计教训：关着的闭环在报告里不可见，
+/// 读者会误以为循环在跑）。
+#[tokio::test]
+async fn test_reflection_cycle_period_and_learning_state_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+    forge.set_learning_enabled(true);
+
+    write_test_experiences(forge.forge_dir(), 5).await;
+    forge.run_reflection_cycle().await;
+
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    // read_dir 顺序是平台实现细节；单报告场景取排序首个即稳定。
+    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&reflections_dir)
+        .expect("reflections dir must exist after cycle")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    reports.sort();
+    assert!(!reports.is_empty(), "expected at least one report file");
+    let content = std::fs::read_to_string(&reports[0]).unwrap();
+    // A4：Period 行 = 真实条数 + 首末时间戳（RFC3339 前 19 字符）。
+    assert!(
+        content.contains("**Period:** 最近 5 条"),
+        "Period 行应反映真实数据窗口; got:\n{content}"
+    );
+    assert!(
+        !content.contains("Period: today") && !content.contains("**Period:** today"),
+        "旧硬编码 period 不得再出现"
+    );
+    // A5：头部学习闭环状态行（显式开启 → enabled）。
+    assert!(
+        content.contains("**学习闭环:** enabled"),
+        "报告头部应有学习闭环状态行且为 enabled; got:\n{content}"
     );
 }
 
@@ -993,10 +1055,23 @@ async fn test_pattern_tool_chain_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // 6 experiences with the same tool (≥5 triggers tool_chain, default min_pattern_frequency=5)
-    let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
-        .collect();
+    // B1 会话级语义：5 个会话重复同形 2 步链（min_pattern_frequency=5）。
+    // 链频按跨会话聚合，单会话只数 1。
+    let mut experiences = vec![];
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_read",
+            true,
+            100,
+        ));
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_write",
+            true,
+            100,
+        ));
+    }
 
     let patterns = engine.extract_patterns(&experiences);
     assert!(!patterns.is_empty(), "expected at least one pattern");
@@ -1015,13 +1090,22 @@ async fn test_pattern_error_recovery_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // Same tool: 5 failures + 5 successes (frequency = error_count, must be ≥5)
+    // B1 会话级语义：恢复链 = 失败工具 → （同会话内）不同工具成功。
+    // 5 个会话重复 web_fetch 失败 → web_search 成功（freq 5 = min_freq）。
     let mut experiences = vec![];
-    for _ in 0..5 {
-        experiences.push(make_collected_experience("web_fetch", false, 500));
-    }
-    for _ in 0..5 {
-        experiences.push(make_collected_experience("web_fetch", true, 200));
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "web_fetch",
+            false,
+            500,
+        ));
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "web_search",
+            true,
+            200,
+        ));
     }
 
     let patterns = engine.extract_patterns(&experiences);
@@ -1040,13 +1124,38 @@ async fn test_pattern_efficiency_issue_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // Most tools fast, one tool very slow — need enough fast tools to keep overall avg low
+    // B1 会话级语义：慢会话（avg_dur > 2× 全局均值）× min_freq 重复。
+    // 9 个快会话（2 步 @100ms）压低全局均值；5 个慢会话（同形 2 步链
+    // @100000ms）聚合到 count=5 过 min_freq=5 闸。慢/全局 = 100000/35779
+    // ≈ 2.8× > 2× ✓（快会话过半时慢会话会拉爆全局均值，必须保持快多慢少）。
     let mut experiences = vec![];
-    for _ in 0..10 {
-        experiences.push(make_collected_experience("file_read", true, 100));
+    for s in 0..9 {
+        experiences.push(make_session_experience(
+            &format!("fast-{}", s),
+            "file_read",
+            true,
+            100,
+        ));
+        experiences.push(make_session_experience(
+            &format!("fast-{}", s),
+            "file_write",
+            true,
+            100,
+        ));
     }
-    for _ in 0..5 {
-        experiences.push(make_collected_experience("shell_exec", true, 50000));
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("slow-{}", s),
+            "shell_exec",
+            true,
+            100000,
+        ));
+        experiences.push(make_session_experience(
+            &format!("slow-{}", s),
+            "git",
+            true,
+            100000,
+        ));
     }
 
     let patterns = engine.extract_patterns(&experiences);
@@ -1067,10 +1176,22 @@ async fn test_pattern_success_template_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // 6 experiences all successful with the same tool (≥5 for min_pattern_frequency)
-    let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
-        .collect();
+    // B1 会话级语义：全成功会话的同形链跨会话重复 ≥ min_freq。
+    let mut experiences = vec![];
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_read",
+            true,
+            100,
+        ));
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_write",
+            true,
+            100,
+        ));
+    }
 
     let patterns = engine.extract_patterns(&experiences);
     assert!(
@@ -1109,8 +1230,14 @@ async fn test_run_cycle_full_with_patterns() {
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // No LLM provider — execute_create_skill will skip but pattern detection still works
+    // （会话级语义：6 个会话各跑同形两步全成功链 → freq 6 ≥ 5）
     let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
+        .flat_map(|i| {
+            vec![
+                make_session_experience(&format!("s{i}"), "file_read", true, 100),
+                make_session_experience(&format!("s{i}"), "file_write", true, 100),
+            ]
+        })
         .collect();
 
     let cycle = engine.run_cycle(&experiences).await;
@@ -1178,7 +1305,7 @@ fn test_reflector_with_llm_failure() {
         make_collected_experience("file_read", true, 100),
         make_collected_experience("shell_exec", false, 200),
     ];
-    let report = reflector.reflect(&experiences, None, "today", "all");
+    let report = reflector.reflect(&experiences, &[], None, "today", "all");
     // Should have stats even without LLM
     assert!(!report.date.is_empty());
     assert!(report.stats.total_records > 0);
@@ -1199,8 +1326,14 @@ async fn test_learning_engine_with_llm_failure() {
     // Set error provider
     engine.set_provider(Arc::new(ErrorSyncProvider));
 
+    // （会话级语义：6 个会话各跑同形两步全成功链 → freq 6 ≥ 5）
     let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
+        .flat_map(|i| {
+            vec![
+                make_session_experience(&format!("s{i}"), "file_read", true, 100),
+                make_session_experience(&format!("s{i}"), "file_write", true, 100),
+            ]
+        })
         .collect();
 
     // Should not panic

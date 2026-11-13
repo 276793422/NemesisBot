@@ -1,16 +1,14 @@
 //! Pattern extraction - detects reusable patterns from experience data.
 //!
-//! Implements four pattern detectors:
-//! - tool_chain: High-frequency tool sequences
-//! - error_recovery: Tools that fail then succeed
-//! - efficiency_issue: Slow or wasteful tool usage
-//! - success_template: Consistently successful tool patterns
+//! B1（缺陷整改批次 2026-11-14）：检测逻辑单一来源 =
+//! [`extract_conversation_patterns`]（会话级 ConversationPattern，镜像 Go）。
+//! 旧「经验级」工具计数检测器族（`Pattern`/`PatternType` +
+//! 四个 detect_*）已整体删除——它们把「单工具出现次数」当链、失败率当
+//! 恢复，产出的伪模式污染下游决策表。
 //!
-//! Also provides `ConversationPattern` with rich metadata for conversation-level
-//! pattern detection (mirrors Go's `ConversationPattern` struct), including
-//! SHA256 fingerprinting, first_seen/last_seen tracking, arg_keys deduplication,
-//! and type-specific fields (tool_chain, avg_rounds, error_tool, recovery_tool,
-//! efficiency_score).
+//! `ConversationPattern` 提供会话级富元数据（SHA256 指纹去重、
+//! first_seen/last_seen、参数键聚合、类型专属字段 tool_chain/avg_rounds/
+//! error_tool/recovery_tool/efficiency_score）。
 
 use std::collections::HashMap;
 
@@ -18,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use nemesis_types::utils;
 
-use crate::types::{CollectedExperience, ExperienceStats};
+use crate::types::CollectedExperience;
 
 // ---------------------------------------------------------------------------
 // ConversationPattern — rich pattern type (mirrors Go's ConversationPattern)
@@ -124,36 +122,6 @@ impl ConversationPattern {
             description: String::new(),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Existing Pattern type (experience-level detection)
-// ---------------------------------------------------------------------------
-
-/// A detected pattern with metadata.
-#[derive(Debug, Clone)]
-pub struct Pattern {
-    /// Pattern type identifier.
-    pub pattern_type: PatternType,
-    /// Frequency of occurrence.
-    pub frequency: u32,
-    /// Confidence score [0, 1].
-    pub confidence: f64,
-    /// Human-readable description.
-    pub description: String,
-    /// Associated tool names.
-    pub tools: Vec<String>,
-    /// Supporting data (JSON).
-    pub data: serde_json::Value,
-}
-
-/// Types of detectable patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatternType {
-    ToolChain,
-    ErrorRecovery,
-    EfficiencyIssue,
-    SuccessTemplate,
 }
 
 // ---------------------------------------------------------------------------
@@ -634,163 +602,6 @@ pub fn extract_conversation_patterns(
     });
 
     patterns
-}
-
-/// Extract patterns from a set of collected experiences.
-pub fn extract_patterns(
-    experiences: &[CollectedExperience],
-    stats: &ExperienceStats,
-) -> Vec<Pattern> {
-    let mut patterns = Vec::new();
-
-    patterns.extend(detect_tool_chains(experiences, stats));
-    patterns.extend(detect_error_recovery(experiences));
-    patterns.extend(detect_efficiency_issues(experiences, stats));
-    patterns.extend(detect_success_templates(experiences));
-
-    patterns
-}
-
-/// Detect high-frequency tool chains.
-fn detect_tool_chains(
-    experiences: &[CollectedExperience],
-    _stats: &ExperienceStats,
-) -> Vec<Pattern> {
-    let mut tool_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-
-    for exp in experiences {
-        *tool_counts
-            .entry(exp.experience.tool_name.clone())
-            .or_insert(0) += 1;
-    }
-
-    let total = experiences.len() as f64;
-    tool_counts
-        .into_iter()
-        .filter(|(_, count)| *count >= 3)
-        .map(|(tool, count)| {
-            let frequency_ratio = count as f64 / total;
-            Pattern {
-                pattern_type: PatternType::ToolChain,
-                frequency: count,
-                confidence: frequency_ratio.min(1.0),
-                description: format!(
-                    "High-frequency tool: {} used {} times ({:.0}%)",
-                    tool,
-                    count,
-                    frequency_ratio * 100.0
-                ),
-                tools: vec![tool],
-                data: serde_json::json!({"frequency_ratio": frequency_ratio}),
-            }
-        })
-        .collect()
-}
-
-/// Detect error recovery patterns (tool fails, then succeeds).
-fn detect_error_recovery(experiences: &[CollectedExperience]) -> Vec<Pattern> {
-    let mut tool_errors: std::collections::HashMap<String, (u32, u32)> =
-        std::collections::HashMap::new();
-
-    for exp in experiences {
-        let entry = tool_errors
-            .entry(exp.experience.tool_name.clone())
-            .or_insert((0, 0));
-        entry.1 += 1;
-        if !exp.experience.success {
-            entry.0 += 1;
-        }
-    }
-
-    tool_errors
-        .into_iter()
-        .filter(|(_, (errors, total))| *errors > 0 && *total >= 3)
-        .map(|(tool, (errors, total))| {
-            let error_rate = errors as f64 / total as f64;
-            Pattern {
-                pattern_type: PatternType::ErrorRecovery,
-                frequency: errors,
-                confidence: error_rate,
-                description: format!(
-                    "Error recovery: {} has {:.0}% failure rate ({}/{})",
-                    tool,
-                    error_rate * 100.0,
-                    errors,
-                    total
-                ),
-                tools: vec![tool],
-                data: serde_json::json!({"error_rate": error_rate}),
-            }
-        })
-        .collect()
-}
-
-/// Detect efficiency issues (slow tools).
-fn detect_efficiency_issues(
-    experiences: &[CollectedExperience],
-    stats: &ExperienceStats,
-) -> Vec<Pattern> {
-    let avg_duration = stats.avg_duration_ms;
-
-    experiences
-        .iter()
-        .filter(|e| e.experience.duration_ms as f64 > avg_duration * 2.0)
-        .map(|e| {
-            let ratio = e.experience.duration_ms as f64 / avg_duration.max(1.0);
-            Pattern {
-                pattern_type: PatternType::EfficiencyIssue,
-                frequency: 1,
-                confidence: (ratio - 1.0).min(1.0),
-                description: format!(
-                    "Slow operation: {} took {}ms (avg: {:.0}ms, {:.1}x slower)",
-                    e.experience.tool_name, e.experience.duration_ms, avg_duration, ratio
-                ),
-                tools: vec![e.experience.tool_name.clone()],
-                data: serde_json::json!({
-                    "duration_ms": e.experience.duration_ms,
-                    "avg_ms": avg_duration,
-                    "ratio": ratio,
-                }),
-            }
-        })
-        .collect()
-}
-
-/// Detect success templates (consistently successful patterns).
-fn detect_success_templates(experiences: &[CollectedExperience]) -> Vec<Pattern> {
-    let mut tool_success: std::collections::HashMap<String, (u32, u32)> =
-        std::collections::HashMap::new();
-
-    for exp in experiences {
-        if exp.experience.success {
-            let entry = tool_success
-                .entry(exp.experience.tool_name.clone())
-                .or_insert((0, 0));
-            entry.0 += 1;
-            entry.1 += 1;
-        } else {
-            let entry = tool_success
-                .entry(exp.experience.tool_name.clone())
-                .or_insert((0, 0));
-            entry.1 += 1;
-        }
-    }
-
-    tool_success
-        .into_iter()
-        .filter(|(_, (successes, total))| *total >= 3 && *successes == *total)
-        .map(|(tool, (successes, total))| Pattern {
-            pattern_type: PatternType::SuccessTemplate,
-            frequency: successes,
-            confidence: 1.0,
-            description: format!(
-                "Perfect success: {} succeeded {}/{} times",
-                tool, successes, total
-            ),
-            tools: vec![tool],
-            data: serde_json::json!({"success_rate": 1.0}),
-        })
-        .collect()
 }
 
 #[cfg(test)]

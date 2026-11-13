@@ -23,6 +23,32 @@ fn make_collected(tool: &str, input: &str, success: bool, duration_ms: u64) -> C
 // Need Collector for dedup_hash
 use crate::collector::Collector;
 
+/// 构造一条真轨迹（A1 缺陷整改批次：analyze_traces/reflect 改读
+/// build_conversation_traces 产物——ConversationTrace，不再拿
+/// experiences 冒充会话级统计）。`total_rounds` = llm_turn 事件数。
+fn make_conversation_trace(
+    rounds: u32,
+    steps: &[(&str, bool, i64)],
+) -> crate::monitor::ConversationTrace {
+    let now = chrono::Local::now().to_rfc3339();
+    crate::monitor::ConversationTrace {
+        start_time: now.clone(),
+        total_rounds: rounds,
+        duration_ms: steps.iter().map(|s| s.2).sum(),
+        tool_steps: steps
+            .iter()
+            .map(|(name, ok, dur)| crate::monitor::ToolStep {
+                tool_name: name.to_string(),
+                ok: *ok,
+                duration_ms: *dur,
+                ts: now.clone(),
+            })
+            .collect(),
+        signals: vec![],
+        round_ts: Vec::new(),
+    }
+}
+
 #[test]
 fn test_analyze_empty() {
     let reflector = Reflector::new();
@@ -114,30 +140,41 @@ fn test_statistical_analysis() {
 #[test]
 fn test_analyze_traces() {
     let reflector = Reflector::new();
-    let experiences = vec![
-        make_collected("read", "file", true, 50),
-        make_collected("edit", "file", true, 100),
-        make_collected("exec", "cmd", false, 200),
-        make_collected("read", "file2", true, 60),
-        make_collected("edit", "file2", true, 120),
-        make_collected("exec", "cmd2", true, 180),
-    ];
+    let traces = vec![make_conversation_trace(
+        2,
+        &[
+            ("read", true, 50),
+            ("edit", true, 100),
+            ("exec", false, 200),
+            ("read", true, 60),
+            ("edit", true, 120),
+            ("exec", true, 180),
+        ],
+    )];
 
-    let trace_stats = reflector.analyze_traces(&experiences, None);
-    // All experiences share the same session_key "sess-test" from make_collected,
-    // so total_traces = unique sessions = 1
+    let trace_stats = reflector.analyze_traces(&traces, None);
     assert_eq!(trace_stats.total_traces, 1);
-    assert!(trace_stats.avg_duration_ms > 0);
+    // eligible = 含 ≥1 llm_turn → 本轨迹 rounds=2 进分母
+    assert_eq!(trace_stats.traces_with_rounds, 1);
+    assert!((trace_stats.avg_rounds - 2.0).abs() < 1e-9);
+    // avg_tool_calls_per_round = 6 步 / 2 轮 = 3.0
+    assert!((trace_stats.avg_tool_calls_per_round - 3.0).abs() < 1e-9);
+    // 步级时长池化：(50+100+200+60+120+180)/6 = 118
+    assert_eq!(trace_stats.avg_duration_ms, 118);
+    // exec 失败 1 步（工具总步数 ≥2 且 errors>0）→ retry_patterns 命中
     assert!(!trace_stats.retry_patterns.is_empty());
+    assert_eq!(trace_stats.retry_patterns[0].tool_name, "exec");
+    assert_eq!(trace_stats.retry_patterns[0].error_count, 1);
+    assert!((trace_stats.retry_patterns[0].success_rate - 0.5).abs() < 1e-9);
 }
 
 #[test]
 fn test_analyze_traces_with_learning_cycle() {
     let reflector = Reflector::new();
-    let experiences = vec![
-        make_collected("tool_a", "input", true, 100),
-        make_collected("tool_b", "input", true, 200),
-    ];
+    let traces = vec![make_conversation_trace(
+        1,
+        &[("tool_a", true, 100), ("tool_b", true, 200)],
+    )];
 
     let cycle = nemesis_types::forge::LearningCycle {
         id: "lc-123".to_string(),
@@ -148,7 +185,7 @@ fn test_analyze_traces_with_learning_cycle() {
         status: nemesis_types::forge::CycleStatus::Completed,
     };
 
-    let trace_stats = reflector.analyze_traces(&experiences, Some(&cycle));
+    let trace_stats = reflector.analyze_traces(&traces, Some(&cycle));
     assert_eq!(
         trace_stats.signal_summary.get("learning_patterns_found"),
         Some(&3)
@@ -167,7 +204,8 @@ fn test_reflect_full_cycle() {
         make_collected("tool_b", "input2", false, 200),
     ];
 
-    let report = reflector.reflect(&experiences, None, "today", "all");
+    let traces = vec![make_conversation_trace(1, &[("tool_a", true, 100)])];
+    let report = reflector.reflect(&experiences, &traces, None, "today", "all");
     assert_eq!(report.period, "today");
     assert_eq!(report.focus, "all");
     assert!(report.stats.total_records > 0);
@@ -177,7 +215,7 @@ fn test_reflect_full_cycle() {
 #[test]
 fn test_reflect_empty() {
     let reflector = Reflector::new();
-    let report = reflector.reflect(&[], None, "week", "skill");
+    let report = reflector.reflect(&[], &[], None, "week", "skill");
     assert_eq!(report.stats.total_records, 0);
     assert!(report.trace_stats.is_none());
 }
@@ -243,6 +281,7 @@ fn test_write_report() {
         llm_insights: None,
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
 
     let path = reflector.write_report(&report).unwrap();
@@ -271,6 +310,7 @@ fn test_write_report_no_dir_configured() {
         llm_insights: None,
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let result = reflector.write_report(&report);
     assert!(result.is_err());
@@ -528,7 +568,7 @@ fn test_reflect_with_learning_cycle() {
         actions_taken: 2,
         status: nemesis_types::forge::CycleStatus::Completed,
     };
-    let report = reflector.reflect(&experiences, Some(&cycle), "today", "all");
+    let report = reflector.reflect(&experiences, &[], Some(&cycle), "today", "all");
     assert!(report.learning_cycle.is_some());
     assert_eq!(report.learning_cycle.unwrap().patterns_found, 5);
 }
@@ -540,17 +580,20 @@ fn test_reflect_with_trace_stats() {
         make_collected("tool_a", "input", true, 100),
         make_collected("tool_b", "input", true, 200),
     ];
-    let report = reflector.reflect(&experiences, None, "week", "all");
+    let traces = vec![make_conversation_trace(2, &[("tool_a", true, 100)])];
+    let report = reflector.reflect(&experiences, &traces, None, "week", "all");
     assert!(report.trace_stats.is_some());
     let ts = report.trace_stats.unwrap();
     assert!(ts.total_traces > 0);
+    // A1 真指标：learning_enabled 默认 None（由调用方按运行时旗标回填）
+    assert!(report.learning_enabled.is_none());
 }
 
 #[test]
 fn test_reflect_report_structure() {
     let reflector = Reflector::new();
     let experiences = vec![make_collected("tool", "input", true, 100)];
-    let report = reflector.reflect(&experiences, None, "today", "all");
+    let report = reflector.reflect(&experiences, &[], None, "today", "all");
     assert!(!report.date.is_empty());
     assert_eq!(report.period, "today");
     assert_eq!(report.focus, "all");
@@ -568,29 +611,19 @@ fn test_analyze_traces_empty() {
 #[test]
 fn test_analyze_traces_multiple_sessions() {
     let reflector = Reflector::new();
-    // Create experiences across multiple sessions
-    let mut experiences = Vec::new();
-    for i in 0..3 {
-        experiences.push(Experience {
-            id: format!("exp-{}", i),
-            tool_name: "tool".into(),
-            input_summary: "input".into(),
-            output_summary: "ok".into(),
-            success: true,
-            duration_ms: 100 * (i as u64 + 1),
-            timestamp: "2026-04-29T00:00:00Z".into(),
-            session_key: format!("session-{}", i),
-        });
-    }
-    let ces: Vec<CollectedExperience> = experiences
-        .into_iter()
-        .map(|e| CollectedExperience {
-            dedup_hash: Collector::dedup_hash(&e.tool_name, &serde_json::json!({})),
-            experience: e,
-        })
-        .collect();
-    let trace_stats = reflector.analyze_traces(&ces, None);
+    // A1 缺陷整改批次：analyze_traces 消费真轨迹——3 条轨迹 = 3 会话。
+    // 其中 1 条为旧轨迹（rounds=0，未发 llm_turn）→ eligible 只算 2 条，
+    // traces_with_rounds 差值诚实反映。
+    let traces = vec![
+        make_conversation_trace(1, &[("tool_a", true, 100)]),
+        make_conversation_trace(2, &[("tool_a", true, 100), ("tool_b", true, 100)]),
+        make_conversation_trace(0, &[("tool_c", true, 50)]),
+    ];
+    let trace_stats = reflector.analyze_traces(&traces, None);
     assert_eq!(trace_stats.total_traces, 3);
+    assert_eq!(trace_stats.traces_with_rounds, 2);
+    // eligible 均值：(1 + 2) / 2 = 1.5
+    assert!((trace_stats.avg_rounds - 1.5).abs() < 1e-9);
 }
 
 #[test]
@@ -622,6 +655,7 @@ fn test_write_report_with_llm_insights() {
         llm_insights: Some("AI detected efficiency issues".into()),
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -641,14 +675,16 @@ fn test_write_report_with_trace_stats() {
         llm_insights: None,
         trace_stats: Some(TraceStats {
             total_traces: 10,
+            traces_with_rounds: 10,
             avg_rounds: 5.0,
+            avg_tool_calls_per_round: 3.0,
             avg_duration_ms: 500,
-            efficiency_score: 0.75,
             tool_chain_patterns: vec![],
             retry_patterns: vec![],
             signal_summary: HashMap::new(),
         }),
         learning_cycle: None,
+        learning_enabled: None,
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -757,9 +793,11 @@ fn test_reflection_stats_default() {
 fn test_trace_stats_default() {
     let stats = TraceStats::default();
     assert_eq!(stats.total_traces, 0);
+    // A1 真指标缺省态：eligible=0，效率均值为 0 而非假分
+    assert_eq!(stats.traces_with_rounds, 0);
     assert_eq!(stats.avg_rounds, 0.0);
+    assert_eq!(stats.avg_tool_calls_per_round, 0.0);
     assert_eq!(stats.avg_duration_ms, 0);
-    assert_eq!(stats.efficiency_score, 0.0);
     assert!(stats.tool_chain_patterns.is_empty());
     assert!(stats.retry_patterns.is_empty());
     assert!(stats.signal_summary.is_empty());
@@ -925,7 +963,7 @@ fn test_set_reflections_dir() {
 #[test]
 fn test_with_cluster_and_dir() {
     let reflector = Reflector::with_cluster_and_dir(PathBuf::from("/tmp/test"));
-    let report = reflector.reflect(&[], None, "today", "all");
+    let report = reflector.reflect(&[], &[], None, "today", "all");
     assert_eq!(report.period, "today");
 }
 
@@ -1009,67 +1047,42 @@ fn test_generate_reflection_below_80_percent() {
 #[test]
 fn test_analyze_traces_with_tool_chains() {
     let reflector = Reflector::new();
-    let mut experiences = Vec::new();
-    // Create enough for a chain pattern (3+ tools in sequence)
-    for i in 0..6 {
-        experiences.push(Experience {
-            id: format!("exp-{}", i),
-            tool_name: format!("tool_{}", i % 3),
-            input_summary: "input".into(),
-            output_summary: "ok".into(),
-            success: true,
-            duration_ms: 100,
-            timestamp: "2026-04-29T00:00:00Z".into(),
-            session_key: "same-session".into(),
-        });
-    }
-    let ces: Vec<CollectedExperience> = experiences
-        .into_iter()
-        .map(|e| CollectedExperience {
-            dedup_hash: Collector::dedup_hash(&e.tool_name, &serde_json::json!({})),
-            experience: e,
-        })
-        .collect();
-    let trace_stats = reflector.analyze_traces(&ces, None);
-    assert_eq!(trace_stats.total_traces, 1); // all same session
+    // 6 步连续轨迹（tool_0→tool_1→tool_2 循环）→ 3 连续步滑窗产出链模式
+    let traces = vec![make_conversation_trace(
+        2,
+        &[
+            ("tool_0", true, 100),
+            ("tool_1", true, 100),
+            ("tool_2", true, 100),
+            ("tool_0", true, 100),
+            ("tool_1", true, 100),
+            ("tool_2", true, 100),
+        ],
+    )];
+    let trace_stats = reflector.analyze_traces(&traces, None);
+    assert_eq!(trace_stats.total_traces, 1);
+    assert!(!trace_stats.tool_chain_patterns.is_empty());
+    assert!(
+        trace_stats
+            .tool_chain_patterns
+            .iter()
+            .any(|c| c.chain == "tool_0->tool_1->tool_2")
+    );
 }
 
 #[test]
 fn test_analyze_traces_with_retry_patterns() {
     let reflector = Reflector::new();
-    // 2 calls, 1 error -> retry pattern
-    let experiences = vec![
-        Experience {
-            id: "e1".into(),
-            tool_name: "retry_tool".into(),
-            input_summary: "input".into(),
-            output_summary: "fail".into(),
-            success: false,
-            duration_ms: 100,
-            timestamp: "2026-04-29T00:00:00Z".into(),
-            session_key: "session-1".into(),
-        },
-        Experience {
-            id: "e2".into(),
-            tool_name: "retry_tool".into(),
-            input_summary: "input".into(),
-            output_summary: "ok".into(),
-            success: true,
-            duration_ms: 100,
-            timestamp: "2026-04-29T00:00:00Z".into(),
-            session_key: "session-1".into(),
-        },
-    ];
-    let ces: Vec<CollectedExperience> = experiences
-        .into_iter()
-        .map(|e| CollectedExperience {
-            dedup_hash: Collector::dedup_hash(&e.tool_name, &serde_json::json!({})),
-            experience: e,
-        })
-        .collect();
-    let trace_stats = reflector.analyze_traces(&ces, None);
+    // 同一轨迹内 2 步同工具、1 失败 → retry pattern（total≥2 且 errors>0）
+    let traces = vec![make_conversation_trace(
+        1,
+        &[("retry_tool", false, 100), ("retry_tool", true, 100)],
+    )];
+    let trace_stats = reflector.analyze_traces(&traces, None);
     assert_eq!(trace_stats.retry_patterns.len(), 1);
     assert_eq!(trace_stats.retry_patterns[0].tool_name, "retry_tool");
+    assert_eq!(trace_stats.retry_patterns[0].error_count, 1);
+    assert!((trace_stats.retry_patterns[0].success_rate - 0.5).abs() < 1e-9);
 }
 
 #[test]
@@ -1097,6 +1110,7 @@ fn test_write_report_with_low_success_patterns() {
         llm_insights: None,
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1129,6 +1143,7 @@ fn test_write_report_with_top_patterns() {
         llm_insights: None,
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1215,59 +1230,85 @@ fn test_analyze_traces_coverage_empty() {
 #[test]
 fn test_analyze_traces_coverage_single() {
     let reflector = Reflector::new();
-    let trace = vec![make_collected("tool_a", "x", true, 100)];
-    let stats = reflector.analyze_traces(&trace, None);
+    let traces = vec![make_conversation_trace(1, &[("tool_a", true, 100)])];
+    let stats = reflector.analyze_traces(&traces, None);
     assert_eq!(stats.total_traces, 1);
     assert_eq!(stats.avg_duration_ms, 100);
+    assert_eq!(stats.traces_with_rounds, 1);
 }
 
 #[test]
 fn test_analyze_traces_coverage_multiple() {
     let reflector = Reflector::new();
     let traces = vec![
-        make_collected("tool_a", "x", true, 100),
-        make_collected("tool_b", "y", true, 200),
-        make_collected("tool_c", "z", false, 300),
+        make_conversation_trace(1, &[("tool_a", true, 100)]),
+        make_conversation_trace(1, &[("tool_b", true, 200)]),
+        make_conversation_trace(1, &[("tool_c", false, 300)]),
     ];
     let stats = reflector.analyze_traces(&traces, None);
-    // total_traces counts unique session_keys, all are "sess-test"
-    assert_eq!(stats.total_traces, 1);
-    assert_eq!(stats.avg_duration_ms, 200); // (100+200+300)/3
+    assert_eq!(stats.total_traces, 3);
+    // 步级时长池化：(100+200+300)/3
+    assert_eq!(stats.avg_duration_ms, 200);
+    // tool_c 失败 1 步（总步数 1 < 2 → 不入 retry_patterns；
+    // 该闸在 1250 处 retries 用例专门验证）
+    assert!(stats.retry_patterns.is_empty());
 }
 
 #[test]
 fn test_analyze_traces_coverage_retries() {
     let reflector = Reflector::new();
-    let traces = vec![
-        make_collected("tool_a", "x", false, 100),
-        make_collected("tool_a", "x", false, 100),
-        make_collected("tool_a", "x", true, 100),
-    ];
+    let traces = vec![make_conversation_trace(
+        1,
+        &[
+            ("tool_a", false, 100),
+            ("tool_a", false, 100),
+            ("tool_a", true, 100),
+        ],
+    )];
     let stats = reflector.analyze_traces(&traces, None);
-    assert!(!stats.retry_patterns.is_empty());
+    assert_eq!(stats.retry_patterns.len(), 1);
+    assert_eq!(stats.retry_patterns[0].tool_name, "tool_a");
+    // errors=2 / total=3 → success_rate 1/3
+    assert_eq!(stats.retry_patterns[0].error_count, 2);
+    assert!((stats.retry_patterns[0].success_rate - 1.0 / 3.0).abs() < 1e-9);
 }
 
 #[test]
 fn test_analyze_traces_coverage_chains() {
     let reflector = Reflector::new();
-    let mut traces: Vec<CollectedExperience> = vec![];
-    for _ in 0..5 {
-        traces.push(make_collected("read", "x", true, 50));
-        traces.push(make_collected("write", "x", true, 50));
-    }
+    // 3 连续步滑窗：单轨迹内 read→write→read→write→read 产出链模式
+    let traces = vec![make_conversation_trace(
+        3,
+        &[
+            ("read", true, 50),
+            ("write", true, 50),
+            ("read", true, 50),
+            ("write", true, 50),
+            ("read", true, 50),
+        ],
+    )];
     let stats = reflector.analyze_traces(&traces, None);
     assert!(stats.total_traces > 0);
+    assert!(stats.traces_with_rounds > 0);
+    assert!(!stats.tool_chain_patterns.is_empty());
+    // 链型 avg_rounds = 该轨迹真实 llm_turn 数（A2：不再伪造 count）
+    assert!((stats.tool_chain_patterns[0].avg_rounds - 3.0).abs() < 1e-9);
+    // 全 ok 窗口 → success_rate 1.0
+    assert!((stats.tool_chain_patterns[0].success_rate - 1.0).abs() < 1e-9);
 }
 
 #[test]
 fn test_analyze_traces_coverage_low_freq() {
     let reflector = Reflector::new();
+    // 短轨迹（<3 步）不进链滑窗；但 trace 计数与 retry 闸照常工作
     let traces = vec![
-        make_collected("a", "x", true, 50),
-        make_collected("b", "x", true, 50),
+        make_conversation_trace(1, &[("a", true, 50)]),
+        make_conversation_trace(1, &[("b", false, 50), ("b", true, 50)]),
     ];
     let stats = reflector.analyze_traces(&traces, None);
-    assert!(stats.total_traces > 0);
+    assert_eq!(stats.total_traces, 2);
+    assert!(stats.tool_chain_patterns.is_empty());
+    assert_eq!(stats.retry_patterns.len(), 1);
 }
 
 #[test]
@@ -1294,6 +1335,7 @@ fn test_write_report_with_tool_frequency() {
         llm_insights: None,
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let path = reflector.write_report(&report).unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
@@ -1384,7 +1426,7 @@ async fn test_reflect_with_llm_ok_provider_sets_insights() {
         make_collected("file_read", "b.txt", false, 150),
     ];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
         .await;
 
     let insights = report.llm_insights.expect("insights must be set on Ok");
@@ -1399,7 +1441,7 @@ async fn test_reflect_with_llm_error_provider_keeps_none() {
 
     let experiences = vec![make_collected("exec", "ls", true, 20)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
         .await;
 
     assert!(
@@ -1416,7 +1458,7 @@ async fn test_reflect_with_llm_no_provider_none() {
 
     let experiences = vec![make_collected("grep", "pattern", true, 10)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
         .await;
 
     assert!(report.llm_insights.is_none());
@@ -1443,7 +1485,7 @@ async fn test_s8_reflect_with_llm_ok_evaluates_tracing_fields() {
     reflector.set_provider(std::sync::Arc::new(ReflectorOkLLM));
     let experiences = vec![make_collected("file_read", "a.txt", true, 50)];
     let report = reflector
-        .reflect_with_llm(&experiences, &[], None, "today", "all", None)
+        .reflect_with_llm(&experiences, &[], &[], None, "today", "all", None)
         .await;
     assert!(report.llm_insights.is_some());
 }
@@ -1472,6 +1514,7 @@ async fn test_reflect_with_llm_passes_max_tokens_to_caller() {
     let report = reflector
         .reflect_with_llm(
             &experiences,
+            &[],
             &[],
             None,
             "today",
@@ -1634,4 +1677,39 @@ fn test_s8_cleanup_reports_locked_file_not_counted() {
     // Removal fails under the exclusive handle -> not counted as deleted.
     assert_eq!(reflector.cleanup_reports(30), 0);
     assert!(old_md.exists());
+}
+
+// A4（2026-11-14 缺陷整改批次）：Period 标签单一真相源——空数据 honest
+// "empty"；非空 = 条数 + 首末时间戳前 19 字符（三反思入口同源渲染）。
+#[test]
+fn test_compute_reflection_period() {
+    // 空 = honest empty
+    assert_eq!(Reflector::compute_reflection_period(&[]), "empty");
+
+    // 非空 = 最近 N 条 + 首末时间（timestamp 前 19 字符，秒粒度）
+    let mk = |ts: &str| CollectedExperience {
+        experience: Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: "t".into(),
+            input_summary: "i".into(),
+            output_summary: "o".into(),
+            success: true,
+            duration_ms: 10,
+            timestamp: ts.into(),
+            session_key: "s".into(),
+        },
+        dedup_hash: String::new(),
+    };
+    let exps = vec![
+        mk("2026-11-01T08:00:00Z+trailing"),
+        mk("2026-11-02T09:30:00Z"),
+        mk("2026-11-03T10:15:30Z"),
+    ];
+    let period = Reflector::compute_reflection_period(&exps);
+    assert_eq!(
+        period,
+        "最近 3 条：2026-11-01T08:00:00 ~ 2026-11-03T10:15:30"
+    );
+    // 旧硬编码形态零残留反向断言
+    assert_ne!(period, "today");
 }

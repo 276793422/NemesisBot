@@ -426,6 +426,23 @@ pub struct LearningConfig {
     /// ——低预算被 thinking 系模型烧穿、真机两稿全空），接线会重引该风险。
     #[serde(default = "default_learning_llm_budget")]
     pub llm_budget_tokens: u32,
+
+    /// success_template 建技能的频率闸（默认 5）。
+    ///
+    /// 决策表（缺陷整改批次 B2）：success_template 频率 ≥ 此值 →
+    /// create_skill，其余全部 → suggest_prompt。置信度不再是闸
+    /// （conversation 检测器的 success_template confidence 恒 1.0，
+    /// 频率过滤才是真闸）。
+    #[serde(default = "default_success_template_skill_threshold")]
+    pub success_template_skill_threshold: u32,
+
+    /// error_recovery 进入 suggest_prompt 的最低置信度（默认 0.2）。
+    ///
+    /// 决策表（缺陷整改批次 B2）：conf ≥ high_conf_threshold → create，
+    /// conf ≥ 此值 → suggest，低于此值 → 无动作（完整分区，
+    /// 旧 `_` 静默丢弃臂消灭）。
+    #[serde(default = "default_error_recovery_suggest_min")]
+    pub error_recovery_suggest_min: f64,
 }
 
 impl Default for LearningConfig {
@@ -441,8 +458,18 @@ impl Default for LearningConfig {
             degrade_threshold: default_degrade_threshold(),
             degradation_cooldown_days: default_degradation_cooldown(),
             llm_budget_tokens: default_learning_llm_budget(),
+            success_template_skill_threshold: default_success_template_skill_threshold(),
+            error_recovery_suggest_min: default_error_recovery_suggest_min(),
         }
     }
+}
+
+fn default_success_template_skill_threshold() -> u32 {
+    5
+}
+
+fn default_error_recovery_suggest_min() -> f64 {
+    0.2
 }
 
 fn default_min_freq() -> u32 {

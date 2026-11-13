@@ -82,8 +82,15 @@ impl ModuleHandler for ForgeHandler {
                 self.config_save(home, &data, ctx)
             }
             // S8：评审/反思走 aux 账本——data_store 穿线（None = 不落账）。
+            // A5：学习闭环状态权威源 = Forge 运行时旗标（热切后 config
+            // 快照会说谎）；实例缺席 = None，reflect 内回落 config 值。
             "reflect" => {
-                self.reflect(home, workspace, ctx.state.data_store.clone())
+                let learning_flag = ctx
+                    .state
+                    .forge
+                    .as_ref()
+                    .map(|forge| forge.is_learning_enabled());
+                self.reflect(home, workspace, learning_flag, ctx.state.data_store.clone())
                     .await
             }
             "test" => {
@@ -586,6 +593,7 @@ impl ForgeHandler {
         &self,
         home: &str,
         workspace: &str,
+        learning_flag: Option<bool>,
         data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
     ) -> Result<Option<serde_json::Value>, String> {
         let fd = forge_dir(workspace);
@@ -645,20 +653,46 @@ impl ForgeHandler {
         let _ = registry.load().await;
         let artifacts = registry.list(None, None);
 
+        // A1（缺陷整改批次 2026-11-14）：手动反思同样喂 TraceStore 真轨迹
+        //（与 run_reflection_cycle 同源）——Dashboard 手动反思报告的
+        // Trace Analysis 段不再拿 experiences 冒充或缺席。读失败 = 诚实
+        // 降级为空轨迹（报告无 Trace 段），不阻塞反思。
+        let traces = match nemesis_forge::trace_store::TraceStore::new(fd.join("traces"))
+            .read_all()
+            .await
+        {
+            Ok(events) => nemesis_forge::monitor::build_conversation_traces(&events),
+            Err(e) => {
+                tracing::warn!(error = %e, "[Forge] Failed to read traces for manual reflection");
+                Vec::new()
+            }
+        };
+
+        // A4（缺陷整改批次 2026-11-14）：period 标签与 run_reflection_cycle
+        // 同源（单一真相源 compute_reflection_period）——手动反思报告的
+        // Period 行反映实际数据窗口，不再硬编码 "today"。
+        let period = nemesis_forge::reflector::Reflector::compute_reflection_period(&experiences);
+
         let report = if llm_requested {
             reflector
                 .reflect_with_llm(
                     &experiences,
+                    &traces,
                     &artifacts,
                     None,
-                    "today",
+                    &period,
                     "all",
                     Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
                 )
                 .await
         } else {
-            reflector.reflect(&experiences, None, "today", "all")
+            reflector.reflect(&experiences, &traces, None, &period, "all")
         };
+        let mut report = report;
+        // 学习闭环状态入报告（与 run_reflection_cycle 同源）。权威源 =
+        // 运行时旗标（A5：热切后 config 快照会说谎）；Forge 实例缺席
+        //（子系统未装配）回落 config 值。
+        report.learning_enabled = Some(learning_flag.unwrap_or(forge_cfg.learning.enabled));
         let llm_insights = report.llm_insights.is_some();
 
         // Write report to disk

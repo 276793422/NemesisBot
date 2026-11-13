@@ -72,21 +72,32 @@ pub struct ActionOutcome {
 pub struct ConversationTrace {
     /// Trace start time (RFC 3339).
     pub start_time: String,
-    /// Total rounds of interaction.
+    /// Total rounds of interaction = llm_turn 事件数（缺陷整改批次
+    /// D2：旧实现按事件总数代理——tool_call 密集的会话轮数被灌水）。
+    /// 旧轨迹（无 llm_turn 事件，agent 未发）诚实为 0。
     pub total_rounds: u32,
-    /// Duration in milliseconds.
+    /// Duration in milliseconds (first→last event span).
     pub duration_ms: i64,
     /// Tool steps in the conversation.
     pub tool_steps: Vec<ToolStep>,
+    /// llm_turn 事件时间戳序列（D3 事件级 before/after 切分的轮数分母）。
+    pub round_ts: Vec<String>,
     /// Detected signals (empty = success).
     pub signals: Vec<String>,
 }
 
 /// A single tool step in a conversation trace.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ToolStep {
     /// Tool name used.
     pub tool_name: String,
+    /// Whether the step succeeded（D2 事件粒度 success_rate 的分子来源；
+    /// 旧事件缺 ok 字段时诚实回 true——无从判定就不假造失败）。
+    pub ok: bool,
+    /// Step duration in milliseconds（D2 步级 avg_duration 的样本）。
+    pub duration_ms: i64,
+    /// Step timestamp (RFC 3339, D3 事件级切分的锚点)。
+    pub ts: String,
 }
 
 /// Monitors deployed artifacts and evaluates their effectiveness.
@@ -182,13 +193,10 @@ impl DeploymentMonitor {
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()
             .filter(|t| {
-                // 全量偏移感知解析（验证轮二）：旧实现 `[..19]`
-                // 截断后硬贴 "Z"，把本地墙上时间当 UTC——轨迹时刻被平移
-                // ±时区差（+08:00 用户窗口老边界放宽 8h，负时区收窄）。该
-                // 过滤器在轨迹臂接线前零生产调用方，接线后成为真实喂入者，
-                // 改为完整 RFC3339 解析；不可解析仍放行（沿旧语义）。
-                chrono::DateTime::parse_from_rfc3339(&t.start_time)
-                    .map(|dt| dt.with_timezone(&chrono::Local) >= since)
+                // 全量偏移感知解析（验证轮二）；缺陷整改批次 D1 收编到
+                // parse_ts 单一解析锚点。不可解析仍放行（沿旧语义）。
+                parse_ts(&t.start_time)
+                    .map(|dt| dt >= since)
                     .unwrap_or(true)
             })
             .collect();
@@ -250,6 +258,15 @@ impl DeploymentMonitor {
     ///
     /// Matches Go's `evaluateArtifact()`. Uses tool signature subsequence
     /// matching to find relevant traces, then computes before/after metrics.
+    ///
+    /// 缺陷整改批次 D1+D3：
+    /// - D1 分桶比较换解析序（`ts_before`：双侧可解析=时刻序，跨时区偏移
+    ///   正确；任一侧不可解析回落字符串序——不劣于旧实现）。
+    /// - D3 事件级切分——长命会话跨部署点不再整桶掺水。每条 matched
+    ///   trace 的 tool_steps / round_ts 按 `ts_before(事件 ts, deploy_time)`
+    ///   拆 ≤2 条子轨迹；子轨迹非空 = 有步或有轮（一侧无事件不计样本，
+    ///   不再让「整条轨迹挂 before 名下」稀释 after 指标）。avg_rounds
+    ///   在子轨迹上的真值 = 该桶 round_ts 条数（llm_turn 事件计数）。
     pub fn evaluate_artifact(
         &self,
         artifact: &Artifact,
@@ -262,17 +279,58 @@ impl DeploymentMonitor {
             .as_deref()
             .unwrap_or(artifact.created_at.as_str());
 
-        let mut before_traces: Vec<&ConversationTrace> = Vec::new();
-        let mut after_traces: Vec<&ConversationTrace> = Vec::new();
+        let mut before_traces: Vec<ConversationTrace> = Vec::new();
+        let mut after_traces: Vec<ConversationTrace> = Vec::new();
 
         for t in traces {
             if !matches_tool_signature(t, &artifact.tool_signature) {
                 continue;
             }
-            if t.start_time.as_str() < deploy_time {
-                before_traces.push(t);
-            } else {
-                after_traces.push(t);
+            let before_steps: Vec<ToolStep> = t
+                .tool_steps
+                .iter()
+                .filter(|s| ts_before(&s.ts, deploy_time))
+                .cloned()
+                .collect();
+            let before_rounds: Vec<String> = t
+                .round_ts
+                .iter()
+                .filter(|ts| ts_before(ts, deploy_time))
+                .cloned()
+                .collect();
+            // 双侧构造：非空侧（有步或有轮）才成样本；空侧丢弃。
+            // 子轨迹 start_time 保留母轨迹值（仅描述性字段，不参与计算）；
+            // signals/duration_ms 是轨迹级旧度量残留，事件级指标不消费。
+            for (steps, rounds, bucket) in [
+                (
+                    before_steps,
+                    before_rounds,
+                    &mut before_traces as &mut Vec<ConversationTrace>,
+                ),
+                (
+                    t.tool_steps
+                        .iter()
+                        .filter(|s| !ts_before(&s.ts, deploy_time))
+                        .cloned()
+                        .collect::<Vec<ToolStep>>(),
+                    t.round_ts
+                        .iter()
+                        .filter(|ts| !ts_before(ts, deploy_time))
+                        .cloned()
+                        .collect::<Vec<String>>(),
+                    &mut after_traces,
+                ),
+            ] {
+                if !steps.is_empty() || !rounds.is_empty() {
+                    bucket.push(ConversationTrace {
+                        start_time: t.start_time.clone(),
+                        total_rounds: rounds.len() as u32,
+                        duration_ms: 0,
+                        tool_steps: steps,
+                        round_ts: rounds,
+                        signals: Vec::new(),
+                    });
+                }
             }
         }
 
@@ -282,12 +340,15 @@ impl DeploymentMonitor {
             self.config.learning.min_outcome_samples as usize
         };
 
-        if after_traces.len() < min_samples {
+        let before_refs: Vec<&ConversationTrace> = before_traces.iter().collect();
+        let after_refs: Vec<&ConversationTrace> = after_traces.iter().collect();
+
+        if after_refs.len() < min_samples {
             return Some(ActionOutcome {
                 artifact_id: artifact.id.clone(),
                 measured_at: chrono::Local::now().to_rfc3339(),
-                sample_size: after_traces.len(),
-                sample_size_before: before_traces.len(),
+                sample_size: after_refs.len(),
+                sample_size_before: before_refs.len(),
                 rounds_before_avg: 0.0,
                 rounds_after_avg: 0.0,
                 success_before: 0.0,
@@ -300,12 +361,12 @@ impl DeploymentMonitor {
         }
 
         // Calculate metrics
-        let before_rounds = avg_rounds(&before_traces);
-        let after_rounds = avg_rounds(&after_traces);
-        let before_success = success_rate(&before_traces);
-        let after_success = success_rate(&after_traces);
-        let before_dur = avg_duration(&before_traces);
-        let after_dur = avg_duration(&after_traces);
+        let before_rounds = avg_rounds(&before_refs);
+        let after_rounds = avg_rounds(&after_refs);
+        let before_success = success_rate(&before_refs);
+        let after_success = success_rate(&after_refs);
+        let before_dur = avg_duration(&before_refs);
+        let after_dur = avg_duration(&after_refs);
 
         // Normalized improvement score: 0.4*rounds + 0.4*success + 0.2*duration
         let norm_rounds = normalize(before_rounds, after_rounds);
@@ -319,8 +380,8 @@ impl DeploymentMonitor {
         Some(ActionOutcome {
             artifact_id: artifact.id.clone(),
             measured_at: chrono::Local::now().to_rfc3339(),
-            sample_size: after_traces.len(),
-            sample_size_before: before_traces.len(),
+            sample_size: after_refs.len(),
+            sample_size_before: before_refs.len(),
             rounds_before_avg: before_rounds,
             rounds_after_avg: after_rounds,
             success_before: before_success,
@@ -534,10 +595,13 @@ impl DeploymentMonitor {
 /// Build conversation traces from raw trace events (audit -,).
 ///
 /// Groups events by `session_key` (insertion order preserved), maps
-/// `tool_call` events to tool steps, and emits a `tool_error` signal for
-/// failed tool calls (`data.ok == false`). `total_rounds` is approximated by
-/// the event count per session; `duration_ms` is last-minus-first event
-/// timestamp (unparseable timestamps degrade to 0). Pure function — no I/O.
+/// `tool_call` events to tool steps (携带 ok/duration_ms/ts——D2 事件粒度
+/// 度量的原始样本), and emits a `tool_error` signal for failed tool calls
+/// (`data.ok == false`). `total_rounds` counts **llm_turn** events only
+/// （缺陷整改批次 D2：旧实现按事件总数代理——tool_call 密集的会话轮数被
+/// 灌水；llm_turn 事件由 agent loop 每次 LLM 响应落定时发射，旧轨迹无此
+/// 事件则诚实为 0）; `duration_ms` is last-minus-first event timestamp
+/// (unparseable timestamps degrade to 0). Pure function — no I/O.
 pub fn build_conversation_traces(events: &[crate::trace::TraceEvent]) -> Vec<ConversationTrace> {
     use std::collections::HashMap;
 
@@ -552,11 +616,14 @@ pub fn build_conversation_traces(events: &[crate::trace::TraceEvent]) -> Vec<Con
                 total_rounds: 0,
                 duration_ms: 0,
                 tool_steps: Vec::new(),
+                round_ts: Vec::new(),
                 signals: Vec::new(),
             }
         });
-        trace.total_rounds += 1;
-        if event.event_type == "tool_call" {
+        if event.event_type == "llm_turn" {
+            trace.total_rounds += 1;
+            trace.round_ts.push(event.timestamp.clone());
+        } else if event.event_type == "tool_call" {
             let tool = event
                 .data
                 .get("tool")
@@ -568,11 +635,21 @@ pub fn build_conversation_traces(events: &[crate::trace::TraceEvent]) -> Vec<Con
                 .get("ok")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
+            let duration_ms = event
+                .data
+                .get("duration_ms")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             if !ok {
                 trace.signals.push("tool_error".into());
             }
             if !tool.is_empty() {
-                trace.tool_steps.push(ToolStep { tool_name: tool });
+                trace.tool_steps.push(ToolStep {
+                    tool_name: tool,
+                    ok,
+                    duration_ms,
+                    ts: event.timestamp.clone(),
+                });
             }
         }
     }
@@ -599,6 +676,27 @@ pub fn build_conversation_traces(events: &[crate::trace::TraceEvent]) -> Vec<Con
         .into_iter()
         .filter_map(|key| grouped.remove(&key))
         .collect()
+}
+
+/// Parse an RFC 3339 timestamp（缺陷整改批次 D1 单一解析锚点）。
+///
+/// Returns `None` when unparseable — callers decide the honest fallback
+/// （窗口过滤放行 / 分桶回落字符串序），不再各自手写 parse。
+fn parse_ts(s: &str) -> Option<chrono::DateTime<chrono::Local>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Local))
+}
+
+/// 事件/步时间戳与分界点的比较（D1/D3 共用）。
+///
+/// 双侧可解析 = 时刻序（跨时区偏移正确）；任一侧解析失败 = 回落字符串序
+/// （同偏移写入的时间戳字符串序 == 时刻序，正确性不劣于旧实现）。
+fn ts_before(stamp: &str, boundary: &str) -> bool {
+    match (parse_ts(stamp), parse_ts(boundary)) {
+        (Some(a), Some(b)) => a < b,
+        _ => stamp < boundary,
+    }
 }
 
 /// Check if a trace's tool steps contain the given signature as a subsequence.
@@ -633,7 +731,8 @@ pub fn normalize(before: f64, after: f64) -> f64 {
 
 /// Calculate average total rounds across traces.
 ///
-/// Matches Go's `avgRounds()`.
+/// Matches Go's `avgRounds()`. total_rounds = llm_turn 计数（D2）——
+/// 旧轨迹无 llm_turn 事件时贡献 0（诚实无轮数，不拿 tool_call 数灌水）。
 pub fn avg_rounds(traces: &[&ConversationTrace]) -> f64 {
     if traces.is_empty() {
         return 0.0;
@@ -642,26 +741,41 @@ pub fn avg_rounds(traces: &[&ConversationTrace]) -> f64 {
     total as f64 / traces.len() as f64
 }
 
-/// Calculate success rate (traces with no signals = success).
+/// Calculate success rate at **event granularity**（缺陷整改批次 D2）.
 ///
-/// Matches Go's `successRate()`.
+/// 旧实现按轨迹级「无 signals = 成功」——一条轨迹 20 步成功 + 1 步失败
+/// 会被整轨判负。现按步池化：sum(ok steps) / sum(all steps)；零步轨迹
+/// （纯 LLM 对话）不进分母——无工具步 = 无失败证据（全空输入返回 1.0）。
 pub fn success_rate(traces: &[&ConversationTrace]) -> f64 {
-    if traces.is_empty() {
-        return 0.0;
+    let total_steps: usize = traces.iter().map(|t| t.tool_steps.len()).sum();
+    if total_steps == 0 {
+        return 1.0;
     }
-    let successes = traces.iter().filter(|t| t.signals.is_empty()).count();
-    successes as f64 / traces.len() as f64
+    let ok_steps: usize = traces
+        .iter()
+        .flat_map(|t| t.tool_steps.iter())
+        .filter(|s| s.ok)
+        .count();
+    ok_steps as f64 / total_steps as f64
 }
 
-/// Calculate average duration across traces.
+/// Calculate average duration at **step granularity**（缺陷整改批次 D2）.
 ///
-/// Matches Go's `avgDuration()`.
+/// 旧实现取轨迹级 first→last span 均值——长会话单次工具失败把整轨时长
+/// 拉爆。现为步级 duration_ms 池化均值；零步轨迹不进分母。
 pub fn avg_duration(traces: &[&ConversationTrace]) -> i64 {
-    if traces.is_empty() {
+    let mut total_ms: i64 = 0;
+    let mut total_steps: usize = 0;
+    for t in traces {
+        for s in &t.tool_steps {
+            total_ms += s.duration_ms;
+            total_steps += 1;
+        }
+    }
+    if total_steps == 0 {
         return 0;
     }
-    let total: i64 = traces.iter().map(|t| t.duration_ms).sum();
-    total / traces.len() as i64
+    total_ms / total_steps as i64
 }
 
 #[cfg(test)]
