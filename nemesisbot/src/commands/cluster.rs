@@ -1680,6 +1680,13 @@ fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
 fn run_firewall(action: FirewallAction) -> Result<()> {
     match action {
         FirewallAction::Add { udp_port, tcp_port } => {
+            // 端口 0 在命令层显式拒绝：此前「非法端口 fail-fast」仰赖
+            // netsh/ufw 的参数校验，2026-11 runner 镜像更新后 netsh 放行
+            // localport=0（真写进 allow 规则并返回成功）——fail-fast
+            // 契约不能依赖外部工具版本 whim，命令层先校验，全平台一致。
+            if udp_port == 0 || tcp_port == 0 {
+                anyhow::bail!("无效端口（0）：firewall add 需要具体端口号");
+            }
             println!("Adding firewall rules for cluster...");
             println!("  UDP port: {}", udp_port);
             println!("  TCP port: {}", tcp_port);
