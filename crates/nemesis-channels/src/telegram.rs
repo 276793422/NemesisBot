@@ -1063,7 +1063,15 @@ impl TelegramChannel {
         let path_str = local_path.to_string_lossy().to_string();
 
         // Step 3: Call transcriber
-        match transcriber.transcribe(&path_str).await {
+        let transcribed = transcriber.transcribe(&path_str).await;
+        // 转写完成即删临时文件——Ok/Err 两臂统一（finally 语义）。
+        // BUG-20261113-158：此前两臂都不删，每条语音消息在系统级
+        // temp（std::env::temp_dir 不随 workspace 清理）永久残留一个
+        // ogg（几百 KB~几 MB）。转写器读路径成功臂读完即无用，失败臂
+        // 同样不应把语音内容残留磁盘。
+        let _ = std::fs::remove_file(&local_path);
+
+        match transcribed {
             Ok(text) => {
                 info!("[TelegramChannel] voice transcribed successfully");
                 Some(format!("[voice transcription: {text}]"))

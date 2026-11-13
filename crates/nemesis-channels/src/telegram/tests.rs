@@ -1094,3 +1094,76 @@ async fn test_polling_loop_replaces_and_aborts_previous_handle() {
     // 收尾：stop 兜底 abort 新任务。
     ch.stop().await.unwrap();
 }
+
+// -----------------------------------------------------------------------
+// BUG-20261113-158 回归锁：语音转写临时 ogg 必须在转写后删除（Ok/Err 两臂
+// finally 语义）。此前两臂都不删——每条语音消息在系统级 temp
+// （std::env::temp_dir/nemesisbot_telegram_voice，不随 workspace 清理）永久
+// 残留一个 ogg。mock 服务器两连接 = getFile + 文件下载；MockTranscriber
+// 不真读文件（纯返回），落盘字节内容无关紧要。
+// -----------------------------------------------------------------------
+
+/// 转写成功臂：临时 ogg 删除。
+#[tokio::test]
+async fn t15_voice_transcribe_removes_temp_ogg_on_success() {
+    let file_id = "nb_t15_voice_ok";
+    let base = spawn_mock_telegram_api(b"fake-ogg-bytes".to_vec(), "123456:nb-t15-token");
+    let api = TelegramApi::new(&base, "123456:nb-t15-token");
+    let transcriber: Arc<dyn crate::base::VoiceTranscriber> = Arc::new(MockTranscriber {
+        available: true,
+        text: "transcribed".to_string(),
+        should_fail: false,
+    });
+    let client = reqwest::Client::new();
+
+    let result =
+        TelegramChannel::transcribe_voice(&Some(transcriber), Some(&client), Some(&api), file_id)
+            .await;
+    assert_eq!(
+        result.as_deref(),
+        Some("[voice transcription: transcribed]"),
+        "成功臂返回形态"
+    );
+
+    let leaked = std::env::temp_dir()
+        .join("nemesisbot_telegram_voice")
+        .join(format!("{file_id}.ogg"));
+    assert!(
+        !leaked.exists(),
+        "转写成功后临时 ogg 必须被删: {}",
+        leaked.display()
+    );
+}
+
+/// 转写失败臂：临时 ogg 同样删除（finally 语义两侧都锁——失败臂是泄漏
+/// 主路径：转写服务异常时每条语音仍落盘）。
+#[tokio::test]
+async fn t16_voice_transcribe_removes_temp_ogg_on_failure() {
+    let file_id = "nb_t16_voice_err";
+    let base = spawn_mock_telegram_api(b"fake-ogg-bytes".to_vec(), "123456:nb-t16-token");
+    let api = TelegramApi::new(&base, "123456:nb-t16-token");
+    let transcriber: Arc<dyn crate::base::VoiceTranscriber> = Arc::new(MockTranscriber {
+        available: true,
+        text: String::new(),
+        should_fail: true,
+    });
+    let client = reqwest::Client::new();
+
+    let result =
+        TelegramChannel::transcribe_voice(&Some(transcriber), Some(&client), Some(&api), file_id)
+            .await;
+    assert_eq!(
+        result.as_deref(),
+        Some("[voice (transcription failed)]"),
+        "失败臂返回形态"
+    );
+
+    let leaked = std::env::temp_dir()
+        .join("nemesisbot_telegram_voice")
+        .join(format!("{file_id}.ogg"));
+    assert!(
+        !leaked.exists(),
+        "转写失败后临时 ogg 同样必须被删: {}",
+        leaked.display()
+    );
+}
