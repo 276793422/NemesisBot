@@ -4303,7 +4303,14 @@ impl BoardStore {
         // （BUG-164）：与 list_issues 同源转义——旧实现 `%` 直接剥除
         // （含 `%` 的字面条目搜不到、`100%` 退化为 `100` 把 `100x` 也误
         // 命中），`_` 完全未处理（按单字符通配符解释）。
-        let needle = format!("%{}%", escape_like(query.trim().to_lowercase().as_str()));
+        // ASCII 折叠（BUG-20261113-160）：SQL 侧 `lower()` 只折叠 ASCII——
+        // 查询词此前用 Unicode 折叠（to_lowercase），全角/带音标大写被
+        // 查询侧折掉而存储侧原样，LIKE 永不命中（搜索漏结果）。折到
+        // ASCII 域与存储引擎对齐：ASCII 大小写不敏感保留，非 ASCII 精确。
+        let needle = format!(
+            "%{}%",
+            escape_like(query.trim().to_ascii_lowercase().as_str())
+        );
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
