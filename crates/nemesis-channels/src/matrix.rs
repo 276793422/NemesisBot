@@ -157,7 +157,7 @@ impl MatrixChannel {
             .map_err(|e| NemesisError::Channel(format!("matrix whoami failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "matrix whoami error: {body}"
             )));
@@ -190,7 +190,7 @@ impl MatrixChannel {
             .map_err(|e| NemesisError::Channel(format!("matrix initial sync failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "matrix initial sync error: {body}"
             )));
@@ -229,7 +229,7 @@ impl MatrixChannel {
             .map_err(|e| NemesisError::Channel(format!("matrix sync failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("matrix sync error: {body}")));
         }
 
@@ -272,7 +272,7 @@ impl MatrixChannel {
             .map_err(|e| NemesisError::Channel(format!("matrix send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("matrix send error: {body}")));
         }
 

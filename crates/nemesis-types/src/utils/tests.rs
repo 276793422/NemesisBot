@@ -435,3 +435,83 @@ fn test_split_message_every_chunk_within_budget() {
         assert!(c.chars().count() <= 30, "chunk len {}", c.chars().count());
     }
 }
+
+// --- split_message_utf16（Telegram / LINE 的 UTF-16 code unit 口径）---
+
+fn utf16_units(s: &str) -> usize {
+    s.chars().map(char::len_utf16).sum()
+}
+
+#[test]
+fn test_split_message_utf16_astral_every_chunk_within_budget() {
+    // BUG-20261113-166 回归锁：3000 个 🍎（标量 3000、UTF-16 units 6000）。
+    // 标量口径下 3000 ≤ 3500 会原样单块返回——6000 units 越过 Telegram
+    // 4096 硬限被整条拒收；UTF-16 口径必须拆块且逐块 ≤ 预算。
+    let s = "🍎".repeat(3000);
+    // 病灶钉死：标量 helper 对该内容不拆（单块 6000 units > 4096）。
+    let scalar_chunks = split_message(&s, 3500);
+    assert_eq!(scalar_chunks.len(), 1);
+    assert_eq!(utf16_units(&scalar_chunks[0]), 6000);
+    // 修复口径：拆成 2 块，逐块 ≤ 3500 units，无丢字。
+    let chunks = split_message_utf16(&s, 3500);
+    assert_eq!(chunks.len(), 2);
+    for c in &chunks {
+        assert!(utf16_units(c) <= 3500, "chunk units {}", utf16_units(c));
+    }
+    assert_eq!(chunks.concat(), s);
+}
+
+#[test]
+fn test_split_message_utf16_cjk_bmp_counts_one_unit() {
+    // BMP 常用 CJK 一字一 unit：3000 字 = 3000 units ≤ 3500，不拆。
+    // （LINE 文档「部分汉字多单位计」指的是 CJK 扩展 B+ 等 astral 字。）
+    let s = "你".repeat(3000);
+    assert_eq!(utf16_len(&s), 3000);
+    assert_eq!(split_message_utf16(&s, 3500), vec![s]);
+}
+
+#[test]
+fn test_split_message_utf16_prefers_newline_break() {
+    // 6 emoji(12) + \n(1) + abcdef(6) = 19 units，预算 14：\n 在窗口内
+    // （emoji×6+\n+a = 14 units 恰好装下），最后 \n 优先切。
+    let s = "🍎🍎🍎🍎🍎🍎\nabcdef";
+    assert_eq!(utf16_len(s), 19);
+    let chunks = split_message_utf16(s, 14);
+    assert_eq!(chunks, vec!["🍎🍎🍎🍎🍎🍎\n", "abcdef"]);
+}
+
+#[test]
+fn test_split_message_utf16_zero_budget_is_noop() {
+    assert_eq!(split_message_utf16("hello", 0), vec!["hello"]);
+}
+
+#[test]
+fn test_split_message_utf16_exact_budget_single_chunk() {
+    // 恰好等于预算：不拆。
+    let s = "🍎".repeat(1500); // 3000 units
+    assert_eq!(utf16_len(&s), 3000);
+    assert_eq!(split_message_utf16(&s, 3000), vec![s]);
+}
+
+#[test]
+fn test_split_message_utf16_budget_smaller_than_one_char_terminates() {
+    // 预算 1 连单个 emoji（2 units）都装不下：整字符让行保证前进，
+    // 不得死循环/panic；无丢字。
+    let s = "🍎🌍你好";
+    let chunks = split_message_utf16(s, 1);
+    assert_eq!(chunks.concat(), s);
+    assert!(chunks.iter().all(|c| !c.is_empty()));
+}
+
+#[test]
+fn test_split_message_utf16_mixed_content_every_chunk_within_budget() {
+    // 混合文本（emoji + CJK + ASCII + 换行 + 空格）多轮拆分：
+    // 逐块 units ≤ 预算、逐块 char boundary 安全、无丢字。
+    let s = "🍎段落一\nsecond 段 🌍 here\n第三段 continues 🍎\n".repeat(20);
+    let chunks = split_message_utf16(&s, 60);
+    assert!(chunks.len() > 1);
+    for c in &chunks {
+        assert!(utf16_units(c) <= 60, "chunk units {}", utf16_units(c));
+    }
+    assert_eq!(chunks.concat(), s);
+}

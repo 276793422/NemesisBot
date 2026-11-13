@@ -757,6 +757,7 @@ fn test_full_config_roundtrip() {
                 name: "Main Agent".to_string(),
                 ..Default::default()
             }],
+            experts: crate::ExpertsModeConfig::default(),
         },
         model_list: vec![ModelConfig {
             extra: Default::default(),
@@ -801,6 +802,39 @@ fn test_agents_roles_config_roundtrip_and_defaults() {
     assert_eq!(cfg.agents.roles.hidden, vec!["fork", "coordinator"]);
     let out: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(out.agents.roles.hidden, vec!["fork", "coordinator"]);
+}
+
+#[test]
+fn test_agents_experts_mode_defaults_and_roundtrip() {
+    // 缺段：agents.experts 全缺 = (false, true, false)——总开关默认关、
+    // 降级默认开、通知默认静默（serde default fn 单一真相源 + 手写
+    // Default 同源，BUG-20261107-014 纪律）。
+    let bare: Config = serde_json::from_str("{}").unwrap();
+    assert!(!bare.agents.experts.enabled);
+    assert!(bare.agents.experts.degrade);
+    assert!(!bare.agents.experts.notify);
+
+    // 部分键：只写 enabled=true，degrade 缺键仍走 default fn = true
+    // （不能被 typed 零值 false 覆盖——这是 default_experts_degrade 的
+    // 存在意义）。
+    let partial: Config =
+        serde_json::from_str(r#"{"agents":{"experts":{"enabled":true}}}"#).unwrap();
+    assert!(partial.agents.experts.enabled);
+    assert!(partial.agents.experts.degrade);
+    assert!(!partial.agents.experts.notify);
+
+    // 显式三键：typed 往返逐字段保留（save 不烤 false 进 degrade）。
+    let full: Config = serde_json::from_str(
+        r#"{"agents":{"experts":{"enabled":true,"degrade":false,"notify":true}}}"#,
+    )
+    .unwrap();
+    assert!(full.agents.experts.enabled);
+    assert!(!full.agents.experts.degrade);
+    assert!(full.agents.experts.notify);
+    let out: Config = serde_json::from_str(&serde_json::to_string(&full).unwrap()).unwrap();
+    assert!(out.agents.experts.enabled);
+    assert!(!out.agents.experts.degrade);
+    assert!(out.agents.experts.notify);
 }
 
 #[test]

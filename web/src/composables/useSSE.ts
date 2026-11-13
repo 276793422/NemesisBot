@@ -29,7 +29,10 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 帧（订阅存在 + 后端发布存在 + 白名单缺席 = 实时进度静默失效）。
 // M2（2026-10-27）：'system-alert' = 系统级降级告警（磁盘水位升档
 // disk_watermark + 关键写失败聚合 degraded_write），AppLayout 告警条消费。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert']
+// 2026-11-13：'expert-degraded' = 专家无匹配自动降级（spawn 点名不存在/
+// 停用 + degrade 策略 + notify 开），AppLayout toast 消费（voice-setup
+// 同款白名单坑——后端发布 + composable 订阅都在，白名单缺席 = 静默失效）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

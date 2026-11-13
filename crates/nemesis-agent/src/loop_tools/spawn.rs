@@ -74,6 +74,16 @@ pub fn detached_role_for_profile(profile: &str) -> Option<crate::prompt::Subagen
 /// 显式角色，闭包侧覆盖 `DetachedOpts.role`）。
 /// 子代理可见性：第 10 参 `parent_session_key` = 发起会话键（注册表
 /// 台账归属 + 后台续行回灌路由的信号；客户端手动 spawn 传 `""`）。
+/// （专家子代理）：第 11 参 `expert` = 专家 slug/显示名（`""` = 默认
+/// 子代理，现行行为逐字节不变）。非空 = 已过 SpawnTool 侧 resolver 预检
+/// （存在 + 启用 + 模式开关），闭包内再 resolve 一次取提示词/模型覆盖
+/// （磁盘真相两次读，专家目录个位数成本可忽略）：`DetachedOpts.system_prompt`
+/// 整段替换主人格、`role` 置 None、model 非空时 `model_swap`。
+/// （无匹配自动降级，2026-11-13）：第 12 参 `prompt` = 自拟专家系统提示词
+/// （`""` = 缺省）。非空且 `expert` 空 = ad-hoc 派发——默认子代理以该提示词
+/// 整体替换主人格（`agent_id=expert:ad-hoc`），降级二段式的第二跳（第一跳
+/// 点名吃降级指引后模型自拟提示词重调）。与 `expert` 互斥（SpawnTool 侧
+/// 校验），模式开关在 SpawnTool 侧闸（闭包不再验策略——单一裁决点）。
 pub type SpawnFn = Arc<
     dyn Fn(
             &str,
@@ -86,11 +96,93 @@ pub type SpawnFn = Arc<
             bool,
             &str,
             &str,
+            &str,
+            &str,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
         + Send
         + Sync,
 >;
+
+// ===========================================================================
+// 专家子代理（experts）——契约类型
+// ===========================================================================
+// crate 边界：这里只定义契约（名册/解析产物/闭包类型）；IO 与解析全在
+// bot 侧 experts_store，装配点把同一个 ExpertsHandle 注入 SpawnTool
+// （list/预检）与 spawn 闭包（run 执行），两条路径同源不漂移。
+
+/// 专家名册条目（`spawn action=list` 形态）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExpertRosterEntry {
+    pub slug: String,
+    pub name: String,
+    pub summary: String,
+    pub tags: Vec<String>,
+    pub enabled: bool,
+}
+
+/// 专家名册整体产物：条目 + 默认子代理显示名（名册尾部 default 行用）。
+#[derive(Debug, Clone)]
+pub struct ExpertsRoster {
+    pub experts: Vec<ExpertRosterEntry>,
+    pub default_name: String,
+}
+
+/// 专家派发产物（run 形态）：`prompt` 整段替换主人格（Swarm 裸提示词
+/// 通道）；`model` 非空 = 模型别名覆盖（空 = 继承主 Agent 模型）。
+#[derive(Debug, Clone)]
+pub struct ExpertDispatch {
+    pub slug: String,
+    pub name: String,
+    pub prompt: String,
+    pub model: String,
+}
+
+pub type ExpertsRosterFn = Arc<dyn Fn() -> ExpertsRoster + Send + Sync>;
+
+/// 专家解析器：key = slug 或显示名（不区分大小写回落匹配）。Err =
+/// 诚实错误（文案自带在册名册/停用说明，供模型自纠；由实现方组装）。
+pub type ExpertResolveFn = Arc<dyn Fn(&str) -> Result<ExpertDispatch, String> + Send + Sync>;
+
+/// 专家模式策略（2026-11-13 总开关 + 自动降级）。config `agents.experts`
+/// 段的契约镜像——实现方（bot 侧）每次调用现读 config.json 组装（
+/// fresh-read，运行中改键即时生效）；默认值与
+/// `nemesis_config::ExpertsModeConfig` 的 serde 缺省一致，由单测钉住。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpertsPolicy {
+    /// 专家模式总开关（默认 false，opt-in）。false = 点名 `expert`/`prompt`
+    /// 诚实拒绝（文案带开启指引）、`action=list` 照列 + 停用注记。
+    pub enabled: bool,
+    /// 无匹配专家自动降级（默认 true）。true = 点名不存在/停用回灌降级
+    /// 指引（模型自拟提示词带 `prompt` 重调，勿停车问用户）。
+    pub degrade: bool,
+    /// 降级时通知用户（默认 false = 静默）。
+    pub notify: bool,
+}
+
+impl Default for ExpertsPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            degrade: true,
+            notify: false,
+        }
+    }
+}
+
+/// 策略读取器（实现方注入；每次调用现读——fresh-read 惯例）。
+pub type ExpertsPolicyFn = Arc<dyn Fn() -> ExpertsPolicy + Send + Sync>;
+
+/// spawn 工具与 spawn 闭包共用的专家解析面（装配点单一注入面）。None
+/// （headless / 项目 loop / 测试未装配）= `action=list` 诚实空名册、
+/// `expert` 点名诚实报错——不假装有专家，也不假装没有 spawn。
+#[derive(Clone)]
+pub struct ExpertsHandle {
+    pub roster: ExpertsRosterFn,
+    pub resolve: ExpertResolveFn,
+    /// 模式策略读取器（2026-11-13 总开关 + 降级；每次调用现读）。
+    pub policy: ExpertsPolicyFn,
+}
 
 /// Spawn tool for creating sub-agents.
 ///
@@ -124,6 +216,14 @@ pub struct SpawnTool {
     /// Spawn 闭包槽（agent_factory 组装后 `set`；`None` 时 execute 诚实
     /// 报 not available——旧装配路径行为不回归）。
     spawn_slot: Arc<std::sync::OnceLock<SpawnFn>>,
+    /// 专家解析面（装配点注入；None = list 诚实空名册 / expert 点名诚实
+    /// 报错——见 [`ExpertsHandle`] 文档）。
+    experts: Option<ExpertsHandle>,
+    /// 降级通知事件槽（2026-11-13）：`agents.experts.notify=true` 时降级
+    /// 发生即发布 [`nemesis_types::agent::AgentEvent::ExpertDegraded`]（web
+    /// pump 转 SSE 全局广播 → 前端 toast）。None（headless/测试未注入）=
+    /// 无通知面。
+    event_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
 }
 
 impl SpawnTool {
@@ -152,7 +252,24 @@ impl SpawnTool {
             semaphore,
             invocation_depth: std::sync::atomic::AtomicUsize::new(0),
             spawn_slot,
+            experts: None,
+            event_tx: None,
         }
+    }
+
+    /// 注入专家解析面（装配点 builder；None 缺省 = 无专家子系统）。
+    pub fn with_experts(mut self, experts: ExpertsHandle) -> Self {
+        self.experts = Some(experts);
+        self
+    }
+
+    /// 注入降级通知事件槽（装配点 builder；None 缺省 = 无通知面）。
+    pub fn with_event_tx(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>,
+    ) -> Self {
+        self.event_tx = Some(tx);
+        self
     }
 
     /// Set the allowlist checker function.
@@ -175,7 +292,10 @@ impl SpawnTool {
 #[async_trait]
 impl Tool for SpawnTool {
     fn description(&self) -> String {
-        "Spawn a sub-agent to handle a task independently. The sub-agent runs with the same tools and governance as the main agent and returns its final answer.".to_string()
+        // 专家锚句是**静态**文本（专家名册永不进 schema/system prompt——
+        // 动态数据只在 action=list 工具结果里出现，专家增删改对 prompt
+        // cache 零冲击）。
+        "Spawn a sub-agent to handle a task independently. The sub-agent runs with the same tools and governance as the main agent and returns its final answer. You may first call with {\"action\": \"list\"} to enumerate hired experts (slug/name/summary/tags), then delegate by {\"expert\": \"<slug>\"} — the expert's own system prompt replaces the default persona for that task.".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -197,6 +317,19 @@ impl Tool for SpawnTool {
             "type": "object",
             "properties": {
                 "task": {"type": "string", "description": "Task description for the sub-agent"},
+                "action": {
+                    "type": "string",
+                    "enum": ["run", "list"],
+                    "description": "Action to perform (default \"run\"). \"run\" spawns the sub-agent for `task`; \"list\" returns the hired-expert roster (slug/name/summary/tags + default line) and ignores `task` — call it first when unsure which expert fits."
+                },
+                "expert": {
+                    "type": "string",
+                    "description": "Delegate this task to a hired expert (slug or display name; see action=list). The expert's own system prompt replaces the default persona and takes precedence over `role`; an optional per-expert model override applies. Omit for the default sub-agent."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Ad-hoc system prompt you write yourself for the sub-agent (mutually exclusive with `expert`). Primary use: auto-degrade fallback — when a requested expert is missing or disabled and the degrade policy is active, re-call with the SAME task plus this prompt carrying the specialist instructions that expert would have had; do not stop to ask the user. The sub-agent runs with this prompt replacing the default persona."
+                },
                 "context": {"type": "string", "description": "Additional context"},
                 "agent_id": {"type": "string", "description": "Optional sub-agent preset name (v1 informational only; defaults to \"default\")"},
                 "tools": {
@@ -292,6 +425,107 @@ impl Tool for SpawnTool {
             ));
         }
 
+        // 专家子代理（experts）：action 分叉 + expert 预检。list = 纯读
+        // 名册（不占信号量、不产生子代理台账、忽略 task/depth）；run 带
+        // expert = 先在本侧预检解析（存在 + 启用），错误不占信号量——
+        // 真正的提示词/模型消费在 spawn 闭包内再 resolve 一次（磁盘真相
+        // 两次读，专家目录个位数成本可忽略）。
+        let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("run");
+        if action != "run" && action != "list" {
+            return Err(format!(
+                "Unknown action '{}'. Valid values: \"run\" (default) or \"list\" (enumerate hired experts).",
+                action
+            ));
+        }
+        let expert = val
+            .get("expert")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        // 自拟提示词（2026-11-13 无匹配自动降级的第二跳；与 expert 互斥）。
+        let prompt = val
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if !expert.is_empty() && !prompt.is_empty() {
+            return Err(
+                "Pass either `expert` or `prompt`, not both — `expert` dispatches a hired expert; `prompt` installs your own ad-hoc system prompt (the auto-degrade second hop).".to_string(),
+            );
+        }
+        // 模式策略（2026-11-13 总开关 + 降级）：每次调用现读（fresh-read，
+        // 运行中改键即时生效）。handle 缺席 = Default（enabled=false——
+        // 下方 None 分支的诚实错误先于策略语义，不依赖此值）。
+        let policy = self
+            .experts
+            .as_ref()
+            .map(|h| (h.policy)())
+            .unwrap_or_default();
+        if action == "list" {
+            return Ok(match &self.experts {
+                Some(h) => {
+                    let roster_text = render_experts_roster(&(h.roster)());
+                    if policy.enabled {
+                        roster_text
+                    } else {
+                        format!(
+                            "NOTE: Expert mode is currently DISABLED (agents.experts.enabled=false). The roster below is for reference only — dispatching with `expert` or `prompt` is rejected until the mode is enabled (config.json or the Dashboard experts page).\n\n{roster_text}"
+                        )
+                    }
+                }
+                None => "No expert roster is configured in this deployment (experts are a main-loop feature). Spawning without `expert` still works with the default sub-agent.".to_string(),
+            });
+        }
+        if !expert.is_empty() {
+            let Some(h) = &self.experts else {
+                return Err(format!(
+                    "Experts are not configured in this deployment; omit `expert` to use the default sub-agent (requested: '{}').",
+                    expert
+                ));
+            };
+            if !policy.enabled {
+                return Err(format!(
+                    "Expert mode is disabled (agents.experts.enabled=false). Enable it in config.json (or the Dashboard experts page) and retry; or omit `expert` to use the default sub-agent (requested: '{}').",
+                    expert
+                ));
+            }
+            match (h.resolve)(expert) {
+                // 预检只消费校验结果（存在 + 启用），产物丢弃——真正的
+                // 提示词/模型解析在 spawn 闭包内做（单一消费点）。
+                Ok(_) => {}
+                Err(e) => {
+                    if policy.degrade {
+                        // 无匹配自动降级（2026-11-13）：回灌降级指引（模型
+                        // 自拟提示词二段重调，勿停车问用户）；notify=true 时
+                        // 发布降级事件（Dashboard toast）。false = 现行诚实
+                        // 拒绝行为字节不变（原始错误原样上抛）。
+                        if policy.notify {
+                            self.emit_degrade_notification(
+                                &context.session_key,
+                                &context.chat_id,
+                                expert,
+                                &e,
+                            );
+                        }
+                        return Err(degrade_guidance(&e));
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        if !prompt.is_empty() {
+            if self.experts.is_none() {
+                return Err(
+                    "Experts are not configured in this deployment; omit `prompt` to use the default sub-agent.".to_string(),
+                );
+            }
+            if !policy.enabled {
+                return Err(
+                    "Expert mode is disabled (agents.experts.enabled=false). Enable it in config.json (or the Dashboard experts page) first — `prompt` dispatch is part of the expert surface.".to_string(),
+                );
+            }
+        }
+
         // Check allowlist.
         if let Some(ref checker) = self.allowlist_checker
             && !checker(agent_id)
@@ -365,9 +599,86 @@ impl Tool for SpawnTool {
             background,
             role,
             &context.session_key,
+            expert,
+            prompt,
         )
         .await
     }
+}
+
+impl SpawnTool {
+    /// 降级事件发布（notify=true 时）。事件经 event_tx 广播到 web pump
+    /// → SSE `expert-degraded`（approval 家族先例的全局展平通道）。发布
+    /// 失败静默忽略——通知是尽力而为面，不能反过来影响降级指引回灌。
+    fn emit_degrade_notification(
+        &self,
+        session_key: &str,
+        chat_id: &str,
+        requested: &str,
+        reason: &str,
+    ) {
+        let Some(tx) = &self.event_tx else {
+            return;
+        };
+        let _ = tx.send(nemesis_types::agent::AgentEvent::ExpertDegraded {
+            session_key: session_key.to_string(),
+            chat_id: chat_id.to_string(),
+            requested: requested.to_string(),
+            reason: reason.chars().take(300).collect(),
+        });
+    }
+}
+
+/// 无匹配自动降级指引（2026-11-13）：嵌入原始原因（unknown/disabled
+/// 文案由 ExpertsStore 侧区分），指示模型勿停车问用户——带同 task +
+/// 自拟 `prompt` 二段重调。这条文本是降级策略的指令载体（策略本身
+/// 不进提示词/cache——见 PLAN §二）。
+fn degrade_guidance(original_error: &str) -> String {
+    format!(
+        "AUTO-DEGRADE: {original_error}\n\nAuto-degrade policy is active (agents.experts.degrade=true): do NOT stop to ask the user. Re-call spawn with the SAME task plus a `prompt` parameter containing your own specialist system prompt for this task — write the instructions that expert would have had (role, method, output contract). The sub-agent will run with that prompt instead of the missing expert."
+    )
+}
+
+/// 专家名册 → 模型可读文本（list 动作产物）。default 行永远在册
+/// （spawn 兜底不依赖专家子系统）；停用专家照列并显式标注（模型得知
+/// 名单全貌，不再误点名吃「已停用」错）。
+fn render_experts_roster(roster: &ExpertsRoster) -> String {
+    if roster.experts.is_empty() {
+        return format!(
+            "No experts hired yet (default sub-agent: \"{}\"). Hire experts from the persona shop or define them on the dashboard, then dispatch with {{\"expert\": \"<slug>\"}}.",
+            roster.default_name
+        );
+    }
+    let mut lines = vec![format!(
+        "Hired experts ({}); delegate with {{\"expert\": \"<slug>\"}}:",
+        roster.experts.len()
+    )];
+    for e in &roster.experts {
+        let state = if e.enabled {
+            "enabled"
+        } else {
+            "DISABLED (cannot be dispatched)"
+        };
+        let summary = if e.summary.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", e.summary)
+        };
+        let tags = if e.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", e.tags.join(", "))
+        };
+        lines.push(format!(
+            "- {} — {} ({}){}{}",
+            e.slug, e.name, state, summary, tags
+        ));
+    }
+    lines.push(format!(
+        "- (omit `expert`) — {} (default sub-agent, unchanged behavior)",
+        roster.default_name
+    ));
+    lines.join("\n")
 }
 
 // ===========================================================================

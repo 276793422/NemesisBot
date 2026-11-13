@@ -815,7 +815,7 @@ impl LLMProvider for CodexProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             // effort 词表自愈（真机实证）：gpt-6 系砍掉 minimal
             // 后首跳 off→minimal 撞 400 unsupported_value；上游错误信息自带
             // 权威词表，按其最低档降档重试一次（仅此一跳，不循环——重试跳
@@ -837,7 +837,7 @@ impl LLMProvider for CodexProvider {
                 let status2 = resp2.status().as_u16();
                 if status2 >= 400 {
                     let retry_after2 = crate::failover::retry_after_from_headers(resp2.headers());
-                    let text2 = resp2.text().await.unwrap_or_default();
+                    let text2 = nemesis_utils::http_cap::read_error_body(resp2).await;
                     return Err(FailoverError::from_status(
                         "codex",
                         &resolved_model,

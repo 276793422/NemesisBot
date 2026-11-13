@@ -152,6 +152,16 @@ mod exec_worker;
 /// 统一执行世界：executor 通道装配统一定义 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// 专家管理面 WSAPI 桥——ExpertsStore 到 nemesis-web ExpertsBridge trait
+/// 的适配（ExpertFull → JSON 投影）；gateway 启动注入静态槽。
+mod experts_bridge;
+#[cfg(test)]
+mod experts_bridge_tests;
+/// 专家子代理资源层（experts）——workspace/experts/ 目录即注册表：
+/// 每专家一个目录（EXPERT.md = TOML frontmatter + 系统提示词全文）+
+/// 默认子代理改名元数据。scan-on-read 单一真相源；spawn 工具与
+/// spawn 闭包经同一 ExpertsHandle 注入消费。
+mod experts_store;
 /// 插件流程扩展：宿主侧 flow 引擎——面板插件 `[[flow.template]]` 剧本
 /// 的推进者（六类 step 原语绑定既有件：connector 取数 / board 落单 /
 /// agent_fixloop / 回归验收 / publish 发布 / dossier 报告；磁盘实例账本 +
@@ -1436,6 +1446,8 @@ pub(crate) static VAULT_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 
 #[cfg(test)]
 mod bridge_client_tests;
+#[cfg(test)]
+mod experts_store_tests;
 #[cfg(test)]
 mod native_plugins_tests;
 #[cfg(test)]

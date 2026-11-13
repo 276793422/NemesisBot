@@ -1157,8 +1157,17 @@ fn spawn_fixture(
     let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
         Arc::new(std::sync::OnceLock::new());
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    super::inject_spawn_fn(&loop_arc, &slot, &bus, Some(bridge));
+    super::inject_spawn_fn(&loop_arc, &slot, &bus, Some(bridge), None, test_reloader());
     (loop_arc, slot)
+}
+
+/// 专家面单测注入用 provider 解析器（纯数据件；专家模型覆盖路径不在本套
+/// 断言范围——空 home 解析必失败，恰钉「诚实 Err 不静默回落」）。
+fn test_reloader() -> std::sync::Arc<super::ModelProviderReloader> {
+    std::sync::Arc::new(super::ModelProviderReloader {
+        home: std::path::PathBuf::new(),
+        workspace: std::path::PathBuf::new(),
+    })
 }
 
 /// 前台三路径：Start exit 2 = 拒绝（Err 带阻断文案，loop 不动）；Start 放行
@@ -1175,7 +1184,7 @@ async fn spawn_closure_foreground_refuse_and_stop_fires() {
     let (_loop_arc, slot) = spawn_fixture(&doc);
     let spawn = slot.get().expect("closure injected");
     let err = spawn(
-        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "",
+        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
     )
     .await
     .expect_err("exit 2 must refuse spawn");
@@ -1195,7 +1204,7 @@ async fn spawn_closure_foreground_refuse_and_stop_fires() {
     let spawn = slot.get().expect("closure injected");
     let _keep_alive = loop_arc; // Weak 升级需要 loop 活着
     let result = spawn(
-        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "",
+        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
     )
     .await;
     assert!(result.is_err(), "stub provider never chats: {result:?}");
@@ -1223,7 +1232,7 @@ async fn spawn_closure_background_fires_start_then_stop() {
     let spawn = slot.get().expect("closure injected");
     let _keep_alive = loop_arc;
     let marker = spawn(
-        "agent-1", "bg task", "", "", "", "readonly", 1, true, "", "",
+        "agent-1", "bg task", "", "", "", "readonly", 1, true, "", "", "", "",
     )
     .await
     .expect("background spawn returns marker");
@@ -1265,7 +1274,7 @@ async fn project_spawn_closure_refuses_on_start_exit_2() {
     super::inject_project_spawn_fn(&loop_arc, &slot, Some(bridge), &bus, "project:t1");
     let spawn = slot.get().expect("closure injected");
     let err = spawn(
-        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "",
+        "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
     )
     .await
     .expect_err("project spawn must refuse on exit 2");
@@ -1732,13 +1741,17 @@ async fn project_spawn_closure_rejects_unknown_profile_and_background() {
         false,
         "",
         "",
+        "",
+        "",
     )
     .await
     .expect_err("unknown profile must be refused");
     assert!(err.contains("Unknown tools profile"), "err={err}");
-    let marker = spawn("p-agent", "task", "", "", "", "readonly", 1, true, "", "")
-        .await
-        .expect("background spawn returns marker in project mode (D7)");
+    let marker = spawn(
+        "p-agent", "task", "", "", "", "readonly", 1, true, "", "", "", "",
+    )
+    .await
+    .expect("background spawn returns marker in project mode (D7)");
     assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");
 }
 
@@ -1759,7 +1772,10 @@ async fn project_spawn_closure_foreground_runs_and_fires_stop() {
     let (loop_arc, slot) = project_spawn_fixture(&doc);
     let _keep_alive = loop_arc;
     let spawn = slot.get().expect("closure injected");
-    let result = spawn("p-agent", "task", "", "", "", "readonly", 1, false, "", "").await;
+    let result = spawn(
+        "p-agent", "task", "", "", "", "readonly", 1, false, "", "", "", "",
+    )
+    .await;
     assert!(result.is_err(), "stub provider never chats: {result:?}");
     assert_eq!(
         marker_lines_of(&start_marker),
@@ -1787,7 +1803,7 @@ fn bg_spawn_fixture(
     let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
         Arc::new(std::sync::OnceLock::new());
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    super::inject_spawn_fn(&loop_arc, &slot, &bus, Some(bridge));
+    super::inject_spawn_fn(&loop_arc, &slot, &bus, Some(bridge), None, test_reloader());
     (loop_arc, slot, bus)
 }
 
@@ -1806,7 +1822,7 @@ async fn background_spawn_publishes_error_continuation_to_bus() {
     let _keep_alive = loop_arc.clone();
     let spawn = slot.get().expect("closure injected");
     let marker = spawn(
-        "b-agent", "bg task", "", "", "", "readonly", 1, true, "", "",
+        "b-agent", "bg task", "", "", "", "readonly", 1, true, "", "", "", "",
     )
     .await
     .expect("background spawn returns marker");
@@ -1844,7 +1860,7 @@ async fn background_spawn_publishes_cancelled_when_loop_dropped() {
     let mut rx = bus.subscribe_inbound();
     let spawn = slot.get().expect("closure injected");
     let marker = spawn(
-        "c-agent", "bg task", "", "", "", "readonly", 1, true, "", "",
+        "c-agent", "bg task", "", "", "", "readonly", 1, true, "", "", "", "",
     )
     .await
     .expect("background spawn returns marker");

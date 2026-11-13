@@ -110,7 +110,13 @@ async fn poll_with(
         .await
         .map_err(|e| e.to_string())?;
     let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    // 双用拆分（BUG-20261113-164）：成功体是内部 API 小 JSON，全量读合法；
+    // 错误体只喂错误消息——有帽读取。
+    let body = if status.is_success() {
+        resp.text().await.unwrap_or_default()
+    } else {
+        nemesis_utils::http_cap::read_error_body(resp).await
+    };
     if !status.is_success() {
         return Err(format!("estop_status returned {status}: {body}"));
     }

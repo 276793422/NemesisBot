@@ -180,7 +180,7 @@ impl BlueskyChannel {
             .map_err(|e| NemesisError::Channel(format!("bluesky session failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "bluesky session error: {body}"
             )));
@@ -221,7 +221,7 @@ impl BlueskyChannel {
             .map_err(|e| NemesisError::Channel(format!("getRecord failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("getRecord error: {body}")));
         }
 
@@ -269,7 +269,7 @@ impl BlueskyChannel {
             .map_err(|e| NemesisError::Channel(format!("createRecord failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("createRecord error: {body}")));
         }
 

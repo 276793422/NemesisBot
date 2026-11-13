@@ -198,3 +198,47 @@ describe('PersonaShopView 下载与聘用', () => {
     expect((w.vm as any).hiring).toBe('')
   })
 })
+
+describe('PersonaShopView 雇佣专家', () => {
+  it('雇佣专家成功：请求 shop.hire_expert、提示、清 busy；失败提示', async () => {
+    const w = await mountView()
+    // P2 installed=true → 按钮可用；P1 未安装禁用
+    const guardCard = w.findAll('.shop-card').find(c => c.text().includes('Guardian'))!
+    await guardCard.findAll('button').find(b => b.text().includes('雇佣专家'))!.trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('persona', 'shop.hire_expert', { id: 'p2' })
+    expect(useToast().toasts.some(t => t.message.includes('已雇佣为专家'))).toBe(true)
+    expect((w.vm as any).hiringExpert).toBe('')
+
+    requestMock.mockImplementation((_m, cmd) =>
+      cmd === 'shop.hire_expert' ? Promise.reject(new Error('SOUL.md 为空')) : defaultImpl(_m, cmd, {}))
+    await guardCard.findAll('button').find(b => b.text().includes('雇佣专家'))!.trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some(t => t.message.includes('雇佣专家失败'))).toBe(true)
+    expect((w.vm as any).hiringExpert).toBe('')
+  })
+
+  it('未安装人格的雇佣按钮禁用；无 cluster 也恒渲染（不随集群裁剪）', async () => {
+    const w = await mountView()
+    const nemesisBtn = w.findAll('.shop-card').find(c => c.text().includes('Nemesis'))!
+      .findAll('button').find(b => b.text().includes('雇佣专家'))!
+    expect(nemesisBtn.attributes('disabled')).toBeDefined()
+    const guardBtn = w.findAll('.shop-card').find(c => c.text().includes('Guardian'))!
+      .findAll('button').find(b => b.text().includes('雇佣专家'))!
+    expect(guardBtn.attributes('disabled')).toBeUndefined()
+  })
+
+  it('预览弹窗内雇佣专家成功关预览', async () => {
+    // 预览合并 installed 才可用（默认 preview 响应 installed=false，需覆盖）
+    requestMock.mockImplementation((_m, cmd) =>
+      cmd === 'shop.preview' ? Promise.resolve({ ...defaultImpl(_m, cmd, {}), installed: true }) : defaultImpl(_m, cmd, {}))
+    const w = await mountView()
+    await w.findAll('.shop-card').find(c => c.text().includes('Guardian'))!.trigger('click')
+    await flushPromises()
+    await w.findAll('.modal-footer button').find(b => b.text().includes('雇佣专家'))!.trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('persona', 'shop.hire_expert', { id: 'p2' })
+    expect((w.vm as any).previewPersona).toBe(null)
+    expect((w.vm as any).hiringExpert).toBe('')
+  })
+})

@@ -267,6 +267,15 @@ fn open_file_with_default(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("打开文件失败: {e}"))
 }
 
+/// open/reveal 两臂共用的 path 参数提取：缺 data / 缺键 / 非字符串 →
+/// 空串（归一化统一报「path 缺失」——错误面单一真相源在
+/// [`resolve_click_target`]）。
+fn path_arg(data: Option<&serde_json::Value>) -> &str {
+    data.and_then(|d| d.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
 /// 文件管理器定位文件（不打开、不高亮执行——非白名单扩展名的降级动作）。
 /// Windows=`explorer /select,<path>`（单参数形态——explorer 自行解析命令
 /// 行，拆参会在含空格路径上断裂）；macOS=`open -R`；Linux 无标准 reveal，
@@ -503,7 +512,7 @@ impl ModuleHandler for FsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["complete_path", "tree", "open"]
+        &["complete_path", "tree", "open", "reveal"]
     }
 
     async fn handle_cmd(
@@ -560,12 +569,7 @@ impl ModuleHandler for FsHandler {
             // 未切换的主 workspace（绝对路径 containment 集合 = 主 workspace
             // + 全部项目；session root 已含于其中）。
             "open" => {
-                let raw = data
-                    .as_ref()
-                    .and_then(|d| d.get("path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let raw = path_arg(data.as_ref()).to_string();
                 let main_workspace = require_workspace(ctx)?.to_string();
                 let (target, is_dir) = resolve_click_target(&workspace, &main_workspace, &raw)?;
                 let out = if is_dir {
@@ -577,6 +581,28 @@ impl ModuleHandler for FsHandler {
                     open_file_with_default(&target)?;
                     serde_json::json!({
                         "kind": "file", "action": "open", "path": target.display().to_string(),
+                    })
+                } else {
+                    reveal_in_file_manager(&target)?;
+                    serde_json::json!({
+                        "kind": "file", "action": "reveal", "path": target.display().to_string(),
+                    })
+                };
+                Ok(Some(out))
+            }
+            // 右键菜单「打开所在目录」（reveal 语义，2026-11-13）：与
+            // `open` 同一套解析与 containment，只换最终动作——目录链接
+            // 直接打开该目录（用户拍板：目录特判不做 reveal）；文件链接
+            // 打开所在目录并选中该文件（Windows=explorer /select，便于
+            // 随手移动）。解析/越界/缺参错误面与 open 完全同源。
+            "reveal" => {
+                let raw = path_arg(data.as_ref()).to_string();
+                let main_workspace = require_workspace(ctx)?.to_string();
+                let (target, is_dir) = resolve_click_target(&workspace, &main_workspace, &raw)?;
+                let out = if is_dir {
+                    crate::handlers::projects::open_in_file_manager(&target)?;
+                    serde_json::json!({
+                        "kind": "dir", "action": "open", "path": target.display().to_string(),
                     })
                 } else {
                     reveal_in_file_manager(&target)?;

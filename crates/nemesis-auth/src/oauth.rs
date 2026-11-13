@@ -122,7 +122,7 @@ impl OAuthProviderConfig {
             .map_err(|e| format!("requesting device code: {}", e))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(format!("device code request failed: {}", body));
         }
 
@@ -225,7 +225,7 @@ impl OAuthProviderConfig {
             .map_err(|e| format!("refreshing token: {}", e))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(format!("token refresh failed: {}", body));
         }
 
@@ -392,7 +392,7 @@ impl OAuthProviderConfig {
             .map_err(|e| format!("exchanging code for tokens: {}", e))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(format!("token exchange failed: {}", body));
         }
 

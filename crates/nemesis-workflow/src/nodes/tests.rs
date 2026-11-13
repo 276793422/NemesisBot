@@ -100,6 +100,75 @@ async fn test_parallel_node_executor_with_registry() {
     assert!(obj.contains_key("branch_1"));
 }
 
+/// BUG-20261113-169 回归锁：parallel 子分支任务必须在父 executor future 被
+/// 丢弃时随之 abort（JoinSet drop = abort），不得 detached 存活——scheduler
+/// 的 node timeout/cancel 正是靠丢弃 executor future 停节点（`timeout(dur,
+/// executor.execute(..))` / cancel select 两臂）；子分支若 detached 会带着
+/// 副作用跑完（timeout+retry 组合下重试再 spawn 同一节点 = 并发双跑）。
+#[tokio::test]
+async fn parallel_children_aborted_when_parent_future_dropped() {
+    struct SlowProbe(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl NodeExecutor for SlowProbe {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            // 睡 1s 再 +1：父 future 50ms 被丢弃（模拟 scheduler timeout 臂
+            // 胜出）。修复前僵尸探针 detached 存活、1s 后 +1；修复后 JoinSet
+            // drop = abort，探针的 sleep 随父死而取消、永不 +1。
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(NodeResult {
+                node_id: "probe".to_string(),
+                output: serde_json::json!({}),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let probe_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("slow_probe", Arc::new(SlowProbe(probe_hits.clone())));
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "p", "node_type": "slow_probe", "config": {} },
+        ]),
+    );
+    let node = make_node("n1", "parallel", config);
+
+    // 模拟 scheduler timeout：50ms 后丢弃 executor future（tokio::time::
+    // timeout 超时即 drop 内层 future，与 scheduler 的 timeout 臂同语义）。
+    let args = HashMap::new();
+    let wf_ctx = empty_wf_ctx();
+    let fut = exec.execute(&node, &args, &wf_ctx);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), fut)
+            .await
+            .is_err(),
+        "探针 50ms 内不该完成（timeout 丢弃父 future 正是修复面）"
+    );
+
+    // 修复前：僵尸探针 1s 后 +1（断言红）；修复后：abort，恒 0。
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(
+        probe_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "父 future 被丢弃后子分支必须被 abort，不得 detached 跑完副作用"
+    );
+}
+
 #[tokio::test]
 async fn test_parallel_node_stub() {
     let exec = ParallelNodeStub;

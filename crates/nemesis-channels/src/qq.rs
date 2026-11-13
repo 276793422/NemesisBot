@@ -272,7 +272,7 @@ impl QQChannel {
             .map_err(|e| NemesisError::Channel(format!("QQ C2C send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("QQ C2C send error: {body}")));
         }
 
@@ -317,7 +317,7 @@ impl QQChannel {
             .map_err(|e| NemesisError::Channel(format!("QQ group send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "QQ group send error: {body}"
             )));

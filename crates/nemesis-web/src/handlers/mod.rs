@@ -65,6 +65,8 @@ pub mod editor;
 // canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
 pub mod estop;
+// 专家子代理管理面（experts.*）——bot 侧资源层经静态槽桥注入。
+pub mod experts;
 // 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
 // 运行闸默认关）。
 #[cfg(feature = "forge")]
@@ -391,6 +393,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(deliveries::DeliveriesHandler));
     // 角色目录（角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
+    // 专家子代理管理面（experts.list/get/create/update/remove/set_enabled；
+    // bot 侧 store 经静态槽桥注入——槽空诚实报错，headless/独立 web 测试态）。
+    router.register(Arc::new(experts::ExpertsHandler));
     // 子代理可见性：subagents.list/detail/cancel。
     router.register(Arc::new(subagents::SubagentsHandler));
     // 后台进程实时输出（2026-11-06 P1）：background.list/output/kill/steer。

@@ -589,6 +589,46 @@ async fn open_handle_cmd_error_paths() {
     assert!(err.contains("越出 workspace"), "{err}");
 }
 
+// fs.reveal：右键「打开所在目录」（错误面不 spawn；成功臂调系统文件
+// 管理器，不进单测——open 同纪律。解析/containment 语义与 open 全同源，
+// 已由 resolve_click_target 测试组覆盖，此处只钉 handle_cmd 错误路径 +
+// 命令清单在册）。
+
+#[tokio::test]
+async fn reveal_handle_cmd_error_paths() {
+    let ws = setup_workspace();
+    let h = FsHandler::new();
+    let ctx = ctx_with_workspace(&ws);
+
+    let err = h
+        .handle_cmd("reveal", Some(serde_json::json!({})), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("path 缺失"), "{err}");
+
+    let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let err = h
+        .handle_cmd("reveal", Some(serde_json::json!({ "path": sys_dir })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("越出 workspace"), "{err}");
+
+    let err = h
+        .handle_cmd(
+            "reveal",
+            Some(serde_json::json!({ "path": "no_such.md" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("文件不存在"), "{err}");
+}
+
+#[test]
+fn module_commands_include_reveal() {
+    assert!(FsHandler::new().commands().contains(&"reveal"));
+}
+
 // 存在性回退（用户设计：CJK 引导语粘连剥前缀找真实文件）----
 
 /// 相对路径头粘连：「见docs/总结.md」→ 剥引导语 → docs/总结.md 命中。

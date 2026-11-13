@@ -368,6 +368,19 @@ pub enum AgentEvent {
         /// 进程累计产出字节数（单调）。
         total_bytes: u64,
     },
+    /// 专家无匹配自动降级事件（2026-11-13 专家总开关与降级）。spawn 点名
+    /// 专家不存在/停用且降级策略激活 + notify 开时发布；web pump 转 SSE
+    /// `expert-degraded` 全局广播，前端 toast 提示。`reason` 是原始
+    /// resolve 错误文本（unknown/disabled 文案区分在 ExpertsStore 侧），
+    /// 截断 ≤300 字符。
+    ExpertDegraded {
+        session_key: String,
+        chat_id: String,
+        /// 模型点名的专家名（原样，未归一）。
+        requested: String,
+        /// 降级原因（resolve 错误原文）。
+        reason: String,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -435,6 +448,8 @@ impl AgentEvent {
             AgentEvent::SubagentReplyLanded { chat_id, .. } => chat_id,
             // exec 执行中输出流绑定发起会话（走默认 tool_event 通用路径）。
             AgentEvent::ToolOutput { chat_id, .. } => chat_id,
+            // 专家降级事件绑定发起会话（spawn 所在会话）。
+            AgentEvent::ExpertDegraded { chat_id, .. } => chat_id,
         }
     }
 
@@ -463,6 +478,8 @@ impl AgentEvent {
             AgentEvent::CredentialRequested { .. } | AgentEvent::CredentialResolved { .. } => None,
             // exec 执行中输出流绑发起会话。
             AgentEvent::ToolOutput { session_key, .. } => Some(session_key),
+            // 专家降级事件绑发起会话。
+            AgentEvent::ExpertDegraded { session_key, .. } => Some(session_key),
         }
     }
 
@@ -486,6 +503,7 @@ impl AgentEvent {
             AgentEvent::CredentialRequested { .. } => "CredentialRequested",
             AgentEvent::CredentialResolved { .. } => "CredentialResolved",
             AgentEvent::ToolOutput { .. } => "ToolOutput",
+            AgentEvent::ExpertDegraded { .. } => "ExpertDegraded",
         }
     }
 }

@@ -2439,6 +2439,16 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
+                // 专家无匹配自动降级（2026-11-13 专家总开关与降级）：SSE
+                // `expert-degraded` 全局广播（approval 家族同款展平内层）——
+                // 前端 toast「专家 X 不存在/停用，已降级为通用子代理」。
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::ExpertDegraded { .. }
+                ) {
+                    event_hub.publish("expert-degraded", data.get("data").cloned().unwrap_or(data));
+                    continue;
+                }
                 // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
                 // ——前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
                 // 语义（侧栏是跨会话面），不做 web: 定向 push。

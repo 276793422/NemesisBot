@@ -107,8 +107,13 @@ impl NodeExecutor for ParallelNodeExecutor {
             });
         }
 
-        // Spawn a task for each child node
-        let mut handles = Vec::new();
+        // Spawn a task for each child node. JoinSet（而非 Vec<JoinHandle>）：
+        // scheduler 的 node timeout/cancel 是靠丢弃本 executor future 停节点
+        // 的——JoinHandle drop = detach（子分支带副作用继续跑完；timeout+
+        // retry 组合下重试再 spawn 同一节点 = 子分支并发双跑），JoinSet
+        // drop = abort 全部子分支（BUG-20261113-169），父死子亡与 DAG 层
+        // future-drop 取消语义一致。
+        let mut children_set = tokio::task::JoinSet::new();
         // BUG-20261112-115 同族：子分支 local_wf_ctx 必须继承父 identity——
         // 旧实现 `WorkflowContext::new` 落全空默认值，parallel 块里的 tool
         // 子节点经 SecureExecutor 透传的 RequestContext 三键全空（审批卡
@@ -121,7 +126,7 @@ impl NodeExecutor for ParallelNodeExecutor {
             let branch_key = format!("branch_{}", idx);
             let identity = identity.clone();
 
-            handles.push(tokio::spawn(async move {
+            children_set.spawn(async move {
                 let executor = match registry.get(&child_def.node_type) {
                     Some(e) => e,
                     None => {
@@ -141,15 +146,15 @@ impl NodeExecutor for ParallelNodeExecutor {
                     WorkflowContext::new_with_identity(identity.clone(), ctx.clone());
                 let result = executor.execute(&child_def, &ctx, &local_wf_ctx).await;
                 (branch_key, result)
-            }));
+            });
         }
 
         // Collect results
         let mut merged = serde_json::Map::new();
         let mut first_error: Option<String> = None;
 
-        for handle in handles {
-            match handle.await {
+        while let Some(joined) = children_set.join_next().await {
+            match joined {
                 Ok((key, Ok(result))) => {
                     if result.state == ExecutionState::Failed {
                         if first_error.is_none() {

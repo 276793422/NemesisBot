@@ -173,6 +173,43 @@ fn session_effort_priority_over_config() {
     assert_eq!(effective(&loop_, "web:s1"), Some("high".to_string()));
 }
 
+#[test]
+fn session_effort_map_is_bounded() {
+    // BUG-20261113-170：会话键控有界纪律（与 compact_state/summarizing
+    // 同约定）。写入是显式 per-session 动作，此前完全无驱逐。超限后
+    // 整体 clear——被清会话回落 config 模型级值（无不变量破坏），触发
+    // clear 的本次写入照常生效；overwrite 已有键不触发 clear。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [{"model": "m/plain", "model_name": "m-plain"}]
+    }));
+    let max = super::compact::SESSION_STATE_MAX_ENTRIES;
+    for i in 0..=max {
+        loop_.set_session_effort(&format!("web:s{i}"), Some("high".to_string()));
+    }
+    assert_eq!(
+        loop_.session_effort("web:s0"),
+        Some("high".to_string()),
+        "恰好在界限上（len == MAX+1）还不 clear——与 compact_state 同形态"
+    );
+    loop_.set_session_effort("web:overflow", Some("off".to_string()));
+    assert_eq!(
+        loop_.session_effort("web:s0"),
+        None,
+        "超限写入触发 clear，旧键全部回落"
+    );
+    assert_eq!(
+        loop_.session_effort("web:overflow"),
+        Some("off".to_string()),
+        "触发 clear 的本次写入正常生效"
+    );
+    loop_.set_session_effort("web:overflow", Some("low".to_string()));
+    assert_eq!(
+        loop_.session_effort("web:overflow"),
+        Some("low".to_string()),
+        "overwrite 已有键不触发 clear"
+    );
+}
+
 // --- BUG-20261108-030：外层包裹超时跟随 provider 请求超时（超时阶梯
 // 纪律：外层必须大于内层）。显式配置直接采信（含 0=关）——用户预算
 // 意志优先；缺省跟随活跃模型 per-model timeout + 30s 余量。 ---

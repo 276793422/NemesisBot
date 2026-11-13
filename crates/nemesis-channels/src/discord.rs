@@ -247,7 +247,7 @@ impl DiscordChannel {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "discord send returned {status}: {body}"
             )));

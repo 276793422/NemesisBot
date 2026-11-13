@@ -106,6 +106,10 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'persona-shop', label: '人格超市', route: '/persona-shop', icon: 'M3 3h18v18H3V3zm3 3h12v3H6V6zm0 5h12v3H6v-3zm0 5h8v3H6v-3z' },
       { id: 'skills', label: 'Skills', route: '/skills', icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z' },
       { id: 'mcp', label: 'MCP', route: '/mcp', icon: 'M4 6h16M4 12h16M4 18h16' },
+      // 专家Agent（2026-11-13 专家子代理）：单机专家名册管理面——spawn
+      // `expert` 参数的供给侧（卡片栅格 + 默认子代理置顶锁定卡 + 雇佣
+      // 入口指向人格超市）。恒编译无 feature 闸（资源层无裁剪面）。
+      { id: 'experts', label: '专家Agent', route: '/experts', icon: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75' },
       // 2026-08-29：MCP 之下新增 HOOK/命令/插件页。
       // （子Agent 骨架页 2026-10-20 下线；2026-11-03 子代理可见性以实页
       // 回归——spawn/后台/集群委派台账 + 事件环回放；2026-11-07 并入执行
