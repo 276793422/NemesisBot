@@ -165,11 +165,16 @@ where
                 if status == 200 || !should_retry(status) {
                     return Ok(result);
                 }
-                // Retryable status; if this is the last attempt, return the result anyway
+                // Retryable status; if this is the last attempt, return the
+                // result as-is（BUG-20261113-159：此前这里「re-run one final
+                // time」——最后一轮拿到可重试状态码时额外补跑一次上游：既
+                // 是副作用双执行（非幂等 POST 双发），其返回值又不经状态
+                // 检查直接 Ok 出门（429/5xx 也当成功）。result 已在手上，
+                // 「无法 reconstruct T」的注释理由不成立，原样返回即可——
+                // 与 simple/reqwest 两版语义对齐：max 次尝试 = 恰好 max 次
+                // 请求，最后一次的结果无论状态码如何都是终态返回值）。
                 if attempt + 1 >= max {
-                    // Can't easily reconstruct T, so re-run one final time
-                    // and return whatever we get
-                    return request_fn().await;
+                    return Ok(result);
                 }
             }
             Err(e) => {
