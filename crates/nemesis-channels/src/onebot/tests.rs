@@ -165,3 +165,19 @@ fn test_next_echo() {
     assert_ne!(echo1, echo2);
     assert!(echo1.starts_with("api_"));
 }
+
+/// BUG-20261113-149：allow_from 白名单判定（家族惯例：空 = 全放行；
+/// 精确匹配 QQ user_id；群/私聊一致按发送者判）。
+#[test]
+fn test_bug149_sender_allowed() {
+    let allowlist = vec!["10001".to_string(), "10002".to_string()];
+
+    // 空 = 全放行
+    assert!(OneBotChannel::sender_allowed(&[], "99999"));
+    // 白名单内
+    assert!(OneBotChannel::sender_allowed(&allowlist, "10001"));
+    assert!(OneBotChannel::sender_allowed(&allowlist, "10002"));
+    // 白名单外（含前缀不匹配形态——判据是精确相等，不是 starts_with）
+    assert!(!OneBotChannel::sender_allowed(&allowlist, "99999"));
+    assert!(!OneBotChannel::sender_allowed(&allowlist, "1000"));
+}

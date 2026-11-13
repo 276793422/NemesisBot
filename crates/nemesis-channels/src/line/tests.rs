@@ -1600,14 +1600,16 @@ async fn w4c_line_webhook_pair(
     reply_tokens: &Arc<dashmap::DashMap<String, String>>,
     running: &Arc<parking_lot::RwLock<bool>>,
 ) -> (tokio::net::TcpStream, std::net::SocketAddr) {
-    w4c_line_webhook_pair_with_path(bus, secret, "/webhook/line", reply_tokens, running).await
+    w4c_line_webhook_pair_with_path(bus, secret, "/webhook/line", &[], reply_tokens, running).await
 }
 
-/// 同 [`w4c_line_webhook_pair`]，可指定 webhook_path（路径闸回归测试用）。
+/// 同 [`w4c_line_webhook_pair`]，可指定 webhook_path（路径闸回归测试用）与
+/// allow_from（白名单闸回归测试用）。
 async fn w4c_line_webhook_pair_with_path(
     bus: &broadcast::Sender<InboundMessage>,
     secret: &str,
     webhook_path: &str,
+    allow_from: &[String],
     reply_tokens: &Arc<dashmap::DashMap<String, String>>,
     running: &Arc<parking_lot::RwLock<bool>>,
 ) -> (tokio::net::TcpStream, std::net::SocketAddr) {
@@ -1617,6 +1619,7 @@ async fn w4c_line_webhook_pair_with_path(
     let bus = bus.clone();
     let secret = secret.to_string();
     let webhook_path = webhook_path.to_string();
+    let allow_from = allow_from.to_vec();
     let reply_tokens = Arc::clone(reply_tokens);
     let running = Arc::clone(running);
     let _accept_task = tokio::spawn(async move {
@@ -1626,6 +1629,7 @@ async fn w4c_line_webhook_pair_with_path(
                 &bus,
                 &secret,
                 &webhook_path,
+                &allow_from,
                 &reply_tokens,
                 &running,
             )
@@ -2082,9 +2086,15 @@ async fn test_bug055_path_mismatch_404_even_with_valid_signature() {
         String::from_utf8_lossy(body)
     );
 
-    let (mut client, _addr) =
-        w4c_line_webhook_pair_with_path(&bus, "secret", "/webhook/line", &reply_tokens, &running)
-            .await;
+    let (mut client, _addr) = w4c_line_webhook_pair_with_path(
+        &bus,
+        "secret",
+        "/webhook/line",
+        &[],
+        &reply_tokens,
+        &running,
+    )
+    .await;
     client.write_all(request.as_bytes()).await.unwrap();
     let resp = w4c_read_http_response(&mut client)
         .await
@@ -2115,9 +2125,15 @@ async fn test_bug055_path_query_string_tolerated() {
         String::from_utf8_lossy(body)
     );
 
-    let (mut client, _addr) =
-        w4c_line_webhook_pair_with_path(&bus, "secret", "/webhook/line", &reply_tokens, &running)
-            .await;
+    let (mut client, _addr) = w4c_line_webhook_pair_with_path(
+        &bus,
+        "secret",
+        "/webhook/line",
+        &[],
+        &reply_tokens,
+        &running,
+    )
+    .await;
     client.write_all(request.as_bytes()).await.unwrap();
     let resp = w4c_read_http_response(&mut client)
         .await
@@ -2187,4 +2203,101 @@ async fn test_bug055_start_binds_configured_host_and_path_gate() {
     assert_eq!(inbound.content, "cb");
 
     ch.stop().await.unwrap();
+}
+
+/// BUG-20261113-149 回归：config `channels.line.allow_from` 白名单闸。
+/// allowlist=["U-allowed"] 时：白名单外 sender 合法签名 webhook → 200
+///（LINE 平台契约：收下了）但**不入总线、不存 reply token**；白名单内
+/// sender 照常投递。闸在 reply token 存储之前——被拒 sender 不得留下
+/// 可回包的 token。
+#[tokio::test]
+async fn test_bug149_allow_from_blocks_disallowed_sender() {
+    use tokio::io::AsyncWriteExt;
+
+    let (bus, mut rx) = broadcast::channel::<InboundMessage>(16);
+    let secret = "w4c-secret";
+    let reply_tokens = Arc::new(dashmap::DashMap::new());
+    let running = Arc::new(parking_lot::RwLock::new(true));
+    let allow_from = vec!["U-allowed".to_string()];
+
+    let send_signed = |user_id: &str, token: &str| {
+        serde_json::json!({
+            "destination": "U-dest",
+            "events": [{
+                "type": "message",
+                "replyToken": token,
+                "message": {"type": "text", "text": format!("hi from {user_id}")},
+                "source": {"type": "user", "user_id": user_id}
+            }]
+        })
+        .to_string()
+    };
+
+    // ① 白名单外 sender：合法签名 + 合法路径 → 200，但不投递、不存 token
+    let body = send_signed("U-intruder", "rt-intruder");
+    let sig = w4c_line_signature(secret, body.as_bytes());
+    let (mut client, _addr) = w4c_line_webhook_pair_with_path(
+        &bus,
+        secret,
+        "/webhook/line",
+        &allow_from,
+        &reply_tokens,
+        &running,
+    )
+    .await;
+    let req = format!(
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "webhook itself must still 200 (LINE contract), got: {resp}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "disallowed sender must NOT publish inbound"
+    );
+    assert!(
+        reply_tokens.get("U-intruder").is_none(),
+        "disallowed sender must NOT leave a reply token (gate before token store)"
+    );
+
+    // ② 白名单内 sender：照常投递 + 存 token
+    let body = send_signed("U-allowed", "rt-ok");
+    let sig = w4c_line_signature(secret, body.as_bytes());
+    let (mut client, _addr) = w4c_line_webhook_pair_with_path(
+        &bus,
+        secret,
+        "/webhook/line",
+        &allow_from,
+        &reply_tokens,
+        &running,
+    )
+    .await;
+    let req = format!(
+        "POST /webhook/line HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    client.write_all(req.as_bytes()).await.unwrap();
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(resp.starts_with("HTTP/1.1 200"), "got: {resp}");
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: allowed sender must publish inbound")
+        .unwrap();
+    assert_eq!(inbound.sender_id, "U-allowed");
+    assert_eq!(
+        reply_tokens.get("U-allowed").map(|v| v.clone()),
+        Some("rt-ok".to_string()),
+        "allowed sender reply token must be stored"
+    );
 }

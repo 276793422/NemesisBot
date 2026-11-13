@@ -300,6 +300,97 @@ impl BlueskyChannel {
     pub fn is_seen(&self, notif_id: &str) -> bool {
         self.seen_notifs.read().contains_key(notif_id)
     }
+
+    /// 首轮基线：把窗口内全部 mention/reply 通知 uri 标记为已见（不发布）。
+    /// 供 start() 轮询循环在首次成功拉取后调用。
+    fn mark_notifications_seen(
+        notifications: &[serde_json::Value],
+        seen: &std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
+    ) {
+        for notif in notifications {
+            let reason = notif["reason"].as_str().unwrap_or("");
+            if reason != "mention" && reason != "reply" {
+                continue;
+            }
+            if let Some(uri) = notif["uri"].as_str() {
+                seen.write().insert(uri.to_string(), true);
+            }
+        }
+    }
+
+    /// 处理单条通知：mention/reply 类型闸 → 自发帖闸 → allow_from 白名单
+    /// 闸 → 去重 → bus 发布。返回是否发布了入站消息（测试断言用）。
+    ///
+    /// - allow_from 判据与 signal/whatsapp/qq 同款家族惯例：空 = 全放行；
+    ///   匹配对象为 sender_id（Bluesky handle）。此前 config
+    ///   `channels.bluesky.allow_from` 是声名未读取的死键（BUG-20261113-149）。
+    fn ingest_notification(
+        notif: &serde_json::Value,
+        own_did: &str,
+        seen: &std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>>,
+        allow_from: &[String],
+        bus: &broadcast::Sender<InboundMessage>,
+    ) -> bool {
+        let reason = notif["reason"].as_str().unwrap_or("");
+        if reason != "mention" && reason != "reply" {
+            return false;
+        }
+
+        let author = match notif.get("author") {
+            Some(a) => a,
+            None => return false,
+        };
+
+        let author_did = author["did"].as_str().unwrap_or("");
+        if author_did == own_did {
+            return false;
+        }
+
+        let record = match notif.get("record") {
+            Some(r) => r,
+            None => return false,
+        };
+
+        let text = record["text"].as_str().unwrap_or("");
+        if text.is_empty() {
+            return false;
+        }
+
+        let sender_handle = author["handle"].as_str().unwrap_or("unknown");
+        if !allow_from.is_empty() && !allow_from.iter().any(|a| a == sender_handle) {
+            return false;
+        }
+
+        let notif_id = notif["uri"].as_str().unwrap_or("").to_string();
+
+        // Dedup
+        {
+            let mut map = seen.write();
+            if map.contains_key(&notif_id) {
+                return false;
+            }
+            map.insert(notif_id.clone(), true);
+            if map.len() > 500 {
+                map.clear();
+                map.insert(notif_id, true);
+            }
+        }
+
+        let inbound = InboundMessage {
+            channel: "bluesky".to_string(),
+            sender_id: sender_handle.to_string(),
+            chat_id: notif["uri"].as_str().unwrap_or("").to_string(),
+            content: text.to_string(),
+            media: Vec::new(),
+            session_key: sender_handle.to_string(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+        };
+
+        let _ = bus.send(inbound);
+        true
+    }
 }
 
 #[async_trait]
@@ -327,11 +418,15 @@ impl Channel for BlueskyChannel {
         let access_token = self.access_token.clone();
         let did_arc = self.did.clone();
         let seen = self.seen_notifs.clone();
+        let allow_from = self.config.allow_from.clone();
 
         tokio::spawn(async move {
             let poll_dur = std::time::Duration::from_secs(poll_interval);
             let mut backoff = std::time::Duration::from_secs(1);
             let max_backoff = std::time::Duration::from_secs(60);
+            // 首轮成功拉取前为 true：首个窗口只建基线不发布（见下方
+            // mark_notifications_seen 注释）。
+            let mut first_poll = true;
 
             // Create session first
             let session_url = format!("{}/xrpc/com.atproto.server.createSession", server);
@@ -430,61 +525,20 @@ impl Channel for BlueskyChannel {
                     None => continue,
                 };
 
+                // 首轮基线（nostr since=now / mastodon 同款家族语义）：进程
+                // 首启/重启后的第一次成功拉取，把窗口内全部 mention/reply
+                // 标记为已见、**不发布**。否则 seen 表只在内存（服务端
+                // updateSeen 不参与 listNotifications 过滤），每次重启都会把
+                // 最近 ≤25 条历史通知当新消息回灌，bot 对早已回复过的旧帖
+                // 逐条重发回复。离线期间的 mention 不补答。
+                if first_poll {
+                    Self::mark_notifications_seen(notifications, &seen);
+                    first_poll = false;
+                    continue;
+                }
+
                 for notif in notifications {
-                    let reason = notif["reason"].as_str().unwrap_or("");
-                    if reason != "mention" && reason != "reply" {
-                        continue;
-                    }
-
-                    let author = match notif.get("author") {
-                        Some(a) => a,
-                        None => continue,
-                    };
-
-                    let author_did = author["did"].as_str().unwrap_or("");
-                    if author_did == own_did {
-                        continue;
-                    }
-
-                    let record = match notif.get("record") {
-                        Some(r) => r,
-                        None => continue,
-                    };
-
-                    let text = record["text"].as_str().unwrap_or("");
-                    if text.is_empty() {
-                        continue;
-                    }
-
-                    let notif_id = notif["uri"].as_str().unwrap_or("").to_string();
-
-                    // Dedup
-                    {
-                        let mut map = seen.write();
-                        if map.contains_key(&notif_id) {
-                            continue;
-                        }
-                        map.insert(notif_id.clone(), true);
-                        if map.len() > 500 {
-                            *map = HashMap::new();
-                            map.insert(notif_id, true);
-                        }
-                    }
-
-                    let sender_handle = author["handle"].as_str().unwrap_or("unknown");
-                    let inbound = InboundMessage {
-                        channel: "bluesky".to_string(),
-                        sender_id: sender_handle.to_string(),
-                        chat_id: notif["uri"].as_str().unwrap_or("").to_string(),
-                        content: text.to_string(),
-                        media: Vec::new(),
-                        session_key: sender_handle.to_string(),
-                        correlation_id: String::new(),
-                        metadata: std::collections::HashMap::new(),
-                        voice_playback: None,
-                    };
-
-                    let _ = bus.send(inbound);
+                    Self::ingest_notification(notif, &own_did, &seen, &allow_from, &bus);
                 }
 
                 // Mark notifications as seen

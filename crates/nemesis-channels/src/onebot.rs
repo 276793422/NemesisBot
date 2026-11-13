@@ -197,6 +197,12 @@ impl OneBotChannel {
         }
     }
 
+    /// allow_from 白名单判定（家族惯例：空 = 全放行；精确匹配 QQ user_id）。
+    /// 单独成 fn 供单元测试（qq handle_c2c_message 先例）。
+    fn sender_allowed(allow_from: &[String], user_id: &str) -> bool {
+        allow_from.is_empty() || allow_from.iter().any(|a| a == user_id)
+    }
+
     /// Checks if a message ID is a duplicate.
     pub fn is_duplicate(&self, message_id: &str) -> bool {
         if message_id.is_empty() || message_id == "0" {
@@ -262,23 +268,23 @@ impl OneBotChannel {
         for seg in &segments {
             match seg.seg_type.as_str() {
                 "text" => {
-                    if let Some(ref data) = seg.data {
-                        if let Some(serde_json::Value::String(t)) = data.get("text") {
-                            text_parts.push(t.clone());
-                        }
+                    if let Some(ref data) = seg.data
+                        && let Some(serde_json::Value::String(t)) = data.get("text")
+                    {
+                        text_parts.push(t.clone());
                     }
                 }
                 "at" => {
-                    if let Some(ref data) = seg.data {
-                        if let Some(val) = data.get("qq") {
-                            let qq_val = match val {
-                                serde_json::Value::String(s) => s.clone(),
-                                serde_json::Value::Number(n) => n.to_string(),
-                                _ => String::new(),
-                            };
-                            if qq_val == self_id_str || qq_val == "all" {
-                                mentioned = true;
-                            }
+                    if let Some(ref data) = seg.data
+                        && let Some(val) = data.get("qq")
+                    {
+                        let qq_val = match val {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            _ => String::new(),
+                        };
+                        if qq_val == self_id_str || qq_val == "all" {
+                            mentioned = true;
                         }
                     }
                 }
@@ -390,6 +396,7 @@ impl Channel for OneBotChannel {
         let running = self.running.clone();
         let ws_sink = self.ws_sink.clone();
         let group_trigger_prefix = self.config.group_trigger_prefix.clone();
+        let allow_from = self.config.allow_from.clone();
         let dedup = self.dedup.clone();
         let self_id_arc = Arc::new(AtomicI64::new(0));
         let last_message_ids = self.last_message_ids.clone();
@@ -415,10 +422,10 @@ impl Channel for OneBotChannel {
                     }
                 };
 
-                if let Some(ref token) = access_token {
-                    if let Ok(val) = format!("Bearer {}", token).parse() {
-                        request.headers_mut().insert("Authorization", val);
-                    }
+                if let Some(ref token) = access_token
+                    && let Ok(val) = format!("Bearer {}", token).parse()
+                {
+                    request.headers_mut().insert("Authorization", val);
                 }
 
                 let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
@@ -512,10 +519,11 @@ impl Channel for OneBotChannel {
                         .map(|i| i.to_string())
                         .unwrap_or_default();
 
-                    if !message_id.is_empty() && message_id != "0" {
-                        if dedup.write().check_and_add(&message_id) {
-                            continue;
-                        }
+                    if !message_id.is_empty()
+                        && message_id != "0"
+                        && dedup.write().check_and_add(&message_id)
+                    {
+                        continue;
                     }
 
                     // Parse sender
@@ -531,6 +539,20 @@ impl Channel for OneBotChannel {
                     });
 
                     let is_group = group_id.is_some();
+
+                    // allow_from 白名单闸（家族惯例：空 = 全放行；匹配对象为
+                    // QQ user_id，群/私聊一致按发送者判）。gate 在群触发判定
+                    // 之前——非白名单用户连 @bot / 前缀触发也不响应。此前
+                    // config `channels.onebot.allow_from` 是声名未读取的死键
+                    // （BUG-20261113-149）。
+                    if !Self::sender_allowed(&allow_from, &user_id) {
+                        debug!(
+                            sender = %user_id,
+                            "[OneBotChannel] sender filtered by allow_from"
+                        );
+                        continue;
+                    }
+
                     let chat_id = if let Some(ref gid) = group_id {
                         format!("group:{}", gid)
                     } else {
