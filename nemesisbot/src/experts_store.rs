@@ -261,6 +261,15 @@ impl ExpertsStore {
             .filter(|s| !s.is_empty())
             .ok_or("专家名不能为空")?;
         let slug = Self::slug_for_name(name);
+        // slug 守卫（BUG-20261114-016）：create 是唯一从自由文本名字派生
+        // slug 的入口，slug_for_name 产出可能落保留域——① 用户名自带 `_`
+        // 前缀（sanitize 白名单保留 `_`，前导下划线直通）；② 无辜名字撞
+        // Windows 保留设备名（sanitize 出口中和插 `_` 前缀，"nul"→"_nul"）。
+        // 这类 slug 落盘后 list() 跳过 `_` 目录 + get/update/remove/
+        // set_enabled 全被 slug_guard 拒绝 = 不可见且不可管理的僵尸目录，
+        // 再建同名只报「撞车」死路。hire 面在入口已有同款守卫（296 行），
+        // create 漏挂——守卫前移到派生点。
+        Self::slug_guard(&slug)?;
         let dir = self.root.join(&slug);
         if dir.exists() {
             return Err(format!(

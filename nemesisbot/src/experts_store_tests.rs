@@ -267,6 +267,35 @@ fn create_chinese_name_gets_timestamp_slug() {
 }
 
 // ---------------------------------------------------------------------------
+// 保留域 slug 拒绝（BUG-20261114-016）：`_` 前缀用户名 + Windows 保留设备
+// 名（sanitize 中和插 `_`）在 create 出口诚实拒绝——否则落盘成 list 跳过、
+// get/update/remove 全拒的僵尸目录
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_rejects_underscore_prefixed_slug() {
+    let (t, s) = store();
+    let err = s.create(&up("_foo", "p")).unwrap_err();
+    assert!(err.contains("保留名"), "got: {err}");
+    // 目录未落盘（拒绝先行，不留残骸）。
+    assert!(!t.path().join("experts").join("_foo").exists());
+}
+
+#[test]
+fn create_rejects_windows_reserved_device_name() {
+    let (t, s) = store();
+    // "nul" 经 sanitize_path_segment 保留设备名中和 → "_nul"（`_` 前缀
+    // 保留域）——无辜名字同样必须被 create 出口拦下。
+    let err = s.create(&up("nul", "p")).unwrap_err();
+    assert!(err.contains("保留名"), "got: {err}");
+    assert!(!t.path().join("experts").join("_nul").exists());
+    // 大小写变体同域。
+    assert!(s.create(&up("Con", "p")).is_err());
+    // 正常名字不受守卫波及（守卫只拦保留域）。
+    assert!(s.create(&up("null-checker", "p")).is_ok());
+}
+
+// ---------------------------------------------------------------------------
 // split_frontmatter：BOM / CRLF / 缺围栏 / 正文两端 trim
 // ---------------------------------------------------------------------------
 
