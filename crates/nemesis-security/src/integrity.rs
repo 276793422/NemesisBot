@@ -142,6 +142,45 @@ impl AuditChain {
         // 全程临界区（横扫九期）：prev 读取与 last 写入之间不得插入第二个
         // append，否则链分叉（结构体注释）。
         let _chain = self.append_lock.lock();
+
+        // 撕裂尾防护（BUG-20261114-005，BUG-20261113-168 event_ledger 同族）：
+        // 上一笔 writeln 撕裂（磁盘满中途落盘/进程死）留下的半行残迹若不
+        // 处理，本笔追加会拼接其后成不可解析行——新事件内存链尾已推进但盘上
+        // 不可解析 ⇒ 解析视图从下一事件起永久断链（verify 恒红无修复路径）。
+        // 必须在 prev_hash 读取**之前**执行（Restored 分支把恢复事件采纳为
+        // 链尾，本笔事件要链到它而不是到恢复前的旧链尾）；append_lock 内
+        // 调用（串行保证）。
+        let storage_path = self.get_current_segment_path();
+        match heal_segment_tail(&storage_path)? {
+            TailHeal::Restored(ev) => {
+                // 残迹是丢换行的完整事件（content 与 "\n" 两段写之间断裂）
+                // ——换行已补，事件已在盘上；把它采纳为本进程链尾（本进程
+                // 撕裂时 writeln 返回 Err 未推进内存）。prev 不对齐 = 异常
+                // 态（并发/外部写入），fail-closed 诚实拒绝。
+                let mut lh = self.last_hash.lock();
+                if ev.prev_hash != *lh {
+                    return Err(format!(
+                        "audit chain healed-tail event prev_hash mismatch (expected {}, got {})",
+                        *lh, ev.prev_hash
+                    ));
+                }
+                *lh = ev.hash.clone();
+                self.event_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.total_events
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            TailHeal::Truncated { dropped } => {
+                tracing::warn!(
+                    target: "nemesis_security::integrity",
+                    dropped,
+                    segment = %storage_path.display(),
+                    "[AuditChain] 撕裂尾自愈：截掉撕裂残迹字节（append-only 不变量下自身故障只可能在尾部）"
+                );
+            }
+            TailHeal::Clean => {}
+        }
+
         let mut hasher = Sha256::new();
         let timestamp = chrono::Local::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
@@ -183,7 +222,6 @@ impl AuditChain {
         // 盘脱节：verify 按盘上行链式校验从此必 FAIL，事发时刻零可见。
         let json = serde_json::to_string(&event)
             .map_err(|e| format!("audit event serialize failed: {e}"))?;
-        let storage_path = self.get_current_segment_path();
         if let Err(e) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -431,6 +469,17 @@ impl AuditChain {
         }
 
         for path in files {
+            // 撕裂尾防护（BUG-20261114-005）：断电/崩溃可撕裂任意历史段
+            // （写 syscall 完成不保证落盘完成）——解析前先自愈每段尾部，
+            // 恢复的事件随本函数既有解析循环自然入账。
+            if let Err(e) = heal_segment_tail(&path) {
+                tracing::warn!(
+                    target: "nemesis_security::integrity",
+                    segment = %path.display(),
+                    error = %e,
+                    "[AuditChain] 段撕裂尾自愈失败（按原样解析）: {e}"
+                );
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for line in content.lines() {
                     if let Ok(event) = serde_json::from_str::<AuditEvent>(line) {
@@ -569,6 +618,105 @@ impl AuditChain {
         }
         Ok(events[from..to.min(events.len())].to_vec())
     }
+}
+
+// ---------------------------------------------------------------------------
+// 撕裂尾自愈（BUG-20261114-005，BUG-20261113-168 event_ledger 同族移植）
+// ---------------------------------------------------------------------------
+
+/// `heal_segment_tail` 的结果。
+#[derive(Debug)]
+enum TailHeal {
+    /// 尾字节 = '\n'，无残迹。
+    Clean,
+    /// 残迹整体恰是完整 AuditEvent（writeln 的 content 与 "\n" 两段写之间
+    /// 断裂，只丢换行）——已补写换行恢复，事件零丢失。调用方决定是否采纳
+    /// 进内存链尾（append 采纳；load_segments 交解析循环）。
+    Restored(Box<AuditEvent>),
+    /// 残迹不可解析（半行/拼行）——已截到最后 '\n'，丢弃 `dropped` 字节。
+    Truncated { dropped: u64 },
+}
+
+/// 段文件撕裂尾自愈。serde_json 转义控制字符 ⇒ 事件行内无裸 `\n`，因此
+/// **尾字节 ≠ '\n' ⇔ 存在撕裂残迹**（O(残迹) 向后扫描，非 O(文件)——段
+/// 可达 MB 级且 append 在热路径）。语义对齐 event_ledger `read_chain_tail_healed`
+/// （append-only 不变量下自身故障只可能发生在尾部；最后 '\n' 之前的中间
+/// 损坏不在本防护范围——verify 对其保持红，本函数只触碰尾区字节不吞证据）。
+fn heal_segment_tail(path: &Path) -> Result<TailHeal, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let size = match std::fs::metadata(path) {
+        Ok(m) => m.len(),
+        Err(_) => return Ok(TailHeal::Clean), // 段不存在 = 从未追加
+    };
+    if size == 0 {
+        return Ok(TailHeal::Clean);
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| format!("heal open: {e}"))?;
+    f.seek(SeekFrom::End(-1))
+        .map_err(|e| format!("heal seek: {e}"))?;
+    let mut last = [0u8; 1];
+    f.read_exact(&mut last)
+        .map_err(|e| format!("heal read: {e}"))?;
+    if last[0] == b'\n' {
+        return Ok(TailHeal::Clean);
+    }
+    // 向后分块找最后 '\n'（残迹 = 单事件撕裂，8KB 步进远超所需）。
+    const CHUNK: u64 = 8192;
+    let mut scan_end = size;
+    let mut residue_start = 0u64;
+    while scan_end > 0 {
+        let start = scan_end.saturating_sub(CHUNK);
+        let len = (scan_end - start) as usize;
+        f.seek(SeekFrom::Start(start))
+            .map_err(|e| format!("heal seek: {e}"))?;
+        let mut buf = vec![0u8; len];
+        f.read_exact(&mut buf)
+            .map_err(|e| format!("heal read: {e}"))?;
+        if let Some(i) = buf.iter().rposition(|&b| b == b'\n') {
+            residue_start = start + i as u64 + 1;
+            break;
+        }
+        scan_end = start;
+    }
+    let residue_len = (size - residue_start) as usize;
+    f.seek(SeekFrom::Start(residue_start))
+        .map_err(|e| format!("heal seek: {e}"))?;
+    let mut residue = vec![0u8; residue_len];
+    f.read_exact(&mut residue)
+        .map_err(|e| format!("heal read: {e}"))?;
+    // ① 残迹整体是完整事件 → 补换行恢复（证据零丢失）。
+    if let Ok(s) = std::str::from_utf8(&residue)
+        && let Ok(event) = serde_json::from_str::<AuditEvent>(s.trim_end_matches('\r'))
+    {
+        let mut af = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|e| format!("heal open: {e}"))?;
+        use std::io::Write as _;
+        af.write_all(b"\n")
+            .map_err(|e| format!("heal newline: {e}"))?;
+        let _ = af.sync_all();
+        tracing::warn!(
+            target: "nemesis_security::integrity",
+            segment = %path.display(),
+            "[AuditChain] 撕裂尾自愈：尾区为丢换行的完整事件，已补换行恢复"
+        );
+        return Ok(TailHeal::Restored(Box::new(event)));
+    }
+    // ② 截到最后 '\n'（残迹随截丢弃，丢弃量可观测）。
+    let af = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("heal open: {e}"))?;
+    af.set_len(residue_start)
+        .map_err(|e| format!("heal truncate: {e}"))?;
+    let _ = af.sync_all();
+    Ok(TailHeal::Truncated {
+        dropped: residue_len as u64,
+    })
 }
 
 #[cfg(test)]
