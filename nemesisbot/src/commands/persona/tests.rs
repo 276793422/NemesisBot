@@ -1,10 +1,11 @@
 //! persona 命令单测：文件型子命令（current/list/activate/remove/restore
 //! —— 临时目录确定性）+ 共享分类映射臂钉住。
 //!
-//! cmd_search / cmd_install / fetch_and_convert / search_personas 走 GitHub
-//! API（结构性不可离线单测， 集成真进程覆盖）。解析/筛选/转换纯函数的
-//! 真相源在 nemesis-web handlers/persona（起 CLI 全部委托
-//! 共享实现），其单测住 web crate，此处不重复。
+//! cmd_search / search_personas 走 GitHub API（结构性不可离线单测，集成真
+//! 进程覆盖）。解析/筛选/转换纯函数的真相源在 nemesis-web handlers/persona
+//! （起 CLI 全部委托共享实现），其单测住 web crate，此处不重复。
+//! fetch_and_convert 的快照降级臂**可离线单测**（TEST_ONLINE_MODE 注入上游
+//! 失败 + 进程内假句柄注入快照，见文件末段）。
 
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
 // 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
@@ -794,4 +795,104 @@ fn path_to_result_derives_row_and_filters_by_query() {
     // 未安装同路径 → installed=false
     let other = path_to_result("design/design-critic.md", "", ws.path()).unwrap();
     assert!(!other.4);
+}
+
+// ---------------------------------------------------------------------------
+// 快照降级臂离线回归（BUG-20261113-146）：在线臂所有失败路径（HTTP 状态/
+// 网络/未找到）统一 Err 上抛 → 快照臂触发。TEST_ONLINE_MODE 强制上游失败 +
+// 快照三元组走 fetch_and_convert_with 参数注入（纯 Rust 值，零全局状态——
+// BRIDGE 是进程级 OnceLock，注入会永久污染 r10 系列的「无快照插件 → 死上
+// 游必须 Err」前提，桥不可作为测试 seam）。持 GLOBAL_STATE_LOCK：既与 r10
+// 的 env 操作互斥，也串行化本段两测试对 TEST_ONLINE_MODE 的写入窗口。
+// ---------------------------------------------------------------------------
+
+const FAKE_WRITER_CONTENT: &str =
+    "---\nname: Writer\nemoji: ✍️\ndescription: 写作助手\n---\n\n## Identity\n写手\n";
+
+fn fake_snapshot() -> Option<(
+    Vec<String>,
+    nemesis_plugin::resources::ResourceEntry,
+    impl Fn(&str) -> Result<String, String>,
+)> {
+    let entry = nemesis_plugin::resources::ResourceEntry {
+        kind: "persona-catalog".to_string(),
+        id: "persona-catalog".to_string(),
+        upstream_repo: String::new(),
+        upstream_commit: "deadbee123456".to_string(),
+        fetched_at_utc: "2026-11-13T00:00:00Z".to_string(),
+        file_count: 1,
+        license: String::new(),
+        tree: vec!["engineering/writer.md".to_string()],
+    };
+    Some((
+        vec!["engineering/writer.md".to_string()],
+        entry,
+        |p: &str| {
+            if p == "engineering/writer.md" {
+                Ok(FAKE_WRITER_CONTENT.to_string())
+            } else {
+                Err(format!("资源不存在: {p}"))
+            }
+        },
+    ))
+}
+
+/// 在线臂 HTTP 状态错误（GitHub 未认证限流 403 = 最常见不可达形态）必须
+/// 触发快照臂并成功安装——修复前该路径 `Ok(Err(..))` 透传绕过快照臂。
+#[test]
+fn install_snapshot_fallback_fires_on_upstream_http_error() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_string_lossy().to_string();
+
+    use std::sync::atomic::Ordering;
+    TEST_ONLINE_MODE.store(2, Ordering::SeqCst);
+    let r = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async { fetch_and_convert_with(&workspace, "writer", fake_snapshot()).await });
+    TEST_ONLINE_MODE.store(0, Ordering::SeqCst);
+
+    r.expect("HTTP 状态失败必须触发快照臂并安装成功");
+
+    let dir = ws.path().join("personas/writer");
+    let pj: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("PERSONA.json")).expect("快照内容必须落盘"),
+    )
+    .expect("PERSONA.json 合法 JSON");
+    assert_eq!(
+        pj["name"].as_str(),
+        Some("Writer"),
+        "frontmatter 进 PERSONA.json"
+    );
+    assert!(dir.join("IDENTITY.md").is_file());
+    assert!(dir.join("HEARTBEAT.md").is_file());
+}
+
+/// 快照无该 id 时维持在线臂**原始错误**（不是吞掉也不是空成功），且不落盘。
+#[test]
+fn install_snapshot_miss_preserves_original_error() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_string_lossy().to_string();
+
+    use std::sync::atomic::Ordering;
+    TEST_ONLINE_MODE.store(2, Ordering::SeqCst);
+    let r = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        fetch_and_convert_with(&workspace, "ghost-persona", fake_snapshot()).await
+    });
+    TEST_ONLINE_MODE.store(0, Ordering::SeqCst);
+
+    let e = r.expect_err("快照无该 id 必须维持原始错误");
+    assert!(
+        format!("{e:#}").contains("403"),
+        "错误必须是在线臂原始错误（含 HTTP 状态）: {e:#}"
+    );
+    assert!(
+        !ws.path().join("personas/ghost-persona").exists(),
+        "失败路径不得落盘"
+    );
 }

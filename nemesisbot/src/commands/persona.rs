@@ -303,7 +303,7 @@ fn cmd_install(workspace: &std::path::Path, id: &str) -> Result<()> {
 
     let ws_str = workspace.to_string_lossy().to_string();
     let rt = tokio::runtime::Handle::current();
-    tokio::task::block_in_place(|| rt.block_on(async { fetch_and_convert(&ws_str, id).await }))??;
+    tokio::task::block_in_place(|| rt.block_on(async { fetch_and_convert(&ws_str, id).await }))?;
 
     println!("已安装人格: {}。", id);
     println!("使用 'nemesisbot persona activate {}' 激活。", id);
@@ -370,6 +370,11 @@ fn snapshot_persona_tree() -> Option<(Vec<String>, nemesis_plugin::resources::Re
         nemesis_web::handlers::persona::is_agent_file,
     )
 }
+
+/// 在线臂故障注入钩子（cfg(test) 专供：2 = 强制上游失败，快照降级臂离线
+/// 回归用；生产恒 0 走真实网络。web 面同款 TEST_REFRESH_MODE 先例）。
+#[cfg(test)]
+static TEST_ONLINE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 async fn search_personas(
     query: &str,
@@ -449,11 +454,46 @@ fn write_converted_persona(workspace: &str, id: &str, content: &str) -> Result<(
     Ok(())
 }
 
-async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
+/// install 在线臂 + 快照降级（拍板 2026-11-12：GitHub 上游错误分类只影响
+/// stderr 措辞，不分支降级行为——有快照且快照含该 id 时**全部错误类别一律
+/// 降级**，快照无该 id 或无快照时维持原始错误）。生产入口。
+async fn fetch_and_convert(workspace: &str, id: &str) -> Result<()> {
+    fetch_and_convert_with(
+        workspace,
+        id,
+        snapshot_persona_tree().map(|(paths, entry)| {
+            (paths, entry, |p: &str| {
+                nemesis_plugin::resources::snapshot_content(
+                    nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+                    p,
+                )
+            })
+        }),
+    )
+    .await
+}
+
+/// 快照源参数化的降级臂本体。在线臂所有失败路径（HTTP 状态/网络/内容异常/
+/// 未找到）统一 `Err` 上抛——前形态 `Ok(Err(..))` 内层 Result 会被
+/// `Ok(r) => Ok(r)` 透传**绕过快照臂**（BUG-20261113-146 根因：GitHub 未认
+/// 证限流 403 这类最常见不可达形态下 install 无快照兜底），已坍缩为单层
+/// `Result<()>` 杜绝再犯。
+///
+/// 快照三元组走参数而非 BRIDGE 全局注入：BRIDGE 是进程级 OnceLock，测试
+/// 注入会永久污染同 binary 的 r10 系列（其前提 = 无快照插件 → 死上游必须
+/// Err），桥不可作为测试 seam。
+async fn fetch_and_convert_with<C>(
+    workspace: &str,
+    id: &str,
+    snapshot: Option<(Vec<String>, nemesis_plugin::resources::ResourceEntry, C)>,
+) -> Result<()>
+where
+    C: Fn(&str) -> Result<String, String>,
+{
     match fetch_and_convert_online(workspace, id).await {
-        Ok(r) => Ok(r),
+        Ok(()) => Ok(()),
         Err(e) => {
-            let Some((paths, entry)) = snapshot_persona_tree() else {
+            let Some((paths, entry, content_of)) = snapshot else {
                 return Err(e);
             };
             // 匹配口径与 web 面同源（stem == id || filename == id，且 .md +
@@ -475,18 +515,20 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
                 id,
                 entry.short_label()
             );
-            let content = nemesis_plugin::resources::snapshot_content(
-                nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
-                path,
-            )
-            .map_err(anyhow::Error::msg)?;
+            let content = content_of(path).map_err(anyhow::Error::msg)?;
             write_converted_persona(workspace, id, &content)?;
-            Ok(Ok(()))
+            Ok(())
         }
     }
 }
 
-async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<Result<()>> {
+async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<()> {
+    // 测试注入点：强制上游失败（快照降级臂离线回归；生产恒 0 不可达）。
+    #[cfg(test)]
+    if TEST_ONLINE_MODE.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+        anyhow::bail!("GitHub API error: 403 Forbidden");
+    }
+
     // Find path from tree
     let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1"
         .to_string();
@@ -497,7 +539,7 @@ async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<Result<()
 
     let resp = client.get(&url).send().await?;
     if !resp.status().is_success() {
-        return Ok(Err(anyhow::anyhow!("GitHub API error: {}", resp.status())));
+        anyhow::bail!("GitHub API error: {}", resp.status());
     }
     let json: serde_json::Value = resp.json().await?;
 
@@ -520,7 +562,7 @@ async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<Result<()
 
     let path = match agent_path {
         Some(p) => p,
-        None => return Ok(Err(anyhow::anyhow!("人格 '{}' 在仓库中未找到", id))),
+        None => anyhow::bail!("人格 '{}' 在仓库中未找到", id),
     };
 
     // Fetch file content
@@ -530,7 +572,7 @@ async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<Result<()
     );
     let resp = client.get(&content_url).send().await?;
     if !resp.status().is_success() {
-        return Ok(Err(anyhow::anyhow!("下载失败: {}", resp.status())));
+        anyhow::bail!("下载失败: {}", resp.status());
     }
     let cjson: serde_json::Value = resp.json().await?;
     let content_b64 = cjson["content"]
@@ -543,7 +585,7 @@ async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<Result<()
 
     write_converted_persona(workspace, id, &content)?;
 
-    Ok(Ok(()))
+    Ok(())
 }
 
 #[cfg(test)]
