@@ -395,3 +395,51 @@ fn allow_all_plugin(audit_path: &std::path::Path) -> nemesis_security::pipeline:
         ..Default::default()
     })
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-144 回归锁：rename 诊断块的行号惯例必须是 1-based（+1）。
+// 此前裸印 LSP 0-based 行/列且无标注，未标注 file:line:col 按通用惯例
+// 读作 1-based → 模型按错误行号修复（偏一行）。与诊断回灌面
+// （config_watch L{} 渲染）对齐。
+// ---------------------------------------------------------------------------
+
+fn diag(line: u32, ch: u32, severity: u8, msg: &str) -> nemesis_lsp::proto::Diagnostic {
+    nemesis_lsp::proto::Diagnostic {
+        range_start: (line, ch),
+        range_end: (line, ch + 1),
+        severity,
+        source: Some("rustc".to_string()),
+        message: msg.to_string(),
+    }
+}
+
+#[test]
+fn rename_diagnostics_render_one_based_positions() {
+    // LSP 0-based (322, 14) → 1-based 323:15。
+    let diags = vec![diag(322, 14, 1, "cannot find value `x`")];
+    let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &diags);
+    assert!(
+        out.contains("- [error] rustc:323:15: cannot find value `x`"),
+        "1-based rendering expected, got: {out}"
+    );
+    // (0,0) → 1:1（零基原点不越零）。
+    let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &[diag(0, 0, 2, "unused")]);
+    assert!(out.contains("- [warning] rustc:1:1: unused"), "got: {out}");
+    // 计数行按全量统计（不受 take(20) 影响）。
+    let many: Vec<_> = (0..25u32)
+        .map(|i| diag(i, 0, 1, &format!("e{i}")))
+        .collect();
+    let out = super::format_rename_diagnostics(Path::new("a.rs"), &many);
+    assert!(out.contains("25 error(s)"), "got: {out}");
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("- [error]")).count(),
+        20,
+        "listing capped at 20"
+    );
+}
+
+#[test]
+fn rename_diagnostics_none_reported_arm() {
+    let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &[]);
+    assert_eq!(out, "Diagnostics after rename (src/a.rs): none reported\n");
+}

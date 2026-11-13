@@ -286,8 +286,6 @@ impl LspTool {
                 .await;
         }
         let diags = self.manager.wait_for_diagnostics(path, 150, 2000).await;
-        let errs = diags.iter().filter(|d| d.severity == 1).count();
-        let warns = diags.iter().filter(|d| d.severity == 2).count();
 
         if written.is_empty() {
             // 全部文件被边界拒绝 = rename 一个字节都没落——诚实失败并把
@@ -327,34 +325,50 @@ impl LspTool {
                 out.push_str(&format!("- {e}\n"));
             }
         }
-        if diags.is_empty() {
-            out.push_str(&format!(
-                "Diagnostics after rename ({}): none reported\n",
-                path.display()
-            ));
-        } else {
-            out.push_str(&format!(
-                "Diagnostics after rename ({}): {errs} error(s), {warns} warning(s)\n",
-                path.display()
-            ));
-            for d in diags.iter().take(20) {
-                let sev = match d.severity {
-                    1 => "error",
-                    2 => "warning",
-                    3 => "info",
-                    _ => "hint",
-                };
-                out.push_str(&format!(
-                    "- [{sev}] {}:{}:{}: {}\n",
-                    d.source.as_deref().unwrap_or("lsp"),
-                    d.range_start.0,
-                    d.range_start.1,
-                    d.message
-                ));
-            }
-        }
+        out.push_str(&format_rename_diagnostics(path, &diags));
         Ok(out)
     }
+}
+
+/// rename 后诊断块渲染（execute_rename 收尾段提纯为纯函数，行号惯例可
+/// 直接单测）。BUG-20261113-144：此处曾**裸印 LSP 0-based 行/列号且无
+/// 任何标注**——未标注的 `source:line:col` 按通用惯例（编译器/编辑器/
+/// 诊断回灌面）读作 1-based，模型拿这个行号去 edit_file 会偏一行。
+/// 修复 = +1 转 1-based 展示，与诊断回灌面（config_watch
+/// apply_diagnostics_feedback 的 L{} 渲染）同惯例。manager.rs 查询面
+/// （definition/references 列表）不跟随、维持「显式标注 0-based」——
+/// 该面的数字会被模型原样回填为 lsp 工具的 line/character 入参（入参
+/// 契约 0-based），标注比转换更不易错；两个消费面各自成立。
+fn format_rename_diagnostics(file: &Path, diags: &[nemesis_lsp::proto::Diagnostic]) -> String {
+    if diags.is_empty() {
+        return format!(
+            "Diagnostics after rename ({}): none reported\n",
+            file.display()
+        );
+    }
+    let errs = diags.iter().filter(|d| d.severity == 1).count();
+    let warns = diags.iter().filter(|d| d.severity == 2).count();
+    let mut out = format!(
+        "Diagnostics after rename ({}): {errs} error(s), {warns} warning(s)\n",
+        file.display()
+    );
+    for d in diags.iter().take(20) {
+        let sev = match d.severity {
+            1 => "error",
+            2 => "warning",
+            3 => "info",
+            _ => "hint",
+        };
+        // LSP 位置 0-based → 1-based 展示（+1，行与列同转）。
+        out.push_str(&format!(
+            "- [{sev}] {}:{}:{}: {}\n",
+            d.source.as_deref().unwrap_or("lsp"),
+            d.range_start.0 + 1,
+            d.range_start.1 + 1,
+            d.message
+        ));
+    }
+    out
 }
 
 /// 两阶段落盘：先全部过安全闸（合成 `write_file` ToolInvocation 走完整
