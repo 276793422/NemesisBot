@@ -528,8 +528,9 @@ fn test_resolve_reasoning_effort_tiers() {
 fn effort_truth_source_contract_and_extended_tiers() {
     // 值域单一真相源（2026-11-09 扩档 7 档）：off 居首、无重复；
     // valid_effort 大小写不敏感 + trim；新档（minimal/xhigh/max）resolve
-    // 原样透传；大写形态不在 resolve 层归一（保存入口已归一）——防御臂
-    // None，垃圾不上 wire。
+    // 原样透传；resolve 与 valid_effort 同一容忍语义（BUG-20261113-151：
+    // trim + 大小写归一——保存入口只 lowercase 不 trim，手改 config 无
+    // 归一层，合法变体不能在读端被当垃圾静默丢档）。
     assert_eq!(EFFORT_TIERS.len(), 7);
     assert_eq!(EFFORT_TIERS.first(), Some(&"off"));
     let mut dedup = EFFORT_TIERS.to_vec();
@@ -562,8 +563,51 @@ fn effort_truth_source_contract_and_extended_tiers() {
         Some("xhigh")
     );
     assert_eq!(resolve_reasoning_effort(&cfg, "m3").as_deref(), Some("max"));
-    // 大写 = 保存入口不应产生的形态 → 防御臂 None。
-    assert_eq!(resolve_reasoning_effort(&cfg, "m4"), None);
+    // 大写变体与 canonical 等价（valid_effort 认可 → resolve 不丢档）。
+    assert_eq!(resolve_reasoning_effort(&cfg, "m4").as_deref(), Some("max"));
+}
+
+/// BUG-20261113-151：resolve_reasoning_effort 读侧容忍语义回归——
+/// 写侧 lowercase-未-trim 存储值（" high "）与手改 config 大写变体
+/// （"High"）不再被当 garbage 静默丢档；unknown 值仍 None（垃圾不上
+/// wire）；"off"/空白变体仍 None。
+#[test]
+fn test_bug151_resolve_reasoning_effort_normalizes_case_and_trim() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "upper", "model": "x/m", "reasoning_effort": "High"},
+            {"model_name": "padded", "model": "x/m", "reasoning_effort": "  high  "},
+            {"model_name": "padded_upper", "model": "x/m", "reasoning_effort": " XHIGH "},
+            {"model_name": "off_plain", "model": "x/m", "reasoning_effort": "off"},
+            {"model_name": "off_padded", "model": "x/m", "reasoning_effort": " OFF "},
+            {"model_name": "off_upper", "model": "x/m", "reasoning_effort": "OFF"},
+            {"model_name": "empty", "model": "x/m", "reasoning_effort": ""},
+            {"model_name": "whitespace", "model": "x/m", "reasoning_effort": "   "},
+            {"model_name": "unknown", "model": "x/m", "reasoning_effort": "turbo"},
+            {"model_name": "absent", "model": "x/m"}
+        ]
+    });
+    // 合法变体归一到 canonical 小写。
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "upper").as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "padded").as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "padded_upper").as_deref(),
+        Some("xhigh")
+    );
+    // off / 空白 / 未知 / 缺席 → None（不发键）。
+    assert_eq!(resolve_reasoning_effort(&cfg, "off_plain"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "off_padded"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "off_upper"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "empty"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "whitespace"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "unknown"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "absent"), None);
 }
 
 // ============================================================================

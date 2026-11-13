@@ -1293,7 +1293,8 @@ impl ModelsHandler {
                 let s = value
                     .as_str()
                     .ok_or("reasoning_effort must be a string")?
-                    .to_lowercase();
+                    .trim()
+                    .to_lowercase(); // trim：valid_effort 容忍空白，落盘不留（BUG-20261113-151 读侧精确匹配）
                 if !nemesis_types::capability::valid_effort(&s) {
                     return Err(format!(
                         "Invalid effort '{s}'. Use one of: {}",

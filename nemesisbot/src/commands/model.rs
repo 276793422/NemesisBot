@@ -908,7 +908,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
-            let e = effort.to_lowercase();
+            let e = effort.trim().to_lowercase(); // trim 落盘 canonical（BUG-20261113-151，与读侧容忍语义对齐）
             if !nemesis_types::capability::valid_effort(&e) {
                 anyhow::bail!(
                     "Invalid effort '{}'. Use one of: {}",

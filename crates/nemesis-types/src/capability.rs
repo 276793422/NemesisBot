@@ -332,11 +332,17 @@ pub fn valid_effort(s: &str) -> bool {
 /// matching `model_list[]` entry and returns its `reasoning_effort` string
 /// (one of [`EFFORT_TIERS`]); None/empty/"off" → None (send nothing);
 /// unknown values → None (defensive: garbage config never injects keys).
+///
+/// 归一与 [`valid_effort`] 同一容忍语义（trim + 大小写不敏感，
+/// BUG-20261113-151）：保存入口（WSAPI/CLI）只 lowercase 不 trim，
+/// 手改 config 亦无归一层——`"High"` / `" high "` 是 [`valid_effort`]
+/// 认可的合法变体，不能在读取端被当垃圾静默丢档（effort 无声失效，
+/// 用户以为开档实际未生效）。返回值恒为 canonical 小写。
 pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> Option<String> {
     let e = find_model_entry(cfg, active_alias)
         .and_then(|m| m.get("reasoning_effort"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(|s| s.trim().to_ascii_lowercase())
         .unwrap_or_default();
     match e.as_str() {
         "" | "off" => None,
