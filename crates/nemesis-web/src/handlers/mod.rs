@@ -764,6 +764,7 @@ mod agt_tests;
 
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_deep_tests;
+// BUG-20261113-156：workbench 命令名形态契约（裸名 vs 全名）回归锁。
 #[cfg(all(test, feature = "forge"))]
 mod forge_extra_tests;
 #[cfg(all(test, feature = "memory"))]
@@ -780,6 +781,8 @@ mod scanner_more_tests;
 mod skills_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_more_tests;
+#[cfg(all(test, feature = "board"))]
+mod workbench_tests;
 // 供应链工作流：skills.install 漏斗记账/gate 拒绝/
 // uninstall 联动/verify 漂移检测的 WSAPI 面。
 #[cfg(all(test, feature = "workflow"))]

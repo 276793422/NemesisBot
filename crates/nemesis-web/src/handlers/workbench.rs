@@ -63,7 +63,11 @@ impl ModuleHandler for WorkbenchHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["workbench.get", "workbench.respond"]
+        // BUG-20261113-156：裸 cmd 名（与全仓 51 模块惯例一致——router 把
+        // msg.cmd 原样传进 handle_cmd，前端 request('workbench', 'get') 发
+        // 的是裸名；旧清单「workbench.get」与 match 臂全名形态导致全部
+        // 请求落 unknown 分支，工作台页面取数与动作全灭）。
+        &["get", "respond"]
     }
 
     async fn handle_cmd(
@@ -84,7 +88,9 @@ impl ModuleHandler for WorkbenchHandler {
         match cmd {
             // 页面完整载荷：触点语义 + 承载单全视图 + 默认动作 + 无人值守
             // 解析（见 touchpoints::touchpoint_workbench_payload）。
-            "workbench.get" => {
+            // BUG-20261113-156：裸名（router 原样传 msg.cmd；全名旧形态
+            // 与前端 request('workbench', 'get') 契约错位，见 commands()）。
+            "get" => {
                 let kind_str = get_str(&data, "kind")?;
                 let kind = kind_from_str(&kind_str)?;
                 let id = require_id(&data)?;
@@ -95,7 +101,7 @@ impl ModuleHandler for WorkbenchHandler {
             }
             // 人工动作漏斗：confirm / revise_spec / rework_local / cancel /
             // mute（词表与校验在 respond_touchpoint；payload 透传原样）。
-            "workbench.respond" => {
+            "respond" => {
                 let kind_str = get_str(&data, "kind")?;
                 kind_from_str(&kind_str)?; // 值域校验（id 才是权威键）
                 let id = require_id(&data)?;
@@ -111,7 +117,7 @@ impl ModuleHandler for WorkbenchHandler {
                 Ok(Some(out))
             }
             other => Err(format!(
-                "未知 workbench 命令 \"{other}\"（可选：workbench.get / workbench.respond）"
+                "未知 workbench 命令 \"{other}\"（可选：get / respond）"
             )),
         }
     }

@@ -1216,7 +1216,7 @@ async fn test_workbench_handler_routing() {
     // 正常取数：URL 段 touchpoint-spec 命中 spec 触点。
     let out = WorkbenchHandler
         .handle_cmd(
-            "workbench.get",
+            "get",
             Some(serde_json::json!({ "kind": "touchpoint-spec", "id": spec_tp.id })),
             &ctx,
         )
@@ -1227,7 +1227,7 @@ async fn test_workbench_handler_routing() {
     // kind 与触点实体不一致（stale/手打交叉）= 诚实报错。
     let err = WorkbenchHandler
         .handle_cmd(
-            "workbench.get",
+            "get",
             Some(serde_json::json!({ "kind": "touchpoint-prototype", "id": spec_tp.id })),
             &ctx,
         )
@@ -1238,7 +1238,7 @@ async fn test_workbench_handler_routing() {
     // 未知 kind = loud 报错（列权威形态）。
     let err = WorkbenchHandler
         .handle_cmd(
-            "workbench.get",
+            "get",
             Some(serde_json::json!({ "kind": "nope", "id": spec_tp.id })),
             &ctx,
         )
@@ -1252,7 +1252,7 @@ async fn test_workbench_handler_routing() {
     // 缺 id = 报错。
     let err = WorkbenchHandler
         .handle_cmd(
-            "workbench.get",
+            "get",
             Some(serde_json::json!({ "kind": "touchpoint-spec" })),
             &ctx,
         )
@@ -1263,7 +1263,7 @@ async fn test_workbench_handler_routing() {
     // respond 透传漏斗：未知动作错误从漏斗冒出（kind 只做值域校验，id 才是权威键）。
     let err = WorkbenchHandler
         .handle_cmd(
-            "workbench.respond",
+            "respond",
             Some(serde_json::json!({
                 "kind": "touchpoint-spec",
                 "id": spec_tp.id,
@@ -1278,7 +1278,7 @@ async fn test_workbench_handler_routing() {
     // respond 成功路径（身份固定 dashboard admin）。
     let out = WorkbenchHandler
         .handle_cmd(
-            "workbench.respond",
+            "respond",
             Some(serde_json::json!({
                 "kind": "touchpoint-spec",
                 "id": spec_tp.id,
