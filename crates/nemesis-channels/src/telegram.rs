@@ -18,9 +18,12 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
-/// 单块原始文本字符预算：Telegram Bot API 硬限 4096，
+/// 单块原始文本预算（UTF-16 code units）：Telegram Bot API 硬限 4096
+/// 按 UTF-16 units 计（官方 entities 文档；astral emoji = 2 units），
 /// 预算留 ~600 给 markdown→HTML 的转义/标签膨胀；纯文本回退落在原始块
-/// 上恒 < 4096。
+/// 上恒 < 4096。拆分必须用 UTF-16 口径（split_message_utf16）——纯标量
+/// 计数在 emoji 密集内容上少算至 2×，拆完仍会被整条拒收
+/// （BUG-20261113-166）。
 const TELEGRAM_SPLIT_BUDGET: usize = 3500;
 
 // ---------------------------------------------------------------------------
@@ -370,15 +373,15 @@ impl TelegramChannel {
         let mut client_builder = crate::base::outbound_http_builder();
 
         // Apply proxy if configured
-        if let Some(ref proxy_url) = config.proxy {
-            if !proxy_url.is_empty() {
-                match reqwest::Proxy::all(proxy_url.as_str()) {
-                    Ok(proxy) => {
-                        client_builder = client_builder.proxy(proxy);
-                    }
-                    Err(e) => {
-                        warn!("[TelegramChannel] invalid proxy URL '{}': {}", proxy_url, e);
-                    }
+        if let Some(ref proxy_url) = config.proxy
+            && !proxy_url.is_empty()
+        {
+            match reqwest::Proxy::all(proxy_url.as_str()) {
+                Ok(proxy) => {
+                    client_builder = client_builder.proxy(proxy);
+                }
+                Err(e) => {
+                    warn!("[TelegramChannel] invalid proxy URL '{}': {}", proxy_url, e);
                 }
             }
         }
@@ -704,34 +707,34 @@ impl TelegramChannel {
         // Photo — （多模态）：getFile → 下载落盘 uploads → **本地路径引用**
         // 进 统一 attach（安全闸 → 历史引用 → build_messages 水合）。
         // 下载失败诚实降级为 "[Photo received]" 文案（不产出无法水合的引用）。
-        if let Some(ref photos) = msg.photo {
-            if !photos.is_empty() {
-                // Use the largest photo (last in array)
-                let photo = &photos[photos.len() - 1];
-                let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
-                    &nemesis_path::default_path_manager().workspace(),
-                );
-                let attachment = Self::fetch_file_attachment(
-                    http,
-                    api,
-                    &photo.file_id,
-                    "image",
-                    "jpg",
-                    &uploads_dir,
-                )
-                .await;
-                if let Some(ref att) = attachment {
-                    media.push(att.clone());
-                }
-                if !content.is_empty() {
-                    content.push('\n');
-                }
-                match (&attachment, &msg.caption) {
-                    (Some(_), Some(cap)) => content.push_str(&format!("[image: {cap}]")),
-                    (Some(_), None) => content.push_str("[image: photo]"),
-                    (None, Some(cap)) => content.push_str(&format!("[Photo received: {cap}]")),
-                    (None, None) => content.push_str("[Photo received]"),
-                }
+        if let Some(ref photos) = msg.photo
+            && !photos.is_empty()
+        {
+            // Use the largest photo (last in array)
+            let photo = &photos[photos.len() - 1];
+            let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
+                &nemesis_path::default_path_manager().workspace(),
+            );
+            let attachment = Self::fetch_file_attachment(
+                http,
+                api,
+                &photo.file_id,
+                "image",
+                "jpg",
+                &uploads_dir,
+            )
+            .await;
+            if let Some(ref att) = attachment {
+                media.push(att.clone());
+            }
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            match (&attachment, &msg.caption) {
+                (Some(_), Some(cap)) => content.push_str(&format!("[image: {cap}]")),
+                (Some(_), None) => content.push_str("[image: photo]"),
+                (None, Some(cap)) => content.push_str(&format!("[Photo received: {cap}]")),
+                (None, None) => content.push_str("[Photo received]"),
             }
         }
 
@@ -1244,7 +1247,7 @@ impl TelegramChannel {
 
             // ATX heading (# through ######) → bold
             if let Some(heading) = parse_heading(trimmed) {
-                blocks.push(format!("<b>{}</b>", render_inline(&heading)));
+                blocks.push(format!("<b>{}</b>", render_inline(heading)));
                 i += 1;
                 continue;
             }
@@ -1469,13 +1472,12 @@ fn render_inline(text: &str) -> String {
             Some(chars[idx + 1])
         };
 
-        let star_marker =
-            c == '*' && prev.map_or(true, |p| p != '*') && next.map_or(true, |n| n != '*');
+        let star_marker = c == '*' && (prev != Some('*')) && (next != Some('*'));
         let underscore_marker = c == '_'
-            && prev.map_or(true, |p| p != '_')
-            && next.map_or(true, |n| n != '_')
-            && !(prev.map_or(false, |p| p.is_alphanumeric())
-                && next.map_or(false, |n| n.is_alphanumeric()));
+            && (prev != Some('_'))
+            && (next != Some('_'))
+            && !(prev.is_some_and(|p| p.is_alphanumeric())
+                && next.is_some_and(|n| n.is_alphanumeric()));
 
         if star_marker || underscore_marker {
             if in_italic {
@@ -1569,11 +1571,14 @@ impl Channel for TelegramChannel {
         // before sending the actual response.
         self.stop_thinking_animation(&msg.chat_id);
 
-        // Telegram Bot API sendMessage/editMessageText 硬限 4096 字符——超长
-        // 回复 HTML 与纯文本两次尝试全 400，整条投递失败。
-        // 预算 3500 留 HTML 转义/标签膨胀余量；即便病理转义内容把 HTML 版
-        // 顶过 4096，纯文本回退落在原始块（≤3500 < 4096）上恒可达。
-        let raw_chunks = nemesis_types::utils::split_message(&msg.content, TELEGRAM_SPLIT_BUDGET);
+        // Telegram Bot API sendMessage/editMessageText 硬限 4096 ——按
+        // UTF-16 code units 计（官方 entities 文档；astral emoji = 2
+        // units），超长回复 HTML 与纯文本两次尝试全 400，整条投递失败。
+        // 预算 3500 units 留 HTML 转义/标签膨胀余量；即便病理转义内容把
+        // HTML 版顶过 4096，纯文本回退落在原始块（≤3500 units < 4096）
+        // 上恒可达。
+        let raw_chunks =
+            nemesis_types::utils::split_message_utf16(&msg.content, TELEGRAM_SPLIT_BUDGET);
         let html_chunks: Vec<String> = raw_chunks
             .iter()
             .map(|c| Self::markdown_to_telegram_html(c))
