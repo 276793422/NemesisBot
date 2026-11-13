@@ -504,9 +504,11 @@ impl AgentLoop {
             return;
         }
 
-        // 3. 会话串行闸：try_acquire 失败 = 该会话回合在跑。★ 在一切闸
-        //    状态变更（claim/confirm/打标）之前——busy 臂全部无副作用返回
-        //    （或入队），重投递由回合尾巴 drain 自然排空。
+        // 3. 会话串行闸：try_acquire 失败 = 该会话回合在跑。★ 在主路闸
+        //    状态变更（claim/confirm/打标）之前——入队臂无副作用返回，重投
+        //    递由回合尾巴 drain 自然排空；排队满/Reject 终局注记臂带终局副
+        //    作用（落库+出站+收口），防重复回调双份注记由
+        //    finish_continuation_as_note 内部的单飞闸承担（BUG-20261113-145）。
         if !self.try_acquire_session(&cont.session_key) {
             match self.concurrent_mode {
                 // Queue/Steer：重投递消息入队（恒 next-turn——续行结果不
@@ -861,11 +863,20 @@ impl AgentLoop {
         self.mark_snapshot_final_persisted(mgr, task_id);
     }
 
-    /// 终局注记臂汇总：D5 台账回写（真实终态三元组）+ 注记落库（store
-    /// append + chat_log assistant 行带节点徽章）+ 出站 + 快照收口
+    /// 终局注记臂汇总：单飞闸 + D5 台账回写（真实终态三元组）+ 注记落库
+    /// （store append + chat_log assistant 行带节点徽章）+ 出站 + 快照收口
     /// （finish_handling）。estop 臂 / 排队满臂 / Reject 忙臂共用——三者
     /// 都是「不再续行」的终局，都必须在返回前完成台账终态与快照生命周期
     /// 收口。
+    ///
+    /// 单飞闸（BUG-20261113-145）：三个注记臂在主路认领点（run_continuation_turn
+    /// 的 claim_handling）**之前**执行，旧实现无认领保护——重复回调（发现 F
+    /// 同源威胁模型：B 端传输重试/恢复重投递可与首份并发到达，或落在首份
+    /// 「落库 ↔ 快照回收」窗口内）会双份注记出站 + 双行 chat_log append。
+    /// 旧迷你循环 claim-first（先认领后进一切臂）estop 臂同样受保护；续行
+    /// 回主路重排闸序后该保护出现缺口。认领失败 = 已有在途处理（主路认领
+    /// 后正走 finalize，或另一注记臂已收口），本臂诚实跳过、不收口快照
+    /// （结局归在途那份）；成功路径由尾部 finish_handling 统一放行 + 回收。
     #[allow(clippy::too_many_arguments)]
     async fn finish_continuation_as_note(
         self: &Arc<Self>,
@@ -878,6 +889,10 @@ impl AgentLoop {
         reg_summary: Option<String>,
         reg_error: Option<String>,
     ) {
+        if !mgr.claim_handling(task_id).await {
+            debug!("[Continuation] task {task_id} 终局注记臂认领失败（重复回调诚实跳过）");
+            return;
+        }
         crate::subagent_registry::global().finish(
             task_id,
             reg_status,

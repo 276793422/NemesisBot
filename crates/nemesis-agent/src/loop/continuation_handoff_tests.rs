@@ -18,6 +18,9 @@
 // ⑨ 失败任务错误文本（"Error: {error}"）进续行 LLM 上下文；
 // ⑩ adversarial：续行回合高危工具调用走审批卡（dispatch 瀑布在续行同样
 //    生效——旧裸 execute 无此闸，脚本化 tool_call 会被静默执行）。
+// ⑪ 终局注记臂单飞闸（BUG-20261113-145）：estop/排队满/Reject 忙臂在主路
+//    认领点之前执行，认领已被在途首份持有时必须诚实跳过（恰好一份终局
+//    注记），且不得收口快照（结局归在途那份）。
 //
 // 全部经 run_bus_owned 泵全链路驱动（gate → Continuation →
 // run_continuation_turn），自带迷你 provider + 计数工具，不与 l5/g4/f8
@@ -910,4 +913,158 @@ async fn continuation_high_risk_tool_call_goes_through_approval() {
         "got: {}",
         out.content
     );
+}
+
+// ---------------------------------------------------------------------------
+// ⑪ 终局注记臂单飞闸（BUG-20261113-145）：认领被在途首份持有时，
+//    estop / busy Reject 注记臂必须诚实跳过——一份终局 + 快照不收口
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn estop_note_arm_single_flight_suppresses_duplicate_callback() {
+    let _logs = crate::test_support::capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut loop_inner = AgentLoop::new_bus(
+        Box::new(HandoffProvider::new(
+            vec![hs_resp("must not run")],
+            calls.clone(),
+        )),
+        hs_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let estop = std::sync::Arc::new(crate::estop::EstopState::new());
+    loop_inner.set_estop(estop.clone());
+    estop.trigger();
+    let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    seed_continuation(&mgr, "hsnote1").await;
+    loop_inner.set_continuation_manager(mgr.clone());
+    let agent_loop = std::sync::Arc::new(loop_inner);
+
+    let note_msg = |task: &str, result: &str| {
+        hs_msg(
+            &format!(
+                "{}{task}",
+                nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX
+            ),
+            result,
+            std::collections::HashMap::new(),
+        )
+    };
+
+    // 第一份：模拟在途重复——认领已被首份持有（主路认领后正走 finalize，
+    // 或另一注记臂已收口）。estop 注记臂必须跳过：零出站、快照不收口。
+    assert!(mgr.claim_handling("hsnote1").await);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    in_tx
+        .send(note_msg("hsnote1", "task result text"))
+        .await
+        .unwrap();
+    drop(in_tx);
+    agent_loop.clone().run_bus_arc(in_rx).await;
+    let calls = calls.lock().unwrap().clone();
+    assert!(calls.is_empty(), "注记臂不开 LLM 轮");
+    assert_no_outbound(&mut out_rx).await;
+    assert!(
+        mgr.has_continuation("hsnote1").await,
+        "认领失败臂 = 诚实跳过，不得收口快照（结局归在途那份）"
+    );
+
+    // 第二份：放行认领（模拟在途那份完成）——重投递走注记臂，恰好一份
+    // ⛔ 注记 + 快照收口。
+    mgr.release_handling("hsnote1").await;
+    let (in_tx2, in_rx2) = tokio::sync::mpsc::channel(16);
+    in_tx2
+        .send(note_msg("hsnote1", "task result text"))
+        .await
+        .unwrap();
+    drop(in_tx2);
+    agent_loop.clone().run_bus_arc(in_rx2).await;
+    let out = out_rx
+        .recv()
+        .await
+        .expect("estop note published exactly once");
+    assert!(out.content.contains("⛔"), "got: {}", out.content);
+    assert_no_outbound(&mut out_rx).await;
+    assert!(!mgr.has_continuation("hsnote1").await);
+}
+
+#[tokio::test]
+async fn busy_reject_note_arm_single_flight_suppresses_duplicate_callback() {
+    let _logs = crate::test_support::capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut loop_inner = AgentLoop::new_bus(
+        Box::new(HandoffProvider::new(
+            vec![hs_resp("must not run")],
+            calls.clone(),
+        )),
+        hs_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    seed_continuation(&mgr, "hsbusy2").await;
+    loop_inner.set_continuation_manager(mgr.clone());
+    // 预占会话（另一回合在跑的模拟——busy → Reject 注记臂）。
+    assert!(loop_inner.try_acquire_session("hsess"));
+    let agent_loop = std::sync::Arc::new(loop_inner);
+
+    let note_msg = |task: &str, result: &str| {
+        hs_msg(
+            &format!(
+                "{}{task}",
+                nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX
+            ),
+            result,
+            std::collections::HashMap::new(),
+        )
+    };
+
+    // 第一份：认领被在途首份持有——busy Reject 注记臂必须跳过（零出站、
+    // 快照不收口），双份 ⏳ 注记被单飞闸拦下。
+    assert!(mgr.claim_handling("hsbusy2").await);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    in_tx
+        .send(note_msg("hsbusy2", "precious worker result"))
+        .await
+        .unwrap();
+    drop(in_tx);
+    agent_loop.clone().run_bus_arc(in_rx).await;
+    let calls = calls.lock().unwrap().clone();
+    assert!(calls.is_empty(), "忙臂不得开 LLM 轮");
+    assert_no_outbound(&mut out_rx).await;
+    assert!(
+        mgr.has_continuation("hsbusy2").await,
+        "认领失败臂不得收口快照"
+    );
+
+    // 第二份：放行认领——注记臂放行，恰好一份 ⏳ 终局注记（含任务结果）
+    // + 快照收口。
+    mgr.release_handling("hsbusy2").await;
+    let (in_tx2, in_rx2) = tokio::sync::mpsc::channel(16);
+    in_tx2
+        .send(note_msg("hsbusy2", "precious worker result"))
+        .await
+        .unwrap();
+    drop(in_tx2);
+    agent_loop.clone().run_bus_arc(in_rx2).await;
+    let out = out_rx
+        .recv()
+        .await
+        .expect("busy note published exactly once");
+    assert!(out.content.contains("会话正忙"), "got: {}", out.content);
+    assert!(
+        out.content.contains("precious worker result"),
+        "任务结果不得静默丢弃: {}",
+        out.content
+    );
+    assert_no_outbound(&mut out_rx).await;
+    assert!(!mgr.has_continuation("hsbusy2").await);
+    agent_loop.release_session("hsess");
 }
