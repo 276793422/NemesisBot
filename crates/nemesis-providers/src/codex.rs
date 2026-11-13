@@ -132,7 +132,21 @@ impl CodexProvider {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    instructions = msg.content.to_text();
+                    // 多条 system 合并（非 last-wins 覆写）：hook 重呼会在
+                    // 消息尾部追加一条 system 角色 "# Hook feedback: ..."
+                    //（nemesis-agent loop/recovery.rs），覆写形态会把 persona
+                    // 整个顶掉——instructions 只剩 hook 文案，模型失去身份
+                    // 与行为契约。anthropic lane（system_parts 全收集合并）
+                    // 与 http lane（多条 system 原样透传）都保留全部 system
+                    // 内容，本 lane 是唯一覆写者——对齐合并语义。空段不拼
+                    //（避免悬空分隔符，全空仍回落默认 instructions）。
+                    let text = msg.content.to_text();
+                    if !text.is_empty() {
+                        if !instructions.is_empty() {
+                            instructions.push_str("\n\n");
+                        }
+                        instructions.push_str(&text);
+                    }
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
@@ -628,6 +642,30 @@ fn handle_sse_event(ev: &serde_json::Value) -> SseOutcome {
     }
 }
 
+/// 200-包装错误诚实化（对齐 http lane 2026-09-17 CC Switch 根修与
+/// anthropic lane content-array 守卫）：部分网关对未知路径/上游故障回
+/// HTTP 200 + 合法 JSON 错误体（实测形态 {"code":500,"msg":"404 NOT_FOUND"}）。
+/// Responses wire 的合法 200 响应体必带 output 数组（空数组 = 合法空响应，
+/// 既有测试钉住）；error 字段在场或 output 缺席/非数组 → 上游真相被吞成
+/// 静默空成功（content=""/finish=stop），现响亮报 Format 带 body 摘要。
+/// 消费点：decode_codex_response（非流式 JSON 臂）与 parse_sse_text
+/// （response.completed/incomplete 终态臂）——同一谓词两处共用。
+fn codex_200_guard(data: &serde_json::Value, raw_excerpt: &str) -> Result<(), FailoverError> {
+    if data.get("error").is_some_and(|e| !e.is_null()) {
+        return Err(FailoverError::Format {
+            provider: "codex".to_string(),
+            message: format!("error body with HTTP 200: {raw_excerpt}"),
+        });
+    }
+    if data.get("output").and_then(|o| o.as_array()).is_none() {
+        return Err(FailoverError::Format {
+            provider: "codex".to_string(),
+            message: format!("HTTP 200 response body missing output array: {raw_excerpt}"),
+        });
+    }
+    Ok(())
+}
+
 /// 解析完整 SSE 文本流（聚合模式：找终态事件出结果）。
 /// 流自然结束仍无终态事件（中途断流）= 补全不完整，按 Timeout 计——
 /// 诚实不可交付，且重试环可安全重抽。
@@ -645,7 +683,15 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
             continue;
         };
         match handle_sse_event(&ev) {
-            SseOutcome::Finished(response) => return Ok(parse_codex_response(&response)),
+            SseOutcome::Finished(response) => {
+                // 终态载荷同过 200-guard（codex_200_guard）：网关把错误
+                // 包成 completed 事件（response 对象缺 output/error 在场）
+                // 时上游真相不静默——空 output 数组仍合法放行。
+                let excerpt = serde_json::to_string(&response)
+                    .unwrap_or_else(|_| "<unserializable response>".to_string());
+                codex_200_guard(&response, &excerpt.chars().take(200).collect::<String>())?;
+                return Ok(parse_codex_response(&response));
+            }
             SseOutcome::Failed(msg) => {
                 // 流内 failed/error 文案与真相源同判
                 //（classify_llm_error 统一定义）——此前恒 Unknown（不带
@@ -730,6 +776,7 @@ async fn decode_codex_response(
             ),
         })?;
 
+    codex_200_guard(&data, &raw.chars().take(200).collect::<String>())?;
     Ok(parse_codex_response(&data))
 }
 
