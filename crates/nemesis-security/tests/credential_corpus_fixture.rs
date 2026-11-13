@@ -722,6 +722,12 @@ fn dlp_real_forms_still_block() {
     let dlp = DlpEngine::new(true, "block");
     let cases: Vec<(&str, String)> = vec![
         ("aws_access_key", "aws_access_key_id = AKIANCDC6VFQTFGRMBKW".into()),
+        // BUG-20261113-148：全字母无词表 SCREAMING 真实形态（占位豁免词表
+        // 收窄的行为增量面）必须保持 block——上一行含数字样本在收窄前后
+        // 两版判据下都不过 SCREAMING（含数字即失格），钉不住收窄；此格
+        // 让 dlp validator（aws_access_not_doc_example）回退裸 SCREAMING
+        // 旧判据时当场翻红。
+        ("aws_access_key", "aws_access_key_id = AKIAABCDEFGHIJKLMNOP".into()),
         ("aws_secret_key", "aws_secret_access_key = K7MdE1NgBpXrFiCy3Wj9QaZt5uVwS8xY2hJ4mN6pQ0".into()),
         // jwt.io demo 常量尾字符改写（d→d 不行,取末位替换为 9）——非 demo 真 JWT
         ("jwt_token", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.flKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c9".into()),
