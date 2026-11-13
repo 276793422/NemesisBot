@@ -17,8 +17,10 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Web fetch tool - retrieves URL content via HTTP GET.
 pub struct WebFetchTool {
-    /// HTTP client.
-    client: reqwest::Client,
+    /// HTTP client（pub(crate) 供 tests 子模块直连验证重定向策略——
+    /// execute 全链的 validate_url 会拦一切本地 host，网络行为测试
+    /// 只能绕开闸直测 client）。
+    pub(crate) client: reqwest::Client,
     /// Maximum response size in bytes.
     max_size: usize,
     /// Request timeout.
@@ -36,6 +38,14 @@ impl WebFetchTool {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .user_agent("NemesisBot/1.0")
+            // BUG-20261113-155：不跟随重定向。reqwest 默认 Policy 会静默跟随
+            // 最多 10 跳，而 validate_url 只在首跳 URL 上执行——公网恶意站
+            // 302 → http://127.0.0.1 / 169.254.169.254 即绕过 SSRF 闸。禁跟
+            // 随后 3xx 原样返回，execute 把 Location 带进错误消息（见下方
+            // 3xx 分支），模型自行 fetch 新地址时重新过闸——每一跳都校验。
+            // 与 image_attach URL 预取 / plugins-wasm egress / http-pool /
+            // release_fetch 等安全敏感出口的 Policy::none 惯例一致。
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
 
@@ -116,6 +126,17 @@ impl Tool for WebFetchTool {
             Ok(Ok(response)) => {
                 let status = response.status();
                 if !status.is_success() {
+                    // 重定向禁跟随（BUG-20261113-155）：3xx 带 Location 回给
+                    // 模型——它可自行 fetch 新地址，新 URL 重新过 validate_url
+                    // 首跳闸；不回 Location 模型就看不到跳转去向。
+                    if status.is_redirection()
+                        && let Some(loc) = response
+                            .headers()
+                            .get(reqwest::header::LOCATION)
+                            .and_then(|v| v.to_str().ok())
+                    {
+                        return ToolResult::error(&redirect_refetch_message(status, loc));
+                    }
                     return ToolResult::error(&format!(
                         "HTTP {} {}",
                         status.as_u16(),
@@ -142,6 +163,17 @@ impl Tool for WebFetchTool {
             )),
         }
     }
+}
+
+/// 重定向禁跟随（BUG-20261113-155）的 3xx 错误消息：状态码 + 跳转去向
+/// 一并回给模型（它可自行 fetch 新地址，新 URL 重新过 validate_url 首跳闸）。
+fn redirect_refetch_message(status: reqwest::StatusCode, location: &str) -> String {
+    format!(
+        "HTTP {} {} (redirected, not followed — re-fetch this URL to continue: {})",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("Unknown"),
+        location
+    )
 }
 
 /// Validate URL to prevent SSRF attacks.

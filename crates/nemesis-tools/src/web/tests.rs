@@ -693,3 +693,109 @@ fn s2_validate_url_passes_hostless_and_public_urls() {
     // Public host that passes every blocked-host / private-range check.
     assert!(validate_url("https://example.com/path").is_ok());
 }
+
+// ===========================================================================
+// BUG-20261113-155 回归锁：web_fetch 禁跟随重定向（SSRF redirect bypass）。
+// 旧形态：reqwest 默认 Policy 静默跟随 10 跳，validate_url 只拦首跳——
+// 公网恶意站 302 → http://127.0.0.1:<port>/ 即绕闸读内网响应。
+// 修复两半：①client 层 Policy::none（不跟随，resp.url() 停在首跳）；
+// ②execute 3xx 分支消息带 Location（redirect_refetch_message，模型自行
+// fetch 新址时每一跳重新过闸）。execute 全链的 validate_url 拦一切本地
+// host，网络行为只能经 pub(crate) client 直连验证——不依赖任何
+// validate_url 缺口形态。
+// ===========================================================================
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// 起一个一次性 mini HTTP 服务器：收到任意请求即回固定原始响应
+/// （仅接受一次连接——跟随行为会撞第二次连接/无服务端口）。
+async fn spawn_one_shot_http_server(response: Vec<u8>) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.expect("accept");
+        let mut buf = [0u8; 4096];
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let n = sock.read(&mut buf).await.expect("read");
+                if n == 0
+                    || buf[..n].windows(4).any(|w| {
+                        w == b"
+
+"
+                    })
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        let _ = sock.write_all(&response).await;
+        let _ = sock.shutdown().await;
+    });
+    port
+}
+
+/// 修复第一半：client 层不跟随 302——状态原样返回、resp.url() 停在首跳、
+/// 「内网」目标的响应体永远不被拉回。
+#[tokio::test]
+async fn s2_web_fetch_client_does_not_follow_redirect() {
+    let internal_port = spawn_one_shot_http_server(
+        b"HTTP/1.1 200 OK
+Content-Length: 16
+
+INTERNAL_SECRET"
+            .to_vec(),
+    )
+    .await;
+    let redirector_port = spawn_one_shot_http_server(
+        format!(
+            "HTTP/1.1 302 Found
+Location: http://127.0.0.1:{internal_port}/secret
+Content-Length: 0
+
+"
+        )
+        .into_bytes(),
+    )
+    .await;
+
+    let tool = WebFetchTool::new();
+    let resp = tool
+        .client
+        .get(format!("http://127.0.0.1:{redirector_port}/start"))
+        .send()
+        .await
+        .expect("request should succeed (no-follow keeps transport-level errors away)");
+
+    assert_eq!(resp.status().as_u16(), 302, "302 必须原样返回而非被跟随");
+    assert_eq!(
+        resp.url().as_str(),
+        format!("http://127.0.0.1:{redirector_port}/start"),
+        "resp.url() 必须停在首跳——变更即说明发生了跟随"
+    );
+    // 关键断言：内网响应体绝不能被拉回（旧形态跟随即泄）。
+    let text = resp.text().await.unwrap_or_default();
+    assert!(
+        !text.contains("INTERNAL_SECRET"),
+        "禁止跟随重定向读内网响应，实际拿到: {text}"
+    );
+}
+
+/// 修复第二半：3xx 错误消息带跳转去向——模型可一步拿到新地址重新过闸；
+/// 无 Location 头时回落普通 HTTP 错误消息形态。
+#[test]
+fn s2_redirect_refetch_message_includes_location() {
+    let msg = redirect_refetch_message(
+        reqwest::StatusCode::FOUND,
+        "http://127.0.0.1:49000/api/internal",
+    );
+    assert!(msg.contains("302"), "保留状态码: {msg}");
+    assert!(msg.contains("not followed"), "声明未跟随: {msg}");
+    assert!(
+        msg.contains("http://127.0.0.1:49000/api/internal"),
+        "必须带 Location 让模型自行 fetch（新 URL 重新过闸）: {msg}"
+    );
+}
