@@ -2843,3 +2843,32 @@ fn test_workspace_ignored_images_runtime_dir() {
     // 普通文件名只做组件匹配不吃前缀：imagesque.png 是普通文件不误伤。
     assert!(!is_workspace_ignored(&PathBuf::from("imagesque.png")));
 }
+
+#[test]
+fn test_minimal_config_workspace_path_bare_tilde_expands() {
+    // BUG-20261114-014：裸 `~` workspace 此前字面量穿透——四个
+    // side-config（mcp/security/skills/scanner）落到 cwd 下字面 `~` 目录，
+    // 与主 workspace（expand_tilde，正确落 home）分叉。家族口径
+    // （expand_home「裸 ~ = home」）对齐。
+    let cfg: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":"~"}}}"#).unwrap();
+    let got = cfg.workspace_path().expect("bare ~ must expand to home");
+    assert_eq!(got, dirs::home_dir().unwrap());
+
+    // `~/sub` 斜杠形态不回归（既有行为）。
+    let cfg2: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":"~/ws"}}}"#).unwrap();
+    let got2 = cfg2.workspace_path().unwrap();
+    assert_eq!(got2, dirs::home_dir().unwrap().join("ws"));
+
+    // 普通路径逐字面量穿透（既有行为）。
+    let cfg3: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":"D:/data/ws"}}}"#).unwrap();
+    let got3 = cfg3.workspace_path().unwrap();
+    assert_eq!(got3, PathBuf::from("D:/data/ws"));
+
+    // 空 workspace = None（既有行为）。
+    let cfg4: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+    assert!(cfg4.workspace_path().is_none());
+}

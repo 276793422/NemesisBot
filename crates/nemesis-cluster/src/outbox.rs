@@ -689,7 +689,18 @@ impl TransferOutbox {
             match self.attempt_push(&entry).await {
                 Ok(PushOutcome::Delivered) | Ok(PushOutcome::NothingToSend) => {
                     // 双删：master 已落盘（或 dedup 已有）→ 删本地。
-                    crate::fsutil::remove_dir_all_resilient(&dir);
+                    // BUG-20261114-013：阻塞退避不进 async——本函数跑在
+                    // spawn_push_loop（tokio::spawn，进程生命周期常驻）的
+                    // 共享 executor 上，remove_dir_all_resilient 最坏
+                    // ~4.4s thread::sleep；Windows AV/索引器瞬时持句柄恰是
+                    // 该 helper 设计针对的常态场景，删刚写完的 outbox 目录
+                    // 命中率高。同 crate LOW-5 家族（task_result_store /
+                    // continuation_store / pair）同款 spawn_blocking 形态。
+                    let stale_dir = dir.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::fsutil::remove_dir_all_resilient(&stale_dir)
+                    })
+                    .await;
                     tracing::info!(
                         task_id = %entry.task_id,
                         "[Transfer] 执行记录回传完成，本地发件箱清空"
