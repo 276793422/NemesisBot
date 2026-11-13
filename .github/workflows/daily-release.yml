@@ -236,6 +236,11 @@ jobs:
           # M1：iroh-relay/rcgen/rustls/axum 栈整体住进这个库，宿主零增量）。
           # 缺席 = QUIC 漫游诚实降级——全量 nightly 必须带，non-fatal 同上。
           (cd plugins/plugin-roaming && cargo build --release)
+          # plugin-resources 是附加资源载体 C-ABI 插件（人格超市上游快照
+          # 编译期内嵌：仓库基线在库，CI 无需预下载缓存；build.rs fail-open
+          # 兜底与本地 build-windows.bat / build-linux.sh 同源）。缺席 =
+          # 人格超市纯在线——全量 nightly 必须带，non-fatal 同上。
+          (cd plugins/plugin-resources && cargo build --release)
           # eval-monitor 是 Windows-only 注入 DLL（注入签名的 SbieCtrl.exe
           # 采集 Sandboxie 事件），只在 Windows 编
           if [ "${{ matrix.platform }}" = "windows" ]; then
@@ -294,6 +299,11 @@ jobs:
           # 漫游诚实降级，non-fatal 同上——拷贝跳过不拦主包
           cp plugins/plugin-roaming/target/release/libplugin_roaming.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-roaming/target/release/plugin_roaming.dll   staging/plugins/ 2>/dev/null || true
+          # plugin-resources（附加资源载体，人格超市上游快照编译期内嵌）：
+          # 缺件 = 人格超市纯在线（诚实降级），non-fatal 同上。签名无需单独
+          # 接线——ci-sign-artifacts.sh 对 staging/plugins/ 全目录签。
+          cp plugins/plugin-resources/target/release/libplugin_resources.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-resources/target/release/plugin_resources.dll   staging/plugins/ 2>/dev/null || true
           # plugin-vm 单文件部署（2026-10-22 资源内嵌拍板）：与其他插件同住
           # plugins/ 子目录（装载器 plugins/ 优先 + exe 同目录回落）；镜像
           # 脚本 + guest 双架构 musl ELF 已编译期内嵌进库文件（上方构建步
