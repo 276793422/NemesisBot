@@ -805,6 +805,8 @@ pub async fn send_callback_or_persist(
 
     // 任务终态钩子（/ 执行档案入队）：回调成功与否无关紧要——worker 侧
     // 档案推送不依赖 A 端是否收到本轮结果。source 为空时钩子内部诚实跳过。
+    // 本调用立即返回：钩子实现（ClusterResultPersisterAdapter）内部已线程
+    // 化重活（树杀+全树 diff，BUG-20261113-152），不在 async 上下文阻塞。
     if let Some(persister) = result_persister {
         persister.on_task_terminal(task_id, source_node_id);
     }

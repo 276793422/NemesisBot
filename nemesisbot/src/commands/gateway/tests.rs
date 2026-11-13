@@ -3438,6 +3438,7 @@ mod wave_b {
             node_id: "node-wave-b".to_string(),
             outbox: None,
             workspace: None,
+            test_join: std::sync::Mutex::new(Vec::new()),
         };
 
         // set_running → 以 "peer_chat"/running 占位结果成功态写入。

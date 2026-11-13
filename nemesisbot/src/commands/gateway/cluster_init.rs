@@ -832,6 +832,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 node_id: node_id_for_handler.clone(),
                 outbox: transfer_outbox.clone(),
                 workspace: Some(home.join("workspace")),
+                #[cfg(test)]
+                test_join: std::sync::Mutex::new(Vec::new()),
             });
         handler.set_result_persister(persister.clone());
 
