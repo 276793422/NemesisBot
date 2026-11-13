@@ -22,7 +22,7 @@
 # guest change_list 归一投影 ChangeInfo（number/web_url 构造）供宿主
 # parse_publish_result 直读。Gerrit REST = HTTP Basic（gerrit_username +
 # gerrit_http_pass）+ `)]}'` 魔法前缀剥离。
-wasm-sha256 = "69e2e242e2404c8ef854e1487d3204e19e232aca0c378a07cd9fb26c18981c50"
+wasm-sha256 = "b8a132d8bb69532bd670c514a0fd64a10a66fd19cd9172c3649681b21d4486ce"
 api-version = 1
 slug = "sc-bugfix"
 kind = "panel"

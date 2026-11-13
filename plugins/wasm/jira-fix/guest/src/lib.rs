@@ -16,7 +16,7 @@
 //! `{{config.base_url}}` 整条目 token，随配置热生效（fresh-store-per-call）。
 //!
 //! Jira REST v2 形态（沿用 0.1 注释）：search 返回**包裹对象**
-//! `{issues:[{key, fields:{summary, status:{name}, assignee:{displayName}}}], total}`
+//! `{issues:[{key, fields:{summary, description, status:{name}, assignee:{displayName}}}], total}`
 //! （非顶层数组）；issue key 是字符串（PROJ-123 形态），无整数序号。
 
 use exports::nemesis::plugin::flow_step::Guest as StepGuest;
@@ -111,21 +111,44 @@ fn jira_request(method: &str, path_and_query: &str, body: Option<Value>) -> Resu
     serde_json::from_slice(&resp.body).map_err(|e| format!("Jira 响应非 JSON: {e}"))
 }
 
-/// JQL 检索（search 包裹对象 → issues 数组）。
+/// JQL 检索（search 包裹对象 → issues 数组直出）。
+/// R9 复评整改：fields 取回面带 description——模板 body_field 物化坐标
+/// `$.fields.description` 此前从未被取回（fields 只有 key,summary,status），
+/// 无正文的 issue 与「字段未取回」不可区分（物化正文恒空）。
+/// R10 复评整改：startAt 递进翻页——maxResults 受服务端上限钳制（Jira
+/// 常见上限远小于调用方请求值），旧单发会把超过单页的条目静默截断。
+/// 翻到取尽（累计 ≥ total）、补足请求量（≥ max）或页预算（32 页）止；
+/// 首页响应缺 total 时按页预算兜底（不猜服务端上限）。
 fn jira_search(jql: &str, max: u32) -> Result<Vec<Value>, String> {
-    let reply = jira_request(
-        "GET",
-        &format!(
-            "/rest/api/2/search?jql={}&maxResults={max}&fields=key,summary,status",
-            urlencode(jql)
-        ),
-        None,
-    )?;
-    Ok(reply
-        .get("issues")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default())
+    let max = max.max(1) as usize;
+    let mut all: Vec<Value> = Vec::new();
+    let mut total = usize::MAX;
+    let mut start_at = 0usize;
+    for _page in 0..32 {
+        let reply = jira_request(
+            "GET",
+            &format!(
+                "/rest/api/2/search?jql={}&startAt={start_at}&maxResults={max}&fields=key,summary,status,description",
+                urlencode(jql)
+            ),
+            None,
+        )?;
+        if let Some(t) = reply.get("total").and_then(Value::as_u64) {
+            total = t as usize;
+        }
+        let page = reply
+            .get("issues")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let got = page.len();
+        all.extend(page);
+        if got == 0 || all.len() >= total || all.len() >= max {
+            break;
+        }
+        start_at += got;
+    }
+    Ok(all)
 }
 
 /// issue 回帖（POST /issue/{key}/comment，body `{"body": <文本>}`）。

@@ -17,7 +17,7 @@
 # 缺口对账三态）→ report（回帖 + 幂等转状态三步）。两个 base_url 不进
 # 剧本缺省（防假缺省 URL）：模板即装即载，未配置时模板 WARN 不注册
 # （诚实不发车），面板「实例设置」保存后热生效。
-wasm-sha256 = "e5ac10c56cc4eef7b0b7cc83b6f388d59112f833d3ac7bc40042e7bd372fb9bc"
+wasm-sha256 = "5e2d30e9f0c80bb9e64ba805fca506ad6f36dcf919a0839d77ec1d71f6ee7abb"
 api-version = 1
 slug = "jira-gitlab-flow"
 kind = "panel"

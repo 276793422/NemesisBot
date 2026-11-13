@@ -667,6 +667,8 @@ fn preflight_happy_path_proceeds_with_issue_title() {
             delivery_tree,
             base_tree,
             stage,
+            intent_advanced,
+            recast_tree,
         } => {
             assert_eq!(copy_dir, f.copy_root);
             assert_eq!(expected_base, f.base_sha);
@@ -676,6 +678,8 @@ fn preflight_happy_path_proceeds_with_issue_title() {
             assert!(delivery_tree.is_none(), "无 tree 字段 → None 透传");
             assert!(base_tree.is_none(), "无 base_tree 字段 → None 透传");
             assert_eq!(stage, None, "首次发布无阶段现场");
+            assert!(!intent_advanced, "无意图字段 → false（首次常规路径）");
+            assert!(recast_tree.is_none(), "无重整锚 → None 透传（非 Gerrit）");
         }
         _ => panic!("期望 Proceed"),
     }
@@ -748,28 +752,62 @@ fn preflight_delivery_already_merged_proceeds_third_arm() {
 /// 分支树等值交付树 → 复用；不等 → 诚实拒绝不猜；锚缺席 → 落 git 层探针。
 #[test]
 fn branch_reuse_decision_reuses_matching_tree() {
-    let reuse =
-        branch_reuse_decision(Some(("c1".to_string(), "aa".to_string())), Some("aa")).unwrap();
+    let reuse = branch_reuse_decision(
+        Some(&("c1".to_string(), "aa".to_string())),
+        Some("aa"),
+        None,
+    )
+    .unwrap();
     assert_eq!(reuse.as_deref(), Some("c1"), "树等值 → 复用分支 commit");
 }
 
 #[test]
 fn branch_reuse_decision_rejects_mismatched_tree() {
-    let e =
-        branch_reuse_decision(Some(("c1".to_string(), "bb".to_string())), Some("aa")).unwrap_err();
+    let e = branch_reuse_decision(
+        Some(&("c1".to_string(), "bb".to_string())),
+        Some("aa"),
+        None,
+    )
+    .unwrap_err();
     assert!(e.contains("拒绝覆盖"), "{e}");
     assert!(e.contains("bb"), "{e}");
 }
 
 #[test]
 fn branch_reuse_decision_absent_branch_proceeds_normal_path() {
-    let none = branch_reuse_decision(None, Some("aa")).unwrap();
+    let none = branch_reuse_decision(None, Some("aa"), None).unwrap();
     assert!(none.is_none(), "分支缺席 → None 走常规建分支");
-    let none_no_tree = branch_reuse_decision(None, None).unwrap();
+    let none_no_tree = branch_reuse_decision(None, None, None).unwrap();
     assert!(
         none_no_tree.is_none(),
         "分支缺席 + 交付树缺席 → 同样常规路径"
     );
+}
+
+/// R3 复评整改：Gerrit 重整锚臂——分支树 == payload recast_tree ⇒ 复用
+/// （重试不被「分支树 ≠ 交付树」假失败卡死）；锚在场但不等 ⇒ 仍拒绝
+///（人为改分支验收保全）。
+#[test]
+fn branch_reuse_decision_recast_anchor_reuse_and_reject() {
+    let reuse = branch_reuse_decision(
+        Some(&("rc1".to_string(), "recast-tree".to_string())),
+        Some("delivery-tree"),
+        Some("recast-tree"),
+    )
+    .unwrap();
+    assert_eq!(
+        reuse.as_deref(),
+        Some("rc1"),
+        "重整锚命中 → 复用重整 commit"
+    );
+    let e = branch_reuse_decision(
+        Some(&("c1".to_string(), "foreign".to_string())),
+        Some("delivery-tree"),
+        Some("recast-tree"),
+    )
+    .unwrap_err();
+    assert!(e.contains("拒绝覆盖"), "{e}");
+    assert!(e.contains("重整锚"), "{e}");
 }
 
 /// 交付树锚缺席（旧形态 payload 无 `tree` 键）→ Ok(None) 落入
@@ -778,7 +816,8 @@ fn branch_reuse_decision_absent_branch_proceeds_normal_path() {
 /// fail-closed（会挡死 续作回归的合法重试），等值校验由 git 层完成。
 #[test]
 fn branch_reuse_decision_missing_delivery_tree_falls_to_git_probe() {
-    let none = branch_reuse_decision(Some(("c1".to_string(), "aa".to_string())), None).unwrap();
+    let none =
+        branch_reuse_decision(Some(&("c1".to_string(), "aa".to_string())), None, None).unwrap();
     assert!(none.is_none(), "锚缺席 → None → git 层内容级探针裁决");
 }
 
@@ -850,6 +889,187 @@ fn preflight_invalid_task_id_is_err() {
 // ---------------------------------------------------------------------------
 
 struct ReviewNov02NoopProvider;
+
+/// R1 复评整改回归锁（外评探针
+/// review_nov13_publish_intent_write_failure_still_creates_and_retries_create
+/// 翻转）：**意图留痕失败 = 中止不做外部写**——deliveries 表 UPDATE 全拦
+///（BEFORE UPDATE trigger）时，发布在 commit_generated 留痕点中止：
+/// 不 push、不建条目（calls 空）。重试（trigger 解除后）经分支树内容级
+/// 探针幂等复用走完全链。旧形态 warn+继续 → 外部 PR 已建而意图无锚 →
+/// 重试重复建条目。
+#[tokio::test]
+async fn publish_intent_write_failure_aborts_before_external_effects() {
+    let f = PreflightFixture::new();
+    f.db.record_delivery(
+        "branch",
+        None,
+        "task-1:branch",
+        &f.payload(json!({})),
+        false,
+    )
+    .unwrap();
+    wire_remote(&f);
+    let conn = rusqlite::Connection::open(f.ws_root.join("tasks.db")).unwrap();
+    conn.execute_batch("CREATE TRIGGER review_fail_publish BEFORE UPDATE ON deliveries BEGIN SELECT RAISE(FAIL, 'review injected delivery write failure'); END;").unwrap();
+    let (stub, calls1) = StubConnector::new(Some(json!({"number":7}).to_string()), None, None);
+    let first = publish_task_delivery(
+        &f.db,
+        &f.store,
+        &stub_agent(stub),
+        &f.ws_root,
+        &f.args(),
+        Some(&gitea_protocol()),
+        None,
+    )
+    .await
+    .unwrap();
+    println!(
+        "NOV13 R1 intent failure={first}; calls={:?}",
+        calls1.lock().unwrap()
+    );
+    assert_eq!(first["status"], "failed");
+    assert!(
+        first["detail"]
+            .as_str()
+            .unwrap()
+            .contains("发布意图落盘失败"),
+        "{first}"
+    );
+    assert_eq!(
+        *calls1.lock().unwrap(),
+        Vec::<String>::new(),
+        "R1: 意图未落盘不做外部写（不 push 不建条目）"
+    );
+    let rec = f.db.delivery_by_key("task-1:branch").unwrap().unwrap();
+    assert!(
+        rec.payload.get("publish_stage").is_none(),
+        "UPDATE 全拦：无任何意图锚"
+    );
+    conn.execute_batch("DROP TRIGGER review_fail_publish;")
+        .unwrap();
+    let (stub, calls2) = StubConnector::new(Some(json!({"number":7}).to_string()), None, None);
+    let retry = publish_task_delivery(
+        &f.db,
+        &f.store,
+        &stub_agent(stub),
+        &f.ws_root,
+        &f.args(),
+        Some(&gitea_protocol()),
+        None,
+    )
+    .await
+    .unwrap();
+    println!("NOV13 R1 retry={retry}; calls={:?}", calls2.lock().unwrap());
+    assert_eq!(retry["status"], "published");
+    assert_eq!(
+        *calls2.lock().unwrap(),
+        vec!["create_pull"],
+        "重试经分支树内容级探针幂等复用，恰好一次创建"
+    );
+}
+
+/// R1+R3 复评整改回归锁（外评探针
+/// review_nov13_gerrit_recast_branch_blocks_retry_after_push_failure 翻转）：
+/// Gerrit 臂首推前意图留痕被拦（R1 中止、push 未发生）→ 重试时 payload
+/// 无重整锚（recast_tree），本地分支已被重整为「atop 目标头」的重整产物
+///（树 ≠ 交付树）——兜底臂现算重整候选树与分支树等值 → 幂等复用重整
+/// commit → 推送成功发布。旧形态误报「分支被其他内容占用」。
+#[tokio::test]
+async fn gerrit_recast_retry_reuses_recast_branch_without_anchor() {
+    let f = PreflightFixture::new();
+    let repo = git2::Repository::open(&f.copy_root).unwrap();
+    let base = repo.head().unwrap().peel_to_commit().unwrap();
+    let base_tree = base.tree().unwrap();
+    let delivery_commit = nemesis_board::git_repo::apply_patch_new_branch(
+        &f.copy_root,
+        "delivery-fixture",
+        f.payload(json!({}))["patch"].as_str().unwrap().as_bytes(),
+        "delivery",
+    )
+    .unwrap();
+    let delivery_tree = repo
+        .find_commit(git2::Oid::from_str(&delivery_commit).unwrap())
+        .unwrap()
+        .tree_id()
+        .to_string();
+    // 目标分支独立前进（remote.txt——三方合并可解）。
+    let extra = repo.blob(b"remote-only file\n").unwrap();
+    let mut tb = repo.treebuilder(Some(&base_tree)).unwrap();
+    tb.insert("remote.txt", extra, 0o100644).unwrap();
+    let target_tree = repo.find_tree(tb.write().unwrap()).unwrap();
+    let sig = git2::Signature::now("review", "review@example.invalid").unwrap();
+    repo.commit(
+        Some("refs/remotes/origin/main"),
+        &sig,
+        &sig,
+        "target moved independently",
+        &target_tree,
+        &[&base],
+    )
+    .unwrap();
+    let remote = f.copy_root.parent().unwrap().join("gerrit-remote.git");
+    repo.remote("origin", &file_url(&remote)).unwrap();
+    f.db.record_delivery(
+        "branch",
+        None,
+        "task-1:branch",
+        &f.payload(json!({"tree": delivery_tree, "base_tree": base_tree.id().to_string()})),
+        false,
+    )
+    .unwrap();
+    let mut args = f.args();
+    args["push_ref"] = json!("refs/for/main");
+    // 首轮：UPDATE 全拦 → Gerrit 臂重整完成后在 commit_generated 留痕点
+    // R1 中止（push 未发生——bare 尚未 init 也无妨）。
+    let conn = rusqlite::Connection::open(f.ws_root.join("tasks.db")).unwrap();
+    conn.execute_batch("CREATE TRIGGER review_fail_publish BEFORE UPDATE ON deliveries BEGIN SELECT RAISE(FAIL, 'review injected delivery write failure'); END;").unwrap();
+    let (stub, calls1) = StubConnector::new(None, None, None);
+    let first = publish_task_delivery(
+        &f.db,
+        &f.store,
+        &stub_agent(stub),
+        &f.ws_root,
+        &args,
+        Some(&gitea_protocol()),
+        None,
+    )
+    .await
+    .unwrap();
+    println!("NOV13 R3 first={first}; calls={:?}", calls1.lock().unwrap());
+    assert_eq!(first["status"], "failed");
+    assert!(
+        first["detail"]
+            .as_str()
+            .unwrap()
+            .contains("发布意图落盘失败"),
+        "R1 中止在留痕点（push 未发生）: {first}"
+    );
+    assert_eq!(*calls1.lock().unwrap(), Vec::<String>::new());
+    conn.execute_batch("DROP TRIGGER review_fail_publish;")
+        .unwrap();
+    // 重试：payload 无锚（UPDATE 曾全拦）+ 分支=重整树 → 兜底臂现算候选
+    // 等值复用 → 幂等重整 → push 成功 → 条目建成。
+    git2::Repository::init_bare(&remote).unwrap();
+    let (stub, calls2) = StubConnector::new(Some(json!({"number":7}).to_string()), None, None);
+    let retry = publish_task_delivery(
+        &f.db,
+        &f.store,
+        &stub_agent(stub),
+        &f.ws_root,
+        &args,
+        Some(&gitea_protocol()),
+        None,
+    )
+    .await
+    .unwrap();
+    println!("NOV13 R3 retry={retry}; calls={:?}", calls2.lock().unwrap());
+    assert_eq!(
+        retry["status"], "published",
+        "重整分支经候选树等值复用（不误报「分支被其他内容占用」）"
+    );
+    assert_eq!(retry["external_ref"], 7);
+    assert_eq!(*calls2.lock().unwrap(), vec!["create_pull"]);
+}
 
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::LlmProvider for ReviewNov02NoopProvider {
@@ -1030,10 +1250,13 @@ async fn review_nov02_publish_push_failure_retry_continues_after_remote_repaired
     // 远端修复（bare 建好）+ create_pull 可用 → 重试续作到 published，且
     // 复用同一 commit——不被自己上次的交付分支挡死（payload 无 `tree` 锚，
     // 复用判定落 apply_patch_new_branch 内容级探针——双层校验第二层）。
+    // R1 契约（复评整改）：commit_generated + published_commit = 意图前进
+    // 现场 → 重试对账先行——pr_list 答空页（Absent，远端无既有条目）→
+    // 放行重建；对账不可答（桩未配置）= 保守判失败绝不盲建。
     git2::Repository::init_bare(&remote).unwrap();
     let (stub, calls) = StubConnector::new(
         Some(json!({"number": 7, "html_url": "https://x/pr/7"}).to_string()),
-        None,
+        Some("[]".to_string()),
         None,
     );
     let agent = stub_agent(stub);
@@ -1060,8 +1283,8 @@ async fn review_nov02_publish_push_failure_retry_continues_after_remote_repaired
     assert_eq!(rec.payload["external_ref"], 7);
     assert_eq!(
         *calls.lock().unwrap(),
-        vec!["create_pull"],
-        "重试直奔条目创建（分支复用，非 pr_pending 现场无对账）"
+        vec!["pr_list", "create_pull"],
+        "重试对账先行（意图前进现场，Absent 放行）再直奔条目创建（分支复用）"
     );
 }
 

@@ -2401,11 +2401,14 @@ pub fn dispatch_issue_for_flow(
 }
 
 /// 非 cluster 编译形态：诚实零操作 + warn（与 auto_dispatch_after_assign
-/// 非 cluster 臂同款纪律）。签名与 cluster 臂一致（cluster 槽位收下不用）。
+/// 非 cluster 臂同款纪律）。无调用方（flow_engine 的 dispatch_issue 恒在
+/// cluster 形态）——桩仅为跨形态可装配而存在；cluster 槽位类型是
+/// `Option<&()>`（AppState.cluster 的 not(cluster) 镜像，收下不用），
+/// 不得引用 nemesis_cluster 类型（该形态下 crate 不编译）。
 #[cfg(not(feature = "cluster"))]
 pub fn dispatch_issue_for_flow(
     _store: &Arc<BoardStore>,
-    _cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    _cluster: Option<&()>,
     _issue: &nemesis_board::Issue,
     _explicit_target: Option<&str>,
     _actor: &Actor,

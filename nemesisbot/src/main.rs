@@ -161,6 +161,12 @@ mod exec_world;
 /// 通路）——与 publish 消费点同闸。
 #[cfg(all(feature = "plugins-wasm", feature = "board", feature = "connectors"))]
 mod flow_engine;
+/// flow 原语层（R8 复评整改）：flow 引擎与 publish 骨架共同消费的纯原语
+/// （token 渲染 / 外链闸 / 比较式 / JSON path / plugin 出参四态）——零
+/// WASM 依赖，门控取两消费方公共交集（board+connectors），publish 在无
+/// WASM 裁剪组合下可编译。见 [`crate::flow_proto`] 模块文档。
+#[cfg(all(feature = "board", feature = "connectors"))]
+mod flow_proto;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
