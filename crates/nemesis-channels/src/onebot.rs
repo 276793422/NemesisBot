@@ -614,7 +614,9 @@ impl Channel for OneBotChannel {
                         voice_playback: None,
                     };
 
-                    let _ = bus.send(inbound);
+                    if let Err(e) = bus.send(inbound) {
+                        warn!("[OneBotChannel] failed to publish inbound message to bus: {e}");
+                    }
                 }
 
                 // Clear the WS reference

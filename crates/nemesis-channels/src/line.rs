@@ -440,7 +440,9 @@ impl LineChannel {
                 voice_playback: None,
             };
 
-            let _ = bus.send(inbound);
+            if let Err(e) = bus.send(inbound) {
+                warn!("[LineChannel] failed to publish inbound message to bus: {e}");
+            }
         }
     }
 }

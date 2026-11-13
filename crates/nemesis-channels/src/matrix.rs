@@ -477,7 +477,11 @@ impl Channel for MatrixChannel {
                                     voice_playback: None,
                                 };
 
-                                let _ = bus.send(inbound);
+                                if let Err(e) = bus.send(inbound) {
+                                    warn!(
+                                        "[MatrixChannel] failed to publish inbound message to bus: {e}"
+                                    );
+                                }
                             }
                         }
                     }
