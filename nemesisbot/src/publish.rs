@@ -104,11 +104,6 @@ pub(crate) struct PublishProtocol {
     pub reconcile_limit: usize,
     /// 页数硬上限（缺省 5；封顶 = Inconclusive）。
     pub reconcile_max_pages: usize,
-    /// Gerrit 臂提交信息模板（可选；push_ref 以 `refs/for/` 开头时消费）。
-    /// parse 期已渲染条目 token（ext_key/title/board_issue/report_path），
-    /// 发布侧 rt 期再渲染 change_id/branch/task_id；模板未带 Change-Id
-    /// footer 由发布侧补齐（Gerrit 缺 footer 拒收）。
-    pub commit_message: Option<String>,
 }
 
 impl Default for PublishProtocol {
@@ -125,7 +120,6 @@ impl Default for PublishProtocol {
             reconcile_page_key: "page".to_string(),
             reconcile_limit: 20,
             reconcile_max_pages: 5,
-            commit_message: None,
         }
     }
 }
@@ -276,9 +270,6 @@ enum Preflight {
         /// 交付内容树（payload `tree` 原样透传；缺席/空 = None）——git 半边
         /// 重试幂等判断的等值锚（分支树 == 交付树 → 上次产物复用）。
         delivery_tree: Option<String>,
-        /// 交付基线树（payload `base_tree` 透传；缺席/空 = None）——Gerrit
-        /// 臂三方合并的基树锚（缺席时回落基线提交的树）。
-        base_tree: Option<String>,
         /// 交付 payload 的 `publish_stage`（续作留痕）：`pr_pending` =
         /// 上次已到达发布条目创建阶段（进程崩溃/落账失败），重试先对账防
         /// 重复建条目；其余值（commit_generated/push_completed/published/
@@ -289,11 +280,6 @@ enum Preflight {
         /// 与 `stage` 解耦判定续作形态：旧账本/半行账（stage 缺失但意图
         /// 在场）同样走对账先行的保守路径，不再单点信任 stage 字段。
         intent_advanced: bool,
-        /// Gerrit 重整锚（payload `recast_tree` 透传；缺席/空 = None，R3
-        /// 复评整改）：上次 Gerrit 臂重整产物的树——重试凭「分支树 ==
-        /// 重整锚」幂等复用重整 commit，不再被「分支树 ≠ 交付树」假失败
-        /// 卡死（patch 套在重整内容上必炸）。
-        recast_tree: Option<String>,
     },
 }
 
@@ -434,14 +420,6 @@ fn preflight(
             .and_then(|v| v.as_str())
             .is_some_and(|s| !s.trim().is_empty())
     });
-    // Gerrit 重整锚（R3）：payload `recast_tree` 透传（Gerrit 臂随两次
-    // 意图留痕写入）；非 Gerrit 臂恒缺席。
-    let recast_tree = rec
-        .payload
-        .get("recast_tree")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_string);
 
     let issue_title = resolve_issue_title(store, task_id);
     let title = arg_str(args, "title")
@@ -457,10 +435,8 @@ fn preflight(
         title,
         already_merged,
         delivery_tree,
-        base_tree: expected_tree,
         stage,
         intent_advanced,
-        recast_tree,
     })
 }
 
@@ -482,33 +458,23 @@ const PREFLIGHT_NO_PATCH: &str =
 ///   [`nemesis_board::git_repo:apply_patch_new_branch`] 的内容级复用探针
 ///   （父基线一致 + patch-over-HEAD tree 等值， 复评 移植）——
 ///   载荷无 `tree` 锚也能安全续作，等值校验由 git 层完成；
-/// - 分支在场且树等值 Gerrit 重整锚（payload `recast_tree`——上次重整
-///   commit 的树，R3 复评整改加第三参）→ 重整产物复用（重试不被
-///   「分支树 ≠ 交付树」假失败卡死）；
 /// - 分支在场且树不等值（有锚可比）→ Err 诚实拒绝不猜（分支被其他内容
 ///   占用；人为改分支仍拒绝，验收保全）。
-///
-/// ⚠ Gerrit 调用点对拒绝形态（含锚在场不等）追加重整候选树复核
-///（`recast_candidate_tree` 现算等值即复用）——见调用臂注释。
 fn branch_reuse_decision(
     existing: Option<&(String, String)>,
     delivery_tree: Option<&str>,
-    recast_tree: Option<&str>,
 ) -> Result<Option<String>, String> {
     let Some((commit, branch_tree)) = existing else {
         return Ok(None);
     };
-    if delivery_tree == Some(branch_tree.as_str()) || recast_tree == Some(branch_tree.as_str()) {
+    if delivery_tree == Some(branch_tree.as_str()) {
         return Ok(Some(commit.clone()));
     }
-    if delivery_tree.is_none() && recast_tree.is_none() {
+    if delivery_tree.is_none() {
         return Ok(None);
     }
     Err(format!(
-        "分支已存在且指向树 {branch_tree} ≠ 交付树{}——分支被其他内容占用，拒绝覆盖（Gerrit 重试场景若为历史重整产物且锚缺席，人工删除本地交付分支后重试可重铸）",
-        recast_tree
-            .map(|rt| format!(" ≠ 重整锚 {rt}"))
-            .unwrap_or_default()
+        "分支已存在且指向树 {branch_tree} ≠ 交付树——分支被其他内容占用，拒绝覆盖（人工删除本地交付分支后重试可重铸）"
     ))
 }
 
@@ -570,15 +536,10 @@ pub(crate) async fn publish_task_delivery(
     let session_key = format!("publish:{task_id}");
     let branch = format!("nemesis/task-{task_id}");
     let branch_key = format!("{task_id}:branch");
-    // 批 B（SC 套件 Gerrit 臂 + 代理）：可选步参（模板声明面，值已装载期
-    // config 渲染）——
-    // - push_ref：推送 refspec（缺省 refs/heads/{branch}；`refs/for/` 前缀
-    //   = Gerrit 评审形态：push 本身建 change，交付重整单提交 + Change-Id）；
+    // 批 B：可选步参（模板声明面，值已装载期 config 渲染）——
+    // - push_ref：推送 refspec（缺省 refs/heads/{branch}）；
     // - proxy：git2 网络代理（socks5h://host:port；空值/含未渲染 token =
-    //   未配置语义——实例配置 proxy 键缺省空串，装载期渲染后即空）；
-    // - Change-Id：task_id 确定性派生（SHA-1）——重试重推同 Change-Id =
-    //   Gerrit 同一 change 的新 patchset，评审号稳定；仅 Gerrit 臂消费，
-    //   rt token 面恒可用（非 Gerrit 声明里引用 = 渲染为派生值，无副作用）。
+    //   未配置语义——实例配置 proxy 键缺省空串，装载期渲染后即空）。
     let push_ref = args
         .get("push_ref")
         .and_then(|v| v.as_str())
@@ -592,7 +553,6 @@ pub(crate) async fn publish_task_delivery(
         .map(str::trim)
         .filter(|s| !s.is_empty() && !s.contains("{{"))
         .map(str::to_string);
-    let change_id = nemesis_board::git_repo::derive_change_id(&task_id).ok();
 
     let pre = match preflight(db, store, &task_id, args) {
         Ok(Preflight::Already(v)) => return Ok(v),
@@ -606,10 +566,8 @@ pub(crate) async fn publish_task_delivery(
         title,
         already_merged,
         delivery_tree,
-        base_tree,
         stage,
         intent_advanced,
-        recast_tree,
     } = pre
     else {
         unreachable!("preflight 只产 Already/Proceed 两形态");
@@ -637,82 +595,8 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
-    let commit_hex = match branch_reuse_decision(
-        existing.as_ref(),
-        delivery_tree.as_deref(),
-        recast_tree.as_deref(),
-    ) {
+    let commit_hex = match branch_reuse_decision(existing.as_ref(), delivery_tree.as_deref()) {
         Ok(Some(c)) => c,
-        // R3 锚缺席窗口兜底：Gerrit 臂 + 分支在场 + 快路锚未命中。两个到达
-        // 形态：①交付/重整锚均缺席（Ok(None)——旧账本）；②交付锚在场但
-        // 分支树已非交付树（Err——R1 意图留痕中止后的重试现场：上一轮
-        // Gerrit 臂已重整 force 过分支、abort 发生在留痕点，payload 永远
-        // 没拿到 recast_tree，建单时写入的交付树锚自然对不上）。重整候选
-        // 树现算（recast_candidate_tree 与 single_commit_atop 同源合并语
-        // 义）：分支树 == 候选 ⇒ 上次重整产物仍在，复用；否则保留快路拒
-        // 绝语义（人为改动/目标已前进不可区分，patch 套重整内容必炸——指
-        // 引人工删分支后重试重铸）。
-        other if existing.is_some() && push_ref.starts_with("refs/for/") => {
-            let (prev_commit, branch_tree) = existing.expect("臂条件已保证在场");
-            let fast_reject = match &other {
-                Err(m) => m.clone(),
-                Ok(_) => "交付/重整锚均缺席".to_string(),
-            };
-            let target = push_ref
-                .strip_prefix("refs/for/")
-                .expect("臂条件已保证前缀");
-            let Some(delivery_hex) = delivery_tree.as_deref().filter(|s| !s.trim().is_empty())
-            else {
-                return Ok(fail_outcome(
-                    &task_id,
-                    &branch,
-                    format!(
-                        "Gerrit 臂分支在场（树 {branch_tree}）但交付树缺席（{fast_reject}，无法现算重整候选）——patch 套重整内容有污染风险，拒绝。人工删除本地交付分支 {branch} 后重试可重铸"
-                    ),
-                ));
-            };
-            let base_tree_hex = match base_tree.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(t) => t.to_string(),
-                None => {
-                    match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &expected_base) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            return Ok(fail_outcome(
-                                &task_id,
-                                &branch,
-                                format!(
-                                    "Gerrit 臂基树解析失败（基线提交 {expected_base} 不在副本仓——副本被重物化？可重试，再失败需人工核查）: {e}"
-                                ),
-                            ));
-                        }
-                    }
-                }
-            };
-            match nemesis_board::git_repo::recast_candidate_tree(
-                &copy_dir,
-                target,
-                &base_tree_hex,
-                delivery_hex,
-            ) {
-                Ok(candidate) if candidate == branch_tree => prev_commit,
-                Ok(candidate) => {
-                    return Ok(fail_outcome(
-                        &task_id,
-                        &branch,
-                        format!(
-                            "Gerrit 重整候选树 {candidate} ≠ 分支树 {branch_tree}（{fast_reject}；分支不是上次重整产物——人为改动或目标分支已前进）。人工删除本地交付分支 {branch} 后重试可重铸，或人工核查分支内容"
-                        ),
-                    ));
-                }
-                Err(e) => {
-                    return Ok(fail_outcome(
-                        &task_id,
-                        &branch,
-                        format!("Gerrit 重整候选树计算失败（可重试）: {e}"),
-                    ));
-                }
-            }
-        }
         Ok(None) => {
             // 分支缺席（或锚缺席交 git 层探针裁决）→ 常规建分支。第三臂
             // （already_merged——交付已并入副本 main）时分支直接指向 HEAD：
@@ -755,126 +639,14 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
-    // ③.5 Gerrit 评审形态（批 B，SC 套件）：push_ref 以 `refs/for/` 开头 =
-    // Gerrit change 评审——push 本身建 change（无 MR 对象，REST 建条目走
-    // query-as-create：create_op = change_list 按 Change-Id 查询，已建 =
-    // 收口落账、未建 = 诚实失败留 pr_pending 由下轮对账收敛）。交付内容
-    // 重整为**单提交 atop 目标分支头**（refs/remotes/origin/<target>，目标
-    // 提交缺席 = 副本未 sync，诚实 Err）：
-    // - 交付树 = 当前 commit 的树（reuse/apply/already_merged 三臂通吃——
-    //   树是内容等价面）；基树 = payload `base_tree` 锚，缺席取基线提交的
-    //   树（基线漂移已在 preflight 挡过，此处只做树解析）；
-    // - 三方合并冲突 = 诚实 Err 人工 rebase；合并树 == 目标头树 = 诚实 Err
-    //   无可发布差异（交付已在目标分支）；目标分支被本地检出 = Err。
-    // 产出 commit 替换 commit_hex（refs/heads/{branch} 单亲重置——分支是
-    // 本地交付面，推送走 refs/for/<target>，远端主线零污染）。
-    let commit_hex = match push_ref.strip_prefix("refs/for/") {
-        Some(target) => {
-            let Some(change_id) = change_id.as_ref() else {
-                return Ok(fail_outcome(
-                    &task_id,
-                    &branch,
-                    "Change-Id 派生失败（git 哈希原语异常）——Gerrit 臂拒绝发布".to_string(),
-                ));
-            };
-            let delivery_tree_hex =
-                match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &commit_hex) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return Ok(fail_outcome(
-                            &task_id,
-                            &branch,
-                            format!("Gerrit 臂交付树解析失败（确定失败，可重试）: {e}"),
-                        ));
-                    }
-                };
-            let base_tree_hex = match base_tree.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(t) => t.to_string(),
-                None => {
-                    match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &expected_base) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            return Ok(fail_outcome(
-                                &task_id,
-                                &branch,
-                                format!(
-                                    "Gerrit 臂基树解析失败（基线提交 {expected_base} 不在副本仓——副本被重物化？可重试，再失败需人工核查）: {e}"
-                                ),
-                            ));
-                        }
-                    }
-                }
-            };
-            // 提交信息：commit_message 模板 rt 第二遍渲染（change_id/branch/
-            // task_id 运行期 token；条目 token 已在 parse 期消化）；模板未
-            // 带 Change-Id footer 时补齐——Gerrit 缺 footer 直接拒收
-            //（missing Change-Id）。
-            let mut message = match &protocol.commit_message {
-                Some(tpl) => crate::flow_proto::render_tokens(tpl, |key: &str| match key {
-                    "change_id" => Some(change_id.clone()),
-                    "branch" => Some(branch.clone()),
-                    "task_id" => Some(task_id.clone()),
-                    _ => None,
-                }),
-                None => format!("NemesisBot task {task_id}: {title}"),
-            };
-            if !message.contains("Change-Id:") {
-                while message.ends_with('\n') {
-                    message.pop();
-                }
-                message.push_str(&format!("\n\nChange-Id: {change_id}"));
-            }
-            match nemesis_board::git_repo::single_commit_atop(
-                &copy_dir,
-                &branch,
-                target,
-                &base_tree_hex,
-                &delivery_tree_hex,
-                &message,
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    return Ok(fail_outcome(
-                        &task_id,
-                        &branch,
-                        format!(
-                            "Gerrit 单提交重整失败（确定失败，可重试——同 Change-Id 幂等）: {e}"
-                        ),
-                    ));
-                }
-            }
-        }
-        None => commit_hex,
-    };
-    // R3 复评整改：Gerrit 臂重整锚（recast_tree = 重整 commit 的树）随
-    // 两次意图留痕写入 payload——重试凭「分支树 == 重整锚」幂等复用重整
-    // 产物；非 Gerrit 臂 = None（payload 不带锚字段，行为不变）。
-    let recast_tree = if push_ref.starts_with("refs/for/") {
-        match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &commit_hex) {
-            Ok(t) => Some(t),
-            Err(e) => {
-                return Ok(fail_outcome(
-                    &task_id,
-                    &branch,
-                    format!("Gerrit 重整锚树解析失败（可重试）: {e}"),
-                ));
-            }
-        }
-    } else {
-        None
-    };
     // 阶段留痕（续作；best-effort——留痕写失败不阻断发布本身，只降级
     // 重试续作的精确度，warn 可观测）。**阶段单调不回退**：pr_pending 现场
     // 续作时跳过中间态——把 pr_pending 覆盖成 commit_generated/push_completed
     // 后，若本次重试又在对账/创建窗口中断，下次重试丢失 pr_pending 语义 →
     // 不对账直建条目 = 重复建条目风险（stage 只前进不后退）。
     if !pr_pending_retry {
-        let mut stage_payload =
+        let stage_payload =
             json!({ "publish_stage": "commit_generated", "published_commit": commit_hex });
-        if let Some(t) = recast_tree.as_deref() {
-            stage_payload["recast_tree"] = Value::String(t.to_string());
-            stage_payload["recast_commit"] = Value::String(commit_hex.clone());
-        }
         if let Err(e) = db.merge_delivery_payload(&branch_key, &stage_payload) {
             // R1 复评整改：意图未落盘就不做外部写——warn+继续把「重试续
             // 作精确度」降级成「重复建条目风险」。此处中止（commit 已在
@@ -890,9 +662,8 @@ pub(crate) async fn publish_task_delivery(
     // ④ 推送（vault PAT；匿名路径 = 公开仓语义，与 clone 凭据对称）。凭据
     // 别名从 create_op 路由推导（a 单点）：Plugin → plugin/<slug>/pat
     // （自持插件 PAT），Native → connector/<id>/pat。批 B：cred_secret 显式
-    // 覆盖优先（Gerrit = HTTP Basic 用户名 + HTTP Password，别名与 GitLab
-    // PAT 分开，如 plugin/sc-bugfix/gerrit_http_pass；cred_user 缺省回落
-    // owner——GitLab HTTPS+PAT 任意非空用户名语义不变）。
+    // 覆盖优先（cred_user 缺省回落 owner——HTTPS+PAT 任意非空用户名语义
+    // 不变）。
     let cred = match args
         .get("cred_secret")
         .and_then(|v| v.as_str())
@@ -930,12 +701,8 @@ pub(crate) async fn publish_task_delivery(
         ));
     }
     if !pr_pending_retry {
-        let mut stage_payload =
+        let stage_payload =
             json!({ "publish_stage": "push_completed", "published_commit": commit_hex });
-        if let Some(t) = recast_tree.as_deref() {
-            stage_payload["recast_tree"] = Value::String(t.to_string());
-            stage_payload["recast_commit"] = Value::String(commit_hex.clone());
-        }
         if let Err(e) = db.merge_delivery_payload(&branch_key, &stage_payload) {
             // R1 复评整改：push 已完成但意图未落盘 = 本地分支领先账本——
             // 中止（重试树等值/重整锚复用 + 重推幂等，不做无账本锚的外部
@@ -957,7 +724,6 @@ pub(crate) async fn publish_task_delivery(
             "base_sha" => Some(expected_base.clone()),
             "branch" => Some(branch.clone()),
             "task_id" => Some(task_id.clone()),
-            "change_id" => change_id.clone(),
             _ => None,
         })
     };
@@ -1021,16 +787,12 @@ pub(crate) async fn publish_task_delivery(
     // 结果丢失（进程崩溃/响应不可解析）时，重试凭此先对账防重复建条目。
     // R1 复评整改：落账失败不再 warn+继续（无 pr_pending 锚的创建请求 =
     // 中断后盲目重建），改中止——创建请求未发出，重试安全。
-    let mut pending_payload = json!({
+    let pending_payload = json!({
         "publish_stage": "pr_pending",
         "published_commit": commit_hex,
         "published_branch": branch,
         "publish_op": protocol.create_op,
     });
-    if let Some(t) = recast_tree.as_deref() {
-        pending_payload["recast_tree"] = Value::String(t.to_string());
-        pending_payload["recast_commit"] = Value::String(commit_hex.clone());
-    }
     if let Err(e) = db.merge_delivery_payload(&branch_key, &pending_payload) {
         return Ok(fail_outcome(
             &task_id,

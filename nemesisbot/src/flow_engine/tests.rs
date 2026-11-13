@@ -1631,7 +1631,7 @@ fn render_config_tokens_renders_when_config_but_keeps_step_tokens() {
 
 #[test]
 fn render_config_tokens_declared_unset_renders_empty() {
-    // 可选键契约（SC 套件 proxy / gerrit_base_url 二选一形态）：键已声明
+    // 可选键契约（SC 套件 proxy 形态）：键已声明
     // 但未配置（无缺省无覆盖）= 空串，不再整模板拒绝；未声明 = 仍 Err。
     let mut t = tpl("t", &[KIND_FETCH]);
     t.steps[0]

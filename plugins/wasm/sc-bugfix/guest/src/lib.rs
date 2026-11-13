@@ -1,27 +1,24 @@
 //! sc-bugfix 插件 guest（组合 world `plugin-panel-flow-step`）。
 //!
-//! 自持形态：插件**自带 Jira（Server/DC）+ GitLab（自托管，REST v4）+
-//! Gerrit（REST）三直连**（http-send + secret-get），领域知识全部住在
+//! 自持形态：插件**自带 Jira（Server/DC）+ GitLab（自托管，REST v4）
+//! 直连**（http-send + secret-get），领域知识全部住在
 //! plugin.toml 声明 + 本组件。同一组件双导出，词表全自报：
 //! - 面板命令（Panel 帧，有写面）：`sync` / `jira_get`（Jira 检索与详情）
-//!   + `save_settings`（config-set ×16 + secret-set ×4——实例配置与凭据
+//!   + `save_settings`（config-set ×12 + secret-set ×3——实例配置与凭据
 //!   的自持写通道；全空入参 = 页面挂载自动探活，诚实无写入应答）。
 //! - flow 步骤（FlowStep 帧，无写面）：`fetch`（JQL 检索，entries 直出
 //!   raw Jira issue 对象——宿主按模板 key_field/title_field/body_field
 //!   物化）/ `comment`（Jira 回帖；on-transition 入口）/ `report`（报告
 //!   回帖 + 幂等转状态；目标状态未配置 = 只回帖）/ `create_mr`（GitLab
 //!   MR 创建，done 载荷顶层展开 iid/web_url——宿主 parse_publish_result
-//!   直读）/ `mr_list`（宿主 reconcile 翻页直投，entries 包裹）/
-//!   `change_list`（Gerrit change 检索：query-as-create 与 reconcile
-//!   共用；归一投影 ChangeInfo + 首条顶层展开）。
+//!   直读）/ `mr_list`（宿主 reconcile 翻页直投，entries 包裹）。
 //!
 //! 凭据：`jira_pat`（Bearer）/ `jira_password`（Basic）与 `pat`
 //! （GitLab PRIVATE-TOKEN；名字被宿主 publish 推送凭据推导钉死
-//! `plugin/sc-bugfix/pat`，repo_sync 同源）/ `gerrit_http_pass`
-//! （Gerrit HTTP Basic）经面板表单 secret-set 写 vault，调用现取现用，
-//! 不落日志不出审计值。配置：三个 base_url 无声明缺省（防假缺省 URL）——
-//! 未设置时各路诚实报错，不猜；egress allowlist = 三个 base_url 整条目
-//! token，随配置热生效（fresh-store-per-call）。
+//! `plugin/sc-bugfix/pat`，repo_sync 同源）经面板表单 secret-set 写
+//! vault，调用现取现用，不落日志不出审计值。配置：base_url 无声明缺省
+//! （防假缺省 URL）——未设置时各路诚实报错，不猜；egress allowlist =
+//! base_url 整条目 token，随配置热生效（fresh-store-per-call）。
 //!
 //! Jira 双认证形态（`jira_auth_mode` 配置）：`pat`（缺省，Bearer）|
 //! `basic`（jira_username 配置 + jira_password secret → HTTP Basic
@@ -31,11 +28,7 @@
 //! REST 形态：Jira v2 search 返回**包裹对象**
 //! `{issues:[{key, fields:{...}}]}`（issue key 字符串 PROJ-123 形态）；
 //! GitLab v4 项目坐标 `{owner}/{repo}` 整体 percent-encode（slash → %2F），
-//! MR 列表返回**顶层数组**；Gerrit REST 响应带 XSSI 魔法前缀 `)]}'`
-//! （剥掉再解析），change 检索返回 ChangeInfo 数组——本组件归一投影为
-//! {number, change_id, project, branch, subject, status, web_url}
-//! （number = _number；web_url REST 无独立字段，按
-//! `{base}/c/{project}/+/{_number}` 构造）。
+//! MR 列表返回**顶层数组**。
 
 use exports::nemesis::plugin::flow_step::Guest as StepGuest;
 use exports::nemesis::plugin::ui::Guest as UiGuest;
@@ -109,10 +102,6 @@ fn gitlab_base_url() -> Result<String, String> {
     base_url("gitlab_base_url", "GitLab")
 }
 
-fn gerrit_base_url() -> Result<String, String> {
-    base_url("gerrit_base_url", "Gerrit")
-}
-
 /// 串字段统一读实例配置（声明无缺省 → 只能是操作员条目）。
 fn cfg_str(key: &str, what: &str) -> Result<String, String> {
     match host::config_get(key) {
@@ -147,10 +136,6 @@ fn gitlab_pat() -> Result<String, String> {
     secret_ready("pat", "GitLab 访问令牌（PAT）")
 }
 
-fn gerrit_http_pass() -> Result<String, String> {
-    secret_ready("gerrit_http_pass", "Gerrit HTTP Password")
-}
-
 /// 极简 percent-encode（RFC 3986 unreserved 保留，其余 %XX——JQL/issue key
 /// /项目坐标 进 query/path 段用；无外部 crate）。
 fn urlencode(s: &str) -> String {
@@ -167,7 +152,7 @@ fn urlencode(s: &str) -> String {
 }
 
 /// 极简 base64（std-only；HTTP Basic 认证 `user:pass` 编码用——Jira basic
-/// 形态与 Gerrit REST 共用）。
+/// 形态）。
 fn b64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -281,64 +266,6 @@ fn gitlab_request(
         return Err(format!("GitLab HTTP {}: {}", resp.status, head));
     }
     parse_body(&resp.body).map_err(|e| format!("GitLab 响应非 JSON: {e}"))
-}
-
-/// Gerrit REST 响应魔法前缀剥离（XSSI 防护：响应以 `)]}'` 开头 + 换行；
-/// 无前缀原样返回——JSON 解析器自身容忍前导空白）。
-fn strip_gerrit_prefix(body: &[u8]) -> &[u8] {
-    if body.starts_with(b")]}'") {
-        let rest = &body[4..];
-        return match rest.first() {
-            Some(b'\n') => &rest[1..],
-            Some(b'\r') => {
-                if rest.get(1) == Some(&b'\n') {
-                    &rest[2..]
-                } else {
-                    rest
-                }
-            }
-            _ => rest,
-        };
-    }
-    body
-}
-
-/// Gerrit REST 单发请求（HTTP Basic：gerrit_username 配置 + gerrit_http_pass
-/// secret——HTTP Password 在 Gerrit 设置里生成；帧闸同上）。
-fn gerrit_request(
-    method: &str,
-    path_and_query: &str,
-    body: Option<Value>,
-) -> Result<Value, String> {
-    let base = gerrit_base_url()?;
-    let user = cfg_str("gerrit_username", "Gerrit HTTP 凭据用户名")?;
-    let pass = gerrit_http_pass()?;
-    let mut headers = vec![
-        (
-            "Authorization".to_string(),
-            format!("Basic {}", b64(format!("{user}:{pass}").as_bytes())),
-        ),
-        ("Accept".to_string(), "application/json".to_string()),
-    ];
-    if body.is_some() {
-        headers.push(("Content-Type".to_string(), "application/json".to_string()));
-    }
-    let req = host::HttpRequest {
-        method: method.to_string(),
-        url: format!("{base}{path_and_query}"),
-        headers,
-        body: body.map(|b| b.to_string().into_bytes()),
-    };
-    let resp = host::http_send(&req).map_err(|e| format!("Gerrit 请求失败: {e:?}"))?;
-    if !(200..300).contains(&resp.status) {
-        let head: String = String::from_utf8_lossy(&resp.body)
-            .chars()
-            .take(200)
-            .collect();
-        return Err(format!("Gerrit HTTP {}: {}", resp.status, head));
-    }
-    let clean = strip_gerrit_prefix(&resp.body);
-    parse_body(clean).map_err(|e| format!("Gerrit 响应非 JSON: {e}"))
 }
 
 /// 2xx body 解析：空/全空白 = `Value::Null`（no-content 2xx 合法，见
@@ -566,62 +493,6 @@ fn gitlab_mr_list(
     Ok(reply.as_array().cloned().unwrap_or_default())
 }
 
-/// ChangeInfo → 归一投影（number/change_id/project/branch/subject/status/
-/// web_url）。`_number` → `number`（宿主 result_ref 直读面）；web_url REST
-/// 无独立字段，按 `{base}/c/{project}/+/{_number}` 构造（project/number
-/// 缺失 = Null 诚实降级）。
-fn normalize_change(base: &str, c: &Value) -> Value {
-    let number = c.get("_number").cloned().unwrap_or(Value::Null);
-    let num_str = number.as_i64().map(|n| n.to_string()).unwrap_or_default();
-    let project = c
-        .get("project")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    let web_url = if project.is_empty() || num_str.is_empty() {
-        Value::Null
-    } else {
-        json!(format!("{base}/c/{project}/+/{num_str}"))
-    };
-    json!({
-        "number": number,
-        "change_id": c.get("change_id").cloned().unwrap_or(Value::Null),
-        "project": project,
-        "branch": c.get("branch").cloned().unwrap_or(Value::Null),
-        "subject": c.get("subject").cloned().unwrap_or(Value::Null),
-        "status": c.get("status").cloned().unwrap_or(Value::Null),
-        "web_url": web_url,
-    })
-}
-
-/// Gerrit change 检索（query-as-create 与 reconcile 翻页共用）：query 必填
-/// （Gerrit search 语法，如 `change:I8a3f...`）；limit/page 宿主注入 JSON
-/// 数字（arg_any 双形态）映射 Gerrit 分页参数 n（页长）/ S（起始偏移 =
-/// (page-1)×limit）。返回 ChangeInfo 数组（顶层数组形态）。
-fn gerrit_change_list(
-    query: &str,
-    limit: Option<&str>,
-    page: Option<&str>,
-) -> Result<Vec<Value>, String> {
-    let base = gerrit_base_url()?;
-    let n = limit
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(25);
-    let page_n = page
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .filter(|p| *p > 0)
-        .unwrap_or(1);
-    let start = page_n.saturating_sub(1).saturating_mul(n);
-    let reply = gerrit_request(
-        "GET",
-        &format!("/a/changes/?q={}&n={n}&S={start}", urlencode(query)),
-        None,
-    )?;
-    let raw = reply.as_array().cloned().unwrap_or_default();
-    Ok(raw.iter().map(|c| normalize_change(&base, c)).collect())
-}
-
 /// 逐字段写配置（有值才写；写失败聚合报错）。
 fn save_cfg(v: &Value, key: &str, saved: &mut Vec<String>, errors: &mut Vec<String>) {
     if let Some(s) = arg_str(v, key).and_then(|s| trim_nonempty(&s)) {
@@ -748,9 +619,9 @@ impl UiGuest for ScBugfixPlugin {
             "save_settings" => {
                 // 枚举形态字段先验（值域钉死；留空 = 保持原值不验）。
                 if let Some(s) = arg_str(&v, "code_host").and_then(|s| trim_nonempty(&s)) {
-                    if s != "gitlab" && s != "gerrit" {
+                    if s != "gitlab" {
                         return err_reply(format!(
-                            "code_host 值无法识别「{s}」：仅支持 gitlab 或 gerrit"
+                            "code_host 值无法识别「{s}」：仅支持 gitlab"
                         ));
                     }
                 }
@@ -774,22 +645,11 @@ impl UiGuest for ScBugfixPlugin {
                 save_cfg(&v, "gitlab_owner", &mut saved, &mut errors);
                 save_cfg(&v, "gitlab_repo", &mut saved, &mut errors);
                 save_cfg(&v, "gitlab_target_branch", &mut saved, &mut errors);
-                save_base_url(&v, "gerrit_base_url", &mut saved, &mut errors);
-                save_cfg(&v, "gerrit_username", &mut saved, &mut errors);
-                save_cfg(&v, "gerrit_project", &mut saved, &mut errors);
-                save_cfg(&v, "gerrit_target_branch", &mut saved, &mut errors);
                 save_cfg(&v, "board_project", &mut saved, &mut errors);
                 save_cfg(&v, "proxy", &mut saved, &mut errors);
                 save_secret(&v, "jira_pat", "Jira PAT", &mut saved, &mut errors);
                 save_secret(&v, "jira_password", "Jira 密码", &mut saved, &mut errors);
                 save_secret(&v, "pat", "GitLab PAT", &mut saved, &mut errors);
-                save_secret(
-                    &v,
-                    "gerrit_http_pass",
-                    "Gerrit HTTP Password",
-                    &mut saved,
-                    &mut errors,
-                );
                 if !errors.is_empty() {
                     return err_reply(errors.join("；"));
                 }
@@ -814,14 +674,13 @@ impl UiGuest for ScBugfixPlugin {
 impl StepGuest for ScBugfixPlugin {
     fn get_step_metadata() -> Result<exports::nemesis::plugin::flow_step::StepMetadata, HostError> {
         Ok(exports::nemesis::plugin::flow_step::StepMetadata {
-            // 词表即文档：模板里 `plugin:sc-bugfix:<op>` 只认这六个 op。
+            // 词表即文档：模板里 `plugin:sc-bugfix:<op>` 只认这五个 op。
             kinds: vec![
                 "fetch".into(),
                 "comment".into(),
                 "report".into(),
                 "create_mr".into(),
                 "mr_list".into(),
-                "change_list".into(),
             ],
         })
     }
@@ -941,41 +800,8 @@ impl StepGuest for ScBugfixPlugin {
                     Err(e) => Ok(fail(e)),
                 }
             }
-            // Gerrit change 检索（query-as-create 与 reconcile 翻页共用）：
-            // query 必填；project 仅投影保留（web_url 构造优先用返回体
-            // project 字段）；limit/page 宿主注入 JSON 数字（arg_any）映射
-            // Gerrit n / S。归一投影 + **首条顶层展开**——宿主
-            // parse_publish_result 直读 $.number/$.web_url。空结果不展开、
-            // 状态仍 done：create 臂解析落空 → 对账保守分支；reconcile 臂
-            // 空页 = Absent 诚实扫尽（与 mr_list 同形态）。
-            "change_list" => {
-                let fail = |e: String| json!({ "status": "failed", "error": e }).to_string();
-                let Some(query) = arg_str(&v, "query").and_then(|s| trim_nonempty(&s)) else {
-                    return Ok(fail("change_list 缺参数 query（Gerrit search 语法）".into()));
-                };
-                let limit = arg_any(&v, "limit").and_then(|s| trim_nonempty(&s));
-                let page = arg_any(&v, "page").and_then(|s| trim_nonempty(&s));
-                match gerrit_change_list(&query, limit.as_deref(), page.as_deref()) {
-                    Ok(entries) => {
-                        let mut out = serde_json::Map::new();
-                        out.insert("status".into(), json!("done"));
-                        out.insert("entries".into(), json!(entries));
-                        out.insert(
-                            "message".into(),
-                            json!(format!("检索到 {} 条 change", entries.len())),
-                        );
-                        if let Some(fields) = entries.first().and_then(Value::as_object) {
-                            for (k, val) in fields {
-                                out.insert(k.clone(), val.clone());
-                            }
-                        }
-                        Ok(Value::Object(out).to_string())
-                    }
-                    Err(e) => Ok(fail(e)),
-                }
-            }
             other => Err(HostError::NotFound(format!(
-                "op '{other}' not in kinds wordlist（fetch/comment/report/create_mr/mr_list/change_list）"
+                "op '{other}' not in kinds wordlist（fetch/comment/report/create_mr/mr_list）"
             ))),
         }
     }

@@ -1181,14 +1181,6 @@ fn parse_publish_step_protocol(
             .and_then(|s| s.trim().parse().ok())
             .filter(|v| *v > 0)
             .unwrap_or(5),
-        // Gerrit 臂提交信息模板（可选；push_ref 以 refs/for/ 开头时消费）。
-        // parse 期渲染条目 token（ext_key/title/board_issue/report_path），
-        // 发布侧 rt 期再渲染 change_id/branch/task_id（两段渲染走 protocol
-        // 字段而非 args 原样拷贝——args 拷贝只有 rt 单段）。
-        commit_message: get_arg("commit_message")
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|s| render(&s)),
     })
 }
 
@@ -3048,8 +3040,8 @@ fn config_table(
 
 /// 装载期 config token 宽和渲染：声明面里 `{{config.<key>}}` 换实例配置值
 /// （缺省/运行）。**已声明但未配置**（schema 无缺省且开关文件无覆盖）= 空串
-/// ——诚实语义「声明说键存在，未配置 = 空」：proxy / gerrit_base_url 这类
-/// 可选键（按 code_host 二选一使用）靠它免于整模板被残留检查拒绝。**未声明**
+/// ——诚实语义「声明说键存在，未配置 = 空」：proxy 这类可选键（按
+/// code_host 二选一使用）靠它免于整模板被残留检查拒绝。**未声明**
 /// 键保持字面量 = Err（诚实跳过模板，不把字面量垃圾送给 connector）。
 /// 其余 token（`{{key}}`/`{{arg.*}}`/`{{origin_meta.*}}` 等条目级）原样保留
 /// 由下游逐条目渲染。`step.when` 同相参与装载期 config 渲染（config 值对
