@@ -414,8 +414,9 @@ mod wave6 {
 // ---------------------------------------------------------------------------
 // wave7：roaming 管理面（trust/mandate 簿 + 开关写）、Status 身份段、
 // init 职能/档位/能力宣告段、firewall 入口、node 空 token fail-closed。
-// 全程进程内 + tempdir，不触网；firewall 用非法端口 0 让 netsh 参数
-// 校验失败（与管理员权限无关，两个平台语义一致地 Err）。
+// 全程进程内 + tempdir，不触网；firewall 用非法端口 0——拒绝在命令层
+// 显式给出（2026-11 镜像 netsh 已放行 localport=0，失败路径不仰赖外部
+// 工具校验；与管理员权限无关，两个平台语义一致地 Err）。
 // ---------------------------------------------------------------------------
 mod wave7 {
     use super::wave5::{EnvHomeGuard, seed};
@@ -908,8 +909,8 @@ mod wave7 {
         );
     }
 
-    /// firewall add 用端口 0：netsh 参数校验拒绝（与权限无关的确定性失败
-    /// 路径），命令层如实上抛。
+    /// firewall add 用端口 0：命令层显式拒绝（2026-11 镜像 netsh 已放行
+    /// localport=0，确定性失败路径收敛到命令层，与权限/工具版本无关）。
     #[tokio::test]
     async fn w7_firewall_add_invalid_port_fails_fast() {
         let g = EnvHomeGuard::new();
@@ -924,7 +925,7 @@ mod wave7 {
             false,
         )
         .await;
-        assert!(res.is_err(), "端口 0 必须被 netsh 拒绝");
+        assert!(res.is_err(), "端口 0 必须被拒绝（命令层校验）");
         // 兜底清理：即便极端环境把规则加上去了，也顺手删掉。
         let _ = run(
             ClusterAction::Firewall {
