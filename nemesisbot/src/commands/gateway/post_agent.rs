@@ -127,6 +127,15 @@ pub(crate) async fn init_post_agent(
     let board_selfcheck_registry = cluster.board_selfcheck_registry.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_playtest_registry = cluster.board_playtest_registry.clone();
+    // BUG-20261114-019：发件箱 Arc 进 adapter（terminal 停机链收口推送
+    // 循环的唯一样携带面；spawn 点句柄已丢弃，此前全进程无终止通路）。
+    // 双臂声明：wiring 字段随 board+cluster 门，cluster-only 构建下
+    // adapter 槽恒 None（类型 nemesis_cluster::outbox 恒可用——init_cluster
+    // 的 not(all) 占位臂同款）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let transfer_outbox = cluster.transfer_outbox.clone();
+    #[cfg(not(all(feature = "board", feature = "cluster")))]
+    let transfer_outbox: Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>> = None;
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // 注记：None 前向声明随 迁入本函数——赋值在下方 ClusterService
     // Adapter 构建（四元组消费点）。
@@ -496,6 +505,7 @@ pub(crate) async fn init_post_agent(
                 work_queue,
                 result_persister,
                 board_worker_inbox.take(),
+                transfer_outbox,
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.

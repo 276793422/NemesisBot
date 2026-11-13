@@ -339,6 +339,18 @@ pub struct TransferOutbox {
     /// （旧行为照发）。`Option<bool>` 语义由注入方裁决（未知节点建议 true，
     /// 让推送 fast-fail 诚实暴露）。
     online_check: std::sync::Mutex<Option<Box<dyn Fn(&str) -> bool + Send + Sync>>>,
+    /// 推送循环停机令牌（BUG-20261114-019）：heartbeat r9 / devices
+    /// BUG-20261114-015 停机 panic 家族第三例的根修。旧形态 select 只有
+    /// {kick.notified, sleep(15s)} 两臂且 JoinHandle 在 spawn 点被丢弃——
+    /// 全进程无任何通路能终止它，gateway 停机排空窗（rt.shutdown_timeout(5s)）
+    /// 内存活任务被最后 poll：醒来跑 process_once（文件 IO + 网络推送，
+    /// 撞上已停的 RPC server）、回到 select 再注册新 TimerEntry = 停机
+    /// panic（heartbeat r9 家族注释的机制原文）。cancelled 挂第一臂
+    /// （臂序铁律：停机后被唤醒的任务先 poll 到取消即退，根本轮到不了
+    /// sleep 注册）。仅 terminal 停机链消费（runtime.rs 收尾块）——tray/
+    /// Dashboard 的动态 cluster start/stop 周期不碰它，保持「进程生命周期
+    /// 常驻」语义不变。
+    stop_token: tokio_util::sync::CancellationToken,
 }
 
 impl TransferOutbox {
@@ -359,6 +371,7 @@ impl TransferOutbox {
             max_bytes,
             kick: tokio::sync::Notify::new(),
             online_check: std::sync::Mutex::new(None),
+            stop_token: tokio_util::sync::CancellationToken::new(),
         }
     }
 
@@ -625,17 +638,31 @@ impl TransferOutbox {
     // -- 推送循环 -----------------------------------------------------------
 
     /// 起后台推送循环（kick 即时 / 15s 兜底节拍；进程生命周期常驻）。
+    ///
+    /// BUG-20261114-019：停机臂（cancelled 第一臂，heartbeat r9 / devices
+    /// BUG-20261114-015 家族纪律）——terminal 停机链（gateway runtime 收尾）
+    /// 经 [`Self::stop_push_loop`] 取消，循环在 select 点即刻退出，不再于
+    /// 停机排空窗内注册新 timer / 跑推送副作用。动态 start/stop 周期
+    ///（tray/Dashboard）不消费本令牌。
     pub fn spawn_push_loop(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    _ = this.stop_token.cancelled() => break,
                     _ = this.kick.notified() => {}
                     _ = tokio::time::sleep(Duration::from_secs(PUSH_TICK_SECS)) => {}
                 }
                 this.process_once().await;
             }
         })
+    }
+
+    /// 终态停机：取消推送循环（BUG-20261114-019）。幂等（token cancel
+    /// 幂等）；仅 gateway terminal 收尾链消费，动态 cluster start/stop
+    /// 周期不得调用（循环是进程生命周期常驻，杀掉后无人重新 spawn）。
+    pub fn stop_push_loop(&self) {
+        self.stop_token.cancel();
     }
 
     /// 一轮推送：串行处理全部 `pending` 条目（单循环任务内串行，天然免并发

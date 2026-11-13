@@ -1926,6 +1926,14 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "cluster")]
     {
         if let Some(adapter) = cluster_adapter.take() {
+            // BUG-20261114-019：推送循环终态收口必须先于 adapter.stop()
+            // ——循环的 JoinHandle 在 spawn 点已丢弃，本调用是全进程唯一
+            // 终止通路；不收口则循环存活跨进 shutdown_timeout 排空窗，
+            // 最后 poll 注册新 TimerEntry = 停机 panic（heartbeat r9 /
+            // devices BUG-20261114-015 家族第三例）。收口挂 terminal 链
+            // 而非 adapter.stop()：后者被 tray/Dashboard 动态 start/stop
+            // 周期复用，杀循环会永久失去推送能力。
+            adapter.stop_push_loop();
             let _ = adapter.stop();
         }
     }

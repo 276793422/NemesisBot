@@ -94,6 +94,11 @@ pub(crate) struct ClusterWiring {
     /// 同源同形态：内存表 + playtest_pending 持久兜底，回调/sweep 共享）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_playtest_registry: crate::board_review::PlaytestRegistry,
+    /// 发件箱（BUG-20261114-019）：terminal 停机链经它收口推送循环——
+    /// push loop 的 JoinHandle 在 spawn 点丢弃，此前全进程无终止通路。
+    /// ClusterServiceAdapter 持同份 Arc；runtime.rs 终相块消费。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub transfer_outbox: Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
 }
 
 /// Step 9a：集群基础设施装配（计划）。Cluster 对象与 adapter refs
@@ -208,6 +213,15 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_playtest_registry =
         crate::board_review::PlaytestRegistry::with_store(board_store.clone());
+    // BUG-20261114-019：发件箱 Arc 越块导出槽。transfer_outbox 绑定活在下方
+    // #[cfg(feature = "cluster")] 裸块内（块在函数尾前收口），而 ClusterWiring
+    // 字面量在块外——Rust 块作用域无导出，经此外层槽把 Arc 带到返回点。
+    // 延迟初始化（无 None 初值）：三处同 gate（声明/赋值/字段读），
+    // all(board,cluster) 构建下赋值无条件先于读取，其余构建整体消失。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let transfer_outbox_for_wiring: Option<
+        std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>,
+    >;
     #[cfg(feature = "cluster")]
     {
         // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份；
@@ -814,6 +828,12 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
             None => (None, None),
         };
+        // BUG-20261114-019：越块导出（块外 ClusterWiring 字面量经外层槽消费）。
+        // 裸块包裹：cfg 直挂赋值表达式语句是 E0658 实验特性。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            transfer_outbox_for_wiring = transfer_outbox.clone();
+        }
         #[cfg(not(all(feature = "board", feature = "cluster")))]
         let (_transfer_sink, transfer_outbox): (
             Option<std::sync::Arc<nemesis_cluster::transfer::TransferSink>>,
@@ -2260,5 +2280,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         board_selfcheck_registry,
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_playtest_registry,
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        transfer_outbox: transfer_outbox_for_wiring,
     })
 }

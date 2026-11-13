@@ -891,3 +891,40 @@ fn park_entry(ws: &Path, task_id: &str, state: &str) {
     entry.state = state.to_string();
     std::fs::write(&p, serde_json::to_string(&entry).unwrap()).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-019：推送循环终态收口（cancelled 第一臂）
+// ---------------------------------------------------------------------------
+
+/// stop_push_loop 后循环必须从 select 点即刻退出（含 15s sleep 在飞窗口）
+/// ——JoinHandle 在 spawn 点丢弃，本臂是全进程唯一终止通路；不收口则
+/// gateway 停机排空窗（shutdown_timeout）内最后 poll 注册新 TimerEntry
+/// = 停机 panic（heartbeat r9 / devices BUG-015 家族）。变异锁：删掉
+/// cancelled 臂本测试 join 超时（循环只能等满 15s tick）。
+#[tokio::test]
+async fn push_loop_exits_on_stop_push_loop_even_mid_sleep() {
+    let ws = temp_ws("push_loop_stop");
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    let handle = ob.spawn_push_loop();
+
+    // 让循环进入 select（15s sleep 在飞）。无条目工作区 process_once 为空转。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    ob.stop_push_loop();
+
+    // 取消是即时的（watch 通道事件驱动，不依赖 15s tick 到期）：join
+    // 3s 超时远小于 PUSH_TICK_SECS——中途 sleep 也必须被唤醒退出。
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
+    assert!(
+        joined.is_ok(),
+        "push loop did not exit within 3s of stop_push_loop \
+         (cancelled arm missing or not first?)"
+    );
+
+    // 幂等：二次取消不得 panic。
+    ob.stop_push_loop();
+}
