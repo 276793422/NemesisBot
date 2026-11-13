@@ -558,7 +558,9 @@ async fn test_spawn_tool_with_fn() {
          _d: usize,
          _bg: bool,
          _r: &str,
-         _psk: &str| {
+         _psk: &str,
+         _expert: &str,
+         _prompt: &str| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -1658,7 +1660,9 @@ async fn test_spawn_tool_allowlist_allowed() {
          _d: usize,
          _bg: bool,
          _r: &str,
-         _psk: &str| {
+         _psk: &str,
+         _expert: &str,
+         _prompt: &str| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -3242,7 +3246,9 @@ async fn test_spawn_tool_set_context() {
          _d: usize,
          _bg: bool,
          _r: &str,
-         _psk: &str| {
+         _psk: &str,
+         _expert: &str,
+         _prompt: &str| {
             let ch = channel.to_string();
             let cid = chat_id.to_string();
             Box::pin(async move { Ok(format!("ch={}, cid={}", ch, cid)) })
@@ -5851,4 +5857,328 @@ fn test_cluster_rpc_auto_schema_hint_present() {
         schema.contains("You may also pass") && schema.contains("health/load aware"),
         "参数 schema 要带 auto 用法提示（模型才知道可以传 auto）: {schema}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 专家模式策略行为矩阵（2026-11-13 总开关 + 自动降级）
+// ---------------------------------------------------------------------------
+
+/// 合成 ExpertsHandle：entries = (slug, enabled)；resolve 命中计数供
+/// 「预检不该发生」断言用；策略常量注入（生产侧 bot 现读 config）。
+fn expert_handle_fixture(
+    entries: Vec<(&'static str, bool)>,
+    policy: ExpertsPolicy,
+    resolve_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> ExpertsHandle {
+    let roster_entries = entries.clone();
+    let roster: ExpertsRosterFn = std::sync::Arc::new(move || ExpertsRoster {
+        experts: roster_entries
+            .iter()
+            .map(|(slug, enabled)| ExpertRosterEntry {
+                slug: (*slug).to_string(),
+                name: (*slug).to_string(),
+                summary: String::new(),
+                tags: Vec::new(),
+                enabled: *enabled,
+            })
+            .collect(),
+        default_name: "默认子代理".to_string(),
+    });
+    let resolve_entries = entries;
+    let resolve: ExpertResolveFn = std::sync::Arc::new(move |key: &str| {
+        resolve_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let norm = key.trim().to_lowercase();
+        for (slug, enabled) in &resolve_entries {
+            if slug.to_lowercase() == norm {
+                if !*enabled {
+                    return Err(format!(
+                        "Expert '{key}' is disabled (it stays defined but cannot be dispatched until re-enabled)."
+                    ));
+                }
+                return Ok(ExpertDispatch {
+                    slug: (*slug).to_string(),
+                    name: (*slug).to_string(),
+                    prompt: format!("PROMPT_OF_{slug}"),
+                    model: String::new(),
+                });
+            }
+        }
+        Err(format!("Unknown expert '{key}'. Hired experts: none."))
+    });
+    let policy_fn: ExpertsPolicyFn = std::sync::Arc::new(move || policy.clone());
+    ExpertsHandle {
+        roster,
+        resolve,
+        policy: policy_fn,
+    }
+}
+
+#[allow(clippy::redundant_closure)]
+fn spawn_tool_with_experts(h: Option<ExpertsHandle>) -> SpawnTool {
+    let config = SpawnConfig {
+        default_model: "test-model".to_string(),
+        max_concurrent: 5,
+        max_depth: 1,
+    };
+    let mut tool = SpawnTool::new(config);
+    if let Some(h) = h {
+        tool = tool.with_experts(h);
+    }
+    stub_spawn_fn(&mut tool);
+    tool
+}
+
+fn stub_spawn_fn(tool: &mut SpawnTool) {
+    tool.set_spawn_fn(std::sync::Arc::new(
+        |_a: &str,
+         _t: &str,
+         _m: &str,
+         _c: &str,
+         _ch: &str,
+         _p: &str,
+         _d: usize,
+         _bg: bool,
+         _r: &str,
+         _psk: &str,
+         _expert: &str,
+         _prompt: &str| { Box::pin(async move { Ok("[Spawn] ok".to_string()) }) },
+    ));
+}
+
+#[tokio::test]
+async fn test_expert_mode_disabled_rejects_expert_and_prompt() {
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let tool = spawn_tool_with_experts(Some(expert_handle_fixture(
+        vec![("marker-probe", true)],
+        ExpertsPolicy::default(), // enabled=false
+        hits.clone(),
+    )));
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let err = tool
+        .execute(r#"{"expert": "marker-probe", "task": "x"}"#, &ctx)
+        .await
+        .expect_err("模式关必须拒绝点名派发");
+    assert!(
+        err.contains("Expert mode is disabled") && err.contains("agents.experts.enabled=false"),
+        "拒绝文案要带开启指引: {err}"
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "模式关在预检拦截，resolve 不该被调"
+    );
+
+    let err = tool
+        .execute(r#"{"prompt": "你是数据分析师", "task": "x"}"#, &ctx)
+        .await
+        .expect_err("模式关必须拒绝 prompt 派发");
+    assert!(
+        err.contains("Expert mode is disabled"),
+        "prompt 拒绝同指引: {err}"
+    );
+
+    // list 停用注记：名册照列 + 顶部 DISABLED-MODE 注记（信息丰富先例）。
+    let out = tool.execute(r#"{"action": "list"}"#, &ctx).await.unwrap();
+    assert!(
+        out.contains("Expert mode is currently DISABLED") && out.contains("marker-probe"),
+        "list 停用注记要带名册: {out}"
+    );
+}
+
+#[tokio::test]
+async fn test_expert_unknown_degrade_guidance_vs_passthrough() {
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // degrade=true：降级指引（勿问用户 + prompt 二段重调），嵌入原始原因。
+    let tool = spawn_tool_with_experts(Some(expert_handle_fixture(
+        vec![],
+        ExpertsPolicy {
+            enabled: true,
+            degrade: true,
+            notify: false,
+        },
+        hits,
+    )));
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let err = tool
+        .execute(r#"{"expert": "数据分析师", "task": "x"}"#, &ctx)
+        .await
+        .expect_err("未知专家在降级模式下回灌指引");
+    assert!(err.starts_with("AUTO-DEGRADE"), "降级指引前缀: {err}");
+    assert!(
+        err.contains("Unknown expert '数据分析师'")
+            && err.contains("do NOT stop to ask the user")
+            && err.contains("`prompt`"),
+        "指引要嵌原始原因 + 勿问用户 + prompt 指令: {err}"
+    );
+
+    // degrade=false：现行诚实拒绝行为字节不变（原始错误原样上抛）。
+    let tool = spawn_tool_with_experts(Some(expert_handle_fixture(
+        vec![],
+        ExpertsPolicy {
+            enabled: true,
+            degrade: false,
+            notify: false,
+        },
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )));
+    let err = tool
+        .execute(r#"{"expert": "数据分析师", "task": "x"}"#, &ctx)
+        .await
+        .expect_err("降级关必须诚实拒绝");
+    assert!(
+        err.starts_with("Unknown expert") && !err.contains("AUTO-DEGRADE"),
+        "降级关 = 原始错误透传（T4b 形态）: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_expert_mutual_exclusion_and_prompt_passthrough() {
+    let tool = spawn_tool_with_experts(Some(expert_handle_fixture(
+        vec![],
+        ExpertsPolicy {
+            enabled: true,
+            degrade: true,
+            notify: false,
+        },
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    )));
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    // 互斥：双传诚实拒绝。
+    let err = tool
+        .execute(r#"{"expert": "a", "prompt": "b", "task": "x"}"#, &ctx)
+        .await
+        .expect_err("expert/prompt 互斥必须拒绝");
+    assert!(err.contains("not both"), "互斥文案: {err}");
+
+    // prompt 直通：模式开时第 12 参透传 spawn_fn。
+    let config = SpawnConfig {
+        default_model: "test-model".to_string(),
+        max_concurrent: 5,
+        max_depth: 1,
+    };
+    let mut tool = SpawnTool::new(config);
+    tool = tool.with_experts(expert_handle_fixture(
+        vec![],
+        ExpertsPolicy {
+            enabled: true,
+            degrade: true,
+            notify: false,
+        },
+        std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    ));
+    tool.set_spawn_fn(std::sync::Arc::new(
+        |_a: &str,
+         _t: &str,
+         _m: &str,
+         _c: &str,
+         _ch: &str,
+         _p: &str,
+         _d: usize,
+         _bg: bool,
+         _r: &str,
+         _psk: &str,
+         _expert: &str,
+         prompt: &str| {
+            let prompt = prompt.to_string();
+            Box::pin(async move { Ok(format!("PROMPT_WAS:{prompt}")) })
+        },
+    ));
+    let out = tool
+        .execute(r#"{"task": "x", "prompt": "你是临时数据分析师"}"#, &ctx)
+        .await
+        .unwrap();
+    assert!(
+        out.contains("PROMPT_WAS:你是临时数据分析师"),
+        "prompt 必须透传第 12 参: {out}"
+    );
+}
+
+#[tokio::test]
+async fn test_expert_degrade_notify_event_published() {
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = SpawnConfig {
+        default_model: "test-model".to_string(),
+        max_concurrent: 5,
+        max_depth: 1,
+    };
+    let mut tool = SpawnTool::new(config);
+    tool = tool
+        .with_experts(expert_handle_fixture(
+            vec![],
+            ExpertsPolicy {
+                enabled: true,
+                degrade: true,
+                notify: true,
+            },
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ))
+        .with_event_tx(tx);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let _ = tool
+        .execute(r#"{"expert": "ghost", "task": "x"}"#, &ctx)
+        .await;
+    let event = rx.recv().await.expect("降级事件必须发布");
+    match event {
+        nemesis_types::agent::AgentEvent::ExpertDegraded {
+            session_key,
+            requested,
+            reason,
+            ..
+        } => {
+            assert_eq!(requested, "ghost");
+            assert!(
+                reason.contains("Unknown expert"),
+                "reason=原始错误: {reason}"
+            );
+            assert!(session_key.starts_with("sess"), "会话键透传: {session_key}");
+        }
+        other => panic!("期望 ExpertDegraded，得到: {other:?}"),
+    }
+
+    // notify=false：同场景不发事件（静默降级默认）。
+    let (tx2, mut rx2) = tokio::sync::broadcast::channel(16);
+    let config = SpawnConfig {
+        default_model: "test-model".to_string(),
+        max_concurrent: 5,
+        max_depth: 1,
+    };
+    let mut tool = SpawnTool::new(config);
+    tool = tool
+        .with_experts(expert_handle_fixture(
+            vec![],
+            ExpertsPolicy {
+                enabled: true,
+                degrade: true,
+                notify: false,
+            },
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        ))
+        .with_event_tx(tx2);
+    let _ = tool
+        .execute(r#"{"expert": "ghost", "task": "x"}"#, &ctx)
+        .await;
+    assert!(
+        rx2.try_recv().is_err(),
+        "notify=false 不该发事件（静默降级）"
+    );
+}
+
+#[tokio::test]
+async fn test_expert_face_absent_honest_rejects() {
+    // handle 缺席（headless/项目 loop 未装配）：expert 与 prompt 双诚实
+    // 拒绝，list 报无名册（现行形态不变）。
+    let tool = spawn_tool_with_experts(None);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let err = tool
+        .execute(r#"{"expert": "x", "task": "t"}"#, &ctx)
+        .await
+        .expect_err("无专家面必须诚实拒绝");
+    assert!(err.contains("not configured"), "{err}");
+    let err = tool
+        .execute(r#"{"prompt": "p", "task": "t"}"#, &ctx)
+        .await
+        .expect_err("无专家面 prompt 同拒");
+    assert!(err.contains("not configured"), "{err}");
 }

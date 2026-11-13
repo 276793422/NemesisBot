@@ -15,6 +15,7 @@ import { useCredentials } from '../composables/useCredentials'
 import { useCanvas } from '../composables/useCanvas'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useSystemAlerts } from '../composables/useSystemAlerts'
+import { useExpertDegraded } from '../composables/useExpertDegraded'
 // 皮肤结构皮肤（v2）：槽位由引擎渲染（skinHasSlot 判定在场，CSS-only
 // 包全部回落原生）；投影 + 动作白名单在此装配一次（模块单例）。
 import { skinHasSlot, ensureSkinMeta } from '../composables/useSkin'
@@ -33,6 +34,8 @@ const { initCanvas } = useCanvas()
 const { initEditorMode } = useEditorMode()
 // M2：系统级降级告警条单例订阅（SSE system-alert：磁盘水位 + 写失败聚合）。
 const { systemAlerts, initSystemAlerts, dismiss: dismissSystemAlert } = useSystemAlerts()
+// 专家降级 toast 单例订阅（SSE expert-degraded；服务端 notify=true 才发）。
+const { initExpertDegraded } = useExpertDegraded()
 
 // 皮肤数据投影 + 动作白名单装配（幂等单例；router 须从 setup 传）。
 const router = useRouter()
@@ -48,6 +51,7 @@ onMounted(() => {
   initCanvas()
   initEditorMode()
   initSystemAlerts()
+  initExpertDegraded()
   if (skinHasSlot('sidebar') || skinHasSlot('statusbar')) ensureSkinMeta()
 })
 </script>

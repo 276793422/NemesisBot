@@ -1129,6 +1129,8 @@ impl ModuleHandler for PersonaHandler {
             // 集群聘用依赖 cluster handler（写 cluster/ 三件套 + peers.toml 事务）
             #[cfg(feature = "cluster")]
             "shop.hire",
+            // 雇佣专家（2026-11-13 专家子代理）：单机专家名册，无 feature 闸。
+            "shop.hire_expert",
         ]
     }
 
@@ -1221,6 +1223,12 @@ impl ModuleHandler for PersonaHandler {
                 let id = get_str(&d, "id")?;
                 validate_persona_name(&id)?;
                 self.cmd_shop_hire(workspace, &id, ctx)
+            }
+            "shop.hire_expert" => {
+                let d = data.ok_or("missing data")?;
+                let id = get_str(&d, "id")?;
+                validate_persona_name(&id)?;
+                self.cmd_shop_hire_expert(workspace, &id)
             }
             _ => Err(format!("unknown command: persona.{}", cmd)),
         }
@@ -1682,6 +1690,75 @@ impl PersonaHandler {
             "note": note,
         })))
     }
+
+    /// 雇佣专家（2026-11-13 专家子代理批次③）：把已安装的本地超市人格
+    /// 映射成单机专家（workspace/experts/）。前置 shop.download（与集群
+    /// 聘用同款「先下载后映射」决策）；PERSONA.json name/description →
+    /// 专家名/简介，SOUL.md 全文 → 系统提示词（trim 后空 = 诚实拒绝）；
+    /// slug = 人格目录 id（下载面已 FS 归一，hire 面 slug_guard 复核）；
+    /// 幂等重雇（同 slug 覆盖，model/enabled 重置出厂态）。无 feature 闸
+    /// ——专家面恒编译；experts 桥缺席（CLI/headless 测试态）诚实报错。
+    fn cmd_shop_hire_expert(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let payload = expert_hire_payload(workspace, id)?;
+        let bridge = crate::handlers::experts::experts_bridge()?;
+        let entry = bridge.hire(&payload)?;
+        tracing::info!(persona = %id, "[Persona] hired as expert");
+        Ok(Some(
+            serde_json::json!({ "hired": true, "id": id, "expert": entry }),
+        ))
+    }
+}
+
+/// 雇佣专家载荷构造纯函数（测试面）：personas/{id}/ 已安装人格 → hire 桥
+/// 入参。只读两文件——PERSONA.json（name/description，缺席/坏 JSON 容忍
+/// 回落 id/空）+ SOUL.md（trim 后空 = 诚实拒绝）。
+fn expert_hire_payload(workspace: &str, id: &str) -> Result<serde_json::Value, String> {
+    let dir = resolve_path(workspace, &format!("personas/{}", id))?;
+    if !dir.exists() {
+        return Err(format!(
+            "persona '{}' not installed — 雇佣专家必须先下载（shop.download）",
+            id
+        ));
+    }
+    let pj_path = dir.join("PERSONA.json");
+    let pj: serde_json::Value = if pj_path.exists() {
+        let content = std::fs::read_to_string(&pj_path)
+            .map_err(|e| format!("failed to read PERSONA.json: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("failed to parse PERSONA.json: {e}"))?
+    } else {
+        serde_json::json!({})
+    };
+    let name = pj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(id);
+    let summary = pj
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let soul = std::fs::read_to_string(dir.join("SOUL.md"))
+        .map_err(|e| format!("failed to read SOUL.md（人格缺 SOUL.md？）: {e}"))?;
+    let prompt = soul.trim().to_string();
+    if prompt.is_empty() {
+        return Err(format!(
+            "persona '{}' SOUL.md 为空 — 没有可雇佣的专家提示词",
+            id
+        ));
+    }
+    Ok(serde_json::json!({
+        "slug": id,
+        "name": name,
+        "summary": summary,
+        "tags": [],
+        "prompt": prompt,
+        "hired_from": id,
+    }))
 }
 
 // Cluster hire（集群聘用）—— 映射/备份/身份纯函数 + 写盘主体
@@ -1859,3 +1936,8 @@ mod agt_tests;
 //（无 ctx，temp workspace 文件级验证）。随 cluster feature 门控。
 #[cfg(all(test, feature = "cluster"))]
 mod hire_tests;
+
+// 雇佣专家（shop.hire_expert）：expert_hire_payload 纯函数
+//（无 ctx 无桥依赖，temp workspace 文件级验证）。无 feature 闸（专家面恒编译）。
+#[cfg(test)]
+mod hire_expert_tests;

@@ -361,6 +361,14 @@ pub async fn run(
         // ——headless 同样不是急停旁路；Default 的孤立新建态 = 急停闸
         // 在位却无人可达）。
         estop: bind_estop(home),
+        // 专家子代理资源层（2026-11-13）：与 gateway 同型装配——headless
+        // 不是专家旁路（批次④闭环测试补齐）。workspace/experts/ 目录即
+        // 注册表，目录缺席 = 空名册常态。
+        experts: Some(Arc::new(
+            crate::experts_store::ExpertsStore::new(&workspace_dir)
+                // 专家模式策略现读源（agents.experts fresh-read）。
+                .with_config_path(crate::common::config_path(home)),
+        )),
         ..Default::default()
     });
     let agent_loop = crate::agent_factory::build_agent_loop(&shared)

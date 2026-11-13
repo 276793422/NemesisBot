@@ -198,6 +198,8 @@ impl AgentLoop {
             false,
             role,
             parent_session_key,
+            "", // expert：UI 手动派发无专家语义（专家走模型自主 spawn 面板）
+            "", // prompt：UI 手动派发无自拟提示词语义（ad-hoc 降级二跳走模型自主面）
         )
         .await;
         // 子代理注册表 id（回执事件的台账锚）：按父会话键过滤取最新一条

@@ -86,6 +86,14 @@
             >
               {{ hiring === p.id ? '聘用中...' : '集群聘用' }}
             </button>
+            <button
+              class="btn btn-sm"
+              :title="p.installed ? '将此人格雇佣为本机专家子代理（在【专家Agent】页管理）' : '请先下载'"
+              :disabled="!p.installed || hiringExpert === p.id"
+              @click.stop="hireExpert(p)"
+            >
+              {{ hiringExpert === p.id ? '雇佣中...' : '雇佣专家' }}
+            </button>
           </div>
         </div>
       </div>
@@ -175,6 +183,14 @@
             >
               {{ hiring === previewPersona.id ? '聘用中...' : '集群聘用' }}
             </button>
+            <button
+              class="btn"
+              :title="previewPersona.installed ? '将此人格雇佣为本机专家子代理（在【专家Agent】页管理）' : '请先下载'"
+              :disabled="!previewPersona.installed || hiringExpert === previewPersona.id"
+              @click="hireExpert(previewPersona)"
+            >
+              {{ hiringExpert === previewPersona.id ? '雇佣中...' : '雇佣专家' }}
+            </button>
           </div>
         </div>
       </div>
@@ -241,7 +257,9 @@ function applySource(data: any) {
 
 // 集群聘用依赖 cluster WSAPI（裁剪构建可关；shop.browse/download 不依赖恒在）
 // ——与 router 的 VITE_FEATURE_CLUSTER 视图门控同款（web/.env 由 customize 生成）。
+// 雇佣专家（shop.hire_expert）不依赖 cluster——本机专家子代理，恒可用。
 const clusterEnabled = import.meta.env.VITE_FEATURE_CLUSTER !== 'false'
+const hiringExpert = ref('')
 const previewPersona = ref<ShopPersona | null>(null)
 const previewLoading = ref(false)
 const selectedConverted = ref(0)
@@ -318,6 +336,21 @@ async function hirePersona(p: ShopPersona) {
     toast.error('集群聘用失败: ' + (e.message || e))
   } finally {
     hiring.value = ''
+  }
+}
+
+async function hireExpert(p: ShopPersona) {
+  hiringExpert.value = p.id
+  try {
+    await request('persona', 'shop.hire_expert', { id: p.id })
+    toast.success(`「${p.name}」已雇佣为专家，可在【专家Agent】页管理`)
+    if (previewPersona.value && previewPersona.value.id === p.id) {
+      closePreview()
+    }
+  } catch (e: any) {
+    toast.error('雇佣专家失败: ' + (e.message || e))
+  } finally {
+    hiringExpert.value = ''
   }
 }
 

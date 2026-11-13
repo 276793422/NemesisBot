@@ -21,6 +21,9 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_MEMORY !== 'false' ? [{ path: '/memory', name: 'memory', component: () => import('../views/MemoryView.vue') }] : []),
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
+  // 专家Agent（2026-11-13 专家子代理）：恒编译无 feature 闸（与 navModel
+  // experts 条目同构——资源层无裁剪面）。
+  { path: '/experts', name: 'experts', component: () => import('../views/ExpertsView.vue') },
   // 2026-08-29：管理分组新增页（MCP 之后）。Hook 页自设置页迁移；
   // 命令/插件为实页（命令=slash 命令 CRUD，插件=三 Tab 含 WASM）。
   // 执行单元复合页（2026-11-07 布局重构）：子代理 + 后台任务两 TAB

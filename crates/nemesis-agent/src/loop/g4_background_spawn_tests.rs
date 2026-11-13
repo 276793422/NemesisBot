@@ -147,7 +147,9 @@ fn bg_marker_spawn_fn(task_id: &str) -> crate::loop_tools::SpawnFn {
               _d: usize,
               _bg: bool,
               _r: &str,
-              _psk: &str| {
+              _psk: &str,
+              _expert: &str,
+              _prompt: &str| {
             let marker = marker.clone();
             Box::pin(async move { Ok(marker.clone()) })
         },
@@ -202,7 +204,9 @@ async fn spawn_fn_receives_background_flag() {
                   _d: usize,
                   bg: bool,
                   _r: &str,
-                  _psk: &str| {
+                  _psk: &str,
+                  _expert: &str,
+                  _prompt: &str| {
                 let cap = cap.clone();
                 Box::pin(async move {
                     *cap.lock().unwrap() = Some(bg);

@@ -61,6 +61,11 @@ pub struct SharedToolConfig {
     /// SpawnTool 与其共享同一 Arc。`None` = SpawnTool 自建空槽（行为与
     /// 旧「无 spawn_fn」完全一致：execute 诚实报 not available）。
     pub spawn_slot: Option<Arc<std::sync::OnceLock<SpawnFn>>>,
+    /// （专家子代理）：spawn 工具的专家解析面——`action=list` 名册与
+    /// `expert` 点名预检的消费面。`None`（Default）= 无专家子系统（list
+    /// 诚实空名册 / 点名诚实报错）；生产装配点把与 spawn 闭包同一
+    /// [`ExpertsHandle`] 注入，两条路径同源。
+    pub experts: Option<ExpertsHandle>,
     /// Skills registry manager for find/install tools.
     pub skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
     /// Skills loader for listing local skills.
@@ -410,6 +415,16 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 )),
             ),
             None => SpawnTool::new(spawn_config.clone()),
+        };
+        let tool = match config.experts.clone() {
+            Some(h) => tool.with_experts(h),
+            None => tool,
+        };
+        // 降级通知事件槽（2026-11-13）：exec_output_tx 同源（web pump 消费
+        // 同一 broadcast）；None = 无通知面（headless/测试缺省）。
+        let tool = match config.exec_output_tx.clone() {
+            Some(tx) => tool.with_event_tx(tx),
+            None => tool,
         };
         tools.insert("spawn".to_string(), Box::new(tool));
     }
@@ -945,6 +960,7 @@ pub fn register_extended_tools(
         cluster_rpc: cluster_config,
         spawn: spawn_config,
         spawn_slot: None,
+        experts: None,
         skills_registry: None,
         skills_loader: None,
         workspace: None,
