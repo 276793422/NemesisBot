@@ -295,8 +295,15 @@ async fn sync_via_gateway(home: &std::path::Path, cmd: &str, project: &str) -> R
         .send()
         .await?;
     let status = resp.status();
-    let body: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap_or_default())
-        .unwrap_or_else(|_| serde_json::json!({}));
+    // 双用拆分（BUG-20261113-164）：错误体要打进 bail 文案——有帽读取；
+    // 成功体是内部 API JSON（result 可能较大），全量读合法。
+    let raw = if status.is_success() {
+        resp.text().await.unwrap_or_default()
+    } else {
+        nemesis_utils::http_cap::read_error_body(resp).await
+    };
+    let body: serde_json::Value =
+        serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
     if !status.is_success() {
         bail!("Internal command failed: {status} {body}");
     }

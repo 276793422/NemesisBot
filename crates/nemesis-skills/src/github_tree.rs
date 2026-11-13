@@ -71,7 +71,7 @@ pub async fn download_skill_tree_from_github(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(response).await;
         return Err(NemesisError::Other(format!(
             "GitHub Trees API HTTP {}: {}",
             status,
@@ -223,7 +223,7 @@ pub async fn download_file(client: &Client, url: &str, max_size: u64) -> Result<
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(response).await;
         return Err(NemesisError::Other(format!(
             "HTTP {}: {}",
             status,

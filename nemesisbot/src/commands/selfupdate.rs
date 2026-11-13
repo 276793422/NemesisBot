@@ -213,8 +213,9 @@ async fn post_internal(base_url: &str, token: &str, body: &serde_json::Value) ->
     }
     let resp = req.send().await.context("POST /api/internal 失败")?;
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
+        // 错误体有帽读取（BUG-20261113-164）；成功路径 body 未消费，不读。
+        let text = nemesis_utils::http_cap::read_error_body(resp).await;
         bail!("gateway 拒绝（HTTP {status}）：{text}");
     }
     Ok(())

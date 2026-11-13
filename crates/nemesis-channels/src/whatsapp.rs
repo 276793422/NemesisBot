@@ -179,7 +179,7 @@ impl WhatsAppChannel {
             .map_err(|e| NemesisError::Channel(format!("whatsapp bridge send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "whatsapp bridge error: {body}"
             )));

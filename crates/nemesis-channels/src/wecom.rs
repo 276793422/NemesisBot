@@ -229,7 +229,7 @@ impl WeComChannel {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "wecom webhook HTTP {status}: {text}"
             )));

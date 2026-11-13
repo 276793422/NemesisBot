@@ -538,7 +538,7 @@ impl AnthropicProvider {
             if status >= 400 {
                 // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
                 let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-                let text = resp.text().await.unwrap_or_default();
+                let text = nemesis_utils::http_cap::read_error_body(resp).await;
                 let _ = tx
                     .send(Err(FailoverError::from_status(
                         "anthropic",
@@ -1309,7 +1309,7 @@ impl LLMProvider for AnthropicProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             // thinking 块 wire 兼容回退（复查二轮发现）：adaptive-only
             // 模型（新 Claude 系）拒绝**一切**显式 thinking 块（400，enabled 与
             // disabled 皆然）——aux 杂务的 `thinking:{type:"disabled"}` 在这类
@@ -1332,7 +1332,7 @@ impl LLMProvider for AnthropicProvider {
                 let retry_status = resp.status().as_u16();
                 if retry_status >= 400 {
                     let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-                    let retry_text = resp.text().await.unwrap_or_default();
+                    let retry_text = nemesis_utils::http_cap::read_error_body(resp).await;
                     return Err(FailoverError::from_status(
                         "anthropic",
                         model,

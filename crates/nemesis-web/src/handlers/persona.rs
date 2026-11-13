@@ -404,7 +404,7 @@ async fn fetch_tree_online() -> Result<Vec<(String, i64)>, String> {
         .map_err(|e| format!("GitHub tree API error: {}", reqwest_error_chain(&e)))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(resp).await;
         return Err(format!("GitHub tree API returned {}: {}", status, body));
     }
     let json: serde_json::Value = resp
@@ -530,7 +530,7 @@ async fn fetch_agent_content_online(id: &str) -> Result<String, String> {
         .map_err(|e| format!("GitHub contents API error: {}", reqwest_error_chain(&e)))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(resp).await;
         return Err(format!("GitHub contents API returned {}: {}", status, body));
     }
     let json: serde_json::Value = resp

@@ -344,7 +344,7 @@ impl ClawHubRegistry {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Other(format!(
                 "browse failed with status {}: {}",
                 status,
@@ -445,7 +445,7 @@ impl ClawHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "search failed with status {}: {}",
                 status,
@@ -540,7 +540,7 @@ impl ClawHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "ZIP download failed with status {}: {}",
                 status,

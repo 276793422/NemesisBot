@@ -425,7 +425,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "GitHub API HTTP {}: {}",
                 status,
@@ -487,7 +487,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "GitHub API HTTP {}: {}",
                 status,
@@ -696,7 +696,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "HTTP {}: {}",
                 status,

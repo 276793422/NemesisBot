@@ -161,3 +161,97 @@ async fn test_read_body_capped_aborts_transport_mid_read() {
         "server sent {sent} bytes; client must stop consuming near cap ({CAP}), not drain all {BODY}"
     );
 }
+
+// ---- read_error_body（BUG-20261113-164：错误体有帽读取）----
+
+#[tokio::test]
+async fn test_read_error_body_small_body_untouched() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/e"))
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("{\"error\":\"boom\"}"))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/e", server.uri())).await.unwrap();
+    let out = super::read_error_body(resp).await;
+    assert_eq!(out, "{\"error\":\"boom\"}");
+    assert!(!out.contains("truncated"));
+}
+
+#[tokio::test]
+async fn test_read_error_body_over_cap_truncates_with_note() {
+    let server = wiremock::MockServer::start().await;
+    let big = "y".repeat(512 * 1024);
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/big"))
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string(big))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/big", server.uri())).await.unwrap();
+    let out = super::read_error_body(resp).await;
+    assert!(out.contains("…[error body truncated]"), "must carry note");
+    // 帽 256KB + 注记；512KB body 不得全量进内存。
+    assert!(
+        out.len() < 300 * 1024,
+        "capped length must stay near cap, got {}",
+        out.len()
+    );
+    assert!(out.starts_with('y'), "prefix must be preserved");
+}
+
+#[tokio::test]
+async fn test_read_error_body_aborts_transport_mid_read() {
+    // 与 read_body_capped 的传输级测试同形：64MB body + 客户端帽 256KB，
+    // 服务器实际写出必须远小于全量（客户端帽化停读断开）。
+    const BODY: usize = 64 * 1024 * 1024;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut req = vec![0u8; 8192];
+        let mut got = 0usize;
+        loop {
+            let n = sock.read(&mut req[got..]).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got += n;
+            if req[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-length: {BODY}\r\nconnection: close\r\n\r\n"
+        );
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return 0usize;
+        }
+        let chunk = vec![b'z'; 64 * 1024];
+        let mut sent = 0usize;
+        while sent < BODY {
+            let n = chunk.len().min(BODY - sent);
+            match sock.write_all(&chunk[..n]).await {
+                Ok(()) => sent += n,
+                Err(_) => break,
+            }
+        }
+        sent
+    });
+
+    let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+    let out = super::read_error_body(resp).await;
+    assert!(out.contains("…[error body truncated]"), "must carry note");
+
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(30), server)
+        .await
+        .expect("server task must terminate")
+        .unwrap();
+    const CAP: usize = 256 * 1024;
+    assert!(
+        sent < CAP + 8 * 1024 * 1024,
+        "server sent {sent} bytes; client must stop consuming near cap ({CAP}), not drain all {BODY}"
+    );
+}

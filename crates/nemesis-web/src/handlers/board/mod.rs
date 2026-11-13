@@ -429,8 +429,14 @@ impl ModuleHandler for BoardHandler {
                                         .map(String::from)
                                 }),
                             });
-                        } else if cluster.continuation_store().contains(&d.task_id) {
-                            // 在途：续行快照在场（任务未终结）。
+                        } else if cluster
+                            .continuation_store()
+                            .exists_on_disk(&d.task_id)
+                            .await
+                        {
+                            // 在途：续行快照在场（任务未终结）。盘上判定
+                            // （BUG-20261113-165）——快照由 agent 侧 store
+                            // 落盘，cluster 侧内存 contains 恒空（分支永假）。
                             extra.push(nemesis_board::timeline::TimelineEvent {
                                 ts: d.dispatched_at,
                                 source: "continuation",

@@ -5,7 +5,7 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
