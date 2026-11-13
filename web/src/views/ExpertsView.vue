@@ -83,6 +83,15 @@ const editingSlug = ref<string | null>(null) // null = 新建
 const confirmDeleteSlug = ref('')
 const showRenameDefault = ref(false)
 
+// 编辑模态 prompt 拉取生命周期（BUG-20261114-001）：
+// - promptLoaded：get 成功返回才置 true——失败/在途期间 saveExpert 不携带
+//   prompt 字段（后端 partial update 缺省 = 保留现值），堵住「瞬时读失败 →
+//   空串写回 → 存量提示词被清空」数据丢失通道；
+// - promptFetchSeq：单调递增请求代序——关 A 开 B 后 A 的晚到响应不得写进
+//   B 的编辑框（SessionSidebar BUG-20261106-029 同族围栏先例）。
+const promptLoaded = ref(false)
+let promptFetchSeq = 0
+
 const defaultForm = () => ({
   name: '',
   summary: '',
@@ -121,12 +130,20 @@ function openEdit(e: ExpertEntry) {
     model: e.model || '',
     prompt: '',
   }
-  // 编辑模态先拉 prompt 全文（list 面不带，体积面）。
+  promptLoaded.value = false
+  const seq = ++promptFetchSeq
+  // 编辑模态先拉 prompt 全文（list 面不带，体积面）；过期响应（已换目标/
+  // 重开模态）按代序丢弃，不写共享 form。
   request('experts', 'get', { key: e.slug })
     .then((full: any) => {
+      if (seq !== promptFetchSeq) return
       form.value.prompt = full?.prompt || ''
+      promptLoaded.value = true
     })
-    .catch((err: any) => toast.error('读取专家详情失败: ' + err))
+    .catch((err: any) => {
+      if (seq !== promptFetchSeq) return
+      toast.error('读取专家详情失败: ' + err)
+    })
   showEditDialog.value = true
 }
 
@@ -143,7 +160,12 @@ async function saveExpert() {
       .map((t: string) => t.trim())
       .filter(Boolean),
     model: form.value.model.trim(),
-    prompt: form.value.prompt,
+  }
+  // prompt 仅在可安全携带时上行（BUG-20261114-001）：新建空串是合法草稿
+  // 恒携带；编辑态 get 未成功加载（失败/在途）则缺省——后端保留现值，
+  // 不把空串/在途半态写回存量提示词。
+  if (!editingSlug.value || promptLoaded.value) {
+    payload.prompt = form.value.prompt
   }
   try {
     if (editingSlug.value) {
@@ -160,7 +182,13 @@ async function saveExpert() {
   }
 }
 
+// 在飞围栏（BUG-20261114-001）：双击第二发读到的仍是旧 e.enabled，两发
+// 同值请求 + 响应后本地翻转会让 UI 与名册状态相反（服务端停在第一发的
+// 目标值，UI 翻转两次回到原值）。在飞期间忽略重入。
+const toggleBusy = new Set<string>()
 async function toggleExpert(e: ExpertEntry) {
+  if (toggleBusy.has(e.slug)) return
+  toggleBusy.add(e.slug)
   try {
     await request('experts', 'set_enabled', { key: e.slug, enabled: !e.enabled })
     e.enabled = !e.enabled
@@ -171,6 +199,8 @@ async function toggleExpert(e: ExpertEntry) {
     }
   } catch (err: any) {
     toast.error(String(err))
+  } finally {
+    toggleBusy.delete(e.slug)
   }
 }
 
@@ -358,6 +388,9 @@ onMounted(() => {
             <div class="form-group">
               <label class="form-label">系统提示词（整段替换主人格，需自足）</label>
               <textarea class="form-textarea" v-model="form.prompt" rows="10" placeholder="You are a code review expert. When given a diff, ..." style="width: 100%; font-family: monospace;"></textarea>
+              <p v-if="editingSlug && !promptLoaded" style="font-size: var(--text-xs); color: var(--text-muted); margin-top: 4px;">
+                提示词加载中/加载失败——本次保存不会改动现有提示词
+              </p>
             </div>
           </div>
           <div class="modal-footer">

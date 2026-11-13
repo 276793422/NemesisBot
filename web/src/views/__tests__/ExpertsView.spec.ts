@@ -182,6 +182,69 @@ describe('ExpertsView 专家名册', () => {
     const call = requestMock.mock.calls.find(c => c[1] === 'create')!
     expect(call[2]).toMatchObject({ name: 'reviewer', prompt: 'You review.' })
   })
+
+  // BUG-20261114-001 回归锁×3：编辑 prompt 生命周期 + toggle 重入。
+  it('编辑 get 失败：保存不带 prompt 字段（后端保留现值，不清空存量）', async () => {
+    const w = await mountView()
+    requestMock.mockClear()
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'get') return Promise.reject(new Error('IO 瞬时失败'))
+      return Promise.resolve({})
+    })
+    await w.findAll('button').find(b => b.text() === '编辑')!.trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.at(-1)?.type).toBe('error')
+    // 诚实提示在位：textarea 空但保存不动存量提示词
+    expect(w.text()).toContain('本次保存不会改动现有提示词')
+    await w.findAll('input.form-input')[1]!.setValue('只改简介')
+    await w.findAll('button').find(b => b.text() === '保存')!.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find(c => c[1] === 'update')!
+    expect(call[2].key).toBe('writer')
+    expect(call[2].summary).toBe('只改简介')
+    expect('prompt' in call[2]).toBe(false)
+  })
+
+  it('编辑 prompt 过期响应围栏：重开后旧 get 晚到不覆盖新内容', async () => {
+    const w = await mountView()
+    requestMock.mockClear()
+    const resolvers: Array<(v: any) => void> = []
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'get') return new Promise(r => resolvers.push(r))
+      return Promise.resolve({})
+    })
+    // 第一击编辑（get#1 挂起）→ 关闭 → 重开（get#2 挂起）
+    await w.findAll('button').find(b => b.text() === '编辑')!.trigger('click')
+    await w.findAll('button.modal-close')[0]!.trigger('click')
+    await w.findAll('button').find(b => b.text() === '编辑')!.trigger('click')
+    expect(resolvers.length).toBe(2)
+    // get#2（新代序）先回
+    resolvers[1]!({ ...WRITER, prompt: 'FRESH' })
+    await flushPromises()
+    const area = w.findAll('textarea')[0]!
+    expect((area.element as HTMLTextAreaElement).value).toBe('FRESH')
+    // get#1（过期代序）晚到：不得写进共享 form
+    resolvers[0]!({ ...WRITER, prompt: 'STALE' })
+    await flushPromises()
+    expect((area.element as HTMLTextAreaElement).value).toBe('FRESH')
+  })
+
+  it('toggle 双击重入围栏：在飞期间第二击不发请求', async () => {
+    const w = await mountView()
+    requestMock.mockClear()
+    let resolveToggle!: (v: any) => void
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'set_enabled') return new Promise(r => { resolveToggle = r })
+      return Promise.resolve({})
+    })
+    const t = w.findAll('.skill-card .toggle')[0]!
+    await t.trigger('click')
+    await t.trigger('click')
+    expect(requestMock.mock.calls.filter(c => c[1] === 'set_enabled').length).toBe(1)
+    resolveToggle({ ...WRITER, enabled: false })
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'set_enabled').length).toBe(1)
+  })
 })
 
 describe('ExpertsView 模式策略条（2026-11-13 总开关 + 自动降级）', () => {
