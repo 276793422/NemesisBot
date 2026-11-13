@@ -470,8 +470,8 @@ pub struct AgentLoop {
     turn_permits: Option<Arc<tokio::sync::Semaphore>>,
     max_concurrent_turns: usize,
     /// Tracks which sessions are currently being summarized.
-    /// Wrapped in `Arc` so the flag can be cleared from a spawned task
-    /// after summarization completes (mirrors Go's `defer al.summarizing.Delete()`).
+    /// 摘除由 [`crate::r#loop::compact::SummarizingSlotGuard`] RAII Drop
+    /// 承担（BUG-20261113-170）：成功/失败/panic 各出口一致，不滞留。
     summarizing: Arc<parking_lot::Mutex<HashMap<String, bool>>>,
     /// ⑩ Per-session compaction state for graded tiers (soft/summarize) and
     /// stuck self-check. See `maybe_summarize`.
