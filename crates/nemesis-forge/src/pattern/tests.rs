@@ -547,6 +547,89 @@ fn test_detect_error_recovery_both_failure_no_match() {
     assert!(patterns.is_empty());
 }
 
+/// 显式时间戳的经验构造器（配对测试需要跨会话确定性时序）。
+fn exp_ts(tool: &str, success: bool, session: &str, ts: &str) -> CollectedExperience {
+    CollectedExperience {
+        experience: Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tool.into(),
+            input_summary: "test".into(),
+            output_summary: if success { "ok" } else { "err" }.into(),
+            success,
+            duration_ms: 100,
+            timestamp: ts.into(),
+            session_key: session.into(),
+        },
+        dedup_hash: format!("hash-{}-{}", tool, ts),
+    }
+}
+
+/// BUG-20261114-017 回归锁：跨会话事件穿插在失败与恢复之间时，旧全局
+/// windows(2) 让同会话 (失败,恢复) 对永不相邻 → 漏检。会话内配对修复后
+/// 两组穿插的对都必须检出。
+#[test]
+fn test_detect_error_recovery_interleaved_sessions_still_pairs() {
+    let exps = vec![
+        // s1: a 失败 → b 恢复，中间被 s2 的两个事件穿插。
+        exp_ts("a", false, "s1", "2026-01-01T00:00:01+08:00"),
+        exp_ts("y", false, "s2", "2026-01-01T00:00:02+08:00"),
+        exp_ts("b", true, "s1", "2026-01-01T00:00:03+08:00"),
+        exp_ts("z", true, "s2", "2026-01-01T00:00:04+08:00"),
+    ];
+    let patterns = detect_conversation_error_recovery(&exps, 1);
+    assert_eq!(
+        patterns.len(),
+        2,
+        "both interleaved pairs must be found, got {:?}",
+        patterns
+    );
+    let mut pairs: Vec<(String, String)> = patterns
+        .iter()
+        .map(|p| {
+            (
+                p.error_tool.clone().unwrap_or_default(),
+                p.recovery_tool.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![("a".into(), "b".into()), ("y".into(), "z".into())]
+    );
+}
+
+/// BUG-20261114-018 回归锁：置信度 = 恢复覆盖率 hits / failures(error_tool)，
+/// 不再恒 ≡ 1.0（旧实现 successes 与 count 同步自增）。4 次失败中 2 次被
+/// b 恢复、2 次同工具重试自愈 → conf = 0.5（决策表 suggest 臂可达）。
+#[test]
+fn test_detect_error_recovery_confidence_is_recovery_coverage() {
+    let exps = vec![
+        // 2 次命中：a 失败 → b 恢复。
+        exp_ts("a", false, "s1", "2026-01-01T00:00:01+08:00"),
+        exp_ts("b", true, "s1", "2026-01-01T00:00:02+08:00"),
+        exp_ts("a", false, "s2", "2026-01-01T00:00:03+08:00"),
+        exp_ts("b", true, "s2", "2026-01-01T00:00:04+08:00"),
+        // 2 次未命中：a 失败 → a 重试成功（同工具自愈，不计入 (a,b) 命中）。
+        exp_ts("a", false, "s3", "2026-01-01T00:00:05+08:00"),
+        exp_ts("a", true, "s3", "2026-01-01T00:00:06+08:00"),
+        exp_ts("a", false, "s4", "2026-01-01T00:00:07+08:00"),
+        exp_ts("a", true, "s4", "2026-01-01T00:00:08+08:00"),
+    ];
+    let patterns = detect_conversation_error_recovery(&exps, 2);
+    assert_eq!(patterns.len(), 1);
+    let p = &patterns[0];
+    assert_eq!(p.error_tool.as_deref(), Some("a"));
+    assert_eq!(p.recovery_tool.as_deref(), Some("b"));
+    assert_eq!(p.frequency, 2);
+    assert!(
+        (p.confidence - 0.5).abs() < 1e-9,
+        "coverage = 2 hits / 4 failures = 0.5, got {}",
+        p.confidence
+    );
+    assert_eq!(p.success_rate, Some(p.confidence));
+}
+
 #[test]
 fn test_detect_efficiency_issues_zero_global_avg() {
     // All durations are 0 => global avg = 0 => no patterns

@@ -180,7 +180,6 @@ struct RecoveryAgg {
     error_tool: String,
     recovery_tool: String,
     count: u32,
-    successes: u32,
     #[allow(dead_code)]
     error_codes: HashMap<String, u32>,
     first_seen: String,
@@ -299,68 +298,102 @@ pub fn detect_conversation_tool_chains(
 }
 
 /// Detect error recovery patterns at the conversation level (mirrors Go's detectErrorRecoveryPatterns).
+///
+/// BUG-20261114-017/018 两处语义修复：
+/// - **会话内配对**：旧实现全局按时间排序后 `windows(2)`——跨会话事件穿插在
+///   失败与恢复之间时，同会话 (失败,恢复) 对永不相邻 → 系统性漏检（多会话
+///   并发是常态）。与其余三个检测器同构：先按 session 分组，会话内排序后
+///   再配对。单调增益：旧实现能检出的对（全局相邻且同会话）在新结构下
+///   依旧相邻，只增不漏。
+/// - **真置信度**：旧实现 `successes` 与 `count` 在同一分支同步自增（检测
+///   条件本身即「失败后恢复成功」），recovery_rate 恒 ≡ 1.0 → 决策表
+///   conf ≥ high_confidence 恒真，`error_recovery_suggest_min` 臂死代码
+///   （同提交已对 success_template 的同构恒真式裁断「置信度闸恒真无区分
+///   度」）。现分母 = 失败工具在本批经验中的失败总数（无论后续跟什么：
+///   同工具重试 / 其他工具失败 / 会话结束，失败都计入），置信度 = 恢复
+///   覆盖率 hits / failures(error_tool)，(0,1] 区间真方差，三臂表恢复
+///   区分度。
 pub fn detect_conversation_error_recovery(
     experiences: &[CollectedExperience],
     min_freq: u32,
 ) -> Vec<ConversationPattern> {
     let mut agg: HashMap<String, RecoveryAgg> = HashMap::new();
+    // 失败工具 → 失败总次数（置信度分母，全会话累计；map-out 阶段已完整）。
+    let mut failures: HashMap<String, u32> = HashMap::new();
 
-    // Look for consecutive experiences: failed tool -> different tool -> success
-    let mut sorted: Vec<&CollectedExperience> = experiences.iter().collect();
-    sorted.sort_by(|a, b| a.experience.timestamp.cmp(&b.experience.timestamp));
+    // Group by session first, then pair within each session.
+    let mut sessions: HashMap<&str, Vec<&CollectedExperience>> = HashMap::new();
+    for exp in experiences {
+        sessions
+            .entry(&exp.experience.session_key)
+            .or_default()
+            .push(exp);
+    }
 
-    for window in sorted.windows(2) {
-        let prev = &window[0];
-        let next = &window[1];
+    for exps in sessions.values() {
+        let mut sorted: Vec<&CollectedExperience> = exps.to_vec();
+        sorted.sort_by(|a, b| a.experience.timestamp.cmp(&b.experience.timestamp));
 
-        // Condition: prev failed, next succeeded, different tools, same session
-        if prev.experience.success || !next.experience.success {
-            continue;
-        }
-        if prev.experience.tool_name == next.experience.tool_name {
-            continue;
-        }
-        if prev.experience.session_key != next.experience.session_key {
-            continue;
-        }
-
-        let key = format!(
-            "{}:{}",
-            prev.experience.tool_name, next.experience.tool_name
-        );
-        let fp = pattern_fingerprint("error_recovery", &key);
-
-        let timestamp = prev.experience.timestamp.clone();
-
-        if let Some(a) = agg.get_mut(&fp) {
-            a.count += 1;
-            a.successes += 1;
-            if timestamp < a.first_seen {
-                a.first_seen = timestamp.clone();
+        for (i, prev) in sorted.iter().enumerate() {
+            // 失败计数与配对解耦：凡是失败都计入分母（哪怕后面没跟任何
+            // 事件——会话尾部的失败也是未被恢复的失败）。
+            if prev.experience.success {
+                continue;
             }
-            if timestamp > a.last_seen {
-                a.last_seen = timestamp.clone();
+            *failures
+                .entry(prev.experience.tool_name.clone())
+                .or_insert(0) += 1;
+
+            let Some(next) = sorted.get(i + 1) else {
+                continue;
+            };
+            // 恢复命中：同会话相邻、失败工具 ≠ 恢复工具、下一事件成功。
+            // （同工具成功 = 重试自愈，不属于跨工具恢复链。）
+            if next.experience.success && next.experience.tool_name != prev.experience.tool_name {
+                let key = format!(
+                    "{}:{}",
+                    prev.experience.tool_name, next.experience.tool_name
+                );
+                let fp = pattern_fingerprint("error_recovery", &key);
+
+                let timestamp = prev.experience.timestamp.clone();
+
+                if let Some(a) = agg.get_mut(&fp) {
+                    a.count += 1;
+                    if timestamp < a.first_seen {
+                        a.first_seen = timestamp.clone();
+                    }
+                    if timestamp > a.last_seen {
+                        a.last_seen = timestamp.clone();
+                    }
+                } else {
+                    agg.insert(
+                        fp,
+                        RecoveryAgg {
+                            error_tool: prev.experience.tool_name.clone(),
+                            recovery_tool: next.experience.tool_name.clone(),
+                            count: 1,
+                            error_codes: HashMap::new(),
+                            first_seen: timestamp.clone(),
+                            last_seen: timestamp,
+                        },
+                    );
+                }
             }
-        } else {
-            agg.insert(
-                fp,
-                RecoveryAgg {
-                    error_tool: prev.experience.tool_name.clone(),
-                    recovery_tool: next.experience.tool_name.clone(),
-                    count: 1,
-                    successes: 1,
-                    error_codes: HashMap::new(),
-                    first_seen: timestamp.clone(),
-                    last_seen: timestamp,
-                },
-            );
         }
     }
 
     agg.into_iter()
         .filter(|(_, a)| a.count >= min_freq)
         .map(|(fp, a)| {
-            let recovery_rate = a.successes as f64 / a.count as f64;
+            // 覆盖率 = 命中数 / 失败工具失败总数；失败数 ≥ 命中数（每次
+            // 命中都对应一次失败），分母恒 ≥ 1。max 守卫防御性兜底。
+            let denom = failures
+                .get(&a.error_tool)
+                .copied()
+                .unwrap_or(0)
+                .max(a.count) as f64;
+            let recovery_rate = a.count as f64 / denom;
             let confidence = recovery_rate;
             let mut p = ConversationPattern::new(ConversationPatternType::ErrorRecovery, &fp);
             p.frequency = a.count;
@@ -372,7 +405,7 @@ pub fn detect_conversation_error_recovery(
             p.success_rate = Some(recovery_rate);
             p.description = format!(
                 "Error recovery: {} \u{2192} {} (recovered {}/{} times)",
-                a.error_tool, a.recovery_tool, a.successes, a.count
+                a.error_tool, a.recovery_tool, a.count, denom as u32
             );
             p
         })
