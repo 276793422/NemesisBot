@@ -262,7 +262,7 @@ rpc_port = 21195
             udp_port: Some(0),
             rpc_port: Some(occupied),
             name: Some("W5Runner".into()),
-            broadcast_interval: 10,
+            broadcast_interval: Some(10),
         };
         let res = tokio::time::timeout(Duration::from_secs(20), run(action, false)).await;
         drop(squatter);
@@ -289,7 +289,7 @@ rpc_port = 21195
             udp_port: Some(0),
             rpc_port: Some(0),
             name: None,
-            broadcast_interval: 10,
+            broadcast_interval: Some(10),
         };
         let res = tokio::time::timeout(Duration::from_secs(20), run(action, false)).await;
         let res = res.expect("fail-closed 必须快速返回");
@@ -967,7 +967,7 @@ mod wave7 {
             udp_port: Some(0),
             rpc_port: Some(0),
             name: None,
-            broadcast_interval: 10,
+            broadcast_interval: Some(10),
         };
         let res =
             tokio::time::timeout(std::time::Duration::from_secs(20), run(action, false)).await;
@@ -1009,7 +1009,7 @@ rpc_port = 21195
             udp_port: Some(0),
             rpc_port: Some(0),
             name: Some("W7Runner".into()),
-            broadcast_interval: 10,
+            broadcast_interval: Some(10),
         };
         let res = tokio::time::timeout(std::time::Duration::from_secs(7), run(action, false)).await;
         // 超时 = 走完装载 + RPC 启动 + 发现启动 + 进入等待循环（未被 bail）。

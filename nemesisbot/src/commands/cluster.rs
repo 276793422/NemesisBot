@@ -128,9 +128,9 @@ pub enum ClusterAction {
         /// Node name (overrides config)
         #[arg(short = 'n', long)]
         name: Option<String>,
-        /// Broadcast interval in seconds
-        #[arg(short, long, default_value = "10")]
-        broadcast_interval: u64,
+        /// Broadcast interval in seconds (overrides config; 0 clamps to 1)
+        #[arg(short, long)]
+        broadcast_interval: Option<u64>,
     },
     /// Manage iroh cross-network roaming (A1 overlay layer; identity keygen
     /// 2026-10-23 起归 `quic keygen`——身份是 QUIC 层资产)
@@ -1934,13 +1934,21 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
     anyhow::bail!("当前平台不支持防火墙规则管理");
 }
 
+/// run_node 的有效广播间隔决策表（BUG-20261114-021 单一裁决点）：
+/// 显式 flag 优先，缺省回落 config.cluster.json 的 broadcast_interval；
+/// 0 一律钳到 1（tokio `interval(Duration::ZERO)` 构造期 panic——gateway
+/// 装载臂 `cluster_init.rs` 同款 `.max(1)` 钳制，两臂语义对齐）。
+fn effective_broadcast_interval(flag: Option<u64>, config_value: u64) -> u64 {
+    flag.unwrap_or(config_value).max(1)
+}
+
 /// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.
 async fn run_node(
     home: &Path,
     udp_port_override: Option<u16>,
     rpc_port_override: Option<u16>,
     name_override: Option<String>,
-    broadcast_interval: u64,
+    broadcast_interval_override: Option<u64>,
 ) -> Result<()> {
     // 检查 config.cluster.json 是否存在（确保已 onboard）
     let cluster_cfg_path = common::cluster_config_path(home);
@@ -1954,6 +1962,14 @@ async fn run_node(
     let cluster_app_cfg = nemesis_cluster::config_loader::load_app_config(&home.join("workspace"));
     let udp_port = udp_port_override.unwrap_or(cluster_app_cfg.port);
     let rpc_port = rpc_port_override.unwrap_or(cluster_app_cfg.rpc_port);
+    // 有效广播间隔（BUG-20261114-021）：显式 flag 优先，缺省回落 config——
+    // 旧实现 flag 只进 println、config 完全不读，cluster 实际跑
+    // DEFAULT_BROADCAST_INTERVAL(30s)，打印/默认/实际三方矛盾；0 钳 1
+    // （tokio interval 构造 0 时长 panic，gateway 装载臂同款钳制）。
+    let broadcast_interval_secs = effective_broadcast_interval(
+        broadcast_interval_override,
+        cluster_app_cfg.broadcast_interval,
+    );
 
     // Init logger
     let cfg_path = common::config_path(home);
@@ -1963,7 +1979,7 @@ async fn run_node(
     println!("==========================");
     println!("  UDP Port:   {}", udp_port);
     println!("  RPC Port:   {}", rpc_port);
-    println!("  Broadcast:  every {}s", broadcast_interval);
+    println!("  Broadcast:  every {}s", broadcast_interval_secs);
     println!();
 
     // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml 加载真实身份；
@@ -1983,6 +1999,9 @@ async fn run_node(
     cluster.set_node_type("node");
     // A1 运行时硬化批：announce 携带本节点构建号（与 gateway 装载同源）。
     cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
+    // BUG-20261114-021：广播间隔实际应用——旧实现从未调用本 setter，
+    // node 恒跑 30s 常量而打印用户值（UAT/config 的 3s 期望被静默落空）。
+    cluster.set_broadcast_interval(std::time::Duration::from_secs(broadcast_interval_secs));
 
     // Load static peers from peers.toml
     let peers_path = common::cluster_dir(home).join("peers.toml");

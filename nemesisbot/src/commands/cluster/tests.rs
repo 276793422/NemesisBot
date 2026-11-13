@@ -2598,7 +2598,7 @@ async fn test_run_node_not_initialized_bails() {
             udp_port: None,
             rpc_port: None,
             name: None,
-            broadcast_interval: 10,
+            broadcast_interval: Some(10),
         },
         false,
     )
@@ -4218,5 +4218,41 @@ async fn test_roaming_trust_mutate_corrupt_book_loud_reject() {
         std::fs::read_to_string(&path).unwrap(),
         "{{ not toml",
         "坏簿不得被静默覆盖"
+    );
+}
+
+/// BUG-20261114-021 决策表：run_node 的有效广播间隔单一裁决点。
+/// 旧缺陷：`cluster node --broadcast-interval` 只进 println 从不应用、
+/// config.broadcast_interval 完全不读——node 恒跑 30s 常量，打印/默认
+/// (clap 10)/实际 (30) 三方矛盾。变异锁：删 run_node 里的
+/// set_broadcast_interval 调用或把裁决点改回 `.unwrap_or(30)`，本表即
+/// 失去意义——配合 grep 断言 `set_broadcast_interval` 在 run_node 内被调用。
+#[test]
+fn effective_broadcast_interval_decision_table() {
+    // 缺省 flag → config 值（含 UAT 风格 3s 与出厂默认 30s）。
+    assert_eq!(effective_broadcast_interval(None, 30), 30);
+    assert_eq!(effective_broadcast_interval(None, 3), 3);
+    // 显式 flag 优先。
+    assert_eq!(effective_broadcast_interval(Some(5), 30), 5);
+    assert_eq!(effective_broadcast_interval(Some(3), 30), 3);
+    // 0 钳 1（tokio interval 构造 0 时长 panic；gateway 装载臂同款钳制）。
+    assert_eq!(effective_broadcast_interval(Some(0), 30), 1);
+    assert_eq!(effective_broadcast_interval(None, 0), 1);
+}
+
+/// 装配面回归：run_node 源码必须把裁决结果真正喂给
+/// Cluster::set_broadcast_interval（旧缺陷的根因正是只打印不应用）。
+/// 文件级 grep 断言——轻量但锁得住「再删接线」这类回归。
+#[test]
+fn run_node_wires_broadcast_interval_into_cluster() {
+    // 剥除全部空白后匹配（rustfmt 会折行/调整缩进，语义断言不得依赖排版形态）。
+    let normalize = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let src = normalize(include_str!("../cluster.rs"));
+    assert!(
+        src.contains(
+            "cluster.set_broadcast_interval(std::time::Duration::from_secs(broadcast_interval_secs));"
+        ),
+        "run_node must apply effective_broadcast_interval via set_broadcast_interval \
+         (BUG-20261114-021: flag used to be printed but never applied)"
     );
 }
