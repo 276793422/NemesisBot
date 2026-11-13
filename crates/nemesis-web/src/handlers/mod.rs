@@ -551,6 +551,52 @@ pub(crate) fn restore_masked_entries(
     Ok(())
 }
 
+/// 数组元素身份指纹：剥掉敏感名字段后的深拷贝——掩码还原的元素配对不能
+/// 看凭据值本身（那正是要还原的东西），看其余全部字段。
+fn strip_sensitive_named_fields(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in map {
+                if is_sensitive_field(k) {
+                    continue;
+                }
+                out.insert(k.clone(), strip_sensitive_named_fields(val));
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(strip_sensitive_named_fields).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// 在 `existing`（数组）里找与 `elem` 指纹（剥敏感字段后深相等）唯一相同
+/// 的对象元素：唯一命中返回该元素（按身份配对）；零命中（元素同轮被编辑
+/// 过）/歧义（重复指纹，如两条仅 api_key 不同的条目）返回 None（调用方
+/// 回落按下标）。非对象元素（headers/env 等纯标量条目）恒 None。
+fn unique_fingerprint_match<'a>(
+    existing: &'a serde_json::Value,
+    elem: &serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    let arr = existing.as_array()?;
+    let fp = strip_sensitive_named_fields(elem);
+    if !fp.is_object() {
+        return None;
+    }
+    let mut hit: Option<&'a serde_json::Value> = None;
+    for e in arr {
+        if e.is_object() && strip_sensitive_named_fields(e) == fp {
+            if hit.is_some() {
+                return None; // 歧义：两个候选不可裁决，回落下标
+            }
+            hit = Some(e);
+        }
+    }
+    hit
+}
+
 /// Restore masked values in sensitive-named fields of `incoming` from the
 /// matching field in `existing` (recursive over objects/arrays). A masked
 /// value with no unmasked counterpart is a loud error — never persist a mask.
@@ -583,8 +629,16 @@ pub(crate) fn restore_masked_named_fields(
             Ok(())
         }
         serde_json::Value::Array(arr) => {
+            // 对象元素数组（model_list 等）按身份指纹配对而非下标
+            //（BUG-20261114-007）：整档编辑器里插入/重排/删除条目会让下标
+            // 错位，把 A 条目的掩码 api_key 从 B 条目的原值还原——跨条目
+            // 凭据串换且静默落盘。指纹唯一命中 → 用命中元素做 existing；
+            // 零命中/歧义 → 回落按下标（无重排的普通编辑保持原行为）。
             for (i, v) in arr.iter_mut().enumerate() {
-                let ex = existing.get(i).unwrap_or(&NULL);
+                let ex: &serde_json::Value = match unique_fingerprint_match(existing, v) {
+                    Some(e) => e,
+                    None => existing.get(i).unwrap_or(&NULL),
+                };
                 restore_masked_named_fields(v, ex)?;
             }
             Ok(())
