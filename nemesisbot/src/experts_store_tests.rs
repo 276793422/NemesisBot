@@ -477,3 +477,88 @@ fn set_mode_policy_requires_config_path() {
         .unwrap_err();
     assert!(err.contains("未装配"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-171：set_mode_policy 的 config.json raw RMW 必须持写串行锁
+// （BUG-20261110-043 同族；锁参与证明形态 = config_watch_tests
+// stale_mark_holds_config_write_lock 同款）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_mode_policy_holds_config_write_lock() {
+    let (_t, s, cfg_path) = store_with_config();
+    std::fs::write(&cfg_path, r#"{"agents":{"experts":{"enabled":false}}}"#).unwrap();
+    let before = std::fs::read_to_string(&cfg_path).unwrap();
+
+    // 主线程先持锁，set_mode_policy 线程必须被挡住（文件不动）；释放后才落盘。
+    let guard = nemesis_config::config_write_lock();
+    let handle = std::thread::spawn(move || {
+        s.set_mode_policy(&serde_json::json!({ "enabled": true }))
+            .unwrap();
+    });
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let blocked = std::fs::read_to_string(&cfg_path).unwrap();
+    assert_eq!(
+        blocked, before,
+        "持锁期间 set_mode_policy 不得落盘（无锁形态 = 回归）"
+    );
+    drop(guard);
+    handle.join().unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(
+        raw["agents"]["experts"]["enabled"], true,
+        "释放后 patch 生效"
+    );
+}
+
+#[test]
+fn set_mode_policy_concurrent_writers_all_survive() {
+    // 并发交错：experts patch 线程 ×4 + 其他写者线程 ×4（持锁 raw patch
+    // 追加 model_list——模拟配置页/探针标记家族同纪律写者），锁串行化后
+    // 全部在案；无锁 RMW 的读旧快照回写会吞掉交错写者的改动。
+    let (_t, s, cfg_path) = store_with_config();
+    std::fs::write(&cfg_path, r#"{"model_list":[]}"#).unwrap();
+    let s = Arc::new(s);
+
+    let mut handles = Vec::new();
+    for i in 0..4 {
+        let st = Arc::clone(&s);
+        handles.push(std::thread::spawn(move || {
+            st.set_mode_policy(&serde_json::json!({ "enabled": true }))
+                .unwrap();
+        }));
+        let p = cfg_path.clone();
+        handles.push(std::thread::spawn(move || {
+            let _serial = nemesis_config::config_write_lock();
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            raw["model_list"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({ "model_name": format!("m{i}") }));
+            let pretty = serde_json::to_string_pretty(&raw).unwrap();
+            nemesis_utils::write_file_atomic(
+                p.to_string_lossy().as_ref(),
+                pretty.as_bytes(),
+                0o600,
+            )
+            .unwrap();
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(
+        raw["model_list"].as_array().unwrap().len(),
+        4,
+        "4 个其他写者更新必须全部存活（丢任何一个 = 无锁回写回归）"
+    );
+    assert_eq!(
+        raw["agents"]["experts"]["enabled"], true,
+        "experts patch 必须存活"
+    );
+}

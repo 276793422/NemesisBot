@@ -427,7 +427,13 @@ impl ExpertsStore {
     /// credentials reloader 先例）。校验先行（写前全验，不做部分写入）；
     /// 开启动作（enabled false→true）落结构化日志 = 用户显式 opt-in 的
     /// 后台记录（PLAN §零.1；审计链不扩——config 变更不入链是现状口径）。
+    ///
+    /// RMW 全程持 config 写串行锁（BUG-20261113-171）：与 gateway 进程内
+    /// 其他 config.json 写者（配置页 update_config/update_raw_config、探针
+    /// stale 标记、画像 sweep、sandbox/vm/cluster/插件段写）共用同一把锁，
+    /// 无锁读旧快照回写会与并发写者交错丢更新（BUG-20261110-043 同族）。
     pub fn set_mode_policy(&self, data: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let _serial = nemesis_config::config_write_lock();
         let Some(path) = &self.config_path else {
             return Err("experts 模式策略面未装配（本进程无 config 路径）".to_string());
         };
