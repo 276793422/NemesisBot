@@ -39,6 +39,14 @@ use nemesis_plugins_wasm::manifest::{
     FlowStep, FlowTemplate, FlowTransition, PluginKind, PluginManifest,
 };
 
+// 纯原语层再导出（R8 复评整改：原语出逃 [`crate::flow_proto`]——publish
+// 骨架在无 WASM 裁剪组合下直接引用该模块，引擎侧经此再导出保持内部调用
+// 点与单测引用零改动）。
+pub(crate) use crate::flow_proto::{
+    ERR_SNIPPET, PluginOutcome, compare_str, json_path_first, json_scalar, plugin_step_outcome,
+    render_tokens, split_compare_expr,
+};
+
 // 派发面私有别名：cluster 编译形态挂 Cluster 引用做派发，非 cluster 形态
 // 诚实不可派发（web 侧 dispatch_issue_for_flow 的非 cluster 臂恒 false，
 // 同款纪律）。
@@ -70,9 +78,6 @@ const ESTOP_BACKOFF_SECS: u64 = 30;
 /// fetch 失败后的最小重试间隔（interval 闸天然下限——on_fail=retry 的
 /// 真实节奏）。
 const MIN_FETCH_INTERVAL_DOC: &str = "interval_secs 即 fetch 重试下限";
-/// 错误摘要截断长度。
-const ERR_SNIPPET: usize = 300;
-
 /// poll 仍运行中的哨兵错误——fail_step 识别后静默返回（不记账不推进）。
 const FLOW_STILL_RUNNING: &str = "\u{0}__flow_still_running__";
 
@@ -607,6 +612,47 @@ impl FlowStore {
         nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
             .map_err(|e| format!("回写状态: {e}"))
     }
+
+    /// R4 复评整改：回写水位路径 `<flows-root>/_transitions/<模板>/_watermark.json`
+    /// （`_` 前缀不撞模板 id 词表 `[a-z0-9-]`，也不撞 origin_id 段安全化
+    /// 产物）。水位 = 最后一个成功收口单的 `updated_at`（轮询下界，只进
+    /// 不退）。
+    fn writeback_watermark_path(&self, template: &str) -> PathBuf {
+        self.root
+            .join("_transitions")
+            .join(template)
+            .join("_watermark.json")
+    }
+
+    /// 读回写水位（缺席/损坏 = 0 全量重扫——游标 Noop 幂等去重兜底，
+    /// 降级安全）。
+    fn load_writeback_watermark(&self, template: &str) -> i64 {
+        let Some(raw) = std::fs::read_to_string(self.writeback_watermark_path(template)).ok()
+        else {
+            return 0;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+            return 0;
+        };
+        v.get("updated_at").and_then(|t| t.as_i64()).unwrap_or(0)
+    }
+
+    /// 原子落回写水位（[`FlowStore::save_transition_state`] 同款原子纪律）。
+    fn save_writeback_watermark(&self, template: &str, updated_at: i64) -> Result<(), String> {
+        let path = self.writeback_watermark_path(template);
+        let body = json!({ "updated_at": updated_at, "ts_ms": now_ms() }).to_string();
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
+            .map_err(|e| format!("回写水位: {e}"))
+    }
+
+    /// R5 复评整改：模板名下是否存在取数 origin 匹配的流程实例（list_all
+    /// 线性扫——实例量级 = 模板活跃外部单，可承受；v0 旧实例经 inst_origin
+    /// 回落键同样命中）。回写轮询的孤儿闸：无实例的外部单不收编不回写。
+    fn origin_has_instance(&self, template: &str, origin_id: &str) -> bool {
+        self.list_all(template)
+            .iter()
+            .any(|inst| inst_origin(inst).1 == origin_id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1135,14 +1181,6 @@ fn parse_publish_step_protocol(
             .and_then(|s| s.trim().parse().ok())
             .filter(|v| *v > 0)
             .unwrap_or(5),
-        // Gerrit 臂提交信息模板（可选；push_ref 以 refs/for/ 开头时消费）。
-        // parse 期渲染条目 token（ext_key/title/board_issue/report_path），
-        // 发布侧 rt 期再渲染 change_id/branch/task_id（两段渲染走 protocol
-        // 字段而非 args 原样拷贝——args 拷贝只有 rt 单段）。
-        commit_message: get_arg("commit_message")
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .map(|s| render(&s)),
     })
 }
 
@@ -1437,180 +1475,6 @@ fn entry_scalar(entry: &Value, field: &str) -> Option<String> {
     } else {
         entry_string(entry, field)
     }
-}
-
-// ---------------------------------------------------------------------------
-// 共享原语（publish.rs 跨模块消费 pub(crate)：token 渲染 / 比较式拆解 /
-// JSON path 子集 / 外链 scheme 闸）
-// ---------------------------------------------------------------------------
-
-/// `{{key}}` 渲染单点：lookup 决定每个键的值，未知 token 原样保留（诚实
-/// 不猜）。[`substitute_tokens`] 的实例账面/步骤投影词表经 lookup 注入；
-/// publish.rs 的运行期 token（{{commit}}/{{base_sha}}）也走这里。
-pub(crate) fn render_tokens<F: Fn(&str) -> Option<String>>(tpl: &str, lookup: F) -> String {
-    let mut out = String::with_capacity(tpl.len());
-    let bytes = tpl.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'{'
-            && i + 1 < bytes.len()
-            && bytes[i + 1] == b'{'
-            && let Some(end) = tpl[i + 2..].find("}}")
-        {
-            let key = tpl[i + 2..i + 2 + end].trim();
-            match lookup(key) {
-                Some(v) => out.push_str(&v),
-                None => out.push_str(&tpl[i..i + 2 + end + 2]),
-            }
-            i += 2 + end + 2;
-            continue;
-        }
-        // 按 char 边界推进（非 ASCII 安全）。
-        let ch_len = tpl[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
-        out.push_str(&tpl[i..i + ch_len]);
-        i += ch_len;
-    }
-    out
-}
-
-/// 外链 scheme 闸（同源纪律）：只放行 http(s)。空串 = 无外链（放行）。
-pub(crate) fn safe_external_url(raw: &str) -> Option<String> {
-    // scheme 大小写不敏感（RFC 3986：HTTPS:// 与 https:// 同义）——只放行
-    // http(s)，判前缀用小写比对、回传保原形（与旧外链闸语义对齐）。
-    let t = raw.trim();
-    let lower = t.to_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        Some(t.to_string())
-    } else {
-        None
-    }
-}
-
-/// 比较式拆解：最早出现位置命中，同位取最长 op（`>=` 不被 `>` 截断）；
-/// 两侧 trim + 成对引号剥离；任一侧为空 = None（畸形，调用方诚实报错）。
-pub(crate) fn split_compare_expr(expr: &str) -> Option<(&str, &str, &str)> {
-    fn strip_quotes(s: &str) -> &str {
-        let t = s.trim();
-        if t.len() >= 2
-            && ((t.starts_with('"') && t.ends_with('"'))
-                || (t.starts_with('\'') && t.ends_with('\'')))
-        {
-            &t[1..t.len() - 1]
-        } else {
-            t
-        }
-    }
-    const OPS: [&str; 6] = ["==", "!=", ">=", "<=", ">", "<"];
-    let hit = OPS
-        .iter()
-        .filter_map(|op| expr.find(op).map(|pos| (pos, *op)))
-        .min_by_key(|(pos, op)| (*pos, std::cmp::Reverse(op.len()))); // 同位时长 op（>=/>）先中
-    let (pos, op) = hit?;
-    let left = strip_quotes(&expr[..pos]);
-    let right = strip_quotes(&expr[pos + op.len()..]);
-    if left.is_empty() || right.is_empty() {
-        return None;
-    }
-    Some((left, op, right))
-}
-
-/// 比较求值：两侧均可解析为数字按数值比，否则按字符串比（`==`/`!=` 全等，
-/// `>`/`<` 字典序）。
-pub(crate) fn compare_str(op: &str, left: &str, right: &str) -> bool {
-    let (ln, rn) = (left.parse::<f64>(), right.parse::<f64>());
-    match (ln, rn) {
-        (Ok(a), Ok(b)) => match op {
-            "==" => a == b,
-            "!=" => a != b,
-            ">=" => a >= b,
-            "<=" => a <= b,
-            ">" => a > b,
-            _ => a < b,
-        },
-        _ => match op {
-            "==" => left == right,
-            "!=" => left != right,
-            ">=" => left >= right,
-            "<=" => left <= right,
-            ">" => left > right,
-            _ => left < right,
-        },
-    }
-}
-
-/// JSON 标量化（过滤/对账比较的统一取值面）：字符串原样；数字/布尔
-/// `to_string`；**对象→"object"、数组→"array"**（不是 "null"——PR 过滤
-/// `$.pull_request == null` 必须能拒掉对象形态的在场值）；缺席/Null→"null"。
-pub(crate) fn json_scalar(v: Option<&Value>) -> String {
-    match v {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::Bool(b)) => b.to_string(),
-        Some(Value::Object(_)) => "object".to_string(),
-        Some(Value::Array(_)) => "array".to_string(),
-        Some(Value::Null) | None => "null".to_string(),
-    }
-}
-
-/// JSON path 子集词法：`$` +（`.` 字段 | `[*]`）*。字段段读到下一个
-/// `.`/`[` 为止；未知语法（`$[0]`、裸字段、`..` 空段）= None（诚实：调用方
-/// 按空结果处理，不猜）。
-pub(crate) fn json_path_segments(path: &str) -> Option<Vec<String>> {
-    let mut rest = path.strip_prefix('$')?;
-    let mut segs = Vec::new();
-    while !rest.is_empty() {
-        if let Some(r) = rest.strip_prefix('.') {
-            let end = r.find(['.', '[']).unwrap_or(r.len());
-            let field = &r[..end];
-            if field.is_empty() {
-                return None; // `$.` 尾随点 / `..` 空段
-            }
-            segs.push(field.to_string());
-            rest = &r[end..];
-        } else if let Some(r) = rest.strip_prefix("[*]") {
-            segs.push("*".to_string());
-            rest = r;
-        } else {
-            return None;
-        }
-    }
-    Some(segs)
-}
-
-/// JSON path 求值：字段段 = 对象字段取值（缺席/类型不符丢弃）；`[*]` =
-/// 数组展开。返回按序命中值（wildcard 可多个）；路径畸形/中途落空 = 空。
-pub(crate) fn json_path_eval<'a>(v: &'a Value, path: &str) -> Vec<&'a Value> {
-    let Some(segs) = json_path_segments(path) else {
-        return Vec::new();
-    };
-    let mut cur: Vec<&Value> = vec![v];
-    for seg in segs {
-        let mut next = Vec::new();
-        for node in cur {
-            match seg.as_str() {
-                "*" => {
-                    if let Some(arr) = node.as_array() {
-                        next.extend(arr.iter());
-                    }
-                }
-                field => {
-                    if let Some(child) = node.get(field) {
-                        next.push(child);
-                    }
-                }
-            }
-        }
-        if next.is_empty() {
-            return Vec::new();
-        }
-        cur = next;
-    }
-    cur
-}
-
-/// JSON path 首个命中值。
-pub(crate) fn json_path_first<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
-    json_path_eval(v, path).into_iter().next()
 }
 
 // ---------------------------------------------------------------------------
@@ -2532,36 +2396,59 @@ impl FlowEngine {
             .ok_or_else(|| format!("模板 {} 无步骤", def.template.id))?;
         let (origin_type, _, _) = resolve_instance_origin(&def.template, fetch, "")
             .map_err(|e| format!("模板 {} 回写 origin_type 解析失败: {e}", def.template.id))?;
+        // R4 复评整改：updated_at 水位轮询——三态过滤 + 水位下推 SQL
+        //（list_issues_for_writeback），升序限量；老单卡死不再挤占 LIMIT
+        // 窗口饿死新单（探针回归场景）。
+        let watermark = self.flows.load_writeback_watermark(&def.template.id);
         let issues = self
             .store
-            .list_issues_by_origin_type(&origin_type, WRITEBACK_POLL_LIMIT)
+            .list_issues_for_writeback(
+                &origin_type,
+                watermark,
+                &["in_review", "done", "cancelled"],
+                WRITEBACK_POLL_LIMIT,
+            )
             .map_err(|e| format!("origin 订阅读取失败: {e}"))?;
+        // 水位推进锚：最后一个成功收口单的 updated_at。落盘时 -1（SQL 严格
+        // `>`——同毫秒兄弟单不能丢，重扫由游标 Noop 幂等去重兜底，成本
+        // 一次空转查询）；投递失败 break 时停在失败单之前（水位不越过
+        // 失败现场，下 tick 从水位重扫重投）。
+        let mut last_settled: Option<i64> = None;
         for issue in issues {
             let Some(origin) = issue.origin.as_ref() else {
                 continue;
             };
+            let origin_id = origin.origin_id.as_str();
+            // R5 复评整改：孤儿闸——模板名下无实例的外部单（模板重装前的
+            // 历史导入/手工单）确定性跳过：不建游标不回写，水位照常推进
+            //（诚实行为变化：孤儿单不再收编，防「不推进」饿死窗口）。
+            if !self.flows.origin_has_instance(&def.template.id, origin_id) {
+                last_settled = Some(issue.updated_at);
+                continue;
+            }
             let status = issue.status.as_str();
             if status != "in_review" && status != "done" && status != "cancelled" {
-                continue; // 非回写三态
+                continue; // 非回写三态（SQL 已过滤，防御保留）
             }
-            let origin_id = origin.origin_id.as_str();
             let stored = self
                 .flows
                 .load_transition_state(&def.template.id, origin_id);
             match writeback_decision(stored.as_deref(), status) {
-                WritebackDecision::Noop => continue,
+                WritebackDecision::Noop => last_settled = Some(issue.updated_at),
                 WritebackDecision::Adopt => {
                     let _ = self
                         .flows
                         .save_transition_state(&def.template.id, origin_id, status);
                     tracing::debug!("[FlowEngine] 回写游标静默收编 {origin_id} → {status}");
-                    continue;
+                    last_settled = Some(issue.updated_at);
                 }
                 WritebackDecision::Compose { from } => {
                     // 写回熔断：同一目标连续失败达上限 = 停投
                     // （重复副作用防线——对端可能已收下请求只是响应丢失，
                     // 无限重投即重复写）。恢复 = 修复对端后重启 gateway
-                    // （重试预算随进程刷新）；成功投递即清除计数。
+                    // （重试预算随进程刷新）；成功投递即清除计数。熔断单
+                    // 不推进水位（重启恢复后仍要重投）也不 break（确定性
+                    // 跳过，不挡同批后续单）。
                     let key = format!("{}/{}", def.template.id, origin_id);
                     let at_cap = {
                         let map = self
@@ -2590,6 +2477,7 @@ impl FlowEngine {
                                 .lock()
                                 .expect("writeback_failures lock")
                                 .remove(&key);
+                            last_settled = Some(issue.updated_at);
                         }
                         WritebackResult::Retried => {
                             let mut map = self
@@ -2604,11 +2492,27 @@ impl FlowEngine {
                                     def.template.id
                                 );
                             }
+                            // R4：投递失败 = break 停推——同批后续单留待
+                            // 下 tick（水位停在本单前）。
+                            break;
                         }
+                        // Pending = guest 异步处理中（游标保留、重投幂等由
+                        // guest 负责）——非失败不 break、不收口（水位停在
+                        // 本单前，下 tick 优先重扫）。
                         WritebackResult::Pending => {}
                     }
                 }
             }
+        }
+        if let Some(ts) = last_settled
+            && let Err(e) = self
+                .flows
+                .save_writeback_watermark(&def.template.id, ts.saturating_sub(1))
+        {
+            tracing::warn!(
+                "[FlowEngine] 回写水位落盘失败（模板 {}，下 tick 全量重扫兜底）: {e}",
+                def.template.id
+            );
         }
         Ok(())
     }
@@ -2939,62 +2843,9 @@ fn skip_step_with_payload(flows: &FlowStore, inst: &mut FlowInstance, payload: V
 }
 
 // ---------------------------------------------------------------------------
-// plugin 步骤（guest step）：入参投影构造 + 出参四态解析（自由函数，单测钉死）
+// plugin 步骤（guest step）：入参投影构造 + 出参 entries 提取（出参四态
+// 解析单点 = crate::flow_proto::plugin_step_outcome，R8 原语出逃）
 // ---------------------------------------------------------------------------
-
-/// run-step 出参四态（status 词表 done/running/failed/skipped + 自由负载）。
-/// `pub(crate)`：publish 步 plugin 路由臂复用同一解析单点（a）。
-#[derive(Debug, PartialEq)]
-pub(crate) enum PluginOutcome {
-    /// 同步完成：负载 = artifacts 落盘。
-    Done(Value),
-    /// 保持 Running，下轮 tick 重投（轮询 = 重跑，幂等由 guest 负责）。
-    Running,
-    /// guest 自报跳过：Skipped 同款推进，负载 = artifacts。
-    Skipped(Value),
-    /// guest 自报失败：走 on_fail 既有链。
-    Failed(String),
-    /// 出参畸形/未知 status：按失败走 on_fail（诚实不静默）。
-    Malformed(String),
-}
-
-/// run-step 出参解析：`{"status": <词表>,...自由负载}`。畸形（非 JSON /
-/// 缺 status / 未知 status）= Malformed；failed 的错误文本取负载 `error`
-/// 字段（缺省 = status 原文）。负载 = 去 status 键后的对象（done/skipped
-/// 落 artifacts；failed 不落——错误文本进 step.error 走 ERR_SNIPPET 截断）。
-pub(crate) fn plugin_step_outcome(out_json: &str) -> PluginOutcome {
-    let Ok(mut v) = serde_json::from_str::<Value>(out_json.trim()) else {
-        return PluginOutcome::Malformed(format!("run-step 出参非 JSON: {}", snippet_of(out_json)));
-    };
-    let Some(status) = v.get("status").and_then(Value::as_str).map(str::to_string) else {
-        return PluginOutcome::Malformed("run-step 出参缺 status 字段".to_string());
-    };
-    let payload = match v.as_object_mut() {
-        Some(o) => {
-            o.remove("status");
-            Value::Object(o.clone())
-        }
-        None => json!({}),
-    };
-    match status.as_str() {
-        "done" => PluginOutcome::Done(payload),
-        "running" => PluginOutcome::Running,
-        "failed" => {
-            let err = payload
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("guest 自报 failed（无 error 明细）");
-            PluginOutcome::Failed(err.to_string())
-        }
-        "skipped" => PluginOutcome::Skipped(payload),
-        other => PluginOutcome::Malformed(format!("run-step 出参未知 status: {other}")),
-    }
-}
-
-/// 错误文本摘要（ERR_SNIPPET 同长度，畸形出参回灌用）。
-fn snippet_of(s: &str) -> String {
-    s.trim().chars().take(ERR_SNIPPET).collect()
-}
 
 /// plugin fetch 出参 entries 提取（done 负载 → 条目数组）。契约 =
 /// `{"entries": [...]}` 键必带且为数组——缺键/非数组 = Err（guest 契约坏了
@@ -3189,8 +3040,8 @@ fn config_table(
 
 /// 装载期 config token 宽和渲染：声明面里 `{{config.<key>}}` 换实例配置值
 /// （缺省/运行）。**已声明但未配置**（schema 无缺省且开关文件无覆盖）= 空串
-/// ——诚实语义「声明说键存在，未配置 = 空」：proxy / gerrit_base_url 这类
-/// 可选键（按 code_host 二选一使用）靠它免于整模板被残留检查拒绝。**未声明**
+/// ——诚实语义「声明说键存在，未配置 = 空」：proxy 这类可选键（按
+/// code_host 二选一使用）靠它免于整模板被残留检查拒绝。**未声明**
 /// 键保持字面量 = Err（诚实跳过模板，不把字面量垃圾送给 connector）。
 /// 其余 token（`{{key}}`/`{{arg.*}}`/`{{origin_meta.*}}` 等条目级）原样保留
 /// 由下游逐条目渲染。`step.when` 同相参与装载期 config 渲染（config 值对
@@ -3433,7 +3284,19 @@ fn parse_entries(text: &str) -> Result<Vec<Value>, String> {
     }
 }
 
-/// 条目 → 实例物化（幂等：已存在跳过）。fetch 步记账 Ok、游标落 1。
+/// FNV-1a 64 取低 32 位（实例名碰撞摘要后缀；纯 std 确定性，跨重启稳定，
+/// 与 nemesis-utils 私有 fnv1a64 同算法族）。
+fn fnv1a64_short(bytes: &[u8]) -> u32 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h as u32
+}
+
+/// 条目 → 实例物化（幂等：已存在跳过；R6 复评整改：段碰撞核对 ext_key，
+/// 不等落摘要后缀独立实例）。fetch 步记账 Ok、游标落 1。
 /// C-1 导入语义：key/title 支持 `$.` JSON path 取字段；`body_field` 落
 /// inst.body（land 步 AC 提取 + 描述富化）；`filter` 单比较式过滤（畸形
 /// = Err 响——模板契约问题在取数期就响；逐条 false = 不入选）；`labels`
@@ -3498,9 +3361,36 @@ fn materialize_instances(
         if !labels_any_match(entry, &labels_want) {
             continue;
         }
-        let instance = nemesis_utils::sanitize::sanitize_path_segment(key.trim());
+        let base_instance = nemesis_utils::sanitize::sanitize_path_segment(key.trim());
+        let mut instance = base_instance.clone();
         if flows.exists(&def.template.id, &instance) {
-            continue;
+            // R6 复评整改：exists 不再盲跳——核对既有实例 ext_key。相等 =
+            // 同一外部条目幂等跳过；不等（或既有文件损坏读不出）= 段安全
+            // 化碰撞（如 `a/b` vs `a_b` 同落 `a_b`）→ 原始键 FNV 摘要后缀
+            // 落独立实例（盲跳会把第二条目静默吞进第一条的身份——建单/
+            // 回写全错位，探针回归场景）。
+            let collide = match flows.load(&def.template.id, &instance) {
+                Ok(cur) => cur.ext_key != key,
+                Err(_) => true,
+            };
+            if !collide {
+                continue; // 幂等：同一条目已物化
+            }
+            let suffix = format!("-{:08x}", fnv1a64_short(key.trim().as_bytes()));
+            instance.push_str(&suffix);
+            if flows.exists(&def.template.id, &instance) {
+                tracing::warn!(
+                    "[FlowEngine] {}/{} 条目 {key} 摘要后缀仍碰撞（{instance} 已存在）——跳过该条目",
+                    def.slug,
+                    def.template.id
+                );
+                continue;
+            }
+            tracing::warn!(
+                "[FlowEngine] {}/{} 实例名段碰撞（键 {key} 与既有条目同段名）——摘要后缀独立实例 {instance}",
+                def.slug,
+                def.template.id
+            );
         }
         let title = entry_scalar(entry, &title_field).unwrap_or_else(|| key.clone());
         let body = body_field

@@ -3610,6 +3610,51 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// 回写轮询窗口（R4/R5 复评整改）：状态过滤**下推 SQL** + `updated_at`
+    /// 水位增量。只拉「回写候选态」（调用方传，如 in_review/done/cancelled）
+    /// 且 `updated_at` 严大于水位的行，按 updated_at 升序——状态转移刷新
+    /// `updated_at`（`set_status` 等全部转移入口同刷新），旧任务后转态也会
+    /// 进入下一窗口，固定 LIMIT 创建序窗口把旧任务挤出去的饥饿形态不复存
+    /// 在；调用方以「本批成功收口的最后一条 updated_at」推进水位（失败停推
+    /// ——下轮从水位重扫，已收口单靠游标 Noop 幂等去重）。
+    ///
+    /// 与 [`Self::list_issues_by_origin_type`] 的分工：本方法是回写轮询的
+    /// 唯一数据源（旧方法保留给既有消费方/测试对照）。
+    pub fn list_issues_for_writeback(
+        &self,
+        origin_type: &str,
+        after_updated_at: i64,
+        statuses: &[&str],
+        limit: usize,
+    ) -> Result<Vec<Issue>, String> {
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let placeholders = statuses.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // 占位序：?1 origin_type、?2 水位、?3.. 状态集、末位 limit。
+        let sql = format!(
+            "SELECT * FROM issue
+             WHERE origin_type = ?1 AND updated_at > ?2 AND status IN ({placeholders})
+             ORDER BY updated_at ASC, id ASC LIMIT ?{}",
+            statuses.len() + 3,
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(origin_type.to_string()),
+            Box::new(after_updated_at),
+        ];
+        for s in statuses {
+            bind.push(Box::new(s.to_string()));
+        }
+        bind.push(Box::new(limit as i64));
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(bind.iter()), row_to_issue)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     // -----------------------------------------------------------------------
     // 统计（看板列计数 / 验收）
     // -----------------------------------------------------------------------
