@@ -5651,6 +5651,75 @@ async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
     assert!(engine.cancel_tokens.is_empty());
 }
 
+/// BUG-20261114-008 回归锁（竞态臂）：restore_waiting_after_failed_resume
+/// 只翻回「自己翻的 Running」。resume 错误窗口内并发 cancel_execution 可
+/// 合法观察到 Running 并翻成 Cancelled（状态检查放行 + token fire + 持久
+/// 化）——最宽窗口 = sub_workflow 子执行 resume 全程。修复前 restore 无
+/// 条件翻回 Waiting：已取消执行在内存复活（此后 resume 照常放行，取消意
+/// 图被静默抹除；estop cancel_all_running 的取消同样被复活），且内存
+/// Waiting 与盘上 Cancelled 分叉。
+#[tokio::test]
+async fn test_restore_waiting_after_failed_resume_preserves_raced_cancel() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // 模拟错误窗口内的并发取消落地：cancel_execution 观察到 Running/
+    // Waiting → 合法翻成 Cancelled。
+    engine.cancel_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        engine.get_execution(&parent_id).await.unwrap().state,
+        ExecutionState::Cancelled
+    );
+
+    // 此时 resume 的错误臂跑到 restore——修复前无条件翻回 Waiting。
+    engine.restore_waiting_after_failed_resume(&parent_id).await;
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        after.state,
+        ExecutionState::Cancelled,
+        "restore must not resurrect a cancelled execution"
+    );
+    assert!(
+        after.ended_at.is_some(),
+        "cancelled execution keeps its ended_at"
+    );
+
+    // 可观察语义闭环：复活被堵死后，已取消的执行不可再 resume。
+    let result = engine
+        .resume_execution(
+            &parent_id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(EngineError::InvalidState(_))),
+        "cancelled execution must not be resumable: {result:?}"
+    );
+}
+
+/// BUG-20261114-008 回归锁（正常臂）：无并发取消时，restore 仍把自己翻的
+/// Running 翻回 Waiting + ended_at=None——错误臂恢复语义不变。
+#[tokio::test]
+async fn test_restore_waiting_after_failed_resume_flips_own_running_back() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // resume 临界区翻 Running + ended_at=None 的形态（错误窗口内无并发
+    // 取消）。
+    {
+        let mut execs = engine.executions.write().await;
+        let exec = execs.get_mut(&parent_id).unwrap();
+        exec.state = ExecutionState::Running;
+        exec.ended_at = None;
+    }
+    engine.restore_waiting_after_failed_resume(&parent_id).await;
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(after.state, ExecutionState::Waiting);
+    assert!(after.ended_at.is_none());
+}
+
 /// 多等待同层：human_review 与 sub_workflow 并联（无
 /// 依赖）同时 Waiting。resume human_review 后，公共尾段 schedule_resume
 /// **不得整体重跑**仍 Waiting 的 sub_workflow 节点——SubWorkflowNodeExecutor

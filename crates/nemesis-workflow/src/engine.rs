@@ -3214,9 +3214,20 @@ impl WorkflowEngine {
     /// 临界区，任何错误返回前必须翻回 Waiting（旧实现 workflow 查找
     /// 失败会留下 state=Running + 无 token 的卡死形态，进程内永远无法
     /// 再 resume，重启才被 checkpoint 治愈）。
+    ///
+    /// BUG-20261114-008：翻回的前提必须是「仍是我们自己翻的 Running」。
+    /// 错误窗口内并发 cancel_execution 可合法观察到 Running 并翻成
+    /// Cancelled（持久化 + 终态 checkpoint）——最宽窗口 = sub_workflow 子
+    /// 执行 resume 全程（分钟级，resume_subworkflow_node 的子评审臂）；
+    /// 无条件覆写会把已取消的执行在内存复活成 Waiting：此后 resume 照常
+    /// 放行（取消意图被静默抹除）、estop cancel_all_running 的取消同样
+    /// 被复活，且内存 Waiting 与盘上 Cancelled 分叉。只在 Running 时翻回，
+    /// 其余状态（并发 cancel 已落、未来新状态）一律不动。
     async fn restore_waiting_after_failed_resume(&self, id: &str) {
         let mut execs = self.executions.write().await;
-        if let Some(execution) = execs.get_mut(id) {
+        if let Some(execution) = execs.get_mut(id)
+            && execution.state == ExecutionState::Running
+        {
             execution.state = ExecutionState::Waiting;
             execution.ended_at = None;
         }
