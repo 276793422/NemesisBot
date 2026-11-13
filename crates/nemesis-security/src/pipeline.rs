@@ -244,7 +244,6 @@ impl SecurityPlugin {
             Some(InjectionDetector::new(InjectionConfig {
                 enabled: true,
                 threshold: config.injection_threshold,
-                max_input_length: 100_000,
                 strict_mode: false,
             }))
         } else {

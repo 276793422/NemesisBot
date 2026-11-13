@@ -63,7 +63,6 @@ impl PreExecScanner {
             detector: InjectionDetector::new(InjectionConfig {
                 enabled: true,
                 threshold,
-                max_input_length: MAX_SCAN_BYTES,
                 strict_mode: false,
             }),
             workspace_root: RwLock::new(String::new()),

@@ -867,7 +867,6 @@ mod injection_extra {
         let config = InjectionConfig::default();
         assert!(config.enabled);
         assert!(config.threshold > 0.0);
-        assert!(config.max_input_length > 0);
         assert!(!config.strict_mode);
     }
 

@@ -44,11 +44,16 @@ pub struct InjectionResult {
 }
 
 /// Injection detector configuration.
+///
+/// BUG-20261114-004：原 `max_input_length` 超长短路（超限直接返回
+/// not-injection）已移除——超限跳检是 fail-open 盲区（注入载荷垫长即绕过
+/// Layer ①），而全量分析是线性时间（regex crate 无回溯 + classifier 全
+/// 线性启发式），LLM args 由 max_output_tokens 间接 bounded，无性能闸
+/// 需求。超长输入现在与常规输入同漏斗全量评分。
 #[derive(Debug, Clone)]
 pub struct InjectionConfig {
     pub enabled: bool,
     pub threshold: f64,
-    pub max_input_length: usize,
     pub strict_mode: bool,
 }
 
@@ -57,7 +62,6 @@ impl Default for InjectionConfig {
         Self {
             enabled: true,
             threshold: 0.7,
-            max_input_length: 100_000,
             strict_mode: false,
         }
     }
@@ -179,17 +183,11 @@ impl Detector {
             };
         }
 
-        let cfg = self.config.read();
-        if input.len() > cfg.max_input_length {
-            return InjectionResult {
-                is_injection: false,
-                score: 0.0,
-                level: "none".to_string(),
-                matched_patterns: vec![],
-            };
-        }
-
         // Lower threshold for high-risk tools in strict mode
+        // （BUG-20261114-004：原超长 max_input_length 短路已移除——超限
+        // 跳检是 fail-open 盲区，全量分析线性时间无性能闸需求，见
+        // InjectionConfig 文档。）
+        let cfg = self.config.read();
         let effective_threshold = if cfg.strict_mode && Self::is_high_risk_tool(tool_name) {
             (cfg.threshold * 0.7).max(0.3)
         } else {
@@ -257,13 +255,13 @@ impl Detector {
         let input = extract_all_text(args);
 
         let cfg = self.config.read();
-        if input.is_empty() || input.len() > cfg.max_input_length {
+        if input.is_empty() {
             return AnalysisResult {
                 is_injection: false,
                 score: 0.0,
                 level: "none".to_string(),
                 matched_patterns: vec![],
-                recommendation: "Input is empty or too long for analysis.".to_string(),
+                recommendation: "Input is empty.".to_string(),
                 summary: "No analysis needed.".to_string(),
                 strict_violations: vec![],
             };
@@ -393,7 +391,7 @@ impl Detector {
     /// Uses both pattern-based scoring (65%) AND the Classifier's heuristic analysis (35%).
     pub fn analyze(&self, text: &str) -> InjectionResult {
         let cfg = self.config.read();
-        if text.is_empty() || text.len() > cfg.max_input_length {
+        if text.is_empty() {
             return InjectionResult {
                 is_injection: false,
                 score: 0.0,
