@@ -18,12 +18,12 @@ fn main() {
     let static_dir = Path::new(&manifest_dir).join("../crates/nemesis-web/static");
     if !static_dir.is_dir() {
         println!(
-            "cargo:error=nemesisbot 编译需要前端构建产物 crates/nemesis-web/static/（当前缺失）"
+            "cargo::error=nemesisbot 编译需要前端构建产物 crates/nemesis-web/static/（当前缺失）"
         );
         println!(
-            "cargo:error=请先构建前端: npm --prefix web install && npm --prefix web run build"
+            "cargo::error=请先构建前端: npm --prefix web install && npm --prefix web run build"
         );
-        println!("cargo:error=或使用一键脚本: scripts/build-windows.bat / scripts/build-linux.sh");
+        println!("cargo::error=或使用一键脚本: scripts/build-windows.bat / scripts/build-linux.sh");
         std::process::exit(1);
     }
 
@@ -486,10 +486,16 @@ fn probe_taiwei_rlib(manifest_dir: &str) {
     println!("cargo:rustc-cfg=nb_taiwei");
 }
 
-/// cargo:error 逐行输出 + 构建失败退出（build.rs 的硬错惯例）。
+/// 硬错消息逐行输出 + 构建失败退出（build.rs 的报错惯例）。
+///
+/// 必须用双冒号 `cargo::error=`：cargo 只把双冒号形态（1.77+，本仓
+/// toolchain 1.95 钉死）提升为格式化 error 诊断行；单冒号 `cargo:error=`
+/// 从不是合法指令，消息只会掉进构建失败报告的 stdout 原文 dump 段——
+/// 错误面只剩泛化的「failed to run custom build command」，修复指引
+/// 被埋掉（2026-11-13 实测修复前形态，BUG-20261113-147）。
 fn error_exit(lines: &[&str]) -> ! {
     for l in lines {
-        println!("cargo:error={l}");
+        println!("cargo::error={l}");
     }
     std::process::exit(1);
 }
