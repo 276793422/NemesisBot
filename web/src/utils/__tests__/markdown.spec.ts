@@ -107,6 +107,16 @@ describe('renderMarkdownHtml', () => {
     expect(html).toContain('<b>粗</b>')
     expect(html).toContain('<strong>强</strong>')
   })
+
+  it('style 标签被剥除（BUG-20261113-154：DOMPurify 默认白名单放行 <style> 元素，FORBID_ATTR 只禁属性禁不了标签——页面级 CSS defacement 向量）', () => {
+    const html = renderMarkdownHtml(
+      '前文\n\n<style>body{display:none!important}#app{position:fixed;inset:0;background:#fff;z-index:99999}</style>\n\n后文',
+    )
+    expect(html.toLowerCase()).not.toContain('<style')
+    expect(html).not.toContain('display:none')
+    expect(html).toContain('前文')
+    expect(html).toContain('后文')
+  })
 })
 
 // ---- 文件路径 linkify（问题 2：聊天里的文件路径可点击打开）----

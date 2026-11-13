@@ -29,11 +29,18 @@ export function escapeHtml(s: string): string {
 /**
  * HTML 片段消毒（渲染闸与皮肤引擎 data-nb-html 共用的单一配置真相源）。
  * DOMPurify 默认净化活动内容（script / on* 事件属性 / javascript: URI）；
- * style 属性整体禁掉——模型/皮肤内容不需要内联样式，禁掉即消灭整类 CSS
- * 注入向量（DOMPurify 默认只净化不剥除）。对已消毒 HTML 幂等。
+ * style 属性整体禁掉，`<style>` 标签同样显式禁掉——DOMPurify 默认白名单
+ * **放行** `<style>` 元素（BUG-20261113-154：FORBID_ATTR 只禁属性禁不了
+ * 标签），模型输出混入的样式块会原样进 DOM，构成页面级 CSS defacement
+ * （position:fixed 全屏覆盖层可伪装审批卡/登录框）与 CSS 选择器外传向量。
+ * 模型/皮肤内容不需要内联样式与样式块，属性+标签双禁即消灭整类 CSS
+ * 注入向量。对已消毒 HTML 幂等。
  */
 export function sanitizeHtmlFragment(html: string): string {
-  return DOMPurify.sanitize(html, { FORBID_ATTR: ['style'] })
+  return DOMPurify.sanitize(html, {
+    FORBID_ATTR: ['style'],
+    FORBID_TAGS: ['style'],
+  })
 }
 
 export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): string {
