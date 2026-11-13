@@ -201,6 +201,14 @@ impl AnthropicProvider {
     ) -> serde_json::Value {
         let mut system_parts = Vec::new();
         let mut api_messages = Vec::new();
+        // 上一条 api message 是否为「纯 tool_result user 消息」（可并块）。
+        // 官方并行工具合同（BUG-20261114-003）：一个 assistant 轮的 N 个
+        // tool_use 的全部 tool_result 必须收回**同一条** user 消息——拆成
+        // 多条连续 user 消息请求本身被接受，但官方文档明示会「silently
+        // train Claude to stop making parallel calls」（行为劣化反模式）。
+        // 历史流里 N 个工具结果是 N 条连续 role="tool"（或 user 携
+        // tool_call_id）消息，此处并块归一为单条 user 多 tool_result。
+        let mut last_is_toolresult_user = false;
 
         for msg in messages {
             match msg.role.as_str() {
@@ -212,20 +220,23 @@ impl AnthropicProvider {
                         "type": "text",
                         "text": msg.content.to_text()
                     }));
+                    last_is_toolresult_user = false;
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
                         // Tool result。 同族降级（回归）：tool_result 在本实现
                         // 只承载文本（图像进 tool_result 属），Parts 走
                         // 文本视图 + 诚实注记，防 raw 序列化产出非法 wire 块。
-                        api_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": [{
+                        // 并块语义见函数头注释（BUG-20261114-003）。
+                        push_tool_result_block(
+                            &mut api_messages,
+                            &mut last_is_toolresult_user,
+                            serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
                                 "content": msg.content.to_prompt_text_with_image_note()
-                            }]
-                        }));
+                            }),
+                        );
                     } else {
                         // anthropic_content_value：纯文本保持字符串（字节不变）；
                         // Parts 转 blocks（text / image base64|url）。
@@ -233,6 +244,7 @@ impl AnthropicProvider {
                             "role": "user",
                             "content": anthropic_content_value(&msg.content)
                         }));
+                        last_is_toolresult_user = false;
                     }
                 }
                 "assistant" => {
@@ -298,19 +310,24 @@ impl AnthropicProvider {
                             "content": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
+                    // assistant 轮打破 tool_result 连续段（并块只针对紧邻
+                    // 的连续工具结果，见函数头注释）。
+                    last_is_toolresult_user = false;
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
                         // 同族降级（回归）：同 user tool_result，Parts 走
                         // 文本视图 + 诚实注记（图像进 tool_result 属）。
-                        api_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": [{
+                        // 并块语义见函数头注释（BUG-20261114-003）。
+                        push_tool_result_block(
+                            &mut api_messages,
+                            &mut last_is_toolresult_user,
+                            serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
                                 "content": msg.content.to_prompt_text_with_image_note()
-                            }]
-                        }));
+                            }),
+                        );
                     }
                 }
                 _ => {}
@@ -1050,6 +1067,28 @@ fn anthropic_final_chunk(
         finish_reason: Some(finish_reason),
         usage,
         reasoning_content: reasoning,
+    }
+}
+
+/// 并块语义见 `build_request_body` 函数头注释（BUG-20261114-003）：紧邻
+/// 的连续工具结果收回同一条 user 消息（官方并行工具合同），打破段（system/
+/// 真 user 文本/assistant）后重新开条。
+fn push_tool_result_block(
+    api_messages: &mut Vec<serde_json::Value>,
+    last_is_toolresult_user: &mut bool,
+    block: serde_json::Value,
+) {
+    if *last_is_toolresult_user
+        && let Some(last) = api_messages.last_mut()
+        && let Some(arr) = last["content"].as_array_mut()
+    {
+        arr.push(block);
+    } else {
+        api_messages.push(serde_json::json!({
+            "role": "user",
+            "content": [block]
+        }));
+        *last_is_toolresult_user = true;
     }
 }
 
