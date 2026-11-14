@@ -2913,6 +2913,126 @@ fn test_post_discussion_envelope_idempotent_both_targets() {
     cleanup(&dir);
 }
 
+/// BUG-20261114-031 回归锁：post_discussion_envelope 幂等链路**中途**
+/// 失败（② 落库已成功、③ seq 登记失败）必须整体回滚——旧实现无事务，
+/// 失败路径只删认领行，② 已写的评论残留，同 id 重试整套重落（重复
+/// 评论+重复通知）。既有 FK 失败测试只覆盖「任何写之前失败」分支，本锁
+/// 钉的是写了一半之后的回滚语义。
+#[test]
+fn test_post_discussion_envelope_mid_sequence_failure_rolls_back_completely() {
+    let (store, dir) = temp_store("envelope-midfail");
+    let issue = store.create_issue(new_issue("中途失败回滚")).unwrap();
+    let author = Actor::agent("node-b");
+
+    // SQLite 触发器强制 seq_ledger 写失败（模拟②成功后③失败——触发器
+    // 挂在评论/订阅/活动写入**之后**的环节）。
+    {
+        let raw = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        raw.execute(
+            "CREATE TRIGGER force_seq_fail BEFORE INSERT ON seq_ledger
+             BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+            [],
+        )
+        .unwrap();
+    }
+
+    let err = store
+        .post_discussion_envelope(
+            "node-b",
+            "mid-1",
+            crate::models::thread_kind::ISSUE,
+            issue.id,
+            &author,
+            "半路失败",
+            None,
+            "discussion",
+        )
+        .unwrap_err();
+    assert!(err.contains("forced failure"), "got: {err}");
+
+    // ② 已写的评论（连带订阅/活动）必须随事务回滚，不得残留半套。
+    assert_eq!(
+        store.list_comments(issue.id).unwrap().len(),
+        0,
+        "中途失败必须整体回滚（旧实现残留评论，同 id 重试即产生重复评论）"
+    );
+
+    // 拆除触发器，同 id 重试必须作为全新请求成功，恰好一条评论。
+    {
+        let raw = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        raw.execute("DROP TRIGGER force_seq_fail;", []).unwrap();
+    }
+    let retry = store
+        .post_discussion_envelope(
+            "node-b",
+            "mid-1",
+            crate::models::thread_kind::ISSUE,
+            issue.id,
+            &author,
+            "重试成功",
+            None,
+            "discussion",
+        )
+        .unwrap();
+    assert!(retry.is_new, "整体回滚后同 id 重试应作为首次处理");
+    assert_eq!(store.list_comments(issue.id).unwrap().len(), 1);
+    cleanup(&dir);
+}
+
+/// BUG-20261114-031 横向同族回归锁：add_comment 的多写序列（评论+订阅+
+/// 活动+N 通知）中途失败（通知插入 RAISE ABORT）必须整体回滚——旧实现
+/// 无事务，调用方拿到 Err 但评论/订阅/活动已残留（用户面：报错了评论
+/// 却在，重试即重复）。
+#[test]
+fn test_add_comment_partial_side_effects_rollback_on_failure() {
+    let (store, dir) = temp_store("comment-midfail");
+    let issue = store.create_issue(new_issue("通知失败回滚")).unwrap();
+
+    // 触发器挂在 notification 写入（序列最后一环）；作者 node-b ≠ 创建者
+    // admin（create_issue 自动订阅），评论必然触发 admin 的站内通知。
+    {
+        let raw = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        raw.execute(
+            "CREATE TRIGGER force_notif_fail BEFORE INSERT ON notification
+             BEGIN SELECT RAISE(ABORT, 'forced notif failure'); END;",
+            [],
+        )
+        .unwrap();
+    }
+    let err = store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: Actor::agent("node-b"),
+            content: "触发通知失败".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap_err();
+    assert!(err.contains("forced notif failure"), "got: {err}");
+    assert_eq!(
+        store.list_comments(issue.id).unwrap().len(),
+        0,
+        "add_comment 中途失败必须整体回滚（旧实现残留评论+订阅+活动半套）"
+    );
+
+    {
+        let raw = rusqlite::Connection::open(dir.join("board.db")).unwrap();
+        raw.execute("DROP TRIGGER force_notif_fail;", []).unwrap();
+    }
+    let ok = store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: Actor::agent("node-b"),
+            content: "重试成功".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    assert!(ok.id > 0);
+    assert_eq!(store.list_comments(issue.id).unwrap().len(), 1);
+    cleanup(&dir);
+}
+
 /// seq 台账：单调递增 + board.sync 增量补拉（的存储侧）。
 #[test]
 fn test_seq_ledger_and_list_messages_since() {
