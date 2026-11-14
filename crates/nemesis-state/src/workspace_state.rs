@@ -78,22 +78,45 @@ impl WorkspaceStateManager {
 
         // Try to load from new location first
         if !mgr.state_file.exists() {
-            // New file doesn't exist, try migrating from old location
-            if let Ok(data) = fs::read_to_string(&old_state_file)
-                && let Ok(loaded) = serde_json::from_str::<WorkspaceState>(&data)
-            {
-                *mgr.state.write() = loaded;
-                // Migrate to new location
-                let _ = mgr.save_atomic();
-                tracing::info!(
-                    "state: migrated state from {:?} to {:?}",
-                    old_state_file,
-                    mgr.state_file
-                );
+            // New file doesn't exist, try migrating from old location.
+            // (BUG-20261114-026) 旧位置文件**存在但**读/解析失败必须 loud——
+            // 静默跳过 = 迁移永不重试 + 旧文件残留，用户无从知晓。
+            // 旧文件不存在（全新工作区）是常态路径，不告警。
+            if old_state_file.exists() {
+                let loaded = fs::read_to_string(&old_state_file)
+                    .map_err(|e| format!("read {:?}: {}", old_state_file, e))
+                    .and_then(|data| {
+                        serde_json::from_str::<WorkspaceState>(&data)
+                            .map_err(|e| format!("parse {:?}: {}", old_state_file, e))
+                    });
+                match loaded {
+                    Ok(state) => {
+                        *mgr.state.write() = state;
+                        // Migrate to new location
+                        let _ = mgr.save_atomic();
+                        tracing::info!(
+                            "state: migrated state from {:?} to {:?}",
+                            old_state_file,
+                            mgr.state_file
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "state: 旧位置 state.json 存在但迁移失败，按空状态继续（下次保存覆盖残留，旧文件保留现场）"
+                    ),
+                }
             }
-        } else {
-            // Load from new location
-            let _ = mgr.load();
+        } else if let Err(e) = mgr.load() {
+            // (BUG-20261114-026) 构造期加载失败不能静默——与 AuthStore::new
+            // 同族同纪律：盘上文件损坏时调用方只看到空状态，下次
+            // set_last_channel/set_last_chat_id 会以默认空态覆盖盘上残留，
+            // last_channel/last_chat_id 无声丢失（heartbeat 结果路由静默
+            // 降级为「无通道可投」）。loud 留痕让损失可追溯。
+            // load() 对「文件不存在」返回 Ok（空串约定），Err 必为真损坏。
+            tracing::warn!(
+                error = %e,
+                "state: state.json 加载失败（损坏或不可读），按默认空状态继续（下次保存会覆盖盘上残留）"
+            );
         }
 
         mgr

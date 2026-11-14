@@ -20,6 +20,9 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# BUG-20261114-026 回归锁：state.json 损坏加载 loud 留痕断言用
+# （fmt subscriber + 缓冲 writer 捕获 warn 日志；对齐 BUG-20261025-38 先例）。
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

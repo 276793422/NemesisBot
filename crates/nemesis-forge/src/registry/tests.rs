@@ -400,6 +400,9 @@ async fn test_load_no_path_noop() {
 
 #[tokio::test]
 async fn test_load_from_nonexistent_file() {
+    // (BUG-20261114-026) 约定更新：缺失 = 全新工作区常态 → Ok（空注册表），
+    // 与 AuthStore/TrustStore/WorkspaceState load 家族同口径——Err 保留给
+    // 真损坏（撕裂 JSON / IO 错误），让调用方的 loud 留痕只打真损坏。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("no-such-file.json");
     let config = RegistryConfig {
@@ -407,7 +410,29 @@ async fn test_load_from_nonexistent_file() {
     };
     let registry = Registry::new(config);
     let result = registry.load().await;
-    assert!(result.is_err());
+    assert!(
+        result.is_ok(),
+        "缺失索引文件必须 Ok（空注册表），实得：{result:?}"
+    );
+    assert!(registry.is_empty());
+}
+
+/// (BUG-20261114-026 配套) 真损坏必须仍是 Err——调用方（gateway ctx /
+/// web handler）的 loud warn 靠它触发；此臂松动会让损坏重新变回静默。
+#[tokio::test]
+async fn test_load_from_corrupted_file_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.json");
+    std::fs::write(&path, "{torn json from a crashed write}").unwrap();
+    let config = RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    };
+    let registry = Registry::new(config);
+    let result = registry.load().await;
+    assert!(
+        result.is_err(),
+        "损坏索引文件必须 Err（触发调用方 loud 留痕）"
+    );
 }
 
 #[tokio::test]

@@ -113,7 +113,19 @@ impl TrustStore {
             keys: RwLock::new(HashMap::new()),
             path,
         };
-        let _ = store.load();
+        // (BUG-20261114-026) 构造期加载失败不能静默（与 AuthStore::new /
+        // WorkspaceStateManager::new 同族纪律）：盘上 trust.json 损坏时
+        // store 按空信任库继续——既有信任决策不可见（已装签名技能/插件
+        // 验签方向性失败，fail-closed 但不可诊断），下次 save 会以空 +
+        // 新条目覆盖盘上残留。loud 留痕让损失可追溯。load() 对「文件不
+        // 存在」返回 Ok，Err 必为真损坏/不可读。
+        if let Err(e) = store.load() {
+            tracing::warn!(
+                error = %e,
+                path = ?store.path,
+                "[TrustStore] 信任库加载失败，按空信任库继续（下次保存会覆盖盘上残留）"
+            );
+        }
         store
     }
 

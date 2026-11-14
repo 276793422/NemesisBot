@@ -236,8 +236,17 @@ impl Registry {
     }
 
     /// Load the registry index from disk.
+    ///
+    /// (BUG-20261114-026) 「索引文件不存在」= 全新工作区常态，返回 Ok（空
+    /// 注册表），与 AuthStore::load / TrustStore::load / WorkspaceState::load
+    /// 的家族约定同口径——缺失不是损坏，构造/重载调用方据 Err 触发的 loud
+    /// 留痕只应面向真损坏（撕裂 JSON / IO 错误）。此前缺失 = Err(NotFound)，
+    /// 调用方只能 `let _ =` 一刀切吞掉，连带真损坏也零痕迹。
     pub async fn load(&self) -> std::io::Result<()> {
         if self.config.index_path.is_empty() {
+            return Ok(());
+        }
+        if !std::path::Path::new(&self.config.index_path).exists() {
             return Ok(());
         }
         let content = tokio::fs::read_to_string(&self.config.index_path).await?;

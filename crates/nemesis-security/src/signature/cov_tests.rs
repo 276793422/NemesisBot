@@ -252,3 +252,56 @@ fn test_revoke_key_by_public_key_save_failure_loud_log() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// (BUG-20261114-026 回归锁) TrustStore::new 构造期加载失败必须 loud——此前
+// `let _ = store.load()` 静默：盘上 trust.json 损坏时按空信任库继续，既有
+// 信任决策不可见（fail-closed 但不可诊断），下次 save 以空+新条目覆盖盘上
+// 残留零痕迹。行为面（空库继续）由既有 persistence 测试族钉住，本测试钉
+// 留痕面（对齐 AuthStore::new / WorkspaceStateManager::new 同族纪律）。
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct LogSinkW26(Arc<Mutex<String>>);
+impl std::io::Write for LogSinkW26 {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn test_trust_store_corrupt_file_load_warns_loudly() {
+    let dir = temp_dir("trust-load-loud");
+    let path = dir.join("trust.json");
+    std::fs::write(&path, "{torn json from a crashed write}").unwrap();
+
+    let buf = Arc::new(Mutex::new(String::new()));
+    let sink = LogSinkW26(buf.clone());
+    // 守卫必须由测试体持有：thread-local set_default 生命周期 = guard
+    // 存活期（首版 harness 实测教训，见 revoke_loud_setup 注释）。
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || sink.clone())
+            .finish(),
+    );
+
+    let store = TrustStore::new(Some(&path));
+    assert_eq!(store.key_count(), 0, "损坏文件按空信任库继续");
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("信任库加载失败"),
+        "必须 loud 警告加载失败，实际日志：{log}"
+    );
+    assert!(
+        log.contains("按空信任库继续"),
+        "警告必须说明按空信任库继续（覆盖风险），实际日志：{log}"
+    );
+    drop(guard);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

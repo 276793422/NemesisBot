@@ -650,7 +650,15 @@ impl ForgeHandler {
             nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
                 index_path: fd.join("registry.json").to_string_lossy().to_string(),
             });
-        let _ = registry.load().await;
+        // (BUG-20261114-026) 加载失败 loud——静默吞掉 = registry.json 损坏时
+        // 按空注册表继续，既有 artifacts 不可见，下次保存覆盖盘上残留零痕迹
+        //（与 AuthStore::new / WorkspaceStateManager 同族纪律）。
+        if let Err(e) = registry.load().await {
+            tracing::warn!(
+                error = %e,
+                "[forge] 手动反思前 registry.json 加载失败，按空注册表继续（既有 artifacts 不可见）"
+            );
+        }
         let artifacts = registry.list(None, None);
 
         // A1（缺陷整改批次 2026-11-14）：手动反思同样喂 TraceStore 真轨迹

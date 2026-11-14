@@ -1160,7 +1160,15 @@ impl GatewayCtx {
                 }),
             );
             // F-: reload prior learned artifacts so they survive restart.
-            let _ = forge_shared_registry.load().await;
+            // (BUG-20261114-026) 加载失败 loud——learning_registry.json 损坏
+            // 静默吞掉 = 按空注册表继续，既有 artifacts 不可见，下次保存
+            // 覆盖盘上残留零痕迹（与 AuthStore::new 同族纪律）。
+            if let Err(e) = forge_shared_registry.load().await {
+                tracing::warn!(
+                    error = %e,
+                    "[forge] learning_registry.json 加载失败，按空注册表继续（既有 artifacts 不可见，下次保存会覆盖残留）"
+                );
+            }
 
             // Initialize Pipeline (3-stage validation). Built as Arc + sharing the
             // closed-loop registry so it can be injected into the LearningEngine (F-).
@@ -1213,7 +1221,13 @@ impl GatewayCtx {
             let forge = std::sync::Arc::new(forge);
 
             // F-: reload Forge's manual-create registry so prior artifacts survive restart.
-            let _ = forge.registry().load().await;
+            // (BUG-20261114-026) 加载失败 loud（同族纪律，见上方 learning_registry 臂）。
+            if let Err(e) = forge.registry().load().await {
+                tracing::warn!(
+                    error = %e,
+                    "[forge] registry.json 加载失败，按空注册表继续（既有 artifacts 不可见，下次保存会覆盖残留）"
+                );
+            }
             // 复查：原 skill_creator 注入已随死接线删除——
             // `set_skill_creator` 有注入无读取（write-only）。生产技能创建
             // 走 run_cycle → execute_create_skill（pipeline 臂直写
