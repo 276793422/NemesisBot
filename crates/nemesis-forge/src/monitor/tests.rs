@@ -986,7 +986,8 @@ fn test_s8_evaluate_artifact_before_traces_insufficient_after() {
 #[test]
 fn test_s8_try_deprecate_default_cooldown_config_branch() {
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
-    // degradation_cooldown_days = 0 → default 7-day fallback branch;
+    // degradation_cooldown_days = 0（显式 = 关闭冷却；BUG-20261114-029：旧
+    // 0→7 回落臂已删，serde default 本就是 7、0 唯一入口是显式配置）；
     // no prior degradation → the degrade path runs.
     let mut cfg = ForgeConfig::default();
     cfg.learning.degradation_cooldown_days = 0;
@@ -1000,6 +1001,36 @@ fn test_s8_try_deprecate_default_cooldown_config_branch() {
     let updated = monitor.registry.get(&id).unwrap();
     assert_eq!(updated.status, ArtifactStatus::Degraded);
     assert!(updated.last_degraded_at.is_some());
+}
+
+/// BUG-20261114-029 回归锁：显式 cooldown_days=0 + 刚降级过（last_degraded_at
+/// 在旧 0→7 回落臂的冷却窗内）→ try_deprecate 必须**立即执行降级**（0 =
+/// 用户关闭冷却），且与 is_degradation_cooldown_elapsed 判定一致（同键单
+/// 一语义）。旧代码 fallback 把 0 静默改 7 → early return 不降级 = 本测试红。
+#[test]
+fn test_try_deprecate_explicit_zero_cooldown_disables_cooldown_window() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.degradation_cooldown_days = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let mut artifact = make_artifact("zerocd", 10, ArtifactStatus::Active);
+    artifact.last_degraded_at = Some(chrono::Local::now().to_rfc3339()); // 刚降级
+    let id = registry.add(artifact);
+
+    let fetched = monitor.registry.get(&id).unwrap();
+    // 两个消费面同键同语义：cooldown 闸都放行。
+    assert!(
+        monitor.is_degradation_cooldown_elapsed(&fetched),
+        "explicit 0 must mean 'no cooldown' in is_degradation_cooldown_elapsed"
+    );
+    monitor.try_deprecate(&fetched);
+    let updated = monitor.registry.get(&id).unwrap();
+    assert_eq!(
+        updated.status,
+        ArtifactStatus::Degraded,
+        "explicit cooldown_days=0 must disable the cooldown window (old 0→7 fallback silently overrode user config)"
+    );
 }
 
 #[test]

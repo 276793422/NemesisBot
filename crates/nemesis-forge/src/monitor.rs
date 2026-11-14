@@ -422,11 +422,16 @@ impl DeploymentMonitor {
     /// Matches Go's `tryDeprecate()`. Checks cooldown period and
     /// consecutive observing rounds before deprecating.
     pub fn try_deprecate(&self, artifact: &Artifact) {
-        let cooldown_days = if self.config.learning.degradation_cooldown_days == 0 {
-            7
-        } else {
-            self.config.learning.degradation_cooldown_days
-        };
+        // BUG-20261114-029：删除 `== 0 → 7` 回落臂（BUG-20261113-161 同族
+        // 裁决直接适用）。degradation_cooldown_days 的 serde default 与出厂
+        // 模板都是 7——0 的唯一入口是用户显式配置，语义 = 关闭冷却
+        // （is_degradation_cooldown_elapsed 已按此解释：days_since >= 0 恒真
+        // → 立即放行）。旧回落臂把显式 0 静默改回 7 = silently overriding
+        // user-configured cooldown，且与同键的 is_degradation_cooldown_elapsed
+        // 语义分裂：同一配置下 track_observing→try_deprecate 路径冷却 7 天、
+        // run_evaluation_cycle→apply_degradation 路径冷却 0 天，总有一条
+        // 路径不按配置走。
+        let cooldown_days = self.config.learning.degradation_cooldown_days;
 
         // Check cooldown
         if let Some(ref last_degraded) = artifact.last_degraded_at
