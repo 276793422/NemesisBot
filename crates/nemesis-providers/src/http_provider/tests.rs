@@ -2462,3 +2462,154 @@ fn test_per_request_extra_body_overrides_config_pin_and_dialect() {
         provider_nopin.build_request_body(&messages, &[], "glm-5.3-flash", &options_none, false);
     assert!(body_none.get("reasoning_effort").is_none());
 }
+
+// ------------------------------------------------------------------
+// BUG-20261114-030：SSE 流内 error 事件处理（同族对齐 anthropic/codex lane）
+// ------------------------------------------------------------------
+// failover.rs「流内错误事件与真相源同判」家族（anthropic `error` 事件 /
+// codex `response.failed` 已各自映射）在 openai 兼容 lane SSE 循环的漏网
+// 点：`data: {"error": {...}}` 事件此前落进全空闸（choices Null → delta
+// 空 → 无 finish → usage_only 查 usage 缺席 → continue）被静默吞掉，
+// EOF 合成干净 "stop"——网关 200 后流中途上游故障（one-api / LiteLLM /
+// CC Switch 实测形态）被当成完整终答，瞬态故障（限流/过载）永不触发
+// 重试/故障转移；空内容流更是产出「finish=stop + 空文本」假成功。
+
+#[tokio::test]
+async fn test_b_stream_error_event_midstream_maps_retriable() {
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial answ\"}}]}\n\n",
+        "data: {\"error\": {\"message\": \"Rate limit exceeded\", \"code\": \"rate_limit_exceeded\"}}\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert!(
+        chunks.iter().any(|c| c.is_err()),
+        "流内 error 事件必须以 Err 终结，不得静默吞掉（got {} chunks）",
+        chunks.len()
+    );
+    let err = chunks.iter().find_map(|c| c.as_ref().err()).unwrap();
+    assert!(
+        err.is_retriable(),
+        "限流文案必须落可重试变体（RateLimit），瞬态故障要能轮转：{:?}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_b_stream_error_event_empty_stream_is_error_not_clean_stop() {
+    // 空内容流 + error 事件：旧行为 EOF 合成 finish="stop" + 空文本干净终答
+    //（agent 拿到空回复无从重试，比截断更糟的假成功）。
+    let server = MockServer::start().await;
+    let sse_body =
+        "data: {\"error\": {\"message\": \"upstream overloaded\", \"type\": \"server_error\"}}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    let err = chunks
+        .iter()
+        .find_map(|c| c.as_ref().err())
+        .unwrap_or_else(|| panic!("error 事件不得产出干净 stop 终态（got {chunks:?}）"));
+    assert!(
+        err.is_retriable(),
+        "overloaded 文案按限流同门对待（可轮转）：{:?}",
+        err
+    );
+}
+
+#[tokio::test]
+async fn test_b_stream_error_event_after_finish_is_swallowed() {
+    // 终态后帧闸（BUG-20261105-026）语义保持：finish 已发，后到 error
+    // 事件被闸吞掉——终态 chunk 唯一性契约不被错误帧污染（终端已定，
+    // 二次 Err 会让覆盖式聚合侧把干净终态改写成 StreamInterrupted）。
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"error\": {\"message\": \"late failure\"}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert!(
+        chunks.iter().all(|c| c.is_ok()),
+        "终态后 error 事件必须被后帧闸吞掉，不得改写已发终态（got {chunks:?}）"
+    );
+    let fin = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .find(|c| c.finish_reason.is_some())
+        .expect("必须有终态 chunk");
+    assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
+}
+
+#[tokio::test]
+async fn test_b_stream_error_null_field_is_ignored() {
+    // 老形态兼容块 `"error": null` 与 choices 并存（部分 Azure 形态端点
+    // 每 chunk 带该键）→ 照常处理正文，不得误判成错误。
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"error\": null, \"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert!(
+        chunks.iter().all(|c| c.is_ok()),
+        "error:null 不得误判成错误（got {chunks:?}）"
+    );
+    let text: String = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .map(|c| c.delta.as_str())
+        .collect();
+    assert_eq!(text, "hello");
+}

@@ -827,6 +827,47 @@ impl HttpProvider {
                             continue;
                         }
 
+                        // BUG-20261114-030：SSE 流内 error 事件与真相源同判
+                        //（failover.rs「流内错误事件」家族——anthropic `error`
+                        // 事件 / codex `response.failed` 已各自映射，本 lane
+                        // 此前漏网：error 事件落进全空闸被静默吞掉，EOF 合成
+                        // 干净 "stop"，网关 200 后流中途上游故障（one-api /
+                        // LiteLLM / CC Switch 实测形态）被当成完整终答，瞬态
+                        // 故障永不触发重试/故障转移。分类命中 → 对应变体
+                        // （限流/过载文案可轮转）；未收录文案 → Unknown 原样
+                        // 保留。位处终态后帧闸之后：finish 已发后到达的
+                        // error 事件被闸吞掉（终态唯一性契约——二次 Err 会让
+                        // 覆盖式聚合侧把干净终态改写成 StreamInterrupted）。
+                        // `"error": null`（部分 Azure 形态每 chunk 带该键）
+                        // 不误判。partial 正文已作为 Ok chunk 发出的部分随
+                        // StreamInterrupted 携带（聚合侧既有语义），不丢。
+                        if parsed.get("error").is_some_and(|e| !e.is_null()) {
+                            let msg = parsed
+                                .pointer("/error/message")
+                                .and_then(|m| m.as_str())
+                                .or_else(|| parsed.get("error").and_then(|e| e.as_str()))
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "upstream SSE error event: {}",
+                                        data.chars().take(200).collect::<String>()
+                                    )
+                                });
+                            let err = crate::failover::classify_message_error(
+                                &provider_name,
+                                &model,
+                                &msg,
+                            );
+                            tracing::warn!(
+                                provider = %provider_name,
+                                model = %model,
+                                error_message = %msg,
+                                "[Provider] SSE stream error event"
+                            );
+                            let _ = tx.send(Err(err)).await;
+                            return;
+                        }
+
                         let delta_content = parsed["choices"][0]["delta"]["content"]
                             .as_str()
                             .unwrap_or("")
