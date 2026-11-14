@@ -1,77 +1,32 @@
 //! Shutdown command - graceful shutdown of a running gateway.
 //!
-//! Uses PID file to locate the running gateway process and sends
-//! a shutdown signal. The gateway writes its PID to
-//! `{home}/gateway.pid` on startup.
+//! POSTs `{"cmd":"shutdown"}` to the gateway's internal endpoint
+//! (`/api/internal`), which drives the same graceful-shutdown path as
+//! Ctrl+C. The gateway's web port and auth token are read from the
+//! local `config.json`.
 
 use crate::common;
 use anyhow::Result;
 
-/// Name of the PID file written by the gateway on startup.
-const PID_FILE: &str = "gateway.pid";
-
 pub fn run(local: bool) -> Result<()> {
     let home = common::resolve_home(local);
-    let pid_path = home.join(PID_FILE);
 
     println!("Sending shutdown signal...");
 
-    // Method 1: Try PID file
-    if pid_path.exists()
-        && let Ok(data) = std::fs::read_to_string(&pid_path)
-        && let Ok(pid) = data.trim().parse::<u32>()
-    {
-        println!("  Found gateway PID: {}", pid);
-
-        // Send SIGTERM on Unix, or use taskkill on Windows
-        #[cfg(target_os = "windows")]
-        {
-            // On Windows, send CTRL_BREAK_EVENT or use taskkill
-            // CREATE_NO_WINDOW：gateway 托盘/无控制台运行时，console 子进程
-            // (taskkill) 会各自弹新控制台；输出经.output() 收集，不受影响。
-            let result = {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string()])
-                    .creation_flags(CREATE_NO_WINDOW)
-                    .output()
-            };
-            match result {
-                Ok(output) if output.status.success() => {
-                    println!("  Shutdown signal sent to PID {}.", pid);
-                    // Clean up PID file
-                    let _ = std::fs::remove_file(&pid_path);
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if stderr.contains("not found") {
-                        println!("  Process {} is not running.", pid);
-                        let _ = std::fs::remove_file(&pid_path);
-                    } else {
-                        println!("  Failed to signal process: {}", stderr.trim());
-                    }
-                }
-                Err(e) => println!("  Failed to send signal: {}", e),
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            // On Unix, send SIGTERM
-            unsafe {
-                if libc::kill(pid as i32, libc::SIGTERM) == 0 {
-                    println!("  SIGTERM sent to PID {}.", pid);
-                    let _ = std::fs::remove_file(&pid_path);
-                } else {
-                    println!("  Failed to signal process {} (may not be running).", pid);
-                    let _ = std::fs::remove_file(&pid_path);
-                }
-            }
-        }
-
-        return Ok(());
-    }
+    // (BUG-20261114-025 根修) 旧 PID 臂（读 `{home}/gateway.pid` → Windows
+    // `taskkill /PID`（无 /F）/ Unix SIGTERM）整臂移除。移除依据：
+    // 1) 死臂：全仓库没有任何代码写 gateway.pid（读侧仅本文件，旧模块头注释
+    //    「gateway 启动写 PID」与事实相反）——臂在真实部署里从未执行过；
+    // 2) 唯一激活形态是假成功（隔离 home + 手放 PID 文件实测复现）：
+    //    `taskkill` 无 /F 只向目标进程顶层窗口投递 WM_CLOSE 即返回 success，
+    //    而 gateway 唯一顶层窗口是托盘 winit 隐藏窗口——winit 拦截 WM_CLOSE
+    //    只发 CloseRequested 事件，systray 事件循环没有该处理臂 → 事件被
+    //    忽略、窗口不销毁、进程不停。命令却打印「Shutdown signal sent」并
+    //    删除 PID 文件（湮灭现场），gateway 继续运行；
+    // 3) Unix 臂 SIGTERM 全仓无 handler（只有 tokio ctrl_c = SIGINT）→
+    //    默认动作 = 进程立即终止（硬杀），与命令「优雅停机」语义不符。
+    // 优雅停机的唯一真相源 = 下方 HTTP `/api/internal` 臂（与 Ctrl+C 同源，
+    // 实测隔离 gateway 优雅退出）。
 
     // (, quality-hardening goal 冲刺) legacy 无消费方：全仓库没有
     // 任何代码读取 shutdown.signal 文件（PID 臂与 HTTP 臂是仅有的两条活路径）。

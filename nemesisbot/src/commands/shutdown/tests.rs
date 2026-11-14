@@ -2,65 +2,6 @@ use super::*;
 use tempfile::TempDir;
 
 // -------------------------------------------------------------------------
-// PID_FILE constant
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_pid_file_constant() {
-    assert_eq!(PID_FILE, "gateway.pid");
-}
-
-// -------------------------------------------------------------------------
-// PID file parsing logic
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_pid_file_parsing_valid() {
-    let tmp = TempDir::new().unwrap();
-    let pid_path = tmp.path().join(PID_FILE);
-    std::fs::write(&pid_path, "12345\n").unwrap();
-
-    let data = std::fs::read_to_string(&pid_path).unwrap();
-    let pid = data.trim().parse::<u32>();
-    assert!(pid.is_ok());
-    assert_eq!(pid.unwrap(), 12345);
-}
-
-#[test]
-fn test_pid_file_parsing_no_newline() {
-    let tmp = TempDir::new().unwrap();
-    let pid_path = tmp.path().join(PID_FILE);
-    std::fs::write(&pid_path, "99999").unwrap();
-
-    let data = std::fs::read_to_string(&pid_path).unwrap();
-    let pid = data.trim().parse::<u32>();
-    assert!(pid.is_ok());
-    assert_eq!(pid.unwrap(), 99999);
-}
-
-#[test]
-fn test_pid_file_parsing_invalid() {
-    let tmp = TempDir::new().unwrap();
-    let pid_path = tmp.path().join(PID_FILE);
-    std::fs::write(&pid_path, "not-a-number").unwrap();
-
-    let data = std::fs::read_to_string(&pid_path).unwrap();
-    let pid = data.trim().parse::<u32>();
-    assert!(pid.is_err());
-}
-
-#[test]
-fn test_pid_file_parsing_empty() {
-    let tmp = TempDir::new().unwrap();
-    let pid_path = tmp.path().join(PID_FILE);
-    std::fs::write(&pid_path, "").unwrap();
-
-    let data = std::fs::read_to_string(&pid_path).unwrap();
-    let pid = data.trim().parse::<u32>();
-    assert!(pid.is_err());
-}
-
-// -------------------------------------------------------------------------
 // Shutdown signal file logic
 // -------------------------------------------------------------------------
 
@@ -85,21 +26,6 @@ fn test_shutdown_signal_cleanup() {
 
     let _ = std::fs::remove_file(&signal_path);
     assert!(!signal_path.exists());
-}
-
-// -------------------------------------------------------------------------
-// PID file cleanup logic
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_pid_file_cleanup() {
-    let tmp = TempDir::new().unwrap();
-    let pid_path = tmp.path().join(PID_FILE);
-    std::fs::write(&pid_path, "12345").unwrap();
-    assert!(pid_path.exists());
-
-    let _ = std::fs::remove_file(&pid_path);
-    assert!(!pid_path.exists());
 }
 
 // -------------------------------------------------------------------------
@@ -198,9 +124,12 @@ fn test_shutdown_http_timeout() {
 //   并断言 body / X-Auth-Token header；
 // - 补 token 缺失分支（config 无 auth_token → 不发 header）；
 // - 两个 panic 探针：#27 同款拓扑红对照 + 生产新写法绿证明（见 probe 段）。
+// - (BUG-20261114-025) PID 臂整臂移除：原 PID 文件解析/taskkill/SIGTERM
+//   测试组随之删除；改造出「残留 gateway.pid 被忽略」回归锁（死臂不再读它，
+//   也不清理它——现场保留）。
 // ===========================================================================
 
-// 整 mod Windows 形态（11/11 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+// 整 mod Windows 形态（测试 + 专属 helper 全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod run_arm {
     use super::*;
@@ -324,67 +253,58 @@ mod run_arm {
     fn run_without_pid_and_config_writes_signal_and_reports_unreachable() {
         with_env_home(|home| {
             std::fs::create_dir_all(&home).unwrap();
-            run(false).expect("无 PID 文件无 config → 信号文件 + Could not reach + Ok");
+            run(false).expect("无 config → 信号文件 + Could not reach + Ok");
             assert!(home.join("shutdown.signal").exists(), "信号文件必须落盘");
         });
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
-    fn run_with_unparsable_pid_falls_through_to_signal_file() {
+    fn run_ignores_stale_pid_file_and_still_goes_http() {
+        // (BUG-20261114-025 回归锁) 残留 gateway.pid（任何内容形态）必须被
+        // 完全忽略：既不触发任何进程信号假成功，也不清理现场——命令照走
+        // HTTP /api/internal 优雅停机臂。修复前该文件会把命令带进 taskkill
+        // 假成功分支（报「sent」进程不停 + 删 PID 文件湮灭现场）。
         with_env_home(|home| {
             std::fs::create_dir_all(&home).unwrap();
             std::fs::write(home.join("gateway.pid"), "not-a-number\n").unwrap();
-            run(false).expect("PID 解析失败 → 落到信号文件路径");
+            let (port, rx) = start_mock("200 OK", r#"{"status":"ok"}"#);
+            std::fs::write(
+                home.join("config.json"),
+                serde_json::json!({"channels": {"web": {"port": port}}}).to_string(),
+            )
+            .unwrap();
+            run(false).expect("PID 文件在场 → 忽略，走 HTTP 臂 + Ok");
+            assert!(
+                home.join("gateway.pid").exists(),
+                "死臂已移除：残留 PID 文件不得被读取方清理（现场保留）"
+            );
+            assert!(!home.join("shutdown.signal").exists());
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("mock 必须收到请求");
+            assert!(
+                rec.request_line.starts_with("POST /api/internal "),
+                "PID 文件在场也必须走 HTTP 优雅停机臂，实际: {}",
+                rec.request_line
+            );
+        });
+    }
+
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
+    #[test]
+    fn run_pid_file_as_directory_is_ignored_no_side_effect() {
+        // (BUG-20261114-025 回归锁) gateway.pid 是【目录】的极端形态：
+        // 同样必须被忽略（无读取、无清理、无进程信号），照常落 signal 文件。
+        with_env_home(|home| {
+            std::fs::create_dir_all(home.join("gateway.pid")).unwrap();
+            run(false).expect("pid 目录形态 → 忽略 + Ok");
             assert!(home.join("shutdown.signal").exists());
-            // PID 文件保持原样（该分支不清理）。
-            assert!(home.join("gateway.pid").exists());
+            assert!(
+                home.join("gateway.pid").is_dir(),
+                "死臂已移除：目录形态现场保留"
+            );
         });
-    }
-
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
-    #[test]
-    fn run_with_out_of_range_pid_is_safe_noop() {
-        with_env_home(|home| {
-            std::fs::create_dir_all(&home).unwrap();
-            // 0xFFFFFFFF 超出 Windows 句柄表 PID 空间（≤0xFFFFFC），
-            // taskkill 必然打不到任何真进程——确定性安全。
-            std::fs::write(home.join("gateway.pid"), "4294967295\n").unwrap();
-            // 无论 taskkill 走 "not found" 清理分支还是 Failed to signal
-            // 分支（系统语言相关），run 都必须 Ok 返回。
-            run(false).expect("taskkill 失败路径 → Ok");
-        });
-    }
-
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
-    #[test]
-    fn run_with_live_pid_uses_taskkill_graceful_path() {
-        // 真 spawn 一个本机 sleep 进程（继承当前控制台，不开新窗口），
-        // 再用生产同款 taskkill /PID 收掉——覆盖 Ok+success 分支。
-        // spawn 失败（如 CI 无 ping）则跳过，不制造环境性红。
-        let sleeper = std::process::Command::new("ping")
-            .args(["127.0.0.1", "-n", "30"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let Ok(child) = sleeper else {
-            return; // 环境无 ping：跳过（非断言失败）
-        };
-        let pid = child.id();
-
-        with_env_home(|home| {
-            std::fs::create_dir_all(&home).unwrap();
-            std::fs::write(home.join("gateway.pid"), format!("{pid}\n")).unwrap();
-            // taskkill 无 /F：先礼后兵。对控制台进程可能回"只能强制终止"
-            // （非 success 分支），两种结果 run 都 Ok——只钉"不炸 + 不杀错"。
-            run(false).expect("taskkill graceful 路径 → Ok");
-        });
-        // 收尾兜底：确保 sleeper 不滞留 30s。
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output();
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
@@ -539,20 +459,6 @@ mod run_arm {
             assert!(home.join("shutdown.signal").exists());
         });
     }
-
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
-    #[test]
-    fn run_pid_unreadable_directory_falls_through_to_signal_file() {
-        // gateway.pid 是【目录】而非文件：exists()==true 但 read_to_string
-        // 失败 → 内层 if-let 的 None 边（PID 文件臂的读取失败分支）。
-        // 必须继续走 Method 2/3 收尾而不是 panic。
-        with_env_home(|home| {
-            std::fs::create_dir_all(home.join("gateway.pid")).unwrap();
-            run(false).expect("pid 目录不可读 → 穿透到 signal 文件路径 + Ok");
-            assert!(home.join("shutdown.signal").exists());
-            assert!(home.join("gateway.pid").is_dir(), "该分支不清理 PID 文件");
-        });
-    }
 }
 
 // ===========================================================================
@@ -664,234 +570,5 @@ mod probes {
                 .expect("HTTP 往返应当成功");
             assert_eq!(status, 200, "探针 mock 固定回 200");
         });
-    }
-}
-
-// ===========================================================================
-// r9_zero（补测批零头组）：taskkill 无 /F 礼貌路径的成功分支
-// （shutdown.rs 33-37：「Shutdown signal sent to PID {}." + 删 PID 文件」）。
-//
-// 受害进程选型（pre-compaction 探针 %TEMP%\r9probe.ps1 实证过）：控制台进程
-// （ping/console sleeper）对 WM_CLOSE 无动于衷，taskkill 不带 /F 必回「只能强
-// 制终止」非 success；唯一可靠 victim 是离屏 WinForms Form 的消息泵——GUI 进程
-// 收到 taskkill 的 WM_CLOSE 后正常退出。
-// run() 经子进程 CLI 驱动（println 断言才可观测）；--local + cwd 定位 pid 文件。
-// ===========================================================================
-
-#[cfg(target_os = "windows")]
-mod r9_zero {
-    use std::os::windows::process::CommandExt;
-    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-    /// 离屏 WinForms 消息泵脚本：Form 放屏幕外（32000,-32000）、不进任务栏，
-    /// ShowDialog 维持泵直到收到 WM_CLOSE。用 Left/Top int 属性避开
-    /// System.Drawing 类型加载。
-    const VICTIM_SCRIPT: &str = r#"
-Add-Type -AssemblyName System.Windows.Forms | Out-Null
-$form = New-Object System.Windows.Forms.Form
-$form.StartPosition = 'Manual'
-$form.Left = -32000
-$form.Top = -32000
-$form.ShowInTaskbar = $false
-[void]$form.ShowDialog()
-"#;
-
-    /// 轮询目标进程是否已有可见窗口（MainWindowHandle != 0）——即消息泵就绪、
-    /// 能接收 WM_CLOSE。20s 上限。
-    fn wait_until_window_ready(pid: u32) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let probe = format!("(Get-Process -Id {}).MainWindowHandle", pid);
-        while std::time::Instant::now() < deadline {
-            let out = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &probe])
-                .creation_flags(CREATE_NO_WINDOW)
-                .output();
-            if let Ok(out) = out {
-                let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if let Ok(h) = text.parse::<usize>()
-                    && h != 0
-                {
-                    return true;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        false
-    }
-
-    fn force_kill(pid: u32) {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-
-    #[tokio::test]
-    async fn taskkill_graceful_success_signals_pid_and_removes_pid_file() {
-        // PowerShell 缺失（极端裁剪环境）→ 整个场景无从谈起，软跳过。
-        if std::process::Command::new("powershell")
-            .arg("-?")
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| !s.success())
-            .unwrap_or(true)
-        {
-            return;
-        }
-
-        let tmp = tempfile::tempdir().unwrap();
-        let script_path = tmp.path().join("r9_victim_form.ps1");
-        std::fs::write(&script_path, VICTIM_SCRIPT).unwrap();
-
-        // 起 victim（独立于 shutdown CLI 的 workspace 临时区，随 tempdir 清理）。
-        let mut victim = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                &script_path.to_string_lossy(),
-            ])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("victim spawn");
-        let pid = victim.id();
-
-        // 消息泵没就绪说明这个环境跑不了 GUI victim——收尾后软跳过。
-        if !wait_until_window_ready(pid) {
-            force_kill(pid);
-            let _ = victim.wait();
-            return;
-        }
-
-        let ws_guard = TestWorkspace::new().unwrap();
-        let ws = &ws_guard;
-        std::fs::create_dir_all(ws.home()).unwrap();
-        std::fs::write(ws.home().join("gateway.pid"), format!("{pid}\n")).unwrap();
-
-        let bin = resolve_nemesisbot_bin().expect("需已构建二进制");
-        let out = ws.run_cli_with_timeout(&bin, &["shutdown"], 60).await;
-
-        assert!(
-            out.success(),
-            "PID 文件臂成功后 run() 返回 Ok\nstdout={} stderr={}",
-            out.stdout,
-            out.stderr
-        );
-        assert!(out.stdout_contains("Sending shutdown signal..."));
-        assert!(
-            out.stdout_contains(&format!("Found gateway PID: {}", pid)),
-            "要回显找到的 PID：\n{}",
-            out.stdout
-        );
-        assert!(
-            out.stdout_contains(&format!("Shutdown signal sent to PID {}.", pid)),
-            "33-37 成功分支的核心输出缺失：\n{}",
-            out.stdout
-        );
-        assert!(
-            !ws.home().join("gateway.pid").exists(),
-            "成功分支必须清理 PID 文件"
-        );
-
-        // victim 应已被礼貌终止；10s 内轮询确认，超时强制收尸并打红。
-        let dead_in_time = {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                match victim.try_wait() {
-                    Ok(Some(_)) => break true,
-                    Ok(None) if std::time::Instant::now() >= deadline => break false,
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(250)),
-                    Err(_) => break true, // 句柄异常视作已不在
-                }
-            }
-        };
-        force_kill(pid); // 兜底收尸（幂等）
-        let _ = victim.wait();
-        assert!(
-            dead_in_time,
-            "taskkill 礼貌信号发出后 victim 未能退出——WM_CLOSE 未生效？"
-        );
-    }
-}
-
-// ===========================================================================
-// r10（覆盖率 A 类 miss 补充）：Command::new("taskkill").output() 的 spawn
-// Err 臂（47 行 "Failed to send signal"）。可行解不是清 PATH、也不是 CWD
-// 诱饵——System32\taskkill.exe 不依赖 PATH 解析，且新版 Rust std 已把 CWD
-// 从 CreateProcess 遗留搜索序中剔除；真正排在最前的是**调用方 exe 所在
-// 目录**。子进程是 target/release/nemesisbot.exe，所以在它的同目录预置一个
-// 零字节 taskkill.exe 文件：CreateProcess 命中应用目录候选后加载非 PE 内容
-// → ERROR_BAD_EXE_FORMAT（os error 193）→ Command::output 返回 Err。诱饵只
-// 进 workspace 的 target 构建目录、guard 保证必清场（含 panic 路径）。无 env
-// 竞争、不持全局锁。
-// ===========================================================================
-
-#[cfg(target_os = "windows")]
-mod r10 {
-    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
-
-    /// taskkill.exe 零字节诱饵的 RAII guard：构造时写入，Drop 时删除
-    /// （声明序在 run_cli 之前，panic 时也先于 TempDir 清理执行）。
-    struct BadExeDecoy(std::path::PathBuf);
-
-    impl BadExeDecoy {
-        fn arm(bin_dir: &std::path::Path) -> Self {
-            let p = bin_dir.join("taskkill.exe");
-            std::fs::write(&p, b"").expect("写入零字节诱饵");
-            Self(p)
-        }
-    }
-
-    impl Drop for BadExeDecoy {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    #[tokio::test]
-    async fn r10_taskkill_spawn_failure_reports_failed_to_send_signal_and_keeps_pid_file() {
-        let ws = TestWorkspace::new().expect("workspace");
-        std::fs::create_dir_all(ws.home()).unwrap();
-        // 合法可解析的 PID（值本身无所谓：spawn 根本走不到执行）。
-        std::fs::write(ws.home().join("gateway.pid"), "999999\n").unwrap();
-
-        // 诱饵：release nemesisbot.exe 同目录下的零字节 taskkill.exe ——
-        // 应用目录在 CreateProcess 搜索序中优先于 System32，坏镜像直接让
-        // spawn 报 Err（而非运行真实 taskkill 得到 "not found" 输出）。
-        let bin = resolve_nemesisbot_bin().expect("release binary");
-        let bin_path: std::path::PathBuf = bin.clone();
-        let _decoy = BadExeDecoy::arm(bin_path.parent().expect("bin dir"));
-
-        let out = ws.run_cli_with_timeout(&bin, &["shutdown"], 30).await;
-        assert!(
-            out.success(),
-            "spawn 失败也是 Ok 早退：stdout={} stderr={}",
-            out.stdout,
-            out.stderr
-        );
-        assert!(
-            out.stdout_contains("Found gateway PID: 999999"),
-            "PID 文件必须先被读出：\n{}",
-            out.stdout
-        );
-        assert!(
-            out.stdout_contains("Failed to send signal"),
-            "必须命中 Command::output Err 臂：\n{}",
-            out.stdout
-        );
-        assert!(
-            ws.home().join("gateway.pid").exists(),
-            "信号发送失败不得清理 PID 文件"
-        );
     }
 }
