@@ -2564,6 +2564,43 @@ impl WorkflowEngine {
     /// executors to bail out), marks the execution as cancelled, and persists
     /// the state change. Only executions in `Running` or `Waiting` state can be
     /// cancelled. Returns the updated execution.
+    /// 终态事件单一发射点（BUG-20261114-035）：resume 收口（
+    /// [`resume_execution_node`] 尾段 / [`settle_resume_outcome`]）与
+    /// [`cancel_execution`] 的 token-缺席臂经此发 [`WorkflowEvent`]，与
+    /// run_async 首跑尾段同契约。此前这些收口路径不发任何事件——唯一
+    /// 生产观察者 WorkflowChatReplyObserver 只在 Completed/Failed/
+    /// Cancelled 事件里释放 workflow_chat per-workflow 互斥守卫，事件
+    /// 缺席 = 守卫永久滞留 = 该工作流后续聊天请求静默卡死。
+    ///
+    /// 刻意只发 observer 事件（event_manager.emit），不发布
+    /// publish_event TriggerEvent：resume 后的终态若再进入事件触发链，
+    /// 会把「resume 后的完成/取消」当新事件扩散给事件触发工作流——
+    /// 产品语义变更，超出本修复范围；run_async 首跑尾段的 TriggerEvent
+    /// 发布维持原样。Waiting 非终态：保持沉默（观察者守卫必须留到下
+    /// 一次 resume / 取消，与 run_async 首跑 Waiting 不发声一致）。
+    async fn emit_terminal_event(&self, execution: &Execution) {
+        let event = match execution.state {
+            ExecutionState::Completed => WorkflowEvent::Completed {
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+                timestamp: Local::now(),
+            },
+            ExecutionState::Failed => WorkflowEvent::Failed {
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+                error: execution.error.clone().unwrap_or_default(),
+                timestamp: Local::now(),
+            },
+            ExecutionState::Cancelled => WorkflowEvent::Cancelled {
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+                timestamp: Local::now(),
+            },
+            _ => return,
+        };
+        self.event_manager.emit(event).await;
+    }
+
     pub async fn cancel_execution(&self, id: &str) -> Result<Execution, EngineError> {
         let mut execs = self.executions.write().await;
         let execution = execs
@@ -2587,9 +2624,19 @@ impl WorkflowEngine {
         // miss a token that appears right after — either the scheduler sees
         // the fired token, or we observed the pre-run state and the run side
         // bails out on its own state check.
-        if let Some(entry) = self.cancel_tokens.get(id) {
+        //
+        // BUG-20261114-035 终态事件 exactly-once 判别器：token 在场 =
+        // run_async/resume 在飞，取消会经调度器被它们的收口尾段 settle
+        // 并发终态事件——本方法不得重复发；token 缺席 = Waiting 挂起
+        // （run_async/resume 收口前已摘 token）或 run 尚未起飞
+        // （create_execution 与 run_async 之间的窗口），无人再收口 →
+        // 本方法负责发 Cancelled 事件（见尾部）。
+        let had_inflight_token = if let Some(entry) = self.cancel_tokens.get(id) {
             entry.cancel();
-        }
+            true
+        } else {
+            false
+        };
 
         let updated = execution.clone();
         drop(execs); // Release lock before persistence I/O
@@ -2627,6 +2674,15 @@ impl WorkflowEngine {
                 error = %e,
                 "failed to save terminal checkpoint on cancel (stale checkpoint may resurrect this execution on restart)"
             );
+        }
+
+        // BUG-20261114-035：token 缺席臂在此补发 Cancelled 事件——
+        // Waiting 取消此前不发任何事件（run_async 已返回、无人再收口），
+        // 唯一生产观察者 WorkflowChatReplyObserver 等不到 Cancelled，
+        // workflow_chat 的 per-workflow 互斥守卫永久滞留。token 在场臂
+        // 不发（run/resume 收口尾段负责）——exactly-once。
+        if !had_inflight_token {
+            self.emit_terminal_event(&updated).await;
         }
 
         Ok(updated)
@@ -3054,6 +3110,12 @@ impl WorkflowEngine {
             execs.insert(execution.id.clone(), execution.clone());
         }
 
+        // BUG-20261114-035：resume 收口与 run_async 首跑同契约发终态
+        // 事件。此前缺失 = Waiting 恢复后的完成/失败/取消对观察者不可见
+        // （chat 守卫泄漏）；再次 Waiting 本方法不发声（非终态，守卫留
+        // 待下一次 resume）。
+        self.emit_terminal_event(&execution).await;
+
         Ok(execution)
     }
 
@@ -3291,6 +3353,10 @@ impl WorkflowEngine {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
         }
+        // BUG-20261114-035：早期收口臂（sub_workflow 子终态同步 /
+        // 取消竞态）同样发终态事件——观察者契约与公共尾段一致；
+        // Waiting 臂（嵌套审批）不发声。
+        self.emit_terminal_event(&execution).await;
         execution
     }
 

@@ -23,9 +23,57 @@
 
 use crate::api_handlers::AppState;
 use crate::protocol::ProtocolMessage;
-use nemesis_workflow::types::TriggerSource;
+use nemesis_workflow::engine::WorkflowEngine;
+use nemesis_workflow::types::{TriggerSource, Workflow};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// 顶层工作流（含经 `sub_workflow` 复合可达的整棵子工作流树）是否
+/// 存在 human_review 节点（BUG-20261114-035）。旧实现只查顶层节点——
+/// `sub_workflow → 子工作流 human_review` 的复合路径绕过前门拒绝：
+/// 父执行停在 Waiting（sub_workflow 的 Waiting 合法透传）而聊天互斥
+/// 守卫无人释放。注册期已拒环，visited 集合双保险防自引用。
+pub(crate) fn workflow_reachable_human_review(
+    engine: &WorkflowEngine,
+    wf: &Workflow,
+    root_name: &str,
+) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(root_name.to_string());
+    walk_human_review(engine, wf, &mut visited)
+}
+
+fn walk_human_review(
+    engine: &WorkflowEngine,
+    wf: &Workflow,
+    visited: &mut std::collections::HashSet<String>,
+) -> bool {
+    if wf.nodes.iter().any(|n| n.node_type == "human_review") {
+        return true;
+    }
+    for node in &wf.nodes {
+        if node.node_type != "sub_workflow" {
+            continue;
+        }
+        let Some(child_name) = node.config.get("workflow").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !visited.insert(child_name.to_string()) {
+            continue;
+        }
+        if let Some(child_wf) = engine.get_workflow(child_name)
+            && walk_human_review(engine, &child_wf, visited)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// BUG-20261114-035 测试可见：前门拒绝消息的单一真相源（extra_tests
+/// 断言新文案在位 = 递归检查接线生效）。
+pub(crate) const HUMAN_REVIEW_CHAT_REJECT_MSG: &str =
+    "工作流（含子工作流）包含 human_review 节点，聊天测试不支持";
 
 /// Top-level dispatch for `module == "workflow_chat"` messages.
 ///
@@ -103,6 +151,9 @@ async fn handle_send(
     // Re-check chat_eligible in case the workflow def was edited after the
     // client's resolve_chat_target call. human_review workflows pause in
     // Waiting state, which would hang the chat UI — reject up front instead.
+    // BUG-20261114-035：检查必须递归 sub_workflow 子工作流——顶层不含
+    // ≠ 安全，sub_workflow 节点的 Waiting 会合法透传回父执行，经复合
+    // 路径可达的审批同样挂起聊天会话（守卫无人释放）。
     let wf = match engine.get_workflow(&workflow_name) {
         Some(w) => w,
         None => {
@@ -110,13 +161,8 @@ async fn handle_send(
             return Ok(());
         }
     };
-    if wf.nodes.iter().any(|n| n.node_type == "human_review") {
-        log_send_error(
-            &state,
-            &session_id,
-            "工作流包含 human_review 节点，聊天测试不支持",
-        )
-        .await;
+    if workflow_reachable_human_review(&engine, &wf, &workflow_name) {
+        log_send_error(&state, &session_id, HUMAN_REVIEW_CHAT_REJECT_MSG).await;
         return Ok(());
     }
     drop(wf);
