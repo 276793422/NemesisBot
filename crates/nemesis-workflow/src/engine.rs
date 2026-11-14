@@ -77,7 +77,9 @@ fn cron_next_fire_at_from_trigger(trigger: &TriggerConfig) -> Option<String> {
     if trigger.trigger_type != "cron" {
         return None;
     }
-    let schedule = trigger.config.get("schedule").and_then(|v| v.as_str())?;
+    // schedule 键解析走单一真相源 helper（schedule 优先、legacy expression
+    // 回落，BUG-20261114-042）——与 list_cron_workflows / TriggerManager 同源。
+    let schedule = crate::triggers::cron_schedule_from_config(&trigger.config)?;
     let tz_str = trigger.config.get("timezone").and_then(|v| v.as_str());
     let cron = croner::Cron::from_str(schedule).ok()?;
 
@@ -828,12 +830,13 @@ impl WorkflowEngine {
                 if trigger.trigger_type != "cron" {
                     continue;
                 }
-                let schedule = match trigger.config.get("schedule").and_then(|v| v.as_str()) {
+                let schedule = match crate::triggers::cron_schedule_from_config(&trigger.config) {
                     Some(s) => s.to_string(),
                     None => {
                         tracing::warn!(
                             workflow = %wf.name,
-                            "[Workflow] Cron trigger missing 'schedule' field, skipping"
+                            "[Workflow] Cron trigger missing 'schedule' field \
+                             (legacy alias 'expression' also accepted), skipping"
                         );
                         continue;
                     }

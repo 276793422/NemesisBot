@@ -6095,3 +6095,92 @@ async fn b383_chain_extends_through_event_triggered_execution() {
         Some(&serde_json::json!(["link_a", "link_b"]))
     );
 }
+
+// BUG-20261114-042：cron 触发器 legacy `expression` 键双真相源分叉。
+//
+// manager 层（triggers.rs register_trigger）接受 `expression` 作为 `schedule`
+// 的向后兼容别名（注释明言 "backward compat"），但两个 engine 消费点
+// （cron_next_fire_at_from_trigger / list_cron_workflows）只读 `schedule`——
+// 别名被收编进无人消费的 cron_jobs 缓存，真实调度层却 warn「missing
+// 'schedule' field」跳过（字段明明写在本 crate 自己声称接受的别名下），
+// legacy 文件永不触发、TriggerSummary.next_fire_at 恒空。修法 = 别名在
+// 消费点兑现（仓库 timeout/protocol 别名同惯例），三层读同一 helper。
+
+#[tokio::test]
+async fn test_list_cron_workflows_honors_legacy_expression_alias() {
+    use crate::types::TriggerConfig;
+    use serde_json::json;
+
+    let mut wf = make_workflow("legacy_cron", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let crons = engine.list_cron_workflows();
+    assert_eq!(
+        crons.len(),
+        1,
+        "legacy expression 别名必须与 schedule 同权排程——假兼容（manager 收编、调度层拒收）已根修"
+    );
+    assert_eq!(crons[0].0, "legacy_cron");
+    assert_eq!(crons[0].1, "0 9 * * *");
+}
+
+#[tokio::test]
+async fn test_list_cron_workflows_schedule_takes_precedence_over_expression() {
+    use crate::types::TriggerConfig;
+    use serde_json::json;
+
+    // 两键并存：canonical schedule 赢，legacy alias 只是回落。
+    let mut wf = make_workflow("both_keys_cron", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([
+            ("schedule".to_string(), json!("*/5 * * * *")),
+            ("expression".to_string(), json!("0 9 * * *")),
+        ]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let crons = engine.list_cron_workflows();
+    assert_eq!(crons.len(), 1);
+    assert_eq!(
+        crons[0].1, "*/5 * * * *",
+        "schedule 优先于 legacy expression"
+    );
+}
+
+#[test]
+fn test_cron_next_fire_at_honors_legacy_expression_alias() {
+    use serde_json::json;
+
+    // 别名下写合法 cron：next_fire_at 必须可算（TriggerSummary 展示面）。
+    let valid = crate::types::TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    };
+    assert!(
+        super::cron_next_fire_at_from_trigger(&valid).is_some(),
+        "legacy expression 别名下的合法 cron 必须算出 next_fire_at"
+    );
+
+    // 别名下的非法 cron：诚实 None（与 schedule 键同语义）。
+    let invalid = crate::types::TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("not a cron"))]),
+    };
+    assert!(super::cron_next_fire_at_from_trigger(&invalid).is_none());
+
+    // 非 cron 触发器：None 不变。
+    let not_cron = crate::types::TriggerConfig {
+        trigger_type: "webhook".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    };
+    assert!(super::cron_next_fire_at_from_trigger(&not_cron).is_none());
+}
