@@ -139,6 +139,58 @@ fn legacy_migration_via_load_switches_and_discard_conflict() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BUG-20261115-007 回归锁：迁移写失败时旧实例文件必须原样保留。
+/// 旧序列「内存合并 → 删旧 → 调用方吞写结果」在写失败窗口内旧文件已删、
+/// 数据不可恢复（「下次读再试」注释失真——下次读已无旧文件可迁）。
+/// 修复 = 删旧移到写盘成功之后。故障注入：主文件路径被目录占用 →
+/// write_file_atomic rename 必败。
+#[test]
+fn migration_write_failure_preserves_legacy_files() {
+    let dir = temp_config_dir("legacy_write_fail");
+    let _g = SERIAL.lock().unwrap();
+    legacy_instance(&dir, "victim", r#"{"secret":"payload"}"#);
+    // 故障注入：主文件路径成目录 → write_switch_file 的原子 rename 必败
+    std::fs::create_dir_all(plugin_wasm_config_path(&dir)).unwrap();
+
+    // 读路径仍返回内存态合并结果（本调用语义正确）
+    let all = load_switches(&dir);
+    assert!(
+        all.contains_key("victim"),
+        "写失败不影响本调用的内存态合并结果"
+    );
+    // 关键断言：旧实例文件必须还在——数据未丢，下次读可再迁移
+    assert!(
+        dir.join("plugins/victim.json").exists(),
+        "BUG-20261115-007：迁移写失败时旧实例文件不得被删除"
+    );
+
+    // 收敛：撤除障碍后下次读迁移成功，旧文件才删除
+    std::fs::remove_dir(plugin_wasm_config_path(&dir)).unwrap();
+    let converged = load_switches(&dir);
+    assert!(converged.contains_key("victim"), "撤障后迁移必须收敛");
+    assert!(
+        !dir.join("plugins/victim.json").exists(),
+        "迁移成功后旧实例文件应删除"
+    );
+    let persisted_secret = read_persisted_victim_secret(&dir);
+    assert_eq!(
+        persisted_secret,
+        Some(serde_json::json!("payload")),
+        "迁移数据最终必须持久化落盘"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 直接读盘上的主开关文件（绕过迁移逻辑，验证持久化终态）。
+fn read_persisted_victim_secret(config_dir: &Path) -> Option<serde_json::Value> {
+    let content =
+        std::fs::read_to_string(plugin_wasm_config_path(config_dir)).expect("主开关文件应存在");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("主开关文件应为合法 JSON");
+    v["plugins"]["victim"]["config"]["secret"]
+        .as_str()
+        .map(|s| serde_json::Value::String(s.to_string()))
+}
+
 #[test]
 fn legacy_dir_noise_handled() {
     let dir = temp_config_dir("legacy_noise");
