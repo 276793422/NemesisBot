@@ -2682,6 +2682,19 @@ impl WorkflowEngine {
         // workflow_chat 的 per-workflow 互斥守卫永久滞留。token 在场臂
         // 不发（run/resume 收口尾段负责）——exactly-once。
         if !had_inflight_token {
+            // BUG-20261114-036：账本收口走同一判别器。Waiting 取消此前
+            // 不收账——重启 sweep 只圈 cron_job（ledger.rs
+            // sweep_restart_orphans_on），resume 又因 state != Waiting 被拒，
+            // workflow_run:{id} 行 + attempt 永久停在 running（cancel_all_
+            // running / estop 批量取消放大泄漏面）。token 在场臂由 run/resume
+            // 收口尾段 settle（同一 exactly-once 契约，不重复收）；run 尚未
+            // 起飞的窗口行还不存在，settle 落空 = 无害 no-op。先收账后发
+            // 事件，与 run_async 尾段的账本→事件顺序一致。
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::workflow_run_id(id),
+                "cancelled",
+                None,
+            );
             self.emit_terminal_event(&updated).await;
         }
 
