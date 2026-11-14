@@ -203,24 +203,16 @@ fn store_object(boundary_dir: &std::path::Path, kind: &str, content: &str, hash:
         );
         return;
     }
-    let tmp = dir.join(format!("{}.tmp", hash));
-    if let Err(e) = fs::write(&tmp, content) {
-        // 失败臂同步清理 tmp，对齐下方 rename 失败臂的既有语义——
-        // 残留 tmp 是孤儿（内容寻址判重只看最终路径，tmp 永不被复用）
-        // 且本目录无清扫器（BUG-20261113-158）。
-        let _ = fs::remove_file(&tmp);
-        tracing::warn!("[replay] snapshot write failed {}: {}", tmp.display(), e);
-        return;
-    }
-    if let Err(e) = fs::rename(&tmp, &path) {
-        // Loser of a same-content race (winner already renamed) — cleanup and
-        // move on; bytes are identical by construction.
-        let _ = fs::remove_file(&tmp);
-        tracing::debug!(
-            "[replay] snapshot rename raced/failed {}: {}",
-            path.display(),
-            e
-        );
+    // BUG-20261115-013：改走家族唯一真相源 write_file_atomic——旧
+    // `{hash}.tmp` 内容寻址同名 + std::fs::write 截断写，同 workspace
+    // 双进程并发 store 同内容对象时互踩同名 tmp（truncate 竞窗内 rename
+    // 可发布半截对象，hash≠内容 = 寻址存储腐蚀）。helper = pid+序数+纳秒
+    // 唯一名 + create_new 根除同名互踩；失败清理由 helper 内部承担
+    // （本目录无清扫器，孤儿纪律 BUG-20261113-158 同源）。
+    if let Err(e) =
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o644)
+    {
+        tracing::warn!("[replay] snapshot write failed {}: {}", path.display(), e);
     }
 }
 

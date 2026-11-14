@@ -63,12 +63,11 @@ async fn cred_search_client_stops_cross_host_redirect() {
     );
     let _ = hop_a.await;
     let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), sentry_b).await;
-    match leaked {
-        Ok(Ok(second_hop_req)) => panic!(
+    if let Ok(Ok(second_hop_req)) = leaked {
+        panic!(
             "BUG-20261115-009：跨源重定向把请求（含自定义凭据头）带去了第三方主机，第二跳收到: {second_hop_req}"
-        ),
+        );
         // 超时/哨兵被丢 = 第二跳无连接 = 凭据未出站 ✓
-        _ => {}
     }
 }
 
@@ -86,12 +85,11 @@ async fn cred_search_client_follows_same_origin_redirect() {
             "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let _first_req = serve_one(&l, &first_resp).await;
-        let second_req = serve_one(
+        serve_one(
             &l,
             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
         )
-        .await;
-        second_req
+        .await
     });
 
     let client = WebSearchTool::cred_search_client(5).unwrap();
