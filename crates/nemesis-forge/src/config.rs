@@ -531,13 +531,16 @@ pub fn load_forge_config(path: &Path) -> ForgeConfig {
 }
 
 /// Save forge configuration to a JSON file.
+///
+/// 原子落盘走 `write_file_atomic`（BUG-20261114-022）：本文件是 RMW 活配置
+/// （replay_auto_ingest / judge 阈值 / optimize 预算），直写撕裂 + 下次
+/// load 解析失败静默回默认 + 再保存把默认固化 = 用户 forge 调参永久丢失。
+/// helper 自带 mkdir/唯一临时名/sync_all 先于 rename/失败清理。
 pub fn save_forge_config(path: &Path, config: &ForgeConfig) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     let data = serde_json::to_string_pretty(config)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-    std::fs::write(path, data)
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o600)
+        .map_err(std::io::Error::other)
 }
 
 #[cfg(test)]

@@ -308,3 +308,24 @@ fn test_s8_save_forge_config_root_path_has_no_parent() {
     let result = save_forge_config(std::path::Path::new("/"), &ForgeConfig::default());
     assert!(result.is_err());
 }
+
+/// BUG-20261114-022 回归锁：config.forge.json 是 RMW 活配置
+/// （replay_auto_ingest / judge 阈值 / optimize 预算）——直写撕裂 +
+/// load 解析失败静默回默认 + 再保存固化默认 = 用户 forge 调参永久丢失。
+/// save_forge_config 必须走 `write_file_atomic`，生产代码零直写。
+#[test]
+fn save_forge_config_routes_through_atomic_helper() {
+    let src: String = include_str!("../config.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        !src.contains("fs::write("),
+        "config.rs 生产代码出现直写 fs::write（BUG-20261114-022 回归）：\
+         forge 活配置必须走 write_file_atomic 原子落盘"
+    );
+    assert!(
+        src.contains("nemesis_utils::write_file_atomic("),
+        "save_forge_config 必须经 write_file_atomic 落盘（关键配置写入唯一权威 helper）"
+    );
+}
