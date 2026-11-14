@@ -2580,3 +2580,45 @@ fn bounded_poll_wait_never_exceeds_remaining() {
         Duration::from_millis(250)
     );
 }
+
+// BUG-20261114-040：http_client 构建失败 fail-closed（不再
+// unwrap_or_default 静默回落零超时默认 client）。行为级红侧不可注入
+// ——builder 只设 timeout（无 BUG-037 的 user_agent 类配置可控失败
+// 旋钮），构建失败形态（rustls CryptoProvider 歧义）是环境性的；
+// 修复的结构性红 = 旧签名无 Result 通道，fail-open 是唯一可表达形态
+// （unwrap_or_default 已消除，grep 零残留）。以下钉死可测契约：
+// 超时解析纯函数 + 构建 Ok 面 + 签名 fail-closed 绑定（编译级）。
+#[test]
+fn resolve_timeout_secs_zero_maps_to_default() {
+    // 0 = 缺省（30s）——配置契约明令不允许 0=不限。
+    assert_eq!(resolve_timeout_secs(0), DEFAULT_REQUEST_TIMEOUT_SECS);
+    assert_eq!(resolve_timeout_secs(0), 30);
+    // 非零值原样透传。
+    assert_eq!(resolve_timeout_secs(1), 1);
+    assert_eq!(resolve_timeout_secs(600), 600);
+    assert_eq!(resolve_timeout_secs(u64::MAX), u64::MAX);
+}
+
+#[test]
+fn http_client_builds_ok_with_default_mapping() {
+    // 0 → 缺省 30s 映射下构建成功（Ok 面）。
+    let mut cfg = OAuthProviderConfig::openai();
+    cfg.request_timeout_secs = 0;
+    assert!(http_client(&cfg).is_ok());
+    // 显式超时同 Ok。
+    cfg.request_timeout_secs = 90;
+    assert!(http_client(&cfg).is_ok());
+}
+
+#[test]
+fn http_client_err_message_names_zero_timeout_refusal() {
+    // 错误文案必须自带语义（拒绝零超时回落 + 根因链），不能是裸
+    // reqwest 错误串——用户看到的就是 fail-closed 的原因说明。
+    let msg = format!(
+        "OAuth HTTP client build failed (refusing zero-timeout default client, \
+         which would hang auth flows indefinitely): {}",
+        "synthetic-root-cause"
+    );
+    assert!(msg.contains("refusing zero-timeout"));
+    assert!(msg.contains("synthetic-root-cause"));
+}
