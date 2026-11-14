@@ -312,7 +312,16 @@ impl GatewayCtx {
                     }
                 }
                 for (key, value) in nemesis_config::proxy_file::env_vars_to_apply(&c.env) {
-                    tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    // SEC-002（BUG-20261115-005）：代理 URL 可携带 userinfo
+                    // 凭据（http://user:pass@host:port），日志只落 key + 脱敏
+                    // 占位——与 EnvProxyConfig Debug 脱敏同口径
+                    //（BUG-20261114-063）；no_proxy 是豁免主机列表非凭据
+                    //（063 Debug 原样输出同判），值照落。
+                    if key.eq_ignore_ascii_case("no_proxy") {
+                        tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    } else {
+                        tracing::info!("[Gateway] 环境变量代理已注入：{key}=<redacted>");
+                    }
                     // set_var 在 Rust 2024 为 unsafe（并发读写下 UB 面）；
                     // 此处是启动装配窗口（先例 common.rs PATH 注入），注入
                     // 先于一切并发 client 构建。

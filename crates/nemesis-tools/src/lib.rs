@@ -5,7 +5,6 @@
 pub mod async_shell;
 pub mod bootstrap;
 pub mod browser;
-pub mod cluster_rpc;
 pub mod desktop_automation;
 pub mod edit;
 pub mod executor;
