@@ -219,6 +219,46 @@ fn test_handle_discovered_node() {
     assert_eq!(node.capabilities.len(), 2);
 }
 
+/// 2026-11-14 审查发现 #6 回归锁：announce 载荷地址已自带端口（`ip:port`）
+/// 时 primary（base.address）必须原样采用，不得拼出 `ip:port:rpc_port`
+/// 双端口非法地址。当前 announce 载荷恒裸 IP（本测试钉防御分支——载荷
+/// 形态将来演进时不再静默损坏）；裸 IP 对照臂确认既有拼端口行为不变。
+#[test]
+fn test_discovered_node_pre_ported_address_not_double_ported() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // 已带端口载荷 → 原样采用
+    cluster.handle_discovered_node(
+        "remote-port-1",
+        "worker-port",
+        vec!["10.0.0.42:8899".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node = cluster.get_node_info("remote-port-1").unwrap();
+    assert_eq!(node.base.address, "10.0.0.42:8899");
+
+    // 裸 IP 对照 → 照旧拼 rpc_port（既有行为不变）
+    cluster.handle_discovered_node(
+        "remote-port-2",
+        "worker-bare",
+        vec!["10.0.0.43".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node2 = cluster.get_node_info("remote-port-2").unwrap();
+    assert_eq!(node2.base.address, "10.0.0.43:21949");
+}
+
 // 回归（双机）：handle_discovered_node 曾把 role 硬编码 Worker，
 // announce 携带的对端自报 role 被丢弃 → 纯 UDP 发现拓扑下 board.sync 的
 // coordinator 判定永远失败（「no online coordinator known yet」补拉死循环）。
@@ -9582,6 +9622,61 @@ fn test_is_self_endpoint_matrix() {
     assert!(is_self_endpoint("192.168.137.1", 21949, 21949, &own));
     // 非本机 host + 同端口 → 不命中
     assert!(!is_self_endpoint("other-host", 21949, 21949, &own));
+}
+
+/// 纯函数矩阵（IPv6，2026-11-14 审查发现 #3 回归锁）：`[::1]:port` 括号
+/// 形态 / 裸 `::1` / 裸多冒号 IPv6 三形态都必须取到完整主机——旧实现
+/// `split(':').next()` 对括号形态取 `[`、对裸形态取首段，自投递防护失效。
+#[test]
+fn test_is_self_endpoint_ipv6_matrix() {
+    let own = vec!["10.103.0.5".to_string(), "fe80::5".to_string()];
+    // 括号带端口 `[::1]:port` → 命中回环
+    assert!(is_self_endpoint("[::1]:21949", 21949, 21949, &own));
+    // 括号不带端口
+    assert!(is_self_endpoint("[::1]", 21949, 21949, &own));
+    // 裸回环 IPv6（多冒号，整体即主机）
+    assert!(is_self_endpoint("::1", 21949, 21949, &own));
+    // 本机 IPv6 + 同端口（裸多冒号形态，own_ips 精确比对）
+    assert!(is_self_endpoint("fe80::5", 21949, 21949, &own));
+    assert!(is_self_endpoint("[fe80::5]:21949", 21949, 21949, &own));
+    // 非本机 IPv6 + 同端口 → 不命中
+    assert!(!is_self_endpoint("fe80::6", 21949, 21949, &own));
+    // 端口不匹配 → 永不命中（IPv6 同样守端口全匹配闸）
+    assert!(!is_self_endpoint("[::1]:21950", 21950, 21949, &own));
+}
+
+/// 路由记账去重集（2026-11-14 审查发现 #1 回归锁）：满 cap **按序逐出最老
+/// 一条**，不是全清——cap=3 时 A,B,C,D 依次插入后仅 A 被逐出（A 重插成功），
+/// B/C 仍在（重复插入被去重闸拒绝；旧实现满 cap `clear()` 全清，重复回调
+/// （送达重试/恢复轮询重放）会再次穿过闸门双计成功率）。去重拒绝不扰动
+/// 集合（先查存在后逐出），幸存观察不触发新逐出。
+#[test]
+fn test_route_recorded_set_evicts_oldest_not_clear_all() {
+    let mut s = super::tasks::RouteRecordedSet::default();
+    let cap = 3;
+    assert!(s.insert_evicting_oldest("A", cap), "A 首插");
+    assert!(
+        !s.insert_evicting_oldest("A", cap),
+        "A 重复插入被去重闸拒绝"
+    );
+    assert!(s.insert_evicting_oldest("B", cap), "B 首插");
+    assert!(s.insert_evicting_oldest("C", cap), "C 首插（到 cap）");
+    // 满后再插 D：只逐出最老的 A（「逐出一条」与旧「clear 全清」的分界）
+    assert!(s.insert_evicting_oldest("D", cap), "D 首插触发逐出 A");
+    // B/C 幸存（clear-all 语义下这两条会被接受 = 双计）
+    assert!(
+        !s.insert_evicting_oldest("B", cap),
+        "B 未被误清，仍被去重闸拒绝"
+    );
+    assert!(
+        !s.insert_evicting_oldest("C", cap),
+        "C 未被误清，仍被去重闸拒绝"
+    );
+    assert!(!s.insert_evicting_oldest("D", cap), "D 在集内");
+    // A 已被逐出：重插成功；FIFO 逐出随之落到当前最老的 B
+    assert!(s.insert_evicting_oldest("A", cap), "A 已被逐出，重插成功");
+    assert!(!s.insert_evicting_oldest("C", cap), "C 仍幸存");
+    assert!(s.insert_evicting_oldest("B", cap), "B 已被逐出，重插成功");
 }
 
 /// 同机双节点（同 IP 不同端口）互不误杀——对端候选含本机 IP 但端口

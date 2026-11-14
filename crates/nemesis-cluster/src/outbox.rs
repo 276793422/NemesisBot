@@ -351,6 +351,10 @@ pub struct TransferOutbox {
     /// Dashboard 的动态 cluster start/stop 周期不碰它，保持「进程生命周期
     /// 常驻」语义不变。
     stop_token: tokio_util::sync::CancellationToken,
+    /// 推送全局并发上限（同时在途 worker 数上限）。默认 8；0 按 1。
+    push_concurrency: std::sync::atomic::AtomicUsize,
+    /// 单目标推送并发上限（对同一 master 的同时在途数）。默认 2；0 按 1。
+    per_target_push_concurrency: std::sync::atomic::AtomicUsize,
 }
 
 impl TransferOutbox {
@@ -372,7 +376,18 @@ impl TransferOutbox {
             kick: tokio::sync::Notify::new(),
             online_check: std::sync::Mutex::new(None),
             stop_token: tokio_util::sync::CancellationToken::new(),
+            push_concurrency: std::sync::atomic::AtomicUsize::new(8),
+            per_target_push_concurrency: std::sync::atomic::AtomicUsize::new(2),
         }
+    }
+
+    /// 注入推送并发上限（gateway 从 config.cluster.json 读入；测试注入
+    /// 小值驱动并发场景）。0 按 1 处理（串行旧行为）。
+    pub fn set_push_caps(&self, global: usize, per_target: usize) {
+        self.push_concurrency
+            .store(global.max(1), std::sync::atomic::Ordering::Relaxed);
+        self.per_target_push_concurrency
+            .store(per_target.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 注入健康联动查询（见字段 doc）。gateway 装配时注入一次。
@@ -665,10 +680,88 @@ impl TransferOutbox {
         self.stop_token.cancel();
     }
 
-    /// 一轮推送：串行处理全部 `pending` 条目（单循环任务内串行，天然免并发
-    /// 竞态 + 对速率限制友好）。pub 供单测直接驱动（不起循环）。
-    pub async fn process_once(&self) {
-        for (mut entry, dir) in self.list_entries() {
+    /// 一轮推送：**有界并发 + 滑动窗口**处理全部 `pending` 条目（2026-11-14
+    /// 审查发现 #4 队头阻塞根修；同日 e2e 回归改「滑动窗口收割」——首版
+    /// 批量形态每 tick 吞吐被 cap 封顶（单目标 2 条/15s），单 master 大积压
+    /// 场景队尾条目 6.5 分钟才推完，T-XFER 全套超窗口必败）。语义：
+    /// - 并发两闸不变：全局 `push_concurrency`（默认 8）/ 单目标
+    ///   `per_target_push_concurrency`（默认 2）= **同时在途上限**；
+    /// - 滑动窗口：JoinSet 收割一条即按 created_at FIFO 补采一条 spawn，
+    ///   cap 持续满载流动直至本轮候选（pending 且不在退避窗）扫完——
+    ///   吞吐按并发上限流动，不再按 tick 批量节流；顺带消除 tick 级
+    ///   队头（一条慢推送不再拖住整批收割）；
+    /// - 被单目标闸住的条目**保留**在候选表（回填队首原序），该目标额度
+    ///   释放即补采——不是丢弃等下 tick；
+    /// - worker 在本调用内收割完毕才返回（跨 tick 无重叠，`pushing`
+    ///   状态加重放只认 dead 态的前置就是防双推的完整守卫，无需额外互斥）。
+    ///
+    /// pub 供单测直接驱动（不起循环）。
+    pub async fn process_once(self: &Arc<Self>) {
+        let global_cap = self
+            .push_concurrency
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        let per_target_cap = self
+            .per_target_push_concurrency
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .max(1);
+        let mut per_target_used: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut set: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
+        // 全量候选按 created_at FIFO 一次列出；被单目标闸住的条目回填队首
+        // 原序保留，收割释放额度即重扫补采（每轮重扫 = O(候选) 的内存/
+        // 时间解析与健康表读，纯内存开销，积压几百条量级可忽略）。
+        let mut candidates: std::collections::VecDeque<(OutboxEntry, PathBuf)> =
+            self.list_entries().into();
+        loop {
+            // 补位：在途 < 全局闸 且候选表有可推条目 → spawn。
+            while set.len() < global_cap {
+                match self.next_pushable(&mut candidates, &mut per_target_used, per_target_cap) {
+                    Some((entry, dir)) => {
+                        let this = Arc::clone(self);
+                        let target = entry.source_node.clone();
+                        set.spawn(async move {
+                            this.push_entry_worker(entry, dir).await;
+                            target // 收割时释放单目标额度（cap = 同时在途上限）
+                        });
+                    }
+                    None => break, // 本轮无可推条目（被闸的保留在候选表）
+                }
+            }
+            if set.is_empty() {
+                break;
+            }
+            // 收割一条 → 释放该目标额度 → 回顶补位（cap 持续满载流动）。
+            match set.join_next().await {
+                Some(Ok(target)) => {
+                    if let Some(used) = per_target_used.get_mut(&target) {
+                        *used = used.saturating_sub(1);
+                    }
+                }
+                Some(Err(e)) => {
+                    // worker panic：条目停留盘上 `pushing`（重启 sweep 重置
+                    // 续推，与旧形态一致）；单目标额度本 tick 内不释放。
+                    tracing::error!("[Transfer] 推送 worker 异常退出（JoinSet）: {e}");
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// 候选表队首取下一条可推送条目（死信转 dead / 退避窗跳过 / 离线安静
+    /// 跳过——三类跳过出队不再回来，单次调用内一次判定与旧形态一致）。
+    /// 单目标闸满的条目**回填队首原序保留**（等该目标额度释放补采）；
+    /// 全局闸由调用方以 set.len() 判定。命中即置 `pushing` 落盘并返回；
+    /// 候选表无可推条目返回 None。
+    fn next_pushable(
+        self: &Arc<Self>,
+        candidates: &mut std::collections::VecDeque<(OutboxEntry, PathBuf)>,
+        per_target_used: &mut std::collections::HashMap<String, usize>,
+        per_target_cap: usize,
+    ) -> Option<(OutboxEntry, PathBuf)> {
+        let mut gated_back: Vec<(OutboxEntry, PathBuf)> = Vec::new();
+        let mut result = None;
+        while let Some((mut entry, dir)) = candidates.pop_front() {
             if entry.state != "pending" {
                 continue;
             }
@@ -687,7 +780,7 @@ impl TransferOutbox {
                 );
                 continue;
             }
-            // 退避窗口内跳过（不计数、不打日志）。
+            // 退避窗口内跳过（不计数、不打日志；出队不再回来）。
             if let Some(next) = entry.next_retry_at.as_deref() {
                 match chrono::DateTime::parse_from_rfc3339(next) {
                     Ok(next) if chrono::Local::now() < next => continue,
@@ -696,7 +789,7 @@ impl TransferOutbox {
             }
             // 健康联动——对端离线 → 安静跳过（不计数、不打日志、不推进
             // 退避窗口），回 Online 后下一 tick（≤15s）自然恢复推送，省必败
-            // RPC 调用与刷屏日志。
+            // RPC 调用与刷屏日志。出队不再回来（下 tick 重列）。
             let online = match self
                 .online_check
                 .lock()
@@ -709,87 +802,107 @@ impl TransferOutbox {
             if !online {
                 continue;
             }
+            // 单目标闸（同时在途上限）：满 → 回填保留（等额度释放补采），
+            // 继续扫其他目标。
+            let used = per_target_used
+                .entry(entry.source_node.clone())
+                .or_default();
+            if *used >= per_target_cap {
+                gated_back.push((entry, dir));
+                continue;
+            }
+            *used += 1;
             entry.state = "pushing".into();
             if self.write_entry_at(&dir, &entry).is_err() {
                 continue;
             }
-            match self.attempt_push(&entry).await {
-                Ok(PushOutcome::Delivered) | Ok(PushOutcome::NothingToSend) => {
-                    // 双删：master 已落盘（或 dedup 已有）→ 删本地。
-                    // BUG-20261114-013：阻塞退避不进 async——本函数跑在
-                    // spawn_push_loop（tokio::spawn，进程生命周期常驻）的
-                    // 共享 executor 上，remove_dir_all_resilient 最坏
-                    // ~4.4s thread::sleep；Windows AV/索引器瞬时持句柄恰是
-                    // 该 helper 设计针对的常态场景，删刚写完的 outbox 目录
-                    // 命中率高。同 crate LOW-5 家族（task_result_store /
-                    // continuation_store / pair）同款 spawn_blocking 形态。
-                    let stale_dir = dir.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        crate::fsutil::remove_dir_all_resilient(&stale_dir)
-                    })
-                    .await;
-                    tracing::info!(
+            result = Some((entry, dir));
+            break;
+        }
+        // 被闸条目回填队首原序（保持 created_at FIFO）。
+        for item in gated_back.into_iter().rev() {
+            candidates.push_front(item);
+        }
+        result
+    }
+
+    /// 单条目推送 worker（process_once spawn；条目已在盘上置 `pushing`）。
+    /// 结果分支与旧串行版逐字同语义：Delivered/NothingToSend 双删、
+    /// Overlimit 先落盘后出卡、Err 退避记账留 pending。
+    async fn push_entry_worker(self: Arc<Self>, mut entry: OutboxEntry, dir: PathBuf) {
+        match self.attempt_push(&entry).await {
+            Ok(PushOutcome::Delivered) | Ok(PushOutcome::NothingToSend) => {
+                // 双删：master 已落盘（或 dedup 已有）→ 删本地。
+                // BUG-20261114-013：阻塞退避不进 async——worker 同样跑在
+                // 共享 executor 上，remove_dir_all_resilient 最坏
+                // ~4.4s thread::sleep；Windows AV/索引器瞬时持句柄恰是
+                // 该 helper 设计针对的常态场景，删刚写完的 outbox 目录
+                // 命中率高。同 crate LOW-5 家族（task_result_store /
+                // continuation_store / pair）同款 spawn_blocking 形态。
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::fsutil::remove_dir_all_resilient(&dir)
+                })
+                .await;
+                tracing::info!(
+                    task_id = %entry.task_id,
+                    "[Transfer] 执行记录回传完成，本地发件箱清空"
+                );
+            }
+            Ok(PushOutcome::Overlimit { total_bytes, limit }) => {
+                entry.state = "over_limit".into();
+                entry.last_error = Some(format!("载荷 {total_bytes} 字节超护栏 {limit}"));
+                // 先落盘后通知（顺序倒转，T-XFER-5 误报根修）：master 出卡
+                // 出现时 B 本地 over_limit 必已就位；落盘失败不再静默吞错
+                // （此时盘上停留 pushing，重启 recovery 会重置重推）。
+                if let Err(e) = self.write_entry_at(&dir, &entry) {
+                    tracing::error!(
                         task_id = %entry.task_id,
-                        "[Transfer] 执行记录回传完成，本地发件箱清空"
+                        "[Transfer] over_limit 状态落盘失败: {e}"
                     );
                 }
-                Ok(PushOutcome::Overlimit { total_bytes, limit }) => {
-                    entry.state = "over_limit".into();
-                    entry.last_error = Some(format!("载荷 {total_bytes} 字节超护栏 {limit}"));
-                    // 先落盘后通知（顺序倒转，T-XFER-5 误报根修）：master 出卡
-                    // 出现时 B 本地 over_limit 必已就位；落盘失败不再静默吞错
-                    // （此时盘上停留 pushing，重启 recovery 会重置重推）。
-                    if let Err(e) = self.write_entry_at(&dir, &entry) {
-                        tracing::error!(
-                            task_id = %entry.task_id,
-                            "[Transfer] over_limit 状态落盘失败: {e}"
-                        );
-                    }
-                    // 通知 master 出卡（best effort——master 不在场时本地
-                    // over_limit 标记仍保真）。
-                    let note = TransferOverlimit {
-                        task_id: entry.task_id.clone(),
-                        source_node: self.self_node_id.clone(),
-                        total_bytes,
-                        limit,
-                        kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
-                    };
-                    let _ = self
-                        .transport
-                        .call(
-                            &entry.source_node,
-                            ACTION_TRANSFER_OVERLIMIT,
-                            serde_json::to_value(&note).unwrap_or_default(),
-                            Duration::from_secs(30),
-                        )
-                        .await;
+                // 通知 master 出卡（best effort——master 不在场时本地
+                // over_limit 标记仍保真）。
+                let note = TransferOverlimit {
+                    task_id: entry.task_id.clone(),
+                    source_node: self.self_node_id.clone(),
+                    total_bytes,
+                    limit,
+                    kind: TRANSFER_KIND_EXECUTION_RECORDS.into(),
+                };
+                let _ = self
+                    .transport
+                    .call(
+                        &entry.source_node,
+                        ACTION_TRANSFER_OVERLIMIT,
+                        serde_json::to_value(&note).unwrap_or_default(),
+                        Duration::from_secs(30),
+                    )
+                    .await;
+                tracing::warn!(
+                    task_id = %entry.task_id,
+                    "[Transfer] 载荷超护栏：诚实标记 over_limit（不截断不丢弃）"
+                );
+            }
+            Err(e) => {
+                // 留 pending 重试；attempts 记账 + 退避调度（15s
+                // 起步指数爬升、10 分钟封顶）+ 日志降频（裁决⑪）。
+                entry.state = "pending".into();
+                entry.attempts = entry.attempts.saturating_add(1);
+                entry.last_error = Some(e.clone());
+                let backoff = push_backoff_secs(entry.attempts);
+                entry.next_retry_at = Some(
+                    (chrono::Local::now() + chrono::Duration::seconds(backoff as i64)).to_rfc3339(),
+                );
+                let _ = self.write_entry_at(&dir, &entry);
+                if entry.attempts <= PUSH_WARN_QUIET_AFTER
+                    || entry.attempts.is_multiple_of(PUSH_WARN_EVERY)
+                {
                     tracing::warn!(
                         task_id = %entry.task_id,
-                        "[Transfer] 载荷超护栏：诚实标记 over_limit（不截断不丢弃）"
+                        attempt = entry.attempts,
+                        next_retry_in_secs = backoff,
+                        "[Transfer] 推送失败（保留重试）: {e}"
                     );
-                }
-                Err(e) => {
-                    // 留 pending 重试；attempts 记账 + 退避调度（15s
-                    // 起步指数爬升、10 分钟封顶）+ 日志降频（裁决⑪）。
-                    entry.state = "pending".into();
-                    entry.attempts = entry.attempts.saturating_add(1);
-                    entry.last_error = Some(e.clone());
-                    let backoff = push_backoff_secs(entry.attempts);
-                    entry.next_retry_at = Some(
-                        (chrono::Local::now() + chrono::Duration::seconds(backoff as i64))
-                            .to_rfc3339(),
-                    );
-                    let _ = self.write_entry_at(&dir, &entry);
-                    if entry.attempts <= PUSH_WARN_QUIET_AFTER
-                        || entry.attempts % PUSH_WARN_EVERY == 0
-                    {
-                        tracing::warn!(
-                            task_id = %entry.task_id,
-                            attempt = entry.attempts,
-                            next_retry_in_secs = backoff,
-                            "[Transfer] 推送失败（保留重试）: {e}"
-                        );
-                    }
                 }
             }
         }

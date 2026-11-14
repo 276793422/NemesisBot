@@ -102,6 +102,7 @@ impl Cluster {
             &self.task_manager,
             task_id,
             ok,
+            ROUTE_RECORDED_CAP,
         );
     }
 
@@ -117,7 +118,15 @@ impl Cluster {
         let task_manager = Arc::clone(&self.task_manager);
         self.task_manager
             .set_route_record_fn(Arc::new(move |task_id, ok| {
-                record_route_outcome_core(&stats, &recorded, &node_id, &task_manager, task_id, ok);
+                record_route_outcome_core(
+                    &stats,
+                    &recorded,
+                    &node_id,
+                    &task_manager,
+                    task_id,
+                    ok,
+                    ROUTE_RECORDED_CAP,
+                );
             }));
     }
 
@@ -1128,20 +1137,46 @@ impl Cluster {
     }
 }
 
+/// 负载感知路由去重集：set + 插入序队列双账。满 `cap` 时**按序逐出最老一条**
+/// （2026-11-14 审查发现 #1：旧实现满 cap 即 `clear()` 全清，把仍在活跃窗口
+/// 内的其他任务去重记录一并冲掉——重复回调（送达重试/恢复轮询重放）再次
+/// 穿过闸门 → 同任务双计、成功率失真；10 万 cap 下高频任务集里逐出路径
+/// 触发即伤害一批，不是只影响最老那条）。
+#[derive(Default)]
+pub(super) struct RouteRecordedSet {
+    seen: std::collections::HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl RouteRecordedSet {
+    /// 去重插入：已存在返回 false（记账闸拒绝）；不存在则先按序逐出最老
+    /// 条（若已满 cap）再插入，返回 true。
+    pub(super) fn insert_evicting_oldest(&mut self, task_id: &str, cap: usize) -> bool {
+        if !self.seen.insert(task_id.to_string()) {
+            return false;
+        }
+        if self.seen.len() > cap
+            && let Some(old) = self.order.pop_front()
+        {
+            self.seen.remove(&old);
+        }
+        self.order.push_back(task_id.to_string());
+        true
+    }
+}
+
 fn record_route_outcome_core(
     stats: &Mutex<std::collections::HashMap<String, RoutePeerStats>>,
-    recorded: &Mutex<std::collections::HashSet<String>>,
+    recorded: &Mutex<RouteRecordedSet>,
     node_id: &str,
     task_manager: &Arc<TaskManager>,
     task_id: &str,
     ok: bool,
+    cap: usize,
 ) {
     {
         let mut recorded = recorded.lock();
-        if recorded.len() >= ROUTE_RECORDED_CAP {
-            recorded.clear();
-        }
-        if !recorded.insert(task_id.to_string()) {
+        if !recorded.insert_evicting_oldest(task_id, cap) {
             return;
         }
     }
@@ -1547,12 +1582,23 @@ pub(super) struct ClusterPeerResolver {
 ///
 /// 判定 = **端口全匹配** 且（主机为回环 或 主机在本机 IP 集合内）。
 /// 同机多节点（cluster-uat / 本地双实例）靠端口区分——裸 IP 判定会把
-/// 合法同机对端误杀。`host` 允许携带端口（取 host 部分）。
+/// 合法同机对端误杀。`host` 允许携带端口（取 host 部分；IPv6 带端口的
+/// `[::1]:8080` 取括号内——2026-11-14 审查发现 #3：旧实现 `split(':').next()`
+/// 对该形态取到 `[`，IPv6 自投递防护失效；裸 IPv6（≥2 个冒号）整体即主机）。
 pub(crate) fn is_self_endpoint(host: &str, port: u16, own_port: u16, own_ips: &[String]) -> bool {
     if port != own_port {
         return false;
     }
-    let host_only = host.split(':').next().unwrap_or(host);
+    let host_only = if let Some(rest) = host.strip_prefix('[') {
+        match rest.find(']') {
+            Some(end) => &rest[..end],
+            None => rest,
+        }
+    } else if host.matches(':').count() > 1 {
+        host
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
     if let Ok(ip) = host_only.parse::<std::net::IpAddr>()
         && ip.is_loopback()
     {

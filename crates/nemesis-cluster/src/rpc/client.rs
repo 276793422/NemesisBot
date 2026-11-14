@@ -375,6 +375,10 @@ pub struct RpcClient {
     /// 打真插件，测试注入 LocalDialer 直连本地 TCP）。宿主在装配漫游身份后
     /// 注入；`None` = 拨到 `iroh:` 地址诚实报错（不黑洞）。
     roaming_dialer: RwLock<Option<Arc<dyn crate::roaming::plugin_bridge::RoamingDialer>>>,
+    /// iroh 漫游会话池（长连接 + 心跳保活 + 断线重连；见
+    /// [`super::roaming_pool`]）。iroh 臂帧交换全部经池——同目标请求
+    /// 复用同一连接，不再逐请求拨号。
+    roaming_pool: Arc<super::roaming_pool::RoamingSessionPool>,
     /// b（三期）：mandate 签名器（gateway 装配期注入一次）。
     /// `None` = 不签名（sign_enabled=false 或密钥不可用）——出站 payload 与
     /// 旧版逐字节一致（开关即回滚）。RwLock 因装配晚于构造（同 bridge_transport）。
@@ -398,6 +402,7 @@ impl RpcClient {
             warn_gate: crate::discovery::AnnounceWarnGate::with_cooldown(Duration::from_secs(60)),
             bridge_transport: RwLock::new(None),
             roaming_dialer: RwLock::new(None),
+            roaming_pool: Arc::new(super::roaming_pool::RoamingSessionPool::new()),
             mandate_signer: RwLock::new(None),
         }
     }
@@ -420,6 +425,9 @@ impl RpcClient {
 
     /// Set the authentication token.
     pub fn set_auth_token(&self, token: String) {
+        // 池后台（心跳 ping / 重连拨号）同源喂 token（装配序可能先于
+        // set_roaming_dialer 到达，独立存放）。
+        self.roaming_pool.set_token(&token);
         *self.auth_token.lock() = Some(token);
     }
 
@@ -448,12 +456,21 @@ impl RpcClient {
 
     /// 注入漫游拨号出口（QUIC 插件化）。
     /// 注入后 `iroh:<node_id_hex>` 形态地址走插件 QUIC 叠加层（桥 loopback
-    /// 交接）；未注入时拨到 `iroh:` 地址诚实报错。
+    /// 交接）；未注入时拨到 `iroh:` 地址诚实报错。同时喂会话池后台
+    /// （心跳/重连拨号）并拉起心跳循环（幂等）。
     pub fn set_roaming_dialer(
         &self,
         dialer: Arc<dyn crate::roaming::plugin_bridge::RoamingDialer>,
     ) {
-        *self.roaming_dialer.write() = Some(dialer);
+        *self.roaming_dialer.write() = Some(dialer.clone());
+        self.roaming_pool.set_dialer(dialer);
+    }
+
+    /// 配置漫游会话心跳间隔（秒；0=关）。config.cluster.json
+    /// `roaming_heartbeat_interval_secs`；装配期调用，循环每 tick 现读
+    /// （测试可在 `set_roaming_dialer` 前注入小值驱动心跳场景）。
+    pub fn set_roaming_heartbeat_interval(&self, secs: u64) {
+        self.roaming_pool.set_heartbeat_interval(secs);
     }
 
     /// b：注入 mandate 签名器（gateway 装配期；重复调用 = 覆盖）。
@@ -993,25 +1010,23 @@ impl RpcClient {
     /// iroh 叠加层帧交换（`iroh:<node_id_hex>`
     /// 地址；QUIC 插件化）。
     ///
-    /// 拨号走 [`crate::roaming:plugin_bridge::RoamingDialer`]（生产 BridgeDialer
-    /// 经桥打插件——插件 iroh 拨号 + loopback 一次性监听；测试可注入
-    /// LocalDialer）。拿到 loopback 端口后 `TcpStream::connect(127.0.0.1:port)`
-    /// 帧协议照跑：同一 [`wire_from_request`] 转换、同一 AEAD token 语义
+    /// 帧交换走会话池（[`super::roaming_pool`]）：同目标请求复用池内
+    /// `RoamingConn`（长连接——QUIC 握手 + 打洞只付一次），池缺失才拨号
+    /// （per-addr 互斥 + 双重检查，并发只拨一次）。同一 AEAD token 语义
     /// （[`RoamingConn`] 帧内加解密，帧格式字节一致）、同一
     /// [`Frame::decode_response`] 解析与 RemoteError 提升。拨号限时
     /// 10s（插件 DIAL_TIMEOUT）+ loopback connect 余量，下限 `io_timeout`；
     /// 单次帧读写限时 `io_timeout`（外层 tokio timeout 承担——黑洞对端
-    /// 不会挂住调用）。拨号成功后链路中途失败 best-effort `dialer.close`
-    /// 收半开连接。
+    /// 不会挂住调用）。语义映射与旧按请求拨号形态逐字对齐：
+    /// 拨号/发送失败 → Connection（可重拨重发）；recv/decode 失败 →
+    /// ResponseLost（帧已写出，禁止同请求重发——BUG-20261109-004 语义）。
+    /// 连接级失败由池摘会话 + 后台重连（心跳保活见 [`super::roaming_pool`]）。
     async fn roaming_connect_and_send(
         &self,
         addr: &str,
         request: &RPCRequest,
         io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
-        use crate::roaming::bridge::RoamingConn;
-        use tokio::time::timeout;
-
         let dialer = self.roaming_dialer.read().clone().ok_or_else(|| {
             RpcClientError::Connection(format!(
                 "iroh 地址 {addr} 需要漫游拨号出口（roaming 插件已装载但本节点未装配漫游身份，\
@@ -1019,85 +1034,44 @@ impl RpcClient {
             ))
         })?;
 
-        // 拨号（插件 iroh connect + loopback 监听）。插件内拨号限时 10s，
-        // 叠 loopback TCP connect 余量；下限 io_timeout（重 LLM 调用场景
-        // 外层放宽时不被内层先卡死）。
-        let dial_budget = Duration::from_secs(10).max(io_timeout) + Duration::from_secs(5);
-        let (port, conn_id) = timeout(dial_budget, dialer.dial(addr))
-            .await
-            .map_err(|_| RpcClientError::Connection(format!("iroh dial timeout to {}", addr)))?
-            .map_err(|e| RpcClientError::Connection(format!("iroh connect to {}: {}", addr, e)))?;
-
-        // loopback 交接：帧协议照跑（AEAD token 语义与 TCP 路径同源——同一
-        // auth_token，同一派生）。
-        let stream = match timeout(
-            Duration::from_secs(5),
-            tokio::net::TcpStream::connect(("127.0.0.1", port)),
-        )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                dialer.close(conn_id); // 半开兜底（插件侧整条 QUIC 连接关闭）
-                return Err(RpcClientError::Connection(format!(
-                    "iroh loopback 交接失败（port {port}）: {e}"
-                )));
-            }
-            Err(_) => {
-                dialer.close(conn_id);
-                return Err(RpcClientError::Connection(format!(
-                    "iroh loopback 交接超时（port {port}）"
-                )));
-            }
-        };
-        let (read_half, write_half) = stream.into_split();
-        let token = self.auth_token.lock().clone().unwrap_or_default();
-        let mut mc = RoamingConn::new(write_half, read_half, &token);
-
         let wire = wire_from_request(request);
-        let json_bytes =
+        let wire_bytes =
             serde_json::to_vec(&wire).map_err(|e| RpcClientError::Serialization(e.to_string()))?;
-        let send_res = timeout(io_timeout, mc.send_frame(&json_bytes)).await;
-        if matches!(send_res, Err(_) | Ok(Err(_))) {
-            dialer.close(conn_id);
+        let token = self.auth_token.lock().clone().unwrap_or_default();
+
+        let outcome = self
+            .roaming_pool
+            .exchange(addr, wire_bytes, io_timeout, dialer, &token)
+            .await;
+
+        match outcome {
+            super::roaming_pool::PoolExchange::Ok(resp_bytes) => {
+                let response: RPCResponse = match Frame::decode_response(&resp_bytes) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // 2026-11-14 审查发现 #8 延续：decode 失败 = 协议
+                        // 流失准，连接已不可信——池侧本次交换失败已摘会话
+                        // （连接级失败统一摘除 + 后台重连），此臂按
+                        // ResponseLost 不重发。
+                        return Err(RpcClientError::ResponseLost(format!(
+                            "decode response from {addr}: {e}"
+                        )));
+                    }
+                };
+                if let Some(ref err) = response.error {
+                    tracing::error!(
+                        addr = addr,
+                        request_id = %request.id,
+                        error = %err,
+                        "[RpcClient] Remote error response (iroh path)",
+                    );
+                    return Err(RpcClientError::RemoteError(err.clone()));
+                }
+                Ok(response)
+            }
+            super::roaming_pool::PoolExchange::Broken(e) => Err(RpcClientError::Connection(e)),
+            super::roaming_pool::PoolExchange::Lost(e) => Err(RpcClientError::ResponseLost(e)),
         }
-        send_res
-            .map_err(|_| RpcClientError::Connection(format!("iroh send timeout to {}", addr)))?
-            .map_err(|e| RpcClientError::Connection(format!("iroh send to {}: {}", addr, e)))?;
-
-        tracing::debug!(
-            addr = addr,
-            request_id = %request.id,
-            "[RpcClient] iroh RPC request sent, waiting for response"
-        );
-
-        let recv_res = timeout(io_timeout, mc.recv_frame()).await;
-        if matches!(recv_res, Err(_) | Ok(Err(_))) {
-            dialer.close(conn_id);
-        }
-        let resp_bytes = recv_res
-            .map_err(|_| {
-                // 帧已写出（与 TCP 路径同门）：recv 失败按 ResponseLost，
-                // 不给上层「未送达」错觉触发同请求重发。
-                RpcClientError::ResponseLost(format!("iroh recv timeout from {}", addr))
-            })?
-            .map_err(|e| RpcClientError::ResponseLost(format!("iroh recv from {}: {}", addr, e)))?;
-
-        let response: RPCResponse = Frame::decode_response(&resp_bytes).map_err(|e| {
-            RpcClientError::ResponseLost(format!("decode response from {}: {}", addr, e))
-        })?;
-
-        if let Some(ref err) = response.error {
-            tracing::error!(
-                addr = addr,
-                request_id = %request.id,
-                error = %err,
-                "[RpcClient] Remote error response (iroh path)",
-            );
-            return Err(RpcClientError::RemoteError(err.clone()));
-        }
-
-        Ok(response)
     }
 
     /// Synchronous send-and-receive on a blocking thread.
