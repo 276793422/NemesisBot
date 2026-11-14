@@ -528,7 +528,11 @@ pub struct GitHubSourceConfig {
     pub name: String,
     #[serde(default)]
     pub repo: String,
-    #[serde(default)]
+    /// BUG-20261114-034：缺省收敛 true——与 nemesis-skills::types::GitHubSourceConfig
+    /// （运行时面 `default_true`）及出厂模板显式值一致。旧 derive 零值使手写极简
+    /// 源条目（缺 enabled 键）Dashboard 显示停用而运行时注册；且 typed save 会把
+    /// 解析出的 false 物化回盘，下次 gateway 重启翻转运行时行为（源被关）。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub branch: String,

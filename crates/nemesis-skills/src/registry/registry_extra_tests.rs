@@ -10,6 +10,14 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// BUG-20261114-034：RegistryConfig 缺省启用 ModelScope（与 Dashboard 面收敛）。
+/// 只测单一注册表/开关的 from_config 用例用它隔离掉缺省注册，保持计数断言精准。
+fn isolated_default_config() -> RegistryConfig {
+    let mut c = RegistryConfig::default();
+    c.modelscope.enabled = false;
+    c
+}
+
 // ============================================================
 // Helper mock registries
 // ============================================================
@@ -492,7 +500,7 @@ fn test_from_config_with_disabled_modelscope() {
 
 #[test]
 fn test_from_config_with_disabled_clawhub() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.clawhub.enabled = false;
     let manager = RegistryManager::from_config(config);
     assert!(manager.registries().is_empty());
@@ -502,7 +510,7 @@ fn test_from_config_with_disabled_clawhub() {
 fn test_from_config_multi_source_overrides_legacy() {
     // When github_sources has entries AND github.enabled is true,
     // multi-source takes precedence (legacy skipped)
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     config.github_sources.push(TypesGitHubSourceConfig {
         name: "multi".to_string(),
@@ -524,7 +532,7 @@ fn test_from_config_multi_source_overrides_legacy() {
 
 #[test]
 fn test_from_config_legacy_only_when_no_multi_source() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();

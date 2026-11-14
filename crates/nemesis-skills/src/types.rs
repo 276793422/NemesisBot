@@ -256,7 +256,12 @@ pub struct RegistryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchCacheConfig {
     /// Whether the cache is enabled.
-    #[serde(default)]
+    /// BUG-20261114-034：缺省收敛 true——与 nemesis-config::SkillsSearchCacheConfig
+    /// （Dashboard 面）及出厂模板显式值一致。旧缺省 false 使同一份
+    /// config.skills.json 双解析面答案分裂：运行时搜索缓存静默关、UI 显示开。
+    /// 双路径对齐：字段缺省 fn 与 Default impl 必须同答（同 sections/agents.rs
+    /// DiagnosticsLoopConfig 家族纪律）。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Maximum number of cache entries (default: 50).
     #[serde(default = "default_cache_max_size")]
@@ -269,7 +274,7 @@ pub struct SearchCacheConfig {
 impl Default for SearchCacheConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             max_size: 50,
             ttl_secs: 300,
         }
@@ -285,14 +290,28 @@ fn default_cache_ttl() -> u64 {
 }
 
 /// ModelScope registry configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelScopeConfig {
     /// Whether the ModelScope registry is enabled.
-    #[serde(default)]
+    /// BUG-20261114-034：缺省收敛 true——与 nemesis-config::SkillsModelScopeConfig
+    /// （Dashboard 面）及出厂模板显式值一致。旧 derive 零值使同一份
+    /// config.skills.json 双解析面答案分裂：运行时 ModelScope 源静默不注册
+    /// （registry.rs `if config.modelscope.enabled`）、UI 显示已启用。
+    /// 双路径对齐：字段缺省 fn 与 Default impl 必须同答。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// Timeout in seconds (0 = default 30s).
     #[serde(default)]
     pub timeout_secs: u64,
+}
+
+impl Default for ModelScopeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_secs: 0,
+        }
+    }
 }
 
 /// ClawHub registry configuration.

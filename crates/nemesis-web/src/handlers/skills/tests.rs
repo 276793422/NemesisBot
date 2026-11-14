@@ -360,7 +360,11 @@ fn write_clawhub_config(ws: &std::path::Path, server_uri: &str, enabled: bool) {
             "base_url": server_uri,
             "convex_url": server_uri,
             "convex_site_url": server_uri,
-        }
+        },
+        // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——
+        // 本 helper 的意图是「wiremock 限定的 ClawHub 单源」，显式关掉 ModelScope
+        // 保证测试密闭（不打真实 modelscope.cn）。
+        "modelscope": { "enabled": false }
     });
     std::fs::write(
         ws.join("config/config.skills.json"),

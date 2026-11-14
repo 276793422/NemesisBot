@@ -1111,8 +1111,16 @@ async fn test_skills_source_toggle_unknown() {
 #[tokio::test]
 async fn test_skills_search_no_sources_message() {
     // No sources configured → returns message prompting to add a source.
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证「无源」管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.skills.json"),
+        r#"{"modelscope":{"enabled":false}}"#,
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
 
     let data = serde_json::json!({ "query": "anything" });
