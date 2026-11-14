@@ -958,7 +958,11 @@ async function onFileLinkClick(ev: MouseEvent) {
       path,
       session_id: effectiveSid.value || undefined,
     })
-    if (res?.action === 'reveal') {
+    // 存在性分级（2026-11-14）：祖先目录回退产物 exists=false（文件未
+    // 命中、已打开最近存在祖先目录）——warn 注记，不冒充成功。
+    if (res?.exists === false) {
+      toast.warn(`文件未找到（${res?.path ?? path}），已打开最接近的目录`)
+    } else if (res?.action === 'reveal') {
       toast.info('该文件类型不支持直接打开，已在文件管理器中定位')
     } else if (res?.kind === 'dir') {
       toast.success('已在文件管理器中打开目录')
@@ -2131,7 +2135,7 @@ function fileLinkMenuItems(t: EventTarget | null) {
   return [
     {
       label: '复制路径',
-      title: '复制链接指向的路径原文',
+      title: '复制解析后的绝对路径（相对/跨根链接按会话根与项目目录解析）',
       run: () => void copyLinkPath(path),
     },
     {
@@ -2142,12 +2146,58 @@ function fileLinkMenuItems(t: EventTarget | null) {
   ]
 }
 
+// 剪贴板写入（2026-11-14 B4 根修）：navigator.clipboard 仅 secure context
+// （HTTPS/localhost）——LAN HTTP 部署恒 undefined 或 NotAllowedError，
+// 此前复制路径在该形态下必败。隐藏 textarea + execCommand('copy') 回退
+// 是无 HTTPS 依赖的通路（execCommand 虽标记废弃，剪贴板场景浏览器仍
+// 全量保留）。
+async function writeClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // secure context 但权限被拒（iframe/用户设置等）→ 落 execCommand 回退
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+// 复制路径（2026-11-14 B3 根修）：先 fs.resolve 解析成绝对路径（与
+// 打开/定位同一解析阶梯——相对/跨根/越界判定同源），再复制。此前直接
+// 复制 data-path 原文（相对串），粘进资源管理器打不开。exists=false =
+// 祖先回退产物（文件未找到），warn 注记不冒充成功。
 async function copyLinkPath(path: string) {
   try {
-    await navigator.clipboard.writeText(path)
-    toast.success('已复制路径')
-  } catch {
-    toast.error('复制失败：剪贴板不可用')
+    const res = await request('fs', 'resolve', {
+      path,
+      session_id: effectiveSid.value || undefined,
+    })
+    const abs: string = res?.path ?? path
+    if (await writeClipboard(abs)) {
+      if (res?.exists === false) {
+        toast.warn(`文件未找到，已复制其所在目录路径：${abs}`)
+      } else {
+        toast.success(`已复制路径：${abs}`)
+      }
+    } else {
+      toast.error('复制失败：剪贴板不可用')
+    }
+  } catch (e: any) {
+    toast.error(`复制失败：${e?.message ?? e}`)
   }
 }
 
@@ -2157,7 +2207,9 @@ async function revealLinkDir(path: string) {
       path,
       session_id: effectiveSid.value || undefined,
     })
-    if (res?.kind === 'dir') {
+    if (res?.exists === false) {
+      toast.warn(`文件未找到，已打开其所在目录：${res?.path ?? path}`)
+    } else if (res?.kind === 'dir') {
       toast.success('已在文件管理器中打开目录')
     } else {
       toast.success('已打开所在目录并选中文件')

@@ -113,6 +113,11 @@ pub mod release_fetch;
 // manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+// 系统文件管理器动作单一归宿（打开目录 / 定位选中文件 / 默认应用打开）
+// ——此前 projects/skills/sandbox 各一份 + fs 侧两份私有的收编点；Windows
+// 臂 = explorer spawn + AttachThreadInput 激活阶梯前台看门（设计演进与
+// COM 弃用实证见 shell_open 模块头注）。
+pub mod shell_open;
 // 第 4 步：桌面级 VM 管理面（`vm` feature——命令族全走 VmBridge，
 // feature 本体零依赖，见 handlers/vm.rs 头注）。
 pub mod selfupdate;

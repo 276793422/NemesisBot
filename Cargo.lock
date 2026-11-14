@@ -3960,6 +3960,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -4383,6 +4384,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "ed25519-dalek",
+ "nemesis-config",
  "nemesis-security",
  "nemesis-types",
  "nemesis-utils",
@@ -4416,6 +4418,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4621,6 +4624,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "windows-sys 0.59.0",
  "wiremock",
  "zip",
 ]

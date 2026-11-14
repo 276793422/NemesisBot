@@ -400,20 +400,13 @@ impl SkillsHandler {
 
     fn open_dir(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
         let skill_dir = Self::resolve_skill_dir(workspace, name)?;
-        let path = skill_dir.to_string_lossy().to_string();
-        #[cfg(target_os = "windows")]
-        std::process::Command::new("explorer")
-            .arg(&path)
-            .spawn()
-            .ok();
-        #[cfg(target_os = "macos")]
-        std::process::Command::new("open").arg(&path).spawn().ok();
-        #[cfg(target_os = "linux")]
-        std::process::Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .ok();
-        Ok(Some(serde_json::json!({ "opened": true, "path": path })))
+        // 单一归宿（2026-11-14 收编）：此前三平台 `.ok()` 吞错——spawn 失败
+        // 也回 opened:true（假成功）。改走 shell_open::open_dir 诚实返错，
+        // 前端 SkillsView 已有失败 toast 契约（try/catch + toast.error）。
+        crate::handlers::shell_open::open_dir(&skill_dir)?;
+        Ok(Some(
+            serde_json::json!({ "opened": true, "path": skill_dir.to_string_lossy() }),
+        ))
     }
 
     fn uninstall(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {

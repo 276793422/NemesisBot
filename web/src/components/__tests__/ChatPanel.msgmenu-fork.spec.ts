@@ -302,4 +302,90 @@ describe('ChatPanel 文件链接右键贡献项', () => {
     cm.unmount()
     w.unmount()
   })
+
+  // 2026-11-14 复制路径解析化（B3）：复制的是 fs.resolve 解析后的绝对
+  // 路径（与打开/定位同一解析阶梯），不是 data-path 原文。
+  it('点「复制路径」→ fs.resolve 带 session_id + 剪贴板收解析后绝对路径', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    requestMock.mockResolvedValue({ path: 'C:/resolved/reports/a.md', kind: 'file', exists: true })
+
+    const link = w.find('a.file-link')
+    link.element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    const copy = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('复制路径'),
+    ) as HTMLElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('fs', 'resolve', {
+      path: 'C:/ws/reports/a.md',
+      session_id: 's1',
+    })
+    expect(writeText).toHaveBeenCalledWith('C:/resolved/reports/a.md')
+    cm.unmount()
+    w.unmount()
+  })
+
+  it('exists=false（祖先回退）→ 复制所在目录路径 + warn 注记', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    requestMock.mockResolvedValue({ path: 'C:/resolved', kind: 'dir', exists: false })
+
+    const link = w.find('a.file-link')
+    link.element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    const copy = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('复制路径'),
+    ) as HTMLElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledWith('C:/resolved')
+    const toasts = useToast().toasts
+    const last = toasts[toasts.length - 1]
+    expect(last.type, JSON.stringify(toasts)).toBe('warn')
+    expect(last.message).toContain('C:/resolved')
+    cm.unmount()
+    w.unmount()
+  })
+
+  // B4：LAN HTTP 部署 navigator.clipboard 缺席/被拒 → execCommand 隐藏
+  // textarea 回退通路（jsdom 无 execCommand 实现即抛错 → 诚实「复制失败」，
+  // 不炸不假成功）。
+  it('clipboard 缺席 → 回退通路失败面诚实报错（不再恒败无提示）', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    requestMock.mockResolvedValue({ path: 'C:/resolved/reports/a.md', kind: 'file', exists: true })
+
+    const link = w.find('a.file-link')
+    link.element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    const copy = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('复制路径'),
+    ) as HTMLElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    const toasts = useToast().toasts
+    const last = toasts[toasts.length - 1]
+    expect(last.type, JSON.stringify(toasts)).toBe('error')
+    cm.unmount()
+    w.unmount()
+  })
 })
