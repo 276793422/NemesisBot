@@ -67,6 +67,16 @@ impl ExportConfig {
     }
 }
 
+/// Registry/入参 name 的落盘安全形态（slug + 空 slug `_unnamed_` 占位回落）。
+///
+/// 规则单一真相源 = `forge::slug_or_placeholder`（注释承载完整威胁模型：
+/// 注册表是磁盘态数据，历史遗留的中毒名流进 exporter 的读写路径仍可越出
+/// forge/目标目录；合法名 slugify 恒等零行为差异；占位段把写路径关在
+/// forge 子目录内）。本别名保留调用点语义可读性。
+fn slugified_artifact_name(name: &str) -> String {
+    crate::forge::slug_or_placeholder(name)
+}
+
 /// Exporter writes artifact content to the appropriate workspace directory.
 pub struct Exporter {
     config: ExportConfig,
@@ -80,10 +90,12 @@ impl Exporter {
 
     /// Get the target directory for an artifact type.
     pub fn artifact_dir(&self, kind: ArtifactKind, name: &str) -> PathBuf {
+        // name 在使用点再次 slug（slugified_artifact_name 注释=威胁模型）
+        let dir_name = slugified_artifact_name(name);
         match kind {
-            ArtifactKind::Skill => self.config.forge_dir.join("skills").join(name),
-            ArtifactKind::Script => self.config.forge_dir.join("scripts").join(name),
-            ArtifactKind::Mcp => self.config.forge_dir.join("mcp").join(name),
+            ArtifactKind::Skill => self.config.forge_dir.join("skills").join(dir_name),
+            ArtifactKind::Script => self.config.forge_dir.join("scripts").join(dir_name),
+            ArtifactKind::Mcp => self.config.forge_dir.join("mcp").join(dir_name),
         }
     }
 
@@ -94,12 +106,18 @@ impl Exporter {
         name: &str,
         content: &str,
     ) -> std::io::Result<PathBuf> {
+        // Script 主文件名 = name 原文的 slug 形态；目录解析传**原始 name**——
+        // artifact_dir 内部 slug+回落自洽。不传 safe_name：回落值 `_unnamed_`
+        // 不是 slugify 不动点（首 `_` 会被吞），二次 slug 会漂移成 `unnamed`，
+        // 目录段与主文件名段就不一致了（与 export_artifact 的
+        // artifact_dir(kind, &artifact.name) 同构）。
+        let safe_name = slugified_artifact_name(name);
         let dir = self.artifact_dir(kind, name);
         tokio::fs::create_dir_all(&dir).await?;
 
         let path = match kind {
             ArtifactKind::Skill => dir.join("SKILL.md"),
-            ArtifactKind::Script => dir.join(name),
+            ArtifactKind::Script => dir.join(&safe_name),
             ArtifactKind::Mcp => dir.join("server.py"),
         };
 
@@ -122,21 +140,38 @@ impl Exporter {
         target_dir: &Path,
     ) -> std::io::Result<PathBuf> {
         // Create target subdirectory: {targetDir}/{name}-{version}/
-        let export_dir = target_dir.join(format!("{}-{}", artifact.name, artifact.version));
+        // name 在使用点再次 slug（slugified_artifact_name 注释=威胁模型）。
+        // version 同为路径段且来自磁盘态注册表——历史遗留毒版本
+        // （`../x` 等）经 increment_version 原样携带分隔符传播，`{name}-
+        // {version}` 直拼 join 是 CLI forge export 的越界写面。围栏复用
+        // `valid_skill_dir_name`（合法版本 "1.0"/"1.0.2" 恒等通过，零行为
+        // 差异）；毒版本诚实报错拒绝导出该条目（export_all 计 failed），
+        // 不静默改写版本号误导消费方。
+        if let Err(msg) = crate::forge::valid_skill_dir_name(&artifact.version) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "artifact {} has an unsafe version segment: {msg}",
+                    artifact.id
+                ),
+            ));
+        }
+        let safe_name = slugified_artifact_name(&artifact.name);
+        let export_dir = target_dir.join(format!("{}-{}", safe_name, artifact.version));
         tokio::fs::create_dir_all(&export_dir).await?;
 
         let mut files = Vec::new();
 
         // Write artifact main content
-        let main_filename = match artifact.kind {
-            ArtifactKind::Skill => "SKILL.md",
-            ArtifactKind::Script => &artifact.name,
-            ArtifactKind::Mcp => "server.py",
+        let main_filename: String = match artifact.kind {
+            ArtifactKind::Skill => "SKILL.md".to_string(),
+            ArtifactKind::Script => safe_name.clone(),
+            ArtifactKind::Mcp => "server.py".to_string(),
         };
 
-        let main_path = export_dir.join(main_filename);
+        let main_path = export_dir.join(&main_filename);
         tokio::fs::write(&main_path, &artifact.content).await?;
-        files.push(main_filename.to_string());
+        files.push(main_filename);
 
         // Copy project structure files from artifact directory
         let artifact_dir = self.artifact_dir(artifact.kind, &artifact.name);
@@ -219,11 +254,17 @@ impl Exporter {
         name: &str,
         content: &str,
     ) -> std::io::Result<PathBuf> {
+        // name 过统一 slug+占位规则（forge::slug_or_placeholder）。本 API 当前
+        // 生产无调用（死 API，第三轮复查留痕），但 API 存活一天就是明天的
+        // 调用面——写面不依赖调用方消毒（`../../evil` 直拼 join 可在 workspace
+        // 外落目录写文件；export() 的 M 教训同源）。合法名 slugify 恒等，
+        // `-forge` 后缀语义不变。
+        let slug = slugified_artifact_name(name);
         let dir = self
             .config
             .workspace
             .join("skills")
-            .join(format!("{}-forge", name));
+            .join(format!("{}-forge", slug));
         tokio::fs::create_dir_all(&dir).await?;
         let path = dir.join("SKILL.md");
         tokio::fs::write(&path, content).await?;
