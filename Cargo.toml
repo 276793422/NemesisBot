@@ -81,7 +81,11 @@ members = [
 # 装配槽区（slots/）：专有/商业子系统槽位一律住这里（未来新增定制不再进根目录）。
 # 槽内 impl/（git submodule）自带独立 workspace，宿主构建经 build.rs 静态直链
 # 探测消费（不走 cargo 依赖图）——exclude 防其被工作区解析/吸收。
-exclude = ["slots/taiwei"]
+# 3rd/mxc（2026-11-14 git submodule，microsoft/mxc 钉 4e522623）同理：mxc-sdk
+# 自带独立 workspace（在 src/Cargo.toml），exclude 防其 `workspace = true` 继承
+# 被解析到本 workspace（缺 cidr 等键直接报错）——path 依赖从其自身 workspace
+# 取 workspace.dependencies。
+exclude = ["slots/taiwei", "3rd/mxc"]
 
 [workspace.package]
 version = "0.1.0"

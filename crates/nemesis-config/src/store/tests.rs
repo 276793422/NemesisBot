@@ -85,6 +85,40 @@ fn executor_persistent_defaults_converge_across_serde_and_default_paths() {
     assert_eq!(e2.persistent.idle_shutdown_secs, 300);
 }
 
+/// （executor.mxc，2026-11-14 MXC 护栏后端）：serde 双路径收敛回归钉——
+/// executor 段缺 mxc 键 = network="open"（derive 的空串是非法档位）+
+/// egress_allow 空；显式段缺字段 = 字段级 default 生效；backend 值域
+/// "mxc" 可解析（诚实拒绝在选型层，serde 层 String 透传）。
+#[test]
+fn executor_mxc_defaults_converge_across_serde_and_default_paths() {
+    // 路径 1：结构体级 Default。
+    let d = ExecutorSeparationConfig::default();
+    assert_eq!(d.mxc.network, "open", "derive Default 会给空串——非合法档位");
+    assert!(d.mxc.egress_allow.is_empty());
+
+    // 路径 2：executor 段存在但无 mxc 键（老 config.json 形态）。
+    let e: ExecutorSeparationConfig =
+        serde_json::from_str(r#"{ "enabled": true }"#).expect("deserialize");
+    assert_eq!(
+        e.mxc.network, "open",
+        "缺键必须落 open——与 native 现状零差异"
+    );
+    assert!(e.mxc.egress_allow.is_empty());
+
+    // 路径 3：显式 mxc 段，缺字段走字段级 default，显式值覆盖。
+    let e2: ExecutorSeparationConfig = serde_json::from_str(
+        r#"{ "mxc": { "network": "locked", "egress_allow": ["10.0.0.0/8:443"] } }"#,
+    )
+    .expect("deserialize");
+    assert_eq!(e2.mxc.network, "locked");
+    assert_eq!(e2.mxc.egress_allow, vec!["10.0.0.0/8:443".to_string()]);
+
+    // 路径 4：backend="mxc" 值可反序列化（typed save round-trip 不吞）。
+    let e3: ExecutorSeparationConfig =
+        serde_json::from_str(r#"{ "backend": "mxc" }"#).expect("deserialize");
+    assert_eq!(e3.backend, "mxc");
+}
+
 #[test]
 fn handle_sees_update_live() {
     let (_dir, store) = tmp_store();

@@ -44,6 +44,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
+
       # 平台环境指纹（设备归因纪律，见 ci.yml rust-check 同名步骤注释）
       - name: Environment fingerprint
         shell: bash
@@ -66,6 +72,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
+
       # 环境指纹（设备归因，见 cargo-deny 同名步骤注释）
       - name: Environment fingerprint
         shell: bash
@@ -86,6 +98,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       # 环境指纹（设备归因，见 cargo-deny 同名步骤注释）
       - name: Environment fingerprint

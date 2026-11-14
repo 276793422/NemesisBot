@@ -304,7 +304,9 @@ if exist "certs\root_cert.der" (
     echo   WARN certs\root_cert.der not found - no compile-time anchor, self-update refuses ^(fail-closed^)
 )
 
-cargo build --release --features git-https
+REM sandbox-mxc: 非默认 feature（2026-11-14 审查三轮 #5——mxc-sdk 的 ureq
+REM native-tls 依赖破 Linux rustls-only 纪律），发行构建在此显式带回全量。
+cargo build --release --features git-https,sandbox-mxc
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed!
@@ -316,7 +318,7 @@ REM vm-display pass (plugin-vm host loader; plugin-vm package = single distribut
 REM dependency of the whole VM stack, packaged exe must carry the display loader.
 REM Incremental: only the nemesisbot crate recompiles; failure = keep default exe, non-fatal)
 echo   Building nemesisbot with vm-display (plugin-vm loader)...
-cargo build --release -p nemesisbot --features vm-display,git-https
+cargo build --release -p nemesisbot --features vm-display,git-https,sandbox-mxc
 if errorlevel 1 (
     echo   WARN vm-display build failed, keeping default exe ^(VM display relay unavailable^)
 )

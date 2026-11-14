@@ -91,6 +91,23 @@ impl ExecutorIsolationPolicy {
         self.read_bool("sandbox")
     }
 
+    /// `executor.backend == "mxc"` 现读（2026-11-14 MXC 护栏后端）。persistent
+    /// 常驻执行体暂不支持 MXC 后端（per-call 通道全量覆盖 MXC）——runtime
+    /// 的 spawn_session 据此 fail-closed 拒绝常驻槽（上层回落 per-call，不
+    /// 静默改道 Sandboxie/裸跑）。
+    pub fn backend_is_mxc(&self) -> bool {
+        nemesis_utils::fsutil::read_config_string(&self.config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("executor")?
+                    .get("backend")?
+                    .as_str()
+                    .map(|s| s == "mxc")
+            })
+            .unwrap_or(false)
+    }
+
     /// `executor.strict` 现读。
     pub fn strict_required(&self) -> bool {
         self.read_bool("strict")
@@ -243,6 +260,112 @@ pub fn build_executor_channel_with_extra_roots(
         }
     };
 
+    // ── MXC 护栏后端选择（2026-11-14，docs/PLAN/2026-11-14_mxc-sandbox-integration.md）──
+    // **装配期一次读**（重启生效语义，D6——与 restrict_child 同点同源）：
+    // backend="mxc" 时 Sandboxie 盒不挂（will_attach 强制 false）、DACL hook
+    // 不注入——mxc 是独立后端，不与 Sandboxie/DACL 叠。默认 "auto"/"native"
+    // 语义 = 原生方案（本块零参与，字节不变）。
+    //
+    // ⚠ feature 关 = 装配层面视同 native（backend_mxc 恒 false）：用户 config
+    // 残留 "mxc" 但 feature 被裁时，Sandboxie 盒照常挂、用户态链照常走——
+    // 「诚实降级」是回落原生全量路径，不是退化成无盒 stdio（真机自检发现，
+    // 2026-11-14；否则裁剪构建 + strict 会误拒一切调用）。
+    #[cfg(feature = "sandbox-mxc")]
+    let backend_mxc = config_handle
+        .read()
+        .executor
+        .as_ref()
+        .is_some_and(|ec| ec.backend == "mxc");
+    #[cfg(not(feature = "sandbox-mxc"))]
+    let backend_mxc = false;
+    #[cfg(not(feature = "sandbox-mxc"))]
+    if config_handle
+        .read()
+        .executor
+        .as_ref()
+        .is_some_and(|ec| ec.backend == "mxc")
+    {
+        tracing::warn!(
+            "[Executor] executor.backend=\"mxc\" 但 sandbox-mxc feature 未编译——\
+             本次启动回落原生路径（native），`sandbox-mxc` feature 缺席 = 诚实降级"
+        );
+    }
+    #[cfg(feature = "sandbox-mxc")]
+    if backend_mxc {
+        // 选型警告落到装配日志（UI 警告另有确认框+页面常驻横幅，D5）。
+        tracing::warn!(
+            "[Executor] executor.backend=\"mxc\"（护栏非沙盒）：{} \
+             引擎授权内直写真盘、无 Sandboxie 写虚拟化反悔层；引爆场景请切回 native",
+            nemesis_sandbox::mxc_backend::MXC_WARNING
+        );
+        // 总闸语义澄清（审查发现 2026-11-14）：mxc 只在 executor.sandbox=true
+        // 时生效（sandbox 是 Layer 2 总闸）——闸关 = 护栏不启用，静默 = 撒谎。
+        let sandbox_on = config_handle
+            .read()
+            .executor
+            .as_ref()
+            .is_some_and(|ec| ec.sandbox);
+        if !sandbox_on {
+            tracing::warn!(
+                "[Executor] executor.backend=\"mxc\" 但 executor.sandbox=false \
+                 （Layer 2 总闸关）——MXC 护栏不会启用，工具调用走无容器 stdio；\
+                 要启用护栏请把沙箱开关打开并重启"
+            );
+        }
+    }
+    // MXC spawn hook（feature 门控；backend_mxc=false 恒 None = 现状字节不变）。
+    // hook 内部逐调用 live 读 executor.mxc 策略面（network/egress——策略可
+    // config.json 热调，与 sandbox/strict 同链路）+ 探测缓存（ready 才放行；
+    // unavailable → Err fail-closed——用户显式选了 mxc，静默降级 = 撒谎）。
+    #[cfg(feature = "sandbox-mxc")]
+    let mxc_hook: Option<nemesis_agent::MxcSpawnHook> = if !backend_mxc {
+        None
+    } else {
+        let hook_handle = config_handle.clone();
+        Some(Arc::new(move || {
+            // 防御性复核（装配期已钉 mxc 才注入本 hook；config 不该翻回，
+            // 翻回 = 走 Ok(None) 落回平台原生臂——与「重启生效」语义一致）。
+            let cfg = hook_handle.read();
+            let backend_now = cfg.executor.as_ref().map(|ec| ec.backend.clone());
+            if backend_now.as_deref() != Some("mxc") {
+                return Ok(None);
+            }
+            let mxc_cfg = cfg.executor.as_ref().map(|ec| ec.mxc.clone());
+            drop(cfg);
+            let (network, egress_allow) = match mxc_cfg {
+                Some(sec) => (sec.network, sec.egress_allow),
+                None => ("open".to_string(), Vec::new()),
+            };
+            // 探测（进程内缓存；ready 才放行，unavailable → Err 透传原因）。
+            let report = nemesis_sandbox::mxc_backend::probe_mxc_cached(false);
+            if report.status != "ready" {
+                return Err(report.detail);
+            }
+            let spawn_fn: nemesis_agent::MxcSpawnFn = Arc::new(move |req| {
+                let spec = nemesis_sandbox::mxc_backend::MxcSpawnSpec {
+                    exe: req.exe,
+                    env_pairs: req.env_pairs,
+                    working_dir: req.working_dir,
+                    home: req.home,
+                    extra_roots: req.extra_roots,
+                    request_line: req.request_line,
+                    timeout: req.timeout,
+                };
+                nemesis_sandbox::mxc_backend::spawn_contained(spec, &network, &egress_allow).map(
+                    |out| nemesis_agent::MxcSpawnOutcome {
+                        response: out.response,
+                        exit_code: out.exit_code,
+                        stderr_tail: out.stderr_tail,
+                    },
+                )
+            });
+            Ok(Some(spawn_fn))
+        }))
+    };
+    #[cfg(not(feature = "sandbox-mxc"))]
+    #[allow(unused_variables)]
+    let mxc_hook: Option<nemesis_agent::MxcSpawnHook> = None;
+
     // Windows 盒缺位时的用户态 ACL 降级选型——**显式
     // `executor.backend = "acl"`** 且 AclBackend 本机可用才可顶（子进程
     // engage 同判据 opt-in 自装）。auto/未知值/不可用 → false 维持现状裸
@@ -286,7 +409,10 @@ pub fn build_executor_channel_with_extra_roots(
     // = 现状），`sandbox` feature 裁剪时 `config_handle` 仍在但本机无沙盒面，
     // 同样不注入。
     #[cfg(all(feature = "sandbox", windows))]
-    let dacl_hook: Option<nemesis_agent::DaclSpawnHook> = {
+    let dacl_hook: Option<nemesis_agent::DaclSpawnHook> = if backend_mxc {
+        // backend="mxc"：DACL 定向档不注入（mxc 独立后端，不与 DACL 叠）。
+        None
+    } else {
         let hook_handle = config_handle.clone();
         let ws_root = workspace_dir.to_path_buf();
         // 令牌缓存：OnceLock 语义 = 只铸一次（成功与失败都定格）；错误串
@@ -415,12 +541,17 @@ pub fn build_executor_channel_with_extra_roots(
     // userland_fallback 钩子（盒缺位的 stdio 通道才咨询，见 契约与
     // nemesis-sandbox backend 模块决策表）。读代码者勿把「显式 acl 被盒
     // 压制」当 bug——降级选型语义本就如此。
+    // **`executor.backend="mxc"` 抢盒**（2026-11-14）：mxc 是独立后端，
+    // 选中时 Sandboxie 盒不挂（装配期 backend_mxc 强制 will_attach=false）。
+    // sbie_ready 随元组带出：盒不挂分支（backend=mxc）的日志要如实标注
+    // Sandboxie 就绪与否——该状态下「not ready」是预期形态而非问题。
     #[cfg(feature = "sandbox")]
-    let (start_exe, will_attach): (std::path::PathBuf, bool) = {
+    let (start_exe, will_attach, sbie_ready): (std::path::PathBuf, bool, bool) = {
         let paths = nemesis_sandbox::SandboxPaths::new(home);
         // 就绪三元组（Start.exe 在场 + SbieSvc Running + 引擎归属）单一真
         // 相源 = SandboxPaths::engine_ready（② 常驻盒监督器共用）。
-        (paths.start_exe(), paths.engine_ready())
+        let (start_exe, ready) = (paths.start_exe(), paths.engine_ready());
+        (start_exe, ready && !backend_mxc, ready)
     };
 
     // ── strict gate, per platform (see fn docs) ─────────────────────────
@@ -440,6 +571,17 @@ pub fn build_executor_channel_with_extra_roots(
         Arc::new(move || {
             if !strict_now() {
                 return Ok(());
+            }
+            // backend="mxc"：strict 的合格沙盒 = MXC 探测通过（ProbeOutput
+            // 权威；缓存与执行路径同源）。
+            #[cfg(feature = "sandbox-mxc")]
+            if backend_mxc {
+                let report = nemesis_sandbox::mxc_backend::probe_mxc_cached(false);
+                return if report.status == "ready" {
+                    Ok(())
+                } else {
+                    Err(format!("MXC 探测不可用：{}", report.detail))
+                };
             }
             // 构造时没挂上 Start.exe：这个通道物理上进不了盒（哪怕引擎现在
             // 已就绪）——严格模式拒绝并要求重启（重建通道）。
@@ -485,6 +627,16 @@ pub fn build_executor_channel_with_extra_roots(
         Arc::new(move || {
             if !strict_now() {
                 return Ok(());
+            }
+            // backend="mxc"：strict 的合格沙盒 = MXC 探测通过（跨平台同义）。
+            #[cfg(feature = "sandbox-mxc")]
+            if backend_mxc {
+                let report = nemesis_sandbox::mxc_backend::probe_mxc_cached(false);
+                return if report.status == "ready" {
+                    Ok(())
+                } else {
+                    Err(format!("MXC 探测不可用：{}", report.detail))
+                };
             }
             match nemesis_sandbox::backend::detect_backend(allow_network_now()) {
                 // 只关心存在性（detect 不返回 Unavailable 后端）；名字留给日志层。
@@ -536,25 +688,35 @@ pub fn build_executor_channel_with_extra_roots(
             };
             return Ok(Some(Arc::new(channel)));
         }
-        tracing::warn!(
-            "[Executor] Sandboxie not ready (Start.exe exists={}, SbieSvc running={}). \
-             executor.sandbox is still honoured live via the ConfigStore probe, but \
-             without Start.exe the box is not applied{}.",
-            start_exe.exists(),
-            matches!(
-                nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
-                nemesis_sandbox::status::ServiceState::Running
-            ),
-            if nemesis_config::load_live()
-                .map(|c| c.executor.is_some_and(|e| e.strict))
-                .unwrap_or(false)
-            {
-                " — executor.strict is ON: sandboxed tool calls will be REFUSED until \
-                 the engine is started and the agent restarted"
-            } else {
-                ""
-            }
-        );
+        if backend_mxc {
+            // 盒不挂是 backend="mxc" 的预期装配（独立后端，护栏由 MXC 容器
+            // 承担）——无论 Sandboxie 就绪与否都不是问题，info 如实标注。
+            tracing::info!(
+                "[Executor] executor.backend=\"mxc\"：Sandboxie 盒不挂（独立后端，\
+                 护栏由 MXC 容器承担；Sandboxie 引擎就绪={sbie_ready}，本后端不\
+                 依赖 Sandboxie）"
+            );
+        } else {
+            tracing::warn!(
+                "[Executor] Sandboxie not ready (Start.exe exists={}, SbieSvc running={}). \
+                 executor.sandbox is still honoured live via the ConfigStore probe, but \
+                 without Start.exe the box is not applied{}.",
+                start_exe.exists(),
+                matches!(
+                    nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                    nemesis_sandbox::status::ServiceState::Running
+                ),
+                if nemesis_config::load_live()
+                    .map(|c| c.executor.is_some_and(|e| e.strict))
+                    .unwrap_or(false)
+                {
+                    " — executor.strict is ON: sandboxed tool calls will be REFUSED until \
+                     the engine is started and the agent restarted"
+                } else {
+                    ""
+                }
+            );
+        }
     }
     #[cfg(not(feature = "sandbox"))]
     {
@@ -582,15 +744,25 @@ pub fn build_executor_channel_with_extra_roots(
         .with_userland_fallback({
             #[cfg(all(feature = "sandbox", windows))]
             {
-                userland_fallback
+                // backend="mxc"：用户态 ACL 降级链不参与（独立后端）。
+                if backend_mxc {
+                    Arc::new(|| false)
+                } else {
+                    userland_fallback
+                }
             }
             #[cfg(not(all(feature = "sandbox", windows)))]
             {
                 Arc::new(|| false)
             }
         });
-    // DACL 定向档 spawn hook（cfg 门控同 userland_fallback；未挂 = 现状
-    // 字节不变）。
+    // MXC 护栏后端 spawn hook（backend="mxc" 装配期注入；其他后端 None =
+    // 现状字节不变）。
+    #[cfg(feature = "sandbox-mxc")]
+    let channel = match mxc_hook {
+        Some(hook) => channel.with_mxc_spawn(hook),
+        None => channel,
+    };
     #[cfg(all(feature = "sandbox", windows))]
     let channel = match dacl_hook {
         Some(hook) => channel.with_dacl_spawn(hook),

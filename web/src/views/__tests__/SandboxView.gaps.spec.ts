@@ -279,3 +279,73 @@ describe('SandboxView 文件同步（files tab）', () => {
     expect(vm.formatSize(2097152)).toBe('2.0M')
   })
 })
+
+// ════════ MXC 横幅回归（2026-11-14 三审轮 UI 实测双横幅缺陷） ════════
+// 缺陷史：父视图 TAB 行下常驻横幅 + MxcPanel 内横幅在 MXC TAB 叠两层同
+// 文案卡（真实浏览器截图发现，vitest 未覆盖 MXC 面是该缺陷漏网根因）。
+describe('SandboxView MXC 警告横幅（D5 单横幅）', () => {
+  const MXC_WARNING = '【当前 MXC 版本是 4e522623，目前功能是护栏功能，非沙盒】'
+
+  function mxcOverview(over: Record<string, unknown> = {}) {
+    return windowsOverview({
+      executor: {
+        enabled: true, sandbox: true, strict: false, allow_network: false,
+        backend: 'mxc',
+        mxc: { network: 'open', egress_allow: [] },
+      },
+      mxc: {
+        compiled: true,
+        probe: { status: 'ready', platform_backend: 'processcontainer', detail: 'ok' },
+        warning: MXC_WARNING,
+        version: '4e522623',
+        config: { network: 'open', egress_allow: [] },
+      },
+      ...over,
+    })
+  }
+
+  async function gotoMxcTab(over: Record<string, unknown> = {}) {
+    requestMock.mockImplementation((_m, cmd) => cmd === 'overview' ? Promise.resolve(mxcOverview(over)) : defaultImpl(_m, cmd, {}))
+    const w = await mountView()
+    await w.find('[data-test="tab-mxc"]').trigger('click')
+    await flushPromises()
+    return w
+  }
+
+  it('backend=mxc + MXC TAB：横幅恰好一张（面板内横幅 hide，父横幅承担）', async () => {
+    const w = await gotoMxcTab()
+    expect(w.findAll('[data-test="mxc-active-warning"]')).toHaveLength(1)
+    expect(w.find('[data-test="mxc-active-warning"]').text()).toContain(MXC_WARNING)
+    // 面板内部横幅被 hide-warning 抑制——两处同渲染即缺陷
+    expect(w.findAll('[data-test="mxc-warning-card"]')).toHaveLength(0)
+    // 面板本体照常渲染（状态卡 + 策略卡）
+    expect(w.find('[data-test="mxc-status-card"]').exists()).toBe(true)
+    expect(w.find('[data-test="mxc-config-card"]').exists()).toBe(true)
+  })
+
+  it('backend=mxc + SandboxIE TAB：常驻横幅可见（护栏活跃感知）且单张', async () => {
+    requestMock.mockImplementation((_m, cmd) => cmd === 'overview' ? Promise.resolve(mxcOverview()) : defaultImpl(_m, cmd, {}))
+    const w = await mountView()
+    expect(w.findAll('[data-test="mxc-active-warning"]')).toHaveLength(1)
+    expect(w.findAll('[data-test="mxc-warning-card"]')).toHaveLength(0)
+  })
+
+  it('native 后端浏览 MXC TAB：横幅仍渲染（D5 MXC 页必须有警告）', async () => {
+    const w = await gotoMxcTab({
+      executor: {
+        enabled: true, sandbox: true, strict: false, allow_network: false,
+        backend: 'auto',
+        mxc: { network: 'open', egress_allow: [] },
+      },
+    })
+    expect(w.findAll('[data-test="mxc-active-warning"]')).toHaveLength(1)
+    // 策略区置灰（native 模式只读）
+    expect((w.find('[data-test="mxc-network"]').attributes('disabled') !== undefined)).toBe(true)
+  })
+
+  it('feature 裁剪构建（compiled:false 无 warning 字段）：空文案横幅不渲染，置灰卡出现', async () => {
+    const w = await gotoMxcTab({ mxc: { compiled: false } })
+    expect(w.findAll('[data-test="mxc-active-warning"]')).toHaveLength(0)
+    expect(w.find('[data-test="mxc-not-compiled"]').exists()).toBe(true)
+  })
+})

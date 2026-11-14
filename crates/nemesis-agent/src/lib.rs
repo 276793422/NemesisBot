@@ -171,8 +171,8 @@ pub use memory::ConversationMemory;
 pub use registry::AgentRegistry;
 pub use remote_executor_tool::{
     DaclSpawnFn, DaclSpawnHook, DaclSpawnOutcome, DaclSpawnRequest, ExecutorChannel, MOVE_TOOLS,
-    PersistentCallError, PersistentExecutor, PersistentRoute, RemoteExecutorTool, StrictGate,
-    UserlandFallback,
+    MxcSpawnFn, MxcSpawnHook, MxcSpawnOutcome, MxcSpawnRequest, PersistentCallError,
+    PersistentExecutor, PersistentRoute, RemoteExecutorTool, StrictGate, UserlandFallback,
 };
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;

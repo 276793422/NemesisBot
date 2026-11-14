@@ -45,6 +45,17 @@ fn user_profile() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// MxcProbeReport → WSAPI probe 段（overview + mxc_probe 两臂共用序列化
+/// 形态；审查三轮 #10 去重——字段清单漂移只能发生在一处）。
+#[cfg(feature = "sandbox-mxc")]
+fn mxc_probe_json(report: &nemesis_sandbox::mxc_backend::MxcProbeReport) -> serde_json::Value {
+    serde_json::json!({
+        "status": report.status,
+        "platform_backend": report.platform_backend,
+        "detail": report.detail,
+    })
+}
+
 /// Spawn `nemesisbot sandbox <cmd>` (self-elevating) with NEMESISBOT_HOME set,
 /// await it. Generous timeout for UAC + download + KmdUtil install.
 async fn run_cli_subcmd(home: &std::path::Path, cmd: &str) -> Result<(), String> {
@@ -230,6 +241,7 @@ impl ModuleHandler for SandboxHandler {
             "set_config",
             "self_test",
             "denials.list",
+            "mxc_probe",
         ]
     }
 
@@ -393,6 +405,25 @@ impl ModuleHandler for SandboxHandler {
                 };
                 #[cfg(not(target_os = "windows"))]
                 let dacl_probe: serde_json::Value = serde_json::Value::Null;
+                // MXC 护栏后端段（2026-11-14）：编译态 + 探测报告 + 警告文案
+                // （D5 单一真相源——前端不硬编码）+ 当前策略面（D8 配置区）。
+                // feature 关 = compiled:false（前端据型渲染置灰「未编译」卡，D12）。
+                #[cfg(feature = "sandbox-mxc")]
+                let mxc_section = {
+                    let report = nemesis_sandbox::mxc_backend::probe_mxc_cached(false);
+                    serde_json::json!({
+                        "compiled": true,
+                        "probe": mxc_probe_json(&report),
+                        "warning": nemesis_sandbox::mxc_backend::MXC_WARNING,
+                        "version": nemesis_sandbox::mxc_backend::MXC_VERSION,
+                        "config": {
+                            "network": executor.mxc.network,
+                            "egress_allow": executor.mxc.egress_allow,
+                        },
+                    })
+                };
+                #[cfg(not(feature = "sandbox-mxc"))]
+                let mxc_section = serde_json::json!({ "compiled": false });
                 Ok(Some(serde_json::json!({
                     "platform": platform,
                     "executor": {
@@ -400,6 +431,7 @@ impl ModuleHandler for SandboxHandler {
                         "sandbox": executor.sandbox,
                         "allow_network": executor.allow_network,
                         "strict": executor.strict,
+                        "backend": executor.backend,
                         "acl": {
                             "dacl": executor.acl.dacl,
                             "strict": executor.acl.strict,
@@ -407,9 +439,26 @@ impl ModuleHandler for SandboxHandler {
                         },
                     },
                     "dacl": dacl_probe,
+                    "mxc": mxc_section,
                     "backend_probe": backend_probe,
                     "ready": ready,
                 })))
+            }
+            // MXC 强制重探（D13「重新检测」按钮后端）：绕进程内缓存 fresh
+            // 一发。feature 关 = compiled:false（诚实，不假装探测）。
+            "mxc_probe" => {
+                #[cfg(feature = "sandbox-mxc")]
+                {
+                    let report = nemesis_sandbox::mxc_backend::probe_mxc_cached(true);
+                    Ok(Some(serde_json::json!({
+                        "compiled": true,
+                        "probe": mxc_probe_json(&report),
+                        "warning": nemesis_sandbox::mxc_backend::MXC_WARNING,
+                        "version": nemesis_sandbox::mxc_backend::MXC_VERSION,
+                    })))
+                }
+                #[cfg(not(feature = "sandbox-mxc"))]
+                Ok(Some(serde_json::json!({ "compiled": false })))
             }
             "check" => {
                 let (sz_available, sz_source) =
@@ -633,6 +682,61 @@ impl ModuleHandler for SandboxHandler {
                         Some(n as u32)
                     }
                 };
+                // MXC 护栏后端三键（2026-11-14）：backend 值域 loud 校验
+                // （auto/sandboxie/acl/mxc——与 nemesis-config 选型同词表）；
+                // mxc_network ∈ {open, locked}；egress_allow 逐条非空 + 带
+                // '/'（CIDR 形态，与 mxc_backend 构造同校验，双保险）。
+                let backend = match d.get("backend") {
+                    None => None,
+                    Some(v) => {
+                        let s = v.as_str().ok_or_else(|| {
+                            format!("set_config field 'backend' must be a string, got: {v}")
+                        })?;
+                        if !matches!(s, "auto" | "sandboxie" | "acl" | "mxc") {
+                            return Err(format!(
+                                "set_config field 'backend' 未知值 '{s}'（合法 auto|sandboxie|acl|mxc）"
+                            ));
+                        }
+                        Some(s.to_string())
+                    }
+                };
+                let mxc_network = match d.get("mxc_network") {
+                    None => None,
+                    Some(v) => {
+                        let s = v.as_str().ok_or_else(|| {
+                            format!("set_config field 'mxc_network' must be a string, got: {v}")
+                        })?;
+                        if !matches!(s, "open" | "locked") {
+                            return Err(format!(
+                                "set_config field 'mxc_network' 未知值 '{s}'（合法 open|locked）"
+                            ));
+                        }
+                        Some(s.to_string())
+                    }
+                };
+                let mxc_egress_allow = match d.get("mxc_egress_allow") {
+                    None => None,
+                    Some(v) => {
+                        let arr = v.as_array().ok_or_else(|| {
+                            format!(
+                                "set_config field 'mxc_egress_allow' must be an array, got: {v}"
+                            )
+                        })?;
+                        let mut out = Vec::new();
+                        for item in arr {
+                            let s = item.as_str().ok_or_else(|| {
+                                format!("set_config field 'mxc_egress_allow' entries must be strings, got: {item}")
+                            })?;
+                            if s.is_empty() || !s.contains('/') {
+                                return Err(format!(
+                                    "set_config field 'mxc_egress_allow' 条目 '{s}' 不是合法 CIDR（期望 `cidr` 或 `cidr:port`）"
+                                ));
+                            }
+                            out.push(s.to_string());
+                        }
+                        Some(out)
+                    }
+                };
                 if enabled.is_none()
                     && sandbox.is_none()
                     && allow_network.is_none()
@@ -640,9 +744,12 @@ impl ModuleHandler for SandboxHandler {
                     && acl_dacl.is_none()
                     && acl_strict.is_none()
                     && acl_max_files.is_none()
+                    && backend.is_none()
+                    && mxc_network.is_none()
+                    && mxc_egress_allow.is_none()
                 {
                     return Err(
-                        "set_config requires at least one of { enabled, sandbox, allow_network, strict, acl_dacl, acl_strict: bool } or { acl_max_files: u32 }"
+                        "set_config requires at least one of { enabled, sandbox, allow_network, strict, acl_dacl, acl_strict: bool } or { acl_max_files: u32 } or { backend, mxc_network: string } or { mxc_egress_allow: string[] }"
                             .into(),
                     );
                 }
@@ -668,6 +775,15 @@ impl ModuleHandler for SandboxHandler {
                     if let Some(v) = acl_max_files {
                         e.acl.max_files = v;
                     }
+                    if let Some(v) = backend {
+                        e.backend = v;
+                    }
+                    if let Some(v) = mxc_network {
+                        e.mxc.network = v;
+                    }
+                    if let Some(v) = mxc_egress_allow {
+                        e.mxc.egress_allow = v;
+                    }
                 })?;
                 let now = current_executor(&home);
                 Ok(Some(serde_json::json!({
@@ -677,6 +793,11 @@ impl ModuleHandler for SandboxHandler {
                         "sandbox": now.sandbox,
                         "allow_network": now.allow_network,
                         "strict": now.strict,
+                        "backend": now.backend,
+                        "mxc": {
+                            "network": now.mxc.network,
+                            "egress_allow": now.mxc.egress_allow,
+                        },
                         "acl": {
                             "dacl": now.acl.dacl,
                             "strict": now.acl.strict,

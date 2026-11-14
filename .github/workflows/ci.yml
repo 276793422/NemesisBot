@@ -49,6 +49,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
+
       # 平台环境指纹（2026-10-12 设备归因纪律，所有测试 job 前置）：把分配到的
       # VM 完整身份落日志 + step summary，十个域：runner 身份+镜像波次
       # (ImageVersion)/OS build(UBR)/虚拟化+磁盘/CPU(型号/核数/基频/缓存)+算力
@@ -143,6 +149,16 @@ jobs:
       - name: Linux cross-platform smoke tests
         run: cargo test -p nemesis-types -p nemesis-config -p nemesis-bus
 
+      # MXC opt-in 门（2026-11-14 审查三轮 #5：sandbox-mxc 转非默认 feature 后，
+      # workspace 全量 check/clippy/nextest 不再覆盖 opt-in 编译面与 mxc 单测
+      # ——不设本步则「选了 MXC 就编不过/一改就 rot」无闸）。libssl-dev 为
+      # runner 镜像预装（mxc-sdk → ureq native-tls → openssl-sys 的 Linux 侧
+      # 代价；这也是它进不了默认构建的原因，见 nemesisbot/Cargo.toml 注记）。
+      - name: MXC opt-in feature gate (compile + unit tests)
+        run: |
+          cargo check -p nemesisbot --features sandbox-mxc
+          cargo test -p nemesis-sandbox --features mxc
+
       # 架构依赖矩阵门禁（扩展计划 T3/D7：分层规则 R1-R7 违规即红，
       # 防依赖倒流/越层直依赖——纯 cargo metadata 读图，秒级）
       - name: Architecture dependency gate
@@ -164,6 +180,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       # 环境指纹（设备归因，见 rust-check 同名步骤注释）
       - name: Environment fingerprint
@@ -247,6 +269,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       - name: Install Rust toolchain (rust-toolchain.toml 钉 stable)
         uses: dtolnay/rust-toolchain@stable
@@ -417,6 +445,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       # 环境指纹（设备归因，见 rust-check 同名步骤注释）——Windows 分片版
       - name: Environment fingerprint (Windows shard ${{ matrix.shard }})
@@ -605,6 +639,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
+
       # 皮肤 vitest 断言读 skins/bot/skin/structure.html 等骨架文件——只显式
       # 拉 skins（不能用 submodules: recursive，会连 docs 私有仓库一起拉，
       # runner 的 GITHUB_TOKEN 无权限 → Repository not found，daily-release
@@ -662,6 +702,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       - name: Environment fingerprint
         shell: bash

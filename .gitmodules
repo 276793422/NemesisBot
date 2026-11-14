@@ -9,3 +9,6 @@
 	path = slots/taiwei/impl
 	url = https://github.com/276793422/TaiWei.git
 	branch = main
+[submodule "3rd/mxc"]
+	path = 3rd/mxc
+	url = https://github.com/microsoft/mxc
