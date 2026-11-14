@@ -2978,6 +2978,89 @@ mod wave_a {
         );
     }
 
+    // 回归（BUG-20261115-020）：负价必须 loud 拒绝且不落条目——is_finite
+    // 只拒 NaN/±inf，`-5.0` 畅通落账 → usage 面板负美元、月度账偏移。
+    // 负价无合法计费语义（成本是可观测性数据，不存在返佣结算）；
+    // 计价层另有防御钳兜非 CLI 写路径（下载表/import/手改 JSON）。
+    #[tokio::test]
+    async fn prices_add_rejects_negative_base_prices() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        for (label, input, output) in [
+            ("negative input", -1.0, 2.0),
+            ("negative output", 1.0, -2.0),
+        ] {
+            let err = super::super::run_prices(
+                PricesAction::Add {
+                    model: "acme/neg".into(),
+                    input,
+                    output,
+                    cache_read: 0.0,
+                    cache_creation: 0.0,
+                    display: None,
+                    price_tiers: Vec::new(),
+                },
+                &th.home,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("不能为负"),
+                "{label} 必须 loud 拒绝：{err}"
+            );
+        }
+        // cache 价维度同样受校验（好 in/out + 负 cache_read）
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/neg2".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: -0.1,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: Vec::new(),
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("不能为负"), "负 cache_read：{err}");
+        assert!(
+            reopen_custom(&th.home).is_empty(),
+            "全部失败路径不得落任何条目"
+        );
+    }
+
+    // 同 BUG 阶梯面：阶梯价负值独立校验（parse_price_tiers 闸）。
+    #[tokio::test]
+    async fn prices_add_rejects_negative_tier_prices() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/neg-tier".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: vec!["200000:-3.0:9.0".into()],
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("阶梯价不能为负"),
+            "负阶梯价必须 loud 拒绝：{err}"
+        );
+        assert!(reopen_custom(&th.home).is_empty(), "失败路径不得落条目");
+    }
+
     #[tokio::test]
     async fn prices_add_with_tiers_persists_bad_spec_bails() {
         let _guard = crate::GLOBAL_STATE_LOCK

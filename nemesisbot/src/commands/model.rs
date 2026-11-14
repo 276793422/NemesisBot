@@ -1274,6 +1274,13 @@ fn parse_price_tiers(specs: &[String]) -> Result<Option<Vec<nemesis_data::PriceT
         if !(input_cost_per_million.is_finite() && output_cost_per_million.is_finite()) {
             anyhow::bail!("第 {} 条阶梯价须为有限数值", i + 1);
         }
+        // 负价 loud 拒（BUG-20261115-020）：负价无合法计费语义（成本是
+        // 可观测性数据，不存在返佣结算），落账即错账（usage 面板负美元、
+        // 月度账偏移）。与下方基础价负值校验同口径；计价层另有防御钳兜
+        // 非 CLI 写路径（下载/手改文件）。
+        if input_cost_per_million < 0.0 || output_cost_per_million < 0.0 {
+            anyhow::bail!("第 {} 条阶梯价不能为负", i + 1);
+        }
         tiers.push(nemesis_data::PriceTier {
             min_prompt_tokens,
             input_cost_per_million: Some(input_cost_per_million),
@@ -1409,15 +1416,23 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             if name.is_empty() {
                 anyhow::bail!("模型名不能为空");
             }
-            // 基础价四字段有限性校验——clap f64 解析接受
-            // "NaN"/"inf" 字面量，无校验时坏值直接落自定义层污染计价输出
+            // 基础价四字段有限性 + 非负校验——clap f64 解析接受
+            // "NaN"/"inf"/负数字面量，无校验时坏值直接落自定义层污染计价输出
             // （与下方 parse_price_tiers 的 is_finite 校验同函数族，此处对齐）。
-            if !(input.is_finite()
+            // 负价无合法计费语义（BUG-20261115-020）：落账即错账（usage
+            // 面板负美元、月度账偏移），loud 拒绝而非静默钳——显式输入的
+            // 意志错误必须响亮（stream CLI 非法值先例）。
+            let finite = input.is_finite()
                 && output.is_finite()
                 && cache_read.is_finite()
-                && cache_creation.is_finite())
-            {
+                && cache_creation.is_finite();
+            let non_negative =
+                input >= 0.0 && output >= 0.0 && cache_read >= 0.0 && cache_creation >= 0.0;
+            if !finite {
                 anyhow::bail!("价格须为有限数值（拒绝 NaN/±inf）");
+            }
+            if !non_negative {
+                anyhow::bail!("价格不能为负（计费域无负单价语义）");
             }
             let tiers = parse_price_tiers(&price_tiers)?;
             let tier_note = if tiers.is_some() {
