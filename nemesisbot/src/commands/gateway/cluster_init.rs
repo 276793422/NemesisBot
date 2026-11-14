@@ -759,6 +759,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let rc = rc.clone();
                     move |peer| rc.is_peer_online(peer).unwrap_or(true)
                 }));
+                // 推送并发上限注入（config.cluster.json 两键，缺省 8/2；
+                // 2026-11-14 审查发现 #4 队头阻塞根修——旧实现单循环串行，
+                // 一个离线目标的退避窗口把其他在线目标的条目全堵住）。
+                outbox.set_push_caps(
+                    cluster_app_cfg.outbox_push_concurrency,
+                    cluster_app_cfg.outbox_per_target_concurrency,
+                );
                 // /（看板项目档案 goal 合并批）：基线推送器装配——board.rs
                 // 派发链（dispatch_issue_core）消费；复用既有分块传输通路
                 //（begin/chunk/end，AEAD 鉴权）+ 同一 limit 热刷新 cell（
