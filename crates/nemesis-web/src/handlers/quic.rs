@@ -35,6 +35,7 @@ use nemesis_cluster::roaming::quic_config::resolved_quic;
 use nemesis_cluster::roaming::relay_info;
 use nemesis_plugin::roaming::RoamingPluginHandle;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 pub struct QuicHandler {
     _priv: (),
@@ -141,7 +142,8 @@ impl QuicHandler {
         enable: bool,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?.to_string();
-        relay_toggle_impl(ctx.state.quic_relay, &workspace, enable).await
+        let refresh = RELAY_CONFIG_REFRESH.get().map(|f| f.as_ref());
+        relay_toggle_impl(ctx.state.quic_relay, &workspace, enable, refresh).await
     }
 
     /// quic.registry.members：服务端全量名册（中继机视角，含 TTL 内全部
@@ -176,6 +178,26 @@ impl QuicHandler {
 
 // 插件调用辅助（同步 FFI 内 block_on 插件 runtime——宿主 spawn_blocking；
 // ok:false 展开与 nemesisbot roaming_plugin_loader::call_roaming 同源形态）
+
+// ---------------------------------------------------------------------------
+// 配置刷新钩子（2026-11-15 快照缺口修复面）
+// ---------------------------------------------------------------------------
+
+/// quic.relay.enable 拉起前刷新插件配置快照（gateway 装配注入）。roaming_start
+/// 校验/消费的是 roaming_init 时定格的快照，网关长跑期间页面保存的 relay 段
+/// 变更（token/端口/TLS）不经重灌就对插件不可见（快照空 token = token_missing
+/// 响亮拒启；快照非空改值 = 静默跑旧配置，更险——页面「重新开关即以新配置
+/// 生效」的既有承诺）。静态槽与 plugins_wasm `set_tool_sync_hook` 同款先例；
+/// gateway 装配无条件注入，闭包内插件未装载 = 诚实 no-op（开关保持
+/// 落盘-only 行为，requires_restart 诚实呈现）。
+static RELAY_CONFIG_REFRESH: OnceLock<Arc<dyn Fn() -> Result<(), String> + Send + Sync>> =
+    OnceLock::new();
+
+/// gateway 装配注入（幂等：OnceLock 首写为准）。闭包 = nemesisbot 侧
+/// `refresh_roaming_config`（init 幂等重入 = 刷新配置，插件 ABI 既定机制）。
+pub fn set_relay_config_refresh(f: Arc<dyn Fn() -> Result<(), String> + Send + Sync>) {
+    let _ = RELAY_CONFIG_REFRESH.set(f);
+}
 
 /// 单次插件调用：spawn_blocking + JSON 解析 + ok:false 展开。
 async fn plugin_call(
@@ -567,14 +589,24 @@ async fn relay_toggle_impl(
     handle: Option<RoamingPluginHandle>,
     workspace: &str,
     enable: bool,
+    refresh: Option<&(dyn Fn() -> Result<(), String> + Send + Sync)>,
 ) -> Result<Option<serde_json::Value>, String> {
     relay_config_save_impl(workspace, &serde_json::json!({ "enabled": enable }))?;
-    if let Some(h) = handle {
-        if enable {
-            plugin_call(h, "roaming_start", RoamingPluginHandle::start).await?;
-        } else {
-            plugin_call(h, "roaming_stop", RoamingPluginHandle::stop).await?;
+    if enable {
+        // 快照刷新先于拉起（2026-11-15 快照缺口修复）：roaming_start 校验/
+        // 消费 roaming_init 时定格的快照——网关长跑期间页面保存的新 relay
+        // 段（token/端口/TLS）不经重灌对插件永远不可见（快照空 token =
+        // token_missing 响亮拒启；快照非空改值 = 静默跑旧配置，更险）。
+        // 刷新失败 = 拉起中断；config 闸已落盘，修复后重开开关即重试
+        // （与「配置说了算」语义一致）。
+        if let Some(f) = refresh {
+            f().map_err(|e| format!("roaming_start: 配置刷新失败: {e}"))?;
         }
+        if let Some(h) = handle {
+            plugin_call(h, "roaming_start", RoamingPluginHandle::start).await?;
+        }
+    } else if let Some(h) = handle {
+        plugin_call(h, "roaming_stop", RoamingPluginHandle::stop).await?;
     }
     let (_, active, http_addr, quic_addr) = plugin_runtime_state(handle).await;
     relay_status_payload(workspace, active, http_addr, quic_addr)

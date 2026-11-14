@@ -1484,6 +1484,16 @@ pub(crate) async fn init_post_agent(
         info!("[Gateway] plugin_roaming handle injected into web server");
     }
 
+    // 中继配置刷新钩子（快照缺口 BUG 修复，2026-11-15 档案）：quic.relay.enable
+    // 开关拉起前把盘上最新 relay 段重灌插件快照（init 幂等重入）——否则页面
+    // 保存的 token/端口/TLS 对 roaming_start 永远不可见（快照定格于网关启动）。
+    // 钩子闭包内诚实 no-op：插件未装载时 refresh_roaming_config 回 Ok（开关
+    // 保持落盘-only 行为）；OnceLock 首写为准，网关进程内只注入一次。
+    let relay_refresh_cfg = crate::common::quic_config_path(&home);
+    nemesis_web::handlers::quic::set_relay_config_refresh(std::sync::Arc::new(move || {
+        crate::roaming_plugin_loader::refresh_roaming_config(&relay_refresh_cfg)
+    }));
+
     // Inject AgentLoop ref into web server for runtime model switching
     web_server.set_agent_loop(agent_loop_ref.clone());
     info!("[Gateway] AgentLoop ref injected into web server for model switching");
