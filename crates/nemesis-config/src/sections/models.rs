@@ -194,6 +194,12 @@ pub struct HardwareToolsConfig {
     pub i2c_deny_ranges: Vec<(u8, u8)>,
 }
 
+// SEC-002 Debug 脱敏宏（BUG-20261111-068 定义；BUG-20261114-063 起
+// 向 sections 兄弟模块开放——tools.web 搜索段 api_key 复用同一脱敏形态）。
+use super::channels::impl_redacted_debug;
+
+// 容器层 derive(Debug) 安全（BUG-20261114-063）：无凭据专字段，Debug
+// 递归进 brave/perplexity 走下方脱敏 impl。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebToolsConfig {
     #[serde(default)]
@@ -204,7 +210,9 @@ pub struct WebToolsConfig {
     pub perplexity: PerplexityConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// SEC-002 Debug 脱敏（BUG-20261114-063）：api_key = 搜索服务明文密钥，
+// derive(Debug) 会把明文带进 Config 顶层 derive(Debug) 递归面。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BraveConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -227,6 +235,11 @@ impl Default for BraveConfig {
     }
 }
 
+impl_redacted_debug!(BraveConfig {
+    plain { enabled, max_results }
+    secret { api_key }
+});
+
 // 注意：DuckDuckGoConfig 刻意**不**收敛双路径（排除项）——
 // 键缺席（derive false）与出厂模板的显式 `{enabled: false}` 一致；键在场但
 // enabled 缺席（字段级 true）表示用户主动配置该段=想启用。两路各服务各自
@@ -239,7 +252,8 @@ pub struct DuckDuckGoConfig {
     pub max_results: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// SEC-002 Debug 脱敏（BUG-20261114-063）：同 BraveConfig。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PerplexityConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -259,6 +273,11 @@ impl Default for PerplexityConfig {
         }
     }
 }
+
+impl_redacted_debug!(PerplexityConfig {
+    plain { enabled, max_results }
+    secret { api_key }
+});
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExecConfig {

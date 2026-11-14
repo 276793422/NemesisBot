@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 
 /// env 段：进程环境变量代理（gateway 启动时注入，重启生效）。
 /// 空串 = 不设置该变量（保持系统默认）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvProxyConfig {
     #[serde(default)]
     pub http_proxy: String,
@@ -37,11 +37,35 @@ pub struct EnvProxyConfig {
     pub no_proxy: String,
 }
 
+// SEC-002 Debug 脱敏（BUG-20261114-063）：三个代理 URL 可携带 userinfo
+// 凭据（http://user:pass@host:port——hyper-util from_env 与 reqwest
+// Proxy::all 直接消费），与 ModelConfig.proxy 同脱敏面（BUG-20261111-068
+// 口径）；no_proxy 是豁免主机列表（非凭据）原样输出。
+impl std::fmt::Debug for EnvProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvProxyConfig")
+            .field("no_proxy", &self.no_proxy)
+            .field("http_proxy", &crate::debug_secret_value(&self.http_proxy))
+            .field("https_proxy", &crate::debug_secret_value(&self.https_proxy))
+            .field("all_proxy", &crate::debug_secret_value(&self.all_proxy))
+            .finish()
+    }
+}
+
 /// selfupdate 段：更新下载链路专用代理（调用时读取，保存即生效）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfupdateProxyConfig {
     #[serde(default)]
     pub proxy: String,
+}
+
+// SEC-002 Debug 脱敏（BUG-20261114-063）：同 EnvProxyConfig（userinfo 面）。
+impl std::fmt::Debug for SelfupdateProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SelfupdateProxyConfig")
+            .field("proxy", &crate::debug_secret_value(&self.proxy))
+            .finish()
+    }
 }
 
 /// `config.proxy.json` 顶层（两 section 各存各的；半 schema 缺键容错——

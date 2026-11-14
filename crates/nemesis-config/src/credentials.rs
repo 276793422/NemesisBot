@@ -32,10 +32,24 @@ use serde::{Deserialize, Serialize};
 use crate::{ConfigError, Result};
 
 /// Parsed contents of `credentials.yaml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CredentialsFile {
     /// alias -> API key value.
     pub keys: BTreeMap<String, String>,
+}
+
+// SEC-002 Debug 脱敏（BUG-20261114-063）：keys 就是别名→明文 API key 账本
+// （本文件唯一的数据形态），derive(Debug) 会把全部明文 key 带进
+// Debug/panic/错误上下文日志。Debug 只报条目规模——别名与值都不落。
+impl std::fmt::Debug for CredentialsFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialsFile")
+            .field(
+                "keys",
+                &format_args!("<redacted: {} entries>", self.keys.len()),
+            )
+            .finish()
+    }
 }
 
 /// Result of `run_import` — what the migration did, for CLI output and tests.

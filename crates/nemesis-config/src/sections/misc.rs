@@ -4,6 +4,10 @@
 
 use super::*;
 
+// SEC-002 Debug 脱敏宏（BUG-20261111-068 定义；BUG-20261114-063 起向
+// sections 兄弟模块开放——bridge 段凭据结构复用同一脱敏形态）。
+use super::channels::impl_redacted_debug;
+
 /// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；M6 2026-10-27
 /// 整改批次五）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -210,6 +214,8 @@ impl Default for UiConfig {
 /// 反向桥配置（`config.json` 的 `bridge` 段；`#[serde(default)]` 每字段全可省）。
 /// 分服务端/客户端两侧：服务端 = 中继接入门（`--relay` 与正常启动共用）；
 /// 客户端 = 本机作为桥设备连远端中继服务端（goal：节点显示名 + 反向桥）。
+// derive(Debug) 保留：本结构无凭据专字段，Debug 递归进 server/client 走
+// 下方脱敏 impl（BUG-20261114-063）——容器层 derive 安全。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BridgeConfig {
@@ -220,7 +226,11 @@ pub struct BridgeConfig {
 }
 
 /// 服务端接入门配置。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+// SEC-002 Debug 脱敏（BUG-20261114-063）：token = 预共享钥匙的服务端半把，
+// derive(Debug) 会把明文带进 Debug/panic/错误上下文（Config 顶层
+// derive(Debug) 递归面）——走 impl_redacted_debug! 宏（BUG-20261111-068
+// 同款纪律）。
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BridgeServerConfig {
     /// 接入门 ws token（预共享钥匙的服务端半把；与桥客户端 `client.token`
@@ -231,7 +241,9 @@ pub struct BridgeServerConfig {
 }
 
 /// 客户端（桥设备）配置。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+// SEC-002 Debug 脱敏（BUG-20261114-063）：token（接入门钥匙）+
+// access_token（面板访问密码，只存本机）同脱敏面。
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BridgeClientConfig {
     /// 客户端总开关（false = 零行为变化，不连中继）。
@@ -246,6 +258,12 @@ pub struct BridgeClientConfig {
     /// 拒绝所有远程面板访问（fail-closed）。本地直连面板不受影响（两回事）。
     pub access_token: String,
 }
+
+impl_redacted_debug!(BridgeServerConfig { plain { } secret { token } });
+impl_redacted_debug!(BridgeClientConfig {
+    plain { enabled, relay_url }
+    secret { token, access_token }
+});
 
 /// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；L8。交互 shell 无法
 /// 逐命令审批——默认关闭，启用即接受「dashboard 登录用户=shell 信任级」
