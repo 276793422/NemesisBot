@@ -843,3 +843,70 @@ async fn test_search_three_layer_skips_empty_author_segment() {
     let results = reg.search("pdf", 10).await.unwrap();
     assert!(results.is_empty(), "empty-author path must be skipped");
 }
+
+// ============================================================
+// BUG-20261114-043：API URL 构造 percent-encoding（BUG-20261113-162
+// 横向漏点——fetch_repo_tree / search_two_layer 仍裸插值 repo/branch）
+// ============================================================
+
+#[tokio::test]
+async fn test_search_three_layer_branch_percent_encoded_in_tree_url() {
+    // 分支名可合法含 `#`（release#1 同族）：裸插值时 `#` 起.fragment——
+    // 请求路径只剩 `/repos/octo/skills/git/trees/feat`，`?recursive=1`
+    // 一并落入 fragment 丢失。修复后 = `/repos/octo/skills/git/trees/feat%23ure`，
+    // 且 api_base 尾斜杠归一（`{api}//repos/...` 双斜杠不再出现）。
+    let server = MockServer::start().await;
+    let mut cfg = three_layer_config("octo/skills");
+    cfg.branch = "feat#ure".to_string();
+    let mut reg = GitHubRegistry::from_source(&cfg);
+    reg.base_url = server.uri();
+    reg.set_github_api_url(&format!("{}/", server.uri()));
+
+    let body = r#"{
+        "tree": [
+            {"path": "skills/octo/pdf/SKILL.md", "type": "blob"}
+        ]
+    }"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/skills/git/trees/feat%23ure"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let results = reg.search("pdf", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(
+        reqs[0].url.path(),
+        "/repos/octo/skills/git/trees/feat%23ure"
+    );
+    assert_eq!(reqs[0].url.query(), Some("recursive=1"));
+}
+
+#[tokio::test]
+async fn test_search_two_layer_repo_percent_encoded_in_contents_url() {
+    // repo 段（owner/repo 形态）裸插值同族：`#` 切断 fragment——修复后
+    // = `/repos/octo/sk%23ills/contents/skills`。
+    let server = MockServer::start().await;
+    let mut reg = GitHubRegistry::from_source(&two_layer_api_config("octo/sk#ills"));
+    reg.base_url = server.uri();
+    reg.set_github_api_url(&server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/sk%23ills/contents/skills"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"[{"name":"pdf","type":"dir","path":"skills/pdf"}]"#),
+        )
+        .mount(&server)
+        .await;
+
+    let results = reg.search("pdf", 10).await.unwrap();
+    assert_eq!(results.len(), 1);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].url.path(), "/repos/octo/sk%23ills/contents/skills");
+}

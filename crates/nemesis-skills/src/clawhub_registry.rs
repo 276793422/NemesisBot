@@ -60,7 +60,10 @@ impl ClawHubRegistry {
                 // 同上：`{convex}/api/query` 路径 join。
                 convex_url.trim_end_matches('/').to_string()
             },
-            convex_site_url: convex_site_url.to_string(),
+            // BUG-20261114-043：第三字段同族补齐——162 轮归一漏了
+            // convex_site_url；`{site}/api/v1/download`（download_skill_zip
+            // 经 site_url()）join 对尾斜杠敏感。
+            convex_site_url: convex_site_url.trim_end_matches('/').to_string(),
             client: Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
@@ -287,10 +290,7 @@ impl ClawHubRegistry {
             )));
         }
 
-        let url = format!(
-            "https://raw.githubusercontent.com/openclaw/skills/main/skills/{}/{}/SKILL.md",
-            detail.owner.handle, slug
-        );
+        let url = raw_skill_md_url(&detail.owner.handle, slug);
 
         let resp = self
             .client
@@ -587,6 +587,20 @@ const MAX_ZIP_BODY_BYTES: u64 = 50 * 1024 * 1024;
 /// 比常见 3~10x、理论 >1000:1——炸弹条目靠本闸在撑爆磁盘前拒绝。正常
 /// 技能包（SKILL.md/脚本，KB 级条目）远低于此，不误伤。
 const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 200 * 1024 * 1024;
+
+/// GitHub raw SKILL.md 回落 URL 构造单点（BUG-20261114-043）。
+///
+/// owner.handle 是 Convex API 外部数据（未经 validate_skill_identifier
+/// 校验），`#`/`?`/空格裸插值会切断 fragment/query 指向错误资源——与
+/// [`crate::url_enc::raw_content_url`] 同族分段 percent-encoding。slug
+/// 在入口已过 validator，统一编码保持单点形态一致。
+fn raw_skill_md_url(owner: &str, slug: &str) -> String {
+    format!(
+        "https://raw.githubusercontent.com/openclaw/skills/main/skills/{}/{}/SKILL.md",
+        crate::url_enc::percent_encode_component(owner),
+        crate::url_enc::percent_encode_component(slug)
+    )
+}
 
 /// Extract a ZIP archive to a directory, flattening a single top-level directory if present.
 fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {

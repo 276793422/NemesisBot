@@ -409,10 +409,13 @@ impl GitHubRegistry {
 
     /// Search using GitHub Contents API (two-layer).
     async fn search_two_layer(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
+        // BUG-20261114-043：repo 段 percent-encoding + api_base 尾斜杠归一
+        // （BUG-20261113-162 横向漏点——同文件 raw URL 三处已修，API URL
+        // 两处漏网；`#`/`?` 沦为 fragment/query 分隔符指向错误资源）。
         let api_url = format!(
             "{}/repos/{}/contents/skills",
-            self.api_base_url(),
-            self.repo
+            self.api_base_url().trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(&self.repo)
         );
 
         let response = self
@@ -470,11 +473,15 @@ impl GitHubRegistry {
     /// 拉取仓库全树（Trees API recursive）——search_three_layer 与安装期
     /// slug→author 反查（[`Self::resolve_author`]）共用。
     async fn fetch_repo_tree(&self) -> Result<GithubTreeResponse> {
+        // BUG-20261114-043：repo/branch 段 percent-encoding + api_base 尾斜杠
+        // 归一（BUG-20261113-162 横向漏点；分支名可合法含 `#`，裸插值在
+        // `?recursive=1` 前被 fragment 切断。github_tree.rs 同款 URL 形态
+        // 162 轮已修，本处漏网）。与 github_tree.rs 保持同一构造形态。
         let api_url = format!(
             "{}/repos/{}/git/trees/{}?recursive=1",
-            self.api_base_url(),
-            self.repo,
-            self.branch
+            self.api_base_url().trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(&self.repo),
+            crate::url_enc::percent_encode_component(&self.branch)
         );
 
         let response = self
@@ -735,7 +742,10 @@ impl GitHubRegistry {
         let base_url = if config.base_url.is_empty() {
             "https://raw.githubusercontent.com".to_string()
         } else {
-            config.base_url.clone()
+            // BUG-20261114-043：与 [`Self::new`] 同源尾斜杠归一——162 修复轮
+            // 只补了 new，本构造器漏网。当前 join 点均经 raw_content_url
+            // （use-site trim）行为惰性，归一属构造器对称性防御。
+            config.base_url.trim_end_matches('/').to_string()
         };
 
         let timeout = if config.timeout_secs > 0 {

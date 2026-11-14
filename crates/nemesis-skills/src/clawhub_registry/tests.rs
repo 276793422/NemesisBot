@@ -2319,3 +2319,31 @@ fn test_with_urls_trailing_slash_normalized() {
     assert_eq!(d.base_url, DEFAULT_CLAWHUB_URL);
     assert_eq!(d.convex_url, DEFAULT_CONVEX_URL);
 }
+
+#[test]
+fn test_with_urls_normalizes_convex_site_url_trailing_slash() {
+    // BUG-20261114-043：with_urls 归一漏第三字段——convex_site_url 带尾
+    // 斜杠时 site_url() 原样返回，download_skill_zip 的 `{site}/api/v1/…`
+    // join 拼出 `//api/...`。base_url/convex_url 已归一（162），本字段同族补齐。
+    let r = ClawHubRegistry::with_urls(
+        "https://clawhub.ai",
+        "https://example.convex.cloud",
+        "https://custom.convex.site/",
+    );
+    assert_eq!(r.site_url(), "https://custom.convex.site");
+}
+
+#[test]
+fn test_raw_skill_md_url_encodes_owner_segment() {
+    // BUG-20261114-043：owner.handle 是 Convex API 外部数据——`#` 裸插值
+    // 切断 fragment（路径只剩 .../skills/ow，SKILL.md 永远 404）；编码后
+    // 单段语义保持（`/` 编码为 %2F，handle 不会被误展开为多段路径）。
+    assert_eq!(
+        raw_skill_md_url("ow#ner", "pdf"),
+        "https://raw.githubusercontent.com/openclaw/skills/main/skills/ow%23ner/pdf/SKILL.md"
+    );
+    assert_eq!(
+        raw_skill_md_url("octo", "pdf"),
+        "https://raw.githubusercontent.com/openclaw/skills/main/skills/octo/pdf/SKILL.md"
+    );
+}
