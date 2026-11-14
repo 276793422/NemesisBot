@@ -28,6 +28,21 @@ const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 /// 均在百字节级）。
 const MAX_LSP_HEADER_LINE_BYTES: usize = 64 * 1024;
 
+/// 文档同步出站体积闸（BUG-20261114-047）：didOpen/didChange 把整个文件
+/// 文本装进一帧下发——`read_to_string`(N) → json! Value(N) →
+/// serde_json::to_vec(N) → encode 再拼一次，约 3-4× 文件体积的瞬时 RSS。
+/// 诊断闭环/编辑路径可把 LSP 指向意外巨型文件（误配 dist bundle / 生成物
+/// / 带源码扩展名的数据文件），无闸即 gateway OOM 面——与入站侧
+/// MAX_LSP_MESSAGE_BYTES（64 MiB，防服务器灌入）同族，本闸防客户端灌出。
+/// 帽值对齐 agent 工具面读侧内存闸家族（loop_tools `READ_FILE_MAX_BYTES`
+/// = 20_000_000，BUG-20261110-041 先修：read_file/edit_file/multiedit/
+/// grep 同语义全用此值）——本位点是该家族的漏网站点（工具面已全帽，
+/// LSP 出站面漏帽）。20MB 锚定合法源文件量级的数十倍裕量，且低于入站
+/// 64 MiB（方向自洽）。超限按各调用面既有语义诚实降级：sync_doc = Err
+/// （诊断循环 best-effort 剔除该文件，编辑路径不受阻）；rename = 逐文件
+/// errors 列表（其余文件照常）。
+const MAX_LSP_DOC_SYNC_BYTES: u64 = 20_000_000;
+
 /// The operations this crate exposes. Four are read-only queries; adds
 /// the write-capable pair — `Rename` produces file edits that the CALLER
 /// (the agent tool) must push through the security pipeline before any
@@ -531,6 +546,16 @@ impl LspManager {
         let mut files = Vec::new();
         let mut errors = Vec::new();
         for fe in file_edits {
+            // BUG-20261114-047：读盘前体积闸——超限文件诚实进 errors（不读
+            // 入，防内存倍增），其余文件照常（既有逐文件降级语义）。
+            // metadata 失败 → 0 → 落到下方 read_to_string 原样诚实报错。
+            if std::fs::metadata(&fe.path).map(|m| m.len()).unwrap_or(0) > MAX_LSP_DOC_SYNC_BYTES {
+                errors.push(format!(
+                    "{}: exceeds LSP doc sync cap {MAX_LSP_DOC_SYNC_BYTES} — skipped",
+                    fe.path
+                ));
+                continue;
+            }
             // read_to_string：非 UTF-8 文件诚实进 errors（不静默跳过）。
             let content = match std::fs::read_to_string(&fe.path) {
                 Ok(c) => c,
@@ -812,9 +837,32 @@ impl LspManager {
             return Ok(());
         };
         let text = match text_override {
-            Some(t) => t.to_string(),
-            None => std::fs::read_to_string(path)
-                .map_err(|e| format!("read for LSP sync failed: {e}"))?,
+            Some(t) => {
+                // BUG-20261114-047：直传文本同受闸（rename→notify 链上游已
+                // 逐文件闸过，此处兜底防新增调用方绕行）。
+                if t.len() as u64 > MAX_LSP_DOC_SYNC_BYTES {
+                    return Err(format!(
+                        "text ({} bytes) exceeds LSP doc sync cap {MAX_LSP_DOC_SYNC_BYTES} — skipped",
+                        t.len()
+                    ));
+                }
+                t.to_string()
+            }
+            None => {
+                // BUG-20261114-047：读盘前 metadata 体积闸——超限文件不读入
+                // （防 didOpen 帧 3-4× 文件体积的瞬时 RSS 倍增）。
+                let meta = std::fs::metadata(path)
+                    .map_err(|e| format!("stat for LSP sync failed: {e}"))?;
+                if meta.len() > MAX_LSP_DOC_SYNC_BYTES {
+                    return Err(format!(
+                        "file {} ({} bytes) exceeds LSP doc sync cap {MAX_LSP_DOC_SYNC_BYTES} — skipped",
+                        path.display(),
+                        meta.len()
+                    ));
+                }
+                std::fs::read_to_string(path)
+                    .map_err(|e| format!("read for LSP sync failed: {e}"))?
+            }
         };
         let root = find_root(path);
         self.reap_idle().await;
