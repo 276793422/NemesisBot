@@ -2638,3 +2638,55 @@ async fn duplicate_task_id_after_completion_accepted_fresh() {
     assert_eq!(fresh.content, "retry copy");
     assert_eq!(fresh.status, TaskStatus::Pending);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_duplicate_intake_exactly_one_accepted() {
+    // BUG-20261114-024 并发投递窗口补强：server 每帧 tokio::spawn，两帧
+    // 同 task_id 并发处理时顺序闸（4.7）可能双双通过——原子
+    // check-and-create 必须保证恰好一个受理、一个拒绝、队列恰好一条。
+    let tmp = tempfile::tempdir().unwrap();
+    let wq = Arc::new(ClusterWorkQueue::new(64));
+    let handler = Arc::new({
+        let mut h = PeerChatHandler::new("node-b".into());
+        let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+        h.set_cluster_queue(tl, wq.clone());
+        h
+    });
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut joins = Vec::new();
+    for _ in 0..2 {
+        let handler = handler.clone();
+        let barrier = barrier.clone();
+        joins.push(tokio::task::spawn_blocking(move || {
+            barrier.wait();
+            handler.handle(dup_payload(), None)
+        }));
+    }
+    let mut accepted = 0;
+    let mut rejected = 0;
+    for j in joins {
+        let ack = j.await.expect("handler 任务不 panic");
+        if ack.status == "accepted" {
+            accepted += 1;
+        } else {
+            assert!(
+                ack.error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("duplicate task_id"),
+                "拒绝方文案应点明 duplicate task_id，got: {:?}",
+                ack.error
+            );
+            rejected += 1;
+        }
+    }
+    assert_eq!(accepted, 1, "恰好一个受理，got accepted={accepted}");
+    assert_eq!(rejected, 1, "恰好一个拒绝，got rejected={rejected}");
+    // 队列恰好一条（双入队 = 双执行的直接前兆）。
+    let first = tokio::time::timeout(Duration::from_millis(1000), wq.next())
+        .await
+        .expect("队列应有一条入队");
+    assert!(first.is_some(), "受理方必须入队");
+    let second = tokio::time::timeout(Duration::from_millis(200), wq.next()).await;
+    assert!(second.is_err(), "不得二次入队（双执行前兆）");
+}

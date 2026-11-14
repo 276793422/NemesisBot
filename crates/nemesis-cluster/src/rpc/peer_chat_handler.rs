@@ -463,7 +463,28 @@ impl PeerChatHandler {
                 // 随任务存进 task_list，回调时原样回声给 A 端写回闸。
                 dispatch_generation: payload.get("dispatch_generation").and_then(|v| v.as_i64()),
             };
-            task_list.create_task(cluster_task);
+            // 原子 check-and-create（BUG-20261114-024 并发投递窗口补强）：
+            // 4.7 顺序闸拦不住并发到达的两帧——server 每帧 tokio::spawn，
+            // handle 多线程 runtime 下可真并行，两个 handler 可在对方
+            // create_task 之前各自通过 get 检查 → 双登记双入队。检查与插入
+            // 收进单个 DashMap entry 锁后，输者在这里拿到 Err → error ACK，
+            // 不入队不执行（双执行窗口归零）。输者在 4.7 后已做的 set_running
+            // 是同 key 同值写，被胜者生命周期覆盖，良性。
+            if let Err(existing_status) = task_list.create_task_if_absent(cluster_task) {
+                tracing::warn!(
+                    task_id = %task_id,
+                    source_node = %source_node_id,
+                    existing_status = %existing_status,
+                    "[PeerChat] 并发重复投递拒绝：task_id 已在途（原子 check-and-create）"
+                );
+                return PeerChatAck {
+                    status: "error".into(),
+                    error: Some(format!(
+                        "duplicate task_id: {task_id} 仍在排队/执行中（防重复执行闸），请换新 task_id 重试"
+                    )),
+                    task_id,
+                };
+            }
             // 压测②（三设备）：取证任务（board 评审链的
             // board_selfcheck 取证请求）走优先通道插队——评审在 master
             // 侧挂起等待，被正式任务串行队列堵住会把评审链拖长数十分钟。
