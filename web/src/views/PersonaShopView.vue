@@ -40,9 +40,12 @@
         >{{ d }}</span>
       </div>
 
-      <!-- Loading -->
+      <!-- Loading（挂载即在线刷新上游的窗口也挂转圈——shop.refresh 是
+           同步等待的在线 URL 访问，此前该窗口无任何加载指示且 items 为空，
+           空态文案「没有找到匹配的人格」先行渲染，用户以为界面卡死） -->
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>
+        <p style="margin-top: var(--space-3); color: var(--text-secondary); font-size: var(--text-sm);">正在加载人格超市...</p>
       </div>
 
       <!-- Results count -->
@@ -388,12 +391,15 @@ function setDivision(d: string) {
 onMounted(async () => {
   // 挂载即刷新上游（拉最新）。失败 = 诚实报错（后端 shop.refresh 语义：
   // 上游不可达不再静默吞掉），badge 随后由 browse 的降级响应呈现快照态。
+  // 刷新 + 浏览整个窗口都挂 loading 转圈——shop.refresh 在线拉 GitHub
+  // （30s 客户端超时窗），期间 items 为空，不挂转圈就是一片「假空态」。
+  loading.value = true
   try {
     await request('persona', 'shop.refresh', {})
   } catch (e: any) {
     toast.error('刷新人格超市失败: ' + (e.message || e))
   }
-  browse()
+  await browse()
 })
 </script>
 

@@ -53,6 +53,25 @@ describe('PersonaShopView 浏览与搜索', () => {
     expect(w.text()).toContain('开发')
   })
 
+  it('挂载刷新窗口全程转圈：refresh 未返回前 spinner 在场、不渲染空态文案', async () => {
+    // 回归钉（2026-11-14）：shop.refresh 在线拉 GitHub 可达 30s 超时窗，
+    // 此前该窗口 loading=false + items=[]，空态「没有找到匹配的人格」
+    // 先行渲染，用户以为界面卡死。
+    let resolveRefresh!: (v: any) => void
+    requestMock.mockImplementation((_m, cmd) => cmd === 'shop.refresh'
+      ? new Promise(r => { resolveRefresh = r })
+      : Promise.resolve({ items: [P1, P2] }))
+    const w = mount(PersonaShopView)
+    await w.vm.$nextTick()
+    expect(w.find('.spinner-lg').exists()).toBe(true)
+    expect(w.text()).toContain('正在加载人格超市')
+    expect(w.text()).not.toContain('没有找到匹配的人格')
+    resolveRefresh({})
+    await flushPromises()
+    expect(w.find('.spinner-lg').exists()).toBe(false)
+    expect(w.text()).toContain('共 2 个人格')
+  })
+
   it('browse 失败提示', async () => {
     requestMock.mockImplementation((_m, cmd) => cmd === 'shop.browse' ? Promise.reject(new Error('net')) : Promise.resolve({}))
     await mountView()
