@@ -26,7 +26,9 @@ fn default_chain_equals_new() {
     assert!(chain.list().is_empty());
 }
 
-/// Debug impl 免锁报规模（不触碰过滤器本体）。
+/// Debug impl 报规模：无锁竞争时报真实规模（不触碰过滤器本体）；
+/// 写锁被持有（含同线程重入）时显示 locked 形态、绝不阻塞——见下方
+/// `debug_never_blocks_under_write_lock`（BUG-20261114-062）。
 #[test]
 fn debug_reports_filter_count() {
     struct Noop;
@@ -46,6 +48,29 @@ fn debug_reports_filter_count() {
     assert_eq!(format!("{chain:?}"), "FilterChain { filters: 0 }");
     chain.attach(Arc::new(Noop));
     assert_eq!(format!("{chain:?}"), "FilterChain { filters: 1 }");
+}
+
+/// 红绿证（BUG-20261114-062）：Debug 的免锁契约——同线程持写锁时
+/// format 不得死锁/阻塞。旧实现拿读锁，parking_lot RwLock 不可重入，
+/// 同线程写锁内 Debug = 死锁（本测试在旧实现下永久挂死，timeout 杀死
+/// 即红证）；修复后 try_read 失败显示 locked 形态立即返回。
+#[test]
+fn debug_never_blocks_under_write_lock() {
+    let chain: FilterChain<InboundMessage> = FilterChain::new();
+    let guard = chain.filters.write();
+    let t0 = std::time::Instant::now();
+    let s = format!("{chain:?}");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(2),
+        "Debug 在锁竞争（同线程写锁）下阻塞超过 2s = 违反免锁契约"
+    );
+    assert!(
+        s.contains("locked"),
+        "写锁被持有时 Debug 应显示 locked 形态，实际：{s}"
+    );
+    drop(guard);
+    // 锁释放后恢复真实规模（无竞争路径不回归）。
+    assert_eq!(format!("{chain:?}"), "FilterChain { filters: 0 }");
 }
 
 /// Rejected 决策：链终止、拒绝原因透传（触发 reason 格式化 + warn 日志
