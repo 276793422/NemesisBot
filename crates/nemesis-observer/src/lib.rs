@@ -226,9 +226,18 @@ impl Manager {
     /// Matches Go's `EmitSync()` with `defer recover()` wrapping each call.
     /// Each observer is spawned in its own task; if one panics, the rest still run.
     pub async fn emit_sync(&self, event: ConversationEvent) {
-        let observers = self.observers.read().await;
-        for obs in observers.iter() {
-            let o = Arc::clone(obs);
+        // BUG-20261115-012：快照一次后**立刻放锁**——旧实现读守卫横跨整个
+        // 观察者执行循环（含逐个 handle.await），任何观察者在 on_event 里
+        // 重入本 manager（register/unregister/unregister_all，内部
+        // write().await）即构成「写者等读者、读者（本循环）等写者任务」
+        // 的循环等待死锁，agent loop 硬挂。快照语义与旧实现等价（列表在
+        // 本次 emit 开始时冻结；循环中重入注册只影响下一次 emit，不会让
+        // 本次迭代无限增长）。
+        let observers: Vec<Arc<dyn Observer>> = {
+            let observers = self.observers.read().await;
+            observers.iter().cloned().collect()
+        };
+        for o in observers {
             let e = event.clone();
             let name = o.name().to_string();
             // Spawn and await sequentially, with panic recovery via JoinHandle
