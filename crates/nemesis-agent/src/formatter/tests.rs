@@ -54,10 +54,11 @@ fn enabled_json_with_timeout(secs: u64) -> serde_json::Value {
 #[test]
 fn builtin_table_covers_planned_extensions() {
     let empty = BTreeMap::new();
-    // rs → rustfmt
+    // rs → rustfmt（BUG-20261114-027：edition 跟 2024——let-chains 只在
+    // 2024+ 合法，2021 会让含 let-chains 的文件静默跳过格式化）
     let rs = resolve_spec("rs", &empty).unwrap();
     assert_eq!(rs.tool, "rustfmt");
-    assert_eq!(rs.args, vec!["--edition", "2021", "{file}"]);
+    assert_eq!(rs.args, vec!["--edition", "2024", "{file}"]);
     // go → gofmt
     assert_eq!(resolve_spec("go", &empty).unwrap().tool, "gofmt");
     // 前端家族 → prettier
@@ -139,12 +140,14 @@ fn annotate_reformat_composes_result_tool_and_diff() {
 // ---------------------------------------------------------------------------
 
 /// 工具链随 cargo 必在（rust-toolchain.toml 钉死 1.95.0，Windows/Linux CI
-/// 与开发机同源）——真格式化一条烂格式.rs。
+/// 与开发机同源）——真格式化一条含 **let-chains** 的烂格式.rs。夹具刻意用
+/// `if let … && …`：let-chains 仅 edition 2024+ 合法（BUG-20261114-027），
+/// 默认表退回 2021 时 rustfmt parse error → 静默跳过 → 本测红（变异锁）。
 #[tokio::test]
 async fn rustfmt_reformats_bad_rs_file_and_annotates_result() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("ugly.rs");
-    std::fs::write(&file, "fn a(){let x=1;}\n").unwrap();
+    std::fs::write(&file, "fn a(){if let Some(x)=Some(1)&&x>0{let y=x;}}\n").unwrap();
 
     let config_path = write_config(dir.path(), config_json(enabled_json_with_timeout(60), None));
     let out = format_on_save(Some(config_path), &file.to_string_lossy(), "wrote file").await;
@@ -157,7 +160,12 @@ async fn rustfmt_reformats_bad_rs_file_and_annotates_result() {
     // 磁盘上文件真的被格式化了（contains 断言容忍 rustfmt 版本细节差异）
     let on_disk = std::fs::read_to_string(&file).unwrap();
     assert!(on_disk.contains("fn a() {"), "on_disk: {on_disk}");
-    assert!(on_disk.contains("let x = 1;"), "on_disk: {on_disk}");
+    // let-chains 被原样解析保留（`&& x > 0` 在场——2024 语义；rustfmt 可能
+    // 把链拆行，不能断言单行形态），且内层排版归一（`let y=x;` →
+    // `let y = x;`）证明格式化真的跑过，而非静默跳过后的原文
+    assert!(on_disk.contains("&& x > 0"), "on_disk: {on_disk}");
+    assert!(on_disk.contains("let y = x;"), "on_disk: {on_disk}");
+    assert!(!on_disk.contains("let y=x;"), "on_disk: {on_disk}");
 }
 
 /// 工具缺席：spawn NotFound → 静默原样（无注记、文件不动、不 panic）。
