@@ -388,7 +388,12 @@ impl HttpProvider {
         // 模型在严格 OpenAI 形态端点上账本恒按 0 记（usage 面板/审计/
         // board token 预算保险丝漏记）；usage 内嵌 finish chunk 的端点
         // （DeepSeek 等）不受影响。主流兼容实现均支持该键；个别严格端点
-        // 若拒绝，诚实 400 走故障转移，好过静默零账。
+        // 若拒绝（400 unknown parameter 点名 stream_options），下方任务内
+        // 剥掉该键重试一次（BUG-20261114-051：原注释声称「诚实 400 走故障
+        // 转移」，实际 400 归 Unknown 不可重试、fallback/router 均不轮转，
+        // stream=yes 模型在这类端点上从「可用零记账」变「每次硬失败」；
+        // 降级形态与 anthropic 剥 thinking 块 / images 剥 response_format
+        // 同族——可选参数被端点拒绝时由本 lane 负责收回）。
         body["stream_options"] = serde_json::json!({ "include_usage": true });
 
         let api_key = self.config.api_key.clone();
@@ -408,53 +413,78 @@ impl HttpProvider {
         );
 
         tokio::spawn(async move {
-            let mut req = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json");
+            // stream_options 拒绝降级（BUG-20261114-051）：400 + body 点名
+            // 抱怨该参数 → 剥掉重试一次。对接受该键的端点零影响（重试只在
+            // 立即拒绝的快路径上，不占流式时长）；其余 400（额度/模型不存在）
+            // 与一切非 400 错误照旧走 from_status 定类。
+            let mut stream_options_attached = true;
+            let resp = loop {
+                let mut req = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json");
 
-            for (key, value) in &headers {
-                req = req.header(key.as_str(), value.as_str());
-            }
+                for (key, value) in &headers {
+                    req = req.header(key.as_str(), value.as_str());
+                }
 
-            let resp = match req.json(&body).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
-                    // Unknown + "connect error: <根因链>"（不伪装）。
+                let resp = match req.json(&body).send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
+                        // Unknown + "connect error: <根因链>"（不伪装）。
+                        let _ = tx
+                            .send(Err(crate::failover::transport_error(
+                                &provider_name,
+                                &model,
+                                &e,
+                            )))
+                            .await;
+                        return;
+                    }
+                };
+
+                let status = resp.status().as_u16();
+                if status >= 400 {
+                    // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
+                    let retry_after = crate::failover::retry_after_from_headers(resp.headers());
+                    let text = nemesis_utils::http_cap::read_error_body(resp).await;
+                    // 降级闸：仅 400 + 点名抱怨 stream_options + 尚未剥过
+                    //（一次性——剥后仍 400 说明拒绝另有其因，原样定类上抛）。
+                    if status == 400
+                        && stream_options_attached
+                        && complains_about_stream_options(&text)
+                    {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %model,
+                            "[Provider] endpoint rejected stream_options — stripping it and retrying once"
+                        );
+                        stream_options_attached = false;
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.remove("stream_options");
+                        }
+                        continue;
+                    }
+                    tracing::error!(
+                        provider = %provider_name,
+                        model = %model,
+                        status = status,
+                        "[Provider] Streaming request failed with HTTP error"
+                    );
                     let _ = tx
-                        .send(Err(crate::failover::transport_error(
+                        .send(Err(FailoverError::from_status(
                             &provider_name,
                             &model,
-                            &e,
+                            status,
+                            &text,
+                            retry_after,
                         )))
                         .await;
                     return;
                 }
+                break resp;
             };
-
-            let status = resp.status().as_u16();
-            if status >= 400 {
-                // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
-                let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-                let text = nemesis_utils::http_cap::read_error_body(resp).await;
-                tracing::error!(
-                    provider = %provider_name,
-                    model = %model,
-                    status = status,
-                    "[Provider] Streaming request failed with HTTP error"
-                );
-                let _ = tx
-                    .send(Err(FailoverError::from_status(
-                        &provider_name,
-                        &model,
-                        status,
-                        &text,
-                        retry_after,
-                    )))
-                    .await;
-                return;
-            }
 
             // 200-包装错误诚实化（同 chat() 根修，2026-09-17）：显式
             // application/json 的 200 响应不是 SSE 流——两种可能：
@@ -1141,6 +1171,26 @@ pub struct StreamChunk {
     /// Present only on the final chunk (not streamed incrementally).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+}
+
+/// 400 响应体是否明确抱怨 `stream_options` 参数：body 同时点名参数名与
+/// 抱怨措辞（unknown/unrecognized/not supported/invalid 族，大小写不敏感，
+/// 覆盖 OpenAI `"code": "unknown_parameter"` 与 message 两种承载形态）。
+/// 从严激活——只认端点点名该参数的 400，额度/模型不存在类不触发剥键重试
+/// （images.rs `complains_about_response_format` 同款谓词形态，同族互锚）。
+fn complains_about_stream_options(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("stream_options")
+        && [
+            "unknown parameter",
+            "unknown_parameter",
+            "unrecognized",
+            "not supported",
+            "unsupported",
+            "invalid parameter",
+        ]
+        .iter()
+        .any(|m| lower.contains(m))
 }
 
 #[async_trait]

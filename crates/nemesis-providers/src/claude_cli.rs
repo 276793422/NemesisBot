@@ -156,6 +156,7 @@ impl ClaudeCliProvider {
         &self,
         output: &str,
         tools: &[ToolDefinition],
+        model: &str,
     ) -> Result<LLMResponse, FailoverError> {
         let resp: ClaudeCliResponse =
             serde_json::from_str(output).map_err(|e| FailoverError::Format {
@@ -164,10 +165,16 @@ impl ClaudeCliProvider {
             })?;
 
         if resp.is_error {
-            return Err(FailoverError::Unknown {
-                provider: "claude-cli".to_string(),
-                message: resp.result,
-            });
+            // result 字段是 claude CLI 对上游 API 错误的透传（429/overloaded/
+            // auth 等瞬态文案常只出现在这里、stderr 为空）——与 codex-cli lane
+            // 的 turn.failed/error 事件同源同待遇：交真相源分类（瞬态文案可
+            // 轮转 fallback 链），分类不出维持 Unknown 兜底（BUG-20261114-052：
+            // 原先裸 Unknown 恒不可重试，同族 codex-cli 均已分类）。
+            return Err(crate::failover::classify_message_error(
+                "claude-cli",
+                model,
+                &format!("claude cli error: {}", resp.result),
+            ));
         }
 
         // 白名单过滤（同款不变量）：提取器
@@ -297,7 +304,38 @@ impl LLMProvider for ClaudeCliProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        self.parse_response(&stdout, tools)
+
+        // stdout 先解析（与 codex-cli lane 同序，「even if exit code is
+        // non-zero」）：--output-format json 下错误详情在 stdout 的 is_error
+        // JSON 里、stderr 常为空——若按退出码先拦，非零退出 + 空 stderr 会把
+        // 错误详情（含 429/overloaded 等瞬态文案）丢成「exited with status」，
+        // 既不分类也不轮转（BUG-20261114-052）。
+        if !stdout.is_empty()
+            && let Ok(resp) = self.parse_response(&stdout, tools, model)
+            && (!resp.content.is_empty() || !resp.tool_calls.is_empty())
+        {
+            return Ok(resp);
+        }
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                // stderr 是 CLI 对上游/API 错误的透传主通道——交真相源分类
+                //（瞬态文案可轮转），分类不出维持 Unknown
+                // 兜底。
+                return Err(crate::failover::classify_message_error(
+                    "claude-cli",
+                    model,
+                    &format!("claude cli error: {stderr}"),
+                ));
+            }
+            return Err(FailoverError::Unknown {
+                provider: "claude-cli".to_string(),
+                message: format!("claude cli exited with status: {}", output.status),
+            });
+        }
+
+        self.parse_response(&stdout, tools, model)
     }
 
     fn default_model(&self) -> &str {

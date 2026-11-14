@@ -1986,7 +1986,7 @@ fn test_build_request_body_image_parts_openai_format() {
 // chat_stream() 两分支（忽略 stream:true 的兼容合成 / 错误包装体报 Format）。
 // ===========================================================================
 
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn b_wire_provider(base_url: String) -> HttpProvider {
@@ -2612,4 +2612,120 @@ async fn test_b_stream_error_null_field_is_ignored() {
         .map(|c| c.delta.as_str())
         .collect();
     assert_eq!(text, "hello");
+}
+
+// ===========================================================================
+// B51（BUG-20261114-051）stream_options 拒绝降级：include_usage 键（2026-10-23
+// 根修）对严格端点可能 400 unknown parameter——400 归 Unknown 不可重试，
+// fallback/router 均不轮转（原注释「诚实 400 走故障转移」三处消费面都不
+// 成立），stream=yes 模型在这类端点上从「可用零记账」变「每次硬失败」。
+// 契约：400 + body 点名抱怨 stream_options → 剥键重试一次；其余 400 不剥。
+// ===========================================================================
+
+#[test]
+fn test_b51_complains_about_stream_options_predicate() {
+    // 点名 + 抱怨：OpenAI unknown parameter 形态 / code 字段承载形态 /
+    // not supported 文案形态。
+    assert!(complains_about_stream_options(
+        "{\"error\":{\"message\":\"Unknown parameter: 'stream_options'.\",\"type\":\"invalid_request_error\"}}"
+    ));
+    assert!(complains_about_stream_options(
+        "{\"error\":{\"code\":\"unknown_parameter\",\"message\":\"stream_options\"}}"
+    ));
+    assert!(complains_about_stream_options(
+        "stream_options is not supported by this endpoint"
+    ));
+    // 点名但非抱怨（错误文案回显请求字段，如模型不存在）不触发。
+    assert!(!complains_about_stream_options(
+        "{\"error\":{\"message\":\"model stream_options-test not found\"}}"
+    ));
+    // 抱怨但未点名（别的原因 400）不触发。
+    assert!(!complains_about_stream_options(
+        "{\"error\":{\"message\":\"Invalid parameter: temperature\"}}"
+    ));
+    // 无关错误文案不触发。
+    assert!(!complains_about_stream_options("internal server error"));
+}
+
+#[tokio::test]
+async fn test_b51_stream_options_rejected_400_stripped_and_retried() {
+    // 严格端点：带 stream_options 的请求 400 unknown parameter；剥键后的
+    // 请求回 SSE 正常流。契约：最终流成功 + 两 mock 各命中一次（首试 400 +
+    // 剥键重试 200）。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_string_contains("stream_options"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {
+                "message": "Unknown parameter: 'stream_options'.",
+                "type": "invalid_request_error",
+                "code": "unknown_parameter"
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    let errs: Vec<&FailoverError> = chunks.iter().filter_map(|c| c.as_ref().err()).collect();
+    assert!(
+        errs.is_empty(),
+        "400 抱怨形态剥键重试后不得作为错误上抛（got {errs:?}）"
+    );
+    let content: String = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .map(|c| c.delta.as_str())
+        .collect();
+    assert_eq!(content, "ok", "剥键重试后正常出流");
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn test_b51_stream_400_not_naming_stream_options_no_retry() {
+    // 从严对照：非 stream_options 抱怨的 400（模型不存在形态）不触发剥键
+    // 重试——原样 from_status 定类上抛（Unknown 非 retriable，fallback
+    // 语义不变），且只发一次请求。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": {"message": "model gpt-4 does not exist", "type": "invalid_request_error"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1, "不重试：单错误帧后通道关闭");
+    match chunks[0].as_ref().unwrap_err() {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.starts_with("status 400"), "{}", message);
+            assert!(message.contains("does not exist"), "{}", message);
+        }
+        other => panic!("expected Unknown status 400, got {other:?}"),
+    }
+    server.verify().await;
 }
