@@ -13,6 +13,13 @@ use std::sync::Mutex;
 use crate::lang_restriction::{self, LangRestriction};
 use crate::sherpa;
 
+/// FFI 字符串边界：CString::new 失败（内嵌 NUL）转 Result 错误臂而非
+/// panic（BUG-20261115-014）。`CString::new("")` 恒成功——provider/empty
+/// 常量位点走同 helper 只求形态统一，无行为差异。
+fn c_string(s: &str) -> Result<CString> {
+    CString::new(s).map_err(|e| anyhow::anyhow!("字符串含内嵌 NUL 字节，无法转 C 字符串: {e}"))
+}
+
 pub struct SttEngine {
     /// 串行化 recognizer（主 + 补救 fallback）上的一切 FFI 调用。上游对
     /// offline recognizer 无线程安全承诺（沉默 → 按非线程安全对待），而
@@ -129,11 +136,16 @@ impl SttEngine {
             anyhow::bail!("STT tokens not found: {}", tokens_path.display());
         }
 
-        let model_c = CString::new(model_path.to_str().unwrap_or("")).unwrap();
-        let tokens_c = CString::new(tokens_path.to_str().unwrap_or("")).unwrap();
-        let lang_c = CString::new(language).unwrap();
-        let provider_c = CString::new("cpu").unwrap();
-        let empty_c = CString::new("").unwrap();
+        // BUG-20261115-014：config 来源字符串（stt.language 直达此处；模型
+        // 目录路径同样源自用户配置）可携带内嵌 NUL（serde 反序列化无校验），
+        // CString::new 直接 unwrap 会在本函数 Result 设计的构造路径上 panic
+        // ——统一走 c_string 错误臂（家族形态对齐 health/disk 的 map_err
+        // 惯例与 plugin/roaming 同族）。
+        let model_c = c_string(model_path.to_str().unwrap_or(""))?;
+        let tokens_c = c_string(tokens_path.to_str().unwrap_or(""))?;
+        let lang_c = c_string(language)?;
+        let provider_c = c_string("cpu")?;
+        let empty_c = c_string("")?;
 
         macro_rules! e {
             () => {
