@@ -2411,3 +2411,66 @@ async fn bug_20261114_046_skill_md_over_cap_falls_through_to_next_strategy() {
         "expected strategy-2 loud failure (proves fall-through), got: {msg}"
     );
 }
+
+// ===========================================================================
+// BUG-20261114-059 回归锁：解压体量闸必须「读入过程本身拒绝」。
+//
+// 旧行为（红证）：总量闸 write-then-check——std::io::copy 把**整条**条目
+// 写完才累加、才检查 total_cap。单条目炸弹（50MB 压缩体 × deflate
+// ~1032:1 ≈ 51GB 解压）在闸门触发前已整条落盘，下载侧注释声称的
+// 「拒绝发生在读入过程本身」哲学与解压侧注释声称的「撑爆磁盘前拒绝」
+// 不变量双双不成立。
+// ===========================================================================
+
+/// 单条目炸弹：解压量 1MB >> cap 64KB。修后必须中途断——落盘残留
+/// 上界 = cap + 一个分块（64KB），不得等于完整 payload。
+#[test]
+fn extract_zip_to_dir_capped_aborts_single_entry_bomb_mid_stream() {
+    // 1MB 模式化 payload：deflate 后 KB 级（合法过压缩体闸），解压 1MB
+    // 远超 64KB 总量闸。
+    let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let zip_bytes = make_one_entry_zip(&payload);
+    let tmp = tempfile::tempdir().unwrap();
+    let err =
+        extract_zip_to_dir_capped(&zip_bytes, tmp.path().to_str().unwrap(), 64 * 1024).unwrap_err();
+    assert!(err.to_string().contains("exceeds limit"), "{err}");
+    // 中途断言：残留（或已清理）的输出文件不得等于完整 1MB payload——
+    // 写后检查形态在此红：文件完整落盘 = 1048576 字节。
+    let out = tmp.path().join("big.bin");
+    let written = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    assert!(
+        written <= 192 * 1024,
+        "单条目炸弹必须读入过程中断：落盘 {written} 字节 ≈ 完整 payload = write-then-check 形态复活"
+    );
+}
+
+/// 文件数闸：超过聚合文件数上限的包必须拒绝（小文件海啸 = inode/目录项
+/// 耗尽，体量闸管不住——每条目可以只有几个字节）。
+#[test]
+fn extract_zip_to_dir_capped_rejects_file_count_over_limit() {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut w = zip::ZipWriter::new(&mut cursor);
+        let opts = zip::write::SimpleFileOptions::default();
+        // MAX_SKILL_FILE_COUNT + 1 个微型条目。
+        let n = crate::registry::MAX_SKILL_FILE_COUNT + 1;
+        for i in 0..n {
+            w.start_file(format!("f{i:05}.txt"), opts).unwrap();
+            std::io::Write::write_all(&mut w, b"x").unwrap();
+        }
+        w.finish().unwrap();
+    }
+    let zip_bytes = cursor.into_inner();
+    let tmp = tempfile::tempdir().unwrap();
+    let err = extract_zip_to_dir_capped(
+        &zip_bytes,
+        tmp.path().to_str().unwrap(),
+        u64::MAX, // 体量闸放开，只测文件数闸
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("file count"),
+        "超文件数上限必须拒绝并说明原因，实际错误：{msg}"
+    );
+}

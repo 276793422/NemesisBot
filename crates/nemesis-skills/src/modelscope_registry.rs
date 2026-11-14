@@ -470,6 +470,10 @@ impl ModelScopeRegistry {
     /// Returns `(relative_path, content)` pairs.
     async fn fetch_full_skill(&self, path: &str, name: &str) -> Result<Vec<(String, String)>> {
         let mut files = Vec::new();
+        // 聚合双闸（BUG-20261114-059）：镜像清单是服务器可控输入，每文件
+        // 仅受 16MB 信封帽约束时 N 文件无界——文件数闸帽住小文件海啸
+        // （inode/目录项耗尽），聚合体量闸帽住总字节（内存与后续落盘双面）。
+        let mut total_bytes: u64 = 0;
         let mut roots: Vec<String> = vec![String::new()];
         while let Some(root) = roots.pop() {
             let entries = self.list_repo_files(path, name, &root).await?;
@@ -477,7 +481,21 @@ impl ModelScopeRegistry {
                 if e.entry_type == "tree" {
                     roots.push(e.path);
                 } else {
+                    if files.len() >= crate::registry::MAX_SKILL_FILE_COUNT {
+                        return Err(NemesisError::Security(format!(
+                            "skill file count exceeds limit ({} > {})",
+                            files.len() + 1,
+                            crate::registry::MAX_SKILL_FILE_COUNT
+                        )));
+                    }
                     let content = self.fetch_repo_raw(path, name, &e.path).await?;
+                    total_bytes += content.len() as u64;
+                    if total_bytes > crate::registry::MAX_SKILL_TOTAL_BYTES {
+                        return Err(NemesisError::Security(format!(
+                            "aggregate skill size exceeds limit (>{} bytes)",
+                            crate::registry::MAX_SKILL_TOTAL_BYTES
+                        )));
+                    }
                     files.push((e.path, content));
                 }
             }
@@ -579,6 +597,7 @@ impl ModelScopeRegistry {
                 branch,
                 gh_path,
                 target_dir,
+                0,
                 0,
             )
             .await

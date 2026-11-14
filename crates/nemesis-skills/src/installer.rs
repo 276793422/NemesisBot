@@ -596,6 +596,7 @@ impl SkillInstaller {
             "", // 仓库根为技能根（空前缀匹配全部 blob）
             &staging.to_string_lossy(),
             0,
+            0,
         )
         .await
         {

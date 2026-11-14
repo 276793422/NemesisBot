@@ -229,6 +229,7 @@ impl ClawHubRegistry {
             &dir_prefix,
             target_dir,
             0,
+            0,
         )
         .await?;
 
@@ -620,10 +621,13 @@ impl Default for ClawHubRegistry {
 
 /// ClawHub 技能包 zip 体积上限（压缩体）。
 const MAX_ZIP_BODY_BYTES: u64 = 50 * 1024 * 1024;
-/// 解压总量上限（未压缩实际落盘字节）。50MB 闸的是压缩体，Deflated 压缩
-/// 比常见 3~10x、理论 >1000:1——炸弹条目靠本闸在撑爆磁盘前拒绝。正常
-/// 技能包（SKILL.md/脚本，KB 级条目）远低于此，不误伤。
-const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 200 * 1024 * 1024;
+/// 解压总量上限（未压缩实际落盘字节）——收编为家族单一真相源
+/// [`crate::registry::MAX_SKILL_TOTAL_BYTES`]（BUG-20261114-059：三方
+/// 注册表内容同一信任域，聚合上限同值同源，防横向分叉）。50MB 闸的是
+/// 压缩体，Deflated 压缩比常见 3~10x、理论 >1000:1——炸弹条目靠本闸
+/// 在读入过程中拒绝（见 [`extract_zip_to_dir_capped`] 分块预算拷贝）。
+/// 正常技能包（SKILL.md/脚本，KB 级条目）远低于此，不误伤。
+const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = crate::registry::MAX_SKILL_TOTAL_BYTES;
 
 /// GitHub raw SKILL.md 回落 URL 构造单点（BUG-20261114-043）。
 ///
@@ -665,6 +669,17 @@ fn extract_zip_to_dir_capped(data: &[u8], target_dir: &str, total_cap: u64) -> R
                 })?
                 .to_string(),
         );
+    }
+
+    // 聚合文件数闸（BUG-20261114-059）：50MB 压缩体的中央目录可编码数十万
+    // 条目，每条目几个字节的小文件海啸 = inode/目录项耗尽——体量闸管不住
+    // 条目数，与 MAX_SKILL_TOTAL_BYTES 互补。任何解压发生前拒绝。
+    if entries.len() > crate::registry::MAX_SKILL_FILE_COUNT {
+        return Err(NemesisError::Security(format!(
+            "skill package file count exceeds limit ({} > {})",
+            entries.len(),
+            crate::registry::MAX_SKILL_FILE_COUNT
+        )));
     }
 
     // Determine prefix to strip (flatten single top-level dir).
@@ -736,16 +751,29 @@ fn extract_zip_to_dir_capped(data: &[u8], target_dir: &str, total_cap: u64) -> R
             std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
         }
 
-        // Write file.
+        // Write file —— 分块预算拷贝（BUG-20261114-059）：旧形态
+        // std::io::copy 把**整条**条目写完才累加、才查 total_cap——单条目
+        // 炸弹（50MB 压缩 × deflate ~1032:1 ≈ 51GB 解压）在闸门触发前已
+        // 整条落盘，「撑爆磁盘前拒绝」不变量不成立。改逐块读入累计，
+        // 超限在读入过程中断（下载侧 read_body_capped 同哲学），落盘
+        // 上界 = total_cap + 一个分块。中断即清理残留部分文件（best
+        // effort；权威清理仍归 installer 拒绝臂的 staging 移除）。
         let mut output = std::fs::File::create(&dest_path).map_err(NemesisError::Io)?;
-        // 解压总量闸（BUG-20261101-273 解压侧）：累计实际解压字节，超限
-        // 拒绝——zip-slip 闸管路径，本闸管体量。
-        let n = std::io::copy(&mut file, &mut output).map_err(NemesisError::Io)?;
-        total_uncompressed += n;
-        if total_uncompressed > total_cap {
-            return Err(NemesisError::Security(format!(
-                "uncompressed size exceeds limit (>{total_cap} bytes): decompression bomb suspected",
-            )));
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let n = std::io::Read::read(&mut file, &mut chunk).map_err(NemesisError::Io)?;
+            if n == 0 {
+                break;
+            }
+            total_uncompressed += n as u64;
+            if total_uncompressed > total_cap {
+                drop(output);
+                let _ = std::fs::remove_file(&dest_path);
+                return Err(NemesisError::Security(format!(
+                    "uncompressed size exceeds limit (>{total_cap} bytes): decompression bomb suspected",
+                )));
+            }
+            std::io::Write::write_all(&mut output, &chunk[..n]).map_err(NemesisError::Io)?;
         }
     }
 

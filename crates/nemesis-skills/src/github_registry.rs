@@ -266,6 +266,7 @@ impl GitHubRegistry {
                 &dir_prefix,
                 target_dir,
                 0,
+                0,
             )
             .await?;
 
@@ -745,6 +746,7 @@ impl GitHubRegistry {
             dir_prefix,
             target_dir,
             self.max_size,
+            0,
         )
         .await
     }

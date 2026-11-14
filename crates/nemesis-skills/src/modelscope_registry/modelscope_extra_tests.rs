@@ -1441,3 +1441,58 @@ async fn test_get_skill_content_name_mismatch_errors() {
 // - 634-635: the canonicalize-failure arm of the install write loop —
 //   create_dir_all(parent) at 625 runs immediately before, so the parent
 //   canonicalize at 627 essentially always succeeds.
+
+// ===========================================================================
+// BUG-20261114-059 回归锁：镜像拉取聚合文件数闸。
+//
+// 旧行为（红证）：fetch_full_skill 无任何聚合上限——服务器清单返回任意
+// 多 blob 就拉任意多文件（每文件仅受 16MB 信封帽约束），小文件海啸 =
+// inode/目录项耗尽，体量闸族（clawhub zip 有、github_tree 修同轮补）在
+// 此面漏网。修后必须在拉取内容前按文件数拒绝。
+// ===========================================================================
+
+#[tokio::test]
+async fn test_download_and_install_rejects_file_count_over_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"SkillList":[{"Name":"pdf","DisplayName":"PDF","Description":"s","Path":"PantherAng","SourceUrl":"x"}],"TotalCount":1},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+    // 根清单：MAX+1 个 blob、零 tree（免递归）。
+    let n = crate::registry::MAX_SKILL_FILE_COUNT + 1;
+    let files_json: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"Path":"f{i:05}.txt","Type":"blob"}}"#))
+        .collect();
+    let listing = format!(
+        r#"{{"Code":200,"Data":{{"Files":[{}]}},"Message":"ok","Success":true}}"#,
+        files_json.join(",")
+    );
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/files"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(listing))
+        .mount(&server)
+        .await;
+    // 前 MAX 个文件逐个 raw 拉取（计数闸在第 MAX+1 个文件**拉取前**触发
+    // ——wildcard mock 让前 MAX 个成功，闸门行为才有机会暴露）。
+    Mock::given(method("GET"))
+        .and(path("/PantherAng/pdf/repo/raw"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"Code":200,"Data":{"Content":"x"},"Message":"ok","Success":true}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let reg = make_registry_pointing_at(&server).await;
+    let err = reg
+        .download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("file count"),
+        "超文件数上限必须在拉取内容前拒绝并说明原因，实际错误：{msg}"
+    );
+}

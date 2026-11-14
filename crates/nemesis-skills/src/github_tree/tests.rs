@@ -394,6 +394,7 @@ async fn test_download_skill_tree_connection_error() {
         "skills/pdf",
         "/tmp/nonexistent_download_test",
         0,
+        0,
     )
     .await;
     assert!(result.is_err());
@@ -429,6 +430,7 @@ async fn test_download_skill_tree_no_trailing_slash_prefix() {
         "skills/pdf", // no trailing slash
         "/tmp/nonexistent_download_test2",
         1024,
+        0,
     )
     .await;
     assert!(result.is_err());
