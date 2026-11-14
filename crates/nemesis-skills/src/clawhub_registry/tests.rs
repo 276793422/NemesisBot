@@ -2347,3 +2347,67 @@ fn test_raw_skill_md_url_encodes_owner_segment() {
         "https://raw.githubusercontent.com/openclaw/skills/main/skills/octo/pdf/SKILL.md"
     );
 }
+
+// --- BUG-20261114-046：成功路径响应体帽（16MB API JSON / 1MB SKILL.md）---
+
+#[tokio::test]
+async fn bug_20261114_046_convex_body_over_cap_is_honest_error() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // >16MB 的成功状态响应体：帽必须在 JSON 解析前拒绝，错误串有界
+    // （不把巨型载荷回显进错误消息/模型上下文）。
+    let giant = "A".repeat(17 * 1024 * 1024);
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(giant))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .get_skill_meta("pdf")
+        .await
+        .expect_err("over-cap body must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("response exceeds limit"),
+        "expected cap error, got: {msg}"
+    );
+    assert!(!msg.contains("AAAA"), "error must not echo giant body");
+}
+
+#[tokio::test]
+async fn bug_20261114_046_skill_md_over_cap_falls_through_to_next_strategy() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // Strategy 1（ClawHub file API）返回 >1MB 成功状态体：超帽按策略链
+    // 契约落穿 Strategy 2（convex 臂在本 mock 下响亮失败），而不是把
+    // 巨大内容当 SKILL.md 返回。
+    let giant = "A".repeat(2 * 1024 * 1024);
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .and(query_param("path", "SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(giant))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "error",
+            "value": null,
+            "errorMessage": "stop-here"
+        })))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .get_skill_content("pdf")
+        .await
+        .expect_err("over-cap strategy 1 must fall through, strategy 2 must fail loudly");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("convex error"),
+        "expected strategy-2 loud failure (proves fall-through), got: {msg}"
+    );
+}

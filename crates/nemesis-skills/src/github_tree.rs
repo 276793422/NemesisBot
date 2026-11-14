@@ -80,9 +80,14 @@ pub async fn download_skill_tree_from_github(
     }
 
     // Parse the tree response.
-    let tree_response: TreeResponse = response
-        .json()
-        .await
+    // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+    let body_bytes = nemesis_utils::http_cap::read_body_capped(
+        response,
+        crate::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(NemesisError::Other)?;
+    let tree_response: TreeResponse = serde_json::from_slice(&body_bytes)
         .map_err(|e| NemesisError::Other(format!("failed to parse tree response: {}", e)))?;
 
     // Filter blob paths under dir_prefix.

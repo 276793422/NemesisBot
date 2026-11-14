@@ -436,9 +436,17 @@ impl GitHubRegistry {
             )));
         }
 
-        let entries: Vec<GitHubContentEntry> = response.json().await.map_err(|e| {
-            NemesisError::Other(format!("failed to parse directory listing: {}", e))
-        })?;
+        // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let entries: Vec<GitHubContentEntry> =
+            serde_json::from_slice(&body_bytes).map_err(|e| {
+                NemesisError::Other(format!("failed to parse directory listing: {}", e))
+            })?;
 
         let mut results = Vec::new();
         for entry in &entries {
@@ -502,9 +510,15 @@ impl GitHubRegistry {
             )));
         }
 
-        response
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（大仓库 Trees API 载荷
+        // MB 量级，16MB 数十倍裕量）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse tree: {}", e)))
     }
 

@@ -24,6 +24,19 @@ use crate::types::{
 /// Default maximum concurrent registry searches.
 const DEFAULT_MAX_CONCURRENT: usize = 2;
 
+/// API 元数据 JSON 成功响应体帽（BUG-20261114-046 横向收口）。skill
+/// registry 各 HTTP 端点的成功响应此前无字节上限——reqwest 无默认体上限，
+/// 请求超时只约束时间不约束体积（快管道超时窗口内可灌 GB 级）；错误臂
+/// 早已走 `read_error_body` 有帽，成功臂是同款不对称面。用户可配第三方
+/// 源与 nemesis-mcp 服务器同信任层，按同款口径收口：搜索/树/列表/commit
+/// 等元数据 JSON 16MB（与 nemesis-mcp `MAX_RESPONSE_BODY_BYTES` 对齐，
+/// 正常载荷 KB~MB 量级，16MB 为数十倍裕量）。
+pub(crate) const MAX_API_JSON_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// SKILL.md 文本成功响应体帽（BUG-20261114-046 横向收口）。markdown
+/// 内容 KB 量级，1MB 与 github registry `DEFAULT_MAX_SIZE` 对齐。
+pub(crate) const MAX_SKILL_CONTENT_BODY_BYTES: u64 = 1024 * 1024;
+
 /// Trait for registry operations (allows mocking in tests).
 #[async_trait]
 pub trait SkillRegistry: Send + Sync {

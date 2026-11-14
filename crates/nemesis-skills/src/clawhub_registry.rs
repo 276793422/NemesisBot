@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use nemesis_types::error::{NemesisError, Result};
 
@@ -262,13 +262,29 @@ impl ClawHubRegistry {
         );
         if let Ok(resp) = self.client.get(&file_url).send().await
             && resp.status().is_success()
-            && let Ok(content) = resp.text().await
         {
-            return Ok(crate::types::SkillContent {
-                slug: slug.to_string(),
-                filename: "SKILL.md".to_string(),
-                content,
-            });
+            // BUG-20261114-046：成功状态下的响应体也须有帽（1MB，与
+            // github DEFAULT_MAX_SIZE 对齐）——`text()` 无界摄取在快管道
+            // 超时窗口内可被恶意/被攻陷源灌入 GB 级内存。超帽/读失败 =
+            // 源异常，按既定策略链契约落穿 Strategy 2（GitHub raw 同受
+            // 本帽约束，无绕行面），warn 留痕。
+            match nemesis_utils::http_cap::read_body_capped(
+                resp,
+                crate::registry::MAX_SKILL_CONTENT_BODY_BYTES,
+            )
+            .await
+            {
+                Ok(bytes) => {
+                    return Ok(crate::types::SkillContent {
+                        slug: slug.to_string(),
+                        filename: "SKILL.md".to_string(),
+                        content: String::from_utf8_lossy(&bytes).into_owned(),
+                    });
+                }
+                Err(e) => {
+                    warn!("ClawHub file API read skipped for '{}': {}", slug, e);
+                }
+            }
         }
 
         debug!(
@@ -303,10 +319,15 @@ impl ClawHubRegistry {
             return Err(NemesisError::Other(format!("HTTP {}", resp.status())));
         }
 
-        let content = resp
-            .text()
-            .await
-            .map_err(|e| NemesisError::Other(format!("read failed: {}", e)))?;
+        // BUG-20261114-046：GitHub raw 臂同受 1MB 帽——超帽诚实报错
+        // （此处无下一级回落，截断的 SKILL.md 是毒载荷，不得静默降级）。
+        let body = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            crate::registry::MAX_SKILL_CONTENT_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let content = String::from_utf8_lossy(&body).into_owned();
 
         Ok(crate::types::SkillContent {
             slug: slug.to_string(),
@@ -352,9 +373,14 @@ impl ClawHubRegistry {
             )));
         }
 
-        let browse_resp: ClawhubBrowseResponse = resp
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let browse_resp: ClawhubBrowseResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse browse response: {}", e)))?;
 
         let items: Vec<SkillSearchResult> = browse_resp
@@ -411,9 +437,15 @@ impl ClawHubRegistry {
             .await
             .map_err(|e| NemesisError::Other(format!("convex request failed: {}", e)))?;
 
-        let body: ConvexResponse = response
-            .json()
-            .await
+        // BUG-20261114-046：convex 信封响应体 16MB 帽（call_convex 是
+        // search/get_skill_content/install 元数据的共用摄取点）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let body: ConvexResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to decode convex response: {}", e)))?;
 
         if body.status == "error" {
@@ -453,9 +485,14 @@ impl ClawHubRegistry {
             )));
         }
 
-        let search_resp: ClawhubSearchResponse = response
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let search_resp: ClawhubSearchResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse search response: {}", e)))?;
 
         let mut results: Vec<SkillSearchResult> = search_resp
