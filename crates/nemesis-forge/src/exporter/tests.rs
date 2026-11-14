@@ -182,6 +182,34 @@ async fn test_copy_skill_creates_directory() {
 }
 
 #[tokio::test]
+async fn test_copy_skill_poison_name_contained() {
+    // N 回归钉：毒名直拼 join 是 workspace 外写面（`../../evil` →
+    // `<tmp>/evil-forge/`，create_dir_all + SKILL.md 落盘）。修复后过统一
+    // slug+占位规则——`../../evil` 塌缩为 `evil`，目录关在
+    // `<workspace>/skills/evil-forge/` 内；workspace 外不落任何东西。
+    let dir = tempfile::tempdir().unwrap();
+    let config = ExportConfig::new(dir.path());
+    let exporter = Exporter::new(config);
+    let path = exporter
+        .copy_skill_to_workspace("../../evil", "poison")
+        .await
+        .unwrap();
+    assert_eq!(
+        path,
+        dir.path()
+            .join("skills")
+            .join("evil-forge")
+            .join("SKILL.md")
+    );
+    assert!(path.exists());
+    // 穿越目标（workspace 外 `<tmp>/evil-forge/`）不存在
+    assert!(
+        !dir.path().join("evil-forge").exists(),
+        "traversal target outside workspace must not be created"
+    );
+}
+
+#[tokio::test]
 async fn test_export_manifest_json_structure() {
     let dir = tempfile::tempdir().unwrap();
     let config = ExportConfig::new(dir.path());
@@ -507,4 +535,144 @@ async fn test_s8_export_artifact_copies_project_files_and_tests_dir() {
     assert!(manifest.contains("requirements.txt"));
     assert!(manifest.contains("tests/test_a.py"));
     assert!(manifest.contains("tests/sub/test_b.py"));
+}
+
+// --- 毒名回归钉（exporter 与 resolve_artifact_path 同族威胁模型） ---
+// 注册表是磁盘态数据：历史遗留中毒名（旧 create 弱消毒时期的 `../../evil`
+// 等）不得从 exporter 的目录解析/导出写路径越出 forge/目标目录。
+
+#[test]
+fn test_artifact_dir_poisoned_name_stays_in_forge() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+    let forge = dir.path().join("forge");
+    for kind in [ArtifactKind::Skill, ArtifactKind::Script, ArtifactKind::Mcp] {
+        let d = exporter.artifact_dir(kind, "../../evil");
+        assert!(
+            d.starts_with(&forge),
+            "artifact_dir escaped forge dir: {}",
+            d.display()
+        );
+        // 必须是 kind 目录下恰好一个安全单段目录名（无父目录组件）
+        assert_eq!(
+            d.strip_prefix(&forge).unwrap().components().count(),
+            2,
+            "expected exactly one safe segment under kind dir: {}",
+            d.display()
+        );
+    }
+}
+
+#[test]
+fn test_artifact_dir_empty_name_falls_back_to_placeholder() {
+    // 空 slug（空名/纯符号中毒名 slug 后为空）回落受控占位 `_unnamed_`，
+    // 与 forge_tools::resolve_artifact_path 同款
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+    let d = exporter.artifact_dir(ArtifactKind::Skill, "");
+    assert!(
+        d.ends_with("_unnamed_"),
+        "empty slug must fall back to placeholder: {}",
+        d.display()
+    );
+}
+
+#[tokio::test]
+async fn test_export_artifact_poisoned_name_stays_in_target() {
+    // 毒名不得从 export_artifact 写路径越出目标目录（生产链 = CLI forge export）
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+
+    let poisoned = make_artifact("../../evil", ArtifactKind::Script, ArtifactStatus::Active);
+    let target = dir.path().join("exports");
+    let out = exporter.export_artifact(&poisoned, &target).await.unwrap();
+
+    assert!(
+        out.starts_with(&target),
+        "export dir escaped target dir: {}",
+        out.display()
+    );
+    assert!(out.exists());
+    // Script 主文件名 = slug 后安全形态（原实现 = raw name）
+    let safe = slugified_artifact_name(&poisoned.name);
+    assert!(
+        out.join(&safe).exists(),
+        "slugged main file must exist: {}",
+        out.display()
+    );
+    // 目标目录外不得出现越界产物（`evil-1.0` 穿越形态）
+    assert!(!dir.path().join("evil-1.0").exists());
+}
+
+#[tokio::test]
+async fn test_export_script_poisoned_name_writes_safe_path() {
+    // export() 的 Script 主文件名同样 slug（写路径收紧）
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+
+    let path = exporter
+        .export(ArtifactKind::Script, "../escape", "content")
+        .await
+        .unwrap();
+
+    let forge = dir.path().join("forge");
+    assert!(
+        path.starts_with(&forge),
+        "export path escaped forge dir: {}",
+        path.display()
+    );
+    assert!(path.exists());
+}
+
+#[tokio::test]
+async fn test_export_empty_name_dir_and_file_segments_consistent() {
+    // 修复 M：回落值 `_unnamed_` 不是 slugify 不动点（首 `_` 会被 slug
+    // 吞掉）——export 的目录解析必须传原始 name（artifact_dir 内部回落），
+    // 保证目录段与 Script 主文件名段一致（此前传回落后的 safe_name 二次
+    // slug 会漂移成 `unnamed`，目录/文件名两段不一致）
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+
+    let path = exporter
+        .export(ArtifactKind::Script, "", "content")
+        .await
+        .unwrap();
+
+    assert!(
+        path.ends_with("_unnamed_/_unnamed_"),
+        "dir segment and main filename must be the same _unnamed_ segment: {}",
+        path.display()
+    );
+    assert!(path.exists());
+}
+
+#[tokio::test]
+async fn test_export_artifact_poison_version_rejected() {
+    // P 轮复查回归钉：version 同为 `{name}-{version}` 路径段且来自磁盘态
+    // 注册表（毒版本经 increment_version 原样携带分隔符传播）——`../../evil`
+    // 形态必须诚实拒绝（InvalidInput），不得在目标目录外落越界产物
+    use std::io::ErrorKind;
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new(ExportConfig::new(dir.path()));
+
+    let mut poisoned = make_artifact("ok-name", ArtifactKind::Skill, ArtifactStatus::Active);
+    poisoned.version = "../../evil".to_string();
+    let target = dir.path().join("exports");
+    let err = exporter
+        .export_artifact(&poisoned, &target)
+        .await
+        .expect_err("poison version must be rejected");
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+
+    // 越界目标没有产物
+    assert!(!dir.path().join("evil").exists());
+    assert!(!dir.path().join("evil-1.0").exists());
+    assert!(!dir.path().join("exports").exists());
+
+    // 合法版本零行为差异（多点分段版本也过围栏）
+    let mut ok = make_artifact("ok-name", ArtifactKind::Skill, ArtifactStatus::Active);
+    ok.version = "1.0.2".to_string();
+    let out = exporter.export_artifact(&ok, &target).await.unwrap();
+    assert!(out.ends_with("ok-name-1.0.2"));
+    assert!(out.exists());
 }

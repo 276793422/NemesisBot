@@ -1831,6 +1831,204 @@ fn test_store_distilled_draft_skips_when_active_exists() {
     );
 }
 
+/// 跨注册表同名防线（BUG 批次 2026-11-14）：闭环引擎的
+/// learning_registry.json 里有同名活跃技能时，蒸馏侧必须跳过——两侧都写
+/// `forge/skills/{slug}/SKILL.md`，放行 = 静默覆盖对方磁盘文件。本钉同时
+/// 锁「守护先于落盘」：跳过时本库无新产物、对方文件未被触碰。
+#[test]
+fn test_store_distilled_draft_skips_cross_registry_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let now = chrono::Local::now().to_rfc3339();
+    let learning_artifact = nemesis_types::forge::Artifact {
+        id: "skill-cross-name".to_string(),
+        name: "cross-name".to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Active,
+        content: "learning side".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now,
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    let learning_path = dir.path().join("forge").join(crate::LEARNING_REGISTRY_FILE);
+    std::fs::write(
+        &learning_path,
+        serde_json::to_string(&vec![learning_artifact]).unwrap(),
+    )
+    .unwrap();
+
+    let distilled = crate::reflector_llm::DistilledSkill {
+        name: "cross-name".to_string(),
+        skill_md: "---\nname: cross-name\n---\n\n## Overview\nwould clobber".to_string(),
+        rationale: "cross-registry collision".to_string(),
+    };
+    assert!(
+        forge.store_distilled_draft(&distilled).is_none(),
+        "闭环侧同名活跃技能必须挡住蒸馏（跨库防线）"
+    );
+    assert!(
+        !dir.path()
+            .join("forge")
+            .join("skills")
+            .join("cross-name")
+            .join("SKILL.md")
+            .exists(),
+        "跨库跳过时不得写 SKILL.md（否则覆盖闭环侧文件）"
+    );
+    assert!(
+        forge
+            .registry()
+            .find_by_name("cross-name", nemesis_types::forge::ArtifactKind::Skill)
+            .is_none(),
+        "跨库跳过时本库不得登记同名产物"
+    );
+}
+
+/// 跨库防线放行臂：闭环侧同名产物已 Degraded 时不挡（替代品顶替语义，
+/// 与库内 dedup 的 Degraded/Archived 放行口径一致）。
+#[test]
+fn test_store_distilled_draft_allows_cross_registry_degraded() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let now = chrono::Local::now().to_rfc3339();
+    let learning_artifact = nemesis_types::forge::Artifact {
+        id: "skill-cross-old".to_string(),
+        name: "cross-old".to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Degraded,
+        content: "learning side (degraded)".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now,
+        usage_count: 5,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 3,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    let learning_path = dir.path().join("forge").join(crate::LEARNING_REGISTRY_FILE);
+    std::fs::write(
+        &learning_path,
+        serde_json::to_string(&vec![learning_artifact]).unwrap(),
+    )
+    .unwrap();
+
+    let distilled = crate::reflector_llm::DistilledSkill {
+        name: "cross-old".to_string(),
+        skill_md: "---\nname: cross-old\n---\n\n## Overview\nreplacement draft".to_string(),
+        rationale: "replace degraded".to_string(),
+    };
+    assert!(
+        forge.store_distilled_draft(&distilled).is_some(),
+        "闭环侧 Degraded 同名产物不得阻塞重蒸馏（跨库放行臂）"
+    );
+}
+
+/// 反思输入并集（BUG 批次 2026-11-14）：merged_artifacts_for_reflection
+/// = 本库 ∪ 闭环库，按 id 去重——闭环侧产物对反思/蒸馏 LLM 可见（此前
+/// 互盲，重复提名风险），同 id 双库在场时只计一次。
+#[test]
+fn test_merged_artifacts_for_reflection_unions_learning_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let now = chrono::Local::now().to_rfc3339();
+    let make_artifact = |id: &str, name: &str| nemesis_types::forge::Artifact {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Active,
+        content: "c".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+
+    // 本库：manual-a；闭环库：learning-b + 与本库同 id 的 dup-id。
+    forge
+        .registry()
+        .add(make_artifact("skill-manual-a", "manual-a"));
+    let learning = vec![
+        make_artifact("skill-learning-b", "learning-b"),
+        make_artifact("skill-manual-a", "dup-id"),
+    ];
+    let learning_path = dir.path().join("forge").join(crate::LEARNING_REGISTRY_FILE);
+    std::fs::write(&learning_path, serde_json::to_string(&learning).unwrap()).unwrap();
+
+    let merged = forge.merged_artifacts_for_reflection();
+    let ids: Vec<&str> = merged.iter().map(|a| a.id.as_str()).collect();
+    assert!(
+        ids.contains(&"skill-manual-a") && ids.contains(&"skill-learning-b"),
+        "并集必须同时含本库与闭环库产物，got {:?}",
+        ids
+    );
+    assert_eq!(merged.len(), 2, "同 id 双库在场只计一次（去重）");
+}
+
+/// `merge_artifacts_by_id` 自由函数契约（BUG 批次 2026-11-15）：并集 +
+/// id 去重 primary 优先 + 空 secondary 恒等。web 手动反思 handler 无
+/// Forge 实例，直接消费本函数——契约在此钉死，两入口不再分叉。
+#[test]
+fn test_merge_artifacts_by_id_union_dedup_primary_wins() {
+    let now = chrono::Local::now().to_rfc3339();
+    let make_artifact = |id: &str, name: &str| nemesis_types::forge::Artifact {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Active,
+        content: "c".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+
+    // 并集：primary 2 条 + secondary 独有 1 条 → 3 条。
+    let primary = vec![make_artifact("a", "a"), make_artifact("b", "b")];
+    let secondary = vec![make_artifact("c", "c")];
+    let merged = crate::forge::merge_artifacts_by_id(primary, secondary);
+    assert_eq!(merged.len(), 3);
+    let ids: Vec<&str> = merged.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"a") && ids.contains(&"b") && ids.contains(&"c"));
+
+    // id 冲突：primary 侧条目保留（name 不被 secondary 覆盖）。
+    let primary = vec![make_artifact("dup", "manual-name")];
+    let secondary = vec![make_artifact("dup", "learning-name")];
+    let merged = crate::forge::merge_artifacts_by_id(primary, secondary);
+    assert_eq!(merged.len(), 1, "同 id 只计一次");
+    assert_eq!(merged[0].name, "manual-name", "primary 优先");
+
+    // 空 secondary：恒等于 primary（无扩容无重排）。
+    let primary = vec![make_artifact("a", "a")];
+    let merged = crate::forge::merge_artifacts_by_id(primary, Vec::new());
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].id, "a");
+}
+
 /// Background loops with interval = 2s: the first 1s tick must take the
 /// "elapsed < interval" branch of each loop (the else-arms of the
 /// `elapsed >= interval` checks) before the second tick fires the action.
@@ -1925,6 +2123,39 @@ fn test_slugify_skill_name_normalization() {
     assert_eq!(slugify_skill_name(""), "");
     // 48 字符截断
     assert_eq!(slugify_skill_name(&"a".repeat(60)).len(), 48);
+}
+
+#[test]
+fn test_slugify_skill_name_traversal_forms() {
+    // 毒名形态钉（resolve_artifact_path / exporter 两族修复的共同地基）：
+    // 穿越序列经 slug 全部塌缩为安全单段或空串（空串由调用方回落
+    // `_unnamed_` 占位，不得把穿越序列交还给 join）
+    assert_eq!(slugify_skill_name("../../evil"), "evil");
+    assert_eq!(slugify_skill_name("../escape"), "escape");
+    assert_eq!(slugify_skill_name("../.."), "");
+    assert_eq!(slugify_skill_name(".."), "");
+    assert_eq!(slugify_skill_name("a/../../b"), "a-b");
+    // 幂等：slug 产物再 slug 恒等（exporter/export_artifact 链的二次
+    // 解析依赖该性质）
+    let once = slugify_skill_name("Install MCP Server (HTTP)");
+    assert_eq!(slugify_skill_name(&once), once);
+}
+
+#[test]
+fn test_slug_or_placeholder_rule() {
+    use super::slug_or_placeholder;
+    // 单一真相源钉（exporter 写面 / forge_tools resolve_artifact_path /
+    // learning_engine disable 面三族共用）：合法名 slug 恒等直通；空 slug
+    // （全非法/纯符号毒名）回落受控占位段——调用方拿到的永远是安全单段。
+    assert_eq!(slug_or_placeholder("my-skill"), "my-skill");
+    assert_eq!(
+        slug_or_placeholder("Install MCP Server (HTTP)"),
+        "install-mcp-server-http"
+    );
+    assert_eq!(slug_or_placeholder("../../evil"), "evil");
+    assert_eq!(slug_or_placeholder(""), "_unnamed_");
+    assert_eq!(slug_or_placeholder(".."), "_unnamed_");
+    assert_eq!(slug_or_placeholder("../.."), "_unnamed_");
 }
 
 #[test]

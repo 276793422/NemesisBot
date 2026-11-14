@@ -681,7 +681,16 @@ impl LearningEngine {
             if !matches!(a.status, ArtifactStatus::Degraded) {
                 continue;
             }
-            let dir = skills_root.join(format!("{}-forge", a.name));
+            // name 过统一 slug+占位规则（forge::slug_or_placeholder，N 轮
+            // 复查补配）：a.name 来自磁盘态注册表，历史遗留中毒名直拼 join
+            // 会让 rename 面越出 workspace/skills（把外面 `<名>-forge` 目录
+            // 的 SKILL.md 禁用掉）。合法名 slugify 恒等，禁用行为不变；毒名
+            // 塌缩为安全单段（穿越序列）或占位段（纯符号名）= 目录不存在
+            // 诚实跳过（与 exporter 读路径同语义）。
+            let dir = skills_root.join(format!(
+                "{}-forge",
+                crate::forge::slug_or_placeholder(&a.name)
+            ));
             let active = dir.join("SKILL.md");
             if active.exists() {
                 let disabled = dir.join("SKILL.md.disabled");
@@ -751,13 +760,17 @@ impl LearningEngine {
         }
 
         let draft_name = action.draft_name.as_deref().unwrap_or("unknown");
-        let mut filename = draft_name
-            .replace("->", "-")
-            .replace(' ', "-")
-            .to_lowercase();
-        // truncate() panics on non-char-boundary; floor first (draft_name may be multibyte).
-        let cut = nemesis_types::utils::floor_char_boundary(&filename, 60);
-        filename.truncate(cut);
+        // 防御纵深（BUG 批次 2026-11-15）：suggest 文件名与 create/蒸馏
+        // 路径同源同形——入口 slugify（小写 + 非 [a-z0-9_-] 折叠为 `-` +
+        // 压缩连续 `-` + 48 上限），空产出回落 "unknown"（对齐 no_draft_name
+        // 臂语义；slugify 空串 = 全非法输入，不得落空文件名）。draft_name
+        // 现来源（trace 工具名经 generate_skill_name）受控，但同一「自由
+        // 文本落盘文件名」字段三落盘点应一套规则，防御纵深不依赖上游
+        // 受控假设。
+        let mut filename = crate::forge::slugify_skill_name(draft_name);
+        if filename.is_empty() {
+            filename = "unknown".to_string();
+        }
 
         let content = format!(
             "# Prompt Suggestion: {}\n\n\
@@ -928,6 +941,16 @@ impl LearningEngine {
         })
     }
 
+    /// Read-only peek over the manual/distill registry (`forge/registry.json`,
+    /// [`crate::MANUAL_REGISTRY_FILE`]) for cross-registry dedup.
+    ///
+    /// 跨注册表互查面（BUG 批次 2026-11-14）：ctx.rs 装配刻意分库——本库
+    /// learning_registry.json 之外，手动/蒸馏产物在 registry.json。peek 是
+    /// 防御性只读（缺失 = 空库、损坏 = WARN 不阻塞），零副作用。
+    fn peek_manual_registry(&self) -> crate::registry::Registry {
+        crate::registry::Registry::peek_sync(&self.forge_dir.join(crate::MANUAL_REGISTRY_FILE))
+    }
+
     /// Get the latest completed cycle (from in-memory cache).
     pub fn get_latest_cycle(&self) -> Option<LearningCycle> {
         self.latest_cycle.lock().clone()
@@ -1018,6 +1041,27 @@ impl LearningEngine {
         if self.find_artifact_by_fingerprint(&draft_name) {
             result.status = "skipped".to_string();
             result.error_msg = Some(format!("Artifact {} already exists", draft_name));
+            return result;
+        }
+
+        // 跨注册表同名防线（BUG 批次 2026-11-14）：手动/蒸馏侧的 registry.json
+        // 里若有同名活跃技能，本库照建会静默覆盖对方的 SKILL.md 磁盘文件
+        // （两侧都写 forge/skills/{slug}/）。活跃态语义与 find_artifact_by_
+        // fingerprint 同口径：Degraded/Archived 放行 = 替代品顶替。
+        if let Some(existing) = self
+            .peek_manual_registry()
+            .find_by_name(&draft_name, nemesis_types::forge::ArtifactKind::Skill)
+            && !matches!(
+                existing.status,
+                nemesis_types::forge::ArtifactStatus::Degraded
+                    | nemesis_types::forge::ArtifactStatus::Archived
+            )
+        {
+            result.status = "skipped".to_string();
+            result.error_msg = Some(format!(
+                "Artifact {} already exists in manual registry (cross-registry guard)",
+                draft_name
+            ));
             return result;
         }
 

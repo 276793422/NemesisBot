@@ -244,9 +244,11 @@ fn test_load_registry_empty() {
 fn test_load_registry_with_data() {
     let tmp = tempfile::TempDir::new().unwrap();
     let registry_path = tmp.path().join("registry.json");
+    // 真实 registry.json 形态（Artifact serde：kind PascalCase）——
+    // 本测试钉 load_registry 原样透传，fixture 不撒谎
     std::fs::write(
         &registry_path,
-        r#"[{"id":"test-1","type":"skill","name":"test","status":"draft"}]"#,
+        r#"[{"id":"test-1","kind":"Skill","name":"test","status":"Draft"}]"#,
     )
     .unwrap();
     let reg = load_registry(tmp.path());
@@ -295,17 +297,18 @@ fn test_load_registry_empty_array() {
 fn test_load_registry_multiple_artifacts() {
     let tmp = tempfile::TempDir::new().unwrap();
     let registry_path = tmp.path().join("registry.json");
+    // 真实 registry.json 形态（Artifact serde：kind PascalCase）
     let data = serde_json::json!([
-        {"id": "a1", "type": "skill", "name": "skill1", "status": "active", "version": "1.0"},
-        {"id": "a2", "type": "script", "name": "script1", "status": "draft", "version": "0.1"},
-        {"id": "a3", "type": "mcp", "name": "mcp1", "status": "active", "version": "2.0"}
+        {"id": "a1", "kind": "Skill", "name": "skill1", "status": "Active", "version": "1.0"},
+        {"id": "a2", "kind": "Script", "name": "script1", "status": "Draft", "version": "0.1"},
+        {"id": "a3", "kind": "Mcp", "name": "mcp1", "status": "Active", "version": "2.0"}
     ]);
     std::fs::write(&registry_path, serde_json::to_string(&data).unwrap()).unwrap();
     let reg = load_registry(tmp.path());
     assert_eq!(reg.len(), 3);
-    assert_eq!(reg[0].get("type").and_then(|v| v.as_str()), Some("skill"));
-    assert_eq!(reg[1].get("type").and_then(|v| v.as_str()), Some("script"));
-    assert_eq!(reg[2].get("type").and_then(|v| v.as_str()), Some("mcp"));
+    assert_eq!(reg[0].get("kind").and_then(|v| v.as_str()), Some("Skill"));
+    assert_eq!(reg[1].get("kind").and_then(|v| v.as_str()), Some("Script"));
+    assert_eq!(reg[2].get("kind").and_then(|v| v.as_str()), Some("Mcp"));
 }
 
 // -------------------------------------------------------------------------
@@ -363,9 +366,10 @@ fn test_cmd_list_with_registry_artifacts() {
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
+    // 真实 registry.json 形态：Artifact serde 序列化键 kind（值 PascalCase）
     let registry = serde_json::json!([
-        {"id": "a1", "type": "skill", "name": "Test Skill", "version": "1.0", "status": "active"},
-        {"id": "a2", "type": "script", "name": "Test Script", "version": "0.5", "status": "draft"}
+        {"id": "a1", "kind": "Skill", "name": "Test Skill", "version": "1.0", "status": "Active"},
+        {"id": "a2", "kind": "Script", "name": "Test Script", "version": "0.5", "status": "Draft"}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),
@@ -381,8 +385,8 @@ fn test_cmd_list_filter_by_type() {
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = serde_json::json!([
-        {"id": "a1", "type": "skill", "name": "Test Skill", "version": "1.0", "status": "active"},
-        {"id": "a2", "type": "script", "name": "Test Script", "version": "0.5", "status": "draft"}
+        {"id": "a1", "kind": "Skill", "name": "Test Skill", "version": "1.0", "status": "Active"},
+        {"id": "a2", "kind": "Script", "name": "Test Script", "version": "0.5", "status": "Draft"}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),
@@ -390,6 +394,8 @@ fn test_cmd_list_filter_by_type() {
     )
     .unwrap();
     // Filter by type "skill" - should only show skill artifacts
+    // （修复 F 后：kind=Skill 与 --type skill 大小写不敏感命中，此前读
+    // "type" 键恒失配恒「no artifacts matching」）
     cmd_list(&forge_dir, "skill").unwrap();
 }
 
@@ -399,7 +405,7 @@ fn test_cmd_list_filter_no_match() {
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = serde_json::json!([
-        {"id": "a1", "type": "skill", "name": "Test Skill", "version": "1.0", "status": "active"}
+        {"id": "a1", "kind": "Skill", "name": "Test Skill", "version": "1.0", "status": "Active"}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),
@@ -408,6 +414,29 @@ fn test_cmd_list_filter_no_match() {
     .unwrap();
     // Filter by non-existent type
     cmd_list(&forge_dir, "nonexistent").unwrap();
+}
+
+// kind_matches_filter（修复 F 回归钉）：--type 过滤与 serde kind 值
+// （Skill/Script/Mcp）大小写不敏感匹配
+#[test]
+fn test_kind_matches_filter_arms() {
+    assert!(kind_matches_filter(Some("Skill"), "all"));
+    assert!(kind_matches_filter(Some("Script"), "all"));
+    // all 短路同样大小写不敏感（修复 H：--type ALL 与 --type all 语义一致）
+    assert!(kind_matches_filter(Some("Skill"), "ALL"));
+    assert!(kind_matches_filter(None, "All"));
+    assert!(!kind_matches_filter(Some("Skill"), "script"));
+    // 小写参数命中 PascalCase serde 值
+    assert!(kind_matches_filter(Some("Skill"), "skill"));
+    assert!(kind_matches_filter(Some("Mcp"), "mcp"));
+    // 大小写变体互认
+    assert!(kind_matches_filter(Some("SKILL"), "Skill"));
+    assert!(kind_matches_filter(Some("Skill"), "SKILL"));
+    // 不同 kind 不命中
+    assert!(!kind_matches_filter(Some("Skill"), "script"));
+    // kind 缺失（畸形条目）除 all 外恒不命中
+    assert!(!kind_matches_filter(None, "skill"));
+    assert!(kind_matches_filter(None, "all"));
 }
 
 // -------------------------------------------------------------------------
@@ -420,7 +449,7 @@ fn test_cmd_evaluate_found() {
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = serde_json::json!([
-        {"id": "art-1", "type": "skill", "name": "Test Skill", "version": "1.0", "status": "active", "score": 0.95, "usage_count": 42}
+        {"id": "art-1", "kind": "Skill", "name": "Test Skill", "version": "1.0", "status": "Active", "success_rate": 0.95, "usage_count": 42}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),
@@ -436,7 +465,7 @@ fn test_cmd_evaluate_not_found() {
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = serde_json::json!([
-        {"id": "art-1", "type": "skill", "name": "Test Skill"}
+        {"id": "art-1", "kind": "Skill", "name": "Test Skill"}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),
@@ -748,12 +777,13 @@ fn test_cmd_status_with_registry_artifacts_and_types() {
     let cfg = serde_json::json!({"forge": {"enabled": true}});
     std::fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
 
-    // Create registry with various types and statuses
+    // Create registry with various types and statuses（真实 serde 形态：
+    // kind PascalCase + status PascalCase）
     let registry = serde_json::json!([
-        {"id": "a1", "type": "skill", "status": "active"},
-        {"id": "a2", "type": "skill", "status": "draft"},
-        {"id": "a3", "type": "script", "status": "active"},
-        {"id": "a4", "type": "mcp", "status": "deprecated"}
+        {"id": "a1", "kind": "Skill", "status": "Active"},
+        {"id": "a2", "kind": "Skill", "status": "Draft"},
+        {"id": "a3", "kind": "Script", "status": "Active"},
+        {"id": "a4", "kind": "Mcp", "status": "Deprecated"}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),
@@ -770,7 +800,7 @@ fn test_cmd_evaluate_with_score_and_usage() {
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     let registry = serde_json::json!([
-        {"id": "eval-1", "type": "skill", "name": "Scored Skill", "version": "2.0", "status": "active", "score": 0.85, "usage_count": 150}
+        {"id": "eval-1", "kind": "Skill", "name": "Scored Skill", "version": "2.0", "status": "Active", "success_rate": 0.85, "usage_count": 150}
     ]);
     std::fs::write(
         forge_dir.join("registry.json"),

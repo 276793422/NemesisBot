@@ -38,6 +38,40 @@ impl Registry {
         }
     }
 
+    /// Read-only peek over a registry file at an arbitrary path (cross-registry
+    /// queries).
+    ///
+    /// 跨注册表互查面（BUG 批次 2026-11-14）：蒸馏/闭环引擎两侧的同名撞车
+    /// 防线与反思输入并集借此读取**对方**的注册表文件。返回独立 Registry
+    /// 实例——不落盘（不调 save 系列即零副作用）、与调用方现有实例无共享
+    /// 状态。文件缺失 = 空注册表（与 load 家族约定同口径）；读取/解析失败
+    /// = WARN 留痕 + 空注册表（peek 是防御性互查，不阻塞主流程；loud 只
+    /// 留给装配点——BUG-20261114-026 的分工）。
+    pub fn peek_sync(path: &std::path::Path) -> Registry {
+        let registry = Self::new(RegistryConfig {
+            index_path: path.to_string_lossy().to_string(),
+        });
+        if !path.exists() {
+            return registry;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<Vec<Artifact>>(&content) {
+                Ok(arts) => *registry.artifacts.lock() = arts,
+                Err(e) => tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "[ForgeRegistry] peek parse failed — treating as empty"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[ForgeRegistry] peek read failed — treating as empty"
+            ),
+        }
+        registry
+    }
+
     /// Add a new artifact to the registry. Returns the artifact ID.
     ///
     /// If an artifact with the same name already exists, its version is

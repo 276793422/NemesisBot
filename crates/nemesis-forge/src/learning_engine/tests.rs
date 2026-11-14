@@ -136,6 +136,58 @@ fn test_ff2_disable_degraded_skill_hides_deployed_file() {
     );
 }
 
+#[test]
+fn test_disable_degraded_poison_name_contained() {
+    // N 回归钉：disable 面的 a.name 来自磁盘态注册表，历史遗留中毒名直拼
+    // join（`../../evil` → `<tmp>/evil-forge/`）会把 workspace 外同名目录的
+    // SKILL.md 禁用掉（rename = 破坏面）。修复后过统一 slug+占位规则——毒
+    // 名塌缩为安全段，目录不存在诚实跳过；workspace 外的陷阱文件原样保留。
+    use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let forge_dir = workspace.join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+
+    // 穿越目标陷阱：`workspace/skills/../../evil-forge/SKILL.md` = `<tmp>/evil-forge/SKILL.md`
+    let trap = dir.path().join("evil-forge");
+    std::fs::create_dir_all(&trap).unwrap();
+    std::fs::write(trap.join("SKILL.md"), "trap").unwrap();
+
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    registry.add(Artifact {
+        id: "skill-poison".into(),
+        name: "../../evil".into(),
+        kind: ArtifactKind::Skill,
+        version: "1.0".into(),
+        status: ArtifactStatus::Degraded,
+        content: "...".into(),
+        tool_signature: vec![],
+        created_at: "2026-01-01T00:00:00+08:00".into(),
+        updated_at: "2026-01-01T00:00:00+08:00".into(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    });
+    let cycle_store = CycleStore::new(&forge_dir);
+    let engine =
+        LearningEngine::with_forge_dir(ForgeConfig::default(), forge_dir, registry, cycle_store);
+    engine.disable_degraded_skills_impl();
+
+    assert!(
+        trap.join("SKILL.md").exists() && !trap.join("SKILL.md.disabled").exists(),
+        "outside-workspace trap file must stay untouched"
+    );
+    // 塌缩后的安全段目录（`skills/evil-forge`）也不存在——该毒名条目从未
+    // 真实部署过，disable 面诚实跳过，不留幻影目录
+    assert!(
+        !workspace.join("skills").join("evil-forge").exists(),
+        "collapsed segment dir must not be created (honest skip)"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fc1_closed_loop_produces_deployed_skill() {
     // F- + F- end-to-end: with pipeline+monitor injected and a shared
@@ -2394,6 +2446,51 @@ fn test_execute_suggest_prompt_special_chars_in_name() {
     assert_eq!(files.len(), 1);
     let name = files[0].file_name().to_string_lossy().to_string();
     assert!(name.contains("read-write-exec"));
+}
+
+/// 防御纵深（BUG 批次 2026-11-15）：suggest 文件名与 create/蒸馏路径
+/// 同一套 slugify——含路径字符/大写/空格的 draft_name 落盘为单段安全
+/// 文件名，不产生穿越落点（对照 create 路径入口 slugify 同款防线）。
+#[test]
+fn test_execute_suggest_prompt_filename_slugified() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let cycle_store = CycleStore::new(dir.path().join("cycles.jsonl"));
+    let engine = LearningEngine::with_forge_dir(
+        ForgeConfig::default(),
+        dir.path().join("forge"),
+        registry,
+        cycle_store,
+    );
+
+    let mut action = LearningAction::new("suggest_prompt", "medium", "desc");
+    action.draft_name = Some("../../Evil Name>X".into());
+    action.rationale = Some("reason".into());
+    action.confidence = 0.8;
+
+    engine.execute_suggest_prompt_for_test(&mut action);
+    assert_eq!(action.status, "executed");
+
+    // 只落一个文件、单段安全名（slugify 折叠产物 "evil-name-x"）。
+    let prompts = dir.path().join("prompts");
+    let mut names: Vec<String> = std::fs::read_dir(&prompts)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["evil-name-x_suggestion.md".to_string()]);
+
+    // 无穿越落点：prompts 之外（workspace 根）不得出现 suggestion 产物。
+    let stray = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name().to_string_lossy().ends_with("_suggestion.md"));
+    assert!(!stray, "越径产物不得落在 prompts 之外");
+
+    // 产物内容在场且正文保留原始 draft_name（文件名归一只动文件名面）。
+    let content = std::fs::read_to_string(prompts.join("evil-name-x_suggestion.md")).unwrap();
+    assert!(content.contains("../../Evil Name>X"));
 }
 
 #[test]

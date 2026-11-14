@@ -212,7 +212,7 @@ impl ForgeHandler {
         let reflection_count = count_files_with_ext(&reflections_dir, "md");
 
         // Count registry artifacts
-        let registry_file = fd.join("registry.json");
+        let registry_file = fd.join(nemesis_forge::MANUAL_REGISTRY_FILE);
         let artifact_count = if registry_file.exists() {
             read_registry_artifacts(&registry_file).len()
         } else {
@@ -264,7 +264,7 @@ impl ForgeHandler {
         let latest_report = find_latest_file(&reflections_dir, "md");
 
         // Registry stats
-        let registry_file = fd.join("registry.json");
+        let registry_file = fd.join(nemesis_forge::MANUAL_REGISTRY_FILE);
         let artifacts = read_registry_artifacts(&registry_file);
         let active_count = artifacts
             .iter()
@@ -445,7 +445,7 @@ impl ForgeHandler {
 
 impl ForgeHandler {
     fn registry_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let registry_file = forge_dir(workspace).join("registry.json");
+        let registry_file = forge_dir(workspace).join(nemesis_forge::MANUAL_REGISTRY_FILE);
         let artifacts = read_registry_artifacts(&registry_file);
 
         // Also scan forge/skills/ directory for skill files
@@ -517,7 +517,7 @@ impl ForgeHandler {
         // registry.json 是 load→改→写 RMW（并发 registry_update 后写覆盖先写
         // 丢状态翻转），与 config 同族文件共用写串行锁。
         // 锁在 update_json_file 内；顶层是数组，Value 事务天然兼容。
-        let registry_file = forge_dir(workspace).join("registry.json");
+        let registry_file = forge_dir(workspace).join(nemesis_forge::MANUAL_REGISTRY_FILE);
         super::config::update_json_file(&registry_file, |v| {
             if !registry_file.exists() {
                 return Err("registry not found".to_string());
@@ -648,7 +648,10 @@ impl ForgeHandler {
 
         let registry =
             nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
-                index_path: fd.join("registry.json").to_string_lossy().to_string(),
+                index_path: fd
+                    .join(nemesis_forge::MANUAL_REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
             });
         // (BUG-20261114-026) 加载失败 loud——静默吞掉 = registry.json 损坏时
         // 按空注册表继续，既有 artifacts 不可见，下次保存覆盖盘上残留零痕迹
@@ -659,7 +662,19 @@ impl ForgeHandler {
                 "[forge] 手动反思前 registry.json 加载失败，按空注册表继续（既有 artifacts 不可见）"
             );
         }
-        let artifacts = registry.list(None, None);
+        // 反思输入并集（BUG 批次 2026-11-15）：手动库 ∪ 学习闭环库按 id
+        // 去重——上方意图注释的「全量 artifacts」至此成立，LLM 不再对闭环
+        // 引擎（learning_registry.json）已创建的技能重复提名。本 handler 无
+        // Forge 实例，跨库读走 peek_sync（缺失=空、损坏=WARN 留痕不阻塞），
+        // 合并语义与 Forge::merged_artifacts_for_reflection 同源（单一真相
+        // 源 merge_artifacts_by_id）。
+        let learning_registry = nemesis_forge::registry::Registry::peek_sync(
+            &fd.join(nemesis_forge::LEARNING_REGISTRY_FILE),
+        );
+        let artifacts = nemesis_forge::forge::merge_artifacts_by_id(
+            registry.list(None, None),
+            learning_registry.list(None, None),
+        );
 
         // A1（缺陷整改批次 2026-11-14）：手动反思同样喂 TraceStore 真轨迹
         //（与 run_reflection_cycle 同源）——Dashboard 手动反思报告的
@@ -1112,9 +1127,28 @@ fn read_registry_artifacts(path: &PathBuf) -> Vec<serde_json::Value> {
     }
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            // peek 类防御读：WARN 留痕 + 空（BUG-20261114-026 同族纪律）——
+            // 静默归零会让 Dashboard status/stats/registry.list 把损坏误显为「无制品」
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[forge] registry.json 读取失败，统计按空注册表展示"
+            );
+            return Vec::new();
+        }
     };
-    serde_json::from_str::<Vec<serde_json::Value>>(&content).unwrap_or_default()
+    match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[forge] registry.json 解析失败（文件损坏），统计按空注册表展示"
+            );
+            Vec::new()
+        }
+    }
 }
 
 fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {

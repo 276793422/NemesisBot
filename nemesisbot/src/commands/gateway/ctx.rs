@@ -1173,10 +1173,12 @@ impl GatewayCtx {
             // relative index_path), so deploy/monitor/feedback operated on disjoint
             // stores. (F-) Dedicated path so it persists + reloads; separate from
             // Forge's manual-create registry.json to avoid a two-instance collision.
+            // 文件名走 crate 常量（BUG 批次 2026-11-14）：蒸馏/闭环两侧的跨库
+            // 互查防线按同一常量拼路径，字面量分叉会让防线指向空文件。
             let forge_shared_registry = std::sync::Arc::new(
                 nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
                     index_path: forge_dir
-                        .join("learning_registry.json")
+                        .join(nemesis_forge::LEARNING_REGISTRY_FILE)
                         .to_string_lossy()
                         .to_string(),
                 }),

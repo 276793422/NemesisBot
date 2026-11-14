@@ -1020,8 +1020,7 @@ impl SecurityHandler {
     /// 配置文件即真相源——与 [`Self::layers_projection`] 同款 raw 直读
     /// （缺席 = runtime 默认：mode=off / policy=ask）。
     fn guardian_snapshot(workspace: &str) -> serde_json::Value {
-        let raw = match nemesis_utils::fsutil::read_config_string(security_config_path(workspace))
-        {
+        let raw = match nemesis_utils::fsutil::read_config_string(security_config_path(workspace)) {
             Ok(s) => serde_json::from_str::<serde_json::Value>(&s).unwrap_or(serde_json::json!({})),
             Err(_) => serde_json::json!({}),
         };

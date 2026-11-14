@@ -527,13 +527,50 @@ impl ForgeToolExecutor {
         let period = args["period"].as_str().unwrap_or("today").to_string();
         let focus = args["focus"].as_str().unwrap_or("all").to_string();
 
+        // 与调度反思循环同源读盘（BUG 批次 2026-11-14）：此前只读 collector
+        // 内存——gateway 重启后内存清零而磁盘 experiences.jsonl 满载历史，
+        // agent 调 reflect 得到静默空报告（同名 reflect 两个真相源）。现读
+        // 盘（ExperienceStore::read_recent，与 forge.rs:217 调度循环同源）；
+        // 读取失败或盘空但内存非空（持久化失败场景）回落内存并诚实注记，
+        // 不谎报全量。
+        let limit = self.forge.config().collection.max_experiences.max(1);
+        let store =
+            crate::experience_store::ExperienceStore::from_forge_dir(self.forge.forge_dir());
+        let (experiences, mut output) = match store.read_recent(limit).await {
+            Ok(exps) if !exps.is_empty() => (exps, String::new()),
+            Ok(_) => {
+                let mem = self.forge.collector().experiences();
+                if mem.is_empty() {
+                    return ForgeToolResult::ok(format!(
+                        "## Reflection Report\n\n\
+                         Period: {period} (label only — history is not filtered by period)\n\
+                         Focus: {focus} (label only — history is not filtered by focus)\n\n\
+                         No experiences recorded yet.\n"
+                    ));
+                }
+                (
+                    mem,
+                    "> ⚠ Disk experience log is empty — showing in-memory records from this process only.\n\n"
+                        .to_string(),
+                )
+            }
+            Err(e) => (
+                self.forge.collector().experiences(),
+                format!(
+                    "> ⚠ Failed to read disk experience log ({e}) — showing in-memory records from this process only.\n\n"
+                ),
+            ),
+        };
+
         // Use the reflector to generate a reflection
-        let experiences = self.forge.collector().experiences();
         let reflector = crate::reflector::Reflector::new();
         let reflection = reflector.generate_reflection(&experiences);
 
-        let mut output = "## Reflection Report\n\n".to_string();
-        output.push_str(&format!("Period: {}\nFocus: {}\n\n", period, focus));
+        output.push_str("## Reflection Report\n\n");
+        output.push_str(&format!(
+            "Period: {period} (label only — history is not filtered by period)\n\
+             Focus: {focus} (label only — history is not filtered by focus)\n\n"
+        ));
 
         for insight in &reflection.insights {
             output.push_str(&format!("- {}\n", insight));
@@ -893,10 +930,22 @@ impl ForgeToolExecutor {
             ));
         }
 
-        // Save version snapshot before updating
+        // Save version snapshot before updating（fail-closed，BUG 批次
+        // 2026-11-14）：此前 `let _ = save_snapshot(...)` 把读/写失败全部
+        // 吞掉——Windows AV/索引器瞬时句柄持有工件文件时，空 .bak 落盘且
+        // 伪装成功，用户 rollback 会恢复出空内容（回滚链在本次更新后失
+        // 守）。现快照失败即拒绝更新并诚实报因；NotFound = 盘上无旧内容
+        // （新工件/历史已删），快照无意义，放行。
         let forge_dir = self.forge.workspace().join("forge");
         let artifact_path = resolve_artifact_path(&forge_dir, &artifact);
-        let _ = version::save_snapshot(&artifact_path, &artifact.version).await;
+        if let Err(e) = version::save_snapshot(&artifact_path, &artifact.version).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return ForgeToolResult::err(format!(
+                "update aborted: failed to snapshot current v{} before writing (rollback chain protection): {}",
+                artifact.version, e
+            ));
+        }
 
         // Update file on disk
         if let Err(e) = tokio::fs::write(&artifact_path, &content).await {
@@ -1401,9 +1450,13 @@ impl ForgeToolExecutor {
     async fn execute_learning_status(&self, _args: &serde_json::Value) -> ForgeToolResult {
         let config = self.forge.config();
 
-        if !config.learning.enabled {
+        // 运行时开关以 learning_enabled 旗标为准（BUG 批次 2026-11-14）：
+        // config 是 Forge::new 时的冻结镜像——Dashboard/WSAPI learning.toggle
+        // 双写磁盘+旗标后，学习循环按旗标走（forge.rs is_learning_enabled），
+        // 此处若读 config 镜像会误报（开而报未开/关而报 Enabled）。
+        if !self.forge.is_learning_enabled() {
             return ForgeToolResult::ok(
-                "Forge closed-loop learning is not enabled. Set learning.enabled = true in forge.json to enable.",
+                "Forge closed-loop learning is not enabled. Toggle it on via the Dashboard Forge page (or config.forge.json learning.enabled + gateway restart).",
             );
         }
 
@@ -1483,24 +1536,17 @@ use nemesis_types::forge::ArtifactKind;
 
 /// Resolve the on-disk path for an artifact based on its type and name.
 ///
-/// name 在使用点再次 slug——注册表是磁盘态数据，历史
-/// 遗留的中毒名（旧 create 弱消毒时期写入的 `../x` 等）从这里流进
-/// execute_update/evaluate/build_mcp 的读写路径仍可越出 forge 目录。
-/// 合法名（slug 产物）经 slugify 后逐字节不变，零行为差异。
+/// name 在使用点过统一 slug+占位规则（`forge::slug_or_placeholder`，单一
+/// 真相源）——注册表是磁盘态数据，历史遗留的中毒名（旧 create 弱消毒时期
+/// 写入的 `../x` 等）从这里流进 execute_update/evaluate/build_mcp 的读写
+/// 路径仍可越出 forge 目录。合法名（slug 产物）经 slugify 后逐字节不变，
+/// 零行为差异；空 slug = 纯符号中毒名，占位段把读路径诚实未命中、写路径
+/// 关在 forge 子目录内。
 fn resolve_artifact_path(
     forge_dir: &std::path::Path,
     artifact: &nemesis_types::forge::Artifact,
 ) -> PathBuf {
-    let name = crate::forge::slugify_skill_name(&artifact.name);
-    // 空 slug = 纯符号中毒名（`..`、`../..` 等穿越序列，旧 create 弱消毒
-    // 时期可落库）——此处回落原始名等于把穿越序列原样交还给 join，正是
-    // 本函数要堵的洞。改用受控占位段：读路径诚实未命中，写路径关在 forge
-    // 子目录内（合法名 slugify 恒非空，占位段永不命中正常产物）。
-    let name = if name.is_empty() {
-        "_unnamed_".to_string()
-    } else {
-        name
-    };
+    let name = crate::forge::slug_or_placeholder(&artifact.name);
     match artifact.kind {
         ArtifactKind::Skill => forge_dir.join("skills").join(name).join("SKILL.md"),
         ArtifactKind::Script => resolve_script_path(forge_dir, &name),
@@ -1693,6 +1739,7 @@ pub fn increment_version(version: &str) -> String {
 /// Creates a `.versions/` subdirectory under the artifact's parent directory
 /// and copies the artifact content to `{version}.bak`.
 pub fn save_version_snapshot(artifact_path: &str, version: &str) -> std::io::Result<()> {
+    fence_version_segment(version)?;
     let path = std::path::Path::new(artifact_path);
     let versions_dir = path.parent().unwrap_or(path).join(".versions");
     std::fs::create_dir_all(&versions_dir)?;
@@ -1711,6 +1758,7 @@ pub fn save_version_snapshot(artifact_path: &str, version: &str) -> std::io::Res
 /// Reads the snapshot content from `.versions/{version}.bak` under the
 /// artifact's parent directory.
 pub fn load_version_snapshot(artifact_path: &str, version: &str) -> std::io::Result<String> {
+    fence_version_segment(version)?;
     let path = std::path::Path::new(artifact_path);
     let snapshot_path = path
         .parent()
@@ -1720,21 +1768,45 @@ pub fn load_version_snapshot(artifact_path: &str, version: &str) -> std::io::Res
     std::fs::read_to_string(&snapshot_path)
 }
 
+/// version 段落盘/读盘前的单段围栏（P 轮复查补配）。
+///
+/// version 会拼成 `.versions/{version}.bak`（快照面）与
+/// `{name}-{version}/`（export 面）的路径段：`rollback_version` 是 agent
+/// 工具入参（LLM 可控，`../../x` 直接给 load 面 .bak 后缀的越界读原语），
+/// `artifact.version` 来自磁盘态注册表（历史遗留毒版本经 increment_version
+/// 原样携带分隔符向后续传播）。围栏复用跨入口统一定义
+/// `forge::valid_skill_dir_name`（拒分隔符/盘符/`.`/`..`/Win32 尾点空格
+/// 族；合法版本 "1.0"/"1.0.2"/"1.0-beta" 全通过，零行为差异）。
+fn fence_version_segment(version: &str) -> std::io::Result<()> {
+    if let Err(msg) = crate::forge::valid_skill_dir_name(version) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid version segment: {msg}"),
+        ));
+    }
+    Ok(())
+}
+
 /// Version snapshot operations.
 pub mod version {
     use std::path::Path;
 
     /// Save a version snapshot of an artifact file.
     pub async fn save_snapshot(artifact_path: &Path, version: &str) -> std::io::Result<()> {
+        super::fence_version_segment(version)?;
         let versions_dir = artifact_path
             .parent()
             .unwrap_or(artifact_path)
             .join(".versions");
         tokio::fs::create_dir_all(&versions_dir).await?;
 
-        let content = tokio::fs::read_to_string(artifact_path)
-            .await
-            .unwrap_or_default();
+        // 横扫族 C 五轮（2026-11-06）回扫补漏（BUG 批次 2026-11-14）：同族
+        // 修复此前落在零生产调用的同步孪生 `save_version_snapshot` 上，本
+        // 异步版才是生产唯一实装——读失败 unwrap_or_default 会写空 .bak
+        // 伪装成有效备份，restore 恢复出空文件（回滚点被毁，双重故障全被
+        // 吞）。对齐同步孪生：读失败诚实上抛（NotFound 在内——工件不存在
+        // 时快照无意义），由调用方决定处置。
+        let content = tokio::fs::read_to_string(artifact_path).await?;
         let snapshot_path = versions_dir.join(format!("{}.bak", version));
         tokio::fs::write(&snapshot_path, content).await?;
         Ok(())
@@ -1742,6 +1814,7 @@ pub mod version {
 
     /// Load a version snapshot.
     pub async fn load_snapshot(artifact_path: &Path, version: &str) -> std::io::Result<String> {
+        super::fence_version_segment(version)?;
         let snapshot_path = artifact_path
             .parent()
             .unwrap_or(artifact_path)
