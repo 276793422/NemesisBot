@@ -2169,3 +2169,63 @@ async fn bug87_vector_query_failure_falls_back_to_keyword() {
         .expect("search_auto_inject must not Err when the embed backend is down");
     assert_eq!(res.total, 0, "auto-inject must not fire on embed failure");
 }
+
+// ===================================================================
+// BUG-20261114-032：vector 守卫纪律回归锁
+// ===================================================================
+
+/// embed 推理（tens-of-ms ONNX，reply 通道同步阻塞）必须发生在 manager
+/// 的 vector_store 读守卫之外。embed 闭包内用 try_write 探针断言锁无
+/// 任何持有者——旧实现四处（store_entry_to_vector / search /
+/// search_auto_inject / query_semantic）embed 在守卫内执行，探针当场
+/// 失败（红）；新实现 Arc 外提、守卫先丢再推理（绿）。
+/// 四条路径一测覆盖：写入镜像、search、auto-inject、query_semantic。
+#[tokio::test]
+async fn embed_inference_runs_outside_vector_store_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let mgr_for_embed = Arc::clone(&mgr);
+    let embed: crate::vector::EmbeddingFunc = Box::new(move |text: &str| {
+        assert!(
+            mgr_for_embed.vector_store_lock_free_for_write(),
+            "embed 推理时 vector_store 锁仍被持有（BUG-20261114-032 守卫纪律被违反：\
+             守卫不跨 ONNX 推理——init/close 写者被阻塞，写偏好下搜索互相串行）"
+        );
+        // 确定性 embedding：[len, 1, 0, 0]——同前缀文本余弦相似度接近 1。
+        Ok(vec![text.len() as f32, 1.0, 0.0, 0.0])
+    });
+
+    let store_config = StoreConfig {
+        embedding_tier: "test".into(),
+        plugin_path: None,
+        config_dir: None,
+        max_results: 10,
+        similarity_threshold: 0.1,
+        storage_path: dir
+            .path()
+            .join("vs_guard_probe.jsonl")
+            .to_string_lossy()
+            .to_string(),
+    };
+    mgr.init_vector_store_with_embed(embed, store_config)
+        .unwrap();
+    mgr.set_vector_enabled(true);
+
+    // ① 写入镜像路径（store_entry_to_vector：embed + persist 同步 IO）
+    let entry = Entry::new(MemoryType::LongTerm, "alpha memory about paris".to_string());
+    mgr.store_entry(entry).await.unwrap();
+
+    // ② search（语义命中路径）
+    let res = mgr.search("alpha memory", None, 10).await.unwrap();
+    assert!(res.total >= 1, "search 应命中向量结果");
+
+    // ③ search_auto_inject（0.35 低阈值路径）
+    let res = mgr.search_auto_inject("alpha memory", 10).await.unwrap();
+    assert!(res.total >= 1, "auto-inject 应命中向量结果");
+
+    // ④ query_semantic
+    let res = mgr.query_semantic("alpha memory", 10).await.unwrap();
+    assert!(res.total >= 1, "query_semantic 应命中向量结果");
+}
