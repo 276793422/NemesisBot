@@ -20,6 +20,8 @@ use crate::base::{BaseChannel, Channel};
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 /// Maximum backoff duration.
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+/// Base receive poll interval（退避降级后成功路径恢复到此档，BUG-20261114-054）。
+const RECEIVE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// WhatsApp channel configuration.
 /// SEC-002（BUG-20261111-068）：api_key / proxy（可带 userinfo 凭据）脱敏
@@ -77,7 +79,6 @@ pub struct WhatsAppChannel {
     config: WhatsAppConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    outbound_queue: parking_lot::RwLock<Vec<OutboundMessage>>,
     /// Bus sender for publishing inbound messages to the agent engine.
     bus_sender: broadcast::Sender<InboundMessage>,
     /// Cancellation sender for the receive loop.
@@ -99,15 +100,15 @@ impl WhatsAppChannel {
         let mut client_builder = crate::base::outbound_http_builder();
 
         // Apply proxy if configured (bridge may be remote)
-        if let Some(ref proxy_url) = config.proxy {
-            if !proxy_url.is_empty() {
-                match reqwest::Proxy::all(proxy_url.as_str()) {
-                    Ok(proxy) => {
-                        client_builder = client_builder.proxy(proxy);
-                    }
-                    Err(e) => {
-                        warn!("[WhatsAppChannel] invalid proxy URL '{}': {}", proxy_url, e);
-                    }
+        if let Some(ref proxy_url) = config.proxy
+            && !proxy_url.is_empty()
+        {
+            match reqwest::Proxy::all(proxy_url.as_str()) {
+                Ok(proxy) => {
+                    client_builder = client_builder.proxy(proxy);
+                }
+                Err(e) => {
+                    warn!("[WhatsAppChannel] invalid proxy URL '{}': {}", proxy_url, e);
                 }
             }
         }
@@ -121,7 +122,6 @@ impl WhatsAppChannel {
             config,
             http,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            outbound_queue: parking_lot::RwLock::new(Vec::new()),
             bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),
         })
@@ -151,11 +151,6 @@ impl WhatsAppChannel {
             chat_id.to_string(),
             content.to_string(),
         ))
-    }
-
-    /// Drains all queued outbound messages.
-    pub fn drain_outbound(&self) -> Vec<OutboundMessage> {
-        self.outbound_queue.write().drain(..).collect()
     }
 
     /// Sends a message via the bridge HTTP API.
@@ -188,6 +183,25 @@ impl WhatsAppChannel {
         Ok(())
     }
 
+    /// BUG-20261114-054 轮询节奏决策（纯函数可单测）：连错 >3 晋升退避档
+    /// （Some = 用该周期重建 interval），否则维持现档。
+    fn poll_period_on_error(
+        consecutive_errors: u32,
+        backoff: std::time::Duration,
+    ) -> Option<std::time::Duration> {
+        (consecutive_errors > 3).then_some(backoff)
+    }
+
+    /// 成功路径：处于退避档则回基础档（Some），未降级不动（None）。
+    /// 旧代码只复位 backoff 变量、从不重建 interval——一次 ≥4 连错的瞬态
+    /// 断连后轮询永久停留在 MAX 档（收件延迟恒 60s）。
+    fn poll_period_on_success(
+        degraded: bool,
+        base: std::time::Duration,
+    ) -> Option<std::time::Duration> {
+        degraded.then_some(base)
+    }
+
     /// Starts a polling loop to receive messages from the bridge.
     fn spawn_receive_loop(&self) {
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
@@ -203,13 +217,17 @@ impl WhatsAppChannel {
         tokio::spawn(async move {
             let mut cancel_rx = cancel_rx;
             let url = format!("{base_url}/receive");
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut interval = tokio::time::interval(RECEIVE_POLL_INTERVAL);
             // 默认 Burst 在挂起恢复后把错过的 tick 逐个补发
             // ——bridge 被密集轮询（重建的 backoff interval 同）。Delay 从当前
             // 时刻重排。
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut backoff = INITIAL_BACKOFF;
             let mut consecutive_errors = 0u32;
+            // BUG-20261114-054：interval 是否处于退避档（>3 连错时重建为
+            // backoff 档）。成功路径据此重建回基础档——backoff 变量复位
+            // 不触碰 interval 周期，必须有显式恢复臂。
+            let mut degraded = false;
 
             loop {
                 tokio::select! {
@@ -230,8 +248,15 @@ impl WhatsAppChannel {
                         match req.send().await {
                             Ok(resp) if resp.status().is_success() => {
                                 consecutive_errors = 0;
-                                if backoff > INITIAL_BACKOFF {
-                                    backoff = INITIAL_BACKOFF;
+                                backoff = INITIAL_BACKOFF;
+                                if let Some(period) =
+                                    Self::poll_period_on_success(degraded, RECEIVE_POLL_INTERVAL)
+                                {
+                                    interval = tokio::time::interval(period);
+                                    interval.set_missed_tick_behavior(
+                                        tokio::time::MissedTickBehavior::Delay,
+                                    );
+                                    degraded = false;
                                 }
 
                                 if let Ok(messages) = resp.json::<Vec<WhatsAppInboundMessage>>().await {
@@ -292,11 +317,14 @@ impl WhatsAppChannel {
                             Ok(resp) => {
                                 consecutive_errors += 1;
                                 warn!(status = %resp.status(), "[WhatsAppChannel] bridge poll returned error");
-                                if consecutive_errors > 3 {
-                                    interval = tokio::time::interval(backoff);
+                                if let Some(period) =
+                                    Self::poll_period_on_error(consecutive_errors, backoff)
+                                {
+                                    interval = tokio::time::interval(period);
                                     interval.set_missed_tick_behavior(
                                         tokio::time::MissedTickBehavior::Delay,
                                     );
+                                    degraded = true;
                                     backoff = (backoff * 2).min(MAX_BACKOFF);
                                     interval.tick().await; // skip first tick
                                 }
@@ -304,11 +332,14 @@ impl WhatsAppChannel {
                             Err(e) => {
                                 consecutive_errors += 1;
                                 warn!(error = %e, "[WhatsAppChannel] bridge poll failed");
-                                if consecutive_errors > 3 {
-                                    interval = tokio::time::interval(backoff);
+                                if let Some(period) =
+                                    Self::poll_period_on_error(consecutive_errors, backoff)
+                                {
+                                    interval = tokio::time::interval(period);
                                     interval.set_missed_tick_behavior(
                                         tokio::time::MissedTickBehavior::Delay,
                                     );
+                                    degraded = true;
                                     backoff = (backoff * 2).min(MAX_BACKOFF);
                                     interval.tick().await; // skip first tick
                                 }
@@ -355,7 +386,6 @@ impl Channel for WhatsAppChannel {
             let _ = tx.send(());
         }
 
-        self.outbound_queue.write().clear();
         info!("[WhatsAppChannel] channel stopped");
         Ok(())
     }
@@ -371,16 +401,11 @@ impl Channel for WhatsAppChannel {
 
         debug!(chat_id = %msg.chat_id, "[WhatsAppChannel] channel sending message");
 
-        // Try to send via bridge HTTP API
-        match self.send_via_bridge(&msg.chat_id, &msg.content).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                // Fall back to queue if bridge is unavailable
-                warn!(error = %e, "[WhatsAppChannel] bridge send failed, queueing message");
-                self.outbound_queue.write().push(msg);
-                Ok(())
-            }
-        }
+        // BUG-20261114-053：桥不可达不再入队假成功——outbound_queue 生产零
+        // 消费者（drain_outbound 只有测试调用），入队=静默丢消息且对调用方
+        // 谎报 Ok。诚实报错交 manager 记 warn（maixcam BUG-20261114-053
+        // 同族同口径）。
+        self.send_via_bridge(&msg.chat_id, &msg.content).await
     }
 }
 
