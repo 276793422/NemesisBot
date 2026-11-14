@@ -3367,6 +3367,52 @@ fn add_job_internal_still_allows_legacy_dead_schedule() {
 }
 
 #[test]
+fn add_job_ext_gate_and_write_share_one_clock_read_at_kind() {
+    // BUG-20261114-056 回归锁：死排程闸与内部注册必须共用同一时钟读。
+    // 修复前形态：闸在 add_job_ext 用 now₁ 判定，add_job_internal 用
+    // 第二次时钟读 now₂ 重算 next_run——at 类单发的 at_ms 落在
+    // (now₁, now₂] 之间时，闸放行（at_ms > now₁）而写入得 None
+    // （at_ms <= now₂），产出 enabled + next_run=None 静默僵尸（恰是
+    // 死排程闸存在要防的状态）。测试用 add_gate_delay_ms 钩子在闸通过
+    // 后停顿 60ms、at_ms 只提前 5ms，把过期点确定性挤进闸-写间隙：
+    // 修复前内部重算必得 None（红）；修复后全漏斗单时钟读（闸与写入
+    // 共用 now₁，同一纯函数同一输入 ⇒ 结果恒等），next_run 恒
+    // Some(at_ms)（绿）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let at_ms = chrono::Local::now().timestamp_millis() + 5;
+    let schedule = CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(at_ms),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    svc.add_gate_delay_ms
+        .store(60, std::sync::atomic::Ordering::SeqCst);
+    let job = svc
+        .add_job_ext(
+            "gate-write-race",
+            schedule,
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(job.enabled);
+    assert_eq!(
+        job.state.next_run_at_ms,
+        Some(at_ms),
+        "闸-写共用同一时钟读：at_ms 在闸判定时未过期 ⇒ 写入必须同判定 Some(at_ms)，绝不产出静默僵尸"
+    );
+}
+
+#[test]
 fn add_job_ext_rejects_empty_message_enabled_loud() {
     // 空 message 闸（死排程闸同族不变量）——enabled 作
     // 业 message 空白 = 每次触发都落 on_job 的 "No message to deliver"

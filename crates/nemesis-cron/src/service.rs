@@ -208,6 +208,10 @@ pub struct CronService {
     /// 窗口， 红证）。
     #[cfg(test)]
     persist_delay_ms: std::sync::atomic::AtomicU64,
+    /// 测试钩子（仅 test 构建）：add_job_ext 死排程闸通过后、内部注册前
+    /// 一次性停顿毫秒数——制造闸-写双时钟读窗口（BUG-20261114-056 红证）。
+    #[cfg(test)]
+    add_gate_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 /// （加固）：job 暂停句柄——供
@@ -324,6 +328,8 @@ impl CronService {
             persist_fail_next: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             persist_delay_ms: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            add_gate_delay_ms: std::sync::atomic::AtomicU64::new(0),
         };
         if let Err(e) = svc.load_store() {
             warn!("[Cron] Failed to load store on init: {}", e);
@@ -619,6 +625,19 @@ impl CronService {
         max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
+        // BUG-20261114-056：死排程闸检查与内部注册写入此前各读一次时钟
+        // （本函数 compute_next_run(now₁) → add_job_internal 内
+        // compute_next_run(now₂)）——at 类单发的 at_ms 落在两读之间时
+        // （调度延迟 > at_ms 距 now₁ 的余量即触发，测试钩子可确定性放大）：
+        // 闸放行（at_ms > now₁）、写入重算得 None（at_ms <= now₂）→
+        // enabled + next_run=None 静默僵尸——恰是死排程闸存在要防的状态。
+        // 修复 = 全漏斗单时钟读：now_ms 在此取一次，闸与内部注册共用
+        // （同一纯函数同一输入 ⇒ 结果恒等，窗口结构性消除）。对照：
+        // update/patch/toggle/enable 四路 gate 与 write 本就共用同一
+        // now_ms（各自函数顶部单读），add 是唯一分体读成员。内部旁路
+        // （add_job_internal 直调）语义不变——死排程闸只设在用户漏斗
+        // （tests::add_job_internal_still_allows_legacy_dead_schedule 钉）。
+        let now_ms = Local::now().timestamp_millis();
         if let Some(prefix) = reserved_prefix_hit(name) {
             return Err(format!(
                 "cron job 名字以保留前缀 {prefix:?} 开头（系统内部作业命名空间），\
@@ -630,7 +649,7 @@ impl CronService {
         // 表达式 / 未知 kind）＝ 永远不会 fire 的静默僵尸任务，loud 拒绝
         // 而非假装已排程。disabled 作业放行（语义：不排程不触发，
         // enable_job 重算时才落 next_run）。
-        if enabled && compute_next_run(&schedule, Local::now().timestamp_millis()).is_none() {
+        if enabled && compute_next_run(&schedule, now_ms).is_none() {
             return Err(format!(
                 "调度永远不会有下一次触发，拒绝创建死排程任务: {name:?} \
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
@@ -649,7 +668,18 @@ impl CronService {
                  （启用的任务每次触发都不会投递任何内容；请给出消息文本，或先创建为停用）"
             ));
         }
-        self.add_job_internal(
+        // 红证钩子：闸全部通过后、写入前停顿（一次性消费）——回归锁用
+        // 它把 at_ms 过期点挤进（修复前的）闸-写间隙，见回归锁测试。
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering;
+            let d = self.add_gate_delay_ms.swap(0, Ordering::SeqCst);
+            if d > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(d));
+            }
+        }
+        self.add_job_internal_at(
+            now_ms,
             name,
             schedule,
             message,
@@ -677,12 +707,42 @@ impl CronService {
         max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
+        let now_ms = Local::now().timestamp_millis();
+        self.add_job_internal_at(
+            now_ms,
+            name,
+            schedule,
+            message,
+            deliver,
+            channel,
+            to,
+            session_key,
+            max_rounds,
+            enabled,
+        )
+    }
+
+    /// [`Self::add_job_internal`] 的单时钟读核心（[`Self::add_job_ext`]
+    /// 漏斗以闸侧同一 `now_ms` 调入，见 BUG-20261114-056 注）。私有——
+    /// 公开面只有 `add_job` / `add_job_ext` / `add_job_internal` 三个入口。
+    fn add_job_internal_at(
+        &self,
+        now_ms: i64,
+        name: &str,
+        schedule: CronSchedule,
+        message: &str,
+        deliver: bool,
+        channel: Option<&str>,
+        to: Option<&str>,
+        session_key: Option<&str>,
+        max_rounds: Option<u32>,
+        enabled: bool,
+    ) -> Result<CronJob, String> {
         let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
         info!(
             "[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}",
             name, schedule.kind, cron_expr, enabled
         );
-        let now_ms = Local::now().timestamp_millis();
         let delete_after_run = schedule.kind == "at";
         let job = CronJob {
             id: generate_id(),
