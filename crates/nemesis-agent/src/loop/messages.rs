@@ -582,6 +582,16 @@ impl AgentLoop {
                 snapshot_section.push_str(&format!("\n{note}"));
             }
         }
+        // 文件引用规范（2026-11-14 BUG 提示词半边）：LLM 列界外目录时
+        // 习惯转述裸文件名，前端链接按工作区相对解析必败 → 祖先回退误导。
+        // 规则钉进每轮快照（常量文本跨轮稳定，字节纪律成立不触发重注入；
+        // 注入点在对话历史后 = prompt cache 前缀不受损）。
+        snapshot_section.push_str(
+            "\n# File References\n\
+             - 工作区内文件：用相对路径引用。\n\
+             - 工作区外文件：必须用完整绝对路径（如 C:/path/file.md），相对路径或裸文件名无法被前端链接解析。\n\
+             - 罗列文件清单（列目录/表格式回复）时：逐条带完整路径，不要只写文件名。",
+        );
         snapshot_section.push_str("\n(本快照取代之前的时间/环境快照)");
 
         // /（多模态）：turn → 请求消息统一走 `turn_to_request_message`

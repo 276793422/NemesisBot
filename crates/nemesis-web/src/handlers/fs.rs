@@ -113,6 +113,39 @@ fn path_contains(root: &Path, target: &Path) -> bool {
     prefix && t.as_bytes()[r.len()] == b'/'
 }
 
+/// editor 开关闸类型（与 agent 工具层 `WorkspaceBoundary.editor_gate` 同形：
+/// 原始类型签名，不暴露 nemesis-security 类型——feature 无关持有）。
+type EditorFenceGate = std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
+
+/// 链接围栏的 editor 开关闸（读族，BUG 修复：链接围栏此前未接开关）。
+/// 判定与 agent 工具围栏 fence_gate 同源同判（同一 EditorAccessState）：
+/// Full Access 开 = 界外路径放行；security 裁剪 / 未装配（headless、降级
+/// 形态）= None = 无闸（fail-safe 旧行为：越界照拒）。
+#[cfg(feature = "security")]
+fn editor_fence_gate() -> Option<EditorFenceGate> {
+    crate::handlers::editor::editor_access_state().map(|s| s.fence_gate())
+}
+
+#[cfg(not(feature = "security"))]
+fn editor_fence_gate() -> Option<EditorFenceGate> {
+    None
+}
+
+/// 越界拒绝的解除指引后缀（security 裁剪形态无此开关，指引一并缺席——
+/// 不给修辞性指向不存在的页面）。
+#[cfg(feature = "security")]
+const OUT_OF_BOUNDS_HINT: &str =
+    "。如需放行工作区外路径：开启 Full Access（聊天框旁 FullAccess 按钮或 设置 → 编辑器 TAB）";
+#[cfg(not(feature = "security"))]
+const OUT_OF_BOUNDS_HINT: &str = "";
+
+/// 「全链无命中」报错的指引后缀（2026-11-14 BUG：裸文件名/相对形态在工作
+/// 区锚下无一目录存在时，祖先回退到锚根本身 = 打开一个与文件真实位置无关
+/// 的目录，误导）。不点名开关（不存在「放行未找到」的开关），指引的是
+/// 引用形态本身。不 gate security——围栏与指引语义在裁剪形态同样成立。
+const NOT_FOUND_HINT: &str =
+    "。若是工作区外文件，请让 bot 用完整绝对路径引用（如 C:/path/file.md），前端链接才能正确打开";
+
 /// `..` 段拒绝 + 分隔符归一（点击链接语义不需要逃逸形态；合法嵌套路径
 /// 用绝对或 workspace 相对形态表达）。
 fn normalize_click_path(raw: &str) -> Result<String, String> {
@@ -139,6 +172,24 @@ fn allowed_open_roots(main_workspace: &str) -> Vec<PathBuf> {
     roots
 }
 
+/// 注册项目 → (目录叶名, 项目根路径) 表（项目名前缀剥段臂用；无 bridge =
+/// 空表）。叶名取自注册路径磁盘形态，模型从 workspace 父目录视角写路径
+/// 时首段即它。
+fn project_leaf_roots() -> Vec<(String, PathBuf)> {
+    let Some(bridge) = crate::handlers::projects::projects_bridge() else {
+        return Vec::new();
+    };
+    bridge
+        .list()
+        .iter()
+        .filter_map(|p| {
+            Path::new(&p.path)
+                .file_name()
+                .map(|n| (n.to_string_lossy().to_string(), PathBuf::from(&p.path)))
+        })
+        .collect()
+}
+
 /// 解析产物：绝对路径 + 类型 + 存在性。`exists=false` = 文件未命中、
 /// 回落到最近存在祖先目录的产物（响应面诚实注记「文件未找到」）。
 #[derive(Debug, PartialEq)]
@@ -151,6 +202,7 @@ pub(crate) struct ResolvedTarget {
 /// 锚链单次解析的结果分类：命中 / 未命中（带祖先候选——CJK 剥前缀回退
 /// 可继续，全部候选未命中才落祖先回退）/ 越界（短路——回退候选同样
 /// 不放松任何闸）。
+#[derive(Debug)]
 enum ChainOutcome {
     /// 存在目标命中（exists=true）。
     Hit(ResolvedTarget),
@@ -184,7 +236,9 @@ fn resolve_click_target(
     raw: &str,
 ) -> Result<ResolvedTarget, String> {
     let norm = normalize_click_path(raw)?;
-    match try_resolve_chain(session_root, main_workspace, &norm) {
+    // editor 开关闸每请求现取（不缓存）——开关热生效，agent 工具围栏同款。
+    let gate = editor_fence_gate();
+    match try_resolve_chain(session_root, main_workspace, &norm, gate.as_ref()) {
         ChainOutcome::Hit(t) => Ok(t),
         ChainOutcome::OutOfBounds(e) => Err(e),
         ChainOutcome::Miss(ancestor, e) => {
@@ -200,33 +254,48 @@ fn resolve_click_target(
                 if normalize_click_path(&cand).is_err() {
                     continue;
                 }
-                if let ChainOutcome::Hit(t) = try_resolve_chain(session_root, main_workspace, &cand)
+                if let ChainOutcome::Hit(t) =
+                    try_resolve_chain(session_root, main_workspace, &cand, gate.as_ref())
                 {
                     return Ok(t);
                 }
             }
             // 祖先回退（最后）：全链无存在目标 → 最近存在祖先目录
-            // （文件所在的真实目录，exists=false）；剥到根仍不存在
-            // （注册项目目录被删等）→ 诚实报错。
+            // （文件所在的真实目录，exists=false）；**回退剥到锚根本身**
+            // （路径文本点名的目录在锚下无一存在——裸名/界外文件相对
+            // 形态，2026-11-14 BUG）→ None → 诚实报错 + 绝对路径指引，
+            // 不再打开与文件真实位置无关的锚根。
             match ancestor {
                 Some(t) => Ok(t),
-                None => Err(e),
+                None => Err(format!("{e}{NOT_FOUND_HINT}")),
             }
         }
     }
 }
 
 /// 锚链解析（归一后的路径）：绝对臂 / 相对臂共用存在性判定 + 祖先回退 +
-/// 分隔符统一。
-fn try_resolve_chain(session_root: &str, main_workspace: &str, norm: &str) -> ChainOutcome {
+/// 分隔符统一。`editor_gate` = editor 开关围栏闸（读族，[`editor_fence_gate`]）——
+/// 越界绝对路径先问它（Full Access 开 = 放行），None = 无闸（containment
+/// 照拒；测试面注入点，生产走全局开关槽）。
+fn try_resolve_chain(
+    session_root: &str,
+    main_workspace: &str,
+    norm: &str,
+    editor_gate: Option<&EditorFenceGate>,
+) -> ChainOutcome {
     let p = Path::new(norm);
     let roots = allowed_open_roots(main_workspace);
     if p.is_absolute() || p.has_root() {
-        if !roots.iter().any(|root| path_contains(root, p)) {
+        let inside = roots.iter().any(|root| path_contains(root, p));
+        if !inside && !editor_gate.map(|g| g(norm, false)).unwrap_or(false) {
             return ChainOutcome::OutOfBounds(format!(
-                "path 越出 workspace（仅允许工作区/项目目录内）: {norm}"
+                "path 越出 workspace（仅允许工作区/项目目录内）: {norm}{OUT_OF_BOUNDS_HINT}"
             ));
         }
+        // 祖先 containment 集合：开关放行的界外形态无界（剥到第一个存在
+        // 目录即胜——放行语义是整条路径，祖先回退不折返 containment）；
+        // 集合内形态照旧过 roots。
+        let ancestor_roots = if inside { Some(&roots[..]) } else { None };
         let target = unify_separators(PathBuf::from(norm));
         return match std::fs::metadata(&target) {
             Ok(meta) => ChainOutcome::Hit(ResolvedTarget {
@@ -234,7 +303,7 @@ fn try_resolve_chain(session_root: &str, main_workspace: &str, norm: &str) -> Ch
                 is_dir: meta.is_dir(),
                 exists: true,
             }),
-            Err(_) => match nearest_existing_ancestor(&target, &roots) {
+            Err(_) => match nearest_existing_ancestor(&target, ancestor_roots, true) {
                 Some(dir) => ChainOutcome::Miss(
                     Some(ResolvedTarget {
                         path: unify_separators(dir),
@@ -269,7 +338,52 @@ fn try_resolve_chain(session_root: &str, main_workspace: &str, norm: &str) -> Ch
             });
         }
         if ancestor.is_none()
-            && let Some(a) = nearest_existing_ancestor(&joined, std::slice::from_ref(root))
+            && let Some(a) =
+                nearest_existing_ancestor(&joined, Some(std::slice::from_ref(root)), false)
+        {
+            ancestor = Some(ResolvedTarget {
+                path: unify_separators(a),
+                is_dir: true,
+                exists: false,
+            });
+        }
+    }
+    // 项目目录名前缀剥段（workspace 视角路径）：`proj/note.md`（proj =
+    // 注册项目目录叶名）——直接 join 项目根得到 proj\proj\note.md 死路，
+    // 模型从工作区父目录视角输出路径时常见此形态。剥首段后 join 项目根，
+    // 仍走 containment + 存在性（项目根本就是允许根，无新探测面）；裸
+    // 项目名（无后续段）= 项目目录本身。排在常规锚链之后——workspace 内
+    // 字面同形路径（真实存在的 workspace\proj\note.md）优先于重解释。
+    let segs: Vec<&str> = norm.split(['/', '\\']).collect();
+    let first = segs.first().copied().unwrap_or("");
+    for (leaf, root) in project_leaf_roots() {
+        let matched = if cfg!(windows) {
+            first.eq_ignore_ascii_case(&leaf)
+        } else {
+            first == leaf
+        };
+        if !matched {
+            continue;
+        }
+        let rest = segs[1..].join("/");
+        let joined = if rest.is_empty() {
+            root.clone()
+        } else {
+            unify_separators(root.join(&rest))
+        };
+        if !path_contains(&root, &joined) {
+            continue;
+        }
+        if let Ok(meta) = std::fs::metadata(&joined) {
+            return ChainOutcome::Hit(ResolvedTarget {
+                path: joined,
+                is_dir: meta.is_dir(),
+                exists: true,
+            });
+        }
+        // 剥段臂祖先**覆盖**常规锚链祖先：`myproj/ghost.md` 的最近祖先
+        // 显然是 myproj（项目根）而非 workspace 根——剥段臂语义更具体。
+        if let Some(a) = nearest_existing_ancestor(&joined, Some(std::slice::from_ref(&root)), true)
         {
             ancestor = Some(ResolvedTarget {
                 path: unify_separators(a),
@@ -282,15 +396,34 @@ fn try_resolve_chain(session_root: &str, main_workspace: &str, norm: &str) -> Ch
 }
 
 /// 最近存在祖先目录（文件不存在回退）：从 target 向根方向逐级剥段，
-/// 每级过 containment（锚 root 或绝对臂的全集），首个存在的目录即胜；
-/// 剥到根本身仍不存在（项目目录被删等）= None（诚实报错）。
-fn nearest_existing_ancestor(target: &Path, roots: &[PathBuf]) -> Option<PathBuf> {
+/// 每级过 containment（`roots` = Some 时锚 root 或绝对臂的全集；None =
+/// 无界——editor 开关放行的界外形态，第一个存在目录即胜），剥到根本身
+/// 仍不存在（项目目录被删等）= None（诚实报错）。
+///
+/// `allow_anchor_root`（2026-11-14 BUG）：false 时回退剥到 join 锚根本身
+/// 也返回 None——锚根是解析器隐式选的参照，不是路径文本点名的位置，开它
+/// = 打开与文件真实位置无关的目录（裸名/界外文件相对形态的误导源）；
+/// true 保留旧语义（绝对路径显式声称的父目录 / 剥段臂点名的项目根，锚
+/// 根与「所在目录」语义一致）。相对臂传 false，绝对臂与剥段臂传 true。
+fn nearest_existing_ancestor(
+    target: &Path,
+    roots: Option<&[PathBuf]>,
+    allow_anchor_root: bool,
+) -> Option<PathBuf> {
     let mut cur = target.parent();
     while let Some(dir) = cur {
-        if !roots.iter().any(|r| path_contains(r, dir)) {
+        if let Some(roots) = roots
+            && !roots.iter().any(|r| path_contains(r, dir))
+        {
             return None;
         }
         if dir.is_dir() {
+            if !allow_anchor_root
+                && let Some(roots) = roots
+                && roots.iter().any(|r| same_path(r, dir))
+            {
+                return None;
+            }
             return Some(dir.to_path_buf());
         }
         cur = dir.parent();

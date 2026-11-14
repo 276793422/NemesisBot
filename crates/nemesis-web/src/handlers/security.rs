@@ -805,6 +805,8 @@ impl SecurityHandler {
             "plan_mode": Self::plan_mode_snapshot(ctx),
             "editor": Self::editor_snapshot(),
             "approvals": Self::approvals_status(),
+            "guardian": Self::guardian_snapshot(workspace),
+            "vault": Self::vault_snapshot(workspace),
             "signature": self.signature_verify_status(ctx),
             "scanner": Self::scanner_snapshot(workspace),
             "global": Self::global_switch_snapshot(ctx),
@@ -1011,6 +1013,38 @@ impl SecurityHandler {
             }
             None => serde_json::json!({ "injected": false }),
         }
+    }
+
+    /// ⑪ Guardian 二审快照（总览页行状态）：guardian_mode /
+    /// guardian_failure_policy 是构造期键（装配读定、保存需重启生效），
+    /// 配置文件即真相源——与 [`Self::layers_projection`] 同款 raw 直读
+    /// （缺席 = runtime 默认：mode=off / policy=ask）。
+    fn guardian_snapshot(workspace: &str) -> serde_json::Value {
+        let raw = match nemesis_utils::fsutil::read_config_string(&security_config_path(workspace))
+        {
+            Ok(s) => serde_json::from_str::<serde_json::Value>(&s).unwrap_or(serde_json::json!({})),
+            Err(_) => serde_json::json!({}),
+        };
+        let get = |k: &str| {
+            raw.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        serde_json::json!({
+            "mode": get("guardian_mode"),
+            "failure_policy": get("guardian_failure_policy"),
+        })
+    }
+
+    /// ⑬ 凭据 Vault 快照（总览页行状态）：加密存储文件在场态
+    /// （`<workspace>/config/vault.enc`）。vault 无「装配」半边（子系统
+    /// 恒在），初始化与否由存储文件存在性表达。
+    fn vault_snapshot(workspace: &str) -> serde_json::Value {
+        let path = nemesis_path::resolve_vault_path_in_workspace(Path::new(workspace));
+        serde_json::json!({
+            "exists": path.exists(),
+        })
     }
 
     /// ⑦ 病毒扫描层快照（`load_scanner_status` 单一真相源投影 + 计数；
