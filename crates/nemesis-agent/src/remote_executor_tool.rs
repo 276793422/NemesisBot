@@ -136,6 +136,53 @@ pub type DaclSpawnFn =
 /// - `Err(reason)` = `acl.strict` fail-closed → 拒绝执行（不静默降级）。
 pub type DaclSpawnHook = Arc<dyn Fn() -> Result<Option<DaclSpawnFn>, String> + Send + Sync>;
 
+// ---------------------------------------------------------------------------
+// MXC 护栏后端 spawn hook（2026-11-14，nemesis-sandbox mxc_backend 转译）
+// ---------------------------------------------------------------------------
+
+/// MXC 护栏后端 spawn 请求（nemesis-agent 本地类型——刻意不依赖
+/// nemesis-sandbox；gateway 注入的闭包把它转译成 mxc-sdk 容器事务，
+/// 与 [`DaclSpawnRequest`] 同范式）。
+pub struct MxcSpawnRequest {
+    pub exe: PathBuf,
+    /// 执行体运输层 env（`env_pairs()` 产出）。**不带**
+    /// `NEMESISBOT_EXECUTOR_SANDBOX=1`——MXC 围栏是外部的（容器级），子
+    /// 进程不应再自装 landlock/bwrap（双层叠加冗余且可能与容器策略冲突）。
+    pub env_pairs: Vec<(String, String)>,
+    /// 工作目录（容器 working_directory + 文件策略读写根）。
+    pub working_dir: PathBuf,
+    /// NEMESISBOT_HOME（只读放行给子进程读 config；workspace/config 下的
+    /// credentials.yaml 与 auth.json 容器策略定向拒）。
+    pub home: PathBuf,
+    /// 容器额外读写根（项目 agent home 等，与 `extra_roots` 同源——容器
+    /// 授权模型下 env 围栏放行而容器拒绝 = 自相矛盾，审查三轮补齐）。
+    pub extra_roots: Vec<PathBuf>,
+    /// 单行 JSON 请求（与 stdio 路径同一协议行）。
+    pub request_line: String,
+    /// 事务超时（MXC 引擎按 request.timeout_ms 执行并回报 TimedOut）。
+    pub timeout: Duration,
+}
+
+/// MXC 护栏后端 spawn 结果（与 [`DaclSpawnOutcome`] 字段同构）。
+pub struct MxcSpawnOutcome {
+    /// stdout 首行（executor 协议响应行；`None` = 无响应退出/引擎超时）。
+    pub response: Option<String>,
+    pub exit_code: Option<i32>,
+    pub stderr_tail: String,
+}
+
+/// 一次 MXC 容器 spawn 事务（同步阻塞——调用方 `spawn_blocking` 包住）。
+pub type MxcSpawnFn = Arc<dyn Fn(MxcSpawnRequest) -> Result<MxcSpawnOutcome, String> + Send + Sync>;
+
+/// 每次工具调用询问 gateway：MXC 后端现在可选吗？（hook 内部 live 读
+/// `executor.backend=="mxc"` + 探测缓存。）
+/// - `Ok(Some(fn))` = 选中 mxc 且探测通过 → MXC 容器事务；
+/// - `Ok(None)` = 未选 mxc（native/auto/sandboxie/acl）→ 走现状分支
+///   （字节不变）；
+/// - `Err(reason)` = 选了 mxc 但不可用（探测不通过/未编译）→ **拒绝执行**
+///   （fail-closed——用户显式选了 MXC，静默降级成 Sandboxie/裸跑 = 撒谎）。
+pub type MxcSpawnHook = Arc<dyn Fn() -> Result<Option<MxcSpawnFn>, String> + Send + Sync>;
+
 /// Spawn configuration for executor children. Holds no mutable state, so a
 /// single `Arc<ExecutorChannel>` is shared by every `RemoteExecutorTool`.
 pub struct ExecutorChannel {
@@ -181,6 +228,11 @@ pub struct ExecutorChannel {
     /// `None` = 未注入（测试/裸构造/trim 构建）= 现状字节不变。盒 wrap
     /// （`start_exe`）在场时本 hook 不抢（Sandboxie 更强，结构性防线）。
     pub dacl_spawn: Option<DaclSpawnHook>,
+    /// MXC 护栏后端 spawn hook（gateway 注入，见 [`MxcSpawnHook`]；跨平台）。
+    /// `None` = 未注入（backend≠mxc / feature 未编译 / 测试）= 现状字节不变。
+    /// 装配侧铁律：backend="mxc" 时**不注入** start_exe / dacl_spawn
+    /// （mxc 是独立后端，不与 Sandboxie/DACL 叠）。
+    pub mxc_spawn: Option<MxcSpawnHook>,
     /// （项目 home 收编）：围栏第二根（项目 agent home）。
     /// `env_pairs()` 写 `NEMESISBOT_EXECUTOR_EXTRA_ROOTS`，子进程侧
     /// `exec_worker` 解析合并进子进程围栏——exec 分离开关两侧围栏同根。
@@ -229,6 +281,7 @@ impl ExecutorChannel {
             lease_child: false,
             userland_fallback: None,
             dacl_spawn: None,
+            mxc_spawn: None,
             extra_roots: Vec::new(),
             restrict_child: true,
             deny_patterns_child: None,
@@ -310,6 +363,14 @@ impl ExecutorChannel {
     /// [`ExecutorChannel::dacl_spawn`]）。盒 wrap 在场时 hook 不抢。
     pub fn with_dacl_spawn(mut self, hook: DaclSpawnHook) -> Self {
         self.dacl_spawn = Some(hook);
+        self
+    }
+
+    /// 注入 MXC 护栏后端 spawn hook（跨平台 + gateway 装配侧；见
+    /// [`ExecutorChannel::mxc_spawn`]）。装配铁律：backend="mxc" 时不注入
+    /// start_exe / dacl_spawn。
+    pub fn with_mxc_spawn(mut self, hook: MxcSpawnHook) -> Self {
+        self.mxc_spawn = Some(hook);
         self
     }
 
@@ -455,6 +516,26 @@ impl ExecutorChannel {
                          sandbox backend is unavailable ({reason}) — refusing to run \
                          '{tool}' unsandboxed"
                 ));
+            }
+            // MXC 护栏后端 hook（跨平台，选型在 hook 内部 live 读
+            // executor.backend）。Ok(None)=非 mxc → 走 Sandboxie 管道 /
+            // 用户态平台分支（字节不变）；Err=选了 mxc 但不可用 → fail-closed
+            // （诚实拒绝——opt-in 无降级链，降级 = 对用户撒谎）。
+            if let Some(hook) = &self.mxc_spawn {
+                match hook() {
+                    Ok(Some(spawn_fn)) => {
+                        return self.spawn_and_call_mxc(spawn_fn, &request_line, tool).await;
+                    }
+                    Ok(None) => {}
+                    Err(reason) => {
+                        tracing::warn!("[Executor] backend=mxc refusing '{tool}': {reason}");
+                        return Err(format!(
+                            "executor.backend=mxc unavailable (fail-closed): {reason} — \
+                             切回 executor.backend=\"auto\" 并重启 Bot，或到沙盒页 \
+                             MXC 面板的检测详情排查环境"
+                        ));
+                    }
+                }
             }
             #[cfg(windows)]
             {
@@ -633,6 +714,60 @@ impl ExecutorChannel {
             None => Err(format!(
                 "executor (workspace-dacl) exited without a response \
                  (exit={:?}, tool={tool}); stderr: {}",
+                outcome.exit_code, outcome.stderr_tail
+            )),
+        }
+    }
+
+    /// MXC 护栏后端事务（跨平台）：容器内 spawn 子进程 + 同一协议行 stdio
+    /// 往返。**不带** `NEMESISBOT_EXECUTOR_SANDBOX` 标记——MXC 围栏是外部
+    /// 的（容器级），子进程不再自装 landlock/bwrap（见 [`MxcSpawnRequest`]）。
+    async fn spawn_and_call_mxc(
+        &self,
+        spawn_fn: MxcSpawnFn,
+        request_line: &str,
+        tool: &str,
+    ) -> Result<String, String> {
+        let home = self.home.clone().ok_or_else(|| {
+            "mxc spawn requires home (assembly omitted it — bare test \
+                            construct?)"
+                .to_string()
+        })?;
+        // 拒绝台账 backend 标签（审查三轮补齐）：stdio 路径 "sandboxie"、
+        // DACL 路径 "workspace-dacl" 同一约定——MXC 拦截在台账里也要有归因。
+        let mut env_extra = self.env_pairs();
+        env_extra.push(("NEMESISBOT_SANDBOX_BACKEND".to_string(), "mxc".to_string()));
+        let req = MxcSpawnRequest {
+            exe: self.exe_path.clone(),
+            env_pairs: env_extra,
+            working_dir: PathBuf::from(&self.workspace),
+            home,
+            extra_roots: self.extra_roots.clone(),
+            request_line: request_line.to_string(),
+            timeout: self.timeout,
+        };
+        // 客户端超时兜底（与 stdio 路径的 tokio::time::timeout 同语义）：
+        // 引擎按 request.timeout_ms 执行并杀树，但「引擎失灵」不是零概率——
+        // 客户端再兜一层（+10s 宽限）。超时返回 Err；spawn_blocking 线程无法
+        // 中止（Rust 语义），容器子进程由引擎超时/后续 wait 收尾——线程与
+        // 容器进程至多活到引擎超时，不静默放行无响应调用。
+        let join = tokio::task::spawn_blocking(move || spawn_fn(req));
+        let outcome = tokio::time::timeout(self.timeout + std::time::Duration::from_secs(10), join)
+            .await
+            .map_err(|_| {
+                format!(
+                    "mxc spawn transaction timed out (tool={tool}, timeout={:?}+10s) — \
+                     MXC 引擎超时未兑现，请检查容器内子进程行为",
+                    self.timeout
+                )
+            })?
+            .map_err(|e| format!("mxc spawn task join error (tool={tool}): {e}"))?
+            .map_err(|e| format!("mxc spawn transaction failed (tool={tool}): {e}"))?;
+        match outcome.response {
+            Some(line) => Self::parse_response(&line),
+            None => Err(format!(
+                "executor (mxc) exited without a response (exit={:?}, tool={tool}); \
+                 stderr: {}",
                 outcome.exit_code, outcome.stderr_tail
             )),
         }

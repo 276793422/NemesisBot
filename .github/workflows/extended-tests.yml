@@ -54,6 +54,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
+
       # 平台环境指纹（2026-10-12 设备归因纪律，所有测试 job 前置；十个检测域
       # 与探针设计详见 ci.yml rust-check 同名步骤注释；脚本
       # .github/scripts/dump-env.{ps1,sh}）
@@ -161,6 +167,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
+
       # 环境指纹（设备归因，见 workspace-tests-linux 同名步骤注释）
       - name: Environment fingerprint (feature ${{ matrix.name }})
         shell: bash
@@ -267,6 +279,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       # 环境指纹（设备归因，见 workspace-tests-linux 同名步骤注释）——本 job
       # 是冻结/失联主战场，七个切段每段一份完整指纹

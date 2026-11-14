@@ -73,3 +73,14 @@ rustflags = [
     "-L",
     "dependency=slots/taiwei/impl/target/release/deps",
 ]
+
+# MXC 遥测红线（2026-11-14，docs/PLAN/2026-11-14_mxc-sandbox-integration.md §3.1）：
+# mxc-sdk（submodule 3rd/mxc）Windows release 构建默认捆绑微软签名遥测路由 DLL，
+# 上报 4 个 Required 事件且无需用户同意。此 [env] 是唯一强制点（cargo 拉起的
+# 全部进程含 build script 都吃到）。⚠ force=true 必须在（审查二轮发现）：
+# 默认 force=false 不覆盖 shell 里已 export 的值——开发/CI 环境若残留该变量
+# 会静默复活路由构建。置空 = mxc-sdk 构建脚本走「无路由构建」分支（路由元
+# 数据只能来自该签名 DLL，空 = 无 WinExt 路由组 = 遥测事件只进本机 ETW，
+# 到不了微软）。删本段或改 force = 红线失效，禁止。
+[env]
+MXC_TELEMETRY_COMPONENT_PATH = { value = "", force = true }

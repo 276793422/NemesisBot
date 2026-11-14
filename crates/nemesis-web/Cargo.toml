@@ -116,6 +116,10 @@ security = ["dep:nemesis-security", "nemesis-security/security"]
 # implies security（第 7 层在 pipeline 内），并穿透 nemesis-security/scanner。
 scanner = ["security", "nemesis-security/scanner"]
 sandbox = ["dep:nemesis-sandbox"]
+# MXC 护栏后端管理面（2026-11-14）：穿透 nemesis-sandbox/mxc——sandbox.*
+# WSAPI 的 mxc 段（overview 内嵌探测 + mxc_probe 强刷）随本 feature 编译。
+# 关 = mxc 段回 "compiled": false（前端据型渲染置灰「未编译」卡，D12）。
+sandbox-mxc = ["sandbox", "nemesis-sandbox?/mxc"]
 # P5 桌面级 VM 管理面（vm.* WSAPI + Dashboard VM 页）。当前 handler 随
 # 步骤 4 落地；feature 先在位（编译开关三线同步原则），关 = 空闸。
 vm = []

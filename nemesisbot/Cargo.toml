@@ -58,6 +58,16 @@ scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
+# MXC 护栏后端（2026-11-14，docs/PLAN/2026-11-14_mxc-sandbox-integration.md）：
+# 穿透 nemesis-sandbox/mxc 模块（submodule 3rd/mxc，钉 4e522623）。opt-in 后端
+# （executor.backend="mxc"），默认配置恒 native——编译进去 ≠ 默认选用。
+# 【非默认 feature】（审查三轮 #5 定案）：mxc-sdk 无条件依赖 ureq(native-tls)
+# → Linux 落 openssl-sys，破 rustls-only 纪律且 fresh clone 需先 submodule
+# init 才能编默认构建；默认构建全平台零 mxc-sdk 引用，Windows 发行版由
+# build-windows.bat 显式 --features sandbox-mxc 保持全量。Linux opt-in 需
+# libssl-dev。遥测红线经根 .cargo/config.toml [env] 强制（见
+# nemesis-sandbox/Cargo.toml 注记）。
+sandbox-mxc = ["sandbox", "nemesis-sandbox/mxc", "nemesis-web/sandbox-mxc"]
 # P5 桌面级 VM 后端（executor.vm）：穿透 nemesis-sandbox/vm 模块 + Dashboard
 # VM 页。关 = vm 模块整包不编译、executor.vm 配置缺消费者（诚实报未编译）。
 # IoT/无虚拟化环境默认关（IoT 预设钉 false）。libloading 已恒编译（M4 起非

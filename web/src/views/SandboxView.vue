@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import SecurityLayerHeader from '../components/security/SecurityLayerHeader.vue'
+import MxcPanel from '../components/sandbox/MxcPanel.vue'
 
 // G7 (D1)：用户态沙盒 UI 仅在 Linux 工具链构建中打包（build-linux.sh 导出
 // VITE_USERLAND_SANDBOX=1）。env 缺省时 import.meta.env.X 被静态替换为
@@ -18,6 +19,10 @@ const toast = useToast()
 
 // --- State ---
 const loading = ref(true)
+// 顶层 TAB（2026-11-14 MXC 集成，D8）：Windows = SandboxIE（内含 沙箱配置/
+// 沙箱状态/沙箱文件 三个子 TAB）/ MXC；Linux/macOS 无 SandboxIE → 平铺
+// MXC（D10，不渲染 TAB 行）。
+const activeTopTab = ref<'sandboxie' | 'mxc'>('sandboxie')
 const activeTab = ref<'config' | 'status' | 'files'>('config')
 // P5 平台自适应总览（platform / executor 四开关 live / backend_probe / ready）
 // 2026-09-08 去重：backend_probe 已内联原 status/check 命令的探测数据
@@ -57,6 +62,11 @@ const platformLabel = computed(() =>
 const layerStatus = computed<{ label: string; tone: 'on' | 'off' | 'na' | 'warn' }>(() => {
   if (!platform.value) return { label: '不可用', tone: 'na' }
   if (!executorOn.value) return { label: '已关闭', tone: 'off' }
+  // backend="mxc"：就绪语义 = MXC 探测通过（ProbeOutput 权威）
+  if (currentBackend.value === 'mxc') {
+    if (!mxcCompiled.value) return { label: '未编译', tone: 'na' }
+    return mxcReady.value ? { label: '运行中（MXC 护栏）', tone: 'on' } : { label: 'MXC 未就绪', tone: 'warn' }
+  }
   return sandboxReady.value ? { label: '运行中', tone: 'on' } : { label: '未就绪', tone: 'warn' }
 })
 const backends = computed<any[]>(() => overview.value?.backend_probe?.backends ?? [])
@@ -210,6 +220,78 @@ function saveAclMaxFiles() {
     return
   }
   setExecutorCfg({ acl_max_files: n }, `ACL 授予树文件数上限已设为 ${n}`)
+}
+
+// ════════ MXC 护栏后端（2026-11-14，D5/D6/D8/D11-D13）══════════════════
+// 文案单一真相源在后端（overview.mxc.warning 回传），前端不硬编码。
+// 状态卡/详情/策略区的交互全部在 MxcPanel.vue 内聚（本视图只保留
+// 选择器/警告横幅/探测强刷 所需的最小状态——审查发现死副本已删）。
+const mxc = computed<any>(() => overview.value?.mxc ?? null)
+const mxcCompiled = computed(() => !!mxc.value?.compiled)
+const mxcProbe = computed<any>(() => mxc.value?.probe ?? null)
+const mxcReady = computed(() => mxcProbe.value?.status === 'ready')
+const mxcWarning = computed(() => mxc.value?.warning ?? '')
+const currentBackend = computed(() => executorCfg.value?.backend ?? 'auto')
+// 下拉草稿值（「确认后写盘」语义——不是即时生效，D6）
+const backendDraft = ref('')
+watch(currentBackend, (v: string) => { backendDraft.value = v }, { immediate: true })
+const restartBanner = ref(false)
+
+/// 后端选择确认 + 写盘（D5/D6：选 MXC 必须过警告确认框；重启生效——
+/// 重启前可反复改，反悔窗口最大化）。切走 MXC 也确认一次（对称诚意）。
+function selectBackend() {
+  const next = backendDraft.value
+  if (next === currentBackend.value) return
+  const label = (v: string) =>
+    v === 'mxc' ? 'MXC（护栏）' : v === 'sandboxie' ? 'SandboxIE' : v === 'acl' ? 'ACL 轻量档' : '原生（内置）'
+  if (next === 'mxc') {
+    if (!window.confirm(
+      `${mxcWarning.value}\n\n` +
+      '• MXC 是护栏（ACL 最小授权）：授权路径内直接写真盘，无 Sandboxie 写虚拟化、无 pending/commit 反悔层\n' +
+      '• 引爆场景（明知有问题还要跑、事后审查）请用 SandboxIE\n' +
+      '• 需沙箱总闸（executor.sandbox）开启才会生效\n' +
+      '• ⚠️ 需重启 Bot 生效；重启前可改回\n\n' +
+      `确认从「${label(currentBackend.value)}」切换到「${label(next)}」？`
+    )) {
+      backendDraft.value = currentBackend.value
+      return
+    }
+  } else {
+    if (!window.confirm(
+      `即将把沙盒后端从「${label(currentBackend.value)}」切换到「${label(next)}」：\n` +
+      '• ⚠️ 需重启 Bot 生效；重启前可改回\n\n确认切换？'
+    )) {
+      backendDraft.value = currentBackend.value
+      return
+    }
+  }
+  busy.value = 'set_backend'
+  request('sandbox', 'set_config', { backend: next })
+    .then(() => {
+      restartBanner.value = true
+      toast.success('后端已写入配置 · 重启 Bot 后生效')
+      return refreshAll()
+    })
+    .catch((e: any) => {
+      toast.error('切换失败: ' + (e?.message ?? e))
+      backendDraft.value = currentBackend.value
+    })
+    .finally(() => { busy.value = null })
+}
+
+/// MXC 强制重探（D13「重新检测」——绕缓存的 fresh probe）。
+/// ⚠ 合并而非整体替换：mxc_probe 回执不含 config 段，整体替换会把已保存
+/// 的网络策略从 UI 上抹掉（审查发现 2026-11-14——一键静默降级围栏）。
+async function probeMxc() {
+  busy.value = 'mxc_probe'
+  try {
+    const r = await request('sandbox', 'mxc_probe')
+    if (overview.value) overview.value.mxc = { ...overview.value.mxc, ...r }
+  } catch (e: any) {
+    toast.error('探测失败: ' + (e?.message ?? e))
+  } finally {
+    busy.value = null
+  }
 }
 
 async function install7z() {
@@ -395,8 +477,8 @@ onMounted(async () => {
   <div class="page-sandbox">
     <SecurityLayerHeader
       num="⑨"
-      title="沙盒隔离"
-      :duty="`第 9 层最终防御红线（sandbox feature）：LLM 高危操作剥离进独立子进程（executor.enabled，Layer 1），可再套内核级盒（executor.sandbox，Layer 2）——盒内写盘不落真盘，需 pending/commit 提交。当前平台：${platformLabel}。`"
+      title="沙盒隔离（沙盒层防护）"
+      :duty="`第 9 层最终防御红线（沙盒层防护）：LLM 高危操作剥离进独立子进程（executor.enabled，Layer 1），可再套沙盒（executor.sandbox，Layer 2）——默认原生方案（Windows=Sandboxie 盒：写虚拟化、pending/commit 可反悔；Linux/macOS=内置 landlock/bwrap/Seatbelt），可选 MXC 护栏（ACL 最小授权 + 网络出口管控，无写虚拟化反悔层）。当前平台：${platformLabel}。`"
       :status-label="layerStatus.label"
       :status-tone="layerStatus.tone"
     />
@@ -424,6 +506,8 @@ onMounted(async () => {
              : busy === 'open_explorer' ? '正在沙盒内打开资源管理器...'
              : busy === 'set_network' ? '正在切换盒内联网状态...'
              : busy === 'set_config' ? '正在更新执行体配置...'
+             : busy === 'set_backend' ? '正在切换沙盒后端...'
+             : busy === 'mxc_probe' ? '正在重新探测 MXC...'
              : '正在处理...' }}
           </span>
         </div>
@@ -461,14 +545,56 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- ════════ 后端选择器（2026-11-14 D6/D8）：下拉 + 确认 + 重启生效 ════════ -->
+      <div class="card" data-test="backend-selector">
+        <div class="card-body" style="display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+          <span style="font-weight: 500;">沙盒后端</span>
+          <select class="form-input" style="max-width: 280px;" data-test="backend-select" v-model="backendDraft" @change="selectBackend" :disabled="!!busy">
+            <template v-if="isWindows">
+              <option value="auto">SandboxIE（默认 · 自动）</option>
+              <option value="sandboxie">SandboxIE（显式钉死）</option>
+              <option value="acl">ACL 轻量档（实验性半档）</option>
+              <option value="mxc">MXC（护栏 · 非沙盒）</option>
+            </template>
+            <template v-else>
+              <option value="auto">内置（默认 · landlock/bwrap/Seatbelt）</option>
+              <option value="mxc">MXC（护栏 · 非沙盒）</option>
+            </template>
+          </select>
+          <span style="font-size: var(--text-xs); color: var(--text-secondary);">
+            当前生效：<code data-test="backend-current">{{ currentBackend }}</code> · 切换需确认并重启 Bot（重启前可改回）·
+            MXC 需沙箱总闸（executor.sandbox）开启才生效
+          </span>
+        </div>
+        <div v-if="restartBanner" class="card-body" style="padding-top: 0; font-size: var(--text-sm); color: var(--warning, #d97706);" data-test="restart-banner">
+          ⚠️ 已保存，重启 Bot 后生效。重启前再次修改不会叠加生效（以后保存的为准）。
+        </div>
+      </div>
+
       <!-- ════════ Windows 布局：3 Tab Sandboxie 专属语义（保持原样）+ 严格模式卡 ════════ -->
       <template v-if="isWindows">
-      <!-- Tabs -->
+      <!-- 顶层 TAB（D8）：SandboxIE（含 沙箱配置/沙箱状态/沙箱文件 三个子 TAB）| MXC -->
+      <div class="tabs">
+        <button class="tab" :class="{ active: activeTopTab === 'sandboxie' }" data-test="tab-sandboxie" @click="activeTopTab = 'sandboxie'">SandboxIE</button>
+        <button class="tab" :class="{ active: activeTopTab === 'mxc' }" data-test="tab-mxc" @click="activeTopTab = 'mxc'">MXC</button>
+        <button class="btn btn-sm" style="margin-left: auto;" @click="refreshAll" :disabled="!!busy">刷新</button>
+      </div>
+
+      <!-- MXC 常驻警告（D5：无论在哪个顶层 TAB 都可见——挂在 TAB 行下；
+           浏览 MXC TAB 时无论当前后端都可见——MXC 页面必须有警告，而
+           MxcPanel 内横幅在此挂点 hide-warning 防两层同文案叠放。
+           mxcWarning 非空才渲染——feature 裁剪构建 overview.mxc 无 warning
+           字段（compiled:false），空文案会渲染成无字橙色卡） -->
+      <div v-if="mxcWarning && (currentBackend === 'mxc' || activeTopTab === 'mxc')" class="card" style="padding: var(--space-3) var(--space-4); border-color: var(--warning, #d97706); background: rgba(217,119,6,0.06);" data-test="mxc-active-warning">
+        <span style="font-size: var(--text-sm); color: var(--warning, #d97706);">⚠️ {{ mxcWarning }}</span>
+      </div>
+
+      <template v-if="activeTopTab === 'sandboxie'">
+      <!-- 子 TAB（SandboxIE 原三页收层，内容原样） -->
       <div class="tabs">
         <button class="tab" :class="{ active: activeTab === 'config' }" @click="activeTab = 'config'">沙箱配置</button>
         <button class="tab" :class="{ active: activeTab === 'status' }" @click="activeTab = 'status'">沙箱状态</button>
         <button class="tab" :class="{ active: activeTab === 'files' }" @click="activeTab = 'files'">沙箱文件</button>
-        <button class="btn btn-sm" style="margin-left: auto;" @click="refreshAll" :disabled="!!busy">刷新</button>
       </div>
 
       <!-- ════════ 沙箱配置 ════════ -->
@@ -705,6 +831,11 @@ onMounted(async () => {
         </div>
       </div>
       </template>
+      <!-- ════════ 顶层 TAB：MXC（D8） ════════ -->
+      <template v-if="activeTopTab === 'mxc'">
+        <MxcPanel :mxc="mxc" :busy="busy" :current-backend="currentBackend" hide-warning @probe="probeMxc" />
+      </template>
+      </template>
 
       <!-- ════════ Linux / macOS 布局：用户态沙盒（G7 D1：构建期门控组件） ════════ -->
       <template v-if="isUserland">
@@ -734,6 +865,9 @@ onMounted(async () => {
             <code>scripts/build-linux.sh</code> 重新构建（自动开启用户态沙盒 UI）。
           </div>
         </div>
+        <!-- MXC 护栏后端（D10 单后端平铺：无 SandboxIE TAB，MXC 直接平铺在
+             用户态面板之后；单管理面不渲染 TAB 行） -->
+        <MxcPanel :mxc="mxc" :busy="busy" :current-backend="currentBackend" @probe="probeMxc" />
       </template>
 
     </div>

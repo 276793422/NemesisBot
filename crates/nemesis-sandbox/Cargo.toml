@@ -24,6 +24,15 @@ bytes = "1"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # P21（2026-09-25）：沙盒拒绝台账的时间戳（RFC3339 UTC，毫秒精度）。
 chrono = { workspace = true }
+# MXC 护栏后端（mxc feature 门控，2026-11-14）：path 指 submodule `3rd/mxc`
+# （钉 4e522623，根目录无 Cargo.toml 故 git-rev 依赖形态不可行，PLAN §4.1）。
+# upgrade 流程：submodule advance + PLAN 钉版记录同 commit 更新。
+# 遥测红线（PLAN §3.1）：mxc-sdk 的 Windows release 构建默认捆绑微软签名遥测
+# 路由 DLL（4 个 Required 事件、无需用户同意）。本仓库经根 `.cargo/config.toml`
+# [env] 强制 `MXC_TELEMETRY_COMPONENT_PATH=""`（官方关闭面——路由元数据只能来自
+# 该 DLL，空 = 无 WinExt 路由组 = 事件只进本机 ETW，到不了微软）。强制点单一，
+# 不在构建脚本散布导出。
+mxc-sdk = { path = "../../3rd/mxc/src/mxc-sdk", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -50,6 +59,12 @@ acl = []
 ## 镜像与 overlay 管理/NAT-TCP 通道/生命周期）。关 = 整个 vm 模块不编译，
 ## executor.vm 配置缺消费者（诚实报未编译）。由 nemesisbot 的 vm feature 穿透。
 vm = []
+## MXC 后端（2026-11-14）：Microsoft eXecution Container 护栏后端（opt-in）。
+## 依赖 = submodule `3rd/mxc`（钉 4e522623）的 mxc-sdk，path 引用（见顶部
+## [dependencies] 的 mxc-sdk 条目注记）。关 = mxc_backend.rs 整模块不编译，
+## executor.backend="mxc" 诚实报未编译。由 nemesisbot 的 sandbox-mxc
+## feature 穿透。见 2026-11-14_mxc-sandbox-integration.md（归档于 docs/REPORT）。
+mxc = ["dep:mxc-sdk"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [

@@ -823,6 +823,22 @@ impl AgentRuntimeSupervisor {
     ) -> Result<AgentSlot, String> {
         let home = self.agent_home(agent_id);
         let policy = &self.isolation;
+        // backend="mxc"（2026-11-14）：常驻执行体暂不支持 MXC 后端——本处
+        // fail-closed 拒绝，上层映射 Unavailable → per-call 回落（per-call
+        // 通道全量覆盖 MXC）。不静默改道 Sandboxie/裸跑（用户显式选了 mxc，
+        // 旁路 = 撒谎）。⚠ 仅 sandbox-mxc 编译态生效：feature 裁剪构建里
+        // per-call 已诚实回落 native（exec_world 装配层 backend_mxc=false），
+        // 本闸若仍拒则拒绝理由不真（per-call 并未覆盖 MXC）且白丢常驻容量
+        // （审查二轮发现）——裁剪态放行原生常驻，与 per-call 同语义。
+        #[cfg(feature = "sandbox-mxc")]
+        if policy.backend_is_mxc() {
+            return Err(
+                "persistent executor does not support executor.backend=\"mxc\" \
+                 (the per-call path covers MXC fully; persistent slots are \
+                 unavailable under MXC)"
+                    .to_string(),
+            );
+        }
         // strict 预检（fail-closed 面）：sandbox feature 裁剪的构建里
         // `strict_backend_ready` 恒 false → strict 恒拒（与 per-call
         // feature-off 闸「严格时无后端即拒」一致）。

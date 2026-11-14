@@ -81,6 +81,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，commit id 可用
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
       # 只显式拉 skins（.nbskin 皮肤构建）。不能用 submodules: recursive——
       # 会连 docs 私有仓库一起拉，runner 的 GITHUB_TOKEN 无权限 → Repository
       # not found → checkout 直接炸（2026-09-27 首跑实证）。
@@ -620,6 +626,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，git describe 版本提取可用
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
       # 同上：只显式拉 skins，docs 私有仓库 recursive 拉不动（首跑实证）
       - name: Checkout skins submodule
         run: git submodule update --init --depth 1 skins
@@ -836,6 +848,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
+      # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
+      # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      - name: Init mxc submodule
+        run: git submodule update --init 3rd/mxc
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4

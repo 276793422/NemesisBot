@@ -565,3 +565,20 @@ category = "build"
 type = "enum"
 default = "release"
 options = ["release", "iotsmall"]
+
+# NOTE: `sandbox-mxc`（2026-11-14，docs/PLAN/2026-11-14_mxc-sandbox-integration.md）
+# 依赖 sandbox（nemesis-sandbox/mxc 模块住同一 crate；cargo 复合 feature 蕴含
+# sandbox，export.validate 的 depends 与之同向）。Microsoft eXecution Container
+# 护栏后端（opt-in，executor.backend="mxc"，默认恒 native）：submodule 3rd/mxc
+# 钉 4e522623；ACL 授权模型=授权路径真写，非写虚拟化盒——选 MXC 时 UI 强制警告
+# 「护栏非沙盒」。遥测红线见根 .cargo/config.toml。【非默认】mxc-sdk 的
+# ureq(native-tls) 在 Linux 落 openssl-sys，默认构建保持全平台零 mxc-sdk 引用
+# （fresh clone 免 submodule init 即可编）；Windows 发行版经 build-windows.bat
+# 显式带回。
+[[feature]]
+id = "sandbox-mxc"
+label = "MXC 护栏后端（微软执行容器）"
+desc = "MXC 护栏后端（executor.backend=\"mxc\"，opt-in 默认关）。Windows/Linux/macOS 统一，ACL 最小授权+网络出口管控；无驱动免安装；护栏非沙盒，引爆场景用 SandboxIE。Linux 编译需 libssl-dev"
+category = "subsystems"
+default = false
+depends = ["sandbox"]
