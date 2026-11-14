@@ -401,6 +401,124 @@ fn test_save_empty_path_skips_parent_creation_then_write_fails() {
     assert!(err.contains("rename"), "{err}");
 }
 
+// ===== 回归锁：BUG-20261114-058 persist 失败回滚（BUG-041 同族） =====
+//
+// 旧行为（红证）：save/remove 先改内存、persist 失败后**不回滚**——内存
+// 与盘上真相分叉。save 侧 = 进程重启丢 token；remove 侧 = **登出僵尸**
+// （内存已清视为已登出，盘上 token 残留，重启 load 复活已登出凭据）。
+//
+// 失败注入（BUG-041 同款）：真实落盘路径被同名**目录**占位——
+// write_file_atomic 的 rename 落到目录上必失败（Windows ACCESS_DENIED /
+// Linux EISDIR，跨平台确定性；不依赖权限位模拟）。
+
+/// 用目录占位替换已存在的 auth.json 文件（路径不变，persist 的 rename
+/// 必失败）。返回替换前的文件内容备份无必要——种子凭据已在内存。
+fn block_store_path_with_directory(path: &str) {
+    std::fs::remove_file(path).unwrap();
+    std::fs::create_dir(path).unwrap();
+}
+
+/// save 覆盖既有 provider 时 persist 失败：内存必须恢复**旧值**，
+/// 不能停留在未持久化的新值（幻影 token）。
+#[test]
+fn save_overwrite_persist_failure_restores_previous_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json").to_string_lossy().to_string();
+    let store = AuthStore::new(&path);
+    store.save("prov", test_cred()).unwrap(); // 正常路径种子：内存+盘上都有旧值
+
+    block_store_path_with_directory(&path);
+
+    let mut new_cred = test_cred();
+    new_cred.access_token = "at_NEW_unpersisted".to_string();
+    let result = store.save("prov", new_cred);
+    assert!(result.is_err(), "目录占位路径必须持久化失败");
+
+    // 回滚断言：内存必须回到盘上真相（at_123），而不是新cred的幻影值。
+    // 旧行为在此红：read 返回 at_NEW_unpersisted（未持久化）。
+    let cred = store.get("prov").unwrap();
+    assert_eq!(
+        cred.access_token, "at_123",
+        "persist 失败后内存必须回滚到旧凭据，而不是保留未持久化的幻影 token（读到 {}）",
+        cred.access_token
+    );
+}
+
+/// save 全新 provider 时 persist 失败：内存不得残留幻影条目（prev=None
+/// 回滚臂）。
+#[test]
+fn save_new_provider_persist_failure_does_not_leave_phantom_entry() {
+    // 构造期对目录路径 load 失败会走 warn callsite——按
+    // test_new_with_corrupted_json 的 callsite-interest 纪律持 guard。
+    let (_, _guard) = warn_capture_setup();
+    let dir = tempfile::tempdir().unwrap();
+    let blocked = dir.path().join("auth.json");
+    std::fs::create_dir(&blocked).unwrap();
+    let path = blocked.to_string_lossy().to_string();
+
+    let store = AuthStore::new(&path);
+    let result = store.save("prov", test_cred());
+    assert!(result.is_err(), "目录占位路径必须持久化失败");
+    assert!(
+        store.get("prov").is_none(),
+        "persist 失败后内存不得残留未持久化的幻影条目（进程内可见盘上不存在的凭据）"
+    );
+    assert!(
+        !store.list_providers().contains(&"prov".to_string()),
+        "list_providers 也不得含幻影 provider"
+    );
+}
+
+/// remove 时 persist 失败：内存必须恢复凭据（登出僵尸面——旧行为内存已清
+/// + 盘上残留 = 重启 load 复活已登出凭据）。
+#[test]
+fn remove_persist_failure_restores_credential_no_logout_zombie() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json").to_string_lossy().to_string();
+    let store = AuthStore::new(&path);
+    store.save("prov", test_cred()).unwrap();
+
+    block_store_path_with_directory(&path);
+
+    let result = store.remove("prov");
+    assert!(result.is_err(), "目录占位路径必须持久化失败");
+
+    // 回滚断言：内存必须恢复凭据——调用方拿到 Err 时 store 状态必须与
+    // 盘上真相一致（remove 未生效），而不是「内存已登出、盘上仍登录」。
+    // 旧行为在此红：get 返回 None（登出僵尸，重启复活）。
+    let cred = store.get("prov").unwrap();
+    assert_eq!(
+        cred.access_token, "at_123",
+        "persist 失败后 remove 必须回滚：内存恢复凭据，杜绝登出僵尸（重启复活面）"
+    );
+}
+
+/// 回滚必须选不可能失败的操作且失败后 store 仍可用：占位解除后正常
+/// 路径 save 重新生效。
+#[test]
+fn store_remains_usable_after_persist_failure_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.json").to_string_lossy().to_string();
+    let store = AuthStore::new(&path);
+    store.save("prov", test_cred()).unwrap();
+
+    block_store_path_with_directory(&path);
+    let mut new_cred = test_cred();
+    new_cred.access_token = "at_blocked".to_string();
+    assert!(store.save("prov", new_cred).is_err());
+    // 占位解除：删目录，恢复普通可写状态
+    std::fs::remove_dir(&path).unwrap();
+
+    let mut fixed_cred = test_cred();
+    fixed_cred.access_token = "at_fixed".to_string();
+    store.save("prov", fixed_cred).unwrap();
+    assert_eq!(store.get("prov").unwrap().access_token, "at_fixed");
+
+    // 重启等价：新 store 从盘上 load 到的是已持久化的 at_fixed
+    let store2 = AuthStore::new(&path);
+    assert_eq!(store2.get("prov").unwrap().access_token, "at_fixed");
+}
+
 // ===== 回归锁：auth.json 落盘原子写 + 0o600 + 损坏加载 loud =====
 
 use std::sync::{Arc, Mutex};
