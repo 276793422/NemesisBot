@@ -348,3 +348,93 @@ fn test_build_prompt_image_degrades_to_note() {
     assert!(prompt.contains("描述一下"));
     assert!(prompt.contains("[用户附带 1 张图片（当前委派通道不支持视觉输入）]"));
 }
+
+// ============================================================
+// BUG-20261114-061：chat() 输出裁决编排（decide_output）形态矩阵。
+// 横向面：stdout-first 的解析 Err（turn.failed 已交真相源分类）被
+// `let Ok(resp)` 吞掉——非零退出 + stderr 空时已分类错误丢成
+// Unknown "exited with status"。红证 = 复刻旧编排跑本矩阵。
+// ============================================================
+
+/// 非零退出 + stderr 空 + stdout turn.failed 限流 → 已分类错误必须送达
+/// RateLimit（可轮转），不得被 Err 吞没后落 Unknown exited。
+#[test]
+fn test_decide_nonzero_empty_stderr_turn_failed_classified() {
+    let provider = CodexCliProvider::new(CodexCliConfig::default());
+    let stdout =
+        r#"{"type":"turn.failed","error":{"message":"API Error: 429 rate_limit exceeded"}}"#;
+    let err = provider
+        .decide_output(false, stdout, "", "exit code: 1", &[], "m")
+        .unwrap_err();
+    match err {
+        FailoverError::RateLimit {
+            provider: p, model, ..
+        } => {
+            assert_eq!(p, "codex-cli");
+            assert_eq!(model, "m");
+        }
+        other => panic!("预期 RateLimit（stdout turn.failed 分类送达），得到 {other:?}"),
+    }
+}
+
+/// 非零退出 + stderr 空 + stdout 有效内容 → 内容送达（既有语义不变）。
+#[test]
+fn test_decide_nonzero_empty_stderr_stdout_content_ok() {
+    let provider = CodexCliProvider::new(CodexCliConfig::default());
+    let stdout =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"Answer here"}}"#;
+    let resp = provider
+        .decide_output(false, stdout, "", "exit code: 1", &[], "m")
+        .expect("stdout 有效内容必须送达");
+    assert_eq!(resp.content.trim(), "Answer here");
+}
+
+/// 非零退出 + stderr 有内容 → stderr 分类语义不变（stderr 优先保留）。
+#[test]
+fn test_decide_nonzero_stderr_still_classified() {
+    let provider = CodexCliProvider::new(CodexCliConfig::default());
+    let err = provider
+        .decide_output(
+            false,
+            "",
+            "API Error: 429 rate_limit exceeded",
+            "exit code: 1",
+            &[],
+            "m",
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "得到 {err:?}"
+    );
+}
+
+/// 非零退出 + 双空 → Unknown exited with status 兜底不变。
+#[test]
+fn test_decide_nonzero_both_empty_unknown() {
+    let provider = CodexCliProvider::new(CodexCliConfig::default());
+    let err = provider
+        .decide_output(false, "", "", "exit code: 1", &[], "m")
+        .unwrap_err();
+    match err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.contains("exited with status"), "得到 {message}");
+        }
+        other => panic!("预期 Unknown exited，得到 {other:?}"),
+    }
+}
+
+/// 零退出 + stdout turn.failed 限流 → RateLimit（最终解析送达，语义不变）。
+#[test]
+fn test_decide_zero_turn_failed_classified() {
+    let provider = CodexCliProvider::new(CodexCliConfig::default());
+    let stdout =
+        r#"{"type":"turn.failed","error":{"message":"API Error: 429 rate_limit exceeded"}}"#;
+    let err = provider
+        .decide_output(true, stdout, "", "exit code: 0", &[], "m")
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "得到 {err:?}"
+    );
+}

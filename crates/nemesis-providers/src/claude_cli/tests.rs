@@ -446,3 +446,115 @@ fn test_parse_response_is_error_unmatched_stays_unknown_with_prefix() {
         other => panic!("预期 Unknown，得到 {other:?}"),
     }
 }
+
+// ============================================================
+// BUG-20261114-061：chat() 输出裁决编排（decide_output）形态矩阵。
+// 052 修复②宣称「stdout 先解析……解析不出或为空才走退出码」，实际
+// stdout-first 被插在第一次退出码拦截之后——「非零退出 + 空 stderr」
+// 形态（052 点名主场景）依旧丢成 Unknown "exited with status"，
+// stdout-first 对该形态不可达。红证 = 复刻旧编排跑本矩阵。
+// ============================================================
+
+/// 非零退出 + stderr 空 + stdout 有效内容 → 内容必须送达
+/// （codex lane 同形态 Ok 送达；旧编排丢成 Unknown exited）。
+#[test]
+fn test_decide_nonzero_empty_stderr_stdout_content_delivered() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":false,"result":"Hello world","usage":{}}"#;
+    let resp = provider
+        .decide_output(false, stdout, "", "exit code: 1", &[], "m")
+        .expect("stdout 有效内容必须送达，不得因非零退出+空 stderr 丢弃");
+    assert_eq!(resp.content.trim(), "Hello world");
+    assert_eq!(resp.finish_reason, "stop");
+}
+
+/// 非零退出 + stderr 空 + stdout is_error 限流 JSON → 必须交真相源分类
+/// 成 RateLimit（可轮转），不得丢成 Unknown exited with status
+/// （052 宣称修复的主场景）。
+#[test]
+fn test_decide_nonzero_empty_stderr_is_error_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":true,"result":"API Error: 429 rate_limit exceeded","usage":{}}"#;
+    let err = provider
+        .decide_output(false, stdout, "", "exit code: 1", &[], "m")
+        .unwrap_err();
+    match err {
+        FailoverError::RateLimit {
+            provider: p, model, ..
+        } => {
+            assert_eq!(p, "claude-cli");
+            assert_eq!(model, "m");
+        }
+        other => panic!("预期 RateLimit（stdout is_error 分类送达），得到 {other:?}"),
+    }
+}
+
+/// 非零退出 + stderr 有内容 → stderr 分类语义不变（stderr 优先保留）。
+#[test]
+fn test_decide_nonzero_stderr_still_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let err = provider
+        .decide_output(
+            false,
+            "",
+            "API Error: 429 rate_limit exceeded",
+            "exit code: 1",
+            &[],
+            "m",
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "得到 {err:?}"
+    );
+}
+
+/// 非零退出 + 双空 → Unknown exited with status 兜底不变。
+#[test]
+fn test_decide_nonzero_both_empty_unknown() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let err = provider
+        .decide_output(false, "", "", "exit code: 1", &[], "m")
+        .unwrap_err();
+    match err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.contains("exited with status"), "得到 {message}");
+        }
+        other => panic!("预期 Unknown exited，得到 {other:?}"),
+    }
+}
+
+/// 零退出 + stdout 有效内容 → Ok（既有语义不变）。
+#[test]
+fn test_decide_zero_stdout_content_ok() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":false,"result":"Hi","usage":{}}"#;
+    let resp = provider
+        .decide_output(true, stdout, "", "exit code: 0", &[], "m")
+        .expect("零退出有效内容必须 Ok");
+    assert_eq!(resp.content.trim(), "Hi");
+}
+
+/// 零退出 + stdout is_error 限流 → RateLimit（052 带内分类语义不变）。
+#[test]
+fn test_decide_zero_is_error_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":true,"result":"API Error: 429 rate_limit exceeded","usage":{}}"#;
+    let err = provider
+        .decide_output(true, stdout, "", "exit code: 0", &[], "m")
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "得到 {err:?}"
+    );
+}
+
+/// 零退出 + stdout 畸形 JSON → Format（解析错误语义不变）。
+#[test]
+fn test_decide_zero_invalid_json_format() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let err = provider
+        .decide_output(true, "not json at all", "", "exit code: 0", &[], "m")
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Format { .. }), "得到 {err:?}");
+}
