@@ -61,10 +61,18 @@ impl ConfigStore {
     /// mutates the live config; after it returns the full config is serialized
     /// and written to `path`. The write guard is released before IO so other
     /// readers aren't blocked by the disk write.
+    ///
+    /// 持久化失败必须回滚内存（BUG-20261114-041）：本方法的契约是「内存
+    /// 与盘上真相一起变」。盘写失败后若保留内存变异，内存与磁盘分叉且
+    /// **不可自愈**——mtime reload（check_config_reload）只盯盘文件，盘没变
+    /// 就永不触发，分叉活到进程重启；调用方拿 Err（「没保存成功」）的同一
+    /// 时刻，load_live 消费方读到的全是未持久化的幻影值。回滚 = 恢复变更前
+    /// 快照（=盘上真相），Err 语义诚实。
     pub fn update<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut Config),
     {
+        let before = self.config.read().clone();
         {
             let mut guard = self.config.write();
             f(&mut guard);
@@ -72,7 +80,10 @@ impl ConfigStore {
         // Persist a snapshot. save_config takes &mut for local-mode path
         // auto-adjust — clone so we don't re-take the write guard.
         let mut snapshot = self.config.read().clone();
-        save_config(&self.path, &mut snapshot)?;
+        if let Err(e) = save_config(&self.path, &mut snapshot) {
+            *self.config.write() = before;
+            return Err(e);
+        }
         Ok(())
     }
 
