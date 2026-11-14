@@ -169,6 +169,46 @@ fn resolve_active_tier_from_config() {
     assert_eq!(resolve_active_tier(&cfg, "nonexistent"), ModelTier::Big);
 }
 
+/// BUG-20261114-055 回归锁：`model_size_b` 越域值按「未设」处理。
+/// 0 = resolver 家族缺席惯例（修复前 Some(0)→tier_from_size_b 0..=39 桶
+/// →Mini 钉死）；>u32::MAX 修复前裸 `as u32` 静默回绕（4_294_967_296→0
+/// →Mini——误判强模型为小 = 模块设计原则点名的不可恢复方向）。修复后
+/// 越域 → None → opaque 别名落默认 Big；正常值行为不变。
+#[test]
+fn resolve_active_tier_model_size_b_out_of_domain_treated_as_unset() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "zero", "model": "x/zero", "model_size_b": 0},
+            {"model_name": "wrap", "model": "x/wrap",
+             "model_size_b": 4294967296u64},
+            {"model_name": "huge", "model": "x/huge",
+             "model_size_b": 18446744073709551615u64},
+            {"model_name": "valid", "model": "x/valid", "model_size_b": 30}
+        ]
+    });
+    // opaque 别名无名字标记可依，model_size_b 是唯一 tier 信号。
+    assert_eq!(
+        resolve_active_tier(&cfg, "zero"),
+        ModelTier::Big,
+        "0 = 未设（缺席惯例），不钉 Mini"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "wrap"),
+        ModelTier::Big,
+        "u32::MAX+1 回绕值不吞（修复前 as u32 → 0 → Mini）"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "huge"),
+        ModelTier::Big,
+        "u64::MAX 同口径"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "valid"),
+        ModelTier::Mini,
+        "正常值行为不变（30 → Mini 桶）"
+    );
+}
+
 #[test]
 fn resolve_max_output_tokens_from_config() {
     let cfg = serde_json::json!({

@@ -1888,6 +1888,31 @@ async fn test_s11b_run_setsize_matrix() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("Invalid size"));
+    // BUG-20261114-055：0 / 0B 非法（与 Dashboard 同字段写入面同规则
+    // "must be > 0"）——旧代码 Some(0) 直写 model_size_b=0，auto 检测
+    // 钉死 Mini（0..=39 桶）。
+    for bad in ["0", "0B"] {
+        let err = super::run(
+            super::ModelAction::SetSize {
+                name: "lite".into(),
+                size: bad.into(),
+            },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("must be > 0"),
+            "size={bad} 须拒绝: {err}"
+        );
+    }
+    // 拒绝后 config 未动（不落 model_size_b 键）。
+    assert!(
+        s11b_read_cfg(&th.home)["model_list"][0]
+            .get("model_size_b")
+            .is_none(),
+        "被拒写入不得落盘"
+    );
     // 30B
     super::run(
         super::ModelAction::SetSize {
