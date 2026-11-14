@@ -807,6 +807,50 @@ impl BackgroundProcessRegistry {
             "note": "text delivered to the job's stdin (read its reaction via background_output)",
         }))
     }
+
+    /// 用户面移除单个任务条目（Dashboard「清除」；仅终态行——运行中诚实
+    /// 拒绝并指引先 kill）。移除后 agent 工具通道再读 output 报 no such
+    /// job_id（前端 tail 的「输出已过期」态兜住）。返回移除确认。
+    pub async fn remove(&self, id: u64) -> Result<serde_json::Value, String> {
+        let mut jobs = self.jobs.lock().await;
+        let running = match jobs.get(&id) {
+            Some(job) => job.is_running().await,
+            None => {
+                return Err(format!("background.remove: no such job_id {}", id));
+            }
+        };
+        if running {
+            return Err(format!(
+                "background.remove: job {} is still running; stop it with \
+                 background_kill first",
+                id
+            ));
+        }
+        jobs.remove(&id);
+        debug!(job = id, "[BackgroundRegistry] removed by user");
+        Ok(serde_json::json!({ "removed": true, "id": id }))
+    }
+
+    /// 用户面批量清除全部终态条目（Dashboard「清除已完成」）。运行中条目
+    /// 保留（无从确认死活的条目不擅杀）。状态判定用 `try_lock`（持 jobs
+    /// 锁期间不 await status——与 start_inner 满员淘汰同一形态）。
+    pub async fn clear_finished(&self) -> serde_json::Value {
+        let mut jobs = self.jobs.lock().await;
+        let victims: Vec<u64> = jobs
+            .iter()
+            .filter(|(_, j)| j.status.try_lock().map(|s| s.is_some()).unwrap_or(false))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &victims {
+            jobs.remove(id);
+        }
+        debug!(
+            removed = victims.len(),
+            remaining = jobs.len(),
+            "[BackgroundRegistry] cleared finished jobs"
+        );
+        serde_json::json!({ "removed": victims.len(), "remaining": jobs.len() })
+    }
 }
 
 /// 监督任务：轮询 try_wait → 记录终态；见 kill 旗标跑一次停止阶梯
