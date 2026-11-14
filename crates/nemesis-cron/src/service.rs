@@ -431,8 +431,9 @@ impl CronService {
                         serde_json::json!({ "trigger": "schedule" }),
                     );
 
-                    // Call on_job handler (outside lock)——panic 隔离见
-                    // invoke_handler_catch_panic。
+                    // Call on_job handler (outside store lock)——panic 隔离见
+                    // invoke_handler_catch_panic。（on_job 槽位锁持穿 handler
+                    // 执行期是刻意串行语义，BUG-20261114-048 诚实注记。）
                     let handler_result = {
                         let on_job = on_job.lock();
                         invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
@@ -1211,9 +1212,20 @@ impl CronService {
     /// （handle_cmd 是 async 上下文，同步直跑阻塞 reactor，logs.rs 的
     /// spawn_blocking 纪律同款漏网）；② 调用方 `svc.lock()` 外层锁全程被
     /// 持有 → dashboard 全部 cron 操作（list/add/update/toggle/delete）
-    /// 冻结到 turn 完成；③ on_job 锁被持有 → 到期计划触发排队延迟。
-    /// 本方法快照段（毒态闸 + store 锁内拷 job）微秒级返回，handler 执行、
-    /// 状态写回、账本收口在独立线程完成——三层阻塞全部解除。
+    /// 冻结到 turn 完成。**这两层本方法解除**：快照段（毒态闸 + store 锁内
+    /// 拷 job）微秒级返回，handler 执行、状态写回、账本收口在独立线程完成。
+    /// ③（诚实注记，BUG-20261114-048）on_job 锁仍持穿 handler 执行期（见
+    /// [`run_job_execution`]）——手动触发与到期计划触发在 handler 体上串行
+    /// 是**刻意语义**（handler 槽位互斥 + 「手动/计划执行串行是意图」既有
+    /// 拍板，裁决链见 BUG-20261114-048 修复文档；R955 O1 / R1227 #2 /
+    /// R1265 审计台账三度确认），且延迟不丢失（fire loop due 已收集复位，
+    /// 恢复后补触发）。本方法解除的只有调用方侧的 ①②。旧注「三层阻塞
+    /// 全部解除」对 ③ 是误述——生产三臂（消息 publish / dreaming 后台
+    /// spawn / autopilot 建单派发）均快速返回，锁持穿时长远小于旧注宣称的
+    /// 「分钟级」，而该误述曾连续误导审计复核（R978 照抄；R1280 初判亦被
+    /// 诱导定罪后经既有拍板推翻）。勿据本注做锁语义改动——Box→Arc 锁内
+    /// clone 并发化会推翻串行拍板，回归锁
+    /// `test_bug_20261114_048_on_job_handler_bodies_never_overlap` 会红。
     /// 执行错误与 [`Self:execute_job`] 同径记账（last_status/账本/日志），
     /// 不经返回值上抛（调用方只消费「已接受」）。
     pub fn execute_job_detached(&self, job_id: &str) -> Result<(), String> {
