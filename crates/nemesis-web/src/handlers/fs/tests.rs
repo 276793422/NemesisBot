@@ -500,6 +500,9 @@ fn resolve(ws: &TempDir, raw: &str) -> Result<ResolvedTarget, String> {
 /// 同持 [`crate::handlers::editor::EDITOR_TEST_LOCK`] 互斥——fs 侧永远
 /// 看到未装配形态（None = 无闸 = 越界照拒）。security 裁剪形态无槽无锁
 /// （返回占位 guard，调用点形态统一且不触发 let_unit_value lint）。
+/// guard 有意横跨测试体内的 `.await`（串行化必须盖住 handle_cmd 调用点
+/// 才能挡住并发装槽）——相关测试 fn 逐个挂 `allow(clippy::await_holding_lock)`
+/// （nemesis-agent credential_domain_tests 同款先例）。
 #[cfg(feature = "security")]
 fn editor_slot_lock() -> parking_lot::MutexGuard<'static, ()> {
     crate::handlers::editor::EDITOR_TEST_LOCK.lock()

@@ -11,6 +11,11 @@
 //   行取数，无 in-flight 首载请求），不需要 SubagentsView 那套代次围栏；
 //   行级刷新由列表轮询统一推进（行被逐出 → 详情诚实关闭）。
 // - 停止：background.kill（幂等树杀）；启动归 agent 工具通道，本页无 start。
+// - 清除（2026-11-15 用户面清理）：background.remove（单行，仅终态——运行中
+//   后端拒绝并指引先 kill）+ background.clear_finished（批量清终态，运行中
+//   保留）。两者不可恢复（输出缓冲释放）→ 均弹 confirm。主动清除成功后
+//   **显式 closeDetail** 再 loadList——绕开 syncDetailWithList 的「已被注册表
+//   逐出（满员淘汰）」误导 toast（那话说的是容量语义，清除是用户动作）。
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWSAPI } from '../composables/useWSAPI'
@@ -128,6 +133,40 @@ async function killJob(j: JobRow) {
   }
 }
 
+// --- 清除（2026-11-15 用户面清理；不可恢复 → confirm）---
+const finishedCount = computed(() => jobs.value.filter((j) => !j.running).length)
+
+/** 批量清除全部终态行（运行中保留）。 */
+async function clearFinished() {
+  if (!finishedCount.value) return
+  if (!confirm(`清除全部已完成任务（${finishedCount.value} 个）？输出缓冲将被释放，此操作不可恢复。运行中的任务不受影响。`)) return
+  try {
+    const r = await request('background', 'clear_finished')
+    toast.success(`已清除 ${Number(r?.removed ?? 0)} 个已完成任务`)
+    // 正开着的终态详情行必然被清——显式关详情再刷，绕开 syncDetailWithList
+    // 的「已被注册表逐出（满员淘汰）」误导 toast（清除是用户动作，不是容量
+    // 语义）；运行中详情行不受影响，保留。
+    if (detail.value && !detail.value.running && !detail.value.stale) closeDetail()
+    loadList()
+  } catch (e: any) {
+    toast.error('清除失败: ' + (e?.message ?? e))
+  }
+}
+
+/** 单行清除（仅终态行渲染该钮；运行中行是「停止」）。 */
+async function removeJob(j: JobRow) {
+  const label = excerpt(j.command, 48)
+  if (!confirm(`清除后台任务 #${j.id}（${label}）？输出缓冲将被释放，此操作不可恢复。`)) return
+  try {
+    await request('background', 'remove', { id: j.id })
+    toast.success(`已清除任务 #${j.id}`)
+    if (detail.value?.id === j.id) closeDetail()
+    loadList()
+  } catch (e: any) {
+    toast.error('清除失败: ' + (e?.message ?? e))
+  }
+}
+
 // --- 展示辅助 ---
 function excerpt(s: string | null | undefined, n: number): string {
   const t = (s ?? '').replace(/\s+/g, ' ').trim()
@@ -195,6 +234,7 @@ onBeforeUnmount(() => {
       <div class="proc-filters">
         <span v-if="hasRunning" class="badge badge-info">● {{ jobs.filter((j) => j.running).length }} 个运行中</span>
         <div style="flex: 1;"></div>
+        <button class="btn btn-sm" :disabled="!finishedCount" @click="clearFinished">清除已完成 ({{ finishedCount }})</button>
         <button class="btn btn-sm" @click="loadList">刷新</button>
       </div>
 
@@ -231,6 +271,7 @@ onBeforeUnmount(() => {
                 <div style="display: flex; gap: var(--space-1);">
                   <button class="btn btn-sm" @click="openDetail(j.id)">详情</button>
                   <button v-if="j.running" class="btn btn-sm btn-danger" @click="killJob(j)">停止</button>
+                  <button v-else class="btn btn-sm" @click="removeJob(j)">清除</button>
                 </div>
               </td>
             </tr>

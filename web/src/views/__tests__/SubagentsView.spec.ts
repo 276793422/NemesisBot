@@ -74,8 +74,8 @@ function row(id: string, task: string, running = false) {
   }
 }
 
-async function mountView() {
-  const w = mount(SubagentsView)
+async function mountView(props?: Record<string, unknown>) {
+  const w = mount(SubagentsView, { props })
   await flushPromises()
   return w
 }
@@ -94,6 +94,10 @@ beforeEach(() => {
     if (cmd === 'events') return Promise.resolve({ events: [], running: false })
     return Promise.resolve({})
   })
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 describe('SubagentsView 详情请求围栏（R575）', () => {
@@ -285,6 +289,139 @@ describe('SubagentsView 详情 poll 围栏（R578）', () => {
     const tl = w.find('.subagent-timeline').text()
     expect(tl).toContain('b事件')
     expect(tl).not.toContain('甲载入窗帧')
+    w.unmount()
+  })
+})
+
+// ===========================================================================
+// 归档生命周期（2026-11-15）：archived prop 双模式 / 工作面归档面 / 归档
+// TAB 恢复·删除·清空 / confirm 纪律（归档恢复不弹、删除清空必弹）/
+// archived-count emit / 删除后详情模态显式关闭。
+// ===========================================================================
+
+function findBtn(w: any, text: string) {
+  return w.findAll('button').find((b: any) => b.text().trim() === text)
+}
+
+describe('SubagentsView 归档模式', () => {
+  it('归档模式：list 请求带 archived=only；emit archived-count（全库投影）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [row('a', '归档任务')], archived_count: 5 })
+      return Promise.resolve({})
+    })
+    const w = await mountView({ archived: true })
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'list', { archived: 'only' })
+    expect(w.emitted('archived-count')?.at(-1)).toEqual([5])
+    w.unmount()
+  })
+
+  it('工作面：缺省请求不带 archived；也 emit archived-count', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [], archived_count: 3 })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'list', {})
+    expect(w.emitted('archived-count')?.at(-1)).toEqual([3])
+    w.unmount()
+  })
+
+  it('工作面：终态行「归档」钮不弹确认；运行中行是「终止」钮', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [row('a', '终态任务'), row('b', '运行任务', true)] })
+      return Promise.resolve({})
+    })
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const w = await mountView()
+    const rows = w.findAll('.subagent-row')
+    const btns0 = rows[0].findAll('button').map((b: any) => b.text().trim())
+    expect(btns0).toContain('归档')
+    expect(btns0).not.toContain('终止')
+    const btns1 = rows[1].findAll('button').map((b: any) => b.text().trim())
+    expect(btns1).toContain('终止')
+    expect(btns1).not.toContain('归档')
+    await rows[0].findAll('button').find((b: any) => b.text().trim() === '归档')!.trigger('click')
+    await flushPromises()
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'archive', { ids: ['a'] })
+    w.unmount()
+  })
+
+  it('工作面工具行「归档全部终态」：只批量归档终态行（运行中行不进 ids）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [row('a', '终态'), row('b', '运行中', true)] })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await findBtn(w, '归档全部终态')!.trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'archive', { ids: ['a'] })
+    w.unmount()
+  })
+
+  it('归档模式：恢复不弹确认；删除必弹确认（delegate 行附 B 端回灌注记）', async () => {
+    const del = row('d', '委派任务')
+    del.origin = 'delegate'
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [row('u', '普通归档'), del] })
+      return Promise.resolve({})
+    })
+    const confirmSpy = vi.fn((_note?: string) => true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const w = await mountView({ archived: true })
+    const rows = w.findAll('.subagent-row')
+    const btns0 = rows[0].findAll('button').map((b: any) => b.text().trim())
+    expect(btns0).toContain('恢复')
+    expect(btns0).toContain('删除')
+    expect(btns0).not.toContain('归档')
+
+    await rows[0].findAll('button').find((b: any) => b.text().trim() === '恢复')!.trigger('click')
+    await flushPromises()
+    expect(confirmSpy).not.toHaveBeenCalled()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'unarchive', { ids: ['u'] })
+
+    await rows[1].findAll('button').find((b: any) => b.text().trim() === '删除')!.trigger('click')
+    await flushPromises()
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(String(confirmSpy.mock.calls[0][0])).toContain('B 端结果回灌将无处落')
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'remove', { ids: ['d'] })
+    w.unmount()
+  })
+
+  it('归档模式工具行「清空已归档」：confirm 拒绝不发请求；确认则批量 remove 全部行', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [row('x', '甲'), row('y', '乙')] })
+      return Promise.resolve({})
+    })
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    const w = await mountView({ archived: true })
+    await findBtn(w, '清空已归档')!.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter((c: any[]) => c[1] === 'remove').length).toBe(0)
+
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await findBtn(w, '清空已归档')!.trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'remove', { ids: ['x', 'y'] })
+    w.unmount()
+  })
+
+  it('删除正查看的行后详情模态显式关闭（不悬空轮询 404）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ tasks: [row('a', '任务甲')] })
+      if (cmd === 'detail') return Promise.resolve(row('a', '任务甲'))
+      if (cmd === 'events') return Promise.resolve({ events: [], running: false })
+      return Promise.resolve({})
+    })
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const w = await mountView({ archived: true })
+    await w.findAll('.subagent-row')[0].trigger('click')
+    await flushPromises()
+    expect(w.find('.modal-body').exists()).toBe(true)
+    await w.findAll('.subagent-row')[0].findAll('button').find((b: any) => b.text().trim() === '删除')!.trigger('click')
+    await flushPromises()
+    expect(w.find('.modal-body').exists()).toBe(false)
     w.unmount()
   })
 })

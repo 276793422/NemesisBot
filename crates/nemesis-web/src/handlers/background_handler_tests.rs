@@ -99,8 +99,15 @@ fn temp_cwd() -> String {
 async fn registry_not_injected_honest_error() {
     let ctx = make_ctx(None);
     let h = BackgroundHandler;
-    // 四命令全诚实报错（数据形态齐全——错误只来自缺注入，不来自缺参数）。
-    for cmd in ["list", "output", "kill", "steer"] {
+    // 六命令全诚实报错（数据形态齐全——错误只来自缺注入，不来自缺参数）。
+    for cmd in [
+        "list",
+        "output",
+        "kill",
+        "steer",
+        "remove",
+        "clear_finished",
+    ] {
         let err = h
             .handle_cmd(cmd, Some(serde_json::json!({ "id": 1, "text": "x" })), &ctx)
             .await
@@ -114,7 +121,17 @@ async fn commands_surface_and_unknown_command_rejected() {
     let ctx = make_ctx(None);
     let h = BackgroundHandler;
     assert_eq!(h.module_name(), "background");
-    assert_eq!(h.commands(), &["list", "output", "kill", "steer"]);
+    assert_eq!(
+        h.commands(),
+        &[
+            "list",
+            "output",
+            "kill",
+            "steer",
+            "remove",
+            "clear_finished"
+        ]
+    );
     // unknown command 先于 registry 检查——None 注入下拼错命令也报 unknown。
     let err = h.handle_cmd("nope", None, &ctx).await.unwrap_err();
     assert!(
@@ -313,4 +330,92 @@ async fn steer_rejects_non_steerable_running_job_then_kill_cleans_up() {
         .unwrap();
     assert_eq!(out["job_id"], serde_json::json!(job_id));
     assert_eq!(out["killed"], serde_json::json!(true), "out={out}");
+}
+
+// ===========================================================================
+// 用户面清除（2026-11-15）：remove 仅终态（运行中拒绝并指引先 kill）/
+// clear_finished 只清终态（运行中保留）。
+// ===========================================================================
+
+#[tokio::test]
+async fn remove_and_clear_finished_flows() {
+    let reg = Arc::new(nemesis_agent::BackgroundProcessRegistry::new());
+    let ctx = make_ctx(Some(reg.clone()));
+    let h = BackgroundHandler;
+
+    // 缺 id / 不存在的 job：诚实拒绝。
+    let err = h.handle_cmd("remove", None, &ctx).await.unwrap_err();
+    assert!(err.contains("requires {id}"), "err={err}");
+    let err = h
+        .handle_cmd("remove", Some(serde_json::json!({ "id": 424_242 })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("no such job_id"), "err={err}");
+
+    // echo 秒退任务 → kill（幂等，返回即终态）→ remove 成功。
+    let started = reg.start(echo_cmd(), &temp_cwd(), false).await.unwrap();
+    let id1 = started["job_id"].as_u64().unwrap();
+    reg.kill(id1).await.unwrap();
+    let out = h
+        .handle_cmd("remove", Some(serde_json::json!({ "id": id1 })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["removed"], serde_json::json!(true));
+    assert_eq!(out["id"], serde_json::json!(id1));
+    // 移除后再 output / 再 remove：诚实 miss（真删）。
+    let err = h
+        .handle_cmd("output", Some(serde_json::json!({ "id": id1 })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("no such job_id"), "err={err}");
+    let err = h
+        .handle_cmd("remove", Some(serde_json::json!({ "id": id1 })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("no such job_id"), "err={err}");
+
+    // 运行中拒绝（慢命令给 30s 确定窗口）：文案指引先 kill。
+    let started = reg.start(long_cmd(), &temp_cwd(), false).await.unwrap();
+    let id2 = started["job_id"].as_u64().unwrap();
+    let err = h
+        .handle_cmd("remove", Some(serde_json::json!({ "id": id2 })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("still running"), "err={err}");
+    assert!(
+        err.contains("background_kill"),
+        "文案指引先 kill: err={err}"
+    );
+
+    // clear_finished：echo 终态行被清，运行中行保留。
+    let started = reg.start(echo_cmd(), &temp_cwd(), false).await.unwrap();
+    let id3 = started["job_id"].as_u64().unwrap();
+    reg.kill(id3).await.unwrap();
+    let out = h
+        .handle_cmd("clear_finished", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["removed"], serde_json::json!(1), "只清终态行: {out}");
+    let out = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    let ids: Vec<u64> = out["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["id"].as_u64())
+        .collect();
+    assert!(ids.contains(&id2), "运行中行保留: {ids:?}");
+    assert!(!ids.contains(&id3), "终态行已被清: {ids:?}");
+
+    // 清理慢命令 → 再 clear_finished → 清空。
+    reg.kill(id2).await.unwrap();
+    let out = h
+        .handle_cmd("clear_finished", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["removed"], serde_json::json!(1), "out={out}");
+    let out = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(out["count"], serde_json::json!(0), "全清后空表: {out}");
 }
