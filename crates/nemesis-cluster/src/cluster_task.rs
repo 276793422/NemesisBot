@@ -124,6 +124,12 @@ pub struct ClusterTask {
     /// 兼容），回声缺席 = A 端写回闸放行。
     #[serde(default)]
     pub dispatch_generation: Option<i64>,
+    /// 受理时刻（RFC3339，本地时区）。崩溃恢复重提按它排序——FIFO 执行
+    /// 顺序跨重启延续（DashMap iter 序是平台细节，2026-11-14 审查发现
+    /// A）。serde default 兼容旧 tasks.json（缺键 = 空串，排序时解析
+    /// 失败排最后，stable 同组保序不丢任务）。
+    #[serde(default)]
+    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +193,23 @@ impl ClusterWorkQueue {
         self.prio_tx
             .try_send(task_id)
             .map_err(|e| format!("work queue full: {}", e))
+    }
+
+    /// 背压提交（async）：容量满时等待消费者腾位而不是立即失败。
+    ///
+    /// 供崩溃恢复重提路径使用（2026-11-14 审查发现 A 根修）：恢复的
+    /// 排队任务超过队列容量时，旧路径 `submit`（try_send）硬塞，塞不进
+    /// 的只 warn——任务在 task list 是 Pending、队列里没有、无人重提，
+    /// 悬空到下次重启。恢复路径没有「拒单回滚 + error ACK」的出口
+    /// （受理路径保持 [`Self::submit`] 快速拒单语义不变），必须背压
+    /// 等待。`Err` 仅在 receiver 掉线（队列本体已 drop = 停机窗口）
+    /// 时出现，调用方据此放弃剩余任务（任务表持久化仍在，下次启动
+    /// 恢复）。
+    pub async fn submit_backpressure(&self, task_id: String) -> Result<(), String> {
+        self.tx
+            .send(task_id)
+            .await
+            .map_err(|e| format!("work queue closed: {}", e))
     }
 
     /// Get the sender handle for cloning.
@@ -262,9 +285,19 @@ impl ClusterTaskList {
     /// 检查与插入收进单个 DashMap entry 锁后，同 id 并发受理恰有一个胜者。
     /// 终态残留放行（覆盖）与顺序闸同纪律：complete_task 正常即移除，
     /// 残留视为异常态，宁可放行不可误伤合法重发。
-    /// 注意：本方法持有 entry 锁期间不做任何磁盘持久化——persist 面若
-    /// 内部 `tasks.iter()`（见 persist_to_disk），与 entry 锁同 key 相互
-    /// 等待会死锁（save_async_state 顶部注释同款纪律）。
+    /// 注意：持有 entry 锁期间不做任何磁盘持久化——persist 面若内部
+    /// `tasks.iter()`（见 persist_to_disk），与 entry 锁同 key 相互等待会
+    /// 死锁（save_async_state 顶部注释同款纪律）；落盘在 entry guard 归还
+    /// **之后**执行。
+    ///
+    /// NB-CODE-009 受理即落盘：此前首个持久化点在 save_async_state /
+    /// inject_callback（任务真正开跑时）——B 端串行消费者的排队窗口（可被
+    /// 长 LLM 任务拉长到 30 分钟级）内崩溃，排队任务在 tasks.json 无任何
+    /// 记录，重启 restore_from_disk + recover_task_ids 重提队列时无物可
+    /// 恢复，任务凭空丢失。受理成功即落盘后，「已受理的任务崩溃不丢」
+    /// 成立：排队中崩溃 → 重启重提队列照常执行。落盘失败只 warn 不改
+    /// 受理结果（内存任务照常排队执行；下一个持久化点 save_async_state /
+    /// inject_callback 会重试全量落盘）。
     ///
     /// Returns `Err(existing_status)` when an in-flight task with the same id
     /// already exists; `Ok(())` when the new task was registered.
@@ -275,23 +308,36 @@ impl ClusterTaskList {
             status = %task.status,
             "[ClusterTaskList] Creating task (atomic if-absent)"
         );
-        match self.tasks.entry(task.task_id.clone()) {
+        let task_id = task.task_id.clone();
+        let outcome = match self.tasks.entry(task_id.clone()) {
             Entry::Occupied(mut occupied) => {
                 let existing_status = occupied.get().status;
                 if matches!(
                     existing_status,
                     TaskStatus::Pending | TaskStatus::Running | TaskStatus::WaitingRemote
                 ) {
-                    return Err(existing_status);
+                    Err(existing_status)
+                } else {
+                    occupied.insert(task);
+                    Ok(())
                 }
-                occupied.insert(task);
-                Ok(())
             }
             Entry::Vacant(vacant) => {
                 vacant.insert(task);
                 Ok(())
             }
+        };
+        // Entry guard 已归还——persist_to_disk 内部 iter 不再与 entry 锁互等。
+        if outcome.is_ok()
+            && let Err(e) = self.persist_to_disk()
+        {
+            tracing::warn!(
+                task_id = %task_id,
+                error = %e,
+                "[ClusterTaskList] Failed to persist task index after create (queued task not crash-safe until next persist point)"
+            );
         }
+        outcome
     }
 
     /// Get a task by ID.
@@ -733,7 +779,10 @@ impl ClusterTaskList {
     /// In the worst case (callback truly lost), the task will time out on the
     /// requesting node, which is the correct degradation.
     pub fn recover_task_ids(&self) -> Vec<String> {
-        let mut task_ids = Vec::new();
+        // 收集带 created_at（排序键）——DashMap iter 序是平台/插入序细节，
+        // 恢复顺序必须是任务创建顺序：FIFO 语义跨重启延续，first_start
+        // 逐条重提 work queue，顺序即执行顺序（2026-11-14 审查发现 A）。
+        let mut recovered: Vec<(String, String)> = Vec::new(); // (created_at, task_id)
         for mut entry in self.tasks.iter_mut() {
             match entry.value().status {
                 TaskStatus::Pending => {
@@ -741,7 +790,7 @@ impl ClusterTaskList {
                         task_id = %entry.key(),
                         "[ClusterTaskList] Recovering Pending task"
                     );
-                    task_ids.push(entry.key().clone());
+                    recovered.push((entry.value().created_at.clone(), entry.key().clone()));
                 }
                 TaskStatus::WaitingRemote => {
                     tracing::info!(
@@ -749,11 +798,25 @@ impl ClusterTaskList {
                         "[ClusterTaskList] Recovering WaitingRemote task → Pending (callback may be lost)"
                     );
                     entry.value_mut().status = TaskStatus::Pending;
-                    task_ids.push(entry.key().clone());
+                    recovered.push((entry.value().created_at.clone(), entry.key().clone()));
                 }
                 _ => {}
             }
         }
+
+        // 按 created_at 排序（RFC3339 解析比较，不受时区偏移字面序误导；
+        // 解析失败排最后——stable sort 保持同组原序，不丢任务）。
+        recovered.sort_by(|a, b| {
+            let ka = chrono::DateTime::parse_from_rfc3339(&a.0).ok();
+            let kb = chrono::DateTime::parse_from_rfc3339(&b.0).ok();
+            match (ka, kb) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+        let task_ids: Vec<String> = recovered.into_iter().map(|(_, id)| id).collect();
 
         // Persist the status changes (WaitingRemote → Pending) to disk.
         if !task_ids.is_empty()
@@ -768,6 +831,55 @@ impl ClusterTaskList {
             task_ids.len()
         );
         task_ids
+    }
+
+    /// Re-queue orphaned non-terminal tasks after a dynamic stop/start cycle.
+    ///
+    /// 动态停启周期（tray/Dashboard）的孤儿恢复：`LifecycleService::stop`
+    /// 在 graceful 信号后立即 abort agent loop——正执行中的任务在 await 点
+    /// 被硬杀，状态残留在 Running（完成回调/complete_task 都没跑到）；
+    /// WaitingRemote（async 挂起）若回调恰在停机窗口丢失则同样无人再触达。
+    /// 而动态 start 不跑 restore_from_disk/recover_task_ids（那是进程启动
+    /// 路径），孤儿无人消费；master 重派撞上 `create_task_if_absent` 的
+    /// 非终态拒收（Err(Running)）→ 任务卡死到进程重启。
+    ///
+    /// 与 `recover_task_ids` 的 WaitingRemote→Pending 同语义（执行中断
+    /// 但非终态 → 重提队列重跑，回调/结果丢失由 A 端超时重派兜底）——
+    /// 本方法覆盖动态周期；进程启动路径无内存孤儿（tasks map 全新），
+    /// 不需要本方法。Pending 不触碰（它们仍在队列里，新 loop 继续消费）。
+    /// 返回重提的 task_id 列表（调用方负责入队）。
+    pub fn requeue_orphan_running(&self) -> Vec<String> {
+        let mut orphans: Vec<String> = Vec::new();
+        for mut entry in self.tasks.iter_mut() {
+            match entry.value().status {
+                TaskStatus::Running => {
+                    tracing::info!(
+                        task_id = %entry.key(),
+                        "[ClusterTaskList] Re-queuing orphaned Running task (dynamic stop/start cycle)"
+                    );
+                    entry.value_mut().status = TaskStatus::Pending;
+                    orphans.push(entry.key().clone());
+                }
+                TaskStatus::WaitingRemote => {
+                    tracing::info!(
+                        task_id = %entry.key(),
+                        "[ClusterTaskList] Re-queuing orphaned WaitingRemote task → Pending (callback may be lost)"
+                    );
+                    entry.value_mut().status = TaskStatus::Pending;
+                    orphans.push(entry.key().clone());
+                }
+                _ => {}
+            }
+        }
+        if !orphans.is_empty()
+            && let Err(e) = self.persist_to_disk()
+        {
+            tracing::warn!(
+                "[ClusterTaskList] Failed to persist after orphan re-queue: {}",
+                e
+            );
+        }
+        orphans
     }
 
     /// Persist all active tasks to disk.

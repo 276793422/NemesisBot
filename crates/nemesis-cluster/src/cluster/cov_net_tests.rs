@@ -227,7 +227,7 @@ async fn poll_stale_rpc_error_and_null_result_keep_pending() {
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client),
         chrono::Duration::hours(24),
         &no_bus,
         false,

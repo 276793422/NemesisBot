@@ -162,6 +162,10 @@ pub(crate) struct RoamingSessionPool {
     reconnect_delays: std::sync::Mutex<Vec<u64>>,
     /// 心跳循环已启动（幂等；`set_dialer` 时拉起）。
     hb_started: AtomicBool,
+    /// 停机幕帘（`close_all` 落下）：exchange 诚实报 Broken、后台重连
+    /// 与在途拨号不再把会话插回池（复检持 sessions 锁，与 close_all 的
+    /// drain 互斥——check-then-act 窗口闭合）。
+    closed: AtomicBool,
 }
 
 impl Default for RoamingSessionPool {
@@ -181,7 +185,31 @@ impl RoamingSessionPool {
             idle_ttl: AtomicU64::new(SESSION_IDLE_TTL_SECS),
             reconnect_delays: std::sync::Mutex::new(RECONNECT_DELAY_SECS.to_vec()),
             hb_started: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
         }
+    }
+
+    /// 停机关闭：摘除全部会话 + 关插件连接 + 落幕帘。幕帘拦三路复活：
+    /// 后台重连（sleep 醒来即退）、在途拨号（insert 前 sessions 锁内
+    /// 复检）、close 后新到的 exchange（诚实 Broken）。心跳循环在下一
+    /// tick 检测幕帘退出。幂等。
+    pub(crate) fn close_all(self: &Arc<Self>) {
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let drained: Vec<(String, Arc<PooledSession>)> = {
+            let mut map = self.sessions.lock().unwrap();
+            map.drain().collect()
+        };
+        self.dial_locks.lock().unwrap().clear();
+        let dialer = self.backend_dialer.lock().unwrap().clone();
+        for (addr, sess) in drained {
+            if let Some(d) = dialer.as_ref() {
+                d.close(sess.conn_id);
+            }
+            tracing::debug!(addr = %addr, "[RoamingPool] 停机关闭会话");
+        }
+        tracing::info!("[RoamingPool] 池关闭（会话全摘，幕帘落下）");
     }
 
     /// 注入后台拨号出口（RpcClient::set_roaming_dialer 转发；幂等覆盖）。
@@ -237,17 +265,36 @@ impl RoamingSessionPool {
 
     /// 心跳主循环：1s 粒度 tick；每 tick 做闲置 TTL 清扫（忙会话跳过），
     /// 每 `heartbeat_interval` 做一轮心跳 ping 扫描（0=关）。
+    /// 停机幕帘落下时本循环**不退出**（跳过清扫继续 tick）——Gateway 的
+    /// LifecycleService 有 stop→start 重启语义，`reopen` 抬幕帘后循环下一拍
+    /// 自动恢复；「退出再重生」形态会让 reopen 与旧循环退出竞态（检查
+    /// hb_started 时旧循环尚未复位旗标 → no-op → 循环随后退出 → 心跳
+    /// 永久失联），不做。
     async fn heartbeat_loop(self: Arc<Self>) {
         let mut last_ping_sweep = now_ms();
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
+            let closed = self.closed.load(Ordering::SeqCst);
             let interval = self.heartbeat_interval.load(Ordering::Relaxed);
             let due = now_ms().saturating_sub(last_ping_sweep) >= interval.saturating_mul(1000);
             if interval > 0 && due {
                 last_ping_sweep = now_ms();
             }
-            self.sweep_once(interval > 0 && due).await;
+            if !closed {
+                self.sweep_once(interval > 0 && due).await;
+            }
         }
+    }
+
+    /// 抬起停机幕帘（Gateway LifecycleService stop→start 重启语义的复活
+    /// 路径；`Cluster::start` 在 RPC client 已存在的重启分支调用）。池已空
+    /// （close_all 摘净）、拨号出口/token 保留——之后的真实请求按池缺失
+    /// 路径重拨入池，心跳循环从未退出、下一拍恢复清扫。未关闭时 no-op。
+    pub(crate) fn reopen(self: &Arc<Self>) {
+        if !self.closed.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        tracing::info!("[RoamingPool] 池重新开放（幕帘抬起，会话按需重拨）");
     }
 
     /// 一轮清扫。`do_ping` = 本 tick 是否做心跳 ping（false = 只做 TTL
@@ -328,6 +375,10 @@ impl RoamingSessionPool {
             let delays = this.reconnect_delays.lock().unwrap().clone();
             for delay in delays {
                 tokio::time::sleep(Duration::from_secs(delay)).await;
+                // 停机幕帘：池已关闭，不再拨回。
+                if this.closed.load(Ordering::SeqCst) {
+                    return;
+                }
                 // 真实请求已重拨 / 心跳已另起新会话 → 收工。
                 if this.sessions.lock().unwrap().contains_key(&addr) {
                     return;
@@ -341,7 +392,14 @@ impl RoamingSessionPool {
                     .await
                 {
                     Ok(sess) => {
+                        // insert 前 sessions 锁内复检幕帘：拨号期间 close_all
+                        // 插队落下的话，关掉这条新会话而不是把它插回已关池。
                         let mut map = this.sessions.lock().unwrap();
+                        if this.closed.load(Ordering::SeqCst) {
+                            drop(map);
+                            dialer.close(sess.conn_id);
+                            return;
+                        }
                         if map.contains_key(&addr) {
                             // 竞态败者：关掉自己这条，复用在场会话。
                             drop(map);
@@ -410,6 +468,10 @@ impl RoamingSessionPool {
         dialer: Arc<dyn RoamingDialer>,
         token: &str,
     ) -> PoolExchange {
+        // 停机幕帘：池已关闭，诚实报 Broken（调用方映射 Connection）。
+        if self.closed.load(Ordering::SeqCst) {
+            return PoolExchange::Broken("roaming session pool closed".into());
+        }
         // 快路径：池命中。
         let cached = self.sessions.lock().unwrap().get(addr).cloned();
         if let Some(sess) = cached {
@@ -441,10 +503,16 @@ impl RoamingSessionPool {
                 .await
             {
                 Ok(s) => {
-                    self.sessions
-                        .lock()
-                        .unwrap()
-                        .insert(addr.to_string(), Arc::clone(&s));
+                    // insert 前 sessions 锁内复检幕帘（与 close_all 的
+                    // drain 持同一把锁互斥）：拨号期间 close_all 插队的
+                    // 话，关掉这条新会话而不是把它插回已关池。
+                    let mut map = self.sessions.lock().unwrap();
+                    if self.closed.load(Ordering::SeqCst) {
+                        drop(map);
+                        dialer.close(s.conn_id);
+                        return PoolExchange::Broken("roaming session pool closed".into());
+                    }
+                    map.insert(addr.to_string(), Arc::clone(&s));
                     s
                 }
                 Err(e) => return PoolExchange::Broken(e),

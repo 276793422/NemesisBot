@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use nemesis_types::cluster::Task;
 
-use crate::cluster_config::{DynamicState, PeerConfig, PeerStatus};
+use crate::cluster_config::{DynamicState, PeerConfig};
 use crate::config_loader::ConfigError;
 use crate::continuation_store::ContinuationStore;
 use crate::discovery::ClusterCallbacks;
@@ -652,7 +652,10 @@ impl Cluster {
         self.registry.upsert(local_node);
 
         // Initialize RPC client with peer resolver backed by our registry.
-        // If a client was already set via set_rpc_client(), this is a no-op.
+        // If a client was already set via set_rpc_client(), this is a no-op
+        // ——但 Gateway LifecycleService 的 stop→start 重启语义下 stop() 落过
+        // 漫游池幕帘，这里抬起（reopen：会话按需重拨、心跳恢复；未关闭时
+        // no-op）。
         if self.rpc_client.lock().is_none() {
             let resolver = Arc::new(ClusterPeerResolver {
                 registry: self.registry.clone(),
@@ -666,6 +669,8 @@ impl Cluster {
                 self.rpc_port,
             );
             *self.rpc_client.lock() = Some(client);
+        } else if let Some(ref client) = *self.rpc_client.lock() {
+            client.reopen();
         }
 
         // Load RPC auth token from config.cluster.json and apply to server/client.
@@ -1273,6 +1278,14 @@ impl Cluster {
             && let Err(e) = server.stop()
         {
             tracing::warn!(error = %e, "[Cluster] RPC server stop error");
+        }
+
+        // Stop RPC client（iroh 漫游会话池全摘 + 心跳停摆 + 后台重连退场；
+        // LAN 路径为每请求短连接，无池可关）。不关的话停机后心跳循环继续
+        // ping、插件连接悬挂到进程退出。重启路径由 start() 的 reopen 分支
+        // 对称复活（Gateway LifecycleService stop→start 同实例语义）。
+        if let Some(ref client) = *self.rpc_client.lock() {
+            client.close();
         }
 
         // iroh 漫游叠加层停机（QUIC 插件化：端点本体在 plugin_roaming

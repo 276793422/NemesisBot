@@ -83,10 +83,13 @@ impl RpcTransport {
         );
         let request_id = wire_msg.id.clone();
 
-        // Send
-        conn.send(&wire_msg)
-            .await
-            .map_err(RpcTransportError::Connection)?;
+        // Send（失败也先归还：死连接走 return_connection 的释放臂——
+        // close + 三账回落。直接 `?` 早退会泄漏 dial 时 forget 的许可
+        // 与 node_count；cleanup_dead 只扫池内条目，摸不到在途租借）。
+        if let Err(e) = conn.send(&wire_msg).await {
+            self.pool.return_connection(key, conn);
+            return Err(RpcTransportError::Connection(e));
+        }
 
         // Receive with timeout
         let result = tokio::time::timeout(self.timeout, async {

@@ -33,7 +33,15 @@ impl Cluster {
                     _ = tick.tick() => {
                         tick_count = tick_count.wrapping_add(1);
 
+                        // 并行探针（2026-11-14 审查 #2 根修）：发射阶段
+                        // JoinSet 并行——旧实现逐个 await（每探 5s 超时），
+                        // N 个离线对端把单轮 tick 拖成 Σ(5s)（启动冲刺 12
+                        // tick 窗口内对全 Offline 静态 peer 尤其放大）。
+                        // 应答结算阶段（registry 翻转 / announce 入册 / 复活
+                        // 回调）在 join 后串行执行，行为与逐个探完全一致，
+                        // 墙钟收敛到 max(5s)。
                         let peers = registry.list_peers();
+                        let mut probes = tokio::task::JoinSet::new();
                         for peer in peers {
                             // 跳过本节点（自 ping 无意义）
                             if peer.base.id == local_node_id {
@@ -59,9 +67,30 @@ impl Cluster {
                                 target: Some(node_id.clone()),
                             };
                             // 5s 探针超时：正常 LAN RTT <1ms，5s 足够宽容
-                            let result = client
-                                .call_probe_with_timeout(&node_id, request, Duration::from_secs(5))
-                                .await;
+                            probes.spawn(async move {
+                                let result = client
+                                    .call_probe_with_timeout(
+                                        &node_id,
+                                        request,
+                                        Duration::from_secs(5),
+                                    )
+                                    .await;
+                                (node_id, result)
+                            });
+                        }
+                        while let Some(joined) = probes.join_next().await {
+                            // 探针任务 panic：不翻转注册表（自家 bug 不算
+                            // 对端失联），下轮 tick 重探。
+                            let (node_id, result) = match joined {
+                                Ok(pair) => pair,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "[Cluster] Health probe task panicked; skipping (retried next tick)"
+                                    );
+                                    continue;
+                                }
+                            };
 
                             match result {
                                 Ok(resp) => {
@@ -286,8 +315,9 @@ pub(super) fn probe_drift_gate() -> &'static crate::discovery::AnnounceWarnGate 
 /// 触达）；③ 两臂全部捕获同一 stats/去重集。
 /// 路由去重集容量上限（内存护栏）。条目只在「settle 后短时间内可能收到
 /// 重放」的窗口内有意义（送达重试/ 恢复轮询都在分钟级），而任务本体
-/// 2h 后即被 清理——集内旧条目是纯死重量。超限整体清空重新计数：
-/// 丢的只是远超任何重放窗口的旧任务去重位，最坏情形（窗口外恰好来重放）
-/// 是单个样本双计，自限且可忽略。10 万条 ≈ 15MB 上界，远超看板自动化
-/// 现实任务量级。
+/// 2h 后即被 清理——集内旧条目是纯死重量。超限**按序逐出最老一条**
+/// （RouteRecordedSet::insert_evicting_oldest，seen+order 双账同步；
+/// 旧「整体清空重新计数」形态会把去重位提前丢光，窗口内重放双计风险
+/// 随清空放大——逐条逐出只影响最老的死重量条目）。10 万条 ≈ 15MB 上界，
+/// 远超看板自动化现实任务量级。
 pub(super) const ROUTE_RECORDED_CAP: usize = 100_000;

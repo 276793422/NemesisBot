@@ -707,7 +707,10 @@ impl TaskManager {
     }
 
     fn fire_callback(&self, task: &Task) {
-        if let Some(cb) = self.on_complete.lock().as_ref() {
+        // Clone the hook OUT of the lock（对齐 fire_route_record 同款
+        // 纪律）：parking_lot 非重入，回调体若重入 set_callback /
+        // set_on_complete 等持同一把锁的入口会自锁死。
+        if let Some(cb) = self.on_complete.lock().clone() {
             cb(task);
         }
     }
