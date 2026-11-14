@@ -39,7 +39,6 @@ use super::GatewayCtx;
 use super::GatewayLlmJudge;
 #[cfg(all(feature = "memory", feature = "security"))]
 use super::GatewayMemoryGate;
-use super::count_enabled_channels;
 use super::print_gateway_banner;
 #[cfg(not(target_os = "android"))]
 use super::trigger_global_shutdown;
@@ -324,12 +323,18 @@ pub(crate) async fn run_runtime(
     let _chat_url = format!("http://{}:{}/chat/", web_display_host, real_port);
 
     // Step 21: Print startup banner
-    let enabled_channels = count_enabled_channels(&cfg);
+    // 横幅通道数直接消费 runtime_handoff.enabled_channels（WebWiring 同源
+    // 移交，兼 ChannelManager 出站白名单）——不再从 config 二次数。
+    // BUG-20261114-049：旧 count_enabled_channels 陈旧清单只数 13 通道，
+    // Wave 3 装配的 11 个（matrix/irc/signal/mastodon/bluesky/wecom/
+    // mattermost/nostr/mqtt/wechat/email）全盲——email-only 配置误报
+    // 「WARNING: No channels enabled」。双轨记账已消除，单一真相源 =
+    // 实际装配列表（成员正确性由 cov_tests push 矩阵钉住）。
     print_gateway_banner(
         &web_display_host,
         real_port,
         &cfg.channels.web.auth_token,
-        enabled_channels,
+        runtime_handoff.enabled_channels.len(),
         &cfg.gateway.host,
         cfg.gateway.port,
     );
