@@ -1373,20 +1373,20 @@ impl ModelsHandler {
                 }
             }
             "proxy" => {
-                // 代理设置页：空串 = 清除（直连）；非空做
-                // 前缀校验（reqwest Proxy::all 支持的形态），彻底校验留给
-                // provider 构造（非法 warn 回落直连，不阻断）。注意：代理
-                // 在 provider 构造时消费——改默认模型的代理后需 set_default
-                // 热切或重启网关生效（前端代理页已自动跟发 set_default）。
+                // 代理设置页：空串 = 清除（直连）；非空做前缀校验——白名单
+                // 单一真相源 = nemesis_config::proxy_file::PROXY_PREFIXES
+                //（BUG-20261114-064：socks:// 已除名，reqwest/hyper-util 都
+                // 不认这个 scheme——env 路径静默直连、显式路径连接期按
+                // HTTP CONNECT 打 SOCKS 端口失败），彻底校验留给 provider
+                // 构造（非法 warn 回落直连，不阻断）。注意：代理在 provider
+                // 构造时消费——改默认模型的代理后需 set_default 热切或重启
+                // 网关生效（前端代理页已自动跟发 set_default）。
                 let s = value.as_str().ok_or("proxy must be a string")?.trim();
-                let valid_prefix = ["http://", "https://", "socks://", "socks5://", "socks5h://"]
-                    .iter()
-                    .any(|p| s.starts_with(p));
-                if !s.is_empty() && !valid_prefix {
-                    return Err(
-                        "proxy must start with http:// | https:// | socks:// | socks5:// | socks5h:// (or be empty to clear)"
-                            .to_string(),
-                    );
+                if !s.is_empty() && !nemesis_config::proxy_file::scheme_supported(s) {
+                    return Err(format!(
+                        "proxy must start with {} (or be empty to clear)",
+                        nemesis_config::proxy_file::PROXY_PREFIXES.join(" | ")
+                    ));
                 }
                 serde_json::Value::String(s.to_string())
             }

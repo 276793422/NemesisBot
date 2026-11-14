@@ -289,6 +289,28 @@ impl GatewayCtx {
         // 未配置走。CLI 型 lane 的子进程（读小写）与本进程（读大写）双对覆盖。
         match nemesis_config::proxy_file::load(&common::workspace_path(&home).join("config")) {
             Ok(Some(c)) => {
+                // BUG-20261114-064：scheme 不受 reqwest/hyper-util 支持的
+                // 值（如历史 socks://——reqwest 只认 http/https/socks4/
+                // socks4a/socks5/socks5h）在本进程会被 hyper-util
+                // parse_env_uri 静默忽略（客户端静默直连零诊断）——注入前
+                // WARN 照告。值仍照常注入（env_vars_to_apply 单一真相源
+                // 不动）：CLI 子进程（curl 等）可能支持该 scheme，env 注入
+                // 语义 = 原样转发。WARN 只报 key 不落 value（代理 URL 可带
+                // userinfo 凭据，SEC-002 口径）。no_proxy 是豁免列表非代理
+                // 值，不检查。
+                for (key, value) in [
+                    ("HTTP_PROXY", &c.env.http_proxy),
+                    ("HTTPS_PROXY", &c.env.https_proxy),
+                    ("ALL_PROXY", &c.env.all_proxy),
+                ] {
+                    let v = value.trim();
+                    if !v.is_empty() && !nemesis_config::proxy_file::scheme_supported(v) {
+                        tracing::warn!(
+                            "[Gateway] 环境变量代理 {key} scheme 不受 reqwest 支持（BUG-20261114-064），本进程客户端将静默直连；值仍注入子进程环境。scheme 支持面：{}",
+                            nemesis_config::proxy_file::PROXY_PREFIXES.join(" ")
+                        );
+                    }
+                }
                 for (key, value) in nemesis_config::proxy_file::env_vars_to_apply(&c.env) {
                     tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
                     // set_var 在 Rust 2024 为 unsafe（并发读写下 UB 面）；

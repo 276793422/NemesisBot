@@ -115,19 +115,19 @@ fn half_schema_missing_keys_default() {
 
 #[test]
 fn validation_prefix_rules() {
-    // 合法前缀族
-    for p in [
-        "http://a:1",
-        "https://a:1",
-        "socks://a:1",
-        "socks5://a:1",
-        "socks5h://a:1",
-    ] {
+    // 合法前缀族（BUG-20261114-064：socks:// 已除名——reqwest/hyper-util
+    // 都不认这个 scheme，env 路径静默直连、显式路径连接期按 HTTP CONNECT
+    // 打 SOCKS 端口失败；保存期必须 loud 拒绝而不是让用户配置静默失效）。
+    for p in ["http://a:1", "https://a:1", "socks5://a:1", "socks5h://a:1"] {
         assert!(validate_proxy_value(p, false).is_ok(), "{p} 应合法");
     }
-    // 非法：裸 host:port / 其它 scheme
+    // 非法：裸 host:port / 其它 scheme（含 socks://——reqwest Proxy::all
+    // 构造期解析 Ok 但 hyper-util env 路径 parse_env_uri 对 "socks" scheme
+    // return None 静默忽略，显式路径 connect_via_proxy 落 HTTP CONNECT
+    // 隧道打 SOCKS 端口；两者都不是用户想要的语义）。
     assert!(validate_proxy_value("127.0.0.1:7890", false).is_err());
     assert!(validate_proxy_value("ftp://a:1", false).is_err());
+    assert!(validate_proxy_value("socks://a:1", false).is_err());
     // 空 = 合法（不设置该项）；no_proxy 豁免（自由文本）
     assert!(validate_proxy_value("", false).is_ok());
     assert!(validate_proxy_value("   ", false).is_ok());
@@ -238,4 +238,69 @@ fn concurrent_section_saves_do_not_lose_updates() {
         "BUG-20261103-333: selfupdate 段最后写入不得被并发 env 保存的旧底覆盖"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ============================================================================
+// BUG-20261114-064：socks:// scheme 除名回归锁。reqwest 0.12.28/hyper-util
+// 0.1.21 都不支持 "socks" scheme：env 路径（hyper-util parse_env_uri）对未知
+// scheme `return None` 静默忽略→本进程 reqwest 客户端静默直连零诊断；显式
+// 路径（Proxy::all 构造期 into_proxy 只解析 URL 不校验 scheme）在连接期
+// connect_via_proxy 落 HTTP CONNECT 隧道打 SOCKS 端口→每请求迷惑性失败。
+// 保存期 loud 拒绝 + 自更新读侧诚实降级直连，是唯一的诚实闸口。
+// ============================================================================
+
+#[test]
+fn socks_scheme_rejected_everywhere() {
+    // 保存面三入口全部 loud 拒绝（白名单单一真相源 PROXY_PREFIXES）。
+    let dir = temp_config_dir("socks_reject");
+    let _g = SERIAL.lock().unwrap();
+    let err = save_env(
+        &dir,
+        &EnvProxyConfig {
+            all_proxy: "socks://a:1".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(err.contains("http://"), "错误信息带合法前缀提示：{err}");
+    let err = save_selfupdate(&dir, "socks://a:1").unwrap_err();
+    assert!(err.contains("http://"), "错误信息带合法前缀提示：{err}");
+    assert!(!proxy_config_path(&dir).exists(), "校验拒绝不得落盘");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_socks_selfupdate_degrades_to_direct() {
+    // 兼容既有盘上配置（load 不校验历史值）：socks:// 在读侧诚实降级直连
+    // + WARN（显式 Proxy::all 会解析成功但每请求失败，直连至少可预期）。
+    let dir = temp_config_dir("socks_legacy");
+    let _g = SERIAL.lock().unwrap();
+    save_selfupdate(&dir, "socks5://fallback-ok:1080").unwrap();
+    // 直接改写文件造出历史 socks:// 值（绕过新保存校验）。
+    let mut raw = std::fs::read_to_string(proxy_config_path(&dir)).unwrap();
+    raw = raw.replace("socks5://fallback-ok:1080", "socks://legacy:1080");
+    std::fs::write(proxy_config_path(&dir), raw).unwrap();
+    assert_eq!(
+        load_selfupdate_proxy(&dir),
+        None,
+        "socks:// 历史值读侧降级直连，不把每请求失败的代理交给下载链路"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn scheme_supported_helper_pins_reqwest_surface() {
+    // 助手单一真相源：与 reqwest/hyper-util 实际支持的 scheme 对齐。
+    assert!(scheme_supported("http://a:1"));
+    assert!(scheme_supported("https://a:1"));
+    assert!(scheme_supported("socks5://a:1"));
+    assert!(scheme_supported("socks5h://a:1"));
+    assert!(scheme_supported("  http://a:1  "), "trim 后判定");
+    assert!(!scheme_supported("socks://a:1"), "reqwest 不支持的 scheme");
+    assert!(!scheme_supported("ftp://a:1"));
+    assert!(!scheme_supported(""), "空 = 未配置（调用方先判空）");
+    assert!(
+        !scheme_supported("localhost,127.0.0.1"),
+        "no_proxy 豁免表不是代理值"
+    );
 }
