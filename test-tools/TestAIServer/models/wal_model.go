@@ -2,7 +2,8 @@ package models
 
 // testai-wal-1.0 — turn WAL 崩溃注入驱动模型（2026-10-13，L8 验收）：
 //
-//	用户轮（首轮）：发出 sleep{"duration":20} 长工具调用——gateway 被
+//	用户轮（首轮）：发出 sleep{"seconds":20} 长工具调用（参数名=seconds，
+//	  见 test_models.go TestAI42 注记）——gateway 被
 //	  taskkill /F 注入崩溃时，WAL 里留下 admitted+started 两行断头记录
 //	  （finished 永远等不到）。
 //	用户轮（续轮）：最后一条 user 消息带「⟳ 系统续轮」标记（gateway

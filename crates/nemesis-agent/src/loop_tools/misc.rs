@@ -415,7 +415,7 @@ const MAX_SLEEP_SECONDS: u64 = 3600;
 /// A tool that sleeps for a specified duration in seconds.
 ///
 /// This is a utility tool for testing delays and timeouts.
-/// Maximum duration is 60 seconds.
+/// Maximum duration is 1 hour (`MAX_SLEEP_SECONDS` = 3600)。
 pub struct SleepTool;
 
 #[async_trait]
