@@ -326,11 +326,17 @@ async fn test_privmsg_publishes_inbound_to_bus() {
 /// 私聊判别：target 是本 bot 当前昵称的 PRIVMSG 是私聊（query），chat_id
 /// 必须取发送者昵称而非 target——否则回复会 PRIVMSG 给 bot 自己，私聊
 /// 永远无法应答。IRC 昵称大小写不敏感，判别用等值忽略大小写。
+/// BUG-20261115-015 扩展：身份键（chat_id/sender_id/session_key）按
+/// irc_identity casemap 归一——同一昵称 "BoB"/"BOB" 变体必须收敛为同一
+/// 会话（NTFS/APFS 文件名不敏感面，原大小写键会分裂会话且落盘互串）。
+/// 第三帧验证 wiring 级收敛：target 大写 `NB` 照常进私聊臂（target 匹配
+/// 不敏感），发送者昵称无论何种大小写，chat_id 恒为归一化形态。
 #[tokio::test]
 async fn test_privmsg_query_chat_id_takes_sender_nick() {
     let script = vec![
         ":alice!u@h PRIVMSG nb :query hi\r\n".to_string(),
         ":BoB!u@h PRIVMSG NB :cased query\r\n".to_string(),
+        ":BOB!u@h PRIVMSG nb :third\r\n".to_string(),
     ];
     let addr = spawn_fake_irc(&script).await;
     let (tx, mut rx) = tokio::sync::broadcast::channel(16);
@@ -351,9 +357,20 @@ async fn test_privmsg_query_chat_id_takes_sender_nick() {
         .expect("second query must be published within 5s")
         .unwrap();
     assert_eq!(
-        second.chat_id, "BoB",
-        "nick casemapping must be case-insensitive"
+        second.chat_id, "bob",
+        "BUG-20261115-015: 身份键必须 casemap 归一（target 大写 NB 仍进私聊臂）"
     );
+    assert_eq!(second.sender_id, "bob");
+
+    let third = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("third query must be published within 5s")
+        .unwrap();
+    assert_eq!(
+        third.chat_id, second.chat_id,
+        "同昵称大小写变体必须收敛为同一会话（session 落盘互串回归锁）"
+    );
+    assert_eq!(third.session_key, second.session_key);
 
     ch.stop().await.unwrap();
 }
@@ -691,4 +708,42 @@ async fn test_bug300_send_raw_not_connected_errors_within_retry_window() {
         t0.elapsed() < std::time::Duration::from_secs(5),
         "not-connected path must fail within the bounded retry window"
     );
+}
+
+// ---- BUG-20261115-015：IRC 身份键 casemap 归一（email + irc 同族修复） ----
+
+/// 昵称/频道身份键按 RFC 1459 口径（ASCII 子集，与本文件
+/// eq_ignore_ascii_case 先例同族）大小写归一：同昵称变体必须收敛为
+/// 同一会话，否则 NTFS/APFS 文件名不敏感面 session 落盘互串。
+#[test]
+fn test_irc_identity_casefold_converges_variants() {
+    assert_eq!(IRCChannel::irc_identity("Alice"), "alice");
+    assert_eq!(IRCChannel::irc_identity("#Go"), "#go");
+    assert_eq!(
+        IRCChannel::irc_identity("Alice"),
+        IRCChannel::irc_identity("aLiCe")
+    );
+    assert_eq!(IRCChannel::irc_identity("unknown"), "unknown");
+}
+
+/// allow_from 条目侧同口径 casemap：身份键已归一（irc_identity），
+/// BaseChannel 固有 is_allowed 是精确 == 比较——条目不归一会错杀
+/// 归一化后的合法身份。
+#[test]
+fn test_irc_allow_from_casefolded() {
+    let cfg = IRCConfig {
+        server: "irc.example.com:6697".to_string(),
+        use_tls: false,
+        nick: "nb".to_string(),
+        password: None,
+        channel: "#test".to_string(),
+        allow_from: vec!["Alice".to_string()],
+        reconnect_backoff_secs: 1,
+        max_reconnect_backoff_secs: 2,
+    };
+    let ch = IRCChannel::new(cfg, test_sender()).unwrap();
+    // 归一化身份（入站实际传入形态）命中原大小写条目
+    assert!(ch.base.is_allowed("alice"));
+    // 非白名单昵称仍被拒
+    assert!(!ch.base.is_allowed("mallory"));
 }
