@@ -99,60 +99,80 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
 
         // Check if this would end with an incomplete code block
         let candidate = &content[..msg_end];
-        let unclosed_idx = find_last_unclosed_code_block(candidate);
+        // Option 语义（BUG-20261114-060）：None = 无未闭合围栏；Some(idx) =
+        // 最后一个未闭合围栏的字节位置——**含 0**（消息以 ``` 开头是最常见
+        // 形态）。旧实现用 0 双关「无」与「位置 0」，位置 0 围栏的修复分支
+        // 永远不触发，切分产出围栏失衡的块。
+        let unclosed_idx = match find_last_unclosed_code_block(candidate) {
+            Some(idx) => idx,
+            None => {
+                messages.push(content[..msg_end].to_string());
+                content = content[msg_end..].trim().to_string();
+                continue;
+            }
+        };
 
-        if unclosed_idx > 0 {
-            // Message would end with incomplete code block
-            if content.len() > msg_end {
-                let closing_idx = find_next_closing_code_block(&content, msg_end);
-                if closing_idx > 0 && closing_idx <= max_len {
-                    // Extend to include the closing ```
-                    msg_end = closing_idx;
+        if content.len() > msg_end {
+            let closing_idx = find_next_closing_code_block(&content, msg_end);
+            if closing_idx > 0 && closing_idx <= max_len {
+                // Extend to include the closing ```
+                msg_end = closing_idx;
+            } else {
+                // Code block too long; split inside with closing/reopening fences
+                let header_end = content[unclosed_idx..]
+                    .find('\n')
+                    .map(|i| unclosed_idx + i)
+                    .unwrap_or(unclosed_idx + 3);
+                let header = content[unclosed_idx..header_end].trim();
+
+                if msg_end > header_end + 20 {
+                    let inner_limit = usable_cut(&content, max_len - 5);
+                    let better_end = find_last_newline(&content[..inner_limit], 200);
+                    if better_end > header_end {
+                        msg_end = better_end;
+                    } else {
+                        msg_end = inner_limit;
+                    }
+                    let chunk = format!(
+                        "{}\n```",
+                        content[..msg_end].trim_end_matches([' ', '\t', '\n', '\r'])
+                    );
+                    messages.push(chunk);
+                    content = format!("{}\n{}", header, content[msg_end..].trim());
+                    continue;
+                }
+
+                // Try to split before the code block starts
+                let new_end = find_last_newline(&content[..unclosed_idx], 200);
+                if new_end > 0 {
+                    msg_end = new_end;
                 } else {
-                    // Code block too long; split inside with closing/reopening fences
-                    let header_end = content[unclosed_idx..]
-                        .find('\n')
-                        .map(|i| unclosed_idx + i)
-                        .unwrap_or(unclosed_idx + 3);
-                    let header = content[unclosed_idx..header_end].trim();
-
-                    if msg_end > header_end + 20 {
-                        let inner_limit = usable_cut(&content, max_len - 5);
-                        let better_end = find_last_newline(&content[..inner_limit], 200);
-                        if better_end > header_end {
-                            msg_end = better_end;
-                        } else {
-                            msg_end = inner_limit;
-                        }
+                    let new_end2 = find_last_space(&content[..unclosed_idx], 100);
+                    if new_end2 > 0 {
+                        msg_end = new_end2;
+                    } else if unclosed_idx > 20 {
+                        msg_end = unclosed_idx;
+                    } else {
+                        msg_end = usable_cut(&content, max_len - 5);
                         let chunk = format!(
                             "{}\n```",
                             content[..msg_end].trim_end_matches([' ', '\t', '\n', '\r'])
                         );
                         messages.push(chunk);
-                        content = format!("{}\n{}", header, content[msg_end..].trim());
-                        continue;
-                    }
-
-                    // Try to split before the code block starts
-                    let new_end = find_last_newline(&content[..unclosed_idx], 200);
-                    if new_end > 0 {
-                        msg_end = new_end;
-                    } else {
-                        let new_end2 = find_last_space(&content[..unclosed_idx], 100);
-                        if new_end2 > 0 {
-                            msg_end = new_end2;
-                        } else if unclosed_idx > 20 {
-                            msg_end = unclosed_idx;
-                        } else {
-                            msg_end = usable_cut(&content, max_len - 5);
-                            let chunk = format!(
-                                "{}\n```",
-                                content[..msg_end].trim_end_matches([' ', '\t', '\n', '\r'])
-                            );
-                            messages.push(chunk);
+                        if msg_end > header_end {
+                            // 已切过围栏行末尾：余文需重开围栏（header 前置）。
+                            // 消费 msg_end > header_end 字节、前置 ≤ header_end
+                            // 字节 → content 严格收缩。
                             content = format!("{}\n{}", header, content[msg_end..].trim());
-                            continue;
+                        } else {
+                            // 进度守卫（BUG-20261114-060 配套）：围栏行本身比
+                            // 预算还长（header_end > msg_end）。此时前置 header
+                            // 会让 content 越切越长（每轮 +header 字节）——死循环
+                            // + 无界内存。header 尚未被切过，留在余文里下轮继续
+                            // 硬切；普通切分消费 ≥1 字节恒收缩。
+                            content = content[msg_end..].trim().to_string();
                         }
+                        continue;
                     }
                 }
             }
@@ -170,11 +190,15 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String> {
 }
 
 /// Find the last opening ``` that doesn't have a closing ```.
-/// Returns the byte position of the opening ``` or 0 if all code blocks are complete.
+/// Returns `Some(byte position)` of the opening ``` or `None` if all code
+/// blocks are complete. 恒前进保证（BUG-20261114-060）：旧实现以 0 双关
+/// 「无未闭合」与「围栏在位置 0」——消息以 ``` 开头（assistant 回复最常见
+/// 形态）时调用方永远走不到围栏修复分支，产出首块无闭合围栏、后续块无
+/// 重开围栏的失衡切分。Option 化后位置 0 与「无」可区分。
 /// 按字节扫描：反引号是 ASCII 单字节，字节扫描结果即字节偏移，与调用方的
 /// str 切片语义一致。（曾用 chars().collect() 的 char 索引当字节偏移返回，
 /// 纯 ASCII 下恰好相等，CJK 文本+围栏混合即错切/panic。）
-fn find_last_unclosed_code_block(text: &str) -> usize {
+fn find_last_unclosed_code_block(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut in_code_block = false;
     let mut last_open_idx: usize = 0;
@@ -193,7 +217,11 @@ fn find_last_unclosed_code_block(text: &str) -> usize {
         }
     }
 
-    if in_code_block { last_open_idx } else { 0 }
+    if in_code_block {
+        Some(last_open_idx)
+    } else {
+        None
+    }
 }
 
 /// Find the next closing ``` starting from byte position `start_idx`.
