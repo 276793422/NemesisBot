@@ -352,6 +352,19 @@ fn get_blocklist() -> &'static BlockList {
             // remove_item_recurse：PowerShell 的 rm -rf 等价物——
             // `Remove-Item -Recurse`（可 `-Force` 组合）。
             ("remove_item_recurse", r"(?i)\bremove-item\s+.*-recurse"),
+            // remove_item_dash_aliases：BUG-20261114-044——PowerShell 参数
+            // 无歧义前缀缩写（参数表 r 开头仅 Recurse → `-r` 实证递归删除；
+            // f 开头有 Filter/Force 两个 → `-f` 报错不执行，故意不收）×
+            // Remove-Item 别名族（ri/del/erase/rd）。cmd /c → powershell
+            // 包装形态由归一化候选（剥引号）落到本条目。`(?:.*\s)?` 让旗标
+            // 在前（`del -r C:\x`）与在后（`del C:\x -r`）两种位置都命中，
+            // 且因可选段必须以空白收尾，路径文件名尾缀 `-r`（`C:\x\my-r`）
+            // 不误报。cmd.exe 下 `del -r` 把 `-r` 当文件名（非递归）——
+            // 安全条目误拦走审批出路（与 netcat_bind 对 --help 同取向）。
+            (
+                "remove_item_dash_aliases",
+                r"(?i)\b(remove-item|ri|del|erase|rd)(\.exe)?\s+(?:.*\s)?-(recurse|r|fo|force)\b",
+            ),
             ("rd_s", r"(?i)\brd(\.exe)?\s+(\S+\s+)*/[a-z]*[sfq]"),
             (
                 "erase_recursive",
@@ -366,7 +379,20 @@ fn get_blocklist() -> &'static BlockList {
             ("shred", r"(?i)\bshred\b"),
             // truncate：`-s0` 紧凑值与 `-s 0` 同义（GNU getopt），`\s*` 覆盖
             // 两者（横向）。
-            ("truncate", r"(?i)\btruncate\s+-s\s*0\b"),
+            // truncate：BUG-20261114-044——原式只认 `-s 0`/`-s0`。GNU 长选项
+            // （`--size=0`/`--size 0`）、零×倍数后缀（`-s 0k`/`0M`/`0KIB`/
+            // `0B`——0 乘任何倍率仍为 0，实证清零）、破坏性前缀形态
+            // （SIZE 前缀 `<`=取上限收缩：`-s '<0'` 实证清零（引号经归一化
+            // 剥除后命中）；`%`=向上取整：`%0` 除零报错不执行，保守拦无害）
+            // 全部漏。no-op 前缀刻意放行：`+0`（延长 0）与 `>0`（取下限
+            // 「至少 0」——实证 size 不变；GNU 语义 `<` 是 maximum、`>` 是
+            // minimum，与直觉相反）。非零尺寸（`-s 100M`/`-s 5`）放行；
+            // 十进制尺寸 GNU 实证拒绝（Invalid number），误拦走审批出路
+            // （保守方向无害）。
+            (
+                "truncate",
+                r"(?i)\btruncate\s+(-s\s*[<%]?0[a-z]*\b|--size\s*=?\s*[<%]?0[a-z]*\b)",
+            ),
             ("srm", r"(?i)\bsrm\b"),
             // catastrophic_pipe：classic 冒号炸弹（`:{:|:& };`）——
             // 旧正则要求 `;` 在 `}` 前而 canonical 形态 `;` 在后，恒打不中
@@ -389,7 +415,21 @@ fn get_blocklist() -> &'static BlockList {
             ("killall", r"(?i)\bkillall\b"),
             // kill_9：`-s 9`/`-s sigkill` 与 `-9` 等价（含 `-s9` 紧凑），
             // 等价写法一并拦（横向）。
-            ("kill_9", r"(?i)\bkill\s+(-9\b|-s\s*(9|sigkill)\b)"),
+            // kill_9：BUG-20261114-044——原式只认 `-9`/`-s 9`/`-s sigkill`，
+            // 信号名 dash 形态（kill 的 sigspec 可不带 -s 直接跟：`-KILL`/
+            // `-SIGKILL`）、GNU 长选项（`--signal=KILL`/`--signal KILL` 空格
+            // 形态/GNU getopt_long 单划线 `-signal 9` 缩写）、bash 内建
+            // signum 形态（`-n 9`）、零填充数值（`-09`/`-s 09`，strtoul 归一
+            // 为 9）全部漏。`(sig)?kill` 覆盖带/不带 SIG 前缀的信号名；
+            // 优雅信号（-TERM/-15/-INT）、信号探测 `-0`、PID `kill 9`、
+            // `kill -l`/`--help` 均放行。arm 结构注记：`-(-signal…)?(X)` 的
+            // 可选组自带 `-`，只覆盖双划线（`--signal=X`）与裸 sigspec
+            // （`-KILL`）——单划线 `-signal=X` 的唯一 `-` 被臂前导消费后组内
+            // 无 dash 可配，故单划线长选项缩写须独立臂 `-(signal…)(X)`。
+            (
+                "kill_9",
+                r"(?i)\bkill\s+(-0*9\b|-s\s*(0*9|(sig)?kill)\b|-n\s*0*9\b|-(-signal\s*=?\s*)?(0*9|(sig)?kill)\b|-(signal\s*=?\s*)(0*9|(sig)?kill)\b)",
+            ),
             ("taskkill", r"(?i)\btaskkill\b"),
             // Network recon (4)
             ("nmap", r"(?i)\bnmap\b"),
@@ -489,6 +529,14 @@ fn get_blocklist_metadata() -> &'static Vec<BlockEntry> {
                 severity: Severity::Critical,
                 platform: Platform::Windows,
                 reason: "PowerShell recursive delete",
+            },
+            // BUG-20261114-044 新增条目的 metadata
+            BlockEntry {
+                name: "remove_item_dash_aliases",
+                category: CommandCategory::Destructive,
+                severity: Severity::Critical,
+                platform: Platform::Windows,
+                reason: "Recursive delete via Remove-Item aliases and flag abbreviations (-r/-fo/-force)",
             },
             BlockEntry {
                 name: "format",
