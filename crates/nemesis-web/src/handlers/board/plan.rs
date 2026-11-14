@@ -422,7 +422,9 @@ pub async fn project_resume(
 
     // 明细数据源：与 dispatch 路径同款在线候选快照（只读，供无匹配
     // 候选附「差什么」明细；goal /D 顺序依赖条款， 就绪后接入）。
-    let peers = project_dispatch_candidates(cluster);
+    // matcher_candidates 单一入口（BUG-20261115-001：明细含授予标签，
+    // 与决策面同源）。
+    let peers = matcher_candidates(store, cluster);
 
     if dry_run {
         let preview: Vec<serde_json::Value> = candidates
