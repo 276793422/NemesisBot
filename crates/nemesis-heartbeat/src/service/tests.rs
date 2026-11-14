@@ -463,6 +463,49 @@ fn test_config_new_clamps_interval() {
     );
 }
 
+// 回归锁（BUG-20261114-057）：config heartbeat.interval 是 i64 直通 as u64
+// （仅 .max(0) 下限钳制，无上界）——修复前巨值分钟 ×60 在 debug panic
+// （gateway 启动 Step 12 假死）/ release 回绕垃圾心跳节奏。修复 = 上限钳
+// 30 天（MAX_INTERVAL_MINUTES，与 5 分钟下限构成对称钳契约）。
+#[test]
+fn test_config_new_clamps_interval_upper_bound() {
+    const MAX: Duration = Duration::from_secs(30 * 24 * 60 * 60); // 43200 分钟 → 秒
+    // 全量程巨值：钳到 30 天，不炸不回绕。
+    assert_eq!(
+        HeartbeatConfig::new(u64::MAX, true, "/tmp".to_string()).interval,
+        MAX
+    );
+    // 越上限的普通巨值（此前会溢出的形态）同钳。
+    assert_eq!(
+        HeartbeatConfig::new(u64::MAX / 60 + 1, true, "/tmp".to_string()).interval,
+        MAX
+    );
+    // 恰在上限：原样换算。
+    assert_eq!(
+        HeartbeatConfig::new(30 * 24 * 60, true, "/tmp".to_string()).interval,
+        MAX
+    );
+    // 上限之下不受影响。
+    assert_eq!(
+        HeartbeatConfig::new(30 * 24 * 60 - 1, true, "/tmp".to_string()).interval,
+        Duration::from_secs((30 * 24 * 60 - 1) * 60)
+    );
+}
+
+// 回归锁（BUG-20261114-057 二阶面）：tick 循环
+// `interval_at(tokio::time::Instant::now() + interval, interval)` 的算术
+// 位点——裸 saturating 到 u64::MAX 秒在此 panic（std time.rs「overflow
+// when adding duration to instant」，tokio-rt-worker 线程死 = 心跳永久
+// 停摆）。钳 30 天后 Instant 算术恒安全（实测 gateway 巨值间隔启动红证
+// 转绿）。
+#[tokio::test]
+async fn test_config_interval_is_instant_add_safe() {
+    let cfg = HeartbeatConfig::new(u64::MAX, true, "/tmp".to_string());
+    // 修复前此行 panic——与 service.rs run 循环同一算术形态。
+    let deadline = tokio::time::Instant::now() + cfg.interval;
+    assert!(deadline > tokio::time::Instant::now());
+}
+
 // 回归锁：on_beat 回调在有效 tick（通过 skip 检查、内部
 // beat 计数自增处）触发；旧形态该回调面不存在，/ready beat_count 恒 0。
 #[tokio::test]

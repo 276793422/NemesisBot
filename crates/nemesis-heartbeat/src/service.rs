@@ -71,6 +71,11 @@ pub struct HeartbeatConfig {
     pub default_interval_minutes: u64,
 }
 
+/// 上限 30 天（43200 分钟）：`new()` 对称钳契约的上界——下限 5 防配置写小
+/// 把 LLM 打穿，上限防巨值配置穿透 Instant 算术界（tick 循环
+/// `Instant + interval` 对 u64::MAX 秒 panic，BUG-20261114-057）。
+const MAX_INTERVAL_MINUTES: u64 = 30 * 24 * 60;
+
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
@@ -91,16 +96,30 @@ impl Default for HeartbeatConfig {
 impl HeartbeatConfig {
     /// Create config with the given interval in minutes and workspace.
     pub fn new(interval_minutes: u64, enabled: bool, workspace: String) -> Self {
+        // 分钟→秒换算必须饱和 + 上限钳制（BUG-20261114-057）：config
+        // heartbeat.interval 是 i64 直通（.max(0) 下限，无上界），
+        // ≥u64::MAX/60 的巨值 ×60 溢出在 debug panic（gateway 启动 Step 12
+        // 假死）/ release 回绕成垃圾心跳节奏。裸 saturating 到 u64::MAX 秒
+        // 仍不够——tick 循环 interval_at(tokio Instant::now() + interval)
+        // 的 Instant 算术对巨值秒数 panic（std time.rs「overflow when
+        // adding duration to instant」，tick 线程死 = 心跳永久停摆，
+        // BUG-20261028-113 同面）。上限钳到 30 天：远低于 Instant u64 ns
+        // 算术界（≈584 年），与既有 5 分钟下限构成 crate 对称钳契约。
         let resolved = if interval_minutes == 0 {
             30
-        } else if interval_minutes < 5 {
-            5
         } else {
-            interval_minutes
+            // 对称钳契约：下限 5 防配置写小把 LLM 打穿（既有），上限
+            // MAX_INTERVAL_MINUTES 防巨值穿透 Instant 算术界（本轮新增）。
+            interval_minutes.clamp(5, MAX_INTERVAL_MINUTES)
         };
 
         Self {
-            interval: Duration::from_secs(resolved * 60),
+            // 分钟→秒换算必须饱和：interval 分钟数从 config i64 直通（.max(0)
+            // 下限钳制，无上界），≥u64::MAX/60 的巨值 ×60 溢出在 debug panic
+            // （gateway 启动 Step 12 直接假死）/ release 回绕成垃圾心跳节奏
+            // （BUG-20261114-057）。饱和 = 事实永不心跳：荒谬配置诚实退化，
+            // 与 config 算术族 saturating_mul（BUG-20261107-025）同一语义。
+            interval: Duration::from_secs(resolved.saturating_mul(60)),
             enabled,
             workspace: Some(workspace),
             min_interval_minutes: 5,
