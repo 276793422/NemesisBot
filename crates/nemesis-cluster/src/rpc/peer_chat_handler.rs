@@ -356,6 +356,39 @@ impl PeerChatHandler {
             None => None,
         };
 
+        // 4.7 重复投递闸（BUG-20261114-024，防重复执行防线的 B 端入口块）：
+        // 同 task_id 在途（Pending/Running/WaitingRemote）时再收，原先会
+        // 静默覆盖在途任务条目（create_task=insert）+ 二次入队 → 同一任务
+        // 双执行（双 LLM 成本、双回调）。链路其余各层都有防线：传输层
+        // ResponseLost 帧写出后失败一律不重发（duplicate-execution guard）、
+        // A 端 settle_task 幂等（重复回调不重复续行）、派发重试每次生成
+        // 新 task_id——本闸把「B 端入口收到重复 id」从静默双执行变成显式
+        // error ACK（A 端 sweep 按拒单收口后换新 id 重派，无死循环）。
+        // 位置在 mandate 之后、set_running 之前：拒绝 = 零副作用，与 4.5
+        // 同纪律。终态残留条目（complete_task 即移除，正常不存在）不拦——
+        // 宁可放行不可误伤合法新任务。
+        if let Some(task_list) = self.cluster_task_list.as_ref()
+            && let Some(existing) = task_list.get_task(&task_id)
+            && matches!(
+                existing.status,
+                TaskStatus::Pending | TaskStatus::Running | TaskStatus::WaitingRemote
+            )
+        {
+            tracing::warn!(
+                task_id = %task_id,
+                source_node = %source_node_id,
+                existing_status = %existing.status,
+                "[PeerChat] 重复投递拒绝：task_id 已在途（防重复执行闸）"
+            );
+            return PeerChatAck {
+                status: "error".into(),
+                error: Some(format!(
+                    "duplicate task_id: {task_id} 仍在排队/执行中（防重复执行闸），请换新 task_id 重试"
+                )),
+                task_id,
+            };
+        }
+
         // 5. Mark running in result persister
         if !source_node_id.is_empty()
             && let Some(ref persister) = self.result_persister
