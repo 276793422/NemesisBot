@@ -180,6 +180,7 @@ fn make_build_context_task(task_id: &str) -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -562,6 +563,7 @@ mod loop_e2e {
             async_usage_stash: None,
             mandate: None,
             dispatch_generation: None,
+            created_at: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -1257,6 +1259,7 @@ mod wave_b {
             async_usage_stash: None,
             mandate: None,
             dispatch_generation: None,
+            created_at: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -2311,6 +2314,7 @@ mod wave_d {
             async_usage_stash: None,
             mandate: None,
             dispatch_generation: None,
+            created_at: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -3128,6 +3132,7 @@ fn prof_task(slug: Option<&str>) -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 

@@ -50,7 +50,7 @@ impl Cluster {
                         poll_stale_pending_tasks(
                             &task_manager,
                             &call_fn,
-                            rpc_client.as_deref(),
+                            rpc_client.clone(),
                             safety_net,
                             &bus,
                             first_tick,
@@ -111,7 +111,7 @@ impl Cluster {
         poll_stale_pending_tasks(
             &self.task_manager,
             &call_fn,
-            rpc_client.as_deref(),
+            rpc_client,
             safety_net,
             &self.bus,
             false,

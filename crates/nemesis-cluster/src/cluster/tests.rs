@@ -1,4 +1,5 @@
 use super::*;
+use crate::cluster_config::PeerStatus;
 use nemesis_types::cluster::TaskStatus;
 
 /// 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
@@ -4215,7 +4216,7 @@ fn test_sync_to_disk_with_connecting_status() {
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.start();
 
-    // Register a node with Connecting status to hit the "unknown" branch
+    // Register a node with Connecting status to hit the state projection
     cluster.register_node(ExtendedNodeInfo {
         base: nemesis_types::cluster::NodeInfo {
             id: "connecting-node".into(),
@@ -4244,11 +4245,15 @@ fn test_sync_to_disk_with_connecting_status() {
     let state_path = dir.path().join("cluster").join("state.toml");
     assert!(state_path.exists());
 
-    // Read back and verify the status is "unknown"
+    // sync_to_disk 走统一投影 to_peer_config()（2026-11-14 第七轮审查 T3）：
+    // status.state = get_status_string() 真实值（"connecting"），不再经旧
+    // 手写投影归一化成 "unknown"。回读侧 restore_discovered_from_state 只
+    // 消费 last_seen、恒 Offline 种回，state 字符串无行为消费方——落盘
+    // 真实值对排障面更诚实。
     let content = std::fs::read_to_string(&state_path).unwrap();
     assert!(
-        content.contains("unknown"),
-        "Connecting status should map to 'unknown' in state file, got: {}",
+        content.contains("connecting"),
+        "Connecting status should persist verbatim via to_peer_config, got: {}",
         content
     );
     cluster.stop();
@@ -6969,6 +6974,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     tl.save_async_state(
         "parent-1",
@@ -7042,6 +7048,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     tl.save_async_state(
         "parent-2",
@@ -7266,7 +7273,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7294,7 +7301,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7315,7 +7322,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7329,7 +7336,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,

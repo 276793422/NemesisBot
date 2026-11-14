@@ -1,10 +1,11 @@
 //! RPC client - sends requests to remote cluster nodes.
 //!
-//! Connects to a remote node via TCP using the transport layer, sends a framed
-//! RPC request, and waits for the corresponding response. Supports:
+//! Connects to a remote node and sends a framed RPC request, then waits for
+//! the corresponding response. Supports:
 //! - Rate limiting per peer (token bucket + sliding window)
 //! - Subnet-aware address selection
-//! - Connection pooling via `ConnectionPool`
+//! - iroh 漫游会话池（`roaming_pool`：长连接 + 心跳保活 + 断线重连）；
+//!   LAN TCP 路径为短寿命连接（每请求拨号，无池）
 //! - 60-minute default timeout (outermost timeout for RPC calls)
 //! - 二期桥仲裁（goal：桥集群）：可选 [`BridgeSend`] 出口——peer 有桥链路
 //!   时按网段仲裁首选路径（同网段直连优先失败兜桥 / 异网段桥优先失败兜
@@ -21,7 +22,6 @@ use tokio::time;
 
 use crate::rpc_types::{Frame, RPCRequest, RPCResponse};
 use crate::transport::conn::{Connection, WireMessage};
-use crate::transport::pool::ConnectionPool;
 
 /// Error type for RPC client operations.
 #[derive(Debug, thiserror::Error)]
@@ -351,8 +351,6 @@ const SOCKET_IO_TIMEOUT_MARGIN: Duration = Duration::from_secs(30);
 
 /// RPC client for communicating with remote cluster nodes.
 pub struct RpcClient {
-    /// Connection pool for TCP connections.
-    pool: Arc<ConnectionPool>,
     /// Per-peer rate limiter.
     rate_limiter: RateLimiter,
     /// Default timeout for RPC calls.
@@ -389,7 +387,6 @@ impl RpcClient {
     /// Create a new RPC client with the default 60-minute timeout.
     pub fn new() -> Self {
         Self {
-            pool: Arc::new(ConnectionPool::default()),
             rate_limiter: RateLimiter::new(
                 20,                      // max_tokens
                 Duration::from_secs(1),  // refill_interval
@@ -1193,9 +1190,18 @@ impl RpcClient {
         addresses.first().cloned().unwrap_or_default()
     }
 
-    /// Close all pooled connections.
+    /// Close the client: drops all roaming sessions (and their underlying
+    /// plugin connections) so background reconnect cannot dial them back.
+    /// LAN TCP 路径为短寿命连接（每请求拨号，无池可关）。
     pub fn close(&self) {
-        self.pool.close_all();
+        self.roaming_pool.close_all();
+    }
+
+    /// Reopen the roaming session pool after a `close()`（Gateway
+    /// LifecycleService stop→start 重启语义的复活路径——`Cluster::start`
+    /// 重启分支调用：幕帘抬起，会话按需重拨，心跳恢复）。未关闭时 no-op。
+    pub fn reopen(&self) {
+        self.roaming_pool.reopen();
     }
 }
 
