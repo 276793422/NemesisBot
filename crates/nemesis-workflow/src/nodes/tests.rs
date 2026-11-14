@@ -679,6 +679,61 @@ fn test_resolve_template_missing_var() {
     assert_eq!(result, "Hello {{name}}");
 }
 
+/// BUG-20261114-028 回归锁：占位符替换必须是单遍扫描——上下文**值**里
+/// 内嵌的 `{{另一键}}` 不得被二次展开。旧实现按 HashMap 迭代序循环
+/// replace：键 a（值含 {{b}}）先于 b 迭代时 b 会被二次展开，后于 b 时
+/// 保留字面量——同输入两次构造 HashMap 输出不同（RandomState 每构造
+/// 随机）。本测 128 次独立构造（每次新 RandomState = 迭代序独立掷币）
+/// 钉死确定性契约：全部输出一致且等于「字面量保留」形态。旧实现下
+/// 全同概率 ≈ 2^-128，必红。
+#[test]
+fn resolve_template_is_single_pass_values_never_reexpanded() {
+    for _ in 0..128 {
+        let ctx = HashMap::from([
+            ("a".to_string(), serde_json::json!("see {{b}}")),
+            ("b".to_string(), serde_json::json!("http://x")),
+        ]);
+        let out = resolve_template("{{a}}", &ctx);
+        assert_eq!(
+            out, "see {{b}}",
+            "context value's embedded placeholder must stay literal"
+        );
+    }
+}
+
+/// 修复后语义钉：多占位符一次全解 / 非字符串值 JSON 形态 / 缺失键保留 /
+/// 无闭合保留 / 带空格键不 trim（exact-match 契约——placeholder_refs 的
+/// trim 只服务可证伪性首段提取，替换语义从不含糊）。
+#[test]
+fn resolve_template_single_pass_semantics_pins() {
+    let ctx = HashMap::from([
+        ("name".to_string(), serde_json::json!("World")),
+        ("count".to_string(), serde_json::json!(42)),
+        ("obj".to_string(), serde_json::json!({"k": 1})),
+    ]);
+    assert_eq!(
+        resolve_template("Hello {{name}}, count={{count}}, obj={{obj}}", &ctx),
+        "Hello World, count=42, obj={\"k\":1}"
+    );
+    assert_eq!(resolve_template("{{nope}}", &ctx), "{{nope}}");
+    assert_eq!(resolve_template("{{unclosed", &ctx), "{{unclosed");
+    assert_eq!(resolve_template("{{ name }}", &ctx), "{{ name }}");
+}
+
+/// 两处实现同源（llm 条件面 / script 面委托）：同输入同输出。
+#[test]
+fn resolve_prompt_template_matches_resolve_template() {
+    let ctx = HashMap::from([
+        ("a".to_string(), serde_json::json!("x {{b}} y")),
+        ("b".to_string(), serde_json::json!("z")),
+    ]);
+    assert_eq!(
+        resolve_prompt_template("{{a}}", &ctx),
+        resolve_template("{{a}}", &ctx),
+    );
+    assert_eq!(resolve_prompt_template("{{a}}", &ctx), "x {{b}} y");
+}
+
 #[test]
 fn test_get_config_node_list_missing_id_and_type() {
     let mut config = HashMap::new();
@@ -1771,6 +1826,40 @@ async fn test_script_node_with_context_variables() {
     let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.output["stdout"].as_str().unwrap().contains("World"));
+}
+
+/// BUG-20261114-028 功能级回归锁（真 spawn 链路）：上下文**值**内嵌
+/// `{{x}}` 时，被执行脚本看到的必须是字面量——值是数据不是模板，永不
+/// 二次展开。旧实现按 HashMap 迭代序循环 replace，同输入可能把 `{{x}}`
+/// 展开成 `bare`（若 x 键后迭代），被执行脚本内容随进程随机漂移。
+#[tokio::test]
+async fn test_script_node_context_value_placeholders_stay_literal() {
+    let exec = ScriptNodeExecutor::new();
+    let mut config = HashMap::new();
+    // 脚本把 a 的值原样回显（printf %s 避免 shell 对花括号做任何解释）。
+    config.insert(
+        "script".to_string(),
+        serde_json::json!("printf '%s' \"{{a}}\""),
+    );
+    config.insert("language".to_string(), serde_json::json!("bash"));
+    let node = make_node("n1", "script", config);
+
+    let ctx = HashMap::from([
+        ("a".to_string(), serde_json::json!("value {{x}} tail")),
+        ("x".to_string(), serde_json::json!("bare")),
+    ]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let stdout = result.output["stdout"].as_str().unwrap();
+    assert!(
+        stdout.contains("value {{x}} tail"),
+        "script must see the literal placeholder, got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("bare"),
+        "context value's embedded placeholder must NOT be expanded, got: {stdout:?}"
+    );
 }
 
 #[tokio::test]

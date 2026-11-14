@@ -5,7 +5,9 @@
 use super::*;
 
 // 跨子文件引用（机械拆分）：helpers 定义在 llm.rs / tool.rs
-use super::llm::{failed_node_result, resolve_runtime_string, resp_status_reason};
+use super::llm::{
+    failed_node_result, resolve_prompt_template, resolve_runtime_string, resp_status_reason,
+};
 use super::tool::resolve_template_value;
 
 /// HTTP 节点 SSRF 闸槽：`SecurityPlugin::ssrf_guard()` 的
@@ -714,20 +716,18 @@ pub(super) fn script_tool_result_to_node_result(
 ///
 /// Replaces `{{variable_name}}` patterns with the corresponding values
 /// from the context map.
+///
+/// BUG-20261114-028：实现委托 [`resolve_prompt_template`]（单一真相源）。
+/// 旧副本是同款按 HashMap 迭代序的循环 `str::replace`——script 节点的
+/// 脚本文本里上下文值内嵌的 `{{键}}` 是否二次展开随每次执行漂移
+/// （被执行的脚本内容不确定 = 最重的变异面）。委托后与 llm prompt /
+/// 条件边 / tool args / http 配置全部模板面同一语义：单遍扫描、替换值
+/// 永不二次展开、缺失键原样保留。
 pub(super) fn resolve_template(
     template: &str,
     context: &HashMap<String, serde_json::Value>,
 ) -> String {
-    let mut result = template.to_string();
-    for (key, value) in context {
-        let pattern = format!("{{{{{}}}}}", key);
-        let replacement = match value {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        result = result.replace(&pattern, &replacement);
-    }
-    result
+    resolve_prompt_template(template, context)
 }
 
 // ---------------------------------------------------------------------------
