@@ -137,6 +137,10 @@ impl TrustStore {
     /// Add a public key to the trust store with the given name and trust level,
     /// then persist the store to disk.
     pub fn add_key(&self, public_key: &str, name: &str, level: TrustLevel) {
+        // BUG-20261114-033：变更族是「读-改-写」——先 refresh 同步盘上真相
+        // 再改，否则基线陈旧（其他进程已 remove）时全量 save 把已删条目
+        // 复活回盘。
+        self.refresh();
         let fingerprint = compute_fingerprint(public_key);
         let entry = TrustedKey {
             public_key: public_key.to_string(),
@@ -158,6 +162,8 @@ impl TrustStore {
 
     /// Remove a key by signer name. Returns true if a key was removed.
     pub fn remove_key(&self, name: &str) -> bool {
+        // 同 add_key：先 refresh 同步盘上真相再改（BUG-20261114-033）。
+        self.refresh();
         let mut keys = self.keys.write();
         let b64 = keys
             .iter()
@@ -179,6 +185,8 @@ impl TrustStore {
 
     /// Remove a key by its base64-encoded public key string. Returns true if removed.
     pub fn remove_key_by_public_key(&self, public_key: &str) -> bool {
+        // 同 add_key：先 refresh 同步盘上真相再改（BUG-20261114-033）。
+        self.refresh();
         let mut keys = self.keys.write();
         let removed = keys.remove(public_key).is_some();
         drop(keys);
@@ -227,6 +235,8 @@ impl TrustStore {
 
     /// Revoke a key by signer name. Returns an error string if the key was not found.
     pub fn revoke_key(&self, name: &str) -> Result<(), String> {
+        // 同 add_key：先 refresh 同步盘上真相再改（BUG-20261114-033）。
+        self.refresh();
         let mut keys = self.keys.write();
         let b64 = keys
             .iter()
@@ -253,6 +263,8 @@ impl TrustStore {
 
     /// Revoke a key by its base64-encoded public key string.
     pub fn revoke_key_by_public_key(&self, public_key: &str) -> Result<(), String> {
+        // 同 add_key：先 refresh 同步盘上真相再改（BUG-20261114-033）。
+        self.refresh();
         let mut keys = self.keys.write();
         if let Some(entry) = keys.get_mut(public_key) {
             entry.level = TrustLevel::Revoked;
@@ -295,10 +307,12 @@ impl TrustStore {
     /// 信任库文件是统一定义：CLI（独立进程）的 trust/revoke/remove 只写盘，
     /// 常驻进程若只在构造期 load 一次就会拿陈旧缓存做信任判定——新增信任
     /// 不可见（先信后装的热信任流断链），吊销不可见（已撤密钥仍按 trusted
-    /// 放行，安全语义反向恶化）。load 是 merge 语义（按 public_key 覆盖），
-    /// 读前重读即让盘上真相即时生效；信任判定只发生在安装/验签时刻，非热
-    /// 路径，小文件重读代价可忽略。文件损坏时 load 失败保持现有缓存（最后
-    /// 好状态，原子写防撕裂）。
+    /// 放行，安全语义反向恶化），删除不可见（BUG-20261114-033：已删密钥
+    /// 仍驻内存，is_trusted 继续放行且 save 会复活盘上已删条目）。load 是
+    /// **替换**语义（解析成功后以盘上清单整体替换内存 map），读前重读即让
+    /// 盘上真相三类操作（trust/revoke/remove）即时全量生效；信任判定只发生
+    /// 在安装/验签时刻，非热路径，小文件重读代价可忽略。文件损坏时 load
+    /// 失败保持现有缓存（最后好状态，原子写防撕裂）。
     fn refresh(&self) {
         if self.path.is_some() {
             let _ = self.load();
@@ -350,7 +364,15 @@ impl TrustStore {
         let f: TrustStoreFile = serde_json::from_str(&data)
             .map_err(|e| format!("invalid trust store format: {}", e))?;
 
-        let mut map = self.keys.write();
+        // BUG-20261114-033：以盘上清单为准**替换**内存 map（旧 merge 语义
+        // 只能覆盖插入、不能删除——CLI `plugin trust-remove`（独立进程）
+        // 删盘后，常驻进程 refresh 读盘时被删条目仍驻内存：is_trusted 继续放
+        // 行（已删密钥签名的插件装回按 trusted 过闸），且常驻进程后续
+        // add_key 的全量 save 把已删条目复活回盘。trust/revoke 经 merge 可见
+        // 而 remove 不可见，同族三操作保护不对称）。替换只发生在解析成功
+        // 之后——上方任何 Err 分支已提前 return，保持「最后好状态」缓存
+        // 降级语义不变。
+        let mut loaded = HashMap::new();
         for k in f.keys {
             // Validate the public key format by attempting to decode.
             // 兼容两种历史并存的编码：base64（export_public_key，44 字符）与
@@ -367,8 +389,9 @@ impl TrustStore {
             if !(b64_ok || hex_ok) {
                 continue; // skip malformed entries
             }
-            map.insert(k.public_key.clone(), k);
+            loaded.insert(k.public_key.clone(), k);
         }
+        *self.keys.write() = loaded;
 
         Ok(())
     }
