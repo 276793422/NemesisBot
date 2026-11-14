@@ -84,7 +84,7 @@ impl ModuleHandler for SystemHandler {
                 let home = ctx.home.as_deref().ok_or_else(|| {
                     "主目录未知（会话上下文未携带 home 路径），无法打开".to_string()
                 })?;
-                crate::handlers::projects::open_in_file_manager(std::path::Path::new(home))?;
+                crate::handlers::shell_open::open_dir(std::path::Path::new(home))?;
                 let mut out = serde_json::json!({ "opened": home });
                 if let Some(ref ws) = ctx.workspace {
                     out.as_object_mut()

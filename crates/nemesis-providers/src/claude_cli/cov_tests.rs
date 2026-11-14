@@ -153,7 +153,8 @@ async fn chat_success_via_fake_batch() {
     assert_eq!(usage.cached_tokens, Some(2));
 }
 
-/// is_error = true → Unknown 错误透传 result 文本。
+/// is_error = true → 交真相源分类（BUG-20261114-052：瞬态文案可轮转），
+/// 分类不出维持 Unknown 透传 result 文本（带 `claude cli error: ` 前缀）。
 #[test]
 fn parse_response_is_error_returns_unknown() {
     let provider = provider_with("claude");
@@ -161,10 +162,13 @@ fn parse_response_is_error_returns_unknown() {
         .parse_response(
             "{\"type\":\"result\",\"is_error\":true,\"result\":\"额度用尽\"}",
             &[],
+            "",
         )
         .unwrap_err();
     match err {
-        FailoverError::Unknown { message, .. } => assert_eq!(message, "额度用尽"),
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(message, "claude cli error: 额度用尽")
+        }
         other => panic!("预期 Unknown，得到 {other:?}"),
     }
 }

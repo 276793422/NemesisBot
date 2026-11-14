@@ -8176,6 +8176,96 @@ async fn test_forge_records_successful_tool_experience() {
     assert!(!exp.id.is_empty());
 }
 
+/// A1（缺陷整改批次 2026-11-14）：每轮 LLM 响应落定发一次 `llm_turn`
+/// 轨迹事件——反思侧 avg_rounds / avg_tool_calls_per_round 的轮次锚点
+/// （tool_call 只刻画工具节奏，不计轮）。回归钉咬合：摘掉 run_loop
+/// 发射块，本测试翻红（trace store 无 llm_turn 事件）。
+#[cfg(feature = "forge")]
+#[tokio::test]
+async fn test_forge_records_llm_turn_trace_event_per_response() {
+    // 与 gateway 装配点同款（ctx.rs：TraceStore::new(forge_dir/"traces")
+    // + init_trace）——forge 构造器不自动装配 trace 面，record_trace_event
+    // 对 None 静默无操作；须在 Arc 包装前完成 &mut 初始化，故不走
+    // create_test_forge（它直接返回 Arc）。
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = nemesis_forge::config::ForgeConfig::default();
+    config.enabled = true;
+    let mut forge_raw = nemesis_forge::forge::Forge::new(config, dir.path().to_path_buf());
+    forge_raw.init_trace(nemesis_forge::trace_store::TraceStore::new(
+        forge_raw.forge_dir().join("traces"),
+    ));
+    let forge = Arc::new(forge_raw);
+    let _dir = dir;
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc_lt".to_string(),
+                name: "calculator".to_string(),
+                arguments: r#"{"expr":"2+2"}"#.to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "The answer is 4.".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "4".to_string(),
+        }),
+    );
+    agent_loop.set_forge(forge.clone());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let _events = agent_loop.run(&instance, "What is 2+2?", &context).await;
+
+    // 两轮 LLM 响应各发一次 llm_turn；session_key 与经验台账同格式
+    // （channel:chat_id）。
+    let store = forge.trace_store().expect("trace store must exist");
+    let all_events = store.read_all().await.unwrap();
+    let llm_turns: Vec<_> = all_events
+        .iter()
+        .filter(|e| e.event_type == "llm_turn")
+        .collect();
+    assert_eq!(
+        llm_turns.len(),
+        2,
+        "两轮 LLM 响应各发一次 llm_turn，实际 {:?}",
+        all_events
+            .iter()
+            .map(|e| e.event_type.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        llm_turns.iter().all(|e| e.session_key == "web:chat1"),
+        "llm_turn session_key 必须与经验台账同格式"
+    );
+    // tool_call 事件与 llm_turn 共存于同一轨迹（build_conversation_traces
+    // 消费前提）。
+    assert!(
+        all_events.iter().any(|e| e.event_type == "tool_call"),
+        "同一会话轨迹里应有 tool_call 事件与 llm_turn 并存"
+    );
+}
+
 #[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_records_tool_error_experience() {

@@ -94,7 +94,7 @@ fn test_thinking_cancel() {
     cancel.cancel();
     // The receiver should get the signal (or be errored because sender was dropped)
     // tokio::sync:oneshot::Receiver doesn't have is_ok()/is_err() until awaited
-    let _ = rx;
+    drop(rx);
 }
 
 #[test]
@@ -902,6 +902,116 @@ async fn send_splits_long_message_into_multiple_api_calls() {
     assert_eq!(total, 7500, "分块不得丢字：三块文本总长必须等于原文");
 }
 
+#[tokio::test]
+async fn send_splits_astral_dense_message_within_utf16_budget() {
+    use std::io::{Read, Write};
+
+    // BUG-20261113-166 回归锁（wire 级）：Telegram 长度口径是 UTF-16
+    // code units（官方 entities 文档），astral emoji = 2 units。3000 个
+    // 🍎 = 标量 3000 < 3500（标量口径会原样单块直发）但 6000 units > 4096
+    // 硬限——修复后必须拆 2 块（[3500, 2500] units）且逐块 ≤ 4096 units。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let addr = listener.local_addr().unwrap();
+    let bodies: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let bodies_srv = bodies.clone();
+    std::thread::spawn(move || {
+        fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+            hay.windows(needle.len()).position(|w| w == needle)
+        }
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // 12KB 级请求体可能被 hyper 拆多次 write——读循环直至
+            // Content-Length 满足，单次 read 拿不全。字节级解析（头是
+            // ASCII；body 长度比字节数，避免 lossy 截断多字节虚增）。
+            let mut req: Vec<u8> = Vec::new();
+            let mut tmp = [0u8; 65536];
+            loop {
+                let n = stream.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&tmp[..n]);
+                let Some(hdr_end) = find_sub(&req, b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&req[..hdr_end]).to_lowercase();
+                let clen = headers
+                    .split("content-length:")
+                    .nth(1)
+                    .and_then(|x| x.split("\r\n").next())
+                    .and_then(|x| x.trim().parse::<usize>().ok());
+                match clen {
+                    Some(c) => {
+                        if req.len() - hdr_end - 4 >= c {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            let req = String::from_utf8_lossy(&req).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+            if path.ends_with("/sendMessage") {
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                bodies_srv.lock().unwrap().push(body);
+            }
+            let resp_body = br#"{"ok":true,"result":{"message_id":1,"chat":{"id":123,"type":"private"},"text":"ok"}}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                resp_body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(resp_body);
+        }
+    });
+
+    let config = TelegramConfig {
+        api_base: format!("http://{addr}"),
+        token: "test-token".to_string(),
+        ..Default::default()
+    };
+    let (bus_tx, _bus_rx) = tokio::sync::broadcast::channel(16);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let channel = TelegramChannel::new_with_client(config, bus_tx, http).unwrap();
+    *channel.running.write() = true;
+
+    let content = "🍎".repeat(3000); // 12000 bytes / 3000 scalars / 6000 units
+    let msg = OutboundMessage::new("telegram", "123", &content);
+    Channel::send(&channel, msg)
+        .await
+        .expect("send must succeed");
+
+    let recorded = bodies.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        2,
+        "6000 units 必须按 3500 预算拆成 2 次 sendMessage"
+    );
+    let mut total_units = 0usize;
+    for body in &recorded {
+        // 🍎 非 HTML 特殊字符，markdown→HTML 转换不改字节；JSON 体不转义
+        // 非 ASCII——text 字段即原始 emoji 序列。
+        let start = body.find(r#""text":""#).expect("text field") + r#""text":""#.len();
+        let end = body[start..]
+            .find(r#"","parse_mode""#)
+            .expect("text field terminator")
+            + start;
+        let text = &body[start..end];
+        let units: usize = text.chars().map(char::len_utf16).sum();
+        assert!(
+            units <= 4096,
+            "单块 UTF-16 units 必须低于 Telegram 硬限 4096: {units}"
+        );
+        total_units += units;
+    }
+    assert_eq!(
+        total_units, 6000,
+        "分块不得丢字：两块 units 总和必须等于原文"
+    );
+}
+
 // ---：入站 preview 截断必须字符安全 ---
 
 #[test]
@@ -916,7 +1026,7 @@ fn bug280_message_preview_multibyte_safe() {
     // 混合字符（emoji = 4 字节单 char）同样安全。
     let mixed = "👍".repeat(30);
     let p = super::message_preview(&mixed);
-    assert_eq!(p.chars().count(), 50.min(30));
+    assert_eq!(p.chars().count(), 30);
 
     // 短消息原样返回。
     assert_eq!(super::message_preview("hi"), "hi");

@@ -305,7 +305,7 @@ pub fn clone_repo(
 /// 远端推送（PR 发布）：把本地分支推到 `remote` 的 `remote_ref`。
 /// 凭据语义同 [`clone_repo`]。push 前本地分支必须存在（缺 = Err）。
 /// force = false（快进失败 = Err——交付分支被外部移动必须人裁，不覆盖）。
-/// 代理语义同 [`apply_proxy`]（Gerrit refs/for 推送同路）。
+/// 代理语义同 [`apply_proxy`]。
 pub fn push_branch(
     root: &Path,
     local_branch: &str,
@@ -334,129 +334,6 @@ pub fn push_branch(
     remote_obj
         .push(&[spec.as_str()], Some(&mut po))
         .map_err(|e| format!("推送 {spec} → {remote} 失败: {e}"))
-}
-
-// ---------------------------------------------------------------------------
-// Gerrit 发布支撑（SC 套件批）：确定性 Change-Id + 单提交 atop
-// ---------------------------------------------------------------------------
-
-/// 从种子串确定性派生 Gerrit Change-Id（`I<40hex>`，SHA-1 of seed）。
-/// 同一任务多次重试派生同一 Change-Id → Gerrit 服务端按 Change-Id 归并
-/// （push 建评审天然幂等，对账按此锚点回查——宿主 `{{change_id}}` 运行期
-/// token 的统一定义）。
-pub fn derive_change_id(seed: &str) -> Result<String, String> {
-    let oid = git2::Oid::hash_object(git2::ObjectType::Commit, seed.as_bytes())
-        .map_err(|e| format!("Change-Id 派生失败: {e}"))?;
-    Ok(format!("I{oid}"))
-}
-
-/// 任意 commit 的 tree hex（commit 缺席 = Err——发布面的诚实契约；
-/// Gerrit 单提交臂从交付 commit 反查交付树用）。
-pub fn tree_of_commit_hex(root: &Path, commit_hex: &str) -> Result<String, String> {
-    let repo =
-        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
-    let oid = git2::Oid::from_str(commit_hex).map_err(|e| format!("commit hash 形态非法: {e}"))?;
-    let commit = repo
-        .find_commit(oid)
-        .map_err(|e| format!("commit {commit_hex} 不在仓库 {}: {e}", root.display()))?;
-    Ok(commit.tree_id().to_string())
-}
-
-/// Gerrit 单提交形态：把交付树铸成**单亲 commit**，atop
-/// `refs/remotes/origin/{target_branch}` 远端头。交付分支 HEAD 可能是
-/// 档案管线「变更集合入」的 merge commit——Gerrit 对 merge change 评审
-/// 体验差（diff 噪声/revert 复杂），评审期望单提交基于最新分支头。
-///
-/// 语义：
-/// - 目标头 = `refs/remotes/origin/{target_branch}`（缺席 = Err——目标
-///   分支未同步过就谈不团单提交，先 repo_sync）；
-/// - 基线树 `base_tree_hex` 必给（调用方从 payload `base_tree` 或基线
-///   commit 的 tree 解析；两侧都缺 = 调用方诚实报错，本层不猜）；
-/// - 目标头树 == 基线树 → fast 形态：交付树直接单亲 atop 目标头（零合并）；
-/// - 否则三方合并（ancestor=基线树，ours=交付树，theirs=目标头树）——
-///   冲突 = Err（需人工 rebase，绝不产带冲突标记的提交）；
-/// - 合并后树与目标头树一致（目标已含交付）= Err（无可发布差异）；
-/// - 结果 force 落 `refs/heads/{branch}`（该分支正被工作树检出 = Err，
-///   不背工作树失同步）。
-///
-/// 返回新 commit hex。
-pub fn single_commit_atop(
-    root: &Path,
-    branch: &str,
-    target_branch: &str,
-    base_tree_hex: &str,
-    delivery_tree_hex: &str,
-    message: &str,
-) -> Result<String, String> {
-    let repo =
-        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
-
-    if head_branch_name(&repo)? == branch {
-        return Err(format!(
-            "分支 {branch} 正被工作树检出——单提交重铸不允许在检出分支上进行"
-        ));
-    }
-
-    let target_commit = repo
-        .find_reference(&format!("refs/remotes/origin/{target_branch}"))
-        .map_err(|_| {
-            format!("远端 origin 上没有分支 `{target_branch}`——Gerrit 单提交需要先同步目标分支")
-        })?
-        .peel_to_commit()
-        .map_err(|e| format!("origin/{target_branch} 解析 commit 失败: {e}"))?;
-
-    let parse_tree = |hex: &str, what: &str| -> Result<git2::Tree<'_>, String> {
-        let oid =
-            git2::Oid::from_str(hex).map_err(|e| format!("{what} tree hash 形态非法: {e}"))?;
-        repo.find_tree(oid)
-            .map_err(|e| format!("{what} tree {hex} 不在仓库: {e}"))
-    };
-    let base_tree = parse_tree(base_tree_hex, "基线")?;
-    let delivery_tree = parse_tree(delivery_tree_hex, "交付")?;
-
-    let merged_tree_oid = if target_commit.tree_id() == base_tree.id() {
-        delivery_tree.id()
-    } else {
-        let theirs = target_commit
-            .tree()
-            .map_err(|e| format!("目标头 tree 解析失败: {e}"))?;
-        let mut merged = repo
-            .merge_trees(&base_tree, &delivery_tree, &theirs, None)
-            .map_err(|e| format!("三方合并失败: {e}"))?;
-        if merged.has_conflicts() {
-            return Err(format!(
-                "交付与目标分支 origin/{target_branch} 最新提交存在内容冲突——Gerrit 单提交需人工 rebase 后重发，不产带冲突标记的提交"
-            ));
-        }
-        merged
-            .write_tree_to(&repo)
-            .map_err(|e| format!("合并树落库失败: {e}"))?
-    };
-
-    if merged_tree_oid == target_commit.tree_id() {
-        return Err(format!(
-            "交付内容已包含在 origin/{target_branch} 最新提交中（合并后无差异）——无可发布变更"
-        ));
-    }
-
-    let sig = signature()?;
-    let merged_tree = repo
-        .find_tree(merged_tree_oid)
-        .map_err(|e| format!("合并树回读失败: {e}"))?;
-    // commit 不绑 ref（Some(refname) 会在 ref 现头 ≠ 指定父时拒绝——重试
-    // 重铸场景 ref 头是上一轮产物），落库后 force 更新分支 ref = 文档承诺
-    // 的「force 落 refs/heads/{branch}」（同 Change-Id 重试 = 新 patchset）。
-    let oid = repo
-        .commit(None, &sig, &sig, message, &merged_tree, &[&target_commit])
-        .map_err(|e| format!("单提交创建失败: {e}"))?;
-    repo.reference(
-        &format!("refs/heads/{branch}"),
-        oid,
-        true,
-        "nemesis-board: gerrit single-commit recast",
-    )
-    .map_err(|e| format!("分支 {branch} force 更新失败: {e}"))?;
-    Ok(oid.to_string())
 }
 
 // ---------------------------------------------------------------------------

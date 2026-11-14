@@ -1458,3 +1458,17 @@ fn test_new_trailing_slash_base_normalized() {
         "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"
     );
 }
+
+#[test]
+fn test_new_from_config_trailing_slash_base_normalized() {
+    // BUG-20261114-043：new_from_config 与 new 同源尾斜杠归一——162 修复
+    // 轮只补了 new，这条 pub 构造器（legacy GitHubConfig 入口）漏网。
+    // 当前所有 join 点经 raw_content_url 已免疫（行为惰性），归一属构造器
+    // 对称性防御——未来任何直用 base_url 的新 join 点不再踩双斜杠。
+    let cfg = crate::types::GitHubConfig {
+        base_url: "https://raw.githubusercontent.com/".to_string(),
+        ..Default::default()
+    };
+    let registry = GitHubRegistry::new_from_config(&cfg);
+    assert_eq!(registry.base_url, "https://raw.githubusercontent.com");
+}

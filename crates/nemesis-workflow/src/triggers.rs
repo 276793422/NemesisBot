@@ -64,6 +64,29 @@ impl CronTimezone {
     }
 }
 
+/// Cron schedule key resolution — 单一真相源（BUG-20261114-042）。
+///
+/// 优先级：`schedule`（canonical）> `expression`（legacy 别名）。三个消费点
+/// 一律经本 helper 读，别名在每一层语义一致：
+/// - [`TriggerManager::register_trigger`]（cron_jobs 快查缓存）
+/// - `engine::cron_next_fire_at_from_trigger`（TriggerSummary.next_fire_at）
+/// - `engine::list_cron_workflows` → `spawn_cron_triggers`（真实排程链）
+///
+/// 历史：manager 层接受 legacy `expression` 键（注释自称 "backward compat"），
+/// 但两个 engine 消费点只读 `schedule`——别名被收编进无人消费的 cron_jobs，
+/// 真实调度层却 warn「missing 'schedule' field」跳过（字段明明写在本 crate
+/// 自己声称接受的别名下），legacy 文件永不触发、next_fire_at 恒空（假兼容）。
+/// 现三层同源：写了 `expression` 的旧文件真正排程，无键的 warn 文案如实
+/// 点名两个键。
+pub(crate) fn cron_schedule_from_config(
+    config: &HashMap<String, serde_json::Value>,
+) -> Option<&str> {
+    config
+        .get("schedule")
+        .or_else(|| config.get("expression"))
+        .and_then(|v| v.as_str())
+}
+
 /// Manager for workflow triggers.
 ///
 /// Supports cron schedules, webhook endpoints, event matching, and message
@@ -103,23 +126,18 @@ impl TriggerManager {
             }
         }
 
-        // Track cron jobs separately. Field name is `schedule` to match
-        // `engine.rs` (cron_next_fire_at_from_trigger / spawn_cron_triggers /
-        // list_cron_workflows). Older code read `expression`; that name was
-        // never honoured by the actual scheduler, so writing `expression` in
-        // YAML silently failed to schedule. Accept both keys here for
-        // backward compat, but new YAML should use `schedule`.
-        if trigger.trigger_type == "cron" {
-            let expr_val = trigger
-                .config
-                .get("schedule")
-                .or_else(|| trigger.config.get("expression"));
-            if let Some(v) = expr_val.and_then(|v| v.as_str()) {
-                let mut cron = self.cron_jobs.write();
-                cron.entry(workflow_name.to_string())
-                    .or_default()
-                    .push(v.to_string());
-            }
+        // Track cron jobs separately. Schedule key resolution goes through
+        // [`cron_schedule_from_config`]（单一真相源）：canonical `schedule`
+        // 优先，legacy `expression` 回落——旧 YAML 用 `expression:` 也算数
+        // （与 engine 两个消费点同源，BUG-20261114-042）。新 YAML 应写
+        // `schedule`。
+        if trigger.trigger_type == "cron"
+            && let Some(v) = cron_schedule_from_config(&trigger.config)
+        {
+            let mut cron = self.cron_jobs.write();
+            cron.entry(workflow_name.to_string())
+                .or_default()
+                .push(v.to_string());
         }
 
         let mut triggers = self.triggers.write();

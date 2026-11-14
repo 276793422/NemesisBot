@@ -77,6 +77,43 @@ fn unknown_field_typo_is_autofixed() {
 }
 
 #[test]
+fn rename_target_already_in_args_bounces_instead_of_overwriting() {
+    // Model sends the correct key AND a typo'd duplicate with a DIFFERENT
+    // value. Renaming the typo onto the target `Map::insert`s into the SAME
+    // final key — the survivor is whichever arg key sorts later (BTreeMap
+    // iteration), i.e. input-order-dependent silent rewrite:
+    //   "patch" < "path" → original survives, typo value silently dropped;
+    //   "paths" > "path" → typo value OVERWRITES the correct one (wrong-target
+    //   execution on a write tool).
+    // Same ambiguity discipline as two unknowns colliding on one target:
+    // don't guess, bounce for self-fix.
+    let s = sample_schema();
+    // Direction A: typo sorts before the original (original survives today).
+    match check(&s, r#"{"path":"main.rs","patch":"diff text"}"#) {
+        Outcome::Invalid { message, class } => {
+            assert_eq!(class, "B");
+            assert!(message.contains("patch"), "{}", message);
+        }
+        Outcome::Fixed(fixed) => panic!(
+            "expected Invalid (rename target collision), got Fixed that silently rewrites args: {}",
+            fixed
+        ),
+        other => panic!("expected Invalid, got {:?}", other),
+    }
+    // Direction B: typo sorts after the original (corruption branch today —
+    // the typo value would replace "main.rs" and the tool would execute on
+    // the wrong target).
+    match check(&s, r#"{"path":"main.rs","paths":"other.rs"}"#) {
+        Outcome::Invalid { .. } => {}
+        Outcome::Fixed(fixed) => panic!(
+            "expected Invalid (rename target collision), got Fixed that overwrites the correct value: {}",
+            fixed
+        ),
+        other => panic!("expected Invalid, got {:?}", other),
+    }
+}
+
+#[test]
 fn extra_field_with_no_close_neighbor_is_ignored() {
     // A clearly-extra field (no near-miss with a real field) is IGNORED —
     // tools skip undeclared keys, and bouncing would false-positive on

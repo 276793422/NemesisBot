@@ -5651,6 +5651,75 @@ async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
     assert!(engine.cancel_tokens.is_empty());
 }
 
+/// BUG-20261114-008 回归锁（竞态臂）：restore_waiting_after_failed_resume
+/// 只翻回「自己翻的 Running」。resume 错误窗口内并发 cancel_execution 可
+/// 合法观察到 Running 并翻成 Cancelled（状态检查放行 + token fire + 持久
+/// 化）——最宽窗口 = sub_workflow 子执行 resume 全程。修复前 restore 无
+/// 条件翻回 Waiting：已取消执行在内存复活（此后 resume 照常放行，取消意
+/// 图被静默抹除；estop cancel_all_running 的取消同样被复活），且内存
+/// Waiting 与盘上 Cancelled 分叉。
+#[tokio::test]
+async fn test_restore_waiting_after_failed_resume_preserves_raced_cancel() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // 模拟错误窗口内的并发取消落地：cancel_execution 观察到 Running/
+    // Waiting → 合法翻成 Cancelled。
+    engine.cancel_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        engine.get_execution(&parent_id).await.unwrap().state,
+        ExecutionState::Cancelled
+    );
+
+    // 此时 resume 的错误臂跑到 restore——修复前无条件翻回 Waiting。
+    engine.restore_waiting_after_failed_resume(&parent_id).await;
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        after.state,
+        ExecutionState::Cancelled,
+        "restore must not resurrect a cancelled execution"
+    );
+    assert!(
+        after.ended_at.is_some(),
+        "cancelled execution keeps its ended_at"
+    );
+
+    // 可观察语义闭环：复活被堵死后，已取消的执行不可再 resume。
+    let result = engine
+        .resume_execution(
+            &parent_id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(EngineError::InvalidState(_))),
+        "cancelled execution must not be resumable: {result:?}"
+    );
+}
+
+/// BUG-20261114-008 回归锁（正常臂）：无并发取消时，restore 仍把自己翻的
+/// Running 翻回 Waiting + ended_at=None——错误臂恢复语义不变。
+#[tokio::test]
+async fn test_restore_waiting_after_failed_resume_flips_own_running_back() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // resume 临界区翻 Running + ended_at=None 的形态（错误窗口内无并发
+    // 取消）。
+    {
+        let mut execs = engine.executions.write().await;
+        let exec = execs.get_mut(&parent_id).unwrap();
+        exec.state = ExecutionState::Running;
+        exec.ended_at = None;
+    }
+    engine.restore_waiting_after_failed_resume(&parent_id).await;
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(after.state, ExecutionState::Waiting);
+    assert!(after.ended_at.is_none());
+}
+
 /// 多等待同层：human_review 与 sub_workflow 并联（无
 /// 依赖）同时 Waiting。resume human_review 后，公共尾段 schedule_resume
 /// **不得整体重跑**仍 Waiting 的 sub_workflow 节点——SubWorkflowNodeExecutor
@@ -6025,4 +6094,93 @@ async fn b383_chain_extends_through_event_triggered_execution() {
         ev.data.get(B383_CHAIN_KEY),
         Some(&serde_json::json!(["link_a", "link_b"]))
     );
+}
+
+// BUG-20261114-042：cron 触发器 legacy `expression` 键双真相源分叉。
+//
+// manager 层（triggers.rs register_trigger）接受 `expression` 作为 `schedule`
+// 的向后兼容别名（注释明言 "backward compat"），但两个 engine 消费点
+// （cron_next_fire_at_from_trigger / list_cron_workflows）只读 `schedule`——
+// 别名被收编进无人消费的 cron_jobs 缓存，真实调度层却 warn「missing
+// 'schedule' field」跳过（字段明明写在本 crate 自己声称接受的别名下），
+// legacy 文件永不触发、TriggerSummary.next_fire_at 恒空。修法 = 别名在
+// 消费点兑现（仓库 timeout/protocol 别名同惯例），三层读同一 helper。
+
+#[tokio::test]
+async fn test_list_cron_workflows_honors_legacy_expression_alias() {
+    use crate::types::TriggerConfig;
+    use serde_json::json;
+
+    let mut wf = make_workflow("legacy_cron", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let crons = engine.list_cron_workflows();
+    assert_eq!(
+        crons.len(),
+        1,
+        "legacy expression 别名必须与 schedule 同权排程——假兼容（manager 收编、调度层拒收）已根修"
+    );
+    assert_eq!(crons[0].0, "legacy_cron");
+    assert_eq!(crons[0].1, "0 9 * * *");
+}
+
+#[tokio::test]
+async fn test_list_cron_workflows_schedule_takes_precedence_over_expression() {
+    use crate::types::TriggerConfig;
+    use serde_json::json;
+
+    // 两键并存：canonical schedule 赢，legacy alias 只是回落。
+    let mut wf = make_workflow("both_keys_cron", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([
+            ("schedule".to_string(), json!("*/5 * * * *")),
+            ("expression".to_string(), json!("0 9 * * *")),
+        ]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let crons = engine.list_cron_workflows();
+    assert_eq!(crons.len(), 1);
+    assert_eq!(
+        crons[0].1, "*/5 * * * *",
+        "schedule 优先于 legacy expression"
+    );
+}
+
+#[test]
+fn test_cron_next_fire_at_honors_legacy_expression_alias() {
+    use serde_json::json;
+
+    // 别名下写合法 cron：next_fire_at 必须可算（TriggerSummary 展示面）。
+    let valid = crate::types::TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    };
+    assert!(
+        super::cron_next_fire_at_from_trigger(&valid).is_some(),
+        "legacy expression 别名下的合法 cron 必须算出 next_fire_at"
+    );
+
+    // 别名下的非法 cron：诚实 None（与 schedule 键同语义）。
+    let invalid = crate::types::TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("not a cron"))]),
+    };
+    assert!(super::cron_next_fire_at_from_trigger(&invalid).is_none());
+
+    // 非 cron 触发器：None 不变。
+    let not_cron = crate::types::TriggerConfig {
+        trigger_type: "webhook".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    };
+    assert!(super::cron_next_fire_at_from_trigger(&not_cron).is_none());
 }

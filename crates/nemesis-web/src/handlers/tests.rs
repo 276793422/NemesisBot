@@ -2248,6 +2248,14 @@ async fn test_channels_test_stub() {
 async fn test_skills_search_stub() {
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证空结果管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.skills.json"),
+        r#"{"modelscope":{"enabled":false}}"#,
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
     let data = serde_json::json!({ "query": "automation" });
     let result = handler

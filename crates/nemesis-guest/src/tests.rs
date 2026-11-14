@@ -88,6 +88,26 @@ async fn exec_nonzero_exit_is_ok_with_exit_code_text() {
     assert!(parsed.result.contains("Exit code: 3"), "{resp}");
 }
 
+// BUG-20261114-002 回归锁：Windows cmd /C 必须 raw_arg 逐字传命令串。
+// `.arg()` 的 MSVCRT 转义把内嵌引号变 `\"`，cmd 不认 `\"`——带引号命令
+// 被打挂（宿主 cc_hooks 实测先例；raw_arg 后 echo 原样输出带引号串）。
+// Unix sh -c 无引号层，`.arg()` 本就逐字（测试挂 cfg(windows) 按
+// Windows 形态测试标记约定，Linux 编译期消失）。
+#[cfg(windows)]
+#[tokio::test]
+async fn exec_windows_cmd_preserves_embedded_quotes() {
+    let (agent, _dir) = agent_with_tmp();
+    let resp = agent
+        .serve_line(&v2_line("exec", r#"{"command":"echo \"a b\""}"#))
+        .await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(parsed.ok, "{resp}");
+    assert!(
+        parsed.result.contains("\"a b\""),
+        "引号必须原样保留（raw_arg 逐字语义）: {resp}"
+    );
+}
+
 #[tokio::test]
 async fn write_read_delete_file_roundtrip() {
     let (agent, dir) = agent_with_tmp();

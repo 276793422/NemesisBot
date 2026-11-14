@@ -212,6 +212,18 @@ impl Cluster {
         crate::is_roaming_address(a)
     }
 
+    /// 是否已自带端口（`ip:port` 单冒号 + 数字右段）。裸 IPv4/hostname
+    /// （0 冒号）= false 照旧拼 `:rpc_port`。2026-11-14 审查发现 #6：announce
+    /// 载荷若改为携带完整 `ip:port`（当前恒裸 IP），无条件拼接会造出
+    /// `ip:port:rpc_port` 非法 primary——补形态检查防御（当前不可触发，
+    /// 与 `is_self_endpoint` 的「host 允许携带端口」契约同口径）。
+    fn addr_has_port(a: &str) -> bool {
+        a.matches(':').count() == 1
+            && a.rsplit_once(':')
+                .map(|(_, p)| p.parse::<u16>().is_ok())
+                .unwrap_or(false)
+    }
+
     /// iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，统一小写）。
     /// None = 非法——入池 iroh 候选只会浪费拨号预算（诚实裁剪）。
     fn valid_iroh_id(s: Option<String>) -> Option<String> {
@@ -491,9 +503,10 @@ impl Cluster {
 
         // iroh 形态地址自带完整寻址（node_id[+直连 socket]），拼
         // `:rpc_port` 会造出 `iroh:<hex>:<port>` 非法地址——原样作
-        // primary。TCP 地址照旧拼 port。
+        // primary。TCP 地址照旧拼 port；已自带端口的 `ip:port` 载荷
+        // 形态原样采用（防 `ip:port:rpc_port` 双拼，addr_has_port）。
         let primary_address = match addresses.first() {
-            Some(a) if Self::addr_is_roaming(a) => a.clone(),
+            Some(a) if Self::addr_is_roaming(a) || Self::addr_has_port(a) => a.clone(),
             Some(a) => format!("{}:{}", a, rpc_port),
             None => String::new(),
         };

@@ -86,8 +86,9 @@ onMounted(async () => {
 <template>
   <div class="page-security-guardian">
     <SecurityLayerHeader
+      num="⑪"
       title="Guardian 二审"
-      duty="附加机制（不在八层编号内）：高危操作过规则层后由无上下文 LLM 做语义二审，防提示词注入绕过规则表；execute 同步返回 allow 后 agent loop 异步等待裁决。"
+      duty="第⑪道闸 Guardian 二审：高危操作过规则层后由无上下文 LLM 做语义二审，防提示词注入绕过规则表；execute 同步返回 allow 后 agent loop 异步等待裁决。"
       :status-label="guardianMode === 'off' ? '未开启' : guardianMode === 'critical' ? 'CRITICAL 全审' : 'HIGH+ 破坏形态预筛'"
       :status-tone="guardianMode === 'off' ? 'na' : 'on'"
       effective="restart"

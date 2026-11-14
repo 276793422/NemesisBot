@@ -174,21 +174,29 @@ fn test_split_message_with_spaces() {
 fn test_find_last_unclosed_code_block_open() {
     let text = "some text\n```python\ncode here";
     let pos = find_last_unclosed_code_block(text);
-    assert!(pos > 0);
+    assert_eq!(pos, Some(10));
+}
+
+#[test]
+fn test_find_last_unclosed_code_block_open_at_position_zero() {
+    // BUG-20261114-060 回归锁：位置 0 围栏必须返回 Some(0)，不得与
+    // 「无未闭合」（None）混用哨兵。
+    let text = "```python\ncode here";
+    assert_eq!(find_last_unclosed_code_block(text), Some(0));
 }
 
 #[test]
 fn test_find_last_unclosed_code_block_closed() {
     let text = "some text\n```\ncode\n```\nmore text";
     let pos = find_last_unclosed_code_block(text);
-    assert_eq!(pos, 0);
+    assert_eq!(pos, None);
 }
 
 #[test]
 fn test_find_last_unclosed_code_block_no_fences() {
     let text = "just plain text\nno code blocks";
     let pos = find_last_unclosed_code_block(text);
-    assert_eq!(pos, 0);
+    assert_eq!(pos, None);
 }
 
 #[test]
@@ -336,8 +344,35 @@ fn test_split_message_with_code_block_reopening() {
     let text = format!("```\n{}\n```", code_content);
     let result = split_message(&text, 100);
     assert!(result.len() > 1);
-    // First chunk should end with ```
-    // (either natural closing or injected closing fence)
+    // BUG-20261114-060 回归锁：位置 0 围栏（消息以 ``` 开头）也必须走修复
+    // 分支——每块围栏配对（偶数个 ```），首块以闭合围栏收尾。旧实现哨兵
+    // 冲突导致此形态修复分支永不触发（首块 "```" 裸围栏、体块零围栏）。
+    for chunk in &result {
+        let fences = chunk.matches("```").count();
+        assert_eq!(fences % 2, 0, "unbalanced fences in chunk: {:?}", chunk);
+        assert!(!chunk.is_empty());
+    }
+    assert!(
+        result[0].ends_with("```"),
+        "first chunk must end with closing fence: {:?}",
+        result[0]
+    );
+}
+
+#[test]
+fn test_split_message_fence_header_longer_than_budget_terminates() {
+    // BUG-20261114-060 配套守卫锁：围栏行本身比预算长（header_end > 切点）时，
+    // 修复分支若仍前置 header 重开围栏，content 每轮 +header 字节——死循环
+    // + 无界内存。进度守卫必须让该形态普通硬切恒收缩。本测试的断言就是
+    // 「能返回」——旧守卫缺失形态下此调用永不结束。
+    let text = format!("```{}\n{}", "x".repeat(500), "y".repeat(1000));
+    let result = split_message(&text, 200);
+    assert!(!result.is_empty());
+    for chunk in &result {
+        assert!(!chunk.is_empty());
+        let fences = chunk.matches("```").count();
+        assert_eq!(fences % 2, 0, "unbalanced fences in chunk: {:?}", chunk);
+    }
 }
 
 #[test]
@@ -353,12 +388,12 @@ fn test_find_last_unclosed_code_block_multiple_opens() {
     // Two open code blocks (only last one matters for detection)
     let text = "```\ncode1\n```\n```\ncode2";
     let pos = find_last_unclosed_code_block(text);
-    assert!(pos > 0);
+    assert_eq!(pos, Some(14));
 }
 
 #[test]
 fn test_find_last_unclosed_code_block_empty() {
-    assert_eq!(find_last_unclosed_code_block(""), 0);
+    assert_eq!(find_last_unclosed_code_block(""), None);
 }
 
 #[test]
@@ -492,7 +527,7 @@ fn test_find_last_unclosed_code_block_multiple_blocks() {
     let text = "before\n```\ncode1\n```\nbetween\n```\ncode2\nstill open";
     let pos = find_last_unclosed_code_block(text);
     // Should find the second opening ```
-    assert!(pos > 0);
+    assert!(matches!(pos, Some(p) if p > 0));
 }
 
 #[test]
@@ -701,7 +736,7 @@ fn test_find_last_unclosed_code_block_returns_byte_offset_with_cjk() {
     // 修复前返回 char 索引：中文前缀下 "```" 的 char 索引 ≠ 字节偏移，
     // 调用方按字节切片 → panic 或错位。修复后必须能直接按字节切出 ```
     let text = "中文说明\n```python\n代码";
-    let pos = find_last_unclosed_code_block(text);
+    let pos = find_last_unclosed_code_block(text).expect("unclosed block expected");
     assert!(pos > 0);
     assert_eq!(&text[pos..pos + 3], "```");
 }

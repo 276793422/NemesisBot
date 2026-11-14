@@ -255,7 +255,13 @@ fn resolve_linked_peer_id(
     }
 
     // Search links
-    for (canonical, ids) in identity_links {
+    // canonical 名排序迭代（确定性纪律）：HashMap 迭代顺序跨进程随机（
+    // RandomState 每进程换种），同一平台 ID 误配在两个 canonical 名下时
+    // 无序迭代 = 命中哪个随重启翻转 → DM 会话键漂移、历史分裂且零痕迹。
+    // 排序后 first-match-wins 跨进程稳定（字典序最小 canonical 恒命中）。
+    let mut ordered_links: Vec<(&String, &Vec<String>)> = identity_links.iter().collect();
+    ordered_links.sort_by(|a, b| a.0.trim().cmp(b.0.trim()));
+    for (canonical, ids) in ordered_links {
         let canonical_name = canonical.trim().to_string();
         if canonical_name.is_empty() {
             continue;

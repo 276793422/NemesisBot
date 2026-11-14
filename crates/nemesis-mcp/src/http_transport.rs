@@ -241,9 +241,9 @@ impl Transport for HttpTransport {
         if content_type.contains("text/event-stream") {
             parse_sse_response(response).await
         } else {
-            let body = response.text().await.map_err(|e| {
-                TransportError::send_failed(format!("Failed to read response: {}", e.without_url()))
-            })?;
+            // BUG-20261114-046：成功路径响应体有帽读入——此前 `text()`
+            // 整包无界（时间有界但字节无界，快管道超时窗口内 GB 级灌内存）。
+            let body = capped_response_body(response).await?;
             let trimmed = body.trim();
             if trimmed.is_empty() {
                 let id = request.id.clone().unwrap_or(serde_json::Value::Null);
@@ -310,6 +310,15 @@ const MAX_ERROR_BODY_READ_BYTES: usize = 256 * 1024;
 /// 错误体进错误串的上限（错误串直达日志与模型上下文；定性信息在头部）。
 const MAX_ERROR_BODY_MESSAGE_BYTES: usize = 8 * 1024;
 
+/// 成功路径响应体帽（BUG-20261114-046）：JSON body 整包 + SSE 未终结事件
+/// 缓冲共用。与 stdio 侧 `MAX_RESPONSE_LINE_BYTES`（16MB，单条 JSON-RPC
+/// 响应同语义载荷）对称——大工具结果也远低于此，超帽即服务器输出不可信。
+/// R845 只收口了错误臂（256KB capped_error_body），成功臂 `text()` 与 SSE
+/// `buffer` 此前仍字节无界（reqwest 请求总超时只约束时间，不约束体积——
+/// 崩溃/被替换的 MCP 服务器在超时窗口内可把 GB 级 body 灌进网关内存，
+/// 与 stdio 16MB 帽注释同款威胁模型）。
+const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+
 /// chunk 循环读到 EOF 或读帽（超帽停止消费），prefix 截到消息帽（char 边
 /// 界安全，`truncate_bytes_at_boundary` 单一真相源），超帽时尾部加诚实截
 /// 断注记。
@@ -335,6 +344,32 @@ async fn capped_error_body(mut response: reqwest::Response) -> String {
         body.push_str("\n…[error body truncated]");
     }
     body
+}
+
+/// 成功路径响应体有帽读取（BUG-20261114-046）。超帽 = 诚实 hard error——
+/// 成功路径**不得**截断（截断的 JSON 是毒载荷，与错误路径「截断加注记」
+/// 的语义分工同 nemesis-utils::http_cap read_error_body/read_body_capped
+/// 的既定分层）。
+///
+/// 不消费 `http_cap::read_body_capped` 的原因：其错误串内嵌 reqwest 原始
+/// URL——本文件纪律是所有 reqwest 错误进消息前必须 `.without_url()`
+/// （Smithery 风格 `?key=` 查询串密钥不得进日志/模型上下文，自查 #1）。
+async fn capped_response_body(mut response: reqwest::Response) -> Result<String, TransportError> {
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let chunk = response.chunk().await.map_err(|e| {
+            TransportError::send_failed(format!("Failed to read response: {}", e.without_url()))
+        })?;
+        let Some(chunk) = chunk else { break };
+        if bytes.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+            return Err(TransportError::send_failed(format!(
+                "response body exceeds {} byte cap (server output untrusted)",
+                MAX_RESPONSE_BODY_BYTES
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +424,16 @@ async fn parse_sse_response(
 
         match chunk {
             Some(bytes) => {
-                nemesis_utils::sse::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes)
+                nemesis_utils::sse::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
+                // BUG-20261114-046：未终结事件缓冲同受 16MB 帽——正常流每
+                // 个完整事件即被消费排干，buffer 只持有未消费尾；涨破帽 =
+                // 单事件迟迟不带终结符（服务器输出不可信），诚实报错。
+                if buffer.len() > MAX_RESPONSE_BODY_BYTES {
+                    return Err(TransportError::send_failed(format!(
+                        "SSE event exceeds {} byte cap without terminator (server output untrusted)",
+                        MAX_RESPONSE_BODY_BYTES
+                    )));
+                }
             }
             None => {
                 // EOF：解码残尾（若有）按 lossy 落盘——流已断，尾随不完整

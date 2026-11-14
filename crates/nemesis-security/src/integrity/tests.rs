@@ -1105,3 +1105,124 @@ fn test_bug374_without_replay_chain_breaks() {
         "无回载续写的盘上链必须 verify FAIL（缺陷机理钉死）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-005 回归锁：撕裂尾自愈（BUG-20261113-168 event_ledger 同族）。
+// writeln 撕裂（磁盘满中途落盘/断电）留半行残迹 ⇒ 旧行为下一笔追加拼行 =
+// 新事件盘上不可解析但内存已推进 ⇒ 解析视图永久断链（verify 恒红无修复）。
+// ---------------------------------------------------------------------------
+
+fn write_torn_bytes(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open for torn bytes");
+    f.write_all(bytes).expect("write torn bytes");
+    f.sync_all().expect("sync torn bytes");
+}
+
+fn read_parsed_events(path: &std::path::Path) -> Vec<AuditEvent> {
+    std::fs::read_to_string(path)
+        .expect("read segment")
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+#[test]
+fn test_heal_torn_half_line_truncates_and_chain_continues() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let chain = AuditChain::new(AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    });
+
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r2")
+        .unwrap();
+
+    // 模拟撕裂写：半行残迹（无换行、不可解析）。
+    write_torn_bytes(&path, b"{\"id\":\"torn");
+
+    // 下一笔追加必须先自愈（截残迹）再干净落链。
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t3", "allowed", "r3")
+        .unwrap();
+
+    let events = read_parsed_events(&path);
+    assert_eq!(events.len(), 3, "半行残迹被截，三事件全可解析");
+    assert!(
+        AuditChain::verify_chain(&events),
+        "自愈后链必须完整（不再永久红）"
+    );
+    assert_eq!(chain.total_event_count(), 3);
+}
+
+#[test]
+fn test_heal_restores_complete_event_missing_newline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let chain = AuditChain::new(AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    });
+
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    let e2 = chain
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r2")
+        .unwrap();
+
+    // 模拟「content 落盘、换行丢失」撕裂形态：完整事件 JSON 无换行。
+    // 该事件 prev=e2.hash、hash 按同一公式计算——盘上合法链尾，只是丢换行。
+    let torn = AuditEvent {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        operation: "file_write".into(),
+        tool_name: "write_file".into(),
+        user: "u".into(),
+        source: "cli".into(),
+        target: "/t3".into(),
+        decision: "allowed".into(),
+        reason: "r3".into(),
+        hash: String::new(),
+        prev_hash: e2.hash.clone(),
+        sign: None,
+        hash_version: 1,
+    };
+    let mut torn_hasher = sha2::Sha256::new();
+    torn_hasher.update(torn.prev_hash.as_bytes());
+    torn_hasher.update(torn.timestamp.as_bytes());
+    torn_hasher.update(torn.operation.as_bytes());
+    torn_hasher.update(torn.tool_name.as_bytes());
+    torn_hasher.update(torn.user.as_bytes());
+    torn_hasher.update(torn.target.as_bytes());
+    torn_hasher.update(torn.decision.as_bytes());
+    torn_hasher.update(torn.source.as_bytes());
+    torn_hasher.update(torn.reason.as_bytes());
+    let torn_json = {
+        let mut t = torn.clone();
+        t.hash = format!("{:x}", torn_hasher.finalize());
+        serde_json::to_string(&t).unwrap()
+    };
+    write_torn_bytes(&path, torn_json.as_bytes()); // 无换行
+
+    // 下一笔追加：先补换行恢复残迹事件 + 采纳进链尾，再落自己的事件。
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t4", "allowed", "r4")
+        .unwrap();
+
+    let events = read_parsed_events(&path);
+    assert_eq!(events.len(), 4, "丢换行的完整事件被恢复入链");
+    assert!(
+        AuditChain::verify_chain(&events),
+        "恢复 + 采纳 + 续写后链完整"
+    );
+    assert_eq!(chain.total_event_count(), 4, "恢复事件计入链计数");
+}

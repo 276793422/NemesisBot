@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { useToast } from '../../composables/useToast'
 
-// 安全总览页 spec（十层页面化 2026-11-10）：十层状态表（行内容来自
-// security.overview 聚合快照）+ 运行状态区（只读）+ 链校验按钮 + JSON
+// 安全总览页 spec（十层页面化 2026-11-10；⑪⑫⑬ 编号 2026-11-14 用户拍板）：
+// 十三层状态表（行内容来自 security.overview 聚合快照）+ 运行状态区
+// （只读）+ 链校验按钮 + JSON
 // 编辑器（唯一任意键写入口）。
 
 const requestMock = vi.fn()
@@ -33,6 +34,8 @@ function overviewResult() {
     plan_mode: { available: true, mode: 'build' },
     editor: { injected: true, full_access: false, external_write: false },
     approvals: { injected: true, enabled: false, auto_approved_count: 0 },
+    guardian: { mode: 'critical', failure_policy: 'ask' },
+    vault: { exists: true },
     scanner: { enabled: true, total: 1, enabled_count: 1, ready_count: 1 },
     global: { available: true, enabled: true },
     executor: { available: true, enabled: false, sandbox: false, vm: false },
@@ -69,15 +72,17 @@ beforeEach(() => {
   })
 })
 
-describe('SecurityOverviewView 十层状态表', () => {
-  it('渲染 10 行层状态；行文本带层号/摘要（阈值/DLP 处置/白名单/引擎计数）', async () => {
+describe('SecurityOverviewView 十三层状态表', () => {
+  it('渲染 13 行层状态；行文本带层号/摘要（阈值/DLP 处置/白名单/引擎计数/Guardian 档）', async () => {
     const w = await mountView()
     const rows = w.find('[data-test="layers-table"]').findAll('tbody tr')
-    expect(rows).toHaveLength(10)
+    expect(rows).toHaveLength(13)
     expect(w.text()).toContain('判定阈值 0.7（默认）')
     expect(w.text()).toContain('处置 block')
     expect(w.text()).toContain('白名单 1 项')
     expect(w.text()).toContain('引擎 1 个')
+    expect(w.text()).toContain('CRITICAL 全审')
+    expect(w.text()).toContain('已初始化')
     w.unmount()
   })
 

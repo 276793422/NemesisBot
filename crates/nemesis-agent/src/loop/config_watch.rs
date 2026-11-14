@@ -1076,10 +1076,20 @@ impl AgentLoop {
     /// 会话级强度 override（G3，2026-11-09）：`chat.set_effort` 写入。
     /// `Some(v)` = 设置（合法值集 off/low/medium/high，调用方校验）；
     /// `None` = 清除回落 config 模型级值。仅内存态——重启清空。
+    ///
+    /// 有界纪律（BUG-20261113-170，与 compact_state/summarizing 同约定）：
+    /// 写入是显式 per-session 用户动作，此前完全无驱逐——每个设过的会话
+    /// 留一条直到重启。超限时整体 clear（override 被清 = 会话回落 config
+    /// 模型级值，无不变量破坏，用户可重设）。
     pub fn set_session_effort(&self, session_key: &str, effort: Option<String>) {
         let mut m = self.effort_overrides.write();
         match effort {
             Some(v) => {
+                if m.len() > super::compact::SESSION_STATE_MAX_ENTRIES
+                    && !m.contains_key(session_key)
+                {
+                    m.clear();
+                }
                 m.insert(session_key.to_string(), v);
             }
             None => {

@@ -252,6 +252,48 @@ impl ClusterTaskList {
         self.tasks.insert(task.task_id.clone(), task);
     }
 
+    /// 原子 check-and-insert：同 task_id 在途（Pending/Running/WaitingRemote）
+    /// → `Err(existing_status)`；空位或终态残留 → 插入新任务并 `Ok`。
+    ///
+    /// BUG-20261114-024 并发投递窗口补强：RPC server 每帧 tokio::spawn，
+    /// `PeerChatHandler::handle` 虽无 await 但多线程 runtime 下可真并行——
+    /// 「get_task 检查 → create_task 插入」两步分离时，两个并发 handler
+    /// 可在对方插入前各自通过检查 → 双登记双入队（顺序闸拦不住同时到达）。
+    /// 检查与插入收进单个 DashMap entry 锁后，同 id 并发受理恰有一个胜者。
+    /// 终态残留放行（覆盖）与顺序闸同纪律：complete_task 正常即移除，
+    /// 残留视为异常态，宁可放行不可误伤合法重发。
+    /// 注意：本方法持有 entry 锁期间不做任何磁盘持久化——persist 面若
+    /// 内部 `tasks.iter()`（见 persist_to_disk），与 entry 锁同 key 相互
+    /// 等待会死锁（save_async_state 顶部注释同款纪律）。
+    ///
+    /// Returns `Err(existing_status)` when an in-flight task with the same id
+    /// already exists; `Ok(())` when the new task was registered.
+    pub fn create_task_if_absent(&self, task: ClusterTask) -> Result<(), TaskStatus> {
+        use dashmap::mapref::entry::Entry;
+        tracing::info!(
+            task_id = %task.task_id,
+            status = %task.status,
+            "[ClusterTaskList] Creating task (atomic if-absent)"
+        );
+        match self.tasks.entry(task.task_id.clone()) {
+            Entry::Occupied(mut occupied) => {
+                let existing_status = occupied.get().status;
+                if matches!(
+                    existing_status,
+                    TaskStatus::Pending | TaskStatus::Running | TaskStatus::WaitingRemote
+                ) {
+                    return Err(existing_status);
+                }
+                occupied.insert(task);
+                Ok(())
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(task);
+                Ok(())
+            }
+        }
+    }
+
     /// Get a task by ID.
     pub fn get_task(&self, task_id: &str) -> Option<ClusterTask> {
         self.tasks.get(task_id).map(|r| r.value().clone())

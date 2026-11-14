@@ -1,5 +1,34 @@
 use super::*;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
+
+// ----- BUG-20261114-026 日志捕获 harness（镜像 AuthStore store/tests.rs 形态）-----
+
+#[derive(Clone)]
+struct LogSinkW26(Arc<Mutex<String>>);
+impl std::io::Write for LogSinkW26 {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// warn 捕获 subscriber。守卫必须返回给测试体持有：thread-local
+/// set_default 生命周期 = guard 存活期，setup 内 drop 会在返回时卸载。
+fn warn_capture_setup_w26() -> (Arc<Mutex<String>>, tracing::subscriber::DefaultGuard) {
+    let buf = Arc::new(Mutex::new(String::new()));
+    let sink = LogSinkW26(buf.clone());
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || sink.clone())
+            .finish(),
+    );
+    (buf, guard)
+}
 
 #[test]
 fn test_new_manager_creates_state_dir() {
@@ -159,6 +188,12 @@ fn test_workspace_state_deserialization_partial_fields() {
 
 #[test]
 fn test_new_manager_with_corrupted_state_file() {
+    // 必须持有捕获 guard（BUG-20261114-026 后本测试与
+    // test_corrupted_state_file_load_warns_loudly 共享 new() 同一条 warn!
+    // callsite——tracing callsite interest 缓存进程级单值，无 subscriber
+    // 的执行可能把 callsite 缓存成 NEVER 短路对方的 emit（假红）。
+    // 先例：auth store/tests.rs test_new_with_corrupted_json 同注释）。
+    let (_, _guard) = warn_capture_setup_w26();
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
     let state_dir = workspace.join("state");
@@ -175,6 +210,9 @@ fn test_new_manager_with_corrupted_state_file() {
 
 #[test]
 fn test_new_manager_with_empty_state_file() {
+    // 空 JSON 同样是损坏面（半截写残留），会触发 BUG-20261114-026 的
+    // warn 臂——同理必须持 guard 防 callsite interest 缓存互踩。
+    let (_, _guard) = warn_capture_setup_w26();
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
     let state_dir = workspace.join("state");
@@ -186,6 +224,62 @@ fn test_new_manager_with_empty_state_file() {
     let mgr = WorkspaceStateManager::new(workspace);
     assert_eq!(mgr.get_last_channel(), "");
     assert_eq!(mgr.get_last_chat_id(), "");
+}
+
+/// (BUG-20261114-026 回归锁) 构造期加载失败必须 loud 警告——此前
+/// `let _ = mgr.load()` 静默：盘上 state.json 损坏时按空状态继续，下次
+/// set_last_channel/set_last_chat_id 覆盖盘上残留，last_channel 无声丢失
+/// （heartbeat 结果路由静默降级）。行为面（空态继续）由上方
+/// test_new_manager_with_corrupted_state_file 钉住，本测试钉留痕面。
+#[test]
+fn test_corrupted_state_file_load_warns_loudly() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path();
+    fs::create_dir_all(workspace.join("state")).unwrap();
+    fs::write(
+        workspace.join("state/state.json"),
+        "{torn json from a crashed write}",
+    )
+    .unwrap();
+
+    let (buf, _guard) = warn_capture_setup_w26();
+    let mgr = WorkspaceStateManager::new(workspace);
+    assert_eq!(mgr.get_last_channel(), "");
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("state.json 加载失败"),
+        "必须 loud 警告加载失败，实际日志：{log}"
+    );
+    assert!(
+        log.contains("按默认空状态继续"),
+        "警告必须说明按空状态继续（覆盖风险），实际日志：{log}"
+    );
+}
+
+/// (BUG-20261114-026 回归锁) 迁移臂：旧位置 state.json **存在但损坏**
+/// 必须 loud（此前 `if let Ok(...)` 双重静默跳过 = 迁移永不重试且零痕迹）。
+/// 旧文件不存在（全新工作区）是常态，不告警——由
+/// test_new_manager_creates_state_dir 隐式钉住（其无旧文件亦无 warn 断言）。
+#[test]
+fn test_migration_corrupt_old_file_warns_loudly() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path();
+    // 旧位置损坏文件；新位置无 state.json（触发迁移臂）。
+    fs::write(workspace.join("state.json"), "not-json-at-all {{{").unwrap();
+
+    let (buf, _guard) = warn_capture_setup_w26();
+    let mgr = WorkspaceStateManager::new(workspace);
+    assert_eq!(mgr.get_last_channel(), "");
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("旧位置 state.json 存在但迁移失败"),
+        "迁移臂必须 loud 警告，实际日志：{log}"
+    );
+    // 损坏旧文件必须保留现场（不被迁移覆盖也不被删除）。
+    assert!(
+        workspace.join("state.json").exists(),
+        "损坏的旧位置文件必须保留现场"
+    );
 }
 
 #[test]

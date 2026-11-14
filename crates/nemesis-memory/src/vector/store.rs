@@ -199,6 +199,12 @@ impl VectorStore {
         self.embed.clone()
     }
 
+    /// Store config's similarity threshold（守卫纪律消费方需要显式阈值——
+    /// embed 外提后走 query_with_embedding，config 不再对调用方隐藏）。
+    pub fn similarity_threshold(&self) -> f64 {
+        self.config.similarity_threshold
+    }
+
     // Round-5: removed dead `embed_raw` (zero callers). A second public embed
     // path beside embed_handle invited bypassing the lock-discipline fix.
     // The Arc-returning embed_handle is the one sanctioned way out.
@@ -227,7 +233,22 @@ impl VectorStore {
         min_score: f64,
     ) -> Result<QueryResult, String> {
         let query_embedding = (self.embed)(query)?;
+        self.query_with_embedding(&query_embedding, query, limit, type_filter, min_score)
+    }
 
+    /// 以预计算 embedding 查询（BUG-20261114-032 守卫纪律配套 API）：
+    /// 调用方先 clone embed 句柄 / store Arc、丢上层守卫后再推理，把结果
+    /// 喂给这里——锁不跨 tens-of-ms ONNX 调用。评分/排序/limit 语义与
+    /// query_with_threshold 单一真相源（本函数即其 embed 拆分形态，
+    /// query_with_threshold 只是 embed+委托的便捷壳）。
+    pub fn query_with_embedding(
+        &self,
+        query_embedding: &[f32],
+        query: &str,
+        limit: usize,
+        type_filter: &[String],
+        min_score: f64,
+    ) -> Result<QueryResult, String> {
         let limit = if limit == 0 {
             self.config.max_results
         } else {
@@ -246,7 +267,7 @@ impl VectorStore {
                 }
             })
             .filter_map(|doc| {
-                let sim = cosine_similarity(&query_embedding, &doc.embedding);
+                let sim = cosine_similarity(query_embedding, &doc.embedding);
                 if sim >= min_score {
                     Some((sim, doc))
                 } else {

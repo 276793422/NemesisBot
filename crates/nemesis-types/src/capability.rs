@@ -195,9 +195,17 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
             .get("real_name")
             .and_then(|v| v.as_str())
             .map(String::from),
+        // BUG-20261114-055：越域值按「未设」（None）处理——0 = resolver
+        // 家族缺席惯例（max_output_tokens / context_window /
+        // compact_context_tokens 全 `.filter(>0)` 同族）；>u32::MAX 旧代码
+        // 裸 `as u32` 静默回绕（4_294_967_296→0→Mini 钉死，恰是本模块
+        // 设计原则点名的「误判强模型为小 = 不可恢复」方向；loud 拒绝
+        // 先例：config_port_to_u16 同理由拒绝裸 `as u16`）。误输入宁落
+        // 名字检测 / 默认 Big，不吞进错误桶。
         size_b: entry
             .get("model_size_b")
             .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0 && *n <= u32::MAX as u64)
             .map(|n| n as u32),
     };
 

@@ -105,6 +105,7 @@ fn test_format_report_from_report() {
         llm_insights: Some("LLM analysis suggests optimizing file reads".to_string()),
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
 
     let output = format_report_from_report(&report);
@@ -125,9 +126,10 @@ fn test_format_report_from_report() {
 fn test_format_trace_insights() {
     let stats = TraceStats {
         total_traces: 50,
+        traces_with_rounds: 42,
         avg_rounds: 3.5,
+        avg_tool_calls_per_round: 4.0,
         avg_duration_ms: 1200,
-        efficiency_score: 0.78,
         tool_chain_patterns: vec![ToolChainPattern {
             chain: "read_file->edit_file".to_string(),
             count: 15,
@@ -136,7 +138,7 @@ fn test_format_trace_insights() {
         }],
         retry_patterns: vec![RetryPattern {
             tool_name: "exec".to_string(),
-            retry_count: 3,
+            error_count: 3,
             success_rate: 0.67,
         }],
         signal_summary: {
@@ -150,13 +152,21 @@ fn test_format_trace_insights() {
     let output = format_trace_insights(&stats);
     assert!(output.contains("## Trace Insights"));
     assert!(output.contains("50"));
+    // 42 < 50 → eligible 差值注记行必须渲染（A1 真指标）
+    assert!(output.contains("Traces with round data: 42/50"));
     assert!(output.contains("3.5"));
+    assert!(output.contains("Average tool calls per round"));
     assert!(output.contains("High-Frequency Tool Chains"));
     assert!(output.contains("read_file->edit_file"));
-    assert!(output.contains("Retry Patterns"));
+    // A3 改名：Retry Patterns/Retry Count → Frequent Failures/Failed Steps
+    assert!(output.contains("Frequent Failures"));
+    assert!(!output.contains("Retry Patterns"));
     assert!(output.contains("exec"));
     assert!(output.contains("Session Signals"));
     assert!(output.contains("retry"));
+    // efficiency_score 假分已删——渲染面不得再出现
+    assert!(!output.contains("Efficiency Score"));
+    assert!(!output.contains("efficiency"));
 }
 
 #[test]
@@ -278,6 +288,7 @@ fn test_format_report_from_report_no_llm() {
         llm_insights: None,
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let output = format_report_from_report(&report);
     assert!(output.contains("# Forge Reflection Report"));
@@ -294,6 +305,7 @@ fn test_format_report_from_report_empty_llm() {
         llm_insights: Some(String::new()),
         trace_stats: None,
         learning_cycle: None,
+        learning_enabled: None,
     };
     let output = format_report_from_report(&report);
     assert!(!output.contains("LLM Deep Analysis"));
@@ -305,9 +317,10 @@ fn test_format_trace_insights_only_signals() {
     signals.insert("retry".to_string(), 3);
     let stats = TraceStats {
         total_traces: 0,
+        traces_with_rounds: 0,
         avg_rounds: 0.0,
+        avg_tool_calls_per_round: 0.0,
         avg_duration_ms: 0,
-        efficiency_score: 0.0,
         tool_chain_patterns: vec![],
         retry_patterns: vec![],
         signal_summary: signals,
@@ -315,6 +328,11 @@ fn test_format_trace_insights_only_signals() {
     let output = format_trace_insights(&stats);
     assert!(output.contains("## Trace Insights"));
     assert!(output.contains("retry"));
+    // 轮数数据不足分支（traces_with_rounds == 0，2026-11-14 缺陷整改
+    // 批次）：诚实注记替代 avg 行，avg / per-round 数字不得渲染。
+    assert!(output.contains("Round data insufficient"));
+    assert!(!output.contains("Average rounds"));
+    assert!(!output.contains("Average tool calls per round"));
 }
 
 #[test]
@@ -421,14 +439,16 @@ fn test_format_report_from_report_with_trace() {
         llm_insights: None,
         trace_stats: Some(TraceStats {
             total_traces: 5,
+            traces_with_rounds: 5,
             avg_rounds: 2.0,
+            avg_tool_calls_per_round: 3.0,
             avg_duration_ms: 300,
-            efficiency_score: 0.5,
             tool_chain_patterns: vec![],
             retry_patterns: vec![],
             signal_summary: HashMap::new(),
         }),
         learning_cycle: None,
+        learning_enabled: Some(true),
     };
     let output = format_report_from_report(&report);
     assert!(output.contains("Trace Insights"));
@@ -452,6 +472,7 @@ fn test_format_report_from_report_with_learning_cycle() {
             actions_taken: 3,
             status: nemesis_types::forge::CycleStatus::Completed,
         }),
+        learning_enabled: Some(false),
     };
     let output = format_report_from_report(&report);
     assert!(output.contains("Learning Cycle"));

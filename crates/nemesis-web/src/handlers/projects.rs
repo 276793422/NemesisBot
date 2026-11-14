@@ -190,38 +190,10 @@ pub(crate) fn resolve_open_target(
     Ok(path)
 }
 
-/// 用系统文件管理器打开目录（Windows=explorer / macOS=open / Linux=
-/// xdg-open）。spawn 后不等待——文件管理器的生命周期不归网关管；参数经
-/// `Command::arg` 直传不经 shell，路径含空格/特殊字符安全。
-/// 系统文件管理器打开目录（Windows explorer / macOS open / Linux
-/// xdg-open；CREATE_NO_WINDOW spawn 不等待）。pub(crate)：board 模块的
-/// `project.open_dir`（看板项目档案）同源复用，不复制第二份。
-pub(crate) fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
-    let spawn = || -> std::io::Result<std::process::Child> {
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW：explorer 是 GUI 程序本无控制台，旗标只防
-            // 意外父控台窗口（同 Windows 后台进程纪律：绝不弹新窗口）。
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::process::Command::new("explorer")
-                .arg(path)
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open").arg(path).spawn()
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            std::process::Command::new("xdg-open").arg(path).spawn()
-        }
-    };
-    spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开目录失败: {e}"))
-}
+// 用系统文件管理器打开目录的动作已收编到 [`crate::handlers::shell_open`]
+// （单一归宿：projects / skills / sandbox / board / system / fs 全部消费方
+// 同源；Windows 臂 = explorer spawn + AttachThreadInput 激活阶梯前台看门
+// ——后台进程 spawn explorer 开窗落后台的根修，2026-11-14）。
 
 pub struct ProjectsHandler;
 
@@ -286,7 +258,7 @@ impl ModuleHandler for ProjectsHandler {
                 let data = data.ok_or("missing data")?;
                 let project_id = crate::handlers::get_str(&data, "project_id")?;
                 let path = resolve_open_target(bridge.as_ref(), &project_id)?;
-                open_in_file_manager(&path)?;
+                crate::handlers::shell_open::open_dir(&path)?;
                 Ok(Some(
                     serde_json::json!({ "opened": path.to_string_lossy() }),
                 ))
@@ -298,7 +270,7 @@ impl ModuleHandler for ProjectsHandler {
 
 // AGT 覆盖率批次：ProjectsBridge 两个默认方法体（display_label
 // pid 兜底 + reload_provider_all no-op）——既有 MockBridge 覆写了 display_label，
-// 默认体从未执行；本批用不覆写的最小桩直调。豁免（open_in_file_manager 弹窗
+// 默认体从未执行；本批用不覆写的最小桩直调。豁免（open_dir 弹窗
 // 纪律）见 agt_tests 头注。
 #[cfg(test)]
 mod agt_tests;

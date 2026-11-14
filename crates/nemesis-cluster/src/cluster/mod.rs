@@ -243,7 +243,7 @@ pub struct Cluster {
     /// （送达重试/B 端重发/恢复轮询重放）会让 Cluster 层再次看到 ok=true，
     /// 无去重则同一任务双计、成功率失真。每任务只计首次 settle。
     /// Arc 包裹：同 route_stats，构造期路由钩子闭包捕获。
-    route_recorded: Arc<Mutex<std::collections::HashSet<String>>>,
+    route_recorded: Arc<Mutex<crate::cluster::tasks::RouteRecordedSet>>,
 }
 
 /// 单个对端节点的路由统计（负载感知路由最小版数据面）。胜负与耗时均由
@@ -358,7 +358,9 @@ impl Cluster {
             bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             route_stats: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            route_recorded: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            route_recorded: Arc::new(Mutex::new(
+                crate::cluster::tasks::RouteRecordedSet::default(),
+            )),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
@@ -575,7 +577,9 @@ impl Cluster {
             bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             route_stats: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            route_recorded: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            route_recorded: Arc::new(Mutex::new(
+                crate::cluster::tasks::RouteRecordedSet::default(),
+            )),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
@@ -988,8 +992,12 @@ impl Cluster {
         // 出站：RPC client dial 分派按 `iroh:` 前缀走桥拨号（插件 loopback
         // 交接；测试可注入 LocalDialer 同 trait）。：包一层 TrustGateDialer
         // 吊销 veto（簿缺席 = 未启用透传字节不变；revoked 诚实 Err，调用方
-        // ⛔ 重试语义照常）。
+        // ⛔ 重试语义照常）。会话池心跳间隔自 config.cluster.json
+        // `roaming_heartbeat_interval_secs`（默认 30s；0=关——长连接保活
+        // 与断线重连见 rpc::roaming_pool）。
         if let Some(client) = self.rpc_client.lock().clone() {
+            let app_cfg = crate::config_loader::load_app_config(&self.workspace);
+            client.set_roaming_heartbeat_interval(app_cfg.roaming_heartbeat_interval_secs);
             client.set_roaming_dialer(Arc::new(crate::roaming::plugin_bridge::TrustGateDialer {
                 workspace: self.workspace.clone(),
                 inner: crate::roaming::plugin_bridge::BridgeDialer,

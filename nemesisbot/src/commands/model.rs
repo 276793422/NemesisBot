@@ -950,6 +950,13 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 .ok_or_else(|| {
                     anyhow::anyhow!("Invalid size '{}'. Examples: 30B, 9b, 70, 120B", size)
                 })?;
+            // BUG-20261114-055：0 非法（与 Dashboard 同字段写入面
+            // models.rs attribute 编辑器 "must be > 0" 同规则）——写 0 会被
+            // auto 检测钉死 Mini（0..=39 桶，13 工具）。清除尺寸语义走
+            // 显式 `model set-tier`，不借 0。
+            if size_b == 0 {
+                anyhow::bail!("Invalid size '0': model_size_b must be > 0.");
+            }
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let resolved = nemesis_types::capability::tier_from_size_b(size_b);

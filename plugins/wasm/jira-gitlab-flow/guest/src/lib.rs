@@ -213,20 +213,43 @@ fn project_path(v: &Value) -> Result<String, String> {
 }
 
 /// JQL 检索（search 包裹对象 → issues 数组直出）。
+/// R9 复评整改：fields 取回面带 description——模板 body_field 物化坐标
+/// `$.fields.description` 此前从未被取回（fields 只有 key,summary,status），
+/// 无正文的 issue 与「字段未取回」不可区分（物化正文恒空）。
+/// R10 复评整改：startAt 递进翻页——maxResults 受服务端上限钳制（Jira
+/// 常见上限远小于调用方请求值），旧单发会把超过单页的条目静默截断。
+/// 翻到取尽（累计 ≥ total）、补足请求量（≥ max）或页预算（32 页）止；
+/// 首页响应缺 total 时按页预算兜底（不猜服务端上限）。
 fn jira_search(jql: &str, max: u32) -> Result<Vec<Value>, String> {
-    let reply = jira_request(
-        "GET",
-        &format!(
-            "/rest/api/2/search?jql={}&maxResults={max}&fields=key,summary,status",
-            urlencode(jql)
-        ),
-        None,
-    )?;
-    Ok(reply
-        .get("issues")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default())
+    let max = max.max(1) as usize;
+    let mut all: Vec<Value> = Vec::new();
+    let mut total = usize::MAX;
+    let mut start_at = 0usize;
+    for _page in 0..32 {
+        let reply = jira_request(
+            "GET",
+            &format!(
+                "/rest/api/2/search?jql={}&startAt={start_at}&maxResults={max}&fields=key,summary,status,description",
+                urlencode(jql)
+            ),
+            None,
+        )?;
+        if let Some(t) = reply.get("total").and_then(Value::as_u64) {
+            total = t as usize;
+        }
+        let page = reply
+            .get("issues")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let got = page.len();
+        all.extend(page);
+        if got == 0 || all.len() >= total || all.len() >= max {
+            break;
+        }
+        start_at += got;
+    }
+    Ok(all)
 }
 
 /// Jira issue 回帖（POST /issue/{key}/comment，body `{"body": <文本>}`）。

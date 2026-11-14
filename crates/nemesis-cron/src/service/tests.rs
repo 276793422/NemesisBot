@@ -3367,6 +3367,52 @@ fn add_job_internal_still_allows_legacy_dead_schedule() {
 }
 
 #[test]
+fn add_job_ext_gate_and_write_share_one_clock_read_at_kind() {
+    // BUG-20261114-056 回归锁：死排程闸与内部注册必须共用同一时钟读。
+    // 修复前形态：闸在 add_job_ext 用 now₁ 判定，add_job_internal 用
+    // 第二次时钟读 now₂ 重算 next_run——at 类单发的 at_ms 落在
+    // (now₁, now₂] 之间时，闸放行（at_ms > now₁）而写入得 None
+    // （at_ms <= now₂），产出 enabled + next_run=None 静默僵尸（恰是
+    // 死排程闸存在要防的状态）。测试用 add_gate_delay_ms 钩子在闸通过
+    // 后停顿 60ms、at_ms 只提前 5ms，把过期点确定性挤进闸-写间隙：
+    // 修复前内部重算必得 None（红）；修复后全漏斗单时钟读（闸与写入
+    // 共用 now₁，同一纯函数同一输入 ⇒ 结果恒等），next_run 恒
+    // Some(at_ms)（绿）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let at_ms = chrono::Local::now().timestamp_millis() + 5;
+    let schedule = CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(at_ms),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    svc.add_gate_delay_ms
+        .store(60, std::sync::atomic::Ordering::SeqCst);
+    let job = svc
+        .add_job_ext(
+            "gate-write-race",
+            schedule,
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(job.enabled);
+    assert_eq!(
+        job.state.next_run_at_ms,
+        Some(at_ms),
+        "闸-写共用同一时钟读：at_ms 在闸判定时未过期 ⇒ 写入必须同判定 Some(at_ms)，绝不产出静默僵尸"
+    );
+}
+
+#[test]
 fn add_job_ext_rejects_empty_message_enabled_loud() {
     // 空 message 闸（死排程闸同族不变量）——enabled 作
     // 业 message 空白 = 每次触发都落 on_job 的 "No message to deliver"
@@ -4844,6 +4890,96 @@ fn test_execute_job_detached_does_not_block_caller() {
     loop {
         let done = svc
             .get_job(&job.id)
+            .map(|j| j.state.last_status.as_deref() == Some("executed"))
+            .unwrap_or(false);
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached execution did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+// BUG-20261114-048：on_job 锁持穿 handler 执行期 = **刻意串行语义**（既有
+// 拍板「手动/计划执行串行是意图」，见 R955 O1 / R1227 #2 / R1265 审计台账
+// 与 BUG-20261114-048 修复文档裁决链）。本测试钉住该语义：detached 手动
+// 触发与同步手动触发的 handler 体不得并发执行——若未来把 on_job 的
+// Box<dyn Fn> 改 Arc 锁内 clone 锁外调用（并发化），本测试红，必须先推翻
+// 既有拍板再动（-033 注释「三层阻塞全部解除」的 ③ 误述曾连续误导审计轮）。
+#[test]
+fn test_bug_20261114_048_on_job_handler_bodies_never_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let mk_job = |name: &str| {
+        svc.add_job(
+            name,
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+    };
+    let job_a = mk_job("ser_a").unwrap();
+    let job_b = mk_job("ser_b").unwrap();
+
+    // handler 记录自身 [start, end] 区间。400ms 睡眠远大于线程 spawn 抖动
+    //（ms 级）——锁若被绕开，两区间几乎必然重叠，断言裕量 100×。
+    let spans = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
+        std::time::Instant,
+        std::time::Instant,
+    )>::new()));
+    let spans_for_handler = std::sync::Arc::clone(&spans);
+    svc.set_on_job(move |_job| {
+        let start = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let end = std::time::Instant::now();
+        spans_for_handler.lock().unwrap().push((start, end));
+        Ok("ok".to_string())
+    });
+
+    // detached（独立线程）+ 同步（调用线程）先后触发两个 job——
+    // 串行语义下第二个 handler 必须等第一个完成后才开始。
+    svc.execute_job_detached(&job_a.id).unwrap();
+    svc.execute_job(&job_b.id).unwrap();
+
+    // 等 detached 侧收口（同步侧返回时其区间已在表中；共 2 条为齐）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while spans.lock().unwrap().len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "both handler invocations did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    // 串行不变量：按 start 排序后第二段 start >= 第一段 end（零重叠）。
+    let mut ivals = spans.lock().unwrap().clone();
+    ivals.sort_by_key(|(s, _)| *s);
+    assert!(
+        ivals[1].0 >= ivals[0].1,
+        "on_job handler 体必须串行（既有拍板语义，BUG-20261114-048 钉）：\
+         {:?} 与 {:?} 重叠",
+        ivals[0],
+        ivals[1]
+    );
+
+    // 等 detached 侧状态写回收口再退出（tempdir drop 后线程仍写盘 =
+    // save 失败噪声，同 test_execute_job_detached_does_not_block_caller 纪律）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let done = svc
+            .get_job(&job_a.id)
             .map(|j| j.state.last_status.as_deref() == Some("executed"))
             .unwrap_or(false);
         if done {

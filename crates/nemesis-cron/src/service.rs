@@ -208,6 +208,10 @@ pub struct CronService {
     /// 窗口， 红证）。
     #[cfg(test)]
     persist_delay_ms: std::sync::atomic::AtomicU64,
+    /// 测试钩子（仅 test 构建）：add_job_ext 死排程闸通过后、内部注册前
+    /// 一次性停顿毫秒数——制造闸-写双时钟读窗口（BUG-20261114-056 红证）。
+    #[cfg(test)]
+    add_gate_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 /// （加固）：job 暂停句柄——供
@@ -324,6 +328,8 @@ impl CronService {
             persist_fail_next: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             persist_delay_ms: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            add_gate_delay_ms: std::sync::atomic::AtomicU64::new(0),
         };
         if let Err(e) = svc.load_store() {
             warn!("[Cron] Failed to load store on init: {}", e);
@@ -431,8 +437,9 @@ impl CronService {
                         serde_json::json!({ "trigger": "schedule" }),
                     );
 
-                    // Call on_job handler (outside lock)——panic 隔离见
-                    // invoke_handler_catch_panic。
+                    // Call on_job handler (outside store lock)——panic 隔离见
+                    // invoke_handler_catch_panic。（on_job 槽位锁持穿 handler
+                    // 执行期是刻意串行语义，BUG-20261114-048 诚实注记。）
                     let handler_result = {
                         let on_job = on_job.lock();
                         invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
@@ -618,6 +625,19 @@ impl CronService {
         max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
+        // BUG-20261114-056：死排程闸检查与内部注册写入此前各读一次时钟
+        // （本函数 compute_next_run(now₁) → add_job_internal 内
+        // compute_next_run(now₂)）——at 类单发的 at_ms 落在两读之间时
+        // （调度延迟 > at_ms 距 now₁ 的余量即触发，测试钩子可确定性放大）：
+        // 闸放行（at_ms > now₁）、写入重算得 None（at_ms <= now₂）→
+        // enabled + next_run=None 静默僵尸——恰是死排程闸存在要防的状态。
+        // 修复 = 全漏斗单时钟读：now_ms 在此取一次，闸与内部注册共用
+        // （同一纯函数同一输入 ⇒ 结果恒等，窗口结构性消除）。对照：
+        // update/patch/toggle/enable 四路 gate 与 write 本就共用同一
+        // now_ms（各自函数顶部单读），add 是唯一分体读成员。内部旁路
+        // （add_job_internal 直调）语义不变——死排程闸只设在用户漏斗
+        // （tests::add_job_internal_still_allows_legacy_dead_schedule 钉）。
+        let now_ms = Local::now().timestamp_millis();
         if let Some(prefix) = reserved_prefix_hit(name) {
             return Err(format!(
                 "cron job 名字以保留前缀 {prefix:?} 开头（系统内部作业命名空间），\
@@ -629,7 +649,7 @@ impl CronService {
         // 表达式 / 未知 kind）＝ 永远不会 fire 的静默僵尸任务，loud 拒绝
         // 而非假装已排程。disabled 作业放行（语义：不排程不触发，
         // enable_job 重算时才落 next_run）。
-        if enabled && compute_next_run(&schedule, Local::now().timestamp_millis()).is_none() {
+        if enabled && compute_next_run(&schedule, now_ms).is_none() {
             return Err(format!(
                 "调度永远不会有下一次触发，拒绝创建死排程任务: {name:?} \
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
@@ -648,7 +668,18 @@ impl CronService {
                  （启用的任务每次触发都不会投递任何内容；请给出消息文本，或先创建为停用）"
             ));
         }
-        self.add_job_internal(
+        // 红证钩子：闸全部通过后、写入前停顿（一次性消费）——回归锁用
+        // 它把 at_ms 过期点挤进（修复前的）闸-写间隙，见回归锁测试。
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering;
+            let d = self.add_gate_delay_ms.swap(0, Ordering::SeqCst);
+            if d > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(d));
+            }
+        }
+        self.add_job_internal_at(
+            now_ms,
             name,
             schedule,
             message,
@@ -676,12 +707,42 @@ impl CronService {
         max_rounds: Option<u32>,
         enabled: bool,
     ) -> Result<CronJob, String> {
+        let now_ms = Local::now().timestamp_millis();
+        self.add_job_internal_at(
+            now_ms,
+            name,
+            schedule,
+            message,
+            deliver,
+            channel,
+            to,
+            session_key,
+            max_rounds,
+            enabled,
+        )
+    }
+
+    /// [`Self::add_job_internal`] 的单时钟读核心（[`Self::add_job_ext`]
+    /// 漏斗以闸侧同一 `now_ms` 调入，见 BUG-20261114-056 注）。私有——
+    /// 公开面只有 `add_job` / `add_job_ext` / `add_job_internal` 三个入口。
+    fn add_job_internal_at(
+        &self,
+        now_ms: i64,
+        name: &str,
+        schedule: CronSchedule,
+        message: &str,
+        deliver: bool,
+        channel: Option<&str>,
+        to: Option<&str>,
+        session_key: Option<&str>,
+        max_rounds: Option<u32>,
+        enabled: bool,
+    ) -> Result<CronJob, String> {
         let cron_expr = schedule.expr.as_deref().unwrap_or(schedule.kind.as_str());
         info!(
             "[Cron] Job added: name={}, schedule_kind={}, cron={}, enabled={}",
             name, schedule.kind, cron_expr, enabled
         );
-        let now_ms = Local::now().timestamp_millis();
         let delete_after_run = schedule.kind == "at";
         let job = CronJob {
             id: generate_id(),
@@ -1211,9 +1272,20 @@ impl CronService {
     /// （handle_cmd 是 async 上下文，同步直跑阻塞 reactor，logs.rs 的
     /// spawn_blocking 纪律同款漏网）；② 调用方 `svc.lock()` 外层锁全程被
     /// 持有 → dashboard 全部 cron 操作（list/add/update/toggle/delete）
-    /// 冻结到 turn 完成；③ on_job 锁被持有 → 到期计划触发排队延迟。
-    /// 本方法快照段（毒态闸 + store 锁内拷 job）微秒级返回，handler 执行、
-    /// 状态写回、账本收口在独立线程完成——三层阻塞全部解除。
+    /// 冻结到 turn 完成。**这两层本方法解除**：快照段（毒态闸 + store 锁内
+    /// 拷 job）微秒级返回，handler 执行、状态写回、账本收口在独立线程完成。
+    /// ③（诚实注记，BUG-20261114-048）on_job 锁仍持穿 handler 执行期（见
+    /// [`run_job_execution`]）——手动触发与到期计划触发在 handler 体上串行
+    /// 是**刻意语义**（handler 槽位互斥 + 「手动/计划执行串行是意图」既有
+    /// 拍板，裁决链见 BUG-20261114-048 修复文档；R955 O1 / R1227 #2 /
+    /// R1265 审计台账三度确认），且延迟不丢失（fire loop due 已收集复位，
+    /// 恢复后补触发）。本方法解除的只有调用方侧的 ①②。旧注「三层阻塞
+    /// 全部解除」对 ③ 是误述——生产三臂（消息 publish / dreaming 后台
+    /// spawn / autopilot 建单派发）均快速返回，锁持穿时长远小于旧注宣称的
+    /// 「分钟级」，而该误述曾连续误导审计复核（R978 照抄；R1280 初判亦被
+    /// 诱导定罪后经既有拍板推翻）。勿据本注做锁语义改动——Box→Arc 锁内
+    /// clone 并发化会推翻串行拍板，回归锁
+    /// `test_bug_20261114_048_on_job_handler_bodies_never_overlap` 会红。
     /// 执行错误与 [`Self:execute_job`] 同径记账（last_status/账本/日志），
     /// 不经返回值上抛（调用方只消费「已接受」）。
     pub fn execute_job_detached(&self, job_id: &str) -> Result<(), String> {

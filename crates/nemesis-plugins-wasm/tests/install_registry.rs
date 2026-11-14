@@ -1956,7 +1956,7 @@ async fn shipped_jira_gitlab_flow_install_e2e() {
 
 // ---------------------------------------------------------------------------
 // shipped sc-bugfix 域插件 drift 锁（两件套照 jira-gitlab-flow
-// 样板——Jira 取数 + GitLab/Gerrit 双臂仓副本修复 + MR/change 发布全链；
+// 样板——Jira 取数 + GitLab 仓副本修复 + MR 发布全链；
 // 改动清单/哈希不同步时 CI 当场响）
 // ---------------------------------------------------------------------------
 
@@ -1980,27 +1980,19 @@ fn shipped_sc_bugfix_manifest_is_valid() {
     );
     assert_eq!(m.ui.pages.len(), 1);
     assert_eq!(m.ui.pages[0].route, "sc-bugfix");
-    // 自持面：egress 三基址（整条目 token，未配置源 = 条目丢弃；全部未配置
-    // = egress 整体关闭），四凭据走 x-secret（pat = GitLab PRIVATE-TOKEN
+    // 自持面：egress 两基址（整条目 token，未配置源 = 条目丢弃；全部未配置
+    // = egress 整体关闭），三凭据走 x-secret（pat = GitLab PRIVATE-TOKEN
     // 兼推送密码——publish 凭据推导钉死；jira_pat = Jira Bearer；
-    // jira_password = Jira Basic；gerrit_http_pass = Gerrit HTTP Basic）；
-    // 自托管三实例常驻企业内网 → allow-private 是产品语义（allowlist 仍钉
-    // base_url 精确值）。
+    // jira_password = Jira Basic）；自托管实例常驻企业内网 → allow-private
+    // 是产品语义（allowlist 仍钉 base_url 精确值）。
     assert_eq!(
         m.permissions.egress,
-        [
-            "{{config.jira_base_url}}",
-            "{{config.gitlab_base_url}}",
-            "{{config.gerrit_base_url}}"
-        ]
+        ["{{config.jira_base_url}}", "{{config.gitlab_base_url}}"]
     );
     assert!(m.permissions.allow_private, "内网自托管实例是真实靶");
-    assert_eq!(
-        m.permissions.x_secret,
-        ["pat", "jira_pat", "jira_password", "gerrit_http_pass"]
-    );
-    // 单模板双臂九步：取→仓副本（gitlab/gerrit 按 code_host 裁剪）→落→
-    // 修复循环（唯一人工闸）→验收→发布（双臂，自动）→报告。
+    assert_eq!(m.permissions.x_secret, ["pat", "jira_pat", "jira_password"]);
+    // 单模板七步：取→仓副本→落→修复循环（唯一人工闸）→验收→发布（自动）→
+    // 报告。
     assert_eq!(m.flow.templates.len(), 1, "单模板");
     let t = &m.flow.templates[0];
     assert_eq!(t.id, "sc-bugfix-pipeline");
@@ -2021,62 +2013,44 @@ fn shipped_sc_bugfix_manifest_is_valid() {
         [
             "plugin:sc-bugfix:fetch",
             "repo_sync",
-            "repo_sync",
             "board_land",
             "agent_fixloop",
             "check_regress",
             "publish",
-            "publish",
             "report"
         ]
     );
-    // 双臂 when：sync_gitlab/sync_gerrit 与 publish_gitlab/publish_gerrit
-    // 按 code_host 装载期裁剪（假臂 = Skipped 非失败）。
+    // when 防线：code_host 只认 gitlab（guest save_settings 值域校验）；
+    // 清单被手改成其他值时步 = Skipped 不误同步（防御性 when 保留）。
     assert_eq!(by_id("sync-gitlab").when, "{{config.code_host}} == gitlab");
-    assert_eq!(by_id("sync-gerrit").when, "{{config.code_host}} == gerrit");
     assert_eq!(
         by_id("publish-gitlab").when,
         "{{config.code_host}} == gitlab"
-    );
-    assert_eq!(
-        by_id("publish-gerrit").when,
-        "{{config.code_host}} == gerrit"
     );
     // 唯一人工闸 = fixloop；publish 无 gate；sync 失败停车（没法修复），
     // publish 失败缺口记账不停车。
     assert_eq!(by_id("fixloop").gate, "manual", "fixloop = 唯一人工闸");
     assert_eq!(by_id("fixloop").on_fail, "park_human");
     assert_eq!(by_id("sync-gitlab").on_fail, "park_human");
-    assert_eq!(by_id("sync-gerrit").on_fail, "park_human");
     assert!(
-        by_id("publish-gitlab").gate.is_empty() && by_id("publish-gerrit").gate.is_empty(),
+        by_id("publish-gitlab").gate.is_empty(),
         "publish 自动不停（无 gate）"
     );
     assert_eq!(by_id("publish-gitlab").on_fail, "continue");
-    assert_eq!(by_id("publish-gerrit").on_fail, "continue");
-    // repo_sync 双臂声明：project/url/cred_secret/cred_user（凭据各臂独立，
-    // 与 publish 同源别名）。
-    for (id, secret, user_key) in [
-        ("sync-gitlab", "plugin/sc-bugfix/pat", "gitlab_owner"),
-        (
-            "sync-gerrit",
-            "plugin/sc-bugfix/gerrit_http_pass",
-            "gerrit_username",
-        ),
-    ] {
-        let s = by_id(id);
-        assert_eq!(
-            s.args.get("cred_secret").map(String::as_str),
-            Some(secret),
-            "{id} 仓副本凭据别名"
-        );
-        assert!(
-            s.args
-                .get("cred_user")
-                .is_some_and(|u| u.contains(&format!("{{{{config.{user_key}}}}}"))),
-            "{id} cred_user 必含 {user_key} token（GitLab HTTPS+PAT 任意非空用户名；Gerrit HTTP Basic 真用户名）"
-        );
-    }
+    // repo_sync 声明：project/url/cred_secret/cred_user（凭据与 publish
+    // 同源别名）。
+    let s = by_id("sync-gitlab");
+    assert_eq!(
+        s.args.get("cred_secret").map(String::as_str),
+        Some("plugin/sc-bugfix/pat"),
+        "仓副本凭据别名"
+    );
+    assert!(
+        s.args
+            .get("cred_user")
+            .is_some_and(|u| u.contains("{{config.gitlab_owner}}")),
+        "cred_user 必含 gitlab_owner token（GitLab HTTPS+PAT 任意非空用户名）"
+    );
     // publish_gitlab 协议声明（GitLab MR 顶层字段 iid/web_url/source_branch）。
     let pg = by_id("publish-gitlab");
     assert_eq!(
@@ -2095,45 +2069,6 @@ fn shipped_sc_bugfix_manifest_is_valid() {
     assert_eq!(
         pg.args.get("reconcile_match").map(String::as_str),
         Some("$.source_branch == {{branch}}")
-    );
-    // publish_gerrit 协议声明：refs/for/ 推送（宿主 Gerrit 臂触发）+
-    // change:<Change-Id> query-as-create + $.change_id 对账匹配 + Change-Id
-    // 页脚（宿主 derive_change_id 确定性派生，重试 = 同 change 新 patchset）。
-    let pr = by_id("publish-gerrit");
-    assert!(
-        pr.args
-            .get("push_ref")
-            .is_some_and(|r| r.starts_with("refs/for/")),
-        "Gerrit 臂必须推 refs/for/（宿主 publish Gerrit 臂触发形态）"
-    );
-    assert_eq!(
-        pr.args.get("create_op").map(String::as_str),
-        Some("plugin:sc-bugfix:change_list")
-    );
-    assert_eq!(
-        pr.args.get("reconcile_op").map(String::as_str),
-        Some("plugin:sc-bugfix:change_list")
-    );
-    assert_eq!(
-        pr.args.get("result_ref").map(String::as_str),
-        Some("$.number")
-    );
-    assert_eq!(
-        pr.args.get("result_url").map(String::as_str),
-        Some("$.web_url")
-    );
-    assert_eq!(
-        pr.args.get("reconcile_match").map(String::as_str),
-        Some("$.change_id == {{change_id}}")
-    );
-    let commit_msg = pr
-        .args
-        .get("commit_message")
-        .map(String::as_str)
-        .unwrap_or_default();
-    assert!(
-        commit_msg.contains("Change-Id: {{change_id}}"),
-        "commit_message 必带 Change-Id 页脚模板（宿主缺页脚时自动补，显式声明免歧义）"
     );
     // land 步六阶段契约前导（body_preamble → 宿主 board_land 注入 issue
     // description 头部；worker 读单即读纪律）。静态纪律文本：六阶段词 +
@@ -2166,15 +2101,10 @@ fn shipped_sc_bugfix_manifest_is_valid() {
         !t.on_transition.parse_origin_id.is_empty(),
         "parse-origin-id 兜旧单（C-2 声明面）"
     );
-    // config-schema：三 base_url 无缺省（防假缺省 URL——未配置时 guest 诚实
+    // config-schema：两 base_url 无缺省（防假缺省 URL——未配置时 guest 诚实
     // 报错）；jira_transition_name 无缺省（留空 = 只回帖不转状态，语义键）；
     // 其余带声明缺省；code_host/jira_auth_mode 缺省即合法值域。
-    for k in [
-        "jira_base_url",
-        "gitlab_base_url",
-        "gerrit_base_url",
-        "jira_transition_name",
-    ] {
+    for k in ["jira_base_url", "gitlab_base_url", "jira_transition_name"] {
         match m.config_schema.get(k).expect("schema 键必在") {
             ConfigSchemaEntry::Full { default, .. } => {
                 assert!(
@@ -2192,7 +2122,6 @@ fn shipped_sc_bugfix_manifest_is_valid() {
         "gitlab_owner",
         "gitlab_repo",
         "gitlab_target_branch",
-        "gerrit_target_branch",
         "board_project",
     ] {
         assert!(
@@ -2209,7 +2138,7 @@ fn shipped_sc_bugfix_manifest_is_valid() {
             _ => "",
         }),
         Some("gitlab"),
-        "code_host 缺省 = gitlab 臂"
+        "code_host 缺省 = gitlab（唯一合法值）"
     );
 }
 

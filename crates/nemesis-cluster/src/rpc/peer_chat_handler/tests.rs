@@ -2558,3 +2558,135 @@ async fn mandate_corrupt_book_fail_closed() {
     );
     assert!(tl.get_task("gate-corrupt-book-1").is_none(), "拒单不入队");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-024：B 端入口重复投递闸（防重复执行防线）
+// ---------------------------------------------------------------------------
+
+fn dup_payload() -> serde_json::Value {
+    serde_json::json!({
+        "content": "retry copy",
+        "type": "chat",
+        "task_id": "dup-1",
+    })
+}
+
+fn inflight_task() -> ClusterTask {
+    ClusterTask {
+        task_id: "dup-1".into(),
+        source: TaskSource {
+            node_id: "node-a".into(),
+            rpc_address: String::new(),
+            session_key: "cluster_rpc:node-a/chat-1".into(),
+        },
+        status: TaskStatus::Running,
+        content: "original".into(),
+        conversation: None,
+        waiting_for_task_id: None,
+        waiting_tool_call_id: None,
+        callback_result: None,
+        required_profession: None,
+        async_usage_stash: None,
+        mandate: None,
+        dispatch_generation: None,
+    }
+}
+
+#[tokio::test]
+async fn duplicate_inflight_task_id_rejected_without_side_effects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let wq = Arc::new(ClusterWorkQueue::new(64));
+    handler.set_cluster_queue(tl.clone(), wq.clone());
+    tl.create_task(inflight_task());
+
+    let ack = handler.handle(dup_payload(), None);
+    assert_eq!(ack.status, "error", "同 task_id 在途 = 拒绝");
+    assert!(
+        ack.error
+            .as_deref()
+            .unwrap_or("")
+            .contains("duplicate task_id"),
+        "拒绝文案应点明重复 task_id，got: {:?}",
+        ack.error
+    );
+    // 零副作用 1：在途条目未被静默覆盖。
+    let existing = tl.get_task("dup-1").expect("在途条目仍在");
+    assert_eq!(existing.content, "original", "条目未被重发内容覆盖");
+    assert_eq!(existing.status, TaskStatus::Running);
+    // 零副作用 2：队列未二次入队。
+    let drained = tokio::time::timeout(Duration::from_millis(100), wq.next()).await;
+    assert!(drained.is_err(), "拒绝路径不得向工作队列入队");
+}
+
+#[tokio::test]
+async fn duplicate_task_id_after_completion_accepted_fresh() {
+    // 终态条目已随 complete_task 移除 → 同 id 重发按新任务受理
+    //（闸只拦在途三态，宁可放行不可误伤合法重发）。
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = PeerChatHandler::new("node-b".into());
+    let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    handler.set_cluster_queue(tl.clone(), Arc::new(ClusterWorkQueue::new(64)));
+    tl.create_task(inflight_task());
+    tl.complete_task("dup-1");
+    assert!(tl.get_task("dup-1").is_none(), "终态条目已移除");
+
+    let ack = handler.handle(dup_payload(), None);
+    assert_eq!(ack.status, "accepted", "完成后同 id = 新任务，放行");
+    let fresh = tl.get_task("dup-1").expect("新任务入册");
+    assert_eq!(fresh.content, "retry copy");
+    assert_eq!(fresh.status, TaskStatus::Pending);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_duplicate_intake_exactly_one_accepted() {
+    // BUG-20261114-024 并发投递窗口补强：server 每帧 tokio::spawn，两帧
+    // 同 task_id 并发处理时顺序闸（4.7）可能双双通过——原子
+    // check-and-create 必须保证恰好一个受理、一个拒绝、队列恰好一条。
+    let tmp = tempfile::tempdir().unwrap();
+    let wq = Arc::new(ClusterWorkQueue::new(64));
+    let handler = Arc::new({
+        let mut h = PeerChatHandler::new("node-b".into());
+        let tl = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+        h.set_cluster_queue(tl, wq.clone());
+        h
+    });
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut joins = Vec::new();
+    for _ in 0..2 {
+        let handler = handler.clone();
+        let barrier = barrier.clone();
+        joins.push(tokio::task::spawn_blocking(move || {
+            barrier.wait();
+            handler.handle(dup_payload(), None)
+        }));
+    }
+    let mut accepted = 0;
+    let mut rejected = 0;
+    for j in joins {
+        let ack = j.await.expect("handler 任务不 panic");
+        if ack.status == "accepted" {
+            accepted += 1;
+        } else {
+            assert!(
+                ack.error
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("duplicate task_id"),
+                "拒绝方文案应点明 duplicate task_id，got: {:?}",
+                ack.error
+            );
+            rejected += 1;
+        }
+    }
+    assert_eq!(accepted, 1, "恰好一个受理，got accepted={accepted}");
+    assert_eq!(rejected, 1, "恰好一个拒绝，got rejected={rejected}");
+    // 队列恰好一条（双入队 = 双执行的直接前兆）。
+    let first = tokio::time::timeout(Duration::from_millis(1000), wq.next())
+        .await
+        .expect("队列应有一条入队");
+    assert!(first.is_some(), "受理方必须入队");
+    let second = tokio::time::timeout(Duration::from_millis(200), wq.next()).await;
+    assert!(second.is_err(), "不得二次入队（双执行前兆）");
+}

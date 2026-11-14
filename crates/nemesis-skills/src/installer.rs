@@ -441,9 +441,14 @@ impl SkillInstaller {
                 response.status()
             )));
         }
-        let body: serde_json::Value = response
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（commit 元数据 KB 量级）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse commit response: {}", e)))?;
         let sha = body["sha"].as_str().unwrap_or_default().to_string();
         if sha.is_empty() {
@@ -590,6 +595,7 @@ impl SkillInstaller {
             &commit,
             "", // 仓库根为技能根（空前缀匹配全部 blob）
             &staging.to_string_lossy(),
+            0,
             0,
         )
         .await

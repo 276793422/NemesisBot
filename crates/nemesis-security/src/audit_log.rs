@@ -133,33 +133,50 @@ impl AuditLogger {
         }
 
         // Write to file if enabled
-        if self.config.enabled
-            && let Some(ref mut file) = self.log_file
-        {
-            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
-            let log_line = format!(
-                "{} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
-                timestamp,
-                event_id,
-                decision,
-                operation,
-                user,
-                source,
-                sanitize_target(target),
-                danger_level,
-                sanitize_reason(reason),
-                policy_rule,
-            );
-            // 明文审计不允许静默丢行：写失败必须可见（横扫
-            // 角度 A）。句柄已打开时写失败多为磁盘满/IO 瞬时错误，后续行
-            // 继续 best-effort，但本次丢失必须留痕。
-            if let Err(e) = file.write_all(log_line.as_bytes()) {
+        if self.config.enabled {
+            // 跨日滚动（BUG-20261114-020）：模块契约是「daily log files」，
+            // 旧实现构造期开一次句柄后长驻不滚——网关跨午夜后所有审计行
+            // 继续落启动日文件，按日取证的文件名归档错位。写前比对当前
+            // 句柄日文件的日期与今天，不一致则滚动。
+            let today = Local::now().format("%Y-%m-%d").to_string();
+            if self.current_file_date().as_deref() != Some(today.as_str())
+                && let Err(e) = self.init_log_file()
+            {
+                // 滚动失败（多为磁盘满/权限瞬时态）：保留旧句柄
+                // best-effort 续写——行不丢（横扫角度 A：明文审计不
+                // 允许静默丢行），日文件纯度降级可观测，下个事件重试。
                 tracing::warn!(
                     target: "nemesis_security::audit_log",
-                    event_id = %event_id,
                     error = %e,
-                    "[AuditLog] 审计明文日志写入失败，本条决策记录丢失: {e}"
+                    "[AuditLog] 跨日滚动失败，本日继续写旧日文件（下个事件重试滚动）: {e}"
                 );
+            }
+            if let Some(ref mut file) = self.log_file {
+                let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+                let log_line = format!(
+                    "{} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
+                    timestamp,
+                    event_id,
+                    decision,
+                    operation,
+                    user,
+                    source,
+                    sanitize_target(target),
+                    danger_level,
+                    sanitize_reason(reason),
+                    policy_rule,
+                );
+                // 明文审计不允许静默丢行：写失败必须可见（横扫
+                // 角度 A）。句柄已打开时写失败多为磁盘满/IO 瞬时错误，后续行
+                // 继续 best-effort，但本次丢失必须留痕。
+                if let Err(e) = file.write_all(log_line.as_bytes()) {
+                    tracing::warn!(
+                        target: "nemesis_security::audit_log",
+                        event_id = %event_id,
+                        error = %e,
+                        "[AuditLog] 审计明文日志写入失败，本条决策记录丢失: {e}"
+                    );
+                }
             }
         }
     }
@@ -167,6 +184,18 @@ impl AuditLogger {
     /// Get the current log file path.
     pub fn log_file_path(&self) -> Option<&Path> {
         self.log_file_path.as_deref()
+    }
+
+    /// 当前句柄对应日文件的日期（stem 形如 `security_audit_YYYY-MM-DD`，
+    /// 日期单一真相源 = 路径本身，不另设状态字段防漂移）。
+    /// None = 无句柄/disabled/路径畸形（视作需滚动；init 失败时保守留旧句柄）。
+    fn current_file_date(&self) -> Option<String> {
+        self.log_file_path
+            .as_ref()?
+            .file_stem()?
+            .to_str()?
+            .strip_prefix("security_audit_")
+            .map(str::to_string)
     }
 
     /// Check if file logging is enabled.

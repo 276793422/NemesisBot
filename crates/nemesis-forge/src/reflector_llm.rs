@@ -132,11 +132,21 @@ pub fn build_full_analysis_prompt(
     if let Some(ts) = trace_stats {
         sb.push_str("\n## 会话级轨迹洞察\n");
         sb.push_str(&format!("- 会话总数：{}\n", ts.total_traces));
-        sb.push_str(&format!("- 平均每会话 LLM 轮数：{:.1}\n", ts.avg_rounds));
-        sb.push_str(&format!(
-            "- 效率得分：{:.2}（每轮工具步数）\n",
-            ts.efficiency_score
-        ));
+        if ts.traces_with_rounds < ts.total_traces {
+            sb.push_str(&format!(
+                "- 含轮次数据的轨迹：{}/{}（其余为旧轨迹，未发 llm_turn 事件）\n",
+                ts.traces_with_rounds, ts.total_traces
+            ));
+        }
+        if ts.traces_with_rounds > 0 {
+            sb.push_str(&format!("- 平均每会话 LLM 轮数：{:.1}\n", ts.avg_rounds));
+            sb.push_str(&format!(
+                "- 平均每轮工具调用数：{:.2}\n",
+                ts.avg_tool_calls_per_round
+            ));
+        } else {
+            sb.push_str("- 轮数数据不足（窗口内轨迹均无 llm_turn 事件）\n");
+        }
 
         if !ts.tool_chain_patterns.is_empty() {
             sb.push_str("\n### 高频工具链\n");
@@ -152,12 +162,12 @@ pub fn build_full_analysis_prompt(
         }
 
         if !ts.retry_patterns.is_empty() {
-            sb.push_str("\n### 重试模式\n");
+            sb.push_str("\n### 高频失败\n");
             for p in &ts.retry_patterns {
                 sb.push_str(&format!(
-                    "- {}: {} 次重试，成功率 {:.0}%\n",
+                    "- {}: {} 次失败步，整体成功率 {:.0}%\n",
                     p.tool_name,
-                    p.retry_count,
+                    p.error_count,
                     p.success_rate * 100.0
                 ));
             }

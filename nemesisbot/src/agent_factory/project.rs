@@ -37,6 +37,10 @@ pub fn build_project_agent_loop(
 /// 同源——spec 形态 loop 已接线 continuation manager（快照在本 loop 存取），
 /// 完成消息按 parent session_key 回灌（manager.rs 按归属路由回本 loop 的
 /// per-loop mpsc），不再全局短路进主 loop。Weak 捕获防环与主 spawn 同理。
+/// 专家面 v1 边界：项目 loop 无专家入口（SpawnTool 无名册 handle），第 11
+/// 参 `expert` 非空 = 诚实 Err，第 12 参 `prompt`（自拟提示词降级/ad-hoc，
+/// 2026-11-13）非空同语义拒绝——专家提示词锚定主 workspace 资源（experts
+/// 目录），项目执行根语义不匹配，硬造 parity 反而模糊边界。
 pub(super) fn inject_project_spawn_fn(
     loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
     spawn_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
@@ -71,7 +75,9 @@ pub(super) fn inject_project_spawn_fn(
               depth: usize,
               background: bool,
               role: &str,
-              parent_session_key: &str| {
+              parent_session_key: &str,
+              expert: &str,
+              prompt: &str| {
             let weak = weak.clone();
             let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
@@ -79,6 +85,11 @@ pub(super) fn inject_project_spawn_fn(
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
             let role_owned = role.to_string();
+            // 专家点名：项目 loop v1 无专家面——非空诚实拒绝（async 块内
+            // 判，错误文案走 SpawnFn Err 回灌模型自纠）。
+            let expert = expert.trim().to_string();
+            // 自拟提示词（同专家面拒绝语义；'static 边界先转 owned）。
+            let prompt = prompt.trim().to_string();
             // 子代理可见性：连接级 chat_id + 父会话键（同主 spawn）。
             let chat_id = chat_id.to_string();
             let parent_session_key = parent_session_key.to_string();
@@ -99,6 +110,21 @@ pub(super) fn inject_project_spawn_fn(
                 loop_kind: "project",
             };
             Box::pin(async move {
+                // 专家面 v1 边界：项目 loop 无专家入口——非空 expert 诚实
+                // 拒绝（专家提示词锚定主 workspace 资源，项目执行根语义
+                // 不匹配；错误文案回灌模型自纠）。自拟提示词（prompt，第
+                // 12 参）同属专家面（降级/ad-hoc 通道）——同语义拒绝。
+                if !expert.is_empty() {
+                    return Err(format!(
+                        "experts are only available on the main loop (requested '{expert}'); project sessions dispatch with the default sub-agent"
+                    ));
+                }
+                if !prompt.is_empty() {
+                    return Err(
+                        "ad-hoc prompt dispatch (`prompt`) is part of the expert surface, which is only available on the main loop; project sessions dispatch with the default sub-agent"
+                            .to_string(),
+                    );
+                }
                 // 档位 → 白名单（与主 spawn 同一映射点，防御纵深）。
                 let allowed_tools = match nemesis_agent::loop_tools::detached_tools_for_profile(
                     &info.tools_profile,

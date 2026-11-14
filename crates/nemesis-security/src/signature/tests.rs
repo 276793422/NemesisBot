@@ -1723,3 +1723,84 @@ fn test_hex_decode_rejects_non_ascii() {
     let err = hex_decode_vec("0中0").unwrap_err();
     assert_eq!(err, "non-ascii hex");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-033 回归锁：TrustStore refresh 的 merge 语义对跨进程
+// remove 不可见——CLI `plugin trust-remove`（独立进程）删盘后，常驻进程
+// （gateway 装配漏斗 / skills installer 持有的持久化 TrustStore）信任判定
+// 前 refresh→load 仍是 merge（只覆盖插入、不删除内存多余条目）：被删公钥
+// 永驻内存，其签名的插件装回按 trusted 放行；且常驻进程后续 add_key 的
+// 全量 save 把已删条目复活回盘。修复 = load 成功后以盘上清单为准替换
+// 内存 map（解析失败仍走「最后好状态」缓存降级，不受影响）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cross_process_remove_visible_after_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("trust.json");
+
+    let kp = generate_key_pair().unwrap();
+    let signing_key = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let public_key_b64 = export_public_key(&signing_key.verifying_key());
+
+    // 进程 A（trust 写入）：add + save（盘上有 pk）。
+    {
+        let store = TrustStore::new(Some(&path));
+        store.add_key(&public_key_b64, "author", TrustLevel::Verified);
+    }
+    // 常驻进程 B（gateway）：构造期 load，内存持有 pk。
+    let resident = TrustStore::new(Some(&path));
+    assert!(resident.is_trusted(&public_key_b64).1);
+
+    // 进程 C（CLI trust-remove）：整条删除 + save（盘上无 pk）。
+    {
+        let cli = TrustStore::new(Some(&path));
+        assert!(cli.remove_key_by_public_key(&public_key_b64));
+    }
+
+    // 常驻进程 B 下一次信任判定：refresh 读盘必须看见删除。
+    assert!(
+        !resident.is_trusted(&public_key_b64).1,
+        "跨进程 remove 后常驻进程 is_trusted 必须放否（refresh merge 语义看不见删除）"
+    );
+}
+
+#[test]
+fn test_cross_process_remove_not_resurrected_by_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("trust.json");
+
+    let kp = generate_key_pair().unwrap();
+    let key1 = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
+    let public_key_b64 = export_public_key(&key1.verifying_key());
+    let kp2 = generate_key_pair().unwrap();
+    let key2 = SigningKey::from_bytes(&hex_decode_32(&kp2.private_key).unwrap());
+    let public_key_b64_2 = export_public_key(&key2.verifying_key());
+    let kp3 = generate_key_pair().unwrap();
+    let key3 = SigningKey::from_bytes(&hex_decode_32(&kp3.private_key).unwrap());
+    let public_key_b64_3 = export_public_key(&key3.verifying_key());
+
+    // 进程 A：add 两个 key。
+    {
+        let store = TrustStore::new(Some(&path));
+        store.add_key(&public_key_b64, "author", TrustLevel::Verified);
+        store.add_key(&public_key_b64_2, "author2", TrustLevel::Verified);
+    }
+    // 常驻进程 B：内存视图含两个 key。
+    let resident = TrustStore::new(Some(&path));
+    // 进程 C：CLI remove 掉第一个。
+    {
+        let cli = TrustStore::new(Some(&path));
+        assert!(cli.remove_key_by_public_key(&public_key_b64));
+    }
+    // 常驻进程 B 添加第三个 key（全量 save）——不得把 C 删掉的条目复活。
+    resident.add_key(&public_key_b64_3, "author3", TrustLevel::Verified);
+
+    // 盘上真相回读：pk1 必须不在，pk2/pk3 在。
+    let after = TrustStore::new(Some(&path));
+    assert!(
+        after.get_key(&public_key_b64).is_none(),
+        "被 CLI 删除的条目不得被常驻进程的全量 save 复活"
+    );
+    assert_eq!(after.key_count(), 2);
+}

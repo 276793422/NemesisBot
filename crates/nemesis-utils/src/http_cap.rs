@@ -61,5 +61,44 @@ pub async fn read_body_capped(
     Ok(out)
 }
 
+/// 错误响应体有帽读取（BUG-20261113-164 单一真相源）。
+///
+/// 错误体只喂错误消息摘要（`from_status` 取 200 字符）与日志——全量读入
+/// 毫无收益，却让失控/恶意源的巨大错误体（GB 级调试转储、中转网关回显
+/// 请求体）在 `text()` 里灌满进程内存（reqwest 无默认体上限；600s 超时
+/// 在快管路上不约束体积）。帽取 MCP 先例同款 256KB
+///（`nemesis-mcp` http_transport `MAX_ERROR_BODY_READ_BYTES`）。
+///
+/// 语义与 [`read_body_capped` 的「超限即 hard error」]刻意不同：错误路径
+/// 状态码已定类，截断信息够用——**超帽截断加注记**（不是 Err），读中断
+/// 返回已积累前缀（调用方旧 `unwrap_or_default` 的「失败=空串」语义保留
+/// 为零积累下位形态，信息严格不减）。成功路径响应本体**不得**用本函数
+/// （图像 b64 / API JSON 是合法大载荷，须全量读）。
+pub async fn read_error_body(mut response: reqwest::Response) -> String {
+    const ERROR_BODY_READ_CAP: usize = 256 * 1024;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(c) => c,
+            // 读中断（连接断/超时）：返回已积累前缀，不伪装成完整错误体。
+            Err(_) => break,
+        };
+        let Some(chunk) = chunk else { break };
+        let room = ERROR_BODY_READ_CAP - bytes.len();
+        if chunk.len() >= room {
+            bytes.extend_from_slice(&chunk[..room]);
+            truncated = true;
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let mut s = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        s.push_str("\n…[error body truncated]");
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests;

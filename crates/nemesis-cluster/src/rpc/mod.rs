@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod peer_chat_handler;
+pub mod roaming_pool;
 pub mod server;
 
 pub use client::{LocalNetworkInterface, PeerResolver, RpcClient, RpcClientError};

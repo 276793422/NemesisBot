@@ -562,14 +562,17 @@ impl ModuleHandler for SandboxHandler {
                 ))
             }
             "open_box" => {
+                // 单一归宿（2026-11-14 收编）：host explorer 打开盒目录走
+                // shell_open（Windows 臂含前台看门——后台 spawn 开窗落后
+                // 台根修）。非 Windows 本命令诚实报错（盒是 Sandboxie
+                // Windows-only 概念）。
                 #[cfg(target_os = "windows")]
                 {
-                    std::process::Command::new("explorer")
-                        .arg(&paths.box_root)
-                        .spawn()
-                        .map_err(|e| format!("open explorer: {e}"))?;
+                    crate::handlers::shell_open::open_dir(&paths.box_root)?;
+                    Ok(Some(serde_json::json!({ "ok": true })))
                 }
-                Ok(Some(serde_json::json!({ "ok": true })))
+                #[cfg(not(target_os = "windows"))]
+                Err("open_box 仅限 Windows（Sandboxie 盒目录）".to_string())
             }
             // Open an explorer window INSIDE the box: Start.exe /box:NemesisBox explorer.exe.
             // Unlike open_box (host explorer viewing the box folder), this runs explorer as

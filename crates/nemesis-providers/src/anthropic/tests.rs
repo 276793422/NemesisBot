@@ -1313,6 +1313,111 @@ fn test_request_body_tool_result_content_stays_string() {
     assert_eq!(msg["content"][0]["content"], "工具输出");
 }
 
+// BUG-20261114-003 回归锁：并行工具批的 tool_result 必须收回同一条 user
+// 消息（官方并行工具合同——拆成多条连续 user 消息会「silently train
+// Claude to stop making parallel calls」）。assistant 多 tool_use → N 条
+// 连续 tool 消息 → 单条 user 多 tool_result 块（保 tool_use 顺序）；
+// 真 user 文本消息不并块（打破段后重新开条）。
+#[test]
+fn test_request_body_parallel_tool_results_merge_into_single_user_message() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let tc = |id: &str| ToolCall {
+        id: id.to_string(),
+        call_type: None,
+        function: None,
+        name: Some("web_fetch".to_string()),
+        arguments: Some(HashMap::from([(
+            "url".to_string(),
+            serde_json::json!("https://example.com"),
+        )])),
+    };
+    let tr = |id: &str, body: &str| Message {
+        role: "tool".to_string(),
+        content: MessageContent::Text(body.to_string()),
+        tool_calls: vec![],
+        tool_call_id: Some(id.to_string()),
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    };
+    let messages = vec![
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("抓两个页面".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: String::new().into(),
+            tool_calls: vec![tc("tc-1"), tc("tc-2")],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        tr("tc-1", "page A"),
+        tr("tc-2", "page B"),
+    ];
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let api_msgs = body["messages"].as_array().unwrap();
+    assert_eq!(api_msgs.len(), 3, "两工具结果必须并成一条 user 消息");
+    assert_eq!(api_msgs[2]["role"], "user");
+    let blocks = api_msgs[2]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["type"], "tool_result");
+    assert_eq!(blocks[0]["tool_use_id"], "tc-1");
+    assert_eq!(blocks[0]["content"], "page A");
+    assert_eq!(blocks[1]["type"], "tool_result");
+    assert_eq!(blocks[1]["tool_use_id"], "tc-2");
+    assert_eq!(blocks[1]["content"], "page B");
+}
+
+#[test]
+fn test_request_body_real_user_message_breaks_tool_result_merge() {
+    // 真 user 文本（无 tool_call_id）在两条工具结果之间：不得把文本并入
+    // tool_result 块，也不得把第二条工具结果并进文本消息。
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![
+        Message {
+            role: "tool".to_string(),
+            content: MessageContent::Text("result A".to_string()),
+            tool_calls: vec![],
+            tool_call_id: Some("tc-1".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("用户新输入".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: MessageContent::Text("result B".to_string()),
+            tool_calls: vec![],
+            tool_call_id: Some("tc-2".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let api_msgs = body["messages"].as_array().unwrap();
+    assert_eq!(api_msgs.len(), 3);
+    assert_eq!(api_msgs[0]["content"][0]["tool_use_id"], "tc-1");
+    assert_eq!(api_msgs[1]["content"], "用户新输入");
+    assert_eq!(api_msgs[2]["content"][0]["tool_use_id"], "tc-2");
+}
+
 // 2026-09-03 二次回归 F1 回归锁：非 user 位（system / assistant / tool_result）
 // 携带 Parts 时不得 raw 序列化产出非法 wire 块——文本视图（+诚实注记，D7 同族），
 // 全请求无 base64 泄漏；Text 形态保持原字节（既有快照测试覆盖）。
@@ -1380,23 +1485,16 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     assert!(asst["content"].is_string());
     assert!(asst["content"].as_str().unwrap().contains("1 张图片"));
 
-    // user/tool 两个 tool_result 位：content 字符串 + 注记
-    let tr1 = &body["messages"][2];
-    assert_eq!(tr1["content"][0]["type"], "tool_result");
-    assert!(
-        tr1["content"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("1 张图片")
-    );
-    let tr2 = &body["messages"][3];
-    assert_eq!(tr2["content"][0]["type"], "tool_result");
-    assert!(
-        tr2["content"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("1 张图片")
-    );
+    // user/tool 两个 tool_result 位：紧邻连续 → 并成**同一条** user 消息
+    //（BUG-20261114-003 并块语义），两个块各自 content 字符串 + 注记。
+    let tr = &body["messages"][2];
+    assert_eq!(tr["role"], "user");
+    let tr_blocks = tr["content"].as_array().unwrap();
+    assert_eq!(tr_blocks.len(), 2);
+    for b in tr_blocks {
+        assert_eq!(b["type"], "tool_result");
+        assert!(b["content"].as_str().unwrap().contains("1 张图片"));
+    }
 
     // 对照组：user 位 Parts 正常转 blocks（image block 仍在，证明降级只作用于非 user 位）
     let user = &body["messages"][0];

@@ -157,21 +157,23 @@ async fn post_for_text(
         })?;
 
     let status = resp.status();
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            let reason = if e.is_timeout() {
-                "超时"
-            } else {
-                "连接中断"
-            };
-            if status.is_success() {
+    // 双用拆分（BUG-20261113-164）：成功体（b64 图像，合法 MB 级载荷）全量
+    // 读；错误体只喂诊断文案——有帽读取（nemesis-utils::http_cap 共享单一
+    // 真相源），失控/恶意端点的巨大错误体不再灌满内存。
+    let text = if status.is_success() {
+        match resp.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                let reason = if e.is_timeout() {
+                    "超时"
+                } else {
+                    "连接中断"
+                };
                 return Err(format!("图像响应 body 读取失败（{reason}）: {e}"));
             }
-            return Err(format!(
-                "图像端点 HTTP {status}，body 读取失败（{reason}）: {e}"
-            ));
         }
+    } else {
+        nemesis_utils::http_cap::read_error_body(resp).await
     };
     Ok((status, text))
 }

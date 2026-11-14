@@ -36,7 +36,13 @@ pub struct FormatterSpec {
 /// 内置声明式表（常用工具的默认覆盖；扩展名小写）。
 fn builtin_spec(ext: &str) -> Option<FormatterSpec> {
     let (tool, args): (&str, &[&str]) = match ext {
-        "rs" => ("rustfmt", &["--edition", "2021", "{file}"]),
+        // (BUG-20261114-027) rustfmt edition 跟 2024：let-chains（`if let …
+        // && …`）只在 edition 2024+ 合法——默认表此前给 2021，rustfmt 对
+        // 含 let-chains 的文件 parse error 退非零，format-on_save 按「失败
+        // 静默」设计永远跳过它们（本仓库自身 edition=2024 且新代码大量
+        // 使用 let-chains，默认表在主场失灵）。2024 解析器是 2021 的超集
+        // （唯一倒挂是 `gen` 作标识符，极罕见），旧版代码照常格式化。
+        "rs" => ("rustfmt", &["--edition", "2024", "{file}"]),
         "go" => ("gofmt", &["-w", "{file}"]),
         "ts" | "tsx" | "js" | "jsx" | "vue" | "json" | "md" => ("prettier", &["--write", "{file}"]),
         "py" => ("black", &["-q", "{file}"]),

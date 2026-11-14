@@ -361,6 +361,10 @@ pub(super) fn build_shared_tool_config(
         // spawn 共享槽——factory 在 Arc<AgentLoop> 定型后注入
         // Weak<AgentLoop> 闭包（见 build_agent_loop 尾部 inject_spawn_fn）。
         spawn_slot: Some(spawn_slot.clone()),
+        // 专家子代理名册（2026-11-13）：SharedResources.experts 建档后
+        // 注入（SpawnTool list/预检消费）；None = 无专家面（list 诚实
+        // 空名册 / 点名诚实报错——集群 loop、测试构建缺省）。
+        experts: shared.experts.as_ref().map(|s| s.handle()),
         cluster_rpc: None, // Registered separately with call_fn
         mcp_tool_snapshot,
         workflow_engine: shared.workflow_engine.clone(),
@@ -468,12 +472,31 @@ pub(super) fn build_shared_tool_config(
 /// 先建 inbound 通道后起步 loop，回灌消息经 bridge 正常入站；agent 重启
 /// 窗口期发布（bridge 未挂）由 broadcast 无订阅者丢弃 + 启动期诚实丢失
 /// 注入兜底（见 adapters.rs）。
+///
+/// `experts`（专家子代理，2026-11-13）：Some = 第 11 参 `expert` 点名时
+/// 经 ExpertsHandle 解析（提示词整体替换主人格 + 可选模型覆盖）；None +
+/// 非空 expert = 诚实 Err（本 loop 无专家面）。专家预检（含模式策略/
+/// 降级分流）在 SpawnTool，执行面解析在此闭包——两条路径同一 handle
+/// 同源。
+/// 第 12 参 `prompt`（2026-11-13 自动降级第二跳）：非空 = 自拟提示词
+/// ad-hoc 派发（`agent_id=expert:ad-hoc`、model 空 = 主模型），与专家
+/// 派发同构同管线（无新旁路）；与 `expert` 互斥（SpawnTool 预检）。
+/// `reloader`：专家模型覆盖的 provider 解析器（factory 同源
+/// reload_provider；纯数据件，与 loop provider 重建器同构造）。
+/// 专家 model 别名解析失败：degrade 策略开 = **回落主模型照跑专家
+/// 提示词**（提示词是价值本体，引擎坏不停车）+ 结果尾部注记 + WARN；
+/// 策略关 = 现行为诚实 Err（派发语义不变形）。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn inject_spawn_fn(
     loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
     spawn_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
     bus: &Arc<nemesis_bus::MessageBus>,
     // 件2：SubagentStart/Stop 事件源（None = 无桥，不发事件——集群/裸构建）。
     cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
+    // 专家子代理（None = 本 loop 无专家面）。
+    experts: Option<nemesis_agent::loop_tools::ExpertsHandle>,
+    // 专家模型覆盖解析器。
+    reloader: std::sync::Arc<ModelProviderReloader>,
 ) {
     use std::sync::atomic::{AtomicU64, Ordering};
     // 后台任务 id 计数器（同毫秒并发 spawn 防撞）。
@@ -482,6 +505,8 @@ pub(super) fn inject_spawn_fn(
     loop_arc.set_spawn_slot(spawn_slot.clone());
     let weak = Arc::downgrade(loop_arc);
     let bus = bus.clone();
+    let experts = experts.clone();
+    let reloader = reloader.clone();
     let _ = spawn_slot.set(Arc::new(
         move |agent_id: &str,
               task: &str,
@@ -492,7 +517,9 @@ pub(super) fn inject_spawn_fn(
               depth: usize,
               background: bool,
               role: &str,
-              parent_session_key: &str| {
+              parent_session_key: &str,
+              expert: &str,
+              prompt: &str| {
             let weak = weak.clone();
             let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
@@ -504,15 +531,22 @@ pub(super) fn inject_spawn_fn(
             // 父会话房间）+ 父会话键（注册表台账 + 后台回灌路由信号）。
             let chat_id = chat_id.to_string();
             let parent_session_key = parent_session_key.to_string();
+            // 专家点名（"" = 默认子代理，旧路径字节不变）；克隆进 async 块。
+            let expert = expert.trim().to_string();
+            // 自拟提示词（"" = 非降级流；非空 = ad-hoc 派发，见上注）。
+            let prompt = prompt.trim().to_string();
             // 显式角色覆盖（"" = 自动 → 沿用档位推导；非空 = 已过
             // from_slug 校验的 slug，直接转角色）。解析在闭包内做（&str
             // 参数不可跨 'static 边界）。
             let explicit_role = nemesis_agent::prompt::SubagentRole::from_slug(role);
             // Fn 闭包不能把捕获 move 进 async 块——每次调用 clone 进去。
             let cc_bridge = cc_bridge.clone();
+            let experts = experts.clone();
+            let reloader = reloader.clone();
             // 件2：SubagentStart/Stop 的 payload 素材（两路径共用；后台路径
-            // 再 clone 进 spawn 任务）。
-            let info = nemesis_agent::cc_hooks::SubagentInfo {
+            // 再 clone 进 spawn 任务）。expert 模式下 agent_id 在解析后改写
+            // （mut：`expert:{slug}` 注册表可见性）。
+            let mut info = nemesis_agent::cc_hooks::SubagentInfo {
                 agent_id,
                 task,
                 depth,
@@ -529,6 +563,75 @@ pub(super) fn inject_spawn_fn(
                     Ok(a) => a,
                     Err(e) => return Err(e),
                 };
+                // 专家解析（2026-11-13）：非空 expert → ExpertsHandle 解析
+                //（停用/空提示词诚实拒绝，文案自带在册名单）。提示词整体
+                // 替换主人格 + 可选模型覆盖。SpawnTool 预检只验存在，这里
+                // 二次解析取产品（两读同源 ExpertsStore，无缓存无漂移）。
+                // 非空 prompt（expert 为空，互斥由 SpawnTool 预检保证）=
+                // 自拟提示词 ad-hoc 派发——ExpertDispatch 同构消费
+                //（agent_id=expert:ad-hoc、role=None、提示词整体替换、
+                // model 空 = 主模型），与专家派发同一管线零新旁路。
+                let expert_dispatch = if !expert.is_empty() {
+                    match &experts {
+                        Some(h) => Some((h.resolve)(&expert)?),
+                        None => {
+                            return Err(format!(
+                                "experts are not configured on this loop (requested '{expert}')"
+                            ))
+                        }
+                    }
+                } else if !prompt.is_empty() {
+                    Some(nemesis_agent::loop_tools::ExpertDispatch {
+                        slug: "ad-hoc".to_string(),
+                        name: "ad-hoc".to_string(),
+                        prompt: prompt.clone(),
+                        model: String::new(),
+                    })
+                } else {
+                    None
+                };
+                // 专家模型覆盖：非空 model = factory 同源 provider 解析
+                //（reload_provider：raw config resolve/create/fallback 链）。
+                // 解析失败分流（2026-11-13）：degrade 策略开 = 回落主模型
+                // 照跑专家提示词 + 尾注记（提示词是价值本体，引擎坏不停
+                // 车——长任务无人值守不因别名笔误停车）；策略关 = 现行为
+                // 诚实 Err（派发语义不变形）。
+                let (expert_model_swap, degrade_note) =
+                    match expert_dispatch.as_ref().map(|d| d.model.trim()) {
+                        Some(m) if !m.is_empty() => {
+                            match nemesis_agent::r#loop::ProviderReloader::reload_provider(
+                                reloader.as_ref(),
+                                m,
+                                None,
+                            ) {
+                                Ok(provider) => (Some((provider, m.to_string())), String::new()),
+                                Err(e) => {
+                                    let degrade = experts
+                                        .as_ref()
+                                        .map(|h| (h.policy)().degrade)
+                                        .unwrap_or(false);
+                                    if degrade {
+                                        tracing::warn!(
+                                            expert = %expert,
+                                            model = %m,
+                                            error = %e,
+                                            "[spawn] expert model alias failed to resolve; degrading to the main model (agents.experts.degrade=true)"
+                                        );
+                                        (None, format!("\n\n[Note: the expert's model '{m}' failed to load ({e}); this sub-agent ran with the default model instead.]"))
+                                    } else {
+                                        return Err(e);
+                                    }
+                                }
+                            }
+                        }
+                        _ => (None, String::new()),
+                    };
+                // 专家派发的注册表可见性：agent_id 改写 `expert:{slug}`
+                //（子代理面板台账一眼分清专家子代理与普通子代理；两条
+                // 路径的 SubagentBegin / 事件 payload 都从这里取值）。
+                if let Some(d) = &expert_dispatch {
+                    info.agent_id = format!("expert:{}", d.slug);
+                }
                 if !background {
                     let agent_loop = weak
                         .upgrade()
@@ -583,12 +686,25 @@ pub(super) fn inject_spawn_fn(
                                 // 写到子 instance，供其 dispatch 再触发深度检查。
                                 depth,
                                 // prompt-pack pro：readonly 档 → 侦察员角色。
-                                // 显式角色优先，缺省回落档位推导。
-                                role: explicit_role.or_else(|| {
-                                    nemesis_agent::loop_tools::detached_role_for_profile(
-                                        &info.tools_profile,
-                                    )
-                                }),
+                                // 显式角色优先，缺省回落档位推导。专家派发 =
+                                // 提示词整体替换，角色叠加无意义 → None。
+                                role: if expert_dispatch.is_some() {
+                                    None
+                                } else {
+                                    explicit_role.or_else(|| {
+                                        nemesis_agent::loop_tools::detached_role_for_profile(
+                                            &info.tools_profile,
+                                        )
+                                    })
+                                },
+                                // 专家系统提示词（整体替换主人格；None =
+                                // 默认子代理旧行为字节不变）。
+                                system_prompt: expert_dispatch
+                                    .as_ref()
+                                    .map(|d| d.prompt.as_str()),
+                                // 专家模型覆盖（ready-made (provider, 模型名)；
+                                // None = 主模型字节不变）。
+                                model_swap: expert_model_swap.as_ref(),
                                 // 子代理可见性：会话键/注册表 id 同键；取消
                                 // 令牌直达执行链（注册表 cancel 面）。
                                 session_key_override: Some(registry_id.clone()),
@@ -615,7 +731,13 @@ pub(super) fn inject_spawn_fn(
                             )
                             .await;
                     }
-                    return result;
+                    // 模型别名坏降级（2026-11-13）：成功结果尾部附注记
+                    //（模型/用户都能看到引擎回落事实；失败路径本就是 Err
+                    // 无需注记）。
+                    return match result {
+                        Ok(text) if !degrade_note.is_empty() => Ok(format!("{text}{degrade_note}")),
+                        other => other,
+                    };
                 }
 
                 // 后台路径：tokio::spawn 包住 run_detached，本调用立即
@@ -688,12 +810,22 @@ pub(super) fn inject_spawn_fn(
                                         allowed_tools,
                                         depth,
                                         // prompt-pack pro：readonly 档 → 侦察员角色。
-                                        // 显式角色优先，缺省回落档位推导。
-                                        role: explicit_role.or_else(|| {
-                                            nemesis_agent::loop_tools::detached_role_for_profile(
-                                                &info.tools_profile,
-                                            )
-                                        }),
+                                        // 显式角色优先，缺省回落档位推导。专家派发
+                                        // 同前台：提示词整体替换，角色叠加无意义。
+                                        role: if expert_dispatch.is_some() {
+                                            None
+                                        } else {
+                                            explicit_role.or_else(|| {
+                                                nemesis_agent::loop_tools::detached_role_for_profile(
+                                                    &info.tools_profile,
+                                                )
+                                            })
+                                        },
+                                        // 专家系统提示词 + 模型覆盖（与前台同源）。
+                                        system_prompt: expert_dispatch
+                                            .as_ref()
+                                            .map(|d| d.prompt.as_str()),
+                                        model_swap: expert_model_swap.as_ref(),
                                         // 子代理可见性：会话键/注册表 id 同键；
                                         // 取消令牌直达执行链；完成状态自动收尾。
                                         session_key_override: Some(bg_registry_id.clone()),
@@ -737,7 +869,13 @@ pub(super) fn inject_spawn_fn(
                             .await;
                     }
                     let (content, status, error) = match &result {
-                        Ok(text) => (text.clone(), "ok", None),
+                        Ok(text) => (
+                            // 模型别名坏降级：后台路径同附尾注记（回灌
+                            // 内容与前台语义一致）。
+                            format!("{text}{}", degrade_note),
+                            "ok",
+                            None,
+                        ),
                         Err(e) => (
                             format!("[后台子代理任务失败] {}", e),
                             "error",

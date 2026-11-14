@@ -20,7 +20,7 @@ slug = "jira-fix"
 kind = "panel"
 name = "Jira 修复流水线"
 version = "0.2.0"
-wasm-sha256 = "7230b4a657f13173c71edb31ac073c97d5849793832098504bd25fdf2c5fdf51"
+wasm-sha256 = "f52182e2284ecc5ef28cdbbc26a3cc099e8ccdb76380fd573b9539d55c1b335d"
 description = "Jira issue 修复流水线（自持形态：面板 + flow 剧本 + guest 直连 Jira REST；导入/回帖走自报步骤，PAT 走 vault）"
 
 # 出网面：只准打 base_url 指向的实例（整条目 token，配置热渲染；未配置 =

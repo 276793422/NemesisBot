@@ -581,3 +581,71 @@ async fn init_web_negative_time_configs_smoke() {
         w.enabled_channels
     );
 }
+
+/// Wave 3（集成面）通道 push 矩阵：matrix..email 11 条 feature-gated push
+/// 线成员断言。banner 通道计数已改为直接消费本列表（BUG-20261114-049：
+/// 旧 count_enabled_channels 陈旧 13 通道清单对 Wave 3 装配臂全盲——
+/// email-only 配置误报「WARNING: No channels enabled」；双轨记账已消除，
+/// 本列表是唯一真相源），列表成员正确性在此钉住。
+#[cfg(all(
+    feature = "channels-matrix",
+    feature = "channels-irc",
+    feature = "channels-signal",
+    feature = "channels-mastodon",
+    feature = "channels-bluesky",
+    feature = "channels-wecom",
+    feature = "channels-mattermost",
+    feature = "channels-nostr",
+    feature = "channels-mqtt",
+    feature = "channels-wechat",
+    feature = "channels-email"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn w5_init_web_wave3_channel_push_matrix() {
+    let th = ctx_env();
+    write_bare_config(&th.home);
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
+        .await
+        .expect("assemble ok")
+        .expect("非 relay 必返 Some");
+    let cluster: ClusterWiring = init_cluster(&ctx).await.expect("cluster disabled 廉价路径");
+
+    // Wave 3 全开。push 线只看 enabled 位；构造臂对空/越界配置自降级
+    // None + loud error（如 mqtt/email 端口缺省越界）——成员断言不受
+    // 构造结果影响。全部为出站客户端形态，无监听端口。
+    ctx.cfg.channels.matrix.enabled = true;
+    ctx.cfg.channels.irc.enabled = true;
+    ctx.cfg.channels.signal.enabled = true;
+    ctx.cfg.channels.mastodon.enabled = true;
+    ctx.cfg.channels.bluesky.enabled = true;
+    ctx.cfg.channels.wecom.enabled = true;
+    ctx.cfg.channels.mattermost.enabled = true;
+    ctx.cfg.channels.nostr.enabled = true;
+    ctx.cfg.channels.mqtt.enabled = true;
+    ctx.cfg.channels.wechat.enabled = true;
+    ctx.cfg.channels.email.enabled = true;
+
+    let w = init_web(&ctx, &cluster)
+        .await
+        .expect("Wave 3 全通道形态不炸");
+    for name in [
+        "matrix",
+        "irc",
+        "signal",
+        "mastodon",
+        "bluesky",
+        "wecom",
+        "mattermost",
+        "nostr",
+        "mqtt",
+        "wechat",
+        "email",
+    ] {
+        assert!(
+            w.enabled_channels.iter().any(|c| c == name),
+            "enabled 列表缺 {name}: {:?}",
+            w.enabled_channels
+        );
+    }
+    drop(w);
+}

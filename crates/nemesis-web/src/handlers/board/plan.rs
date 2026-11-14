@@ -481,9 +481,10 @@ pub async fn project_resume(
 }
 
 /// `project.resume`（未编译 cluster）：恢复发车即发集群 RPC，无从谈起。
-/// （`_cluster` 在该形态下是 `&`——AppState.cluster 的 not(cluster) 镜像。）
+/// （`_cluster` 在该形态下是 `&`——AppState.cluster 的 not(cluster) 镜像；
+/// pub 与 cluster 臂对齐——mod.rs 调用点两形态同可见。）
 #[cfg(not(feature = "cluster"))]
-async fn project_resume(
+pub async fn project_resume(
     _store: &Arc<BoardStore>,
     _cluster: &(),
     _board_cfg: Option<&nemesis_config::BoardFlagConfig>,

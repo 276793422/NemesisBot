@@ -133,7 +133,7 @@ impl MastodonChannel {
             .map_err(|e| NemesisError::Channel(format!("mastodon verify failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "mastodon verify error: {body}"
             )));
@@ -186,7 +186,7 @@ impl MastodonChannel {
             .map_err(|e| NemesisError::Channel(format!("mastodon post failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "mastodon post error: {body}"
             )));
@@ -300,7 +300,9 @@ impl MastodonChannel {
             voice_playback: None,
         };
 
-        let _ = bus.send(inbound);
+        if let Err(e) = bus.send(inbound) {
+            warn!("[MastodonChannel] failed to publish inbound message to bus: {e}");
+        }
         true
     }
 }

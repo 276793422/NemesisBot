@@ -9,6 +9,292 @@ use std::sync::Arc;
 
 use super::*;
 
+// —— 外评探针翻转收编（2026-11-13 R4/R5/R6 复评整改批 + 正向锁定）——
+
+struct Nov13NoModel;
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for Nov13NoModel {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        panic!("review must not call a model")
+    }
+}
+struct Nov13Pages {
+    pages: Vec<String>,
+    calls: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::Tool for Nov13Pages {
+    async fn execute(
+        &self,
+        args: &str,
+        _: &nemesis_agent::context::RequestContext,
+    ) -> Result<String, String> {
+        let v: Value = serde_json::from_str(args).unwrap();
+        self.calls.lock().unwrap().push(v.clone());
+        let p = v["args"]["page"].as_u64().unwrap_or(1) as usize;
+        Ok(self
+            .pages
+            .get(p - 1)
+            .cloned()
+            .unwrap_or_else(|| "[]".into()))
+    }
+    fn operation_override(&self, _: &str) -> Option<nemesis_agent::r#loop::OperationOverride> {
+        Some(nemesis_agent::r#loop::OperationOverride {
+            op_type: "internal".into(),
+            force_approval: None,
+            receipt_ctx: None,
+        })
+    }
+}
+fn nov13_wire_pages(fx: &EngineFixture, pages: Vec<String>) -> Arc<std::sync::Mutex<Vec<Value>>> {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut lp = AgentLoop::new(
+        Box::new(Nov13NoModel),
+        nemesis_agent::types::AgentConfig {
+            model: "test".into(),
+            ..Default::default()
+        },
+    );
+    lp.register_tool(
+        crate::connector_tools::INVOKE_TOOL_NAME.into(),
+        Box::new(Nov13Pages {
+            pages,
+            calls: calls.clone(),
+        }),
+    );
+    *fx.engine.agent_loop_ref.write() = Some(Arc::new(lp));
+    calls
+}
+fn nov13_fetch_def() -> FlowTemplateDef {
+    let mut def = FlowTemplateDef {
+        slug: "sample".into(),
+        template: tpl("nov13-fetch", &[KIND_FETCH, KIND_LAND]),
+    };
+    def.template.steps[0].args = BTreeMap::from([
+        ("connector".into(), "test".into()),
+        ("op".into(), "list".into()),
+        ("page_size".into(), "2".into()),
+        ("max_pages".into(), "5".into()),
+        ("labels".into(), "agent-ready".into()),
+    ]);
+    def
+}
+
+/// 外评探针收编（正向锁定）：fetch 过滤后首页全被滤掉也继续翻页——
+/// page1 全 human 标签被滤、page2 有 agent-ready → 创建 1、调用 [1,2]。
+#[tokio::test]
+async fn fetch_filtered_first_page_reaches_second_page() {
+    let fx = make_engine("fetch-pages-fixed", true);
+    let calls = nov13_wire_pages(
+        &fx,
+        vec![
+            json!([{"key":"human1","labels":[{"name":"human"}]},{"key":"human2","labels":[{"name":"human"}]}]).to_string(),
+            json!([{"key":"agent1","labels":[{"name":"agent-ready"}]}]).to_string(),
+        ],
+    );
+    let out = fx.engine.fetch_template(&nov13_fetch_def()).await.unwrap();
+    println!(
+        "NOV13 filtered page fixed={out}; calls={:?}",
+        calls.lock().unwrap()
+    );
+    assert_eq!(out["created"], 1);
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|v| v["args"]["page"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+/// 外评探针收编（正向锁定）：截断 JSON 页 salvaged——完整前缀对象物化、
+/// 截断残尾不炸（created=1、entries=1、ext_key=complete）。
+#[tokio::test]
+async fn fetch_truncated_page_materializes_salvaged_entry() {
+    let fx = make_engine("salvage-fixed", true);
+    let calls = nov13_wire_pages(
+        &fx,
+        vec![format!(
+            "[{},{{\"key\":\"large\",\"body\":\"{}",
+            json!({"key":"complete","labels":[{"name":"agent-ready"}]}),
+            "a".repeat(9000)
+        )],
+    );
+    let out = fx.engine.fetch_template(&nov13_fetch_def()).await.unwrap();
+    println!(
+        "NOV13 salvage fixed={out}; invocations={}",
+        calls.lock().unwrap().len()
+    );
+    assert_eq!(out["created"], 1);
+    assert_eq!(
+        out["entries"], 1,
+        "only the complete prefix object was salvaged"
+    );
+    assert_eq!(fx.flows.list_all("nov13-fetch")[0].ext_key, "complete");
+}
+
+/// R6 复评整改回归锁（外评探针
+/// review_nov13_external_keys_collide_and_drop_second_instance 翻转）：
+/// 段安全化碰撞（`a/b` 与 `a_b` 同落实例名 `a_b`）不再静默吞第二条——
+/// 既有实例按 ext_key 核对，不等落 FNV 摘要后缀独立实例；两键各自物化、
+/// 重扫幂等。
+#[test]
+fn external_keys_collide_materialize_independent_instances() {
+    let ws = temp_ws("key-collision-r6");
+    let flows = FlowStore::new(&ws);
+    let def = FlowTemplateDef {
+        slug: "sample".into(),
+        template: tpl("tpl", &[KIND_FETCH, KIND_LAND]),
+    };
+    let entries = vec![
+        json!({"key":"a/b","title":"first distinct issue"}),
+        json!({"key":"a_b","title":"second distinct issue"}),
+    ];
+    let created = materialize_instances(&flows, &def, &entries).unwrap();
+    println!(
+        "NOV13 R6 created={created}; stored={:?}",
+        flows
+            .list_all("tpl")
+            .iter()
+            .map(|i| &i.ext_key)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(created, 2, "两个键各自物化（不再吞第二条）");
+    let mut keys: Vec<String> = flows
+        .list_all("tpl")
+        .iter()
+        .map(|i| i.ext_key.clone())
+        .collect();
+    keys.sort();
+    assert_eq!(keys, vec!["a/b".to_string(), "a_b".to_string()]);
+    assert_eq!(
+        materialize_instances(&flows, &def, &entries).unwrap(),
+        0,
+        "重扫幂等（两实例都按 ext_key 认领跳过）"
+    );
+}
+
+/// R4 复评整改回归锁（外评探针
+/// review_nov13_writeback_older_issue_starves_beyond_first_hundred 翻转）：
+/// 回写轮询换 updated_at 水位 + **三态过滤下推 SQL**——大量 backlog 单
+/// 不再占满 LIMIT 窗口挤掉三态单；老单的 done 转移被真实 attempt
+///（旧形态永不触达：游标停 in_review、零失败计数）。
+#[tokio::test]
+async fn writeback_three_state_filter_reaches_older_issue_beyond_backlog_window() {
+    let fx = make_engine("wb-filter-r4", true);
+    let def = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    let old = wb_issue(
+        &fx.store,
+        "old",
+        BTreeMap::from([("owner".into(), "acme".into())]),
+    );
+    // R5 孤儿闸要求订阅面单有模板实例——先物化（ext_key=old → fe/old）。
+    materialize_instances(&fx.flows, &def, &[json!({"key": "old"})]).unwrap();
+    to_review(&fx.store, &old);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/old").as_deref(),
+        Some("in_review")
+    );
+    // 100 条 backlog 单（非三态）——SQL 下推过滤后不占窗口。
+    for i in 0..100 {
+        wb_issue(&fx.store, &format!("new-{i}"), BTreeMap::new());
+    }
+    let selected = fx
+        .store
+        .list_issues_for_writeback("fe", 0, &["in_review", "done", "cancelled"], 100)
+        .unwrap();
+    assert!(
+        selected.iter().any(|i| i.id == old.id),
+        "三态下推：old 不被 backlog 挤出窗口"
+    );
+    fx.store
+        .transition_issue(
+            old.id,
+            nemesis_board::IssueStatus::Done,
+            &nemesis_board::Actor::system("review"),
+        )
+        .unwrap();
+    for _ in 0..3 {
+        fx.engine.poll_writebacks(&def).await.unwrap();
+    }
+    let failures = fx.engine.writeback_failures.lock().unwrap();
+    println!("NOV13 R4 failures={failures:?}");
+    assert_eq!(
+        failures.get("wb/fe/old"),
+        Some(&3),
+        "done 转移被 attempt（每 poll 恰一次，Retried break 停推不跳批）"
+    );
+}
+
+/// R5 复评整改回归锁（外评探针
+/// review_nov13_writeback_subscribes_to_other_template_origin 翻转）：
+/// 回写订阅**孤儿闸**——模板名下无实例的外部单（他项目 origin）确定性
+/// 跳过：不采纳游标、不回写（旧形态跨模板误采纳+误投递）。
+#[tokio::test]
+async fn writeback_skips_issues_without_template_instance() {
+    let fx = make_engine("wb-orphan-r5", true);
+    let mut def = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    def.template.origin_id = "jira/PROJECT-A/{{key}}".into();
+    def.template.steps[0].args.insert(
+        "args_json".into(),
+        json!({"project":"PROJECT-A"}).to_string(),
+    );
+    let foreign = fx
+        .store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "belongs to project B and another flow".into(),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "fe".into(),
+                origin_id: "jira/PROJECT-B/7".into(),
+                origin_meta: BTreeMap::from([("project".into(), "PROJECT-B".into())]),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+    to_review(&fx.store, &foreign);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows
+            .load_transition_state("wb", "jira/PROJECT-B/7")
+            .as_deref(),
+        None,
+        "孤儿单不采纳游标（R5：模板名下无实例 = 确定性跳过）"
+    );
+    fx.store
+        .transition_issue(
+            foreign.id,
+            nemesis_board::IssueStatus::Done,
+            &nemesis_board::Actor::system("review"),
+        )
+        .unwrap();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    let failures = fx.engine.writeback_failures.lock().unwrap();
+    println!("NOV13 R5 orphan failures={failures:?}");
+    assert!(
+        !failures.keys().any(|k| k.contains("jira/PROJECT-B/7")),
+        "孤儿单不投递（不产生回写失败计数）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 夹具
 // ---------------------------------------------------------------------------
@@ -1345,7 +1631,7 @@ fn render_config_tokens_renders_when_config_but_keeps_step_tokens() {
 
 #[test]
 fn render_config_tokens_declared_unset_renders_empty() {
-    // 可选键契约（SC 套件 proxy / gerrit_base_url 二选一形态）：键已声明
+    // 可选键契约（SC 套件 proxy 形态）：键已声明
     // 但未配置（无缺省无覆盖）= 空串，不再整模板拒绝；未声明 = 仍 Err。
     let mut t = tpl("t", &[KIND_FETCH]);
     t.steps[0]
@@ -3396,6 +3682,17 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         BTreeMap::new(),
         Some("jira"),
     );
+    // R5 孤儿闸前置：订阅面单必须有模板实例（A/C/D；B 靠 todo 状态天然跳过）。
+    materialize_instances(
+        &fx.flows,
+        &def,
+        &[
+            json!({"key": "A"}),
+            json!({"key": "C"}),
+            json!({"key": "D"}),
+        ],
+    )
+    .unwrap();
     // A：meta 在场 → adopt（静默收编）→ noop → done 后 compose。
     let a = wb_issue(
         &fx.store,
@@ -3427,6 +3724,13 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         let map = fx.engine.writeback_failures.lock().unwrap();
         assert_eq!(map.get("wb/fe/A"), Some(&1), "map: {map:?}");
     }
+    // R4 契约（ASC 批序 + Retried break）：持续失败的老单恒居批首，后续单
+    // 要等它熔断让路（有界 5 tick）才可达——预熔断 A 给 C/D 段让位。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/A".to_string(), WRITEBACK_MAX_RETRIES);
 
     // B：todo 状态不订阅三态 → 零动作；无 origin 单同样跳过。
     let _b = wb_issue(&fx.store, "B", BTreeMap::new());
@@ -3497,6 +3801,17 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
 async fn poll_writebacks_permanent_skip_parse_retry_render_fail() {
     let fx = make_engine("wb2", true);
     let def_np = wb_def("issue_comment", BTreeMap::new(), BTreeMap::new(), None);
+    // R5 孤儿闸前置：订阅面单必须有模板实例（P/R/F）。
+    materialize_instances(
+        &fx.flows,
+        &def_np,
+        &[
+            json!({"key": "P"}),
+            json!({"key": "R"}),
+            json!({"key": "F"}),
+        ],
+    )
+    .unwrap();
     // 永久跳过：先 adopt（in_review），转 done 触发 compose——无 origin_meta
     // 无 parse 声明 → 游标落盘收口（Advanced，不计失败）。
     let p = wb_issue(&fx.store, "P", BTreeMap::new());
@@ -3531,6 +3846,13 @@ async fn poll_writebacks_permanent_skip_parse_retry_render_fail() {
         Some("in_review".to_string()),
         "compose 失败游标不推进"
     );
+    // R4 契约（ASC 批序 + Retried break）：R 的解析失败恒居批首挡住 F 段
+    // ——预熔断 R 给 F 段让位（同 wb1 A 段注记）。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/R".to_string(), WRITEBACK_MAX_RETRIES);
 
     // 渲染失败：meta 在场但 args 引用未知 token → Retry。
     let f = wb_issue(
@@ -3564,6 +3886,8 @@ async fn poll_writebacks_plugin_route_faces() {
         BTreeMap::new(),
         None,
     );
+    // R5 孤儿闸前置：订阅面单必须有模板实例（A/B）。
+    materialize_instances(&fx.flows, &def, &[json!({"key": "A"}), json!({"key": "B"})]).unwrap();
     // 合法 plugin 引用 + 子系统未装配 → Retried。
     let a = wb_issue(
         &fx.store,
@@ -3582,6 +3906,13 @@ async fn poll_writebacks_plugin_route_faces() {
         fx.flows.load_transition_state("wb", "fe/A"),
         Some("in_review".to_string())
     );
+    // R4 契约（ASC 批序 + Retried break）：A 的子系统缺席失败恒居批首挡住
+    // B 段——预熔断 A 给 B 段让位（同 wb1 A 段注记）。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/A".to_string(), WRITEBACK_MAX_RETRIES);
 
     // 引用形态非法 → Retried（装载期校验是声明面闸，运行期诚实保底）。
     let b = wb_issue(
@@ -3793,31 +4124,6 @@ fn poll_outcome_maps_three_states() {
         poll_outcome(PollOutcome::StillRunning).unwrap_err(),
         FLOW_STILL_RUNNING
     );
-}
-
-#[test]
-fn json_scalar_and_json_path_faces() {
-    assert_eq!(json_scalar(Some(&json!(true))), "true");
-    assert_eq!(json_scalar(Some(&json!([1, 2]))), "array");
-    assert_eq!(json_scalar(Some(&json!({"a": 1}))), "object");
-    assert_eq!(json_scalar(Some(&json!(null))), "null");
-    assert_eq!(json_scalar(None), "null");
-    assert_eq!(json_scalar(Some(&json!(3.5))), "3.5");
-
-    // 词法：通配段与畸形路径。
-    assert_eq!(json_path_segments("$.a[*].b").unwrap(), vec!["a", "*", "b"]);
-    assert!(json_path_segments("$.").is_none(), "尾随空段");
-    assert!(json_path_segments("$.a..b").is_none(), "连续点空段");
-    assert!(json_path_segments("$[0]").is_none(), "索引语法不支持");
-    assert!(json_path_segments("a.b").is_none(), "缺 $ 前缀");
-
-    // 求值：通配展开、字段缺席、畸形路径。
-    let v = json!({"items": [{"name": "x"}, {"name": "y"}]});
-    let hits = json_path_eval(&v, "$.items[*].name");
-    assert_eq!(hits.len(), 2);
-    assert_eq!(hits[0], &json!("x"));
-    assert!(json_path_eval(&v, "$.nope[*]").is_empty(), "中途落空 = 空");
-    assert!(json_path_eval(&v, "$bad").is_empty(), "畸形路径 = 空");
 }
 
 #[test]
@@ -4072,26 +4378,6 @@ async fn flow_engine_new_assembles_with_global_plugin_dir() {
         .await
         .unwrap_err();
     assert!(err.contains("不存在"), "{err}");
-}
-
-#[test]
-fn safe_external_url_scheme_gate() {
-    // http(s) 放行且保原形；大小写不敏感；其余 scheme / 空 = None。
-    assert_eq!(
-        safe_external_url("https://example.com/p/1").as_deref(),
-        Some("https://example.com/p/1")
-    );
-    assert_eq!(
-        safe_external_url("HTTP://Example.com").as_deref(),
-        Some("HTTP://Example.com")
-    );
-    assert_eq!(
-        safe_external_url("  https://x.y  ").as_deref(),
-        Some("https://x.y")
-    );
-    assert_eq!(safe_external_url("javascript:alert(1)"), None);
-    assert_eq!(safe_external_url("ftp://x"), None);
-    assert_eq!(safe_external_url(""), None);
 }
 
 #[test]

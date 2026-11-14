@@ -1823,7 +1823,14 @@ impl ConnectorInvokeTool {
             }
         };
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        // 双用拆分（BUG-20261113-164）：错误体只喂失败文案——有帽读取；
+        // 成功体是 connector 回执（可能带数据），全量读后仍走 HTTP_BODY_CAP
+        // 显示帽与回提炼。
+        let text = if status.is_success() {
+            resp.text().await.unwrap_or_default()
+        } else {
+            nemesis_utils::http_cap::read_error_body(resp).await
+        };
         let capped: String = text.chars().take(HTTP_BODY_CAP).collect();
         if !status.is_success() {
             return Ok(InvocationOutcome::Failed {

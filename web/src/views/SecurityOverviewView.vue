@@ -4,7 +4,8 @@ import { useRouter } from 'vue-router'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
-// 安全总览页（十层页面化 2026-11-10）：十层状态表（行跳对应页）+ 只读
+// 安全总览页（十层页面化 2026-11-10；⑪⑫⑬ 编号 2026-11-14 用户拍板）：
+// 十三层状态表（行跳对应页）+ 只读
 // 状态区（estop/Plan/Full Access/免打扰——用户拍板 2：总览只显示状态，
 // 操作面留侧栏/ChatPanel/审批页）+ 全局总闸（即时生效，编辑走设置页）+
 // 审计链校验 + 高级 JSON 编辑器（自旧 SecurityView 迁移，唯一写入口）。
@@ -133,6 +134,37 @@ const ROWS: LayerRow[] = [
       return e.vm ? { label: '已启用', tone: 'on' } : { label: '已关闭', tone: 'off' }
     },
     summary: () => '桌面级 VM 执行环境（config executor.vm.enabled）',
+  },
+  {
+    num: '⑪',
+    title: 'Guardian 二审',
+    to: '/security/guardian',
+    status: () => {
+      const m = overview.value?.guardian?.mode
+      if (!m || m === 'off') return { label: '未开启', tone: 'na' }
+      return { label: m === 'critical' ? 'CRITICAL 全审' : 'HIGH+ 预筛', tone: 'on' }
+    },
+    summary: () => '高危操作 LLM 语义二审（config security.guardian_mode）',
+  },
+  {
+    num: '⑫',
+    title: '人工审批',
+    to: '/security/approval',
+    status: () => {
+      const a = overview.value?.approvals ?? {}
+      return a.injected ? { label: '已装配', tone: 'on' } : { label: '未装配', tone: 'na' }
+    },
+    summary: () => '高危操作人工审批卡（「总是允许」记忆规则表可免重复确认）',
+  },
+  {
+    num: '⑬',
+    title: '凭据 Vault',
+    to: '/vault',
+    status: () => {
+      const v = overview.value?.vault ?? {}
+      return v.exists ? { label: '已初始化', tone: 'on' } : { label: '未初始化', tone: 'na' }
+    },
+    summary: () => '凭据加密托管（工具凭据槽注入，明文 key 不进提示词）',
   },
 ]
 

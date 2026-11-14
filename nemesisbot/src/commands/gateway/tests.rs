@@ -903,20 +903,6 @@ fn test_apply_security_layer_switches_injection_threshold_out_of_range_rejected(
 }
 
 // -------------------------------------------------------------------------
-// count_enabled_channels tests
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_count_enabled_channels_none() {
-    // 后 WebChannelConfig::default().enabled=true（与字段级
-    // default_true 收敛）——「无启用通道」场景须显式关掉 web 才成立。
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = false;
-    let count = count_enabled_channels(&config);
-    assert_eq!(count, 0);
-}
-
-// -------------------------------------------------------------------------
 // Approval popup data construction tests
 // -------------------------------------------------------------------------
 
@@ -1063,42 +1049,6 @@ fn test_parse_host_port_multiple_colons() {
 // -------------------------------------------------------------------------
 // Additional tests for maximum coverage
 // -------------------------------------------------------------------------
-
-#[test]
-fn test_count_enabled_channels_zero() {
-    // 后 WebChannelConfig::default().enabled=true（与字段级
-    // default_true 收敛）——「全零」场景须显式关掉 web 才成立。
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = false;
-    assert_eq!(count_enabled_channels(&config), 0);
-}
-
-#[test]
-fn test_count_enabled_channels_web_only() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 1);
-}
-
-#[test]
-fn test_count_enabled_channels_multiple() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 3);
-}
-
-#[test]
-fn test_count_enabled_channels_all() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    config.channels.feishu.enabled = true;
-    config.channels.slack.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 5);
-}
 
 #[test]
 fn test_parse_host_port_ipv6_bracket() {
@@ -2588,29 +2538,6 @@ fn test_cron_message_metadata_construction() {
 }
 
 // -------------------------------------------------------------------------
-// count_enabled_channels additional channels
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_count_enabled_channels_web_telegram() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 2);
-}
-
-#[test]
-fn test_count_enabled_channels_all_five() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    config.channels.feishu.enabled = true;
-    config.channels.slack.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 5);
-}
-
-// -------------------------------------------------------------------------
 // parse_host_port additional edge cases
 // -------------------------------------------------------------------------
 
@@ -3202,27 +3129,6 @@ mod gateway_agent_runner_tests {
 
 mod wave_b {
     use super::*;
-
-    #[test]
-    fn wave_b_count_enabled_channels_all_flags() {
-        // 13 个通道位全开（web/websocket/telegram/discord/feishu/slack/external/
-        // whatsapp/dingtalk/qq/line/onebot/maixcam），点亮剩余 11 个 miss 推入臂。
-        let mut config = nemesis_config::Config::default();
-        config.channels.web.enabled = true;
-        config.channels.websocket.enabled = true;
-        config.channels.telegram.enabled = true;
-        config.channels.discord.enabled = true;
-        config.channels.feishu.enabled = true;
-        config.channels.slack.enabled = true;
-        config.channels.external.enabled = true;
-        config.channels.whatsapp.enabled = true;
-        config.channels.dingtalk.enabled = true;
-        config.channels.qq.enabled = true;
-        config.channels.line.enabled = true;
-        config.channels.onebot.enabled = true;
-        config.channels.maixcam.enabled = true;
-        assert_eq!(count_enabled_channels(&config), 13);
-    }
 
     // -------------------------------------------------------------------------
     // GatewayLlmJudge —— guardian LLM 二审桥（security）

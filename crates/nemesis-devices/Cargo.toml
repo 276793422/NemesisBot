@@ -13,6 +13,8 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+# 停机取消单一真相源：CancellationToken（BUG-20261114-015，heartbeat r9 根修同款）
+tokio-util = { version = "0.7", features = ["rt"] }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 

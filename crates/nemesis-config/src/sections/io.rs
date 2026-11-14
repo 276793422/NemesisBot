@@ -494,6 +494,7 @@ pub fn default_config() -> Config {
                 ..Default::default()
             },
             list: vec![],
+            experts: ExpertsModeConfig::default(),
         },
         bindings: vec![],
         session: SessionConfig::default(),

@@ -958,7 +958,11 @@ async function onFileLinkClick(ev: MouseEvent) {
       path,
       session_id: effectiveSid.value || undefined,
     })
-    if (res?.action === 'reveal') {
+    // 存在性分级（2026-11-14）：祖先目录回退产物 exists=false（文件未
+    // 命中、已打开最近存在祖先目录）——warn 注记，不冒充成功。
+    if (res?.exists === false) {
+      toast.warn(`文件未找到（${res?.path ?? path}），已打开最接近的目录`)
+    } else if (res?.action === 'reveal') {
       toast.info('该文件类型不支持直接打开，已在文件管理器中定位')
     } else if (res?.kind === 'dir') {
       toast.success('已在文件管理器中打开目录')
@@ -2007,7 +2011,7 @@ function rewindActions(msg: ChatMessage) {
 // registerCloser 登记（useContextMenu 事件开头统一回调）。
 // ---------------------------------------------------------------------------
 
-const { close: closeContextMenu, registerCloser } = useContextMenu()
+const { close: closeContextMenu, registerCloser, registerContextMenuItems } = useContextMenu()
 
 /** 当前展开「⋯」菜单的消息行号（null=全关；单值天然互斥单开）。 */
 const msgMenuFor = ref<number | null>(null)
@@ -2109,6 +2113,111 @@ function onMsgMenuKeydown(e: KeyboardEvent) {
 
 /** onMounted 装的清理闭包（互斥登记注销 + Esc listener 摘除）；onUnmounted 消费。 */
 let onMsgMenuCleanup: (() => void) | null = null
+
+// ---------------------------------------------------------------------------
+// 右键菜单贡献项（2026-11-13）：文件链接（markdown linkify 产出的
+// a.file-link）右键追加「复制路径 / 打开所在目录」两项（菜单底部）。
+// 打开走 fs.reveal——reveal 语义：目录链接直接打开该目录，文件链接打开
+// 所在目录并选中该文件（explorer /select），与左键 fs.open 的「能用就开」
+// 分工（右键诉求是找文件/移动走，不执行）。相对路径按 effectiveSid 会话
+// 根解析（项目会话落项目目录）——贡献函数活在组件侧正是为了拿到会话上下
+// 文；只对本面板消息区内的链接出项，多面板共存（主聊天 + workflow 嵌入）
+// 互不串。
+// ---------------------------------------------------------------------------
+
+/** 贡献函数：命中本面板消息区内的 a.file-link 才出项；否则空数组。 */
+function fileLinkMenuItems(t: EventTarget | null) {
+  const el = t instanceof HTMLElement ? t : null
+  const a = el?.closest('a.file-link') as HTMLAnchorElement | null
+  if (!a?.dataset.path) return []
+  if (!chatMessages.value || !chatMessages.value.contains(a)) return []
+  const path = a.dataset.path
+  return [
+    {
+      label: '复制路径',
+      title: '复制解析后的绝对路径（相对/跨根链接按会话根与项目目录解析）',
+      run: () => void copyLinkPath(path),
+    },
+    {
+      label: '打开所在目录',
+      title: '在文件管理器中打开所在目录（文件同时选中，便于移动）',
+      run: () => void revealLinkDir(path),
+    },
+  ]
+}
+
+// 剪贴板写入（2026-11-14 B4 根修）：navigator.clipboard 仅 secure context
+// （HTTPS/localhost）——LAN HTTP 部署恒 undefined 或 NotAllowedError，
+// 此前复制路径在该形态下必败。隐藏 textarea + execCommand('copy') 回退
+// 是无 HTTPS 依赖的通路（execCommand 虽标记废弃，剪贴板场景浏览器仍
+// 全量保留）。
+async function writeClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // secure context 但权限被拒（iframe/用户设置等）→ 落 execCommand 回退
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+// 复制路径（2026-11-14 B3 根修）：先 fs.resolve 解析成绝对路径（与
+// 打开/定位同一解析阶梯——相对/跨根/越界判定同源），再复制。此前直接
+// 复制 data-path 原文（相对串），粘进资源管理器打不开。exists=false =
+// 祖先回退产物（文件未找到），warn 注记不冒充成功。
+async function copyLinkPath(path: string) {
+  try {
+    const res = await request('fs', 'resolve', {
+      path,
+      session_id: effectiveSid.value || undefined,
+    })
+    const abs: string = res?.path ?? path
+    if (await writeClipboard(abs)) {
+      if (res?.exists === false) {
+        toast.warn(`文件未找到，已复制其所在目录路径：${abs}`)
+      } else {
+        toast.success(`已复制路径：${abs}`)
+      }
+    } else {
+      toast.error('复制失败：剪贴板不可用')
+    }
+  } catch (e: any) {
+    toast.error(`复制失败：${e?.message ?? e}`)
+  }
+}
+
+async function revealLinkDir(path: string) {
+  try {
+    const res = await request('fs', 'reveal', {
+      path,
+      session_id: effectiveSid.value || undefined,
+    })
+    if (res?.exists === false) {
+      toast.warn(`文件未找到，已打开其所在目录：${res?.path ?? path}`)
+    } else if (res?.kind === 'dir') {
+      toast.success('已在文件管理器中打开目录')
+    } else {
+      toast.success('已打开所在目录并选中文件')
+    }
+  } catch (e: any) {
+    toast.error(`打开失败：${e?.message ?? e}`)
+  }
+}
 
 // M6：命令面板「插入不发送」——草稿追加进输入框并聚焦（消费后清空）。
 watch(
@@ -3510,10 +3619,13 @@ onMounted(() => {
 
   // 2026-11-12「⋯」消息菜单：右键菜单互斥登记（右键事件开头统一回调关
   // 本菜单）+ Esc 关闭（capture）。卸载对称注销。
+  // 2026-11-13 右键菜单贡献项：文件链接「复制路径/打开所在目录」同批装卸。
   const unregisterMsgMenuCloser = registerCloser(closeMsgMenu)
+  const unregisterCtxItems = registerContextMenuItems(fileLinkMenuItems)
   window.addEventListener('keydown', onMsgMenuKeydown, true)
   onMsgMenuCleanup = () => {
     unregisterMsgMenuCloser()
+    unregisterCtxItems()
     window.removeEventListener('keydown', onMsgMenuKeydown, true)
   }
 })

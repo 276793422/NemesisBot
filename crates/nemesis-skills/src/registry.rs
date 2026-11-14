@@ -24,6 +24,32 @@ use crate::types::{
 /// Default maximum concurrent registry searches.
 const DEFAULT_MAX_CONCURRENT: usize = 2;
 
+/// API 元数据 JSON 成功响应体帽（BUG-20261114-046 横向收口）。skill
+/// registry 各 HTTP 端点的成功响应此前无字节上限——reqwest 无默认体上限，
+/// 请求超时只约束时间不约束体积（快管道超时窗口内可灌 GB 级）；错误臂
+/// 早已走 `read_error_body` 有帽，成功臂是同款不对称面。用户可配第三方
+/// 源与 nemesis-mcp 服务器同信任层，按同款口径收口：搜索/树/列表/commit
+/// 等元数据 JSON 16MB（与 nemesis-mcp `MAX_RESPONSE_BODY_BYTES` 对齐，
+/// 正常载荷 KB~MB 量级，16MB 为数十倍裕量）。
+pub(crate) const MAX_API_JSON_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// SKILL.md 文本成功响应体帽（BUG-20261114-046 横向收口）。markdown
+/// 内容 KB 量级，1MB 与 github registry `DEFAULT_MAX_SIZE` 对齐。
+pub(crate) const MAX_SKILL_CONTENT_BODY_BYTES: u64 = 1024 * 1024;
+
+/// 技能包**聚合落盘体量**上限（单次安装实际解压/下载字节，BUG-20261114-059
+/// 收编为单一真相源）。clawhub zip 解压（原私有
+/// `MAX_TOTAL_UNCOMPRESSED_BYTES` 同值）、github_tree 树下载、modelscope
+/// 镜像拉取三面共用：三方注册表内容是同一信任域（发布者可控 → staging），
+/// 聚合上限必须同值同源，防「一个面收口、另一个面漏网」的横向分叉。
+pub(crate) const MAX_SKILL_TOTAL_BYTES: u64 = 200 * 1024 * 1024;
+
+/// 技能包**聚合文件数**上限（单次安装，BUG-20261114-059）。正常技能
+/// <100 文件，2000 = 20 倍裕量。帽住小文件海啸（树 JSON 16MB 可编码
+/// ~160K 条目，每条目几个字节即可耗尽 inode/目录项）——体量闸管不住
+/// 条目数，两闸互补。
+pub(crate) const MAX_SKILL_FILE_COUNT: usize = 2000;
+
 /// Trait for registry operations (allows mocking in tests).
 #[async_trait]
 pub trait SkillRegistry: Send + Sync {

@@ -1,5 +1,13 @@
 use super::*;
 
+/// BUG-20261114-034：RegistryConfig 缺省启用 ModelScope（与 Dashboard 面收敛）。
+/// 只测单一注册表/开关的 from_config 用例用它隔离掉缺省注册，保持计数断言精准。
+fn isolated_default_config() -> RegistryConfig {
+    let mut c = RegistryConfig::default();
+    c.modelscope.enabled = false;
+    c
+}
+
 #[test]
 fn test_new_empty_manager() {
     let manager = RegistryManager::new_empty();
@@ -132,7 +140,8 @@ fn test_new_manager_with_cache_enabled() {
 
 #[test]
 fn test_new_manager_with_cache_disabled() {
-    let config = RegistryConfig::default();
+    let mut config = RegistryConfig::default();
+    config.search_cache.enabled = false;
     let manager = RegistryManager::new(config);
     let cache = manager.get_search_cache();
     assert!(cache.is_none());
@@ -140,7 +149,7 @@ fn test_new_manager_with_cache_disabled() {
 
 #[test]
 fn test_from_config_with_github_enabled() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
@@ -150,7 +159,7 @@ fn test_from_config_with_github_enabled() {
 
 #[test]
 fn test_from_config_with_clawhub_enabled() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
@@ -160,7 +169,7 @@ fn test_from_config_with_clawhub_enabled() {
 
 #[test]
 fn test_from_config_with_both_enabled() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
@@ -284,7 +293,7 @@ async fn test_install_from_stub_registry() {
 
 #[test]
 fn test_from_config_with_multi_source() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config
         .github_sources
         .push(crate::types::GitHubSourceConfig {
@@ -306,7 +315,7 @@ fn test_from_config_with_multi_source() {
 
 #[test]
 fn test_from_config_with_disabled_source() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config
         .github_sources
         .push(crate::types::GitHubSourceConfig {
@@ -325,10 +334,15 @@ fn test_from_config_with_disabled_source() {
 }
 
 #[test]
-fn test_from_config_no_registries() {
+fn test_from_config_defaults_register_modelscope_only() {
+    // BUG-20261114-034：键全缺的缺省配置现在恰好注册 ModelScope 单表
+    // （与 Dashboard 面 SkillsFullConfig 及出厂模板显式值收敛）；
+    // github/clawhub 缺省仍关闭。
     let config = RegistryConfig::default();
     let manager = RegistryManager::from_config(config);
-    assert!(manager.registries().is_empty());
+    let reg = manager.registries();
+    assert_eq!(reg.len(), 1);
+    assert_eq!(reg[0], "modelscope");
 }
 
 #[test]
@@ -426,7 +440,7 @@ fn test_multiple_registries() {
 
 #[test]
 fn test_from_config_legacy_github_single_source() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     config.github.base_url = "https://raw.githubusercontent.com".to_string();
     let manager = RegistryManager::from_config(config);
@@ -437,7 +451,7 @@ fn test_from_config_legacy_github_single_source() {
 
 #[test]
 fn test_from_config_with_clawhub() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
@@ -447,7 +461,7 @@ fn test_from_config_with_clawhub() {
 
 #[test]
 fn test_from_config_github_and_clawhub() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
@@ -637,7 +651,7 @@ fn test_compute_relevance_partial_slug_match() {
 
 #[test]
 fn test_from_config_with_multiple_sources() {
-    let mut config = crate::types::RegistryConfig::default();
+    let mut config = isolated_default_config();
     config
         .github_sources
         .push(crate::types::GitHubSourceConfig {
@@ -682,7 +696,9 @@ fn test_registry_config_default_values() {
     assert!(!config.github.enabled);
     assert!(!config.clawhub.enabled);
     assert!(config.github_sources.is_empty());
-    assert!(!config.search_cache.enabled);
+    // BUG-20261114-034：search_cache/modelscope 缺省启用（与 Dashboard 面收敛）。
+    assert!(config.search_cache.enabled);
+    assert!(config.modelscope.enabled);
 }
 
 #[test]

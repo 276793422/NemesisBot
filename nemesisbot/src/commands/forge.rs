@@ -481,19 +481,38 @@ fn cmd_reflect(
     println!("  Loaded {} raw experience(s).", experiences.len());
 
     // Run the real reflector（Stages 1-4 统计 + use_llm 时 LLM 语义分析）
+    // A1（缺陷整改批次 2026-11-14）：CLI 反思同样喂 TraceStore 真轨迹
+    //（与网关 run_reflection_cycle 同源）——读失败 = 诚实降级空轨迹，
+    // 报告无 Trace 段，不阻塞反思。
     let report = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            if use_llm {
+            let traces = match nemesis_forge::trace_store::TraceStore::new(forge_dir.join("traces"))
+                .read_all()
+                .await
+            {
+                Ok(events) => nemesis_forge::monitor::build_conversation_traces(&events),
+                Err(e) => {
+                    tracing::warn!(error = %e, "[Forge] Failed to read traces for CLI reflection");
+                    Vec::new()
+                }
+            };
+            // A4：period 标签与网关反思循环同源（单一真相源
+            // compute_reflection_period）——CLI 反思报告的 Period 行
+            // 反映实际数据窗口，不再硬编码 "today"。
+            let period =
+                nemesis_forge::reflector::Reflector::compute_reflection_period(&experiences);
+            let mut report = if use_llm {
                 forge
                     .reflector()
                     .expect("reflector initialized above")
                     .reflect_with_llm(
                         &experiences,
+                        &traces,
                         // 与网关反思循环同源：带全量 artifacts，LLM 看到
                         // 已部署技能不重复提名（注册表已从盘回载）。
                         &forge.registry().list(None, None),
                         None,
-                        "today",
+                        &period,
                         "all",
                         Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
                     )
@@ -502,8 +521,12 @@ fn cmd_reflect(
                 forge
                     .reflector()
                     .expect("reflector initialized above")
-                    .reflect(&experiences, None, "today", "all")
-            }
+                    .reflect(&experiences, &traces, None, &period, "all")
+            };
+            // 学习闭环状态入报告（与网关同源；CLI 侧用运行时原子旗标
+            // ——runtime enable/disable 热切后 config 值会说谎）。
+            report.learning_enabled = Some(forge.is_learning_enabled());
+            report
         })
     });
 
@@ -554,6 +577,14 @@ fn cmd_reflect(
     println!("  Reflection Results:");
     println!("    Date: {}", report.date);
     println!("    Period: {}", report.period);
+    // A5：学习闭环开关状态入 stdout 摘要（与报告文件同源注入；CLI
+    // 用户的第一眼——关着的学习开关不可见是「51 天零工件」审计教训）。
+    if let Some(enabled) = report.learning_enabled {
+        println!(
+            "    Learning loop: {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+    }
     println!("    Total records: {}", report.stats.total_records);
     println!("    Unique patterns: {}", report.stats.unique_patterns);
     println!(
@@ -591,8 +622,22 @@ fn cmd_reflect(
         println!();
         println!("    Trace analysis:");
         println!("      Total traces: {}", trace_stats.total_traces);
+        if trace_stats.traces_with_rounds < trace_stats.total_traces {
+            println!(
+                "      Traces with rounds: {}/{}",
+                trace_stats.traces_with_rounds, trace_stats.total_traces
+            );
+        }
+        if trace_stats.traces_with_rounds > 0 {
+            println!("      Avg rounds: {:.1}", trace_stats.avg_rounds);
+            println!(
+                "      Avg tool calls per round: {:.2}",
+                trace_stats.avg_tool_calls_per_round
+            );
+        } else {
+            println!("      Round data insufficient (no llm_turn events)");
+        }
         println!("      Avg duration: {}ms", trace_stats.avg_duration_ms);
-        println!("      Efficiency: {:.2}", trace_stats.efficiency_score);
     }
 
     Ok(())

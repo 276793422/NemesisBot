@@ -102,12 +102,11 @@ pub(crate) use self::ctx::GatewayCtx;
 pub(crate) use self::display::select_advertised_lan_ip;
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) use self::display::{advertise_host_for, select_lan_ip_for_advertisement};
-pub(crate) use self::display::{
-    count_enabled_channels, print_agent_startup_info, print_gateway_banner,
-    web_bind_and_display_hosts,
-};
 #[cfg(all(feature = "desktop", not(target_os = "android")))]
 pub(crate) use self::display::{open_browser, open_plugin_window};
+pub(crate) use self::display::{
+    print_agent_startup_info, print_gateway_banner, web_bind_and_display_hosts,
+};
 #[cfg(feature = "workflow")]
 pub(crate) use self::migrate::migrate_legacy_workflow_dir;
 pub(crate) use self::post_agent::init_post_agent;
@@ -281,7 +280,8 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     // wiring 影子重绑：web_server 移动推迟到 init_agent 之后（其以
     // &WebWiring 借读整体），其余 clone 保结构完整（起不再借 web）。
     // enabled_channels 不留影子：唯一消费者 PB-4 已迁入 init_agent（其内
-    // 自行 clone），Step 21 另建同名局部（count_enabled_channels）。
+    // 自行 clone），RuntimeHandoff 再 clone 移交 run_runtime（Step 21 横幅
+    // 计数消费，BUG-20261114-049 起为横幅唯一取数源）。
     let web_bind_host = web_wiring.web_bind_host.clone();
     let web_display_host = web_wiring.web_display_host.clone();
     let web_port = web_wiring.web_port;

@@ -156,6 +156,7 @@ impl ClaudeCliProvider {
         &self,
         output: &str,
         tools: &[ToolDefinition],
+        model: &str,
     ) -> Result<LLMResponse, FailoverError> {
         let resp: ClaudeCliResponse =
             serde_json::from_str(output).map_err(|e| FailoverError::Format {
@@ -164,10 +165,16 @@ impl ClaudeCliProvider {
             })?;
 
         if resp.is_error {
-            return Err(FailoverError::Unknown {
-                provider: "claude-cli".to_string(),
-                message: resp.result,
-            });
+            // result 字段是 claude CLI 对上游 API 错误的透传（429/overloaded/
+            // auth 等瞬态文案常只出现在这里、stderr 为空）——与 codex-cli lane
+            // 的 turn.failed/error 事件同源同待遇：交真相源分类（瞬态文案可
+            // 轮转 fallback 链），分类不出维持 Unknown 兜底（BUG-20261114-052：
+            // 原先裸 Unknown 恒不可重试，同族 codex-cli 均已分类）。
+            return Err(crate::failover::classify_message_error(
+                "claude-cli",
+                model,
+                &format!("claude cli error: {}", resp.result),
+            ));
         }
 
         // 白名单过滤（同款不变量）：提取器
@@ -215,6 +222,66 @@ impl ClaudeCliProvider {
             raw_request_body: None,
             raw_response_body: None,
         })
+    }
+
+    /// chat() 的输出裁决编排（从 chat() 提取为纯函数，形态矩阵可测——
+    /// CLI 子进程编排依赖 spawn，直接测不了裁决顺序）。
+    ///
+    /// 裁决序（BUG-20261114-061 修正）：stdout 先解析（052 宣称序，此处
+    /// 真正落实——052 修复把 stdout-first 插在了退出码拦截之后，宣称的
+    /// 「解析不出或为空才走退出码」从未生效）；解析成功且有内容即 Ok；
+    /// 解析 Err 暂存不吞，非零退出 + stderr 空时送达（stderr 优先保留）。
+    fn decide_output(
+        &self,
+        status_success: bool,
+        stdout: &str,
+        stderr: &str,
+        status_display: &str,
+        tools: &[ToolDefinition],
+        model: &str,
+    ) -> Result<LLMResponse, FailoverError> {
+        // stdout 先解析（与 codex-cli lane 同序，「even if exit code is
+        // non-zero」）：--output-format json 下错误详情在 stdout 的 is_error
+        // JSON 里、stderr 常为空——退出码先拦会把错误详情（含 429/overloaded
+        // 等瞬态文案）丢成「exited with status」，既不分类也不轮转
+        //（BUG-20261114-052/061）。
+        let mut stdout_err: Option<FailoverError> = None;
+        if !stdout.is_empty() {
+            match self.parse_response(stdout, tools, model) {
+                Ok(resp) if !resp.content.is_empty() || !resp.tool_calls.is_empty() => {
+                    return Ok(resp);
+                }
+                Err(e) => stdout_err = Some(e),
+                _ => {}
+            }
+        }
+
+        if !status_success {
+            if !stderr.is_empty() {
+                // stderr 是 CLI 对上游/API 错误的透传主通道——stderr 优先，
+                // 交真相源分类（瞬态文案可轮转），分类不出维持 Unknown 兜底。
+                return Err(crate::failover::classify_message_error(
+                    "claude-cli",
+                    model,
+                    &format!("claude cli error: {stderr}"),
+                ));
+            }
+            // stderr 常为空（claude CLI --output-format json 下错误详情在
+            // stdout 的 is_error JSON 里）——stdout 里已分类的错误不得丢成
+            // 「exited with status」（052 宣称主场景，061 残留修复）。
+            if let Some(e) = stdout_err {
+                return Err(e);
+            }
+            return Err(FailoverError::Unknown {
+                provider: "claude-cli".to_string(),
+                message: format!("claude cli exited with status: {status_display}"),
+            });
+        }
+
+        // 零退出：stdout 解析 Err（is_error 分类 / Format）由最终解析送达
+        // 同一 Err（纯函数等价）；stdout 有效内容已提前返回；空内容维持
+        // 空响应语义。
+        self.parse_response(stdout, tools, model)
     }
 }
 
@@ -278,26 +345,14 @@ impl LLMProvider for ClaudeCliProvider {
                 message: format!("failed to execute claude cli: {}", e),
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.is_empty() {
-                // stderr 是 CLI 对上游/API 错误的透传主通道——交真相源分类
-                //（瞬态文案可轮转），分类不出维持 Unknown
-                // 兜底。
-                return Err(crate::failover::classify_message_error(
-                    "claude-cli",
-                    model,
-                    &format!("claude cli error: {stderr}"),
-                ));
-            }
-            return Err(FailoverError::Unknown {
-                provider: "claude-cli".to_string(),
-                message: format!("claude cli exited with status: {}", output.status),
-            });
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        self.parse_response(&stdout, tools)
+        self.decide_output(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+            &output.status.to_string(),
+            tools,
+            model,
+        )
     }
 
     fn default_model(&self) -> &str {

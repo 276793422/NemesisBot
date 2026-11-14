@@ -74,14 +74,31 @@ pub(crate) struct CompactionInFlight {
 }
 
 /// [`CompactionInFlight`] 的 RAII guard：Drop 摘除登记——成功/失败/弃用/
-/// panic 各出口一致，无僵尸态（panic 路径 summarizing 槽会滞留是既有
-/// 行为，本表不跟随）。
+/// panic 各出口一致，无僵尸态。
 struct CompactionInFlightGuard {
     registry: Arc<parking_lot::Mutex<HashMap<String, CompactionInFlight>>>,
     session_key: String,
 }
 
 impl Drop for CompactionInFlightGuard {
+    fn drop(&mut self) {
+        self.registry.lock().remove(&self.session_key);
+    }
+}
+
+/// [`AgentLoop.summarizing`] 槽位的 RAII guard（BUG-20261113-170）：
+/// Drop 摘除旗标——成功/失败/早退/panic 各出口一致。此前是函数尾显式
+/// remove，panic/任务取消路径跳过 → 旗标永久滞留，该会话自动压缩从此
+/// 静默失效直到重启（`contains_key` 早退）——与 `SessionBusyGuard`
+/// 根治过的「永久 busy 死会话」同事故形态。函数体无 spawn（全 inline
+/// await），guard 活到函数作用域结束即等价于原尾部 remove，panic 面
+/// 额外兜住。
+struct SummarizingSlotGuard {
+    registry: Arc<parking_lot::Mutex<HashMap<String, bool>>>,
+    session_key: String,
+}
+
+impl Drop for SummarizingSlotGuard {
     fn drop(&mut self) {
         self.registry.lock().remove(&self.session_key);
     }
@@ -889,6 +906,13 @@ impl AgentLoop {
             }
             map.insert(summarize_key.clone(), true);
         }
+        // RAII 摘除（BUG-20261113-170）：替代原函数尾显式 remove——panic/
+        // 取消路径不再滞留旗标。guard 活到函数尾，成功/失败路径时序与
+        // 旧实现逐点等价（PostCompact hook 之后摘除）。
+        let _summarizing_slot = SummarizingSlotGuard {
+            registry: self.summarizing.clone(),
+            session_key: summarize_key.clone(),
+        };
 
         // 压缩进行中徽标（2026-11-09 压缩提示徽标化）：拿到 summarizing 槽后
         // 每次尝试必发、**不落盘**（note_kind="compaction_start" → 前端渲染
@@ -922,9 +946,7 @@ impl AgentLoop {
 
         let provider = self.provider.read().clone();
         let model = self.active_model.read().clone();
-        let summarizing_flag = self.summarizing.clone();
         let observer_mgr = self.observer_manager.clone();
-        let clear_key = summarize_key.clone();
 
         // 方言 PreCompact（观察型， 三段化扩展）：exit 2 不阻止压缩
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
@@ -1112,11 +1134,8 @@ impl AgentLoop {
                 .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "post")
                 .await;
         }
-
-        {
-            let mut map = summarizing_flag.lock();
-            map.remove(&clear_key);
-        }
+        // summarizing 旗标摘除由 `_summarizing_slot` guard Drop 承担
+        // （BUG-20261113-170；原显式 remove 块已删）。
     }
 
     /// （口径补全 + B2 实报锚定）：记录最近一次

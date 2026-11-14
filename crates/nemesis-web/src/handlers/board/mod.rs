@@ -429,8 +429,14 @@ impl ModuleHandler for BoardHandler {
                                         .map(String::from)
                                 }),
                             });
-                        } else if cluster.continuation_store().contains(&d.task_id) {
-                            // 在途：续行快照在场（任务未终结）。
+                        } else if cluster
+                            .continuation_store()
+                            .exists_on_disk(&d.task_id)
+                            .await
+                        {
+                            // 在途：续行快照在场（任务未终结）。盘上判定
+                            // （BUG-20261113-165）——快照由 agent 侧 store
+                            // 落盘，cluster 侧内存 contains 恒空（分支永假）。
                             extra.push(nemesis_board::timeline::TimelineEvent {
                                 ts: d.dispatched_at,
                                 source: "continuation",
@@ -1154,8 +1160,8 @@ impl ModuleHandler for BoardHandler {
             }
             // 看板项目档案：打开档案目录。只放行 board 项目注册表
             // （board.db Project.directory——绑定不可变、无修改入口）已知路径，
-            // 前端不可传任意路径；系统文件管理器打开（复用 projects 模块的
-            // open_in_file_manager：CREATE_NO_WINDOW spawn 不等待）。
+            // 前端不可传任意路径；系统文件管理器打开（shell_open 单一归宿：
+            // Windows=explorer spawn + 前台看门，spawn 不等待）。
             "project.open_dir" => {
                 let data = data.ok_or("missing data")?;
                 let project_id = data
@@ -1168,7 +1174,7 @@ impl ModuleHandler for BoardHandler {
                 if !path.is_dir() {
                     return Err(format!("档案目录不存在: {}", path.display()));
                 }
-                crate::handlers::projects::open_in_file_manager(&path)?;
+                crate::handlers::shell_open::open_dir(&path)?;
                 Ok(Some(
                     serde_json::json!({ "opened": true, "directory": dir }),
                 ))

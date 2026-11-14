@@ -991,6 +991,74 @@ async fn wsapi_resolve_chat_target_human_review_ineligible() {
     assert!(r["reason"].as_str().unwrap().contains("human_review"));
 }
 
+#[tokio::test]
+async fn wsapi_resolve_chat_target_indirect_human_review_ineligible() {
+    // BUG-20261114-035 横向锁：human_review 经 sub_workflow 复合可达时，
+    // 预检也必须报 ineligible——否则列表说可聊、聊天页前门拒绝，两层
+    // 口径分裂（旧实现只查顶层节点）。
+    let engine = build_test_engine();
+    engine
+        .register_workflow(nemesis_workflow::types::Workflow {
+            name: "indirect_child".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            triggers: vec![],
+            nodes: vec![nemesis_workflow::types::NodeDef {
+                id: "n1".to_string(),
+                node_type: "human_review".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        })
+        .unwrap();
+    engine
+        .register_workflow(nemesis_workflow::types::Workflow {
+            name: "indirect_parent".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            triggers: vec![],
+            nodes: vec![nemesis_workflow::types::NodeDef {
+                id: "s1".to_string(),
+                node_type: "sub_workflow".to_string(),
+                config: HashMap::from([(
+                    "workflow".to_string(),
+                    serde_json::json!("indirect_child"),
+                )]),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        })
+        .unwrap();
+    let index = nemesis_workflow::engine::WorkflowEngine::chat_index("indirect_parent");
+    let ctx = make_ctx_with_engine(engine);
+    let r = WorkflowHandler
+        .handle_cmd(
+            "resolve_chat_target",
+            Some(serde_json::json!({"index": index})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["found"], true);
+    assert_eq!(
+        r["chat_eligible"], false,
+        "复合路径可达 human_review 必须报 ineligible"
+    );
+    assert!(r["reason"].as_str().unwrap().contains("human_review"));
+}
+
 // cancel / resume (unknown execution_id → engine error) ----
 
 #[tokio::test]

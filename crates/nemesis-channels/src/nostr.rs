@@ -856,7 +856,9 @@ impl NostrEventProcessor {
             voice_playback: None,
         };
         self.base.record_received();
-        let _ = self.bus_sender.send(inbound);
+        if let Err(e) = self.bus_sender.send(inbound) {
+            warn!(error = %e, "[NostrChannel] 入站消息发布失败（bus 无接收者）");
+        }
     }
 }
 

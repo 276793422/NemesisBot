@@ -203,3 +203,18 @@ tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
+
+# shell_open.rs（系统文件管理器动作单一归宿）：Windows 臂 = explorer
+# spawn（窗口创建的确定性路径；COM SHOpenFolderAndSelectItems 生产实测
+# S_OK 但窗口不落地，弃用）+ AttachThreadInput/SetForegroundWindow 组合
+# 拳前台看门（后台进程无前台权，裸 SwitchToThisWindow 被激活锁静默拒绝）。
+# windows-sys 0.59 与 workspace 既定模式对齐（nemesis-sandbox /
+# nemesis-injector 同款），只用 needed features（AttachThreadInput/
+# GetCurrentThreadId 在 System_Threading 子 feature）。
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

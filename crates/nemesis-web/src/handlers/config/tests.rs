@@ -127,6 +127,22 @@ fn dropped_paths_normalized_value_collected() {
     assert_eq!(collect_dropped_paths(&inc, &re), vec!["agents.temperature"]);
 }
 
+#[test]
+fn dropped_paths_integral_float_same_value_not_collected() {
+    // BUG-20261114-006：f64 字段收 JSON 整数（JS Number wire 形态），typed
+    // reparse 合法归一 PosInt(1) → Float(1.0)——数值语义相同，不算丢键。
+    let inc = serde_json::json!({ "agents": { "defaults": { "temperature": 1 } } });
+    let re = serde_json::json!({ "agents": { "defaults": { "temperature": 1.0 } } });
+    assert!(collect_dropped_paths(&inc, &re).is_empty());
+    // 反向：真值变化照旧收集（归一只放行数值语义相同的对）。
+    let inc2 = serde_json::json!({ "agents": { "defaults": { "temperature": 1 } } });
+    let re2 = serde_json::json!({ "agents": { "defaults": { "temperature": 0.5 } } });
+    assert_eq!(
+        collect_dropped_paths(&inc2, &re2),
+        vec!["agents.defaults.temperature"]
+    );
+}
+
 // ---- handler 级 ----
 
 async fn get_config(handler: &ConfigHandler, ctx: &RequestContext) -> serde_json::Value {
@@ -194,6 +210,84 @@ async fn config_save_empty_valued_fields_pass() {
         result.is_ok(),
         "empty-valued modeled fields should pass: {result:?}"
     );
+}
+
+#[tokio::test]
+async fn config_save_f64_integral_temperature_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    // BUG-20261114-006 handler 级：整档编辑器把 temperature 改成 1（JS
+    // Number 序列化恒为整数形态）——typed 归一 1.0 不是丢键，save 必须
+    // 通过并落盘 1.0（此前 loud 拒绝且误报「key would be silently dropped」）。
+    let mut payload = get_config(&handler, &ctx).await;
+    payload["agents"]["defaults"]["temperature"] = serde_json::json!(1);
+
+    let result = handler.handle_cmd("save", Some(payload), &ctx).await;
+    assert!(
+        result.is_ok(),
+        "integral f64 save must pass (normalized, not dropped): {result:?}"
+    );
+
+    let cfg = get_config(&handler, &ctx).await;
+    assert_eq!(
+        cfg["agents"]["defaults"]["temperature"], 1.0,
+        "value must persist as f64 1.0"
+    );
+}
+
+#[tokio::test]
+async fn config_save_reordered_model_list_restores_masked_keys_by_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    // 盘上两模型各持不同 key——必须在 make_ctx **之后**落原始 JSON
+    // （make_ctx 会先写一份 default config，先写会被它清掉）。
+    let raw = serde_json::json!({
+        "model_list": [
+            { "model": "vendor/alpha", "api_key": "sk-alpha-real", "api_base": "http://127.0.0.1:1" },
+            { "model": "vendor/beta", "api_key": "sk-beta-real", "api_base": "http://127.0.0.1:2" }
+        ]
+    });
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string_pretty(&raw).unwrap(),
+    )
+    .unwrap();
+    let handler = ConfigHandler::new();
+
+    // UI 掩码视图：api_key 已脱敏。
+    let mut payload = get_config(&handler, &ctx).await;
+    assert!(
+        payload["model_list"][0]["api_key"]
+            .as_str()
+            .unwrap()
+            .contains("****"),
+        "config.get must mask api_key"
+    );
+
+    // 整档编辑器重排：beta 提到首位（掩码字符串跟随条目走，UI 原样回传）。
+    let beta = payload["model_list"][1].clone();
+    let alpha = payload["model_list"][0].clone();
+    payload["model_list"] = serde_json::json!([beta, alpha]);
+
+    handler
+        .handle_cmd("save", Some(payload), &ctx)
+        .await
+        .expect("reordered full-doc save must pass");
+
+    // 盘上验证（BUG-20261114-007 handler 级）：重排后各条目 key 各归各主，
+    // 不是按下标从错位条目还原。
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(on_disk["model_list"][0]["model"], "vendor/beta");
+    assert_eq!(
+        on_disk["model_list"][0]["api_key"], "sk-beta-real",
+        "beta keeps its own key (positional restore would give it alpha's)"
+    );
+    assert_eq!(on_disk["model_list"][1]["model"], "vendor/alpha");
+    assert_eq!(on_disk["model_list"][1]["api_key"], "sk-alpha-real");
 }
 
 // ---- config.set_field（f64 数值归一 + None 段自动装配）----

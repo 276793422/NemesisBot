@@ -1119,3 +1119,136 @@ fn test_parse_sse_text_terminal_carries_reasoning() {
     assert_eq!(r.content, "answer");
     assert_eq!(r.reasoning_content.as_deref(), Some("terminal summary"));
 }
+
+// ---- 回归锁（BUG-20261114-009）：多条 system 合并而非 last-wins 覆写 ----
+// hook 重呼在消息尾部追加 system 角色 "# Hook feedback: ..."（nemesis-agent
+// loop/recovery.rs），旧 last-wins 覆写会把 persona 整个顶掉——instructions
+// 只剩 hook 文案，模型失去身份与行为契约（anthropic/http lane 都保留全部
+// system 内容，本 lane 是唯一覆写者）。
+#[test]
+fn test_build_request_body_multi_system_merges_not_overwrites() {
+    let provider = CodexProvider::new(CodexConfig::default());
+    let messages = vec![
+        Message {
+            role: "system".to_string(),
+            content: "You are nemesis.".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: "hi".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "system".to_string(),
+            content: "# Hook feedback: fix format".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+    let body = provider.build_request_body(&messages, &[], "gpt-5.2", &ChatOptions::default());
+    assert_eq!(
+        body["instructions"],
+        "You are nemesis.\n\n# Hook feedback: fix format"
+    );
+}
+
+#[test]
+fn test_build_request_body_empty_system_section_not_separators() {
+    // 空段不拼（悬空分隔符防线）：空 system + 非空 system → 无前导 "\n\n"。
+    let provider = CodexProvider::new(CodexConfig::default());
+    let messages = vec![
+        Message {
+            role: "system".to_string(),
+            content: String::new().into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "system".to_string(),
+            content: "only real section".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+    let body = provider.build_request_body(&messages, &[], "gpt-5.2", &ChatOptions::default());
+    assert_eq!(body["instructions"], "only real section");
+}
+
+// ---- 回归锁（BUG-20261114-010）：200-包装错误/缺 output 响应体不静默成功 ----
+// 网关对未知路径回 HTTP 200 + 合法 JSON 错误体（CC Switch 实测形态），旧逻辑
+// parse_codex_response 对无 output 载荷 unwrap_or_default → 静默空成功
+//（content=""/finish=stop），上游真相被吞。对齐 http lane 2026-09-17 根修。
+#[test]
+fn test_codex_200_guard_error_body_is_format() {
+    let data = serde_json::json!({"code": 500, "msg": "404 NOT_FOUND"});
+    match codex_200_guard(&data, &data.to_string()) {
+        Err(FailoverError::Format { message, .. }) => {
+            assert!(message.contains("missing output array"));
+            assert!(message.contains("404 NOT_FOUND"));
+        }
+        other => panic!("应 Format，实际 {other:?}"),
+    }
+    // error 字段在场（非 null）→ Format（摘要在场）
+    let with_error = serde_json::json!({"error": {"message": "upstream exploded"}});
+    match codex_200_guard(&with_error, "EXCERPT") {
+        Err(FailoverError::Format { message, .. }) => {
+            assert!(message.contains("error body with HTTP 200"));
+            assert!(message.contains("EXCERPT"));
+        }
+        other => panic!("应 Format，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn test_codex_200_guard_legit_shapes_pass() {
+    // error:null 视作缺席（http lane 同口径）
+    assert!(codex_200_guard(&serde_json::json!({"error": null, "output": []}), "").is_ok());
+    // output:[] = 合法空响应（既有 test_parse_codex_response_empty_output 钉住的形态）
+    assert!(codex_200_guard(&serde_json::json!({"output": []}), "").is_ok());
+    // 正常带内容响应
+    assert!(codex_200_guard(&serde_json::json!({"output": [{"type": "message"}]}), "").is_ok());
+    // 缺席 → Format
+    assert!(
+        codex_200_guard(
+            &serde_json::json!({"id": "resp_1", "status": "completed"}),
+            ""
+        )
+        .is_err()
+    );
+    // 非数组（畸形）→ Format
+    assert!(codex_200_guard(&serde_json::json!({"output": "text"}), "").is_err());
+    // SSE completed 无 response 对象（unwrap_or(Null) 形态）→ Format 不静默
+    assert!(codex_200_guard(&serde_json::Value::Null, "null").is_err());
+}
+
+// SSE 终态臂同一谓词：completed 载荷缺 output → Format（不静默空成功）；
+// 空 output 数组仍合法放行（CRLF 测试钉住的形态不回退）。
+#[test]
+fn test_parse_sse_text_completed_without_output_is_format() {
+    let text = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"code\":500,\"msg\":\"upstream down\"}}\n\n";
+    match parse_sse_text(text, "gpt-4o") {
+        Err(FailoverError::Format { message, .. }) => {
+            assert!(message.contains("missing output array"));
+            assert!(message.contains("upstream down"));
+        }
+        other => panic!("应 Format，实际 {other:?}"),
+    }
+}

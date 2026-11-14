@@ -261,6 +261,60 @@ impl CodexCliProvider {
             raw_response_body: None,
         })
     }
+
+    /// chat() 的输出裁决编排（从 chat() 提取为纯函数，形态矩阵可测）。
+    ///
+    /// 裁决序（BUG-20261114-061 修正）：stdout 先解析；解析成功且有内容
+    /// 即 Ok；解析 Err 暂存不吞——非零退出 + stderr 空时送达（stderr 优先
+    /// 保留）。旧编排 `let Ok(resp)` 把 turn.failed/error 已分类的 Err 吞掉，
+    /// 非零退出 + stderr 空时落 Unknown exited（分类与轮转双丢失）。
+    fn decide_output(
+        &self,
+        status_success: bool,
+        stdout: &str,
+        stderr: &str,
+        status_display: &str,
+        tools: &[ToolDefinition],
+        model: &str,
+    ) -> Result<LLMResponse, FailoverError> {
+        // Parse JSONL from stdout even if exit code is non-zero
+        let mut stdout_err: Option<FailoverError> = None;
+        if !stdout.is_empty() {
+            match self.parse_jsonl_events(stdout, model, tools) {
+                Ok(resp) if !resp.content.is_empty() || !resp.tool_calls.is_empty() => {
+                    return Ok(resp);
+                }
+                Err(e) => stdout_err = Some(e),
+                _ => {}
+            }
+        }
+
+        if !status_success {
+            if !stderr.is_empty() {
+                // stderr 是 CLI 对上游/API 错误的透传主通道——stderr 优先，
+                // 交真相源分类。
+                return Err(crate::failover::classify_message_error(
+                    "codex-cli",
+                    model,
+                    &format!("codex cli error: {stderr}"),
+                ));
+            }
+            // stderr 空时 stdout 里已分类的错误（turn.failed/error 事件）
+            // 不得丢成「exited with status」（BUG-20261114-061）。
+            if let Some(e) = stdout_err {
+                return Err(e);
+            }
+            return Err(FailoverError::Unknown {
+                provider: "codex-cli".to_string(),
+                message: format!("codex cli exited with status: {status_display}"),
+            });
+        }
+
+        // 零退出：stdout 解析 Err（turn.failed 分类 / 格式噪声）由最终解析
+        // 送达同一 Err（纯函数等价）；有效内容已提前返回；空内容维持空响应
+        // 语义。
+        self.parse_jsonl_events(stdout, model, tools)
+    }
 }
 
 #[async_trait]
@@ -323,36 +377,15 @@ impl LLMProvider for CodexCliProvider {
                 message: format!("failed to execute codex cli: {}", e),
             })?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Parse JSONL from stdout even if exit code is non-zero
-        if !stdout.is_empty()
-            && let Ok(resp) = self.parse_jsonl_events(&stdout, model, tools)
-            && (!resp.content.is_empty() || !resp.tool_calls.is_empty())
-        {
-            return Ok(resp);
-        }
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if !stderr.is_empty() {
-                // stderr 是 CLI 对上游/API 错误的透传主通道——同交真相源
-                // 分类。
-                return Err(crate::failover::classify_message_error(
-                    "codex-cli",
-                    model,
-                    &format!("codex cli error: {stderr}"),
-                ));
-            }
-            return Err(FailoverError::Unknown {
-                provider: "codex-cli".to_string(),
-                message: format!("codex cli exited with status: {}", output.status),
-            });
-        }
-
-        self.parse_jsonl_events(&stdout, model, tools)
+        self.decide_output(
+            output.status.success(),
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+            &output.status.to_string(),
+            tools,
+            model,
+        )
     }
-
     fn default_model(&self) -> &str {
         &self.config.default_model
     }

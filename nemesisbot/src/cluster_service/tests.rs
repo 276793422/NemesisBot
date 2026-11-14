@@ -36,6 +36,7 @@ async fn new_adapter_reports_not_running() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     // 固有方法 + trait 实现都报未运行。
@@ -65,6 +66,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     // 未运行时 stop() 必须短路 Ok（幂等停机），不触碰 cluster 内部。
@@ -203,6 +205,7 @@ fn make_adapter(
         work_queue.clone(),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
     (adapter, cluster, shared, task_list, work_queue, flag)
 }
@@ -452,6 +455,7 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         work_queue,
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     let err = adapter.start().expect_err("busy rpc port must fail start");
@@ -491,6 +495,7 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     // agent 构建 lenient-Ok(None) → running=true 但 handle 缺席。
@@ -773,6 +778,7 @@ async fn g5_first_start_reregisters_pending_continuations_from_disk() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None,
+        None, // 无发件箱（BUG-20261114-019）
     );
     adapter.first_start().expect("first_start");
 
@@ -820,6 +826,7 @@ async fn first_start_with_discussion_inbox_wires_sender() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         Some(inbox.clone()),
+        None, // 无发件箱（BUG-20261114-019）
     );
 
     // start 前：sender 未设 → 诚实 Err。

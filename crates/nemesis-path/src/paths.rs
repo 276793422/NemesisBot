@@ -732,6 +732,14 @@ impl MinimalConfig {
         // `~\` 反斜杠形态与 `~/` 同判（展开）——本函数
         // 是 MCP/security/skills/scanner 四个 resolve_*_config_path 的
         // workspace 来源，字面量穿透会把配置路径落到 cwd 下 `~` 目录。
+        // 裸 `~`（BUG-20261114-014）：家族纪律（expand_home /
+        // config::expand_tilde 同口径「裸 ~ = home」）在此变体上漏了裸形态
+        // ——`workspace: "~"` 落到字面 `~` 目录，四个 side-config 与主
+        // workspace（走 expand_tilde，正确落 home）分叉。home 不可判定时
+        // 返回 None 落默认布局（诚实降级），不回字面量。
+        if ws == "~" {
+            return dirs::home_dir();
+        }
         if (ws.starts_with("~/") || ws.starts_with("~\\"))
             && let Some(home) = dirs::home_dir()
         {

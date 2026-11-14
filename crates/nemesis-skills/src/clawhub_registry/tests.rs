@@ -2319,3 +2319,158 @@ fn test_with_urls_trailing_slash_normalized() {
     assert_eq!(d.base_url, DEFAULT_CLAWHUB_URL);
     assert_eq!(d.convex_url, DEFAULT_CONVEX_URL);
 }
+
+#[test]
+fn test_with_urls_normalizes_convex_site_url_trailing_slash() {
+    // BUG-20261114-043：with_urls 归一漏第三字段——convex_site_url 带尾
+    // 斜杠时 site_url() 原样返回，download_skill_zip 的 `{site}/api/v1/…`
+    // join 拼出 `//api/...`。base_url/convex_url 已归一（162），本字段同族补齐。
+    let r = ClawHubRegistry::with_urls(
+        "https://clawhub.ai",
+        "https://example.convex.cloud",
+        "https://custom.convex.site/",
+    );
+    assert_eq!(r.site_url(), "https://custom.convex.site");
+}
+
+#[test]
+fn test_raw_skill_md_url_encodes_owner_segment() {
+    // BUG-20261114-043：owner.handle 是 Convex API 外部数据——`#` 裸插值
+    // 切断 fragment（路径只剩 .../skills/ow，SKILL.md 永远 404）；编码后
+    // 单段语义保持（`/` 编码为 %2F，handle 不会被误展开为多段路径）。
+    assert_eq!(
+        raw_skill_md_url("ow#ner", "pdf"),
+        "https://raw.githubusercontent.com/openclaw/skills/main/skills/ow%23ner/pdf/SKILL.md"
+    );
+    assert_eq!(
+        raw_skill_md_url("octo", "pdf"),
+        "https://raw.githubusercontent.com/openclaw/skills/main/skills/octo/pdf/SKILL.md"
+    );
+}
+
+// --- BUG-20261114-046：成功路径响应体帽（16MB API JSON / 1MB SKILL.md）---
+
+#[tokio::test]
+async fn bug_20261114_046_convex_body_over_cap_is_honest_error() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // >16MB 的成功状态响应体：帽必须在 JSON 解析前拒绝，错误串有界
+    // （不把巨型载荷回显进错误消息/模型上下文）。
+    let giant = "A".repeat(17 * 1024 * 1024);
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(giant))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .get_skill_meta("pdf")
+        .await
+        .expect_err("over-cap body must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("response exceeds limit"),
+        "expected cap error, got: {msg}"
+    );
+    assert!(!msg.contains("AAAA"), "error must not echo giant body");
+}
+
+#[tokio::test]
+async fn bug_20261114_046_skill_md_over_cap_falls_through_to_next_strategy() {
+    let server = MockServer::start().await;
+    let registry = ClawHubRegistry::with_urls(&server.uri(), &server.uri(), "");
+
+    // Strategy 1（ClawHub file API）返回 >1MB 成功状态体：超帽按策略链
+    // 契约落穿 Strategy 2（convex 臂在本 mock 下响亮失败），而不是把
+    // 巨大内容当 SKILL.md 返回。
+    let giant = "A".repeat(2 * 1024 * 1024);
+    Mock::given(method("GET"))
+        .and(path("/api/v1/skills/pdf/file"))
+        .and(query_param("path", "SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(giant))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "error",
+            "value": null,
+            "errorMessage": "stop-here"
+        })))
+        .mount(&server)
+        .await;
+
+    let err = registry
+        .get_skill_content("pdf")
+        .await
+        .expect_err("over-cap strategy 1 must fall through, strategy 2 must fail loudly");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("convex error"),
+        "expected strategy-2 loud failure (proves fall-through), got: {msg}"
+    );
+}
+
+// ===========================================================================
+// BUG-20261114-059 回归锁：解压体量闸必须「读入过程本身拒绝」。
+//
+// 旧行为（红证）：总量闸 write-then-check——std::io::copy 把**整条**条目
+// 写完才累加、才检查 total_cap。单条目炸弹（50MB 压缩体 × deflate
+// ~1032:1 ≈ 51GB 解压）在闸门触发前已整条落盘，下载侧注释声称的
+// 「拒绝发生在读入过程本身」哲学与解压侧注释声称的「撑爆磁盘前拒绝」
+// 不变量双双不成立。
+// ===========================================================================
+
+/// 单条目炸弹：解压量 1MB >> cap 64KB。修后必须中途断——落盘残留
+/// 上界 = cap + 一个分块（64KB），不得等于完整 payload。
+#[test]
+fn extract_zip_to_dir_capped_aborts_single_entry_bomb_mid_stream() {
+    // 1MB 模式化 payload：deflate 后 KB 级（合法过压缩体闸），解压 1MB
+    // 远超 64KB 总量闸。
+    let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let zip_bytes = make_one_entry_zip(&payload);
+    let tmp = tempfile::tempdir().unwrap();
+    let err =
+        extract_zip_to_dir_capped(&zip_bytes, tmp.path().to_str().unwrap(), 64 * 1024).unwrap_err();
+    assert!(err.to_string().contains("exceeds limit"), "{err}");
+    // 中途断言：残留（或已清理）的输出文件不得等于完整 1MB payload——
+    // 写后检查形态在此红：文件完整落盘 = 1048576 字节。
+    let out = tmp.path().join("big.bin");
+    let written = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    assert!(
+        written <= 192 * 1024,
+        "单条目炸弹必须读入过程中断：落盘 {written} 字节 ≈ 完整 payload = write-then-check 形态复活"
+    );
+}
+
+/// 文件数闸：超过聚合文件数上限的包必须拒绝（小文件海啸 = inode/目录项
+/// 耗尽，体量闸管不住——每条目可以只有几个字节）。
+#[test]
+fn extract_zip_to_dir_capped_rejects_file_count_over_limit() {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    {
+        let mut w = zip::ZipWriter::new(&mut cursor);
+        let opts = zip::write::SimpleFileOptions::default();
+        // MAX_SKILL_FILE_COUNT + 1 个微型条目。
+        let n = crate::registry::MAX_SKILL_FILE_COUNT + 1;
+        for i in 0..n {
+            w.start_file(format!("f{i:05}.txt"), opts).unwrap();
+            std::io::Write::write_all(&mut w, b"x").unwrap();
+        }
+        w.finish().unwrap();
+    }
+    let zip_bytes = cursor.into_inner();
+    let tmp = tempfile::tempdir().unwrap();
+    let err = extract_zip_to_dir_capped(
+        &zip_bytes,
+        tmp.path().to_str().unwrap(),
+        u64::MAX, // 体量闸放开，只测文件数闸
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("file count"),
+        "超文件数上限必须拒绝并说明原因，实际错误：{msg}"
+    );
+}

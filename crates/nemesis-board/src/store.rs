@@ -1312,8 +1312,15 @@ impl BoardStore {
         if new.content.trim().is_empty() {
             return Err("comment content must not be empty".to_string());
         }
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        add_comment_on(&conn, &new)
+        // BUG-20261114-031 横向同族修复：add_comment_on 是多写序列（评论 +
+        // 订阅 + 活动 + N 条通知），锁只保证「与其他调用方不交错」，不保证
+        // 「写序列自身原子」——中途失败（如通知写一半出错）会残留半套状态
+        // （评论在场但部分订阅者没通知）。事务包裹整体回滚。
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let comment = add_comment_on(&tx, &new)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(comment)
     }
 
     /// 评论列表（issue 内按时间升序，线程展开由前端做）。
@@ -3610,6 +3617,51 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// 回写轮询窗口（R4/R5 复评整改）：状态过滤**下推 SQL** + `updated_at`
+    /// 水位增量。只拉「回写候选态」（调用方传，如 in_review/done/cancelled）
+    /// 且 `updated_at` 严大于水位的行，按 updated_at 升序——状态转移刷新
+    /// `updated_at`（`set_status` 等全部转移入口同刷新），旧任务后转态也会
+    /// 进入下一窗口，固定 LIMIT 创建序窗口把旧任务挤出去的饥饿形态不复存
+    /// 在；调用方以「本批成功收口的最后一条 updated_at」推进水位（失败停推
+    /// ——下轮从水位重扫，已收口单靠游标 Noop 幂等去重）。
+    ///
+    /// 与 [`Self::list_issues_by_origin_type`] 的分工：本方法是回写轮询的
+    /// 唯一数据源（旧方法保留给既有消费方/测试对照）。
+    pub fn list_issues_for_writeback(
+        &self,
+        origin_type: &str,
+        after_updated_at: i64,
+        statuses: &[&str],
+        limit: usize,
+    ) -> Result<Vec<Issue>, String> {
+        if statuses.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let placeholders = statuses.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // 占位序：?1 origin_type、?2 水位、?3.. 状态集、末位 limit。
+        let sql = format!(
+            "SELECT * FROM issue
+             WHERE origin_type = ?1 AND updated_at > ?2 AND status IN ({placeholders})
+             ORDER BY updated_at ASC, id ASC LIMIT ?{}",
+            statuses.len() + 3,
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(origin_type.to_string()),
+            Box::new(after_updated_at),
+        ];
+        for s in statuses {
+            bind.push(Box::new(s.to_string()));
+        }
+        bind.push(Box::new(limit as i64));
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(bind.iter()), row_to_issue)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     // -----------------------------------------------------------------------
     // 统计（看板列计数 / 验收）
     // -----------------------------------------------------------------------
@@ -3804,18 +3856,25 @@ impl BoardStore {
         if client_msg_id.trim().is_empty() {
             return Err("client_msg_id must not be empty".to_string());
         }
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = BoardStore::now();
 
+        // BUG-20261114-031：认领 + 落库 + seq 登记 + 首响回填全程**单事务**
+        // ——此前无事务，中途失败路径只删认领行，② 已写的评论/订阅/活动/
+        // 通知残留半套，同 id 重试会整套重落（重复评论 + 重复通知），文档
+        // 承诺的「同 id 重试不受影响」被实现打破。事务化后任何一步失败整体
+        // 回滚（认领行一并撤销），原显式 DELETE 回滚臂不再需要。
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
         // ① 幂等认领：INSERT OR IGNORE 占位；changes()==0 → 重复请求。
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO msg_dedup (origin_node, client_msg_id, first_response, created_at)
              VALUES (?1, ?2, '', ?3)",
             params![origin_node, client_msg_id, now],
         )
         .map_err(|e| e.to_string())?;
-        if conn.changes() == 0 {
-            let cached: String = conn
+        if tx.changes() == 0 {
+            let cached: String = tx
                 .query_row(
                     "SELECT first_response FROM msg_dedup
                      WHERE origin_node = ?1 AND client_msg_id = ?2",
@@ -3831,13 +3890,13 @@ impl BoardStore {
             });
         }
 
-        // ②③ 落库 + seq 登记；失败先删认领行（回滚），同 id 可重试。
+        // ②③ 落库 + seq 登记；任一步失败 = 事务 drop 整体回滚，同 id 可重试。
         let posted = (|| -> Result<PostedMessage, String> {
             let message_id = match target_kind {
                 thread_kind::ISSUE => {
                     let ctype = CommentType::from_str(kind_tag).unwrap_or(CommentType::Comment);
                     let comment = add_comment_on(
-                        &conn,
+                        &tx,
                         &NewComment {
                             issue_id: target_id,
                             author: sender.clone(),
@@ -3850,7 +3909,7 @@ impl BoardStore {
                 }
                 thread_kind::CHANNEL => {
                     let msg = append_channel_message_on(
-                        &conn,
+                        &tx,
                         &NewChannelMessage {
                             channel_id: target_id,
                             sender: sender.clone(),
@@ -3863,13 +3922,13 @@ impl BoardStore {
                 }
                 other => return Err(format!("unknown thread kind: {other}")),
             };
-            conn.execute(
+            tx.execute(
                 "INSERT INTO seq_ledger (thread_kind, thread_id, message_id, sender_id, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![target_kind, target_id, message_id, sender.id, now],
             )
             .map_err(|e| e.to_string())?;
-            let seq = conn.last_insert_rowid();
+            let seq = tx.last_insert_rowid();
             let response = if target_kind == thread_kind::ISSUE {
                 serde_json::json!({"comment_id": message_id, "seq": seq})
             } else {
@@ -3885,21 +3944,18 @@ impl BoardStore {
 
         match posted {
             Ok(p) => {
-                conn.execute(
+                tx.execute(
                     "UPDATE msg_dedup SET first_response = ?3
                      WHERE origin_node = ?1 AND client_msg_id = ?2",
                     params![origin_node, client_msg_id, p.response.to_string()],
                 )
                 .map_err(|e| e.to_string())?;
+                tx.commit().map_err(|e| e.to_string())?;
                 Ok(p)
             }
-            Err(e) => {
-                let _ = conn.execute(
-                    "DELETE FROM msg_dedup WHERE origin_node = ?1 AND client_msg_id = ?2",
-                    params![origin_node, client_msg_id],
-                );
-                Err(e)
-            }
+            // 失败路径：事务 drop 即整体回滚（认领行 + 已落半套副作用一并
+            // 撤销），同 id 重试作为全新请求处理。
+            Err(e) => Err(e),
         }
     }
 
@@ -4561,7 +4617,8 @@ fn append_channel_message_on(
 /// 落一条 issue 评论的完整副作用（不加锁内核）：FK 校验 + 评论行 +
 /// 订阅 + activity + 站内通知（订阅者 ∪ 指派 − 作者；@提及优先）。
 /// [`BoardStore::add_comment`] 与 `post_discussion_envelope` 共用——
-/// 统一定义，后者靠外层持同一把锁保证原子。
+/// 统一定义，两个调用方各自用事务包裹本函数（BUG-20261114-031：写序列
+/// 自身原子性靠事务，锁只保证与其他调用方不交错）。
 fn add_comment_on(conn: &Connection, new: &NewComment) -> Result<Comment, String> {
     // FK 校验 + 顺带取通知标题需要的编号/标题/指派（一次查询）。
     let (number, title, at, aid): (String, String, Option<String>, Option<String>) = conn

@@ -163,6 +163,49 @@ fn release_session_drains_queue_before_releasing() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261113-170：完全释放摘除条目（24/7 会话数无界累积根修）。
+// 排队路径条目保留；全释放后 map 回空；缺席键读路径观测等价
+// （旧行为留 busy=false 死条目，读路径 (false,0) 不可区分）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn release_session_evicts_entry_on_full_release() {
+    let al = AgentLoop::new(Box::new(CovQuietProvider), test_config());
+    let key = "agent:main:session:evict";
+
+    // busy + 排队：release 只消耗队列，条目保留（排队期间闸语义需要它）。
+    al.session_busy.lock().insert(
+        key.to_string(),
+        SessionBusyState {
+            busy: true,
+            queue_length: 1,
+        },
+    );
+    assert!(al.release_session(key), "queue remaining → stays busy");
+    assert_eq!(al.session_busy.lock().len(), 1, "排队未排空前条目保留");
+
+    // 队列已空：完全释放 → 条目摘除，map 回空。
+    assert!(!al.release_session(key));
+    assert!(
+        al.session_busy.lock().is_empty(),
+        "完全释放后条目必须摘除（无界累积根修）"
+    );
+    // 缺席键读路径观测等价。
+    assert_eq!(al.get_session_busy_state(key), (false, 0));
+    assert_eq!(al.session_queue_length(key), 0);
+    assert!(!al.is_session_busy(key));
+
+    // 摘除后可正常重新认领；再完全释放再摘。
+    assert!(al.try_acquire_session(key));
+    assert!(!al.release_session(key));
+    assert!(al.session_busy.lock().is_empty());
+
+    // 重复 release（条目已不在）：no-op false，不复活条目。
+    assert!(!al.release_session(key));
+    assert!(al.session_busy.lock().is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // inbox_status：三模式快照（dashboard 可见性）
 // ---------------------------------------------------------------------------
 

@@ -50,6 +50,11 @@ pub struct ClusterServiceAdapter {
     // 裁剪时 None）。每次 start 换入新管道（stop/start 周期安全）。
     discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    /// 发件箱（BUG-20261114-019）：terminal 停机链经
+    /// [`Self::stop_push_loop`] 收口推送循环——spawn 点句柄已丢弃，
+    /// 本槽是全进程唯一终止通路。board+cluster 裁剪组合下恒 None
+    /// （无 outbox = 无推送循环 = 无可停）。
+    transfer_outbox: Option<Arc<nemesis_cluster::outbox::TransferOutbox>>,
 }
 
 impl ClusterServiceAdapter {
@@ -64,6 +69,7 @@ impl ClusterServiceAdapter {
         cluster_work_queue: Arc<ClusterWorkQueue>,
         result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
         discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
+        transfer_outbox: Option<Arc<nemesis_cluster::outbox::TransferOutbox>>,
     ) -> Self {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         Self {
@@ -80,6 +86,7 @@ impl ClusterServiceAdapter {
             result_persister,
             discussion_inbox,
             shutdown_tx,
+            transfer_outbox,
         }
     }
 
@@ -93,6 +100,20 @@ impl ClusterServiceAdapter {
     #[allow(dead_code)]
     pub fn cluster(&self) -> &Arc<Cluster> {
         &self.cluster
+    }
+
+    /// 终态停机收口：取消发件箱推送循环（BUG-20261114-019）。
+    ///
+    /// **仅 gateway terminal 停机链（runtime.rs 收尾块）消费**——
+    /// [`Self::stop`]（LifecycleService）是动态语义（tray/Dashboard
+    /// start/stop 周期），不得触达：push loop 是进程生命周期常驻，
+    /// 杀掉后无人重新 spawn，动态禁用→重启会永久失去推送能力。
+    /// 空槽（board/cluster 裁剪组合）= 无循环 = 幂等 no-op。
+    #[cfg(feature = "cluster")]
+    pub fn stop_push_loop(&self) {
+        if let Some(ref outbox) = self.transfer_outbox {
+            outbox.stop_push_loop();
+        }
     }
 
     /// Perform first-time cluster agent startup (called once from gateway.rs).

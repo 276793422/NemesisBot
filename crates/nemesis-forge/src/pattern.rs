@@ -1,16 +1,14 @@
 //! Pattern extraction - detects reusable patterns from experience data.
 //!
-//! Implements four pattern detectors:
-//! - tool_chain: High-frequency tool sequences
-//! - error_recovery: Tools that fail then succeed
-//! - efficiency_issue: Slow or wasteful tool usage
-//! - success_template: Consistently successful tool patterns
+//! B1（缺陷整改批次 2026-11-14）：检测逻辑单一来源 =
+//! [`extract_conversation_patterns`]（会话级 ConversationPattern，镜像 Go）。
+//! 旧「经验级」工具计数检测器族（`Pattern`/`PatternType` +
+//! 四个 detect_*）已整体删除——它们把「单工具出现次数」当链、失败率当
+//! 恢复，产出的伪模式污染下游决策表。
 //!
-//! Also provides `ConversationPattern` with rich metadata for conversation-level
-//! pattern detection (mirrors Go's `ConversationPattern` struct), including
-//! SHA256 fingerprinting, first_seen/last_seen tracking, arg_keys deduplication,
-//! and type-specific fields (tool_chain, avg_rounds, error_tool, recovery_tool,
-//! efficiency_score).
+//! `ConversationPattern` 提供会话级富元数据（SHA256 指纹去重、
+//! first_seen/last_seen、参数键聚合、类型专属字段 tool_chain/avg_rounds/
+//! error_tool/recovery_tool/efficiency_score）。
 
 use std::collections::HashMap;
 
@@ -18,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use nemesis_types::utils;
 
-use crate::types::{CollectedExperience, ExperienceStats};
+use crate::types::CollectedExperience;
 
 // ---------------------------------------------------------------------------
 // ConversationPattern — rich pattern type (mirrors Go's ConversationPattern)
@@ -127,36 +125,6 @@ impl ConversationPattern {
 }
 
 // ---------------------------------------------------------------------------
-// Existing Pattern type (experience-level detection)
-// ---------------------------------------------------------------------------
-
-/// A detected pattern with metadata.
-#[derive(Debug, Clone)]
-pub struct Pattern {
-    /// Pattern type identifier.
-    pub pattern_type: PatternType,
-    /// Frequency of occurrence.
-    pub frequency: u32,
-    /// Confidence score [0, 1].
-    pub confidence: f64,
-    /// Human-readable description.
-    pub description: String,
-    /// Associated tool names.
-    pub tools: Vec<String>,
-    /// Supporting data (JSON).
-    pub data: serde_json::Value,
-}
-
-/// Types of detectable patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatternType {
-    ToolChain,
-    ErrorRecovery,
-    EfficiencyIssue,
-    SuccessTemplate,
-}
-
-// ---------------------------------------------------------------------------
 // Fingerprint helpers
 // ---------------------------------------------------------------------------
 
@@ -212,7 +180,6 @@ struct RecoveryAgg {
     error_tool: String,
     recovery_tool: String,
     count: u32,
-    successes: u32,
     #[allow(dead_code)]
     error_codes: HashMap<String, u32>,
     first_seen: String,
@@ -331,68 +298,102 @@ pub fn detect_conversation_tool_chains(
 }
 
 /// Detect error recovery patterns at the conversation level (mirrors Go's detectErrorRecoveryPatterns).
+///
+/// BUG-20261114-017/018 两处语义修复：
+/// - **会话内配对**：旧实现全局按时间排序后 `windows(2)`——跨会话事件穿插在
+///   失败与恢复之间时，同会话 (失败,恢复) 对永不相邻 → 系统性漏检（多会话
+///   并发是常态）。与其余三个检测器同构：先按 session 分组，会话内排序后
+///   再配对。单调增益：旧实现能检出的对（全局相邻且同会话）在新结构下
+///   依旧相邻，只增不漏。
+/// - **真置信度**：旧实现 `successes` 与 `count` 在同一分支同步自增（检测
+///   条件本身即「失败后恢复成功」），recovery_rate 恒 ≡ 1.0 → 决策表
+///   conf ≥ high_confidence 恒真，`error_recovery_suggest_min` 臂死代码
+///   （同提交已对 success_template 的同构恒真式裁断「置信度闸恒真无区分
+///   度」）。现分母 = 失败工具在本批经验中的失败总数（无论后续跟什么：
+///   同工具重试 / 其他工具失败 / 会话结束，失败都计入），置信度 = 恢复
+///   覆盖率 hits / failures(error_tool)，(0,1] 区间真方差，三臂表恢复
+///   区分度。
 pub fn detect_conversation_error_recovery(
     experiences: &[CollectedExperience],
     min_freq: u32,
 ) -> Vec<ConversationPattern> {
     let mut agg: HashMap<String, RecoveryAgg> = HashMap::new();
+    // 失败工具 → 失败总次数（置信度分母，全会话累计；map-out 阶段已完整）。
+    let mut failures: HashMap<String, u32> = HashMap::new();
 
-    // Look for consecutive experiences: failed tool -> different tool -> success
-    let mut sorted: Vec<&CollectedExperience> = experiences.iter().collect();
-    sorted.sort_by(|a, b| a.experience.timestamp.cmp(&b.experience.timestamp));
+    // Group by session first, then pair within each session.
+    let mut sessions: HashMap<&str, Vec<&CollectedExperience>> = HashMap::new();
+    for exp in experiences {
+        sessions
+            .entry(&exp.experience.session_key)
+            .or_default()
+            .push(exp);
+    }
 
-    for window in sorted.windows(2) {
-        let prev = &window[0];
-        let next = &window[1];
+    for exps in sessions.values() {
+        let mut sorted: Vec<&CollectedExperience> = exps.to_vec();
+        sorted.sort_by(|a, b| a.experience.timestamp.cmp(&b.experience.timestamp));
 
-        // Condition: prev failed, next succeeded, different tools, same session
-        if prev.experience.success || !next.experience.success {
-            continue;
-        }
-        if prev.experience.tool_name == next.experience.tool_name {
-            continue;
-        }
-        if prev.experience.session_key != next.experience.session_key {
-            continue;
-        }
-
-        let key = format!(
-            "{}:{}",
-            prev.experience.tool_name, next.experience.tool_name
-        );
-        let fp = pattern_fingerprint("error_recovery", &key);
-
-        let timestamp = prev.experience.timestamp.clone();
-
-        if let Some(a) = agg.get_mut(&fp) {
-            a.count += 1;
-            a.successes += 1;
-            if timestamp < a.first_seen {
-                a.first_seen = timestamp.clone();
+        for (i, prev) in sorted.iter().enumerate() {
+            // 失败计数与配对解耦：凡是失败都计入分母（哪怕后面没跟任何
+            // 事件——会话尾部的失败也是未被恢复的失败）。
+            if prev.experience.success {
+                continue;
             }
-            if timestamp > a.last_seen {
-                a.last_seen = timestamp.clone();
+            *failures
+                .entry(prev.experience.tool_name.clone())
+                .or_insert(0) += 1;
+
+            let Some(next) = sorted.get(i + 1) else {
+                continue;
+            };
+            // 恢复命中：同会话相邻、失败工具 ≠ 恢复工具、下一事件成功。
+            // （同工具成功 = 重试自愈，不属于跨工具恢复链。）
+            if next.experience.success && next.experience.tool_name != prev.experience.tool_name {
+                let key = format!(
+                    "{}:{}",
+                    prev.experience.tool_name, next.experience.tool_name
+                );
+                let fp = pattern_fingerprint("error_recovery", &key);
+
+                let timestamp = prev.experience.timestamp.clone();
+
+                if let Some(a) = agg.get_mut(&fp) {
+                    a.count += 1;
+                    if timestamp < a.first_seen {
+                        a.first_seen = timestamp.clone();
+                    }
+                    if timestamp > a.last_seen {
+                        a.last_seen = timestamp.clone();
+                    }
+                } else {
+                    agg.insert(
+                        fp,
+                        RecoveryAgg {
+                            error_tool: prev.experience.tool_name.clone(),
+                            recovery_tool: next.experience.tool_name.clone(),
+                            count: 1,
+                            error_codes: HashMap::new(),
+                            first_seen: timestamp.clone(),
+                            last_seen: timestamp,
+                        },
+                    );
+                }
             }
-        } else {
-            agg.insert(
-                fp,
-                RecoveryAgg {
-                    error_tool: prev.experience.tool_name.clone(),
-                    recovery_tool: next.experience.tool_name.clone(),
-                    count: 1,
-                    successes: 1,
-                    error_codes: HashMap::new(),
-                    first_seen: timestamp.clone(),
-                    last_seen: timestamp,
-                },
-            );
         }
     }
 
     agg.into_iter()
         .filter(|(_, a)| a.count >= min_freq)
         .map(|(fp, a)| {
-            let recovery_rate = a.successes as f64 / a.count as f64;
+            // 覆盖率 = 命中数 / 失败工具失败总数；失败数 ≥ 命中数（每次
+            // 命中都对应一次失败），分母恒 ≥ 1。max 守卫防御性兜底。
+            let denom = failures
+                .get(&a.error_tool)
+                .copied()
+                .unwrap_or(0)
+                .max(a.count) as f64;
+            let recovery_rate = a.count as f64 / denom;
             let confidence = recovery_rate;
             let mut p = ConversationPattern::new(ConversationPatternType::ErrorRecovery, &fp);
             p.frequency = a.count;
@@ -404,7 +405,7 @@ pub fn detect_conversation_error_recovery(
             p.success_rate = Some(recovery_rate);
             p.description = format!(
                 "Error recovery: {} \u{2192} {} (recovered {}/{} times)",
-                a.error_tool, a.recovery_tool, a.successes, a.count
+                a.error_tool, a.recovery_tool, a.count, denom as u32
             );
             p
         })
@@ -634,163 +635,6 @@ pub fn extract_conversation_patterns(
     });
 
     patterns
-}
-
-/// Extract patterns from a set of collected experiences.
-pub fn extract_patterns(
-    experiences: &[CollectedExperience],
-    stats: &ExperienceStats,
-) -> Vec<Pattern> {
-    let mut patterns = Vec::new();
-
-    patterns.extend(detect_tool_chains(experiences, stats));
-    patterns.extend(detect_error_recovery(experiences));
-    patterns.extend(detect_efficiency_issues(experiences, stats));
-    patterns.extend(detect_success_templates(experiences));
-
-    patterns
-}
-
-/// Detect high-frequency tool chains.
-fn detect_tool_chains(
-    experiences: &[CollectedExperience],
-    _stats: &ExperienceStats,
-) -> Vec<Pattern> {
-    let mut tool_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-
-    for exp in experiences {
-        *tool_counts
-            .entry(exp.experience.tool_name.clone())
-            .or_insert(0) += 1;
-    }
-
-    let total = experiences.len() as f64;
-    tool_counts
-        .into_iter()
-        .filter(|(_, count)| *count >= 3)
-        .map(|(tool, count)| {
-            let frequency_ratio = count as f64 / total;
-            Pattern {
-                pattern_type: PatternType::ToolChain,
-                frequency: count,
-                confidence: frequency_ratio.min(1.0),
-                description: format!(
-                    "High-frequency tool: {} used {} times ({:.0}%)",
-                    tool,
-                    count,
-                    frequency_ratio * 100.0
-                ),
-                tools: vec![tool],
-                data: serde_json::json!({"frequency_ratio": frequency_ratio}),
-            }
-        })
-        .collect()
-}
-
-/// Detect error recovery patterns (tool fails, then succeeds).
-fn detect_error_recovery(experiences: &[CollectedExperience]) -> Vec<Pattern> {
-    let mut tool_errors: std::collections::HashMap<String, (u32, u32)> =
-        std::collections::HashMap::new();
-
-    for exp in experiences {
-        let entry = tool_errors
-            .entry(exp.experience.tool_name.clone())
-            .or_insert((0, 0));
-        entry.1 += 1;
-        if !exp.experience.success {
-            entry.0 += 1;
-        }
-    }
-
-    tool_errors
-        .into_iter()
-        .filter(|(_, (errors, total))| *errors > 0 && *total >= 3)
-        .map(|(tool, (errors, total))| {
-            let error_rate = errors as f64 / total as f64;
-            Pattern {
-                pattern_type: PatternType::ErrorRecovery,
-                frequency: errors,
-                confidence: error_rate,
-                description: format!(
-                    "Error recovery: {} has {:.0}% failure rate ({}/{})",
-                    tool,
-                    error_rate * 100.0,
-                    errors,
-                    total
-                ),
-                tools: vec![tool],
-                data: serde_json::json!({"error_rate": error_rate}),
-            }
-        })
-        .collect()
-}
-
-/// Detect efficiency issues (slow tools).
-fn detect_efficiency_issues(
-    experiences: &[CollectedExperience],
-    stats: &ExperienceStats,
-) -> Vec<Pattern> {
-    let avg_duration = stats.avg_duration_ms;
-
-    experiences
-        .iter()
-        .filter(|e| e.experience.duration_ms as f64 > avg_duration * 2.0)
-        .map(|e| {
-            let ratio = e.experience.duration_ms as f64 / avg_duration.max(1.0);
-            Pattern {
-                pattern_type: PatternType::EfficiencyIssue,
-                frequency: 1,
-                confidence: (ratio - 1.0).min(1.0),
-                description: format!(
-                    "Slow operation: {} took {}ms (avg: {:.0}ms, {:.1}x slower)",
-                    e.experience.tool_name, e.experience.duration_ms, avg_duration, ratio
-                ),
-                tools: vec![e.experience.tool_name.clone()],
-                data: serde_json::json!({
-                    "duration_ms": e.experience.duration_ms,
-                    "avg_ms": avg_duration,
-                    "ratio": ratio,
-                }),
-            }
-        })
-        .collect()
-}
-
-/// Detect success templates (consistently successful patterns).
-fn detect_success_templates(experiences: &[CollectedExperience]) -> Vec<Pattern> {
-    let mut tool_success: std::collections::HashMap<String, (u32, u32)> =
-        std::collections::HashMap::new();
-
-    for exp in experiences {
-        if exp.experience.success {
-            let entry = tool_success
-                .entry(exp.experience.tool_name.clone())
-                .or_insert((0, 0));
-            entry.0 += 1;
-            entry.1 += 1;
-        } else {
-            let entry = tool_success
-                .entry(exp.experience.tool_name.clone())
-                .or_insert((0, 0));
-            entry.1 += 1;
-        }
-    }
-
-    tool_success
-        .into_iter()
-        .filter(|(_, (successes, total))| *total >= 3 && *successes == *total)
-        .map(|(tool, (successes, total))| Pattern {
-            pattern_type: PatternType::SuccessTemplate,
-            frequency: successes,
-            confidence: 1.0,
-            description: format!(
-                "Perfect success: {} succeeded {}/{} times",
-                tool, successes, total
-            ),
-            tools: vec![tool],
-            data: serde_json::json!({"success_rate": 1.0}),
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@
 //! 制造选不中的死项）。
 
 use crate::handlers::require_workspace;
+use crate::handlers::shell_open;
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -112,6 +113,39 @@ fn path_contains(root: &Path, target: &Path) -> bool {
     prefix && t.as_bytes()[r.len()] == b'/'
 }
 
+/// editor 开关闸类型（与 agent 工具层 `WorkspaceBoundary.editor_gate` 同形：
+/// 原始类型签名，不暴露 nemesis-security 类型——feature 无关持有）。
+type EditorFenceGate = std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
+
+/// 链接围栏的 editor 开关闸（读族，BUG 修复：链接围栏此前未接开关）。
+/// 判定与 agent 工具围栏 fence_gate 同源同判（同一 EditorAccessState）：
+/// Full Access 开 = 界外路径放行；security 裁剪 / 未装配（headless、降级
+/// 形态）= None = 无闸（fail-safe 旧行为：越界照拒）。
+#[cfg(feature = "security")]
+fn editor_fence_gate() -> Option<EditorFenceGate> {
+    crate::handlers::editor::editor_access_state().map(|s| s.fence_gate())
+}
+
+#[cfg(not(feature = "security"))]
+fn editor_fence_gate() -> Option<EditorFenceGate> {
+    None
+}
+
+/// 越界拒绝的解除指引后缀（security 裁剪形态无此开关，指引一并缺席——
+/// 不给修辞性指向不存在的页面）。
+#[cfg(feature = "security")]
+const OUT_OF_BOUNDS_HINT: &str =
+    "。如需放行工作区外路径：开启 Full Access（聊天框旁 FullAccess 按钮或 设置 → 编辑器 TAB）";
+#[cfg(not(feature = "security"))]
+const OUT_OF_BOUNDS_HINT: &str = "";
+
+/// 「全链无命中」报错的指引后缀（2026-11-14 BUG：裸文件名/相对形态在工作
+/// 区锚下无一目录存在时，祖先回退到锚根本身 = 打开一个与文件真实位置无关
+/// 的目录，误导）。不点名开关（不存在「放行未找到」的开关），指引的是
+/// 引用形态本身。不 gate security——围栏与指引语义在裁剪形态同样成立。
+const NOT_FOUND_HINT: &str =
+    "。若是工作区外文件，请让 bot 用完整绝对路径引用（如 C:/path/file.md），前端链接才能正确打开";
+
 /// `..` 段拒绝 + 分隔符归一（点击链接语义不需要逃逸形态；合法嵌套路径
 /// 用绝对或 workspace 相对形态表达）。
 fn normalize_click_path(raw: &str) -> Result<String, String> {
@@ -138,72 +172,293 @@ fn allowed_open_roots(main_workspace: &str) -> Vec<PathBuf> {
     roots
 }
 
-/// 解析点击路径 → (绝对路径, 是否目录)。
+/// 注册项目 → (目录叶名, 项目根路径) 表（项目名前缀剥段臂用；无 bridge =
+/// 空表）。叶名取自注册路径磁盘形态，模型从 workspace 父目录视角写路径
+/// 时首段即它。
+fn project_leaf_roots() -> Vec<(String, PathBuf)> {
+    let Some(bridge) = crate::handlers::projects::projects_bridge() else {
+        return Vec::new();
+    };
+    bridge
+        .list()
+        .iter()
+        .filter_map(|p| {
+            Path::new(&p.path)
+                .file_name()
+                .map(|n| (n.to_string_lossy().to_string(), PathBuf::from(&p.path)))
+        })
+        .collect()
+}
+
+/// 解析产物：绝对路径 + 类型 + 存在性。`exists=false` = 文件未命中、
+/// 回落到最近存在祖先目录的产物（响应面诚实注记「文件未找到」）。
+#[derive(Debug, PartialEq)]
+pub(crate) struct ResolvedTarget {
+    pub path: PathBuf,
+    pub is_dir: bool,
+    pub exists: bool,
+}
+
+/// 锚链单次解析的结果分类：命中 / 未命中（带祖先候选——CJK 剥前缀回退
+/// 可继续，全部候选未命中才落祖先回退）/ 越界（短路——回退候选同样
+/// 不放松任何闸）。
+#[derive(Debug)]
+enum ChainOutcome {
+    /// 存在目标命中（exists=true）。
+    Hit(ResolvedTarget),
+    /// 全链无存在目标：`ancestor` = 最近存在祖先目录（若有）；`err` =
+    /// 「文件不存在」错误面。**祖先回退不在这里落地**——CJK 剥前缀
+    /// 优先（候选命中真实文件远优于开一个祖先目录），祖先只在全部
+    /// 候选未命中后由 [`resolve_click_target`] 兜底消费。
+    Miss(Option<ResolvedTarget>, String),
+    /// 越界（containment 拒绝——短路，不参与回退）。
+    OutOfBounds(String),
+}
+
+/// 解析点击路径 → [`ResolvedTarget`]。
 ///
-/// - **相对**（`reports/notes.md` / `notes.md`）：拼 session root（调用方
-///   已按会话切换），再过包含闸（纵深：join 相对恒在 root 下，闸兜异常形态）。
+/// - **相对**（`reports/notes.md` / `notes.md`）：锚链逐根试存在性——
+///   session root（项目会话语义不变）在先，未命中再试其余允许根（主
+///   workspace + 全部注册项目），首个存在者胜（确定性优先）。
 /// - **绝对**（模型常输出绝对路径）：仅放行 [`allowed_open_roots`] 集合内；
 ///   集合外诚实报错（含探测面收敛：报错只说越界，不回显集合内容）。
-/// - 目标不存在 → **CJK 引导语剥前缀回退**（见 [`cjk_boundary_candidates`]）
-///   后仍不存在才诚实报错（前端 toast 提示，不留死链接静默）。
+/// - 全链未命中 → **CJK 引导语剥前缀回退**（见 [`cjk_boundary_candidates`]，
+///   只收存在命中）→ 仍无命中 → **最近存在祖先目录兜底**（文件未找到时
+///   打开其所在的真实目录，`exists=false` 诚实注记；祖先逐级过
+///   containment 绝不逃逸）；连祖先都不存在才诚实报错（前端 toast 提示，
+///   不留死链接静默）。
 ///
-/// 纯决策不 spawn——测试面；实际打开在 [`FsHandler::handle_cmd`] 的 `open` 臂。
+/// 纯决策不 spawn——测试面；实际打开在 [`FsHandler::handle_cmd`] 的
+/// `open` / `resolve` 臂。
 fn resolve_click_target(
     session_root: &str,
     main_workspace: &str,
     raw: &str,
-) -> Result<(PathBuf, bool), String> {
+) -> Result<ResolvedTarget, String> {
     let norm = normalize_click_path(raw)?;
-    match try_resolve_once(session_root, main_workspace, &norm) {
-        Ok(hit) => Ok(hit),
-        Err(e) if e.contains("文件不存在") => {
+    // editor 开关闸每请求现取（不缓存）——开关热生效，agent 工具围栏同款。
+    let gate = editor_fence_gate();
+    match try_resolve_chain(session_root, main_workspace, &norm, gate.as_ref()) {
+        ChainOutcome::Hit(t) => Ok(t),
+        ChainOutcome::OutOfBounds(e) => Err(e),
+        ChainOutcome::Miss(ancestor, e) => {
             // 存在性回退（用户设计：候选不存在不应直接死，先剥
             // 粘连的中文引导语找真实文件——「见docs/总结.md」→ docs/总结.md）。
             // 每个候选先过同一套 normalize 闸（`..` 段拒绝必须重跑——raw
             // 「见../x」因首段是「见..」可通过整体检查，切出的候选「../x」
             // 若不过闸，path_contains 字符串前缀检查拦不住 OS 层.. 解析，
-            // 即成逃逸面），再走同一条 try_resolve_once。
+            // 即成逃逸面），再走同一条锚链。**只收 Hit**——候选再 miss
+            // 也不抢原始路径的祖先回退权（候选的祖先与原始路径的祖先
+            // 高度重叠，抢了会让「见docs/不存在.md」开错目录）。
             for cand in cjk_boundary_candidates(&norm) {
                 if normalize_click_path(&cand).is_err() {
                     continue;
                 }
-                if let Ok(hit) = try_resolve_once(session_root, main_workspace, &cand) {
-                    return Ok(hit);
+                if let ChainOutcome::Hit(t) =
+                    try_resolve_chain(session_root, main_workspace, &cand, gate.as_ref())
+                {
+                    return Ok(t);
                 }
             }
-            Err(e)
+            // 祖先回退（最后）：全链无存在目标 → 最近存在祖先目录
+            // （文件所在的真实目录，exists=false）；**回退剥到锚根本身**
+            // （路径文本点名的目录在锚下无一存在——裸名/界外文件相对
+            // 形态，2026-11-14 BUG）→ None → 诚实报错 + 绝对路径指引，
+            // 不再打开与文件真实位置无关的锚根。
+            match ancestor {
+                Some(t) => Ok(t),
+                None => Err(format!("{e}{NOT_FOUND_HINT}")),
+            }
         }
-        Err(e) => Err(e),
     }
 }
 
-/// 单次解析（归一后的路径）：containment + 存在性，供回退循环复用。
-fn try_resolve_once(
+/// 锚链解析（归一后的路径）：绝对臂 / 相对臂共用存在性判定 + 祖先回退 +
+/// 分隔符统一。`editor_gate` = editor 开关围栏闸（读族，[`editor_fence_gate`]）——
+/// 越界绝对路径先问它（Full Access 开 = 放行），None = 无闸（containment
+/// 照拒；测试面注入点，生产走全局开关槽）。
+fn try_resolve_chain(
     session_root: &str,
     main_workspace: &str,
     norm: &str,
-) -> Result<(PathBuf, bool), String> {
+    editor_gate: Option<&EditorFenceGate>,
+) -> ChainOutcome {
     let p = Path::new(norm);
-    let target = if p.is_absolute() || p.has_root() {
-        if !allowed_open_roots(main_workspace)
-            .iter()
-            .any(|root| path_contains(root, p))
-        {
-            return Err(format!(
-                "path 越出 workspace（仅允许工作区/项目目录内）: {norm}"
+    let roots = allowed_open_roots(main_workspace);
+    if p.is_absolute() || p.has_root() {
+        let inside = roots.iter().any(|root| path_contains(root, p));
+        if !inside && !editor_gate.map(|g| g(norm, false)).unwrap_or(false) {
+            return ChainOutcome::OutOfBounds(format!(
+                "path 越出 workspace（仅允许工作区/项目目录内）: {norm}{OUT_OF_BOUNDS_HINT}"
             ));
         }
-        PathBuf::from(norm)
-    } else {
-        let joined = PathBuf::from(session_root).join(norm);
-        if !path_contains(Path::new(session_root), &joined) {
-            return Err(format!("path 越出 workspace: {norm}"));
+        // 祖先 containment 集合：开关放行的界外形态无界（剥到第一个存在
+        // 目录即胜——放行语义是整条路径，祖先回退不折返 containment）；
+        // 集合内形态照旧过 roots。
+        let ancestor_roots = if inside { Some(&roots[..]) } else { None };
+        let target = unify_separators(PathBuf::from(norm));
+        return match std::fs::metadata(&target) {
+            Ok(meta) => ChainOutcome::Hit(ResolvedTarget {
+                path: target,
+                is_dir: meta.is_dir(),
+                exists: true,
+            }),
+            Err(_) => match nearest_existing_ancestor(&target, ancestor_roots, true) {
+                Some(dir) => ChainOutcome::Miss(
+                    Some(ResolvedTarget {
+                        path: unify_separators(dir),
+                        is_dir: true,
+                        exists: false,
+                    }),
+                    format!("文件不存在: {norm}"),
+                ),
+                None => ChainOutcome::Miss(None, format!("文件不存在: {norm}")),
+            },
+        };
+    }
+    // 相对：锚链 = session root 在先 + 其余允许根（去重——主会话形态
+    // session root == 主 workspace，锚链退化为单根，行为与旧版一致）。
+    let mut chain = vec![PathBuf::from(session_root)];
+    for r in &roots {
+        if !chain.iter().any(|c| same_path(c, r)) {
+            chain.push(r.clone());
         }
-        joined
+    }
+    let mut ancestor: Option<ResolvedTarget> = None;
+    for root in &chain {
+        let joined = unify_separators(root.join(norm));
+        if !path_contains(root, &joined) {
+            continue; // 纵深闸（合法 join 恒过）
+        }
+        if let Ok(meta) = std::fs::metadata(&joined) {
+            return ChainOutcome::Hit(ResolvedTarget {
+                path: joined,
+                is_dir: meta.is_dir(),
+                exists: true,
+            });
+        }
+        if ancestor.is_none()
+            && let Some(a) =
+                nearest_existing_ancestor(&joined, Some(std::slice::from_ref(root)), false)
+        {
+            ancestor = Some(ResolvedTarget {
+                path: unify_separators(a),
+                is_dir: true,
+                exists: false,
+            });
+        }
+    }
+    // 项目目录名前缀剥段（workspace 视角路径）：`proj/note.md`（proj =
+    // 注册项目目录叶名）——直接 join 项目根得到 proj\proj\note.md 死路，
+    // 模型从工作区父目录视角输出路径时常见此形态。剥首段后 join 项目根，
+    // 仍走 containment + 存在性（项目根本就是允许根，无新探测面）；裸
+    // 项目名（无后续段）= 项目目录本身。排在常规锚链之后——workspace 内
+    // 字面同形路径（真实存在的 workspace\proj\note.md）优先于重解释。
+    let segs: Vec<&str> = norm.split(['/', '\\']).collect();
+    let first = segs.first().copied().unwrap_or("");
+    for (leaf, root) in project_leaf_roots() {
+        let matched = if cfg!(windows) {
+            first.eq_ignore_ascii_case(&leaf)
+        } else {
+            first == leaf
+        };
+        if !matched {
+            continue;
+        }
+        let rest = segs[1..].join("/");
+        let joined = if rest.is_empty() {
+            root.clone()
+        } else {
+            unify_separators(root.join(&rest))
+        };
+        if !path_contains(&root, &joined) {
+            continue;
+        }
+        if let Ok(meta) = std::fs::metadata(&joined) {
+            return ChainOutcome::Hit(ResolvedTarget {
+                path: joined,
+                is_dir: meta.is_dir(),
+                exists: true,
+            });
+        }
+        // 剥段臂祖先**覆盖**常规锚链祖先：`myproj/ghost.md` 的最近祖先
+        // 显然是 myproj（项目根）而非 workspace 根——剥段臂语义更具体。
+        if let Some(a) = nearest_existing_ancestor(&joined, Some(std::slice::from_ref(&root)), true)
+        {
+            ancestor = Some(ResolvedTarget {
+                path: unify_separators(a),
+                is_dir: true,
+                exists: false,
+            });
+        }
+    }
+    ChainOutcome::Miss(ancestor, format!("文件不存在: {norm}"))
+}
+
+/// 最近存在祖先目录（文件不存在回退）：从 target 向根方向逐级剥段，
+/// 每级过 containment（`roots` = Some 时锚 root 或绝对臂的全集；None =
+/// 无界——editor 开关放行的界外形态，第一个存在目录即胜），剥到根本身
+/// 仍不存在（项目目录被删等）= None（诚实报错）。
+///
+/// `allow_anchor_root`（2026-11-14 BUG）：false 时回退剥到 join 锚根本身
+/// 也返回 None——锚根是解析器隐式选的参照，不是路径文本点名的位置，开它
+/// = 打开与文件真实位置无关的目录（裸名/界外文件相对形态的误导源）；
+/// true 保留旧语义（绝对路径显式声称的父目录 / 剥段臂点名的项目根，锚
+/// 根与「所在目录」语义一致）。相对臂传 false，绝对臂与剥段臂传 true。
+fn nearest_existing_ancestor(
+    target: &Path,
+    roots: Option<&[PathBuf]>,
+    allow_anchor_root: bool,
+) -> Option<PathBuf> {
+    let mut cur = target.parent();
+    while let Some(dir) = cur {
+        if let Some(roots) = roots
+            && !roots.iter().any(|r| path_contains(r, dir))
+        {
+            return None;
+        }
+        if dir.is_dir() {
+            if !allow_anchor_root
+                && let Some(roots) = roots
+                && roots.iter().any(|r| same_path(r, dir))
+            {
+                return None;
+            }
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// 路径等值（分隔符归一 + Windows 大小写不敏感）——锚链去重用。
+fn same_path(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string()
     };
-    let meta =
-        std::fs::metadata(&target).map_err(|_| format!("文件不存在: {}", target.display()))?;
-    Ok((target, meta.is_dir()))
+    let (a, b) = (norm(a), norm(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
+/// 分隔符统一：解析产物在 Windows 上把 join 保留的 `/` 归一成 `\`
+/// （混合分隔符让 explorer /select 选中行为不稳，也让响应 path 形态
+/// 不一致）。非 Windows 原样。
+fn unify_separators(p: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        PathBuf::from(p.to_string_lossy().replace('/', "\\"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        p
+    }
 }
 
 /// CJK 统一表意区判定（含扩展 A）——与前端 linkify SEG 字符类口径一致
@@ -239,65 +494,13 @@ fn cjk_boundary_candidates(norm: &str) -> Vec<String> {
     out
 }
 
-/// 默认应用打开文件（Windows=`explorer <file>`——资源管理器对文件路径
-/// 走默认关联程序，绕开被禁的 `start` 系命令；macOS=`open`；
-/// Linux=`xdg-open`）。spawn 不等待；CREATE_NO_WINDOW 同后台进程纪律。
-fn open_file_with_default(path: &Path) -> Result<(), String> {
-    let spawn = || -> std::io::Result<std::process::Child> {
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::process::Command::new("explorer")
-                .arg(path)
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open").arg(path).spawn()
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            std::process::Command::new("xdg-open").arg(path).spawn()
-        }
-    };
-    spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开文件失败: {e}"))
-}
-
-/// 文件管理器定位文件（不打开、不高亮执行——非白名单扩展名的降级动作）。
-/// Windows=`explorer /select,<path>`（单参数形态——explorer 自行解析命令
-/// 行，拆参会在含空格路径上断裂）；macOS=`open -R`；Linux 无标准 reveal，
-/// 打开父目录（诚实降级）。
-fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
-    let spawn = || -> std::io::Result<std::process::Child> {
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::process::Command::new("explorer")
-                .arg(format!("/select,{}", path.display()))
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open")
-                .arg("-R")
-                .arg(path)
-                .spawn()
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let parent = path.parent().unwrap_or(path);
-            std::process::Command::new("xdg-open").arg(parent).spawn()
-        }
-    };
-    spawn()
-        .map(|_| ())
-        .map_err(|e| format!("定位文件失败: {e}"))
+/// open/reveal 两臂共用的 path 参数提取：缺 data / 缺键 / 非字符串 →
+/// 空串（归一化统一报「path 缺失」——错误面单一真相源在
+/// [`resolve_click_target`]）。
+fn path_arg(data: Option<&serde_json::Value>) -> &str {
+    data.and_then(|d| d.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
 }
 
 impl FsHandler {
@@ -503,7 +706,7 @@ impl ModuleHandler for FsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["complete_path", "tree", "open"]
+        &["complete_path", "tree", "open", "reveal", "resolve"]
     }
 
     async fn handle_cmd(
@@ -558,33 +761,71 @@ impl ModuleHandler for FsHandler {
             // 文件链接打开（问题 2）：目录→文件管理器；白名单扩展名→默认
             // 应用；其余→文件管理器定位（不点击执行）。main_workspace 用
             // 未切换的主 workspace（绝对路径 containment 集合 = 主 workspace
-            // + 全部项目；session root 已含于其中）。
+            // + 全部项目；session root 已含于其中）。响应带 exists 注记
+            // （祖先目录回退产物 exists=false——前端 toast 语义分级用）。
             "open" => {
-                let raw = data
-                    .as_ref()
-                    .and_then(|d| d.get("path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let raw = path_arg(data.as_ref()).to_string();
                 let main_workspace = require_workspace(ctx)?.to_string();
-                let (target, is_dir) = resolve_click_target(&workspace, &main_workspace, &raw)?;
-                let out = if is_dir {
-                    crate::handlers::projects::open_in_file_manager(&target)?;
+                let t = resolve_click_target(&workspace, &main_workspace, &raw)?;
+                let out = if t.is_dir {
+                    shell_open::open_dir(&t.path)?;
                     serde_json::json!({
-                        "kind": "dir", "action": "open", "path": target.display().to_string(),
+                        "kind": "dir", "action": "open", "path": t.path.display().to_string(),
+                        "exists": t.exists,
                     })
-                } else if is_openable_extension(&target) {
-                    open_file_with_default(&target)?;
+                } else if is_openable_extension(&t.path) {
+                    shell_open::open_file_default(&t.path)?;
                     serde_json::json!({
-                        "kind": "file", "action": "open", "path": target.display().to_string(),
+                        "kind": "file", "action": "open", "path": t.path.display().to_string(),
+                        "exists": t.exists,
                     })
                 } else {
-                    reveal_in_file_manager(&target)?;
+                    shell_open::reveal_file(&t.path)?;
                     serde_json::json!({
-                        "kind": "file", "action": "reveal", "path": target.display().to_string(),
+                        "kind": "file", "action": "reveal", "path": t.path.display().to_string(),
+                        "exists": t.exists,
                     })
                 };
                 Ok(Some(out))
+            }
+            // 右键菜单「打开所在目录」（reveal 语义，2026-11-13）：与
+            // `open` 同一套解析与 containment，只换最终动作——目录链接
+            // 直接打开该目录（用户拍板：目录特判不做 reveal）；文件链接
+            // 打开所在目录并选中该文件。文件未命中时打开最近存在祖先
+            // 目录（解析层回退产物，exists=false 诚实注记）。解析/越界/
+            // 缺参错误面与 open 完全同源。
+            "reveal" => {
+                let raw = path_arg(data.as_ref()).to_string();
+                let main_workspace = require_workspace(ctx)?.to_string();
+                let t = resolve_click_target(&workspace, &main_workspace, &raw)?;
+                let out = if t.is_dir {
+                    shell_open::open_dir(&t.path)?;
+                    serde_json::json!({
+                        "kind": "dir", "action": "open", "path": t.path.display().to_string(),
+                        "exists": t.exists,
+                    })
+                } else {
+                    shell_open::reveal_file(&t.path)?;
+                    serde_json::json!({
+                        "kind": "file", "action": "reveal", "path": t.path.display().to_string(),
+                        "exists": t.exists,
+                    })
+                };
+                Ok(Some(out))
+            }
+            // 纯决策面（不 spawn——reveal 会弹窗，复制路径等只需要
+            // 「绝对路径 + 存在性」）：与 open/reveal 共用同一解析阶梯。
+            // exists=false = 文件未命中、path 是最近存在祖先目录（前端
+            // 复制路径后 toast 注记「文件尚未定位到」）。
+            "resolve" => {
+                let raw = path_arg(data.as_ref()).to_string();
+                let main_workspace = require_workspace(ctx)?.to_string();
+                let t = resolve_click_target(&workspace, &main_workspace, &raw)?;
+                Ok(Some(serde_json::json!({
+                    "path": t.path.display().to_string(),
+                    "kind": if t.is_dir { "dir" } else { "file" },
+                    "exists": t.exists,
+                })))
             }
             _ => Err(format!("unknown command: fs.{}", cmd)),
         }

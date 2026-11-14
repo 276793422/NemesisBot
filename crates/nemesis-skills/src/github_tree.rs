@@ -28,6 +28,9 @@ const DEFAULT_FILE_MAX_SIZE: u64 = 10 * 1024 * 1024; // 10 MB per file
 /// - `dir_prefix`: Directory prefix to filter (e.g., "skills/pdf").
 /// - `target_dir`: Local directory to write files into.
 /// - `max_file_size`: Maximum size per file in bytes (0 = default 10MB).
+/// - `total_budget`: Aggregate download budget in bytes across all files
+///   (0 = default [`crate::registry::MAX_SKILL_TOTAL_BYTES`]). 检查发生在
+///   **写盘前**（文件内容已在内存中）——零落盘超写（BUG-20261114-059）。
 pub async fn download_skill_tree_from_github(
     client: &Client,
     api_base_url: &str,
@@ -37,6 +40,7 @@ pub async fn download_skill_tree_from_github(
     dir_prefix: &str,
     target_dir: &str,
     max_file_size: u64,
+    total_budget: u64,
 ) -> Result<()> {
     // Ensure trailing slash for consistent prefix matching.
     // 空前缀 = 仓库根安装：不加斜缀（否则 "/" 匹配不到任何顶层 blob）。
@@ -49,6 +53,15 @@ pub async fn download_skill_tree_from_github(
         DEFAULT_FILE_MAX_SIZE
     } else {
         max_file_size
+    };
+    // 聚合预算（0 = 家族默认帽）。三方注册表内容同一信任域，聚合体量
+    // 单一真相源 = registry::MAX_SKILL_TOTAL_BYTES（BUG-20261114-059：
+    // 旧实现无聚合上限——16MB 树 JSON 可编码 ~160K 条目 × 单文件
+    // 10MB 帽 = TB 级落盘，磁盘耗尽 DoS）。
+    let total_budget = if total_budget == 0 {
+        crate::registry::MAX_SKILL_TOTAL_BYTES
+    } else {
+        total_budget
     };
 
     // BUG-20261113-162：api_base 尾斜杠归一 + 分支名 percent-encoding
@@ -71,7 +84,7 @@ pub async fn download_skill_tree_from_github(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(response).await;
         return Err(NemesisError::Other(format!(
             "GitHub Trees API HTTP {}: {}",
             status,
@@ -80,9 +93,14 @@ pub async fn download_skill_tree_from_github(
     }
 
     // Parse the tree response.
-    let tree_response: TreeResponse = response
-        .json()
-        .await
+    // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+    let body_bytes = nemesis_utils::http_cap::read_body_capped(
+        response,
+        crate::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(NemesisError::Other)?;
+    let tree_response: TreeResponse = serde_json::from_slice(&body_bytes)
         .map_err(|e| NemesisError::Other(format!("failed to parse tree response: {}", e)))?;
 
     // Filter blob paths under dir_prefix.
@@ -100,10 +118,21 @@ pub async fn download_skill_tree_from_github(
         )));
     }
 
+    // 聚合文件数闸（BUG-20261114-059）：16MB 树 JSON 可编码 ~160K 条目，
+    // 每条目几个字节的文件即耗尽 inode/目录项——体量闸管不住条目数。
+    if blob_paths.len() > crate::registry::MAX_SKILL_FILE_COUNT {
+        return Err(NemesisError::Security(format!(
+            "skill file count exceeds limit ({} > {})",
+            blob_paths.len(),
+            crate::registry::MAX_SKILL_FILE_COUNT
+        )));
+    }
+
     // Create target directory.
     std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
 
     // Download each file.
+    let mut total_downloaded: u64 = 0;
     for blob_path in &blob_paths {
         let relative_path = blob_path.strip_prefix(&dir_prefix).unwrap_or(blob_path);
         if relative_path.is_empty() {
@@ -146,6 +175,15 @@ pub async fn download_skill_tree_from_github(
         let raw_url = crate::url_enc::raw_content_url(raw_base_url, repo, branch, blob_path);
 
         let data = download_file(client, &raw_url, max_file_size).await?;
+        // 聚合预算闸（BUG-20261114-059）：检查发生在**写盘前**——文件
+        // 内容已完整在内存（单文件受 max_file_size 帽），超预算零落盘。
+        total_downloaded += data.len() as u64;
+        if total_downloaded > total_budget {
+            return Err(NemesisError::Security(format!(
+                "aggregate download size exceeds limit (>{} bytes)",
+                total_budget
+            )));
+        }
         std::fs::write(&dest_path, &data).map_err(NemesisError::Io)?;
     }
 
@@ -223,7 +261,7 @@ pub async fn download_file(client: &Client, url: &str, max_size: u64) -> Result<
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(response).await;
         return Err(NemesisError::Other(format!(
             "HTTP {}: {}",
             status,

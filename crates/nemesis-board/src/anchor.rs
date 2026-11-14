@@ -870,6 +870,43 @@ fn truncate_tail(stdout: &str, stderr: &str) -> String {
     .to_string()
 }
 
+/// 自指剥离的归一化探针（只用于检测，不改写参与匹配的原文）：去空白与
+/// markdown 强调字符——回显变体（多空格/加粗/反引号/列表符前的 `-` 不在
+/// 词表，靠核心串 contains 语义吸收）归一后与锚点行核心归一形态一致；
+/// 正则元字符（`*` 等）双侧同删，比较一致性不受影响。
+fn normalize_echo_probe(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '*' | '`' | '_' | '~'))
+        .collect()
+}
+
+/// 锚点行回显判据核心：raw 全行去 ` # 注释` 尾（split_anchor_comment 同源
+/// 切分）——复述验收标准时丢注释尾是最自然回显变体，判据必须不含注释尾。
+/// raw 恒以 [`ANCHOR_PREFIX`] 开头（parse_anchor_line 构造保证）。
+fn anchor_echo_core(anchor: &AnchorCheck) -> String {
+    let rest = anchor
+        .raw
+        .strip_prefix(ANCHOR_PREFIX)
+        .unwrap_or(anchor.raw.as_str());
+    let (core_rest, _) = split_anchor_comment(rest.trim_start());
+    format!("{}{}", ANCHOR_PREFIX, core_rest.trim_end())
+}
+
+/// 自指剥离：交付文本中「归一化后包含锚点行核心」的行整行剥除。
+/// split_inclusive 保留原文结构——非命中行逐字节保留（含行尾换行），
+/// 参与匹配的正则语义不受剥离动作本身扰动。
+fn strip_anchor_echo_lines(delivery_text: &str, anchor: &AnchorCheck) -> String {
+    let core = normalize_echo_probe(&anchor_echo_core(anchor));
+    let mut out = String::with_capacity(delivery_text.len());
+    for line in delivery_text.split_inclusive('\n') {
+        if normalize_echo_probe(line).contains(&core) {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 fn run_one(
     anchor: &AnchorCheck,
     workspace_root: &Path,
@@ -883,12 +920,24 @@ fn run_one(
             };
             match Regex::new(pattern) {
                 Ok(re) => {
-                    // 自指防御（UAT ③ 实证）：交付文本逐字
-                    // 引用锚点行本身（重派 prompt 回显、复述验收标准的汇报）
-                    // 不构成满足锚点的证据——剥离全部锚点行原文后再匹配。
-                    // 否则 worker 只要把任务卡原样抄回来，re: 锚点就在引文
-                    // 里自命中 → 假 PASS → 自动收货。
-                    let cleaned = delivery_text.replace(&anchor.raw, "");
+                    // 自指防御（UAT ③ 实证；BUG-20261114-045 扩面）：交付
+                    // 文本引用锚点行本身（重派 prompt 回显、复述验收标准的
+                    // 汇报）不构成满足锚点的证据——剥离引文行后再匹配，否
+                    // 则 re: 锚点在引文里自命中 → 假 PASS → 自动收货。
+                    // 判据 = 归一化行包含归一化锚点行核心：旧实现逐字
+                    // replace 只打得中逐字原文，近逐字回显族（去 ` # 注释`
+                    // 尾复述、内部多空格、markdown 强调、行首列表符、行内
+                    // 嵌引文）全部绕过——去注释尾复述是最自然变体（红侧
+                    // 实证）。归一化只去空白与 markdown 强调字符（* ` _ ~，
+                    // 正则元字符双侧同删、比较一致性不受影响），普通汇报
+                    // 正文（无锚点结构）不含 `[CHECK]re:<pattern>` 核心串
+                    // 不受影响；整行剥除偏保守方向（误剥 = 诚实 FAIL 走
+                    // 重派/人工，非假 PASS）。
+                    // 残余边界（诚实声明）：全角字符改写（[ＣＨＥＣＫ] 等）
+                    // 刻意对抗形态不在本防御射程——该类属主动规避而非回显
+                    // 变体，由强制自检取证臂（「不得引用任务卡原文来满足
+                    // 锚点」）+ 语义二审兜底（真机实录：二审识破）。
+                    let cleaned = strip_anchor_echo_lines(delivery_text, anchor);
                     if re.is_match(&cleaned) {
                         (true, format!("交付文本命中 /{pattern}/"))
                     } else {

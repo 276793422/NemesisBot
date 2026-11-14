@@ -1620,17 +1620,27 @@ impl AgentLoop {
     /// Release a session after processing.
     /// Returns true if there are queued requests remaining.
     /// Mirrors Go's `releaseSession()`.
+    ///
+    /// 完全释放（无排队）时**摘除条目**（BUG-20261113-170）：此前只置
+    /// `busy=false` 留条目在场，每个 admit 过的会话都留下一条死条目直到
+    /// 进程重启——24/7 网关下按会话数无界累积。所有读路径
+    /// （`get_session_busy_state`/`is_session_busy`/`session_queue_length`）
+    /// 对缺席键都回落默认值 (false, 0) / 0，摘除后观测等价；排队路径
+    /// （queue_length > 0）条目保留不动。
     pub fn release_session(&self, session_key: &str) -> bool {
         let mut map = self.session_busy.lock();
-        if let Some(state) = map.get_mut(session_key) {
-            if state.queue_length > 0 {
+        let has_queued = match map.get_mut(session_key) {
+            Some(state) if state.queue_length > 0 => {
                 state.queue_length -= 1;
                 // Keep busy since there are queued requests.
-                return true;
+                true
             }
-            state.busy = false;
+            Some(_) | None => false,
+        };
+        if !has_queued {
+            map.remove(session_key);
         }
-        false
+        has_queued
     }
 
     /// Check whether a session is currently busy.

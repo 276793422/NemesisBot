@@ -241,27 +241,67 @@ impl Forge {
             learning_cycle = Some(cycle);
         }
 
+        // Step 1.5: 加载 TraceStore 真轨迹（缺陷整改批次 A1）——反思
+        // 报告的 Trace Analysis 段数据源从 experiences 冒充改为真轨迹。
+        // 读取失败/无 store → 空 Vec（报告诚实无 Trace Analysis 段，
+        // 不炸反思循环）。
+        let traces: Vec<crate::monitor::ConversationTrace> = match self.trace_store() {
+            Some(store) => match store.read_all().await {
+                Ok(events) => {
+                    let t = crate::monitor::build_conversation_traces(&events);
+                    tracing::info!(
+                        traces = t.len(),
+                        "[Forge] trace store loaded for reflection"
+                    );
+                    t
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[Forge] trace store read failed, report will omit trace analysis");
+                    Vec::new()
+                }
+            },
+            None => Vec::new(),
+        };
+
         // Step 2: Reflect（统计 + use_llm 时 LLM 语义分析）。语义反思带：全量 artifacts
         // （旧调用面只传统计不传产物——LLM 看不到已部署技能会重复提名）、
-        // 本轮 learning_cycle、统一杂务预算（thinking 系防烧穿）。桥接护栏
-        // 空输出 → Err → warn+skip，报告无 insights 节，诚实降级不炸循环。
-        // use_llm=false = 纯统计反思（修复：该键文档契约
+        // 本轮 learning_cycle、真轨迹、统一杂务预算（thinking 系防烧穿）。
+        // 桥接护栏空输出 → Err → warn+skip，报告无 insights 节，诚实降级
+        // 不炸循环。use_llm=false = 纯统计反思（修复：该键文档契约
         // 「是否用 LLM 做语义分析」，此前 gateway 无条件走 LLM、键只在 CLI
         // 被消费——用户设 false 省成本的意图被静默无视）。
+        // A4：period 从硬编码 "today" 换成实际数据窗口（最近 N 条 +
+        // 首末时间戳），反思报告的 Period 行第一次反映真实覆盖面。
+        // 标签计算单一真相源 = compute_reflection_period（三入口同源：
+        // run_reflection_cycle / Dashboard 手动反思 / CLI reflect）。
+        let period = Reflector::compute_reflection_period(&experiences);
         let report = if self.config.reflection.use_llm {
             reflector
                 .reflect_with_llm(
                     &experiences,
+                    &traces,
                     &self.registry().list(None, None),
                     learning_cycle.as_ref(),
-                    "today",
+                    &period,
                     "all",
                     Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
                 )
                 .await
         } else {
-            reflector.reflect(&experiences, learning_cycle.as_ref(), "today", "all")
+            reflector.reflect(
+                &experiences,
+                &traces,
+                learning_cycle.as_ref(),
+                &period,
+                "all",
+            )
         };
+
+        // A5：学习闭环开关状态注入报告头部（反思报告必须能让用户一眼
+        // 看到闭环是关的——「51 天零工件」审计的教训：关着的学习开关
+        // 在报告里不可见，读者会误以为循环在跑）。
+        let mut report = report;
+        report.learning_enabled = Some(self.is_learning_enabled());
 
         // Step 3: Write report
         if let Ok(path) = reflector.write_report(&report) {

@@ -32,7 +32,9 @@ async fn test_whatsapp_channel_lifecycle() {
 }
 
 #[tokio::test]
-async fn test_whatsapp_send_queues_on_bridge_failure() {
+async fn test_whatsapp_send_reports_error_when_bridge_down() {
+    // BUG-20261114-053 回归锁：桥不可达 = 诚实 Err（manager 记 warn 可观测），
+    // 不再入队假成功（outbound_queue 生产零消费者，入队=静默丢消息）。
     let config = WhatsAppConfig {
         bridge_url: "http://localhost:19999".to_string(), // unreachable
         api_key: None,
@@ -50,11 +52,41 @@ async fn test_whatsapp_send_queues_on_bridge_failure() {
         message_type: String::new(),
         meta: Default::default(),
     };
-    ch.send(msg).await.unwrap(); // should succeed (queued on bridge failure)
+    let err = ch.send(msg).await.unwrap_err();
+    assert!(
+        err.to_string().contains("whatsapp bridge send failed"),
+        "{err}"
+    );
+    ch.stop().await.unwrap();
+}
 
-    let outbound = ch.drain_outbound();
-    assert_eq!(outbound.len(), 1);
-    assert_eq!(outbound[0].content, "Hello");
+#[test]
+fn test_poll_period_ladder_and_restore() {
+    // BUG-20261114-054 回归锁：退避晋升阶梯 + 成功恢复基础档。
+    // 连错 1..3 维持现档（不重建）。
+    assert_eq!(
+        WhatsAppChannel::poll_period_on_error(1, INITIAL_BACKOFF),
+        None
+    );
+    assert_eq!(
+        WhatsAppChannel::poll_period_on_error(3, INITIAL_BACKOFF),
+        None
+    );
+    // 第 4 连错晋升退避档（用当前 backoff 重建）。
+    assert_eq!(
+        WhatsAppChannel::poll_period_on_error(4, INITIAL_BACKOFF),
+        Some(INITIAL_BACKOFF)
+    );
+    // 成功：未降级不重建；降级后必须回基础档（旧代码缺这条恢复臂，
+    // 一次瞬态断连后轮询永久停留在 MAX 档）。
+    assert_eq!(
+        WhatsAppChannel::poll_period_on_success(false, RECEIVE_POLL_INTERVAL),
+        None
+    );
+    assert_eq!(
+        WhatsAppChannel::poll_period_on_success(true, RECEIVE_POLL_INTERVAL),
+        Some(RECEIVE_POLL_INTERVAL)
+    );
 }
 
 #[test]

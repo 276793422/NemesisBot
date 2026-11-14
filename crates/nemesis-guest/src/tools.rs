@@ -106,7 +106,17 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
         ("sh", "-c")
     };
     let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg(flag).arg(command).current_dir(&cwd);
+    cmd.arg(flag);
+    // raw_arg（BUG-20261114-002，对齐宿主 exec/cc_hooks/anchor 同型修复）：
+    // Windows 默认 argv 转义把内嵌引号变 `\"`（MSVCRT 规则），cmd 不认
+    // `\"`——guest 侧带引号的命令（`echo "a b"`、含空格引号路径）会被
+    // 打挂或行为错乱。raw_arg 让 cmd 按原生语法逐字解析；Unix execv 无
+    // 引号层，`.arg()` 本就逐字。
+    #[cfg(target_os = "windows")]
+    cmd.raw_arg(command);
+    #[cfg(not(target_os = "windows"))]
+    cmd.arg(command);
+    cmd.current_dir(&cwd);
     // 显式 env 透传（模块文档「差异」节声明的语义；形态对齐宿主
     // ShellTool——args["env"] 只取字符串值逐键叠加）。此前实现缺失
     // 此消费点：模型带 env 调 guest exec 时变量被静默丢弃，违反

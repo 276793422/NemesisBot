@@ -187,7 +187,7 @@ async fn send_internal_command(
         Ok(())
     } else {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = nemesis_utils::http_cap::read_error_body(resp).await;
         Err(format!("Internal command failed: {} {}", status, body).into())
     }
 }
@@ -210,7 +210,13 @@ pub(crate) async fn send_internal_command_get_json(
         .send()
         .await?;
     let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    // 双用拆分（BUG-20261113-164）：成功体是内部 API 小 JSON（estop_status
+    // 等），全量读合法；错误体只喂诊断文案——有帽读取。
+    let body = if status.is_success() {
+        resp.text().await.unwrap_or_default()
+    } else {
+        nemesis_utils::http_cap::read_error_body(resp).await
+    };
     if status.is_success() {
         Ok(serde_json::from_str(&body).unwrap_or_else(|_| serde_json::json!({})))
     } else {

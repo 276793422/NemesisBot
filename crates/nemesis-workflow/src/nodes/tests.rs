@@ -100,6 +100,75 @@ async fn test_parallel_node_executor_with_registry() {
     assert!(obj.contains_key("branch_1"));
 }
 
+/// BUG-20261113-169 回归锁：parallel 子分支任务必须在父 executor future 被
+/// 丢弃时随之 abort（JoinSet drop = abort），不得 detached 存活——scheduler
+/// 的 node timeout/cancel 正是靠丢弃 executor future 停节点（`timeout(dur,
+/// executor.execute(..))` / cancel select 两臂）；子分支若 detached 会带着
+/// 副作用跑完（timeout+retry 组合下重试再 spawn 同一节点 = 并发双跑）。
+#[tokio::test]
+async fn parallel_children_aborted_when_parent_future_dropped() {
+    struct SlowProbe(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl NodeExecutor for SlowProbe {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            // 睡 1s 再 +1：父 future 50ms 被丢弃（模拟 scheduler timeout 臂
+            // 胜出）。修复前僵尸探针 detached 存活、1s 后 +1；修复后 JoinSet
+            // drop = abort，探针的 sleep 随父死而取消、永不 +1。
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(NodeResult {
+                node_id: "probe".to_string(),
+                output: serde_json::json!({}),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let probe_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("slow_probe", Arc::new(SlowProbe(probe_hits.clone())));
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "p", "node_type": "slow_probe", "config": {} },
+        ]),
+    );
+    let node = make_node("n1", "parallel", config);
+
+    // 模拟 scheduler timeout：50ms 后丢弃 executor future（tokio::time::
+    // timeout 超时即 drop 内层 future，与 scheduler 的 timeout 臂同语义）。
+    let args = HashMap::new();
+    let wf_ctx = empty_wf_ctx();
+    let fut = exec.execute(&node, &args, &wf_ctx);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), fut)
+            .await
+            .is_err(),
+        "探针 50ms 内不该完成（timeout 丢弃父 future 正是修复面）"
+    );
+
+    // 修复前：僵尸探针 1s 后 +1（断言红）；修复后：abort，恒 0。
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(
+        probe_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "父 future 被丢弃后子分支必须被 abort，不得 detached 跑完副作用"
+    );
+}
+
 #[tokio::test]
 async fn test_parallel_node_stub() {
     let exec = ParallelNodeStub;
@@ -608,6 +677,61 @@ fn test_resolve_template_missing_var() {
     let result = resolve_template("Hello {{name}}", &ctx);
     // Unresolved variables remain as-is
     assert_eq!(result, "Hello {{name}}");
+}
+
+/// BUG-20261114-028 回归锁：占位符替换必须是单遍扫描——上下文**值**里
+/// 内嵌的 `{{另一键}}` 不得被二次展开。旧实现按 HashMap 迭代序循环
+/// replace：键 a（值含 {{b}}）先于 b 迭代时 b 会被二次展开，后于 b 时
+/// 保留字面量——同输入两次构造 HashMap 输出不同（RandomState 每构造
+/// 随机）。本测 128 次独立构造（每次新 RandomState = 迭代序独立掷币）
+/// 钉死确定性契约：全部输出一致且等于「字面量保留」形态。旧实现下
+/// 全同概率 ≈ 2^-128，必红。
+#[test]
+fn resolve_template_is_single_pass_values_never_reexpanded() {
+    for _ in 0..128 {
+        let ctx = HashMap::from([
+            ("a".to_string(), serde_json::json!("see {{b}}")),
+            ("b".to_string(), serde_json::json!("http://x")),
+        ]);
+        let out = resolve_template("{{a}}", &ctx);
+        assert_eq!(
+            out, "see {{b}}",
+            "context value's embedded placeholder must stay literal"
+        );
+    }
+}
+
+/// 修复后语义钉：多占位符一次全解 / 非字符串值 JSON 形态 / 缺失键保留 /
+/// 无闭合保留 / 带空格键不 trim（exact-match 契约——placeholder_refs 的
+/// trim 只服务可证伪性首段提取，替换语义从不含糊）。
+#[test]
+fn resolve_template_single_pass_semantics_pins() {
+    let ctx = HashMap::from([
+        ("name".to_string(), serde_json::json!("World")),
+        ("count".to_string(), serde_json::json!(42)),
+        ("obj".to_string(), serde_json::json!({"k": 1})),
+    ]);
+    assert_eq!(
+        resolve_template("Hello {{name}}, count={{count}}, obj={{obj}}", &ctx),
+        "Hello World, count=42, obj={\"k\":1}"
+    );
+    assert_eq!(resolve_template("{{nope}}", &ctx), "{{nope}}");
+    assert_eq!(resolve_template("{{unclosed", &ctx), "{{unclosed");
+    assert_eq!(resolve_template("{{ name }}", &ctx), "{{ name }}");
+}
+
+/// 两处实现同源（llm 条件面 / script 面委托）：同输入同输出。
+#[test]
+fn resolve_prompt_template_matches_resolve_template() {
+    let ctx = HashMap::from([
+        ("a".to_string(), serde_json::json!("x {{b}} y")),
+        ("b".to_string(), serde_json::json!("z")),
+    ]);
+    assert_eq!(
+        resolve_prompt_template("{{a}}", &ctx),
+        resolve_template("{{a}}", &ctx),
+    );
+    assert_eq!(resolve_prompt_template("{{a}}", &ctx), "x {{b}} y");
 }
 
 #[test]
@@ -1702,6 +1826,40 @@ async fn test_script_node_with_context_variables() {
     let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.output["stdout"].as_str().unwrap().contains("World"));
+}
+
+/// BUG-20261114-028 功能级回归锁（真 spawn 链路）：上下文**值**内嵌
+/// `{{x}}` 时，被执行脚本看到的必须是字面量——值是数据不是模板，永不
+/// 二次展开。旧实现按 HashMap 迭代序循环 replace，同输入可能把 `{{x}}`
+/// 展开成 `bare`（若 x 键后迭代），被执行脚本内容随进程随机漂移。
+#[tokio::test]
+async fn test_script_node_context_value_placeholders_stay_literal() {
+    let exec = ScriptNodeExecutor::new();
+    let mut config = HashMap::new();
+    // 脚本把 a 的值原样回显（printf %s 避免 shell 对花括号做任何解释）。
+    config.insert(
+        "script".to_string(),
+        serde_json::json!("printf '%s' \"{{a}}\""),
+    );
+    config.insert("language".to_string(), serde_json::json!("bash"));
+    let node = make_node("n1", "script", config);
+
+    let ctx = HashMap::from([
+        ("a".to_string(), serde_json::json!("value {{x}} tail")),
+        ("x".to_string(), serde_json::json!("bare")),
+    ]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let stdout = result.output["stdout"].as_str().unwrap();
+    assert!(
+        stdout.contains("value {{x}} tail"),
+        "script must see the literal placeholder, got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("bare"),
+        "context value's embedded placeholder must NOT be expanded, got: {stdout:?}"
+    );
 }
 
 #[tokio::test]

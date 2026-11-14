@@ -37,12 +37,13 @@ pub(crate) struct RewindUndoEntry {
     /// 把合法回退误报成漂移。JSON 形态 / store 未挂载 / tree 写失败 = None
     /// （扫描诚实跳过）。
     undo_disk_tree: Option<String>,
-    /// 续作（复评）：redo 自身已写到前向态的路径（restore
-    /// 的 written+deleted）。重试时冲突预检豁免这些路径——上次重试恢复
-    /// 半途失败还栈后，盘面上留着的是本操作自己写的半成品；不豁免会把自
-    /// 恢复面误报成外部漂移，逼用户 force 自己的操作。条目本身是内存态，
-    /// 崩溃即同生共死，无额外一致性负担。
-    redo_partial_written: Vec<String>,
+    /// 续作（复评，R2 指纹化）：redo 自身已写到前向态的路径 + **还栈时刻
+    /// 的盘面指纹**（sha256 内容 hex / 缺席哨兵 None）。重试时冲突预检
+    /// 豁免这些路径——豁免 = 路径匹配 **且** 现盘指纹与还栈时刻相等；
+    /// 期间被外部改过的自恢复面不再豁免（旧实现只按路径豁免：外部改动
+    /// 落在同路径上会被静默碾掉，是 R2 缺陷面）。条目本身是内存态，崩溃
+    /// 即同生共死，无额外一致性负担。
+    redo_partial_written: Vec<(String, Option<String>)>,
 }
 
 /// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json::to_string` 后
@@ -59,6 +60,17 @@ fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
         }
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// R2 复评整改：路径在**当前盘面**的内容指纹（sha256 hex；缺席/读不出 =
+/// None 哨兵——deleted 臂路径的自然形态）。redo 自恢复面豁免判定的
+/// 「还栈时刻」锚点：还栈时记录、重试时对比，相等才豁免。
+fn disk_fingerprint(root: &std::path::Path, rel: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(root.join(rel)).ok()?;
+    let mut h = Sha256::new();
+    h.update(&bytes);
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// forward_tree 的 gc 在途保护 guard。采集后立即注册进
@@ -151,6 +163,73 @@ impl Drop for RedoInflightGuard<'_> {
                     inflight.remove(t);
                 }
             }
+        }
+    }
+}
+
+/// redo 弹栈条目的 RAII 还栈 guard（R7 复评整改）。pop→慢操作窗口内的
+/// 全部早退路径默认还栈：removed_rows 是被回退对话行的唯一副本，此前
+/// 守卫 1/1b「直接 Err」会静默销毁条目（陈旧作废是刻意语义，但销毁是
+/// 隐式的——panic/unwind 场景连作废理由都没有，redo 安全网静默失效）。
+/// 显式 [`PoppedRedoEntry::consume`] = 合法消费终态（redo 成功 / 守卫
+/// 1/1b 陈旧作废）；显式 [`PoppedRedoEntry::restore`] 或 Drop（未消费）=
+/// 还栈可重试（pop_back/push_back 同端，栈序不变）。RedoInflightGuard
+/// 随槽位持有：还栈在先（栈条目接管 gc 保护）、注销在后——与既有
+/// blocked 路径手写次序一致。
+struct PoppedRedoEntry<'a> {
+    al: &'a AgentLoop,
+    session_key: String,
+    slot: Option<(RewindUndoEntry, RedoInflightGuard<'a>)>,
+}
+
+impl<'a> PoppedRedoEntry<'a> {
+    /// pop 单点（复用 [`AgentLoop::pop_undo_entry_for_redo`]——gc 在途
+    /// 保护零窗口语义不变）。
+    fn pop(al: &'a AgentLoop, session_key: &str) -> Option<Self> {
+        let (entry, guard) = al.pop_undo_entry_for_redo(session_key)?;
+        Some(Self {
+            al,
+            session_key: session_key.to_string(),
+            slot: Some((entry, guard)),
+        })
+    }
+
+    fn entry(&self) -> &RewindUndoEntry {
+        &self
+            .slot
+            .as_ref()
+            .expect("PoppedRedoEntry 槽位被提前消费")
+            .0
+    }
+
+    fn entry_mut(&mut self) -> &mut RewindUndoEntry {
+        &mut self
+            .slot
+            .as_mut()
+            .expect("PoppedRedoEntry 槽位被提前消费")
+            .0
+    }
+
+    /// 显式消费（合法终态：redo 成功 / 守卫 1/1b 陈旧作废）——条目移出
+    /// 不还栈，随附的 gc 保护 guard 解体注销。
+    fn consume(mut self) -> RewindUndoEntry {
+        self.slot.take().expect("PoppedRedoEntry 槽位被提前消费").0
+    }
+
+    /// 显式还栈（blocked 可重试路径）——直接落 Drop 语义（先还栈再注销）。
+    fn restore(self) {}
+}
+
+impl Drop for PoppedRedoEntry<'_> {
+    fn drop(&mut self) {
+        if let Some((entry, _)) = self.slot.take() {
+            // 还栈在先（栈条目接管 gc 保护），guard 随解体在后注销。
+            self.al
+                .rewind_undo_stacks
+                .lock()
+                .entry(self.session_key.clone())
+                .or_default()
+                .push_back(entry);
         }
     }
 }
@@ -944,10 +1023,11 @@ impl AgentLoop {
         // 截断写回同样以整文件重写落盘，守卫 1 读取与截断之间的绕闸追加
         // （busy 回绝留痕 / snooze 唤醒行）会被静默吞掉。
         let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
-        // BUG-20261106-040：pop 经保护单点——条目三族 tree 即刻进在途保护集，
-        // 后续慢操作（全量读/指纹/冲突扫描/restore）期间并发 gc 不清对象。
-        let (entry, _redo_inflight) = self
-            .pop_undo_entry_for_redo(session_key)
+        // BUG-20261106-040 + R7 复评整改：pop 经 RAII 还栈 guard——条目
+        // 三族 tree 即刻进在途保护集，后续慢操作（全量读/指纹/冲突扫描/
+        // restore）期间并发 gc 不清对象；全部早退路径默认还栈（显式
+        // consume 除外），panic/unwind 不再静默销毁条目。
+        let mut popped = PoppedRedoEntry::pop(self, session_key)
             .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
 
         // 守卫 1：会话行数未变（undo 后没发过新消息）。
@@ -961,17 +1041,19 @@ impl AgentLoop {
             .await
             .map_err(|e| format!("redo task join failed: {e}"))?
         };
-        if rows.len() != entry.kept_count {
+        if rows.len() != popped.entry().kept_count {
+            let e = popped.consume(); // 陈旧作废（行数已变——回栈也永不可重做）
             return Err(format!(
                 "回退后产生了新消息，redo 已失效（期望 {} 行，实际 {} 行）",
-                entry.kept_count,
+                e.kept_count,
                 rows.len()
             ));
         }
         // 守卫 1b：行身份指纹——行数相同但内容已变
         // （clear 后重填到 kept_count 行等）也判陈旧。旧守卫只查行数，
         // 同数重填会放行并把 removed_rows verbatim 回填进无关对话。
-        if kept_rows_fingerprint(&rows) != entry.kept_rows_hash {
+        if kept_rows_fingerprint(&rows) != popped.entry().kept_rows_hash {
+            popped.consume(); // 陈旧作废（内容已变——回栈也永不可重做）
             return Err("回退后会话内容已变化，redo 已失效（行数未变但内容不同）".to_string());
         }
         // 守卫 2：工作区 tree 基线未变（本会话 scope 内 undo 后没有新
@@ -986,12 +1068,8 @@ impl AgentLoop {
         let cur_tree = self
             .attached_checkpoint()
             .and_then(|cp| cp.latest_tree_hex_scoped(Some(session_key)));
-        if cur_tree != entry.post_tree {
-            self.rewind_undo_stacks
-                .lock()
-                .entry(session_key.to_string())
-                .or_default()
-                .push_back(entry);
+        if cur_tree != popped.entry().post_tree {
+            popped.restore();
             warn!(
                 "[AgentLoop] redo tree 基线守卫拒绝（会话 checkpoint 基线漂移）——undo 条目已还栈可重试：session={session_key}"
             );
@@ -1014,28 +1092,36 @@ impl AgentLoop {
         // blocked 回执，对齐 rewind 冲突块形态）；force 强过（审计留痕）。
         // 基线不可用（JSON 形态 / tree 写失败）= None，诚实跳过（前向
         // 恢复本就带不完整注记，best-effort 语义不变）。
-        let mut drifted = match (entry.undo_disk_tree.as_deref(), self.attached_checkpoint()) {
+        let mut drifted = match (
+            popped.entry().undo_disk_tree.as_deref(),
+            self.attached_checkpoint(),
+        ) {
             (Some(hex), Some(cp)) => cp.conflict_scan_since_tree(hex),
             _ => None,
         }
         .unwrap_or_default();
-        // 续作（复评）：redo 自身已写到前向态的路径不算外部
-        // 漂移——上次重试恢复半途失败还栈后，盘面上留着的是本操作自己写
-        // 的半成品；不豁免会把自恢复面误报成外部改动，逼用户 force 自己
-        // 的操作。诚实边界：恰好落在这些路径上的真外部改动与之不可分辨
-        // ——豁免是刻意的（恢复本就要把它们覆盖到前向态，覆盖语义与
-        // force 一致）。
-        drifted.retain(|p| !entry.redo_partial_written.contains(p));
+        // 续作（复评，R2 指纹化）：redo 自身已写到前向态的路径不算外部
+        // 漂移——豁免 = 路径匹配 **且** 现盘指纹 == 还栈时刻指纹。期间被
+        // 外部改过的自恢复面不再豁免（指纹不等 → 留 drifted 走冲突/force
+        // 流——旧实现只按路径豁免，外部改动落同路径会被静默碾掉）。指纹
+        // 不可算（store 未挂载）= 不豁免（保守：无法验证 = 按漂移报）。
+        // 诚实边界：恰好同内容的外部改动与之不可分辨（内容等值豁免的覆盖
+        // 语义与 force 一致，豁免仍是刻意的）。
+        let cp_root = self.attached_checkpoint().map(|cp| cp.root().to_path_buf());
+        drifted.retain(|p| {
+            !popped.entry().redo_partial_written.iter().any(|(wp, fp)| {
+                wp == p
+                    && cp_root
+                        .as_deref()
+                        .map(|r| disk_fingerprint(r, p))
+                        .is_some_and(|now| &now == fp)
+            })
+        });
         if !drifted.is_empty() && !force {
             // 条目还栈：冲突拒绝是「等用户确认」的可重试阻塞点，不是终态
-            // ——上面弹出的条目必须 push_back（pop_back/push_back 同端，
-            // 栈序不变），否则前端「确认覆盖 → force 重试」会撞「没有可
-            // 重做的回退」。
-            self.rewind_undo_stacks
-                .lock()
-                .entry(session_key.to_string())
-                .or_default()
-                .push_back(entry);
+            // ——R7 guard 还栈（pop_back/push_back 同端，栈序不变），否则
+            // 前端「确认覆盖 → force 重试」会撞「没有可重做的回退」。
+            popped.restore();
             warn!(
                 "[AgentLoop] redo 冲突预检拒绝：session={session_key} 检出 {} 个回退窗口内外部修改的路径（force 可强过）: {:?}",
                 drifted.len(),
@@ -1067,7 +1153,10 @@ impl AgentLoop {
         let restore_failures: Vec<(String, String)> = Vec::new();
         let mut written: Vec<String> = Vec::new();
         let mut deleted: Vec<String> = Vec::new();
-        match (entry.forward_tree.as_deref(), self.attached_checkpoint()) {
+        match (
+            popped.entry().forward_tree.as_deref(),
+            self.attached_checkpoint(),
+        ) {
             (Some(hex), Some(cp)) => match cp.restore_to_tree(hex) {
                 Ok(report) => {
                     if report.ok() {
@@ -1083,20 +1172,18 @@ impl AgentLoop {
                         // blocked 回执。重试安全：已恢复到位的文件 restore 见
                         // 内容一致 → 跳过，剩余路径续补。
                         let partial = !report.written.is_empty() || !report.deleted.is_empty();
-                        let restore_turn = entry.restore_turn;
-                        let mut entry = entry;
-                        entry.redo_partial_written.extend(
+                        let restore_turn = popped.entry().restore_turn;
+                        // R2：还栈时刻盘面指纹（written = 恢复后内容态，
+                        // deleted = 缺席哨兵 None）——重试豁免按「路径 +
+                        // 指纹相等」判定。
+                        popped.entry_mut().redo_partial_written.extend(
                             report
                                 .written
                                 .iter()
-                                .cloned()
-                                .chain(report.deleted.iter().cloned()),
+                                .chain(report.deleted.iter())
+                                .map(|p| (p.clone(), disk_fingerprint(cp.root(), p))),
                         );
-                        self.rewind_undo_stacks
-                            .lock()
-                            .entry(session_key.to_string())
-                            .or_default()
-                            .push_back(entry);
+                        popped.restore();
                         warn!(
                             "[AgentLoop] redo 前向恢复不完整（{} 成功 / {} 失败）——行回填未做、undo 条目已还栈可重试：session={session_key} 失败项={:?}",
                             report.written.len() + report.deleted.len(),
@@ -1124,12 +1211,8 @@ impl AgentLoop {
                     // 消耗（removed_rows 唯一副本随条目丢失），三态错位且
                     // 不可重试。现在：条目还栈、回填不做、结构化 blocked
                     // 回执——解决影子库可用性后可重试。
-                    let restore_turn = entry.restore_turn;
-                    self.rewind_undo_stacks
-                        .lock()
-                        .entry(session_key.to_string())
-                        .or_default()
-                        .push_back(entry);
+                    let restore_turn = popped.entry().restore_turn;
+                    popped.restore();
                     warn!(
                         "[AgentLoop] redo 前向恢复整体失败（{e}）——行回填未做、undo 条目已还栈可重试：session={session_key}"
                     );
@@ -1150,7 +1233,7 @@ impl AgentLoop {
                 // 区间）的 redo：对称语义——undo 只截断对话未碰文件，
                 // redo 同样只回填对话不碰文件。有锚但无影子 tree
                 // （JSON 形态/该区间无变更）才走泛化 note。
-                file_note = Some(if entry.restore_turn.is_none() {
+                file_note = Some(if popped.entry().restore_turn.is_none() {
                     "该回退当时未回滚文件（被截区间无 checkpoint 标记），redo 仅回填对话"
                         .to_string()
                 } else {
@@ -1161,30 +1244,33 @@ impl AgentLoop {
 
         // 2) 行回填（verbatim——原时间戳/标记原样回来）。
         let mut all = rows;
-        all.extend(entry.removed_rows.iter().cloned());
+        all.extend(popped.entry().removed_rows.iter().cloned());
         let expected = all.len();
         let n = crate::chat_log::truncate_chat_log_rows(session_key, &all);
         if n != expected {
             // 写回失败是可重试阻塞点（文件占用/磁盘瞬时问题），不是终态
             // ——与上方冲突路径同语义：条目必须还栈（removed_rows 是被回
             // 退对话行的唯一副本，丢了 = 永久丢失且无法重试）。
-            // 续作：文件恢复此番已生效（written/deleted），还栈时记录
-            // 自恢复面——重试的冲突预检豁免这些路径（盘面上的它们是本操
-            // 作自己写的，不是外部漂移）。
-            let mut entry = entry;
-            entry
-                .redo_partial_written
-                .extend(written.iter().cloned().chain(deleted.iter().cloned()));
-            self.rewind_undo_stacks
-                .lock()
-                .entry(session_key.to_string())
-                .or_default()
-                .push_back(entry);
+            // 续作（R2 指纹化）：文件恢复此番已生效（written/deleted），
+            // 还栈时记录自恢复面 + 还栈时刻盘面指纹——重试的冲突预检按
+            // 「路径 + 指纹相等」豁免（盘面上的它们是本操作自己写的，不是
+            // 外部漂移；期间被外部改过 = 指纹不等 = 留 drifted）。
+            let fp_root = self.attached_checkpoint().map(|cp| cp.root().to_path_buf());
+            popped.entry_mut().redo_partial_written.extend(
+                written.iter().chain(deleted.iter()).map(|p| {
+                    let fp = fp_root.as_deref().and_then(|r| disk_fingerprint(r, p));
+                    (p.clone(), fp)
+                }),
+            );
+            popped.restore();
             warn!(
                 "[AgentLoop] redo 回填写回不完整（期望 {expected} 行写 {n} 行）——jsonl 保留原样，undo 条目已还栈可重试"
             );
             return Err("会话日志写回失败，重做未生效（会话保持回退态）".to_string());
         }
+
+        // R7：redo 全部生效——条目显式消费（不再回栈）。
+        let entry = popped.consume();
 
         // 对称：redo force 强过的强恢复动作同 rewind
         // 落审计链台账——覆盖 undo→redo 窗口内的外部漂移是高影响操作，

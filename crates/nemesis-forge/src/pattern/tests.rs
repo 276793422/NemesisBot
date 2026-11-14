@@ -19,90 +19,76 @@ fn make_exp(tool: &str, success: bool, duration: u64) -> CollectedExperience {
 
 #[test]
 fn test_extract_tool_chain() {
-    let exps: Vec<CollectedExperience> = (0..5).map(|_| make_exp("file_read", true, 100)).collect();
+    // B1 会话级语义：同形链跨会话重复 → tool_chain + 全成功 → success_template。
+    let exps: Vec<CollectedExperience> = (0..5)
+        .flat_map(|i| {
+            let s = format!("sess-{}", i);
+            vec![
+                make_exp_session("file_read", true, 100, &s),
+                make_exp_session("file_write", true, 100, &s),
+            ]
+        })
+        .collect();
 
-    let stats = ExperienceStats {
-        total_count: 5,
-        success_count: 5,
-        failure_count: 0,
-        avg_duration_ms: 100.0,
-        tool_counts: Default::default(),
-    };
-
-    let patterns = extract_patterns(&exps, &stats);
+    let patterns = extract_conversation_patterns(&exps, 5);
     assert!(
         patterns
             .iter()
-            .any(|p| p.pattern_type == PatternType::ToolChain)
+            .any(|p| p.pattern_type == ConversationPatternType::ToolChain)
     );
     assert!(
         patterns
             .iter()
-            .any(|p| p.pattern_type == PatternType::SuccessTemplate)
+            .any(|p| p.pattern_type == ConversationPatternType::SuccessTemplate)
     );
 }
 
 #[test]
 fn test_extract_error_recovery() {
+    // B1 会话级语义：恢复链 = 失败工具 → 同会话内不同工具成功。
     let exps = vec![
-        make_exp("tool_a", false, 100),
-        make_exp("tool_a", false, 100),
-        make_exp("tool_a", true, 100),
-        make_exp("tool_a", true, 100),
+        make_exp_session("tool_a", false, 100, "sess-1"),
+        make_exp_session("tool_b", true, 100, "sess-1"),
+        make_exp_session("tool_a", false, 100, "sess-2"),
+        make_exp_session("tool_b", true, 100, "sess-2"),
     ];
 
-    let stats = ExperienceStats {
-        total_count: 4,
-        success_count: 2,
-        failure_count: 2,
-        avg_duration_ms: 100.0,
-        tool_counts: Default::default(),
-    };
-
-    let patterns = extract_patterns(&exps, &stats);
+    let patterns = extract_conversation_patterns(&exps, 2);
     assert!(
         patterns
             .iter()
-            .any(|p| p.pattern_type == PatternType::ErrorRecovery)
+            .any(|p| p.pattern_type == ConversationPatternType::ErrorRecovery)
     );
 }
 
 #[test]
 fn test_efficiency_issue() {
-    let exps = vec![
-        make_exp("fast_tool", true, 50),
-        make_exp("fast_tool", true, 50),
-        make_exp("slow_tool", true, 500),
-    ];
+    // B1 会话级语义：慢会话（avg_dur > 2× 全局均值）→ efficiency_issue。
+    // 6 个快会话（单步 @50ms）压低全局均值（=(6×50+2×500)/8=162.5），
+    // 慢会话 avg 500 > 2×162.5=325 ✓（min_freq=1）。
+    let mut exps = Vec::new();
+    for i in 0..6 {
+        exps.push(make_exp_session(
+            "fast_tool",
+            true,
+            50,
+            &format!("fast-{}", i),
+        ));
+    }
+    exps.push(make_exp_session("slow_tool", true, 500, "slow-1"));
+    exps.push(make_exp_session("slow_tool", true, 500, "slow-1"));
 
-    let stats = ExperienceStats {
-        total_count: 3,
-        success_count: 3,
-        failure_count: 0,
-        avg_duration_ms: 200.0,
-        tool_counts: Default::default(),
-    };
-
-    let patterns = extract_patterns(&exps, &stats);
+    let patterns = extract_conversation_patterns(&exps, 1);
     assert!(
         patterns
             .iter()
-            .any(|p| p.pattern_type == PatternType::EfficiencyIssue)
+            .any(|p| p.pattern_type == ConversationPatternType::EfficiencyIssue)
     );
 }
 
 #[test]
 fn test_empty_experiences() {
-    let patterns = extract_patterns(
-        &[],
-        &ExperienceStats {
-            total_count: 0,
-            success_count: 0,
-            failure_count: 0,
-            avg_duration_ms: 0.0,
-            tool_counts: Default::default(),
-        },
-    );
+    let patterns = extract_conversation_patterns(&[], 3);
     assert!(patterns.is_empty());
 }
 
@@ -318,24 +304,17 @@ fn test_detect_success_templates_empty() {
 
 #[test]
 fn test_extract_patterns_tool_chain_threshold() {
-    // Only 2 uses - below threshold of 3
+    // B1 会话级语义：链频按跨会话聚合——同形链只出现 1 次（单会话）
+    // 时过不了 min_freq=2 闸。
     let exps = vec![
-        make_exp("rare_tool", true, 100),
-        make_exp("rare_tool", true, 100),
+        make_exp_session("rare_tool", true, 100, "only-session"),
+        make_exp_session("rare_tool", true, 100, "only-session"),
     ];
-    let stats = ExperienceStats {
-        total_count: 2,
-        success_count: 2,
-        failure_count: 0,
-        avg_duration_ms: 100.0,
-        tool_counts: Default::default(),
-    };
-    let patterns = extract_patterns(&exps, &stats);
+    let patterns = extract_conversation_patterns(&exps, 2);
     assert!(
         !patterns
             .iter()
-            .any(|p| p.pattern_type == PatternType::ToolChain
-                && p.tools.contains(&"rare_tool".to_string()))
+            .any(|p| p.pattern_type == ConversationPatternType::ToolChain)
     );
 }
 
@@ -359,9 +338,20 @@ fn test_pattern_sorted_by_confidence() {
 
 #[test]
 fn test_pattern_type_equality() {
-    assert_eq!(PatternType::ToolChain, PatternType::ToolChain);
-    assert_ne!(PatternType::ToolChain, PatternType::ErrorRecovery);
-    assert_ne!(PatternType::EfficiencyIssue, PatternType::SuccessTemplate);
+    // legacy PatternType 已删（B1 单一来源 = ConversationPatternType）；
+    // 等值/不等值语义由现类型承接。
+    assert_eq!(
+        ConversationPatternType::ToolChain,
+        ConversationPatternType::ToolChain
+    );
+    assert_ne!(
+        ConversationPatternType::ToolChain,
+        ConversationPatternType::ErrorRecovery
+    );
+    assert_ne!(
+        ConversationPatternType::EfficiencyIssue,
+        ConversationPatternType::SuccessTemplate
+    );
 }
 
 #[test]
@@ -557,6 +547,89 @@ fn test_detect_error_recovery_both_failure_no_match() {
     assert!(patterns.is_empty());
 }
 
+/// 显式时间戳的经验构造器（配对测试需要跨会话确定性时序）。
+fn exp_ts(tool: &str, success: bool, session: &str, ts: &str) -> CollectedExperience {
+    CollectedExperience {
+        experience: Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tool.into(),
+            input_summary: "test".into(),
+            output_summary: if success { "ok" } else { "err" }.into(),
+            success,
+            duration_ms: 100,
+            timestamp: ts.into(),
+            session_key: session.into(),
+        },
+        dedup_hash: format!("hash-{}-{}", tool, ts),
+    }
+}
+
+/// BUG-20261114-017 回归锁：跨会话事件穿插在失败与恢复之间时，旧全局
+/// windows(2) 让同会话 (失败,恢复) 对永不相邻 → 漏检。会话内配对修复后
+/// 两组穿插的对都必须检出。
+#[test]
+fn test_detect_error_recovery_interleaved_sessions_still_pairs() {
+    let exps = vec![
+        // s1: a 失败 → b 恢复，中间被 s2 的两个事件穿插。
+        exp_ts("a", false, "s1", "2026-01-01T00:00:01+08:00"),
+        exp_ts("y", false, "s2", "2026-01-01T00:00:02+08:00"),
+        exp_ts("b", true, "s1", "2026-01-01T00:00:03+08:00"),
+        exp_ts("z", true, "s2", "2026-01-01T00:00:04+08:00"),
+    ];
+    let patterns = detect_conversation_error_recovery(&exps, 1);
+    assert_eq!(
+        patterns.len(),
+        2,
+        "both interleaved pairs must be found, got {:?}",
+        patterns
+    );
+    let mut pairs: Vec<(String, String)> = patterns
+        .iter()
+        .map(|p| {
+            (
+                p.error_tool.clone().unwrap_or_default(),
+                p.recovery_tool.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        vec![("a".into(), "b".into()), ("y".into(), "z".into())]
+    );
+}
+
+/// BUG-20261114-018 回归锁：置信度 = 恢复覆盖率 hits / failures(error_tool)，
+/// 不再恒 ≡ 1.0（旧实现 successes 与 count 同步自增）。4 次失败中 2 次被
+/// b 恢复、2 次同工具重试自愈 → conf = 0.5（决策表 suggest 臂可达）。
+#[test]
+fn test_detect_error_recovery_confidence_is_recovery_coverage() {
+    let exps = vec![
+        // 2 次命中：a 失败 → b 恢复。
+        exp_ts("a", false, "s1", "2026-01-01T00:00:01+08:00"),
+        exp_ts("b", true, "s1", "2026-01-01T00:00:02+08:00"),
+        exp_ts("a", false, "s2", "2026-01-01T00:00:03+08:00"),
+        exp_ts("b", true, "s2", "2026-01-01T00:00:04+08:00"),
+        // 2 次未命中：a 失败 → a 重试成功（同工具自愈，不计入 (a,b) 命中）。
+        exp_ts("a", false, "s3", "2026-01-01T00:00:05+08:00"),
+        exp_ts("a", true, "s3", "2026-01-01T00:00:06+08:00"),
+        exp_ts("a", false, "s4", "2026-01-01T00:00:07+08:00"),
+        exp_ts("a", true, "s4", "2026-01-01T00:00:08+08:00"),
+    ];
+    let patterns = detect_conversation_error_recovery(&exps, 2);
+    assert_eq!(patterns.len(), 1);
+    let p = &patterns[0];
+    assert_eq!(p.error_tool.as_deref(), Some("a"));
+    assert_eq!(p.recovery_tool.as_deref(), Some("b"));
+    assert_eq!(p.frequency, 2);
+    assert!(
+        (p.confidence - 0.5).abs() < 1e-9,
+        "coverage = 2 hits / 4 failures = 0.5, got {}",
+        p.confidence
+    );
+    assert_eq!(p.success_rate, Some(p.confidence));
+}
+
 #[test]
 fn test_detect_efficiency_issues_zero_global_avg() {
     // All durations are 0 => global avg = 0 => no patterns
@@ -637,71 +710,63 @@ fn test_detect_success_templates_all_success_included() {
 
 #[test]
 fn test_extract_patterns_efficiency_with_high_duration() {
-    let exps = vec![
-        make_exp("normal", true, 100),
-        make_exp("normal", true, 100),
-        make_exp("slow", true, 10000), // 100x avg
-    ];
-    let stats = ExperienceStats {
-        total_count: 3,
-        success_count: 3,
-        failure_count: 0,
-        avg_duration_ms: 3400.0,
-        tool_counts: Default::default(),
-    };
-    let patterns = extract_patterns(&exps, &stats);
+    // B1 会话级语义：9 快 1 慢（慢会话 avg 5000 > 2× 全局 1100）。
+    let mut exps = Vec::new();
+    for i in 0..9 {
+        exps.push(make_exp_session(
+            "normal",
+            true,
+            100,
+            &format!("fast-{}", i),
+        ));
+    }
+    exps.push(make_exp_session("slow", true, 5000, "slow-1"));
+    exps.push(make_exp_session("slow", true, 5000, "slow-1"));
+    let patterns = extract_conversation_patterns(&exps, 1);
     let eff_patterns: Vec<_> = patterns
         .iter()
-        .filter(|p| p.pattern_type == PatternType::EfficiencyIssue)
+        .filter(|p| p.pattern_type == ConversationPatternType::EfficiencyIssue)
         .collect();
     assert!(!eff_patterns.is_empty());
 }
 
 #[test]
 fn test_extract_patterns_success_template_requires_perfect() {
-    // 3 successes, 1 failure -> not a success template
+    // B1 会话级语义：混入失败的经验 → 会话非全成功 → 不产 success_template。
     let exps = vec![
-        make_exp("tool_a", true, 100),
-        make_exp("tool_a", true, 100),
-        make_exp("tool_a", true, 100),
-        make_exp("tool_a", false, 100),
+        make_exp_session("tool_a", true, 100, "mixed-1"),
+        make_exp_session("tool_a", true, 100, "mixed-1"),
+        make_exp_session("tool_a", true, 100, "mixed-1"),
+        make_exp_session("tool_a", false, 100, "mixed-1"),
+        // 对照组：全成功会话照常产出（防断言假阳性）
+        make_exp_session("tool_a", true, 100, "pure-1"),
+        make_exp_session("tool_a", true, 100, "pure-2"),
     ];
-    let stats = ExperienceStats {
-        total_count: 4,
-        success_count: 3,
-        failure_count: 1,
-        avg_duration_ms: 100.0,
-        tool_counts: Default::default(),
-    };
-    let patterns = extract_patterns(&exps, &stats);
-    assert!(
-        !patterns
-            .iter()
-            .any(|p| p.pattern_type == PatternType::SuccessTemplate
-                && p.tools.contains(&"tool_a".to_string()))
-    );
+    let patterns = extract_conversation_patterns(&exps, 2);
+    assert!(!patterns.iter().any(
+        |p| p.pattern_type == ConversationPatternType::SuccessTemplate
+            && p.tool_chain.as_deref() == Some("tool_a\u{2192}tool_a\u{2192}tool_a\u{2192}tool_a")
+    ));
 }
 
 #[test]
 fn test_extract_patterns_error_recovery_mixed() {
+    // B1 会话级语义：同工具恢复不构成恢复链（须不同工具）；跨会话
+    // 重复 flaky 失败 → fixer 成功 ≥2 次才产出。
     let exps = vec![
-        make_exp("flaky", false, 100),
-        make_exp("flaky", false, 100),
-        make_exp("flaky", true, 100),
+        make_exp_session("flaky", false, 100, "s1"),
+        make_exp_session("fixer", true, 100, "s1"),
+        make_exp_session("flaky", false, 100, "s2"),
+        make_exp_session("fixer", true, 100, "s2"),
     ];
-    let stats = ExperienceStats {
-        total_count: 3,
-        success_count: 1,
-        failure_count: 2,
-        avg_duration_ms: 100.0,
-        tool_counts: Default::default(),
-    };
-    let patterns = extract_patterns(&exps, &stats);
-    assert!(
-        patterns
-            .iter()
-            .any(|p| p.pattern_type == PatternType::ErrorRecovery)
-    );
+    let patterns = extract_conversation_patterns(&exps, 2);
+    let er: Vec<_> = patterns
+        .iter()
+        .filter(|p| p.pattern_type == ConversationPatternType::ErrorRecovery)
+        .collect();
+    assert_eq!(er.len(), 1);
+    assert_eq!(er[0].error_tool.as_deref(), Some("flaky"));
+    assert_eq!(er[0].recovery_tool.as_deref(), Some("fixer"));
 }
 
 #[test]

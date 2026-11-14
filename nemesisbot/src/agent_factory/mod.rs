@@ -195,6 +195,12 @@ pub struct SharedResources {
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
     pub background_registry: Arc<nemesis_agent::BackgroundProcessRegistry>,
 
+    /// 专家子代理资源层单例（2026-11-13，workspace/experts/ 目录即注册表）。
+    /// gateway 建一次跨 loop 重启存活；经 SharedToolConfig（SpawnTool
+    /// list/预检）与 inject_spawn_fn（执行面解析+模型覆盖）两条路注入。
+    /// None（headless/测试缺省）= 无专家面，spawn 行为字节不变。
+    pub experts: Option<Arc<crate::experts_store::ExpertsStore>>,
+
     /// （WASM 插件框架）：插件注册表单例。gateway init_agent 建一次
     /// （config `plugins.wasm.enabled=false` = None 整面子系统缺席）；跨
     /// agent 重启存活——每次 build_agent_loop 重建时桥工具重新注册 + invoker
@@ -285,6 +291,7 @@ impl Default for SharedResources {
             agent_event_tx: None,
             session_stats: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
+            experts: None,
             plugin_manager: None,
             entrance: nemesis_agent::prompt::Entrance::Interactive,
             #[cfg(all(feature = "board", feature = "cluster"))]

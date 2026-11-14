@@ -692,3 +692,84 @@ fn nfkc_fold_preserves_ascii_identity_and_benign_input() {
     let guard = Guard::new(true);
     assert!(guard.check("ｅｃｈｏ ｈｉ").is_ok());
 }
+
+#[test]
+fn variant_form_recursive_delete_and_force_kill_blocked() {
+    // BUG-20261114-044：blocklist 变体形态漏拦——三条目对「可执行变体」
+    // 恒打不中/漏打：
+    // ① remove_item_recurse 只认 `-recurse` 全词——PowerShell 无歧义前缀
+    //    缩写 `-r`（参数表 r 开头仅 Recurse，实证可递归删除；`-f` 歧义
+    //    Filter/Force 报错不执行，故意不收）、`-fo`/`-force`（Force 无歧义
+    //    前缀）与别名族（ri/del/erase/rd 均为 Remove-Item 别名）的 dash
+    //    形态全漏；旗标在前（`del -r C:\x`）与在后两种位置、
+    //    cmd /c → powershell 包装（归一化剥引号）同漏。
+    // ② kill_9 只认 `-9`/`-s 9`/`-s sigkill`——信号名 dash 形态
+    //    `-SIGKILL`/`-KILL`、GNU 长选项 `--signal=KILL`/`--signal KILL`
+    //    （含单划线 `-signal 9` getopt_long 缩写）、bash 内建 signum
+    //    `-n 9`、零填充数值 `-09`/`-s 09` 漏。
+    // ③ truncate 只认 `-s 0`/`-s0`——GNU 长选项 `--size=0`/`--size 0`、
+    //    零×倍数后缀（`-s 0k`：0×1024 仍为 0，实证清零）、破坏性前缀
+    //    （`-s '<0'`：取上限收缩到 0，实证清零；`%0`：向上取整除零报错，
+    //    保守拦）漏。GNU 前缀语义 `<`=maximum、`>`=minimum（与直觉相反）。
+    // 误伤面单列：graceful 信号（-TERM/-15/-n 15/--signal=TERM）、kill -l
+    //（含 `kill -l SIGKILL` 查询形态）、PID 9、非零 truncate、no-op 尺寸
+    // 前缀（+0 延长/<0 缩减）、dir/Get-ChildItem -Recurse（列出非删除）、
+    // 无旗标别名删除、路径尾缀 `-r` 文件名必须放行。
+    let guard = Guard::new(true);
+    for cmd in [
+        "Remove-Item C:\\probe -r",
+        "ri C:\\probe -r",
+        "del C:\\probe -r",
+        "erase C:\\probe -r",
+        "rd C:\\probe -r",
+        "del -r C:\\probe",               // 旗标在前位置
+        "Remove-Item -recurse C:\\probe", // 全词旗标在前
+        "del.exe C:\\probe -r",           // .exe 后缀形态
+        "Remove-Item C:\\probe -Recurse", // 旧形态回归（全词）
+        "del C:\\probe -fo",              // -Force 缩写（无歧义）
+        "del C:\\probe -force",
+        "powershell -c \"Remove-Item C:\\Users -r\"", // 包装形态：归一化剥引号后命中
+        "kill -SIGKILL 123",
+        "kill -KILL 456",
+        "kill --signal=KILL 1",
+        "kill --signal 9 123", // 长选项空格形态
+        "kill -signal 9 5",    // getopt_long 单划线缩写
+        "kill -n 9 123",       // bash 内建 signum 形态
+        "kill -09 123",        // 零填充数值
+        "kill -s 09 42",       // -s 零填充
+        "kill -s KILL 789",
+        "kill -ssigkill 42",
+        "truncate -s 0 data.bin", // 旧形态回归
+        "truncate --size=0 big.log",
+        "truncate --size 0 big.log",
+        "truncate -s 0k big.log", // 0×1024 = 0，同为清零
+        "truncate -s 0M big.log",
+        "truncate -s0k big.log", // 紧凑形态
+        "truncate --size=0k big.log",
+        "truncate -s '<0' big.log", // 取上限收缩到 0（实证清零；引号经归一化剥除）
+        "truncate -s %0 big.log",   // 向上取整到 0 倍数（除零报错，保守拦）
+        "truncate --size=<0 big.log",
+    ] {
+        assert!(guard.check(cmd).is_err(), "`{cmd}` must be blocked");
+    }
+    for cmd in [
+        "kill -TERM 123",            // graceful 信号不拦
+        "kill -15 123",              // 同上
+        "kill -n 15 123",            // -n 非零 signum
+        "kill --signal=TERM 123",    // 长选项优雅信号
+        "kill -l",                   // 列信号
+        "kill -l SIGKILL",           // 查询信号编号（无害）
+        "kill 9",                    // PID 9 非旗标
+        "truncate -s 100M data.bin", // 非零截断
+        "truncate -s 5 data.bin",    // 非零截断
+        "truncate -s +0 data.log",   // 延长 0 = no-op
+        "truncate -s '>0' data.log", // 取下限「至少 0」= no-op（GNU `<`/`>` 语义与直觉相反）
+        "del C:\\logs\\my-r",        // 路径文件名尾缀 -r 非旗标
+        "dir -Recurse",              // Get-ChildItem 别名：列出非删除
+        "Get-ChildItem -Recurse",    // 同上
+        "del result.txt",            // 无旗标
+        "rd empty_dir",              // 无 /s
+    ] {
+        assert!(guard.check(cmd).is_ok(), "`{cmd}` must not be blocked");
+    }
+}

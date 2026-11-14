@@ -299,6 +299,41 @@ fn parse_duration_large_values() {
     assert_eq!(parse_duration("60m"), Some(Duration::from_secs(3600)));
 }
 
+// 回归锁（BUG-20261114-057）：数值部分 parse::<u64> 通过但 ×60/×3600
+// 溢出的形态（工作流 YAML timeout 字段=模型可写输入面）——修复前
+// debug panic / release 回绕垃圾时长；修复后饱和到 u64::MAX 秒
+// （事实不限时，BUG-20261107-025 saturating_mul 族语义）。
+#[test]
+fn parse_duration_suffix_multiplication_saturates() {
+    // 恰好越阈值：饱和不炸。
+    assert_eq!(
+        parse_duration(&format!("{}m", u64::MAX / 60 + 1)),
+        Some(Duration::from_secs(u64::MAX))
+    );
+    assert_eq!(
+        parse_duration(&format!("{}h", u64::MAX / 3600 + 1)),
+        Some(Duration::from_secs(u64::MAX))
+    );
+    // 阈值边界内：正常换算不受影响。
+    assert_eq!(
+        parse_duration(&format!("{}m", u64::MAX / 60)),
+        Some(Duration::from_secs(u64::MAX / 60 * 60))
+    );
+    assert_eq!(
+        parse_duration(&format!("{}h", u64::MAX / 3600)),
+        Some(Duration::from_secs(u64::MAX / 3600 * 3600))
+    );
+    // 秒臂与裸数字臂无乘法：u64::MAX 直通。
+    assert_eq!(
+        parse_duration("18446744073709551615"),
+        Some(Duration::from_secs(u64::MAX))
+    );
+    assert_eq!(
+        parse_duration("18446744073709551615s"),
+        Some(Duration::from_secs(u64::MAX))
+    );
+}
+
 #[test]
 fn parse_duration_invalid_suffix() {
     assert_eq!(parse_duration("30d"), None);

@@ -130,6 +130,7 @@ async fn test_download_skill_tree_success_downloads_files() {
         "skills/pdf",
         dir.path().to_str().unwrap(),
         0,
+        0,
     )
     .await;
     assert!(result.is_ok());
@@ -166,6 +167,7 @@ async fn test_download_skill_tree_with_trailing_slash_prefix() {
         "skills/pdf/", // already has trailing slash
         dir.path().to_str().unwrap(),
         0,
+        0,
     )
     .await;
     assert!(result.is_ok());
@@ -190,6 +192,7 @@ async fn test_download_skill_tree_http_error() {
         "main",
         "skills/pdf",
         dir.path().to_str().unwrap(),
+        0,
         0,
     )
     .await
@@ -217,6 +220,7 @@ async fn test_download_skill_tree_invalid_json() {
         "skills/pdf",
         dir.path().to_str().unwrap(),
         0,
+        0,
     )
     .await
     .unwrap_err();
@@ -243,6 +247,7 @@ async fn test_download_skill_tree_no_matching_blobs_returns_not_found() {
         "main",
         "skills/pdf",
         dir.path().to_str().unwrap(),
+        0,
         0,
     )
     .await
@@ -281,6 +286,7 @@ async fn test_download_skill_tree_filters_out_tree_entries() {
         "skills/pdf",
         dir.path().to_str().unwrap(),
         0,
+        0,
     )
     .await
     .unwrap();
@@ -316,6 +322,7 @@ async fn test_download_skill_tree_uses_max_file_size_zero_uses_default() {
         "skills/pdf",
         dir.path().to_str().unwrap(),
         0, // zero -> default
+        0, // zero budget -> default aggregate cap
     )
     .await;
     assert!(result.is_ok());
@@ -520,6 +527,7 @@ async fn test_download_skill_tree_blob_equal_to_prefix_is_skipped() {
         "skills/pdf",
         dir.path().to_str().unwrap(),
         0,
+        0,
     )
     .await
     .unwrap();
@@ -552,6 +560,7 @@ async fn test_download_skill_tree_rejects_path_traversal_entry() {
         "main",
         "skills/pdf",
         dir.path().to_str().unwrap(),
+        0,
         0,
     )
     .await
@@ -593,11 +602,154 @@ async fn test_download_skill_tree_parent_create_fails_when_parent_is_file() {
         "skills/pdf",
         target.to_str().unwrap(),
         0,
+        0,
     )
     .await
     .unwrap_err();
     assert!(
         matches!(err, nemesis_types::error::NemesisError::Io(_)),
         "got: {err}"
+    );
+}
+
+// ===========================================================================
+// BUG-20261114-059 回归锁：树下载聚合双闸。
+//
+// 旧行为（红证面）：树下载无聚合体量/文件数上限——16MB 树 JSON 可编码
+// ~160K 条目 × 单文件帽 = TB 级落盘/海量小文件。修后：预算超限在**写盘
+// 前**拒绝（零落盘超写），文件数在任何下载前拒绝。
+// ===========================================================================
+
+/// 聚合预算：total_budget 参数传入小值（64KB），两个 blob 各 ~48KB——
+/// 第二个文件下载后累计超预算，写盘前拒绝。
+#[tokio::test]
+async fn test_download_skill_tree_aggregate_budget_rejects_before_write() {
+    let server = MockServer::start().await;
+    let tree_body = r#"{"tree":[{"path":"skills/pdf/a.md","type":"blob"},{"path":"skills/pdf/b.md","type":"blob"}]}"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/org/repo/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(tree_body))
+        .mount(&server)
+        .await;
+    // 每个 blob 48KB 模式化内容（可压缩，wiremock 载荷小）。
+    let content: Vec<u8> = (0..48 * 1024).map(|i| (i % 251) as u8).collect();
+    let content_clone = content.clone();
+    Mock::given(method("GET"))
+        .and(path("/org/repo/main/skills/pdf/a.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(content))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/repo/main/skills/pdf/b.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(content_clone))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let err = download_skill_tree_from_github(
+        &http_client(),
+        &server.uri(),
+        &server.uri(),
+        "org/repo",
+        "main",
+        "skills/pdf",
+        dir.path().to_str().unwrap(),
+        0,     // 单文件帽默认
+        65536, // 聚合预算 64KB：两文件 96KB 超限
+    )
+    .await
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("aggregate download size"),
+        "聚合预算超限必须拒绝并说明原因，实际错误：{msg}"
+    );
+    // 写盘前检查：第二个文件不得落盘；第一个文件（预算内）已落盘。
+    assert!(dir.path().join("a.md").exists(), "预算内第一个文件应已落盘");
+    assert!(
+        !dir.path().join("b.md").exists(),
+        "超预算文件必须在写盘前拒绝（零落盘超写）"
+    );
+}
+
+/// 正常路径：预算内多文件完整落盘（预算参数存在不破坏正常安装）。
+#[tokio::test]
+async fn test_download_skill_tree_aggregate_budget_passes_within_budget() {
+    let server = MockServer::start().await;
+    let tree_body = r#"{"tree":[{"path":"skills/pdf/SKILL.md","type":"blob"},{"path":"skills/pdf/docs/g.md","type":"blob"}]}"#;
+    Mock::given(method("GET"))
+        .and(path("/repos/org/repo/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(tree_body))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/repo/main/skills/pdf/SKILL.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"# PDF Skill".to_vec()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/org/repo/main/skills/pdf/docs/g.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"# Guide".to_vec()))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    download_skill_tree_from_github(
+        &http_client(),
+        &server.uri(),
+        &server.uri(),
+        "org/repo",
+        "main",
+        "skills/pdf",
+        dir.path().to_str().unwrap(),
+        0,
+        1024 * 1024, // 充裕预算
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("SKILL.md")).unwrap(),
+        b"# PDF Skill"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("docs").join("g.md")).unwrap(),
+        b"# Guide"
+    );
+}
+
+/// 文件数闸：树清单超过 MAX_SKILL_FILE_COUNT 个 blob——任何下载前拒绝
+/// （wiremock 上 raw 端点零 mock：有下载发生就会 404 换错误形态）。
+#[tokio::test]
+async fn test_download_skill_tree_file_count_over_limit_rejected_before_download() {
+    let server = MockServer::start().await;
+    let n = crate::registry::MAX_SKILL_FILE_COUNT + 1;
+    let entries: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"path":"skills/pdf/f{i:05}.txt","type":"blob"}}"#))
+        .collect();
+    let tree_body = format!(r#"{{"tree":[{}],"truncated":false}}"#, entries.join(","));
+    Mock::given(method("GET"))
+        .and(path("/repos/org/repo/git/trees/main"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(tree_body))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let err = download_skill_tree_from_github(
+        &http_client(),
+        &server.uri(),
+        &server.uri(),
+        "org/repo",
+        "main",
+        "skills/pdf",
+        dir.path().to_str().unwrap(),
+        0,
+        0,
+    )
+    .await
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("file count"),
+        "超文件数上限必须在任何下载前拒绝，实际错误：{msg}"
     );
 }

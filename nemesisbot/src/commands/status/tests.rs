@@ -334,6 +334,43 @@ fn test_status_model_parsing_mixed_models() {
     assert_eq!(no_provider_count, 2); // "no-slash-model" and ""
 }
 
+// -------------------------------------------------------------------------
+// aggregate_provider_stats 直测（BUG-20261114-050：真函数非影子——
+// BTreeMap 序确定性 + provider 小写归并 + has_key OR 合并 + 无 slash 跳过）
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_aggregate_provider_stats_sorted_and_merged() {
+    let models = serde_json::json!([
+        {"model": "zhipu/glm-4", "api_key": ""},
+        {"model": "OpenAI/gpt-4", "api_key": "sk-x"},
+        {"model": "openai/gpt-3.5", "api_key": ""},
+        {"model": "anthropic/claude-3", "api_key": "key2"},
+        {"model": "no-slash-model", "api_key": "k"},
+    ]);
+    let stats = super::aggregate_provider_stats(models.as_array().unwrap());
+    // BTreeMap 字典序输出（本 BUG 的修复点：HashMap 迭代序逐进程漂移）。
+    let keys: Vec<&str> = stats.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        vec!["anthropic", "openai", "zhipu"],
+        "输出必须确定性字典序"
+    );
+    assert_eq!(stats["openai"], (2, true), "大小写归并 + has_key OR 合并");
+    assert_eq!(stats["zhipu"], (1, false));
+    assert_eq!(stats["anthropic"], (1, true));
+}
+
+#[test]
+fn test_aggregate_provider_stats_empty_and_no_slash() {
+    let models = serde_json::json!([
+        {"model": "no-slash-model", "api_key": "k"},
+        {"model": "", "api_key": "k2"},
+    ]);
+    let stats = super::aggregate_provider_stats(models.as_array().unwrap());
+    assert!(stats.is_empty(), "无 slash/空模型名不计入任何 provider");
+}
+
 // ===========================================================================
 // run() 全臂（quality-hardening goal 冲刺）
 //

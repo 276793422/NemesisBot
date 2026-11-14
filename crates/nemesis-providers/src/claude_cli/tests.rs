@@ -80,7 +80,7 @@ fn test_messages_to_prompt_multi() {
 fn test_parse_response_text() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"Hello!","usage":{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}"#;
-    let resp = provider.parse_response(output, &[]).unwrap();
+    let resp = provider.parse_response(output, &[], "").unwrap();
     assert_eq!(resp.content, "Hello!");
     assert_eq!(resp.finish_reason, "stop");
     assert!(resp.tool_calls.is_empty());
@@ -91,7 +91,7 @@ fn test_parse_response_text() {
 fn test_parse_response_error() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":true,"result":"Something went wrong","usage":{}}"#;
-    let result = provider.parse_response(output, &[]);
+    let result = provider.parse_response(output, &[], "");
     assert!(result.is_err());
 }
 
@@ -102,7 +102,7 @@ fn test_parse_response_with_tool_calls() {
     // 白名单内名字（read_file）→ 正常恢复为工具调用（过滤
     // 只拦名字不可执行的伪调用，不碰机制本身）。
     let tools = vec![fn_tool("read_file")];
-    let resp = provider.parse_response(output, &tools).unwrap();
+    let resp = provider.parse_response(output, &tools, "").unwrap();
     assert_eq!(resp.tool_calls.len(), 1);
     assert_eq!(
         resp.tool_calls[0].function.as_ref().unwrap().name,
@@ -263,7 +263,7 @@ fn test_messages_to_prompt_tool_without_call_id() {
 fn test_parse_response_with_usage() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"Done!","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":10,"cache_read_input_tokens":20}}"#;
-    let resp = provider.parse_response(output, &[]).unwrap();
+    let resp = provider.parse_response(output, &[], "").unwrap();
     assert_eq!(resp.content, "Done!");
     let usage = resp.usage.unwrap();
     // Anthropic 加法语义透传：prompt=纯输入 100，缓存读写单列；
@@ -280,7 +280,7 @@ fn test_parse_response_with_usage() {
 fn test_parse_response_no_usage() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"No usage info","usage":{}}"#;
-    let resp = provider.parse_response(output, &[]).unwrap();
+    let resp = provider.parse_response(output, &[], "").unwrap();
     assert_eq!(resp.content, "No usage info");
     assert!(resp.usage.is_none()); // Both input and output are 0
 }
@@ -288,7 +288,7 @@ fn test_parse_response_no_usage() {
 #[test]
 fn test_parse_response_invalid_json() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
-    let result = provider.parse_response("not json at all", &[]);
+    let result = provider.parse_response("not json at all", &[], "");
     assert!(result.is_err());
 }
 
@@ -363,7 +363,7 @@ fn test_parse_response_documentation_json_not_hijacked() {
     })
     .to_string();
     let resp = provider
-        .parse_response(&output, &[fn_tool("read_file")])
+        .parse_response(&output, &[fn_tool("read_file")], "")
         .unwrap();
     assert!(resp.tool_calls.is_empty(), "{:?}", resp.tool_calls);
     assert_eq!(resp.finish_reason, "stop");
@@ -383,7 +383,7 @@ fn test_parse_response_empty_tools_drops_envelope() {
         "usage": {}
     })
     .to_string();
-    let resp = provider.parse_response(&output, &[]).unwrap();
+    let resp = provider.parse_response(&output, &[], "").unwrap();
     assert!(resp.tool_calls.is_empty(), "{:?}", resp.tool_calls);
     assert_eq!(resp.finish_reason, "stop");
     assert!(resp.content.contains("tool_calls"), "{}", resp.content);
@@ -402,9 +402,159 @@ fn test_parse_response_mixed_names_filters_to_whitelist() {
     })
     .to_string();
     let resp = provider
-        .parse_response(&output, &[fn_tool("read_file")])
+        .parse_response(&output, &[fn_tool("read_file")], "")
         .unwrap();
     assert_eq!(resp.tool_calls.len(), 1);
     assert_eq!(resp.tool_calls[0].id, "c1");
     assert_eq!(resp.finish_reason, "tool_calls");
+}
+
+// ============================================================
+// BUG-20261114-052：带内 is_error 交真相源分类（同族 codex-cli
+// turn.failed/error 同待遇）——瞬态文案可轮转 fallback 链。
+// ============================================================
+
+/// 限流文案 is_error → RateLimit（可重试可轮转），不再是裸 Unknown。
+#[test]
+fn test_parse_response_is_error_rate_limit_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let output = r#"{"type":"result","is_error":true,"result":"API Error: 429 rate_limit exceeded","usage":{}}"#;
+    let err = provider
+        .parse_response(output, &[], "test-model")
+        .unwrap_err();
+    match err {
+        FailoverError::RateLimit {
+            provider: p, model, ..
+        } => {
+            assert_eq!(p, "claude-cli");
+            assert_eq!(model, "test-model");
+        }
+        other => panic!("预期 RateLimit，得到 {other:?}"),
+    }
+}
+
+/// 分类不出的 is_error → Unknown 保留全文（带前缀），兜底语义不变。
+#[test]
+fn test_parse_response_is_error_unmatched_stays_unknown_with_prefix() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let output = r#"{"type":"result","is_error":true,"result":"额度用尽","usage":{}}"#;
+    let err = provider.parse_response(output, &[], "m").unwrap_err();
+    match err {
+        FailoverError::Unknown { message, .. } => {
+            assert_eq!(message, "claude cli error: 额度用尽");
+        }
+        other => panic!("预期 Unknown，得到 {other:?}"),
+    }
+}
+
+// ============================================================
+// BUG-20261114-061：chat() 输出裁决编排（decide_output）形态矩阵。
+// 052 修复②宣称「stdout 先解析……解析不出或为空才走退出码」，实际
+// stdout-first 被插在第一次退出码拦截之后——「非零退出 + 空 stderr」
+// 形态（052 点名主场景）依旧丢成 Unknown "exited with status"，
+// stdout-first 对该形态不可达。红证 = 复刻旧编排跑本矩阵。
+// ============================================================
+
+/// 非零退出 + stderr 空 + stdout 有效内容 → 内容必须送达
+/// （codex lane 同形态 Ok 送达；旧编排丢成 Unknown exited）。
+#[test]
+fn test_decide_nonzero_empty_stderr_stdout_content_delivered() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":false,"result":"Hello world","usage":{}}"#;
+    let resp = provider
+        .decide_output(false, stdout, "", "exit code: 1", &[], "m")
+        .expect("stdout 有效内容必须送达，不得因非零退出+空 stderr 丢弃");
+    assert_eq!(resp.content.trim(), "Hello world");
+    assert_eq!(resp.finish_reason, "stop");
+}
+
+/// 非零退出 + stderr 空 + stdout is_error 限流 JSON → 必须交真相源分类
+/// 成 RateLimit（可轮转），不得丢成 Unknown exited with status
+/// （052 宣称修复的主场景）。
+#[test]
+fn test_decide_nonzero_empty_stderr_is_error_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":true,"result":"API Error: 429 rate_limit exceeded","usage":{}}"#;
+    let err = provider
+        .decide_output(false, stdout, "", "exit code: 1", &[], "m")
+        .unwrap_err();
+    match err {
+        FailoverError::RateLimit {
+            provider: p, model, ..
+        } => {
+            assert_eq!(p, "claude-cli");
+            assert_eq!(model, "m");
+        }
+        other => panic!("预期 RateLimit（stdout is_error 分类送达），得到 {other:?}"),
+    }
+}
+
+/// 非零退出 + stderr 有内容 → stderr 分类语义不变（stderr 优先保留）。
+#[test]
+fn test_decide_nonzero_stderr_still_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let err = provider
+        .decide_output(
+            false,
+            "",
+            "API Error: 429 rate_limit exceeded",
+            "exit code: 1",
+            &[],
+            "m",
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "得到 {err:?}"
+    );
+}
+
+/// 非零退出 + 双空 → Unknown exited with status 兜底不变。
+#[test]
+fn test_decide_nonzero_both_empty_unknown() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let err = provider
+        .decide_output(false, "", "", "exit code: 1", &[], "m")
+        .unwrap_err();
+    match err {
+        FailoverError::Unknown { message, .. } => {
+            assert!(message.contains("exited with status"), "得到 {message}");
+        }
+        other => panic!("预期 Unknown exited，得到 {other:?}"),
+    }
+}
+
+/// 零退出 + stdout 有效内容 → Ok（既有语义不变）。
+#[test]
+fn test_decide_zero_stdout_content_ok() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":false,"result":"Hi","usage":{}}"#;
+    let resp = provider
+        .decide_output(true, stdout, "", "exit code: 0", &[], "m")
+        .expect("零退出有效内容必须 Ok");
+    assert_eq!(resp.content.trim(), "Hi");
+}
+
+/// 零退出 + stdout is_error 限流 → RateLimit（052 带内分类语义不变）。
+#[test]
+fn test_decide_zero_is_error_classified() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let stdout = r#"{"type":"result","is_error":true,"result":"API Error: 429 rate_limit exceeded","usage":{}}"#;
+    let err = provider
+        .decide_output(true, stdout, "", "exit code: 0", &[], "m")
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "得到 {err:?}"
+    );
+}
+
+/// 零退出 + stdout 畸形 JSON → Format（解析错误语义不变）。
+#[test]
+fn test_decide_zero_invalid_json_format() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let err = provider
+        .decide_output(true, "not json at all", "", "exit code: 0", &[], "m")
+        .unwrap_err();
+    assert!(matches!(err, FailoverError::Format { .. }), "得到 {err:?}");
 }

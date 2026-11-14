@@ -65,6 +65,8 @@ pub mod editor;
 // canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
 pub mod estop;
+// 专家子代理管理面（experts.*）——bot 侧资源层经静态槽桥注入。
+pub mod experts;
 // 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
 // 运行闸默认关）。
 #[cfg(feature = "forge")]
@@ -111,6 +113,11 @@ pub mod release_fetch;
 // manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+// 系统文件管理器动作单一归宿（打开目录 / 定位选中文件 / 默认应用打开）
+// ——此前 projects/skills/sandbox 各一份 + fs 侧两份私有的收编点；Windows
+// 臂 = explorer spawn + AttachThreadInput 激活阶梯前台看门（设计演进与
+// COM 弃用实证见 shell_open 模块头注）。
+pub mod shell_open;
 // 第 4 步：桌面级 VM 管理面（`vm` feature——命令族全走 VmBridge，
 // feature 本体零依赖，见 handlers/vm.rs 头注）。
 pub mod selfupdate;
@@ -391,6 +398,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(deliveries::DeliveriesHandler));
     // 角色目录（角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
+    // 专家子代理管理面（experts.list/get/create/update/remove/set_enabled；
+    // bot 侧 store 经静态槽桥注入——槽空诚实报错，headless/独立 web 测试态）。
+    router.register(Arc::new(experts::ExpertsHandler));
     // 子代理可见性：subagents.list/detail/cancel。
     router.register(Arc::new(subagents::SubagentsHandler));
     // 后台进程实时输出（2026-11-06 P1）：background.list/output/kill/steer。
@@ -546,6 +556,52 @@ pub(crate) fn restore_masked_entries(
     Ok(())
 }
 
+/// 数组元素身份指纹：剥掉敏感名字段后的深拷贝——掩码还原的元素配对不能
+/// 看凭据值本身（那正是要还原的东西），看其余全部字段。
+fn strip_sensitive_named_fields(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in map {
+                if is_sensitive_field(k) {
+                    continue;
+                }
+                out.insert(k.clone(), strip_sensitive_named_fields(val));
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(strip_sensitive_named_fields).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// 在 `existing`（数组）里找与 `elem` 指纹（剥敏感字段后深相等）唯一相同
+/// 的对象元素：唯一命中返回该元素（按身份配对）；零命中（元素同轮被编辑
+/// 过）/歧义（重复指纹，如两条仅 api_key 不同的条目）返回 None（调用方
+/// 回落按下标）。非对象元素（headers/env 等纯标量条目）恒 None。
+fn unique_fingerprint_match<'a>(
+    existing: &'a serde_json::Value,
+    elem: &serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    let arr = existing.as_array()?;
+    let fp = strip_sensitive_named_fields(elem);
+    if !fp.is_object() {
+        return None;
+    }
+    let mut hit: Option<&'a serde_json::Value> = None;
+    for e in arr {
+        if e.is_object() && strip_sensitive_named_fields(e) == fp {
+            if hit.is_some() {
+                return None; // 歧义：两个候选不可裁决，回落下标
+            }
+            hit = Some(e);
+        }
+    }
+    hit
+}
+
 /// Restore masked values in sensitive-named fields of `incoming` from the
 /// matching field in `existing` (recursive over objects/arrays). A masked
 /// value with no unmasked counterpart is a loud error — never persist a mask.
@@ -578,8 +634,16 @@ pub(crate) fn restore_masked_named_fields(
             Ok(())
         }
         serde_json::Value::Array(arr) => {
+            // 对象元素数组（model_list 等）按身份指纹配对而非下标
+            //（BUG-20261114-007）：整档编辑器里插入/重排/删除条目会让下标
+            // 错位，把 A 条目的掩码 api_key 从 B 条目的原值还原——跨条目
+            // 凭据串换且静默落盘。指纹唯一命中 → 用命中元素做 existing；
+            // 零命中/歧义 → 回落按下标（无重排的普通编辑保持原行为）。
             for (i, v) in arr.iter_mut().enumerate() {
-                let ex = existing.get(i).unwrap_or(&NULL);
+                let ex: &serde_json::Value = match unique_fingerprint_match(existing, v) {
+                    Some(e) => e,
+                    None => existing.get(i).unwrap_or(&NULL),
+                };
                 restore_masked_named_fields(v, ex)?;
             }
             Ok(())

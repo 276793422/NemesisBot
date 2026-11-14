@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
-use nemesis_types::utils::split_message;
+use nemesis_types::utils::split_message_utf16;
 
 use crate::base::{BaseChannel, Channel};
 
@@ -232,7 +232,7 @@ impl LineChannel {
             .map_err(|e| NemesisError::Channel(format!("LINE reply failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("LINE reply error: {body}")));
         }
 
@@ -262,7 +262,7 @@ impl LineChannel {
             .map_err(|e| NemesisError::Channel(format!("LINE push failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("LINE push error: {body}")));
         }
 
@@ -440,7 +440,9 @@ impl LineChannel {
                 voice_playback: None,
             };
 
-            let _ = bus.send(inbound);
+            if let Err(e) = bus.send(inbound) {
+                warn!("[LineChannel] failed to publish inbound message to bus: {e}");
+            }
         }
     }
 }
@@ -546,9 +548,11 @@ impl Channel for LineChannel {
 
         self.base.record_sent();
 
-        // LINE 硬限 5000 字符（服务端 400 拒收整条），预算
-        // 4900 留余量。reply token 一次性——首块走 reply()，其余块走 push。
-        let chunks = split_message(&msg.content, 4900);
+        // LINE 硬限 5000 字符——按 UTF-16 code units 计（官方
+        // text-character-count 文档；astral emoji = 2 units），服务端
+        // 400 拒收整条，预算 4900 units 留余量。reply token 一次性——
+        // 首块走 reply()，其余块走 push。
+        let chunks = split_message_utf16(&msg.content, 4900);
 
         // Prefer reply token if available
         if let Some((_, reply_token)) = self.reply_tokens.remove(&msg.chat_id) {

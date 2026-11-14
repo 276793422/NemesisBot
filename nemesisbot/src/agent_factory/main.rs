@@ -805,7 +805,20 @@ pub fn build_agent_loop(
             info!("[AgentFactory] checkpoint gc enabled (keep_turns/keep_days per config)");
         }
     }
-    inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus, cc_bridge.clone());
+    // 专家面（2026-11-13）：名册 handle + provider 解析器注入 spawn 闭包
+    //（None = 无专家面，第 11 参非空时闭包诚实报错）。reloader 纯数据件，
+    // 与 loop provider 重建器同构造（home/workspace 锚定）。
+    inject_spawn_fn(
+        &agent_loop,
+        &spawn_slot,
+        &shared.bus,
+        cc_bridge.clone(),
+        shared.experts.as_ref().map(|s| s.handle()),
+        Arc::new(ModelProviderReloader {
+            home: shared.home.clone(),
+            workspace: shared.workspace_dir(),
+        }),
+    );
     // 插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
     // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。

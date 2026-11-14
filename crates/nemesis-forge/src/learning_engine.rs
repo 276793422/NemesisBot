@@ -28,14 +28,14 @@ use crate::registry::Registry;
 use crate::types::CollectedExperience;
 use nemesis_types::forge::LearningCycle;
 
-// 复查：`SkillCreator` trait 整体删除——它是 write-only
-// 死接线：`set_skill_creator()` 有注入点（gateway ctx.rs + 测试），但字段
-// 从未被读取。技能创建实际路径：run_cycle ⑥ → 私有 `execute_create_skill`
-// （含 pipeline 臂：validate + refine 循环 + determine_status + registry
-// 登记 + workspace/skills 部署；no-pipeline 臂 = 本文件内联注册）。
-// 公开的 `execute_create_skill_action` 是同一逻辑的公开门面（当前仅测试
-// 与外部调用方使用）。保留一个「看起来已接线」的死委托只会误导读者以为
-// 有第三条创建路径。同类A5 restrict_to_workspace 只声名未读取。
+// 复查（C2/C3 合一，缺陷整改批次 2026-11-14）：技能创建只有一条实现——
+// 公开的 `execute_create_skill_action`（slug 化 → 查重 → LLM 生成 →
+// validate + refine 循环 → 安全闸 → forge/skills 落盘 → registry 登记 →
+// workspace/skills `-forge` 副本）。私有 `execute_create_skill` 是薄委托
+// （调公开实现 + 按结果状态打日志），run_cycle ⑥ 消费其返回值真实记账
+// （executed/failed/skipped 分开计数，failed 不再虚计为 executed）。
+// 模式检测单一来源：`crate::pattern::extract_conversation_patterns`
+// （B1 全换——四个弱内联检测器已删）。
 
 /// Detected pattern from experience analysis.
 #[derive(Debug, Clone)]
@@ -50,6 +50,9 @@ pub struct DetectedPattern {
     pub description: String,
     /// Associated tool names.
     pub tools: Vec<String>,
+    /// C1（缺陷整改批次）：脱敏证据块（链序列 + 失败样例 + 统计）——
+    /// LLM 草稿提示词的素材从频次数字升级为可判断形态的真实证据。
+    pub evidence: Option<String>,
 }
 
 /// A learning action to be executed.
@@ -86,6 +89,8 @@ pub struct LearningAction {
     /// 按 `→` 反解析，而 pattern 描述是英文散文不含箭头，落库的是垃圾
     /// 尾词。pattern.tools 由检测器结构化携带，不再二次解析）。
     pub tools: Vec<String>,
+    /// C1：触发该 action 的模式证据块（脱敏）——透传给草稿生成提示词。
+    pub evidence: Option<String>,
 }
 
 impl LearningAction {
@@ -113,6 +118,7 @@ impl LearningAction {
             created_at: Some(chrono::Local::now().to_rfc3339()),
             executed_at: None,
             tools: Vec::new(),
+            evidence: None,
         }
     }
 }
@@ -343,6 +349,7 @@ impl LearningEngine {
         let mut auto_count = 0u32;
         let mut actions_executed = 0u32;
         let mut actions_skipped = 0u32;
+        let mut actions_failed = 0u32;
 
         for mut action in actions {
             match action.action_type.as_str() {
@@ -352,19 +359,24 @@ impl LearningEngine {
                         actions_skipped += 1;
                     } else {
                         auto_count += 1;
-                        self.execute_create_skill(&action);
-                        // F-: execute_create_skill takes &action (immutable),
-                        // so it can't set action.status — count the action here
-                        // once it runs past the max_auto gate. (Inner early-
-                        // return paths are best-effort, but the action was
-                        // processed, which is what actions_taken reports.)
-                        actions_executed += 1;
+                        // C2/C3 合一（缺陷整改批次）：create 单一实现，
+                        // 返回值按真实状态记账——failed 不再虚计为
+                        // executed（旧实现拿不到返回值，early-return
+                        // 全部记成已执行，actions_taken 说谎）。
+                        let result = self.execute_create_skill(&action);
+                        match result.status.as_str() {
+                            "executed" => actions_executed += 1,
+                            "failed" => actions_failed += 1,
+                            _ => actions_skipped += 1,
+                        }
                     }
                 }
                 "suggest_prompt" => {
                     self.execute_suggest_prompt(&mut action);
-                    if action.status == "executed" {
-                        actions_executed += 1;
+                    match action.status.as_str() {
+                        "executed" => actions_executed += 1,
+                        "failed" => actions_failed += 1,
+                        _ => actions_skipped += 1,
                     }
                 }
                 _ => {
@@ -374,10 +386,12 @@ impl LearningEngine {
         }
 
         cycle.actions_taken = actions_executed;
-        if actions_skipped > 0 {
+        if actions_skipped > 0 || actions_failed > 0 {
             tracing::info!(
+                actions_executed,
+                actions_failed,
                 actions_skipped,
-                "[LearningEngine] Learning cycle skipped some actions due to limits or unknown type"
+                "[LearningEngine] Learning cycle action accounting (executed/failed/skipped)"
             );
         }
 
@@ -393,7 +407,15 @@ impl LearningEngine {
         cycle
     }
 
-    /// Extract patterns from collected experiences using all four detectors.
+    /// Extract patterns from collected experiences.
+    ///
+    /// B1（缺陷整改批次 2026-11-14）：检测逻辑单一来源 =
+    /// `crate::pattern::extract_conversation_patterns`（会话级检测器，
+    /// 镜像 Go 的 ConversationPattern：SHA256 指纹去重、first/last_seen、
+    /// 参数键聚合、类型专属字段）。本方法只剩频率阈值下传 +
+    /// ConversationPattern → DetectedPattern 适配层 + C1 证据块挂载
+    /// （[`build_pattern_evidence`]）。此前四个内联检测器是「工具级
+    /// 计数」伪模式（单工具出现次数当链、失败率当恢复），已整体删除。
     pub fn extract_patterns(&self, experiences: &[CollectedExperience]) -> Vec<DetectedPattern> {
         if experiences.is_empty() {
             return Vec::new();
@@ -404,29 +426,48 @@ impl LearningEngine {
             "[Forge/LearningEngine] Extracting patterns from experiences"
         );
 
-        let mut patterns = Vec::new();
-        let tool_chain_patterns = self.detect_tool_chains(experiences);
-        patterns.extend(tool_chain_patterns);
-
-        // Detect error recovery patterns
-        let error_patterns = self.detect_error_recovery(experiences);
-        patterns.extend(error_patterns);
-
-        // Detect efficiency issues
-        let efficiency_patterns = self.detect_efficiency_issue(experiences);
-        patterns.extend(efficiency_patterns);
-
-        // Detect success templates
-        let success_patterns = self.detect_success_template(experiences);
-        patterns.extend(success_patterns);
-
-        // Filter by minimum frequency
+        // 频率下限 fallback（0=未配置 → 缺省 3）；extract_conversation_patterns
+        // 对 min_freq==0 诚实返回空，配置缺省不能依赖检测器兜底。
         let min_freq = if self.config.learning.min_pattern_frequency > 0 {
             self.config.learning.min_pattern_frequency
         } else {
             3
         };
-        patterns.retain(|p| p.frequency >= min_freq);
+
+        let mut patterns: Vec<DetectedPattern> =
+            crate::pattern::extract_conversation_patterns(experiences, min_freq)
+                .into_iter()
+                .map(|cp| {
+                    // 结构化 tools（B1）：链型按 → 拆链；error_recovery 用
+                    // error_tool + recovery_tool 双工具（失败后恢复的完整链）。
+                    let tools: Vec<String> = match cp.pattern_type {
+                        crate::pattern::ConversationPatternType::ErrorRecovery => {
+                            [cp.error_tool.clone(), cp.recovery_tool.clone()]
+                                .into_iter()
+                                .flatten()
+                                .filter(|t| !t.is_empty())
+                                .collect()
+                        }
+                        _ => cp
+                            .tool_chain
+                            .as_deref()
+                            .unwrap_or_default()
+                            .split('\u{2192}')
+                            .map(str::trim)
+                            .filter(|t| !t.is_empty())
+                            .map(String::from)
+                            .collect(),
+                    };
+                    DetectedPattern {
+                        pattern_type: cp.pattern_type.as_str().to_string(),
+                        frequency: cp.frequency,
+                        confidence: cp.confidence,
+                        description: cp.description.clone(),
+                        tools,
+                        evidence: build_pattern_evidence(&cp, experiences),
+                    }
+                })
+                .collect();
 
         // Sort by confidence descending
         patterns.sort_by(|a, b| {
@@ -445,14 +486,34 @@ impl LearningEngine {
 
     /// Generate learning actions from detected patterns.
     ///
-    /// All actions are generated with status "pending" — the caller is
-    /// responsible for executing them (mirrors Go's generateActions).
+    /// B2（缺陷整改批次 2026-11-14）决策表：
+    /// - tool_chain：conf ≥ high_threshold 且 freq ≥ 10 → create，否则 suggest
+    /// - error_recovery：三臂——conf ≥ high_threshold → create；
+    ///   conf ≥ error_recovery_suggest_min → suggest（低置信经验也值得提示，
+    ///   旧实现直接静默丢弃）；conf < suggest_min → 无动作（debug 留痕）
+    /// - efficiency_issue：恒 suggest（优化建议不占自动创建名额）
+    /// - success_template：freq ≥ success_template_skill_threshold → create，
+    ///   否则 suggest（会话级检测器 confidence ≡ 1.0，置信度闸恒真无区分度，
+    ///   频率才是真闸）
+    ///
+    /// 未知 pattern 类型 = loud warn（旧静默 `_` 臂改诚实告警——新增枚举值
+    /// 漏接决策表时第一时间暴露）。每臂透传 pattern.evidence（C1）。
     pub fn generate_actions(&self, patterns: &[DetectedPattern]) -> Vec<LearningAction> {
         let mut actions = Vec::new();
         let high_conf = if self.config.learning.high_conf_threshold > 0.0 {
             self.config.learning.high_conf_threshold
         } else {
             0.8
+        };
+        let er_suggest_min = if self.config.learning.error_recovery_suggest_min > 0.0 {
+            self.config.learning.error_recovery_suggest_min
+        } else {
+            0.2
+        };
+        let st_threshold = if self.config.learning.success_template_skill_threshold > 0 {
+            self.config.learning.success_template_skill_threshold
+        } else {
+            5
         };
 
         for pattern in patterns {
@@ -465,106 +526,110 @@ impl LearningEngine {
                     .unwrap_or("0")
             );
 
-            match pattern.pattern_type.as_str() {
+            let mut action = match pattern.pattern_type.as_str() {
                 "tool_chain" => {
                     if pattern.confidence >= high_conf && pattern.frequency >= 10 {
                         let mut action =
                             LearningAction::new("create_skill", "high", &pattern.description);
-                        action.confidence = pattern.confidence;
-                        action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
-                        action.tools = pattern.tools.clone();
                         action.rationale = Some(format!(
                             "High-confidence tool chain ({:.2}) with frequency {}",
                             pattern.confidence, pattern.frequency
                         ));
-                        actions.push(action);
+                        action
                     } else {
                         let mut action =
                             LearningAction::new("suggest_prompt", "medium", &pattern.description);
-                        action.confidence = pattern.confidence;
-                        action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
-                        action.tools = pattern.tools.clone();
                         action.rationale = Some(format!(
                             "Tool chain below threshold ({:.2} < {:.2}), suggest prompt",
                             pattern.confidence, high_conf
                         ));
-                        actions.push(action);
+                        action
                     }
                 }
 
-                "error_recovery" if pattern.confidence >= high_conf => {
-                    let mut action =
-                        LearningAction::new("create_skill", "high", &pattern.description);
-                    action.confidence = pattern.confidence;
-                    action.pattern_id = Some(pattern_id.clone());
-                    action.draft_name = Some(format!(
-                        "{}-error-handler",
-                        pattern.tools.first().unwrap_or(&"unknown".to_string())
-                    ));
-                    action.tools = pattern.tools.clone();
-                    action.rationale = Some(format!(
-                        "High-confidence error recovery ({:.2}): {}",
-                        pattern.confidence, pattern.description
-                    ));
-                    actions.push(action);
+                "error_recovery" => {
+                    if pattern.confidence >= high_conf {
+                        let mut action =
+                            LearningAction::new("create_skill", "high", &pattern.description);
+                        action.rationale = Some(format!(
+                            "High-confidence error recovery ({:.2}): {}",
+                            pattern.confidence, pattern.description
+                        ));
+                        action
+                    } else if pattern.confidence >= er_suggest_min {
+                        let mut action =
+                            LearningAction::new("suggest_prompt", "medium", &pattern.description);
+                        action.rationale = Some(format!(
+                            "Error recovery below create threshold ({:.2} < {:.2}), suggest prompt",
+                            pattern.confidence, high_conf
+                        ));
+                        action
+                    } else {
+                        tracing::debug!(
+                            pattern_type = %pattern.pattern_type,
+                            confidence = pattern.confidence,
+                            "[LearningEngine] error_recovery below suggest floor, no action"
+                        );
+                        continue;
+                    }
                 }
 
                 "efficiency_issue" => {
                     let mut action =
                         LearningAction::new("suggest_prompt", "medium", &pattern.description);
-                    action.confidence = pattern.confidence;
-                    action.pattern_id = Some(pattern_id.clone());
-                    action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
-                    action.tools = pattern.tools.clone();
                     action.rationale = Some(format!(
                         "Efficiency issue ({:.2} confidence), suggest optimization",
                         pattern.confidence
                     ));
-                    actions.push(action);
+                    action
                 }
 
-                "success_template" if pattern.confidence >= high_conf => {
-                    let mut action =
-                        LearningAction::new("create_skill", "high", &pattern.description);
-                    action.confidence = pattern.confidence;
-                    action.pattern_id = Some(pattern_id.clone());
-                    action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
-                    action.tools = pattern.tools.clone();
-                    action.rationale = Some(format!(
-                        "Success template ({:.2} confidence), automate as Skill",
-                        pattern.confidence
-                    ));
-                    actions.push(action);
+                "success_template" => {
+                    if pattern.frequency >= st_threshold {
+                        let mut action =
+                            LearningAction::new("create_skill", "high", &pattern.description);
+                        action.rationale = Some(format!(
+                            "Success template ({:.2} confidence, frequency {}), automate as Skill",
+                            pattern.confidence, pattern.frequency
+                        ));
+                        action
+                    } else {
+                        let mut action =
+                            LearningAction::new("suggest_prompt", "medium", &pattern.description);
+                        action.rationale = Some(format!(
+                            "Success template below skill threshold ({} < {}), suggest prompt",
+                            pattern.frequency, st_threshold
+                        ));
+                        action
+                    }
                 }
 
-                _ => {
-                    // Unknown pattern type, skip
+                other => {
+                    tracing::warn!(
+                        pattern_type = %other,
+                        "[LearningEngine] Unknown pattern type reached action generation, skipped"
+                    );
+                    continue;
                 }
-            }
+            };
+
+            action.confidence = pattern.confidence;
+            action.pattern_id = Some(pattern_id);
+            action.draft_name = Some(if pattern.pattern_type.as_str() == "error_recovery" {
+                format!(
+                    "{}-error-handler",
+                    pattern.tools.first().unwrap_or(&"unknown".to_string())
+                )
+            } else {
+                generate_skill_name(&pattern.tools.join("->"))
+            });
+            action.tools = pattern.tools.clone();
+            action.evidence = pattern.evidence.clone();
+            actions.push(action);
         }
 
         // Sort by priority (high first) then confidence descending
-        let priority_order = |p: &str| -> u8 {
-            match p {
-                "high" => 0,
-                "medium" => 1,
-                "low" => 2,
-                _ => 3,
-            }
-        };
-        actions.sort_by(|a, b| {
-            let pa = priority_order(&a.priority);
-            let pb = priority_order(&b.priority);
-            match pa.cmp(&pb) {
-                std::cmp::Ordering::Equal => b
-                    .confidence
-                    .partial_cmp(&a.confidence)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                other => other,
-            }
-        });
+        Self::sort_actions(&mut actions);
 
         actions
     }
@@ -643,197 +708,29 @@ impl LearningEngine {
         self.adjust_confidence_from_outcomes(outcomes);
     }
 
-    /// Execute create_skill action: generate via LLM, validate, deploy (mirrors Go's executeCreateSkill).
-    fn execute_create_skill(&self, action: &LearningAction) {
-        let draft_name = match &action.draft_name {
-            Some(name) => name.clone(),
-            None => {
-                return;
-            }
-        };
-        // 落盘名统一过 slug 化（防御纵深，与 store_distilled_draft 同一
-        // 规则统一定义）：draft_name 源自经验聚合的工具链（generate_skill_name
-        // 只 replace+lowercase，无字符白名单；error_recovery 分支直拼
-        // tools.first()），下游有 3 个路径 join 点（forge/skills 落盘、
-        // workspace/skills 部署、degraded 回滚 rename）。上游工具名当前
-        // 受控（内置工具名 + MCP 名已过 sanitize_name），此处不依赖上游
-        // 纪律——slugify 对合法 kebab 名是恒等变换，对穿越序列消解。
-        let draft_name = crate::forge::slugify_skill_name(&draft_name);
-        if draft_name.is_empty() {
-            tracing::warn!("[LearningEngine] draft name slugified to empty, skipping");
-            return;
+    /// Execute create_skill action（run_cycle 内部入口，C2/C3 合一薄委托）。
+    ///
+    /// 单一实现 = [`Self::execute_create_skill_action`]；本方法只委托 +
+    /// 按结果状态打日志。run_cycle ⑥ 消费返回值真实记账（executed /
+    /// failed / skipped 分开计数，failed 不再虚计为 executed）。
+    fn execute_create_skill(&self, action: &LearningAction) -> LearningAction {
+        let result = self.execute_create_skill_action(action);
+        match result.status.as_str() {
+            "executed" => tracing::info!(
+                artifact_id = ?result.artifact_id,
+                "[LearningEngine] Created skill from learning cycle"
+            ),
+            "failed" => tracing::warn!(
+                error = ?result.error_msg,
+                "[LearningEngine] Skill creation failed"
+            ),
+            _ => tracing::debug!(
+                status = %result.status,
+                error = ?result.error_msg,
+                "[LearningEngine] Skill creation skipped"
+            ),
         }
-
-        // Check if already exists in registry (dedup by name)
-        if self.find_artifact_by_fingerprint(&draft_name) {
-            return;
-        }
-
-        // Generate skill draft using LLM
-        let provider = self.provider.lock();
-        let provider_arc = match provider.as_ref() {
-            Some(p) => p.clone(),
-            None => return,
-        };
-        drop(provider);
-
-        let mut content = match self.generate_skill_draft(&*provider_arc, action) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, "[LearningEngine] LLM generation failed for skill draft");
-                return;
-            }
-        };
-
-        // Iterative refinement loop with pipeline validation
-        // (round budget from config.learning.max_refine_rounds)
-        let max_refine = self.config.learning.max_refine_rounds;
-
-        // F-: clone the Arc<Pipeline> out of the lock and drop the guard
-        // before the LLM round-trips (validate + refine loop). Holding the
-        // pipeline Mutex across block_in_place LLM calls pins a runtime worker
-        // and can panic on a current-thread runtime.
-        let pipeline = { self.pipeline.lock().clone() };
-        if let Some(ref pipeline) = pipeline {
-            for attempt in 0..=max_refine {
-                let validation = pipeline.validate(
-                    nemesis_types::forge::ArtifactKind::Skill,
-                    &draft_name,
-                    &content,
-                );
-                let new_status = pipeline.determine_status(&validation);
-
-                if new_status == nemesis_types::forge::ArtifactStatus::Active
-                    || new_status == nemesis_types::forge::ArtifactStatus::Observing
-                {
-                    // F- 安全闸（同类扫）：部署前终态内容过
-                    // security_errors——refine 循环每轮产物都是 LLM 输出（不可
-                    // 信输入），pipeline.validate_static 现已含危险命令面，此
-                    // 处是纵深防御第二道（拦住未过 pipeline 的部署路径）。
-                    // 拦下 = 本轮放弃部署（下轮经验可能产出不同草稿）。
-                    let sec_errors =
-                        crate::validator::StaticValidator::new().security_errors(&content);
-                    if !sec_errors.is_empty() {
-                        tracing::warn!(name = %draft_name, errors = ?sec_errors, "[LearningEngine] skill draft failed security gate, not deploying");
-                        return;
-                    }
-
-                    // Passed — deploy by writing skill file and registering artifact
-                    // 签名取结构化 pattern.tools（无则回落旧解析）
-                    let tool_sig = deploy_tool_signature(action);
-
-                    // Write content to forge skills directory
-                    // 横扫族 C 四轮（2026-11-06）：写盘失败不再静默注册——旧
-                    // 形态 registry 说 Active、盘上没有 SKILL.md，还打无条件
-                    // 「Created skill」日志（部署假成功）。与同函数安全闸臂
-                    // 「不能部署 = 不落盘不注册」同口径：不能部署 = 不注册。
-                    let artifact_dir = self.forge_dir.join("skills").join(&draft_name);
-                    if let Err(e) = std::fs::create_dir_all(&artifact_dir)
-                        .and_then(|_| std::fs::write(artifact_dir.join("SKILL.md"), &content))
-                    {
-                        tracing::warn!(
-                            name = %draft_name,
-                            error = %e,
-                            "[LearningEngine] skill SKILL.md write failed, not deploying (not registered)"
-                        );
-                        return;
-                    }
-
-                    // Register in registry
-                    let artifact_id = format!("skill-{}", draft_name);
-                    let artifact = nemesis_types::forge::Artifact {
-                        id: artifact_id.clone(),
-                        name: draft_name.clone(),
-                        kind: nemesis_types::forge::ArtifactKind::Skill,
-                        version: "1.0".to_string(),
-                        status: new_status,
-                        content: content.clone(),
-                        tool_signature: tool_sig,
-                        created_at: chrono::Local::now().to_rfc3339(),
-                        updated_at: chrono::Local::now().to_rfc3339(),
-                        usage_count: 0,
-                        last_degraded_at: None,
-                        success_rate: 0.0,
-                        consecutive_observing_rounds: 0,
-                        deployed_at: None,
-                        last_efficacy: None,
-                    };
-                    self.registry.add(artifact);
-
-                    // Copy to workspace/skills/ with -forge suffix
-                    // （副本失败 WARN 留痕不回滚：forge 主副本已落盘已注册，
-                    // 缺副本=skills 列表看不见，横扫族 C 四轮，2026-11-06。）
-                    if let Some(workspace) = self.forge_dir.parent() {
-                        let ws_skill_dir = workspace
-                            .join("skills")
-                            .join(format!("{}-forge", draft_name));
-                        if let Err(e) = std::fs::create_dir_all(&ws_skill_dir)
-                            .and_then(|_| std::fs::write(ws_skill_dir.join("SKILL.md"), &content))
-                        {
-                            tracing::warn!(
-                                path = %ws_skill_dir.display(),
-                                error = %e,
-                                "[LearningEngine] workspace skill copy failed (forge primary copy intact)"
-                            );
-                        }
-                    }
-
-                    tracing::info!(artifact_id = %artifact_id, "[LearningEngine] Created skill from learning cycle");
-                    return;
-                }
-
-                // Failed — refine, then loop to re-validate (F-: the old code
-                // discarded the refined draft `_refined` and returned after one
-                // attempt, so a skill that failed first validation could never
-                // deploy even after successful refinement).
-                if attempt < max_refine {
-                    let diagnosis = build_diagnosis(&validation);
-                    match self.refine_skill_draft(&*provider_arc, action, &content, &diagnosis) {
-                        Ok(refined) => {
-                            tracing::debug!(
-                                attempt,
-                                "[LearningEngine] Refined skill draft, re-validating"
-                            );
-                            content = refined;
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::warn!(attempt = attempt + 1, error = %e, "[LearningEngine] Skill refinement failed");
-                            return;
-                        }
-                    }
-                }
-            }
-
-            // 复查：耗尽 refine 轮数的失败注记只属于
-            // pipeline 臂——此前挂在 if/else 之后，no-pipeline 成功注册
-            // draft 的路径也会穿透过来打「validation failed」说谎 warn。
-            tracing::warn!(
-                max_refine = max_refine,
-                "[LearningEngine] Skill validation failed after all refinement rounds"
-            );
-        } else {
-            // No pipeline configured — just register as draft
-            let artifact_id = format!("skill-{}", draft_name);
-            let artifact = nemesis_types::forge::Artifact {
-                id: artifact_id,
-                name: draft_name,
-                kind: nemesis_types::forge::ArtifactKind::Skill,
-                version: "1.0".to_string(),
-                status: nemesis_types::forge::ArtifactStatus::Draft,
-                content,
-                tool_signature: deploy_tool_signature(action),
-                created_at: chrono::Local::now().to_rfc3339(),
-                updated_at: chrono::Local::now().to_rfc3339(),
-                usage_count: 0,
-                last_degraded_at: None,
-                success_rate: 0.0,
-                consecutive_observing_rounds: 0,
-                deployed_at: None,
-                last_efficacy: None,
-            };
-            self.registry.add(artifact);
-        }
+        result
     }
 
     /// Execute suggest_prompt action: write a prompt suggestion to workspace/prompts/.
@@ -954,11 +851,19 @@ impl LearningEngine {
         action: &LearningAction,
     ) -> Result<String, String> {
         let draft_name = action.draft_name.as_deref().unwrap_or("unknown-skill");
+        // C1（缺陷整改批次）：把模式证据块（链序列 + 统计 + 失败样例，
+        // 采集期已脱敏）随提示词下发——LLM 拿到的不再是频次数字而是
+        // 可判断形态的真实证据，草稿内容与实际失败形态对齐。
+        let evidence_block = match action.evidence.as_deref() {
+            Some(ev) if !ev.is_empty() => format!("\n模式证据：\n{}", ev),
+            _ => String::new(),
+        };
         let prompt = format!(
             "请为 Forge 自学习技能生成完整的 SKILL.md，规格如下：\n\n\
              名称：{}\n\
              描述：{}\n\
-             缘由：{}\n\n\
+             缘由：{}\n\
+             {}\n\
              SKILL.md 必须包含以 --- 定界的 YAML frontmatter，字段：\n\
              - name：技能名\n\
              - description：技能功能\n\
@@ -967,7 +872,8 @@ impl LearningEngine {
              聚焦已识别的工具使用模式，保持简明、可执行。",
             draft_name,
             action.description,
-            action.rationale.as_deref().unwrap_or("无")
+            action.rationale.as_deref().unwrap_or("无"),
+            evidence_block
         );
 
         // 预算统一走 forge 侧常量（reflector_llm::AUX_FORGE_MAX_TOKENS，
@@ -1074,167 +980,16 @@ impl LearningEngine {
         }
     }
 
-    /// Detect tool chains - high frequency tool usage patterns.
-    fn detect_tool_chains(&self, experiences: &[CollectedExperience]) -> Vec<DetectedPattern> {
-        let mut tool_counts: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
-        for exp in experiences {
-            *tool_counts
-                .entry(exp.experience.tool_name.clone())
-                .or_insert(0) += 1;
-        }
-
-        let total = experiences.len() as f64;
-        tool_counts
-            .into_iter()
-            .filter(|(_, count)| *count >= 3)
-            .map(|(tool, count)| {
-                let frequency_ratio = count as f64 / total;
-                DetectedPattern {
-                    pattern_type: "tool_chain".into(),
-                    frequency: count,
-                    confidence: frequency_ratio.min(1.0),
-                    description: format!(
-                        "High-frequency tool usage: {} ({} times, {:.0}%)",
-                        tool,
-                        count,
-                        frequency_ratio * 100.0
-                    ),
-                    tools: vec![tool],
-                }
-            })
-            .collect()
-    }
-
-    /// Detect error recovery patterns - tools that fail and then succeed.
-    fn detect_error_recovery(&self, experiences: &[CollectedExperience]) -> Vec<DetectedPattern> {
-        let mut error_tools: std::collections::HashMap<String, (u32, u32)> =
-            std::collections::HashMap::new();
-        for exp in experiences {
-            let (errors, total) = error_tools
-                .entry(exp.experience.tool_name.clone())
-                .or_insert((0, 0));
-            *total += 1;
-            if !exp.experience.success {
-                *errors += 1;
-            }
-        }
-
-        error_tools
-            .into_iter()
-            .filter(|(_, (errors, total))| *errors > 0 && *total >= 3)
-            .map(|(tool, (errors, total))| {
-                let error_rate = errors as f64 / total as f64;
-                DetectedPattern {
-                    pattern_type: "error_recovery".into(),
-                    frequency: errors,
-                    confidence: error_rate,
-                    description: format!(
-                        "Error pattern: {} ({:.0}% failure rate, {}/{})",
-                        tool,
-                        error_rate * 100.0,
-                        errors,
-                        total
-                    ),
-                    tools: vec![tool],
-                }
-            })
-            .collect()
-    }
-
-    /// Detect efficiency issues - tools that are significantly slower than average.
-    fn detect_efficiency_issue(&self, experiences: &[CollectedExperience]) -> Vec<DetectedPattern> {
-        if experiences.is_empty() {
-            return Vec::new();
-        }
-
-        // Calculate average duration
-        let avg_duration: f64 = experiences
-            .iter()
-            .map(|e| e.experience.duration_ms as f64)
-            .sum::<f64>()
-            / experiences.len() as f64;
-
-        // Group durations by tool
-        let mut tool_durations: std::collections::HashMap<String, Vec<u64>> =
-            std::collections::HashMap::new();
-        for exp in experiences {
-            tool_durations
-                .entry(exp.experience.tool_name.clone())
-                .or_default()
-                .push(exp.experience.duration_ms);
-        }
-
-        let mut patterns = Vec::new();
-        for (tool, durations) in &tool_durations {
-            if durations.len() < 2 {
-                continue;
-            }
-            let tool_avg: f64 = durations.iter().sum::<u64>() as f64 / durations.len() as f64;
-            let ratio = tool_avg / avg_duration.max(1.0);
-
-            if ratio > 2.0 {
-                // More than 2x slower than average
-                // 置信度随严重度单调上升（ratio 2→0.5，越大越趋近 1）。
-                // 原 `(ratio - 1.0).min(1.0)` 在 ratio>2 的
-                // 入场过滤下恒饱和为 1.0——所有效率问题都顶格置信度，排序
-                // 与 调整失去区分度。
-                let confidence = (1.0 - 1.0 / ratio).max(0.0);
-                patterns.push(DetectedPattern {
-                    pattern_type: "efficiency_issue".into(),
-                    frequency: durations.len() as u32,
-                    confidence,
-                    description: format!(
-                        "Efficiency issue: {} avg {:.0}ms ({:.1}x slower than overall avg {:.0}ms)",
-                        tool, tool_avg, ratio, avg_duration
-                    ),
-                    tools: vec![tool.clone()],
-                });
-            }
-        }
-
-        patterns
-    }
-
-    /// Detect success templates - tools with perfect or near-perfect success rates.
-    fn detect_success_template(&self, experiences: &[CollectedExperience]) -> Vec<DetectedPattern> {
-        let mut tool_success: std::collections::HashMap<String, (u32, u32)> =
-            std::collections::HashMap::new(); // (successes, total)
-
-        for exp in experiences {
-            let entry = tool_success
-                .entry(exp.experience.tool_name.clone())
-                .or_insert((0, 0));
-            entry.1 += 1;
-            if exp.experience.success {
-                entry.0 += 1;
-            }
-        }
-
-        tool_success
-            .into_iter()
-            .filter(|(_, (successes, total))| *total >= 3 && *successes == *total)
-            .map(|(tool, (successes, total))| {
-                DetectedPattern {
-                    pattern_type: "success_template".into(),
-                    frequency: successes,
-                    confidence: 1.0, // Perfect success
-                    description: format!(
-                        "Success template: {} succeeded {}/{} times (100%)",
-                        tool, successes, total
-                    ),
-                    tools: vec![tool],
-                }
-            })
-            .collect()
-    }
-
-    // ----- Public wrappers for test access / external use -----
+    // ----- 单一 create 实现（C2/C3 合一后唯一的技能创建入口） -----
 
     /// Execute a create_skill action using LLM, validation, and deploy.
     ///
-    /// Public wrapper that mirrors Go's `executeCreateSkill`. Returns the
-    /// resulting action with updated status, artifact_id, and error_msg.
+    /// C2/C3 合一（缺陷整改批次 2026-11-14）：唯一的 create 实现（此前
+    /// 与私有 `execute_create_skill` 是两份漂移的平行实现——workspace
+    /// `-forge` 副本步只在私有版，公开版漂移缺步）。完整链路：slug 化 →
+    /// 查重 → LLM 生成 → validate + refine 循环 → 安全闸 → forge/skills
+    /// 落盘 → registry 登记 → workspace/skills `-forge` 副本 → 返回带
+    /// status/artifact_id/error_msg 的结果 action（run_cycle 按此真实记账）。
     pub fn execute_create_skill_action(&self, action: &LearningAction) -> LearningAction {
         let mut result = action.clone();
 
@@ -1246,9 +1001,12 @@ impl LearningEngine {
                 return result;
             }
         };
-        // 落盘名统一过 slug 化（防御纵深）：与 execute_create_skill 同款
-        // 同一规则单一权威定义——本函数是平行的 create 实现（自身 refine 循环
-        // + forge/skills 落盘面），漏掉即同一穿越面复活。
+        // 落盘名统一过 slug 化（防御纵深，与 store_distilled_draft 同一
+        // 规则统一定义）：draft_name 源自经验聚合的工具链（generate_skill_name
+        // 只 replace+lowercase，无字符白名单；error_recovery 分支直拼
+        // tools.first()），下游有 3 个路径 join 点（forge/skills 落盘、
+        // workspace/skills 部署、degraded 回滚 rename）。slugify 对合法
+        // kebab 名是恒等变换，对穿越序列消解。
         let draft_name = crate::forge::slugify_skill_name(&draft_name);
         if draft_name.is_empty() {
             result.status = "failed".to_string();
@@ -1257,7 +1015,7 @@ impl LearningEngine {
         }
 
         // Check if already exists in registry (dedup by name)
-        if self.find_artifact_by_fingerprint_public(&draft_name) {
+        if self.find_artifact_by_fingerprint(&draft_name) {
             result.status = "skipped".to_string();
             result.error_msg = Some(format!("Artifact {} already exists", draft_name));
             return result;
@@ -1276,7 +1034,7 @@ impl LearningEngine {
             }
         };
 
-        let content = match self.generate_skill_draft_action(&*provider_arc, action) {
+        let mut current_content = match self.generate_skill_draft(&*provider_arc, action) {
             Ok(c) => c,
             Err(e) => {
                 result.status = "failed".to_string();
@@ -1286,11 +1044,8 @@ impl LearningEngine {
         };
 
         // Iterative refinement loop
-        // （refine 轮数预算此前误读 `max_auto_creates`
-        // ——那是「每周期自动创建上限」（run_cycle 的 max_auto 闸），不是
-        // refine 轮数，用户配的 max_refine_rounds 被无视。与私有
-        // execute_create_skill（读 max_refine_rounds）同字段收口：两条
-        // 平行 create 路径的同一语义旋钮必须同源， 同步演进纪律。）
+        // （refine 轮数预算统一读 `max_refine_rounds`——BUG-20261029-189
+        // 修正后两路径同字段收口，C2 合一后此旋钮只剩这一处消费。）
         let max_refine = self.config.learning.max_refine_rounds;
 
         // Arc clone 后立即放锁（F- 同款模式）：迭代 refine 是 30s+ 墙钟
@@ -1300,7 +1055,9 @@ impl LearningEngine {
         // 下轮生效。
         let pipeline = { self.pipeline.lock().clone() };
         if let Some(ref pipeline) = pipeline {
-            let mut current_content = content;
+            // C3：refine 调用失败（LLM/网络层）≠ 校验耗尽——独立跟踪，
+            // 收尾文案分叉。
+            let mut refine_failed: Option<String> = None;
             for attempt in 0..=max_refine {
                 let validation = pipeline.validate(
                     nemesis_types::forge::ArtifactKind::Skill,
@@ -1370,6 +1127,26 @@ impl LearningEngine {
                     };
                     self.registry.add(artifact);
 
+                    // Copy to workspace/skills/ with -forge suffix
+                    // （副本失败 WARN 留痕不回滚：forge 主副本已落盘已注册，
+                    // 缺副本=skills 列表看不见，横扫族 C 四轮，2026-11-06。
+                    // C2 合一补齐：此步此前只在私有实现存在，公开实现漂移
+                    // 缺步——同一样技能两条路径可见性不一致。）
+                    if let Some(workspace) = self.forge_dir.parent() {
+                        let ws_skill_dir = workspace
+                            .join("skills")
+                            .join(format!("{}-forge", draft_name));
+                        if let Err(e) = std::fs::create_dir_all(&ws_skill_dir).and_then(|_| {
+                            std::fs::write(ws_skill_dir.join("SKILL.md"), &current_content)
+                        }) {
+                            tracing::warn!(
+                                path = %ws_skill_dir.display(),
+                                error = %e,
+                                "[LearningEngine] workspace skill copy failed (forge primary copy intact)"
+                            );
+                        }
+                    }
+
                     result.status = "executed".to_string();
                     result.artifact_id = Some(artifact_id);
                     result.executed_at = Some(chrono::Local::now().to_rfc3339());
@@ -1378,18 +1155,26 @@ impl LearningEngine {
 
                 // Failed - try to refine
                 if attempt < max_refine {
-                    let diagnosis = build_diagnosis_public(&validation);
-                    match self.refine_skill_draft_action(
+                    let diagnosis = build_diagnosis(&validation);
+                    match self.refine_skill_draft(
                         &*provider_arc,
                         action,
                         &current_content,
                         &diagnosis,
                     ) {
                         Ok(refined) => {
+                            tracing::debug!(
+                                attempt,
+                                "[LearningEngine] Refined skill draft, re-validating"
+                            );
                             current_content = refined;
                         }
                         Err(e) => {
                             tracing::warn!(attempt = attempt + 1, error = %e, "[LearningEngine] Skill refinement failed");
+                            // C3：refine 调用失败（LLM/网络层）≠ 校验耗尽——
+                            // 独立跟踪，收尾文案分叉，不再一律「validation
+                            // failed after N rounds」说谎。
+                            refine_failed = Some(e);
                             break;
                         }
                     }
@@ -1397,10 +1182,13 @@ impl LearningEngine {
             }
 
             result.status = "failed".to_string();
-            result.error_msg = Some(format!(
-                "Skill validation failed after {} refinement rounds",
-                max_refine
-            ));
+            result.error_msg = Some(match refine_failed {
+                Some(e) => format!("skill refinement failed: {e}"),
+                None => format!(
+                    "Skill validation failed after {} refinement rounds",
+                    max_refine
+                ),
+            });
         } else {
             // No pipeline configured - register as draft
             let artifact_id = format!("skill-{}", draft_name);
@@ -1410,7 +1198,7 @@ impl LearningEngine {
                 kind: nemesis_types::forge::ArtifactKind::Skill,
                 version: "1.0".to_string(),
                 status: nemesis_types::forge::ArtifactStatus::Draft,
-                content,
+                content: current_content,
                 // 与部署臂同一规则（结构化 tools 优先，回落旧解析）。
                 tool_signature: deploy_tool_signature(action),
                 created_at: chrono::Local::now().to_rfc3339(),
@@ -1430,38 +1218,6 @@ impl LearningEngine {
         }
 
         result
-    }
-
-    /// Generate a skill draft using LLM (public wrapper).
-    ///
-    /// Mirrors Go's `generateSkillDraft`.
-    pub fn generate_skill_draft_action(
-        &self,
-        provider: &dyn crate::reflector_llm::LLMCaller,
-        action: &LearningAction,
-    ) -> Result<String, String> {
-        self.generate_skill_draft(provider, action)
-    }
-
-    /// Refine a skill draft using LLM (public wrapper).
-    ///
-    /// Mirrors Go's `refineSkillDraft`.
-    pub fn refine_skill_draft_action(
-        &self,
-        provider: &dyn crate::reflector_llm::LLMCaller,
-        action: &LearningAction,
-        previous_content: &str,
-        diagnosis: &str,
-    ) -> Result<String, String> {
-        self.refine_skill_draft(provider, action, previous_content, diagnosis)
-    }
-
-    /// Find an artifact by name/fingerprint in the registry (public wrapper).
-    ///
-    /// Mirrors Go's `findArtifactByFingerprint`. Returns true if a non-deprecated
-    /// artifact with the given name exists.
-    pub fn find_artifact_by_fingerprint_public(&self, name: &str) -> bool {
-        self.find_artifact_by_fingerprint(name)
     }
 
     /// Sort learning actions by priority (high first) then confidence descending.
@@ -1503,20 +1259,6 @@ fn generate_skill_name(tool_chain: &str) -> String {
     format!("{}-workflow", name)
 }
 
-/// Extract tool names from a chain description like "read->edit->exec".
-///
-/// Public version that mirrors Go's `extractToolSignatureFromChain`.
-pub fn extract_tool_signature_from_chain_public(description: &str) -> Vec<String> {
-    extract_tool_signature_from_chain(description)
-}
-
-/// Build a diagnosis string from validation results.
-///
-/// Public version that mirrors Go's `buildDiagnosis`.
-pub fn build_diagnosis_public(validation: &ArtifactValidation) -> String {
-    build_diagnosis(validation)
-}
-
 /// Extract tool names from a chain description like "read->edit->exec" (mirrors Go's extractToolSignatureFromChain).
 fn extract_tool_signature_from_chain(description: &str) -> Vec<String> {
     let parts: Vec<&str> = description.split("→").collect();
@@ -1548,6 +1290,104 @@ fn deploy_tool_signature(action: &LearningAction) -> Vec<String> {
     } else {
         action.tools.clone()
     }
+}
+
+// ---------------------------------------------------------------------------
+// C1（缺陷整改批次 2026-11-14）：模式证据块
+// ---------------------------------------------------------------------------
+
+/// 单个模式证据块携带的最多失败样例数。
+const MAX_EVIDENCE_SAMPLES: usize = 3;
+
+/// 单条样例的字符上限（超出截尾——与蒸馏提示同族纪律，防大载荷经验
+/// 把草稿生成提示词预算吃穿）。
+const MAX_EVIDENCE_SAMPLE_CHARS: usize = 220;
+
+/// Build a sanitized evidence block for a detected pattern (C1).
+///
+/// 草稿生成提示词的素材从「频次数字 + 一句描述」升级为结构化真实证据：
+/// 链序列 / 恢复链 / 出现次数 / 成功率 / 平均耗时 / 平均轮数 + 最多
+/// [`MAX_EVIDENCE_SAMPLES`] 条失败样例（Sanitizer 脱敏 + 字符边界截断）。
+/// 样例选取条件 = 工具命中该模式（error_recovery 按 error_tool，其余按
+/// 链上工具）&& 失败 && 输出摘要非空。返回 `None` = 无可引用素材
+/// （提示词端省略证据块）。
+fn build_pattern_evidence(
+    cp: &crate::pattern::ConversationPattern,
+    experiences: &[CollectedExperience],
+) -> Option<String> {
+    let want_tools: Vec<String> = match cp.pattern_type {
+        crate::pattern::ConversationPatternType::ErrorRecovery => {
+            vec![cp.error_tool.clone().unwrap_or_default()]
+        }
+        _ => cp
+            .tool_chain
+            .as_deref()
+            .unwrap_or_default()
+            .split('\u{2192}')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(String::from)
+            .collect(),
+    };
+    if want_tools.is_empty() {
+        return None;
+    }
+
+    let sanitizer = crate::sanitizer::Sanitizer::new();
+    let mut samples = Vec::new();
+    for exp in experiences {
+        if samples.len() >= MAX_EVIDENCE_SAMPLES {
+            break;
+        }
+        let e = &exp.experience;
+        if !want_tools.contains(&e.tool_name) {
+            continue;
+        }
+        if e.success || e.output_summary.is_empty() {
+            continue;
+        }
+        let sanitized = sanitizer.sanitize(&e.output_summary);
+        let cut = nemesis_types::utils::floor_char_boundary(&sanitized, MAX_EVIDENCE_SAMPLE_CHARS);
+        samples.push(format!(
+            "- [{}] {} {}ms：{}",
+            e.tool_name,
+            if e.success { "OK" } else { "FAIL" },
+            e.duration_ms,
+            &sanitized[..cut]
+        ));
+    }
+
+    let mut sb = String::new();
+    if let Some(chain) = &cp.tool_chain {
+        sb.push_str(&format!("链序列：{}\n", chain));
+    }
+    if cp.pattern_type == crate::pattern::ConversationPatternType::ErrorRecovery {
+        if let (Some(et), Some(rt)) = (&cp.error_tool, &cp.recovery_tool) {
+            sb.push_str(&format!("恢复链：{} 失败 → {} 恢复\n", et, rt));
+        }
+        if let Some(code) = &cp.error_code {
+            sb.push_str(&format!("错误码：{}\n", code));
+        }
+    }
+    sb.push_str(&format!("出现次数：{}\n", cp.frequency));
+    if let Some(sr) = cp.success_rate {
+        sb.push_str(&format!("成功率：{:.0}%\n", sr * 100.0));
+    }
+    if let Some(d) = cp.avg_duration_ms {
+        sb.push_str(&format!("平均耗时：{}ms\n", d));
+    }
+    if let Some(r) = cp.avg_rounds {
+        sb.push_str(&format!("平均轮数：{:.1}\n", r));
+    }
+    if !samples.is_empty() {
+        sb.push_str("失败样例（脱敏）：\n");
+        for s in &samples {
+            sb.push_str(s);
+            sb.push('\n');
+        }
+    }
+
+    if sb.is_empty() { None } else { Some(sb) }
 }
 
 /// Build a diagnosis string from validation results (mirrors Go's buildDiagnosis).

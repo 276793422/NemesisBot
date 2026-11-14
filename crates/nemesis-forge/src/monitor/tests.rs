@@ -26,14 +26,18 @@ fn make_trace(
     tools: &[&str],
     has_signals: bool,
 ) -> ConversationTrace {
+    let now = chrono::Local::now().to_rfc3339();
     ConversationTrace {
-        start_time: chrono::Local::now().to_rfc3339(),
+        start_time: now.clone(),
         total_rounds: rounds,
         duration_ms,
         tool_steps: tools
             .iter()
             .map(|t| ToolStep {
                 tool_name: t.to_string(),
+                ok: true,
+                duration_ms: 0,
+                ts: now.clone(),
             })
             .collect(),
         signals: if has_signals {
@@ -41,6 +45,29 @@ fn make_trace(
         } else {
             vec![]
         },
+        round_ts: Vec::new(),
+    }
+}
+
+/// 步级夹具：每步 ok/duration 可控——D2 步级池化语义（success_rate /
+/// avg_duration 按步聚合）的最小夹具单元。
+fn make_trace_with_steps(steps: &[(bool, i64)]) -> ConversationTrace {
+    let now = chrono::Local::now().to_rfc3339();
+    ConversationTrace {
+        start_time: now.clone(),
+        total_rounds: 1,
+        duration_ms: steps.iter().map(|(_, d)| *d).sum(),
+        tool_steps: steps
+            .iter()
+            .map(|(ok, d)| ToolStep {
+                tool_name: "t".to_string(),
+                ok: *ok,
+                duration_ms: *d,
+                ts: now.clone(),
+            })
+            .collect(),
+        signals: vec![],
+        round_ts: Vec::new(),
     }
 }
 
@@ -277,10 +304,13 @@ fn test_avg_rounds_empty() {
 
 #[test]
 fn test_success_rate() {
-    let traces: Vec<ConversationTrace> = vec![
-        make_trace(1, 100, &["a"], false),
-        make_trace(1, 100, &["b"], true), // has signals
-        make_trace(1, 100, &["c"], false),
+    // 步级池化（D2）：sum(ok steps) / sum(all steps)。轨迹 1 = 1 失败步，
+    // 轨迹 2/3 = 各 1 成功步 → 2/3。旧轨迹级「无 signals = 成功」语义
+    // （单步失败拖垮整轨 20 步成功）已废。
+    let traces = [
+        make_trace_with_steps(&[(false, 100)]),
+        make_trace_with_steps(&[(true, 100)]),
+        make_trace_with_steps(&[(true, 100)]),
     ];
     let refs: Vec<&ConversationTrace> = traces.iter().collect();
     assert_eq!(success_rate(&refs), 2.0 / 3.0);
@@ -288,10 +318,12 @@ fn test_success_rate() {
 
 #[test]
 fn test_avg_duration() {
-    let traces: Vec<ConversationTrace> = vec![
-        make_trace(1, 100, &["a"], false),
-        make_trace(1, 200, &["b"], false),
-        make_trace(1, 300, &["c"], false),
+    // 步级池化（D2）：跨轨迹步级 duration 均值 = (100+200+300)/3 = 200。
+    // 旧轨迹级 first→last span 均值已废（长会话单次工具失败拉爆整轨）。
+    let traces = [
+        make_trace_with_steps(&[(true, 100)]),
+        make_trace_with_steps(&[(true, 200)]),
+        make_trace_with_steps(&[(true, 300)]),
     ];
     let refs: Vec<&ConversationTrace> = traces.iter().collect();
     assert_eq!(avg_duration(&refs), 200);
@@ -561,16 +593,16 @@ fn test_avg_duration_empty() {
 
 #[test]
 fn test_avg_duration_single() {
-    let traces = [make_trace(1, 300, &["a"], false)];
+    let traces = [make_trace_with_steps(&[(true, 300)])];
     let refs: Vec<&ConversationTrace> = traces.iter().collect();
     assert_eq!(avg_duration(&refs), 300);
 }
 
 #[test]
 fn test_success_rate_all_success() {
-    let traces: Vec<ConversationTrace> = vec![
-        make_trace(1, 100, &["a"], false),
-        make_trace(1, 100, &["b"], false),
+    let traces = [
+        make_trace_with_steps(&[(true, 100)]),
+        make_trace_with_steps(&[(true, 100)]),
     ];
     let refs: Vec<&ConversationTrace> = traces.iter().collect();
     assert_eq!(success_rate(&refs), 1.0);
@@ -578,9 +610,9 @@ fn test_success_rate_all_success() {
 
 #[test]
 fn test_success_rate_all_failure() {
-    let traces: Vec<ConversationTrace> = vec![
-        make_trace(1, 100, &["a"], true),
-        make_trace(1, 100, &["b"], true),
+    let traces = [
+        make_trace_with_steps(&[(false, 100)]),
+        make_trace_with_steps(&[(false, 100)]),
     ];
     let refs: Vec<&ConversationTrace> = traces.iter().collect();
     assert_eq!(success_rate(&refs), 0.0);
@@ -588,8 +620,10 @@ fn test_success_rate_all_failure() {
 
 #[test]
 fn test_success_rate_empty() {
+    // 零步（含空输入）= 无失败证据 → 1.0：零步轨迹（纯 LLM 对话）不进
+    // 分母，也不把「没有工具数据」判成全败。
     let refs: Vec<&ConversationTrace> = vec![];
-    assert_eq!(success_rate(&refs), 0.0);
+    assert_eq!(success_rate(&refs), 1.0);
 }
 
 #[test]
@@ -817,8 +851,12 @@ fn test_s8_evaluate_outcomes_all_traces_outside_window_returns_empty() {
         duration_ms: 100,
         tool_steps: vec![ToolStep {
             tool_name: "file_read".to_string(),
+            ok: true,
+            duration_ms: 0,
+            ts: "2020-01-01T00:00:00+08:00".to_string(),
         }],
         signals: vec![],
+        round_ts: Vec::new(),
     };
     let outcomes = monitor.evaluate_outcomes(&[old_trace]);
     assert!(outcomes.is_empty());
@@ -846,8 +884,12 @@ fn test_s8_evaluate_outcomes_window_respects_timestamp_offset() {
         duration_ms: 100,
         tool_steps: vec![ToolStep {
             tool_name: "file_read".to_string(),
+            ok: true,
+            duration_ms: 0,
+            ts: real.to_rfc3339(),
         }],
         signals: vec![],
+        round_ts: Vec::new(),
     };
 
     let outcomes = monitor.evaluate_outcomes(&[trace]);
@@ -926,8 +968,12 @@ fn test_s8_evaluate_artifact_before_traces_insufficient_after() {
         duration_ms: 100,
         tool_steps: vec![ToolStep {
             tool_name: "file_read".to_string(),
+            ok: true,
+            duration_ms: 0,
+            ts: old.to_rfc3339(),
         }],
         signals: vec![],
+        round_ts: Vec::new(),
     };
 
     let outcomes = monitor.evaluate_outcomes(&[before_trace]);
@@ -940,7 +986,8 @@ fn test_s8_evaluate_artifact_before_traces_insufficient_after() {
 #[test]
 fn test_s8_try_deprecate_default_cooldown_config_branch() {
     let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
-    // degradation_cooldown_days = 0 → default 7-day fallback branch;
+    // degradation_cooldown_days = 0（显式 = 关闭冷却；BUG-20261114-029：旧
+    // 0→7 回落臂已删，serde default 本就是 7、0 唯一入口是显式配置）；
     // no prior degradation → the degrade path runs.
     let mut cfg = ForgeConfig::default();
     cfg.learning.degradation_cooldown_days = 0;
@@ -954,6 +1001,36 @@ fn test_s8_try_deprecate_default_cooldown_config_branch() {
     let updated = monitor.registry.get(&id).unwrap();
     assert_eq!(updated.status, ArtifactStatus::Degraded);
     assert!(updated.last_degraded_at.is_some());
+}
+
+/// BUG-20261114-029 回归锁：显式 cooldown_days=0 + 刚降级过（last_degraded_at
+/// 在旧 0→7 回落臂的冷却窗内）→ try_deprecate 必须**立即执行降级**（0 =
+/// 用户关闭冷却），且与 is_degradation_cooldown_elapsed 判定一致（同键单
+/// 一语义）。旧代码 fallback 把 0 静默改 7 → early return 不降级 = 本测试红。
+#[test]
+fn test_try_deprecate_explicit_zero_cooldown_disables_cooldown_window() {
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.degradation_cooldown_days = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let mut artifact = make_artifact("zerocd", 10, ArtifactStatus::Active);
+    artifact.last_degraded_at = Some(chrono::Local::now().to_rfc3339()); // 刚降级
+    let id = registry.add(artifact);
+
+    let fetched = monitor.registry.get(&id).unwrap();
+    // 两个消费面同键同语义：cooldown 闸都放行。
+    assert!(
+        monitor.is_degradation_cooldown_elapsed(&fetched),
+        "explicit 0 must mean 'no cooldown' in is_degradation_cooldown_elapsed"
+    );
+    monitor.try_deprecate(&fetched);
+    let updated = monitor.registry.get(&id).unwrap();
+    assert_eq!(
+        updated.status,
+        ArtifactStatus::Degraded,
+        "explicit cooldown_days=0 must disable the cooldown window (old 0→7 fallback silently overrode user config)"
+    );
 }
 
 #[test]
@@ -1071,37 +1148,63 @@ fn test_build_conversation_traces_empty_input() {
 
 #[test]
 fn test_build_conversation_traces_single_session_multi_tools() {
+    // D2 事件粒度：total_rounds 只数 llm_turn 事件（tool_call 不计轮——
+    // 旧「事件总数代理」把工具密集会话的轮数灌水）；duration_ms = 会话
+    // last−first 事件时间戳；ToolStep.duration_ms 从事件 data 提取。
     let events = vec![
         make_trace_event(
-            "tool_call",
+            "llm_turn",
             "web:1",
             "2026-10-22T10:00:00+08:00",
-            serde_json::json!({"tool": "file_read", "ok": true}),
+            serde_json::json!({}),
         ),
         make_trace_event(
             "tool_call",
             "web:1",
             "2026-10-22T10:00:01+08:00",
-            serde_json::json!({"tool": "exec", "ok": true}),
+            serde_json::json!({"tool": "file_read", "ok": true, "duration_ms": 50}),
+        ),
+        make_trace_event(
+            "llm_turn",
+            "web:1",
+            "2026-10-22T10:00:02+08:00",
+            serde_json::json!({}),
         ),
         make_trace_event(
             "tool_call",
             "web:1",
-            "2026-10-22T10:00:02+08:00",
+            "2026-10-22T10:00:03+08:00",
+            serde_json::json!({"tool": "exec", "ok": true}),
+        ),
+        make_trace_event(
+            "llm_turn",
+            "web:1",
+            "2026-10-22T10:00:04+08:00",
+            serde_json::json!({}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "web:1",
+            "2026-10-22T10:00:05+08:00",
             serde_json::json!({"tool": "write_file", "ok": true}),
         ),
     ];
     let traces = build_conversation_traces(&events);
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0].start_time, "2026-10-22T10:00:00+08:00");
-    assert_eq!(traces[0].total_rounds, 3);
-    assert_eq!(traces[0].duration_ms, 2000);
+    assert_eq!(traces[0].total_rounds, 3, "rounds = llm_turn 事件数");
+    assert_eq!(traces[0].round_ts.len(), 3);
+    assert_eq!(traces[0].duration_ms, 5000);
     let tools: Vec<&str> = traces[0]
         .tool_steps
         .iter()
         .map(|s| s.tool_name.as_str())
         .collect();
     assert_eq!(tools, vec!["file_read", "exec", "write_file"]);
+    assert_eq!(
+        traces[0].tool_steps[0].duration_ms, 50,
+        "步级 duration 来自事件 data"
+    );
     assert!(
         traces[0].signals.is_empty(),
         "all-ok session has no signals"
@@ -1133,23 +1236,43 @@ fn test_build_conversation_traces_failure_emits_tool_error_signal() {
 
 #[test]
 fn test_build_conversation_traces_groups_by_session_in_order() {
+    // D2：各会话 total_rounds = 各自 llm_turn 事件数；插入序保持
+    // （首次出现序）。
     let events = vec![
+        make_trace_event(
+            "llm_turn",
+            "web:a",
+            "2026-10-22T10:00:00+08:00",
+            serde_json::json!({}),
+        ),
         make_trace_event(
             "tool_call",
             "web:a",
-            "2026-10-22T10:00:00+08:00",
+            "2026-10-22T10:00:01+08:00",
             serde_json::json!({"tool": "t1", "ok": true}),
+        ),
+        make_trace_event(
+            "llm_turn",
+            "web:b",
+            "2026-10-22T10:00:02+08:00",
+            serde_json::json!({}),
         ),
         make_trace_event(
             "tool_call",
             "web:b",
-            "2026-10-22T10:00:01+08:00",
+            "2026-10-22T10:00:03+08:00",
             serde_json::json!({"tool": "t2", "ok": true}),
+        ),
+        make_trace_event(
+            "llm_turn",
+            "web:a",
+            "2026-10-22T10:00:04+08:00",
+            serde_json::json!({}),
         ),
         make_trace_event(
             "tool_call",
             "web:a",
-            "2026-10-22T10:00:02+08:00",
+            "2026-10-22T10:00:05+08:00",
             serde_json::json!({"tool": "t3", "ok": true}),
         ),
     ];
@@ -1157,9 +1280,9 @@ fn test_build_conversation_traces_groups_by_session_in_order() {
     assert_eq!(traces.len(), 2);
     // Insertion order preserved: session "a" (first seen) before "b".
     assert_eq!(traces[0].start_time, "2026-10-22T10:00:00+08:00");
-    assert_eq!(traces[0].total_rounds, 2);
-    assert_eq!(traces[1].start_time, "2026-10-22T10:00:01+08:00");
-    assert_eq!(traces[1].total_rounds, 1);
+    assert_eq!(traces[0].total_rounds, 2, "session a 收到 2 个 llm_turn");
+    assert_eq!(traces[1].start_time, "2026-10-22T10:00:02+08:00");
+    assert_eq!(traces[1].total_rounds, 1, "session b 收到 1 个 llm_turn");
     assert_eq!(traces[1].tool_steps.len(), 1);
 }
 
@@ -1186,18 +1309,34 @@ fn test_build_conversation_traces_unparseable_timestamps_zero_duration() {
 
 #[test]
 fn test_build_conversation_traces_missing_tool_field_skips_step() {
-    // tool_call event without a "tool" field: no tool step, but the event
-    // still counts as a round.
-    let events = vec![make_trace_event(
-        "tool_call",
-        "s",
-        "2026-10-22T10:00:00+08:00",
-        serde_json::json!({"ok": true}),
-    )];
+    // D2 新语义三面覆盖：缺 tool 字段的 tool_call 不产步也不计轮
+    // （total_rounds 只数 llm_turn——旧「事件总数代理」已废）；
+    // 正常 tool_call 只产步不计轮；llm_turn 只计轮不产步。
+    let events = vec![
+        make_trace_event(
+            "tool_call",
+            "s",
+            "2026-10-22T10:00:00+08:00",
+            serde_json::json!({"ok": true}),
+        ),
+        make_trace_event(
+            "tool_call",
+            "s",
+            "2026-10-22T10:00:01+08:00",
+            serde_json::json!({"tool": "t", "ok": true}),
+        ),
+        make_trace_event(
+            "llm_turn",
+            "s",
+            "2026-10-22T10:00:02+08:00",
+            serde_json::json!({}),
+        ),
+    ];
     let traces = build_conversation_traces(&events);
     assert_eq!(traces.len(), 1);
-    assert_eq!(traces[0].total_rounds, 1);
-    assert!(traces[0].tool_steps.is_empty());
+    assert_eq!(traces[0].total_rounds, 1, "只有 llm_turn 计轮");
+    assert_eq!(traces[0].tool_steps.len(), 1);
+    assert_eq!(traces[0].tool_steps[0].tool_name, "t");
 }
 
 #[test]
@@ -1217,14 +1356,19 @@ fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
     artifact.tool_signature = vec!["file_read".to_string()];
     let id = registry.add(artifact);
 
-    // 5 条足样本（全部成功、无信号）→ improvement=0.4 > 0.1 →
-    // positive + 快照写回。
+    // 5 条足样本（全部成功、无信号）。D3 事件级切分后全部样本落
+    // after 桶（步 ts = now > created_at 部署点），before 桶空 →
+    // 空输入约定 success_before = 1.0 → norm_success = 0，
+    // norm_rounds/norm_duration 在 before ≤ 0 时归零 → improvement = 0
+    // → neutral。neutral 仍是有效结论 → 快照写回（只有
+    // insufficient_data 不写回）。旧「空 before → improvement 0.4 →
+    // positive」语义已随 D1/D3 废除。
     let good_traces: Vec<_> = (0..5)
         .map(|_| make_trace(2, 100, &["file_read"], false))
         .collect();
     let outcomes = monitor.evaluate_outcomes(&good_traces);
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].verdict, "positive");
+    assert_eq!(outcomes[0].verdict, "neutral");
     let first = monitor
         .registry
         .get(&id)
@@ -1232,7 +1376,7 @@ fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
         .last_efficacy
         .clone()
         .expect("有效评估必须写回快照");
-    assert_eq!(first.verdict, "positive");
+    assert_eq!(first.verdict, "neutral");
 
     // 一条不匹配签名的轨迹（recent_traces 非空——零轨迹会在窗口
     // 过滤处提前返回，走不到 artifact 循环）→ after_traces 空 →
@@ -1251,4 +1395,125 @@ fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
     assert_eq!(after.verdict, first.verdict, "无结论测量不得覆盖有效快照");
     assert_eq!(after.measured_at, first.measured_at);
     assert_eq!(after.samples_after, first.samples_after);
+}
+
+// ---- 缺陷整改批次新增单测（D1 跨偏移 / D3 长会话跨部署点）----
+
+#[test]
+fn test_ts_before_cross_offset_moment_order() {
+    // D1：双侧可解析 = 时刻序（跨时区偏移书写正确分桶）。
+    // 2026-10-22T10:00:00+08:00 与 2026-10-22T02:00:00Z 是同一时刻 →
+    // 不严格早于（分桶落在 after 侧）。
+    assert!(!ts_before(
+        "2026-10-22T10:00:00+08:00",
+        "2026-10-22T02:00:00Z"
+    ));
+    // Z 书写的更早时刻 < +08:00 书写的部署点 → 时刻序判早（字符串序会
+    // 误判 "2026-10-22T01:59:59Z" > "2026-10-22T10:00:00+08:00"，因为
+    // 字符 '0' < '1'——这正是 D1 要消灭的误分桶）。
+    assert!(ts_before(
+        "2026-10-22T01:59:59Z",
+        "2026-10-22T10:00:00+08:00"
+    ));
+    // 反向：+08:00 书写的早时刻 < Z 书写的部署点。
+    assert!(ts_before(
+        "2026-10-22T09:00:00+08:00",
+        "2026-10-22T02:00:00Z"
+    ));
+    // 任一侧不可解析 → 回落字符串序（同偏移写入下字符串序 == 时刻序，
+    // 正确性不劣于旧实现）。
+    assert_eq!(
+        ts_before("2026-10-22T09:00:00+08:00", "not-a-ts"),
+        "2026-10-22T09:00:00+08:00" < "not-a-ts"
+    );
+    assert!(!ts_before("not-a-ts", "2026-10-22T09:00:00+08:00"));
+}
+
+#[test]
+fn test_evaluate_artifact_splits_long_session_across_deploy_point() {
+    // D3 事件级切分：长命会话跨部署点 → 单条 matched trace 的
+    // tool_steps / round_ts 按 deploy_time 拆 ≤2 条子轨迹，两侧非空各自
+    // 成样本（旧行为整条轨迹挂 before 名下，稀释 after 指标）。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.min_outcome_samples = 1; // after 1 条子轨迹 ≥ 1 → 足样本
+    let monitor = DeploymentMonitor::new(cfg, registry.clone());
+
+    let deploy = chrono::Local::now() - chrono::Duration::hours(1);
+    let mut artifact = make_artifact("d3", 10, ArtifactStatus::Active);
+    artifact.tool_signature = vec!["file_read".to_string()];
+    // 部署点必须走 deployed_at（F 线优先锚）：Registry::add 无条件重盖
+    // created_at = now，回落锚在测试夹具里不可用。
+    artifact.deployed_at = Some(deploy.to_rfc3339());
+    let id = registry.add(artifact);
+
+    let early = (deploy - chrono::Duration::minutes(10)).to_rfc3339();
+    let late = (deploy + chrono::Duration::minutes(10)).to_rfc3339();
+    let long_session = ConversationTrace {
+        start_time: early.clone(),
+        total_rounds: 3, // 母轨迹值仅描述性；分桶后 total_rounds = round_ts 计数
+        duration_ms: 0,
+        tool_steps: vec![
+            ToolStep {
+                tool_name: "file_read".into(),
+                ok: true,
+                duration_ms: 100,
+                ts: early.clone(),
+            },
+            ToolStep {
+                tool_name: "file_read".into(),
+                ok: false,
+                duration_ms: 200,
+                ts: early.clone(),
+            },
+            ToolStep {
+                tool_name: "file_read".into(),
+                ok: true,
+                duration_ms: 50,
+                ts: late.clone(),
+            },
+            ToolStep {
+                tool_name: "file_read".into(),
+                ok: true,
+                duration_ms: 60,
+                ts: late.clone(),
+            },
+            ToolStep {
+                tool_name: "file_read".into(),
+                ok: true,
+                duration_ms: 70,
+                ts: late.clone(),
+            },
+        ],
+        round_ts: vec![early.clone(), late.clone(), late.clone()],
+        signals: vec![],
+    };
+    let traces = vec![long_session];
+    let outcomes = monitor.evaluate_outcomes(&traces);
+    assert_eq!(outcomes.len(), 1);
+    let o = &outcomes[0];
+    // min_samples / sample_size 的计数单位是「子轨迹条数」（每条 matched
+    // 母轨迹每侧 ≤1 条子轨迹）——与旧轨迹级语义同单位；步/轮聚合体现在
+    // 下方指标值断言（success 按步级池化 / rounds avg 按 round_ts 计数）。
+    assert_eq!(o.sample_size, 1, "after 桶 = 部署点后事件切出的 1 条子轨迹");
+    assert_eq!(
+        o.sample_size_before, 1,
+        "before 桶 = 部署点前事件切出的 1 条子轨迹"
+    );
+    // 步级池化（D2）：before 1/2 成功；after 3/3 成功。
+    assert!((o.success_before - 0.5).abs() < 1e-9);
+    assert!((o.success_after - 1.0).abs() < 1e-9);
+    // 拆桶后轮数 = 各侧 round_ts 计数（before 1 轮 / after 2 轮），
+    // 不再继承母轨迹 total_rounds。
+    assert!((o.rounds_before_avg - 1.0).abs() < 1e-9);
+    assert!((o.rounds_after_avg - 2.0).abs() < 1e-9);
+    // 有效结论 → 快照写回（非 insufficient_data）。
+    let snap = registry
+        .get(&id)
+        .unwrap()
+        .last_efficacy
+        .clone()
+        .expect("D3 拆桶评估应写回快照");
+    assert_eq!(snap.samples_after, 1);
+    assert_eq!(snap.samples_before, 1);
 }

@@ -346,6 +346,20 @@ pub(crate) async fn init_agent(
         // Arc 同时挂在 SharedResources 供 web_server 读侧（sessions.stats）取用。
         session_stats: Some(crate::session_stats::spawn_session_stats(&agent_event_tx)),
         background_registry,
+        // 专家子代理资源层（2026-11-13）：workspace/experts/ 目录即注册表
+        //（scan-on-read 单一真相源）。spawn 工具名册面 + spawn 闭包执行面
+        // 同一 store 注入；目录缺席 = 空名册常态（雇用后生效，无重启门槛）。
+        experts: {
+            let experts_store = Arc::new(
+                crate::experts_store::ExpertsStore::new(&home.join("workspace"))
+                    // 专家模式策略现读源（agents.experts fresh-read）。
+                    .with_config_path(home.join("config.json")),
+            );
+            // 管理面 WSAPI 桥（experts.*）静态槽注入——plugins_wasm
+            // INSTALLER 槽同款先例；gateway 生命周期单发（OnceLock 首胜）。
+            nemesis_web::handlers::experts::set_experts_bridge(experts_store.clone());
+            Some(experts_store)
+        },
         plugin_manager,
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
         // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级

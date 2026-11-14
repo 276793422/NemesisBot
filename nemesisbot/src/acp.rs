@@ -948,11 +948,20 @@ impl SessionFactory for RealSessionFactory {
             let security_plugin =
                 crate::security_setup::build_security_plugin(&self.home, security_enabled).await;
 
+            // 专家模式策略现读源（agents.experts fresh-read；ConfigStore
+            // 会 move config_path，先 clone）。
+            let experts_config_path = config_path.clone();
             let config_store = Arc::new(nemesis_config::ConfigStore::from_config(
                 cfg.clone(),
                 config_path,
             ));
             let (event_tx, event_rx) = tokio::sync::broadcast::channel(256);
+            // 专家子代理资源层（2026-11-13）：与 gateway 同型装配——ACP
+            // 出口不是专家旁路。专家定义跟随会话 workspace（cwd，与下方
+            // workspace 字段同根）；先借后移，字段求值序借用合法。
+            let experts_store = Arc::new(
+                crate::experts_store::ExpertsStore::new(&cwd).with_config_path(experts_config_path),
+            );
             let shared = Arc::new(crate::agent_factory::SharedResources {
                 home: self.home.clone(),
                 workspace: cwd,
@@ -968,6 +977,7 @@ impl SessionFactory for RealSessionFactory {
                 // gateway 急停经 estop_follower 镜像到共享态——ACP 出口与
                 // mcp-serve 同样不是急停旁路）。
                 estop: crate::estop_follower::shared_estop(),
+                experts: Some(experts_store),
                 ..Default::default()
             });
             let agent_loop = crate::agent_factory::build_agent_loop(&shared)

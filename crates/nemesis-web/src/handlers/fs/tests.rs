@@ -1,6 +1,9 @@
 use super::*;
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
+use crate::handlers::projects::{
+    BRIDGE_TEST_LOCK, ProjectInfo, ProjectsBridge, set_projects_bridge_for_test,
+};
 use crate::session::{AuthMethod, SessionManager};
 use crate::ws_router::ModuleHandler;
 use std::sync::Arc;
@@ -483,7 +486,7 @@ fn path_contains_multibyte_target_no_panic() {
     }
 }
 
-fn resolve(ws: &TempDir, raw: &str) -> Result<(std::path::PathBuf, bool), String> {
+fn resolve(ws: &TempDir, raw: &str) -> Result<ResolvedTarget, String> {
     resolve_click_target(
         ws.path().to_str().unwrap(),
         ws.path().to_str().unwrap(),
@@ -491,28 +494,63 @@ fn resolve(ws: &TempDir, raw: &str) -> Result<(std::path::PathBuf, bool), String
     )
 }
 
+/// gate 消费型拒绝断言测试的串行锁：resolve_click_target 每请求读
+/// EDITOR_ACCESS 进程级槽（BUG 修复：链接围栏接 editor 开关），editor
+/// 模块测试并发装槽置 full_access=true 会让这里的越界拒绝断言翻转。
+/// 同持 [`crate::handlers::editor::EDITOR_TEST_LOCK`] 互斥——fs 侧永远
+/// 看到未装配形态（None = 无闸 = 越界照拒）。security 裁剪形态无槽无锁
+/// （返回占位 guard，调用点形态统一且不触发 let_unit_value lint）。
+#[cfg(feature = "security")]
+fn editor_slot_lock() -> parking_lot::MutexGuard<'static, ()> {
+    crate::handlers::editor::EDITOR_TEST_LOCK.lock()
+}
+
+#[cfg(not(feature = "security"))]
+fn editor_slot_lock() -> EditorSlotNoopGuard {
+    EditorSlotNoopGuard
+}
+
+#[cfg(not(feature = "security"))]
+struct EditorSlotNoopGuard;
+
 /// 相对路径（含裸文件名）：拼 workspace root → 存在判定 + 类型。
+/// Windows 臂同时钉分隔符统一（解析产物不得保留 join 的 `/` 混合形态）。
 #[test]
 fn open_resolve_relative_hits_workspace_file_and_dir() {
     let ws = setup_workspace();
-    let (p, is_dir) = resolve(&ws, "alpha.txt").unwrap();
-    assert!(!is_dir);
-    assert_eq!(p, ws.path().join("alpha.txt"));
+    let t = resolve(&ws, "alpha.txt").unwrap();
+    assert!(!t.is_dir);
+    assert!(t.exists);
+    assert_eq!(t.path, ws.path().join("alpha.txt"));
 
     std::fs::create_dir_all(ws.path().join("reports")).unwrap();
-    let (p, is_dir) = resolve(&ws, "reports").unwrap();
-    assert!(is_dir);
-    assert_eq!(p, ws.path().join("reports"));
+    let t = resolve(&ws, "reports").unwrap();
+    assert!(t.is_dir);
+    assert!(t.exists);
+    assert_eq!(t.path, ws.path().join("reports"));
 
-    let (p, _) = resolve(&ws, "src/main.rs").unwrap();
-    assert_eq!(p, ws.path().join("src").join("main.rs"));
+    let t = resolve(&ws, "src/main.rs").unwrap();
+    assert_eq!(t.path, ws.path().join("src").join("main.rs"));
 
     // 反斜杠形态等价。
-    let (p, _) = resolve(&ws, "src\\main.rs").unwrap();
-    assert_eq!(p, ws.path().join("src").join("main.rs"));
+    let t = resolve(&ws, "src\\main.rs").unwrap();
+    assert_eq!(t.path, ws.path().join("src").join("main.rs"));
+    // 分隔符统一（2026-11-14 根修）：混合分隔符让 explorer /select 不稳，
+    // 解析产物在 Windows 上必须是纯 `\`。
+    if cfg!(windows) {
+        assert!(
+            !t.path.to_string_lossy().contains('/'),
+            "解析产物仍有 `/`: {}",
+            t.path.display()
+        );
+    }
 }
 
-/// `..` 段 / 空路径 / 不存在 → 诚实报错。
+/// `..` 段 / 空路径 → 诚实报错；**目录段点名且存在**的不存在文件 →
+/// 祖先回退（返回最近存在祖先目录 exists=false，前端 toast 注记「文件
+/// 未找到」）；**裸文件名/锚下无目录存在**（LLM 列界外目录的裸名形态，
+/// 2026-11-14 BUG）→ 诚实报错 + 绝对路径指引——不再回退开锚根（与文件
+/// 真实位置无关的目录，误导）。
 #[test]
 fn open_resolve_rejects_escape_and_missing() {
     let ws = setup_workspace();
@@ -523,54 +561,275 @@ fn open_resolve_rejects_escape_and_missing() {
             "bad={bad:?} err={err}"
         );
     }
+    // 裸文件名（无目录段）→ 报错 + 指引（不回退开 ws 根）。
     let err = resolve(&ws, "no_such.md").unwrap_err();
     assert!(err.contains("文件不存在"), "{err}");
+    assert!(err.contains("绝对路径"), "应带绝对路径指引: {err}");
 }
 
-/// 绝对路径：workspace 内放行；集合外（系统目录）拒绝。
+/// 祖先回退剥到最近**存在的**目录层（不是一律回根）：`src/no_such.md`
+/// → src（存在）；`missing_dir/deeper/x.md` → 锚下无目录存在 → 报错 +
+/// 指引（2026-11-14 BUG：编造前缀与裸名同误导类，不回退开锚根）。
+#[test]
+fn open_resolve_ancestor_is_deepest_existing_dir() {
+    let ws = setup_workspace();
+    let t = resolve(&ws, "src/no_such.md").unwrap();
+    assert!(!t.exists);
+    assert!(t.is_dir);
+    assert_eq!(t.path, ws.path().join("src"));
+
+    let err = resolve(&ws, "missing_dir/deeper/x.md").unwrap_err();
+    assert!(err.contains("文件不存在"), "{err}");
+    assert!(err.contains("绝对路径"), "应带绝对路径指引: {err}");
+}
+
+/// 绝对路径：workspace 内放行；集合外（系统目录）拒绝；集合内缺失 →
+/// 祖先回退（绝不越界）。
 #[test]
 fn open_resolve_absolute_containment() {
+    let _editor_slot = editor_slot_lock();
     let ws = setup_workspace();
     let inside = ws.path().join("alpha.txt");
-    let (p, is_dir) = resolve(&ws, &inside.to_string_lossy()).unwrap();
-    assert!(!is_dir);
-    assert_eq!(p, inside);
+    let t = resolve(&ws, &inside.to_string_lossy()).unwrap();
+    assert!(!t.is_dir);
+    assert!(t.exists);
+    assert_eq!(t.path, inside);
 
     let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
     let err = resolve(&ws, sys_dir).unwrap_err();
     assert!(err.contains("越出 workspace"), "sys={sys_dir} err={err}");
+
+    // 集合内绝对缺失 → 祖先回退到 ws 根。
+    let missing_abs = ws.path().join("no_such.md");
+    let t = resolve(&ws, &missing_abs.to_string_lossy()).unwrap();
+    assert!(!t.exists);
+    assert_eq!(t.path, ws.path());
 }
 
-/// main_workspace 与 session_root 分工：session_root 指向项目目录时，
-/// 相对路径拼项目目录；绝对路径 containment 集合仍含主 workspace。
+/// main_workspace 与 session_root 分工（T4 形态，2026-11-14 用户实测
+/// 失败场景回归锁）：session_root 指向项目目录时，相对路径先拼项目
+/// 目录；**项目根未命中再试主 workspace**（锚链第二根）——项目会话里
+/// 点主 workspace 文件此前必败，现在命中。
 #[test]
 fn open_resolve_session_root_vs_main_workspace() {
     let ws = setup_workspace();
     let proj = TempDir::new().unwrap();
     std::fs::write(proj.path().join("note.md"), "n").unwrap();
 
-    let (p, _) = resolve_click_target(
+    // 相对路径拼项目目录（项目文件命中）。
+    let t = resolve_click_target(
         proj.path().to_str().unwrap(),
         ws.path().to_str().unwrap(),
         "note.md",
     )
     .unwrap();
-    assert_eq!(p, proj.path().join("note.md"));
+    assert_eq!(t.path, proj.path().join("note.md"));
+    assert!(t.exists);
+
+    // 锚链跨根：项目根没有的文件回落主 workspace 命中（B1 根修回归锁）。
+    let t = resolve_click_target(
+        proj.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "beta.rs",
+    )
+    .unwrap();
+    assert!(t.exists);
+    assert_eq!(t.path, ws.path().join("beta.rs"));
+
+    // 锚链顺序：两根都有同名文件 → session root（项目目录）优先。
+    std::fs::write(proj.path().join("alpha.txt"), "proj-copy").unwrap();
+    let t = resolve_click_target(
+        proj.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "alpha.txt",
+    )
+    .unwrap();
+    assert_eq!(t.path, proj.path().join("alpha.txt"));
 
     // 主 workspace 内的文件经绝对路径仍可开（containment 集合含主 ws）。
     let inside_main = ws.path().join("alpha.txt");
-    let (p, _) = resolve_click_target(
+    let t = resolve_click_target(
         proj.path().to_str().unwrap(),
         ws.path().to_str().unwrap(),
         &inside_main.to_string_lossy(),
     )
     .unwrap();
-    assert_eq!(p, inside_main);
+    assert_eq!(t.path, inside_main);
+}
+
+/// 锚链允许根的 bridge 集成（T3 形态，2026-11-14 用户实测失败场景回归
+/// 锁）：主会话（session root == 主 workspace）点**已注册项目目录**内的
+/// 相对路径文件——此前单根必败，现在锚链第二根命中。
+#[test]
+fn open_resolve_anchor_chain_reaches_registered_project() {
+    let _serial = BRIDGE_TEST_LOCK.lock();
+    let ws = setup_workspace();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(proj.path().join("note.md"), "n").unwrap();
+
+    struct ProbeBridge(PathBuf);
+    impl ProjectsBridge for ProbeBridge {
+        fn list(&self) -> Vec<ProjectInfo> {
+            vec![ProjectInfo {
+                id: "p1".to_string(),
+                name: "proj".to_string(),
+                path: self.0.to_string_lossy().to_string(),
+                created_at: "t".to_string(),
+                running: false,
+                instructions_trusted: true,
+            }]
+        }
+        fn create(&self, _n: &str, _p: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn remove(&self, _id: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn rename(&self, _id: &str, _n: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn set_trust(&self, _id: &str, _t: bool) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn owner_of(&self, _s: &str) -> Option<String> {
+            None
+        }
+        fn loop_for_session(&self, _id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+            None
+        }
+        fn project_path(&self, _id: &str) -> Option<PathBuf> {
+            None
+        }
+        fn bind_session(&self, _s: &str, _id: &str) -> Result<(), String> {
+            Err("noop".to_string())
+        }
+        fn forget_session(&self, _s: &str) {}
+    }
+    set_projects_bridge_for_test(Some(Arc::new(ProbeBridge(proj.path().to_path_buf()))));
+    let result = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "note.md",
+    );
+    // 断言前先摘 bridge（进程级共享槽——即使 assert 失败也不污染兄弟测试）。
+    set_projects_bridge_for_test(None);
+    let t = result.unwrap();
+    assert!(t.exists);
+    assert!(!t.is_dir);
+    assert_eq!(t.path, proj.path().join("note.md"));
+}
+
+/// 项目目录名前缀剥段臂（workspace 视角路径回归锁，2026-11-14 冒烟实测
+/// 暴露）：`myproj/note.md`（首段=注册项目目录叶名）——常规锚链 join 项目
+/// 根会得 myproj\myproj\note.md 死路；剥首段后命中。覆盖四形态：带后续段
+/// 命中 / 裸项目名=项目目录本身 / 后续段不存在时祖先落到项目根（不是
+/// workspace）/ workspace 内字面同形路径优先于重解释。
+#[test]
+fn open_resolve_project_leaf_prefix_strip() {
+    let _serial = BRIDGE_TEST_LOCK.lock();
+    let ws = setup_workspace();
+    let holder = TempDir::new().unwrap();
+    let proj_root = holder.path().join("myproj");
+    std::fs::create_dir_all(&proj_root).unwrap();
+    std::fs::write(proj_root.join("note.md"), "n").unwrap();
+
+    struct LeafBridge(PathBuf);
+    impl ProjectsBridge for LeafBridge {
+        fn list(&self) -> Vec<ProjectInfo> {
+            vec![ProjectInfo {
+                id: "p1".to_string(),
+                name: "测试项目".to_string(),
+                path: self.0.to_string_lossy().to_string(),
+                created_at: "t".to_string(),
+                running: false,
+                instructions_trusted: true,
+            }]
+        }
+        fn create(&self, _n: &str, _p: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn remove(&self, _id: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn rename(&self, _id: &str, _n: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn set_trust(&self, _id: &str, _t: bool) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn owner_of(&self, _s: &str) -> Option<String> {
+            None
+        }
+        fn loop_for_session(&self, _id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+            None
+        }
+        fn project_path(&self, _id: &str) -> Option<PathBuf> {
+            None
+        }
+        fn bind_session(&self, _s: &str, _id: &str) -> Result<(), String> {
+            Err("noop".to_string())
+        }
+        fn forget_session(&self, _s: &str) {}
+    }
+    set_projects_bridge_for_test(Some(Arc::new(LeafBridge(proj_root.clone()))));
+
+    // 形态 1：首段=项目目录名 + 后续段 → 剥段命中项目内文件。
+    let hit = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "myproj/note.md",
+    );
+    // 形态 2：裸项目名（无后续段）→ 项目目录本身。
+    let bare = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "myproj",
+    );
+    // 形态 3：首段命中但后续段不存在 → 祖先回退落到项目根（比 workspace
+    // 根更贴近用户意图）。
+    let ghost = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "myproj/ghost.md",
+    );
+    // 形态 4：workspace 内真实存在同形字面路径（workspace\myproj\note.md）
+    // → 字面优先于项目名重解释（常规锚链排在剥段臂之前）。
+    std::fs::create_dir_all(ws.path().join("myproj")).unwrap();
+    std::fs::write(ws.path().join("myproj").join("note.md"), "literal").unwrap();
+    let literal = resolve_click_target(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        "myproj/note.md",
+    );
+
+    set_projects_bridge_for_test(None);
+
+    let t = hit.unwrap();
+    assert!(t.exists, "形态1 应命中项目内文件");
+    assert!(!t.is_dir);
+    assert_eq!(t.path, proj_root.join("note.md"));
+
+    let t = bare.unwrap();
+    assert!(t.exists && t.is_dir, "形态2 裸项目名应得项目目录本身");
+    assert_eq!(t.path, proj_root);
+
+    let t = ghost.unwrap();
+    assert!(!t.exists && t.is_dir, "形态3 幽灵文件应回退祖先目录");
+    assert_eq!(t.path, proj_root, "祖先应落到项目根而非 workspace 根");
+
+    let t = literal.unwrap();
+    assert!(t.exists, "形态4 字面路径应命中");
+    assert_eq!(
+        t.path,
+        ws.path().join("myproj").join("note.md"),
+        "workspace 字面同形路径优先于项目名重解释"
+    );
 }
 
 /// handle_cmd 层错误路径（不触发 spawn）：缺 path / 越界。
 #[tokio::test]
 async fn open_handle_cmd_error_paths() {
+    let _editor_slot = editor_slot_lock();
     let ws = setup_workspace();
     let h = FsHandler::new();
     let ctx = ctx_with_workspace(&ws);
@@ -589,6 +848,93 @@ async fn open_handle_cmd_error_paths() {
     assert!(err.contains("越出 workspace"), "{err}");
 }
 
+// fs.reveal：右键「打开所在目录」（错误面不 spawn；成功臂调系统文件
+// 管理器，不进单测——open 同纪律。解析/containment/祖先回退语义与 open
+// 全同源，已由 resolve_click_target 测试组覆盖，此处只钉 handle_cmd
+// 错误路径 + 命令清单在册。**祖先回退后 reveal 对缺失文件不再报错**
+// （开最近存在祖先目录 = spawn 臂，结构性豁免不进单测）。
+
+#[tokio::test]
+async fn reveal_handle_cmd_error_paths() {
+    let _editor_slot = editor_slot_lock();
+    let ws = setup_workspace();
+    let h = FsHandler::new();
+    let ctx = ctx_with_workspace(&ws);
+
+    let err = h
+        .handle_cmd("reveal", Some(serde_json::json!({})), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("path 缺失"), "{err}");
+
+    let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let err = h
+        .handle_cmd("reveal", Some(serde_json::json!({ "path": sys_dir })), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("越出 workspace"), "{err}");
+}
+
+#[test]
+fn module_commands_include_reveal_and_resolve() {
+    let cmds = FsHandler::new().commands();
+    assert!(cmds.contains(&"reveal"));
+    assert!(cmds.contains(&"resolve"));
+}
+
+// fs.resolve：纯决策面契约（不 spawn——复制路径等只需要「绝对路径 +
+// 存在性」；同一解析阶梯，open/reveal 全同源）。
+
+#[tokio::test]
+async fn resolve_handle_cmd_contract() {
+    let _editor_slot = editor_slot_lock();
+    let ws = setup_workspace();
+    let h = FsHandler::new();
+    let ctx = ctx_with_workspace(&ws);
+
+    // 存在文件：绝对路径 + 类型 + 存在性。
+    let out = h
+        .handle_cmd(
+            "resolve",
+            Some(serde_json::json!({ "path": "alpha.txt" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        out["path"],
+        ws.path().join("alpha.txt").to_string_lossy().to_string()
+    );
+    assert_eq!(out["kind"], "file");
+    assert_eq!(out["exists"], true);
+
+    // 缺失文件 · 裸名（无目录段）：2026-11-14 BUG 新语义 = 诚实报错 +
+    // 指引（不回退开锚根——目录信息从源头就缺失，开锚根是误导）。
+    let err = h
+        .handle_cmd(
+            "resolve",
+            Some(serde_json::json!({ "path": "no_such.md" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("文件不存在"), "{err}");
+    assert!(err.contains("绝对路径"), "应带绝对路径指引: {err}");
+
+    // 越界照常诚实报错（不回退不 spawn）。
+    let sys_dir = if cfg!(windows) { "C:/Windows" } else { "/etc" };
+    let err = h
+        .handle_cmd(
+            "resolve",
+            Some(serde_json::json!({ "path": sys_dir })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("越出 workspace"), "{err}");
+}
+
 // 存在性回退（用户设计：CJK 引导语粘连剥前缀找真实文件）----
 
 /// 相对路径头粘连：「见docs/总结.md」→ 剥引导语 → docs/总结.md 命中。
@@ -598,9 +944,10 @@ fn open_resolve_fallback_strips_cjk_prefix_relative() {
     std::fs::create_dir_all(ws.path().join("docs")).unwrap();
     std::fs::write(ws.path().join("docs/总结.md"), "# s").unwrap();
 
-    let (p, is_dir) = resolve(&ws, "见docs/总结.md").unwrap();
-    assert!(!is_dir);
-    assert_eq!(p, ws.path().join("docs").join("总结.md"));
+    let t = resolve(&ws, "见docs/总结.md").unwrap();
+    assert!(!t.is_dir);
+    assert!(t.exists);
+    assert_eq!(t.path, ws.path().join("docs").join("总结.md"));
 }
 
 /// 绝对路径头粘连：「文件在<abs>」→ 剥引导语 → 绝对路径命中（containment 照过）。
@@ -610,13 +957,16 @@ fn open_resolve_fallback_strips_cjk_prefix_absolute() {
     let abs = ws.path().join("alpha.txt");
     let raw = format!("文件在{}", abs.to_string_lossy());
 
-    let (p, is_dir) = resolve(&ws, &raw).unwrap();
-    assert!(!is_dir);
-    assert_eq!(p, abs);
+    let t = resolve(&ws, &raw).unwrap();
+    assert!(!t.is_dir);
+    assert!(t.exists);
+    assert_eq!(t.path, abs);
 }
 
-/// 回退候选不放松任何闸：候选含 `..` 段直接跳过，工作区外的真实文件
-/// 即使存在也打不开（最终诚实报「文件不存在」）。
+/// 回退候选不放松任何闸：候选含 `..` 段被 normalize 闸拒绝（不进解析
+/// 链），工作区外的真实文件即使存在也**绝不被打开**（2026-11-14 BUG
+/// 新语义：候选闸拒绝后全链无命中 → 诚实报错，连祖先回退都不落——
+/// 安全面收紧：旧行为落 inner 根，现在直接报错）。
 #[test]
 fn open_resolve_fallback_skips_dotdot_candidates() {
     let outer = TempDir::new().unwrap();
@@ -630,17 +980,20 @@ fn open_resolve_fallback_skips_dotdot_candidates() {
         "见../sibling.md",
     )
     .unwrap_err();
-    // 若候选未过.. 闸，这里会打开 outer/sibling.md 而非报错。
+    // 候选「../sibling.md」被.. 闸跳过 → 无命中 → 诚实报错（若候选闸
+    // 失效，这里会打开 outer/sibling.md = 逃逸；报错形态下不可能逃逸）。
     assert!(err.contains("文件不存在"), "{err}");
+    assert!(err.contains("绝对路径"), "应带绝对路径指引: {err}");
 }
 
-/// 无 CJK 边界的纯 ASCII 不存在路径不回退，错误信息保持原样。
+/// 纯 ASCII 不存在路径（裸名形态）：无 CJK 候选 → 直接落「全链无命中」
+/// 报错 + 指引（2026-11-14 BUG 新语义——裸名不回退开锚根）。
 #[test]
-fn open_resolve_fallback_no_candidates_for_ascii() {
+fn open_resolve_ascii_missing_falls_back_to_ancestor() {
     let ws = setup_workspace();
     let err = resolve(&ws, "no_such.md").unwrap_err();
     assert!(err.contains("文件不存在"), "{err}");
-    assert!(err.contains("no_such.md"), "{err}");
+    assert!(err.contains("绝对路径"), "应带绝对路径指引: {err}");
 }
 
 /// 候选生成纯函数：边界扫描口径（CJK→ASCII 词字符/分隔符才切；
@@ -658,4 +1011,173 @@ fn cjk_boundary_candidates_scan() {
     // CJK 文件名后跟扩展名点：切出的 ".md" 碎片被过滤，不产生垃圾候选。
     assert_eq!(cjk_boundary_candidates("见docs/总结.md"), ["docs/总结.md"]);
     assert!(cjk_boundary_candidates("报告总结.md").is_empty());
+}
+
+// ===== editor 开关闸接线（2026-11-14 BUG：链接围栏未接 editor 开关）====
+
+/// 闭包 gate 构造（测试注入 try_resolve_chain，不碰进程级 EDITOR_ACCESS
+/// 槽——判别语义由真 EditorAccessState 的同源测试另钉）。
+fn static_gate(allowed: bool) -> Option<EditorFenceGate> {
+    Some(Arc::new(move |_p: &str, _wd: bool| allowed))
+}
+
+/// 界外输入形态（平台各自有真绝对路径——Unix 上 "C:/x" 是相对形态，
+/// 进不了绝对臂）。
+fn sys_path() -> &'static str {
+    if cfg!(windows) {
+        "C:/Windows/notepad.exe"
+    } else {
+        "/etc/hostname"
+    }
+}
+
+/// 无闸（未装配形态）：越界照拒（fail-safe），security feature 下拒绝
+/// 文案带解除指引（裁剪形态无开关，指引一并缺席）。
+#[test]
+fn editor_gate_absent_out_of_bounds_denies_with_hint() {
+    let ws = setup_workspace();
+    let outcome = try_resolve_chain(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        sys_path(),
+        None,
+    );
+    match outcome {
+        ChainOutcome::OutOfBounds(e) => {
+            assert!(e.contains("越出 workspace"), "{e}");
+            if cfg!(feature = "security") {
+                assert!(e.contains("Full Access"), "拒绝文案应带解除指引: {e}");
+            }
+        }
+        other => panic!("期望 OutOfBounds，得 {other:?}"),
+    }
+}
+
+/// gate 关（Full Access 关的装配态）：判定与无闸一致——越界照拒。
+#[test]
+fn editor_gate_closed_out_of_bounds_denies() {
+    let ws = setup_workspace();
+    let outcome = try_resolve_chain(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        sys_path(),
+        static_gate(false).as_ref(),
+    );
+    assert!(
+        matches!(outcome, ChainOutcome::OutOfBounds(_)),
+        "{outcome:?}"
+    );
+}
+
+/// gate 开（Full Access 开）+ 界外存在文件 → Hit：放行走同一存在性判定，
+/// 不新增探测面语义。
+#[test]
+fn editor_gate_open_out_of_bounds_existing_hits() {
+    let ws = setup_workspace();
+    let outer = TempDir::new().unwrap();
+    let f = outer.path().join("outside.md");
+    std::fs::write(&f, "o").unwrap();
+    let outcome = try_resolve_chain(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &f.to_string_lossy(),
+        static_gate(true).as_ref(),
+    );
+    match outcome {
+        ChainOutcome::Hit(t) => {
+            assert!(t.exists && !t.is_dir);
+            assert_eq!(t.path, f);
+        }
+        other => panic!("期望 Hit，得 {other:?}"),
+    }
+}
+
+/// gate 开 + 界外不存在 → 祖先回退**无界**（放行语义是整条路径，祖先
+/// 剥段不再折返 containment）：剥到第一个存在目录即胜（outer 根）。
+#[test]
+fn editor_gate_open_missing_out_of_bounds_ancestor_unbounded() {
+    let ws = setup_workspace();
+    let outer = TempDir::new().unwrap();
+    let ghost = outer.path().join("no_such.md");
+    let outcome = try_resolve_chain(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &ghost.to_string_lossy(),
+        static_gate(true).as_ref(),
+    );
+    match outcome {
+        ChainOutcome::Miss(Some(a), e) => {
+            assert!(!a.exists && a.is_dir);
+            assert_eq!(a.path, outer.path(), "祖先应落在界外最近存在目录");
+            assert!(e.contains("文件不存在"), "{e}");
+        }
+        other => panic!("期望 Miss(Some)，得 {other:?}"),
+    }
+}
+
+/// 界内路径行为零变化：gate 开/关都不经界内臂（containment 先行放行）。
+#[test]
+fn editor_gate_inside_paths_unchanged() {
+    let ws = setup_workspace();
+    let inside = ws.path().join("alpha.txt");
+    for gate in [static_gate(true), static_gate(false)] {
+        let outcome = try_resolve_chain(
+            ws.path().to_str().unwrap(),
+            ws.path().to_str().unwrap(),
+            &inside.to_string_lossy(),
+            gate.as_ref(),
+        );
+        match outcome {
+            ChainOutcome::Hit(t) => {
+                assert!(t.exists);
+                assert_eq!(t.path, inside);
+            }
+            other => panic!("界内路径应无条件命中，得 {other:?}"),
+        }
+    }
+}
+
+/// 真 EditorAccessState 同源测试：fence_gate 读族判别（full 开 → 界外
+/// 放行；关 → 界外拒）与 agent 工具围栏同一实例同判——链接围栏接的
+/// 就是这份闸（BUG 修复验收口径）。
+#[cfg(feature = "security")]
+#[test]
+fn editor_gate_real_state_same_source_semantics() {
+    use nemesis_security::editor_access::EditorAccessState;
+    let ws = setup_workspace();
+    let outer = TempDir::new().unwrap();
+    let f = outer.path().join("outside.md");
+    std::fs::write(&f, "o").unwrap();
+
+    // 关态：拒。
+    let state = EditorAccessState::new();
+    state.set_flags(false, false);
+    let gate = state.fence_gate();
+    let outcome = try_resolve_chain(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &f.to_string_lossy(),
+        Some(&gate),
+    );
+    assert!(
+        matches!(outcome, ChainOutcome::OutOfBounds(_)),
+        "关态应拒界外: {outcome:?}"
+    );
+
+    // 开态（full on）：放行命中（同一实例翻开关即生效——闸每请求现取）。
+    state.set_flags(true, false);
+    let gate = state.fence_gate();
+    let outcome = try_resolve_chain(
+        ws.path().to_str().unwrap(),
+        ws.path().to_str().unwrap(),
+        &f.to_string_lossy(),
+        Some(&gate),
+    );
+    match outcome {
+        ChainOutcome::Hit(t) => {
+            assert!(t.exists);
+            assert_eq!(t.path, f);
+        }
+        other => panic!("开态应放行界外存在文件，得 {other:?}"),
+    }
 }

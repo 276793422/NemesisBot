@@ -130,7 +130,6 @@ pub struct MaixCamChannel {
     bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
     running: Arc<parking_lot::RwLock<bool>>,
     client_count: Arc<parking_lot::RwLock<usize>>,
-    outbound_queue: parking_lot::RwLock<Vec<OutboundMessage>>,
     /// Active TCP connections: chat_id -> write half（into_split 的
     /// OwnedWriteHalf）。Arc<DashMap> 外层：spawn_tcp_server 需把同一张表
     /// move 进 reader 任务——DashMap 的 Clone 是**逐条目深拷贝**而非共享，
@@ -162,7 +161,6 @@ impl MaixCamChannel {
             bus_sender,
             running: Arc::new(parking_lot::RwLock::new(false)),
             client_count: Arc::new(parking_lot::RwLock::new(0)),
-            outbound_queue: parking_lot::RwLock::new(Vec::new()),
             client_writers: Arc::new(dashmap::DashMap::new()),
             cancel_tx: parking_lot::Mutex::new(None),
         })
@@ -274,11 +272,6 @@ impl MaixCamChannel {
             message: content.to_string(),
             chat_id: chat_id.to_string(),
         }
-    }
-
-    /// Drains all queued outbound messages (for testing).
-    pub fn drain_outbound(&self) -> Vec<OutboundMessage> {
-        self.outbound_queue.write().drain(..).collect()
     }
 
     /// Spawns a TCP accept loop that listens for MaixCam device connections.
@@ -559,8 +552,14 @@ impl MaixCamChannel {
         }
 
         debug!(chat_id = %msg.chat_id, "[MaixCamChannel] sending command");
-        self.outbound_queue.write().push(msg);
-        Ok(())
+        // BUG-20261114-053：设备在册但 write half 尚未注册（accept 计数与
+        // reader 任务注册之间的调度微窗）——不再入队假成功（outbound_queue
+        // 生产零消费者，入队=静默丢消息且对调用方谎报成功），诚实报错交
+        // manager 记 warn（whatsapp BUG-20261114-053 同族同口径）。
+        Err(NemesisError::Channel(format!(
+            "MaixCam device connected but write half not registered yet (chat_id {})",
+            msg.chat_id
+        )))
     }
 }
 
@@ -602,7 +601,6 @@ impl Channel for MaixCamChannel {
 
         *self.client_count.write() = 0;
         self.client_writers.clear();
-        self.outbound_queue.write().clear();
         info!("[MaixCamChannel] channel stopped");
         Ok(())
     }

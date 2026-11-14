@@ -1145,3 +1145,110 @@ fn test_cancel_vs_begin_execution_atomic_invariant() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-024 并发投递窗口补强：create_task_if_absent 原子受理
+// ---------------------------------------------------------------------------
+
+/// N 线程并发对同一 task_id 调 create_task_if_absent：恰好一个 Ok、其余
+/// Err（在途状态），胜者条目内容保持自己的副本——检查与插入必须收在单个
+/// DashMap entry 锁内（两步 get-then-insert 在并发下双登记双入队）。
+#[test]
+fn create_task_if_absent_concurrent_single_winner() {
+    use std::sync::Arc;
+    const N: usize = 8;
+    let tmp = tempfile::tempdir().unwrap();
+    let list = Arc::new(ClusterTaskList::new(tmp.path().join("tasks")));
+    let barrier = Arc::new(std::sync::Barrier::new(N));
+    let mut joins = Vec::new();
+    for i in 0..N {
+        let list = list.clone();
+        let barrier = barrier.clone();
+        joins.push(std::thread::spawn(move || {
+            barrier.wait();
+            let mut t = make_task("race-1", TaskStatus::Pending);
+            t.content = format!("copy-{i}");
+            (i, list.create_task_if_absent(t))
+        }));
+    }
+    let mut winners = Vec::new();
+    let mut losers = Vec::new();
+    for j in joins {
+        let (i, res) = j.join().unwrap();
+        match res {
+            Ok(()) => winners.push(i),
+            Err(status) => losers.push((i, status)),
+        }
+    }
+    assert_eq!(winners.len(), 1, "恰好一个受理，got winners={winners:?}");
+    assert_eq!(losers.len(), N - 1, "其余全部拒绝，got losers={losers:?}");
+    assert!(
+        losers.iter().all(|(_, s)| *s == TaskStatus::Pending),
+        "拒绝状态应报在途 Pending，got losers={losers:?}"
+    );
+    let winner = list.get_task("race-1").expect("胜者条目在册");
+    assert_eq!(
+        winner.content,
+        format!("copy-{}", winners[0]),
+        "在册内容必须是胜者自己的副本"
+    );
+}
+
+/// 终态残留覆盖放行：Occupied + Completed/Failed/Cancelled → 覆盖为新任务
+/// （complete_task 正常即移除；残留视为异常态，宁可放行不误伤合法重发，
+/// 与顺序闸同纪律）。
+#[test]
+fn create_task_if_absent_overwrites_terminal_residue() {
+    for terminal in [
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let list = ClusterTaskList::new(tmp.path().join("tasks"));
+        list.create_task(make_task("residue-1", terminal));
+        let fresh = {
+            let mut t = make_task("residue-1", TaskStatus::Pending);
+            t.content = "fresh".into();
+            t
+        };
+        assert!(
+            list.create_task_if_absent(fresh).is_ok(),
+            "终态残留 {terminal:?} 必须放行覆盖"
+        );
+        let now = list.get_task("residue-1").expect("新任务入册");
+        assert_eq!(now.status, TaskStatus::Pending);
+        assert_eq!(now.content, "fresh");
+    }
+}
+
+/// 在途三态逐一拒绝（Pending/Running/WaitingRemote），且原条目不被覆盖。
+#[test]
+fn create_task_if_absent_rejects_each_inflight_status() {
+    for inflight in [
+        TaskStatus::Pending,
+        TaskStatus::Running,
+        TaskStatus::WaitingRemote,
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let list = ClusterTaskList::new(tmp.path().join("tasks"));
+        let original = {
+            let mut t = make_task("inflight-1", inflight);
+            t.content = "original".into();
+            t
+        };
+        list.create_task(original);
+        let duplicate = {
+            let mut t = make_task("inflight-1", TaskStatus::Pending);
+            t.content = "duplicate".into();
+            t
+        };
+        let err = list
+            .create_task_if_absent(duplicate)
+            .expect_err("在途三态必须拒绝");
+        assert_eq!(err, inflight);
+        let kept = list.get_task("inflight-1").expect("原条目仍在");
+        assert_eq!(kept.content, "original", "原条目不被重发内容覆盖");
+        assert_eq!(kept.status, inflight);
+    }
+}

@@ -259,7 +259,7 @@ impl DingTalkChannel {
             })?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "dingtalk reply error: {body}"
             )));
@@ -291,7 +291,7 @@ impl DingTalkChannel {
             })?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "dingtalk text reply error: {body}"
             )));
@@ -638,7 +638,7 @@ impl DingTalkChannel {
                             }
                         } else {
                             let status = resp.status();
-                            let body = resp.text().await.unwrap_or_default();
+                            let body = nemesis_utils::http_cap::read_error_body(resp).await;
                             warn!(status = %status, body = %body, "[DingTalkChannel] stream open failed");
                         }
                     }

@@ -30,12 +30,19 @@ use crate::types::{CollectedExperience, ExperienceStats, ToolStats};
 pub struct TraceStats {
     /// Total number of traces analyzed.
     pub total_traces: usize,
-    /// Average number of rounds per conversation.
+    /// 含 ≥1 llm_turn 的轨迹数（eligible——avg_rounds /
+    /// avg_tool_calls_per_round 只统计这些；低于 total_traces 的差值 =
+    /// 窗口内旧轨迹（agent 未发 llm_turn 事件），报告诚实注记。
+    pub traces_with_rounds: usize,
+    /// Average number of rounds per conversation（eligible 轨迹的真
+    /// llm_turn 计数均值；非 eligible 的旧轨迹不进分母）。
     pub avg_rounds: f64,
-    /// Average duration in milliseconds.
+    /// Average tool calls per round（eligible 轨迹：tool_call 事件总数 /
+    /// llm_turn 事件总数——效率的真实形态，取代同义反复的
+    /// efficiency_score 假分）。
+    pub avg_tool_calls_per_round: f64,
+    /// Average duration in milliseconds（步级 duration_ms 池化均值）。
     pub avg_duration_ms: i64,
-    /// Efficiency score [0, 1].
-    pub efficiency_score: f64,
     /// Tool chain patterns detected.
     pub tool_chain_patterns: Vec<ToolChainPattern>,
     /// Retry patterns detected.
@@ -51,19 +58,22 @@ pub struct ToolChainPattern {
     pub chain: String,
     /// Number of occurrences.
     pub count: i32,
-    /// Average rounds for this chain.
+    /// Average rounds for this chain（A2：该链所在轨迹的真实 llm_turn
+    /// 均值——不再拿出现次数伪造）。
     pub avg_rounds: f64,
     /// Success rate [0, 1].
     pub success_rate: f64,
 }
 
-/// A tool that was retried after failure.
+/// A tool that failed at least once（A3：retry_count → error_count 改名
+/// ——统计的是失败步数，不是「重试」次数；旧名暗示了从未实现的
+/// 「同轨迹失败后再成功」配对逻辑）。
 #[derive(Debug, Clone)]
 pub struct RetryPattern {
     /// Tool name.
     pub tool_name: String,
-    /// Number of retry attempts.
-    pub retry_count: i32,
+    /// Number of failed steps（eligible 轨迹内该工具失败步计数）。
+    pub error_count: i32,
     /// Success rate after retry [0, 1].
     pub success_rate: f64,
 }
@@ -85,6 +95,9 @@ pub struct ReflectionReport {
     pub trace_stats: Option<TraceStats>,
     /// Learning cycle result.
     pub learning_cycle: Option<nemesis_types::forge::LearningCycle>,
+    /// 学习闭环开关状态（A5：Some = 报告头部渲染「学习闭环」行；
+    /// None = 调用方未注入（如纯测试构造）不渲染）。
+    pub learning_enabled: Option<bool>,
 }
 
 /// Statistical analysis results from experience data.
@@ -351,117 +364,112 @@ impl Reflector {
 
     /// Perform Stage 1.5/1.7 trace analysis.
     ///
-    /// This analyzes conversation-level patterns from collected experiences.
-    /// When learning engine results are available, they are integrated into
-    /// the trace stats.
+    /// 缺陷整改批次 A1/A2/A3：改读 TraceStore 真轨迹
+    /// （`build_conversation_traces` 产物），不再拿 experiences 按
+    /// session_key 数数冒充会话级统计。指标只统计含 ≥1 llm_turn 的
+    /// 轨迹（eligible）——旧轨迹无 llm_turn 事件，混算会把 0 轮灌进
+    /// 分母；报告层对差值诚实注记「数据不足」。
     pub fn analyze_traces(
         &self,
-        experiences: &[CollectedExperience],
+        traces: &[crate::monitor::ConversationTrace],
         learning_cycle: Option<&nemesis_types::forge::LearningCycle>,
     ) -> TraceStats {
-        if experiences.is_empty() {
+        if traces.is_empty() {
             return TraceStats::default();
         }
 
         let mut stats = TraceStats::default();
+        stats.total_traces = traces.len();
 
-        // Count unique sessions as "traces" (conversations)
-        let mut sessions: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut tool_counts: HashMap<String, (i32, i32)> = HashMap::new(); // (total, errors)
-        let mut total_duration: i64 = 0;
-        let mut total_steps: usize = 0;
+        // eligible = 含 ≥1 llm_turn 的轨迹（D2 语义：total_rounds 即
+        // llm_turn 计数）。
+        let eligible: Vec<&crate::monitor::ConversationTrace> =
+            traces.iter().filter(|t| t.total_rounds > 0).collect();
+        stats.traces_with_rounds = eligible.len();
 
-        for ce in experiences {
-            let e = &ce.experience;
-            sessions.insert(&e.session_key);
-            total_duration += e.duration_ms as i64;
-            total_steps += 1;
+        if !eligible.is_empty() {
+            let total_rounds: f64 = eligible.iter().map(|t| t.total_rounds as f64).sum();
+            stats.avg_rounds = total_rounds / eligible.len() as f64;
 
-            let entry = tool_counts.entry(e.tool_name.clone()).or_insert((0, 0));
-            entry.0 += 1;
-            if !e.success {
-                entry.1 += 1;
+            let total_tool_calls: usize = eligible.iter().map(|t| t.tool_steps.len()).sum();
+            stats.avg_tool_calls_per_round = total_tool_calls as f64 / total_rounds.max(1.0);
+
+            // 步级时长池化（D2 同语义：轨迹级 span 会被长会话拉爆）。
+            let total_step_ms: i64 = eligible
+                .iter()
+                .flat_map(|t| t.tool_steps.iter())
+                .map(|s| s.duration_ms)
+                .sum();
+            let total_steps: usize = eligible.iter().map(|t| t.tool_steps.len()).sum();
+            if total_steps > 0 {
+                stats.avg_duration_ms = total_step_ms / total_steps as i64;
             }
         }
 
-        stats.total_traces = sessions.len();
-        let total_rounds = experiences.len() as f64; // total experiences as round proxy
-
-        stats.avg_duration_ms = total_duration / experiences.len() as i64;
-
-        // Build tool chain patterns from sequential tool usage
-        let mut chain_counts: HashMap<String, (i32, i32, f64)> = HashMap::new(); // (count, successes, total_rounds)
-        let mut current_chain = String::new();
-        let mut chain_tool_count = 0;
-
-        for ce in experiences {
-            let tool = &ce.experience.tool_name;
-            if current_chain.is_empty() {
-                current_chain = tool.clone();
-            } else {
-                current_chain = format!("{}->{}", current_chain, tool);
+        // 工具链模式：eligible 轨迹内 3 连续步滑窗。avg_rounds 填真值
+        // （A2）——该链所在轨迹的真实 llm_turn 均值，替换 `*count as f64`
+        // 伪造；success_rate = 全 ok 窗口 / 窗口总数。
+        let mut chain_counts: HashMap<String, (i32, i32, f64)> = HashMap::new(); // (count, all-ok, rounds_sum)
+        for t in &eligible {
+            if t.tool_steps.len() < 3 {
+                continue;
             }
-            chain_tool_count += 1;
-
-            // Commit chain every 3 tools or at the end
-            if chain_tool_count >= 3 {
-                let success = ce.experience.success;
-                let entry = chain_counts
-                    .entry(current_chain.clone())
-                    .or_insert((0, 0, 0.0));
+            for w in t.tool_steps.windows(3) {
+                let chain = format!("{}->{}->{}", w[0].tool_name, w[1].tool_name, w[2].tool_name);
+                let entry = chain_counts.entry(chain).or_insert((0, 0, 0.0));
                 entry.0 += 1;
-                if success {
+                if w.iter().all(|s| s.ok) {
                     entry.1 += 1;
                 }
-                current_chain = String::new();
-                chain_tool_count = 0;
+                entry.2 += t.total_rounds as f64;
             }
         }
-
-        // Build tool chain patterns
-        for (chain, (count, successes, _)) in &chain_counts {
-            let success_rate = if *count > 0 {
-                *successes as f64 / *count as f64
-            } else {
-                0.0
-            };
+        for (chain, (count, all_ok, rounds_sum)) in &chain_counts {
             stats.tool_chain_patterns.push(ToolChainPattern {
                 chain: chain.clone(),
                 count: *count,
-                avg_rounds: *count as f64,
-                success_rate,
+                avg_rounds: if *count > 0 {
+                    rounds_sum / *count as f64
+                } else {
+                    0.0
+                },
+                success_rate: if *count > 0 {
+                    *all_ok as f64 / *count as f64
+                } else {
+                    0.0
+                },
             });
         }
-
-        // Sort by count descending, keep top 5
         stats
             .tool_chain_patterns
             .sort_by_key(|a| std::cmp::Reverse(a.count));
         stats.tool_chain_patterns.truncate(5);
 
-        // Build retry patterns
+        // 失败模式（A3 改名 error_count）：eligible 轨迹内每工具失败步
+        // 计数；success_rate = (total - errors) / total。
+        let mut tool_counts: HashMap<String, (i32, i32)> = HashMap::new(); // (total, errors)
+        for t in &eligible {
+            for s in &t.tool_steps {
+                let entry = tool_counts.entry(s.tool_name.clone()).or_insert((0, 0));
+                entry.0 += 1;
+                if !s.ok {
+                    entry.1 += 1;
+                }
+            }
+        }
         for (tool, (total, errors)) in &tool_counts {
             if *total >= 2 && *errors > 0 {
                 stats.retry_patterns.push(RetryPattern {
                     tool_name: tool.clone(),
-                    retry_count: *errors,
+                    error_count: *errors,
                     success_rate: (*total - *errors) as f64 / *total as f64,
                 });
             }
         }
         stats
             .retry_patterns
-            .sort_by_key(|a| std::cmp::Reverse(a.retry_count));
+            .sort_by_key(|a| std::cmp::Reverse(a.error_count));
         stats.retry_patterns.truncate(5);
-
-        // Efficiency score: totalSteps / totalRounds (matching Go's formula)
-        // More steps per round = higher efficiency, capped at 1.0.
-        if total_steps > 0 && total_rounds > 0.0 {
-            stats.efficiency_score = total_steps as f64 / total_rounds;
-            if stats.efficiency_score > 1.0 {
-                stats.efficiency_score = 1.0;
-            }
-        }
 
         // Stage 1.7: Integrate learning cycle data
         if let Some(cycle) = learning_cycle {
@@ -478,15 +486,44 @@ impl Reflector {
         stats
     }
 
+    /// 反思报告 Period 标签的单一真相源（A4，2026-11-14 缺陷整改批次）。
+    ///
+    /// 三个反思入口（`run_reflection_cycle` / Dashboard 手动反思 / CLI
+    /// `forge reflect`）同源渲染实际数据窗口（最近 N 条 + 首末时间戳），
+    /// 不再各自硬编码 "today"——period 在 report 里是纯展示标签
+    ///（experiences 已由调用方整批读入，不经 filter_by_period 过滤），
+    /// 必须反映数据真实覆盖面。
+    pub fn compute_reflection_period(experiences: &[CollectedExperience]) -> String {
+        if experiences.is_empty() {
+            return "empty".to_string();
+        }
+        let first = experiences[0].experience.timestamp.as_str();
+        let last = experiences[experiences.len() - 1]
+            .experience
+            .timestamp
+            .as_str();
+        format!(
+            "最近 {} 条：{} ~ {}",
+            experiences.len(),
+            first.get(..19).unwrap_or(first),
+            last.get(..19).unwrap_or(last)
+        )
+    }
+
     /// Perform full reflection cycle (Stages 1-4).
     ///
     /// Stage 1: Statistical analysis
     /// Stage 1.5: Trace analysis
     /// Stage 1.7: Learning engine integration
     /// Stage 4: Cluster sharing (if enabled)
+    ///
+    /// `traces`：TraceStore 真轨迹（A1——调用方经
+    /// `build_conversation_traces` 构建；空切片 = 反思报告不带 Trace
+    /// Analysis 段，而非拿 experiences 冒充）。
     pub fn reflect(
         &self,
         experiences: &[CollectedExperience],
+        traces: &[crate::monitor::ConversationTrace],
         learning_cycle: Option<&nemesis_types::forge::LearningCycle>,
         period: &str,
         focus: &str,
@@ -494,9 +531,9 @@ impl Reflector {
         // Stage 1: Statistical analysis
         let stats = self.statistical_analysis(experiences);
 
-        // Stage 1.5: Trace analysis
-        let trace_stats = if !experiences.is_empty() {
-            Some(self.analyze_traces(experiences, learning_cycle))
+        // Stage 1.5: Trace analysis（真轨迹数据源）
+        let trace_stats = if !traces.is_empty() {
+            Some(self.analyze_traces(traces, learning_cycle))
         } else {
             None
         };
@@ -516,6 +553,7 @@ impl Reflector {
             llm_insights: None,
             trace_stats,
             learning_cycle: learning_cycle.cloned(),
+            learning_enabled: None,
         }
     }
 
@@ -531,13 +569,14 @@ impl Reflector {
     pub async fn reflect_with_llm(
         &self,
         experiences: &[CollectedExperience],
+        traces: &[crate::monitor::ConversationTrace],
         artifacts: &[crate::types::Artifact],
         learning_cycle: Option<&nemesis_types::forge::LearningCycle>,
         period: &str,
         focus: &str,
         max_tokens: Option<i64>,
     ) -> ReflectionReport {
-        let mut report = self.reflect(experiences, learning_cycle, period, focus);
+        let mut report = self.reflect(experiences, traces, learning_cycle, period, focus);
 
         // Stage 4 LLM: Semantic analysis (if provider available).
         // Clone the Arc inside the lock and drop the guard before awaiting —
@@ -1072,6 +1111,14 @@ impl Reflector {
         md.push_str(&format!("**Period:** {}\n\n", report.period));
         md.push_str(&format!("**Focus:** {}\n\n", report.focus));
 
+        // A5：学习闭环状态行（调用方注入；None = 不渲染）。
+        if let Some(enabled) = report.learning_enabled {
+            md.push_str(&format!(
+                "**学习闭环:** {}\n\n",
+                if enabled { "enabled" } else { "disabled" }
+            ));
+        }
+
         md.push_str("## Statistics\n\n");
         md.push_str(&format!(
             "- Total records: {}\n",
@@ -1114,14 +1161,51 @@ impl Reflector {
         if let Some(ref trace_stats) = report.trace_stats {
             md.push_str("\n## Trace Analysis\n\n");
             md.push_str(&format!("- Total traces: {}\n", trace_stats.total_traces));
+            // A1 诚实注记：eligible 差值 = 窗口内未发 llm_turn 事件的旧轨迹。
+            if trace_stats.traces_with_rounds < trace_stats.total_traces {
+                md.push_str(&format!(
+                    "- 含 llm_turn 轮次数据的轨迹: {}/{}（其余为旧轨迹或纯工具会话，不进轮数统计）\n",
+                    trace_stats.traces_with_rounds, trace_stats.total_traces
+                ));
+            }
+            if trace_stats.traces_with_rounds == 0 {
+                md.push_str(
+                    "- 轮数数据不足（窗口内轨迹均无 llm_turn 事件——需 agent 发射数据积累）\n",
+                );
+            } else {
+                md.push_str(&format!("- Avg rounds: {:.2}\n", trace_stats.avg_rounds));
+                md.push_str(&format!(
+                    "- Avg tool calls per round: {:.2}\n",
+                    trace_stats.avg_tool_calls_per_round
+                ));
+            }
             md.push_str(&format!(
                 "- Avg duration: {}ms\n",
                 trace_stats.avg_duration_ms
             ));
-            md.push_str(&format!(
-                "- Efficiency score: {:.2}\n",
-                trace_stats.efficiency_score
-            ));
+            if !trace_stats.tool_chain_patterns.is_empty() {
+                md.push_str("\n### Tool Chains\n\n");
+                for p in &trace_stats.tool_chain_patterns {
+                    md.push_str(&format!(
+                        "- `{}` ×{}, {:.0}% success, {:.1} rounds avg\n",
+                        p.chain,
+                        p.count,
+                        p.success_rate * 100.0,
+                        p.avg_rounds
+                    ));
+                }
+            }
+            if !trace_stats.retry_patterns.is_empty() {
+                md.push_str("\n### Frequent Failures\n\n");
+                for p in &trace_stats.retry_patterns {
+                    md.push_str(&format!(
+                        "- **{}**: {} failed steps, {:.0}% success overall\n",
+                        p.tool_name,
+                        p.error_count,
+                        p.success_rate * 100.0
+                    ));
+                }
+            }
         }
 
         if let Some(ref insights) = report.llm_insights {

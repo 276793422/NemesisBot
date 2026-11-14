@@ -573,7 +573,12 @@ fn walk_dropped(
             if is_empty_leaf(inc) {
                 return;
             }
-            if re != inc {
+            // 整数→浮点收敛（f64 字段收 JSON 整数，重序列化 1.0）不算丢键——
+            // 与 set_field 的 numeric_normalized_equal 同款语义（BUG-20261114-006：
+            // 此前只比 `re != inc`，PosInt(1) != Float(1.0) 把合法归一误判成
+            // 丢失，整档保存被 loud 拒绝且报因误导）。真值变化（0.7→0.5）
+            // 两侧都是 Float，归一不等，照旧收集。
+            if re != inc && !numeric_normalized_equal(re, inc) {
                 out.push(path.to_string());
             }
         }

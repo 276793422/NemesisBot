@@ -891,3 +891,304 @@ fn park_entry(ws: &Path, task_id: &str, state: &str) {
     entry.state = state.to_string();
     std::fs::write(&p, serde_json::to_string(&entry).unwrap()).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-019：推送循环终态收口（cancelled 第一臂）
+// ---------------------------------------------------------------------------
+
+/// stop_push_loop 后循环必须从 select 点即刻退出（含 15s sleep 在飞窗口）
+/// ——JoinHandle 在 spawn 点丢弃，本臂是全进程唯一终止通路；不收口则
+/// gateway 停机排空窗（shutdown_timeout）内最后 poll 注册新 TimerEntry
+/// = 停机 panic（heartbeat r9 / devices BUG-015 家族）。变异锁：删掉
+/// cancelled 臂本测试 join 超时（循环只能等满 15s tick）。
+#[tokio::test]
+async fn push_loop_exits_on_stop_push_loop_even_mid_sleep() {
+    let ws = temp_ws("push_loop_stop");
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    let handle = ob.spawn_push_loop();
+
+    // 让循环进入 select（15s sleep 在飞）。无条目工作区 process_once 为空转。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    ob.stop_push_loop();
+
+    // 取消是即时的（watch 通道事件驱动，不依赖 15s tick 到期）：join
+    // 3s 超时远小于 PUSH_TICK_SECS——中途 sleep 也必须被唤醒退出。
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
+    assert!(
+        joined.is_ok(),
+        "push loop did not exit within 3s of stop_push_loop \
+         (cancelled arm missing or not first?)"
+    );
+
+    // 幂等：二次取消不得 panic。
+    ob.stop_push_loop();
+}
+
+// ---------------------------------------------------------------------------
+// 有界并发推送（2026-11-14 审查发现 #4 队头阻塞根修；同日改滑动窗口收割）
+// ---------------------------------------------------------------------------
+
+/// 并发探针 transport：全部调用成功（同 FakeTransport happy path），同时
+/// 记录瞬时并发（in_flight / max_in_flight）；begin 驻留 hold_ms——迫使
+/// 多 worker 在 tick 内真实重叠（不驻留时顺序调度下 max 恒 1，无法区分
+/// 并行/串行假阴性）。可选对指定 peer 的 begin 必败（失败记账场景）。
+struct ProbeTransport {
+    calls: std::sync::Mutex<Vec<(String, String)>>,
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+    hold_ms: u64,
+    fail_begin_peer: std::sync::Mutex<Option<String>>,
+}
+
+impl ProbeTransport {
+    fn new(hold_ms: u64) -> Arc<Self> {
+        Arc::new(Self {
+            calls: std::sync::Mutex::new(Vec::new()),
+            in_flight: AtomicUsize::new(0),
+            max_in_flight: AtomicUsize::new(0),
+            hold_ms,
+            fail_begin_peer: std::sync::Mutex::new(None),
+        })
+    }
+
+    fn max_in_flight(&self) -> usize {
+        self.max_in_flight.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl TransferTransport for ProbeTransport {
+    async fn call(
+        &self,
+        peer: &str,
+        action: &str,
+        _payload: serde_json::Value,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((peer.to_string(), action.to_string()));
+        if action == ACTION_TRANSFER_BEGIN
+            && self.fail_begin_peer.lock().unwrap().as_deref() == Some(peer)
+        {
+            return Err("模拟该目标必败".into());
+        }
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+        if action == ACTION_TRANSFER_BEGIN {
+            tokio::time::sleep(Duration::from_millis(self.hold_ms)).await;
+        }
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        match action {
+            ACTION_TRANSFER_BEGIN => Ok(json!({ "status": "ok", "have": Vec::<usize>::new() })),
+            ACTION_TRANSFER_CHUNK => Ok(json!({ "status": "ok" })),
+            ACTION_TRANSFER_END => Ok(json!({ "status": "ok", "file_count": 1, "total_bytes": 1 })),
+            _ => Ok(serde_json::Value::Null),
+        }
+    }
+}
+
+/// 并发场景 outbox 构造（probe 走 dyn 装箱 + set_push_caps 注入）。
+fn make_probe_outbox(
+    ws: &Path,
+    transport: Arc<ProbeTransport>,
+    global: usize,
+    per_target: usize,
+) -> Arc<TransferOutbox> {
+    let ob = Arc::new(TransferOutbox::new(
+        ws,
+        "node-w".into(),
+        transport,
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    ));
+    ob.set_push_caps(global, per_target);
+    ob
+}
+
+/// 多目标并行：4 目标 × 1 条目（全局 8 / 单目标 2），单 tick 全部推完，
+/// 且传输层有重叠（max_in_flight ≥ 2）——旧串行版同夹具必 max=1。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn process_once_pushes_multiple_targets_in_parallel() {
+    let ws = temp_ws("conc-parallel");
+    let targets = ["node-m1", "node-m2", "node-m3", "node-m4"];
+    for (i, t) in targets.iter().enumerate() {
+        make_task_records(&ws, t, &format!("task-{i}"), "payload");
+    }
+    let pt = ProbeTransport::new(30);
+    let ob = make_probe_outbox(&ws, pt.clone(), 8, 2);
+    for (i, t) in targets.iter().enumerate() {
+        ob.enqueue(&format!("task-{i}"), t).unwrap();
+    }
+
+    ob.process_once().await;
+
+    for i in 0..4 {
+        assert!(
+            !outbox_dir(&ws).join(format!("task-{i}")).exists(),
+            "task-{i} 必须在单 tick 内送达"
+        );
+    }
+    assert!(
+        pt.max_in_flight() >= 2,
+        "多目标必须并行（旧串行版恒 1），实得 {}",
+        pt.max_in_flight()
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 单目标闸（滑动窗口语义）：同目标 4 条目 + per_target=2 → 单次
+/// process_once 全部推完（收割一条即补采一条，cap 持续满载流动），瞬时
+/// 并发恰 2（同时在途上限不被突破）。被闸语义 = 下一刻补位而非等下
+/// tick——旧批量版单 tick 恰推 2 条、须等下 tick，正是 T-XFER 积压超时
+/// 败因（2026-11-14 e2e 实证后改版）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn process_once_respects_per_target_concurrency_cap() {
+    let ws = temp_ws("conc-per-target");
+    for i in 0..4 {
+        make_task_records(&ws, "node-m", &format!("task-{i}"), "payload");
+    }
+    let pt = ProbeTransport::new(30);
+    let ob = make_probe_outbox(&ws, pt.clone(), 8, 2);
+    for i in 0..4 {
+        ob.enqueue(&format!("task-{i}"), "node-m").unwrap();
+    }
+
+    ob.process_once().await;
+
+    for i in 0..4 {
+        assert!(
+            !outbox_dir(&ws).join(format!("task-{i}")).exists(),
+            "task-{i} 必须在单次 process_once 内送达（滑动窗口补位）"
+        );
+    }
+    assert_eq!(pt.max_in_flight(), 2, "同目标在跑数必须恰为 2");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 全局闸（滑动窗口语义）：4 目标 + 全局上限 1 → 单次 process_once 全部
+/// 推完（收割一条即补采下一条），瞬时并发恰 1，begin 调用严格按
+/// created_at FIFO 序——并发上限与补采秩序同时钉死。旧批量版全局 1
+/// 单 tick 只推最早 1 条，是积压吞吐回退的极端形态。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn process_once_respects_global_concurrency_cap() {
+    let ws = temp_ws("conc-global");
+    let targets = ["node-m1", "node-m2", "node-m3", "node-m4"];
+    for (i, t) in targets.iter().enumerate() {
+        make_task_records(&ws, t, &format!("task-{i}"), "payload");
+    }
+    let pt = ProbeTransport::new(10);
+    let ob = make_probe_outbox(&ws, pt.clone(), 1, 2);
+    for (i, t) in targets.iter().enumerate() {
+        ob.enqueue(&format!("task-{i}"), t).unwrap();
+    }
+
+    ob.process_once().await;
+
+    for i in 0..4 {
+        assert!(
+            !outbox_dir(&ws).join(format!("task-{i}")).exists(),
+            "task-{i} 必须在单次 process_once 内送达（滑动窗口补位）"
+        );
+    }
+    assert_eq!(pt.max_in_flight(), 1, "全局并发恰为 1");
+    let begins: Vec<String> = pt
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, a)| a == ACTION_TRANSFER_BEGIN)
+        .map(|(p, _)| p.clone())
+        .collect();
+    assert_eq!(
+        begins,
+        ["node-m1", "node-m2", "node-m3", "node-m4"],
+        "全局闸 1 下 begin 必须严格 FIFO（created_at 序）"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 失败记账在并发语义下不变：1 个必败目标 + 1 个正常目标同 tick 处理，
+/// 失败条目回 pending 记账退避（attempts+1、15s 起步），正常条目照常
+/// 送达——单目标故障不拖累其他目标的推送（队头阻塞根修语义面）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_push_failure_accounting_intact() {
+    let ws = temp_ws("conc-fail");
+    make_task_records(&ws, "node-bad", "task-bad", "payload");
+    make_task_records(&ws, "node-ok", "task-ok", "payload");
+    let pt = ProbeTransport::new(30);
+    *pt.fail_begin_peer.lock().unwrap() = Some("node-bad".into());
+    let ob = make_probe_outbox(&ws, pt.clone(), 8, 2);
+    ob.enqueue("task-bad", "node-bad").unwrap();
+    ob.enqueue("task-ok", "node-ok").unwrap();
+
+    ob.process_once().await;
+
+    // 正常目标照常送达。
+    assert!(
+        !outbox_dir(&ws).join("task-ok").exists(),
+        "正常目标不被拖累"
+    );
+    // 失败条目留 pending 记账退避。
+    let dir = outbox_dir(&ws).join("task-bad");
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.state, "pending");
+    assert_eq!(entry.attempts, 1);
+    assert!(entry.next_retry_at.is_some(), "失败必须设退避窗口");
+    // 退避窗口内下一 tick 不再发 begin。
+    ob.process_once().await;
+    let begins = pt
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(peer, a)| peer == "node-bad" && a == ACTION_TRANSFER_BEGIN)
+        .count();
+    assert_eq!(begins, 1, "退避窗口内不得重发 begin");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// 积压吞吐回归锁（T-XFER 全套全败场景，2026-11-14 e2e 实证）：旧批量版
+/// 每 tick 单目标恰推 per_target 条（默认 2 条/15s）——全套 T1-T37 期间
+/// B 发件箱积压 324 条，队尾条目 6.5 分钟才推完，240s 测试窗口必败。
+/// 滑动窗口版单次 process_once 持续满载流动直至候选扫完。
+/// 夹具：单目标 60 条积压 + per_target=2 + 快传输（hold=2ms）→ 单次
+/// process_once 全部推完且瞬时并发恰 2；旧版同夹具单次恰推 2 条。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn process_once_drains_backlog_in_single_call() {
+    let ws = temp_ws("conc-backlog");
+    for i in 0..60 {
+        make_task_records(&ws, "node-m", &format!("task-{i:03}"), "payload");
+    }
+    let pt = ProbeTransport::new(2);
+    let ob = make_probe_outbox(&ws, pt.clone(), 8, 2);
+    for i in 0..60 {
+        ob.enqueue(&format!("task-{i:03}"), "node-m").unwrap();
+    }
+
+    ob.process_once().await;
+
+    let left = (0..60)
+        .filter(|i| outbox_dir(&ws).join(format!("task-{i:03}")).exists())
+        .count();
+    assert_eq!(
+        left, 0,
+        "60 条积压必须在单次 process_once 内清空（旧批量版单次只推 2 条）"
+    );
+    assert_eq!(pt.max_in_flight(), 2, "满载流动，瞬时并发恰为单目标闸 2");
+    let begins = pt
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, a)| a == ACTION_TRANSFER_BEGIN)
+        .count();
+    assert_eq!(begins, 60, "全部 60 条各推送一次");
+    let _ = std::fs::remove_dir_all(&ws);
+}

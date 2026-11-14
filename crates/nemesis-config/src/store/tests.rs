@@ -295,3 +295,44 @@ fn config_write_lock_is_exclusive() {
         .expect("A 释放后 B 应能拿到锁");
     h.join().unwrap();
 }
+
+// BUG-20261114-041：update 持久化失败必须回滚内存。
+//
+// 旧行为（红证）：闭包先改内存、盘写失败后**不回滚**——内存与盘上真相
+// 分叉。分叉不可自愈：mtime reload（check_config_reload）只盯盘文件，
+// 盘文件没变就永不触发；调用方拿到 Err（「没保存成功」）的同时，
+// load_live 消费方（dashboard get / tier 每轮重读 / executor 探针）读到的
+// 全是**未持久化**的值，分叉活到进程重启。
+//
+// 失败注入：store 的落盘路径被同名**目录**占位——write_file_atomic 的
+// rename 落到目录上必失败（Windows ACCESS_DENIED / Linux EISDIR，
+// 跨平台确定性；不依赖权限位模拟）。
+#[test]
+fn update_save_failure_rolls_back_memory_to_disk_truth() {
+    let dir = tempfile::tempdir().unwrap();
+    let disk_truth = dir.path().join("config.json");
+    std::fs::write(
+        &disk_truth,
+        serde_json::to_string_pretty(&Config::default()).unwrap(),
+    )
+    .unwrap();
+    let store = ConfigStore::load(&disk_truth).unwrap();
+
+    // 把真实落盘路径换成必败路径（目录占位），同时保留一个真配置文件
+    // 让 load 阶段拿到合法基线。
+    let blocked = dir.path().join("blocked.json");
+    std::fs::create_dir(&blocked).unwrap();
+    let store = ConfigStore::from_config(store.handle().read().clone(), blocked);
+
+    let original_port = Config::default().gateway.port;
+    let result = store.update(|c| c.gateway.port = 65432);
+    assert!(result.is_err(), "目录占位路径必须持久化失败");
+
+    // 回滚断言：内存必须回到盘上真相（基线值），而不是停留在闭包写入的
+    // 65432。旧行为在此红：read 返回 65432（未持久化的幻影值）。
+    let live_port = store.handle().read().gateway.port;
+    assert_eq!(
+        live_port, original_port,
+        "持久化失败后内存必须回滚到盘上真相，而不是保留未持久化的幻影值（读到 {live_port}）"
+    );
+}

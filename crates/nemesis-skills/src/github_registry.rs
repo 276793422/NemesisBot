@@ -266,6 +266,7 @@ impl GitHubRegistry {
                 &dir_prefix,
                 target_dir,
                 0,
+                0,
             )
             .await?;
 
@@ -409,10 +410,13 @@ impl GitHubRegistry {
 
     /// Search using GitHub Contents API (two-layer).
     async fn search_two_layer(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
+        // BUG-20261114-043：repo 段 percent-encoding + api_base 尾斜杠归一
+        // （BUG-20261113-162 横向漏点——同文件 raw URL 三处已修，API URL
+        // 两处漏网；`#`/`?` 沦为 fragment/query 分隔符指向错误资源）。
         let api_url = format!(
             "{}/repos/{}/contents/skills",
-            self.api_base_url(),
-            self.repo
+            self.api_base_url().trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(&self.repo)
         );
 
         let response = self
@@ -425,7 +429,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "GitHub API HTTP {}: {}",
                 status,
@@ -433,9 +437,17 @@ impl GitHubRegistry {
             )));
         }
 
-        let entries: Vec<GitHubContentEntry> = response.json().await.map_err(|e| {
-            NemesisError::Other(format!("failed to parse directory listing: {}", e))
-        })?;
+        // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let entries: Vec<GitHubContentEntry> =
+            serde_json::from_slice(&body_bytes).map_err(|e| {
+                NemesisError::Other(format!("failed to parse directory listing: {}", e))
+            })?;
 
         let mut results = Vec::new();
         for entry in &entries {
@@ -470,11 +482,15 @@ impl GitHubRegistry {
     /// 拉取仓库全树（Trees API recursive）——search_three_layer 与安装期
     /// slug→author 反查（[`Self::resolve_author`]）共用。
     async fn fetch_repo_tree(&self) -> Result<GithubTreeResponse> {
+        // BUG-20261114-043：repo/branch 段 percent-encoding + api_base 尾斜杠
+        // 归一（BUG-20261113-162 横向漏点；分支名可合法含 `#`，裸插值在
+        // `?recursive=1` 前被 fragment 切断。github_tree.rs 同款 URL 形态
+        // 162 轮已修，本处漏网）。与 github_tree.rs 保持同一构造形态。
         let api_url = format!(
             "{}/repos/{}/git/trees/{}?recursive=1",
-            self.api_base_url(),
-            self.repo,
-            self.branch
+            self.api_base_url().trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(&self.repo),
+            crate::url_enc::percent_encode_component(&self.branch)
         );
 
         let response = self
@@ -487,7 +503,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "GitHub API HTTP {}: {}",
                 status,
@@ -495,9 +511,15 @@ impl GitHubRegistry {
             )));
         }
 
-        response
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（大仓库 Trees API 载荷
+        // MB 量级，16MB 数十倍裕量）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse tree: {}", e)))
     }
 
@@ -696,7 +718,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "HTTP {}: {}",
                 status,
@@ -724,6 +746,7 @@ impl GitHubRegistry {
             dir_prefix,
             target_dir,
             self.max_size,
+            0,
         )
         .await
     }
@@ -735,7 +758,10 @@ impl GitHubRegistry {
         let base_url = if config.base_url.is_empty() {
             "https://raw.githubusercontent.com".to_string()
         } else {
-            config.base_url.clone()
+            // BUG-20261114-043：与 [`Self::new`] 同源尾斜杠归一——162 修复轮
+            // 只补了 new，本构造器漏网。当前 join 点均经 raw_content_url
+            // （use-site trim）行为惰性，归一属构造器对称性防御。
+            config.base_url.trim_end_matches('/').to_string()
         };
 
         let timeout = if config.timeout_secs > 0 {
