@@ -40,7 +40,9 @@ pub fn atomic_tmp_path(parent: &Path) -> std::path::PathBuf {
 }
 
 /// Atomically write data to a file: unique same-dir temp file → write →
-/// flush → `sync_all` → (unix) rename over target → (unix) parent-dir sync.
+/// flush → `sync_all` → rename over target（unix 天然覆盖 / Windows
+/// `MOVEFILE_REPLACE_EXISTING`——rename 两平台都执行，见下方 bullet）
+/// → (unix) parent-dir sync.
 ///
 /// 关键配置/状态写入的唯一权威 helper——所有配置修改
 /// 入口都调这里，不在各模块重复自制 tmp+rename。
