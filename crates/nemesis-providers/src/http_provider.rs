@@ -125,7 +125,9 @@ fn data_payload(block: &str) -> Option<String> {
 }
 
 /// HTTP provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy /
+/// headers（可带 Authorization 类私有凭据头，map 整体脱敏）。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HttpProviderConfig {
     pub name: String,
     pub base_url: String,
@@ -156,6 +158,27 @@ pub struct HttpProviderConfig {
     #[serde(default)]
     pub extra_body: serde_json::Value,
 }
+
+crate::debug_redact::impl_redacted_debug!(HttpProviderConfig {
+    plain {
+        name,
+        base_url,
+        default_model,
+        timeout_secs,
+        preserve_prefix,
+        stream_mode,
+        extra_body,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+    secret_map {
+        headers,
+    }
+});
 
 // P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
 // （原 120s——评审 LLM 连续 120s 超时根因的 http 分支）。

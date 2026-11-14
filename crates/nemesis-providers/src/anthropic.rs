@@ -34,7 +34,8 @@ fn cache_ttl_gap_warn(prev_ts: i64, now_ts: i64) -> Option<i64> {
 }
 
 /// Anthropic provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     pub api_key: String,
     #[serde(default)]
@@ -65,6 +66,22 @@ pub struct AnthropicConfig {
     #[serde(default)]
     pub cache_breakpoints: bool,
 }
+
+crate::debug_redact::impl_redacted_debug!(AnthropicConfig {
+    plain {
+        base_url,
+        default_model,
+        timeout_secs,
+        stream_mode,
+        cache_breakpoints,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 // P3A 超时对齐：120s 曾与 openai 兼容 lane 的 600s 口径分裂
 // （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 评审

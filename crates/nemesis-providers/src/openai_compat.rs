@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// OpenAI-compatible provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OpenAICompatConfig {
     /// Provider display name.
     pub name: String,
@@ -35,6 +36,21 @@ pub struct OpenAICompatConfig {
     #[serde(default)]
     pub proxy: Option<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(OpenAICompatConfig {
+    plain {
+        name,
+        base_url,
+        default_model,
+        timeout_secs,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 fn default_timeout() -> u64 {
     600 // 10 minutes (matches Go implementation)

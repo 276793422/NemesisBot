@@ -12,7 +12,8 @@ const CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex, a coding assistant.";
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Codex provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexConfig {
     pub api_key: String,
     #[serde(default)]
@@ -36,6 +37,23 @@ pub struct CodexConfig {
     #[serde(default)]
     pub stream_mode: String,
 }
+
+crate::debug_redact::impl_redacted_debug!(CodexConfig {
+    plain {
+        account_id,
+        default_model,
+        base_url,
+        enable_web_search,
+        timeout_secs,
+        stream_mode,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 fn default_true() -> bool {
     true
