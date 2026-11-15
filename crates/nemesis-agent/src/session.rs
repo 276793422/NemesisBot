@@ -365,18 +365,38 @@ impl SessionStore {
         // key and later `save()` would overwrite the fork file with that
         // near-empty history (the fork silently lost). Construction-time
         // `load_from_disk` still covers the restart path; this covers the
-        // live path. Corrupt/absent file → same empty-session behavior as
-        // before.
+        // live path. Absent file → silent (new-session normal); corrupt/
+        // unreadable file → warn (BUG-20261115-021：故障必须可见——静默落穿
+        // 会让随后的 save 用重建内容覆盖损坏文件、销毁证据), then the same
+        // rebuild/empty fallback as before.
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Ok(data) = std::fs::read_to_string(&path)
-                && let Ok(session) = serde_json::from_str::<StoredSession>(&data)
-            {
-                self.sessions
-                    .write()
-                    .unwrap()
-                    .insert(key.to_string(), session.clone());
-                return session;
+            match std::fs::read_to_string(&path) {
+                // NotFound 是新会话常态（文件在 store 构造后才出现才是 Z1
+                // 的主场景），静默。
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // BUG-20261115-021：读失败（权限/锁等）静默落穿重建臂 =
+                // 故障不可见。warn 留信号，行为不变。
+                Err(e) => tracing::warn!(
+                    "[session-store] sidecar {} 读取失败（走自愈重建）: {e}",
+                    path.display()
+                ),
+                Ok(data) => match serde_json::from_str::<StoredSession>(&data) {
+                    Ok(session) => {
+                        self.sessions
+                            .write()
+                            .unwrap()
+                            .insert(key.to_string(), session.clone());
+                        return session;
+                    }
+                    // BUG-20261115-021：解析失败静默落穿重建臂——随后 save
+                    // 会用重建内容覆盖原文件、销毁损坏证据（BUG-20261028-95
+                    // 同族的上游检测点补漏）。warn 后落穿，行为不变。
+                    Err(e) => tracing::warn!(
+                        "[session-store] sidecar {} 解析失败（走自愈重建）: {e}",
+                        path.display()
+                    ),
+                },
             }
         }
 
@@ -821,7 +841,16 @@ impl SessionStore {
                         .insert(session.key.clone(), session);
                     loaded += 1;
                 }
-                Err(_) => continue,
+                // BUG-20261115-021：损坏 sidecar 静默跳过 = 故障不可见（后续
+                // save 会用自愈重建内容覆盖原文件、销毁证据）。warn 留信号，
+                // 行为不变（跳过该文件，等 get_or_create 自愈重建）。
+                Err(e) => {
+                    warn!(
+                        "[session-store] sidecar {} 解析失败，跳过（等 get_or_create 自愈重建）: {e}",
+                        path.display()
+                    );
+                    continue;
+                }
             }
         }
 
