@@ -4720,6 +4720,7 @@ dependencies = [
  "hmac",
  "http",
  "http-body-util",
+ "include_dir",
  "nemesis-agent",
  "nemesis-board",
  "nemesis-bus",

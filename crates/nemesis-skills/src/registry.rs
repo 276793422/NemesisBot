@@ -31,11 +31,16 @@ const DEFAULT_MAX_CONCURRENT: usize = 2;
 /// 源与 nemesis-mcp 服务器同信任层，按同款口径收口：搜索/树/列表/commit
 /// 等元数据 JSON 16MB（与 nemesis-mcp `MAX_RESPONSE_BODY_BYTES` 对齐，
 /// 正常载荷 KB~MB 量级，16MB 为数十倍裕量）。
-pub(crate) const MAX_API_JSON_BODY_BYTES: u64 = 16 * 1024 * 1024;
+/// 2026-11-15 升 pub：nemesis-web persona shop 抓取面（handlers/persona.rs
+/// tree/contents JSON）与 skills 源结构探测（handlers/skills.rs）横向接入
+/// ——同一信任域同一帽值，跨 crate 单一真相源。
+pub const MAX_API_JSON_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
 /// SKILL.md 文本成功响应体帽（BUG-20261114-046 横向收口）。markdown
 /// 内容 KB 量级，1MB 与 github registry `DEFAULT_MAX_SIZE` 对齐。
-pub(crate) const MAX_SKILL_CONTENT_BODY_BYTES: u64 = 1024 * 1024;
+/// 2026-11-15 升 pub：nemesis-web persona shop 原文抓取（handlers/persona.rs
+/// raw 内容）横向接入同一帽值——markdown 内容面单一真相源。
+pub const MAX_SKILL_CONTENT_BODY_BYTES: u64 = 1024 * 1024;
 
 /// 技能包**聚合落盘体量**上限（单次安装实际解压/下载字节，BUG-20261114-059
 /// 收编为单一真相源）。clawhub zip 解压（原私有
