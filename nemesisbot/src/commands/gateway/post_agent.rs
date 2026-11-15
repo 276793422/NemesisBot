@@ -129,12 +129,15 @@ pub(crate) async fn init_post_agent(
     let board_playtest_registry = cluster.board_playtest_registry.clone();
     // BUG-20261114-019：发件箱 Arc 进 adapter（terminal 停机链收口推送
     // 循环的唯一样携带面；spawn 点句柄已丢弃，此前全进程无终止通路）。
-    // 双臂声明：wiring 字段随 board+cluster 门，cluster-only 构建下
-    // adapter 槽恒 None（类型 nemesis_cluster::outbox 恒可用——init_cluster
-    // 的 not(all) 占位臂同款）。
+    // 三态声明：wiring 字段随 board+cluster 门；cluster-only（无 board）
+    // 构建下 adapter 槽恒 None（类型 nemesis_cluster::outbox 只在 cluster
+    // 构建可用——optional dep）；zero-cluster 构建消费点（adapter 块，
+    // cfg(feature="cluster")）整段缺席，连占位都不需要。2026-11-15 复审：
+    // 旧双臂写法（not(all(board,cluster))）在 zero-cluster 下引用
+    // nemesis_cluster → E0433 裁剪构建编译失败。
     #[cfg(all(feature = "board", feature = "cluster"))]
     let transfer_outbox = cluster.transfer_outbox.clone();
-    #[cfg(not(all(feature = "board", feature = "cluster")))]
+    #[cfg(all(feature = "cluster", not(all(feature = "board", feature = "cluster"))))]
     let transfer_outbox: Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>> = None;
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // 注记：None 前向声明随 迁入本函数——赋值在下方 ClusterService
@@ -1179,6 +1182,16 @@ pub(crate) async fn init_post_agent(
     {
         web_server.set_lsp_manager(shared_resources.lsp_manager.clone());
         info!("[Gateway] LSP manager injected into web server");
+    }
+
+    // 浏览器接管管理面注入（2026-11-15）：BrowserManager 单例移交 web 面
+    //（browser.* WSAPI 投影 + Dashboard 执行单元浏览器面板；host_browser
+    // 工具经 SharedResources 同源）。模块级 OnceLock 槽（同 BOARD_ESTOP
+    // 裁决——AppState 字面量测试遍布全库，加字段是断点级改动）。
+    #[cfg(feature = "browser")]
+    if let Some(mgr) = shared_resources.browser_manager.clone() {
+        nemesis_web::handlers::browser::set_browser_manager(mgr);
+        info!("[Gateway] browser manager injected into web server");
     }
 
     // hand the tool-event receiver to the web server — its pump (spawned

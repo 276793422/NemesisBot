@@ -58,6 +58,9 @@ nemesis-prompts = { workspace = true }
 # registry table (SERVERS / server_available). Unconditional, mirroring
 # nemesis-agent's own non-optional dependency on nemesis-lsp.
 nemesis-lsp = { workspace = true, optional = true }
+# 浏览器接管管理面（handlers/browser.rs；`browser` feature 门控，nemesisbot
+# feature 转发——BrowserManager 是 exe 侧单例，web 只持 Arc 引用）。
+nemesis-browser = { workspace = true, optional = true }
 # L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控）
 portable-pty = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -158,6 +161,10 @@ connectors = ["dep:nemesis-connectors"]
 # ziwei feature 穿透，窄门面依赖 nemesis-ziwei）。关 = handler 整体退出
 # 注册表面（端点 404 形态=unknown command）。
 ziwei = ["dep:nemesis-ziwei"]
+# 浏览器接管管理面（browser.* WSAPI + AppState 浏览器槽 + Dashboard 执行
+# 单元浏览器面板后端；由 nemesisbot 的 browser feature 穿透，依赖
+# nemesis-browser）。关 = handler 整体退出注册表面（unknown command）。
+browser = ["dep:nemesis-browser"]
 
 [dev-dependencies]
 tempfile = "3"

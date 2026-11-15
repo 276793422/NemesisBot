@@ -109,14 +109,15 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     const { useSessionStore } = await import('../../stores/session')
     expect(useSessionStore().currentId).toBe('s9')
 
-    // 两行共 7 个 fn-btn（2026-11-10 布局：原 5 个单行溢出改两行 + 新增
-    // MCP/命令路由入口）。行1 [0-3]=定时/Skills/MCP/命令 → 路由跳转；
-    // 行2 [4-6]=批量/导入/工作区（批量归 batch spec、导入触发隐藏
-    // file input、工作区=文件树开合）。
+    // 两行共 8 个 fn-btn（2026-11-10 布局：原 5 个单行溢出改两行 + 新增
+    // MCP/命令路由入口；2026-11-15 D10 行2 增「浏览器」点名面板开关）。
+    // 行1 [0-3]=定时/Skills/MCP/命令 → 路由跳转；行2 [4-7]=批量/导入/工作区/
+    // 浏览器（批量归 batch spec、导入触发隐藏 file input、工作区=文件树
+    // 开合、浏览器=点名面板开合）。
     const rows = w.findAll('.fn-row')
     expect(rows).toHaveLength(2)
     const btns = w.findAll('.fn-btn').map((b: any) => b.text())
-    expect(btns).toHaveLength(7)
+    expect(btns).toHaveLength(8)
     expect(btns[0]).toContain('定时')
     expect(btns[1]).toContain('Skills')
     expect(btns[2]).toContain('MCP')
@@ -124,6 +125,7 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     expect(btns[4]).toContain('批量')
     expect(btns[5]).toContain('导入')
     expect(btns[6]).toContain('工作区')
+    expect(btns[7]).toContain('浏览器')
     await w.findAll('.fn-btn')[0].trigger('click')
     expect(routerPushMock).toHaveBeenCalledWith('/tasks')
     await w.findAll('.fn-btn')[1].trigger('click')
@@ -137,6 +139,9 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     await w.findAll('.fn-btn')[6].trigger('click')
     expect(localStorage.getItem('nb_filetree_collapsed')).toBe('0')
     expect(w.findAll('.fn-btn')[6].classes()).toContain('on')
+    // 浏览器 → 点名面板单例开合（开态 on 高亮；useBrowserPanel 全局单例）。
+    await w.findAll('.fn-btn')[7].trigger('click')
+    expect(w.findAll('.fn-btn')[7].classes()).toContain('on')
     w.unmount()
   })
 

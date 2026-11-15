@@ -3891,6 +3891,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-browser"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "futures",
+ "nemesis-config",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "which",
+ "winreg 0.55.0",
+]
+
+[[package]]
 name = "nemesis-build-config"
 version = "0.1.0"
 dependencies = [
@@ -4722,6 +4742,7 @@ dependencies = [
  "http-body-util",
  "nemesis-agent",
  "nemesis-board",
+ "nemesis-browser",
  "nemesis-bus",
  "nemesis-cluster",
  "nemesis-config",
@@ -4877,6 +4898,7 @@ dependencies = [
  "nemesis-agent",
  "nemesis-auth",
  "nemesis-board",
+ "nemesis-browser",
  "nemesis-bus",
  "nemesis-channels",
  "nemesis-cluster",
