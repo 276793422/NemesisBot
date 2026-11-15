@@ -1197,7 +1197,7 @@ impl SecurityPlugin {
 
         // Layer 8: Audit Chain
         if let Some(ref chain) = self.audit_chain {
-            let _ = chain.append(
+            chain.append_observed(
                 &op_type.to_string(),
                 &invocation.tool_name,
                 &invocation.user,
@@ -1405,8 +1405,10 @@ impl SecurityPlugin {
     /// 非工具管线的直接审计记账入口——rewind force 等
     /// 强恢复动作不经 `execute()` 八层管线（没有 ToolInvocation），但需要
     /// 落审计链台账（Merkle append-only，不可篡改；tracing 日志轮转即失，
-    /// 不算「留痕」）。返回 `None` = 审计链未启用（默认）/已关闭，调用方
-    /// 保留 tracing warn 作为兜底可见性。
+    /// 不算「留痕」）。返回 `None` = 审计链未启用（默认）**或追加失败**
+    /// （失败分支已在 [`AuditChain::append_or_observe`] 单点 warn + 降级
+    /// 登记 `audit_chain`，调用方 debug 兜底保持原语义）。调用方保留
+    /// tracing warn/debug 作为兜底可见性。
     pub fn append_direct_audit_event(
         &self,
         operation: &str,
@@ -1417,10 +1419,9 @@ impl SecurityPlugin {
         decision: &str,
         reason: &str,
     ) -> Option<crate::integrity::AuditEvent> {
-        self.audit_chain
-            .as_ref()?
-            .append(operation, tool_name, user, source, target, decision, reason)
-            .ok()
+        self.audit_chain.as_ref()?.append_or_observe(
+            operation, tool_name, user, source, target, decision, reason, None,
+        )
     }
 
     /// Get the shared scan chain.

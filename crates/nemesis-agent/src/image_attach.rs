@@ -130,7 +130,7 @@ fn gate_and_hash(
     if let Some(sec) = security
         && let Some(chain) = sec.audit_chain()
     {
-        let _ = chain.append(
+        chain.append_observed(
             "image_attach",
             "read_file",
             "",

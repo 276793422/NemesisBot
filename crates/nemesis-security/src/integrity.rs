@@ -256,6 +256,67 @@ impl AuditChain {
         Ok(event)
     }
 
+    /// append + 失败可观测（单点：漏斗 [`crate::pipeline`]/直连位点共用）。
+    ///
+    /// `append` 的 Err 契约是「事件未落盘，内存链尾不前进」——磁盘写失败
+    /// 分支内部虽有 error!，但 tracing 日志轮转即失（本模块 degraded 登记
+    /// 表文档明文「tracing 日志不算留痕」），且 closed/heal 失败分支无任何
+    /// 日志。审计链是安全第 8 层台账，静默丢账 = 审计面开洞运维不可见。
+    /// 失败路径在此统一：tracing warn + 降级登记表 `audit_chain` kind
+    /// （gateway 水泵 → SSE system-alert + `/ready` 降级面，与 chat_log /
+    /// turn_wal 同族基建）。成功路径零额外开销。
+    /// 返回 `None` = 追加失败（已可观测）；`Some` = 已落盘事件。
+    pub(crate) fn append_or_observe(
+        &self,
+        operation: &str,
+        tool_name: &str,
+        user: &str,
+        source: &str,
+        target: &str,
+        decision: &str,
+        reason: &str,
+        sign: Option<String>,
+    ) -> Option<AuditEvent> {
+        match self.append_with_sign(
+            operation, tool_name, user, source, target, decision, reason, sign,
+        ) {
+            Ok(ev) => Some(ev),
+            Err(e) => {
+                tracing::warn!(
+                    target: "nemesis_security::integrity",
+                    operation = %operation,
+                    target = %target,
+                    error = %e,
+                    "[AuditChain] 审计事件未落盘（已降级登记 audit_chain）"
+                );
+                nemesis_utils::degraded::report(
+                    "audit_chain",
+                    format!("operation={operation} target={target}: {e}"),
+                );
+                None
+            }
+        }
+    }
+
+    /// [`Self::append_or_observe`] 的 bool 面——调用方丢弃事件本体、只
+    /// 需「是否已落盘」语义的直连位点用（`let _ = chain.append(..)` 直吞
+    /// 形态的替代写法，防回归：bool 无 must_use 丢弃告警，观测在链侧完成）。
+    pub fn append_observed(
+        &self,
+        operation: &str,
+        tool_name: &str,
+        user: &str,
+        source: &str,
+        target: &str,
+        decision: &str,
+        reason: &str,
+    ) -> bool {
+        self.append_or_observe(
+            operation, tool_name, user, source, target, decision, reason, None,
+        )
+        .is_some()
+    }
+
     /// Get the current chain hash.
     pub fn current_hash(&self) -> String {
         self.last_hash.lock().clone()
