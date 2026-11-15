@@ -527,8 +527,10 @@ impl DelegateManager {
 
         // delegate 无完成通告面（协议驱动收尾），排干句柄就地弃置（detach
         // 语义同旧）；返回句柄为 background 完成通告的排干同步而设。
-        let _ = spawn_pump(child.stdout.take(), output.clone());
-        let _ = spawn_pump(child.stderr.take(), output.clone());
+        // 裸表达式语句就地 drop JoinHandle（detach）；`let _ =` 会触发
+        // clippy::let_underscore_future（-D warnings 拦 CI）。
+        spawn_pump(child.stdout.take(), output.clone());
+        spawn_pump(child.stderr.take(), output.clone());
 
         let child = Arc::new(Mutex::new(child));
         tokio::spawn(supervise(
