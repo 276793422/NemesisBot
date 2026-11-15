@@ -2,7 +2,7 @@
 //! （同 seed 双实现 node_id 一致——插件 ed25519-dalek 手工实现 vs 插件内
 //! iroh::SecretKey 官方派生，交叉验证不依赖宿主）。
 
-use super::identity::{Identity, roaming_key_path};
+use super::identity::{Identity, persist, roaming_key_path};
 
 #[test]
 fn generate_produces_distinct_ids() {
@@ -87,4 +87,51 @@ fn key_file_seed_format_is_iroh_secret_key_roundtrip() {
         .try_into()
         .expect("32B");
     iroh::EndpointId::from_bytes(&bytes).expect("插件 node_id 必须是合法 iroh EndpointId");
+}
+
+#[test]
+fn persist_is_atomic_overwrites_cleanly_and_unix_mode_is_0600() {
+    // 原子写回归锁（旧形态 = 裸 fs::write + 事后 set_permissions）：
+    // ① 父目录自动创建；② 覆盖写（rename over existing）成功且内容换新；
+    // ③ unix 权限在临时文件创建时即挂 0600（先宽后收窗口消除）；
+    // ④ 无 .tmp-* 残留（失败清理面）。
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir
+        .path()
+        .join("cluster")
+        .join("nested")
+        .join("roaming.key");
+
+    let a = Identity::generate();
+    persist(&a, &path).expect("首写成功");
+    assert_eq!(
+        Identity::load(&path).expect("读回").node_id_hex(),
+        a.node_id_hex(),
+        "首写内容 roundtrip"
+    );
+
+    let b = Identity::generate();
+    persist(&b, &path).expect("覆盖写成功");
+    assert_eq!(
+        Identity::load(&path).expect("读回").node_id_hex(),
+        b.node_id_hex(),
+        "覆盖写内容换新"
+    );
+    assert_ne!(a.node_id_hex(), b.node_id_hex());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "seed 文件权限 0600（got {:o}）", mode);
+    }
+
+    let nested = dir.path().join("cluster").join("nested");
+    let leftovers: Vec<String> = std::fs::read_dir(&nested)
+        .expect("dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "临时文件必须清理: {leftovers:?}");
 }

@@ -330,9 +330,10 @@ impl RelayServer {
         if self.ws_token.is_empty() {
             return Err("接入门未配置（服务端未开放）".to_string());
         }
-        // 常数时间比较不必要（token 非密码学密钥，网络侧无法计时探测
-        // JSON 帧处理路径）；直接比对即可。
-        if token != self.ws_token {
+        // 恒时比较（nemesis_utils::verify_token 单源）：token 是配对凭据，
+        // 与 REST/WS 升级闸同一纵深防御教义（时序侧信道现实门槛高——收敛
+        // 是补全覆盖，不是堵已知洞）。
+        if !nemesis_utils::verify::verify_token(token, &self.ws_token) {
             tracing::warn!(
                 node_id = %node_id,
                 "[Relay] 桥接入被拒：接入门 token 不匹配（配对失败）"

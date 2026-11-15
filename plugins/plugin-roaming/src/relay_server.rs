@@ -170,6 +170,18 @@ fn access_control(token: &str) -> Arc<dyn DynAccessControl> {
     }
 }
 
+/// 常数时间字节比较（插件自持依赖，不引 nemesis-utils；XOR 折叠形态与
+/// 宿主 nemesis_utils::verify_token 同族——纵深防御全覆盖口径）。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes()
+        .zip(b.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 /// SharedToken 访问控制（官方 binary 同款形态）：`Authorization: Bearer`
 /// 头或 `?token=` 查询参数携带；不匹配一票拒绝。
 #[derive(Debug)]
@@ -178,7 +190,7 @@ struct SharedTokenAccess(String);
 impl AccessControl for SharedTokenAccess {
     async fn on_connect(&self, request: &ClientRequest) -> Access {
         match request.auth_token() {
-            Some(token) if token == self.0 => Access::Allow,
+            Some(token) if constant_time_eq(&token, &self.0) => Access::Allow,
             _ => Access::Deny { reason: None },
         }
     }
@@ -237,18 +249,13 @@ fn ensure_self_signed_cert(
     let cert_pem = cert.pem();
     let key_pem = key.serialize_pem();
 
-    let dir = relay_dir(workspace);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
-    std::fs::write(&cert_path, &cert_pem)
+    // 原子写（见 atomic 模块文档）：证书半截被幂等复用逻辑当有效内容
+    // 复用（读回非空即原样复用），撕裂 = TLS 起不来；私钥同 identity
+    // 凭据面（unix 0600 即挂，先宽后收窗口消除）。
+    crate::atomic::atomic_write(&cert_path, cert_pem.as_bytes(), false)
         .map_err(|e| format!("写 {} 失败: {e}", cert_path.display()))?;
-    std::fs::write(&key_path, &key_pem)
+    crate::atomic::atomic_write(&key_path, key_pem.as_bytes(), true)
         .map_err(|e| format!("写 {} 失败: {e}", key_path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("收紧 {} 权限失败: {e}", key_path.display()))?;
-    }
     crate::plugin_log(
         crate::roaming::ROAMING_LOG_INFO,
         "relay",

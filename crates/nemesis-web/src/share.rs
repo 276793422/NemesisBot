@@ -121,7 +121,7 @@ pub fn revoke_share(workspace: &str, token: &str) -> Result<bool, String> {
     let mut shares = load_shares(workspace);
     let mut found = false;
     for s in shares.iter_mut() {
-        if s.token == token {
+        if nemesis_utils::verify::verify_token(token, &s.token) {
             s.revoked = true;
             found = true;
         }
@@ -136,7 +136,7 @@ pub fn revoke_share(workspace: &str, token: &str) -> Result<bool, String> {
 pub fn resolve_share(workspace: &str, token: &str) -> Option<ShareEntry> {
     load_shares(workspace)
         .into_iter()
-        .find(|s| !s.revoked && s.token == token)
+        .find(|s| !s.revoked && nemesis_utils::verify::verify_token(token, &s.token))
 }
 
 pub fn list_shares(workspace: &str) -> Vec<ShareEntry> {

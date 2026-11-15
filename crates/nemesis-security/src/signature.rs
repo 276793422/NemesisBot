@@ -815,12 +815,25 @@ impl Verifier {
 // ---------------------------------------------------------------------------
 
 /// Key pair for signing (hex-encoded).
-#[derive(Debug)]
 pub struct KeyPair {
     /// Hex-encoded Ed25519 private key (64 hex chars = 32 bytes seed).
     pub private_key: String,
     /// Hex-encoded Ed25519 public key (64 hex chars = 32 bytes).
     pub public_key: String,
+}
+
+/// Debug 脱敏：private_key 只露长度（Debug/日志输出不得携带私钥任何明文
+/// 片段）；public_key 非秘密原样。
+impl std::fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyPair")
+            .field(
+                "private_key",
+                &format!("<redacted; {} hex chars>", self.private_key.len()),
+            )
+            .field("public_key", &self.public_key)
+            .finish()
+    }
 }
 
 /// Generate a new Ed25519 key pair.

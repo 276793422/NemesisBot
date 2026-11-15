@@ -1114,10 +1114,10 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 
 // /relay：极简状态页（ws token 门：未通过不可见任何设备信息）
 
-/// 状态页管理门校验（cookie 值 == ws token SHA-256 hex）。
+/// 状态页管理门校验（cookie 值 == ws token SHA-256 hex；恒时比较）。
 fn admin_gate_pass(relay: &RelayServer, req_headers: &HeaderMap) -> bool {
     extract_cookie(req_headers, ADMIN_COOKIE)
-        .map(|c| c == relay.admin_hash_hex())
+        .map(|c| nemesis_utils::verify::verify_token(&c, &relay.admin_hash_hex()))
         .unwrap_or(false)
 }
 
@@ -1177,8 +1177,10 @@ pub async fn handle_relay_login(relay: Arc<RelayServer>, req: Request) -> Respon
                 b.nonce.len() == 64 && b.nonce.bytes().all(|c| c.is_ascii_hexdigit());
             nonce_shape_ok
                 && relay.consume_login_nonce(&b.nonce)
-                && b.hash
-                    == sha256_hex_of(format!("{}{}", relay.ws_token_plain(), b.nonce).as_bytes())
+                && nemesis_utils::verify::verify_token(
+                    &b.hash,
+                    &sha256_hex_of(format!("{}{}", relay.ws_token_plain(), b.nonce).as_bytes()),
+                )
         }
         Err(_) => false,
     };

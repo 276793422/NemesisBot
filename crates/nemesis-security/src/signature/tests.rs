@@ -7,6 +7,31 @@ fn test_generate_key_pair() {
     assert_eq!(kp.public_key.len(), 64);
 }
 
+/// Debug 脱敏回归锁：Debug 输出不得携带私钥任何片段（前缀也不行——
+/// 日志聚合/错误上报路径可能把 Debug 产物带出去）。
+#[test]
+fn test_keypair_debug_redacts_private_key() {
+    let kp = generate_key_pair().unwrap();
+    let dbg = format!("{kp:?}");
+    assert!(
+        !dbg.contains(&kp.private_key),
+        "Debug 不得包含私钥明文: {dbg}"
+    );
+    for i in (4..=16).step_by(4) {
+        assert!(
+            !dbg.contains(&kp.private_key[..i]),
+            "Debug 不得包含私钥前 {i} 字符片段: {dbg}"
+        );
+    }
+    assert!(dbg.contains("<redacted"), "私钥以 redacted 形态展示: {dbg}");
+    assert!(dbg.contains(&kp.public_key), "公钥非秘密，原样展示: {dbg}");
+    // 存量行为面：Debug 脱敏不影响真实签名路径。
+    let verifier = SignatureVerifier::new();
+    verifier.add_trusted_key(&kp.public_key, "debug-redact-author");
+    let sig = sign_content_hex("debug-redact-probe", &kp.private_key).unwrap();
+    assert!(verifier.verify_signature("debug-redact-probe", &sig, &kp.public_key));
+}
+
 #[test]
 fn test_sign_and_verify() {
     let kp = generate_key_pair().unwrap();
