@@ -110,9 +110,10 @@ impl Tool for EditFileTool {
             ));
         }
 
-        // Replace and write
+        // Replace and write（原子写，BUG-20261116-010：杜绝写中段崩溃撕裂源文件）
         let new_content = content.replacen(old_text, new_text, 1);
-        match tokio::fs::write(&resolved, new_content).await {
+        match nemesis_utils::write_file_atomic_async(&resolved, new_content.as_bytes(), 0o644).await
+        {
             Ok(()) => ToolResult::silent(&format!("File edited: {}", path)),
             Err(e) => ToolResult::error(&format!("failed to write file: {}", e)),
         }

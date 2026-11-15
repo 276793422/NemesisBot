@@ -72,6 +72,7 @@ pub mod zip_util;
 // Re-export the most commonly used functions
 pub use file::{
     ATOMIC_TMP_ORPHAN_GRACE, ATOMIC_TMP_PREFIX, ensure_dir, read_file_string, write_file_atomic,
+    write_file_atomic_async,
 };
 #[cfg(feature = "http")]
 pub use http_retry::do_request_with_retry_reqwest;

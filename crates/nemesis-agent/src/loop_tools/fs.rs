@@ -360,7 +360,9 @@ impl Tool for WriteFileTool {
                 .map_err(|e| format!("Failed to create directories: {}", e))?;
         }
 
-        tokio::fs::write(&path, &content)
+        // 原子写（BUG-20261116-010）：tmp+fsync+rename 替代裸直写——写中段
+        // 进程死亡不再撕裂源文件；已存在文件保留权限位与 symlink 链。
+        nemesis_utils::write_file_atomic_async(&path, content.as_bytes(), 0o644)
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
@@ -781,7 +783,8 @@ impl EditFileTool {
             &path.to_string_lossy(),
         )?;
 
-        tokio::fs::write(path, &outcome.new_content)
+        // 原子写（BUG-20261116-010）：同 write_file——编辑结果经 tmp+rename 落盘。
+        nemesis_utils::write_file_atomic_async(path, outcome.new_content.as_bytes(), 0o644)
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
@@ -1076,7 +1079,10 @@ impl Tool for MultiEditTool {
             if f.current == f.original {
                 continue;
             }
-            if let Err(err) = tokio::fs::write(&f.path, &f.current).await {
+            // 原子写（BUG-20261116-010）：multiedit 统一写盘逐文件 tmp+rename。
+            if let Err(err) =
+                nemesis_utils::write_file_atomic_async(&f.path, f.current.as_bytes(), 0o644).await
+            {
                 // 磁盘写阶段失败无跨文件事务——诚实报告已写清单。
                 return Err(format!(
                     "multiedit write failed on {}: {}. Files already written: {}",
