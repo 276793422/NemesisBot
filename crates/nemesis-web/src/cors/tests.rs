@@ -381,3 +381,20 @@ fn test_manager_config_returns_snapshot() {
     assert!(cfg1.allowed_origins.is_empty());
     assert_eq!(cfg2.allowed_origins.len(), 1);
 }
+
+/// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的 CORS 配置——
+/// 旧形态裸 `read_to_string` → BOM → parse 失败 → `CORSManager::new` Err
+/// 上浮 gateway 启动失败（BUG-20261103-334 同族）。read_config_string 剥
+/// BOM 后照常装载；既有配置（自定义 origin）必须被如实读回而非重建缺省。
+#[test]
+fn new_tolerates_utf8_bom_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cors.json");
+    std::fs::write(&path, "\u{feff}{\"allowed_origins\":[\"https://foo.com\"]}").unwrap();
+    let mgr = CORSManager::new(&path).expect("BOM 前缀完好 CORS 配置必须装载成功");
+    assert!(
+        mgr.list_origins().contains(&"https://foo.com".to_string()),
+        "BOM 配置里的 origin 必须被如实读回，got: {:?}",
+        mgr.list_origins()
+    );
+}

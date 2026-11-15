@@ -622,7 +622,10 @@ impl SecurityHandler {
     fn approvals_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let path = approval_rules_path(workspace);
         let rules: Vec<serde_json::Value> = if path.exists() {
-            let raw = std::fs::read_to_string(&path)
+            // read_config_string 剥 BOM——与运行期 loader（approval_rules.rs
+            // 已走 helper）同口径：BOM 文件运行期生效而面板列表报 parse 错 =
+            // 同文件读面分裂（BUG-20261103-334 同族）。
+            let raw = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read approval rules: {}", e))?;
             serde_json::from_str(&raw)
                 .map_err(|e| format!("failed to parse approval rules: {}", e))?
@@ -642,7 +645,8 @@ impl SecurityHandler {
         let _cfg_serial = nemesis_config::config_write_lock();
         let path = approval_rules_path(workspace);
         let removed = if path.exists() {
-            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            // read_config_string 剥 BOM（同 approvals_list 臂口径）。
+            let raw = nemesis_utils::fsutil::read_config_string(&path).unwrap_or_default();
             serde_json::from_str::<Vec<serde_json::Value>>(&raw)
                 .map(|v| v.len())
                 .unwrap_or(0)

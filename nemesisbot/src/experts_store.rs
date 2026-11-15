@@ -473,9 +473,12 @@ impl ExpertsStore {
         if patch.is_empty() {
             return Err("无可更新字段（允许：enabled / degrade / notify，boolean）".to_string());
         }
-        // raw JSON 读 + patch + 原子写。
+        // raw JSON 读 + patch + 原子写。read_config_string 剥 BOM（裸读时
+        // 记事本 BOM → patch 操作整体失败，config.json 本是用户可手工编辑面，
+        // BUG-20261103-334 同族）。
         let mut raw: serde_json::Value = if path.exists() {
-            let text = std::fs::read_to_string(path).map_err(|e| format!("读 config 失败: {e}"))?;
+            let text = nemesis_utils::fsutil::read_config_string(path)
+                .map_err(|e| format!("读 config 失败: {e}"))?;
             serde_json::from_str(&text).map_err(|e| format!("config JSON 解析失败: {e}"))?
         } else {
             serde_json::json!({})

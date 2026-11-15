@@ -468,3 +468,31 @@ fn effort_reader_sees_autofix_after_republish() {
         "写盘 + 对账发布后 effort 读者必须见新档位"
     );
 }
+
+// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的 config.json——
+// effort 探针保鲜层两个助手旧形态裸 `read_to_string` → BOM → parse 失败 →
+// stale 标记静默不落盘 / accepted 建议静默消失。read_config_string 剥 BOM
+// 后照常解析（BUG-20261103-334 同族）。
+#[test]
+fn stale_mark_and_accepted_read_tolerate_bom_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = stale_write_config(
+        dir.path(),
+        "\u{feff}{ \"model_list\": [ { \"model_name\": \"m1\", \"effort_probe\": { \"accepted\": [\"low\"] } } ] }",
+    );
+    // 读臂：BOM config → accepted 照常读出。
+    let accepted = crate::r#loop::config_watch::effort_probe_accepted_at(&path, "m1");
+    assert_eq!(
+        accepted,
+        Some(vec!["low".to_string()]),
+        "BOM config 的 effort_probe.accepted 必须可读"
+    );
+    // 写臂：BOM config → stale 标记照常落盘。
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&path, "m1");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        cfg["model_list"][0]["effort_probe"]["stale"], true,
+        "BOM config 的 stale 标记必须落盘"
+    );
+}

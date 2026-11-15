@@ -64,7 +64,9 @@ pub(crate) fn registry_path(workspace: &Path) -> PathBuf {
 /// 读注册表文件。缺文件 = 空表（fresh 常态，不报错）；坏 JSON = 诚实报错
 /// （静默当空表会让用户以为规则还在生效）。
 pub(crate) fn load_triggers_from_file(path: &Path) -> Result<Vec<AutomationTrigger>, String> {
-    let content = match std::fs::read_to_string(path) {
+    // read_config_string 剥 BOM（裸读时记事本 BOM →「请修正后重试」永远修
+    // 不好——记事本再存还带 BOM，BUG-20261103-334 同族）。
+    let content = match nemesis_utils::fsutil::read_config_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("failed to read {}: {e}", path.display())),

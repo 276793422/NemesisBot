@@ -1647,7 +1647,10 @@ fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
     let _cfg_serial = nemesis_config::config_write_lock();
     let path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     let mut cfg: serde_json::Value = if path.exists() {
-        let content = std::fs::read_to_string(&path)
+        // read_config_string 剥 BOM——运行期 cluster 配置装载已走 helper
+        // （BUG-334 记录：cluster_config.rs canonical 读写全走），BOM 文件
+        // 运行期正常而本 RMW 拒绝写 = 同文件读面分裂（BUG-20261103-334 同族）。
+        let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| anyhow::anyhow!("读取 cluster 配置失败: {e}"))?;
         // 横扫族 C 六轮（2026-11-06）：文件在但解析失败（损坏/半截写）不许
         // 静默当 `{}`——本函数是读改写环，回写会把既有系统参数层
