@@ -91,6 +91,33 @@ pub(crate) fn fence_exempt_tool(tool: &str) -> bool {
     FENCE_EXEMPT_TOOLS.contains(&tool)
 }
 
+/// (Phase 5 图像工具层) 产出图片的工具清单——vision 前置闸的单一真相源。
+/// vision=no 的模型调这些工具 = 产出无人能看的图（纯浪费 + 截屏连拍的
+/// 隐私面），dispatch 层诚实拒绝、零 IO。新图片工具注册时同步登记。
+pub(crate) const IMAGE_RESULT_TOOLS: &[&str] =
+    &["read_image", "screen_capture", "desktop_automation"];
+
+/// 工具是否产出图片（[`IMAGE_RESULT_TOOLS`] 成员测试）。
+pub(crate) fn is_image_result_tool(tool: &str) -> bool {
+    IMAGE_RESULT_TOOLS.contains(&tool)
+}
+
+/// (Phase 5 图像工具层) vision 前置闸（值形态）——产出图片的工具在
+/// vision=no 的模型面前零 IO 拒绝。串行派发路径消费（图片工具全部非
+/// parallel-safe，并行批天然不含它们——`tool_is_parallel_safe` fail-closed
+/// 默认值兜底）。`vision_allows` = `resolve_active_vision` 的放行判定。
+pub(crate) fn vision_gated_image_tool_refusal(vision_allows: bool, tool: &str) -> Option<String> {
+    if is_image_result_tool(tool) && !vision_allows {
+        return Some(format!(
+            "Error: tool '{tool}' produces image output, but the current model does not support \
+vision input (vision=no) — the image would never reach any model. Refused without side effects. \
+If you need image content, ask the user to switch to a vision-capable model, or work from the \
+text-only information available. Do NOT retry this tool."
+        ));
+    }
+    None
+}
+
 /// 派发闸拒绝文案的统一定义（serial 与 parallel 两条派发路径共用，
 /// 文案不允许劈叉）。`profession` = `AgentConfig.tool_fence_profession`
 ///（Some 时文案带职能名，None 时通用措辞——讨论唤醒轮的宣言交集形态）。
@@ -1955,6 +1982,20 @@ impl AgentLoop {
         // （⛔ 前缀 → ok=false），不会留 interrupted 假崩溃态。
         let mut estop_rx = self.security.subscribe();
         let estop_call_id = hook_call_id;
+        // 会话取消臂（Phase 5 A1）：`agent.cancel`（dashboard 停止按钮 /
+        // WSAPI agent.cancel → `cancel_session`）取消 per-session 令牌——
+        // estop 臂只听急停，会话级停止此前要等工具自愿返回（用户痛点：
+        // 「点击停止立刻就能停止」）。按 session_key 查令牌（零签名扩散
+        // ——串行与并行批两条路径都经本 chokepoint，单点双覆盖）；令牌
+        // 缺席（standalone/测试/code_run 内层调度专用 key）= 无此臂，
+        // 等价旧行为。drop 安全性与 estop 臂同审计（上方逐类清单对
+        // cancel 同样成立：exec 族 Job Object RAII 收杀树 / 网络断连
+        // 天然安全 / 写完成不记账=安全方向）；code_run 的 spawn_blocking
+        // 脚本线程不受 drop 影响（跑完即弃，结果不记账——同看门狗语义）。
+        let session_cancel_token = self
+            .cancel_tokens
+            .get(&context.session_key)
+            .map(|e| e.value().clone());
         let chain_fut = chain(hook_call_owned);
         let result = tokio::select! {
             biased;
@@ -1972,6 +2013,26 @@ impl AgentLoop {
                     "⛔ interrupted by e-stop (estop engaged mid-call)",
                 );
                 "⛔ ESTOP: 已急停 — 工具调用已被打断 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。".to_string()
+            }
+            _ = async {
+                match session_cancel_token.as_ref() {
+                    Some(tok) => tok.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                info!(
+                    "[AgentLoop] Session cancel interrupted in-flight tool {}.",
+                    tool_call.name
+                );
+                self.emit_tool_interrupted(
+                    &context.session_key,
+                    &context.chat_id,
+                    &estop_call_id,
+                    &tool_call.name,
+                    dispatch_started,
+                    "⛔ interrupted by session cancel (stop requested mid-call)",
+                );
+                "⛔ CANCELLED: 已取消 — 工具调用已被打断（用户请求停止）。不要重试该工具；停止当前工作，简短确认已停止即可。".to_string()
             }
             result = async {
                 match watchdog {

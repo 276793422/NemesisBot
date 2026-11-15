@@ -70,6 +70,16 @@ fn fm_manual() -> String {
     "manual".to_string()
 }
 
+/// 专家工作纪律围栏（dispatch 时系统前置注入，不落 EXPERT.md）：行为契约
+/// 是系统内容，与专家人格分离——专家页编辑/落盘的始终是纯人格内容，
+/// 围栏升级无需重雇，超市雇佣与手动创建的专家一视同仁被罩住。
+const EXPERT_FENCE: &str = "\
+## 专家工作纪律（系统注入，非人格内容）
+- 你是被主 Agent 委派的独立专家子代理，专注完成委派的专业任务。
+- 只在委派范围内工作，不越界改动无关内容。
+- 完成后给出结论性汇报：做了什么、结果如何、遗留风险。
+- 超出专业范围或信息不足时，如实说明，不猜测硬编。";
+
 /// frontmatter（写侧，字段顺序 = 声明序，toml 序列化保序）。
 #[derive(serde::Serialize)]
 struct FmOut<'a> {
@@ -218,7 +228,9 @@ impl ExpertsStore {
     }
 
     /// spawn 执行面解析（agent crate [`nemesis_agent::loop_tools::ExpertDispatch`]
-    /// 契约）：lookup → 停用诚实拒绝 → 空提示词诚实拒绝 → prompt + model。
+    /// 契约）：lookup → 停用诚实拒绝 → 空提示词诚实拒绝 → 围栏前置 +
+    /// prompt + model。围栏在本出口统一注入（唯一运行时消费点，spawn
+    /// 预检与 agent_factory 同走此路）。
     pub fn dispatch(&self, key: &str) -> Result<nemesis_agent::loop_tools::ExpertDispatch, String> {
         let e = self.lookup(key)?;
         if !e.enabled {
@@ -237,7 +249,7 @@ impl ExpertsStore {
         Ok(nemesis_agent::loop_tools::ExpertDispatch {
             slug: e.slug,
             name: e.name,
-            prompt: e.prompt,
+            prompt: format!("{EXPERT_FENCE}\n\n{}", e.prompt),
             model: e.model,
         })
     }
@@ -307,7 +319,7 @@ impl ExpertsStore {
             return Err("专家名不能为空".to_string());
         }
         if prompt.trim().is_empty() {
-            return Err("专家提示词不能为空（人格 SOUL.md 缺失？）".to_string());
+            return Err("专家提示词不能为空（原文正文缺失？）".to_string());
         }
         let full = ExpertFull {
             slug: slug.to_string(),

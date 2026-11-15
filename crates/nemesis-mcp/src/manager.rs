@@ -40,6 +40,11 @@ pub struct McpManager {
     /// 上下文/共享形态零变化）。`discover_tools` 是单一消费点（启动全量
     /// 挂载与热重载补挂都经它，manager 实例贯穿两者）。
     browser_profile: Option<String>,
+    /// 图像落盘槽（Phase 5 F1）。`discover_tools` 单一消费点
+    /// （`create_tools_from_client_named_with_sink` 逐适配器注入）——
+    /// MCP server 返回 image content 时经槽落盘，`[Image saved: <path>]`
+    /// 注记替代旧占位。None = 旧行为（启动默认，装配方显式 set 才启用）。
+    image_sink: Option<crate::adapter::McpImageSink>,
 }
 
 impl McpManager {
@@ -52,6 +57,7 @@ impl McpManager {
             config: McpConfig::default(),
             last_content: None,
             browser_profile: None,
+            image_sink: None,
         };
         if let Err(e) = mgr.load_config() {
             warn!("[McpManager] Failed to load config on init: {}", e);
@@ -69,6 +75,17 @@ impl McpManager {
     /// 当前生效的 per-agent 浏览器 profile（可观测面）。
     pub fn browser_profile(&self) -> Option<&str> {
         self.browser_profile.as_deref()
+    }
+
+    /// 设置图像落盘槽（Phase 5 F1；须在 `discover_tools` 之前调用，
+    /// 与 browser profile 同时序约定；None = 旧占位行为）。
+    pub fn set_image_sink(&mut self, sink: Option<crate::adapter::McpImageSink>) {
+        self.image_sink = sink;
+    }
+
+    /// 当前生效的图像落盘槽（可观测面）。
+    pub fn image_sink(&self) -> Option<&crate::adapter::McpImageSink> {
+        self.image_sink.as_ref()
     }
 
     // -----------------------------------------------------------------------
@@ -266,9 +283,14 @@ impl McpManager {
         );
 
         // Discover tools using config name
-        adapter::create_tools_from_client_named(client, &server.name, server.timeout_secs)
-            .await
-            .map_err(|e| format!("Failed to discover tools from '{}': {}", server.name, e))
+        adapter::create_tools_from_client_named_with_sink(
+            client,
+            &server.name,
+            server.timeout_secs,
+            self.image_sink.clone(),
+        )
+        .await
+        .map_err(|e| format!("Failed to discover tools from '{}': {}", server.name, e))
     }
 
     // -----------------------------------------------------------------------

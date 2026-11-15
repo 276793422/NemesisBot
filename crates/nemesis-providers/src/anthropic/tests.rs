@@ -1418,9 +1418,10 @@ fn test_request_body_real_user_message_breaks_tool_result_merge() {
     assert_eq!(api_msgs[2]["content"][0]["tool_use_id"], "tc-2");
 }
 
-// 2026-09-03 二次回归 F1 回归锁：非 user 位（system / assistant / tool_result）
-// 携带 Parts 时不得 raw 序列化产出非法 wire 块——文本视图（+诚实注记，D7 同族），
-// 全请求无 base64 泄漏；Text 形态保持原字节（既有快照测试覆盖）。
+// 2026-09-03 二次回归 F1 回归锁（Phase 5 E1 更约）：非 user 位携带 Parts
+// 时 system / assistant 仍降级为文本视图（+诚实注记），不得产出非法 wire 块；
+// **tool_result 位图像随 blocks 数组直通**（E1：read_image/screen_capture/
+// MCP 产图工具的结果图像真实上行 vision 通路）；Text 形态保持原字节。
 #[test]
 fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
@@ -1468,9 +1469,15 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let raw = serde_json::to_string(&body).unwrap();
 
-    // 非 user 位不得出现 image block / base64 泄漏（非 user 标记全请求消失）
-    assert!(!raw.contains("aGVsbG8="), "base64 泄漏进请求: {raw}");
-    // user 位对照组的图片照常保留（降级只作用于非 user 位）
+    // Phase 5 E1 更约：tool_result 位图像随 blocks 数组**直通**——`aGVsbG8=`
+    // （两个 tool_result 的图）恰好出现 2 次；system/assistant 位仍降级为
+    // 文本视图（不得出现）。
+    assert_eq!(
+        raw.matches("aGVsbG8=").count(),
+        2,
+        "tool_result 图像应恰好 2 处直通: {raw}"
+    );
+    // user 位对照组的图片照常保留。
     assert!(raw.contains("Y29udHJvbA=="), "user 位图片被误剥: {raw}");
 
     // system：**纯文本视图**（to_text）——system 是内部指令位，无"用户附带"
@@ -1485,18 +1492,25 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     assert!(asst["content"].is_string());
     assert!(asst["content"].as_str().unwrap().contains("1 张图片"));
 
-    // user/tool 两个 tool_result 位：紧邻连续 → 并成**同一条** user 消息
-    //（BUG-20261114-003 并块语义），两个块各自 content 字符串 + 注记。
+    // user/tool 两个 tool_result 位（Phase 5 E1）：紧邻连续 → 并成**同一条**
+    // user 消息（BUG-20261114-003 并块语义）；各块 content 为 blocks 数组
+    // （text 块 + image 块），图像直通 vision 通路、无降级注记。
     let tr = &body["messages"][2];
     assert_eq!(tr["role"], "user");
     let tr_blocks = tr["content"].as_array().unwrap();
     assert_eq!(tr_blocks.len(), 2);
-    for b in tr_blocks {
+    let expected_texts = ["工具结果", "工具结果2"];
+    for (b, exp) in tr_blocks.iter().zip(expected_texts) {
         assert_eq!(b["type"], "tool_result");
-        assert!(b["content"].as_str().unwrap().contains("1 张图片"));
+        let content = b["content"].as_array().expect("E1: content blocks 数组");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], exp);
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["data"], "aGVsbG8=");
     }
 
-    // 对照组：user 位 Parts 正常转 blocks（image block 仍在，证明降级只作用于非 user 位）
+    // 对照组：user 位 Parts 正常转 blocks（image block 仍在）
     let user = &body["messages"][0];
     let ucontent = user["content"].as_array().expect("user 位 blocks 数组");
     assert_eq!(ucontent[1]["type"], "image");

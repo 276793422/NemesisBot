@@ -288,3 +288,68 @@ async fn test_read_error_body_aborts_transport_mid_read() {
         "server sent {sent} bytes; client must stop consuming near cap ({CAP}), not drain all {BODY}"
     );
 }
+
+// ---- read_body_capped_blocking（2026-11-15 persona shop 同类横扫补）----
+
+#[test]
+fn blocking_reader_passes_within_cap() {
+    let out = super::read_body_capped_blocking(b"hello world".as_slice(), 12).unwrap();
+    assert_eq!(out, b"hello world");
+}
+
+#[test]
+fn blocking_reader_aborts_mid_read_over_cap() {
+    // 超限在读入过程断（Err，无部分态返回）——与 async 版同契约。
+    let data = vec![b'x'; 4096];
+    let err = super::read_body_capped_blocking(data.as_slice(), 1024).unwrap_err();
+    assert!(err.contains("exceeds limit"), "{err}");
+    assert!(err.contains("aborted mid-read"), "{err}");
+}
+
+#[test]
+fn blocking_reader_exact_cap_passes_zero_cap_rejects_nonempty() {
+    assert!(super::read_body_capped_blocking(b"12345".as_slice(), 5).is_ok());
+    let err = super::read_body_capped_blocking(b"1".as_slice(), 0).unwrap_err();
+    assert!(err.contains("exceeds limit"), "{err}");
+    assert!(super::read_body_capped_blocking(std::io::empty(), 0).is_ok());
+}
+
+#[test]
+fn blocking_reader_propagates_read_error() {
+    struct Broken;
+    impl std::io::Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("boom"))
+        }
+    }
+    let err = super::read_body_capped_blocking(Broken, 1024).unwrap_err();
+    assert!(err.contains("failed to read response body"), "{err}");
+    assert!(err.contains("boom"), "{err}");
+}
+
+#[test]
+fn blocking_reader_stops_consuming_reader_on_over_cap() {
+    // 计数 Reader：超限后不得继续消费底层（读入过程中断，非读完后核对）。
+    use std::io::Read;
+    struct Counting<'a> {
+        inner: &'a [u8],
+        reads: usize,
+    }
+    impl<'a> Read for Counting<'a> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            let n = buf.len().min(self.inner.len());
+            buf[..n].copy_from_slice(&self.inner[..n]);
+            self.inner = &self.inner[n..];
+            Ok(n)
+        }
+    }
+    let mut r = Counting {
+        inner: &[b'a'; 2048],
+        reads: 0,
+    };
+    let err = super::read_body_capped_blocking(r.by_ref(), 512).unwrap_err();
+    assert!(err.contains("exceeds limit"), "{err}");
+    // 8192 缓冲一读即超限：恰好 1 次 read 后断，不再拖尾。
+    assert_eq!(r.reads, 1, "must abort after the first over-cap read");
+}

@@ -201,6 +201,19 @@ pub fn relay_init_json(quic_config_path: &Path) -> String {
     serde_json::json!({ "relay": relay_section }).to_string()
 }
 
+/// 插件配置快照刷新（init 幂等重入 = 刷新配置）。quic.relay.enable 开关
+/// 拉起前调用——roaming_start 校验/消费的是 init 时定格的快照，网关长跑
+/// 期间页面保存的 relay 段（token/端口/TLS）须经此重灌才可见（快照缺口
+/// BUG 修复，2026-11-15 档案）。未装载 = `Ok(())`（无可刷新，诚实 no-op
+/// ——开关保持落盘-only 行为）；已装载 = 以盘上最新 relay 段重入 init
+/// （运行中中继不受影响，插件侧幂等承接）。
+pub fn refresh_roaming_config(quic_config_path: &Path) -> Result<(), String> {
+    let Some(h) = HANDLE.get() else {
+        return Ok(());
+    };
+    h.init(&HOST_VTABLE, &relay_init_json(quic_config_path))
+}
+
 pub fn load_roaming_plugin(
     workspace: &Path,
     config_json: &str,

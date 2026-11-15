@@ -270,8 +270,11 @@ fn flatten_white(img: image::DynamicImage) -> image::DynamicImage {
 }
 
 /// 内容 sha256 前 8 字节 hex（命名寻址；sha2 已是 crate 依赖面）。
-#[cfg(feature = "image-process")]
-fn content_sha8(bytes: &[u8]) -> String {
+/// ⚠️ 不挂 image-process 闸——本函数只用 sha2（非 optional 依赖），
+/// 消费点 `mcp_image_sink_for_root`（tools_trait.rs）在无 image-process
+/// 的 feature 组合（nemesis-web 直连 nemesis-agent）下也要编译（2026-11-15
+/// nemesis-web 全 feature 回归抓到的 E0425 实录）。
+pub(crate) fn content_sha8(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(bytes);

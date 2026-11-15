@@ -350,6 +350,18 @@ impl AgentLoop {
         // 启动全量挂载与后续热重载补挂都经 mgr.discover_tools 单点消费
         // （注入与否的 opt-in 闸在 transport 侧按 server 配置执行）。
         mgr.set_browser_profile(self.browser_profile.clone());
+        // MCP 图像落盘槽（Phase 5 F1）：workspace 边界在场时把 MCP server
+        // 返回的 image content 落 `{root}/temp/mcp/`（内容寻址命名），文本
+        // 注记 `[Image saved: <path>]` 由 McpToolBridge 解析推图槽。边界
+        // 缺席（standalone/测试构造时序）= None = 旧占位行为（零回归）。
+        // 工厂时序：set_workspace_boundary 恒先于 register_tools_and_mcp
+        // （main.rs/spec.rs 同序），生产路径边界恒在场。
+        mgr.set_image_sink(mcp_image_sink_for_root(
+            self.workspace_boundary
+                .read()
+                .as_ref()
+                .map(|b| b.root.clone()),
+        ));
         if mgr.is_enabled() {
             for server in mgr.list_servers().to_vec() {
                 let server_name = server.name.clone();
@@ -581,4 +593,60 @@ pub(crate) fn registered_server_prefixes(
         .map(|s| format!("mcp_{}_", nemesis_mcp::adapter::sanitize_name(s)))
         .filter(|prefix| tool_keys.iter().any(|k| k.starts_with(prefix.as_str())))
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// MCP 图像落盘槽（Phase 5 F1）
+// ---------------------------------------------------------------------------
+
+/// MCP 图像落盘槽构造：root 在场 → 返回槽闭包（[`nemesis_mcp::adapter::McpImageSink`]）
+/// ——字节超 25MB 帽 / magic 非图片 / mime 未知 / 落盘失败 → None（adapter
+/// 回落旧占位注记）；成功 → 内容寻址命名 `mcp_{sha8}_{millis}.{ext}` 落
+/// `{root}/temp/mcp/`，返回绝对路径文本（adapter 产 `[Image saved: <path>]`
+/// 注记，由 [`crate::mcp_bridge::McpToolBridge`] 解析推 `tool_images` 槽）。
+/// root 缺席（standalone/测试构造时序）→ None = 旧占位行为（零回归）。
+pub(crate) fn mcp_image_sink_for_root(
+    root: Option<std::path::PathBuf>,
+) -> Option<nemesis_mcp::adapter::McpImageSink> {
+    let root = root?;
+    Some(std::sync::Arc::new(move |mime: &str, bytes: &[u8]| {
+        if bytes.len() as u64 > crate::image_path_detector::MAX_IMAGE_BYTES {
+            return None;
+        }
+        // 扩展名：magic byte 嗅探权威（server 自报 mime 可能缺失/不准），
+        // 嗅探失手回落 mime 映射表；两路都未知 = 拒收（None → 旧占位）。
+        let ext =
+            crate::image_path_detector::ext_from_magic(bytes).or_else(|| ext_from_mime(mime))?;
+        let dir = root.join("temp").join("mcp");
+        std::fs::create_dir_all(&dir).ok()?;
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!(
+            "mcp_{}_{}.{ext}",
+            crate::image_downscale::content_sha8(bytes),
+            millis
+        ));
+        std::fs::write(&path, bytes).ok()?;
+        Some(path.to_string_lossy().to_string())
+    }))
+}
+
+/// mime → 图片扩展名映射（`mcp_image_sink_for_root` 的 magic 嗅探回落）。
+pub(crate) fn ext_from_mime(mime: &str) -> Option<&'static str> {
+    let m = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match m.as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/bmp" => Some("bmp"),
+        _ => None,
+    }
 }

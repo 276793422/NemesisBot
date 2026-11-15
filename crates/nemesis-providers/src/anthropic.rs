@@ -241,17 +241,17 @@ impl AnthropicProvider {
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // Tool result。 同族降级（回归）：tool_result 在本实现
-                        // 只承载文本（图像进 tool_result 属），Parts 走
-                        // 文本视图 + 诚实注记，防 raw 序列化产出非法 wire 块。
-                        // 并块语义见函数头注释（BUG-20261114-003）。
+                        // Tool result。Phase 5 E1：含图 Parts 走 blocks 数组
+                        // （图像随 tool_result 直通 vision 通路），纯文本保持
+                        // JSON 字符串（历史 wire 字节不变）。并块语义见函数头
+                        // 注释（BUG-20261114-003）。
                         push_tool_result_block(
                             &mut api_messages,
                             &mut last_is_toolresult_user,
                             serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content.to_prompt_text_with_image_note()
+                                "content": tool_result_content_value(&msg.content)
                             }),
                         );
                     } else {
@@ -333,8 +333,8 @@ impl AnthropicProvider {
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // 同族降级（回归）：同 user tool_result，Parts 走
-                        // 文本视图 + 诚实注记（图像进 tool_result 属）。
+                        // Phase 5 E1：同 user tool_result，含图 Parts 走
+                        // blocks 数组直通 vision 通路，纯文本字节不变。
                         // 并块语义见函数头注释（BUG-20261114-003）。
                         push_tool_result_block(
                             &mut api_messages,
@@ -342,7 +342,7 @@ impl AnthropicProvider {
                             serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content.to_prompt_text_with_image_note()
+                                "content": tool_result_content_value(&msg.content)
                             }),
                         );
                     }
@@ -1114,6 +1114,50 @@ fn push_tool_result_block(
             "content": [block]
         }));
         *last_is_toolresult_user = true;
+    }
+}
+
+/// tool_result content 值（Phase 5 E1）：纯文本 → JSON 字符串（与历史
+/// wire 字节一致）；含图 Parts → blocks 数组（text 块 + image 块——
+/// Anthropic tool_result content 原生支持 block 数组形态，图像随工具
+/// 结果直通 vision 通路）。块形态与 [`anthropic_content_value`] 同构。
+/// 旧「图像进 tool_result 属 → 文本注记降级」已废除：read_image/
+/// screen_capture/MCP 产图工具的结果图像自此真实上行。
+fn tool_result_content_value(content: &crate::types::MessageContent) -> serde_json::Value {
+    if !content.has_image() {
+        return serde_json::Value::String(content.to_text());
+    }
+    if let crate::types::MessageContent::Parts(parts) = content {
+        serde_json::Value::Array(
+            parts
+                .iter()
+                .map(|p| match p {
+                    crate::types::ContentPart::Text { text } => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
+                    crate::types::ContentPart::Image { image, .. } => match image {
+                        crate::types::ImageSource::Base64 { media_type, data } => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data
+                                }
+                            })
+                        }
+                        crate::types::ImageSource::Url(url) => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": { "type": "url", "url": url }
+                            })
+                        }
+                    },
+                })
+                .collect(),
+        )
+    } else {
+        serde_json::Value::String(content.to_text())
     }
 }
 

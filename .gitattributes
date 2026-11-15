@@ -13,3 +13,14 @@
 # .bat/.ps1 stay CRLF (Windows-native interpreters).
 *.rs text eol=lf
 *.sh text eol=lf
+
+# Workspace template assets (2026-11-15): nemesisbot/workspace/** 被编译期
+# 嵌入二进制（include_dir! 内嵌 personas 全树、include_str! 内嵌
+# AGENT.md/TOOLS.md）并按盘上字节原样随包分发——盘上字节即产品字节。
+# Windows runner checkout 的 core.autocrlf=true 把 LF blob smudge 成
+# CRLF 落盘，人格漂移锁测试（builtin_persona_files_match_conversion_pipeline
+# 字节相等断言）只在 Windows CI 红（Linux checkout 无转换全绿；blob 本身
+# 经 cat-file 验证为 LF）。同 *.rs/*.sh 先例钉整树 checkout=LF。
+nemesisbot/workspace/** text eol=lf
+# .bat 按上方既定策略保持 CRLF（Windows 原生解释器），覆盖上面的整树规则。
+nemesisbot/workspace/**/*.bat text eol=crlf

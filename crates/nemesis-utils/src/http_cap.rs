@@ -81,6 +81,37 @@ pub async fn read_body_capped(response: reqwest::Response, cap: u64) -> Result<V
     }
 }
 
+/// [`read_body_capped`] 的 **blocking** 形态（2026-11-15 persona shop 同类
+/// 横扫补）：`reqwest::blocking::Response` 无 `chunk()` 流式接口，但实现
+/// [`std::io::Read`]——泛型收窄到 `Read`，读循环与 async 版逐行同形
+///（chunk 换 `read` 判零），超限同样在读入过程中断（返回即 drop 调用方
+/// 手里的 Response，连接关闭）。消息形态与 async 版一致（`exceeds limit`
+/// 子串契约）。skills 源结构探测（reqwest::blocking）为此首个消费面。
+pub fn read_body_capped_blocking<R: std::io::Read>(
+    mut reader: R,
+    cap: u64,
+) -> Result<Vec<u8>, String> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("failed to read response body: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n as u64);
+        if total > cap {
+            return Err(format!(
+                "response exceeds limit (>{cap} bytes); aborted mid-read"
+            ));
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    Ok(out)
+}
+
 /// 错误响应体有帽读取（BUG-20261113-164 单一真相源）。
 ///
 /// 错误体只喂错误消息摘要（`from_status` 取 200 字符）与日志——全量读入

@@ -758,6 +758,11 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // normal 档开启——取回工具随档必含（同 mini 侧注释；lazy 关闭
             // 时由供给闸隐藏，白名单成员无害）。
             "tools_schema_get",
+            // (Phase 5 图像工具层) LLM 主动读图。Mini 不给——
+            // 小模型视觉质量不可控（附图 token 成本高、利用率低）；big 全量
+            // 天然含。vision=no 的模型由 dispatch 层 vision 前置闸零 IO 拒绝，
+            // 白名单成员无副作用。
+            "read_image",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

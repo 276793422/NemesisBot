@@ -175,7 +175,10 @@ async fn test_relay_toggle_config_contract_without_cluster() {
 
     // enable（插件句柄未装载）：config 闸落盘；active=false、requires_restart=true
     // 诚实呈现——配置说了算、进程没跟上，面板亮「待启动」而不是假成功。
-    let p = relay_toggle_impl(None, ws, true).await.unwrap().unwrap();
+    let p = relay_toggle_impl(None, ws, true, None)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(p["enabled"], serde_json::json!(true));
     assert_eq!(p["active"], serde_json::json!(false));
     assert_eq!(p["requires_restart"], serde_json::json!(true));
@@ -184,13 +187,75 @@ async fn test_relay_toggle_config_contract_without_cluster() {
     assert_eq!(v["relay"]["enabled"], serde_json::json!(true));
 
     // disable：闸回落 + requires_restart 熄灭（配置与运行态一致=都没跑）。
-    let p = relay_toggle_impl(None, ws, false).await.unwrap().unwrap();
+    let p = relay_toggle_impl(None, ws, false, None)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(p["enabled"], serde_json::json!(false));
     assert_eq!(p["active"], serde_json::json!(false));
     assert_eq!(p["requires_restart"], serde_json::json!(false));
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
     assert_eq!(v["relay"]["enabled"], serde_json::json!(false));
+}
+
+// 快照缺口回归钉（2026-11-15 BUG 档案）：enable 拉起前必须刷新插件配置
+// 快照（页面保存的 token/端口/TLS 对 init 时定格的快照原本永远不可见，
+// token_missing 假失败的根因）；disable 不刷新；刷新失败 = 拉起中断且
+// config 闸已落盘（重开开关即重试语义不变）。
+#[tokio::test]
+async fn relay_toggle_enable_refreshes_plugin_config_snapshot_before_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+    let cfg_path = quic_config_path(ws);
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    std::fs::write(&cfg_path, r#"{"relay":{"enabled":false,"token":"t1"}}"#).unwrap();
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = calls.clone();
+    let refresh = move || -> Result<(), String> {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    };
+
+    // enable：刷新恰一次（先于拉起）；config 闸落盘（载荷投影双形态归
+    // 上方契约测——本测钉快照刷新与闸，不钉投影键）。
+    relay_toggle_impl(None, ws, true, Some(&refresh))
+        .await
+        .unwrap()
+        .unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["relay"]["enabled"], serde_json::json!(true));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "enable 必须刷新插件配置快照"
+    );
+
+    // disable：不刷新（无拉起动作，快照与停机无关）。
+    relay_toggle_impl(None, ws, false, Some(&refresh))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "disable 不得触发刷新"
+    );
+
+    // 刷新失败 = 拉起中断（响亮报错），config 闸已落盘（enabled=true 保持）。
+    let boom = || -> Result<(), String> { Err("boom".to_string()) };
+    let err = relay_toggle_impl(None, ws, true, Some(&boom))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("配置刷新失败") && err.contains("boom"),
+        "实际错误: {err}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(v["relay"]["enabled"], serde_json::json!(true));
 }
 
 // 命令表面： 清单恒注册 + feature 关诚实降级（双形态锚点）

@@ -379,6 +379,52 @@ impl nemesis_types::agent::QuestionResponder for WebQuestionBroker {
             Err(_) => Vec::new(),
         }
     }
+
+    fn cancel_session_questions(&self, session_key: &str, reason: &str) -> usize {
+        // 会话级取消（Phase 5 A3）：只了结 session_key 匹配的条目，
+        // 其余会话 pending 原样保留（与 cancel_pending_all 的全局 drain
+        // 互补）。真实实现在 inherent 方法（trait 方法体内借用与
+        // MutexGuard 生命周期纠缠，拆出去拿干净作用域）。
+        Self::cancel_session_questions_impl(self, session_key, reason)
+    }
+}
+
+impl WebQuestionBroker {
+    /// `cancel_session_questions` 的实现体：摘除 session_key 匹配的全部
+    /// pending 条目（逐条 .send(Cancelled) + broadcast resolved 让前端
+    /// 摘卡），锁外投递（与 cancel_pending_all 同纪律）。返回了结条数。
+    fn cancel_session_questions_impl(&self, session_key: &str, reason: &str) -> usize {
+        let mut entries: Vec<(String, PendingEntry)> = Vec::new();
+        match self.pending.lock() {
+            Ok(mut map) => {
+                let keys: Vec<String> = map
+                    .iter()
+                    .filter(|(_, e)| e.session_key == session_key)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in keys {
+                    if let Some(e) = map.remove(&id) {
+                        entries.push((id, e));
+                    }
+                }
+            }
+            Err(_) => return 0,
+        }
+        let n = entries.len();
+        for (id, entry) in entries {
+            let _ = entry.tx.send(Answer::Cancelled);
+            self.broadcast_resolved(&id, "cancelled");
+        }
+        if n > 0 {
+            tracing::warn!(
+                "[WebQuestion] cancelled {} pending question(s) for session {}: {}",
+                n,
+                session_key,
+                reason
+            );
+        }
+        n
+    }
 }
 
 #[cfg(test)]

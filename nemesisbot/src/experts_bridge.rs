@@ -92,7 +92,7 @@ impl ExpertsBridge for ExpertsStore {
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
-            .ok_or("missing prompt（SOUL.md 缺失或为空？）")?;
+            .ok_or("missing prompt（原文正文缺失或为空？）")?;
         let summary = data
             .get("summary")
             .and_then(|v| v.as_str())

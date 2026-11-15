@@ -563,7 +563,19 @@ impl AgentLoop {
             } else {
                 None
             };
-        instance.add_tool_result_projected(&tc.id, &original_result, &tc.name, projection);
+        // (Phase 5 图像工具层) 工具产出的图片路径随 tool 轮落史——串行
+        // dispatch 主路径的唯一取图点（dispatch 前 clear_tool_images、
+        // 工具 push、此处 take）。并行批回放走同一入口但槽恒空（图片工具
+        // 非 parallel-safe，进不了并行批）。异步占位臂（__ASYNC__/
+        // __BG_SPAWN__）在守卫之前 return，不经过此处。
+        let tool_images = context.take_tool_images();
+        instance.add_tool_result_projected_with_images(
+            &tc.id,
+            &original_result,
+            &tc.name,
+            projection,
+            tool_images,
+        );
         tool_succeeded
     }
 
@@ -812,6 +824,20 @@ impl AgentLoop {
                     .to_string(),
             ));
         }
+        // 批后取消检查点（Phase 5 A2）——并行批窗口内到达的会话取消
+        // （chokepoint cancel 臂已中断在飞执行并补发中断面 ToolFinished）
+        // 在此收口，与上方批后急停检查点同形：拒绝整批回灌、终局本轮。
+        // （并行路径 skip_cancel_estop=true 跳过下方 per-item 检查——若
+        // 无此闸，取消结果照回灌、模型下一轮读到 ⛔ 才自停 = 多烧一轮
+        // LLM 且「停止」变两跳。）串行路径 per-item 检查已覆盖，不受影响。
+        if precomputed.is_some() && cancel_token.is_cancelled() {
+            info!(
+                "[AgentLoop] Session cancel arrived during/after parallel batch ({} calls) — stopping turn.",
+                tool_calls.len()
+            );
+            st.terminal_reason = Some("cancelled");
+            return TurnFlow::Stop(AgentEvent::Done("已取消".to_string()));
+        }
         for (batch_idx, tc) in tool_calls.iter().enumerate() {
             // Check cancellation before each tool execution.
             if !skip_cancel_estop && cancel_token.is_cancelled() {
@@ -898,7 +924,17 @@ impl AgentLoop {
                 // 阻塞链的派发侧护栏之一）。
                 let r = match super::tool_dispatch::environment_constraint_refusal(
                     instance, &tc.name,
-                ) {
+                )
+                .or_else(|| {
+                    // (Phase 5 图像工具层) vision 前置闸：产出图片的工具
+                    // 在 vision=no 的模型面前零 IO 拒绝（注册点
+                    // vision_gated_image_tool_refusal；并行批不含图片工具，
+                    // 无需并行臂）。
+                    super::tool_dispatch::vision_gated_image_tool_refusal(
+                        self.current_vision().supported,
+                        &tc.name,
+                    )
+                }) {
                     // 压测①a：detached 工具闸——no_tools/白名单外
                     // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
                     // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游
@@ -915,6 +951,10 @@ impl AgentLoop {
                         crate::args_validator::Outcome::Valid => {
                             st.validation_failures = 0;
                             self.record_tool_validation_stats(false);
+                            // (Phase 5 图像工具层) 每次串行分派前清图片槽：
+                            // 上一次调用的残留（工具 push 后守卫前中断的边角）
+                            // 不得泄进本次 tool 轮。取图在 apply_tool_guards。
+                            context.clear_tool_images();
                             // dispatch at this instance's sub-agent depth so
                             // depth-aware tools (spawn) enforce max_depth.
                             self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
@@ -929,6 +969,7 @@ impl AgentLoop {
                             );
                             let mut fixed = tc.clone();
                             fixed.arguments = fixed_args;
+                            context.clear_tool_images();
                             self.handle_tool_call_at_depth(
                                 &fixed,
                                 context,
