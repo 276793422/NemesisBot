@@ -1077,3 +1077,69 @@ fn test_build_imap_login_escapes_quoted_injection() {
         "CR/LF must be stripped: {login:?}"
     );
 }
+
+// ---- BUG-20261115-015：入站身份键大小写归一（email + irc 同族修复） ----
+
+/// 同一地址的大小写变体必须收敛为同一身份键：原大小写入键会在内存里
+/// 分裂成两个会话（chat_id/session_key/sender_map 键各一份），而 NTFS/
+/// APFS 文件名不敏感 → 两个 session_key 落同一个磁盘 jsonl 交错互串。
+#[test]
+fn test_identity_chat_id_case_variants_converge() {
+    assert_eq!(EmailChannel::identity_chat_id("User@X.com"), "user@x.com");
+    assert_eq!(EmailChannel::identity_chat_id("USER@X.COM"), "user@x.com");
+    assert_eq!(
+        EmailChannel::identity_chat_id("User@X.com"),
+        EmailChannel::identity_chat_id("user@x.com")
+    );
+    // 空地址哨兵不变
+    assert_eq!(EmailChannel::identity_chat_id(""), "email:unknown");
+}
+
+/// 回信二元组：命中 sender_map 时 To 用原文（保留对方地址大小写——本地
+/// 部分 RFC 5321 名义区分大小写），主题用线索化结果；未命中回落归一化
+/// 身份键 + 默认主题（进程重启 sender_map 清空 / bot 主动发起形态）。
+#[test]
+fn test_reply_target_and_subject_prefers_original_address() {
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "imap_user".to_string(),
+        imap_password: "imap_pass".to_string(),
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
+    ch.sender_map.insert(
+        "user@x.com".to_string(),
+        EmailMessageInfo {
+            sender_email: "User@X.com".to_string(),
+            subject: "Re: Hello".to_string(),
+        },
+    );
+    let (to, subject) = ch.reply_target_and_subject("user@x.com");
+    assert_eq!(to, "User@X.com");
+    assert_eq!(subject, "Re: Hello");
+    let (to, subject) = ch.reply_target_and_subject("other@y.org");
+    assert_eq!(to, "other@y.org");
+    assert_eq!(subject, "Re: NemesisBot Response");
+}
+
+/// allow_from 条目侧在构造期归一小写：身份键已归一（identity_chat_id），
+/// BaseChannel 固有 is_allowed 是精确 == 比较——条目不归一会让配置里
+/// 原大小写条目错杀归一化后的合法身份（修复前该条目靠原大小写 chat_id
+/// 恰好命中，归一化后不处理就是行为回退）。
+#[test]
+fn test_allow_from_matching_survives_identity_normalization() {
+    let config = EmailConfig {
+        imap_host: "imap.example.com".to_string(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "imap_user".to_string(),
+        imap_password: "imap_pass".to_string(),
+        allow_from: vec!["User@X.com".to_string()],
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config, test_sender()).unwrap();
+    // 归一化身份（入站实际传入形态）命中原大小写条目
+    assert!(ch.base.is_allowed("user@x.com"));
+    // 非白名单地址仍被拒
+    assert!(!ch.base.is_allowed("attacker@evil.com"));
+}

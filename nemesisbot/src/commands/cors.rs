@@ -62,7 +62,9 @@ fn default_cors_config() -> serde_json::Value {
 /// Load or create the CORS configuration.
 fn load_or_create_cors(cors_path: &std::path::Path) -> Result<serde_json::Value> {
     if cors_path.exists() {
-        let data = std::fs::read_to_string(cors_path)?;
+        // read_config_string 剥 BOM（记事本保存的 config.cors.json，裸读时
+        // parse 失败，BUG-20261103-334 同族）。
+        let data = nemesis_utils::fsutil::read_config_string(cors_path)?;
         Ok(serde_json::from_str(&data)?)
     } else {
         let dir = cors_path.parent().unwrap();
@@ -206,7 +208,7 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
             }
 
             let mut cfg: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&cors_path)?)?;
+                serde_json::from_str(&nemesis_utils::fsutil::read_config_string(&cors_path)?)?;
 
             let key = if cdn {
                 "allowed_cdn_domains"
@@ -266,7 +268,7 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                     return Ok(());
                 }
                 let mut cfg: serde_json::Value =
-                    serde_json::from_str(&std::fs::read_to_string(&cors_path)?)?;
+                    serde_json::from_str(&nemesis_utils::fsutil::read_config_string(&cors_path)?)?;
                 if let Some(obj) = cfg.as_object_mut() {
                     obj.insert(
                         "development_mode".to_string(),

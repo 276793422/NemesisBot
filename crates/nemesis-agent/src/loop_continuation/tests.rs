@@ -3674,6 +3674,91 @@ async fn test_claim_handling_single_flight() {
     assert!(manager.claim_handling("task-sf").await);
 }
 
+// BUG-20261115-022：认领 RAII guard——panic 展开兜底释放。
+// 生产形态：认领到收口横跨整个 LLM 续行，跑在无人 watch 的 tokio::spawn
+// 里；旧形态裸 HashSet insert 在 panic 路径上把 task_id 永久留在闸内
+// （重投递恒跳过 + 快照永不回收 + 会话 history gate 永久拒绝）。
+#[tokio::test]
+async fn test_claim_guard_releases_on_panic_unwind() {
+    let manager = std::sync::Arc::new(ContinuationManager::new());
+    let m2 = manager.clone();
+
+    let result = tokio::spawn(async move {
+        let _guard = ContinuationClaimGuard::new(&m2, "task-unwind");
+        // 持有期间不可重入（单飞闸语义不因 guard 改变）。
+        assert!(!m2.claim_handling("task-unwind").await);
+        panic!("simulated continuation panic");
+    })
+    .await;
+    assert!(result.is_err(), "spawn 任务应以 panic 结束");
+
+    // guard Drop 在 panic 展开时已释放闸位——重投递可再次认领。
+    assert!(
+        manager.claim_handling("task-unwind").await,
+        "panic 展开后闸位应已释放（重投递可再次认领）"
+    );
+}
+
+// BUG-20261115-022：显式 release 与 guard drop 双释放幂等无害
+// （正常路径 finish/release 先行释放，guard drop 二次 remove = no-op）。
+#[tokio::test]
+async fn test_claim_guard_double_release_idempotent() {
+    let manager = ContinuationManager::new();
+
+    let guard = ContinuationClaimGuard::new(&manager, "task-double");
+    manager.release_handling("task-double").await;
+    drop(guard);
+    assert!(
+        manager.claim_handling("task-double").await,
+        "双释放后闸位应干净可认领（无状态污染）"
+    );
+}
+
+// BUG-20261115-022 横扫：confirm→finish 窗口 panic 死亡的前任——claim
+// guard 只释放闸位，相位滞留 Confirmed；重投递经 rollback 后 confirm
+// 合法（对齐进程崩溃恢复语义：盘上快照同样回落 Checkpoint 重放）。
+#[tokio::test]
+async fn test_confirmed_phase_rollback_after_dead_predecessor() {
+    let manager = std::sync::Arc::new(ContinuationManager::new());
+    let m2 = manager.clone();
+
+    // 前任：认领 + 确认续行（模拟进入 LLM 执行窗口），随后 panic 死亡
+    // （不调用 finish_handling——guard Drop 只释放 claim 与 inflight）。
+    let result = tokio::spawn(async move {
+        let _claim = ContinuationClaimGuard::new(&m2, "task-phase");
+        assert!(m2.confirm_continuation("task-phase").is_ok());
+        panic!("simulated post-confirm panic");
+    })
+    .await;
+    assert!(result.is_err());
+
+    // 重投递：claim 可再入（guard 修复）；滞留的 Confirmed 相位经回退后
+    // confirm 合法——否则 1b 闸 loud 拒，快照永不回收、会话 history
+    // 操作永久拒绝。
+    assert!(manager.claim_handling("task-phase").await);
+    assert!(
+        manager.rollback_confirmed_phase("task-phase"),
+        "滞留 Confirmed 相位应被识别并回退"
+    );
+    assert!(manager.confirm_continuation("task-phase").is_ok());
+}
+
+// BUG-20261115-022 横扫：rollback 只动 Confirmed（Checkpoint 缺省 /
+// Restored 是合法前置相位，confirm 照常走，不得误回退）。
+#[test]
+fn test_rollback_confirmed_phase_noop_without_confirmed() {
+    let manager = ContinuationManager::new();
+
+    // 缺省 Checkpoint：不回退。
+    assert!(!manager.rollback_confirmed_phase("task-fresh"));
+    assert!(manager.confirm_continuation("task-fresh").is_ok());
+
+    // Restored：不回退，Restored→Confirmed 链仍合法。
+    assert!(manager.mark_restored("task-chain").is_ok());
+    assert!(!manager.rollback_confirmed_phase("task-chain"));
+    assert!(manager.confirm_continuation("task-chain").is_ok());
+}
+
 #[tokio::test]
 async fn test_finish_handling_defers_disk_snapshot_removal() {
     let tmp = TempDir::new().unwrap();

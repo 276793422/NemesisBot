@@ -236,7 +236,9 @@ impl CORSManager {
     // File helpers (private)
 
     fn load_from_file(path: &Path) -> std::io::Result<CORSConfig> {
-        let data = std::fs::read_to_string(path)?;
+        // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 →
+        // CORSManager::new Err 上浮 gateway 启动失败，BUG-20261103-334 同族）。
+        let data = nemesis_utils::fsutil::read_config_string(path)?;
         let cfg: CORSConfig = serde_json::from_str(&data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(cfg)

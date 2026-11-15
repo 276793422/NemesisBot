@@ -505,7 +505,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
+/// 测试 RequestContext（sibling 测试模块复用：recommend_tests 等）。
+pub(crate) fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
@@ -568,8 +569,9 @@ fn seed_tree_and_fm() {
         ("security/pentest-pro.md".to_string(), 200),
     ]);
     let mut fm = FM_CACHE.lock().unwrap();
+    // 复合键（2026-11-15）：`<source>/<id>`，browse/search 按 agency 复合键取。
     fm.insert(
-        "rust-dev".to_string(),
+        "agency/rust-dev".to_string(),
         Frontmatter {
             name: "Rusty".to_string(),
             emoji: "🦀".to_string(),
@@ -597,8 +599,12 @@ async fn shop_browse_offline_via_seeded_caches() {
     let dir = tempfile::tempdir().unwrap();
     seed_tree_and_fm();
     // 预装一个 persona → installed=true 臂。注意 installed 探测路径是
-    // personas/<id>（id=文件名 stem，不含目录），不是仓库的分类子路径。
-    std::fs::create_dir_all(dir.path().join("personas/pentest-pro")).unwrap();
+    // personas/<id>（id=文件名 stem，不含目录），不是仓库的分类子路径；
+    // 安装态口径（2026-11-15）：PERSONA.json 在场——只雇佣专家落盘的
+    // raw.md-only 目录不算已安装。
+    let pdir = dir.path().join("personas/pentest-pro");
+    std::fs::create_dir_all(&pdir).unwrap();
+    std::fs::write(pdir.join("PERSONA.json"), r#"{"name": "pentest-pro"}"#).unwrap();
 
     let h = PersonaHandler::new();
     let ctx = shop_ctx(&dir);
@@ -608,17 +614,24 @@ async fn shop_browse_offline_via_seeded_caches() {
         .unwrap()
         .unwrap();
     let items = out["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
+    // 2 条目录源 + builtin 伪源合并的内建 bug-analyst（内嵌模板随编译期
+    // 进列表，division「内置」）。
+    assert_eq!(items.len(), 3);
     let rusty = items.iter().find(|i| i["id"] == "rust-dev").unwrap();
     // FM_CACHE 覆盖 parse_agent_from_path 的默认名/emoji。
     assert_eq!(rusty["name"], "Rusty");
     assert_eq!(rusty["emoji"], "🦀");
     assert_eq!(rusty["division"], "开发");
     assert_eq!(rusty["installed"], false);
+    assert_eq!(rusty["source"], "agency");
     let pentest = items.iter().find(|i| i["id"] == "pentest-pro").unwrap();
     assert_eq!(pentest["installed"], true);
+    let builtin = items.iter().find(|i| i["id"] == "bug-analyst").unwrap();
+    assert_eq!(builtin["source"], "builtin");
+    assert_eq!(builtin["division"], "内置");
+    assert_eq!(builtin["installed"], false);
 
-    // division 过滤臂：只要安全类。
+    // division 过滤臂：只要安全类（builtin 条目 division=内置，不混入）。
     let out = h
         .handle_cmd(
             "shop.browse",
@@ -666,13 +679,28 @@ async fn shop_search_offline_via_seeded_caches() {
         .unwrap();
     assert_eq!(out["items"].as_array().unwrap().len(), 0);
 
-    // 空 query = browse 全量。
+    // 空 query = browse 全量（2 目录源 + 1 builtin）。
     let out = h
         .handle_cmd("shop.search", Some(serde_json::json!({"query": ""})), &ctx)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(out["items"].as_array().unwrap().len(), 2);
+    assert_eq!(out["items"].as_array().unwrap().len(), 3);
+
+    // builtin 条目可被搜到（haystack 含「内置」与 id）。
+    let out = h
+        .handle_cmd(
+            "shop.search",
+            Some(serde_json::json!({"query": "bug-analyst"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let items = out["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "bug-analyst");
+    assert_eq!(items[0]["source"], "builtin");
     invalidate_cache();
 }
 
@@ -680,11 +708,11 @@ async fn shop_search_offline_via_seeded_caches() {
 async fn shop_preview_offline_via_content_cache() {
     let _shop_guard = SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    // 内容缓存命中 → fetch_agent_content 不发网络请求。
-    CONTENT_CACHE
-        .lock()
-        .unwrap()
-        .insert("code-reviewer".to_string(), AGENT_MD_SAMPLE.to_string());
+    // 内容缓存命中 → fetch_agent_content 不发网络请求（复合键）。
+    CONTENT_CACHE.lock().unwrap().insert(
+        "agency/code-reviewer".to_string(),
+        AGENT_MD_SAMPLE.to_string(),
+    );
 
     let h = PersonaHandler::new();
     let ctx = shop_ctx(&dir);
@@ -729,10 +757,10 @@ async fn shop_preview_offline_via_content_cache() {
 async fn shop_download_offline_via_content_cache() {
     let _shop_guard = SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    CONTENT_CACHE
-        .lock()
-        .unwrap()
-        .insert("code-reviewer".to_string(), AGENT_MD_SAMPLE.to_string());
+    CONTENT_CACHE.lock().unwrap().insert(
+        "agency/code-reviewer".to_string(),
+        AGENT_MD_SAMPLE.to_string(),
+    );
 
     let h = PersonaHandler::new();
     let ctx = shop_ctx(&dir);

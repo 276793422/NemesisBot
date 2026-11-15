@@ -252,7 +252,7 @@ pub struct VmStartParams {
     pub id: String,
     /// 运行期目录（stderr 日志 / pidfile 落这里）。
     pub run_dir: PathBuf,
-    /// qemu-system 二进制（[`super::assembly:resolve_qemu_binary`] 产出）。
+    /// qemu-system 二进制（[`super::assembly::resolve_qemu_binary`] 产出）。
     pub qemu_bin: PathBuf,
     /// 已裁决的加速后端（[`adjudicate_accel`]）。
     pub accel: QemuAccel,

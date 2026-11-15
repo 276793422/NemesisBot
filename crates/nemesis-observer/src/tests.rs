@@ -897,3 +897,51 @@ async fn test_emit_sync_joinerror_non_panic_path() {
     // or runtime shutdown during await, which doesn't happen in normal tests
     // This test documents that the path exists but is not easily testable
 }
+
+/// BUG-20261115-012 回归锁：观察者 on_event 重入 manager 不得死锁 emit_sync。
+///
+/// 旧实现读守卫横跨整个观察者执行循环（含逐个 `handle.await`）——重入
+/// `register()`（内部 `write().await`）即「写者等读者、读者（emit_sync
+/// 循环）等写者任务」的循环等待死锁，agent loop 硬挂。修复 = 快照一次
+/// 后立刻放锁再迭代（列表在本次 emit 开始时冻结，语义与旧实现等价：
+/// 循环中重入注册只影响下一次 emit）。
+#[tokio::test]
+async fn test_emit_sync_survives_observer_reentrancy() {
+    struct ReentrantObserver {
+        mgr: Arc<Manager>,
+    }
+
+    #[async_trait]
+    impl Observer for ReentrantObserver {
+        fn name(&self) -> &str {
+            "reentrant"
+        }
+
+        async fn on_event(&self, _event: ConversationEvent) {
+            // 重入写锁：旧实现此处与 emit_sync 持有的读守卫互相等待 = 死锁。
+            let (late, _) = TestObserver::new("late");
+            self.mgr.register(late).await;
+        }
+    }
+
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(Arc::new(ReentrantObserver {
+            mgr: manager.clone(),
+        }))
+        .await;
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        manager.emit_sync(make_event(EventType::ConversationStart)),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "BUG-20261115-012：观察者 on_event 重入 register() 死锁 emit_sync（旧实现读守卫横跨 handle.await，写者等读者等写者任务）"
+    );
+
+    // 重入注册的观察者进的是 manager 注册表（影响下一次 emit），
+    // 不进本次快照（本次迭代冻结语义）。
+    assert!(manager.has_observers().await);
+}

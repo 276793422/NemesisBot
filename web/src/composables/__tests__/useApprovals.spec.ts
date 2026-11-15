@@ -494,4 +494,27 @@ describe('useApprovals', () => {
     expect(pendingApprovals).toHaveLength(1)
     expect(toasts.some(t => t.type === 'error')).toBe(true)
   })
+
+  // BUG-20261115-028 回归锁：L2 resync 契约——断线窗口滑出 1000 帧重放环后
+  // approval-requested 事件不可补发，resync 到场必须重拉本地+远程 pending
+  // （此前只在页面初始化拉一次，窗口内错过的卡永不出现 → 服务端到点自动拒）。
+  it('resync → 本地+远程 pending 重拉（环溢出窗口漏卡恢复）', async () => {
+    // 初始补拉为空（页面加载时无卡）。
+    wsapiRequest.mockResolvedValue({ pending: [] })
+    const { pendingApprovals, initApprovals } = useApprovals()
+    initApprovals()
+    await vi.waitFor(() => expect(wsapiRequest).toHaveBeenCalledTimes(2))
+    expect(pendingApprovals).toHaveLength(0)
+
+    // 断线窗口内错过的卡（事件已滑出环，SSE 不会重放）；重拉此时返回它。
+    wsapiRequest.mockImplementation((_mod: string, cmd: string) =>
+      cmd === 'pending'
+        ? Promise.resolve({ pending: [makePayload('late-1')] })
+        : Promise.resolve({ pending: [] }),
+    )
+    sseHandlers.get('resync')!({})
+    await vi.waitFor(() =>
+      expect(pendingApprovals.map(a => a.request_id)).toEqual(['late-1']),
+    )
+  })
 })

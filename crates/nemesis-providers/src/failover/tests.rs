@@ -148,6 +148,19 @@ fn test_connect_error_unknown_is_retriable() {
 }
 
 #[test]
+fn test_body_limit_unknown_is_retriable() {
+    // BUG-20261115-024 配套：成功体超帽（body_cap）落 Unknown，带
+    // "response body exceeds limit" 前缀锚——端点失控/恶意是端点问题，
+    // fallback 链必须照常轮转（坏端点换下一家，对齐 connect error 同门）。
+    let err = FailoverError::Unknown {
+        provider: "anthropic".to_string(),
+        message: "response body exceeds limit (model claude-x): >67108864 bytes; aborted mid-read"
+            .to_string(),
+    };
+    assert!(err.is_retriable(), "body-limit unknown must be retriable");
+}
+
+#[test]
 fn test_from_status_401() {
     let err = FailoverError::from_status("anthropic", "claude-3", 401, "bad key", None);
     assert!(matches!(err, FailoverError::Auth { status: 401, .. }));

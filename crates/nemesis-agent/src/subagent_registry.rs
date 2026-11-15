@@ -77,6 +77,10 @@ pub struct SubagentTask {
     pub error: Option<String>,
     /// 后台任务 id（`__BG_SPAWN__` marker 里的 task_id；前台 None）。
     pub bg_task_id: Option<String>,
+    /// 归档时刻（ms）；None = 未归档（工作面可见）。归档 = 移出工作面、
+    /// 可恢复；旧文件无此字段按 None 读（`#[serde(default)]` 零迁移）。
+    #[serde(default)]
+    pub archived_at: Option<u64>,
 }
 
 /// 登记请求（`begin` 入参；id 由调用方按会话键派生规则预生成）。
@@ -161,6 +165,7 @@ impl SubagentRegistry {
             summary: None,
             error: None,
             bg_task_id: b.bg_task_id,
+            archived_at: None,
         };
         let mut inner = self.inner.lock();
         if !inner.tasks.contains_key(&task.id) {
@@ -224,6 +229,80 @@ impl SubagentRegistry {
             self.persist();
         }
         hit
+    }
+
+    /// 归档：仅终态行生效（运行中跳过不计数），写 `archived_at = now`。
+    /// 不动 order（列表序保持插入序；归档只改可见性过滤面）。返回实际
+    /// 归档数。
+    pub fn archive(&self, ids: &[String]) -> usize {
+        let mut changed = 0;
+        {
+            let mut inner = self.inner.lock();
+            for id in ids {
+                if let Some(t) = inner
+                    .tasks
+                    .get_mut(id)
+                    .filter(|t| t.status.is_terminal() && t.archived_at.is_none())
+                {
+                    t.archived_at = Some(now_ms());
+                    changed += 1;
+                }
+            }
+        }
+        if changed > 0 {
+            self.persist();
+        }
+        changed
+    }
+
+    /// 恢复：清 `archived_at`（回到工作面）。返回实际恢复数。
+    pub fn unarchive(&self, ids: &[String]) -> usize {
+        let mut changed = 0;
+        {
+            let mut inner = self.inner.lock();
+            for id in ids {
+                if let Some(t) = inner.tasks.get_mut(id).filter(|t| t.archived_at.is_some()) {
+                    t.archived_at = None;
+                    changed += 1;
+                }
+            }
+        }
+        if changed > 0 {
+            self.persist();
+        }
+        changed
+    }
+
+    /// 物理移除（tasks + order + tokens 同步摘除）。返回实际移除数。
+    /// 删除后 delegate 行的 B 端回灌（finish 缺行）静默忽略——用户主动
+    /// 删 = 放弃展示，语义自洽。
+    pub fn remove(&self, ids: &[String]) -> usize {
+        let mut changed = 0;
+        {
+            let mut inner = self.inner.lock();
+            for id in ids {
+                if inner.tasks.remove(id).is_some() {
+                    inner.order.retain(|o| o != id);
+                    inner.tokens.remove(id);
+                    changed += 1;
+                }
+            }
+        }
+        if changed > 0 {
+            self.persist();
+        }
+        changed
+    }
+
+    /// 归档行总数（全库投影——与 handler 层 status/origin/loop_origin
+    /// 过滤无关；TAB 徽标数据源，任何过滤组合下恒定）。
+    pub fn archived_count(&self) -> usize {
+        self.inner
+            .lock()
+            .tasks
+            .values()
+            .filter(|t| t.archived_at.is_some())
+            .count()
     }
 
     /// 全量列表（新的在前）。

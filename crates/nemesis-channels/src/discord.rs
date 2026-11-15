@@ -1,13 +1,16 @@
 //! Discord bot channel (WebSocket gateway, @mention handling, guild/DM).
 //!
 //! Uses the Discord Gateway API over WebSocket for receiving events and
-//! the REST API for sending messages. Supports typing indicators and
-//! message splitting for Discord's 2000 character limit.
+//! the REST API for sending messages, with message splitting for Discord's
+//! 2000 character limit. A typing-indicator REST wrapper exists
+//! (`trigger_typing`，allow(dead_code) 镜像面) 但**未接线**到消息流——
+//! BUG-20261115-018：此前 stop() 有一张永不填充的 typing_stops 表 +
+//! 「Cancel all typing tasks」误导注释，已删；未来接线 typing 任务生命
+//! 周期时需连同发送侧 abort 一起设计。
 
 #![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -138,7 +141,6 @@ pub struct DiscordChannel {
     config: DiscordConfig,
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
-    typing_stops: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
     transcriber: parking_lot::RwLock<Option<Arc<dyn crate::base::VoiceTranscriber>>>,
     /// Bus sender for publishing inbound messages.
     bus_sender: broadcast::Sender<InboundMessage>,
@@ -178,7 +180,6 @@ impl DiscordChannel {
             config,
             http,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            typing_stops: RwLock::new(HashMap::new()),
             transcriber: parking_lot::RwLock::new(None),
             bus_sender,
             bot_user_id: Arc::new(TokioRwLock::new(None)),
@@ -213,7 +214,6 @@ impl DiscordChannel {
             config,
             http,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            typing_stops: RwLock::new(HashMap::new()),
             transcriber: parking_lot::RwLock::new(None),
             bus_sender,
             bot_user_id: Arc::new(TokioRwLock::new(None)),
@@ -780,12 +780,6 @@ impl Channel for DiscordChannel {
         info!("[DiscordChannel] stopping bot");
         *self.running.write() = false;
         self.base.set_enabled(false);
-
-        // Cancel all typing tasks
-        let mut stops = self.typing_stops.write();
-        for (_, handle) in stops.drain() {
-            handle.abort();
-        }
 
         Ok(())
     }

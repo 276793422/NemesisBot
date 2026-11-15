@@ -10,19 +10,6 @@ use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
 use crate::types::RegistryConfig;
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Monotonic counter for unique atomic-write temp filenames (F-). Unique per
-/// write so concurrent writes to the same path (e.g. parallel tests sharing the
-/// default index) don't collide on the temp file.
-static REGISTRY_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn atomic_tmp_path(index_path: &str) -> PathBuf {
-    let n = REGISTRY_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    PathBuf::from(format!("{}.{}.tmp", index_path, n))
-}
-
 /// The registry manages a collection of forge artifacts.
 pub struct Registry {
     config: RegistryConfig,
@@ -222,23 +209,19 @@ impl Registry {
                 return;
             }
         };
-        let tmp = atomic_tmp_path(&self.config.index_path);
-        if let Err(e) = std::fs::write(&tmp, &json) {
+        // BUG-20261115-013：改走家族唯一真相源 write_file_atomic——旧
+        // `{index}.{n}.tmp` 仅进程内计数器 + std::fs::write 截断写，跨进程
+        // 同 workspace 并发 save 互踩同名 tmp，半截内容被 rename 成坏索引。
+        // helper = pid+序数+纳秒唯一名 + create_new + sync_all + 失败清理
+        // （孤儿纪律 BUG-20261109-005 同源承担）。
+        if let Err(e) =
+            nemesis_utils::file::write_file_atomic(&self.config.index_path, json.as_bytes(), 0o644)
+        {
             tracing::warn!(
                 path = %self.config.index_path,
                 error = %e,
-                "[ForgeRegistry] index tmp write failed — auto-persist skipped"
+                "[ForgeRegistry] index atomic write failed — on-disk index stale until next save"
             );
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-            return;
-        }
-        if let Err(e) = std::fs::rename(&tmp, &self.config.index_path) {
-            tracing::warn!(
-                path = %self.config.index_path,
-                error = %e,
-                "[ForgeRegistry] index rename failed — on-disk index stale until next save"
-            );
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         }
     }
 
@@ -255,18 +238,17 @@ impl Registry {
             serde_json::to_string_pretty(&*arts)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
         };
-        // F-: atomic write (unique temp + rename). 计数器唯一名 = 错误路径
-        // 漏清即永久孤儿（BUG-20261109-005）——tmp 写与 rename 失败都清残留。
-        let tmp = atomic_tmp_path(&self.config.index_path);
-        if let Err(e) = tokio::fs::write(&tmp, &json).await {
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-            return Err(e);
-        }
-        if let Err(e) = tokio::fs::rename(&tmp, &self.config.index_path).await {
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-            return Err(e);
-        }
-        Ok(())
+        // F-: atomic write 走家族唯一真相源（BUG-20261115-013，与
+        // save_sync 同根修：旧计数器名 + 截断写跨进程互踩）。sync_all 属
+        // 阻塞操作，按 BUG-20261114-013 同族纪律挪 spawn_blocking，不占
+        // async 执行器线程。
+        let path = self.config.index_path.clone();
+        tokio::task::spawn_blocking(move || {
+            nemesis_utils::file::write_file_atomic(&path, json.as_bytes(), 0o644)
+        })
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+        .map_err(std::io::Error::other)
     }
 
     /// Load the registry index from disk.

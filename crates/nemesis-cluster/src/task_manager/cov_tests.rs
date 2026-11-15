@@ -42,6 +42,7 @@ fn cleanup_completed_deletes_only_stale_finished_tasks() {
         &None,
         &pending_timeout,
         &None,
+        &None,
     );
 
     assert!(store.get("t-stale").is_err(), "超龄完成态必须被清");

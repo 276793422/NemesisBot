@@ -232,6 +232,13 @@ export function useApprovals() {
         removeRemoteLocal(data.request_id)
       }
     })
+    // L2 resync 契约（BUG-20261115-028）：断线窗口滑出 1000 帧重放环后，
+    // 窗口内的 approval-requested 事件不可补发——重拉 pending 是卡片唯一
+    // 恢复路径（错过审批卡 = 用户全程无感知，服务端到点自动拒绝）。
+    on('resync', () => {
+      seedPending()
+      seedRemotePending()
+    })
     // 断线期间错过的事件：连上后拉一次 pending 补齐。
     seedPending()
     seedRemotePending()

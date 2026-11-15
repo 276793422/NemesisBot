@@ -307,9 +307,13 @@ impl TaskDb {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
+                    // created_at 是 RFC3339 亚秒精度（写入点 now_rfc3339），
+                    // 同值碰撞罕见——id 决胜 tie 是预防性对齐（同文件
+                    // tasks.rs 列表查询 `ORDER BY created_at, id` 同款纪律；
+                    // TEXT id 字典序与创建序一致），非独立缺陷修复。
                     "SELECT id, kind, title, status, action, peer_id, payload, result, \
                      created_at, completed_at FROM runs \
-                     WHERE kind = ?1 ORDER BY created_at DESC LIMIT ?2",
+                     WHERE kind = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
                 )
                 .map_err(|e| format!("tasks.db list runs failed: {e}"))?;
             let rows = stmt

@@ -95,7 +95,10 @@ async fn drain_child_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>
     };
     // 有界排干（横扫角度 B）：输出体量不受我方控制，1 MiB
     // 丢头保尾（nemesis_utils::pipe_cap 统一定义，对齐 anchor.rs）。
-    String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
+    // 解码走单一真相源（BUG-20261115-034）。
+    nemesis_utils::child_decode::decode_child_output(
+        &nemesis_utils::pipe_cap::drain_capped_async(pipe).await,
+    )
 }
 
 /// 超时树杀（guest `tools::kill_tree` / `background_registry::tree_kill`

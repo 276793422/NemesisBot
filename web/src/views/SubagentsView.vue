@@ -11,11 +11,21 @@
 //   （泵侧 D3 臂注入；带 seq → 与回放去重共用一条时间线）。
 // - 终止（D6）：subagents.cancel。delegate 行诚实注记：取消只代表本节点
 //   「不再等待显示」，B 端真实结果回灌仍会覆盖终态（bus.rs 侧钉死语义）。
+// - 归档生命周期（2026-11-15）：本组件双模式复用——缺省 = 工作面（归档行
+//   隐藏）；archived prop = 归档 TAB（list 带 archived:"only"）。归档/恢复
+//   可逆不弹确认；删除/清空已归档不可逆必弹 confirm（delegate 删除附
+//   「B 端结果回灌无处落」注记）。每次 loadList 后 emit('archived-count')
+//   （响应 archived_count 全库投影），宿主 ExecutorsView 拿去渲染 TAB 徽标。
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { addMessageHandler, removeMessageHandler } from '../composables/useWebSocket'
+
+// 双模式：缺省 = 工作面（归档行隐藏）；archived = 归档 TAB（第三页签）。
+const props = defineProps<{ archived?: boolean }>()
+const emit = defineEmits<{ (e: 'archived-count', n: number): void }>()
+const isArchived = computed(() => props.archived === true)
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -41,6 +51,7 @@ interface SubagentRow {
   summary?: string | null
   error?: string | null
   bg_task_id?: string | null
+  archived_at?: number | null
   running: boolean
   duration_ms?: number
 }
@@ -62,8 +73,11 @@ async function loadList() {
     const data: any = {}
     if (filterStatus.value) data.status = filterStatus.value
     if (filterOrigin.value) data.origin = filterOrigin.value
+    if (isArchived.value) data.archived = 'only'
     const r = await request('subagents', 'list', data)
     tasks.value = (r?.tasks as SubagentRow[]) || []
+    // 全库投影（响应 archived_count 与过滤参数无关）——宿主拿去渲染 TAB 徽标。
+    emit('archived-count', Number(r?.archived_count ?? 0))
   } catch { /* WS 未就绪——下轮再试 */ }
   loading.value = false
 }
@@ -225,6 +239,76 @@ async function cancelTask(t: SubagentRow) {
   }
 }
 
+// --- 归档生命周期（2026-11-15）---
+// 确认纪律：归档/恢复可逆 → 不弹确认；删除/清空不可逆 → 必弹 confirm。
+
+/** 工作面行「归档」（仅终态行渲染该钮；运行中行是「终止」）。 */
+async function archiveTask(t: SubagentRow) {
+  try {
+    await request('subagents', 'archive', { ids: [t.id] })
+    toast.success('已归档——可在「已归档」页签找到')
+    loadList()
+  } catch (e: any) {
+    toast.error('归档失败: ' + (e?.message ?? e))
+  }
+}
+
+/** 工作面工具行「归档全部终态」：列表内运行中行由后端静默跳过（计数如实）。 */
+async function archiveAllFinished() {
+  const ids = tasks.value.filter((t) => !t.running).map((t) => t.id)
+  if (!ids.length) {
+    toast.warn('没有可归档的终态任务')
+    return
+  }
+  try {
+    const r = await request('subagents', 'archive', { ids })
+    toast.success(`已归档 ${Number(r?.changed ?? 0)} 个终态任务`)
+    loadList()
+  } catch (e: any) {
+    toast.error('归档失败: ' + (e?.message ?? e))
+  }
+}
+
+/** 归档 TAB 行「恢复」。 */
+async function unarchiveTask(t: SubagentRow) {
+  try {
+    await request('subagents', 'unarchive', { ids: [t.id] })
+    toast.success('已恢复到子代理列表')
+    loadList()
+  } catch (e: any) {
+    toast.error('恢复失败: ' + (e?.message ?? e))
+  }
+}
+
+/** 归档 TAB 行「删除」（物理摘除台账行，不可恢复）。 */
+async function removeTask(t: SubagentRow) {
+  const note = t.origin === 'delegate'
+    ? `删除「${excerpt(t.task, 40)}」？此操作不可恢复。\n集群委派任务：删除台账行后，B 端结果回灌将无处落（回灌对缺行静默忽略）。`
+    : `删除「${excerpt(t.task, 40)}」？此操作不可恢复。`
+  if (!confirm(note)) return
+  await removeIds([t.id])
+}
+
+/** 归档 TAB 工具行「清空已归档」。 */
+async function clearArchived() {
+  const ids = tasks.value.map((t) => t.id)
+  if (!ids.length) return
+  if (!confirm(`清空全部已归档任务（${ids.length} 个）？台账行将被物理删除，此操作不可恢复。`)) return
+  await removeIds(ids)
+}
+
+async function removeIds(ids: string[]) {
+  try {
+    const r = await request('subagents', 'remove', { ids })
+    toast.success(`已删除 ${Number(r?.changed ?? 0)} 个任务`)
+    // 详情模态悬空防护：正查看的行被删后 detail/events 会 404 空转——显式关。
+    if (detail.value && ids.includes(detail.value.id)) closeDetail()
+    loadList()
+  } catch (e: any) {
+    toast.error('删除失败: ' + (e?.message ?? e))
+  }
+}
+
 // --- 展示辅助 ---
 function excerpt(s: string | null | undefined, n: number): string {
   const t = (s ?? '').replace(/\s+/g, ' ').trim()
@@ -325,9 +409,13 @@ onBeforeUnmount(() => {
        无自身 page-header——页面级标题归宿主页；desc 降级为面板顶部说明行；
        padding 与滚动由宿主 .page-body 提供（裸 div 仅作结构分组）。 -->
   <div class="page-subagents">
-    <p class="page-desc">
+    <p class="page-desc" v-if="!isArchived">
       Agent 派生的子执行环台账：内联 / 后台子代理 + 集群委派任务（A 端生命周期）。
       台账落盘重启保留；对话事件环是进程内存态，重启后不可回放。
+    </p>
+    <p class="page-desc" v-else>
+      已归档的子代理任务（终态后手动归档）。台账容量上限 500 行，归档行不豁免满员逐出——
+      最旧的终态行（含已归档）会先被淘汰；重要结果建议删除前先留存。
     </p>
     <div>
       <div class="subagent-filters">
@@ -347,6 +435,8 @@ onBeforeUnmount(() => {
         </select>
         <span v-if="hasRunning" class="badge badge-info">● {{ tasks.filter((t) => t.running).length }} 个运行中</span>
         <div style="flex: 1;"></div>
+        <button v-if="!isArchived" class="btn btn-sm" :disabled="!tasks.some((t) => !t.running)" @click="archiveAllFinished">归档全部终态</button>
+        <button v-else class="btn btn-sm btn-danger" :disabled="!tasks.length" @click="clearArchived">清空已归档</button>
         <button class="btn btn-sm" @click="loadList">刷新</button>
       </div>
 
@@ -355,8 +445,14 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-else-if="tasks.length === 0" class="empty-state">
-        <h3>暂无子代理任务</h3>
-        <p>Agent 派生子代理（spawn / 后台任务 / 集群委派）后会出现在这里</p>
+        <template v-if="!isArchived">
+          <h3>暂无子代理任务</h3>
+          <p>Agent 派生子代理（spawn / 后台任务 / 集群委派）后会出现在这里</p>
+        </template>
+        <template v-else>
+          <h3>没有已归档的任务</h3>
+          <p>在子代理页签对终态任务点「归档」（或「归档全部终态」）后会出现在这里</p>
+        </template>
       </div>
 
       <div v-else class="table-wrap">
@@ -385,7 +481,14 @@ onBeforeUnmount(() => {
               <td @click.stop>
                 <div style="display: flex; gap: var(--space-1);">
                   <button class="btn btn-sm" @click="openDetail(t.id)">详情</button>
-                  <button v-if="t.running" class="btn btn-sm btn-danger" @click="cancelTask(t)">终止</button>
+                  <template v-if="!isArchived">
+                    <button v-if="t.running" class="btn btn-sm btn-danger" @click="cancelTask(t)">终止</button>
+                    <button v-else class="btn btn-sm" @click="archiveTask(t)">归档</button>
+                  </template>
+                  <template v-else>
+                    <button class="btn btn-sm" @click="unarchiveTask(t)">恢复</button>
+                    <button class="btn btn-sm btn-danger" @click="removeTask(t)">删除</button>
+                  </template>
                 </div>
               </td>
             </tr>

@@ -799,3 +799,106 @@ fn s2_redirect_refetch_message_includes_location() {
         "必须带 Location 让模型自行 fetch（新 URL 重新过闸）: {msg}"
     );
 }
+
+// ===========================================================================
+// BUG-20261115-017 回归锁：search provider 非 2xx 必须报错而非静默零结果。
+// 形态：原生 TCP canned HTTP mock（ephemeral 端口）+ with_base_url 注入。
+// 历史：DDG 403/429 反爬挑战页被当普通 HTML 提取 → Ok("No results found
+// or extraction failed…")；Brave 429 JSON 错误体（无 "web" 键）被
+// #[serde(default)] typed struct 吞成零结果成功——配额耗尽伪装成「网上没有」。
+// ===========================================================================
+
+/// 本地 canned HTTP 服务器：**先读完整请求头再应答**（TCP 握手完成即
+/// accept，客户端 GET 还在路上——不等读就写+关连接会撞 RST「error
+/// sending request」，实施实录），然后回固定响应关连接（ephemeral 端口；
+/// Connection: close + Content-Length 双定界，reqwest 两种解析路径都稳）。
+async fn spawn_canned_http(status_line: &str, body: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let status_line = status_line.to_string();
+    let body = body.to_string();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .await;
+            let resp = format!(
+                "{}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status_line,
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn test_bug017_ddg_non_success_status_returns_err() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 403 Forbidden",
+        "<html><body>anomaly challenge</body></html>",
+    )
+    .await;
+    let p = DuckDuckGoSearchProvider::with_base_url(&base);
+    let err = p
+        .search("rust async", 5)
+        .await
+        .expect_err("403 挑战页必须报错而非零结果假象");
+    assert!(err.contains("403"), "错误应含状态码: {err}");
+    assert!(err.contains("anomaly"), "错误应含响应体前缀供定性: {err}");
+}
+
+#[tokio::test]
+async fn test_bug017_ddg_success_still_extracts() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 200 OK",
+        r#"<a class="result__a" href="https://example.com/a">Example Title</a>"#,
+    )
+    .await;
+    let p = DuckDuckGoSearchProvider::with_base_url(&base);
+    let out = p.search("rust async", 5).await.expect("200 不应被闸拦截");
+    assert!(out.contains("example.com/a"), "200 路径照常提取: {out}");
+}
+
+#[tokio::test]
+async fn test_bug017_brave_429_json_error_not_silent_empty() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 429 Too Many Requests",
+        r#"{"error":[{"id":"RATE_LIMITED","title":"Rate limited","status":429}]}"#,
+    )
+    .await;
+    let p = BraveSearchProvider::with_base_url("test-key", &base);
+    let err = p
+        .search("rust async", 5)
+        .await
+        .expect_err("429 JSON 错误体必须报错——serde(default) 不得吞成零结果成功");
+    assert!(err.contains("429"), "错误应含状态码: {err}");
+    assert!(err.contains("RATE_LIMITED"), "错误应含错误体前缀: {err}");
+}
+
+#[tokio::test]
+async fn test_bug017_brave_success_still_extracts() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 200 OK",
+        r#"{"web":{"results":[{"title":"T","url":"https://example.com/x","description":"d"}]}}"#,
+    )
+    .await;
+    let p = BraveSearchProvider::with_base_url("test-key", &base);
+    let out = p.search("rust async", 5).await.expect("200 不应被闸拦截");
+    assert!(out.contains("example.com/x"), "200 路径照常提取: {out}");
+}

@@ -210,3 +210,85 @@ describe('ProcessesView 深链', () => {
     expect(replaceMock).not.toHaveBeenCalled()
   })
 })
+
+// --- 用户面清除（2026-11-15）：行级 remove 仅终态 / 批量 clear_finished
+// 清终态留运行中；均不可恢复 → 必弹 confirm；主动清除后显式关匹配详情，
+// 绕开 syncDetailWithList 的「满员淘汰」误导 toast。 ---
+describe('ProcessesView 清除', () => {
+  it('工具行「清除已完成 (N)」计数 = 终态行数；运行中详情不受批量清除影响', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    requestMock.mockImplementation((_m, cmd) => cmd === 'list' ? jobsImpl([JOB_DONE, JOB_RUN, JOB_KILLED])(_m, cmd) : cmd === 'clear_finished' ? Promise.resolve({ removed: 2, remaining: 1 }) : Promise.resolve({}))
+    const w = mount(ProcessesView)
+    await flushPromises()
+    expect(w.text()).toContain('清除已完成 (2)')
+    const vm = w.vm as any
+    vm.openDetail(2) // 运行中行详情
+    await vm.clearFinished()
+    expect(requestMock).toHaveBeenCalledWith('background', 'clear_finished')
+    expect(vm.detail?.id).toBe(2) // 运行中行保留 → 详情保留
+    expect(useToast().toasts.some(t => t.message.includes('已清除 2'))).toBe(true)
+    w.unmount()
+  })
+
+  it('批量清除：confirm 拦截不发请求；确认后关闭终态详情', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    const w = mount(ProcessesView)
+    await flushPromises()
+    const vm = w.vm as any
+    vm.openDetail(1) // 终态行
+    await vm.clearFinished()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'clear_finished').length).toBe(0)
+    expect(vm.detail?.id).toBe(1)
+
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await vm.clearFinished()
+    expect(vm.detail).toBe(null) // 终态详情必然被清 → 显式关闭
+    w.unmount()
+  })
+
+  it('行级清除：终态行渲染「清除」钮、运行中行是「停止」；确认后 remove 并关匹配详情', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    const w = mount(ProcessesView)
+    await flushPromises()
+    const rows = w.findAll('.proc-row') // id 倒序：3(killed) 2(running) 1(done)
+    expect(rows[0].text()).toContain('清除')
+    expect(rows[1].text()).toContain('停止')
+    expect(rows[1].text()).not.toContain('清除')
+    expect(rows[2].text()).toContain('清除')
+
+    const vm = w.vm as any
+    vm.openDetail(1)
+    await vm.removeJob(JOB_DONE)
+    expect(requestMock).toHaveBeenCalledWith('background', 'remove', { id: 1 })
+    expect(vm.detail).toBe(null)
+    expect(useToast().toasts.some(t => t.message.includes('已清除任务 #1'))).toBe(true)
+    w.unmount()
+  })
+
+  it('行级清除 confirm 拦截不发请求；不误关其他详情', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => false))
+    const w = mount(ProcessesView)
+    await flushPromises()
+    const vm = w.vm as any
+    vm.openDetail(2)
+    await vm.removeJob(JOB_DONE)
+    expect(requestMock.mock.calls.filter(c => c[1] === 'remove').length).toBe(0)
+    expect(vm.detail?.id).toBe(2)
+
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    await vm.removeJob(JOB_DONE)
+    expect(requestMock).toHaveBeenCalledWith('background', 'remove', { id: 1 })
+    expect(vm.detail?.id).toBe(2) // 详情在别的行 → 不动
+    w.unmount()
+  })
+
+  it('清除失败提示错误', async () => {
+    vi.stubGlobal('confirm', vi.fn(() => true))
+    requestMock.mockImplementation((_m, cmd) => cmd === 'remove' ? Promise.reject(new Error('boom')) : jobsImpl([])(_m, cmd))
+    const w = mount(ProcessesView)
+    await flushPromises()
+    await (w.vm as any).removeJob(JOB_DONE)
+    expect(useToast().toasts.some(t => t.message.includes('清除失败'))).toBe(true)
+    w.unmount()
+  })
+})

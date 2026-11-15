@@ -133,6 +133,11 @@ pub fn create_dashboard_window(config: &WindowConfig) -> Result<(), i32> {
     // Run event loop (blocking)
     run_event_loop(event_loop, window);
 
+    // BUG-20261115-010：先 drop webview/web_context（关 WebView2 controller
+    // → 浏览器进程开始退出）再清数据目录。旧序在 controller 仍持用户数据
+    // 文件夹句柄时单发 remove_dir_all，Windows 上 sharing violation 必败。
+    drop(_webview);
+    drop(web_context);
     // Clean up WebView2 data directory
     cleanup_web_context(&data_dir);
 
@@ -283,6 +288,10 @@ pub fn create_approval_window(config: &WindowConfig) -> Result<(), i32> {
     run_event_loop(event_loop, window);
     eprintln!("[plugin-ui] Event loop exited");
 
+    // BUG-20261115-010：先 drop webview/web_context（关 WebView2 controller
+    // → 浏览器进程开始退出）再清数据目录（dashboard 同款，见那边注释）。
+    drop(_webview);
+    drop(web_context);
     // Clean up WebView2 data directory
     cleanup_web_context(&data_dir);
 
@@ -409,16 +418,30 @@ fn create_web_context(window_type: &str) -> (WebContext, std::path::PathBuf) {
 }
 
 /// Remove the WebView2 data directory created for a window session.
+///
+/// BUG-20261115-010 韧性删除（fsutil 同款纪律的模块内联版）：WebView2
+/// 浏览器进程（msedgewebview2.exe）在 controller 关闭后**异步**退出，短
+/// 窗口内仍持用户数据文件夹句柄；AV/索引器瞬时句柄同族。单发删除撞
+/// sharing violation → %TEMP%\nemesisbot-webview2 每开一次窗泄漏一个完整
+/// profile（目录名毫秒级唯一，永不复用）。退避重试 + 尽力而为语义：
+/// 最终失败 warn 不 panic（残留只影响 TEMP 整洁度）。
 fn cleanup_web_context(data_dir: &std::path::Path) {
-    if data_dir.exists() {
+    for _attempt in 0..10u32 {
         match std::fs::remove_dir_all(data_dir) {
-            Ok(()) => eprintln!("[plugin-ui] cleaned up WebView2 data dir: {:?}", data_dir),
-            Err(e) => eprintln!(
-                "[plugin-ui] warning: failed to clean up WebView2 data dir {:?}: {}",
-                data_dir, e
-            ),
+            Ok(()) => {
+                eprintln!("[plugin-ui] cleaned up WebView2 data dir: {:?}", data_dir);
+                return;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
         }
     }
+    eprintln!(
+        "[plugin-ui] warning: failed to clean up WebView2 data dir {:?} (browser process still exiting?)",
+        data_dir
+    );
 }
 
 /// Center a window on the primary monitor.
@@ -435,3 +458,7 @@ fn center_window(window: &tao::window::Window, width: f64, height: f64) {
             window.set_outer_position(PhysicalPosition::new(x.max(0.0) as i32, y.max(0.0) as i32));
     }
 }
+
+// BUG-20261115-010 回归锁：WebView2 数据目录韧性删除（drop 序 + 退避重试）。
+#[cfg(test)]
+mod window_cleanup_tests;

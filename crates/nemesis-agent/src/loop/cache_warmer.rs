@@ -141,7 +141,10 @@ impl AgentLoop {
     /// 同源复用，不另抄第二份读文件逻辑。
     pub(crate) fn read_config_json(&self) -> Option<serde_json::Value> {
         let path = self.config_path.read().clone()?;
-        std::fs::read_to_string(&path)
+        // 走 read_config_string 剥 BOM（记事本保存的 config.json）——裸读时
+        // BOM → parse 失败 → None → 段静默按缺省关（用户配置被静默忽略，
+        // BUG-20261103-334 同族）。
+        nemesis_utils::fsutil::read_config_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     }

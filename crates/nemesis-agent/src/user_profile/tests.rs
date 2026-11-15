@@ -547,3 +547,37 @@ fn enable_profile_respects_configured_max() {
     assert_eq!(out.habits[0].confidence, 0.90);
     assert_eq!(out.habits[4].confidence, 0.86);
 }
+
+/// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的
+/// user_profile.json——旧形态裸 `read_to_string` → BOM → parse 失败：
+/// try_load（写路径）Err 误导损坏、load_profile（读/注入路径）静默空画像
+/// （BUG-20261103-334 同族静默忽略）。read_config_string 剥 BOM 后两形态
+/// 均按完好文件处理。对照臂：BOM + 真损坏仍 Err——helper 只剥 BOM 不吞错误。
+#[test]
+fn try_load_accepts_utf8_bom_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    let body = r#"{"enabled_at":"2026-01-01T00:00:00Z","habits":[{"category":"style","content":"喜欢简洁回复","confidence":0.9,"first_seen":"2026-01-01T00:00:00Z","last_seen":"2026-01-01T00:00:00Z","hits":1}]}"#;
+    std::fs::write(
+        dir.path().join("config").join("user_profile.json"),
+        format!("\u{feff}{body}"),
+    )
+    .unwrap();
+    let p = try_load_profile(dir.path()).expect("BOM 前缀完好画像必须 Ok");
+    assert_eq!(p.habits.len(), 1);
+    assert_eq!(p.habits[0].content, "喜欢简洁回复");
+    assert_eq!(load_profile(dir.path()).habits.len(), 1);
+
+    // 对照：BOM + 真损坏 → 仍 Err（剥 BOM 不吞解析错误）。
+    let dir2 = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir2.path().join("config")).unwrap();
+    std::fs::write(
+        dir2.path().join("config").join("user_profile.json"),
+        "\u{feff}{not json",
+    )
+    .unwrap();
+    assert!(
+        try_load_profile(dir2.path()).is_err(),
+        "BOM+真损坏必须仍 Err"
+    );
+}

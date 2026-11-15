@@ -1785,6 +1785,15 @@ pub(crate) async fn run_runtime(
     println!();
     println!("Shutting down...");
 
+    // BUG-20261115-023（家族第四~八成员收口）：进程终态令牌先行 cancel
+    // —— logs_sweeper / session_group_sweeper / notify / board_bus /
+    // profile_service 五个常驻循环的周期等待点感知终态立即退出，不再在
+    // 排空窗内注册新 timer（裸 Drop 语义 runtime 的 shutdown 最后 poll
+    // 撞 "Tokio context is being shutdown" panic 面；机理与根修先例见
+    // heartbeat r9 / devices BUG-20261114-015 / outbox BUG-20261114-019，
+    // 家族纪律见 shutdown.rs 模块文档）。
+    crate::commands::gateway::shutdown::cancel_terminal_tasks();
+
     // 太微（taiwei，静态直链子系统）：exit 事件先行 spawn（与下方 drain
     // 并行跑，通常在 drain 窗口内就完成）；teardown 收尾处有界等待（3s
     // 让路预算）。

@@ -416,3 +416,100 @@ fn test_trash_invalidates_incremental_baseline() {
     nemesis_agent::chat_trash::trash_purge(&entry).unwrap();
     delete_chat_log(&k);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261115-029 回归锁：CLI 与 gateway 并开同一 history_index.db 的
+// 跨进程竞争面。外部连接（同进程另一 Connection，锁语义与另一进程一致）
+// 持写锁做测试替身。两则测试都以「旧行为必红、新行为绿」设计：
+// 旧行为 = 无 busy_timeout（撞锁立即 SQLITE_BUSY 丢行）+ 失败仍登记 mtime
+// （半索引文件被恒跳过，尾部缺口持久到 mtime 再变）。
+// ---------------------------------------------------------------------------
+
+/// busy_timeout 通路：外部短写锁（300ms 后提交）期间的增量插行必须退避
+/// 等锁落行，而不是瞬间 BUSY 丢行。search 不经 reindex 直查——证明行
+/// 确实由增量路径在锁窗口内落库（旧行为查不到）。
+#[test]
+fn test_busy_timeout_lets_incremental_append_through_external_lock() {
+    let _g = family_guard();
+    let k = fresh_session("busy");
+    append_chat_log(&k, "user", "baseline before lock yonder");
+    reindex_session_logs();
+
+    let db_path = nemesis_agent::history_search::index_db_path();
+    let ext = rusqlite::Connection::open(&db_path).expect("external conn opens");
+    ext.execute_batch("BEGIN IMMEDIATE;")
+        .expect("external write lock taken");
+    // 提交点 300ms << busy_timeout 5000ms：插行等锁后必然落行。
+    let h = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        ext.execute_batch("COMMIT;").expect("external commit");
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50)); // 锁已布好
+    append_chat_log(&k, "assistant", "locked window marker xq9z");
+    h.join().expect("commit thread joins");
+
+    // 不 reindex 直查：行必须已在增量路径落库。
+    let stem = k.replace(':', "_");
+    let hits: Vec<_> = search("xq9z", 50)
+        .into_iter()
+        .filter(|hit| hit.session_key == stem)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "incremental append must survive a short external lock: {hits:?}"
+    );
+
+    delete_chat_log(&k);
+}
+
+/// 半索引不留死账：外部锁持有超过 busy_timeout 窗口（6s 提交 > 5s 退避）
+/// 时 reindex 的 DELETE 必然失败——本文件必须诚实让位（不索引、不登记
+/// mtime），锁释放后的下一轮 reindex 整文件重建成功并可检索。旧行为：
+/// 失败仍登记 mtime → 后续 reindex 恒按 fresh 跳过 → 尾部缺口持久。
+#[test]
+fn test_reindex_under_external_lock_leaves_no_stale_registration() {
+    let _g = family_guard();
+    let k = fresh_session("stale");
+    append_chat_log(&k, "user", "registered baseline marlinspike");
+    reindex_session_logs();
+    // mtime 变化（新行落文件），触发下一轮 reindex 重读本文件。
+    append_chat_log(&k, "assistant", "tail marker after mtime lemgrino");
+
+    let db_path = nemesis_agent::history_search::index_db_path();
+    let ext = rusqlite::Connection::open(&db_path).expect("external conn opens");
+    ext.execute_batch("BEGIN IMMEDIATE;")
+        .expect("external write lock taken");
+    // 提交点（6s）晚于 busy_timeout 窗口（5s）：DELETE 等满退避后失败。
+    let h = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(6000));
+        ext.execute_batch("COMMIT;").expect("external commit");
+    });
+
+    // 家族内其它文件均已删除/已登记（mtime 未变 → fresh 跳过），计数只
+    // 反映本文件：锁持有期间不得计为已索引（旧行为在此 = 1，必红）。
+    let rows = reindex_session_logs();
+    assert_eq!(rows, 0, "locked file must not be counted as indexed");
+
+    h.join().expect("commit thread joins");
+
+    // 锁释放后的下一轮 reindex：本文件已变化且未登记 → 整文件重建。
+    // 旧行为（死登记）此轮按 fresh 跳过 → 计数 0 且查不到（必红）。
+    let rows2 = reindex_session_logs();
+    assert!(
+        rows2 >= 1,
+        "released lock must allow full rebuild, got {rows2}"
+    );
+    let stem = k.replace(':', "_");
+    let hits: Vec<_> = search("lemgrino", 50)
+        .into_iter()
+        .filter(|hit| hit.session_key == stem)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "tail marker must be searchable after rebuild: {hits:?}"
+    );
+
+    delete_chat_log(&k);
+}

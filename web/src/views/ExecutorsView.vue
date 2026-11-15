@@ -14,26 +14,39 @@
 //   天然兼容（只清 focus、保留 tab）。
 // - TAB 切换 = 组件销毁/重建（轮询定时器随 onMounted/onBeforeUnmount 正确
 //   清理重建）；两 TAB 数据面本就独立（subagents vs background WSAPI）。
+// - 已归档 TAB（2026-11-15）：SubagentsView 挂 archived prop 复用（归档是
+//   子代理台账的过滤视角，不是独立数据面）；TAB 标签带已归档计数
+//   （N != null 时渲染 `(N)`）——计数由面板 loadList 后 emit('archived-count')
+//   投影（列表加载时点的全库投影），宿主 ref 收敛；进程 TAB 先行时计数
+//   缺席（null → 不渲染括号），进入子代理/归档任一面板即补上。
 // - 布局契约（2026-11-09 对齐全仓骨架）：本页是路由页根（page- 前缀拿
 //   `.main-content > [class^="page-"]` 的 flex+height:100%），page-header
 //   归宿主页；TAB 条用全局 .tabs/.tab 下划线式（components.css，与通道/
 //   看板页签等全仓一致）；两个面板 View 均无自身 page-header（标题层级
 //   = 大标题→TAB→内容，与 Scanner/Board 等同款）。
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SubagentsView from './SubagentsView.vue'
 import ProcessesView from './ProcessesView.vue'
 
-type Tab = 'subagents' | 'processes'
+type Tab = 'subagents' | 'processes' | 'archived'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'subagents', label: '子代理' },
   { key: 'processes', label: '后台任务' },
+  { key: 'archived', label: '已归档' },
 ]
 
 const route = useRoute()
 const router = useRouter()
 
-const tab = computed<Tab>(() => (route.query.tab === 'processes' ? 'processes' : 'subagents'))
+const tab = computed<Tab>(() =>
+  route.query.tab === 'processes' ? 'processes' : route.query.tab === 'archived' ? 'archived' : 'subagents',
+)
+
+// 已归档计数（TAB 徽标数据源）：面板每次 loadList 后 emit 投影；
+// null = 尚未有任何面板加载过（如直链后台任务 TAB——不渲染括号；
+// 缺省/归档 TAB 一挂载即投影，0 也渲染括号）。
+const archivedCount = ref<number | null>(null)
 
 function switchTab(t: Tab) {
   if (t === tab.value) return
@@ -55,11 +68,19 @@ function switchTab(t: Tab) {
           :class="{ active: tab === t.key }"
           @click="switchTab(t.key)"
         >
-          {{ t.label }}
+          {{ t.label }}<template v-if="t.key === 'archived' && archivedCount != null"> ({{ archivedCount }})</template>
         </button>
       </div>
-      <SubagentsView v-if="tab === 'subagents'" />
-      <ProcessesView v-else />
+      <SubagentsView
+        v-if="tab === 'subagents'"
+        @archived-count="(n: number) => (archivedCount = n)"
+      />
+      <ProcessesView v-else-if="tab === 'processes'" />
+      <SubagentsView
+        v-else
+        :archived="true"
+        @archived-count="(n: number) => (archivedCount = n)"
+      />
     </div>
   </div>
 </template>

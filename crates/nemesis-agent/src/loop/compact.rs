@@ -1294,11 +1294,13 @@ impl AgentLoop {
     /// `nemesis_config::resolve_compact_keep_recent_tokens`（typed
     /// `AgentDefaults` 字段同源）。
     pub(crate) fn current_compact_keep_recent_tokens(&self) -> usize {
+        // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → 静默
+        // 落缺省值，BUG-20261103-334 同族）。
         let cfg = self
             .config_path
             .read()
             .clone()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| nemesis_utils::fsutil::read_config_string(&p).ok())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         nemesis_config::resolve_compact_keep_recent_tokens(cfg.as_ref())
     }
@@ -1313,7 +1315,7 @@ impl AgentLoop {
             .config_path
             .read()
             .clone()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| nemesis_utils::fsutil::read_config_string(&p).ok())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         nemesis_config::resolve_compact_boundary(cfg.as_ref())
     }

@@ -132,7 +132,14 @@ impl IRCChannel {
         Ok(Self {
             base: Arc::new(BaseChannel::with_allow_list(
                 "irc",
-                config.allow_from.clone(),
+                // allow_from 条目侧同口径 casemap（BUG-20261115-015）：身份
+                // 键已归一（irc_identity），BaseChannel 固有 is_allowed 是
+                // 精确 == 比较，原大小写条目会错杀归一化后的合法身份。
+                config
+                    .allow_from
+                    .iter()
+                    .map(|s| s.to_ascii_lowercase())
+                    .collect(),
             )),
             config: IRCConfig {
                 channel,
@@ -204,6 +211,18 @@ impl IRCChannel {
         } else {
             prefix
         }
+    }
+
+    /// IRC 身份键（昵称/频道名共用）：RFC 1459 casemapping 语义大小写
+    /// 不敏感，按 ASCII 子集折叠（与本文件 eq_ignore_ascii_case 先例同族
+    /// 口径；严格 casemapping 还折叠 `[]\^` ↔ `{}|~`，实际服务器与国内
+    /// 用法罕见依赖，不展开）。BUG-20261115-015：身份键不归一会让同一
+    /// 昵称/频道的大小写变体在内存里分裂成多会话（session_key=
+    /// irc:{chat_id}），而 NTFS/APFS 文件名大小写不敏感 → 落盘同一文件
+    /// 交错互串。回复投递面 PRIVMSG target 由服务器按 casemapping 匹配
+    /// 送达，归一化不影响可达性。
+    fn irc_identity(raw: &str) -> String {
+        raw.to_ascii_lowercase()
     }
 
     /// Builds IRC registration commands.
@@ -505,20 +524,30 @@ impl IRCChannel {
                                                     if let Some((target, content)) =
                                                         IRCChannel::parse_privmsg(params)
                                                     {
-                                                        let sender = prefix
-                                                            .map(IRCChannel::extract_nick_from_prefix)
-                                                            .unwrap_or("unknown");
-                                                        // IRC 昵称大小写不敏感（RFC 1459 casemapping）
+                                                        // BUG-20261115-015：发送者昵称归一
+                                                        // 后兼作身份键与 allow 闸输入
+                                                        //（irc_identity，RFC 1459 口径）。
+                                                        let sender = IRCChannel::irc_identity(
+                                                            prefix
+                                                                .map(
+                                                                    IRCChannel::extract_nick_from_prefix,
+                                                                )
+                                                                .unwrap_or("unknown"),
+                                                        );
+                                                        // IRC 昵称大小写不敏感（RFC 1459
+                                                        // casemapping）：身份键按 irc_identity
+                                                        // 归一，私聊 chat_id=发送者昵称（归一
+                                                        // 后），频道 chat_id=频道名（归一后）。
                                                         let chat_id =
                                                             if target.eq_ignore_ascii_case(&current_nick) {
-                                                                sender.to_string()
+                                                                sender.clone()
                                                             } else {
-                                                                target.to_string()
+                                                                IRCChannel::irc_identity(target)
                                                             };
-                                                        if base.handle_message(sender) {
+                                                        if base.handle_message(&sender) {
                                                             let inbound = InboundMessage {
                                                                 channel: base.name().to_string(),
-                                                                sender_id: sender.to_string(),
+                                                                sender_id: sender.clone(),
                                                                 chat_id: chat_id.clone(),
                                                                 content: content.to_string(),
                                                                 media: Vec::new(),

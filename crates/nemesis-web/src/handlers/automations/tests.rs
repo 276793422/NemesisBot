@@ -314,3 +314,26 @@ async fn pump_exits_when_sender_dropped() {
         .expect("pump must exit after senders drop")
         .expect("pump task must not panic");
 }
+
+/// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的
+/// automation_triggers.json——旧形态裸 `read_to_string` → BOM →「请修正后
+/// 重试」报错（记事本再存还带 BOM，永远修不好）。read_config_string 剥
+/// BOM 后照常解析。对照臂：BOM + 真损坏仍诚实报错。
+#[test]
+fn load_triggers_tolerates_utf8_bom_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = registry_path(dir.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "\u{feff}[{\"id\":\"at-b\",\"pattern\":\"exec\",\"workflow_id\":\"wf\",\"cooldown_secs\":30,\"enabled\":true,\"created_at\":7}]",
+    )
+    .unwrap();
+    let loaded = load_triggers_from_file(&path).expect("BOM 前缀完好注册表必须 Ok");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].id, "at-b");
+
+    // 对照：BOM + 真损坏 → 仍报错（剥 BOM 不吞解析错误）。
+    std::fs::write(&path, "\u{feff}{ not json").unwrap();
+    assert!(load_triggers_from_file(&path).is_err());
+}

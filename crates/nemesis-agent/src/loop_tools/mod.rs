@@ -117,6 +117,9 @@ mod cron_tool_tests;
 mod tests;
 #[cfg(test)]
 mod web_fetch_tests;
+// BUG-20261115-009 回归锁：带凭据 search client 的跨源重定向终停行为级测试。
+#[cfg(test)]
+mod web_search_redirect_tests;
 
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]

@@ -368,6 +368,7 @@ impl Cluster {
             on_recovered_delivery: Arc::new(Mutex::new(None)),
         };
         cluster.install_route_record_hook();
+        cluster.install_stale_kill_hook();
         cluster
     }
 
@@ -587,6 +588,7 @@ impl Cluster {
             on_recovered_delivery: Arc::new(Mutex::new(None)),
         };
         cluster.install_route_record_hook();
+        cluster.install_stale_kill_hook();
         cluster
     }
 
@@ -701,9 +703,12 @@ impl Cluster {
         // （旧 &mut self 签名无法经 Arc<TaskManager> 调用）——2h 终态清理
         // 与 pending/running 安全网兜底双双失效，终态任务（含完整
         // payload+result）在 tasks.db 无限累积。接线后 on_complete 生产恒
-        // None（gateway 走 with_workspace 不挂回调），清理只落状态不重复
-        // 唤醒——pending 唤醒仍由 recovery_loop 独占（settle 幂等，双循环
-        // 竞争无害）。
+        // None（gateway 走 with_workspace 不挂回调），清理只落状态；
+        // **判死的唤醒义务由构造期 stale-kill 钩子承担**
+        // （`install_stale_kill_hook`）：清理 tick（30s）与 recovery sweep
+        // （120s）对同一 pending_timeout 阈值竞速，清理赢时任务即 Failed，
+        // sweep 只扫 Pending 从此永远看不到——不补发唤醒帧 = 续行快照孤儿
+        // + 等待方挂死。exactly-once 由条件转移 CAS 保证，双杀臂互斥不双发。
         self.task_manager.start();
 
         // 主动健康探针循环（health_check_interval_secs=0 关闭）。

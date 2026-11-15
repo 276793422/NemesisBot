@@ -95,6 +95,22 @@ impl WebSearchTool {
         extract_search_query(args)
     }
 
+    /// 带凭据外呼的 search client（跨源重定向终停，单一真相源
+    /// `nemesis_utils::http_redirect`）。BUG-20261115-009：`X-Subscription-Token`
+    /// 等自定义凭据头 reqwest 跨源重定向**不剥**（只剥 authorization/cookie
+    /// 等 标准四头）——搜索上游返回（或被劫持后返回）一个 302，API key 就
+    /// 静默流向第三方主机（BUG-20261109-014 消费面漏网：providers 六 lane +
+    /// channels 三 builder 已挂，search client 三处未挂）。同源跟随保留
+    /// （CDN/网关合规场景不断链），跨源 `stop()` 把 3xx 当最终响应透传，
+    /// 上层按非成功响应诚实处理。
+    pub(super) fn cred_search_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .map_err(|e| format!("failed to create HTTP client: {}", e))
+    }
+
     pub(super) async fn search_brave(&self, query: &str) -> Result<String, String> {
         let api_key = match &self.config.brave_api_key {
             Some(k) if !k.is_empty() => k.clone(),
@@ -108,10 +124,7 @@ impl WebSearchTool {
             count
         );
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+        let client = Self::cred_search_client(10)?;
 
         let resp = client
             .get(&url)
@@ -259,10 +272,7 @@ impl WebSearchTool {
             "max_tokens": 1000
         });
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("failed to create HTTP client: {}", e))?;
+        let client = Self::cred_search_client(30)?;
 
         let resp = client
             .post("https://api.perplexity.ai/chat/completions")

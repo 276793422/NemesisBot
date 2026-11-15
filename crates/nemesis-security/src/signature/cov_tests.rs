@@ -211,6 +211,10 @@ fn revoke_loud_setup(
         })
         .finish();
     let guard = tracing::subscriber::set_default(subscriber);
+    // (BUG-20261115-027) set_default 不重建 interest 缓存：本进程曾在无
+    // subscriber 线程首评过 callsite 时全表缓存 NEVER，set_default 无法
+    // 翻案，emit 短路 → buf 空。持闸下以本线程栈全表重建翻案。
+    tracing::callsite::rebuild_interest_cache();
 
     let store = TrustStore::new(Some(&store_path));
     store.add_key(VALID_PUBKEY_B64, "loud-revoke-38", TrustLevel::Verified);
@@ -219,6 +223,8 @@ fn revoke_loud_setup(
 
 #[test]
 fn test_revoke_key_save_failure_loud_log() {
+    // (BUG-20261115-027) 捕获互斥闸：见 crate::test_capture_sync 文档。
+    let _capture_serial = crate::test_capture_sync::SERIAL.blocking_lock();
     let dir = temp_dir("revoke-loud");
     let (store, buf, _guard) = revoke_loud_setup(&dir);
 
@@ -239,6 +245,7 @@ fn test_revoke_key_save_failure_loud_log() {
 
 #[test]
 fn test_revoke_key_by_public_key_save_failure_loud_log() {
+    let _capture_serial = crate::test_capture_sync::SERIAL.blocking_lock();
     let dir = temp_dir("revoke-pk-loud");
     let (store, buf, _guard) = revoke_loud_setup(&dir);
 
@@ -275,6 +282,7 @@ impl std::io::Write for LogSinkW26 {
 
 #[test]
 fn test_trust_store_corrupt_file_load_warns_loudly() {
+    let _capture_serial = crate::test_capture_sync::SERIAL.blocking_lock();
     let dir = temp_dir("trust-load-loud");
     let path = dir.join("trust.json");
     std::fs::write(&path, "{torn json from a crashed write}").unwrap();
@@ -289,6 +297,9 @@ fn test_trust_store_corrupt_file_load_warns_loudly() {
             .with_writer(move || sink.clone())
             .finish(),
     );
+    // (BUG-20261115-027) 同 revoke_loud_setup：set_default 后强制全表
+    // 重建翻案，见该处注释。
+    tracing::callsite::rebuild_interest_cache();
 
     let store = TrustStore::new(Some(&path));
     assert_eq!(store.key_count(), 0, "损坏文件按空信任库继续");

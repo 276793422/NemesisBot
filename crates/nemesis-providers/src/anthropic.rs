@@ -34,7 +34,8 @@ fn cache_ttl_gap_warn(prev_ts: i64, now_ts: i64) -> Option<i64> {
 }
 
 /// Anthropic provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     pub api_key: String,
     #[serde(default)]
@@ -65,6 +66,22 @@ pub struct AnthropicConfig {
     #[serde(default)]
     pub cache_breakpoints: bool,
 }
+
+crate::debug_redact::impl_redacted_debug!(AnthropicConfig {
+    plain {
+        base_url,
+        default_model,
+        timeout_secs,
+        stream_mode,
+        cache_breakpoints,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 // P3A 超时对齐：120s 曾与 openai 兼容 lane 的 600s 口径分裂
 // （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 评审
@@ -581,10 +598,18 @@ impl AnthropicProvider {
                 // body 读传输失败诚实上抛（同族）：空串会让
                 // 下方 from_str 落 Format 伪装应用层错误，fallback 链不轮转。
                 // unwrap_or_default 只留给 4xx 路径（状态码本身已定类）。
-                let raw = match resp.text().await {
+                // 成功体走有帽读取（BUG-20261115-024）：超限在读入中途断开，
+                // Unknown + "response body exceeds limit" 前缀（可重试换下一家）。
+                let raw = match crate::body_cap::read_success_body(resp).await {
                     Ok(b) => b,
                     Err(e) => {
-                        let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
+                        let _ = tx
+                            .send(Err(crate::body_cap::to_failover_error(
+                                "anthropic",
+                                &model,
+                                e,
+                            )))
+                            .await;
                         return;
                     }
                 };
@@ -1439,11 +1464,11 @@ impl LLMProvider for AnthropicProvider {
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send/SSE 读路径同判）；解析失败→Format 带 body 摘要
-        //（应用层，不可重试）。
-        let raw = resp
-            .text()
+        //（应用层，不可重试）。成功体有帽（BUG-20261115-024）：超限中途断开
+        // →Unknown + "response body exceeds limit" 前缀（可重试）。
+        let raw = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| transport_error("anthropic", model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error("anthropic", model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
                 provider: "anthropic".to_string(),

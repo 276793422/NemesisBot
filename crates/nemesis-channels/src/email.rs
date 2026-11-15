@@ -220,7 +220,10 @@ impl EmailChannel {
         Ok(Self {
             base: Arc::new(BaseChannel::with_allow_list(
                 "email",
-                config.allow_from.clone(),
+                // allow_from 条目侧同步归一小写（BUG-20261115-015）：身份键
+                // 已归一（identity_chat_id），BaseChannel 固有 is_allowed 是
+                // 精确 == 比较，原大小写条目会错杀归一化后的合法身份。
+                config.allow_from.iter().map(|s| s.to_lowercase()).collect(),
             )),
             config,
             running: Arc::new(parking_lot::RwLock::new(false)),
@@ -295,6 +298,33 @@ impl EmailChannel {
             original_subject.to_string()
         } else {
             format!("Re: {original_subject}")
+        }
+    }
+
+    /// 入站身份键：发件人地址 → 会话身份（BUG-20261115-015）。邮箱地址的
+    /// 投递语义不区分大小写（域名部分 RFC 5321 恒不敏感；本地部分实践上
+    /// 所有 MTA/MDA 均不敏感），同一地址的大小写变体必须是同一身份键：
+    /// 原大小写入键会让 "User@X.com"/"user@x.com" 在内存里分裂成两个会话
+    /// （chat_id/session_key/sender_map 键各一份），而 NTFS/APFS 文件名
+    /// 大小写不敏感 → 两个 session_key 落同一个磁盘 jsonl 交错互串。
+    /// 原文地址由 sender_map 另存（reply_target_and_subject 回信用原文）。
+    fn identity_chat_id(sender_email: &str) -> String {
+        if sender_email.is_empty() {
+            "email:unknown".to_string()
+        } else {
+            sender_email.to_lowercase()
+        }
+    }
+
+    /// 回信 (To 地址, Subject) 二元组：地址优先取 sender_map 存的原文
+    /// （身份键已归一小写，直接拿 chat_id 当 To: 会改写对方地址的大小写
+    /// ——本地部分 RFC 5321 名义上区分大小写，投递实践中虽不敏感，取
+    /// 原文最稳）；未命中（进程重启 sender_map 清空 / bot 主动发起）回落
+    /// chat_id + 默认主题。
+    fn reply_target_and_subject(&self, chat_id: &str) -> (String, String) {
+        match self.sender_map.get(chat_id) {
+            Some(info) => (info.sender_email.clone(), info.subject.clone()),
+            None => (chat_id.to_string(), "Re: NemesisBot Response".to_string()),
         }
     }
 
@@ -812,11 +842,11 @@ impl EmailChannel {
                                             // Extract email address
                                             let sender_email =
                                                 extract_email_address_static(&from);
-                                            let chat_id = if sender_email.is_empty() {
-                                                "email:unknown".to_string()
-                                            } else {
-                                                sender_email.clone()
-                                            };
+                                            // BUG-20261115-015：身份键小写归一（同一
+                                            // 地址大小写变体收敛为同一会话），原文另存
+                                            // sender_map 供回信。
+                                            let chat_id =
+                                                Self::identity_chat_id(&sender_email);
 
                                             // Store for replies
                                             if !sender_email.is_empty() {
@@ -1455,20 +1485,17 @@ impl Channel for EmailChannel {
 
         self.base.record_sent();
 
-        // Look up subject for reply threading
-        let subject = self
-            .sender_map
-            .get(&msg.chat_id)
-            .map(|info| info.subject.clone())
-            .unwrap_or_else(|| "Re: NemesisBot Response".to_string());
+        // 回信地址（原文优先）+ 线索化主题（BUG-20261115-015：chat_id 是
+        // 归一化身份键，不能直接当 To: 用——原文在 sender_map）。
+        let (to, subject) = self.reply_target_and_subject(&msg.chat_id);
 
         debug!(
-            to = %msg.chat_id,
+            to = %to,
             subject = %subject,
             "[EmailChannel] sending message"
         );
 
-        self.smtp_send(&msg.chat_id, &subject, &msg.content).await
+        self.smtp_send(&to, &subject, &msg.content).await
     }
 }
 
