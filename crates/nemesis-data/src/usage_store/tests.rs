@@ -398,6 +398,67 @@ fn query_logs_filters_paginates_and_roundtrips_rows() {
     let _ = std::fs::remove_file(path);
 }
 
+/// 同秒组排序确定性（BUG-20261115-041）：created_at 是秒级（写入点
+/// `Local::now().timestamp()`），逐请求一行 → 同秒多行是常态。排序键非
+/// 唯一时同值组内行序由查询计划决定（索引扫描序），id（自增主键）决胜
+/// tie 后组内 id DESC 契约稳定；静态数据 offset 翻页并集无漏无重。
+/// 边界定性：翻页**期间插入**新行导致的重行是 offset 分页固有语义
+/// （窗口随数据移动，非 tie 缺陷）。
+#[test]
+fn query_logs_same_second_pagination_id_tiebreaker() {
+    let (store, path) = open_store("w4_logs_tie");
+    let base = 1_770_000_500_i64;
+
+    // 同秒组 4 行 + 更早 1 行（不同秒）。
+    for m in ["gpt/a", "gpt/b", "gpt/c", "gpt/d"] {
+        store
+            .insert_request_log(&w4_log(m, base, "agent:main:s1", 200))
+            .unwrap();
+    }
+    store
+        .insert_request_log(&w4_log("glm/old", base - 5, "agent:main:s1", 200))
+        .unwrap();
+
+    // (a) 同秒组内 id DESC 契约：同键组 = 插入逆序，组外按值降序垫尾。
+    // 契约钉定说明：当前查询计划（idx_request_logs_created_at 反向扫描）
+    // 组内恰好也是 id DESC，故临时退回无 tiebreaker 形态本测试不红——
+    // 缺陷是潜伏的（组内序靠计划巧合而非契约保证）；本断言的价值是
+    // 计划漂移（sorter 路径/统计变化/schema 演进）下锁死组内序。
+    let (logs, total) = store
+        .query_logs(base - 10, base + 100, 1, 10, &LogFilter::default())
+        .expect("all logs");
+    assert_eq!(total, 5);
+    let got: Vec<&str> = logs.iter().map(|l| l.model.as_str()).collect();
+    assert_eq!(
+        got,
+        ["gpt/d", "gpt/c", "gpt/b", "gpt/a", "glm/old"],
+        "同秒组内 id DESC（插入逆序）"
+    );
+
+    // (b) 静态数据 offset 翻页并集完整性（数据固定时无漏无重）。
+    let mut seen: Vec<String> = Vec::new();
+    let mut dup_free = true;
+    let mut last_total = 0;
+    for p in 1..=3 {
+        let (page, total) = store
+            .query_logs(base - 10, base + 100, p, 2, &LogFilter::default())
+            .expect("pageN");
+        last_total = total;
+        for l in &page {
+            if seen.contains(&l.model) {
+                dup_free = false;
+            }
+            seen.push(l.model.clone());
+        }
+    }
+    assert_eq!(last_total, 5);
+    assert!(dup_free, "静态翻页无重行: {seen:?}");
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 5, "三页并集覆盖全量（无漏）: {seen:?}");
+    let _ = std::fs::remove_file(path);
+}
+
 /// aggregate_session_usage 精确键匹配 + 无行全零；by_task 后缀匹配两种
 /// 身份形态（worker id 与 peer 名不同源也能聚合到）。
 #[test]
