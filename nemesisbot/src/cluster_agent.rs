@@ -2237,12 +2237,18 @@ async fn post_board_ask_notice(
         );
         Ok(())
     } else {
-        Err(format!(
-            "master 拒绝注记（额度/校验）：{}",
-            body.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        ))
+        // error 位是对象 {code, message}（envelope.rs 单一真相）——as_str()
+        // 对对象恒 None，拒绝原因会恒显 "unknown"（诊断信息丢失）。与
+        // post_discussion_reply 同款 pointer 解析。
+        let code = body
+            .pointer("/error/code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let msg = body
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Err(format!("master 拒绝注记（额度/校验）：{code} {msg}"))
     }
 }
 

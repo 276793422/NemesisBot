@@ -30,6 +30,8 @@ use std::time::{Duration, SystemTime};
 
 use tracing::{info, warn};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 /// 组内全部会话正文超此天数才入报告（部分活跃的组不打扰）。
 const ORPHAN_AGE_DAYS: u64 = 30;
 
@@ -301,7 +303,11 @@ pub fn spawn_session_group_sweeper() {
         let mut interval = tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECS));
         interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
         loop {
-            interval.tick().await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(terminal_cancel_token(), interval.tick()).await {
+                break;
+            }
             run_sweep_once();
         }
     });

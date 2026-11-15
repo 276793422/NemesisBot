@@ -79,7 +79,7 @@ pub fn classify_line(line: &str) -> Result<QmpLine, String> {
 }
 
 /// QMP 客户端（一条 TCP 连接一个实例；QMP server 每连接独立会话，多次
-/// 控制操作各起新连接即可——[`crate::vm:lifecycle`] 的用法）。
+/// 控制操作各起新连接即可——[`crate::vm::lifecycle`] 的用法）。
 pub struct QmpClient {
     reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
     write: tokio::net::tcp::OwnedWriteHalf,

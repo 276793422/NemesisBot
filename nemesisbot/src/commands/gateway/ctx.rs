@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 use crate::common;
 
 #[cfg(feature = "board")]
@@ -289,8 +290,39 @@ impl GatewayCtx {
         // 未配置走。CLI 型 lane 的子进程（读小写）与本进程（读大写）双对覆盖。
         match nemesis_config::proxy_file::load(&common::workspace_path(&home).join("config")) {
             Ok(Some(c)) => {
+                // BUG-20261114-064：scheme 不受 reqwest/hyper-util 支持的
+                // 值（如历史 socks://——reqwest 只认 http/https/socks4/
+                // socks4a/socks5/socks5h）在本进程会被 hyper-util
+                // parse_env_uri 静默忽略（客户端静默直连零诊断）——注入前
+                // WARN 照告。值仍照常注入（env_vars_to_apply 单一真相源
+                // 不动）：CLI 子进程（curl 等）可能支持该 scheme，env 注入
+                // 语义 = 原样转发。WARN 只报 key 不落 value（代理 URL 可带
+                // userinfo 凭据，SEC-002 口径）。no_proxy 是豁免列表非代理
+                // 值，不检查。
+                for (key, value) in [
+                    ("HTTP_PROXY", &c.env.http_proxy),
+                    ("HTTPS_PROXY", &c.env.https_proxy),
+                    ("ALL_PROXY", &c.env.all_proxy),
+                ] {
+                    let v = value.trim();
+                    if !v.is_empty() && !nemesis_config::proxy_file::scheme_supported(v) {
+                        tracing::warn!(
+                            "[Gateway] 环境变量代理 {key} scheme 不受 reqwest 支持（BUG-20261114-064），本进程客户端将静默直连；值仍注入子进程环境。scheme 支持面：{}",
+                            nemesis_config::proxy_file::PROXY_PREFIXES.join(" ")
+                        );
+                    }
+                }
                 for (key, value) in nemesis_config::proxy_file::env_vars_to_apply(&c.env) {
-                    tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    // SEC-002（BUG-20261115-005）：代理 URL 可携带 userinfo
+                    // 凭据（http://user:pass@host:port），日志只落 key + 脱敏
+                    // 占位——与 EnvProxyConfig Debug 脱敏同口径
+                    //（BUG-20261114-063）；no_proxy 是豁免主机列表非凭据
+                    //（063 Debug 原样输出同判），值照落。
+                    if key.eq_ignore_ascii_case("no_proxy") {
+                        tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    } else {
+                        tracing::info!("[Gateway] 环境变量代理已注入：{key}=<redacted>");
+                    }
                     // set_var 在 Rust 2024 为 unsafe（并发读写下 UB 面）；
                     // 此处是启动装配窗口（先例 common.rs PATH 注入），注入
                     // 先于一切并发 client 构建。
@@ -472,7 +504,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即扫
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let exec_removed = nemesis_workflow::persistence::sweep_stale_execution_files(
                         &sweep_exec_dir,
                         WORKFLOW_SWEEP_TTL,
@@ -718,7 +754,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即维护
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = store_for_maint.as_ref() else {
                         continue;
                     };
@@ -832,7 +872,11 @@ impl GatewayCtx {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        tick.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                            break;
+                        }
                         let report =
                             cap.sweep(zw_ttl, nemesis_ziwei::capture::MAX_BYTES_PER_PROFILE);
                         if report.expired_profiles > 0 || report.size_truncated > 0 {
@@ -1151,10 +1195,12 @@ impl GatewayCtx {
             // relative index_path), so deploy/monitor/feedback operated on disjoint
             // stores. (F-) Dedicated path so it persists + reloads; separate from
             // Forge's manual-create registry.json to avoid a two-instance collision.
+            // 文件名走 crate 常量（BUG 批次 2026-11-14）：蒸馏/闭环两侧的跨库
+            // 互查防线按同一常量拼路径，字面量分叉会让防线指向空文件。
             let forge_shared_registry = std::sync::Arc::new(
                 nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
                     index_path: forge_dir
-                        .join("learning_registry.json")
+                        .join(nemesis_forge::LEARNING_REGISTRY_FILE)
                         .to_string_lossy()
                         .to_string(),
                 }),

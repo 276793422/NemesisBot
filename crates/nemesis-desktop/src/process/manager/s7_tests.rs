@@ -43,7 +43,12 @@ async fn s7_spawn_wait_for_result_without_and_with_result_channel() {
     );
 
     // 连接已存在，spawn_wait_for_result 第一次轮询即命中。
-    mgr.spawn_wait_for_result("s7-wait".to_string());
+    // 回收窗走默认基线推导（无 timeout_seconds 数据 → 360s）；本测试只
+    // 验证处理器投递，远早于回收窗结束。
+    mgr.spawn_wait_for_result(
+        "s7-wait".to_string(),
+        result_wait_secs(&serde_json::json!({})),
+    );
     tokio::time::sleep(Duration::from_millis(200)).await; // 等处理器注册
 
     // (a) 无结果通道：处理器触发后走 "no result channel" 警告分支。

@@ -485,12 +485,8 @@ impl RpcServer {
     ) where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        tracing::info!(
-            action = %wire_msg.action,
-            from = %wire_msg.from,
-            id = %wire_msg.id,
-            "[RpcServer] Received RPC request"
-        );
+        // 入站 INFO 在 dispatch_wire_request 内打（is_ping 门控降噪）——
+        // 此处不再重复记录（曾导致每个非 ping 请求两条相同 INFO）。
         let resp = Self::dispatch_wire_request(wire_msg, handlers).await;
         if let Err(e) = conn.send(&resp).await {
             tracing::error!(error = %e, "[RpcServer] Failed to send response");
@@ -514,6 +510,23 @@ impl RpcServer {
         handlers: &RwLock<HashMap<String, Arc<RpcHandlerFn>>>,
     ) -> WireMessage {
         let action = &wire_msg.action;
+        // ping 降噪（2026-11-14 审查发现 B）：健康探针（Online 节点每 tick
+        // 一发）与 iroh 心跳保活（每会话每 interval 一发）都以 "ping" action
+        // 高频过 dispatch——inbound/success 两条 INFO + 审计
+        // write_cluster_log 全记会把 cluster_{date}.log 与 general 日志刷成
+        // 心跳噪声（多节点长跑数千条/天），真实 RPC 审计信号被稀释。
+        // 降噪只静音成功路径的周期性记录；错误路径（handler Err / 响应
+        // 写回失败）照常 WARN/ERROR——诊断信号不丢。节点上线/下线的
+        // 观测信号由 log_discovery（探针翻转/Marked Offline）承载。
+        let is_ping = action.eq_ignore_ascii_case("ping");
+        if !is_ping {
+            tracing::info!(
+                action = %action,
+                from = %wire_msg.from,
+                id = %wire_msg.id,
+                "[RpcServer] Received RPC request"
+            );
+        }
 
         // Parse payload as JSON value
         let mut payload = wire_msg.payload.clone();
@@ -578,7 +591,8 @@ impl RpcServer {
         // Log inbound RPC call to cluster_{date}.log for Dashboard audit trail.
         // Records every request handled by this node (diagnostics.*, peer_chat, etc.)
         // regardless of whether it goes through the cluster agent.
-        {
+        // ping 不入审计（见上方 is_ping 注记——探针/心跳高频噪声）。
+        if !is_ping {
             let success = result.is_ok();
             let mut fields = serde_json::json!({
                 "direction": "inbound",
@@ -598,14 +612,16 @@ impl RpcServer {
         // 构造响应帧（发送由调用方负责）。
         match result {
             Ok(value) => {
-                tracing::info!(
-                    action = %action,
-                    from = %wire_msg.from,
-                    id = %wire_msg.id,
-                    "[RpcServer] Request handled successfully: action={}, from={}",
-                    action,
-                    wire_msg.from,
-                );
+                if !is_ping {
+                    tracing::info!(
+                        action = %action,
+                        from = %wire_msg.from,
+                        id = %wire_msg.id,
+                        "[RpcServer] Request handled successfully: action={}, from={}",
+                        action,
+                        wire_msg.from,
+                    );
+                }
                 WireMessage::new_response(wire_msg, value)
             }
             Err(err) => {

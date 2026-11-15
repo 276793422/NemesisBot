@@ -1967,6 +1967,86 @@ fn test_get_or_create_fresh_key_without_log_stays_empty() {
     crate::chat_log::delete_chat_log(key); // cleanup
 }
 
+/// BUG-20261115-021：sidecar 损坏（非法 JSON）时 get_or_create 必须走
+/// 自愈重建（chat_log 重放）而非静默空会话。修复前 Z1 回退臂
+/// `if let Ok(..) && let Ok(..)` 双重静默吞掉解析失败、静默落穿——函数
+/// 行为上重建路径本来就通，但损坏信号完全不可见，且随后的 save 会用
+/// 重建内容覆盖原文件、销毁损坏证据。本测试锁函数性行为：损坏 sidecar
+/// 不得吞掉 chat_log 历史，重建后照常持久化（warn 信号由代码审查保证，
+/// tracing 断言不进单测）。
+#[test]
+fn test_get_or_create_corrupt_sidecar_rebuilds_from_chat_log() {
+    let key = "test:rebuild:corrupt-sidecar";
+    crate::chat_log::delete_chat_log(key); // clean slate
+    crate::chat_log::append_chat_log(key, "user", "损坏前的问题");
+    crate::chat_log::append_chat_log(key, "assistant", "损坏前的回答");
+
+    let dir = tempfile::tempdir().unwrap();
+    // 先构造（目录空，不加载任何东西），再让损坏的 store 文件出现 →
+    // get_or_create 走 Z1 磁盘回退臂撞损坏文件，必须落穿自愈重建。
+    let store = SessionStore::new_with_storage(dir.path());
+    let store_path = dir.path().join(format!("{}.json", sanitize_filename(key)));
+    std::fs::write(&store_path, "{corrupted sidecar").unwrap();
+
+    let session = store.get_or_create(key);
+    assert_eq!(
+        session.messages.len(),
+        2,
+        "损坏 sidecar 不得吞掉 chat_log 历史"
+    );
+    assert_eq!(session.messages[0].content, "损坏前的问题");
+    assert_eq!(session.messages[1].content, "损坏前的回答");
+    // 重建后立即持久化（覆盖损坏文件，crash-safe）；第二个实例直接从
+    // 磁盘拿到重建结果，不再二次重建。
+    assert!(store.file_exists(key));
+    let store2 = SessionStore::new_with_storage(dir.path());
+    assert_eq!(store2.get_or_create(key).messages.len(), 2);
+
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
+/// BUG-20261115-021：load_from_disk 一坏一好 → 好的照常载入、坏的跳过。
+/// 装载语义与修复前一致（跳坏文件不 panic），warn 是唯一新增信号——
+/// 本测试钉语义不变：损坏文件不得拖累同目录健康 sidecar 的装载。
+#[test]
+fn test_load_from_disk_corrupt_sidecar_skipped_good_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let good_key = "test:load:good";
+    let good_path = dir
+        .path()
+        .join(format!("{}.json", sanitize_filename(good_key)));
+    let good = StoredSession {
+        key: good_key.to_string(),
+        messages: vec![StoredMessage {
+            role: "user".to_string(),
+            content: "好的会话".to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: "2026-11-15T00:00:00+08:00".to_string(),
+            reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+            image_refs: Vec::new(),
+        }],
+        summary: String::new(),
+        summary_covers_up_to: None,
+        project_id: None,
+        project_path: None,
+        home_agent_id: None,
+        created: Local::now(),
+        updated: Local::now(),
+    };
+    std::fs::write(&good_path, serde_json::to_string(&good).unwrap()).unwrap();
+    let corrupt_path = dir
+        .path()
+        .join(format!("{}.json", sanitize_filename("test:load:corrupt")));
+    std::fs::write(&corrupt_path, "not valid json").unwrap();
+
+    let store = SessionStore::new_with_storage(dir.path());
+    assert_eq!(store.len(), 1, "损坏 sidecar 跳过、好的照常载入");
+    assert_eq!(store.get_or_create(good_key).messages.len(), 1);
+}
+
 /// 纯内存 store（无 storage_dir）不做重建——它既不落盘也不被 TTL 清理，
 /// 且重放会触碰全局路径管理器（测试环境下即真实 sessions_log_dir）。
 #[test]

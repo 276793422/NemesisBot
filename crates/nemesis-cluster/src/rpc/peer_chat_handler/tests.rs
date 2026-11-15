@@ -2589,6 +2589,7 @@ fn inflight_task() -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 

@@ -128,11 +128,14 @@ fn probe_mxc_fresh() -> MxcProbeReport {
     #[cfg(target_os = "linux")]
     {
         // 官方 bubblewrap 可用性探测（版本二进制 + 必要 flag 支持）。
-        match mxc_sdk::bwrap_common::probe_bwrap() {
+        // probe_bwrap 挂在 bwrap_version 子模块（bwrap_common 无顶层
+        // re-export）；此臂仅 Linux 编译——ci.yml feature-poke 步骤
+        // 2026-11-15 首爆 E0425（Windows 侧从不走此块）。
+        match mxc_sdk::bwrap_common::bwrap_version::probe_bwrap() {
             Ok(ver) => MxcProbeReport {
                 status: "ready".to_string(),
                 platform_backend: "bubblewrap".to_string(),
-                detail: format!("MXC 探测通过（bwrap {}）", ver.version),
+                detail: format!("MXC 探测通过（bwrap {}）", ver),
             },
             Err(e) => MxcProbeReport {
                 status: "unavailable".to_string(),

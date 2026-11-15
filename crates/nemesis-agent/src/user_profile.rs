@@ -114,7 +114,9 @@ pub fn profile_path(workspace: &Path) -> PathBuf {
 /// 再 save 会把全量习惯清空（四路评审 B- 根修）。
 pub fn try_load_profile(workspace: &Path) -> Result<UserProfile, String> {
     let path = profile_path(workspace);
-    let content = match std::fs::read_to_string(&path) {
+    // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → 写路径
+    // 全拒绝 / 读路径静默空画像，BUG-20261103-334 同族）。
+    let content = match nemesis_utils::fsutil::read_config_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(UserProfile::default()),
         Err(e) => return Err(format!("read {}: {e}", path.display())),

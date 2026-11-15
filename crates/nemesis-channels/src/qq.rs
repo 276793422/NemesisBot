@@ -22,6 +22,10 @@ use crate::base::{BaseChannel, Channel};
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 /// Maximum backoff duration.
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
+/// 单帧写超时上限（秒）。BUG-20261115-016：半死连接上无界写 await 会冻结
+/// 整个读循环（select 单臂卡住 = Pong/心跳/关停全停），有界超时让既有
+/// break/return 语义可达，重连臂接管。家族值对齐 IRC WRITE_TIMEOUT_SECS。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 
 /// QQ channel configuration.
 /// SEC-002（BUG-20261111-068）：app_secret 脱敏。
@@ -552,7 +556,12 @@ impl QQChannel {
                                             }
                                         }
                                         Some(Ok(Message::Ping(payload))) => {
-                                            let _ = write.send(Message::Pong(payload)).await;
+                                            // BUG-20261115-016：有界写，超时静默放弃本帧
+                                            let _ = tokio::time::timeout(
+                                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                                write.send(Message::Pong(payload)),
+                                            )
+                                            .await;
                                         }
                                         Some(Ok(Message::Close(frame))) => {
                                             info!(frame = ?frame, "[QQChannel] bot WebSocket closed by server");
@@ -575,14 +584,26 @@ impl QQChannel {
                                         "op": 1,
                                         "d": null
                                     });
-                                    if write.send(Message::Text(heartbeat.to_string().into())).await.is_err() {
+                                    // BUG-20261115-016：有界写，超时与发送失败同走 break 重连
+                                    if tokio::time::timeout(
+                                        std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                        write.send(Message::Text(heartbeat.to_string().into())),
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
                                         warn!("[QQChannel] bot heartbeat send failed");
                                         break;
                                     }
                                 }
                                 _ = &mut cancel_rx => {
                                     info!("[QQChannel] bot receive loop shutting down");
-                                    let _ = write.close().await;
+                                    // BUG-20261115-016：关停路径 close 也有界（挂死连接上 close 同样可永远 pending）
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                        write.close(),
+                                    )
+                                    .await;
                                     return;
                                 }
                             }

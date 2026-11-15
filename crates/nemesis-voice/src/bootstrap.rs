@@ -325,6 +325,21 @@ fn prepare_extract_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 代理 URL 日志脱敏（SEC-002 口径，BUG-20261115-005）：代理 URL 可携带
+/// userinfo 凭据（http://user:pass@host:port），日志/错误上下文只落
+/// scheme 不落完整 URL——nemesis-config proxy_file 读侧 WARN 同款口径
+///（config crate 不在 voice 依赖面，本地同名形态；含 with_context 错误链
+/// 面——anyhow Display 会把 context 一并打进日志）。
+#[cfg(feature = "download")]
+pub(crate) fn redact_proxy_for_log(proxy_url: &str) -> String {
+    let scheme = proxy_url.trim().split("://").next().unwrap_or("");
+    if scheme.is_empty() {
+        "<unknown-scheme>".to_string()
+    } else {
+        format!("{scheme}://<redacted>")
+    }
+}
+
 #[cfg(all(target_os = "windows", feature = "download"))]
 async fn try_download_and_extract(
     url: &str,
@@ -353,9 +368,10 @@ async fn try_download_and_extract(
             .connect_timeout(std::time::Duration::from_secs(30));
 
         if !proxy_url.trim().is_empty() {
-            let proxy = reqwest::Proxy::all(proxy_url)
-                .with_context(|| format!("Invalid proxy URL: {}", proxy_url))?;
-            tracing::info!("Using proxy: {}", proxy_url);
+            let proxy = reqwest::Proxy::all(proxy_url).with_context(|| {
+                format!("Invalid proxy URL: {}", redact_proxy_for_log(proxy_url))
+            })?;
+            tracing::info!("Using proxy: {}", redact_proxy_for_log(proxy_url));
             client_builder = client_builder.proxy(proxy);
         }
 
@@ -707,8 +723,8 @@ async fn download_to(url: &str, archive_path: &Path, proxy_url: &str, label: &st
         .connect_timeout(std::time::Duration::from_secs(30));
     if !proxy_url.trim().is_empty() {
         let proxy = reqwest::Proxy::all(proxy_url)
-            .with_context(|| format!("Invalid proxy URL: {}", proxy_url))?;
-        tracing::info!("[aec] Using proxy: {}", proxy_url);
+            .with_context(|| format!("Invalid proxy URL: {}", redact_proxy_for_log(proxy_url)))?;
+        tracing::info!("[aec] Using proxy: {}", redact_proxy_for_log(proxy_url));
         client_builder = client_builder.proxy(proxy);
     }
     let client = client_builder

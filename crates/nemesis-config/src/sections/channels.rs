@@ -30,6 +30,11 @@ macro_rules! impl_redacted_debug {
     };
 }
 
+// 路径宏导出（BUG-20261114-063）：宏本体是 channels.rs 文本作用域私有，
+// sections 兄弟模块（misc/models——bridge 段与 tools.web 搜索段）经
+// `use super::channels::impl_redacted_debug` 复用同一脱敏形态。
+pub(crate) use impl_redacted_debug;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionConfig {
     #[serde(default)]

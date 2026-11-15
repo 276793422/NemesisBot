@@ -352,8 +352,12 @@ func (m *TestAI42) Process(messages []Message) string {
 	toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
 
 	// 构造 sleep 工具调用的参数
+	// 参数名=seconds（gateway 注册的 loop_tools.SleepTool schema 钉 seconds
+	// required；nemesis-tools 同名死模块的 duration 假兼容已在
+	// BUG-20261112-107 清除——用 duration 会被 args 校验拒之门外，
+	// 脚本化 sleep 永不执行。与 wal_model.go 同款注记。）
 	args := map[string]interface{}{
-		"duration": 30, // 30 秒
+		"seconds": 30, // 30 秒
 	}
 	argsJSON, _ := json.Marshal(args)
 
@@ -407,9 +411,9 @@ func (m *TestAI43) Process(messages []Message) string {
 	// 第一轮：返回 sleep 工具调用
 	toolCallID := fmt.Sprintf("call-%d", time.Now().UnixNano())
 
-	// 构造 sleep 工具调用的参数
+	// 构造 sleep 工具调用的参数（参数名=seconds，见 TestAI42 注记）
 	args := map[string]interface{}{
-		"duration": 300, // 300 秒（5 分钟）
+		"seconds": 300, // 300 秒（5 分钟）
 	}
 	argsJSON, _ := json.Marshal(args)
 

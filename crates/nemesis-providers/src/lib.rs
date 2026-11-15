@@ -2,6 +2,8 @@
 //!
 //! Provider management, routing strategies, failover, and LLM driver implementations.
 
+/// Provider 成功响应体有帽读取（BUG-20261115-024 统一入口）。
+pub mod body_cap;
 pub mod failover;
 pub mod http_provider;
 pub mod null_provider;
@@ -18,6 +20,8 @@ pub mod codex;
 pub mod codex_cli;
 pub mod codex_credentials;
 pub mod cooldown;
+/// SEC-002 Debug 脱敏共享件（BUG-20261111-068 家族 providers 侧补漏）。
+pub(crate) mod debug_redact;
 pub mod default_slot;
 /// 强度翻译（U1）：reasoning_effort → openai 兼容请求体补丁（HttpCompat lane）。
 pub mod effort_translate;
@@ -30,3 +34,6 @@ pub mod images;
 pub mod model_ref;
 pub mod think_strip;
 pub mod tool_call_extract;
+
+#[cfg(test)]
+mod debug_redact_tests;

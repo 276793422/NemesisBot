@@ -453,6 +453,13 @@ impl DataStore {
             .map_err(|e| format!("count logs: {e}"))?;
 
         let select_sql = format!(
+            // created_at 是秒级（写入点 `Local::now().timestamp()`），逐请求
+            // 一行 → 同秒多行是常态；排序键非唯一时同值组内行序由查询计划
+            // 决定（当前反向索引扫描恰好 = id DESC，是巧合不是契约）。id
+            // （自增主键）决胜 tie 把组内序钉死在 schema 层——与下方
+            // retention sweep 裁剪子查询（BUG-20261107-021）同一纪律。
+            // 边界：翻页期间插入新行导致的重行是 offset 分页固有语义，
+            // tie 不改变它。
             "SELECT id, trace_id, model, provider_type, input_tokens, output_tokens,
                     cache_creation_tokens, cache_read_tokens, total_cost_usd,
                     latency_ms, status_code, error_message, is_streaming, created_at,
@@ -461,7 +468,7 @@ impl DataStore {
                     first_token_ms, session_key
              FROM request_logs
              WHERE {where_clause}
-             ORDER BY created_at DESC
+             ORDER BY created_at DESC, id DESC
              LIMIT ?{} OFFSET ?{}",
             bind.len() + 1,
             bind.len() + 2,

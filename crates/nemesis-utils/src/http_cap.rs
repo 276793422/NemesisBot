@@ -33,32 +33,52 @@ where
     Ok(out)
 }
 
+/// 有帽读取的分型错误（BUG-20261115-024）：provider 成功体路径需要区分
+/// 「传输读失败」（归 transport_error，保持既有可重试语义）与「超限」（
+/// 端点失控/恶意，独立错误类）。String 版 [`read_body_capped`] 是本枚举
+/// 的视图（消息形态不变，既有消费方零迁移）。
+#[derive(Debug)]
+pub enum BodyReadError {
+    /// 响应体读取传输失败（连接中断/超时等）。
+    Transport(reqwest::Error),
+    /// 累计超 `cap`，读取中途断开。
+    ExceedsLimit { cap: u64 },
+}
+
+/// [`read_body_capped`] 的分型核心：错误分类由类型承载，不靠消息子串
+/// 反解。读循环与 String 版完全同形（单一真相源在循环，两版只是错误
+/// 视图不同）。
+pub async fn read_body_capped_typed(
+    mut response: reqwest::Response,
+    cap: u64,
+) -> Result<Vec<u8>, BodyReadError> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    while let Some(chunk) = response.chunk().await.map_err(BodyReadError::Transport)? {
+        total = total.saturating_add(chunk.len() as u64);
+        if total > cap {
+            return Err(BodyReadError::ExceedsLimit { cap });
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 /// 流式读响应体，累计超 `cap` **中途断开**：超限判定发生在每个 chunk 到达
 /// 时，Err 返回即 drop `response`（连接关闭，后续数据不再拉取）——恶意源
 /// 的巨大 body 在撑内存前被拒，内存峰值 = 已到达的前缀。
 ///
 /// 错误返回 `String`（本模块不依赖 nemesis-types），调用方按各自错误
 /// 体系 map。消息形态含 `exceeds limit`（273 既有测试断言的子串）。
-pub async fn read_body_capped(
-    mut response: reqwest::Response,
-    cap: u64,
-) -> Result<Vec<u8>, String> {
-    let mut out: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("failed to read response body: {e}"))?
-    {
-        total = total.saturating_add(chunk.len() as u64);
-        if total > cap {
-            return Err(format!(
-                "response exceeds limit (>{cap} bytes); aborted mid-read"
-            ));
-        }
-        out.extend_from_slice(&chunk);
+/// 需要区分传输失败与超限的调用方用 [`read_body_capped_typed`]。
+pub async fn read_body_capped(response: reqwest::Response, cap: u64) -> Result<Vec<u8>, String> {
+    match read_body_capped_typed(response, cap).await {
+        Ok(v) => Ok(v),
+        Err(BodyReadError::Transport(e)) => Err(format!("failed to read response body: {e}")),
+        Err(BodyReadError::ExceedsLimit { cap }) => Err(format!(
+            "response exceeds limit (>{cap} bytes); aborted mid-read"
+        )),
     }
-    Ok(out)
 }
 
 /// [`read_body_capped`] 的 **blocking** 形态（2026-11-15 persona shop 同类

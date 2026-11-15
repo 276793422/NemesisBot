@@ -776,8 +776,27 @@ impl MemoryHandler {
         // Embedding config content (full overwrite of config.enhanced_memory.json)
         if let Some(content) = get_opt_str_loud(data, "embedding_config_content")? {
             let emb_path = config_dir.join("config.enhanced_memory.json");
-            std::fs::write(&emb_path, content)
-                .map_err(|e| format!("write embedding config error: {}", e))?;
+            // Typed 解析预检（BUG-20261115-037）：非法内容若落盘，loader 侧
+            // from_str::<EmbeddingConfig> 失败会**静默回落 default**——编辑器
+            // 存进一份坏 JSON = 配置无声丢失。loud 拒绝让坏内容停在编辑器；
+            // 与 loader 同型同源（字段 serde default，仅拒类型失配字段）。
+            serde_json::from_str::<nemesis_memory::vector::embedding_config::EmbeddingConfig>(
+                &content,
+            )
+            .map_err(|e| {
+                format!("embedding 配置解析失败（拒绝写入，防加载期静默回落默认值）: {e}")
+            })?;
+            // 原子写家族（BUG-20261115-037）：裸 std::fs::write 直写终路径，
+            // 写一半（进程被杀/磁盘满）残留半截 JSON → load 回落 default →
+            // 下一次无关的 RMW 保存把默认配置固化覆写。同文件 typed 臂
+            // save_embedding_config 已走 write_file_atomic（其注释即本失败链），
+            // 本臂是漏网——同形补齐。
+            nemesis_utils::write_file_atomic(
+                &emb_path.to_string_lossy(),
+                content.as_bytes(),
+                0o644,
+            )
+            .map_err(|e| format!("write embedding config error: {}", e))?;
         }
 
         Ok(Some(serde_json::json!({ "updated": true })))

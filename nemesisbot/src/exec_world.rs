@@ -95,6 +95,7 @@ impl ExecutorIsolationPolicy {
     /// 常驻执行体暂不支持 MXC 后端（per-call 通道全量覆盖 MXC）——runtime
     /// 的 spawn_session 据此 fail-closed 拒绝常驻槽（上层回落 per-call，不
     /// 静默改道 Sandboxie/裸跑）。
+    #[cfg_attr(not(feature = "sandbox-mxc"), allow(dead_code))]
     pub fn backend_is_mxc(&self) -> bool {
         nemesis_utils::fsutil::read_config_string(&self.config_path)
             .ok()

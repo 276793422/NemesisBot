@@ -202,13 +202,14 @@ pub fn tier_selection_tokens(
 /// `prompt_tokens` = 完整 prompt 长度（[`tier_selection_tokens`] 的产物，
 /// 含缓存），非账本的 `input_tokens`（非缓存纯输入）——两口径勿混。
 fn effective_prices(p: &ModelPricing, prompt_tokens: i64) -> EffectivePrices {
+    let base = EffectivePrices {
+        input: p.input_cost_per_million,
+        output: p.output_cost_per_million,
+        cache_read: p.cache_read_cost_per_million,
+        cache_creation: p.cache_creation_cost_per_million,
+    };
     let Some(tiers) = &p.price_tiers else {
-        return EffectivePrices {
-            input: p.input_cost_per_million,
-            output: p.output_cost_per_million,
-            cache_read: p.cache_read_cost_per_million,
-            cache_creation: p.cache_creation_cost_per_million,
-        };
+        return clamp_negative_prices(base);
     };
     // 命中 = prompt_tokens >= min_prompt_tokens；多条命中取阈值最大的一档
     // （max_by_key 平票取后者，但等阈值档语义上应同价——取哪条都一致）。
@@ -216,26 +217,32 @@ fn effective_prices(p: &ModelPricing, prompt_tokens: i64) -> EffectivePrices {
         .iter()
         .filter(|t| prompt_tokens >= t.min_prompt_tokens)
         .max_by_key(|t| t.min_prompt_tokens);
-    match tier {
-        None => EffectivePrices {
-            input: p.input_cost_per_million,
-            output: p.output_cost_per_million,
-            cache_read: p.cache_read_cost_per_million,
-            cache_creation: p.cache_creation_cost_per_million,
-        },
+    let prices = match tier {
+        None => base,
         Some(t) => EffectivePrices {
-            input: t.input_cost_per_million.unwrap_or(p.input_cost_per_million),
-            output: t
-                .output_cost_per_million
-                .unwrap_or(p.output_cost_per_million),
-            cache_read: t
-                .cache_read_cost_per_million
-                .unwrap_or(p.cache_read_cost_per_million),
+            input: t.input_cost_per_million.unwrap_or(base.input),
+            output: t.output_cost_per_million.unwrap_or(base.output),
+            cache_read: t.cache_read_cost_per_million.unwrap_or(base.cache_read),
             cache_creation: t
                 .cache_creation_cost_per_million
-                .unwrap_or(p.cache_creation_cost_per_million),
+                .unwrap_or(base.cache_creation),
         },
-    }
+    };
+    clamp_negative_prices(prices)
+}
+
+/// 负价防御钳（BUG-20261115-020）：token 列钳 0 的同族不变量延伸到
+/// **价格列**——「上游报数异常不得产生负成本」。畸形负价进入计价层的
+/// 路径：下载表/import 的畸形条目（parse 层不做逐条语义校验，整表降级
+/// 对一条负价过度）、手改 pricing_custom.json、CLI 负值（CLI 入口已
+/// loud 拒——此处是纵深防御，防绕过 CLI 的写路径）。负价无合法计费
+/// 语义（成本是可观测性数据，不存在返佣结算），钳 0 = 免费模型语义。
+fn clamp_negative_prices(mut p: EffectivePrices) -> EffectivePrices {
+    p.input = p.input.max(0.0);
+    p.output = p.output.max(0.0);
+    p.cache_read = p.cache_read.max(0.0);
+    p.cache_creation = p.cache_creation.max(0.0);
+    p
 }
 
 /// [`effective_prices`] 的解析产物（四列价目，已含继承回填）。

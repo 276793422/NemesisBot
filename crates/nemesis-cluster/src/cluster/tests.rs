@@ -1,4 +1,5 @@
 use super::*;
+use crate::cluster_config::PeerStatus;
 use nemesis_types::cluster::TaskStatus;
 
 /// 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
@@ -615,6 +616,79 @@ async fn test_poll_safety_net_timeout_publishes_bus_error() {
 
     // 断言 2：任务状态被标 Failed（complete_callback 语义不回归）。
     let task = cluster.get_task("cd2-timeout-task").unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+}
+
+// --：清理 tick 判死臂必须补发 bus 唤醒帧（BUG-20261115-031）---------
+//
+// 根因：清理循环（30s tick）与恢复 sweep（120s tick）对同一
+// pending_timeout 阈值竞速——清理赢时任务即 Failed，sweep 只扫 Pending
+// 从此永远看不到；此前清理判死臂只落状态不发布 = 续行快照孤儿 +
+// 等待方对话挂死。修复 = 构造期 install_stale_kill_hook 补发与 sweep
+// 判死臂同形状的 cluster_continuation error 帧。
+
+#[tokio::test]
+async fn test_cleanup_stale_kill_publishes_bus_wake() {
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let bus = Arc::new(MockBus {
+        messages: messages.clone(),
+    });
+
+    // 不调 cluster.start()：恢复循环首 tick 即时且含年轻任务闸，会与
+    // 本测试抢判死（混淆被测路径）；构造期已装 stale-kill 钩子，直跑
+    // 清理一轮即可触发被测臂。
+    let cluster = Cluster::new(make_config());
+    cluster.set_message_bus(bus);
+
+    // 缩短安全网到 60s，构造一个 2h 前创建的 Pending 任务（年龄远超
+    // 安全网 → 命中清理循环判死臂）。
+    cluster
+        .task_manager()
+        .set_pending_timeout(chrono::Duration::seconds(60));
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(2)).to_rfc3339();
+    let task = nemesis_types::cluster::Task {
+        id: "ck-stale-kill-task".into(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".into(),
+        peer_id: "remote-001".into(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "web".into(),
+        original_chat_id: "chat-1".into(),
+        created_at: old_created,
+        completed_at: None,
+    };
+    cluster.task_manager().submit(task).unwrap();
+
+    // 生产清理循环同参装配跑一轮；钩子内 publish 是 spawn 化
+    // fire-and-forget，稍候让其落地。
+    cluster.task_manager().run_cleanup_once();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 断言 1：bus 收到 error 续行唤醒帧（agent 被唤醒），形状与 sweep
+    // 判死臂逐字段一致。
+    let msgs = messages.lock();
+    assert_eq!(msgs.len(), 1, "清理判死臂必须补发恰好一条 bus 唤醒帧");
+    assert_eq!(msgs[0].channel, "system");
+    assert_eq!(msgs[0].sender_id, "cluster_continuation:ck-stale-kill-task");
+    assert_eq!(msgs[0].content, "");
+    assert_eq!(
+        msgs[0].metadata.get("status").map(String::as_str),
+        Some("error")
+    );
+    let err = msgs[0]
+        .metadata
+        .get("error")
+        .expect("metadata.error 必须存在");
+    assert!(
+        err.contains("timed out"),
+        "metadata.error 应含清理判死文案，got: {}",
+        err
+    );
+    drop(msgs);
+
+    // 断言 2：任务状态被标 Failed（判死语义不回归）。
+    let task = cluster.get_task("ck-stale-kill-task").unwrap();
     assert_eq!(task.status, TaskStatus::Failed);
 }
 
@@ -4215,7 +4289,7 @@ fn test_sync_to_disk_with_connecting_status() {
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.start();
 
-    // Register a node with Connecting status to hit the "unknown" branch
+    // Register a node with Connecting status to hit the state projection
     cluster.register_node(ExtendedNodeInfo {
         base: nemesis_types::cluster::NodeInfo {
             id: "connecting-node".into(),
@@ -4244,11 +4318,15 @@ fn test_sync_to_disk_with_connecting_status() {
     let state_path = dir.path().join("cluster").join("state.toml");
     assert!(state_path.exists());
 
-    // Read back and verify the status is "unknown"
+    // sync_to_disk 走统一投影 to_peer_config()（2026-11-14 第七轮审查 T3）：
+    // status.state = get_status_string() 真实值（"connecting"），不再经旧
+    // 手写投影归一化成 "unknown"。回读侧 restore_discovered_from_state 只
+    // 消费 last_seen、恒 Offline 种回，state 字符串无行为消费方——落盘
+    // 真实值对排障面更诚实。
     let content = std::fs::read_to_string(&state_path).unwrap();
     assert!(
-        content.contains("unknown"),
-        "Connecting status should map to 'unknown' in state file, got: {}",
+        content.contains("connecting"),
+        "Connecting status should persist verbatim via to_peer_config, got: {}",
         content
     );
     cluster.stop();
@@ -6969,6 +7047,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     tl.save_async_state(
         "parent-1",
@@ -7042,6 +7121,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     tl.save_async_state(
         "parent-2",
@@ -7266,7 +7346,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7294,7 +7374,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7315,7 +7395,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7329,7 +7409,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,

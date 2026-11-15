@@ -258,3 +258,146 @@ fn persist_concurrent_writers_always_leave_valid_snapshot() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ===========================================================================
+// 归档生命周期（2026-11-15）：archive 仅终态 / unarchive 清位 / remove
+// 物理摘除 / 落盘 round-trip 含 archived_at / 旧形态文件兼容 / 容量逐出
+// 不豁免。
+// ===========================================================================
+
+#[test]
+fn archive_only_terminal_and_counts_honestly() {
+    let reg = SubagentRegistry::new(None);
+    reg.begin(begin_req("subagent:a-run"));
+    reg.begin(begin_req("subagent:a-done"));
+    reg.finish("subagent:a-done", SubagentStatus::Done, None, None, None);
+
+    // 批量含一个运行中：只归档终态行，计数如实（1 非 2）。
+    let changed = reg.archive(&["subagent:a-run".into(), "subagent:a-done".into()]);
+    assert_eq!(changed, 1);
+    assert!(reg.get("subagent:a-run").unwrap().archived_at.is_none());
+    assert!(reg.get("subagent:a-done").unwrap().archived_at.is_some());
+    assert_eq!(reg.archived_count(), 1);
+
+    // 重复归档幂等（已归档行不再计数）。
+    assert_eq!(reg.archive(&["subagent:a-done".into()]), 0);
+}
+
+#[test]
+fn unarchive_clears_field() {
+    let reg = SubagentRegistry::new(None);
+    reg.begin(begin_req("subagent:ua"));
+    reg.finish("subagent:ua", SubagentStatus::Failed, None, None, None);
+    assert_eq!(reg.archive(&["subagent:ua".into()]), 1);
+    assert_eq!(reg.unarchive(&["subagent:ua".into()]), 1);
+    assert!(reg.get("subagent:ua").unwrap().archived_at.is_none());
+    assert_eq!(reg.archived_count(), 0);
+    // 未归档行 unarchive：不计数。
+    assert_eq!(reg.unarchive(&["subagent:ua".into()]), 0);
+}
+
+#[test]
+fn remove_physically_purges_tasks_order_tokens() {
+    let reg = SubagentRegistry::new(None);
+    reg.begin(begin_req("subagent:r1"));
+    reg.begin(begin_req("subagent:r2"));
+    reg.finish("subagent:r1", SubagentStatus::Done, None, None, None);
+    let token = Arc::new(CancellationToken::new());
+    reg.attach_token("subagent:r1", token.clone());
+
+    assert_eq!(reg.remove(&["subagent:r1".into()]), 1);
+    assert!(reg.get("subagent:r1").is_none());
+    // order 同步摘除：全列表只余 r2。
+    let list = reg.list();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, "subagent:r2");
+    // 缺行 / 重复 remove：不计数（0）。
+    assert_eq!(
+        reg.remove(&["subagent:r1".into(), "subagent:ghost".into()]),
+        0
+    );
+
+    // 删后再 finish：缺行静默忽略（delegate B 端回灌语义），不炸。
+    reg.finish("subagent:r1", SubagentStatus::Done, None, None, None);
+    assert!(reg.get("subagent:r1").is_none());
+}
+
+#[test]
+fn persist_roundtrip_preserves_archived_at() {
+    let dir = std::env::temp_dir().join(format!("nb-reg-arch-{}", std::process::id()));
+    let path = dir.join("tasks.json");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let reg = SubagentRegistry::new(Some(PathBuf::from(&path)));
+    reg.begin(begin_req("subagent:ka"));
+    reg.finish("subagent:ka", SubagentStatus::Done, None, None, None);
+    reg.archive(&["subagent:ka".into()]);
+
+    // 独立实例回读（模拟进程重启）：archived_at 保留。
+    let reg2 = SubagentRegistry::new(Some(PathBuf::from(&path)));
+    reg2.load_from_disk();
+    assert!(reg2.get("subagent:ka").unwrap().archived_at.is_some());
+    assert_eq!(reg2.archived_count(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_file_without_archived_field_loads_as_unarchived() {
+    let dir = std::env::temp_dir().join(format!("nb-reg-legacy-{}", std::process::id()));
+    let path = dir.join("tasks.json");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // 旧形态文件（无 archived_at 字段，升级前落盘）——手工写最小 JSON，
+    // serde `#[serde(default)]` 读成 None = 未归档，零迁移。
+    let legacy = r#"[{
+        "id": "subagent:legacy",
+        "parent_session_key": "s",
+        "parent_chat_id": "c",
+        "origin": "model_spawn",
+        "agent_id": "a",
+        "task": "t",
+        "role": "",
+        "tools_profile": "full",
+        "depth": 1,
+        "background": false,
+        "loop_origin": "main",
+        "status": "done",
+        "started_at_ms": 1,
+        "finished_at_ms": 2,
+        "rounds": null,
+        "summary": null,
+        "error": null,
+        "bg_task_id": null
+    }]"#;
+    std::fs::write(&path, legacy).unwrap();
+
+    let reg = SubagentRegistry::new(Some(PathBuf::from(&path)));
+    reg.load_from_disk();
+    let t = reg.get("subagent:legacy").unwrap();
+    assert_eq!(t.status, SubagentStatus::Done);
+    assert!(t.archived_at.is_none(), "旧文件无字段 = 未归档");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn archived_rows_still_subject_to_capacity_eviction() {
+    // 归档行不豁免 MAX_TASKS 容量逐出（策略不变；归档行通常更老自然先逐
+    // ——归档 TAB desc 已向用户写明）。
+    let reg = SubagentRegistry::new(None);
+    for i in 0..(MAX_TASKS - 1) {
+        let id = format!("subagent:e{i}");
+        reg.begin(begin_req(&id));
+        reg.finish(&id, SubagentStatus::Done, None, None, None);
+    }
+    let oldest: Vec<String> = (0..10).map(|i| format!("subagent:e{i}")).collect();
+    assert_eq!(reg.archive(&oldest), 10);
+
+    // 打满后再插 2 行（超限 1）：逐出最老终态 = 已归档的 e0。
+    reg.begin(begin_req("subagent:e-new1"));
+    reg.begin(begin_req("subagent:e-new2"));
+    assert!(reg.get("subagent:e0").is_none(), "归档行不豁免逐出");
+    assert_eq!(reg.archived_count(), 9, "e0 被逐后归档计数 9");
+}

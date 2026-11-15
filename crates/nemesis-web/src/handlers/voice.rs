@@ -1456,22 +1456,24 @@ impl VoiceHandler {
                 }
             }
         })
-        .await
-        .map_err(|e| format!("install task panicked: {}", e))?;
+        .await;
 
-        // Release install lock
+        // 先释放闸再处理 JoinError（panic 路径 `?` 早退会把 per-key 闸永久
+        // 卡死，直到重启都报「正在安装中」——memory.rs env_setup/per-tier
+        // 「横扫十期」同族修法，本站点为漏网（BUG-20261115-008））。
         {
             let mut locks = install_locks().lock().unwrap();
             locks.remove(&lock_key);
         }
-
-        // Clear cancel token
+        // cancel 槽同序清理（悬挂 stale token 会让后续 stop_setup 误命中
+        // 旧安装）；进度回调一并摘除（panic 路径闭包内 set_progress(None)
+        // 不可达，残留全局回调会向已死安装的 hub 持续发布进度帧）。
         {
             let mut guard = setup_cancel().lock().unwrap();
             *guard = None;
         }
-
-        result
+        nemesis_voice::set_progress(None);
+        result.map_err(|e| format!("install task panicked: {}", e))?
     }
 
     /// 模型目录（模型设置弹窗数据源）：config.toml `[[models.sources]]` 按

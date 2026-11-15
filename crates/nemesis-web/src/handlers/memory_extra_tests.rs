@@ -548,6 +548,69 @@ async fn test_memory_config_set_active_tier() {
     assert_eq!(v["active"], "large");
 }
 
+/// BUG-20261115-037 回归锁：`config.set` 的 `embedding_config_content`
+/// 臂（Dashboard 原始 JSON 编辑器全量覆写）——旧形态裸 `std::fs::write`
+/// 直写终路径，写一半（进程被杀/磁盘满）残留半截 JSON → loader 解析失败
+/// **静默回落 default** → 下一次无关的 RMW 保存把默认配置固化覆写。同文件
+/// typed 臂 `save_embedding_config` 已走 `write_file_atomic`，本臂是漏网。
+/// 修复 = typed 解析预检（与 loader 同型，坏内容 loud 拒绝）+ 原子写。
+#[tokio::test]
+async fn test_memory_config_set_embedding_content_validated_and_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    ensure_config_dir(ws);
+    write_config(ws);
+    let handler = MemoryHandler;
+    let ctx = make_ctx(&dir);
+    let emb_path = ws.join("config").join("config.enhanced_memory.json");
+
+    // 合法内容落盘，原文保留 + loader 同型读回（不静默回落默认）。
+    let good = r#"{"enabled":true,"active":"local-onnx"}"#;
+    handler
+        .handle_cmd(
+            "config.set",
+            Some(serde_json::json!({ "embedding_config_content": good })),
+            &ctx,
+        )
+        .await
+        .expect("合法 embedding 配置必须被接受")
+        .expect("updated 应答");
+    assert_eq!(std::fs::read_to_string(&emb_path).unwrap(), good);
+    let loaded =
+        nemesis_memory::vector::embedding_config::load_embedding_config(&ws.join("config"));
+    assert_eq!(loaded.active, "local-onnx", "落盘值必须被 loader 如实读回");
+
+    // 坏 JSON loud 拒绝：文件保持原内容（不被坏内容覆写）。
+    let err = handler
+        .handle_cmd(
+            "config.set",
+            Some(serde_json::json!({ "embedding_config_content": "{not json" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("解析失败"), "got: {err}");
+    assert_eq!(
+        std::fs::read_to_string(&emb_path).unwrap(),
+        good,
+        "坏内容不得覆写既有配置"
+    );
+
+    // 字段类型失配同样拒绝（此形态 loader 也会静默回落 default）。
+    let err = handler
+        .handle_cmd(
+            "config.set",
+            Some(
+                serde_json::json!({ "embedding_config_content": r#"{"enabled":"yes-not-bool"}"# }),
+            ),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("解析失败"), "got: {err}");
+    assert_eq!(std::fs::read_to_string(&emb_path).unwrap(), good);
+}
+
 // config.set / config.get — auto_inject flags (UI entry gap)
 
 /// Set both flags, then read back through `load_embedding_config` — the

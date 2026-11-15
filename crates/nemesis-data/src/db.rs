@@ -126,7 +126,12 @@ static DATA_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
 ];
 
 /// 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
-/// 门面；无 extra pragmas——data.db 单写者，无多进程并开退避需求）。
+/// 门面；busy_timeout = 5000 与 board.db 同值——`dossier export` /
+/// `model prices` / `model probe` 等 CLI 与常驻 gateway **并开同一
+/// data.db** 是常规拓扑（同为 workspace_data_dir 真相源），且 open 面的
+/// 迁移链收尾还会无条件写 `user_version`（拿写锁）——无退避的撞锁 =
+/// CLI 立即 SQLITE_BUSY（dossier 的 usage 闭包静默缺行、prices loud 失败）。
+/// in-process 第二连接（watcher 轮询连接）自带同值 busy_timeout，口径一致）。
 static DATA_STORE: nemesis_utils::sqlite_preflight::StoreSpec =
     nemesis_utils::sqlite_preflight::StoreSpec {
         label: "[DataStore]",
@@ -144,7 +149,11 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     }
     // 装配序（能力准入/WAL/漂移对账/迁移前备份/原子迁移链）单一真相源在
     // 共享件 sqlite_preflight::open_sqlite_store（门面）。
-    nemesis_utils::sqlite_preflight::open_sqlite_store(db_path, &DATA_STORE, &[])
+    nemesis_utils::sqlite_preflight::open_sqlite_store(
+        db_path,
+        &DATA_STORE,
+        &["PRAGMA busy_timeout = 5000"],
+    )
 }
 
 #[cfg(test)]

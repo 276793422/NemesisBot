@@ -172,6 +172,40 @@ async fn agt_update_field_proxy_rejects_bad_prefix() {
     assert!(cfg["model_list"][0].get("proxy").is_none());
 }
 
+/// BUG-20261114-064：socks:// scheme 拒绝——reqwest/hyper-util 都不认
+/// （env 路径静默直连、显式路径连接期失败），保存期必须 loud 拒绝。
+#[tokio::test]
+async fn agt_update_field_proxy_rejects_socks_scheme() {
+    let dir = tempfile::tempdir().unwrap();
+    agt_write_config(
+        dir.path(),
+        r#"{ "model_list": [ { "model_name": "m1", "model": "test/testai-1.1" } ] }"#,
+    );
+    let ctx = agt_make_ctx(&dir);
+    let err = ModelsHandler::new()
+        .update_field(
+            &agt_home_str(&dir),
+            &serde_json::json!({ "name": "m1", "field": "proxy", "value": "socks://proxy:1080" }),
+            &ctx,
+        )
+        .unwrap_err();
+    assert!(err.contains("proxy must start with"), "err: {err}");
+    // socks5:// 仍合法（reqwest socks feature 支持面）
+    let out = ModelsHandler::new()
+        .update_field(
+            &agt_home_str(&dir),
+            &serde_json::json!({ "name": "m1", "field": "proxy", "value": "socks5://proxy:1080" }),
+            &ctx,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+    assert_eq!(
+        agt_read_config_raw(dir.path())["model_list"][0]["proxy"],
+        "socks5://proxy:1080"
+    );
+}
+
 /// entry_is_default 的两个非 model_name 命中臂（719-720）：
 /// agents.defaults.llm = vendor/model 串 / 别名（末段）。
 #[tokio::test]

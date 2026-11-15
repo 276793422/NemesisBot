@@ -96,6 +96,39 @@ async fn test_read_body_capped_wire_over_limit() {
     assert!(err.contains("aborted mid-read"), "msg: {err}");
 }
 
+// ---- read_body_capped_typed（BUG-20261115-024：分型错误视图）----
+
+#[tokio::test]
+async fn test_read_body_capped_typed_ok() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/f"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("hello"))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/f", server.uri())).await.unwrap();
+    let out = super::read_body_capped_typed(resp, 100).await.unwrap();
+    assert_eq!(out, b"hello");
+}
+
+#[tokio::test]
+async fn test_read_body_capped_typed_exceeds_limit_variant() {
+    // 分型核心：超限错误由类型承载（ExceedsLimit{cap}），调用方不再靠
+    // 消息子串反解分类。
+    let server = wiremock::MockServer::start().await;
+    let big = "x".repeat(10_000);
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/big"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(big))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/big", server.uri())).await.unwrap();
+    match super::read_body_capped_typed(resp, 1024).await {
+        Err(super::BodyReadError::ExceedsLimit { cap }) => assert_eq!(cap, 1024),
+        other => panic!("expected ExceedsLimit {{cap}}, got {other:?}"),
+    }
+}
+
 // ---- 传输级「中途断开」观测（钉 [`super::read_body_capped`] 本体）----
 //
 // wiremock 只能观测最终错误消息，观测不了「读了多少」——若未来有人把

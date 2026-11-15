@@ -664,3 +664,20 @@ fn discipline_hook_names() {
     assert_eq!(ToolHook::name(&gate), "discipline-gate");
     assert_eq!(LifecycleHook::name(&fals), "discipline-falsification");
 }
+
+/// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的 declaration.json
+/// ——旧形态裸 `read_to_string` → BOM →「声明不是合法 JSON」误导报错（文件
+/// 完好，用户照报错删文件 = 丢声明）。read_config_string 剥 BOM 后照常解析。
+#[test]
+fn declaration_accepts_utf8_bom_file() {
+    let ws = tempdir();
+    let dir = ws.join(DISCIPLINE_DIR);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("declaration.json"),
+        format!("\u{feff}{}", declaration_doc(pass_cmd())),
+    )
+    .unwrap();
+    let d = Declaration::from_workspace(&ws).expect("BOM 前缀完好声明必须 Ok");
+    assert_eq!(d.falsification_cmd, pass_cmd());
+}

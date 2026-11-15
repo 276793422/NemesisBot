@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 
 use nemesis_agent::user_profile::{self, stat_candidates, upsert_habit};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 static SWEEP_SPAWNED: OnceLock<()> = OnceLock::new();
 
 /// gateway 装配点调用：保证 sweep 任务只 spawn 一份。S8：`data_store`
@@ -37,7 +39,17 @@ pub fn ensure_sweep_spawned(
             })
             .await
             .unwrap_or(3600);
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            // BUG-20261115-023：终态令牌等待点（sleep 型变周期循环）——
+            // cancel 后 break 不再 re-park timer（家族纪律见 shutdown.rs
+            // 模块文档）。
+            if !terminal_loop_tick(
+                terminal_cancel_token(),
+                tokio::time::sleep(std::time::Duration::from_secs(secs)),
+            )
+            .await
+            {
+                break;
+            }
             sweeps += 1;
             // sweep_once 内含 LLM 调用（反思通道）——阻塞段放 blocking 线程，
             // LLM 调用经 Handle::block_on 桥回运行时。

@@ -34,6 +34,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{error, info, warn};
 
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 use super::{AgentWiring, ClusterWiring, GatewayCtx};
 use crate::adapters;
 
@@ -129,13 +131,20 @@ pub(crate) async fn init_post_agent(
     let board_playtest_registry = cluster.board_playtest_registry.clone();
     // BUG-20261114-019：发件箱 Arc 进 adapter（terminal 停机链收口推送
     // 循环的唯一样携带面；spawn 点句柄已丢弃，此前全进程无终止通路）。
-    // 双臂声明：wiring 字段随 board+cluster 门，cluster-only 构建下
-    // adapter 槽恒 None（类型 nemesis_cluster::outbox 恒可用——init_cluster
-    // 的 not(all) 占位臂同款）。
+    // 三分臂声明：wiring 字段随 board+cluster 门。
+    // cluster-on（board 有无皆可）：类型 nemesis_cluster::outbox 恒可用
+    // （依赖随 cluster feature 门）；board-off 时槽恒 None——wiring 在
+    // 下方消费块随 board+cluster 门。
+    // cluster-off：消费块（cfg cluster）整体缺席，槽位仅保位；此处命名
+    // nemesis_cluster 会在裁剪矩阵 cluster-off 组合下 E0433，故占位类型
+    // 退 Option<()>（2026-11-15 云端 ET minimal-iot 实录）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     let transfer_outbox = cluster.transfer_outbox.clone();
-    #[cfg(not(all(feature = "board", feature = "cluster")))]
+    #[cfg(all(feature = "cluster", not(feature = "board")))]
     let transfer_outbox: Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>> = None;
+    #[cfg(not(feature = "cluster"))]
+    #[allow(unused_variables)] // cluster-off：消费块缺席，槽位无读者
+    let transfer_outbox: Option<()> = None;
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // 注记：None 前向声明随 迁入本函数——赋值在下方 ClusterService
     // Adapter 构建（四元组消费点）。
@@ -1303,7 +1312,11 @@ pub(crate) async fn init_post_agent(
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
                     loop {
-                        ticker.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
                         if event_hub_for_watch.subscriber_count() == 0 {
                             continue;
                         }
@@ -1356,7 +1369,11 @@ pub(crate) async fn init_post_agent(
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         let mut last = nemesis_data::watcher::data_version(&watch_conn).ok();
                         loop {
-                            ticker.tick().await;
+                            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                                break;
+                            }
                             if event_hub_for_usage.subscriber_count() == 0 {
                                 continue;
                             }
@@ -1394,7 +1411,11 @@ pub(crate) async fn init_post_agent(
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // interval 首个 tick 立即返回 = 启动时先跑一次。
             loop {
-                ticker.tick().await;
+                // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                    break;
+                }
                 let max_rows = (usage_cfg.max_rows > 0).then_some(usage_cfg.max_rows);
                 if let Err(e) = ds_for_sweep.retention_sweep(
                     (usage_cfg.retention_days > 0).then_some(usage_cfg.retention_days),

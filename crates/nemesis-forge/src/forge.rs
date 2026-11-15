@@ -25,6 +25,7 @@ use crate::syncer::Syncer;
 use crate::trace::TraceEvent;
 use crate::trace_store::TraceStore;
 use crate::types::{CollectedExperience, CollectorConfig, RegistryConfig};
+use nemesis_types::forge::ArtifactStatus;
 
 /// The main Forge struct that owns and coordinates all subsystems.
 pub struct Forge {
@@ -77,7 +78,7 @@ impl Forge {
 
         let registry = Registry::new(RegistryConfig {
             index_path: forge_dir
-                .join("registry.json")
+                .join(crate::MANUAL_REGISTRY_FILE)
                 .to_string_lossy()
                 .to_string(),
         });
@@ -280,7 +281,7 @@ impl Forge {
                 .reflect_with_llm(
                     &experiences,
                     &traces,
-                    &self.registry().list(None, None),
+                    &self.merged_artifacts_for_reflection(),
                     learning_cycle.as_ref(),
                     &period,
                     "all",
@@ -343,7 +344,7 @@ impl Forge {
                 match crate::reflector_llm::distill_skill_draft(
                     caller.as_ref(),
                     &experiences,
-                    &self.registry().list(None, None),
+                    &self.merged_artifacts_for_reflection(),
                     Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
                 )
                 .await
@@ -382,7 +383,7 @@ impl Forge {
         match crate::reflector_llm::distill_skill_draft(
             caller.as_ref(),
             experiences,
-            &self.registry().list(None, None),
+            &self.merged_artifacts_for_reflection(),
             Some(crate::reflector_llm::AUX_FORGE_MAX_TOKENS),
         )
         .await?
@@ -417,7 +418,6 @@ impl Forge {
             .registry()
             .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
         {
-            use nemesis_types::forge::ArtifactStatus;
             if !matches!(
                 existing.status,
                 ArtifactStatus::Degraded | ArtifactStatus::Archived
@@ -435,6 +435,27 @@ impl Forge {
                     "archived"
                 }
             );
+        }
+        // 跨注册表同名防线（BUG 批次 2026-11-14）：ctx.rs 装配刻意分库——
+        // 本库 registry.json 之外，闭环引擎另持 learning_registry.json，
+        // 两侧都写 `forge/skills/{slug}/SKILL.md`。若只在库内去重，蒸馏
+        // 提名撞上闭环侧同名活跃技能会静默覆盖对方磁盘文件（两库各自
+        // 声称拥有同一目录、一方 content 字段变 stale）。peek 只读、缺失
+        // = 空库不阻塞；活跃态语义与库内 dedup 同口径（Degraded/Archived
+        // 放行 = 替代品顶替）。
+        if let Some(existing) = self
+            .peek_learning_registry()
+            .find_by_name(&slug, nemesis_types::forge::ArtifactKind::Skill)
+            && !matches!(
+                existing.status,
+                ArtifactStatus::Degraded | ArtifactStatus::Archived
+            )
+        {
+            tracing::info!(
+                name = %slug,
+                "[Forge] auto_skill: same-name active skill exists in learning registry, skipping (cross-registry guard)"
+            );
+            return None;
         }
         // F- 安全闸（缺陷 20）：LLM 蒸馏产物写盘前过
         // security_errors——蒸馏提示词喂的是经验摘要（外部交互的衍生物，
@@ -619,6 +640,32 @@ impl Forge {
     /// Get a reference to the registry.
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Read-only peek over the closed-loop learning registry
+    /// (`learning_registry.json`, BUG 批次 2026-11-14 跨库互查面）。
+    ///
+    /// 双注册表架构（手动/蒸馏 → registry.json；闭环引擎 →
+    /// learning_registry.json）此前互盲：蒸馏去重、反思输入都看不见闭环
+    /// 侧产物。peek 缺失=空、损坏=WARN 留痕不阻塞（Registry::peek_sync）。
+    /// 对称面 = [`LearningEngine` 对 registry.json 的窥视]。
+    pub(crate) fn peek_learning_registry(&self) -> Registry {
+        Registry::peek_sync(&self.forge_dir.join(crate::LEARNING_REGISTRY_FILE))
+    }
+
+    /// Reflection/distillation input universe: manual registry ∪ learning
+    /// registry (dedup by id).
+    ///
+    /// 「全量 artifacts」四个注入点（reflect_with_llm 调度循环 /
+    /// run_reflection_cycle Step 5 蒸馏 / CLI distill_and_store_draft /
+    /// CLI forge reflect）此前只传 registry.json——闭环侧已部署技能对反思
+    /// LLM 不可见 → 重复提名（A4 防线在跨库面失效）。按 id 去重：历史
+    /// 撞车形态（两库各自持有 skill-{slug}）防御。合并语义单一真相源 =
+    /// [`merge_artifacts_by_id`]（pub 自由函数：web 手动反思 handler 无
+    /// Forge 实例，经 peek_sync + 本函数复用同一合并规则）。
+    pub fn merged_artifacts_for_reflection(&self) -> Vec<nemesis_types::forge::Artifact> {
+        let learning = self.peek_learning_registry().list(None, None);
+        merge_artifacts_by_id(self.registry.list(None, None), learning)
     }
 
     /// Get a reference to the sanitizer.
@@ -1005,6 +1052,24 @@ impl Forge {
     }
 }
 
+/// 按 artifact id 去重合并两份产物列表（反思输入并集单一真相源）。
+///
+/// primary 优先：id 冲突时保留 primary 侧条目（手动库是人工在环真相源）。
+/// pub 自由函数：[`Forge::merged_artifacts_for_reflection`]（Forge 实例
+/// 路径）与 web 手动反思 handler（无 Forge 实例，`Registry::peek_sync`
+/// 读 learning_registry.json 后调用本函数）共用同一合并规则，防再次
+/// 分叉（BUG 批次 2026-11-15：web/CLI 两个注入点漏并集的根因就是
+/// 合并逻辑长在 Forge 方法里，无实例的入口接不上）。
+pub fn merge_artifacts_by_id(
+    primary: Vec<nemesis_types::forge::Artifact>,
+    secondary: Vec<nemesis_types::forge::Artifact>,
+) -> Vec<nemesis_types::forge::Artifact> {
+    let mut merged = primary;
+    let seen: std::collections::HashSet<String> = merged.iter().map(|a| a.id.clone()).collect();
+    merged.extend(secondary.into_iter().filter(|a| !seen.contains(&a.id)));
+    merged
+}
+
 /// Normalize an LLM-produced skill name to a filesystem-safe kebab-case slug.
 ///
 /// 蒸馏草稿名是 LLM 自由文本，落盘前归一：小写、非 `[a-z0-9_-]` 折叠为
@@ -1037,6 +1102,26 @@ pub(crate) fn slugify_skill_name(name: &str) -> String {
         slug.pop();
     }
     slug
+}
+
+/// slug 产物 + 空 slug 占位回落（`_unnamed_`）的统一规则——exporter 写面、
+/// forge_tools resolve_artifact_path、learning_engine disable 面共用的单一
+/// 真相源（此前三处各自内联，learning_engine disable 面漏配 = N 轮复查修）。
+///
+/// 注册表是磁盘态数据，历史遗留的中毒名（旧 create 弱消毒时期写入的
+/// `../x` 等穿越序列、`..`/`../..` 等纯符号名）流进下游 join 仍可越出目标
+/// 目录。合法名（slug 产物）经 slugify 后逐字节不变，零行为差异；空 slug
+/// = 全非法输入，回落受控占位段把路径关在目标子目录内（占位段永不命中
+/// 正常产物：两条 create 生产路径都在空 slug 处诚实拒绝，从不落库）。
+/// 注意回落值不是 slugify 不动点（首 `_` 会被吞）——调用方不要把本函数
+/// 产物再喂回 slugify（exporter export() 的 M 教训）。
+pub(crate) fn slug_or_placeholder(name: &str) -> String {
+    let slug = slugify_skill_name(name);
+    if slug.is_empty() {
+        "_unnamed_".to_string()
+    } else {
+        slug
+    }
 }
 
 /// 技能目录名合法性围栏（跨入口统一定义）：必须是单段 kebab 目录

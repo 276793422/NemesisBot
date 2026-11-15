@@ -290,3 +290,89 @@ fn tier_serde_roundtrip_and_default_absent() {
         "None tiers must be omitted on serialize"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 负价防御钳（BUG-20261115-020）：价格列负值在计价出口钳 0——CLI 入口
+// loud 拒之外的纵深防御（下载表/import 畸形条目、手改 custom JSON）。
+// 负价无合法计费语义（成本是可观测性数据，不存在返佣结算），钳 0 =
+// 免费模型语义；token 列钳 0 的同族不变量。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn negative_base_prices_clamped_to_zero() {
+    let mut p = base_entry();
+    p.input_cost_per_million = -1.0;
+    p.output_cost_per_million = -2.0;
+    p.cache_read_cost_per_million = -0.1;
+    p.cache_creation_cost_per_million = -1.25;
+    // 正 token × 负价 = 负成本——钳后四列全 0。
+    let total = cost_from_pricing(&p, 100_000, 50_000, 10_000, 20_000);
+    assert_eq!(
+        total, 0.0,
+        "negative prices must not produce negative cost, got {total}"
+    );
+    let b = cost_breakdown_from_pricing(&p, 100_000, 50_000, 10_000, 20_000);
+    assert_eq!(b.input_cost_usd, 0.0);
+    assert_eq!(b.output_cost_usd, 0.0);
+    assert_eq!(b.cache_creation_cost_usd, 0.0);
+    assert_eq!(b.cache_read_cost_usd, 0.0);
+    assert_eq!(b.total_cost_usd, 0.0);
+}
+
+#[test]
+fn negative_price_mixed_with_positive_clamps_only_negative_column() {
+    let mut p = base_entry();
+    p.output_cost_per_million = -2.0; // 只有 output 负
+    // input 照常计价，output 列钳 0：100k*1 + 10k*0 = 0.1。
+    let total = cost_from_pricing(&p, 100_000, 10_000, 0, 0);
+    assert!(
+        approx(total, 0.1),
+        "only the negative column clamps, got {total}"
+    );
+    let b = cost_breakdown_from_pricing(&p, 100_000, 10_000, 0, 0);
+    assert!(approx(b.input_cost_usd, 0.1), "input: {}", b.input_cost_usd);
+    assert_eq!(b.output_cost_usd, 0.0);
+    assert!(approx(b.total_cost_usd, 0.1), "total: {}", b.total_cost_usd);
+    // 分项和恒等于 total 的不变量在混合钳位下保持。
+    assert!(approx(
+        b.total_cost_usd,
+        b.input_cost_usd + b.output_cost_usd + b.cache_creation_cost_usd + b.cache_read_cost_usd
+    ));
+}
+
+#[test]
+fn negative_tier_prices_clamped_to_zero() {
+    let mut p = base_entry();
+    p.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(-3.0),
+        output_cost_per_million: Some(-9.0),
+        cache_read_cost_per_million: Some(-0.2),
+        cache_creation_cost_per_million: Some(-2.0),
+    }]);
+    // 过档（250k ≥ 200k）：阶梯负价 → 全列钳 0。
+    let total = cost_from_pricing(&p, 10_000, 1_000, 0, 240_000);
+    assert_eq!(total, 0.0, "negative tier prices must clamp, got {total}");
+}
+
+#[test]
+fn negative_tier_price_clamps_while_none_inherits_base() {
+    // 档内部分 None（继承基础价）：显式负阶梯列钳 0，None 继承的非负
+    // 基础价照常计价——钳位发生在继承回填之后的出口，不影响继承本身。
+    let mut p = base_entry();
+    p.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(-3.0),
+        output_cost_per_million: None,
+        cache_read_cost_per_million: None,
+        cache_creation_cost_per_million: None,
+    }]);
+    // 250k 过档：input=Some(-3.0)→0、output=None→2.0、cache_read=None→0.1、
+    // cache_creation=None→1.25。计费 = 10k*0 + 1k*2 + 0 + 240k*0.1
+    // = 2k + 24k = 26k / 1e6 = 0.026。
+    let total = cost_from_pricing(&p, 10_000, 1_000, 0, 240_000);
+    assert!(
+        approx(total, 0.026),
+        "inherit path must price non-negative base, got {total}"
+    );
+}

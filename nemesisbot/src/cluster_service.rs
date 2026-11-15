@@ -127,17 +127,49 @@ impl ClusterServiceAdapter {
             tracing::warn!("[ClusterAdapter] Failed to restore tasks from disk: {}", e);
         }
         let recovered = self.cluster_task_list.recover_task_ids();
-        for task_id in &recovered {
-            if let Err(e) = self.cluster_work_queue.submit(task_id.clone()) {
-                tracing::warn!(task_id = %task_id, "[ClusterAdapter] Failed to re-submit recovered task: {}", e);
-            }
-        }
+        // 恢复重提改背压提交（2026-11-14 审查发现 A 根修）：旧实现
+        // try_send 硬塞，队列容量（64）< 恢复任务数时第 65 个起只 warn
+        // ——任务在 task list 是 Pending、队列里没有、无人重提，悬空到
+        // 下次重启（192 父单 campaign 重启 worker 必触发）。现 spawn 补
+        // 位任务用 async send（容量满自动等消费者腾位）——零丢失、顺序
+        // 保持（recover_task_ids 已按 created_at 排序，FIFO 执行顺序跨
+        // 重启延续）。受理路径保持 try_send 快速拒单语义不变（拒单有
+        // 回滚 + error ACK 出口）。
         if !recovered.is_empty() {
             tracing::info!(
                 count = recovered.len(),
-                "[ClusterAdapter] Recovered {} tasks",
+                "[ClusterAdapter] Recovered {} tasks (backpressure re-submit)",
                 recovered.len()
             );
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let work_queue = self.cluster_work_queue.clone();
+                handle.spawn(async move {
+                    for task_id in recovered {
+                        if let Err(e) = work_queue.submit_backpressure(task_id).await {
+                            // receiver 掉线 = 队列本体已 drop（停机窗口）——
+                            // 剩余任务放弃（任务表持久化仍在，下次启动恢复）。
+                            tracing::warn!(
+                                error = %e,
+                                "[ClusterAdapter] work queue closed; aborting re-submit"
+                            );
+                            return;
+                        }
+                    }
+                });
+            } else {
+                // 无 tokio 运行时（gateway 内不会发生的兜底）：退回同步
+                // 硬塞 + 失败诚实 warn（旧语义，保留该场景的可见性）。
+                for task_id in recovered {
+                    if let Err(e) = self.cluster_work_queue.submit(task_id.clone()) {
+                        tracing::warn!(
+                            task_id = %task_id,
+                            error = %e,
+                            "[ClusterAdapter] Failed to re-submit recovered task: {}",
+                            e
+                        );
+                    }
+                }
+            }
         }
 
         // （集群韧性 goal）：rpc_cache/results 7 天 TTL 清扫 +
@@ -405,6 +437,27 @@ async fn start_cluster_components(
     // 3. Start UDP discovery
     cluster.start_discovery(cluster.clone());
     tracing::info!("[ClusterComponents] Discovery started");
+
+    // 3.5 动态停启孤儿恢复：上次 stop() 的 abort 硬杀留下的 Running/
+    // WaitingRemote 孤儿重置 Pending 重提队列（动态 start 不跑 first_start
+    // 的 restore/recover 链——任务表是共享内存态，孤儿只在此收口；不收口
+    // 则 master 重派撞 create_task_if_absent 非终态拒收，卡死到进程重启）。
+    // 背压提交与 first_start 同纪律（队列满自动等消费者腾位）。
+    let orphans = cluster_task_list.requeue_orphan_running();
+    if !orphans.is_empty() {
+        let work_queue = cluster_work_queue.clone();
+        tokio::spawn(async move {
+            for task_id in orphans {
+                if let Err(e) = work_queue.submit_backpressure(task_id).await {
+                    tracing::warn!(
+                        error = %e,
+                        "[ClusterComponents] work queue closed; aborting orphan re-queue"
+                    );
+                    return;
+                }
+            }
+        });
+    }
 
     // 4. Build cluster agent loop and spawn
     let rpc_client = cluster.rpc_client_arc();

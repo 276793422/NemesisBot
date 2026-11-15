@@ -125,7 +125,9 @@ fn data_payload(block: &str) -> Option<String> {
 }
 
 /// HTTP provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy /
+/// headers（可带 Authorization 类私有凭据头，map 整体脱敏）。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HttpProviderConfig {
     pub name: String,
     pub base_url: String,
@@ -156,6 +158,27 @@ pub struct HttpProviderConfig {
     #[serde(default)]
     pub extra_body: serde_json::Value,
 }
+
+crate::debug_redact::impl_redacted_debug!(HttpProviderConfig {
+    plain {
+        name,
+        base_url,
+        default_model,
+        timeout_secs,
+        preserve_prefix,
+        stream_mode,
+        extra_body,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+    secret_map {
+        headers,
+    }
+});
 
 // P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
 // （原 120s——评审 LLM 连续 120s 超时根因的 http 分支）。
@@ -503,15 +526,16 @@ impl HttpProvider {
                 // body 读传输失败诚实上抛（BUG-20261029-153 同族）：空串会让
                 // 下方 from_str 落 Format("non-SSE JSON body") 伪装应用层错误，
                 // fallback 链不轮转。unwrap_or_default 只留给 4xx 路径（状态码
-                // 本身已定类）。
-                let body = match resp.text().await {
+                // 本身已定类）。成功体有帽（BUG-20261115-024）：超限中途断开
+                // →Unknown + "response body exceeds limit" 前缀（可重试）。
+                let body = match crate::body_cap::read_success_body(resp).await {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = tx
-                            .send(Err(crate::failover::transport_error(
+                            .send(Err(crate::body_cap::to_failover_error(
                                 &provider_name,
                                 &model,
-                                &e,
+                                e,
                             )))
                             .await;
                         return;
@@ -1292,10 +1316,10 @@ impl LLMProvider for HttpProvider {
         // 其余→Unknown + "connect error" 前缀（可重试，与 send 路径同判——
         // BUG-20261029-153：此前归 Format 不可重试，fallback 链在 body 断连
         // 时直接终止不轮转）。下方 from_str 的解析错误才是 Format（应用层）。
-        let raw_response_text = resp
-            .text()
+        // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚。
+        let raw_response_text = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error(&self.config.name, model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw_response_text).map_err(|e| FailoverError::Format {
                 provider: self.config.name.clone(),

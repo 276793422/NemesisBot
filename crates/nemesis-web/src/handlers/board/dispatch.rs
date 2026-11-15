@@ -1130,7 +1130,9 @@ pub fn dispatch_subissue_auto_with_config(
                 None => {
                     // （goal）：匹配失败明细——要求 vs 每个在线候选差什么
                     // （与 rank_peers 同语义：role 精确、tags 交集非空）。
-                    let candidates = project_dispatch_candidates(cluster);
+                    // 候选取 matcher_candidates 单一入口（BUG-20261115-001：
+                    // 明细与决策面同源，含授予标签合并）。
+                    let candidates = matcher_candidates(store, cluster);
                     let detail = match_failure_detail(&issue, &candidates); // 兜底开关（集群完备性）：无人匹配但任务必须
                     // 做下去——按配置兜底派给在线节点（派发前 ⚠ 评论留痕；
                     // 与 ⏸ 停车评论是不同语义，不受 去重约束）。
@@ -1742,8 +1744,9 @@ pub async fn rebalance_queued_to_worker(
     if queued.is_empty() {
         return 0;
     }
-    // 可执行性校验：新 worker 需满足该单角色/标签要求（同匹配器语义）。
-    let candidates: Vec<nemesis_board::PeerCandidate> = project_dispatch_candidates(cluster)
+    // 可执行性校验：新 worker 需满足该单角色/标签要求（同匹配器语义，
+    // 候选走 matcher_candidates 单一入口——授予标签参与判定）。
+    let candidates: Vec<nemesis_board::PeerCandidate> = matcher_candidates(store, cluster)
         .into_iter()
         .filter(|c| c.id == target_worker_id)
         .collect();
@@ -1958,7 +1961,7 @@ pub fn rank_dispatch_candidates(
         description: &issue.description,
     };
     // E（goal）：候选 tags 合并 master 授予标签（granted_tags 台账）。
-    let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
+    let candidates = matcher_candidates(store, cluster);
     nemesis_board::rank_peers(&input, &candidates, &load)
         .into_iter()
         .map(|(id, _)| id)
@@ -2067,7 +2070,7 @@ pub(super) fn pick_fallback_target(
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
     //    角色丢标签」，行为不变）。角色归一沿用严格匹配（词表外角色词
     //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
-    let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
+    let candidates = matcher_candidates(store, cluster);
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
@@ -2109,15 +2112,38 @@ fn merge_granted_tags(
     candidates
 }
 
+/// 匹配器候选投影的单一入口（BUG-20261115-001 横扫收敛）：在线节点投影
+/// ∪ master 授予标签合并。此前 rank 侧带标签合并、停车明细/兜底取候选侧
+/// 用裸投影——明细会把已授予标签误报成缺口（反向撒谎）。决策面
+/// （[`rank_dispatch_candidates`]）与观测面（明细）从此吃同一份候选。
+#[cfg(feature = "cluster")]
+pub(super) fn matcher_candidates(
+    store: &BoardStore,
+    cluster: &nemesis_cluster::cluster::Cluster,
+) -> Vec<nemesis_board::PeerCandidate> {
+    merge_granted_tags(store, project_dispatch_candidates(cluster))
+}
+
 /// （goal）匹配失败明细（纯函数，单测直测）：要求 vs 每个在线候选
 /// 差什么（与 rank_peers 同语义：required_role 精确、required_tags 交集
 /// 非空；词表外角色词已在 rank_dispatch_candidates 归一进 tags）。
 /// 输出人读行集，直接拼进停车评论——「差什么」一眼可见。
+///
+/// 判定面必须与决策面同构（BUG-20261115-001）：rank_peers 的 6 个硬条件
+/// （role/tags/prof/tier/caps/backend）逐项在此有镜像——backend 闸是
+/// fail-closed（节点未宣告 = 排除且不参与松弛），明细不查就会产出
+/// 「全 ✓ 却无可匹配」的矛盾停车评论（真机 NB-3 实证）。
 #[cfg(feature = "cluster")]
 pub(super) fn match_failure_detail(
     issue: &nemesis_board::Issue,
     candidates: &[nemesis_board::PeerCandidate],
 ) -> String {
+    // 拓扑闸镜像（与 rank_dispatch_candidates 同源谓词 has_file_anchor）：
+    // file: 锚点单的候选投影被决策面整体清空（锚点在派发端 workspace 实核，
+    // 只能本节点执行），明细不得伪装成「无在线候选节点」误导诊断。
+    if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
+        return "单子含 file: 类锚点（拓扑约束：锚点在派发端 workspace 实核，只能本节点执行），不参与远端节点匹配".to_string();
+    }
     // 角色归一（统一定义 normalize_dispatch_role）：词表外角色词转标签。
     let (required_role, required_tags) =
         normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
@@ -2135,6 +2161,13 @@ pub(super) fn match_failure_detail(
         .as_deref()
         .and_then(nemesis_prompts::professions::meta::find_builtin)
         .map(|m| m.min_tier);
+    // backend 需求归一（与 rank_peers 硬条件 6 同源：trim + 小写；空 = 不过闸）。
+    let backend_need = issue
+        .required_backend
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
     let mut lines = Vec::new();
     for c in candidates {
         let mut missing = Vec::new();
@@ -2176,6 +2209,24 @@ pub(super) fn match_failure_detail(
                 missing.push(format!("缺能力 {need}"));
             }
         }
+        // backend 硬条件 6 镜像（fail-closed：节点未宣告 = 排除，与
+        // rank_peers 同构；宣告值大小写不敏感精确比对）。
+        if let Some(need) = &backend_need {
+            let declared = c
+                .runtime_backend
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let hit = declared.is_some_and(|b| b.to_lowercase() == *need);
+            if !hit {
+                match declared {
+                    Some(b) => missing.push(format!("backend {b}≠{need}")),
+                    None => missing.push(format!(
+                        "未宣告 backend（需求 {need}；闸 fail-closed，需节点宣告同值 backend）"
+                    )),
+                }
+            }
+        }
         let tag_str = if c.tags.is_empty() {
             "—".to_string()
         } else {
@@ -2191,14 +2242,21 @@ pub(super) fn match_failure_detail(
         } else {
             c.capabilities.join("/")
         };
+        let backend_str = c
+            .runtime_backend
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("—");
         lines.push(format!(
-            "{} {}[role={},tags={},prof={},caps={}]{}",
+            "{} {}[role={},tags={},prof={},caps={},backend={}]{}",
             if missing.is_empty() { "✓" } else { "✗" },
             c.name,
             c.role,
             tag_str,
             prof_str,
             cap_str,
+            backend_str,
             if missing.is_empty() {
                 String::new()
             } else {

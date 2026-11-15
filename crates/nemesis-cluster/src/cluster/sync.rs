@@ -244,42 +244,18 @@ impl Cluster {
     }
 
     /// Sync state to disk.
+    ///
+    /// 投影与 sync_loop 周期落盘同源（`to_peer_config()` 全量字段——
+    /// addresses/role/status.state 等；此前手写投影丢 role/addresses
+    /// 且 rpc_port 恒 0，手动落盘后崩溃重启回读的条目丢身份字段）。
     pub fn sync_to_disk(&self) -> Result<(), ConfigError> {
-        let nodes = self.registry.list_peers();
-        let mut discovered = Vec::new();
-        for node in &nodes {
-            if node.base.id == self.node_id {
-                continue;
-            }
-            discovered.push(PeerConfig {
-                id: node.base.id.clone(),
-                name: node.base.name.clone(),
-                address: node.base.address.clone(),
-                addresses: Vec::new(),
-                rpc_port: 0,
-                role: String::new(),
-                category: node.base.category.clone(),
-                tags: node.tags.clone(),
-                professions: node.professions.clone(),
-                tier: node.tier.clone(),
-                runtime_backend: node.runtime_backend.clone(),
-                priority: 1,
-                enabled: true,
-                status: PeerStatus {
-                    state: match node.status {
-                        NodeStatus::Online => "online".into(),
-                        NodeStatus::Offline => "offline".into(),
-                        _ => "unknown".into(),
-                    },
-                    last_seen: node.base.last_seen.clone(),
-                    uptime: String::new(),
-                    tasks_completed: 0,
-                    success_rate: 0.0,
-                    avg_response_time: 0,
-                    last_error: String::new(),
-                },
-            });
-        }
+        let discovered: Vec<PeerConfig> = self
+            .registry
+            .list_peers()
+            .iter()
+            .filter(|n| n.base.id != self.node_id)
+            .map(|n| n.to_peer_config())
+            .collect();
 
         let state = DynamicState {
             discovered,

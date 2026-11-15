@@ -25,6 +25,10 @@ use crate::base::{BaseChannel, Channel};
 /// WS 升级单连接墙钟上限：TCP 连上不发 HTTP 升级请求
 /// 的静默连接（本地扫描/挂死客户端）按超时淘汰，不得永久冻结 accept 循环。
 const WS_UPGRADE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+/// 单帧写超时上限（秒）。BUG-20261115-016：半死客户端上无界写 await 会把
+/// per-client writer 任务永久冻结（任务泄漏 + unbounded 队列积压），有界
+/// 超时让 break/close 语义可达。家族值对齐 IRC WRITE_TIMEOUT_SECS。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
 // Protocol types
@@ -374,11 +378,23 @@ impl Channel for WebSocketChannel {
                         tokio::spawn(async move {
                             let mut sink = sink;
                             while let Some(data) = send_rx.recv().await {
-                                if sink.send(Message::Text(data.into())).await.is_err() {
+                                // BUG-20261115-016：有界写，超时与发送失败同走 break
+                                if tokio::time::timeout(
+                                    std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                    sink.send(Message::Text(data.into())),
+                                )
+                                .await
+                                .is_err()
+                                {
                                     break;
                                 }
                             }
-                            let _ = sink.close().await;
+                            // close 也有界（同一挂死连接上 close 同样可永远 pending）
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                sink.close(),
+                            )
+                            .await;
                         });
 
                         // Spawn reader task

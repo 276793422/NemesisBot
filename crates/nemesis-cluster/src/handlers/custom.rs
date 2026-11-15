@@ -40,13 +40,17 @@ impl CustomHandler {
     }
 
     /// Execute a custom action.
+    ///
+    /// handler Arc 锁内克隆、锁外调用（与 task_manager fire_callback 同纪律）：
+    /// 持锁调用外部闭包若重入 register/unregister 即死锁（parking_lot
+    /// Mutex 不可重入）。
     pub fn execute(
         &self,
         action: &str,
         payload: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let handlers = self.handlers.lock();
-        match handlers.get(action) {
+        let handler = self.handlers.lock().get(action).cloned();
+        match handler {
             Some(handler) => handler(action, payload),
             None => Err(format!("No handler registered for action: {}", action)),
         }

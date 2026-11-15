@@ -32,6 +32,10 @@ use crate::base::{BaseChannel, Channel};
 
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+/// 单帧写超时上限（秒）。BUG-20261115-016：半死连接上无界鉴权帧写 await
+/// 会把 ws_session（进而整个重连循环）冻结在第一帧，有界超时让既有
+/// 「return true 重连」语义可达。家族值对齐 IRC WRITE_TIMEOUT_SECS。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 /// WS 鉴权 challenge 的序号（Mattermost 协议要求请求带递增 seq）。
 const AUTH_SEQ: u64 = 1;
 
@@ -362,10 +366,23 @@ impl MattermostChannel {
         let (mut ws_tx, mut ws_rx) = ws.split();
 
         // —— 鉴权 challenge：连接后首帧必须认证（bot token 模式）
+        // BUG-20261115-016：有界写，超时与发送失败同走重连臂
         let auth = MattermostChannel::build_auth_message(&ctx.bot_token);
-        if let Err(e) = ws_tx.send(Message::Text(auth.into())).await {
-            warn!("[MattermostChannel] 鉴权帧发送失败: {e}");
-            return true;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+            ws_tx.send(Message::Text(auth.into())),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!("[MattermostChannel] 鉴权帧发送失败: {e}");
+                return true;
+            }
+            Err(_) => {
+                warn!("[MattermostChannel] 鉴权帧发送超时（连接疑似挂起）");
+                return true;
+            }
         }
 
         // —— 等鉴权应答：status=OK 才进入事件流；FAIL 通常是 token 失效

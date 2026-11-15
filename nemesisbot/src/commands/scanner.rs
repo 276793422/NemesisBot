@@ -114,7 +114,8 @@ pub struct EngineState {
 /// Load scanner config from file.
 fn load_scanner_config(path: &std::path::Path) -> Result<ScannerFullConfig> {
     if path.exists() {
-        let data = std::fs::read_to_string(path)?;
+        // read_config_string 剥 BOM（记事本保存的 scanner 配置，BUG-20261103-334 同族）。
+        let data = nemesis_utils::fsutil::read_config_string(path)?;
         let cfg: ScannerFullConfig = serde_json::from_str(&data)?;
         Ok(cfg)
     } else {

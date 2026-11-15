@@ -1170,6 +1170,18 @@ impl LogsHandler {
             return Err(format!("cluster task '{}' not found", task_id));
         }
 
+        // BUG-20261115-011：多轮执行（同 task_id 多个 ts 前缀目录）取字典序
+        // 最大 = 最新轮（outbox `find_task_dir` 同纪律）。read_dir 顺序是
+        // 平台实现细节（NTFS 字典序 vs ext4 哈希序），无序基上 first-match
+        // 在 Windows 恒取最旧轮，与 cluster_task_list 的 ts 倒序逐轮展示相
+        // 矛盾。目录名 ts 前缀定宽（%Y-%m-%d_%H-%M-%S[-%3f]），字典序 =
+        // 时间序；perspective 过滤与 first() 兜底作用在有序基上即确定性。
+        candidates.sort_by(|a, b| {
+            b.0.file_name()
+                .unwrap_or_default()
+                .cmp(a.0.file_name().unwrap_or_default())
+        });
+
         let chosen = match perspective {
             "peer" => candidates
                 .iter()
@@ -2729,3 +2741,9 @@ mod b11_snooze_tests;
 // agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
+
+// BUG-20261115-011 回归锁：cluster_task_detail 多轮执行（同 task_id 多个
+// ts 前缀目录）必须取最新轮——候选按目录名降序（定宽 ts 字典序=时间序）
+// 后再 perspective 过滤/first 兜底。旧 first-match 在 NTFS 恒取最旧轮。
+#[cfg(test)]
+mod cluster_task_detail_tests;

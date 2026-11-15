@@ -295,6 +295,107 @@ async fn writeback_skips_issues_without_template_instance() {
     );
 }
 
+/// BUG-20261115-038 回归锁：水位**不得越过未收口单**——同批内熔断单（A，
+/// 游标 in_review → done 的 Compose 撞 5 连败停投）与更晚成功收口单（B）
+/// 并存时，修复前水位 = B.updated_at-1 ≥ A.updated_at，SQL 严格 `>` 下轮
+/// 不再命中 A →「重启恢复后仍要重投」落空（done 回帖静默丢失）；修复后
+/// 水位 cap 在 A-1，A 留在窗口内，熔断解除后即可重投；B 照常收口（游标
+/// 落盘 → 下轮 Noop 幂等去重），「不挡同批后续单」不变量同保。
+#[tokio::test]
+async fn writeback_watermark_never_passes_unsettled_issue() {
+    let fx = make_engine("wb-watermark-038", true);
+    let _calls = nov13_wire_pages(&fx, vec![]); // connector 恒成功（空页 "[]"）
+    let def = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    let a = wb_issue(
+        &fx.store,
+        "a",
+        BTreeMap::from([("owner".into(), "acme".into())]),
+    );
+    to_review(&fx.store, &a);
+    // R5 孤儿闸：A 先物化并首轮 Adopt 收编游标（in_review）——后续 done
+    // 转移才走 Compose（熔断闸只挂在 Compose 臂）。
+    materialize_instances(&fx.flows, &def, &[json!({"key": "a"})]).unwrap();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/a").as_deref(),
+        Some("in_review")
+    );
+    // A 转 done（秒口径时钟：跨秒推进，a.updated_at 刷新为转态时刻）。
+    wait_next_second();
+    fx.store
+        .transition_issue(
+            a.id,
+            nemesis_board::IssueStatus::Done,
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+    let a = fx.store.get_issue(a.id).unwrap();
+    // B 更晚转 in_review（保证 b.updated_at > a.updated_at——BUG 触发前置，
+    // 同秒兄弟单靠水位 -1 恰好兜住，测不出本缺陷）。
+    wait_next_second();
+    let b = wb_issue(
+        &fx.store,
+        "b",
+        BTreeMap::from([("owner".into(), "acme".into())]),
+    );
+    to_review(&fx.store, &b);
+    materialize_instances(&fx.flows, &def, &[json!({"key": "a"}), json!({"key": "b"})]).unwrap();
+    assert!(b.updated_at > a.updated_at, "前置：B 晚于 A（秒口径时钟）");
+    // A 预置熔断满额（对端宕机 5 连败后的停投态）。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/a".into(), WRITEBACK_MAX_RETRIES);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    // 修复核心断言：水位 < a.updated_at——A 未被同批 B 的收口越过。
+    let wm = fx.flows.load_writeback_watermark("wb");
+    println!(
+        "NOV15 038 watermark={wm}; a_at={}; b_at={}",
+        a.updated_at, b.updated_at
+    );
+    assert!(
+        wm < a.updated_at,
+        "水位不得越过熔断单 A（修复前 = b.updated_at-1 ≥ a.updated_at，A 沉底丢失）"
+    );
+    // 「不挡后续单」不变量：B 照常收口。
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/b").as_deref(),
+        Some("in_review")
+    );
+    // 对端修复（清熔断 = 进程内预算刷新，重启 gateway 等价）：A 恢复投递。
+    fx.engine.writeback_failures.lock().unwrap().clear();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/a").as_deref(),
+        Some("done"),
+        "A 留在窗口内——熔断解除后 Compose 重投成功（修复前已沉入水位之下永不可达）"
+    );
+}
+
+/// 秒口径时钟跨秒等待（最多 ~1s）：保证两次转态落不同秒。
+fn wait_next_second() {
+    let base = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("epoch")
+        .as_secs();
+    loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("epoch")
+            .as_secs();
+        if now > base {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 夹具
 // ---------------------------------------------------------------------------

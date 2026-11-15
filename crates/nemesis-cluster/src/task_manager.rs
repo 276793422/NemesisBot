@@ -314,6 +314,16 @@ pub struct TaskManager {
     /// 慢/坏节点的失败样本才进得了路由统计。未安装 = fire no-op
     /// （独立 TaskManager 的单测路径）。
     route_record_fn: Mutex<Option<Arc<RouteRecordCallback>>>,
+    /// 安全网判死唤醒钩子（Cluster 构造期安装，与 route_record_fn 同例：
+    /// 清理 tick 判死臂是拿不到 `&Cluster` 的旁路 settle 点）。清理循环
+    /// （30s tick）与恢复 sweep（120s tick）对同一 `pending_timeout` 阈值
+    /// 竞速——清理赢时任务即 Failed，sweep 只扫 Pending 从此永远看不到，
+    /// 若判死只落状态不发布唤醒帧 = 续行快照孤儿 + 等待方对话挂死。
+    /// 钩子补发与 sweep 判死臂同形状的 `cluster_continuation` error 帧；
+    /// exactly-once 由条件转移 CAS 保证（输方 Ok(false) 不触发钩子），
+    /// 与 sweep 判死臂的直接 publish 互斥不双发。未安装 = fire no-op
+    /// （独立 TaskManager 的单测路径）。
+    on_stale_kill: Mutex<Option<Arc<OnCompleteCallback>>>,
 }
 
 /// pending 任务安全网默认值（24 小时）。
@@ -351,6 +361,7 @@ impl TaskManager {
             pending_timeout: Arc::new(parking_lot::RwLock::new(default_pending_timeout())),
             stop_tx: parking_lot::Mutex::new(None),
             route_record_fn: Mutex::new(None),
+            on_stale_kill: Mutex::new(None),
         }
     }
 
@@ -391,6 +402,7 @@ impl TaskManager {
         let on_complete = self.on_complete.lock().clone();
         let pending_timeout = self.pending_timeout.clone();
         let route_record = self.route_record_fn.lock().clone();
+        let on_stale_kill = self.on_stale_kill.lock().clone();
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
@@ -400,7 +412,7 @@ impl TaskManager {
                         return;
                     }
                     _ = interval.tick() => {
-                        cleanup_completed(&store, &on_complete, &pending_timeout, &route_record);
+                        cleanup_completed(&store, &on_complete, &pending_timeout, &route_record, &on_stale_kill);
                     }
                 }
             }
@@ -436,6 +448,24 @@ impl TaskManager {
     /// 安装负载感知路由记账回调（幂等覆盖；见 [`Self::route_record_fn`]）。
     pub fn set_route_record_fn(&self, f: Arc<RouteRecordCallback>) {
         *self.route_record_fn.lock() = Some(f);
+    }
+
+    /// 安装安全网判死唤醒钩子（幂等覆盖；见 [`Self::on_stale_kill`]）。
+    pub fn set_on_stale_kill(&self, hook: Box<dyn Fn(&Task) + Send + Sync>) {
+        *self.on_stale_kill.lock() = Some(Arc::from(hook));
+    }
+
+    /// 同步跑一轮清理（生产由 [`Self::start`] 的后台循环周期调用；测试与
+    /// 诊断直调以免等 tick）。与循环体共享同一参数装配。
+    #[doc(hidden)]
+    pub fn run_cleanup_once(&self) {
+        cleanup_completed(
+            &self.store,
+            &self.on_complete.lock().clone(),
+            &self.pending_timeout,
+            &self.route_record_fn.lock().clone(),
+            &self.on_stale_kill.lock().clone(),
+        );
     }
 
     /// 触发负载感知路由记账（未安装 = no-op）。旁路 settle 点调用——
@@ -707,7 +737,10 @@ impl TaskManager {
     }
 
     fn fire_callback(&self, task: &Task) {
-        if let Some(cb) = self.on_complete.lock().as_ref() {
+        // Clone the hook OUT of the lock（对齐 fire_route_record 同款
+        // 纪律）：parking_lot 非重入，回调体若重入 set_callback /
+        // set_on_complete 等持同一把锁的入口会自锁死。
+        if let Some(cb) = self.on_complete.lock().clone() {
             cb(task);
         }
     }
@@ -732,6 +765,7 @@ fn cleanup_completed(
     on_complete: &Option<Arc<OnCompleteCallback>>,
     pending_timeout: &parking_lot::RwLock<chrono::Duration>,
     route_record: &Option<Arc<RouteRecordCallback>>,
+    on_stale_kill: &Option<Arc<OnCompleteCallback>>,
 ) {
     // Clean up completed, failed, and cancelled tasks older than 2 hours
     let finished_statuses = [
@@ -812,6 +846,20 @@ fn cleanup_completed(
                         // 先到为主），先到先记，共用同一去重集不双计。
                         if let Some(f) = route_record.as_ref() {
                             f(&task.id, false);
+                        }
+
+                        // 安全网判死也是一次 settle——**必须唤醒等待方**
+                        // （与恢复 sweep 判死臂同义务）。此前只落状态不发布：
+                        // 本 tick（30s）与 sweep（120s）对同一 pending_timeout
+                        // 竞速，本臂赢时任务即 Failed，sweep 只扫 Pending 从此
+                        // 永远看不到——续行快照孤儿 + 等待方对话挂死。钩子
+                        // 补发与 sweep 同形状的 cluster_continuation error 帧；
+                        // exactly-once 由条件转移 CAS 保证（输方 Ok(false) 不
+                        // 到达此处），与 sweep 判死臂的直接 publish 互斥不双发。
+                        if let Some(cb) = on_stale_kill.as_ref()
+                            && let Ok(updated_task) = store.get(&task.id)
+                        {
+                            cb(&updated_task);
                         }
 
                         // Fire callback if set

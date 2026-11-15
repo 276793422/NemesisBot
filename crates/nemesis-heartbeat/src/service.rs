@@ -472,6 +472,16 @@ impl HeartbeatService {
 
         let heartbeat_path = std::path::Path::new(workspace).join("HEARTBEAT.md");
 
+        // 文件已在场绝不覆写（BUG-20261115-006）。与 static 变体
+        // （create_default_heartbeat_template_static）同款守卫：本方法的
+        // 唯一产码调用点是 build_prompt 的 `Err(_)` 臂——该臂盲注释
+        // 「File does not exist」但并不校验错误类别，既有文件遇瞬时读
+        // 错误（Windows AV/索引器共享冲突、权限抖动）会从此路径进来，
+        // 无守卫时用户任务内容会被默认模板整体覆盖。
+        if heartbeat_path.exists() {
+            return;
+        }
+
         let default_content = r#"# Heartbeat Check List
 
 This file contains tasks for the heartbeat service to check periodically.

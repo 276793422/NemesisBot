@@ -88,7 +88,9 @@ fn resolve_config(config_path: Option<&Path>) -> (FormatOnSaveConfig, bool) {
     let Some(p) = config_path else {
         return (FormatOnSaveConfig::default(), false);
     };
-    let parsed = std::fs::read_to_string(p)
+    // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → 用户开的
+    // format_on_save 静默落缺省关，BUG-20261103-334 同族）。
+    let parsed = nemesis_utils::fsutil::read_config_string(p)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     match parsed {

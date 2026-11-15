@@ -462,6 +462,8 @@ impl PeerChatHandler {
                 // a ④：派发代际号（可选键，旧 A 端不带 → None）。
                 // 随任务存进 task_list，回调时原样回声给 A 端写回闸。
                 dispatch_generation: payload.get("dispatch_generation").and_then(|v| v.as_i64()),
+                // 受理时刻——崩溃恢复重提按它排序（FIFO 跨重启延续）。
+                created_at: chrono::Local::now().to_rfc3339(),
             };
             // 原子 check-and-create（BUG-20261114-024 并发投递窗口补强）：
             // 4.7 顺序闸拦不住并发到达的两帧——server 每帧 tokio::spawn，

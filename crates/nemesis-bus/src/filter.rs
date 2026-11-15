@@ -60,7 +60,9 @@ pub trait Filter<T>: Send + Sync {
 
 /// 有序过滤链。挂载点在扇出前对每条消息调用 [`FilterChain::run`]。
 pub struct FilterChain<T> {
-    filters: RwLock<Vec<Arc<dyn Filter<T>>>>,
+    // pub(crate) 仅为让 crate 内测试构造「同线程持写锁调 Debug」的死锁
+    // 红证场景（外部 API 面不变）。
+    pub(crate) filters: RwLock<Vec<Arc<dyn Filter<T>>>>,
 }
 
 impl<T: Send + Sync + 'static> FilterChain<T> {
@@ -132,9 +134,19 @@ impl<T: Send + Sync + 'static> Default for FilterChain<T> {
 
 impl<T> std::fmt::Debug for FilterChain<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // 不触碰内部过滤器（Debug 应免锁、免副作用），只报规模。
-        f.debug_struct("FilterChain")
-            .field("filters", &self.filters.read().len())
-            .finish()
+        // 免锁契约（BUG-20261114-062）：Debug 必须随时可安全 format，
+        // 绝不因锁竞争阻塞/死锁。旧实现拿读锁（注释却宣称「免锁」）——
+        // parking_lot RwLock 不可重入，同线程持写锁时 Debug = 死锁。
+        // try_read：无竞争报真实规模；锁被持有显示 locked 形态，不等待。
+        match self.filters.try_read() {
+            Some(filters) => f
+                .debug_struct("FilterChain")
+                .field("filters", &filters.len())
+                .finish(),
+            None => f
+                .debug_struct("FilterChain")
+                .field("filters", &format_args!("<locked>"))
+                .finish(),
+        }
     }
 }

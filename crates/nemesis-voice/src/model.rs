@@ -603,9 +603,16 @@ fn download_model_files_inner(
         .connect_timeout(std::time::Duration::from_secs(30));
 
     if !proxy_url.trim().is_empty() {
-        let proxy = reqwest::Proxy::all(proxy_url)
-            .with_context(|| format!("Invalid proxy URL: {}", proxy_url))?;
-        tracing::info!("Using proxy: {}", proxy_url);
+        let proxy = reqwest::Proxy::all(proxy_url).with_context(|| {
+            format!(
+                "Invalid proxy URL: {}",
+                crate::bootstrap::redact_proxy_for_log(proxy_url)
+            )
+        })?;
+        tracing::info!(
+            "Using proxy: {}",
+            crate::bootstrap::redact_proxy_for_log(proxy_url)
+        );
         client_builder = client_builder.proxy(proxy);
     }
 

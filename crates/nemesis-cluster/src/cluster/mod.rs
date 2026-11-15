@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use nemesis_types::cluster::Task;
 
-use crate::cluster_config::{DynamicState, PeerConfig, PeerStatus};
+use crate::cluster_config::{DynamicState, PeerConfig};
 use crate::config_loader::ConfigError;
 use crate::continuation_store::ContinuationStore;
 use crate::discovery::ClusterCallbacks;
@@ -368,6 +368,7 @@ impl Cluster {
             on_recovered_delivery: Arc::new(Mutex::new(None)),
         };
         cluster.install_route_record_hook();
+        cluster.install_stale_kill_hook();
         cluster
     }
 
@@ -587,6 +588,7 @@ impl Cluster {
             on_recovered_delivery: Arc::new(Mutex::new(None)),
         };
         cluster.install_route_record_hook();
+        cluster.install_stale_kill_hook();
         cluster
     }
 
@@ -652,7 +654,10 @@ impl Cluster {
         self.registry.upsert(local_node);
 
         // Initialize RPC client with peer resolver backed by our registry.
-        // If a client was already set via set_rpc_client(), this is a no-op.
+        // If a client was already set via set_rpc_client(), this is a no-op
+        // ——但 Gateway LifecycleService 的 stop→start 重启语义下 stop() 落过
+        // 漫游池幕帘，这里抬起（reopen：会话按需重拨、心跳恢复；未关闭时
+        // no-op）。
         if self.rpc_client.lock().is_none() {
             let resolver = Arc::new(ClusterPeerResolver {
                 registry: self.registry.clone(),
@@ -666,6 +671,8 @@ impl Cluster {
                 self.rpc_port,
             );
             *self.rpc_client.lock() = Some(client);
+        } else if let Some(ref client) = *self.rpc_client.lock() {
+            client.reopen();
         }
 
         // Load RPC auth token from config.cluster.json and apply to server/client.
@@ -696,9 +703,12 @@ impl Cluster {
         // （旧 &mut self 签名无法经 Arc<TaskManager> 调用）——2h 终态清理
         // 与 pending/running 安全网兜底双双失效，终态任务（含完整
         // payload+result）在 tasks.db 无限累积。接线后 on_complete 生产恒
-        // None（gateway 走 with_workspace 不挂回调），清理只落状态不重复
-        // 唤醒——pending 唤醒仍由 recovery_loop 独占（settle 幂等，双循环
-        // 竞争无害）。
+        // None（gateway 走 with_workspace 不挂回调），清理只落状态；
+        // **判死的唤醒义务由构造期 stale-kill 钩子承担**
+        // （`install_stale_kill_hook`）：清理 tick（30s）与 recovery sweep
+        // （120s）对同一 pending_timeout 阈值竞速，清理赢时任务即 Failed，
+        // sweep 只扫 Pending 从此永远看不到——不补发唤醒帧 = 续行快照孤儿
+        // + 等待方挂死。exactly-once 由条件转移 CAS 保证，双杀臂互斥不双发。
         self.task_manager.start();
 
         // 主动健康探针循环（health_check_interval_secs=0 关闭）。
@@ -1273,6 +1283,14 @@ impl Cluster {
             && let Err(e) = server.stop()
         {
             tracing::warn!(error = %e, "[Cluster] RPC server stop error");
+        }
+
+        // Stop RPC client（iroh 漫游会话池全摘 + 心跳停摆 + 后台重连退场；
+        // LAN 路径为每请求短连接，无池可关）。不关的话停机后心跳循环继续
+        // ping、插件连接悬挂到进程退出。重启路径由 start() 的 reopen 分支
+        // 对称复活（Gateway LifecycleService stop→start 同实例语义）。
+        if let Some(ref client) = *self.rpc_client.lock() {
+            client.close();
         }
 
         // iroh 漫游叠加层停机（QUIC 插件化：端点本体在 plugin_roaming

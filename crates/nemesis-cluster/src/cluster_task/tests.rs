@@ -18,6 +18,7 @@ fn make_task(task_id: &str, status: TaskStatus) -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -116,6 +117,37 @@ fn test_persist_and_restore() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// NB-CODE-009：create_task_if_absent 受理即落盘——排队窗口（首个持久化点
+/// save_async_state 之前）内崩溃，重启 restore_from_disk + recover_task_ids
+/// 仍能拿回排队任务重提工作队列（不再凭空丢失）。重复受理（Err 分支）
+/// 不产生第二个条目。
+#[test]
+fn test_create_if_absent_persists_queued_task_for_crash_recovery() {
+    let dir = std::env::temp_dir().join("cluster_test_create_persist");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    {
+        let list = ClusterTaskList::new(&dir);
+        list.create_task_if_absent(make_task("t-queued", TaskStatus::Pending))
+            .expect("create should succeed");
+        // 不调用任何显式 persist——受理本身就是持久化点。
+        // 重复受理走 Err 分支：同 id 在途被拒，不产生第二个条目。
+        let dup = make_task("t-queued", TaskStatus::Pending);
+        assert!(list.create_task_if_absent(dup).is_err());
+    }
+
+    // 重启视角：restore + recover 拿回排队任务。
+    let list2 = ClusterTaskList::new(&dir);
+    list2.restore_from_disk().unwrap();
+    let recovered = list2.recover_task_ids();
+    assert_eq!(recovered, vec!["t-queued".to_string()]);
+    let task = list2.get_task("t-queued").unwrap();
+    assert_eq!(task.status, TaskStatus::Pending);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// （三轮审计）：B 端 conversation 路径成分消毒——远端可控
 /// task_id（含 `../`）落盘/删除都必须留在 data_dir/cluster/ 内，且恢复
 /// 路径（tasks.json 索引原 id 反查）与写入对称。
@@ -196,6 +228,57 @@ fn test_recover_resets_waiting_remote() {
     let restored = list2.get_task("t-wr").unwrap();
     assert_eq!(restored.task_id, "t-wr");
     assert_eq!(restored.status, TaskStatus::Pending);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_requeue_orphan_running_and_waiting_remote() {
+    // 动态停启孤儿恢复（第七轮审计 T7）：stop() abort 硬杀执行中任务留
+    // Running 孤儿 + WaitingRemote 回调丢失——requeue_orphan_running 把
+    // 两态重置 Pending 供动态 start 重提队列；Pending 与终态不触碰。
+    let dir = std::env::temp_dir().join("cluster_test_requeue_orphan");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let list = ClusterTaskList::new(&dir);
+    list.create_task(make_task("t-orphan-running", TaskStatus::Running));
+    list.create_task(make_task("t-queued", TaskStatus::Pending));
+    list.create_task(make_task("t-done", TaskStatus::Running));
+    list.complete_task("t-done");
+    list.create_task(make_task("t-wr", TaskStatus::Running));
+    list.save_async_state(
+        "t-wr",
+        "child-x".to_string(),
+        "tc_x".to_string(),
+        serde_json::json!([{"role": "user", "content": "test"}]),
+    )
+    .expect("save_async_state should succeed");
+
+    let mut orphans = list.requeue_orphan_running();
+    orphans.sort();
+    assert_eq!(
+        orphans,
+        vec!["t-orphan-running".to_string(), "t-wr".to_string()],
+        "only Running/WaitingRemote orphans are re-queued"
+    );
+    assert_eq!(
+        list.get_task("t-orphan-running").unwrap().status,
+        TaskStatus::Pending
+    );
+    assert_eq!(list.get_task("t-wr").unwrap().status, TaskStatus::Pending);
+    assert_eq!(
+        list.get_task("t-queued").unwrap().status,
+        TaskStatus::Pending,
+        "already-queued Pending must not be re-queued (it would run twice)"
+    );
+    assert!(
+        list.get_task("t-done").is_none(),
+        "completed task entry was removed by complete_task (terminal cleanup)"
+    );
+
+    // 第二次调用幂等：孤儿已全部转 Pending，无新增。
+    assert!(list.requeue_orphan_running().is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1251,4 +1334,62 @@ fn create_task_if_absent_rejects_each_inflight_status() {
         assert_eq!(kept.content, "original", "原条目不被重发内容覆盖");
         assert_eq!(kept.status, inflight);
     }
+}
+
+/// 恢复重提按 created_at 排序（2026-11-14 审查发现 A）：受理顺序跨重启
+/// 延续——乱序插入的三个任务恢复后按受理时刻 FIFO 返回；旧 tasks.json
+/// 缺 created_at 键（serde default 空串）排最后，不丢任务。
+#[test]
+fn recover_task_ids_orders_by_created_at() {
+    let tmp = tempfile::tempdir().unwrap();
+    let list = ClusterTaskList::new(tmp.path().join("tasks"));
+
+    let mut late = make_task("reco-late", TaskStatus::Pending);
+    late.created_at = "2026-11-14T10:00:00+08:00".into();
+    let mut early = make_task("reco-early", TaskStatus::Pending);
+    early.created_at = "2026-11-14T08:00:00+08:00".into();
+    let mut mid = make_task("reco-mid", TaskStatus::Pending);
+    mid.created_at = "2026-11-14T09:00:00+08:00".into();
+    // 旧格式任务：无 created_at 键（空串）→ 解析失败排最后。
+    let mut legacy = make_task("reco-legacy", TaskStatus::Pending);
+    legacy.created_at = String::new();
+
+    // 故意乱序受理。
+    list.create_task(late);
+    list.create_task(early);
+    list.create_task(mid);
+    list.create_task(legacy);
+
+    let ids = list.recover_task_ids();
+    assert_eq!(
+        ids,
+        vec![
+            "reco-early".to_string(),
+            "reco-mid".to_string(),
+            "reco-late".to_string(),
+            "reco-legacy".to_string(),
+        ],
+        "按受理时刻 FIFO；缺时间戳的旧任务垫底"
+    );
+}
+
+/// 背压提交（2026-11-14 审查发现 A）：容量满时 submit（try_send）诚实
+/// 拒绝，submit_backpressure 等消费者腾位后成功——恢复路径零丢失。
+#[tokio::test]
+async fn submit_backpressure_waits_for_capacity() {
+    let wq = ClusterWorkQueue::new(1);
+
+    assert!(wq.submit("first".into()).is_ok(), "空队列快速入队");
+    assert!(wq.submit("second".into()).is_err(), "满队列 try_send 拒绝");
+
+    // 背压提交在满队列上阻塞；消费者取走后应成功。
+    let wq2 = ClusterWorkQueue::new(1);
+    wq2.submit("filler".into()).unwrap();
+    let pending = wq2.submit_backpressure("backpressed".into());
+    let (res, got) = tokio::join!(pending, wq2.next());
+    assert!(res.is_ok(), "消费者腾位后背压提交成功");
+    assert_eq!(got.as_deref(), Some("filler"), "先入队者先出");
+    // 背压条目此刻已可取。
+    let backpressed = wq2.next().await;
+    assert_eq!(backpressed.as_deref(), Some("backpressed"));
 }

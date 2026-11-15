@@ -1414,6 +1414,60 @@ fn l24_store_object_idempotent_and_hex_named() {
     );
 }
 
+/// BUG-20261115-013 回归锁：同内容并发 store_object（跨进程并发的进程内
+/// 仿真）——旧 `{hash}.tmp` 内容寻址同名 + `fs::write` 截断写，多写者
+/// 互踩同名 tmp，竞窗内 rename 可发布半截对象（hash≠内容 = 寻址存储
+/// 腐蚀，重放水合读出撕裂快照）。write_file_atomic 的 pid+序数+纳秒唯一
+/// 名根除互踩：对象内容恒完整；目录零 tmp 孤儿。诚实边界：真跨进程碰撞
+/// 不可单测复现，机制由 utils 层 8 测试覆盖（含 no_temp_file_left），
+/// 本锁钉 wiring + 孤儿卫生。
+#[test]
+fn l24_store_object_concurrent_same_content_no_corruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let boundary = tmp.path().join("boundary");
+    std::fs::create_dir_all(&boundary).unwrap();
+
+    let content = "shared prompt body\n".repeat(64);
+    let hash = sha256_hex(&content);
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let boundary = boundary.clone();
+            let content = content.clone();
+            let hash = hash.clone();
+            std::thread::spawn(move || {
+                store_object(&boundary, "system_prompt", &content, &hash, "txt");
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("writer thread");
+    }
+
+    let obj = boundary
+        .join("objects")
+        .join("system_prompt")
+        .join(format!("{hash}.txt"));
+    assert_eq!(
+        std::fs::read_to_string(&obj).unwrap(),
+        content,
+        "object bytes intact after concurrent same-content stores"
+    );
+
+    let dir = boundary.join("objects").join("system_prompt");
+    let orphans: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(nemesis_utils::file::ATOMIC_TMP_PREFIX))
+        .collect();
+    assert!(orphans.is_empty(), "no tmp orphans: {orphans:?}");
+    let entries: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec![format!("{hash}.txt")], "exactly one object");
+}
+
 /// 台账记录 serde 兼容双向：旧形态（缺新字段）解析 = None；新形态往返保真。
 #[test]
 fn l24_record_serde_backward_and_forward_compat() {

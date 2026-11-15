@@ -6410,6 +6410,7 @@ async fn ci2_task_cancel_covers_error_queued_terminal_not_found() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
@@ -6642,6 +6643,7 @@ async fn ci2_peer_chat_callback_routes_all_branches() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(

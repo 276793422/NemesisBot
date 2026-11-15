@@ -315,3 +315,72 @@ async fn relay_posts_failure_receipt_on_rpc_unavailable() {
     let _ = std::fs::remove_dir_all(&dir);
     registry().remove_by_request_id("receipt-test-request-0001");
 }
+
+// ---------------------------------------------------------------------------
+// 短号推导字符边界安全（request_id 是 worker 上行输入——bus 层只验非空
+// 不验编码；裸 `[..8]` 在非 ASCII id 上落多字节字符中间 panic 于 RPC
+// 派发线程，远程可达）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_worker_supplied_non_ascii_id_is_boundary_safe() {
+    let reg = RemoteAskRegistry {
+        inner: Mutex::new(HashMap::new()),
+    };
+    let mk = |rid: &str| RemoteAskEntry {
+        request_id: rid.into(),
+        worker_node: "node-b".into(),
+        operation: "process_exec".into(),
+        target: "cargo build".into(),
+        risk_level: "HIGH".into(),
+        reason: "test ask".into(),
+        issue_number: None,
+        timeout_secs: 300,
+        created_at: std::time::Instant::now(),
+    };
+
+    // 中文 id（60 字节）：floor(8)=6 → 短号 = 前 2 个完整汉字；修复前
+    // 裸 [..8] 落第 3 个汉字中间 panic。
+    let id1 = "审批请求甲乙丙丁戊己";
+    let k1 = reg.register(mk(id1));
+    assert!(
+        id1.starts_with(&k1) && !k1.is_empty(),
+        "短号必须是完整 id 的非空字符边界前缀，got: {k1:?}"
+    );
+    assert_eq!(reg.resolve(id1).unwrap().worker_node, "node-b");
+
+    // 冲突加长：第二个 id 共享前 2 个汉字（初始候选相同）→ floor 倍增
+    // 加长区分，不 panic、不死循环；首条目不被覆盖。
+    let id2 = "审批请求甲乙丙丁戊庚";
+    let k2 = reg.register(mk(id2));
+    assert!(id2.starts_with(&k2), "加长短号仍是边界前缀，got: {k2:?}");
+    assert_ne!(k1, k2, "冲突短号必须加长区分");
+    assert_eq!(reg.resolve(id2).unwrap().operation, "process_exec");
+    assert_eq!(reg.resolve(id1).unwrap().worker_node, "node-b");
+
+    // 同 id 重登 = 幂等返回同键。
+    let k1b = reg.register(mk(id1));
+    assert_eq!(k1b, k1);
+}
+
+#[test]
+fn register_empty_worker_id_returns_key_without_panic() {
+    // 空 id：修复前 `min(0).max(1)` = 1 → `&""[..1]` panic。bus 层已拦
+    // 空串；此处验证 register 自身纵深不炸（floor → 0 → 候选 ""）。
+    let reg = RemoteAskRegistry {
+        inner: Mutex::new(HashMap::new()),
+    };
+    let entry = RemoteAskEntry {
+        request_id: String::new(),
+        worker_node: "node-b".into(),
+        operation: "process_exec".into(),
+        target: "x".into(),
+        risk_level: "LOW".into(),
+        reason: "defensive".into(),
+        issue_number: None,
+        timeout_secs: 300,
+        created_at: std::time::Instant::now(),
+    };
+    let k = reg.register(entry);
+    assert_eq!(k, "");
+}

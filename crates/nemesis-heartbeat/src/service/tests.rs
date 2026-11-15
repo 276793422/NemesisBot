@@ -262,6 +262,31 @@ fn test_create_default_heartbeat_template() {
     assert!(content.contains("heartbeat tasks below this line"));
 }
 
+/// BUG-20261115-006 回归锁：文件已在场时 create_default_heartbeat_template
+/// 绝不覆写用户内容。产码触发面是 build_prompt 的 `Err(_)` 臂——瞬时读错误
+/// （Windows AV/索引器共享冲突）会误入该臂，无守卫时用户任务被默认模板
+/// 整体覆盖。守卫与 static 变体同款。
+#[test]
+fn test_create_default_template_never_overwrites_existing_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let path = dir.path().join("HEARTBEAT.md");
+    let user_content = "# My Tasks\n\n- 每天早上查看邮件\n- Review PR #42\n";
+    std::fs::write(&path, user_content).unwrap();
+
+    svc.create_default_heartbeat_template();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        content, user_content,
+        "既有 HEARTBEAT.md 用户内容必须原样保留，不得被默认模板覆盖"
+    );
+}
+
 #[test]
 fn test_build_prompt_no_workspace() {
     let svc = HeartbeatService::new(HeartbeatConfig {

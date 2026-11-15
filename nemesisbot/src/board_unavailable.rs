@@ -28,6 +28,8 @@ use nemesis_web::handlers::board_unavailable as ub;
 
 use crate::board_review::BoardReviewDeps;
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 /// 探针 + 恢复依赖（gateway 装配一次快照传入）。
 pub struct UnavailableProbeDeps {
     pub review: BoardReviewDeps,
@@ -69,10 +71,18 @@ async fn probe_loop(deps: UnavailableProbeDeps) {
     let mut last_probe: Option<Instant> = None;
     loop {
         let cfg = ub::unavailable_cfg(Some(&deps.home));
-        tokio::time::sleep(Duration::from_secs(probe_tick_secs(
-            cfg.probe_interval_secs,
-        )))
-        .await;
+        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+        if !terminal_loop_tick(
+            terminal_cancel_token(),
+            tokio::time::sleep(Duration::from_secs(probe_tick_secs(
+                cfg.probe_interval_secs,
+            ))),
+        )
+        .await
+        {
+            break;
+        }
 
         if !ub::frozen_now() {
             // 未封存：探测计时清零（封存从不连续两段共享计时）。

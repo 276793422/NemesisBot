@@ -2067,6 +2067,93 @@ async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261115-024 成功体有帽（body_cap）：>64MB application/json 成功体
+// 必须在读入中途断开并归 Unknown + "response body exceeds limit" 前缀
+// （可重试，fallback 轮转换下一家），而不是把失控 body 全量灌进内存。
+// 灌流「中途停止」的传输级语义由 http_cap 的同名测试钉死，这里钉的是
+// lane 装配（错误分型 + provider/model 归位 + is_retriable）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_bug_20261115_024_success_body_over_cap_maps_unknown_retriable() {
+    // 服务器宣告 64MB+1 的 200 JSON 成功体并持续灌流（「服务端忽略
+    // stream 回整包」分支的极端形态）。
+    const BODY: usize = 64 * 1024 * 1024 + 1;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // 读掉请求头（\r\n\r\n 为止）再写响应——规范 HTTP 时序。
+        let mut req = vec![0u8; 8192];
+        let mut got = 0usize;
+        loop {
+            let n = sock.read(&mut req[got..]).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got += n;
+            if req[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {BODY}\r\nconnection: close\r\n\r\n"
+        );
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut sent = 0usize;
+        while sent < BODY {
+            let n = chunk.len().min(BODY - sent);
+            if sock.write_all(&chunk[..n]).await.is_err() {
+                // 客户端帽化中途断开 → 写失败退出（不是挂满 120s）。
+                break;
+            }
+            sent += n;
+        }
+    });
+
+    // 墙钟 120s >> loopback 灌 64MB 的时间：错误必须来自帽，不是超时。
+    let config = AnthropicConfig {
+        api_key: "ak-test".to_string(),
+        base_url: format!("http://{addr}"),
+        default_model: "claude-default".to_string(),
+        timeout_secs: 120,
+        proxy: None,
+        stream_mode: String::new(),
+        cache_breakpoints: false,
+    };
+    let provider = AnthropicProvider::new(config);
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::Unknown { ref provider, .. } if provider == "anthropic"),
+        "expected Unknown body-limit error, got: {err:?}"
+    );
+    let FailoverError::Unknown { message, .. } = &err else {
+        unreachable!("just asserted Unknown")
+    };
+    assert!(
+        message.starts_with("response body exceeds limit"),
+        "prefix anchor missing: {message}"
+    );
+    assert!(
+        message.contains("(model m)"),
+        "model must be embedded in message: {message}"
+    );
+    assert!(
+        err.is_retriable(),
+        "body-limit unknown must rotate fallback chain"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // B13 缓存断点显式化（2026-10-18 B 级清零）：cache_breakpoints 只在
 // anthropic lane 的 request body 注入 ephemeral 断点；缺省关 = 字节兼容。
 // ---------------------------------------------------------------------------

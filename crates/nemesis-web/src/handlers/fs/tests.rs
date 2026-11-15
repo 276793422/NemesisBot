@@ -500,6 +500,9 @@ fn resolve(ws: &TempDir, raw: &str) -> Result<ResolvedTarget, String> {
 /// 同持 [`crate::handlers::editor::EDITOR_TEST_LOCK`] 互斥——fs 侧永远
 /// 看到未装配形态（None = 无闸 = 越界照拒）。security 裁剪形态无槽无锁
 /// （返回占位 guard，调用点形态统一且不触发 let_unit_value lint）。
+/// guard 有意横跨测试体内的 `.await`（串行化必须盖住 handle_cmd 调用点
+/// 才能挡住并发装槽）——相关测试 fn 逐个挂 `allow(clippy::await_holding_lock)`
+/// （nemesis-agent credential_domain_tests 同款先例）。
 #[cfg(feature = "security")]
 fn editor_slot_lock() -> parking_lot::MutexGuard<'static, ()> {
     crate::handlers::editor::EDITOR_TEST_LOCK.lock()
@@ -828,6 +831,9 @@ fn open_resolve_project_leaf_prefix_strip() {
 
 /// handle_cmd 层错误路径（不触发 spawn）：缺 path / 越界。
 #[tokio::test]
+// editor 槽测试互斥锁刻意横跨整个测试体（跨测试串行化；current-thread
+// runtime 内无并发争用者）——await_holding_lock 定点豁免。
+#[allow(clippy::await_holding_lock)]
 async fn open_handle_cmd_error_paths() {
     let _editor_slot = editor_slot_lock();
     let ws = setup_workspace();
@@ -855,6 +861,8 @@ async fn open_handle_cmd_error_paths() {
 // （开最近存在祖先目录 = spawn 臂，结构性豁免不进单测）。
 
 #[tokio::test]
+// editor 槽测试互斥锁刻意横跨整个测试体（同 open_handle_cmd_error_paths 豁免注记）。
+#[allow(clippy::await_holding_lock)]
 async fn reveal_handle_cmd_error_paths() {
     let _editor_slot = editor_slot_lock();
     let ws = setup_workspace();
@@ -886,6 +894,8 @@ fn module_commands_include_reveal_and_resolve() {
 // 存在性」；同一解析阶梯，open/reveal 全同源）。
 
 #[tokio::test]
+// editor 槽测试互斥锁刻意横跨整个测试体（同 open_handle_cmd_error_paths 豁免注记）。
+#[allow(clippy::await_holding_lock)]
 async fn resolve_handle_cmd_contract() {
     let _editor_slot = editor_slot_lock();
     let ws = setup_workspace();

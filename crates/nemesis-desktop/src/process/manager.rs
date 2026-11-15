@@ -31,6 +31,27 @@ struct ManagerState {
     result_channels: HashMap<String, tokio::sync::oneshot::Sender<serde_json::Value>>,
 }
 
+/// 回执通道兜底回收窗的交付余量（秒）：覆盖窗口超时兜底层（DLL 自动拒绝）
+/// 触发后 approval.submit 经 WS 送达的延迟。
+const RESULT_WAIT_GRACE_SECS: u64 = 60;
+
+/// window_data 不带 `timeout_seconds` 键时的回收基线（旧实现的 300s 行为）。
+const DEFAULT_RESULT_WAIT_BASE_SECS: u64 = 300;
+
+/// 从窗口数据推导回执通道的兜底回收时长（秒）。
+///
+/// 通道寿命必须覆盖窗口自身的决策窗（`timeout_seconds`）：弹窗还开着而
+/// 通道已被拆 = 用户决策静默丢失（网关侧 rx 关闭 → denied；晚到的
+/// approval.submit 落在已移除通道上）。审批超时可配置
+/// （security.approval_timeout_seconds，默认 300，合法配置可更大），
+/// 回收窗必须随之伸缩，而不是硬编码。
+fn result_wait_secs(data: &serde_json::Value) -> u64 {
+    data.get("timeout_seconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_RESULT_WAIT_BASE_SECS)
+        .saturating_add(RESULT_WAIT_GRACE_SECS)
+}
+
 /// Manages child process lifecycle.
 ///
 /// The ProcessManager coordinates child process creation, pipe-based handshake,
@@ -244,7 +265,7 @@ impl ProcessManager {
         }
 
         // Spawn a task to wait for child result
-        self.spawn_wait_for_result(child_id.clone());
+        self.spawn_wait_for_result(child_id.clone(), result_wait_secs(data));
 
         Ok((child_id, Some(rx)))
     }
@@ -366,7 +387,12 @@ impl ProcessManager {
     /// This polls the WebSocket server for a connection from the child,
     /// then registers an `approval.submit` handler on the connection's dispatcher
     /// that delivers results to the result channel via `submit_result()`.
-    fn spawn_wait_for_result(&self, child_id: String) {
+    ///
+    /// `wait_secs` = 兜底回收窗（`result_wait_secs`：窗口 timeout_seconds +
+    /// 交付余量）。到期回收通道只是内存兜底——正常路径由 submit 交付、
+    /// 子进程死亡（monitor sweep）或 stop() 收走；窗必须覆盖窗口自身的
+    /// 决策窗，提前拆 = 用户晚到的批准被静默丢弃。
+    fn spawn_wait_for_result(&self, child_id: String, wait_secs: u64) {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
         let ws_server = self.ws_server.clone();
         let state = self.state.clone();
@@ -446,10 +472,14 @@ impl ProcessManager {
                 drop(guard);
             }
 
-            // Wait up to 5 minutes for result (or shutdown)
+            // Wait up to wait_secs for result (or shutdown). The caller's own
+            // budget (timeout_secs + grace in request_approval_sync) is the
+            // effective decision deadline; this teardown is only a memory
+            // backstop and must not fire before the window's decision window
+            // (timeout_seconds from window data) has closed.
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(300)) => {
-                    debug!("[ProcessManager] Timeout waiting for result from child {}", child_id);
+                _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => {
+                    debug!("[ProcessManager] Result wait window elapsed for child {}", child_id);
                 }
                 _ = shutdown_rx.recv() => {
                     debug!("[ProcessManager] Shutdown while waiting for child {}", child_id);

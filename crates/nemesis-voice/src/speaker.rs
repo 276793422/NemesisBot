@@ -6,6 +6,12 @@ use std::path::Path;
 
 use crate::sherpa;
 
+/// FFI 字符串边界：CString::new 失败（内嵌 NUL）转 Result 错误臂而非
+/// panic（BUG-20261115-014，与 stt.rs 同款 helper 形态一致）。
+fn c_string(s: &str) -> Result<CString> {
+    CString::new(s).map_err(|e| anyhow::anyhow!("字符串含内嵌 NUL 字节，无法转 C 字符串: {e}"))
+}
+
 pub struct SpeakerEngine {
     extractor: *const sherpa::SherpaOnnxSpeakerEmbeddingExtractor,
     dim: i32,
@@ -34,8 +40,11 @@ impl SpeakerEngine {
             anyhow::bail!("Speaker model not found: {}", model_path.display());
         }
 
-        let model_c = CString::new(model_path.to_str().unwrap_or("")).unwrap();
-        let provider_c = CString::new("cpu").unwrap();
+        // BUG-20261115-014：同 stt.rs——模型目录源自用户配置，防御内嵌
+        // NUL 走错误臂（当前 model_path 有 exists() 闸先拦，本臂属纵深
+        // 防御；形态与 stt.rs c_string 一致）。
+        let model_c = c_string(model_path.to_str().unwrap_or(""))?;
+        let provider_c = c_string("cpu")?;
 
         let config = sherpa::SherpaOnnxSpeakerEmbeddingExtractorConfig {
             model: model_c.as_ptr(),

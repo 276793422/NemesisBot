@@ -1363,7 +1363,9 @@ pub(crate) fn mark_effort_probe_stale_at(path: &std::path::Path, model_name: &st
     // write_config_atomic）共用同一把写串行锁：无锁 RMW 的读旧快照回写
     // 会与并发写者（dashboard 保存 / 探针重写）交错丢更新。
     let _serial = nemesis_config::config_write_lock();
-    let Ok(raw) = std::fs::read_to_string(path) else {
+    // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → stale 标记
+    // 静默不落盘，BUG-20261103-334 同族）。
+    let Ok(raw) = nemesis_utils::fsutil::read_config_string(path) else {
         debug!(
             "[AgentLoop] effort stale mark: config unreadable at {}",
             path.display()
@@ -1416,7 +1418,7 @@ pub(crate) fn effort_probe_accepted_at(
     path: &std::path::Path,
     model_name: &str,
 ) -> Option<Vec<String>> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = nemesis_utils::fsutil::read_config_string(path).ok()?;
     let cfg = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
     let list = cfg.get("model_list")?.as_array()?;
     let entry = list
