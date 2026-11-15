@@ -545,6 +545,29 @@ fn tier_lists_do_not_contain_sealed_exec_async() {
     );
 }
 
+// Phase 5 图像工具层：read_image 是 Normal+（Mini 不给——小模型视觉质量
+// 不可控、附图 token 成本高；big 全量天然含）。screen_capture /
+// desktop_automation 刻意**不入**任何白名单（高敏感操作面最小暴露——仅
+// big/Auto 全量可见），双断言钉住防将来误加。
+#[test]
+fn tier_lists_read_image_and_screen_family() {
+    let normal = tier_allowed_tools(ModelTier::Normal);
+    assert!(normal.contains(&"read_image"), "read_image in Normal");
+    let mini = tier_allowed_tools(ModelTier::Mini);
+    assert!(!mini.contains(&"read_image"), "Mini excluded by design");
+    for tier in [ModelTier::Mini, ModelTier::Normal] {
+        let list = tier_allowed_tools(tier);
+        assert!(
+            !list.contains(&"screen_capture"),
+            "screen_capture must stay out of {tier:?} whitelist (big-only by design)"
+        );
+        assert!(
+            !list.contains(&"desktop_automation"),
+            "desktop_automation must stay out of {tier:?} whitelist (big-only by design)"
+        );
+    }
+}
+
 #[test]
 fn test_resolve_reasoning_effort_tiers() {
     let cfg = serde_json::json!({

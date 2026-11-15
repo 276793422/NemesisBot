@@ -707,3 +707,81 @@ fn respond_form_without_request_is_unknown_error() {
         .unwrap_err();
     assert!(err.contains("unknown question"), "err: {}", err);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 A3：会话级取消（agent.cancel 定向 drain，与 estop 全量版互补）
+// ---------------------------------------------------------------------------
+
+/// `cancel_session_questions` 只了结 session_key 匹配的 pending：匹配会话
+/// 等待方醒来拿 Cancelled + resolved("cancelled") 广播；**其余会话提问
+/// 原样保留**（仍可作答送达 Answered）。幂等空扫返回 0。
+#[test]
+fn cancel_session_questions_drains_only_matching_session() {
+    let (btx, mut brx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(Some(btx)));
+
+    // ⚠️ 锁纪律（run4 实录）：ask 全程持 slot_lock 是既有测试的隐含不变量
+    // （锁挡的是并行置换窗口里 APPROVAL_AUTO enabled 短路 ask）——**两条
+    // ask 并发挂起 = 第二条永远进不了锁**（第一条持锁阻塞等答案），
+    // wait_pending 假超时 + 泄漏线程永久持锁级联毒化后续全部 ask 路径测试
+    // （串行 11 连红 293s 实证）。因此拆两个顺序阶段：每阶段单 ask、
+    // 窗口内解决（Cancelled / Answered）让锁正常释放。
+
+    // —— 阶段一：q-a 挂在 web:chat-1 → 定向取消只了结它 ——
+    let (tx_a, rx_a) = mpsc::channel();
+    let b = broker.clone();
+    std::thread::spawn(move || {
+        let _serial = slot_lock();
+        let mut req = make_req("q-a", false);
+        req.session_key = "web:chat-1".to_string();
+        req.timeout_secs = 0;
+        let _ = tx_a.send(b.ask(req));
+    });
+    wait_pending(&broker, 1);
+    assert!(brx.try_recv().is_ok(), "setup: asked q-a");
+    assert_eq!(
+        broker.cancel_session_questions("web:chat-1", "turn cancelled"),
+        1,
+        "只了结目标会话的一条"
+    );
+    match rx_a.recv_timeout(Duration::from_secs(2)).unwrap().unwrap() {
+        QuestionOutcome::Cancelled => {}
+        other => panic!("target session must get Cancelled, got {:?}", other),
+    }
+    match brx.try_recv() {
+        Ok(AgentEvent::QuestionResolved {
+            question_id,
+            decision,
+        }) => {
+            assert_eq!(question_id, "q-a");
+            assert_eq!(decision, "cancelled");
+        }
+        other => panic!("expected QuestionResolved(q-a, cancelled), got {:?}", other),
+    }
+    // ask 线程随 Cancelled 返回 → slot_lock 释放（阶段二才能进锁）。
+
+    // —— 阶段二：q-b 挂在 web:chat-2 → 对 web:chat-1 的取消是空扫（=0），
+    // 不误伤其他会话的提问卡 ——
+    let (tx_b, rx_b) = mpsc::channel();
+    let b2 = broker.clone();
+    std::thread::spawn(move || {
+        let _serial = slot_lock();
+        let mut req = make_req("q-b", false);
+        req.session_key = "web:chat-2".to_string();
+        req.timeout_secs = 0;
+        let _ = tx_b.send(b2.ask(req));
+    });
+    wait_pending(&broker, 1);
+    assert!(brx.try_recv().is_ok(), "setup: asked q-b");
+    assert_eq!(
+        broker.cancel_session_questions("web:chat-1", "again"),
+        0,
+        "空扫=0（q-b 在其他会话，定向取消不得误伤）"
+    );
+    assert_eq!(broker.pending().len(), 1, "其他会话的提问卡必须保留");
+    assert!(broker.respond("q-b", vec!["pnpm".into()]).unwrap());
+    match rx_b.recv_timeout(Duration::from_secs(2)).unwrap().unwrap() {
+        QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
+        other => panic!("untouched session must answer normally, got {:?}", other),
+    }
+}

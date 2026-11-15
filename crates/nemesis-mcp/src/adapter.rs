@@ -74,6 +74,13 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: serde_json::Value) -> ToolResult;
 }
 
+/// MCP 图像落盘槽（Phase 5 F1）：adapter 收到 MCP server 返回的 image
+/// content（base64 data）时调用——实现方把字节落盘为文件并返回绝对路径
+/// 文本；返回 None = 落盘失败/拒收（超限/非图片字节），回落诚实元信息注记
+/// （既有行为，零回归）。mime 参数是 server 自报的 `mimeType`（可能缺失
+/// 或不准，实现方按字节 magic 自行校验）。
+pub type McpImageSink = std::sync::Arc<dyn Fn(&str, &[u8]) -> Option<String> + Send + Sync>;
+
 // ---------------------------------------------------------------------------
 // McpAdapter
 // ---------------------------------------------------------------------------
@@ -267,6 +274,8 @@ pub async fn create_tools_from_client(
                 }
             },
             timeout: Duration::from_secs(30),
+            // 无槽工厂（既有调用方兼容路径）——图像回落旧注记行为。
+            image_sink: None,
         };
         adapters.push(Box::new(adapter));
     }
@@ -281,6 +290,18 @@ pub async fn create_tools_from_client_named(
     client: Box<dyn Client>,
     server_name: &str,
     timeout_secs: u64,
+) -> Result<Vec<Box<dyn Tool>>, ClientError> {
+    create_tools_from_client_named_with_sink(client, server_name, timeout_secs, None).await
+}
+
+/// [`create_tools_from_client_named`] 的带槽变体（Phase 5 F1）：
+/// `image_sink` 注入每个适配器——MCP server 返回 image content 时经槽
+/// 落盘（`[Image saved: <path>]` 注记），None = 旧注记行为。
+pub async fn create_tools_from_client_named_with_sink(
+    client: Box<dyn Client>,
+    server_name: &str,
+    timeout_secs: u64,
+    image_sink: Option<McpImageSink>,
 ) -> Result<Vec<Box<dyn Tool>>, ClientError> {
     let shared = std::sync::Arc::new(tokio::sync::Mutex::new(client));
     let srv = sanitize_name(server_name);
@@ -331,6 +352,7 @@ pub async fn create_tools_from_client_named(
             mcp_tool,
             tool_def,
             timeout: Duration::from_secs(if timeout_secs > 0 { timeout_secs } else { 30 }),
+            image_sink: image_sink.clone(),
         };
         adapters.push(Box::new(adapter));
     }
@@ -344,6 +366,10 @@ struct ArcClientAdapter {
     mcp_tool: McpTool,
     tool_def: ToolDefinition,
     timeout: Duration,
+    /// 图像落盘槽（Phase 5 F1）。None = 旧行为（诚实元信息注记，字节
+    /// 不透传）——构造路径默认 None，仅 manager 显式 set 后经
+    /// `create_tools_from_client_named_with_sink` 注入。
+    image_sink: Option<super::adapter::McpImageSink>,
 }
 
 #[async_trait]
@@ -404,7 +430,7 @@ impl Tool for ArcClientAdapter {
             .iter()
             .map(|c| match c.content_type.as_str() {
                 "text" => c.text.clone().unwrap_or_default(),
-                "image" => image_or_audio_note(c, "Image"),
+                "image" => image_content_note(c, self.image_sink.as_ref()),
                 "audio" => image_or_audio_note(c, "Audio"),
                 "resource" => resource_content_text(c),
                 _ => c.text.clone().unwrap_or_default(),
@@ -439,6 +465,26 @@ fn image_or_audio_note(c: &crate::types::ToolContent, kind: &str) -> String {
             Some(t) => format!("[{kind}: {t}]"),
             None => format!("[{kind}: (no data)]"),
         },
+    }
+}
+
+/// image content 注记（Phase 5 F1）：有落盘槽且 base64 解码成功 → 槽落盘
+/// Some(路径) = 产出 `[Image saved: <path>]`（下游 bridge 解析该标记把
+/// 路径推进 tool_images 槽，随 tool 轮进 vision 通路）；槽缺席 / 解码失败
+/// / 落盘拒收（None）= 回落 [`image_or_audio_note`] 诚实元信息注记
+/// （字节不透传，行为与旧版一致）。
+fn image_content_note(c: &crate::types::ToolContent, sink: Option<&McpImageSink>) -> String {
+    let (Some(sink), Some(data)) = (sink, &c.data) else {
+        return image_or_audio_note(c, "Image");
+    };
+    use base64::Engine;
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()) else {
+        return image_or_audio_note(c, "Image");
+    };
+    let mime = c.mime_type.as_deref().unwrap_or("");
+    match sink(mime, &bytes) {
+        Some(path) => format!("[Image saved: {path}]"),
+        None => image_or_audio_note(c, "Image"),
     }
 }
 

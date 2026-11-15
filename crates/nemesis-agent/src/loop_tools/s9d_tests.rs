@@ -42,6 +42,7 @@ fn ctx() -> RequestContext {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -56,6 +57,7 @@ fn empty_ctx() -> RequestContext {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 

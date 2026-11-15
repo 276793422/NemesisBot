@@ -662,6 +662,17 @@ pub trait QuestionResponder: Send + Sync {
 
     /// 当前等待作答的提问元数据列表（前端刷新/恢复用）。
     fn pending(&self) -> Vec<serde_json::Value>;
+
+    /// 会话级取消（Phase 5 A3，2026-11-15）：`agent.cancel`（dashboard
+    /// 停止按钮）对**指定会话**全部 pending 提问的强制了结——与
+    /// `cancel_pending_all`（estop 全局 watcher，终止全部会话）互补，
+    /// 只了结 `session_key` 匹配的条目（.send(Cancelled) +
+    /// broadcast resolved，前端卡片摘除），其余会话提问不受影响。
+    /// 返回了结条数。默认 no-op（返回 0）——既有实现零破坏，broker
+    /// 缺席/不关心会话粒度的实现等价旧行为。
+    fn cancel_session_questions(&self, _session_key: &str, _reason: &str) -> usize {
+        0
+    }
 }
 
 /// B4（2026-10-18 凭据 vault §7）：单次凭据索要请求（触发点 → broker 方向

@@ -37,6 +37,10 @@ pub fn register_default_tools() -> HashMap<String, Box<dyn Tool>> {
     );
     tools.insert("create_dir".to_string(), Box::new(CreateDirTool::default()));
     tools.insert("delete_dir".to_string(), Box::new(DeleteDirTool::default()));
+    // (Phase 5 图像工具层) read_image：LLM 主动读图（基线工具——纯读侧，
+    // 图片路径进 tool_images 槽随 tool 轮落史；vision=no 由 dispatch 层
+    // vision 前置闸零 IO 拒绝）。
+    tools.insert("read_image".to_string(), Box::new(ReadImageTool::default()));
     tools.insert("sleep".to_string(), Box::new(SleepTool));
     tools
 }
@@ -354,6 +358,31 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert(
             "delete_dir".to_string(),
             Box::new(DeleteDirTool::with_boundary(boundary.clone())),
+        );
+        // (Phase 5 图像工具层) read_image 同批换带界生产形态——相对路径
+        // 锚定工作区根 + restrict 读界；uploads 降采样产物目录从边界根派生。
+        tools.insert(
+            "read_image".to_string(),
+            Box::new(ReadImageTool::with_boundary(boundary.clone())),
+        );
+    }
+
+    // (Phase 5 图像工具层) screen_capture / desktop_automation：截屏 +
+    // 桌面自动化接线（用户拍板「必须一起做」）。生产注册（workspace 在场
+    // ——截图落 `{workspace}/temp/`），基线/测试注册不含。tier 供给面：
+    // big 全量天然含，normal/mini 白名单不给（高敏感操作面最小暴露）。
+    // 安全分级静态表：screen_capture=FileWrite(HIGH 隐私敏感) /
+    // desktop_automation=ProcessSpawn(HIGH 键鼠注入)，审批卡照常走 8 层。
+    // 非 Windows 平台运行期诚实报错（PowerShell 后端缺席），不做编译期裁剪。
+    if let Some(ref ws) = config.workspace {
+        let ws_root = std::path::PathBuf::from(ws);
+        tools.insert(
+            "screen_capture".to_string(),
+            Box::new(ScreenCaptureToolAdapter::new(ws_root.clone())),
+        );
+        tools.insert(
+            "desktop_automation".to_string(),
+            Box::new(DesktopAutomationToolAdapter::new(ws_root)),
         );
     }
 

@@ -138,3 +138,61 @@ fn record_tool_validation_stats_without_store_is_noop() {
     let al = AgentLoop::new(Box::new(CovMcpProvider), cov_config());
     al.record_tool_validation_stats(true);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 F1：mcp_image_sink_for_root 槽闭包矩阵
+// ---------------------------------------------------------------------------
+
+const SINK_PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// root 在场 + PNG magic → 落盘成功，路径在 `{root}/temp/mcp/` 下、
+/// 内容寻址命名 mcp_{sha8}_{millis}.png、字节原样。
+#[test]
+fn sink_root_saves_png_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = mcp_image_sink_for_root(Some(dir.path().to_path_buf())).unwrap();
+    let path = sink("image/png", &SINK_PNG_MAGIC).expect("sink should save");
+    let p = std::path::PathBuf::from(&path);
+    assert!(p.starts_with(dir.path().join("temp").join("mcp")));
+    assert_eq!(p.extension().and_then(|e| e.to_str()), Some("png"));
+    assert_eq!(std::fs::read(&p).unwrap(), SINK_PNG_MAGIC);
+}
+
+/// magic 失手（假 PNG 头 + mime=image/png）→ mime 映射回落仍落 jpg/png。
+#[test]
+fn sink_mime_fallback_when_magic_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = mcp_image_sink_for_root(Some(dir.path().to_path_buf())).unwrap();
+    // BMP magic 实际可嗅探——用完全未知字节 + jpeg mime 验证 mime 回落。
+    let path = sink("image/jpeg", b"unknown-bytes").expect("mime fallback saves");
+    assert!(
+        std::path::PathBuf::from(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            == Some("jpg")
+    );
+}
+
+/// 非 image/* mime + 非图片字节 → 拒收 None（adapter 回落旧占位）。
+#[test]
+fn sink_rejects_unknown_bytes_and_mime() {
+    let dir = tempfile::tempdir().unwrap();
+    let sink = mcp_image_sink_for_root(Some(dir.path().to_path_buf())).unwrap();
+    assert_eq!(sink("application/octet-stream", b"junk-data"), None);
+}
+
+/// root 缺席 → 槽本身 None（旧占位行为，零回归臂）。
+#[test]
+fn sink_none_without_root() {
+    assert!(mcp_image_sink_for_root(None).is_none());
+}
+
+/// ext_from_mime 映射表 + 参数段剥离。
+#[test]
+fn ext_from_mime_table() {
+    assert_eq!(ext_from_mime("image/png"), Some("png"));
+    assert_eq!(ext_from_mime("image/jpeg; charset=binary"), Some("jpg"));
+    assert_eq!(ext_from_mime("IMAGE/WEBP"), Some("webp"));
+    assert_eq!(ext_from_mime("image/x-unknown"), None);
+    assert_eq!(ext_from_mime(""), None);
+}

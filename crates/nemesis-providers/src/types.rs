@@ -367,20 +367,69 @@ pub fn openai_content_value(parts: &[ContentPart]) -> serde_json::Value {
 /// 消息数组 → OpenAI 兼容请求 `messages` 值（openai_compat / http_provider 共用）：
 /// 纯文本消息整体序列化照旧（content 保持字符串）；Parts 消息仅替换 content
 /// 字段为数组（其余字段——role/tool_calls/tool_call_id/reasoning_content——序列化不变）。
+///
+/// （Phase 5 E2 图像提升）：tool 轮消息（role="tool" 或携 tool_call_id）
+/// 的图像 part **不上行**（OpenAI wire 的 tool 消息 content 只接受字符串
+/// / 纯 text part 数组，image_url part 属非法形态）——图像 part 逐条缓冲，
+/// 工具结果组结束（下一条非工具消息 / 流末）时合成一条 user 消息插入，
+/// 图像照常到达模型 vision 通路。工具消息本体 content 取纯文本视图
+/// （`[图片: <path>]` 标注 part 随文本保留，模型能对应图与工具结果）。
+/// 无图像的消息流零变化（缓冲恒空，不插入合成消息）。
 pub fn messages_to_openai_json(messages: &[Message]) -> serde_json::Value {
-    serde_json::Value::Array(
-        messages
-            .iter()
-            .map(|msg| {
-                let mut v = serde_json::to_value(msg).expect("Message serialize is infallible");
-                if let (MessageContent::Parts(parts), Some(obj)) = (&msg.content, v.as_object_mut())
-                {
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+    let mut pending_hoist: Vec<ContentPart> = Vec::new();
+    for msg in messages {
+        let is_tool_result = msg.role == "tool" || msg.tool_call_id.is_some();
+        let images: Vec<ContentPart> = if is_tool_result {
+            match &msg.content {
+                MessageContent::Parts(parts) => parts
+                    .iter()
+                    .filter(|p| matches!(p, ContentPart::Image { .. }))
+                    .cloned()
+                    .collect(),
+                MessageContent::Text(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        if !is_tool_result && !pending_hoist.is_empty() {
+            // 工具结果组结束：先插合成 user 消息（图像），再排本条。
+            out.push(serde_json::json!({
+                "role": "user",
+                "content": openai_content_value(&pending_hoist),
+            }));
+            pending_hoist.clear();
+        }
+        let mut v = serde_json::to_value(msg).expect("Message serialize is infallible");
+        match &msg.content {
+            MessageContent::Parts(parts) if !is_tool_result => {
+                if let Some(obj) = v.as_object_mut() {
                     obj.insert("content".to_string(), openai_content_value(parts));
                 }
-                v
-            })
-            .collect(),
-    )
+            }
+            MessageContent::Parts(_) => {
+                // 工具结果 Parts：纯文本视图（含 [图片: <path>] 标注 part），
+                // 图像已缓冲待提升。
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "content".to_string(),
+                        serde_json::Value::String(msg.content.to_text()),
+                    );
+                }
+            }
+            MessageContent::Text(_) => {}
+        }
+        pending_hoist.extend(images);
+        out.push(v);
+    }
+    if !pending_hoist.is_empty() {
+        // 流末仍挂着未提升图像（历史以工具结果收尾的罕见形态）——补插。
+        out.push(serde_json::json!({
+            "role": "user",
+            "content": openai_content_value(&pending_hoist),
+        }));
+    }
+    serde_json::Value::Array(out)
 }
 
 /// Tool definition for LLM API.
