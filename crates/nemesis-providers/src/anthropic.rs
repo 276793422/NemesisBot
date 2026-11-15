@@ -598,10 +598,18 @@ impl AnthropicProvider {
                 // body 读传输失败诚实上抛（同族）：空串会让
                 // 下方 from_str 落 Format 伪装应用层错误，fallback 链不轮转。
                 // unwrap_or_default 只留给 4xx 路径（状态码本身已定类）。
-                let raw = match resp.text().await {
+                // 成功体走有帽读取（BUG-20261115-024）：超限在读入中途断开，
+                // Unknown + "response body exceeds limit" 前缀（可重试换下一家）。
+                let raw = match crate::body_cap::read_success_body(resp).await {
                     Ok(b) => b,
                     Err(e) => {
-                        let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
+                        let _ = tx
+                            .send(Err(crate::body_cap::to_failover_error(
+                                "anthropic",
+                                &model,
+                                e,
+                            )))
+                            .await;
                         return;
                     }
                 };
@@ -1412,11 +1420,11 @@ impl LLMProvider for AnthropicProvider {
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send/SSE 读路径同判）；解析失败→Format 带 body 摘要
-        //（应用层，不可重试）。
-        let raw = resp
-            .text()
+        //（应用层，不可重试）。成功体有帽（BUG-20261115-024）：超限中途断开
+        // →Unknown + "response body exceeds limit" 前缀（可重试）。
+        let raw = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| transport_error("anthropic", model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error("anthropic", model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
                 provider: "anthropic".to_string(),

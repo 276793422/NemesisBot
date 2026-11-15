@@ -2,6 +2,8 @@
 //!
 //! Provider management, routing strategies, failover, and LLM driver implementations.
 
+/// Provider 成功响应体有帽读取（BUG-20261115-024 统一入口）。
+pub mod body_cap;
 pub mod failover;
 pub mod http_provider;
 pub mod null_provider;

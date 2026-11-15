@@ -751,10 +751,10 @@ async fn parse_sse_response(
     model: &str,
 ) -> Result<crate::types::LLMResponse, FailoverError> {
     // 中途断流：客户端超时→Timeout；其余读错误诚实携带根因链（同 send 臂）。
-    let text = resp
-        .text()
+    // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚（可重试）。
+    let text = crate::body_cap::read_success_body(resp)
         .await
-        .map_err(|e| transport_error("codex", model, &e))?;
+        .map_err(|e| crate::body_cap::to_failover_error("codex", model, e))?;
     parse_sse_text(&text, model)
 }
 
@@ -780,10 +780,10 @@ async fn decode_codex_response(
     // 重试），fallback 链直接终止不轮转（本文件 parse_sse_response 的
     // SSE 聚合路径早已 transport_error，此路径此前未对齐）。现传输失败
     // →transport_error（可重试）；解析失败→Format 带 body 摘要。
-    let raw = resp
-        .text()
+    // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚。
+    let raw = crate::body_cap::read_success_body(resp)
         .await
-        .map_err(|e| transport_error("codex", model, &e))?;
+        .map_err(|e| crate::body_cap::to_failover_error("codex", model, e))?;
     let data: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
             provider: "codex".to_string(),
