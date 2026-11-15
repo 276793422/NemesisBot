@@ -35,8 +35,9 @@ pub fn now_timestamp() -> String {
 }
 
 /// Cosine similarity between two f32 vectors, accumulated in f64.
-/// 0.0 when lengths differ, either is empty, or either norm is zero
-/// (dimension mismatch = incomparable; zero vector = undefined direction).
+/// 0.0 when lengths differ, either is empty, or either norm is zero or
+/// non-finite (dimension mismatch = incomparable; zero vector = undefined
+/// direction; non-finite = poison for downstream sorts, BUG-20261116-015).
 ///
 /// Round-5 dedup: THE single cosine implementation — nemesis-memory's
 /// `cosine_similarity` and nemesis-providers' router (semantic model
@@ -53,7 +54,14 @@ pub fn cosine_similarity_f32(a: &[f32], b: &[f32]) -> f64 {
         norm_a += f64::from(a[i]) * f64::from(a[i]);
         norm_b += f64::from(b[i]) * f64::from(b[i]);
     }
-    if norm_a == 0.0 || norm_b == 0.0 {
+    // BUG-20261116-015: non-finite norms (NaN/inf elements — model-provided
+    // embeddings have no finite validation upstream) must not reach the
+    // division: a NaN score poisons downstream `partial_cmp().unwrap_or(Equal)`
+    // sorts into a non-total order (driftsort panic, Rust ≥1.81). Parse-domain
+    // self-defense, same doctrine as memory dreaming's `is_finite` gate.
+    // (f64 accumulation of finite f32 squares cannot overflow, so a non-finite
+    // norm here always implies non-finite elements.)
+    if norm_a == 0.0 || norm_b == 0.0 || !norm_a.is_finite() || !norm_b.is_finite() {
         return 0.0;
     }
     dot / (norm_a * norm_b).sqrt()

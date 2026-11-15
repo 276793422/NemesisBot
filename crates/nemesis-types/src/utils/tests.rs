@@ -515,3 +515,26 @@ fn test_split_message_utf16_mixed_content_every_chunk_within_budget() {
     }
     assert_eq!(chunks.concat(), s);
 }
+
+// BUG-20261116-015：守卫此前只挡零范数——非有限元素（NaN/inf，模型输出
+// 嵌入无 finite 校验可达）使范数非有限穿透余弦 → 分数 NaN → 下游排序
+// `partial_cmp().unwrap_or(Equal)` 违反全序（Rust ≥1.81 driftsort 可
+// panic）。解析域自守有限性（dreaming.rs 同族先例 doctrine）：非有限
+// 范数 = 不可比较，与零向量同待遇 0.0。
+#[test]
+fn test_cosine_similarity_non_finite_elements_yield_zero() {
+    // NaN 元素 → norm_a = NaN，旧码 `NaN == 0.0` 为 false 穿透 → 返回 NaN。
+    assert_eq!(cosine_similarity_f32(&[f32::NAN, 1.0], &[1.0, 1.0]), 0.0);
+    assert_eq!(cosine_similarity_f32(&[1.0, 1.0], &[1.0, f32::NAN]), 0.0);
+    // inf 元素 → norm = inf → dot/(inf).sqrt() = inf/inf = NaN（旧码穿透）。
+    assert_eq!(cosine_similarity_f32(&[f32::INFINITY], &[1.0]), 0.0);
+    assert_eq!(cosine_similarity_f32(&[1.0], &[f32::INFINITY]), 0.0);
+    // 双 inf 同形。
+    assert_eq!(
+        cosine_similarity_f32(&[f32::INFINITY], &[f32::INFINITY]),
+        0.0
+    );
+    // 有限大值（f64 累加不溢出）行为不变：正常相似度。
+    let s = cosine_similarity_f32(&[1e30f32], &[1e30f32]);
+    assert!((s - 1.0).abs() < 1e-9, "有限大值相似度不受守卫影响: {s}");
+}

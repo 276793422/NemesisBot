@@ -160,3 +160,23 @@ fn test_one_line_summary_cjk_and_newline_cuts() {
     // No terminator → whole string (already covered elsewhere, pin anyway).
     assert_eq!(one_line_summary("just words"), "just words");
 }
+
+// BUG-20261116-015：守卫此前只挡 `na <= 0.0`——NaN 比较恒 false、inf
+// 通过比较，两者都穿透余弦 → NaN 分数 → fold_tool_defs 排序
+// `partial_cmp().unwrap_or(Equal)` 违反全序（driftsort 可 panic）。
+// f32 累加与共享版（f64）不同：有限大元素平方即可溢出 inf，非有限
+// 形态两条路都可达。非有限范数 = 不可比较，待遇 0.0（解析域自守）。
+#[test]
+fn test_cosine_non_finite_norms_yield_zero() {
+    // NaN 元素：`NaN <= 0.0` 为 false，旧码穿透返回 NaN。
+    assert_eq!(cosine(&[f32::NAN], &[1.0]), 0.0);
+    assert_eq!(cosine(&[1.0], &[f32::NAN]), 0.0);
+    // inf 元素：na = inf → inf/(inf*1) = NaN（旧码穿透）。
+    assert_eq!(cosine(&[f32::INFINITY], &[1.0]), 0.0);
+    assert_eq!(cosine(&[1.0], &[f32::INFINITY]), 0.0);
+    // 有限大元素 f32 平方溢出（1e20² = 1e40 > f32::MAX）：na = inf → NaN。
+    assert_eq!(cosine(&[1e20f32], &[1e20f32]), 0.0);
+    // 有限正常值行为不变。
+    let s = cosine(&[3.0, 4.0], &[3.0, 4.0]);
+    assert!((s - 1.0).abs() < 1e-6, "正常向量不受守卫影响: {s}");
+}
