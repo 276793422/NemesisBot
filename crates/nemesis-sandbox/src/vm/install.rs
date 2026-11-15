@@ -173,7 +173,7 @@ async fn install_qemu_packages(entry: &QemuPlatformEntry) -> Result<QemuInstallR
 // 纯函数（单测钉死）
 // ---------------------------------------------------------------------------
 
-// （QEMU 关键二进制名对已矩阵化——`super::qemu_config:required_binaries_for`
+// （QEMU 关键二进制名对已矩阵化——`super::qemu_config::required_binaries_for`
 // 按条目 binaries 取，安装与探针同源消费。）
 
 /// 分块调度：`total_len` 均分为 `parallel` 块（余数并入末块），返回
@@ -520,6 +520,48 @@ fn pin_preview(s: &str) -> &str {
     s.get(..16).unwrap_or(s)
 }
 
+/// 安装目录齐套判据（纯函数面——`exists()` 探测 + 可测命名拆出）：
+/// system+img 同时在场 = 已安装（幂等早退合法）；缺任一 = 半安装态
+/// （清掉重装）。与 `probe::classify_qemu_presence` 的 Partial 齐套检查
+/// 同判据——install 幂等闸不另立标准。
+pub fn install_dir_complete(install_dir: &Path, system: &str, img: &str) -> bool {
+    install_dir.join(system).exists() && install_dir.join(img).exists()
+}
+
+/// 坏包清场（哈希校验失败路径）：删安装包本体 + 全部下载残件
+/// （`{stem}.partN` 分片 / `{stem}.part.concat` 拼接半成品，前缀匹配覆盖
+/// 同族命名）。分片只对「同一份内容」可续传——哈希失败即证明盘上字节
+/// 不可信，而分片长度吻合会被 `download_chunk` 的续传语义整批跳过，
+/// 不清场 = 下轮重拼同样坏字节、同一坏包现场死循环（本函数自述
+/// 「下轮重新下载」的意图被分片残留击穿）。cluster transfer 的续传锚
+/// 是 content_hash（同族正确形态）；本模块分片无内容指纹，哈希失败后
+/// 必须整批弃置。返回删除文件数（尽力而为，单文件删失败不阻断报错路径）。
+fn purge_bad_installer(work_dir: &Path, installer: &Path) -> usize {
+    let mut removed = 0usize;
+    if std::fs::remove_file(installer).is_ok() {
+        removed += 1;
+    }
+    let Some(stem) = installer.file_stem().and_then(|s| s.to_str()) else {
+        return removed;
+    };
+    let Ok(entries) = std::fs::read_dir(work_dir) else {
+        return removed;
+    };
+    let prefix = format!("{stem}.");
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // 安装包本体已在上方删除；前缀匹配只命中分片族，不误伤
+        // unpack/ 目录与异名产物。
+        if name.starts_with(&prefix) && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// 取上游 sidecar SHA-512（`<url>.sha512`）。不可达 = Err（caller 决定
 /// 诚实拒绝或以显式 expected 继续）。
 pub async fn fetch_sha512_sidecar(url: &str) -> Result<String> {
@@ -622,9 +664,13 @@ async fn install_qemu_archive(
         Some(entry.sha512.to_ascii_lowercase())
     };
 
-    // 幂等：已就绪 = 版本探针过即早退（不重装）。
+    // 幂等：system+img 齐套（BUG-20261115-027——只验 system 会对 img 缺席
+    // 半安装态误报 already_installed 并在报告里给出不存在的 qemu-img 路径；
+    // 齐套判据与 probe::classify_qemu_presence 同源）+ 版本探针过即早退
+    // （不重装）。
     let qemu_system = dirs.install_dir.join(&qemu_name);
-    if qemu_system.exists() {
+    let qemu_img = dirs.install_dir.join(&img_name);
+    if install_dir_complete(&dirs.install_dir, &qemu_name, &img_name) {
         let version = super::probe::qemu_version_ok(&qemu_system)
             .await
             .map_err(|e| {
@@ -637,14 +683,14 @@ async fn install_qemu_archive(
         return Ok(QemuInstallReport {
             install_dir: dirs.install_dir.clone(),
             qemu_system,
-            qemu_img: dirs.install_dir.join(img_name),
+            qemu_img,
             version,
             installer_sha256: String::new(),
             already_installed: true,
         });
     }
 
-    // 残 install_dir（有目录无二进制）= 半安装态，清掉再装。
+    // 残 install_dir（半安装态：system 缺席或 img 缺席）= 清掉再装。
     if dirs.install_dir.exists()
         && !nemesis_utils::fsutil::remove_dir_all_resilient(&dirs.install_dir)
     {
@@ -668,11 +714,12 @@ async fn install_qemu_archive(
         ranged_download(&entry.url, &installer, dirs.parallel).await?;
     }
     if let Err(e) = verify_installer(&installer, &expected_sha512, &entry.url).await {
-        // 坏包不滞留：留在 work_dir 的 installer 会让下次运行走
-        // `prior.is_some()` 跳过重下，永远卡在同一坏包现场——删掉再报错，
-        // 下轮重新下载。
-        let _ = tokio::fs::remove_file(&installer).await;
-        return Err(e);
+        // 坏包不滞留（BUG-20261115-026）：坏 installer 会让下次运行走
+        // `prior.is_some()` 跳过重下，`.partN` 残片会被续传语义整批复用
+        // （长度吻合即跳过）——不清场 = 永远卡在同一坏包现场。全部清掉
+        // 再报错，下轮全量重下。
+        let purged = purge_bad_installer(&dirs.work_dir, &installer);
+        return Err(e.context(format!("已清场坏包与 {purged} 个下载残件（下轮重新下载）")));
     }
 
     // 3. 7z 直解（NSIS 免安装直跑—— 实证；sync IO → spawn_blocking）。
@@ -713,8 +760,6 @@ async fn install_qemu_archive(
         })?;
 
     // 5. 最小文件集 + 版本探针（二进制在场 ≠ 可用，实跑对齐 diff 纪律）。
-    let qemu_system = dirs.install_dir.join(&qemu_name);
-    let qemu_img = dirs.install_dir.join(&img_name);
     if !qemu_img.exists() {
         bail!(
             "解包产物缺 {img_name}（{}）——安装包布局异常",
