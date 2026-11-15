@@ -160,20 +160,24 @@ pub async fn remove_dir_all_retry_async(dir: impl AsRef<Path>) -> std::io::Resul
 /// 的实现基础）。
 ///
 /// BOM 不在 `char::is_whitespace` 内：`trim` / `trim_start` **不剥 BOM**，
-/// 任何锚定开头的解析逻辑（serde_json/toml 的「首字符必须是值」、
-/// SKILL.md frontmatter 的 `^---` 判定）都会被一个前导 BOM 破坏。需要
-/// 剥 BOM 的解析入口一律走本函数，不自拼 `strip_prefix`。
+/// 锚定开头的解析逻辑（serde_json 的「首字符必须是值」、SKILL.md
+/// frontmatter 的 `^---` 判定）会被一个前导 BOM 破坏。需要剥 BOM 的
+/// 解析入口一律走本函数，不自拼 `strip_prefix`。
+/// （toml crate 按 TOML 规范容忍前导 BOM，见 [`read_config_string`] 注。）
 pub fn strip_bom(content: &str) -> &str {
     content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
 /// 读取配置文件文本并剥离前导 UTF-8 BOM（`\u{FEFF}`）。
 ///
-/// Windows 记事本「带 BOM 的 UTF-8」保存形态：serde_json / toml 解析器都
-/// 不认 BOM，报 `expected value at line 1 column 1` 一类无从定位的错误；
-/// cluster 的 peers.toml 更会走「解析失败→全新序列化覆盖写」把用户手工
-/// 维护的 `[peers.X]` 静态表整个冲掉。所有「用户可手工编辑的 JSON/TOML
-/// 配置」读取点一律走本函数，不走裸 `read_to_string`。非 BOM 文件字节
+/// Windows 记事本「带 BOM 的 UTF-8」保存形态：serde_json 不认 BOM，报
+/// `expected value at line 1 column 1` 一类无从定位的错误。toml crate
+/// （锁内 0.8.2 / 1.1.6+spec-1.1.0）按 TOML 规范**容忍**前导 BOM
+/// （nemesis-cluster tests.rs BUG-20261103-334 实测钉死，R1407 旧代码
+/// 复核确认）——统一剥除是不依赖各解析器行为差异的防御纵深，勿据
+/// 「toml 反正容忍」把读取点回退裸 `read_to_string`。所有「用户可手工
+/// 编辑的 JSON/TOML 配置」读取点一律走本函数，不走裸 `read_to_string`。
+/// 非 BOM 文件字节
 /// 不变（`strip_prefix` 不命中时原 String 原样返回，零拷贝）。skills 域
 /// 远程响应同款处理`nemesis-skills/src/modelscope_registry.rs`。
 pub fn read_config_string(path: impl AsRef<Path>) -> std::io::Result<String> {
