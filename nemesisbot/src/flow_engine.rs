@@ -2421,10 +2421,20 @@ impl FlowEngine {
             )
             .map_err(|e| format!("origin 订阅读取失败: {e}"))?;
         // 水位推进锚：最后一个成功收口单的 updated_at。落盘时 -1（SQL 严格
-        // `>`——同毫秒兄弟单不能丢，重扫由游标 Noop 幂等去重兜底，成本
+        // `>`——同秒兄弟单不能丢，重扫由游标 Noop 幂等去重兜底，成本
         // 一次空转查询）；投递失败 break 时停在失败单之前（水位不越过
         // 失败现场，下 tick 从水位重扫重投）。
+        // BUG-20261115-038：水位**不得越过任何未收口单**——at_cap 熔断单 /
+        // guest running 单 / 游标落盘失败单（Adopt 臂 save Err）只是不为
+        // 本单推进 last_settled，但同批后续单的成功收口会把 last_settled
+        // 推到更高，水位最终越过它们 → SQL 严格 `>` 下轮不再命中 → 「重启
+        // 恢复后仍要重投」「下 tick 优先重扫」两条承诺双双落空（回帖静默
+        // 丢失）。watermark_cap = 本批最早未收口单的 updated_at，最终水位
+        // = min(last_settled, cap) - 1：后续单照常投递收口（游标落盘 →
+        // 下轮 Noop 幂等去重），未收口单永远留在窗口内重扫——「不挡同批
+        // 后续单」与「水位不越过未收口现场」两条不变量同时成立。
         let mut last_settled: Option<i64> = None;
+        let mut watermark_cap: Option<i64> = None;
         for issue in issues {
             let Some(origin) = issue.origin.as_ref() else {
                 continue;
@@ -2447,11 +2457,22 @@ impl FlowEngine {
             match writeback_decision(stored.as_deref(), status) {
                 WritebackDecision::Noop => last_settled = Some(issue.updated_at),
                 WritebackDecision::Adopt => {
-                    let _ = self
+                    match self
                         .flows
-                        .save_transition_state(&def.template.id, origin_id, status);
-                    tracing::debug!("[FlowEngine] 回写游标静默收编 {origin_id} → {status}");
-                    last_settled = Some(issue.updated_at);
+                        .save_transition_state(&def.template.id, origin_id, status)
+                    {
+                        Ok(()) => {
+                            tracing::debug!("[FlowEngine] 回写游标静默收编 {origin_id} → {status}");
+                            last_settled = Some(issue.updated_at);
+                        }
+                        // 游标落盘失败 = 未收口（BUG-20261115-038 同族：下轮
+                        // 重 Adopt，水位不越过）。
+                        Err(_) => {
+                            watermark_cap = Some(
+                                watermark_cap.map_or(issue.updated_at, |c| c.min(issue.updated_at)),
+                            );
+                        }
+                    }
                 }
                 WritebackDecision::Compose { from } => {
                     // 写回熔断：同一目标连续失败达上限 = 停投
@@ -2477,6 +2498,12 @@ impl FlowEngine {
                         }
                     };
                     if at_cap {
+                        // BUG-20261115-038：熔断单不推进水位也不 break——
+                        // 水位 cap 在本单（下轮仍扫到，修复对端重启恢复后
+                        // 重投），同批后续单照常处理。
+                        watermark_cap = Some(
+                            watermark_cap.map_or(issue.updated_at, |c| c.min(issue.updated_at)),
+                        );
                         continue;
                     }
                     match self
@@ -2508,14 +2535,25 @@ impl FlowEngine {
                             break;
                         }
                         // Pending = guest 异步处理中（游标保留、重投幂等由
-                        // guest 负责）——非失败不 break、不收口（水位停在
-                        // 本单前，下 tick 优先重扫）。
-                        WritebackResult::Pending => {}
+                        // guest 负责）——非失败不 break、不收口（BUG-20261115-038
+                        // 同族：水位 cap 在本单，下轮仍优先重扫）。
+                        WritebackResult::Pending => {
+                            watermark_cap = Some(
+                                watermark_cap.map_or(issue.updated_at, |c| c.min(issue.updated_at)),
+                            );
+                        }
                     }
                 }
             }
         }
-        if let Some(ts) = last_settled
+        // 最终水位 = min(最后收口单, 最早未收口单) - 1（BUG-20261115-038：
+        // cap 优先——未收口单留在窗口内；收口单靠游标 Noop 幂等去重）。
+        let settled = match (last_settled, watermark_cap) {
+            (Some(t), Some(c)) => Some(t.min(c)),
+            (opt, None) => opt,
+            (None, Some(c)) => Some(c),
+        };
+        if let Some(ts) = settled
             && let Err(e) = self
                 .flows
                 .save_writeback_watermark(&def.template.id, ts.saturating_sub(1))
@@ -2549,10 +2587,16 @@ impl FlowEngine {
                 tracing::debug!(
                     "[FlowEngine] {origin_id} 无 origin_meta 也无 parse-origin-id 声明，回写永久跳过"
                 );
-                let _ = self
+                // BUG-20261115-038 同族：游标落盘失败 ≠ 收口——按 Retried
+                // 让水位停在（或 cap 在）本单（下轮重跑，纯本地落盘重试
+                // 幂等无害）；此前 save 失败仍报 Advanced 会让水位越过。
+                return match self
                     .flows
-                    .save_transition_state(&def.template.id, origin_id, status);
-                return WritebackResult::Advanced;
+                    .save_transition_state(&def.template.id, origin_id, status)
+                {
+                    Ok(()) => WritebackResult::Advanced,
+                    Err(_) => WritebackResult::Retried,
+                };
             }
             WritebackTableOutcome::Retry(e) => {
                 tracing::warn!(
