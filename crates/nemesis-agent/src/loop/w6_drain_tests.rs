@@ -212,3 +212,19 @@ async fn wait_loops_drained_requires_all_loops_idle() {
     let _ = release_tx.send(());
     assert!(AgentLoop::wait_loops_drained(&[a.clone(), b.clone()], Duration::from_secs(2)).await);
 }
+
+// BUG-20261116-014：drain 等待 deadline 算术对超大 timeout 此前裸
+// `Instant + Duration`——timeout 来自 config（`agents.defaults
+// .shutdown_drain_secs`，u64 无 clamp；0=跳过语义下大值即「等待」意图），
+// 超出 std Instant 表示域（≈292 年）时 checked_add expect panic，
+// 停机路径直接崩（本仓 code_run.rs 同形态注释自证 panic 性质）。
+// 饱和修正后：超出表示域 = far_future deadline（语义与可表示大值
+// 一致）；空列表立即归零返回，不 panic。
+#[tokio::test]
+async fn bug20261116014_wait_loops_drained_survives_huge_timeout() {
+    let drained = AgentLoop::wait_loops_drained(&[], Duration::MAX).await;
+    assert!(
+        drained,
+        "空 loop 列表应立即视为已排干（旧代码在 deadline 计算处 panic）"
+    );
+}
