@@ -17,6 +17,23 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
+/// 单帧写超时上限（秒）。
+/// BUG-20261115-016：半死 WS 连接（对端零窗口/进程挂起）上无界
+/// `sink.send().await` 会永久卡死持锁者——出站派发循环单任务内联
+/// `ch.send()` 被拖死 = 全系统出站停摆，且清理臂/重连臂抢同一把
+/// `ws_sink` 写锁同样挂起（三重级联）。有界超时 + 超时臂清槽，
+/// 最坏延迟收敛到本值（家族值：IRC WRITE_TIMEOUT_SECS=30 量级的收窄）。
+const WS_SEND_TIMEOUT_SECS: u64 = 10;
+
+/// 有界单帧写的结果（BUG-20261115-016）。超时与发送失败分道：超时臂
+/// 须清空 ws_sink 槽位（重连臂可装新 sink、后续 send 快速失败），
+/// 发送失败臂保持既有语义（槽位不动，连接任务自会重建）。
+#[derive(Debug)]
+enum BoundedSend {
+    Sent,
+    TimedOut,
+}
+
 /// OneBot channel configuration.
 /// SEC-002（BUG-20261111-068）：access_token 脱敏（Option 形态）。
 #[derive(Clone)]
@@ -677,13 +694,23 @@ impl Channel for OneBotChannel {
         debug!(chat_id = %msg.chat_id, "[OneBotChannel] sending message");
 
         // Send via WebSocket
+        // BUG-20261115-016：写必须有界——写锁跨无界 await 是三重级联死锁的根因。
+        // 超时臂清槽（置 None）：重连臂可装新 sink，后续 send 快速失败
+        // "not connected" 而非继续挂起；守卫随函数返回释放，清理臂可达。
         let mut ws_guard = self.ws_sink.write().await;
         if let Some(sink) = ws_guard.as_mut() {
-            use futures::SinkExt;
             use tokio_tungstenite::tungstenite::Message;
-            sink.send(Message::Text(json.into()))
-                .await
-                .map_err(|e| NemesisError::Channel(format!("OneBot WS send failed: {e}")))?;
+            match Self::ws_send_bounded(sink, Message::Text(json.into())).await {
+                Ok(BoundedSend::Sent) => {}
+                Ok(BoundedSend::TimedOut) => {
+                    *ws_guard = None;
+                    return Err(NemesisError::Channel(format!(
+                        "OneBot WS send timed out after {}s (connection suspected hung; slot cleared, awaiting reconnect)",
+                        WS_SEND_TIMEOUT_SECS
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
         } else {
             return Err(NemesisError::Channel(
                 "OneBot WebSocket not connected".to_string(),
@@ -691,6 +718,39 @@ impl Channel for OneBotChannel {
         }
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261115-016：有界单帧写（固有 impl，测试侧直接调用）
+// ---------------------------------------------------------------------------
+
+impl OneBotChannel {
+    /// 有界单帧写。泛型 S 同时覆盖生产（
+    /// `MaybeTlsStream<TcpStream>`）与回归锁（duplex 传输——tokio 层确定性
+    /// 挂起，不依赖内核缓冲行为；Windows loopback RLS 快路径缓冲可达 MB 级，
+    /// 真实 TCP 挂起形态不可靠）两条路径。
+    async fn ws_send_bounded<S>(
+        sink: &mut futures::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<S>,
+            tokio_tungstenite::tungstenite::Message,
+        >,
+        msg: tokio_tungstenite::tungstenite::Message,
+    ) -> Result<BoundedSend>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        use futures::SinkExt;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(WS_SEND_TIMEOUT_SECS),
+            sink.send(msg),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(BoundedSend::Sent),
+            Ok(Err(e)) => Err(NemesisError::Channel(format!("OneBot WS send failed: {e}"))),
+            Err(_) => Ok(BoundedSend::TimedOut),
+        }
     }
 }
 

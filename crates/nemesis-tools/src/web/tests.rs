@@ -799,3 +799,204 @@ fn s2_redirect_refetch_message_includes_location() {
         "必须带 Location 让模型自行 fetch（新 URL 重新过闸）: {msg}"
     );
 }
+
+// ===========================================================================
+// BUG-20261115-017 回归锁：search provider 非 2xx 必须报错而非静默零结果。
+// 形态：原生 TCP canned HTTP mock（ephemeral 端口）+ with_base_url 注入。
+// 历史：DDG 403/429 反爬挑战页被当普通 HTML 提取 → Ok("No results found
+// or extraction failed…")；Brave 429 JSON 错误体（无 "web" 键）被
+// #[serde(default)] typed struct 吞成零结果成功——配额耗尽伪装成「网上没有」。
+// ===========================================================================
+
+/// 本地 canned HTTP 服务器：**先读完整请求头再应答**（TCP 握手完成即
+/// accept，客户端 GET 还在路上——不等读就写+关连接会撞 RST「error
+/// sending request」，实施实录），然后回固定响应关连接（ephemeral 端口；
+/// Connection: close + Content-Length 双定界，reqwest 两种解析路径都稳）。
+async fn spawn_canned_http(status_line: &str, body: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let status_line = status_line.to_string();
+    let body = body.to_string();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .await;
+            let resp = format!(
+                "{}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status_line,
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn test_bug017_ddg_non_success_status_returns_err() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 403 Forbidden",
+        "<html><body>anomaly challenge</body></html>",
+    )
+    .await;
+    let p = DuckDuckGoSearchProvider::with_base_url(&base);
+    let err = p
+        .search("rust async", 5)
+        .await
+        .expect_err("403 挑战页必须报错而非零结果假象");
+    assert!(err.contains("403"), "错误应含状态码: {err}");
+    assert!(err.contains("anomaly"), "错误应含响应体前缀供定性: {err}");
+}
+
+#[tokio::test]
+async fn test_bug017_ddg_success_still_extracts() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 200 OK",
+        r#"<a class="result__a" href="https://example.com/a">Example Title</a>"#,
+    )
+    .await;
+    let p = DuckDuckGoSearchProvider::with_base_url(&base);
+    let out = p.search("rust async", 5).await.expect("200 不应被闸拦截");
+    assert!(out.contains("example.com/a"), "200 路径照常提取: {out}");
+}
+
+#[tokio::test]
+async fn test_bug017_brave_429_json_error_not_silent_empty() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 429 Too Many Requests",
+        r#"{"error":[{"id":"RATE_LIMITED","title":"Rate limited","status":429}]}"#,
+    )
+    .await;
+    let p = BraveSearchProvider::with_base_url("test-key", &base);
+    let err = p
+        .search("rust async", 5)
+        .await
+        .expect_err("429 JSON 错误体必须报错——serde(default) 不得吞成零结果成功");
+    assert!(err.contains("429"), "错误应含状态码: {err}");
+    assert!(err.contains("RATE_LIMITED"), "错误应含错误体前缀: {err}");
+}
+
+#[tokio::test]
+async fn test_bug017_brave_success_still_extracts() {
+    let base = spawn_canned_http(
+        "HTTP/1.1 200 OK",
+        r#"{"web":{"results":[{"title":"T","url":"https://example.com/x","description":"d"}]}}"#,
+    )
+    .await;
+    let p = BraveSearchProvider::with_base_url("test-key", &base);
+    let out = p.search("rust async", 5).await.expect("200 不应被闸拦截");
+    assert!(out.contains("example.com/x"), "200 路径照常提取: {out}");
+}
+
+// ===========================================================================
+// BUG-20261115-045 回归锁：带凭据 search provider 跨源重定向必须终止。
+// 旧形态：Brave client 未配重定向策略 → reqwest 默认跟随 ≤10 跳，跨主机
+// 只剥 authorization/cookie 等标准四头——X-Subscription-Token（自定义头）
+// 原样流向 302 目标主机（上游被劫持/反代误配 = API key 外泄）。
+// 修复：builder 换 no_cross_host_redirect_policy（同源跟随 + 跨源终止）。
+// 断言双半：①search 报错（302 走非 2xx 分支，非假成功）；②目标主机
+// 零请求（修复前跟随路径 hits=1 且 Ok）。
+// ===========================================================================
+
+/// 302 重定向器（spawn_canned_http 不支持自定义头——Location 需要独立 mock）。
+async fn spawn_redirector(location: String) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .await;
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 计数目标服务器：每次连接 hits+1 并回合法 Brave 形态 200（跟随路径会
+/// 拿到 Ok 假成功；终止路径永远摸不到它）。
+async fn spawn_counting_brave_target() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let hits2 = hits.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            hits2.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match sock.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .await;
+            let body = r#"{"web":{"results":[{"title":"STOLEN","url":"https://evil.example","description":"d"}]}}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        }
+    });
+    (format!("http://{addr}"), hits)
+}
+
+#[tokio::test]
+async fn test_bug045_brave_cross_origin_redirect_not_followed_token_not_leaked() {
+    use std::sync::atomic::Ordering;
+    let (target_base, target_hits) = spawn_counting_brave_target().await;
+    let redirector_base = spawn_redirector(format!("{target_base}/steal")).await;
+    let p = BraveSearchProvider::with_base_url("SECRET_TOKEN", &redirector_base);
+    let err = p
+        .search("rust async", 5)
+        .await
+        .expect_err("跨源 302 必须终止——跟随 = X-Subscription-Token 流向第二主机");
+    assert!(err.contains("302"), "302 原样透传非 2xx 分支: {err}");
+    assert_eq!(
+        target_hits.load(Ordering::SeqCst),
+        0,
+        "重定向目标不得收到任何请求（旧形态跟随路径 hits=1 且 Ok 假成功）"
+    );
+}

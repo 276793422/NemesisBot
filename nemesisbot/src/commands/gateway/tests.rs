@@ -5622,6 +5622,10 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
         cfg,
         resolution: nemesis_config::ProviderResolution::default(),
         model_name: "cov/test-model".to_string(),
+        // 测试注入口默认 None；断言常驻循环活性的测试显式注入局部令牌
+        // （BUG-20261115-046：pa2——全局令牌会被 run_runtime 全链测试
+        // 经生产停机路径 cancel 毒化）。
+        terminal_cancel_override: None,
         bus,
         cron_service,
         conv_router,
@@ -7419,6 +7423,17 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     );
 
     // board watcher 需要 SSE 订阅者在场才轮询 data_version（sub_count>0）。
+    // BUG-20261115-046 根修：watcher 终态令牌改挂局部令牌（ctx 注入口）。
+    // 根因：模块内 run_runtime 全链测试（run_runtime_full_cycle_* 家族）
+    // 经生产停机路径（Step 24 cancel_terminal_tasks）不可逆 cancel 进程
+    // 全局令牌——并行调度下本测试的 watcher 可 born-dead（首 poll 拍完
+    // 基线即被 terminal_loop_tick 前置 is_cancelled 短路收线），
+    // board-changed 永不发布（全量三轮红、单跑恒绿的完整解释；诊断排除
+    // 链：影子连接证明 SQLite 跨连接可见性正常、EventHub 探针证明
+    // hub/replay/broadcast 链路正常、15s 预算排除首拍延迟击穿）。局部
+    // 令牌对全局毒化免疫；测试收线时显式 cancel 保 runtime 优雅退出。
+    let watcher_terminal = tokio_util::sync::CancellationToken::new();
+    f.ctx.terminal_cancel_override = Some(watcher_terminal.clone());
     let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
     let agent = make_agent_wiring(&f.ctx);
     let mut web = make_web_server(&f.ctx.home);
@@ -7461,21 +7476,38 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
             })
             .expect("create issue for watcher");
     }
-    // 放行：触发循环消费 + watcher 2s 轮询次轮拍到变化 + retention sweep。
-    tokio::time::sleep(std::time::Duration::from_millis(2400)).await;
-
-    // board-changed 至少一条送达（watcher 循环体真实执行的证据）。
+    // 放行：watcher 2s 轮询拍到变化 → board-changed 广播。有界条件轮询
+    // （预算 15s，broadcast 到达即走——满载机器上首拍延迟可达秒级，固定
+    // 短窗会假红）。retention sweep / usage watcher 本就无独立断言
+    // （「sleep 期间跑过首轮无 panic」），等待形态变化不影响。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let mut got_board_changed = false;
-    while let Ok(ev) = hub_rx.try_recv() {
-        if ev.event_type == "board-changed" {
-            got_board_changed = true;
+    while std::time::Instant::now() < deadline {
+        while let Ok(ev) = hub_rx.try_recv() {
+            if ev.event_type == "board-changed" {
+                got_board_changed = true;
+            }
         }
+        if got_board_changed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    assert!(
-        got_board_changed,
-        "board watcher must broadcast board-changed after db write"
-    );
-    // retention sweep / usage watcher 已在 sleep 期间跑过首轮——无 panic 即过。
+    // 收线：cancel 局部令牌 → watcher 确定性退出（023 语义：终态前置
+    // 检查保证不 re-park timer），runtime Drop 无悬空 timer。
+    watcher_terminal.cancel();
+    if !got_board_changed {
+        // 失败信息自带现场纪律：replay 直方图（board-changed 在缓冲 =
+        // broadcast 通道侧丢；不在 = watcher 根本没发布）。
+        let (events, _) = web.event_hub().replay_after(0);
+        let kinds: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
+        panic!(
+            "board watcher must broadcast board-changed after db write (15s budget exhausted) \
+             [diag] replay_total={} replay_kinds={kinds:?}",
+            events.len()
+        );
+    }
+    // retention sweep / usage watcher 已在等待期间跑过首轮——无 panic 即过。
 }
 
 /// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + 重建 +

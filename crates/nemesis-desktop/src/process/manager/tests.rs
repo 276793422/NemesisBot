@@ -1582,10 +1582,12 @@ mod scripted_spawn_tests {
         let mut rx = rx.expect("approval returns result receiver");
 
         // Paused clock auto-advances: 100 × 100ms polls (~10s virtual), then
-        // the 300s wait fires at ~310s virtual — long before our 320s cap.
+        // the teardown wait fires at ~370s virtual (默认基线 300s + 交付余量
+        // 60s — R1390 起回收窗随窗口决策窗伸缩，无 timeout_seconds 数据时
+        // 走默认基线 360s) — long before our 380s cap.
         // When the task cleans up the result channel the oneshot sender is
         // dropped and the receiver resolves with an error.
-        let outcome = tokio::time::timeout(Duration::from_secs(320), &mut rx).await;
+        let outcome = tokio::time::timeout(Duration::from_secs(380), &mut rx).await;
         match outcome {
             Ok(Err(_recv_error)) => { /* channel dropped by cleanup, as expected */ }
             other => panic!("expected dropped channel, got {:?}", other.is_ok()),
@@ -1676,4 +1678,78 @@ async fn test_monitor_loop_sweeps_self_exited_child() {
     );
 
     mgr.stop().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// R1390：回执通道回收窗必须随窗口决策窗伸缩（BUG：硬编码 300s）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_result_wait_secs_derives_from_window_timeout() {
+    // 核心场景：审批超时配置 600s（security.approval_timeout_seconds）→
+    // 回收窗 660s。旧实现硬编码 300s：通道在弹窗还开着时被拆，网关侧
+    // rx 关闭 → denied，用户晚到的批准落在已移除通道上被静默丢弃。
+    assert_eq!(
+        result_wait_secs(&serde_json::json!({"timeout_seconds": 600})),
+        660
+    );
+    // bridges 已把超时 floor 到 30 → 90
+    assert_eq!(
+        result_wait_secs(&serde_json::json!({"timeout_seconds": 30})),
+        90
+    );
+    // 无键（display 路径 {} 等）→ 默认基线 + 余量
+    assert_eq!(result_wait_secs(&serde_json::json!({})), 360);
+    // 非整数形态 → 默认基线（as_u64 None）
+    assert_eq!(
+        result_wait_secs(&serde_json::json!({"timeout_seconds": "600"})),
+        360
+    );
+    assert_eq!(
+        result_wait_secs(&serde_json::json!({"timeout_seconds": 600.9})),
+        360
+    );
+    // 巨值不溢出（saturating_add）
+    assert_eq!(
+        result_wait_secs(&serde_json::json!({"timeout_seconds": u64::MAX})),
+        u64::MAX
+    );
+}
+
+#[tokio::test]
+async fn test_result_channel_reclaimed_after_custom_wait_secs() {
+    let mgr = ProcessManager::new();
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<serde_json::Value>();
+    {
+        let mut state = mgr.state.lock();
+        state.result_channels.insert("c-r1390".to_string(), tx);
+    }
+
+    // wait_secs=1 显式传入（旧实现无参、内部硬编码 300s）。钉的是回收
+    // 任务真的消费该参数，而不是恒定 300s 或立即回收。
+    mgr.spawn_wait_for_result("c-r1390".to_string(), 1);
+
+    // 窗口期内通道必须在场。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(mgr.state.lock().result_channels.contains_key("c-r1390"));
+
+    // 回收窗过后通道被收走（10s WS 连接轮询上限 + 1s 等待 + 调度余量）。
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(14);
+    loop {
+        let present = mgr.state.lock().result_channels.contains_key("c-r1390");
+        if !present {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "result channel not reclaimed within expected window"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    // 通道收走 = tx drop → rx Disconnected（网关侧 recv 得 Err，
+    // fail-closed 语义不变；时机由 wait_secs 保证晚于窗口决策窗）。
+    assert!(matches!(
+        rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
 }

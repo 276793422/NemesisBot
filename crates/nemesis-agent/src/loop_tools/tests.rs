@@ -383,8 +383,9 @@ async fn test_sleep_tool_zero_duration() {
 fn test_register_default_tools_count() {
     let tools = register_default_tools();
     // A7（2026-09-06）：+1 = multiedit；2026-11-06：-1 = append_file 并入
-    // edit_file（action=append），基线回落 10。
-    assert_eq!(tools.len(), 10);
+    // edit_file（action=append），基线回落 10；2026-11-15：+1 = read_image
+    // （Phase 5 图像工具层），基线 11。
+    assert_eq!(tools.len(), 11);
     assert!(tools.contains_key("message"));
     assert!(tools.contains_key("read_file"));
     assert!(tools.contains_key("write_file"));
@@ -395,6 +396,7 @@ fn test_register_default_tools_count() {
     assert!(tools.contains_key("create_dir"));
     assert!(tools.contains_key("delete_dir"));
     assert!(tools.contains_key("sleep"));
+    assert!(tools.contains_key("read_image"));
 }
 
 // --- Extended tool tests ---

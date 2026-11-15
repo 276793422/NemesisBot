@@ -720,9 +720,13 @@ pub fn default_patterns() -> Vec<(InjectionCategory, String, f64)> {
             0.95,
         ),
         // Log4Shell / JNDI injection
+        // (?i) 必须带（BUG-20261115-030）：Log4j lookup 名大小写不敏感
+        // （CVE-2021-44228 确认事实），`${JNDI:LDAP://` 大写变体是真实
+        // 攻击演化形态（专打小写敏感的 naive 过滤器）——无 (?i) = 变体
+        // 完全绕过本条 0.95 权重检测。
         (
             InjectionCategory::CommandInjection,
-            r"\$\{jndi:(ldap|rmi|dns|nds|corba|iiop):",
+            r"(?i)\$\{jndi:(ldap|rmi|dns|nds|corba|iiop):",
             0.95,
         ),
         // XXE injection
@@ -759,8 +763,13 @@ pub fn default_patterns() -> Vec<(InjectionCategory, String, f64)> {
             r"\{\{constructor",
             0.88,
         ),
-        // Env var injection
-        (InjectionCategory::CommandInjection, r"\$\{env[\s:]", 0.85),
+        // Env var injection（同 jndi 族：Log4j lookup 名大小写不敏感，
+        // `${ENV:` 变体必须命中——BUG-20261115-030）。
+        (
+            InjectionCategory::CommandInjection,
+            r"(?i)\$\{env[\s:]",
+            0.85,
+        ),
     ];
     raw.into_iter()
         .map(|(cat, pattern, weight)| (cat, pattern.to_string(), weight))
@@ -850,7 +859,12 @@ fn get_injection_patterns() -> &'static PatternList {
             // SQL injection
             (InjectionCategory::CommandInjection, r"(?i);\s*(drop|alter|truncate|delete\s+from)\s+(table|database|index)", 0.95),
             // Log4Shell / JNDI injection
-            (InjectionCategory::CommandInjection, r"\$\{jndi:(ldap|rmi|dns|nds|corba|iiop):", 0.95),
+            // (?i) 必须带（BUG-20261115-030）：Log4j lookup 名大小写不敏感
+            // （CVE-2021-44228 确认事实），`${JNDI:LDAP://` 大写变体是真实
+            // 攻击演化形态（专打小写敏感的 naive 过滤器）——无 (?i) = 变体
+            // 完全绕过本条 0.95 权重检测。与 default_patterns() 的同名条目
+            // 保持逐字节一致（两张表并存，漂移即检测面分裂）。
+            (InjectionCategory::CommandInjection, r"(?i)\$\{jndi:(ldap|rmi|dns|nds|corba|iiop):", 0.95),
             // XXE injection
             (InjectionCategory::CommandInjection, r"(?i)<!entity\s+", 0.88),
             // SSTI (server-side template injection)
@@ -865,8 +879,9 @@ fn get_injection_patterns() -> &'static PatternList {
             (InjectionCategory::CommandInjection, r"%s%s%s%s%s|%n%n%n%n", 0.82),
             // JS prototype pollution
             (InjectionCategory::CommandInjection, r"\{\{constructor", 0.88),
-            // Env var injection
-            (InjectionCategory::CommandInjection, r"\$\{env[\s:]", 0.85),
+            // Env var injection（同 jndi 族：Log4j lookup 名大小写不敏感，
+            // `${ENV:` 变体必须命中——BUG-20261115-030）。
+            (InjectionCategory::CommandInjection, r"(?i)\$\{env[\s:]", 0.85),
         ];
 
         raw.into_iter()

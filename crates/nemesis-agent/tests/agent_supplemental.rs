@@ -656,6 +656,7 @@ fn test_request_context_format_rpc_empty_correlation() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     assert_eq!(ctx.format_rpc_message("Hello"), "Hello");
 }

@@ -459,6 +459,9 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // ProcessSpawn（HIGH）。不上 CRITICAL：日常自动化工具，CRITICAL
         // 会挂 guardian LLM 二审常开。
         "desktop" => Some(OperationType::ProcessSpawn),
+        // (Phase 5 图像工具层) desktop_automation = loop 侧适配器注册名
+        // （DesktopTool 六动作；与旧 "desktop" 名同档同义，两键并存防混用）。
+        "desktop_automation" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
         "download" | "install_skill" => Some(OperationType::NetworkDownload),
         "upload" => Some(OperationType::NetworkUpload),
@@ -472,6 +475,11 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 进程」只对配置驱动路径成立，agent 工具的 command 来自 LLM。
         "browser" | "mcp_discover" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
+        // (Phase 5 图像工具层) read_image = 纯读（验真 + 降采样产物写
+        // uploads/ 由内部构造性钉死，arg 路径零写入）→ FileRead=LOW，
+        // 8 层全跑（注入检测/凭据扫描/DLP/审计链）；vision=no 由 dispatch
+        // 层 vision 前置闸先行拒绝（不进本表裁决）。
+        "read_image" => Some(OperationType::FileRead),
         // todowrite 本质是 workspace 内写文件（sessions/
         // todo_*.json），归 FileWrite 走同类审查（空 target 不匹配任何
         // ABAC 规则 → default action 兜底，默认配置放行）。

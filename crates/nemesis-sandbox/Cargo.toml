@@ -7,7 +7,7 @@ edition.workspace = true
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-path = { workspace = true }
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 # P5：wire 协议薄 crate（guest agent v2 请求/响应 + call_id 单一真相源）。
 nemesis-exec-protocol = { workspace = true }
 async-trait = { workspace = true }

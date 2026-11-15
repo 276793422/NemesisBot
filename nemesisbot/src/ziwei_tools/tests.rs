@@ -102,6 +102,7 @@ fn unwired_primitives_rejected_without_session() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     let out = rt.block_on(t.execute("{}", &ctx));
     let msg = out.unwrap_err();
@@ -242,6 +243,7 @@ async fn live_dynamic_tool_invoke() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     let tool = ZiweiDynamicTool {
         profile_id: "zw-pro-tool".into(),
@@ -377,6 +379,7 @@ async fn bridge_file_plane_flow() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     let tool = ZiweiBridgeTool {
         workspace: ws.clone(),

@@ -24,6 +24,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
 #[cfg(feature = "cluster")]
 use tracing::{error, info, warn};
 
@@ -241,7 +243,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
         cluster.set_broadcast_interval(std::time::Duration::from_secs(
-            cluster_app_cfg.broadcast_interval.max(1),
+            // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护。
+            crate::common::bounded_tick_interval_secs(cluster_app_cfg.broadcast_interval, 1),
         ));
         cluster.set_node_type("agent");
         // 运行时硬化批：announce 携带本节点构建号（编译期 git 短 hash），
@@ -615,7 +618,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     task_list_for_sweep.remove_terminal_tasks();
                 }
             });
@@ -807,7 +814,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         loop {
-                            ticker.tick().await;
+                            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                                break;
+                            }
                             if let Ok(raw) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                                 && let Ok(live) =
                                     serde_json::from_str::<nemesis_config::Config>(&raw)
@@ -951,7 +962,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        ticker.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
                         crate::board_archive_ingest::sweep_missing_archives(
                             &store,
                             &ws_dir,
@@ -1019,7 +1034,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     super::board_dispatch::sweep_archive_stalls(
                         &stall_store,
                         super::board_dispatch::ARCHIVE_STALL_WARN_SECS,
@@ -1241,8 +1260,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
             let sweep_workspace = home.join("workspace");
             tokio::spawn(async move {
+                // 上界钳制（BUG-20261116-001）：巨值配置穿透 Instant 算术界
+                // panic / far_future 静默停摆防护——本 ticker 同时承载派发
+                // 超时 sweep + selfcheck/playtest 恢复兜底，死了三条全停。
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                    sweep_cfg.dispatch_sweep_interval_secs.max(1),
+                    crate::common::bounded_tick_interval_secs(
+                        sweep_cfg.dispatch_sweep_interval_secs,
+                        1,
+                    ),
                 ));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 // （裁决⑫）：mtime 缓存——config 文件未
@@ -1261,7 +1286,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     u64,
                 )> = None;
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = store_for_sweep.as_ref() else {
                         continue;
                     };
@@ -1381,7 +1410,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!(
                 "[Gateway] Board dispatch sweep armed (timeout={}s, interval={}s)",
                 sweep_cfg.dispatch_timeout_secs,
-                sweep_cfg.dispatch_sweep_interval_secs.max(1)
+                crate::common::bounded_tick_interval_secs(
+                    sweep_cfg.dispatch_sweep_interval_secs,
+                    1
+                )
             );
         }
 
@@ -1404,7 +1436,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     if park_sweep_estop.is_engaged() {
                         continue;
                     }
@@ -1452,7 +1488,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     nemesis_config::BoardAttendanceConfig,
                 )> = None;
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = tp_store.as_ref() else {
                         continue;
                     };

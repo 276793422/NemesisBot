@@ -107,3 +107,18 @@ fn relay_init_json_raw_passthrough_and_defaults() {
     std::fs::write(&path, r#"{"relay":42}"#).unwrap();
     assert_eq!(relay_init_json(&path), r#"{"relay":{}}"#);
 }
+
+#[test]
+fn refresh_roaming_config_honest_in_both_environments() {
+    // 快照缺口修复面（2026-11-15 BUG 档案）：插件未装载 = 诚实 no-op
+    // （Ok(())，开关保持落盘-only 行为）；已装载（开发机 DLL 在场）=
+    // init 幂等重入成功（配置刷新语义，运行中中继不受影响）。两种环境
+    // 都必须 Ok——Err 只可能是盘上 config 读取层故障，此处空文件不触发。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.quic.json");
+    let r = refresh_roaming_config(&path);
+    assert!(
+        r.is_ok(),
+        "refresh 必须诚实成功（未装载 no-op / 已装载 init 重入）: {r:?}"
+    );
+}

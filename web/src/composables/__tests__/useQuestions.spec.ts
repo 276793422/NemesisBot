@@ -274,4 +274,22 @@ describe('useQuestions', () => {
     expect(isTerminalQuestion({ timeout_secs: 0 })).toBe(true)
     expect(isTerminalQuestion({ timeout_secs: 120 })).toBe(false)
   })
+
+  // BUG-20261115-028 回归锁：L2 resync 契约——断线窗口滑出 1000 帧重放环后
+  // question-asked 事件不可补发，resync 到场必须重拉 pending（此前只在页面
+  // 初始化拉一次；终极卡 timeout_secs=0 错过 = agent 无限停车且前端无卡可裁）。
+  it('resync → pending 重拉（环溢出窗口漏卡恢复）', async () => {
+    // 初始补拉为空（页面加载时无卡）。
+    wsapiRequest.mockResolvedValue({ pending: [] })
+    const { pendingQuestions, initQuestions } = useQuestions()
+    initQuestions()
+    await vi.waitFor(() => expect(pendingQuestions).toHaveLength(0))
+
+    // 断线窗口内错过的卡（事件已滑出环，SSE 不会重放）；重拉此时返回它。
+    wsapiRequest.mockResolvedValue({ pending: [makePayload('q-late')] })
+    sseHandlers.get('resync')!({})
+    await vi.waitFor(() =>
+      expect(pendingQuestions.map(q => q.question_id)).toEqual(['q-late']),
+    )
+  })
 })

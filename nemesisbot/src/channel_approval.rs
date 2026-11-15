@@ -454,13 +454,21 @@ impl ApprovalManager for ChannelApprovalManager {
                 "approval context has empty chat_id; cannot address approval card".to_string(),
             );
         }
+        if request_id.is_empty() {
+            return Err("approval request has empty request_id".to_string());
+        }
 
         // 编号 + 摘牌：单锁作用域内定编号并挂表。**先挂表、后发卡**——若
         // 先发卡，极快回执会在 watcher 查表时 entry 尚未入表，落「未找到」
         // 分支吞掉裁决，ask 只能等满超时被误拒（测试实证：channel_card_
         // roundtrip_approve 在全量并行负载下 30s 超时误拒）。
         // entry 就位后再发卡，卡片到达时刻起任何回执都可被正确裁决。
-        let mut id_len = 8usize.min(request_id.len()).max(1);
+        // 短号截断走 floor_char_boundary（与 web 侧 RemoteAskRegistry::
+        // register 同款硬化）：裸 `min(len).max(1)` 在空串上造越界索引
+        // （`&""[..1]` panic），倍增在多字节 id 上落中间字符同样 panic。
+        // 本管理器 request_id 现为自生成 prefix-{uuid}（ASCII 非空），
+        // 空串由上方 guard 诚实拒绝；floor + 倍增踏步跳全长为纵深防御。
+        let mut id_len = nemesis_types::utils::floor_char_boundary(request_id, 8);
         let (id, rx) = {
             let mut map = match self.pending.lock() {
                 Ok(m) => m,
@@ -471,7 +479,15 @@ impl ApprovalManager for ChannelApprovalManager {
                 if !map.contains_key(candidate) || id_len >= request_id.len() {
                     break candidate.to_string();
                 }
-                id_len = (id_len * 2).min(request_id.len());
+                let next = nemesis_types::utils::floor_char_boundary(
+                    request_id,
+                    (id_len * 2).min(request_id.len()),
+                );
+                id_len = if next > id_len {
+                    next
+                } else {
+                    request_id.len()
+                };
             };
             let (tx, rx) = mpsc::channel::<ApprovalVerdict>();
             map.insert(

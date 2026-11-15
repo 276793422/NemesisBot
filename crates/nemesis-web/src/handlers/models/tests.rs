@@ -776,6 +776,52 @@ fn set_default_rejects_non_conversation_role_entry() {
     assert_eq!(cfg["agents"]["defaults"]["llm"], "chat");
 }
 
+/// 守卫②b（原地转换面，2026-11-15）：update_field 把**当前默认条目**
+/// 的 protocol 原地改成 images-openai 必须写盘前 loud 拒绝——否则盘上
+/// 默认条目非法、运行时保持旧 provider、重启 factory 拒绝 → NullProvider
+/// 降级（守卫②只拦「设为默认」拦不住「默认原地变质」的旁路）。
+/// 非默认条目照常放行（图像条目的正常创建路径就是属性编辑）。
+#[test]
+fn update_field_rejects_image_protocol_in_place_on_default_entry() {
+    let seed = r#"{
+        "agents": {"defaults": {"llm": "chat"}},
+        "model_list": [
+            {"model_name": "chat", "model": "glm-5", "api_base": "http://a", "api_key": "k"},
+            {"model_name": "other", "model": "glm-6", "api_base": "http://b", "api_key": "k"}
+        ]
+    }"#;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), seed);
+    let ctx = make_ctx(&dir);
+    let h = ModelsHandler::new();
+    let home = home_str(&dir);
+
+    let err = h
+        .update_field(
+            &home,
+            &serde_json::json!({"name": "chat", "field": "protocol", "value": "images-openai"}),
+            &ctx,
+        )
+        .unwrap_err();
+    assert!(err.contains("images-openai"), "{err}");
+    // config 未动：protocol 键不存在、默认引用保持。
+    let cfg = read_config_raw(dir.path());
+    assert!(cfg["model_list"][0].get("protocol").is_none());
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "chat");
+
+    // 非默认条目原地转图像协议照常放行。
+    h.update_field(
+        &home,
+        &serde_json::json!({"name": "other", "field": "protocol", "value": "images-openai"}),
+        &ctx,
+    )
+    .unwrap()
+    .unwrap();
+    let cfg = read_config_raw(dir.path());
+    assert_eq!(cfg["model_list"][1]["protocol"], "images-openai");
+    assert_eq!(cfg["agents"]["defaults"]["llm"], "chat", "默认引用不受波及");
+}
+
 /// 概览页同步（BUG）：set_default 写 config 成功后必须同步
 /// AppState 的 model/model_base/model_has_key 快照——否则 /api/status 与
 /// 概览页永远显示网关启动时的老模型（agent 实际已热换新模型）。

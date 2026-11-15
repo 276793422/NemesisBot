@@ -5,6 +5,13 @@
 use crate::common;
 use anyhow::Result;
 
+/// registry 直读下载体（skills.json 索引 / SKILL.md）读取上限：1MB。
+///
+/// 两者合同都是 KB 级文本；registry 源经 `skills add-source` 用户可配，
+/// 超帽在读入中途诚实断开而不是把任意大 body 灌进内存
+/// （BUG-20261115-025，nemesis_utils::http_cap 单一真相源）。
+const SKILLS_DOWNLOAD_READ_CAP: u64 = 1024 * 1024;
+
 #[derive(clap::Subcommand)]
 pub enum SkillsAction {
     /// List installed skills
@@ -312,8 +319,13 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
             .send()
             .await
             && resp.status().is_success()
-            && let Ok(data) = resp.text().await
-            && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok()
+            // BUG-20261115-025：索引体有帽读取（registry 源经 skills
+            // add-source 用户可配；裸 text() 让失控源 200 态灌内存）。
+            // 索引是 KB 级 JSON，1MB 帽余量充足；from_slice 顺带把
+            // 非法 UTF-8 拒在解析层（原 lossy 形态替换字符后再解析）。
+            && let Ok(data) =
+                nemesis_utils::http_cap::read_body_capped(resp, SKILLS_DOWNLOAD_READ_CAP).await
+            && serde_json::from_slice::<Vec<serde_json::Value>>(&data).is_ok()
         {
             return (
                 "skills_json".to_string(),
@@ -1278,7 +1290,12 @@ async fn cmd_install_clawhub(
     {
         Ok(resp) => {
             if resp.status().is_success() {
-                if let Ok(content) = resp.text().await {
+                // BUG-20261115-025：SKILL.md 有帽读取（registry 源用户可配；
+                // 超帽在读入中途断开）。lossy 解码与原 .text() 行为对齐。
+                if let Ok(bytes) =
+                    nemesis_utils::http_cap::read_body_capped(resp, SKILLS_DOWNLOAD_READ_CAP).await
+                {
+                    let content = String::from_utf8_lossy(&bytes).into_owned();
                     let target = skills_dir.join(out_name);
                     let _ = std::fs::create_dir_all(&target);
                     std::fs::write(target.join("SKILL.md"), &content)?;

@@ -192,6 +192,8 @@ async fn gateway_internal(
     let base_url = format!("http://{}:{}", info.web_host, info.web_port);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
+        // BUG-20261115-045：X-Auth-Token 凭据面不跟随跨主机重定向。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()?;
     let resp = client
         .post(format!("{base_url}/api/internal"))

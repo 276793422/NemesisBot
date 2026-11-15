@@ -310,7 +310,9 @@ async fn device_bridge_round_trip_and_downstream_request() {
     // 挂载上行 → 端到端：send_over_bridge → 上行帧进入 rx → 模拟 hub 回
     // response（经 handle_downstream）→ 完成。三期起 bridge_online
     // = 出口活 + 成员在表——先收一帧 sync 塞表（模拟 hub 广播先行）。
-    let (up_tx, mut up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
+    // attach_uplink 签名 = 有界 Sender（BUG-20261116-003 起）：容量 16 足够
+    // 本组用例的帧数（容量语义归生产侧 bridge_client::UPLINK_CAPACITY）。
+    let (up_tx, mut up_rx) = tokio::sync::mpsc::channel::<BridgeFrame>(16);
     dev.attach_uplink(up_tx);
     dev.handle_member_sync(&serde_json::json!({
         "members": [
@@ -384,7 +386,7 @@ async fn member_sync_merges_registry_and_member_table() {
 
     // 挂载上行（会话活）但成员表空 → hub 节点不在表 → bridge_online false
     // （三期收紧后的语义：经桥可达 = 出口活 + 成员在表）。
-    let (up_tx, _up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
+    let (up_tx, _up_rx) = tokio::sync::mpsc::channel::<BridgeFrame>(16);
     dev.attach_uplink(up_tx);
     assert!(!BridgeSend::bridge_online(dev.as_ref(), "node-hub"));
 
@@ -473,7 +475,7 @@ async fn member_sync_merges_registry_and_member_table() {
 async fn member_sync_malformed_payload_is_tolerated() {
     let server = test_server();
     let dev = Arc::new(DeviceBridgeRpc::new(server, "node-dev".into(), None));
-    let (up_tx, _up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
+    let (up_tx, _up_rx) = tokio::sync::mpsc::channel::<BridgeFrame>(16);
     dev.attach_uplink(up_tx);
     dev.handle_member_sync(&serde_json::json!({
         "members": [
@@ -702,7 +704,7 @@ async fn member_sync_out_of_range_rpc_port_normalized_to_zero_sentinel() {
         self_id.clone(),
         Some(cluster.clone()),
     ));
-    let (up_tx, _up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
+    let (up_tx, _up_rx) = tokio::sync::mpsc::channel::<BridgeFrame>(16);
     dev.attach_uplink(up_tx);
 
     dev.handle_member_sync(&serde_json::json!({

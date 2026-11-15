@@ -828,8 +828,10 @@ pub fn build_plugin_audit_logger(
     home: &std::path::Path,
 ) -> Option<nemesis_plugins_wasm::host_impl::SharedAuditLogger> {
     // 审计文件开关（CFG-06，缺省 true——与 security_setup 同键同语义）。
+    // read_config_string 剥 BOM：裸读时记事本 BOM → parse 失败 → 用户
+    // `audit_log_file_enabled=false` 被静默忽略（BUG-20261103-334 同族）。
     let sec_path = common::security_config_path(home);
-    let enabled = std::fs::read_to_string(&sec_path)
+    let enabled = nemesis_utils::fsutil::read_config_string(&sec_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("audit_log_file_enabled").and_then(|f| f.as_bool()))

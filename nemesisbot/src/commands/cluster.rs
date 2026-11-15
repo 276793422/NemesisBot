@@ -1647,7 +1647,10 @@ fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
     let _cfg_serial = nemesis_config::config_write_lock();
     let path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     let mut cfg: serde_json::Value = if path.exists() {
-        let content = std::fs::read_to_string(&path)
+        // read_config_string 剥 BOM——运行期 cluster 配置装载已走 helper
+        // （BUG-334 记录：cluster_config.rs canonical 读写全走），BOM 文件
+        // 运行期正常而本 RMW 拒绝写 = 同文件读面分裂（BUG-20261103-334 同族）。
+        let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| anyhow::anyhow!("读取 cluster 配置失败: {e}"))?;
         // 横扫族 C 六轮（2026-11-06）：文件在但解析失败（损坏/半截写）不许
         // 静默当 `{}`——本函数是读改写环，回写会把既有系统参数层
@@ -1939,7 +1942,9 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
 /// 0 一律钳到 1（tokio `interval(Duration::ZERO)` 构造期 panic——gateway
 /// 装载臂 `cluster_init.rs` 同款 `.max(1)` 钳制，两臂语义对齐）。
 fn effective_broadcast_interval(flag: Option<u64>, config_value: u64) -> u64 {
-    flag.unwrap_or(config_value).max(1)
+    // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护
+    // （CLI flag 与 config 双入口同闸）。
+    crate::common::bounded_tick_interval_secs(flag.unwrap_or(config_value), 1)
 }
 
 /// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.

@@ -255,6 +255,7 @@ impl PricingStore {
 
     /// 新增/更新自定义条目（按 model_id 幂等 upsert）。
     pub fn upsert_custom(&self, entry: ModelPricing) -> Result<(), String> {
+        validate_custom_entry(&entry)?;
         let mut layers = self.layers.write().map_err(|e| e.to_string())?;
         // 先从克隆落盘再改内存（对齐 replace_downloaded 的磁盘优先序）：
         // 此前 mem::take 后 `write_json_atomic(...)?` 提前返回——写盘失败
@@ -289,6 +290,56 @@ impl PricingStore {
         *layers = Layers::rebuild(custom, layers.downloaded.take());
         Ok(true)
     }
+}
+
+/// 自定义条目写入门禁（BUG-20261115-020 横向收口）：model_id 非空 +
+/// 基础价/阶梯价全部有限且非负。单一真相源——CLI（`model prices add`，
+/// 入口另有同口径前置校验）与 WSAPI（`/api/usage/pricing/custom`，此前
+/// 只校验 model_id）两个写入口共用此门，绕过入口直调 upsert_custom 的
+/// 路径也被拦。负价无合法计费语义（成本是可观测性数据，不存在返佣
+/// 结算）；NaN/±inf 越过 serde_json 值域的手工构造同样拦（JSON 侧
+/// 1e400 溢出解析为 inf 也归此）。下载层/import **不经此门**（整表
+/// 降级对一条畸形价过度）——那侧由计价出口钳
+/// （`pricing::clamp_negative_prices`）纵深兜底。
+fn validate_custom_entry(entry: &ModelPricing) -> Result<(), String> {
+    if entry.model_id.trim().is_empty() {
+        return Err("modelId 不能为空".into());
+    }
+    for (name, v) in [
+        ("input", entry.input_cost_per_million),
+        ("output", entry.output_cost_per_million),
+        ("cache_read", entry.cache_read_cost_per_million),
+        ("cache_creation", entry.cache_creation_cost_per_million),
+    ] {
+        if !v.is_finite() {
+            return Err(format!("{name} 价格须为有限数值（拒绝 NaN/±inf）"));
+        }
+        if v < 0.0 {
+            return Err(format!("{name} 价格不能为负（计费域无负单价语义）"));
+        }
+    }
+    if let Some(tiers) = &entry.price_tiers {
+        for (i, t) in tiers.iter().enumerate() {
+            if t.min_prompt_tokens < 0 {
+                return Err(format!("第 {} 条阶梯价阈值不能为负", i + 1));
+            }
+            for (name, v) in [
+                ("input", t.input_cost_per_million),
+                ("output", t.output_cost_per_million),
+                ("cache_read", t.cache_read_cost_per_million),
+                ("cache_creation", t.cache_creation_cost_per_million),
+            ] {
+                let Some(v) = v else { continue };
+                if !v.is_finite() {
+                    return Err(format!("第 {} 条阶梯 {name} 价须为有限数值", i + 1));
+                }
+                if v < 0.0 {
+                    return Err(format!("第 {} 条阶梯 {name} 价不能为负", i + 1));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 原子写（起委托唯一临时名权威 helper——旧固定 `.json.tmp`

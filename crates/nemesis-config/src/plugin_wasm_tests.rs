@@ -197,18 +197,20 @@ fn legacy_dir_noise_handled() {
     let _g = SERIAL.lock().unwrap();
     std::fs::create_dir_all(dir.join("plugins")).unwrap();
     std::fs::write(dir.join("plugins/readme.txt"), "不是实例文件").unwrap();
+    // BUG-20261115-035：损坏 JSON（截断/手改出错）= 数据未消解，不得按
+    // 空壳迁移后删除原文件（读失败臂 continue 保文件重试，解析失败处置
+    // 必须对称）。诚实跳过：原文件保留、不入册。
     std::fs::write(dir.join("plugins/broken.json"), "{{{").unwrap();
-    // 只有 *.json 进迁移（readme.txt 忽略）；broken.json 解析失败按缺省
-    // （空 entries）并入 enabled=false 条目并删除旧文件
+    // 只有 *.json 进迁移（readme.txt 忽略）；broken.json 解析失败诚实跳过。
     let all = load_switches(&dir);
-    assert_eq!(all.len(), 1, "readme.txt 忽略，broken.json 并入");
-    let sw = &all["broken"];
-    assert!(!sw.enabled);
-    assert!(sw.config.is_empty());
+    assert!(
+        all.is_empty(),
+        "readme.txt 忽略；broken.json 损坏不入册（BUG-20261115-035）"
+    );
     assert!(dir.join("plugins/readme.txt").exists(), "非 json 文件不动");
     assert!(
-        !dir.join("plugins/broken.json").exists(),
-        "已迁移的旧文件删除"
+        dir.join("plugins/broken.json").exists(),
+        "损坏旧文件保留（下次读重试，BUG-20261115-035）"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -513,5 +515,39 @@ fn concurrent_migration_and_set_enabled_do_not_lose_each_other() {
             "现场既有条目必须保留"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_instance_corrupt_file_is_kept_not_migrated() {
+    // BUG-20261115-035：解析失败 ≠ 空配置。损坏旧文件（截断/手改出错）
+    // 不得按空壳迁移后删除原文件——读失败臂 continue 保文件重试，解析
+    // 失败处置必须对称：诚实跳过保留，WARN 注明，下次读再试。
+    let dir = temp_config_dir("legacy_corrupt");
+    let _g = SERIAL.lock().unwrap();
+    let legacy_dir = dir.join("plugins");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    // 真实损坏形态：截断 JSON（写盘中断/手改漏尾）。
+    std::fs::write(legacy_dir.join("broken.json"), r#"{"entries":{"a":"1""#).unwrap();
+    // 同目录正常旧文件照常迁移，互不拖累。
+    legacy_instance(&dir, "good", r#"{"k":"v"}"#);
+
+    let sw = switch(&dir, "good");
+    assert_eq!(sw.config.get("k"), Some(&serde_json::json!("v")));
+    assert!(
+        !legacy_dir.join("good.json").exists(),
+        "正常旧文件迁移后应删除"
+    );
+    assert!(
+        legacy_dir.join("broken.json").exists(),
+        "损坏旧文件必须原样保留（BUG-20261115-035：不得按空配置迁移后删除）"
+    );
+    // 损坏 slug 不得以空壳入册主文件（读面不得把数据丢失固化到盘）。
+    let _ = switch(&dir, "broken");
+    let raw = std::fs::read_to_string(plugin_wasm_config_path(&dir)).unwrap();
+    assert!(
+        !raw.contains("\"broken\""),
+        "损坏 slug 不得以空配置入册 config.plugin.wasm.json"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

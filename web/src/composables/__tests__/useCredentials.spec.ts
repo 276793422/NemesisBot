@@ -186,4 +186,22 @@ describe('useCredentials', () => {
     vi.advanceTimersByTime(1100)
     expect(pendingCredentials).toHaveLength(0)
   })
+
+  // BUG-20261115-028 回归锁：L2 resync 契约——断线窗口滑出 1000 帧重放环后
+  // credential-requested 事件不可补发，resync 到场必须重拉 pending（此前只在
+  // 页面初始化拉一次，窗口内错过的卡永不出现 → agent 侧阻塞到超时放行）。
+  it('resync → pending 重拉（环溢出窗口漏卡恢复）', async () => {
+    // 初始补拉为空（页面加载时无卡）。
+    wsapiRequest.mockResolvedValue({ pending: [] })
+    const { pendingCredentials, initCredentials } = useCredentials()
+    initCredentials()
+    await vi.waitFor(() => expect(pendingCredentials).toHaveLength(0))
+
+    // 断线窗口内错过的卡（事件已滑出环，SSE 不会重放）；重拉此时返回它。
+    wsapiRequest.mockResolvedValue({ pending: [makePayload('c-late')] })
+    sseHandlers.get('resync')!({})
+    await vi.waitFor(() =>
+      expect(pendingCredentials.map(c => c.request_id)).toEqual(['c-late']),
+    )
+  })
 })

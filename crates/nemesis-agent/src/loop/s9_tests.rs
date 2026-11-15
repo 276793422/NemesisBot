@@ -543,6 +543,7 @@ async fn precompute_parallel_batch_validation_arms() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
     let calls = vec![
@@ -1753,15 +1754,29 @@ impl crate::hooks::LlmHook for CancelInHookHook {
     }
 }
 
-/// 收集 outbound 直到 200ms 静默（Queue 模式 spawn 的 turn 不保证在
-/// run_bus 返回前完成）。
-async fn drain_outbound(
+/// 事件驱动收帧（2026-11-16 flake 根修，与 cancel_linkage_tests 同族根因）：
+/// Queue/Steer/摘要等模式的回合是 detached spawn——run_bus 返回不 join
+/// 在飞轮，终局出站（finish_message 在 process_admitted 返回后才发布）
+/// 结构性落在泵退出之后；旧「200ms 静默窗收口」是在赌墙钟，重负载下
+/// 发布延迟超窗即空收口假红。改为 recv 循环直到全部期望子串齐活或
+/// 10s 死线兜底（真丢帧时断言给出现场，不挂死）。
+async fn wait_for_frames(
     out_rx: &mut tokio::sync::mpsc::Receiver<nemesis_types::channel::OutboundMessage>,
+    needles: &[&str],
 ) -> Vec<String> {
     let mut got = Vec::new();
-    while let Ok(Some(m)) =
-        tokio::time::timeout(std::time::Duration::from_millis(200), out_rx.recv()).await
-    {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut seen = vec![false; needles.len()];
+    while seen.iter().any(|s| !s) {
+        let m = match tokio::time::timeout_at(deadline, out_rx.recv()).await {
+            Ok(Some(m)) => m,
+            _ => break, // 死线到（真丢帧）或通道关——断言给出现场
+        };
+        for (i, needle) in needles.iter().enumerate() {
+            if m.content.contains(needle) {
+                seen[i] = true;
+            }
+        }
         got.push(m.content);
     }
     got
@@ -2089,7 +2104,9 @@ async fn bus_flow_summary_success_notice_and_persist() {
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
 
-    let outs = drain_outbound(&mut out_rx).await;
+    // "final ok" 是 turn 任务收尾（process_admitted 持久化完成之后）——
+    // 见两帧 ⇒ store.set_summary 已落，下方 get_summary 断言无竞态。
+    let outs = wait_for_frames(&mut out_rx, &["正在折叠较早历史为摘要", "final ok"]).await;
     assert!(
         outs.iter().any(|c| c.contains("正在折叠较早历史为摘要")),
         "压缩进行中徽标回执照发（2026-11-09 徽标化，原英文回执废除）, got: {:?}",
@@ -2143,7 +2160,7 @@ async fn bus_flow_summary_failure_warns_and_keeps_cache_empty() {
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
 
-    let outs = drain_outbound(&mut out_rx).await;
+    let outs = wait_for_frames(&mut out_rx, &["正在折叠较早历史为摘要", "摘要未能生成"]).await;
     assert!(
         outs.iter().any(|c| c.contains("正在折叠较早历史为摘要")),
         "压缩进行中徽标回执照发（尝试前发出）, got: {:?}",
@@ -2480,8 +2497,11 @@ async fn cancel_during_llm_call_breaks_turn() {
     let _ = runner.await;
 }
 
-/// 工具执行进行中 cancel_session → 下一轮迭代顶部的取消检查
-/// （3521-3529，Done("已取消")）。
+/// 工具执行进行中 cancel_session → chokepoint cancel 臂**立即中断**在飞
+/// 工具（Phase 5 A1 回归锁——用户痛点「点击停止立刻就能停止」）：工具停在
+/// GatedTool 等待内（**永不放行**），取消后 turn 必须在超时内以「已取消」
+/// 收场——若回归为「等工具自愿返回再在下一轮顶部停」，本测试将等满超时
+/// 红出来（旧形态的 r1.notify_one() 补拍已删除，打断即证）。
 #[tokio::test]
 async fn cancel_during_tool_execution_breaks_turn() {
     let _logs = capture_logs();
@@ -2517,12 +2537,14 @@ async fn cancel_during_tool_execution_breaks_turn() {
         handle.cancel_session("agent:main:main"),
         "cancel token existed and was cancelled"
     );
-    tool_release.notify_one();
+    // 关键：**不放行**工具（release 保持挂起）——立刻停止语义下 turn 仍须
+    // 以「已取消」收场；打断失败（回归旧行为）= 工具永远停在这里、出站
+    // 永不到达，timeout 红。
     drop(in_tx);
 
     let out = tokio::time::timeout(std::time::Duration::from_secs(3), out_rx.recv())
         .await
-        .expect("cancelled done published in time")
+        .expect("cancelled done published in time (immediate interrupt)")
         .expect("outbound");
     assert!(out.content.contains("已取消"), "got: {}", out.content);
     let _ = runner.await;
@@ -2663,8 +2685,10 @@ async fn queued_message_reinject_send_fail_warns_and_drops() {
     release.notify_one();
     drop(in_tx);
     let _ = runner.await;
-    // 回合任务与 pump 并发 —— out_rx 轮询排空。
-    let outs = drain_outbound(&mut out_rx).await;
+    // 回合任务与 pump 并发 —— 终局帧事件驱动等（见 wait_for_frames 注释）；
+    // "first done" 是该 turn 最后一条出站，见帧后重注入已失败丢弃，
+    // "second done" 的缺席断言随之安全。
+    let outs = wait_for_frames(&mut out_rx, &["first done"]).await;
     assert!(
         outs.iter().any(|c| c.contains("first done")),
         "got: {:?}",
@@ -2710,7 +2734,7 @@ async fn queued_message_without_reinject_processes_inline() {
     drop(in_tx);
     let _ = runner.await;
 
-    let outs = drain_outbound(&mut out_rx).await;
+    let outs = wait_for_frames(&mut out_rx, &["first done", "second done"]).await;
     assert!(
         outs.iter().any(|c| c.contains("first done"))
             && outs.iter().any(|c| c.contains("second done")),
@@ -2751,7 +2775,7 @@ async fn steer_mode_escape_hatch_extends_turn() {
     drop(in_tx);
     let _ = runner.await;
 
-    let outs = drain_outbound(&mut out_rx).await;
+    let outs = wait_for_frames(&mut out_rx, &["已接收为紧急插话", "steer consumed answer"]).await;
     assert!(
         outs.iter().any(|c| c.contains("已接收为紧急插话")),
         "steer receipt published, got: {:?}",

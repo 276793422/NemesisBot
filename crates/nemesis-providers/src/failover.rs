@@ -94,10 +94,15 @@ impl FailoverError {
             // error" 前缀——与 Timeout 同属瞬态故障，fallback 链与路由
             // 必须照常轮转（此前伪装 Timeout 时 is_retriable 恒 true，
             // 诚实化若不补这条，主端点连不上就不再故障转移 = 回归）。
-            // 其余 Unknown（400/404 等应用层错误）维持不可重试——500 过载
-            // 族自 起由 `from_status` 直接归 Overloaded，
-            // 不再落 Unknown。
-            FailoverError::Unknown { message, .. } => message.starts_with("connect error"),
+            // 同门：成功体超帽（BUG-20261115-024，`body_cap`）落 Unknown
+            // 但带 "response body exceeds limit" 前缀——端点失控/恶意是
+            // 端点问题，换下一家。其余 Unknown（400/404 等应用层错误）
+            // 维持不可重试——500 过载族自 起由 `from_status` 直接归
+            // Overloaded，不再落 Unknown。
+            FailoverError::Unknown { message, .. } => {
+                message.starts_with("connect error")
+                    || message.starts_with("response body exceeds limit")
+            }
             _ => false,
         }
     }

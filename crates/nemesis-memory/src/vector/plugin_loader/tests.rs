@@ -869,3 +869,26 @@ fn w5_fixture_shared_embed_func_honest_without_plugin() {
     let again_err = crate::vector::test_fixture::shared_embed_func().is_err();
     assert_eq!(again_err, !got_ok, "缓存结论必须稳定");
 }
+
+/// BUG-20261116-008 回归锁：Drop 路径毒化锁容毒恢复（tts.rs 同款纪律）。
+/// 持锁 panic 毒化 Mutex 后 drop `NativePlugin`：修复前 Drop 里
+/// `lock().unwrap()` 中毒必 panic（Drop 本在 unwind 中时 = double-panic
+/// abort）；修复后 `into_inner` 容毒恢复，照常完成关闭标记。
+#[test]
+fn drop_with_poisoned_lock_does_not_panic() {
+    let plugin = NativePlugin {
+        inner: std::sync::Mutex::new(NativePluginInner {
+            library: None,
+            dim: 0,
+            closed: false,
+            host_services: None,
+        }),
+    };
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = plugin.inner.lock().unwrap();
+        panic!("毒化注入");
+    }))
+    .is_err();
+    assert!(poisoned, "毒化注入必须真实发生（否则测试空转）");
+    drop(plugin); // 修复前此处 unwrap 中毒必 panic
+}

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 use crate::common;
 
 #[cfg(feature = "board")]
@@ -115,6 +116,14 @@ pub(crate) struct GatewayCtx {
     pub conv_router: nemesis_web::SharedConvRouter,
     /// estop 单例（集群装配前创建，四方共享同一 Arc）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
+    /// 进程终态令牌测试注入口（BUG-20261115-046）：Some = post_agent
+    /// 常驻循环（board watcher）改挂此局部令牌。背景：run_runtime 全链
+    /// 测试经生产停机路径（Step 24 cancel_terminal_tasks）不可逆 cancel
+    /// 进程全局令牌——并行测试进程里全局令牌随时可能已毒化，断言常驻
+    /// 循环活性的测试挂全局令牌会 born-dead（watcher 首 poll 拍完基线
+    /// 即被前置 is_cancelled 短路收线，SSE 永不发布）。生产恒 None
+    /// （= 全局 terminal_cancel_token()，语义不变）。
+    pub terminal_cancel_override: Option<tokio_util::sync::CancellationToken>,
     // QUIC 中继（quic-relay）自 QUIC 插件化 起无 ctx 字段：
     // 运行面在 plugin_roaming C-ABI 插件，句柄住 loader 静态槽
     //（[`crate::roaming_plugin_loader:plugin_handle`]，进程级单例）——
@@ -503,7 +512,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即扫
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let exec_removed = nemesis_workflow::persistence::sweep_stale_execution_files(
                         &sweep_exec_dir,
                         WORKFLOW_SWEEP_TTL,
@@ -749,7 +762,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即维护
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = store_for_maint.as_ref() else {
                         continue;
                     };
@@ -863,7 +880,11 @@ impl GatewayCtx {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        tick.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                            break;
+                        }
                         let report =
                             cap.sweep(zw_ttl, nemesis_ziwei::capture::MAX_BYTES_PER_PROFILE);
                         if report.expired_profiles > 0 || report.size_truncated > 0 {
@@ -1510,6 +1531,8 @@ impl GatewayCtx {
             cfg,
             resolution,
             model_name,
+            // 测试注入口：生产恒 None（全局终态令牌，语义不变）。
+            terminal_cancel_override: None,
             // 消息主干
             bus,
             cron_service,

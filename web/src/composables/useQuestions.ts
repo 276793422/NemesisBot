@@ -147,6 +147,10 @@ export function useQuestions() {
         removeLocal(data.question_id)
       }
     })
+    // L2 resync 契约（BUG-20261115-028）：断线窗口滑出 1000 帧重放环后，
+    // 窗口内的 question-asked 事件不可补发——重拉 pending 是卡片唯一恢复
+    // 路径（终极卡 timeout_secs=0 错过 = agent 无限停车且前端无卡可裁）。
+    on('resync', seedPending)
     // 断线期间错过的事件：连上后拉一次 pending 补齐。
     seedPending()
     ticker = setInterval(pruneExpired, 1000)

@@ -98,7 +98,10 @@ fn dispatch_returns_prompt_and_model() {
     let d = s.dispatch("writer").unwrap();
     assert_eq!(d.slug, "Writer");
     assert_eq!(d.name, "Writer");
-    assert_eq!(d.prompt, "You write docs.");
+    // 围栏前置注入（人格与系统围栏分离）：dispatch 输出 = EXPERT_FENCE
+    // + 人格原文；EXPERT.md 存储与专家页编辑模态仍是纯人格。
+    assert!(d.prompt.starts_with("## 专家工作纪律"), "got: {}", d.prompt);
+    assert!(d.prompt.ends_with("You write docs."));
     assert_eq!(d.model, "glm-5.3-flash");
 }
 
@@ -353,7 +356,9 @@ fn handle_roster_and_resolve() {
     assert!(!dis.enabled, "停用专家在名册中带 DISABLED 标记");
 
     let d = (h.resolve)("reviewer").unwrap();
-    assert_eq!(d.prompt, "You review.");
+    // 围栏前置注入：执行面 prompt = EXPERT_FENCE + 人格原文
+    assert!(d.prompt.starts_with("## 专家工作纪律"), "got: {}", d.prompt);
+    assert!(d.prompt.ends_with("You review."));
     let err = (h.resolve)("silent").unwrap_err();
     assert!(err.contains("disabled"), "停用专家 resolve 诚实拒绝: {err}");
     let err2 = (h.resolve)("ghost").unwrap_err();

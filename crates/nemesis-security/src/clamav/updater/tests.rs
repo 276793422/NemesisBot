@@ -607,6 +607,11 @@ fn capture_logs_to_buf() -> (
         .with_writer(move || SharedBuf(writer_buf.clone()))
         .finish();
     let guard = tracing::subscriber::set_default(subscriber);
+    // (BUG-20261115-027) set_default 不重建 interest 缓存：本进程曾在无
+    // subscriber 线程首评过 callsite 时全表缓存 NEVER，emit 被宏层短路
+    // → buf 空。持闸下以本线程栈全表重建翻案（闸见
+    // crate::test_capture_sync 文档）。
+    tracing::callsite::rebuild_interest_cache();
     (guard, buf)
 }
 
@@ -614,6 +619,10 @@ fn capture_logs_to_buf() -> (
 async fn auto_update_loop_reports_failure_and_stops() {
     // 5ms interval + missing freshclam → each cycle fails fast and logs the
     // auto-update-failed arm; stop() breaks the loop.
+    // (BUG-20261115-027) 捕获互斥闸：同二进制 signature 捕获测试的 guard
+    // drop 重建会把本测试的失败臂 callsite 打成 NEVER（窗口重叠假红）。
+    // tokio Mutex guard 跨 await 不触发 await_holding_lock。
+    let _capture_serial = crate::test_capture_sync::SERIAL.lock().await;
     let (_guard, buf) = capture_logs_to_buf();
     let u = Arc::new(Updater::new(UpdaterConfig {
         clamav_path: r"Z:\definitely\missing".to_string(),

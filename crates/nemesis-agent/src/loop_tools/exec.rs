@@ -4,6 +4,7 @@
 
 use super::*;
 
+use nemesis_utils::child_decode::decode_child_output;
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -100,7 +101,7 @@ impl StreamTeeState {
 
     fn emit(&self) {
         let bytes: Vec<u8> = self.window.iter().copied().collect();
-        let tail = tail_chars(&String::from_utf8_lossy(&bytes), EXEC_TAIL_CHARS);
+        let tail = tail_chars(&decode_child_output(&bytes), EXEC_TAIL_CHARS);
         (self.hook)(&self.context, &tail, self.produced);
     }
 }
@@ -647,11 +648,11 @@ impl ShellOutputCapture {
         let out = std::fs::read(&self.out_path);
         let err = std::fs::read(&self.err_path);
         let mut stdout = match &out {
-            Ok(b) => String::from_utf8_lossy(b).to_string(),
+            Ok(b) => decode_child_output(b),
             Err(_) => String::new(),
         };
         let stderr = match &err {
-            Ok(b) => String::from_utf8_lossy(b).to_string(),
+            Ok(b) => decode_child_output(b),
             Err(_) => String::new(),
         };
         if out.is_err() {
@@ -718,8 +719,8 @@ async fn read_shell_output(
     match capture {
         Some(c) => c.read_back(),
         None => {
-            let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-            let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+            let stdout = decode_child_output(&join_pipe_task(out_task).await);
+            let stderr = decode_child_output(&join_pipe_task(err_task).await);
             (stdout, stderr)
         }
     }
@@ -1631,8 +1632,8 @@ impl Tool for RunScriptTool {
         match waited {
             Ok(Ok(status)) => {
                 guard.mark_complete();
-                let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-                let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+                let stdout = decode_child_output(&join_pipe_task(out_task).await);
+                let stderr = decode_child_output(&join_pipe_task(err_task).await);
                 let exit_code = status.code().unwrap_or(-1);
                 // Always Ok: encode success/failure in exit_code so the caller
                 // (workflow script node) keeps its structured contract. Only

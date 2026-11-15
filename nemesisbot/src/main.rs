@@ -763,7 +763,11 @@ async fn async_main() -> Result<()> {
     {
         if executor_role_short_circuit("eval-agent") {
             common::ensure_default_logger();
-            return eval_worker::run().await;
+            // BUG-20261115-023：eval 装配走 build_agent_loop（可能 spawn
+            // profile sweep 常驻循环），退出前收口终态令牌防 re-park timer。
+            let result = eval_worker::run().await;
+            crate::commands::gateway::shutdown::cancel_terminal_tasks();
+            return result;
         }
     }
 
@@ -843,7 +847,13 @@ async fn async_main() -> Result<()> {
     // Instead, we use a helper function that inits a default subscriber only once
     // and is called by commands that don't have their own config-based init.
 
-    run_command(cli).await
+    // BUG-20261115-023：命令收尾统一收口常驻循环终态令牌——gateway 路径
+    // 已在 Step 24 提前 cancel（幂等无害）；run/acp 等 headless 命令经
+    // build_agent_loop 也可能 spawn profile sweep 常驻循环，退出前 cancel
+    // 防裸 Drop 语义 runtime 的 shutdown 最后 poll re-park timer 撞 panic。
+    let result = run_command(cli).await;
+    crate::commands::gateway::shutdown::cancel_terminal_tasks();
+    result
 }
 
 /// CLI 解析单点（非 mac / mac 双入口同源）：动态隐藏后 parse。
@@ -913,6 +923,9 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()?;
             let result = rt.block_on(eval_worker::run());
+            // BUG-20261115-023：eval 装配走 build_agent_loop（可能 spawn
+            // profile sweep 常驻循环），退出前收口终态令牌防 re-park timer。
+            crate::commands::gateway::shutdown::cancel_terminal_tasks();
             rt.shutdown_timeout(std::time::Duration::from_secs(5));
             return result;
         }

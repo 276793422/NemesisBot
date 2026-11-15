@@ -86,7 +86,7 @@ async fn seed_caches() {
     CONTENT_CACHE
         .lock()
         .unwrap()
-        .insert("toolsmith".to_string(), TOOLS_AGENT_MD.to_string());
+        .insert("agency/toolsmith".to_string(), TOOLS_AGENT_MD.to_string());
 }
 
 fn persona_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -207,6 +207,8 @@ async fn shop_download_writes_tools_md_with_extra_section() {
     // Other persona files written too.
     assert!(dir.path().join("personas/toolsmith/IDENTITY.md").is_file());
     assert!(dir.path().join("personas/toolsmith/SOUL.md").is_file());
+    // 原文存档（2026-11-15 原文直用改版）：雇佣专家路径的取材真相源。
+    assert!(dir.path().join("personas/toolsmith/raw.md").is_file());
 }
 
 // ensure_initialized / cmd_activate archive-directory arms

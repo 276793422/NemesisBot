@@ -278,7 +278,9 @@ impl EmbeddingPlugin for NativePlugin {
 
 impl Drop for NativePlugin {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap();
+        // unwind 路径中 Drop，毒化锁 unwrap 的持毒 panic 会升级成
+        // double-panic abort（tts.rs 同款纪律）——into_inner 容毒恢复，照常关闭。
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if !inner.closed {
             if let Some(ref library) = inner.library {
                 unsafe {

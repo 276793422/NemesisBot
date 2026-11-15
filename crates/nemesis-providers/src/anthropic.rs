@@ -34,7 +34,8 @@ fn cache_ttl_gap_warn(prev_ts: i64, now_ts: i64) -> Option<i64> {
 }
 
 /// Anthropic provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     pub api_key: String,
     #[serde(default)]
@@ -65,6 +66,22 @@ pub struct AnthropicConfig {
     #[serde(default)]
     pub cache_breakpoints: bool,
 }
+
+crate::debug_redact::impl_redacted_debug!(AnthropicConfig {
+    plain {
+        base_url,
+        default_model,
+        timeout_secs,
+        stream_mode,
+        cache_breakpoints,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 // P3A 超时对齐：120s 曾与 openai 兼容 lane 的 600s 口径分裂
 // （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 评审
@@ -224,17 +241,17 @@ impl AnthropicProvider {
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // Tool result。 同族降级（回归）：tool_result 在本实现
-                        // 只承载文本（图像进 tool_result 属），Parts 走
-                        // 文本视图 + 诚实注记，防 raw 序列化产出非法 wire 块。
-                        // 并块语义见函数头注释（BUG-20261114-003）。
+                        // Tool result。Phase 5 E1：含图 Parts 走 blocks 数组
+                        // （图像随 tool_result 直通 vision 通路），纯文本保持
+                        // JSON 字符串（历史 wire 字节不变）。并块语义见函数头
+                        // 注释（BUG-20261114-003）。
                         push_tool_result_block(
                             &mut api_messages,
                             &mut last_is_toolresult_user,
                             serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content.to_prompt_text_with_image_note()
+                                "content": tool_result_content_value(&msg.content)
                             }),
                         );
                     } else {
@@ -316,8 +333,8 @@ impl AnthropicProvider {
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // 同族降级（回归）：同 user tool_result，Parts 走
-                        // 文本视图 + 诚实注记（图像进 tool_result 属）。
+                        // Phase 5 E1：同 user tool_result，含图 Parts 走
+                        // blocks 数组直通 vision 通路，纯文本字节不变。
                         // 并块语义见函数头注释（BUG-20261114-003）。
                         push_tool_result_block(
                             &mut api_messages,
@@ -325,7 +342,7 @@ impl AnthropicProvider {
                             serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content.to_prompt_text_with_image_note()
+                                "content": tool_result_content_value(&msg.content)
                             }),
                         );
                     }
@@ -581,10 +598,18 @@ impl AnthropicProvider {
                 // body 读传输失败诚实上抛（同族）：空串会让
                 // 下方 from_str 落 Format 伪装应用层错误，fallback 链不轮转。
                 // unwrap_or_default 只留给 4xx 路径（状态码本身已定类）。
-                let raw = match resp.text().await {
+                // 成功体走有帽读取（BUG-20261115-024）：超限在读入中途断开，
+                // Unknown + "response body exceeds limit" 前缀（可重试换下一家）。
+                let raw = match crate::body_cap::read_success_body(resp).await {
                     Ok(b) => b,
                     Err(e) => {
-                        let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
+                        let _ = tx
+                            .send(Err(crate::body_cap::to_failover_error(
+                                "anthropic",
+                                &model,
+                                e,
+                            )))
+                            .await;
                         return;
                     }
                 };
@@ -1092,6 +1117,50 @@ fn push_tool_result_block(
     }
 }
 
+/// tool_result content 值（Phase 5 E1）：纯文本 → JSON 字符串（与历史
+/// wire 字节一致）；含图 Parts → blocks 数组（text 块 + image 块——
+/// Anthropic tool_result content 原生支持 block 数组形态，图像随工具
+/// 结果直通 vision 通路）。块形态与 [`anthropic_content_value`] 同构。
+/// 旧「图像进 tool_result 属 → 文本注记降级」已废除：read_image/
+/// screen_capture/MCP 产图工具的结果图像自此真实上行。
+fn tool_result_content_value(content: &crate::types::MessageContent) -> serde_json::Value {
+    if !content.has_image() {
+        return serde_json::Value::String(content.to_text());
+    }
+    if let crate::types::MessageContent::Parts(parts) = content {
+        serde_json::Value::Array(
+            parts
+                .iter()
+                .map(|p| match p {
+                    crate::types::ContentPart::Text { text } => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
+                    crate::types::ContentPart::Image { image, .. } => match image {
+                        crate::types::ImageSource::Base64 { media_type, data } => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data
+                                }
+                            })
+                        }
+                        crate::types::ImageSource::Url(url) => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": { "type": "url", "url": url }
+                            })
+                        }
+                    },
+                })
+                .collect(),
+        )
+    } else {
+        serde_json::Value::String(content.to_text())
+    }
+}
+
 /// 单条消息 content → Anthropic Messages API content 值：
 /// - `Text` → JSON 字符串（字节兼容现网请求，prompt cache 前缀不变）
 /// - `Parts` → blocks 数组：Text → `{"type":"text",text}`；
@@ -1395,11 +1464,11 @@ impl LLMProvider for AnthropicProvider {
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send/SSE 读路径同判）；解析失败→Format 带 body 摘要
-        //（应用层，不可重试）。
-        let raw = resp
-            .text()
+        //（应用层，不可重试）。成功体有帽（BUG-20261115-024）：超限中途断开
+        // →Unknown + "response body exceeds limit" 前缀（可重试）。
+        let raw = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| transport_error("anthropic", model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error("anthropic", model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
                 provider: "anthropic".to_string(),

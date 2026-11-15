@@ -316,3 +316,30 @@ async fn format_on_save_missing_config_is_noop() {
     .await;
     assert_eq!(out, "unchanged body");
 }
+
+/// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的 config.json——
+/// 旧形态裸 `read_to_string` → 前导 `\u{FEFF}` → parse 失败 → 静默落全缺省
+/// （用户开的 format_on_save 被静默忽略）。read_config_string 剥 BOM 后
+/// 照常解析，格式化照常触发。
+#[tokio::test]
+async fn bom_prefixed_config_json_still_enables_format_on_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ugly.rs");
+    std::fs::write(&file, "fn a(){let x=1;}\n").unwrap();
+
+    let config_path = dir.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        format!(
+            "\u{feff}{}",
+            config_json(enabled_json_with_timeout(60), None)
+        ),
+    )
+    .unwrap();
+
+    let out = format_on_save(Some(config_path), &file.to_string_lossy(), "wrote file").await;
+    assert!(
+        out.contains("[format] reformatted by rustfmt"),
+        "BOM 前缀 config.json 的 format_on_save 必须照常生效，out: {out}"
+    );
+}

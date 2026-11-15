@@ -447,6 +447,23 @@ fn test_entropy_low_normalised_arm() {
 }
 
 #[test]
+fn test_entropy_multibyte_uniform_is_high() {
+    // 多字节回归：全异 CJK 串是均匀分布，归一化熵必须 = 1.0（>0.95 → 0.6）。
+    // 修复前分母用 input.len()（字节 = 3×字符数），Σp = 1/3，熵被系统性
+    // 低估（C 个全异汉字 → normalized = log2(3C)/(3·log2(C)) ≈ 0.49 →
+    // 落 0.0 分臂），乱码检测对非 ASCII 失灵。
+    let input = "你好世界零壹贰叁肆伍陆柒玖";
+    let (score, desc) = entropy_score(input);
+    assert_eq!(input.chars().count(), 13);
+    assert_eq!(input.len(), 39); // 字节数 3×：钉住多字节前提
+    assert_eq!(
+        score, 0.6,
+        "uniform CJK must hit the high-entropy arm, desc={desc}"
+    );
+    assert!(desc.contains("normalised=1.00"), "desc={desc}");
+}
+
+#[test]
 fn test_structural_control_chars_low_band() {
     // 控制字符占比 ∈ (0.01, 0.05] → +0.2 且指标名 control_chars_low。
     let mut s = "word ".repeat(48);

@@ -233,6 +233,8 @@ pub trait SearchProvider: Send + Sync {
 /// DuckDuckGo search provider using HTML scraping.
 pub struct DuckDuckGoSearchProvider {
     client: reqwest::Client,
+    /// 查询端点根（默认官方 html 端点；测试侧可注入本地 mock——BUG-20261115-017 回归锁）。
+    base_url: String,
 }
 
 impl DuckDuckGoSearchProvider {
@@ -243,7 +245,18 @@ impl DuckDuckGoSearchProvider {
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_default();
-        Self { client }
+        Self {
+            client,
+            base_url: "https://html.duckduckgo.com/html/".to_string(),
+        }
+    }
+
+    /// 测试专用：注入本地 mock 端点（生产路径不可达硬编码官方端点，回归锁需要可控服务器）。
+    #[cfg(test)]
+    fn with_base_url(base_url: &str) -> Self {
+        let mut p = Self::new();
+        p.base_url = base_url.to_string();
+        p
     }
 
     /// Extract search results from DuckDuckGo HTML response.
@@ -313,7 +326,7 @@ impl Default for DuckDuckGoSearchProvider {
 #[async_trait]
 impl SearchProvider for DuckDuckGoSearchProvider {
     async fn search(&self, query: &str, count: usize) -> Result<String, String> {
-        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
+        let url = format!("{}?q={}", self.base_url, urlencoding(query));
 
         let resp = self
             .client
@@ -322,10 +335,21 @@ impl SearchProvider for DuckDuckGoSearchProvider {
             .await
             .map_err(|e| format!("request failed: {}", e))?;
 
+        let status = resp.status();
         let body = resp
             .text()
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
+
+        // BUG-20261115-017：非 2xx 必须报错而非进解析——html.duckduckgo.com
+        // 的 403 异常页/429 限流页（反爬常态）此前被当普通 HTML 提取，稳定
+        // 落「No results found or extraction failed」假象：agent 把「传输被拒」
+        // 误读为「网上没有」。错误体前缀 200 字符（char 边界安全）喂回
+        // agent 供定性（限流 vs 拒绝 vs 端点变更）。
+        if !status.is_success() {
+            let preview: String = body.chars().take(200).collect();
+            return Err(format!("DuckDuckGo HTTP {status}: {preview}"));
+        }
 
         self.extract_results(&body, count, query)
     }
@@ -339,6 +363,8 @@ impl SearchProvider for DuckDuckGoSearchProvider {
 pub struct BraveSearchProvider {
     api_key: String,
     client: reqwest::Client,
+    /// 查询端点根（默认官方 API；测试侧可注入本地 mock——BUG-20261115-017 回归锁）。
+    base_url: String,
 }
 
 impl BraveSearchProvider {
@@ -346,23 +372,34 @@ impl BraveSearchProvider {
     pub fn new(api_key: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            // BUG-20261115-045：X-Subscription-Token 是自定义凭据头——reqwest
+            // 默认重定向策略跨主机只剥 authorization/cookie 等标准四头，自定义
+            // 头会原样带到 302 目标主机。换同源跟随 + 跨源终止策略（与
+            // nemesis-providers 六 lane / channels 三 builder 同源纪律，见
+            // nemesis_utils::http_redirect）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .unwrap_or_default();
         Self {
             api_key: api_key.to_string(),
             client,
+            base_url: "https://api.search.brave.com/res/v1/web/search".to_string(),
         }
+    }
+
+    /// 测试专用：注入本地 mock 端点。
+    #[cfg(test)]
+    fn with_base_url(api_key: &str, base_url: &str) -> Self {
+        let mut p = Self::new(api_key);
+        p.base_url = base_url.to_string();
+        p
     }
 }
 
 #[async_trait]
 impl SearchProvider for BraveSearchProvider {
     async fn search(&self, query: &str, count: usize) -> Result<String, String> {
-        let url = format!(
-            "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-            urlencoding(query),
-            count
-        );
+        let url = format!("{}?q={}&count={}", self.base_url, urlencoding(query), count);
 
         let resp = self
             .client
@@ -373,10 +410,20 @@ impl SearchProvider for BraveSearchProvider {
             .await
             .map_err(|e| format!("request failed: {}", e))?;
 
+        // BUG-20261115-017：非 2xx 必须报错而非进解析。Brave 4xx/429 的 JSON
+        // 错误体（如 {"error":[{"id":"RATE_LIMITED"}]}）没有 "web" 键——下方
+        // `#[serde(default)]` typed struct 会把它静默解析成「零结果成功」，
+        // 配额耗尽被伪装成「网上没有结果」，agent 无从触发重试/降级。
+        let status = resp.status();
         let body = resp
             .text()
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
+
+        if !status.is_success() {
+            let preview: String = body.chars().take(200).collect();
+            return Err(format!("Brave HTTP {status}: {preview}"));
+        }
 
         #[derive(serde::Deserialize)]
         struct SearchResult {
@@ -432,6 +479,10 @@ impl PerplexitySearchProvider {
     pub fn new(api_key: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            // BUG-20261115-045：凭据外呼统一走跨源终止策略（Authorization
+            // 虽在 reqwest 默认剥离清单内，但显式策略不再依赖「记得哪些头
+            // 会被剥」——日后换自定义凭据头时不再裸奔）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .unwrap_or_default();
         Self {

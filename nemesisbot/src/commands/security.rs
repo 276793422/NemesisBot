@@ -313,7 +313,10 @@ fn cmd_approvals_list(home: &std::path::Path) -> Result<()> {
         println!("(none — no always-allow rules saved)");
         return Ok(());
     }
-    let raw = std::fs::read_to_string(&path)?;
+    // read_config_string 剥 BOM——与运行期 loader（approval_rules.rs 同文件
+    // 已走 helper）同口径：BOM 文件运行期规则生效而 CLI 列表报 parse 错 =
+    // 同文件读面分裂（BUG-20261103-334 同族）。
+    let raw = nemesis_utils::fsutil::read_config_string(&path)?;
     let rules: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
     if rules.is_empty() {
         println!("(empty)");
@@ -348,7 +351,8 @@ fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
     let path =
         nemesis_path::resolve_approval_rules_path_in_workspace(&common::workspace_path(home));
     let removed = if path.exists() {
-        let raw = std::fs::read_to_string(&path)?;
+        // read_config_string 剥 BOM（同 list 臂口径：BOM 文件计数不失真）。
+        let raw = nemesis_utils::fsutil::read_config_string(&path)?;
         serde_json::from_str::<Vec<serde_json::Value>>(&raw)
             .map(|v| v.len())
             .unwrap_or(0)

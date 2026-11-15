@@ -31,6 +31,8 @@ use anyhow::Result;
 use nemesis_services::LifecycleService;
 use tracing::{error, info, warn};
 
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 use super::GatewayCtx;
 use super::print_agent_startup_info;
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -496,7 +498,10 @@ pub(crate) async fn init_services(
             let interval_secs = if dw.interval_secs == 0 {
                 60
             } else {
-                dw.interval_secs
+                // 上界钳制（BUG-20261116-001）：巨值配置穿透 Instant 算术界
+                // panic / far_future 静默停摆防护——本循环死了磁盘水位监控
+                // 无感知停摆。
+                crate::common::bounded_tick_interval_secs(dw.interval_secs, 1)
             };
             let workspace = common::workspace_path(&home);
             // disk_level：0=ok/未知 1=warn 2=critical（watchdog 写，检查闭包读）。
@@ -524,7 +529,11 @@ pub(crate) async fn init_services(
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    tick.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                        break;
+                    }
                     // 查询失败不打搅（偶发 IO 抖动，下轮再来）；升档错过比误报好。
                     let Ok(free) = nemesis_health::volume_free_bytes(&workspace) else {
                         continue;
@@ -594,7 +603,11 @@ pub(crate) async fn init_services(
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    tick.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                        break;
+                    }
                     for d in nemesis_utils::degraded::take_pending() {
                         hub_for_degraded.publish(
                             "system-alert",
@@ -742,7 +755,11 @@ pub(crate) async fn init_services(
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     ticker.tick().await; // 首个 tick 立即返回，跳过（bind 刚算过）
                     loop {
-                        ticker.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
                         let Some(ref ca) = heal_adapter else {
                             continue;
                         };

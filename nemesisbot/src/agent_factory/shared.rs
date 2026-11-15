@@ -4,6 +4,8 @@
 
 use super::*;
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 /// 路由 config 接线——把 `bindings` / `agents.list` /
 /// `session.dm_scope` 映射成生产 [`nemesis_routing::RouteResolver`]。
 ///
@@ -1488,7 +1490,16 @@ pub(super) fn spawn_daily_cleanup(
         loop {
             let sleep_secs = secs_until_next_local_midnight(chrono::Local::now());
 
-            tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(
+                terminal_cancel_token(),
+                tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)),
+            )
+            .await
+            {
+                break;
+            }
 
             // detailed 版返回被删 key，逐个触发方言 SessionEnd
             // （观察型；无桥/cluster 侧 = 只清理不触发）。
@@ -1543,7 +1554,16 @@ pub(super) fn spawn_rpc_cache_cleanup(mgr: Arc<nemesis_agent::ContinuationManage
         loop {
             let sleep_secs = secs_until_next_local_midnight(chrono::Local::now());
 
-            tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(
+                terminal_cancel_token(),
+                tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)),
+            )
+            .await
+            {
+                break;
+            }
 
             let removed = mgr.cleanup_old_snapshots(TTL).await;
             if removed > 0 {
@@ -1576,7 +1596,16 @@ pub(super) fn spawn_daily_spill_cleanup(
         loop {
             let sleep_secs = secs_until_next_local_midnight(chrono::Local::now());
 
-            tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(
+                terminal_cancel_token(),
+                tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)),
+            )
+            .await
+            {
+                break;
+            }
 
             // Live-read retention (default 7 on unreadable config; negative -> 0 -> skip).
             let retention = nemesis_config::load_config(&config_path)

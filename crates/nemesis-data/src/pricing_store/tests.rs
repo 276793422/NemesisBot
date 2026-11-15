@@ -2,7 +2,7 @@
 //! 原子写 / 损坏降级 / 三层优先级都按真实磁盘行为验证。
 
 use super::*;
-use crate::models::ModelPricing;
+use crate::models::{ModelPricing, PriceTier};
 
 fn tmp_dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("nb-pricing-store-{}-{name}", std::process::id()));
@@ -191,4 +191,88 @@ fn failed_fetch_updates_meta_but_keeps_table() {
         Some("https://mirror.test/table.json")
     );
     assert!(store.meta().fetched_at.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 写入门禁（BUG-20261115-020 横向收口）：upsert_custom 拒绝有限性/非负
+// 违规条目且不落盘——CLI 与 WSAPI 两个写入口的单一共享闸，存储层不变量
+// 「自定义条目价目列必须有限非负」。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn upsert_custom_rejects_negative_prices_and_does_not_persist() {
+    let (_dir, store) = fresh_store("neg-gate");
+    for (label, input, output) in [
+        ("negative input", -1.0, 2.0),
+        ("negative output", 1.0, -2.0),
+        ("negative cache_read", 1.0, 2.0),
+    ] {
+        let mut e = entry("neg-model", input, output);
+        if label == "negative cache_read" {
+            e.cache_read_cost_per_million = -0.1;
+        }
+        let err = store.upsert_custom(e).unwrap_err();
+        assert!(err.contains("不能为负"), "{label} 必须 loud 拒绝：{err}");
+    }
+    assert!(store.list_custom().is_empty(), "失败路径不得落任何条目");
+}
+
+#[test]
+fn upsert_custom_rejects_non_finite_and_blank_id() {
+    let (_dir, store) = fresh_store("finite-gate");
+    let mut e = entry("nan-model", f64::NAN, 2.0);
+    assert!(
+        store
+            .upsert_custom(e.clone())
+            .unwrap_err()
+            .contains("有限数值")
+    );
+    e = entry("inf-model", 1.0, f64::INFINITY);
+    assert!(store.upsert_custom(e).unwrap_err().contains("有限数值"));
+    e = entry("   ", 1.0, 2.0);
+    assert!(
+        store
+            .upsert_custom(e)
+            .unwrap_err()
+            .contains("modelId 不能为空")
+    );
+    assert!(store.list_custom().is_empty(), "失败路径不得落任何条目");
+}
+
+#[test]
+fn upsert_custom_rejects_bad_tiers() {
+    let (_dir, store) = fresh_store("tier-gate");
+    let mut e = entry("tier-model", 1.0, 2.0);
+    e.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 200_000,
+        input_cost_per_million: Some(-3.0),
+        output_cost_per_million: Some(9.0),
+        cache_read_cost_per_million: None,
+        cache_creation_cost_per_million: None,
+    }]);
+    let err = store.upsert_custom(e).unwrap_err();
+    assert!(err.contains("阶梯 input 价不能为负"), "{err}");
+
+    let mut e = entry("tier-model2", 1.0, 2.0);
+    e.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: -1,
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(9.0),
+        cache_read_cost_per_million: None,
+        cache_creation_cost_per_million: None,
+    }]);
+    let err = store.upsert_custom(e).unwrap_err();
+    assert!(err.contains("阈值不能为负"), "{err}");
+
+    // 合法阶梯照常入库（闸不误伤）。
+    let mut ok = entry("tier-model3", 1.0, 2.0);
+    ok.price_tiers = Some(vec![PriceTier {
+        min_prompt_tokens: 0,
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(9.0),
+        cache_read_cost_per_million: None,
+        cache_creation_cost_per_million: None,
+    }]);
+    store.upsert_custom(ok).unwrap();
+    assert_eq!(store.list_custom().len(), 1, "合法条目必须入库");
 }

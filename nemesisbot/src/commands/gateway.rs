@@ -56,7 +56,9 @@ mod post_agent;
 mod relay;
 mod runtime;
 mod services;
-mod shutdown;
+// 终态令牌/等待点 helper 被五常驻循环（logs_sweeper / session_group_
+// sweeper / notify / board_bus / profile_service）跨模块消费——pub(crate)。
+pub(crate) mod shutdown;
 #[cfg(feature = "workflow")]
 mod workflow_secure_executor;
 // workflow 安全执行通道 gateway 实现回归锁（A 批；identity→RequestContext
@@ -64,6 +66,9 @@ mod workflow_secure_executor;
 mod web_init;
 #[cfg(all(test, feature = "workflow"))]
 mod workflow_secure_executor_tests;
+// 终态令牌等待点 helper 回归锁（BUG-20261115-023）。
+#[cfg(test)]
+mod shutdown_tests;
 
 pub(crate) use self::agent_build::{AgentWiring, init_agent};
 #[cfg(all(feature = "board", feature = "cluster"))]

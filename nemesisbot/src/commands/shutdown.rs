@@ -124,6 +124,9 @@ fn post_internal_shutdown(port: u16, token: &str) -> Result<u16, String> {
             rt.block_on(async move {
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(5))
+                    // BUG-20261115-045：X-Auth-Token 凭据面不跟随跨主机重定向
+                    // （reqwest 默认只剥标准四头）——同源跟随 + 跨源终止。
+                    .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
                     .build()
                     .map_err(|e| format!("http client: {e}"))?;
                 let mut req = client

@@ -1210,12 +1210,20 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
 
 /// Auto-detect skill structure of a GitHub repo.
 /// Returns Ok((index_type, skill_path_pattern, branch)) on success, Err(reason) on failure.
+///
+/// 探测响应体有帽读（2026-11-15 六轮复查补，BUG-20261114-046 同类横扫）：
+/// 四处成功臂 `json()/text()` 全量读入无上界——046 横扫收口了
+/// nemesis-skills 三个 registry crate，漏掉本 handler 侧探测路径（同信任
+/// 域：用户可配第三方源）。帽值 = nemesis-skills registry 单一真相源
+/// 16MB；blocking 响应经 [`nemesis_utils::http_cap::read_body_capped_blocking`]
+/// 读入过程中断。
 fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, String), String> {
     let branches = ["main", "master"];
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+    const CAP: u64 = nemesis_skills::registry::MAX_API_JSON_BODY_BYTES;
 
     for branch in &branches {
         let base_url = format!("https://api.github.com/repos/{}/{}/contents", owner, repo);
@@ -1227,7 +1235,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .header("User-Agent", "nemesisbot")
             .send()
             && resp.status().is_success()
-            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>()
+            && let Ok(body) = nemesis_utils::http_cap::read_body_capped_blocking(resp, CAP)
+            && let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&body)
         {
             let skill_dirs: Vec<&str> = entries
                 .iter()
@@ -1274,8 +1283,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .header("User-Agent", "nemesisbot")
             .send()
             && resp.status().is_success()
-            && let Ok(data) = resp.text()
-            && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok()
+            && let Ok(body) = nemesis_utils::http_cap::read_body_capped_blocking(resp, CAP)
+            && serde_json::from_slice::<Vec<serde_json::Value>>(&body).is_ok()
         {
             return Ok((
                 "skills_json".to_string(),
@@ -1291,7 +1300,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .header("User-Agent", "nemesisbot")
             .send()
             && resp.status().is_success()
-            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>()
+            && let Ok(body) = nemesis_utils::http_cap::read_body_capped_blocking(resp, CAP)
+            && let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&body)
         {
             let skip_dirs = [
                 "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests", "examples",
@@ -1321,7 +1331,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
                     .header("User-Agent", "nemesisbot")
                     .send()
                     && r.status().is_success()
-                    && let Ok(sub) = r.json::<Vec<serde_json::Value>>()
+                    && let Ok(sub_body) = nemesis_utils::http_cap::read_body_capped_blocking(r, CAP)
+                    && let Ok(sub) = serde_json::from_slice::<Vec<serde_json::Value>>(&sub_body)
                     && sub.iter().any(|e| {
                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
                             && e.get("type").and_then(|v| v.as_str()) == Some("file")

@@ -26,6 +26,13 @@ use crate::base::{BaseChannel, Channel};
 /// （BUG-20261113-166）。
 const TELEGRAM_SPLIT_BUDGET: usize = 3500;
 
+/// 媒体（voice/photo/document）单文件下载上限：64MB。
+///
+/// Telegram Bot API 标准模式单文件 20MB 硬上限，64MB = 3x 余量；
+/// local Bot API server 模式可传 GB 级文件，超帽在读入中途诚实断开
+/// 而不是灌满进程内存（BUG-20261115-025，http_cap 单一真相源）。
+const VOICE_DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Thinking cancel mechanism
 // ---------------------------------------------------------------------------
@@ -980,7 +987,13 @@ impl TelegramChannel {
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status()));
         }
-        let bytes = resp.bytes().await.map_err(|e| api.redact(e))?;
+        // BUG-20261115-025：媒体下载有帽读取——裸 `bytes()` 把整文件灌进内存
+        // （Telegram Bot API 标准模式单文件上限 20MB；local Bot API server
+        // 模式可达 GB 级）。64MB 帽对标准模式余量充足；local 模式超帽文件
+        // 诚实报 exceeds limit（读入中途断开，内存峰值=已到达前缀）。
+        let bytes = nemesis_utils::http_cap::read_body_capped(resp, VOICE_DOWNLOAD_LIMIT_BYTES)
+            .await
+            .map_err(|e| api.redact(e))?;
         std::fs::write(local_path, &bytes).map_err(|e| e.to_string())
     }
 

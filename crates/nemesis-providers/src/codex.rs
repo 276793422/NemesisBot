@@ -12,7 +12,8 @@ const CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex, a coding assistant.";
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Codex provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexConfig {
     pub api_key: String,
     #[serde(default)]
@@ -36,6 +37,23 @@ pub struct CodexConfig {
     #[serde(default)]
     pub stream_mode: String,
 }
+
+crate::debug_redact::impl_redacted_debug!(CodexConfig {
+    plain {
+        account_id,
+        default_model,
+        base_url,
+        enable_web_search,
+        timeout_secs,
+        stream_mode,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 fn default_true() -> bool {
     true
@@ -733,10 +751,10 @@ async fn parse_sse_response(
     model: &str,
 ) -> Result<crate::types::LLMResponse, FailoverError> {
     // 中途断流：客户端超时→Timeout；其余读错误诚实携带根因链（同 send 臂）。
-    let text = resp
-        .text()
+    // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚（可重试）。
+    let text = crate::body_cap::read_success_body(resp)
         .await
-        .map_err(|e| transport_error("codex", model, &e))?;
+        .map_err(|e| crate::body_cap::to_failover_error("codex", model, e))?;
     parse_sse_text(&text, model)
 }
 
@@ -762,10 +780,10 @@ async fn decode_codex_response(
     // 重试），fallback 链直接终止不轮转（本文件 parse_sse_response 的
     // SSE 聚合路径早已 transport_error，此路径此前未对齐）。现传输失败
     // →transport_error（可重试）；解析失败→Format 带 body 摘要。
-    let raw = resp
-        .text()
+    // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚。
+    let raw = crate::body_cap::read_success_body(resp)
         .await
-        .map_err(|e| transport_error("codex", model, &e))?;
+        .map_err(|e| crate::body_cap::to_failover_error("codex", model, e))?;
     let data: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
             provider: "codex".to_string(),

@@ -266,7 +266,21 @@ fn migrate_legacy_instances(
         let Ok(content) = nemesis_utils::fsutil::read_config_string(&legacy_path) else {
             continue;
         };
-        let legacy = serde_json::from_str::<LegacyInstanceFile>(&content).unwrap_or_default();
+        // BUG-20261115-035：解析失败 ≠ 空配置。旧文件截断/手改损坏时按
+        // unwrap_or_default 空壳迁移并删除原文件 = 用户插件实例配置静默
+        // 永久丢失。读失败臂 continue 保文件重试，两失败形态处置必须
+        // 对称：损坏文件诚实跳过（WARN 注明），下次读再试。
+        let legacy = match serde_json::from_str::<LegacyInstanceFile>(&content) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    path = %legacy_path.display(),
+                    error = %e,
+                    "[WasmPlugin] 旧实例文件解析失败——跳过迁移（文件保留，下次读重试）"
+                );
+                continue;
+            }
+        };
         if !file.plugins.contains_key(&slug) {
             let config: BTreeMap<String, serde_json::Value> = legacy
                 .entries

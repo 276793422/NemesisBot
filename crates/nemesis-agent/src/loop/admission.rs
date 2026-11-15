@@ -1760,6 +1760,18 @@ impl AgentLoop {
                     );
                 }
             }
+            // 提问等待联动（Phase 5 A3）：同审批 drain 语义——该会话
+            // pending 提问以 Cancelled 强制了结（question 工具醒来按
+            // 「停止」语义处理）。槽空 = trait 默认 no-op（返回 0）。
+            if let Some(responder) = self.question_responder() {
+                let closed = responder.cancel_session_questions(session_key, "turn cancelled");
+                if closed > 0 {
+                    info!(
+                        "[AgentLoop] session cancel closed {} pending question card(s): {}",
+                        closed, session_key
+                    );
+                }
+            }
             info!(
                 "[AgentLoop] Session cancellation requested: {}",
                 session_key
@@ -1791,6 +1803,17 @@ impl AgentLoop {
                 if closed > 0 {
                     info!(
                         "[AgentLoop] session cancel closed {} pending approval card(s): {}",
+                        closed, session_key
+                    );
+                }
+            }
+            // 提问等待联动（Phase 5 A3）：与 cancel_session 同款 drain，
+            // 覆盖全局停止按钮（不带 session_id 的 agent.cancel）路径。
+            if let Some(responder) = self.question_responder() {
+                let closed = responder.cancel_session_questions(session_key, "turn cancelled");
+                if closed > 0 {
+                    info!(
+                        "[AgentLoop] session cancel closed {} pending question card(s): {}",
                         closed, session_key
                     );
                 }

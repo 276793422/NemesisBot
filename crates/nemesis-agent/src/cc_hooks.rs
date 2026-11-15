@@ -498,8 +498,10 @@ pub async fn run_hook_script(
     match tokio::time::timeout(Duration::from_secs(timeout_secs.max(1)), fut).await {
         Ok(Ok(out)) => ScriptOutcome {
             code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            // 解码走单一真相源（BUG-20261115-034）：hook 经 cmd /C 无控制台
+            // 管道执行，cmd 内建/控制台工具输出按 OEM 码页产出。
+            stdout: nemesis_utils::child_decode::decode_child_output(&out.stdout),
+            stderr: nemesis_utils::child_decode::decode_child_output(&out.stderr),
             timed_out: false,
         },
         Ok(Err(e)) => ScriptOutcome {

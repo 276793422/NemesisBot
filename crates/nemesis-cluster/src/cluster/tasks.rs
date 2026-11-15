@@ -130,6 +130,61 @@ impl Cluster {
             }));
     }
 
+    /// 构造期安装 TaskManager 安全网判死唤醒钩子（与
+    /// `install_route_record_hook` 同例：清理 tick 判死臂是拿不到
+    /// `&Cluster` 的旁路 settle 点）。清理循环（30s tick）与恢复 sweep
+    /// （120s tick）对同一 `pending_timeout` 阈值竞速——清理赢时任务即
+    /// Failed，sweep 只扫 Pending 从此永远看不到，若判死只落状态不发布
+    /// 唤醒帧（生产 on_complete 恒 None）= 续行快照孤儿 + 等待方对话
+    /// 挂死。钩子补发与 sweep 判死臂同形状的 `cluster_continuation`
+    /// error 帧（`publish_continuation_to_bus`，15s 接收者就绪等待）；
+    /// exactly-once 由条件转移 CAS 保证（输方 Ok(false) 不触发钩子），
+    /// 双杀臂互斥不双发。bus 句柄在钩子体内现读——`set_message_bus`
+    /// 可发生在构造之后（gateway 装配顺序 cluster 构造 → start →
+    /// set_message_bus），tick 级快照会拿过期 None。幂等覆盖（重复
+    /// 构造/重启安全）。
+    pub(super) fn install_stale_kill_hook(&self) {
+        let bus_handle = Arc::clone(&self.bus);
+        self.task_manager
+            .set_on_stale_kill(Box::new(move |task: &Task| {
+                let Some(bus) = bus_handle.lock().clone() else {
+                    return;
+                };
+                let task_id = task.id.clone();
+                let peer_id = task.peer_id.clone();
+                // 错误文案单一真相源 = 判死写入 task.result 的 error 字段
+                // （与恢复 sweep「文案先落变量、状态与唤醒帧共用」同一纪律）。
+                let error = task
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("error"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("task timed out (safety net)")
+                    .to_string();
+                // 发布 fire-and-forget spawn 化：不阻塞清理循环下一 tick；
+                // publish 内部自带 15s 接收者就绪等待。无 runtime（纯同步
+                // 单测直调 run_cleanup_once）= 诚实跳过留痕，不 panic。
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        "[Cluster] stale-kill wake skipped: no tokio runtime"
+                    );
+                    return;
+                };
+                handle.spawn(async move {
+                    publish_continuation_to_bus(
+                        bus.as_ref(),
+                        &task_id,
+                        "",
+                        "error",
+                        &peer_id,
+                        Some(&error),
+                    )
+                    .await;
+                });
+            }));
+    }
+
     /// 负载感知路由（最小版）：从在线节点（不含本节点）按健康/负载选一个
     /// 最优 target。评分链（min 逐维裁决，确定性平局）：
     /// ① success_rate 降（零样本 = 1.0 乐观中性，新节点不被饿死）→
@@ -1257,7 +1312,10 @@ enum QueryOutcome {
 /// 的形状向总线重发 `cluster_continuation:{task_id}`（含真实响应内容 +
 /// metadata），唤醒 A 端主 agent 的续行恢复——生产装配不接
 /// TaskManager.on_complete，仅靠 complete_callback 只会更新任务状态、不会
-/// 唤醒 agent。（安全网分支补齐 publish。）
+/// 唤醒 agent。（安全网分支补齐 publish。）清理 tick（`cleanup_completed`
+/// 30s）对同一 pending_timeout 阈值的判死臂经构造期 stale-kill 钩子
+/// （`install_stale_kill_hook`）补发同形唤醒帧——两杀臂对同一任务竞速，
+/// 条件转移 CAS 恰一方生效，互斥不双发。
 ///
 /// `delivery_cb` 非空时，done 分支先触发交付回调（看板写回 / chat
 /// 交付判定，路由在 gateway 注入的闭包里），回调返回 true 才向 worker 发
@@ -1573,7 +1631,10 @@ pub(super) async fn poll_stale_pending_tasks(
 /// broadcast send 对无接收者是**静默丢弃**（publish_inbound 返回），
 /// 故发布前等待接收者就位，上界 15s（150×100ms 轮询）——超时照发不吞
 /// （宁试勿丢；总线侧仍有 no-receiver WARN 可观测）。
-async fn publish_continuation_to_bus(
+/// `pub(super)`：Cluster 构造期 stale-kill 唤醒钩子（`install_stale_kill_hook`）
+/// 复用同一发布形状——清理 tick 判死臂与恢复 sweep 判死臂是同一义务的两个
+/// 竞速执行者，发布形状必须逐字节一致（exactly-once 由条件转移 CAS 保证）。
+pub(super) async fn publish_continuation_to_bus(
     bus: &dyn MessageBus,
     task_id: &str,
     content: &str,

@@ -290,6 +290,30 @@ impl AgentInstance {
         self.push_turn(turn);
     }
 
+    /// (Phase 5 图像工具层) add_tool_result 带图变体：工具产出的图片路径
+    /// 随 tool 轮 `image_refs` 落史，水合层（turn_to_request_message_in）
+    /// 每 role 无关地读它 → LLM 请求带图。只存路径引用不存字节。
+    /// 旧 replay/interrupt 路径继续走无图版本（重放不带本次会话的临时产物）。
+    pub fn add_tool_result_with_images(
+        &self,
+        tool_call_id: &str,
+        content: &str,
+        image_refs: Vec<String>,
+    ) {
+        let turn = ConversationTurn {
+            role: "tool".to_string(),
+            content: content.to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            timestamp: chrono::Local::now().to_rfc3339(),
+            reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+            image_refs,
+        };
+        self.push_turn(turn);
+    }
+
     /// (projection prune): add a tool result keeping the ORIGINAL
     /// content in history, with the bounded model-facing projection carried
     /// alongside instead of replacing the content.
@@ -318,6 +342,30 @@ impl AgentInstance {
             tool_name: Some(tool_name.to_string()),
             tool_result_projection: projection,
             image_refs: Vec::new(),
+        };
+        self.push_turn(turn);
+    }
+
+    /// (Phase 5 图像工具层) add_tool_result_projected 带图变体：串行
+    /// dispatch 主路径用——projection 语义不变，图片路径额外随轮落史。
+    pub fn add_tool_result_projected_with_images(
+        &self,
+        tool_call_id: &str,
+        original: &str,
+        tool_name: &str,
+        projection: Option<String>,
+        image_refs: Vec<String>,
+    ) {
+        let turn = ConversationTurn {
+            role: "tool".to_string(),
+            content: original.to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            timestamp: chrono::Local::now().to_rfc3339(),
+            reasoning_content: None,
+            tool_name: Some(tool_name.to_string()),
+            tool_result_projection: projection,
+            image_refs,
         };
         self.push_turn(turn);
     }

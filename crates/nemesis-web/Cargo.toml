@@ -54,6 +54,9 @@ nemesis-utils = { workspace = true, features = ["http"] }
 # 提示词资产单一真相源（M7）：cluster_persona_gen（人格生成三阶段）消费；
 # 零依赖纯静态文本，直接非 optional。
 nemesis-prompts = { workspace = true }
+# 人格超市 builtin 伪源（2026-11-15）：编译期内嵌工作区人格模板
+# （nemesisbot/workspace/personas/），browse 陈列 + 安装/雇佣按需释放（B2）。
+include_dir = "0.7"
 # P2-1 (2026-08-24 UI entry gap): coding.lsp_status probes the language-server
 # registry table (SERVERS / server_available). Unconditional, mirroring
 # nemesis-agent's own non-optional dependency on nemesis-lsp.

@@ -27,7 +27,7 @@ tar = "0.4"
 # 压缩分工（计划 §3）：完整 zstd crate 只进 pack（构建机压缩，需 C 工具链）；
 # 安装器运行侧只解不压 → ruzstd 纯 Rust 解码器。
 zstd = "0.13"
-ruzstd = "0.7"
+ruzstd = "0.9"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 # 遥测 install_id（M3：安装器生成透传 `taiwei emit install --install-id`）

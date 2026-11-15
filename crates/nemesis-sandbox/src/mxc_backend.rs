@@ -25,6 +25,18 @@
 //! （无路由构建）。运行期：每次 spawn 显式 `telemetry: Some(TelemetryConfig
 //! { enabled: Some(false) })`（双重保险）。删任一 = 红线失效，禁止。
 //!
+//! ## 上游依赖漏洞标记（2026-11-16 全仓漏洞清扫遗留面）
+//!
+//! mxc 官方仓库（submodule `3rd/mxc`）我方无推送权限，其入库依赖锁存在
+//! 已公开漏洞报告。本地处置：`src/Cargo.lock` 已在工作区升级归零
+//! （libz-sys/webpki-root-certs/rustix/tokio 四项）——**该修复只存在于
+//! 本地子模块工作区，不随任何仓库同步**，fresh clone 或
+//! `submodule update --force` 会丢失，恢复步骤见
+//! 2026-11-16_mxc上游依赖漏洞处置标记报告（docs/REPORT）。`samples/`
+//! 在本 pin 上上游清单自身损坏无法修复，但 samples 不进产品构建链
+//! （本 crate 的 mxc-sdk path 依赖只指 `src/mxc-sdk`），残留无风险。
+//! 若上游发布新 pin，按 [`MXC_VERSION`] 三点同 commit 纪律 advance。
+//!
 //! ## 消费面
 //!
 //! nemesisbot `exec_world` 装配（backend="mxc" 时注入 ExecutorChannel 的
@@ -128,11 +140,14 @@ fn probe_mxc_fresh() -> MxcProbeReport {
     #[cfg(target_os = "linux")]
     {
         // 官方 bubblewrap 可用性探测（版本二进制 + 必要 flag 支持）。
-        match mxc_sdk::bwrap_common::probe_bwrap() {
+        // probe_bwrap 挂在 bwrap_version 子模块（bwrap_common 无顶层
+        // re-export）；此臂仅 Linux 编译——ci.yml feature-poke 步骤
+        // 2026-11-15 首爆 E0425（Windows 侧从不走此块）。
+        match mxc_sdk::bwrap_common::bwrap_version::probe_bwrap() {
             Ok(ver) => MxcProbeReport {
                 status: "ready".to_string(),
                 platform_backend: "bubblewrap".to_string(),
-                detail: format!("MXC 探测通过（bwrap {}）", ver.version),
+                detail: format!("MXC 探测通过（bwrap {}）", ver),
             },
             Err(e) => MxcProbeReport {
                 status: "unavailable".to_string(),

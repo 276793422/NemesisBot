@@ -127,8 +127,11 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
         }
     };
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    // 解码走单一真相源（BUG-20261115-034）：Windows 上 CLI 经 .cmd 包装
+    // （cmd.exe 解释），CLI 自身 UTF-8 输出字节精确直通，cmd 层码页文本
+    // （错误横幅等）就地恢复。
+    let stdout = nemesis_utils::child_decode::decode_child_output(&out.stdout);
+    let stderr = nemesis_utils::child_decode::decode_child_output(&out.stderr);
     if !out.status.success() {
         return Ok(format!(
             "Error: {} exited with {}.\nstdout:\n{}\nstderr:\n{}",

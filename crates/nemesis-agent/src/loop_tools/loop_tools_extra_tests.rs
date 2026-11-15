@@ -1645,6 +1645,7 @@ async fn test_cron_create_continue_session_uses_ext() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
     // continue_session=true → job payload carries the CALLER's session_key.
@@ -1706,6 +1707,7 @@ async fn test_cron_create_continue_session_max_rounds() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
 
     // Explicit tier → payload carries it.

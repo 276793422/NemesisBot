@@ -614,6 +614,11 @@ impl AgentLoop {
             debug!("[Continuation] task {task_id} 已有在途处理（重复回调诚实跳过）");
             return;
         }
+        // BUG-20261115-022：认领 RAII guard——本任务跑在无人 watch 的
+        // tokio::spawn 里，认领到收口横跨整个 LLM 续行，panic 展开由
+        // guard Drop 兜底释放（与 busy/inflight guard 同一防御姿态）。
+        // 正常路径由 finish_handling 先行释放，guard drop 幂等 no-op。
+        let _claim_guard = crate::loop_continuation::ContinuationClaimGuard::new(&mgr, task_id);
 
         // 0b. HD：续行重投递幂等闸——上一轮执行已把最终回复落库并在磁盘
         //     快照打标（final_persisted），但进程在「落库 ↔ 快照回收」窗口
@@ -635,6 +640,17 @@ impl AgentLoop {
         //     键缺省 = Checkpoint（存活快照直达续行合法）；已 Confirmed 的
         //     重复续行（claim + final_persisted 双闸之后）在此第三道 loud
         //     拒绝，绝不静默续行。
+        //     BUG-20261115-022：claim RAII 后，带 Confirmed 相位抵达此处的
+        //     重投递 = 前任处理者在 confirm→finish 窗口 panic 死亡（活体
+        //     处理者持 claim，本轮 claim 不可能成功）——按进程崩溃恢复同
+        //     语义回退相位重放，否则快照永不回收、has_inflight_work 快照
+        //     在册臂恒 true（该会话 rewind/undo/redo/fork 永久拒绝）。
+        if mgr.rollback_confirmed_phase(task_id) {
+            warn!(
+                task_id = %task_id,
+                "[Continuation] 相位滞留 Confirmed（前任处理者 panic 死亡），回退 Checkpoint 重放"
+            );
+        }
         if let Err(e) = mgr.confirm_continuation(task_id) {
             warn!(task_id = %task_id, "[Continuation] 相位机拒绝续行: {e}");
             mgr.release_handling(task_id).await;
@@ -893,6 +909,9 @@ impl AgentLoop {
             debug!("[Continuation] task {task_id} 终局注记臂认领失败（重复回调诚实跳过）");
             return;
         }
+        // BUG-20261115-022：认领 RAII guard（panic 展开兜底释放；正常
+        // 路径由尾部 finish_handling 先行释放，guard drop 幂等 no-op）。
+        let _claim_guard = crate::loop_continuation::ContinuationClaimGuard::new(mgr, task_id);
         crate::subagent_registry::global().finish(
             task_id,
             reg_status,

@@ -113,7 +113,9 @@ impl Declaration {
     /// 闸拦截文案）。
     pub fn from_workspace(workspace: &Path) -> Result<Self, String> {
         let path = workspace.join(DISCIPLINE_DIR).join(DECLARATION_FILE);
-        let text = std::fs::read_to_string(&path)
+        // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 →「不是
+        // 合法 JSON」误导报错，文件完好，BUG-20261103-334 同族）。
+        let text = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|_| format!("声明缺失：{DISCIPLINE_DIR}/{DECLARATION_FILE} 不存在"))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("声明不是合法 JSON：{e}"))?;
@@ -603,6 +605,7 @@ impl DisciplineFalsificationHook {
             tool_path_base: None,
             approval_ref: None,
             secrets: std::sync::Arc::new(Vec::new()),
+            tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         };
         let outcome = exec.execute(&args, &ctx).await;
         // 成败判定走 loop_tools 统一定义 [`crate::loop_tools:exec_output_passed`]

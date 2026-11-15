@@ -47,7 +47,9 @@ mod mcp;
 mod memory_skills;
 mod messaging;
 mod misc;
+mod read_image;
 mod registry;
+mod screen_tools;
 mod search_code;
 mod spawn;
 mod web;
@@ -61,7 +63,9 @@ pub use mcp::*;
 pub use memory_skills::*;
 pub use messaging::*;
 pub use misc::*;
+pub use read_image::*;
 pub use registry::*;
+pub use screen_tools::*;
 pub use search_code::*;
 pub use spawn::*;
 pub use web::*;
@@ -113,6 +117,9 @@ mod cron_tool_tests;
 mod tests;
 #[cfg(test)]
 mod web_fetch_tests;
+// BUG-20261115-009 回归锁：带凭据 search client 的跨源重定向终停行为级测试。
+#[cfg(test)]
+mod web_search_redirect_tests;
 
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]

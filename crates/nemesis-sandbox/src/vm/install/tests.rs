@@ -398,3 +398,124 @@ fn bug280_pin_preview_multibyte_safe() {
     let chinese = "中".repeat(10); // 30 字节，第 16 字节在「中」的中间
     assert_eq!(super::pin_preview(&chinese), chinese);
 }
+
+// ---：BUG-20261115-025 sidecar 体有帽读取（超帽读入中途断开）---
+
+#[tokio::test]
+async fn bug_20261115_025_sidecar_over_cap_aborts() {
+    use std::io::{Read, Write};
+
+    // reqwest Client 无读超时 → 灌出 1MB+1 后错误必来自帽而非超时；
+    // 服务器端写失败返回 = 客户端在超帽点断开 = 预期路径。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let total: u64 = 1024 * 1024 + 1;
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        let chunk = [b'a'; 65536];
+        let mut sent: u64 = 0;
+        while sent < total {
+            if stream.write_all(&chunk).is_err() {
+                return;
+            }
+            sent += chunk.len() as u64;
+        }
+    });
+
+    let err = fetch_sha512_sidecar(&format!("http://{addr}/qemu.iso"))
+        .await
+        .expect_err("超帽必须 Err");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("read sidecar body"),
+        "错误链须带读取现场（实际: {msg}）"
+    );
+    assert!(
+        msg.contains("exceeds limit"),
+        "错误必须来自帽（实际: {msg}）"
+    );
+}
+
+// ---：BUG-20261115-026 坏包清场（`.partN` 残片被续传语义整批复用 =
+//      同一坏包现场死循环；修复 = 哈希失败路径删包 + 清全部残片）---
+
+#[test]
+fn bug_20261115_026_purge_bad_installer_clears_fragments() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let work = tmp.path();
+    let installer = work.join("qemu-installer.bin");
+    std::fs::write(&installer, b"bad-bytes").expect("write installer");
+    for name in [
+        "qemu-installer.part0",
+        "qemu-installer.part1",
+        "qemu-installer.part11",
+        "qemu-installer.part.concat",
+    ] {
+        std::fs::write(work.join(name), b"frag").expect("write frag");
+    }
+    // 异名产物必须留存（unpack 解包目录 / 其它文件）。
+    std::fs::create_dir_all(work.join("unpack")).expect("mkdir");
+    std::fs::write(work.join("unpack").join("keep.txt"), b"k").expect("write");
+    std::fs::write(work.join("unrelated.log"), b"u").expect("write");
+
+    let removed = purge_bad_installer(work, &installer);
+    assert_eq!(removed, 5, "installer + 4 残件（实际 {removed}）");
+    assert!(!installer.exists(), "坏安装包必须删除");
+    for name in [
+        "qemu-installer.part0",
+        "qemu-installer.part1",
+        "qemu-installer.part11",
+        "qemu-installer.part.concat",
+    ] {
+        assert!(
+            !work.join(name).exists(),
+            "{name} 必须删除（残留=续传语义整批复用=同一坏包死循环）"
+        );
+    }
+    assert!(
+        work.join("unpack").join("keep.txt").exists(),
+        "解包目录不误伤"
+    );
+    assert!(work.join("unrelated.log").exists(), "异名文件不误伤");
+}
+
+#[test]
+fn bug_20261115_026_purge_idempotent_on_missing_files() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let work = tmp.path();
+    let installer = work.join("qemu-installer.bin"); // 从不存在
+    let removed = purge_bad_installer(work, &installer);
+    assert_eq!(removed, 0, "空场清场 = 0 且不报错");
+}
+
+// ---：BUG-20261115-027 幂等闸齐套判据（img 缺席 = 半安装态非已就绪）---
+
+#[test]
+fn bug_20261115_027_install_dir_complete_requires_both_binaries() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path();
+    assert!(
+        !install_dir_complete(dir, "qemu-system-x86_64.exe", "qemu-img.exe"),
+        "空目录不算已安装"
+    );
+    std::fs::write(dir.join("qemu-system-x86_64.exe"), b"x").expect("write system");
+    assert!(
+        !install_dir_complete(dir, "qemu-system-x86_64.exe", "qemu-img.exe"),
+        "只有 system = 半安装态（修复前幂等闸误判已就绪并报幻影 qemu_img）"
+    );
+    std::fs::write(dir.join("qemu-img.exe"), b"x").expect("write img");
+    assert!(
+        install_dir_complete(dir, "qemu-system-x86_64.exe", "qemu-img.exe"),
+        "齐套 = 已安装"
+    );
+}
