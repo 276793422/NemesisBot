@@ -243,7 +243,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
         cluster.set_broadcast_interval(std::time::Duration::from_secs(
-            cluster_app_cfg.broadcast_interval.max(1),
+            // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护。
+            crate::common::bounded_tick_interval_secs(cluster_app_cfg.broadcast_interval, 1),
         ));
         cluster.set_node_type("agent");
         // 运行时硬化批：announce 携带本节点构建号（编译期 git 短 hash），
@@ -1259,8 +1260,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
             let sweep_workspace = home.join("workspace");
             tokio::spawn(async move {
+                // 上界钳制（BUG-20261116-001）：巨值配置穿透 Instant 算术界
+                // panic / far_future 静默停摆防护——本 ticker 同时承载派发
+                // 超时 sweep + selfcheck/playtest 恢复兜底，死了三条全停。
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                    sweep_cfg.dispatch_sweep_interval_secs.max(1),
+                    crate::common::bounded_tick_interval_secs(
+                        sweep_cfg.dispatch_sweep_interval_secs,
+                        1,
+                    ),
                 ));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 // （裁决⑫）：mtime 缓存——config 文件未
@@ -1403,7 +1410,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!(
                 "[Gateway] Board dispatch sweep armed (timeout={}s, interval={}s)",
                 sweep_cfg.dispatch_timeout_secs,
-                sweep_cfg.dispatch_sweep_interval_secs.max(1)
+                crate::common::bounded_tick_interval_secs(
+                    sweep_cfg.dispatch_sweep_interval_secs,
+                    1
+                )
             );
         }
 

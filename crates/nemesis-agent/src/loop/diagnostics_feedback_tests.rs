@@ -107,7 +107,15 @@ while True:
 /// 的前提：本机无真 gopls；纵然有，前插目录赢得解析序。
 /// pub(super)：diagnostics_session_tests 复用（同锁前提见模块注释）。
 pub(super) fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
-    let lock = FAKE_ENV_LOCK.lock().unwrap();
+    // 毒化容忍（BUG-20261116-002）：RA e2e 全程持有本锁（RaEnvGuard），
+    // 其预算耗尽 panic 会毒化锁——裸 unwrap 让 16 个同锁用例级联 PoisonError
+    // 假红（本轮全量实录）。锁只保护进程 env/PATH 改装窗口，恢复由各方
+    // PathRestore Drop 兜底，毒化后 into_inner 继续互斥是安全的（与
+    // acquire_ra_env_guard 既有写法、common/tests GLOBAL_STATE_LOCK 先例
+    // 同源）。下面 :367 同。
+    let lock = FAKE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let py_path = dir.path().join("fake_gopls.py");
     std::fs::write(&py_path, FAKE_GOPLS_PY).unwrap();
@@ -364,7 +372,10 @@ async fn touch_failure_returns_unchanged() {
 /// 插在中间（TOCTOU）——首跑实锤（fake 会话被 spawn，session_count=1）。
 #[tokio::test]
 async fn no_server_on_path_returns_unchanged() {
-    let lock = FAKE_ENV_LOCK.lock().unwrap();
+    // 毒化容忍：见 plant_fake_gopls 内注释（BUG-20261116-002）。
+    let lock = FAKE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let orig = std::env::var("PATH").unwrap_or_default();
     #[cfg(windows)]
     let bare = r"C:\Windows\System32";

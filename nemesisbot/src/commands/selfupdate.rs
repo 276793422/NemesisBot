@@ -203,6 +203,9 @@ fn read_auth_token(workspace: &Path) -> Result<String> {
 async fn post_internal(base_url: &str, token: &str, body: &serde_json::Value) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        // BUG-20261115-045：X-Auth-Token 不在 reqwest 默认重定向剥离清单内，
+        // 跨源 302 会把 token 带走——同源跟随 + 跨源终止。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()
         .context("HTTP client 构建失败")?;
     let url = format!("{base_url}/api/internal");

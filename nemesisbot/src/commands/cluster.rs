@@ -1942,7 +1942,9 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
 /// 0 一律钳到 1（tokio `interval(Duration::ZERO)` 构造期 panic——gateway
 /// 装载臂 `cluster_init.rs` 同款 `.max(1)` 钳制，两臂语义对齐）。
 fn effective_broadcast_interval(flag: Option<u64>, config_value: u64) -> u64 {
-    flag.unwrap_or(config_value).max(1)
+    // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护
+    // （CLI flag 与 config 双入口同闸）。
+    crate::common::bounded_tick_interval_secs(flag.unwrap_or(config_value), 1)
 }
 
 /// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.

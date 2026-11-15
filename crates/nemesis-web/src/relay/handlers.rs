@@ -51,6 +51,34 @@ const MAX_BRIDGE_UP_BUF: usize = 64 * 1024 * 1024;
 /// 同名 cookie 按路径隔离，每设备独立授权）。
 pub const AUTH_COOKIE: &str = "nemesis_bridge_auth";
 
+/// ws 写超时：冻结对端（TCP 零窗口 / 浏览器标签页挂起；混合版本舰队里
+/// 旧版设备无客户端写超时兜底）会把裸 send 永久挂住——泵停在 arm body
+/// 里，select 其余臂（含 out_rx recv-None 的踢出/顶替信号与 ws_rx 关闭）
+/// 全不可达，泵任务与套接字泄漏到进程退出（表/身份/conn 状态由 sweeper
+/// 兜底保持正确，泄漏面只在任务与 FD——设备表满员闸与 conn 上限不受
+/// 影响）。超时 = 断泵走收口；与桥客户端 UP_WRITE_TIMEOUT_SECS 及通道
+/// 家族 WS_WRITE_TIMEOUT_SECS 同值 30s。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
+
+/// 带写超时的 ws 发送（true = 发出；false = 错误或超时——调用方断泵）。
+/// 泛型 + 超时入参 = 超时臂单测（mock sink）直测。
+async fn send_ws_capped<S>(ws_tx: &mut S, write_timeout: Duration, msg: Message) -> bool
+where
+    S: futures::Sink<Message, Error = axum::Error> + Unpin,
+{
+    match tokio::time::timeout(write_timeout, ws_tx.send(msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            tracing::warn!(
+                "[Relay] ws 写超时（{}s，对端冻结/零窗口），断泵",
+                write_timeout.as_secs()
+            );
+            false
+        }
+    }
+}
+
 /// 状态页管理 cookie 名（值为 ws token 的 SHA-256 hex；path=/ 覆盖
 /// `/relay` 与 `/api/relay/*`）。
 pub const ADMIN_COOKIE: &str = "nemesis_relay_admin";
@@ -134,6 +162,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
     };
 
     // 鉴权登记 ----
+    let write_timeout = Duration::from_secs(WS_WRITE_TIMEOUT_SECS);
     let (out_tx, mut out_rx) = mpsc::channel::<BridgeFrame>(DEVICE_OUTBOUND_CAPACITY);
     let generation = match relay.authenticate_device(
         &token,
@@ -153,7 +182,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
                 hub_node_id: relay.hub_node_id(),
             };
             if let Some(text) = encode_or_none(&welcome) {
-                let _ = ws_tx.send(Message::Text(text.into())).await;
+                let _ = send_ws_capped(&mut ws_tx, write_timeout, Message::Text(text.into())).await;
             }
             tracing::warn!(node_id = %node_id, "[Relay] 桥接入被拒：{reason}");
             return;
@@ -165,7 +194,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
         hub_node_id: relay.hub_node_id(),
     };
     if let Some(text) = encode_or_none(&welcome) {
-        let _ = ws_tx.send(Message::Text(text.into())).await;
+        let _ = send_ws_capped(&mut ws_tx, write_timeout, Message::Text(text.into())).await;
     }
 
     // 双向泵 ----
@@ -181,7 +210,9 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
                     Some(frame) => {
                         match encode_or_none(&frame) {
                             Some(text) => {
-                                if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                                if !send_ws_capped(&mut ws_tx, write_timeout, Message::Text(text.into()))
+                                    .await
+                                {
                                     break;
                                 }
                             }
@@ -606,6 +637,7 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
 
     upgrade.on_upgrade(move |socket| async move {
         let (mut ws_tx, mut ws_rx) = socket.split();
+        let write_timeout = Duration::from_secs(WS_WRITE_TIMEOUT_SECS);
         let mut resp_rx = relay.register_conn(conn_id, &node_id, 0);
 
         // 等设备侧升级响应头（30s）----
@@ -635,7 +667,7 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
             }
         };
         if !upgrade_ok {
-            let _ = ws_tx.send(Message::Close(None)).await;
+            let _ = send_ws_capped(&mut ws_tx, write_timeout, Message::Close(None)).await;
             // 设备侧本机连接可能还挂着（超时/表项丢失路径），通知收口
             // （EOF 路径设备已自知，drop_conn 幂等，重复通知无害）。
             notify_device_conn_closed(&relay, &node_id, conn_id, "upgrade failed");
@@ -660,7 +692,7 @@ async fn handle_ws_tunnel(relay: Arc<RelayServer>, node_id: String, req: Request
                             Some((msg, consumed)) => {
                                 buf = &buf[consumed..];
                                 consumed_total += consumed;
-                                if ws_tx.send(msg).await.is_err() {
+                                if !send_ws_capped(&mut ws_tx, write_timeout, msg).await {
                                     send_failed = true;
                                     break;
                                 }

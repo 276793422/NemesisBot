@@ -39,6 +39,9 @@ fn fast_timing() -> LoopTiming {
         welcome_timeout: Duration::from_secs(2),
         backoff_min: Duration::from_millis(10),
         backoff_max: Duration::from_millis(50),
+        // 写超时给宽余量（mock 中继即读即收，正常 send 毫秒级完成）——
+        // 专测超时臂的用例自建更小值。
+        write_timeout: Duration::from_millis(500),
     }
 }
 
@@ -1678,4 +1681,185 @@ mod w5r2 {
         handle.abort();
         let _ = handle.await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261116-003 回归锁：上行有界背压 + ws 写超时（防 unbounded/裸 send 复辟）
+// ---------------------------------------------------------------------------
+
+use crate::bridge_client::conn_read_pump;
+// 生产版 send_frame 全限定调用（本文件 :115 已有同名本地 ws helper，避免
+// E0255 同名冲突）。
+
+/// 永不就绪的 sink（poll_ready 恒 Pending）——模拟中继挂死/半开（TCP 零
+/// 窗口下 tungstenite send 永不完成）。
+struct StuckSink;
+
+impl futures::Sink<Message> for StuckSink {
+    type Error = tokio_tungstenite::tungstenite::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Pending
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        unreachable!("poll_ready 恒 Pending，start_send 不可达")
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// 计数 sink（send 即收）——验证正常路径不被写超时误伤。
+struct AcceptingSink(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl futures::Sink<Message> for AcceptingSink {
+    type Error = tokio_tungstenite::tungstenite::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// 写超时臂：挂死 sink 上 send_frame 必须在 write_timeout 量级内返回 Err
+/// （旧形态裸 send 永久挂住——主循环单点写串行化下饿死心跳假死判定与
+/// 手动重连臂）。
+#[tokio::test]
+async fn send_frame_times_out_on_stuck_sink() {
+    let mut sink = StuckSink;
+    let started = std::time::Instant::now();
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        crate::bridge_client::send_frame(
+            &mut sink,
+            BridgeFrame::Heartbeat,
+            Duration::from_millis(60),
+        ),
+    )
+    .await
+    .expect("send_frame 必须在 3s 内返回（写超时生效，不得永久挂住）");
+    assert!(r.is_err(), "挂死 sink 必须 Err");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "超时应在 write_timeout≈60ms 量级返回，实际 {:?}",
+        started.elapsed()
+    );
+}
+
+/// 正常路径：可就绪 sink 上 send_frame 立即 Ok，小 write_timeout 不误伤。
+#[tokio::test]
+async fn send_frame_ok_on_accepting_sink_with_small_timeout() {
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut sink = AcceptingSink(sent.clone());
+    let r = crate::bridge_client::send_frame(
+        &mut sink,
+        BridgeFrame::Heartbeat,
+        Duration::from_millis(50),
+    )
+    .await;
+    assert!(r.is_ok(), "可就绪 sink 必须 Ok");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+/// 上行背压契约：cap=2 时灌 1MB（64 个 16KB 块 ≫ 一切回环缓冲），消费端
+/// 停手后写端必须仍被阻塞（背压传导到 TCP 写端的证据——unbounded 旧形态
+/// 下泵会把 1MB 全吞进内存、写端秒完）；关闭写端后排空必见 fin 帧
+/// （阻塞中的泵干净退出）。
+#[tokio::test]
+async fn conn_read_pump_backpressure_bounds_uplink_backlog() {
+    use tokio::io::AsyncWriteExt;
+
+    const CAP: usize = 2;
+    const CHUNK: usize = 16 * 1024;
+    const TOTAL_CHUNKS: usize = 64; // 1MB >> duplex 缓冲(32KB) → 写端必阻塞
+
+    let (client, server) = tokio::io::duplex(CHUNK * 2);
+    let (up_tx, mut up_rx) = tokio::sync::mpsc::channel::<BridgeFrame>(CAP);
+    let pump = conn_read_pump(client, up_tx, 7);
+
+    // 写端任务：喂 TOTAL_CHUNKS 个 CHUNK（duplex 缓冲小，write_all 中途
+    // 阻塞在窗口满——正是「浏览器猛灌大响应」的真实形态）。
+    let writer = tokio::spawn(async move {
+        let mut w = server;
+        let chunk = vec![0xA5u8; CHUNK];
+        for _ in 0..TOTAL_CHUNKS {
+            if w.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // 前两帧可达（流量通路健康）。
+    for _ in 0..CAP {
+        let f = tokio::time::timeout(Duration::from_secs(3), up_rx.recv())
+            .await
+            .expect("前 CAP 帧必须 3s 内可达")
+            .expect("channel 未关");
+        assert!(matches!(f, BridgeFrame::ConnData { fin: false, .. }));
+    }
+
+    // 消费端停手 300ms：写端必须仍阻塞（有界背压成立）。unbounded 复辟
+    // 时泵会把 1MB 全部吞入队列、写端提前完工 → 此断言必红。
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !writer.is_finished(),
+        "消费端停手后写端必须被背压阻塞（有界队列的回归锚）"
+    );
+
+    // 关写端 → 排空至 fin（EOF 约定帧）。阻塞中的 send 随消费解除，
+    // 泵读到 EOF 后干净退出，无泄漏。
+    drop(writer);
+    let mut saw_fin = false;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(3), up_rx.recv()).await {
+            Ok(Some(BridgeFrame::ConnData { fin: true, .. })) => {
+                saw_fin = true;
+                break;
+            }
+            Ok(Some(BridgeFrame::ConnData { fin: false, .. })) => {}
+            Ok(Some(BridgeFrame::ConnClose { .. })) => {}
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(_) => panic!("排空阶段 3s 内必须见到 fin 帧（泵必须能解除阻塞并退出）"),
+        }
+    }
+    assert!(saw_fin, "EOF 约定：写端关闭后必须有空载荷 fin 帧");
+    pump.abort();
+    let _ = pump.await;
 }

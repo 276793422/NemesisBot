@@ -148,3 +148,152 @@ async fn track_prunes_finished_handles() {
     mgr.track(tokio::spawn(async {}));
     assert_eq!(mgr.tracked_len(), 1);
 }
+
+/// BUG-20261116-004 回归锁：下行泵有界背压 + 丢最新帧契约。cap=2 灌 5 帧
+/// → 只缓存最早 2 帧、丢最新 3 帧（画面流「后到先弃」自愈语义）；排空后
+/// 新帧继续到达（泵不死）；unbounded 复辟 = 5 帧全数出现 → 此断言必红。
+#[tokio::test]
+async fn pump_downstream_bounds_backlog_and_drops_newest() {
+    const CAP: usize = 2;
+    let (client, mut server) = tokio::io::duplex(4096);
+    let (mut rx, pump) = pump_downstream(client, MAX_DOWNSTREAM_FRAME, CAP);
+
+    // 灌 5 帧（duplex 缓冲 4KB 足容，写端立即完成）。
+    for i in 0..5u8 {
+        write_frame(&mut server, format!("frame-{i}").as_bytes())
+            .await
+            .expect("write ok");
+    }
+
+    // 泵沉降：队里只该有最早 CAP 帧。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let f0 = rx.recv().await.expect("前 CAP 帧缓存可达");
+    assert_eq!(f0, b"frame-0");
+    let f1 = rx.recv().await.expect("前 CAP 帧缓存可达");
+    assert_eq!(f1, b"frame-1");
+
+    // 丢帧契约：try_send 满即弃最新——第 3-5 帧不得出现。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "cap=2 且消费端未再排空时不得出现第 3 帧（unbounded 复辟必红）"
+    );
+
+    // 排空后续流：新帧继续到达（泵活跃，未因丢帧停摆）。
+    write_frame(&mut server, b"frame-new")
+        .await
+        .expect("write ok");
+    let fresh = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("排空后新帧必须可达（泵未死）");
+    assert_eq!(fresh, Some(b"frame-new".to_vec()));
+
+    pump.abort();
+    let _ = pump.await;
+}
+
+/// 写超时 helper：挂死 sink（poll_ready 恒 Pending）上 send_ws_capped
+/// 必须在超时内返回 false（裸 send 会永久挂住会话任务——estop watch /
+/// kill 通知全不被轮询）；可就绪 sink 返回 true 不误伤。
+struct StuckWsSink;
+
+impl futures::Sink<Message> for StuckWsSink {
+    type Error = axum::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Pending
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        unreachable!("poll_ready 恒 Pending，start_send 不可达")
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn send_ws_capped_times_out_on_stuck_sink() {
+    let mut socket = StuckWsSink;
+    let started = std::time::Instant::now();
+    // 写超时入参传小值（生产常量 30s 只在调用点；本测试锚「不永久挂住」语义，
+    // 用 60ms 让断言在秒级完成——外层 3s 只兜 timeout 原语本身失效的极端面）。
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        send_ws_capped(
+            &mut socket,
+            std::time::Duration::from_millis(60),
+            Message::Text("x".into()),
+        ),
+    )
+    .await
+    .expect("send_ws_capped 必须在 3s 内返回（写超时生效）");
+    assert!(!r, "挂死 sink 必须 false");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "超时应在入参量级内返回（实际 {:?}）",
+        started.elapsed()
+    );
+}
+
+/// 正常臂：可就绪 sink 返回 true，不误伤健康链路。
+struct AcceptingWsSink(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl futures::Sink<Message> for AcceptingWsSink {
+    type Error = axum::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn send_ws_capped_ok_on_accepting_sink() {
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut socket = AcceptingWsSink(sent.clone());
+    let ok = send_ws_capped(
+        &mut socket,
+        std::time::Duration::from_millis(500),
+        Message::Text("pong".into()),
+    )
+    .await;
+    assert!(ok, "可就绪 sink 必须 true");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
+}

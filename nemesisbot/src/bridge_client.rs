@@ -51,10 +51,21 @@ pub(crate) const BACKOFF_MAX_SECS: u64 = 60;
 /// hello 后等 welcome 的超时（服务端收到 hello 立即回；超时 = 中继假死/网络断）。
 pub(crate) const WELCOME_TIMEOUT_SECS: u64 = 10;
 
-/// 单 conn 本机读取缓冲（响应/WS 帧逐块搬运，16KB 平衡内存与帧数）。
-const CONN_READ_BUF: usize = 16 * 1024;
 /// 单 conn 下行写队列深度（写本机 tcp 慢于 ws 下发时的背压面）。
 const CONN_WRITE_CAPACITY: usize = 16;
+/// 单 conn 本机读取缓冲（响应/WS 帧逐块搬运，16KB 平衡内存与帧数）。
+const CONN_READ_BUF: usize = 16 * 1024;
+/// 上行帧队列深度（conn 读泵 + 桥 RPC hub 共用出口）。有界 = 慢中继下积压
+/// 封顶（CONN_READ_BUF 16KB base64 后 ≈22KB/帧，256 ≈ 5.7MB bulk 上界）；
+/// 旧 unbounded 形态会把大响应整吞进内存。满 = 读泵 `send().await` 阻塞 →
+/// 本机 TCP 读停 → 窗口收窄 → 浏览器自然背压（与服务端
+/// DEVICE_OUTBOUND_CAPACITY try_send 语义对偶：这里是流量方向反过来的
+/// 阻塞式背压）。
+const UPLINK_CAPACITY: usize = 256;
+/// 上行 ws 写超时（主循环单点写串行化：cmd_rx 臂体 send_frame 挂住 =
+/// ws_read/heartbeat/reconnect 臂全不被 poll——心跳假死判定与手动重连
+/// 失效。超时 = 断开重连，对齐通道家族 WS_WRITE_TIMEOUT_SECS=30s）。
+pub(crate) const UP_WRITE_TIMEOUT_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
 // 参数与时序（时序参数化 = 测试可毫秒级跑完假死/退避路径）
@@ -71,11 +82,11 @@ pub type BridgeRpcHandle = ();
 /// 二期 helper（cfg 双实现）：挂载桥 RPC 上行出口。
 /// 非 cluster 构建无此子系统，no-op。
 #[cfg(feature = "cluster")]
-fn bridge_rpc_attach(handle: &BridgeRpcHandle, tx: mpsc::UnboundedSender<BridgeFrame>) {
+fn bridge_rpc_attach(handle: &BridgeRpcHandle, tx: mpsc::Sender<BridgeFrame>) {
     handle.attach_uplink(tx);
 }
 #[cfg(not(feature = "cluster"))]
-fn bridge_rpc_attach(handle: &BridgeRpcHandle, _tx: mpsc::UnboundedSender<BridgeFrame>) {
+fn bridge_rpc_attach(handle: &BridgeRpcHandle, _tx: mpsc::Sender<BridgeFrame>) {
     let _ = handle;
 }
 
@@ -151,6 +162,8 @@ pub(crate) struct LoopTiming {
     pub welcome_timeout: Duration,
     pub backoff_min: Duration,
     pub backoff_max: Duration,
+    /// 上行 ws 单帧写超时（生产 [`UP_WRITE_TIMEOUT_SECS`]；测试毫秒级）。
+    pub write_timeout: Duration,
 }
 
 impl Default for LoopTiming {
@@ -161,6 +174,7 @@ impl Default for LoopTiming {
             welcome_timeout: Duration::from_secs(WELCOME_TIMEOUT_SECS),
             backoff_min: Duration::from_secs(BACKOFF_MIN_SECS),
             backoff_max: Duration::from_secs(BACKOFF_MAX_SECS),
+            write_timeout: Duration::from_secs(UP_WRITE_TIMEOUT_SECS),
         }
     }
 }
@@ -265,18 +279,20 @@ async fn open_conn(
     conn_id: u64,
     web_port: u16,
     conns: &mut HashMap<u64, ConnHandle>,
-    up_tx: &mpsc::UnboundedSender<BridgeFrame>,
+    up_tx: &mpsc::Sender<BridgeFrame>,
 ) {
     match tokio::net::TcpStream::connect(("127.0.0.1", web_port)).await {
         Err(e) => {
             tracing::warn!("[Bridge] conn#{conn_id} dial 127.0.0.1:{web_port} 失败：{e}");
-            let _ = up_tx.send(BridgeFrame::ConnClose {
-                conn_id,
-                reason: format!("dial failed: {e}"),
-            });
+            let _ = up_tx
+                .send(BridgeFrame::ConnClose {
+                    conn_id,
+                    reason: format!("dial failed: {e}"),
+                })
+                .await;
         }
         Ok(stream) => {
-            let (mut rd, mut wr) = stream.into_split();
+            let (rd, mut wr) = stream.into_split();
             let (write_tx, mut write_rx) = mpsc::channel::<ConnWriteCmd>(CONN_WRITE_CAPACITY);
             // 写泵：下行帧字节落本机 tcp。写失败 = 本机断了，静默退出——
             // 读泵随即读到 EOF/错误，经 EOF 约定/ConnClose 收口整条 conn。
@@ -293,51 +309,8 @@ async fn open_conn(
                 }
                 // wr drop = 写半关闭；rd 仍由读泵持有直至收口。
             });
-            // 读泵：本机响应 → 上行 ConnData（seq 逐包递增）。
-            // EOF（Ok(0)）→ 空载荷 + fin=true（EOF 约定，服务端据此收口）。
-            // 读错误 → ConnClose。cmd_tx 断（ws 出口已死）→ 退出。
-            let up_tx = up_tx.clone();
-            let read_task = tokio::spawn(async move {
-                let mut seq: u64 = 0;
-                let mut buf = vec![0u8; CONN_READ_BUF];
-                loop {
-                    match rd.read(&mut buf).await {
-                        Ok(0) => {
-                            let _ = up_tx.send(BridgeFrame::ConnData {
-                                conn_id,
-                                seq,
-                                data_b64: String::new(),
-                                fin: true,
-                            });
-                            break;
-                        }
-                        Ok(n) => {
-                            use base64::Engine as _;
-                            let data_b64 =
-                                base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                            if up_tx
-                                .send(BridgeFrame::ConnData {
-                                    conn_id,
-                                    seq,
-                                    data_b64,
-                                    fin: false,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                            seq += 1;
-                        }
-                        Err(e) => {
-                            let _ = up_tx.send(BridgeFrame::ConnClose {
-                                conn_id,
-                                reason: format!("local read error: {e}"),
-                            });
-                            break;
-                        }
-                    }
-                }
-            });
+            // 读泵：本机响应 → 上行 ConnData（提取见 [`conn_read_pump`]）。
+            let read_task = conn_read_pump(rd, up_tx.clone(), conn_id);
             tracing::debug!("[Bridge] conn#{conn_id} 已建立（127.0.0.1:{web_port}）");
             conns.insert(
                 conn_id,
@@ -348,6 +321,68 @@ async fn open_conn(
             );
         }
     }
+}
+
+/// conn 读泵（提取为独立函数 = 上行背压契约可测）：本机响应 → 上行
+/// ConnData（seq 逐包递增）。EOF（Ok(0)）→ 空载荷 + fin=true（EOF 约定，
+/// 服务端据此收口）；读错误 → ConnClose；上行 channel 关（会话结束/
+/// 收尾 abort）→ send Err → 退出。上行队列有界（[`UPLINK_CAPACITY`]）：
+/// 满 = `send().await` 阻塞 → 本机 TCP 读停 → 窗口收窄 → 浏览器侧自然
+/// 背压；泵阻塞期间会话收尾 abort 读泵即可终止（中断 send 无泄漏）。
+/// pub(crate) = 背压契约单测直测。
+pub(crate) fn conn_read_pump<R>(
+    mut rd: R,
+    up_tx: mpsc::Sender<BridgeFrame>,
+    conn_id: u64,
+) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut seq: u64 = 0;
+        let mut buf = vec![0u8; CONN_READ_BUF];
+        loop {
+            match rd.read(&mut buf).await {
+                Ok(0) => {
+                    let _ = up_tx
+                        .send(BridgeFrame::ConnData {
+                            conn_id,
+                            seq,
+                            data_b64: String::new(),
+                            fin: true,
+                        })
+                        .await;
+                    break;
+                }
+                Ok(n) => {
+                    use base64::Engine as _;
+                    let data_b64 = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                    if up_tx
+                        .send(BridgeFrame::ConnData {
+                            conn_id,
+                            seq,
+                            data_b64,
+                            fin: false,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    seq += 1;
+                }
+                Err(e) => {
+                    let _ = up_tx
+                        .send(BridgeFrame::ConnClose {
+                            conn_id,
+                            reason: format!("local read error: {e}"),
+                        })
+                        .await;
+                    break;
+                }
+            }
+        }
+    })
 }
 
 /// 关一条 conn：abort 读泵 + 关写泵（CloseAll）+ 移出表。
@@ -515,9 +550,23 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
             return SessionEnd::Disconnected { welcomed };
         }
     };
-    if let Err(e) = ws_write.send(Message::Text(hello.into())).await {
-        tracing::warn!("[Bridge] hello 发送失败：{e}");
-        return SessionEnd::Disconnected { welcomed };
+    // hello 写也包时界（welcome_timeout 共用：push 不出去的连接是垃圾，
+    // 断开走退避重连——半开/黑洞中继下裸 send 会永久挂住握手任务，重连
+    // 循环整体停摆）。
+    let hello_fut = ws_write.send(Message::Text(hello.into()));
+    match tokio::time::timeout(timing.welcome_timeout, hello_fut).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!("[Bridge] hello 发送失败：{e}");
+            return SessionEnd::Disconnected { welcomed };
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[Bridge] hello 发送超时（{}s），断开重连",
+                timing.welcome_timeout.as_secs()
+            );
+            return SessionEnd::Disconnected { welcomed };
+        }
     }
     match tokio::time::timeout(timing.welcome_timeout, ws_read.next()).await {
         Err(_) => {
@@ -580,7 +629,8 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
 
     // ----：主循环 ----
     // conn 泵上行帧统一出口（泵不持有 ws 写半——主循环单点写，串行化）。
-    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<BridgeFrame>();
+    // 有界（[`UPLINK_CAPACITY`]）：慢中继下积压封顶，读泵阻塞背压。
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<BridgeFrame>(UPLINK_CAPACITY);
     // 二期：挂载桥 RPC 上行出口（BridgeSend 发帧 + hub 请求的响应
     // 回上行都经此）；会话收尾 detach（在途桥请求按链路死亡收口）。
     if let Some(bridge_rpc) = &params.bridge_rpc {
@@ -613,7 +663,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 } else {
                                     tracing::warn!("[Bridge] access_check#{request_id} 拒绝（哈希不匹配或本机未配置访问密码）");
                                 }
-                                if send_frame(&mut ws_write, BridgeFrame::AccessResult { request_id, ok }).await.is_err() {
+                                if send_frame(&mut ws_write, BridgeFrame::AccessResult { request_id, ok }, timing.write_timeout).await.is_err() {
                                     break SessionEnd::Disconnected { welcomed };
                                 }
                             }
@@ -627,7 +677,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                     Err(e) => {
                                         tracing::warn!("[Bridge] conn#{conn_id} 下行 base64 解码失败：{e}");
                                         drop_conn(conn_id, &mut conns);
-                                        if send_frame(&mut ws_write, BridgeFrame::ConnClose { conn_id, reason: "bad base64".into() }).await.is_err() {
+                                        if send_frame(&mut ws_write, BridgeFrame::ConnClose { conn_id, reason: "bad base64".into() }, timing.write_timeout).await.is_err() {
                                             break SessionEnd::Disconnected { welcomed };
                                         }
                                         continue;
@@ -635,7 +685,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 };
                                 let Some(h) = conns.get(&conn_id) else {
                                     // conn 已收口/未登记——通知服务端停发。
-                                    if send_frame(&mut ws_write, BridgeFrame::ConnClose { conn_id, reason: "conn not found".into() }).await.is_err() {
+                                    if send_frame(&mut ws_write, BridgeFrame::ConnClose { conn_id, reason: "conn not found".into() }, timing.write_timeout).await.is_err() {
                                         break SessionEnd::Disconnected { welcomed };
                                     }
                                     continue;
@@ -665,7 +715,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 if backpressured {
                                     tracing::warn!("[Bridge] conn#{conn_id} 下行背压超限，关闭该 conn");
                                     drop_conn(conn_id, &mut conns);
-                                    if send_frame(&mut ws_write, BridgeFrame::ConnClose { conn_id, reason: "backpressure".into() }).await.is_err() {
+                                    if send_frame(&mut ws_write, BridgeFrame::ConnClose { conn_id, reason: "backpressure".into() }, timing.write_timeout).await.is_err() {
                                         break SessionEnd::Disconnected { welcomed };
                                     }
                                 }
@@ -687,7 +737,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 Some(bridge_rpc) => {
                                     if let Some(up_frame) =
                                         bridge_rpc_downstream(bridge_rpc, payload).await
-                                        && send_frame(&mut ws_write, up_frame).await.is_err()
+                                        && send_frame(&mut ws_write, up_frame, timing.write_timeout).await.is_err()
                                     {
                                         break SessionEnd::Disconnected { welcomed };
                                     }
@@ -723,7 +773,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
             maybe_frame = cmd_rx.recv() => {
                 match maybe_frame {
                     Some(frame) => {
-                        if send_frame(&mut ws_write, frame).await.is_err() {
+                        if send_frame(&mut ws_write, frame, timing.write_timeout).await.is_err() {
                             break SessionEnd::Disconnected { welcomed };
                         }
                     }
@@ -740,7 +790,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                     );
                     break SessionEnd::Disconnected { welcomed };
                 }
-                if send_frame(&mut ws_write, BridgeFrame::Heartbeat).await.is_err() {
+                if send_frame(&mut ws_write, BridgeFrame::Heartbeat, timing.write_timeout).await.is_err() {
                     break SessionEnd::Disconnected { welcomed };
                 }
             }
@@ -764,16 +814,34 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
     end
 }
 
-/// 发一帧（Text）。写半死亡 = 会话该结束了。
-async fn send_frame(
-    ws_write: &mut futures::stream::SplitSink<WsStream, Message>,
+/// 发一帧（Text）。写半死亡 = 会话该结束了；写超时同判——主循环单点写
+/// 串行化下，无限期挂住会饿死其余 select 臂（心跳假死判定/手动重连全
+/// 失效），必须有时界（中继慢/挂死/半开 → 断开重连）。超时后整个
+/// ws_write 句柄废弃（重连新建），中断写安全。pub(crate) = 超时臂
+/// 单测（mock sink）直测。
+pub(crate) async fn send_frame<S>(
+    ws_write: &mut S,
     frame: BridgeFrame,
-) -> Result<(), ()> {
+    write_timeout: Duration,
+) -> Result<(), ()>
+where
+    S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
     match encode_frame(&frame) {
-        Ok(text) => ws_write
-            .send(Message::Text(text.into()))
-            .await
-            .map_err(|_| ()),
+        Ok(text) => {
+            let send_fut = ws_write.send(Message::Text(text.into()));
+            match tokio::time::timeout(write_timeout, send_fut).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err(()),
+                Err(_) => {
+                    tracing::warn!(
+                        "[Bridge] 中继 {}s 未收上行帧（慢/挂死/半开），断开重连",
+                        write_timeout.as_secs()
+                    );
+                    Err(())
+                }
+            }
+        }
         Err(e) => {
             tracing::error!("[Bridge] 帧序列化失败（不可能路径）：{e}");
             Err(())

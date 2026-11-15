@@ -350,8 +350,9 @@ pub struct DeviceBridgeRpc {
     /// 降级（goal；仲裁只问 [`BridgeSend::bridge_online`]）。
     bridge_members: Mutex<std::collections::HashSet<String>>,
     /// 桥上行出口（session() 启动时挂载 cmd_tx，结束 detach——装配早于
-    /// 会话建立，运行期插拔）。
-    uplink: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<BridgeFrame>>>>,
+    /// 会话建立，运行期插拔）。有界 Sender（UPLINK_CAPACITY）：hub 同步
+    /// 上下文 `try_send`，满 = 诚实失败走兜底（不阻塞调用线程）。
+    uplink: Arc<Mutex<Option<tokio::sync::mpsc::Sender<BridgeFrame>>>>,
 }
 
 impl DeviceBridgeRpc {
@@ -362,9 +363,7 @@ impl DeviceBridgeRpc {
         self_node_id: String,
         cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     ) -> Self {
-        let uplink = Arc::new(Mutex::new(
-            None::<tokio::sync::mpsc::UnboundedSender<BridgeFrame>>,
-        ));
+        let uplink = Arc::new(Mutex::new(None::<tokio::sync::mpsc::Sender<BridgeFrame>>));
         let uplink_for_send = uplink.clone();
         let channel = BridgeRpcChannel::new(Box::new(move |_target, wire| {
             let Ok(payload) = serde_json::to_value(&wire) else {
@@ -375,7 +374,9 @@ impl DeviceBridgeRpc {
                 return false;
             };
             match uplink_for_send.lock().expect("桥上行出口锁中毒").as_ref() {
-                Some(tx) => tx.send(BridgeFrame::ClusterRpc { payload }).is_ok(),
+                // try_send（同步上下文）：满 = 链路拥塞，诚实失败 → 调用方
+                // 走兜底/错误路径（RpcClient 仲裁按桥路径失败收口）。
+                Some(tx) => tx.try_send(BridgeFrame::ClusterRpc { payload }).is_ok(),
                 None => false,
             }
         }));
@@ -389,8 +390,8 @@ impl DeviceBridgeRpc {
         }
     }
 
-    /// session() 启动时挂载上行出口（conn 泵同款 unbounded channel）。
-    pub fn attach_uplink(&self, tx: tokio::sync::mpsc::UnboundedSender<BridgeFrame>) {
+    /// session() 启动时挂载上行出口（conn 泵共用的有界 channel）。
+    pub fn attach_uplink(&self, tx: tokio::sync::mpsc::Sender<BridgeFrame>) {
         *self.uplink.lock().expect("桥上行出口锁中毒") = Some(tx);
     }
 

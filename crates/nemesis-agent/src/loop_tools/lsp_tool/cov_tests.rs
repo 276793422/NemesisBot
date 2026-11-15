@@ -696,8 +696,16 @@ fn acquire_ra_env_guard() -> RaEnvGuard {
 /// （含 didOpen/touch_file）的等待钳制为剩余预算，耗尽即 Err（调用方
 /// fail-closed，不再 SKIP）。§四.1：首次装配与重试的 touch_file 同样
 /// 纳入本闸——初始化/didOpen/重试/清理全部受同一 deadline 约束。
-const RA_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+const RA_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
 const RA_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+// （BUG-20261116-002）90s 预算在 `cargo test --workspace` 全并行下被击穿
+// （实录：6 个 cargo 编译 worker + 测试二进制吃满 CPU，RA 对 scratch 工程
+// 冷索引 >90s，两 RA e2e 双双「never became ready within 90s」）；而持有
+// 的 FAKE_ENV_LOCK 随 panic 毒化，16 个 diagnostics 用例裸 `.lock()`
+// .unwrap()` 级联 PoisonError 假红（同轮实录）。隔离/稳态下 RA 就绪
+// 10-30s，90s 平时够用——满载场景按「慢机预算可调大」惯例（CLAUDE.md
+// format_on_save timeout 同例）放宽到 300s：容忍满载、仍有界（fail-closed
+// 语义不变，预算耗尽照样 fail 不 SKIP）。
 
 /// didOpen 注册（touch_file）受总闸约束的包裹：等待钳制为剩余预算。
 async fn touch_within_budget(

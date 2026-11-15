@@ -1303,6 +1303,15 @@ pub(crate) async fn init_post_agent(
         const BOARD_CHANGE_POLL_SECS: u64 = 2;
         let board_db_for_watch = home.join("workspace").join("board").join("board.db");
         let event_hub_for_watch = web_server.event_hub().clone();
+        // 终态令牌：测试注入口优先（BUG-20261115-046 根修）——ctx 带局部
+        // 令牌时 watcher 挂局部（对进程全局令牌被 run_runtime 全链测试经
+        // 生产停机路径 cancel 的毒化免疫）；生产 None = 全局令牌。全局
+        // 令牌是一次性语义（进程生命周期内同对象），spawn 时取一次与
+        // 逐迭代取全局等价。
+        let watcher_terminal = ctx
+            .terminal_cancel_override
+            .clone()
+            .unwrap_or_else(|| terminal_cancel_token().clone());
         match nemesis_board::watcher::open_conn(&board_db_for_watch) {
             Ok(watch_conn) => {
                 tokio::spawn(async move {
@@ -1311,10 +1320,19 @@ pub(crate) async fn init_post_agent(
                     ));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
+                    // 首拍基线观测（BUG-20261115-046 诊断存留）：基线在任务
+                    // 首 poll 才拍——满载下首 poll 可晚于启动期早段写入，
+                    // 基线吃掉首个变化 → 该变化漏报（低频、后续写入照常
+                    // 广播）。日志给排障一个「watcher 活没活/基线多少」的
+                    // 直接观测面。
+                    tracing::info!(
+                        "[Gateway] board change watcher started (baseline data_version={last:?})"
+                    );
                     loop {
                         // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
                         // re-park timer（家族纪律见 shutdown.rs 模块文档）。
-                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        // BUG-20261115-046：令牌来自 ctx 注入口（局部/全局）。
+                        if !terminal_loop_tick(&watcher_terminal, ticker.tick()).await {
                             break;
                         }
                         if event_hub_for_watch.subscriber_count() == 0 {

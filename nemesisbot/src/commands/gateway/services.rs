@@ -498,7 +498,10 @@ pub(crate) async fn init_services(
             let interval_secs = if dw.interval_secs == 0 {
                 60
             } else {
-                dw.interval_secs
+                // 上界钳制（BUG-20261116-001）：巨值配置穿透 Instant 算术界
+                // panic / far_future 静默停摆防护——本循环死了磁盘水位监控
+                // 无感知停摆。
+                crate::common::bounded_tick_interval_secs(dw.interval_secs, 1)
             };
             let workspace = common::workspace_path(&home);
             // disk_level：0=ok/未知 1=warn 2=critical（watchdog 写，检查闭包读）。

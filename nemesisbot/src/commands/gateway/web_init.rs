@@ -157,9 +157,14 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
     // channels.web.heartbeat_interval → WS 保活 ping 间隔（秒）。此前 server
     // 侧硬编码 30s、config 键纯装饰（BUG-20261110-055 接线）。负值截 0 后
-    // 由 setter 统一回落缺省（tokio interval(0) panic 防护）。
+    // 由 setter 统一回落缺省（tokio interval(0) panic 防护）；上界钳 30 天
+    // （BUG-20261116-001）：i64::MAX 秒 ≈ 2920 亿年 ≫ Instant 算术界（≈584
+    // 年），不钳则 ping task missed-tick panic / far_future 停摆。
     nemesis_web::websocket_handler::configure_ws_ping_interval(
-        cfg.channels.web.heartbeat_interval.max(0) as u64,
+        cfg.channels
+            .web
+            .heartbeat_interval
+            .clamp(0, crate::common::MAX_TICK_INTERVAL_SECS as i64) as u64,
     );
     // CORS 管理器注入（cors.* WSAPI 真实现）：与 skins 同款 setter 形态
     // （不进 WebServerConfig——测试字面量装配面大）；None（配置缺失/加载

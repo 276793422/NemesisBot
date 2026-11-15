@@ -43,6 +43,14 @@ pub(crate) fn is_shutdown_requested() -> bool {
 /// 一次性语义：只在进程终态链 cancel，无动态 start/stop（区别于 outbox
 /// push loop 的 per-component stop_token——那类动态生命周期组件各自持
 /// token，不走本令牌）。
+///
+/// 测试注入口（BUG-20261115-046）：断言常驻循环**活性**的测试必须经
+/// `GatewayCtx.terminal_cancel_override` 注入局部令牌——run_runtime 全链
+/// 测试（run_runtime_full_cycle_* 家族）走生产停机路径不可逆 cancel 全局
+/// 令牌，并行测试进程里全局令牌随时可能已毒化（born-dead 形态：循环首
+/// poll 拍完基线即被前置 is_cancelled 短路收线，表现对并行敏感、单跑
+/// 恒绿，极易误诊为时序/可见性问题）。不活性断言的测试不受影响（死循环
+/// 不再有断言价值）；生产路径不受影响（ctx 恒 None）。
 static TERMINAL_CANCEL: OnceLock<CancellationToken> = OnceLock::new();
 
 /// 常驻循环等待点消费的进程终态令牌。

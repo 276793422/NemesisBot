@@ -161,6 +161,9 @@ pub fn spawn(
             let client = client.get_or_insert_with(|| {
                 reqwest::Client::builder()
                     .timeout(Duration::from_secs(3))
+                    // BUG-20261115-045：poll_with 每轮都带 X-Auth-Token（不在
+                    // reqwest 默认重定向剥离清单内）——同源跟随 + 跨源终止。
+                    .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
                     .build()
                     .expect("reqwest client build")
             });
