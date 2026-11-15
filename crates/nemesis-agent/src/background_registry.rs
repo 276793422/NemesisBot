@@ -68,6 +68,10 @@ pub const MAX_CHUNK_BYTES: usize = 8 * 1024;
 /// 监督任务轮询子进程退出的间隔。
 const SUPERVISE_INTERVAL: Duration = Duration::from_millis(200);
 
+/// 完成通告 tail 快照前的 pump 排干宽限：正常 EOF 毫秒级到达；孤儿孙进程
+/// 持管不 EOF 时封顶（不无限延迟通告）。
+const COMPLETION_DRAIN_GRACE: Duration = Duration::from_secs(10);
+
 /// 完成唤醒通告携带的输出尾部窗口（字节）。
 pub const COMPLETION_TAIL_BYTES: usize = 4 * 1024;
 
@@ -226,6 +230,10 @@ struct JobEntry {
     started_at: std::time::SystemTime,
     /// stdout+stderr 合流输出（两个 pump task 追加）。
     output: Arc<Mutex<OutputBuffer>>,
+    /// pump 排干完成信号（start 期哨兵任务等两个 pump 任务到 EOF 后置
+    /// true——完成通告 tail 快照前的排干同步消费，见 completion_watcher）。
+    /// JoinHandle 不 Clone（E0599 实录），watch::Receiver 可 Clone。
+    pump_drain: tokio::sync::watch::Receiver<bool>,
     /// 终态；None = 还在跑。
     status: Arc<Mutex<Option<JobStatus>>>,
     /// kill 请求旗标（监督任务看到即树杀；注册表 Drop 同步置位）。
@@ -330,6 +338,14 @@ impl BackgroundProcessRegistry {
             .try_lock()
             .ok()
             .and_then(|jobs| jobs.get(&id).map(|j| j.output.clone()))
+    }
+
+    /// pump 排干完成信号句柄（完成唤醒 watcher 排干同步用；仅新路径使用）。
+    fn job_pump_drain_handle(&self, id: u64) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.jobs
+            .try_lock()
+            .ok()
+            .and_then(|jobs| jobs.get(&id).map(|j| j.pump_drain.clone()))
     }
 
     /// 当前任务数（含已完成——完成后条目保留至被淘汰/注册表销毁）。
@@ -463,8 +479,17 @@ impl BackgroundProcessRegistry {
         // 同 exec 的 管道必须由独立任务并发排干——否则长输出
         // 写满 ~64KB 管道缓冲会把子进程卡死在 write 上。stdout/stderr 合流
         // 追加进同一缓冲（保持产出顺序交错，与终端观感一致）。
-        spawn_pump(child.stdout.take(), output.clone());
-        spawn_pump(child.stderr.take(), output.clone());
+        // 句柄存条目：完成通告 tail 快照前须与两个 pump 排干同步（EOF =
+        // 真尾；竞态实录见 completion_watcher 注）。JoinHandle 不 Clone，
+        // 经哨兵任务转成 watch 信号存条目。
+        let (drain_tx, pump_drain) = tokio::sync::watch::channel(false);
+        let h1 = spawn_pump(child.stdout.take(), output.clone());
+        let h2 = spawn_pump(child.stderr.take(), output.clone());
+        tokio::spawn(async move {
+            let _ = h1.await;
+            let _ = h2.await;
+            let _ = drain_tx.send(true);
+        });
 
         // 监督任务：轮询 try_wait（微秒级持锁）→ 记录终态；见 kill 旗标先
         // 树杀。不持锁跨 await，background_output 的读路径永不被阻塞。
@@ -485,6 +510,7 @@ impl BackgroundProcessRegistry {
                 started_at: std::time::SystemTime::now(),
                 output,
                 status,
+                pump_drain,
                 kill_flag,
                 stdin,
                 steerable,
@@ -658,8 +684,12 @@ impl BackgroundProcessRegistry {
         );
         let job_id = payload.get("job_id").and_then(|v| v.as_u64());
         if let Some(id) = job_id {
-            match (self.job_status_handle(id), self.job_output_handle(id)) {
-                (Some(status), Some(output)) => {
+            match (
+                self.job_status_handle(id),
+                self.job_output_handle(id),
+                self.job_pump_drain_handle(id),
+            ) {
+                (Some(status), Some(output), Some(pump_drain)) => {
                     tokio::spawn(completion_watcher(
                         id,
                         status,
@@ -667,6 +697,7 @@ impl BackgroundProcessRegistry {
                         origin,
                         Arc::clone(&self.completion_tx),
                         secrets,
+                        pump_drain,
                     ));
                 }
                 _ => {
@@ -905,6 +936,7 @@ async fn completion_watcher(
     origin: JobOrigin,
     completion_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionEvent>>>,
     secrets: Arc<Vec<String>>,
+    pump_drain: tokio::sync::watch::Receiver<bool>,
 ) {
     let final_status = loop {
         let snap = status.lock().await.clone();
@@ -913,6 +945,20 @@ async fn completion_watcher(
         }
         sleep(SUPERVISE_INTERVAL).await;
     };
+    // 排干同步（2026-11-15 ET Linux 假红根修）：supervise 在 try_wait 报
+    // 退出的瞬间写终态，此刻 stdout/stderr pump 可能尚未把管道尾巴追加进
+    // 缓冲——立刻快照 tail 会假空（完成通告尾部空串实录，CI 高并压下
+    // 调度倒转）。先限时等排干哨兵信号（两 pump 到 EOF，正常毫秒级）；
+    // 孤儿孙进程持管不 EOF 时宽限封顶，不无限延迟通告。
+    let _ = tokio::time::timeout(COMPLETION_DRAIN_GRACE, async {
+        let mut rx = pump_drain.clone();
+        while !*rx.borrow_and_update() {
+            if rx.changed().await.is_err() {
+                break; // 发送端掉线（条目淘汰）——按已排干处理
+            }
+        }
+    })
+    .await;
     let tail = {
         let buf = output.lock().await;
         let start = buf.produced().saturating_sub(COMPLETION_TAIL_BYTES as u64);
@@ -937,14 +983,15 @@ async fn completion_watcher(
     }
 }
 
-/// 排干管道追加进共享输出缓冲（stdout/stderr 各一个任务）。
+/// 排干管道追加进共享输出缓冲（stdout/stderr 各一个任务）。返回任务句柄
+/// ——完成通告 tail 快照前的排干同步消费（见 `completion_watcher`）。
 ///
 /// `pub(crate)`：delegate_registry 复用（delegate 子进程同样
 /// 必须并发排干，否则 64KB 管道缓冲写满卡死子进程—— 教训同源）。
 pub(crate) fn spawn_pump(
     pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
     output: Arc<Mutex<OutputBuffer>>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut pipe = match pipe {
             Some(p) => p,
@@ -957,7 +1004,7 @@ pub(crate) fn spawn_pump(
                 Ok(n) => output.lock().await.append(&chunk[..n]),
             }
         }
-    });
+    })
 }
 
 /// 平台 shell 命令构造——与 `ExecTool` / `AsyncExecTool` 同语义：

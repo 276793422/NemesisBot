@@ -525,8 +525,10 @@ impl DelegateManager {
         let kill_flag = Arc::new(AtomicBool::new(false));
         let stdin = Arc::new(Mutex::new(child.stdin.take()));
 
-        spawn_pump(child.stdout.take(), output.clone());
-        spawn_pump(child.stderr.take(), output.clone());
+        // delegate 无完成通告面（协议驱动收尾），排干句柄就地弃置（detach
+        // 语义同旧）；返回句柄为 background 完成通告的排干同步而设。
+        let _ = spawn_pump(child.stdout.take(), output.clone());
+        let _ = spawn_pump(child.stderr.take(), output.clone());
 
         let child = Arc::new(Mutex::new(child));
         tokio::spawn(supervise(

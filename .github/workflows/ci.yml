@@ -707,9 +707,15 @@ jobs:
       # MXC submodule（2026-11-14）：nemesis-sandbox 的 path 依赖 3rd/mxc
       # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
       # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
+      # ⚠️ 本 job 全局 working-directory: web，submodule 命令必须显式回仓库
+      # 根（同 frontend job），否则 pathspec '3rd/mxc' 不存在（2026-11-15
+      # 实录：frontend 同款修复见上）。
       - name: Init mxc submodule
+        working-directory: ${{ github.workspace }}
         run: git submodule update --init 3rd/mxc
 
+      # 环境指纹（设备归因）；本 job defaults.run.working-directory=web，
+      # dump-env 用 GITHUB_WORKSPACE 绝对路径故无需显式回根
       - name: Environment fingerprint
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"
