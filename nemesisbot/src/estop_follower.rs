@@ -27,6 +27,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 /// 轮询间隔（秒）。急停是人工尺度的操作，2s 的最坏生效延迟可接受。
 pub const POLL_SECS: u64 = 2;
 
@@ -139,7 +141,16 @@ pub fn spawn(
         let mut announced_unreachable = false;
         let mut announced_shape_broken = false;
         loop {
-            tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(
+                terminal_cancel_token(),
+                tokio::time::sleep(Duration::from_secs(POLL_SECS)),
+            )
+            .await
+            {
+                break;
+            }
             let Some(target) = discover(&home) else {
                 if announced_following {
                     eprintln!("estop-follower: gateway state 消失（停机？），等待重新发现");

@@ -24,6 +24,8 @@ use nemesis_taskstore::deliveries::DeliveryRecord;
 use nemesis_taskstore::deliveries::{notify_backoff_secs, notify_dead_lettered};
 use nemesis_types::channel::OutboundMessage;
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 /// 全局通知 db 槽（post_agent 装配时注入一次；sweeper 每 tick 惰性读）。
 static NOTIFY_DB: std::sync::OnceLock<Arc<TaskDb>> = std::sync::OnceLock::new();
 
@@ -217,13 +219,19 @@ pub(crate) async fn sweep_once(db: &Arc<TaskDb>, mgr: &Arc<ChannelManager>) {
 }
 
 /// spawn 重试 sweeper（15s tick；MissedTickBehavior::Delay——tick 慢不
-/// 追赶堆积）。db 槽空 = tick no-op；进程退出随 runtime 一起终止。
+/// 追赶堆积）。db 槽空 = tick no-op；终态令牌臂收口（BUG-20261115-023）
+/// ——「进程退出随 runtime 一起终止」的旧假设被证伪：裸 Drop 语义的
+/// runtime（`#[tokio::test]` / test-harness）shutdown 对 park 在 timer
+/// 上的任务做最后 poll，re-park 即撞 shutdown panic（家族纪律见
+/// shutdown.rs 模块文档）。
 pub(crate) fn spawn_sweeper(mgr: Arc<ChannelManager>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tick.tick().await;
+            if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                break;
+            }
             if let Some(db) = NOTIFY_DB.get() {
                 sweep_once(db, &mgr).await;
             }

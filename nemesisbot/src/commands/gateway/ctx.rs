@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 use crate::common;
 
 #[cfg(feature = "board")]
@@ -503,7 +504,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即扫
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let exec_removed = nemesis_workflow::persistence::sweep_stale_execution_files(
                         &sweep_exec_dir,
                         WORKFLOW_SWEEP_TTL,
@@ -749,7 +754,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即维护
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = store_for_maint.as_ref() else {
                         continue;
                     };
@@ -863,7 +872,11 @@ impl GatewayCtx {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        tick.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                            break;
+                        }
                         let report =
                             cap.sweep(zw_ttl, nemesis_ziwei::capture::MAX_BYTES_PER_PROFILE);
                         if report.expired_profiles > 0 || report.size_truncated > 0 {

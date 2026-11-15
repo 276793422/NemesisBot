@@ -28,6 +28,8 @@ use nemesis_board::models::PostedMessage;
 use nemesis_board::models::thread_kind;
 use nemesis_board::quota::{QuotaDenied, QuotaLedger};
 use nemesis_cluster::envelope::{self, Envelope, EnvelopeError, EnvelopeResponse};
+
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 use nemesis_cluster::rpc_types::{ActionType, RPCRequest};
 use nemesis_types::cluster::{DiscussionCtxMessage, DiscussionEvent};
 
@@ -1907,7 +1909,11 @@ pub fn spawn_worker_sync_loop(
             tokio::time::interval(std::time::Duration::from_secs(BOARD_SYNC_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            ticker.tick().await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                break;
+            }
             match worker_sync_once(&deps, &cluster).await {
                 Ok(n) if n > 0 => {
                     tracing::info!(target: "board_bus", enqueued = n,

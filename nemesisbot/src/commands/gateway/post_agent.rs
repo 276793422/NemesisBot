@@ -34,6 +34,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{error, info, warn};
 
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 use super::{AgentWiring, ClusterWiring, GatewayCtx};
 use crate::adapters;
 
@@ -1310,7 +1312,11 @@ pub(crate) async fn init_post_agent(
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
                     loop {
-                        ticker.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
                         if event_hub_for_watch.subscriber_count() == 0 {
                             continue;
                         }
@@ -1363,7 +1369,11 @@ pub(crate) async fn init_post_agent(
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         let mut last = nemesis_data::watcher::data_version(&watch_conn).ok();
                         loop {
-                            ticker.tick().await;
+                            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                                break;
+                            }
                             if event_hub_for_usage.subscriber_count() == 0 {
                                 continue;
                             }
@@ -1401,7 +1411,11 @@ pub(crate) async fn init_post_agent(
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // interval 首个 tick 立即返回 = 启动时先跑一次。
             loop {
-                ticker.tick().await;
+                // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                    break;
+                }
                 let max_rows = (usage_cfg.max_rows > 0).then_some(usage_cfg.max_rows);
                 if let Err(e) = ds_for_sweep.retention_sweep(
                     (usage_cfg.retention_days > 0).then_some(usage_cfg.retention_days),
