@@ -377,6 +377,13 @@ pub struct AgentLoop {
     /// Active model name, kept in sync with the provider above.
     /// Separated from `config.model` so runtime swaps don't need `&mut self`.
     active_model: parking_lot::RwLock<String>,
+    /// 降级注记槽（fallback 用户面标注第三跳）：[`AgentLoop::chat_call_escalating`]
+    /// 每次成功调用后从 provider 取件覆盖（last-call wins，None=清除）；
+    /// `finish_message` 终局回复取件消费（receipt/err 不消费——排队回执/
+    /// slash 确认/错误文案不背标注）。诚实边界：跨会话并行 turn
+    /// （`max_concurrent_turns>0`）极端交错下 loop 级槽可能串帧——默认
+    /// reject/queue 形态恒串行，fallback 又是稀有事件，v1 接受。
+    response_degradation: parking_lot::Mutex<Option<String>>,
     /// Tool registry: name -> tool implementation.
     /// Each tool is wrapped in `Arc` so the map can be cloned and shared
     /// with spawned tasks without requiring `Box` clone support.
@@ -930,6 +937,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
+            response_degradation: parking_lot::Mutex::new(None),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: None,
@@ -1611,6 +1619,10 @@ mod recovery_concat_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
+// 工具使用率落账（usage-ranked tool index）：dispatch 包装层单点记账
+// ——真实执行入账 / 拒绝短路 / 执行失败照常入账 / 无账本静默跳过。
+#[cfg(test)]
+mod tool_dispatch_usage_tests;
 // workflow 工具节点 dispatch 入口五闸回归锁（A 批，非 security 面）：
 // estop / plan 写闸 / hidden_tools / 插件 min-tier / args_validator
 // 经 handle_tool_call_with_attrib 全部生效（PLAN 回归锁 2-6）。

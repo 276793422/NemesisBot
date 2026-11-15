@@ -130,12 +130,12 @@ fn init_db_rejects_newer_schema_version() {
     let db_path = base.join("usage.db");
     {
         let conn = init_db(&db_path).unwrap();
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(SCHEMA_VERSION, 4);
         conn.pragma_update(None, "user_version", 99).unwrap();
     }
     let err = init_db(&db_path).unwrap_err();
     assert!(
-        err.contains("高于本程序支持的 3"),
+        err.contains("高于本程序支持的 4"),
         "高版本库应 loud 拒绝: {err}"
     );
 

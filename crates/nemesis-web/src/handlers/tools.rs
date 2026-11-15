@@ -83,6 +83,18 @@ impl ToolsHandler {
                 .ok_or("agent not running")?,
         };
         let tools = al.tools();
+        // 工具使用率投影（usage_store 天×工具账）：近 30 天**真实执行**
+        // 计数（拒绝不计——dispatch 包装层 classify_result None 臂短路）。
+        // 无 data_store / usage-store 关 / 无记录 = 缺省 0（前端照常渲染，
+        // 排序退化为注册表序）。行序保持注册表序不变（工作流画布选择器
+        // 与运行时不漂移的契约）；排序归前端消费侧。
+        let usage: std::collections::HashMap<String, i64> = ctx
+            .state
+            .data_store
+            .as_ref()
+            .and_then(|ds| ds.query_tool_usage_totals(30).ok())
+            .map(|rows| rows.into_iter().map(|r| (r.tool, r.calls)).collect())
+            .unwrap_or_default();
         let rows: Vec<serde_json::Value> = tools
             .iter()
             .map(|(name, tool)| {
@@ -90,6 +102,7 @@ impl ToolsHandler {
                     "name": name,
                     "description": tool.description(),
                     "parameters": tool.parameters(),
+                    "usage_count": usage.get(name).copied().unwrap_or(0),
                 })
             })
             .collect();

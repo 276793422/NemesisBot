@@ -51,6 +51,14 @@ onMounted(async () => {
   }
 })
 
+// 工具使用率排序（usage-ranked tool index）：选择器按近 30 天真实执行
+// 次数降序——常用工具置顶，零使用的保持注册表序（稳定排序不重排同分组）。
+const sortedTools = computed<ToolSchema[]>(() =>
+  [...tools.value].sort(
+    (a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0),
+  ),
+)
+
 // Read tool name from `name` (preferred) or legacy `tool`.
 const toolName = computed(() => {
   const n = props.config.name
@@ -107,13 +115,13 @@ function fieldAsString(key: string): string {
 <template>
   <FormField label="工具" required hint="从宿主工具注册表选择（需 agent 已启动）">
     <select
-      v-if="tools.length > 0"
+      v-if="sortedTools.length > 0"
       class="form-input"
       :value="toolName"
       @change="setTool(($event.target as HTMLSelectElement).value)"
     >
       <option value="" disabled>— 选择工具 —</option>
-      <option v-for="t in tools" :key="t.name" :value="t.name">{{ t.name }}</option>
+      <option v-for="t in sortedTools" :key="t.name" :value="t.name">{{ t.name }}</option>
     </select>
     <!-- Fallback free-text input when the list isn't available yet (agent not
          running / WS not ready) so the form is never blocking. -->

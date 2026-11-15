@@ -63,7 +63,13 @@ async fn tee_none_return_path_matches_drain_pipe() {
     drop(w1);
     drop(w2);
     let old = crate::loop_tools::exec::drain_pipe(Some(rx1)).await;
-    let new = super::spawn_drain_pipe_tee(Some(rx2), None).await.unwrap();
+    let new = super::spawn_drain_pipe_forwardable(
+        Some(rx2),
+        None,
+        Arc::new(std::sync::Mutex::new(super::ForwardAcc::new())),
+    )
+    .await
+    .unwrap();
     assert_eq!(old, payload.to_vec());
     assert_eq!(new, old, "tee=None 必须与旧 drain_pipe 逐字节一致");
 }
@@ -82,11 +88,12 @@ async fn tee_finish_flush_emits_tail_with_multibyte() {
     w.write_all(payload.as_bytes()).await.unwrap();
     drop(w); // EOF → drain 收尾
 
-    let out = super::spawn_drain_pipe_tee(
+    let out = super::spawn_drain_pipe_forwardable(
         Some(rx),
         Some(Arc::new(std::sync::Mutex::new(
             crate::loop_tools::exec::StreamTeeState::new(hook, ctx()),
         ))),
+        Arc::new(std::sync::Mutex::new(super::ForwardAcc::new())),
     )
     .await
     .unwrap();
@@ -121,11 +128,12 @@ async fn tee_window_keeps_tail_only_and_full_total() {
     w.write_all(payload.as_bytes()).await.unwrap();
     drop(w);
 
-    let out = super::spawn_drain_pipe_tee(
+    let out = super::spawn_drain_pipe_forwardable(
         Some(rx),
         Some(Arc::new(std::sync::Mutex::new(
             crate::loop_tools::exec::StreamTeeState::new(hook, ctx()),
         ))),
+        Arc::new(std::sync::Mutex::new(super::ForwardAcc::new())),
     )
     .await
     .unwrap();
@@ -164,7 +172,11 @@ async fn tee_throttle_allows_second_emit() {
     let state = Arc::new(std::sync::Mutex::new(
         crate::loop_tools::exec::StreamTeeState::new(hook, ctx()),
     ));
-    let handle = super::spawn_drain_pipe_tee(Some(rx), Some(Arc::clone(&state)));
+    let handle = super::spawn_drain_pipe_forwardable(
+        Some(rx),
+        Some(Arc::clone(&state)),
+        Arc::new(std::sync::Mutex::new(super::ForwardAcc::new())),
+    );
     let mut w = tx;
     w.write_all(b"chunk_one\n").await.unwrap();
     w.flush().await.unwrap();

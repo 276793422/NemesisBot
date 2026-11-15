@@ -187,6 +187,15 @@ pub struct ModelToolHealth {
     pub hint: Option<String>,
 }
 
+/// 单工具的使用率聚合（工具使用率账，`tools.list` 的 `usage_count` 面
+/// 数据源——工作流工具选择器按使用率排序）。只出事实（计数），排序
+/// 策略归消费侧。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolUsageTotal {
+    pub tool: String,
+    pub calls: i64,
+}
+
 /// A single point in a trend chart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrendPoint {

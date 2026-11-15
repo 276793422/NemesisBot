@@ -421,3 +421,150 @@ async fn pump_final_reply_has_no_occupies_key() {
         "终局回复已由 turn 内部落盘 → 无键（旧规则 user/assistant 占行）"
     );
 }
+
+// --- 降级注记槽（fallback 用户面标注）---
+
+/// 降级注记 provider 桩：chat 恒成功；take_response_degradation 恒返回
+/// 配置注记（桩不清——取件清的职责在 adapter 实现，桩只测 loop 侧
+/// last-call 覆盖语义）。
+struct DegradingNoteProvider {
+    note: Option<String>,
+}
+
+#[async_trait]
+impl LlmProvider for DegradingNoteProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "note-ok".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+
+    fn take_response_degradation(&self) -> Option<String> {
+        self.note.clone()
+    }
+}
+
+/// 主路径成功调用后统一取件入槽；干净调用（None）覆盖清槽——
+/// 多会话共享 loop 不串台陈旧标注。
+#[tokio::test]
+async fn degradation_note_taken_on_success_and_cleared_by_clean_call() {
+    let al = AgentLoop::new(Box::new(QuietProvider), cov_config());
+    let degrading: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(DegradingNoteProvider {
+        note: Some("主模型x → http-compat/备选y".to_string()),
+    });
+
+    al.chat_call_escalating(0, &degrading, "m", Vec::new(), None, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        al.response_degradation.lock().as_deref(),
+        Some("主模型x → http-compat/备选y"),
+        "成功调用后必须取件入槽"
+    );
+
+    // 干净调用 → last-call 覆盖清槽。
+    let clean: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(QuietProvider);
+    al.chat_call_escalating(0, &clean, "m", Vec::new(), None, Vec::new())
+        .await
+        .unwrap();
+    assert!(al.response_degradation.lock().is_none(), "干净调用清槽");
+}
+
+/// finish_message 终局回复：附加展示注记 + 取件即清（下一帧无注记）。
+#[tokio::test]
+async fn finish_message_appends_degradation_note_and_consumes_slot() {
+    let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
+    let (otx, mut orx) = tokio::sync::mpsc::channel(4);
+    al.outbound_tx = Some(otx);
+    *al.response_degradation.lock() = Some("glm-4.7 → http-compat/glm-5.3-flash".to_string());
+
+    let msg = inbound("hello", "web", "covuser", "agent:main:session:covdegrade");
+    al.finish_message(&msg, "最终回复".to_string(), None, false, false, None)
+        .await;
+    let got = orx.recv().await.unwrap();
+    assert!(
+        got.content.contains("最终回复"),
+        "原文保留: {}",
+        got.content
+    );
+    assert!(
+        got.content.contains("备选应答") && got.content.contains("glm-5.3-flash"),
+        "注记必须随回复: {}",
+        got.content
+    );
+    assert!(al.response_degradation.lock().is_none(), "取件即清");
+
+    // 槽已清：下一帧不带注记。
+    al.finish_message(&msg, "第二条".to_string(), None, false, false, None)
+        .await;
+    let got2 = orx.recv().await.unwrap();
+    assert_eq!(got2.content, "第二条");
+}
+
+/// 回执帧（receipt=true）与错误文案（err=Some）既不背注记也不消费槽；
+/// 随后终局回复正常消费。
+#[tokio::test]
+async fn finish_message_receipt_and_error_do_not_consume_note() {
+    let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
+    let (otx, mut orx) = tokio::sync::mpsc::channel(4);
+    al.outbound_tx = Some(otx);
+    *al.response_degradation.lock() = Some("a → b".to_string());
+    let msg = inbound("hello", "web", "covuser", "agent:main:session:covdegrade2");
+
+    // 回执帧：不背注记、不消费槽。
+    al.finish_message(
+        &msg,
+        "⏳ 排队中".to_string(),
+        None,
+        false,
+        true,
+        Some(false),
+    )
+    .await;
+    let got = orx.recv().await.unwrap();
+    assert_eq!(got.content, "⏳ 排队中");
+    assert!(al.response_degradation.lock().is_some(), "回执不消费槽");
+
+    // 错误文案：不背注记、不消费槽。
+    al.finish_message(
+        &msg,
+        String::new(),
+        Some("boom".to_string()),
+        true,
+        false,
+        None,
+    )
+    .await;
+    let got = orx.recv().await.unwrap();
+    assert!(
+        got.content.contains("Error processing message"),
+        "错误文案形态: {}",
+        got.content
+    );
+    assert!(al.response_degradation.lock().is_some(), "错误不消费槽");
+
+    // 随后终局回复正常消费。
+    al.finish_message(&msg, "终局".to_string(), None, true, false, None)
+        .await;
+    let got = orx.recv().await.unwrap();
+    assert!(
+        got.content.contains("备选应答"),
+        "终局注记: {}",
+        got.content
+    );
+    assert!(al.response_degradation.lock().is_none());
+}

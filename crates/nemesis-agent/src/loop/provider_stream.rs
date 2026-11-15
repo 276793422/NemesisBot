@@ -293,6 +293,13 @@ impl LlmProvider for StreamingLlmProvider {
         self.inner.name()
     }
 
+    /// 降级注记取件穿透流式包装（fallback 用户面标注）：inner =
+    /// ProviderAdapter 持槽，不穿透则生产流式路径（provider_stream_events
+    /// 默认开）取件恒 None，标注断链。
+    fn take_response_degradation(&self) -> Option<String> {
+        self.inner.take_response_degradation()
+    }
+
     async fn chat(
         &self,
         model: &str,

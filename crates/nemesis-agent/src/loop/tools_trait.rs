@@ -509,6 +509,19 @@ impl AgentLoop {
         }
     }
 
+    /// 工具使用率落账（`tools.list` 的 `usage_count` 面数据源——工作流
+    /// 工具选择器按使用率排序）。调用方只在**真实执行**后调用
+    /// （`checks_capture::classify_result` None 臂 = 拒绝，不入账）。
+    /// 无 data_store 静默跳过；写失败只 warn——账本是增值动作，不反压轮次
+    /// （与 [`Self::record_tool_validation_stats`] 同纪律）。
+    pub(crate) fn record_tool_usage_stats(&self, tool: &str) {
+        if let Some(ref ds) = self.data_store
+            && let Err(e) = ds.record_tool_usage(tool)
+        {
+            tracing::warn!("[AgentLoop] record_tool_usage failed: {e}");
+        }
+    }
+
     /// （引入）：turn 收尾守卫事件落账
     /// （`guard_event_stats` 天×模型 upsert，`models.health` 按「原地打转」
     /// 口径消费——tier 校准建议的数据面）。0 事件不写行；无 data_store

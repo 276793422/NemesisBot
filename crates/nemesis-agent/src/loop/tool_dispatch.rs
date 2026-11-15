@@ -366,6 +366,12 @@ impl AgentLoop {
             &tool_call.arguments,
             &result,
         );
+        // 工具使用率落账：真实执行才计（`classify_result` None 臂 = 拒绝，
+        // 单点判定不入账——所有调度路径（串行/批次/子代理）都过本入口，
+        // 一处包装全覆盖）。
+        if checks_capture::classify_result(&tool_call.name, &result).is_some() {
+            self.record_tool_usage_stats(&tool_call.name);
+        }
         result
     }
 
@@ -428,6 +434,11 @@ impl AgentLoop {
             &effective.arguments,
             &result,
         );
+        // 工具使用率落账（workflow 节点程序化调用同口径：真实执行才计，
+        // 拒绝/校验拒绝不入账——校验拒绝臂已在上方提前 return）。
+        if checks_capture::classify_result(&effective.name, &result).is_some() {
+            self.record_tool_usage_stats(&effective.name);
+        }
         result
     }
 

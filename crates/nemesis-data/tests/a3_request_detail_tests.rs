@@ -52,7 +52,8 @@ fn full_log(trace: &str, model: &str, session: &str, status: i32, ts: i64) -> Re
 
 /// v1 库（旧 schema + 旧行）打开 → 沿迁移链逐级升级到当前版本
 /// （v1→v2→…→SCHEMA_VERSION）：v2 新列存在、旧行保留且新字段为默认值。
-/// P2B 起 SCHEMA_VERSION=3（tool_validation_stats）——断言跟随当前版本。
+/// P2B 起 SCHEMA_VERSION=3（tool_validation_stats）——断言跟随当前版本
+/// （v4 起含 tool_usage_stats）。
 #[test]
 fn migration_v1_to_v2_preserves_rows_and_adds_columns() {
     let db_path = temp_db_path("migrate");
@@ -86,12 +87,12 @@ fn migration_v1_to_v2_preserves_rows_and_adds_columns() {
 
     let store = DataStore::open(&db_path).expect("v1 → 当前版本 migration must succeed");
 
-    // 版本到当前 SCHEMA_VERSION（迁移链逐级走完，P2B 起 = 3）。
+    // 版本到当前 SCHEMA_VERSION（迁移链逐级走完，v4 起含 tool_usage_stats）。
     let version: i32 = Connection::open(&db_path)
         .unwrap()
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 
     // 旧行保留 + 新字段默认值（迁移只加列，不回填历史）。
     let (logs, total) = store

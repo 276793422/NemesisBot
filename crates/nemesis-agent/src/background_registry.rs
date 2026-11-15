@@ -690,31 +690,167 @@ impl BackgroundProcessRegistry {
         );
         let job_id = payload.get("job_id").and_then(|v| v.as_u64());
         if let Some(id) = job_id {
-            match (
-                self.job_status_handle(id),
-                self.job_output_handle(id),
-                self.job_pump_drain_handle(id),
-            ) {
-                (Some(status), Some(output), Some(pump_drain)) => {
-                    tokio::spawn(completion_watcher(
-                        id,
-                        status,
-                        output,
-                        origin,
-                        Arc::clone(&self.completion_tx),
-                        secrets,
-                        pump_drain,
-                    ));
-                }
-                _ => {
-                    // 条目句柄取不到（理论竞态：jobs 锁正被别的调用方长持）
-                    // ——诚实降级：无 watcher = 无唤醒，不静默装没事。
-                    debug!(
-                        job = id,
-                        "[BackgroundRegistry] completion watcher not spawned (entry handles unavailable)"
-                    );
+            self.spawn_completion_watcher(id, origin, secrets);
+        }
+        Ok(payload)
+    }
+
+    /// 完成唤醒 watcher 装配（start_with_origin / adopt_exec 共用）：取
+    /// 条目三句柄 spawn [`completion_watcher`]；句柄取不到（理论竞态：
+    /// jobs 锁正被别的调用方长持）诚实降级——无 watcher = 无唤醒，不静默
+    /// 装没事。
+    fn spawn_completion_watcher(&self, id: u64, origin: JobOrigin, secrets: Arc<Vec<String>>) {
+        match (
+            self.job_status_handle(id),
+            self.job_output_handle(id),
+            self.job_pump_drain_handle(id),
+        ) {
+            (Some(status), Some(output), Some(pump_drain)) => {
+                tokio::spawn(completion_watcher(
+                    id,
+                    status,
+                    output,
+                    origin,
+                    Arc::clone(&self.completion_tx),
+                    secrets,
+                    pump_drain,
+                ));
+            }
+            _ => {
+                debug!(
+                    job = id,
+                    "[BackgroundRegistry] completion watcher not spawned (entry handles unavailable)"
+                );
+            }
+        }
+    }
+
+    /// exec 超时收编（2026-11-16 B43：exec 超时自动后台化）。
+    ///
+    /// 把一个**已 spawn、超时未退**的前台 exec 子进程原样收进注册表——
+    /// 不杀，进程继续跑；四动词（output / kill / steer 诚实拒绝）与完成
+    /// 唤醒照常生效。调用方（ExecTool 超时臂）在收编前已把 stdout/stderr
+    /// 排水切换为经 `stdout_rx` / `stderr_rx` 通道实时转发；
+    /// `seed_output` = 超时前已累积的输出快照（先入缓冲，保住超时前的
+    /// 可见性——环形 cap 照常裁头、`dropped_bytes` 如实）。通道关闭 =
+    /// 管道 EOF，pump_drain 哨兵照常置位（完成通告 tail 的排干同步消费）。
+    ///
+    /// 与 [`Self::start`] 的差异：不 spawn 子进程（child 由调用方移交，
+    /// 含其 `kill_on_drop(true)` 兜底——条目被淘汰 / 注册表 Drop 时随
+    /// Child drop 收杀，与 start 路径同语义）；stdin 恒 None（exec 以
+    /// null stdin spawn，`steer` 走诚实拒绝文案）；pid 由调用方在 spawn
+    /// 后即捕获传入（超时时刻 `child.id()` 可能已 None——进程已退未收尸
+    /// 的窗口）。收编失败（满员全在跑 / pid 缺席）时 Err 返回，child 随
+    /// 失败路径 drop（kill_on_drop 收杀兜底），调用方回落树杀旧路径。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn adopt_exec(
+        &self,
+        command: &str,
+        cwd: &str,
+        child: tokio::process::Child,
+        pid: Option<u32>,
+        seed_output: Vec<u8>,
+        stdout_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        stderr_rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        origin: Option<JobOrigin>,
+        secrets: Arc<Vec<String>>,
+    ) -> Result<serde_json::Value, String> {
+        let Some(pid) = pid else {
+            return Err("child pid unavailable (already reaped?)".to_string());
+        };
+        // 满员处理：与 start_inner 同款——先淘汰最旧的已完成任务；全在
+        // 跑才拒绝（收编是尽力而为，拒绝即回落树杀）。
+        {
+            let mut jobs = self.jobs.lock().await;
+            if jobs.len() >= self.max_jobs {
+                let oldest_finished = jobs
+                    .iter()
+                    .filter(|(_, j)| j.status.try_lock().map(|s| s.is_some()).unwrap_or(false))
+                    .map(|(id, _)| *id)
+                    .min();
+                match oldest_finished {
+                    Some(id) => {
+                        jobs.remove(&id);
+                        debug!(
+                            evicted = id,
+                            "[BackgroundRegistry] evicted finished job (adopt)"
+                        );
+                    }
+                    None => {
+                        return Err(format!(
+                            "background job limit reached ({} running); \
+                             kill one with background_kill first",
+                            self.max_jobs
+                        ));
+                    }
                 }
             }
+        }
+
+        let output = Arc::new(Mutex::new(OutputBuffer::new(self.max_output)));
+        // 超时前快照先入缓冲（保住超时前的输出可见性）。
+        output.lock().await.append(&seed_output);
+        let status: Arc<Mutex<Option<JobStatus>>> = Arc::new(Mutex::new(None));
+        let kill_flag = Arc::new(AtomicBool::new(false));
+
+        // 转发泵：调用方排水任务经通道送 chunk（stdout/stderr 合流追加，
+        // 与 start 路径的 pump 语义一致）；两通道都关闭（= 双管道 EOF，
+        // 含孙进程持管时的延迟形态）→ 哨兵置 pump_drain。
+        let (drain_tx, pump_drain) = tokio::sync::watch::channel(false);
+        let h1 = tokio::spawn(pump_forward(stdout_rx, output.clone()));
+        let h2 = tokio::spawn(pump_forward(stderr_rx, output.clone()));
+        tokio::spawn(async move {
+            let _ = h1.await;
+            let _ = h2.await;
+            let _ = drain_tx.send(true);
+        });
+
+        let child = Arc::new(Mutex::new(child));
+        tokio::spawn(supervise(pid, child, status.clone(), kill_flag.clone()));
+
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.jobs.lock().await.insert(
+            id,
+            JobEntry {
+                cmd: command.to_string(),
+                cwd: cwd.to_string(),
+                started_at: std::time::SystemTime::now(),
+                output,
+                status,
+                pump_drain,
+                kill_flag,
+                stdin: Arc::new(Mutex::new(None)),
+                steerable: false,
+                secrets: Arc::clone(&secrets),
+            },
+        );
+        debug!(
+            job = id,
+            pid,
+            adopted = true,
+            "[BackgroundRegistry] adopted timed-out exec"
+        );
+
+        let note = if origin.is_some() {
+            "timed-out exec adopted into the background registry; it is still running; \
+             when it exits a completion notice (with the recent output) is delivered \
+             back into this conversation automatically"
+        } else {
+            "timed-out exec adopted into the background registry; it is still running — \
+             read output with background_output, stop with background_kill"
+        };
+        let payload = serde_json::json!({
+            "job_id": id,
+            "pid": pid,
+            "command": command,
+            "cwd": cwd,
+            "running": true,
+            "steerable": false,
+            "adopted": true,
+            "note": note,
+        });
+        if let Some(origin) = origin {
+            self.spawn_completion_watcher(id, origin, secrets);
         }
         Ok(payload)
     }
@@ -1013,6 +1149,20 @@ pub(crate) fn spawn_pump(
             }
         }
     })
+}
+
+/// 收编路径的转发泵（2026-11-16 B43）：消费 exec 侧排水任务经通道送来的
+/// chunk，追加进注册表输出缓冲（stdout/stderr 合流，与 [`spawn_pump`]
+/// 语义一致）。unbounded 通道 = 发送端（exec 侧排水任务）永不阻塞；
+/// 通道关闭 = 对应管道 EOF，双通道都关后哨兵置 pump_drain（见
+/// [`Self::adopt_exec`]）。
+async fn pump_forward(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    output: Arc<Mutex<OutputBuffer>>,
+) {
+    while let Some(chunk) = rx.recv().await {
+        output.lock().await.append(&chunk);
+    }
 }
 
 /// 平台 shell 命令构造——与 `ExecTool` / `AsyncExecTool` 同语义：

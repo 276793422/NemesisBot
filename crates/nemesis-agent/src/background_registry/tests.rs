@@ -1299,3 +1299,311 @@ async fn background_start_schema_exposes_notify_param() {
         "工具 description 必须带 notify=false 引导"
     );
 }
+
+// ---------------------------------------------------------------------------
+// exec 超时收编（2026-11-16 B43）
+// ---------------------------------------------------------------------------
+
+/// 把管道排水进 unbounded 通道（模拟 exec 侧收编式排水的转发段：排水
+/// 任务每 chunk 送通道，注册侧 pump_forward 消费）。
+fn forward_pipe(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
+    tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+) {
+    tokio::spawn(async move {
+        let Some(mut p) = pipe else {
+            return;
+        };
+        let mut buf = [0u8; 8192];
+        loop {
+            match tokio::io::AsyncReadExt::read(&mut p, &mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// spawn 一个 piped 形态的 shell 子进程（收编测试的 child 来源；与
+/// ExecTool 同款树杀前提：kill_on_drop + Unix 进程组）。
+fn spawn_piped_shell(command: &str) -> (tokio::process::Child, Option<u32>) {
+    let mut cmd = build_platform_shell(command);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let child = cmd.spawn().expect("spawn piped shell");
+    let pid = child.id();
+    (child, pid)
+}
+
+/// 收编（B43）生命周期：seed 先入缓冲（超时前输出不丢）、转发流可达
+/// （收编后输出实时进注册表缓冲）、kill 树杀、终态 killed 如实。
+#[tokio::test]
+async fn adopt_exec_seed_forward_kill_lifecycle() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let cmd_str = {
+        #[cfg(target_os = "windows")]
+        {
+            "echo adopt_echo_b4& ping -n 30 127.0.0.1 >nul".to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "echo adopt_echo_b4; sleep 30".to_string()
+        }
+    };
+    let (mut child, pid) = spawn_piped_shell(&cmd_str);
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel();
+    forward_pipe(child.stdout.take(), out_tx);
+    forward_pipe(child.stderr.take(), err_tx);
+
+    let payload = reg
+        .adopt_exec(
+            &cmd_str,
+            "/",
+            child,
+            pid,
+            b"seed_before_adopt_b4".to_vec(),
+            out_rx,
+            err_rx,
+            None,
+            Arc::new(Vec::new()),
+        )
+        .await
+        .expect("adopt must succeed");
+    assert_eq!(payload["adopted"].as_bool(), Some(true));
+    assert_eq!(payload["running"].as_bool(), Some(true));
+    assert_eq!(
+        payload["steerable"].as_bool(),
+        Some(false),
+        "exec 收编无 stdin，steer 诚实拒绝"
+    );
+    let id = payload["job_id"].as_u64().unwrap();
+
+    // seed 立即可读（超时前输出不丢）。
+    let out = reg.output(id, 0).await.unwrap();
+    assert!(
+        out["chunk"]
+            .as_str()
+            .unwrap()
+            .contains("seed_before_adopt_b4"),
+        "seed 必须立即可读: {}",
+        out["chunk"]
+    );
+
+    // 转发流可达（shell echo 进 stdout 通道 → pump_forward → 缓冲）。
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut saw = false;
+    while Instant::now() < deadline {
+        let v = reg.output(id, 0).await.unwrap();
+        if v["chunk"].as_str().unwrap().contains("adopt_echo_b4") {
+            saw = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(saw, "转发流必须把收编后的输出送进注册表缓冲");
+
+    // kill 生命周期照常（收编任务 = 正式条目）。
+    let killed = reg.kill(id).await.unwrap();
+    assert_eq!(killed["killed"].as_bool(), Some(true));
+    let done = reg.output(id, 0).await.unwrap();
+    assert_eq!(done["running"].as_bool(), Some(false));
+    assert_eq!(done["killed"].as_bool(), Some(true));
+}
+
+/// 收编满员（全在跑）诚实拒绝；Err 带 limit reached 文案（exec 侧据此
+/// 回落树杀旧路径）。
+#[tokio::test]
+async fn adopt_exec_rejects_when_full_and_all_running() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::with_limits(1, DEFAULT_MAX_OUTPUT_BYTES);
+    let started = reg.start(long_cmd(), "/", false).await.unwrap();
+    let holder = started["job_id"].as_u64().unwrap();
+
+    let (child, pid) = spawn_piped_shell("echo adopt_reject_probe_b4");
+    let (_out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel();
+    let r = reg
+        .adopt_exec(
+            "echo adopt_reject_probe_b4",
+            "/",
+            child,
+            pid,
+            Vec::new(),
+            out_rx,
+            err_rx,
+            None,
+            Arc::new(Vec::new()),
+        )
+        .await;
+    let err = r.expect_err("满员全在跑必须拒绝收编");
+    assert!(err.contains("limit reached"), "err: {}", err);
+    reg.kill(holder).await.unwrap();
+}
+
+/// 收编 + 完成唤醒（B43 接线面）：origin 在场的收编任务自然退出后，
+/// CompletionEvent（带 origin 与输出尾部）照常发出——收编任务与
+/// background_start 任务同轨道享受完成通告。
+#[tokio::test]
+async fn adopt_exec_completion_notice_fires_on_exit() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = Arc::new(BackgroundProcessRegistry::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    assert!(reg.set_completion_sink(tx), "sink 一次性装配");
+
+    // 快退命令（echo 后 ~1s 自然退出）。
+    let cmd_str = {
+        #[cfg(target_os = "windows")]
+        {
+            "echo adopt_fin_b4& ping -n 2 127.0.0.1 >nul".to_string()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            "echo adopt_fin_b4; sleep 1".to_string()
+        }
+    };
+    let (mut child, pid) = spawn_piped_shell(&cmd_str);
+    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel();
+    forward_pipe(child.stdout.take(), out_tx);
+    forward_pipe(child.stderr.take(), err_tx);
+
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        session_key: "sess1".to_string(),
+    };
+    let payload = reg
+        .adopt_exec(
+            &cmd_str,
+            "/",
+            child,
+            pid,
+            b"seed_fin_b4".to_vec(),
+            out_rx,
+            err_rx,
+            Some(origin),
+            Arc::new(Vec::new()),
+        )
+        .await
+        .expect("adopt must succeed");
+    let id = payload["job_id"].as_u64().unwrap();
+
+    let ev = tokio::time::timeout(Duration::from_secs(20), rx.recv())
+        .await
+        .expect("completion event within 20s")
+        .expect("channel open");
+    assert_eq!(ev.job_id, id);
+    assert_eq!(ev.origin.session_key, "sess1", "origin round-trip");
+    assert!(
+        ev.tail.contains("adopt_fin_b4"),
+        "完成通告 tail 含收编后输出: {:?}",
+        ev.tail
+    );
+}
+
+/// exec 超时收编 e2e（B43）：ExecTool + 注册表装配 → 超时文本保持失败
+/// 形态前缀（exec_output_passed 判定依赖），带 job_id 与四动词指引；
+/// 注册表恰一条在跑；seed（超时前 echo）进缓冲；kill 收尾。
+#[tokio::test]
+async fn exec_timeout_adopts_into_registry_end_to_end() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = Arc::new(BackgroundProcessRegistry::new());
+    let tool = crate::loop_tools::ExecTool::new(".", false)
+        .with_background_registry(Some(Arc::clone(&reg)));
+    // 纯内建死循环（无孙进程——exec 侧测试纪律）+ 前置 echo（seed 可验）。
+    #[cfg(target_os = "windows")]
+    let cmd = "echo adopt_e2e_b4 & for /l %i in (0,0,1) do @rem";
+    #[cfg(not(target_os = "windows"))]
+    let cmd = "echo adopt_e2e_b4; while :; do :; done";
+
+    let out = tool
+        .execute(
+            &serde_json::json!({ "command": cmd, "timeout": 1 }).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect("adoption notice must be Ok");
+    assert!(
+        out.starts_with("Command timed out"),
+        "失败形态前缀保持: {out}"
+    );
+    assert!(
+        out.contains("moved to the background"),
+        "收编标注在场: {out}"
+    );
+    assert!(out.contains("background_output"), "读输出指引在场: {out}");
+    assert!(out.contains("background_kill"), "停止指引在场: {out}");
+
+    let job_id = out
+        .split("job_id ")
+        .nth(1)
+        .and_then(|s| s.split([')', ' ', '\n']).next())
+        .and_then(|s| s.parse::<u64>().ok())
+        .expect("notice carries job_id");
+    assert_eq!(reg.job_count().await, 1, "收编后注册表恰一条");
+
+    // seed（超时前的 echo）进了注册表缓冲。
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut saw_seed = false;
+    while Instant::now() < deadline {
+        let v = reg.output(job_id, 0).await.unwrap();
+        if v["chunk"].as_str().unwrap().contains("adopt_e2e_b4") {
+            saw_seed = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(saw_seed, "超时前输出必须随 seed 进入注册表缓冲");
+
+    let killed = reg.kill(job_id).await.unwrap();
+    assert_eq!(killed["killed"].as_bool(), Some(true));
+}
+
+/// exec 超时收编失败回落 e2e（B43）：注册表满员全在跑 → 超时文本保持
+/// 旧失败形态（进程被杀），带收编失败原因与残余输出；注册表不收垃圾。
+#[tokio::test]
+async fn exec_timeout_falls_back_to_kill_when_adopt_rejected() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = Arc::new(BackgroundProcessRegistry::with_limits(
+        1,
+        DEFAULT_MAX_OUTPUT_BYTES,
+    ));
+    let holder_started = reg.start(long_cmd(), "/", false).await.unwrap();
+    let holder = holder_started["job_id"].as_u64().unwrap();
+
+    let tool = crate::loop_tools::ExecTool::new(".", false)
+        .with_background_registry(Some(Arc::clone(&reg)));
+    #[cfg(target_os = "windows")]
+    let cmd = "echo fallback_b4 & for /l %i in (0,0,1) do @rem";
+    #[cfg(not(target_os = "windows"))]
+    let cmd = "echo fallback_b4; while :; do :; done";
+
+    let out = tool
+        .execute(
+            &serde_json::json!({ "command": cmd, "timeout": 1 }).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect("fallback notice must be Ok");
+    assert!(
+        out.starts_with("Command timed out"),
+        "失败形态前缀保持: {out}"
+    );
+    assert!(
+        out.contains("attempted to move it to the background but failed"),
+        "收编失败原因在场: {out}"
+    );
+    assert!(out.contains("fallback_b4"), "残余输出仍在: {out}");
+    assert_eq!(reg.job_count().await, 1, "收编失败不占注册表");
+    reg.kill(holder).await.unwrap();
+}

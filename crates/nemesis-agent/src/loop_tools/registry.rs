@@ -683,8 +683,12 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         }
         // timeout clamp 上限（2026-11-08 config 化）：None = 600 旧行为。
         // editor 开关围栏闸：链尾统一注入（None = 旧行为字节不变）。
+        // exec 超时收编（2026-11-16 B43）：gateway 注册表单例注入——超时
+        // 不杀，收编后台继续跑 + 完成唤醒回灌；executor 分离/测试构造
+        // （注册表缺席）= 树杀旧行为字节不变。
         .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600))
-        .with_editor_gate(editor_gate.clone());
+        .with_editor_gate(editor_gate.clone())
+        .with_background_registry(config.background_registry.clone());
         tools.insert("exec".to_string(), Box::new(exec_tool));
         // [SEALED 2026-11-08] exec_async 封存（用户拍板，实现保留不删除）。
         // 根因：fire-and-forget（管道只接不排，64KB 写满即死锁）+ 无

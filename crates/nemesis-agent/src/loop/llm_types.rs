@@ -161,6 +161,16 @@ pub trait LlmProvider: Send + Sync {
     fn name(&self) -> &str {
         ""
     }
+
+    /// 降级事实取件口（fallback 用户面标注链路第二跳）：本次响应若由
+    /// 备选（fallback 链非首级）应答，返回「主模型 → 实际应答方」注记。
+    /// **取件即清**（last-call 语义）——主路径每次成功调用后由
+    /// [`AgentLoop::chat_call_escalating`] 统一取件入 loop 槽，多会话
+    /// 共享同一 loop 时上一会话的标注不会串台。默认 None：测试桩 /
+    /// CLI 型 / 单模型装配（无链）行为字节不变，无需逐一实现。
+    fn take_response_degradation(&self) -> Option<String> {
+        None
+    }
 }
 
 impl AgentLoop {
