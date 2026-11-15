@@ -987,3 +987,55 @@ async fn shop_browse_seeded_cache_reports_live_source() {
     assert_eq!(out["snapshot_info"], serde_json::Value::Null);
     invalidate_cache();
 }
+
+// BUG-20261116-016：目录符号链接环——旧实现 `src_path.is_dir()` 跟随
+// 链接（metadata 语义），链接指回祖先目录时无限递归拷贝，以
+// 「loop\loop\...」假路径重复整子树直到 OS 路径长度上限才收敛（与
+// dossier.rs copy_dir_sorted 已修先例同族；仓内其余 7 份目录递归实现
+// 均有防护，persona 这份是漏接位点）。链接创建免提权降级链：
+// symlink_dir（开发者模式/管理员）→ junction（mklink /J，任何用户）。
+#[cfg(windows)]
+fn persona_make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(not(windows))]
+fn persona_make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn copy_dir_recursive_skips_symlink_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("persona_src");
+    let sub = src.join("assets").join("deep");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.md"), "data").unwrap();
+
+    // 链接环：persona_src/loop → persona_src 自身
+    persona_make_dir_link(&src, &src.join("loop"));
+
+    // 旧实现：跟随环病态重复递归（红证 = dst/loop 在位——整子树被
+    // 重复拷贝进假路径）。
+    let dst = dir.path().join("persona_dst");
+    copy_dir_recursive(&src, &dst).unwrap();
+    assert!(
+        dst.join("assets").join("deep").join("a.md").is_file(),
+        "真实子树照常拷贝"
+    );
+    assert!(!dst.join("loop").exists(), "目录链接必须跳过");
+}

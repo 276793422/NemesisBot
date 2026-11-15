@@ -624,6 +624,14 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
         let entry = entry.map_err(|e| format!("{}", e))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
+        // BUG-20261116-016：目录符号链接跳过——`is_dir()` 是 metadata 语义
+        // （跟随链接），链接指回祖先目录时无限递归拷贝直到路径长度上限
+        // （dossier.rs copy_dir_sorted 同族先例）。file_type() 不穿越链接。
+        let is_dir_link =
+            entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) && src_path.is_dir();
+        if is_dir_link {
+            continue;
+        }
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
