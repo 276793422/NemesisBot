@@ -2,8 +2,13 @@
 //! 策略面失败源：probe / 裸 echo / fs 策略（仅存在路径）/ denied 含不
 //! 存在路径。运行：`cargo run -p nemesis-sandbox --features mxc --example
 //! mxc_smoke [-- <variant>]`。
+//!
+//! Windows-only：mxc-sdk 的 probe/run/spawn entry 全 family
+//! #[cfg(target_os = "windows")]（3rd/mxc lib.rs），且本 example 硬编码
+//! Windows 路径与 cmd/powershell——非 Windows 平台走 fallback main 诚实
+//! 早退（CI Linux --all-features E0425 实录 2026-11-15）。
 
-#[cfg(feature = "mxc")]
+#[cfg(all(feature = "mxc", target_os = "windows"))]
 fn main() {
     let variant = std::env::args().nth(1).unwrap_or_else(|| "all".to_string());
 
@@ -1456,10 +1461,10 @@ fn main() {
     }
 }
 
-#[cfg(not(feature = "mxc"))]
+#[cfg(not(all(feature = "mxc", target_os = "windows")))]
 fn main() {
     eprintln!(
-        "本 example 需要 mxc feature：cargo run -p nemesis-sandbox --features mxc --example mxc_smoke"
+        "本 example 需要 mxc feature 且仅 Windows（mxc-sdk entry 全 family cfg windows）：cargo run -p nemesis-sandbox --features mxc --example mxc_smoke"
     );
     std::process::exit(1);
 }
