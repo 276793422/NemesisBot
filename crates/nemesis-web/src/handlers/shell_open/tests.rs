@@ -2,6 +2,11 @@
 //! agt_tests「spawn 臂不进单测」豁免纪律；前台看门决策逻辑是纯函数，
 //! 直接钉住）。
 
+// 全文件 Windows 门：被测 `win` 模块（shell_open.rs 内联）随
+// target_os = "windows" 门——非 Windows 平台本文件整体编译为空模块，
+// 否则 use super::win E0432（Linux 云端 ET 实录 2026-11-15）。
+#![cfg(target_os = "windows")]
+
 use super::win::pick_focus_target;
 
 fn leaves(names: &[&str]) -> Vec<String> {

@@ -643,6 +643,7 @@ jobs:
       # （workspace 任一 cargo 命令都解析它）。精准 init——不用 checkout 的
       # submodules: true（会连带拉 taiwei 等其他 submodule，私有鉴权面风险）。
       - name: Init mxc submodule
+        working-directory: ${{ github.workspace }}
         run: git submodule update --init 3rd/mxc
 
       # 皮肤 vitest 断言读 skins/bot/skin/structure.html 等骨架文件——只显式
