@@ -4099,6 +4099,160 @@ mod n6_role {
         );
     }
 
+    // 守卫①c（merge 面，2026-11-15）：不带 --default 的重复 add 也会
+    // merge 覆写旧条目——旧条目是当前默认时，新 --role/--protocol 使其
+    // 原地变成守卫①禁止的形态（agents.defaults.llm 仍指向它，重启
+    // NullProvider 降级）。三个面（显式 --default / 合并生效值 / 原地
+    // 转换）共用同一组资格检查。
+
+    #[tokio::test]
+    async fn run_readd_without_default_converts_default_role_in_place_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 当前默认 = flash（model_name 形态引用，set_default/rename 写法）。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "flash"}},
+                "model_list": [
+                    {"model": "zhipu/flash-8b", "model_name": "flash", "api_key": "old"}
+                ]
+            }),
+        );
+
+        // 不带 --default + --role utility：守卫①只看显式 --default 拦不住
+        // 这条原地转换路径 → 必须由守卫①c 拦（写盘前，config 未动）。
+        let err = super::super::run(
+            add_action("zhipu/flash-8b", Some("utility".into()), false),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("utility") && err.to_string().contains("默认"),
+            "默认条目原地转 utility 必须拦: {err}"
+        );
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["model_list"][0].get("role").is_none(),
+            "写盘前拒绝：role 键不得落盘"
+        );
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "flash");
+    }
+
+    #[tokio::test]
+    async fn run_readd_without_default_converts_default_protocol_in_place_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 当前默认 = dall-e（alias 形态引用，`model add --default` 写法：
+        // agents.defaults.llm 存 model 串最后一段）。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "dall-e"}},
+                "model_list": [
+                    {"model": "vendor/dall-e", "model_name": "dall", "api_key": "old"}
+                ]
+            }),
+        );
+
+        let action = super::super::ModelAction::Add {
+            model: Some("vendor/dall-e".into()),
+            provider: None,
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: Some("images-openai".into()),
+            role: None,
+            stream: None,
+            default: false,
+        };
+        let err = super::super::run(action, false).await.unwrap_err();
+        assert!(
+            err.to_string().contains("images-openai"),
+            "默认条目原地转图像协议必须拦: {err}"
+        );
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["model_list"][0].get("protocol").is_none(),
+            "写盘前拒绝：protocol 键不得落盘"
+        );
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "dall-e");
+    }
+
+    #[tokio::test]
+    async fn run_readd_default_entry_with_legal_role_still_succeeds() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "flash"}},
+                "model_list": [
+                    {"model": "zhipu/flash-8b", "model_name": "flash", "api_key": "old"}
+                ]
+            }),
+        );
+
+        // 合法形态（显式 conversation）不受守卫①c 波及——只拦非法转换，
+        // 不拦正常重复 add。
+        super::super::run(
+            add_action("zhipu/flash-8b", Some("conversation".into()), false),
+            false,
+        )
+        .await
+        .expect("合法 role 的重复 add 必须照常成功");
+        let cfg = s11b_read_cfg(&th.home);
+        assert_eq!(cfg["model_list"][0]["role"], "conversation");
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "flash", "默认引用不动");
+    }
+
+    #[tokio::test]
+    async fn run_readd_non_default_entry_with_image_protocol_succeeds() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 默认在别的条目上——给非默认条目原地转图像协议照常放行
+        //（图像条目的正常创建路径），守卫①c 不得过拦。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "main"}},
+                "model_list": [
+                    {"model": "zhipu/glm-4.7", "model_name": "main", "api_key": "old"},
+                    {"model": "vendor/dall-e", "model_name": "dall", "api_key": "old"}
+                ]
+            }),
+        );
+
+        let action = super::super::ModelAction::Add {
+            model: Some("vendor/dall-e".into()),
+            provider: None,
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: Some("images-openai".into()),
+            role: None,
+            stream: None,
+            default: false,
+        };
+        super::super::run(action, false)
+            .await
+            .expect("非默认条目转图像协议必须放行");
+        let cfg = s11b_read_cfg(&th.home);
+        assert_eq!(cfg["model_list"][1]["protocol"], "images-openai");
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "main");
+    }
+
     #[test]
     fn effective_entry_key_merge_semantics() {
         use serde_json::json;

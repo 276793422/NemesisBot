@@ -1466,6 +1466,26 @@ impl ModelsHandler {
                     if model_name == name || model == name {
                         entry_is_default = default_owner.as_deref() == Some(model_name);
                         entry_model_name = model_name.to_string();
+                        // 守卫②b（原地转换面，2026-11-15）：protocol 在
+                        // provider 构造期消费，图像协议条目唯一消费点 =
+                        // generate_image 工具——**当前默认条目**经属性编辑
+                        // 原地转成 images-openai 与 set_default 守卫②同罪
+                        // （写盘前 loud 拒绝，不产生「盘上默认条目非法、
+                        // 重启 factory 拒绝 → NullProvider 降级」半状态）。
+                        // 非默认条目放行——图像条目的正常创建路径就是
+                        // 属性编辑 / 带协议 add。
+                        if field == "protocol"
+                            && entry_is_default
+                            && nemesis_types::capability::is_image_protocol(
+                                normalized.as_str().unwrap_or(""),
+                            )
+                        {
+                            return Err(format!(
+                                "'{name}' 是当前默认对话模型，不能原地改为 images-openai \
+                                 图像协议（仅供 generate_image 工具消费）——\
+                                 请先把默认模型切到其他条目再改"
+                            ));
+                        }
                         // Null 哨兵 = 清除：移键落盘（写 Null 会留 `"key": null`
                         // 字节垃圾；resolver 对缺席本就按 None 处理）。
                         if normalized.is_null() {
