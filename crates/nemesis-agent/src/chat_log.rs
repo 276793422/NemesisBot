@@ -72,6 +72,16 @@ pub struct ChatLogMeta<'a> {
     /// `Some` 时 Dashboard 渲染「节点 X」徽章（与模型徽章并列）；`None`
     /// （普通回复）不写该键——旧 jsonl 条目照常解析，读侧缺字段 = 无徽章。
     pub source_node: Option<&'a str>,
+    /// 系统通知标记（2026-11-16 系统注入消息渲染成用户气泡 BUG）：本行是
+    /// **系统注入**消息（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮等
+    /// `sender_id=="system"` 的注入源）而非真人发言——role 仍是 `"user"`
+    /// （通知轮是真实轮次：`is_projected_chat_row` 上下文重建投影与
+    /// `is_user_turn_boundary` 轮边界判定全依赖 role=user，改 role 会破
+    /// 重建与 rewind），但 Dashboard 据此渲染成系统通知条而非用户气泡。
+    /// admission 落盘点按 `sender_id=="system"` 推导（metadata 显式值
+    /// 优先）。`None` 不写——真人消息/旧条目缺字段 = 用户气泡，逐字节
+    /// 旧行为。
+    pub system_notice: Option<&'a str>,
 }
 
 /// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
@@ -91,6 +101,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.steer,
         meta.work,
         None,
+        meta.system_notice,
     );
 }
 
@@ -196,6 +207,7 @@ pub fn append_chat_log_with_model_and_node(
         false,
         None,
         None,
+        None,
     );
 }
 
@@ -226,6 +238,7 @@ pub fn append_chat_log_full(
         None,
         None,
         false,
+        None,
         None,
         None,
     );
@@ -261,6 +274,7 @@ pub fn append_chat_log_full_with_images(
         false,
         None,
         None,
+        None,
     );
 }
 
@@ -284,6 +298,7 @@ pub fn append_compaction_note(session_key: &str, content: &str) {
         false,
         None,
         Some("compaction"),
+        None,
     );
 }
 
@@ -297,6 +312,9 @@ pub fn append_compaction_note(session_key: &str, content: &str) {
 /// 中间过程交错随行；直答/旧条目缺字段读侧宽容）.
 /// `note_kind` Some → extra `"note_kind"` 字段（2026-11-09 压缩注记徽标化
 /// ——前端据此渲染小徽标而非整段气泡，缺省不写键=旧条目照常解析）.
+/// `system_notice` Some → extra `"system_notice"` 字段（2026-11-16 系统通知
+/// 标记——前端据此把 role=user 的系统注入行渲染成通知条而非用户气泡，
+/// 缺省不写键=旧条目照常解析）.
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
@@ -313,6 +331,7 @@ fn write_chat_entry(
     steer: bool,
     work: Option<&WorkTimeline>,
     note_kind: Option<&str>,
+    system_notice: Option<&str>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -385,6 +404,13 @@ fn write_chat_entry(
     // 折叠小徽标而非整段蓝底气泡。缺字段 = 旧行，前端走文案前缀兜底识别。
     if let Some(kind) = note_kind {
         entry["note_kind"] = serde_json::Value::String(kind.to_string());
+    }
+    // 系统通知标记（2026-11-16）：role=user 的系统注入行（后台任务完成
+    // 唤醒/审批裁决回灌/Turn WAL 续轮/cron tick）——前端据此渲染成系统
+    // 通知条而非用户气泡。缺字段 = 真人消息/旧条目，前端用户气泡逐字节
+    // 旧行为（与 model/cron/note_kind 同一宽容读契约）。
+    if let Some(kind) = system_notice {
+        entry["system_notice"] = serde_json::Value::String(kind.to_string());
     }
     // R100（BUG-20261025-25）：整行（含换行）先序列化成 String 再**单次**
     // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的

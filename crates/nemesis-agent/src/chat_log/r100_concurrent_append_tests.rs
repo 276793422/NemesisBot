@@ -51,6 +51,7 @@ fn concurrent_appends_never_tear_lines() {
                     work: None,
 
                     source_node: None,
+                    system_notice: None,
                 };
                 append_chat_log_meta(&k, "assistant", &format!("t{}-line{}", t, i), &meta);
             }

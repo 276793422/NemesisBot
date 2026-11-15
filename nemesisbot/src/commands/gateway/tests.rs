@@ -7449,33 +7449,77 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
             std::collections::HashMap::new(),
         ),
     );
-    // 先放行 spawn 任务起跑（watcher 先拍下 data_version 基线），再写库。
+    // 先放行 spawn 任务起跑（watcher 首调度 + 触发循环消费），再进写库等待循环。
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     // ③ board watcher：store 连接写 board.db → watcher 连接 data_version 变化
-    //    → board-changed 广播。
-    if let Some(store) = f.ctx.board_store.as_ref() {
-        store
-            .create_issue(nemesis_board::NewIssue {
-                title: "watcher".to_string(),
-                ..Default::default()
-            })
-            .expect("create issue for watcher");
-    }
-    // 放行：触发循环消费 + watcher 2s 轮询次轮拍到变化 + retention sweep。
-    tokio::time::sleep(std::time::Duration::from_millis(2400)).await;
+    //    → board-changed 广播。等待事件驱动（写库 → 死线收帧，未到再写再等，
+    //    旧形态「写库一次 + sleep(2400) + try_recv 抽干」是三重固定窗赌注）。
+    //    ⚠ 干涉面（2026-11-16 全量假红真根因，配对复现实锤：毒源测试 + 本测试
+    //    同进程两线程必红、单跑恒绿）：gateway 装配的 watcher 挂进程级终态令牌
+    //    （BUG-20261115-023 家族纪律），而 run_runtime 全链七测试跑到 Step 24
+    //    会 cancel 该令牌（OnceLock 无复位、进程内永久生效）——本测试排其后时
+    //    watcher 首 tick 即死，写库永无广播。主臂 miss 且令牌已被毒化时用测试
+    //    私有令牌重挂同一生产循环体（post_agent::run_board_change_watcher）再
+    //    断言：循环逻辑照常验证，绝不吞真回归；令牌仍活时 miss 即真回归，
+    //    回落臂不触发、直接 panic。
+    use super::shutdown::terminal_cancel_token;
 
-    // board-changed 至少一条送达（watcher 循环体真实执行的证据）。
+    async fn write_and_wait_board_changed(
+        store: &std::sync::Arc<nemesis_board::BoardStore>,
+        hub_rx: &mut tokio::sync::broadcast::Receiver<nemesis_web::events::Event>,
+        title_prefix: &str,
+        rounds: usize,
+    ) -> bool {
+        for round in 0..rounds {
+            store
+                .create_issue(nemesis_board::NewIssue {
+                    title: format!("{title_prefix}-r{round}"),
+                    ..Default::default()
+                })
+                .expect("create issue for watcher");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match tokio::time::timeout_at(deadline, hub_rx.recv()).await {
+                    Ok(Ok(ev)) => {
+                        if ev.event_type == "board-changed" {
+                            return true;
+                        }
+                        // 其他事件（工具/心跳等）继续等
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        // 256 槽溢出丢帧：跳本轮，重写库重触发（不致命）
+                        break;
+                    }
+                    Ok(Err(e)) => panic!("event hub closed: {e}"),
+                    Err(_) => break, // 本轮 5s 死线到 → 下一轮重写
+                }
+            }
+        }
+        false
+    }
+
     let mut got_board_changed = false;
-    while let Ok(ev) = hub_rx.try_recv() {
-        if ev.event_type == "board-changed" {
-            got_board_changed = true;
+    if let Some(store) = f.ctx.board_store.as_ref().map(std::sync::Arc::clone) {
+        got_board_changed = write_and_wait_board_changed(&store, &mut hub_rx, "watcher", 5).await;
+        if !got_board_changed && terminal_cancel_token().is_cancelled() {
+            // 全局令牌已被其他测试的 run_runtime Step 24 毒化——环境干涉非回归，
+            // 私有令牌重挂同一生产循环体（数据面同库、广播面同 hub）。
+            let board_db = f.ctx.home.join("workspace").join("board").join("board.db");
+            tokio::spawn(super::post_agent::run_board_change_watcher(
+                board_db,
+                web.event_hub().clone(),
+                tokio_util::sync::CancellationToken::new(),
+            ));
+            got_board_changed =
+                write_and_wait_board_changed(&store, &mut hub_rx, "watcher-private", 3).await;
         }
     }
     assert!(
         got_board_changed,
-        "board watcher must broadcast board-changed after db write"
+        "board watcher must broadcast board-changed after db write（主臂 5 轮 + 私有重挂 3 轮写库×5s 死线均未见广播；终态令牌已毒化={}——私有令牌下仍无广播=循环真回归）",
+        terminal_cancel_token().is_cancelled()
     );
-    // retention sweep / usage watcher 已在 sleep 期间跑过首轮——无 panic 即过。
+    // retention sweep / usage watcher 在收帧等待期间被调度跑过首轮——无 panic 即过。
 }
 
 /// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + 重建 +

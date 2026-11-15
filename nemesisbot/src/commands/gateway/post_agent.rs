@@ -1300,46 +1300,16 @@ pub(crate) async fn init_post_agent(
         // CLI 子命令（跨进程）的每次落库都会被看见——写路径零埋点覆盖全部
         // 写入方。变化 → SSE `board-changed` → 前端各面板 200ms 防抖刷新。
         // 无 SSE 订阅者（dashboard 未开）时跳过轮询读数，空闲零成本。
-        const BOARD_CHANGE_POLL_SECS: u64 = 2;
+        // 循环体抽 `run_board_change_watcher`（令牌参数化）：生产挂进程终态
+        // 令牌（语义不变）；测试挂私有令牌——run_runtime 全链测试的 Step 24
+        // 会 cancel 进程令牌（OnceLock 无复位），同进程并行的其他测试 watcher
+        // 会被跨测试毒杀（pa2 干涉面根修，2026-11-16 配对复现实锤）。
         let board_db_for_watch = home.join("workspace").join("board").join("board.db");
-        let event_hub_for_watch = web_server.event_hub().clone();
-        match nemesis_board::watcher::open_conn(&board_db_for_watch) {
-            Ok(watch_conn) => {
-                tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                        BOARD_CHANGE_POLL_SECS,
-                    ));
-                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                    let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
-                    loop {
-                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
-                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
-                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
-                            break;
-                        }
-                        if event_hub_for_watch.subscriber_count() == 0 {
-                            continue;
-                        }
-                        let Ok(v) = nemesis_board::watcher::data_version(&watch_conn) else {
-                            continue;
-                        };
-                        if last != Some(v) {
-                            last = Some(v);
-                            event_hub_for_watch.publish(
-                                "board-changed",
-                                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
-                            );
-                            tracing::debug!(
-                                "[Board] change detected (data_version={v}) → board-changed"
-                            );
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::warn!("[Gateway] board change watcher disabled: {e}");
-            }
-        }
+        tokio::spawn(run_board_change_watcher(
+            board_db_for_watch,
+            web_server.event_hub().clone(),
+            terminal_cancel_token().clone(),
+        ));
     }
 
     // Inject DataStore into web server for usage statistics API
@@ -1741,4 +1711,59 @@ pub(crate) async fn init_post_agent(
         #[cfg(feature = "cluster")]
         cluster_arc_ref,
     })
+}
+
+/// board.db 变化侦测循环本体（init_post_agent 的「---.5」装配点；令牌参数化）。
+///
+/// 生产挂进程终态令牌克隆（BUG-20261115-023 家族纪律：cancel 后 break，不在
+/// runtime 排空窗 re-park timer）。抽函数的动机是测试干涉面：run_runtime 全链
+/// 七测试跑到 Step 24 会 `cancel_terminal_tasks()` 毒化进程级 OnceLock 令牌
+/// （无复位），同进程并行的其他测试里 spawn 的 watcher 首 tick 即死——pa2
+/// 「board watcher must broadcast」假红（2026-11-16 配对复现实锤：毒源测试 +
+/// pa2 同进程两线程必红，单跑恒绿）。测试侧用局部令牌挂同一循环体（pa2 干涉
+/// 回落臂），循环逻辑断言不受令牌毒化影响；生产行为不变（同一循环、同一令牌
+/// 语义；open_conn 失败 WARN 后不进循环，与旧装配 Ok/Err 分臂等价）。
+/// 连接在函数内经 `nemesis_board::watcher::open_conn` 自开——rusqlite 仅是
+/// 本 crate dev-dependency，生产签名不得命名其类型。
+#[cfg(feature = "board")]
+pub(crate) async fn run_board_change_watcher(
+    board_db: std::path::PathBuf,
+    event_hub: Arc<nemesis_web::EventHub>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let watch_conn = match nemesis_board::watcher::open_conn(&board_db) {
+        Ok(conn) => {
+            info!("[Gateway] board change watcher armed (poll=2s)");
+            conn
+        }
+        Err(e) => {
+            tracing::warn!("[Gateway] board change watcher disabled: {e}");
+            return;
+        }
+    };
+    const BOARD_CHANGE_POLL_SECS: u64 = 2;
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(BOARD_CHANGE_POLL_SECS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
+    loop {
+        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再 re-park
+        // timer（家族纪律见 shutdown.rs 模块文档）。
+        if !terminal_loop_tick(&cancel, ticker.tick()).await {
+            break;
+        }
+        if event_hub.subscriber_count() == 0 {
+            continue;
+        }
+        let Ok(v) = nemesis_board::watcher::data_version(&watch_conn) else {
+            continue;
+        };
+        if last != Some(v) {
+            last = Some(v);
+            event_hub.publish(
+                "board-changed",
+                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
+            );
+            tracing::debug!("[Board] change detected (data_version={v}) → board-changed");
+        }
+    }
 }

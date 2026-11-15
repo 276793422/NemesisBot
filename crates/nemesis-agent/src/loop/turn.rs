@@ -614,6 +614,9 @@ impl AgentLoop {
                 // （bus.rs run_continuation_turn）透传 worker 节点名，
                 // 主路恒 None（与旧行为逐字节一致）。
                 source_node: node_badge,
+                // assistant 终局回复行正常气泡展示（系统通知标记只在
+                // user 行——见 admission.rs system_notice_of）。
+                system_notice: None,
             },
         );
 
