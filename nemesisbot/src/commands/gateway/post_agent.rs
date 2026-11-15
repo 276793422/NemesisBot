@@ -1190,6 +1190,16 @@ pub(crate) async fn init_post_agent(
         info!("[Gateway] LSP manager injected into web server");
     }
 
+    // 浏览器接管管理面注入（2026-11-15）：BrowserManager 单例移交 web 面
+    //（browser.* WSAPI 投影 + Dashboard 执行单元浏览器面板；host_browser
+    // 工具经 SharedResources 同源）。模块级 OnceLock 槽（同 BOARD_ESTOP
+    // 裁决——AppState 字面量测试遍布全库，加字段是断点级改动）。
+    #[cfg(feature = "browser")]
+    if let Some(mgr) = shared_resources.browser_manager.clone() {
+        nemesis_web::handlers::browser::set_browser_manager(mgr);
+        info!("[Gateway] browser manager injected into web server");
+    }
+
     // hand the tool-event receiver to the web server — its pump (spawned
     // in WebServer::start) routes events to Dashboard WS push + EventHub.
     web_server.set_agent_event_rx(agent_event_rx);

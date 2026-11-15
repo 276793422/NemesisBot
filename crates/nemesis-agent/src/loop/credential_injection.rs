@@ -87,34 +87,52 @@ pub fn inject_credential_aliases_structured(
     tool: &dyn Tool,
     args: &str,
 ) -> Result<String, CredentialInjectionError> {
-    inject_credential_aliases_with_secrets(tool, args).map(|(a, _)| a)
+    inject_credential_aliases_with_secrets(tool, args).map(|(a, _, _)| a)
 }
+
+/// 凭据绑定清单（浏览器接管框架，2026-11-15）：本次调用解析成功的
+/// `(字段路径, 别名)` 对——dispatch 侧合入 `exec_args` 的
+/// `_credential_bindings` sidecar，供工具 execute 侧防伪造验证（凭据守卫
+/// ③：工具自解别名与槽内明文比对一致才放行）。别名非明文，落 sidecar
+/// 无泄漏面；不认识该键的工具按多余字段忽略，无害。
+pub type CredentialBindings = Vec<(String, String)>;
 
 /// 注入并带回本次调用**解析出的明文值清单**（vault 计划 P2，2026-11-11）：
 /// dispatch 把清单与通路 2 `session_secrets` 合流喂 `mask_secrets_in_result`
 /// （工具结果回显凭据明文时遮蔽，Ok/Err 双臂）。清单只随本次调用在进程
 /// 内存存活，不落日志/历史/审计。只收集本次真正解析成功的 `vault:` 引用
 /// ——字面量原样通过的值不收集（它们本来就在模型上下文里，无新增泄漏面）。
+/// 第三返回值 = [`CredentialBindings`] 绑定清单（2026-11-15，见类型注释）。
 pub fn inject_credential_aliases_with_secrets(
     tool: &dyn Tool,
     args: &str,
-) -> Result<(String, Vec<String>), CredentialInjectionError> {
+) -> Result<(String, Vec<String>, CredentialBindings), CredentialInjectionError> {
     let keys = tool.credential_arg_keys();
     if keys.is_empty() {
-        return Ok((args.to_string(), Vec::new()));
+        return Ok((args.to_string(), Vec::new(), Vec::new()));
     }
     let mut val: serde_json::Value = match serde_json::from_str(args) {
         Ok(v) => v,
         // 非 JSON 参数：交给工具自身/上游校验去响亮失败，注入层不伪装。
-        Err(_) => return Ok((args.to_string(), Vec::new())),
+        Err(_) => return Ok((args.to_string(), Vec::new(), Vec::new())),
     };
     let mut secrets = Vec::new();
+    let mut bindings: CredentialBindings = Vec::new();
     walk_declared_slots(keys, &mut val, |field, slot| {
         let was_ref = slot.starts_with(nemesis_config::VAULT_PREFIX);
+        // 别名先取（resolve 会把 slot 覆写为真值）。
+        let alias = if was_ref {
+            slot.strip_prefix(nemesis_config::VAULT_PREFIX)
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            String::new()
+        };
         resolve_slot_value(field, slot)?;
         if was_ref {
             // resolve 已把 slot 覆写为真值——此刻克隆即明文。
             secrets.push(slot.clone());
+            bindings.push((field.to_string(), alias));
         }
         Ok(())
     })?;
@@ -123,7 +141,7 @@ pub fn inject_credential_aliases_with_secrets(
         alias: String::new(),
         message: format!("凭据注入序列化失败: {e}"),
     })?;
-    Ok((out, secrets))
+    Ok((out, secrets, bindings))
 }
 
 /// 声明槽位的通用遍历（抽取：槽位形态契约单点收拢于此）。对每个
@@ -159,6 +177,32 @@ fn walk_declared_slots<E>(
         }
     }
     Ok(())
+}
+
+/// sidecar 键名（`exec_args` 顶层；工具 execute 侧读取后剥离——见
+/// host_browser 工具）。`_` 前缀 = 内部约定键，非模型参数面。
+pub const CREDENTIAL_BINDINGS_KEY: &str = "_credential_bindings";
+
+/// 把绑定清单合入 `exec_args`（sidecar 附加）。非 JSON 对象参数原样返回
+/// None（注入层不伪装——工具自身校验去响亮失败）。别名非明文，无泄漏面。
+pub fn attach_credential_bindings(
+    exec_args: &str,
+    bindings: &CredentialBindings,
+) -> Option<String> {
+    if bindings.is_empty() {
+        return None;
+    }
+    let mut val: serde_json::Value = serde_json::from_str(exec_args).ok()?;
+    let obj = val.as_object_mut()?;
+    let items: Vec<serde_json::Value> = bindings
+        .iter()
+        .map(|(field, alias)| serde_json::json!({"field": field, "alias": alias}))
+        .collect();
+    obj.insert(
+        CREDENTIAL_BINDINGS_KEY.to_string(),
+        serde_json::Value::Array(items),
+    );
+    serde_json::to_string(&val).ok()
 }
 
 /// 检测声明槽位值中的 `vault:` 引用（dispatch 凭据闸的闸面探测）。
@@ -307,7 +351,7 @@ pub async fn try_card_recovery(
     session_key: &str,
     tool_name: &str,
     err: &CredentialInjectionError,
-) -> Option<(String, Vec<String>)> {
+) -> Option<(String, Vec<String>, CredentialBindings)> {
     let Some(broker) = broker else {
         return None; // headless / 裸构建：原错误路径零回归
     };
@@ -355,12 +399,12 @@ pub async fn try_card_recovery(
         Some(CredentialOutcome::Stored) => {
             guard.release(session_key, &err.alias);
             match inject_credential_aliases_with_secrets(tool, args) {
-                Ok((a, secrets)) => {
+                Ok((a, secrets, bindings)) => {
                     tracing::info!(
                         "[CredentialInjection] credential stored, re-injection succeeded tool={tool_name} alias={}（值不落日志）",
                         err.alias
                     );
-                    Some((a, secrets))
+                    Some((a, secrets, bindings))
                 }
                 Err(e2) => {
                     tracing::warn!(

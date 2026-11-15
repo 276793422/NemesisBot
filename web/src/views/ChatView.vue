@@ -3,10 +3,15 @@ import { onMounted } from 'vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import SessionSidebar from '../components/SessionSidebar.vue'
 import FileTreePanel from '../components/chat/FileTreePanel.vue'
+import BrowserPickPanel from '../components/chat/BrowserPickPanel.vue'
 import { useSessionStore } from '../stores/session'
 import { skinHasSlot } from '../composables/useSkin'
 
 const sessionStore = useSessionStore()
+
+// 浏览器点名面板（2026-11-15，计划 D10）：feature gate（`!== 'false'` =
+// 默认包含，同 router 门控惯例）；关 = 面板不挂载（侧栏按钮同闸）。
+const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
 
 // On entering the chat page, load the session list + auto-select a sensible
 // default (legacy "历史对话" if present, else the most recent) so the user
@@ -34,6 +39,8 @@ onMounted(async () => {
   <div class="chat-page-layout">
     <!-- M4: 工作区文件树（默认折叠成左缘细条；点击文件 @引用进输入框） -->
     <FileTreePanel />
+    <!-- D10: 浏览器点名面板（对话中途点名工作 tab，不跳页；侧栏按钮开合） -->
+    <BrowserPickPanel v-if="browserEnabled" />
     <!-- 皮肤 sidebar 槽（结构皮肤）自带会话历史（AppLayout 层），避免
          双侧栏；CSS-only 包 / 无皮肤回落原生 SessionSidebar -->
     <SessionSidebar v-if="sessionStore.showSidebar && !skinHasSlot('sidebar')" />

@@ -180,6 +180,13 @@ mod flow_proto;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
+/// 浏览器接管框架（2026-11-15）：host_browser 工具——bot 在用户机器
+/// 浏览器（真 Edge/Chrome 窗口）里看页面 + 操作页面的 agent 消费点。
+/// 九动作 + run_script 编排；凭据守卫三条件（域名绑定/密码框校验/
+/// 防伪造）；run_script 每步过安全闸 + estop 步边界。注册闸 =
+/// browser feature × BrowserManager 在场（诚实缺省）。
+#[cfg(feature = "browser")]
+mod host_browser_tool;
 /// 集群专业职能框架：generate_image 工具（images-openai lane 唯一消费
 /// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
 mod image_gen_tool;

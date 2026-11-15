@@ -22,7 +22,7 @@ default = [
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
     "connectors", "ziwei",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
-    "pricing-embed", "verify", "web-static", "lsp",
+    "pricing-embed", "verify", "web-static", "lsp", "browser",
     "checkpoint-git", "image-process", "history-search", "usage-store",
 ]
 
@@ -153,6 +153,12 @@ web-static = []
 # nemesisbot/nemesis-agent/nemesis-web）。运行闸 config agents.lsp_tool
 # （默认关）+ PATH 探测本来就关着，编译内含 ~0.2MB；IoT 建议关。
 lsp = ["dep:nemesis-lsp", "nemesis-agent/lsp", "nemesis-web/lsp"]
+
+# 浏览器接管框架（2026-11-15）：bot 在用户机器浏览器（真 Edge/Chrome 窗口）
+# 里看页面 + 操作页面。nemesis-browser CDP 驱动 + host_browser 工具 +
+# Dashboard 执行单元浏览器面板（browser.* WSAPI）。关 = 工具/WSAPI/前端
+# 页面整体消失（与 VM 档 browser 工具无关，那个随 vm feature）。
+browser = ["dep:nemesis-browser", "nemesis-web/browser"]
 # 2026-10-17 体积细粒度三件套（nemesis-agent 重依赖拆分）：
 # checkpoint-git：D2 影子库（libgit2 ~1.5MB）；关 = checkpoint 恒 JSON 快照回落
 # image-process：J6 图片降采样（~0.8MB）；关 = 超限图按原图链路（验真链照常把关）
@@ -249,6 +255,8 @@ nemesis-web = { workspace = true }
 # shutdown_all + web server share the same Arc the LspTool registers with.
 # LSP 只读语义查询（lsp feature 门控；穿透 nemesis-agent/lsp + nemesis-web/lsp）
 nemesis-lsp = { workspace = true, optional = true }
+# 浏览器接管框架（browser feature 门控；穿透 nemesis-web/browser）
+nemesis-browser = { workspace = true, optional = true }
 nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }

@@ -4735,3 +4735,36 @@ fn test_connectors_script_default_timeout_semantics() {
     .unwrap();
     assert_eq!(cfg3.script_timeout_secs(), 120);
 }
+
+/// 浏览器接管段（2026-11-15）：顶层 typed 建模防 set_field round-trip 丢键
+/// （plugins 段同款教训——不建模则 Dashboard 设置页保存 kind/executable 恒
+/// 报「unknown config field」，spawn 永远走 auto）。旧 config.json 无该段 =
+/// None 全默认；显式值 round-trip 无损。
+#[test]
+fn test_browser_config_typed_roundtrip() {
+    // 旧 JSON（无 browser 段）= None（prefs_getter 落全默认 auto）。
+    let old: crate::Config = serde_json::from_str(r#"{"model_list": []}"#).unwrap();
+    assert!(old.browser.is_none(), "缺省段 = None");
+
+    // 显式段解析 + 缺省 auto 语义。
+    let cfg: crate::Config = serde_json::from_str(r#"{"browser": {"kind": "edge"}}"#).unwrap();
+    let seg = cfg.browser.as_ref().expect("browser 段丢失");
+    assert_eq!(seg.kind, "edge");
+    assert_eq!(seg.executable, "", "executable 缺省空");
+
+    // 整档 round-trip：typed 序列化必须原样回吐（set_field 的
+    // json_path_get 校验依赖这一点）。
+    let out = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(
+        out["browser"]["kind"], "edge",
+        "round-trip 不得丢 browser.kind"
+    );
+
+    // executable 也保真。
+    let cfg2: crate::Config =
+        serde_json::from_str(r#"{"browser": {"kind": "custom", "executable": "C:/b/my.exe"}}"#)
+            .unwrap();
+    let out2 = serde_json::to_value(&cfg2).unwrap();
+    assert_eq!(out2["browser"]["kind"], "custom");
+    assert_eq!(out2["browser"]["executable"], "C:/b/my.exe");
+}

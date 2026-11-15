@@ -64,6 +64,10 @@ pub mod connectors;
 pub mod editor;
 // canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
+// 浏览器接管管理面（browser.* WSAPI；browser feature 门控，manager 槽
+// 未装配时 handler 诚实报「未装配」）。
+#[cfg(feature = "browser")]
+pub mod browser;
 pub mod estop;
 // 专家子代理管理面（experts.*）——bot 侧资源层经静态槽桥注入。
 pub mod experts;
@@ -330,6 +334,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "vm")]
     {
         router.register(Arc::new(vm::VmHandler));
+    }
+    // 浏览器接管管理面（browser.* WSAPI；manager 槽未装配诚实报）。
+    #[cfg(feature = "browser")]
+    {
+        router.register(Arc::new(browser::BrowserHandler));
     }
     #[cfg(feature = "forge")]
     {

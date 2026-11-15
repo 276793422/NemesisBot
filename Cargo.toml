@@ -46,6 +46,7 @@ members = [
     "crates/nemesis-voice",
     "crates/nemesis-ui",
     "crates/nemesis-lsp",
+    "crates/nemesis-browser",
     "crates/nemesis-board",
     "crates/nemesis-connectors",
     "nemesisbot",
@@ -248,6 +249,7 @@ nemesis-workflow = { path = "crates/nemesis-workflow" }
 nemesis-skills = { path = "crates/nemesis-skills", default-features = false }
 nemesis-mcp = { path = "crates/nemesis-mcp" }
 nemesis-lsp = { path = "crates/nemesis-lsp" }
+nemesis-browser = { path = "crates/nemesis-browser" }
 nemesis-agent = { path = "crates/nemesis-agent", default-features = false }
 nemesis-channels = { path = "crates/nemesis-channels" }
 nemesis-forge = { path = "crates/nemesis-forge" }

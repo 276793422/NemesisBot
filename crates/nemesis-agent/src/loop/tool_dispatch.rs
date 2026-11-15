@@ -1691,12 +1691,12 @@ impl AgentLoop {
                         // 缺席/被拒/超时 = 原错误串即工具结果，工具不执行，
                         // fail loud 零回归）。
                         Some(tool) => {
-                            let (exec_args, vault_secrets) =
+                            let (exec_args, vault_secrets, cred_bindings) =
                                 match credential_injection::inject_credential_aliases_with_secrets(
                                     tool.as_ref(),
                                     &call.arguments,
                                 ) {
-                                    Ok((a, s)) => (a, s),
+                                    Ok((a, s, b)) => (a, s, b),
                                     Err(inj_err) => {
                                         match credential_injection::try_card_recovery(
                                             cred_broker.clone(),
@@ -1709,11 +1709,23 @@ impl AgentLoop {
                                         )
                                         .await
                                         {
-                                            Some((a, s)) => (a, s),
+                                            Some((a, s, b)) => (a, s, b),
                                             None => return inj_err.to_string(),
                                         }
                                     }
                                 };
+                            // 浏览器接管（2026-11-15）凭据绑定 sidecar：注入层
+                            // 解析出的 (字段路径, 别名) 清单合入 exec_args 专键
+                            // ——工具 execute 侧防伪造验证的数据源（凭据守卫③
+                            // ：工具自解别名与槽内明文比对）。别名非明文无泄
+                            // 漏面；不认识该键的工具按多余字段忽略。
+                            let exec_args = match credential_injection::attach_credential_bindings(
+                                &exec_args,
+                                &cred_bindings,
+                            ) {
+                                Some(v) => v,
+                                None => exec_args,
+                            };
                             // B4（2026-11-08 批次④）会话凭据占位符：声明槽
                             // 注入之后、execute 之前——安全 8 层已在上方跑完
                             //（各层看到占位符原文；Layer 4/DLP 的匹配级引用
