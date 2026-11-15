@@ -117,7 +117,9 @@ fn test_migration_from_old_location() {
     // 迁移 info callsite 首评触发全表重建，无 subscriber 线程上评估 =
     // 全表缓存 NEVER，砸中并发捕获测试的 emit 窗口）——凡会 emit 事件
     // 的测试一律持捕获互斥闸。
-    let _capture_serial = CAPTURE_SERIAL_W26.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
 
@@ -237,7 +239,9 @@ fn test_new_manager_with_corrupted_state_file() {
     // callsite——tracing callsite interest 缓存进程级单值，无 subscriber
     // 的执行可能把 callsite 缓存成 NEVER 短路对方的 emit（假红）。
     // 先例：auth store/tests.rs test_new_with_corrupted_json 同注释）。
-    let _capture_serial = CAPTURE_SERIAL_W26.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (_, _guard) = warn_capture_setup_w26();
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
@@ -257,7 +261,9 @@ fn test_new_manager_with_corrupted_state_file() {
 fn test_new_manager_with_empty_state_file() {
     // 空 JSON 同样是损坏面（半截写残留），会触发 BUG-20261114-026 的
     // warn 臂——同理必须持 guard 防 callsite interest 缓存互踩。
-    let _capture_serial = CAPTURE_SERIAL_W26.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (_, _guard) = warn_capture_setup_w26();
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
@@ -279,7 +285,9 @@ fn test_new_manager_with_empty_state_file() {
 /// test_new_manager_with_corrupted_state_file 钉住，本测试钉留痕面。
 #[test]
 fn test_corrupted_state_file_load_warns_loudly() {
-    let _capture_serial = CAPTURE_SERIAL_W26.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
     fs::create_dir_all(workspace.join("state")).unwrap();
@@ -314,7 +322,9 @@ fn test_migration_corrupt_old_file_warns_loudly() {
     // 旧位置损坏文件；新位置无 state.json（触发迁移臂）。
     fs::write(workspace.join("state.json"), "not-json-at-all {{{").unwrap();
 
-    let _capture_serial = CAPTURE_SERIAL_W26.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (buf, _guard) = warn_capture_setup_w26();
     let mgr = WorkspaceStateManager::new(workspace);
     assert_eq!(mgr.get_last_channel(), "");
@@ -584,7 +594,9 @@ fn test_set_last_chat_id_with_special_chars() {
 fn test_migration_from_old_location_with_invalid_json() {
     // (BUG-20261115-027) 走迁移失败臂 emit warn!（旧位置损坏 callsite）
     // ——同 test_migration_from_old_location，凡 emit 事件必持互斥闸。
-    let _capture_serial = CAPTURE_SERIAL_W26.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
 
