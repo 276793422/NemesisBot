@@ -232,22 +232,34 @@ fn persist_concurrent_writers_always_leave_valid_snapshot() {
     // write_file_atomic 契约明文「目标被外部占用（AV 扫描）时 rename 失败
     // 属预期，由调用方决定重试」（file.rs 头注）——重试归属测试侧：begin
     // 是同 id 幂等 upsert（覆盖 + 重 persist），有界重试不影响断言语义。
+    // 重试窗按死线驱动（10s）而非固定次数：全量并行 + 新编译 exe 场景下
+    // Defender 对每秒数百次重写的 tasks.json 会持句柄（共享违规 = rename
+    // 失败，persist 只 WARN 测试进程听不见），持有时长秒级波动——固定
+    // 5×200ms 窗在重负载下赌输过（实录 2026-11-16：快照冻结在风暴早期
+    // 8 条、后续 rename 全败；join 完成 ⇒ rename 全部已返回，不存在迟到
+    // 涓流，唯一解释就是连败）。
+    let expected = 8 * 30 + 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut tasks: Vec<SubagentTask> = Vec::new();
-    for attempt in 0..5 {
+    loop {
         reg.begin(begin_req("subagent:quiesce"));
-        let bytes = std::fs::read(&path).unwrap();
-        tasks = serde_json::from_slice(&bytes)
-            .unwrap_or_else(|e| panic!("静默后快照非法（第 {} 次尝试）: {e}", attempt + 1));
-        if tasks.len() == 8 * 30 + 1 {
-            break;
+        if let Some(parsed) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Vec<SubagentTask>>(&bytes).ok())
+        {
+            tasks = parsed;
+            if tasks.len() == expected {
+                break;
+            }
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "静默后全量快照始终不完整（死线 10s）：期望 {expected} 条，末次读到 {} 条 \
+             —— rename 持续失败（AV/Defender 持句柄）或真回归",
+            tasks.len()
+        );
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    assert_eq!(
-        tasks.len(),
-        8 * 30 + 1,
-        "静默后全量快照必须含全部条目（重试 5 次后仍缺 = 真回归）"
-    );
     // 不变量 3：无残留 tmp 垃圾（write_file_atomic 失败自清理 + rename 带走）。
     let leftovers: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
