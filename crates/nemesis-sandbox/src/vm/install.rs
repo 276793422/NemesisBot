@@ -537,7 +537,15 @@ pub async fn fetch_sha512_sidecar(url: &str) -> Result<String> {
     if !resp.status().is_success() {
         bail!("sidecar {sidecar_url} → {}", resp.status());
     }
-    let body = resp.text().await.context("read sidecar body")?;
+    // BUG-20261115-025：sidecar 体有帽读取——裸 `text()` 让失控/被劫持的
+    // 上游（qemu 镜像 URL 用户可配）在 200 态把任意大 body 灌进内存。
+    // sidecar 合同 = 128 hex 字符（parse_sha512_sidecar 严格校验），1MB 帽
+    // 余量充足；超帽在读入中途断开（nemesis_utils::http_cap 单一真相源）。
+    const SHA512_SIDECAR_READ_CAP: u64 = 1024 * 1024;
+    let body_bytes = nemesis_utils::http_cap::read_body_capped(resp, SHA512_SIDECAR_READ_CAP)
+        .await
+        .map_err(|e| anyhow::anyhow!("read sidecar body: {e}"))?;
+    let body = String::from_utf8_lossy(&body_bytes).into_owned();
     parse_sha512_sidecar(&body).context("sidecar 内容不含合法 hex128")
 }
 

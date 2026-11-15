@@ -687,6 +687,60 @@ async fn t7_photo_download_without_http_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261115-025：媒体下载有帽读取——超帽在读入中途断开，不落盘不灌内存
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn t_bug_20261115_025_voice_download_over_cap_aborts() {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let total = VOICE_DOWNLOAD_LIMIT_BYTES + 1;
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        // 宣告 64MB+1 并实际灌出：reqwest Client::new() 默认无读超时，
+        // 错误必来自帽（读入中途断开）而非超时。
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/ogg\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        let chunk = [0u8; 65536];
+        let mut sent: u64 = 0;
+        while sent < total {
+            // 客户端在超帽点断开 → 写失败返回 = 预期路径
+            if stream.write_all(&chunk).is_err() {
+                return;
+            }
+            sent += chunk.len() as u64;
+        }
+    });
+
+    let uploads = tempfile::tempdir().expect("uploads tempdir");
+    let dest = uploads.path().join("voice.ogg");
+    let client = reqwest::Client::new();
+    // token 用「不出现于 exceeds limit 消息」的长串——api.redact 会把
+    // token 全文替换成 <redacted>，单字符 token（如 "t"）会把断言子串
+    // 一起打碎（首跑实录：exceeds limi<redacted> 假红）。
+    let api = TelegramApi::new(&format!("http://{addr}"), "TKN123");
+    let err =
+        TelegramChannel::download_voice_file(&client, &format!("http://{addr}/file"), &dest, &api)
+            .await
+            .expect_err("超帽必须 Err");
+    assert!(
+        err.contains("exceeds limit"),
+        "错误必须来自帽（实际: {err}）"
+    );
+    assert!(!dest.exists(), "超帽不得落盘");
+}
+
+// ---------------------------------------------------------------------------
 // BUG-20261109-006：URL 构造契约 + token 脱敏
 // ---------------------------------------------------------------------------
 

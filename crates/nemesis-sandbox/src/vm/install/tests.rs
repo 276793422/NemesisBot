@@ -398,3 +398,50 @@ fn bug280_pin_preview_multibyte_safe() {
     let chinese = "中".repeat(10); // 30 字节，第 16 字节在「中」的中间
     assert_eq!(super::pin_preview(&chinese), chinese);
 }
+
+// ---：BUG-20261115-025 sidecar 体有帽读取（超帽读入中途断开）---
+
+#[tokio::test]
+async fn bug_20261115_025_sidecar_over_cap_aborts() {
+    use std::io::{Read, Write};
+
+    // reqwest Client 无读超时 → 灌出 1MB+1 后错误必来自帽而非超时；
+    // 服务器端写失败返回 = 客户端在超帽点断开 = 预期路径。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let total: u64 = 1024 * 1024 + 1;
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        let chunk = [b'a'; 65536];
+        let mut sent: u64 = 0;
+        while sent < total {
+            if stream.write_all(&chunk).is_err() {
+                return;
+            }
+            sent += chunk.len() as u64;
+        }
+    });
+
+    let err = fetch_sha512_sidecar(&format!("http://{addr}/qemu.iso"))
+        .await
+        .expect_err("超帽必须 Err");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("read sidecar body"),
+        "错误链须带读取现场（实际: {msg}）"
+    );
+    assert!(
+        msg.contains("exceeds limit"),
+        "错误必须来自帽（实际: {msg}）"
+    );
+}
