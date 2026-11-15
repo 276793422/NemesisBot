@@ -565,7 +565,7 @@ fn kill_process(pid: u32) {
 
 // 非 Windows 的 kill：只声明 libc 符号（引入 libc crate 为这一个调用不值）。
 #[cfg(not(windows))]
-extern "C" {
+unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
 }
 

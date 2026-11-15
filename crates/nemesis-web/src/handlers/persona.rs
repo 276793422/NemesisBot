@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use crate::handlers::{get_str, require_workspace, resolve_path};
 use crate::ws_router::{ModuleHandler, RequestContext};
+use futures::StreamExt as _;
 
 // Constants
 
@@ -939,11 +940,38 @@ fn cache_key(source: &str, id: &str) -> String {
 
 /// builtin 单人格原文直链（raw.githubusercontent.com：**raw 域名不占
 /// api.github.com 60 次/小时配额**——agency 283 个 fm 全 403 的冒烟实录
-/// 教训；自家源从第一天就全走 raw）。
+/// 教训；raw 可达网络零配额消耗）。
 fn builtin_raw_file_url(id: &str, file: &str) -> String {
     format!(
         "https://raw.githubusercontent.com/{BUILTIN_REPO}/{BUILTIN_BRANCH}/{BUILTIN_PATH}/{id}/{file}"
     )
+}
+
+/// builtin 单人格原文 contents API 形态（2026-11-16 卡慢 BUG 修复①②臂：
+/// raw 域在部分网络不可达——黑洞拖满 30s 超时才失败；api.github.com 与
+/// agency 同域实测可达。占用配额，仅作 raw 传输层失败后的回落臂）。
+fn builtin_contents_file_url(id: &str, file: &str) -> String {
+    format!(
+        "{GITHUB_API}/repos/{BUILTIN_REPO}/contents/{BUILTIN_PATH}/{id}/{file}?ref={BUILTIN_BRANCH}"
+    )
+}
+
+/// GitHub contents API 响应 JSON → 原文文本（encoding=base64 解码；
+/// agency [`fetch_agent_content_online`] 与 builtin 回落臂共用单一真相源）。
+fn decode_github_contents_text(json: &serde_json::Value) -> Result<String, String> {
+    let encoding = json["encoding"].as_str().unwrap_or("");
+    let content_b64 = json["content"]
+        .as_str()
+        .ok_or("missing content field in GitHub response")?;
+    let content = if encoding == "base64" {
+        // GitHub returns base64 with newlines
+        let cleaned: String = content_b64.chars().filter(|c| !c.is_whitespace()).collect();
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &cleaned)
+            .map_err(|e| format!("base64 decode error: {}", e))?
+    } else {
+        content_b64.as_bytes().to_vec()
+    };
+    String::from_utf8(content).map_err(|e| format!("utf8 error: {}", e))
 }
 
 /// builtin 目录源清单在线拉取（contents API 目录列举，1 次调用拿全清单；
@@ -1005,9 +1033,16 @@ async fn fetch_builtin_list_online() -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-/// builtin 单人格原文（raw.md）在线拉取（raw 直链；命中写
-/// CONTENT_CACHE/FM_CACHE 复合键——browse/preview/download/hire 四链共享，
-/// 与 agency [`fetch_agent_content_online`] 同款副作用养缓存语义）。
+/// builtin 单人格原文（raw.md）在线拉取（**两臂级联**，2026-11-16 卡慢 BUG
+/// 修复①）：臂① raw.githubusercontent.com 直链（不占 api.github.com 60 次/
+/// 小时配额；带 5s 短超时——黑洞网络快败不拖满 client 30s）→ 臂②
+/// api.github.com contents API（与 agency 同域同法，base64 经
+/// [`decode_github_contents_text`]；占配额，仅 raw 传输层失败后回落）。
+/// 级联条件 = 传输层失败（send Err：域名不可达/黑洞）；HTTP 非 2xx 不级联
+/// ——文件真缺失时两域同 404，白烧配额。失败返回 Err → 调用方回落编译期
+/// 内嵌模板（第三臂，browse/preview/download/hire 各自既有兜底不动）。
+/// 命中写 CONTENT_CACHE/FM_CACHE 复合键——browse/preview/download/hire 四链
+/// 共享，与 agency [`fetch_agent_content_online`] 同款副作用养缓存语义。
 async fn fetch_builtin_raw_online(id: &str) -> Result<String, String> {
     let key = cache_key(BUILTIN_SOURCE_KEY, id);
     {
@@ -1018,27 +1053,75 @@ async fn fetch_builtin_raw_online(id: &str) -> Result<String, String> {
     }
     #[cfg(test)]
     forced_builtin_live_fail_check().await?;
-    let url = builtin_raw_file_url(id, "raw.md");
-    let resp = get_client()
-        .get(&url)
+
+    // 臂①：raw 直链（5s 单请求超时，快败让位臂②）
+    let raw_url = builtin_raw_file_url(id, "raw.md");
+    let raw_resp = match get_client()
+        .get(&raw_url)
+        .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
-        .map_err(|e| format!("builtin raw fetch error: {}", reqwest_error_chain(&e)))?;
+    {
+        Ok(resp) if resp.status().is_success() => Some(resp),
+        Ok(resp) => {
+            // HTTP 层失败（404/403 等）：文件/仓库配置问题，臂②同 URL 同结果，
+            // 诚实报错不级联。
+            let status = resp.status();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
+            return Err(format!("builtin raw fetch returned {}: {}", status, body));
+        }
+        Err(e) => {
+            tracing::debug!(
+                "builtin raw 直链传输失败（{:?}），回落 contents API：{}",
+                e,
+                reqwest_error_chain(&e)
+            );
+            None
+        }
+    };
+    if let Some(resp) = raw_resp {
+        // 成功响应体有帽读（046 同类横扫补）：markdown 人格文件 KB 量级，1MB
+        // 与 SKILL.md 内容帽同源（registry 单一真相源）。resp.text() 的 lossy
+        // 解码语义保留（from_utf8_lossy）。
+        let body = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            nemesis_skills::registry::MAX_SKILL_CONTENT_BODY_BYTES,
+        )
+        .await
+        .map_err(|e| format!("builtin raw read error: {e}"))?;
+        let text = String::from_utf8_lossy(&body).into_owned();
+        if let Some(fm) = parse_frontmatter(&text) {
+            FM_CACHE.lock().unwrap().insert(key.clone(), fm);
+        }
+        CONTENT_CACHE.lock().unwrap().insert(key, text.clone());
+        return Ok(text);
+    }
+
+    // 臂②：contents API base64（raw 域不可达的网络——api.github.com 与
+    // agency 同域可达）。
+    let api_url = builtin_contents_file_url(id, "raw.md");
+    let resp = get_client()
+        .get(&api_url)
+        .send()
+        .await
+        .map_err(|e| format!("builtin contents API error: {}", reqwest_error_chain(&e)))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = nemesis_utils::http_cap::read_error_body(resp).await;
-        return Err(format!("builtin raw fetch returned {}: {}", status, body));
+        return Err(format!(
+            "builtin contents API returned {}: {}",
+            status, body
+        ));
     }
-    // 成功响应体有帽读（046 同类横扫补）：markdown 人格文件 KB 量级，1MB
-    // 与 SKILL.md 内容帽同源（registry 单一真相源）。resp.text() 的 lossy
-    // 解码语义保留（from_utf8_lossy）。
     let body = nemesis_utils::http_cap::read_body_capped(
         resp,
-        nemesis_skills::registry::MAX_SKILL_CONTENT_BODY_BYTES,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
     )
     .await
-    .map_err(|e| format!("builtin raw read error: {e}"))?;
-    let text = String::from_utf8_lossy(&body).into_owned();
+    .map_err(|e| format!("builtin contents API body read: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|e| format!("failed to parse builtin contents response: {}", e))?;
+    let text = decode_github_contents_text(&json)?;
     if let Some(fm) = parse_frontmatter(&text) {
         FM_CACHE.lock().unwrap().insert(key.clone(), fm);
     }
@@ -1164,22 +1247,7 @@ async fn fetch_agent_content_online(id: &str) -> Result<String, String> {
     .map_err(|e| format!("GitHub contents API body read: {e}"))?;
     let json: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| format!("failed to parse contents response: {}", e))?;
-
-    let encoding = json["encoding"].as_str().unwrap_or("");
-    let content_b64 = json["content"]
-        .as_str()
-        .ok_or("missing content field in GitHub response")?;
-
-    let content = if encoding == "base64" {
-        // GitHub returns base64 with newlines
-        let cleaned: String = content_b64.chars().filter(|c| !c.is_whitespace()).collect();
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &cleaned)
-            .map_err(|e| format!("base64 decode error: {}", e))?
-    } else {
-        content_b64.as_bytes().to_vec()
-    };
-
-    let text = String::from_utf8(content).map_err(|e| format!("utf8 error: {}", e))?;
+    let text = decode_github_contents_text(&json)?;
 
     // Parse frontmatter and update cache（复合键）
     if let Some(fm) = parse_frontmatter(&text) {
@@ -2246,21 +2314,40 @@ impl PersonaHandler {
         };
         let live_ok = source_label == "live";
 
+        // 并发预取（2026-11-16 卡慢 BUG 修复②）：逐卡串行 await 在 live 臂
+        // 慢/不可达时把首屏拖成 N×超时放大；buffer_unordered(8) 后墙钟 ≈
+        // ⌈N/8⌉×单卡最慢臂（raw 5s 快败把单卡上限从 30s 压到 ~6s）。结果
+        // 按位归座，下方装配仍按 ids 顺序（卡片次序稳定，不随完成先后抖动）。
+        let mut raws: Vec<Option<Result<String, String>>> = vec![None; ids.len()];
+        if live_ok {
+            let owned: Vec<(usize, String)> = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (i, id.clone()))
+                .collect();
+            let mut stream = futures::stream::iter(
+                owned
+                    .into_iter()
+                    .map(|(i, id)| async move { (i, fetch_builtin_raw_online(&id).await) }),
+            )
+            .buffer_unordered(8);
+            while let Some((i, r)) = stream.next().await {
+                raws[i] = Some(r);
+            }
+        }
+
         let mut items = Vec::new();
-        for id in &ids {
-            let fm = if live_ok {
-                match fetch_builtin_raw_online(id).await {
-                    Ok(raw) => parse_frontmatter(&raw),
-                    Err(e) => {
-                        let class = classify_github_error(&e);
-                        tracing::warn!(
-                            "[Persona] builtin '{id}' raw 拉取失败（{class}），卡片名回落 id"
-                        );
-                        parse_frontmatter(builtin_persona_raw(id).unwrap_or(""))
-                    }
+        for (i, id) in ids.iter().enumerate() {
+            let fm = match raws[i].take() {
+                Some(Ok(raw)) => parse_frontmatter(&raw),
+                Some(Err(e)) => {
+                    let class = classify_github_error(&e);
+                    tracing::warn!(
+                        "[Persona] builtin '{id}' raw 拉取失败（{class}），卡片名回落 id"
+                    );
+                    parse_frontmatter(builtin_persona_raw(id).unwrap_or(""))
                 }
-            } else {
-                parse_frontmatter(builtin_persona_raw(id).unwrap_or(""))
+                None => parse_frontmatter(builtin_persona_raw(id).unwrap_or("")),
             };
             let installed = is_persona_installed(workspace, id);
             items.push(serde_json::json!({

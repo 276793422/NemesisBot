@@ -548,3 +548,60 @@ async fn busy_race_orphan_kick_reinjects_parked_head() {
     al.kick_orphaned_queue_if_idle(key);
     assert_eq!(al.inbox.pending(key), (1, 0), "busy session must not kick");
 }
+
+// ---------------------------------------------------------------------------
+// system_notice_of：系统通知标记推导（2026-11-16 系统注入消息渲染成用户
+// 气泡 BUG）——sender 推导 / metadata 覆盖 / 真人消息不命中。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_notice_of_derivation_table() {
+    let mk =
+        |sender: &str, metadata: HashMap<String, String>| nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: sender.to_string(),
+            chat_id: "c".to_string(),
+            content: "x".to_string(),
+            media: vec![],
+            session_key: "s".to_string(),
+            correlation_id: String::new(),
+            metadata,
+            voice_playback: None,
+        };
+
+    // ① 后台任务完成唤醒形态：sender=system、无 metadata → 推导命中。
+    let wake = mk("system", HashMap::new());
+    assert_eq!(super::system_notice_of(&wake), Some("system"));
+
+    // ② Turn WAL 续轮形态：sender=system + 自有 metadata（不含
+    // system_notice）→ 仍推导命中（自有键不受影响）。
+    let wal = mk(
+        "system",
+        [("turn_wal_resume".to_string(), "1".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(super::system_notice_of(&wal), Some("system"));
+
+    // ③ metadata 显式值优先（注入点可指定更细类别）。
+    let explicit = mk(
+        "system",
+        [("system_notice".to_string(), "background_wake".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(super::system_notice_of(&explicit), Some("background_wake"));
+
+    // ④ 真人消息：web 通道真实会话 id → None（不写键，用户气泡旧行为）。
+    let human = mk("web-session-abc", HashMap::new());
+    assert_eq!(super::system_notice_of(&human), None);
+
+    // ⑤ cron 投递形态：sender=cron:{id} → None（cron 行已有 cron_job_id
+    // meta，前端按 cronJobId 渲染，不走本标记）。
+    let cron = mk("cron:job-7", HashMap::new());
+    assert_eq!(super::system_notice_of(&cron), None);
+
+    // ⑥ 集群桥接远端用户：sender 为远端真实 id → None。
+    let remote = mk("remote-user-9", HashMap::new());
+    assert_eq!(super::system_notice_of(&remote), None);
+}

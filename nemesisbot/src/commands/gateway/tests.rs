@@ -7464,34 +7464,51 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
             std::collections::HashMap::new(),
         ),
     );
-    // 先放行 spawn 任务起跑（watcher 先拍下 data_version 基线），再写库。
+    // 先放行 spawn 任务起跑（watcher 首调度 + 触发循环消费），再进写库等待循环。
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     // ③ board watcher：store 连接写 board.db → watcher 连接 data_version 变化
-    //    → board-changed 广播。
-    if let Some(store) = f.ctx.board_store.as_ref() {
-        store
-            .create_issue(nemesis_board::NewIssue {
-                title: "watcher".to_string(),
-                ..Default::default()
-            })
-            .expect("create issue for watcher");
-    }
-    // 放行：watcher 2s 轮询拍到变化 → board-changed 广播。有界条件轮询
-    // （预算 15s，broadcast 到达即走——满载机器上首拍延迟可达秒级，固定
-    // 短窗会假红）。retention sweep / usage watcher 本就无独立断言
-    // （「sleep 期间跑过首轮无 panic」），等待形态变化不影响。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    let mut got_board_changed = false;
-    while std::time::Instant::now() < deadline {
-        while let Ok(ev) = hub_rx.try_recv() {
-            if ev.event_type == "board-changed" {
-                got_board_changed = true;
+    //    → board-changed 广播。等待事件驱动（写库 → 死线收帧，未到再写再等，
+    //    旧形态「写库一次 + 固定窗轮询抽干」是赌注）。watcher 终态令牌已注入
+    //    局部（上方 watcher_terminal——BUG-20261115-046 根修），对进程全局
+    //    令牌的跨测试毒杀（run_runtime Step 24 cancel、OnceLock 无复位）免疫：
+    //    此处 miss = 真回归，无回落臂（旧回落臂会掩盖 init_post_agent 接线回归）。
+    async fn write_and_wait_board_changed(
+        store: &std::sync::Arc<nemesis_board::BoardStore>,
+        hub_rx: &mut tokio::sync::broadcast::Receiver<nemesis_web::events::Event>,
+        title_prefix: &str,
+        rounds: usize,
+    ) -> bool {
+        for round in 0..rounds {
+            store
+                .create_issue(nemesis_board::NewIssue {
+                    title: format!("{title_prefix}-r{round}"),
+                    ..Default::default()
+                })
+                .expect("create issue for watcher");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match tokio::time::timeout_at(deadline, hub_rx.recv()).await {
+                    Ok(Ok(ev)) => {
+                        if ev.event_type == "board-changed" {
+                            return true;
+                        }
+                        // 其他事件（工具/心跳等）继续等
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        // 256 槽溢出丢帧：跳本轮，重写库重触发（不致命）
+                        break;
+                    }
+                    Ok(Err(e)) => panic!("event hub closed: {e}"),
+                    Err(_) => break, // 本轮 5s 死线到 → 下一轮重写
+                }
             }
         }
-        if got_board_changed {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        false
+    }
+
+    let mut got_board_changed = false;
+    if let Some(store) = f.ctx.board_store.as_ref().map(std::sync::Arc::clone) {
+        got_board_changed = write_and_wait_board_changed(&store, &mut hub_rx, "watcher", 5).await;
     }
     // 收线：cancel 局部令牌 → watcher 确定性退出（023 语义：终态前置
     // 检查保证不 re-park timer），runtime Drop 无悬空 timer。
@@ -7502,12 +7519,13 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
         let (events, _) = web.event_hub().replay_after(0);
         let kinds: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
         panic!(
-            "board watcher must broadcast board-changed after db write (15s budget exhausted) \
+            "board watcher must broadcast board-changed after db write \
+             （5 轮写库×5s 死线均未见广播——watcher 挂局部令牌对全局毒杀免疫，miss=真回归） \
              [diag] replay_total={} replay_kinds={kinds:?}",
             events.len()
         );
     }
-    // retention sweep / usage watcher 已在等待期间跑过首轮——无 panic 即过。
+    // retention sweep / usage watcher 在收帧等待期间被调度跑过首轮——无 panic 即过。
 }
 
 /// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + 重建 +

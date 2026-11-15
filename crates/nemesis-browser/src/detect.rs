@@ -239,11 +239,6 @@ fn expand_env(s: &str) -> PathBuf {
     PathBuf::from(out)
 }
 
-#[cfg(not(windows))]
-fn expand_env(s: &str) -> PathBuf {
-    PathBuf::from(s)
-}
-
 /// Windows 已知安装路径（64/32 位 Program Files + LocalAppData）。
 #[cfg(windows)]
 fn windows_known_paths(kind: DriverKind) -> Vec<PathBuf> {

@@ -661,6 +661,7 @@ impl AgentLoop {
                 work: None,
 
                 source_node: None,
+                system_notice: system_notice_of(msg),
             },
         );
         crate::chat_log::append_chat_log_meta(
@@ -679,6 +680,7 @@ impl AgentLoop {
                 work: None,
 
                 source_node: None,
+                system_notice: None, // assistant 回实行正常气泡展示，无标记
             },
         );
         if !log_existed {
@@ -1303,6 +1305,7 @@ impl AgentLoop {
                     work: None,
 
                     source_node: None,
+                    system_notice: system_notice_of(&msg),
                 },
             );
             if !log_existed {
@@ -1998,6 +2001,22 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
         session_key: route.session_key,
         matched_by: route.matched_by,
     }
+}
+
+/// 系统通知标记推导（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
+/// metadata 显式 `system_notice` 优先（注入点可指定更细的类别文案），
+/// 否则 `sender_id=="system"` 的注入源一律视为系统通知——后台任务完成
+/// 唤醒（agent_build）、审批裁决回灌（runtime）、Turn WAL 崩溃恢复续轮
+/// （bus）三个已知生产注入点全部命中；未来任何 `sender="system"` 的新
+/// 注入点自动正确（推导而非逐注入点打标）。真人消息经各通道携带真实
+/// 用户 id，不命中——返回 None 不写键，前端用户气泡逐字节旧行为。
+/// role 仍是 `"user"`（通知轮是真实轮次：上下文重建投影与轮边界判定
+/// 依赖 role=user），标记只影响 Dashboard 展示形态。
+fn system_notice_of(msg: &nemesis_types::channel::InboundMessage) -> Option<&str> {
+    msg.metadata
+        .get("system_notice")
+        .map(|s| s.as_str())
+        .or_else(|| (msg.sender_id == "system").then_some("system"))
 }
 
 // 覆盖率补充批次：审批卡回执语法 / 会话闸队列账目 / inbox_status 模式。

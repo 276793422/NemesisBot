@@ -80,6 +80,9 @@ impl AgentLoop {
                     work: None,
 
                     source_node: None,
+                    // channel=="system" 守卫保证到达此路径的必为系统消息
+                    // ——落行带系统通知标记（前端渲染通知条而非用户气泡）。
+                    system_notice: Some("system"),
                 },
             );
             if !log_existed {
