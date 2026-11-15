@@ -802,9 +802,11 @@ struct StartGateGuard<'a> {
 
 impl Drop for StartGateGuard<'_> {
     fn drop(&mut self) {
+        // unwind 路径中 Drop，毒化锁 expect 的持毒 panic 会升级成
+        // double-panic abort（tts.rs 同款纪律）——into_inner 容毒恢复，照常摘除。
         self.set
             .lock()
-            .expect("vm supervisor starting lock poisoned")
+            .unwrap_or_else(|p| p.into_inner())
             .remove(&self.id);
     }
 }
