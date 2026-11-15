@@ -75,6 +75,15 @@ jobs:
         with:
           targets: wasm32-wasip2
 
+      # dtolnay action 的 targets 只装到它选定的默认链；仓库
+      # rust-toolchain.toml 钉 1.95.0 后 cargo 实际用钉链——钉链上缺
+      # wasm32-wasip2 = wasm fixture 构建 E0463（2026-11-15 实录）。裸
+      # rustup target add 落在 cwd 的 toolchain override（=钉链），
+      # 不硬编码版本号（钉升级无需改此处）。
+      - name: Install wasm32-wasip2 on pinned toolchain
+        shell: bash
+        run: rustup target add wasm32-wasip2
+
       # workspaces 收编示例插件（嵌套独立 workspace）：fixture 构建产物
       # 落在各自 target/，不收编则每轮冷构建多花 3-6 分钟。
       # plugins/plugin-roaming 同理（QUIC 插件化 M1：独立 workspace，

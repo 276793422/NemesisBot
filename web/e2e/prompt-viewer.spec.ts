@@ -71,10 +71,12 @@ test('提示词查看器：autoLogin 落盘 → 票据流取段 → 一次性链
 
   // ── 4. 票据流：取票 → 带票打开 → 内容渲染 + 倒计时横幅 ──
   const tk = await wsapi(page, 'chat', 'prompt_ticket', { session_id: sid, segment: 'tools' })
-  expect(tk.data?.ticket, 'chat.prompt_ticket 应返回票据').toBeTruthy()
+  // WsapiResult.data 是 unknown——此处窄化票据形状（e2e 侧自行守护协议面）
+  const ticket = (tk.data as { ticket?: unknown } | null)?.ticket
+  expect(ticket, 'chat.prompt_ticket 应返回票据').toBeTruthy()
   const viewer = await context.newPage()
   await viewer.goto(
-    `${BASE_URL}/prompt-viewer/index.html?session=${encodeURIComponent(sid)}&segment=tools&ticket=${encodeURIComponent(String(tk.data.ticket))}`,
+    `${BASE_URL}/prompt-viewer/index.html?session=${encodeURIComponent(sid)}&segment=tools&ticket=${encodeURIComponent(String(ticket))}`,
   )
   await expect(viewer.locator('.pv-error-card')).toHaveCount(0)
   await expect(viewer.locator('.pv-body')).toBeVisible({ timeout: 20_000 })
