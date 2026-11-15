@@ -24,7 +24,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::identity::{BridgeClusterIdentity, IdentitySinkSlot};
 use super::protocol::{
-    ACCESS_CHECK_TIMEOUT_SECS, BridgeFrame, HEARTBEAT_TIMEOUT_SECS, decode_frame, encode_frame,
+    ACCESS_CHECK_TIMEOUT_SECS, ACCESS_NONCE_TTL_SECS, BridgeFrame, HEARTBEAT_TIMEOUT_SECS,
+    decode_frame, encode_frame,
 };
 
 /// 桥入设备下行发送队列深度（设备消费不过来 = 连接不健康，try_send 满即拒）。
@@ -111,6 +112,13 @@ pub struct RelayServer {
     conns: DashMap<u64, ConnEntry>,
     /// access_check 等待表：request_id → 回执通道（设备 AccessResult 投递）。
     access_waiters: DashMap<String, oneshot::Sender<bool>>,
+    /// 挑战等待表（BUG-20261116-009）：request_id → nonce 通道
+    /// （设备 AccessChallenge 投递；旧设备不回 = 超时回落旧版流程）。
+    challenge_waiters: DashMap<String, oneshot::Sender<String>>,
+    /// /relay/login 挑战 nonce 库（服务端本地发放）：nonce → 发放时刻
+    /// （unix 秒）。单次消费 + TTL 过期；浏览器页与服务器同 binary，
+    /// 无跨版本兼容问题 → nonce 必带（不带 = 拒绝）。
+    login_nonces: DashMap<String, u64>,
     next_conn_id: AtomicU64,
     next_generation: AtomicU64,
     sweeper_started: AtomicBool,
@@ -140,6 +148,8 @@ impl RelayServer {
             sessions: DashMap::new(),
             conns: DashMap::new(),
             access_waiters: DashMap::new(),
+            challenge_waiters: DashMap::new(),
+            login_nonces: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
             next_generation: AtomicU64::new(1),
             sweeper_started: AtomicBool::new(false),
@@ -267,11 +277,13 @@ impl RelayServer {
     /// 状态页门（服务端自己持有 token；cookie 被拿 = 同级会话泄露，不引入
     /// 额外面）。
     pub fn admin_hash_hex(&self) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(self.ws_token.as_bytes());
-        let out = hasher.finalize();
-        out.iter().map(|b| format!("{b:02x}")).collect()
+        sha256_hex_of(self.ws_token.as_bytes())
+    }
+
+    /// ws token 明文（`/relay/login` 挑战-应答验算
+    /// SHA-256(token||nonce) 用；crate 内可见，不外泄）。
+    pub(crate) fn ws_token_plain(&self) -> &str {
+        &self.ws_token
     }
 
     /// 运行时开关（通道页调用；关闭即踢掉全部桥入设备）。
@@ -486,9 +498,16 @@ impl RelayServer {
         self.devices.contains_key(node_id)
     }
 
-    /// 发起面板访问 token 校验（服务端只转发哈希，零存储原文）。
+    /// 发起面板访问 token 校验（服务端只转发摘要，零存储原文）。
     /// 设备离线 → Err；设备回执 → Ok(ok)；超时/断开 → Ok(false)。
-    pub async fn access_check(&self, node_id: &str, hash_hex: &str) -> Result<bool, String> {
+    /// `nonce_hex` = Some(n) 走挑战-应答校验（设备单次消费 nonce），
+    /// None = 旧版裸哈希（旧设备/挑战超时回落路径）。
+    pub async fn access_check(
+        &self,
+        node_id: &str,
+        hash_hex: &str,
+        nonce_hex: Option<&str>,
+    ) -> Result<bool, String> {
         if !self.devices.contains_key(node_id) {
             return Err("设备不在线".to_string());
         }
@@ -501,6 +520,7 @@ impl RelayServer {
                 request_id: request_id.clone(),
                 node_id: node_id.to_string(),
                 hash_hex: hash_hex.to_string(),
+                nonce_hex: nonce_hex.map(|s| s.to_string()),
             },
             0,
         );
@@ -522,10 +542,92 @@ impl RelayServer {
         }
     }
 
+    /// 请求设备发放挑战 nonce（BUG-20261116-009 挑战-应答第一步）。
+    /// 设备在线且回 `AccessChallenge` → Ok(nonce_hex)；设备离线 → Err；
+    /// 超时（旧设备不解码新帧帧型）→ Err（调用方回落旧版裸哈希流程）。
+    pub async fn access_challenge(&self, node_id: &str) -> Result<String, String> {
+        self.access_challenge_with_timeout(node_id, Duration::from_secs(ACCESS_CHECK_TIMEOUT_SECS))
+            .await
+    }
+
+    /// [`access_challenge`] 的可调超时形态（测试用短时窗；生产走常量）。
+    pub async fn access_challenge_with_timeout(
+        &self,
+        node_id: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        if !self.devices.contains_key(node_id) {
+            return Err("设备不在线".to_string());
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        self.challenge_waiters.insert(request_id.clone(), tx);
+        let sent = self.send_to_device(
+            node_id,
+            BridgeFrame::AccessChallengeRequest {
+                request_id: request_id.clone(),
+                node_id: node_id.to_string(),
+            },
+            0,
+        );
+        if !sent {
+            self.challenge_waiters.remove(&request_id);
+            return Err("设备不在线".to_string());
+        }
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(nonce)) => Ok(nonce),
+            Ok(Err(_)) => Err("设备已断开".to_string()),
+            Err(_) => {
+                self.challenge_waiters.remove(&request_id);
+                tracing::warn!(
+                    node_id = %node_id,
+                    "[Relay] access_challenge 超时（{timeout:?} 无回执）——设备可能为旧版本，回落旧版校验"
+                );
+                Err("设备不支持挑战-应答（旧版本）".to_string())
+            }
+        }
+    }
+
     /// 设备回执投递（AccessResult）。
     pub fn deliver_access_result(&self, request_id: &str, ok: bool) {
         if let Some((_, tx)) = self.access_waiters.remove(request_id) {
             let _ = tx.send(ok);
+        }
+    }
+
+    /// 设备挑战回执投递（AccessChallenge，BUG-20261116-009）。
+    pub fn deliver_access_challenge(&self, request_id: &str, nonce_hex: &str) {
+        if let Some((_, tx)) = self.challenge_waiters.remove(request_id) {
+            let _ = tx.send(nonce_hex.to_string());
+        }
+    }
+
+    /// 发放 /relay/login 挑战 nonce（服务端本地库；顺带清扫过期项）。
+    /// 库上限 64：全满时先清过期，仍满则拒绝发放（人类登录节奏到不了
+    /// 64 并发；拒绝是诚实信号，浏览器报网络错误可重试）。
+    pub fn issue_login_nonce(&self) -> Result<String, String> {
+        // 过期清扫（发放时顺带；维护循环不接管——库只在本路径增长）。
+        let now = unix_now();
+        self.login_nonces
+            .retain(|_, issued| now.saturating_sub(*issued) < ACCESS_NONCE_TTL_SECS);
+        if self.login_nonces.len() >= 64 {
+            return Err("挑战发放繁忙，请稍后重试".to_string());
+        }
+        let nonce = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        self.login_nonces.insert(nonce.clone(), now);
+        Ok(nonce)
+    }
+
+    /// 单次消费 /relay/login 挑战 nonce：存在 + 未过期 → 移除并返回 true。
+    /// 重放（已消费）/伪造/过期统一 false。
+    pub fn consume_login_nonce(&self, nonce: &str) -> bool {
+        match self.login_nonces.remove(nonce) {
+            Some((_, issued)) => unix_now().saturating_sub(issued) < ACCESS_NONCE_TTL_SECS,
+            None => false,
         }
     }
 
@@ -637,6 +739,15 @@ impl RelayServer {
                 .unwrap_or_else(Instant::now);
         }
     }
+
+    /// 测试辅助：把全部 login nonce 拨旧指定秒数（TTL 过期路径）。
+    #[cfg(test)]
+    pub fn backdate_login_nonces_for_test(&self, by_secs: u64) {
+        let now = unix_now();
+        for mut e in self.login_nonces.iter_mut() {
+            *e.value_mut() = now.saturating_sub(by_secs);
+        }
+    }
 }
 
 fn unix_now() -> u64 {
@@ -650,6 +761,15 @@ fn now_instant() -> Instant {
     Instant::now()
 }
 
+/// SHA-256 摘要 hex（relay 面 token/挑战摘要共用）。
+pub(crate) fn sha256_hex_of(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let out = hasher.finalize();
+    out.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// /bridge handler 的帧分发辅助：控制帧统一处理（心跳回 pong、access 回执
 /// 投递、预留帧忽略 + WARN）。返回是否为数据面帧（由 handler 自行路由）。
 pub fn handle_control_frame(frame: BridgeFrame, relay: &RelayServer, node_id: &str) {
@@ -660,6 +780,12 @@ pub fn handle_control_frame(frame: BridgeFrame, relay: &RelayServer, node_id: &s
         }
         BridgeFrame::AccessResult { request_id, ok } => {
             relay.deliver_access_result(&request_id, ok);
+        }
+        BridgeFrame::AccessChallenge {
+            request_id,
+            nonce_hex,
+        } => {
+            relay.deliver_access_challenge(&request_id, &nonce_hex);
         }
         BridgeFrame::ClusterRpc { .. } | BridgeFrame::MemberSync { .. } => {
             tracing::warn!(

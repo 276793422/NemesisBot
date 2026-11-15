@@ -29,6 +29,7 @@ use super::protocol::{
 };
 use super::server::{
     DEVICE_OUTBOUND_CAPACITY, RelayServer, decode_or_warn, encode_or_none, handle_control_frame,
+    sha256_hex_of,
 };
 use super::ws_codec::{encode_client_frame, parse_server_frame};
 
@@ -805,7 +806,12 @@ pub async fn handle_auth_page(relay: Arc<RelayServer>, node_id: String, req: Req
         .into_response()
 }
 
-/// POST：校验（浏览器端已 SHA-256；服务端转发哈希，零存储原文）。
+/// POST：校验（浏览器端已 SHA-256；服务端转发摘要，零存储原文）。
+///
+/// 挑战-应答（BUG-20261116-009）：浏览器先 `GET __challenge` 取设备发放的
+/// nonce，摘要 = SHA-256(token || nonce)，POST 带 `nonce` 字段——服务端
+/// 原样透传给设备（设备单次消费 + TTL 验证）。`nonce` 缺省 = 旧版裸哈希
+/// 兼容路径（浏览器跳过挑战 / 设备不支持挑战时浏览器收到 `nonce:null`）。
 pub async fn handle_auth_submit(
     relay: Arc<RelayServer>,
     node_id: String,
@@ -817,6 +823,8 @@ pub async fn handle_auth_submit(
     #[derive(serde::Deserialize)]
     struct AuthBody {
         hash: String,
+        #[serde(default)]
+        nonce: Option<String>,
     }
     let (_, body) = req.into_parts();
     let body_bytes = match axum::body::to_bytes(body, 4 * 1024).await {
@@ -835,7 +843,10 @@ pub async fn handle_auth_submit(
     if parsed.hash.len() != 64 || !parsed.hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         return auth_json_response(false, "令牌哈希格式错误", None, None);
     }
-    match relay.access_check(&node_id, &parsed.hash).await {
+    match relay
+        .access_check(&node_id, &parsed.hash, parsed.nonce.as_deref())
+        .await
+    {
         Err(reason) => auth_json_response(false, &reason, None, None),
         Ok(true) => {
             let cookie_value = relay.create_auth_session(&node_id);
@@ -848,6 +859,22 @@ pub async fn handle_auth_submit(
         }
         Ok(false) => auth_json_response(false, "令牌错误", None, None),
     }
+}
+
+/// GET /d/{node_id}/__challenge：请求设备发放挑战 nonce（BUG-20261116-009）。
+///
+/// 回 `{"nonce": "<64hex>"}`；设备离线或不支持挑战（旧版本，超时无回执）
+/// → `{"nonce": null}`——浏览器据此回落旧版裸哈希摘要。挑战请求本身
+/// 不暴露任何设备信息（gate 关闭 404；失败形态与离线不可区分）。
+pub async fn handle_device_challenge(relay: Arc<RelayServer>, node_id: String) -> Response {
+    if !relay.is_gate_open() {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    }
+    let nonce = match relay.access_challenge(&node_id).await {
+        Ok(n) => serde_json::json!({ "nonce": n }),
+        Err(_) => serde_json::json!({ "nonce": serde_json::Value::Null }),
+    };
+    axum::Json(nonce).into_response()
 }
 
 /// auth POST 的 JSON 回复（ok=true 时带 Set-Cookie）。
@@ -991,13 +1018,23 @@ async function submit() {{
   if (!token) {{ err.textContent = '请输入令牌'; return; }}
   btn.disabled = true; err.textContent = '校验中…';
   try {{
-    // 浏览器端先 SHA-256：令牌原文不出本机，服务端只见哈希。
+    // 浏览器端先 SHA-256：令牌原文不出本机，服务端只见摘要。
     // （sha256Hex 在 http://IP 等非安全上下文自动回落纯 JS 实现。）
-    const hex = await sha256Hex(token);
+    // 挑战-应答：先向设备取一次性 nonce，摘要 = SHA-256(token+nonce)，
+    // 同一明文的摘要不跨登录复用；设备不支持/离线回 null → 旧版裸摘要。
+    let nonce = null;
+    try {{
+      const cr = await fetch(location.pathname.replace(/__auth$/, '__challenge'));
+      if (cr.ok) {{
+        const cd = await cr.json();
+        if (cd && typeof cd.nonce === 'string') nonce = cd.nonce;
+      }}
+    }} catch (_) {{ /* 挑战失败按旧版摘要回落 */ }}
+    const hex = await sha256Hex(nonce ? (token + nonce) : token);
     const resp = await fetch(location.pathname, {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
-      body: JSON.stringify({{ hash: hex }})
+      body: JSON.stringify(nonce ? {{ hash: hex, nonce: nonce }} : {{ hash: hex }})
     }});
     const data = await resp.json();
     if (data.ok && data.redirect) {{
@@ -1106,7 +1143,12 @@ pub async fn handle_relay_status_page(relay: Arc<RelayServer>, req: Request) -> 
         .into_response()
 }
 
-/// POST /relay/login：{hash} 比对 ws token SHA-256 → 发管理 cookie。
+/// POST /relay/login：{hash, nonce} 比对 → 发管理 cookie。
+///
+/// 挑战-应答强制（BUG-20261116-009，无旧版回落）：登录页与服务器同一
+/// binary（页面 JS 由服务端注入，必然先 `GET /relay/login-nonce` 取
+/// nonce）——摘要 = SHA-256(ws_token || nonce)，nonce 单次消费 + 60s TTL。
+/// 静态哈希重放（观察一次 cookie/token 哈希后无限重放的旧形态）从此失效。
 pub async fn handle_relay_login(relay: Arc<RelayServer>, req: Request) -> Response {
     if !relay.is_gate_open() {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
@@ -1114,6 +1156,7 @@ pub async fn handle_relay_login(relay: Arc<RelayServer>, req: Request) -> Respon
     #[derive(serde::Deserialize)]
     struct LoginBody {
         hash: String,
+        nonce: String,
     }
     let (_, body) = req.into_parts();
     let body_bytes = match axum::body::to_bytes(body, 4 * 1024).await {
@@ -1126,9 +1169,19 @@ pub async fn handle_relay_login(relay: Arc<RelayServer>, req: Request) -> Respon
                 .into_response();
         }
     };
-    let ok = serde_json::from_slice::<LoginBody>(&body_bytes)
-        .map(|b| b.hash == relay.admin_hash_hex())
-        .unwrap_or(false);
+    let parsed = serde_json::from_slice::<LoginBody>(&body_bytes);
+    let ok = match parsed {
+        Ok(b) => {
+            // nonce 形态 + 单次消费 + TTL 三道闸，再比对摘要。
+            let nonce_shape_ok =
+                b.nonce.len() == 64 && b.nonce.bytes().all(|c| c.is_ascii_hexdigit());
+            nonce_shape_ok
+                && relay.consume_login_nonce(&b.nonce)
+                && b.hash
+                    == sha256_hex_of(format!("{}{}", relay.ws_token_plain(), b.nonce).as_bytes())
+        }
+        Err(_) => false,
+    };
     if !ok {
         tracing::warn!("[Relay] 状态页令牌校验失败");
         return (
@@ -1148,6 +1201,24 @@ pub async fn handle_relay_login(relay: Arc<RelayServer>, req: Request) -> Respon
         resp.headers_mut().append(header::SET_COOKIE, hv);
     }
     resp
+}
+
+/// GET /relay/login-nonce：发放状态页登录挑战 nonce（BUG-20261116-009）。
+///
+/// 登录页 JS 提交前先取；nonce 单次消费 + 60s TTL——静态哈希重放失效。
+/// gate 关闭同样 404；发放繁忙（64 并发防御上限）回 503 让浏览器重试。
+pub async fn handle_relay_login_nonce(relay: Arc<RelayServer>) -> Response {
+    if !relay.is_gate_open() {
+        return (StatusCode::NOT_FOUND, "Not Found").into_response();
+    }
+    match relay.issue_login_nonce() {
+        Ok(n) => axum::Json(serde_json::json!({ "nonce": n })).into_response(),
+        Err(reason) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({"ok": false, "reason": reason})),
+        )
+            .into_response(),
+    }
 }
 
 /// GET /api/relay/status：设备列表 JSON（状态页轮询 + 通道页同源消费）。
@@ -1292,11 +1363,20 @@ async function submit() {
   if (!token) { err.textContent = '请输入令牌'; return; }
   btn.disabled = true; err.textContent = '校验中…';
   try {
-    const hex = await sha256Hex(token);
+    // 挑战-应答（强制）：先取一次性 nonce，摘要 = SHA-256(token+nonce)，
+    // nonce 单次消费——抓到的静态摘要无法重放。
+    const nr = await fetch('/relay/login-nonce');
+    const nd = await nr.json();
+    if (!nd || typeof nd.nonce !== 'string') {
+      err.textContent = (nd && nd.reason) || '挑战获取失败，请重试';
+      btn.disabled = false;
+      return;
+    }
+    const hex = await sha256Hex(token + nd.nonce);
     const resp = await fetch('/relay/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hash: hex })
+      body: JSON.stringify({ hash: hex, nonce: nd.nonce })
     });
     const data = await resp.json();
     if (data.ok) { location.replace('/relay'); return; }
