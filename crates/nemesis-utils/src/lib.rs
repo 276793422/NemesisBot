@@ -4,6 +4,9 @@
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
 pub mod env_sanitize;
+// 子进程文本输出解码单一真相源（BUG-20261115-034）——exec 家族 stdout/
+// stderr 严格 UTF-8 优先 + Windows OEM 码页（CJK 族）回落。
+pub mod child_decode;
 // 关键持久化写失败的进程级信号注册表——
 // 生产者 nemesis-agent（chat_log/checkpoint/turn_wal），消费者 gateway
 // 水泵（EventHub system-alert + /ready 面）。

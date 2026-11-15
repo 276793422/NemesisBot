@@ -4644,6 +4644,7 @@ name = "nemesis-utils"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "encoding_rs",
  "parking_lot",
  "regex",
  "reqwest",
@@ -4654,6 +4655,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "wiremock",
  "zip",
 ]

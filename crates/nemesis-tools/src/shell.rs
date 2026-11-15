@@ -697,7 +697,10 @@ async fn drain_child_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>
     };
     // 有界排干（横扫角度 B）：输出体量不受我方控制（`yes`
     // 类高吞吐 × 超时窗口 = OOM 面），1 MiB 丢头保尾，显示层截断照旧。
-    String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
+    // 解码走单一真相源（BUG-20261115-034）：UTF-8 优先 + OEM 码页回落。
+    nemesis_utils::child_decode::decode_child_output(
+        &nemesis_utils::pipe_cap::drain_capped_async(pipe).await,
+    )
 }
 
 /// 超时树杀（guest `tools::kill_tree` / `background_registry::tree_kill`

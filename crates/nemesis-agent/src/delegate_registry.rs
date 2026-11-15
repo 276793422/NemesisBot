@@ -727,7 +727,7 @@ impl DelegateManager {
         let mut assistant: Vec<String> = Vec::new();
         let mut session_from_stream: Option<String> = None;
         {
-            let text = String::from_utf8_lossy(output.buf_bytes());
+            let text = nemesis_utils::child_decode::decode_child_output(output.buf_bytes());
             for line in text.lines() {
                 if line.trim().is_empty() {
                     continue;
@@ -749,7 +749,9 @@ impl DelegateManager {
             "session_id": session,
             "assistant": assistant,
             "raw": {
-                "chunk": String::from_utf8_lossy(&chunk),
+                // 解码走单一真相源（BUG-20261115-034；窗口劈开码页序列的
+                // 边界降级同 background_registry::output 注释）。
+                "chunk": nemesis_utils::child_decode::decode_child_output(&chunk),
                 "bytes_returned": chunk.len(),
                 "next_offset": next_offset,
                 "clamped": clamped,
@@ -1002,7 +1004,7 @@ async fn rpc_round(
         if output.produced() > *read_mark {
             let (chunk, _) = output.read_chunk(*read_mark);
             *read_mark += chunk.len() as u64;
-            carry.push_str(&String::from_utf8_lossy(&chunk));
+            carry.push_str(&nemesis_utils::child_decode::decode_child_output(&chunk));
             if let Some(split) = carry.rfind('\n') {
                 let complete = carry[..=split].to_string();
                 carry.drain(..=split);

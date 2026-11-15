@@ -29,6 +29,12 @@ sqlite-preflight = ["dep:rusqlite"]
 # 拉进依赖图，未启用方零成本。
 http = ["dep:reqwest"]
 
+# 子进程输出解码（child_decode）：Windows API + 码页解码器只在 Windows
+# 编译进依赖图（guest musl 静态构建零成本，同 sqlite-preflight 守卫模式）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Globalization"] }
+encoding_rs = "0.8"
+
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"

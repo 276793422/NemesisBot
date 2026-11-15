@@ -144,7 +144,9 @@ impl ScreenCaptureTool {
         };
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            // 解码走单一真相源（BUG-20261115-034）：powershell.exe 管道
+            // 输出按控制台 OEM 码页产出（中文 Windows 错误文本 = GBK）。
+            let stderr = nemesis_utils::child_decode::decode_child_output(&output.stderr);
             let mut detail = format!("screen capture failed with status {}", output.status);
             if !stderr.is_empty() {
                 detail.push_str(&format!("\n{}", stderr));
@@ -163,7 +165,9 @@ impl ScreenCaptureTool {
             }
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stdout = nemesis_utils::child_decode::decode_child_output(&output.stdout)
+            .trim()
+            .to_string();
         let result = format!(
             "Screenshot saved to {} (size: {} bytes, info: {})",
             output_path.display(),

@@ -573,7 +573,13 @@ impl BackgroundProcessRegistry {
         // 凭据恰被分页边界切开的极端时序尽力而为（同实时尾窗滑窗边界，
         // 权威面 = 无回显即无暴露）。
         let chunk_text = {
-            let raw = String::from_utf8_lossy(&chunk).into_owned();
+            // 解码走单一真相源（BUG-20261115-034）：cmd /C 后台任务的无控制台
+            // 管道输出按 OEM 码页产出，lossy UTF-8 会打成 U+FFFD。CJK 码页
+            // 机器上 GBK 等 8 位编码文本就地恢复。已知边界（诚实降级）：
+            // 码页多字节序列恰在 MAX_CHUNK_BYTES 窗口边界劈开时两半皆损
+            // （无增量码页解码；utf8_safe_len 只护 UTF-8 尾，对非 UTF-8
+            // 字节不截）——UTF-8 输出（绝大多数后台任务）边界安全不变。
+            let raw = nemesis_utils::child_decode::decode_child_output(&chunk);
             if job.secrets.is_empty() {
                 raw
             } else {
@@ -963,7 +969,9 @@ async fn completion_watcher(
         let buf = output.lock().await;
         let start = buf.produced().saturating_sub(COMPLETION_TAIL_BYTES as u64);
         let (chunk, _skipped) = buf.read_chunk(start);
-        let raw = String::from_utf8_lossy(&chunk).into_owned();
+        // 解码走单一真相源（BUG-20261115-034；窗口劈开码页序列的边界降级
+        // 同 output() 分页读注释）。
+        let raw = nemesis_utils::child_decode::decode_child_output(&chunk);
         // vault 计划 P2++（2026-11-11）：完成通告尾部过本 job 掩码池——
         // env 槽真值被任务回显时不随 CompletionEvent → InboundMessage 进
         // 会话（session_log / LLM 上下文）。空池零成本直通。
