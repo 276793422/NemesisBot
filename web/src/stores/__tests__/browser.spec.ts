@@ -141,11 +141,15 @@ describe('browser store WSAPI 面契约', () => {
 
 describe('browser store 设置与实时事件', () => {
   it('fetchSettings 读 config.browser 段并给 auto 缺省', async () => {
-    wsapiRequest.mockResolvedValue({ config: { browser: { kind: 'edge', executable: '' } } })
+    // BUG-20261116-017：config.get 的 wire 形状 = 配置根对象直出
+    // （protocol.rs response_ok 的 data = handler 返回值，无 {config} 包裹；
+    // BridgeTab/SettingsView/PluginsView 等全部直读根字段）——旧 mock 包裹
+    // 形漏掉了 store 读 r?.config?.browser 的契约漂移。
+    wsapiRequest.mockResolvedValue({ browser: { kind: 'edge', executable: '' } })
     const store = useBrowserStore()
     await store.fetchSettings()
     expect(store.settings).toEqual({ kind: 'edge', executable: '' })
-    wsapiRequest.mockResolvedValue({ config: {} })
+    wsapiRequest.mockResolvedValue({})
     await store.fetchSettings()
     expect(store.settings).toEqual({ kind: 'auto', executable: '' })
   })

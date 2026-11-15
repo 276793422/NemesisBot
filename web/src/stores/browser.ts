@@ -153,7 +153,12 @@ export const useBrowserStore = defineStore('browser', () => {
   async function fetchSettings() {
     try {
       const r = await request('config', 'get')
-      const seg = r?.config?.browser
+      // BUG-20261116-017：config.get 的 wire 形状 = 配置根对象直出
+      // （protocol.rs response_ok 的 data = handler 返回值，无 {config}
+      // 包裹层）——旧读法 r?.config?.browser 恒 undefined，设置表单永远
+      // 显示缺省 auto/空（保存过的 kind/路径不回显）。与其余消费方
+      // （BridgeTab data?.bridge、TerminalView cfg?.terminal 等）同形直读。
+      const seg = r?.browser
       settings.value = {
         kind: typeof seg?.kind === 'string' && seg.kind ? seg.kind : 'auto',
         executable: typeof seg?.executable === 'string' ? seg.executable : '',
