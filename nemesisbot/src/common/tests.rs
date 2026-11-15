@@ -1484,3 +1484,31 @@ fn init_logger_config_disabled_returns_without_layers() {
     let flags = init_logger_from_config(&cfg, &[]);
     assert_eq!(flags, 0);
 }
+
+#[test]
+fn bounded_tick_interval_floor_and_cap() {
+    // BUG-20261116-001：ticker 间隔收敛（下限 floor / 上界 MAX）。
+    assert_eq!(bounded_tick_interval_secs(0, 20), 20);
+    assert_eq!(bounded_tick_interval_secs(5, 20), 20);
+    assert_eq!(bounded_tick_interval_secs(42, 20), 42);
+    assert_eq!(bounded_tick_interval_secs(1, 1), 1);
+    assert_eq!(
+        bounded_tick_interval_secs(u64::MAX, 1),
+        MAX_TICK_INTERVAL_SECS
+    );
+    // floor 自身超过上界时上界赢（interval() 的下限语义由调用方保证非零）。
+    assert_eq!(
+        bounded_tick_interval_secs(u64::MAX, MAX_TICK_INTERVAL_SECS + 7),
+        MAX_TICK_INTERVAL_SECS
+    );
+}
+
+#[test]
+fn max_tick_interval_sits_well_below_instant_arithmetic_bound() {
+    // tokio Instant 算术界 ≈ 584 年（u64 ns 可表示范围）；上界必须远低于
+    // 它，保证 missed-tick Delay 路径 `Instant + Duration` 永不溢出 panic。
+    let instant_bound_secs: u64 = 584 * 365 * 24 * 3600;
+    assert!(MAX_TICK_INTERVAL_SECS < instant_bound_secs);
+    // 与 heartbeat 先例常量对齐（30 天，分钟数 ×60）。
+    assert_eq!(MAX_TICK_INTERVAL_SECS, 30 * 24 * 3600);
+}

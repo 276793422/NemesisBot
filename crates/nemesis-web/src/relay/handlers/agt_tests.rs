@@ -813,3 +813,113 @@ async fn agt_ws_tunnel_offline_device_returns_503() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert!(body.contains("请求无法送达设备"), "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261116-006 回归锁：ws 写超时（防冻结对端挂死泵复辟裸 send）
+// ---------------------------------------------------------------------------
+
+/// 永不就绪的 sink（poll_ready 恒 Pending）——模拟冻结对端（TCP 零窗口
+/// /浏览器挂起）下 split sink 的 send 永不完成形态。
+struct StuckRelaySink;
+
+impl futures::Sink<Message> for StuckRelaySink {
+    type Error = axum::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Pending
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        unreachable!("poll_ready 恒 Pending，start_send 不可达")
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// 超时臂：挂死 sink 上 send_ws_capped 必须在超时量级内返回 false
+/// （裸 send 复辟 = 泵永久停在 arm body，踢出/顶替/关闭信号全不可达）。
+#[tokio::test]
+async fn send_ws_capped_times_out_on_stuck_sink() {
+    let mut ws_tx = StuckRelaySink;
+    let started = std::time::Instant::now();
+    // 写超时入参传小值（生产调用点传 WS_WRITE_TIMEOUT_SECS=30s；本测试
+    // 锚「不永久挂住」语义，外层 3s 只兜 timeout 原语本身失效的极端面）。
+    let r = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        send_ws_capped(
+            &mut ws_tx,
+            std::time::Duration::from_millis(60),
+            Message::Text("x".into()),
+        ),
+    )
+    .await
+    .expect("send_ws_capped 必须在 3s 内返回（写超时生效，不得永久挂住）");
+    assert!(!r, "挂死 sink 必须 false");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "超时应在入参量级内返回（实际 {:?}）",
+        started.elapsed()
+    );
+}
+
+/// 正常臂：可就绪 sink 返回 true，不误伤健康链路。
+struct AcceptingRelaySink(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl futures::Sink<Message> for AcceptingRelaySink {
+    type Error = axum::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn send_ws_capped_ok_on_accepting_sink() {
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut ws_tx = AcceptingRelaySink(sent.clone());
+    let ok = send_ws_capped(
+        &mut ws_tx,
+        std::time::Duration::from_millis(500),
+        Message::Text("hello".into()),
+    )
+    .await;
+    assert!(ok, "可就绪 sink 必须 true");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), 1);
+}

@@ -775,7 +775,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if !(16..=128).contains(&length) {
                     anyhow::bail!("Token length must be between 16 and 128 bytes");
                 }
-                let token = generate_token(length);
+                let token = generate_token(length).map_err(|e| anyhow::anyhow!(e))?;
                 println!("Generated token: {}", token);
                 if save {
                     let cfg_path = common::cluster_config_path(&home);
@@ -847,7 +847,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if !(16..=128).contains(&length) {
                         anyhow::bail!("Token length must be between 16 and 128 bytes");
                     }
-                    generate_token(length)
+                    generate_token(length).map_err(|e| anyhow::anyhow!(e))?
                 } else {
                     println!("Error: provide a token value or use --generate.");
                     return Ok(());
@@ -964,7 +964,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             // config.cluster.json 不再含身份字段，只含系统参数 + token。
             // token 用 generate_token（32 字节 CSPRNG，与 `cluster token generate`
             // 同源）：空 token = RPC/UDP 发现层双双无鉴权裸奔（审计 F4），init 即生成。
-            let init_token = generate_token(32);
+            let init_token = generate_token(32).map_err(|e| anyhow::anyhow!(e))?;
             let mut cluster_cfg =
                 serde_json::from_str::<serde_json::Value>(crate::CONFIG_CLUSTER_DEFAULT)
                     .unwrap_or_else(|_| serde_json::json!({}));
@@ -1942,7 +1942,9 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
 /// 0 一律钳到 1（tokio `interval(Duration::ZERO)` 构造期 panic——gateway
 /// 装载臂 `cluster_init.rs` 同款 `.max(1)` 钳制，两臂语义对齐）。
 fn effective_broadcast_interval(flag: Option<u64>, config_value: u64) -> u64 {
-    flag.unwrap_or(config_value).max(1)
+    // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护
+    // （CLI flag 与 config 双入口同闸）。
+    crate::common::bounded_tick_interval_secs(flag.unwrap_or(config_value), 1)
 }
 
 /// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.
@@ -2240,7 +2242,7 @@ fn read_cluster_token(home: &std::path::Path) -> String {
 /// `update_cluster_config` 的 "not initialized" 错误照常上抛。
 fn ensure_cluster_token(home: &std::path::Path) -> Result<Option<String>> {
     if read_cluster_token(home).is_empty() {
-        let token = generate_token(32);
+        let token = generate_token(32).map_err(|e| anyhow::anyhow!(e))?;
         update_cluster_config(home, "token", token.clone())?;
         Ok(Some(token))
     } else {
@@ -2259,20 +2261,17 @@ fn main_cluster_flag(home: &std::path::Path) -> Option<bool> {
 }
 
 /// Generate a cryptographically secure random standard base64 token of the given byte length.
-fn generate_token(byte_len: usize) -> String {
+///
+/// RNG 失败 = **hard-fail 上抛**（无兜底）：旧版回落 uuid 有两重坏——uuid v4
+/// 拉的是同一 OS 随机源（getrandom 刚失败它也会炸）且 16 字节填充对
+/// 32 字节 token 留 16 字节零段（可预测半截密钥）。随机源不可用时诚实地
+/// 拒绝生成弱凭据，由调用方上抛为命令错误。
+fn generate_token(byte_len: usize) -> Result<String, String> {
     let mut bytes = vec![0u8; byte_len];
     // Use getrandom for cryptographically secure randomness
-    if let Err(e) = getrandom::getrandom(&mut bytes) {
-        // Fallback: if system RNG fails, log warning and use uuid-based entropy
-        eprintln!("Warning: crypto RNG failed ({}), using fallback", e);
-        let uuid = uuid::Uuid::new_v4();
-        for (i, b) in uuid.as_bytes().iter().enumerate() {
-            if i < bytes.len() {
-                bytes[i] = *b;
-            }
-        }
-    }
-    base64_encode(&bytes)
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| format!("系统随机源不可用（getrandom 失败: {e}），拒绝生成弱 token"))?;
+    Ok(base64_encode(&bytes))
 }
 
 /// Simple standard base64 encoding with padding (to match Go's base64.StdEncoding).

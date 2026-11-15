@@ -62,10 +62,25 @@ fn frame_round_trip_all_variants() {
             hub_node_id: String::new(),
         },
         BridgeFrame::Pong,
+        BridgeFrame::AccessChallengeRequest {
+            request_id: "ch-1".to_string(),
+            node_id: "node-abcd1234".to_string(),
+        },
+        BridgeFrame::AccessChallenge {
+            request_id: "ch-1".to_string(),
+            nonce_hex: "f".repeat(64),
+        },
         BridgeFrame::AccessCheck {
             request_id: "req-1".to_string(),
             node_id: "node-abcd1234".to_string(),
             hash_hex: "ab".repeat(32),
+            nonce_hex: Some("e".repeat(64)),
+        },
+        BridgeFrame::AccessCheck {
+            request_id: "req-2".to_string(),
+            node_id: "node-abcd1234".to_string(),
+            hash_hex: "cd".repeat(32),
+            nonce_hex: None,
         },
         BridgeFrame::AccessResult {
             request_id: "req-1".to_string(),
@@ -127,10 +142,38 @@ fn frame_tag_is_snake_case_type_field() {
         request_id: "r".into(),
         node_id: "n".into(),
         hash_hex: "h".into(),
+        nonce_hex: None,
     })
     .unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["type"], "access_check");
+    // 兼容矩阵：nonce_hex 缺省解码（旧版帧无该字段）= None；显式 nonce
+    // 解码回 Some；skip_serializing_if 使 None 不出现在线上字节。
+    let old_shape = r#"{"type":"access_check","request_id":"r","node_id":"n","hash_hex":"h"}"#;
+    match decode_frame(old_shape).unwrap() {
+        BridgeFrame::AccessCheck { nonce_hex, .. } => assert_eq!(nonce_hex, None),
+        other => panic!("期望 access_check，得到 {other:?}"),
+    }
+    let text = encode_frame(&BridgeFrame::AccessChallengeRequest {
+        request_id: "c".into(),
+        node_id: "n".into(),
+    })
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["type"], "access_challenge_request");
+    let text = encode_frame(&BridgeFrame::AccessChallenge {
+        request_id: "c".into(),
+        nonce_hex: "a".repeat(64),
+    })
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["type"], "access_challenge");
+    let with_nonce =
+        r#"{"type":"access_check","request_id":"r","node_id":"n","hash_hex":"h","nonce_hex":"aa"}"#;
+    match decode_frame(with_nonce).unwrap() {
+        BridgeFrame::AccessCheck { nonce_hex, .. } => assert_eq!(nonce_hex, Some("aa".to_string())),
+        other => panic!("期望 access_check，得到 {other:?}"),
+    }
 }
 
 #[test]
@@ -505,7 +548,9 @@ async fn access_check_three_states() {
     let relay = RelayServer::new("tok".to_string(), true);
 
     // ① 设备离线 → Err。
-    let err = relay.access_check("node-ghost", &"ab".repeat(32)).await;
+    let err = relay
+        .access_check("node-ghost", &"ab".repeat(32), None)
+        .await;
     assert!(err.is_err());
 
     let mut d = register_fake(&relay, "node-aaa", "tok", "A 机");
@@ -529,7 +574,7 @@ async fn access_check_three_states() {
                 }
             }
         };
-        tokio::join!(relay.access_check("node-aaa", &hash_fail), responder).0
+        tokio::join!(relay.access_check("node-aaa", &hash_fail, None), responder).0
     };
     assert_eq!(r1, Ok(false));
 
@@ -547,9 +592,77 @@ async fn access_check_three_states() {
                 }
             }
         };
-        tokio::join!(relay_clone.access_check("node-aaa", &hash_ok), responder).0
+        tokio::join!(
+            relay_clone.access_check("node-aaa", &hash_ok, None),
+            responder
+        )
+        .0
     };
     assert_eq!(r2, Ok(true));
+}
+
+#[tokio::test]
+async fn access_challenge_roundtrip_offline_and_timeout() {
+    let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
+
+    // ① 设备离线 → Err（浏览器收到 nonce:null 回落旧版摘要）。
+    assert!(relay.access_challenge("node-ghost").await.is_err());
+
+    let mut d = register_fake(&relay, "node-ch", "tok", "挑战机");
+
+    // ② 设备回 AccessChallenge → Ok(nonce)；回执帧形态 + deliver 投递。
+    let relay2 = relay.clone();
+    let nonce_val = "ab".repeat(32);
+    let responder = async {
+        loop {
+            match d.outbound_rx.recv().await {
+                Some(BridgeFrame::AccessChallengeRequest {
+                    request_id,
+                    node_id,
+                }) => {
+                    assert_eq!(node_id, "node-ch");
+                    relay2.deliver_access_challenge(&request_id, &nonce_val);
+                    break;
+                }
+                Some(_) => continue,
+                None => panic!("下行通道意外关闭"),
+            }
+        }
+    };
+    let got = tokio::join!(relay.access_challenge("node-ch"), responder).0;
+    assert_eq!(got, Ok(nonce_val.clone()));
+
+    // ③ 设备在表但不回执（旧版本形态）→ 短超时 Err（回落旧版流程）。
+    let started = std::time::Instant::now();
+    let err = relay
+        .access_challenge_with_timeout("node-ch", std::time::Duration::from_millis(120))
+        .await;
+    assert!(err.is_err(), "无回执必须 Err 触发回落");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(120),
+        "必须等满超时窗"
+    );
+    drop(d);
+}
+
+#[test]
+fn login_nonce_single_consume_ttl_and_forgery() {
+    let relay = RelayServer::new("tok".to_string(), true);
+
+    let n1 = relay.issue_login_nonce().expect("发放应成功");
+    assert_eq!(n1.len(), 64, "nonce = 64 hex（2×uuid simple）");
+    assert!(n1.bytes().all(|c| c.is_ascii_hexdigit()));
+
+    // 单次消费：第一次 true，重放 false；伪造 nonce false。
+    assert!(relay.consume_login_nonce(&n1));
+    assert!(!relay.consume_login_nonce(&n1), "重放必须失败");
+    assert!(!relay.consume_login_nonce(&"ff".repeat(32)), "伪造必须失败");
+
+    // TTL 过期：拨旧 61s 后消费 false（且过期项被下次发放清扫）。
+    let n2 = relay.issue_login_nonce().expect("发放应成功");
+    relay.backdate_login_nonces_for_test(61);
+    assert!(!relay.consume_login_nonce(&n2), "过期 nonce 必须失败");
+    let _n3 = relay.issue_login_nonce().expect("清扫后发放正常");
 }
 
 #[test]

@@ -704,3 +704,22 @@ fn bug135_emit_false_stops_pump_early() {
     assert!(outcome.is_ok());
     assert_eq!(count, 1, "pump must stop at first false emit");
 }
+
+/// BUG-20261116-008 回归锁：kill_child（Drop/stop 共用收割路径）毒化锁
+/// 容毒恢复。持锁 panic 毒化后调用：修复前 `lock().unwrap()` 必 panic，
+/// 修复后 `into_inner` 恢复照常收割（空槽 no-op + 锁保持健康）。
+#[test]
+fn kill_child_with_poisoned_lock_does_not_panic() {
+    let child: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = child.lock().unwrap();
+        panic!("毒化注入");
+    }))
+    .is_err();
+    assert!(poisoned, "毒化注入必须真实发生（否则测试空转）");
+    UsbEventSource::kill_child(&child); // 修复前此处 unwrap 中毒必 panic
+    assert!(
+        child.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+        "收割后槽位应为空"
+    );
+}

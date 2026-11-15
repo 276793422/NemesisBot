@@ -5622,6 +5622,10 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
         cfg,
         resolution: nemesis_config::ProviderResolution::default(),
         model_name: "cov/test-model".to_string(),
+        // 测试注入口默认 None；断言常驻循环活性的测试显式注入局部令牌
+        // （BUG-20261115-046：pa2——全局令牌会被 run_runtime 全链测试
+        // 经生产停机路径 cancel 毒化）。
+        terminal_cancel_override: None,
         bus,
         cron_service,
         conv_router,
@@ -7419,6 +7423,17 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     );
 
     // board watcher 需要 SSE 订阅者在场才轮询 data_version（sub_count>0）。
+    // BUG-20261115-046 根修：watcher 终态令牌改挂局部令牌（ctx 注入口）。
+    // 根因：模块内 run_runtime 全链测试（run_runtime_full_cycle_* 家族）
+    // 经生产停机路径（Step 24 cancel_terminal_tasks）不可逆 cancel 进程
+    // 全局令牌——并行调度下本测试的 watcher 可 born-dead（首 poll 拍完
+    // 基线即被 terminal_loop_tick 前置 is_cancelled 短路收线），
+    // board-changed 永不发布（全量三轮红、单跑恒绿的完整解释；诊断排除
+    // 链：影子连接证明 SQLite 跨连接可见性正常、EventHub 探针证明
+    // hub/replay/broadcast 链路正常、15s 预算排除首拍延迟击穿）。局部
+    // 令牌对全局毒化免疫；测试收线时显式 cancel 保 runtime 优雅退出。
+    let watcher_terminal = tokio_util::sync::CancellationToken::new();
+    f.ctx.terminal_cancel_override = Some(watcher_terminal.clone());
     let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
     let agent = make_agent_wiring(&f.ctx);
     let mut web = make_web_server(&f.ctx.home);
@@ -7453,17 +7468,10 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     // ③ board watcher：store 连接写 board.db → watcher 连接 data_version 变化
     //    → board-changed 广播。等待事件驱动（写库 → 死线收帧，未到再写再等，
-    //    旧形态「写库一次 + sleep(2400) + try_recv 抽干」是三重固定窗赌注）。
-    //    ⚠ 干涉面（2026-11-16 全量假红真根因，配对复现实锤：毒源测试 + 本测试
-    //    同进程两线程必红、单跑恒绿）：gateway 装配的 watcher 挂进程级终态令牌
-    //    （BUG-20261115-023 家族纪律），而 run_runtime 全链七测试跑到 Step 24
-    //    会 cancel 该令牌（OnceLock 无复位、进程内永久生效）——本测试排其后时
-    //    watcher 首 tick 即死，写库永无广播。主臂 miss 且令牌已被毒化时用测试
-    //    私有令牌重挂同一生产循环体（post_agent::run_board_change_watcher）再
-    //    断言：循环逻辑照常验证，绝不吞真回归；令牌仍活时 miss 即真回归，
-    //    回落臂不触发、直接 panic。
-    use super::shutdown::terminal_cancel_token;
-
+    //    旧形态「写库一次 + 固定窗轮询抽干」是赌注）。watcher 终态令牌已注入
+    //    局部（上方 watcher_terminal——BUG-20261115-046 根修），对进程全局
+    //    令牌的跨测试毒杀（run_runtime Step 24 cancel、OnceLock 无复位）免疫：
+    //    此处 miss = 真回归，无回落臂（旧回落臂会掩盖 init_post_agent 接线回归）。
     async fn write_and_wait_board_changed(
         store: &std::sync::Arc<nemesis_board::BoardStore>,
         hub_rx: &mut tokio::sync::broadcast::Receiver<nemesis_web::events::Event>,
@@ -7501,24 +7509,22 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     let mut got_board_changed = false;
     if let Some(store) = f.ctx.board_store.as_ref().map(std::sync::Arc::clone) {
         got_board_changed = write_and_wait_board_changed(&store, &mut hub_rx, "watcher", 5).await;
-        if !got_board_changed && terminal_cancel_token().is_cancelled() {
-            // 全局令牌已被其他测试的 run_runtime Step 24 毒化——环境干涉非回归，
-            // 私有令牌重挂同一生产循环体（数据面同库、广播面同 hub）。
-            let board_db = f.ctx.home.join("workspace").join("board").join("board.db");
-            tokio::spawn(super::post_agent::run_board_change_watcher(
-                board_db,
-                web.event_hub().clone(),
-                tokio_util::sync::CancellationToken::new(),
-            ));
-            got_board_changed =
-                write_and_wait_board_changed(&store, &mut hub_rx, "watcher-private", 3).await;
-        }
     }
-    assert!(
-        got_board_changed,
-        "board watcher must broadcast board-changed after db write（主臂 5 轮 + 私有重挂 3 轮写库×5s 死线均未见广播；终态令牌已毒化={}——私有令牌下仍无广播=循环真回归）",
-        terminal_cancel_token().is_cancelled()
-    );
+    // 收线：cancel 局部令牌 → watcher 确定性退出（023 语义：终态前置
+    // 检查保证不 re-park timer），runtime Drop 无悬空 timer。
+    watcher_terminal.cancel();
+    if !got_board_changed {
+        // 失败信息自带现场纪律：replay 直方图（board-changed 在缓冲 =
+        // broadcast 通道侧丢；不在 = watcher 根本没发布）。
+        let (events, _) = web.event_hub().replay_after(0);
+        let kinds: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
+        panic!(
+            "board watcher must broadcast board-changed after db write \
+             （5 轮写库×5s 死线均未见广播——watcher 挂局部令牌对全局毒杀免疫，miss=真回归） \
+             [diag] replay_total={} replay_kinds={kinds:?}",
+            events.len()
+        );
+    }
     // retention sweep / usage watcher 在收帧等待期间被调度跑过首轮——无 panic 即过。
 }
 

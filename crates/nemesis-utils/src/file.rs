@@ -107,6 +107,59 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
     result
 }
 
+/// Async 版 [`write_file_atomic`]——agent 文件工具（write_file/edit_file/
+/// multiedit）的写盘单一入口（BUG-20261116-010）：裸 `tokio::fs::write`
+/// 非原子直写，写中段进程死亡 = 源文件撕裂（半截新内容覆盖旧文件）。
+///
+/// 与 sync 版的语义差异（本封装的三件事）：
+/// - **symlink 保链**：目标已存在先 `canonicalize` 解析——rename 落在真实
+///   目标上，不把 symlink 本身换成普通文件（与旧直写 follow 语义一致）；
+///   目标不存在（含父目录未建）→ 原路径走 create 语义。
+/// - **unix mode 保留**：目标已存在 → 继承其权限位（0o7777），不用调用方
+///   perm 覆盖（否则每次编辑把 0600 私密文件改成 0644）；新建文件用调用方
+///   perm（sync 版 `mode()` 精确生效、不过 umask——工具面传 0o644 惯例）。
+/// - **阻塞 IO 下放 spawn_blocking**：不占 async 工作线程；JoinError
+///   （运行期关停）诚实上抛。
+///
+/// 诚实边界（共通 + 本封装特有）：
+/// - **硬链接集合分裂**：rename 替换单个目录项，同 inode 的其他硬链接保留
+///   旧内容（直写是全集合更新）；当前工具面无硬链接依赖场景，如出现需
+///   回到直写或先解链。
+/// - **Windows 隐藏属性丢失**：rename 换入的新文件不带 Hidden 位。
+/// - AV 扫描/打开句柄占用目标时 rename 失败属预期（同 sync 版），由调用方
+///   决定重试或上报。
+pub async fn write_file_atomic_async(path: &Path, data: &[u8], perm: u32) -> Result<(), String> {
+    let target = match tokio::fs::canonicalize(path).await {
+        Ok(p) => p,
+        Err(_) => path.to_path_buf(),
+    };
+
+    #[cfg(unix)]
+    let perm = match fs::metadata(&target) {
+        Ok(meta) => {
+            use std::os::unix::fs::PermissionsExt;
+            meta.permissions().mode() & 0o7777
+        }
+        Err(_) => perm,
+    };
+    #[cfg(not(unix))]
+    let _ = perm;
+
+    let target_str = match target.into_os_string().into_string() {
+        Ok(s) => s,
+        Err(os) => {
+            return Err(format!(
+                "atomic write {}: path is not valid UTF-8",
+                Path::new(&os).display()
+            ));
+        }
+    };
+    let data = data.to_vec();
+    tokio::task::spawn_blocking(move || write_file_atomic(&target_str, &data, perm))
+        .await
+        .map_err(|e| format!("atomic write task join: {e}"))?
+}
+
 /// Ensure a directory exists.
 pub fn ensure_dir(path: &str) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| format!("create dir: {}", e))

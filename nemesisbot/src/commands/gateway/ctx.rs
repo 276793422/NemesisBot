@@ -116,6 +116,14 @@ pub(crate) struct GatewayCtx {
     pub conv_router: nemesis_web::SharedConvRouter,
     /// estop 单例（集群装配前创建，四方共享同一 Arc）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
+    /// 进程终态令牌测试注入口（BUG-20261115-046）：Some = post_agent
+    /// 常驻循环（board watcher）改挂此局部令牌。背景：run_runtime 全链
+    /// 测试经生产停机路径（Step 24 cancel_terminal_tasks）不可逆 cancel
+    /// 进程全局令牌——并行测试进程里全局令牌随时可能已毒化，断言常驻
+    /// 循环活性的测试挂全局令牌会 born-dead（watcher 首 poll 拍完基线
+    /// 即被前置 is_cancelled 短路收线，SSE 永不发布）。生产恒 None
+    /// （= 全局 terminal_cancel_token()，语义不变）。
+    pub terminal_cancel_override: Option<tokio_util::sync::CancellationToken>,
     // QUIC 中继（quic-relay）自 QUIC 插件化 起无 ctx 字段：
     // 运行面在 plugin_roaming C-ABI 插件，句柄住 loader 静态槽
     //（[`crate::roaming_plugin_loader:plugin_handle`]，进程级单例）——
@@ -1523,6 +1531,8 @@ impl GatewayCtx {
             cfg,
             resolution,
             model_name,
+            // 测试注入口：生产恒 None（全局终态令牌，语义不变）。
+            terminal_cancel_override: None,
             // 消息主干
             bus,
             cron_service,

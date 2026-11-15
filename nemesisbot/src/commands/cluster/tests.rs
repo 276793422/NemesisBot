@@ -82,7 +82,7 @@ fn test_mask_token_exactly_9() {
 
 #[test]
 fn test_generate_token_length() {
-    let token = generate_token(32);
+    let token = generate_token(32).unwrap();
     // base64 of 32 bytes = 44 chars (ceil(32/3)*4 = 44)
     assert_eq!(token.len(), 44);
     // Should be valid base64 characters
@@ -93,15 +93,15 @@ fn test_generate_token_length() {
 
 #[test]
 fn test_generate_token_16_bytes() {
-    let token = generate_token(16);
+    let token = generate_token(16).unwrap();
     // base64 of 16 bytes = 24 chars (ceil(16/3)*4 = 24)
     assert_eq!(token.len(), 24);
 }
 
 #[test]
 fn test_generate_token_unique() {
-    let t1 = generate_token(32);
-    let t2 = generate_token(32);
+    let t1 = generate_token(32).unwrap();
+    let t2 = generate_token(32).unwrap();
     assert_ne!(t1, t2, "Two generated tokens should differ");
 }
 
@@ -360,7 +360,7 @@ fn test_base64_encode_all_ones() {
 
 #[test]
 fn test_generate_token_128_bytes() {
-    let token = generate_token(128);
+    let token = generate_token(128).unwrap();
     // base64 of 128 bytes = 172 chars (ceil(128/3)*4 = 172)
     assert_eq!(token.len(), 172);
 }
@@ -803,13 +803,13 @@ fn test_peer_defaults() {
 
 #[test]
 fn test_generate_token_zero_bytes() {
-    let token = generate_token(0);
+    let token = generate_token(0).unwrap();
     assert_eq!(token.len(), 0);
 }
 
 #[test]
 fn test_generate_token_one_byte() {
-    let token = generate_token(1);
+    let token = generate_token(1).unwrap();
     assert_eq!(token.len(), 4); // base64 of 1 byte = 4 chars
 }
 
@@ -2674,7 +2674,8 @@ fn test_update_main_config_cluster_writes_section() {
 //
 // 豁免不碰：firewall netsh 臂（spawn 进程 + 宿主防火墙变更）、run_node
 // 主流程臂（UDP 发现 + RPC server 绑定 + ctrl_c 无限循环）、Init/Reset
-// 的 TTY 确认分支、generate_token 的 getrandom 失败兜底。
+// 的 TTY 确认分支、generate_token 的 RNG 失败 hard-fail 臂（无法模拟
+// OS 随机源故障——结构性豁免；兜底路径已删除，见 generate_token 文档）。
 // 本批覆盖：错误传播臂（corrupt JSON Enable/Disable/Start/Stop）、
 // 静默跳过臂（Status/Config 对坏文件）、"(not set)" 显示臂、保存失败打印
 // 臂（只读文件；root/admin 会无视只读位——断言保持弱语义）、Remove 的
@@ -3423,7 +3424,8 @@ mod wave_c {
 // 进程有看门狗限时强杀保护（单测试 ≤ ~75s）。
 // 结构性豁免（本轮不碰）：firewall netsh 全臂；Init 的 TTY 确认分支
 // （is_terminal 在管道下恒 false）；显示循环 tick 变更臂（需真实对端上线）
-// 与 ctrl_c 臂（无信号注入通道）；generate_token 的 RNG 失败兜底。
+// 与 ctrl_c 臂（无信号注入通道）；generate_token 的 RNG 失败 hard-fail
+// 臂（无法模拟 OS 随机源故障——结构性豁免；uuid 兜底已删除）。
 // 仅 Windows：resolve_nemesisbot_bin 解析.exe（与既有子进程测试同门）。
 // =========================================================================
 #[cfg(windows)]

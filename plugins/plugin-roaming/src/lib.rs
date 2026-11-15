@@ -15,6 +15,7 @@
 //! 活动面）。Library 进程生命周期不卸载（插件持 runtime/线程，unload 活着的
 //! 东西是 UB——vm_display 同款）。
 
+mod atomic;
 mod endpoint;
 mod identity;
 mod registry_client;

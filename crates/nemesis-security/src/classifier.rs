@@ -216,7 +216,11 @@ fn entropy_score(input: &str) -> (f64, String) {
         *freq.entry(ch).or_insert(0usize) += 1;
     }
 
-    let total = input.len() as f64;
+    // 分母必须与频率的计数口径一致（char）：input.len() 是字节数，多字节
+    // 文本下 Σp = chars/bytes < 1，算出的不是 Shannon 熵（均匀随机 CJK 串
+    // 归一化熵 ≈ 0.49 而非 1.0，>0.95 乱码臂对非 ASCII 系统性失灵）。
+    // 同文件 structural_score 的 total 同口径（chars().count()）。
+    let total = input.chars().count() as f64;
     let mut entropy = 0.0;
     for &count in freq.values() {
         let p = count as f64 / total;

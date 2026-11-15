@@ -174,6 +174,10 @@ async fn send_internal_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
+        // BUG-20261115-045：X-Auth-Token 不在 reqwest 默认重定向剥离清单
+        // （标准四头）内——gateway 侧任何 302 跨主机（反代误配/端口撞车）
+        // 都会把 token 带走。同源跟随 + 跨源终止（nemesis_utils::http_redirect）。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()?;
     let url = format!("{}/api/internal", base_url);
     let resp = client
@@ -201,6 +205,9 @@ pub(crate) async fn send_internal_command_get_json(
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
+        // BUG-20261115-045：同 send_internal_command——X-Auth-Token 凭据面
+        // 不跟随跨主机重定向。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()?;
     let url = format!("{}/api/internal", base_url);
     let resp = client

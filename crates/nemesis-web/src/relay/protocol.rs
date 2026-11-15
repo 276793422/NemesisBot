@@ -7,9 +7,11 @@
 //! - **链路控制帧**：`bridge_hello`（接入鉴权，token 走 hello 帧不走 URL
 //!   query——避免进访问日志）、`bridge_welcome`（服务端回执）、`heartbeat`/
 //!   `pong`（30s 心跳 / 90s 无心跳判离线）、`bridge_close`（优雅关闭）
-//! - **面板访问鉴权帧**：`access_check`（服务端→设备，转发浏览器提交的
-//!   SHA-256 哈希；**密码原文不出设备本机、服务端零存储**）+ `access_result`
-//!   回执
+//! - **面板访问鉴权帧**：`access_challenge_request`/`access_challenge`
+//!   （挑战-应答 nonce 发放，BUG-20261116-009）+ `access_check`（服务端
+//!   →设备，转发浏览器提交的摘要哈希；**密码原文不出设备本机、服务端零
+//!   存储**；带 nonce = 挑战绑定防重放，不带 = 旧版兼容路径）+
+//!   `access_result` 回执
 //! - **数据帧**：`conn_open`/`conn_data`/`conn_close`——一条 conn = 浏览器
 //!   与设备 web server 之间的一次字节流搬运（普通 HTTP = 短 conn；WS 升级
 //!   = open 后转长泵直至任一端关闭）
@@ -35,6 +37,10 @@ use serde::{Deserialize, Serialize};
 
 /// 面板访问 token 校验回执等待超时（服务端侧；设备离线/不回 = fail）。
 pub const ACCESS_CHECK_TIMEOUT_SECS: u64 = 5;
+
+/// 挑战 nonce 有效期（发放起算；过期单次消费即失败）。人类输入令牌的
+/// 登录节奏是十秒级，60s 覆盖慢输入；nonce 单次消费使窗口内的重放无意义。
+pub const ACCESS_NONCE_TTL_SECS: u64 = 60;
 
 /// 服务端心跳判定：设备最近一次心跳/任意帧距今超过该秒数 → 判离线踢连接
 /// （客户端 30s 一跳，3× 容错）。
@@ -103,13 +109,30 @@ pub enum BridgeFrame {
     Pong,
 
     // 面板访问鉴权（服务端 → 设备 + 回执）----
-    /// 面板访问 token 校验转发：`hash_hex` = 浏览器端 SHA-256(token) 的 hex。
-    /// 设备比对 `SHA-256(access_token)` 后回 `AccessResult`。服务端全程
-    /// 只见哈希、零存储。
+    /// 挑战-应答第一步（服务端 → 设备，BUG-20261116-009）：请求设备发放
+    /// 一次性 nonce。设备回 `AccessChallenge`；不支持挑战的旧设备不解码
+    /// 本帧（未知变体 decode 失败忽略）→ 服务端超时回落旧版裸哈希流程。
+    AccessChallengeRequest { request_id: String, node_id: String },
+    /// 挑战-应答第二步（设备 → 服务端）：`nonce_hex` = 64 hex 随机数
+    /// （设备发放、单次消费、TTL 内有效）。
+    AccessChallenge {
+        request_id: String,
+        nonce_hex: String,
+    },
+    /// 面板访问 token 校验转发：`hash_hex` = 浏览器端摘要的 hex。
+    /// 设备比对后回 `AccessResult`。服务端全程只见摘要、零存储。
+    ///
+    /// **摘要契约（挑战-应答模式，BUG-20261116-009）**：`nonce_hex` =
+    /// `Some(n)` 时 `hash_hex` = SHA-256(`access_token` UTF-8 || `n` hex
+    /// 字符串拼接)——同一明文哈希不再跨登录重放；`None` = 旧版裸哈希
+    /// （SHA-256(token)，可重放——旧版中继/设备兼容路径，设备侧 WARN）。
     AccessCheck {
         request_id: String,
         node_id: String,
         hash_hex: String,
+        /// 挑战 nonce（None = 旧版裸哈希流程；serde default 保旧帧兼容）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nonce_hex: Option<String>,
     },
     /// access_check 回执（设备 → 服务端）。
     AccessResult { request_id: String, ok: bool },

@@ -699,6 +699,22 @@ pub fn should_skip_heartbeat_for_bootstrap(workspace: &Path) -> bool {
     workspace.join("BOOTSTRAP.md").exists()
 }
 
+/// ticker/interval 间隔上界（BUG-20261116-001）：config u64/i64 巨值直喂
+/// tokio `interval()` 的 Instant 算术防护——missed-tick Delay 路径
+/// `Instant + Duration` 对 ≥584 年量级秒数 panic（std time.rs「overflow
+/// when adding duration to instant」，tick 线程死 = 兜底循环永久停摆），
+/// 准点路径则落 far_future 静默永不 tick（fail-silent）。上界 30 天远低于
+/// 算术界，语义 = 荒谬配置诚实退化；与 heartbeat `MAX_INTERVAL_MINUTES`
+/// （BUG-20261114-057 同面先例，30 天）对齐。
+pub(crate) const MAX_TICK_INTERVAL_SECS: u64 = 30 * 24 * 3600;
+
+/// ticker 间隔收敛：下限 `floor`（防 tokio `interval(0)` panic，保留各位点
+/// 既有语义）+ 上界 [`MAX_TICK_INTERVAL_SECS`]。消费点：gateway board 派发
+/// sweep / 磁盘水位 watchdog / 广播间隔双臂 / ws ping 间隔。
+pub(crate) fn bounded_tick_interval_secs(raw: u64, floor: u64) -> u64 {
+    raw.max(floor).min(MAX_TICK_INTERVAL_SECS)
+}
+
 #[cfg(test)]
 mod tests;
 

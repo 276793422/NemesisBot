@@ -34,10 +34,12 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
+use futures::SinkExt;
 use serde::Deserialize;
 
 use crate::api_handlers::AppState;
@@ -53,6 +55,21 @@ const MAX_DISPLAY_SESSIONS: usize = 4;
 /// 失常/恶意插件，正常增量 tile 远小于此。
 const MAX_UPSTREAM_FRAME: usize = 1024 * 1024;
 const MAX_DOWNSTREAM_FRAME: usize = 16 * 1024 * 1024;
+/// 下行帧队列深度（插件 → 浏览器方向）。有界 = 慢/冻结客户端下积压封顶
+/// （最坏 8 × 16MiB 单帧上限 = 128MiB 硬上界；正常增量 tile KB 级）；
+/// 旧 unbounded 形态会把整条 RFB 流全吞进内存。满 = 丢最新帧 + 限频
+/// 计数（画面流「后来居上」语义下丢帧自愈；冻结客户端由写超时断连）。
+const DISPLAY_OUT_CAPACITY: usize = 8;
+/// 上行帧队列深度（浏览器 → 插件方向）。有界 = 插件冻结（回环 TCP 写
+/// 停）时积压封顶（64 × 1MiB 上行单帧上限 = 硬上界；正常键鼠事件字节级）。
+/// 满 = 会话关闭——RFB 上行顺序事件流不可静默丢帧，堵死即诚实断开。
+const DISPLAY_IN_CAPACITY: usize = 64;
+/// 下行 ws 写超时：冻结客户端（TCP 零窗口/浏览器挂起）会把裸 send 永久
+/// 挂住——会话任务停在 arm body 里，estop watch 与 kill 通知全不被轮询
+/// （estop 面有 kill_all 带外 abort 兜底，会话槽位/内存的无限期占用则
+/// 只有此超时能解）。超时 = 断会话释放槽位，对齐通道家族
+/// WS_WRITE_TIMEOUT_SECS=30s。
+const DISPLAY_SEND_TIMEOUT_SECS: u64 = 30;
 
 // 插件端点槽 + 会话管理器（模块级 OnceLock，PTY 同款——不进 AppState）
 
@@ -333,7 +350,7 @@ async fn handle_vm_display_socket(
             return;
         }
     };
-    let (mut tcp_read, mut tcp_write) = tcp.into_split();
+    let (tcp_read, mut tcp_write) = tcp.into_split();
 
     // meta 握手（一行 JSON + \n——插件的会话定界；agent_id 缺省 = 主实例）。
     let session_id = format!("d-{}", chrono::Utc::now().timestamp_millis());
@@ -350,18 +367,17 @@ async fn handle_vm_display_socket(
         return;
     }
 
-    // 下行泵任务：插件 TCP → 帧解析 → channel（16 MiB cap 兜失常插件）。
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-    let down = tokio::spawn(async move {
-        while let Ok(frame) = read_frame(&mut tcp_read, MAX_DOWNSTREAM_FRAME).await {
-            if out_tx.send(frame).is_err() {
-                break;
-            }
-        }
-    });
+    // 下行泵任务：插件 TCP → 帧解析 → 有界 channel（提取见
+    // [`pump_downstream`]；容量/帧上限参数化 = 背压契约可测）。
+    let (mut out_rx, down) = pump_downstream(tcp_read, MAX_DOWNSTREAM_FRAME, DISPLAY_OUT_CAPACITY);
 
     // 上行泵任务：channel → 帧写（WS 侧只投递，写串行化在独立任务）。
-    let (in_tx, mut in_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    // 有界（[`DISPLAY_IN_CAPACITY`]）：插件冻结（VM 卡死）时其回环 TCP 写
+    // 缓冲填满 → up 任务停在 write_frame → 无界队列会把「用户对着冻结屏
+    // 持续键鼠」全部吞进内存（RFB 上行单帧上限 1MiB，恶意/失控客户端可灌
+    // 大帧）。满 = 会话关闭（RFB 上行是顺序事件流，静默丢帧 = 协议损坏，
+    // 不可丢；上游堵死 = 会话已死，诚实断开，客户端重连自愈）。
+    let (in_tx, mut in_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(DISPLAY_IN_CAPACITY);
     let up = tokio::spawn(async move {
         while let Some(chunk) = in_rx.recv().await {
             if write_frame(&mut tcp_write, &chunk).await.is_err() {
@@ -395,6 +411,7 @@ async fn handle_vm_display_socket(
         state.estop.as_ref().map(|e| e.subscribe());
     let mut dying = *kill_rx.borrow() || estop_rx.as_ref().is_some_and(|rx| *rx.borrow());
 
+    let write_timeout = Duration::from_secs(DISPLAY_SEND_TIMEOUT_SECS);
     loop {
         if dying {
             tracing::info!("[VmDisplay] estop/kill — disconnecting session {conn_id}");
@@ -423,7 +440,9 @@ async fn handle_vm_display_socket(
             frame = out_rx.recv() => {
                 match frame {
                     Some(data) => {
-                        if socket.send(Message::Binary(data.into())).await.is_err() {
+                        if !send_ws_capped(&mut socket, write_timeout, Message::Binary(data.into()))
+                            .await
+                        {
                             break;
                         }
                     }
@@ -437,12 +456,22 @@ async fn handle_vm_display_socket(
                         if b.len() > MAX_UPSTREAM_FRAME {
                             break;
                         }
-                        let _ = in_tx.send(b.to_vec());
+                        if in_tx.try_send(b.to_vec()).is_err() {
+                            // 队列满（插件冻结 + 上行持续灌入）= 上游堵死，
+                            // 顺序流不可丢帧 → 关会话（诚实断开，客户端重连）。
+                            tracing::warn!(
+                                "[VmDisplay] 上行队列满（插件冻结/消费停摆），断会话 {conn_id}"
+                            );
+                            break;
+                        }
                     }
                     // Text 帧：ping 保活（穿越代理/负载均衡）；其余忽略。
                     Some(Ok(Message::Text(t))) => {
-                        if t.trim() == "ping" {
-                            let _ = socket.send(Message::Text("pong".into())).await;
+                        if t.trim() == "ping"
+                            && !send_ws_capped(&mut socket, write_timeout, Message::Text("pong".into()))
+                                .await
+                        {
+                            break;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -458,6 +487,66 @@ async fn handle_vm_display_socket(
     down.abort();
     up.abort();
     tracing::info!("[VmDisplay] session {conn_id} closed");
+}
+
+/// 下行泵（提取为独立函数 = 有界背压契约可测）：读插件 TCP 帧 → 有界
+/// channel。满 = **丢最新帧** + 限频计数日志（画面流语义：客户端消费不过
+/// 来时丢新帧不丢通路，恢复后排空续流；丢帧自愈优于泵停摆/内存积压）；
+/// channel 关（会话结束）→ 退出。
+fn pump_downstream<R>(
+    tcp_read: R,
+    max_frame: usize,
+    capacity: usize,
+) -> (
+    tokio::sync::mpsc::Receiver<Vec<u8>>,
+    tokio::task::JoinHandle<()>,
+)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(capacity);
+    let handle = tokio::spawn(async move {
+        let mut tcp_read = tcp_read;
+        let mut dropped: u64 = 0;
+        while let Ok(frame) = read_frame(&mut tcp_read, max_frame).await {
+            match out_tx.try_send(frame) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    dropped += 1;
+                    if dropped == 1 || dropped.is_multiple_of(128) {
+                        tracing::warn!(
+                            "[VmDisplay] 下行队列满，累计丢帧 {dropped}（客户端消费不过来/冻结）"
+                        );
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+            }
+        }
+    });
+    (out_rx, handle)
+}
+
+/// 带写超时的 WS 发送（true = 发出；false = 错误或超时——调用方断会话）。
+/// 冻结客户端（TCP 零窗口/浏览器挂起）会把裸 send 永久挂住：会话任务
+/// 停在 arm body，estop watch / kill 通知全不被轮询（estop 面有 kill_all
+/// 带外 abort 兜底；会话槽位/任务的无限期占用只有此超时能解）。超时
+/// 对齐通道家族 WS_WRITE_TIMEOUT_SECS=30s。泛型 = 超时臂单测（mock
+/// sink）直测。
+async fn send_ws_capped<S>(socket: &mut S, write_timeout: Duration, msg: Message) -> bool
+where
+    S: futures::Sink<Message, Error = axum::Error> + Unpin,
+{
+    match tokio::time::timeout(write_timeout, socket.send(msg)).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            tracing::warn!(
+                "[VmDisplay] 下行写超时（{}s，客户端冻结/零窗口）",
+                write_timeout.as_secs()
+            );
+            false
+        }
+    }
 }
 
 #[cfg(all(test, feature = "vm-display"))]

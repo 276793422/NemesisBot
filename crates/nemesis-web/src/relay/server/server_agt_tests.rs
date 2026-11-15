@@ -120,7 +120,7 @@ async fn agt_access_check_send_failure_and_timeout() {
         !relay.send_to_device("n1", BridgeFrame::Pong, 0),
         "队列此刻必须已满"
     );
-    let err = relay.access_check("n1", "abcd").await.expect_err("");
+    let err = relay.access_check("n1", "abcd", None).await.expect_err("");
     assert!(err.contains("设备不在线"), "{err}");
 
     // ② 设备在表、通道健康但无回执 → 超时 Ok(false)（真等 5s）。
@@ -129,7 +129,10 @@ async fn agt_access_check_send_failure_and_timeout() {
         .authenticate_device("tok", "n2", "名", "v", None, tx)
         .expect("注册应成功");
     let started = Instant::now();
-    let ok = relay.access_check("n2", "abcd").await.expect("超时非 Err");
+    let ok = relay
+        .access_check("n2", "abcd", None)
+        .await
+        .expect("超时非 Err");
     assert!(!ok, "无回执 = 校验不通过");
     assert!(
         started.elapsed() >= Duration::from_secs(ACCESS_CHECK_TIMEOUT_SECS),

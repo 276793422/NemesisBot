@@ -488,6 +488,18 @@ desc = "只读 LSP 客户端（lsp 工具 definition/references/implementation/h
 category = "subsystems"
 default = true
 
+# NOTE: `browser`（2026-11-15 浏览器接管框架）：CDP 客户端（nemesis-browser）
+# + host_browser 工具（九动作：navigate/click/type/key/scroll/extract_text/
+# screenshot/wait_for/run_script）+ browser.* WSAPI + Dashboard 执行单元浏览器
+# 面板。run_script 步进安全闸（每步过 8 层 + 强制审批）；凭据注入走 vault:
+# 别名（域名绑定 + 密码框校验 + 防伪造三守卫）。IoT/无头建议关。
+[[feature]]
+id = "browser"
+label = "浏览器接管（host_browser）"
+desc = "控制本机已装浏览器看页面+操作页面（host_browser 工具九动作 + browser.* WSAPI + Dashboard 浏览器面板；CDP 驱动 Edge/Chrome/Brave）。run_script 每步过安全闸+审批；IoT/无头建议关"
+category = "subsystems"
+default = true
+
 [[feature]]
 id = "checkpoint-git"
 label = "Checkpoint 影子库（git）"

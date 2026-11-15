@@ -95,7 +95,9 @@ impl UsbEventSource {
     /// Kill and reap the child process if present. Idempotent; the reader
     /// thread exits once stdout closes (EOF) after the kill.
     fn kill_child(child: &std::sync::Mutex<Option<std::process::Child>>) {
-        if let Some(mut c) = child.lock().unwrap().take() {
+        // Drop/stop 路径：毒化锁 unwrap 的持毒 panic 会升级成 double-panic
+        // abort（tts.rs 同款纪律）——into_inner 容毒恢复，照常收割子进程。
+        if let Some(mut c) = child.lock().unwrap_or_else(|p| p.into_inner()).take() {
             let _ = c.kill();
             let _ = c.wait();
         }

@@ -95,6 +95,28 @@ fn test_create_and_resolve_roundtrip() {
 }
 
 #[test]
+fn test_wrong_token_share_not_resolvable_nor_revocable() {
+    // 恒时比较收敛（verify_token 单源）后的行为面回归锁：错 token 既解析
+    // 不到也撤不掉；截断形态同样拒（长度不等短路 + 恒时折叠语义不变）。
+    let _g = crate::test_home::lock_home();
+    let ws = temp_workspace();
+    let p = ws.path().to_str().unwrap();
+    let e = create_share(p, "s1").unwrap();
+    assert!(
+        resolve_share(p, &"0".repeat(32)).is_none(),
+        "错 token 必须解析不到"
+    );
+    assert!(
+        resolve_share(p, &e.token[..31]).is_none(),
+        "截断 token 必须解析不到"
+    );
+    assert!(
+        !revoke_share(p, &"0".repeat(32)).unwrap(),
+        "错 token 撤销必须 false"
+    );
+}
+
+#[test]
 fn test_create_is_idempotent_per_session() {
     let _g = crate::test_home::lock_home();
     let ws = temp_workspace();

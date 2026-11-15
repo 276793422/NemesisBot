@@ -25,6 +25,14 @@ pub const BUSY_MESSAGE: &str =
 pub const DRAINING_RECEIPT: &str =
     "\u{23f4} 正在停机：新消息已停止受理（在途任务正常收尾），请稍后重试";
 
+/// drain 等待 timeout 的可表示域上限（BUG-20261116-014）：30 年 ≈ 9.47e8 秒
+/// ——ns ≈ 9.47e17，加任意现实运行时长稳落 std Instant 表示域（i64 ns，
+/// ≈292 年）内。timeout（config `agents.shutdown_drain_secs` 等）超出时
+/// clamp 到本值：语义 = 「等待至可表示大值」，与可表示大值行为一致，
+/// 不再在停机路径 panic。
+const DRAIN_TIMEOUT_REPRESENTABLE_CAP: std::time::Duration =
+    std::time::Duration::from_secs(30 * 365 * 86400);
+
 /// W6：在途 turn gauge 守卫——构造即 +1，Drop 即 -1（panic/abort 展开
 /// 路径也减账，gauge 不会单调漂移）。spawn 臂与 inline continuation 臂
 /// 共用（[`AgentLoop::spawn_turn_task`] / pump_dispatch Continuation 分支）。
@@ -1209,8 +1217,14 @@ impl AgentLoop {
 
     /// W6：有界等在途 turn 归零（100ms 轮询）。返回 true=已归零 /
     /// false=超时（调用方明示在途数后走强制 teardown）。
+    ///
+    /// deadline 饱和（BUG-20261116-014）：timeout 可来自 config 超大值，
+    /// 裸 `Instant + Duration` 在超出 std 表示域（≈292 年）时 checked_add
+    /// expect panic。先 clamp 到可表示大值（30 年，任意现实运行时长下
+    /// 相加稳落表示域内）——超出表示域的 timeout 语义收敛为「等 30 年」，
+    /// 与可表示大值一致，不再 panic。
     pub async fn wait_turns_drained(&self, timeout: std::time::Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + timeout.min(DRAIN_TIMEOUT_REPRESENTABLE_CAP);
         loop {
             if self.in_flight_turns() == 0 {
                 return true;
@@ -1226,11 +1240,15 @@ impl AgentLoop {
     /// drain 面不止主 loop（L6++ 项目 loop 与 G1 自建 agent loop 同为常驻
     /// AgentLoop，在途 turn 同样不该被停机 abort），全部 loop 共享同一有界
     /// 窗口轮询，任一在途即未排干。空列表视为已排干。
+    ///
+    /// 生产消费点 timeout 直接来自 `agents.defaults.shutdown_drain_secs`
+    /// （u64 无 clamp，极端值在停机路径 panic）——deadline 饱和同
+    /// [`Self::wait_turns_drained`]（BUG-20261116-014）。
     pub async fn wait_loops_drained(
         loops: &[std::sync::Arc<AgentLoop>],
         timeout: std::time::Duration,
     ) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + timeout.min(DRAIN_TIMEOUT_REPRESENTABLE_CAP);
         loop {
             if loops.iter().all(|l| l.in_flight_turns() == 0) {
                 return true;

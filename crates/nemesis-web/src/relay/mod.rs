@@ -40,9 +40,9 @@ pub use client_status::{
 
 pub use handlers::{
     ADMIN_COOKIE, AUTH_COOKIE, handle_auth_page, handle_auth_submit, handle_bridge_ws,
-    handle_device_request, handle_relay_api_client_reconnect, handle_relay_api_enabled,
-    handle_relay_api_overview, handle_relay_api_status, handle_relay_login,
-    handle_relay_status_page,
+    handle_device_challenge, handle_device_request, handle_relay_api_client_reconnect,
+    handle_relay_api_enabled, handle_relay_api_overview, handle_relay_api_status,
+    handle_relay_login, handle_relay_login_nonce, handle_relay_status_page,
 };
 pub use identity::{BridgeClusterIdentity, BridgeIdentityEvent, BridgeIdentitySink};
 pub use protocol::BridgeFrame;

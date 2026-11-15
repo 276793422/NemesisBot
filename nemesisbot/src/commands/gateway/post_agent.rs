@@ -1190,6 +1190,16 @@ pub(crate) async fn init_post_agent(
         info!("[Gateway] LSP manager injected into web server");
     }
 
+    // 浏览器接管管理面注入（2026-11-15）：BrowserManager 单例移交 web 面
+    //（browser.* WSAPI 投影 + Dashboard 执行单元浏览器面板；host_browser
+    // 工具经 SharedResources 同源）。模块级 OnceLock 槽（同 BOARD_ESTOP
+    // 裁决——AppState 字面量测试遍布全库，加字段是断点级改动）。
+    #[cfg(feature = "browser")]
+    if let Some(mgr) = shared_resources.browser_manager.clone() {
+        nemesis_web::handlers::browser::set_browser_manager(mgr);
+        info!("[Gateway] browser manager injected into web server");
+    }
+
     // hand the tool-event receiver to the web server — its pump (spawned
     // in WebServer::start) routes events to Dashboard WS push + EventHub.
     web_server.set_agent_event_rx(agent_event_rx);
@@ -1305,10 +1315,20 @@ pub(crate) async fn init_post_agent(
         // 会 cancel 进程令牌（OnceLock 无复位），同进程并行的其他测试 watcher
         // 会被跨测试毒杀（pa2 干涉面根修，2026-11-16 配对复现实锤）。
         let board_db_for_watch = home.join("workspace").join("board").join("board.db");
+        // 终态令牌：测试注入口优先（BUG-20261115-046 根修）——ctx 带局部
+        // 令牌时 watcher 挂局部（对进程全局令牌被 run_runtime 全链测试经
+        // 生产停机路径 cancel 的毒化免疫）；生产 None = 全局令牌。循环体
+        // 抽 `run_board_change_watcher`（令牌参数化）：测试 pa2 回落臂可
+        // 重挂同一生产循环体（跨测试毒杀干涉面根修，2026-11-16 配对复现
+        // 实锤）。
+        let watcher_terminal = ctx
+            .terminal_cancel_override
+            .clone()
+            .unwrap_or_else(|| terminal_cancel_token().clone());
         tokio::spawn(run_board_change_watcher(
             board_db_for_watch,
             web_server.event_hub().clone(),
-            terminal_cancel_token().clone(),
+            watcher_terminal,
         ));
     }
 
@@ -1745,6 +1765,11 @@ pub(crate) async fn run_board_change_watcher(
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(BOARD_CHANGE_POLL_SECS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
+    // 首拍基线观测（BUG-20261115-046 诊断存留）：基线在任务首 poll 才拍
+    // ——满载下首 poll 可晚于启动期早段写入，基线吃掉首个变化 → 该变化
+    // 漏报（低频、后续写入照常广播）。日志给排障一个「watcher 活没活/
+    // 基线多少」的直接观测面。
+    tracing::info!("[Gateway] board change watcher started (baseline data_version={last:?})");
     loop {
         // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再 re-park
         // timer（家族纪律见 shutdown.rs 模块文档）。

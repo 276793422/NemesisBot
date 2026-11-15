@@ -372,6 +372,12 @@ impl BraveSearchProvider {
     pub fn new(api_key: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            // BUG-20261115-045：X-Subscription-Token 是自定义凭据头——reqwest
+            // 默认重定向策略跨主机只剥 authorization/cookie 等标准四头，自定义
+            // 头会原样带到 302 目标主机。换同源跟随 + 跨源终止策略（与
+            // nemesis-providers 六 lane / channels 三 builder 同源纪律，见
+            // nemesis_utils::http_redirect）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .unwrap_or_default();
         Self {
@@ -473,6 +479,10 @@ impl PerplexitySearchProvider {
     pub fn new(api_key: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            // BUG-20261115-045：凭据外呼统一走跨源终止策略（Authorization
+            // 虽在 reqwest 默认剥离清单内，但显式策略不再依赖「记得哪些头
+            // 会被剥」——日后换自定义凭据头时不再裸奔）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .unwrap_or_default();
         Self {

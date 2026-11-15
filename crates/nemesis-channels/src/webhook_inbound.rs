@@ -119,10 +119,10 @@ impl WebhookInboundChannel {
 
     /// Validates the API key from a request header.
     pub fn validate_api_key(&self, provided_key: &str) -> bool {
-        if self.config.api_key.is_empty() {
-            return true; // no auth required
-        }
-        self.config.api_key == provided_key
+        // 恒时比较（nemesis-utils 单一真相源）：expected 空 = 不设闸放行，
+        // 与 verify_token 语义同构——HTTP 入站路径的时序 oracle 面与 REST
+        // 面同级（verify_token 当初引入的场景即 REST/升级闸）。
+        nemesis_utils::verify::verify_token(provided_key, &self.config.api_key)
     }
 
     /// Registers a pending request and returns the receiver.

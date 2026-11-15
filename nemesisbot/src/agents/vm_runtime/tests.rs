@@ -1359,3 +1359,31 @@ fn browser_not_in_guest_subset_routes_via_dedicated_tool() {
         "browser 必须被子集闸拦成 ToolFailed: {err:?}"
     );
 }
+
+/// BUG-20261116-008 回归锁：StartGateGuard Drop 毒化锁容毒恢复。持锁
+/// panic 毒化 `starting` 集合后 guard Drop：修复前 expect 必 panic（unwind
+/// 中 = double-panic abort），修复后 into_inner 恢复照常摘除登记。
+#[test]
+fn start_gate_guard_drop_with_poisoned_lock_does_not_panic() {
+    let set: std::sync::Mutex<std::collections::HashSet<String>> =
+        std::sync::Mutex::new(std::collections::HashSet::new());
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = set.lock().unwrap();
+        panic!("毒化注入");
+    }))
+    .is_err();
+    assert!(poisoned, "毒化注入必须真实发生（否则测试空转）");
+    // 容毒恢复路径预置登记（真实流程 = start_or_wake 插入后持守卫）。
+    set.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert("vm-1".to_string());
+    let guard = StartGateGuard {
+        set: &set,
+        id: "vm-1".to_string(),
+    };
+    drop(guard); // 修复前此处 expect 中毒必 panic
+    assert!(
+        set.lock().unwrap_or_else(|p| p.into_inner()).is_empty(),
+        "guard Drop 应已摘除登记"
+    );
+}
