@@ -24,7 +24,7 @@
  */
 import { expect, test } from './fixtures'
 import { BASE_URL, E2E } from './env'
-import { AUTH_KEY, gotoRoute, sendChat, waitAssistantReply, wsapi, type WsapiResult } from './helpers'
+import { AUTH_KEY, gotoRoute, openSessionSidebar, sendChat, waitAssistantReply, wsapi, type WsapiResult } from './helpers'
 
 /** sessions.list 响应里的裸 sid 集合（data = { sessions: [{id,...}], ... }） */
 function sessionIds(r: WsapiResult): string[] {
@@ -58,6 +58,12 @@ test('提示词查看器：autoLogin 落盘 → 票据流取段 → 一次性链
   await expect(page.locator('.chat-input-area textarea')).toBeVisible({ timeout: 20_000 })
 
   // ── 3. 造真实会话（UI 发送 → mock 确定性回复落账）→ 差分取 sid ──
+  // 2026-11-17 BUG-053：无 localStorage 页面会自动选中「最近会话」——串行
+  // shard 里那是早前 spec 留下的旧会话，发送落旧会话 → 差分永空（051 清掉
+  // project-history 死会话后暴露）。显式新建对话再发，会话新建与差分自洽。
+  await openSessionSidebar(page)
+  await page.locator('.fn-new-chat').click()
+  await expect(page.locator('.chat-input-area textarea')).toBeVisible({ timeout: 20_000 })
   const before = new Set(sessionIds(await wsapi(page, 'sessions', 'list')))
   await sendChat(page, '你好，请做个自我介绍')
   await waitAssistantReply(page, 'E2E_MOCK_TEXT_REPLY')
