@@ -2,9 +2,23 @@ use super::*;
 
 /// BUG-20261114-034：RegistryConfig 缺省启用 ModelScope（与 Dashboard 面收敛）。
 /// 只测单一注册表/开关的 from_config 用例用它隔离掉缺省注册，保持计数断言精准。
+/// 2026-11-16 起再隔离两笔恒注册面：出厂源（disabled `nemesisbot` 占位条目
+/// ——append-if-absent 见名跳过且 disabled 不构造 registry）与 builtin 内嵌臂
+/// （无开关，恒在——计数断言各 +1，专用探针见 factory/builtin 测试段）。
 fn isolated_default_config() -> RegistryConfig {
     let mut c = RegistryConfig::default();
     c.modelscope.enabled = false;
+    c.github_sources.push(crate::types::GitHubSourceConfig {
+        name: crate::registry::FACTORY_SOURCE.name.to_string(),
+        repo: String::new(),
+        enabled: false,
+        branch: String::new(),
+        index_type: String::new(),
+        index_path: String::new(),
+        skill_path_pattern: String::new(),
+        timeout_secs: 0,
+        max_size: 0,
+    });
     c
 }
 
@@ -149,12 +163,19 @@ fn test_new_manager_with_cache_disabled() {
 
 #[test]
 fn test_from_config_with_github_enabled() {
-    let mut config = isolated_default_config();
+    // legacy 单源 lane（github_sources 空 + github.enabled）：出厂源 live 臂
+    // 与 legacy github 叠加并存（升级语义=叠加非替换），builtin 恒注册 → 3。
+    // 注：不用 isolated_default_config——占位条目使 sources 非空，legacy
+    // 资格（sources 空 + github.enabled）为 false。
+    let mut config = RegistryConfig::default();
+    config.modelscope.enabled = false;
     config.github.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert!(reg[0].contains("github"));
+    assert_eq!(reg.len(), 3);
+    assert!(reg.iter().any(|r| r == "github"));
+    assert!(reg.iter().any(|r| r == FACTORY_SOURCE.name));
+    assert!(reg.iter().any(|r| r == "builtin"));
 }
 
 #[test]
@@ -163,18 +184,27 @@ fn test_from_config_with_clawhub_enabled() {
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert!(reg[0].contains("clawhub"));
+    // builtin 恒注册 +1（出厂源已被 helper 占位隔离）
+    assert_eq!(reg.len(), 2);
+    assert!(reg.iter().any(|r| r == "clawhub"));
+    assert!(reg.iter().any(|r| r == "builtin"));
 }
 
 #[test]
 fn test_from_config_with_both_enabled() {
-    let mut config = isolated_default_config();
+    // github.enabled 走 legacy 单源 lane（不能用 isolated_default_config——
+    // 占位条目使 sources 非空杀死 legacy 资格）；裸 default 出厂源如实叠加
+    // → [nemesisbot, builtin, github, clawhub]。
+    let mut config = RegistryConfig::default();
+    config.modelscope.enabled = false;
     config.github.enabled = true;
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 2);
+    assert_eq!(reg.len(), 4);
+    for name in ["github", "clawhub", "builtin", FACTORY_SOURCE.name] {
+        assert!(reg.iter().any(|r| r == name), "missing {name}: {reg:?}");
+    }
 }
 
 #[test]
@@ -309,8 +339,9 @@ fn test_from_config_with_multi_source() {
         });
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "test-source");
+    assert_eq!(reg.len(), 2);
+    assert!(reg.iter().any(|r| r == "test-source"));
+    assert!(reg.iter().any(|r| r == "builtin"));
 }
 
 #[test]
@@ -330,19 +361,24 @@ fn test_from_config_with_disabled_source() {
             max_size: 0,
         });
     let manager = RegistryManager::from_config(config);
-    assert!(manager.registries().is_empty());
+    let reg = manager.registries();
+    // disabled github 源不构造；builtin 恒注册 → 1
+    assert_eq!(reg.len(), 1);
+    assert_eq!(reg[0], "builtin");
 }
 
 #[test]
 fn test_from_config_defaults_register_modelscope_only() {
-    // BUG-20261114-034：键全缺的缺省配置现在恰好注册 ModelScope 单表
-    // （与 Dashboard 面 SkillsFullConfig 及出厂模板显式值收敛）；
-    // github/clawhub 缺省仍关闭。
+    // BUG-20261114-034：键全缺的缺省配置 github/clawhub 缺省仍关闭、
+    // ModelScope 缺省启用（与 Dashboard 面 SkillsFullConfig 及出厂模板
+    // 显式值收敛）；2026-11-16 起出厂源 live 臂 + builtin 恒注册叠加 → 3。
     let config = RegistryConfig::default();
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "modelscope");
+    assert_eq!(reg.len(), 3);
+    for name in [FACTORY_SOURCE.name, "builtin", "modelscope"] {
+        assert!(reg.iter().any(|r| r == name), "missing {name}: {reg:?}");
+    }
 }
 
 #[test]
@@ -440,13 +476,16 @@ fn test_multiple_registries() {
 
 #[test]
 fn test_from_config_legacy_github_single_source() {
-    let mut config = isolated_default_config();
+    // legacy 单源 lane：github.enabled + sources 空 → legacy "github" 注册表；
+    // 出厂源与 builtin 恒注册叠加 → 3（占位条目会杀 legacy 资格，同 :151 注）。
+    let mut config = RegistryConfig::default();
+    config.modelscope.enabled = false;
     config.github.enabled = true;
     config.github.base_url = "https://raw.githubusercontent.com".to_string();
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "github");
+    assert_eq!(reg.len(), 3);
+    assert!(reg.iter().any(|r| r == "github"));
 }
 
 #[test]
@@ -455,18 +494,24 @@ fn test_from_config_with_clawhub() {
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "clawhub");
+    assert_eq!(reg.len(), 2);
+    assert!(reg.iter().any(|r| r == "clawhub"));
+    assert!(reg.iter().any(|r| r == "builtin"));
 }
 
 #[test]
 fn test_from_config_github_and_clawhub() {
-    let mut config = isolated_default_config();
+    // legacy github lane（不能用 helper，同 both_enabled 注）+ 出厂源叠加。
+    let mut config = RegistryConfig::default();
+    config.modelscope.enabled = false;
     config.github.enabled = true;
     config.clawhub.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 2);
+    assert_eq!(reg.len(), 4);
+    for name in ["github", "clawhub", "builtin", FACTORY_SOURCE.name] {
+        assert!(reg.iter().any(|r| r == name), "missing {name}: {reg:?}");
+    }
 }
 
 #[test]
@@ -679,7 +724,8 @@ fn test_from_config_with_multiple_sources() {
             max_size: 0,
         });
     let manager = RegistryManager::from_config(config);
-    assert_eq!(manager.registries().len(), 2);
+    // 双 user 源 + builtin 恒注册 → 3
+    assert_eq!(manager.registries().len(), 3);
 }
 
 #[tokio::test]
@@ -784,4 +830,88 @@ async fn test_search_merged_sorts_by_score() {
     manager.add_registry(Arc::new(StubRegistryProvider));
     let result = manager.search("test", 10).await;
     assert!(result.is_ok());
+}
+
+// ============================================================
+// 出厂源合流 + builtin 恒注册（2026-11-16，仓库 Skills/ 第三源双臂）
+// ============================================================
+
+#[test]
+fn test_apply_factory_sources_appends_when_absent() {
+    let mut config = RegistryConfig::default();
+    assert!(config.github_sources.is_empty());
+    apply_factory_sources(&mut config);
+    assert_eq!(config.github_sources.len(), 1);
+    let s = &config.github_sources[0];
+    assert_eq!(s.name, FACTORY_SOURCE.name);
+    assert_eq!(s.repo, FACTORY_SOURCE.repo);
+    assert_eq!(s.branch, FACTORY_SOURCE.branch);
+    assert_eq!(s.index_type, FACTORY_SOURCE.index_type);
+    assert_eq!(s.skill_path_pattern, FACTORY_SOURCE.pattern);
+    assert!(s.enabled);
+}
+
+#[test]
+fn test_apply_factory_sources_idempotent() {
+    let mut config = RegistryConfig::default();
+    apply_factory_sources(&mut config);
+    apply_factory_sources(&mut config);
+    assert_eq!(config.github_sources.len(), 1);
+}
+
+#[test]
+fn test_apply_factory_sources_user_entry_wins_even_disabled() {
+    // 可关不可丢：用户显式停用的同名条目压制合流（append-if-absent 只看名字）。
+    let mut config = RegistryConfig::default();
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: FACTORY_SOURCE.name.to_string(),
+            repo: "user/own".to_string(),
+            enabled: false,
+            branch: "dev".to_string(),
+            index_type: "github_api".to_string(),
+            index_path: String::new(),
+            skill_path_pattern: "custom/{slug}/SKILL.md".to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
+    apply_factory_sources(&mut config);
+    assert_eq!(config.github_sources.len(), 1);
+    assert_eq!(config.github_sources[0].repo, "user/own");
+    assert!(!config.github_sources[0].enabled);
+}
+
+#[test]
+fn test_from_config_registers_factory_and_builtin() {
+    // 恒注册双面：出厂源 live 臂（enabled → registry 构造）+ builtin 内嵌臂。
+    let manager = RegistryManager::from_config(RegistryConfig::default());
+    let reg = manager.registries();
+    assert!(reg.iter().any(|r| r == FACTORY_SOURCE.name));
+    assert!(reg.iter().any(|r| r == "builtin"));
+    // config 面同步合流（消费方读 manager.config 与 registry 面同源）。
+    let cfg = manager.config.read();
+    assert!(
+        cfg.github_sources
+            .iter()
+            .any(|s| s.name == FACTORY_SOURCE.name)
+    );
+}
+
+#[test]
+fn test_legacy_lane_survives_factory_merge() {
+    // 出厂源合流不得杀死 legacy 单源 lane：sources 空 + github.enabled 的
+    // 老工作区升级后 legacy "github" 与出厂源并存（回归锁——合流点若挪到
+    // legacy 资格判定之后，github_sources 恒非空会把 legacy 分支永久假死）。
+    let mut config = RegistryConfig::default();
+    config.modelscope.enabled = false;
+    config.clawhub.enabled = false;
+    config.github.enabled = true;
+    let manager = RegistryManager::from_config(config);
+    let reg = manager.registries();
+    assert!(
+        reg.iter().any(|r| r == "github"),
+        "legacy lane dead: {reg:?}"
+    );
+    assert!(reg.iter().any(|r| r == FACTORY_SOURCE.name));
 }

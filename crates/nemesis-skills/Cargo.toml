@@ -30,6 +30,7 @@ parking_lot = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
+include_dir = "0.7"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

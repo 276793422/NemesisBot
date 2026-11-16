@@ -4551,6 +4551,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "ed25519-dalek",
+ "include_dir",
  "nemesis-config",
  "nemesis-security",
  "nemesis-types",

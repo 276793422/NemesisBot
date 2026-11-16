@@ -39,8 +39,26 @@ impl ClusterHandler {
         let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
         let action = data["action"].as_str().ok_or("missing action")?;
 
-        // Use RPC client directly for async call with 10s timeout
+        // RPC client 可用性检查**先于**预热（配置面错误优先报——client 都
+        // 没有时预热探针必然双双空转，报「预热失败」会误导排障方向）。
         let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
+
+        // 预热探针（诊断可用性，QUIC 隧道拓扑）：诊断与探针共用同一条
+        // RpcClient 拨号路径（iroh 地址 → 漫游池过洞），但 call_with_timeout
+        // 挂 require_online 门禁——registry 标 Offline 时直接拒绝、根本不拨号。
+        // 诊断恰是「不确定对端状态」时用的工具，被「对端必须在线」挡住是
+        // 循环依赖。probe_peer 走免门禁帧探针，成功即 mark_peer_healthy——
+        // 门禁自然放行，顺带把 UI 离线态拉回真实。
+        // 失败重试一次：冷漫游会话首拨常超预算（「冷会话首 ping 必超时
+        // 二次绿」——首拨超时后连接已落池，二次秒绿），重试把二次绿变成
+        // 对用户透明。两次仍败 = 诚实报错，且不翻 Online/Offline 状态
+        // （预热是工具性探测；与 nodes.ping「用户主动探针失败即翻 Offline」
+        // 的 UX 语义刻意区分）。
+        if !cluster.probe_peer(node_id).await && !cluster.probe_peer(node_id).await {
+            return Err(format!(
+                "预热探针两次失败（对端不可达）：无法建立到 {node_id} 的诊断通道，请检查对端 gateway 与中继/网络状态"
+            ));
+        }
 
         let request = nemesis_cluster::rpc_types::RPCRequest {
             id: uuid::Uuid::new_v4().to_string(),

@@ -364,7 +364,13 @@ fn write_clawhub_config(ws: &std::path::Path, server_uri: &str, enabled: bool) {
         // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——
         // 本 helper 的意图是「wiremock 限定的 ClawHub 单源」，显式关掉 ModelScope
         // 保证测试密闭（不打真实 modelscope.cn）。
-        "modelscope": { "enabled": false }
+        "modelscope": { "enabled": false },
+        // 2026-11-16：出厂源 disabled 同名条目压制 from_config 合流——否则
+        // search 路径会带真实 api.github.com 出厂源（CI 可达 → 拉回真数据 /
+        // 限流 = 非密闭）。builtin 内嵌臂仍恒注册（in-process，无网络面）。
+        // 注意 name/repo 无 serde default（必填）——缺 repo 会让整份
+        // RegistryConfig 解析失败静默回落 default（clawhub 配置全丢）。
+        "github_sources": [ { "name": "nemesisbot", "repo": "276793422/NemesisBot", "enabled": false } ]
     });
     std::fs::write(
         ws.join("config/config.skills.json"),
@@ -699,7 +705,7 @@ async fn search_ok_via_wiremock_marks_installed() {
 }
 
 #[tokio::test]
-async fn search_registry_failure_maps_chinese_prefix() {
+async fn search_clawhub_failure_degrades_to_builtin() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -707,19 +713,26 @@ async fn search_registry_failure_maps_chinese_prefix() {
     let dir = tempfile::tempdir().unwrap();
     write_clawhub_config(dir.path(), &server.uri(), true);
 
-    // 唯一源返回 500 → search_all 全失败 → “搜索失败:...”
+    // 唯一外部源返回 500：builtin 内嵌臂恒注册（2026-11-16）后 search_all
+    // 的「全失败 → 搜索失败」聚合错误结构性不可达（builtin in-process 恒
+    // 成功）——语义翻转为**降级**：clawhub 失败被容忍，builtin 结果照常
+    // 返回（query 命中 problem-analysis）。handler 的 map_err（「搜索失败:
+    // 」前缀映射）保留为防御（builtin 不可能失败，分支结构性不可达）。
     Mock::given(method("GET"))
         .and(path("/api/search"))
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
         .mount(&server)
         .await;
 
-    let err = SkillsHandler::new()
-        .search("q", &dir.path().to_string_lossy())
+    let r = SkillsHandler::new()
+        .search("problem-analysis", &dir.path().to_string_lossy())
         .await
-        .unwrap_err();
-    assert!(err.starts_with("搜索失败"), "err: {err}");
-    assert!(err.contains("500"), "err: {err}");
+        .unwrap()
+        .unwrap();
+    let results = r["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "builtin-degraded results: {results:?}");
+    assert_eq!(results[0]["slug"], "problem-analysis");
+    assert_eq!(results[0]["source"], "builtin");
 }
 
 #[tokio::test]
