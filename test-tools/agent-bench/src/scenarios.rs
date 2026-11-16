@@ -2522,7 +2522,7 @@ fn stage_bootstrap_fixture(ws: &TestWorkspace, allowed_sources: &[&str]) -> Resu
 async fn spawn_install_approver() -> tokio::sync::oneshot::Receiver<Result<String>> {
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        let outcome: Result<String> = (|| async {
+        let outcome: Result<String> = async {
             let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
             let deadline = Instant::now() + Duration::from_secs(90);
             loop {
@@ -2561,7 +2561,7 @@ async fn spawn_install_approver() -> tokio::sync::oneshot::Receiver<Result<Strin
                 );
                 return Ok(rid);
             }
-        })()
+        }
         .await;
         let _ = done_tx.send(outcome);
     });
