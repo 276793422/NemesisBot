@@ -2629,3 +2629,102 @@ async fn bug57_mutual_sync_via_manager_does_not_ping_pong() {
         Some("chan-a")
     );
 }
+
+// —— 通道 send panic 隔离（BUG-20261116-039 回归钉）——
+
+/// send 即 panic 的通道桩：模拟三方通道实现内的任意 panic
+/// （毒化锁 unwrap / 越界 / 三方库解析炸），dispatch 环不得被炸掉。
+struct PanickingChannel {
+    name: String,
+    started: Arc<parking_lot::RwLock<bool>>,
+}
+
+impl PanickingChannel {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            started: Arc::new(parking_lot::RwLock::new(false)),
+        }
+    }
+}
+
+#[async_trait]
+impl Channel for PanickingChannel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_running(&self) -> bool {
+        *self.started.read()
+    }
+
+    async fn start(&self) -> Result<()> {
+        *self.started.write() = true;
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        *self.started.write() = false;
+        Ok(())
+    }
+
+    async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+        panic!("boom: simulated third-party channel panic");
+    }
+}
+
+/// 单元钉：dispatch_outbound 对 panic 通道返回 Err（含 panicked 字样）
+/// 而非 panic 穿透——错误进既有 send_errors 记账臂。
+#[tokio::test]
+async fn test_dispatch_outbound_survives_channel_panic() {
+    let mgr = ChannelManager::new();
+    mgr.register(Arc::new(PanickingChannel::new("boom")))
+        .await
+        .unwrap();
+
+    let result = mgr
+        .dispatch_outbound(OutboundMessage::new("boom", "chat-1", "trigger"))
+        .await;
+    let err = result.expect_err("panic 隔离必须映射为 Err");
+    assert!(
+        err.to_string().contains("panicked"),
+        "错误串必须带 panicked 标记: {err}"
+    );
+    assert_eq!(
+        mgr.metrics()
+            .send_errors
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+/// 环存活钉：panic 通道之后同环继续投递——后续消息必须送达
+/// 健康通道。旧形态（无隔离）dispatch loop task 随首个 panic 死亡，
+/// mpsc 无接收者堆积，本测试在 good 通道断言处超时红。
+#[tokio::test]
+async fn test_dispatch_loop_survives_panic_and_delivers_next() {
+    let mgr = Arc::new(ChannelManager::new());
+    let boom = Arc::new(PanickingChannel::new("boom"));
+    let good = Arc::new(StubChannel::new("good"));
+    mgr.register(boom).await.unwrap();
+    mgr.register(good.clone()).await.unwrap();
+    mgr.start_dispatch_loop().unwrap();
+    let tx = mgr.outbound_sender();
+
+    tx.send(OutboundMessage::new("boom", "chat-1", "first (panics)"))
+        .await
+        .unwrap();
+    tx.send(OutboundMessage::new("good", "chat-1", "second (must land)"))
+        .await
+        .unwrap();
+
+    let wait_delivered = async {
+        while good.sent_messages().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), wait_delivered)
+        .await
+        .expect("panic 后环必须存活并继续派发（good 通道未收到 = 环已死）");
+    assert_eq!(good.sent_messages(), vec!["second (must land)"]);
+}

@@ -457,16 +457,23 @@ impl ChannelManager {
                 let mirror_content = (!mirrors.is_empty()).then(|| msg.content.clone());
                 // 项 C：钩子接线时发消息副本、留原值投递后记账（send 按
                 // 值收消息）；未接线形态零拷贝零回调，与历史行为一致。
+                // send 走 panic 隔离包裹（见 base::send_panic_isolated）：
+                // 单任务串行派发环不容任一通道 future 的 panic 炸环。
                 let hook_wired = self.notify_hook.lock().is_some();
                 let result = if hook_wired {
-                    let r = ch.send(msg.clone()).await;
+                    let r = crate::base::send_panic_isolated(
+                        &channel_name,
+                        Arc::clone(ch),
+                        msg.clone(),
+                    )
+                    .await;
                     // 真实投递尝试完成，记账（成功 → 通道接受；失败 → 入
                     // 重试箱）。钩子内部 swallow 自身错误——记账故障不改
                     // 变投递语义。
                     self.fire_notify_hook(&msg, &r);
                     r
                 } else {
-                    ch.send(msg).await
+                    crate::base::send_panic_isolated(&channel_name, Arc::clone(ch), msg).await
                 };
                 match result {
                     Ok(()) => {
