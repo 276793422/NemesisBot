@@ -477,6 +477,72 @@ async fn replay_dead_letter_resets_and_repushes() {
     assert!(replay_dead_letter_entry(&outbox_dir(&ws), "task-live").is_err());
 }
 
+// BUG-20261117-064 回归：created_at 混存不同本地 offset 形态时按真实时刻
+// 排序，不被字典序误导。
+#[test]
+fn dead_letter_listing_orders_by_instant_not_string() {
+    // task-a = "09:00+09:00" = 00:00Z（真实较早）；task-b = "08:30+08:00"
+    // = 00:30Z（真实较晚）。裸字典序 "08:30+08:00" < "09:00+09:00" 会把
+    // task-b 排前；解析后比较正确排 task-a 在前。
+    let ws = temp_ws("dead_order");
+    for (tid, created) in [
+        ("task-b", "2026-11-17T08:30:00+08:00"),
+        ("task-a", "2026-11-17T09:00:00+09:00"),
+    ] {
+        let dir = outbox_dir(&ws).join(tid);
+        std::fs::create_dir_all(dir.join("payload")).unwrap();
+        std::fs::write(dir.join("payload").join("00.request.md"), "x").unwrap();
+        let entry = OutboxEntry {
+            task_id: tid.into(),
+            source_node: "node-m".into(),
+            state: "dead".into(),
+            created_at: created.into(),
+            attempts: 5,
+            total_bytes: 1,
+            last_error: Some("dead".into()),
+            next_retry_at: None,
+        };
+        std::fs::write(
+            dir.join("entry.json"),
+            serde_json::to_string(&entry).unwrap(),
+        )
+        .unwrap();
+    }
+
+    let dead = list_dead_letter_entries(&outbox_dir(&ws));
+    assert_eq!(dead.len(), 2);
+    assert_eq!(
+        dead[0].task_id, "task-a",
+        "00:00Z 应排在 00:30Z 前（裸字面序会错排 task-b 在前）"
+    );
+    assert_eq!(dead[1].task_id, "task-b");
+}
+
+/// created_at_order 四臂语义（BUG-20261117-064）。
+#[test]
+fn created_at_order_parses_and_falls_back() {
+    use std::cmp::Ordering;
+    // 跨 offset 按时刻比较（裸字面序恰好相反）。
+    assert_eq!(
+        created_at_order("2026-11-17T09:00:00+09:00", "2026-11-17T08:30:00+08:00"),
+        Ordering::Less
+    );
+    assert_eq!(
+        created_at_order("2026-11-17T08:30:00+08:00", "2026-11-17T09:00:00+09:00"),
+        Ordering::Greater
+    );
+    // 解析失败排最后；双失败保持等序（stable 保原序）。
+    assert_eq!(
+        created_at_order("2026-11-17T09:00:00+09:00", "not-a-timestamp"),
+        Ordering::Less
+    );
+    assert_eq!(
+        created_at_order("not-a-timestamp", "2026-11-17T09:00:00+09:00"),
+        Ordering::Greater
+    );
+    assert_eq!(created_at_order("garbage-a", "garbage-b"), Ordering::Equal);
+}
+
 // ---------------------------------------------------------------------------
 // worker 侧护栏
 // ---------------------------------------------------------------------------

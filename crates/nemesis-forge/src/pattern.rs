@@ -128,6 +128,27 @@ impl ConversationPattern {
 // Fingerprint helpers
 // ---------------------------------------------------------------------------
 
+/// RFC3339 时间戳解析比较（BUG-20261117-064）。timestamp 产自
+/// `Local::now().to_rfc3339()`（带本地 offset），Forge 经验缓冲跨网关
+/// 长运行期（周级）积累，跨 DST 切换 / 系统时区变更后同批数据会混存不同
+/// offset 形态——裸字符串字典序按本地钟面数字排，与真实时刻序不一致
+/// （"09:00+09:00"=00:00Z 实际早于 "08:30+08:00"=00:30Z，字面序却排其
+/// 后），导致会话内失败→恢复配对错位、first_seen/last_seen 元数据失真。
+/// 解析成 `DateTime<FixedOffset>` 比较（chrono Ord 按 UTC 时刻）；解析
+/// 失败排最后——stable sort 保持同组原序。与 cluster_task.rs /
+/// task_manager.rs 的既有纪律同源（RFC3339 一律解析后比较，不信字面序）。
+fn rfc3339_order(a: &str, b: &str) -> std::cmp::Ordering {
+    match (
+        chrono::DateTime::parse_from_rfc3339(a),
+        chrono::DateTime::parse_from_rfc3339(b),
+    ) {
+        (Ok(x), Ok(y)) => x.cmp(&y),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+    }
+}
+
 /// Generate a SHA256 fingerprint for pattern deduplication.
 ///
 /// Mirrors Go's `patternFingerprint(prefix, data)`.
@@ -249,10 +270,10 @@ pub fn detect_conversation_tool_chains(
             if all_success {
                 a.successes += 1;
             }
-            if timestamp < a.first_seen {
+            if rfc3339_order(&timestamp, &a.first_seen) == std::cmp::Ordering::Less {
                 a.first_seen = timestamp.clone();
             }
-            if timestamp > a.last_seen {
+            if rfc3339_order(&timestamp, &a.last_seen) == std::cmp::Ordering::Greater {
                 a.last_seen = timestamp.clone();
             }
         } else {
@@ -332,7 +353,7 @@ pub fn detect_conversation_error_recovery(
 
     for exps in sessions.values() {
         let mut sorted: Vec<&CollectedExperience> = exps.to_vec();
-        sorted.sort_by(|a, b| a.experience.timestamp.cmp(&b.experience.timestamp));
+        sorted.sort_by(|a, b| rfc3339_order(&a.experience.timestamp, &b.experience.timestamp));
 
         for (i, prev) in sorted.iter().enumerate() {
             // 失败计数与配对解耦：凡是失败都计入分母（哪怕后面没跟任何
@@ -360,10 +381,10 @@ pub fn detect_conversation_error_recovery(
 
                 if let Some(a) = agg.get_mut(&fp) {
                     a.count += 1;
-                    if timestamp < a.first_seen {
+                    if rfc3339_order(&timestamp, &a.first_seen) == std::cmp::Ordering::Less {
                         a.first_seen = timestamp.clone();
                     }
-                    if timestamp > a.last_seen {
+                    if rfc3339_order(&timestamp, &a.last_seen) == std::cmp::Ordering::Greater {
                         a.last_seen = timestamp.clone();
                     }
                 } else {
@@ -474,10 +495,10 @@ pub fn detect_conversation_efficiency_issues(
             a.count += 1;
             a.total_rounds += exps.len() as f64;
             a.total_dur += total_dur;
-            if timestamp < a.first_seen {
+            if rfc3339_order(&timestamp, &a.first_seen) == std::cmp::Ordering::Less {
                 a.first_seen = timestamp.clone();
             }
-            if timestamp > a.last_seen {
+            if rfc3339_order(&timestamp, &a.last_seen) == std::cmp::Ordering::Greater {
                 a.last_seen = timestamp.clone();
             }
         } else {
@@ -561,10 +582,10 @@ pub fn detect_conversation_success_templates(
             a.successes += 1;
             a.total_rounds += exps.len() as f64;
             a.total_dur += total_dur;
-            if timestamp < a.first_seen {
+            if rfc3339_order(&timestamp, &a.first_seen) == std::cmp::Ordering::Less {
                 a.first_seen = timestamp.clone();
             }
-            if timestamp > a.last_seen {
+            if rfc3339_order(&timestamp, &a.last_seen) == std::cmp::Ordering::Greater {
                 a.last_seen = timestamp.clone();
             }
         } else {

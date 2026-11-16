@@ -906,3 +906,65 @@ fn test_s8_tool_chains_single_experience_session_skipped() {
     assert_eq!(patterns.len(), 1);
     assert_eq!(patterns[0].frequency, 1);
 }
+
+// ---- BUG-20261117-064 回归 ----
+
+/// 带 timestamp 的经验构造（BUG-20261117-064 回归专用）。
+fn make_exp_ts(tool: &str, success: bool, ts: &str, session: &str) -> CollectedExperience {
+    CollectedExperience {
+        experience: Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tool.into(),
+            input_summary: "test".into(),
+            output_summary: if success { "ok" } else { "err" }.into(),
+            success,
+            duration_ms: 100,
+            timestamp: ts.into(),
+            session_key: session.into(),
+        },
+        dedup_hash: format!("hash-{}", tool),
+    }
+}
+
+/// BUG-20261117-064：同会话跨 offset 形态的失败→恢复配对按真实时刻序。
+/// 失败(tool_a)在 00:00Z（"09:00+09:00"），恢复(tool_b 成功)在 00:30Z
+/// （"08:30+08:00"）——真实顺序为 失败→恢复。裸字典序会把 "08:30+08:00"
+/// 排前（成功在前、失败在后），配对消失 → 检测器漏报恢复链。
+#[test]
+fn test_bug_20261117_064_error_recovery_pairs_by_instant_order() {
+    let exps = vec![
+        make_exp_ts("tool_a", false, "2026-11-17T09:00:00+09:00", "sess-x"), // 00:00Z 失败
+        make_exp_ts("tool_b", true, "2026-11-17T08:30:00+08:00", "sess-x"),  // 00:30Z 恢复
+    ];
+    let patterns = extract_conversation_patterns(&exps, 1);
+    assert!(
+        patterns
+            .iter()
+            .any(|p| p.pattern_type == ConversationPatternType::ErrorRecovery),
+        "失败(00:00Z)→成功(00:30Z) 应配成恢复链；裸字面序会把失败排到成功之后致配对消失"
+    );
+}
+
+/// BUG-20261117-064：first_seen 取真实更早时刻，不被字面序误导。
+/// 同形链 read→write 出现两次：s1 链首 = 00:00Z（"09:00+09:00"），s2 链首
+/// = 00:30Z（"08:30+08:00"）。裸字符串取最小会错选 s2（"08:30…" 字面更小），
+/// 解析后比较正确选 s1（00:00Z 更早）。
+#[test]
+fn test_bug_20261117_064_first_seen_tracks_instant_across_offsets() {
+    let exps = vec![
+        make_exp_ts("file_read", true, "2026-11-17T09:00:00+09:00", "s1"),
+        make_exp_ts("file_write", true, "2026-11-17T09:00:05+09:00", "s1"),
+        make_exp_ts("file_read", true, "2026-11-17T08:30:00+08:00", "s2"),
+        make_exp_ts("file_write", true, "2026-11-17T08:30:05+08:00", "s2"),
+    ];
+    let patterns = extract_conversation_patterns(&exps, 2);
+    let chain = patterns
+        .iter()
+        .find(|p| p.pattern_type == ConversationPatternType::ToolChain)
+        .expect("tool chain pattern expected");
+    assert!(
+        chain.first_seen.starts_with("2026-11-17T09:00"),
+        "first_seen 应为真实更早的 00:00Z 条目（09:00+09:00），实际: {}",
+        chain.first_seen
+    );
+}
