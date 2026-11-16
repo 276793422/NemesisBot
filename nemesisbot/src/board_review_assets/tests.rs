@@ -87,6 +87,24 @@ fn extract_bundles_multiple_in_order() {
     assert_eq!(out[1].asset_ref, "b.jpg");
 }
 
+/// ref 凭据闸（BUG-20261116-028）：is_image_ref 只查扩展名后缀，拦不住
+/// 穿越/反斜杠/隐藏/保留名 ref——worker 评论远端可控，这类 ref 会让本地臂
+/// `assets_dir.join(ref)` 先于 do_fetch 的 sanitize_asset_ref 闸穿越读。
+/// 解析出口必须丢弃（合法 ref 对照照常产出）。
+#[test]
+fn extract_bundles_reject_invalid_refs_but_keep_legal_ones() {
+    let sha = nemesis_board::sha256_bytes(b"x");
+    let traversal = bundle_text("../../evil.png", &sha, "http://127.0.0.1:1");
+    let backslash = bundle_text("..\\evil.png", &sha, "http://127.0.0.1:1");
+    let hidden = bundle_text(".hidden.png", &sha, "http://127.0.0.1:1");
+    let reserved = bundle_text("nul.png", &sha, "http://127.0.0.1:1");
+    let legal = bundle_text("img_v2.png", &sha, "http://127.0.0.1:1");
+    let text = format!("{traversal}\n{backslash}\n{hidden}\n{reserved}\n{legal}");
+    let out = extract_image_bundles_from(&text);
+    assert_eq!(out.len(), 1, "只留合法单段 ref: {out:?}");
+    assert_eq!(out[0].asset_ref, "img_v2.png");
+}
+
 // ---------------------------------------------------------------------------
 // collect_review_images：本地命中 / HTTP 取回 / 过滤 / 上限
 // ---------------------------------------------------------------------------
@@ -198,6 +216,29 @@ async fn collect_skips_oversize_image() {
     );
     let imgs = collect_review_images(tmp.path(), &test_cluster(), &[c]).await;
     assert!(imgs.is_empty(), "超单张上限诚实跳过");
+}
+
+/// 穿越红证（BUG-20261116-028 端到端）：ref `../../evil.png` 指向
+/// workspace 外、sha 可匹配的实体——修复前本地臂 `assets_dir.join(ref)`
+/// 穿越命中并把它当合法评审图返回（path 出 workspace）；修复后解析出口
+/// 闸丢弃，零取回零返回。
+#[tokio::test]
+async fn collect_rejects_traversal_ref_without_local_hit() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 放在 workspace 根（assets_dir = <ws>/board/assets 的上两级外）。
+    let outside = tmp.path().join("evil.png");
+    std::fs::write(&outside, TINY_PNG).unwrap();
+    let sha = nemesis_board::sha256_bytes(TINY_PNG);
+    let c = comment(
+        CommentType::Delivery,
+        bundle_text("../../evil.png", &sha, "http://127.0.0.1:1"),
+    );
+    let imgs = collect_review_images(tmp.path(), &test_cluster(), &[c]).await;
+    assert!(
+        imgs.is_empty(),
+        "穿越 ref 不得经本地臂命中 assets 外实体: {:?}",
+        imgs.iter().map(|i| &i.path).collect::<Vec<_>>()
+    );
 }
 
 // ---------------------------------------------------------------------------
