@@ -149,7 +149,7 @@ impl Manager {
         )?;
 
         // Step 4: Download virus database if stale
-        let update_interval = parse_duration_string(&self.config.update_interval);
+        let update_interval = resolve_update_interval(&self.config.update_interval);
         let updater = Updater::new(UpdaterConfig {
             clamav_path: clamav_path.clone(),
             database_dir: db_dir.to_string_lossy().to_string(),
@@ -309,29 +309,71 @@ impl Manager {
     }
 }
 
-/// Parse a duration string (e.g., "24h", "1h30m"). Returns 0 if empty or invalid.
-fn parse_duration_string(s: &str) -> Duration {
+/// Parse a human-config duration string: "24h", "1h30m", "1d2h30m15s", or
+/// a plain number = seconds ("90" -> 90s, "0" -> disabled).
+///
+/// Returns `None` for malformed values (unknown characters, a unit without a
+/// preceding number, interior whitespace) — the caller warns loudly and
+/// falls back to the default instead of silently disabling (BUG-20261116-026:
+/// the old parser returned ZERO for "daily"/"123"/"24h30", silently disabling
+/// the virus-database auto-update).
+///
+/// Empty string = `Some(ZERO)` (documented disabled sentinel).
+///
+/// Arithmetic saturates (aligns with `nemesis-workflow` `parse_duration`,
+/// BUG-20261114-057): absurd values degrade to "effectively unlimited".
+fn parse_duration_string(s: &str) -> Option<Duration> {
+    let s = s.trim();
     if s.is_empty() {
-        return Duration::ZERO;
+        return Some(Duration::ZERO);
     }
-    // Simple parsing for common formats: "24h", "30m", "1h30m"
     let mut total_secs: u64 = 0;
     let mut current_num: u64 = 0;
+    let mut digits_pending = false;
     for ch in s.chars() {
-        if ch.is_ascii_digit() {
-            current_num = current_num * 10 + (ch as u64 - '0' as u64);
+        if let Some(d) = ch.to_digit(10) {
+            current_num = current_num.saturating_mul(10).saturating_add(u64::from(d));
+            digits_pending = true;
         } else {
-            match ch {
-                'h' => total_secs += current_num * 3600,
-                'm' => total_secs += current_num * 60,
-                's' => total_secs += current_num,
-                'd' => total_secs += current_num * 86400,
-                _ => return Duration::ZERO,
+            // A unit/garbage character must follow a number ("1h30m"), never
+            // lead ("h30", "daily") or interrupt ("1x").
+            if !digits_pending {
+                return None;
             }
+            let unit = match ch {
+                'h' => 3600,
+                'm' => 60,
+                's' => 1,
+                'd' => 86400,
+                _ => return None,
+            };
+            total_secs = total_secs.saturating_add(current_num.saturating_mul(unit));
             current_num = 0;
+            digits_pending = false;
         }
     }
-    Duration::from_secs(total_secs)
+    // Trailing digits are seconds ("24h30" -> 24h + 30s; "90" -> 90s) —
+    // the old parser dropped them entirely (BUG-20261116-026).
+    total_secs = total_secs.saturating_add(current_num);
+    Some(Duration::from_secs(total_secs))
+}
+
+/// Resolve the configured update interval. Malformed values (e.g. "daily",
+/// "1 day") parse to `None` and would previously become ZERO = auto-update
+/// silently disabled; now they warn loudly and fall back to the 24h default
+/// so virus-database updates keep running (BUG-20261116-026).
+fn resolve_update_interval(raw: &str) -> Duration {
+    match parse_duration_string(raw) {
+        Some(d) => d,
+        None => {
+            tracing::warn!(
+                value = %raw,
+                "[Scanner] invalid update_interval (expected forms: \"24h\", \"1h30m\", \"1d\", \
+                 or plain seconds); falling back to 24h"
+            );
+            Duration::from_secs(24 * 3600)
+        }
+    }
 }
 
 #[cfg(test)]
