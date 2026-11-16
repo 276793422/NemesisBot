@@ -1100,3 +1100,50 @@ async fn real_factory_assembles_session_and_unreachable_llm_maps_to_refusal() {
         "LLM 失败必须诚实映射 refusal"
     );
 }
+// ---------------------------------------------------------------------------
+// BUG-20261117-060 回归锁（模式副本）
+// ---------------------------------------------------------------------------
+
+/// select! 循环里 broadcast recv 臂的 Closed 处理必须**禁用该臂**（标志 +
+/// 前置条件）而非留空臂：Closed 态下 recv() 恒即时返回 Err(Closed)，空臂
+/// 让外层 loop 每次迭代立即空转烧 CPU 直到 run 收尾（生产位点是
+/// `LoopDriver::prompt` 的事件泵，需完整 agent 装配不可直驱，此处同形副本
+/// 钉机制）。两个反例也一并钉死：
+/// - handler 体里 `pending().await` 挂起 = select 进入 handler 后只 poll
+///   handler，handle 分支饿死成永久死锁（首轮修复实测：本测试 60s 不返）；
+/// - 空臂 = passes 计数在 handle 未完成窗口内是十万次级爆炸。
+#[tokio::test]
+async fn select_closed_recv_arm_must_park_not_hot_spin() {
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<u32>(4);
+    drop(tx); // session 被拆：sender 全消失 → 排干缓冲后 recv 恒 Err(Closed)
+    let handle = tokio::spawn(async {
+        // 模拟 run_with_trace 仍在跑（50ms 窗口足够区分：禁臂形态 2 轮 vs
+        // 空臂形态十万轮级空转）。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        42u32
+    });
+    tokio::pin!(handle);
+    let mut rx_closed = false;
+    let mut passes = 0usize;
+    let result = loop {
+        passes += 1;
+        tokio::select! {
+            biased;
+            res = &mut handle => break res,
+            ev = rx.recv(), if !rx_closed => match ev {
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    // 与生产 LoopDriver::prompt 的 Closed 臂同款：置标志禁臂。
+                    rx_closed = true;
+                }
+            },
+        }
+    };
+    let result = result.expect("handle join ok");
+    assert_eq!(result, 42, "Closed 后仍须等 run 收尾（handle 结果不丢）");
+    assert_eq!(
+        passes, 2,
+        "首轮 Closed 置标志、次轮起只剩 handle 臂等收尾——固定 2 轮；         空臂形态此处是空转计数爆炸（断言必炸）"
+    );
+}
