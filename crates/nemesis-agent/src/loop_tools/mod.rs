@@ -124,6 +124,10 @@ mod web_fetch_tests;
 // BUG-20261115-009 回归锁：带凭据 search client 的跨源重定向终停行为级测试。
 #[cfg(test)]
 mod web_search_redirect_tests;
+// search_code glob 过滤回归（BUG-20261117-050）：fnmatch 子集（`*`/`?`）
+// 修复中间星号 glob（test_*.rs）静默失配 → 裸「No matches」假阴性。
+#[cfg(test)]
+mod search_code_glob_tests;
 
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
