@@ -67,6 +67,14 @@
 #                                               model probe 同款装配路径即建
 #                                               即用即退，同 run.rs/model.rs
 #                                               一次性先例）
+#   nemesisbot/src/recall_gate.rs               召回质量闸判定通道（2026-11-16：
+#                                               判定模型链 recall_gate.model→
+#                                               agents.small_model 解析非默认槽
+#                                               模型，default_following wrapper
+#                                               不适用——同 forge.rs/dreaming_job
+#                                               先例；装配期一次构造随 loop 重建
+#                                               跟随配置，同 main.rs small_model
+#                                               杂务通道 set_small_model 先例）
 #
 # 测试文件（/tests 目录、*_tests.rs / tests.rs）不在纪律范围。
 set -uo pipefail
@@ -75,7 +83,7 @@ cd "$(dirname "$0")/.."
 hits=$(grep -rnE "create_provider(_or_null)?\s*\(" crates nemesisbot/src --include='*.rs' 2>/dev/null \
   | grep -v '/tests' \
   | grep -v '_tests\.rs' \
-  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory/main\.rs|nemesisbot/src/agent_factory/spec\.rs|nemesisbot/src/agent_factory/shared\.rs|nemesisbot/src/agent_factory/cluster\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs|crates/nemesis-web/src/handlers/forge\.rs|crates/nemesis-web/src/handlers/board/plan\.rs|nemesisbot/src/security_calibrate\.rs):' \
+  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory/main\.rs|nemesisbot/src/agent_factory/spec\.rs|nemesisbot/src/agent_factory/shared\.rs|nemesisbot/src/agent_factory/cluster\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs|crates/nemesis-web/src/handlers/forge\.rs|crates/nemesis-web/src/handlers/board/plan\.rs|nemesisbot/src/security_calibrate\.rs|nemesisbot/src/recall_gate\.rs):' \
   || true)
 
 if [ -n "$hits" ]; then
