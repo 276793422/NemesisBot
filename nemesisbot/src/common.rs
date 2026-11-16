@@ -682,6 +682,14 @@ pub fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
+        // 目录链接环守卫（BUG-20261110-059 同源家族，BUG-20261116-024
+        // 横扫补漏）：DirEntry::file_type() 不穿越链接，Path::is_dir()
+        // 跟随链接——环下同子树以 loop/loop/... 假路径重复拷贝直到
+        // OS 路径上限（届时 copy Err 炸整树）。跳过目录链接；普通
+        // symlink 文件照常按内容拷贝。
+        if entry.file_type()?.is_symlink() && src_path.is_dir() {
+            continue;
+        }
 
         if src_path.is_dir() {
             copy_directory(&src_path, &dst_path)?;
