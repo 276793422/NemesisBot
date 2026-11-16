@@ -1645,6 +1645,12 @@ async fn test_bug300_targeted_write_times_out_on_stalled_device() {
         elapsed < std::time::Duration::from_secs(10),
         "timeout must bound the write, took {elapsed:?}"
     );
+    // BUG-20261116-040：超时 = 连接判死，死链 writer 必须按身份逐出——
+    // 否则条目永驻，串行派发环对同一死链每条消息再吃满超时窗。
+    assert!(
+        ch.client_writers.get("dev1").is_none(),
+        "timed-out writer must be evicted from client_writers"
+    );
     ch.stop().await.unwrap();
 }
 
@@ -1675,7 +1681,60 @@ async fn test_bug300_broadcast_write_bounded_on_stalled_device() {
         elapsed < std::time::Duration::from_secs(10),
         "broadcast must be bounded per device, took {elapsed:?}"
     );
+    // BUG-20261116-040：广播臂同样逐出死链（best-effort 不拦整体，但不留
+    // 永驻条目反复吃满超时窗）。
+    assert!(
+        ch.client_writers.get("dev1").is_none(),
+        "timed-out broadcast writer must be evicted from client_writers"
+    );
     ch.stop().await.unwrap();
+}
+
+/// BUG-20261116-040 回归锁（全平台确定性）：按身份逐出只移除「同一个 Arc」
+/// ——写挂起窗内设备重连已覆盖注册的新 writer 不被误删（对齐注册点
+/// 「断开不 remove 避免误删重连新注册」的既有竞态纪律）；命中时移除并
+/// 返回 true。仅构造 loopback 写半部实例，不依赖内核缓冲行为。
+#[tokio::test]
+async fn test_bug20261116_040_evict_removes_only_matching_arc() {
+    async fn loopback_write_half() -> tokio::net::tcp::OwnedWriteHalf {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (_server, _) = listener.accept().await.unwrap();
+        let (_rd, writer) = client.into_split();
+        writer
+    }
+
+    let map: dashmap::DashMap<
+        String,
+        std::sync::Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    > = dashmap::DashMap::new();
+    let stale = std::sync::Arc::new(tokio::sync::Mutex::new(loopback_write_half().await));
+    let fresh = std::sync::Arc::new(tokio::sync::Mutex::new(loopback_write_half().await));
+    map.insert("default".to_string(), std::sync::Arc::clone(&stale));
+    // 「重连」：新连接覆盖注册同一 key
+    map.insert("default".to_string(), std::sync::Arc::clone(&fresh));
+
+    // 旧连接的超时逐出不得误删新注册（守卫不命中，false + fresh 仍在）
+    assert!(
+        !MaixCamChannel::evict_writer_if_current(&map, "default", &stale),
+        "evict must not remove a successor's re-registration"
+    );
+    assert!(
+        map.get("default")
+            .map(|v| std::sync::Arc::ptr_eq(v.value(), &fresh))
+            .unwrap_or(false),
+        "fresh writer must remain registered"
+    );
+
+    // 新 writer 自身可按身份逐出（命中，true + 表空）
+    assert!(MaixCamChannel::evict_writer_if_current(
+        &map, "default", &fresh
+    ));
+    assert!(
+        map.get("default").is_none(),
+        "map must be empty after evict"
+    );
 }
 
 // ===========================================================================
