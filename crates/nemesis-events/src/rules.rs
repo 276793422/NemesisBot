@@ -337,7 +337,7 @@ pub fn validate(rules: Vec<EventRule>) -> LoadedRules {
                 // release 回绕（可构造出毫秒级 busy 探测）、debug panic——下界
                 // 防 interval(0)，上界防回绕，同位点是同一族算术护栏。
                 let interval_ok =
-                    interval >= PROBE_MIN_INTERVAL_SECS && interval <= u64::MAX / 1000;
+                    (PROBE_MIN_INTERVAL_SECS..=u64::MAX / 1000).contains(&interval);
                 if !type_ok || !target_ok || !interval_ok {
                     out.warnings.push(format!(
                         "{tag}: probe 规则须 watch.probe_type（http|tcp|command）+ 合法 watch.target（http=URL/tcp=host:port/command=命令行）+ watch.interval_secs ∈ [{PROBE_MIN_INTERVAL_SECS}, {}]（缺省 60），剔除",
