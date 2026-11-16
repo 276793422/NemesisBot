@@ -135,6 +135,7 @@ fn test_nonexistent_workspace_errors() {
 fn build_state(ws: &str) -> AppState {
     AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.to_string()),

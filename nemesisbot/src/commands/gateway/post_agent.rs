@@ -1115,6 +1115,160 @@ pub(crate) async fn init_post_agent(
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
 
+    // 项1（质变级能力开发计划 2026-11-16）：事件驱动唤醒——EventWatchManager
+    // 构造 + 观测快照注入 + 泵启动（P2 EventsView 同点接线）。规则文件
+    // <workspace>/config/events.json（mtime 热重载，解析失败保留旧规则）；
+    // 注入复用 web_approval 续行注入器的 bus 先例（channel "web" sender
+    // "system"，会话在位检查 chat_log_exists 在注入器内做——会话已删=
+    // 诚实失败留痕不造假投递）；estop 冻结在 manager 侧判定（冻结期
+    // pending 诚实丢弃，release 恢复积累）。放 security 块之外：事件源与
+    // 安全中间件无依赖（裁剪组合下独立工作）。时序：agent loop 此刻已
+    // 订阅 bus（「loop 订阅 bus → web bind」不变量），泵注入不会掉进
+    // 无人订阅窗口。JoinHandle detach（gateway 生命周期任务，停机随
+    // runtime 收敛——bus sender drop → pump channel 关闭即退）。
+    #[cfg(feature = "events")]
+    {
+        let bus_for_events = bus.clone();
+        let estop_for_events = std::sync::Arc::clone(&shared_resources.estop);
+        let events_rules_path = shared_resources
+            .workspace_dir()
+            .join("config")
+            .join("events.json");
+        let injector: nemesis_events::InjectorFn =
+            std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
+                if !nemesis_agent::chat_log::chat_log_exists(session_key) {
+                    return false;
+                }
+                bus_for_events.publish_inbound(nemesis_types::channel::InboundMessage {
+                    channel: "web".to_string(),
+                    sender_id: "system".to_string(),
+                    chat_id: session_key.to_string(),
+                    content: content.to_string(),
+                    media: Vec::new(),
+                    session_key: session_key.to_string(),
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                    voice_playback: None,
+                });
+                true
+            });
+        let events_mgr = nemesis_events::EventWatchManager::new(
+            events_rules_path.clone(),
+            injector,
+            std::sync::Arc::new(move || estop_for_events.is_engaged()),
+        );
+        // 泵观测快照句柄注入 web 面（P2：events.status 读泵统计/规则/在攒）。
+        web_server.set_events_snapshot(events_mgr.snapshot_handle());
+        let _events_pump = events_mgr.start();
+        info!(
+            "[Gateway] event wakeup manager armed (rules: {})",
+            events_rules_path.display()
+        );
+    }
+
+    // 项5（质变级能力开发计划 2026-11-16）：自配速 durable loop 驱动器。
+    // 每 10s sweep 一轮 `<workspace>/loops/*.json`：sweep_loop 纯函数裁决
+    // （非 active/未排程/未到期 → None；预算耗尽 → Park；到期 → Wake）→
+    // 宿主执行注入与落盘。注入复用项1 同款 bus 形态（channel "web" sender
+    // "system"；在场判定 session_occupied——jsonl ∥ meta 双形态，新建未
+    // 发言的会话也算在场，区别于 events 的 chat_log_exists 语义）。estop
+    // 冻结期 sweep 恒零动作（唤醒留到期，release 后下一轮补投——不过期
+    // 不丢失）；loop_wakeup 工具侧同步拒绝（双保险）。
+    // token 维：budget.max_tokens 显式配置的 loop 才查 usage 台账
+    // （aggregate_session_usage 现值 − tokens_base 基线 = loop 期间消耗；
+    // 基线在 loop create 时由创建方写入）。save 失败只 warn（下轮重试，
+    // 最坏重复唤醒一次——唤醒消息幂等语义，计划容忍极小重复）。
+    #[cfg(feature = "loop")]
+    {
+        let bus_for_loops = bus.clone();
+        let estop_for_loops = std::sync::Arc::clone(&shared_resources.estop);
+        let loops_dir = shared_resources.workspace_dir().join("loops");
+        let ds_for_loops = data_store.clone();
+        let loop_inject: std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync> =
+            std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
+                if !nemesis_agent::chat_log::session_occupied(session_key) {
+                    return false;
+                }
+                bus_for_loops.publish_inbound(nemesis_types::channel::InboundMessage {
+                    channel: "web".to_string(),
+                    sender_id: "system".to_string(),
+                    chat_id: session_key.to_string(),
+                    content: content.to_string(),
+                    media: Vec::new(),
+                    session_key: session_key.to_string(),
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                    voice_playback: None,
+                });
+                true
+            });
+        let loops_dir_for_task = loops_dir.clone();
+        tokio::spawn(async move {
+            let loops_dir = loops_dir_for_task;
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let estop = estop_for_loops.is_engaged();
+                let mut states = nemesis_loop::list_loops(&loops_dir);
+                for st in states.iter_mut() {
+                    // token 维喂入：仅显式配了 max_tokens 的 loop 查台账
+                    // （其他 loop 零查询成本）。
+                    if st.budget.max_tokens > 0
+                        && let Some(ref ds) = ds_for_loops
+                        && let Ok(agg) = ds.aggregate_session_usage(&st.session_key)
+                    {
+                        let total = (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
+                        st.spent.tokens = total.saturating_sub(st.tokens_base);
+                    }
+                    match nemesis_loop::sweep_loop(st, now, estop) {
+                        Some(nemesis_loop::SweepOutcome::Wake { message }) => {
+                            if loop_inject(&st.session_key, &message) {
+                                st.push_progress(
+                                    now,
+                                    format!("[wake] 第 {} 次唤醒", st.spent.turns),
+                                );
+                                info!(
+                                    "[LoopDriver] loop {} woke session {} (turn {})",
+                                    st.id, st.session_key, st.spent.turns
+                                );
+                            } else {
+                                // 目标会话缺席（已删除）→ 诚实停车，不静默。
+                                st.status = nemesis_loop::LoopStatus::Parked;
+                                st.next_wake_ms = None;
+                                st.cron = None;
+                                st.push_progress(
+                                    now,
+                                    "[parked] 目标会话不存在（可能已删除）——人工处理后可 resume",
+                                );
+                                warn!("[LoopDriver] loop {} target session missing, parked", st.id);
+                            }
+                            if let Err(e) = nemesis_loop::save_loop(&loops_dir, st) {
+                                warn!("[LoopDriver] save loop {} failed: {e}", st.id);
+                            }
+                        }
+                        Some(nemesis_loop::SweepOutcome::Park { dim }) => {
+                            if let Err(e) = nemesis_loop::save_loop(&loops_dir, st) {
+                                warn!("[LoopDriver] save loop {} failed: {e}", st.id);
+                            } else {
+                                warn!("[LoopDriver] loop {} parked (budget: {dim})", st.id);
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+        });
+        info!(
+            "[Gateway] durable loop driver armed (loops dir: {})",
+            loops_dir.display()
+        );
+    }
+
     // 后台进程实时输出：同一 B4 注册表 Arc 注入 web 侧
     // ——background.* WSAPI 与 agent 工具通道（background_start 等）同源，
     // 操作员在 Dashboard 看到的就是 agent 起的那些进程。

@@ -17,6 +17,14 @@
 //! | disconnect_resume | testai-2.1 | 断线补拉 seq 无缝 + gap=false + final 不丢 | chat.sync 断线续接（L2 事件补拉，B9）|
 //! | stream_break | testai-break-1.0 / testai-heal-1.0 | 终局：错误诚实上报 + partial 保留；重试：完整回复无 partial 泄漏 | 流中断契约（L02 StreamInterrupted）+ transient 重试环 |
 //! | gateway_restart | testai-9.3 | 重启后同会话第三轮 Z1_USERS_3 + 事件 seq 连续 gap=false | 优雅重启：历史重建无重复/无丢失 + 事件环连续性 |
+//! | subagent_steer | testai-steer-1.0 | 子代理终局 summary 含 STEER_OK + 注入指令子串；estop 期间 steer 诚实拒绝；终态 steer 拒绝 | 飞行中驾驶全链（项3）：spawn 后台子代理 → WSAPI steer → 效果面断言 |
+//! | event_wakeup | testai-9.3 | 5 次投递 Z1_USERS_1→5 + 冷却/estop 两次静默窗 + burst 3 文件恰 1 条（Z1 计数 + chat_log「共 3 个」内容面） | 事件驱动唤醒全链（项1）：fs 事件 → events.json 热重载 → 三闸 → 注入目标会话 |
+//! | durable_loop | testai-loop-1.0 | 三流：done（spent=1 + LOOPBENCH:DONE + [finish] 留痕）；parked（max_turns_total=1 停车 + [parked] 留痕 + resume 人工面）；estop（冻结 23s 状态原样 wake 不丢 → release 补投 spent=2 + LOOPBENCH:ESTOP-DONE） | 自配速 durable loop 全链（项5）：loops.create 绑定 → loop_wakeup 自排程 → 驱动器 10s sweep 唤醒 → 预算保险丝 → estop 冻结/补投 → loop_finish 收尾 |
+//! | plugin_bootstrap | testai-bootstrap-1.0 | 三流：HAPPY（人批审批卡应答 + installed_and_loaded + 同会话 textstat 真实执行 + 审计链 plugin_bootstrap 在案）；WL（白名单外结构化拒绝）；ESTOP（急停冻结提案） | agent 自举插件全链（项6）：plugin_search 发现 → plugin_propose 提案 → 九步漏斗人批 → ToolSync 热装 → 同会话可用；白名单/急停两护栏 |
+//! | memory_persistence | testai-mem-1.0 | A 会话存 3 条 → 全新会话查询命中事实体 | 长程记忆持久化（跨会话存取全链 + 审批闸自动批准，项2） |
+//! | memory_relevance | testai-mem-1.0 | 存 10 问 1（R07）：命中目标 + 其余 9 码词零串扰 | 记忆检索相关性（串扰率=0，项2） |
+//! | memory_forget | testai-mem-1.0 | store 回执抠 ID → delete_by_id → 复查事实体召不回 | 记忆遗忘闭环（项2） |
+//! | memory_capacity_recall | testai-mem-1.0 | 存 20（≤5/turn 分块）问 5：命中率 ≥4/5 记分卡 | 记忆容量下召回质量（项2） |
 //! | length_continuation | testai-lenbreak-1.0 | 终答 = 续写轮补全段 LENBREAK_PART_B OK | max_tokens 撞顶续行（L04 器官 6 usage 数值判定 + continue-generation） |
 //! | codemode_chain | testai-chain-step-1.0 / testai-chain-code-1.0 | 两臂效果面等价（chain_b.txt）+ code 臂 requests < steps 臂 | code_run 上下文经济学（L17：3 步依赖链 编排 vs 逐轮，墙钟+usage 双对比） |
 //! | honest_completion | testai-liar-1.0 / testai-honest-1.0 | 两臂收据面 read_file ok=false 各恰 1 条 + 终答判定一致性 | 最终陈述与执行收据一致（B 批待办 3：gateway 吞收据即判负） |
@@ -1650,6 +1658,1513 @@ pub fn drop_png_fixture(ws: &TestWorkspace) -> Result<std::path::PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
+// subagent_steer（项3 子代理飞行中驾驶，2026-11-16）
+// ---------------------------------------------------------------------------
+
+/// WSAPI 调用但把服务端 error 当 Ok 值返回（预期拒绝断言用——
+/// `wsapi_call_on` 对 error 是 bail，够不着「拒绝文案必须诚实」的断言）。
+async fn wsapi_call_err_on(
+    stream: &mut WsStream,
+    module: &str,
+    cmd: &str,
+    data: Value,
+    timeout: Duration,
+) -> Result<String> {
+    let req_id = format!(
+        "bench-err-{}-{}",
+        WSAPI_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let msg = json!({
+        "type": "request",
+        "module": module,
+        "cmd": cmd,
+        "reqId": req_id,
+        "data": data,
+    });
+    ws_send_json(stream, &msg).await?;
+    let frame = ws_recv_matching(stream, timeout, &format!("{module}.{cmd} error"), |v| {
+        v.get("type").and_then(|t| t.as_str()) == Some("response")
+            && v.get("reqId").and_then(|r| r.as_str()) == Some(req_id.as_str())
+    })
+    .await?;
+    frame
+        .get("error")
+        .and_then(|e| e.as_str())
+        .map(String::from)
+        .ok_or_else(|| {
+            anyhow!(
+                "{module}.{cmd} 意外成功（期望服务端拒绝）: {}",
+                frame["data"]
+            )
+        })
+}
+
+/// subagent_steer ×N：子代理飞行中驾驶全链（项3 验收）。
+///
+/// 链路（testai-steer-1.0 单模型双角色，见 TestAIServer models/steer_model.go）：
+/// master（`<STEER_E2E>`）spawn 后台子代理（首回合 loop 固定中间消息收尾）
+/// → subagents.list 找本会话 running 行 → WSAPI `subagents.steer` 注入指令 →
+/// 轮询至终态 → summary 含 `STEER_OK` 且含注入指令子串（子代理真的在下一轮
+/// 轮边界吃到了注入，效果面断言非 ack 面）→ master 续行终局
+/// MASTER_ACK_CHILD_DONE（回灌链通）。附带验收（同轮完成）：estop 期间
+/// steer 诚实拒绝（急停文案）+ release 恢复；终态任务 steer 拒绝（终态文案）。
+pub async fn run_subagent_steer(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        out.push(steer_one_round().await);
+    }
+    out
+}
+
+async fn steer_one_round() -> Result<(u64, String)> {
+    const INSTR: &str = "转向：只汇报根目录条目数量";
+    let start = Instant::now();
+    let flow = async {
+        let session_id = fresh_session_id("bench-steer");
+        let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        // 1) master spawn 后台子代理：首回合在 __BG_SPAWN__ marker 处被
+        //    loop 固定中间消息收尾（master 模型不说话），该中间消息即
+        //    spawn 受理信号（TestAI 每请求 1s Delay，秒级）。
+        chat_send(
+            &mut chat,
+            &session_id,
+            "bench: <STEER_E2E> 派一个后台子代理调查工作区结构",
+            None,
+        )
+        .await?;
+        chat_wait(
+            &mut chat,
+            &session_id,
+            "已派后台子代理任务",
+            Duration::from_secs(90),
+        )
+        .await?;
+
+        // 2) 独立 WSAPI 连接（chat 连接的 reply 帧与 response 帧互不干扰；
+        //    ws_recv_matching 丢非命中帧 = push 帧无害）。
+        let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let id = loop {
+            let data = wsapi_call_on(
+                &mut api,
+                "subagents",
+                "list",
+                json!({}),
+                Duration::from_secs(10),
+            )
+            .await?;
+            let hit = data["tasks"]
+                .as_array()
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|t| {
+                            t["status"].as_str() == Some("running")
+                                && (t["parent_chat_id"].as_str() == Some(session_id.as_str())
+                                    || t["parent_session_key"]
+                                        .as_str()
+                                        .is_some_and(|k| k.ends_with(&session_id)))
+                        })
+                        .and_then(|t| t["id"].as_str().map(String::from))
+                });
+            if let Some(id) = hit {
+                break id;
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "30s 内未见本会话 running 子代理行（SPAWNED_OK 已回但注册表无行——后台 spawn 链断裂）"
+            );
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        };
+
+        // 3) steer 注入：ack 面 + 效果面分两步验。
+        let ack = wsapi_call_on(
+            &mut api,
+            "subagents",
+            "steer",
+            json!({ "id": id, "instruction": INSTR }),
+            Duration::from_secs(10),
+        )
+        .await?;
+        anyhow::ensure!(
+            ack["steered"].as_bool() == Some(true),
+            "steer ack 异常（期望 steered=true）: {ack}"
+        );
+
+        // 4) 轮询至终态，断言终局 summary 含 STEER_OK + 注入指令子串
+        //    （子代理确定性回显 [父代理指令] 前缀后的原文）。
+        let poll_deadline = Instant::now() + Duration::from_secs(90);
+        let summary = loop {
+            let data = wsapi_call_on(
+                &mut api,
+                "subagents",
+                "detail",
+                json!({ "id": id }),
+                Duration::from_secs(10),
+            )
+            .await?;
+            if data["running"].as_bool() == Some(false) {
+                let status = data["status"].as_str().unwrap_or("").to_string();
+                let s = data["summary"].as_str().unwrap_or("").to_string();
+                anyhow::ensure!(
+                    status == "done",
+                    "子代理终态 {status}（期望 done），summary={s:?}"
+                );
+                break s;
+            }
+            anyhow::ensure!(
+                Instant::now() < poll_deadline,
+                "90s 内子代理未终态（steer 未被消费或子代理保活轮耗尽——id={id}）"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        anyhow::ensure!(
+            summary.contains("STEER_OK"),
+            "终局 summary 缺 STEER_OK（注入未达子代理上下文）: {summary:?}"
+        );
+        anyhow::ensure!(
+            summary.contains(INSTR),
+            "终局 summary 缺注入指令子串 {INSTR:?}: {summary:?}"
+        );
+
+        // 4.5) master 续行收尾：子代理完成回灌 → master 终局 ack
+        //     （后台子代理续行链通；帧在轮询期间已排队，此时读出）。
+        chat_wait(
+            &mut chat,
+            &session_id,
+            "MASTER_ACK_CHILD_DONE",
+            Duration::from_secs(90),
+        )
+        .await?;
+        let _ = chat.close(None).await;
+
+        // 5) estop 闸验收：触发 → steer 诚实拒绝（急停文案）→ release 恢复
+        //    （此时子代理已终态、master 已收尾，冻结无在飞流量可伤）。
+        wsapi_call_on(
+            &mut api,
+            "estop",
+            "trigger",
+            json!({}),
+            Duration::from_secs(10),
+        )
+        .await?;
+        let estop_err = wsapi_call_err_on(
+            &mut api,
+            "subagents",
+            "steer",
+            json!({ "id": id, "instruction": "go" }),
+            Duration::from_secs(10),
+        )
+        .await?;
+        anyhow::ensure!(
+            estop_err.contains("急停"),
+            "estop 期间 steer 错误文案缺「急停」: {estop_err:?}"
+        );
+        wsapi_call_on(
+            &mut api,
+            "estop",
+            "release",
+            json!({}),
+            Duration::from_secs(10),
+        )
+        .await?;
+
+        // 6) 终态拒绝验收：释放后对已终态任务 steer → 终态文案（handler
+        //    前置拒绝——终态任务的 loop 可能已不在，路由错误会误导）。
+        let term_err = wsapi_call_err_on(
+            &mut api,
+            "subagents",
+            "steer",
+            json!({ "id": id, "instruction": "go" }),
+            Duration::from_secs(10),
+        )
+        .await?;
+        anyhow::ensure!(
+            term_err.contains("终态"),
+            "终态任务 steer 错误文案缺「终态」: {term_err:?}"
+        );
+        let _ = api.close(None).await;
+        Ok(format!("steer 全链 OK：id={id} summary={summary:?}"))
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 事件驱动唤醒（项1 P1 e2e）
+// ---------------------------------------------------------------------------
+
+/// 事件唤醒场景的规则 id（注入消息徽标 `[事件:bench-evw]` 断言锚）。
+const EV_RULE_ID: &str = "bench-evw";
+
+/// 事件场景的 chat_log jsonl 路径。
+fn event_chat_log(ws: &TestWorkspace, session_id: &str) -> std::path::PathBuf {
+    ws.workspace()
+        .join("logs")
+        .join("session_logs")
+        .join(format!("agent_main_session_{session_id}.jsonl"))
+}
+
+/// 轮询 chat_log 等 assistant 回复行含 marker（事件注入的回复走服务端
+/// 持久化面——注入无发起连接，回复帧到不了 bench 的 WS 连接房间
+/// （BUG② 同族已知边界：帧进环形缓冲 chat.sync 补拉），所以投递面断言
+/// 读落盘真相而非 WS 帧——比帧更确定性，也顺带覆盖持久化语义）。
+async fn wait_event_reply(
+    ws: &TestWorkspace,
+    session_id: &str,
+    marker: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let log_path = event_chat_log(ws, session_id);
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Ok(log) = std::fs::read_to_string(&log_path) {
+            let hit = log.lines().any(|l| {
+                serde_json::from_str::<Value>(l).is_ok_and(|v| {
+                    v["role"].as_str() == Some("assistant")
+                        && v["content"].as_str().is_some_and(|c| c.contains(marker))
+                })
+            });
+            if hit {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "chat_log {}s 内未出现含 {marker} 的 assistant 回复（注入→agent 消费链断裂）: {}",
+                timeout.as_secs(),
+                log_path.display()
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// 静默断言：窗口内该会话 chat_log 零增长 = 闸没多投（注入行与回复行
+/// 都会落 chat_log——闸失效时注入行先落盘，字节长度必涨）。这是文件面
+/// 等价物（原 WS 帧断言对注入回复不可达，见 wait_event_reply 注释）。
+async fn assert_session_quiet(
+    ws: &TestWorkspace,
+    session_id: &str,
+    window: Duration,
+    label: &str,
+) -> Result<()> {
+    let log_path = event_chat_log(ws, session_id);
+    let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    tokio::time::sleep(window).await;
+    let after = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    anyhow::ensure!(
+        after == before,
+        "{label} chat_log 增长了 {} 字节（闸失效，多投了）: {}",
+        after - before,
+        log_path.display()
+    );
+    Ok(())
+}
+
+/// 读 chat_log 内容面：找最新一条 `[事件:bench-evw]` 用户行，返回其内容。
+fn last_event_row(ws: &TestWorkspace, session_id: &str) -> Result<String> {
+    let log_path = ws
+        .workspace()
+        .join("logs")
+        .join("session_logs")
+        .join(format!("agent_main_session_{session_id}.jsonl"));
+    let log = std::fs::read_to_string(&log_path)
+        .map_err(|e| anyhow!("chat_log 读取失败 {}: {e}", log_path.display()))?;
+    let anchor = format!("[事件:{EV_RULE_ID}]");
+    log.lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|v| {
+            v["role"].as_str() == Some("user")
+                && v["content"].as_str().is_some_and(|c| c.contains(&anchor))
+        })
+        .map(|v| v["content"].as_str().unwrap_or_default().to_string())
+        .ok_or_else(|| anyhow!("chat_log 无 {anchor} 注入行（注入未落会话日志）"))
+}
+
+/// 事件唤醒单轮全链（项1）：
+/// ① 种子会话确立 chat_log 在盘（Z1_USERS_1）→ ② 写 events.json（gateway
+/// 启动时无此文件 = 顺带验热重载）→ fs 事件 A → 注入 Z1_USERS_2 → ③ 冷却内
+/// 事件 B → 4.5s 静默 → ④ 冷却出窗事件 C → 恢复投递 Z1_USERS_3 → ⑤ 再爆发
+/// 3 文件 → burst 合并恰 1 条 Z1_USERS_4 + chat_log 内容面「共 3 个」+ 3 文件
+/// 名 → ⑥ estop 冻结事件 g 静默（冻结窗口顺带熬过冷却）→ release 后事件 h →
+/// Z1_USERS_5。Z1 计数逐腿递增双重钉死：既证「投了」，静默窗又证「没多投」。
+async fn event_wakeup_one_round(ws: &TestWorkspace) -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        // 0) 清残留 + 建监听根（先清后建：此时无规则在监听，清理不产生事件；
+        //    notify 对缺席目录 watch 失败是已知边界，必须先建目录再写规则）。
+        let watch_root = ws.workspace().join("tmp").join("event_watch");
+        let _ = std::fs::remove_dir_all(&watch_root);
+        std::fs::create_dir_all(&watch_root)?;
+        let rules_path = ws.workspace().join("config").join("events.json");
+
+        let session_id = fresh_session_id("bench-evw");
+        let session_key = format!("agent:main:session:{session_id}");
+        let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+
+        // 1) 种子轮：确立会话存在（chat_log 在盘——注入目标会话缺席时
+        //    injector 诚实失败）+ 基线计数。
+        chat_send(&mut chat, &session_id, "bench: 事件唤醒基线", None).await?;
+        chat_wait(
+            &mut chat,
+            &session_id,
+            "Z1_USERS_1",
+            Duration::from_secs(60),
+        )
+        .await?;
+
+        // 2) 写规则文件（启动期无此文件 → 此写盘即热重载路径）+ 等 2 个泵
+        //    周期装载并挂监听。冷却 10s / 合并窗 1s（burst 腿三文件在窗内
+        //    到齐合并恰 1 条；单事件腿投递延迟 +1s，60s 超时余量足够）/
+        //    小时窗不限。
+        let rule = json!([{
+            "id": EV_RULE_ID,
+            "watch": {
+                "kind": "fs",
+                "path": watch_root.to_string_lossy(),
+                "glob": "*.txt",
+                "debounce_ms": 300
+            },
+            "deliver": {
+                "session_key": session_key,
+                "prompt": "测试事件：{paths}（共 {count} 个）",
+                "cooldown_secs": 10,
+                "merge_window_secs": 1,
+                "max_per_hour": 0,
+                "enabled": true
+            }
+        }]);
+        std::fs::create_dir_all(rules_path.parent().unwrap())?;
+        std::fs::write(&rules_path, serde_json::to_string_pretty(&rule)?)?;
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+
+        // 3) 事件 A → 注入 → agent 轮次 → Z1_USERS_2（投递面）。
+        std::fs::write(watch_root.join("ev_a.txt"), "a")?;
+        wait_event_reply(ws, &session_id, "Z1_USERS_2", Duration::from_secs(60)).await?;
+
+        // 4) 冷却内事件 B → 丢弃（不排队）→ 4.5s 静默窗 chat_log 零增长。
+        std::fs::write(watch_root.join("ev_b.txt"), "b")?;
+        assert_session_quiet(ws, &session_id, Duration::from_millis(4500), "冷却静默窗").await?;
+
+        // 5) 冷却出窗事件 C → 恢复投递 Z1_USERS_3。睡 12s 保证最坏时序下
+        //    （B 落盘时 A 的冷却刚启动）C 的投递尝试点已越过 10s 冷却。
+        tokio::time::sleep(Duration::from_millis(12000)).await;
+        std::fs::write(watch_root.join("ev_c.txt"), "c")?;
+        wait_event_reply(ws, &session_id, "Z1_USERS_3", Duration::from_secs(60)).await?;
+
+        // 6) C 冷却出窗后爆发 3 文件 → burst 合并恰 1 条 → Z1_USERS_4。
+        tokio::time::sleep(Duration::from_millis(11000)).await;
+        for name in ["ev_d.txt", "ev_e.txt", "ev_f.txt"] {
+            std::fs::write(watch_root.join(name), "x")?;
+        }
+        wait_event_reply(ws, &session_id, "Z1_USERS_4", Duration::from_secs(60)).await?;
+        // 内容面：chat_log 最新 [事件:] 行含「共 3 个」+ 全部 3 个文件名。
+        let row = last_event_row(ws, &session_id)?;
+        anyhow::ensure!(
+            row.contains("共 3 个"),
+            "burst 注入行缺「共 3 个」: {row:?}"
+        );
+        for name in ["ev_d.txt", "ev_e.txt", "ev_f.txt"] {
+            anyhow::ensure!(row.contains(name), "burst 注入行缺 {name}: {row:?}");
+        }
+
+        // 7) estop 闸：冻结期事件 g → 全丢（4.5s 静默）；冻结窗口顺带熬过
+        //    burst 冷却（12.75s+ > 10s），release 后事件 h → 恢复投递。
+        let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        wsapi_call_on(
+            &mut api,
+            "estop",
+            "trigger",
+            json!({}),
+            Duration::from_secs(10),
+        )
+        .await?;
+        std::fs::write(watch_root.join("ev_g.txt"), "g")?;
+        assert_session_quiet(ws, &session_id, Duration::from_millis(4500), "estop 静默窗").await?;
+        tokio::time::sleep(Duration::from_millis(8000)).await;
+        wsapi_call_on(
+            &mut api,
+            "estop",
+            "release",
+            json!({}),
+            Duration::from_secs(10),
+        )
+        .await?;
+        std::fs::write(watch_root.join("ev_h.txt"), "h")?;
+        wait_event_reply(ws, &session_id, "Z1_USERS_5", Duration::from_secs(60)).await?;
+        let _ = api.close(None).await;
+
+        // 8) 清理：移除规则文件 → 下一泵周期空规则集 + unwatch，不污染后续。
+        let _ = std::fs::remove_file(&rules_path);
+        let _ = chat.close(None).await;
+        Ok("事件唤醒全链 OK：5 次投递（含 burst 恰 1 条）+ 冷却/estop 两次静默".to_string())
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+/// 事件驱动唤醒基准场景（项1）：fs 事件 → events.json 热重载 → 三闸 →
+/// 注入目标会话，Z1_USERS 计数全程钉死（testai-9.3 oracle）。
+pub async fn run_event_wakeup(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        out.push(event_wakeup_one_round(ws).await);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// 自配速 durable loop（项5）：durable_loop 场景
+// ---------------------------------------------------------------------------
+
+/// loops.create 重试包装：会话在场判定（jsonl ∥ meta 落盘）是 chat.send
+/// 处理链的异步副作用——create 先到会诚实拒绝「不存在」，300ms 步进等在场
+/// （15s 上限；其他错误立即上抛不重试）。
+async fn loops_create_with_retry(
+    api: &mut WsStream,
+    goal: &str,
+    session_id: &str,
+    budget: Option<Value>,
+) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let mut data = json!({ "goal": goal, "session_id": session_id });
+        if let Some(b) = &budget {
+            data["budget"] = b.clone();
+        }
+        match wsapi_call_on(api, "loops", "create", data, Duration::from_secs(10)).await {
+            Ok(d) => {
+                let id = d["id"].as_str().unwrap_or_default().to_string();
+                anyhow::ensure!(!id.is_empty(), "loops.create 回执缺 id: {d}");
+                return Ok(id);
+            }
+            Err(e) if e.to_string().contains("不存在") => {
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "loops.create 持续被拒（会话始终不在场）: {e}"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// 轮询 loops.get 至谓词命中，返回命中时刻的状态视图（500ms 步进）。
+async fn poll_loop_until(
+    api: &mut WsStream,
+    id: &str,
+    timeout: Duration,
+    mut pred: impl FnMut(&Value) -> bool,
+) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let st = wsapi_call_on(
+            api,
+            "loops",
+            "get",
+            json!({ "id": id }),
+            Duration::from_secs(10),
+        )
+        .await?;
+        if pred(&st) {
+            return Ok(st);
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "轮询 loops.get 超时（{timeout:?}）——最后状态: {st}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// 进度留痕断言：progress_log 里存在 text 含 `needle` 的条目。
+fn progress_has(st: &Value, needle: &str) -> bool {
+    st["progress_log"].as_array().is_some_and(|a| {
+        a.iter()
+            .any(|e| e["text"].as_str().is_some_and(|t| t.contains(needle)))
+    })
+}
+
+/// 自配速 durable loop 基准场景（项5）：testai-loop-1.0 三流脚本，全部
+/// 断言走 WSAPI loops.get（盘上状态真相源），chat 连接只负责发 goal。
+pub async fn run_durable_loop(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        out.push(durable_loop_one_round().await);
+    }
+    out
+}
+
+async fn durable_loop_one_round() -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let mut notes = Vec::new();
+
+        // ── 流1 done：排程 → 驱动器唤醒 → loop_finish 正常收尾链 ──
+        {
+            let session_id = fresh_session_id("bench-loop-fin");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench loop 目标：LOOPBENCH:FINISH 每次唤醒检查进度后收尾",
+                None,
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id = loops_create_with_retry(
+                &mut api,
+                "LOOPBENCH:FINISH 每次唤醒检查进度后收尾",
+                &session_id,
+                None,
+            )
+            .await?;
+            let st = poll_loop_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("done")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["finish_summary"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("LOOPBENCH:DONE")),
+                "done 流 finish_summary 缺 LOOPBENCH:DONE: {st}"
+            );
+            anyhow::ensure!(
+                st["spent"]["turns"].as_u64() == Some(1),
+                "done 流唤醒次数应恰 1（一次性排程唤醒后清空，模型不再续排）: {st}"
+            );
+            anyhow::ensure!(st["next_wake"].is_null(), "done 流收尾后应清排程: {st}");
+            anyhow::ensure!(
+                progress_has(&st, "[finish]"),
+                "done 流进度缺 [finish] 留痕: {st}"
+            );
+            notes.push(format!("done(id={id})"));
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        // ── 流2 parked：budget.max_turns_total=1 → 唤醒 1 次 → 模型续排程
+        //    → 下一 sweep 预算闸停车（优先于唤醒，[parked] 留痕带维度名）。
+        //    顺手验人控恢复面：parked → resume → active + [resumed] 留痕
+        //    → remove 清场（resume 后无排程不会自驱，不留僵尸状态文件）。
+        {
+            let session_id = fresh_session_id("bench-loop-park");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench loop 目标：LOOPBENCH:PARK 每次唤醒续排程",
+                None,
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id = loops_create_with_retry(
+                &mut api,
+                "LOOPBENCH:PARK 每次唤醒续排程",
+                &session_id,
+                Some(json!({ "max_turns_total": 1 })),
+            )
+            .await?;
+            let st = poll_loop_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("parked")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["spent"]["turns"].as_u64() == Some(1),
+                "parked 流停车前应恰唤醒 1 次（预算=1）: {st}"
+            );
+            anyhow::ensure!(st["next_wake"].is_null(), "parked 流应清排程: {st}");
+            anyhow::ensure!(
+                progress_has(&st, "[parked]") && progress_has(&st, "max_turns_total"),
+                "parked 流留痕缺 [parked] 或预算维度名: {st}"
+            );
+            let r = wsapi_call_on(
+                &mut api,
+                "loops",
+                "resume",
+                json!({ "id": id }),
+                Duration::from_secs(10),
+            )
+            .await?;
+            anyhow::ensure!(
+                r["status"].as_str() == Some("active"),
+                "resume 回执异常（期望 active）: {r}"
+            );
+            let st = wsapi_call_on(
+                &mut api,
+                "loops",
+                "get",
+                json!({ "id": id }),
+                Duration::from_secs(10),
+            )
+            .await?;
+            anyhow::ensure!(
+                progress_has(&st, "[resumed]"),
+                "resume 后进度缺 [resumed] 留痕: {st}"
+            );
+            let r = wsapi_call_on(
+                &mut api,
+                "loops",
+                "remove",
+                json!({ "id": id }),
+                Duration::from_secs(10),
+            )
+            .await?;
+            anyhow::ensure!(r["removed"].as_bool() == Some(true), "remove 回执异常: {r}");
+            notes.push("parked+resume+remove".to_string());
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        // ── 流3 estop：唤醒#1 + 模型 15s 长排程 → estop 冻结 ≥2 个 sweep
+        //    周期后状态原样（active / wake 留到期 / spent 不动）→ release
+        //    补投唤醒#2 → 模型收尾（spent=2 旁证冻结期未偷跑）。
+        //    ⚠ estop 是 gateway 全局态：freeze 窗口内的检查先收进 Result，
+        //    release 无条件执行后再 unwrap——断言失败绝不把急停残留给
+        //    后续场景（冻死全场）。
+        {
+            let session_id = fresh_session_id("bench-loop-estop");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench loop 目标：LOOPBENCH:ESTOP 急停链验证",
+                None,
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id =
+                loops_create_with_retry(&mut api, "LOOPBENCH:ESTOP 急停链验证", &session_id, None)
+                    .await?;
+            // 等唤醒#1 已投 + 模型已续排程（next_wake 再度非空）。
+            poll_loop_until(&mut api, &id, Duration::from_secs(60), |st| {
+                st["spent"]["turns"].as_u64() == Some(1) && !st["next_wake"].is_null()
+            })
+            .await?;
+            wsapi_call_on(
+                &mut api,
+                "estop",
+                "trigger",
+                json!({}),
+                Duration::from_secs(10),
+            )
+            .await?;
+            // 冻结窗检查（≥2 个 10s sweep tick；15s 排程窗内 wake 时间到但
+            // sweep 冻结不投——wake 不丢失的正面断言）。
+            let freeze_check: Result<Value> = async {
+                tokio::time::sleep(Duration::from_secs(23)).await;
+                wsapi_call_on(
+                    &mut api,
+                    "loops",
+                    "get",
+                    json!({ "id": id }),
+                    Duration::from_secs(10),
+                )
+                .await
+            }
+            .await;
+            wsapi_call_on(
+                &mut api,
+                "estop",
+                "release",
+                json!({}),
+                Duration::from_secs(10),
+            )
+            .await?;
+            let st = freeze_check?;
+            anyhow::ensure!(
+                st["status"].as_str() == Some("active"),
+                "estop 冻结期状态被改（期望 active）: {st}"
+            );
+            anyhow::ensure!(
+                !st["next_wake"].is_null(),
+                "estop 冻结期唤醒丢失（期望留到期 release 后补投）: {st}"
+            );
+            anyhow::ensure!(
+                st["spent"]["turns"].as_u64() == Some(1),
+                "estop 冻结期 spent 被偷跑: {st}"
+            );
+            // release → 补投唤醒#2 → 模型 loop_finish。
+            let st = poll_loop_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("done")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["finish_summary"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("LOOPBENCH:ESTOP-DONE")),
+                "estop 流 finish_summary 缺 LOOPBENCH:ESTOP-DONE: {st}"
+            );
+            anyhow::ensure!(
+                st["spent"]["turns"].as_u64() == Some(2),
+                "estop 流应恰唤醒 2 次（冻结期不计数）: {st}"
+            );
+            notes.push("estop freeze/preserve/resume".to_string());
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        Ok(format!("durable loop 三流 OK：{}", notes.join("；")))
+    };
+    let flow = flow.await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// agent 自举插件（项6）：plugin_bootstrap 场景。三子流全部走真实九步
+// 装配漏斗（校验/验签/hash/扫描/审批/编译对账/lockfile/落位/注册一概
+// 不裁剪）：
+//
+//   HAPPY  plugin_search → plugin_propose（论证上审批卡）→ bench 以 WSAPI
+//          approval.respond 应人批卡 → 热装载 → 同一会话立刻调用
+//          plugin.textstat.textstat（真实 guest 执行）→ 审计链在案
+//   WL     allowed_sources 白名单外 → 结构化拒绝（「白名单」可自纠）
+//   ESTOP  estop 先行 → run_loop 轮顶急停闸直接终局（提案冻结）
+//
+// fixture 运行时装配：bootstrap-src 源 + textstat 插件（仓库预编译 wasm
+// 拷贝 + sha256 重算写 plugin.toml——载荷字节变化时 sha 必须跟着算）。
+// wasm 缺席 = 诚实报错并附构建指引（SKIP 语义）。
+// ---------------------------------------------------------------------------
+
+/// textstat 预编译 wasm 路径（仓库内 fixture 资产）。
+fn textstat_wasm_src() -> Result<std::path::PathBuf> {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/wasm/textstat/target/wasm32-wasip2/release/textstat_plugin.wasm");
+    let p = p
+        .canonicalize()
+        .map_err(|e| anyhow!("textstat 预编译 wasm 缺席（{}: {e}）——先构建：cd plugins/wasm/textstat && cargo build --target wasm32-wasip2 --release", p.display()))?;
+    Ok(p)
+}
+
+/// 装配自举 fixture：源目录 + 重算 sha 的 plugin.toml + sources.json。
+/// `allowed_sources` 传空 = 全部源可用（HAPPY）；传不含 bootstrap-src 的
+/// 名单 = 白名单外拒绝（WL）。
+fn stage_bootstrap_fixture(ws: &TestWorkspace, allowed_sources: &[&str]) -> Result<()> {
+    let wasm_src = textstat_wasm_src()?;
+    let src_dir = ws.workspace().join("bootstrap-src");
+    let plugin_dir = src_dir.join("textstat");
+    std::fs::create_dir_all(&plugin_dir)?;
+    let wasm_dst = plugin_dir.join("plugin.wasm");
+    std::fs::copy(&wasm_src, &wasm_dst)?;
+    // sha256 重算（拷贝后对落盘字节算——manifest 声明与载荷字节必须一致，
+    // 漏斗第③步会 hash 对账）。
+    use sha2::Digest;
+    let bytes = std::fs::read(&wasm_dst)?;
+    let sha = sha2::Sha256::digest(&bytes);
+    let sha_hex: String = sha.iter().map(|b| format!("{b:02x}")).collect();
+    let toml = format!(
+        "wasm-sha256 = \"{sha_hex}\"\n\
+         api-version = 1\n\
+         slug = \"textstat\"\n\
+         kind = \"tool\"\n\
+         name = \"TextStat\"\n\
+         version = \"0.1.0\"\n\
+         description = \"bootstrap e2e fixture: text stats\"\n\n\
+         [permissions]\n"
+    );
+    std::fs::write(plugin_dir.join("plugin.toml"), toml)?;
+    let allowed: Vec<Value> = allowed_sources.iter().map(|s| json!(s)).collect();
+    let sources = json!({
+        "sources": [
+            {
+                "name": "bootstrap-src",
+                "kind": "local",
+                "path": src_dir.to_string_lossy(),
+                "enabled": true
+            }
+        ],
+        // 保险丝给大值：e2e 目标是审批卡/白名单/急停三链路，配额保险丝
+        // 归单测覆盖（且多轮 runs 重复安装不被配额误伤）。
+        "self_bootstrap": {
+            "enabled": true,
+            "allowed_sources": allowed,
+            "auto_approve": false,
+            "max_installs_per_day": 100
+        }
+    });
+    // 刻意不用 config/plugins/（WASM 旧实例迁移目录会吞 .json——
+    // plugin_bootstrap::plugins_config_dir 同源注释；这里与实现保持同路径）。
+    let cfg_dir = ws.workspace().join("config").join("plugin_bootstrap");
+    std::fs::create_dir_all(&cfg_dir)?;
+    std::fs::write(
+        cfg_dir.join("sources.json"),
+        serde_json::to_string_pretty(&sources)?,
+    )?;
+    Ok(())
+}
+
+/// 人批审批卡应答器（memory_approver_loop 同款轮询形态）：轮询
+/// approval.pending，见 `plugins.install` 卡即 approval.respond 批准后退出
+///（成功应答 / 90s 超时二选一终局——无需外部 stop）。respond 结果经
+/// oneshot 回传，场景侧收口断言（红线：提案不得绕卡）。
+async fn spawn_install_approver() -> tokio::sync::oneshot::Receiver<Result<String>> {
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let outcome: Result<String> = (|| async {
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let deadline = Instant::now() + Duration::from_secs(90);
+            loop {
+                anyhow::ensure!(Instant::now() < deadline, "审批卡等待超时（90s）");
+                let pending = wsapi_call_on(
+                    &mut api,
+                    "approval",
+                    "pending",
+                    json!({}),
+                    Duration::from_secs(5),
+                )
+                .await?;
+                let entry = pending["pending"].as_array().and_then(|a| {
+                    a.iter()
+                        .find(|e| e["operation"].as_str() == Some("plugins.install"))
+                });
+                let Some(entry) = entry else {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    continue;
+                };
+                let rid = entry["request_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("plugins.install 卡缺 request_id: {entry}"))?
+                    .to_string();
+                let resp = wsapi_call_on(
+                    &mut api,
+                    "approval",
+                    "respond",
+                    json!({ "request_id": rid, "approved": true, "always": false }),
+                    Duration::from_secs(5),
+                )
+                .await?;
+                anyhow::ensure!(
+                    resp["delivered"].as_bool() == Some(true),
+                    "approval.respond 未送达: {resp}"
+                );
+                return Ok(rid);
+            }
+        })()
+        .await;
+        let _ = done_tx.send(outcome);
+    });
+    done_rx
+}
+
+async fn plugin_bootstrap_one_round(ws: &TestWorkspace) -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let mut notes = Vec::new();
+
+        // 多轮 runs 清场：上一轮已装的 textstat 摘除（uninstall 删载荷留
+        // 数据目录；缺装时诚实报错照常吞掉）。
+        {
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let _ = wsapi_call_on(
+                &mut api,
+                "plugins",
+                "wasm.uninstall",
+                json!({ "slug": "textstat" }),
+                Duration::from_secs(10),
+            )
+            .await;
+            let _ = api.close(None).await;
+        }
+
+        // ── 流1 HAPPY：search → propose → 人批 → 热装 → 同会话用上新工具 ──
+        stage_bootstrap_fixture(ws, &[])?;
+        let mut done_rx = spawn_install_approver().await;
+        let happy_reply = {
+            let session_id = fresh_session_id("bench-boot-happy");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "能力缺口：需要文本统计工具。BOOTFLOW:HAPPY 请自举安装合适的插件并用它统计文本",
+                None,
+            )
+            .await?;
+            let reply = chat_wait(
+                &mut chat,
+                &session_id,
+                "BOOTFLOW:HAPPY-DONE",
+                Duration::from_secs(120),
+            )
+            .await;
+            let _ = chat.close(None).await;
+            reply?
+        };
+        // 审批卡确实被人批应答过（红线：卡不静默跳过——bypass 卡则轮询等
+        // 不到 plugins.install，5s 内收不到回执即判负）。respond 送达通常
+        // 先于终答（批准 → 漏斗收尾 → 回复），timeout 只是兜底窗口。
+        let approved_rid = tokio::time::timeout(Duration::from_secs(5), &mut done_rx)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .and_then(|inner| inner.ok());
+        anyhow::ensure!(
+            approved_rid.is_some(),
+            "HAPPY 流未见人批审批卡应答——提案可能绕卡（红线）或卡片未在 90s 内出现"
+        );
+        // 终答断言：模型终答只嵌 textstat 执行结果（中间步 propose 成功
+        // 态由审批回执 + 审计链断言覆盖）。textstat 真实执行 = 热装语义的
+        // 效果面证明（装了 + 装载了 + 同会话可调）。
+        anyhow::ensure!(
+            happy_reply.contains("\"chars\""),
+            "HAPPY 流终答缺 textstat 真实执行结果（同会话新工具不可用？）: {happy_reply}"
+        );
+
+        // 装载面 + 审计面双断言（WSAPI 同源真相）。
+        {
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let list = wsapi_call_on(
+                &mut api,
+                "plugins",
+                "wasm.list",
+                json!({}),
+                Duration::from_secs(10),
+            )
+            .await?;
+            anyhow::ensure!(
+                serde_json::to_string(&list)?.contains("textstat"),
+                "plugins.wasm.list 缺 textstat（漏斗落位失败）: {list}"
+            );
+            let chain = wsapi_call_on(
+                &mut api,
+                "logs",
+                "chain_list",
+                json!({ "limit": 200 }),
+                Duration::from_secs(15),
+            )
+            .await?;
+            let chain_s = serde_json::to_string(&chain)?;
+            anyhow::ensure!(
+                chain_s.contains("plugin_bootstrap"),
+                "审计链缺 plugin_bootstrap 记录（proposed/installed 未入链）: {}",
+                &chain_s[..chain_s.len().min(600)]
+            );
+            anyhow::ensure!(
+                chain_s.contains("textstat"),
+                "审计链 plugin_bootstrap 记录缺 textstat 目标: {}",
+                &chain_s[..chain_s.len().min(600)]
+            );
+            // installed 决策在案（不止 proposed——漏斗走完的留痕）。
+            anyhow::ensure!(
+                chain_s.contains("installed"),
+                "审计链缺 installed 决策记录: {}",
+                &chain_s[..chain_s.len().min(600)]
+            );
+            let _ = api.close(None).await;
+        }
+        notes.push(format!("HAPPY(rid={})", approved_rid.unwrap_or_default()));
+
+        // ── 流2 WL：白名单外结构化拒绝 ──
+        stage_bootstrap_fixture(ws, &["other-src"])?;
+        {
+            let session_id = fresh_session_id("bench-boot-wl");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "能力缺口：需要文本统计工具。BOOTFLOW:WL 请自举安装合适的插件",
+                None,
+            )
+            .await?;
+            let reply = chat_wait(
+                &mut chat,
+                &session_id,
+                "BOOTFLOW:WL-REFUSED",
+                Duration::from_secs(60),
+            )
+            .await;
+            let _ = chat.close(None).await;
+            reply?
+        };
+        notes.push("WL 白名单拒绝".to_string());
+
+        // ── 流3 ESTOP：急停冻结提案（run_loop 轮顶闸直接终局，模型不被调用；
+        // 若急停恰好落在首轮 LLM 之后则模型见工具分发拒绝 → ESTOP-BLOCKED
+        // 兜底臂——两者都含「急停」语义，谓词双命中）──
+        {
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            wsapi_call_on(
+                &mut api,
+                "estop",
+                "trigger",
+                json!({}),
+                Duration::from_secs(5),
+            )
+            .await?;
+            let st = wsapi_call_on(
+                &mut api,
+                "estop",
+                "status",
+                json!({}),
+                Duration::from_secs(5),
+            )
+            .await?;
+            anyhow::ensure!(
+                st["engaged"].as_bool() == Some(true),
+                "estop.trigger 未生效: {st}"
+            );
+            let session_id = fresh_session_id("bench-boot-estop");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "能力缺口：需要文本统计工具。BOOTFLOW:ESTOP 请自举安装合适的插件",
+                None,
+            )
+            .await?;
+            let reply = chat_wait_pred(&mut chat, &session_id, Duration::from_secs(30), |v| {
+                v["data"]["role"].as_str() == Some("assistant")
+                    && v["data"]["content"]
+                        .as_str()
+                        .is_some_and(|c| c.contains("已急停") || c.contains("ESTOP-BLOCKED"))
+            })
+            .await;
+            let _ = chat.close(None).await;
+            let reply = reply?;
+            // 释放急停（全局态——不释放会毒化后续场景/轮次）。
+            wsapi_call_on(
+                &mut api,
+                "estop",
+                "release",
+                json!({}),
+                Duration::from_secs(5),
+            )
+            .await?;
+            let st = wsapi_call_on(
+                &mut api,
+                "estop",
+                "status",
+                json!({}),
+                Duration::from_secs(5),
+            )
+            .await?;
+            anyhow::ensure!(
+                st["engaged"].as_bool() == Some(false),
+                "estop.release 未生效: {st}"
+            );
+            let _ = api.close(None).await;
+            notes.push(format!("ESTOP 冻结（{:.0} 字节回执）", reply.len() as f32));
+        }
+
+        Ok(format!("plugin bootstrap 三流 OK：{}", notes.join("；")))
+    };
+    let flow = flow.await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+/// agent 自举插件基准场景（项6）：testai-bootstrap-1.0 三流脚本。
+pub async fn run_plugin_bootstrap(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        out.push(plugin_bootstrap_one_round(ws).await);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// 长程记忆质量（项2）：memory_persistence / memory_relevance / memory_forget /
+// memory_capacity_recall 四场景。确定性路径：无 plugin-onnx → vector 关 →
+// 条目只落 episodic + 子串包含检索——gateway 侧真实存取，testai-mem-1.0
+// 只是 marker 翻译搬运工，无采样随机性。
+// ---------------------------------------------------------------------------
+
+/// 记忆事实体码词表（唯一码词 = 串扰/遗忘断言的负样本词；查询回执只 echo
+/// 查询串不含码词，缺席断言只看码词不误伤）。
+const MEM_BODIES: [&str; 20] = [
+    "ORCHID-BAY-31",
+    "GLACIER-FORK-52",
+    "EMBER-DOCK-64",
+    "QUARTZ-LANE-18",
+    "HARBOR-VALE-93",
+    "FALCON-GATE-27",
+    "MARBLE-TIDE-45",
+    "CINDER-PATH-86",
+    "LANTERN-HILL-39",
+    "SUMMIT-VEIL-71",
+    "ATLAS-GROVE-24",
+    "BRIAR-MOOR-58",
+    "CEDAR-FLATS-90",
+    "DELTA-KNOLL-33",
+    "ECHO-STRATH-66",
+    "FJORD-CREST-49",
+    "GALE-MEADOW-82",
+    "HAZEL-BROOK-15",
+    "IVY-TERRACE-53",
+    "JUNIPER-STRAND-96",
+];
+
+/// 单轮 store 分块上限（max_tool_iterations=20 的余量纪律：一轮并发 ≤5 个
+/// memory_store 调用，20 条 = 4 轮）。
+const MEM_STORE_CHUNK: usize = 5;
+
+/// 记忆场景回合：发 marker 指令 → 等 MEMRECEIPT echo 回执，返回回执文本。
+/// 每条路径（含无 marker 兜底）都终止于 MEMRECEIPT 前缀——超时只会是
+/// gateway 侧卡死，回执内容自带现场。
+async fn mem_turn(
+    stream: &mut WsStream,
+    session_id: &str,
+    instruction: &str,
+    timeout: Duration,
+) -> Result<String> {
+    chat_send(stream, session_id, instruction, None).await?;
+    chat_wait(stream, session_id, "MEMRECEIPT:", timeout).await
+}
+
+/// 记忆存入助手：facts 按 ≤5/turn 分块逐轮 MEMSTORE，断言每轮回执含
+/// store 成功文案（审批被拒/写入失败即响亮红）；返回每轮回执文本。
+async fn mem_store_facts(
+    stream: &mut WsStream,
+    session_id: &str,
+    facts: &[String],
+) -> Result<Vec<String>> {
+    let mut receipts = Vec::new();
+    for chunk in facts.chunks(MEM_STORE_CHUNK) {
+        let instr = format!("MEMSTORE: {}", serde_json::to_string(&chunk)?);
+        let receipt = mem_turn(stream, session_id, &instr, Duration::from_secs(120)).await?;
+        anyhow::ensure!(
+            receipt.contains("stored successfully"),
+            "store 回执缺成功文案（可能审批被拒）: {receipt:?}"
+        );
+        receipts.push(receipt);
+    }
+    Ok(receipts)
+}
+
+/// spawn 记忆审批自动批准任务。GatewayMemoryGate 对 memory_store/forget
+/// 每次调用发 MEDIUM 审批卡（30s 超时=拒绝、永不静默跳过——写入面红线在
+/// bench 同样成立），bench 侧以此任务扮演「人批」的 e2e 形态：300ms 轮询
+/// approval.pending → 操作面匹配的卡 respond approved:true。匹配集：
+/// - `memory_store` / `memory_forget`：工具内 GatewayMemoryGate 卡（30s）；
+/// - `file_delete`：ABAC 层卡（memory_forget 映射 FileDelete，Windows 安全
+///   模板 file_rules.delete 带 `pattern "*" action "ask"` 兜底——生产 UX
+///   是先 ABAC 卡后工具内卡两张连批；target 为空串（memory_forget 不在
+///   extract_target 具名清单），无路径可供收窄，bench 实例内 file_delete
+///   只可能来自本场景的 memory_forget，按 operation 放行即场景语义）。
+///
+/// 不误批其他面的卡。返回 stop 信号 Sender：drop 即停（频道关闭 → 任务
+/// 退出并关自身连接）。
+async fn spawn_memory_approver() -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(memory_approver_loop(stop_rx));
+    stop_tx
+}
+
+async fn memory_approver_loop(mut stop: tokio::sync::watch::Receiver<bool>) {
+    let mut stream = match ws_connect(WS_PORT, AUTH_TOKEN).await {
+        Ok(s) => s,
+        Err(_) => return, // 连接失败：场景侧 store 回执断言会以拒绝形态暴露
+    };
+    loop {
+        tokio::select! {
+            _ = stop.changed() => break,
+            _ = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        let pending = match wsapi_call_on(
+            &mut stream,
+            "approval",
+            "pending",
+            json!({}),
+            Duration::from_secs(5),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some(entries) = pending["pending"].as_array() else {
+            continue;
+        };
+        for entry in entries {
+            let op = entry["operation"].as_str().unwrap_or_default();
+            // 工具内记忆闸卡 + ABAC FileDelete 兜底卡（见函数头注释）。
+            if op != "memory_store" && op != "memory_forget" && op != "file_delete" {
+                continue;
+            }
+            let Some(rid) = entry["request_id"].as_str() else {
+                continue;
+            };
+            let _ = wsapi_call_on(
+                &mut stream,
+                "approval",
+                "respond",
+                json!({ "request_id": rid, "approved": true }),
+                Duration::from_secs(5),
+            )
+            .await;
+        }
+    }
+    let _ = stream.close(None).await;
+}
+
+/// 从 store 回执抠第一条条目 ID（"(ID: <uuid>, session: ...)" 形态；检索行
+/// 的 "[ID: ...]" 前缀不同形态，不会误配）。store 回执直带 ID——forget 无需
+/// 先 search。
+fn extract_memory_id(text: &str) -> Option<String> {
+    const MARKER: &str = "(ID: ";
+    let start = text.find(MARKER)? + MARKER.len();
+    let rest = &text[start..];
+    let end = rest.find([',', ')'])?;
+    let id = rest[..end].trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// 记忆场景轮包装（runs 循环 × 单轮函数）。
+macro_rules! memory_run_wrapper {
+    ($fn_name:ident, $one_round:ident) => {
+        pub async fn $fn_name(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+            let _ = ctx;
+            let mut out = Vec::new();
+            for _ in 0..runs {
+                out.push($one_round().await);
+            }
+            out
+        }
+    };
+}
+
+/// memory_persistence：A 会话存 3 条事实 → 全新连接全新会话查询 → 断言
+/// 答案含事实体（跨会话持久化 + 检索全链）。
+async fn memory_persistence_one_round() -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let approver = spawn_memory_approver().await;
+        let stamp = fresh_session_id("MBP");
+        let sess_a = fresh_session_id("bench-mem-a");
+        let mut chat_a = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+
+        let bodies = &MEM_BODIES[..3];
+        let facts: Vec<String> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, b)| format!("{stamp}-A{:02} 仓库码位 {b}", i + 1))
+            .collect();
+        mem_store_facts(&mut chat_a, &sess_a, &facts).await?;
+
+        let sess_b = fresh_session_id("bench-mem-b");
+        let mut chat_b = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        let receipt = mem_turn(
+            &mut chat_b,
+            &sess_b,
+            &format!("MEMQUERY: {stamp}-A01"),
+            Duration::from_secs(90),
+        )
+        .await?;
+        anyhow::ensure!(
+            receipt.contains(bodies[0]),
+            "新会话未召回事实体（{} 缺席）: {receipt:?}",
+            bodies[0]
+        );
+        let _ = chat_a.close(None).await;
+        let _ = chat_b.close(None).await;
+        drop(approver);
+        Ok(format!(
+            "记忆持久化 OK（{stamp}：A 存 3 条 → 新会话召回 A01）"
+        ))
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+/// memory_relevance：存 10 条 → 问 1 条（R07）→ 断言命中目标事实体且其余
+/// 9 条码词零串扰（检索相关性：串扰率=0 才满分）。
+async fn memory_relevance_one_round() -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let approver = spawn_memory_approver().await;
+        let stamp = fresh_session_id("MBR");
+        let sess_a = fresh_session_id("bench-mem-ra");
+        let mut chat_a = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+
+        let bodies: Vec<&str> = MEM_BODIES[..10].to_vec();
+        let facts: Vec<String> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, b)| format!("{stamp}-R{:02} 货架代号 {b}", i + 1))
+            .collect();
+        mem_store_facts(&mut chat_a, &sess_a, &facts).await?;
+
+        let sess_b = fresh_session_id("bench-mem-rb");
+        let mut chat_b = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        let receipt = mem_turn(
+            &mut chat_b,
+            &sess_b,
+            &format!("MEMQUERY: {stamp}-R07"),
+            Duration::from_secs(90),
+        )
+        .await?;
+        anyhow::ensure!(
+            receipt.contains(bodies[6]),
+            "R07 未命中（{} 缺席）: {receipt:?}",
+            bodies[6]
+        );
+        for (i, b) in bodies.iter().enumerate() {
+            if i == 6 {
+                continue; // R07 自身
+            }
+            anyhow::ensure!(
+                !receipt.contains(b),
+                "串扰：{b} 串入 R07 查询回执（检索相关性破口）: {receipt:?}"
+            );
+        }
+        let _ = chat_a.close(None).await;
+        let _ = chat_b.close(None).await;
+        drop(approver);
+        Ok(format!(
+            "记忆相关性 OK（{stamp}：存 10 问 1，命中 + 零串扰）"
+        ))
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+/// memory_forget：存 1 条 → store 回执抠 ID → delete_by_id 删除 → 复查
+/// 断言事实体召不回（遗忘闭环；删除回执同时钉死 deleted successfully）。
+async fn memory_forget_one_round() -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let approver = spawn_memory_approver().await;
+        let stamp = fresh_session_id("MBF");
+        let sess_a = fresh_session_id("bench-mem-fa");
+        let mut chat_a = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+
+        let body = "QUIET-POND-77";
+        let facts = vec![format!("{stamp}-F01 码位 {body}")];
+        let receipts = mem_store_facts(&mut chat_a, &sess_a, &facts).await?;
+        let id = extract_memory_id(&receipts[0])
+            .ok_or_else(|| anyhow!("store 回执无可抠条目 ID: {:?}", receipts[0]))?;
+
+        let sess_b = fresh_session_id("bench-mem-fb");
+        let mut chat_b = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        let del = mem_turn(
+            &mut chat_b,
+            &sess_b,
+            &format!("MEMFORGET: {id}"),
+            Duration::from_secs(90),
+        )
+        .await?;
+        anyhow::ensure!(
+            del.contains("deleted successfully") && del.contains(id.as_str()),
+            "删除回执异常（期望 deleted successfully + id）: {del:?}"
+        );
+        let receipt = mem_turn(
+            &mut chat_b,
+            &sess_b,
+            &format!("MEMQUERY: {stamp}-F01"),
+            Duration::from_secs(90),
+        )
+        .await?;
+        anyhow::ensure!(
+            !receipt.contains(body),
+            "forget 后仍召回（{body} 在场——删除未生效）: {receipt:?}"
+        );
+        let _ = chat_a.close(None).await;
+        let _ = chat_b.close(None).await;
+        drop(approver);
+        Ok(format!(
+            "记忆遗忘 OK（{stamp}：store→抠 ID→delete→复查召不回）"
+        ))
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+/// memory_capacity_recall：存 20 条（4 轮 × 5 分块纪律）→ 新会话查 5 条
+/// → 命中率记分卡（≥4/5 闸线；hits 计入场景输出可观测）。
+async fn memory_capacity_recall_one_round() -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let approver = spawn_memory_approver().await;
+        let stamp = fresh_session_id("MBC");
+        let sess_a = fresh_session_id("bench-mem-ca");
+        let mut chat_a = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+
+        let bodies: Vec<&str> = MEM_BODIES.to_vec();
+        let facts: Vec<String> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, b)| format!("{stamp}-C{:02} 月台编号 {b}", i + 1))
+            .collect();
+        mem_store_facts(&mut chat_a, &sess_a, &facts).await?;
+
+        // 查 5 条：C03/C07/C11/C15/C19（同会话顺序轮询）。
+        let probe = [2usize, 6, 10, 14, 18];
+        let sess_b = fresh_session_id("bench-mem-cb");
+        let mut chat_b = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        let mut hits = 0u32;
+        for i in probe {
+            let receipt = mem_turn(
+                &mut chat_b,
+                &sess_b,
+                &format!("MEMQUERY: {stamp}-C{:02}", i + 1),
+                Duration::from_secs(90),
+            )
+            .await?;
+            if receipt.contains(bodies[i]) {
+                hits += 1;
+            }
+        }
+        anyhow::ensure!(
+            hits >= 4,
+            "容量召回命中率 {hits}/5 低于 4/5 闸线（stamp={stamp}）"
+        );
+        let _ = chat_a.close(None).await;
+        let _ = chat_b.close(None).await;
+        drop(approver);
+        Ok(format!(
+            "容量召回 OK（{stamp}：存 20 问 5，命中率 {hits}/5）"
+        ))
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+memory_run_wrapper!(run_memory_persistence, memory_persistence_one_round);
+memory_run_wrapper!(run_memory_relevance, memory_relevance_one_round);
+memory_run_wrapper!(run_memory_forget, memory_forget_one_round);
+memory_run_wrapper!(run_memory_capacity_recall, memory_capacity_recall_one_round);
+
+// ---------------------------------------------------------------------------
 // 场景目录
 // ---------------------------------------------------------------------------
 
@@ -1728,6 +3243,38 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         ScenarioSpec {
             name: "no_irreversible_repeat",
             runs: 2,
+        },
+        ScenarioSpec {
+            name: "subagent_steer",
+            runs: 2,
+        },
+        ScenarioSpec {
+            name: "event_wakeup",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "durable_loop",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "plugin_bootstrap",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "memory_persistence",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "memory_relevance",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "memory_forget",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "memory_capacity_recall",
+            runs: 1,
         },
     ]
 }

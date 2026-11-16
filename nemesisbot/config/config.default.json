@@ -247,6 +247,13 @@
       "enabled": false,
       "cron": "30 3 * * *",
       "top_k": 8
+    },
+    "recall_gate": {
+      "enabled": false,
+      "model": "",
+      "max_items": 0,
+      "min_candidates": 4,
+      "cache_secs": 300
     }
   },
   "mcp": {

@@ -31,6 +31,10 @@ const similarityThreshold = ref(0.7)
 const maxResults = ref(10)
 const _configInitialized = ref(false)
 
+// --- 召回质量闸（项2 P2）：memory.status 回读（装配面 + 计数；计数活在
+// gateway 进程内，重启归零）---
+const recallGate = ref<any>(null)
+
 // --- Enhanced memory: auto-inject (P1-1, 2026-08-24) ---
 // 区别于记忆库（有问才答：agent 主动 memory_search）——自动注入是不问自答：
 // 每轮 LLM 调用前自动把与最新消息最相关的 top_k 条记忆注入上下文。
@@ -76,6 +80,7 @@ async function loadStatus() {
   try {
     const data = await request('memory', 'status')
     mainEnabled.value = data?.vector_memory?.main_enabled ?? false
+    recallGate.value = data?.recall_gate ?? null
   } catch { /* ignore */ }
 }
 
@@ -666,7 +671,36 @@ onUnmounted(() => {
                     {{ envStatus?.overall === 'ready' ? '就绪' : envStatus?.overall === 'degraded' ? '降级' : '未启用' }}
                   </span>
                 </span>
+
+                <!-- 召回质量闸（项2 P2，只读展示；配置在 config.json memory.recall_gate） -->
+                <span class="settings-key">召回质量闸</span>
+                <span>
+                  <span v-if="!recallGate?.available" class="badge badge-neutral">未装配</span>
+                  <span v-else-if="!recallGate?.enabled" class="badge badge-neutral">未启用</span>
+                  <span v-else class="badge badge-success">启用</span>
+                </span>
               </div>
+
+              <!-- 召回质量闸计数（启用时展示） -->
+              <template v-if="recallGate?.enabled && recallGate?.stats">
+                <div style="margin-top: var(--space-3); display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2);">
+                  <div class="stat-card">
+                    <div class="stat-label">召回候选</div>
+                    <div class="stat-value">{{ recallGate.stats.recalled ?? 0 }}</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-label">判定保留</div>
+                    <div class="stat-value">{{ recallGate.stats.kept ?? 0 }}</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-label">判定丢弃</div>
+                    <div class="stat-value">{{ recallGate.stats.dropped ?? 0 }}</div>
+                  </div>
+                </div>
+                <div style="margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary);">
+                  判定调用 {{ recallGate.stats.judge_calls ?? 0 }} 次（缓存命中 {{ recallGate.stats.cache_hits ?? 0 }}）；成本闸直通 {{ recallGate.stats.skipped_cost_gate ?? 0 }} 次；fail-open {{ recallGate.stats.errors ?? 0 }} 次。计数活在 gateway 进程内，重启归零。
+                </div>
+              </template>
             </div>
           </div>
 

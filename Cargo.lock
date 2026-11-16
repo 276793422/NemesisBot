@@ -69,6 +69,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "test-harness",
  "tokio",
@@ -4122,6 +4123,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-events"
+version = "0.1.0"
+dependencies = [
+ "notify",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nemesis-exec-protocol"
 version = "0.1.0"
 dependencies = [
@@ -4245,6 +4259,18 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nemesis-loop"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "croner",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -4732,7 +4758,9 @@ dependencies = [
  "nemesis-connectors",
  "nemesis-cron",
  "nemesis-data",
+ "nemesis-events",
  "nemesis-forge",
+ "nemesis-loop",
  "nemesis-lsp",
  "nemesis-mcp",
  "nemesis-memory",
@@ -4891,12 +4919,14 @@ dependencies = [
  "nemesis-desktop",
  "nemesis-devices",
  "nemesis-eval-proxy",
+ "nemesis-events",
  "nemesis-forge",
  "nemesis-health",
  "nemesis-heartbeat",
  "nemesis-http-pool",
  "nemesis-injector",
  "nemesis-logger",
+ "nemesis-loop",
  "nemesis-lsp",
  "nemesis-mcp",
  "nemesis-memory",

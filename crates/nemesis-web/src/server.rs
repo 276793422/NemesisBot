@@ -317,6 +317,13 @@ pub struct WebServer {
     #[cfg(not(feature = "board"))]
     #[allow(dead_code)]
     board: Option<()>,
+    /// 事件唤醒泵观测快照句柄（`events` feature 门控；gateway post_agent 注入，
+    /// flows into AppState for events.* WSAPI。泵任务每周期覆写，handler 读）。
+    #[cfg(feature = "events")]
+    events_snapshot: Option<Arc<parking_lot::RwLock<nemesis_events::EventSnapshot>>>,
+    #[cfg(not(feature = "events"))]
+    #[allow(dead_code)]
+    events_snapshot: Option<()>,
     /// Conversation→WS router for cron-initiated live delivery (Opt 2).
     /// Populated on inbound in `process_messages`; read by the gateway cron
     /// fire handler to pick a live `chat_id` for the targeted conversation.
@@ -428,6 +435,7 @@ impl WebServer {
             #[cfg(feature = "skins")]
             skin_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
             cors_manager: None,
+            events_snapshot: None,
         }
     }
 
@@ -613,6 +621,16 @@ impl WebServer {
         self.cron = Some(cron);
     }
 
+    /// 注入事件唤醒泵观测快照句柄（`events` feature；gateway post_agent 在
+    /// 泵 start 前调用——句柄 new() 即存在，AppState 随 build_router 携带）。
+    #[cfg(feature = "events")]
+    pub fn set_events_snapshot(
+        &mut self,
+        snap: Arc<parking_lot::RwLock<nemesis_events::EventSnapshot>>,
+    ) {
+        self.events_snapshot = Some(snap);
+    }
+
     /// L14（2026-11-01）：注入会话执行统计读侧（nemesisbot 聚合器，
     /// `sessions.stats` 消费）。None = 未装配（诚实返回 unavailable）。
     pub fn set_session_stats(&mut self, reader: Arc<dyn nemesis_agent::SessionStatsReader>) {
@@ -774,6 +792,10 @@ impl WebServer {
             session_stats: self.session_stats.clone(),
             cron: self.cron.clone(),
             board,
+            #[cfg(feature = "events")]
+            events_snapshot: self.events_snapshot.clone(),
+            #[cfg(not(feature = "events"))]
+            events_snapshot: self.events_snapshot,
         };
 
         let state = Arc::new(state);

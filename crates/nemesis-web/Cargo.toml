@@ -29,6 +29,12 @@ nemesis-cron = { workspace = true }
 # 看板存储（board.* WSAPI / team.* / 看板资产端点；`board` feature 门控——
 # rusqlite bundled 随它进出，iotsmall 里最后一个 SQLite 来源）。
 nemesis-board = { workspace = true, optional = true }
+# 事件驱动唤醒管理面（handlers/events.rs：events.status/rules.get/rules.save；
+# `events` feature 门控——泵观测快照句柄 + events.json 规则文件 CRUD）。
+nemesis-events = { workspace = true, optional = true }
+# 自配速 durable loop 管理面（handlers/loops.rs：loops.* 七命令；`loop`
+# feature 门控——状态真相源 <workspace>/loops/*.json，人控面 pause/resume）。
+nemesis-loop = { workspace = true, optional = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-memory = { workspace = true, optional = true }
@@ -154,6 +160,13 @@ history-search = ["nemesis-agent/history-search"]
 # 注入槽）。由 nemesisbot 的 board feature 穿透；关 =nemesis-board 整包退出
 # 依赖图（rusqlite bundled 随之消失），board 命令从注册表面消失。
 board = ["dep:nemesis-board"]
+# 事件驱动唤醒管理面（events.* WSAPI；由 nemesisbot 的 events feature 穿透）。
+# 关 = handler 整体退出注册表面（events.status 形态=unknown command）。
+events = ["dep:nemesis-events"]
+# 自配速 durable loop 管理面（loops.* 七命令 WSAPI；由 nemesisbot 的 loop
+# feature 穿透）。关 = handler 整体退出注册表面；agent 工具面（loop_wakeup/
+# loop_status/loop_finish）在 nemesisbot 侧独立门控，两侧同 feature 名同开。
+loop = ["dep:nemesis-loop"]
 # 行动代理连接器管理面（connectors.* / paperbroker.* WSAPI；由 nemesisbot
 # 的 connectors feature 穿透）。关 = handler 整体退出注册表面。
 connectors = ["dep:nemesis-connectors"]

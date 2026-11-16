@@ -34,6 +34,9 @@ pub mod history;
 #[cfg(feature = "board")]
 pub mod issue;
 pub mod log;
+/// durable loop 管理 CLI（`loop` 子命令；项5；`loop` feature 门控）。
+#[cfg(feature = "loop")]
+pub mod loops;
 pub mod mcp;
 /// stdIO MCP server 入口（`nemesisbot mcp-serve`）。
 pub mod mcp_serve;

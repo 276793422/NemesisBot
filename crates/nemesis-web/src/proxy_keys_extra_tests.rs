@@ -18,6 +18,7 @@ use std::time::Instant;
 fn make_state(workspace: Option<String>) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace,

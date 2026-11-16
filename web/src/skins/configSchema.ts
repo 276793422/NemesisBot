@@ -121,6 +121,12 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'memory.dreaming.enabled': { label: '记忆整理（dreaming）', type: 'boolean' },
   'memory.dreaming.cron': { label: '整理计划（cron）', type: 'string' },
   'memory.dreaming.top_k': { label: '整理检索条数', type: 'number', range: { min: 1, max: 64, step: 1 } },
+  // ---- 召回质量闸（项2 P2）----
+  'memory.recall_gate.enabled': { label: '启用召回质量闸（小模型判相关）', type: 'boolean' },
+  'memory.recall_gate.model': { label: '判定模型别名（空=走小模型回落链）', type: 'string' },
+  'memory.recall_gate.max_items': { label: '注入条数上限（0=沿用 top_k）', type: 'number', range: { min: 0, max: 20, step: 1 } },
+  'memory.recall_gate.min_candidates': { label: '成本闸阈值（候选低于此数不判定）', type: 'number', range: { min: 1, max: 20, step: 1 } },
+  'memory.recall_gate.cache_secs': { label: '判定缓存时长（秒）', type: 'number', range: { min: 0, max: 3600, step: 30 } },
   'mcp.enabled': { label: '启用 MCP', type: 'boolean' },
   // ---- 用户习惯画像（自进化升级 B 线，2026-10-14）----
   'user_profile.enabled': { label: '启用用户习惯画像', type: 'boolean' },

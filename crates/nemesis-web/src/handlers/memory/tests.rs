@@ -78,6 +78,91 @@ fn missing_legacy_file_is_noop() {
 
 use super::{MemoryHandler, read_main_switch, set_main_switch};
 
+use crate::api_handlers::AppState;
+use crate::events::EventHub;
+use crate::session::SessionManager;
+use crate::ws_router::RequestContext;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::time::Instant;
+
+/// 最小 RequestContext（status 直测用；`with_manager` 臂供召回质量闸
+/// 状态段断言——manager 在场 + gate 未装配 = available:true/enabled:false）。
+fn make_ctx(
+    ws: Option<&str>,
+    #[cfg(feature = "memory")] with_manager: bool,
+    #[cfg(not(feature = "memory"))] _with_manager: bool,
+) -> RequestContext {
+    #[cfg(feature = "memory")]
+    let manager = if with_manager {
+        Some(Arc::new(nemesis_memory::manager::MemoryManager::new(
+            &nemesis_memory::manager::Config::new(std::path::Path::new("unused")),
+        )))
+    } else {
+        None
+    };
+    #[cfg(not(feature = "memory"))]
+    let manager = {
+        let _ = with_manager;
+        None
+    };
+    let state = Arc::new(AppState {
+        cors_manager: None,
+        events_snapshot: None,
+        auth_token: String::new(),
+        session_count: Arc::new(AtomicUsize::new(0)),
+        workspace: ws.map(|s| s.to_string()),
+        home: ws.map(|s| s.to_string()),
+        version: "test".to_string(),
+        start_time: Instant::now(),
+        model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
+        event_hub: Arc::new(EventHub::new()),
+        running: Arc::new(AtomicBool::new(true)),
+        session_manager: Arc::new(SessionManager::with_default_timeout()),
+        inbound_tx: None,
+        streaming_provider: None,
+        ws_router: None,
+        agent_service: None,
+        data_store: None,
+        memory_manager: manager,
+        forge: None,
+        agent_loop: Arc::new(parking_lot::RwLock::new(None)),
+        cluster: None,
+        quic_relay: None,
+        cluster_service: None,
+        cluster_log_dir: None,
+        workflow_engine: None,
+        #[cfg(feature = "workflow")]
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
+        internal_cmd_tx: None,
+        estop: None,
+        background_registry: None,
+        signature_verify: None,
+        skills_install_gate: None,
+        session_stats: None,
+        cron: None,
+        board: None,
+    });
+    RequestContext {
+        session_id: "test-session".to_string(),
+        chat_id: "test-chat".to_string(),
+        workspace: ws.map(|s| s.to_string()),
+        home: ws.map(|s| s.to_string()),
+        state,
+        auth_method: crate::session::AuthMethod::default(),
+    }
+}
+
 #[test]
 fn read_main_switch_no_config_returns_false() {
     let dir = tempfile::tempdir().unwrap();
@@ -126,9 +211,10 @@ fn status_counts_documents_and_switches() {
     let h = MemoryHandler;
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
+    let ctx = make_ctx(Some(ws), false);
 
     // Empty workspace: all zeros/false, but memory dir missing does not count as error.
-    let out = h.status(ws, ws).unwrap().unwrap();
+    let out = h.status(ws, ws, &ctx).unwrap().unwrap();
     assert_eq!(out["document_memory"]["document_count"], 0);
     assert_eq!(out["document_memory"]["directory_exists"], false);
     assert_eq!(out["vector_memory"]["enabled"], false);
@@ -149,11 +235,34 @@ fn status_counts_documents_and_switches() {
         r#"{"memory": {"enabled": true}}"#,
     )
     .unwrap();
-    let out = h.status(ws, ws).unwrap().unwrap();
+    let out = h.status(ws, ws, &ctx).unwrap().unwrap();
     assert_eq!(out["document_memory"]["document_count"], 2);
     assert_eq!(out["document_memory"]["directory_exists"], true);
     assert_eq!(out["vector_memory"]["enabled"], true);
     assert_eq!(out["vector_memory"]["main_enabled"], true);
+}
+
+/// 项2 P2：status 的召回质量闸状态段契约。
+/// - manager 缺席 = available:false；
+/// - manager 在场 + gate 未装配 = available:true / enabled:false（stats:null）。
+#[test]
+fn status_recall_gate_section_shape() {
+    let h = MemoryHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_str().unwrap();
+
+    let ctx = make_ctx(Some(ws), false);
+    let out = h.status(ws, ws, &ctx).unwrap().unwrap();
+    assert_eq!(out["recall_gate"]["available"], false);
+
+    #[cfg(feature = "memory")]
+    {
+        let ctx = make_ctx(Some(ws), true);
+        let out = h.status(ws, ws, &ctx).unwrap().unwrap();
+        assert_eq!(out["recall_gate"]["available"], true);
+        assert_eq!(out["recall_gate"]["enabled"], false);
+        assert!(out["recall_gate"]["stats"].is_null());
+    }
 }
 
 #[test]

@@ -49,6 +49,7 @@ fn agt_make_state(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

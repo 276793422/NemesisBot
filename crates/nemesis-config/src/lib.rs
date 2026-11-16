@@ -715,6 +715,11 @@ mod ws2_compact_config_tests;
 #[cfg(test)]
 mod dispatch_fallback_mode_tests;
 
+// memory.recall_gate 配置节（项2 P2 召回质量闸）：缺席 = None /
+// 部分键落默认 / roundtrip 零漂移。
+#[cfg(test)]
+mod recall_gate_config_tests;
+
 // 人工触点考勤（board.attendance）：serde 缺省 / mode 归一 / kind 等待窗
 // 测试。
 #[cfg(test)]

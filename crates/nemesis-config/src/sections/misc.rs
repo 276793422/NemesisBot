@@ -647,6 +647,55 @@ pub struct MemoryFlagConfig {
     /// P31 记忆 dreaming（三段式记忆巩固；None = 全默认——enabled=false 关）。
     #[serde(default)]
     pub dreaming: Option<DreamingConfig>,
+    /// 项2 P2 召回质量闸（None = 缺省——enabled=false 直通现状）。
+    #[serde(default)]
+    pub recall_gate: Option<RecallGateConfig>,
+}
+
+/// `memory.recall_gate` 配置节（项2 P2 召回质量闸）。
+///
+/// top-k 召回 → 一次批量小模型判相关（保留/丢弃）→ 过滤后注入。判定走
+/// `model` 显式别名 → `agents.small_model` 回落链，**无主模型臂**——主模型
+/// 每轮判召回正是闸要省的成本，链上无可用模型 = 诚实跳过（WARN 一次，
+/// 直通现状）。判定失败/解析失败 = fail-open 全保留（不确定时判保留，
+/// 绝不因闸失败丢注入）。默认关——多一次 LLM 调用是成本，opt-in。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecallGateConfig {
+    /// 总开关，默认 false（opt-in）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 判定模型别名（空 = 走 agents.small_model 回落链）。
+    #[serde(default)]
+    pub model: String,
+    /// 注入条数上限（闸后截断；0 = 不再截断，沿用 auto_inject top_k）。
+    #[serde(default)]
+    pub max_items: usize,
+    /// 成本闸：召回候选 ≥ 该数才启用判定（低于 = 直通现状不花 token）。
+    #[serde(default = "default_recall_gate_min_candidates")]
+    pub min_candidates: usize,
+    /// 判定缓存 TTL 秒（同 query+候选集短窗复用判定；0 = 用内置缺省）。
+    #[serde(default = "default_recall_gate_cache_secs")]
+    pub cache_secs: u64,
+}
+
+fn default_recall_gate_min_candidates() -> usize {
+    4
+}
+
+fn default_recall_gate_cache_secs() -> u64 {
+    300
+}
+
+impl Default for RecallGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: String::new(),
+            max_items: 0,
+            min_candidates: default_recall_gate_min_candidates(),
+            cache_secs: default_recall_gate_cache_secs(),
+        }
+    }
 }
 
 /// `memory.dreaming` 配置节（P31 记忆巩固）。

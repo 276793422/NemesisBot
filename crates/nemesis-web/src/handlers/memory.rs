@@ -79,7 +79,7 @@ impl ModuleHandler for MemoryHandler {
 
         match cmd {
             // Document memory (original) ---
-            "status" => self.status(workspace, home),
+            "status" => self.status(workspace, home, ctx),
             "documents" => self.documents(workspace),
             "document.get" => {
                 let data = data.ok_or("missing data")?;
@@ -366,8 +366,40 @@ fn jsonl_write_lock() -> &'static std::sync::Mutex<()> {
 
 // Document memory (original commands)
 
+/// 项2 P2：召回质量闸状态段（`memory.status` 消费）。
+/// - manager 缺席（config memory.enabled=false）→ `available:false`；
+/// - manager 在场 + gate 装配 → `available:true, enabled:true, stats:{...}`；
+/// - manager 在场 + gate 未装配（默认关/诚实跳过）→ `available:true, enabled:false`
+///   （闸统计只在 gateway 进程内存中，重启归零——诚实边界）。
+fn recall_gate_status(ctx: &RequestContext) -> serde_json::Value {
+    #[cfg(feature = "memory")]
+    {
+        match ctx.state.memory_manager.as_ref() {
+            None => serde_json::json!({ "available": false }),
+            Some(mgr) => {
+                let stats = mgr.recall_gate_stats();
+                serde_json::json!({
+                    "available": true,
+                    "enabled": stats.is_some(),
+                    "stats": stats,
+                })
+            }
+        }
+    }
+    #[cfg(not(feature = "memory"))]
+    {
+        let _ = ctx;
+        serde_json::json!({ "available": false })
+    }
+}
+
 impl MemoryHandler {
-    fn status(&self, workspace: &str, home: &str) -> Result<Option<serde_json::Value>, String> {
+    fn status(
+        &self,
+        workspace: &str,
+        home: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let memory_dir = PathBuf::from(workspace).join("memory");
         let doc_count = if memory_dir.exists() {
             count_files_recursive(&memory_dir)
@@ -388,6 +420,10 @@ impl MemoryHandler {
 
         let main_enabled = read_main_switch(home);
 
+        // 项2 P2：召回质量闸统计（manager 装配的 gate 缺席 = enabled:false；
+        // manager 本身缺席（memory.enabled=false）= available:false）。
+        let recall_gate = recall_gate_status(ctx);
+
         Ok(Some(serde_json::json!({
             "document_memory": {
                 "enabled": true,
@@ -398,6 +434,7 @@ impl MemoryHandler {
                 "enabled": vector_enabled,
                 "main_enabled": main_enabled,
             },
+            "recall_gate": recall_gate,
         })))
     }
 

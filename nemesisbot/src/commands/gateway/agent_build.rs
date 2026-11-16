@@ -151,7 +151,7 @@ pub(crate) async fn init_agent(
     // 块 bind 真身 WebApprovalManager（晚绑槽模式，skills gate 同款）；
     // 启动装载走 installer.load_all（无审批/无扫描——安装期已裁决）。
     #[cfg(feature = "plugins-wasm")]
-    let (plugin_manager, plugin_gate) = {
+    let (plugin_manager, plugin_gate, plugin_installer) = {
         let gate = Arc::new(crate::plugin_bridge::LateInstallApprover::new(300));
         match crate::plugin_bridge::build_plugin_stack(
             &home,
@@ -165,15 +165,19 @@ pub(crate) async fn init_agent(
                 }
                 // 整槽注入 web 管理面（plugins.wasm.* 命令的 install /
                 // uninstall / enable 均消费同一 installer——审批/扫描/验签
-                // 统一定义，handler 零旁路）。
-                nemesis_web::handlers::plugins_wasm::set_installer(Arc::new(installer));
-                (Some(manager), Some(gate))
+                // 统一定义，handler 零旁路）。Arc 先于 move 建立：同一
+                // Arc 克隆进 SharedResources.plugin_installer（项6 agent
+                // 自举工具与 web 管理面共用一个漏斗真相源）。
+                let installer = Arc::new(installer);
+                nemesis_web::handlers::plugins_wasm::set_installer(installer.clone());
+                (Some(manager), Some(gate), Some(installer))
             }
-            None => (None, None),
+            None => (None, None, None),
         }
     };
     #[cfg(not(feature = "plugins-wasm"))]
-    let (plugin_manager, plugin_gate): (Option<()>, Option<()>) = (None, None);
+    let (plugin_manager, plugin_gate, plugin_installer): (Option<()>, Option<()>, Option<()>) =
+        (None, None, None);
 
     // 原生插件状态 probe 注入（与 plugins_wasm::set_installer 同批）：签名
     // 验签执行体在 nemesisbot（nemesis-verify + 编译期锚），web handler 只
@@ -361,6 +365,10 @@ pub(crate) async fn init_agent(
             Some(experts_store)
         },
         plugin_manager,
+        // agent 自举插件（项6）：同一 installer Arc + 审批门 Arc
+        //（8f 注册块消费；任一缺席 = plugin_search/plugin_propose 不注册）。
+        plugin_installer,
+        plugin_install_gate: plugin_gate.clone(),
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
         // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级
         // 动态解析槽（AgentLoopServiceAdapter start 填 Some / stop 写

@@ -298,13 +298,15 @@ describe('setupSkinProjection 装配', () => {
     vi.stubEnv('VITE_FEATURE_FORGE', 'true')
     const { mod } = await setupProjection()
     const paths = mod.skinProjection.navMore.map(n => n.path)
-    // 全量 26 项 − usage（feature=false）− cluster（未注册路由）
-    expect(paths).toHaveLength(24)
+    // 全量 28 项 − usage（feature=false）− cluster（未注册路由）
+    expect(paths).toHaveLength(26)
     expect(paths).not.toContain('/usage')
     expect(paths).not.toContain('/cluster')
     expect(paths).toContain('/forge') // feature=true 放行
     expect(paths).toContain('/overview') // 无 feature 门控
     expect(paths).toContain('/license')
+    expect(paths).toContain('/events') // 事件管理面（events feature 默认开）
+    expect(paths).toContain('/loops') // 循环管理面（loop feature 默认开）
   })
 
   it('会话分组：今天/昨天/7天内/更早 + relTime 四档 + 标题三级回退 + active 随路由', async () => {

@@ -115,6 +115,9 @@ const NAV_MORE: { id: string; label: string; path: string }[] = [
   { id: 'plugins', label: '插件', path: '/plugins' },
   { id: 'channels', label: '通道', path: '/channels' },
   { id: 'workflows', label: '工作流', path: '/workflows' },
+  // 事件管理面（项1 事件驱动唤醒 P2）/ 循环管理面（项5 durable loop）。
+  { id: 'events', label: '事件', path: '/events' },
+  { id: 'loops', label: '循环', path: '/loops' },
   { id: 'forge', label: 'Forge', path: '/forge' },
   { id: 'board', label: '看板', path: '/board' },
   { id: 'cluster', label: '集群', path: '/cluster' },
@@ -146,6 +149,10 @@ const ITEM_FEATURE: Record<string, string> = {
   vm: 'VM',
   board: 'BOARD',
   terminal: 'TERMINAL',
+  // 事件/循环管理面（项1/项5）：events / loop feature 闸（与 navModel
+  // 同源映射；VITE_FEATURE_X=false 裁掉）。
+  events: 'EVENTS',
+  loops: 'LOOP',
 }
 
 // ---- 会话时间分组（SkinSidebar L104-138 迁移）----

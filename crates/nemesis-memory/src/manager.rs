@@ -107,6 +107,8 @@ pub struct MemoryManager {
     enabled: RwLock<bool>,
     /// Root data directory (used for vector store paths).
     data_dir: PathBuf,
+    /// 召回质量闸（项2 P2；gateway 装配期注入，缺席 = 过滤直通）。
+    recall_gate: RwLock<Option<Arc<crate::recall_gate::RecallGate>>>,
 }
 
 impl MemoryManager {
@@ -129,6 +131,7 @@ impl MemoryManager {
             vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
+            recall_gate: RwLock::new(None),
         }
     }
 
@@ -154,6 +157,7 @@ impl MemoryManager {
             vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
+            recall_gate: RwLock::new(None),
         })
     }
 
@@ -339,6 +343,30 @@ impl MemoryManager {
             vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: PathBuf::new(),
+            recall_gate: RwLock::new(None),
+        }
+    }
+
+    // -- 召回质量闸（项2 P2）------------------------------------------------
+
+    /// 注入召回质量闸（gateway/agent_factory 装配期调用；重复调用 = 替换）。
+    pub fn set_recall_gate(&self, gate: Arc<crate::recall_gate::RecallGate>) {
+        *self.recall_gate.write() = Some(gate);
+    }
+
+    /// 闸统计快照（`memory.status` / Dashboard 消费）；闸缺席 = None。
+    pub fn recall_gate_stats(&self) -> Option<crate::recall_gate::RecallGateStats> {
+        self.recall_gate.read().as_ref().map(|g| g.stats())
+    }
+
+    /// 召回命中过滤（loop 侧 `prefetch_memory_context` 消费点）。闸缺席 =
+    /// 原样返回（直通现状，loop 零新分支）；在场 = 一次批量小模型判定后
+    /// 过滤（失败 fail-open 全保留，语义见 [`crate::recall_gate`]）。
+    pub async fn filter_recall_hits(&self, query: &str, hits: Vec<String>) -> Vec<String> {
+        let gate = self.recall_gate.read().clone();
+        match gate {
+            None => hits,
+            Some(g) => g.filter(query, hits).await,
         }
     }
 

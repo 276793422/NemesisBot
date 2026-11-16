@@ -566,7 +566,7 @@ pub fn build_agent_loop_from_spec(
     //    AgentLoop 对 None 优雅降级，零风险）。
 
     // 6. 工具注册：主配置构造后字段覆盖（项目锚 + 剥离三资产件套）。
-    let (mut tool_config, spawn_slot) = build_shared_tool_config(
+    let (mut tool_config, spawn_slot, steer_slot) = build_shared_tool_config(
         shared,
         &cfg,
         &model_name,
@@ -812,6 +812,10 @@ pub fn build_agent_loop_from_spec(
         &shared.bus,
         &spec.loop_origin,
     );
+    // 子代理飞行中驾驶（项3）：项目 loop 同款 steer 闭包注入——
+    // 校验链单点在 AgentLoop::steer_subagent（loop_origin 比对保证
+    // 只驾驶本项目 loop 派生的子代理）。
+    inject_steer_fn(&agent_loop, &steer_slot);
     // 治理补全：connector 治理面与主 loop 同源——项目/
     // selfbuilt loop 同装 MCP（enable_mcp_reload），独占接管与 connector
     // 工具必须同覆盖，否则项目会话成为独占旁路（治理资产仍锚主 workspace，

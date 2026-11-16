@@ -15,6 +15,7 @@ fn make_ctx(ws: &str) -> RequestContext {
 
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.to_string()),

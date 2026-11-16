@@ -939,6 +939,11 @@ impl AgentLoop {
                 error,
             );
         }
+        // 项3 子代理 steer 收口：子代理会话键是 ephemeral，运行终点把本
+        // loop inbox 里未消费的 steer 一并丢弃（estop/取消/收尾窗口错过
+        // 的注入诚实即逝——[父代理指令] 是瞬态指令，不重投递；后台续行
+        // 由父会话驱动，子键不再进 run_llm_loop，留着只会泄漏）。
+        self.inbox.clear(&session_key);
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
             trace_id,
             session_key,

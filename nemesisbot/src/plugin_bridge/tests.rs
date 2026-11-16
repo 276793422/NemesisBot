@@ -224,6 +224,8 @@ async fn install_approver_unbound_is_fail_closed() {
         flow_templates: 0,
         connectors: vec![],
         limits_ignored: vec![],
+        takeover: vec![],
+        proposer_reason: None,
         source_dir: "C:\\tmp".into(),
     };
     let verdict = gate.approve(&review).await;

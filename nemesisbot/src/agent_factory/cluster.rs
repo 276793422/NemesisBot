@@ -470,8 +470,9 @@ pub fn build_cluster_agent_loop(
     // spawn 槽此处**不注入**闭包——build_cluster_agent_loop 返回非 Arc
     // 的 AgentLoop（Arc 由 Cluster 调用方创建），Weak 注入点不在此；槽留空
     // 时 SpawnTool 诚实报 "not available"。v1 边界：sub-agent 只在主
-    // gateway loop 开放（cluster B 端 spawn 见 后续）。
-    let (mut tool_config, _unused_cluster_spawn_slot) =
+    // gateway loop 开放（cluster B 端 spawn 见 后续）。steer 槽（项3）同款
+    // 不注入——无 spawn 面 = 无子代理可驾驶，工具诚实报 not available。
+    let (mut tool_config, _unused_cluster_spawn_slot, _unused_cluster_steer_slot) =
         build_shared_tool_config(shared, &cfg, &model_name, None);
     // ASM-04（横扫存量加固）：集群 loop 工作区围栏强制 restrict=true。
     // 方向性事实：项目 loop（本地可信会话）强制 restrict=true，集群 loop

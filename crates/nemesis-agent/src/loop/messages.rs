@@ -287,7 +287,15 @@ impl AgentLoop {
             if kept.is_empty() {
                 return None;
             }
-            Some(kept.into_iter().map(|(_, c)| c).collect())
+            // 项2 P2 召回质量闸：一次批量小模型判相关后过滤。闸缺席 =
+            // 原样返回（默认关，字节不变）；判定失败 fail-open 全保留；
+            // 全部判为不相关 = 合法空集（无注入段）。
+            let hits: Vec<String> = kept.into_iter().map(|(_, c)| c).collect();
+            let hits = mgr.filter_recall_hits(&query, hits).await;
+            if hits.is_empty() {
+                return None;
+            }
+            Some(hits)
         }
         #[cfg(not(feature = "memory"))]
         {

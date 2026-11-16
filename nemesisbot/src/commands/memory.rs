@@ -201,6 +201,26 @@ fn cmd_status(home: &Path) -> Result<()> {
         common::status_icon(has_model)
     );
 
+    // 4b. 召回质量闸配置面（项2 P2）。CLI 是独立进程——闸统计（召回/保留/
+    // 丢弃率）只活在运行中 gateway 的内存里，此处只回读配置形态；活体计数
+    // 走 Dashboard Memory 页（memory.status WSAPI）。
+    let gate = read_recall_gate_config(&cfg_path);
+    match gate {
+        Some(g) if g.enabled => {
+            let model = if g.model.is_empty() {
+                "agents.small_model 回落链".to_string()
+            } else {
+                g.model.clone()
+            };
+            println!(
+                "  Recall gate:    ENABLED (model={model}, min_candidates={})",
+                g.min_candidates
+            );
+        }
+        Some(_) => println!("  Recall gate:    DISABLED (memory.recall_gate.enabled = false)"),
+        None => println!("  Recall gate:    NOT CONFIGURED (memory.recall_gate 缺席 = 关)"),
+    }
+
     // 5. Overall status
     println!("─────────────────────────────────────");
     if main_enabled && sub_enabled && plugin_path.is_some() && has_model {
@@ -241,6 +261,18 @@ fn read_main_switch(cfg_path: &Path) -> bool {
                 .and_then(|e| e.as_bool())
         })
         .unwrap_or(false)
+}
+
+/// `memory.recall_gate` 配置回读（CLI status 配置面；项2 P2）。
+fn read_recall_gate_config(cfg_path: &Path) -> Option<nemesis_config::RecallGateConfig> {
+    if !cfg_path.exists() {
+        return None;
+    }
+    nemesis_utils::fsutil::read_config_string(cfg_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+        .and_then(|v| v.get("memory").and_then(|m| m.get("recall_gate")).cloned())
+        .and_then(|g| serde_json::from_value::<nemesis_config::RecallGateConfig>(g).ok())
 }
 
 /// Set the `memory.enabled` field in the main config.json.

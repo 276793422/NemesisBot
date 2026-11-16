@@ -12,8 +12,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 fn make_ctx() -> RequestContext {
+    make_ctx_with_estop(None)
+}
+
+/// steer 急停闸测试用：注入已触发的 EstopState。
+fn make_ctx_with_estop(estop: Option<Arc<nemesis_agent::estop::EstopState>>) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -50,7 +56,7 @@ fn make_ctx() -> RequestContext {
         #[cfg(not(feature = "workflow"))]
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
-        estop: None,
+        estop,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -73,6 +79,12 @@ fn marker_id(tag: &str, i: usize) -> String {
 }
 
 fn begin_via_global(tag: &str, i: usize, background: bool) -> String {
+    begin_with_loop_origin(tag, i, &format!("hdn:{tag}"), background)
+}
+
+/// steer 测试用：显式 loop_origin（handler 路由按注册表 loop_origin 选 loop，
+/// "main" 落 ctx.state.agent_loop 主槽）。
+fn begin_with_loop_origin(tag: &str, i: usize, loop_origin: &str, background: bool) -> String {
     let id = marker_id(tag, i);
     nemesis_agent::subagent_registry::global().begin(
         nemesis_agent::subagent_registry::SubagentBegin {
@@ -86,7 +98,7 @@ fn begin_via_global(tag: &str, i: usize, background: bool) -> String {
             tools_profile: "readonly".to_string(),
             depth: 1,
             background,
-            loop_origin: format!("hdn:{tag}"),
+            loop_origin: loop_origin.to_string(),
             bg_task_id: background.then(|| format!("bg-{tag}-{i}")),
         },
     );
@@ -241,7 +253,8 @@ async fn commands_surface_and_unknown_command_rejected() {
             "cancel",
             "archive",
             "unarchive",
-            "remove"
+            "remove",
+            "steer"
         ]
     );
     let err = h.handle_cmd("nope", None, &ctx).await.unwrap_err();
@@ -520,4 +533,185 @@ async fn archive_skips_running_rows_silently() {
         .await
         .unwrap()
         .unwrap();
+}
+
+// ===========================================================================
+// steer（飞行中驾驶，2026-11-16）。参数/未知任务/终态/急停全是 handler
+// 前置闸；成功路径挂真 AgentLoop（loop_origin 默认 "main"）+ 注册表
+// Running 行（loop_origin 同值），断言注入落该 loop 的 inbox next_step。
+// ===========================================================================
+
+/// 真循环成功路径用：不做事的 provider（steer 不触发 LLM 调用）。
+struct NoopProvider;
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for NoopProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        Ok(nemesis_agent::r#loop::LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "ok".to_string(),
+            tool_calls: vec![],
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+fn make_ctx_with_loop(al: Arc<nemesis_agent::r#loop::AgentLoop>) -> RequestContext {
+    let ctx = make_ctx();
+    *ctx.state.agent_loop.write() = Some(al);
+    ctx
+}
+
+#[tokio::test]
+async fn steer_requires_id_and_instruction() {
+    let ctx = make_ctx();
+    let h = SubagentsHandler;
+    let err = h.handle_cmd("steer", None, &ctx).await.unwrap_err();
+    assert!(err.contains("requires {id, instruction}"), "err={err}");
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": "subagent:x" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("requires {id, instruction}"), "err={err}");
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": "subagent:x", "instruction": "   " })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("requires {id, instruction}"), "err={err}");
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": "", "instruction": "go" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("requires {id, instruction}"), "err={err}");
+}
+
+#[tokio::test]
+async fn steer_honest_miss_and_terminal_pre_reject() {
+    let ctx = make_ctx();
+    let h = SubagentsHandler;
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": "subagent:no-such", "instruction": "go" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("task not found"), "err={err}");
+
+    // 终态前置拒绝发生在 loop 路由之前（ctx.state.agent_loop 是 None——
+    // 若路由先行会误导性地报 "agent loop not running"）。
+    let id = begin_with_loop_origin("st", 0, "main", false);
+    nemesis_agent::subagent_registry::global().finish(
+        &id,
+        nemesis_agent::subagent_registry::SubagentStatus::Done,
+        Some(1),
+        Some("done".to_string()),
+        None,
+    );
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": id, "instruction": "go" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("终态"), "err={err}");
+}
+
+#[tokio::test]
+async fn steer_frozen_while_estop_engaged_then_routes_after_release() {
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let ctx = make_ctx_with_estop(Some(estop.clone()));
+    let h = SubagentsHandler;
+    let id = begin_with_loop_origin("ste", 0, "main", false);
+
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": id, "instruction": "go" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("急停"), "err={err}");
+
+    // 释放后：estop 闸放行，路由到主 loop——ctx.state.agent_loop 是 None，
+    // 诚实报 "agent loop not running"（路由面可达性验证）。
+    estop.release();
+    let err = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": id, "instruction": "go" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("agent loop not running"), "err={err}");
+}
+
+#[tokio::test]
+async fn steer_success_lands_in_main_loop_inbox_next_step() {
+    let id = begin_with_loop_origin("sts", 0, "main", false);
+    let al = Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NoopProvider),
+        nemesis_agent::types::AgentConfig::default(),
+    ));
+    let ctx = make_ctx_with_loop(al.clone());
+    let h = SubagentsHandler;
+
+    let out = h
+        .handle_cmd(
+            "steer",
+            Some(serde_json::json!({ "id": id, "instruction": "转向：只做调查" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["steered"], serde_json::json!(true));
+    assert_eq!(out["id"], serde_json::json!(id));
+    assert!(
+        out["reply"].as_str().unwrap().contains("转向"),
+        "ack 带指令回显: {}",
+        out["reply"]
+    );
+
+    // 注入面真相：子代理会话键的 next_step +1（loop 每轮开头 claim）。
+    let pending = al.inbox_handle().pending(&id);
+    assert_eq!(pending, (0, 1), "steer 落 next_step: {pending:?}");
+
+    // 清理：终态（不留跨测试 Running 行）。
+    nemesis_agent::subagent_registry::global().finish(
+        &id,
+        nemesis_agent::subagent_registry::SubagentStatus::Done,
+        Some(1),
+        None,
+        None,
+    );
 }

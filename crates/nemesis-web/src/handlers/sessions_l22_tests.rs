@@ -48,6 +48,7 @@ fn make_ctx(home: &Path) -> RequestContext {
     let ws = home.join("workspace").to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

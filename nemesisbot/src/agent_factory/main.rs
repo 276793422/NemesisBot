@@ -499,7 +499,7 @@ pub fn build_agent_loop(
 
     // 7. Build tool config + register all tools + enable MCP.
     // 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
-    let (mut tool_config, spawn_slot) = build_shared_tool_config(
+    let (mut tool_config, spawn_slot, steer_slot) = build_shared_tool_config(
         shared,
         &cfg,
         &model_name,
@@ -572,6 +572,15 @@ pub fn build_agent_loop(
         agent_loop.set_memory_inject(shared.memory_manager.clone(), auto, top_k);
         if auto {
             info!("[AgentFactory] memory auto-inject enabled (top_k={top_k})");
+        }
+        // 项2 P2：召回质量闸装配（memory.recall_gate，默认关 = None 直通）。
+        // config 快照即取即放（guard 不跨 await）；幂等替换，gateway/run/acp
+        // 三入口同源生效。
+        if let Some(ref mgr) = shared.memory_manager {
+            let cfg_snapshot = shared.config_store.handle().read().clone();
+            if let Some(gate) = crate::recall_gate::build_recall_gate(&cfg_snapshot) {
+                mgr.set_recall_gate(gate);
+            }
         }
     }
     #[cfg(not(feature = "memory"))]
@@ -656,6 +665,63 @@ pub fn build_agent_loop(
                 n
             );
         }
+    }
+
+    // 8e. 自配速 durable loop（项5）：loop_wakeup/loop_status/loop_finish
+    // 三工具（主 agent 专属——绑定模型按 session_key 反查；项目 loop 工具
+    // 子集不带，loop 绑定项目会话 P1 不支持）。loops 目录 = <workspace>/loops
+    // （与 gateway 驱动器同一目录——工具写排程、驱动器 sweep 到期，双侧
+    // 经盘上状态文件交接，无共享内存依赖）。estop 冻结期 wakeup 拒绝。
+    #[cfg(feature = "loop")]
+    {
+        let loops_dir = nemesis_loop::loops_dir(&workspace_dir);
+        agent_loop.register_tool(
+            crate::loop_state_tool::WAKEUP_TOOL_NAME.to_string(),
+            Box::new(crate::loop_state_tool::LoopWakeupTool::new(
+                loops_dir.clone(),
+                std::sync::Arc::clone(&shared.estop),
+            )),
+        );
+        agent_loop.register_tool(
+            crate::loop_state_tool::STATUS_TOOL_NAME.to_string(),
+            Box::new(crate::loop_state_tool::LoopStatusTool::new(
+                loops_dir.clone(),
+            )),
+        );
+        agent_loop.register_tool(
+            crate::loop_state_tool::FINISH_TOOL_NAME.to_string(),
+            Box::new(crate::loop_state_tool::LoopFinishTool::new(loops_dir)),
+        );
+        info!("[AgentFactory] durable loop tools registered (loop_wakeup/loop_status/loop_finish)");
+    }
+
+    // 8f. agent 自举插件（项6）：plugin_search / plugin_propose 两工具
+    //（主 agent 专属——项目 loop 工具子集不带、cluster worker agent 不装：
+    // 远端节点不跑本地插件；同 8c 边界）。installer / 审批门任一缺席
+    //（plugins.wasm.enabled=false / feature 裁掉 / 构建失败）= 不注册，
+    // 零影响。min_tier=big 双闸（供给 + 分发）；提案经既有九步漏斗 +
+    // LateInstallApprover 审批卡（auto_approve 资格命中才短路，红线
+    // 「卡面永不静默跳过」由 plugins.install op 标签的规则表拒绝侧兜底）。
+    // 审计 sink = SharedResources.security_plugin 直记审计链。
+    #[cfg(feature = "plugins-wasm")]
+    if let (Some(installer), Some(gate)) = (&shared.plugin_installer, &shared.plugin_install_gate) {
+        agent_loop.register_tool(
+            crate::plugin_bootstrap::SEARCH_TOOL_NAME.to_string(),
+            Box::new(crate::plugin_bootstrap::PluginSearchTool::new(
+                workspace_dir.clone(),
+            )),
+        );
+        agent_loop.register_tool(
+            crate::plugin_bootstrap::PROPOSE_TOOL_NAME.to_string(),
+            Box::new(crate::plugin_bootstrap::PluginProposeTool::new(
+                workspace_dir.clone(),
+                installer.clone(),
+                gate.clone(),
+                std::sync::Arc::clone(&shared.estop),
+                shared.security_plugin.clone(),
+            )),
+        );
+        info!("[AgentFactory] plugin bootstrap tools registered (plugin_search/plugin_propose)");
     }
 
     // 9. Continuation manager (disk-persisted — new instance).
@@ -819,6 +885,9 @@ pub fn build_agent_loop(
             workspace: shared.workspace_dir(),
         }),
     );
+    // 子代理飞行中驾驶（项3）：steer 闭包注入（Weak 同款防环；校验链
+    // 单点在 AgentLoop::steer_subagent）。
+    inject_steer_fn(&agent_loop, &steer_slot);
     // 插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
     // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。

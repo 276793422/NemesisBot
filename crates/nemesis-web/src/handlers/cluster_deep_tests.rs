@@ -79,6 +79,7 @@ fn make_deep_ctx(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: ws.clone(),
@@ -1501,6 +1502,7 @@ fn ctx_ws_with_provider(
     }
     let state = AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

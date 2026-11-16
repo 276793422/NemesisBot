@@ -259,6 +259,10 @@ const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-honest-1.0",
     "testai-norepeat-1.0",
     "testai-repeat-1.0",
+    "testai-steer-1.0",
+    "testai-loop-1.0",
+    "testai-mem-1.0",
+    "testai-bootstrap-1.0",
 ];
 
 /// 需强制流式（config 条目 `stream: "yes"`）的模型子集：openai 兼容 lane
@@ -322,6 +326,10 @@ fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
         },
         "security": {"enabled": true},
         "forge": {"enabled": false},
+        // 记忆场景（项2）：gateway 侧 MemoryManager 开关（ctx.rs 构建闸）。
+        // 无 plugin-onnx → vector_enabled=false → 条目只落 episodic jsonl +
+        // 子串包含检索——确定性成立的前提，bench 四场景吃这条路径。
+        "memory": {"enabled": true},
         "logging": {"llm": {"enabled": false}},
         "cluster": {"enabled": false}
     });
@@ -375,6 +383,41 @@ fn disable_ssrf_layer(ws: &TestWorkspace) -> Result<()> {
     Ok(())
 }
 
+/// spawn 工具放行：默认 Windows 安全模板 `process_rules.spawn = [("*","ask")]`
+/// 对所有 spawn 挂人工审批卡——bench 无人值守，subagent_steer 场景会在
+/// spawn 卡 300s 假死（2026-11-16 实录：两轮 90s chat_wait 全超时，turn
+/// 在途悬挂）。场景主题是 steer 不是审批（审批面有 approval-test 专门
+/// 覆盖），这里把 spawn 收敛为 allow，其余安全层照常生效。
+fn allow_spawn_rule(ws: &TestWorkspace) -> Result<()> {
+    let path = ws
+        .home()
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
+    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    cfg["process_rules"]["spawn"] = json!([{ "pattern": "*", "action": "allow" }]);
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
+/// 启用完整性审计链（Merkle append-only，`logs.chain_list`/`chain_verify`
+/// 消费面）：`config.security.json` 键 `audit_chain_enabled` 默认 false，
+/// 不开的话 plugin_bootstrap 场景的「提案/批准/安装全进审计链」断言读到的
+/// 是空链（2026-11-16 实录：run3 chain_list 返回 segments:[]，gateway log
+/// WARN「审计链未启用——自举决策仅落日志」——常开 jsonl 安全审计照常有
+/// evt-* 记录，但 chain_list 读的是完整性链，两者不是同一个东西）。
+fn enable_audit_chain(ws: &TestWorkspace) -> Result<()> {
+    let path = ws
+        .home()
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
+    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    cfg["audit_chain_enabled"] = json!(true);
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 场景调度
 // ---------------------------------------------------------------------------
@@ -408,6 +451,14 @@ async fn run_scenario(
         "codemode_chain" => scenarios::run_codemode_chain(ctx, runs, ws).await,
         "honest_completion" => scenarios::run_honest_completion(ctx, runs, ws).await,
         "no_irreversible_repeat" => scenarios::run_no_irreversible_repeat(ctx, runs, ws).await,
+        "subagent_steer" => scenarios::run_subagent_steer(ctx, runs).await,
+        "event_wakeup" => scenarios::run_event_wakeup(ctx, runs, ws).await,
+        "durable_loop" => scenarios::run_durable_loop(ctx, runs).await,
+        "plugin_bootstrap" => scenarios::run_plugin_bootstrap(ctx, runs, ws).await,
+        "memory_persistence" => scenarios::run_memory_persistence(ctx, runs).await,
+        "memory_relevance" => scenarios::run_memory_relevance(ctx, runs).await,
+        "memory_forget" => scenarios::run_memory_forget(ctx, runs).await,
+        "memory_capacity_recall" => scenarios::run_memory_capacity_recall(ctx, runs).await,
         // gateway_restart 不走本调度：它要吃掉/交还 gateway 进程所有权，
         // 在 main() 场景循环特判。
         other => {
@@ -480,6 +531,8 @@ async fn main() -> Result<()> {
     );
     write_bench_config(&ws, &cfg.prompt_system)?;
     disable_ssrf_layer(&ws)?;
+    allow_spawn_rule(&ws)?;
+    enable_audit_chain(&ws)?;
 
     println!("[3/4] 启动 AI Server（端口 {}）...", ai_server_port());
     let mut ai_server = ManagedProcess::spawn(

@@ -65,6 +65,11 @@ pub struct SharedToolConfig {
     /// SpawnTool 与其共享同一 Arc。`None` = SpawnTool 自建空槽（行为与
     /// 旧「无 spawn_fn」完全一致：execute 诚实报 not available）。
     pub spawn_slot: Option<Arc<std::sync::OnceLock<SpawnFn>>>,
+    /// （项3 子代理飞行中驾驶）：`subagent_steer` 工具闭包共享槽——
+    /// agent_factory 组装后注入（持 `Weak<AgentLoop>` 调 `steer_subagent`），
+    /// 与 SpawnTool 槽同款形态。`None` = 工具自建空槽（execute 诚实报
+    /// not available——与 spawn 无闭包形态一致）。
+    pub steer_slot: Option<Arc<std::sync::OnceLock<SubagentSteerFn>>>,
     /// （专家子代理）：spawn 工具的专家解析面——`action=list` 名册与
     /// `expert` 点名预检的消费面。`None`（Default）= 无专家子系统（list
     /// 诚实空名册 / 点名诚实报错）；生产装配点把与 spawn 闭包同一
@@ -456,6 +461,20 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             None => tool,
         };
         tools.insert("spawn".to_string(), Box::new(tool));
+    }
+
+    // 子代理飞行中驾驶工具（项3）：随 spawn 面注册——无 spawn 面 = 无
+    // 子代理可驾驶，工具缺席。steer_slot Some = 共享槽（factory 延迟注入
+    // 闭包）；None 自建空槽（execute 诚实报 not available）。
+    if config.spawn.is_some() {
+        let slot = config
+            .steer_slot
+            .clone()
+            .unwrap_or_else(|| Arc::new(std::sync::OnceLock::new()));
+        tools.insert(
+            "subagent_steer".to_string(),
+            Box::new(SubagentSteerTool::new(slot)),
+        );
     }
 
     // Memory tools.
@@ -993,6 +1012,7 @@ pub fn register_extended_tools(
         cluster_rpc: cluster_config,
         spawn: spawn_config,
         spawn_slot: None,
+        steer_slot: None,
         experts: None,
         skills_registry: None,
         skills_loader: None,

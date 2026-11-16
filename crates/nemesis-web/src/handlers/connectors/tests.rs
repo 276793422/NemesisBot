@@ -24,6 +24,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
     let ws = dir.to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -82,6 +83,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

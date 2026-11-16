@@ -900,8 +900,15 @@ impl InstallApprover for LateInstallApprover {
             // 非多线程 runtime 会 panic，同 skills gate 理由）。
             let manager = manager.clone();
             let timeout_secs = self.timeout_secs;
+            // agent 自举提案论证（项6）：有提案时卡片带「提案论证」段——
+            // 人批的是一段有理由的请求，不是裸 manifest；常规安装 None =
+            // 卡面字节零变化。
+            let reason_note = match review.proposer_reason.as_deref() {
+                Some(r) if !r.trim().is_empty() => format!("\n提案论证：{}", r.trim()),
+                _ => String::new(),
+            };
             let summary = format!(
-                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}{}",
+                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}{}{}",
                 review.slug,
                 review.version,
                 review.kind,
@@ -927,6 +934,7 @@ impl InstallApprover for LateInstallApprover {
                 } else {
                     String::new()
                 },
+                reason_note,
             );
             let target = review.source_dir.clone();
             let wait = tokio::task::spawn_blocking(move || {

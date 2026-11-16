@@ -212,6 +212,21 @@ pub struct SharedResources {
     #[allow(dead_code)]
     pub plugin_manager: Option<()>,
 
+    /// agent 自举插件（项6）：installer Arc（漏斗 + 热装唯一执行体）与
+    /// 既有审批门（LateInstallApprover）。plugin_bootstrap 两工具的装配
+    /// 依赖；任一缺席 = 工具不注册，零影响。Dashboard 手动安装走 web
+    /// 全局槽的同一 installer（agent_build 同批 Arc），审批面不经过本槽。
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_installer: Option<Arc<nemesis_plugins_wasm::install::PluginInstaller>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
+    pub plugin_installer: Option<()>,
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_install_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
+    pub plugin_install_gate: Option<()>,
+
     /// 入口形态变体（gap ⑤）：gateway/eval 等既有装配点用缺省 Interactive
     /// （pro system prompt 渲染字节不变）；headless `run` 显式 Headless、
     /// ACP 显式 Acp——各自入口的语境说明段随身份基座注入。
@@ -293,6 +308,8 @@ impl Default for SharedResources {
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
             experts: None,
             plugin_manager: None,
+            plugin_installer: None,
+            plugin_install_gate: None,
             entrance: nemesis_agent::prompt::Entrance::Interactive,
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_store: None,

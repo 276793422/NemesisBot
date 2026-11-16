@@ -181,6 +181,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
 
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -293,6 +294,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
     use std::time::Instant;
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

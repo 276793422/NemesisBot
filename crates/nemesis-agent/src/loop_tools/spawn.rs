@@ -682,5 +682,81 @@ fn render_experts_roster(roster: &ExpertsRoster) -> String {
 }
 
 // ===========================================================================
+// SubagentSteerTool（项3 子代理飞行中驾驶）
+// ===========================================================================
+
+/// steer 闭包类型：`(subagent_id, instruction) -> Result<String, String>`。
+/// 生产接线 = agent_factory 组装后向 steer_slot 注入（持 `Weak<AgentLoop>`
+/// 调 [`AgentLoop::steer_subagent`]——校验链单一裁决点在 loop 侧，
+/// WSAPI `subagents.steer` 与本工具两入口同源不漂移）。
+pub type SubagentSteerFn = Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
+
+/// 子代理飞行中驾驶工具：对**运行中**的后台子代理中途注入指令
+/// （course correction）。消费点 = 子代理 `run_llm_loop` 每轮开头的
+/// `claim_steer_messages`（与主 loop `!` steer 同源管线：@文件展开 /
+/// 媒体附加 / chat_log `[steer]` 行审计不断）。终态任务 / estop /
+/// 跨引擎（loop_origin 不一致）在 loop 侧校验链诚实拒绝。
+/// 槽形态与 [`SpawnTool`] 同款：agent_factory 组装后注入闭包。
+pub struct SubagentSteerTool {
+    steer_slot: Arc<std::sync::OnceLock<SubagentSteerFn>>,
+}
+
+impl SubagentSteerTool {
+    /// 共享槽构造器——生产接线用；调用方持有同一 slot Arc，在 AgentLoop
+    /// 组装完成后向其注入闭包。
+    pub fn new(steer_slot: Arc<std::sync::OnceLock<SubagentSteerFn>>) -> Self {
+        Self { steer_slot }
+    }
+}
+
+#[async_trait]
+impl Tool for SubagentSteerTool {
+    fn description(&self) -> String {
+        "Steer a RUNNING background sub-agent mid-flight: inject an additional instruction that takes effect before its next round. Pass the task id from the spawn background receipt (or the subagent ledger); finished/cancelled tasks are rejected. Use for course corrections the moment you notice the sub-agent heading the wrong way — do not wait for it to finish."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Running sub-agent task id to steer (from the spawn background receipt)."
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "Mid-flight instruction for the sub-agent: course correction, added constraint, or refocus. Takes effect before the sub-agent's next round."
+                }
+            },
+            "required": ["id", "instruction"]
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let id = val
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        let instruction = val
+            .get("instruction")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        if id.is_empty() {
+            return Err("`id` is required: the running sub-agent task id to steer.".to_string());
+        }
+        let steer_fn = self.steer_slot.get().ok_or_else(|| {
+            "Sub-agent steering is not available on this loop (no steer channel configured)."
+                .to_string()
+        })?;
+        steer_fn(id, instruction)
+    }
+}
+
+// ===========================================================================
 // Memory tools
 // ===========================================================================

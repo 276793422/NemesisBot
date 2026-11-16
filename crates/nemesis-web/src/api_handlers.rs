@@ -161,6 +161,14 @@ pub struct AppState {
     /// CORS 管理器句柄（cors.* WSAPI 真实现；gateway 启动装配注入）。
     /// None = 未注入（headless/relay/测试装配）→ handler 诚实报错。
     pub cors_manager: Option<Arc<crate::cors::CORSManager>>,
+    /// 事件唤醒泵观测快照句柄（events.* WSAPI 读面；`events` feature 门控，
+    /// gateway post_agent 注入 `Some`——泵任务每周期覆写，handler 读）。
+    /// None = 泵未装配（feature 关 / headless / 测试装配）→ 诚实报错。
+    #[cfg(feature = "events")]
+    pub events_snapshot: Option<Arc<parking_lot::RwLock<nemesis_events::EventSnapshot>>>,
+    #[cfg(not(feature = "events"))]
+    #[allow(dead_code)]
+    pub events_snapshot: Option<()>,
 }
 
 impl AppState {

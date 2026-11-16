@@ -29,6 +29,7 @@ fn make_state(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace,
@@ -77,6 +78,7 @@ fn make_state_with_tx(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace,
@@ -395,6 +397,7 @@ async fn test_handle_api_status_includes_model_base() {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -802,6 +805,7 @@ async fn test_handle_api_sessions_returns_zero_active() {
 async fn test_handle_api_sessions_with_count() {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(42)),
         workspace: None,
@@ -1207,6 +1211,7 @@ fn test_sanitize_map_partial_match_substring_key() {
 fn test_app_state_clone() {
     let state = AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: "tok".to_string(),
         session_count: Arc::new(AtomicUsize::new(5)),
         workspace: Some("/work".to_string()),

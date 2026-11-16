@@ -30,6 +30,7 @@ fn make_ctx_with_service(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(dir.to_string_lossy().to_string()),
@@ -6302,6 +6303,7 @@ fn agt_make_ctx_ex(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(dir.to_string_lossy().to_string()),

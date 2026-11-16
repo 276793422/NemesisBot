@@ -34,6 +34,7 @@ fn make_ctx(main_loop: Option<Arc<AgentLoop>>) -> RequestContext {
     // TempDir 在此 drop——测试只用 ctx.workspace 做字符串，不落盘。
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

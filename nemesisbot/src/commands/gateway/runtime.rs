@@ -971,6 +971,11 @@ pub(crate) async fn run_runtime(
         }
     }
 
+    // 项1（质变级能力开发计划 2026-11-16）：事件驱动唤醒泵已迁 post_agent.rs
+    // 装配（构造 + 观测快照注入 web 面 + 启动一处完成——runtime 阶段 web
+    // server 已 start，无法走 set_* 注入链；loop 订阅 bus 不变量在 post_agent
+    // 时点同样满足）。
+
     // W7：插件工具面热装 hook——WSAPI wasm.install/uninstall/enable/disable
     // 成功后经此把工具同步进**当前** AgentLoop 注册表（启动装载走
     // agent_factory 8c 的 register_plugin_tools，两路共用同一桥类型与操作

@@ -67,6 +67,10 @@ const ITEM_FEATURE: Record<string, string> = {
   // 交付审核页与看板同一 feature 闸（发布命令 delivery.publish 挂 board 模块）。
   deliveries: 'BOARD',
   terminal: 'TERMINAL',
+  // 事件管理面（项1 事件驱动唤醒 P2，events feature / VITE_FEATURE_EVENTS）。
+  events: 'EVENTS',
+  // 循环管理面（项5 自配速 durable loop，loop feature / VITE_FEATURE_LOOP）。
+  loops: 'LOOP',
   // 更新页（selfupdate feature / VITE_FEATURE_SELFUPDATE 门控）：版本对照 +
   // 手动更新完整面；侧栏自更新长条保留快速入口（同 feature）。
   update: 'SELFUPDATE',
@@ -128,6 +132,12 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'connectors', label: 'Connectors', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },
       { id: 'coding', label: '代码开发', route: '/coding', icon: 'M16 18l6-6-6-6M8 6l-6 6 6 6' },
       { id: 'workflows', label: '工作流', route: '/workflows', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7zM10 6.5h4M10 17.5h4M6.5 10v4M17.5 10v4' },
+      // 事件（项1 事件驱动唤醒 P2，2026-11-16）：出事主动叫人——fs 事件规则
+      // （events.json 热重载）+ 泵统计 + cron/后台进程源只读收编。
+      { id: 'events', label: '事件', route: '/events', icon: 'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0' },
+      // 循环（项5 自配速 durable loop，2026-11-16）：agent 自排程唤醒台账 +
+      // 人控 pause/resume（停车场解除）——loop feature / VITE_FEATURE_LOOP。
+      { id: 'loops', label: '循环', route: '/loops', icon: 'M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15' },
     ],
   },
   {

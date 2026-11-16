@@ -14,6 +14,7 @@ use std::time::Instant;
 async fn agt_tools_with_session_id_resolves_loop_and_bails_without_one() {
     let state = std::sync::Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: std::sync::Arc::new(AtomicUsize::new(0)),
         workspace: None,

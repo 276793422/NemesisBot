@@ -24,6 +24,7 @@ default = [
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
     "pricing-embed", "verify", "web-static", "lsp",
     "checkpoint-git", "image-process", "history-search", "usage-store",
+    "events", "loop",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -33,6 +34,18 @@ desktop = ["dep:nemesis-desktop"]
 health = ["dep:nemesis-health"]
 heartbeat = ["dep:nemesis-heartbeat"]
 auth = ["dep:nemesis-auth"]
+# events = 事件驱动唤醒（项1 P1，质变计划 2026-11-16）：fs 事件按规则唤醒会话
+# （`<workspace>/config/events.json` 热重载；三闸：per-rule 冷却 / 小时窗 /
+# estop 冻结）。nemesis-events crate 解耦 bus/estop（闭包注入，gateway
+# post_agent.rs 装配）。穿透 nemesis-web/events = EventsView 管理面同闸。
+# 关 = 泵任务不装配、events.json 无消费者、events.* WSAPI 退出注册表面。
+events = ["dep:nemesis-events", "nemesis-web/events"]
+# loop = 自配速 durable loop（项5，质变计划 2026-11-16）：`<workspace>/loops/
+# {id}.json` 状态对象 + loop_wakeup/loop_status/loop_finish 三工具（绑定
+# 会话）+ gateway 驱动器（sweep 纯逻辑裁决 → 项1 注入面同款 bus 注入；
+# 预算三维保险丝 → 停车场；estop 全冻结）。nemesis-web/loop 穿透 =
+# loops.* WSAPI + LoopsView 同闸。paused/parked 只能由人置（防自锁）。
+loop = ["dep:nemesis-loop", "nemesis-web/loop"]
 # voice = 语音本体（STT/TTS/VAD/标点/声纹/云转写，缓冲区与文件驱动）；
 # voice-capture = 设备 IO（麦克风采集/扬声器播放/AEC/loopback，cpal+wasapi）。
 # capture 不隐含在 voice 里——IoT 可只留转写不带设备 IO；全量构建两者都开。
@@ -253,6 +266,8 @@ nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
+nemesis-events = { workspace = true, optional = true }
+nemesis-loop = { workspace = true, optional = true }
 nemesis-board = { workspace = true, optional = true }
 nemesis-state = { workspace = true }
 nemesis-desktop = { workspace = true, optional = true }

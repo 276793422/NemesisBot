@@ -801,13 +801,21 @@ async fn execute_tool_gates_and_roundtrip() {
         .await
         .expect("execute");
     assert!(!out.is_error, "content: {}", out.content);
+    // 缺省 config（schema 缺省含空格）："hello world" = 11 chars。
+    assert!(
+        out.content.contains("\"chars\":11"),
+        "content: {}",
+        out.content
+    );
     assert!(
         out.content.contains("\"words\":2"),
         "content: {}",
         out.content
     );
 
-    // 实例配置热生效（config.set → 下帧生效）。
+    // 实例配置热生效（config.set → 下帧生效，fresh-store-per-call 无驻留
+    // ——registry.rs build_frame 每帧现读 instance_config）：include_spaces
+    // = false 后下一帧字符计数**不含**空格，10 = 新值生效的直接证据。
     mgr.set_config_key("textstat", "include_spaces", "false")
         .expect("set");
     let out = mgr
@@ -819,7 +827,12 @@ async fn execute_tool_gates_and_roundtrip() {
         .await
         .expect("execute 2");
     assert!(
-        out.content.contains("\"chars\":11"),
+        out.content.contains("\"chars\":10"),
+        "content: {}",
+        out.content
+    );
+    assert!(
+        out.content.contains("\"include_spaces\":false"),
         "content: {}",
         out.content
     );

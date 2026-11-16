@@ -191,6 +191,10 @@ mod local_dispatch;
 /// / boundary / request_logs / terminal / event_ledger 按 `config.logs.ttl`
 /// 逐族保留天数清扫（0=族关），启动扫一次 + 每 6h 一拍，每族每拍限量。
 mod logs_sweeper;
+/// 自配速 durable loop（项5）：loop_wakeup/loop_status/loop_finish 三工具
+/// （绑定活跃 loop 的会话专属；按 session_key 反查绑定，未绑定诚实报）。
+#[cfg(feature = "loop")]
+mod loop_state_tool;
 /// stdio MCP server——NemesisBot 能力经 MCP 协议
 /// 暴露给 Claude Code / Cursor 等客户端； 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。
@@ -204,6 +208,14 @@ mod native_plugins;
 /// 项 C：出站通知记账 + 失败重试 sweeper——notify_state
 /// 三段推进（pending→channel_accepted→confirmed）与 notify_outbox 重投。
 mod notify;
+/// agent 自举插件（项6）：plugin_search / plugin_propose 两工具 +
+/// SelfBootstrapApprover（auto_approve 资格裁决）+ 源清单/策略/配额。
+/// 依赖 plugin_bridge 的 LateInstallApprover 与 web 侧 enable_with_face_sync
+///（热装 ToolSync），随 `plugins-wasm` 同闸。
+#[cfg(feature = "plugins-wasm")]
+mod plugin_bootstrap;
+#[cfg(all(test, feature = "plugins-wasm"))]
+mod plugin_bootstrap_tests;
 /// WASM 插件框架 ↔ gateway 桥：agent 工具桥 / 宿主调用面 / vault
 /// 凭据解析 / 安装审批晚绑 / estop 联动。随 `plugins-wasm` feature 门控
 /// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。
@@ -229,6 +241,13 @@ mod publish;
 /// （devtool-upgrade）：Dashboard 结构化提问 broker——question
 /// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
 mod question_broker;
+/// 项2 P2 召回质量闸 gateway 侧装配（memory.recall_gate → 小模型判定
+/// 通道 → RecallGate）。消费点 = agent_factory set_memory_inject 块；
+/// 无 memory feature 时模块空置（装配块不编译）。
+#[cfg(feature = "memory")]
+mod recall_gate;
+#[cfg(all(test, feature = "memory"))]
+mod recall_gate_tests;
 /// d：评审结论 → 交付账本闭环——record_auto_decide 漏斗
 /// 尾同步落 deliveries `review` 行 + auto_accept/redispatch 分支裁决 +
 /// 项目档案自动导出 `dossier` 行。
@@ -649,6 +668,12 @@ enum Commands {
     Memory {
         #[command(subcommand)]
         action: commands::memory::MemoryAction,
+    },
+    /// Manage durable self-paced loops (create/list/show/pause/resume/remove)
+    #[cfg(feature = "loop")]
+    Loops {
+        #[command(subcommand)]
+        action: commands::loops::LoopAction,
     },
     /// Manage AI personas
     Persona {
@@ -1285,6 +1310,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Memory { action } => {
             common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;
+        }
+        Commands::Loops { action } => {
+            common::ensure_default_logger();
+            commands::loops::run(action, cli.local).await?;
         }
         Commands::Persona { action } => {
             common::ensure_default_logger();

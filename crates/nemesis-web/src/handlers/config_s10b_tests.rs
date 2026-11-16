@@ -19,6 +19,7 @@ fn make_state_with_cors(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: cors,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: ws.clone(),

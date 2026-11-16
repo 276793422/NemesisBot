@@ -106,6 +106,12 @@ pub struct InstallReview {
     pub connectors: Vec<String>,
     /// manifest limits 被忽略的放宽请求。
     pub limits_ignored: Vec<String>,
+    /// 接管声明（内置工具名清单；空 = 无接管）。agent 自举自动批准的
+    /// 资格判据之一（项6：接管内置执行体的插件不进自动批准白名单）。
+    pub takeover: Vec<String>,
+    /// agent 自举提案论证（plugin_propose 工具注入；常规安装 = None）。
+    /// 审批卡展示「agent 论证」——人批的是一段有理由的请求，不是裸 manifest。
+    pub proposer_reason: Option<String>,
     /// 来源目录。
     pub source_dir: String,
 }
@@ -213,11 +219,34 @@ impl PluginInstaller {
         source_dir: &Path,
         allow_unsigned: bool,
     ) -> Result<InstallOutcome, PluginError> {
+        self.install_with(source_dir, allow_unsigned, self.approver.clone(), None)
+            .await
+    }
+
+    /// [`Self::install`] 的可覆盖变体（agent 自举提案专用，项6）：审批面
+    /// 替换 + 提案论证注入审批卡。九步漏斗一概不变（红线：自举 ≠ 免审
+    /// ——auto_approve 的资格裁决发生在审批面**内部**，漏斗对「谁批的」
+    /// 无感知；资格不足照样回落人工卡）。常规 WSAPI/CLI 安装恒走
+    /// [`Self::install`]（自带审批面，卡永不静默跳过）。
+    pub async fn install_with(
+        &self,
+        source_dir: &Path,
+        allow_unsigned: bool,
+        approver: Arc<dyn InstallApprover>,
+        proposer_reason: Option<String>,
+    ) -> Result<InstallOutcome, PluginError> {
         let _funnel = FUNNEL_LOCK.lock().await;
         let source_dir = source_dir
             .canonicalize()
             .map_err(|e| PluginError::Manifest(format!("source dir: {e}")))?;
-        let approved = self.install_core(&source_dir, allow_unsigned).await?;
+        let approved = self
+            .install_core(
+                &source_dir,
+                allow_unsigned,
+                approver.as_ref(),
+                proposer_reason,
+            )
+            .await?;
         self.record_switch_and_load(approved).await
     }
 
@@ -287,11 +316,15 @@ impl PluginInstaller {
     }
 
     /// 装配漏斗 ①-⑧（无第⑨步；`install` 与 `set_enabled` 的手工拷入路径
-    /// 共用）。
+    /// 共用）。`approver`/`proposer_reason` 由 [`Self::install_with`] 传入
+    /// （自举提案的审批面覆盖与论证注入）；`set_enabled` 补漏斗路径传
+    /// `(&self.approver, None)`——开关路径与提案无关。
     async fn install_core(
         &self,
         source_dir: &Path,
         allow_unsigned: bool,
+        approver: &dyn InstallApprover,
+        proposer_reason: Option<String>,
     ) -> Result<ApprovedInstall, PluginError> {
         // ① manifest 结构校验 + ② 验签四态
         let raw = std::fs::read_to_string(source_dir.join("plugin.toml"))
@@ -360,9 +393,11 @@ impl PluginInstaller {
                 .map(|(id, _)| vec![id.clone()])
                 .unwrap_or_default(),
             limits_ignored: self.manager.limits().tighten_with(&manifest.limits).1,
+            takeover: manifest.takeover.clone(),
+            proposer_reason,
             source_dir: source_dir.display().to_string(),
         };
-        let approval = self.approver.approve(&review).await;
+        let approval = approver.approve(&review).await;
         match approval {
             Ok(true) => {}
             outcome @ (Ok(false) | Err(_)) => {
@@ -825,7 +860,8 @@ impl PluginInstaller {
             // 或无卡面（CLI --yes / headless）维持从紧——卡面救不了失效签名，
             // CLI 走 `install --allow-unsigned` 显式旗标或 `plugin sign`。
             let tolerate_unsigned = self.hand_copied_unsigned_tolerable(&pdir);
-            self.install_core(&pdir, tolerate_unsigned).await?;
+            self.install_core(&pdir, tolerate_unsigned, self.approver.as_ref(), None)
+                .await?;
         }
         let reg = self
             .load_one(&pdir, self.recorded_allow_unsigned(slug))
@@ -856,6 +892,16 @@ impl PluginInstaller {
             crate::trust::verify_manifest(&raw, &self.verifier),
             Ok((_, outcome)) if !outcome.signed
         )
+    }
+
+    /// 是否已安装（注册表在册 **或** lockfile 有记录——后者覆盖「已装但
+    /// 停用」形态：停用插件不在注册表，安装记录仍在）。项6 agent 自举
+    /// 提案的「已装拒绝」判定用（升级走 Dashboard/CLI，提案面不做升级）。
+    pub fn is_installed(&self, slug: &str) -> bool {
+        self.manager.get(slug).is_some()
+            || self
+                .read_lockfile()
+                .is_some_and(|l| l.plugins.contains_key(slug))
     }
 
     /// 装载容差 = 安装期裁决（lockfile 记录的四态）：装的时候豁免了「无签名」

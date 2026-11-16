@@ -1,0 +1,20 @@
+[package]
+name = "nemesis-events"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+# fs 事件源（notify = workspace 无此共享依赖，nemesis-agent 亦按 crate 直声明）
+notify = "8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

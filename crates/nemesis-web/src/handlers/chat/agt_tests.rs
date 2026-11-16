@@ -15,6 +15,7 @@ use std::time::Instant;
 fn agt_ctx(workspace: Option<String>) -> RequestContext {
     let state = std::sync::Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: std::sync::Arc::new(AtomicUsize::new(0)),
         workspace: workspace.clone(),

@@ -32,6 +32,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         .unwrap_or_default();
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -257,6 +258,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
     // home = None → the SERVICE_UNAVAILABLE arm.
     let state_none = crate::api_handlers::AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

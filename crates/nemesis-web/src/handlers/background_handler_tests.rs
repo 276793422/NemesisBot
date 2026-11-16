@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 fn make_ctx(registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

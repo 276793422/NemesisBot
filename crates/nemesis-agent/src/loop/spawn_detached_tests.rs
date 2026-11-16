@@ -1320,3 +1320,180 @@ async fn run_detached_emits_observer_lifecycle_for_request_logging() {
         seq
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⑥ 子代理飞行中驾驶（项3 steer）：入队 → 子代理轮边界 claim 注入。
+// 校验链单一裁决点 = AgentLoop::steer_subagent（WSAPI subagents.steer 与
+// subagent_steer 工具双入口共用）；注册表是进程级单例——条目一律用
+// steer-t marker 前缀，断言不假设全局表为空。
+// ---------------------------------------------------------------------------
+
+/// 注册表播种（Running 条目，marker 前缀隔离）。返回条目 id。
+fn steer_marker_begin(tag: &str, i: usize, loop_origin: &str) -> String {
+    let id = format!("subagent:steer-t-{tag}-{i}");
+    crate::subagent_registry::global().begin(crate::subagent_registry::SubagentBegin {
+        id: id.clone(),
+        parent_session_key: "agent:main:session:steer_t".to_string(),
+        parent_chat_id: String::new(),
+        origin: "model_spawn".to_string(),
+        agent_id: "default".to_string(),
+        task: "steer 测试任务".to_string(),
+        role: String::new(),
+        tools_profile: "readonly".to_string(),
+        depth: 1,
+        background: false,
+        loop_origin: loop_origin.to_string(),
+        bg_task_id: None,
+    });
+    id
+}
+
+/// 捕获每次请求的 message 内容（steer 是否进入子代理请求的断言面）。
+struct MsgCaptureProvider {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+}
+
+#[async_trait]
+impl LlmProvider for MsgCaptureProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push(messages.iter().map(|m| m.content.clone()).collect());
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// 主链路：steer 注入先于子代理启动 → 首轮 claim 在首个 LLM 调用前
+/// 消费 → 请求里带 `[父代理指令]` 前缀的合成用户轮 → 终点队列清账
+/// （终态回写 Done + inbox.clear）。
+#[tokio::test]
+async fn steer_subagent_claimed_into_child_first_round() {
+    let _logs = crate::test_support::capture_logs();
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>> = Default::default();
+    let agent_loop = AgentLoop::new(
+        Box::new(MsgCaptureProvider { seen: seen.clone() }),
+        test_config(),
+    );
+    let id = steer_marker_begin("c1", 0, "main");
+    let ack = agent_loop
+        .steer_subagent(&id, "转向：只做调查不做修改")
+        .expect("steer 应入队");
+    assert!(ack.contains("转向"), "ack 应回显指令: {ack}");
+    let (nt, ns) = agent_loop.inbox_handle().pending(&id);
+    assert_eq!((nt, ns), (0, 1), "steer 应挂在 next_step");
+
+    let events = agent_loop
+        .run_detached_events(
+            "调查任务",
+            DetachedOpts {
+                session_key_override: Some(id.clone()),
+                registry_id: Some(id.clone()),
+                ..DetachedOpts::default()
+            },
+        )
+        .await;
+    assert!(
+        events.iter().any(|e| matches!(e, AgentEvent::Done(_))),
+        "子代理应正常完成"
+    );
+    // 首轮请求就带 steer 注入（claim 在首轮 LLM 调用之前）。
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty(), "provider 应至少收到一次请求");
+    assert!(
+        seen[0]
+            .iter()
+            .any(|c| c.contains("[父代理指令] 转向：只做调查不做修改")),
+        "首轮请求必须含 steer 注入: {:?}",
+        seen[0]
+    );
+    drop(seen);
+    // 终点清账：claim 消费 + finish 后 clear，无残留。
+    let (nt, ns) = agent_loop.inbox_handle().pending(&id);
+    assert_eq!((nt, ns), (0, 0), "终点应无残留队列");
+    // 终态回写（registry_id 挂载）。
+    let t = crate::subagent_registry::global()
+        .get(&id)
+        .expect("条目在册");
+    assert!(t.status.is_terminal(), "回合结束应写终态: {:?}", t.status);
+}
+
+/// 校验链：空指令 / 未知任务 / 终态 / 跨引擎（loop_origin 不一致）诚实拒绝。
+#[tokio::test]
+async fn steer_subagent_validation_chain_rejects() {
+    let _logs = crate::test_support::capture_logs();
+    let agent_loop = AgentLoop::new(Box::new(DetachedMockProvider::failing()), test_config());
+
+    let err = agent_loop.steer_subagent("subagent:x", "   ").unwrap_err();
+    assert!(err.contains("empty"), "空指令拒绝: {err}");
+
+    let err = agent_loop
+        .steer_subagent("subagent:steer-t-no-such", "x")
+        .unwrap_err();
+    assert!(err.contains("task not found"), "未知任务拒绝: {err}");
+
+    let id = steer_marker_begin("c2", 0, "main");
+    crate::subagent_registry::global().finish(
+        &id,
+        crate::subagent_registry::SubagentStatus::Done,
+        Some(1),
+        None,
+        None,
+    );
+    let err = agent_loop.steer_subagent(&id, "x").unwrap_err();
+    assert!(err.contains("终态"), "终态拒绝: {err}");
+
+    let id2 = steer_marker_begin("c3", 0, "project:other");
+    let err = agent_loop.steer_subagent(&id2, "x").unwrap_err();
+    assert!(err.contains("跨引擎"), "loop_origin 不一致拒绝: {err}");
+}
+
+/// estop 冻结投递（loop 侧兜底闸——WSAPI handler 另有前置闸）。
+#[tokio::test]
+async fn steer_subagent_rejects_while_estop_engaged() {
+    let _logs = crate::test_support::capture_logs();
+    let agent_loop = AgentLoop::new(Box::new(DetachedMockProvider::failing()), test_config());
+    let estop = std::sync::Arc::new(crate::estop::EstopState::new());
+    agent_loop.set_estop(estop.clone());
+    let id = steer_marker_begin("c4", 0, "main");
+    estop.trigger();
+    let err = agent_loop.steer_subagent(&id, "x").unwrap_err();
+    assert!(err.contains("急停"), "estop 冻结: {err}");
+    // release 恢复。
+    estop.release();
+    agent_loop
+        .steer_subagent(&id, "恢复后注入")
+        .expect("release 后应可注入");
+}
+
+/// 容量闸：inbox 硬上限（默认 8）满 = 诚实拒绝（steer 豁免软水位，
+/// 不豁免硬上限）。
+#[tokio::test]
+async fn steer_subagent_rejects_when_queue_full() {
+    let _logs = crate::test_support::capture_logs();
+    let agent_loop = AgentLoop::new(Box::new(DetachedMockProvider::failing()), test_config());
+    let id = steer_marker_begin("c5", 0, "main");
+    for i in 0..8 {
+        agent_loop
+            .steer_subagent(&id, &format!("第 {i} 条"))
+            .expect("容量内应全部入队");
+    }
+    let err = agent_loop.steer_subagent(&id, "第 9 条").unwrap_err();
+    assert!(err.contains("队列已满"), "硬上限拒绝: {err}");
+}

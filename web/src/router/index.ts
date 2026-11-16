@@ -48,6 +48,12 @@ const routes: RouteRecordRaw[] = [
   // lsp_install）全部挂在 coding 模块，IoT 预设 lsp=false 时整模块退出。
   ...(import.meta.env.VITE_FEATURE_LSP !== 'false' ? [{ path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_WORKFLOW !== 'false' ? [{ path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') }] : []),
+  // 事件管理面（项1 事件驱动唤醒 P2，events feature / VITE_FEATURE_EVENTS
+  // 门控）：fs 事件规则（events.json）+ 泵统计 + cron/后台进程源只读收编。
+  ...(import.meta.env.VITE_FEATURE_EVENTS !== 'false' ? [{ path: '/events', name: 'events', component: () => import('../views/EventsView.vue') }] : []),
+  // 循环管理面（项5 自配速 durable loop，loop feature / VITE_FEATURE_LOOP
+  // 门控）：agent 自排程唤醒 loop 台账 + 人控 pause/resume + 停车场预算调整。
+  ...(import.meta.env.VITE_FEATURE_LOOP !== 'false' ? [{ path: '/loops', name: 'loops', component: () => import('../views/LoopsView.vue') }] : []),
   // Note: `/workflow/chat/<index>` is served as a standalone HTML page
   // (workflow-chat.html, see vite.config.ts + serve_embedded_static),
   // not as a Vue Router route. The dashboard SPA never renders this path;

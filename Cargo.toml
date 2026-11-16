@@ -25,6 +25,8 @@ members = [
     "crates/nemesis-web",
     "crates/nemesis-auth",
     "crates/nemesis-cron",
+    "crates/nemesis-events",
+    "crates/nemesis-loop",
     "crates/nemesis-devices",
     "crates/nemesis-health",
     "crates/nemesis-heartbeat",
@@ -257,6 +259,8 @@ nemesis-desktop = { path = "crates/nemesis-desktop" }
 nemesis-web = { path = "crates/nemesis-web" }
 nemesis-auth = { path = "crates/nemesis-auth" }
 nemesis-cron = { path = "crates/nemesis-cron" }
+nemesis-events = { path = "crates/nemesis-events" }
+nemesis-loop = { path = "crates/nemesis-loop" }
 nemesis-devices = { path = "crates/nemesis-devices" }
 nemesis-health = { path = "crates/nemesis-health" }
 nemesis-heartbeat = { path = "crates/nemesis-heartbeat" }

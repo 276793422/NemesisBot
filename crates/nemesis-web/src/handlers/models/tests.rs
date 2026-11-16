@@ -567,6 +567,7 @@ pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestCont
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -929,6 +930,7 @@ fn ctx_with_loop(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
     );
     let state = crate::api_handlers::AppState {
         cors_manager: None,
+        events_snapshot: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
         ..(*ctx.state).clone()
     };
@@ -1004,6 +1006,7 @@ fn set_default_syncs_forge_provider_bridge() {
     );
     let state = crate::api_handlers::AppState {
         cors_manager: None,
+        events_snapshot: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
         forge: Some(forge),
         ..(*ctx.state).clone()

@@ -23,6 +23,7 @@ fn agt_ctx(ws: Option<&str>) -> RequestContext {
         home: ws.map(|s| s.to_string()),
         state: std::sync::Arc::new(AppState {
             cors_manager: None,
+            events_snapshot: None,
             auth_token: String::new(),
             session_count: std::sync::Arc::new(AtomicUsize::new(0)),
             workspace: ws.map(|s| s.to_string()),

@@ -250,12 +250,17 @@ pub(super) fn build_shared_tool_config(
 ) -> (
     nemesis_agent::SharedToolConfig,
     Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+    Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SubagentSteerFn>>,
 ) {
     let workspace_dir = shared.workspace_dir();
 
     // spawn 共享槽原件（SharedToolConfig 拿克隆；本原件留给调用方
     // 在 Arc<AgentLoop> 定型后注入 Weak 闭包）。
     let spawn_slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
+        Arc::new(std::sync::OnceLock::new());
+    // 子代理飞行中驾驶共享槽（项3）——同款原件形态，调用方在
+    // Arc<AgentLoop> 定型后经 inject_steer_fn 注入 Weak 闭包。
+    let steer_slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SubagentSteerFn>> =
         Arc::new(std::sync::OnceLock::new());
 
     // editor 开关（Full Access）围栏闸：文件围栏与 exec 族围栏共用同一把
@@ -363,6 +368,8 @@ pub(super) fn build_shared_tool_config(
         // spawn 共享槽——factory 在 Arc<AgentLoop> 定型后注入
         // Weak<AgentLoop> 闭包（见 build_agent_loop 尾部 inject_spawn_fn）。
         spawn_slot: Some(spawn_slot.clone()),
+        // 子代理飞行中驾驶共享槽（项3）——同款延迟注入（inject_steer_fn）。
+        steer_slot: Some(steer_slot.clone()),
         // 专家子代理名册（2026-11-13）：SharedResources.experts 建档后
         // 注入（SpawnTool list/预检消费）；None = 无专家面（list 诚实
         // 空名册 / 点名诚实报错——集群 loop、测试构建缺省）。
@@ -453,7 +460,7 @@ pub(super) fn build_shared_tool_config(
             None
         },
     };
-    (config, spawn_slot)
+    (config, spawn_slot, steer_slot)
 }
 
 /// 把「复用主 loop 跑 detached 轮次」的闭包注入 spawn 共享槽。
@@ -919,6 +926,27 @@ pub(super) fn inject_spawn_fn(
             })
         },
     ));
+}
+
+/// 把子代理飞行中驾驶闭包注入 steer 共享槽（项3）。
+///
+/// 捕获 `Weak<AgentLoop>`（与 [`inject_spawn_fn`] 同款防环形态）——升级
+/// 失败（loop 重建窗口）诚实报错，下一轮工厂重建会重新 set（OnceLock
+/// 已满则静默忽略，工具仍指旧槽？不——槽原件每次 `build_shared_tool_config`
+/// 新建，工具实例也随 loop 重建新建，同槽同批，无陈旧窗口）。
+/// 校验链（estop/在册/非终态/loop_origin 比对）单一裁决点在
+/// `AgentLoop::steer_subagent`，闭包只做转发。
+pub(super) fn inject_steer_fn(
+    loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    steer_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SubagentSteerFn>>,
+) {
+    let weak = Arc::downgrade(loop_arc);
+    let _ = steer_slot.set(Arc::new(move |id: &str, instruction: &str| {
+        let loop_arc = weak
+            .upgrade()
+            .ok_or_else(|| "agent loop is being rebuilt; retry shortly".to_string())?;
+        loop_arc.steer_subagent(id, instruction)
+    }));
 }
 
 /// 图像模型解析（generate_image 注册闸的单一裁决点）。

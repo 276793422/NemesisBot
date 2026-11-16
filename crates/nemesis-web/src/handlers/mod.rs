@@ -65,6 +65,14 @@ pub mod editor;
 // canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
 pub mod estop;
+// 事件驱动唤醒管理面（events.status/rules.get/rules.save；`events` feature
+// 门控——读泵观测快照 + events.json 规则 CRUD；项1 P2）。
+#[cfg(feature = "events")]
+pub mod events;
+// 自配速 durable loop 管理面（loops.* 七命令；`loop` feature 门控——
+// <workspace>/loops/*.json 人控面；项5）。
+#[cfg(feature = "loop")]
+pub mod loops;
 // 专家子代理管理面（experts.*）——bot 侧资源层经静态槽桥注入。
 pub mod experts;
 // 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
@@ -274,6 +282,16 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // 事件驱动唤醒管理面（`events` feature 门控；泵快照槽未装配诚实报）。
+    #[cfg(feature = "events")]
+    {
+        router.register(Arc::new(events::EventsHandler));
+    }
+    // 自配速 durable loop 管理面（`loop` feature 门控；项5）。
+    #[cfg(feature = "loop")]
+    {
+        router.register(Arc::new(loops::LoopsHandler));
+    }
     // 紫微系统（.5）：ziwei.* 全量命令清单随 feature 进出。
     #[cfg(feature = "ziwei")]
     {

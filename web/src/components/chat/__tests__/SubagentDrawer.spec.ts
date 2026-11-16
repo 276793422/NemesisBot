@@ -4,7 +4,9 @@
 // 旧版只按会话过滤，台账终态行（ledger 语义，容量 500）每轮在 live 容器
 // 重放。硬闸 status === 'running' 必须钉死。
 // 其余：会话过滤 / 胶囊形态（spinner+任务+用时+停止钮）/ stop 调
-// subagents.cancel / 入场动画静止约束 / push 帧触发刷新。
+// subagents.cancel / steer（飞行中驾驶，2026-11-16）单开输入行 + Enter 发
+// subagents.steer + 成功收起 toast 确认 + 失败 toast 原文保留重试 +
+// 入场动画静止约束 / push 帧触发刷新。
 // WSAPI 与 WebSocket composables 全 mock，不碰真实后端。
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -36,6 +38,7 @@ vi.mock('../../../composables/useWebSocket', () => ({
 }))
 
 import SubagentDrawer from '../SubagentDrawer.vue'
+import { useToast } from '../../../composables/useToast'
 
 function row(overrides: Record<string, unknown>) {
   return {
@@ -66,6 +69,7 @@ describe('SubagentDrawer', () => {
     addMessageHandler.mockClear()
     removeMessageHandler.mockClear()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
+    useToast().toasts.splice(0)
     vi.useFakeTimers()
   })
   afterEach(() => {
@@ -199,5 +203,84 @@ describe('SubagentDrawer', () => {
     handler({ type: 'push', cmd: 'tool_event', data: { kind: 'ToolStarted', data: {} } })
     await flushPromises()
     expect(requestMock).not.toHaveBeenCalled()
+  })
+
+  // —— steer（飞行中驾驶，2026-11-16）——
+  it('胶囊带 steer 钮；点击展开输入行（单开互斥，一次只有一行）', async () => {
+    requestMock.mockResolvedValue({
+      tasks: [row({ id: 'subagent:a' }), row({ id: 'subagent:b' })],
+    })
+    const w = await mountDrawer()
+    expect(w.findAll('.sc-steer').length).toBe(2)
+    expect(w.find('.sc-steer-row').exists()).toBe(false)
+    await w.findAll('.sc-steer')[0].trigger('click')
+    expect(w.findAll('.sc-steer-row').length).toBe(1)
+    // 单开互斥：点第二个胶囊的 steer 钮，输入行仍只有一行
+    await w.findAll('.sc-steer')[1].trigger('click')
+    expect(w.findAll('.sc-steer-row').length).toBe(1)
+  })
+
+  it('Esc 收起输入行', async () => {
+    requestMock.mockResolvedValue({ tasks: [row({})] })
+    const w = await mountDrawer()
+    await w.find('.sc-steer').trigger('click')
+    expect(w.find('.sc-steer-row').exists()).toBe(true)
+    await w.find('.sc-steer-input').trigger('keydown.esc')
+    expect(w.find('.sc-steer-row').exists()).toBe(false)
+  })
+
+  it('Enter 发送 subagents.steer；成功后收起 + toast 确认', async () => {
+    const { toasts } = useToast()
+    requestMock.mockResolvedValue({ tasks: [row({})] })
+    const w = await mountDrawer()
+    await w.find('.sc-steer').trigger('click')
+    const input = w.find('.sc-steer-input')
+    await input.setValue('转向：只做调查')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'steer', {
+      id: 'subagent:u1',
+      instruction: '转向：只做调查',
+    })
+    expect(w.find('.sc-steer-row').exists()).toBe(false)
+    const last = toasts[toasts.length - 1]
+    expect(last?.type).toBe('success')
+    expect(last?.message).toContain('转向')
+  })
+
+  it('注入钮同链路；空指令不发送', async () => {
+    requestMock.mockResolvedValue({ tasks: [row({})] })
+    const w = await mountDrawer()
+    await w.find('.sc-steer').trigger('click')
+    // 空指令：Enter 与注入钮都不发送
+    await w.find('.sc-steer-input').trigger('keydown.enter')
+    await w.find('.sc-steer-send').trigger('click')
+    expect(requestMock).not.toHaveBeenCalledWith('subagents', 'steer', expect.anything())
+    // 填入指令后注入钮发送同一请求
+    await w.find('.sc-steer-input').setValue('再跑一轮验证')
+    await w.find('.sc-steer-send').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('subagents', 'steer', {
+      id: 'subagent:u1',
+      instruction: '再跑一轮验证',
+    })
+  })
+
+  it('steer 失败 toast 错误原文，输入行保留可重试', async () => {
+    const { toasts } = useToast()
+    requestMock
+      .mockResolvedValueOnce({ tasks: [row({})] })
+      .mockRejectedValueOnce('⛔ 急停（estop）生效中，子代理驾驶已冻结')
+    const w = await mountDrawer()
+    await w.find('.sc-steer').trigger('click')
+    const input = w.find('.sc-steer-input')
+    await input.setValue('转向')
+    await input.trigger('keydown.enter')
+    await flushPromises()
+    const last = toasts[toasts.length - 1]
+    expect(last?.type).toBe('error')
+    expect(last?.message).toContain('急停')
+    // 输入行保留（指令还在，可修正后重试）
+    expect(w.find('.sc-steer-row').exists()).toBe(true)
   })
 })
