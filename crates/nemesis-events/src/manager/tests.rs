@@ -10,8 +10,7 @@ fn rule(id: &str, root: &str) -> EventRule {
         watch: WatchSpec {
             kind: "fs".to_string(),
             path: PathBuf::from(root),
-            glob: None,
-            debounce_ms: None,
+            ..Default::default()
         },
         deliver: DeliverSpec {
             session_key: "agent:main:session:t".to_string(),
@@ -210,6 +209,26 @@ fn check_reload_applies_changes_and_rearm_roots_follow() {
     );
 }
 
+/// webhook/probe/sys 规则的 watch.path 恒空（非 fs 源无目录可盯）——
+/// watch_roots 不得把空根喂给 notify rearm（空串 watch 必然 Err，
+/// 假故障 WARN；修复回归锁 2026-11-16）。
+#[test]
+fn watch_roots_filters_empty_paths_from_non_fs_rules() {
+    let mut wh = rule("wh1", "");
+    wh.watch.kind = "webhook".to_string();
+    wh.watch.token = Some("tok".to_string());
+    let mut pr = rule("pr1", "");
+    pr.watch.kind = "probe".to_string();
+    let fs = rule("fs1", "C:/logs");
+    let st = ManagerState {
+        rules: vec![wh, pr, fs],
+        ..ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP)
+    };
+    let roots = st.watch_roots();
+    assert_eq!(roots.len(), 1, "空根必须剔除");
+    assert_eq!(roots.iter().next().unwrap(), &PathBuf::from("C:/logs"));
+}
+
 #[test]
 fn check_reload_keeps_old_rules_on_parse_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -306,4 +325,963 @@ fn snapshot_handle_shared_arc_receives_pump_writes() {
     assert!(Arc::ptr_eq(&h1, &h2), "两次取句柄必须同一 Arc");
     *h1.write() = EventSnapshot::default();
     assert_eq!(h2.read().stats.delivered_events, 0);
+}
+
+// ── 事件源扩展：webhook / proc / sys 泵逻辑 ─────────────────────────
+
+fn wh_rule(id: &str, token: &str) -> EventRule {
+    EventRule {
+        id: id.to_string(),
+        watch: WatchSpec {
+            kind: "webhook".to_string(),
+            token: Some(token.to_string()),
+            ..Default::default()
+        },
+        deliver: DeliverSpec {
+            session_key: "agent:main:session:t".to_string(),
+            prompt: "外部推送：{payload}".to_string(),
+            cooldown_secs: None,
+            merge_window_secs: None,
+            max_per_hour: None,
+            enabled: None,
+        },
+    }
+}
+
+fn proc_rule(id: &str, job_id: u64, pattern: &str, notify_start: bool) -> EventRule {
+    EventRule {
+        id: id.to_string(),
+        watch: WatchSpec {
+            kind: "proc".to_string(),
+            job_id: Some(job_id),
+            pattern: Some(pattern.to_string()),
+            notify_start: Some(notify_start),
+            ..Default::default()
+        },
+        deliver: DeliverSpec {
+            session_key: "agent:main:session:t".to_string(),
+            prompt: "任务 #{job_id} 命中：{line}（{count}）".to_string(),
+            cooldown_secs: None,
+            merge_window_secs: None,
+            max_per_hour: None,
+            enabled: None,
+        },
+    }
+}
+
+fn sys_rule(id: &str, metric: &str, above: f64, below: f64) -> EventRule {
+    EventRule {
+        id: id.to_string(),
+        watch: WatchSpec {
+            kind: "sys".to_string(),
+            metric: Some(metric.to_string()),
+            above: Some(above),
+            below: Some(below),
+            ..Default::default()
+        },
+        deliver: DeliverSpec {
+            session_key: "agent:main:session:t".to_string(),
+            prompt: "系统告警：{payload}".to_string(),
+            cooldown_secs: None,
+            merge_window_secs: None,
+            max_per_hour: None,
+            enabled: None,
+        },
+    }
+}
+
+#[tokio::test]
+async fn webhook_matches_token_and_renders_payload() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![wh_rule("wh1", "s3cret"), wh_rule("wh2", "other")];
+    let matched = st.ingest_webhook("s3cret", "deploy done", 0);
+    assert_eq!(matched, vec!["wh1".to_string()]);
+    assert_eq!(st.stats.webhook_received, 1);
+    assert_eq!(st.stats.webhook_unmatched, 0);
+    assert_eq!(st.pending["wh1"].count(), 1);
+    assert!(!st.pending.contains_key("wh2"));
+    // 相同载荷是不同事件（无去重折叠）
+    st.ingest_webhook("s3cret", "deploy done", 100);
+    assert_eq!(st.pending["wh1"].count(), 2);
+    // 未匹配 token → 诚实计数 + 空列表（HTTP 面 404）
+    let none = st.ingest_webhook("nope", "x", 200);
+    assert!(none.is_empty());
+    assert_eq!(st.stats.webhook_unmatched, 1);
+    // 渲染 {payload}
+    let (hits, contents, inj) = ok_injector();
+    st.rules[0].deliver.merge_window_secs = Some(0);
+    st.run_cycle(200, false, &inj);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let msg = contents.lock().unwrap()[0].clone();
+    assert!(msg.starts_with("[事件:wh1] "));
+    assert!(msg.contains("deploy done"));
+}
+
+#[tokio::test]
+async fn webhook_payload_oversize_truncated() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![wh_rule("wh1", "tk")];
+    let big = "x".repeat(WEBHOOK_PAYLOAD_MAX + 500);
+    st.ingest_webhook("tk", &big, 0);
+    let p = st.pending["wh1"].paths()[0].clone();
+    assert!(p.len() < big.len(), "载荷必须截断");
+    assert!(p.contains("已截断"));
+    assert!(p.contains("…["));
+}
+
+#[tokio::test]
+async fn proc_matches_lines_and_renders_line_job_id() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![proc_rule("pr1", 7, "(?i)error", false)];
+    let reader: ProcReaderFn = Arc::new(|_job, offset| {
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                "chunk": "line1\nERROR boom\nline3\n",
+                "next_offset": offset + 21u64,
+                "running": true
+            }))
+        })
+    });
+    st.sample_procs(Some(&reader), 1000).await;
+    // running 任务：末尾空段留 tail；命中 1 行
+    assert_eq!(st.pending["pr1"].count(), 1);
+    assert_eq!(st.stats.proc_lines_matched, 1);
+    let (hits, contents, inj) = ok_injector();
+    st.rules[0].deliver.merge_window_secs = Some(0);
+    st.run_cycle(1000, false, &inj);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let msg = contents.lock().unwrap()[0].clone();
+    assert!(msg.contains("任务 #7 命中：ERROR boom（1）"));
+}
+
+#[tokio::test]
+async fn proc_tail_carries_partial_line_across_reads() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![proc_rule("pr1", 7, "ERROR", false)];
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let reads2 = reads.clone();
+    let reader: ProcReaderFn = Arc::new(move |_job, offset| {
+        reads2.lock().unwrap().push(offset);
+        let chunk = if offset == 0 { "hel" } else { "lo ERROR\n" };
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                "chunk": chunk,
+                "next_offset": offset + chunk.len() as u64,
+                "running": true
+            }))
+        })
+    });
+    st.sample_procs(Some(&reader), 0).await;
+    assert_eq!(
+        st.pending.get("pr1").map(|b| b.count()).unwrap_or(0),
+        0,
+        "半行不应命中（pending 可能尚未建 buffer）"
+    );
+    st.sample_procs(Some(&reader), 250).await;
+    assert_eq!(st.pending["pr1"].count(), 1, "拼接后命中");
+    assert_eq!(st.pending["pr1"].paths()[0], "hello ERROR");
+    assert_eq!(
+        reads.lock().unwrap().clone(),
+        vec![0u64, 3],
+        "offset 坐标单调推进（0 → 3）"
+    );
+}
+
+#[tokio::test]
+async fn proc_notify_start_fires_once_on_first_running_observation() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![proc_rule("pr1", 9, "(?i)error", true)];
+    let reader: ProcReaderFn = Arc::new(|_job, _offset| {
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                "chunk": "",
+                "next_offset": 0u64,
+                "running": true
+            }))
+        })
+    });
+    st.sample_procs(Some(&reader), 0).await;
+    let payloads = st.pending["pr1"].paths();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0], "[后台任务 #9 已启动]");
+    // 第二次采样：seen_running 已置位 → 不重复启动通知
+    st.sample_procs(Some(&reader), 1000).await;
+    assert_eq!(st.pending["pr1"].count(), 1);
+}
+
+#[tokio::test]
+async fn proc_read_error_marks_rule_idle_with_one_warn() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![proc_rule("pr1", 99, "x", false)];
+    let reader: ProcReaderFn =
+        Arc::new(|_job, _offset| Box::pin(async { Err("job not found".to_string()) }));
+    st.sample_procs(Some(&reader), 0).await;
+    st.sample_procs(Some(&reader), 1000).await;
+    assert_eq!(st.stats.proc_read_errors, 2);
+    assert!(st.pending.is_empty());
+    assert!(st.proc_warned.contains("pr1"), "同规则只 warn 一次");
+}
+
+#[tokio::test]
+async fn proc_without_reader_honest_noop() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![proc_rule("pr1", 7, "x", false)];
+    st.sample_procs(None, 0).await;
+    assert!(st.pending.is_empty());
+    assert_eq!(st.stats.proc_read_errors, 0);
+}
+
+#[test]
+fn sys_hysteresis_trigger_quiet_fall_and_retrigger() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![sys_rule("sy1", "cpu", 90.0, 80.0)];
+    let sample = |cpu: f32| SysSample {
+        cpu,
+        mem_percent: 0.0,
+        disks: vec![],
+    };
+    // 首轮基态落账（80 未过阈 → normal，无 pending）
+    st.sample_sys(&sample(80.0), 0);
+    assert!(st.pending.is_empty());
+    assert_eq!(st.stats.sys_triggered, 0);
+    // 过阈 → 触发一次
+    st.sample_sys(&sample(95.0), 1000);
+    assert_eq!(st.pending["sy1"].count(), 1);
+    assert_eq!(st.stats.sys_triggered, 1);
+    // firing 期 85（below ≤ v < above）→ 静默不重复
+    st.sample_sys(&sample(85.0), 2000);
+    assert_eq!(st.pending["sy1"].count(), 1);
+    assert_eq!(st.stats.sys_triggered, 1);
+    // 回落 < below → normal（不推）
+    st.sample_sys(&sample(79.0), 3000);
+    assert_eq!(st.pending["sy1"].count(), 1);
+    // 再过阈 → 第二次触发
+    st.sample_sys(&sample(91.0), 4000);
+    assert_eq!(st.stats.sys_triggered, 2);
+}
+
+#[test]
+fn sys_mem_and_disk_metrics_resolve() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    let mut disk = sys_rule("syd", "disk", 50.0, 40.0);
+    disk.watch.path = PathBuf::from("/data");
+    st.rules = vec![sys_rule("sym", "mem", 90.0, 80.0), disk];
+    // /data 40% used（< above 50 不触发）；/home 90% used。
+    let sample = SysSample {
+        cpu: 0.0,
+        mem_percent: 95.0,
+        disks: vec![
+            (PathBuf::from("/data"), 600, 1000),
+            (PathBuf::from("/home"), 100, 1000),
+        ],
+    };
+    st.sample_sys(&sample, 0);
+    // mem 过阈触发；disk 挂载点 /data 使用率 40 未过阈 → 不触发
+    assert_eq!(st.pending["sym"].count(), 1);
+    assert!(!st.pending.contains_key("syd"));
+    // disk 无 path 时 = 任一盘最高使用率 → /home 90 过阈触发
+    let mut st2 = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st2.rules = vec![sys_rule("syd", "disk", 80.0, 70.0)];
+    st2.sample_sys(&sample, 0);
+    assert_eq!(st2.pending["syd"].count(), 1);
+    // 滞回：50% 触发 → 39%（< below 40）回 normal → 50% 再触发
+    let mut st3 = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    let mut d3 = sys_rule("syd", "disk", 50.0, 40.0);
+    d3.watch.path = PathBuf::from("/data");
+    st3.rules = vec![d3];
+    let disk_sample = |avail: u64| SysSample {
+        cpu: 0.0,
+        mem_percent: 0.0,
+        disks: vec![(PathBuf::from("/data"), avail, 1000)],
+    };
+    st3.sample_sys(&disk_sample(500), 0); // 50% ≥ above → 触发
+    assert_eq!(st3.pending["syd"].count(), 1);
+    st3.sample_sys(&disk_sample(610), 1000); // 39% < below → 回 normal（不推）
+    assert_eq!(st3.pending["syd"].count(), 1);
+    st3.sample_sys(&disk_sample(500), 2000); // 50% 再过阈 → 第二次触发
+    assert_eq!(st3.stats.sys_triggered, 2);
+}
+
+#[test]
+fn disk_percent_longest_prefix_mount_resolution() {
+    let sample = SysSample {
+        cpu: 0.0,
+        mem_percent: 0.0,
+        disks: vec![
+            (PathBuf::from("/data"), 250, 1000),     // 75%
+            (PathBuf::from("/data/sub"), 500, 1000), // 50%
+            (PathBuf::from("/home"), 100, 1000),     // 90%
+        ],
+    };
+    // None = 任一盘最高
+    assert_eq!(resolve_disk_percent(&sample, None), Some(90.0));
+    // 最长前缀挂载点
+    assert_eq!(
+        resolve_disk_percent(&sample, Some(Path::new("/data/sub/x.txt"))),
+        Some(50.0)
+    );
+    assert_eq!(
+        resolve_disk_percent(&sample, Some(Path::new("/data/other.txt"))),
+        Some(75.0)
+    );
+    // 无匹配挂载点 → None（本轮跳过）
+    assert_eq!(
+        resolve_disk_percent(&sample, Some(Path::new("/var/log/x"))),
+        None
+    );
+}
+
+#[tokio::test]
+async fn estop_drops_multi_source_pending_and_release_recovers() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![
+        rule_with("r1", "C:/logs", 0, 0, 0),
+        wh_rule("wh1", "tk"),
+        sys_rule("sy1", "cpu", 1.0, 0.5),
+    ];
+    let reader: ProcReaderFn = Arc::new(|_j, _o| {
+        Box::pin(async {
+            Ok(serde_json::json!({"chunk": "hit\n", "next_offset": 4u64, "running": false}))
+        })
+    });
+    st.rules.push(proc_rule("pr1", 1, "hit", false));
+    st.ingest(ev("C:/logs/a.txt", 0));
+    st.ingest_webhook("tk", "payload", 0);
+    st.sample_sys(
+        &SysSample {
+            cpu: 50.0,
+            mem_percent: 0.0,
+            disks: vec![],
+        },
+        0,
+    );
+    st.sample_procs(Some(&reader), 0).await;
+    assert_eq!(st.pending.len(), 4);
+    st.run_cycle(0, true, &|_, _| true); // 冻结 → 全源 pending 诚实丢弃
+    assert!(st.pending.is_empty());
+    assert_eq!(st.stats.dropped_estop, 4);
+}
+
+#[test]
+fn snapshot_rule_view_detail_hides_webhook_token() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![
+        wh_rule("wh1", "s3cret-token"),
+        proc_rule("pr1", 7, "(?i)err", true),
+        sys_rule("sy1", "mem", 90.0, 80.0),
+    ];
+    let snap = st.snapshot();
+    let wh = snap.rules.iter().find(|r| r.id == "wh1").unwrap();
+    assert_eq!(wh.kind, "webhook");
+    assert!(!wh.detail.contains("s3cret-token"), "观测面不回显 token");
+    let pr = snap.rules.iter().find(|r| r.id == "pr1").unwrap();
+    assert!(pr.detail.contains("job #7"));
+    assert!(pr.detail.contains("启动通知"));
+    let sy = snap.rules.iter().find(|r| r.id == "sy1").unwrap();
+    assert!(sy.detail.contains("mem"));
+    assert!(sy.detail.contains("90%"));
+}
+
+#[tokio::test]
+async fn reload_reconciles_proc_offset_and_sys_firing_state() {
+    use crate::rules::save_rules;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.json");
+    save_rules(&path, &[proc_rule("pr1", 7, "err", false)]).unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.load_rules(&path);
+    // 采样推进 offset
+    let reader: ProcReaderFn = Arc::new(|_j, o| {
+        Box::pin(async move {
+            Ok(serde_json::json!({
+                "chunk": "x\n", "next_offset": o + 2u64, "running": true
+            }))
+        })
+    });
+    st.sample_procs(Some(&reader), 0).await;
+    assert_eq!(st.proc_state["pr1"].offset, 2);
+    // 同 watch 段热重载 → offset 保留（不重扫历史）
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    save_rules(&path, &[proc_rule("pr1", 7, "err", false)]).unwrap();
+    assert!(st.check_reload(&path));
+    assert_eq!(st.proc_state["pr1"].offset, 2, "watch 段未变 offset 不回退");
+    // pattern 变更 → 状态丢弃（新 offset 从 0 重扫）
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    save_rules(&path, &[proc_rule("pr1", 7, "err|warn", false)]).unwrap();
+    assert!(st.check_reload(&path));
+    assert!(!st.proc_state.contains_key("pr1"));
+}
+
+// ── 事件源扩展 P2：probe 探测源 ──────────────────────────────────────
+
+fn probe_rule(id: &str, probe_type: &str, target: &str, interval: u64, timeout: u64) -> EventRule {
+    EventRule {
+        id: id.to_string(),
+        watch: WatchSpec {
+            kind: "probe".to_string(),
+            probe_type: Some(probe_type.to_string()),
+            target: Some(target.to_string()),
+            interval_secs: Some(interval),
+            timeout_secs: Some(timeout),
+            ..Default::default()
+        },
+        deliver: DeliverSpec {
+            session_key: "agent:main:session:t".to_string(),
+            prompt: "{payload}".to_string(),
+            cooldown_secs: None,
+            merge_window_secs: None,
+            max_per_hour: None,
+            enabled: None,
+        },
+    }
+}
+
+fn outcome(rule_id: &str, generation: u64, up: bool, detail: &str) -> ProbeOutcome {
+    ProbeOutcome {
+        rule_id: rule_id.to_string(),
+        generation,
+        up,
+        detail: detail.to_string(),
+    }
+}
+
+#[test]
+fn probe_baseline_silent_then_flip_triggers_and_recovers() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![probe_rule("pb1", "tcp", "127.0.0.1:1", 60, 5)];
+    // 惰性建状态（代次 1；probe_checks 只建状态不排程——0 距 60s 间隔远未到期）
+    let reqs = st.probe_checks(0, false);
+    assert!(reqs.is_empty(), "0 时刻未到期，只落状态");
+    assert_eq!(st.probe_state["pb1"].generation, 1);
+    // 首探只定基态（DOWN），不触发
+    st.apply_probe(outcome("pb1", 1, false, "连接失败"), 1000);
+    assert!(st.pending.is_empty());
+    assert_eq!(st.stats.probe_flips, 0);
+    // 同态心跳静默
+    st.apply_probe(outcome("pb1", 1, false, "连接失败"), 2000);
+    assert_eq!(st.stats.probe_flips, 0);
+    // 翻转 DOWN → UP：触发 + payload 带方向与判定依据
+    st.apply_probe(outcome("pb1", 1, true, "连接成功"), 3000);
+    assert_eq!(st.stats.probe_flips, 1);
+    let payloads = st.pending["pb1"].paths();
+    assert_eq!(payloads.len(), 1);
+    assert!(payloads[0].contains("DOWN → UP"), "got: {}", payloads[0]);
+    assert!(payloads[0].contains("连接成功"));
+    // 同态静默
+    st.apply_probe(outcome("pb1", 1, true, "连接成功"), 4000);
+    assert_eq!(st.stats.probe_flips, 1);
+    // 回落 UP → DOWN 再触发
+    st.apply_probe(outcome("pb1", 1, false, "超时（5s）"), 5000);
+    assert_eq!(st.stats.probe_flips, 2);
+    assert!(st.pending["pb1"].paths()[1].contains("UP → DOWN"));
+}
+
+#[test]
+fn probe_checks_respect_interval_freeze_and_enabled() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    let mut off = probe_rule("pboff", "tcp", "127.0.0.1:1", 60, 5);
+    off.deliver.enabled = Some(false);
+    st.rules = vec![
+        probe_rule("pb1", "http", "https://a.example.com/h", 60, 10),
+        off,
+    ];
+    // 冻结：排程暂停（状态不建，release 后重新惰性初始化）
+    assert!(st.probe_checks(10_000_000, true).is_empty());
+    assert!(st.probe_state.is_empty());
+    // release 后首排程：last_ms=0 → 立即出发；disabled 规则不排
+    let reqs = st.probe_checks(10_000_000, false);
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].rule_id, "pb1");
+    assert_eq!(reqs[0].generation, 1, "首个状态代次从 1 起");
+    assert_eq!(reqs[0].probe_type, "http");
+    assert_eq!(reqs[0].timeout_secs, 10);
+    // 周期内不重排
+    assert!(st.probe_checks(10_000_000 + 30_000, false).is_empty());
+    // interval 到期 → 再排（同代次——target 未变）
+    let reqs = st.probe_checks(10_000_000 + 60_000, false);
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].generation, 1);
+}
+
+#[test]
+fn probe_stale_generation_and_missing_rule_dropped() {
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![probe_rule("pb1", "tcp", "127.0.0.1:1", 60, 5)];
+    let reqs = st.probe_checks(10_000_000, false);
+    assert_eq!(reqs[0].generation, 1);
+    // 基态 UP 落账
+    st.apply_probe(outcome("pb1", 1, true, "连接成功"), 10_000_000);
+    // 旧代次（0）在途结果 → 丢弃，基态不被打翻（防旧目标迟到结果串台）
+    st.apply_probe(outcome("pb1", 0, false, "迟到的旧目标结果"), 11_000_000);
+    assert_eq!(st.probe_state["pb1"].up, Some(true));
+    assert_eq!(st.stats.probe_flips, 0);
+    // 规则消失（热重载删除）→ 结果丢弃
+    st.apply_probe(outcome("gone", 1, true, "x"), 11_000_000);
+    assert!(!st.pending.contains_key("gone"));
+}
+
+#[tokio::test]
+async fn tcp_probe_hits_real_listener_and_refused_port_reports_down() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (up, detail) = tcp_probe(&addr.to_string(), 5).await;
+    assert!(up, "真监听端口必须 up，detail: {detail}");
+    assert_eq!(detail, "连接成功");
+    // 关掉监听（拒连）→ down 带根因
+    drop(listener);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let (up, detail) = tcp_probe(&addr.to_string(), 5).await;
+    assert!(!up);
+    assert!(detail.contains("连接失败"), "detail: {detail}");
+}
+
+#[tokio::test]
+async fn http_probe_parses_status_and_reports_root_cause_on_failure() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let client = reqwest::Client::new();
+    // 200 → up + "HTTP 200 OK"
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let _ = sock
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await;
+    });
+    let (up, detail) = http_probe(&client, &format!("http://{addr}/health"), 5).await;
+    assert!(up, "detail: {detail}");
+    assert!(detail.contains("200"));
+    server.await.unwrap();
+    // 500 → down（非 2xx）
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = sock.read(&mut buf).await;
+        let _ = sock
+            .write_all(
+                b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\
+                  Connection: close\r\n\r\n",
+            )
+            .await;
+    });
+    let (up, detail) = http_probe(&client, &format!("http://{addr}/"), 5).await;
+    assert!(!up, "非 2xx 必须 down");
+    assert!(detail.contains("500"), "detail: {detail}");
+    server.await.unwrap();
+    // 拒连 → down 带根因
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead = listener.local_addr().unwrap();
+    drop(listener);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let (up, detail) = http_probe(&client, &format!("http://{dead}/"), 5).await;
+    assert!(!up);
+    assert!(detail.contains("请求失败"), "detail: {detail}");
+}
+
+#[tokio::test]
+async fn http_probe_timeout_reports_honest_detail() {
+    let client = reqwest::Client::new();
+    // accept 后永不回包 → per-request timeout 兜底
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (_sock, _) = listener.accept().await.unwrap();
+        // 故意不读不写，挂住连接
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    });
+    let (up, detail) = http_probe(&client, &format!("http://{addr}/"), 1).await;
+    assert!(!up);
+    assert!(detail.contains("超时（1s）"), "detail: {detail}");
+    server.abort();
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn command_probe_exit_code_semantics() {
+    let (up, detail) = command_probe("cmd /c exit 0", 10).await;
+    assert!(up, "退出码 0 必须 up，detail: {detail}");
+    let (up, detail) = command_probe("cmd /c exit 3", 10).await;
+    assert!(!up);
+    assert!(detail.contains("退出码 3"), "detail: {detail}");
+    // 启动失败（程序不存在）= down
+    let (up, detail) = command_probe("definitely-not-a-real-program-xyz", 10).await;
+    assert!(!up);
+    assert!(detail.contains("启动失败"), "detail: {detail}");
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn command_probe_exit_code_semantics() {
+    let (up, detail) = command_probe("true", 10).await;
+    assert!(up, "detail: {detail}");
+    let (up, _detail) = command_probe("false", 10).await;
+    assert!(!up, "false(1) 必须 down");
+    let (up, detail) = command_probe("definitely-not-a-real-program-xyz", 10).await;
+    assert!(!up);
+    assert!(detail.contains("启动失败"), "detail: {detail}");
+}
+
+#[tokio::test]
+async fn run_probe_unknown_probe_type_sends_nothing() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    run_probe(
+        ProbeRequest {
+            rule_id: "pb".to_string(),
+            generation: 1,
+            probe_type: "icmp".to_string(),
+            target: "a".to_string(),
+            timeout_secs: 1,
+        },
+        reqwest::Client::new(),
+        tx,
+    )
+    .await;
+    // 未知类型：防御分支静默返回——channel 关闭且无缓冲消息 = Ok(None)
+    let got = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        matches!(got, Ok(None)),
+        "未知 probe_type 不得产生结果，got: {got:?}"
+    );
+}
+
+#[tokio::test]
+async fn pump_probe_flip_delivers_payload_end_to_end() {
+    // 真监听端点：基线 UP → 关监听翻转 DOWN → 全链投递。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("events.json");
+    let mut r = probe_rule("pb1", "tcp", &addr.to_string(), 5, 5);
+    // merge=0（翻转即投）+ cooldown=0——泵 tick 与测试线程共享 current_thread
+    // runtime，探测检查粒度（4 tick）在争用下可被拉长到 ~1.4s；默认 5s 合并窗
+    // 会把投递顶出测试预算（与 webhook 泵测试同解法）。
+    r.deliver.merge_window_secs = Some(0);
+    r.deliver.cooldown_secs = Some(0);
+    crate::rules::save_rules(&rules_path, &[r]).unwrap();
+    let (hits, contents, inj) = ok_injector();
+    let injector: InjectorFn = Arc::new(inj);
+    let mgr = EventWatchManager::new(rules_path, injector, Arc::new(|| false));
+    let snap = mgr.snapshot_handle();
+    let handle = mgr.start();
+    // 首探（~1s 检查粒度内）定基态 UP，不投递；2s 后关监听翻转 DOWN。
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    drop(listener);
+    // 翻转探测在 interval（5s）+ 检查粒度（1s）内出发 → 投递含方向与根因。
+    let mut delivered = false;
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if contents
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.contains("UP → DOWN") && c.contains("[事件:pb1]"))
+        {
+            delivered = true;
+            break;
+        }
+    }
+    let s = snap.read();
+    assert!(
+        delivered,
+        "翻转必须全链投递；contents: {:?}; stats: {:?}; rules: {:?}; pending: {:?}",
+        contents.lock().unwrap(),
+        s.stats,
+        s.rules,
+        s.pending
+    );
+    assert!(hits.load(Ordering::SeqCst) >= 1);
+    handle.abort();
+}
+
+// ── 事件源扩展 P3：fs content_pattern ────────────────────────────────
+
+fn content_rule(id: &str, root: &std::path::Path, pattern: &str) -> EventRule {
+    EventRule {
+        id: id.to_string(),
+        watch: WatchSpec {
+            kind: "fs".to_string(),
+            path: root.to_path_buf(),
+            content_pattern: Some(pattern.to_string()),
+            ..Default::default()
+        },
+        deliver: DeliverSpec {
+            session_key: "agent:main:session:t".to_string(),
+            prompt: "日志命中：{paths}（{count}）".to_string(),
+            cooldown_secs: None,
+            merge_window_secs: None,
+            max_per_hour: None,
+            enabled: None,
+        },
+    }
+}
+
+fn append_line(file: &std::path::Path, line: &str) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().append(true).open(file).unwrap();
+    writeln!(f, "{line}").unwrap();
+}
+
+#[test]
+fn content_matching_line_triggers_and_non_matching_is_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("app.log");
+    std::fs::write(&file, "startup ok\nall systems normal\n").unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![content_rule("c1", dir.path(), "(?i)fatal|panic")];
+    let ev_path = file.to_string_lossy().to_string();
+    // 首见：基线窗（尾部 64KB）无命中 → 不触发
+    st.ingest(ev(&ev_path, 1000));
+    assert!(st.pending.is_empty());
+    // 追加命中行 → 触发
+    append_line(&file, "FATAL: core dumped");
+    st.ingest(ev(&ev_path, 2000));
+    assert_eq!(st.pending["c1"].count(), 1);
+    // 追加不命中行 → 静默
+    append_line(&file, "recovered");
+    st.ingest(ev(&ev_path, 3000));
+    assert_eq!(st.pending["c1"].count(), 1);
+    assert!(
+        st.content_state["c1"].offsets.contains_key(&file),
+        "坐标已落账"
+    );
+}
+
+#[test]
+fn content_partial_line_waits_for_newline_then_matches_joined() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("app.log");
+    std::fs::write(&file, "ERR").unwrap(); // 半行（无换行）
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![content_rule("c1", dir.path(), "ERROR")];
+    let ev_path = file.to_string_lossy().to_string();
+    // 基线窗无行边界 → 坐标停窗起点，不消费不触发（残段留给下次拼接）
+    st.ingest(ev(&ev_path, 1000));
+    assert!(st.pending.is_empty());
+    assert_eq!(st.content_state["c1"].offsets.get(&file), Some(&0));
+    // 续写补全换行 → 拼接命中
+    append_line(&file, "OR boot failed"); // "ERR" + "OR boot failed\n"
+    st.ingest(ev(&ev_path, 2000));
+    assert_eq!(st.pending["c1"].count(), 1, "跨事件拼接的行必须命中");
+}
+
+#[test]
+fn content_truncation_rebaselines_without_replaying_old_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("app.log");
+    std::fs::write(&file, "old run ERROR\n").unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![content_rule("c1", dir.path(), "ERROR")];
+    let ev_path = file.to_string_lossy().to_string();
+    st.ingest(ev(&ev_path, 1000));
+    assert_eq!(st.pending["c1"].count(), 1, "首见基线窗命中照常触发");
+    assert!(st.content_state["c1"].offsets[&file] > 0);
+    // 截断（日志轮转）→ 重新基线，不触发（新内容无命中）
+    std::fs::write(&file, "new run\n").unwrap();
+    st.ingest(ev(&ev_path, 2000));
+    assert_eq!(st.pending["c1"].count(), 1);
+    // 截断后追加命中行 → 正常触发
+    append_line(&file, "ERROR again");
+    st.ingest(ev(&ev_path, 3000));
+    assert_eq!(st.pending["c1"].count(), 2);
+}
+
+#[test]
+fn content_binary_nul_advances_offset_without_trigger() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("dump.bin");
+    std::fs::write(&file, b"\x00\x01\x02panic\x00\xff").unwrap(); // 含 NUL + 命中形态
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![content_rule("c1", dir.path(), "panic")];
+    let ev_path = file.to_string_lossy().to_string();
+    // 二进制（NUL）跳过：不触发但坐标推进（不反复读同一段）
+    st.ingest(ev(&ev_path, 1000));
+    assert!(st.pending.is_empty());
+    assert_eq!(
+        st.content_state["c1"].offsets.get(&file),
+        Some(&10),
+        "坐标推进到段末（\\x00\\x01\\x02 panic \\x00\\xff = 10 字节）"
+    );
+    // 追加文本命中行 → 正常触发（skip 不影响后续增量）
+    append_line(&file, "panic real");
+    st.ingest(ev(&ev_path, 2000));
+    assert_eq!(st.pending["c1"].count(), 1);
+}
+
+#[test]
+fn content_read_failure_is_one_time_warn_without_trigger() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.log");
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![content_rule("c1", dir.path(), "ERROR")];
+    let ev_path = missing.to_string_lossy().to_string();
+    st.ingest(ev(&ev_path, 1000));
+    st.ingest(ev(&ev_path, 2000));
+    assert!(st.pending.is_empty());
+    assert!(st.content_warned.contains("c1"), "一次性 warn 落账");
+    assert_eq!(st.stats.delivered_events, 0);
+}
+
+#[test]
+fn content_gate_scopes_to_own_rule_only() {
+    // 同一路径两条 fs 规则：一条带 content_pattern（不命中），一条不带
+    // （纯路径变化触发）——互不牵连。
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("app.log");
+    std::fs::write(&file, "calm line\n").unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![
+        content_rule("c1", dir.path(), "FATAL"),
+        rule("plain", dir.path().to_str().unwrap()),
+    ];
+    let ev_path = file.to_string_lossy().to_string();
+    st.ingest(ev(&ev_path, 1000));
+    assert!(!st.pending.contains_key("c1"), "content 不命中 → 不触发");
+    assert!(st.pending.contains_key("plain"), "无过滤规则照常触发");
+}
+
+#[tokio::test]
+async fn reload_carries_content_offset_and_probe_baseline_drops_on_change() {
+    use crate::rules::save_rules;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.json");
+    let file = dir.path().join("app.log");
+    std::fs::write(&file, "hello ERROR\n").unwrap();
+    let mut cr = content_rule("c1", dir.path(), "ERROR");
+    let mut pr = probe_rule("pb1", "tcp", "127.0.0.1:1", 60, 5);
+    save_rules(&path, &[cr.clone(), pr.clone()]).unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.load_rules(&path);
+    // drive：content offset 落账 + probe 基态落账
+    let ev_path = file.to_string_lossy().to_string();
+    st.ingest(ev(&ev_path, 1000));
+    assert_eq!(
+        st.content_state["c1"].offsets.get(&file),
+        Some(&12),
+        "\"hello ERROR\\n\" = 12 字节全消费"
+    );
+    let reqs = st.probe_checks(10_000_000, false);
+    assert_eq!(reqs[0].generation, 1);
+    st.apply_probe(outcome("pb1", 1, true, "连接成功"), 10_000_000);
+    assert_eq!(st.probe_state["pb1"].up, Some(true));
+    // 同 watch 段热重载（改 deliver prompt）→ 两态全保留
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    cr.deliver.prompt = "改了模板：{paths}".to_string();
+    pr.deliver.prompt = "改了模板：{payload}".to_string();
+    save_rules(&path, &[cr.clone(), pr.clone()]).unwrap();
+    assert!(st.check_reload(&path));
+    assert_eq!(st.content_state["c1"].offsets.get(&file), Some(&12));
+    assert_eq!(st.probe_state["pb1"].up, Some(true));
+    assert_eq!(st.probe_state["pb1"].generation, 1, "target 未变代次不推进");
+    // content_pattern 变更 → offset 保留（坐标与 pattern 无关）、正则换新
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    cr.watch.content_pattern = Some("panic".to_string());
+    save_rules(&path, &[cr.clone(), pr.clone()]).unwrap();
+    assert!(st.check_reload(&path));
+    assert_eq!(st.content_state["c1"].offsets.get(&file), Some(&12));
+    assert_eq!(st.content_state["c1"].regex.as_str(), "panic", "滤网换新");
+    // probe target 变更 → 基态丢弃 + 代次推进（旧目标在途回结果按代次丢）
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    pr.watch.target = Some("127.0.0.1:2".to_string());
+    save_rules(&path, &[cr, pr]).unwrap();
+    assert!(st.check_reload(&path));
+    assert!(!st.probe_state.contains_key("pb1"), "目标变更重新定基态");
+    let reqs = st.probe_checks(20_000_000, false);
+    assert_eq!(
+        reqs[0].generation, 2,
+        "新目标新代次——旧目标迟到结果按代次丢弃"
+    );
+}
+
+// ── 补钉：content 基线窗历史命中「一次性」语义 ────────────────────────
+
+#[test]
+fn content_baseline_history_match_triggers_once_and_does_not_replay() {
+    // 语义锚点（基线窗匹配的代价面，刻意钉死防将来误改）：规则安装前已在
+    // 盘且历史内容命中的文件——首个变更事件的基线窗命中触发**一次**（这是
+    // 「新文件首行命中立即可用」的对价）；此后坐标已越过基线段，新增不命中
+    // 行不得重放历史命中（防基线语义退化成「历史一直命中=一直触发」）。
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("app.log");
+    std::fs::write(&file, "old panic last week\nmore old panic\n").unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.rules = vec![content_rule("c1", dir.path(), "panic")];
+    let ev_path = file.to_string_lossy().to_string();
+    // 首见：基线窗（尾部 64KB）含历史命中行 → 触发一次（合并计数 = 1 事件）
+    st.ingest(ev(&ev_path, 1000));
+    assert_eq!(st.pending["c1"].count(), 1, "历史命中随基线窗触发一次");
+    // 新增不命中行：坐标已越过基线段 → 不得重放历史
+    append_line(&file, "recovered ok");
+    st.ingest(ev(&ev_path, 2000));
+    assert_eq!(st.pending["c1"].count(), 1, "历史命中不得重放");
+    // 新增命中行：正常触发
+    append_line(&file, "panic again");
+    st.ingest(ev(&ev_path, 3000));
+    assert_eq!(st.pending["c1"].count(), 2);
+}
+
+// ── sys 当前值展示面（events.status sys_current）─────────────────────
+
+#[tokio::test]
+async fn pump_sys_sampling_exposes_sys_current_and_snapshot_carries_it() {
+    // 泵级真采样：sys 规则在场 → 懒闸开（2s 采样粒度）→ last_sys 覆写 →
+    // snapshot.sys_current 透传；above=0 同时验证触发面（0.0 基态 ≥ 0 触发，
+    // below=-1 恒不回落——below ≥ above 的规则会被校验剔除）。
+    let dir = tempfile::tempdir().unwrap();
+    let rules_path = dir.path().join("events.json");
+    let mut r = sys_rule("sy1", "cpu", 0.0, -1.0);
+    r.deliver.merge_window_secs = Some(0);
+    r.deliver.cooldown_secs = Some(0);
+    crate::rules::save_rules(&rules_path, &[r]).unwrap();
+    let (hits, contents, inj) = ok_injector();
+    let injector: InjectorFn = Arc::new(inj);
+    let mgr = EventWatchManager::new(rules_path, injector, Arc::new(|| false));
+    let snap = mgr.snapshot_handle();
+    assert!(
+        snap.read().sys_current.is_none(),
+        "首采样前快照 sys_current = None（懒闸语义）"
+    );
+    let handle = mgr.start();
+    // 采样周期 2s + 规则装载 ≤250ms；8s 预算足够最坏时序。
+    let mut sampled = false;
+    for _ in 0..32 {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let s = snap.read();
+        if let Some(cur) = &s.sys_current {
+            sampled = true;
+            assert!(
+                cur.cpu >= 0.0 && cur.mem_percent >= 0.0,
+                "采样值非法: cpu={} mem={}",
+                cur.cpu,
+                cur.mem_percent
+            );
+            assert!(
+                !cur.disks.is_empty(),
+                "盘列表不得为空（sysinfo 至少一块盘）"
+            );
+            for d in &cur.disks {
+                assert!(
+                    (0.0..=100.0).contains(&d.used_percent),
+                    "盘使用率越界: {} {}",
+                    d.mount,
+                    d.used_percent
+                );
+            }
+            break;
+        }
+    }
+    assert!(
+        sampled,
+        "8s 内必须出现 sys_current 快照；stats: {:?}",
+        snap.read().stats
+    );
+    assert!(
+        hits.load(Ordering::SeqCst) >= 1,
+        "above=0 规则必须触发投递；contents: {:?}",
+        contents.lock().unwrap()
+    );
+    handle.abort();
 }

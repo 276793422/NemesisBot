@@ -44,3 +44,42 @@ fn compose_content_has_event_badge() {
     let c = compose_content("build", "日志更新");
     assert_eq!(c, "[事件:build] 日志更新");
 }
+
+// ── render_prompt_vars（webhook/proc/sys 多源渲染）─────────────────────
+
+#[test]
+fn vars_render_replaces_named_placeholders() {
+    let out = render_prompt_vars(
+        "后台任务 #{job_id} 命中：{line}（{count} 条）",
+        2,
+        &[
+            ("line", "error: boom".to_string()),
+            ("job_id", "7".to_string()),
+        ],
+    );
+    assert_eq!(out, "后台任务 #7 命中：error: boom（2 条）");
+}
+
+#[test]
+fn vars_render_sorts_by_name_length_desc_no_prefix_eating() {
+    // {payload} 必须先于假想的短名替换——按名字长度降序，长名不吃短名。
+    let out = render_prompt_vars(
+        "{payload}",
+        1,
+        &[("payload", "hello".to_string()), ("p", "WRONG".to_string())],
+    );
+    // {payload} 命中长名；不存在 {p} 占位符则 "WRONG" 无处出现。
+    assert_eq!(out, "hello");
+}
+
+#[test]
+fn vars_render_keeps_unknown_placeholders_verbatim() {
+    let out = render_prompt_vars("{mystery} {payload}", 1, &[("payload", "v".to_string())]);
+    assert_eq!(out, "{mystery} v");
+}
+
+#[test]
+fn vars_render_count_independent_of_vars() {
+    let out = render_prompt_vars("x{count}y", 3, &[]);
+    assert_eq!(out, "x3y");
+}

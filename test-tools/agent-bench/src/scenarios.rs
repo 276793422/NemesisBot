@@ -18,7 +18,7 @@
 //! | stream_break | testai-break-1.0 / testai-heal-1.0 | 终局：错误诚实上报 + partial 保留；重试：完整回复无 partial 泄漏 | 流中断契约（L02 StreamInterrupted）+ transient 重试环 |
 //! | gateway_restart | testai-9.3 | 重启后同会话第三轮 Z1_USERS_3 + 事件 seq 连续 gap=false | 优雅重启：历史重建无重复/无丢失 + 事件环连续性 |
 //! | subagent_steer | testai-steer-1.0 | 子代理终局 summary 含 STEER_OK + 注入指令子串；estop 期间 steer 诚实拒绝；终态 steer 拒绝 | 飞行中驾驶全链（项3）：spawn 后台子代理 → WSAPI steer → 效果面断言 |
-//! | event_wakeup | testai-9.3 | 5 次投递 Z1_USERS_1→5 + 冷却/estop 两次静默窗 + burst 3 文件恰 1 条（Z1 计数 + chat_log「共 3 个」内容面） | 事件驱动唤醒全链（项1）：fs 事件 → events.json 热重载 → 三闸 → 注入目标会话 |
+//! | event_wakeup | testai-9.3 | 8 次投递 Z1_USERS_1→9（fs 4 + webhook 1 + probe 双向翻转 2 + content 正则 1）+ 五处静默窗（冷却/estop/错 token/probe 基线/content 非命中）+ burst 3 文件恰 1 条 + webhook 载荷透传 + probe 方向断言 | 事件源扩展全链（项1 fs + P1 webhook + P2 probe + P3 content）：events.json 热重载 → 三闸 → 注入目标会话 |
 //! | durable_loop | testai-loop-1.0 | 三流：done（spent=1 + LOOPBENCH:DONE + [finish] 留痕）；parked（max_turns_total=1 停车 + [parked] 留痕 + resume 人工面）；estop（冻结 23s 状态原样 wake 不丢 → release 补投 spent=2 + LOOPBENCH:ESTOP-DONE） | 自配速 durable loop 全链（项5）：loops.create 绑定 → loop_wakeup 自排程 → 驱动器 10s sweep 唤醒 → 预算保险丝 → estop 冻结/补投 → loop_finish 收尾 |
 //! | plugin_bootstrap | testai-bootstrap-1.0 | 三流：HAPPY（人批审批卡应答 + installed_and_loaded + 同会话 textstat 真实执行 + 审计链 plugin_bootstrap 在案）；WL（白名单外结构化拒绝）；ESTOP（急停冻结提案） | agent 自举插件全链（项6）：plugin_search 发现 → plugin_propose 提案 → 九步漏斗人批 → ToolSync 热装 → 同会话可用；白名单/急停两护栏 |
 //! | memory_persistence | testai-mem-1.0 | A 会话存 3 条 → 全新会话查询命中事实体 | 长程记忆持久化（跨会话存取全链 + 审批闸自动批准，项2） |
@@ -1903,6 +1903,36 @@ async fn steer_one_round() -> Result<(u64, String)> {
 
 /// 事件唤醒场景的规则 id（注入消息徽标 `[事件:bench-evw]` 断言锚）。
 const EV_RULE_ID: &str = "bench-evw";
+/// webhook 腿规则 id + token（token 即凭据；POST /api/events/webhook/{token}）。
+const EV_WEBHOOK_RULE_ID: &str = "bench-evwh";
+const EV_WEBHOOK_TOKEN: &str = "bench-evw-token-9f3a";
+/// probe 腿规则 id。
+const EV_PROBE_RULE_ID: &str = "bench-evpb";
+/// content 腿规则 id。
+const EV_CONTENT_RULE_ID: &str = "bench-evct";
+
+/// 裸 HTTP/1.1 POST（webhook 腿用；bench 不引 reqwest——一条端点一条
+/// TcpStream 足矣，Connection: close 读到 EOF）。返回状态码。
+async fn http_post_localhost(port: u16, path: &str, body: &str) -> Result<u16> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    )
+    .await??;
+    let req = format!(
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    tokio::time::timeout(Duration::from_secs(5), s.write_all(req.as_bytes())).await??;
+    let mut buf = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), s.read_to_end(&mut buf)).await??;
+    let head = String::from_utf8_lossy(&buf);
+    head.split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| anyhow!("webhook 响应行解析失败: {head:?}"))
+}
 
 /// 事件场景的 chat_log jsonl 路径。
 fn event_chat_log(ws: &TestWorkspace, session_id: &str) -> std::path::PathBuf {
@@ -1969,8 +1999,8 @@ async fn assert_session_quiet(
     Ok(())
 }
 
-/// 读 chat_log 内容面：找最新一条 `[事件:bench-evw]` 用户行，返回其内容。
-fn last_event_row(ws: &TestWorkspace, session_id: &str) -> Result<String> {
+/// 读 chat_log 内容面：找最新一条 `[事件:{rule_id}]` 用户行，返回其内容。
+fn last_event_row(ws: &TestWorkspace, session_id: &str, rule_id: &str) -> Result<String> {
     let log_path = ws
         .workspace()
         .join("logs")
@@ -1978,7 +2008,7 @@ fn last_event_row(ws: &TestWorkspace, session_id: &str) -> Result<String> {
         .join(format!("agent_main_session_{session_id}.jsonl"));
     let log = std::fs::read_to_string(&log_path)
         .map_err(|e| anyhow!("chat_log 读取失败 {}: {e}", log_path.display()))?;
-    let anchor = format!("[事件:{EV_RULE_ID}]");
+    let anchor = format!("[事件:{rule_id}]");
     log.lines()
         .rev()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -1990,13 +2020,17 @@ fn last_event_row(ws: &TestWorkspace, session_id: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("chat_log 无 {anchor} 注入行（注入未落会话日志）"))
 }
 
-/// 事件唤醒单轮全链（项1）：
+/// 事件唤醒单轮全链（项1 + 事件源扩展 P1/P2/P3 e2e 腿）：
 /// ① 种子会话确立 chat_log 在盘（Z1_USERS_1）→ ② 写 events.json（gateway
 /// 启动时无此文件 = 顺带验热重载）→ fs 事件 A → 注入 Z1_USERS_2 → ③ 冷却内
 /// 事件 B → 4.5s 静默 → ④ 冷却出窗事件 C → 恢复投递 Z1_USERS_3 → ⑤ 再爆发
 /// 3 文件 → burst 合并恰 1 条 Z1_USERS_4 + chat_log 内容面「共 3 个」+ 3 文件
 /// 名 → ⑥ estop 冻结事件 g 静默（冻结窗口顺带熬过冷却）→ release 后事件 h →
-/// Z1_USERS_5。Z1 计数逐腿递增双重钉死：既证「投了」，静默窗又证「没多投」。
+/// Z1_USERS_5 → ⑦ webhook 腿：错 token 404+静默 / 对 token 载荷透传
+/// Z1_USERS_6 → ⑧ probe 腿：基线 UP 静默窗 → 关监听 DOWN 翻转 Z1_USERS_7 →
+/// 重绑 UP 翻转 Z1_USERS_8（方向+目标双断言）→ ⑨ content 腿：建文件基线
+/// 静默 + 非命中静默窗 → 命中行注入 Z1_USERS_9。Z1 计数逐腿递增双重钉死：
+/// 既证「投了」，静默窗又证「没多投」。
 async fn event_wakeup_one_round(ws: &TestWorkspace) -> Result<(u64, String)> {
     let start = Instant::now();
     let flow = async {
@@ -2068,7 +2102,7 @@ async fn event_wakeup_one_round(ws: &TestWorkspace) -> Result<(u64, String)> {
         }
         wait_event_reply(ws, &session_id, "Z1_USERS_4", Duration::from_secs(60)).await?;
         // 内容面：chat_log 最新 [事件:] 行含「共 3 个」+ 全部 3 个文件名。
-        let row = last_event_row(ws, &session_id)?;
+        let row = last_event_row(ws, &session_id, EV_RULE_ID)?;
         anyhow::ensure!(
             row.contains("共 3 个"),
             "burst 注入行缺「共 3 个」: {row:?}"
@@ -2103,10 +2137,137 @@ async fn event_wakeup_one_round(ws: &TestWorkspace) -> Result<(u64, String)> {
         wait_event_reply(ws, &session_id, "Z1_USERS_5", Duration::from_secs(60)).await?;
         let _ = api.close(None).await;
 
-        // 8) 清理：移除规则文件 → 下一泵周期空规则集 + unwatch，不污染后续。
+        // 8) webhook 腿：错 token → 404 + 静默窗（诚实拒绝面）；对 token →
+        //    200 + 载荷透传注入（{payload} 渲染 + 徽标锚换新规则 id）。
+        let webhook_rules = json!([{
+            "id": EV_WEBHOOK_RULE_ID,
+            "watch": { "kind": "webhook", "token": EV_WEBHOOK_TOKEN },
+            "deliver": {
+                "session_key": session_key,
+                "prompt": "Webhook推送：{payload}",
+                "cooldown_secs": 0,
+                "merge_window_secs": 0,
+                "max_per_hour": 0,
+                "enabled": true
+            }
+        }]);
+        std::fs::write(&rules_path, serde_json::to_string_pretty(&webhook_rules)?)?;
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        let bad = http_post_localhost(WEB_PORT, "/api/events/webhook/bench-wrong-token", "noise")
+            .await?;
+        anyhow::ensure!(bad == 404, "错 token 必须 404（诚实拒绝），got {bad}");
+        assert_session_quiet(ws, &session_id, Duration::from_secs(3), "错 token 静默窗").await?;
+        let good = http_post_localhost(
+            WEB_PORT,
+            &format!("/api/events/webhook/{EV_WEBHOOK_TOKEN}"),
+            "Z1_WEBHOOK_PAYLOAD deploy-ok",
+        )
+        .await?;
+        anyhow::ensure!(good == 200, "对 token 必须 200，got {good}");
+        wait_event_reply(ws, &session_id, "Z1_USERS_6", Duration::from_secs(60)).await?;
+        let row = last_event_row(ws, &session_id, EV_WEBHOOK_RULE_ID)?;
+        anyhow::ensure!(
+            row.contains("Z1_WEBHOOK_PAYLOAD deploy-ok"),
+            "webhook 载荷未透传: {row:?}"
+        );
+
+        // 9) probe 腿：预绑定监听 → 规则热载 → 基线 UP 静默窗（首探只定基态
+        //    不触发；静默窗从 t≈2s 起跨 4s——若基线误注入，agent 回复必在此
+        //    窗落盘）→ 关监听 → DOWN 翻转注入（方向+目标双断言）→ 重绑同址
+        //    （refused 探测不留 TIME_WAIT，循环兜极端内核时序）→ UP 翻转注入。
+        //    interval=5s（校验下限），翻转在下个探测周期出发，60s 预算充裕。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?.to_string();
+        let probe_rules = json!([{
+            "id": EV_PROBE_RULE_ID,
+            "watch": {
+                "kind": "probe",
+                "probe_type": "tcp",
+                "target": addr,
+                "interval_secs": 5,
+                "timeout_secs": 3
+            },
+            "deliver": {
+                "session_key": session_key,
+                "prompt": "探测翻转：{payload}",
+                "cooldown_secs": 0,
+                "merge_window_secs": 0,
+                "max_per_hour": 0,
+                "enabled": true
+            }
+        }]);
+        std::fs::write(&rules_path, serde_json::to_string_pretty(&probe_rules)?)?;
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        assert_session_quiet(ws, &session_id, Duration::from_secs(4), "probe 基线静默窗").await?;
+        drop(listener);
+        wait_event_reply(ws, &session_id, "Z1_USERS_7", Duration::from_secs(60)).await?;
+        let row = last_event_row(ws, &session_id, EV_PROBE_RULE_ID)?;
+        anyhow::ensure!(
+            row.contains("UP → DOWN") && row.contains(&addr),
+            "DOWN 翻转注入缺方向/目标: {row:?}"
+        );
+        let mut rebound = None;
+        for _ in 0..20 {
+            match tokio::net::TcpListener::bind(addr.as_str()).await {
+                Ok(l) => {
+                    rebound = Some(l);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+            }
+        }
+        let listener = rebound.ok_or_else(|| anyhow!("probe 重绑 {addr} 失败"))?;
+        wait_event_reply(ws, &session_id, "Z1_USERS_8", Duration::from_secs(60)).await?;
+        let row = last_event_row(ws, &session_id, EV_PROBE_RULE_ID)?;
+        anyhow::ensure!(row.contains("DOWN → UP"), "UP 翻转注入缺方向: {row:?}");
+        drop(listener);
+
+        // 10) content 腿：fs 正则过滤——建文件（首见基线窗静默消费）→ 追加
+        //     非命中行静默窗 → 追加命中行注入（{paths} 文件名面）。
+        let content_rules = json!([{
+            "id": EV_CONTENT_RULE_ID,
+            "watch": {
+                "kind": "fs",
+                "path": watch_root.to_string_lossy(),
+                "glob": "*.log",
+                "debounce_ms": 200,
+                "content_pattern": "Z1_CONTENT_MATCH"
+            },
+            "deliver": {
+                "session_key": session_key,
+                "prompt": "内容命中：{paths}",
+                "cooldown_secs": 0,
+                "merge_window_secs": 0,
+                "max_per_hour": 0,
+                "enabled": true
+            }
+        }]);
+        std::fs::write(&rules_path, serde_json::to_string_pretty(&content_rules)?)?;
+        let content_file = watch_root.join("app.log");
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        std::fs::write(&content_file, "boot ok\n")?;
+        let append = |line: &str| -> Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&content_file)?;
+            writeln!(f, "{line}")?;
+            Ok(())
+        };
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        append("still ok line")?;
+        assert_session_quiet(ws, &session_id, Duration::from_secs(3), "content 非命中静默窗")
+            .await?;
+        append("Z1_CONTENT_MATCH fired")?;
+        wait_event_reply(ws, &session_id, "Z1_USERS_9", Duration::from_secs(60)).await?;
+        let row = last_event_row(ws, &session_id, EV_CONTENT_RULE_ID)?;
+        anyhow::ensure!(row.contains("app.log"), "content 注入缺文件名: {row:?}");
+
+        // 11) 清理：移除规则文件 → 下一泵周期空规则集 + unwatch，不污染后续。
         let _ = std::fs::remove_file(&rules_path);
         let _ = chat.close(None).await;
-        Ok("事件唤醒全链 OK：5 次投递（含 burst 恰 1 条）+ 冷却/estop 两次静默".to_string())
+        Ok(
+            "事件源扩展全链 OK：8 次投递（fs 4 含 burst 合 1 + webhook 1 + probe 双向翻转 2 + content 正则 1）+ 五处静默窗（冷却/estop/错 token/probe 基线/content 非命中）"
+                .to_string(),
+        )
     }
     .await;
     match flow {
@@ -2115,8 +2276,9 @@ async fn event_wakeup_one_round(ws: &TestWorkspace) -> Result<(u64, String)> {
     }
 }
 
-/// 事件驱动唤醒基准场景（项1）：fs 事件 → events.json 热重载 → 三闸 →
-/// 注入目标会话，Z1_USERS 计数全程钉死（testai-9.3 oracle）。
+/// 事件驱动唤醒基准场景（项1 + 事件源扩展 P1/P2/P3）：fs 事件 / webhook
+/// POST / probe 状态翻转 / fs 正则四源 → events.json 热重载 → 三闸 → 注入
+/// 目标会话，Z1_USERS 计数全程钉死（testai-9.3 oracle）。
 pub async fn run_event_wakeup(
     ctx: BenchCtx,
     runs: u32,

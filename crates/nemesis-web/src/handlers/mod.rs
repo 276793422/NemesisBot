@@ -73,6 +73,11 @@ pub mod estop;
 // 门控——读泵观测快照 + events.json 规则 CRUD；项1 P2）。
 #[cfg(feature = "events")]
 pub mod events;
+// webhook 事件源 HTTP 入口（POST /api/events/webhook/{token}；`events`
+// feature 门控——token 即凭据公开端点 + 泵 submitter 静态槽；2026-11-16
+// 事件源扩展 P1）。
+#[cfg(feature = "events")]
+pub mod events_webhook;
 // 自配速 durable loop 管理面（loops.* 七命令；`loop` feature 门控——
 // <workspace>/loops/*.json 人控面；项5）。
 #[cfg(feature = "loop")]

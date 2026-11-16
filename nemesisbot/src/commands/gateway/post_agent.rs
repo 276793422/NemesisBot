@@ -1156,9 +1156,29 @@ pub(crate) async fn init_post_agent(
             events_rules_path.clone(),
             injector,
             std::sync::Arc::new(move || estop_for_events.is_engaged()),
-        );
+        )
+        // proc 事件源（2026-11-16 事件源扩展 P1）：增量读闭包持
+        // background_registry Arc——`output(id, offset)` 公开 API，零 registry
+        // 侵入（泵每 ~1s 逐 proc 规则读新增字节 → 正则行匹配）。
+        .with_proc_reader({
+            let registry = std::sync::Arc::clone(&shared_resources.background_registry);
+            std::sync::Arc::new(move |job_id: u64, offset: u64| {
+                let registry = std::sync::Arc::clone(&registry);
+                Box::pin(async move { registry.output(job_id, offset).await })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    >
+            }) as nemesis_events::ProcReaderFn
+        });
         // 泵观测快照句柄注入 web 面（P2：events.status 读泵统计/规则/在攒）。
         web_server.set_events_snapshot(events_mgr.snapshot_handle());
+        // webhook 事件源提交句柄注入 web 面静态槽（HTTP POST
+        // /api/events/webhook/{token} → 泵；start 前注入——路由已挂，
+        // 注入前调用诚实 503）。
+        nemesis_web::handlers::events_webhook::set_events_webhook(events_mgr.webhook_handle());
         let _events_pump = events_mgr.start();
         info!(
             "[Gateway] event wakeup manager armed (rules: {})",
