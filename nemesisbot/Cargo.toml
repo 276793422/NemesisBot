@@ -268,7 +268,7 @@ nemesis-desktop = { workspace = true, optional = true }
 nemesis-devices = { workspace = true, optional = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-logger = { workspace = true }
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 # 系统集成执行体（system register/unregister/cert 子命令；安装器 spawn 契约面）。
 nemesis-sysint = { workspace = true }
 # Z1 session fork: chat_log copy goes through the process-global path manager;

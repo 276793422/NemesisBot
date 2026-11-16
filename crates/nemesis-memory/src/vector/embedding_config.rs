@@ -27,6 +27,13 @@ const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 const DOWNLOAD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
 const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// 模型下载响应体上限（BUG-20261116-027 下载加固横扫补位）：裸
+/// `response.bytes()` 无上限，失控/被替换的 CDN 端点可把 GB 级响应灌满
+/// 进程内存（timeout 只约束墙钟不约束体积）。2GiB = 合法上限 fp32
+/// bge-large ~1.3GB + 余量；超限在读入中途断开（nemesis_utils::http_cap
+/// 单一真相源），内存峰值 = 已到达前缀。
+const MAX_MODEL_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // Configuration types
 // ---------------------------------------------------------------------------
@@ -596,6 +603,12 @@ pub fn download_model_files(
 ///   model.onnx → 重装永远跳过 → 插件 init 失败 → with_config_dir 写
 ///   enabled:false 永久自禁增强记忆」失败链的源头。
 fn download_file(url: &str, dest: &Path) -> Result<(), String> {
+    download_file_capped(url, dest, MAX_MODEL_DOWNLOAD_BYTES)
+}
+
+/// [`Self::download_file`] 的显式帽形态（测试缝 + 单一实现）：`max_bytes`
+/// 上限内才落盘，超限在读入中途断开（BUG-20261116-027）。
+fn download_file_capped(url: &str, dest: &Path, max_bytes: u64) -> Result<(), String> {
     if is_non_empty_file(dest) {
         return Ok(());
     }
@@ -620,8 +633,9 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
         ));
     }
 
-    let bytes = response
-        .bytes()
+    // 响应体有帽读取（BUG-20261116-027）：超限在读入中途断开，Err 消息带
+    // `exceeds limit` 锚（http_cap 家族契约）。
+    let bytes = nemesis_utils::http_cap::read_body_capped_blocking(response, max_bytes)
         .map_err(|e| format!("failed to read download response: {}", e))?;
 
     if bytes.is_empty() {

@@ -179,3 +179,45 @@ async fn fetch_zip_bytes_retry_passes_success_body() {
         .expect("200 body must pass through");
     assert_eq!(&bytes[..], b"PK_FAKE_ZIP_BYTES");
 }
+
+// ---------------------------------------------------------------------------
+// 有帽读取（BUG-20261116-027 下载加固补位）：fetch_zip_bytes_with_retry_capped
+// 对超限响应在读入中途断开（nemesis_utils::http_cap 单一真相源），Err 带
+// exceeds limit 锚；小帽值真实行为测试（64MB 真帽无法在测试里造超限载荷）。
+// ---------------------------------------------------------------------------
+
+/// 体 > cap → Err 带 exceeds limit 锚，体不落手（三连重试都被 mock 应答）。
+#[tokio::test]
+async fn fetch_zip_bytes_capped_rejects_over_limit_body() {
+    let _logs = crate::test_util::capture_logs();
+    let port = spawn_status_mock("HTTP/1.1 200 OK", "PK_FAKE_ZIP_BYTES");
+    let err = fetch_zip_bytes_with_retry_capped(
+        &format!("http://127.0.0.1:{port}/7z.zip"),
+        8, // cap < body.len() (17)
+    )
+    .await
+    .expect_err("over-cap body must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exceeds limit"),
+        "error must carry http_cap exceeds-limit anchor: {msg}"
+    );
+    assert!(
+        msg.contains("read body"),
+        "error must surface from the read-body arm: {msg}"
+    );
+}
+
+/// 体 < cap → Ok(bytes) 原样透传（under-cap 成功臂对照）。
+#[tokio::test]
+async fn fetch_zip_bytes_capped_passes_body_under_limit() {
+    let _logs = crate::test_util::capture_logs();
+    let port = spawn_status_mock("HTTP/1.1 200 OK", "PK_FAKE_ZIP_BYTES");
+    let bytes = fetch_zip_bytes_with_retry_capped(
+        &format!("http://127.0.0.1:{port}/7z.zip"),
+        MAX_ARCHIVE_FETCH_BYTES,
+    )
+    .await
+    .expect("under-cap body must pass through");
+    assert_eq!(&bytes[..], b"PK_FAKE_ZIP_BYTES");
+}
