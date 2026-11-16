@@ -1875,16 +1875,33 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         .unwrap_or(false);
 
     if ufw_exists {
-        let _ = std::process::Command::new("ufw")
+        let udp_result = std::process::Command::new("ufw")
             .args(["delete", "allow", &format!("{}/udp", udp_port)])
-            .output();
-        println!("  UFW UDP rule removed: port {}", udp_port);
-        let _ = std::process::Command::new("ufw")
+            .output()?;
+        if udp_result.status.success() {
+            println!("  UFW UDP rule removed: port {}", udp_port);
+        } else {
+            // 删除失败不谎报 removed（BUG-20261116-031：原实现 `let _ =`
+            // 吞结果后无条件打印 removed——非 root 跑 disable 时规则残留
+            // 却报成功）。非零含幂等场景（规则本不存在），stderr 带现场。
+            println!(
+                "  UFW UDP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&udp_result.stderr).trim()
+            );
+        }
+        let tcp_result = std::process::Command::new("ufw")
             .args(["delete", "allow", &format!("{}/tcp", tcp_port)])
-            .output();
-        println!("  UFW TCP rule removed: port {}", tcp_port);
+            .output()?;
+        if tcp_result.status.success() {
+            println!("  UFW TCP rule removed: port {}", tcp_port);
+        } else {
+            println!(
+                "  UFW TCP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&tcp_result.stderr).trim()
+            );
+        }
     } else {
-        let _ = std::process::Command::new("iptables")
+        let udp_result = std::process::Command::new("iptables")
             .args([
                 "-D",
                 "INPUT",
@@ -1895,9 +1912,16 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
                 "-j",
                 "ACCEPT",
             ])
-            .output();
-        println!("  iptables UDP rule removed: port {}", udp_port);
-        let _ = std::process::Command::new("iptables")
+            .output()?;
+        if udp_result.status.success() {
+            println!("  iptables UDP rule removed: port {}", udp_port);
+        } else {
+            println!(
+                "  iptables UDP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&udp_result.stderr).trim()
+            );
+        }
+        let tcp_result = std::process::Command::new("iptables")
             .args([
                 "-D",
                 "INPUT",
@@ -1908,8 +1932,15 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
                 "-j",
                 "ACCEPT",
             ])
-            .output();
-        println!("  iptables TCP rule removed: port {}", tcp_port);
+            .output()?;
+        if tcp_result.status.success() {
+            println!("  iptables TCP rule removed: port {}", tcp_port);
+        } else {
+            println!(
+                "  iptables TCP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&tcp_result.stderr).trim()
+            );
+        }
     }
     Ok(())
 }
