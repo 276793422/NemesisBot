@@ -773,6 +773,28 @@ function isCompactNoteRunning(msg: ChatMessage): boolean {
   return msg.noteKind === 'compaction_start'
 }
 
+// --- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）-------------
+// role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮，
+// 后端按 sender_id=="system" 推导落 `system_notice` 键；cron tick 行带既有
+// `cron_job_id` 键）渲染为折叠单行通知条而非用户气泡——通知轮是真实轮次
+// （agent 会回复），行照常占行号锚/可 rewind，只是展示形态区分于真人发言。
+// 仅历史行携带（wake/cron 注入不经 WS 售票点，无实时帧与 sync 事件）。
+
+/** 通知条谓词：role=user 且带 systemNotice 或 cronJobId 标记。 */
+function isSystemNotice(msg: ChatMessage): boolean {
+  return msg.role === 'user' && !!(msg.systemNotice || msg.cronJobId)
+}
+
+/** 通知条图标：cron tick ⏰ / 其他系统注入 ⚙。 */
+function systemNoticeGlyph(msg: ChatMessage): string {
+  return msg.cronJobId ? '⏰' : '⚙'
+}
+
+/** 通知条类别词：cron tick 「定时任务」/ 其他「系统通知」。 */
+function systemNoticeLabel(msg: ChatMessage): string {
+  return msg.cronJobId ? '定时任务' : '系统通知'
+}
+
 /** 压缩进行中（实时态）：驱动 context 进度条流光特效（2026-11-09 用户点名——
  *  特效挂输入框上方 usage 条，不挂消息流徽标）。compaction_start 实时帧在场
  *  = true；✓ 回执到场扫除 → false → 特效停。切会话/刷新丢失 = 特效消失，
@@ -2297,6 +2319,10 @@ function handleHistoryResponse(data: any) {
         // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（compaction_start
         // 不落盘，历史里只有静态注记）。
         noteKind: m.note_kind,
+        // 系统通知标记（2026-11-16）：历史行 system_notice / cron_job_id
+        // 透传——role=user 的系统注入行渲染通知条而非用户气泡。
+        systemNotice: m.system_notice,
+        cronJobId: m.cron_job_id,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
@@ -2348,6 +2374,9 @@ function handleHistoryResponse(data: any) {
           work: m.work ?? undefined,
           // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传。
           noteKind: m.note_kind,
+          // 系统通知标记（2026-11-16）：同上，watchdog 重灌同款透传。
+          systemNotice: m.system_notice,
+          cronJobId: m.cron_job_id,
         })),
       )
       chatStore.setBusy(effectiveSid.value, false)
@@ -2420,6 +2449,10 @@ function handleHistoryResponse(data: any) {
       // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（jsonl 整行
       // 透传链同一渲染分支——切走再切回看到的是同一枚折叠徽标，不蹦蓝底长文）。
       noteKind: m.note_kind,
+      // 系统通知标记（2026-11-16）：历史行 system_notice / cron_job_id
+      // 透传（同一整行透传链）——系统注入行渲染通知条而非用户气泡。
+      systemNotice: m.system_notice,
+      cronJobId: m.cron_job_id,
     }))
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
     chatStore.prependHistory(
@@ -3750,7 +3783,7 @@ onUnmounted(() => {
       </div>
 
       <div v-for="(msg, idx) in chatStore.messages" :key="idx" class="message" :class="msg.role">
-        <div class="message-avatar">{{ getAvatar(msg.role) }}</div>
+        <div class="message-avatar">{{ isSystemNotice(msg) ? '⚙' : getAvatar(msg.role) }}</div>
         <div class="message-content">
           <!-- 2026-10-30 Work 时间线：本 turn 的「叙述+工具」交错过程折叠块
                （历史行 work 键 / 实时 flush 挂载双路；默认收起，点开回看）。 -->
@@ -3778,6 +3811,22 @@ onUnmounted(() => {
               <span class="compact-note-glyph" aria-hidden="true">🗜️</span>
               <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
             </template>
+          </div>
+          <!-- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
+               role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL
+               续轮 system_notice + cron tick cron_job_id）渲染折叠单行
+               通知条，明确区分于真人发言。点击展开全文（与压缩注记徽标
+               同款 expandedCompactNotes 复用）。 -->
+          <div
+            v-else-if="isSystemNotice(msg)"
+            class="system-notice"
+            :class="{ expanded: expandedCompactNotes.has(msg) }"
+            :title="msg.content"
+            @click="toggleCompactNote(msg)"
+          >
+            <span class="system-notice-glyph" aria-hidden="true">{{ systemNoticeGlyph(msg) }}</span>
+            <span class="system-notice-tag">{{ systemNoticeLabel(msg) }}</span>
+            <span class="system-notice-text">{{ msg.content }}</span>
           </div>
           <div v-else class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
@@ -5061,6 +5110,55 @@ onUnmounted(() => {
   opacity: 0.4;
   transform-origin: bottom;
   animation: compact-bar-flow 1.2s ease-in-out infinite;
+}
+
+/* ===== 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）=====
+   role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL 续轮/cron
+   tick）渲染为折叠单行通知条。中性灰调（区别于压缩注记的 --info 蓝系
+   与用户气泡）——一眼区分「系统说的」与「我说的」。折叠态单行截断，
+   点击展开全文（与压缩注记同款 expandedCompactNotes）。 */
+.system-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(560px, 100%);
+  margin: 2px 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border: 1px dashed var(--border-color);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+.system-notice:hover {
+  filter: brightness(1.15);
+}
+.system-notice-glyph {
+  flex: none;
+  font-size: 12px;
+}
+.system-notice-tag {
+  flex: none;
+  font-weight: 600;
+}
+.system-notice-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  opacity: 0.85;
+}
+.system-notice.expanded .system-notice-text {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+}
+.system-notice.expanded {
+  max-width: 100%;
 }
 .compact-note-bars i:nth-child(1) { height: 8px; animation-delay: 0s; }
 .compact-note-bars i:nth-child(2) { height: 13px; animation-delay: 0.15s; }

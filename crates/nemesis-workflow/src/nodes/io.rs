@@ -179,10 +179,11 @@ impl NodeExecutor for HTTPNodeExecutor {
         // workflow http 节点的 url 支持 {{var}} 运行时注入，威胁面与
         // web_fetch 同级）。语义对齐 reqwest 默认跟随：301/302/303 把非
         // GET/HEAD 转为 GET 并剥 body；307/308 保持 method+body；跨源
-        //（host/端口/scheme 任一变化）时剥敏感头；跳数
-        // 上限 5。
+        //（host/端口/scheme 任一变化）时剥**全部**请求头（BUG-20261116-013：
+        // 作者配置头本身就是凭据载体——014 防线认定的 x-api-key 类自定义
+        // 凭据头不在标准三头名单内，固定名单拦不住；同源跳保留全部头，
+        // 带 cookie 站点跟随语义不变）；跳数上限 5。
         const HTTP_MAX_HOPS: usize = 5;
-        const SENSITIVE_HEADERS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
         let mut current_url = url;
         let mut current_method = method;
@@ -253,8 +254,8 @@ impl NodeExecutor for HTTPNodeExecutor {
                     current_body.clear();
                 }
                 if redirect_cross_origin(&base, &next) {
-                    current_headers
-                        .retain(|k, _| !SENSITIVE_HEADERS.contains(&k.to_lowercase().as_str()));
+                    // 跨源跳剥全部请求头（BUG-20261116-013）——同源跳不动。
+                    current_headers.clear();
                 }
                 current_url = next.to_string();
                 continue;

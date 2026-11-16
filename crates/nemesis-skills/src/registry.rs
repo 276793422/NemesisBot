@@ -13,6 +13,7 @@ use tracing::{debug, info, warn};
 
 use nemesis_types::error::{NemesisError, Result};
 
+use crate::builtin_registry::BuiltinSkillsRegistry;
 use crate::clawhub_registry::ClawHubRegistry;
 use crate::github_registry::{GitHubRegistry, GitHubSourceConfig};
 use crate::modelscope_registry::ModelScopeRegistry;
@@ -23,6 +24,58 @@ use crate::types::{
 
 /// Default maximum concurrent registry searches.
 const DEFAULT_MAX_CONCURRENT: usize = 2;
+
+/// 出厂第三源描述（值单一真相源，2026-11-16 拍板）：registry 面
+/// （[`RegistryManager::from_config`]）与 nemesis-web SkillsFullConfig
+/// 显示/RMW 面共用。repo 与 nemesis-web persona `BUILTIN_REPO` 同仓库；
+/// `Skills/` 在仓库根，live 臂加技能 = 往仓库 `Skills/` 提交一个技能目录
+/// （部署实例不重编可见可装）。
+pub struct FactorySourceDesc {
+    /// 源名（marketplace 展示与安装路由键）。
+    pub name: &'static str,
+    /// GitHub `owner/repo`。
+    pub repo: &'static str,
+    pub branch: &'static str,
+    pub index_type: &'static str,
+    /// 仓库根形态 pattern——listing/下载两侧均由它推导（github_registry
+    /// `listing_dir`）。
+    pub pattern: &'static str,
+}
+
+/// 出厂 GitHub 源值（单一真相源）。
+pub const FACTORY_SOURCE: FactorySourceDesc = FactorySourceDesc {
+    name: "nemesisbot",
+    repo: "276793422/NemesisBot",
+    branch: "main",
+    index_type: "github_api",
+    pattern: "Skills/{slug}/SKILL.md",
+};
+
+/// 出厂源合流（append-if-absent，语义单一真相源）：名字已存在则跳过
+/// （含用户显式停用的条目——用户可关不可丢），否则追加 enabled 条目。
+/// 老工作区 config 无此源也能零操作拿到（persona 出厂源同款收敛语义）。
+pub fn apply_factory_sources(config: &mut RegistryConfig) {
+    if config
+        .github_sources
+        .iter()
+        .any(|s| s.name == FACTORY_SOURCE.name)
+    {
+        return;
+    }
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: FACTORY_SOURCE.name.to_string(),
+            repo: FACTORY_SOURCE.repo.to_string(),
+            enabled: true,
+            branch: FACTORY_SOURCE.branch.to_string(),
+            index_type: FACTORY_SOURCE.index_type.to_string(),
+            index_path: String::new(),
+            skill_path_pattern: FACTORY_SOURCE.pattern.to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
+}
 
 /// API 元数据 JSON 成功响应体帽（BUG-20261114-046 横向收口）。skill
 /// registry 各 HTTP 端点的成功响应此前无字节上限——reqwest 无默认体上限，
@@ -135,7 +188,11 @@ impl RegistryManager {
     }
 
     /// Build a RegistryManager from config, instantiating enabled registries.
-    pub fn from_config(config: RegistryConfig) -> Self {
+    ///
+    /// `config` 按值进来后先做出厂源合流（append-if-absent，见下方注释），
+    /// 再由合流后的副本构造 registries 并存回 [`Self::config`]——消费方
+    /// 拿到的 config 面与 registry 面同源。
+    pub fn from_config(mut config: RegistryConfig) -> Self {
         let max_concurrent = if config.max_concurrent_searches > 0 {
             config.max_concurrent_searches
         } else {
@@ -152,6 +209,20 @@ impl RegistryManager {
         };
 
         let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
+
+        // Legacy 单源形态资格**先于**出厂源合流捕获：合流后 github_sources
+        // 恒非空（出厂源 append-if-absent），若让 legacy 分支事后判断会永久
+        // 假死——老工作区 `github.enabled` 单源形态（无 sources 数组）必须
+        // 保持可注册，与出厂源叠加并存。
+        let legacy_github_eligible = config.github_sources.is_empty() && config.github.enabled;
+
+        // 出厂第三源 append-if-absent（2026-11-16 拍板；persona 先例同款）：
+        // 在 github_sources 循环**之前**合流，出厂源的 GitHub registry 走
+        // 既有循环构造，config 面读取方（源列表/面板/落盘）看到合流后的
+        // 真相。老工作区 config 无此源也能零操作拿到。值与语义单一真相源
+        // = [`FACTORY_SOURCE`] / [`apply_factory_sources`]（nemesis-web
+        // SkillsFullConfig 显示/RMW 面同源消费）。
+        apply_factory_sources(&mut config);
 
         // Create GitHub registries from multi-source config.
         for source in &config.github_sources {
@@ -171,8 +242,14 @@ impl RegistryManager {
             }
         }
 
+        // 内嵌臂恒注册（2026-11-16 拍板②同款双臂形态：live GitHub 臂在上，
+        // 本臂断网/纯内网兜底；无 config 开关——恒在，列表全量上架 13 个
+        // 技能，安装时统一内容安全关照常裁决，运维技能装时诚实报拦截理由）。
+        registries.push(Arc::new(BuiltinSkillsRegistry::new()));
+
         // Legacy: if no multi-source GitHub registries, use single-source.
-        if config.github_sources.is_empty() && config.github.enabled {
+        //（资格在出厂源合流前捕获，见上方注释）
+        if legacy_github_eligible {
             let gh = GitHubRegistry::new(
                 &config.github.base_url,
                 config.github.timeout_secs,

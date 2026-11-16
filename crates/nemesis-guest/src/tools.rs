@@ -124,9 +124,16 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     // sanitize 不进来（VM 内无宿主凭据可剥）。
     if let Some(env_obj) = val.get("env").and_then(|v| v.as_object()) {
         for (key, value) in env_obj {
-            if let Some(val_str) = value.as_str() {
-                cmd.env(key, val_str);
-            }
+            let Some(val_str) = value.as_str() else {
+                continue;
+            };
+            // 环境块硬校验（BUG-20261116-025 横向同族）：与宿主
+            // parse_env_slot 同源校验器（nemesis-utils::env_sanitize::
+            // check_env_slot_pair）——病态键值（空 / `=` / NUL）诚实 Err
+            // 带槽位指向，不裸奔到 std Command::env 的 panic 面
+            //（Unix 即时 panic）/ spawn 期通用错误（Windows）。
+            nemesis_utils::env_sanitize::check_env_slot_pair(key, val_str)?;
+            cmd.env(key, val_str);
         }
     }
     cmd.stdin(std::process::Stdio::null())

@@ -344,9 +344,81 @@ fn extract_workspace_templates_skips_existing_files() {
         identity, "USER-CUSTOMIZED",
         "existing file must NOT be overwritten"
     );
-    // 未存在的其余模板照常铺出（同一棵嵌入树的其他根文件）。
+    // 未存在的其余模板照常铺出（同一棵嵌入树的其他根文件）；
+    // 身份三件已入提取排除清单（2026-11-16 人格预装语义重构，归 Step 9
+    // default/ 权威源），AGENT.md 是「照常提取面」的代表。
     assert!(
-        target.join("SOUL.md").exists(),
+        target.join("AGENT.md").exists(),
         "missing templates must still be extracted"
     );
+}
+
+// =========================================================================
+// 提取排除（2026-11-16 人格预装语义重构）：EMBEDDED_WORKSPACE 提取不再
+// 落 personas/ 子树与身份三件（personas 归内置页手动下载 + Step 9.5 两槽
+// 物化；身份三件归 Step 9 default/ 权威源）——两臂（overwrite /
+// skip-existing）同规则。
+// =========================================================================
+
+/// 排除判定纯函数：首组件精确匹配、子树任意深度命中、相似名不误伤。
+#[test]
+fn extract_exclusion_first_component_match() {
+    use std::path::Path;
+    // 顶层身份三件排除
+    assert!(is_extract_excluded(Path::new("IDENTITY.md")));
+    assert!(is_extract_excluded(Path::new("SOUL.md")));
+    assert!(is_extract_excluded(Path::new("USER.md")));
+    // personas 子树任意深度排除（首组件判定）
+    assert!(is_extract_excluded(Path::new("personas")));
+    assert!(is_extract_excluded(Path::new(
+        "personas/bug-analyst/PERSONA.json"
+    )));
+    assert!(is_extract_excluded(Path::new(
+        "personas/default/IDENTITY.md"
+    )));
+    // 相似名不误伤（精确匹配非前缀匹配）
+    assert!(!is_extract_excluded(Path::new("IDENTITY.md.bak")));
+    assert!(!is_extract_excluded(Path::new("personas-old/x.md")));
+    // 非顶层同名文件不误伤（cluster 身份由 Step 9 独立安装，不经提取）
+    assert!(!is_extract_excluded(Path::new("cluster/IDENTITY.md")));
+    // 其余顶层模板照常提取
+    assert!(!is_extract_excluded(Path::new("AGENT.md")));
+    assert!(!is_extract_excluded(Path::new("TOOLS.md")));
+    assert!(!is_extract_excluded(Path::new("HEARTBEAT.md")));
+    assert!(!is_extract_excluded(Path::new("config/mcp.json")));
+    assert!(!is_extract_excluded(Path::new("memory/MEMORY.md")));
+}
+
+/// 两臂提取产物统一断言：无 personas/ 子树、无身份三件、执行面与其余
+/// 模板照常落盘。
+fn assert_workspace_extraction_excludes(target: &std::path::Path) {
+    assert!(
+        !target.join("personas").exists(),
+        "personas/ 必须被提取排除（内置人格只走手动下载）"
+    );
+    assert!(
+        !target.join("IDENTITY.md").exists(),
+        "身份三件归 Step 9 default/ 权威源，不得从提取落地"
+    );
+    assert!(!target.join("SOUL.md").exists());
+    assert!(!target.join("USER.md").exists());
+    // 执行面三件与其余模板照常提取
+    assert!(target.join("AGENT.md").exists(), "执行面模板必须照常提取");
+    assert!(target.join("TOOLS.md").exists());
+    assert!(target.join("HEARTBEAT.md").exists());
+    assert!(target.join("config").exists(), "其余顶层目录不受排除影响");
+}
+
+#[test]
+fn extract_workspace_templates_overwrite_excludes_persona_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    extract_workspace_templates_overwrite(temp.path()).unwrap();
+    assert_workspace_extraction_excludes(temp.path());
+}
+
+#[test]
+fn extract_workspace_templates_skip_existing_excludes_persona_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    extract_workspace_templates(temp.path()).unwrap();
+    assert_workspace_extraction_excludes(temp.path());
 }

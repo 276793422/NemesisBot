@@ -75,7 +75,7 @@ fn apply_outbound_dlp(
         return;
     }
     if let Some(chain) = plugin.audit_chain() {
-        let _ = chain.append(
+        chain.append_observed(
             "dlp_outbound_redact",
             "",
             "agent",

@@ -146,7 +146,8 @@ impl Tool for WriteFileTool {
             return ToolResult::error(&format!("failed to create directories: {}", e));
         }
 
-        match tokio::fs::write(&canonical, content).await {
+        // 原子写（BUG-20261116-010）：tmp+fsync+rename 替代裸直写。
+        match nemesis_utils::write_file_atomic_async(&canonical, content.as_bytes(), 0o644).await {
             Ok(()) => ToolResult::success(&format!("wrote {} bytes to {}", content.len(), path)),
             Err(e) => ToolResult::error(&format!("failed to write file: {}", e)),
         }

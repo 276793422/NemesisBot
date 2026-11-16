@@ -77,7 +77,7 @@ pub enum SkillsAction {
     /// List available built-in skills
     #[command(name = "list-builtin")]
     ListBuiltin,
-    /// Install a skill from ClawHub (legacy)
+    /// Install a skill from openclaw/skills via the unified funnel (legacy command name kept)
     #[command(name = "install-clawhub")]
     InstallClawhub {
         /// Author name
@@ -86,6 +86,9 @@ pub enum SkillsAction {
         skill_name: String,
         /// Output directory name (defaults to skill_name)
         output_name: Option<String>,
+        /// Skip the install approval prompt (non-interactive / scripts)
+        #[arg(long)]
+        yes: bool,
     },
     /// Learn from a directory/URL/conversation/notes and create a skill
     Learn {
@@ -641,6 +644,16 @@ async fn cmd_install(
             if result.is_suspicious {
                 println!("  ⚠ 内容有可疑特征（未拦截，已记录安全检查）");
             }
+        }
+        Err(e @ nemesis_types::error::NemesisError::Security(_)) => {
+            // 安全关裁决**终局**，不做 GitHub fallback（2026-11-16 装时拦
+            // e2e 实测发现）：registry 侧已对该内容下了「拦截」结论——
+            // fallback 换源安装 = 用另一来源的同名内容绕开该裁决（同名
+            // owner/slug 仓库可被第三方占位）；且 fallback 失败的最终错误
+            // 是误导性 GitHub 404，诚实的拦截理由反被埋在中间行。可用性类
+            // 错误（网络/NotFound）维持既有 fallback 语义不变。
+            println!("  ⛔ 被安全关拦截，安装终止（不做 GitHub 回退）：{e}");
+            anyhow::bail!("安装失败: {e}");
         }
         Err(e) => {
             println!("  Install from registry failed: {}", e);
@@ -1256,70 +1269,118 @@ fn cmd_list_builtin() -> Result<()> {
 /// drop 必 panic；30s 超时语义保持不变。
 async fn cmd_install_clawhub(
     skills_dir: &std::path::Path,
+    skills_cfg: &std::path::Path,
+    main_cfg: &std::path::Path,
     author: &str,
     skill_name: &str,
     output_name: Option<&str>,
+    yes: bool,
 ) -> Result<()> {
-    let out_name = output_name.unwrap_or(skill_name);
-    // 路径安全（同族）：out_name 裸拼落盘目录——
-    // `--output-name../..` 形态可把远端内容写出 skills/ 边界。
-    nemesis_skills::types::validate_skill_identifier(out_name)
-        .map_err(|e| anyhow::anyhow!("output name '{}' 非法：{}", out_name, e))?;
-    println!("Installing from ClawHub: {}/{}", author, skill_name);
-    println!(
-        "  Note: This is a legacy command. Use 'nemesisbot skills install clawhub/{}' instead.",
-        skill_name
-    );
-
-    // Download SKILL.md from GitHub raw URL
-    let url = format!(
-        "https://raw.githubusercontent.com/openclaw/skills/main/skills/{}/{}/SKILL.md",
-        author, skill_name
-    );
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    match client
-        .get(&url)
-        .header("User-Agent", "nemesisbot")
-        .send()
-        .await
+    // 落盘名闸（历史语义保留）：漏斗按规范 slug 落位（skills/<skill>），
+    // 自定义安装名与 slug 目录纪律冲突。敌意值（路径穿越等）仍在此处、
+    // 任何配置读取/触网之前拒绝。
+    if let Some(out) = output_name
+        && out != skill_name
     {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                // BUG-20261115-025：SKILL.md 有帽读取（registry 源用户可配；
-                // 超帽在读入中途断开）。lossy 解码与原 .text() 行为对齐。
-                if let Ok(bytes) =
-                    nemesis_utils::http_cap::read_body_capped(resp, SKILLS_DOWNLOAD_READ_CAP).await
-                {
-                    let content = String::from_utf8_lossy(&bytes).into_owned();
-                    let target = skills_dir.join(out_name);
-                    let _ = std::fs::create_dir_all(&target);
-                    std::fs::write(target.join("SKILL.md"), &content)?;
-                    println!("  Installed: {} -> {}", skill_name, target.display());
-                } else {
-                    println!("  Failed to read response.");
-                }
-            } else {
-                println!("  Failed to download: HTTP {}", resp.status());
-                println!("  Troubleshooting:");
-                println!(
-                    "    - Check that {}/{} exists in openclaw/skills",
-                    author, skill_name
-                );
-                println!("    - Try: nemesisbot skills search {}", skill_name);
-            }
-        }
-        Err(e) => {
-            println!("  Failed to download: {}", e);
-            println!("  Check your internet connection and try again.");
+        nemesis_skills::types::validate_skill_identifier(out)
+            .map_err(|e| anyhow::anyhow!("output name '{out}' 非法：{e}"))?;
+        anyhow::bail!(
+            "统一漏斗按规范 slug 落位，不支持自定义安装名 '{out}'（将落在 skills/{skill_name}）；如需别名请安装后手动重命名目录"
+        );
+    }
+
+    println!("Installing openclaw/skills skill via unified funnel: {author}/{skill_name}");
+    println!(
+        "  Note: This is a legacy command. Prefer 'nemesisbot skills install openclaw/{skill_name}'（同一漏斗）."
+    );
+
+    // 与 cmd_install 同源装配（2026-11-16 legacy 命令接入统一漏斗）：
+    // 主配置 skills 安全策略 → CLI 审批闸 → registry 合流（含 builtin/出厂源）。
+    // 此前本命令 raw URL 下载后直接落盘，绕过扫描/验签/审批/lockfile 全部
+    // 安全面——现代路径有全链防护而 legacy 零防护的漏斗旁路。
+    let workspace = skills_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| skills_dir.to_path_buf());
+    let mut installer =
+        nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
+    if let Ok(cfg) = nemesis_config::load_config(main_cfg)
+        && let Some(skills) = cfg.skills
+    {
+        installer.set_allow_unsigned(skills.allow_unsigned);
+        installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
+    }
+    installer.set_install_gate(std::sync::Arc::new(CliInstallGate { yes }));
+    let config = load_registry_config(skills_cfg);
+    // 作者一致性预检只对 {author} 三层模式源有意义（两层源 download_path
+    // 无 author 段，作者参数无从校验，诚实跳过）。
+    let openclaw_three_layer = config
+        .github_sources
+        .iter()
+        .any(|s| s.name == "openclaw" && s.skill_path_pattern.contains("{author}"));
+    installer.set_registry_manager(nemesis_skills::registry::RegistryManager::from_config(
+        config,
+    ));
+
+    // openclaw 源必须在配置（本命令的内容源就是 openclaw/skills 仓库）。
+    // 未配置 = 诚实报错指路，不做任何绕漏斗的直连（旁路正是本次修复对象）。
+    if !installer.has_registry("openclaw") {
+        anyhow::bail!(
+            "openclaw 源未配置，无法经统一漏斗安装：请 `nemesisbot skills add-source https://github.com/openclaw/skills`，或改用 `nemesisbot skills install openclaw/{skill_name}`"
+        );
+    }
+
+    // 作者一致性预检：三层源安装期 slug 反查 author（BUG-20261111-066 机制，
+    // 取树序首个命中作者）——同名 slug 多作者共存时防止静默装错人。
+    // search 命中且作者段与请求不符 → 拒；未命中（网络抖动/确实不存在）不硬拒，
+    // 交给漏斗安装给出终局诚实错误。
+    if openclaw_three_layer {
+        let grouped = installer
+            .search_registries(skill_name, 10)
+            .await
+            .unwrap_or_default();
+        let flat = nemesis_skills::installer::SkillInstaller::flatten_search_results(&grouped);
+        if let Some(hit) = flat
+            .iter()
+            .find(|r| r.registry_name == "openclaw" && r.slug == skill_name)
+            && let Some(actual) = download_path_author(&hit.download_path, skill_name)
+            && actual != author
+        {
+            anyhow::bail!(
+                "作者不符：openclaw 上 '{skill_name}' 位于作者 '{actual}' 下（请求 '{author}'）。如确要安装请用：nemesisbot skills install openclaw/{skill_name}"
+            );
         }
     }
 
+    println!("📥 Installing skill: openclaw/{skill_name}");
+    let _ = std::fs::create_dir_all(skills_dir);
+    match installer.install("openclaw", skill_name, "latest").await {
+        Ok(result) => {
+            println!("  ✅ Installed: {skill_name} v{}", result.version);
+            println!(
+                "  Location: {}",
+                workspace.join("skills").join(skill_name).display()
+            );
+            if result.is_suspicious {
+                println!("  ⚠ 内容有可疑特征（未拦截，已记录安全检查）");
+            }
+        }
+        Err(e) => {
+            // 单一内容源语义：本命令不做任何 fallback（含 GitHub 直装）——
+            // openclaw 漏斗的失败原因（安全裁决/网络/不存在）就是终局诚实错误。
+            println!("  ⛔ 安装失败（openclaw 漏斗，无回退）：{e}");
+            anyhow::bail!("安装失败: {e}");
+        }
+    }
     Ok(())
+}
+
+/// 三层源 search 结果的 download_path（`<prefix><author>/<slug>/SKILL.md`）
+/// 反推 author 段（作者一致性预检用）。
+fn download_path_author(path: &str, slug: &str) -> Option<String> {
+    let inner = path.strip_suffix(&format!("/{slug}/SKILL.md"))?;
+    let author = inner.rsplit('/').next()?;
+    (!author.is_empty()).then(|| author.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1389,15 +1450,20 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
             author,
             skill_name,
             output_name,
+            yes,
         } => {
-            // (同类横向, quality-hardening goal 冲刺) async 化桥接，
-            // 同 block_in_place 既有模式。
+            // async 桥接，同 block_in_place 既有模式。
+            // 2026-11-16 接入统一漏斗：与 Install 同款参数面（skills_cfg/
+            // main_cfg/yes），openclaw 漏斗 + 审批卡 + lockfile 全链生效。
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_install_clawhub(
                     &skills_dir,
+                    &skills_cfg,
+                    &common::config_path(&home),
                     &author,
                     &skill_name,
                     output_name.as_deref(),
+                    yes,
                 ))
             })?;
         }

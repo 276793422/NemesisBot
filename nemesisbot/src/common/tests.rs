@@ -155,6 +155,43 @@ fn test_copy_directory_nonexistent() {
     assert!(result.is_err());
 }
 
+/// BUG-20261116-024 回归锁（copy 面）：目录链接（junction/symlink）环下
+/// copy_directory 不沿链接环以 loop/loop/... 假路径重复拷贝（修复前 =
+/// 深路径 fs::copy Err 炸整树），真实文件照常拷出。
+#[test]
+fn test_copy_directory_dir_link_loop_no_recurse() {
+    fn create_dir_link(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .status()?;
+            if !status.success() {
+                return Err(std::io::Error::other(format!("mklink /J failed: {status}")));
+            }
+            Ok(())
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), "hello").unwrap();
+    create_dir_link(&src, &src.join("loop")).expect("建目录链接");
+
+    copy_directory(&src, &dst).unwrap();
+
+    assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+    assert!(!dst.join("loop").exists(), "目录链接不得被递归进/拷出");
+}
+
 #[test]
 fn test_should_skip_heartbeat() {
     let tmp = tempfile::TempDir::new().unwrap();

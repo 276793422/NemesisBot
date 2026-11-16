@@ -226,6 +226,15 @@ pub struct SharedResources {
     #[cfg(not(feature = "plugins-wasm"))]
     #[allow(dead_code)]
     pub plugin_install_gate: Option<()>,
+    /// 浏览器接管框架（2026-11-15）：会话注册表单例。gateway 装配期建
+    /// 一次（跨 agent 重启存活）；host_browser 工具注册闸（Some 才注册）
+    /// 与 Dashboard 执行单元浏览器面板同源。None（headless/测试/browser
+    /// feature 关）= 无浏览器面，诚实缺省。
+    #[cfg(feature = "browser")]
+    pub browser_manager: Option<Arc<nemesis_browser::BrowserManager>>,
+    #[cfg(not(feature = "browser"))]
+    #[allow(dead_code)]
+    pub browser_manager: Option<()>,
 
     /// 入口形态变体（gap ⑤）：gateway/eval 等既有装配点用缺省 Interactive
     /// （pro system prompt 渲染字节不变）；headless `run` 显式 Headless、
@@ -293,6 +302,7 @@ impl Default for SharedResources {
             cluster_peers_fn: None,
             cluster_auto_target_fn: None,
             cluster_rpc_enabled: parking_lot::RwLock::new(None),
+            browser_manager: None,
             mcp_config_path: PathBuf::default(),
             mcp_enabled: false,
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),

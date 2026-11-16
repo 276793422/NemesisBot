@@ -349,8 +349,11 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
 
     // --- Step 9: Install default personality files (embedded) ---
     // Cli：总是覆盖——default/ 是新装机的权威源（mirrors Go's
-    // copyDefaultFiles，re-onboard 修复损坏人格）。Seed：only-if-absent——
-    // 用户装过的人格（persona install/activate）绝不被 auto-init clobber。
+    // copyDefaultFiles，re-onboard 修复损坏人格）。Seed：only-if-absent
+    // （用户已激活人格不被 clobber）。2026-11-16 提取排除后身份三件在
+    // Step 8 不再落盘（embedded::EXTRACT_EXCLUDED_ENTRIES），两条路径此处
+    // 都天然安装到老贾版——消除「Step 8 空白模板占位 → Seed 存在即跳过
+    // 静默截胡」的双真相源分裂。
     // 写失败计数汇总（诚实报告：不再无条件宣称安装成功）。
     let mut persona_failures = 0usize;
     if !install_if_absent(
@@ -383,6 +386,11 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
     } else {
         println!("  Warning: {persona_failures} personality file(s) failed to install (see above)");
     }
+
+    // --- Step 9.5: Materialize persona slots (default=贾维斯 / custom=空白) ---
+    // 2026-11-16 人格预装语义重构：提取排除后 personas/ 不再来自 Step 8，
+    // 改由这里物化两槽（五件套口径见 materialize_persona_store 文档注释）。
+    materialize_persona_store(&workspace_dir);
 
     // --- Step 10: Create additional directories ---
     let _ = std::fs::create_dir_all(workspace_dir.join("logs"));
@@ -490,6 +498,173 @@ fn install_if_absent(path: &Path, content: &str, mode: OnboardMode) -> bool {
             println!("  Warning: failed to write {}: {e}", path.display());
             false
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Step 9.5：人格槽物化（2026-11-16 人格预装语义重构）
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 系统默认执行面三件（与 workspace 模板同一 include_str 源——改模板两槽
+/// 同步；老贾无专属执行面特化，default/custom 共用同一份执行面）。
+const SLOT_AGENT_MD: &str = include_str!("../../workspace/AGENT.md");
+const SLOT_TOOLS_MD: &str = include_str!("../../workspace/TOOLS.md");
+const SLOT_HEARTBEAT_MD: &str = include_str!("../../workspace/HEARTBEAT.md");
+/// custom 槽身份两件（workspace 空白模板同源——单一真相源保持：改模板
+/// custom 同步；改 default/ 老贾同步）。
+const SLOT_IDENTITY_BLANK_MD: &str = include_str!("../../workspace/IDENTITY.md");
+const SLOT_SOUL_BLANK_MD: &str = include_str!("../../workspace/SOUL.md");
+
+/// 物化人格槽（onboard Step 9.5）。
+///
+/// 空/新装机的本地人格底座 = 两槽：`personas/default/`（贾维斯/老贾本体，
+/// 默认激活）+ `personas/custom/`（空白定制画布，用户改名编辑后自用）+
+/// `_active.json`。内置人格不在此列——必须用户从内置页手动下载才落地
+/// （提取排除见 `embedded::EXTRACT_EXCLUDED_ENTRIES`）。
+///
+/// **五件套口径 = nemesis-web handlers/persona.rs 的 PERSONA_FILES ∪
+/// PERSONA_ARCHIVE_FILES 白名单**（IDENTITY/SOUL/AGENT/TOOLS/HEARTBEAT；
+/// USER.md 不在白名单 = 跨人格恒定文件，不进 persona 目录，root 由
+/// Step 9 落）——激活链（activate_persona_workspace）清根后按白名单恢复
+/// 且无系统默认补齐臂，槽内缺哪件切走再切回根上就永久缺哪件，故两槽
+/// 必须带全五件。口径变更需与 web 白名单两处同步（防双真相漂移）。
+///
+/// 写盘**恒 only-if-absent（两种模式一致）**：人格槽是用户可编辑数据面
+/// ——default 可能已被用户改过、custom 可能定制中，覆盖即毁用户数据
+/// （刻意偏离 Cli=overwrite 惯例；root 身份三件不受影响，仍按 Step 9
+/// 模式语义）。文件级 only-if-absent 只作用于**已存在的槽目录内**：
+/// 懒初始化归档槽（web ensure_persona_store 的半量白名单产物）在此补齐
+/// 缺口件；槽目录本身的创建另受下方闸门约束。
+///
+/// custom 被用户删除后**不会复活**（槽目录创建闸）：personas/ 整体缺席 =
+/// 全新装机，物化两槽；在场 = 存量环境（懒初始化归档 / 用户自行管理），
+/// 只对**已存在的槽目录**逐文件补缺口——槽目录缺席 = 用户删除意志，不
+/// 重建、不造墓碑；同一闸门天然覆盖「不迁移存量」（老用户 personas/ 无
+/// custom 槽，re-onboard 不凭空造出）。删除整个 personas/ 目录 = 显式
+/// 重置意志，重初始化照常恢复底座（与删 config.json 重置身份面同口径）。
+fn materialize_persona_store(workspace_dir: &Path) {
+    let personas_dir = workspace_dir.join("personas");
+    // 槽创建闸：personas/ 在场即视为存量环境（不新建任何槽目录）。
+    let fresh_install = !personas_dir.exists();
+
+    // default 槽：老贾本体。IDENTITY/SOUL 用 default/ 权威源（与 Step 9
+    // root 安装同源——root 是老贾版，default 槽也是老贾版）。
+    let default_slot = personas_dir.join("default");
+    if fresh_install || default_slot.is_dir() {
+        materialize_persona_slot(
+            &default_slot,
+            &[
+                ("IDENTITY.md", crate::DEFAULT_IDENTITY),
+                ("SOUL.md", crate::DEFAULT_SOUL),
+                ("AGENT.md", SLOT_AGENT_MD),
+                ("TOOLS.md", SLOT_TOOLS_MD),
+                ("HEARTBEAT.md", SLOT_HEARTBEAT_MD),
+            ],
+            "贾维斯",
+            "😄",
+            "默认管家人格：日常对话与任务执行的贴身助手",
+        );
+    }
+
+    // custom 槽：空白定制画布（同受槽创建闸——存量环境无此槽则不造）。
+    let custom_slot = personas_dir.join("custom");
+    if fresh_install || custom_slot.is_dir() {
+        materialize_persona_slot(
+            &custom_slot,
+            &[
+                ("IDENTITY.md", SLOT_IDENTITY_BLANK_MD),
+                ("SOUL.md", SLOT_SOUL_BLANK_MD),
+                ("AGENT.md", SLOT_AGENT_MD),
+                ("TOOLS.md", SLOT_TOOLS_MD),
+                ("HEARTBEAT.md", SLOT_HEARTBEAT_MD),
+            ],
+            "自定义人格",
+            "🧩",
+            "空白人格画布：编辑 personas/custom/ 下各文件定制你的人格，启用后生效",
+        );
+    }
+
+    // 激活标记：默认指向 default（only-if-absent——已有激活状态绝不覆盖）。
+    // 写入闸（复审精化）：仅当本重构语义确实接管该 store 时写——
+    // fresh_install（两槽刚物化）或任一本重构槽已在场（标记丢失按缺省
+    // default 补）。存量老用户 store（只有第三方槽、无 default/custom、
+    // 无标记）**不写**：web ensure_persona_store 的懒初始化归档以
+    // `_active.json` 在场为闸（persona.rs:1587），提前写入会把闸关死，
+    // default 槽将永不创建（老路径靠首次触达人格页从 root 归档自愈）。
+    // 不写 = 与旧版行为一致（标记缺席由 ensure-first 纪律兜底：cmd_*
+    // 全部先 ensure 再读）。
+    let active_path = personas_dir.join("_active.json");
+    if !active_path.exists() && (fresh_install || default_slot.is_dir() || custom_slot.is_dir()) {
+        let active = serde_json::json!({ "name": "default" });
+        if let Err(e) = nemesis_utils::write_file_atomic(
+            &active_path.to_string_lossy(),
+            serde_json::to_string_pretty(&active)
+                .unwrap_or_else(|_| active.to_string())
+                .as_bytes(),
+            0o600,
+        ) {
+            println!("  Warning: failed to write personas/_active.json: {e}");
+        }
+    }
+}
+
+/// 单槽物化：五件套 + PERSONA.json，全部 only-if-absent（存在即跳过，
+/// 不读不比对——已有文件可能是用户手笔）。PERSONA.json 三字段形态对齐
+/// web ensure_persona_store 的懒初始化产物（name/emoji/description；
+/// 转换管线 write_persona_files 写的是带 frontmatter 的四字段形态，
+/// 两形态 web 侧皆可解析）。
+fn materialize_persona_slot(
+    slot_dir: &Path,
+    files: &[(&str, &str)],
+    name: &str,
+    emoji: &str,
+    description: &str,
+) {
+    let slot_label = slot_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut written = 0usize;
+    let mut failures = 0usize;
+    for (file, content) in files {
+        let path = slot_dir.join(file);
+        if path.exists() {
+            continue;
+        }
+        if install_if_absent(&path, content, OnboardMode::Seed) {
+            written += 1;
+        } else {
+            failures += 1;
+        }
+    }
+    // PERSONA.json 压轴（installed 判定唯一口径同款语义）。
+    let persona_json_path = slot_dir.join("PERSONA.json");
+    if !persona_json_path.exists() {
+        let persona_json = serde_json::json!({
+            "name": name,
+            "emoji": emoji,
+            "description": description,
+        });
+        match nemesis_utils::write_file_atomic(
+            &persona_json_path.to_string_lossy(),
+            serde_json::to_string_pretty(&persona_json)
+                .unwrap_or_else(|_| persona_json.to_string())
+                .as_bytes(),
+            0o600,
+        ) {
+            Ok(()) => written += 1,
+            Err(e) => {
+                println!("  Warning: failed to write {slot_label}/PERSONA.json: {e}");
+                failures += 1;
+            }
+        }
+    }
+    if failures > 0 {
+        println!(
+            "  Warning: persona slot '{slot_label}': {failures} file(s) failed to materialize"
+        );
+    } else if written > 0 {
+        println!("  Persona slot '{slot_label}' materialized ({written} file(s))");
     }
 }
 

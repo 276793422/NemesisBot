@@ -273,6 +273,11 @@ pub struct Config {
     /// 用户显式禁用，子系统静默重启用。
     #[serde(default)]
     pub plugins: Option<PluginsHostConfig>,
+    /// 浏览器接管段（spawn 浏览器选择 kind/executable；None = 全默认
+    /// auto）。typed 字段化防 set_field round-trip 丢键（plugins 段同款）。
+    /// 见 [`BrowserConfig`]。
+    #[serde(default)]
+    pub browser: Option<BrowserConfig>,
 }
 
 /// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；

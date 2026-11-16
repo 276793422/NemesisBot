@@ -2,9 +2,11 @@
 //!
 //! 独立测试文件（项目纪律：生产文件禁内联测试）。两类：
 //! - 纯函数：bridge_endpoint 归一 / check_access 比对 / next_backoff 步进 /
-//!   hostname_node_id 形态
+//!   hostname_node_id 形态 / 挑战 nonce 发放-登记-单次消费-TTL-容量逐出 /
+//!   check_access_challenged 绑定摘要
 //! - 集成（本地回环 mock 中继）：hello→welcome 握手、conn 泵字节往返
-//!   （TCP echo）、dial 失败回执、access_check 通过/拒绝、welcome 拒止
+//!   （TCP echo）、dial 失败回执、access_check 通过/拒绝、挑战-应答全链路
+//!   （发放→绑定摘要→重放拒绝→伪造拒绝→旧版兼容）、welcome 拒止
 //!   不 panic 且退避重连、假死判定（服务端沉默→客户端主动断）、心跳续命
 //!   （服务端回 Pong→连接不误杀）
 //!
@@ -21,8 +23,9 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 use nemesis_web::relay::protocol::{BridgeFrame, decode_frame, encode_frame};
 
 use crate::bridge_client::{
-    BridgeClientParams, LoopTiming, bridge_endpoint, check_access, constant_time_eq,
-    hostname_node_id, next_backoff, run_loop,
+    BridgeClientParams, LoopTiming, bridge_endpoint, check_access, check_access_challenged,
+    constant_time_eq, consume_pending_nonce, hostname_node_id, issue_access_nonce, next_backoff,
+    register_pending_nonce, run_loop,
 };
 
 // ---------------------------------------------------------------------------
@@ -210,6 +213,94 @@ fn test_constant_time_eq() {
     assert!(!constant_time_eq(b"abc", b"ab"));
     assert!(!constant_time_eq(b"", b"a"));
     assert!(constant_time_eq(b"", b""));
+}
+
+// 挑战-应答（BUG-20261116-009）：nonce 发放/登记/单次消费/绑定摘要
+
+#[test]
+fn test_issue_and_consume_access_nonce() {
+    use std::collections::HashMap;
+
+    // 发放形态：64 hex（2×uuid simple，128 位熵）；多次发放不重复。
+    let n1 = issue_access_nonce();
+    let n2 = issue_access_nonce();
+    assert_eq!(n1.len(), 64);
+    assert!(n1.bytes().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(n1, n2, "随机 nonce 不得重复");
+
+    // 登记后单次消费：第一次 true，重放 false；伪造 false。
+    let mut map = HashMap::new();
+    register_pending_nonce(&mut map, n1.clone());
+    register_pending_nonce(&mut map, n2.clone());
+    assert!(consume_pending_nonce(&mut map, &n1));
+    assert!(!consume_pending_nonce(&mut map, &n1), "重放必须失败");
+    assert!(
+        !consume_pending_nonce(&mut map, &"ff".repeat(32)),
+        "伪造必须失败"
+    );
+    assert!(consume_pending_nonce(&mut map, &n2));
+    assert!(map.is_empty());
+}
+
+#[test]
+fn test_pending_nonce_ttl_and_cap_eviction() {
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    let ttl = Duration::from_secs(nemesis_web::relay::protocol::ACCESS_NONCE_TTL_SECS);
+
+    // TTL 过期：拨旧 Instant 后消费 false（单次消费语义里过期与重放同型）。
+    let mut map = HashMap::new();
+    let stale = issue_access_nonce();
+    map.insert(stale.clone(), Instant::now() - ttl - Duration::from_secs(1));
+    assert!(
+        !consume_pending_nonce(&mut map, &stale),
+        "过期 nonce 必须失败"
+    );
+
+    // 发放清扫：登记过期项后再登记新项 → 过期项被 retain 清掉，不占容量。
+    let mut map = HashMap::new();
+    map.insert(
+        "old".to_string(),
+        Instant::now() - ttl - Duration::from_secs(1),
+    );
+    register_pending_nonce(&mut map, issue_access_nonce());
+    assert!(!map.contains_key("old"), "过期项必须被发放清扫");
+
+    // 容量上限：登记 32 个后再登记 → 逐出最旧（挑战路径永不被 spam 停摆）。
+    let mut map = HashMap::new();
+    let first = issue_access_nonce();
+    register_pending_nonce(&mut map, first.clone());
+    for _ in 1..32 {
+        register_pending_nonce(&mut map, issue_access_nonce());
+    }
+    assert_eq!(map.len(), 32);
+    register_pending_nonce(&mut map, issue_access_nonce());
+    assert_eq!(map.len(), 32, "超限逐出最旧后仍 32");
+    assert!(!map.contains_key(&first), "最旧 nonce 被逐出");
+}
+
+#[test]
+fn test_check_access_challenged() {
+    use sha2::{Digest, Sha256};
+    let nonce = "ab".repeat(32);
+    // 摘要契约：SHA-256(token UTF-8 || nonce hex 字符串拼接)。
+    let good = format!("{:x}", Sha256::digest(format!("secret{nonce}").as_bytes()));
+    assert!(check_access_challenged("secret", &good, &nonce));
+    assert!(check_access_challenged(
+        "secret",
+        &good.to_uppercase(),
+        &nonce
+    ));
+    // 错误 nonce / 错误摘要 / 空 token fail-closed。
+    let other_nonce = "cd".repeat(32);
+    assert!(!check_access_challenged("secret", &good, &other_nonce));
+    let plain = format!("{:x}", Sha256::digest(b"secret"));
+    assert!(
+        !check_access_challenged("secret", &plain, &nonce),
+        "裸哈希过不了挑战校验"
+    );
+    assert!(!check_access_challenged("", &good, &nonce));
 }
 
 #[test]
@@ -717,6 +808,7 @@ async fn test_access_check_roundtrip() {
             request_id: "req-ok".into(),
             node_id: "bridge-testnode".into(),
             hash_hex: good,
+            nonce_hex: None,
         },
     )
     .await;
@@ -739,6 +831,7 @@ async fn test_access_check_roundtrip() {
             request_id: "req-bad".into(),
             node_id: "bridge-testnode".into(),
             hash_hex: format!("{:x}", Sha256::digest(b"wrong")),
+            nonce_hex: None,
         },
     )
     .await;
@@ -750,6 +843,138 @@ async fn test_access_check_roundtrip() {
         BridgeFrame::AccessResult { request_id, ok } => {
             assert_eq!(request_id, "req-bad");
             assert!(!ok);
+        }
+        _ => unreachable!(),
+    }
+    client.abort();
+}
+
+/// 挑战-应答全链路（BUG-20261116-009）：AccessChallengeRequest → 设备发放
+/// nonce → 绑定摘要 AccessCheck 通过 → 同 nonce 重放拒绝 → 未知 nonce 拒绝
+/// → 旧版裸哈希兼容路径照常通过。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_access_challenge_roundtrip_and_replay_rejection() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    use sha2::{Digest, Sha256};
+    let (relay_port, relay_accept) = spawn_mock_relay().await;
+    let client = spawn_client(test_params("tok-ch", dead_web_port()), relay_port);
+    let mut ws = relay_ws_of(relay_accept).await;
+
+    let _ = recv_frame(&mut ws).await; // hello
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: String::new(),
+        },
+    )
+    .await;
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+
+    // ① 挑战请求 → 设备回 AccessChallenge（64 hex）。
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessChallengeRequest {
+            request_id: "ch-1".into(),
+            node_id: "bridge-testnode".into(),
+        },
+    )
+    .await;
+    let nonce = match recv_frame_matching(&mut ws, |f| {
+        matches!(f, BridgeFrame::AccessChallenge { .. })
+    })
+    .await
+    {
+        BridgeFrame::AccessChallenge {
+            request_id,
+            nonce_hex,
+        } => {
+            assert_eq!(request_id, "ch-1");
+            assert_eq!(nonce_hex.len(), 64);
+            assert!(nonce_hex.bytes().all(|c| c.is_ascii_hexdigit()));
+            nonce_hex
+        }
+        _ => unreachable!(),
+    };
+
+    // ② 绑定摘要 AccessCheck（SHA-256("secret"+nonce)）→ ok=true。
+    let bound = format!("{:x}", Sha256::digest(format!("secret{nonce}").as_bytes()));
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessCheck {
+            request_id: "req-bound".into(),
+            node_id: "bridge-testnode".into(),
+            hash_hex: bound.clone(),
+            nonce_hex: Some(nonce.clone()),
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::AccessResult { .. })).await {
+        BridgeFrame::AccessResult { request_id, ok } => {
+            assert_eq!(request_id, "req-bound");
+            assert!(ok, "绑定摘要必须通过");
+        }
+        _ => unreachable!(),
+    }
+
+    // ③ 同 nonce 重放（nonce 已消费）→ ok=false。
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessCheck {
+            request_id: "req-replay".into(),
+            node_id: "bridge-testnode".into(),
+            hash_hex: bound,
+            nonce_hex: Some(nonce),
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::AccessResult { .. })).await {
+        BridgeFrame::AccessResult { request_id, ok } => {
+            assert_eq!(request_id, "req-replay");
+            assert!(!ok, "nonce 重放必须拒绝");
+        }
+        _ => unreachable!(),
+    }
+
+    // ④ 未知 nonce（伪造）→ ok=false。
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessCheck {
+            request_id: "req-forged".into(),
+            node_id: "bridge-testnode".into(),
+            hash_hex: "f".repeat(64),
+            nonce_hex: Some("ff".repeat(32)),
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::AccessResult { .. })).await {
+        BridgeFrame::AccessResult { request_id, ok } => {
+            assert_eq!(request_id, "req-forged");
+            assert!(!ok, "伪造 nonce 必须拒绝");
+        }
+        _ => unreachable!(),
+    }
+
+    // ⑤ 旧版裸哈希兼容路径（None nonce + 裸摘要）→ ok=true。
+    let plain = format!("{:x}", Sha256::digest(b"secret"));
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessCheck {
+            request_id: "req-legacy".into(),
+            node_id: "bridge-testnode".into(),
+            hash_hex: plain,
+            nonce_hex: None,
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::AccessResult { .. })).await {
+        BridgeFrame::AccessResult { request_id, ok } => {
+            assert_eq!(request_id, "req-legacy");
+            assert!(ok, "旧版兼容路径必须保持可用");
         }
         _ => unreachable!(),
     }
@@ -1166,7 +1391,7 @@ async fn test_downstream_noise_frames_ignored_and_session_survives() {
 
     // 会话必须仍健在：后续心跳照常。
     let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
-    // access_check 照常应答（功能未受损）。
+    // access_check 照常应答（功能未受损；无 nonce = 旧版兼容路径）。
     let good = format!("{:x}", Sha256::digest(b"secret"));
     send_frame(
         &mut ws,
@@ -1174,6 +1399,7 @@ async fn test_downstream_noise_frames_ignored_and_session_survives() {
             request_id: "nz".to_string(),
             node_id: "bridge-testnode".to_string(),
             hash_hex: good,
+            nonce_hex: None,
         },
     )
     .await;

@@ -413,7 +413,16 @@ async fn search_personas_online(
     if !resp.status().is_success() {
         anyhow::bail!("GitHub API error: {}", resp.status());
     }
-    let json: serde_json::Value = resp.json().await?;
+    // 响应体有帽读取（BUG-20261116-027 下载加固横扫补位）：裸 resp.json()
+    // 无上限，API/中转异常时巨大响应灌满内存。与 web 面 twin
+    // (handlers/persona.rs) 同一常量单一真相源。
+    let body = nemesis_utils::http_cap::read_body_capped(
+        resp,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("read GitHub API response: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
 
     let mut results = Vec::new();
     if let Some(tree) = json["tree"].as_array() {
@@ -541,7 +550,14 @@ async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<()> {
     if !resp.status().is_success() {
         anyhow::bail!("GitHub API error: {}", resp.status());
     }
-    let json: serde_json::Value = resp.json().await?;
+    // 响应体有帽读取（BUG-20261116-027，同上：单一真相源常量与 web twin 共享）。
+    let body = nemesis_utils::http_cap::read_body_capped(
+        resp,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("read GitHub API response: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
 
     let mut agent_path = None;
     if let Some(tree) = json["tree"].as_array() {
@@ -574,7 +590,14 @@ async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<()> {
     if !resp.status().is_success() {
         anyhow::bail!("下载失败: {}", resp.status());
     }
-    let cjson: serde_json::Value = resp.json().await?;
+    // 响应体有帽读取（BUG-20261116-027，同上：单一真相源常量与 web twin 共享）。
+    let cbody = nemesis_utils::http_cap::read_body_capped(
+        resp,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("read persona content response: {e}"))?;
+    let cjson: serde_json::Value = serde_json::from_slice(&cbody)?;
     let content_b64 = cjson["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing content"))?;

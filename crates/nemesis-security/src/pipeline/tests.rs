@@ -2294,6 +2294,81 @@ fn test_append_direct_audit_event_none_when_chain_disabled() {
     );
 }
 
+#[test]
+fn test_audit_append_failure_is_observed_not_silent() {
+    // 审计事件落盘失败不得静默（`let _ =`/`.ok()` 直吞族回归锁）：append
+    // 契约是 Err=未落盘（内存链尾不前进），失败必须 warn + 降级登记表
+    // `audit_chain` kind（gateway 水泵 → SSE system-alert + /ready 降级面，
+    // 与 chat_log/turn_wal 同族基建）。用 close() 确定性制造 Err，不依赖
+    // 磁盘故障注入。漏斗（append_direct_audit_event）与直连 bool 面
+    // （append_observed）共用同一观测路径，单测试顺序断言（降级登记表是
+    // 进程级全局，并行双测试会互相复位竞态）。
+    nemesis_utils::degraded::reset_for_tests();
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        audit_chain_enabled: true,
+        audit_chain_path: Some(
+            dir.path()
+                .join("audit_chain.jsonl")
+                .to_string_lossy()
+                .to_string(),
+        ),
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    let chain = plugin.audit_chain().unwrap();
+    chain.close().unwrap();
+
+    // 漏斗面：None（closed → Err）之外必须降级登记。
+    assert!(
+        plugin
+            .append_direct_audit_event("op_a19", "tool", "user", "src", "target", "forced", "why")
+            .is_none(),
+        "closed 链漏斗追加必须诚实 None"
+    );
+    let snap = nemesis_utils::degraded::snapshot();
+    let hit = snap
+        .iter()
+        .find(|d| d.kind == "audit_chain" && d.detail.contains("op_a19"))
+        .expect("漏斗 append 失败必须进降级登记表（kind=audit_chain）");
+    assert!(
+        hit.detail.contains("operation=op_a19"),
+        "登记 detail 必须带现场: {}",
+        hit.detail
+    );
+
+    // 直连 bool 面（Layer 8 / message_preprocess / image_attach / DLP 四处
+    // `let _ =` 直吞形态的替代写法）：同一观测路径，closed 链 false + 登记。
+    assert!(
+        !chain.append_observed("op_b19", "t", "u", "c", "x", "a", ""),
+        "closed 链直连追加必须 false"
+    );
+    let snap2 = nemesis_utils::degraded::snapshot();
+    assert!(
+        snap2
+            .iter()
+            .any(|d| d.kind == "audit_chain" && d.detail.contains("op_b19")),
+        "直连 append 失败必须降级登记"
+    );
+
+    // 对照：open 链成功追加 true 且不产生登记。
+    let dir2 = tempfile::tempdir().unwrap();
+    let chain2 = crate::integrity::AuditChain::new(crate::integrity::AuditChainConfig {
+        storage_path: dir2.path().join("chain.jsonl"),
+        ..Default::default()
+    });
+    assert!(
+        chain2.append_observed("op_ok19", "t", "u", "c", "x", "a", ""),
+        "open 链直连追加必须 true"
+    );
+    let snap3 = nemesis_utils::degraded::snapshot();
+    assert!(
+        !snap3.iter().any(|d| d.detail.contains("op_ok19")),
+        "成功追加不得降级登记"
+    );
+}
+
 // ===========================================================================
 // pre-exec 脚本内容扫描——管线级矩阵
 // ===========================================================================

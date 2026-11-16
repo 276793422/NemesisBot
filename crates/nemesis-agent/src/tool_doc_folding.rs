@@ -24,9 +24,10 @@ pub const DEFAULT_EXPAND_TOP_N: usize = 8;
 /// slicing panics mid-codepoint on CJK text).
 pub const SUMMARY_CHAR_CAP: usize = 100;
 
-/// Cosine similarity between two vectors. Zero-length or zero-norm inputs
-/// yield 0.0 (an embedding that carries no direction cannot be similar to
-/// anything — deterministic, no NaN).
+/// Cosine similarity between two vectors. Zero-length, zero-norm, or
+/// non-finite-norm inputs yield 0.0 (an embedding that carries no direction
+/// cannot be similar to anything; non-finite scores poison downstream
+/// sorts — deterministic, no NaN).
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
     let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
@@ -35,7 +36,11 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
         na += a[i] * a[i];
         nb += b[i] * b[i];
     }
-    if na <= 0.0 || nb <= 0.0 {
+    // BUG-20261116-015: `na <= 0.0` cannot stop NaN (comparison is always
+    // false) or inf (passes) — both poison fold_tool_defs' sort comparator
+    // into a non-total order (driftsort panic). Note f32 accumulation, unlike
+    // the shared f64 version, can overflow to inf from finite large elements.
+    if na <= 0.0 || nb <= 0.0 || !na.is_finite() || !nb.is_finite() {
         return 0.0;
     }
     dot / (na.sqrt() * nb.sqrt())

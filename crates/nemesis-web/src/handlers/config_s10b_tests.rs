@@ -580,6 +580,63 @@ fn config_update_entry_closure_err_leaves_disk_untouched() {
     assert_eq!(raw["model_list"][0]["model_name"], "seed");
 }
 
+// BUG-20261116-021 回归锁：typed 事务在全局 store 在位（gateway 常驻形态）
+// 时必须以**磁盘**为 RMW 读底，不能 live 优先——跨进程写者（CLI `model
+// set-tier` 等免重启工作流直接改盘）之后 store 内存无回读触发点（reload 只
+// 在自家写后调用），live 优先读 = 陈旧快照，typed 写整档落盘静默回退外部
+// 改动（无需窗口重叠，前后紧邻也中招）。
+// 注入自建 store 而非 set_global：OnceLock first-wins 会毒化本测试二进制内
+// 全部依赖磁盘 fallback 的既有测试（nemesis-config store/tests.rs 单例纪律
+// 同源）。
+#[test]
+fn config_update_typed_tx_reads_disk_not_stale_store_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_string_lossy().to_string();
+    let path = dir.path().join("config.json");
+    std::fs::write(
+        &path,
+        serde_json::json!({ "model_list": [ { "model_name": "seed" } ] }).to_string(),
+    )
+    .unwrap();
+
+    // gateway 形态：store 从启动时快照装配（内存不含尚未发生的外部改动）。
+    let store = nemesis_config::ConfigStore::load(&path).unwrap();
+
+    // 跨进程外部写（模拟 CLI `model set-tier` 直接改盘，绕过本进程 store）。
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "model_list": [ { "model_name": "seed", "model_tier": "big" } ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // typed 事务改另一 section（dashboard toggle 形态）。
+    super::config::update_config_with_store(&home, Some(&store), |cfg| {
+        cfg.agents.tool_doc_folding.enabled = true;
+        Ok(())
+    })
+    .expect("typed tx ok");
+
+    // 外部改动必须在盘上存活（修复前：live 读陈旧 store → model_tier 被抹）。
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        raw["model_list"][0]["model_tier"], "big",
+        "typed tx clobbered the external (CLI) edit from the stale store snapshot"
+    );
+    assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], true);
+
+    // store 内存同时被对账到本次写入结果（typed readers 不再供陈旧快照）。
+    let live_json = serde_json::to_value(store.handle().read().clone()).unwrap();
+    assert_eq!(
+        live_json["model_list"][0]["model_tier"], "big",
+        "store memory not reconciled with the disk-fresh write"
+    );
+    assert_eq!(live_json["agents"]["tool_doc_folding"]["enabled"], true);
+}
+
 // 掩码还原（实机实证回归锁）：config.get 脱敏 → 编辑器原样保存，
 // 旧实现把 model_list[].api_key 落盘成 '****'（真 key 丢失——channels.save /
 // cluster.config.save 都有 restore_masked_named_fields，config.save 漏接）。

@@ -28,20 +28,29 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SubagentsView from './SubagentsView.vue'
 import ProcessesView from './ProcessesView.vue'
+import BrowserView from './BrowserView.vue'
 
-type Tab = 'subagents' | 'processes' | 'archived'
+// 浏览器接管（2026-11-15，计划 D10）：第四 TAB，feature gate（`!== 'false'`
+// = 默认包含，同 router 门控惯例）；关 = TAB 不渲染，路由/侧栏零改动。
+const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
+
+type Tab = 'subagents' | 'processes' | 'archived' | 'browser'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'subagents', label: '子代理' },
   { key: 'processes', label: '后台任务' },
   { key: 'archived', label: '已归档' },
+  ...(browserEnabled ? [{ key: 'browser' as Tab, label: '浏览器' }] : []),
 ]
 
 const route = useRoute()
 const router = useRouter()
 
-const tab = computed<Tab>(() =>
-  route.query.tab === 'processes' ? 'processes' : route.query.tab === 'archived' ? 'archived' : 'subagents',
-)
+const tab = computed<Tab>(() => {
+  if (route.query.tab === 'processes') return 'processes'
+  if (route.query.tab === 'archived') return 'archived'
+  if (route.query.tab === 'browser' && browserEnabled) return 'browser'
+  return 'subagents'
+})
 
 // 已归档计数（TAB 徽标数据源）：面板每次 loadList 后 emit 投影；
 // null = 尚未有任何面板加载过（如直链后台任务 TAB——不渲染括号；
@@ -76,6 +85,7 @@ function switchTab(t: Tab) {
         @archived-count="(n: number) => (archivedCount = n)"
       />
       <ProcessesView v-else-if="tab === 'processes'" />
+      <BrowserView v-else-if="tab === 'browser'" />
       <SubagentsView
         v-else
         :archived="true"

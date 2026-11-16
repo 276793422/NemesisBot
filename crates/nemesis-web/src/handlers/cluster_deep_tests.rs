@@ -1456,7 +1456,9 @@ async fn diagnostics_run_gates_and_fails_fast() {
         .unwrap_err();
     assert_eq!(err, "RPC client not available");
 
-    // 注入无 resolver 的 RpcClient → 对未知 peer 快速失败
+    // 注入无 resolver 的 RpcClient → 预热探针两次失败（unknown peer 对
+    // 无 resolver 的 dispatch 立即报 unresolvable，双探针瞬时失败）诚实
+    // 报对端不可达，不翻 Online/Offline 状态（预热是工具性探测）。
     cluster.set_rpc_client(Arc::new(RpcClient::new()));
     let err = handler
         .handle_cmd(
@@ -1466,7 +1468,8 @@ async fn diagnostics_run_gates_and_fails_fast() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("RPC call failed"), "{err}");
+    assert!(err.contains("预热探针两次失败"), "{err}");
+    assert!(err.contains("n1"), "{err}");
 }
 
 // persona_generate / persona_apply

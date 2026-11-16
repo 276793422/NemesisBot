@@ -247,6 +247,57 @@ pub(crate) fn check_access(access_token: &str, hash_hex: &str) -> bool {
     constant_time_eq(expect.as_bytes(), hash_hex.to_lowercase().as_bytes())
 }
 
+/// 挑战 nonce 有效期（发放起算；与中继侧协议常量同源）。
+const ACCESS_NONCE_TTL_SECS: u64 = nemesis_web::relay::protocol::ACCESS_NONCE_TTL_SECS;
+
+/// 设备端待消费 nonce 上限。超限**逐出最旧**而非拒绝发放——洪泛/spam 下
+/// 保证挑战路径始终可用，服务端不会因发放停摆误判「旧版设备」回落可重放
+/// 裸哈希（拒绝发放 = 变相降级攻击面）；合法用户 nonce 被逐出 = 提交失败
+/// 重试即得新 nonce（人类登录节奏到不了 32 并发）。
+const ACCESS_NONCE_CAP: usize = 32;
+
+/// 发放一次性挑战 nonce（64 hex = 2×uuid simple 拼接，128 位熵）。
+pub(crate) fn issue_access_nonce() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// 登记挑战 nonce（发放侧：过期清扫 + 超限逐出最旧 + 插入）。
+pub(crate) fn register_pending_nonce(map: &mut HashMap<String, Instant>, nonce: String) {
+    map.retain(|_, t| t.elapsed() < Duration::from_secs(ACCESS_NONCE_TTL_SECS));
+    if map.len() >= ACCESS_NONCE_CAP
+        && let Some(oldest) = map.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone())
+    {
+        map.remove(&oldest);
+    }
+    map.insert(nonce, Instant::now());
+}
+
+/// 单次消费挑战 nonce：在册 + 未过期 → 移除并 true；重放/伪造/过期 → false。
+pub(crate) fn consume_pending_nonce(map: &mut HashMap<String, Instant>, nonce: &str) -> bool {
+    match map.remove(nonce) {
+        Some(t) => t.elapsed() < Duration::from_secs(ACCESS_NONCE_TTL_SECS),
+        None => false,
+    }
+}
+
+/// 挑战-应答比对：`SHA-256(access_token UTF-8 || nonce hex 字符串拼接)` ==
+/// 上报 hash_hex。空 access_token = fail-closed；nonce 在册性由调用方先
+/// 消费验明（本函数只管摘要）。
+pub(crate) fn check_access_challenged(access_token: &str, hash_hex: &str, nonce: &str) -> bool {
+    if access_token.is_empty() {
+        return false;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(access_token.as_bytes());
+    hasher.update(nonce.as_bytes());
+    let expect = format!("{:x}", hasher.finalize());
+    constant_time_eq(expect.as_bytes(), hash_hex.to_lowercase().as_bytes())
+}
+
 /// 退避步进：×2 翻倍，封顶 `max`。
 pub(crate) fn next_backoff(cur: Duration, max: Duration) -> Duration {
     let doubled = cur.mul_f64(2.0);
@@ -637,6 +688,9 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
         bridge_rpc_attach(bridge_rpc, cmd_tx.clone());
     }
     let mut conns: HashMap<u64, ConnHandle> = HashMap::new();
+    // 挑战 nonce 待消费表（发放→单次消费；连接级生命周期——断线重连 =
+    // 新会话新表，服务端挑战等待表同为 per-session 语义，无跨会话残留）。
+    let mut access_nonces: HashMap<String, Instant> = HashMap::new();
     let mut last_rx = Instant::now();
     let mut heartbeat_tick = tokio::time::interval(timing.heartbeat);
     heartbeat_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -656,12 +710,36 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                         match frame {
                             BridgeFrame::Pong => {} // 心跳回执：last_rx 已刷新
                             BridgeFrame::Heartbeat => {} // 服务端不该发；防御忽略
-                            BridgeFrame::AccessCheck { request_id, node_id: _, hash_hex } => {
-                                let ok = check_access(&params.access_token, &hash_hex);
+                            BridgeFrame::AccessChallengeRequest { request_id, node_id: _ } => {
+                                // 挑战-应答第一步（BUG-20261116-009）：发放一次性
+                                // nonce 回执。旧中继不发本帧（未知变体解码失败被
+                                // 忽略）——本臂只在链路对端为新中继时触达。
+                                let nonce = issue_access_nonce();
+                                register_pending_nonce(&mut access_nonces, nonce.clone());
+                                if send_frame(&mut ws_write, BridgeFrame::AccessChallenge { request_id, nonce_hex: nonce }, timing.write_timeout).await.is_err() {
+                                    break SessionEnd::Disconnected { welcomed };
+                                }
+                            }
+                            BridgeFrame::AccessCheck { request_id, node_id: _, hash_hex, nonce_hex } => {
+                                let ok = match nonce_hex.as_deref() {
+                                    Some(n) if consume_pending_nonce(&mut access_nonces, n) => {
+                                        check_access_challenged(&params.access_token, &hash_hex, n)
+                                    }
+                                    // nonce 不在册（重放/伪造/过期）——一律拒绝。
+                                    Some(_) => false,
+                                    None => {
+                                        // 旧版裸哈希兼容路径（旧中继或挑战超时回落）
+                                        // ——可重放，WARN 留痕。
+                                        tracing::warn!(
+                                            "[Bridge] access_check#{request_id} 无挑战 nonce（旧版裸哈希，可重放）——建议升级中继"
+                                        );
+                                        check_access(&params.access_token, &hash_hex)
+                                    }
+                                };
                                 if ok {
                                     tracing::info!("[Bridge] access_check#{request_id} 通过");
                                 } else {
-                                    tracing::warn!("[Bridge] access_check#{request_id} 拒绝（哈希不匹配或本机未配置访问密码）");
+                                    tracing::warn!("[Bridge] access_check#{request_id} 拒绝（摘要不匹配/nonce 失效或本机未配置访问密码）");
                                 }
                                 if send_frame(&mut ws_write, BridgeFrame::AccessResult { request_id, ok }, timing.write_timeout).await.is_err() {
                                     break SessionEnd::Disconnected { welcomed };
@@ -726,7 +804,8 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 drop_conn(conn_id, &mut conns);
                             }
                             BridgeFrame::BridgeHello { .. } | BridgeFrame::BridgeClose { .. }
-                            | BridgeFrame::BridgeWelcome { .. } | BridgeFrame::AccessResult { .. } => {
+                            | BridgeFrame::BridgeWelcome { .. } | BridgeFrame::AccessResult { .. }
+                            | BridgeFrame::AccessChallenge { .. } => {
                                 tracing::warn!("[Bridge] 收到不该由服务端发的帧，忽略");
                             }
                             // 二期：下行 cluster_rpc 帧 → 桥 RPC 枢纽分流

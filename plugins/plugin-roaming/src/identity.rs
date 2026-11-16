@@ -67,20 +67,12 @@ impl Identity {
 }
 
 /// 持久化身份到 roaming.key（hex seed；父目录自动创建；Unix 0600）。
+///
+/// 原子写（[`atomic_write`]，语义对齐宿主 nemesis_utils::write_file_atomic）：
+/// 崩溃/断电不留半截 seed；**权限在临时文件创建时即挂**（unix mode 0600）
+/// ——旧形态「先明文写后收紧」存在 0644 窗口。
 pub fn persist(id: &Identity, path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {} 失败: {e}", parent.display()))?;
-    }
-    std::fs::write(path, hex::encode(id.seed()))
-        .map_err(|e| format!("写 {} 失败: {e}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("收紧 {} 权限失败: {e}", path.display()))?;
-    }
-    Ok(())
+    crate::atomic::atomic_write(path, hex::encode(id.seed()).as_bytes(), true)
 }
 
 /// roaming.key 路径（workspace/cluster/roaming.key——宿主同款，格式不变）。

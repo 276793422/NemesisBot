@@ -26,6 +26,9 @@ import { useToast } from '../composables/useToast'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useChatApi } from '../composables/useChatApi'
 import { useFileTreePanel } from '../composables/useFileTreePanel'
+// D10（2026-11-15 浏览器接管）：点名面板开合入口（纯点名器在 ChatView 左列；
+// 管理/配置/审计归执行单元页【浏览器】TAB）。feature gate 同 ChatView。
+import { useBrowserPanel } from '../composables/useBrowserPanel'
 // SB（2026-09-17）：订阅 `session.created`（会话 jsonl 首行落盘）→ force
 // 刷新列表——修「零会话发消息隐式创建的会话不进侧栏，须手动刷新」。
 import { on as onSSE, off as offSSE } from '../composables/useSSE'
@@ -69,6 +72,9 @@ function isWfEditSession(id: string): boolean {
   return wfEditSessions.targetOf(id) !== undefined || wfEditBoundSids.value.has(id)
 }
 const fileTree = useFileTreePanel()
+const browserPanel = useBrowserPanel()
+// 浏览器接管 feature gate（`!== 'false'` = 默认包含，同 router 门控惯例）。
+const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
 
 // ---------------------------------------------------------------------------
 // 顶部功能区（2026-11-10 两行布局）：新建对话 + 行1 定时/Skills/MCP/命令 +
@@ -927,6 +933,15 @@ function relTime(ts: string): string {
           @click="fileTree.toggle()"
           title="工作区文件树"
         >📁 工作区</button>
+        <!-- D10（2026-11-15）：浏览器点名面板开合（feature gate：VITE_FEATURE_BROWSER） -->
+        <button
+          v-if="browserEnabled"
+          class="fn-btn"
+          :class="{ on: browserPanel.open.value }"
+          data-test="browser-panel-toggle"
+          @click="browserPanel.toggle()"
+          title="浏览器点名：选工作标签页，AI 只操作被点名页"
+        >🌐 浏览器</button>
         <input
           ref="importInput"
           type="file"

@@ -1,6 +1,7 @@
 //! MXC 护栏后端（feature = "mxc"，2026-11-14）。
 //!
-//! Microsoft eXecution Container（submodule `3rd/mxc`，钉 `4e522623`）的
+//! Microsoft eXecution Container（crates.io `mxc-sdk =1.1.0`，微软官方
+//! 发布账号 microsoft-oss-releases，仓库同源 github.com/microsoft/mxc）的
 //! nemesis-sandbox 接入层。**语义定性（用户拍板口径，警告文案的根基）**：
 //! MXC 是 ACL 授权模型——授权路径内直接写真盘，无 Sandboxie 写虚拟化盒、
 //! 无 pending/commit 事后反悔。它是「护栏」，不是「沙盒」；引爆场景
@@ -19,23 +20,19 @@
 //! 内置 `sandbox-exec`。结果带进程内缓存（执行路径复用，Dashboard 强刷
 //! 走 [`probe_mxc_cached`] 的 `force`）。
 //!
-//! ## 遥测红线（docs/PLAN/2026-11-14_mxc-sandbox-integration.md §3.1）
+//! ## 遥测红线（2026-11-14_mxc-sandbox-integration §3.1，归档于 docs/REPORT）
 //!
 //! 构建期：根 `.cargo/config.toml` [env] 强制 `MXC_TELEMETRY_COMPONENT_PATH=""`
 //! （无路由构建）。运行期：每次 spawn 显式 `telemetry: Some(TelemetryConfig
 //! { enabled: Some(false) })`（双重保险）。删任一 = 红线失效，禁止。
 //!
-//! ## 上游依赖漏洞标记（2026-11-16 全仓漏洞清扫遗留面）
+//! ## 上游依赖治理（2026-11-16 registry 切换后重写）
 //!
-//! mxc 官方仓库（submodule `3rd/mxc`）我方无推送权限，其入库依赖锁存在
-//! 已公开漏洞报告。本地处置：`src/Cargo.lock` 已在工作区升级归零
-//! （libz-sys/webpki-root-certs/rustix/tokio 四项）——**该修复只存在于
-//! 本地子模块工作区，不随任何仓库同步**，fresh clone 或
-//! `submodule update --force` 会丢失，恢复步骤见
-//! 2026-11-16_mxc上游依赖漏洞处置标记报告（docs/REPORT）。`samples/`
-//! 在本 pin 上上游清单自身损坏无法修复，但 samples 不进产品构建链
-//! （本 crate 的 mxc-sdk path 依赖只指 `src/mxc-sdk`），残留无风险。
-//! 若上游发布新 pin，按 [`MXC_VERSION`] 三点同 commit 纪律 advance。
+//! 依赖形态 = crates.io 发布版（`=` 钉死），传递依赖随本仓根 Cargo.lock
+//! 统一解析——cargo audit 例行覆盖，原 submodule 形态「上游入库锁漏洞的
+//! 本地修复不随同步（fresh clone 即丢失）」脆弱面整体消灭。2026-11-16
+//! 漏洞处置标记报告（docs/REPORT）的 submodule 手工恢复步骤随之作废。
+//! 若本锁面检出漏洞，按常规 workspace `cargo update --precise` 处置。
 //!
 //! ## 消费面
 //!
@@ -54,15 +51,18 @@ use serde::Serialize;
 // 版本与警告（D5 单一真相源）
 // ---------------------------------------------------------------------------
 
-/// 钉版 commit 短哈希（submodule `3rd/mxc` 当前指向）。升级 = submodule
-/// advance + 本常量 + PLAN §3.2 三点同 commit 更新。
-pub const MXC_VERSION: &str = "4e522623";
+/// 版本号（crates.io `mxc-sdk` 钉版，与 nemesis-sandbox/Cargo.toml 的
+/// `version = "=1.1.0"` 同源）。升级 = bump **三处字面量**（同 commit）：
+/// Cargo.toml `version`、本常量、下方 [`MXC_WARNING`] 内嵌版本串
+/// （它是独立字面量不会自动跟随——`warning_carries_pinned_version`
+/// 测试钉住后两处一致，漏改即测试红）。
+pub const MXC_VERSION: &str = "1.1.0";
 
-/// MXC 选择警告（用户拍板原文，版本串随 [`MXC_VERSION`] 走）。出现位置：
-/// ① Dashboard 选择器确认框；② MXC 页面常驻横幅。前端文案由 WSAPI 回传
-/// 本常量（禁止前端再硬编码一份）。
+/// MXC 选择警告（用户拍板原文，内嵌版本串须与 [`MXC_VERSION`] 同步——
+/// 见上方 bump 纪律）。出现位置：① Dashboard 选择器确认框；② MXC 页面
+/// 常驻横幅。前端文案由 WSAPI 回传本常量（禁止前端再硬编码一份）。
 pub const MXC_WARNING: &str =
-    "【当前 MXC 版本是 4e522623，目前功能是护栏功能，非沙盒，无法完整保护系统，可能导致出现异常】";
+    "【当前 MXC 版本是 1.1.0，目前功能是护栏功能，非沙盒，无法完整保护系统，可能导致出现异常】";
 
 // ---------------------------------------------------------------------------
 // 探测（三态 + 进程内缓存）
@@ -390,7 +390,9 @@ pub fn spawn_contained(
             enabled: Some(false),
         }),
     };
-    let mut proc = mxc_sdk::v1::spawn_with_stdin(request, options).map_err(|e| {
+    // mxc-sdk 1.1.0：spawn_with_stdin 并入 spawn（stdin 默认接管，同语义
+    // 同签名同返回类型——take_stdin/收尾流程不变）。
+    let mut proc = mxc_sdk::v1::spawn(request, options).map_err(|e| {
         format!(
             "MXC 容器 spawn 失败（后端={}）：{e}",
             probe_mxc_cached(false).platform_backend

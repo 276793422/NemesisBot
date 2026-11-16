@@ -186,12 +186,14 @@ export const NAV_GROUPS: NavGroupModel[] = [
       // ⑨⑩ 执行体隔离双页：独立子系统页归组（路由/组件不动）。
       { id: 'sandbox', label: '⑨沙盒', route: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
       { id: 'vm', label: '⑩虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
-      // 附加机制两页（不在十层编号内）：LLM judge 语义二审 + 人工审批
-      // （eval 评估规则暂放 Approval 页一节，位置后议）。
-      { id: 'guardian', label: 'Guardian 二审', route: '/security/guardian', icon: 'M9 12l2 2 4-4M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
-      { id: 'approval', label: '人工审批', route: '/security/approval', icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM17 11l2 2 4-4' },
-      // L7c：凭据 Vault（组尾；VITE_FEATURE_SECURITY 门控）。
-      { id: 'vault', label: '凭据', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
+      // 附加机制两页（⑪⑫ 编号 2026-11-14 用户拍板，与总览层表/各页内部
+      // 标题同源）：LLM judge 语义二审 + 人工审批（eval 评估规则暂放
+      // Approval 页一节，位置后议）。
+      { id: 'guardian', label: '⑪Guardian 二审', route: '/security/guardian', icon: 'M9 12l2 2 4-4M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
+      { id: 'approval', label: '⑫人工审批', route: '/security/approval', icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM17 11l2 2 4-4' },
+      // L7c：⑬ 凭据隔离（原名「凭据」易与 ④凭据扫描混淆，2026-11-16 用户
+      // 拍板更名；组尾；VITE_FEATURE_SECURITY 门控）。
+      { id: 'vault', label: '⑬凭据隔离', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
     ],
   },
   {

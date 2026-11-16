@@ -334,9 +334,11 @@ async fn auth_flow_end_to_end_forwards_hash_to_device() {
                 request_id,
                 node_id,
                 hash_hex,
+                nonce_hex,
             } => {
                 assert_eq!(node_id, "node-a");
                 assert_eq!(hash_hex, "ab".repeat(32));
+                assert_eq!(nonce_hex, None, "无 nonce body = 旧版兼容路径透传");
                 send_frame(
                     &mut dev,
                     &BridgeFrame::AccessResult {
@@ -409,6 +411,179 @@ async fn auth_flow_end_to_end_forwards_hash_to_device() {
     let json3: serde_json::Value = serde_json::from_slice(&body3).unwrap();
     assert_eq!(json3["ok"], false);
     assert_eq!(status3, 200);
+}
+
+// ②b 挑战-应答授权流（BUG-20261116-009）：__challenge 发放 → 绑定摘要提交
+// → nonce 透传到设备 → 单次消费
+
+#[tokio::test]
+async fn auth_flow_challenge_response_end_to_end() {
+    let (addr, _relay, _shutdown) = spawn_relay_server("pair-token").await;
+    let mut dev = connect_device(addr, "node-c", "C 机", "pair-token")
+        .await
+        .expect("设备接入");
+
+    // 设备侧任务：答挑战（发放 nonce）→ 等 AccessCheck 校验 nonce 透传
+    // → ok=true。（摘要与 token 的真实比对语义在 bridge_client_tests
+    // 设备侧覆盖；本用例验证中继透传面。）
+    let dev_task = tokio::spawn(async move {
+        let nonce = match recv_business_frame(&mut dev).await {
+            BridgeFrame::AccessChallengeRequest {
+                request_id,
+                node_id,
+            } => {
+                assert_eq!(node_id, "node-c");
+                let n = "77".repeat(32);
+                send_frame(
+                    &mut dev,
+                    &BridgeFrame::AccessChallenge {
+                        request_id,
+                        nonce_hex: n.clone(),
+                    },
+                )
+                .await;
+                n
+            }
+            other => panic!("设备应收到 AccessChallengeRequest，得到 {other:?}"),
+        };
+        match recv_business_frame(&mut dev).await {
+            BridgeFrame::AccessCheck {
+                request_id,
+                node_id,
+                hash_hex,
+                nonce_hex,
+            } => {
+                assert_eq!(node_id, "node-c");
+                assert_eq!(hash_hex, "ab".repeat(32));
+                assert_eq!(
+                    nonce_hex.as_deref(),
+                    Some(nonce.as_str()),
+                    "挑战 nonce 必须透传到设备"
+                );
+                send_frame(
+                    &mut dev,
+                    &BridgeFrame::AccessResult {
+                        request_id,
+                        ok: true,
+                    },
+                )
+                .await;
+            }
+            other => panic!("设备应收到 AccessCheck，得到 {other:?}"),
+        }
+        dev
+    });
+
+    // 浏览器侧：GET __challenge 取设备发放的 nonce。
+    let (cs, _, cb) = http_request(addr, "GET", "/d/node-c/__challenge", &[], b"").await;
+    assert_eq!(cs, 200, "{}", String::from_utf8_lossy(&cb));
+    let cj: serde_json::Value = serde_json::from_slice(&cb).unwrap();
+    assert_eq!(cj["nonce"], "77".repeat(32), "挑战端点应回设备发放的 nonce");
+
+    // 提交绑定摘要（nonce 随 body）→ 设备 ok → cookie。
+    let (status, headers, body) = http_request(
+        addr,
+        "POST",
+        "/d/node-c/__auth",
+        &[("content-type", "application/json")],
+        format!(
+            "{{\"hash\":\"{}\",\"nonce\":\"{}\"}}",
+            "ab".repeat(32),
+            "77".repeat(32)
+        )
+        .as_bytes(),
+    )
+    .await;
+    let mut dev = dev_task.await.unwrap();
+    assert_eq!(status, 200, "body: {}", String::from_utf8_lossy(&body));
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["ok"], true, "{json}");
+    assert!(set_cookie_value(&headers, AUTH_COOKIE).is_some());
+    dev.close(None).await.ok();
+}
+
+#[tokio::test]
+async fn auth_flow_challenge_offline_device_reports_null_nonce() {
+    // 设备离线：__challenge 回 nonce:null（浏览器回落旧版摘要；POST 由
+    // access_check 的「设备不在线」诚实报错——既有三态覆盖，不重复）。
+    let (addr, _relay, _shutdown) = spawn_relay_server("pair-token").await;
+    let (cs, _, cb) = http_request(addr, "GET", "/d/ghost/__challenge", &[], b"").await;
+    assert_eq!(cs, 200);
+    let cj: serde_json::Value = serde_json::from_slice(&cb).unwrap();
+    assert!(cj["nonce"].is_null(), "离线设备必须回 nonce:null：{cj}");
+}
+
+// ②c /relay/login 挑战-应答强制（BUG-20261116-009）：nonce 必带 + 单次
+// 消费 + 静态哈希拒止
+
+#[tokio::test]
+async fn relay_login_challenge_required_replay_rejected() {
+    let (addr, relay, _shutdown) = spawn_relay_server("admin-tok").await;
+
+    // nonce 发放端点。
+    let (s, _, b) = http_request(addr, "GET", "/relay/login-nonce", &[], b"").await;
+    assert_eq!(s, 200, "{}", String::from_utf8_lossy(&b));
+    let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let nonce = j["nonce"].as_str().expect("nonce 字段").to_string();
+    assert_eq!(nonce.len(), 64);
+    assert!(nonce.bytes().all(|c| c.is_ascii_hexdigit()));
+
+    // 正确挑战-应答 → ok:true + admin cookie。
+    let good = sha256_hex(&format!("admin-tok{nonce}"));
+    let (s, h, b) = http_request(
+        addr,
+        "POST",
+        "/relay/login",
+        &[("content-type", "application/json")],
+        format!("{{\"hash\":\"{good}\",\"nonce\":\"{nonce}\"}}").as_bytes(),
+    )
+    .await;
+    assert_eq!(s, 200, "{}", String::from_utf8_lossy(&b));
+    let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(j["ok"], true, "{j}");
+    let (cookie, path) = set_cookie_value(&h, ADMIN_COOKIE).expect("应发管理 cookie");
+    assert_eq!(path, "/");
+
+    // 重放同一 (hash, nonce) → 401（nonce 单次消费——修复的核心断言）。
+    let (s, _, b) = http_request(
+        addr,
+        "POST",
+        "/relay/login",
+        &[("content-type", "application/json")],
+        format!("{{\"hash\":\"{good}\",\"nonce\":\"{nonce}\"}}").as_bytes(),
+    )
+    .await;
+    assert_eq!(s, 401, "重放必须被拒：{}", String::from_utf8_lossy(&b));
+
+    // 新 nonce + 旧静态哈希（修复前的旧版提交形态）→ 401。
+    let (_, _, bn) = http_request(addr, "GET", "/relay/login-nonce", &[], b"").await;
+    let n2 = serde_json::from_slice::<serde_json::Value>(&bn).unwrap()["nonce"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let stale = sha256_hex("admin-tok");
+    let (s, _, _) = http_request(
+        addr,
+        "POST",
+        "/relay/login",
+        &[("content-type", "application/json")],
+        format!("{{\"hash\":\"{stale}\",\"nonce\":\"{n2}\"}}").as_bytes(),
+    )
+    .await;
+    assert_eq!(s, 401, "静态哈希必须被拒");
+
+    // 状态页门：admin cookie 值 = admin_hash_hex 语义未变。
+    let expect = relay.admin_hash_hex();
+    assert_eq!(cookie, expect);
+    let (s, _, _) = http_request(
+        addr,
+        "GET",
+        "/relay",
+        &[("cookie", &format!("{ADMIN_COOKIE}={cookie}"))],
+        b"",
+    )
+    .await;
+    assert_eq!(s, 200, "有效 admin cookie 应过状态页门");
 }
 
 // ③ /d/ 三道门 + 状态页门关 404
@@ -875,7 +1050,7 @@ async fn relay_status_page_gate_and_api() {
     let (s2, _, _) = http_request(addr, "GET", "/api/relay/status", &[], b"").await;
     assert_eq!(s2, 401);
 
-    // 错误 hash 登录 → 401。
+    // 错误 hash 登录（nonce 缺省——旧版形态已被挑战强制淘汰）→ 401。
     let (s3, _, b3) = http_request(
         addr,
         "POST",
@@ -886,20 +1061,31 @@ async fn relay_status_page_gate_and_api() {
     .await;
     assert_eq!(s3, 401, "{}", String::from_utf8_lossy(&b3));
 
-    // 正确 hash（= ws token SHA-256）登录 → 200 + Set-Cookie(path=/)。
-    let admin_hash = sha256_hex("admin-token");
-    let (s4, h4, _) = http_request(
+    // 挑战-应答登录（GET login-nonce → SHA-256(token||nonce)）→ 200 +
+    // Set-Cookie(path=/)，cookie 值仍 = ws token SHA-256（门语义未变）。
+    let (sn, _, bn) = http_request(addr, "GET", "/relay/login-nonce", &[], b"").await;
+    assert_eq!(sn, 200);
+    let nonce = serde_json::from_slice::<serde_json::Value>(&bn).unwrap()["nonce"]
+        .as_str()
+        .expect("nonce 字段")
+        .to_string();
+    let admin_hash = sha256_hex(&format!("admin-token{nonce}"));
+    let (s4, h4, b4) = http_request(
         addr,
         "POST",
         "/relay/login",
         &[("content-type", "application/json")],
-        format!("{{\"hash\":\"{admin_hash}\"}}").as_bytes(),
+        format!("{{\"hash\":\"{admin_hash}\",\"nonce\":\"{nonce}\"}}").as_bytes(),
     )
     .await;
-    assert_eq!(s4, 200);
+    assert_eq!(s4, 200, "{}", String::from_utf8_lossy(&b4));
     let (admin_cookie, path) = set_cookie_value(&h4, ADMIN_COOKIE).expect("应发管理 cookie");
     assert_eq!(path, "/");
-    assert_eq!(admin_cookie, admin_hash, "cookie 值 = token 的 SHA-256 hex");
+    assert_eq!(
+        admin_cookie,
+        sha256_hex("admin-token"),
+        "cookie 值 = token 的 SHA-256 hex（门语义未变）"
+    );
 
     // 过门后：状态页正常渲染（设备列表由页面 JS 动态拉
     // /api/relay/status 渲染，静态 HTML 不含设备 id——数据正确性在

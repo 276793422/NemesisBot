@@ -153,7 +153,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
     let reg = build_registry();
-    // 30 个无条件模块必须全在；12 个 feature 门控模块按 cfg 计入下限。
+    // 30 个无条件模块必须全在；13 个 feature 门控模块按 cfg 计入下限。
     // （cfg! 的 feature 参数必须是字面量，无法循环展开——逐个列出。）
     let gated_on = [
         cfg!(feature = "cluster"),
@@ -168,6 +168,7 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "board"),      // nemesis-board 转 optional
         cfg!(feature = "connectors"), // 同时带 paperbroker，两个模块
         cfg!(feature = "ziwei"),      // 进下限清单（紫微管理面 feature 门控，此前漏列）
+        cfg!(feature = "browser"),    // 浏览器接管管理面（2026-11-15 browser.* 八命令）
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
@@ -380,6 +381,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "ziwei",
         "events",
         "loops",
+        "browser", // 浏览器接管管理面（不带 browser 重跑会把 browser.* 八命令整模块冲没）
     ];
     let missing_module = GATED_DOC_MODULES
         .iter()
@@ -400,7 +402,8 @@ fn docs_generation_writes_wsapi_commands_md() {
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
-             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,events,loop\" docs_generation"
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,events,loop,\
+             browser\" docs_generation"
         );
         return;
     }
@@ -413,7 +416,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
 security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,\
-events,loop\" docs_generation` 刷新本文件\
+events,loop,browser\" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));

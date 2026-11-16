@@ -215,3 +215,234 @@ mod r55_install_if_absent_contract {
         );
     }
 }
+
+// ===========================================================================
+// 人格预装语义重构（2026-11-16）：身份三件 = default/ 权威源（老贾版），
+// personas/ 两槽物化（default=贾维斯默认激活 / custom=空白可定制），
+// bug-analyst 等内置人格不再预装落盘（内置页手动下载才落地）。
+// ===========================================================================
+
+mod persona_preinstall_2026_11_16 {
+    use super::super::{OnboardMode, onboard_default};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// 五件套清单（与 nemesis-web handlers/persona.rs 的 PERSONA_FILES ∪
+    /// PERSONA_ARCHIVE_FILES 白名单口径一致——激活链清根恢复无补齐臂，
+    /// 槽内缺哪件切走再切回根上就永久缺哪件）。
+    const FIVE_PIECE: [&str; 5] = [
+        "IDENTITY.md",
+        "SOUL.md",
+        "AGENT.md",
+        "TOOLS.md",
+        "HEARTBEAT.md",
+    ];
+
+    fn personas(home: &Path) -> PathBuf {
+        home.join("workspace").join("personas")
+    }
+
+    /// seed 直启（空环境 config.json 缺失）：root 身份三件 = 老贾版 +
+    /// personas/ 恰两槽五件套齐全 + _active=default + 无 bug-analyst。
+    #[test]
+    fn seed_fresh_home_materializes_two_slots_and_jarvis_identity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("persona-seed-home");
+
+        onboard_default(&home, false, OnboardMode::Seed).unwrap();
+
+        assert_root_identity_is_jarvis(&home);
+        assert_two_slots_materialized(&home);
+    }
+
+    /// Cli 显式初始化：同断言（两条启动路径统一出老贾）。
+    #[test]
+    fn cli_fresh_home_materializes_two_slots_and_jarvis_identity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("persona-cli-home");
+
+        onboard_default(&home, false, OnboardMode::Cli).unwrap();
+
+        assert_root_identity_is_jarvis(&home);
+        assert_two_slots_materialized(&home);
+    }
+
+    /// re-onboard（Cli 最强语义：root 身份三件会覆盖）不得触碰 personas/
+    /// 用户数据——槽文件、PERSONA.json、_active.json 全部保留用户手笔
+    /// （恒 only-if-absent，偏离 Cli=overwrite 惯例是刻意决策）。
+    #[test]
+    fn re_onboard_never_clobbers_persona_slots() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("persona-re-onboard-home");
+        onboard_default(&home, false, OnboardMode::Seed).unwrap();
+
+        let custom_identity = personas(&home).join("custom").join("IDENTITY.md");
+        fs::write(&custom_identity, "MY-CUSTOM-EDIT").unwrap();
+        let default_persona_json = personas(&home).join("default").join("PERSONA.json");
+        fs::write(&default_persona_json, r#"{"name": "用户改名"}"#).unwrap();
+        let active = personas(&home).join("_active.json");
+        fs::write(&active, r#"{"name": "custom"}"#).unwrap();
+
+        onboard_default(&home, false, OnboardMode::Cli).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&custom_identity).unwrap(),
+            "MY-CUSTOM-EDIT",
+            "custom 槽用户编辑必须保留"
+        );
+        assert_eq!(
+            fs::read_to_string(&default_persona_json).unwrap(),
+            r#"{"name": "用户改名"}"#,
+            "default 槽 PERSONA.json 用户编辑必须保留"
+        );
+        assert_eq!(
+            fs::read_to_string(&active).unwrap(),
+            r#"{"name": "custom"}"#,
+            "_active.json 用户激活状态必须保留"
+        );
+        // root 身份三件仍走 Cli 覆盖语义（不因人格槽豁免而退化）
+        assert_eq!(
+            fs::read_to_string(home.join("workspace").join("IDENTITY.md")).unwrap(),
+            crate::DEFAULT_IDENTITY,
+            "root 身份三件保持 Cli=overwrite 现语义"
+        );
+    }
+
+    /// custom 删除后 re-onboard 不复活（删除是用户明确意志，不造墓碑——
+    /// 依赖 seed 仅 config.json 缺失时跑的装配闸 + 物化 only-if-absent）。
+    #[test]
+    fn re_onboard_does_not_revive_deleted_custom_slot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("persona-delete-home");
+        onboard_default(&home, false, OnboardMode::Seed).unwrap();
+
+        fs::remove_dir_all(personas(&home).join("custom")).unwrap();
+        onboard_default(&home, false, OnboardMode::Cli).unwrap();
+
+        assert!(
+            !personas(&home).join("custom").exists(),
+            "custom 槽删除后 re-onboard 不得复活"
+        );
+        assert!(
+            personas(&home).join("default").join("IDENTITY.md").exists(),
+            "default 槽不受 custom 删除影响"
+        );
+    }
+
+    /// 存量老用户 store（升级自预装 bug-analyst 的旧版：personas/ 只有
+    /// 第三方槽、无 default/custom、无 _active.json）跑 Cli re-onboard：
+    /// **不得写 _active.json**——web ensure_persona_store 的懒初始化归档以
+    /// 标记在场为闸（persona.rs:1587），提前写入会把闸关死，default 槽
+    /// 永不创建（旧版行为 = 首次触达人格页从 root 归档自愈出 default 槽）。
+    /// 第三方槽原样保留，也不得凭空造本重构槽（不迁移存量）。
+    #[test]
+    fn re_onboard_legacy_store_keeps_lazy_init_armed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("persona-legacy-home");
+        onboard_default(&home, false, OnboardMode::Seed).unwrap();
+
+        // 构造存量形态：摘掉两槽与标记，只留第三方槽（bug-analyst 同构）
+        fs::remove_dir_all(personas(&home).join("default")).unwrap();
+        fs::remove_dir_all(personas(&home).join("custom")).unwrap();
+        fs::remove_file(personas(&home).join("_active.json")).unwrap();
+        fs::create_dir_all(personas(&home).join("bug-analyst")).unwrap();
+        fs::write(
+            personas(&home).join("bug-analyst").join("PERSONA.json"),
+            r#"{"name":"bug-analyst"}"#,
+        )
+        .unwrap();
+
+        onboard_default(&home, false, OnboardMode::Cli).unwrap();
+
+        assert!(
+            !personas(&home).join("_active.json").exists(),
+            "外来 store 不得写 _active.json（懒初始化闸必须保持武装）"
+        );
+        assert!(
+            !personas(&home).join("default").exists(),
+            "存量 store 不得凭空造 default 槽（不迁移存量）"
+        );
+        assert!(
+            !personas(&home).join("custom").exists(),
+            "存量 store 不得凭空造 custom 槽（不迁移存量）"
+        );
+        assert!(
+            personas(&home)
+                .join("bug-analyst")
+                .join("PERSONA.json")
+                .exists(),
+            "第三方槽原样保留"
+        );
+    }
+
+    // ── 断言助手 ─────────────────────────────────────────────────────
+
+    /// root 身份三件 = default/ 权威源（老贾版）——提取排除 + Step 9 天然
+    /// 缺席安装的行为锚点（本重构消除的双真相源分裂）。
+    fn assert_root_identity_is_jarvis(home: &Path) {
+        for (file, expected) in [
+            ("IDENTITY.md", crate::DEFAULT_IDENTITY),
+            ("SOUL.md", crate::DEFAULT_SOUL),
+            ("USER.md", crate::DEFAULT_USER),
+        ] {
+            let path = home.join("workspace").join(file);
+            assert!(path.exists(), "{file} 必须落盘");
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                expected,
+                "root {file} 必须 = default/ 权威源（老贾版）"
+            );
+        }
+    }
+
+    /// personas/ 恰两槽：default（贾维斯）+ custom（自定义人格），五件套
+    /// 齐全、PERSONA.json 三字段、_active=default、无 bug-analyst。
+    fn assert_two_slots_materialized(home: &Path) {
+        let p = personas(home);
+        assert!(p.join("default").is_dir(), "default 槽必须物化");
+        assert!(p.join("custom").is_dir(), "custom 槽必须物化");
+        assert!(
+            !p.join("bug-analyst").exists(),
+            "bug-analyst 不得预装落盘（内置人格必须手动下载）"
+        );
+        // 目录集合恰 = {custom, default}（read_dir 序是平台实现细节，排序后断言）
+        let mut dirs: Vec<String> = fs::read_dir(&p)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        dirs.sort();
+        assert_eq!(dirs, vec!["custom".to_string(), "default".to_string()]);
+
+        // 两槽五件套齐全
+        for slot in ["default", "custom"] {
+            for f in FIVE_PIECE {
+                assert!(
+                    p.join(slot).join(f).exists(),
+                    "{slot}/{f} 必须物化（五件套口径）"
+                );
+            }
+        }
+
+        // PERSONA.json：default=贾维斯/😄、custom=自定义人格/🧩（三字段形态）
+        let dpj: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(p.join("default").join("PERSONA.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(dpj["name"], "贾维斯");
+        assert_eq!(dpj["emoji"], "😄");
+        assert!(dpj.get("description").is_some(), "description 字段在场");
+        let cpj: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(p.join("custom").join("PERSONA.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cpj["name"], "自定义人格");
+        assert_eq!(cpj["emoji"], "🧩");
+
+        // 激活标记默认指向 default
+        let active: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(p.join("_active.json")).unwrap()).unwrap();
+        assert_eq!(active["name"], "default");
+    }
+}

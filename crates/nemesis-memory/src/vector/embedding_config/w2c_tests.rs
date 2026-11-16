@@ -601,3 +601,48 @@ fn download_file_errors_on_body_stall_instead_of_hanging() {
     assert_stall_timeout(&err, started.elapsed());
     assert!(!dest.exists(), "失败不得落盘");
 }
+
+// ---------------------------------------------------------------------------
+// 有帽读取（BUG-20261116-027 下载加固补位）：download_file_capped 对超限
+// 响应在读入中途断开（nemesis_utils::http_cap 单一真相源）。生产帽
+// MAX_MODEL_DOWNLOAD_BYTES = 2GiB 无法在测试里造超限载荷（CI 内存/时长
+// 风险）——参数化缝小帽值真实行为测试（BUG-20261115-024 先例形态）；
+// http_cap 本体语义由 nemesis-utils http_cap/tests.rs 既有钉死。
+// ---------------------------------------------------------------------------
+
+/// 体 > cap → Err 带 exceeds limit 锚（map_err 前缀 "failed to read download
+/// response"），0 字节残骸不落盘。
+#[test]
+fn download_file_capped_rejects_over_limit_body_without_materializing_file() {
+    let port = spawn_http_server(vec![("200 OK", "ONNX_MODEL_BYTES")]);
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("model.onnx");
+
+    let err = download_file_capped(
+        &format!("http://127.0.0.1:{}/model.onnx", port),
+        &dest,
+        8, // cap < body.len() (16)
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("failed to read download response") && err.contains("exceeds limit"),
+        "over-cap must surface http_cap exceeds-limit anchor: {err}"
+    );
+    assert!(!dest.exists(), "over-cap body must not materialize a file");
+}
+
+/// 体 < cap → Ok + 内容落盘正确（under-cap 成功臂对照）。
+#[test]
+fn download_file_capped_passes_body_under_limit() {
+    let port = spawn_http_server(vec![("200 OK", "ONNX_MODEL_BYTES")]);
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("model.onnx");
+
+    download_file_capped(
+        &format!("http://127.0.0.1:{}/model.onnx", port),
+        &dest,
+        MAX_MODEL_DOWNLOAD_BYTES,
+    )
+    .expect("under-cap body must download");
+    assert_eq!(std::fs::read(&dest).unwrap(), b"ONNX_MODEL_BYTES");
+}

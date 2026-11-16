@@ -625,6 +625,16 @@ fn demo_walk_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     };
     for e in entries.flatten() {
         let p = e.path();
+        // 目录链接环守卫（BUG-20261110-059 同源家族，BUG-20261116-024
+        // 横扫补漏）：DirEntry::file_type() 不穿越链接，Path::is_dir()
+        // 跟随链接——环下同子树以 loop/loop/... 假路径重复枚举直到
+        // OS 路径上限。跳过目录链接；普通 symlink 文件照常列出。
+        if e.file_type()
+            .map(|t| t.is_symlink() && p.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
         if p.is_dir() {
             demo_walk_files(&p, out);
         } else {

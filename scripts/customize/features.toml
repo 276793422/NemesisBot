@@ -512,6 +512,18 @@ desc = "只读 LSP 客户端（lsp 工具 definition/references/implementation/h
 category = "subsystems"
 default = true
 
+# NOTE: `browser`（2026-11-15 浏览器接管框架）：CDP 客户端（nemesis-browser）
+# + host_browser 工具（九动作：navigate/click/type/key/scroll/extract_text/
+# screenshot/wait_for/run_script）+ browser.* WSAPI + Dashboard 执行单元浏览器
+# 面板。run_script 步进安全闸（每步过 8 层 + 强制审批）；凭据注入走 vault:
+# 别名（域名绑定 + 密码框校验 + 防伪造三守卫）。IoT/无头建议关。
+[[feature]]
+id = "browser"
+label = "浏览器接管（host_browser）"
+desc = "控制本机已装浏览器看页面+操作页面（host_browser 工具九动作 + browser.* WSAPI + Dashboard 浏览器面板；CDP 驱动 Edge/Chrome/Brave）。run_script 每步过安全闸+审批；IoT/无头建议关"
+category = "subsystems"
+default = true
+
 [[feature]]
 id = "checkpoint-git"
 label = "Checkpoint 影子库（git）"
@@ -590,14 +602,15 @@ type = "enum"
 default = "release"
 options = ["release", "iotsmall"]
 
-# NOTE: `sandbox-mxc`（2026-11-14，docs/PLAN/2026-11-14_mxc-sandbox-integration.md）
+# NOTE: `sandbox-mxc`（2026-11-14，2026-11-16_mxc-sdk-crates-io切换报告）
 # 依赖 sandbox（nemesis-sandbox/mxc 模块住同一 crate；cargo 复合 feature 蕴含
 # sandbox，export.validate 的 depends 与之同向）。Microsoft eXecution Container
-# 护栏后端（opt-in，executor.backend="mxc"，默认恒 native）：submodule 3rd/mxc
-# 钉 4e522623；ACL 授权模型=授权路径真写，非写虚拟化盒——选 MXC 时 UI 强制警告
+# 护栏后端（opt-in，executor.backend="mxc"，默认恒 native）：crates.io
+# mxc-sdk =1.1.0（微软官方发布）；ACL 授权模型=授权路径真写，非写虚拟化盒——
+# 选 MXC 时 UI 强制警告
 # 「护栏非沙盒」。遥测红线见根 .cargo/config.toml。【非默认】mxc-sdk 的
-# ureq(native-tls) 在 Linux 落 openssl-sys，默认构建保持全平台零 mxc-sdk 引用
-# （fresh clone 免 submodule init 即可编）；Windows 发行版经 build-windows.bat
+# ureq(native-tls) 在 Linux 落 openssl-sys，默认构建保持全平台零 mxc-sdk 引用；
+# Windows 发行版经 build-windows.bat
 # 显式带回。
 [[feature]]
 id = "sandbox-mxc"

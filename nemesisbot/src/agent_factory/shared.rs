@@ -1352,6 +1352,34 @@ pub(super) fn register_tools_and_mcp(
         }
     }
 
+    // 浏览器接管框架（2026-11-15）：host_browser 工具（三 loop 统一注册
+    // 面，generate_image 同位置）。注册闸 = browser feature ×
+    // BrowserManager 在场（gateway 装配期 Some；headless/测试 None = 诚实
+    // 缺省，不注册）。静态声明兜底 = NetworkRequest（navigate 是工具内
+    // 最高档动作——畸形 args 未知名 fail-closed 前的合理档位；正常 per-op
+    // 风险走 Tool::operation_override 每次调用投影）。
+    #[cfg(feature = "browser")]
+    if let Some(manager) = shared.browser_manager.clone() {
+        #[cfg(feature = "security")]
+        nemesis_security::types::declare_tool_operation(
+            crate::host_browser_tool::TOOL_NAME,
+            nemesis_security::types::OperationType::NetworkRequest,
+        );
+        agent_loop.register_tool(
+            crate::host_browser_tool::TOOL_NAME.to_string(),
+            Box::new(crate::host_browser_tool::HostBrowserTool::new(
+                manager,
+                shared.workspace_dir().to_path_buf(),
+                shared.estop.clone(),
+                #[cfg(feature = "security")]
+                shared.security_plugin.clone(),
+                #[cfg(not(feature = "security"))]
+                None,
+            )),
+        );
+        info!("[AgentFactory] host_browser tool registered");
+    }
+
     if shared.mcp_enabled {
         agent_loop.enable_mcp_reload(shared.mcp_config_path.clone());
     }

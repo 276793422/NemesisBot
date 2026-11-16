@@ -342,6 +342,75 @@ fn test_skill_dir_prefix_root_pattern() {
 }
 
 // ============================================================
+// pattern 驱动 listing 推导（2026-11-16 仓库根 Skills/ 第三源；三个硬编码
+// `skills/` 点收编为 listing_dir/listing_prefix 推导后的回归锁）
+// ============================================================
+
+fn source_with_pattern(pattern: &str) -> GitHubRegistry {
+    GitHubRegistry::from_source(&GitHubSourceConfig {
+        name: "probe".to_string(),
+        repo: "test/skills".to_string(),
+        enabled: true,
+        branch: "main".to_string(),
+        index_type: "github_api".to_string(),
+        index_path: String::new(),
+        skill_path_pattern: pattern.to_string(),
+        timeout_secs: 0,
+        max_size: 0,
+    })
+}
+
+#[test]
+fn test_listing_dir_derivation() {
+    // 两段式（skills/{slug}）→ listing 目录 skills
+    assert_eq!(
+        source_with_pattern("skills/{slug}/SKILL.md").listing_dir(),
+        "skills"
+    );
+    // 三段式 → 仍是 skills（{author} 也在占位符之后）
+    assert_eq!(
+        source_with_pattern("skills/{author}/{slug}/SKILL.md").listing_dir(),
+        "skills"
+    );
+    // 仓库根形态（出厂源）：Skills 大写目录
+    assert_eq!(
+        source_with_pattern("Skills/{slug}/SKILL.md").listing_dir(),
+        "Skills"
+    );
+    // 无 listing 目录（裸根）→ 空串
+    assert_eq!(source_with_pattern("{slug}/SKILL.md").listing_dir(), "");
+    // 自定义子目录
+    assert_eq!(
+        source_with_pattern("docs/skills/{slug}/SKILL.md").listing_dir(),
+        "docs/skills"
+    );
+}
+
+#[test]
+fn test_listing_prefix_derivation() {
+    // 有目录 → 带 `/` 前缀（tree 过滤 / strip_prefix 用）
+    assert_eq!(
+        source_with_pattern("skills/{slug}/SKILL.md").listing_prefix(),
+        "skills/"
+    );
+    assert_eq!(
+        source_with_pattern("Skills/{slug}/SKILL.md").listing_prefix(),
+        "Skills/"
+    );
+    // 裸根 → 空前缀（不加多余 `/`）
+    assert_eq!(source_with_pattern("{slug}/SKILL.md").listing_prefix(), "");
+}
+
+#[test]
+fn test_factory_source_pattern_derives_root_listing() {
+    // 出厂源值的推导形态钉定：pattern=Skills/{slug}/SKILL.md → Skills/。
+    assert_eq!(
+        source_with_pattern(crate::registry::FACTORY_SOURCE.pattern).listing_prefix(),
+        "Skills/"
+    );
+}
+
+// ============================================================
 // Additional coverage tests
 // ============================================================
 

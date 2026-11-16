@@ -79,7 +79,20 @@ fn extract_image_bundles_from(text: &str) -> Vec<AssetTokenBundle> {
             && !bundle.asset_ref.is_empty()
             && is_image_ref(&bundle.asset_ref)
         {
-            out.push(bundle);
+            // ref 凭据闸（BUG-20261116-028）：is_image_ref 只查扩展名后缀，
+            // 拦不住含分隔符/`..`/保留名的 ref——worker 评论远端可控，这类
+            // ref 会让本地臂 `assets_dir.join(ref)` 先于 do_fetch 的
+            // sanitize_asset_ref 闸穿越读（metadata + sha256 oracle）。与
+            // publish/fetch/RPC 腿同源单闸（nemesis-board 统一定义），非法
+            // ref 在解析出口丢弃并诚实 warn，合法路径零行为变化。
+            if let Err(e) = nemesis_board::sanitize_asset_ref(&bundle.asset_ref) {
+                warn!(
+                    "[BoardReviewAssets] 非法 asset_ref `{}`（{e}）——丢弃该 bundle",
+                    bundle.asset_ref
+                );
+            } else {
+                out.push(bundle);
+            }
         }
         i = end;
     }

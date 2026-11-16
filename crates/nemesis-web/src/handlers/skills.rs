@@ -202,8 +202,34 @@ fn skills_config_path(workspace: &str) -> PathBuf {
 
 fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, String> {
     let path = skills_config_path(workspace);
-    nemesis_config::load_skills_config(&path)
-        .map_err(|e| format!("failed to load skills config: {}", e))
+    let mut cfg = nemesis_config::load_skills_config(&path)
+        .map_err(|e| format!("failed to load skills config: {}", e))?;
+    // 出厂第三源显示面合流（registry 面 = nemesis-skills
+    // `apply_factory_sources`，两处共享同一 [`nemesis_skills::registry::FACTORY_SOURCE`]
+    // 值真相源；字段名差异 timeout/timeout_secs 在此显式映射）。append-if-absent
+    // 名字已存在即跳过——用户可关不可丢；load_config 也是 RMW（update_skills_config）
+    // 的读腿，下一条写事务会把合流结果落盘，与 registry 面收敛语义一致
+    // （老工作区零操作拿到出厂源）。builtin 内嵌臂不经 config，恒注册。
+    if !cfg
+        .github_sources
+        .iter()
+        .any(|s| s.name == nemesis_skills::registry::FACTORY_SOURCE.name)
+    {
+        cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
+            name: nemesis_skills::registry::FACTORY_SOURCE.name.to_string(),
+            repo: nemesis_skills::registry::FACTORY_SOURCE.repo.to_string(),
+            enabled: true,
+            branch: nemesis_skills::registry::FACTORY_SOURCE.branch.to_string(),
+            index_type: nemesis_skills::registry::FACTORY_SOURCE
+                .index_type
+                .to_string(),
+            index_path: String::new(),
+            skill_path_pattern: nemesis_skills::registry::FACTORY_SOURCE.pattern.to_string(),
+            timeout: 0,
+            max_size: 0,
+        });
+    }
+    Ok(cfg)
 }
 
 fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {

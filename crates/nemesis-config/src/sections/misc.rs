@@ -289,6 +289,33 @@ impl Default for TerminalConfig {
     }
 }
 
+/// 浏览器接管配置段（`config.json` 的 `browser` 段；2026-11-15
+/// 浏览器接管框架。消费方 = gateway prefs_getter（每次 spawn 现读）+
+/// Dashboard 设置页（config.get/set_field 读写）。typed 字段化是硬要求：
+/// `config.set_field` 的 typed round-trip 校验会丢弃非建模键（plugins
+/// 段同款教训）——不建模则设置页保存 kind/executable 恒报
+/// 「unknown config field」，spawn 永远走 auto。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// 浏览器选择：`auto`（缺省——Chrome 检出即偏好 > 平台保底
+    /// Edge/Chromium）/ edge / chrome / brave / vivaldi / chromium /
+    /// custom（配 executable）。值域解释单一真相源在
+    /// nemesis-browser `resolve_browser`。
+    pub kind: String,
+    /// 自定义可执行文件路径（非空 = 最高优先，覆盖 kind）。
+    pub executable: String,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            kind: "auto".to_string(),
+            executable: String::new(),
+        }
+    }
+}
+
 /// workflow 引擎运行期参数（`config.json` 的 `workflow` 段；A 批批 4。
 /// None = 全默认——墙钟保险丝 3600s）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

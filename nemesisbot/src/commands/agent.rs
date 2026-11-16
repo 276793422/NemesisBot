@@ -285,72 +285,71 @@ pub async fn run(
                                 if input.starts_with('/') {
                                     match input.as_str() {
                                         "/history" => {
-                                            if let Some(registry) = agent_loop.get_registry() {
-                                                if let Some(default_id) =
-                                                    registry.default_agent_id()
-                                                {
-                                                    registry.with_agent(&default_id, |inst| {
-                                                        let history = inst.get_history();
-                                                        if history.is_empty() {
-                                                            println!("  No conversation history.");
-                                                        } else {
-                                                            println!("  Conversation history ({} turns):", history.len());
-                                                            for (i, turn) in history.iter().enumerate() {
-                                                                let preview = if turn.content.len() > 80 {
-                                                                        let cut = nemesis_types::utils::floor_char_boundary(&turn.content, 77);
-                                                                        format!("{}...", &turn.content[..cut])
-                                                                    } else {
-                                                                        turn.content.clone()
-                                                                    };
-                                                                println!("    [{}] {}: {}", i, turn.role, preview);
-                                                            }
+                                            // 从真相源（session store）读。registry 里的
+                                            // instance 是 AgentLoop 构造期一次性对象，对话
+                                            // 路径每回合经 get_or_create_instance 新建并从
+                                            // store 恢复历史——registry 对象从不参与对话
+                                            // （BUG-20261116-032：旧实现读死对象，恒显空）。
+                                            match agent_loop.session_store() {
+                                                Some(store) => {
+                                                    let msgs = store.get_history(&session_key);
+                                                    if msgs.is_empty() {
+                                                        println!("  No conversation history.");
+                                                    } else {
+                                                        println!(
+                                                            "  Conversation history ({} messages):",
+                                                            msgs.len()
+                                                        );
+                                                        for (i, m) in msgs.iter().enumerate() {
+                                                            let preview = if m.content.len() > 80 {
+                                                                let cut = nemesis_types::utils::floor_char_boundary(&m.content, 77);
+                                                                format!("{}...", &m.content[..cut])
+                                                            } else {
+                                                                m.content.clone()
+                                                            };
+                                                            println!(
+                                                                "    [{}] {}: {}",
+                                                                i, m.role, preview
+                                                            );
                                                         }
-                                                    });
-                                                } else {
-                                                    println!("  No agent instance found.");
+                                                    }
                                                 }
+                                                None => println!("  No session store available."),
                                             }
                                             println!();
                                             continue;
                                         }
                                         "/clear" => {
-                                            if let Some(registry) = agent_loop.get_registry()
-                                                && let Some(default_id) =
-                                                    registry.default_agent_id()
-                                            {
-                                                registry.with_agent(&default_id, |inst| {
-                                                    inst.clear_history();
-                                                });
+                                            // 走 AgentLoop::clear_session 完整闭环（chat_log
+                                            // jsonl 清空 + session store 清除 + provider 锚
+                                            // 作废，chat.clear WSAPI 同源）。旧实现清的是
+                                            // registry 死对象——真实会话历史原封不动，下一
+                                            // 回合从 store 全量复活却谎报已清空
+                                            // （BUG-20261116-032）。
+                                            match agent_loop.clear_session(&session_key).await {
+                                                Ok(receipt) => println!("  {}", receipt),
+                                                Err(e) => eprintln!("  Clear failed: {}", e),
                                             }
-                                            println!("  History cleared.");
                                             println!();
                                             continue;
                                         }
                                         "/status" => {
-                                            let state =
-                                                if let Some(registry) = agent_loop.get_registry() {
-                                                    if let Some(default_id) =
-                                                        registry.default_agent_id()
-                                                    {
-                                                        registry
-                                                            .with_agent(&default_id, |inst| {
-                                                                format!(
-                                                                    "{:?} ({} messages)",
-                                                                    inst.state(),
-                                                                    inst.message_count()
-                                                                )
-                                                            })
-                                                            .unwrap_or_else(|| {
-                                                                "no instance".to_string()
-                                                            })
-                                                    } else {
-                                                        "no instance".to_string()
-                                                    }
-                                                } else {
-                                                    "no registry".to_string()
-                                                };
+                                            // 状态从 loop 运行态（busy/队列长度）与 store
+                                            // 消息数取真相。旧实现读 registry 死对象，恒显
+                                            // Idle (0 messages)（BUG-20261116-032）。
+                                            let (busy, queued) =
+                                                agent_loop.get_session_busy_state(&session_key);
+                                            let msg_count = agent_loop
+                                                .session_store()
+                                                .map(|s| s.get_history(&session_key).len())
+                                                .unwrap_or(0);
                                             println!("  Session: {}", session_key);
-                                            println!("  State: {}", state);
+                                            println!(
+                                                "  State: {} ({} queued)",
+                                                if busy { "Busy" } else { "Idle" },
+                                                queued
+                                            );
+                                            println!("  Messages: {}", msg_count);
                                             println!();
                                             continue;
                                         }

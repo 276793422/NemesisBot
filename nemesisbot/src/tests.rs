@@ -629,6 +629,25 @@ fn test_config_default_has_expected_sections() {
 }
 
 #[test]
+fn test_config_default_max_tool_iterations_matches_typed_default() {
+    // BUG-20261116-018 回归锁：onboard 模板 agents.defaults.max_tool_iterations
+    // 与 typed 缺省漂移（2026-10-11 模板翻 0 后 typed 默认 100 从未跟随——
+    // serde default fn / Default impl / default_config() / 两处单测 / CLAUDE.md
+    // 口径全部 100，唯独模板 0；onboard 用户 config.json 被显式写 0 =
+    // 轮次治理「不限」，文档口径「默认 100（0=不限）」对其失效）。
+    // 断言模板显式值 == typed 缺省（同源对齐：任一侧单独改都会红，逼同步）。
+    let cfg: serde_json::Value = serde_json::from_str(CONFIG_DEFAULT).unwrap();
+    let template = cfg["agents"]["defaults"]["max_tool_iterations"]
+        .as_i64()
+        .expect("template agents.defaults.max_tool_iterations must be a number");
+    assert_eq!(
+        template,
+        nemesis_config::AgentDefaults::default().max_tool_iterations,
+        "config.default.json 模板与 typed 默认漂移：onboard 用户拿到的轮次治理上限与文档/typed 口径不一致"
+    );
+}
+
+#[test]
 fn test_config_cluster_default_has_ports() {
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_CLUSTER_DEFAULT).unwrap();
     assert!(

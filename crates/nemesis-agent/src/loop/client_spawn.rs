@@ -249,6 +249,7 @@ impl AgentLoop {
                     work: None,
 
                     source_node: None,
+                    system_notice: None, // LLM 发起的委派任务原文，正常用户气泡
                 },
             );
             if !log_existed {
@@ -341,6 +342,7 @@ impl AgentLoop {
                             work: None,
 
                             source_node: None,
+                            system_notice: None,
                         },
                     );
                     if let Some(ref store) = self.session_store {

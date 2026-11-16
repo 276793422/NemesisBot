@@ -818,7 +818,9 @@ pub fn parse_relocations_file(file: &[u8], pe: &PeInfo) -> Option<RelocTable> {
     }
     let mut blocks = Vec::new();
     let mut total = 0usize;
-    // 块游标按目录起点 + 已消费 BlockSize 走；64 块 / 4MB 防御
+    // 块游标按目录起点 + 已消费 BlockSize 走；64 块数闸 + 条目量按盘上
+    // 物理可读字节钳制（BUG-20261116-023，见循环内）——不按可伪造的
+    // 声明值预分配。
     let mut cur = dir_rva;
     let end_rva = dir_rva.saturating_add(dir_size);
     // 余量判边界而非 cur+8（同族：cur 可顶到 u32::MAX，
@@ -837,7 +839,17 @@ pub fn parse_relocations_file(file: &[u8], pe: &PeInfo) -> Option<RelocTable> {
             break; // 坏块（不足头）诚实止步
         }
         let bsize = bsize.min(end_rva.saturating_sub(cur)); // 越界块钳制
-        let n = ((bsize - 8) / 2) as usize;
+        // 条目预分配按盘上物理可读字节钳制（BUG-20261116-023）：BlockSize
+        // 与目录尺寸都是文件可伪造的 u32，按声明值 with_capacity 可达 GB
+        // 级分配（失败 = 进程 abort，不可捕获，违反「损坏输入诚实降级、
+        // 绝不 panic」不变量）。物理上界才是真界：声明超出盘面的条目必然
+        // 在 u16_at 处读到头。0 可读 = 表被截断，诚实止步（不再产出空
+        // offsets 块）。
+        let readable = file.len().saturating_sub(off.saturating_add(8)) / 2;
+        if readable == 0 {
+            break;
+        }
+        let n = (((bsize - 8) / 2) as usize).min(readable);
         let mut offsets = Vec::with_capacity(n);
         for k in 0..n {
             let Ok(w) = u16_at(file, off + 8 + k * 2) else {

@@ -259,7 +259,7 @@ fn env_slot_rewritten_and_secrets_collected() {
         _ => Err(format!("别名不存在: {alias}")),
     }));
     let tool = SlotTool::new(vec!["env"]);
-    let (out, secrets) = inject_credential_aliases_with_secrets(
+    let (out, secrets, bindings) = inject_credential_aliases_with_secrets(
         &tool,
         r#"{"command":"printenv API_TOKEN","env":{"API_TOKEN":"vault:known","OTHER":"vault:known2","DEBUG":"1"}}"#,
     )
@@ -283,6 +283,16 @@ fn env_slot_rewritten_and_secrets_collected() {
     assert!(
         secrets.contains(&"REAL-SECRET-2".to_string()),
         "{secrets:?}"
+    );
+    // 绑定清单（2026-11-15）：与明文同集——两个 vault 叶各一条。
+    assert_eq!(bindings.len(), 2, "{bindings:?}");
+    assert!(
+        bindings.contains(&("env.API_TOKEN".to_string(), "known".to_string())),
+        "{bindings:?}"
+    );
+    assert!(
+        bindings.contains(&("env.OTHER".to_string(), "known2".to_string())),
+        "{bindings:?}"
     );
 }
 
@@ -312,18 +322,21 @@ fn env_slot_literal_only_no_secrets_collected() {
     nemesis_config::clear_global_vault_resolver();
     let tool = SlotTool::new(vec!["env"]);
     let args = r#"{"command":"echo hi","env":{"DEBUG":"1","MODE":"x"}}"#;
-    let (out, secrets) = inject_credential_aliases_with_secrets(&tool, args).unwrap();
+    let (out, secrets, bindings) = inject_credential_aliases_with_secrets(&tool, args).unwrap();
     assert_eq!(out, args);
     assert!(secrets.is_empty(), "字面量不收集: {secrets:?}");
+    assert!(bindings.is_empty(), "字面量无绑定: {bindings:?}");
 }
 
 /// env 槽非 JSON 参数：透传（与注入层全局语义同构），零错误零清单。
 #[test]
 fn env_slot_malformed_json_passthrough() {
     let tool = SlotTool::new(vec!["env"]);
-    let (out, secrets) = inject_credential_aliases_with_secrets(&tool, "not-json").unwrap();
+    let (out, secrets, bindings) =
+        inject_credential_aliases_with_secrets(&tool, "not-json").unwrap();
     assert_eq!(out, "not-json");
     assert!(secrets.is_empty());
+    assert!(bindings.is_empty());
 }
 
 /// 生产声明 drift 锁（vault 计划 P3）：exec 族四工具（exec/run_checks/
@@ -874,7 +887,7 @@ async fn card_recovery_stored_reinjects_full_args() {
     let guard = CredentialCardGuard::new();
     let out = try_card_recovery(Some(broker), &guard, &tool, args, "s1", "credtool", &err).await;
     nemesis_config::clear_global_vault_resolver();
-    let (recovered, secrets) = out.expect("Stored 应恢复成功");
+    let (recovered, secrets, bindings) = out.expect("Stored 应恢复成功");
     assert!(
         recovered.contains(SECRET) && recovered.contains(r#""target":"http://x""#),
         "重注入应含真值且保留其余字段: {recovered}"
@@ -883,6 +896,12 @@ async fn card_recovery_stored_reinjects_full_args() {
         secrets,
         vec![SECRET],
         "恢复臂应带回解析明文清单（掩码合流）"
+    );
+    // 绑定清单（2026-11-15）：恢复臂与常规注入同形。
+    assert_eq!(
+        bindings,
+        vec![("credential".to_string(), "card-alias".to_string())],
+        "恢复臂应带回绑定清单: {bindings:?}"
     );
     assert_eq!(*calls.lock().unwrap(), 1, "应恰好发一张卡");
     assert!(

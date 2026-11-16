@@ -6645,3 +6645,47 @@ async fn bug352_http_node_redirect_keeps_auth_same_origin() {
         "hop2（同源）必须保留 Authorization: {h2}"
     );
 }
+
+/// 红证（BUG-20261116-013）：跨源 302 携带**自定义**凭据头（x-api-key——
+/// 014 防线认定的凭据载体类，不在 authorization/cookie/proxy-authorization
+/// 三头名单内）→ 旧代码三头固定名单拦不住，header 原样流向重定向目标主机。
+/// 修复 = 跨源跳剥**全部**请求头（作者配置头整体视为潜在凭据材料；
+/// 同源跳语义不变）。断言：hop1 带 X-Api-Key，hop2（跨端口）不带任何
+/// 作者配置头。
+#[tokio::test]
+async fn bug20261116013_http_node_custom_credential_header_stripped_cross_origin() {
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let (p2, heads2) = bug352_sequenced_mock_heads(vec![bug324_ok_body("final")]);
+    let (p1, heads1) = bug352_sequenced_mock_heads(vec![format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        p2
+    )]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/a", p1)),
+        ),
+        ("method".to_string(), serde_json::json!("GET")),
+        (
+            "headers".to_string(),
+            serde_json::json!({"X-Api-Key": "custom-secret-key"}),
+        ),
+    ]);
+    let node = make_node("r13a", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let h1 = heads1.lock()[0].to_lowercase();
+    assert!(
+        h1.contains("x-api-key: custom-secret-key"),
+        "hop1 必须携带作者配置的 X-Api-Key: {h1}"
+    );
+    let h2 = heads2.lock()[0].to_lowercase();
+    assert!(
+        !h2.contains("x-api-key"),
+        "hop2（跨源）必须剥掉自定义凭据头 X-Api-Key: {h2}"
+    );
+}

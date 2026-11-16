@@ -181,7 +181,7 @@ fn read_head_text(
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let hash = format!("{:x}", hasher.finalize());
-        let _ = chain.append(
+        chain.append_observed(
             "message_preprocess",
             "read_file",
             "",

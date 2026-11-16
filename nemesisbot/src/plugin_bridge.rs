@@ -320,7 +320,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
                 self.inner.as_ref(),
                 args,
             ) {
-                Ok((a, secrets)) => (a, secrets),
+                Ok((a, secrets, _bindings)) => (a, secrets),
                 Err(inj_err) => {
                     match nemesis_agent::r#loop::credential_injection::try_card_recovery(
                         self.credential_broker.clone(),
@@ -333,7 +333,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
                     )
                     .await
                     {
-                        Some((retried, secrets)) => (retried, secrets),
+                        Some((retried, secrets, _bindings)) => (retried, secrets),
                         None => return Err(inj_err.to_string()),
                     }
                 }

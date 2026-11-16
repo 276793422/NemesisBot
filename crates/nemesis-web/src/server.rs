@@ -1017,8 +1017,10 @@ impl WebServer {
             let relay_dev = relay.clone();
             let relay_auth_get = relay.clone();
             let relay_auth_post = relay.clone();
+            let relay_challenge = relay.clone();
             let relay_page = relay.clone();
             let relay_login = relay.clone();
+            let relay_login_nonce = relay.clone();
             let relay_api = relay.clone();
             router
                 .route(
@@ -1075,6 +1077,13 @@ impl WebServer {
                     ),
                 )
                 .route(
+                    "/d/{node_id}/__challenge",
+                    get(move |node_id: axum::extract::Path<String>| {
+                        let relay = relay_challenge.clone();
+                        async move { crate::relay::handle_device_challenge(relay, node_id.0).await }
+                    }),
+                )
+                .route(
                     "/relay",
                     get(move |req: axum::extract::Request| {
                         let relay = relay_page.clone();
@@ -1086,6 +1095,13 @@ impl WebServer {
                     post(move |req: axum::extract::Request| {
                         let relay = relay_login.clone();
                         async move { crate::relay::handle_relay_login(relay, req).await }
+                    }),
+                )
+                .route(
+                    "/relay/login-nonce",
+                    get(move || {
+                        let relay = relay_login_nonce.clone();
+                        async move { crate::relay::handle_relay_login_nonce(relay).await }
                     }),
                 )
                 .route(
@@ -2883,21 +2899,23 @@ fn auth_exempt_path(path: &str) -> bool {
         || path.starts_with("/api/workflow/webhook/")
         || path.starts_with("/api/sdk/")
         // relay 自有信任边界（BUG-20261107-006，2026-11-07）：/bridge、/d/*、
-        // /relay、/relay/login、/api/relay/status 五条路由面在 relay-only 与
-        // 全量（dashboard hub）两种形态共用（build_router 里 set_relay 后统一
-        // 注册），设备/管理侧凭据是 relay 自有的 hello token / 设备访问令牌
-        // cookie / admin cookie——dashboard token 对其无意义。统一鉴权上线时
-        // 只对 relay-only 形态免挂中间件（见 build_router 注释），漏了全量
-        // 形态的同名路由：auth_token 非空时设备桥入/隧道/状态页整体 401
+        // /relay、/relay/login、/relay/login-nonce、/api/relay/status 六条路由
+        // 面在 relay-only 与全量（dashboard hub）两种形态共用（build_router 里
+        // set_relay 后统一注册），设备/管理侧凭据是 relay 自有的 hello token /
+        // 设备访问令牌 cookie / admin cookie——dashboard token 对其无意义。统一
+        // 鉴权上线时只对 relay-only 形态免挂中间件（见 build_router 注释），漏了
+        // 全量形态的同名路由：auth_token 非空时设备桥入/隧道/状态页整体 401
         // （与 /api/sdk/、/api/workflow/webhook/ 漏列同类事故第三次）。
-        // 各路由自有闸：/bridge=hello token（10s 内）、/d/*=设备 cookie、
-        // /relay+login+status=admin cookie（ws token SHA-256）。批次三
-        // /api/relay/overview|enabled|client/reconnect **不豁免**——dashboard
-        // 信任边界（与 /api/status 同语义，见 build_router 批次三注释）。
+        // 各路由自有闸：/bridge=hello token（10s 内）、/d/*=设备 cookie
+        // （__challenge 挑战发放端点无需 cookie——nonce 本身无特权）、
+        // /relay+login+login-nonce+status=admin cookie（ws token 挑战-应答）。
+        // 批次三 /api/relay/overview|enabled|client/reconnect **不豁免**——
+        // dashboard 信任边界（与 /api/status 同语义，见 build_router 批次三注释）。
         || path == "/bridge"
         || path.starts_with("/d/")
         || path == "/relay"
         || path == "/relay/login"
+        || path == "/relay/login-nonce"
         || path == "/api/relay/status"
 }
 

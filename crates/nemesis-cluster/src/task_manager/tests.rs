@@ -574,6 +574,72 @@ fn test_in_memory_store_delete_nonexistent_fails() {
     assert!(result.is_err());
 }
 
+/// 列表出口稳定序（BUG-20261116-029）：`list_all`/`list_by_status` 底层
+/// 是 DashMap 无序迭代（SQLite 实现也无 ORDER BY）——Dashboard
+/// `tasks.list` 直接对出口 `skip/take` 分页，无序源分页 = 跨页重复/漏项/
+/// 重启漂移。出口必须按 `created_at` 给稳定序（新任务在前，Dashboard
+/// 首页展示最新）；解析失败/空串排最后。经真实 store 路径注入受控
+/// created_at（trait 无 update 面，delete+create 重插；重插序与
+/// created_at 序相反，暴露无序迭代）。
+#[test]
+fn test_list_tasks_sorted_by_created_at_newest_first() {
+    let tm = TaskManager::new();
+    let base = tm.create_task("a", serde_json::json!({}), "rpc", "ch");
+    tm.delete_task(&base.id);
+
+    let specs = [
+        ("t-new", "2026-11-16T12:00:00+08:00"),
+        ("t-mid", "2026-11-16T11:00:00+08:00"),
+        ("t-old", "2026-11-16T10:00:00+08:00"),
+        ("t-broken", ""), // 解析失败/空串 → 排最后
+    ];
+    for (id, created_at) in specs {
+        let mut t = base.clone();
+        t.id = id.to_string();
+        t.created_at = created_at.to_string();
+        tm.store.create(t).expect("store create");
+    }
+
+    let ids: Vec<String> = tm.list_tasks().into_iter().map(|t| t.id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "t-new".to_string(),
+            "t-mid".to_string(),
+            "t-old".to_string(),
+            "t-broken".to_string(),
+        ],
+        "list_tasks 必须按 created_at 新→旧稳定排序，解析失败排最后: {ids:?}"
+    );
+}
+
+/// 同上（BUG-20261116-029）的 `list_by_status` 臂：状态过滤后的列表同样
+/// 走出口排序（Dashboard 按状态筛选页共用同一条分页语义）。
+#[test]
+fn test_list_pending_tasks_sorted_by_created_at_newest_first() {
+    let tm = TaskManager::new();
+    let base = tm.create_task("a", serde_json::json!({}), "rpc", "ch");
+    tm.delete_task(&base.id);
+
+    let specs = [
+        ("p-new", "2026-11-16T12:00:00+08:00"),
+        ("p-old", "2026-11-16T10:00:00+08:00"),
+    ];
+    for (id, created_at) in specs {
+        let mut t = base.clone();
+        t.id = id.to_string();
+        t.created_at = created_at.to_string();
+        tm.store.create(t).expect("store create");
+    }
+
+    let ids: Vec<String> = tm.list_pending_tasks().into_iter().map(|t| t.id).collect();
+    assert_eq!(
+        ids,
+        vec!["p-new".to_string(), "p-old".to_string()],
+        "list_pending_tasks 必须按 created_at 新→旧稳定排序: {ids:?}"
+    );
+}
+
 #[test]
 fn test_in_memory_store_list_all() {
     let store = InMemoryTaskStore::new();

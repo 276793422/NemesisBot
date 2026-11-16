@@ -748,9 +748,13 @@ impl ExecutorChannel {
         };
         // 客户端超时兜底（与 stdio 路径的 tokio::time::timeout 同语义）：
         // 引擎按 request.timeout_ms 执行并杀树，但「引擎失灵」不是零概率——
-        // 客户端再兜一层（+10s 宽限）。超时返回 Err；spawn_blocking 线程无法
-        // 中止（Rust 语义），容器子进程由引擎超时/后续 wait 收尾——线程与
-        // 容器进程至多活到引擎超时，不静默放行无响应调用。
+        // 客户端再兜一层（+10s 宽限），超时诚实返回 Err（不静默放行无响应
+        // 调用）。**泄漏边界（诚实注记，2026-11-16 第四轮复审）**：
+        // spawn_blocking 线程无法中止（Rust 语义）——「有慢输出」类子进程由
+        // mxc_backend read-first 的 read_line 自然收口（引擎 wait 杀树生效）；
+        // 「永不产出」类 read_line 永久阻塞 → wait 永不进入 → 引擎超时不兑现，
+        // 线程+容器进程活到网关进程重启（PSEC kill-on-close 随进程死亡回收）。
+        // 主链路 Err 兜底不受影响；泄漏是资源占用非安全缺口（容器围栏仍有效）。
         let join = tokio::task::spawn_blocking(move || spawn_fn(req));
         let outcome = tokio::time::timeout(self.timeout + std::time::Duration::from_secs(10), join)
             .await

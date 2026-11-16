@@ -221,6 +221,7 @@ impl AgentLoop {
                 work: None,
 
                 source_node: None,
+                system_notice: None, // 用户派发的编码任务原文，正常用户气泡
             },
         );
         if !log_existed {

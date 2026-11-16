@@ -49,6 +49,16 @@ export interface ChatMessage {
    *  不落盘，不占行号锚）；`undefined` = 旧规则（user/assistant 占行）。
    *  缺失该键的帧（旧网关/本地回显）按旧规则算，行为逐字节兼容。 */
   occupies?: boolean
+  /** 系统通知标记（2026-11-16 系统注入消息渲染成用户气泡 BUG）：后端
+   *  jsonl 历史行的 `system_notice` 透传。role=user 的系统注入行（后台
+   *  任务完成唤醒/审批裁决回灌/Turn WAL 续轮，sender_id=="system" 推导）
+   *  ——渲染为折叠系统通知条而非用户气泡。缺省 = 真人消息/旧条目，用户
+   *  气泡旧行为。 */
+  systemNotice?: string
+  /** 定时任务来源标记（同 BUG 同族收编）：后端 jsonl 历史行的
+   *  `cron_job_id` 透传（后端早已有此键，前端此前从不消费）。cron tick
+   *  行与 systemNotice 行共用同一通知条渲染分支。缺省 = 非 cron 行。 */
+  cronJobId?: string
 }
 
 /** N5：单条交付物（与后端 chat_log PresentedFile serde 字段对齐）。 */

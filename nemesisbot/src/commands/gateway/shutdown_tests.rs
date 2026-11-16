@@ -11,6 +11,15 @@
 //! 无复位，libtest 并行调度下 cancel 全局令牌会杀死同进程内任何正在
 //! terminal_loop_tick 里 park 的生产循环测试（pa2 board watcher 断言假红）。
 //! 全局面只测指针同一性（单实例），cancel 幂等性用局部令牌证明。
+//!
+//! 纪律边界（2026-11-16 补记）：「不可 cancel」只约束**直接**取消；run_runtime
+//! 全链七测试（run_runtime_full_cycle_guardian_off / guardian_* 族）跑到
+//! Step 24 会经 `cancel_terminal_tasks()` **结构性**取消全局令牌——那是它们
+//! 的测试目的（排空窗防 timer panic），不可规避。后果：OnceLock 无复位，
+//! 排其后的测试里 spawn 的常驻循环首 tick 即死（pa2 假红实录，配对复现
+//! 「毒源 + 受害者同进程两线程必红、单跑恒绿」）。因此**令牌活性在本进程
+//! 内不可断言**（下方单实例测试只测指针同一性，不测 `is_cancelled()==false`
+//! ）；受影响的生产循环断言须自带干涉回落（见 tests.rs pa2 干涉回落臂）。
 
 use std::future::pending;
 use std::time::Duration;
@@ -62,7 +71,10 @@ async fn test_terminal_tick_cancel_preempts_ready_wait() {
 /// 全局令牌：单实例契约——`terminal_cancel_token()` 重复取回同一指针
 /// （27 个调用点 + 收口点消费的是同一个 OnceLock 实例，cancel 才能一次
 /// 触达全部循环）。cancel 幂等性（双重调用无害）用**局部令牌**证明——
-/// 全局令牌在测试里不可 cancel（见模块文档测试纪律）。
+/// 全局令牌在测试里不可直接 cancel（见模块文档测试纪律）。
+/// 令牌活性（`!is_cancelled()`）**不可断言**：run_runtime 全链七测试的
+/// Step 24 会结构性取消它（OnceLock 无复位），libtest 并行下本测试排在
+/// 其后即见已取消态——断言活性反而是颗排位雷（2026-11-16 摘除）。
 #[tokio::test]
 async fn test_global_terminal_token_single_instance() {
     let a = terminal_cancel_token();
@@ -71,7 +83,6 @@ async fn test_global_terminal_token_single_instance() {
         std::ptr::eq(a, b),
         "terminal_cancel_token 必须返回同一 OnceLock 实例"
     );
-    assert!(!a.is_cancelled(), "测试进程内终态令牌应保持为活");
     // cancel 幂等性（局部令牌）：双重 cancel 不 panic、状态一致为已取消。
     let local = CancellationToken::new();
     local.cancel();

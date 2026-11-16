@@ -299,6 +299,40 @@ pub(crate) async fn init_agent(
         info!("[Gateway] persistent executor supervisor ready (watchdog started)");
         sup
     };
+    // 浏览器接管框架（2026-11-15）：BrowserManager 单例（host_browser 工具
+    // 与 browser.* WSAPI 同源；跨 agent 重启存活）。prefs_getter 每次 spawn
+    // 现读 config.json `browser` 段（Dashboard 设置页改完即生效）；sink 接
+    // EventHub（编排操作路 → SSE 日志子页签；AI 动作路走 tool_event）。
+    #[cfg(feature = "browser")]
+    let browser_manager = {
+        // 直接取字段借用（web_init.rs 字段恒存在）——不走 `web_server`
+        // 影子（那扇门 = board_event_hub 消费点的 board+cluster 窄门，
+        // browser-only 裁剪构建下影子缺席；2026-11-15 复审 E0425 根修）。
+        let event_hub = web.web_server.event_hub().clone();
+        let config_path = common::config_path(&home);
+        Arc::new(nemesis_browser::BrowserManager::new(
+            home.clone(),
+            Box::new(move || {
+                // config.json 是真相源；读失败 = 全默认（auto/系统保底）。
+                let mut prefs = nemesis_browser::BrowserPrefs::default();
+                if let Ok(text) = std::fs::read_to_string(&config_path)
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+                    && let Some(seg) = v.get("browser")
+                {
+                    if let Some(k) = seg.get("kind").and_then(|k| k.as_str()) {
+                        prefs.kind = k.to_string();
+                    }
+                    if let Some(e) = seg.get("executable").and_then(|e| e.as_str()) {
+                        prefs.executable = e.to_string();
+                    }
+                }
+                prefs
+            }),
+            Some(Arc::new(move |ev: &serde_json::Value| {
+                event_hub.publish("browser_event", ev.clone());
+            })),
+        ))
+    };
     let shared_resources = crate::agent_factory::SharedResources {
         home: home.clone(),
         // gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
@@ -369,6 +403,12 @@ pub(crate) async fn init_agent(
         //（8f 注册块消费；任一缺席 = plugin_search/plugin_propose 不注册）。
         plugin_installer,
         plugin_install_gate: plugin_gate.clone(),
+        // 浏览器接管框架（2026-11-15）：BrowserManager 单例（host_browser
+        // 工具注册闸 + browser.* WSAPI 同源；headless/测试 = None 诚实缺省）。
+        #[cfg(feature = "browser")]
+        browser_manager: Some(browser_manager.clone()),
+        #[cfg(not(feature = "browser"))]
+        browser_manager: None,
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
         // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级
         // 动态解析槽（AgentLoopServiceAdapter start 填 Some / stop 写
