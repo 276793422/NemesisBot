@@ -92,6 +92,27 @@ fn is_terminal_status(status: &TaskStatus) -> bool {
     )
 }
 
+/// 列表出口统一排序（BUG-20261116-029）：`list_all`/`list_by_status` 的
+/// 底层是 DashMap 无序迭代（SQLite 实现也无 ORDER BY），迭代序是平台/
+/// 插入序细节；而 Dashboard `tasks.list` 直接对出口 `skip/take` 分页、
+/// 恢复 sweep 按原 list 顺序结算——分页与结算语义要求稳定序，无序源
+/// 分页 = 跨页重复/漏项/重启漂移。按 `created_at` RFC3339 解析比较，
+/// **新任务在前**（Dashboard 首页展示最新；方向与 `recover_task_ids`
+/// 的 FIFO 升序刻意相反——那是重放执行序，这是展示序）；解析失败/空串
+/// 排最后，stable 同组保序不丢任务（形态对齐 cluster_task.rs 先例）。
+fn sort_tasks_by_created_at_newest_first(tasks: &mut Vec<Task>) {
+    tasks.sort_by(|a, b| {
+        let ka = chrono::DateTime::parse_from_rfc3339(&a.created_at).ok();
+        let kb = chrono::DateTime::parse_from_rfc3339(&b.created_at).ok();
+        match (ka, kb) {
+            (Some(x), Some(y)) => y.cmp(&x),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+}
+
 /// attempt 归因收账的终态串映射（runs 行状态机由 SqliteTaskStore
 /// 适配器维护；这里只映射 attempts 收账串——非终态 None = 不记账）。
 fn ledger_attempt_status(status: TaskStatus) -> Option<&'static str> {
@@ -679,22 +700,30 @@ impl TaskManager {
 
     /// List all tasks.
     pub fn list_tasks(&self) -> Vec<Task> {
-        self.store.list_all()
+        let mut tasks = self.store.list_all();
+        sort_tasks_by_created_at_newest_first(&mut tasks);
+        tasks
     }
 
     /// List all tasks that are still in Pending status (used by recoveryLoop).
     pub fn list_pending_tasks(&self) -> Vec<Task> {
-        self.store.list_by_status(TaskStatus::Pending)
+        let mut tasks = self.store.list_by_status(TaskStatus::Pending);
+        sort_tasks_by_created_at_newest_first(&mut tasks);
+        tasks
     }
 
     /// List all tasks with Completed status.
     pub fn list_completed_tasks(&self) -> Vec<Task> {
-        self.store.list_by_status(TaskStatus::Completed)
+        let mut tasks = self.store.list_by_status(TaskStatus::Completed);
+        sort_tasks_by_created_at_newest_first(&mut tasks);
+        tasks
     }
 
     /// List all tasks with Failed status.
     pub fn list_failed_tasks(&self) -> Vec<Task> {
-        self.store.list_by_status(TaskStatus::Failed)
+        let mut tasks = self.store.list_by_status(TaskStatus::Failed);
+        sort_tasks_by_created_at_newest_first(&mut tasks);
+        tasks
     }
 
     /// High-level callback that completes or fails a task based on status string.
