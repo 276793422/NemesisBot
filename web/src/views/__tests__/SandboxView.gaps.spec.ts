@@ -284,7 +284,9 @@ describe('SandboxView 文件同步（files tab）', () => {
 // 缺陷史：父视图 TAB 行下常驻横幅 + MxcPanel 内横幅在 MXC TAB 叠两层同
 // 文案卡（真实浏览器截图发现，vitest 未覆盖 MXC 面是该缺陷漏网根因）。
 describe('SandboxView MXC 警告横幅（D5 单横幅）', () => {
-  const MXC_WARNING = '【当前 MXC 版本是 4e522623，目前功能是护栏功能，非沙盒】'
+  // 夹具镜像生产 wire 形态（mxc_backend.rs MXC_WARNING/MXC_VERSION 常量；
+  // 2026-11-16 registry 切换后版本串 = 1.1.0，旧 submodule 短哈希作废）。
+  const MXC_WARNING = '【当前 MXC 版本是 1.1.0，目前功能是护栏功能，非沙盒，无法完整保护系统，可能导致出现异常】'
 
   function mxcOverview(over: Record<string, unknown> = {}) {
     return windowsOverview({
@@ -297,7 +299,7 @@ describe('SandboxView MXC 警告横幅（D5 单横幅）', () => {
         compiled: true,
         probe: { status: 'ready', platform_backend: 'processcontainer', detail: 'ok' },
         warning: MXC_WARNING,
-        version: '4e522623',
+        version: '1.1.0',
         config: { network: 'open', egress_allow: [] },
       },
       ...over,
