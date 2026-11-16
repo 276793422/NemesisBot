@@ -2,8 +2,8 @@
  * 配置页补全批次 3 四处视觉自测（2026-11-08，UI 视觉自测纪律）。
  *
  * 截图四处新增 UI，人工看图（test-results/cfg3-visual/shots/）：
- *   1. /security 配置 TAB 审批记忆规则卡（表单 + 规则表）
- *   2. /security 评估规则 TAB（表格 + 新增模态展开）
+ *   1. /security/approval 审批记忆规则卡（表单 + 规则表）
+ *   2. /security/approval eval 评估规则节（表格 + 新增模态展开）
  *   3. /ziwei 门关横幅（立即启用按钮）→ 启用后总闸卡 + 高级配置展开
  *   4. /plugins WASM 分节总闸行 + 侧栏项目区 projects.max 输入
  */
@@ -32,16 +32,14 @@ test('配置页补全批次3：security规则两卡/ziwei总闸/plugins总闸/�
     console.log('[page-err] ' + String(e).slice(0, 400))
   })
 
-  // —— 1. SecurityView 配置 TAB：审批记忆规则卡 ——
-  await gotoRoute(page, '/#/security')
+  // —— 1. SecurityApprovalView（2026-11-10 十层页面化：/security redirect
+  //        总览，审批记忆规则卡迁 /security/approval）：审批记忆规则卡 ——
+  await gotoRoute(page, '/#/security/approval')
   await page.locator('[data-test="approval-rules-card"]').waitFor({ state: 'visible' })
   await page.screenshot({ path: shotPath('1-security-approval-rules.png'), fullPage: true })
 
-  // —— 2. SecurityView 评估规则 TAB：表格 + 新增模态 ——
-  const rulesTab = page.locator('button.tab', { hasText: '评估规则' })
-  await rulesTab.waitFor({ state: 'visible' })
-  await rulesTab.click()
-  await page.locator('[data-test="eval-rules-tab"]').waitFor({ state: 'visible' })
+  // —— 2. eval 评估规则节（同页一节，旧 SecurityView 四 tab 页退役）：
+  //        表格 + 新增模态 ——
   await page.locator('[data-test="eval-rules-table"], .empty-state').first().waitFor({ state: 'visible' })
   await page.screenshot({ path: shotPath('2-security-eval-rules.png'), fullPage: true })
   // 打开新增模态再截一张
