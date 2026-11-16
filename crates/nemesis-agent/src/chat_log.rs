@@ -1265,6 +1265,14 @@ pub fn delete_chat_log(session_key: &str) {
 /// 写失败仍是 warn 降级（主日志成功 = 操作成立，账本差集已入账）。
 pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
     let path = log_path(session_key);
+    // 零历史会话幂等（BUG-20261116-033）：jsonl 不存在 = 无事可清，直接
+    // Ok——不为空会话创建空文件。此前对全新会话（session_logs/ 目录尚未
+    // 懒创建）fs::write 直接撞「系统找不到指定的路径 (os error 3)」，
+    // CLI /clear（BUG-20261116-032 修复后走本函数）与 WSAPI chat.clear
+    // 对零历史会话都会误报失败。
+    if !path.exists() {
+        return Ok(());
+    }
     // T6（扩展计划 D5）：清空即全删——清空前取原始行，成功后全额按
     // truncate 语义入账（被清内容全文可从账本找回，与 rewind 同一保障）。
     let raw_lines: Vec<String> = fs::File::open(&path)
