@@ -1323,6 +1323,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;
         }
+        #[cfg(feature = "loop")]
         Commands::Loops { action } => {
             common::ensure_default_logger();
             commands::loops::run(action, cli.local).await?;

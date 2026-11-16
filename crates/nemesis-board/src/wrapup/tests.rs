@@ -257,3 +257,19 @@ fn review_section_lists_parked_and_escalations() {
     assert!(report.contains("已停车标「需同步沟通」"));
     assert!(report.contains("escalate_human"));
 }
+
+/// 编号数值序回归（BUG-20261116-042）：汇报包 done 表按数值序列出
+/// （字典序直排会把 NB-10 排在 NB-2 前）。
+#[test]
+fn report_lists_issues_in_numeric_order() {
+    let store = temp_store("numorder");
+    let project = make_project(&store, "数值序");
+    for k in 1..=12 {
+        let iss = make_issue(&store, &format!("任务{k}"), project.id);
+        mark_done(&store, iss.id);
+    }
+    let report = render_project_report(&store, project.id, &[]).unwrap();
+    let p9 = report.find("NB-9").expect("NB-9 in report");
+    let p10 = report.find("NB-10").expect("NB-10 in report");
+    assert!(p9 < p10, "报告编号顺序应为数值序（NB-9 在 NB-10 前）");
+}

@@ -54,15 +54,24 @@ use crate::r#loop::{FileChange, FileChangeKind};
 mod gc;
 
 /// One file's pre-edit state at the moment it was first touched in a turn.
-/// `content == None` means the file did not exist then, so a restore deletes it.
+/// `content == None` **且** `kind == Create`（或旧 JSON 条目 kind 缺失）=
+/// 文件当时不存在，restore 走删除臂；`content == None` 且 `kind` 为
+/// Modify/Delete = 快照读取失败（非 UTF-8 / 文件被锁 / 权限拒绝）——
+/// 基线数据从未捕获，restore 诚实进 failures 保持现状，**绝不落删除臂**
+/// （把现存文件整删 = 数据毁坏）。
 ///
 /// git 模式下工作区内文件的 content 恒为 `None`（内容在影子库 tree 里，不
 /// 双份存储）；工作区外的声明路径（absolute path 写出工作区、restrict 关闭
-/// 时合法）仍按 JSON 语义读全文——影子树罩不住工作区外。
+/// 时合法）仍按 JSON 语义读全文——影子树罩不住工作区外。restore 侧对
+/// git 时代记录的 None 有独立守卫（tree 负责），不经本 kind 判别。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSnap {
     pub path: String,
     pub content: Option<String>,
+    /// 声明时的变更类别（serde default 兼容老 JSON：None = 旧条目不可
+    /// 归属，维持旧删除语义）。
+    #[serde(default)]
+    pub kind: Option<FileChangeKind>,
 }
 
 /// 单路径「变更后指纹」——turn 收尾封印
@@ -1391,6 +1400,7 @@ impl CheckpointStore {
         cp.files.push(FileSnap {
             path: change.path.clone(),
             content,
+            kind: Some(change.kind),
         });
         cp.paths.push(change.path.clone());
         let snap = cp.clone();
@@ -1753,7 +1763,7 @@ impl CheckpointStore {
         // 第三元 = 零条目信号（见 [`RestoreReport::no_checkpoint_from_turn`]）
         // ：from_turn 之后索引里没有任何条目 = tree/hybrid 双双无源、本次
         // 调用什么都没做，回执必须诚实反映（不得谎称「applied」）。
-        let (target_hex, hybrid, no_entries) = {
+        let (target_hex, hybrid, capture_failures, no_entries) = {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
             // cur 桶化——所有会话的进行中 turn 都参与全量收集。
@@ -1762,7 +1772,7 @@ impl CheckpointStore {
 
             // 与 JSON 模式同款语义守卫：from_turn 之后没有任何 checkpoint → no-op。
             if !all.iter().any(|c| c.turn >= from_turn) {
-                (None, Vec::new(), true)
+                (None, Vec::new(), Vec::new(), true)
             } else {
                 let target = all
                     .iter()
@@ -1777,6 +1787,14 @@ impl CheckpointStore {
                 // 纯 JSON 时代记录（tree=None）维持原语义：None = 不存在须删除。
                 let git_mode = self.git.is_some();
                 let mut hybrid: Vec<(String, Option<String>)> = Vec::new();
+                // 快照捕获失败集（BUG-20261117-058）：content=None 且声明
+                // 是 Modify/Delete = 基线读取失败（非 UTF-8 / 文件被锁 /
+                // 权限拒绝），不是「文件本不存在」（那是 Create 的 None
+                // 语义）。落删除臂会把现存文件整删=数据毁坏；诚实进
+                // failures、文件保持现状（基线从未捕获，无从恢复）。
+                // 先占 hybrid_seen 槽：同路径更晚 turn 的成功捕获不得回填
+                // （那是 mid-turn 内容冒充最早基线——BUG-20261110-047 同族）。
+                let mut capture_failures: Vec<(String, String)> = Vec::new();
                 // 最早基线去重走 comparable 形态（BUG-20261110-047，与快照
                 // 侧 seen 同款归一）——形态变体不归一会漏去重，mid-turn 内
                 // 容覆盖 turn-start 基线。
@@ -1789,13 +1807,28 @@ impl CheckpointStore {
                         {
                             continue; // 工作区内 None → tree 负责（或诚实 no-op）
                         }
+                        if f.content.is_none()
+                            && !matches!(f.kind, None | Some(FileChangeKind::Create))
+                        {
+                            // 旧 JSON 条目 kind=None 不可归属，维持旧删除
+                            // 语义（serde default 兼容；破坏性面已随新快照
+                            // 携带 kind 起对未来闭合）。
+                            if hybrid_seen.insert(self.comparable_path_form(&f.path)) {
+                                capture_failures.push((
+                                    f.path.clone(),
+                                    "基线内容不可读（非 UTF-8 或读取失败），无法恢复，文件保持现状"
+                                        .to_string(),
+                                ));
+                            }
+                            continue;
+                        }
                         if !hybrid_seen.insert(self.comparable_path_form(&f.path)) {
                             continue;
                         }
                         hybrid.push((f.path.clone(), f.content.clone()));
                     }
                 }
-                (target, hybrid, false)
+                (target, hybrid, capture_failures, false)
             }
         };
 
@@ -1805,6 +1838,7 @@ impl CheckpointStore {
             // 时 hybrid 恒空（无源），报告带信号位，调用方诚实化回执。
             let mut report = self.hybrid_restore(hybrid).await;
             report.no_checkpoint_from_turn = no_entries;
+            report.failures.extend(capture_failures);
             return report;
         };
 
@@ -1841,6 +1875,7 @@ impl CheckpointStore {
         // ----：hybrid 工作区外内容恢复 ----
         let hw = self.hybrid_restore(hybrid).await;
         result.merge(hw);
+        result.failures.extend(capture_failures);
         result
     }
 

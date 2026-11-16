@@ -10,7 +10,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -645,7 +645,7 @@ impl FeishuChannel {
                 info!(url = %ws_url, "[FeishuChannel] connecting to WebSocket endpoint");
 
                 // Step 3: Connect to WebSocket
-                match connect_async(&ws_url).await {
+                match crate::base::ws_connect_bounded(&ws_url).await {
                     Ok((ws_stream, _)) => {
                         info!("[FeishuChannel] WebSocket connected successfully");
                         backoff = INITIAL_BACKOFF;

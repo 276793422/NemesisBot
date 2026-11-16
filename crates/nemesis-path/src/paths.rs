@@ -80,7 +80,10 @@ impl PathManager {
         if let Some(ref p) = *self.config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.home_dir.read().join("config.json")
@@ -102,7 +105,10 @@ impl PathManager {
         if let Some(ref p) = *self.mcp_config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.workspace().join("config").join("config.mcp.json")
@@ -119,7 +125,10 @@ impl PathManager {
         if let Some(ref p) = *self.security_config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.workspace().join("config").join("config.security.json")
@@ -136,7 +145,10 @@ impl PathManager {
         if let Some(ref p) = *self.skills_config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.workspace().join("config").join("config.skills.json")
@@ -224,7 +236,13 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
     }
 
     // Priority 2: NEMESISBOT_HOME env var
-    if let Ok(env_home) = std::env::var(ENV_HOME) {
+    // set-but-empty 视同 unset（BUG-20261117-047）：docker `-e VAR=` /
+    // systemd `Environment=VAR=` / shell `export VAR=` 都会留下**已设但空**
+    // ——Go 蓝本 os.Getenv 对 unset 与 empty 同返回 ""（空值跳过走默认链），
+    // 裸 `if let Ok(v)` 会让空串走通 → home 落 cwd 相对路径。
+    if let Ok(env_home) = std::env::var(ENV_HOME)
+        && !env_home.is_empty()
+    {
         let expanded = expand_home(&env_home);
         return Ok(expanded.join(DEFAULT_HOME_DIR));
     }
@@ -758,7 +776,10 @@ fn load_config_for_workspace(config_path: &Path) -> Option<MinimalConfig> {
 /// Resolve the main configuration file path.
 /// Priority: NEMESISBOT_CONFIG env > LocalMode/auto-detect > Default.
 pub fn resolve_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::config_path）。
+    if let Ok(env_path) = std::env::var(ENV_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -779,7 +800,10 @@ pub fn fallback_home_dir(_: String) -> PathBuf {
 /// Resolve the MCP configuration file path.
 /// Priority: NEMESISBOT_MCP_CONFIG env > workspace/config/config.mcp.json > default.
 pub fn resolve_mcp_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::mcp_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -798,7 +822,10 @@ pub fn resolve_mcp_config_path() -> PathBuf {
 /// Resolve the security configuration file path.
 /// Priority: NEMESISBOT_SECURITY_CONFIG env > workspace/config/config.security.json > default.
 pub fn resolve_security_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::security_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -817,7 +844,10 @@ pub fn resolve_security_config_path() -> PathBuf {
 /// Resolve the skills configuration file path.
 /// Priority: NEMESISBOT_SKILLS_CONFIG env > workspace/config/config.skills.json > default.
 pub fn resolve_skills_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::skills_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -836,7 +866,10 @@ pub fn resolve_skills_config_path() -> PathBuf {
 /// Resolve the scanner configuration file path.
 /// Priority: NEMESISBOT_SCANNER_CONFIG env > workspace/config/config.scanner.json > default.
 pub fn resolve_scanner_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_SCANNER_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同族其余 resolve_*_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_SCANNER_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 

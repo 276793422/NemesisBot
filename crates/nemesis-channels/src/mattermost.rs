@@ -317,7 +317,7 @@ impl MattermostChannel {
                 let ws_url = MattermostChannel::ws_url_from_base(&base_url);
                 info!("[MattermostChannel] 连接 WebSocket 网关: {ws_url}");
 
-                let ws_stream = match tokio_tungstenite::connect_async(&ws_url).await {
+                let ws_stream = match crate::base::ws_connect_bounded(&ws_url).await {
                     Ok((stream, _)) => stream,
                     Err(e) => {
                         warn!("[MattermostChannel] WebSocket 连接失败: {e}，{backoff:?} 后重试");

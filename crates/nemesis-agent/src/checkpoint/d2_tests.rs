@@ -591,3 +591,96 @@ async fn cross_mode_git_index_loaded_as_json_never_false_deletes() {
         "in-root file must NOT be false-deleted (content=None is tree semantics, not delete)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// JSON 形态：快照捕获失败（content=None 且 kind=Modify/Delete）绝不能落
+// 删除臂（BUG-20261117-057——非 UTF-8/读取失败 ≠ 文件本不存在）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn json_mode_capture_failure_modify_never_deletes_existing_file() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+
+    // 非 UTF-8 现存文件（历史本地编码文本 / 二进制数据——read_to_string
+    // 必失败，快照 content=None）。
+    let bin = root.join("data.bin");
+    std::fs::write(&bin, [0xffu8, 0xfe, 0x41, 0x00, 0x42]).unwrap();
+
+    let store = CheckpointStore::new(None, root.clone());
+    assert_eq!(store.backend(), CheckpointBackend::Json);
+    store.begin(1, "edit binary");
+    store
+        .snapshot(&FileChange {
+            path: "data.bin".to_string(),
+            kind: FileChangeKind::Modify,
+        })
+        .await;
+
+    // 轮内改写（write_file 工具以 UTF-8 文本覆盖）。
+    std::fs::write(&bin, "rewritten as utf-8 text").unwrap();
+
+    let report = store.restore_code(1).await;
+    // 修复前：content=None 被当「文件本不存在」→ restore 删除现存文件
+    // （数据毁坏）。修复后：文件保持轮内现状 + failures 诚实注记。
+    assert!(
+        bin.exists(),
+        "捕获失败的 Modify 声明绝不能落删除臂: deleted={:?}",
+        report.deleted
+    );
+    assert_eq!(
+        std::fs::read(&bin).unwrap(),
+        b"rewritten as utf-8 text",
+        "基线从未捕获无从恢复，文件保持现状"
+    );
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|(p, r)| p == "data.bin" && r.contains("基线内容不可读")),
+        "诚实进 failures: {:?}",
+        report.failures
+    );
+    assert!(
+        !report.ok(),
+        "有失败项 = 部分恢复态，rewind 不得盖 applied 戳"
+    );
+}
+
+#[tokio::test]
+async fn json_mode_legacy_snapshot_without_kind_keeps_delete_semantics() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let cp_dir = root.join("logs").join("checkpoints");
+
+    // 旧版本落盘的 turn-1.json：FileSnap 无 kind 字段（serde default None
+    // = 不可归属）→ 维持旧删除语义（Create 快照的既有行为不回归）。
+    std::fs::create_dir_all(&cp_dir).unwrap();
+    let legacy = serde_json::json!({
+        "turn": 1,
+        "time": "2026-11-17T00:00:00Z",
+        "prompt": "legacy entry without kind",
+        "files": [{ "path": "made_up.txt", "content": null }],
+        "paths": ["made_up.txt"]
+    });
+    std::fs::write(
+        cp_dir.join("turn-1.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+
+    // 会话期间文件被创建（restore 应删除它 = Create 快照既有语义）。
+    std::fs::write(root.join("made_up.txt"), "created during turn").unwrap();
+
+    let store = CheckpointStore::new(Some(cp_dir), root.clone());
+    let report = store.restore_code(1).await;
+    assert_eq!(
+        report.deleted,
+        vec!["made_up.txt".to_string()],
+        "legacy 无 kind 条目维持旧删除语义: {:?}",
+        report
+    );
+    assert!(!root.join("made_up.txt").exists());
+}

@@ -509,7 +509,10 @@ fn resolve_openclaw_home(override_path: &str) -> Result<String, String> {
     if !override_path.is_empty() {
         return Ok(expand_home(override_path));
     }
-    if let Ok(env_home) = std::env::var("OPENCLAW_HOME") {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_nemesisbot_home）。
+    if let Ok(env_home) = std::env::var("OPENCLAW_HOME")
+        && !env_home.is_empty()
+    {
         return Ok(expand_home(&env_home));
     }
     let home = dirs_home()?;
@@ -524,7 +527,12 @@ fn resolve_nemesisbot_home(override_path: &str) -> Result<String, String> {
     if !override_path.is_empty() {
         return Ok(expand_home(override_path));
     }
-    if let Ok(env_home) = std::env::var("NEMESISBOT_HOME") {
+    // set-but-empty 视同 unset（BUG-20261117-047）：Go 蓝本 os.Getenv 对
+    // unset 与 empty 同返回 ""（空值跳过落 ~/.nemesisbot），裸 `if let Ok`
+    // 会让空值走通 → 迁移目标落 cwd 相对路径。
+    if let Ok(env_home) = std::env::var("NEMESISBOT_HOME")
+        && !env_home.is_empty()
+    {
         return Ok(expand_home(&env_home));
     }
     let home = dirs_home()?;
@@ -537,10 +545,16 @@ fn resolve_nemesisbot_home(override_path: &str) -> Result<String, String> {
 /// Get the user's home directory.
 fn dirs_home() -> Result<String, String> {
     // Try HOME env var first (Unix-style), then USERPROFILE (Windows)
-    if let Ok(h) = std::env::var("HOME") {
+    // set-but-empty 视同 unset（BUG-20261117-047）：空 HOME 落到这里会让
+    // `Path::new("").join(".openclaw")` 变 cwd 相对路径，`~/x` 展开也变 `/x`。
+    if let Ok(h) = std::env::var("HOME")
+        && !h.is_empty()
+    {
         return Ok(h);
     }
-    if let Ok(h) = std::env::var("USERPROFILE") {
+    if let Ok(h) = std::env::var("USERPROFILE")
+        && !h.is_empty()
+    {
         return Ok(h);
     }
     Err("resolving home directory: no HOME or USERPROFILE set".to_string())

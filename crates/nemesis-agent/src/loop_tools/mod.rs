@@ -93,6 +93,11 @@ mod git_tool_tests;
 // web_fetch 重定向循环 + SSRF 逐跳复查测试。
 #[cfg(test)]
 mod exec_timeout_tests;
+// AsyncExecTool 启动确认臂信号终止诚实上报（BUG-20261117-056）：
+// wait Ok 臂 code None = 信号终止必须 Err，不得谎报「确认运行中」。
+// 裁决纯函数全平台单测；真进程 e2e 用例 unix 门控。
+#[cfg(test)]
+mod exec_async_signal_tests;
 // exec deny 词表接线测试（2026-11-08 激活 tools.exec.* 死键：
 // 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
 #[cfg(test)]
@@ -124,6 +129,10 @@ mod web_fetch_tests;
 // BUG-20261115-009 回归锁：带凭据 search client 的跨源重定向终停行为级测试。
 #[cfg(test)]
 mod web_search_redirect_tests;
+// search_code glob 过滤回归（BUG-20261117-050）：fnmatch 子集（`*`/`?`）
+// 修复中间星号 glob（test_*.rs）静默失配 → 裸「No matches」假阴性。
+#[cfg(test)]
+mod search_code_glob_tests;
 
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]

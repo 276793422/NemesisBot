@@ -949,6 +949,16 @@ impl WebServer {
             // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
             .route("/api/share/{token}", get(crate::share::handle_api_share));
 
+        // webhook 事件源（2026-11-16 事件源扩展 P1）：外部系统 POST 推送。
+        // **token 即凭据**（/api/share/ 同款公开端点先例）——token 与
+        // events.json webhook 规则精确匹配，404=无规则认领、503=泵未装配；
+        // events 关：路由整体退出编译。
+        #[cfg(feature = "events")]
+        let router = router.route(
+            "/api/events/webhook/{token}",
+            axum::routing::post(crate::handlers::events_webhook::handle_events_webhook),
+        );
+
         // Swarm M3（§5.4/D6）：看板资产下载——公开端点（asset_token 即
         // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
         // board 关：路由与 handlers/board_asset 模块整体退出编译。
@@ -2900,7 +2910,10 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
 ///   （`handlers/workflow.rs` 注册处注释自认 unauthenticated，凭据是 per-workflow 密码）；
 /// - `/api/sdk/`：SDK 源码包/pip 包下载——公开静态产物（与 GitHub release 资产同性质，
 ///   外部消费者没有 dashboard token，token 闸 = 端点失效；2026-09-22 统一鉴权上线
-///   时漏列，CI integration-test `ui/p2_sdk_http` 钉住的公开契约当场红）。
+///   时漏列，CI integration-test `ui/p2_sdk_http` 钉住的公开契约当场红）；
+/// - `/api/events/webhook/`：事件源 webhook——token 即凭据（events.json webhook
+///   规则 `watch.token` 精确匹配；2026-11-16 事件源扩展，`handlers/events_webhook.rs`
+///   模块头注释；与 /api/workflow/webhook/ 同类外部回调语义）。
 fn auth_exempt_path(path: &str) -> bool {
     path == "/health"
         || path == "/api/health"
@@ -2913,6 +2926,8 @@ fn auth_exempt_path(path: &str) -> bool {
         // 鉴权上线时漏列（与 /api/sdk/ 漏列同类事故），外部回调恒 401。
         || path.starts_with("/api/workflow/webhook/")
         || path.starts_with("/api/sdk/")
+        // 事件源 webhook（2026-11-16 事件源扩展 P1）：token 即凭据的公开端点。
+        || path.starts_with("/api/events/webhook/")
         // relay 自有信任边界（BUG-20261107-006，2026-11-07）：/bridge、/d/*、
         // /relay、/relay/login、/relay/login-nonce、/api/relay/status 六条路由
         // 面在 relay-only 与全量（dashboard hub）两种形态共用（build_router 里

@@ -1367,6 +1367,88 @@ fn test_resolve_nemesisbot_home_override_takes_priority_over_env() {
     assert_eq!(result.unwrap(), "/override/path");
 }
 
+/// 回归锁（set-but-empty 视同 unset，BUG-20261117-047）：docker `-e VAR=` /
+/// systemd `Environment=VAR=` / shell `export VAR=` 都会留下**已设但空**的
+/// 环境变量——Go 蓝本 os.Getenv 对 unset 与 empty 同返回 ""（空值跳过落
+/// ~/.openclaw），裸 `if let Ok` 会让空值走通 → 迁移源落 cwd 相对路径
+/// `.openclaw`（读不到任何旧数据还自以为迁移成功）。
+#[test]
+fn test_resolve_openclaw_home_set_but_empty_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let orig = std::env::var("OPENCLAW_HOME").ok();
+    unsafe {
+        std::env::set_var("OPENCLAW_HOME", "");
+    }
+    let result = resolve_openclaw_home("");
+    match orig {
+        Some(v) => unsafe {
+            std::env::set_var("OPENCLAW_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("OPENCLAW_HOME");
+        },
+    }
+    assert!(result.is_ok());
+    let home = result.unwrap();
+    assert!(
+        home.ends_with(".openclaw"),
+        "空 OPENCLAW_HOME 应落默认链 ~/.openclaw，实得 {home:?}"
+    );
+}
+
+/// 同族（BUG-20261117-047）：空 NEMESISBOT_HOME 迁移目标同纪律。
+#[test]
+fn test_resolve_nemesisbot_home_set_but_empty_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let orig = std::env::var("NEMESISBOT_HOME").ok();
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "");
+    }
+    let result = resolve_nemesisbot_home("");
+    match orig {
+        Some(v) => unsafe {
+            std::env::set_var("NEMESISBOT_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        },
+    }
+    assert!(result.is_ok());
+    let home = result.unwrap();
+    assert!(
+        home.ends_with(".nemesisbot"),
+        "空 NEMESISBOT_HOME 应落默认链 ~/.nemesisbot，实得 {home:?}"
+    );
+}
+
+/// 同族（BUG-20261117-047）：dirs_home 空 HOME 跳过取 USERPROFILE（或
+/// 两键皆空/未设时诚实 Err——fail-closed 优于返回空串）。
+#[test]
+fn test_dirs_home_set_but_empty_env() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let orig_home = std::env::var("HOME").ok();
+    unsafe {
+        std::env::set_var("HOME", "");
+    }
+    let result = dirs_home();
+    match orig_home {
+        Some(v) => unsafe {
+            std::env::set_var("HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("HOME");
+        },
+    }
+    // HOME/USERPROFILE 双空（Linux 容器形态）= 诚实 Err，可接受；
+    // Ok 臂钉住「不得返回空串」。
+    if let Ok(h) = result {
+        assert!(
+            !h.is_empty(),
+            "dirs_home 空 HOME 不得返回空串（应跳过取 USERPROFILE）"
+        );
+    }
+}
+
 #[test]
 fn test_resolve_openclaw_home_with_tilde() {
     // 持锁读 env：~ 展开间接走 dirs_home()，不持锁会与 userprofile_fallback

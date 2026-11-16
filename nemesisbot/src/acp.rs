@@ -1093,11 +1093,20 @@ impl PromptDriver for LoopDriver {
                     .await
             });
             let mut rx = self.event_rx.resubscribe();
+            // sender 全部消失（session 被拆）后 recv() 恒即时返回
+            // Err(Closed)：用标志禁用 recv 臂，select 只剩 run 收尾一个
+            // 可完成分支。不能留空臂（Closed 后每次 loop 迭代立即
+            // Ready → 热空转烧 CPU 直到 run 结束，BUG-20261117-060），
+            // 也不能在 handler 体里 pending 挂起——select 进入 handler
+            // 后只 poll handler，其他分支（handle）会被饿死成永久死锁。
+            // （local_dispatch::wait_estop 的 pending 挂起之所以成立，
+            // 是它作为**分支表达式**只挂自己那条臂。）
+            let mut rx_closed = false;
             let events = loop {
                 tokio::select! {
                     biased;
                     res = &mut handle => break res.unwrap_or_default(),
-                    ev = rx.recv() => match ev {
+                    ev = rx.recv(), if !rx_closed => match ev {
                         Ok(ev) => {
                             // 出站通道关闭（客户端断开）：继续跑完，结局
                             // 无人接收而已（`let _ =` 显式吞错）。
@@ -1109,7 +1118,7 @@ impl PromptDriver for LoopDriver {
                             eprintln!("acp: {n} live events dropped (consumer too slow)");
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            // sender 全部消失（session 被拆）：等 run 收尾。
+                            rx_closed = true;
                         }
                     },
                 }

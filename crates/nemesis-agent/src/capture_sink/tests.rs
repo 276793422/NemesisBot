@@ -133,7 +133,8 @@ fn disabled_sink() -> CaptureSink {
     CaptureSink {
         workspace: std::path::PathBuf::new(),
         enabled: false,
-        buffers: std::sync::Mutex::new(std::collections::HashMap::new()),
+        max_buffer_bytes: MAX_TOTAL_BUFFER_BYTES,
+        buffers: std::sync::Mutex::new(Default::default()),
     }
 }
 
@@ -169,7 +170,7 @@ fn write_cap(overwrite: bool) -> SessionWriteCapture {
 fn record_tool_disabled_is_noop() {
     let sink = disabled_sink();
     sink.record_tool("sk", tool_cap("t"));
-    assert!(sink.buffers.lock().unwrap().is_empty());
+    assert!(sink.buffers.lock().unwrap().map.is_empty());
 }
 
 /// record_session_write on a disabled sink is a no-op (early return).
@@ -177,7 +178,7 @@ fn record_tool_disabled_is_noop() {
 fn record_session_write_disabled_is_noop() {
     let sink = disabled_sink();
     sink.record_session_write("sk", write_cap(false));
-    assert!(sink.buffers.lock().unwrap().is_empty());
+    assert!(sink.buffers.lock().unwrap().map.is_empty());
 }
 
 /// flush on a disabled sink returns before touching the filesystem.
@@ -200,7 +201,7 @@ fn tool_ringbuffer_drains_oldest_beyond_50() {
     }
     {
         let bufs = sink.buffers.lock().unwrap();
-        let buf = bufs.get("rb").unwrap();
+        let buf = bufs.map.get("rb").unwrap();
         assert_eq!(buf.tools.len(), 50, "bounded at MAX_TOOLS");
         assert_eq!(buf.tools[0].tool_name, "t2", "oldest two dropped");
         assert_eq!(buf.tools[49].tool_name, "t51");
@@ -221,7 +222,7 @@ fn session_write_ringbuffer_drains_oldest_beyond_200() {
     }
     {
         let bufs = sink.buffers.lock().unwrap();
-        let buf = bufs.get("wr").unwrap();
+        let buf = bufs.map.get("wr").unwrap();
         assert_eq!(
             buf.session_writes.len(),
             200,
@@ -247,4 +248,146 @@ fn flush_with_file_workspace_warns_and_returns() {
     let sink = CaptureSink::for_test(blocker);
     sink.record_tool("sk2", tool_cap("t"));
     sink.flush("sk2", "llm_retry_exhausted", None, None); // must not panic
+}
+
+// ---: global byte budget / LRU eviction (BUG-20261117-045) ---
+
+/// A tool record of approximately `n` payload bytes.
+fn fat_tool_cap(name: &str, n: usize) -> ToolCapture {
+    ToolCapture {
+        tool_name: name.to_string(),
+        arguments: "{}".to_string(),
+        result: "x".repeat(n),
+        success: true,
+        duration_ms: 1,
+        error: String::new(),
+        llm_round: 1,
+        ts: String::new(),
+    }
+}
+
+/// Budget exceeded -> idle sessions evicted oldest-recorded-first; the most
+/// recently recorded session survives. Recording to A *after* B makes A the
+/// most recent despite B being inserted later — LRU, not insertion order.
+#[test]
+fn budget_exceeded_evicts_idle_sessions_lru() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_cap_lru_{}_{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Budget fits ~1.5 records of 1000 bytes.
+    let sink = CaptureSink::for_test_with_budget(dir.clone(), 1500);
+    sink.record_tool("B", fat_tool_cap("b1", 1000));
+    sink.record_tool("A", fat_tool_cap("a1", 1000)); // total > 1500
+    let rec_bytes = tool_rec_bytes(&fat_tool_cap("a1", 1000));
+    {
+        let bufs = sink.buffers.lock().unwrap();
+        // B (idle, oldest) evicted; A survives as most-recent.
+        assert!(bufs.map.contains_key("A"), "most-recent session survives");
+        assert!(!bufs.map.contains_key("B"), "idle oldest session evicted");
+        assert_eq!(
+            bufs.total_bytes, rec_bytes,
+            "accounting reflects survivor only"
+        );
+        assert_eq!(bufs.order.len(), 1);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Refresh-on-record: a session re-recorded after others stays alive; an
+/// older session that was NOT re-touched is evicted first even though its
+/// neighbour is newer by insertion.
+#[test]
+fn budget_lru_refresh_keeps_active_session() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_cap_lr2_{}_{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sink = CaptureSink::for_test_with_budget(dir.clone(), 1500);
+    sink.record_tool("old", fat_tool_cap("o1", 1000));
+    sink.record_tool("new", fat_tool_cap("n1", 1000)); // evicts "old" at this point
+    sink.record_tool("new", fat_tool_cap("n2", 1000)); // over budget again
+    let rec_bytes = tool_rec_bytes(&fat_tool_cap("n2", 1000));
+    {
+        let bufs = sink.buffers.lock().unwrap();
+        assert!(bufs.map.contains_key("new"), "re-touched session survives");
+        assert!(!bufs.map.contains_key("old"));
+        // Both of "new"'s records are retained: a single session may exceed
+        // the budget on its own (documented residual — never evict the live
+        // session), so total = 2 records.
+        assert_eq!(bufs.total_bytes, 2 * rec_bytes);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// flush releases the session's byte accounting: total drops to 0 and the
+/// map/order no longer hold the key (no stale LRU entries).
+#[test]
+fn flush_releases_budget_accounting() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_cap_acct_{}_{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sink = CaptureSink::for_test_with_budget(dir.clone(), 1 << 20);
+    sink.record_tool("acct", fat_tool_cap("t1", 5000));
+    sink.record_session_write("acct", write_cap(false));
+    assert!(sink.buffers.lock().unwrap().total_bytes > 5000);
+    sink.flush("acct", "agent_error", None, None);
+    {
+        let bufs = sink.buffers.lock().unwrap();
+        assert!(bufs.map.is_empty());
+        assert!(bufs.order.is_empty());
+        assert_eq!(bufs.total_bytes, 0);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A single session over budget on its own is retained (documented
+/// residual: the live session's full evidence is the point of the sink) —
+/// and the saturating accounting never panics on underflow.
+#[test]
+fn single_session_over_budget_is_retained() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_cap_res_{}_{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    let sink = CaptureSink::for_test_with_budget(dir.clone(), 100);
+    sink.record_tool("solo", fat_tool_cap("big", 5000));
+    {
+        let bufs = sink.buffers.lock().unwrap();
+        assert_eq!(bufs.map.len(), 1, "live session never evicted");
+        assert!(bufs.order.len() == 1);
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Ring drain (count bound) releases byte accounting too: pushing 52 fat
+/// records keeps total at 50 records' worth, not 52.
+#[test]
+fn ring_drain_releases_bytes() {
+    let dir =
+        std::env::temp_dir().join(format!("nemesis_cap_rd_{}_{}", std::process::id(), line!()));
+    let _ = fs::remove_dir_all(&dir);
+    let sink = CaptureSink::for_test_with_budget(dir.clone(), 1 << 30);
+    for _ in 0..52 {
+        sink.record_tool("rd", fat_tool_cap("t", 1000));
+    }
+    let bufs = sink.buffers.lock().unwrap();
+    assert_eq!(bufs.map.get("rd").unwrap().tools.len(), 50);
+    let rec_bytes = tool_rec_bytes(&fat_tool_cap("t", 1000));
+    assert_eq!(
+        bufs.total_bytes,
+        50 * rec_bytes,
+        "drained records release bytes"
+    );
+    drop(bufs);
+    let _ = fs::remove_dir_all(&dir);
 }

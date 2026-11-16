@@ -51,16 +51,16 @@ LangChain / LangGraph / Deep Agents / LangSmith 等通用框架覆盖了图编�
 
 | 基准项 | 数字 | 复现命令 |
 |--------|------|----------|
-| 测试用例 | 30,000+ | `cargo test --workspace` |
-| 行覆盖率（全 workspace lib） | 87.85%（CI 地板 84% 防倒退） | `cargo llvm-cov --workspace --lib --summary-only` |
-| CLI 集成断言 | 589 断言 / 22 命令 ~180 子命令 | `cargo run -p integration-test` |
-| 集群端到端 | T1-T37 + U 系列 46 场景（双节点真流） | `cargo run -p cluster-uat` |
-| 自建任务基准 | agent-bench 16 场景 + baseline 防倒退门禁 | `agent-bench --compare test-tools/agent-bench/baseline.json` |
+| 测试用例 | 32,000+ | `cargo test --workspace` |
+| 行覆盖率（全 workspace lib） | 86.01%（CI 地板 84% 防倒退） | `cargo llvm-cov --workspace --lib --summary-only` |
+| CLI 集成断言 | 702 断言 / 22+ 命令 | `cargo run -p integration-test` |
+| 集群端到端 | 六段合计 76 场景全绿（T1-T49 + U 系列 + 连接器/监控/VM/迁移/WAN 族） | `cargo run -p cluster-uat` |
+| 自建任务基准 | agent-bench 25 场景 + baseline 防倒退门禁 | `agent-bench --compare test-tools/agent-bench/baseline.json` |
 | 架构依赖矩阵 | 7 条分层规则，CI 强制 | `cargo test -p arch-gate` |
-| 内联测试纪律 | 2600+ 文件 0 违规 | `bash scripts/check-inline-tests.sh` |
-| 生产 / 测试行数比 | 164%（295K 生产 / 484K 测试） | `bash scripts/test-ratio.sh` |
+| 内联测试纪律 | 2,682 文件 0 违规 | `bash scripts/check-inline-tests.sh` |
+| 生产 / 测试行数比 | 152%（541.7K 生产 / 824.0K 测试） | `bash scripts/test-ratio.sh` |
 
-完整口径与实测记录见 [docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)。
+完整口径与实测记录见 [docs/INFO/2026-11-16_公开基准.md](docs/INFO/2026-11-16_公开基准.md)。
 
 ---
 
@@ -150,12 +150,12 @@ NemesisBot_Rust/
 
 ```bash
 cargo test --workspace               # 全部单元测试
-cargo run -p integration-test        # CLI 集成测试（589 断言）
-cargo run -p cluster-uat             # 集群 UAT（T1-T37 + U 系列，双节点端到端）
-cargo build --release -p agent-bench && ./target/release/agent-bench.exe   # 自建基准 16 场景
+cargo run -p integration-test        # CLI 集成测试（702 断言）
+cargo run -p cluster-uat             # 集群 UAT（T1-T49 + U 系列，双节点端到端）
+cargo build --release -p agent-bench && ./target/release/agent-bench.exe   # 自建基准 25 场景
 ```
 
-质量基准（每项附复现命令）见 [docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)。
+质量基准（每项附复现命令）见 [docs/INFO/2026-11-16_公开基准.md](docs/INFO/2026-11-16_公开基准.md)。
 
 ## CLI 速查
 

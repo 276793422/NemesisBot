@@ -190,8 +190,9 @@ impl CcHookGroup {
         match regex::Regex::new(pattern) {
             Ok(re) => candidates.iter().any(|c| re.is_match(c)),
             Err(_) => {
-                // 无效正则（方言语义是整个 hook 报错；我们退化成子串匹配，
-                // warn 一次都不做——每次调用打日志太吵，加载时已统计）。
+                // 无效正则：加载期 parse_cc_hooks → warn_invalid_matchers 已
+                // 逐条 warn（BUG-20261117-054 前该承诺从未落地）；此处按
+                // 既定语义退化为字面量子串匹配，每次调用不再打日志。
                 candidates.iter().any(|c| c.contains(pattern.as_str()))
             }
         }
@@ -322,7 +323,51 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
     if skipped > 0 {
         tracing::warn!("[cc-hooks] skipped {} non-command hook(s)", skipped);
     }
+    // matcher 加载期编译验证（BUG-20261117-054）：无效正则运行期按既定
+    // 语义退化为字面量子串匹配（`CcHookGroup::matches`，模块头「诚实边界」
+    // 明示 warn 提示）——此前该 warn 承诺从未落地，打错字的 matcher 全链
+    // 零诊断、hook 静默永不触发。加载只走一次，逐条带 pattern 原文 +
+    // 编译错误，不吵。
+    let invalid_matchers = warn_invalid_matchers(&events);
+    if invalid_matchers > 0 {
+        tracing::warn!(
+            "[cc-hooks] {invalid_matchers} matcher(s) failed regex compilation — degraded to literal substring matching"
+        );
+    }
     Ok(events)
+}
+
+/// 逐事件组编译 matcher 正则，无效则逐条 warn（含 pattern 原文与编译错误），
+/// 返回无效条数。12 个事件组必须全覆盖（与上方 type 过滤同清单纪律——
+/// 漏组 = 该组的坏 matcher 零诊断）。
+fn warn_invalid_matchers(events: &CcEvents) -> usize {
+    let mut invalid = 0usize;
+    for groups in [
+        &events.pre_tool_use,
+        &events.post_tool_use,
+        &events.post_tool_use_failure,
+        &events.session_start,
+        &events.session_end,
+        &events.user_prompt_submit,
+        &events.stop,
+        &events.pre_compact,
+        &events.post_compact,
+        &events.subagent_start,
+        &events.subagent_stop,
+        &events.notification,
+    ] {
+        for g in groups {
+            if let Some(pattern) = &g.matcher
+                && let Err(e) = regex::Regex::new(pattern)
+            {
+                invalid += 1;
+                tracing::warn!(
+                    "[cc-hooks] invalid matcher regex {pattern:?} ({e}) — will fall back to literal substring matching"
+                );
+            }
+        }
+    }
+    invalid
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +772,10 @@ pub async fn run_hook_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // env 窄版闸（BUG-20261117-048，家族闸纪律对齐 cli_delegation）：hook
+    // 是用户配置面第三方脚本，不继承 bot 内部命名空间变量；窄剥保留
+    // 第三方自身 auth env（git hooks 场景需要 PATH/HOME/登录态）。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
     // Windows 下子控制台进程不弹新窗口（CLAUDE.md 禁令：绝不创建可见窗口）。
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW

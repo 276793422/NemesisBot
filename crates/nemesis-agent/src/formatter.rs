@@ -165,6 +165,11 @@ async fn format_file(spec: &FormatterSpec, path: &str, timeout: Duration) -> boo
         .stderr(std::process::Stdio::null())
         // 超时分支 drop Child 时兜底 kill（不留孤儿格式化进程）。
         .kill_on_drop(true);
+    // env 窄版闸（BUG-20261117-048，家族闸纪律对齐 cli_delegation）：第三方
+    // 格式化器（prettier/black…）是用户配置面 spawn 点，不继承 bot 内部
+    // 命名空间变量（NEMESISBOT_VAULT_PASSPHRASE 等）；窄剥保留第三方自身
+    // auth env，不砍登录态。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
     // 格式化工具（prettier/black 等）是 console 程序；gateway 托盘/无控制台
     // 运行（release windows 子系统）时压掉弹窗（输出本就走 null）。
     #[cfg(target_os = "windows")]

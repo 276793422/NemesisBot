@@ -314,7 +314,7 @@ impl SlackChannel {
 
                 info!("[SlackChannel] connecting to Socket Mode...");
 
-                let ws_result = tokio_tungstenite::connect_async(&ws_url).await;
+                let ws_result = crate::base::ws_connect_bounded(&ws_url).await;
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => stream,
                     Err(e) => {

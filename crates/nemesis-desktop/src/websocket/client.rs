@@ -93,9 +93,20 @@ impl WebSocketClient {
         );
 
         // Establish WebSocket connection
-        let (ws_stream, _response) = tokio_tungstenite::connect_async(&self.server_url)
-            .await
-            .map_err(|e| format!("WebSocket connect failed: {}", e))?;
+        // BUG-20261116-041：connect_async 无内建超时——父服务端接受 TCP 后
+        // 不回 HTTP 101 时此处永久挂起（connect() 的调用方与重连逻辑全部
+        // 卡死在 await 内）。15s 握手帽对齐 nemesis-channels::base 先例。
+        let (ws_stream, _response) = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            tokio_tungstenite::connect_async(&self.server_url),
+        )
+        .await
+        .map_err(|_| {
+            "WebSocket handshake timeout (15s): server accepted TCP but never sent \
+                 HTTP 101 (half-open?)"
+                .to_string()
+        })?
+        .map_err(|e| format!("WebSocket connect failed: {}", e))?;
 
         info!("[WebSocketClient] {}: TCP connected", self.id);
 

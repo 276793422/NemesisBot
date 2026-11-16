@@ -349,7 +349,10 @@ impl MaixCamChannel {
                                     // send 按 msg.chat_id 查表三方同键——MaixCam
                                     // 协议无设备 id 握手，单设备假设；重连时
                                     // insert 覆盖旧 half 自愈，断开不 remove
-                                    // 避免误删重连后的新注册，stop 统一 clear）。
+                                    // 避免误删重连后的新注册，stop 统一 clear；
+                                    // 写失败路径按身份逐出——evict_writer_if_current
+                                    // 的 ptr_eq 守卫保证不误删重连新注册，
+                                    // BUG-20261116-040）。
                                     // 修复前 write half 被直接丢弃——出站定向/
                                     // 广播分支死代码，bot 回复永远到不了设备。
                                     let (reader, writer) = stream.into_split();
@@ -496,6 +499,23 @@ impl MaixCamChannel {
         }
     }
 
+    /// 写失败后按身份逐出 writer 条目（BUG-20261116-040）。
+    ///
+    /// ptr_eq 守卫：只有表内仍是「本次写超时/失败的同一个 Arc」才移除——
+    /// 写挂起窗内设备重连已覆盖注册的新 writer 不受影响（对齐注册点
+    /// 「断开不 remove 避免误删重连新注册」的既有竞态纪律，此处是同一
+    /// 竞态在失败路径的解法：不笼统 remove，按身份条件移除）。返回是否
+    /// 真的移除了条目。不逐出的代价：停摆设备（firmware 死锁不读 socket、
+    /// TCP 层不自断）条目永驻，串行派发环对同一条死链每条消息再吃满
+    /// 整个超时窗——单设备停摆放大为全通道出站持续停摆。
+    fn evict_writer_if_current(
+        map: &dashmap::DashMap<String, Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>,
+        key: &str,
+        stale: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    ) -> bool {
+        map.remove_if(key, |_, v| Arc::ptr_eq(v, stale)).is_some()
+    }
+
     /// send 的可注入超时形态（测试用短窗验证 的
     /// 有界性；生产走 WRITE_TIMEOUT_SECS）。
     async fn send_with_timeout(
@@ -525,22 +545,39 @@ impl MaixCamChannel {
                 .map(|g| Arc::clone(g.value()))
             {
                 let mut guard = writer.lock().await;
-                Self::write_payload_with_timeout(&mut *guard, &payload, timeout)
-                    .await
-                    .map_err(|e| NemesisError::Channel(format!("MaixCam write error: {e}")))?;
+                if let Err(e) =
+                    Self::write_payload_with_timeout(&mut *guard, &payload, timeout).await
+                {
+                    // 写失败 = 连接判死（BUG-20261116-040）：按身份逐出后诚实
+                    // 上抛。不逐出 = 死链条目永驻（见 evict_writer_if_current），
+                    // 串行派发环对同一条死链每条消息再吃满超时窗。
+                    Self::evict_writer_if_current(&self.client_writers, &msg.chat_id, &writer);
+                    return Err(NemesisError::Channel(format!("MaixCam write error: {e}")));
+                }
                 return Ok(());
             }
 
             // Broadcast to all（best-effort 语义保持：单设备失败不拦整体，
             // 但每设备写有界——不再被停摆设备冻死派发管线；快照收集在锁外写）
-            let writers: Vec<_> = self
+            let writers: Vec<(String, _)> = self
                 .client_writers
                 .iter()
-                .map(|e| Arc::clone(e.value()))
+                .map(|e| (e.key().clone(), Arc::clone(e.value())))
                 .collect();
-            for writer in writers {
+            for (key, writer) in writers {
                 let mut guard = writer.lock().await;
-                let _ = Self::write_payload_with_timeout(&mut *guard, &payload, timeout).await;
+                if let Err(e) =
+                    Self::write_payload_with_timeout(&mut *guard, &payload, timeout).await
+                {
+                    // 广播 best-effort 语义保持（单设备失败不拦整体），但死链
+                    // 条目按身份逐出——同上：停摆设备不逐出会反复吃满超时窗。
+                    Self::evict_writer_if_current(&self.client_writers, &key, &writer);
+                    warn!(
+                        chat_id = %key,
+                        error = %e,
+                        "[MaixCamChannel] broadcast write failed, stale writer evicted"
+                    );
+                }
             }
             return Ok(());
         }

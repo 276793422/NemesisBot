@@ -445,7 +445,7 @@ impl Channel for OneBotChannel {
                     request.headers_mut().insert("Authorization", val);
                 }
 
-                let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
+                let (ws_stream, _) = match crate::base::ws_connect_bounded(request).await {
                     Ok(s) => s,
                     Err(e) => {
                         warn!("[OneBotChannel] WS connect failed: {e}");

@@ -535,6 +535,76 @@ fn test_resolve_scanner_config_path_default() {
     assert!(result.to_string_lossy().ends_with("config.scanner.json"));
 }
 
+/// 回归锁（set-but-empty 视同 unset，BUG-20261117-047）：docker `-e VAR=` /
+/// systemd `Environment=VAR=` / shell `export VAR=` 都会留下**已设但空**的
+/// 环境变量——Go 蓝本 os.Getenv 对 unset 与 empty 同返回 ""（空值跳过走
+/// 默认检测链），裸 `if let Ok` 会让空串走通 → home 落 cwd 相对路径
+/// `.nemesisbot`（workspace/data/logs 全部落错根）。
+#[test]
+fn test_resolve_home_dir_set_but_empty_env() {
+    let _g = EnvGuard::set(ENV_HOME, "");
+    set_local_mode(false);
+    let result = resolve_home_dir();
+    set_local_mode(false);
+    assert!(result.is_ok());
+    let home = result.unwrap();
+    assert_ne!(
+        home,
+        PathBuf::from(DEFAULT_HOME_DIR),
+        "空 NEMESISBOT_HOME 不得落 cwd 相对路径 .nemesisbot"
+    );
+    assert!(
+        home.is_absolute(),
+        "空 NEMESISBOT_HOME 应走默认检测链落绝对路径，实得 {home:?}"
+    );
+    assert!(home.to_string_lossy().ends_with(".nemesisbot"));
+}
+
+/// 同族（BUG-20261117-047）：空 NEMESISBOT_CONFIG 不得返回裸空
+/// `PathBuf::from("")`——必须跳过覆盖落默认链。
+#[test]
+fn test_resolve_config_path_set_but_empty_env() {
+    let _g1 = EnvGuard::set(ENV_CONFIG, "");
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+    let result = resolve_config_path();
+    assert!(
+        result.to_string_lossy().ends_with("config.json"),
+        "空 NEMESISBOT_CONFIG 不得返回裸空路径，实得 {result:?}"
+    );
+}
+
+/// 同族（BUG-20261117-047）：mcp/security/skills/scanner 四键空值同纪律。
+#[test]
+fn test_resolve_other_config_paths_set_but_empty_env() {
+    let _g0 = EnvGuard::remove(ENV_HOME);
+    let _g1 = EnvGuard::set(ENV_MCP_CONFIG, "");
+    let _g2 = EnvGuard::set(ENV_SECURITY_CONFIG, "");
+    let _g3 = EnvGuard::set(ENV_SKILLS_CONFIG, "");
+    let _g4 = EnvGuard::set(ENV_SCANNER_CONFIG, "");
+    set_local_mode(false);
+    assert!(
+        resolve_mcp_config_path()
+            .to_string_lossy()
+            .ends_with("config.mcp.json")
+    );
+    assert!(
+        resolve_security_config_path()
+            .to_string_lossy()
+            .ends_with("config.security.json")
+    );
+    assert!(
+        resolve_skills_config_path()
+            .to_string_lossy()
+            .ends_with("config.skills.json")
+    );
+    assert!(
+        resolve_scanner_config_path()
+            .to_string_lossy()
+            .ends_with("config.scanner.json")
+    );
+}
+
 #[test]
 fn test_path_manager_config_path_with_env() {
     let pm = PathManager::with_home(PathBuf::from("/tmp/test_home"));

@@ -18,7 +18,7 @@ use async_trait::async_trait;
 
 use super::{
     CcHookBridge, ScriptOutcome, build_event_payload, cc_tool_alias,
-    migrate_legacy_home_hooks_config, parse_cc_hooks, pre_tool_use_payload,
+    migrate_legacy_home_hooks_config, parse_cc_hooks, pre_tool_use_payload, warn_invalid_matchers,
 };
 use crate::context::RequestContext;
 use crate::hooks::{HookPrompt, HookToolCall, HookTurnEnd, LifecycleHook, ToolHook};
@@ -379,6 +379,33 @@ async fn compact_hooks_carry_session_and_respect_scope() {
 
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[test]
+fn invalid_matcher_regex_warned_at_load_and_degrade_kept() {
+    // BUG-20261117-054：无效 matcher 正则必须在加载期被逐条统计+warn
+    //（模块头「诚实边界」承诺的 warn 提示——此前从未落地，坏 matcher
+    // 全链零诊断、hook 静默永不触发）。解析不拒绝（退化语义不变），
+    // 运行期 matches() 仍按字面量子串匹配兜底。
+    let json = hook_json(
+        "\"PreToolUse\":[{\"matcher\":\"Edit|Write\",\"hooks\":[{\"command\":\"exit 0\"}]},\
+         {\"matcher\":\"Edit|[\",\"hooks\":[{\"command\":\"exit 0\"}]}]",
+    );
+    let ev = parse_cc_hooks(&json).expect("invalid matcher 不拒绝解析");
+    // 12 组全量清点：恰一条无效（"Edit|[" 未闭合字符类）。
+    assert_eq!(warn_invalid_matchers(&ev), 1);
+    // 合法 matcher 组不受影响。
+    assert!(ev.pre_tool_use[0].matches("Edit"));
+    assert!(ev.pre_tool_use[0].matches("Write"));
+    assert!(!ev.pre_tool_use[0].matches("Bash"));
+    // 无效正则组：退化语义仍在——按字面子串匹配（"Edit|[" 只命中包含
+    // 该字面的名字，不会当正则解释出 Edit 分支）。
+    assert!(ev.pre_tool_use[1].matches("Edit|["));
+    assert!(!ev.pre_tool_use[1].matches("Edit"));
+    // 空 matcher = 无正则编译对象，不计无效。
+    let bare =
+        parse_cc_hooks("{\"PreToolUse\":[{\"hooks\":[{\"command\":\"a\"}]}]}").expect("bare");
+    assert_eq!(warn_invalid_matchers(&bare), 0);
 }
 
 #[test]

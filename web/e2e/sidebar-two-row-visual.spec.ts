@@ -3,6 +3,7 @@
  *
  * 改动：fn-row 单行 5 按钮（第 5 个溢出）→ 两行 7 按钮
  *（行1 定时/Skills/MCP/命令；行2 批量/导入/工作区，新增 MCP/命令入口）。
+ * 2026-11-17：行2 增 🌐 浏览器（D10 浏览器接管，feature gate 默认开）→ 8 按钮。
  * 截图人工看图（test-results/sidebar-two-row-visual/shots/）。
  */
 import { test } from './fixtures'
@@ -22,11 +23,11 @@ test('侧栏顶部两行按钮布局截图', async ({ browser }) => {
   await toggle.click()
   const fnRow = page.locator('.fn-row')
   await fnRow.first().waitFor({ state: 'visible' })
-  // 7 按钮 2 行就位
+  // 8 按钮 2 行就位（2026-11-15 D10 浏览器接管入行2）
   const btnTexts = await page.locator('.fn-btn').allTextContents()
   console.log('[fn-btns]', JSON.stringify(btnTexts))
-  if (btnTexts.length !== 7) {
-    throw new Error(`期望 7 个 fn-btn，实际 ${btnTexts.length}: ${btnTexts.join(' | ')}`)
+  if (btnTexts.length !== 8) {
+    throw new Error(`期望 8 个 fn-btn，实际 ${btnTexts.length}: ${btnTexts.join(' | ')}`)
   }
   // 不溢出断言：每行右边缘不超过侧栏容器右边缘
   const overflow = await page.evaluate(() => {
