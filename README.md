@@ -8,7 +8,7 @@
 [![Rust Version](https://img.shields.io/badge/Rust-1.95.0-000000?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-lightgrey)](https://github.com/276793422/NemesisBot)
 
-**NemesisBot** 是天庭架构的参考实现：安全第一的 AI 智能管家、多入口编码代理与数字人力协同平台。52 个核心 crate、26 种通讯通道、30,000+ 测试用例，支持 Windows / Linux / macOS / Android 四平台。
+**NemesisBot** 是天庭架构的参考实现：安全第一的 AI 智能管家、多入口编码代理与数字人力协同平台。54 个核心 crate、26 种通讯通道、30,000+ 测试用例，支持 Windows / Linux / macOS / Android 四平台。
 
 </div>
 
@@ -57,7 +57,7 @@ LangChain / LangGraph / Deep Agents / LangSmith 等通用框架覆盖了图编�
 | 集群端到端 | T1-T37 + U 系列 46 场景（双节点真流） | `cargo run -p cluster-uat` |
 | 自建任务基准 | agent-bench 16 场景 + baseline 防倒退门禁 | `agent-bench --compare test-tools/agent-bench/baseline.json` |
 | 架构依赖矩阵 | 7 条分层规则，CI 强制 | `cargo test -p arch-gate` |
-| 内联测试纪律 | 1500+ 文件 0 违规 | `bash scripts/check-inline-tests.sh` |
+| 内联测试纪律 | 2600+ 文件 0 违规 | `bash scripts/check-inline-tests.sh` |
 | 生产 / 测试行数比 | 164%（295K 生产 / 484K 测试） | `bash scripts/test-ratio.sh` |
 
 完整口径与实测记录见 [docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)。
@@ -72,10 +72,10 @@ LangChain / LangGraph / Deep Agents / LangSmith 等通用框架覆盖了图编�
 - **多入口编码代理**：headless `run`（NDJSON 事件流）、ACP 编辑器接入（Zed 等）、plan / build 双模式、审批卡与结构化提问、checkpoint / undo / redo / diff、LSP 诊断回灌、后台进程注册表、PTY 内嵌终端。安全体系在所有入口同源生效。
 - **人格与专家体系**：数百种领域人格 + 内置人格页按需下载；「聘为专家」定制专家子代理；技能市场（远程 registry 搜索 / 安装 + Ed25519 签名验签 + 装前安全检查）；MCP 双向（发现 / 调用外部 MCP 工具 + `mcp-serve` 把 Bot 能力暴露为 stdio MCP server）；LSP 只读语义查询。
 - **浏览器接管与多模态**：调试旗标专用窗口人机共享驾驶（trusted 输入事件注入 + 截图 vision 闭环 + run_script 多动作编排 + 凭据三守卫）；带图对话（验真 / 超限自动降采样 / 不支持视觉的模型诚实降级）；语音（STT / TTS / VAD / AEC）。
-- **WASM 插件框架**：三方用 Rust 编译单个 `.wasm`（三平台通用），清单验签后热装载；四个 WIT world（tool / observer / loop-policy / panel）；fuel / 内存 / 墙钟限制 + 网络出口默认拒绝 + 秘密经 vault 注入；支持接管内置工具接口。
+- **WASM 插件框架**：三方用 Rust 编译单个 `.wasm`（三平台通用），清单验签后热装载；六个 WIT world（tool / observer / loop-policy / panel / flow-step / panel-flow-step）；fuel / 内存 / 墙钟限制 + 网络出口默认拒绝 + 秘密经 vault 注入；支持接管内置工具接口。
 - **紫微系统**：对任意三方 Windows 程序（无源码、无接口）建立受控接管：注入探测 → 锚点定位 → 受管 profile → 远程调用；目标更新后锚点投票验证找回。
 - **看板与自动化**：任务拆解 → 派发 → 执行 → 验收全自动流转，带预算保险丝、转人工停车场与审计回滚；任务档案一键导出。
-- **连接器**：AI 原生行动代理的数据面（connector_find / invoke）+ 独占接管治理 + 纸面账本回执。
+- **连接器**：AI 原生行动代理的数据面（connector_find / connector_invoke）+ 独占接管治理 + 纸面账本回执。
 - **自学习（Forge）**：技能行为回归网、用户习惯画像、失败重放、受限微优化；持久化记忆（含 ONNX 本地嵌入）。
 - **编译期裁剪**：所有子系统均为可选 cargo feature，menuconfig 风格 TUI 配置，Vue 前端同步裁剪；`iotsmall` profile 产物约 10MB（IoT / 低资源场景）。
 
@@ -123,7 +123,7 @@ nemesisbot acp                                   # ACP 编辑器接入
 
 ```
 NemesisBot_Rust/
-├── crates/                          # 52 个核心 crate
+├── crates/                          # 54 个核心 crate
 │   ├── nemesis-agent/               # Agent 核心（LLM 循环 + 工具执行）
 │   ├── nemesis-security/            # 安全审计（8 层管线 + ABAC + 病毒扫描）
 │   ├── nemesis-sandbox/             # Sandboxie 沙盒 / 用户态沙盒后端
@@ -133,11 +133,13 @@ NemesisBot_Rust/
 │   ├── nemesis-ziwei*/              # 紫微系统（门面 / profile / 分析引擎）
 │   ├── nemesis-board/               # 看板（issue 数据模型 + SQLite）
 │   ├── nemesis-connectors/          # 行动代理连接器
-│   ├── nemesis-web/                 # Web API + WebSocket + SSE（60+ Handler 模块）
+│   ├── nemesis-web/                 # Web API + WebSocket + SSE（65 个 Handler 模块）
 │   ├── nemesis-channels/            # 26 种通讯通道
+│   ├── nemesis-loop/                # 自配速 durable loop（agent 跨重启自驱）
+│   ├── nemesis-events/              # 事件驱动唤醒（文件系统变化按规则唤醒会话）
 │   └── ...                          # 完整清单见 Cargo.toml
 ├── plugins/                         # 运行时插件（plugin-ui / plugin-wasm / plugin-roaming / plugin-vm / plugin-onnx / plugin-eval-monitor 等 9 个目录）
-├── nemesisbot/                      # 主程序入口（46 个 CLI 子命令）
+├── nemesisbot/                      # 主程序入口（47 个 CLI 子命令）
 ├── web/                             # Vue 3 Dashboard 前端
 ├── test-tools/                      # 40 个测试工具（TestAIServer / integration-test / cluster-uat / agent-bench 等）
 ├── docs/                            # 文档（BUG / INFO / PLAN / REPORT）
@@ -165,7 +167,7 @@ nemesisbot acp              # ACP server（编辑器接入）
 nemesisbot onboard          # 初始化配置
 nemesisbot model            # 模型管理（add / probe / set-tier / prices）
 nemesisbot cluster          # 集群管理（init / status / peers）
-nemesisbot security         # 安全配置（approvals / scanner / session-allow）
+nemesisbot security         # 安全配置（approvals / scanner / audit / rules）
 nemesisbot sandbox          # 沙盒管理（install / start / pending / commit）
 nemesisbot quic             # QUIC 中继（relay / status）
 nemesisbot vm               # VM 环境自举（QEMU）
@@ -178,6 +180,7 @@ nemesisbot mcp-serve        # 把 Bot 能力暴露为 stdio MCP server
 nemesisbot issue            # 看板 issue 管理
 nemesisbot autopilot        # 看板定时规则
 nemesisbot eval             # 沙盒安全评估（prompt / skill / rules）
+nemesisbot loop             # 自配速 durable loop（create / list / pause / resume）
 nemesisbot estop            # 急停开关
 nemesisbot session          # 会话管理（分叉 / 恢复）
 nemesisbot history          # 会话历史全文搜索
