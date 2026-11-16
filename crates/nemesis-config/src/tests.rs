@@ -2399,6 +2399,61 @@ fn test_apply_env_overrides_max_tool_iterations() {
     }
 }
 
+/// 回归锁（set-but-empty 视同 unset，BUG-20261117-047）：docker
+/// `-e VAR=` / systemd `Environment=VAR=` / shell `export VAR=` 都会留下
+/// **已设但空**的环境变量——Go 蓝本惯用法 `if v := os.Getenv(x); v != ""`
+/// 对空值跳过覆盖，字符串值键必须同纪律。否则空串覆盖 config 文件值：
+/// workspace 变 cwd 相对路径、host 变 ""（bind(("", port)) = 绑全网卡，
+/// 默认 127.0.0.1 被静默放大成 0.0.0.0 暴露面）。数值/布尔键不受此影响
+/// （`"".parse()` 失败 / parse_env_bool None → 保留 config 值）。
+#[test]
+fn test_apply_env_overrides_set_but_empty_keeps_config_value() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+
+    // 给 config 一个已知基准值（模拟 config 文件内容），env 全部设空串，
+    // 断言所有字符串值键一个都不被覆盖。
+    let mut config = Config::default();
+    config.gateway.host = "127.0.0.1".to_string();
+    config.channels.web.host = "127.0.0.1".to_string();
+    config.agents.defaults.workspace = "/base/ws".to_string();
+    config.agents.defaults.llm = "base/model".to_string();
+    config.agents.defaults.image_model = "base/image".to_string();
+    config.agents.defaults.concurrent_request_mode = "queue".to_string();
+    config.session.dm_scope = "mention".to_string();
+
+    const KEYS: [&str; 7] = [
+        "NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE",
+        "NEMESISBOT_AGENTS_DEFAULTS_LLM",
+        "NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL",
+        "NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE",
+        "NEMESISBOT_CHANNELS_WEB_HOST",
+        "NEMESISBOT_GATEWAY_HOST",
+        "NEMESISBOT_SESSION_DM_SCOPE",
+    ];
+    for k in KEYS {
+        // SAFETY: single-threaded test, GLOBAL_STATE_LOCK held
+        unsafe {
+            std::env::set_var(k, "");
+        }
+    }
+    apply_env_overrides(&mut config);
+
+    assert_eq!(config.gateway.host, "127.0.0.1");
+    assert_eq!(config.channels.web.host, "127.0.0.1");
+    assert_eq!(config.agents.defaults.workspace, "/base/ws");
+    assert_eq!(config.agents.defaults.llm, "base/model");
+    assert_eq!(config.agents.defaults.image_model, "base/image");
+    assert_eq!(config.agents.defaults.concurrent_request_mode, "queue");
+    assert_eq!(config.session.dm_scope, "mention");
+
+    for k in KEYS {
+        // SAFETY: single-threaded test, GLOBAL_STATE_LOCK held
+        unsafe {
+            std::env::remove_var(k);
+        }
+    }
+}
+
 /// （集群无人值守硬化）：session_token_budget 默认 pin。
 /// **0 = 关**（与 max_tool_iterations 的 0=不限惯例相反）；typed round-trip
 /// 保值（AgentDefaults 无 flatten extra，typed 字段是防 save_config 抹键的
@@ -3083,6 +3138,38 @@ fn test_workspace_resolver_env_var_absolute() {
     unsafe {
         std::env::remove_var("NEMESISBOT_HOME");
     }
+}
+
+/// 回归锁（set-but-empty 视同 unset，BUG-20261117-047）：docker `-e VAR=` /
+/// systemd `Environment=VAR=` / shell `export VAR=` 都会留下**已设但空**的
+/// NEMESISBOT_HOME——Go 蓝本 os.Getenv 对 unset 与 empty 同返回 ""（跳过走
+/// 检测链），裸 `if let Ok` 会让空值走通 → workspace 落 cwd 相对路径
+/// `.nemesisbot`。
+#[test]
+fn test_workspace_resolver_env_var_set_but_empty() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let orig = std::env::var("NEMESISBOT_HOME").ok();
+    unsafe {
+        std::env::set_var("NEMESISBOT_HOME", "");
+    }
+
+    let path = WorkspaceResolver::resolve(false);
+
+    match orig {
+        Some(v) => unsafe {
+            std::env::set_var("NEMESISBOT_HOME", v);
+        },
+        None => unsafe {
+            std::env::remove_var("NEMESISBOT_HOME");
+        },
+    }
+
+    assert_ne!(
+        path,
+        PathBuf::from(".nemesisbot"),
+        "空 NEMESISBOT_HOME 不得落 cwd 相对路径 .nemesisbot"
+    );
+    assert!(path.is_absolute());
 }
 
 #[test]
