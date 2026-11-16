@@ -92,9 +92,13 @@ test('项目会话历史：目录删除后组不可用但历史完整可读', as
 
   // 收尾清理（2026-11-17 BUG-050）：场景 A 在注册表留下无目录的 PROJ_NAME。
   // workers=1 串行共享 gateway，字母序 project-history 先于 prompt-viewer：
-  // 后续 spec 的新会话归附这个死项目 → 投递报「当前不可用」（观察期实测
-  // 串页）。恢复本文件头声明的「无跨文件顺序依赖」契约：remove 仅解除分组，
-  // 会话与目录文件不受影响。
+  // 后续 spec 的页面无 localStorage 时 UI 自动选中最近会话=恰好本 spec 的
+  // 项目会话（sidecar meta 绑定落盘，gateway 重启后 owner 索引重建自磁盘
+  // 仍解析到死项目）→ 消息投递报「当前不可用」（观察期两轮实测串页）。
+  // 恢复本文件头声明的「无跨文件顺序依赖」契约：hard 删会话（forget_session
+  // 清双桥绑定）+ remove 解除项目分组（会话与目录文件不受影响）。
+  const sd = await wsapi(page, 'sessions', 'delete', { session_id: sid, hard: true })
+  expect(sd.ok, `sessions.delete 失败: ${sd.error}`).toBe(true)
   const pr = await wsapi(page, 'projects', 'remove', { project_id: projectId })
   expect(pr.ok, `projects.remove 失败: ${pr.error}`).toBe(true)
 
