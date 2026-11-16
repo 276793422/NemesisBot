@@ -324,6 +324,46 @@ fn probe_rules_require_type_target_interval_and_timeout() {
 }
 
 #[test]
+fn probe_interval_upper_bound_rejects_overflow_domain() {
+    // BUG-20261117-053：manager 消费面做 `interval_secs * 1000` 毫秒换算，
+    // 超过 u64::MAX/1000 的输入在 release 回绕（可构造毫秒级 busy 探测）、
+    // debug panic——加载闸上界拒绝，与下界 ≥5 同族算术护栏。
+    let boundary = u64::MAX / 1000;
+    let out = validate(vec![
+        // 恰在上界：毫秒可表示，必须放行。
+        probe_rule(
+            Some("http"),
+            Some("https://a.example.com"),
+            Some(boundary),
+            None,
+        ),
+        // 上界 +1：乘法必溢出，必须剔除。
+        probe_rule(
+            Some("http"),
+            Some("https://b.example.com"),
+            Some(boundary + 1),
+            None,
+        ),
+        // u64::MAX：极端无意义值，必须剔除。
+        probe_rule(
+            Some("http"),
+            Some("https://c.example.com"),
+            Some(u64::MAX),
+            None,
+        ),
+    ]);
+    assert_eq!(out.rules.len(), 1, "只有恰在边界的规则放行");
+    assert_eq!(out.rules[0].watch.probe_interval_or_default(), boundary);
+    assert_eq!(
+        out.warnings.len(),
+        2,
+        "越上界两条必须各带剔除警告: {:?}",
+        out.warnings
+    );
+    assert!(out.warnings.iter().all(|w| w.contains("interval_secs")));
+}
+
+#[test]
 fn cron_kind_is_cut_with_honest_reason() {
     let mut cron = sys_rule(Some("cpu"), Some(1.0), None);
     cron.watch.kind = "cron".to_string();
