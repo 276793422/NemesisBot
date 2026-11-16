@@ -4150,6 +4150,7 @@ dependencies = [
 name = "nemesis-events"
 version = "0.1.0"
 dependencies = [
+ "nemesis-utils",
  "notify",
  "parking_lot",
  "regex",
