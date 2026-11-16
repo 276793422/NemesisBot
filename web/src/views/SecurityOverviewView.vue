@@ -158,7 +158,7 @@ const ROWS: LayerRow[] = [
   },
   {
     num: '⑬',
-    title: '凭据 Vault',
+    title: '凭据隔离',
     to: '/vault',
     status: () => {
       const v = overview.value?.vault ?? {}
