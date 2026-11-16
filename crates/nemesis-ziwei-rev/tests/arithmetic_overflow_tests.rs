@@ -115,7 +115,7 @@ fn leading_nops_rva_saturating() {
 }
 
 /// 最小 PE 变体：单 .rdata 节（rva=0x1000，raw_ptr=0x400，raw_size 可调）
-/// + dd[5]（重定位目录）指向节首。块头 8 字节（page/bsize）落 raw_ptr 处，
+/// 加 dd[5]（重定位目录）指向节首。块头 8 字节（page/bsize）落 raw_ptr 处，
 /// 条目紧随其后（body）。
 fn reloc_pe(dir_size: u32, raw_size: usize, page: u32, bsize: u32, body: &[u8]) -> Vec<u8> {
     let raw_ptr: usize = 0x400;
