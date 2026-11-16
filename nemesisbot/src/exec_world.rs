@@ -462,7 +462,7 @@ pub fn build_executor_channel_with_extra_roots(
                         .map(|t| t < cutoff)
                         .unwrap_or(false);
                     if stale {
-                        let _ = std::fs::remove_file(e.path());
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(e.path());
                     }
                 }
             }

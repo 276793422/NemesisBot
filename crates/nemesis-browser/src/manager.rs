@@ -381,7 +381,7 @@ impl BrowserManager {
 pub fn cleanup_stale_port_file(profile_dir: &std::path::Path) {
     let p = profile_dir.join(crate::cdp::DEVTOOLS_PORT_FILE);
     if p.exists() {
-        let _ = std::fs::remove_file(p);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(p);
     }
 }
 

@@ -1267,7 +1267,7 @@ fn rollback_old_exe_to(old: &str, target: &Path) -> Result<String, String> {
         // 让位诊断现场与回滚源同目录（old 的扩展位换 failed——旧布局 journal
         // old 在根目录则落根目录、新布局 back/ 抽屉则落 back/，跨版本透明）。
         let failed = old.with_extension("failed");
-        let _ = std::fs::remove_file(&failed);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&failed);
         std::fs::rename(target, &failed).map_err(|e| {
             format!(
                 "回滚失败：运行中 exe 让位失败（{} → {}）：{e}；.old 现场保留。",
@@ -1426,10 +1426,10 @@ fn remove_loaded_file(target: &Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => {
             let failed = loaded_sidecar_path(target);
-            let _ = std::fs::remove_file(&failed);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&failed);
             std::fs::rename(target, &failed)
                 .map_err(|e| format!("映射文件让位失败（{}）：{e}", target.display()))?;
-            let _ = std::fs::remove_file(&failed);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&failed);
             Ok(())
         }
     }
@@ -2457,8 +2457,8 @@ impl SelfUpdateManager {
         })?;
         // 残留清场（同名 PID 复用的罕见遗留会让 rename 撞已存在目标；PID 后缀
         // 名下通常本来就不存在）。
-        let _ = std::fs::remove_file(&old_path);
-        let _ = std::fs::remove_file(&new_path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&old_path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&new_path);
         // plugins staging 同名 PID 残留清场（整目录韧性删除；清扫面只认
         // `plugins.old-{pid}`/`plugins.new-{pid}` 前缀，裸 `plugins` 真实插件
         // 目录永不被碰）。

@@ -156,6 +156,32 @@ pub async fn remove_dir_all_retry_async(dir: impl AsRef<Path>) -> std::io::Resul
         .unwrap_or_else(|e| Err(std::io::Error::other(format!("spawn_blocking join: {e}"))))
 }
 
+/// [`remove_file_retry`] 的异步包装（[`remove_dir_all_retry_async`] 同款
+/// `spawn_blocking` 模式——同步 `thread::sleep` 退避不阻塞 executor 线程，
+/// 实现单一真相源不变，语义一致：`NotFound` 视为成功，耗尽返回最后错误）。
+pub async fn remove_file_retry_async(file: impl AsRef<Path>) -> std::io::Result<()> {
+    let file = file.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || remove_file_retry(file))
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::other(format!("spawn_blocking join: {e}"))))
+}
+
+/// [`remove_file_resilient`] 的异步包装（清理类变体，错误不向上传播）。
+pub async fn remove_file_resilient_async(file: impl AsRef<Path>) -> bool {
+    let file = file.as_ref().to_path_buf();
+    match remove_file_retry_async(file.clone()).await {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                file = %file.display(),
+                last_error = %e,
+                "[FsUtil] 文件删除重试耗尽（残留交清扫兜底）"
+            );
+            false
+        }
+    }
+}
+
 /// 剥离前导 UTF-8 BOM（`\u{FEFF}`）——字符串级原语（[`read_config_string`]
 /// 的实现基础）。
 ///

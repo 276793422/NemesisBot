@@ -526,11 +526,11 @@ async fn write_json_atomic(path: &Path, json: &str) -> Result<(), String> {
         WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     tokio::fs::write(&tmp, json).await.map_err(|e| {
-        let _ = std::fs::remove_file(&tmp); // 错误清理臂：同步 fs（async 版未 await 即 drop 等于没清）
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp); // 错误清理臂：同步 fs（async 版未 await 即 drop 等于没清）
         format!("写临时文件失败: {e}")
     })?;
     tokio::fs::rename(&tmp, path).await.map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         format!("原子改名失败: {e}")
     })?;
     Ok(())
@@ -801,11 +801,11 @@ async fn pack_tar(
     match packed {
         Ok(Ok((hashes, payload_bytes))) => Ok((out, hashes, payload_bytes)),
         Ok(Err(e)) => {
-            let _ = std::fs::remove_file(&out);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&out);
             Err(e)
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&out);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&out);
             Err(format!("打包任务失败: {e}"))
         }
     }
@@ -1409,7 +1409,7 @@ async fn push_files_to_vm(
         .collect();
     let (tmp_tar, hashes, _bytes) = pack_tar(project_path, &files).await?;
     let result = send_tar_chunks(sup, agent_id, &tmp_tar, false).await;
-    let _ = std::fs::remove_file(&tmp_tar);
+    let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_tar);
     result?;
 
     // 定点复核（增量推送的完整性闸——只对推过的路径核指纹）。
@@ -1550,7 +1550,7 @@ async fn full_sync(
 
     let (tmp_tar, expected, payload_bytes) = pack_tar(project_path, &files).await?;
     let result = send_and_verify(sup, agent_id, &tmp_tar, &expected, payload_bytes).await;
-    let _ = std::fs::remove_file(&tmp_tar); // 成败都清打包临时件
+    let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_tar); // 成败都清打包临时件
     let skipped_symlinks = 0usize; // v1 打包只含普通文件（symlink 选择阶段已不进清单）
     let report = FullSyncReport {
         files: files.len(),

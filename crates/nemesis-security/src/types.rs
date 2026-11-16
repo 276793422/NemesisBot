@@ -605,9 +605,19 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             })
             .unwrap_or("")
             .to_string(),
-        "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
-        | "find_skills" => args
-            .get("url")
+        "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "find_skills" => {
+            args.get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        // web_search 的实参是 `query` 不是 `url`（BUG-20261116-037 横扫）
+        // ——此前读 `url` 键恒空 target：审计链 target 列空白、网络规则
+        // 对 web_search 整体失明（`*` 形规则对空串的命中行为也失真）。
+        // query 文本非域名，域名词法规则不命中属预期（落 default_action）；
+        // 修复目标是审计可见性 + `*` 形规则语义恢复。
+        "web_search" => args
+            .get("query")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),

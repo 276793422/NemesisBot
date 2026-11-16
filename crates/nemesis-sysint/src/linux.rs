@@ -237,7 +237,7 @@ pub fn install_symlink(link: &Path, target: &Path) -> Result<()> {
     {
         return Ok(());
     }
-    let _ = std::fs::remove_file(link);
+    let _ = nemesis_utils::fsutil::remove_file_resilient(link);
     symlink(target, link)
         .with_context(|| format!("建符号链接失败: {} → {}", link.display(), target.display()))
 }

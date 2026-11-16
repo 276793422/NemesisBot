@@ -79,7 +79,7 @@ impl ScanHook {
                 "[Scanner] Downloaded file is infected"
             );
             // Attempt to remove the infected file
-            let _ = tokio::fs::remove_file(save_path).await;
+            let _ = nemesis_utils::fsutil::remove_file_resilient_async(save_path).await;
             return Ok((false, Some(result)));
         }
 

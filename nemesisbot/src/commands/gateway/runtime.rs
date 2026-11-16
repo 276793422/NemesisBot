@@ -1971,9 +1971,9 @@ pub(crate) async fn run_runtime(
     }
 
     // Clean up gateway state file
-    let _ = std::fs::remove_file(nemesis_path::resolve_gateway_state_path_in_workspace(
-        &common::workspace_path(&home),
-    ));
+    let _ = nemesis_utils::fsutil::remove_file_resilient(
+        nemesis_path::resolve_gateway_state_path_in_workspace(&common::workspace_path(&home)),
+    );
 
     println!("  OK Gateway stopped");
 

@@ -287,15 +287,11 @@ fn test_config_custom() {
         port: 9090,
         ws_path: "/custom-ws".to_string(),
         auth_token: "secret-token".to_string(),
-        session_timeout_secs: 7200,
-        allow_from: vec!["127.0.0.1".to_string()],
     };
     assert_eq!(cfg.host, "0.0.0.0");
     assert_eq!(cfg.port, 9090);
     assert_eq!(cfg.ws_path, "/custom-ws");
     assert_eq!(cfg.auth_token, "secret-token");
-    assert_eq!(cfg.session_timeout_secs, 7200);
-    assert_eq!(cfg.allow_from.len(), 1);
 }
 
 #[test]
@@ -521,14 +517,9 @@ fn test_config_long_auth_token() {
     assert_eq!(cfg.auth_token, token);
 }
 
-#[test]
-fn test_config_session_timeout() {
-    let cfg = WebChannelConfig {
-        session_timeout_secs: 86400,
-        ..Default::default()
-    };
-    assert_eq!(cfg.session_timeout_secs, 86400);
-}
+// （test_config_session_timeout 已删——BUG-20261116-035：session_timeout
+// 不再经 WebChannelConfig 携带，语义测试在 nemesis-web session/tests.rs
+// （timeout_from_config_secs 三态 + 不逐出端到端）。）
 
 // === Session ID extraction ===
 
@@ -697,8 +688,6 @@ fn test_web_channel_config_default() {
     assert_eq!(config.port, 8080);
     assert_eq!(config.ws_path, "/ws");
     assert!(config.auth_token.is_empty());
-    assert_eq!(config.session_timeout_secs, 3600);
-    assert!(config.allow_from.is_empty());
 }
 
 #[test]
@@ -734,8 +723,6 @@ fn test_web_channel_config_custom() {
         port: 9090,
         ws_path: "/custom".into(),
         auth_token: "secret".into(),
-        session_timeout_secs: 7200,
-        allow_from: vec!["user1".into()],
     };
     assert_eq!(config.host, "0.0.0.0");
     assert_eq!(config.port, 9090);
@@ -961,8 +948,6 @@ fn test_web_channel_config_clone_equality() {
         port: 9090,
         ws_path: "/ws".to_string(),
         auth_token: "secret".to_string(),
-        session_timeout_secs: 7200,
-        allow_from: vec!["10.0.0.0/8".to_string()],
     };
     let cloned = cfg.clone();
     assert_eq!(cloned.host, cfg.host);

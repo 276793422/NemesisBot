@@ -58,7 +58,7 @@ pub fn run(local: bool) -> Result<()> {
         match post_internal_shutdown(port as u16, &token) {
             Ok(200) => {
                 println!("  Shutdown requested via HTTP API (/api/internal).");
-                let _ = std::fs::remove_file(&signal_path);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&signal_path);
                 return Ok(());
             }
             Ok(401) => {

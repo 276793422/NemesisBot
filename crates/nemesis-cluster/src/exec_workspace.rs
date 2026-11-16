@@ -71,7 +71,7 @@ impl AssemblingMarker {
 
 impl Drop for AssemblingMarker {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.0);
     }
 }
 

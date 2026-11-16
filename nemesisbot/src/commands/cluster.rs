@@ -1182,7 +1182,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("Soft reset: clearing discovered nodes...");
                 let state_path = common::cluster_dir(&home).join("state.toml");
                 if state_path.exists() {
-                    let _ = std::fs::remove_file(&state_path);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&state_path);
                     println!("  Discovered nodes cleared.");
                 } else {
                     println!("  No state file found (nothing to clear).");
@@ -1204,11 +1204,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 return Ok(());
             }
             let cfg_path = common::cluster_config_path(&home);
-            let _ = std::fs::remove_file(&cfg_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&cfg_path);
             let peers_path = common::cluster_dir(&home).join("peers.toml");
-            let _ = std::fs::remove_file(&peers_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&peers_path);
             let state_path = common::cluster_dir(&home).join("state.toml");
-            let _ = std::fs::remove_file(&state_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&state_path);
             println!("Cluster configuration reset (hard).");
         }
         ClusterAction::Identity { action } => {

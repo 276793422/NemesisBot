@@ -348,13 +348,13 @@ pub(crate) fn save_record(
         REGISTRY_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&tmp, json).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         format!("registry 临时文件写入失败 {}: {e}", tmp.display())
     })?;
     // 同目录 rename（NTFS/ext4 都原子；跨盘 rename 才有拷贝窗——tmp 与
     // target 同目录，不存在跨盘）。
     std::fs::rename(&tmp, &target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         format!("registry 原子替换失败 {}: {e}", target.display())
     })?;
     Ok(())
@@ -570,7 +570,7 @@ impl StartingMarkerGuard {
 
 impl Drop for StartingMarkerGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.path);
     }
 }
 
