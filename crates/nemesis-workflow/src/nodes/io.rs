@@ -608,6 +608,13 @@ impl NodeExecutor for ScriptNodeExecutor {
         // direct spawn.
         let mut cmd = tokio::process::Command::new(interpreter);
         cmd.arg(flag).arg(&resolved_script);
+        // 取消安全纪律（对齐全仓其余 spawn 位点——stdio/pipe 传输车道、
+        // guarded_direct_spawn、background/delegate registry、cc_hooks 均带
+        // kill_on_drop）：节点超时 / workflow 取消 / 兄弟失败联动取消都会
+        // drop 本 future，裸 spawn 无 kill_on_drop 时脚本子进程成为孤儿
+        // 继续跑完（工作流已判死、文件副作用还在写）。有序路径 output()
+        // 已等进程退出，drop 时不触发，无副作用。（BUG-20261116-034）
+        cmd.kill_on_drop(true);
         // 黑窗根修：直跑臂与生产 execution-world 车道
         // （guarded_direct_spawn）同纪律压 CREATE_NO_WINDOW。
         // （tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）
