@@ -153,16 +153,14 @@ fn mcpservers_scalar_entry_is_loud_err_not_panic() {
     let err = serde_json::from_str::<McpConfig>(
         r#"{"mcpServers":{"bad":"npx -y thing","good":{"command":"x"}}}"#,
     )
-    .err()
-    .expect("标量条目必须 Err，绝不 panic")
+    .expect_err("标量条目必须 Err，绝不 panic")
     .to_string();
     assert!(err.contains("bad"), "错误文案必须点名 key: {err}");
     assert!(err.contains("string"), "错误文案必须带实际类型: {err}");
     // null 条目同纪律（旧形态恰好不 panic 但静默变空对象再被
     // from_value 间接拒绝；新守卫直 Err，文案点名）。
     let null_err = serde_json::from_str::<McpConfig>(r#"{"mcpServers":{"n":null}}"#)
-        .err()
-        .expect("null 条目必须 Err")
+        .expect_err("null 条目必须 Err")
         .to_string();
     assert!(null_err.contains("n"), "null 条目文案点名 key: {null_err}");
     // 数组形态的标量条目走 from_value 既有诚实 Err（对照，防同族漂移）。

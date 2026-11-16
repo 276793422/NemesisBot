@@ -97,7 +97,7 @@ impl<'de> serde::Deserialize<'de> for McpConfig {
 ///    env/args/headers/tags 逐字段宽容（`null`/map/数组皆收，见
 ///    [`flexible_string_list`]）；全局与 per-server timeout 皆宽容
 ///    （`null`/字符串数字 → 默认值）。
-/// Value 类型名（错误文案用——「got string」比裸 panics 可诊断）。
+///    Value 类型名（错误文案用——「got string」比裸 panics 可诊断）。
 fn json_type_name(v: &serde_json::Value) -> &'static str {
     match v {
         serde_json::Value::Null => "null",
