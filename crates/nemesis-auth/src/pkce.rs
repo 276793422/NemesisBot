@@ -1,7 +1,6 @@
 //! PKCE (Proof Key for Code Exchange) implementation.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// PKCE code pair.
@@ -22,8 +21,11 @@ pub fn generate_pkce() -> PkceCodes {
 }
 
 fn generate_code_verifier() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.r#gen();
+    // BUG-20261117-049：verifier 是防授权码拦截的凭据（RFC 7636 要求
+    // 高熵加密强随机），thread_rng 是非加密 PRNG——OsRng。
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
