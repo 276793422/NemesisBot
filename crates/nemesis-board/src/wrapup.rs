@@ -32,8 +32,9 @@ pub fn render_project_report(
         project_id: Some(project_id),
         ..Default::default()
     })?;
-    // 确定性顺序：编号字典序（与 dossier 同纪律——报告可 diff）。
-    issues.sort_by(|a, b| a.number.cmp(&b.number).then(a.id.cmp(&b.id)));
+    // 确定性顺序：编号**数值**序（与 dossier 同纪律——报告可 diff；直排
+    // 字典序在 N≥10 错乱，见 models::sort_issues_deterministically）。
+    crate::models::sort_issues_deterministically(&mut issues);
 
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M");
     let mut out = String::new();

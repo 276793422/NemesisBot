@@ -466,3 +466,37 @@ fn copy_dir_and_walk_skip_symlink_cycles() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 编号数值序回归（BUG-20261116-042）：12 单项目导出 issue_numbers 与
+/// README 均按数值序（字典序直排会把 NB-10 排在 NB-2 前）。
+#[test]
+fn test_project_export_orders_issues_numerically() {
+    let (store, dir) = temp_store("numorder");
+    let ws = temp_dir("numws");
+    let project = store
+        .create_project("数值序", "desc", None, "", "", None, None)
+        .expect("project");
+    for k in 1..=12 {
+        store
+            .create_issue(NewIssue {
+                project_id: Some(project.id),
+                ..new_issue(&format!("任务{k}"))
+            })
+            .expect("create");
+    }
+
+    let out_root = ws.join("logs").join("dossiers");
+    let outcome = export_project(&store, project.id, &ws, &out_root, &NO_USAGE).expect("export");
+    assert_eq!(
+        outcome.issue_numbers,
+        (1..=12).map(|k| format!("NB-{k}")).collect::<Vec<_>>()
+    );
+    let readme = std::fs::read_to_string(outcome.root.join("README.md")).unwrap();
+    assert!(
+        readme.find("NB-9").unwrap() < readme.find("NB-10").unwrap(),
+        "README 编号顺序应为数值序（NB-9 在 NB-10 前）"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&ws);
+}
