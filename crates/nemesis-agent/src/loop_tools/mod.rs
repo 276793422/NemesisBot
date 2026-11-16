@@ -97,6 +97,10 @@ mod exec_timeout_tests;
 // 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
 #[cfg(test)]
 mod exec_deny_tests;
+// env 槽硬校验回归（BUG-20261116-025）：空键/含 `=` 键/含 NUL 键值
+// 诚实 Err（std Command::env panic 面前置拦截），execute 面红证锁。
+#[cfg(test)]
+mod exec_env_slot_tests;
 // exec 执行中输出流 tee（2026-11-08）：返回值路径不变 + EOF flush +
 // 窗丢头保尾 + 节流 + hook 装配 e2e + exec_output_tx 广播接线。
 #[cfg(test)]

@@ -491,6 +491,38 @@ async fn exec_explicit_env_is_passed_through() {
     assert!(parsed.result.contains("val-42"), "env 未透传: {resp}");
 }
 
+// env 槽硬校验（BUG-20261116-025 横向同族）：含 NUL 键 → 诚实 Err 且
+// 错误带 env 槽位指向（修复前 Windows 报 spawn 期通用错误
+// "nul byte found in provided data"、Unix Command::env 即时 panic）。
+#[tokio::test]
+async fn exec_nul_env_key_is_honest_err() {
+    let (agent, _dir) = agent_with_tmp();
+    let args = r#"{"command":"echo hi","env":{"BAD\u0000KEY":"v"}}"#;
+    let resp = agent.serve_line(&v2_line("exec", args)).await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(!parsed.ok);
+    assert!(
+        parsed.error.contains("Invalid 'env' argument"),
+        "错误须带 env 槽位指向: {resp}"
+    );
+    assert!(parsed.error.contains("NUL"), "错误须含 NUL 原因: {resp}");
+}
+
+// 同族：含 `=` 键 → 诚实 Err（Unix Command::env 即时 panic 面；
+// Windows 环境块对该形态同样病态，全平台统一拒）。
+#[tokio::test]
+async fn exec_eq_in_env_key_is_honest_err() {
+    let (agent, _dir) = agent_with_tmp();
+    let args = r#"{"command":"echo hi","env":{"A=B":"v"}}"#;
+    let resp = agent.serve_line(&v2_line("exec", args)).await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(!parsed.ok);
+    assert!(
+        parsed.error.contains("must not contain '='"),
+        "错误形态: {resp}"
+    );
+}
+
 // accept 瞬态错误分类：连接级抖动与资源耗尽族重试，其余传播退出。
 #[test]
 fn transient_accept_errors_classified() {

@@ -217,6 +217,13 @@ pub(crate) fn parse_env_slot(
                 "Invalid 'env' argument: value of '{k}' must be a string"
             ));
         };
+        // 环境块硬校验（BUG-20261116-025）：std::process::Command::env
+        // 对病态键值的处理不可依赖（Unix 即时 panic / Windows spawn 期
+        // 通用错误），绕过本函数「形态错误 → Err fail loud」契约。
+        // 校验器单一真相源在 nemesis-utils::env_sanitize::
+        // check_env_slot_pair（guest exec 同源消费）；本单点覆盖
+        // exec / run_checks / run_script / background_start 四消费方。
+        nemesis_utils::env_sanitize::check_env_slot_pair(k, s)?;
         pairs.push((k.clone(), s.to_string()));
     }
     Ok(Some(pairs))
