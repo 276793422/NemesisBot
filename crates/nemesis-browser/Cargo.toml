@@ -17,6 +17,8 @@ chrono = { workspace = true }
 which = { workspace = true }
 # 凭据别名解析（vault: 全局 resolver 单一真相源）
 nemesis-config = { workspace = true }
+# 文件删除韧性包装（BUG-20261116-036：裸 remove_file 撞 Windows 瞬时句柄）
+nemesis-utils = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 # Windows 浏览器枚举：注册表 App Paths（HKLM/HKCU）。

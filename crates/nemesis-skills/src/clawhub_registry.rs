@@ -768,7 +768,7 @@ fn extract_zip_to_dir_capped(data: &[u8], target_dir: &str, total_cap: u64) -> R
             total_uncompressed += n as u64;
             if total_uncompressed > total_cap {
                 drop(output);
-                let _ = std::fs::remove_file(&dest_path);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&dest_path);
                 return Err(NemesisError::Security(format!(
                     "uncompressed size exceeds limit (>{total_cap} bytes): decompression bomb suspected",
                 )));

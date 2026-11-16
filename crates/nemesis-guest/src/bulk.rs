@@ -126,7 +126,7 @@ async fn gc_stale(transfers: &TransferMap) {
         .collect();
     for (id, file) in stale {
         map.remove(&id);
-        let _ = std::fs::remove_file(&file);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&file);
     }
 }
 
@@ -254,7 +254,7 @@ pub async fn bulk_write(
     }
     let (written, skipped_symlinks) = extract_tar_safe(&state.file, workspace)?;
     // 解包完成后临时 tar 才可删（先删后解 = 必然失败的顺序）。
-    let _ = std::fs::remove_file(&state.file);
+    let _ = nemesis_utils::fsutil::remove_file_resilient(&state.file);
     Ok(serde_json::json!({
         "written": written,
         "skipped_symlinks": skipped_symlinks,
@@ -590,7 +590,7 @@ pub async fn bulk_read_chunk(
     if is_final {
         let mut map = transfers.lock().await;
         if let Some(t) = map.remove(id) {
-            let _ = std::fs::remove_file(&t.file);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&t.file);
         }
     }
     Ok(serde_json::json!({

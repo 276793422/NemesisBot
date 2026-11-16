@@ -1696,7 +1696,7 @@ impl WorkflowEngine {
                 {
                     continue;
                 }
-                let _ = std::fs::remove_file(&p);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&p);
             }
         }
         Ok(())

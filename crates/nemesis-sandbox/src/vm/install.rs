@@ -460,7 +460,10 @@ pub async fn ranged_download(url: &str, dest: &Path, parallel: usize) -> Result<
         .with_context(|| format!("rename concat -> {}", dest.display()))?;
     // 分片已并入，清盘（尽力而为）。
     for i in 0..chunks.len() {
-        let _ = tokio::fs::remove_file(dest.with_extension(format!("part{i}"))).await;
+        let _ = nemesis_utils::fsutil::remove_file_resilient_async(
+            dest.with_extension(format!("part{i}")),
+        )
+        .await;
     }
     Ok(probe.content_length)
 }
@@ -796,7 +799,7 @@ async fn install_qemu_archive(
     // 7. 暂存清盘（installer/unpack；fsutil 韧性删，尽力而为；空壳目录
     //    一并收走——remove_dir 只删空目录，非空即留不给误删面）。
     let _ = nemesis_utils::fsutil::remove_dir_all_resilient(&unpack);
-    let _ = tokio::fs::remove_file(&installer).await;
+    let _ = nemesis_utils::fsutil::remove_file_resilient_async(&installer).await;
     let _ = tokio::fs::remove_dir(&dirs.work_dir).await;
 
     tracing::info!(

@@ -4,7 +4,8 @@ use std::fs;
 
 use super::{
     read_config_string, remove_dir_all_resilient, remove_dir_all_retry, remove_dir_all_retry_async,
-    remove_dir_retry, remove_file_resilient, remove_file_retry,
+    remove_dir_retry, remove_file_resilient, remove_file_resilient_async, remove_file_retry,
+    remove_file_retry_async,
 };
 
 #[test]
@@ -73,6 +74,29 @@ fn file_resilient_removes_and_reports_true() {
     assert!(!f.exists());
     // 缺失文件同语义：清理类调用点 NotFound 不算失败。
     assert!(remove_file_resilient(&f));
+}
+
+// async 单文件包装面（BUG-20261116-036：异步 tmp 清理臂接线用例，
+// 形态对称 async 目录版）。
+#[tokio::test]
+async fn async_file_retry_removes_single_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("stale.tmp");
+    fs::write(&f, b"x").unwrap();
+    remove_file_retry_async(&f).await.unwrap();
+    assert!(!f.exists());
+    // 缺席幂等：NotFound 视为成功。
+    remove_file_retry_async(&f).await.unwrap();
+}
+
+#[tokio::test]
+async fn async_file_resilient_removes_and_reports_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("stale.tmp");
+    fs::write(&f, b"x").unwrap();
+    assert!(remove_file_resilient_async(&f).await);
+    assert!(!f.exists());
+    assert!(remove_file_resilient_async(&f).await);
 }
 
 // remove_dir_retry 的 rmdir 语义（2026-11-06 cluster_logs 空壳摘除护栏）：

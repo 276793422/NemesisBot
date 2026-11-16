@@ -255,7 +255,7 @@ impl DraftStore {
 
         // Registered successfully — remove the draft. A leftover on failure
         // here is harmless (next apply discards it after persisting).
-        let _ = std::fs::remove_file(self.draft_path(&stem));
+        let _ = nemesis_utils::fsutil::remove_file_resilient(self.draft_path(&stem));
 
         Ok(AppliedDraft {
             name: name.to_string(),

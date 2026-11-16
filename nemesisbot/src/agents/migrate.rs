@@ -307,7 +307,7 @@ fn write_tombstone(workspace: &Path, agent_id: &str, target_node: &str) -> Resul
 }
 
 fn remove_tombstone(workspace: &Path, agent_id: &str) {
-    let _ = std::fs::remove_file(tombstone_path(workspace, agent_id));
+    let _ = nemesis_utils::fsutil::remove_file_resilient(tombstone_path(workspace, agent_id));
 }
 
 /// 迁移意图日志（复核：`<workspace>/agents/<id>.migrating.json`）。
@@ -351,7 +351,7 @@ fn write_journal(workspace: &Path, agent_id: &str, target_node: &str) -> Result<
 }
 
 fn remove_journal(workspace: &Path, agent_id: &str) {
-    let _ = std::fs::remove_file(journal_path(workspace, agent_id));
+    let _ = nemesis_utils::fsutil::remove_file_resilient(journal_path(workspace, agent_id));
 }
 
 /// 迁移 staging 根（A 端打包目录；B 端 landing 由 transfer sink 布局

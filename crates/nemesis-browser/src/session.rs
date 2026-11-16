@@ -121,7 +121,7 @@ impl BrowserSession {
         // 上方收养臂已接走）。
         let port_file = profile_dir.join(cdp::DEVTOOLS_PORT_FILE);
         if port_file.exists() {
-            let _ = std::fs::remove_file(&port_file);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&port_file);
         }
 
         let stderr_log = std::fs::OpenOptions::new()

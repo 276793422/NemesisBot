@@ -1684,7 +1684,7 @@ async fn run_image_build(
 ) {
     let log_path = image_build_log_path(&workspace);
     let _ = std::fs::create_dir_all(log_path.parent().unwrap_or_else(|| Path::new(".")));
-    let _ = std::fs::remove_file(&log_path); // 截断重写
+    let _ = nemesis_utils::fsutil::remove_file_resilient(&log_path); // 截断重写
     let route_note = if program == "wsl.exe" {
         "经 WSL"
     } else {
@@ -1810,7 +1810,7 @@ async fn run_image_build(
 async fn run_qemu_install(workspace: PathBuf) {
     let log_path = bootstrap_log_path(&workspace);
     let _ = std::fs::create_dir_all(log_path.parent().unwrap_or_else(|| Path::new(".")));
-    let _ = std::fs::remove_file(&log_path); // 截断重写
+    let _ = nemesis_utils::fsutil::remove_file_resilient(&log_path); // 截断重写
     log_line(&log_path, &format!("[{}] QEMU 安装启动", now_ms()));
 
     let result = do_qemu_install(&workspace, &log_path).await;

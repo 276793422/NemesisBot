@@ -70,7 +70,7 @@ fn probe_outside_write(workspace: &Path) -> ProbeCheck {
     }
     match std::fs::write(&path, b"probe") {
         Ok(()) => {
-            let _ = std::fs::remove_file(&path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&path);
             ProbeCheck {
                 name: name.to_string(),
                 blocked: false,
@@ -127,7 +127,7 @@ fn probe_workspace_write(workspace: &Path) -> ProbeCheck {
     let path = workspace.join(format!(".selftest_probe_{}.tmp", std::process::id()));
     match std::fs::write(&path, b"probe") {
         Ok(()) => {
-            let _ = std::fs::remove_file(&path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&path);
             ProbeCheck {
                 name: name.to_string(),
                 blocked: false,

@@ -787,15 +787,15 @@ pub fn install_bytes(dir: &str, bytes: &[u8], overwrite: bool) -> Result<Install
     // 写失败同样清残留——计数唯一名不会被下次安装覆盖，漏清 = 永久孤儿
     //（BUG-20261109-005；rename/移除旧包两臂此前已清，本臂对齐）。
     if let Err(e) = std::fs::write(&tmp, bytes) {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         return Err(format!("写入临时文件失败: {e}"));
     }
     if overwritten && let Err(e) = std::fs::remove_file(&path) {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         return Err(format!("移除旧包失败: {e}"));
     }
     if let Err(e) = std::fs::rename(&tmp, &path) {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         return Err(format!("落盘失败: {e}"));
     }
     Ok(InstallOutcome {

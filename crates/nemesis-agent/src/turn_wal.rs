@@ -254,7 +254,7 @@ impl TurnWal {
         *guard = None;
         let reopened = (|| {
             if self.old_path.exists() {
-                let _ = std::fs::remove_file(&self.old_path);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&self.old_path);
             }
             std::fs::rename(&self.path, &self.old_path)?;
             std::fs::OpenOptions::new()
@@ -458,7 +458,7 @@ impl TurnWal {
             }
         }
         if self.old_path.exists() {
-            let _ = std::fs::remove_file(&self.old_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&self.old_path);
         }
 
         candidates

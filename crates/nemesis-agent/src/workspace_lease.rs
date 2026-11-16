@@ -324,7 +324,7 @@ fn remove_own_holder(holder_path: &std::path::Path, acq_id: &str) {
         return;
     };
     if v.get("acq_id").and_then(|h| h.as_str()) == Some(acq_id) {
-        let _ = std::fs::remove_file(holder_path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(holder_path);
     }
 }
 
