@@ -471,6 +471,13 @@ impl ManagerState {
             return false;
         }
         self.load_rules(path);
+        // BUG-20261117-063：失败也要钉游标——mtime 是「已消费到哪个版本」
+        // 的游标，不是「解析成功」的证明。此前 Err 臂不钉，坏文件（半写/
+        // 手改坏）期间每个泵 tick（250ms）都 stat+read+parse+warn 一轮：
+        // 4Hz 无限重试，warn 洪水经 sse_log_layer 直刷 Dashboard 实时事件
+        // 流。钉住后只在文件再次变化（修复）时重试；半写竞态下编辑器完成
+        // 写入必产生新 mtime，自愈路径保留。
+        self.rules_mtime = mtime;
         true
     }
 

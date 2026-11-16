@@ -249,6 +249,35 @@ fn check_reload_keeps_old_rules_on_parse_error() {
     assert!(st.rules.is_empty());
 }
 
+/// BUG-20261117-063 回归锁：坏文件重载失败后必须钉住 mtime 游标——
+/// 此前 Err 臂不钉，同一坏文件持续在盘期间每个泵 tick（250ms）都
+/// stat+read+parse+warn 一轮（4Hz 无限重试 + warn 洪水）。
+/// 修复语义：第一次 check_reload 尝试并失败（返回 true），此后同 mtime
+/// 不再重试（返回 false）；文件修复（新 mtime）后恢复重载。
+#[test]
+fn check_reload_failure_pins_mtime_no_infinite_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.json");
+    // 启动即坏文件：startup load_rules 失败（游标仍是 None）
+    std::fs::write(&path, "[{broken").unwrap();
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    st.load_rules(&path);
+    assert!(st.rules.is_empty());
+    // 第一个泵 tick：尝试重载（仍失败 → true，且钉住游标）
+    assert!(st.check_reload(&path));
+    assert!(st.rules_mtime.is_some(), "失败臂之后游标必须被钉住");
+    // 同一坏文件持续在盘（修复前这里每个 tick 都返回 true）：
+    // 不再重试——连续两个 tick 均为 false
+    assert!(!st.check_reload(&path), "同 mtime 失败后不得再次重试");
+    assert!(!st.check_reload(&path));
+    assert!(st.rules.is_empty());
+    // 文件修复（新 mtime）→ 恢复重载成功
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    crate::rules::save_rules(&path, &[rule("r1", "C:/logs")]).unwrap();
+    assert!(st.check_reload(&path));
+    assert_eq!(st.rules.len(), 1, "修复后必须恢复正常重载");
+}
+
 #[test]
 fn reload_drops_pending_of_removed_rules() {
     let dir = tempfile::tempdir().unwrap();
