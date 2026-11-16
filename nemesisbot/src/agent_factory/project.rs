@@ -118,6 +118,8 @@ pub(super) fn inject_project_spawn_fn(
                 background,
                 tools_profile,
                 loop_kind: "project",
+                // 会话圈定锚点：项目子代理继承父会话（同主 spawn）。
+                session_key: parent_session_key.clone(),
             };
             Box::pin(async move {
                 // 专家派发（2026-11-16 放开 v1 边界，与主 spawn 同源）：

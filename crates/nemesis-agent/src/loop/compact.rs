@@ -953,7 +953,7 @@ impl AgentLoop {
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
             bridge
-                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "pre")
+                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "pre", session_key)
                 .await;
         }
 
@@ -1131,7 +1131,11 @@ impl AgentLoop {
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
             bridge
-                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "post")
+                .run_compact_hooks(
+                    CompactReason::AutoSummarize.hook_kind(),
+                    "post",
+                    session_key,
+                )
                 .await;
         }
         // summarizing 旗标摘除由 `_summarizing_slot` guard Drop 承担
@@ -1518,7 +1522,7 @@ impl AgentLoop {
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
             bridge
-                .run_compact_hooks(CompactReason::Manual.hook_kind(), "pre")
+                .run_compact_hooks(CompactReason::Manual.hook_kind(), "pre", session_key)
                 .await;
         }
 
@@ -1532,7 +1536,7 @@ impl AgentLoop {
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
             bridge
-                .run_compact_hooks(CompactReason::Manual.hook_kind(), "post")
+                .run_compact_hooks(CompactReason::Manual.hook_kind(), "post", session_key)
                 .await;
         }
 
