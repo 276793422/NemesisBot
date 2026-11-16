@@ -318,7 +318,9 @@ impl Journal {
         if !self.enabled {
             return;
         }
-        // 先验形态（提取 call_id 判空判重），再落盘，成功后才入内存。
+        // 先验形态（提取 call_id 判空判重）→ 落盘 → 入内存。落盘失败
+        // **仍 admit**（内存环照常，进程内 replay 不丢；sticky 置不可信
+        // 闸有副作用工具——见上方 doc）。
         let Ok(resp) = serde_json::from_str::<ExecutorResponseWire>(response_line) else {
             return;
         };

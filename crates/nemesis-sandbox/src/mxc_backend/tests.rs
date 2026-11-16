@@ -11,7 +11,7 @@ use super::*;
 fn warning_carries_pinned_version() {
     assert!(
         MXC_WARNING.contains(MXC_VERSION),
-        "警告文案必须携带钉版短哈希（升级时三处同更）：{MXC_WARNING}"
+        "警告文案必须携带钉版版本号（升级时三处同更，见 MXC_VERSION 注释）：{MXC_WARNING}"
     );
     assert!(
         MXC_WARNING.contains("护栏功能，非沙盒"),

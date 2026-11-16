@@ -4,7 +4,7 @@
 //! mxc_smoke [-- <variant>]`。
 //!
 //! Windows-only：mxc-sdk 的 probe/run/spawn entry 全 family
-//! #[cfg(target_os = "windows")]（3rd/mxc lib.rs），且本 example 硬编码
+//! #[cfg(target_os = "windows")]（mxc-sdk lib.rs v1 模块），且本 example 硬编码
 //! Windows 路径与 cmd/powershell——非 Windows 平台走 fallback main 诚实
 //! 早退（CI Linux --all-features E0425 实录 2026-11-15）。
 
@@ -174,7 +174,7 @@ fn main() {
         // nemesisbot.exe 在 executor 角色会等 stdin 协议行——不会退出。
         // 用 spawn + 立即 kill 探「容器创建成功与否」（创建失败在 spawn 阶段
         // 就 Err；创建成功 = PSEC 通路 OK）。stdout 读到任何字节也算证据。
-        match mxc_sdk::v1::spawn_with_stdin(
+        match mxc_sdk::v1::spawn(
             req,
             mxc_sdk::v1::SpawnOptions {
                 telemetry: Some(mxc_sdk::v1::TelemetryConfig {
@@ -378,10 +378,18 @@ fn main() {
             inherit_default_environment: Some(true),
             command: format!("\"{exe}\""),
             container_name: None,
-            ui: None,
+            // ui 缺席 = 引擎落 `UiPolicy::default()` 全锁死（Win32k 拦），
+            // 全量构建 exe（GUI DLL 静态导入）死在 DLL init（坑 #2，
+            // 2026-11-14 实录）——显式给 prod 同款姿态，镜像
+            // build_container_request 的产出。
+            ui: Some(mxc_sdk::v1::UiPolicy {
+                disable: false,
+                clipboard: mxc_sdk::v1::ClipboardPolicy::None,
+                allow_input_injection: false,
+            }),
             network: None,
         };
-        match mxc_sdk::v1::spawn_with_stdin(
+        match mxc_sdk::v1::spawn(
             req,
             mxc_sdk::v1::SpawnOptions {
                 telemetry: Some(mxc_sdk::v1::TelemetryConfig {
@@ -409,7 +417,11 @@ fn main() {
                 println!("[exec-child] 写协议行: {} bytes", line.len());
                 stdin.write_all(line.as_bytes()).expect("write line");
                 stdin.flush().expect("flush");
-                // 不关 stdin（exec_worker 按行分发、EOF 才退）——读响应。
+                // 关 stdin（EOF）：exec_worker 是多行分发循环、EOF 才退——
+                // 握着 stdin 读 read_to_end 与健康子进程不相容（永久阻塞，
+                // 2026-11-16 实录；旧形态只在子进程异常死亡时才走得通）。
+                // 生产 spawn_contained 同序：写行 → drop(stdin) → 读首行。
+                drop(stdin);
                 let mut out = Vec::new();
                 let read_result = stdout.read_to_end(&mut out);
                 println!(
@@ -480,9 +492,18 @@ fn main() {
             Err(e) => println!("[env-baseline] ERR {e}"),
         }
     }
-    // executor 代码路径验证：ROLE=executor + 假 workspace → exec_worker 应
-    // 早退并在 stderr 留话（证明子进程真的进了 executor 代码路径 + stdio
-    // 通）。「无输出 + 快速退出」= 路由失败（ROLE 没生效或更早的短路）。
+    // ═══ 诊断判定件（刻意不带 ui 段——复现「ui 缺席→引擎全锁死→DLL init 死」机制）═══
+    // 全量构建 exe（GUI DLL 静态导入 user32/comctl32）在 UiPolicy::default()
+    // （disable: true → disallow_win32k_system_calls）下死于 0xC0000142
+    // （STATUS_DLL_INIT_FAILED）= 11-14 报告坑 #2 的机制本身。这两个变体
+    // 预期输出 Exited(0xC0000142) = 判定成立（非故障）；**活体对照臂 = ui-on**
+    // （显式姿态 → Exited(0)）。生产路径无此暴露：build_container_request
+    // 恒显式给 ui 姿态。
+    //
+    // executor 代码路径验证（路由面，与 ui 机制解耦）：ROLE=executor + 假
+    // workspace → exec_worker 应早退并在 stderr 留话。路由正确性归 exec-child
+    // / ui-on / spawn-contained-e2e 三变体活体验证（本变体死于 DLL init、到
+    // 不了 exec_worker，不承担路由验证职责）。
     if variant == "nb-badws" || variant == "all" {
         let req = mxc_sdk::v1::ContainerRequest {
             environment: Some(vec![
@@ -506,7 +527,7 @@ fn main() {
             },
         ) {
             Ok(r) => println!(
-                "[nb-badws] outcome={:?} stdout={}B stderr={:?}",
+                "[nb-badws] 预期诊断件：Exited(0xC0000142)=ui 缺席→引擎全锁死→DLL init 死（坑 #2 机制复现；活体对照=ui-on）outcome={:?} stdout={}B stderr={:?}",
                 r.outcome,
                 r.stdout.len(),
                 String::from_utf8_lossy(&r.stderr)
@@ -519,7 +540,9 @@ fn main() {
         }
     }
     // exe 位置验证：把 exe 拷进授权路径（workspace）再跑 --version——
-    // 「DLL init 失败 = exe 在未授权路径」假设的直接判定。
+    // 「DLL init 失败 = exe 在未授权路径」假设的直接判定。本变体同样**不带
+    // ui 段**：若 Exited(0xC0000142) 则死因与路径授权无关（= ui 缺席所致，
+    // 由 ui-on 对照臂交叉印证），假设被否证。
     if variant == "nb-granted" || variant == "all" {
         let granted_dir = std::path::Path::new(ws_dir).join("mxc-smoke-bin");
         let _ = std::fs::create_dir_all(&granted_dir);
@@ -545,7 +568,7 @@ fn main() {
             },
         ) {
             Ok(r) => println!(
-                "[nb-granted] outcome={:?} stdout={:?}",
+                "[nb-granted] Exited(0xC0000142)=死因与路径授权无关（ui 缺席所致，非路径问题）outcome={:?} stdout={:?}",
                 r.outcome,
                 String::from_utf8_lossy(&r.stdout)
                     .trim()
@@ -734,7 +757,11 @@ fn main() {
             Err(e) => println!("[fs-secret-read-denied] ERR {e}"),
         }
     }
-    // A5: 策略外越界（写 C:\Users\Public + 读 C:\Windows\win.ini）→ 应全拒。
+    // A5: 策略外越界（写 C:\Users\Public → 应拒；读 win.ini → 基线可读）。
+    // 读面定性（2026-11-14 报告 §7.6-① 文档化）：PSEC read = deny-list
+    // 语义——readonly/readwrite 只管写授权，策略外**读**穿透宿主 ACL，唯一
+    // 读面拒绝机制 = denied_paths。护栏语义如此（MXC_WARNING 原文「护栏
+    // 非沙盒」）；真读隔离归 Sandboxie 引爆场景。
     if variant == "fs-outside-write-denied" {
         let outside = r"C:\Users\Public\mxc-outside-probe.txt";
         let _ = std::fs::remove_file(outside);
@@ -757,16 +784,18 @@ fn main() {
             Ok(r) => {
                 let out = String::from_utf8_lossy(&r.stdout);
                 let leaked = out.contains("[fonts]");
-                let pass = !leaked;
+                // 基线断言：泄漏 = deny-list 读语义成立（可读是预期，恒定）；
+                // 若哪天不可读 = 语义收紧，此臂红出来提示重审基线记录。
+                let pass = leaked;
                 println!(
-                    "[fs-outside-read-denied] {} outcome={:?} win.ini 泄漏={leaked} stdout={}B stderr={:?}",
+                    "[fs-outside-read-baseline] {} outcome={:?} win.ini 泄漏={leaked}（deny-list 读基线：策略外读穿透宿主 ACL=预期）stdout={}B stderr={:?}",
                     if pass { "PASS" } else { "FAIL" },
                     r.outcome,
                     r.stdout.len(),
                     stderr_head(&r)
                 );
             }
-            Err(e) => println!("[fs-outside-read-denied] ERR {e}"),
+            Err(e) => println!("[fs-outside-read-baseline] ERR {e}"),
         }
     }
     // A6: extra_root 额外读写根透传 → 容器写 → 宿主读回验证。
@@ -890,7 +919,16 @@ fn main() {
         }),
         runtime_config: None,
     };
-    // B1: open 档 → egress 全放行（loopback / LAN / 公网）。
+    // B1: open 档 egress 全放行 → 公网可达（正向控制）；loopback/LAN 目标
+    // 被拒 = **生产形态基线**（2026-11-16 第四轮改判，原「期望 200」是恒红
+    // 断言）：
+    // - loopback：open_policy 恒带 ingress.host_loopback=Deny（生产 open 臂
+    //   同构），宿主边界处拒连——容器网络舱本身有独立 loopback 的旧假设已被
+    //   diag-b/c 推翻（host_loopback=Allow 时 200 通）；
+    // - LAN：连 ingress 全 Allow（diag-c）都 exit 7——挡它的一层在 PSEC
+    //   ingress 策略之外（Windows 防火墙/PSEC 舱外机制），策略调不动。
+    // 正向机制证明归 net-loopback-diag（b/c 臂）；本变体断言「生产策略下
+    // 不可达」这个安全基线——基线被破坏（意外可达）时红出来报警。
     if variant == "net-open-ok" {
         ensure_host_http();
         for (label, url) in [
@@ -903,12 +941,17 @@ fn main() {
                     let out = String::from_utf8_lossy(&r.stdout).trim().to_string();
                     let pass = match label {
                         "公网" => !out.is_empty() && out != "000",
-                        _ => out == "200",
+                        _ => out == "000", // 基线：生产 ingress Deny 下不可达
                     };
                     println!(
-                        "[net-open-{label}] {} outcome={:?} http-code={out}",
+                        "[net-open-{label}] {} outcome={:?} http-code={out}{}",
                         if pass { "PASS" } else { "FAIL" },
-                        r.outcome
+                        r.outcome,
+                        if label == "公网" {
+                            String::new()
+                        } else {
+                            "（基线：ingress Deny 下不可达=预期）".to_string()
+                        }
                     );
                 }
                 Err(e) => println!("[net-open-{label}] ERR {e}"),
@@ -937,7 +980,13 @@ fn main() {
             }
         }
     }
-    // B3: locked 白名单命中（cidr:port 精确）→ 放行。
+    // B3: locked 白名单命中（cidr:port 精确）。egress 白名单机器的**正向
+    // 控制在 B7 远程臂**（net-locked-remote-hit 404 / miss-ip / miss-port，
+    // B7 注释已写明：loopback/LAN 目标撞宿主 ingress Deny 测不出 egress
+    // 白名单本身）。本变体（2026-11-16 第四轮改判）断言安全基线：白名单
+    // 命中 + 生产 ingress 双 Deny 下宿主 loopback 仍不可达（host_loopback
+    // 是独立闸门，egress 白名单放行不越过它）——diag-b 实证闸门本身可用
+    // （Allow 时 200 通）。基线被破坏（意外可达）时红出来报警。
     if variant == "net-locked-allow-loopback" {
         ensure_host_http();
         match net_run(
@@ -946,9 +995,9 @@ fn main() {
         ) {
             Ok(r) => {
                 let out = String::from_utf8_lossy(&r.stdout).trim().to_string();
-                let pass = out == "200";
+                let pass = out == "000"; // 基线：ingress.host_loopback=Deny 恒拒
                 println!(
-                    "[net-locked-allow-loopback] {} outcome={:?} http-code={out} stderr={}",
+                    "[net-locked-allow-loopback] {} outcome={:?} http-code={out}（基线：白名单命中但 ingress Deny 仍拒=预期；egress 正向控制=B7 远程臂）stderr={}",
                     if pass { "PASS" } else { "FAIL" },
                     r.outcome,
                     stderr_head(&r)
@@ -957,6 +1006,9 @@ fn main() {
             Err(e) => println!("[net-locked-allow-loopback] ERR {e}"),
         }
     }
+    // B3-LAN：同 B3 机制（白名单命中 {host_lan}/32:49498，但 LAN 目标被
+    // PSEC 策略外的舱外机制层挡住——diag-c ingress 全 Allow 仍 exit 7 实证），
+    // 断言「白名单放行不打通 LAN」基线。
     if variant == "net-locked-allow-lan" {
         ensure_host_http();
         match net_run(
@@ -965,9 +1017,9 @@ fn main() {
         ) {
             Ok(r) => {
                 let out = String::from_utf8_lossy(&r.stdout).trim().to_string();
-                let pass = out == "200";
+                let pass = out == "000"; // 基线：LAN 舱外机制层恒拒
                 println!(
-                    "[net-locked-allow-lan] {} outcome={:?} http-code={out} stderr={}",
+                    "[net-locked-allow-lan] {} outcome={:?} http-code={out}（基线：LAN 被 PSEC 外层恒拒=预期，diag-c 实证）stderr={}",
                     if pass { "PASS" } else { "FAIL" },
                     r.outcome,
                     stderr_head(&r)
@@ -1050,10 +1102,13 @@ fn main() {
         }
     }
 
-    // B6: loopback 语义诊断（B1 实录：open 档容器 curl 宿主 loopback/LAN
-    // 全 exit 7、公网 200 → 容器网络舱独立 loopback 假设）。三臂：
+    // B6: loopback 语义诊断（B1/B3 不可达基线的**正向机制证明**）。三臂：
     // a) 容器内 ipconfig（容器网络视图）；b) ingress.host_loopback=Allow
     // 再试宿主 loopback；c) ingress 全 Allow 再试 loopback+LAN。
+    // 结论（2026-11-16 第四轮定案）：b/c 的 loopback 臂 200 通 = 挡容器→
+    // 宿主 loopback 的**不是「容器网络舱独立 loopback」（旧假设，已推翻），
+    // 而是 ingress.host_loopback=Deny 策略本身**；LAN 臂在 ingress 全 Allow
+    // 下仍 exit 7 = 挡 LAN 的一层在 PSEC ingress 策略之外（舱外机制）。
     if variant == "net-loopback-diag" {
         ensure_host_http();
         // a) 容器网络视图
@@ -1161,7 +1216,7 @@ fn main() {
                 ui: prod_ui(),
                 ..mxc_sdk::v1::ContainerRequest::new(ps_listen)
             };
-            let Ok(mut p) = mxc_sdk::v1::spawn_with_stdin(
+            let Ok(mut p) = mxc_sdk::v1::spawn(
                 req,
                 mxc_sdk::v1::SpawnOptions {
                     telemetry: Some(mxc_sdk::v1::TelemetryConfig {
@@ -1311,7 +1366,7 @@ fn main() {
             network: Some(open_policy()),
         };
         let t0 = std::time::Instant::now();
-        match mxc_sdk::v1::spawn_with_stdin(
+        match mxc_sdk::v1::spawn(
             req,
             mxc_sdk::v1::SpawnOptions {
                 telemetry: Some(mxc_sdk::v1::TelemetryConfig {

@@ -75,7 +75,8 @@ rustflags = [
 ]
 
 # MXC 遥测红线（2026-11-14，docs/PLAN/2026-11-14_mxc-sandbox-integration.md §3.1）：
-# mxc-sdk（submodule 3rd/mxc）Windows release 构建默认捆绑微软签名遥测路由 DLL，
+# mxc-sdk（crates.io 发布版，微软官方账号 microsoft-oss-releases）Windows
+# release 构建默认捆绑微软签名遥测路由 DLL，
 # 上报 4 个 Required 事件且无需用户同意。此 [env] 是唯一强制点（cargo 拉起的
 # 全部进程含 build script 都吃到）。⚠ force=true 必须在（审查二轮发现）：
 # 默认 force=false 不覆盖 shell 里已 export 的值——开发/CI 环境若残留该变量
