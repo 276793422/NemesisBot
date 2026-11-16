@@ -122,6 +122,16 @@ pub struct CcCommand {
     timeout: Option<u64>,
 }
 
+/// hook 超时解析：`None` / `Some(0)` → 缺省 [`DEFAULT_TIMEOUT_SECS`]，
+/// 显式正值直通。
+///
+/// BUG-20261117-061：0 视作缺省（同 oauth.rs 契约「不允许 0=不限」）——
+/// `Some(0)` 原样透传会在 [`run_hook_script`] 里被 `max(1)` 钳成 1s 必超时
+/// （hook 静默全废），且超时报错文案用原值 0s 与实际不符。
+fn resolve_hook_timeout(timeout: Option<u64>) -> u64 {
+    timeout.filter(|t| *t > 0).unwrap_or(DEFAULT_TIMEOUT_SECS)
+}
+
 /// 一个事件下的 matcher 分组：`{"matcher":"Edit|Write","hooks":[...]}`。
 #[derive(Debug, Clone, Deserialize)]
 pub struct CcHookGroup {
@@ -779,7 +789,7 @@ impl CcHookBridge {
                 continue;
             }
             for h in &g.hooks {
-                let timeout = h.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
+                let timeout = resolve_hook_timeout(h.timeout);
                 let o = run_hook_script(&h.command, timeout, payload, &self.project_dir).await;
                 // 非阻断失败（超时/非 0 非 2 退出码/启动失败）响亮 warn 后继续。
                 if o.code.is_none() || (o.code != Some(0) && o.code != Some(2)) {

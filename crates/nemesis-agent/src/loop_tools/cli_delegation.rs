@@ -89,7 +89,10 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
     #[cfg_attr(not(windows), allow(unused_variables))]
     let child_pid = child.id();
     let out = match tokio::time::timeout(
-        Duration::from_secs(spec.timeout_secs),
+        // BUG-20261117-061 纵深：0 不允许（tokio timeout(0) 立即超时 =
+        // spawn 即 tree-kill）；构造方已把 0 归缺省，此 max(1) 只兜未来
+        // 新调用方漏滤。
+        Duration::from_secs(spec.timeout_secs.max(1)),
         child.wait_with_output(),
     )
     .await
