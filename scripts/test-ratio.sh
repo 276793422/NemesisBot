@@ -8,6 +8,9 @@
 #   - 测试行 = 上述根下命中测试文件形态的 .rs 全部行。
 #   - test-tools/ 与 Skills/ 不计入任何一侧（它们是测试基础设施/流程，
 #     不是被测产物的镜像）。
+#   - 排除 target/ 与 node_modules/（2026-11-16 修复：plugin-wasm/target 内
+#     vendored 依赖构建输出 ~32 万行被计成生产行，官方口径 152%→95% 虚降；
+#     exclusion 口径与 check-inline-tests.sh 对齐）。
 #
 # 性能注记（2026-10-22 单进程重写，与 check-inline-tests.sh 同批根治）：
 # 旧版逐文件孵化 wc+dirname+basename+sed+cut（每文件 5 个外部进程 × 2000+
@@ -26,7 +29,8 @@ OUT="$ROOT/target/test-ratio.txt"
 QUIET=0
 [ "${1:-}" = "--quiet" ] && QUIET=1
 
-REPORT="$(find "$ROOT/crates" "$ROOT/plugins" "$ROOT/nemesisbot/src" -name '*.rs' -type f 2>/dev/null | sort | perl -e '
+REPORT="$(find "$ROOT/crates" "$ROOT/plugins" "$ROOT/nemesisbot/src" -name '*.rs' -type f \
+  -not -path '*/target/*' -not -path '*/node_modules/*' 2>/dev/null | sort | perl -e '
 use strict; use warnings;
 
 my ($prod, $test_lines) = (0, 0);

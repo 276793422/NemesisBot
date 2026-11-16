@@ -163,7 +163,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
-      # 扩展计划 T7a/D6（docs/INFO/2026-09-24_公开基准.md §5）：行覆盖硬地板，
+      # 扩展计划 T7a/D6（docs/INFO/2026-11-16_公开基准.md §5）：行覆盖硬地板，
       # 防倒退不追高。基线口径：全 workspace lib（nemesis-config 除外——
       # llvm-cov 独立 target-dir 环境特定失败；test-harness / nemesis-build-config
       # 为测试基建 lib 非产品代码，一并排除），见 docs/INFO/2026-06-27_coverage-baseline.md。

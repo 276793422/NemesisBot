@@ -67,11 +67,14 @@ ERR_LINES=$(echo "$M2_OUT" | grep -c "SignTool Error" || true)
 [ "$ERR_LINES" -le 1 ] || fail "M2: SignTool Error 行数 $ERR_LINES > 1（非唯一错误）"
 
 echo ""
-echo "### [M3] Get-AuthenticodeSignature（期望 UnknownError + 0109 官方文本 + 签名者非空）###"
-M3_OUT=$(powershell -NoProfile -Command "\$s = Get-AuthenticodeSignature -FilePath '$(cygpath -w "$SPIKE/sample.exe")'; Write-Host ('STATUS=' + \$s.Status); Write-Host ('MSG=' + \$s.StatusMessage); if (\$s.SignerCertificate) { Write-Host ('SIGNER=' + \$s.SignerCertificate.Subject) } else { Write-Host 'SIGNER=' }")
+echo "### [M3] Get-AuthenticodeSignature（期望 UnknownError + 0109 语义 + 签名者非空）###"
+# StatusMessage 是 Windows 本地化资源（随系统 UI 语言，zh-CN 下为中文文案），
+# 不能匹配英文原文；改为在 PowerShell 内部用 Win32Exception(0x800B0109) 取
+# 同源本地化文案做等值比较（MATCH0109），完全绕开 shell 编码回传损耗。
+M3_OUT=$(powershell -NoProfile -Command "\$s = Get-AuthenticodeSignature -FilePath '$(cygpath -w "$SPIKE/sample.exe")'; \$expect = (New-Object System.ComponentModel.Win32Exception(0x800B0109)).Message; Write-Host ('STATUS=' + \$s.Status); Write-Host ('MSG=' + \$s.StatusMessage); Write-Host ('MATCH0109=' + (\$s.StatusMessage -eq \$expect)); if (\$s.SignerCertificate) { Write-Host ('SIGNER=' + \$s.SignerCertificate.Subject) } else { Write-Host 'SIGNER=' }")
 echo "$M3_OUT"
 echo "$M3_OUT" | grep -q "STATUS=UnknownError" || fail "M3: Status 非 UnknownError（P0 实测口径）"
-echo "$M3_OUT" | grep -qi "MSG=$UNTRUSTEDROOT_TEXT" || fail "M3: StatusMessage 非 0109 官方文本"
+echo "$M3_OUT" | grep -q "MATCH0109=True" || fail "M3: StatusMessage 与 CERT_E_UNTRUSTEDROOT(0x800B0109) 本地化文案不等值"
 echo "$M3_OUT" | grep -Eq "^SIGNER=.+" || fail "M3: SignerCertificate 为空"
 
 echo ""
