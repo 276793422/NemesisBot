@@ -78,8 +78,7 @@ async fn signal_death_within_startup_window_reports_premature_exit() {
     let err = t
         .execute(r#"{"command":"kill -SEGV $$","wait_seconds":1}"#, &ctx())
         .await
-        .err()
-        .expect("信号终止必须 Err，不得谎报运行中");
+        .expect_err("信号终止必须 Err，不得谎报运行中");
     assert!(
         err.contains("terminated by signal"),
         "错误消息必须点名信号终止: {err}"
