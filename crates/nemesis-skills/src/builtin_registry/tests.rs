@@ -328,3 +328,47 @@ fn collect_relative_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
         }
     }
 }
+
+/// 内嵌体积预算回归锁（BUG-20261116-030）：内嵌树必须零 ≥1MB 载荷——
+/// build.rs staging 过滤被绕过（include_dir 直指仓库 `Skills/`）或阈值
+/// 放宽时，47.5MB 的 ClamAV zip + window-mcp.exe 会重新塞进所有构建
+/// （iotsmall ≈10MB 预算依赖此闸）。递归遍历——include_dir 的
+/// `files()`/`dirs()` 都只返回直接子条目，`Skills/` 根层零文件、载荷
+/// 全在嵌套 slug 目录下，只扫根层永远测不到（红证轮实录）。顺带锚 13
+/// 个技能的 SKILL.md 全部在内嵌树（过滤只裁载荷不丢文档面）。
+#[test]
+fn embedded_tree_excludes_large_payloads_and_keeps_all_skill_docs() {
+    const MAX_EMBED_FILE_BYTES: usize = 1024 * 1024;
+
+    fn walk(dir: &include_dir::Dir, files: &mut Vec<std::path::PathBuf>) {
+        for f in dir.files() {
+            files.push(f.path().to_path_buf());
+        }
+        for sub in dir.dirs() {
+            walk(sub, files);
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(&super::BUILTIN_SKILLS_DIR, &mut files);
+    assert!(!files.is_empty(), "内嵌树为空——build.rs staging 失效");
+    for path in &files {
+        let f = super::BUILTIN_SKILLS_DIR
+            .get_file(path)
+            .unwrap_or_else(|| panic!("embedded file vanished: {}", path.display()));
+        assert!(
+            f.contents().len() < MAX_EMBED_FILE_BYTES,
+            "内嵌树混入 ≥1MB 载荷: {}（{} 字节）——build.rs 过滤被绕过或阈值放宽",
+            path.display(),
+            f.contents().len()
+        );
+    }
+    for slug in BuiltinSkillsRegistry::skill_slugs() {
+        assert!(
+            super::BUILTIN_SKILLS_DIR
+                .get_file(format!("{slug}/SKILL.md"))
+                .is_some(),
+            "技能 {slug} 的 SKILL.md 未入内嵌树"
+        );
+    }
+}

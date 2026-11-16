@@ -29,11 +29,17 @@ use crate::types::{
     contains_ci,
 };
 
-/// 编译期内嵌的仓库技能目录（repo 根 `Skills/`；与 nemesis-web 的
-/// `BUILTIN_PERSONAS_DIR` 同形态）。运行期配置无法触达该目录的内容——
-/// 它随二进制发行。
-static BUILTIN_SKILLS_DIR: include_dir::Dir =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../Skills");
+/// 编译期内嵌的仓库技能目录（build.rs staging 树 `OUT_DIR/builtin_skills`；
+/// 与 nemesis-web 的 `BUILTIN_PERSONAS_DIR` 同形态）。运行期配置无法触达
+/// 该目录的内容——它随二进制发行。
+///
+/// **为什么不是直嵌仓库 `Skills/`**（BUG-20261116-030）：仓库树含二进制
+/// 载荷（ClamAV 回退 zip ≈40.6MB——该技能本身装时拦截分档，zip 到不了
+/// 安装面；window-mcp.exe ≈6.9MB），无过滤整树嵌入 ≈47.5MB 塞进所有
+/// 构建，击穿 iotsmall ≈10MB 预算（skills 恒编译无 feature 闸）。build.rs
+/// 复制时跳过 ≥1MB 文件（载荷仍随仓库与 live GitHub 臂可得），回归锁在
+/// `tests::embedded_tree_excludes_large_payloads_and_keeps_all_skill_docs`。
+static BUILTIN_SKILLS_DIR: include_dir::Dir = include_dir::include_dir!("$OUT_DIR/builtin_skills");
 
 /// 内嵌技能目录名（registry name；WSAPI/前端按此展示与路由安装）。
 const REGISTRY_NAME: &str = "builtin";
