@@ -472,9 +472,7 @@ impl AgentLoop {
                             .map(|r| r.list_agent_ids())
                             .unwrap_or_default();
                         if agent_ids.is_empty() {
-                            let guard = self.tools.read();
-                            let tool_names: Vec<&str> =
-                                guard.keys().map(|s| s.as_str()).collect();
+                            let tool_names = self.tool_names();
                             Some(format!("Registered agents (tools): {}", tool_names.join(", ")))
                         } else {
                             Some(format!("Registered agents: {}", agent_ids.join(", ")))
@@ -513,9 +511,7 @@ impl AgentLoop {
                             .map(|r| r.list_agent_ids())
                             .unwrap_or_default();
                         if agent_ids.is_empty() {
-                            let guard = self.tools.read();
-                            let tool_names: Vec<&str> =
-                                guard.keys().map(|s| s.as_str()).collect();
+                            let tool_names = self.tool_names();
                             Some(format!("Registered agents: {}", tool_names.join(", ")))
                         } else {
                             Some(format!("Registered agents: {}", agent_ids.join(", ")))
@@ -554,8 +550,9 @@ impl AgentLoop {
     /// Get startup information about the agent loop for logging.
     /// Mirrors Go's `GetStartupInfo()`.
     pub fn get_startup_info(&self) -> serde_json::Value {
-        let guard = self.tools.read();
-        let tool_names: Vec<&str> = guard.keys().map(|s| s.as_str()).collect();
+        // tool_names() 内部已排序（BUG-20261117-052）——startup JSON 的
+        // names 数组跨进程确定性，便于审计对比。
+        let tool_names = self.tool_names();
 
         let agent_ids = self
             .registry

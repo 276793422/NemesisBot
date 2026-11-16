@@ -10644,3 +10644,62 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
 
     cleanup_session_log(&key);
 }
+
+// =========================================================================
+// BUG-20261117-052 回归锁：HashMap 迭代序不得消费为有序输出
+// =========================================================================
+
+/// 最小桩工具：Tool trait 只要求 execute，其余全走默认。
+struct SortedNameStubTool;
+
+#[async_trait]
+impl Tool for SortedNameStubTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        Ok("ok".to_string())
+    }
+}
+
+#[tokio::test]
+async fn mcp_snapshot_and_tool_names_sorted_after_out_of_order_registration() {
+    // 乱序注册三个 mcp_ 工具 → refresh_mcp_snapshot → snapshot 必须按名
+    // 字典序。HashMap RandomState 跨进程不同 + MCP 热装 rehash 漂移——
+    // 不排序则 mcp_list 全量清单输出序漂移，违反其「逐字节一致保
+    // prompt cache 兼容」自声明（BUG-20261117-052）。
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(Vec::new())), test_config());
+    agent_loop.register_plugin_tool("mcp_zulu".to_string(), Arc::new(SortedNameStubTool));
+    agent_loop.register_plugin_tool("mcp_alpha".to_string(), Arc::new(SortedNameStubTool));
+    agent_loop.register_plugin_tool("mcp_mid".to_string(), Arc::new(SortedNameStubTool));
+
+    agent_loop.refresh_mcp_snapshot();
+
+    let snap = agent_loop.mcp_tool_snapshot().read().clone();
+    let names: Vec<&str> = snap.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["mcp_alpha", "mcp_mid", "mcp_zulu"],
+        "mcp snapshot 必须按名字典序"
+    );
+
+    // tool_names() 本身同样必须定序（消费方含 slash 命令 join 输出）。
+    let all = agent_loop.tool_names();
+    let mut sorted = all.clone();
+    sorted.sort();
+    assert_eq!(all, sorted, "tool_names() 必须已排序");
+    assert!(all.contains(&"mcp_alpha".to_string()));
+}
+
+#[tokio::test]
+async fn model_aliases_sorted_deterministically() {
+    // /model 无参输出 joinaliases——HashMap 键迭代序是实现细节，
+    // 必须字典序（BUG-20261117-052）。
+    let mut cfg = test_config();
+    cfg.models.insert("zeta".to_string(), "m1".to_string());
+    cfg.models.insert("alpha".to_string(), "m2".to_string());
+    cfg.models.insert("mid".to_string(), "m3".to_string());
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(Vec::new())), cfg);
+    assert_eq!(
+        agent_loop.model_aliases(),
+        vec!["alpha", "mid", "zeta"],
+        "model_aliases 必须按别名排序"
+    );
+}

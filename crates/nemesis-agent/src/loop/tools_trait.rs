@@ -314,9 +314,13 @@ impl AgentLoop {
         self.tools.read().len()
     }
 
-    /// Return the names of all registered tools.
+    /// Return the names of all registered tools (sorted deterministically —
+    /// HashMap 迭代序是实现细节，消费方含用户可见 join 输出，见
+    /// BUG-20261117-052）。
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.read().keys().cloned().collect()
+        let mut names: Vec<String> = self.tools.read().keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// 按名取注册工具的 `parameters()` JSON。项目 loop
@@ -473,8 +477,10 @@ impl AgentLoop {
     }
 
     /// Refresh the MCP tool snapshot from the tool registry.
-    fn refresh_mcp_snapshot(&self) {
-        let snapshot: Vec<McpToolSnapshotEntry> = self
+    /// pub(crate)：回归锁直触发（乱序注册后断言 snapshot 有序，
+    /// BUG-20261117-052）。
+    pub(crate) fn refresh_mcp_snapshot(&self) {
+        let mut snapshot: Vec<McpToolSnapshotEntry> = self
             .tools
             .read()
             .iter()
@@ -487,6 +493,12 @@ impl AgentLoop {
                 destructive_hint: tool.destructive_hint(),
             })
             .collect();
+        // 确定性顺序（BUG-20261117-052）：HashMap 迭代序是实现细节
+        //（RandomState 跨进程不同 + MCP 热装 rehash 漂移），而 mcp_list
+        // 按 snapshot 顺序渲染全量清单且自声明「逐字节一致保 prompt
+        // cache 兼容」——同工具集不同进程输出序漂移 = 违反该前提。
+        // 与 list_dir / grep_recursive 的平台序排序纪律同族。
+        snapshot.sort_by(|a, b| a.name.cmp(&b.name));
         *self.mcp_tool_snapshot.write() = snapshot;
     }
 
