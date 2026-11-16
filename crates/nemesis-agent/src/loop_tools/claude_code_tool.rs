@@ -47,7 +47,12 @@ impl ClaudeCodeTool {
     pub fn new(cli_path: String, timeout_secs: Option<u64>, permission_mode: Option<&str>) -> Self {
         Self {
             cli_path,
-            timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            // BUG-20261117-061：0 视作缺省（同 oauth.rs 契约「不允许 0=不限」
+            // ——Some(0) 直通会在 cli_delegation 变 tokio timeout(0) 立即超时，
+            // spawn 即被 tree-kill，委派静默永久废）。
+            timeout_secs: timeout_secs
+                .filter(|t| *t > 0)
+                .unwrap_or(DEFAULT_TIMEOUT_SECS),
             permission_mode: cli_delegation::resolve_cc_permission_mode(
                 permission_mode.unwrap_or(""),
             ),

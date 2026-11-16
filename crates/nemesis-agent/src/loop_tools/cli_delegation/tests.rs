@@ -298,3 +298,37 @@ async fn test_run_cli_delegation_env_narrow_sanitize() {
         "non-namespaced vars must survive narrow sanitize: {out}"
     );
 }
+
+/// BUG-20261117-061 纵深回归锁：timeout_secs=0 不允许变成 tokio
+/// timeout(0) 立即超时（spawn 即 tree-kill）——内部 max(1) 兜底后
+/// 1s 窗口足够 fake CLI（echo）完成，委派正常返回。
+#[tokio::test]
+async fn test_run_cli_delegation_timeout_zero_not_instant_kill() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = if cfg!(windows) {
+        let p = dir.path().join("fake_echo.bat");
+        std::fs::write(&p, "@echo off\r\necho cli-delegation-ok\r\n").unwrap();
+        p
+    } else {
+        let p = dir.path().join("fake_echo.sh");
+        std::fs::write(&p, "#!/bin/sh\necho cli-delegation-ok\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    };
+    let spec = CliDelegationSpec {
+        cli: &script.to_string_lossy(),
+        cli_label: "fake-echo",
+        args: vec![],
+        timeout_secs: 0,
+        cwd: dir.path(),
+    };
+    let out = run_cli_delegation(spec).await.unwrap();
+    assert!(
+        out.contains("cli-delegation-ok"),
+        "timeout=0 must not insta-kill the delegation: {out}"
+    );
+}

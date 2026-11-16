@@ -2262,3 +2262,14 @@ async fn session_end_fires_scoped_hook_then_purges_storage() {
     assert!(!text.contains("s-gone"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-20261117-061 回归锁：hook 超时 0 视作缺省（同 oauth.rs 契约
+/// 「不允许 0=不限」）——Some(0) 原样透传会被 run_hook_script 的
+/// max(1) 钳成 1s 必超时（hook 静默全废）。
+#[test]
+fn test_resolve_hook_timeout_zero_falls_back_to_default() {
+    assert_eq!(super::resolve_hook_timeout(None), 60);
+    assert_eq!(super::resolve_hook_timeout(Some(0)), 60);
+    assert_eq!(super::resolve_hook_timeout(Some(5)), 5);
+    assert_eq!(super::resolve_hook_timeout(Some(3600)), 3600);
+}

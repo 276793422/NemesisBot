@@ -6763,3 +6763,39 @@ async fn bug20261116013_http_node_custom_credential_header_stripped_cross_origin
         "hop2（跨源）必须剥掉自定义凭据头 X-Api-Key: {h2}"
     );
 }
+
+// ── BUG-20261117-062：`!` 前缀迭代化（旧自递归 `!×N` 每层一帧无深度帽，
+// 模板解析后的数据值可携带上万 `!` → 栈溢出 abort 全进程；现剥前缀计数 +
+// 按奇偶取反，核心只求值一次，语义与旧递归逐字节一致）──
+
+#[test]
+fn test_negation_prefix_parity() {
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    assert!(evaluate_condition("true", &ctx));
+    assert!(!evaluate_condition("!true", &ctx));
+    assert!(evaluate_condition("!!true", &ctx));
+    assert!(!evaluate_condition("!!!true", &ctx));
+    // 旧递归形态空串锚点：剥空 → false（再按奇偶取反）。
+    assert!(evaluate_condition("!", &ctx));
+    assert!(!evaluate_condition("!!", &ctx));
+}
+
+#[test]
+fn test_negation_prefix_interleaved_whitespace() {
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    assert!(!evaluate_condition("!  true", &ctx));
+    assert!(evaluate_condition("!  !  true", &ctx));
+}
+
+#[test]
+fn test_negation_prefix_mass_chain_no_crash() {
+    // 数据面实锤形态：节点输出值携带 5 万零一个 `!` 经 {{x}} 模板解析进
+    // 条件——修复前 5 万帧自递归 = 栈溢出 abort 全进程；修复后迭代零递归。
+    let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    ctx.insert(
+        "x".to_string(),
+        serde_json::json!(format!("{}true", "!".repeat(50_001))),
+    );
+    // 50_001 层取反（奇）→ !true = false。
+    assert!(!evaluate_condition("{{x}}", &ctx));
+}

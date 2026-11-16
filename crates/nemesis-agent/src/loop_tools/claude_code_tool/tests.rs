@@ -171,3 +171,16 @@ fn test_claude_code_tool_not_registered_without_cli() {
     }
     // (When the CLI exists, presence is expected — no assert either way.)
 }
+
+/// BUG-20261117-061 回归锁：timeout_secs=0 视作缺省 300（Some(0) 直通
+/// 会在 cli_delegation 变 tokio timeout(0) 立即超时，spawn 即被
+/// tree-kill，委派静默永久废）。
+#[test]
+fn test_claude_code_timeout_zero_falls_back_to_default() {
+    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), Some(0), None);
+    assert_eq!(t.timeout_secs, 300);
+    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), Some(30), None);
+    assert_eq!(t.timeout_secs, 30);
+    let t = ClaudeCodeTool::new("C:/fake/claude.exe".into(), None, None);
+    assert_eq!(t.timeout_secs, 300);
+}
