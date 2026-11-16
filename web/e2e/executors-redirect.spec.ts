@@ -127,10 +127,11 @@ test('TAB 状态机：hash 直改/back-forward/mount-unmount 循环/模态并存
 
   // (5) mount/unmount 循环 ×3（组件销毁重建；轮询定时器随 onBeforeUnmount
   //     清理、onMounted 重建——循环后面板仍健康）
+  //     （2026-11-17 修观察期红：2026-11-07 复合页布局重构 .exec-tab → .tabs .tab）
   for (let i = 0; i < 3; i++) {
-    await page.locator('.exec-tab', { hasText: '后台任务' }).click()
+    await page.locator('.tabs .tab', { hasText: '后台任务' }).click()
     await expect(page.locator('.page-processes')).toBeVisible({ timeout: 10_000 })
-    await page.locator('.exec-tab', { hasText: '子代理' }).click()
+    await page.locator('.tabs .tab', { hasText: '子代理' }).click()
     await expect(page.locator('.page-subagents')).toBeVisible({ timeout: 10_000 })
   }
 
