@@ -2298,14 +2298,15 @@ impl AgentLoop {
     }
 
     /// 会话资产区（2026-11-12）：会话感知产物目录——绑定会话 =
-    /// `<session_home>/plans`（home 在本 loop 的 workspace_root 下），未绑定
-    /// / 解析失败 = 回落 [`Self::plan_products_dir`]（项目 loop = 项目 agent
-    /// home/plans，主 loop = workspace/plans，存量行为零变化）。放行判定、
-    /// 拒绝文案、/plan 回执、模式快照行四处同读本函数，永不漂移。
+    /// `<session_home>/plans`（home 在会话资产区根下；2026-11-16 污染
+    /// 修复：根走 session_homes_root 统一裁决——项目会话 home 在主
+    /// workspace，不再落项目目录），未绑定 / 解析失败 = 回落
+    /// [`Self::plan_products_dir`]（项目 loop = 项目 agent home/plans，
+    /// 主 loop = workspace/plans，存量行为零变化）。放行判定、拒绝文案、
+    /// /plan 回执、模式快照行四处同读本函数，永不漂移。
     pub(crate) fn plan_products_dir_for(&self, session_key: &str) -> Option<std::path::PathBuf> {
-        if let Some(root) = self.workspace_root.read().clone()
-            && let Some(home) = crate::session_home::resolve_session_home(&root, session_key)
-        {
+        let root = self.session_homes_root();
+        if let Some(home) = crate::session_home::resolve_session_home(&root, session_key) {
             return Some(home.join("plans"));
         }
         self.plan_products_dir()

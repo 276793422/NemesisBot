@@ -174,8 +174,10 @@ impl Default for ExpertsPolicy {
 pub type ExpertsPolicyFn = Arc<dyn Fn() -> ExpertsPolicy + Send + Sync>;
 
 /// spawn 工具与 spawn 闭包共用的专家解析面（装配点单一注入面）。None
-/// （headless / 项目 loop / 测试未装配）= `action=list` 诚实空名册、
-/// `expert` 点名诚实报错——不假装有专家，也不假装没有 spawn。
+///（headless / 测试未装配）= `action=list` 诚实空名册、`expert` 点名诚实
+/// 报错——不假装有专家，也不假装没有 spawn。主 loop 与项目 loop
+///（2026-11-16 放开 v1 边界起）同源注入：名册/预检（SpawnTool）与执行面
+/// 解析（spawn 闭包）两条路同一 handle。
 #[derive(Clone)]
 pub struct ExpertsHandle {
     pub roster: ExpertsRosterFn,

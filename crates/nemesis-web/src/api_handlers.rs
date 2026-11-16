@@ -1544,13 +1544,10 @@ pub async fn handle_api_chat_session_fork(
             at_turn,
             independent,
         )?;
-        // 资产树根 = 新会话所属 workspace：fork 血缘把 project_id 一并写入
-        // 新 meta（fork_session_opts），此处按新会话解析项目目录——项目
-        // 会话的 home 在项目目录下（与项目 loop 围栏同根）；对话组 =
-        // 主 workspace。解析不出（未装配/未注册）回落主 workspace。
-        let ws = crate::handlers::projects::project_root_for_session(&info.new_key)
-            .or(ws_opt.clone())
-            .ok_or_else(|| "workspace 未装配".to_string())?;
+        // 资产树根恒主 workspace（2026-11-16 污染修复）：项目会话的
+        // home 不再锚项目目录，fork 复制源/目标同根——与 sessions.create
+        // / upload / admission / hydrate 同源。
+        let ws = ws_opt.ok_or_else(|| "workspace 未装配".to_string())?;
         if let Err(e) = nemesis_agent::session_home::fork_copy_session_home(
             std::path::Path::new(&ws),
             &info.source_key,

@@ -962,12 +962,13 @@ impl AgentLoop {
                 // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
                 // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
                 // 不静默丢图。
-                let ws_for_uploads = self.workspace_root.read().clone();
-                let uploads_base = ws_for_uploads
-                    .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-                // 会话资产区（2026-11-12）：steer 与首轮同源——绑定会话的
+                // 会话资产区根（2026-11-16 污染修复）：session_homes_root
+                // 统一裁决。steer 与首轮同源——同样可能携带图片（media 引用 +
+                // 文本点名路径）。走与 process_admitted 同一附加链（URL 预取 +
+                // 统一附加 + 诚实注记 + image_refs），不静默丢图。绑定会话的
                 // 预取产物落自家 home/uploads（home 已在首轮 admission 惰性
                 // 分配，此处只消费）；未绑定落全局。
+                let uploads_base = self.session_homes_root();
                 let uploads_dir =
                     crate::session_home::resolve_session_home(&uploads_base, &context.session_key)
                         .map(|h| h.join("uploads"))

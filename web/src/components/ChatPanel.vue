@@ -1242,6 +1242,14 @@ function handleWSMessage(data: any) {
           // 同步排空（内容与磁盘行重复，丢弃即可），否则残留混进下一 turn。
           chatStore.flushPendingWork()
           chatStore.flushPendingDeliverables()
+          // ①（2026-11-16 用户消息重复渲染修复）：重复帧 = 环里已有此行
+          // ——把环 seq 盖回已渲染的行（user 回声帧盖乐观回显、assistant
+          // 重复帧盖 legacy 无 seq 行）。盖章后该行获得确认标记：sync 回放
+          // 消费面（consumeReplayRow）把它剔出候选、A1 语义面一致；游标
+          // 推进（上方 L2 块）本就先行，此处只补行侧锚。
+          if (typeof data.data?.seq === 'number' && last.seq === undefined) {
+            last.seq = data.data.seq
+          }
         }
         // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
         // 完成信号——不关 streaming、不清 watchdog（本地发送态保持到
@@ -1509,10 +1517,26 @@ async function syncMissedChat() {
         added = true
         continue
       }
-      // 尾行同文比对（与 receive 分支 isDuplicateRecovery 同语义）：发送方
-      // 极端时序下自己的 user 行可能已由回声帧先落视图，补拉不重复渲染。
-      const tail = chatStore.messages[chatStore.messages.length - 1]
-      if (ev.role === 'user' && tail && tail.role === 'user' && tail.content === ev.content) {
+      // ③（2026-11-16 用户消息重复渲染修复）：补拉 user/assistant 行先走
+      // 「回放消费」——视图里已有同一行的本地未确认形态（发送链乐观回显 /
+      // legacy 无 seq 行）则认领盖章并跳过渲染。旧「尾行同文比对」只看
+      // 一行：补拉批量 ≥2 行（断线窗口跨多轮）时，中间行渲染推进尾巴后，
+      // 后续同文行必然漏比对 → 级联重复（路径 α：光标陈旧 + 重放批 ≥2
+      // user 行的根因形态）。认领面规则见 store consumeReplayRow。
+      if (
+        (ev.role === 'user' || ev.role === 'assistant') &&
+        chatStore.consumeReplayRow(
+          ev.role,
+          String(ev.content ?? ''),
+          typeof ev.seq === 'number' ? ev.seq : undefined,
+        )
+      ) {
+        // R263 同族：认领 = 该行已在视图（时间线/交付物已随 live 渲染），
+        // 但缓冲必须同步排空（assistant 认领臂），否则残留混进下一 turn。
+        if (ev.role === 'assistant') {
+          chatStore.flushPendingWork()
+          chatStore.flushPendingDeliverables()
+        }
         if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
         continue
       }
@@ -2408,57 +2432,60 @@ function handleHistoryResponse(data: any) {
 
   const historyMessages = data.messages || []
 
-  // A1/A2（2026-09-22 聊天切会话竞态）：prepend 前清洗「实时帧先到的尾巴」。
-  // 切会话 reset() 清空视图的窗口内，assistant 实时帧先入列（无尾部可比），
-  // 随后历史快照前置拼接会把它重复一遍。清洗规则（顺序敏感）：
-  // ① A1 seq 剔除：历史已含回复 ⟹ 后端读取晚于其落盘 ⟹ last_seq ≥ 其环
-  //    seq（assistant 入环在落盘后）——先剔精确的；last_seq 缺省（旧网关/
-  //    未注入）自然跳过。
-  // ② A2 尾行同文兜底：剔除后的列表尾部与历史批次尾部同 role 同文则丢
-  //    尾部——覆盖 user 回声帧重复与 ① 的采样缝隙。
-  // W1 修正（2026-09-22 审计修复）：原注释「翻页时两规则天然不命中」对 ①
-  // 不成立——后端翻页响应同样携带**全会话最新** last_seq（采样不区分
-  // before_index），dropAssistantBelowSeq 会把视图内所有带 seq 的 assistant
-  // 实时帧删掉，而这些帧不在更旧的翻页批次里 → 直接消失，且行号重算连带
-  // 错算 rewind 锚。故翻页请求（在飞登记 paginated 钉子）跳过两规则：翻页
-  // 批次严格更旧、与尾部实时帧零交集，清洗既无必要也有害（宁可不删不错删）。
+  // A1/②（2026-09-22 聊天切会话竞态 → 2026-11-16 用户消息重复渲染修复升级）：
+  // prepend 前清洗「实时帧先到的尾巴」。清洗规则（顺序敏感）：
+  // ① ② 尾段对齐合并先行：两列表从尾同步向头逐行比对（role+content），
+  //    连续一致段 = 同一批 jsonl 行的两份渲染（乐观回显/live 帧 vs 快照）
+  //    ——整段由批次副本替换，批次只插入视图没有的更旧前缀。旧 A2 只比
+  //    一行，历史批量 ≥2 行与视图尾巴重复时必然漏（路径 β：historyLoaded
+  //    =false 会话重连全量重拉无 reset → 已渲染行整段重复）。
+  // ② A1 seq 剔除后置兜底：历史已含回复 ⟹ 快照读取晚于其落盘 ⟹ last_seq
+  //    ≥ 其环 seq——扫残余（合并后批次副本不带 seq，A1 只作用于未被认领
+  //    的 live 行，不重复不丢失）。**必须在合并之后跑**：先 A1 会把视图里
+  //    的 assistant 重复行先删掉，行走对齐在中间断档提前停止 → 认领段
+  //    缩短 → 夹在中间的 user 乐观行残留重复。
+  // W1 修正（2026-09-22 审计修复）：翻页请求（在飞登记 paginated 钉子）
+  // 跳过两规则——翻页批次严格更旧、与尾部实时帧零交集，清洗既无必要也有害
+  // （宁可不删不错删）。
+  const newMessages: ChatMessage[] = historyMessages.map((m: any) => ({
+    role: m.role,
+    content: m.content,
+    timestamp: m.timestamp || new Date().toISOString(),
+    model: m.model,
+    sourceNode: m.source_node,
+    imageCount: Array.isArray(m.images) ? m.images.length : undefined,
+    deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
+    // Work 时间线（2026-10-30）：已完成任务的过程折叠块数据源——历史行
+    // `"work"` 键整行透传（后端整行透传链已验证，前端零转换）。
+    work: m.work ?? undefined,
+    // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（jsonl 整行
+    // 透传链同一渲染分支——切走再切回看到的是同一枚折叠徽标，不蹦蓝底长文）。
+    noteKind: m.note_kind,
+    // 系统通知标记（2026-11-16）：历史行 system_notice / cron_job_id
+    // 透传（同一整行透传链）——系统注入行渲染通知条而非用户气泡。
+    systemNotice: m.system_notice,
+    cronJobId: m.cron_job_id,
+  }))
   if (!inflight.paginated) {
+    if (historyMessages.length > 0) {
+      chatStore.mergeHistoryTail(
+        newMessages,
+        typeof data.oldest_index === 'number' ? data.oldest_index : null,
+      )
+    }
     const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
     chatStore.dropAssistantBelowSeq(lastSeq)
-    if (historyMessages.length > 0) {
-      const histTail = historyMessages[historyMessages.length - 1]
-      chatStore.dropTailIfSame(String(histTail.role ?? ''), String(histTail.content ?? ''))
-    }
-  }
-
-  if (historyMessages.length > 0) {
-    const container = chatMessages.value
-    const oldScrollHeight = container ? container.scrollHeight : 0
-
-    const newMessages: ChatMessage[] = historyMessages.map((m: any) => ({
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp || new Date().toISOString(),
-      model: m.model,
-      sourceNode: m.source_node,
-      imageCount: Array.isArray(m.images) ? m.images.length : undefined,
-      deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
-      // Work 时间线（2026-10-30）：已完成任务的过程折叠块数据源——历史行
-      // `"work"` 键整行透传（后端整行透传链已验证，前端零转换）。
-      work: m.work ?? undefined,
-      // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（jsonl 整行
-      // 透传链同一渲染分支——切走再切回看到的是同一枚折叠徽标，不蹦蓝底长文）。
-      noteKind: m.note_kind,
-      // 系统通知标记（2026-11-16）：历史行 system_notice / cron_job_id
-      // 透传（同一整行透传链）——系统注入行渲染通知条而非用户气泡。
-      systemNotice: m.system_notice,
-      cronJobId: m.cron_job_id,
-    }))
+  } else if (historyMessages.length > 0) {
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
     chatStore.prependHistory(
       newMessages,
       typeof data.oldest_index === 'number' ? data.oldest_index : null,
     )
+  }
+
+  if (historyMessages.length > 0) {
+    const container = chatMessages.value
+    const oldScrollHeight = container ? container.scrollHeight : 0
 
     nextTick(() => {
       if (container) {
@@ -2949,6 +2976,11 @@ async function sendValidated(content: string, media: { id: string }[]) {
     content: content || (media.length ? '[图片]' : ''),
     timestamp: new Date().toISOString(),
     imageCount: media.length || undefined,
+    // ③（2026-11-16 用户消息重复渲染修复）：乐观行标记——此行先于后端
+    // 回执创建，sync 回放消费面（consumeReplayRow）据此把它与历史区
+    // 同文行区分开（历史行永不带标记），回声帧/补拉盖章 seq 后标记
+    // 自然失活。
+    optimistic: true,
   })
   if (switchedToFresh) chatStore.anchorFreshSession()
 

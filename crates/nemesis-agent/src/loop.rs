@@ -752,6 +752,13 @@ pub struct AgentLoop {
     /// 不可作推导根）。`None` = dispatch 闸回落 config.json 同目录（测试/
     /// 裸装配旁路形态；生产恒注入）。
     vault_domain_config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// 会话资产区根（`agents/<id>/home` 树所在 workspace）。`None` = 回落
+    /// workspace_root（主/集群/headless loop 的 workspace_root 就是资产区
+    /// 根，行为不变）；项目 loop 构造时注入主 workspace——项目 loop 的
+    /// workspace_root 是项目目录（用户真实工作树），资产区树不得落进去
+    /// （2026-11-16 污染修复；vault_domain_config_path 同族先例：项目 loop
+    /// 不可从 workspace_root 推导的根一律显式注入）。
+    session_home_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// VM 档执行环境注记 resolver（审计收口）。`Some` 时每轮
     /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
     /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
@@ -1055,6 +1062,7 @@ impl AgentLoop {
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
             vault_domain_config_path: parking_lot::RwLock::new(None),
+            session_home_root: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,

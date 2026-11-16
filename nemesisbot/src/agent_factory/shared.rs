@@ -1324,14 +1324,12 @@ pub(super) fn register_tools_and_mcp(
         match resolve_image_model(&cfg_guard) {
             Ok((api_base, api_key, model)) => {
                 let timeout = cfg_guard.tools.image_gen.effective_timeout_secs();
-                // 会话资产区（2026-11-12）双根：homes_root = 本 loop 的
-                // workspace 根（绑定会话 home 所在树——主/集群 = 主 workspace，
-                // 项目 = 项目目录，与围栏同根；三 loop 均在注册前
-                // set_workspace_root，此处恒有值）；fallback_root = 主
+                // 会话资产区（2026-11-12）双根：homes_root = 主 workspace
+                // （2026-11-16 污染修复：会话资产区树统一锚主 workspace，
+                // 恒定不随 loop workspace_root 走——项目会话若未来接
+                // generate_image 也不落项目目录）；fallback_root = 主
                 // workspace（未绑定存量会话产物落全局 images/，行为零变化）。
-                let homes_root = agent_loop
-                    .workspace_root()
-                    .unwrap_or_else(|| shared.workspace_dir().to_path_buf());
+                let homes_root = shared.workspace_dir().to_path_buf();
                 let fallback_root = shared.workspace_dir().to_path_buf();
                 agent_loop.register_tool(
                     crate::image_gen_tool::TOOL_NAME.to_string(),

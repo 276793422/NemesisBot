@@ -93,6 +93,29 @@ impl AgentLoop {
         self.workspace_root.read().clone()
     }
 
+    /// 注入会话资产区根（`agents/<id>/home` 树所在 workspace）。项目 loop
+    /// 装配时从主 workspace 注入——项目 loop 的 workspace_root 是项目目录
+    /// （用户真实工作树），资产区树不得落进去（2026-11-16 污染修复；
+    /// vault 域路径同族先例）。未注入 = 回落 workspace_root（主/集群/
+    /// headless loop 行为不变）。
+    pub fn set_session_home_root(&self, root: std::path::PathBuf) {
+        *self.session_home_root.write() = Some(root);
+    }
+
+    /// 会话资产区根（2026-11-16 修复）：显式注入优先，回落 workspace_root，
+    /// 再回落全局 path manager（headless/裸装配兜底，与 uploads 既有兜底
+    /// 链同形）。uploads 预取 / plans 产物 / hydrate 回退 / 图片 / 记忆域
+    /// 五族消费统一走此函数，永不漂移。
+    pub(crate) fn session_homes_root(&self) -> std::path::PathBuf {
+        if let Some(root) = self.session_home_root.read().clone() {
+            return root;
+        }
+        if let Some(root) = self.workspace_root.read().clone() {
+            return root;
+        }
+        nemesis_path::default_path_manager().workspace()
+    }
+
     /// 注入工作区指令信任档（项目 loop 装配时解析注入；
     /// `projects.trust` WSAPI 对运行中 loop 热更新——下一轮 build_messages
     /// 即生效，区块逐 build 重渲染无残留）。

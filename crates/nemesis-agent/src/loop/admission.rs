@@ -1346,13 +1346,12 @@ impl AgentLoop {
         // URL media 先经 fetch_url_media 预取（SSRF 闸 + http-pool 下载 →
         // uploads 落盘改写为本地路径引用），再统一走同步附加链；失败注记随
         // 附加注记一并合并进轮次文本。
-        let ws_for_uploads = self.workspace_root.read().clone();
-        let uploads_base =
-            ws_for_uploads.unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-        // 会话资产区（2026-11-12）：不经 sessions.create 到达的会话在此
-        // 惰性补分配（幂等——已绑定零写入）；绑定会话的 URL 预取产物落
-        // 自家 home/uploads，未绑定（存量 lenient / 分配失败）落全局
-        // workspace/uploads——行为零变化。
+        // 会话资产区根（2026-11-16 污染修复）：session_homes_root 统一裁决
+        // （项目 loop = 主 workspace，不再落项目目录）。会话资产区（2026-11-12）：
+        // 不经 sessions.create 到达的会话在此惰性补分配（幂等——已绑定零写入）；
+        // 绑定会话的 URL 预取产物落自家 home/uploads，未绑定（存量 lenient /
+        // 分配失败）落全局 workspace/uploads——行为零变化。
+        let uploads_base = self.session_homes_root();
         if let Err(e) = crate::session_home::assign_session_home(&uploads_base, &session_key) {
             tracing::warn!("[admission] lazy home assign failed for {session_key}: {e}");
         }

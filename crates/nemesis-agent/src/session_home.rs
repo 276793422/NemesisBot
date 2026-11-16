@@ -46,6 +46,81 @@ pub fn resolve_session_home(workspace: &Path, session_key: &str) -> Option<PathB
     ))
 }
 
+/// 存量项目会话资产树惰性迁移（2026-11-16 污染修复配套）。
+///
+/// 背景：修复前的分配点把项目会话的 `agents/<id>/home` 锚在**项目目录**
+/// （用户的真实工作树）——修复后根恒主 workspace，但设备上已长出的旧树
+/// 不会自己搬家。本函数把「主 workspace 树缺席 + meta 带 project_path +
+/// 项目侧旧树在场」的会话整树搬回主 workspace。
+///
+/// 搬移策略：同卷 rename 优先（原子、瞬时）；失败（跨卷 / Windows 句柄
+/// 占用）回落 copy + 韧性删——copy 臂先复核主侧目标仍缺席（并发窗口里
+/// 另一调用者可能已完成迁移，此时放弃且**绝不清扫主侧**——那是赢家刚
+/// 搬好的树）；copy 半残失败才清主侧残迹。搬后 best-effort 摘除项目侧
+/// 空壳父目录（`remove_dir` 只删空目录，用户自己的 `agents/` 内容永不
+/// 触碰）。幂等：主树已在 / 项目侧缺席 / meta 无项目路径 / 未绑定 =
+/// no-op（稳态调用成本 = 一次 meta 读 + 一次 is_dir）。失败 = lenient
+/// （WARN 不炸调用方——迁移失败会话降级为新空 home 继续用，旧树残留
+/// 项目侧可人工搬）。
+pub fn migrate_stale_project_session_home(workspace: &Path, session_key: &str) {
+    let Some(id) = resolve_home_agent_id(session_key) else {
+        return;
+    };
+    let main_home = nemesis_path::resolve_agent_home_in_workspace(workspace, &id);
+    if main_home.is_dir() {
+        return; // 已在正确位置（或已迁移过）
+    }
+    let Some(project_path) = chat_log::read_session_meta_full(session_key)
+        .and_then(|m| m.project_path)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    else {
+        return;
+    };
+    let legacy_home = nemesis_path::resolve_agent_home_in_workspace(Path::new(&project_path), &id);
+    if !legacy_home.is_dir() {
+        return; // 项目侧无旧树（未受污染的会话 / project_path 已失效）
+    }
+    // 防呆：project_path == 主 workspace 时 legacy_home == main_home，
+    // 上方 is_dir 已拦截，走不到这——不会出现「自己搬给自己」。
+    if let Some(parent) = main_home.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("[session_home] 迁移中止：父目录创建失败 {parent:?}: {e}");
+        return;
+    }
+    if std::fs::rename(&legacy_home, &main_home).is_err() {
+        // rename 失败（跨卷 / 源树有打开句柄 / 并发竞争）。复核并发窗口：
+        // 目标已在 = 另一调用者迁移完成，诚实放弃（不碰主侧）。
+        if main_home.is_dir() {
+            return;
+        }
+        if copy_dir_recursive(&legacy_home, &main_home).is_err() {
+            // copy 半残：主侧目录必是本次 copy 臂所建（上方复核保证），
+            // 清残迹避免半截树被误认为已迁移。
+            let _ = nemesis_utils::fsutil::remove_dir_all_resilient(&main_home);
+            tracing::warn!(
+                "[session_home] 存量资产树迁移失败（copy 臂），会话继续用新空 home: \
+                 {legacy_home:?} → {main_home:?}"
+            );
+            return;
+        }
+        if !nemesis_utils::fsutil::remove_dir_all_resilient(&legacy_home) {
+            tracing::warn!("[session_home] 迁移 copy 完成但项目侧旧树删除未净: {legacy_home:?}");
+        }
+    }
+    // 项目侧空壳摘除（best-effort，只删空目录；Windows 瞬时句柄静默跳过）。
+    // `<project>/agents/<id>` → `<project>/agents` 两层都试——修复版 bug
+    // 会话在项目目录留下完整 `agents/` 骨架，搬空后应归位。
+    if let Some(shell) = legacy_home.parent() {
+        let _ = std::fs::remove_dir(shell);
+        if let Some(grand) = shell.parent() {
+            let _ = std::fs::remove_dir(grand);
+        }
+    }
+    tracing::info!("[session_home] 存量项目资产树已迁回主 workspace: {id}");
+}
+
 /// fork 产物独立记忆域（2026-11-12 拍板「只在分叉时分叉」）：meta 有 fork
 /// 血缘（`parent` 在场）且 home 已绑定 → `Some(<home>/memory/memory_vector)`
 /// ——分支间与对父会话记忆隔离，域随 home 树存在；普通会话 / 未绑定 /
@@ -66,6 +141,10 @@ pub fn resolve_session_memory_domain(workspace: &Path, session_key: &str) -> Opt
 /// 绑架会话创建）。
 pub fn assign_session_home(workspace: &Path, session_key: &str) -> Result<String, String> {
     if let Some(existing) = resolve_home_agent_id(session_key) {
+        // 幂等分支顺带惰性迁移（2026-11-16）：绑定在但主侧树缺席时，
+        // 存量项目树搬回主 workspace——消息路径（admission/binding）与
+        // create 重入都经这里，无需各自感知迁移。
+        migrate_stale_project_session_home(workspace, session_key);
         return Ok(existing);
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -103,6 +182,10 @@ pub fn fork_copy_session_home(
     source_key: &str,
     new_key: &str,
 ) -> Result<Option<String>, String> {
+    // 源会话可能还是存量项目树形态（升级后未经 sessions.list/消息路径
+    // 触发迁移）——先迁移再解析，fork 复制才不会因「主侧缺席」把源资产
+    // 误判成空 home。
+    migrate_stale_project_session_home(workspace, source_key);
     let Some(src_home) = resolve_session_home(workspace, source_key) else {
         return Ok(None);
     };

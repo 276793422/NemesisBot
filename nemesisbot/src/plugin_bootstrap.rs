@@ -366,8 +366,8 @@ type AuditSink = Option<()>;
 fn audit_bootstrap(sink: &AuditSink, decision: &str, target: &str, reason: &str, source: &str) {
     let operation = "plugin_bootstrap";
     #[cfg(feature = "security")]
-    if let Some(sp) = sink {
-        if sp
+    if let Some(sp) = sink
+        && sp
             .append_direct_audit_event(
                 operation,
                 "plugin_propose",
@@ -378,9 +378,8 @@ fn audit_bootstrap(sink: &AuditSink, decision: &str, target: &str, reason: &str,
                 reason,
             )
             .is_some()
-        {
-            return;
-        }
+    {
+        return;
     }
     tracing::warn!(
         "[PluginBootstrap] 审计链未启用——自举决策仅落日志：decision={decision} target={target} reason={reason}"

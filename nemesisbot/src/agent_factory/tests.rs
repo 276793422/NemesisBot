@@ -1271,7 +1271,15 @@ async fn project_spawn_closure_refuses_on_start_exit_2() {
     let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
         Arc::new(std::sync::OnceLock::new());
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    super::inject_project_spawn_fn(&loop_arc, &slot, Some(bridge), &bus, "project:t1");
+    super::inject_project_spawn_fn(
+        &loop_arc,
+        &slot,
+        Some(bridge),
+        &bus,
+        "project:t1",
+        None,
+        test_reloader(),
+    );
     let spawn = slot.get().expect("closure injected");
     let err = spawn(
         "agent-1", "do task", "", "", "", "readonly", 1, false, "", "", "", "",
@@ -1704,7 +1712,8 @@ async fn project_factory_small_model_unresolvable_degrades_quietly() {
 // provider 构造失败 warn / approval_slot 缺席 warn）。
 // -------------------------------------------------------------------------
 
-/// 项目 spawn 夹具：同 spawn_fixture 但注入 inject_project_spawn_fn。
+/// 项目 spawn 夹具：同 spawn_fixture 但注入 inject_project_spawn_fn
+///（experts=None——无专家面路径由专家矩阵用例另行覆盖）。
 fn project_spawn_fixture(
     doc: &str,
 ) -> (
@@ -1718,7 +1727,62 @@ fn project_spawn_fixture(
     let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
         Arc::new(std::sync::OnceLock::new());
     let bus = Arc::new(nemesis_bus::MessageBus::new());
-    super::inject_project_spawn_fn(&loop_arc, &slot, Some(bridge), &bus, "project:t1");
+    super::inject_project_spawn_fn(
+        &loop_arc,
+        &slot,
+        Some(bridge),
+        &bus,
+        "project:t1",
+        None,
+        test_reloader(),
+    );
+    (loop_arc, slot)
+}
+
+/// 项目专家派发夹具：合成 ExpertsHandle 注入 project spawn 闭包。resolve
+/// 命中任意非 ghost key（ghost* = 未知专家 Err，钉闭包错误上抛臂）；预检
+/// 策略矩阵归 SpawnTool/nemesis-agent 套件，这里只钉执行面接线。
+fn project_expert_spawn_fixture(
+    doc: &str,
+) -> (
+    Arc<nemesis_agent::r#loop::AgentLoop>,
+    Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+) {
+    let tmp = tempfile::tempdir().expect("tempdir").keep();
+    let bridge =
+        Arc::new(nemesis_agent::cc_hooks::CcHookBridge::from_json(doc, tmp).expect("bridge"));
+    let loop_arc = Arc::new(fresh_unwired_loop());
+    let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
+        Arc::new(std::sync::OnceLock::new());
+    let bus = Arc::new(nemesis_bus::MessageBus::new());
+    let resolve: nemesis_agent::loop_tools::ExpertResolveFn = std::sync::Arc::new(|key: &str| {
+        if key.starts_with("ghost") {
+            return Err(format!("Unknown expert '{key}'. Hired experts: rust-guru."));
+        }
+        Ok(nemesis_agent::loop_tools::ExpertDispatch {
+            slug: key.trim().to_lowercase(),
+            name: key.to_string(),
+            prompt: format!("EXPERT_PROMPT_OF_{key}"),
+            model: String::new(),
+        })
+    });
+    let handle = nemesis_agent::loop_tools::ExpertsHandle {
+        roster: std::sync::Arc::new(|| nemesis_agent::loop_tools::ExpertsRoster {
+            experts: Vec::new(),
+            default_name: "默认子代理".to_string(),
+        }),
+        resolve,
+        policy: std::sync::Arc::new(nemesis_agent::loop_tools::ExpertsPolicy::default),
+    };
+    super::inject_project_spawn_fn(
+        &loop_arc,
+        &slot,
+        Some(bridge),
+        &bus,
+        "project:t1",
+        Some(handle),
+        test_reloader(),
+    );
     (loop_arc, slot)
 }
 
@@ -1786,6 +1850,133 @@ async fn project_spawn_closure_foreground_runs_and_fires_stop() {
         marker_lines_of(&stop_marker) >= 1,
         "SubagentStop must fire after the detached run (failed 态)"
     );
+}
+
+/// 项目专家派发（2026-11-16 放开 v1 边界）：点名专家越过闸（stub provider
+/// 失败 ≠ 拒绝文案），注册表条目带改写后的 `expert:<slug>` + 宿主形态。
+/// 可见性断言走全局注册表而非钩子 payload 捕获——hook 经 cmd /C 执行，
+/// MSYS PATH 下 `find`/文本管道类写法平台/环境脆，注册表是同一事实源
+///（SubagentBegin 的 agent_id 即改写后的值）。
+#[tokio::test]
+async fn project_spawn_expert_dispatch_passes_gate_and_rewrites_agent_id() {
+    let doc = serde_json::json!({ "hooks": {} }).to_string();
+    let (loop_arc, slot) = project_expert_spawn_fixture(&doc);
+    let _keep_alive = loop_arc;
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn(
+        "p-agent",
+        "task",
+        "",
+        "",
+        "",
+        "readonly",
+        1,
+        false,
+        "",
+        "",
+        "rust-guru",
+        "",
+    )
+    .await
+    .expect_err("stub provider never chats");
+    assert!(
+        !err.contains("experts are only available"),
+        "专家派发必须越过 v1 闸: {err}"
+    );
+    // 注册表可见性：agent_id 改写 expert:<slug> + 宿主形态 project:*。
+    // 全局注册表进程内共享（并行测试只产生空 expert 条目），按改写后的
+    // agent_id 过滤无撞车。
+    let entry = nemesis_agent::subagent_registry::global()
+        .list()
+        .into_iter()
+        .find(|t| t.agent_id == "expert:rust-guru")
+        .expect("registry entry with rewritten expert agent_id");
+    assert_eq!(entry.loop_origin, "project:t1");
+    assert!(!entry.background);
+}
+
+/// 项目自拟提示词（ad-hoc）派发：非空 prompt 走同一管线越过 v1 闸。
+#[tokio::test]
+async fn project_spawn_prompt_adhoc_passes_gate() {
+    let doc = serde_json::json!({ "hooks": {} }).to_string();
+    let (loop_arc, slot) = project_expert_spawn_fixture(&doc);
+    let _keep_alive = loop_arc;
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn(
+        "p-agent",
+        "task",
+        "",
+        "",
+        "",
+        "readonly",
+        1,
+        false,
+        "",
+        "",
+        "",
+        "你是资深数据工程师",
+    )
+    .await
+    .expect_err("stub provider never chats");
+    assert!(
+        !err.contains("ad-hoc prompt dispatch") && !err.contains("experts are only available"),
+        "prompt 派发必须越过 v1 闸: {err}"
+    );
+}
+
+/// 项目 loop 无专家 handle（headless/测试缺省）：点名诚实 Err，不静默回落
+/// 默认子代理。
+#[tokio::test]
+async fn project_spawn_expert_without_handle_honest_error() {
+    let doc = serde_json::json!({ "hooks": {} }).to_string();
+    let (_loop_arc, slot) = project_spawn_fixture(&doc);
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn(
+        "p-agent",
+        "task",
+        "",
+        "",
+        "",
+        "readonly",
+        1,
+        false,
+        "",
+        "",
+        "rust-guru",
+        "",
+    )
+    .await
+    .expect_err("None handle must honestly refuse");
+    assert!(
+        err.contains("experts are not configured on this loop"),
+        "err={err}"
+    );
+}
+
+/// 项目专家派发：resolve 失败（未知 slug）原始错误上抛（降级分流归
+/// SpawnTool 预检，闭包不重复降级——同主 spawn）。
+#[tokio::test]
+async fn project_spawn_expert_resolve_error_propagates() {
+    let doc = serde_json::json!({ "hooks": {} }).to_string();
+    let (_loop_arc, slot) = project_expert_spawn_fixture(&doc);
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn(
+        "p-agent",
+        "task",
+        "",
+        "",
+        "",
+        "readonly",
+        1,
+        false,
+        "",
+        "",
+        "ghost-expert",
+        "",
+    )
+    .await
+    .expect_err("unknown expert must surface the resolver error");
+    assert!(err.contains("Unknown expert 'ghost-expert'"), "err={err}");
 }
 
 /// 带 bus 的主 spawn 夹具（后台回灌断言需要订阅 bus）。

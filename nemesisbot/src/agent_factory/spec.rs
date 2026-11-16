@@ -427,6 +427,11 @@ pub fn build_agent_loop_from_spec(
     // 指令链（AGENTS.md/CLAUDE.md）根锚项目目录——项目可带自己的指令
     // 文件，与主 workspace 互不影响。
     agent_loop.set_workspace_root(project_dir.clone());
+    // 会话资产区根（2026-11-16 污染修复）：**主 workspace 锚**——项目
+    // loop 的 workspace_root 是项目目录（用户真实工作树），`agents/<id>/
+    // home` 资产树不得落进去；uploads/plans/hydrate/图片/记忆域五族消费
+    // 统一走 loop 的 session_homes_root（本注入是唯一裁决点）。
+    agent_loop.set_session_home_root(shared.workspace_dir().to_path_buf());
     // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11）：**主 workspace
     // 锚**——项目 loop 的 workspace_root 是项目目录（上面一行），不可作
     // 推导根；恒走 SharedResources 单一推导点（与 CLI 写入侧同点）。
@@ -598,7 +603,17 @@ pub fn build_agent_loop_from_spec(
     tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
         root: project_dir.clone(),
         restrict: true,
-        extra_roots: agent_home.iter().cloned().collect(),
+        extra_roots: {
+            let mut roots: Vec<std::path::PathBuf> = agent_home.iter().cloned().collect();
+            // 会话资产区树（2026-11-16 污染修复配套）：home 锚主 workspace
+            // 后，plan 产物 / 图片产物 / 模型显式写自家 home 都在主 ws
+            // `agents/` 下——围栏第二根放行该树（Bot 可自改的数据域，与
+            // 项目 agent home 同语义域；边界仍在主 workspace 内）。
+            roots.push(nemesis_path::resolve_agents_root_in_workspace(
+                &shared.workspace_dir(),
+            ));
+            roots
+        },
         editor_gate,
     }));
     // 项目 loop 同挂钩子边界（同一 Arc 实例）。
@@ -633,11 +648,12 @@ pub fn build_agent_loop_from_spec(
                 memory_manager_for_namespace(shared, &spec.memory_namespace)
             };
             // 会话资产区（2026-11-12，拍板「只在分叉时分叉」）：项目 loop
-            // 同注 fork 独立域解析器——homes_root = 项目目录（项目会话的
-            // home 树根，与 workspace_root/围栏同根）；非 fork 会话回落
-            // 上面选出的 mgr（主镜像域 / 项目 agent 域，行为零变化）。
+            // 同注 fork 独立域解析器——homes_root = 主 workspace（2026-11-16
+            // 污染修复：项目会话 home 树统一锚主 workspace，不再落项目
+            // 目录——项目目录是用户真实工作树）；非 fork 会话回落上面选出的
+            // mgr（主镜像域 / 项目 agent 域，行为零变化）。
             mgr.map(|mgr| {
-                let homes_root = project_dir.clone();
+                let homes_root = shared.workspace_dir().to_path_buf();
                 let shared_for_domains = shared.clone();
                 let exec = nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)
                     .with_session_domain_resolver(Arc::new(move |session_key| {
@@ -805,12 +821,21 @@ pub fn build_agent_loop_from_spec(
             );
         }
     }
+    // 专家面（2026-11-16 放开 v1 边界）：名册 handle + provider 解析器注入
+    // spawn 闭包（与主 loop 同源同 handle；None = 无专家面，第 11 参非空
+    // 诚实 Err）。reloader roots = 主 workspace（专家模型覆盖解析锚
+    // config.json 所在 workspace，与上方该 loop 的 provider reloader 同构造）。
     inject_project_spawn_fn(
         &agent_loop,
         &spawn_slot,
         project_cc_bridge.clone(),
         &shared.bus,
         &spec.loop_origin,
+        shared.experts.as_ref().map(|s| s.handle()),
+        Arc::new(ModelProviderReloader {
+            home: shared.home.clone(),
+            workspace: shared.workspace_dir(),
+        }),
     );
     // 子代理飞行中驾驶（项3）：项目 loop 同款 steer 闭包注入——
     // 校验链单点在 AgentLoop::steer_subagent（loop_origin 比对保证

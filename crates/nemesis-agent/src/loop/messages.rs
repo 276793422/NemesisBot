@@ -606,10 +606,11 @@ impl AgentLoop {
         // （与 replay 重建共用；image_refs 每轮水合重读，失效 → 占位文本）。
         // ⑥ hydrate 回退查找：fallback 根 = 自会话 home（fork copy-on-fork
         // 语义——源路径失效时自 home 副本命中）。未绑定/根缺席 = None，
-        // 行为零变化；根一致性同 plans/uploads/images——用本 loop 的
-        // workspace_root（项目会话 home 在项目目录下）。
+        // 行为零变化；根一致性同 plans/uploads/images——会话资产区根统一
+        // 走 session_homes_root（2026-11-16 污染修复：项目会话 home 在主
+        // workspace，不再随项目 loop 落项目目录）。
         let hydrate_home = session_key.and_then(|sk| {
-            let root = self.workspace_root.read().clone()?;
+            let root = self.session_homes_root();
             crate::session_home::resolve_session_home(&root, sk)
         });
         let turn_to_msg = |turn: &crate::types::ConversationTurn| {

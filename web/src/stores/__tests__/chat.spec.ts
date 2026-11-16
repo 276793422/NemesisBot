@@ -462,15 +462,25 @@ describe('chat store rowIndex (occupies 三态, 2026-11-11)', () => {
   })
 })
 
-// A1/A2（2026-09-22 聊天切会话竞态）：历史快照与实时帧的合并语义。
-// 竞态：切会话 reset() 清空视图 → 实时帧先入列（无尾部可比）→ 历史响应
-// prependHistory 无条件前置拼接 → 同一条回复渲染两次。修法 = prepend 前
-// 清洗「实时帧先到的尾巴」：A1 seq 精确剔除（assistant）+ A2 尾行同文兜底。
+// A1/A2→②③（2026-09-22 竞态 / 2026-11-16 用户消息重复渲染修复）：历史
+// 快照与实时帧的合并语义。竞态：切会话 reset() 清空视图 → 实时帧先入列 →
+// 历史响应无条件前置拼接 → 同一条回复渲染两次。修法 = 前置前尾段对齐合并
+// （mergeHistoryTail，②——旧 A2 单行比对覆盖不了批量重复）+ sync 补拉乐观
+// 行认领（consumeReplayRow，③）+ A1 seq 精确剔除（合并**之后**跑——先 A1
+// 会删掉视图侧重复 assistant 行令合并行走提前断，夹层 user 乐观行漏认领）。
 
-describe('chat store A1/A2 history-vs-live merge', () => {
+describe('chat store A1/A2/②③ history-vs-live merge', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
+
+  function frame(
+    role: 'user' | 'assistant' | 'error' | 'system',
+    content: string,
+    occupies: boolean | undefined,
+  ) {
+    return { role, content, timestamp: 't', ...(occupies !== undefined ? { occupies } : {}) }
+  }
 
   it('dropAssistantBelowSeq removes only assistant rows with seq <= maxSeq', () => {
     const store = useChatStore()
@@ -491,56 +501,187 @@ describe('chat store A1/A2 history-vs-live merge', () => {
     expect(store.messages).toHaveLength(1)
   })
 
-  it('dropTailIfSame drops the tail only on same role+content', () => {
+  it('② full-tail claim (path β): batch copies rebuild the view exactly once', () => {
     const store = useChatStore()
-    store.addMessage({ role: 'user', content: 'q', timestamp: 't' })
-    store.addMessage({ role: 'assistant', content: 'dup', timestamp: 't' })
-    expect(store.dropTailIfSame('assistant', 'dup')).toBe(true)
-    expect(store.messages.map(m => m.content)).toEqual(['q'])
-    expect(store.dropTailIfSame('assistant', 'dup')).toBe(false)
+    // 路径 β：historyLoaded=false 会话重连全量重拉——视图已渲染
+    // 乐观/live 行（带 seq / optimistic 标记），历史批次含同样内容。
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', optimistic: true })
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 3 })
+    store.addMessage({ role: 'user', content: 'q2', timestamp: 't', optimistic: true })
+    const claimed = store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+        { role: 'user', content: 'q2', timestamp: 'srv' },
+      ],
+      null,
+    )
+    expect(claimed).toBe(3)
+    // 整段替换成批次副本：无重复、顺序保持、服务端时间戳胜出。
+    expect(store.messages.map(m => m.content)).toEqual(['q1', 'a1', 'q2'])
+    expect(store.messages.map(m => m.timestamp)).toEqual(['srv', 'srv', 'srv'])
   })
 
-  it('race replay: live assistant frame lands before snapshot → prepended exactly once', () => {
+  it('② partial tail claim: batch prefix (older rows) prepends between', () => {
     const store = useChatStore()
-    // T3：reset 后空视图，实时帧先到（现象 A 的竞态窗口）。
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', optimistic: true })
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 3 })
+    const claimed = store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q0', timestamp: 'srv' },
+        { role: 'assistant', content: 'a0', timestamp: 'srv' },
+        { role: 'user', content: 'q1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+      ],
+      null,
+    )
+    expect(claimed).toBe(2)
+    // 视图没有的更旧前缀（q0/a0）插入认领段之前；认领段换批次副本。
+    expect(store.messages.map(m => m.content)).toEqual(['q0', 'a0', 'q1', 'a1'])
+  })
+
+  it('② zero-match (snapshot stale vs live tail) → classic prepend, view untouched', () => {
+    const store = useChatStore()
+    // 保守回落：快照读取早于视图尾部行落盘（残余赛窗）——批次整体
+    // 比视图尾更旧，旧行为前置拼接，视图行原样保留。
+    store.addMessage({ role: 'user', content: 'q-live', timestamp: 't', optimistic: true })
+    store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q0', timestamp: 'srv' },
+        { role: 'assistant', content: 'a0', timestamp: 'srv' },
+      ],
+      null,
+    )
+    expect(store.messages.map(m => m.content)).toEqual(['q0', 'a0', 'q-live'])
+  })
+
+  it('② transient receipts inside the claimed region are preserved (no loss)', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', optimistic: true })
+    store.addMessage(frame('assistant', '⏳ 正在处理…', false))
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 3 })
+    store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+      ],
+      null,
+    )
+    // 认领段重建按视图原序重放：瞬态回执夹在两行之间原样保留。
+    expect(store.messages.map(m => m.content)).toEqual(['q1', '⏳ 正在处理…', 'a1'])
+  })
+
+  it('② batch-side skip (disconnect window): view prefix of batch tail renders missed rows once', () => {
+    const store = useChatStore()
+    // 断线窗口形态：视图只有乐观 q1（回复 a1 断线期间落盘没渲染），
+    // 批次 [q1, a1]——a1 经批次侧跳过照常渲染，q1 不重复。
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', optimistic: true })
+    const claimed = store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+      ],
+      null,
+    )
+    expect(claimed).toBe(2)
+    expect(store.messages.map(m => m.content)).toEqual(['q1', 'a1'])
+    expect(store.messages.filter(m => m.content === 'q1')).toHaveLength(1)
+  })
+
+  it('② batch-side skip renders missed rows at batch order (interleaved span)', () => {
+    const store = useChatStore()
+    // 视图缺连续尾段 [u2, a2]：校验行 a1 命中后整段跳过，按批次原序落位。
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't' })
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 3 })
+    store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+        { role: 'user', content: 'u2', timestamp: 'srv' },
+        { role: 'assistant', content: 'a2', timestamp: 'srv' },
+      ],
+      null,
+    )
+    expect(store.messages.map(m => m.content)).toEqual(['q1', 'a1', 'u2', 'a2'])
+  })
+
+  it('② batch-side skip without validator (true divergence) stops conservatively', () => {
+    const store = useChatStore()
+    // 批次尾与视图尾同 role 但不同文、且批次更深处无校验行 = 真分叉
+    // （残余赛窗）——零认领走保守前置，视图不动。
+    store.addMessage({ role: 'user', content: 'q-live', timestamp: 't', optimistic: true })
+    store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q0', timestamp: 'srv' },
+        { role: 'assistant', content: 'a0', timestamp: 'srv' },
+      ],
+      null,
+    )
+    expect(store.messages.map(m => m.content)).toEqual(['q0', 'a0', 'q-live'])
+  })
+
+  it('② rows get batch numbering when oldestIdx is provided', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', optimistic: true })
+    store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+      ],
+      5,
+    )
+    // 批内行号 = oldestIdx + 批内序号（q1=5, a1=6，跳过行也按批次位编号）。
+    expect(store.messages.map(m => m.rowIndex)).toEqual([5, 6])
+  })
+
+  it('race replay (updated call order): merge first, then A1 → rendered exactly once', () => {
+    const store = useChatStore()
+    // reset 后空视图，实时帧先到（竞态窗口）；新流程 ChatPanel 先
+    // merge（视图单行被批次副本认领替换）再 A1（无残行可剔）。
     store.reset()
     store.addMessage({ role: 'assistant', content: 'reply', timestamp: 't', seq: 7 })
-    // T4：历史响应到达（last_seq=7 覆盖实时帧）→ seq 剔除 → prepend 快照。
+    store.mergeHistoryTail(
+      [
+        { role: 'user', content: 'q', timestamp: 'srv' },
+        { role: 'assistant', content: 'reply', timestamp: 'srv' },
+      ],
+      0,
+    )
     store.dropAssistantBelowSeq(7)
-    store.prependHistory(
-      [
-        { role: 'user', content: 'q', timestamp: 't' },
-        { role: 'assistant', content: 'reply', timestamp: 't' },
-      ],
-      0,
-    )
     expect(store.messages.map(m => m.content)).toEqual(['q', 'reply'])
   })
 
-  it('A2 fallback: legacy gateway without last_seq → tail-same dedup catches the dup', () => {
+  it('A1-after-merge ordering: A1 first would strand the interleaved optimistic user row', () => {
     const store = useChatStore()
-    store.reset()
-    store.addMessage({ role: 'assistant', content: 'reply', timestamp: 't', seq: 3 })
-    store.dropAssistantBelowSeq(0) // 旧网关无 last_seq → 0 → 不剔
-    store.dropTailIfSame('assistant', 'reply')
-    store.prependHistory(
+    // 路径 β 全匹配形态回放：合并先行 → assistant 行参与对齐被批次
+    // 副本替换 → user 乐观行同批认领 → 无重复。（反面教材：若先 A1
+    // 删掉视图 a1，合并行走只匹配到 u2，u1 残留重复。）
+    store.addMessage({ role: 'user', content: 'u1', timestamp: 't', optimistic: true })
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 1 })
+    store.addMessage({ role: 'user', content: 'u2', timestamp: 't', optimistic: true })
+    const claimed = store.mergeHistoryTail(
       [
-        { role: 'user', content: 'q', timestamp: 't' },
-        { role: 'assistant', content: 'reply', timestamp: 't' },
+        { role: 'user', content: 'u1', timestamp: 'srv' },
+        { role: 'assistant', content: 'a1', timestamp: 'srv' },
+        { role: 'user', content: 'u2', timestamp: 'srv' },
       ],
-      0,
+      null,
     )
-    expect(store.messages.map(m => m.content)).toEqual(['q', 'reply'])
+    expect(claimed).toBe(3)
+    expect(store.messages.filter(m => m.content === 'u1')).toHaveLength(1)
+    expect(store.messages.filter(m => m.content === 'u2')).toHaveLength(1)
+    store.dropAssistantBelowSeq(1)
+    expect(store.messages.map(m => m.content)).toEqual(['u1', 'a1', 'u2'])
   })
 
-  it('pagination prepend (older batch) is unaffected by both rules', () => {
+  it('pagination prepend (older batch) is unaffected by all rules', () => {
     const store = useChatStore()
     store.addMessage({ role: 'user', content: 'q2', timestamp: 't' })
     store.addMessage({ role: 'assistant', content: 'a2', timestamp: 't' })
-    // 翻页：更早的批次（尾部与列表尾部不同文）→ 不剔不丢，原样前置。
-    store.dropAssistantBelowSeq(99)
-    store.dropTailIfSame('user', 'q1')
-    store.prependHistory(
+    // 翻页：更早的批次（尾部与列表尾部不同文）→ 零认领走保守前置，
+    // 原样 prepend（ChatPanel inflight.paginated 钉子：翻页不调用
+    // mergeHistoryTail 的替换面，行为与 prependHistory 等价）。
+    store.mergeHistoryTail(
       [
         { role: 'user', content: 'q1', timestamp: 't' },
         { role: 'assistant', content: 'a1', timestamp: 't' },
@@ -548,6 +689,59 @@ describe('chat store A1/A2 history-vs-live merge', () => {
       0,
     )
     expect(store.messages.map(m => m.content)).toEqual(['q1', 'a1', 'q2', 'a2'])
+  })
+
+  // --- ③ consumeReplayRow：sync 补拉的环事件认领本地未确认形态 ---
+
+  it('③ user replay event claims optimistic unconfirmed row and stamps seq', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', optimistic: true })
+    expect(store.consumeReplayRow('user', 'q1', 42)).toBe(true)
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].seq).toBe(42)
+  })
+
+  it('③ user replay event does not claim history/live rows (no optimistic mark)', () => {
+    const store = useChatStore()
+    // 历史区同文行（无 optimistic 标记）不是候选——误吞会白白发一轮。
+    store.addMessage({ role: 'user', content: 'q1', timestamp: 't', seq: 3 })
+    expect(store.consumeReplayRow('user', 'q1', 42)).toBe(false)
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].seq).toBe(3)
+  })
+
+  it('③ user scan passes confirmed rows (α cascade: replay assistant landed first)', () => {
+    const store = useChatStore()
+    // 路径 α：断线窗口 ≥2 条用户消息，补拉批次先渲染了漏掉的
+    // assistant（已盖章），user 乐观行在其更早的位置——扫描穿越
+    // 已盖章行到达乐观行（乐观标记钉死误吞面）。
+    store.addMessage({ role: 'user', content: 'u1', timestamp: 't', optimistic: true })
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 7 })
+    store.addMessage({ role: 'user', content: 'u2', timestamp: 't', optimistic: true })
+    expect(store.consumeReplayRow('user', 'u2', 9)).toBe(true)
+    expect(store.messages[2].seq).toBe(9)
+    // u1 也照常认领（批次顺序无要求）。
+    expect(store.consumeReplayRow('user', 'u1', 8)).toBe(true)
+    expect(store.messages[0].seq).toBe(8)
+  })
+
+  it('③ assistant replay event claims unconfirmed row; seq-defined row stops the scan', () => {
+    const store = useChatStore()
+    // legacy 帧（无 seq）在视图里可认领。
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't' })
+    expect(store.consumeReplayRow('assistant', 'a1', 7)).toBe(true)
+    expect(store.messages[0].seq).toBe(7)
+    // 确认边界：扫到首个已盖章 assistant 行即停——不向更深处（历史区）
+    // 越界匹配，防误吞落盘行（历史行不带 seq，误吞会扩大 A1 淘汰面）。
+    store.addMessage({ role: 'user', content: 'u', timestamp: 't' })
+    store.addMessage({ role: 'assistant', content: 'a1', timestamp: 't', seq: 5 })
+    expect(store.consumeReplayRow('assistant', 'a1', 9)).toBe(false)
+  })
+
+  it('③ role must match exactly (user event never claims assistant row)', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'assistant', content: 'same', timestamp: 't' })
+    expect(store.consumeReplayRow('user', 'same', 1)).toBe(false)
   })
 })
 
