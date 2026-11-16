@@ -629,3 +629,57 @@ fn test_shutdown_stops_cleanup_thread() {
         "cleanup thread must stop evicting after shutdown (BUG-20261029-141)"
     );
 }
+
+// === BUG-20261116-035：channels.web.session_timeout 接线（翻译语义） ===
+
+#[test]
+fn test_timeout_from_config_secs_positive_passthrough() {
+    assert_eq!(
+        SessionManager::timeout_from_config_secs(120),
+        std::time::Duration::from_secs(120)
+    );
+    assert_eq!(
+        SessionManager::timeout_from_config_secs(3600),
+        std::time::Duration::from_secs(3600)
+    );
+}
+
+#[test]
+fn test_timeout_from_config_secs_zero_or_negative_is_unlimited() {
+    // 0/负 = 不限：i64::MAX 秒（不是 Duration::MAX——见函数注释回绕陷阱）。
+    assert_eq!(
+        SessionManager::timeout_from_config_secs(0),
+        std::time::Duration::from_secs(i64::MAX as u64)
+    );
+    assert_eq!(
+        SessionManager::timeout_from_config_secs(-5),
+        std::time::Duration::from_secs(i64::MAX as u64)
+    );
+}
+
+#[test]
+fn test_timeout_from_config_secs_survives_as_i64_cast() {
+    // 回绕回归锁：evict_inactive 用 `timeout.as_secs() as i64` 比较——
+    // Duration::MAX 回绕成 -1 会把比较翻转成全量逐出。翻译产物 cast 后
+    // 必须仍为正（负值/零即触发条件）。
+    for secs in [0i64, -1, -3600] {
+        let t = SessionManager::timeout_from_config_secs(secs);
+        assert!(
+            t.as_secs() as i64 > 0,
+            "secs={secs}: 翻译产物 as i64 后必须仍为正（回绕即全量逐出）"
+        );
+    }
+}
+
+#[test]
+fn test_unlimited_timeout_does_not_evict() {
+    // 0=不限端到端：极小 cleanup 拍 + 不限超时 → 会话存活。
+    // 若翻译误用 Duration::MAX（as-i64 回绕 -1），首拍即全量逐出 → 本测试红。
+    let mgr = SessionManager::new_with_cleanup_interval(
+        SessionManager::timeout_from_config_secs(0),
+        std::time::Duration::from_millis(10),
+    );
+    let _s = mgr.create_session();
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    assert_eq!(mgr.active_count(), 1, "0=不限：会话不得被逐出");
+}

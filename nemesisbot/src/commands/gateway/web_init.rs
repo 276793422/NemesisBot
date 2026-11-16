@@ -172,6 +172,21 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     if let Some(mgr) = cors_manager {
         web_server.set_cors_manager(mgr);
     }
+    // channels.web.session_timeout → WS 会话闲置逐出超时。此前 session 侧
+    // 硬编码 3600s、config 键声明后零消费（BUG-20261116-035 接线，同 055
+    // heartbeat_interval 先例）；<=0 = 不限（翻译语义在 nemesis-web 侧单一
+    // 真相源 SessionManager::timeout_from_config_secs，Duration::MAX 的
+    // as-i64 回绕陷阱见该函数注释）。setter 必须在 start 前调用（AppState
+    // 构造时 clone 句柄），与 set_cors_manager 同一窗口。
+    web_server.set_session_timeout(
+        nemesis_web::session::SessionManager::timeout_from_config_secs(
+            cfg.channels.web.session_timeout,
+        ),
+    );
+    info!(
+        secs = cfg.channels.web.session_timeout,
+        "channels.web.session_timeout wired (0/negative = never evict)"
+    );
     // 皮肤包（.nbskin）装配：目录 = exe 同级 `skins/`（与 static/ 同策略，
     // 不落 home）；激活 id = config `ui.skin`（"default"/空 = 内置皮肤）。
     // setter 注入而非 WebServerConfig 字段——后者有大量测试字面量装配，
@@ -449,6 +464,17 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             ),
         );
 
+        // channels.web.allow_from 装饰性定性（BUG-20261116-035）：web 入站
+        // 身份是每连接临时会话 id（nemesis-web session.rs `web:<uuid>`），
+        // 无稳定 sender 可做 allow_list 门控；web 入站准入由 auth_token
+        // 把守，出站经本通道按会话 id 路由。其他通道的 allow_from 靠稳定
+        // 身份生效，语义迁移不到 web——非空配置响亮告知而非静默忽略。
+        if !cfg.channels.web.allow_from.is_empty() {
+            warn!(
+                count = cfg.channels.web.allow_from.len(),
+                "channels.web.allow_from has no effect (web inbound identity is a per-connection ephemeral session id, nothing stable to allow-list; to restrict access set channels.web.auth_token)"
+            );
+        }
         // Build ChannelInitConfig from gateway config (web channel is always available).
         // Feature-gated channel fields only exist under some cfg combos, so the
         // `..Default::default()` base is required (not dead code); the lint can't see that.
@@ -461,12 +487,13 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     ws_path: cfg.channels.web.path.clone(),
                     // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
+                    // （session_timeout/allow_from 不经本结构携带——前者由
+                    // 上方 set_session_timeout 直接接线，后者装饰性 WARN，
+                    // 见 BUG-20261116-035。）
                     auth_token: crate::common::resolve_auth_token_or_random(
                         &cfg.channels.web.auth_token,
                         "channels.web.auth_token",
                     ),
-                    session_timeout_secs: cfg.channels.web.session_timeout as u64,
-                    allow_from: cfg.channels.web.allow_from.clone(),
                 })
             } else {
                 None
