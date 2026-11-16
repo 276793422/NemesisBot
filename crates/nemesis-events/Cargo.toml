@@ -18,6 +18,8 @@ regex = "1"
 sysinfo = "0.33"
 # probe http 探测（workspace 共享：rustls-tls，无 openssl）
 reqwest = { workspace = true }
+# probe command 源的 env 窄版闸（nemesis_utils::env_sanitize，BUG-20261117-048）
+nemesis-utils = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -1389,6 +1389,19 @@ async fn command_probe(target: &str, timeout_secs: u64) -> (bool, String) {
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
+    // env 窄版闸（BUG-20261117-048，家族闸纪律对齐 cli_delegation）：探测
+    // 命令是管理员配置面 spawn 点，不继承 bot 内部命名空间变量；窄剥保留
+    // 第三方自身 auth env。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
+    // 黑窗根修（BUG-20261117-048，对齐 formatter.rs 同因注释）：gateway 无
+    // console 运行（release windows 子系统）时 spawn console 探测程序会
+    // 分配可见新窗口——探测 stdio 全 null，压窗零副作用。
+    //（tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let fut = cmd.output();
     match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), fut).await {
         Err(_) => (false, format!("超时（{timeout_secs}s）")),

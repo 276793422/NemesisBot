@@ -464,6 +464,10 @@ pub async fn run_hook_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // env 窄版闸（BUG-20261117-048，家族闸纪律对齐 cli_delegation）：hook
+    // 是用户配置面第三方脚本，不继承 bot 内部命名空间变量；窄剥保留
+    // 第三方自身 auth env（git hooks 场景需要 PATH/HOME/登录态）。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
     // Windows 下子控制台进程不弹新窗口（CLAUDE.md 禁令：绝不创建可见窗口）。
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
