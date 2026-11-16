@@ -146,8 +146,17 @@ impl DraftStore {
             .map_err(|e| format!("create drafts dir {:?}: {}", self.dir, e))?;
         let stem = sanitize_workflow_filename(&wf.name);
         let path = self.dir.join(format!("{}.yaml", stem));
-        std::fs::write(&path, workflow_to_yaml(wf)?)
-            .map_err(|e| format!("write draft {:?}: {}", path, e))?;
+        // 原子写（BUG-20261117-046）：草稿是覆盖写的用户资产——写中段
+        // 进程死亡/磁盘满 = 半截 YAML 覆盖掉上一版（list 虽诚实报
+        // valid=false，但草稿内容已丢）。委托统一 helper（唯一临时名 +
+        // sync + rename + 失败清理），与 save_config / persist_workflow
+        // 同纪律。
+        nemesis_utils::file::write_file_atomic(
+            &path.to_string_lossy(),
+            workflow_to_yaml(wf)?.as_bytes(),
+            0o600,
+        )
+        .map_err(|e| format!("write draft {:?}: {}", path, e))?;
         Ok(self.summarize(&stem, wf))
     }
 

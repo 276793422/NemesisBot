@@ -1638,7 +1638,12 @@ impl WorkflowEngine {
         let yaml = serde_yaml::to_string(&workflow).map_err(|e| {
             EngineError::PersistenceError(format!("serialize workflow {:?}: {}", workflow.name, e))
         })?;
-        std::fs::write(&path, yaml)
+        // 原子写（BUG-20261117-046）：定义文件是覆盖写的用户资产（UI
+        // update 正常路径反复覆盖同一路径）——裸 fs::write 写中段进程死亡
+        // = 半截 YAML 顶掉上一版。委托统一 helper（同 save_config /
+        // draft save 纪律）；错误带 "atomic write {path}: {step}" 前缀，
+        // 包 PersistenceError 保语义。
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), yaml.as_bytes(), 0o600)
             .map_err(|e| EngineError::PersistenceError(format!("write {:?}: {}", path, e)))?;
 
         self.workflows.insert(workflow.name.clone(), workflow);
