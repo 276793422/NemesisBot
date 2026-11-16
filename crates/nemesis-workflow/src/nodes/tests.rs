@@ -6373,10 +6373,13 @@ async fn test_parallel_completed_child_still_succeeds() {
 static HTTP_SSRF_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// RAII：测试结束（含 panic）把闸槽清回 None，不污染同进程后续用例。
+/// （仅 security 构造——唯一构造点是两个 `#[cfg(feature = "security")]`
+/// SSRF 用例；本体不门控时 security 关裁剪组合下 dead_code 红。）
+#[cfg(feature = "security")]
 struct SsrfSlotReset;
+#[cfg(feature = "security")]
 impl Drop for SsrfSlotReset {
     fn drop(&mut self) {
-        #[cfg(feature = "security")]
         super::set_http_ssrf_guard(None);
     }
 }
