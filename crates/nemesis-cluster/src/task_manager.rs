@@ -100,7 +100,7 @@ fn is_terminal_status(status: &TaskStatus) -> bool {
 /// **新任务在前**（Dashboard 首页展示最新；方向与 `recover_task_ids`
 /// 的 FIFO 升序刻意相反——那是重放执行序，这是展示序）；解析失败/空串
 /// 排最后，stable 同组保序不丢任务（形态对齐 cluster_task.rs 先例）。
-fn sort_tasks_by_created_at_newest_first(tasks: &mut Vec<Task>) {
+fn sort_tasks_by_created_at_newest_first(tasks: &mut [Task]) {
     tasks.sort_by(|a, b| {
         let ka = chrono::DateTime::parse_from_rfc3339(&a.created_at).ok();
         let kb = chrono::DateTime::parse_from_rfc3339(&b.created_at).ok();
