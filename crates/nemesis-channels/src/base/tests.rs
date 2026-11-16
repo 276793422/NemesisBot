@@ -1247,3 +1247,59 @@ fn redact_url_secrets_preserves_non_secret_strings() {
         "u?foo=bar&baz=qux"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ws_connect_bounded（BUG-20261116-041）：握手超时帽
+// ---------------------------------------------------------------------------
+
+// 半开服务端：accept TCP 后保持静默不回 HTTP 101——裸 connect_async 会在此
+// 永久挂起；带帽 helper 必须在超时处有界返回，错误形态含 "handshake timeout"。
+#[tokio::test]
+async fn test_ws_connect_bounded_handshake_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        // 接受连接后故意不读写（挂起对端握手）；短持有即 drop
+        let (_sock, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    });
+
+    let started = std::time::Instant::now();
+    let result = ws_connect_bounded_with_timeout(
+        format!("ws://{addr}"),
+        std::time::Duration::from_millis(400),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let err = result.expect_err("stalled handshake must fail with timeout");
+    assert!(
+        err.contains("handshake timeout"),
+        "unexpected error shape: {err}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "handshake wait must be bounded by the cap, got {elapsed:?}"
+    );
+}
+
+// 真实 WS 服务端（accept_async 完成握手）：happy path 正常连通——帽子只拦
+// 半开形态，不误杀合法握手。
+#[tokio::test]
+async fn test_ws_connect_bounded_ok_against_real_ws_server() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((sock, _)) = listener.accept().await {
+            let _ = tokio_tungstenite::accept_async(sock).await;
+        }
+    });
+
+    let result =
+        ws_connect_bounded_with_timeout(format!("ws://{addr}"), std::time::Duration::from_secs(5))
+            .await;
+    assert!(
+        result.is_ok(),
+        "expected successful handshake against a real WS server, got {result:?}"
+    );
+}

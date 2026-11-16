@@ -533,6 +533,71 @@ pub(crate) fn outbound_http_client() -> Result<reqwest::Client> {
 }
 
 // ---------------------------------------------------------------------------
+// 出站 WebSocket 拨号单一构造点
+// ---------------------------------------------------------------------------
+
+/// 出站 WS 握手超时帽（BUG-20261116-041）。15s 对齐 cdp.rs 先例
+/// （`connect_async` 无内建超时——对端接受 TCP 后不回 HTTP 101 时
+/// `connect_async` 永久挂起：重连任务停在 await 内，退避/取消检查全失
+/// 效，通道静默停摆零错误零日志。裸 TCP connect 有 OS SYN 超时兜底，
+/// WS 握手没有——握手是 HTTP-over-TCP，纯等对端字节）。
+// default 构建形态无消费通道（7 个 WS 通道默认关）——同
+// outbound_http_builder 房规，dead_code 只在 default 构建出现。
+#[allow(dead_code)]
+pub(crate) const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// [`ws_connect_bounded`] 的显式超时形态（测试用小超时；生产走 15s 帽）。
+#[allow(dead_code)]
+pub(crate) async fn ws_connect_bounded_with_timeout<R>(
+    target: R,
+    timeout: std::time::Duration,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+>
+where
+    R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
+{
+    match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(target)).await {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(format!("websocket connect failed: {e}")),
+        Err(_) => Err(format!(
+            "websocket handshake timeout ({timeout:?}): server accepted TCP but never sent \
+             HTTP 101 (half-open?)"
+        )),
+    }
+}
+
+/// 出站 WebSocket 拨号单一构造点：带握手超时帽的 `connect_async`。
+///
+/// 通道重连环统一走此入口（discord/slack/qq/nostr/mattermost/feishu/
+/// onebot）；超时 Err 与 connect Err 同形态（String），消费方既有退避
+/// 重试臂无需区分。取消安全：超时丢 future 即关 socket，握手未完成前
+/// 无共享流状态。
+#[allow(dead_code)]
+pub(crate) async fn ws_connect_bounded<R>(
+    target: R,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+>
+where
+    R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
+{
+    ws_connect_bounded_with_timeout(target, WS_HANDSHAKE_TIMEOUT).await
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

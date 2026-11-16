@@ -542,7 +542,7 @@ impl NostrChannel {
                 break;
             }
 
-            let connect = tokio_tungstenite::connect_async(&relay_url).await;
+            let connect = crate::base::ws_connect_bounded(&relay_url).await;
             let ws = match connect {
                 Ok((ws, _)) => ws,
                 Err(e) => {
