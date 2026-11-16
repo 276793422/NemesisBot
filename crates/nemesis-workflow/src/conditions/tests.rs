@@ -633,3 +633,60 @@ fn test_parenthesized_multibyte_unwraps_correctly() {
     // ASCII 回归锁（字节=char 下标时行为不变）。
     assert_eq!(evaluate("(a == a) and (b == b)", &vars), Ok(true));
 }
+
+// ── BUG-20261117-062：递归求值深度帽（eval_expression ↔ eval_comparison 乒乓
+// 剥括号此前无深度帽，{{var}} 解析后的数据值可携带上万层嵌套 → 栈溢出 abort
+// 全进程；帽 128 对齐 serde_json RECURSION_LIMIT 先例，超限诚实 Err）──
+
+#[test]
+fn test_deep_parens_over_cap_is_honest_err_not_crash() {
+    let vars = HashMap::new();
+    // 200 层整包裹括号（> 128 帽）→ 诚实 Err，不崩进程。
+    let mut expr = String::new();
+    for _ in 0..200 {
+        expr.push('(');
+    }
+    expr.push_str("1 == 1");
+    for _ in 0..200 {
+        expr.push(')');
+    }
+    let r = evaluate(&expr, &vars);
+    assert!(r.is_err(), "200 层嵌套必须诚实 Err");
+    assert!(r.unwrap_err().contains("嵌套过深"));
+}
+
+#[test]
+fn test_deep_not_chain_over_cap_is_honest_err() {
+    let vars = HashMap::new();
+    let expr = format!("{}1 == 1", "not ".repeat(200));
+    let r = evaluate(&expr, &vars);
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("嵌套过深"));
+}
+
+#[test]
+fn test_variable_value_with_deep_parens_cannot_crash() {
+    // 数据面实锤形态：变量值（节点输出，LLM 生成文本）携带 2 万层括号，
+    // 经 {{x}} 解析注入条件串——修复前 = 全进程栈溢出；修复后诚实 Err。
+    let mut vars = HashMap::new();
+    let deep = format!("{}1{}", "(".repeat(20_000), ")".repeat(20_000));
+    vars.insert("x".to_string(), deep);
+    let r = evaluate("{{x}}", &vars);
+    assert!(r.is_err());
+    assert!(r.unwrap_err().contains("嵌套过深"));
+}
+
+#[test]
+fn test_reasonable_nesting_still_evaluates() {
+    let vars = HashMap::new();
+    // 帽 128 之下的合法嵌套不受影响（50 层括号包裹真比较）。
+    let mut expr = String::new();
+    for _ in 0..50 {
+        expr.push('(');
+    }
+    expr.push_str("1 == 1");
+    for _ in 0..50 {
+        expr.push(')');
+    }
+    assert_eq!(evaluate(&expr, &vars), Ok(true));
+}
