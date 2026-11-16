@@ -2114,9 +2114,40 @@ mod wave_b {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // run() 分发臂缺口（Install / Source::Add 的 block_in_place 桥）
-    // -----------------------------------------------------------------------
+    /// 安全关裁决终局（2026-11-16 装时拦真机 e2e 实测修复）：registry 安装
+    /// 被 Security 类错误拦截（builtin/wsl-operations 是内容关分档被拦集
+    /// 成员）→ **不得**走 GitHub fallback。旧形态对任何 registry 错误都
+    /// fallback：把「builtin/wsl-operations」当 owner/repo 打真网（真机
+    /// e2e 实录 HTTP 404），误导性 404 掩埋诚实拦截理由，且同名第三方
+    /// 仓库可借道绕开裁决。断言终局错误 = 拦截理由本身（fallback 若仍在
+    /// 跑，终局必是 GitHub 侧错误而非拦截文案）。全程离线：显式
+    /// registry 名只触 builtin 臂，不迭代网络源。
+    #[tokio::test]
+    async fn wave_b_cmd_install_security_verdict_is_final_no_github_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(home.join("workspace")).unwrap();
+        let skills_dir = crate::common::workspace_path(&home).join("skills");
+
+        let err = cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&home),
+            &crate::common::config_path(&home),
+            "builtin/wsl-operations",
+            false,
+        )
+        .await
+        .expect_err("被拦技能必须以安全裁决终局");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("blocked by security check"),
+            "终局错误必须是拦截理由（不得被 fallback 错误顶替）: {msg}"
+        );
+        assert!(
+            !msg.contains("invalid github repo") && !msg.contains("resolve ref"),
+            "fallback 在跑（终局出现 GitHub 侧错误）: {msg}"
+        );
+    }
 
     /// Install 臂的桥接体（1153-1158 + 1160-1161）：走上面同款离线终局。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
@@ -2764,56 +2795,79 @@ mod r10_wave {
         assert!(!skills_dir.join("Hello-World").exists());
     }
 
-    /// cmd_install_clawhub 不可达终点臂：openclaw/skills 的 raw URL 打不通时
-    /// 打印排障提示并 Ok 收尾；output_name None / Some 两变体都过一遍
-    /// （覆盖 out_name 解析两个臂）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
+    /// cmd_install_clawhub 接入统一漏斗后的离线诚实拒绝臂（2026-11-16）：
+    /// ① `--output-name` 非同名值 = 装前拒绝（漏斗按规范 slug 落位，不支持
+    /// 别名）；② openclaw 源未配置 = 诚实报错指路，不做绕漏斗直连。
+    /// 两臂都在任何触网之前终结（fake config 路径即可，零网络零落盘）。
+    /// 旧形态（raw 直装、失败臂打印后 Ok 收尾）已随漏斗接入退役。
     #[tokio::test]
-    async fn r10_cmd_install_clawhub_unreachable_reports_and_returns_ok() {
-        let _lock = crate::GLOBAL_STATE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _net = R10OfflineNet::engage();
+    async fn r10_cmd_install_clawhub_funnel_gates_offline() {
         let tmp = TempDir::new().unwrap();
         let skills_dir = tmp.path().join("skills");
+        let no_cfg = tmp.path().join("no-skills-cfg.json");
+        let no_main = tmp.path().join("no-main-cfg.json");
 
-        cmd_install_clawhub(&skills_dir, "r10-none-author", "r10-none-skill", None)
-            .await
-            .expect("下载失败也必须收在 Ok");
-        cmd_install_clawhub(
+        // ① 自定义安装名：合法但非同名值拒绝（敌意值另有专测）。
+        let err = cmd_install_clawhub(
             &skills_dir,
-            "r10-none-author",
-            "r10-none-skill",
+            &no_cfg,
+            &no_main,
+            "r10-author",
+            "r10-skill",
             Some("r10-renamed-output"),
+            true,
         )
         .await
-        .expect("output_name 变体同样 Ok");
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("不支持自定义安装名"),
+            "err: {err}"
+        );
 
+        // ② openclaw 源未配置：诚实报错 + 指路（add-source / 现代命令）。
+        let err = cmd_install_clawhub(
+            &skills_dir,
+            &no_cfg,
+            &no_main,
+            "r10-author",
+            "r10-skill",
+            None,
+            false,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("openclaw 源未配置"), "err: {msg}");
+        assert!(msg.contains("add-source"), "报错须带指路: {msg}");
+
+        // 零落盘（拒绝发生在任何下载/落位之前）。
+        assert!(!skills_dir.join("r10-skill").exists());
         assert!(!skills_dir.join("r10-renamed-output").exists());
     }
 
-    /// run() 的 InstallClawhub 分发桥：既有测试从未驱动过的 async 命令包装臂
-    /// （block_in_place + Handle::block_on 承载内部异步 client）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
+    /// run() 的 InstallClawhub 分发桥（block_in_place + Handle::block_on）：
+    /// 漏斗接入后拒绝以 Err 传播（temp home 无 openclaw 源 → 报错指路），
+    /// 不再是旧形态的「失败打印 + Ok 收尾」。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r10_run_install_clawhub_bridge_dispatches_offline_error_arm() {
+    async fn r10_run_install_clawhub_bridge_propagates_funnel_error() {
         let _lock = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let tmp_root = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp_root.path().join(".nemesisbot")).unwrap();
         let _home = R10HomeGuard::set(tmp_root.path());
-        let _net = R10OfflineNet::engage();
 
-        run(
+        let err = run(
             SkillsAction::InstallClawhub {
                 author: "r10-none-author".to_string(),
                 skill_name: "r10-none-skill".to_string(),
                 output_name: None,
+                yes: false,
             },
             false,
         )
-        .expect("分发桥驱动下载失败臂后收在 Ok");
+        .expect_err("漏斗拒绝（openclaw 源未配置）必须以 Err 传播");
+        assert!(format!("{err}").contains("openclaw 源未配置"), "err: {err}");
     }
 }
 
@@ -2876,17 +2930,28 @@ fn cmd_show_valid_name_still_works() {
 }
 
 /// cmd_install_clawhub 落盘名闸：--output-name 敌意值触网/落盘前拒绝
-/// （裸写 skills/<out_name>/SKILL.md 可越出 skills/ 边界）。
+/// （裸写 skills/<out_name>/SKILL.md 可越出 skills/ 边界）；非同名的
+/// 合法值同样拒绝（漏斗按规范 slug 落位，不支持别名，2026-11-16 接漏斗）。
 #[tokio::test]
 async fn cmd_install_clawhub_output_name_gate() {
     let tmp = TempDir::new().unwrap();
     let skills_dir = tmp.path().join("skills");
     std::fs::create_dir_all(&skills_dir).unwrap();
+    let no_cfg = tmp.path().join("no-cfg.json");
+    let no_main = tmp.path().join("no-main.json");
 
     for hostile in ["../..", "a/b", "..\\..\\"] {
-        let err = cmd_install_clawhub(&skills_dir, "author", "skill", Some(hostile))
-            .await
-            .unwrap_err();
+        let err = cmd_install_clawhub(
+            &skills_dir,
+            &no_cfg,
+            &no_main,
+            "author",
+            "skill",
+            Some(hostile),
+            true,
+        )
+        .await
+        .unwrap_err();
         assert!(
             format!("{err}").contains("非法"),
             "hostile output name {:?} must fail at the slug gate, got: {}",
@@ -2896,6 +2961,96 @@ async fn cmd_install_clawhub_output_name_gate() {
     }
     // 闸在网络请求之前：无越界落盘。
     assert!(!tmp.path().join("skills/a").exists());
+
+    // 合法但非同名 → 同样装前拒绝（漏斗 slug 落位纪律，不做静默别名）。
+    let err = cmd_install_clawhub(
+        &skills_dir,
+        &no_cfg,
+        &no_main,
+        "author",
+        "skill",
+        Some("benign-rename"),
+        true,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{err}").contains("不支持自定义安装名"),
+        "err: {err}"
+    );
+}
+
+/// 漏斗路由证明：openclaw 源在场 + 离线 → 失败错误是漏斗下载错误
+/// （不是「源未配置」）——legacy 命令确实走进了统一漏斗，不再 raw 直连。
+/// GitHub API base 硬编码无法 wiremock，以 HTTPS_PROXY 毒化制造确定性离线。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cmd_install_clawhub_routes_openclaw_source_through_funnel() {
+    struct ProxyGuard {
+        prev: Option<std::ffi::OsString>,
+    }
+    impl Drop for ProxyGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => unsafe { std::env::set_var("HTTPS_PROXY", v) },
+                None => unsafe { std::env::remove_var("HTTPS_PROXY") },
+            }
+        }
+    }
+
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _net = ProxyGuard {
+        prev: std::env::var_os("HTTPS_PROXY"),
+    };
+    unsafe { std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9") };
+
+    let tmp = TempDir::new().unwrap();
+    let skills_cfg = tmp.path().join("config.skills.json");
+    std::fs::write(
+        &skills_cfg,
+        r#"{"github_sources":[{"name":"openclaw","repo":"openclaw/skills","enabled":true}]}"#,
+    )
+    .unwrap();
+
+    let err = cmd_install_clawhub(
+        &tmp.path().join("skills"),
+        &skills_cfg,
+        &tmp.path().join("no-main.json"),
+        "r10-author",
+        "no-such-skill-xyz",
+        None,
+        false,
+    )
+    .await
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        !msg.contains("openclaw 源未配置"),
+        "路由失败——还在源闸就被拒: {msg}"
+    );
+    assert!(
+        !msg.contains("作者不符"),
+        "search 离线失败不应误报作者不符: {msg}"
+    );
+}
+
+/// download_path_author：三层 download_path（`<prefix><author>/<slug>/SKILL.md`）
+/// 反推 author 段（作者一致性预检用）。
+#[test]
+fn download_path_author_extracts_author_segment() {
+    assert_eq!(
+        download_path_author("skills/nebeidko/pdf/SKILL.md", "pdf"),
+        Some("nebeidko".to_string())
+    );
+    // 前缀形态无关（pattern 只影响前缀，rsplit 取 slug 前一段）。
+    assert_eq!(
+        download_path_author("docs/author-x/slug-y/SKILL.md", "slug-y"),
+        Some("author-x".to_string())
+    );
+    // 无 slug 后缀 / 空 author 段 → None。
+    assert_eq!(download_path_author("skills/other/SKILL.md", "pdf"), None);
+    assert_eq!(download_path_author("skills//pdf/SKILL.md", "pdf"), None);
 }
 
 // ===========================================================================
@@ -2903,8 +3058,10 @@ async fn cmd_install_clawhub_output_name_gate() {
 // 干净技能的 Security: OK 臂、Install 消费主配置 skills 段（策略注入臂，
 // 随后以毒化 ref 在任何 socket 前终结）、Learn 的 agent 构造失败臂、
 // Search 空 results 组的 continue 臂（ClawHub base 指 mock）。
-// GitHub 硬编码端点（detect_skill_layout / install_github / clawhub 直装
-// / clawhub 仓库校验）无重定向钩子，维持 wave_b 既有 EXEMPT 纪律。
+// GitHub 硬编码端点（detect_skill_layout / install_github / clawhub 仓库
+// 校验）无重定向钩子，维持 wave_b 既有 EXEMPT 纪律（install-clawhub 已接
+// config 驱动的统一漏斗，2026-11-16 起不在豁免清单——离线臂以 HTTPS_PROXY
+// 毒化覆盖）。
 // ===========================================================================
 #[cfg(windows)] // Windows-form CLI tests (Linux nightly: excluded, sweep)
 mod cov_b3 {

@@ -22,6 +22,14 @@
       "branch": "main",
       "index_type": "github_api",
       "skill_path_pattern": "skills/{author}/{slug}/SKILL.md"
+    },
+    {
+      "name": "nemesisbot",
+      "repo": "276793422/NemesisBot",
+      "enabled": true,
+      "branch": "main",
+      "index_type": "github_api",
+      "skill_path_pattern": "Skills/{slug}/SKILL.md"
     }
   ],
   "clawhub": {

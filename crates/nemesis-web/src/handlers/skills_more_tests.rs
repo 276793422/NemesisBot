@@ -359,10 +359,10 @@ async fn test_skills_source_add_manual_multiple() {
         .unwrap()
         .unwrap();
     let sources = list["sources"].as_array().unwrap();
-    // 3 github + 1 clawhub + 1 modelscope
-    assert_eq!(sources.len(), 5);
+    // 3 github 用户源 + 出厂源合流（首次 RMW 落盘收敛）+ 1 clawhub + 1 modelscope
+    assert_eq!(sources.len(), 6);
     let gh_count = sources.iter().filter(|s| s["type"] == "github").count();
-    assert_eq!(gh_count, 3);
+    assert_eq!(gh_count, 4);
 }
 
 // source.remove — remove one of many
@@ -414,7 +414,13 @@ async fn test_skills_source_remove_one_of_many() {
         .filter(|s| s["type"] == "github")
         .map(|s| s["name"].as_str().unwrap())
         .collect();
-    assert_eq!(gh_names, vec!["a", "c"]);
+    // b 被摘除；出厂源 nemesisbot 经 RMW 读腿合流落盘（append-if-absent）
+    assert!(
+        !gh_names.contains(&"b"),
+        "removed source still present: {gh_names:?}"
+    );
+    assert!(gh_names.contains(&"a") && gh_names.contains(&"c"));
+    assert!(gh_names.contains(&"nemesisbot"));
 }
 
 // source.toggle — clawhub disabled then re-enabled
@@ -454,9 +460,9 @@ async fn test_skills_source_toggle_clawhub_then_persist() {
 
 #[tokio::test]
 async fn test_skills_search_no_sources_with_installed_dir() {
-    // No registries but a skills/ dir exists; just verify no panic.
-    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
-    // 验证「无源」管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 2026-11-16 起 builtin 内嵌臂恒注册——验证密闭配置（压制出厂源 + 关
+    // ModelScope，不打真实网络）+ skills/ 目录在场时搜索管道不 panic，
+    // installed 标记面照常工作。
     let handler = SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
@@ -464,20 +470,23 @@ async fn test_skills_search_no_sources_with_installed_dir() {
     std::fs::create_dir_all(ws.join("config")).unwrap();
     std::fs::write(
         ws.join("config/config.skills.json"),
-        r#"{"modelscope":{"enabled":false}}"#,
+        // name/repo 无 serde default——缺 repo 整份解析失败回落 default（出厂源复活）。
+        r#"{"modelscope":{"enabled":false},"github_sources":[{"name":"nemesisbot","repo":"276793422/NemesisBot","enabled":false}]}"#,
     )
     .unwrap();
     let ctx = make_ctx(&dir);
 
-    let data = serde_json::json!({ "query": "anything" });
+    let data = serde_json::json!({ "query": "problem-analysis" });
     let r = handler
         .handle_cmd("search", Some(data), &ctx)
         .await
         .unwrap()
         .unwrap();
-    assert!(r["results"].as_array().unwrap().is_empty());
-    // No sources → friendly message.
-    assert!(r["message"].as_str().is_some());
+    let results = r["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "builtin-only results: {results:?}");
+    assert_eq!(results[0]["slug"], "problem-analysis");
+    // 本地未装 → installed=false（installed_slugs 面照常工作）
+    assert_eq!(results[0]["installed"], false);
 }
 
 // browse — sort variants

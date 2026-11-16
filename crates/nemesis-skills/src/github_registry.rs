@@ -410,14 +410,26 @@ impl GitHubRegistry {
 
     /// Search using GitHub Contents API (two-layer).
     async fn search_two_layer(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
+        // 列表目录由 pattern 推导（[`Self::listing_dir`]；历史硬编码
+        // `contents/skills` 的接替点一）。
         // BUG-20261114-043：repo 段 percent-encoding + api_base 尾斜杠归一
         // （BUG-20261113-162 横向漏点——同文件 raw URL 三处已修，API URL
         // 两处漏网；`#`/`?` 沦为 fragment/query 分隔符指向错误资源）。
-        let api_url = format!(
-            "{}/repos/{}/contents/skills",
-            self.api_base_url().trim_end_matches('/'),
-            crate::url_enc::percent_encode_path(&self.repo)
-        );
+        let listing = self.listing_dir();
+        let api_url = if listing.is_empty() {
+            format!(
+                "{}/repos/{}/contents",
+                self.api_base_url().trim_end_matches('/'),
+                crate::url_enc::percent_encode_path(&self.repo)
+            )
+        } else {
+            format!(
+                "{}/repos/{}/contents/{}",
+                self.api_base_url().trim_end_matches('/'),
+                crate::url_enc::percent_encode_path(&self.repo),
+                crate::url_enc::percent_encode_path(&listing)
+            )
+        };
 
         let response = self
             .client
@@ -523,13 +535,16 @@ impl GitHubRegistry {
             .map_err(|e| NemesisError::Other(format!("failed to parse tree: {}", e)))
     }
 
-    /// Search using GitHub Trees API (three-layer: skills/{author}/{slug}/SKILL.md).
+    /// Search using GitHub Trees API (three-layer: {prefix}{author}/{slug}/SKILL.md).
     async fn search_three_layer(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<SkillSearchResult>> {
         let tree_response = self.fetch_repo_tree().await?;
+        // 列表前缀由 pattern 推导（[`Self::listing_prefix`]；历史硬编码
+        // `skills/` 的接替点二）。
+        let prefix = self.listing_prefix();
 
         let mut results = Vec::new();
         let mut seen_slugs = std::collections::HashSet::new();
@@ -544,16 +559,14 @@ impl GitHubRegistry {
             }
 
             let path = &entry.path;
-            if !path.starts_with("skills/") || !path.ends_with("/SKILL.md") {
+            if !path.starts_with(prefix.as_str()) || !path.ends_with("/SKILL.md") {
                 continue;
             }
 
-            // Extract author/slug from "skills/{author}/{slug}/SKILL.md".
-            let inner = path
-                .strip_prefix("skills/")
-                .unwrap()
+            // Extract author/slug from "{prefix}{author}/{slug}/SKILL.md".
+            let inner = path[prefix.len()..]
                 .strip_suffix("/SKILL.md")
-                .unwrap();
+                .expect("path ends with /SKILL.md checked above");
             let parts: Vec<&str> = inner.splitn(2, '/').collect();
             if parts.len() != 2 {
                 continue;
@@ -614,6 +627,37 @@ impl GitHubRegistry {
         self.skill_path_pattern.contains("{author}")
     }
 
+    /// 从 [`Self::skill_path_pattern`] 推导**列表目录**（listing 面单一
+    /// 推导点）。
+    ///
+    /// pattern 形态 `前缀/{slug}/SKILL.md` 或 `前缀/{author}/{slug}/SKILL.md`
+    /// ——列表目录 = **最早**出现的占位符（`{slug}`/`{author}` 取位置最小者
+    /// ——三段式的 `{author}` 在 `{slug}` 之前，只查 `{slug}` 会把
+    /// `skills/{author}` 误当列表目录）之前的前缀剥尾 `/`；根形态
+    /// `{slug}/SKILL.md` = 空串（仓库根）。历史代码三处硬编码 `skills` /
+    /// `skills/`（contents URL、tree 前缀、author 反查），仓库根形态源
+    /// （`Skills/{slug}/SKILL.md`）接入后不再成立——统一改 pattern 推导，
+    /// 旧 `skills/` 模式推导结果与硬编码逐字节一致（向后兼容零迁移）。
+    fn listing_dir(&self) -> String {
+        let pattern = &self.skill_path_pattern;
+        let cut = pattern
+            .find("{slug}")
+            .unwrap_or(pattern.len())
+            .min(pattern.find("{author}").unwrap_or(pattern.len()));
+        pattern[..cut].trim_end_matches('/').to_string()
+    }
+
+    /// 列表前缀形态（带尾 `/`；根形态 = 空串）——tree 路径过滤 /
+    /// `strip_prefix` 用（contents URL 用 [`Self::listing_dir`]）。
+    fn listing_prefix(&self) -> String {
+        let dir = self.listing_dir();
+        if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{dir}/")
+        }
+    }
+
     /// 三段式源安装期 slug→author 反查（BUG-20261111-066）。
     ///
     /// search 产出的 slug 按安装目录名纪律不带 author（`/` 被
@@ -627,12 +671,15 @@ impl GitHubRegistry {
     /// 的也是首个）。拉树失败/无命中 = None（回落 bare slug 旧行为）。
     async fn resolve_author(&self, slug: &str) -> Option<String> {
         let tree = self.fetch_repo_tree().await.ok()?;
+        // 列表前缀由 pattern 推导（[`Self::listing_prefix`]；历史硬编码
+        // `skills/` 的接替点三）。
+        let prefix = self.listing_prefix();
         let suffix = format!("/{slug}/SKILL.md");
         for entry in &tree.tree {
             if entry.entry_type != "blob" {
                 continue;
             }
-            let Some(inner) = entry.path.strip_prefix("skills/") else {
+            let Some(inner) = entry.path.strip_prefix(prefix.as_str()) else {
                 continue;
             };
             let Some(author) = inner.strip_suffix(&suffix) else {
