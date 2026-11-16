@@ -644,6 +644,21 @@ impl WebServer {
         self.cors_manager = Some(mgr);
     }
 
+    /// 注入 WS 会话闲置逐出超时（`channels.web.session_timeout`，
+    /// BUG-20261116-035 接线——此前 WebServer 构造恒 `with_default_timeout()`
+    /// 3600s 硬编码，config 键声明后零消费）。
+    ///
+    /// 与 `set_cors_manager` 同款 setter 形态（不进 WebServerConfig——测试
+    /// 字面量装配面大）。必须在 `start()`/`build_router` **之前**调用：
+    /// AppState 构造时 clone session_manager 句柄，之后替换不生效。替换
+    /// 丢弃默认构造的管理器是安全的——旧 cleanup 线程经 Drop→watch 通道
+    /// `changed()` Err 退出（session.rs cleanup_cancel_tx 注释的兜底路径）。
+    /// 超时翻译（含 0/负=不限）单一真相源：
+    /// `SessionManager::timeout_from_config_secs`。
+    pub fn set_session_timeout(&mut self, timeout: std::time::Duration) {
+        self.session_manager = Arc::new(crate::session::SessionManager::new(timeout));
+    }
+
     /// Set the managed-agent board service (gateway injects when the `board`
     /// feature is enabled and the store opened successfully).
     #[cfg(feature = "board")]

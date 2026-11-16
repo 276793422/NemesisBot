@@ -217,7 +217,9 @@ pub fn save_cache(home_dir: &Path, entries: Vec<CatalogEntry>) -> Result<(), Str
     // 委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩）。
     nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
         .map_err(|e| format!("atomic write: {e}"))?;
-    let _ = std::fs::remove_file(nemesis_path::legacy_models_catalog_cache_path(home_dir));
+    let _ = nemesis_utils::fsutil::remove_file_resilient(
+        nemesis_path::legacy_models_catalog_cache_path(home_dir),
+    );
     Ok(())
 }
 

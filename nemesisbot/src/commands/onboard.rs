@@ -408,7 +408,7 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
     // personality is already set up, so it must be removed (mirrors Go).
     let bootstrap = workspace_dir.join("BOOTSTRAP.md");
     if bootstrap.exists() {
-        let _ = std::fs::remove_file(&bootstrap);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&bootstrap);
         println!("  BOOTSTRAP.md removed");
     }
 

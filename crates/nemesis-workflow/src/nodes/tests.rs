@@ -169,6 +169,80 @@ async fn parallel_children_aborted_when_parent_future_dropped() {
     );
 }
 
+/// BUG-20261116-034 回归锁：script 节点裸 spawn 臂（无 registry / 无 world，
+/// IoT/minimal 裁剪构建的 CLI 裸引擎可达）必须 kill_on_drop——scheduler 的
+/// timeout / cancel 臂正是靠丢弃 executor future 停节点；无 kill_on_drop 时
+/// 脚本 shell 随 future 丢弃逃逸成孤儿，工作流已判死而 shell 后续的文件
+/// 副作用照常发生。断言面 = shell 内建重定向落盘的标记文件永不出现（写
+/// 动作由 shell 执行，shell 被杀 ⇒ 写不发生；不再查进程表，跨平台无 PID
+/// 竞态）。与 parallel_children_aborted_when_parent_future_dropped 同款
+/// 「drop = 收副作用」模式。阳性对照（同形态脚本跑完必须落盘）先于负断言
+/// ——防脚本机制坏掉时负断言空转变假绿（首轮实录：cmd /C 嵌套引号解析坏
+/// 脚本，负断言恒过）。
+#[tokio::test]
+async fn script_node_bare_spawn_killed_when_future_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 路径不带空格（tempfile 根通常无空格），Windows 侧裸路径免引号——
+    // cmd /C 的嵌套引号解析会吃掉内层引号致 type 失败（假绿根因）。
+    let control = tmp.path().join("control_marker.txt");
+    let marker = tmp.path().join("marker.txt");
+
+    // 标记写法用 shell 内建重定向（写动作活在 shell 进程里），不用 touch
+    // 等子进程——kill_on_drop 杀的是 shell 本体，子进程逃逸（Layer 1 跨进程
+    // 疑点，见 BUG_HUNT R1492 台账观察项）不在本测试断言面内。
+    #[cfg(windows)]
+    let shape = |path: &std::path::Path| {
+        format!("ping -n 2 127.0.0.1 >nul & type nul > {}", path.display())
+    };
+    #[cfg(not(windows))]
+    let shape = |path: &std::path::Path| format!("sleep 1 && echo x > {}", path.display());
+
+    let exec = ScriptNodeExecutor::new(); // 无 tools / 无 world = 裸 spawn 臂
+    let wf_ctx = empty_wf_ctx();
+    let args = HashMap::new();
+
+    // 阳性对照：同形态脚本（ping/sleep 1s + 重定向）不丢弃跑完 → 标记必须
+    // 落盘。对照不过 = 脚本机制坏，负断言无意义。
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!(shape(&control)));
+    #[cfg(windows)]
+    config.insert("language".to_string(), serde_json::json!("cmd"));
+    let node = make_node("n0", "script", config);
+    let result = exec
+        .execute(&node, &args, &wf_ctx)
+        .await
+        .expect("对照脚本必须执行成功");
+    assert_eq!(result.state, ExecutionState::Completed, "对照脚本执行失败");
+    assert!(
+        control.exists(),
+        "对照标记未落盘——脚本机制无效，后续负断言空转"
+    );
+
+    // 负断言：同形态脚本模拟 scheduler timeout 臂胜出，50ms 丢弃 executor
+    // future（脚本还睡在 ping/sleep 里）。
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!(shape(&marker)));
+    #[cfg(windows)]
+    config.insert("language".to_string(), serde_json::json!("cmd"));
+    let node = make_node("n1", "script", config);
+    let fut = exec.execute(&node, &args, &wf_ctx);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), fut)
+            .await
+            .is_err(),
+        "脚本 50ms 内不该完成（timeout 丢弃 future 正是修复面）"
+    );
+
+    // 修复前：shell 孤儿存活，ping/sleep 到点后重定向落盘，标记出现（断言红）；
+    // 修复后：kill_on_drop 杀 shell，标记永不出现。等待期覆盖脚本全长
+    // （Windows ping -n 2 ≈ 1s，Unix sleep 1s）再断言。
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    assert!(
+        !marker.exists(),
+        "future 被丢弃后脚本 shell 必须被收杀，不得孤儿存活落盘副作用"
+    );
+}
+
 #[tokio::test]
 async fn test_parallel_node_stub() {
     let exec = ParallelNodeStub;

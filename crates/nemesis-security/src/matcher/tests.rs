@@ -218,3 +218,70 @@ fn test_match_pattern_escapes_regex_metachar() {
     assert!(match_pattern("x{2}", "x{2}"));
     assert!(match_pattern("c^d$e", "c^d$e"));
 }
+
+// ---- BUG-20261116-037：url_host / match_network_rule ----
+// 网络族工具 target 是完整 URL，域名词法（match_domain_pattern）对整串
+// URL 锚定恒败——出厂默认 `*.github.com` allow 是死规则、deny fail-open。
+// match_network_rule 先按 URL host 归位，整串兜底保 `**`-style 向后兼容。
+
+#[test]
+fn url_host_extracts_from_url_forms() {
+    assert_eq!(
+        url_host("https://api.github.com/v1/repos"),
+        Some("api.github.com")
+    );
+    assert_eq!(url_host("http://evil.com/path?x=1#frag"), Some("evil.com"));
+    assert_eq!(
+        url_host("https://host.example:8443/a"),
+        Some("host.example")
+    );
+    assert_eq!(
+        url_host("https://user:pass@host.example/x"),
+        Some("host.example")
+    );
+    assert_eq!(url_host("http://[::1]:8080/x"), Some("[::1]"));
+    // 裸域名 / host:port 无 scheme 原样归位
+    assert_eq!(url_host("api.github.com"), Some("api.github.com"));
+    assert_eq!(url_host("localhost:8080"), Some("localhost"));
+    // 空 target = None（调用方落整串臂，行为同旧）
+    assert_eq!(url_host(""), None);
+}
+
+#[test]
+fn network_rule_matches_url_targets_by_host() {
+    // 出厂默认 allow 规则形态——修复前对 URL 恒败（死规则）
+    assert!(match_network_rule(
+        "*.github.com",
+        "https://api.github.com/repos/x/y"
+    ));
+    assert!(match_network_rule(
+        "*.openai.com",
+        "https://api.openai.com/v1/chat"
+    ));
+    // deny 方向：URL 带路径也拦得住（修复前 fail-open）
+    assert!(match_network_rule("evil.com", "http://evil.com/steal"));
+    assert!(match_network_rule(
+        "*.evil.com",
+        "http://sub.evil.com/steal"
+    ));
+    // 单标签域名词法语义保持（文档契约：*.github.com 不命中裸 github.com）
+    assert!(!match_network_rule("*.github.com", "https://github.com/x"));
+    // 无关域名不命中
+    assert!(!match_network_rule("*.github.com", "https://evil.com/path"));
+    // 大小写：match_domain_pattern 内部双折
+    assert!(match_network_rule(
+        "*.github.com",
+        "https://API.GitHub.Com/v1"
+    ));
+}
+
+#[test]
+fn network_rule_raw_fallback_keeps_url_style_patterns() {
+    // `**`-style URL 通配规则（修复前唯一能命中 URL 的形态）向后兼容
+    assert!(match_network_rule("**evil.com**", "http://evil.com/steal"));
+    // 裸 `*` 全域规则照常（host 臂即命中）
+    assert!(match_network_rule("*", "https://anything.example/x"));
+    // 空 target：host 提不出，落整串臂——`*` 对空串行为同旧
+    assert!(match_network_rule("*", ""));
+    assert!(!match_network_rule("*.github.com", ""));
+}

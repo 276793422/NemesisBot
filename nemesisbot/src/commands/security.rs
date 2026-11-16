@@ -607,6 +607,11 @@ fn cmd_rules_test(
     // `python -c "os.system('rm -rf /')"` 可能显示无命中，运行时仍会被
     // 内层扫描拦下；预览偏松方向，结论以运行时审计为准。
     let is_command_op = rule_type == "process";
+    // BUG-20261116-037：network 族与运行时 auditor 同源消费
+    // `matcher::match_network_rule`（URL host 归位 + 整串兜底）——此前
+    // 预览走路径通配语义（`preview_path_match`），同一批网络规则在预览
+    // 与运行时是两种语义（闭环-13 单一真相源缺口）。
+    let is_network_op = rule_type == "network";
     let pattern_matches = |bucket: &str, pattern: &str| -> bool {
         if is_command_op {
             let segs = nemesis_security::matcher::exec_rule_segments(target);
@@ -616,6 +621,8 @@ fn cmd_rules_test(
                 &nemesis_security::matcher::normalize_exec_command(target),
                 &segs,
             )
+        } else if is_network_op {
+            nemesis_security::matcher::match_network_rule(pattern, target)
         } else {
             preview_path_match(pattern, target)
         }

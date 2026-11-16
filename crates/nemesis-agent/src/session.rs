@@ -1005,7 +1005,7 @@ impl SessionStore {
                             )
                             .is_ok()
                         {
-                            let _ = std::fs::remove_file(&main_json);
+                            let _ = nemesis_utils::fsutil::remove_file_resilient(&main_json);
                             info!(
                                 "[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json"
                             );

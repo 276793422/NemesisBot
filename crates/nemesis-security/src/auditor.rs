@@ -1775,7 +1775,13 @@ impl SecurityAuditor {
                 OperationType::NetworkDownload
                 | OperationType::NetworkUpload
                 | OperationType::NetworkRequest => {
-                    matcher::match_domain_pattern(&rule.pattern, &req.target)
+                    // BUG-20261116-037：target 是完整 URL（extract_target web
+                    // 族取 `url` 实参），域名词法对整串 URL 锚定恒败——出厂
+                    // 默认 `*.github.com` allow 规则是死规则、deny fail-open。
+                    // match_network_rule 先按 URL host 归位匹配（域名词法
+                    // 语义不变），整串兜底保 `**`-style URL 规则向后兼容。
+                    // `security rules test` 预览臂同源消费。
+                    matcher::match_network_rule(&rule.pattern, &req.target)
                 }
                 _ => rule.pattern == "*" || matcher::match_path_rule(&rule.pattern, &req.target),
             }

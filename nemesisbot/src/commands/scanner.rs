@@ -748,7 +748,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
 
         match output {
             Ok(out) if out.status.success() => {
-                let _ = std::fs::remove_file(&archive_path);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&archive_path);
                 target_dir.to_string_lossy().to_string()
             }
             _ => {
@@ -777,7 +777,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
                         _ => false,
                     };
                     if ps_extracted {
-                        let _ = std::fs::remove_file(&archive_path);
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(&archive_path);
                     } else {
                         // Leave as-is, user can extract manually
                         println!(
@@ -807,7 +807,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
             ])
             .output();
         if output.is_ok_and(|o| o.status.success()) {
-            let _ = std::fs::remove_file(&archive_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&archive_path);
         }
         target_dir.to_string_lossy().to_string()
     } else {

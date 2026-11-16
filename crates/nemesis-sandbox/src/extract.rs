@@ -153,7 +153,7 @@ async fn download_and_unzip_7z(runtime_dir: &Path) -> Result<()> {
     .context("unzip task join")??;
 
     // Keep runtime/ clean — the zip has served its purpose.
-    let _ = tokio::fs::remove_file(&zip_path).await;
+    let _ = nemesis_utils::fsutil::remove_file_resilient_async(&zip_path).await;
     Ok(())
 }
 

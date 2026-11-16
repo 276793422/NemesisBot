@@ -430,6 +430,61 @@ pub fn match_domain_pattern(pattern: &str, domain: &str) -> bool {
     }
 }
 
+/// 从 URL / URL 形 target 提取 host（scheme://userinfo@host:port/path?query#fragment；
+/// IPv6 `[::1]:8080` 括号形态整体保留）。裸域名原样返回（无 scheme/路径
+/// 可剥），空串返回 None。
+pub fn url_host(target: &str) -> Option<&str> {
+    let rest = target.split_once("://").map(|(_, r)| r).unwrap_or(target);
+    let rest = rest.split_once('/').map(|(h, _)| h).unwrap_or(rest);
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let rest = match rest.rsplit_once('@') {
+        // userinfo 尾随 @（user:pass@host）——rsplit 取最后一段
+        Some((_, h)) => h,
+        None => rest,
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    if let Some(end) = rest.rfind(']') {
+        // IPv6 括号形态：端口在 `]` 之后，host 含括号整体
+        return Some(&rest[..=end]);
+    }
+    match rest.rsplit_once(':') {
+        // host:port——只剥「冒号后纯数字」的端口形态
+        Some((h, port))
+            if !h.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            Some(h)
+        }
+        _ => Some(rest),
+    }
+}
+
+/// 网络规则匹配单一入口（auditor 运行时与 `security rules test` 预览同源）。
+///
+/// BUG-20261116-037：网络族工具的 target 是完整 URL（[`crate::types::extract_target`]
+/// web 族取 `url` 实参），而 [`match_domain_pattern`] 是域名词法
+/// （`^[^.]*\.host$` 锚定）——URL 路径让锚定恒败，出厂默认
+/// `network_rules.request` 的 `*.github.com` 等 allow 规则是死规则，
+/// deny 形态 fail-open。本函数先把 URL 归位成 host 再走域名词法，
+/// host 提取不出（空 target 等）或 host 臂未命中时整串兜底——
+/// `**`-style URL 通配规则（`**evil.com**`）向后兼容。
+pub fn match_network_rule(pattern: &str, target: &str) -> bool {
+    // 裸 `*` = 惯例 match-all（download/upload 出厂默认 `*` ask 规则的
+    // 书写意图）。域名词法 `[^.]*` 只认单标签，对多标签 host 恒败——
+    // 本臂特判放在 host 提取前，`*` 对一切非空 target 恒真。
+    // （match_domain_pattern 本体不动：其单标签 `*` 语义有文档与用例钉着。）
+    if pattern == "*" && !target.is_empty() {
+        return true;
+    }
+    if let Some(host) = url_host(target)
+        && match_domain_pattern(pattern, host)
+    {
+        return true;
+    }
+    match_domain_pattern(pattern, target)
+}
+
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

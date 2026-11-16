@@ -106,7 +106,7 @@ fn migrate_legacy_file(path: &Path) {
     }
     if path.exists() {
         // 新版已在场（并发或先前迁移过写了一半）——旧文件作废弃副本清理。
-        let _ = std::fs::remove_file(&legacy);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&legacy);
         return;
     }
     // 同目录 rename = 原子迁移（旧「读+写+删」中段崩溃

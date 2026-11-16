@@ -97,18 +97,23 @@ pub trait WebServerOps: Send + Sync {
 /// SEC-002（BUG-20261111-068）：手写 Debug 替代 derive——auth_token 脱敏
 /// （与 nemesis-config 侧 WebChannelConfig 同字段同威胁模型；本侧此前是
 /// 隔壁漏网）。
+///
+/// 曾经携带的 `session_timeout_secs`/`allow_from` 已移除（BUG-20261116-035）：
+/// 二者在 WebChannel 内零消费——session_timeout 由装配点 web_init 直接
+/// `WebServer::set_session_timeout` 接线（语义单一真相源
+/// `SessionManager::timeout_from_config_secs`）；allow_from 对 web 无生效
+/// 语义（入站身份是每连接临时会话 id，无稳定 sender 可门控），非空配置
+/// 在 web_init 响亮 WARN。
 #[derive(Clone)]
 pub struct WebChannelConfig {
     pub host: String,
     pub port: u16,
     pub ws_path: String,
     pub auth_token: String,
-    pub session_timeout_secs: u64,
-    pub allow_from: Vec<String>,
 }
 
 crate::debug_redact::impl_redacted_debug!(WebChannelConfig {
-    plain { host, port, ws_path, session_timeout_secs, allow_from }
+    plain { host, port, ws_path }
     secret { auth_token }
 });
 
@@ -119,8 +124,6 @@ impl Default for WebChannelConfig {
             port: 8080,
             ws_path: "/ws".to_string(),
             auth_token: String::new(),
-            session_timeout_secs: 3600,
-            allow_from: vec![],
         }
     }
 }

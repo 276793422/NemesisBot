@@ -457,7 +457,7 @@ async fn run_eval(
         std::fs::write(&tmp_path, &ini_backup)
             .with_context(|| format!("write ini tmp {}", tmp_path.display()))?;
         std::fs::rename(&tmp_path, &ini_path).with_context(|| {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
             format!("atomic-replace {}", ini_path.display())
         })
     })()
@@ -503,7 +503,7 @@ struct EvalLock {
 #[cfg(target_os = "windows")]
 impl Drop for EvalLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.path);
     }
 }
 
@@ -549,7 +549,7 @@ fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
                     eprintln!(
                         "[eval] WARN: 发现陈旧 eval 锁（pid {p} 已退出）——上次 eval 异常终止，抢占锁继续"
                     );
-                    let _ = std::fs::remove_file(&path);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&path);
                     let mut f = std::fs::OpenOptions::new()
                         .write(true)
                         .create_new(true)

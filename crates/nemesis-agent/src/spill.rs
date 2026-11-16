@@ -93,7 +93,7 @@ pub fn spill_tool_result(
     if file.write_all(result.as_bytes()).is_err() {
         // Remove the partial file so the locator never points at a truncated
         // spill; the caller falls back to the pruned inline form.
-        let _ = std::fs::remove_file(&path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&path);
         return SpillOutcome::SpillFailed;
     }
     let preview: String = result.chars().take(SPILL_PREVIEW_CHARS).collect();

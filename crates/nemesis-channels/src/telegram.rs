@@ -1089,7 +1089,7 @@ impl TelegramChannel {
         // temp（std::env::temp_dir 不随 workspace 清理）永久残留一个
         // ogg（几百 KB~几 MB）。转写器读路径成功臂读完即无用，失败臂
         // 同样不应把语音内容残留磁盘。
-        let _ = std::fs::remove_file(&local_path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&local_path);
 
         match transcribed {
             Ok(text) => {
