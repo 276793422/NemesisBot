@@ -1224,3 +1224,166 @@ fn test_resolve_active_timeout_secs_non_u64_honestly_ignored() {
     assert_eq!(resolve_active_timeout_secs(&cfg, "bad"), 0);
     assert_eq!(resolve_active_timeout_secs(&cfg, "neg"), 0);
 }
+
+// ============================================================
+// 大小写不敏感兜底层（BUG-20261117-077）
+// ============================================================
+
+/// 大小写变体的 model_name 必须命中已配条目（api_key/api_base 随条目 =
+/// 未落裸推断）。此前精确匹配区分大小写、推断 fallback 却 `to_lowercase`
+/// ——变体（`/model Zhipu/GLM-4.7`、config 手改）绕过条目落「默认 base +
+/// 无 key」裸推断（gpt-5.6-sol 风暴同款失败形态）。突变验证：摘掉
+/// `model_ref_eq` 的 ci 臂本测必红（变体落推断 → api_key 空）。
+#[test]
+fn test_resolve_model_config_case_variant_model_name_hits_entry() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "Zhipu/GLM-4.7".to_string(),
+            model: "glm-4.7".to_string(),
+            api_key: "real-key".to_string(),
+            api_base: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let res = resolve_model_config(&cfg, "zhipu/glm-4.7").unwrap();
+    assert_eq!(
+        res.api_key, "real-key",
+        "大小写变体必须命中条目，不得落裸推断（推断臂 api_key 为空）"
+    );
+    assert_eq!(res.api_base, "https://open.bigmodel.cn/api/paas/v4");
+    // canonical 字段随条目下传（下游 router/cache_warmer 精确比对契约依赖）。
+    assert_eq!(res.model_name, "glm-4.7");
+}
+
+/// 大小写变体命中 `model` 字段（vendor/model wire 形态）同样不得落推断。
+#[test]
+fn test_resolve_model_config_case_variant_model_field_hits_entry() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "my-zhipu".to_string(),
+            model: "GLM-4.7".to_string(),
+            api_key: "real-key".to_string(),
+            api_base: "https://entry-base.example".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let res = resolve_model_config(&cfg, "glm-4.7").unwrap();
+    assert_eq!(res.api_key, "real-key");
+    assert_eq!(res.api_base, "https://entry-base.example");
+}
+
+/// 精确层恒先于 CI 层：两个仅大小写不同的条目是合法配置形态，精确查询
+/// 各归各条；纯变体查询进 CI 层按列表序命中第一个。
+#[test]
+fn test_exact_match_wins_over_ci_when_case_distinct_entries_exist() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "Alpha".to_string(),
+                model: "m-a".to_string(),
+                api_key: "key-alpha".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "alpha".to_string(),
+                model: "m-b".to_string(),
+                api_key: "key-b".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        find_model_by_name(&cfg, "Alpha").unwrap().api_key,
+        "key-alpha",
+        "精确查询保住区分语义（不因 CI 兜底层引入而漂移）"
+    );
+    assert_eq!(find_model_by_name(&cfg, "alpha").unwrap().api_key, "key-b");
+    assert_eq!(
+        find_model_by_name(&cfg, "ALPHA").unwrap().api_key,
+        "key-alpha",
+        "纯变体进 CI 层，按列表序命中第一个"
+    );
+}
+
+/// `get_model_by_name` 的 CI 兜底层保留同层全收集 + RR 轮询语义
+/// （多条目负载分摊不被 CI 引入破坏）。
+#[test]
+fn test_get_model_by_name_case_insensitive_tier_collects() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "Worker".to_string(),
+                model: "m-1".to_string(),
+                api_key: "k1".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "worker".to_string(),
+                model: "m-2".to_string(),
+                api_key: "k2".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    // 变体查询进 CI 层，同层收集两条 → RR 轮询先后给出两条（集合语义）。
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..4 {
+        if let Ok(mc) = get_model_by_name(&cfg, "WORKER") {
+            seen.insert(mc.api_key);
+        }
+    }
+    assert_eq!(
+        seen,
+        ["k1", "k2"]
+            .into_iter()
+            .map(String::from)
+            .collect::<std::collections::HashSet<_>>(),
+        "CI 层同层收集 + RR：两条都可达（负载分摊语义保留）"
+    );
+}
+
+/// `Config::get_model_by_model_name`（lib.rs 站点）同口径：CI 兜底命中。
+#[test]
+fn test_config_get_model_by_model_name_case_insensitive() {
+    let mut config = Config::default();
+    config.model_list.push(ModelConfig {
+        extra: Default::default(),
+        model_name: "groq/llama3".to_string(),
+        model: "groq/llama3-70b".to_string(),
+        api_key: "gk".to_string(),
+        ..Default::default()
+    });
+
+    assert_eq!(
+        config
+            .get_model_by_model_name("GROQ/LLAMA3")
+            .unwrap()
+            .api_key,
+        "gk",
+        "lib.rs 站点同口径 CI 兜底"
+    );
+    // 精确命中行为不变。
+    assert_eq!(
+        config
+            .get_model_by_model_name("groq/llama3")
+            .unwrap()
+            .api_key,
+        "gk"
+    );
+    // 完全无关名字仍 Err（CI 层不制造假命中）。
+    assert!(config.get_model_by_model_name("totally-other").is_err());
+}

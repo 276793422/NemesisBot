@@ -385,17 +385,22 @@ impl Config {
 
     /// Find a model configuration by model name or vendor/model prefix.
     pub fn get_model_by_model_name(&self, model_ref: &str) -> Result<&ModelConfig> {
-        // First try exact match with model_name
-        for mc in &self.model_list {
-            if mc.model_name == model_ref {
-                return Ok(mc);
+        // 层序与 provider_resolver::model_ref_eq doc 恒等：精确 model_name →
+        // 精确 model 字段 → CI model_name → CI model 字段（CI 兜底层 =
+        // BUG-20261117-077，与查找族其余站点同口径）。
+        for ci in [false, true] {
+            // First try exact match with model_name
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_eq(&mc.model_name, model_ref, ci) {
+                    return Ok(mc);
+                }
             }
-        }
 
-        // Then try prefix match with model field (vendor/model)
-        for mc in &self.model_list {
-            if mc.model == model_ref {
-                return Ok(mc);
+            // Then try prefix match with model field (vendor/model)
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_eq(&mc.model, model_ref, ci) {
+                    return Ok(mc);
+                }
             }
         }
 
