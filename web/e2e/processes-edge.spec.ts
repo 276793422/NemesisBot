@@ -169,7 +169,8 @@ test('后台进程边角：多任务排序/丢弃徽标/上滚暂停/暗色主�
   // toHaveURL（轮询）而非 waitForURL：webkit same-document hash 导航事件
   // 间歇不可见（见 processes-visual 同款注记）。
   await expect(page).toHaveURL(/\/executors/, { timeout: 15_000 })
-  await page.locator('.exec-tab', { hasText: '后台任务' }).click()
+  // 2026-11-17 修观察期红：2026-11-07 复合页布局重构 .exec-tab → .tabs .tab
+  await page.locator('.tabs .tab', { hasText: '后台任务' }).click()
   await expect(page).toHaveURL(/tab=processes/, { timeout: 15_000 })
   const rows = page.locator('.proc-row')
   await expect(rows.filter({ hasText: `#${bigId}` })).toBeVisible({ timeout: 15_000 })

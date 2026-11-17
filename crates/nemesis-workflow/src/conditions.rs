@@ -6,6 +6,17 @@
 
 use std::collections::HashMap;
 
+/// 条件表达式递归求值的最大嵌套深度（括号/`not ` 层数合计）。
+///
+/// BUG-20261117-062：`eval_expression` ↔ `eval_comparison` 乒乓剥括号的
+/// 递归下降此前无深度帽，而条件串在求值前先经 `{{var}}` 解析——**变量值
+/// （节点输出，LLM 生成文本）可携带上万层 `(` 或 `not `**，tokio worker
+/// 线程 2MB 栈下 ~5-10K 帧即打穿；Rust 栈溢出是 abort 非 unwind，
+/// catch_unwind 救不了，整个 gateway 进程死亡。帽值对齐 serde_json
+/// RECURSION_LIMIT（128）先例——合法条件表达式的嵌套远低于此。
+/// 超限 = 诚实 Err（调用方 condition 节点已有 failed_node_result 落点）。
+const MAX_EXPR_DEPTH: usize = 128;
+
 /// Evaluate a condition expression against a set of variables.
 ///
 /// Supported operators:
@@ -23,7 +34,7 @@ pub fn evaluate(expr: &str, vars: &HashMap<String, String>) -> Result<bool, Stri
     // Resolve {{variable}} references
     let resolved = resolve_variables(expr, vars);
 
-    eval_expression(&resolved)
+    eval_expression(&resolved, 0)
 }
 
 /// Resolve {{variable}} references in an expression.
@@ -53,17 +64,23 @@ fn resolve_variables(expr: &str, vars: &HashMap<String, String>) -> String {
 }
 
 /// Handle top-level expression parsing with logical operator precedence.
-fn eval_expression(expr: &str) -> Result<bool, String> {
+fn eval_expression(expr: &str, depth: usize) -> Result<bool, String> {
+    // BUG-20261117-062：深度帽（见 MAX_EXPR_DEPTH 文档）。
+    if depth > MAX_EXPR_DEPTH {
+        return Err(format!(
+            "条件表达式嵌套过深（> {MAX_EXPR_DEPTH} 层括号/not）——拒绝求值以防栈溢出"
+        ));
+    }
     let expr = expr.trim();
 
     // Handle parenthesized expressions
     if expr.starts_with('(') && find_matching_paren(expr, 0) == expr.len() - 1 {
-        return eval_expression(&expr[1..expr.len() - 1]);
+        return eval_expression(&expr[1..expr.len() - 1], depth + 1);
     }
 
     // Handle "not" prefix
     if let Some(inner) = expr.strip_prefix("not ") {
-        let result = eval_expression(inner)?;
+        let result = eval_expression(inner, depth + 1)?;
         return Ok(!result);
     }
 
@@ -71,7 +88,7 @@ fn eval_expression(expr: &str) -> Result<bool, String> {
     let parts = split_logical(expr, " or ");
     if parts.len() > 1 {
         for part in parts {
-            if eval_expression(part)? {
+            if eval_expression(part, depth + 1)? {
                 return Ok(true);
             }
         }
@@ -82,7 +99,7 @@ fn eval_expression(expr: &str) -> Result<bool, String> {
     let parts = split_logical(expr, " and ");
     if parts.len() > 1 {
         for part in parts {
-            if !eval_expression(part)? {
+            if !eval_expression(part, depth + 1)? {
                 return Ok(false);
             }
         }
@@ -90,7 +107,7 @@ fn eval_expression(expr: &str) -> Result<bool, String> {
     }
 
     // Single comparison
-    eval_comparison(expr.trim())
+    eval_comparison(expr.trim(), depth)
 }
 
 /// Split an expression by a logical operator, respecting parentheses.
@@ -156,17 +173,17 @@ fn split_logical<'a>(expr: &'a str, op: &str) -> Vec<&'a str> {
 }
 
 /// Evaluate a single comparison expression.
-fn eval_comparison(expr: &str) -> Result<bool, String> {
+fn eval_comparison(expr: &str, depth: usize) -> Result<bool, String> {
     let expr = expr.trim();
 
     // Handle parenthesized
     if expr.starts_with('(') && find_matching_paren(expr, 0) == expr.len() - 1 {
-        return eval_expression(&expr[1..expr.len() - 1]);
+        return eval_expression(&expr[1..expr.len() - 1], depth + 1);
     }
 
     // Handle "not" prefix
     if expr.starts_with("not ") {
-        return eval_expression(expr);
+        return eval_expression(expr, depth + 1);
     }
 
     // Try operators in order of specificity (longest first)

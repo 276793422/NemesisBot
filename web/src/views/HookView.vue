@@ -2,16 +2,21 @@
 import { ref, watch, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { useSessionStore } from '../stores/session'
 
 // Hooks 钩子页（2026-08-29 自设置页迁移 + 双 TAB 重构）：
-// - 总览：统计徽标 + 每事件只读明细 + 可编辑原文 + 方言 5 事件文档表
-// - 设置：扁平结构化编辑（每条钩子 = 触发工具[可空] + 命令 + 超时），
-//   保存时每条各自成组写入 hooks.json（方案 B，语义与分组版等价）。
+// - 总览：统计徽标 + 每事件只读明细 + 可编辑原文 + 方言事件文档表
+// - 设置：扁平结构化编辑（每条钩子 = 触发工具[可空] + 命令 + 超时 +
+//   作用会话[可选，2026-11-16 会话圈定]），保存时每条各自成组写入
+//   hooks.json（方案 B，语义与分组版等价）。
 // 单一真相源 = hooks.json；两处编辑都走 hooks.set（后端语义校验兜底），
 // 切换 TAB 即从磁盘刷新（最后写入者胜，用户已接受覆盖冲突）。
 
 const { request } = useWSAPI()
 const toast = useToast()
+// 会话圈定（HOOK 会话维度，2026-11-16）：选择器数据源复用全局 session
+// store（侧栏同源，5s 缓存内不重复拉取）；按标题展示、按裸 sid 落盘。
+const sessionStore = useSessionStore()
 
 const EVENTS = [
   { id: 'PreToolUse', label: 'PreToolUse', hint: '工具执行前（安全 8 层闸之后）——可拦截工具调用' },
@@ -34,6 +39,8 @@ interface HookEntry {
   command: string
   /** 秒；空串 = 后端默认 60。输入框绑定用字符串。 */
   timeout: string
+  /** 会话圈定（2026-11-16）：裸 sid 列表；空 = 全部会话（缺省兼容）。 */
+  sessions: string[]
 }
 
 function emptyEntries(): Record<string, HookEntry[]> {
@@ -79,6 +86,9 @@ function parseEntries(content: string): Record<string, HookEntry[]> {
         matcher: typeof g?.matcher === 'string' ? g.matcher : '',
         command: typeof c?.command === 'string' ? c.command : '',
         timeout: c?.timeout != null ? String(c.timeout) : '',
+        sessions: Array.isArray(g?.scope?.sessions)
+          ? g.scope.sessions.filter((s: any) => typeof s === 'string' && s.trim())
+          : [],
       })),
     )
   }
@@ -97,6 +107,8 @@ function serializeEntries(): string {
       if (e.timeout.trim() && Number.isFinite(t) && t > 0) cmd.timeout = t
       const group: any = { hooks: [cmd] }
       if (e.matcher.trim()) group.matcher = e.matcher.trim()
+      const ss = e.sessions.map(s => s.trim()).filter(Boolean)
+      if (ss.length) group.scope = { sessions: ss }
       return group
     })
   }
@@ -170,7 +182,77 @@ watch(activeTab, () => {
   void loadHooks()
 })
 
-onMounted(loadHooks)
+// ---------------------------------------------------------------------------
+// 作用会话选择器（2026-11-16 会话圈定）：按标题搜、按裸 sid 存。
+// ---------------------------------------------------------------------------
+
+const pickerFor = ref<{ ev: string; idx: number } | null>(null)
+const pickerSearch = ref('')
+const pickerDraft = ref<string[]>([])
+
+async function openPicker(evId: string, idx: number) {
+  pickerFor.value = { ev: evId, idx }
+  pickerSearch.value = ''
+  pickerDraft.value = [...entries.value[evId][idx].sessions]
+  await sessionStore.fetchList()
+  void sessionStore.fetchProjects()
+}
+
+function togglePickerSid(sid: string) {
+  const i = pickerDraft.value.indexOf(sid)
+  if (i >= 0) pickerDraft.value.splice(i, 1)
+  else pickerDraft.value.push(sid)
+}
+
+function applyPicker() {
+  if (!pickerFor.value) return
+  entries.value[pickerFor.value.ev][pickerFor.value.idx].sessions = [...pickerDraft.value]
+  pickerFor.value = null
+}
+
+/** 选择器候选：标题 / sid / 首条消息按搜索串过滤。 */
+const pickerRows = computed(() => {
+  const q = pickerSearch.value.trim().toLowerCase()
+  const all = sessionStore.sessions
+  if (!q) return all
+  return all.filter(
+    s =>
+      (s.title ?? '').toLowerCase().includes(q) ||
+      (s.firstMessage ?? '').toLowerCase().includes(q) ||
+      s.id.toLowerCase().includes(q),
+  )
+})
+
+/** sid → 显示标题（列表缺席/无标题回退裸 sid——诚实不编造）。 */
+function sessionTitle(sid: string): string {
+  return sessionStore.sessions.find(s => s.id === sid)?.title ?? sid
+}
+
+/** sid → 项目徽标文案（项目名；注册表缺席回退 📁，无项目 null）。 */
+function projectBadgeOf(sid: string): string | null {
+  const pid = sessionStore.sessions.find(s => s.id === sid)?.projectId
+  if (!pid) return null
+  return sessionStore.projectNameOf(pid) ?? '📁'
+}
+
+/** 编辑行作用会话按钮文案。 */
+function scopeLabel(e: HookEntry): string {
+  return e.sessions.length ? `已圈 ${e.sessions.length} 个会话` : '全部会话'
+}
+
+/** 总览明细行作用域徽标：`全部会话` / `N 个会话: 标题 +k`（未知 sid 原样显示）。 */
+function scopeBadge(e: HookEntry): string {
+  if (!e.sessions.length) return '全部会话'
+  const first = sessionTitle(e.sessions[0])
+  return e.sessions.length === 1
+    ? first
+    : `${e.sessions.length} 个会话: ${first} +${e.sessions.length - 1}`
+}
+
+onMounted(() => {
+  void loadHooks()
+  void sessionStore.fetchList()
+})
 </script>
 
 <template>
@@ -208,6 +290,7 @@ onMounted(loadHooks)
                 <div style="font-weight: 600; font-size: var(--text-sm); margin-bottom: var(--space-1);">{{ ev.label }}</div>
                 <div v-for="(e, i) in entries[ev.id]" :key="i" class="hooks-detail-row">
                   <span class="hooks-detail-matcher">{{ e.matcher || '全部工具' }}</span>
+                  <span class="hooks-detail-scope" :title="e.sessions.length ? e.sessions.join('、') : ''">{{ scopeBadge(e) }}</span>
                   <span style="flex: 1; font-family: var(--font-mono); font-size: var(--text-xs); word-break: break-all;">{{ e.command }}</span>
                   <span style="color: var(--text-muted); font-size: var(--text-xs);">超时 {{ e.timeout || 60 }}s</span>
                 </div>
@@ -262,7 +345,9 @@ onMounted(loadHooks)
               脚本协议：退出码 0 = 放行（PreToolUse/Stop 还认 stdout JSON <code>{"decision":"block","reason":…}</code>）；
               2 = 阻断；其他/超时/启动失败 = 非阻断错误（fail-open）。触发工具（matcher）用工具名
               （Bash/Edit/Write/Read/Grep，本系统工具名自动映射别名），留空 = 全命中。每条钩子可设
-              <code>timeout</code> 秒（默认 60）。LLM 调用级钩子（K1b）无对应事件，不在此文件配置。
+              <code>timeout</code> 秒（默认 60）；可加
+              <code>scope: {"sessions": ["<会话id>"]}</code> 圈定作用会话（「设置」TAB 按标题勾选、
+              落盘存会话 id；不设 = 全部会话生效）。LLM 调用级钩子（K1b）无对应事件，不在此文件配置。
             </p>
           </div>
         </div>
@@ -271,8 +356,9 @@ onMounted(loadHooks)
       <!-- ===================== 设置（结构化编辑） ===================== -->
       <div v-else>
         <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-3);">
-          每条钩子 = 触发工具（可选，留空对全部工具生效）+ 命令 + 超时。保存时后端做方言语义校验，
-          校验失败不落盘；保存后下条消息自动生效（桥内热更；Agent 启动时无钩子配置的首次保存需重启一次）。
+          每条钩子 = 触发工具（可选，留空对全部工具生效）+ 命令 + 超时 + 作用会话（可选，
+          不选 = 全部会话生效）。保存时后端做方言语义校验，校验失败不落盘；保存后下条消息
+          自动生效（桥内热更；Agent 启动时无钩子配置的首次保存需重启一次）。
         </p>
         <div v-for="ev in EVENTS" :key="ev.id" class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header" style="justify-content: space-between;">
@@ -280,17 +366,48 @@ onMounted(loadHooks)
               {{ ev.label }}
               <span v-if="entries[ev.id].length" style="font-weight: 400; font-size: var(--text-sm); color: var(--text-muted);">（{{ entries[ev.id].length }} 条）</span>
             </h3>
-            <button class="btn btn-sm" @click="entries[ev.id].push({ matcher: '', command: '', timeout: '' })">+ 添加钩子</button>
+            <button class="btn btn-sm" @click="entries[ev.id].push({ matcher: '', command: '', timeout: '', sessions: [] })">+ 添加钩子</button>
           </div>
           <div class="card-body">
             <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">{{ ev.hint }}</p>
             <div v-if="!entries[ev.id].length" style="color: var(--text-muted); font-size: var(--text-sm);">该事件暂无钩子</div>
-            <div v-for="(e, i) in entries[ev.id]" :key="i" style="display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2);">
-              <input class="form-input" style="width: 170px; flex-shrink: 0;" v-model="e.matcher" placeholder="触发工具（空=全部）" />
-              <input class="form-input" style="flex: 1; font-family: var(--font-mono);" v-model="e.command" placeholder="命令（如 python lint.py）" />
-              <input class="form-input" style="width: 76px; flex-shrink: 0;" v-model="e.timeout" placeholder="60" />
-              <span style="color: var(--text-muted); font-size: var(--text-xs); flex-shrink: 0;">秒</span>
-              <button class="btn btn-sm" style="color: var(--danger); flex-shrink: 0;" @click="entries[ev.id].splice(i, 1)">✕</button>
+            <div v-for="(e, i) in entries[ev.id]" :key="i" style="margin-bottom: var(--space-2);">
+              <div style="display: flex; gap: var(--space-2); align-items: center;">
+                <input class="form-input" style="width: 170px; flex-shrink: 0;" v-model="e.matcher" placeholder="触发工具（空=全部）" />
+                <input class="form-input" style="flex: 1; font-family: var(--font-mono);" v-model="e.command" placeholder="命令（如 python lint.py）" />
+                <input class="form-input" style="width: 76px; flex-shrink: 0;" v-model="e.timeout" placeholder="60" />
+                <span style="color: var(--text-muted); font-size: var(--text-xs); flex-shrink: 0;">秒</span>
+                <button class="btn btn-sm" style="color: var(--danger); flex-shrink: 0;" @click="entries[ev.id].splice(i, 1)">✕</button>
+              </div>
+              <div style="display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-1); position: relative;">
+                <button
+                  class="btn btn-sm hooks-scope-btn"
+                  :class="{ 'hooks-scope-btn--scoped': e.sessions.length }"
+                  @click="openPicker(ev.id, i)"
+                >
+                  {{ scopeLabel(e) }} ▾
+                </button>
+                <span style="color: var(--text-muted); font-size: var(--text-xs);">作用会话（不选 = 全部会话生效）</span>
+                <div v-if="pickerFor && pickerFor.ev === ev.id && pickerFor.idx === i" class="hooks-scope-picker">
+                  <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
+                  <div class="hooks-scope-list">
+                    <label v-for="s in pickerRows" :key="s.id" class="hooks-scope-item">
+                      <input type="checkbox" :checked="pickerDraft.includes(s.id)" @change="togglePickerSid(s.id)" />
+                      <span class="hooks-scope-item-title">{{ s.title || s.id }}</span>
+                      <span v-if="s.projectId" class="hooks-scope-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
+                      <span class="hooks-scope-item-sid">{{ s.id }}</span>
+                    </label>
+                    <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
+                  </div>
+                  <div class="hooks-scope-picker-footer">
+                    <span style="color: var(--text-muted); font-size: var(--text-xs);">已选 {{ pickerDraft.length }} 个（不选 = 全部会话）</span>
+                    <div style="display: flex; gap: var(--space-2);">
+                      <button class="btn btn-sm" @click="pickerDraft = []">清空</button>
+                      <button class="btn btn-sm btn-primary" @click="applyPicker">完成</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -366,6 +483,82 @@ onMounted(loadHooks)
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
   white-space: nowrap;
+}
+/* 作用会话徽标（scope，2026-11-16）——虚线框与 matcher 实线框区分。 */
+.hooks-detail-scope {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+/* 作用会话选择器（编辑行弹层） */
+.hooks-scope-btn--scoped {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.hooks-scope-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-overlay);
+  width: min(420px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.hooks-scope-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.hooks-scope-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-xs);
+}
+.hooks-scope-item:hover { background: var(--surface-hover); }
+.hooks-scope-item-title {
+  flex-shrink: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.hooks-scope-item-badge {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.hooks-scope-item-sid {
+  flex: 1;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+.hooks-scope-picker-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--border-light);
+  padding-top: var(--space-2);
 }
 
 /* 状态横幅 */

@@ -562,6 +562,9 @@ pub(super) fn inject_spawn_fn(
                 background,
                 tools_profile,
                 loop_kind: "main",
+                // 会话圈定锚点：子代理继承父会话——圈定到本会话的
+                // SubagentStart/Stop 钩子照常触发。
+                session_key: parent_session_key.clone(),
             };
             Box::pin(async move {
                 // 档位 → 白名单（readonly 缺省；full 不设限）。SpawnTool
@@ -1204,6 +1207,31 @@ pub(crate) fn register_connector_governance(
         nemesis_connectors::registry::exclusive_hidden_tools(&connector_ws, &names)
     }));
     info!("[AgentFactory] connector governance registered (find + invoke + exclusive provider)");
+}
+
+/// 会话钩子自管面：`hooks` 工具（HOOK 会话圈定批次三）——单工具多
+/// action（add/delete/list），sid 取 `context.session_key`（结构上只能给
+/// 自己设），写 `hooks.session.json`（原子落盘）。`cc_bridge` 在场 = 桥
+/// 内容比对热更即时生效；None = 冷启动双缺，工具响应诚实提示「重启
+/// Agent 后生效」。add/delete 静态 FileWrite（HIGH → 审批卡）；list 投影
+/// internal 只读直通。仅主 gateway loop / 项目 loop 调用（集群走
+/// `register_tools_and_mcp` 公共路径天然排除；run/acp headless 不装）。
+pub(crate) fn register_hooks_tool(
+    agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    shared: &Arc<SharedResources>,
+    cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
+) {
+    #[cfg(feature = "security")]
+    nemesis_security::types::declare_tool_operation(
+        crate::hooks_tool::TOOL_NAME,
+        nemesis_security::types::OperationType::FileWrite,
+    );
+    let config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
+    agent_loop.register_plugin_tool(
+        crate::hooks_tool::TOOL_NAME.to_string(),
+        Arc::new(crate::hooks_tool::HooksTool::new(config_dir, cc_bridge)),
+    );
+    info!("[AgentFactory] hooks tool registered (session-scoped hooks self-management)");
 }
 
 /// Register all tools and enable MCP on the given AgentLoop.

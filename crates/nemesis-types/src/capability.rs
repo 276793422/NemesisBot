@@ -763,6 +763,10 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // 天然含。vision=no 的模型由 dispatch 层 vision 前置闸零 IO 拒绝，
             // 白名单成员无副作用。
             "read_image",
+            // 会话钩子自管（add/delete/list 单工具）。Mini 不给——
+            // HIGH 落盘走审批卡 + 只能给自己设，小模型容易在琐碎场景
+            // 滥用审批交互；big 全量天然含。
+            "hooks",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

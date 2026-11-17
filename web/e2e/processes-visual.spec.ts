@@ -79,7 +79,8 @@ test('后台进程五态截图：空态/聊天tail/深链详情steer/列表运�
   // hash 导航的 navigation 事件间歇不可见（2026-11-07 全量实录：点击成功、
   // URL 已变、waitForURL 仍 15s 超时）；SPA 断言 URL 用轮询语义才确定。
   await expect(page).toHaveURL(/\/executors/, { timeout: 15_000 })
-  await page.locator('.exec-tab', { hasText: '后台任务' }).click()
+  // 2026-11-17 修观察期红：2026-11-07 复合页布局重构 .exec-tab → .tabs .tab
+  await page.locator('.tabs .tab', { hasText: '后台任务' }).click()
   await expect(page).toHaveURL(/tab=processes/, { timeout: 15_000 })
   await expect(page.locator('.page-processes .empty-state')).toBeVisible({ timeout: 15_000 })
   await shot(page, 'state0-empty.png')

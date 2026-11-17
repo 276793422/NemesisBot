@@ -151,6 +151,14 @@ async fn set_accepts_bare_top_level_form() {
 
 /// Same AppState scaffold as coding/models tests (agent_loop None etc.).
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
+    make_ctx_at(dir.path(), dir.path())
+}
+
+/// Explicit workspace/home split — the legacy-migration path only exists when
+/// the two differ (gateway runs with home = `<dir>/.nemesisbot`, workspace =
+/// `<home>/workspace`; tests defaulting to home == workspace make the
+/// migration a structural no-op).
+fn make_ctx_at(workspace: &std::path::Path, home: &std::path::Path) -> RequestContext {
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
     use crate::session::SessionManager;
@@ -158,14 +166,15 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::time::Instant;
 
-    let ws = dir.path().to_string_lossy().to_string();
+    let ws = workspace.to_string_lossy().to_string();
+    let hm = home.to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
         events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
-        home: Some(ws.clone()),
+        home: Some(hm.clone()),
         version: "test".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
@@ -209,8 +218,8 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     RequestContext {
         session_id: "test-session".to_string(),
         chat_id: "test-chat".to_string(),
-        workspace: Some(ws.clone()),
-        home: Some(ws),
+        workspace: Some(ws),
+        home: Some(hm),
         state,
         auth_method: crate::session::AuthMethod::default(),
     }
@@ -237,4 +246,111 @@ async fn dispatch_get_and_set_via_ctx_home() {
 
     // Unknown command errors.
     assert!(h.handle_cmd("bogus", None, &ctx).await.is_err());
+}
+
+// Session scoping (2026-11-16) + full 12-event surface through the handler.
+
+/// All 12 agent-side events, one script each; the PreToolUse entry is scoped
+/// to two sessions — the full dialect the UI can produce must round-trip
+/// through hooks.set/get without the handler narrowing it.
+const ALL_TWELVE: &str = r#"{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "scope": { "sessions": ["sid-a", "sid-b"] },
+        "hooks": [ { "type": "command", "command": "echo pre", "timeout": 10 } ] }
+    ],
+    "PostToolUse": [ { "hooks": [ { "type": "command", "command": "echo post" } ] } ],
+    "PostToolUseFailure": [ { "hooks": [ { "type": "command", "command": "echo fail" } ] } ],
+    "SessionStart": [ { "hooks": [ { "type": "command", "command": "echo start" } ] } ],
+    "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "echo prompt" } ] } ],
+    "Stop": [ { "hooks": [ { "type": "command", "command": "echo stop" } ] } ],
+    "SessionEnd": [ { "hooks": [ { "type": "command", "command": "echo end" } ] } ],
+    "PreCompact": [ { "hooks": [ { "type": "command", "command": "echo precompact" } ] } ],
+    "PostCompact": [ { "hooks": [ { "type": "command", "command": "echo postcompact" } ] } ],
+    "SubagentStart": [ { "hooks": [ { "type": "command", "command": "echo substart" } ] } ],
+    "SubagentStop": [ { "hooks": [ { "type": "command", "command": "echo substop" } ] } ],
+    "Notification": [ { "hooks": [ { "type": "command", "command": "echo note" } ] } ]
+  }
+}"#;
+
+#[tokio::test]
+async fn set_roundtrips_scope_and_all_twelve_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = HooksHandler;
+
+    let r = h.set(&home_str(&dir), ALL_TWELVE).unwrap().unwrap();
+    assert_eq!(r["written"], true);
+    assert_eq!(r["summary"]["total"], 12);
+    for ev in [
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+        "SessionEnd",
+        "PreCompact",
+        "PostCompact",
+        "SubagentStart",
+        "SubagentStop",
+        "Notification",
+    ] {
+        assert_eq!(r["summary"][ev], 1, "event {ev} counted");
+    }
+
+    // get: verbatim content (scope key untouched), valid, same counts.
+    let g = h.get(&home_str(&dir)).unwrap().unwrap();
+    assert_eq!(g["valid"], true);
+    assert_eq!(g["content"].as_str().unwrap(), ALL_TWELVE);
+    assert_eq!(g["summary"]["total"], 12);
+    let doc: serde_json::Value = serde_json::from_str(g["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        doc["hooks"]["PreToolUse"][0]["scope"],
+        serde_json::json!({ "sessions": ["sid-a", "sid-b"] }),
+        "scope.sessions survives the handler round-trip"
+    );
+}
+
+// Legacy migration (<home>/config/hooks.json -> <workspace>/config/hooks.json).
+
+#[tokio::test]
+async fn legacy_home_config_migrated_copy_once_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let workspace = root.path().join("ws");
+    let legacy_dir = home.join("config");
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    std::fs::write(legacy_dir.join("hooks.json"), GOOD).unwrap();
+
+    let ctx = make_ctx_at(&workspace, &home);
+    let h = HooksHandler;
+
+    // First get: migration copies legacy into the workspace; get serves it.
+    let r = h.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(
+        r["exists"], true,
+        "migrated config is served, not the template"
+    );
+    assert_eq!(r["content"].as_str().unwrap(), GOOD);
+    let migrated = hooks_path(&workspace);
+    assert!(migrated.exists(), "copy-once landed in workspace config");
+    assert_eq!(std::fs::read_to_string(&migrated).unwrap(), GOOD);
+    // Copy, not move: legacy stays (source of truth switch is a deploy concern).
+    assert!(legacy_dir.join("hooks.json").exists());
+
+    // User edits the workspace copy; a later call must NOT re-copy over it
+    // (target-wins guard), and the legacy file must stay untouched.
+    let overwritten = GOOD.replace("python check.py", "python rewritten.py");
+    std::fs::write(&migrated, &overwritten).unwrap();
+    let r2 = h.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    assert_eq!(
+        r2["content"].as_str().unwrap(),
+        overwritten,
+        "copy-once: target wins"
+    );
+    assert_eq!(
+        std::fs::read_to_string(legacy_dir.join("hooks.json")).unwrap(),
+        GOOD,
+        "legacy file never rewritten"
+    );
 }

@@ -1,5 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { createPinia } from 'pinia'
 import { useToast } from '../../composables/useToast'
 
 // P4 hooks.json 编辑器（2026-08-29 重构为双 TAB：总览 + 结构化设置）——
@@ -8,10 +9,15 @@ import { useToast } from '../../composables/useToast'
 // （2026-09-24 热更：桥内 mtime 惰性重载，保存后下条消息生效——原「一键重启
 // 」按钮与对应测试随死 UI 移除。）后端 hooks handler 行为由
 // handlers/hooks/tests.rs（7 测试）钉住。
+// 2026-11-16 会话圈定（scope.sessions）：带 scope 条目读回/写回往返、
+// 作用会话选择器（sessions.list 按标题搜、落盘存 sid）、总览作用域徽标。
 
 const requestMock = vi.fn()
+// initWSAPI：批次二起 HookView import 链经 session store 拉进 useWebSocket
+// 顶层 initWSAPI(sendRaw)——mock 必须提供该导出（BoardView.spec.ts 同款）。
 vi.mock('../../composables/useWSAPI', () => ({
   useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
+  initWSAPI: vi.fn(),
 }))
 
 import HookView from '../HookView.vue'
@@ -26,6 +32,31 @@ const VALID_HOOKS = JSON.stringify({
     ],
   },
 }, null, 2)
+
+const SCOPED_HOOKS = JSON.stringify({
+  hooks: {
+    PreToolUse: [
+      { matcher: 'Edit|Write', scope: { sessions: ['s-abc123'] }, hooks: [{ type: 'command', command: 'python lint.py', timeout: 30 }] },
+    ],
+  },
+}, null, 2)
+
+const SESSION_ROWS = [
+  { id: 's-abc123', title: '修登录bug', projectId: 'p1' },
+  { id: 's-def456', title: '日常闲聊' },
+]
+
+function withSessions(impl: Record<string, any>) {
+  return (_m: string, cmd: string) => {
+    if (_m === 'sessions' && cmd === 'list') {
+      return Promise.resolve({ sessions: SESSION_ROWS, bindings: {} })
+    }
+    if (_m === 'projects' && cmd === 'list') {
+      return Promise.resolve({ projects: [{ id: 'p1', name: '前端项目', path: 'C:/work' }] })
+    }
+    return (impl[cmd] ?? (() => Promise.resolve({})))()
+  }
+}
 
 beforeEach(() => {
   requestMock.mockReset()
@@ -45,7 +76,7 @@ afterEach(() => {
 })
 
 async function mountView(tab: '总览' | '设置' = '总览') {
-  const w = mount(HookView)
+  const w = mount(HookView, { global: { plugins: [createPinia()] } })
   await flushPromises()
   if (tab !== '总览') {
     await w.findAll('button.tab').find(b => b.text() === tab)!.trigger('click')
@@ -142,9 +173,9 @@ describe('HookView 总览', () => {
 })
 
 describe('HookView 结构化设置页（方案 B 扁平条目）', () => {
-  it('设置 TAB 渲染 8 个事件区块（2026-09-24 +SubagentStart/SubagentStop/Notification）；既有条目回显 matcher/命令/超时', async () => {
+  it('设置 TAB 渲染 12 个事件区块（2026-09-24 +SubagentStart/SubagentStop/Notification；2026-11-17 补齐 PostToolUseFailure/SessionEnd/PreCompact/PostCompact 与 EVENTS 常量对账）', async () => {
     const w = await mountView('设置')
-    for (const label of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'Notification']) {
+    for (const label of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'PreCompact', 'PostCompact', 'SubagentStart', 'SubagentStop', 'Notification']) {
       expect(w.text()).toContain(label)
     }
     // PreToolUse 的既有条目（matcher=Edit|Write，命令 lint）
@@ -223,5 +254,82 @@ describe('HookView 结构化设置页（方案 B 扁平条目）', () => {
     await flushPromises()
     expect(requestMock.mock.calls.filter(c => c[1] === 'get').length).toBeGreaterThanOrEqual(2)
     expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe(VALID_HOOKS)
+  })
+})
+
+describe('HookView 会话圈定（scope.sessions，2026-11-16）', () => {
+  it('带 scope 条目读回 → 保存原样写回；总览显示作用域徽标（按标题）', async () => {
+    requestMock.mockImplementation(withSessions({
+      get: () => Promise.resolve({ content: SCOPED_HOOKS, exists: true, valid: true, summary: { total: 1, PreToolUse: 1 } }),
+      set: () => Promise.resolve({ summary: { total: 1 } }),
+    }))
+    // 总览：徽标显示会话标题；未圈定条目显示「全部会话」。
+    const w = await mountView()
+    expect(w.text()).toContain('修登录bug')
+    expect(w.text()).toContain('全部会话')
+
+    // 设置页：读回勾选态（scope.sessions 进条目）→ 保存原样写回 sid。
+    const w2 = await mountView('设置')
+    requestMock.mockClear()
+    await w2.findAll('button').find(b => b.text() === '保存全部钩子')!.trigger('click')
+    await flushPromises()
+    const written = JSON.parse(requestMock.mock.calls.find(c => c[1] === 'set')![2].content)
+    expect(written.hooks.PreToolUse[0].scope).toEqual({ sessions: ['s-abc123'] })
+  })
+
+  it('作用会话选择器：按标题搜索 + 项目徽标 + 勾选 → 落盘存 sid', async () => {
+    requestMock.mockImplementation(withSessions({
+      get: () => Promise.resolve({ content: VALID_HOOKS, exists: true, valid: true, summary: { total: 2 } }),
+      set: () => Promise.resolve({ summary: { total: 3 } }),
+    }))
+    const w = await mountView('设置')
+    const preBlock = w.findAll('.card').find(c => c.text().includes('PreToolUse'))!
+    await preBlock.findAll('button').find(b => b.text() === '+ 添加钩子')!.trigger('click')
+    const newCmd = preBlock.findAll('input[placeholder^="命令"]').at(-1)!
+    await newCmd.setValue('echo hi')
+
+    // 打开选择器：两行候选，项目会话带项目名徽标。
+    await preBlock.findAll('button.hooks-scope-btn').at(-1)!.trigger('click')
+    await flushPromises()
+    expect(w.findAll('.hooks-scope-item').length).toBe(2)
+    expect(w.text()).toContain('前端项目')
+
+    // 按标题搜索收敛到一行。
+    await w.find('input[placeholder^="按标题"]').setValue('修登录')
+    expect(w.findAll('.hooks-scope-item').length).toBe(1)
+
+    // 勾选 + 完成：弹层关闭、按钮文案更新。
+    await w.find('.hooks-scope-item input[type="checkbox"]').setValue(true)
+    await w.findAll('button').find(b => b.text() === '完成')!.trigger('click')
+    expect(w.findAll('.hooks-scope-picker').length).toBe(0)
+    expect(w.text()).toContain('已圈 1 个会话')
+
+    // 保存 → JSON 写 scope.sessions（裸 sid）。
+    await w.findAll('button').find(b => b.text() === '保存全部钩子')!.trigger('click')
+    await flushPromises()
+    const written = JSON.parse(requestMock.mock.calls.find(c => c[1] === 'set')![2].content)
+    expect(written.hooks.PreToolUse.at(-1)!.scope).toEqual({ sessions: ['s-abc123'] })
+  })
+
+  it('清空选择 = 回到全部会话：保存不写 scope 键（缺省兼容）', async () => {
+    requestMock.mockImplementation(withSessions({
+      get: () => Promise.resolve({ content: SCOPED_HOOKS, exists: true, valid: true, summary: { total: 1 } }),
+      set: () => Promise.resolve({ summary: { total: 1 } }),
+    }))
+    const w = await mountView('设置')
+    const preBlock = w.findAll('.card').find(c => c.text().includes('PreToolUse'))!
+    await preBlock.findAll('button.hooks-scope-btn').at(0)!.trigger('click')
+    await flushPromises()
+    // 已选 1 → 清空 → 完成。
+    expect(w.text()).toContain('已选 1 个')
+    await preBlock.findAll('button').find(b => b.text() === '清空')!.trigger('click')
+    await preBlock.findAll('button').find(b => b.text() === '完成')!.trigger('click')
+    expect(w.text()).toContain('全部会话')
+    expect(w.text()).not.toContain('已圈')
+
+    await w.findAll('button').find(b => b.text() === '保存全部钩子')!.trigger('click')
+    await flushPromises()
+    const written = JSON.parse(requestMock.mock.calls.find(c => c[1] === 'set')![2].content)
+    expect(written.hooks.PreToolUse[0].scope).toBeUndefined()
   })
 })
