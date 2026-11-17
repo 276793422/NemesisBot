@@ -682,6 +682,30 @@ fn get_remote_size(client: &reqwest::blocking::Client, url: &str) -> Option<u64>
         .and_then(|v| v.parse().ok())
 }
 
+/// Existing `.part` file disposition relative to the remote file (纯函数，
+/// 单测钉死——BUG-20261117-080 三态决策)。
+#[cfg(feature = "download")]
+#[derive(Debug, PartialEq, Eq)]
+enum PartDisposition {
+    /// existing == remote：part 完整，直接 rename 收尾。
+    Complete,
+    /// existing > remote：远端文件已换版本（re-release 变小），旧内容
+    /// 不可信，删 part 全量重下（本通道零 hash 校验，尺寸是唯一对账手段）。
+    TooLarge,
+    /// existing < remote 或 remote 未知：Range 续传。
+    Resume,
+}
+
+/// BUG-20261117-080：part 文件处置决策（单一真相源，调用方与测试同源）。
+#[cfg(feature = "download")]
+fn part_disposition(existing: u64, remote: Option<u64>) -> PartDisposition {
+    match remote {
+        Some(t) if existing == t => PartDisposition::Complete,
+        Some(t) if existing > t => PartDisposition::TooLarge,
+        _ => PartDisposition::Resume,
+    }
+}
+
 /// Download a single file with resume support.
 /// Downloads to `part_file`, renames to `target_file` on completion.
 /// If `part_file` exists, resumes from its current size using HTTP Range.
@@ -703,58 +727,78 @@ fn download_file_resume(
 
     // Try resuming if we have a partial file
     if existing_size > 0 {
-        // Check if already complete
-        if total_size.is_some_and(|t| existing_size >= t) {
-            fs::rename(part_file, target_file)
-                .with_context(|| format!("Failed to rename {}", display_name))?;
-            let msg = format!(
-                "{} (完整, {:.1} MB)",
-                display_name,
-                existing_size as f64 / (1024.0 * 1024.0)
-            );
-            tracing::info!("{}", msg);
-            report_progress(&msg);
-            return Ok(());
+        match part_disposition(existing_size, total_size) {
+            // Check if already complete
+            PartDisposition::Complete => {
+                fs::rename(part_file, target_file)
+                    .with_context(|| format!("Failed to rename {}", display_name))?;
+                let msg = format!(
+                    "{} (完整, {:.1} MB)",
+                    display_name,
+                    existing_size as f64 / (1024.0 * 1024.0)
+                );
+                tracing::info!("{}", msg);
+                report_progress(&msg);
+                return Ok(());
+            }
+            // BUG-20261117-080：part 比远端还大 = 远端文件已换版本（re-release
+            // 变小），旧 part 内容不可信——本通道下载零 hash 校验，旧实现
+            // `>=` 直接 rename 会拿旧版本文件冒充新远端文件落盘。删 part
+            // fall-through 全量重下。
+            PartDisposition::TooLarge => {
+                tracing::warn!(
+                    "{} part file {:.1} MB larger than remote {:.1} MB — remote file changed, restarting download",
+                    display_name,
+                    existing_size as f64 / (1024.0 * 1024.0),
+                    total_size.map_or(0.0, |t| t as f64 / (1024.0 * 1024.0))
+                );
+                let _ = fs::remove_file(part_file);
+            }
+            // existing < remote（或 remote 未知）：Range 续传。
+            PartDisposition::Resume => {
+                let range_header = format!("bytes={}-", existing_size);
+                let resp = client
+                    .get(url)
+                    .header(reqwest::header::RANGE, &range_header)
+                    .send()
+                    .with_context(|| format!("Failed to download: {}", url))?;
+
+                if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                    let remaining = total_size.map_or("?".to_string(), |t| {
+                        format!("{:.1} MB", (t - existing_size) as f64 / (1024.0 * 1024.0))
+                    });
+                    let msg = format!(
+                        "{} (续传 {:.1} MB, 剩余 {})",
+                        display_name,
+                        existing_size as f64 / (1024.0 * 1024.0),
+                        remaining
+                    );
+                    tracing::info!(
+                        "{} <- {} (resuming from {:.1} MB, {} remaining)",
+                        display_name,
+                        url,
+                        existing_size as f64 / (1024.0 * 1024.0),
+                        remaining
+                    );
+                    report_progress(&msg);
+
+                    let mut file = fs::OpenOptions::new()
+                        .append(true)
+                        .open(part_file)
+                        .with_context(|| {
+                            format!("Failed to open for append: {}", part_file.display())
+                        })?;
+
+                    stream_to_file(&mut file, resp, existing_size, total_size, display_name)?;
+
+                    fs::rename(part_file, target_file)
+                        .with_context(|| format!("Failed to rename {}", display_name))?;
+                    return Ok(());
+                }
+                // Server didn't support Range — fall through to full download,
+                // overwrite.part
+            }
         }
-
-        let range_header = format!("bytes={}-", existing_size);
-        let resp = client
-            .get(url)
-            .header(reqwest::header::RANGE, &range_header)
-            .send()
-            .with_context(|| format!("Failed to download: {}", url))?;
-
-        if resp.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            let remaining = total_size.map_or("?".to_string(), |t| {
-                format!("{:.1} MB", (t - existing_size) as f64 / (1024.0 * 1024.0))
-            });
-            let msg = format!(
-                "{} (续传 {:.1} MB, 剩余 {})",
-                display_name,
-                existing_size as f64 / (1024.0 * 1024.0),
-                remaining
-            );
-            tracing::info!(
-                "{} <- {} (resuming from {:.1} MB, {} remaining)",
-                display_name,
-                url,
-                existing_size as f64 / (1024.0 * 1024.0),
-                remaining
-            );
-            report_progress(&msg);
-
-            let mut file = fs::OpenOptions::new()
-                .append(true)
-                .open(part_file)
-                .with_context(|| format!("Failed to open for append: {}", part_file.display()))?;
-
-            stream_to_file(&mut file, resp, existing_size, total_size, display_name)?;
-
-            fs::rename(part_file, target_file)
-                .with_context(|| format!("Failed to rename {}", display_name))?;
-            return Ok(());
-        }
-        // Server didn't support Range — fall through to full download, overwrite.part
     }
 
     // Full download
