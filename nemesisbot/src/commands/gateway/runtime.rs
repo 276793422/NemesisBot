@@ -1743,15 +1743,53 @@ pub(crate) async fn run_runtime(
         // E-stop / release: tray is in-process, capture the same EstopState Arc
         // the agent loop reads (shared_resources.estop). trigger()/release() are
         // &self on a thread-safe AtomicBool+watch, safe to call from the tray thread.
+        // BUG-20261118-096：托盘入口与 CLI/Dashboard 同款落审计链（source=tray
+        // 区分入口）；审计链未启用 = append None（内部 warn），tracing 兜底。
         let estop_engage = Arc::clone(&shared_resources.estop);
+        let tray_audit_engage = security_plugin.clone();
         tray.set_on_estop(Box::new(move || {
             estop_engage.trigger();
+            if let Some(plugin) = tray_audit_engage.as_ref()
+                && plugin
+                    .append_direct_audit_event(
+                        "estop",
+                        "kill_switch",
+                        "system",
+                        "tray",
+                        "gateway",
+                        "allow",
+                        "e-stop engaged (kill switch: freeze all agent activity)",
+                    )
+                    .is_none()
+            {
+                tracing::debug!(
+                    "[Gateway] tray estop audit not recorded (chain disabled); tracing fallback only"
+                );
+            }
             tracing::info!("[Gateway] Tray: e-stop engaged");
         }));
 
         let estop_release = Arc::clone(&shared_resources.estop);
+        let tray_audit_release = security_plugin.clone();
         tray.set_on_release(Box::new(move || {
             estop_release.release();
+            if let Some(plugin) = tray_audit_release.as_ref()
+                && plugin
+                    .append_direct_audit_event(
+                        "estop",
+                        "kill_switch",
+                        "system",
+                        "tray",
+                        "gateway",
+                        "allow",
+                        "e-stop released (agent activity resumes)",
+                    )
+                    .is_none()
+            {
+                tracing::debug!(
+                    "[Gateway] tray estop audit not recorded (chain disabled); tracing fallback only"
+                );
+            }
             tracing::info!("[Gateway] Tray: e-stop released");
         }));
 

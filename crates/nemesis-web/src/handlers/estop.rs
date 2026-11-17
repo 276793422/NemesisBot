@@ -6,6 +6,14 @@
 //! CLI 走 `/api/internal` 是另一条入口，两者操作同一个 EstopState。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use std::sync::Arc;
+
+/// 急停审计钩子（BUG-20261118-096）：gateway 注入（set_estop_audit），持
+/// SecurityPlugin 真身走 `append_direct_audit_event` 落 Merkle 审计链。
+/// 参数 (operation, source)：operation ∈ {"engage","release"}；source ∈
+/// {"cli","dashboard","tray"}。None = 审计链未启用/未注入 → 诚实降级
+/// （tracing 兜底，急停动作本身不受影响——审计是记录面不是执行闸）。
+pub type EstopAuditHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 pub struct EstopHandler;
 
@@ -29,12 +37,18 @@ impl ModuleHandler for EstopHandler {
             "trigger" => {
                 let estop = ctx.state.estop.as_ref().ok_or("e-stop not available")?;
                 estop.trigger();
+                if let Some(hook) = ctx.state.estop_audit.as_ref() {
+                    hook("engage", "dashboard");
+                }
                 tracing::info!("[Web/WSAPI] E-stop engaged");
                 Ok(Some(serde_json::json!({ "engaged": true })))
             }
             "release" => {
                 let estop = ctx.state.estop.as_ref().ok_or("e-stop not available")?;
                 estop.release();
+                if let Some(hook) = ctx.state.estop_audit.as_ref() {
+                    hook("release", "dashboard");
+                }
                 tracing::info!("[Web/WSAPI] E-stop released");
                 Ok(Some(serde_json::json!({ "engaged": false })))
             }

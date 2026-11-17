@@ -55,6 +55,7 @@ fn make_ctx(registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>) -> 
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: registry,
         signature_verify: None,
         skills_install_gate: None,

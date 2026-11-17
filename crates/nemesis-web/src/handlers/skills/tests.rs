@@ -450,6 +450,7 @@ fn learn_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,

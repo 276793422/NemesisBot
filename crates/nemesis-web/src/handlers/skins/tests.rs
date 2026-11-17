@@ -115,6 +115,7 @@ fn make_state(home: &std::path::Path, auth_token: &str) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         cron: None,
