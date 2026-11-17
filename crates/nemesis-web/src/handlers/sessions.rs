@@ -147,6 +147,7 @@ impl ModuleHandler for SessionsHandler {
                     );
                     let root = std::path::PathBuf::from(&workspace);
                     nemesis_agent::session_home::migrate_stale_project_session_home(&root, &key);
+                    nemesis_agent::session_home::migrate_stale_project_session_todo(&root, &key);
                     if let Some(home) =
                         nemesis_agent::session_home::resolve_session_home(&root, &key)
                             .filter(|p| p.is_dir())
