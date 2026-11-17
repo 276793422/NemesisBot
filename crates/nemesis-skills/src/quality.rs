@@ -185,9 +185,9 @@ impl QualityScorer {
             r"(?i)^#+\s*(?:steps|instructions|procedure|workflow|process)",
         ) || content.to_lowercase().contains("step 1")
             || content.to_lowercase().contains("step 1:")
-            || Regex::new(r"(?i)^\d+\.\s")
-                .map(|re| re.is_match(content))
-                .unwrap_or(false)
+            // BUG-20261117-084：走 has_heading_pattern 自动补 (?m)——旧形态
+            // 裸 `^` 无 (?m) 只匹配首行，编号步骤不在文档第一行时漏判。
+            || has_heading_pattern(content, r"(?i)^\d+\.\s")
         {
             score += 15.0;
             found.push("steps");
