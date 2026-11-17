@@ -222,3 +222,99 @@ describe('限流重试进度文案（agent.retry_status 轮询，BUG ①）', ()
     w.unmount()
   })
 })
+
+describe('限流重试倒计时滚动（2026-11-17）', () => {
+  it('remaining_secs 在场 → 显示剩余值并本地每秒递减', async () => {
+    prepareSession()
+    const w = await mountWithDanglingTurn({
+      available: true,
+      retrying: true,
+      retry: 3,
+      max_retries: 10,
+      wait_secs: 40,
+      remaining_secs: 40,
+      model: 'gpt-5.6-sol',
+    })
+    // 首拍（t=4s）：快照落地 → 基准 40；tick interval 同刻注册未 fire。
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    const text = () => w.find('.retry-status-text').text()
+    expect(text()).toContain('等待 40 秒')
+    // 推进 3s → 3 次 tick → 37（拍间本地插值，数字在下滚）。
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+    expect(text()).toContain('等待 37 秒')
+    w.unmount()
+  })
+
+  it('remaining_secs 缺席（旧后端）→ 回落 wait_secs 起点', async () => {
+    prepareSession()
+    const w = await mountWithDanglingTurn({
+      available: true,
+      retrying: true,
+      retry: 1,
+      max_retries: 10,
+      wait_secs: 20,
+      model: 'm',
+    })
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    expect(w.find('.retry-status-text').text()).toContain('等待 20 秒')
+    w.unmount()
+  })
+
+  it('下一拍 remaining_secs 更小（后端 elapsed 折算）→ 基准重置不回跳', async () => {
+    prepareSession()
+    let pollN = 0
+    requestMock.mockImplementation((_mod: string, cmd: string) => {
+      if (cmd === 'inbox_status') return Promise.resolve({ available: true, busy: true })
+      if (cmd === 'retry_status') {
+        pollN += 1
+        // 后端语义：remaining 随真实流逝递减（本轮 40s 等待，拍间隔 4s）。
+        const remaining = Math.max(0, 40 - (pollN - 1) * 4)
+        return Promise.resolve({
+          available: true, retrying: true, retry: 1, max_retries: 10,
+          wait_secs: 40, remaining_secs: remaining, model: 'm',
+        })
+      }
+      return Promise.resolve({})
+    })
+    vi.useFakeTimers()
+    const w = mount(ChatPanel)
+    await flushPromises()
+    feedHistory(lastRequestId(), [{ role: 'user', content: 'dangling turn' }])
+    await flushPromises()
+    const text = () => w.find('.retry-status-text').text()
+
+    // t=4s 拍 1：基准 40；t=5~7s 三次 tick → 37。
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    expect(text()).toContain('等待 40 秒')
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+    expect(text()).toContain('等待 37 秒')
+    // t=8s 拍 2：后端 remaining=36 → 基准重置 ≤36（拍 2 与秒级 tick 同刻到
+    // 期，并列触发顺序是宿主调度细节——fake 环境下 fetch 先落则同刻 tick
+    // 再递减 1，真浏览器 tick 先走旧值再被重置、无闪烁。断言不变式：不回
+    // 跳到 40、不超过后端 fresh 基准）。
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    const shown = Number(text().match(/等待 (\d+) 秒/)![1])
+    expect(shown).toBeLessThanOrEqual(36)
+    // 继续递减（数字持续下滚）：再 2s 至少 -1。
+    await vi.advanceTimersByTimeAsync(2000)
+    await flushPromises()
+    const shown2 = Number(text().match(/等待 (\d+) 秒/)![1])
+    expect(shown2).toBeLessThan(shown)
+    w.unmount()
+  })
+
+  it('retrying=false → 倒计时随文案一并消失', async () => {
+    prepareSession()
+    const w = await mountWithDanglingTurn({ available: true, retrying: false })
+    await vi.advanceTimersByTimeAsync(4000)
+    await flushPromises()
+    expect(w.find('.retry-status-text').exists()).toBe(false)
+    w.unmount()
+  })
+})

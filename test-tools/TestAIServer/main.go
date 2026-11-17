@@ -95,6 +95,8 @@ func main() {
 	registry.Register(models.NewTestAIConn())
 	registry.Register(models.NewTestAIBreak())
 	registry.Register(models.NewTestAIHeal())
+	registry.Register(models.NewTestAIStreamErrCode())
+	registry.Register(models.NewTestAIStreamErrNoCode())
 	registry.Register(models.NewTestAILenBreak())
 	registry.Register(models.NewTestAIChainStep())
 	registry.Register(models.NewTestAIChainCode())

@@ -140,6 +140,11 @@ fn matches_rate_limit(msg: &str) -> bool {
         "resource_exhausted",
         "quota exceeded",
         "usage limit",
+        // cc-switch / one-api 系流内限流实测文案（"Concurrency limit
+        // exceeded for account"）——错误码在流内 error 事件采集点丢失时
+        // 的文案兜底（2026-11-17 治本批；loop 层 RATE_LIMIT_ERROR_KEYWORDS
+        // 双写同步）。
+        "concurrency limit",
     ];
     const REGEX_PATTERNS: &[&str] = &[r"exceeded.*quota", r"resource.*exhausted", r"\b429\b"];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)

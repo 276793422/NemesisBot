@@ -32,11 +32,15 @@ const RATE_LIMIT_BACKOFF_LADDER: [u64; 10] = [5, 10, 20, 40, 60, 90, 120, 150, 1
 /// 「Overloaded treated as rate_limit」），loop 层词表必须同步对齐，否则
 /// 过载首败即终局（BUG 实证：provider codex is overloaded 一次
 /// 报死，复杂长链路任一轮踩 503 即全任务报废）。
-pub(crate) const RATE_LIMIT_ERROR_KEYWORDS: [&str; 4] = [
+pub(crate) const RATE_LIMIT_ERROR_KEYWORDS: [&str; 5] = [
     "rate limited by provider",
     "429",
     "too many requests",
     "overloaded",
+    // cc-switch / one-api 系流内限流实测文案（"Concurrency limit exceeded
+    // for account"）——CLI 型 lane stderr 原文直通等不经分类器的路径兜底
+    //（2026-11-17 治本批；llm_error_class matches_rate_limit 双写同步）。
+    "concurrency limit",
 ];
 
 /// 展示标签：限流环内错误含 "overloaded"（FailoverError:
@@ -142,6 +146,17 @@ pub struct RateLimitStatus {
     pub label: &'static str,
     /// 写入时刻（读侧判过期用 [`RETRY_STATUS_STALE_SECS`]）。
     pub updated_at: std::time::Instant,
+}
+
+impl RateLimitStatus {
+    /// 剩余等待秒数 = `wait_secs - 写入至今`（钳 ≥0）。倒计时滚动投影
+    /// （2026-11-17）：写侧只在每轮重试开始写一次快照，wait_secs 是本轮
+    /// 完整等待值；读侧按 elapsed 折算剩余，前端每拍拿到的值单调递减、
+    /// 本地秒级 tick 在拍间插值——数字不回跳。
+    pub fn remaining_secs(&self) -> u64 {
+        self.wait_secs
+            .saturating_sub(self.updated_at.elapsed().as_secs())
+    }
 }
 
 impl AgentLoop {

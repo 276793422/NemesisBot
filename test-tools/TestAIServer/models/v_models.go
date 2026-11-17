@@ -561,3 +561,101 @@ func (m *TestAILenBreak) Process(messages []Message) string {
 	}
 	return "LENBREAK_NO_USER_MESSAGE"
 }
+
+// ---------------------------------------------------------------- LLM-ERR-A 流内错误事件模型对
+//
+// testai-serr-code-1.0 / testai-serr-nocode-1.0 —— 流内 SSE error 事件
+// 模型对（2026-11-17，cc-switch 429「Concurrency limit exceeded」绕过
+// 限流环根因的活体复现载体）。与 L21 stream-break（传输层掐断）不同：
+// HTTP 200 正常建流，发 role 块 + partial 内容块后发一个
+// `data: {"error": {...}}` 事件再终止（不发 finish/[DONE]）——one-api /
+// LiteLLM / CC Switch 实测形态（BUG-20261114-030 点名的「网关 200 后
+// 流中途上游故障」）。HTTP 状态码路径（from_status）与传输错误路径
+// （connect error）都覆盖不到这个形态：状态码在流内载荷里，采集方若
+// 只抠 message 就丢码，分类只能靠文本词表。
+//
+// 分工与证据链设计（两模型都奇偶交替：奇数次 error、偶数次完整回复，
+// 复刻 heal 模式——验证「流内 error → 限流环退避 → 重试成功」完整链路；
+// 偶数次回复刻意不含 SERR_PARTIAL marker，partial 不泄漏断言沿用）：
+//   - testai-serr-code-1.0：error 载荷带数字 code=429，message 刻意用
+//     无词表词文案（SERR_CODE_429_MARK）——修复后若进限流环，唯一解释
+//     是 code 字段采集生效（码路径修复的直接证据，文本兜底不可能命中）。
+//   - testai-serr-nocode-1.0：error 载荷不带 code，message 复刻 cc-switch
+//     实测文案（"Concurrency limit exceeded for account"）——修复前现象
+//     = Unknown 终局（两级词表全 miss）；修复后 = 文案兜底命中限流环。
+
+// StreamErrorer 流内错误事件模型契约（LLM-ERR-A）。handler 在流式请求
+// 下先问 ShouldError()——true 则走 handleStreamErrorResponse（partial 后
+// 发 error 事件终止），false 走正常 Process 路径（重试轮）。
+type StreamErrorer interface {
+	Model
+	ShouldError() bool
+	ErrorPayload() string
+	PartialContent() string
+}
+
+// serrPartialContent error 事件前发出的确定性 partial（断言错误通知携带
+// 全文 + 成功回复不含 partial 双断言的 marker）。刻意避开错误分类词表
+// 污染面。
+const serrPartialContent = "SERR_PARTIAL_A1：这是流内错误事件前的半截内容，"
+
+// streamErrEvent 组装 SSE error 事件载荷 JSON。code<=0 时不带 code 键
+// （nocode 变体形态）。
+func streamErrEvent(code int, message string) string {
+	inner := map[string]interface{}{"message": message}
+	if code > 0 {
+		inner["code"] = code
+	}
+	b, _ := json.Marshal(map[string]interface{}{"error": inner})
+	return string(b)
+}
+
+// TestAIStreamErrCode 带码变体：奇数次发 error（code=429 + 无词表词文案）。
+type TestAIStreamErrCode struct {
+	calls atomic.Int64
+}
+
+func NewTestAIStreamErrCode() *TestAIStreamErrCode { return &TestAIStreamErrCode{} }
+func (m *TestAIStreamErrCode) Name() string         { return "testai-serr-code-1.0" }
+func (m *TestAIStreamErrCode) Delay() time.Duration { return 0 }
+
+// ShouldError 全局请求计数奇偶：1/3/5… error，2/4/6… 完整。跨请求持久
+// （进程生命周期）——场景串行的前提下每对请求恰好一错一成。
+func (m *TestAIStreamErrCode) ShouldError() bool {
+	return m.calls.Add(1)%2 == 1
+}
+
+func (m *TestAIStreamErrCode) ErrorPayload() string {
+	return streamErrEvent(429, "SERR_CODE_429_MARK upstream busy, try later")
+}
+
+func (m *TestAIStreamErrCode) PartialContent() string { return serrPartialContent }
+
+// Process 偶数次（重试）请求的完整回复；刻意不含 SERR_PARTIAL marker。
+func (m *TestAIStreamErrCode) Process(messages []Message) string {
+	return "SERR_RETRY_OK: retry succeeded (code variant)"
+}
+
+// TestAIStreamErrNoCode 无码变体：奇数次发 error（纯 message 复刻
+// cc-switch 实测文案）。
+type TestAIStreamErrNoCode struct {
+	calls atomic.Int64
+}
+
+func NewTestAIStreamErrNoCode() *TestAIStreamErrNoCode { return &TestAIStreamErrNoCode{} }
+func (m *TestAIStreamErrNoCode) Name() string          { return "testai-serr-nocode-1.0" }
+func (m *TestAIStreamErrNoCode) Delay() time.Duration  { return 0 }
+
+func (m *TestAIStreamErrNoCode) ShouldError() bool {
+	return m.calls.Add(1)%2 == 1
+}
+
+func (m *TestAIStreamErrNoCode) ErrorPayload() string {
+	return streamErrEvent(0, "Concurrency limit exceeded for account")
+}
+
+func (m *TestAIStreamErrNoCode) PartialContent() string { return serrPartialContent }
+
+func (m *TestAIStreamErrNoCode) Process(messages []Message) string {
+	return "SERR_RETRY_OK: retry succeeded (nocode variant)"
+}

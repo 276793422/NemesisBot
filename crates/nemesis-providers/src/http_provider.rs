@@ -895,27 +895,39 @@ impl HttpProvider {
                         // `"error": null`（部分 Azure 形态每 chunk 带该键）
                         // 不误判。partial 正文已作为 Ok chunk 发出的部分随
                         // StreamInterrupted 携带（聚合侧既有语义），不丢。
+                        // `classify_stream_error_payload` 统一入口（码探测
+                        // → type 枚举 → 文案兜底）。2026-11-17 治本：此前
+                        // 只抽 message 丢 code——cc-switch 实测流内
+                        // `{"error":{"code":429,...}}` 的状态码被丢弃，文案
+                        // 不在两级词表 → Unknown 不可重试，429 信号永不进
+                        // 限流退避环（零退避立即重试打回限流上游 = 风暴）。
+                        // 位处终态后帧闸之后：finish 已发后到达的
+                        // error 事件被闸吞掉（终态唯一性契约——二次 Err 会让
+                        // 覆盖式聚合侧把干净终态改写成 StreamInterrupted）。
+                        // `"error": null`（部分 Azure 形态每 chunk 带该键）
+                        // 不误判。
                         if parsed.get("error").is_some_and(|e| !e.is_null()) {
-                            let msg = parsed
+                            // 日志现场：上游原始文案（RateLimit/Auth 等变体
+                            // 槽位无 message，Display 不含上游原文）。
+                            let raw_msg = parsed
                                 .pointer("/error/message")
                                 .and_then(|m| m.as_str())
                                 .or_else(|| parsed.get("error").and_then(|e| e.as_str()))
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "upstream SSE error event: {}",
-                                        data.chars().take(200).collect::<String>()
-                                    )
-                                });
-                            let err = crate::failover::classify_message_error(
+                                .unwrap_or("<no message field>");
+                            let err = crate::failover::classify_stream_error_payload(
+                                &parsed,
                                 &provider_name,
                                 &model,
-                                &msg,
+                                format!(
+                                    "upstream SSE error event: {}",
+                                    data.chars().take(200).collect::<String>()
+                                ),
                             );
                             tracing::warn!(
                                 provider = %provider_name,
                                 model = %model,
-                                error_message = %msg,
+                                error_message = %raw_msg,
+                                classified = %err,
                                 "[Provider] SSE stream error event"
                             );
                             let _ = tx.send(Err(err)).await;

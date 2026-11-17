@@ -113,6 +113,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			h.handleStreamBreakResponse(c, model.Name(), breaker.PartialContent())
 			return
 		}
+		// LLM-ERR-A 流内错误事件：流不断，HTTP 200 建流后中途发 error
+		// 事件再终止（one-api / LiteLLM / CC Switch 实测形态）——状态码
+		// 在流内载荷里，与传输层错误、HTTP 状态码路径都是不同的到达面。
+		if errer, ok := model.(models.StreamErrorer); ok && errer.ShouldError() {
+			h.handleStreamErrorResponse(c, model.Name(), errer.PartialContent(), errer.ErrorPayload())
+			return
+		}
 	}
 
 	// 处理消息
@@ -363,6 +370,65 @@ func (h *Handler) handleStreamBreakResponse(c *gin.Context, modelName, content s
 		return
 	}
 	_ = conn.Close()
+}
+
+// handleStreamErrorResponse LLM-ERR-A 流内错误事件响应——SSE 前缀正常
+// （role 块 + partial 内容块，与正常流/中断流同形态），partial 发完后发
+// 一个 `data: {"error": {...}}` 事件，然后**不发 finish/[DONE] 直接结束**
+// （error 事件语义上终止流，真实网关行为；客户端 error 事件处理路径
+// 收到 Err 即返回，不会读到 EOF）。与 handleStreamBreakResponse 的本质
+// 区别：传输层完好（chunked 帧正常收尾），错误以应用层事件到达——
+// 复现「状态码在流内载荷里」的到达面。
+func (h *Handler) handleStreamErrorResponse(c *gin.Context, modelName, content, errorPayload string) {
+	// 设置 SSE headers（与正常流式/中断流同款）
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("Access-Control-Allow-Origin", "*")
+
+	chatID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	created := time.Now().Unix()
+
+	// 1. role 块（与正常流式同形态）
+	roleChunk := models.StreamChunk{
+		ID:      chatID,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   modelName,
+		Choices: []models.StreamChoice{
+			{
+				Index:        0,
+				Delta:        models.Delta{Role: "assistant", Content: ""},
+				FinishReason: nil,
+			},
+		},
+	}
+	h.sendSSEChunk(c.Writer, roleChunk)
+
+	// 2. partial 内容块（逐字符，与正常流同节奏）
+	for _, char := range content {
+		contentChunk := models.StreamChunk{
+			ID:      chatID,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   modelName,
+			Choices: []models.StreamChoice{
+				{
+					Index:        0,
+					Delta:        models.Delta{Content: string(char)},
+					FinishReason: nil,
+				},
+			},
+		}
+		h.sendSSEChunk(c.Writer, contentChunk)
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// 3. 流内 error 事件（预序列化载荷直发），不发 finish/[DONE]。
+	c.Writer.Write([]byte("data: "))
+	c.Writer.Write([]byte(errorPayload))
+	c.Writer.Write([]byte("\n\n"))
+	c.Writer.Flush()
 }
 
 // handleStreamingResponseWithTools 处理带工具调用的流式响应
