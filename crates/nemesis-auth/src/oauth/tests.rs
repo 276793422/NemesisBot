@@ -2622,3 +2622,79 @@ fn http_client_err_message_names_zero_timeout_refusal() {
     assert!(msg.contains("refusing zero-timeout"));
     assert!(msg.contains("synthetic-root-cause"));
 }
+
+/// BUG-20261117-075 回归锁：OAuth HTTP client 重定向策略行为级测试。
+/// refresh_access_token 把 refresh_token 放 POST body——跨主机 307 不得
+/// 跟随。策略生效：307 作为最终响应走 `!is_success` 错误臂（错误值任意），
+/// 第二跳哨兵等不到连接；策略漏挂时 reqwest 对 307 保方法保 body 跟随，
+/// 哨兵捕获带 refresh_token 的请求 → 断言红。
+#[tokio::test]
+async fn refresh_client_stops_cross_host_redirect() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l_a = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let l_b = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port_b = l_b.local_addr().unwrap().port();
+    let issuer_a = format!("http://127.0.0.1:{}", l_a.local_addr().unwrap().port());
+
+    // 第二跳哨兵：策略生效时永远等不到连接。
+    let sentry_b = tokio::spawn(async move {
+        let (mut sock, _) = l_b.accept().await.unwrap();
+        let mut buf = [0u8; 2048];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+    // 第一跳：收请求 → 回 307 + Location 指第二跳（307 保留 method+body）。
+    let hop_a = tokio::spawn(async move {
+        let (mut sock, _) = l_a.accept().await.unwrap();
+        let mut buf = [0u8; 2048];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        let req = String::from_utf8_lossy(&buf[..n]).to_string();
+        let resp = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:{port_b}/oauth/token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        sock.write_all(resp.as_bytes()).await.unwrap();
+        req
+    });
+
+    let cfg = OAuthProviderConfig {
+        issuer: issuer_a,
+        client_id: "test-client".to_string(),
+        scopes: String::new(),
+        originator: "nemesisbot".to_string(),
+        port: 0,
+        request_timeout_secs: 5,
+    };
+    let cred = AuthCredential {
+        access_token: "stale".to_string(),
+        refresh_token: Some("SECRET-REFRESH-TOKEN".to_string()),
+        expires_at: None,
+        provider: "test".to_string(),
+        auth_method: "test".to_string(),
+        account_id: None,
+    };
+    let result = cfg.refresh_access_token(&cred).await;
+
+    // 策略生效：跨主机 307 被终停，3xx 作为最终响应进 !is_success 错误臂。
+    assert!(
+        result.is_err(),
+        "cross-host 307 must surface as an error, not be followed"
+    );
+
+    // 第一跳确实收到了 refresh POST（证明请求走过配置的 issuer）。
+    let first_req = tokio::time::timeout(std::time::Duration::from_secs(3), hop_a)
+        .await
+        .expect("first hop must complete")
+        .expect("hop_a task");
+    assert!(
+        first_req.contains("grant_type=refresh_token"),
+        "first hop must receive the refresh POST, got: {first_req}"
+    );
+
+    // 第二跳 300ms 静默 = 诚实通过；收到请求 = 策略被摘 → 红。
+    let leaked = tokio::time::timeout(std::time::Duration::from_millis(300), sentry_b).await;
+    assert!(
+        leaked.is_err(),
+        "cross-host redirect must not be followed; second hop saw: {:?}",
+        leaked.map(|r| r.ok())
+    );
+}

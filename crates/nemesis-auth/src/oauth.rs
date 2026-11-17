@@ -30,6 +30,14 @@ fn http_client(cfg: &OAuthProviderConfig) -> Result<reqwest::Client, String> {
     let secs = resolve_timeout_secs(cfg.request_timeout_secs);
     reqwest::Client::builder()
         .timeout(Duration::from_secs(secs))
+        // 凭据随重定向跨主机泄漏防线（BUG-20261117-075；单一真相源
+        // `nemesis_utils::http_redirect`——同源跟随/跨源终停）：refresh /
+        // code 交换 / device 轮询把 refresh_token / code_verifier /
+        // device_code 放请求体，reqwest 默认策略对跨主机 307/308 保方法
+        // 转发 body、自定义头原样带去目标主机——凭据直接出站。provider
+        // 六 lane / channels / MCP / search 均已挂同款策略，本函数是凭据
+        // lane 家族横向扫的最后一个漏网点。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()
         .map_err(|e| {
             format!(
