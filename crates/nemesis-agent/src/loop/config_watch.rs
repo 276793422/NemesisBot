@@ -1011,11 +1011,15 @@ impl AgentLoop {
 
     /// 内置 slash 命令名（与 [`Self::handle_command_with_context`] 的 match 臂
     /// **同步维护**）：自定义命令表命中这些名字时跳过改写——内置优先。
-    /// `compact`/`clear` 是 会话维护命令（gate 内 `parse_maintenance_command`
+    /// `compact`/`clear`/`undo` 是 会话维护命令（gate 内 `parse_maintenance_command`
     /// 拦截，有副作用，同样不许被自定义命令表遮蔽）；`plan`/`build` 是
-    /// 模式切换（gate 内独立臂，要先拿 chat_id 发布 ModeChanged）。
-    /// 清单本体收敛到 `nemesis_types::constants:BUILTIN_SLASH_COMMANDS`
+    /// 模式切换（gate 内独立臂，要先拿 chat_id 发布 ModeChanged）；
+    /// `approve`/`deny` 是 IM 审批卡回执（gate `parse_approval_reply` 短路，
+    /// 遮蔽 = 丢静态确认 + 误起 agent 轮）；`discipline` 是纪律切换
+    /// （gate 独立臂）。清单本体收敛到
+    /// `nemesis_types::constants:BUILTIN_SLASH_COMMANDS`
     /// （dashboard `commands.list` 的 `builtins` 下发同源），这里只做转发。
+    /// BUG-20261118-093：**新增 gate 短路臂必须同步补清单**。
     pub(crate) const BUILTIN_SLASH_COMMANDS: &'static [&'static str] =
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS;
 

@@ -136,6 +136,48 @@ async fn builtin_names_skip_rewrite() {
     assert_eq!(out, "/model deepseek-v4");
 }
 
+/// 回归锁（BUG-20261118-093）：gate 短路名（审批回执）必须对自定义
+/// 命令表免疫——命令表里若有同名 `approve` 条目，`/approve <id>` 若被
+/// 展开成模板文本，gate 的 `parse_approval_reply` 就接不到（丢静态确认
+/// + 误起一轮无意义 agent 对话）。改写层必须在查表前跳过这些名字。
+#[tokio::test]
+async fn gate_shortcut_names_skip_command_table() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.commands.json"),
+        r#"{
+  "commands": [
+    { "name": "approve", "description": "d",
+      "prompt": "请评估是否同意：$ARGUMENTS" },
+    { "name": "discipline", "description": "d",
+      "prompt": "解释纪律模式：$ARGUMENTS" }
+  ]
+}"#,
+    )
+    .unwrap();
+    let al = loop_with_commands_table(dir.path());
+
+    for raw in [
+        "/approve abc123",
+        "/deny def456",
+        "/discipline off 已验证完毕",
+    ] {
+        let out = msg_content_after(&al, raw).await;
+        assert_eq!(out, raw, "gate 短路名被命令表改写: {raw} -> {out}");
+    }
+}
+
+/// 回归锁（BUG-20261118-093 技能回落臂）：gate 短路名对已装技能同样
+/// 免疫——同名技能不得把 `/approve <id>` 改写成技能驱动提示词。
+#[tokio::test]
+async fn gate_shortcut_names_skip_skill_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = loop_with_skill(dir.path(), "approve");
+
+    let out = msg_content_after(&al, "/approve abc123").await;
+    assert_eq!(out, "/approve abc123");
+}
+
 #[tokio::test]
 async fn unknown_name_and_non_slash_untouched() {
     let dir = tempfile::tempdir().unwrap();
@@ -302,8 +344,16 @@ fn builtin_list_matches_shared_truth_source() {
         AgentLoop::BUILTIN_SLASH_COMMANDS,
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS
     );
-    for name in ["compact", "clear", "plan", "build"] {
+    for name in ["compact", "clear", "plan", "build", "undo"] {
         assert!(AgentLoop::BUILTIN_SLASH_COMMANDS.contains(&name));
+    }
+    // BUG-20261118-093：gate 短路臂（审批回执 + 纪律切换）必须在名单内
+    // ——缺项 = 同名自定义命令/技能在 gate 前被改写展开，短路失守。
+    for name in ["approve", "deny", "discipline"] {
+        assert!(
+            AgentLoop::BUILTIN_SLASH_COMMANDS.contains(&name),
+            "gate 短路名 {name} 缺席内置名单（会被自定义命令/技能遮蔽）"
+        );
     }
 }
 
