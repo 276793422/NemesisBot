@@ -1670,11 +1670,38 @@ fn test_directory_security_rules_defaults_v2() {
 
 #[test]
 fn test_clamav_engine_config_default() {
+    // BUG-20261118-089：Default 收敛为出厂模板/CLI 同款健值集（此前 derive
+    // 零值使 Dashboard scanner.add 物化 max_file_size=0（尺寸闸关）/
+    // skip_extensions=[]（全量扫描）/ update_interval=""（自动更新循环不
+    // 启动））。值集与 config.scanner.default.json clamav 条目一致。
     let cfg = ClamAVEngineConfig::default();
     assert!(cfg.url.is_empty());
-    assert!(!cfg.scan_on_write);
+    assert!(cfg.scan_on_write);
     assert!(!cfg.scan_on_download);
+    assert!(cfg.scan_on_exec);
+    assert_eq!(cfg.address, "127.0.0.1:3310");
+    assert_eq!(cfg.max_file_size, 52_428_800);
+    assert_eq!(cfg.update_interval, "24h");
+    assert_eq!(cfg.skip_extensions.len(), 9);
     assert!(cfg.scan_extensions.is_empty());
+}
+
+#[test]
+fn test_clamav_engine_config_partial_parse_keeps_sane_defaults() {
+    // BUG-20261118-089 第二入口：engine.update_config 先 serde 解析存量条目
+    // 再整结构回写——存储 JSON 缺失键走 serde 缺省，必须答出健值而非零值，
+    // 否则一次任意字段的更新会把 0/""/[] 物化落盘。
+    let parsed: ClamAVEngineConfig =
+        serde_json::from_str(r#"{"url": "https://example.com/c.zip"}"#).unwrap();
+    assert_eq!(parsed.url, "https://example.com/c.zip");
+    assert!(parsed.scan_on_write);
+    assert!(parsed.scan_on_exec);
+    assert!(!parsed.scan_on_download);
+    assert_eq!(parsed.address, "127.0.0.1:3310");
+    assert_eq!(parsed.max_file_size, 52_428_800);
+    assert_eq!(parsed.update_interval, "24h");
+    assert_eq!(parsed.skip_extensions.len(), 9);
+    assert!(parsed.scan_extensions.is_empty());
 }
 
 #[test]

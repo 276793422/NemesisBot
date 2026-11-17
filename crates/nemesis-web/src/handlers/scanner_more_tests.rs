@@ -535,10 +535,12 @@ async fn test_engine_update_config_wrong_types_are_ignored() {
         .unwrap()
         .unwrap();
     let engines = result["engines"].as_array().unwrap();
-    // Wrong types — original values preserved.
+    // Wrong types — original values preserved (url 显式值原样；未显式设置的
+    // 字段保留 BUG-20261118-089 后的健值缺省——与出厂模板/CLI 同款，
+    // 不再是旧零值形态）。
     assert_eq!(engines[0]["url"], "https://orig.example.com/c.zip");
-    assert_eq!(engines[0]["max_file_size"], 0);
-    assert!(!engines[0]["scan_on_write"].as_bool().unwrap());
+    assert_eq!(engines[0]["max_file_size"], 52_428_800);
+    assert!(engines[0]["scan_on_write"].as_bool().unwrap());
 }
 
 #[tokio::test]

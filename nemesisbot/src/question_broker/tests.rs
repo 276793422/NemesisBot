@@ -1,7 +1,8 @@
 //! WebQuestionBroker 单元测试。
 //!
 //! 覆盖八条路径：作答送达 + pending 清理 / 超时 Timeout 结局 + 迟到 respond
-//! unknown / 双 respond 竞速先到先得 / 载荷校验（空选择、非候选、单选多项
+//! unknown + 超时竞速宽限（deadline 后宽限窗内作答送达 / 宽限耗尽诚实
+//! unknown，BUG-20261118-088 回归锁）/ 双 respond 竞速先到先得 / 载荷校验（空选择、非候选、单选多项
 //! ——校验失败请求留在 pending 可重试）/ pending 列表元数据 / 广播事件
 //! （QuestionAsked 载荷 + QuestionResolved answered/timeout 两路）。等待侧
 //! 测试在纯同步线程跑（走 `recv` 直等分支）。
@@ -206,13 +207,78 @@ fn timeout_returns_timeout_outcome_and_removes_pending() {
     let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
     let result_rx = ask_async(broker.clone(), "q-t", 1);
     let outcome = result_rx
-        .recv_timeout(Duration::from_secs(5))
+        // 宽限臂（BUG-20261118-088）使 ask 总时长 = deadline+2s 宽限 ≈3s，
+        // 且全并行 slot_lock 单锁排队（队尾等待 = 前序持锁测试之和，宽限
+        // 又给 3 个超时形态各 +2s）——首轮 5s、二轮 10s 都在并行下假红，
+        // 对齐套件 30s 预算先例取 20s。
+        .recv_timeout(Duration::from_secs(20))
         .unwrap()
         .unwrap();
     assert_eq!(outcome, QuestionOutcome::Timeout, "timeout must not be Err");
     assert!(broker.pending().is_empty(), "timeout must clean pending");
     // 超时后迟到的 respond 诚实报 unknown。
     assert!(broker.respond("q-t", vec!["pnpm".into()]).is_err());
+}
+
+/// 超时竞速宽限（BUG-20261118-088 回归锁·正向）：deadline 已过但 respond
+/// 落在宽限窗（2s）内 → 照常接受、送达 Answered。旧代码在 recv_timeout 判
+/// 超时后立即摘卡定案：窗口内到达的 respond 被报 Ok(true) + 广播
+/// "answered"，答案却随 rx drop 静默丢弃、模型拿到 Timeout 按「无人作答」
+/// 继续。同族三 broker（web_approval / channel_approval / credential_broker）
+/// 均有宽限臂，本类曾是唯一漏网。
+#[test]
+fn respond_within_grace_after_deadline_is_honored() {
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
+    let result_rx = ask_async(broker.clone(), "q-grace", 1);
+    wait_pending(&broker, 1);
+    // 越过 1s deadline（ask 此刻已进宽限窗）再作答——落在 2s 宽限内。
+    // recv_timeout 只会在 deadline 过后判超时，respond 最早 ≈ insert+1.2s
+    // > deadline，稳定命中宽限臂而非「send 唤醒未到期 recv」的正常路径。
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(
+        broker.respond("q-grace", vec!["pnpm".into()]).is_ok(),
+        "respond past deadline but within grace must be accepted"
+    );
+    match result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap()
+    {
+        QuestionOutcome::Answered(sel) => assert_eq!(sel, vec!["pnpm".to_string()]),
+        other => panic!(
+            "grace-window answer must yield Answered, got {:?} (did the grace arm leak out?)",
+            other
+        ),
+    }
+    assert!(
+        broker.pending().is_empty(),
+        "grace answer must clear pending"
+    );
+}
+
+/// 超时竞速宽限（BUG-20261118-088 回归锁·反向）：宽限有界——越过
+/// deadline+宽限（1+2s）再作答 → 诚实 unknown；结局 Timeout 定案、pending
+/// 清空（宽限不得变成无限延期）。
+#[test]
+fn respond_after_grace_expiry_is_unknown_and_timeout_finalizes() {
+    let broker = std::sync::Arc::new(WebQuestionBroker::new(None));
+    let result_rx = ask_async(broker.clone(), "q-post", 1);
+    wait_pending(&broker, 1);
+    // deadline(1s)+宽限(2s)=3s，留 1.2s 调度余量再作答。
+    std::thread::sleep(Duration::from_millis(4200));
+    assert!(
+        broker.respond("q-post", vec!["pnpm".into()]).is_err(),
+        "respond past grace window must be rejected as unknown"
+    );
+    let outcome = result_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, QuestionOutcome::Timeout);
+    assert!(
+        broker.pending().is_empty(),
+        "grace expiry must finalize and clear pending"
+    );
 }
 
 #[test]
@@ -319,7 +385,8 @@ async fn broadcast_carries_ask_payload_and_resolved_on_answer_and_timeout() {
     assert_eq!(resolved["data"]["question_id"], "q-b2");
     assert_eq!(resolved["data"]["decision"], "timeout");
     let outcome = result_rx
-        .recv_timeout(Duration::from_secs(5))
+        // 宽限臂使 timeout 广播推迟到 deadline+2s（同上排队考量，20s）。
+        .recv_timeout(Duration::from_secs(20))
         .unwrap()
         .unwrap();
     assert_eq!(outcome, QuestionOutcome::Timeout);

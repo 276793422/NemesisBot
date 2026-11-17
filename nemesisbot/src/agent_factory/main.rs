@@ -231,7 +231,13 @@ pub fn build_agent_loop(
     // 纯观察者（不改写/不拦截），事件由 gateway 建、web pump 消费。
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（work 时间线 /
+            // Dashboard 事件面不落复扫前原文；与 dispatch 尾部权威复扫同源）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     // （devtool-upgrade）：事件发送端注入 loop——/plan /build 切换

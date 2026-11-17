@@ -1181,6 +1181,31 @@ impl AgentLoop {
         self.work_recorder.clone()
     }
 
+    /// BUG-20261118-090：ToolEventHook 预览净化器（factory 注入用）——与
+    /// dispatch 尾部出侧复扫（`output_rescan::rescan_tool_output`）同源
+    /// 同一 SecurityPlugin 实例，让 `ToolFinished.result_preview` / work
+    /// 时间线预览不落复扫前原文（模型上下文已脱敏而观测面/落盘面拿原文
+    /// 的口径分裂）。只净化预览副本，不触碰 dispatch 权威复扫语义。
+    /// 安全 feature 裁掉或插件未装配 = `None`（预览原样，退回旧形态）。
+    #[cfg(feature = "security")]
+    pub fn output_preview_sanitizer(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>> {
+        let plugin = self.security.security_plugin.clone()?;
+        Some(std::sync::Arc::new(
+            move |tool: &str, result: &str| -> String {
+                output_rescan::rescan_tool_output(Some(plugin.as_ref()), tool, result.to_string())
+            },
+        ))
+    }
+
+    #[cfg(not(feature = "security"))]
+    pub fn output_preview_sanitizer(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>> {
+        None
+    }
+
     /// 急停中断面的 ToolFinished 补发。被 estop
     /// select 臂 drop 的执行链（含 ToolEventHook）发不出终态——按 hook 同一
     /// 发射点（Work 累加器 + broadcast）补发 interrupted 记录：同 call_id

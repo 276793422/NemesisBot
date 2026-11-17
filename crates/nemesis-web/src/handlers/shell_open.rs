@@ -25,7 +25,9 @@
 //!
 //! macOS/Linux 臂保持 `open` / `open -R` / `xdg-open` spawn（平台激活
 //! 行为正确，无需看门）。spawn 均不经 shell（`Command::arg` 直传，路径
-//! 含空格/特殊字符安全）；spawn 失败诚实返错。
+//! 含空格/特殊字符安全）；spawn 失败诚实返错。spawn 成功后经
+//! [`nemesis_utils::spawn_reap`] 后台收尸（BUG-20261117-087：裸 drop
+//! std Child 在 Unix 长命 gateway 下留僵尸，持续累积）。
 
 use std::path::Path;
 
@@ -338,7 +340,13 @@ fn spawn_detached(
     make: impl FnOnce() -> std::io::Result<std::process::Child>,
     err_prefix: &str,
 ) -> Result<(), String> {
-    make().map(|_| ()).map_err(|e| format!("{err_prefix}: {e}"))
+    // BUG-20261117-087：转发 utils 单一真相源（spawn + 后台收尸线程）。
+    // 此前本包装只做错误映射、Child 直接 drop——Unix 长命 gateway 下每次
+    // 打开动作留一个僵尸进程；名字宣称 detached 实际无收尸语义，现名实
+    // 相符（Windows 无僵尸概念，收尸线程等价无害空转）。
+    nemesis_utils::spawn_reap::spawn_detached(make)
+        .map(|_| ())
+        .map_err(|e| format!("{err_prefix}: {e}"))
 }
 
 #[cfg(test)]

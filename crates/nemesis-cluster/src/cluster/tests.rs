@@ -4598,11 +4598,12 @@ fn test_confirm_delivery_with_call_fn_fallback() {
 }
 
 // -- 9. confirm_delivery with neither client nor fn --------------------------
-// NOTE: confirm_delivery() has a potential deadlock when call_with_context_fn
-// is None: it locks the mutex, then falls back to call_with_context() which
-// also tries to lock the same mutex. Instead we test the free function
-// confirm_delivery_with directly, which is the async path used by the
-// recovery loop.
+// NOTE: confirm_delivery() used to self-deadlock (guard held across the
+// fallback that re-locked the same mutex) -- root-fixed to a clone-out
+// shape, see the confirm_delivery comment in tasks.rs. This test still
+// targets the free function confirm_delivery_with (the async path used by
+// the recovery loop) as an independent regression lock alongside the
+// method-level coverage.
 
 #[tokio::test]
 async fn test_confirm_delivery_neither_client_nor_fn() {

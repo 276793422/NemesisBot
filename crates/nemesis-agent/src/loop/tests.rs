@@ -4157,6 +4157,79 @@ async fn test_handle_tool_call_with_security_block() {
     );
 }
 
+// BUG-20261118-090：output_preview_sanitizer 同源集成——插件在位时净化器
+// 脱敏真实凭据形态（与 dispatch 尾部 rescan 同一 plugin 语义）；插件缺席
+// = None（预览原样，退回旧形态）。
+#[cfg(feature = "security")]
+#[test]
+fn output_preview_sanitizer_masks_real_credential_when_plugin_present() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    use nemesis_security::types::SecurityRule;
+
+    let config = SecurityPluginConfig {
+        enabled: true,
+        injection_enabled: false,
+        injection_threshold: 0.7,
+        command_guard_enabled: false,
+        credential_enabled: true,
+        dlp_enabled: false,
+        dlp_action: "block".to_string(),
+        dlp_enabled_rules: vec![],
+        dlp_low_confidence_action: "log".to_string(),
+        dlp_inbound_action: "log".to_string(),
+        ssrf_enabled: false,
+        ssrf_allowed_hosts: vec![],
+        audit_chain_enabled: false,
+        audit_chain_path: None,
+        audit_log_enabled: false,
+        audit_log_dir: None,
+        default_action: "deny".to_string(),
+        approval_timeout_secs: 300,
+        log_all_operations: true,
+        preexec_scan_enabled: false,
+        file_rules: vec![],
+        dir_rules: vec![],
+        process_rules: vec![],
+        network_rules: vec![],
+        hardware_rules: vec![],
+        registry_rules: vec![SecurityRule {
+            pattern: ".*".to_string(),
+            action: "allow".to_string(),
+            comment: "allow all (本测只打出侧复扫面)".to_string(),
+        }],
+    };
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_security_plugin(Arc::new(SecurityPlugin::new(config)));
+    let sanitize = agent_loop
+        .output_preview_sanitizer()
+        .expect("插件在位 = 净化器必须在位");
+    // 注：AWS 官方文档示例键（AKIAIOSFODNN7EXAMPLE）被豁免表
+    // is_canonical_doc_example 刻意放行（文档占位符不是泄漏），此处用
+    // 非 example 形态的真实键格式断言遮蔽。
+    let raw = "aws_key = AKIAQWERNMXC7H2K9PL4 and more content here to pass length gate";
+    let out = sanitize("read_file", raw);
+    assert!(
+        !out.contains("AKIAQWERNMXC7H2K9PL4"),
+        "净化器必须遮蔽真实凭据形态: {out}"
+    );
+    assert!(
+        out.contains("[REDACTED_CREDENTIAL]"),
+        "出侧脱敏标记必须在位: {out}"
+    );
+    // 无命中文本直通（净化器不改写干净输出）。
+    let clean = sanitize("read_file", "plain output without secrets");
+    assert_eq!(clean, "plain output without secrets");
+}
+
+#[test]
+fn output_preview_sanitizer_none_without_plugin() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    assert!(
+        agent_loop.output_preview_sanitizer().is_none(),
+        "插件缺席 = None（预览原样，退回旧形态）"
+    );
+}
+
 #[tokio::test]
 async fn test_checkpoint_e2e_write_then_rewind_restores() {
     // AgentLoop-level e2e: write_file snapshots pre-edit content via the
