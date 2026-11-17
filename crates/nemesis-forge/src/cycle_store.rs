@@ -152,9 +152,13 @@ impl CycleStore {
     /// Get the latest cycle record across all files.
     pub async fn load_latest_cycle(&self) -> std::io::Result<Option<LearningCycle>> {
         let mut cycles = self.read_cycles(None).await?;
-        // read_dir order is unspecified — sort by started_at so.last() is the
-        // genuinely newest cycle (F-: the old code returned an arbitrary one).
-        cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+        // read_dir order is unspecified — sort by started_at so `last()` is
+        // the genuinely newest cycle (F-: the old code returned an arbitrary
+        // one). BUG-20261118-140：started_at 产自 `to_rfc3339()`（带本地
+        // offset），裸字符串字典序在混 offset 数据（跨 DST/时区变更后同批
+        // 混存）上与真实时刻序不一致——与 pattern.rs/064 同源纪律，解析
+        // 后比较；排序键单一真相源 rfc3339_order。
+        cycles.sort_by(|a, b| crate::pattern::rfc3339_order(&a.started_at, &b.started_at));
         Ok(cycles.into_iter().last())
     }
 
@@ -200,8 +204,19 @@ impl CycleStore {
                 // Extract date from filename (YYYYMMDD.jsonl)
                 let date_part = name_str.trim_end_matches(".jsonl");
                 if date_part < cutoff_str.as_str() {
-                    tokio::fs::remove_file(file_entry.path()).await?;
-                    removed += 1;
+                    // BUG-20261118-145：单文件删除失败不中断整个 sweep
+                    //（Windows AV/索引器瞬时句柄是常态不是异常；同族
+                    // 对照组 reflector::cleanup_reports 等均为逐文件
+                    // 容错）。旧代码 `?` 硬上浮 = 余下文件全部漏删且
+                    // caller 无感知。
+                    match tokio::fs::remove_file(file_entry.path()).await {
+                        Ok(()) => removed += 1,
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            path = %file_entry.path().display(),
+                            "[CycleStore] cleanup remove failed, skipping file"
+                        ),
+                    }
                 }
             }
         }

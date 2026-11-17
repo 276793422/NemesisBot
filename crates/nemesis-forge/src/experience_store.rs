@@ -90,8 +90,22 @@ impl ExperienceStore {
                 // Extract date from filename (YYYYMMDD.jsonl)
                 let date_part = name_str.trim_end_matches(".jsonl");
                 if date_part < cutoff_str.as_str() {
-                    tokio::fs::remove_file(file_entry.path()).await?;
-                    removed += 1;
+                    // BUG-20261118-145：单文件删除失败不中断整个 sweep。
+                    // Windows AV/索引器瞬时句柄是常态不是异常（仓库纪律；
+                    // 同族对照组 reflector::cleanup_reports /
+                    // check_suggestion_adoption / cleanup_prompt_suggestions
+                    // 均为逐文件容错）。旧代码 `?` 硬上浮 = 本轮余下文件
+                    // 全部漏删，且下方平文件 trim 被整体跳过、caller
+                    // （run_cleanup_cycle 的 `if let Ok(..)`）静默吞
+                    // Err——清理永久失效零可观测。
+                    match tokio::fs::remove_file(file_entry.path()).await {
+                        Ok(()) => removed += 1,
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            path = %file_entry.path().display(),
+                            "[ExperienceStore] cleanup remove failed, skipping file"
+                        ),
+                    }
                 }
             }
         }
