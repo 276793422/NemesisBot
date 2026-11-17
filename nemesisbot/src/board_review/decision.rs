@@ -638,6 +638,19 @@ pub(crate) fn park_with_handoff(
     issue_id: i64,
     spec: nemesis_board::handoff::HandoffSpec,
 ) -> String {
+    // 批三（无人值守加固）：停车推送发射（单一收口 = 本函数）。档案
+    // 写失败不阻断通知（停车优先），推送失败同样只 WARN（notify.rs）。
+    super::notify::emit_park_notice(
+        &deps.home,
+        &super::notify::ParkNotice {
+            issue_number: issue_number.to_string(),
+            issue_id,
+            stop_kind: spec.stop_kind,
+            suggested_action: spec.suggested_action,
+            hint: spec.hint.clone(),
+            resume_entry: spec.resume_entry.clone(),
+        },
+    );
     let chain = nemesis_board::handoff::verdict_chain_from(&deps.store, issue_id);
     match nemesis_board::handoff::write_handoff(
         &deps.workspace,

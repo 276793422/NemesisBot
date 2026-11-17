@@ -437,6 +437,16 @@ impl Config {
             );
             board.autonomy = BoardAutonomy::Assisted;
         }
+        // 批一①（无人值守加固）：unlimited + 预算保险丝三维全关的组合
+        // WARN（纯可观测不拦截——用户显式选择不是错误）。谓词单一真相源
+        // BoardFlagConfig::unlimited_without_budget_fuse（sections/board.rs）。
+        if let Some(board) = self.board.as_ref()
+            && board.unlimited_without_budget_fuse()
+        {
+            warn!(
+                "[Config] board.unlimited_mode=true 且预算保险丝三维全关（max_total_redispatch=0 / wall_clock_budget_secs=0 / max_tokens_per_parent=0）：FAIL 重派无资源上限，签名逐轮翻转的失败不在任何停车闸内。无人值守请配置 board.budget.*（0=关该维是刻意的，后果自担）；estop 可随时止血"
+            );
+        }
     }
 
     /// Adjust hardcoded default paths to respect NEMESISBOT_HOME.
@@ -773,3 +783,8 @@ mod hot_reload_tests;
 // Debug 输出不落明文凭据。
 #[cfg(test)]
 mod channels_debug_redaction_tests;
+
+// 无人值守加固配置面：unlimited+预算全关组合谓词（批一①）/
+// transient_retry 两键（批二）/ board.notify 段（批三）默认与解析。
+#[cfg(test)]
+mod unattended_hardening_tests;
