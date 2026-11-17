@@ -397,7 +397,12 @@ pub fn build_agent_loop_from_spec(
     agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（同主 loop）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());

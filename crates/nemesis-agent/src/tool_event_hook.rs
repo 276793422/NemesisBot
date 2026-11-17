@@ -49,6 +49,12 @@ pub(crate) fn truncate_chars(s: &str, cap: usize) -> String {
 pub struct ToolEventHook {
     tx: broadcast::Sender<AgentEvent>,
     work: crate::work_timeline::WorkRecorder,
+    /// BUG-20261118-090：result 预览净化器（factory 经
+    /// [`crate::r#loop::AgentLoop::output_preview_sanitizer`] 注入，与
+    /// dispatch 尾部出侧复扫同源同 plugin）。`None`（测试 / 无安全构建）
+    /// = 预览原样截断，行为不变。只作用于**预览副本**——返回给 dispatch
+    /// 的原始 result 不经此处（权威复扫在 dispatch 尾，语义不变）。
+    sanitize: Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>>,
 }
 
 impl ToolEventHook {
@@ -56,7 +62,20 @@ impl ToolEventHook {
         tx: broadcast::Sender<AgentEvent>,
         work: crate::work_timeline::WorkRecorder,
     ) -> Self {
-        Self { tx, work }
+        Self {
+            tx,
+            work,
+            sanitize: None,
+        }
+    }
+
+    /// 带出侧复扫同源净化器的构造形态（生产装配用；见字段注释）。
+    pub fn new_with_sanitizer(
+        tx: broadcast::Sender<AgentEvent>,
+        work: crate::work_timeline::WorkRecorder,
+        sanitize: Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>>,
+    ) -> Self {
+        Self { tx, work, sanitize }
     }
 }
 
@@ -121,12 +140,23 @@ impl ToolHook for ToolEventHook {
         // （拒绝不是成功，旧 contains 启发式把 ⛔ ESTOP 拒绝标成了 ok）。
         let ok = crate::checks_capture::classify_result(&tool, &result).unwrap_or(false);
 
+        // BUG-20261118-090：预览必须过出侧复扫同源净化器——本 hook 在
+        // dispatch 尾部复扫（tool_dispatch rescan 臂）**之前**拿到工具
+        // 结果，原样截断会把复扫前的明文凭据/敏感信息带进 work 时间线
+        // （session_log jsonl 持久化）与 Dashboard WS/SSE 事件面，而模型
+        // 上下文拿到的已是脱敏后文本——观测面与上下文口径分裂。净化器
+        // 缺席（测试/无安全构建）= 原样截断，行为不变。
+        let preview_source = match &self.sanitize {
+            Some(f) => f(&tool, &result),
+            None => result.clone(),
+        };
+
         self.work.tool_finished(
             &session_key,
             &call_id,
             ok,
             duration_ms,
-            &truncate_chars(&result, RESULT_PREVIEW_CAP),
+            &truncate_chars(&preview_source, RESULT_PREVIEW_CAP),
         );
         let _ = self.tx.send(AgentEvent::ToolFinished {
             session_key,
@@ -135,7 +165,7 @@ impl ToolHook for ToolEventHook {
             tool,
             duration_ms,
             ok,
-            result_preview: truncate_chars(&result, RESULT_PREVIEW_CAP),
+            result_preview: truncate_chars(&preview_source, RESULT_PREVIEW_CAP),
         });
 
         result

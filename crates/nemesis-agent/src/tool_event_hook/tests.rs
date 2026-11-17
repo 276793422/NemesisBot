@@ -219,3 +219,102 @@ async fn hook_name_is_tool_event() {
     let hook = ToolEventHook::new(tx, crate::work_timeline::WorkRecorder::default());
     assert_eq!(ToolHook::name(&hook), "tool-event");
 }
+
+// BUG-20261118-090 回归锁（出侧复扫同源预览净化）：本 hook 在 dispatch
+// 尾部复扫之前拿到工具结果——净化器缺席时，复扫前的明文凭据会经
+// result_preview 落进 work 时间线（session_log jsonl 持久化）与
+// Dashboard WS/SSE 事件面，而模型上下文拿到的已是脱敏后文本（口径分裂，
+// 泄漏面）。装配净化器（生产经 AgentLoop::output_preview_sanitizer 同源
+// 注入；此处用打桩闭包钉 plumbing）后：事件与 work 记录的预览都必须是
+// 净化后文本，返回给 dispatch 的原始 result 不得被改写（权威复扫仍在
+// dispatch 尾，语义不变）。
+#[tokio::test]
+async fn sanitizer_masks_result_preview_but_not_chain_return() {
+    let (tx, mut rx) = broadcast::channel(16);
+    let work = crate::work_timeline::WorkRecorder::default();
+    work.begin("web:s1:main");
+    let raw = "model key: sk-live-abcdef0123456789 end";
+    let hook = ToolEventHook::new_with_sanitizer(
+        tx,
+        work.clone(),
+        Some(Arc::new(|_tool: &str, r: &str| {
+            r.replace("sk-live-abcdef0123456789", "[REDACTED]")
+        })),
+    );
+
+    let returned = hook
+        .around_tool_use(sample_call("{}"), next_returns(raw))
+        .await;
+    assert_eq!(
+        returned, raw,
+        "hook 只净化预览副本，返回给 dispatch 的原始 result 不得改写"
+    );
+
+    let started = rx.recv().await.unwrap();
+    match &started {
+        AgentEvent::ToolStarted { args_preview, .. } => {
+            assert_eq!(args_preview, "{}", "净化器只作用于 result 预览，args 不动");
+        }
+        other => panic!("expected ToolStarted, got {}", other.kind()),
+    }
+    let finished = rx.recv().await.unwrap();
+    match &finished {
+        AgentEvent::ToolFinished { result_preview, .. } => {
+            assert!(
+                !result_preview.contains("sk-live"),
+                "事件预览不得携带复扫前原文: {result_preview}"
+            );
+            assert!(
+                result_preview.contains("[REDACTED]"),
+                "事件预览必须是净化后文本: {result_preview}"
+            );
+        }
+        other => panic!("expected ToolFinished, got {}", other.kind()),
+    }
+
+    // work 时间线（session_log jsonl 持久化形态）同样只落净化后预览。
+    let snap = work.snapshot_json("web:s1:main").expect("work snapshot");
+    let serialized = serde_json::to_string(&snap).unwrap();
+    assert!(
+        !serialized.contains("sk-live"),
+        "work 时间线不得携带复扫前原文: {serialized}"
+    );
+    assert!(serialized.contains("[REDACTED]"));
+}
+
+// 净化器在**截断之前**作用于完整结果：净化改写使长度越过预览上限时，
+// 落盘预览的长度按净化后文本计算（先净化后截断，无截断边界漏字）。
+#[tokio::test]
+async fn sanitizer_runs_before_truncation() {
+    let (tx, mut rx) = broadcast::channel(16);
+    // 构造超长明文（> RESULT_PREVIEW_CAP），净化器把它整体替换成短标记——
+    // 若先截断后净化，标记会被截掉/原文片段残留；先净化后截断则预览
+    // 恰为标记 + 无原文。
+    let secret = "s".repeat(RESULT_PREVIEW_CAP + 100);
+    let secret_for_closure = secret.clone();
+    let hook = ToolEventHook::new_with_sanitizer(
+        tx,
+        crate::work_timeline::WorkRecorder::default(),
+        Some(Arc::new(move |_tool: &str, r: &str| {
+            if r.contains(&secret_for_closure) {
+                "[REDACTED_ALL]".to_string()
+            } else {
+                r.to_string()
+            }
+        })),
+    );
+    hook.around_tool_use(sample_call("{}"), next_returns(secret))
+        .await;
+
+    let _started = rx.recv().await.unwrap();
+    let finished = rx.recv().await.unwrap();
+    match finished {
+        AgentEvent::ToolFinished { result_preview, .. } => {
+            assert_eq!(
+                result_preview, "[REDACTED_ALL]",
+                "净化必须发生在截断之前（否则截断边界漏字/标记被切）"
+            );
+        }
+        other => panic!("expected ToolFinished, got {}", other.kind()),
+    }
+}
