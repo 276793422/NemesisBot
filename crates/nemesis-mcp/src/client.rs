@@ -264,13 +264,15 @@ impl McpClient {
         // per-call——确定性先到并报 `timed out after Ns`；内层只兜住
         // 「config > 30 旧硬编码截断」的洞）。0/缺省 = 默认外层 30s →
         // 内层 31s（`new()` 裸构造默认 30s 不变：测试/直连无外层配对）。
-        client.request_timeout_ms = std::time::Duration::from_secs(if config.timeout_secs > 0 {
+        // BUG-20261117-070：`as u64 + 1_000` 裸加法在 timeout_secs 巨值时
+        // debug panic / release 静默回绕到 ~999ms（错误方向）——saturating_add。
+        client.request_timeout_ms = (std::time::Duration::from_secs(if config.timeout_secs > 0 {
             config.timeout_secs
         } else {
             30
         })
-        .as_millis() as u64
-            + 1_000;
+        .as_millis() as u64)
+            .saturating_add(1_000);
         Ok(client)
     }
 

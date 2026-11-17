@@ -226,6 +226,19 @@ impl ApprovalPopupAdapter {
     }
 }
 
+/// BUG-20261117-070 同族：审批桥两段等待预算（子进程等待 +10s / 主线程
+/// 收口 +15s 让位）。config.security.json `approval_timeout_seconds` 是
+/// 仅 0 值守卫、无上界钳制的 u64——裸 `+ N` debug panic / release 回绕
+/// 成极小值（审批卡瞬间假超时）。saturating_add；纯函数便于单测
+/// （弹窗路径 headless 不可达，dll 早退分支挡在算术之前）。
+#[cfg(all(feature = "desktop", feature = "security"))]
+pub(super) fn approval_bridge_budgets(timeout_secs: u64) -> (u64, u64) {
+    (
+        timeout_secs.saturating_add(10),
+        timeout_secs.saturating_add(15),
+    )
+}
+
 #[cfg(all(feature = "desktop", feature = "security"))]
 impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
     fn is_running(&self) -> bool {
@@ -282,7 +295,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         // The oneshot receiver is async but we're in a sync context.
         // Use a dedicated thread with its own tokio runtime to wait for the result.
         let (tx, rx) = std::sync::mpsc::channel::<Result<serde_json::Value, String>>();
-        let wait_secs = timeout_secs + 10;
+        let wait_secs = approval_bridge_budgets(timeout_secs).0;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(async {
@@ -302,7 +315,8 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         });
 
         // Block until the user responds or timeout
-        match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs + 15)) {
+        let recv_secs = approval_bridge_budgets(timeout_secs).1;
+        match rx.recv_timeout(std::time::Duration::from_secs(recv_secs)) {
             Ok(Ok(value)) => {
                 let action = value
                     .get("action")

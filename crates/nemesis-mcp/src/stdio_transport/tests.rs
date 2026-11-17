@@ -1256,3 +1256,47 @@ time.sleep(30)
     );
     t.close().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261117-070 行为锁（非红证判别锁——红证判别由 client/manager 两锁
+// 承担）：巨值 timeout 端到端不 panic、正常回包。Instant + Duration 的
+// panic 窗（Windows Duration 支撑 u128 ns / Linux Timespec i64 secs，溢出
+// 阈值 ~千亿年）远高于 u64 ms 输入上限（~5.8 亿年），Add 形态本身不可
+// 达——本测试钉住这一平台事实防未来回归（如换 Instant 实现/输入通路）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bug070_huge_timeout_ms_does_not_panic_and_returns_response() {
+    let script = r#"
+import sys, json
+line = sys.stdin.readline()
+req = json.loads(line)
+resp = {"jsonrpc": "2.0", "id": req["id"], "result": {"echo": True}}
+sys.stdout.write(json.dumps(resp) + "\n")
+sys.stdout.flush()
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    // u64::MAX ms ≈ 5.8 亿年——修复前 Add panic；修复后 deadline None =
+    // 不限时，服务器立即回包照常返回。
+    let resp = t
+        .send(&req, u64::MAX)
+        .await
+        .expect("巨值 timeout 不得 panic 且必须正常收到回包");
+    assert_eq!(
+        resp.result,
+        Some(serde_json::json!({ "echo": true })),
+        "回包必须命中 echo 断言"
+    );
+    t.close().await.unwrap();
+}
