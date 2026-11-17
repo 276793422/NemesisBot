@@ -22,6 +22,23 @@ use tracing::{info, warn};
 
 use crate::types::ConversationTurn;
 
+/// 测试钩子登记表（BUG-20261118-092 回归锁）：登记的 key 下次进入
+/// [`SessionStore::save`] 时模拟落盘失败（消费一次即摘除）。仅测试编译；
+/// key 定向而非全局开关——fork 测试并行跑，全局开关会串扰。镜像
+/// `chat_log::arm_test_fail_open` 的设计（目录占位注入会被 fork 的
+/// unique_key taken 检查避让，够不到 save 写入位点）。
+#[cfg(test)]
+static TEST_FAIL_SAVE_KEYS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// 武装一次 store save 失败注入（见 [`TEST_FAIL_SAVE_KEYS`]）。
+#[cfg(test)]
+pub(crate) fn arm_test_fail_save(key: &str) {
+    TEST_FAIL_SAVE_KEYS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(key.to_string());
+}
+
 // ---------------------------------------------------------------------------
 // Session (active session tracking)
 // ---------------------------------------------------------------------------
@@ -773,6 +790,17 @@ impl SessionStore {
 
     /// Save a session to disk.
     pub fn save(&self, key: &str) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            let mut armed = TEST_FAIL_SAVE_KEYS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(pos) = armed.iter().position(|k| k == key) {
+                armed.swap_remove(pos);
+                tracing::warn!("[session_store] (test hook) simulated save failure: {key}");
+                return Err(format!("simulated save failure for {key}"));
+            }
+        }
         let storage_dir = match &self.storage_dir {
             Some(d) => d.clone(),
             None => return Ok(()),

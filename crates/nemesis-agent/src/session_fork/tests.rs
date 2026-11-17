@@ -676,3 +676,63 @@ fn test_fork_jsonl_write_failure_fails_loudly_and_atomic() {
     delete_chat_log(&src);
     delete_chat_log(&target_key);
 }
+
+/// 回归锁（BUG-20261118-092）：fork 的 step-2 store.save 落盘失败必须
+/// 原子回退。旧代码本臂裸 Err 不回退——此刻 jsonl 已提交（step-1 排他
+/// 创建成功）、in-memory store 条目已建、项目绑定 meta 已落盘（继承块
+/// 在 save 之前），boundary 与血缘 meta 尚未写——产出「被告知失败但
+/// 实际存在」的幽灵 fork 会话（sessions.list 可见、无血缘无 boundary
+/// 审计），重试被 unique_key 避让成 `_2` 第二份。注入走 SessionStore 的
+/// key 定向测试钩子（`arm_test_fail_save`），与 205 的 arm_test_fail_open
+/// 同款设计。本测还特意让源会话绑项目——回退必须连继承写出的新 key
+/// 项目 meta 一起清。
+#[test]
+fn test_fork_store_save_failure_fails_loudly_and_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = unique_src();
+    seed_clean_log(&src);
+    let target_key = format!("{}__fork", src);
+    // 项目绑定注入：源绑项目 → fork 继承块会写新 key 的项目 meta sidecar，
+    // 且该写发生在 save 之前——save 失败臂的回退必须连它一起清。
+    crate::chat_log::write_session_project(&src, "p1", "C:/proj");
+    // 连武装两次（消费序实证，backtrace 探针钉死）：第一个消费点是
+    // `get_or_create(&new_key)` 的自愈重建内部持久化——step-1 已把 jsonl
+    // 落盘，get_or_create 走 rebuild_from_chat_log 后立即 self.save（失败
+    // warn 续走 = BUG-20261028-95 设计行为，不触发 fork Err）；第二个才是
+    // fork step-2 的 save。连武装两次恰好忠实模拟真实磁盘满的失败级联：
+    // 内部持久化失败（warn）→ step-2 失败 → 本 BUG 的回退臂。
+    crate::session::arm_test_fail_save(&target_key);
+    crate::session::arm_test_fail_save(&target_key);
+
+    let err = fork_session(&store, &src, Some(target_key.clone()), None)
+        .expect_err("store.save 失败必须 Err，不得静默成功");
+    assert!(err.contains("完整回退"), "错误信息带回退声明: {err}");
+
+    // 原子回退全件套：jsonl 不存在、store 无半残会话、boundary 无痕、
+    // 新 key 的项目绑定 meta 不存在（继承块产物一并回收）。
+    assert!(
+        !crate::chat_log::chat_log_exists(&target_key),
+        "半残 jsonl 必须被回收"
+    );
+    assert!(!store.contains(&target_key), "store 不得有半残会话");
+    assert!(
+        read_boundary_events(&target_key).is_empty(),
+        "boundary 不得有 fork 痕"
+    );
+    assert!(
+        crate::chat_log::read_session_meta_full(&target_key).is_none(),
+        "新 key 项目绑定 meta（继承块产物）必须被回收"
+    );
+
+    // 源会话原封不动（6 行全在 + 项目绑定仍在——fork 全程只读源）。
+    let (rows, total, _, _) = read_chat_log(&src, 100_000, None);
+    assert_eq!(total, 6);
+    assert_eq!(rows.len(), 6);
+    let src_meta =
+        crate::chat_log::read_session_meta_full(&src).expect("源会话项目绑定不受回退影响");
+    assert_eq!(src_meta.project_id.as_deref(), Some("p1"));
+
+    delete_chat_log(&src);
+    delete_chat_log(&target_key);
+}
