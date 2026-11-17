@@ -11,16 +11,29 @@
 use std::time::Duration;
 
 use nemesis_browser::driver::{KeyPhase, WebAction};
-use nemesis_browser::{BrowserDriver, BrowserManager, BrowserPrefs};
+use nemesis_browser::{BrowserDriver, BrowserManager, BrowserPrefs, BrowserSession};
 use serde_json::json;
+
+// 同进程内两个活体测试串行化（2026-11-18 实测：双 Edge 实例并行重活时
+// CDP socket 被 Edge 侧重置——os error 10054，两轮死在不同步骤=时序依赖
+// 的资源争用抖动，非协议缺陷）。活体测试本来就重，串行换稳定。
+static EDGE_LIVE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
 // 本地站点（axum；每个测试页一个行为面）
 // ---------------------------------------------------------------------------
 
-async fn serve_site() -> (String, tokio::task::JoinHandle<()>) {
+async fn serve_site(
+    extra_oopif_src: Option<String>,
+    extra_dialog_src: Option<String>,
+) -> (String, tokio::task::JoinHandle<()>) {
     use axum::Router;
     use axum::routing::get;
+
+    // bind 前移（iframe 宿主页需要 base 拼 iframe src）。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
 
     async fn index() -> axum::response::Html<&'static str> {
         axum::response::Html(
@@ -201,6 +214,88 @@ window.addEventListener('scroll', upd, true);
         )
     }
 
+    // DOM 只读三动作验证页（2026-11-18 计划 B3）：details 展开态 / 密码框
+    // 页面源码 value 预填（SSO 场景——脱敏目标）/ checkbox（property 实时
+    // 性锁）/ disabled+aria+data 按钮（attribute 白名单）/ 初始文本
+    // textarea（清空损失面）/ shadow host（穿透）/ 叶子列表（text 面源）。
+    async fn dom_page() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>DOM 验证页</title></head><body id="dom-body">
+<details id="details" open><summary>展开区</summary><p>内容可见</p></details>
+<input id="pw" type="password" value="sso-prefill-secret" placeholder="密码">
+<input id="cb" type="checkbox">
+<button id="btndis" disabled aria-expanded="false" data-slug="nb-dom" class="btn primary">禁用按钮</button>
+<textarea id="ta-init">初始多行文本
+第二行</textarea>
+<div id="host"></div>
+<ul id="leafs"><li id="leaf1">叶子一 NEMESIS_LEAF_OK</li><li>叶子二</li></ul>
+<script>
+document.getElementById('host').attachShadow({mode: 'open'});
+document.getElementById('host').shadowRoot.innerHTML =
+  '<span id="in-shadow">SHADOW_CONTENT_OK</span>';
+</script>
+<style>.x{color:red}</style>
+</body></html>"##,
+        )
+    }
+
+    // 同源 iframe 内页（同端口 = 同源 = 同进程 frame；目标元素三动作）。
+    async fn iframe_inner_page() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>同源内页</title></head><body>
+<h1 id="inner-title">INNER_OK</h1>
+<details id="inner-details" open><summary>内层</summary></details>
+<input id="inner-pw" type="password" value="inner-prefill-secret">
+</body></html>"##,
+        )
+    }
+
+    // 解析期弹框页（六轮复核活体锁 ⑤）：alert 在解析中途同步弹出，阻塞
+    // parser = readyState 停滞 + 加载等待轮询撞框——逼出
+    // wait_document_ready 的短轮询 + deadline 顺延路径。
+    async fn dialog_parse_page() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>解析期弹框</title></head><body>
+<h1 id="parse-title">PARSE_DIALOG_OK</h1>
+<script>alert('NEMESIS_PARSE_DIALOG');</script>
+<p id="after-parse">AFTER_PARSE_OK</p>
+</body></html>"##,
+        )
+    }
+
+    // 等待中途弹框页（六轮复核活体锁 ④）：1s alert（wait_for 轮询中途
+    // 撞框）+ 2.5s 追加元素（overdue 定时器在 alert 关闭后才补跑）——
+    // 逼出 wait_for 的入口探针 miss + 短轮询自愈 + deadline 顺延命中。
+    async fn dialog_wait_page() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>等待中途弹框</title></head><body>
+<h1>wait dialog page</h1>
+<script>
+setTimeout(function(){ alert('NEMESIS_WAIT_DIALOG'); }, 1000);
+setTimeout(function(){
+  var b = document.createElement('button');
+  b.id = 'late-btn'; b.textContent = 'LATE_BTN_OK';
+  document.body.appendChild(b);
+}, 2500);
+</script>
+</body></html>"##,
+        )
+    }
+
+    // iframe 内延迟弹框页（2026-11-18 交付后自查修正 1 的活体锁内页）：
+    // alert 刻意延迟 2s——晚于宿主页 load（若在 navigate 期间就弹框会被
+    // navigate 自身的 F33 超时臂关掉，走不到 route 路径），早于测试探测。
+    async fn iframe_dialog_inner_page() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>内页弹框</title></head><body>
+<h1 id="d-title">DIALOG_FRAME_OK</h1>
+<script>
+setTimeout(function(){ alert('NEMESIS_IFRAME_DIALOG'); }, 2000);
+</script>
+</body></html>"##,
+        )
+    }
+
     let app = Router::new()
         .route("/", get(index))
         .route("/text", get(text_page))
@@ -212,8 +307,123 @@ window.addEventListener('scroll', upd, true);
         .route("/dialog", get(dialog_page))
         .route("/tall", get(tall_page))
         .route("/key", get(key_page))
-        .route("/coord", get(coord_page));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        .route("/coord", get(coord_page))
+        .route("/dom", get(dom_page))
+        .route("/iframe-inner", get(iframe_inner_page))
+        .route("/iframe-dialog-inner", get(iframe_dialog_inner_page))
+        .route("/dialog-parse", get(dialog_parse_page))
+        .route("/dialog-wait", get(dialog_wait_page));
+    // 同源 iframe 宿主页（src 需 base——bind 前移的原因）。
+    let iframe_host_page = format!(
+        r##"<html><head><title>同源 iframe 宿主页</title></head><body>
+<iframe id="frameA" src="{base}/iframe-inner" width="500" height="300"></iframe>
+<p id="host-title">HOST_PAGE_OK</p>
+</body></html>"##
+    );
+    let app = app.route(
+        "/iframe-host",
+        get(move || {
+            let p = iframe_host_page.clone();
+            async move { axum::response::Html(p) }
+        }),
+    );
+    // iframe 弹框宿主页（src 需 base；同端口 = 同源 = 同进程 frame）。
+    let dialog_host_page = format!(
+        r##"<html><head><title>弹框宿主页</title></head><body>
+<iframe id="frameD" src="{base}/iframe-dialog-inner" width="500" height="300"></iframe>
+</body></html>"##
+    );
+    let app = app.route(
+        "/iframe-dialog-host",
+        get(move || {
+            let p = dialog_host_page.clone();
+            async move { axum::response::Html(p) }
+        }),
+    );
+    // 跨域 OOPIF 宿主页（可选——第二 axum 实例的 src 传入；origin 含端口
+    // 不同 = 跨源 = site isolation 下 OOPIF）。
+    let app = if let Some(src) = extra_oopif_src {
+        let x_host_page = format!(
+            r##"<html><head><title>跨域宿主页</title></head><body>
+<iframe id="frameX" src="{src}" width="500" height="300"></iframe>
+<p id="xhost-title">XHOST_PAGE_OK</p>
+</body></html>"##
+        );
+        app.route(
+            "/x-host",
+            get(move || {
+                let p = x_host_page.clone();
+                async move { axum::response::Html(p) }
+            }),
+        )
+    } else {
+        app
+    };
+    // OOPIF 弹框宿主页（可选——src 指向第二实例的弹框内页；eval_conn
+    // session 路由臂活体面，2026-11-18 四轮复核）。
+    let app = if let Some(src) = extra_dialog_src {
+        let xd_host_page = format!(
+            r##"<html><head><title>OOPIF 弹框宿主页</title></head><body>
+<iframe id="frameXD" src="{src}" width="500" height="300"></iframe>
+</body></html>"##
+        );
+        app.route(
+            "/x-dialog-host",
+            get(move || {
+                let p = xd_host_page.clone();
+                async move { axum::response::Html(p) }
+            }),
+        )
+    } else {
+        app
+    };
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    (base, handle)
+}
+
+/// 第二 axum 实例（2026-11-18 计划 B3）：只服务跨域内页（密码预填 +
+/// details + 标题——OOPIF 三动作 + 脱敏正交断言面）。
+///
+/// **绑 127.0.0.2 而非同 IP 不同端口**（首版实测踩坑）：origin 含端口=
+/// 跨源没错，但 Chromium 的 **进程级 site isolation 按 site 分——IP 主机
+/// 的 site 是 IP 本身、忽略端口**，127.0.0.1:A 与 127.0.0.1:B 同站点 →
+/// iframe 根本不是 OOPIF（frame 树诚实标注 [same-process]，动作走同进程
+/// 隔离 world 路径照样全过——假绿OOPIF）。不同回环 IP = 不同 site → 真
+/// site isolation → 真 OOPIF target。
+async fn serve_oopif_site() -> (String, tokio::task::JoinHandle<()>) {
+    use axum::Router;
+    use axum::routing::get;
+
+    async fn x_inner() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>跨域内页</title></head><body>
+<h1 id="x-title">OOPIF_OK</h1>
+<details id="x-details" open><summary>跨域内层</summary></details>
+<input id="x-pw" type="password" value="x-prefill-secret">
+</body></html>"##,
+        )
+    }
+
+    // OOPIF 弹框内页（eval_conn session 路由臂活体面）：alert 延迟 2s——
+    // 晚于宿主 load（导航期弹框会被 navigate 的 F33 臂先关掉），早于探测。
+    async fn x_dialog_inner() -> axum::response::Html<&'static str> {
+        axum::response::Html(
+            r##"<html><head><title>跨域弹框内页</title></head><body>
+<h1 id="xd-title">XDIALOG_OK</h1>
+<script>
+setTimeout(function(){ alert('NEMESIS_XDIALOG'); }, 2000);
+</script>
+</body></html>"##,
+        )
+    }
+
+    let app = Router::new()
+        .route("/x-inner", get(x_inner))
+        .route("/x-dialog-inner", get(x_dialog_inner));
+    // 整个 127/8 都是本机回环（Windows/Linux 同），绑 127.0.0.2 无需特权。
+    let listener = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
@@ -265,8 +475,10 @@ async fn edge_live_full_matrix() {
     fn step(name: &str) {
         eprintln!("[edge_live] {name}");
     }
+    // 双活体测试进程内串行（见 EDGE_LIVE_LOCK 注）。
+    let _serial = EDGE_LIVE_LOCK.lock().await;
     step("本地站点启动");
-    let (base, _server) = serve_site().await;
+    let (base, _server) = serve_site(None, None).await;
     let tmp = tempfile::tempdir().unwrap();
     let manager = BrowserManager::new(
         tmp.path().to_path_buf(),
@@ -1067,4 +1279,769 @@ fn decode_b64(s: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+// frame 内动作带重试（2026-11-18 计划 B3）：iframe/OOPIF 的 target 注册
+// 滞后于 navigate 返回（site isolation 进程孵化需要时间），首次 resolve
+// 可能「frame 未找到」——退避重试；其余错误（含 stale 自愈失败）立即返回，
+// 诚实报错不被重试掩盖。
+async fn act_in_frame_with_retry(
+    session: &BrowserSession,
+    action: &WebAction,
+    tries: usize,
+) -> Result<serde_json::Value, String> {
+    let stale = |e: &str| {
+        e.contains("frame 未找到")
+            || e.contains("Cannot find context")
+            || e.contains("No frame with given id")
+            || e.contains("Target closed")
+            || e.contains("Session closed")
+    };
+    let mut last = String::new();
+    for _ in 0..tries {
+        match session.act(action).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if !stale(&e) {
+                    return Err(e);
+                }
+                last = e;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    Err(format!("frame 定位重试 {tries} 次仍失败: {last}"))
+}
+
+/// DOM 只读三动作活体矩阵（2026-11-18 计划 §6 验收 4-7）：真 spawn Edge，
+/// 覆盖 inspect 属性-attribute 分层与白名单、snapshot 有界遍历（shadow/
+/// 叶子 text/双闸钳制）、get_dom 脱敏与截断、同进程 iframe 与跨域 OOPIF
+/// 双路径、frame 清单诚实报错、导航后自愈。与 edge_live_full_matrix 并行
+/// 跑（各自独立 Edge 实例 + profile，互不干扰）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edge_live_dom_read_actions() {
+    fn step(name: &str) {
+        eprintln!("[dom_live] {name}");
+    }
+    // 双活体测试进程内串行（见 EDGE_LIVE_LOCK 注）。
+    let _serial = EDGE_LIVE_LOCK.lock().await;
+    step("本地站点 + OOPIF 站点启动");
+    let (base2, _oopif_server) = serve_oopif_site().await;
+    let port2 = base2.rsplit(':').next().unwrap_or("").to_string();
+    let (base, _server) = serve_site(
+        Some(format!("{base2}/x-inner")),
+        Some(format!("{base2}/x-dialog-inner")),
+    )
+    .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let manager = BrowserManager::new(
+        tmp.path().to_path_buf(),
+        Box::new(BrowserPrefs::default),
+        None,
+    );
+
+    step("spawn Edge");
+    let session = match spawn_edge_session(&manager).await {
+        Some(s) => s,
+        None => return, // 诚实 SKIP（原因已在 spawn_edge_session 打印）
+    };
+    // panic hook 树杀（同 edge_live_full_matrix 纪律）。
+    let spawned_pid = session.pid;
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        #[cfg(windows)]
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &spawned_pid.to_string()])
+            .output();
+        #[cfg(not(windows))]
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &spawned_pid.to_string()])
+            .output();
+        prev_hook(info);
+    }));
+
+    // ---- 主 frame inspect：property/attribute 分层 + 白名单 ----
+    step("navigate /dom + inspect details");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/dom"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate /dom");
+    let r = session
+        .act(&WebAction::Inspect {
+            selector: "#details".into(),
+            frame: None,
+        })
+        .await
+        .expect("inspect #details");
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert_eq!(r["tag"], json!("details"));
+    assert_eq!(r["open"], json!(true), "details 展开态 property");
+    assert_eq!(r["frame"], json!("main"), "缺省 frame 回显 main");
+    assert_eq!(r["visible"], json!(true));
+    assert!(
+        r["rect"]["w"].as_f64().unwrap_or(0.0) > 0.0,
+        "rect 几何面: {r}"
+    );
+
+    step("inspect disabled/aria/data 白名单分层");
+    let r = session
+        .act(&WebAction::Inspect {
+            selector: "#btndis".into(),
+            frame: None,
+        })
+        .await
+        .expect("inspect #btndis");
+    assert_eq!(r["disabled"], json!(true), "disabled property（动态态面）");
+    assert_eq!(
+        r["expanded"],
+        json!("false"),
+        "aria-expanded attribute（字符串非布尔）"
+    );
+    assert_eq!(
+        r["attributes"]["data-slug"],
+        json!("nb-dom"),
+        "data-* 白名单"
+    );
+    assert_eq!(
+        r["attributes"]["class"],
+        json!("btn primary"),
+        "class 白名单"
+    );
+
+    step("inspect 密码框 value 恒缺");
+    let r = session
+        .act(&WebAction::Inspect {
+            selector: "#pw".into(),
+            frame: None,
+        })
+        .await
+        .expect("inspect #pw");
+    assert!(
+        !r.to_string().contains("sso-prefill-secret"),
+        "inspect 输出不得含 value 明文: {r}"
+    );
+    assert_eq!(r["type"], json!("password"));
+    assert_eq!(
+        r["attributes"].get("value"),
+        None,
+        "白名单不含 value 键: {r}"
+    );
+
+    step("inspect 未命中诚实报错 + extract 缺口对照");
+    let r = session
+        .act(&WebAction::Inspect {
+            selector: "#nonexistent".into(),
+            frame: None,
+        })
+        .await;
+    assert!(
+        matches!(&r, Err(e) if e.contains("未找到元素")),
+        "inspect 未命中应诚实报错: {r:?}"
+    );
+    let r = session
+        .act(&WebAction::ExtractText {
+            selector: Some("#btndis".into()),
+        })
+        .await
+        .expect("extract #btndis");
+    assert_eq!(
+        r["text"].as_str().unwrap_or("").trim(),
+        "禁用按钮",
+        "extract 只拿文本——无 disabled/aria 状态面（缺口对照）: {r}"
+    );
+
+    step("property 实时性锁：click checkbox → checked=true");
+    session
+        .act(&WebAction::Click {
+            selector: Some("#cb".into()),
+            x: None,
+            y: None,
+        })
+        .await
+        .expect("click #cb");
+    let r = session
+        .act(&WebAction::Inspect {
+            selector: "#cb".into(),
+            frame: None,
+        })
+        .await
+        .expect("inspect #cb");
+    assert_eq!(
+        r["checked"],
+        json!(true),
+        "点击后 checked property 应实时为 true: {r}"
+    );
+
+    // ---- snapshot：shadow 穿透 / 叶子 text / 双闸钳制 ----
+    step("snapshot 全页");
+    let r = session
+        .act(&WebAction::SnapshotDom {
+            selector: None,
+            frame: None,
+            max_depth: None,
+            max_nodes: None,
+        })
+        .await
+        .expect("snapshot body");
+    assert_eq!(r["ok"], json!(true));
+    assert!(r["ts_ms"].as_u64().is_some(), "ts_ms 在场");
+    assert_eq!(r["truncated"], json!(false), "页面小于缺省闸不截断");
+    let nodes = r["nodes"].as_array().expect("nodes array");
+    assert!(
+        nodes
+            .iter()
+            .any(|n| n["id"] == json!("details") && n["open"] == json!(true)),
+        "details 入树（open 布尔投影）: {r}"
+    );
+    assert!(
+        nodes.iter().any(|n| n["id"] == json!("in-shadow")
+            && n["shadow"] == json!(true)
+            && n["text"] == json!("SHADOW_CONTENT_OK")),
+        "shadowRoot 穿透: {r}"
+    );
+    assert!(
+        nodes.iter().any(|n| n["id"] == json!("leaf1")
+            && n["text"].as_str().unwrap_or("").contains("NEMESIS_LEAF_OK")),
+        "叶子 text 面: {r}"
+    );
+
+    step("snapshot 钳制：depth 下限 / nodes 上限");
+    let r = session
+        .act(&WebAction::SnapshotDom {
+            selector: None,
+            frame: None,
+            max_depth: Some(0),
+            max_nodes: None,
+        })
+        .await
+        .expect("snapshot depth=0");
+    assert!(
+        r["nodes_emitted"].as_u64().unwrap_or(0) > 1,
+        "max_depth=0 钳到 1（根+子层入树）: {r}"
+    );
+    assert_eq!(r["truncated"], json!(true), "深层被剪=截断语义");
+    let r = session
+        .act(&WebAction::SnapshotDom {
+            selector: None,
+            frame: None,
+            max_depth: None,
+            max_nodes: Some(3),
+        })
+        .await
+        .expect("snapshot nodes=3");
+    assert_eq!(r["nodes_emitted"], json!(3), "节点闸生效: {r}");
+    assert_eq!(r["truncated"], json!(true), "触顶诚实标记");
+
+    // ---- get_dom：脱敏 + 截断 + 钳制 ----
+    step("get_dom body 脱敏");
+    let r = session
+        .act(&WebAction::GetDom {
+            selector: "body".into(),
+            frame: None,
+            max_chars: None,
+        })
+        .await
+        .expect("get_dom body");
+    let html = r["html"].as_str().expect("html str");
+    assert!(
+        !html.contains("sso-prefill-secret"),
+        "页面源码 value 属性应被剥除: {html}"
+    );
+    assert!(
+        !html.contains("初始多行文本"),
+        "textarea textContent 应被清空（宁过度脱敏）: {html}"
+    );
+    assert!(!html.contains("<script"), "script 应被删: {html}");
+    assert!(!html.contains("<style"), "style 应被删: {html}");
+    assert!(html.contains("<details"), "结构保留: {html}");
+    assert_eq!(r["truncated"], json!(false), "小于缺省 cap 不截断");
+    let chars0 = r["chars"].as_u64().expect("chars");
+
+    step("get_dom 钳制 + 截断注记");
+    let r = session
+        .act(&WebAction::GetDom {
+            selector: "body".into(),
+            frame: None,
+            max_chars: Some(200),
+        })
+        .await
+        .expect("get_dom cap=200");
+    assert_eq!(r["truncated"], json!(true), "超 cap 截断");
+    assert_eq!(
+        r["chars"].as_u64(),
+        Some(chars0),
+        "chars = 原始总字符（非截后）"
+    );
+    assert!(
+        r["html"].as_str().unwrap_or("").contains("已截断"),
+        "截断注记在场: {r}"
+    );
+    let r_low = session
+        .act(&WebAction::GetDom {
+            selector: "body".into(),
+            frame: None,
+            max_chars: Some(100),
+        })
+        .await
+        .expect("get_dom cap=100");
+    assert!(
+        r_low["html"].as_str().unwrap_or("").chars().count() > 150,
+        "max_chars=100 应钳到 200（截后 >150 字符）: {}",
+        r_low["html"].as_str().unwrap_or("").chars().count()
+    );
+    let r_hi = session
+        .act(&WebAction::GetDom {
+            selector: "body".into(),
+            frame: None,
+            max_chars: Some(999_999),
+        })
+        .await
+        .expect("get_dom cap=999999");
+    assert_eq!(r_hi["truncated"], json!(false), "上限钳 50000 内页面不截断");
+
+    // ---- 同进程 iframe（§3.7 路径 A）----
+    step("同源 iframe 三动作");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/iframe-host"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate /iframe-host");
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::Inspect {
+            selector: "#inner-title".into(),
+            frame: Some("/iframe-inner".into()),
+        },
+        20,
+    )
+    .await
+    .expect("iframe inspect");
+    assert_eq!(r["id"], json!("inner-title"), "同源 iframe inspect: {r}");
+    assert_eq!(r["frame"], json!("/iframe-inner"), "frame 回显 want 子串");
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::SnapshotDom {
+            selector: None,
+            frame: Some("/iframe-inner".into()),
+            max_depth: None,
+            max_nodes: None,
+        },
+        20,
+    )
+    .await
+    .expect("iframe snapshot");
+    assert!(
+        r.to_string().contains("INNER_OK"),
+        "同源 iframe snapshot: {r}"
+    );
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::GetDom {
+            selector: "#inner-pw".into(),
+            frame: Some("/iframe-inner".into()),
+            max_chars: None,
+        },
+        20,
+    )
+    .await
+    .expect("iframe get_dom");
+    let html = r["html"].as_str().expect("iframe html");
+    assert!(
+        !html.contains("inner-prefill-secret"),
+        "同源 iframe 脱敏照常: {html}"
+    );
+    assert!(html.contains("input"), "同源 iframe get_dom 内容: {html}");
+
+    // ---- 跨域 OOPIF（§3.7 路径 B；不同回环 IP = 不同 site = 真 OOPIF，
+    //      见 serve_oopif_site 注——首版端口隔离是假 OOPIF）----
+    step("跨域 OOPIF 三动作");
+    let frame_x = format!(":{port2}/x-inner");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/x-host"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate /x-host");
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::Inspect {
+            selector: "#x-title".into(),
+            frame: Some(frame_x.clone()),
+        },
+        30,
+    )
+    .await
+    .expect("OOPIF inspect");
+    assert_eq!(r["id"], json!("x-title"), "OOPIF inspect: {r}");
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::SnapshotDom {
+            selector: Some("#x-details".into()),
+            frame: Some(frame_x.clone()),
+            max_depth: None,
+            max_nodes: None,
+        },
+        20,
+    )
+    .await
+    .expect("OOPIF snapshot");
+    assert!(
+        r["nodes_emitted"].as_u64().unwrap_or(0) >= 1,
+        "OOPIF snapshot: {r}"
+    );
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::GetDom {
+            selector: "body".into(),
+            frame: Some(frame_x.clone()),
+            max_chars: None,
+        },
+        20,
+    )
+    .await
+    .expect("OOPIF get_dom");
+    let html = r["html"].as_str().expect("OOPIF html");
+    assert!(
+        !html.contains("x-prefill-secret"),
+        "OOPIF 脱敏照常（路径正交）: {html}"
+    );
+    assert!(html.contains("x-pw"), "OOPIF get_dom 内容: {html}");
+
+    // ---- frame 清单诚实报错 ----
+    step("虚构 frame 诚实报错带清单");
+    let r = session
+        .act(&WebAction::Inspect {
+            selector: "#x-title".into(),
+            frame: Some("no-such-frame-xyz".into()),
+        })
+        .await;
+    match r {
+        Err(e) => {
+            assert!(e.contains("frame 未找到"), "错误面: {e}");
+            assert!(e.contains("no-such-frame-xyz"), "回显 want: {e}");
+            assert!(e.contains("127.0.0.1"), "清单带 URL: {e}");
+            assert!(e.contains("[cross-process]"), "OOPIF 标注: {e}");
+            assert!(e.contains("[same-process]"), "同进程标注: {e}");
+        }
+        Ok(v) => panic!("虚构 frame 应诚实报错，却返回: {v}"),
+    }
+
+    // ---- 导航走开再走回：frame 缓存自愈 ----
+    step("导航往返后 frame 自愈");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/text"),
+            timeout_ms: Some(10000),
+        })
+        .await
+        .expect("navigate /text");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/x-host"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate /x-host again");
+    let r = act_in_frame_with_retry(
+        &session,
+        &WebAction::Inspect {
+            selector: "#x-title".into(),
+            frame: Some(frame_x.clone()),
+        },
+        30,
+    )
+    .await
+    .expect("OOPIF inspect after nav");
+    assert_eq!(
+        r["id"],
+        json!("x-title"),
+        "导航往返后 OOPIF 仍可用（缓存逐出/重解析自愈）"
+    );
+
+    // ---- iframe 内 JS 对话框 → route 路径 30s 超时 → 自愈关闭 → 恢复 ----
+    // 2026-11-18 交付后自查修正 1 的活体锁：同进程 iframe 的 alert 阻塞渲染
+    // 器主线程——resolve_frame（getFrameTree/createIsolatedWorld 不跑 JS）
+    // 快速成功，evaluate 撞满 CDP_CMD_TIMEOUT → eval_conn 超时臂
+    // dismiss_dialog_if_open 兜底（修正前该臂只覆盖 main 路径，route 内联
+    // 调用绕过了它）。iframe 的 URL 子串匹配 /iframe-dialog-inner。
+    step("iframe 内对话框 route 路径自愈");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/iframe-dialog-host"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate /iframe-dialog-host");
+    // 2s 定时器已触发：弹框开着、页面 JS 暂停。
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let dialog_act = WebAction::Inspect {
+        selector: "#d-title".into(),
+        frame: Some("/iframe-dialog-inner".into()),
+    };
+    let r = session.act(&dialog_act).await;
+    let Err(e) = &r else {
+        panic!("对话框阻塞期间 inspect 应报错，却返回: {r:?}");
+    };
+    assert!(
+        e.contains("对话框") && e.contains("已自动关闭"),
+        "route 路径超时臂应自愈关框并在错误面注明: {e}"
+    );
+    // 自愈证明：同一动作再来一次——弹框已被按拒绝关闭，frame 恢复可用。
+    let r = session
+        .act(&dialog_act)
+        .await
+        .expect("自愈后同 frame inspect 应恢复");
+    assert_eq!(r["id"], json!("d-title"), "自愈后 inspect 应命中目标元素");
+
+    // ---- OOPIF 内 JS 对话框 → eval_conn 超时臂（session 路由）→ 自愈 ----
+    // 修复 A 原始声称的最后活体面（2026-11-18 四轮复核）：OOPIF 是唯一
+    // 「resolve 存活（getTargets/attachToTarget 走 browser 进程）而
+    // evaluate 阻塞（对话框在该 iframe 自己的渲染器里）」的路径——
+    // eval_conn 超时臂 + dismiss_dialog_if_open 的 session 路由
+    // （handleJavaScriptDialog 经 flatten 子会话打给该 target）只有这里能
+    // 被真对话框打到；同进程场景 resolve 先死（三轮实测），走不到本臂。
+    step("OOPIF 内对话框 route 路径自愈");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/x-dialog-host"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate /x-dialog-host");
+    // 2s 定时器已触发：弹框开着、OOPIF 渲染器暂停。
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let x_dialog_act = WebAction::Inspect {
+        selector: "#xd-title".into(),
+        frame: Some(format!(":{port2}/x-dialog-inner")),
+    };
+    let r = session.act(&x_dialog_act).await;
+    let Err(e) = &r else {
+        panic!("OOPIF 对话框阻塞期间 inspect 应报错，却返回: {r:?}");
+    };
+    assert!(
+        e.contains("对话框") && e.contains("已自动关闭"),
+        "eval_conn session 路由臂应自愈关框并在错误面注明: {e}"
+    );
+    // 自愈证明：同一动作再来一次——弹框已按拒绝关闭，OOPIF 恢复可用。
+    let r = session
+        .act(&x_dialog_act)
+        .await
+        .expect("自愈后 OOPIF inspect 应恢复");
+    assert_eq!(r["id"], json!("xd-title"), "自愈后 OOPIF inspect 应命中");
+
+    step("close");
+    let r = session.close().await.expect("close");
+    assert_eq!(r["ok"], json!(true));
+    // panic hook 不还原（与 edge_live_full_matrix 同款——测试进程随用例结束
+    // 收场；残留 hook 只会对已关闭会话的 pid 空杀，无害）。
+    step("全部通过 ✓");
+}
+
+/// 六轮复核活体锁（2026-11-18）：基线 4 处容忍型 evaluate 消费点的前置
+/// 探针修复——截图视口 metrics / navigate 文档身份锚 / wait_document_ready
+/// 轮询 / wait_for 轮询。修复前这四处撞对话框 = 静默假伤（DPR 连坐降级
+/// device_px 截图 / same_doc 保守判定 / navigate 假超时 / wait_for 假未
+/// 命中）；修复后入口探针毫秒级关框 + 结果面 `dialog_dismissed` 注记，
+/// 短轮询把加载期弹框的自愈代价压到 ~3s。墙钟判据 <15s（修复前 30s+
+/// 起步）。与既有弹框活体（route 路径）互补：那两个测「错误面注解 +
+/// 重试自愈」，本测试测「探针快路径 + 结果面注记 + 不假伤」。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edge_live_dialog_probe_first_read_actions() {
+    fn step(name: &str) {
+        eprintln!("[probe_live] {name}");
+    }
+    let _serial = EDGE_LIVE_LOCK.lock().await;
+    let (base, _server) = serve_site(None, None).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let manager = BrowserManager::new(
+        tmp.path().to_path_buf(),
+        Box::new(BrowserPrefs::default),
+        None,
+    );
+
+    step("spawn Edge");
+    let session = match spawn_edge_session(&manager).await {
+        Some(s) => s,
+        None => return, // 诚实 SKIP（原因已在 spawn_edge_session 打印）
+    };
+    let spawned_pid = session.pid;
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        #[cfg(windows)]
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &spawned_pid.to_string()])
+            .output();
+        #[cfg(not(windows))]
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &spawned_pid.to_string()])
+            .output();
+        prev_hook(info);
+    }));
+
+    // ---- ① 截图撞框：入口探针关框 → css_px 归一保持 + 注记 ----
+    step("截图撞框（/iframe-dialog-inner 直航主 frame）");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/iframe-dialog-inner"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate 弹框页");
+    // 2s 定时器已触发：弹框开着。
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let t0 = std::time::Instant::now();
+    let r = session
+        .act(&WebAction::Screenshot)
+        .await
+        .expect("对话框场景截图应探针自愈成功");
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "截图撞框应探针快路径而非 30s 阻塞: {elapsed:?}"
+    );
+    assert_eq!(
+        r["dialog_dismissed"],
+        json!(true),
+        "截图结果应注记关框: {r}"
+    );
+    assert_eq!(
+        r["coordinate_space"],
+        json!("css_px"),
+        "F32 归一不应连坐降级 device_px: {r}"
+    );
+    assert!(
+        r["viewport"]["width"].as_f64().unwrap_or(0.0) > 0.0,
+        "viewport metrics 应读到位: {r}"
+    );
+
+    // ---- ② navigate 撞框：锚点探针关框 → F14 闸完整 + 注记 ----
+    step("navigate 撞框（文档身份锚前探测）");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/iframe-dialog-inner"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("re-navigate 弹框页");
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let t0 = std::time::Instant::now();
+    let r = session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/text"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("对话框场景 navigate 应探针自愈成功");
+    assert!(
+        t0.elapsed() < Duration::from_secs(15),
+        "navigate 撞框应探针快路径: {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(
+        r["dialog_dismissed"],
+        json!(true),
+        "navigate 结果应注记关框: {r}"
+    );
+    assert_eq!(
+        r["load_state"],
+        json!("complete"),
+        "F14 加载闸不应因锚点探针退化: {r}"
+    );
+
+    // ---- ③ wait_for 撞框（弹框先于等待）：入口探针 → 立即命中 + 注记 ----
+    step("wait_for 撞框（弹框先于等待）");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/iframe-dialog-inner"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("re-navigate 弹框页");
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let t0 = std::time::Instant::now();
+    let r = session
+        .act(&WebAction::WaitFor {
+            selector: "#d-title".into(),
+            timeout_ms: Some(10000),
+        })
+        .await
+        .expect("对话框场景 wait_for 应探针自愈成功");
+    assert!(
+        t0.elapsed() < Duration::from_secs(15),
+        "wait_for 撞框应探针快路径: {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(r["found"], json!(true), "{r}");
+    assert_eq!(
+        r["dialog_dismissed"],
+        json!(true),
+        "wait_for 结果应注记关框: {r}"
+    );
+
+    // ---- ④ wait_for 等待中途弹框：短轮询自愈 + deadline 顺延 → 命中 ----
+    step("wait_for 等待中途弹框（元素后到）");
+    session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/dialog-wait"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("navigate dialog-wait");
+    let t0 = std::time::Instant::now();
+    let r = session
+        .act(&WebAction::WaitFor {
+            selector: "#late-btn".into(),
+            timeout_ms: Some(10000),
+        })
+        .await
+        .expect("中途弹框 wait_for 应自愈命中");
+    let elapsed = t0.elapsed();
+    assert_eq!(r["found"], json!(true), "中途弹框不应假未命中: {r}");
+    assert_eq!(
+        r["dialog_dismissed"],
+        json!(true),
+        "中途弹框应注记关框: {r}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "短轮询自愈应 ~3-4s 而非 30s+: {elapsed:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(2500),
+        "元素 2.5s 后才出现（overdue 定时器在关框后补跑），命中不该早于此: {elapsed:?}"
+    );
+
+    // ---- ⑤ navigate 加载期弹框（解析阻塞）：轮询自愈 → complete ----
+    step("navigate 加载期弹框（解析期 alert 阻塞 parser）");
+    let t0 = std::time::Instant::now();
+    let r = session
+        .act(&WebAction::Navigate {
+            url: format!("{base}/dialog-parse"),
+            timeout_ms: Some(15000),
+        })
+        .await
+        .expect("解析期弹框 navigate 应轮询自愈完成");
+    let elapsed = t0.elapsed();
+    assert_eq!(
+        r["load_state"],
+        json!("complete"),
+        "解析期弹框不应假超时: {r}"
+    );
+    assert_eq!(r["dialog_dismissed"], json!(true), "加载期关框应注记: {r}");
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "短轮询自愈应 ~3s 而非 30s+: {elapsed:?}"
+    );
+
+    step("close");
+    let r = session.close().await.expect("close");
+    assert_eq!(r["ok"], json!(true));
+    // panic hook 不还原（同款纪律——残留 hook 只会对已关闭会话的 pid 空杀）。
+    step("全部通过 ✓");
 }

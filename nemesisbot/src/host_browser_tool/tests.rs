@@ -22,8 +22,9 @@ fn tool_for_screenshot(workspace: PathBuf) -> HostBrowserTool {
 }
 
 #[test]
-fn schema_declares_nine_actions_and_required_action() {
-    // 通道：schema 面是模型唯一可见合同——九动作枚举缺一即模型盲区。
+fn schema_declares_twelve_actions_and_required_action() {
+    // 通道：schema 面是模型唯一可见合同——十二动作枚举缺一即模型盲区
+    // （2026-11-18 计划：九动作 + DOM 只读三动作 inspect/snapshot/get_dom）。
     let t = tool_for_screenshot(std::env::temp_dir());
     let schema = t.parameters();
     let actions = schema
@@ -44,9 +45,31 @@ fn schema_declares_nine_actions_and_required_action() {
             "extract_text",
             "screenshot",
             "wait_for",
+            "inspect",
+            "snapshot",
+            "get_dom",
             "run_script"
         ]
     );
+    // DOM 三动作的参数在 schema 面可发现（frame/钳制参数缺一 = 模型盲区）。
+    let props = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("properties missing");
+    for k in ["frame", "max_depth", "max_nodes", "max_chars"] {
+        assert!(props.contains_key(k), "schema 缺 {k} 参数");
+    }
+    let frame_desc = props
+        .get("frame")
+        .and_then(|v| v.get("description"))
+        .and_then(|d| d.as_str())
+        .unwrap_or("");
+    for needle in ["substring", "cross-process", "same-process"] {
+        assert!(
+            frame_desc.contains(needle),
+            "frame 描述应含「{needle}」（清单发现机制/子串匹配语义）: {frame_desc}"
+        );
+    }
     let required = schema
         .get("required")
         .and_then(|r| r.as_array())
@@ -94,6 +117,13 @@ fn operation_override_single_actions_project_slugs() {
         ),
         (json!({"action": "screenshot"}), "internal"),
         (json!({"action": "wait_for", "selector": "#a"}), "internal"),
+        // DOM 只读三动作 = internal（免审批卡读面，2026-11-18 计划 §3.5）。
+        (json!({"action": "inspect", "selector": "#a"}), "internal"),
+        (json!({"action": "snapshot"}), "internal"),
+        (
+            json!({"action": "get_dom", "selector": "#a", "frame": "/inner"}),
+            "internal",
+        ),
     ];
     for (args, expect) in cases {
         let ov = t
@@ -230,6 +260,55 @@ fn script_summary_estop_arm_carries_stop_fields_f48() {
     assert_eq!(s2.get("ok"), Some(&json!(true)));
 }
 
+// --- DOM 只读三动作编排回执摘要投影（2026-11-18 计划 §3.6）---
+
+#[test]
+fn dom_action_summary_projects_compact_fields() {
+    // inspect 摘 tag/open；snapshot 摘 nodes_emitted/truncated；get_dom 摘
+    // chars/truncated——编排回执不携带全量（snapshot 2000 节点 / get_dom
+    // 50K 字符会把回执撑爆）。非 DOM 动作 = None（回执回全量）。
+    let r = json!({
+        "ok": true, "selector": "#d", "frame": "main", "tag": "details",
+        "open": true, "checked": false, "visible": true,
+        "rect": {"x": 0, "y": 0, "w": 100, "h": 20}, "attributes": {},
+        "nodes": [], "nodes_emitted": 42, "html": "<p>…</p>", "chars": 9000
+    });
+    let s = super::dom_action_summary(
+        &WebAction::Inspect {
+            selector: "#d".into(),
+            frame: None,
+        },
+        &r,
+    )
+    .unwrap();
+    assert_eq!(s, json!({"tag": "details", "open": true}));
+    let s = super::dom_action_summary(
+        &WebAction::SnapshotDom {
+            selector: None,
+            frame: None,
+            max_depth: None,
+            max_nodes: None,
+        },
+        &r,
+    )
+    .unwrap();
+    assert_eq!(s, json!({"nodes_emitted": 42, "truncated": null}));
+    let s = super::dom_action_summary(
+        &WebAction::GetDom {
+            selector: "#d".into(),
+            frame: None,
+            max_chars: None,
+        },
+        &r,
+    )
+    .unwrap();
+    assert_eq!(s, json!({"chars": 9000, "truncated": null}));
+    assert!(
+        super::dom_action_summary(&WebAction::Screenshot, &r).is_none(),
+        "非 DOM 动作不投影"
+    );
+}
+
 // --- F42 脚本级前置校验（2026-11-16 八审）---
 
 #[test]
@@ -269,9 +348,9 @@ fn script_plan_validation_rejects_malformed_without_execution() {
 }
 
 #[test]
-fn script_plan_validation_accepts_eight_actions() {
-    // 八基础动作全形通过（click 双形态 / key / scroll / 读类三件）+
-    // continue_on_error 收编进计划。
+fn script_plan_validation_accepts_all_basic_actions() {
+    // 基础动作全形通过（click 双形态 / key / scroll / 读类三件 / DOM 只读
+    // 三动作）+ continue_on_error 收编进计划。
     let args = json!({
         "continue_on_error": true,
         "steps": [
@@ -283,11 +362,14 @@ fn script_plan_validation_accepts_eight_actions() {
             {"action": "scroll", "dy": 300},
             {"action": "extract_text"},
             {"action": "screenshot"},
-            {"action": "wait_for", "selector": "#done"}
+            {"action": "wait_for", "selector": "#done"},
+            {"action": "inspect", "selector": "#details"},
+            {"action": "snapshot", "max_depth": 5},
+            {"action": "get_dom", "selector": "#f", "frame": "/inner", "max_chars": 4000}
         ]
     });
     let plan = HostBrowserTool::validate_script_plan(&args).expect("valid plan rejected");
-    assert_eq!(plan.steps.len(), 9);
+    assert_eq!(plan.steps.len(), 12);
     assert!(plan.continue_on_error);
     // 回执面动作名与原始 JSON 都在计划里（安全闸看别名原文）。
     assert_eq!(plan.steps[1].action_name, "click");
@@ -295,15 +377,22 @@ fn script_plan_validation_accepts_eight_actions() {
         plan.steps[1].raw,
         json!({"action": "click", "selector": "#a"})
     );
+    // DOM 只读三动作进编排（serde 反序列化天然支持——2026-11-18 计划 §3.6）。
+    assert_eq!(plan.steps[9].action_name, "inspect");
+    assert_eq!(plan.steps[10].action_name, "snapshot");
+    assert_eq!(plan.steps[11].action_name, "get_dom");
 }
 
 #[tokio::test]
 async fn run_script_live_orchestrates_type_click_extract() {
     // D12 核心需求活体验证：真 spawn Edge（无 Edge 诚实 SKIP——同
     // nemesis-browser edge_live 纪律），run_script 编排 navigate→type→
-    // click→extract 四步全回执，extract 拿到 type+click 的效果文本——
-    // 钉「编排器在真浏览器上串起多步」。fail-fast / estop 边界 / 审批
-    // 语义归纯函数面测试（run_script_forces_approval 等），此处不重复。
+    // click→extract→inspect→snapshot→get_dom 七步全回执，extract 拿到
+    // type+click 的效果文本；DOM 三步回执 = 摘要投影（§3.6：tag/open /
+    // nodes_emitted/truncated / chars/truncated，非全量）——钉「编排器在
+    // 真浏览器上串起多步 + DOM 只读步骤成编排合法步骤」。
+    // fail-fast / estop 边界 / 审批语义归纯函数面测试（run_script_forces_approval
+    // 等），此处不重复。
     let Some(_edge) =
         nemesis_browser::detect::find_executable(nemesis_browser::detect::DriverKind::Edge)
     else {
@@ -323,15 +412,22 @@ async fn run_script_live_orchestrates_type_click_extract() {
         .expect("spawn Edge failed");
 
     // data: URL 页面（单引号避转义地狱）：type 进输入框 → click 触发
-    // onclick 回显 → extract 读回显 = 三动作编排串联的效果面断言。
-    let page = "data:text/html,<input id='u' value='hello'><button id='b' \
+    // onclick 回显 → extract 读回显；details（open 态）+ 密码预填框 +
+    // 足量子树 = DOM 三动作编排断言面。
+    let page = "data:text/html,<input id='u' value='hello'>\
+         <input id='pw' type='password' value='prefill-secret'>\
+         <details id='d' open><summary>s</summary><p>body-text</p></details>\
+         <button id='b' \
          onclick=\"document.getElementById('o').textContent='clicked '+document.getElementById('u').value\">go</button><div id='o'></div>";
     let args = json!({
         "steps": [
             {"action": "navigate", "url": page},
             {"action": "type", "selector": "#u", "text": "hello"},
             {"action": "click", "selector": "#b"},
-            {"action": "extract_text", "selector": "#o"}
+            {"action": "extract_text", "selector": "#o"},
+            {"action": "inspect", "selector": "#d"},
+            {"action": "snapshot", "selector": "#d", "max_depth": 3},
+            {"action": "get_dom", "selector": "#d", "max_chars": 500}
         ]
     });
     // F42：编排签名 = 前置校验产物（ScriptPlan）——生产 execute 链路
@@ -341,18 +437,20 @@ async fn run_script_live_orchestrates_type_click_extract() {
         .run_script(&session, plan)
         .await
         .expect("run_script failed");
-    let receipts = serde_json::from_str::<serde_json::Value>(&out)
-        .expect("receipts not json")
+    let summary: serde_json::Value = serde_json::from_str(&out).expect("receipts not json");
+    let receipts = summary
         .get("receipts")
         .and_then(|v| v.as_array())
         .expect("receipts array missing")
         .clone();
-    assert_eq!(receipts.len(), 4, "四步全回执: {out}");
+    assert_eq!(receipts.len(), 7, "七步全回执: {out}");
     for (i, r) in receipts.iter().enumerate() {
         assert_eq!(r.get("ok"), Some(&json!(true)), "第 {i} 步失败: {out}");
     }
-    let last = receipts.last().expect("last receipt");
-    let text = last
+    // extract 步 = index 3（七步版 navigate/type/click/extract/inspect/
+    // snapshot/get_dom）——旧五步版用 receipts.last() 恰好是 extract，扩容
+    // 后 last 是 get_dom（摘要投影无 text 字段）→ 读空串假红（首轮实跑抓出）。
+    let text = receipts[3]
         .get("result")
         .and_then(|v| v.get("text"))
         .and_then(|v| v.as_str())
@@ -360,6 +458,31 @@ async fn run_script_live_orchestrates_type_click_extract() {
     assert!(
         text.contains("clicked hello"),
         "extract 未拿到 type+click 效果文本: {out}"
+    );
+    // inspect 步回执 = 摘要（tag/open），非全量（visible/rect 等不在场）。
+    let insp = &receipts[4];
+    let insp_res = insp.get("result").expect("inspect result missing");
+    assert_eq!(insp_res.get("tag"), Some(&json!("details")), "{out}");
+    assert_eq!(insp_res.get("open"), Some(&json!(true)), "{out}");
+    assert!(
+        insp_res.get("rect").is_none() && insp_res.get("attributes").is_none(),
+        "inspect 编排回执应投影摘要（rect/attributes 不在场）: {out}"
+    );
+    // snapshot 步回执 = 摘要（nodes_emitted/truncated），nodes 数组不在场。
+    let snap_res = receipts[5].get("result").expect("snapshot result missing");
+    assert!(snap_res.get("nodes_emitted").is_some(), "{out}");
+    assert!(snap_res.get("truncated").is_some(), "{out}");
+    assert!(
+        snap_res.get("nodes").is_none(),
+        "snapshot 编排回执不应携带 nodes 数组: {out}"
+    );
+    // get_dom 步回执 = 摘要（chars/truncated），html 不在场。
+    let dom_res = receipts[6].get("result").expect("get_dom result missing");
+    assert!(dom_res.get("chars").is_some(), "{out}");
+    assert!(dom_res.get("truncated").is_some(), "{out}");
+    assert!(
+        dom_res.get("html").is_none(),
+        "get_dom 编排回执不应携带 html: {out}"
     );
 
     let _ = manager.close_session(&session.id).await;

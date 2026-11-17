@@ -1,6 +1,11 @@
 //! driver 纯函数单测：JS 片段形态 / 键表 / 截断。
 
-use super::{js_click, js_exists, js_extract, js_focus, js_type, key_spec, truncate_head_tail};
+use super::{
+    GET_DOM_CHARS_DEFAULT, GET_DOM_CHARS_MAX, SNAP_DEPTH_DEFAULT, SNAP_DEPTH_MAX,
+    SNAP_NODES_DEFAULT, SNAP_NODES_MAX, eval_result_value, find_frame_id, flatten_frame_tree,
+    frame_url_list, is_stale_frame_error, js_click, js_exists, js_extract, js_focus, js_get_dom,
+    js_inspect, js_snapshot, js_type, key_spec, truncate_head_tail,
+};
 
 // --- JS 片段形态（selector 经 js_str 引号安全嵌入是注入面）---
 
@@ -410,4 +415,236 @@ fn screenshot_params_css_px_clip_or_raw_fallback() {
     assert!(zero.get("clip").is_none());
     let neg = screenshot_params(Some((100.0, -1.0)), (0.0, 0.0));
     assert!(neg.get("clip").is_none());
+}
+
+// --- DOM 只读三动作 JS 片段（2026-11-18 计划 B1）---
+
+#[test]
+fn js_inspect_shape_property_attribute_layering() {
+    let js = js_inspect("#details");
+    assert!(js.contains("document.querySelector(\"#details\")"));
+    assert!(js.contains("ERROR:no-element"));
+    // property/attribute 分层（计划 §3.2）：状态字段读 property（动态状态
+    // 准——点击后 attribute 不更新）；expanded/role/name/type 读 attribute。
+    assert!(js.contains("open: norm(el.open)"));
+    assert!(js.contains("checked: norm(el.checked)"));
+    assert!(js.contains("disabled: norm(el.disabled)"));
+    assert!(js.contains("required: norm(el.required)"));
+    assert!(js.contains("expanded: el.getAttribute('aria-expanded')"));
+    assert!(js.contains("role: el.getAttribute('role')"));
+    // undefined → null 归一（探针实测：非 details 元素 el.open 是 undefined，
+    // JSON.stringify 会整键丢掉——norm 保键位稳定）。
+    assert!(js.contains("(v === undefined ? null : v)"));
+    // 几何 + 可见性。
+    assert!(js.contains("getBoundingClientRect()"));
+    assert!(js.contains("visibility !== 'hidden'"));
+    assert!(js.contains("display !== 'none'"));
+    // 白名单 + aria-/data- 前缀；href/src/action 巨型载荷截断。
+    assert!(js.contains("startsWith('aria-')"));
+    assert!(js.contains("startsWith('data-')"));
+    assert!(js.contains("slice(0, 200)"));
+    // 凭据硬规则：value 恒不在白名单数组（结构性保证不靠调用方自觉）。
+    let wl_start = js.find("const WL = [").unwrap();
+    let wl_end = js[wl_start..].find(']').unwrap() + wl_start;
+    let wl = &js[wl_start..wl_end];
+    assert!(!wl.contains("'value'"));
+    // 引号注入安全。
+    let evil = js_inspect("a\"; alert(1); \"");
+    assert!(evil.contains("\\\""));
+}
+
+#[test]
+fn js_snapshot_shape_bounded_walk() {
+    // 缺省 selector → body（null 形态注入）。
+    let js = js_snapshot(None, SNAP_DEPTH_DEFAULT, SNAP_NODES_DEFAULT);
+    assert!(js.contains("=== null ? null : document.querySelector"));
+    assert!(js.contains("document.body"));
+    // 双闸 + 诚实标记 + 竞态可观测。
+    assert!(js.contains("truncated = true"));
+    assert!(js.contains("nodes_emitted"));
+    assert!(js.contains("ts_ms"));
+    // text 只给叶子（容器 textContent 是后代拼接会与子行重复）。
+    assert!(js.contains("el.children.length === 0"));
+    // class 一律 getAttribute（SVGElement.className 是 SVGAnimatedString）。
+    assert!(js.contains("el.getAttribute('class')"));
+    // shadowRoot 递归穿透 + shadow 标记。
+    assert!(js.contains("el.shadowRoot"));
+    // id/cls 截断（防构建 hash 类名/超长 id）。
+    assert!(js.contains("clip(el.id, 80)"));
+    assert!(js.contains("clip(cls, 120)"));
+    // 布尔投影 !!（property）。
+    assert!(js.contains("!!el.open"));
+    assert!(js.contains("!!el.disabled"));
+    // 数值参数真实注入（非占位）。
+    let js3 = js_snapshot(Some("#x"), 30, 2000);
+    assert!(js3.contains("const MD = 30, MN = 2000"));
+    // 引号注入安全。
+    let evil = js_snapshot(Some("a\"; alert(1); \""), 12, 300);
+    assert!(evil.contains("\\\""));
+}
+
+#[test]
+fn js_get_dom_shape_redaction() {
+    let js = js_get_dom("#form");
+    assert!(js.contains("document.querySelector(\"#form\")"));
+    assert!(js.contains("ERROR:no-element"));
+    // 脱敏三件套（计划 §3.3）：剥 input value 属性（页面源码预填）/
+    // 清 textarea textContent（当前值在 textContent）/ 删 script+style。
+    assert!(js.contains("removeAttribute('value')"));
+    assert!(js.contains("querySelectorAll('textarea')"));
+    assert!(js.contains("textContent = ''"));
+    assert!(js.contains("querySelectorAll('script, style')"));
+    assert!(js.contains("cloneNode(true)"));
+    assert!(js.contains("outerHTML"));
+    // 根元素自脱敏（2026-11-18 edge_live 实测缺口）：querySelectorAll 只
+    // 匹配后代——selector 直指密码框本身时根也要剥，缺 matches 三连 = 缺口回归。
+    assert!(js.contains("copy.matches('input')"));
+    assert!(js.contains("copy.matches('textarea')"));
+    assert!(js.contains("copy.matches('script, style')"));
+    // 引号注入安全。
+    let evil = js_get_dom("a\"; alert(1); \"");
+    assert!(evil.contains("\\\""));
+}
+
+#[test]
+fn dom_action_clamp_constants_ordered() {
+    // 缺省值永不越界（缺省 + clamp 组合的语义前提）；上下限有序。
+    // 常量断言进 const 块（clippy assertions_on_constants 同款纪律）。
+    const {
+        assert!(SNAP_DEPTH_DEFAULT <= SNAP_DEPTH_MAX);
+        assert!(SNAP_NODES_DEFAULT <= SNAP_NODES_MAX);
+        assert!(GET_DOM_CHARS_DEFAULT <= GET_DOM_CHARS_MAX);
+    }
+}
+
+// --- frame 路由纯函数（§3.7 双路径）---
+
+#[test]
+fn is_stale_frame_error_four_needles() {
+    // 四针命中（页面导航后隔离 world 换 context / OOPIF 换 target / 会话关闭）。
+    assert!(is_stale_frame_error(
+        "Runtime.evaluate: Cannot find context with given id"
+    ));
+    assert!(is_stale_frame_error("No frame with given id found"));
+    assert!(is_stale_frame_error("Target closed."));
+    assert!(is_stale_frame_error(
+        "Session closed: attached session not found"
+    ));
+    // 非 stale 错误不触发自愈重试（普通失败重试是浪费 + 可能双执行）。
+    assert!(!is_stale_frame_error("ERROR:no-element"));
+    assert!(!is_stale_frame_error("cdp evaluate timeout"));
+    assert!(!is_stale_frame_error("element not visible"));
+}
+
+#[test]
+fn eval_result_value_exception_vs_ok() {
+    // 正常路径取 result RemoteObject（{type, value}——调用方再取 .value）。
+    let ok = serde_json::json!({"result": {"type": "string", "value": "OK"}});
+    assert_eq!(
+        eval_result_value(ok, "expr").unwrap().pointer("/value"),
+        Some(&serde_json::json!("OK"))
+    );
+    // exceptionDetails → Err（description 优先，details fallback）。
+    let exc = serde_json::json!({
+        "exceptionDetails": {"exception": {"description": "TypeError: boom"}}
+    });
+    assert!(
+        eval_result_value(exc, "expr")
+            .unwrap_err()
+            .contains("TypeError: boom")
+    );
+    let exc2 = serde_json::json!({
+        "exceptionDetails": {"exception": {"details": [{"text": "SyntaxError"}]}}
+    });
+    assert!(
+        eval_result_value(exc2, "expr")
+            .unwrap_err()
+            .contains("SyntaxError")
+    );
+    // result 缺席 → Null（不炸）。
+    let bare = serde_json::json!({});
+    assert_eq!(
+        eval_result_value(bare, "expr").unwrap(),
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn find_frame_id_nested_tree_first_match() {
+    let tree = serde_json::json!({
+        "frame": {"id": "root", "url": "http://a/main.html"},
+        "childFrames": [
+            {"frame": {"id": "f1", "url": "http://a/inner.html"}},
+            {"frame": {"id": "f2", "url": "http://a/inner.html#second"},
+             "childFrames": [{"frame": {"id": "f3", "url": "http://a/deep.html"}}]},
+        ]
+    });
+    // 嵌套 childFrames 递归命中。
+    assert_eq!(find_frame_id(&tree, "deep.html").as_deref(), Some("f3"));
+    // 多匹配首个命中（f1 在 f2 之前——与 querySelector 首个语义一致）。
+    assert_eq!(find_frame_id(&tree, "inner.html").as_deref(), Some("f1"));
+    // 无匹配 None。
+    assert_eq!(find_frame_id(&tree, "missing.html"), None);
+    // 空树。
+    let empty = serde_json::json!({});
+    let mut none = Vec::new();
+    flatten_frame_tree(&empty, &mut none);
+    assert!(none.is_empty());
+    assert_eq!(find_frame_id(&empty, "x"), None);
+}
+
+#[test]
+fn get_frame_tree_envelope_must_be_unwrapped_before_find() {
+    // 回归锁（2026-11-18 edge_live 实测）：`Page.getFrameTree` 的 result
+    // 载荷顶层是 `frameTree` 键（包络），纯函数消费的是 frameTree **节点**
+    // `{frame, childFrames}`。把包络直接喂 find_frame_id 会让 flatten 首层
+    // 即 return——查找恒未命中、清单恒「（无）」（同源 iframe 路径整体
+    // 瘫痪）。lib 只能钉形态契约，包络解包在 resolve_frame；形态漂移时
+    // 此测试先红。
+    let envelope = serde_json::json!({
+        "frameTree": {
+            "frame": {"id": "root", "url": "http://a/main.html"},
+            "childFrames": [{"frame": {"id": "f1", "url": "http://a/inner.html"}}]
+        }
+    });
+    // 包络直接喂 = 未命中（陷阱形态钉死）。
+    assert_eq!(find_frame_id(&envelope, "inner.html"), None);
+    // 解包后命中（resolve_frame 的正确姿势）。
+    let node = envelope.get("frameTree").cloned().unwrap_or_default();
+    assert_eq!(find_frame_id(&node, "inner.html").as_deref(), Some("f1"));
+}
+
+#[test]
+fn frame_url_list_annotations_dedup_and_empty() {
+    let tree = serde_json::json!({
+        "frame": {"id": "root", "url": "http://a/main.html"},
+        "childFrames": [
+            {"frame": {"id": "f1", "url": "http://a/inner.html"}},
+            {"frame": {"id": "f2", "url": "http://a:9/inner.html"}},
+        ]
+    });
+    let targets = serde_json::json!({
+        "targetInfos": [
+            {"type": "page", "url": "http://a/main.html"},
+            {"type": "iframe", "url": "http://a:9/inner.html"},
+            {"type": "iframe", "url": "http://b/cross.html"},
+            {"type": "iframe", "url": "http://a:9/inner.html"},
+        ]
+    });
+    let list = frame_url_list(&tree, &targets);
+    // OOPIF targets 先列 + cross-process 标注；同 URL 第三次出现被去重。
+    assert!(list.contains("http://b/cross.html [cross-process]"));
+    assert!(list.contains("http://a:9/inner.html [cross-process]"));
+    assert_eq!(list.matches("http://a:9/inner.html").count(), 1);
+    // 只在 frame 树出现的 URL = same-process 标注。
+    assert!(list.contains("http://a/inner.html [same-process]"));
+    // page 型 target 不进清单（只列 iframe target）——主文档 URL 只能从
+    // frame 树以 same-process 出现。
+    assert!(!list.contains("http://a/main.html [cross-process]"));
+    // 空清单 = 「（无）」（空 URL frame 跳过、无 target）。
+    let empty = frame_url_list(
+        &serde_json::json!({"frame": {"id": "r", "url": ""}}),
+        &serde_json::json!({"targetInfos": []}),
+    );
+    assert_eq!(empty, "（无）");
 }
