@@ -244,11 +244,18 @@ pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) ->
 /// JSON object — caller falls back to the startup value. Negative values are
 /// passed through unmolested; the consumer (run_loop organ 1) already maps
 /// <=0 to "unlimited".
+///
+/// BUG-20261117-085：上界 `u32::MAX` 闸（消费侧 `n as u32`）——越域值
+/// 按「未设」（None）回落启动值，拒绝裸 `as u32`。截断是语义反转：
+/// 2^32 → 0 → 消费侧判「不限」（用户设上限反而得到无限轮次），同族
+/// 惯例先例：BUG-20261114-055（model_size_b 越域按 None）。
 pub fn resolve_max_tool_iterations(cfg: &serde_json::Value) -> Option<i64> {
     cfg.get("agents")
         .and_then(|v| v.get("defaults"))
         .and_then(|v| v.get("max_tool_iterations"))
         .and_then(|v| v.as_i64())
+        // 负值（≤0=不限）照透传：负数天然 ≤ u32::MAX，只拦上界越域。
+        .filter(|v| *v <= u32::MAX as i64)
 }
 
 /// （无人值守）：`agents.defaults.max_output_ceiling` 缺席
