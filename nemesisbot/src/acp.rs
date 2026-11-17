@@ -36,17 +36,21 @@
 //!   自家工具）。
 //! - 轮次预算耗尽 → end_turn（不伪造 max_tokens/max_turn_requests 保真度）。
 //! - session/cancel 只作用于在飞 turn（排队中的下一轮不受影响）。
+//! - 会话表有界（BUG-20261117-072）：超 [`MAX_ACP_SESSIONS`] 时 LRU 逐出
+//!   空闲会话（cwd 存根保留——被逐会话再 prompt 时透明重装，历史按
+//!   session_key 续上）；全部在飞时软上限放行新会话，宁超限不拒新。
 //!
 //! 测试 seams：transport 泛化 AsyncRead/AsyncWrite（duplex 全流程单测）；
 //! session 装配注入 [`SessionFactory`]；协议逻辑与 [`PromptDriver`] 解耦。
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -507,8 +511,32 @@ struct AcpSession {
     turn_lock: tokio::sync::Mutex<()>,
 }
 
+/// 会话表容量上限（BUG-20261117-072）：每个 session/new 走一次完整 K1
+/// 装配（security 8 层 + SQLite 审批台账 + 事件泵），MB 级驻留/会话；
+/// dispatch 无 session/close，stdio EOF 前表只增不减——编辑器进程寿命
+/// 内无界增长。超限按 LRU 逐出空闲会话；cwd 存根保留使被逐会话下次
+/// prompt 透明重装。
+const MAX_ACP_SESSIONS: usize = 32;
+
+/// 逐出后保留的最小存根：cwd（透明重装入参）+ last_used（LRU 记账，
+/// prompt 命中与重装都盖章）。
+struct SessionStub {
+    cwd: PathBuf,
+    last_used: Instant,
+}
+
+/// prompt 侧会话解析失败两态：真未知（-32602，原语义）vs 逐出后重装
+/// 失败（-32603，装配层错误——该会话确实存在过，错误语义必须可区分）。
+enum SessionLookupFailure {
+    Unknown,
+    RebuildFailed(String),
+}
+
 struct AcpServerCore {
     sessions: Mutex<HashMap<String, Arc<AcpSession>>>,
+    /// cwd 存根表：session_id → 装配 cwd。会话被 LRU 逐出后存根仍在，
+    /// prompt 命中存根即透明重装（每条仅一个 PathBuf + Instant）。
+    session_stubs: Mutex<HashMap<String, SessionStub>>,
     outbound: mpsc::Sender<Value>,
     pending: Arc<PendingPermissions>,
     factory: Arc<dyn SessionFactory>,
@@ -567,8 +595,25 @@ impl AcpServerCore {
             self.outbound.clone(),
             Arc::clone(&self.pending),
         ));
-        match self.factory.create(cwd, session_id.clone(), gate).await {
+        match self
+            .factory
+            .create(cwd.clone(), session_id.clone(), gate)
+            .await
+        {
             Ok(driver) => {
+                // 会话表有界化（BUG-20261117-072）：先逐出再入册，稳态
+                // 表长 = cap；cwd 存根随会话入册（LRU 记账基准戳）。
+                self.evict_idle_session(None);
+                self.session_stubs
+                    .lock()
+                    .expect("session stubs lock poisoned")
+                    .insert(
+                        session_id.clone(),
+                        SessionStub {
+                            cwd,
+                            last_used: Instant::now(),
+                        },
+                    );
                 self.sessions
                     .lock()
                     .expect("sessions lock poisoned")
@@ -604,16 +649,22 @@ impl AcpServerCore {
             self.send(make_error(id, -32602, "missing sessionId")).await;
             return;
         };
-        let Some(session) = self
-            .sessions
-            .lock()
-            .expect("sessions lock poisoned")
-            .get(&sid)
-            .cloned()
-        else {
-            self.send(make_error(id, -32602, &format!("unknown sessionId: {sid}")))
+        let session = match self.get_or_rebuild_session(&sid).await {
+            Ok(s) => s,
+            Err(SessionLookupFailure::Unknown) => {
+                self.send(make_error(id, -32602, &format!("unknown sessionId: {sid}")))
+                    .await;
+                return;
+            }
+            Err(SessionLookupFailure::RebuildFailed(e)) => {
+                self.send(make_error(
+                    id,
+                    -32603,
+                    &format!("session rebuild failed: {e}"),
+                ))
                 .await;
-            return;
+                return;
+            }
         };
         let blocks = params
             .get("prompt")
@@ -688,6 +739,145 @@ impl AcpServerCore {
         {
             token.cancel();
         }
+    }
+
+    /// 会话表有界化逐出扫描（BUG-20261117-072）。表长达到
+    /// [`MAX_ACP_SESSIONS`] 时按 LRU（存根 last_used）逐出空闲会话：
+    /// - turn 在飞者不可逐（`turn_lock.try_lock()` 即取即放探针，
+    ///   `agents/runtime.rs` watchdog_tick 同款避让）——逐出在飞会话 =
+    ///   Arc 虽仍存活但 cancel 令牌永失联，session/cancel 表现成挂死；
+    /// - cwd 存根不删：被逐会话下次 prompt 走 [`Self::get_or_rebuild_session`]
+    ///   透明重装（session_key 持久在 session_logs，历史续上）；
+    /// - 全部在飞（无可逐受害者）= 软上限：warn 留痕、照常放行新会话，
+    ///   宁超限不拒新（编辑器多窗口并发属正常形态）。
+    ///
+    /// `exclude`：刚入册的新会话/重装会话（其 turn_lock 必然空闲，若不
+    /// 排除会在「其余全忙」的窄竞态下被当作唯一受害者逐出，令调用方
+    /// 拿着孤儿 Arc 跑轮次）。锁序：sessions（外）→ stubs（内），全仓
+    /// 无反向嵌套。
+    fn evict_idle_session(&self, exclude: Option<&str>) {
+        loop {
+            let victim = {
+                let sessions = self.sessions.lock().expect("sessions lock poisoned");
+                if sessions.len() < MAX_ACP_SESSIONS {
+                    return;
+                }
+                let stubs = self
+                    .session_stubs
+                    .lock()
+                    .expect("session stubs lock poisoned");
+                let mut victim: Option<(String, Instant)> = None;
+                for (id, stub) in stubs.iter() {
+                    if Some(id.as_str()) == exclude {
+                        continue;
+                    }
+                    let Some(sess) = sessions.get(id) else {
+                        // 已逐出（存根保留）或装配窗口——跳过。
+                        continue;
+                    };
+                    if sess.turn_lock.try_lock().is_err() {
+                        continue; // turn 在飞，避让
+                    }
+                    if victim.as_ref().is_none_or(|(_, t)| stub.last_used < *t) {
+                        victim = Some((id.clone(), stub.last_used));
+                    }
+                }
+                victim.map(|(id, _)| id)
+            };
+            let Some(id) = victim else {
+                tracing::warn!(
+                    cap = MAX_ACP_SESSIONS,
+                    "[ACP] 会话表达软上限且全部在飞轮，放行新会话（不逐出不拒绝）"
+                );
+                return;
+            };
+            self.sessions
+                .lock()
+                .expect("sessions lock poisoned")
+                .remove(&id);
+            tracing::info!(
+                session = %id,
+                cap = MAX_ACP_SESSIONS,
+                "[ACP] 会话表满，LRU 逐出空闲会话（cwd 存根保留，后续 prompt 透明重装）"
+            );
+        }
+    }
+
+    /// prompt 侧会话解析：命中即盖章 LRU；miss 而存根在 = 被 LRU 逐出
+    /// 的会话，用存根 cwd 透明重装（完整 K1 装配；session_key `acp:{id}`
+    /// 持久在 session_logs——对话历史自动续上，对编辑器 UX 无感）。
+    /// 并发同 sid 双 prompt 重装：`entry()` 竞态败者丢弃自装结果复用
+    /// 胜者（`agents/runtime.rs` get_or_spawn 同款形态）。重装全程不持
+    /// std 锁跨 await（factory.create 内部完整装配耗时不受限）。
+    async fn get_or_rebuild_session(
+        &self,
+        sid: &str,
+    ) -> Result<Arc<AcpSession>, SessionLookupFailure> {
+        // 命中：先取先放 sessions，再单独碰 stubs 盖章（锁序不嵌套反向）。
+        let existing = {
+            let sessions = self.sessions.lock().expect("sessions lock poisoned");
+            sessions.get(sid).cloned()
+        };
+        if let Some(s) = existing {
+            if let Some(stub) = self
+                .session_stubs
+                .lock()
+                .expect("session stubs lock poisoned")
+                .get_mut(sid)
+            {
+                stub.last_used = Instant::now();
+            }
+            return Ok(s);
+        }
+        // miss：查 cwd 存根——真未知会话维持 -32602 语义。
+        let cwd = {
+            let stubs = self
+                .session_stubs
+                .lock()
+                .expect("session stubs lock poisoned");
+            stubs.get(sid).map(|s| s.cwd.clone())
+        };
+        let Some(cwd) = cwd else {
+            return Err(SessionLookupFailure::Unknown);
+        };
+        // 存根命中：透明重装（不持锁跨 await）。
+        let gate = Arc::new(PermissionGate::new(
+            sid.to_string(),
+            self.outbound.clone(),
+            Arc::clone(&self.pending),
+        ));
+        let driver = self
+            .factory
+            .create(cwd, sid.to_string(), gate)
+            .await
+            .map_err(SessionLookupFailure::RebuildFailed)?;
+        let fresh = Arc::new(AcpSession {
+            driver,
+            cancel: Mutex::new(None),
+            turn_lock: tokio::sync::Mutex::new(()),
+        });
+        // 入册（竞态败者复用胜者）+ 盖章 + 回到有界纪律（排除自身防窄
+        // 竞态自逐）。
+        let session = {
+            let mut sessions = self.sessions.lock().expect("sessions lock poisoned");
+            match sessions.entry(sid.to_string()) {
+                Entry::Occupied(e) => e.get().clone(),
+                Entry::Vacant(e) => {
+                    e.insert(Arc::clone(&fresh));
+                    fresh
+                }
+            }
+        };
+        if let Some(stub) = self
+            .session_stubs
+            .lock()
+            .expect("session stubs lock poisoned")
+            .get_mut(sid)
+        {
+            stub.last_used = Instant::now();
+        }
+        self.evict_idle_session(Some(sid));
+        Ok(session)
     }
 
     async fn dispatch(self: &Arc<Self>, msg: Value) {
@@ -898,6 +1088,7 @@ async fn serve_with_frame_cap(
 
     let core = Arc::new(AcpServerCore {
         sessions: Mutex::new(HashMap::new()),
+        session_stubs: Mutex::new(HashMap::new()),
         outbound: out_tx,
         pending: Arc::new(PendingPermissions::new()),
         factory,
