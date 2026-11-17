@@ -117,6 +117,10 @@ fn model_label(model: &str) -> &str {
 /// 「越界回退默认」意图（cluster.rs 端口族 filter→cast 同序先例）。
 /// 越界/缺省回退默认值；非法值（范围内但引擎不收）由 AecNew 返回
 /// null 降级为关闭（调用点语义）。
+/// Windows 门：产线调用点（cmd_stt_engine_start）与测试（w4_tests）均随
+/// Windows 进出；不门控则 Linux 非测试构建 dead_code（CI E0425 后 clippy
+/// 实证）。
+#[cfg(target_os = "windows")]
 fn aec_filter_length_from_cfg(voice_cfg: &serde_json::Value) -> i32 {
     voice_cfg
         .get("aec_filter_length")
