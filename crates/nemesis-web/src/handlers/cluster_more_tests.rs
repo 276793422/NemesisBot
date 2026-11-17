@@ -903,7 +903,9 @@ async fn test_config_save_overwrites_existing_file() {
     let written = std::fs::read_to_string(dir.path().join("config/config.cluster.json")).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
     assert_eq!(parsed["new"], true);
-    assert!(parsed.get("old").is_none());
+    // 2026-11-18 抹段修复后语义：config.save 是表单保存（顶层浅合并），
+    // 存量独有键存活——不再整体替换（旧行为抹掉 roaming 等表单外段）。
+    assert_eq!(parsed["old"], true);
 }
 
 // =======================================================================

@@ -2233,8 +2233,20 @@ impl ClusterHandler {
         let mut data = data.clone();
         super::config::update_json_file(&path, |existing| {
             crate::handlers::restore_masked_named_fields(&mut data, existing)?;
-            // 合并结果整体替换落盘（原子写由事务入口承担）。
-            *existing = data;
+            // 顶层浅合并（2026-11-18 抹段事故修复）：表单键覆盖存量，
+            // 存量独有的键（roaming 等 UI 表单之外的后加段）原样保留。
+            // 此前 `*existing = data` 整体替换，而 ClusterSettings
+            // saveConfig 只回传 6 个表单字段——集群设置页每保存一次，
+            // roaming.enabled 就被抹掉一次（实录：Dispatcher 凌晨保存一次
+            // → 集群重启后漫游叠加层静默失联 → 全网互见瘫痪）。
+            // data 非对象（防御臂）保持旧整体替换语义。
+            if let (Some(obj), Some(new)) = (existing.as_object_mut(), data.as_object()) {
+                for (k, v) in new {
+                    obj.insert(k.clone(), v.clone());
+                }
+            } else {
+                *existing = data;
+            }
             Ok(())
         })?;
 
