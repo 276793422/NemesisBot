@@ -306,7 +306,7 @@ describe('setupSkinProjection 装配', () => {
     expect(paths).toContain('/overview') // 无 feature 门控
     expect(paths).toContain('/license')
     expect(paths).toContain('/events') // 事件管理面（events feature 默认开）
-    expect(paths).toContain('/loops') // 循环管理面（loop feature 默认开）
+    expect(paths).toContain('/executors?tab=loops') // 循环并入执行单元复合页 TAB（loop feature 默认开）
     expect(paths).toContain('/goals') // 目标管理面（goals feature 默认开）
   })
 

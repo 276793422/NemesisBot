@@ -196,7 +196,14 @@ describe('导航模型与路由一致性（契约 vs router）', () => {
     )
     const navFeatures = new Set([...table.matchAll(/: '([A-Z_]+)'/g)].map((m) => m[1]))
     expect(navFeatures.size).toBeGreaterThan(10) // 表解析失败（空集）= 红，防假绿
-    expect([...routerFeatures].sort()).toEqual([...navFeatures].sort())
+    // 例外（2026-11-17 循环并入执行单元复合页【执行循环】TAB）：/loops 旧深链
+    // redirect 保留 LOOP 门控（裁剪构建连 redirect 也不注册）；navModel 已无
+    // loops 条目，TAB 闸在 ExecutorsView（同 VITE_FEATURE_LOOP，browser TAB 同款
+    // 惯例——browser 从来没有 navModel 条目，不在两侧比对面）。
+    const ROUTER_ONLY = new Set(['LOOP'])
+    expect([...routerFeatures].filter((f) => !ROUTER_ONLY.has(f)).sort()).toEqual([
+      ...navFeatures,
+    ].sort())
   })
 })
 

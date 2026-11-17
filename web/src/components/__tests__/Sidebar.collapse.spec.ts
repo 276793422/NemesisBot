@@ -3,9 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ref, reactive, nextTick } from 'vue'
 
 // Sidebar 折叠分组（2026-11-06 导航收敛）行为契约：
-// - 能力/配置/其他默认收起（首跑无存储形态；真实默认名单 2026-11-17
-//   分组重组起为能力/自动化/开发/配置/安全/其他六组），主要等组默认展开；
+// - 模型/能力/通道/自动化/开发/配置/安全/其他默认收起（首跑无存储形态，
+//   2026-11-17 分组重组名单），主要等组默认展开；
 // - 默认形态不落盘，首次交互（手动点击/导航展开）才持久化；
+// - 存量语义：存储只记显式意志，未动过的组按默认名单兜底（新增默认收起
+//   组对已有存储的老用户同样生效，无需逐组落过键）；
 // - 点组标题切换收起/展开，状态持久化 localStorage（nb_nav_collapsed_groups）；
 // - 导航进入被折叠组内页面自动展开（同口径持久化）；
 // - 不带 immediate：本组页面上手动收起后刷新不反弹（跨页导航才触发）。
@@ -60,6 +62,7 @@ vi.mock('../../skins/navModel', () => ({
   visibleNavGroups: () => [
     { title: '主要', items: [{ id: 'chat', label: '聊天', icon: 'x', route: '/' }] },
     { title: '能力', items: [{ id: 'logs', label: '日志', icon: 'x', route: '/logs' }] },
+    { title: '通道', items: [{ id: 'channels', label: '通道', icon: 'x', route: '/channels' }] },
     { title: '配置', items: [{ id: 'settings', label: '设置', icon: 'x', route: '/settings' }] },
     { title: '其他', items: [{ id: 'about', label: '关于', icon: 'x', route: '/about' }] },
   ],
@@ -132,5 +135,17 @@ describe('Sidebar 折叠分组', () => {
     const w = mount(Sidebar)
     expect(itemsVisible(w, '能力')).toBe(false)
     expect(itemsVisible(w, '主要')).toBe(true)
+  })
+
+  it('存量存储缺新组：默认收起名单按组兜底生效；显式意志（存 false）优先', () => {
+    // 2026-11-17 回归锁：老用户存储只落过点过的组（如 {能力:false}），
+    // 新增默认收起组（通道）必须照样收起——旧实现首载把默认值物化进 state，
+    // 存储一旦存在即冻结，名单新增组对老用户永远不生效。
+    localStorage.setItem(KEY, JSON.stringify({ 能力: false }))
+    const w = mount(Sidebar)
+    expect(itemsVisible(w, '能力')).toBe(true) // 显式意志优先，不被默认覆盖
+    expect(itemsVisible(w, '通道')).toBe(false) // 未动过的新组吃默认收起
+    expect(stored().通道).toBeUndefined() // 默认不落盘
+    w.unmount()
   })
 })

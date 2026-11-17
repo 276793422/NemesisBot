@@ -1,5 +1,12 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 
+// 旧 /loops 深链 redirect（独立常量拿 RouteRecordRaw 上下文类型——条目
+// 落在条件 spread 里会丢失上下文推断，redirect 回调参数变隐式 any）。
+const loopsRedirect: RouteRecordRaw = {
+  path: '/loops',
+  redirect: (to) => ({ path: '/executors', query: { ...to.query, tab: 'loops' } }),
+}
+
 const routes: RouteRecordRaw[] = [
   // Main
   { path: '/', name: 'chat', component: () => import('../views/ChatView.vue') },
@@ -51,9 +58,9 @@ const routes: RouteRecordRaw[] = [
   // 事件管理面（项1 事件驱动唤醒 P2，events feature / VITE_FEATURE_EVENTS
   // 门控）：fs 事件规则（events.json）+ 泵统计 + cron/后台进程源只读收编。
   ...(import.meta.env.VITE_FEATURE_EVENTS !== 'false' ? [{ path: '/events', name: 'events', component: () => import('../views/EventsView.vue') }] : []),
-  // 循环管理面（项5 自配速 durable loop，loop feature / VITE_FEATURE_LOOP
-  // 门控）：agent 自排程唤醒 loop 台账 + 人控 pause/resume + 停车场预算调整。
-  ...(import.meta.env.VITE_FEATURE_LOOP !== 'false' ? [{ path: '/loops', name: 'loops', component: () => import('../views/LoopsView.vue') }] : []),
+  // 循环管理面（项5 自配速 durable loop）已并入执行单元复合页【执行循环】
+  // TAB（2026-11-17）；旧 /loops 深链 redirect 保兼容（loop feature 门控同构）。
+  ...(import.meta.env.VITE_FEATURE_LOOP !== 'false' ? [loopsRedirect] : []),
   // 目标管理面（目标系统，goals feature / VITE_FEATURE_GOALS 门控）：
   // goal 注册表 + 评估台账 + 人控 create/update/enable/disable/delete。
   ...(import.meta.env.VITE_FEATURE_GOALS !== 'false' ? [{ path: '/goals', name: 'goals', component: () => import('../views/GoalsView.vue') }] : []),

@@ -343,13 +343,22 @@ const visibleNavGroups = computed(() => {
   return out
 })
 
-// 折叠分组（2026-11-06 用户决策：左侧导航收敛；2026-11-17 分组重组默认
-// 名单同步）：分组标题变可点开关，仓库型组（能力/自动化/开发/配置/安全/
-// 其他）默认收起；导航进组内页面自动展开；状态持久化 localStorage。
+// 折叠分组（2026-11-06 用户决策：左侧导航收敛；默认名单 2026-11-17 分组
+// 重组同步，同日能力组三分拆出模型/通道两新组入名单）：分组标题变可点
+// 开关，仓库型组默认收起；导航进组内页面自动展开；状态持久化 localStorage。
 // 纯渲染层行为——navModel 契约（皮肤脚本编程面）不动。
+//
+// 存量语义（2026-11-17）：存储只记**显式意志**（手动点过/导航自动展开过
+// 的组），没动过的组按默认名单兜底——否则名单新增组对已有存储的老用户
+// 永远不生效（旧实现首载把默认值物化进 state，存储一旦存在即冻结）。
 const NAV_COLLAPSE_KEY = 'nb_nav_collapsed_groups'
-const NAV_DEFAULT_COLLAPSED = ['能力', '自动化', '开发', '配置', '安全', '其他']
+const NAV_DEFAULT_COLLAPSED = ['模型', '能力', '通道', '自动化', '开发', '配置', '安全', '其他']
 const collapsedGroups = ref<Record<string, boolean>>(loadCollapsedGroups())
+
+function isCollapsed(title: string): boolean {
+  const v = collapsedGroups.value[title]
+  return v !== undefined ? v : NAV_DEFAULT_COLLAPSED.includes(title)
+}
 
 function loadCollapsedGroups(): Record<string, boolean> {
   try {
@@ -363,9 +372,7 @@ function loadCollapsedGroups(): Record<string, boolean> {
   } catch {
     // 存储损坏/隐私模式——回落默认形态
   }
-  const def: Record<string, boolean> = {}
-  for (const t of NAV_DEFAULT_COLLAPSED) def[t] = true
-  return def
+  return {}
 }
 
 function persistCollapsedGroups() {
@@ -378,7 +385,7 @@ function persistCollapsedGroups() {
 
 function toggleGroup(title: string) {
   if (appStore.sidebarCollapsed) return // 图标窄条无标签语义，不响应折叠
-  collapsedGroups.value[title] = !collapsedGroups.value[title]
+  collapsedGroups.value[title] = !isCollapsed(title)
   persistCollapsedGroups()
 }
 
@@ -388,7 +395,7 @@ watch(
   () => route.path,
   async (path) => {
     const hit = visibleNavGroups.value.find((g) => g.items.some((i) => i.route === path))
-    if (hit && collapsedGroups.value[hit.title]) {
+    if (hit && isCollapsed(hit.title)) {
       collapsedGroups.value[hit.title] = false
       persistCollapsedGroups()
     }
@@ -445,8 +452,8 @@ watch(
       <div v-for="group in visibleNavGroups" :key="group.title" class="nav-section">
         <div
           class="nav-section-title nav-section-toggle"
-          :class="{ 'is-collapsed': collapsedGroups[group.title] }"
-          :title="collapsedGroups[group.title] ? '展开 ' + group.title : '收起 ' + group.title"
+          :class="{ 'is-collapsed': isCollapsed(group.title) }"
+          :title="isCollapsed(group.title) ? '展开 ' + group.title : '收起 ' + group.title"
           @click="toggleGroup(group.title)"
         >
           <span class="nav-chevron" aria-hidden="true">▸</span>
@@ -454,7 +461,7 @@ watch(
         </div>
         <a
           v-for="item in group.items"
-          v-show="!collapsedGroups[group.title]"
+          v-show="!isCollapsed(group.title)"
           :key="item.id"
           class="nav-item"
           :class="{ active: route.path === item.route }"
