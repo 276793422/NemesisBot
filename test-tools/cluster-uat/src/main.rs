@@ -12493,8 +12493,11 @@ async fn main() {
             return fail("T43", format!("config.set(auto_accept) failed: {e}"));
         }
 
-        // 1. sweep 超时热调 30s（sweep interval 烘死不动；恢复在重派前）。
-        if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 30) {
+        // 1. sweep 超时热调 90s（sweep interval 烘死不动；恢复在重派前）。
+        //    90 = T46 同款：B 刚冷重启 + testai-1.2 是 30s 延迟桩，认领 +
+        //    started 回报在慢批 CI 上可超 30s 被 sweep 抢杀，等 running 窗
+        //    只见 ["failed"]（ET16 a2 / ET387 att4 双案例同签名）。
+        if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 90) {
             return fail("T43", format!("hot-set sweep failed: {e}"));
         }
 
@@ -12524,12 +12527,12 @@ async fn main() {
         if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
             return fail("T43", format!("issue.dispatch unexpected: {disp}"));
         }
-        // 60s 而非 30s：worker 拾取派发走 dispatch sweep（默认 interval=20s，
-        // 重启后计时器重置首拍最多 +20s），满载 runner 上 30s 余量不足
-        // （CI 41273770830 attempt2 T46 40.5min 龄真红案例：30s 现态仍
-        // ["dispatched"]）；60s = 3 个 sweep 拍的余量，与 10405/13003 两处
-        // 既有 60s 先例对齐。冻结/击杀窗口锚在 running 之后，不削弱断言。
-        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 60).await {
+        // 120s 与 T46 对齐：拾取走 dispatch sweep（默认 interval=20s，重启后
+        // 首拍最多 +20s），testai-1.2 桩延迟 30s 后才回 started，慢批 CI 上
+        // 认领+started 合计可达 60-90s；120s 覆盖 90s sweep 窗 + 一拍余量
+        // （超窗则见 sweep 的 ["failed"] 判定，错误面自明）。冻结/击杀窗口
+        // 锚在 running 之后，不削弱断言。
+        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 120).await {
             return fail("T43", e);
         }
 
@@ -12541,8 +12544,9 @@ async fn main() {
             return fail("T43", format!("B 被杀后 40s 内未判 Offline: {e}"));
         }
 
-        // 5. sweep 判定：⛔ 派发超时（≥30s 无回报；interval 2-10s）。
-        let comment = match u_wait_system_comment(&mut ws, issue_id, "派发超时", 120).await {
+        // 5. sweep 判定：⛔ 派发超时（≥90s 无回报；interval 2-10s；150s 与
+        //    T46 对齐，覆盖击杀前 running 到位偏晚 → ⛔ 相应晚到）。
+        let comment = match u_wait_system_comment(&mut ws, issue_id, "派发超时", 150).await {
             Ok(c) => c,
             Err(e) => return fail("T43", format!("sweep 未标失败: {e}")),
         };
