@@ -301,6 +301,38 @@ fn test_merge_config_channels_existing_enabled() {
 }
 
 #[test]
+fn test_merge_config_channels_absent_from_existing_inserted() {
+    // BUG-20261117-082：incoming 通道在既有配置中缺失 → 插入（与
+    // model_list 的 absent-insert 对齐）。旧实现静默丢弃——旧版
+    // NemesisBot 配置缺新通道族 / 用户手删过通道段时，re-migrate 把
+    // OpenClaw 通道配置无声丢掉且报告迁移成功。修复前此测试在
+    // `existing["channels"].get("qq")` 断言处失败（None）。
+    let mut existing = serde_json::json!({
+        "model_list": [],
+        "channels": {
+            "telegram": {"enabled": true, "token": "t-existing"}
+        }
+    });
+    let incoming = serde_json::json!({
+        "model_list": [],
+        "channels": {
+            // ① 同名 enabled：既有优先不变
+            "telegram": {"enabled": false, "token": "t-incoming"},
+            // ③ absent：插入 incoming
+            "qq": {"enabled": true, "token": "q-incoming"}
+        }
+    });
+    merge_config(&mut existing, &incoming);
+    let channels = existing["channels"].as_object().unwrap();
+    // ① 同名 enabled 保留既有
+    assert_eq!(channels["telegram"]["token"], "t-existing");
+    assert_eq!(channels["telegram"]["enabled"], true);
+    // ③ absent → incoming 完整插入
+    assert_eq!(channels["qq"]["token"], "q-incoming");
+    assert_eq!(channels["qq"]["enabled"], true);
+}
+
+#[test]
 fn test_merge_config_empty_model_list() {
     let mut existing = serde_json::json!({"model_list": [], "channels": {}});
     let incoming = serde_json::json!({

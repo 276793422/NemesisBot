@@ -41,6 +41,10 @@ pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
+// fire-and-forget spawn 收尸单一真相源（BUG-20261117-087：std Child drop
+// 不收尸，Unix 长命 gateway 下僵尸堆积；oauth 浏览器唤起 + shell_open 打开
+// 动作两消费方收敛至此）。
+pub mod spawn_reap;
 // SSE 事件边界定位单一真相源（原 nemesis-providers/nemesis-mcp
 // 各自内联双形态扫描；规范行终止三态逐行独立，CR-only/混合行尾
 // 此前零事件解析）。

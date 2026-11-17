@@ -394,14 +394,32 @@ fn test_prefix_len_to_mask_common() {
 
 #[test]
 fn test_find_available_port_from_high() {
-    let port = find_available_port(55000).unwrap();
-    assert!(port >= 55000);
+    // BUG-20261117-065：Windows Hyper-V/WinNAT 排除段随重启漂移（2026-11-17
+    // 实测 UDP 54952-55151 整段保留、TCP 邻段保留，bind 报 WinError 10013），
+    // 固定起点 55000 的 100 窗口可能整体落在排除段内——固定起点断言对该
+    // 环境状态失效，非函数回归。起点前移实测避开排除段再验函数语义；
+    // 窗口内无可 bind 端口时诚实 SKIP（环境不满足，非代码缺陷）。
+    let Some(start) =
+        (55000..55300).find(|&p| std::net::TcpListener::bind(("127.0.0.1", p)).is_ok())
+    else {
+        eprintln!("SKIP: TCP 55000-55299 全段被系统排除（Hyper-V/WinNAT），无法验证");
+        return;
+    };
+    let port = find_available_port(start).unwrap();
+    assert!(port >= start);
 }
 
 #[test]
 fn test_find_available_udp_port_from_high() {
-    let port = find_available_udp_port(55000).unwrap();
-    assert!(port >= 55000);
+    // 同 BUG-20261117-065：起点实测避开排除段；本机 2026-11-17 实测
+    // 54952-55151 全段 UDP 保留时旧断言恒红（100 个 bind 全报 10013）。
+    let Some(start) = (55000..55300).find(|&p| std::net::UdpSocket::bind(("127.0.0.1", p)).is_ok())
+    else {
+        eprintln!("SKIP: UDP 55000-55299 全段被系统排除（Hyper-V/WinNAT），无法验证");
+        return;
+    };
+    let port = find_available_udp_port(start).unwrap();
+    assert!(port >= start);
 }
 
 #[test]

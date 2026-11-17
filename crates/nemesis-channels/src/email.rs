@@ -268,17 +268,18 @@ impl EmailChannel {
         if from.contains('@') { from } else { "" }
     }
 
-    /// Parses IMAP SEARCH results into sequence numbers.
+    /// Parses IMAP SEARCH results into UIDs（`UID SEARCH` 与 `SEARCH` 的
+    /// untagged 响应同形态 `* SEARCH n...`，解析器同源复用）。
     pub fn parse_search_results(responses: &[String]) -> Vec<String> {
         let mut seq_nums = Vec::new();
         for resp in responses {
             if let Some(rest) = resp.strip_prefix("* SEARCH ") {
                 for part in rest.split_whitespace() {
                     let p = part.trim();
-                    // 纯数字闸（R737 协议注入面）：seq 原样拼进
-                    // `STORE {seq} +FLAGS` / `FETCH {seq}` 命令流，IMAP 服务器
-                    // 返回畸形 token 即可注入任意后续命令。合法 SEARCH 响应的
-                    // token 恒为数字，非数字 token 丢弃。
+                    // 纯数字闸（R737 协议注入面）：uid 原样拼进
+                    // `UID STORE {uid} +FLAGS` / `UID FETCH {uid}` 命令流，
+                    // IMAP 服务器返回畸形 token 即可注入任意后续命令。
+                    // 合法 SEARCH 响应的 token 恒为数字，非数字 token 丢弃。
                     if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) {
                         seq_nums.push(p.to_string());
                     }
@@ -796,17 +797,22 @@ impl EmailChannel {
                         }
                         // Attempt to poll
                         if let Ok(mut conn) = imap_connect_static(&config).await {
-                            // SEARCH UNSEEN
-                            match conn.send_command_multi("SEARCH UNSEEN").await {
+                            // UID SEARCH UNSEEN（BUG-20261117-078：改用 UID 命令族
+                            // ——MSN 序号在并发 EXPUNGE（其他会话清理邮箱）下会被
+                            // 重编号，批内后续 FETCH/STORE 打错消息 = 错标已读/
+                            // 内容丢失。UID 稳定唯一（RFC 3501 §2.3.1.2），免疫
+                            // 重编号。响应形态不变（* SEARCH 裸数字），解析器
+                            // 同源复用。
+                            match conn.send_command_multi("UID SEARCH UNSEEN").await {
                                 Ok(responses) => {
-                                    let seq_nums = parse_search_results_static(&responses);
-                                    for seq in seq_nums {
-                                        // FETCH envelope
-                                        let fetch_cmd = format!(
-                                            "{} (ENVELOPE BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)])",
-                                            seq
-                                        );
-                                        if let Ok(headers) = conn.send_command_multi(&format!("FETCH {}", fetch_cmd)).await {
+                                    let uids = parse_search_results_static(&responses);
+                                    for uid in uids {
+                                        // UID FETCH envelope
+                                        let fetch_cmd = uid_fetch_envelope_cmd(&uid);
+                                        if let Ok(headers) = conn
+                                            .send_command_multi(&fetch_cmd)
+                                            .await
+                                        {
                                             let (from, subject, message_id) =
                                                 parse_email_headers_static(&headers);
 
@@ -822,18 +828,18 @@ impl EmailChannel {
                                                 }
                                             }
 
-                                            // FETCH body（失败必须
+                                            // UID FETCH body（失败必须
                                             // 告警——此前.ok() 吞错，正文丢失无任何
                                             // 痕迹；取不到就不发布，避免造出空内容
                                             // 幻影会话。已入 seen_uids，下轮不会重处理）
-                                            let body_cmd = format!("{} (BODY[TEXT])", seq);
+                                            let body_cmd = uid_fetch_body_cmd(&uid);
                                             let body = match conn
-                                                .send_command_multi(&format!("FETCH {}", body_cmd))
+                                                .send_command_multi(&body_cmd)
                                                 .await
                                             {
                                                 Ok(r) => parse_email_body_static(&r),
                                                 Err(e) => {
-                                                    warn!(error = %e, seq = %seq,
+                                                    warn!(error = %e, uid = %uid,
                                                         "[EmailChannel] failed to fetch email body");
                                                     continue;
                                                 }
@@ -864,12 +870,10 @@ impl EmailChannel {
                                                 Self::prune_sender_map(&sender_map);
                                             }
 
-                                            // Mark as seen
+                                            // Mark as seen（UID STORE：与上同源，
+                                            // 免疫 MSN 重编号）
                                             let _ = conn
-                                                .send_command(&format!(
-                                                    "STORE {} +FLAGS (\\Seen)",
-                                                    seq
-                                                ))
+                                                .send_command(&uid_store_seen_cmd(&uid))
                                                 .await;
 
                                             // 收件必须发布到总线进
@@ -1426,6 +1430,25 @@ fn extract_email_address_static(from: &str) -> String {
 
 fn build_reply_subject_static(subject: &str) -> String {
     EmailChannel::build_reply_subject(subject)
+}
+
+/// UID FETCH envelope 命令（BUG-20261117-078 回归锚：UID 命令族免疫
+/// 并发 EXPUNGE 下的 MSN 重编号；助手化以便单测钉死前缀）。
+fn uid_fetch_envelope_cmd(uid: &str) -> String {
+    format!(
+        "UID FETCH {} (ENVELOPE BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)])",
+        uid
+    )
+}
+
+/// UID FETCH body 命令。
+fn uid_fetch_body_cmd(uid: &str) -> String {
+    format!("UID FETCH {} (BODY[TEXT])", uid)
+}
+
+/// UID STORE 标已读命令。
+fn uid_store_seen_cmd(uid: &str) -> String {
+    format!("UID STORE {} +FLAGS (\\Seen)", uid)
 }
 
 #[async_trait]

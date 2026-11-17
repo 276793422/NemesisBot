@@ -1242,6 +1242,32 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let sweep_cfg = cfg.board.clone().unwrap_or_default();
+            // 批三（无人值守加固）：停车推送 hook 注册（发射面在
+            // park_with_handoff 单一收口，config 门控在 notify.rs——本闭包
+            // 只管投递：文本拼装 + bus 出站发布，走现成 ChannelManager
+            // 派发面，不新建通道）。推送是增值通知：bus 无订阅者 /
+            // publish 失败自带日志，不炸停车收口。
+            let bus_for_notify = bus.clone();
+            crate::board_review::set_park_notify_hook(Some(std::sync::Arc::new(
+                move |notice: &crate::board_review::ParkNotice, channel: &str, chat_id: &str| {
+                    let text = format!(
+                        "🅿️ 看板任务 {} 已停车转人工（{}，建议：{}）\n原因：{}\n恢复：{}\n\n详情：Dashboard 看板该单评论与停车档案（board/handoffs/{}.json）",
+                        notice.issue_number,
+                        notice.stop_kind,
+                        notice.suggested_action,
+                        notice.hint,
+                        notice.resume_entry,
+                        notice.issue_number
+                    );
+                    bus_for_notify.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+                        channel, chat_id, &text,
+                    ));
+                    info!(
+                        "[BoardReview] issue {}（{}）停车摘要已推送 {}({})",
+                        notice.issue_id, notice.issue_number, channel, chat_id
+                    );
+                },
+            )));
             let store_for_sweep = board_store.clone();
             let cluster_for_sweep = cluster.clone();
             let home_for_sweep = home.clone();

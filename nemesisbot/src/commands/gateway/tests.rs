@@ -3410,6 +3410,27 @@ mod wave_b {
         }
     }
 
+    // BUG-20261117-070 同族：审批桥两段等待预算 saturating（弹窗路径
+    // headless 不可达，纯函数直接断言——巨值 config 输入不得 panic /
+    // 回绕成极小值造成审批卡瞬间假超时）。
+    #[cfg(all(feature = "desktop", feature = "security"))]
+    #[test]
+    fn bug070_approval_bridge_budgets_saturates_not_wraps() {
+        // 常规值：精确 +10 / +15 让位。
+        assert_eq!(bridges::approval_bridge_budgets(30), (40, 45));
+        assert_eq!(bridges::approval_bridge_budgets(0), (10, 15));
+        // 巨值：饱和不回绕（裸 `+ N` 在此 debug panic / release 回绕成
+        // 极小值）。
+        assert_eq!(
+            bridges::approval_bridge_budgets(u64::MAX),
+            (u64::MAX, u64::MAX)
+        );
+        assert_eq!(
+            bridges::approval_bridge_budgets(u64::MAX - 5),
+            (u64::MAX, u64::MAX)
+        );
+    }
+
     // -------------------------------------------------------------------------
     // 集群桥接适配器（cluster）
     // -------------------------------------------------------------------------

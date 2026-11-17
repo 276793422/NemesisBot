@@ -1,0 +1,14 @@
+[package]
+name = "nemesis-goals"
+version = "0.1.0"
+edition = "2021"
+# SC cargo-deny：新 crate 必须继承 workspace license（缺了 = unlicensed 红）
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

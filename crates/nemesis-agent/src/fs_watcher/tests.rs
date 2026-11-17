@@ -213,6 +213,102 @@ fn test_self_write_dot_relative_window_match() {
     );
 }
 
+// --- BUG-20261118-091：multiedit 经 touch_instruction_chain 的自写登记 ---
+
+fn test_instance() -> crate::instance::AgentInstance {
+    crate::instance::AgentInstance::new(crate::types::AgentConfig {
+        model: "test-model".to_string(),
+        system_prompt: Some("test".to_string()),
+        system_prompt_split: None,
+        max_turns: 3,
+        tools: vec![],
+        models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
+    })
+}
+
+fn multiedit_tc(arguments: &str) -> crate::types::ToolCallInfo {
+    crate::types::ToolCallInfo {
+        id: "mc1".to_string(),
+        name: "multiedit".to_string(),
+        arguments: arguments.to_string(),
+    }
+}
+
+#[test]
+fn test_multiedit_touch_registers_self_write_for_each_edit_path() {
+    // multiedit 是真实注册的写族工具（registry default + boundary 双形态，
+    // big tier 白名单在列），单次调用批量编辑 N 个文件。touch_instruction_
+    // chain 此前只登记 write_file/edit_file——agent 刚批量编辑的文件被
+    // watcher 事件照常投递，下一轮上下文谎报「外部修改（非本会话操作）」。
+    // 回归锁：multiedit 成功后每个 edits[].path（含大小写漂移形态）都必须
+    // 进自写窗拦下 watcher 事件。
+    let arc = test_loop();
+    let instance = test_instance();
+    let tc = multiedit_tc(
+        r#"{"edits":[{"path":"src/a.rs","old":"x","new":"y"},{"path":"SRC/B.RS","old":"1","new":"2"}]}"#,
+    );
+    arc.touch_instruction_chain(&instance, &tc, true);
+    arc.push_external_change("src/a.rs");
+    arc.push_external_change("src/b.rs");
+    // 对照臂：未登记文件照常呈现。
+    arc.push_external_change("src/other.rs");
+    assert_eq!(
+        arc.drain_external_changes(),
+        vec!["src/other.rs".to_string()],
+        "multiedit 的每个 edits[].path 必须进自写窗拦下 watcher 事件"
+    );
+}
+
+#[test]
+fn test_multiedit_failure_does_not_register_self_write() {
+    // 失败的 multiedit（tool_succeeded=false）不得登记——否则会吞掉
+    // 真实的外部修改通知（自写窗语义只覆盖真实写成功的路径）。
+    let arc = test_loop();
+    let instance = test_instance();
+    let tc = multiedit_tc(r#"{"edits":[{"path":"src/a.rs","old":"x","new":"y"}]}"#);
+    arc.touch_instruction_chain(&instance, &tc, false);
+    arc.push_external_change("src/a.rs");
+    assert_eq!(arc.drain_external_changes(), vec!["src/a.rs".to_string()]);
+}
+
+#[test]
+fn test_multiedit_malformed_args_no_panic() {
+    // edits 缺失 / 非数组 / path 非字符串——防御性解析：零路径、不 panic、
+    // 不登记（行为与漏登记一致但不炸 dispatch）。
+    let arc = test_loop();
+    let instance = test_instance();
+    for args in [
+        r#"{}"#,
+        r#"{"edits":"not-an-array"}"#,
+        r#"{"edits":[{"path":42}]}"#,
+    ] {
+        let tc = multiedit_tc(args);
+        arc.touch_instruction_chain(&instance, &tc, true);
+    }
+    // 三个畸形 args 都没登记任何路径。
+    arc.push_external_change("src/a.rs");
+    assert_eq!(arc.drain_external_changes(), vec!["src/a.rs".to_string()]);
+}
+
+#[test]
+fn test_write_file_touch_still_registers_self_write() {
+    // 重构对照臂：单 path 工具（write_file）经重排后的路径提取仍照常登记。
+    let arc = test_loop();
+    let instance = test_instance();
+    let tc = crate::types::ToolCallInfo {
+        id: "wf1".to_string(),
+        name: "write_file".to_string(),
+        arguments: r#"{"path":"w/f.txt","content":"hi"}"#.to_string(),
+    };
+    arc.touch_instruction_chain(&instance, &tc, true);
+    arc.push_external_change("w/f.txt");
+    assert!(
+        arc.drain_external_changes().is_empty(),
+        "write_file 单 path 登记不得因 multiedit 重排回归"
+    );
+}
+
 // --- end-to-end: watcher fires through the loop ---
 
 #[test]

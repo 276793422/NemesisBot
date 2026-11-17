@@ -1143,3 +1143,45 @@ fn test_allow_from_matching_survives_identity_normalization() {
     // 非白名单地址仍被拒
     assert!(!ch.base.is_allowed("attacker@evil.com"));
 }
+
+// ============================================================
+// UID 命令族（BUG-20261117-078）
+// ============================================================
+
+/// 收件路径必须用 UID 命令（SEARCH/FETCH/STORE）而非 MSN 序号——并发
+/// EXPUNGE（其他会话清理邮箱）会重编号 MSN，批内后续 FETCH/STORE 打错
+/// 消息 = 错标已读/内容丢失。UID 稳定唯一（RFC 3501 §2.3.1.2）。
+/// 突变验证：摘掉任一 helper 的 "UID " 前缀本测必红。
+#[test]
+fn test_uid_command_family_prefixes() {
+    let uid = "42";
+    let env = uid_fetch_envelope_cmd(uid);
+    assert!(
+        env.starts_with("UID FETCH 42 ")
+            && env.contains("ENVELOPE")
+            && env.contains("SUBJECT FROM MESSAGE-ID"),
+        "envelope 命令必须是 UID FETCH 形态: {env}"
+    );
+    let body = uid_fetch_body_cmd(uid);
+    assert_eq!(body, "UID FETCH 42 (BODY[TEXT])");
+    let store = uid_store_seen_cmd(uid);
+    assert_eq!(store, "UID STORE 42 +FLAGS (\\Seen)");
+}
+
+/// UID SEARCH 与 SEARCH 的 untagged 响应同形态——解析器对 `* SEARCH`
+/// 前缀裸数字的提取在两种命令下行为一致（回归锚：解析器不得耦合
+/// 命令形态）。
+#[test]
+fn test_parse_search_results_shape_invariant_across_uid_and_msn() {
+    let responses = vec![
+        "* SEARCH 2 5 17".to_string(),
+        "* 1 EXISTS".to_string(),
+        "* SEARCH".to_string(), // 空结果：无未读
+    ];
+    let parsed = EmailChannel::parse_search_results(&responses);
+    assert_eq!(
+        parsed,
+        vec!["2", "5", "17"],
+        "只收 * SEARCH 行的裸数字 token"
+    );
+}

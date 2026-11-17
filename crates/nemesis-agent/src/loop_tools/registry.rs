@@ -81,6 +81,14 @@ pub struct SharedToolConfig {
     pub skills_loader: Option<Arc<nemesis_skills::loader::SkillsLoader>>,
     /// Workspace path for skill installation.
     pub workspace: Option<String>,
+    /// bot 域产物根（2026-11-17 数据归属视角统一）：screen_capture /
+    /// desktop_automation 截图落盘（`{root}/temp/`）与 web_fetch 超限
+    /// spill 存档（`{root}/logs/spill/`）的落盘根。这些是 bot 诊断/临时
+    /// 产物，不属于用户仓库——项目 loop（workspace=用户项目工作树）必须
+    /// 显式注入主 workspace，避免落用户目录。`None`（Default）= 回落
+    /// `workspace`（主 loop / 对话组 / 集群 worker 的 workspace 本就是
+    /// 主 ws，行为零变化）。
+    pub bot_artifacts_root: Option<std::path::PathBuf>,
     /// Cron service for scheduling jobs.
     pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
     /// (half): enable the claude_code delegation tool. Default false
@@ -380,7 +388,12 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // desktop_automation=ProcessSpawn(HIGH 键鼠注入)，审批卡照常走 8 层。
     // 非 Windows 平台运行期诚实报错（PowerShell 后端缺席），不做编译期裁剪。
     if let Some(ref ws) = config.workspace {
-        let ws_root = std::path::PathBuf::from(ws);
+        // 截图落盘根 = bot 域产物根（temp/ 是 bot 临时产物，不属于用户
+        // 仓库——项目 loop 经 bot_artifacts_root 锚主 workspace）。
+        let ws_root = config
+            .bot_artifacts_root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(ws));
         tools.insert(
             "screen_capture".to_string(),
             Box::new(ScreenCaptureToolAdapter::new(ws_root.clone())),
@@ -416,12 +429,18 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // 宿主——重定向手动循环逐跳复查（无闸时仍限跳数 ≤5）。mut 只在
     // security 形态用到（ssrf 注入），minimal 形态 cfg_attr 压 unused_mut
     // （远端 minimal clippy；不能删 mut——security 形态需要）。
-    // 注入 workspace 根（超限全文存档 spill 用）。web_fetch
-    // 无条件注册（与 workspace 有无无关）——workspace 缺席时 with_workspace
-    // 收空串，超限退回旧「截断+注记」行为（诚实不静默）。
+    // 注入 workspace 根（超限全文存档 spill 用）。spill 是 bot 域诊断
+    // 产物——根优先取 bot_artifacts_root（项目 loop 锚主 workspace，
+    // 不落用户项目树）。web_fetch 无条件注册（与 workspace 有无无关）
+    // ——两者皆缺席时 with_workspace 收空串，超限退回旧「截断+注记」
+    // 行为（诚实不静默）。
+    let spill_root = config
+        .bot_artifacts_root
+        .clone()
+        .or_else(|| config.workspace.as_deref().map(std::path::PathBuf::from));
     #[cfg_attr(not(feature = "security"), allow(unused_mut))]
-    let mut web_fetch =
-        WebFetchTool::new(50000).with_workspace(config.workspace.as_deref().unwrap_or(""));
+    let mut web_fetch = WebFetchTool::new(50000)
+        .with_workspace(spill_root.as_deref().and_then(|p| p.to_str()).unwrap_or(""));
     #[cfg(feature = "security")]
     {
         web_fetch.ssrf = config.security.clone();
@@ -577,11 +596,17 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Coding tools (grep / git) — read-only code search & git queries.
+    // （BUG-20261117-067）grep 显式 path 与文件工具同源过 resolve_tool_path
+    // （Read 族）——旧行为：绝对路径不校验、相对 join 无包含检查，restrict
+    // =true 下 read_file 拒绝的界外路径可被 grep 搜出内容（同族缺口第二例，
+    // 第一例 lsp_tool）。git 是 repo-bound 形态（cwd 钉工作区、路径在仓库
+    // 内解析），不属本族。
     if let Some(ref workspace) = config.workspace {
-        tools.insert(
-            "grep".to_string(),
-            Box::new(GrepTool::new(workspace.clone())),
-        );
+        let mut grep = GrepTool::new(workspace.clone());
+        if let Some(ref boundary) = config.workspace_boundary {
+            grep = grep.with_boundary(boundary.clone());
+        }
+        tools.insert("grep".to_string(), Box::new(grep));
         tools.insert("git".to_string(), Box::new(GitTool::new(workspace.clone())));
     }
 
@@ -1016,6 +1041,7 @@ pub fn register_extended_tools(
         experts: None,
         skills_registry: None,
         skills_loader: None,
+        bot_artifacts_root: None,
         workspace: None,
         cron_service: None,
         claude_code_tool_enabled: false,

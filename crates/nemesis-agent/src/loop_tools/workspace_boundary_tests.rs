@@ -57,6 +57,7 @@ fn boundary(root: &Path, restrict: bool) -> WorkspaceBoundary {
         restrict,
         extra_roots: Vec::new(),
         editor_gate: None,
+        goals_guard: None,
     }
 }
 
@@ -500,6 +501,7 @@ fn boundary_with_extra(root: &Path, extra: &Path) -> WorkspaceBoundary {
         restrict: true,
         extra_roots: vec![extra.to_path_buf()],
         editor_gate: None,
+        goals_guard: None,
     }
 }
 
@@ -628,4 +630,94 @@ async fn write_file_into_extra_root_allowed_end_to_end() {
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "plan");
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// ---------------------------------------------------------------------------
+// goals_guard（目标系统文件保护）接线行为
+// ---------------------------------------------------------------------------
+
+fn boundary_with_goals_guard(root: &Path, restrict: bool, human_goal: bool) -> WorkspaceBoundary {
+    let mut b = boundary(root, restrict);
+    // 生产形态复刻（nemesisbot goals_engine::workspace_goals_guard 同构）：
+    // 注册表投影 → gate::fence_denial 裁决。G1 = human / agent 视入参。
+    b.goals_guard = Some(Arc::new(move |rel: &str| {
+        let created_by = if human_goal {
+            nemesis_goals::GoalCreatedBy::Human
+        } else {
+            nemesis_goals::GoalCreatedBy::Agent
+        };
+        nemesis_goals::fence_denial(rel, &move |id: &str| {
+            (id == "G1" || id == "G2").then_some(created_by)
+        })
+    }));
+    b
+}
+
+#[test]
+fn goals_guard_blocks_human_goal_write_even_with_restrict_off() {
+    // 人配 goal.md：restrict=false（用户显式关边界）也拒——评估真相源
+    // 不随边界开关松动。
+    let root = temp_dir("xg_main");
+    let g = root.join("goals").join("G1.goal.md");
+    let err = validate_workspace_path(
+        &ps(&g),
+        &boundary_with_goals_guard(&root, false, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap_err();
+    assert!(
+        !err.contains("access denied: path"),
+        "应走 goals 守卫理由而非界外拒绝: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn goals_guard_blocks_registry_and_evals_but_allows_agent_goal_and_outside_goals() {
+    let root = temp_dir("xg2_main");
+    // 注册表恒拒（restrict=false 形态）
+    let reg = root.join("config").join("goals.json");
+    assert!(
+        validate_workspace_path(
+            &ps(&reg),
+            &boundary_with_goals_guard(&root, false, true),
+            FenceOpFamily::WriteDelete
+        )
+        .is_err()
+    );
+    // 评估台账恒拒
+    let evals = root.join("goals").join("G1.evals.jsonl");
+    assert!(
+        validate_workspace_path(
+            &ps(&evals),
+            &boundary_with_goals_guard(&root, false, true),
+            FenceOpFamily::WriteDelete
+        )
+        .is_err()
+    );
+    // agent 自建 goal：放行（create 返回 canonical）
+    let agent_goal = root.join("goals").join("G2.goal.md");
+    let ok = validate_workspace_path(
+        &ps(&agent_goal),
+        &boundary_with_goals_guard(&root, true, false),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
+    assert!(ok.to_string_lossy().contains("G2.goal.md"));
+    // goals/ 外路径不受守卫影响（restrict=true 界内照常）
+    let plain = root.join("src").join("main.rs");
+    validate_workspace_path(
+        &ps(&plain),
+        &boundary_with_goals_guard(&root, true, true),
+        FenceOpFamily::WriteDelete,
+    )
+    .unwrap();
+    // 读族不设防：人建 goal 读放行
+    validate_workspace_path(
+        &ps(&root.join("goals").join("G1.goal.md")),
+        &boundary_with_goals_guard(&root, true, true),
+        FenceOpFamily::Read,
+    )
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&root);
 }

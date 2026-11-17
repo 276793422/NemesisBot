@@ -341,5 +341,110 @@ pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> Failove
     }
 }
 
+/// 流内错误事件载荷 → `FailoverError` **统一分类入口**（2026-11-17 治本批）。
+///
+/// 三 lane 此前各自手搓解析：openai 兼容 lane 只抽 message 丢 code（cc-switch
+/// 429 风暴根因——流内 `{"error":{"code":429,...}}` 的状态码在采集点被丢弃，
+/// 文案不在两级词表 → `Unknown` 不可重试，429 信号永不进限流退避环）；
+/// anthropic lane 私有 type 映射表；codex lane `SseOutcome::Failed` 只携文案。
+/// 本函数单点收敛，探测序：
+///
+/// ① **码探测**（治本核心）：error 子对象（openai 家族 `/error`、codex
+///    `response.failed` 的 `/response/error`；两者皆无则整个 payload——
+///    codex 裸 `error` 事件形态）上的 `code` / `status` / `status_code`
+///    三键，数字或纯数字字符串；0 / 非法 / 真相源不收录的码跳过（字符串
+///    语义码如 `"insufficient_quota"` 不是码——语义在 message 里，落 ③）。
+///    命中 → [`FailoverError::from_status`]（`class_by_status` 单一真相源）。
+/// ② **anthropic 官方错误 type 枚举**：原 anthropic lane 私有表并入单点。
+///    未收录 type **不判 Format**——openai 家族也带 type 字段（如
+///    `"invalid_request_error"`），同一探测序两家族共用，语义交 ③ 定夺。
+/// ③ **message 文案**：[`classify_message_error`]（`llm_error_class` 同判）；
+///    `error` 本身是字符串的形态（部分网关）同样收录。
+/// ④ 全无 → `Unknown{fallback_msg}`（调用方给的现场描述）。
+pub fn classify_stream_error_payload(
+    event: &serde_json::Value,
+    provider: &str,
+    model: &str,
+    fallback_msg: String,
+) -> FailoverError {
+    // error 子对象定位：openai 家族在 /error；codex response.failed 在
+    // /response/error；两者皆无 → 整个 payload 即错误对象。
+    let err_obj = event
+        .get("error")
+        .filter(|v| v.is_object())
+        .or_else(|| event.pointer("/response/error").filter(|v| v.is_object()))
+        .unwrap_or(event);
+
+    // ① 码探测：code / status / status_code，数字或纯数字字符串。
+    for key in ["code", "status", "status_code"] {
+        let Some(v) = err_obj.get(key) else {
+            continue;
+        };
+        let raw = match v {
+            serde_json::Value::Number(n) => n.as_u64(),
+            serde_json::Value::String(s) => s.trim().parse::<u64>().ok(),
+            _ => None,
+        };
+        let Some(code) = raw.filter(|&c| c != 0).and_then(|c| u16::try_from(c).ok()) else {
+            continue;
+        };
+        // 只在真相源收录该码时采纳——未收录码（418 等）不产
+        // `Unknown{"status N: "}`（会掩埋 message 真语义），把探测机会
+        // 让给 ②③。
+        if nemesis_utils::llm_error_class::class_by_status(code).is_some() {
+            return FailoverError::from_status(provider, model, code, "", None);
+        }
+    }
+
+    // ② anthropic 官方错误 type 枚举（原 lane 私有表并入单点）。
+    if let Some(etype) = err_obj.get("type").and_then(|t| t.as_str()) {
+        let mapped = match etype {
+            "overloaded_error" | "api_error" => Some(FailoverError::Overloaded {
+                provider: provider.to_string(),
+                // SSE error 事件无 HTTP 状态码（流已在 200 里）→ 0（未
+                // 携带），与 Auth 纯文案形态同约定。
+                status: 0,
+            }),
+            "rate_limit_error" => Some(FailoverError::RateLimit {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                retry_after: None,
+            }),
+            "authentication_error" | "permission_error" => Some(FailoverError::Auth {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                status: 0,
+            }),
+            "billing_error" => Some(FailoverError::Billing {
+                provider: provider.to_string(),
+            }),
+            "timeout_error" => Some(FailoverError::Timeout {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            }),
+            _ => None,
+        };
+        if let Some(err) = mapped {
+            return err;
+        }
+    }
+
+    // ③ message 文案兜底：error 子对象 message 优先；`error` 本身是字符串
+    // 的形态（部分网关）同样收录。
+    let msg = err_obj
+        .get("message")
+        .and_then(|m| m.as_str())
+        .or_else(|| event.get("error").and_then(|e| e.as_str()));
+    if let Some(msg) = msg {
+        return classify_message_error(provider, model, msg);
+    }
+
+    // ④ 全无 → Unknown（调用方现场描述）。
+    FailoverError::Unknown {
+        provider: provider.to_string(),
+        message: fallback_msg,
+    }
+}
+
 #[cfg(test)]
 mod tests;

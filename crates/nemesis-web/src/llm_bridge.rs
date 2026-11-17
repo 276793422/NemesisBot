@@ -435,6 +435,25 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                         warn!("[LlmBridge] LLM stream error: {}", e);
                         return Err(map_provider_error(&e));
                     }
+                    // LLM-ERR-B（2026-11-17 治本批，与 collect_stream_response
+                    // 同款透传）：确定性应用层错误（限流/认证/计费）是上游对
+                    // 本次请求的明确拒绝——partial 是被拒请求的半成品不是可续
+                    // 写成果，**透传不包 StreamInterrupted**。包装会把分类拍扁
+                    // 进 reason 文本（Display 前缀短路恒判 Timeout → 限流信号
+                    // 被当传输抖动零退避立即重试，429 风暴）且触发拼接续写
+                    // 把半截文本缝进重试后的完整回复（缝合怪终答，基线实测）。
+                    if matches!(
+                        e,
+                        nemesis_providers::failover::FailoverError::RateLimit { .. }
+                            | nemesis_providers::failover::FailoverError::Auth { .. }
+                            | nemesis_providers::failover::FailoverError::Billing { .. }
+                    ) {
+                        warn!(
+                            "[LlmBridge] LLM stream definitive error, passing through: {}",
+                            e
+                        );
+                        return Err(map_provider_error(&e));
+                    }
                     let chars = content.chars().count();
                     let wrapped = nemesis_providers::failover::FailoverError::StreamInterrupted {
                         provider: self.inner.name().to_string(),

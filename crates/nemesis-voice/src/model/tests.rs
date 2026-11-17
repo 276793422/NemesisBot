@@ -1574,3 +1574,61 @@ fn download_model_files_rejects_unsafe_local_without_writing() {
         );
     });
 }
+
+/// part_disposition 三态判定（BUG-20261117-080）：== Complete / > TooLarge /
+/// < 与 None 远端 → Resume。单一真相源决策函数。
+#[test]
+fn part_disposition_three_states() {
+    assert_eq!(part_disposition(4, Some(4)), PartDisposition::Complete);
+    assert_eq!(part_disposition(9, Some(4)), PartDisposition::TooLarge);
+    assert_eq!(part_disposition(2, Some(4)), PartDisposition::Resume);
+    // remote 未知（HEAD 失败/无 Content-Length）→ 只能续传
+    assert_eq!(part_disposition(9, None), PartDisposition::Resume);
+}
+
+/// 回归锁（BUG-20261117-080）：part 比远端大 = 远端文件已换版本（re-release
+/// 变小），旧 part 内容不可信——必须删 part 全量重下，不许旧内容冒充新文件。
+/// 旧实现 `existing_size >= t` 直接 rename：本测试在旧行为下拿到旧 9 字节
+/// 内容（零 hash 校验通道里尺寸是唯一对账手段）。
+#[test]
+fn download_file_resume_part_larger_than_remote_restarts_full() {
+    with_runtime(|| async {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/repo/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-length", "4"))
+            .mount(&server)
+            .await;
+        // 全量 GET（TooLarge 分支删 part 后 fall-through，无 Range 头）
+        Mock::given(method("GET"))
+            .and(path("/repo/resolve/main/model.onnx"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("NEWD"))
+            .mount(&server)
+            .await;
+
+        let server_uri = server.uri();
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("final.onnx");
+        let part = tmp.path().join("final.onnx.part");
+        std::fs::write(&part, b"OLDOLDOLD").unwrap(); // 9 字节 > 远端 4 字节
+        let target_check = target.clone();
+        let part_check = part.clone();
+
+        crate::test_util::ensure_global_subscriber(); // warn! 参数求值
+        run_blocking(move || {
+            let client = reqwest::blocking::Client::new();
+            download_file_resume(
+                &client,
+                &format!("{server_uri}/repo/resolve/main/model.onnx"),
+                &target,
+                &part,
+                "final.onnx",
+            )
+        })
+        .await
+        .unwrap();
+        // 新远端内容落盘，旧 9 字节内容被丢弃
+        assert_eq!(std::fs::read(&target_check).unwrap(), b"NEWD");
+        assert!(!part_check.exists());
+    });
+}

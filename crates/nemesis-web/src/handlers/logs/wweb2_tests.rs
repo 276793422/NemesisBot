@@ -431,3 +431,35 @@ fn extract_md_first_message_truncates_at_200_chars() {
     // 无 Message 节 → 空串
     assert_eq!(extract_md_first_message("# nothing\n"), "");
 }
+
+/// BUG-20261117-071 配对锁：写入端（nemesis-security `audit_log.rs`）已把
+/// 字段内 `|` 中和为 Broken Bar `¦`（exec/run_script target=命令串本体，
+/// shell 管道是日常形态——未中和时行 split(" | ") 错位移列，danger 列被
+/// 读成命令碎片）。锁定新形态行的列对位：10 段、danger/reason/policy
+/// 落正确列。
+#[test]
+fn parse_security_audit_file_bug071_neutralized_pipes_align_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("security_audit_2026-11-17.log");
+    // 与修复后写入端逐字节同形：target = "cargo build ¦ tee build.log"，
+    // reason = "reason ¦ with pipe second line"。
+    std::fs::write(
+        &path,
+        "2026-11-17 13:00:00.000 | evt-pipe | allowed | process_exec | sess-user | web | cargo build \u{00a6} tee build.log | HIGH | reason \u{00a6} with pipe second line | policy-rule-1\n",
+    )
+    .unwrap();
+    let entries = parse_security_audit_file(&path);
+    assert_eq!(
+        entries.len(),
+        1,
+        "neutralized-pipe line parses as one entry"
+    );
+    let e = &entries[0];
+    assert_eq!(e["target"], "cargo build \u{00a6} tee build.log");
+    assert_eq!(
+        e["risk_level"], "HIGH",
+        "danger column must not be a command fragment"
+    );
+    assert_eq!(e["reason"], "reason \u{00a6} with pipe second line");
+    assert_eq!(e["policy"], "policy-rule-1");
+}

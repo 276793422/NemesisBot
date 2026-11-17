@@ -228,6 +228,40 @@ pub struct BoardFlagConfig {
     pub attendance: BoardAttendanceConfig,
     /// worker 执行面配置（`board.worker` 段；B36 工具供给裁剪开关）。
     pub worker: BoardWorkerConfig,
+    /// 停车推送（`board.notify` 段；无人值守加固 批三）：看板任务
+    /// 停车转人工时向已配置出站通道推一条停车摘要。三键全默认（关 +
+    /// 空目标）= 完全 no-op，现网行为不变。
+    pub notify: BoardNotifyConfig,
+}
+
+/// 停车推送配置（`board.notify` 段）。出站走现成 ChannelManager 派发面
+/// （channel = 已配置出站通道名，如 webhook/telegram），不新建通道；
+/// 未启用 / 目标为空 / 无已配置通道 = 诚实 no-op。
+///
+/// Default（全关 + 空目标）即现网行为：derive 语义恰好就是目标默认态。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardNotifyConfig {
+    /// 停车推送总开关（默认 false）。
+    pub enabled: bool,
+    /// 出站通道名（ChannelManager 注册名；空 = 不推）。
+    pub channel: String,
+    /// 出站 chat id（通道各自的会话标识；空 = 不推）。
+    pub chat_id: String,
+}
+
+impl BoardFlagConfig {
+    /// 批一①（无人值守加固）：unlimited + 预算保险丝三维全关的组合检测
+    /// （纯谓词，供启动 WARN 与单测）。true = FAIL 重派无资源上限，唯一
+    /// 兜底只剩同因熔断 / UNSURE 闸 / Freeze / worker_loop / token 预算五
+    /// 闸——签名逐轮翻转的 FAIL 不在任何闸内，无人值守跑飞只靠日志可见。
+    /// 检测是纯 WARN 不拦截：用户显式选择不是错误（硬拒已答辩否决）。
+    pub fn unlimited_without_budget_fuse(&self) -> bool {
+        self.unlimited_mode
+            && self.budget.max_total_redispatch == 0
+            && self.budget.wall_clock_budget_secs == 0
+            && self.budget.max_tokens_per_parent == 0
+    }
 }
 
 impl Default for BoardFlagConfig {
@@ -258,6 +292,7 @@ impl Default for BoardFlagConfig {
             replan: BoardReplanConfig::default(),
             attendance: BoardAttendanceConfig::default(),
             worker: BoardWorkerConfig::default(),
+            notify: BoardNotifyConfig::default(),
         }
     }
 }
@@ -474,6 +509,19 @@ pub struct BoardReviewConfig {
     /// 恒转人工（返工修不了「无法判定」）。轮数按「返工：」前缀子单累计数计
     /// （含 cancelled——按尝试计不按存活计），超限保持转人工。
     pub parent_remediation_max: u32,
+    /// 瞬态失败退避重试上限（无人值守加固 批二；默认 **6**，**0 = 关**
+    /// = 旧行为）。终态 fail_class 属瞬态集（llm_timeout/llm_rate_limit/
+    /// llm_failure/empty_result——上游 failover 已耗尽的罕见事件）时，
+    /// 退避 [`Self::transient_retry_delay_secs`] 后同目标重派给环境自愈
+    /// 窗口。**独立预算不烧重派轮次**（轮次语义是「worker 真做了事还
+    /// 不过」，瞬态是「worker 根本没干成」）；派发行照落审计可追溯。
+    /// 内存计数按单累计，任一非瞬态 verdict / 超限 / 派发终态清零；
+    /// 重启清零可接受（拥塞窗分钟级，重启即环境剧变）。
+    pub transient_retry_max: u32,
+    /// 瞬态退避等待秒数（无人值守加固 批二；默认 60，**0 = 不等**——
+    /// 测试注入用）。复用评审侧延迟重评（`REVIEW_RETRY_DELAY_SECS`）
+    /// 先例：立即重派大概率撞同一个拥塞。
+    pub transient_retry_delay_secs: u64,
     /// 交付证据契约总闸（默认 false = 语义不变）。
     /// 开启后**所有**单子验收 PASS 前置校验最新派发任务的交付记录在场
     /// （delivered/confirmed），缺失 = 降级 FAIL「缺交付证据」（不凭自然
@@ -647,6 +695,8 @@ impl Default for BoardReviewConfig {
             max_unsure_streak: 2,
             professions: std::collections::HashMap::new(),
             parent_remediation_max: 2,
+            transient_retry_max: 6,
+            transient_retry_delay_secs: 60,
             require_delivery_evidence: false,
             evidence_typed_required: false,
             required_checks: std::collections::HashMap::new(),

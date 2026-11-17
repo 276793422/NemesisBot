@@ -30,6 +30,14 @@ fn http_client(cfg: &OAuthProviderConfig) -> Result<reqwest::Client, String> {
     let secs = resolve_timeout_secs(cfg.request_timeout_secs);
     reqwest::Client::builder()
         .timeout(Duration::from_secs(secs))
+        // 凭据随重定向跨主机泄漏防线（BUG-20261117-075；单一真相源
+        // `nemesis_utils::http_redirect`——同源跟随/跨源终停）：refresh /
+        // code 交换 / device 轮询把 refresh_token / code_verifier /
+        // device_code 放请求体，reqwest 默认策略对跨主机 307/308 保方法
+        // 转发 body、自定义头原样带去目标主机——凭据直接出站。provider
+        // 六 lane / channels / MCP / search 均已挂同款策略，本函数是凭据
+        // lane 家族横向扫的最后一个漏网点。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()
         .map_err(|e| {
             format!(
@@ -898,6 +906,10 @@ fn url_encode(s: &str) -> String {
 }
 
 /// Open a URL in the default browser.
+///
+/// 三平台统一走 [`nemesis_utils::spawn_reap::spawn_detached`]（fire-and-forget
+/// spawn + 后台收尸线程）：裸 spawn 后 drop `std Child` 在 Unix 上不回收
+/// ——gateway 长命进程内每次浏览器唤起留一个僵尸（BUG-20261117-087）。
 fn open_browser_impl(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -909,27 +921,29 @@ fn open_browser_impl(url: &str) -> Result<(), String> {
         // URL 走单一 argv（无 shell 中间层，& 不经任何解析），explorer 对
         // http(s) 经 ShellExecute 打开默认浏览器；GUI 子系统无控制台窗，
         // 无需 CREATE_NO_WINDOW。
-        windows_browser_command(url)
-            .spawn()
-            .map_err(|e| format!("opening browser: {}", e))?;
+        let url = url.to_string();
+        nemesis_utils::spawn_reap::spawn_detached(|| windows_browser_command(&url).spawn())
+            .map_err(|e| format!("opening browser: {e}"))?;
         Ok(())
     }
 
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| format!("opening browser: {}", e))?;
+        let url = url.to_string();
+        nemesis_utils::spawn_reap::spawn_detached(|| {
+            std::process::Command::new("open").arg(&url).spawn()
+        })
+        .map_err(|e| format!("opening browser: {e}"))?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| format!("opening browser: {}", e))?;
+        let url = url.to_string();
+        nemesis_utils::spawn_reap::spawn_detached(|| {
+            std::process::Command::new("xdg-open").arg(&url).spawn()
+        })
+        .map_err(|e| format!("opening browser: {e}"))?;
         Ok(())
     }
 

@@ -1216,6 +1216,57 @@ fn test_cleanup_timeout_fires_stale_kill_hook_once() {
     );
 }
 
+/// run_cleanup_once 钩子重入回归：on_complete 钩子体内重入
+/// fire_route_record（= route_record_fn 注册表锁）。历史形态把
+/// `.lock().clone()` 放在 cleanup_completed 的实参表达式里——临时
+/// MutexGuard 活到整条语句结束，三把注册表锁持穿整个清扫（含钩子
+/// 回调体），回调体重入即 parking_lot 同线程自锁死（测试挂死）。
+/// 修复 = 与 start() 后台循环同款（先克隆出锁再调用）。
+#[test]
+fn run_cleanup_once_hook_reentry_does_not_deadlock() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let tm = Arc::new(TaskManager::with_store_and_interval(
+        store.clone(),
+        std::time::Duration::from_secs(3600),
+    ));
+
+    // route_record 钩子本体 no-op（重入链由 on_complete 臂发起，防递归）。
+    tm.set_route_record_fn(Arc::new(|_: &str, _: bool| {}));
+
+    // on_complete 钩子体重入 fire_route_record（route_record_fn.lock()）。
+    let tm_for_hook = Arc::clone(&tm);
+    tm.set_callback(Box::new(move |_task: &Task| {
+        tm_for_hook.fire_route_record("reentry-probe", true);
+    }));
+
+    // 超阈 stale Pending（25h > 24h 安全网）→ 清扫判死臂依次触发
+    // route_record 钩子（no-op）与 on_complete 钩子（重入注册表锁）。
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    store
+        .create(Task {
+            id: "reentry-stale".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "remote-1".to_string(),
+            payload: serde_json::json!({"msg": "hello"}),
+            result: None,
+            original_channel: "web".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_created,
+            completed_at: None,
+        })
+        .unwrap();
+
+    // 修复后必须正常返回并完成判死（历史形态在此自锁死挂死）。
+    tm.run_cleanup_once();
+
+    assert_eq!(
+        store.get("reentry-stale").unwrap().status,
+        TaskStatus::Failed,
+        "判死臂必须落地（on_complete 钩子重入注册表锁不阻塞清扫）"
+    );
+}
+
 #[tokio::test]
 async fn test_start_idempotent_v2() {
     // Test that calling start() twice is a no-op when a runtime is present

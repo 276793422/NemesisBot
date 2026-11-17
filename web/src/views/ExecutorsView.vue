@@ -19,12 +19,16 @@
 //   （N != null 时渲染 `(N)`）——计数由面板 loadList 后 emit('archived-count')
 //   投影（列表加载时点的全库投影），宿主 ref 收敛；进程 TAB 先行时计数
 //   缺席（null → 不渲染括号），进入子代理/归档任一面板即补上。
+// - 执行循环 TAB（2026-11-17 项5 durable loop 并入，用户拍板）：原独立
+//   /loops 页降为 TAB 面板——loop 也是 agent 派生执行单元；feature gate
+//   + 按需异步加载（裁 loop 时 LoopsView 整体剔除）；旧 /loops 深链
+//   redirect 落 ?tab=loops（query 全透传，与 subagents/processes 同构）。
 // - 布局契约（2026-11-09 对齐全仓骨架）：本页是路由页根（page- 前缀拿
 //   `.main-content > [class^="page-"]` 的 flex+height:100%），page-header
 //   归宿主页；TAB 条用全局 .tabs/.tab 下划线式（components.css，与通道/
 //   看板页签等全仓一致）；两个面板 View 均无自身 page-header（标题层级
 //   = 大标题→TAB→内容，与 Scanner/Board 等同款）。
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SubagentsView from './SubagentsView.vue'
 import ProcessesView from './ProcessesView.vue'
@@ -34,10 +38,18 @@ import BrowserView from './BrowserView.vue'
 // = 默认包含，同 router 门控惯例）；关 = TAB 不渲染，路由/侧栏零改动。
 const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
 
-type Tab = 'subagents' | 'processes' | 'archived' | 'browser'
+// 执行循环 TAB（2026-11-17 项5 durable loop 并入，用户拍板）：loop 也是
+// agent 派生的执行单元，管理面从独立 /loops 页收编为 TAB。feature gate
+// 同 browser TAB；组件按需异步加载——customize 裁剪 loop 时 LoopsView
+// 整体 tree-shake 掉（保留原 /loops 路由时代的动态导入语义）。
+const loopEnabled = import.meta.env.VITE_FEATURE_LOOP !== 'false'
+const LoopsPanel = loopEnabled ? defineAsyncComponent(() => import('./LoopsView.vue')) : null
+
+type Tab = 'subagents' | 'processes' | 'archived' | 'browser' | 'loops'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'subagents', label: '子代理' },
   { key: 'processes', label: '后台任务' },
+  ...(loopEnabled ? [{ key: 'loops' as Tab, label: '执行循环' }] : []),
   { key: 'archived', label: '已归档' },
   ...(browserEnabled ? [{ key: 'browser' as Tab, label: '浏览器' }] : []),
 ]
@@ -47,6 +59,7 @@ const router = useRouter()
 
 const tab = computed<Tab>(() => {
   if (route.query.tab === 'processes') return 'processes'
+  if (route.query.tab === 'loops' && loopEnabled) return 'loops'
   if (route.query.tab === 'archived') return 'archived'
   if (route.query.tab === 'browser' && browserEnabled) return 'browser'
   return 'subagents'
@@ -85,6 +98,7 @@ function switchTab(t: Tab) {
         @archived-count="(n: number) => (archivedCount = n)"
       />
       <ProcessesView v-else-if="tab === 'processes'" />
+      <LoopsPanel v-else-if="tab === 'loops'" />
       <BrowserView v-else-if="tab === 'browser'" />
       <SubagentsView
         v-else

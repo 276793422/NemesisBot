@@ -3816,6 +3816,7 @@ dependencies = [
  "nemesis-data",
  "nemesis-exec-protocol",
  "nemesis-forge",
+ "nemesis-goals",
  "nemesis-http-pool",
  "nemesis-lsp",
  "nemesis-mcp",
@@ -4200,6 +4201,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "nemesis-goals"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -4792,6 +4803,7 @@ dependencies = [
  "nemesis-data",
  "nemesis-events",
  "nemesis-forge",
+ "nemesis-goals",
  "nemesis-loop",
  "nemesis-lsp",
  "nemesis-mcp",
@@ -4954,6 +4966,7 @@ dependencies = [
  "nemesis-eval-proxy",
  "nemesis-events",
  "nemesis-forge",
+ "nemesis-goals",
  "nemesis-health",
  "nemesis-heartbeat",
  "nemesis-http-pool",

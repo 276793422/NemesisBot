@@ -231,7 +231,13 @@ pub fn build_agent_loop(
     // 纯观察者（不改写/不拦截），事件由 gateway 建、web pump 消费。
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（work 时间线 /
+            // Dashboard 事件面不落复扫前原文；与 dispatch 尾部权威复扫同源）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     // （devtool-upgrade）：事件发送端注入 loop——/plan /build 切换
@@ -750,6 +756,23 @@ pub fn build_agent_loop(
             )),
         );
         info!("[AgentFactory] plugin bootstrap tools registered (plugin_search/plugin_propose)");
+    }
+
+    // 8g. 目标系统 agent 工具（2026-11-17）：`goal` 单工具三 action
+    //（主 agent 专属——项目 loop 工具子集不带、cluster worker agent 不装：
+    // 目标绑定主会话，worker 会话无 goals 语义；同 8c/8f 边界）。
+    // config_path 注入 disable 的 allow_agent_disable 热读（config.json
+    // 单一真相源）。tier 策略：不进 tier_allowed_tools（仅 big 全量档可见）。
+    #[cfg(feature = "goals")]
+    {
+        agent_loop.register_tool(
+            crate::goal_tool::GOAL_TOOL_NAME.to_string(),
+            Box::new(crate::goal_tool::GoalTool::new(
+                workspace_dir.clone(),
+                Some(shared.home.join("config.json")),
+            )),
+        );
+        info!("[AgentFactory] goal tool registered (goal add/delete/disable)");
     }
 
     // 9. Continuation manager (disk-persisted — new instance).

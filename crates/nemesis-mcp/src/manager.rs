@@ -329,7 +329,9 @@ fn one_shot_budget(timeout_secs: u64) -> std::time::Duration {
 /// one-shot 探测路径同族漏配（当时「裸 new() 无外层配对」的归类对本
 /// 函数不成立——它有 `tokio::time:timeout` 外层包裹）。
 fn one_shot_request_timeout_ms(timeout_secs: u64) -> u64 {
-    one_shot_budget(timeout_secs).as_millis() as u64 + 1_000
+    // BUG-20261117-070：裸 `+ 1_000` 在巨值 timeout_secs 下 debug panic /
+    // release 回绕——saturating_add（同 client.rs::from_server_config）。
+    (one_shot_budget(timeout_secs).as_millis() as u64).saturating_add(1_000)
 }
 
 /// Result of one-shot MCP server discovery.

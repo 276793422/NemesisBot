@@ -88,6 +88,26 @@ fn entry_age_secs(entry: &OutboxEntry) -> Option<i64> {
     )
 }
 
+/// created_at 解析比较（BUG-20261117-064）。created_at 产自
+/// `Local::now().to_rfc3339()`（带本地 offset），条目持久化落盘后跨 DST
+/// 切换 / 系统时区变更会混存不同 offset 形态——裸字符串字典序按本地钟面
+/// 数字排，与真实时刻序不一致（"09:00+09:00"=00:00Z 实际早于
+/// "08:30+08:00"=00:30Z，字面序却排其后）。解析成 `DateTime<FixedOffset>`
+/// 比较（chrono Ord 按 UTC 时刻）；解析失败排最后——stable sort 保持
+/// 同组原序，不丢条目。与 cluster_task.rs / task_manager.rs 的既有纪律
+/// 同源（RFC3339 一律解析后比较，不信字面序）。
+fn created_at_order(a: &str, b: &str) -> std::cmp::Ordering {
+    match (
+        chrono::DateTime::parse_from_rfc3339(a),
+        chrono::DateTime::parse_from_rfc3339(b),
+    ) {
+        (Ok(x), Ok(y)) => x.cmp(&y),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+    }
+}
+
 /// cluster_logs 任务目录名 `{ts}_{task_id}` 的 ts 前缀定长：
 /// `%Y-%m-%d_%H-%M-%S-%3f`（23 字符）+ `_`（1）= 24。task_id 从下标 24 起。
 /// （ts 格式由 cluster_request_logger_observer 决定；变更须同步这里。）
@@ -268,7 +288,7 @@ pub fn list_dead_letter_entries(outbox_root: &Path) -> Vec<OutboxEntry> {
             out.push(entry);
         }
     }
-    out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    out.sort_by(|a, b| created_at_order(&a.created_at, &b.created_at));
     out
 }
 
@@ -973,7 +993,7 @@ impl TransferOutbox {
                 ),
             }
         }
-        out.sort_by(|a, b| a.0.created_at.cmp(&b.0.created_at));
+        out.sort_by(|a, b| created_at_order(&a.0.created_at, &b.0.created_at));
         out
     }
 

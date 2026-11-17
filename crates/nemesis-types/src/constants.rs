@@ -40,8 +40,29 @@ pub const INTERNAL_CHANNELS: &[&str] = &["cli", "system", "subagent"];
 /// 的短路匹配（`rewrite_custom_command` 跳过内置名 + `handle_command` 的
 /// match 臂）与 dashboard `commands.list` 下发给前端补全菜单的 `builtins`
 /// 都从这里读，防止两处清单漂移。
+///
+/// BUG-20261118-093：清单必须覆盖 gate 内**全部**短路臂——不止
+/// `handle_command` 的 match 与维护/模式切换命令，还包括审批回执
+/// （`/approve <id>` / `/deny <id>`，gate `parse_approval_reply`）与
+/// 纪律切换（`/discipline`，gate 独立臂）。名单缺项 = 用户自定义命令表
+/// /已装技能取同名时，消息在 gate 之前被 `rewrite_custom_command` 展开成
+/// 模板文本，gate 短路接不到（审批回执丢静态确认 + 误起一轮无意义
+/// agent 对话——正是该短路要防的事）。**新增 gate 短路臂时必须同步补
+/// 本清单**。
 pub const BUILTIN_SLASH_COMMANDS: &[&str] = &[
-    "help", "model", "show", "list", "switch", "compact", "clear", "plan", "build", "undo",
+    "help",
+    "model",
+    "show",
+    "list",
+    "switch",
+    "compact",
+    "clear",
+    "plan",
+    "build",
+    "undo",
+    "approve",
+    "deny",
+    "discipline",
 ];
 
 /// Check if a channel is an internal channel.

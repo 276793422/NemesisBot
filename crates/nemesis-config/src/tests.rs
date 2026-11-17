@@ -126,22 +126,6 @@ fn test_resolve_model_string() {
 }
 
 #[test]
-fn test_agent_model_config_string() {
-    let json = r#""gpt-4""#;
-    let config: AgentModelConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.primary, "gpt-4");
-    assert!(config.fallbacks.is_empty());
-}
-
-#[test]
-fn test_agent_model_config_object() {
-    let json = r#"{"primary": "gpt-4", "fallbacks": ["claude-haiku"]}"#;
-    let config: AgentModelConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.primary, "gpt-4");
-    assert_eq!(config.fallbacks, vec!["claude-haiku"]);
-}
-
-#[test]
 fn test_workspace_resolve_local() {
     let path = WorkspaceResolver::resolve(true);
     assert_eq!(path, PathBuf::from("./.nemesisbot"));
@@ -754,8 +738,6 @@ fn test_full_config_roundtrip() {
             list: vec![AgentConfigEntry {
                 id: "main".to_string(),
                 default: true,
-                name: "Main Agent".to_string(),
-                ..Default::default()
             }],
             experts: crate::ExpertsModeConfig::default(),
         },
@@ -908,28 +890,6 @@ fn test_engine_state_default_v2() {
     let cfg = ScannerFullConfig::default();
     assert!(cfg.enabled.is_empty());
     assert!(cfg.engines.is_empty());
-}
-
-#[test]
-fn test_agent_model_config_manual() {
-    let cfg = AgentModelConfig {
-        primary: String::new(),
-        fallbacks: vec![],
-    };
-    assert!(cfg.primary.is_empty());
-    assert!(cfg.fallbacks.is_empty());
-}
-
-#[test]
-fn test_agent_model_config_string_serialization() {
-    let cfg = AgentModelConfig {
-        primary: "gpt-4".to_string(),
-        fallbacks: vec!["claude-3".to_string(), "llama3".to_string()],
-    };
-    let json = serde_json::to_string(&cfg).unwrap();
-    let parsed: AgentModelConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.primary, "gpt-4");
-    assert_eq!(parsed.fallbacks.len(), 2);
 }
 
 #[test]
@@ -1570,17 +1530,48 @@ fn test_agent_config_entry_default() {
     let entry = AgentConfigEntry::default();
     assert!(entry.id.is_empty());
     assert!(!entry.default);
-    assert!(entry.skills.is_empty());
 }
 
+/// 回归锁（BUG-20261117-066）：死旋钮键存量 config 仍可加载。
+/// agents.defaults.image_model(+fallbacks)、agents.list[].{name,workspace,
+/// model,skills,subagents}、channels.{websocket,external}.{sync_to_web,
+/// web_session_id} 已从 typed 结构删除（全仓零读者）；serde 忽略未知键，
+/// 本测试钉「旧 config.json 直接加载不炸、活跃字段值不漂移」。
 #[test]
-fn test_subagents_config_manual() {
-    let cfg = SubagentsConfig {
-        allow_agents: vec![],
-        model: None,
-    };
-    assert!(cfg.allow_agents.is_empty());
-    assert!(cfg.model.is_none());
+fn test_removed_dead_knobs_still_parse() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let json = r#"{
+        "agents": {
+            "defaults": {
+                "llm": "kept/model",
+                "image_model": "legacy/image",
+                "image_model_fallbacks": ["legacy/f1"]
+            },
+            "list": [
+                {
+                    "id": "agent-a",
+                    "default": true,
+                    "name": "Main",
+                    "workspace": "/tmp/ws",
+                    "model": {"primary": "p", "fallbacks": ["f"]},
+                    "skills": ["s1"],
+                    "subagents": {"allow_agents": ["sa1"], "model": "sub"}
+                }
+            ]
+        },
+        "channels": {
+            "websocket": {"sync_to_web": true, "web_session_id": "sess-1"},
+            "external": {"sync_to_web": false, "web_session_id": "sess-2"}
+        }
+    }"#;
+    let config: Config = serde_json::from_str(json).unwrap();
+    // 活跃字段不受残留旧键影响
+    assert_eq!(config.agents.defaults.llm, "kept/model");
+    assert_eq!(config.agents.list.len(), 1);
+    assert_eq!(config.agents.list[0].id, "agent-a");
+    assert!(config.agents.list[0].default);
+    // sync_to（活键）默认/显式值保持
+    assert_eq!(config.channels.websocket.sync_to, vec!["web".to_string()]);
 }
 
 #[test]
@@ -1679,11 +1670,38 @@ fn test_directory_security_rules_defaults_v2() {
 
 #[test]
 fn test_clamav_engine_config_default() {
+    // BUG-20261118-089：Default 收敛为出厂模板/CLI 同款健值集（此前 derive
+    // 零值使 Dashboard scanner.add 物化 max_file_size=0（尺寸闸关）/
+    // skip_extensions=[]（全量扫描）/ update_interval=""（自动更新循环不
+    // 启动））。值集与 config.scanner.default.json clamav 条目一致。
     let cfg = ClamAVEngineConfig::default();
     assert!(cfg.url.is_empty());
-    assert!(!cfg.scan_on_write);
+    assert!(cfg.scan_on_write);
     assert!(!cfg.scan_on_download);
+    assert!(cfg.scan_on_exec);
+    assert_eq!(cfg.address, "127.0.0.1:3310");
+    assert_eq!(cfg.max_file_size, 52_428_800);
+    assert_eq!(cfg.update_interval, "24h");
+    assert_eq!(cfg.skip_extensions.len(), 9);
     assert!(cfg.scan_extensions.is_empty());
+}
+
+#[test]
+fn test_clamav_engine_config_partial_parse_keeps_sane_defaults() {
+    // BUG-20261118-089 第二入口：engine.update_config 先 serde 解析存量条目
+    // 再整结构回写——存储 JSON 缺失键走 serde 缺省，必须答出健值而非零值，
+    // 否则一次任意字段的更新会把 0/""/[] 物化落盘。
+    let parsed: ClamAVEngineConfig =
+        serde_json::from_str(r#"{"url": "https://example.com/c.zip"}"#).unwrap();
+    assert_eq!(parsed.url, "https://example.com/c.zip");
+    assert!(parsed.scan_on_write);
+    assert!(parsed.scan_on_exec);
+    assert!(!parsed.scan_on_download);
+    assert_eq!(parsed.address, "127.0.0.1:3310");
+    assert_eq!(parsed.max_file_size, 52_428_800);
+    assert_eq!(parsed.update_interval, "24h");
+    assert_eq!(parsed.skip_extensions.len(), 9);
+    assert!(parsed.scan_extensions.is_empty());
 }
 
 #[test]
@@ -1700,28 +1718,10 @@ fn test_flexible_string_vec_empty_array() {
     assert!(cfg.allow_from.is_empty());
 }
 
-#[test]
-fn test_config_post_process_for_compatibility() {
-    let mut config = Config::default();
-    config.channels.external.sync_to = vec!["web".to_string()];
-    config.channels.websocket.sync_to = vec!["web".to_string()];
-    config.post_process_for_compatibility();
-    assert!(config.channels.external.sync_to_web);
-    assert!(config.channels.websocket.sync_to_web);
-}
-
-#[test]
-fn test_config_post_process_no_sync() {
-    let mut config = Config::default();
-    // websocket 缺省收敛出厂真相源后（BUG-20261109-017）带模板值
-    // sync_to=["web"]——本测试钉的是「清空 → 不推导 sync_to_web」联动，
-    // 显式置空模拟无同步意图（Default 本身现在忠于模板，推导为 true 是
-    // 对的，由 test_websocket_channel_config_default 覆盖）。
-    config.channels.websocket.sync_to = vec![];
-    config.post_process_for_compatibility();
-    assert!(!config.channels.external.sync_to_web);
-    assert!(!config.channels.websocket.sync_to_web);
-}
+// （BUG-20261117-066）test_config_post_process_for_compatibility /
+// test_config_post_process_no_sync 随 sync_to_web 死旋钮一并删除：
+// 二者断言的 sync_to→sync_to_web 派生臂已不存在，post_process 剩余
+// autonomy 兼容逻辑不属本面。
 
 #[test]
 fn test_config_workspace_path_empty() {
@@ -1844,7 +1844,6 @@ fn test_websocket_channel_config_default() {
     assert_eq!(cfg.port, 49001);
     assert_eq!(cfg.path, "/ws");
     assert_eq!(cfg.sync_to, vec!["web".to_string()]);
-    assert!(!cfg.sync_to_web);
 }
 
 #[test]
@@ -1869,7 +1868,6 @@ fn test_external_config_default() {
     let cfg = ExternalConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.input_exe.is_empty());
-    assert!(!cfg.sync_to_web);
 }
 
 #[test]
@@ -2367,21 +2365,8 @@ fn test_apply_env_overrides_llm() {
     }
 }
 
-#[test]
-fn test_apply_env_overrides_image_model() {
-    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    let mut config = Config::default();
-
-    unsafe {
-        std::env::set_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL", "openai/dall-e-3");
-    }
-    apply_env_overrides(&mut config);
-    assert_eq!(config.agents.defaults.image_model, "openai/dall-e-3");
-
-    unsafe {
-        std::env::remove_var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL");
-    }
-}
+// （BUG-20261117-066）test_apply_env_overrides_image_model 已随
+// agents.defaults.image_model 死旋钮（含 env 覆盖臂）一并删除。
 
 #[test]
 fn test_apply_env_overrides_max_tool_iterations() {
@@ -2417,14 +2402,12 @@ fn test_apply_env_overrides_set_but_empty_keeps_config_value() {
     config.channels.web.host = "127.0.0.1".to_string();
     config.agents.defaults.workspace = "/base/ws".to_string();
     config.agents.defaults.llm = "base/model".to_string();
-    config.agents.defaults.image_model = "base/image".to_string();
     config.agents.defaults.concurrent_request_mode = "queue".to_string();
     config.session.dm_scope = "mention".to_string();
 
-    const KEYS: [&str; 7] = [
+    const KEYS: [&str; 6] = [
         "NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE",
         "NEMESISBOT_AGENTS_DEFAULTS_LLM",
-        "NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL",
         "NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE",
         "NEMESISBOT_CHANNELS_WEB_HOST",
         "NEMESISBOT_GATEWAY_HOST",
@@ -2442,7 +2425,6 @@ fn test_apply_env_overrides_set_but_empty_keeps_config_value() {
     assert_eq!(config.channels.web.host, "127.0.0.1");
     assert_eq!(config.agents.defaults.workspace, "/base/ws");
     assert_eq!(config.agents.defaults.llm, "base/model");
-    assert_eq!(config.agents.defaults.image_model, "base/image");
     assert_eq!(config.agents.defaults.concurrent_request_mode, "queue");
     assert_eq!(config.session.dm_scope, "mention");
 
@@ -2759,20 +2741,14 @@ fn test_expand_tilde_subpath() {
 
 #[test]
 fn test_post_process_for_compatibility() {
+    // （BUG-20261117-066）sync_to→sync_to_web 派生臂已删（sync_to_web 全仓零读者）：
+    // post_process 只剩 autonomy/unlimited_mode 兼容臂，sync_to 原样保留。
     let mut config = Config::default();
-    // External with non-empty sync_to
     config.channels.external.sync_to = vec!["web".to_string()];
     config.channels.websocket.sync_to = vec!["web".to_string()];
     config.post_process_for_compatibility();
-    assert!(config.channels.external.sync_to_web);
-    assert!(config.channels.websocket.sync_to_web);
-
-    // Empty sync_to
-    config.channels.external.sync_to = vec![];
-    config.channels.websocket.sync_to = vec![];
-    config.post_process_for_compatibility();
-    assert!(!config.channels.external.sync_to_web);
-    assert!(!config.channels.websocket.sync_to_web);
+    assert_eq!(config.channels.external.sync_to, vec!["web".to_string()]);
+    assert_eq!(config.channels.websocket.sync_to, vec!["web".to_string()]);
 }
 
 #[test]
@@ -3023,17 +2999,9 @@ fn test_mcp_server_config_normalize_existing_transport() {
     assert_eq!(cfg.transport_type, "sse");
 }
 
-// Remove the problematic visitor expecting tests, they're covered by other tests
-// that actually use the deserialization behavior
-
-#[test]
-fn test_agent_model_config_visit_map() {
-    // This tests the map visitor path
-    let json = r#"{"primary": "gpt-4", "fallbacks": ["claude-3"]}"#;
-    let cfg: AgentModelConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.primary, "gpt-4");
-    assert_eq!(cfg.fallbacks.len(), 1);
-}
+// （BUG-20261117-066）test_agent_model_config_visit_map 随 AgentModelConfig
+// 死类型一并删除；visit_map 路径由 extra_agent_config_entry_minimal 的
+// 存量旧键兼容回归锁覆盖。
 
 #[test]
 fn test_save_config_invalid_json_error() {

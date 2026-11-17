@@ -316,6 +316,26 @@ impl Default for BrowserConfig {
     }
 }
 
+/// 目标系统配置段（`config.json` 的 `goals` 段；2026-11-17 目标系统。
+/// None = 全默认——allow_agent_disable=true。typed 字段化是硬要求：
+/// `config.set_field` 的 typed round-trip 校验会丢弃非建模键（plugins/
+/// browser 段同款教训）——不建模则设置页保存恒报 unknown config field。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GoalsConfig {
+    /// agent 可否 disable **人创建**的 goal（全局开关，默认允许；关闭后
+    /// agent disable 人建 goal 恒拒）。agent 自建 goal 不受此闸。
+    pub allow_agent_disable: bool,
+}
+
+impl Default for GoalsConfig {
+    fn default() -> Self {
+        Self {
+            allow_agent_disable: true,
+        }
+    }
+}
+
 /// workflow 引擎运行期参数（`config.json` 的 `workflow` 段；A 批批 4。
 /// None = 全默认——墙钟保险丝 3600s）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

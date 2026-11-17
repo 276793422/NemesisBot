@@ -1825,7 +1825,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("budget.max_subissues_per_parent 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "budget.max_subissues_per_parent 超出 u32 范围")?;
             }
             "budget.max_total_redispatch" => {
                 board.budget.max_total_redispatch = u32::try_from(
@@ -1833,7 +1833,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("budget.max_total_redispatch 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "budget.max_total_redispatch 超出 u32 范围")?;
             }
             // 送达失败自动重试熔断上限（0=关=无限重试；
             // unlimited_mode 视为 0；按本单 ⛔ 标记评论终身累计计数）。
@@ -1843,7 +1843,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("budget.max_send_retries 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "budget.max_send_retries 超出 u32 范围")?;
             }
             "budget.wall_clock_budget_secs" => {
                 board.budget.wall_clock_budget_secs = value
@@ -1869,7 +1869,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.max_agent_turns_per_thread 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.max_agent_turns_per_thread 超出 u32 范围")?;
             }
             "discussion.hourly_budget_per_node" => {
                 board.discussion.hourly_budget_per_node = u32::try_from(
@@ -1877,7 +1877,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.hourly_budget_per_node 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.hourly_budget_per_node 超出 u32 范围")?;
             }
             "discussion.rate_limit_per_min" => {
                 board.discussion.rate_limit_per_min = u32::try_from(
@@ -1885,7 +1885,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.rate_limit_per_min 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.rate_limit_per_min 超出 u32 范围")?;
             }
             "discussion.review_wait_secs" => {
                 board.discussion.review_wait_secs = u32::try_from(
@@ -1893,7 +1893,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.review_wait_secs 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.review_wait_secs 超出 u32 范围")?;
             }
             // （职能→评审预设查表）：review.professions.<slug>.<field>
             // （slug 大小写归一后写入 map，与查表侧 to_ascii_lowercase 对齐；
@@ -1920,7 +1920,9 @@ fn board_config_set(
                                     u32::try_from(value.as_u64().ok_or(
                                         "review.professions.<slug>.max_turns 需要非负整数",
                                     )?)
-                                    .map_err(|_| "超出 u32 范围")?,
+                                    .map_err(|_| {
+                                        format!("review.professions.{slug}.max_turns 超出 u32 范围")
+                                    })?,
                                 );
                         }
                     }
@@ -1934,7 +1936,9 @@ fn board_config_set(
                                     .as_u64()
                                     .ok_or("review.professions.<slug>.checkers 需要非负整数")?,
                             )
-                            .map_err(|_| "超出 u32 范围")?;
+                            .map_err(|_| {
+                                format!("review.professions.{slug}.checkers 超出 u32 范围")
+                            })?;
                             // 消费侧（run_review_panel）同样收敛，这里前置拒绝给出明确文案。
                             if !(1..=5).contains(&v) {
                                 return Err(

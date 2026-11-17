@@ -279,6 +279,12 @@ pub(super) fn build_shared_tool_config(
 
     let config = nemesis_agent::SharedToolConfig {
         workspace: Some(workspace_dir.to_string_lossy().to_string()),
+        // bot 域产物根：None = 回落 workspace。本装配器的所有调用方
+        // （主 loop / 对话组 / 集群 worker / run/acp headless）的 workspace
+        // 本就是主 ws（bot 自有域），回落即正确；项目 loop 装配臂在
+        // spec.rs 显式覆盖为主 workspace（其 workspace 是用户项目工作树，
+        // 截图 temp / web_fetch spill 不得落那里——数据归属视角）。
+        bot_artifacts_root: None,
         // 文件工具工作区边界（write/edit/append 纵深
         // 防御，不单靠安全 8 层管线）；开关跟 agents.defaults
         // .restrict_to_workspace 配置走。
@@ -289,6 +295,8 @@ pub(super) fn build_shared_tool_config(
             // editor 开关（Full Access）闸：界外即将拒绝的分支先问一次
             // （热生效，与审批层同一开关同一判定）。
             editor_gate,
+            // 目标系统文件保护（D-Q3 创建者二分；goals feature 裁剪 = None）。
+            goals_guard: crate::goals_engine::workspace_goals_guard(&workspace_dir),
         })),
         // todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 ToolEventHook 共用同一 sender；gateway 建、

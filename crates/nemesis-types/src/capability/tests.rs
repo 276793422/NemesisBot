@@ -972,6 +972,38 @@ fn resolve_max_tool_iterations_tri_state() {
     assert_eq!(resolve_max_tool_iterations(&negative), Some(-1));
 }
 
+/// BUG-20261117-085：>u32::MAX 越域值按「未设」（None）回落启动值——
+/// 消费侧 `n as u32` 裸截断会把 2^32 变 0 = 「不限」（用户设上限反而
+/// 无限轮次的语义反转）。边界值 u32::MAX 本身必须照常透传。
+#[test]
+fn resolve_max_tool_iterations_rejects_above_u32_max() {
+    // 恰好 2^32：旧代码裸截断成 0 → 消费侧判不限，语义反转。
+    let overflow: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 4_294_967_296i64}}
+    });
+    assert_eq!(
+        resolve_max_tool_iterations(&overflow),
+        None,
+        ">u32::MAX 必须按未设回落启动值，不得截断"
+    );
+
+    // 更大的越域值同样拒绝（截断落点任意小 → 提前停轮）。
+    let far_overflow: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 9_000_000_000i64}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&far_overflow), None);
+
+    // 边界内最大合法值照常透传。
+    let at_max: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 4_294_967_295i64}}
+    });
+    assert_eq!(
+        resolve_max_tool_iterations(&at_max),
+        Some(4_294_967_295),
+        "u32::MAX 边界值必须透传"
+    );
+}
+
 /// （无人值守）：`agents.defaults.max_output_ceiling` 翻倍
 /// 阶梯封顶解析——值生效 / 0 与负数与非数字回落默认 / 缺席回落默认。
 /// 惯例与 `max_tool_iterations` 0=不限 相反：封顶没有不限形态。

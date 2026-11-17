@@ -47,6 +47,7 @@ vi.mock('../../components/process/ProcessOutputTail.vue', () => ({
 import ExecutorsView from '../ExecutorsView.vue'
 import SubagentsView from '../SubagentsView.vue'
 import ProcessesView from '../ProcessesView.vue'
+import LoopsView from '../LoopsView.vue'
 
 beforeEach(() => {
   queryMock = {}
@@ -59,19 +60,21 @@ beforeEach(() => {
   })
 })
 
-describe('ExecutorsView 三 TAB', () => {
-  it('三个 TAB 渲染；缺省挂子代理工作面（无 archived prop）；加载后计数投影 0', async () => {
+describe('ExecutorsView 多 TAB', () => {
+  it('TAB 序：子代理/后台任务/执行循环/已归档…；缺省挂子代理工作面（无 archived prop）；加载后计数投影 0', async () => {
     const w = mount(ExecutorsView)
     await flushPromises()
     const tabs = w.findAll('.tab').map((t) => t.text().trim())
     expect(tabs.slice(0, 2)).toEqual(['子代理', '后台任务'])
+    expect(tabs[2]).toBe('执行循环')
     const sv = w.findComponent(SubagentsView)
     expect(sv.exists()).toBe(true)
     // Vue Boolean prop 缺省归一为 false（isArchived 判 === true，行为一致）。
     expect(sv.props('archived')).toBe(false)
     expect(w.findComponent(ProcessesView).exists()).toBe(false)
+    expect(w.findComponent(LoopsView).exists()).toBe(false)
     // 缺省 list 响应无 archived_count → 投影 0 → 括号渲染 (0)。
-    expect(tabs[2]).toBe('已归档 (0)')
+    expect(tabs[3]).toBe('已归档 (0)')
     w.unmount()
   })
 
@@ -79,7 +82,7 @@ describe('ExecutorsView 三 TAB', () => {
     queryMock = { tab: 'processes' }
     const w = mount(ExecutorsView)
     await flushPromises()
-    expect(w.findAll('.tab')[2].text().trim()).toBe('已归档')
+    expect(w.findAll('.tab')[3].text().trim()).toBe('已归档')
     w.unmount()
   })
 
@@ -89,6 +92,17 @@ describe('ExecutorsView 三 TAB', () => {
     await flushPromises()
     expect(w.findComponent(ProcessesView).exists()).toBe(true)
     expect(w.findComponent(SubagentsView).exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('route query 派生：tab=loops 挂执行循环面板（异步组件 flush 后解析；loops.list 响应 {} → 空态）', async () => {
+    queryMock = { tab: 'loops' }
+    const w = mount(ExecutorsView)
+    await flushPromises()
+    expect(w.findComponent(LoopsView).exists()).toBe(true)
+    expect(w.findComponent(SubagentsView).exists()).toBe(false)
+    expect(w.find('.page-loops').exists()).toBe(true)
+    expect(w.find('[data-testid="loops-empty"]').exists()).toBe(true)
     w.unmount()
   })
 
@@ -107,7 +121,7 @@ describe('ExecutorsView 三 TAB', () => {
     queryMock = { tab: 'subagents', keep: '1' }
     const w = mount(ExecutorsView)
     await flushPromises()
-    await w.findAll('.tab')[2].trigger('click')
+    await w.findAll('.tab')[3].trigger('click')
     expect(routerMocks.replace).toHaveBeenCalledTimes(1)
     expect(routerMocks.replace).toHaveBeenCalledWith({ query: { tab: 'archived', keep: '1' } })
     w.unmount()
@@ -120,7 +134,16 @@ describe('ExecutorsView 三 TAB', () => {
     })
     const w = mount(ExecutorsView)
     await flushPromises()
-    expect(w.findAll('.tab')[2].text()).toContain('(7)')
+    expect(w.findAll('.tab')[3].text()).toContain('(7)')
+    w.unmount()
+  })
+
+  it('点执行循环 TAB → replace 落 tab=loops（query 派生挂面板）', async () => {
+    queryMock = { tab: 'subagents' }
+    const w = mount(ExecutorsView)
+    await flushPromises()
+    await w.findAll('.tab')[2].trigger('click')
+    expect(routerMocks.replace).toHaveBeenCalledWith({ query: { tab: 'loops' } })
     w.unmount()
   })
 })

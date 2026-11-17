@@ -631,3 +631,40 @@ async fn w5_speaker_register_start_rejects_while_in_progress() {
     );
     speaker_register_state().lock().unwrap().take();
 }
+
+/// BUG-20261117-085 横向扫：AEC filter_length 范围闸必须在宽类型（i64）
+/// 上做——旧形态先 `as i32` 再 filter，2^32+160 截断成 160 假装合法过闸。
+/// 合法值透传 / 越界回落默认 / 恰好 2^32 溢位形态回落默认 / 缺省回落默认。
+#[test]
+fn aec_filter_length_range_gate_before_cast() {
+    use nemesis_voice::DEFAULT_FILTER_LENGTH;
+
+    // 边界内合法值透传（160 / 65536 / 常规 1024）。
+    let ok = serde_json::json!({"aec_filter_length": 1024});
+    assert_eq!(aec_filter_length_from_cfg(&ok), 1024);
+    let lo = serde_json::json!({"aec_filter_length": 160});
+    assert_eq!(aec_filter_length_from_cfg(&lo), 160);
+    let hi = serde_json::json!({"aec_filter_length": 65536});
+    assert_eq!(aec_filter_length_from_cfg(&hi), 65536);
+
+    // 边界外（普通越界）：回落默认。
+    let below = serde_json::json!({"aec_filter_length": 159});
+    assert_eq!(aec_filter_length_from_cfg(&below), DEFAULT_FILTER_LENGTH);
+    let above = serde_json::json!({"aec_filter_length": 65537});
+    assert_eq!(aec_filter_length_from_cfg(&above), DEFAULT_FILTER_LENGTH);
+    let negative = serde_json::json!({"aec_filter_length": -8192});
+    assert_eq!(aec_filter_length_from_cfg(&negative), DEFAULT_FILTER_LENGTH);
+
+    // 恰好 2^32+160：旧代码 `as i32` 截断成 160 假装合法——修复后必须
+    // 在 i64 域内被闸拦下回落默认（语义反转形态的回归锁）。
+    let wrap_hit = serde_json::json!({"aec_filter_length": 4_294_967_456i64});
+    assert_eq!(
+        aec_filter_length_from_cfg(&wrap_hit),
+        DEFAULT_FILTER_LENGTH,
+        "2^32+160 截断回 160 的绕闸形态必须被拦"
+    );
+
+    // 缺省回落默认。
+    let absent = serde_json::json!({});
+    assert_eq!(aec_filter_length_from_cfg(&absent), DEFAULT_FILTER_LENGTH);
+}

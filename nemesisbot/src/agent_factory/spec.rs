@@ -397,7 +397,12 @@ pub fn build_agent_loop_from_spec(
     agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（同主 loop）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
@@ -555,10 +560,11 @@ pub fn build_agent_loop_from_spec(
         bridge.register(&agent_loop);
     }
     // Todo 收尾提醒：同主 loop——项目会话正是 todowrite 忘
-    // 收尾的重灾区。workspace 与项目 loop 的 TodoToolConfig 同根
-    // （project_dir）。注册在用户 hooks 桥之后（用户脚本优先）。
+    // 收尾的重灾区。todo 是 bot 域会话态数据，锚主 workspace（与下方
+    // TodoToolConfig 同根；不落用户项目工作树）。注册在用户 hooks 桥
+    // 之后（用户脚本优先）。
     agent_loop.add_lifecycle_hook(std::sync::Arc::new(nemesis_agent::TodoCloseoutHook::new(
-        project_dir.clone(),
+        shared.workspace_dir(),
     )));
 
     // 4. Session store：共享主 loop 的同一 Arc（存储全局集中、会话隔离靠
@@ -615,15 +621,25 @@ pub fn build_agent_loop_from_spec(
             roots
         },
         editor_gate,
+        // 项目 loop 不装 goals 守卫：root=项目目录，主 ws goals/ 本就界外
+        // （restrict 拒绝）；项目目录内无 goals 面。
+        goals_guard: None,
     }));
     // 项目 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
         agent_loop.set_workspace_boundary(boundary.clone());
     }
+    // todowrite：bot 域会话态数据，锚主 workspace（2026-11-17 污染修复
+    // ——2026-11-16 修复漏网：当时误判「合法项目根消费者」，判定视角用了
+    // 路由自洽而非数据归属；删侧回收站/删除链/sweeper 早已按主 ws 寻址）。
+    // 会话键在文件名里消毒隔离，同主 ws 的对话组会话互不串扰。
     tool_config.todo = Some(nemesis_agent::loop_tools::TodoToolConfig {
-        workspace: project_dir.clone(),
+        workspace: shared.workspace_dir(),
         event_tx: shared.agent_event_tx.clone(),
     });
+    // bot 域产物根（截图 temp / web_fetch spill）：同上数据归属视角——
+    // None = 回落 workspace（主 loop 零变化），项目臂显式主 workspace。
+    tool_config.bot_artifacts_root = Some(shared.workspace_dir());
     // 剥离：skills/forge 不挂项目 loop（None 覆盖对 cfg 双臂类型
     // 都成立——字段在 feature 关闭时本就是 Option<>）。工具集差异 =
     // 项目 prompt 更短 + 两 loop 共有工具 schema 交集字节一致（测试钉死）。

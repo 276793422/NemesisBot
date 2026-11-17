@@ -2605,13 +2605,37 @@ const pendingTurn = ref(false)
 // BUG 2026-09-21 ①：占位区的限流重试实时态（agent.retry_status 轮询）——
 // 切走切回后用户看到「第 N/M 次重试」而非哑转圈；重试不落盘（既有裁决
 // 进度只走实时帧），这里是唯一的过程可见面。
-const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string; label?: string } | null>(null)
+const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; remaining_secs?: number; model: string; label?: string } | null>(null)
+// 倒计时滚动（2026-11-17）：wait_secs 是本轮完整等待值（写侧每轮只写一次
+// 快照），直显会静止不动。本地秒级 tick 在轮询拍（4s）间插值：每拍拿后端
+// remaining_secs（按快照写入至今 elapsed 折算的剩余值，单调递减）重置基准，
+// 拍间每秒 -1——数字持续下滚且不回跳。旧后端无 remaining_secs 字段回落
+// wait_secs（首拍起点正确，只是拍间无后端折算）。
+const retrySecs = ref(0)
+let retrySecsTimer: number | null = null
 let pendingTurnTimer: number | null = null
 let pendingTurnDeadPolls = 0
 let pendingTurnStartedAt = 0
 const PENDING_TURN_POLL_MS = 4000
 const PENDING_TURN_MAX_DEAD_POLLS = 2
 const PENDING_TURN_MAX_MS = 15 * 60 * 1000
+
+function stopRetrySecsTick() {
+  if (retrySecsTimer !== null) {
+    clearInterval(retrySecsTimer)
+    retrySecsTimer = null
+  }
+  retrySecs.value = 0
+}
+
+function startRetrySecsTick(base: number) {
+  retrySecs.value = Math.max(0, Math.floor(base))
+  if (retrySecsTimer === null) {
+    retrySecsTimer = window.setInterval(() => {
+      if (retrySecs.value > 0) retrySecs.value -= 1
+    }, 1000)
+  }
+}
 
 function stopPendingTurnPolling() {
   if (pendingTurnTimer !== null) {
@@ -2620,6 +2644,7 @@ function stopPendingTurnPolling() {
   }
   if (pendingTurn.value) pendingTurn.value = false
   retryStatus.value = null
+  stopRetrySecsTick()
   pendingTurnDeadPolls = 0
 }
 
@@ -2700,8 +2725,15 @@ async function pollPendingTurn() {
   try {
     const rs = await request('agent', 'retry_status', { session_id: effectiveSid.value || '' })
     retryStatus.value = rs?.retrying
-      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model, label: rs.label }
+      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, remaining_secs: rs.remaining_secs, model: rs.model, label: rs.label }
       : null
+    // 倒计时基准重置（2026-11-17）：后端 remaining_secs 单调递减（elapsed
+    // 折算），本地 tick 从它续走；retrying 终局 → tick 一并停。
+    if (retryStatus.value) {
+      startRetrySecsTick(retryStatus.value.remaining_secs ?? retryStatus.value.wait_secs)
+    } else {
+      stopRetrySecsTick()
+    }
   } catch {
     /* 后端不可用/非 default chat——占位退化为转圈，无害 */
   }
@@ -3964,8 +3996,9 @@ onUnmounted(() => {
                  转圈。streaming（本地发送）不显示——重试进度已有实时帧。 -->
             <template v-if="pendingTurn && retryStatus">
               <div class="retry-status-text">
-                <!-- label 按真类（上游限流/上游过载，2026-10-13）；旧后端无 label 字段回落「上游限流」。 -->
-                ⏳ {{ retryStatus.label || '上游限流' }}（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
+                <!-- label 按真类（上游限流/上游过载，2026-10-13）；旧后端无 label 字段回落「上游限流」。
+                     等待秒数 = retrySecs 本地秒级递减（2026-11-17 倒计时滚动，基准每拍由后端 remaining_secs 重置）。 -->
+                ⏳ {{ retryStatus.label || '上游限流' }}（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retrySecs }} 秒…
               </div>
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>

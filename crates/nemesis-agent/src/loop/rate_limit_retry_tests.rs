@@ -790,3 +790,36 @@ async fn retry_after_within_budget_is_honored_exactly() {
         progresses[0]
     );
 }
+
+// 倒计时滚动投影（2026-11-17）：remaining_secs = wait_secs - 写入至今 elapsed
+// （钳 ≥0）。前端每拍拿它重置本地递减基准，数字单调不回跳。
+
+#[test]
+fn rate_limit_status_remaining_secs_fresh_snapshot_is_full_wait() {
+    let st = RateLimitStatus {
+        retry: 1,
+        max_retries: 10,
+        wait_secs: 40,
+        model: "m".to_string(),
+        label: "上游限流",
+        updated_at: std::time::Instant::now(),
+    };
+    // 刚写入：elapsed≈0 → 剩余 = 完整等待值（整数秒语义下 elapsed <1s 不折损）。
+    assert_eq!(st.remaining_secs(), 40);
+}
+
+#[test]
+fn rate_limit_status_remaining_secs_elapsed_beyond_wait_clamps_zero() {
+    let st = RateLimitStatus {
+        retry: 2,
+        max_retries: 10,
+        wait_secs: 5,
+        model: "m".to_string(),
+        label: "上游限流",
+        // 构造写入于 500s 前的快照（远超 wait_secs）→ 剩余钳 0。
+        updated_at: std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(500))
+            .expect("500s back must be representable"),
+    };
+    assert_eq!(st.remaining_secs(), 0);
+}

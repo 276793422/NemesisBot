@@ -611,8 +611,10 @@ enum SseOutcome {
     /// `response.completed` / `response.incomplete`——携带最终 response 对象
     /// （与非流式响应体同构，可直送 `parse_codex_response`）。
     Finished(serde_json::Value),
-    /// `response.failed` / `error`——上游显式失败，带可读原因。
-    Failed(String),
+    /// `response.failed` / `error`——上游显式失败，携**完整事件载荷**
+    /// （2026-11-17 治本批：此前只携 message 文案丢 code/status——统一
+    /// 分类入口 `classify_stream_error_payload` 需要整个事件做码探测）。
+    Failed(serde_json::Value),
     /// 中间事件（response.created / in_progress / output_text.delta 等）继续收。
     Continue,
 }
@@ -641,21 +643,7 @@ fn handle_sse_event(ev: &serde_json::Value) -> SseOutcome {
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         ),
-        "response.failed" => {
-            let msg = ev
-                .pointer("/response/error/message")
-                .or_else(|| ev.pointer("/response/status"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("upstream reported response.failed");
-            SseOutcome::Failed(msg.to_string())
-        }
-        "error" => {
-            let msg = ev
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("upstream SSE error event");
-            SseOutcome::Failed(msg.to_string())
-        }
+        "response.failed" | "error" => SseOutcome::Failed(ev.clone()),
         _ => SseOutcome::Continue,
     }
 }
@@ -710,28 +698,34 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
                 codex_200_guard(&response, &excerpt.chars().take(200).collect::<String>())?;
                 return Ok(parse_codex_response(&response));
             }
-            SseOutcome::Failed(msg) => {
-                // 流内 failed/error 文案与真相源同判
-                //（classify_llm_error 统一定义）——此前恒 Unknown（不带
-                // "connect error" 前缀 = is_retriable false），上游显式瞬态
-                // 文案（"quota exceeded"/"overloaded"）反而放弃 fallback
-                // 轮转，比断流（Timeout 可重试）处置更差。分类命中 → 对应
-                // 变体（轮转语义与 HTTP 429/500 同判）；分类不出维持 Unknown
-                // 兜底（不可重试语义不变）。
-                let provider = "codex".to_string();
-                // 根因文案随日志保留（RateLimit/Auth 等变体槽位无 message，
-                // Display 不含上游原文）。
+            SseOutcome::Failed(ev) => {
+                // 流内 failed/error 事件经 `classify_stream_error_payload`
+                // 统一入口（码探测 → type 枚举 → 文案兜底；2026-11-17 治本
+                // 批）——此前只抽 message 文案丢 code/status，`Failed` 只携
+                // String。根因文案随日志保留（RateLimit/Auth 等变体槽位无
+                // message，Display 不含上游原文）。
+                let log_msg = ev
+                    .pointer("/response/error/message")
+                    .or_else(|| ev.pointer("/response/status"))
+                    .or_else(|| ev.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("upstream reported response.failed");
                 tracing::warn!(
                     provider = "codex",
                     model = %model,
-                    error_message = %msg,
+                    error_message = %log_msg,
                     "[Provider] Codex SSE stream failed"
                 );
-                // 与真相源同判（classify_message_error 单一
-                // 入口）——此前恒 Unknown 不可重试，上游显式瞬态文案放弃轮转
-                // 比断流（Timeout）处置更差。
-                return Err(crate::failover::classify_message_error(
-                    &provider, model, &msg,
+                let excerpt = serde_json::to_string(&ev)
+                    .unwrap_or_else(|_| "upstream SSE failed event (unserializable)".to_string());
+                return Err(crate::failover::classify_stream_error_payload(
+                    &ev,
+                    "codex",
+                    model,
+                    format!(
+                        "upstream SSE failed event: {}",
+                        excerpt.chars().take(200).collect::<String>()
+                    ),
                 ));
             }
             SseOutcome::Continue => {}

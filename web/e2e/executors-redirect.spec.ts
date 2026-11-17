@@ -2,7 +2,7 @@
  * 执行单元复合页 redirect 兼容层 + TAB 状态机专项测试（2026-11-07 充分测试战役）。
  *
  * 针对复合页重构交付报告的残余风险补测：
- *   1. redirect 兼容矩阵：旧 /processes、/subagents 无参落地；旧深链跨
+ *   1. redirect 兼容矩阵：旧 /processes、/subagents、/loops 无参落地；旧深链跨
  *      redirect 的 query 全透传（focus 消费后清理只剥 focus、foo=bar 存活
  *      = 透传保真的最强证据）；无效 focus 双侧各自诚实降级（processes=
  *      「输出已过期」/ subagents=「任务不在册」）。
@@ -65,6 +65,14 @@ test('redirect 兼容矩阵：无参落地/query 全透传/无效深链双侧诚
   await gotoRoute(page, `/#/subagents`)
   await expect(page).toHaveURL(/\/executors\?tab=subagents/, { timeout: 15_000 })
   await expect(page.locator('.page-subagents')).toBeVisible({ timeout: 15_000 })
+
+  // (2b) 旧 /loops 无参 → /executors?tab=loops，执行循环 TAB 面板挂载
+  //      （2026-11-17 循环并入执行单元复合页；TAB 面板按需异步加载，首开
+  //      有 chunk 下载窗口；loops.list 空库 → 挂载后 empty-state 可见）
+  await gotoRoute(page, `/#/loops`)
+  await expect(page).toHaveURL(/\/executors\?tab=loops/, { timeout: 15_000 })
+  await expect(page.locator('.page-loops')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('[data-testid="loops-empty"]')).toBeVisible({ timeout: 15_000 })
 
   // (3) 旧深链带 focus + 额外参数 → redirect 透传全部 query；focus 消费后
   //     清理只剥 focus，foo=bar 存活 = 透传保真最强证据（redirect 若弄丢
@@ -134,6 +142,12 @@ test('TAB 状态机：hash 直改/back-forward/mount-unmount 循环/模态并存
     await page.locator('.tabs .tab', { hasText: '子代理' }).click()
     await expect(page.locator('.page-subagents')).toBeVisible({ timeout: 10_000 })
   }
+
+  // (5b) 执行循环 TAB（2026-11-17 并入）：点 TAB → 异步面板 chunk 挂载
+  //      → 销毁重建后仍健康（5s 轮询定时器随卸载清理）
+  await page.locator('.tabs .tab', { hasText: '执行循环' }).click()
+  await expect(page.locator('.page-loops')).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('.page-processes')).toHaveCount(0)
 
   // (6) 模态开着时另一 TAB 深链到达（异常时序）：processes 侧先开「输出
   //     已过期」模态（chat→深链到达 = 产品真实路径：ProcessesView 此刻

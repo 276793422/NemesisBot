@@ -316,11 +316,6 @@ pub fn apply_env_overrides(config: &mut Config) {
     {
         config.agents.defaults.llm = v;
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL")
-        && !v.is_empty()
-    {
-        config.agents.defaults.image_model = v;
-    }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS")
         && let Ok(n) = v.parse()
     {
@@ -627,6 +622,7 @@ pub fn default_config() -> Config {
         checkpoint: None,
         plugins: None,
         browser: None,
+        goals: None,
     }
 }
 /// Load MCP configuration from a separate config.mcp.json file.

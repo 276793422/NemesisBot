@@ -107,3 +107,123 @@ async fn adapter_streamed_fallback_stashes_note() {
         Some("主 → 备")
     );
 }
+
+// ==========================================================================
+// LLM-ERR-B（2026-11-17 治本批）：chat_streamed 自带聚合循环的确定性
+// 应用层错误透传回归锁。本聚合循环不走 provider 内部 collect_stream_response
+// （上方注释明示），RateLimit/Auth/Billing 在非空 partial 下同样不得包
+// StreamInterrupted（分类拍扁 → 零退避 429 风暴 + 缝合怪终答）；Unknown
+// 维持既有包装契约（对照臂钉住语义分界）。
+// ==========================================================================
+
+/// 流内错误 mock：stream_preferred=true，chat_stream 产出 1 个 delta chunk
+/// 后发预设 Err；`chat()` 返回哨兵内容——若被误走到（应走真流式聚合），
+/// 断言当即暴露。
+struct StreamErrProvider {
+    err: FailoverError,
+}
+
+#[async_trait::async_trait]
+impl nemesis_providers::router::LLMProvider for StreamErrProvider {
+    async fn chat(
+        &self,
+        _messages: &[nemesis_providers::types::Message],
+        _tools: &[nemesis_providers::types::ToolDefinition],
+        _model: &str,
+        _options: &ChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        Ok(LLMResponse {
+            content: "SHOULD_NOT_FALLBACK".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+
+    fn chat_stream(
+        &self,
+        _messages: &[nemesis_providers::types::Message],
+        _tools: &[nemesis_providers::types::ToolDefinition],
+        _model: &str,
+        _options: &ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<
+        Result<nemesis_providers::http_provider::StreamChunk, FailoverError>,
+    > {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let _ = tx.try_send(Ok(nemesis_providers::http_provider::StreamChunk {
+            delta: "半截".to_string(),
+            ..Default::default()
+        }));
+        let _ = tx.try_send(Err(self.err.clone()));
+        rx
+    }
+
+    fn stream_preferred(&self, _model: &str) -> bool {
+        true
+    }
+
+    fn default_model(&self) -> &str {
+        "serr-model"
+    }
+
+    fn name(&self) -> &str {
+        "serr-inner"
+    }
+}
+
+fn stream_err_adapter(err: FailoverError) -> ProviderAdapter {
+    ProviderAdapter::new(
+        Arc::new(StreamErrProvider { err }),
+        "serr-model".to_string(),
+    )
+}
+
+#[tokio::test]
+async fn streamed_rate_limit_passes_through_without_partial_stitch() {
+    let adapter = stream_err_adapter(FailoverError::RateLimit {
+        provider: "serr-inner".into(),
+        model: "serr-model".into(),
+        retry_after: None,
+    });
+    let err = adapter
+        .chat_streamed("serr-model", Vec::new(), None, Vec::new(), &|_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        err.starts_with("rate limited by provider"),
+        "RateLimit 必须透传（Display 前缀进限流环），实际: {err}"
+    );
+    assert!(
+        !err.contains("半截"),
+        "被拒请求的半成品不得缝进错误值（拼接续写根源）: {err}"
+    );
+    assert!(
+        !err.contains("stream interrupted from provider"),
+        "不得包 StreamInterrupted（前缀短路恒判 Timeout）: {err}"
+    );
+}
+
+#[tokio::test]
+async fn streamed_unknown_still_wraps_stream_interrupted() {
+    // 对照臂：Unknown（传输类）维持既有包装契约——partial 随错误携带。
+    let adapter = stream_err_adapter(FailoverError::Unknown {
+        provider: "serr-inner".into(),
+        message: "boom".into(),
+    });
+    let err = adapter
+        .chat_streamed("serr-model", Vec::new(), None, Vec::new(), &|_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        err.starts_with("stream interrupted from provider"),
+        "非确定性错误维持 StreamInterrupted 携带契约: {err}"
+    );
+    assert!(
+        err.contains("半截"),
+        "partial 随错误保留（既有语义）: {err}"
+    );
+}

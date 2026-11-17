@@ -1147,3 +1147,346 @@ async fn select_closed_recv_arm_must_park_not_hot_spin() {
         "首轮 Closed 置标志、次轮起只剩 handle 臂等收尾——固定 2 轮；         空臂形态此处是空转计数爆炸（断言必炸）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 会话表有界化（BUG-20261117-072）：LRU 逐出 + cwd 存根透明重装
+// ---------------------------------------------------------------------------
+
+/// 会话新建 helper：session/new 往返取回 sessionId（inline 处理，响应
+/// 顺序确定；调用方须无在飞 prompt 响应帧干扰）。
+async fn new_session(c: &mut TestClient, cwd: &std::path::Path, id: u64) -> String {
+    c.send(&json!({"jsonrpc": "2.0", "id": id, "method": "session/new",
+                   "params": {"cwd": cwd.to_string_lossy()}}))
+        .await;
+    let frame = c.recv().await;
+    frame["result"]["sessionId"].as_str().unwrap().to_string()
+}
+
+/// 接收直到指定 id 的响应帧（跳过 notification），不发送任何请求。
+async fn recv_response(c: &mut TestClient, id: u64) -> Value {
+    loop {
+        let frame = c.recv().await;
+        if frame["method"].is_null() {
+            assert_eq!(frame["id"], id, "响应 id 错位: {frame}");
+            return frame;
+        }
+    }
+}
+
+/// 短 prompt 往返 helper：发送 + 接收（跳过 notification）。
+async fn prompt_ok(c: &mut TestClient, sid: &str, id: u64) -> Value {
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": id, "method": "session/prompt",
+                   "params": {"sessionId": sid, "prompt": [
+                       {"type": "text", "text": "hi"}]}}),
+    )
+    .await;
+    recv_response(c, id).await
+}
+
+/// created 记录中指定 sid 的装配次数（重装断言用）。
+fn create_count(created: &Mutex<Vec<(String, Arc<PermissionGate>)>>, sid: &str) -> usize {
+    created
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(s, _)| s == sid)
+        .count()
+}
+
+#[tokio::test]
+async fn session_overflow_evicts_lru_and_rebuilds_on_prompt() {
+    let script = vec![FakeAction::Finish(TurnOutcome::Completed("ok".to_string()))];
+    let (mut c, created, _) = start_server(script).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let sid_a = new_session(&mut c, dir.path(), 1).await;
+    let sid_b = new_session(&mut c, dir.path(), 2).await;
+    // B 先用一次（prompt 盖 last_used）→ A 成为 LRU 最旧。
+    prompt_ok(&mut c, &sid_b, 10).await;
+    // 填满到 cap（MAX_ACP_SESSIONS）：A + B + 30 = 32。
+    for i in 0..MAX_ACP_SESSIONS - 2 {
+        new_session(&mut c, dir.path(), 100 + i as u64).await;
+    }
+    // 第 33 个：触发逐出——victim = A（B 用过、30 个中间者更晚入册）。
+    let _sid_c = new_session(&mut c, dir.path(), 200).await;
+    assert_eq!(create_count(&created, &sid_a), 1, "逐出本身不重跑工厂");
+    // B 未被逐（LRU 顺序正确）：仍活着，不重装。
+    prompt_ok(&mut c, &sid_b, 11).await;
+    assert_eq!(create_count(&created, &sid_b), 1, "存活会话不应重装");
+    // 被逐的 A 再 prompt：透明重装（工厂第二次装配同 sid）+ 正常完成。
+    // 重装入册后的回捞逐出会拿走一个中间者（B 刚盖章、A 被排除——
+    // 均不受伤）。
+    let frame = prompt_ok(&mut c, &sid_a, 12).await;
+    assert_eq!(frame["result"]["stopReason"], "end_turn");
+    assert_eq!(create_count(&created, &sid_a), 2, "被逐会话应透明重装");
+    // A 重装后的连带逐出不伤 B：仍活着，不重装。
+    prompt_ok(&mut c, &sid_b, 13).await;
+    assert_eq!(create_count(&created, &sid_b), 1, "存活会话不应重装");
+}
+
+/// 首个会话用挂起脚本、其余用即完成脚本的工厂（在飞避让测试专用：
+/// 0 号会话停飞、其余/重装走完成脚本；两个内层 FakeFactory 共享同一
+/// created 记录，装配计数聚合可断言）。
+struct FirstParksRestFinishFactory {
+    park: FakeFactory,
+    done: FakeFactory,
+    n: AtomicU64,
+}
+
+impl SessionFactory for FirstParksRestFinishFactory {
+    fn create<'a>(
+        &'a self,
+        cwd: PathBuf,
+        session_id: String,
+        gate: Arc<PermissionGate>,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn PromptDriver>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let idx = self.n.fetch_add(1, Ordering::SeqCst);
+            let ff = if idx == 0 { &self.park } else { &self.done };
+            ff.create(cwd, session_id, gate).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn eviction_skips_in_flight_turn() {
+    // 挂起脚本先 Emit（update 到客端 = turn_lock 已被持有）再等 cancel，
+    // 收尾显式 Finish(Cancelled)（真驱动语义：取消返回 Cancelled，无
+    // 收尾 chunk）；完成脚本 Emit 后立即 Completed。
+    let created = Arc::new(Mutex::new(Vec::new()));
+    let perm_log = Arc::new(Mutex::new(Vec::new()));
+    let park_script = vec![
+        FakeAction::Emit(tool_started_update("t1", "exec", "sleep")),
+        FakeAction::WaitCancel,
+        FakeAction::Finish(TurnOutcome::Cancelled),
+    ];
+    let done_script = vec![
+        FakeAction::Emit(tool_started_update("t1", "exec", "work")),
+        FakeAction::Finish(TurnOutcome::Completed("ok".to_string())),
+    ];
+    let factory = Arc::new(FirstParksRestFinishFactory {
+        park: FakeFactory {
+            script: park_script,
+            created: Arc::clone(&created),
+            perm_log: Arc::clone(&perm_log),
+        },
+        done: FakeFactory {
+            script: done_script,
+            created: Arc::clone(&created),
+            perm_log,
+        },
+        n: AtomicU64::new(0),
+    });
+    let mut c = start_with_factory(factory).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let sid_a = new_session(&mut c, dir.path(), 1).await;
+    let sid_b = new_session(&mut c, dir.path(), 2).await;
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 10, "method": "session/prompt",
+                   "params": {"sessionId": sid_a, "prompt": [
+                       {"type": "text", "text": "park me"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["method"], "session/update", "首帧应为 A 的 update");
+    // 填满到 cap 再溢出一个：A 在飞不可逐 → victim 顺延到 B（最旧空闲）。
+    for i in 0..MAX_ACP_SESSIONS - 2 {
+        new_session(&mut c, dir.path(), 100 + i as u64).await;
+    }
+    new_session(&mut c, dir.path(), 200).await;
+    // B 被逐：prompt B → 透明重装（update 到达 = 重装已完成、新轮已起）
+    // → 收尾 chunk + end_turn。重装后的回捞逐出拿走一个中间者（A 在飞
+    // 避让、B 被排除），无断言受伤。
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 11, "method": "session/prompt",
+                   "params": {"sessionId": sid_b, "prompt": [
+                       {"type": "text", "text": "hi"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["method"], "session/update", "B 重装轮 update 缺失");
+    let frame = recv_response(&mut c, 11).await;
+    assert_eq!(frame["result"]["stopReason"], "end_turn");
+    assert_eq!(create_count(&created, &sid_b), 2, "B 应被逐出并重装");
+    // A 未被逐：cancel 收尾（挂起脚本显式 Cancelled，无收尾 chunk）。
+    c.send(&json!({"jsonrpc": "2.0", "method": "session/cancel",
+                   "params": {"sessionId": sid_a}}))
+        .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 10, "A 的取消响应 id 错位: {frame}");
+    assert_eq!(frame["result"]["stopReason"], "cancelled");
+    // A 再 prompt：存活命中（不重装）——update 到达即解析已定，随后
+    // cancel 收尾防泄漏。
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 12, "method": "session/prompt",
+                   "params": {"sessionId": sid_a, "prompt": [
+                       {"type": "text", "text": "park again"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["method"], "session/update", "A 存活轮 update 缺失");
+    assert_eq!(create_count(&created, &sid_a), 1, "在飞会话不应被逐出");
+    c.send(&json!({"jsonrpc": "2.0", "method": "session/cancel",
+                   "params": {"sessionId": sid_a}}))
+        .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 12, "A 二次取消响应 id 错位: {frame}");
+}
+
+/// 二次装配失败工厂：同 sid 第二次 create 报错（重装失败路径专用）。
+struct RebuildFailFactory {
+    inner: FakeFactory,
+    seen: std::sync::Mutex<std::collections::HashSet<String>>,
+}
+
+impl SessionFactory for RebuildFailFactory {
+    fn create<'a>(
+        &'a self,
+        cwd: PathBuf,
+        session_id: String,
+        gate: Arc<PermissionGate>,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn PromptDriver>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            if !self.seen.lock().unwrap().insert(session_id.clone()) {
+                return Err("rebuild boom".to_string());
+            }
+            self.inner.create(cwd, session_id, gate).await
+        })
+    }
+}
+
+#[tokio::test]
+async fn evicted_session_rebuild_failure_maps_32603_vs_unknown_32602() {
+    let dir = tempfile::tempdir().unwrap();
+    let factory = Arc::new(RebuildFailFactory {
+        inner: FakeFactory {
+            script: vec![FakeAction::Finish(TurnOutcome::Completed("ok".to_string()))],
+            created: Arc::new(Mutex::new(Vec::new())),
+            perm_log: Arc::new(Mutex::new(Vec::new())),
+        },
+        seen: std::sync::Mutex::new(std::collections::HashSet::new()),
+    });
+    let mut c = start_with_factory(factory).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+
+    let sid = new_session(&mut c, dir.path(), 1).await;
+    // 填满并溢出一个：sid（最早入册、从未使用）被逐。
+    for i in 0..MAX_ACP_SESSIONS - 1 {
+        new_session(&mut c, dir.path(), 100 + i as u64).await;
+    }
+    new_session(&mut c, dir.path(), 200).await;
+    // 被逐 sid 再 prompt：重装失败 → -32603（区别于真未知）。
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 10, "method": "session/prompt",
+                   "params": {"sessionId": sid, "prompt": [
+                       {"type": "text", "text": "hi"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["error"]["code"], -32603, "frame: {frame}");
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("session rebuild failed")
+    );
+    // 真未知 sid（无存根）维持 -32602 原语义——两态可区分。
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 11, "method": "session/prompt",
+                   "params": {"sessionId": "never-existed", "prompt": [
+                       {"type": "text", "text": "hi"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["error"]["code"], -32602, "frame: {frame}");
+}
+
+#[tokio::test]
+async fn soft_cap_when_all_turns_in_flight_admits_new_session() {
+    // 挂起脚本收尾显式 Finish(Cancelled)——取消轮只有响应帧、无收尾
+    // chunk（裸 WaitCancel fall-through 到 Completed 会混入无 id 帧，
+    // 干扰排干断言）。
+    let script = vec![
+        FakeAction::Emit(tool_started_update("t1", "exec", "sleep")),
+        FakeAction::WaitCancel,
+        FakeAction::Finish(TurnOutcome::Cancelled),
+    ];
+    let (mut c, created, _) = start_server(script).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut sids = Vec::new();
+    for i in 0..MAX_ACP_SESSIONS {
+        sids.push(new_session(&mut c, dir.path(), i as u64).await);
+    }
+    // 全部 cap 个 prompt 挂起（各自先发一条 update——update 到客端即
+    // cancel 令牌已登记，随后 cancel 必命中）。
+    for (i, sid) in sids.iter().enumerate() {
+        c.send(
+            &json!({"jsonrpc": "2.0", "id": 1000 + i, "method": "session/prompt",
+                       "params": {"sessionId": sid, "prompt": [
+                           {"type": "text", "text": "park"}]}}),
+        )
+        .await;
+    }
+    for _ in 0..sids.len() {
+        let frame = c.recv().await;
+        assert_eq!(frame["method"], "session/update", "frame: {frame}");
+    }
+    // 第 cap+1 个 session/new：全忙 → 软上限放行（不逐出不拒绝）。
+    let sid_extra = new_session(&mut c, dir.path(), 9999).await;
+    sids.push(sid_extra);
+    // 排干：逐个 cancel（响应完成顺序并发不定 → 按 id 集合断言）。
+    for sid in sids.iter().take(MAX_ACP_SESSIONS) {
+        c.send(&json!({"jsonrpc": "2.0", "method": "session/cancel",
+                       "params": {"sessionId": sid}}))
+            .await;
+    }
+    let mut drained = std::collections::HashSet::new();
+    for _ in 0..MAX_ACP_SESSIONS {
+        let frame = c.recv().await;
+        let id = frame["id"].as_u64().expect("响应 id 缺失") as usize;
+        assert!(
+            (1000..1000 + MAX_ACP_SESSIONS).contains(&id),
+            "越界响应 id: {frame}"
+        );
+        assert_eq!(frame["result"]["stopReason"], "cancelled", "frame: {frame}");
+        drained.insert(id);
+    }
+    assert_eq!(
+        drained.len(),
+        MAX_ACP_SESSIONS,
+        "响应 id 应恰好覆盖全部 prompt"
+    );
+    // 软上限路径未逐出任何会话：工厂装配次数 = cap 原装 + 1 新会话。
+    {
+        let created = created.lock().unwrap();
+        assert_eq!(
+            created.len(),
+            MAX_ACP_SESSIONS + 1,
+            "软上限不应逐出任何会话"
+        );
+    }
+    // 追加会话照常可用（脚本共享 → 走挂起形态：update 后 cancel 收尾）。
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 5000, "method": "session/prompt",
+                   "params": {"sessionId": sids[MAX_ACP_SESSIONS], "prompt": [
+                       {"type": "text", "text": "hi"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["method"], "session/update", "追加会话轮 update 缺失");
+    c.send(&json!({"jsonrpc": "2.0", "method": "session/cancel",
+                   "params": {"sessionId": sids[MAX_ACP_SESSIONS]}}))
+        .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 5000, "追加会话响应 id 错位: {frame}");
+}

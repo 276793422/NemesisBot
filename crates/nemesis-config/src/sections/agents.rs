@@ -670,10 +670,6 @@ pub struct AgentDefaults {
     pub restrict_to_workspace: bool,
     #[serde(default)]
     pub llm: String,
-    #[serde(default)]
-    pub image_model: String,
-    #[serde(default)]
-    pub image_model_fallbacks: Vec<String>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: i64,
     #[serde(default = "default_temperature")]
@@ -770,8 +766,6 @@ impl Default for AgentDefaults {
             workspace: String::new(),
             restrict_to_workspace: true,
             llm: String::new(),
-            image_model: String::new(),
-            image_model_fallbacks: vec![],
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             max_tool_iterations: default_max_tool_iterations(),
@@ -793,85 +787,21 @@ impl Default for AgentDefaults {
     }
 }
 
+/// 路由条目实体（BUG-20261117-066 死面收敛后的形态）。
+///
+/// `agents.list` 的唯一生产读者是 agent_factory `build_route_resolver`
+/// （nemesisbot/src/agent_factory/shared.rs），只消费 `id`/`default`
+/// （→ nemesis-routing `AgentDef { id, is_default }`）。此前并存的
+/// `name`/`workspace`/`model`/`skills`/`subagents` 五字段自 INIT 起全仓
+/// 零读者（多代理持久实体的真相源在 2026-10-16 落地的 agent store 持久桥，
+/// 不在 config 路由表），连同无父的 `AgentModelConfig`/`SubagentsConfig`
+/// 两类型一并删除；serde 忽略未知键，存量 config.json 里的旧键保持可加载。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfigEntry {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub default: bool,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub workspace: String,
-    #[serde(default)]
-    pub model: Option<AgentModelConfig>,
-    #[serde(default)]
-    pub skills: Vec<String>,
-    #[serde(default)]
-    pub subagents: Option<SubagentsConfig>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentModelConfig {
-    #[serde(default)]
-    pub primary: String,
-    #[serde(default)]
-    pub fallbacks: Vec<String>,
-}
-
-/// Support both string and structured model config during deserialization.
-impl<'de> serde::Deserialize<'de> for AgentModelConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        use serde::de::{self, Visitor};
-        use std::fmt;
-
-        pub struct AgentModelConfigVisitor;
-
-        impl<'de> Visitor<'de> for AgentModelConfigVisitor {
-            type Value = AgentModelConfig;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                write!(f, "a string or an object with primary and fallbacks")
-            }
-
-            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
-                Ok(AgentModelConfig {
-                    primary: v.to_string(),
-                    fallbacks: vec![],
-                })
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                #[derive(Deserialize)]
-                struct Raw {
-                    #[serde(default)]
-                    primary: String,
-                    #[serde(default)]
-                    fallbacks: Vec<String>,
-                }
-                let raw = Raw::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(AgentModelConfig {
-                    primary: raw.primary,
-                    fallbacks: raw.fallbacks,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(AgentModelConfigVisitor)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubagentsConfig {
-    #[serde(default)]
-    pub allow_agents: Vec<String>,
-    #[serde(default)]
-    pub model: Option<AgentModelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

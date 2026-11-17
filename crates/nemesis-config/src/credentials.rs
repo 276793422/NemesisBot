@@ -174,6 +174,19 @@ pub fn load_credentials_file(path: &Path) -> Result<CredentialsFile> {
     if content.trim().is_empty() {
         return Ok(CredentialsFile::default());
     }
+    // 深嵌套 flow 集合喂给 serde_yaml 0.9 会按嵌套深度递归下降 → 栈溢出
+    // abort（不可捕获，进程级 DoS）。与本仓另两个 serde_yaml 反序列化入口
+    // （workflow parser/drafts，BUG-20261110-044）对齐：反序列化前过词法
+    // 上界闸。credentials.yaml 虽是用户文件，但 workspace 内可被 agent 经
+    // 审批的 file_write 触及（LLM 代写模型配置是真实路径），不可信级别
+    // 与工作流草稿同档。真实文件形态 keys: {alias: value} 深度 ≤ 3，
+    // 64 上闸零误伤。
+    nemesis_utils::yaml_depth::check_yaml_nesting_depth(&content).map_err(|e| {
+        ConfigError::Validation(format!(
+            "credentials file '{}' rejected by nesting depth guard: {e}",
+            path.display()
+        ))
+    })?;
     serde_yaml::from_str(&content).map_err(|e| {
         ConfigError::Validation(format!(
             "credentials file '{}' is not valid YAML ({}) — expected shape: keys: {{ alias: value }}",

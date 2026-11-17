@@ -255,7 +255,12 @@ pub fn build_cluster_agent_loop(
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（同主 loop）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
@@ -496,6 +501,9 @@ pub fn build_cluster_agent_loop(
         restrict: true,
         extra_roots: Vec::new(),
         editor_gate,
+        // 目标系统文件保护（D-Q3；worker 同主 agent 装守卫——人配目标在
+        // 集群执行语境同样只读）。
+        goals_guard: crate::goals_engine::workspace_goals_guard(&shared.workspace_dir()),
     }));
     // 集群 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {

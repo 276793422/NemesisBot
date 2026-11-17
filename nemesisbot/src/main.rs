@@ -180,6 +180,17 @@ mod flow_proto;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
+/// 目标系统 agent 工具面（feature=`goals`）：`goal` 单工具三 action
+/// （add/delete/disable）——防自锁（无 enable/done，完成只归评估闸），
+/// 人建目标 delete 恒拒、disable 受 `goals.allow_agent_disable` 开关。
+#[cfg(feature = "goals")]
+mod goal_tool;
+/// 目标系统评估闸驱动器（feature=`goals`）：bus outbound 订阅触发 turn
+/// 末评估（LLM 独立评审 goal.md → DONE 落状态 / CONTINUE 注入 goal 轮）
+/// + 文件保护闭包供给面（workspace_goals_guard）。裁决逻辑单一真相源在
+/// nemesis-goals crate；本模块只管 IO/LLM/注入。`workspace_goals_guard`
+/// 非 goals feature 构建恒 None（文件保护不设防——feature 裁剪形态）。
+mod goals_engine;
 /// 会话钩子自管面（HOOK 会话圈定批次三）：`hooks` 工具——单工具多
 /// action（add/delete/list），只能给自己（当前会话）设，schema 无 session
 /// 参数；写 hooks.session.json 原子落盘，桥内容比对热更。仅主 gateway

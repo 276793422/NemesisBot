@@ -111,6 +111,25 @@ fn model_label(model: &str) -> &str {
     }
 }
 
+/// AEC filter_length 解析（纯函数，平台中立；原内联形态抽出可测）。
+/// 范围闸在宽类型（i64）上做再 cast——BUG-20261117-085 横向扫：旧形态
+/// 先 `as i32` 再 filter，2^32+160 截断成 160 假装合法过闸，违背
+/// 「越界回退默认」意图（cluster.rs 端口族 filter→cast 同序先例）。
+/// 越界/缺省回退默认值；非法值（范围内但引擎不收）由 AecNew 返回
+/// null 降级为关闭（调用点语义）。
+/// Windows 门：产线调用点（cmd_stt_engine_start）与测试（w4_tests）均随
+/// Windows 进出；不门控则 Linux 非测试构建 dead_code（CI E0425 后 clippy
+/// 实证）。
+#[cfg(target_os = "windows")]
+fn aec_filter_length_from_cfg(voice_cfg: &serde_json::Value) -> i32 {
+    voice_cfg
+        .get("aec_filter_length")
+        .and_then(|v| v.as_i64())
+        .filter(|v| (160..=65536).contains(v))
+        .map(|v| v as i32)
+        .unwrap_or(nemesis_voice::DEFAULT_FILTER_LENGTH)
+}
+
 // Global STT session (only one active dictation at a time)
 #[cfg(target_os = "windows")]
 fn stt_state() -> &'static Arc<Mutex<Option<SttSession>>> {
@@ -2002,12 +2021,7 @@ impl VoiceHandler {
             .unwrap_or(false);
         // AEC 进阶参数：房间预设映射到 filter_length（16kHz 下采样数）。
         // 越界/缺省回退默认值；非法值会让 AecNew 返回 null，由下方 match 降级为关闭。
-        let aec_filter_length = voice_cfg
-            .get("aec_filter_length")
-            .and_then(|v| v.as_i64())
-            .map(|v| v as i32)
-            .filter(|&v| (160..=65536).contains(&v))
-            .unwrap_or(nemesis_voice::DEFAULT_FILTER_LENGTH);
+        let aec_filter_length = aec_filter_length_from_cfg(&voice_cfg);
         let aec_preprocess = voice_cfg
             .get("aec_preprocess")
             .and_then(|v| v.as_bool())

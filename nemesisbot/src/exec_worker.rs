@@ -247,6 +247,13 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 // dispatch 照跑）——开关开着时审批层放行、这里仍拒（项目+
                 // executor 组合形态的两层分叉，见 editor 围栏修复报告遗留）。
                 editor_gate: None,
+                // 目标系统文件保护（D-Q3）：子进程侧同样装守卫——被剥离
+                // 执行的文件写仍不得触碰人配目标。root=executor 工作区
+                // （主会话=主 ws，注册表可读；项目会话=项目目录，注册表
+                // 缺席 → 空表 fail-open，该目录本无 goals 面，行为无害）。
+                goals_guard: crate::goals_engine::workspace_goals_guard(std::path::Path::new(
+                    &workspace,
+                )),
             },
         )),
         // /：executor 侧租约——gateway 在 spawn 前经

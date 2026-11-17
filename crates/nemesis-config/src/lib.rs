@@ -278,6 +278,11 @@ pub struct Config {
     /// 见 [`BrowserConfig`]。
     #[serde(default)]
     pub browser: Option<BrowserConfig>,
+    /// 目标系统段（评估闸/权限全局开关；None = 全默认——
+    /// allow_agent_disable=true）。typed 字段化防 set_field round-trip
+    /// 丢键（plugins/browser 段同款）。见 [`GoalsConfig`]。
+    #[serde(default)]
+    pub goals: Option<GoalsConfig>,
 }
 
 /// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；
@@ -380,17 +385,22 @@ impl Config {
 
     /// Find a model configuration by model name or vendor/model prefix.
     pub fn get_model_by_model_name(&self, model_ref: &str) -> Result<&ModelConfig> {
-        // First try exact match with model_name
-        for mc in &self.model_list {
-            if mc.model_name == model_ref {
-                return Ok(mc);
+        // 层序与 provider_resolver::model_ref_eq doc 恒等：精确 model_name →
+        // 精确 model 字段 → CI model_name → CI model 字段（CI 兜底层 =
+        // BUG-20261117-077，与查找族其余站点同口径）。
+        for ci in [false, true] {
+            // First try exact match with model_name
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_eq(&mc.model_name, model_ref, ci) {
+                    return Ok(mc);
+                }
             }
-        }
 
-        // Then try prefix match with model field (vendor/model)
-        for mc in &self.model_list {
-            if mc.model == model_ref {
-                return Ok(mc);
+            // Then try prefix match with model field (vendor/model)
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_eq(&mc.model, model_ref, ci) {
+                    return Ok(mc);
+                }
             }
         }
 
@@ -408,15 +418,11 @@ impl Config {
 
     /// Populate deprecated fields from new fields for backward compatibility.
     ///
-    /// This mirrors the Go `postProcessForCompatibility` function:
-    /// - Sync `sync_to_web` from `sync_to` for External and WebSocket channels.
+    /// This mirrors the Go `postProcessForCompatibility` function.
+    /// （BUG-20261117-066）曾有的 `sync_to_web` 从 `sync_to` 派生臂已随
+    /// 该死旋钮一并删除：bool 全仓零读者，Go 蓝本兼容残留；sync 路由
+    /// 单一真相源是 `sync_to`（web_init setup_sync_targets 消费）。
     pub fn post_process_for_compatibility(&mut self) {
-        // External channel: populate SyncToWeb from SyncTo
-        self.channels.external.sync_to_web = !self.channels.external.sync_to.is_empty();
-
-        // WebSocket channel: populate SyncToWeb from SyncTo
-        self.channels.websocket.sync_to_web = !self.channels.websocket.sync_to.is_empty();
-
         // autonomy=autonomous 前置要求 unlimited_mode=true——
         // 防「监察环自动重派开着、评审 FAIL 却转人工」的矛盾态。加载期矛盾
         // 诚实降级为 assisted + WARN（安全方向回退，网关不被一个旗标卡死——
@@ -430,6 +436,16 @@ impl Config {
                 "[Config] board.autonomy=autonomous 但 unlimited_mode=false（矛盾态）：降级为 assisted 生效（请在面板开启 unlimited_mode 后再切 autonomous）"
             );
             board.autonomy = BoardAutonomy::Assisted;
+        }
+        // 批一①（无人值守加固）：unlimited + 预算保险丝三维全关的组合
+        // WARN（纯可观测不拦截——用户显式选择不是错误）。谓词单一真相源
+        // BoardFlagConfig::unlimited_without_budget_fuse（sections/board.rs）。
+        if let Some(board) = self.board.as_ref()
+            && board.unlimited_without_budget_fuse()
+        {
+            warn!(
+                "[Config] board.unlimited_mode=true 且预算保险丝三维全关（max_total_redispatch=0 / wall_clock_budget_secs=0 / max_tokens_per_parent=0）：FAIL 重派无资源上限，签名逐轮翻转的失败不在任何停车闸内。无人值守请配置 board.budget.*（0=关该维是刻意的，后果自担）；estop 可随时止血"
+            );
         }
     }
 
@@ -767,3 +783,8 @@ mod hot_reload_tests;
 // Debug 输出不落明文凭据。
 #[cfg(test)]
 mod channels_debug_redaction_tests;
+
+// 无人值守加固配置面：unlimited+预算全关组合谓词（批一①）/
+// transient_retry 两键（批二）/ board.notify 段（批三）默认与解析。
+#[cfg(test)]
+mod unattended_hardening_tests;

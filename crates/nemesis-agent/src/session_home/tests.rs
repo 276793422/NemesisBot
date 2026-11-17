@@ -407,3 +407,91 @@ fn test_fork_migrates_stale_source_before_copy() {
     assert!(src_home.join("uploads").join("asset.bin").is_file());
     assert!(!legacy_home.exists());
 }
+
+// --- 2026-11-17 todo 污染修复：存量项目 todo 文件惰性迁移 ---
+
+#[test]
+fn test_migrate_stale_project_todo_moves_file_back() {
+    let key = unique_key("todo-move");
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_path_buf();
+    let project_dir = ws.path().join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    // 存量形态：meta 带 project_path + todo 长在项目目录 sessions/。
+    crate::chat_log::write_session_project(&key, "proj-t1", &project_dir.to_string_lossy());
+    let legacy = nemesis_path::session_todo_file_in_workspace(&project_dir, &key);
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, r#"[{"content":"t1","status":"pending"}]"#).unwrap();
+
+    migrate_stale_project_session_todo(&workspace, &key);
+
+    let main_todo = nemesis_path::session_todo_file_in_workspace(&workspace, &key);
+    assert_eq!(
+        std::fs::read_to_string(&main_todo).unwrap(),
+        r#"[{"content":"t1","status":"pending"}]"#,
+        "todo 内容完整搬回主 workspace"
+    );
+    assert!(!legacy.exists(), "项目侧旧 todo 已搬走");
+    assert!(
+        !project_dir.join("sessions").exists(),
+        "项目侧 sessions/ 空壳已摘（用户工作树归位）"
+    );
+    // 幂等：再跑一次 no-op。
+    migrate_stale_project_session_todo(&workspace, &key);
+    assert!(main_todo.is_file());
+}
+
+#[test]
+fn test_migrate_todo_main_wins_removes_stale_project_copy() {
+    let key = unique_key("todo-win");
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_path_buf();
+    let project_dir = ws.path().join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    crate::chat_log::write_session_project(&key, "proj-t2", &project_dir.to_string_lossy());
+    // 双侧都在：主侧是修复后的新态（恒胜），项目侧是修复前旧态（清）。
+    let main_todo = nemesis_path::session_todo_file_in_workspace(&workspace, &key);
+    std::fs::create_dir_all(main_todo.parent().unwrap()).unwrap();
+    std::fs::write(&main_todo, r#"[{"content":"new","status":"in_progress"}]"#).unwrap();
+    let legacy = nemesis_path::session_todo_file_in_workspace(&project_dir, &key);
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, r#"[{"content":"old","status":"pending"}]"#).unwrap();
+
+    migrate_stale_project_session_todo(&workspace, &key);
+
+    assert_eq!(
+        std::fs::read_to_string(&main_todo).unwrap(),
+        r#"[{"content":"new","status":"in_progress"}]"#,
+        "主侧内容原样保留"
+    );
+    assert!(!legacy.exists(), "项目侧旧态文件被顺手清理");
+    assert!(
+        !project_dir.join("sessions").exists(),
+        "项目侧 sessions/ 空壳已摘"
+    );
+}
+
+#[test]
+fn test_migrate_todo_noop_without_project_meta_or_legacy() {
+    let ws = tempfile::tempdir().unwrap();
+    let workspace = ws.path().to_path_buf();
+
+    // meta 无 project_path（普通对话组会话）：no-op 不炸。
+    let no_proj = unique_key("todo-noproj");
+    migrate_stale_project_session_todo(&workspace, &no_proj);
+
+    // meta 带 project_path 但项目侧无文件（未受污染 / 已迁移过）：no-op，
+    // 主侧原样、项目目录不长 sessions/。
+    let clean = unique_key("todo-clean");
+    let project_dir = ws.path().join("proj2");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    crate::chat_log::write_session_project(&clean, "proj-t3", &project_dir.to_string_lossy());
+    let main_todo = nemesis_path::session_todo_file_in_workspace(&workspace, &clean);
+    std::fs::create_dir_all(main_todo.parent().unwrap()).unwrap();
+    std::fs::write(&main_todo, "[]").unwrap();
+    migrate_stale_project_session_todo(&workspace, &clean);
+    assert_eq!(std::fs::read_to_string(&main_todo).unwrap(), "[]");
+    assert!(!project_dir.join("sessions").exists());
+}

@@ -3020,6 +3020,53 @@ async fn test_board_config_set_wrong_type_rejects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// 范围错误必须带字段名（BUG-20261117-083）：u32 溢出报错裸写「超出 u32 范
+// 围」没有现场——多字段连设时用户无法定位是哪个键。budget/discussion 两族
+// 与 review.professions.<slug> 动态键三臂全覆盖。
+#[tokio::test]
+async fn test_board_config_set_range_error_names_field() {
+    let dir = unique_dir("config-range-error-field");
+    let ctx = make_ctx_with_board(&dir);
+
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "budget.max_send_retries", "value": 4294967296u64 }),
+    )
+    .await
+    .expect_err("u32 溢出必须拒绝");
+    assert!(
+        err.contains("budget.max_send_retries"),
+        "范围错误必须带字段名: {err}"
+    );
+
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "discussion.rate_limit_per_min", "value": 4294967296u64 }),
+    )
+    .await
+    .expect_err("u32 溢出必须拒绝");
+    assert!(
+        err.contains("discussion.rate_limit_per_min"),
+        "范围错误必须带字段名: {err}"
+    );
+
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.dev.max_turns", "value": 4294967296u64 }),
+    )
+    .await
+    .expect_err("u32 溢出必须拒绝");
+    assert!(
+        err.contains("review.professions.dev.max_turns"),
+        "动态键范围错误必须带真实 slug 与维度: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // （职能→评审预设查表）：review.professions.<slug>.<field> 白名单键。
 // 写入 → get 回读 + 盘上真实落盘；非法 slug/未知维度 loud 拒绝。
 #[tokio::test]

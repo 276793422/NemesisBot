@@ -69,6 +69,25 @@ pub async fn collect_stream_response(
                 if content.trim().is_empty() && tool_calls.is_empty() {
                     return Err(e);
                 }
+                // LLM-ERR-B（2026-11-17 治本批）：确定性应用层错误（限流/
+                // 认证/计费）**透传不包 StreamInterrupted**——上游 error 事件
+                // 明确宣告本次请求失败，partial 是被拒请求的半成品不是可续写
+                // 工作成果。包 StreamInterrupted 会：(a) 把分类拍扁进 reason
+                // 字符串（Display 前缀短路恒判 Timeout → 限流信号被当传输
+                // 抖动零退避立即重试，429 风暴形态，实测基线复现）；(b) 触发
+                // 拼接续写把半截文本缝进重试后的完整回复（实测缝合怪终答）。
+                // 透传保住变体语义：loop 侧 classified/词表双轨都按 RateLimit
+                // 进限流退避环（或 Auth/Billing 诚实终局），重试成功后终答
+                // 干净。Timeout/Overloaded/Format/Unknown 等维持既有
+                // StreamInterrupted 携带契约（传输中断的 partial 是真成果）。
+                if matches!(
+                    e,
+                    FailoverError::RateLimit { .. }
+                        | FailoverError::Auth { .. }
+                        | FailoverError::Billing { .. }
+                ) {
+                    return Err(e);
+                }
                 return Err(FailoverError::StreamInterrupted {
                     provider: provider.to_string(),
                     model: model.to_string(),

@@ -258,7 +258,9 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
 }
 
 /// Merge an incoming NemesisBot config into an existing one.
-/// Models are added only if not present. Channels are merged (existing takes priority).
+/// Models are added only if not present. Channels: enabled existing wins,
+/// disabled/missing existing is filled from incoming (three-branch contract
+/// in the function body).
 pub fn merge_config(existing: &mut Value, incoming: &Value) {
     // Merge model_list（契约：只并入既有结构，不补建缺失键——
     // test_merge_config_existing_without_model_list / coverage 279 钉死；
@@ -280,21 +282,29 @@ pub fn merge_config(existing: &mut Value, incoming: &Value) {
         }
     }
 
-    // Merge channels - incoming only fills in disabled channels
+    // Merge channels - 契约三分支：
+    // ① 同名且既有 enabled → 保留既有（用户在用的通道不被迁移覆盖）；
+    // ② 同名且既有 disabled/缺 enabled → incoming 替换（把 OpenClaw 的
+    //    通道配置带过来）；
+    // ③ 既有缺失 → 插入 incoming（BUG-20261117-082：与 model_list 的
+    //    absent-insert 对齐——同名 disabled 都能被补，absent 是更明确的
+    //    「不在使用中」，旧实现却静默丢弃：旧版 NemesisBot 配置缺新通道族
+    //    / 用户手删过通道段时，re-migrate 会把 OpenClaw 通道配置无声丢掉
+    //    且报告迁移成功）。
     if let (Some(existing_channels), Some(incoming_channels)) = (
         existing.get_mut("channels").and_then(|v| v.as_object_mut()),
         incoming.get("channels").and_then(|v| v.as_object()),
     ) {
         for (name, incoming_ch) in incoming_channels {
-            if let Some(existing_ch) = existing_channels.get(name) {
-                let existing_enabled = existing_ch
-                    .get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !existing_enabled {
-                    existing_channels.insert(name.clone(), incoming_ch.clone());
-                }
+            let existing_enabled = existing_channels
+                .get(name)
+                .and_then(|ch| ch.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if existing_enabled {
+                continue;
             }
+            existing_channels.insert(name.clone(), incoming_ch.clone());
         }
     }
 }

@@ -957,6 +957,8 @@ impl AgentLoop {
         // mtime 翻转（同 tier 的热读纪律；turn_budget 仍最高优先）。
         let effective_max_turns = turn_budget.unwrap_or(
             self.current_max_tool_iterations()
+                // n ≤ u32::MAX 由 resolver 上界闸保证（BUG-20261117-085）；
+                // 负值→0=不限，正数 cast 安全。
                 .map(|n| if n <= 0 { 0 } else { n as u32 })
                 .unwrap_or(self.config.max_turns),
         );

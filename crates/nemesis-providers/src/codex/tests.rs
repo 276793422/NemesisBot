@@ -912,19 +912,18 @@ fn test_handle_sse_event_completed_yields_response() {
 
 #[test]
 fn test_handle_sse_event_failed_and_error() {
+    // 2026-11-17 治本批：Failed 携完整事件载荷（统一分类入口需要整个事件
+    // 做码探测），不再只携 message 文案。
     let failed = serde_json::json!({
         "type": "response.failed",
         "response": {"status": "failed", "error": {"message": "boom"}}
     });
     assert_eq!(
         handle_sse_event(&failed),
-        SseOutcome::Failed("boom".to_string())
+        SseOutcome::Failed(failed.clone())
     );
     let err = serde_json::json!({"type": "error", "message": "concURRENCY limit"});
-    assert_eq!(
-        handle_sse_event(&err),
-        SseOutcome::Failed("concURRENCY limit".to_string())
-    );
+    assert_eq!(handle_sse_event(&err), SseOutcome::Failed(err.clone()));
     // 中间事件全部 Continue
     let delta = serde_json::json!({"type": "response.output_text.delta", "delta": "x"});
     assert_eq!(handle_sse_event(&delta), SseOutcome::Continue);

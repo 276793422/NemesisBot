@@ -96,8 +96,9 @@ fn test_set_channel_config_bool_key_value_set_extended() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_config(&tmp);
 
+    // （BUG-20261117-066）sync_to_web 死旋钮已删，样本键换 cors。
     set_channel_config(&cfg, "websocket", "enabled", "YES").unwrap();
-    set_channel_config(&cfg, "external", "sync_to_web", "off").unwrap();
+    set_channel_config(&cfg, "web", "cors", "off").unwrap();
     set_channel_config(&cfg, "telegram", "enabled", "maybe").unwrap();
 
     let data: serde_json::Value =
@@ -106,10 +107,7 @@ fn test_set_channel_config_bool_key_value_set_extended() {
         data["channels"]["websocket"]["enabled"],
         serde_json::json!(true)
     );
-    assert_eq!(
-        data["channels"]["external"]["sync_to_web"],
-        serde_json::json!(false)
-    );
+    assert_eq!(data["channels"]["web"]["cors"], serde_json::json!(false));
     assert_eq!(data["channels"]["telegram"]["enabled"], "maybe");
 }
 

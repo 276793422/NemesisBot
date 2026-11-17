@@ -1176,8 +1176,8 @@ pub(crate) async fn init_post_agent(
     #[cfg(feature = "events")]
     {
         let bus_for_events = bus.clone();
-        let estop_for_events = std::sync::Arc::clone(&shared_resources.estop);
         let conv_router_for_events = conv_router.clone();
+        let estop_for_events = std::sync::Arc::clone(&shared_resources.estop);
         let events_rules_path = shared_resources
             .workspace_dir()
             .join("config")
@@ -1187,13 +1187,13 @@ pub(crate) async fn init_post_agent(
                 if !nemesis_agent::chat_log::chat_log_exists(session_key) {
                     return false;
                 }
+                // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
+                // 活页绑定优先（回复实时推到正开着该会话的标签页），
+                // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
+                // 通道原生形态硬前提不变（docs/BUG 同名文档）。
                 bus_for_events.publish_inbound(nemesis_types::channel::InboundMessage {
                     channel: "web".to_string(),
                     sender_id: "system".to_string(),
-                    // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
-                    // 活页绑定优先（回复实时推到正开着该会话的标签页），
-                    // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
-                    // 通道原生形态硬前提不变（docs/BUG 同名文档）。
                     chat_id: resolve_inject_chat_id(session_key, &conv_router_for_events),
                     content: content.to_string(),
                     media: Vec::new(),
@@ -1253,22 +1253,22 @@ pub(crate) async fn init_post_agent(
     #[cfg(feature = "loop")]
     {
         let bus_for_loops = bus.clone();
+        let conv_router_for_loops = conv_router.clone();
         let estop_for_loops = std::sync::Arc::clone(&shared_resources.estop);
         let loops_dir = shared_resources.workspace_dir().join("loops");
         let ds_for_loops = data_store.clone();
-        let conv_router_for_loops = conv_router.clone();
         let loop_inject: std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync> =
             std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
                 if !nemesis_agent::chat_log::session_occupied(session_key) {
                     return false;
                 }
+                // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
+                // 活页绑定优先（回复实时推到正开着该会话的标签页），
+                // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
+                // 通道原生形态硬前提不变（docs/BUG 同名文档）。
                 bus_for_loops.publish_inbound(nemesis_types::channel::InboundMessage {
                     channel: "web".to_string(),
                     sender_id: "system".to_string(),
-                    // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
-                    // 活页绑定优先（回复实时推到正开着该会话的标签页），
-                    // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
-                    // 通道原生形态硬前提不变（docs/BUG 同名文档）。
                     chat_id: resolve_inject_chat_id(session_key, &conv_router_for_loops),
                     content: content.to_string(),
                     media: Vec::new(),
@@ -1344,6 +1344,41 @@ pub(crate) async fn init_post_agent(
             "[Gateway] durable loop driver armed (loops dir: {})",
             loops_dir.display()
         );
+    }
+
+    // 目标系统评估闸驱动器（feature=`goals`）：订阅 bus outbound（带会话
+    // 键的终局回复 = turn 结束）+ AgentEvent（ToolStarted 工具名累积）；
+    // 评估闸 LLM 独立评审 goal.md → DONE 落状态（唯一 done 出口）/
+    // CONTINUE 注入 goal 轮（bus 入站，durable loop 注入同款形态）。裁决
+    // 逻辑单一真相源在 nemesis-goals crate；estop 冻结期评估跳过（goal
+    // 状态不动）。agent_event_tx 缺席（装配形态变体）= 空 channel 的
+    // sender 刻意 forget 保活（rx 永远收不到事件但不 Closed——工具名
+    // 材料缺失是诚实降级，watcher 不退）。
+    #[cfg(feature = "goals")]
+    {
+        let bus_for_goals = bus.clone();
+        let estop_for_goals = std::sync::Arc::clone(&shared_resources.estop);
+        let ws_for_goals = shared_resources.workspace_dir();
+        let loop_ref_for_goals = ctx.board_moderator_loop.clone();
+        let event_rx_for_goals = shared_resources
+            .agent_event_tx
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| {
+                let (tx, rx) =
+                    tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(1);
+                std::mem::forget(tx); // 保活防 Closed → watcher 提前退出
+                rx
+            });
+        crate::goals_engine::spawn_goals_engine(
+            bus_for_goals,
+            loop_ref_for_goals,
+            estop_for_goals,
+            ws_for_goals,
+            event_rx_for_goals,
+            conv_router.clone(),
+        );
+        info!("[Gateway] goals evaluation engine armed");
     }
 
     // 后台进程实时输出：同一 B4 注册表 Arc 注入 web 侧

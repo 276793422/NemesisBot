@@ -52,7 +52,9 @@ mod display;
 #[cfg(feature = "memory")]
 mod dreaming_job;
 mod migrate;
-mod post_agent;
+// resolve_inject_chat_id（注入面出站键单一真相源）被 goals 引擎跨模块
+// 消费——pub(crate)。
+pub(crate) mod post_agent;
 mod relay;
 mod runtime;
 mod services;
