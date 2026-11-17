@@ -3785,19 +3785,30 @@ fn test_mcp_discover_operation_override_empty_or_bad_args_none() {
 
 // =========================================================================
 // McpListTool tests
+// （BUG-20261118-095 后形态：execute = 诚实报错安全网（执行走 dispatch
+// 拦截）；渲染逻辑抽为自由函数，格式断言迁移到渲染函数面。dispatch 级
+// 可见性行为回归在 loop/w7_lazy_supply_tests.rs。）
 // =========================================================================
 
 #[tokio::test]
-async fn test_mcp_list_tool_empty() {
-    let snapshot = Arc::new(parking_lot::RwLock::new(Vec::new()));
-    let tool = McpListTool::new(snapshot);
+async fn test_mcp_list_tool_execute_is_honest_fallback() {
+    let tool = McpListTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute("{}", &ctx).await.unwrap();
-    assert!(result.contains("No MCP tools"));
+    let result = tool.execute("{}", &ctx).await;
+    assert!(
+        result.is_err(),
+        "直调必须诚实报错（正常流程 dispatch 拦截）"
+    );
+    assert!(result.unwrap_err().contains("dispatched by the agent loop"));
 }
 
-#[tokio::test]
-async fn test_mcp_list_tool_with_tools() {
+#[test]
+fn test_render_mcp_list_empty_and_populated() {
+    // 空表 = 诚实空表文案。
+    assert_eq!(
+        render_mcp_list(&[]),
+        "No MCP tools are currently registered."
+    );
     let mk = |name: &str, desc: &str| McpToolSnapshotEntry {
         name: name.to_string(),
         description: desc.to_string(),
@@ -3805,37 +3816,32 @@ async fn test_mcp_list_tool_with_tools() {
         read_only_hint: None,
         destructive_hint: None,
     };
-    let snapshot = Arc::new(parking_lot::RwLock::new(vec![
+    let out = render_mcp_list(&[
         mk("mcp_server_tool1", "Tool 1 desc"),
         mk("mcp_server_tool2", "Tool 2 desc"),
-    ]));
-    let tool = McpListTool::new(snapshot);
-    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute("{}", &ctx).await.unwrap();
-    assert!(result.contains("mcp_server_tool1"));
-    assert!(result.contains("Tool 1 desc"));
-    assert!(result.contains("mcp_server_tool2"));
-    assert!(result.contains("2"));
+    ]);
+    assert!(out.contains("mcp_server_tool1"));
+    assert!(out.contains("Tool 1 desc"));
+    assert!(out.contains("mcp_server_tool2"));
+    assert!(out.contains("2"));
 }
 
-#[tokio::test]
-async fn test_mcp_list_tool_dynamic_update() {
-    let snapshot = Arc::new(parking_lot::RwLock::new(Vec::new()));
-    let tool = McpListTool::new(snapshot.clone());
-
-    // Add tools after creating the tool
-    *snapshot.write() = vec![McpToolSnapshotEntry {
+#[test]
+fn test_render_mcp_tool_detail_full_schema() {
+    let entry = McpToolSnapshotEntry {
         name: "mcp_new_tool".to_string(),
         description: "New tool".to_string(),
-        parameters: serde_json::json!({"type": "object"}),
-        read_only_hint: None,
+        parameters: serde_json::json!({"type": "object", "properties": {"msg": {"type": "string"}}}),
+        read_only_hint: Some(true),
         destructive_hint: None,
-    }];
-
-    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
-    let result = tool.execute("{}", &ctx).await.unwrap();
-    assert!(result.contains("mcp_new_tool"));
-    assert!(result.contains("1"));
+    };
+    let out = render_mcp_tool_detail(&entry);
+    assert!(out.contains("mcp_new_tool"));
+    assert!(out.contains("New tool"));
+    assert!(out.contains("read_only_hint**: true"));
+    assert!(out.contains("destructive_hint**: unknown"));
+    assert!(out.contains("msg"));
+    assert!(out.contains("Call it with `mcp_call`"));
 }
 
 // =========================================================================

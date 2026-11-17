@@ -244,9 +244,6 @@ pub(super) fn build_shared_tool_config(
     shared: &Arc<SharedResources>,
     cfg: &nemesis_config::Config,
     model_name: &str,
-    mcp_tool_snapshot: Option<
-        Arc<parking_lot::RwLock<Vec<nemesis_agent::r#loop::McpToolSnapshotEntry>>>,
-    >,
 ) -> (
     nemesis_agent::SharedToolConfig,
     Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
@@ -383,7 +380,6 @@ pub(super) fn build_shared_tool_config(
         // 空名册 / 点名诚实报错——集群 loop、测试构建缺省）。
         experts: shared.experts.as_ref().map(|s| s.handle()),
         cluster_rpc: None, // Registered separately with call_fn
-        mcp_tool_snapshot,
         workflow_engine: shared.workflow_engine.clone(),
         approval_manager: Some(shared.approval_slot.clone()),
         // question 工具 broker 槽（gateway 晚填 WebQuestionBroker）。

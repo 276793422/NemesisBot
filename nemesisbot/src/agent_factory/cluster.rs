@@ -478,7 +478,7 @@ pub fn build_cluster_agent_loop(
     // gateway loop 开放（cluster B 端 spawn 见 后续）。steer 槽（项3）同款
     // 不注入——无 spawn 面 = 无子代理可驾驶，工具诚实报 not available。
     let (mut tool_config, _unused_cluster_spawn_slot, _unused_cluster_steer_slot) =
-        build_shared_tool_config(shared, &cfg, &model_name, None);
+        build_shared_tool_config(shared, &cfg, &model_name);
     // ASM-04（横扫存量加固）：集群 loop 工作区围栏强制 restrict=true。
     // 方向性事实：项目 loop（本地可信会话）强制 restrict=true，集群 loop
     // （执行远端半可信任务）此前跟随全局开关（默认 false）——B 端 file 工具
