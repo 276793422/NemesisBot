@@ -234,7 +234,11 @@ fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, Stri
 
 fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
     if path.exists()
-        && let Ok(data) = std::fs::read_to_string(path)
+        // read_config_string 剥 BOM——记事本保存的 config.skills.json 裸读会
+        // parse 失败 → 静默落 default → 用户添加的 registry 源全部丢失
+        // （BUG-20261116-044；CLI 侧 commands/skills.rs:183 同文件早已走
+        // fsutil，此处补齐同源纪律）。
+        && let Ok(data) = nemesis_utils::fsutil::read_config_string(path)
         && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
     {
         return config;

@@ -56,6 +56,53 @@ pub(crate) fn roster_state(
     }
 }
 
+/// 会话键 → web 通道出站路由键映射（事件/循环/审批续执行注入器共用，
+/// 纯函数，单测钉死）。
+///
+/// 入站 `chat_id` 必须是通道原生形态 `web:<session-id>`：AgentLoop 的
+/// 最终回复**原样回显**入站 (channel, chat_id)（`loop/bus.rs` send_reply），
+/// WebChannel 只认 `web:<session-id>`（`nemesis-channels/src/web.rs`）。
+/// 回灌 session_key 本身（`agent:main:session:<uuid>`）会让每条注入回合
+/// 的回复在通道派发面被拒（invalid chat ID format）——回复只落 chat log、
+/// Dashboard 在线客户端收不到实时推送（真实系统 UAT 实录：69 条派发
+/// 失败与 delivered_messages 一一对应）。
+///
+/// 非 `agent:main:session:` 形态 = 目标通道不明（IM 通道会话等），
+/// 诚实原样保留：行为与修复前一致，不在注入面猜测通道。
+#[cfg_attr(
+    not(any(feature = "events", feature = "loop", feature = "security")),
+    allow(dead_code)
+)]
+pub(crate) fn web_chat_id_from_session_key(session_key: &str) -> String {
+    match session_key.strip_prefix("agent:main:session:") {
+        Some(sid) => format!("web:{sid}"),
+        None => session_key.to_string(),
+    }
+}
+
+/// 注入面出站 `chat_id` 解析（单一真相源，三注入器共用）：**ConvRouter
+/// 活页绑定优先**——web 入站在册 `session_key → web:<ws_conn_id>` 映射
+/// （`process_messages_with_router` 每条 chat.send 都 `bind`），据此解析
+/// 才能把回复实时推到「正开着该会话」的标签页（SessionManager 按 WS
+/// 连接 id 键控，会话 uuid 不是连接 id，直接喂 `web:<uuid>` 只会命中
+/// 死会话软失败）；与 cron Opt2 实时推送消费**同一张绑定表**。
+///
+/// 无绑定（标签页没开过/已重连）回落 [`web_chat_id_from_session_key`]：
+/// `web:<会话id>` 形态合法，派发面死会话软失败（一次性 WARN + Ok），
+/// 正文照落 chat log、历史加载即恢复——与 cron 无绑定臂同一降级语义。
+#[cfg_attr(
+    not(any(feature = "events", feature = "loop", feature = "security")),
+    allow(dead_code)
+)]
+pub(crate) fn resolve_inject_chat_id(
+    session_key: &str,
+    conv_router: &nemesis_web::SharedConvRouter,
+) -> String {
+    conv_router
+        .target(session_key)
+        .unwrap_or_else(|| web_chat_id_from_session_key(session_key))
+}
+
 /// PB-5 产物 struct。
 pub(crate) struct PostAgentWiring {
     /// Tray 启停 + 心跳 handler + Step 14 start（无门）。
@@ -1131,6 +1178,7 @@ pub(crate) async fn init_post_agent(
         let bus_for_events = bus.clone();
         let conv_router_for_events = conv_router.clone();
         let estop_for_events = std::sync::Arc::clone(&shared_resources.estop);
+        let conv_router_for_events = conv_router.clone();
         let events_rules_path = shared_resources
             .workspace_dir()
             .join("config")
@@ -1140,16 +1188,14 @@ pub(crate) async fn init_post_agent(
                 if !nemesis_agent::chat_log::chat_log_exists(session_key) {
                     return false;
                 }
-                // chat_id 经 conv_router 解析活跃 web 连接（goals 注入同
-                // 批修）：有绑定 = 唤醒轮回复实时推回 Dashboard tab；无绑定
-                // 回落裸 session_key（回复仍落历史，软失败语义既有）。
-                let inject_chat_id = conv_router_for_events
-                    .target(session_key)
-                    .unwrap_or_else(|| session_key.to_string());
+                // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
+                // 活页绑定优先（回复实时推到正开着该会话的标签页），
+                // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
+                // 通道原生形态硬前提不变（docs/BUG 同名文档）。
                 bus_for_events.publish_inbound(nemesis_types::channel::InboundMessage {
                     channel: "web".to_string(),
                     sender_id: "system".to_string(),
-                    chat_id: inject_chat_id,
+                    chat_id: resolve_inject_chat_id(session_key, &conv_router_for_events),
                     content: content.to_string(),
                     media: Vec::new(),
                     session_key: session_key.to_string(),
@@ -1163,9 +1209,29 @@ pub(crate) async fn init_post_agent(
             events_rules_path.clone(),
             injector,
             std::sync::Arc::new(move || estop_for_events.is_engaged()),
-        );
+        )
+        // proc 事件源（2026-11-16 事件源扩展 P1）：增量读闭包持
+        // background_registry Arc——`output(id, offset)` 公开 API，零 registry
+        // 侵入（泵每 ~1s 逐 proc 规则读新增字节 → 正则行匹配）。
+        .with_proc_reader({
+            let registry = std::sync::Arc::clone(&shared_resources.background_registry);
+            std::sync::Arc::new(move |job_id: u64, offset: u64| {
+                let registry = std::sync::Arc::clone(&registry);
+                Box::pin(async move { registry.output(job_id, offset).await })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    >
+            }) as nemesis_events::ProcReaderFn
+        });
         // 泵观测快照句柄注入 web 面（P2：events.status 读泵统计/规则/在攒）。
         web_server.set_events_snapshot(events_mgr.snapshot_handle());
+        // webhook 事件源提交句柄注入 web 面静态槽（HTTP POST
+        // /api/events/webhook/{token} → 泵；start 前注入——路由已挂，
+        // 注入前调用诚实 503）。
+        nemesis_web::handlers::events_webhook::set_events_webhook(events_mgr.webhook_handle());
         let _events_pump = events_mgr.start();
         info!(
             "[Gateway] event wakeup manager armed (rules: {})",
@@ -1192,21 +1258,20 @@ pub(crate) async fn init_post_agent(
         let estop_for_loops = std::sync::Arc::clone(&shared_resources.estop);
         let loops_dir = shared_resources.workspace_dir().join("loops");
         let ds_for_loops = data_store.clone();
+        let conv_router_for_loops = conv_router.clone();
         let loop_inject: std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync> =
             std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
                 if !nemesis_agent::chat_log::session_occupied(session_key) {
                     return false;
                 }
-                // chat_id 经 conv_router 解析活跃 web 连接（goals 注入同
-                // 批修）：有绑定 = 唤醒轮回复实时推回 Dashboard tab；无绑定
-                // 回落裸 session_key（回复仍落历史，软失败语义既有）。
-                let inject_chat_id = conv_router_for_loops
-                    .target(session_key)
-                    .unwrap_or_else(|| session_key.to_string());
+                // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
+                // 活页绑定优先（回复实时推到正开着该会话的标签页），
+                // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
+                // 通道原生形态硬前提不变（docs/BUG 同名文档）。
                 bus_for_loops.publish_inbound(nemesis_types::channel::InboundMessage {
                     channel: "web".to_string(),
                     sender_id: "system".to_string(),
-                    chat_id: inject_chat_id,
+                    chat_id: resolve_inject_chat_id(session_key, &conv_router_for_loops),
                     content: content.to_string(),
                     media: Vec::new(),
                     session_key: session_key.to_string(),

@@ -1942,6 +1942,34 @@ impl AsyncExecTool {
     }
 }
 
+/// 启动确认裁决（BUG-20261117-056 修复形态——纯逻辑，跨平台可单测）。
+///
+/// `child.wait()` Ok 返回后进程必然已退出，三种结局：
+/// - `Running`：wait_seconds 内退出 0——fire-and-forget 合法完成；
+/// - `SignalDeath`：`code()` None = 被信号终止（Unix SIGSEGV/SIGKILL
+///   启动即崩的常见失败形态）。旧形态 `success() || code().is_none()`
+///   把它并进成功臂谎报「确认运行中」——全仓唯一错误方向位点；
+/// - `Failed(code)`：带退出码早退。
+///
+/// 「still running」只属于 timeout Err 臂（[`AsyncExecTool::execute`]
+/// 的 `Err(_)` 臂），本裁决不涉及。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartupVerdict {
+    Running,
+    SignalDeath,
+    Failed(i32),
+}
+
+pub(super) fn startup_confirm_verdict(success: bool, code: Option<i32>) -> StartupVerdict {
+    if success {
+        StartupVerdict::Running
+    } else if code.is_none() {
+        StartupVerdict::SignalDeath
+    } else {
+        StartupVerdict::Failed(code.expect("Failed 臂 code 恒 Some（上方 is_none 已分流）"))
+    }
+}
+
 #[async_trait]
 impl Tool for AsyncExecTool {
     fn description(&self) -> String {
@@ -2057,20 +2085,23 @@ impl Tool for AsyncExecTool {
             tokio::time::timeout(std::time::Duration::from_secs(wait_secs), child.wait()).await;
 
         match result {
-            Ok(Ok(status)) => {
-                if status.success() || status.code().is_none() {
-                    // Still running (no exit code) or exited cleanly
+            Ok(Ok(status)) => match startup_confirm_verdict(status.success(), status.code()) {
+                StartupVerdict::Running => {
+                    // 快退（wait_seconds 内退出 0）：fire-and-forget 合法完成。
                     Ok(format!(
                         "Command '{}' started and confirmed running",
                         command
                     ))
-                } else {
-                    Err(format!(
-                        "Command '{}' exited prematurely with status: {}",
-                        command, status
-                    ))
                 }
-            }
+                StartupVerdict::SignalDeath => Err(format!(
+                    "Command '{}' exited prematurely (terminated by signal)",
+                    command
+                )),
+                StartupVerdict::Failed(code) => Err(format!(
+                    "Command '{}' exited prematurely with status: exit code: {}",
+                    command, code
+                )),
+            },
             Ok(Err(e)) => Err(format!("Failed to wait for command: {}", e)),
             Err(_) => {
                 // Timeout — process still running, which is the expected async case

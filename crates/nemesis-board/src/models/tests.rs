@@ -197,3 +197,20 @@ fn allowed_targets_covers_every_status() {
         "backlog（issue.reopen）"
     );
 }
+
+/// 编号排序键：数值序压倒字典序（BUG-20261116-042 回归锁）。
+/// 字典序直排 "NB-10" < "NB-2"；键必须按解析后的整数比较。
+#[test]
+fn issue_number_sort_key_numeric_beats_lexicographic() {
+    let mut nums = ["NB-10", "NB-2", "NB-100", "NB-9"];
+    nums.sort_by_key(|n| issue_number_sort_key(n));
+    assert_eq!(nums, ["NB-2", "NB-9", "NB-10", "NB-100"]);
+}
+
+/// 不可解析编号垫底、垫底层内按原串字典序（对齐 RFC3339 解析失败惯例）。
+#[test]
+fn issue_number_sort_key_unparseable_last_lexicographic() {
+    let mut nums = ["NB-3", "custom-x", "NB-20", "custom-a"];
+    nums.sort_by_key(|n| issue_number_sort_key(n));
+    assert_eq!(nums, ["NB-3", "NB-20", "custom-a", "custom-x"]);
+}

@@ -234,8 +234,12 @@ impl AgentLoop {
     }
 
     /// Available model aliases (from config.models), for `/model` listing.
+    /// Sorted deterministically（HashMap 迭代序是实现细节，输出进用户可见
+    /// join，见 BUG-20261117-052）。
     pub fn model_aliases(&self) -> Vec<String> {
-        self.config.models.keys().cloned().collect()
+        let mut aliases: Vec<String> = self.config.models.keys().cloned().collect();
+        aliases.sort();
+        aliases
     }
     /// 装配小模型杂务通道（工厂从 `agents.small_model` 解析后调用；
     /// 重复调用覆盖前值）。传 `None` 显式清除（= 回退主模型）。

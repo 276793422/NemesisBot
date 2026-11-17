@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -498,7 +498,7 @@ impl QQChannel {
                 info!(url = %ws_url, "[QQChannel] bot connecting to WebSocket gateway");
 
                 // Step 3: Connect to WebSocket
-                match connect_async(&ws_url).await {
+                match crate::base::ws_connect_bounded(&ws_url).await {
                     Ok((ws_stream, _)) => {
                         info!("[QQChannel] bot WebSocket connected successfully");
                         backoff = INITIAL_BACKOFF;

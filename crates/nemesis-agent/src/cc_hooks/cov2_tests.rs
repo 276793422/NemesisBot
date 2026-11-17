@@ -43,6 +43,8 @@ fn subagent_info() -> super::SubagentInfo {
         background: false,
         tools_profile: "readonly".to_string(),
         loop_kind: "main",
+        // 空串 = 无会话身份：本文件钩子全是未圈定组，不受会话过滤影响。
+        session_key: String::new(),
     }
 }
 
@@ -93,9 +95,11 @@ async fn compact_hook_stdout_gets_info_logged() {
     let tmp = tempdir();
     let echo = "echo covw6b-compact-stdout";
     let b = bridge_with(&hooks_doc("PreCompact", echo), &tmp);
-    b.run_compact_hooks("auto", "pre").await;
+    b.run_compact_hooks("auto", "pre", "agent:main:session:s1")
+        .await;
     let b2 = bridge_with(&hooks_doc("PostCompact", echo), &tmp);
-    b2.run_compact_hooks("auto", "post").await;
+    b2.run_compact_hooks("auto", "post", "agent:main:session:s1")
+        .await;
     // pre 与 post 两臂的 stdout 都必须以 INFO 级记录。
     let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(

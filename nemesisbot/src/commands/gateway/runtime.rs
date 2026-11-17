@@ -425,6 +425,7 @@ pub(crate) async fn run_runtime(
             // 只管「发什么」。
             web_mgr.set_continuation_injector({
                 let bus = bus.clone();
+                let conv_router = ctx.conv_router.clone();
                 std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
                     if !nemesis_agent::chat_log::chat_log_exists(session_key) {
                         return false;
@@ -432,7 +433,15 @@ pub(crate) async fn run_runtime(
                     bus.publish_inbound(nemesis_types::channel::InboundMessage {
                         channel: "web".to_string(),
                         sender_id: "system".to_string(),
-                        chat_id: session_key.to_string(),
+                        // 出站回显键（单一解析 resolve_inject_chat_id）：
+                        // ConvRouter 活页绑定优先（回复实时推到正开着该
+                        // 会话的标签页），无绑定回落 web:<会话id>（死会话
+                        // 软失败 + 历史照落）——通道原生形态硬前提不变
+                        // （docs/BUG 同名文档）。
+                        chat_id: super::post_agent::resolve_inject_chat_id(
+                            session_key,
+                            &conv_router,
+                        ),
                         content: content.to_string(),
                         media: Vec::new(),
                         session_key: session_key.to_string(),

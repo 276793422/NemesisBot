@@ -959,6 +959,71 @@ fn exec_anchor_quoted_command_runs() {
     );
 }
 
+/// env 凭据剥离回归锁（BUG-20261117-048）：exec 锚点命令是 planner LLM
+/// 产物，黑名单拦删/网络/破坏类但**不拦 `%VAR%` 展开**——
+/// `exec:echo %NEMESISBOT_VAULT_PASSPHRASE%` 过黑名单（echo 是 shell 内建），
+/// 凭据经 stdout「输出尾部」进评审评论外泄。run_exec_anchor 的 spawn 接
+/// env_sanitize 全版闸后，敏感命名空间变量到不了子进程 env，外泄链在
+/// 源头掐断。差分设计：非敏感名变量照常展开（证明 echo 与展开管线工作
+/// 正常），敏感名变量拿不到值——不依赖进程级开关的临时翻转，不毒化
+/// 并行测试。
+#[test]
+fn exec_anchor_env_sanitized_secret_namespace_stripped() {
+    let ws = temp_workspace("exec-env-san");
+    const SECRET_VAR: &str = "NEMESISBOT_TEST_SECRET_R1531";
+    const SECRET_VAL: &str = "SUP3RSECRET42";
+    const PLAIN_VAR: &str = "ANCHOR_PLAIN_R1531";
+    const PLAIN_VAL: &str = "PLAINOK77";
+    // SAFETY: 进程内唯一名变量，其他测试不读这两个名字；测试尾移除。
+    unsafe {
+        std::env::set_var(SECRET_VAR, SECRET_VAL);
+        std::env::set_var(PLAIN_VAR, PLAIN_VAL);
+    }
+    let (command, secret_literal) = if cfg!(windows) {
+        // cmd：设置变量展开为值；剥离后未设置变量按字面回显。
+        (
+            format!("echo {PLAIN_VAR}-%{PLAIN_VAR}%-%{SECRET_VAR}%"),
+            format!("%{SECRET_VAR}%"),
+        )
+    } else {
+        // sh：未设置变量展开为空串（引号防 set -u 环境炸场）。
+        (
+            format!("echo {PLAIN_VAR}-\"${PLAIN_VAR}\"-\"${SECRET_VAR}\""),
+            String::new(),
+        )
+    };
+    let results = run_anchors_dual_ext(
+        &exec_anchor(&command),
+        &ws,
+        None,
+        "",
+        &ExecAnchorPolicy::Enabled { timeout_secs: 30 },
+    )
+    .0;
+    unsafe {
+        std::env::remove_var(SECRET_VAR);
+        std::env::remove_var(PLAIN_VAR);
+    }
+    if results.is_empty() {
+        return; // echo 缺席 = EnvSkip 通道（诚实跳过，不假红）
+    }
+    let detail = &results[0].detail;
+    assert!(
+        detail.contains(PLAIN_VAL),
+        "非敏感名变量应照常展开（管线健康对照）：{detail}"
+    );
+    assert!(
+        !detail.contains(SECRET_VAL),
+        "敏感命名空间值经剥离闸不得进锚点输出尾部：{detail}"
+    );
+    if cfg!(windows) {
+        assert!(
+            detail.contains(&secret_literal),
+            "剥离后未设置变量应按字面回显（证明 cmd 展开真发生了但拿不到值）：{detail}"
+        );
+    }
+}
+
 /// 探针目标提取纯函数：env 赋值 / 路径形态 / shell 内建不探（None），裸词
 /// 工具才探（Some）。路径形态不探的理由：相对脚本缺失属交付缺陷，走真 FAIL。
 #[test]

@@ -492,15 +492,30 @@ pub(crate) async fn run_loop(params: BridgeClientParams, timing: LoopTiming) {
     });
     let mut backoff = timing.backoff_min;
     loop {
-        match tokio_tungstenite::connect_async(&endpoint).await {
-            Err(e) => {
+        // BUG-20261116-041：connect_async 无内建超时——中继 accept 后不回
+        // HTTP 101 时本 loop 永久停在握手 await 内，退避重连与状态上报全
+        // 失效（bridge 静默假死）。15s 握手帽对齐 nemesis-channels::base 先例。
+        let handshake = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            tokio_tungstenite::connect_async(&endpoint),
+        )
+        .await;
+        match handshake {
+            Err(_) => {
+                tracing::info!("[Bridge] 中继握手超时（15s，TCP 已接受但无 HTTP 101）：{endpoint}");
+                nemesis_web::relay::report_client_state(
+                    nemesis_web::relay::BridgeClientState::Disconnected,
+                    Some("握手超时（15s）：服务端已接受 TCP 但未完成握手".to_string()),
+                );
+            }
+            Ok(Err(e)) => {
                 tracing::info!("[Bridge] 连接中继失败：{e}（{endpoint}；网络断或中继未启动）");
                 nemesis_web::relay::report_client_state(
                     nemesis_web::relay::BridgeClientState::Disconnected,
                     Some(format!("连接失败：{e}")),
                 );
             }
-            Ok((ws, _)) => {
+            Ok(Ok((ws, _))) => {
                 tracing::info!(
                     "[Bridge] 已连接中继 {endpoint}，发送 hello（node_id={}）",
                     params.node_id

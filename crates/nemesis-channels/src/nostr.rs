@@ -190,7 +190,10 @@ fn shared_secret(keys: &NostrKeys, peer_x_only: &str) -> Result<[u8; 32]> {
 pub fn encrypt_dm(keys: &NostrKeys, recipient_x_only: &str, plaintext: &str) -> Result<String> {
     let mut iv = [0u8; 16];
     use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut iv);
+    // BUG-20261117-049：AES-256-CBC 的 IV 是加密参数，必须 CSPRNG
+    //（OsRng）——thread_rng 是非加密 PRNG（rand 文档明令不用于安全用途），
+    // IV 可预测弱化 CBC 对选择明文攻击的抵抗力。
+    rand::rngs::OsRng.fill_bytes(&mut iv);
     encrypt_dm_with_iv(keys, recipient_x_only, plaintext, &iv)
 }
 
@@ -280,7 +283,8 @@ pub fn build_dm_event(
 ) -> Result<NostrEvent> {
     let mut iv = [0u8; 16];
     use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut iv);
+    // BUG-20261117-049：同 encrypt_dm——IV 必须 CSPRNG。
+    rand::rngs::OsRng.fill_bytes(&mut iv);
     build_dm_event_with_iv(keys, recipient_x_only, plaintext, created_at, &iv)
 }
 
@@ -306,7 +310,10 @@ pub fn build_dm_event_with_iv(
     let mut aux = [0u8; 32];
     {
         use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut aux);
+        // BUG-20261117-049：BIP-340 签名的 aux randomness 必须加密强随机
+        //——aux 可预测 ⇒ 签名 nonce 可预测 ⇒ 私钥可恢复（Schnorr/ECDSA
+        // nonce 弱化是私钥提取的经典通路，BIP-340 规范明令 CSPRNG）。
+        rand::rngs::OsRng.fill_bytes(&mut aux);
     }
     let sig: Signature = keys
         .signing
@@ -542,7 +549,7 @@ impl NostrChannel {
                 break;
             }
 
-            let connect = tokio_tungstenite::connect_async(&relay_url).await;
+            let connect = crate::base::ws_connect_bounded(&relay_url).await;
             let ws = match connect {
                 Ok((ws, _)) => ws,
                 Err(e) => {

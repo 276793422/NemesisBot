@@ -615,8 +615,32 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // 后字面以 `!` 开头 → 对剩余表达式取反。旧实现四步全不匹配落到 Step 4
     // 「非空即真」，"!true" 恒为真——否定分支无条件放行（静默错，违反诚实
     // 失败契约）。`!=` 是中缀运算符不会出现在表达式开头，无歧义。
-    if let Some(rest) = resolved.strip_prefix('!') {
-        return !evaluate_condition(rest, context);
+    //
+    // BUG-20261117-062：**迭代剥前缀**（计数 + 按奇偶取反，核心只求值一次）
+    // 取代旧的自递归形态——旧代码 `!×N` 每层一帧且无深度帽，模板解析后的
+    // 数据值（节点输出，LLM 生成）可携带上万 `!`，tokio worker 2MB 栈下
+    // 直接栈溢出 abort 全进程（栈溢出不走 unwind，catch_unwind 救不了）。
+    // 迭代形态语义与旧递归逐字节一致（旧递归入口会 trim，此处 `trim`
+    // 保持同口径）。
+    let mut negations = 0usize;
+    let mut rest = resolved;
+    while let Some(inner) = rest.strip_prefix('!') {
+        negations += 1;
+        rest = inner.trim();
+    }
+    let core = eval_condition_core(rest, context);
+    if negations % 2 == 1 { !core } else { core }
+}
+
+/// Step 2-4 主体（`evaluate_condition` 剥完否定前缀后的核心求值）。
+///
+/// 从 `evaluate_condition` 原样抽出（BUG-20261117-062 迭代化重构），
+/// 语义锚点逐条保留。`resolved` 必须已 trim（调用方保证）。
+fn eval_condition_core(resolved: &str, context: &HashMap<String, serde_json::Value>) -> bool {
+    if resolved.is_empty() {
+        // 旧递归形态 `!!` 剥空后走 evaluate_condition 入口空串臂 → false；
+        // 迭代化后由本臂保持同值。
+        return false;
     }
 
     // Step 2: Literal booleans (also covers cases where {{var}} resolved to

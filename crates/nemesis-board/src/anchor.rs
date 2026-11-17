@@ -673,6 +673,12 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> Exec
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // env 凭据剥离（BUG-20261117-048，家族闸纪律：新 spawn 点必须显式接闸，
+    // 覆盖率靠家族清点）：锚点命令是 planner LLM 产物，黑名单拦删/网络/
+    // 破坏类但不拦 `%VAR%` 展开——`exec:echo %NEMESISBOT_VAULT_PASSPHRASE%`
+    // 过黑名单（echo 是 shell 内建），凭据经 stdout「输出尾部」进评审评论
+    // 外泄。剥离后 %VAR% 展开拿不到敏感值，外泄链在源头掐断。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_command(&mut cmd);
     #[cfg(windows)]
     {
         // 后台网关进程不弹控制台窗口（CREATE_NO_WINDOW，仓库纪律）。
@@ -778,6 +784,10 @@ fn probe_tool_present(tool: &str, root: &Path) -> bool {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    // env 凭据剥离（BUG-20261117-048，同 run_exec_anchor）：探针 tool token
+    // 同为 LLM 命令派生，`where %VAR%` 形态 cmd 会先展开再查——探针不该看
+    // 凭据命名空间。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_command(&mut cmd);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

@@ -7,7 +7,6 @@ use crate::token::AuthCredential;
 
 use base64::Engine;
 use chrono::Local;
-use rand::Rng;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -821,8 +820,11 @@ fn base64url_decode(input: &str) -> Result<Vec<u8>, String> {
 
 /// Generate a random state parameter for OAuth.
 fn generate_state() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.r#gen();
+    // BUG-20261117-049：state 是 OAuth CSRF 防护值（RFC 6749 §10.12 要求
+    // 不可猜测），thread_rng 是非加密 PRNG——OsRng。
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex_encode(&bytes)
 }
 

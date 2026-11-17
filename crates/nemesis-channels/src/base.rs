@@ -210,6 +210,47 @@ fn split_sender_id(sender_id: &str) -> (&str, &str) {
     }
 }
 
+/// 通道 send 的 panic 隔离包裹。
+///
+/// dispatch 环是单任务串行派发（`ChannelManager::dispatch_loop`）：任一
+/// 通道 send future 内的 panic（三方库解析、毒化锁 unwrap、越界——26
+/// 通道 × 三方依赖面非全仓自审）会沿 unwind 炸掉整个 dispatch loop
+/// task——出站 mpsc 无接收者静默堆积，gateway 其余功能照常，全部通道
+/// 出站停摆且零错误零日志。对齐既有长环隔离纪律（heartbeat 逐拍
+/// `catch_unwind` / cron hook / agent loop 工具执行 future 同款）：panic
+/// 映射为 `Err(..)` 返回，消费方走既有 Err 臂记账（send_errors），环
+/// 存活继续派发后续消息。
+///
+/// 诚实边界：`iotsmall` profile 是 `panic=abort`，`catch_unwind` 接不住
+/// abort（进程死即任务死，与工具隔离同一取舍）；send 半程副作用（消息
+/// 可能已送达外部服务）与超时放弃 future 的孤儿语义同级，错误串注明
+/// 「送达状态未知」。
+pub(crate) async fn send_panic_isolated(
+    channel_name: &str,
+    ch: Arc<dyn Channel>,
+    msg: OutboundMessage,
+) -> Result<()> {
+    match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(ch.send(msg))).await {
+        Ok(result) => result,
+        Err(payload) => {
+            let detail = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "opaque panic".to_string()
+            };
+            warn!(
+                channel = %channel_name,
+                "[Channel] send PANIC caught, dispatch loop survives: {detail}"
+            );
+            Err(NemesisError::Channel(format!(
+                "{channel_name} send panicked: {detail} (delivery state unknown, partial side effects possible)"
+            )))
+        }
+    }
+}
+
 /// Sends a single sync mirror message to one target channel.
 ///
 /// Single truth source for mirror construction (BUG-20261112-118): stamp
@@ -245,7 +286,14 @@ pub(crate) async fn send_sync_mirror(
         "[Channel] sending to sync target"
     );
 
-    match tokio::time::timeout(std::time::Duration::from_secs(3), target_ch.send(msg)).await {
+    // panic 隔离在 timeout 内层：send future 的 panic 不穿透 timeout
+    // 炸调用方任务（镜像扇出跑在 manager dispatch 环内，同一条命）。
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        send_panic_isolated(target_name, target_ch, msg),
+    )
+    .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             warn!(
@@ -482,6 +530,71 @@ pub(crate) fn outbound_http_client() -> Result<reqwest::Client> {
     outbound_http_builder()
         .build()
         .map_err(|e| NemesisError::Channel(format!("HTTP client creation failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// 出站 WebSocket 拨号单一构造点
+// ---------------------------------------------------------------------------
+
+/// 出站 WS 握手超时帽（BUG-20261116-041）。15s 对齐 cdp.rs 先例
+/// （`connect_async` 无内建超时——对端接受 TCP 后不回 HTTP 101 时
+/// `connect_async` 永久挂起：重连任务停在 await 内，退避/取消检查全失
+/// 效，通道静默停摆零错误零日志。裸 TCP connect 有 OS SYN 超时兜底，
+/// WS 握手没有——握手是 HTTP-over-TCP，纯等对端字节）。
+// default 构建形态无消费通道（7 个 WS 通道默认关）——同
+// outbound_http_builder 房规，dead_code 只在 default 构建出现。
+#[allow(dead_code)]
+pub(crate) const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// [`ws_connect_bounded`] 的显式超时形态（测试用小超时；生产走 15s 帽）。
+#[allow(dead_code)]
+pub(crate) async fn ws_connect_bounded_with_timeout<R>(
+    target: R,
+    timeout: std::time::Duration,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+>
+where
+    R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
+{
+    match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(target)).await {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(format!("websocket connect failed: {e}")),
+        Err(_) => Err(format!(
+            "websocket handshake timeout ({timeout:?}): server accepted TCP but never sent \
+             HTTP 101 (half-open?)"
+        )),
+    }
+}
+
+/// 出站 WebSocket 拨号单一构造点：带握手超时帽的 `connect_async`。
+///
+/// 通道重连环统一走此入口（discord/slack/qq/nostr/mattermost/feishu/
+/// onebot）；超时 Err 与 connect Err 同形态（String），消费方既有退避
+/// 重试臂无需区分。取消安全：超时丢 future 即关 socket，握手未完成前
+/// 无共享流状态。
+#[allow(dead_code)]
+pub(crate) async fn ws_connect_bounded<R>(
+    target: R,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+>
+where
+    R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
+{
+    ws_connect_bounded_with_timeout(target, WS_HANDSHAKE_TIMEOUT).await
 }
 
 // ---------------------------------------------------------------------------

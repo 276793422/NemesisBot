@@ -317,6 +317,14 @@ fn default_node_display_name(node_id: &str) -> String {
     )
 }
 
+/// 存量配置值（u64 读回，不截断）与 CLI 新值是否有差异（`cluster config`
+/// 写闸）。比较必须升域到 u64：裸 `as u16` 读回越域配置会回绕
+/// （66000→464），与合法请求 464 撞相等 → 用户写请求被静默跳过
+/// （BUG-20261116-043）。u16→u64 升域无损，越域存量照常判差异。
+fn cluster_config_differs(stored: (u64, u64, u64), new: (u16, u16, u64)) -> bool {
+    stored.0 != new.0 as u64 || stored.1 != new.1 as u64 || stored.2 != new.2
+}
+
 pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
 
@@ -404,12 +412,14 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                     && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 {
-                    // Read current values for display
-                    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
+                    // 读回值保持 u64 域（不截断）：裸 `as u16` 会把越域配置
+                    // 回绕（66000→464）——显示谎报 + 写闸比较与合法新值撞
+                    // 相等致用户写请求静默跳过（BUG-20261116-043）。
+                    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949);
                     let cur_rpc = cfg
                         .get("rpc_port")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(21949) as u16;
+                        .unwrap_or(21949);
                     let cur_interval = cfg
                         .get("broadcast_interval")
                         .and_then(|v| v.as_u64())
@@ -421,10 +431,10 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     println!("  Broadcast Interval: {}s", cur_interval);
 
                     // Only update and save if values differ from what's currently stored
-                    if (udp_port != cur_udp
-                        || rpc_port != cur_rpc
-                        || broadcast_interval != cur_interval)
-                        && let Some(obj) = cfg.as_object_mut()
+                    if cluster_config_differs(
+                        (cur_udp, cur_rpc, cur_interval),
+                        (udp_port, rpc_port, broadcast_interval),
+                    ) && let Some(obj) = cfg.as_object_mut()
                     {
                         obj.insert(
                             "port".to_string(),

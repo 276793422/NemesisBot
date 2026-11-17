@@ -29,6 +29,35 @@ fn compute_delay_zero_rejected() {
 }
 
 #[test]
+fn compute_delay_huge_rejected_not_wrapped() {
+    // BUG-20261117-053：超大 delay_secs 旧形态 `(d as i64) * 1000` 双重
+    // 失守——as-cast 符号翻转（d > i64::MAX → 负）+ 乘法 debug panic /
+    // release 回绕；回绕负值把唤醒排进过去 = busy wake 僵尸循环。修复后
+    // 必须诚实 Err，绝不 panic、绝不回绕（CLI `loops create --delay` 的
+    // u64 参数域任何值都打不穿）。
+    // d = u64::MAX：as-cast 即负值路径。
+    assert!(compute_next_wake(10_000, Some(u64::MAX), None)
+        .err()
+        .is_some_and(|e| e.contains("超出可表示范围")));
+    // d = i64::MAX as u64：as-cast 恰好非负但乘法必溢出。
+    assert!(compute_next_wake(10_000, Some(i64::MAX as u64), None).is_err());
+    // d 可转 i64 但 ×1000 溢出（> i64::MAX/1000 秒）。
+    assert!(compute_next_wake(10_000, Some((i64::MAX / 1000 + 1) as u64), None).is_err());
+}
+
+#[test]
+fn compute_delay_boundary_ok_and_now_overflow_rejected() {
+    // 上界内最大合法值：i64::MAX/1000 秒 × 1000 = i64::MAX 截到千位，
+    // now 较小时必须成功。
+    let (w, _) = compute_next_wake(0, Some((i64::MAX / 1000) as u64), None).unwrap();
+    assert!(w.is_some_and(|ms| ms > 0));
+    // now 本身接近 i64::MAX：即使 delay 合法，加法溢出也必须诚实 Err。
+    assert!(compute_next_wake(i64::MAX - 500, Some(1), None)
+        .err()
+        .is_some_and(|e| e.contains("超出可表示范围")));
+}
+
+#[test]
 fn compute_cron_local_semantics() {
     // 本地时区 "0 9 * * *"：从 2026-11-16 08:00 本地起算 → 下次 09:00 本地。
     let local = chrono::Local::now();

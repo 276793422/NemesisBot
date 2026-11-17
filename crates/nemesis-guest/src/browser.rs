@@ -327,9 +327,17 @@ async fn cdp_command(
     use tokio_tungstenite::tungstenite::Message;
 
     let url = format!("ws://127.0.0.1:{CDP_PORT}/devtools/page/{target_id}");
-    let (ws, _) = tokio_tungstenite::connect_async(&url)
-        .await
-        .map_err(|e| format!("CDP ws connect failed: {e}"))?;
+    // BUG-20261116-041：connect_async 无内建超时——loopback 对端（CDP 中继）
+    // accept 后不回 HTTP 101 时同样永久挂起，15s 帽兜底（横扫同族）。
+    let (ws, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio_tungstenite::connect_async(&url),
+    )
+    .await
+    .map_err(|_| {
+        "CDP ws handshake timeout (15s): server accepted TCP but never sent HTTP 101".to_string()
+    })?
+    .map_err(|e| format!("CDP ws connect failed: {e}"))?;
     let (mut sink, mut stream) = ws.split();
 
     let req = serde_json::json!({ "id": CDP_CMD_ID, "method": method, "params": params });

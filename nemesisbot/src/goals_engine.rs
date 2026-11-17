@@ -129,15 +129,14 @@ pub fn spawn_goals_engine(
     })
 }
 
-/// 注入入站 chat_id 解析（单一真相源；回归锚 BUG-20261117-goals-echo）：
-/// conv_router 有该会话的活跃绑定 → `web:<conn>` 实时形态（回复推回打开
-/// 的 Dashboard tab）；无绑定 → 裸 session_key 回落（WebChannel 拒投 =
-/// 既有软失败语义，回复仍按 session_key 落历史）。
+/// 注入入站 chat_id 解析（回归锚 BUG-20261117-goals-echo）：委托
+/// `post_agent::resolve_inject_chat_id` 单一真相源（events/loops 注入器
+/// 同款）——conv_router 活页绑定优先（回复推回打开的 Dashboard tab），
+/// 无绑定回落 `web:<会话id>` 通道原生形态（死会话软失败，回复仍按
+/// session_key 落历史）。
 #[cfg(feature = "goals")]
 fn inject_chat_id(router: &nemesis_web::SharedConvRouter, session_key: &str) -> String {
-    router
-        .target(session_key)
-        .unwrap_or_else(|| session_key.to_string())
+    crate::commands::gateway::post_agent::resolve_inject_chat_id(session_key, router)
 }
 
 #[cfg(feature = "goals")]

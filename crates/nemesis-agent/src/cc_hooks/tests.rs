@@ -18,7 +18,7 @@ use async_trait::async_trait;
 
 use super::{
     CcHookBridge, ScriptOutcome, build_event_payload, cc_tool_alias,
-    migrate_legacy_home_hooks_config, parse_cc_hooks, pre_tool_use_payload,
+    migrate_legacy_home_hooks_config, parse_cc_hooks, pre_tool_use_payload, warn_invalid_matchers,
 };
 use crate::context::RequestContext;
 use crate::hooks::{HookPrompt, HookToolCall, HookTurnEnd, LifecycleHook, ToolHook};
@@ -169,10 +169,250 @@ fn parse_rejects_garbage() {
     assert!(parse_cc_hooks("42").is_err());
 }
 
+// ---------------------------------------------------------------------------
+// 会话圈定（scope.sessions，2026-11-16 HOOK 会话维度批次一）
+// ---------------------------------------------------------------------------
+
+/// 程序化构造带 scope 的单事件 hooks 文档。
+fn hooks_doc_scoped(event: &str, sessions: &[&str], command: &str) -> String {
+    let doc = serde_json::json!({
+        "hooks": { event: [ {
+            "scope": { "sessions": sessions },
+            "hooks": [ { "type": "command", "command": command } ]
+        } ] }
+    });
+    doc.to_string()
+}
+
+/// 从单组文档解析出 PreToolUse 的第一个分组（矩阵测试走 serde 路径，
+/// 归一化随解析生效）。
+fn pre_group_from_doc(group: serde_json::Value) -> super::CcHookGroup {
+    let doc = serde_json::json!({ "hooks": { "PreToolUse": [ group ] } });
+    let mut events = parse_cc_hooks(&doc.to_string()).expect("parses");
+    events.pre_tool_use.remove(0)
+}
+
+fn call_in_session(session_key: &str) -> HookToolCall {
+    HookToolCall {
+        name: "edit".to_string(),
+        arguments: "{}".to_string(),
+        channel: "web".to_string(),
+        chat_id: "c1".to_string(),
+        session_key: session_key.to_string(),
+        dispatch_started: None,
+        call_id: None,
+    }
+}
+
+#[test]
+fn scope_sessions_parse_trims_and_rejects_empty() {
+    // 正例：条目去空白归一。
+    let events = parse_cc_hooks(
+        r#"{"hooks":{"PreToolUse":[{"matcher":"Edit","scope":{"sessions":[" s1 ","s2"]},"hooks":[{"type":"command","command":"exit 0"}]}]}}"#,
+    )
+    .expect("parses");
+    let g = &events.pre_tool_use[0];
+    let scope = g.scope.as_ref().expect("scope present");
+    assert_eq!(scope.sessions, vec!["s1".to_string(), "s2".to_string()]);
+
+    // 负例：去空白后空条目 = loud 拒绝（永不命中的静默配置错误不收）。
+    assert!(
+        parse_cc_hooks(r#"{"hooks":{"PreToolUse":[{"scope":{"sessions":["  "]},"hooks":[]}]}}"#)
+            .is_err(),
+        "空白条目必须被拒绝"
+    );
+}
+
+#[test]
+fn matches_session_filter_matrix() {
+    // 未圈定 = 全命中（含空 session 输入）。
+    let no_scope = pre_group_from_doc(serde_json::json!({ "hooks": [] }));
+    assert!(no_scope.matches_session("agent:main:session:s1"));
+    assert!(no_scope.matches_session(""));
+    assert!(no_scope.matches_session("telegram:x:y"));
+
+    // 圈了但列表为空 = 全命中（缺省兼容语义与 None 一致）。
+    let empty_list =
+        pre_group_from_doc(serde_json::json!({ "scope": { "sessions": [] }, "hooks": [] }));
+    assert!(empty_list.matches_session("agent:main:session:s1"));
+    assert!(empty_list.matches_session(""));
+
+    // 圈定 s1：裸 sid 与完整键双候选任一即中。
+    let scoped =
+        pre_group_from_doc(serde_json::json!({ "scope": { "sessions": ["s1"] }, "hooks": [] }));
+    assert!(scoped.matches_session("s1"), "裸 sid 命中");
+    assert!(
+        scoped.matches_session("agent:main:session:s1"),
+        "完整 session_key 命中（剥前缀候选）"
+    );
+    assert!(!scoped.matches_session("s2"), "其他 sid 不命中");
+    assert!(
+        !scoped.matches_session("telegram:chat:1"),
+        "非 web 形状整串比较不命中"
+    );
+    assert!(!scoped.matches_session(""), "空串永不命中圈定组");
+}
+
+#[tokio::test]
+async fn session_scoped_pre_tool_use_zero_spawn_for_other_sessions() {
+    // 圈定 s-a（裸 sid 落盘）的 PreToolUse 写 marker；非命中会话零 spawn
+    // （marker 不增 = 没有子进程，比「脚本自查 exit 0」更强的断言）。
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("workspace");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    let marker = proj.join("scoped_fired.txt");
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc_scoped("PreToolUse", &["s-a"], &append_cmd(&marker, "hit")),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+
+    // s-a 完整键输入：剥前缀候选命中（真子进程跑一次）。
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-a"))
+        .await;
+    assert_eq!(marker_lines(&marker), 1, "圈定会话应触发一次");
+
+    // 其他 web 会话：零 spawn。
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-b"))
+        .await;
+    assert_eq!(marker_lines(&marker), 1, "非圈定会话不得触发");
+
+    // 非 web 形状 session_key：零 spawn。
+    let _ = bridge
+        .pre_tool_use(&call_in_session("telegram:chat:9"))
+        .await;
+    assert_eq!(marker_lines(&marker), 1, "非 web 形状不得触发");
+
+    // 裸 sid 输入（非 web 通道理论上不会，双候选语义仍钉住）。
+    let _ = bridge.pre_tool_use(&call_in_session("s-a")).await;
+    assert_eq!(marker_lines(&marker), 2, "裸 sid 命中圈定组");
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[tokio::test]
+async fn hot_reload_preserves_session_scope() {
+    // v1（圈定 s-a，写 v1）→ 热更换装 v2（同圈定，写 v2）→ 圈定在换装后
+    // 保留：s-b 依旧零 spawn，s-a 落 v2。
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("workspace");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    let marker = proj.join("hr_fired.txt");
+    let hooks_path = cfg.join("hooks.json");
+    std::fs::write(
+        &hooks_path,
+        hooks_doc_scoped("PreToolUse", &["s-a"], &append_cmd(&marker, "v1")),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-a"))
+        .await;
+    assert_eq!(marker_lines(&marker), 1, "v1 触发一次");
+
+    // 内容变化 → 热更换装。
+    std::fs::write(
+        &hooks_path,
+        hooks_doc_scoped("PreToolUse", &["s-a"], &append_cmd(&marker, "v2")),
+    )
+    .unwrap();
+    // 换装后的圈定仍生效：s-b 零 spawn。
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-b"))
+        .await;
+    assert_eq!(marker_lines(&marker), 1, "热更后非圈定会话仍零 spawn");
+    // s-a 走新命令 v2。
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-a"))
+        .await;
+    assert_eq!(marker_lines(&marker), 2, "热更后圈定会话走新命令");
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[tokio::test]
+async fn compact_hooks_carry_session_and_respect_scope() {
+    // PreCompact 圈定 s-x：非命中会话零 spawn；命中会话 spawn 且 payload
+    // 的 session_id 带真值（旧占位 "system" 的诚实化）。
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("workspace");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    let capture = proj.join("compact_payload.txt");
+    let capture_cmd = if cfg!(windows) {
+        format!("findstr \"session_id\" >>{}", capture.display())
+    } else {
+        format!("grep session_id >> {}", capture.display())
+    };
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc_scoped("PreCompact", &["s-x"], &capture_cmd),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+
+    // 非命中会话：零 spawn，无捕获文件。
+    bridge
+        .run_compact_hooks("auto", "pre", "agent:main:session:s-y")
+        .await;
+    assert!(!capture.exists(), "非圈定会话的 compact 不得触发钩子");
+
+    // 命中会话：spawn + payload session_id = 真实 session_key。
+    bridge
+        .run_compact_hooks("auto", "pre", "agent:main:session:s-x")
+        .await;
+    let text = std::fs::read_to_string(&capture).expect("payload captured");
+    assert!(
+        text.contains("\"session_id\":\"agent:main:session:s-x\""),
+        "compact payload 必须携带真实 session_id\n--- captured ---\n{text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+#[test]
+fn invalid_matcher_regex_warned_at_load_and_degrade_kept() {
+    // BUG-20261117-054：无效 matcher 正则必须在加载期被逐条统计+warn
+    //（模块头「诚实边界」承诺的 warn 提示——此前从未落地，坏 matcher
+    // 全链零诊断、hook 静默永不触发）。解析不拒绝（退化语义不变），
+    // 运行期 matches() 仍按字面量子串匹配兜底。
+    let json = hook_json(
+        "\"PreToolUse\":[{\"matcher\":\"Edit|Write\",\"hooks\":[{\"command\":\"exit 0\"}]},\
+         {\"matcher\":\"Edit|[\",\"hooks\":[{\"command\":\"exit 0\"}]}]",
+    );
+    let ev = parse_cc_hooks(&json).expect("invalid matcher 不拒绝解析");
+    // 12 组全量清点：恰一条无效（"Edit|[" 未闭合字符类）。
+    assert_eq!(warn_invalid_matchers(&ev), 1);
+    // 合法 matcher 组不受影响。
+    assert!(ev.pre_tool_use[0].matches("Edit"));
+    assert!(ev.pre_tool_use[0].matches("Write"));
+    assert!(!ev.pre_tool_use[0].matches("Bash"));
+    // 无效正则组：退化语义仍在——按字面子串匹配（"Edit|[" 只命中包含
+    // 该字面的名字，不会当正则解释出 Edit 分支）。
+    assert!(ev.pre_tool_use[1].matches("Edit|["));
+    assert!(!ev.pre_tool_use[1].matches("Edit"));
+    // 空 matcher = 无正则编译对象，不计无效。
+    let bare =
+        parse_cc_hooks("{\"PreToolUse\":[{\"hooks\":[{\"command\":\"a\"}]}]}").expect("bare");
+    assert_eq!(warn_invalid_matchers(&bare), 0);
+}
+
 #[test]
 fn matcher_hits_cc_alias_and_raw_name() {
     let mk = |pattern: &str| super::CcHookGroup {
         matcher: Some(pattern.to_string()),
+        scope: None,
         hooks: vec![],
     };
     // 方言名 matcher 命中我们的原始工具名（经别名）。
@@ -187,6 +427,7 @@ fn matcher_hits_cc_alias_and_raw_name() {
     // 无 matcher = 全命中。
     let all = super::CcHookGroup {
         matcher: None,
+        scope: None,
         hooks: vec![],
     };
     assert!(all.matches("anything"));
@@ -1028,11 +1269,15 @@ async fn pre_compact_and_post_compact_hooks_both_fire() {
     .unwrap();
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
 
-    bridge.run_compact_hooks("auto", "pre").await;
+    bridge
+        .run_compact_hooks("auto", "pre", "agent:main:session:s1")
+        .await;
     assert!(pre_marker.exists(), "PreCompact 脚本应已执行");
     // exit 2 的 PreCompact 不阻断（继续 post 也能触发）。
     let bridge2 = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
-    bridge2.run_compact_hooks("auto", "post").await;
+    bridge2
+        .run_compact_hooks("auto", "post", "agent:main:session:s1")
+        .await;
     assert!(post_marker.exists(), "PostCompact 脚本应已执行");
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
@@ -1328,6 +1573,8 @@ fn subagent_info() -> super::SubagentInfo {
         background: false,
         tools_profile: "readonly".to_string(),
         loop_kind: "main",
+        // 空串 = 无会话身份（payload session_id 为空，只被未圈定组命中）。
+        session_key: String::new(),
     }
 }
 
@@ -1693,6 +1940,7 @@ fn alias_table_covers_dialect_write_subagent_web_tools() {
     // matcher 集成：方言名命中原始名。
     let mk = |pattern: &str| super::CcHookGroup {
         matcher: Some(pattern.to_string()),
+        scope: None,
         hooks: vec![],
     };
     assert!(mk("MultiEdit").matches("multiedit"));
@@ -1716,4 +1964,312 @@ fn parse_filters_non_command_type_across_all_events() {
         "non-command hooks must be filtered in ALL event groups, got {:?}",
         ev.script_counts()
     );
+}
+
+// ---------------------------------------------------------------------------
+// 会话级钩子存储 + 冷启动矩阵 + 合并 e2e + purge（2026-11-16 批次三）
+// ---------------------------------------------------------------------------
+
+/// 预置 hooks.session.json（经 write_session_hook_store 单一写路径）。
+fn seed_session_store(cfg: &std::path::Path, sid: &str, event: &str, command: &str) {
+    let mut store = super::SessionHookStore::default();
+    store.hooks.insert(
+        sid.to_string(),
+        std::collections::BTreeMap::from([(
+            event.to_string(),
+            vec![super::SessionHookEntry {
+                id: "h1".to_string(),
+                matcher: String::new(),
+                command: command.to_string(),
+                timeout: Some(60),
+            }],
+        )]),
+    );
+    super::write_session_hook_store(cfg, &store).expect("seed session store");
+}
+
+/// 冷启动矩阵（load_from_dir 批次三语义）：
+/// - 双缺 → None（旧语义）
+/// - 只有 hooks.session.json 且有内容 → Some（会话钩子有桥，全局侧空）
+/// - hooks.json 坏 + 会话侧有内容 → Some（会话钩子不被全局坏文件拖累）
+/// - hooks.json 坏 + 会话侧无内容 → None（旧 fail-open 语义不变）
+/// - 双空（会话文件空壳 + 全局空脚本）→ None（旧「declares no scripts」）
+#[test]
+fn load_from_dir_cold_start_matrix_with_session_file() {
+    // ① 双缺 → None。
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+    assert!(
+        CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none(),
+        "双缺 = 无桥（旧语义）"
+    );
+
+    // ② 只有 hooks.session.json 有内容 → Some。
+    seed_session_store(&cfg, "s-only", "Stop", "echo session-only");
+    let bridge =
+        CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("session file alone builds bridge");
+    // 会话侧钩子在 current_events 合并快照里可见。
+    let ev = bridge.current_events("agent:main:session:s-only");
+    assert_eq!(ev.stop.len(), 1, "会话级 Stop 钩子并入快照");
+    assert_eq!(
+        bridge.current_events("agent:main:session:other").stop.len(),
+        0
+    );
+
+    // ③ hooks.json 坏 + 会话侧有内容 → Some（全局降级空 + warn）。
+    std::fs::write(cfg.join("hooks.json"), "{broken-global").unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone())
+        .expect("bad global + session content still builds bridge");
+    let ev = bridge.current_events("agent:main:session:s-only");
+    assert_eq!(ev.stop.len(), 1, "会话钩子不受全局坏文件拖累");
+    assert_eq!(ev.total_scripts(), 1, "全局侧坏 = 0 脚本");
+
+    // ④ hooks.json 坏 + 会话侧无内容 → None（旧 fail-open）。
+    let dir2 = tempdir();
+    let cfg2 = dir2.join("config");
+    let proj2 = dir2.join("ws");
+    std::fs::create_dir_all(&cfg2).unwrap();
+    std::fs::create_dir_all(&proj2).unwrap();
+    std::fs::write(cfg2.join("hooks.json"), "{broken").unwrap();
+    assert!(
+        CcHookBridge::load_from_dir(&cfg2, proj2).is_none(),
+        "全局坏且无会话钩子 = None（旧语义）"
+    );
+
+    // ⑤ 双空 → None（会话文件在场但空壳）。
+    let dir3 = tempdir();
+    let cfg3 = dir3.join("config");
+    let proj3 = dir3.join("ws");
+    std::fs::create_dir_all(&cfg3).unwrap();
+    std::fs::create_dir_all(&proj3).unwrap();
+    std::fs::write(cfg3.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
+    super::write_session_hook_store(&cfg3, &super::SessionHookStore::default()).unwrap();
+    assert!(
+        CcHookBridge::load_from_dir(&cfg3, proj3).is_none(),
+        "双空 = None（旧语义）"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+    let _ = std::fs::remove_dir_all(&dir3);
+}
+
+/// 合并 e2e（真子进程）：hooks.json 全局钩子 + hooks.session.json 会话钩子
+/// 同触发——圈定会话两脚本都跑，其他会话只跑全局；工具写盘路径
+///（write_session_hook_store）→ 桥内容比对热更捡到。
+#[tokio::test]
+async fn merged_global_and_session_hooks_fire_per_session() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // 全局钩子（无 scope）：PreToolUse 记 global。
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc(
+            "PreToolUse",
+            None,
+            &append_cmd(&proj.join("global.txt"), "global"),
+            None,
+        ),
+    )
+    .unwrap();
+    // 会话钩子（存储形态）：s-1 专属 PreToolUse 记 scoped。
+    seed_session_store(
+        &cfg,
+        "s-1",
+        "PreToolUse",
+        &append_cmd(&proj.join("scoped.txt"), "scoped"),
+    );
+
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+
+    // s-1 会话：全局 + 会话钩子都触发。
+    use crate::hooks::ToolHook as _;
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-1"))
+        .await;
+    let global = proj.join("global.txt");
+    let scoped = proj.join("scoped.txt");
+    assert!(global.exists(), "全局钩子对任意会话触发");
+    assert!(scoped.exists(), "会话钩子对圈定会话触发");
+
+    // 其他会话：只触发全局（删 marker 重跑对照）。
+    std::fs::remove_file(&scoped).unwrap();
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-2"))
+        .await;
+    assert!(global.exists());
+    assert!(
+        !scoped.exists(),
+        "会话钩子对非圈定会话不得触发（session 维度圈定的核心语义）"
+    );
+
+    // 热更：工具写盘路径（write_session_hook_store）→ 桥内容比对捡到。
+    seed_session_store(
+        &cfg,
+        "s-2",
+        "PreToolUse",
+        &append_cmd(&proj.join("scoped.txt"), "hot"),
+    );
+    let _ = bridge
+        .pre_tool_use(&call_in_session("agent:main:session:s-2"))
+        .await;
+    assert!(
+        scoped.exists(),
+        "工具落盘后桥热更捡到（即时生效，无需重启）"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 会话圈定的 SubagentStart 真触发：scope 钉 sid 的组在子代理
+/// session_key 匹配时命中、不匹配时不命中（批次三 SubagentInfo.session_key
+/// 接线的回归锁——此前硬编码空串，圈定组永不触发）。
+#[tokio::test]
+async fn scoped_subagent_start_fires_only_for_matching_session() {
+    use super::SubagentInfo;
+    let dir = tempdir();
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&proj).unwrap();
+    let marker = proj.join("sub_start.txt");
+    let doc = hooks_doc_scoped(
+        "SubagentStart",
+        &["s-target"],
+        &append_cmd(&marker, "start"),
+    );
+    let b = CcHookBridge::from_json(&doc, proj.clone()).expect("bridge");
+
+    let mk_info = |session_key: &str| SubagentInfo {
+        agent_id: "sub-1".to_string(),
+        task: "t".to_string(),
+        depth: 1,
+        background: false,
+        tools_profile: "readonly".to_string(),
+        loop_kind: "main",
+        session_key: session_key.to_string(),
+    };
+
+    // 匹配会话（web 整键 → 剥前缀命中 scope.sessions=["s-target"]）。
+    let _ = b
+        .dispatch_subagent_start(&mk_info("agent:main:session:s-target"))
+        .await;
+    assert!(
+        marker.exists(),
+        "圈定 SubagentStart 钩子对匹配会话的真子代理触发"
+    );
+
+    // 不匹配会话：marker 计数不增。
+    let before = marker_lines(&marker);
+    let _ = b
+        .dispatch_subagent_start(&mk_info("agent:main:session:s-other"))
+        .await;
+    assert_eq!(marker_lines(&marker), before, "非圈定会话不触发");
+
+    // 空会话身份（旧形态子代理）：只被未圈定组命中——圈定组不触发。
+    let _ = b.dispatch_subagent_start(&mk_info("")).await;
+    assert_eq!(marker_lines(&marker), before);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// on_session_end 先分发（圈定 SessionEnd 钩子死前响最后一次）后 purge
+///（hooks.session.json 摘除该会话条目 + 内存态同步；其他会话保留）。
+#[tokio::test]
+async fn session_end_fires_scoped_hook_then_purges_storage() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // 会话侧：s-gone 条目 + s-keep 条目（对照）——一次写入（存储写路径
+    // 是整表覆写，分次写后者胜）。
+    {
+        let mut store = super::SessionHookStore::default();
+        let entry = |cmd: &str| super::SessionHookEntry {
+            id: "h1".to_string(),
+            matcher: String::new(),
+            command: cmd.to_string(),
+            timeout: Some(60),
+        };
+        store.hooks.insert(
+            "s-gone".to_string(),
+            std::collections::BTreeMap::from([("Stop".to_string(), vec![entry("echo gone-hook")])]),
+        );
+        store.hooks.insert(
+            "s-keep".to_string(),
+            std::collections::BTreeMap::from([("Stop".to_string(), vec![entry("echo keep-hook")])]),
+        );
+        super::write_session_hook_store(&cfg, &store).expect("seed session store");
+    }
+
+    // 桥在（SessionEnd 钩子经 hooks.json——圈定到 s-gone 的组）。
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc_scoped(
+            "SessionEnd",
+            &["s-gone"],
+            &append_cmd(&proj.join("end.txt"), "end"),
+        ),
+    )
+    .unwrap();
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+
+    // purge 前快照可见。
+    assert_eq!(
+        bridge
+            .current_events("agent:main:session:s-gone")
+            .stop
+            .len(),
+        1
+    );
+
+    bridge
+        .on_session_end("agent:main:session:s-gone", "deleted")
+        .await;
+
+    // ① SessionEnd 圈定钩子死前触发。
+    let end_marker = proj.join("end.txt");
+    assert!(end_marker.exists(), "SessionEnd 钩子在 purge 前响最后一次");
+
+    // ② 存储 purge：s-gone 摘除、s-keep 保留。
+    let store = super::read_session_hook_store(&cfg);
+    assert!(!store.hooks.contains_key("s-gone"), "死者条目应摘除");
+    assert!(store.hooks.contains_key("s-keep"), "活者条目保留");
+
+    // ③ 内存态同步：purge 后快照不再含 s-gone（无需等热更重解析）。
+    assert_eq!(
+        bridge
+            .current_events("agent:main:session:s-gone")
+            .stop
+            .len(),
+        0,
+        "purge 后内存快照即时摘除"
+    );
+    assert_eq!(
+        bridge
+            .current_events("agent:main:session:s-keep")
+            .stop
+            .len(),
+        1
+    );
+
+    // ④ 磁盘上确实无 s-gone（热更重解析也回不来）。
+    let text = std::fs::read_to_string(cfg.join("hooks.session.json")).unwrap();
+    assert!(!text.contains("s-gone"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-20261117-061 回归锁：hook 超时 0 视作缺省（同 oauth.rs 契约
+/// 「不允许 0=不限」）——Some(0) 原样透传会被 run_hook_script 的
+/// max(1) 钳成 1s 必超时（hook 静默全废）。
+#[test]
+fn test_resolve_hook_timeout_zero_falls_back_to_default() {
+    assert_eq!(super::resolve_hook_timeout(None), 60);
+    assert_eq!(super::resolve_hook_timeout(Some(0)), 60);
+    assert_eq!(super::resolve_hook_timeout(Some(5)), 5);
+    assert_eq!(super::resolve_hook_timeout(Some(3600)), 3600);
 }

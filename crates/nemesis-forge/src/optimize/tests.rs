@@ -139,6 +139,17 @@ fn custom_budget_is_respected() {
 }
 
 #[test]
+fn zero_budget_disables_gate() {
+    // 0=关（BUG-20261117-051）：预算哨兵与 board.budget.* /
+    // max_tool_iterations 家族同惯例——0 关闭预算闸，不是「预算为零全
+    // 拒绝」（旧形态配置 0 会把 apply 整体砖死，一切非空候选恒 Err
+    // 「exceeds budget 0」，forge optimize 特性不可用）。
+    let c =
+        apply(Operator::AddExample, BODY, Some("示例"), 0).expect("budget_tokens=0 必须关闭预算闸");
+    assert!(c.content.contains("## 示例"));
+}
+
+#[test]
 fn single_section_reorder_is_err() {
     let body = "## 示例\n\n已有示例。\n";
     assert!(

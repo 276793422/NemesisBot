@@ -134,11 +134,20 @@ async fn status_with_snapshot_serializes_stats_and_rules() {
             cooldown_secs: 30,
             merge_window_secs: 5,
             max_per_hour: 10,
+            detail: String::new(),
         }],
         pending: vec![nemesis_events::PendingView {
             rule_id: "r1".to_string(),
             count: 3,
         }],
+        sys_current: Some(nemesis_events::SysCurrentView {
+            cpu: 23.5,
+            mem_percent: 61.0,
+            disks: vec![nemesis_events::SysDiskView {
+                mount: "C:\\".to_string(),
+                used_percent: 88.0,
+            }],
+        }),
     };
     let ctx = make_ctx_with_snapshot(&dir, Some(snap_handle(snapshot)));
     let out = EventsHandler
@@ -152,6 +161,10 @@ async fn status_with_snapshot_serializes_stats_and_rules() {
     assert_eq!(out["rules"][0]["id"], "r1");
     assert_eq!(out["rules"][0]["cooldown_secs"], 30);
     assert_eq!(out["pending"][0]["count"], 3);
+    // sys 当前值透传面（EventsView sys 当前行数据源）。
+    assert_eq!(out["sys_current"]["cpu"], 23.5);
+    assert_eq!(out["sys_current"]["mem_percent"], 61.0);
+    assert_eq!(out["sys_current"]["disks"][0]["used_percent"], 88.0);
 }
 
 #[tokio::test]

@@ -93,10 +93,14 @@ impl AgentRegistry {
         agents.keys().min().cloned()
     }
 
-    /// List all registered agent IDs.
+    /// List all registered agent IDs (sorted deterministically — HashMap
+    /// 迭代序是实现细节，消费方含 slash 命令 join 输出，见
+    /// BUG-20261117-052；与 default_agent_id 字典序兜底同纪律)。
     pub fn list_agent_ids(&self) -> Vec<String> {
         let agents = self.agents.read().unwrap();
-        agents.keys().cloned().collect()
+        let mut ids: Vec<String> = agents.keys().cloned().collect();
+        ids.sort();
+        ids
     }
 
     /// Returns the number of registered agents.

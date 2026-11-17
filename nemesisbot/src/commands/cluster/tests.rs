@@ -703,11 +703,12 @@ fn test_cluster_config_parsing_all_fields() {
 #[test]
 fn test_cluster_config_missing_fields_use_defaults() {
     let cfg = serde_json::json!({});
-    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
+    // u64 域读回（不截断），与 run() 生产形态一致（BUG-20261116-043）。
+    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949);
     let cur_rpc = cfg
         .get("rpc_port")
         .and_then(|v| v.as_u64())
-        .unwrap_or(21949) as u16;
+        .unwrap_or(21949);
     let cur_interval = cfg
         .get("broadcast_interval")
         .and_then(|v| v.as_u64())
@@ -4257,4 +4258,33 @@ fn run_node_wires_broadcast_interval_into_cluster() {
         "run_node must apply effective_broadcast_interval via set_broadcast_interval \
          (BUG-20261114-021: flag used to be printed but never applied)"
     );
+}
+
+/// BUG-20261116-043 回归：写闸比较必须在 u64 域（读回不截断）。
+/// 裸 `as u16` 读回会把越域存量回绕（66000→464）与合法请求撞相等，
+/// 用户写请求被静默跳过。
+#[test]
+fn cluster_config_differs_compares_in_u64_domain() {
+    use super::cluster_config_differs;
+    // 越域存量 66000 vs 合法请求 464：必须判差异（截断域会误判相等）。
+    assert!(cluster_config_differs((66000, 21949, 30), (464, 21949, 30)));
+    // 越域 rpc 同理。
+    assert!(cluster_config_differs(
+        (11949, 70000, 30),
+        (11949, 4464, 30)
+    ));
+    // 全等不写。
+    assert!(!cluster_config_differs(
+        (11949, 21949, 30),
+        (11949, 21949, 30)
+    ));
+    // 任一维差异即写。
+    assert!(cluster_config_differs(
+        (11949, 21949, 30),
+        (11949, 21949, 31)
+    ));
+    assert!(cluster_config_differs(
+        (11949, 21949, 30),
+        (11950, 21949, 30)
+    ));
 }

@@ -1112,6 +1112,28 @@ pub struct NewTeamMemory {
     pub author: String,
 }
 
+// ---------------------------------------------------------------------------
+// 编号排序（单一真相源：dossier 档案导出 / wrapup 汇报包共用）
+// ---------------------------------------------------------------------------
+
+/// NB-N 编号排序键：可解析的「NB-<整数>」排前按**数值**序；其余垫底按原串
+/// 字典序。字典序直排是错的——N≥10 时 "NB-10" < "NB-2"（BUG-20261116-042）。
+pub fn issue_number_sort_key(number: &str) -> (u8, i64, String) {
+    match number
+        .strip_prefix("NB-")
+        .and_then(|s| s.parse::<i64>().ok())
+    {
+        Some(n) => (0, n, String::new()),
+        None => (1, 0, number.to_string()),
+    }
+}
+
+/// 看板单据确定性排序：编号数值序 → id 终序（档案/汇报包按字节可 diff
+/// 依赖此序稳定）。dossier 导出与 wrapup 汇报包共用此单一真相源。
+pub fn sort_issues_deterministically(issues: &mut [Issue]) {
+    issues.sort_by_key(|i| (issue_number_sort_key(&i.number), i.id));
+}
+
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

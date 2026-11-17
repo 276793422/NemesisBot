@@ -191,6 +191,11 @@ mod goal_tool;
 /// nemesis-goals crate；本模块只管 IO/LLM/注入。`workspace_goals_guard`
 /// 非 goals feature 构建恒 None（文件保护不设防——feature 裁剪形态）。
 mod goals_engine;
+/// 会话钩子自管面（HOOK 会话圈定批次三）：`hooks` 工具——单工具多
+/// action（add/delete/list），只能给自己（当前会话）设，schema 无 session
+/// 参数；写 hooks.session.json 原子落盘，桥内容比对热更。仅主 gateway
+/// loop 注册（集群/headless 不装）。
+mod hooks_tool;
 /// 浏览器接管框架（2026-11-15）：host_browser 工具——bot 在用户机器
 /// 浏览器（真 Edge/Chrome 窗口）里看页面 + 操作页面的 agent 消费点。
 /// 九动作 + run_script 编排；凭据守卫三条件（域名绑定/密码框校验/
@@ -1329,6 +1334,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;
         }
+        #[cfg(feature = "loop")]
         Commands::Loops { action } => {
             common::ensure_default_logger();
             commands::loops::run(action, cli.local).await?;

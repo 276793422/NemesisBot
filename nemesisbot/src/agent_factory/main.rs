@@ -491,6 +491,34 @@ pub fn build_agent_loop(
         );
     }
 
+    // 会话钩子孤儿对账（HOOK 会话圈定批次三，启动一次）：hooks.session.json
+    // 里 sid 不在存活会话集的条目直删。正常删除路径（dashboard 删会话 /
+    // TTL 清理）已有 SessionEnd → purge 兜底；这里兜手动删日志文件等旁路。
+    // live 集来自 session_logs 扫描（与 Dashboard 会话列表同一真相）；
+    // 集群/RPC 等非 web 键不在扫描面——它们的会话钩子按原样保留（工具只在
+    // 主/项目 loop 注册，生产写入面只有 web 键）。
+    {
+        let rows = nemesis_web::handlers::logs::scan_session_logs(
+            &shared.workspace_dir().to_string_lossy(),
+        );
+        let live: std::collections::HashSet<String> = rows
+            .iter()
+            .filter_map(|r| r["session_key"].as_str())
+            .map(|k| {
+                k.strip_prefix(nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX)
+                    .unwrap_or(k)
+                    .to_string()
+            })
+            .collect();
+        let purged = nemesis_agent::cc_hooks::reconcile_session_orphans(&ws_config_dir, &live);
+        if purged > 0 {
+            info!(
+                purged,
+                "[AgentFactory] session-hook orphan reconciliation (startup)"
+            );
+        }
+    }
+
     // 6. Workspace state manager (disk-based — new instance).
     {
         let state_mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
@@ -1073,6 +1101,9 @@ pub fn build_agent_loop(
     // 项目/selfbuilt loop 共用同一治理面装配）。
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
+    // 会话钩子自管面：hooks 工具（只能给自己设；桥在场 = 热更即时生效）。
+    // 挂在 connector governance 之后（独立面，无 connectors 依赖）。
+    register_hooks_tool(&agent_loop, shared, cc_bridge.clone());
     // 紫微系统.2：profile.tools[] → 动态工具注册（poll_report 可调；
     // call_fn/hook_capture 诚实报 实装中）。config 闸同 WSAPI 门关；
     // profile 新增后经 `ziwei.refresh` 幂等重注册（先清 zw_* 再装）。

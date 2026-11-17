@@ -44,7 +44,21 @@ pub fn compute_next_wake(
             if d == 0 {
                 return Err("delay_secs 必须大于 0".to_string());
             }
-            Ok((Some(now_ms + (d as i64) * 1000), None))
+            // 受检换算（BUG-20261117-053）：旧的 `(d as i64) * 1000` 在超大
+            // delay_secs 下双重失守——`d as i64` 符号翻转（d > i64::MAX →
+            // 负值）、乘法在 debug panic / release 回绕；负/回绕值把唤醒排
+            // 进过去 = busy wake 僵尸循环。与 cron 命令 `--every` 的受检换算
+            //（nemesis_cron::secs_to_ms_checked，BUG 同款先例）同纪律；本地
+            // 实现避免为本三行 std 算术给零 tokio 内核 crate 引入 nemesis-cron
+            // 依赖（其拖 tokio/chrono-tz/rand/taskstore，IoT 常编译面不合算）。
+            let delay_ms = i64::try_from(d)
+                .ok()
+                .and_then(|d| d.checked_mul(1000))
+                .ok_or_else(|| format!("delay_secs {d} 秒超出可表示范围（毫秒溢出）"))?;
+            let next = now_ms
+                .checked_add(delay_ms)
+                .ok_or_else(|| format!("delay_secs {d} 秒超出可表示范围（唤醒时间戳溢出）"))?;
+            Ok((Some(next), None))
         }
         (None, Some(expr)) => {
             let next = cron_next_ms(now_ms, expr)?;

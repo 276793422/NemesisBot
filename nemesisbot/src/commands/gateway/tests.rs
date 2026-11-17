@@ -34,6 +34,88 @@ fn test_parse_host_port_no_port() {
 }
 
 // -------------------------------------------------------------------------
+// web_chat_id_from_session_key（事件/循环/审批续执行注入器共用映射）。
+// 回归锚：注入回合回复曾以 session_key 形态出站 → WebChannel 拒收
+// （invalid chat ID format）→ Dashboard 收不到实时推送（UAT 实录 69 条）。
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_web_chat_id_from_main_session_key() {
+    // 事件规则钦定的 preset 会话键形态 → 通道原生形态
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key(
+            "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181"
+        ),
+        "web:f42ec545-c2b0-4239-b027-fc742ae0e181"
+    );
+}
+
+#[test]
+fn test_web_chat_id_passthrough_non_main_session_key() {
+    // 非 `agent:main:session:` 形态 = 目标通道不明，诚实原样保留
+    // （派发面按既有语义处理，不在注入面猜通道）。
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key("agents:foo:bar"),
+        "agents:foo:bar"
+    );
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key("board_dispatch:t1"),
+        "board_dispatch:t1"
+    );
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key("agent:main:telegram:42"),
+        "agent:main:telegram:42"
+    );
+}
+
+// -------------------------------------------------------------------------
+// resolve_inject_chat_id（注入面出站键解析单一真相源）：ConvRouter 活页
+// 绑定优先（cron Opt2 同一张表），无绑定回落 web_chat_id_from_session_key。
+// 回归锚：仅 web:<会话id> 形态合法还不够——SessionManager 按 WS 连接 id
+// 键控，会话 uuid 不是连接 id，不查绑定表则实时推送仍死（UAT L3 实录：
+// "Session not found or no send queue"）。
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_inject_chat_id_prefers_conv_router_binding() {
+    let router = std::sync::Arc::new(nemesis_web::ConvRouter::new());
+    let sk = "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181";
+    // 有活绑定（标签页在位）→ 活连接键优先，实时推送可达
+    router.bind(sk, "web:ce17140269794c10");
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id(sk, &router),
+        "web:ce17140269794c10"
+    );
+}
+
+#[test]
+fn test_resolve_inject_chat_id_falls_back_without_binding() {
+    let router = std::sync::Arc::new(nemesis_web::ConvRouter::new());
+    // 无绑定 → 回落 web:<会话id>（死会话软失败 + 历史照落）
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id(
+            "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181",
+            &router
+        ),
+        "web:f42ec545-c2b0-4239-b027-fc742ae0e181"
+    );
+    // 非 main 形态 + 无绑定 → 原样透传（不在注入面猜通道）
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id("agent:main:telegram:42", &router),
+        "agent:main:telegram:42"
+    );
+    // 绑定表对其他会话有条目不影响本会话的回落判定
+    router.bind("agent:main:session:other", "web:aaaabbbbccccdddd");
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id(
+            "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181",
+            &router
+        ),
+        "web:f42ec545-c2b0-4239-b027-fc742ae0e181"
+    );
+}
+
+// -------------------------------------------------------------------------
 // GatewayMemoryGate (memory approval bridge) — mock ApprovalManager tests
 // Covers the three boundary cases: user approves, user denies, popup
 // times out / errors (must be treated as deny — never let a memory write

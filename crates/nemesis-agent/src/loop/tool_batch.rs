@@ -1025,7 +1025,14 @@ impl AgentLoop {
             // so this is what catches a bloated output blowing out the
             // context window (the suspected bug trigger). No-op unless
             // capture is enabled; flushed only on a later failure signal.
-            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+            // The `enabled()` gate must come FIRST: the ToolCapture literal
+            // below clones the full result twice, and a bare `global()` check
+            // would do that cloning even when capture is disabled (only to
+            // drop it inside record_tool) — every tool call on every session
+            // would pay it.
+            if crate::capture_sink::CaptureSink::enabled()
+                && let Some(sink) = crate::capture_sink::CaptureSink::global()
+            {
                 sink.record_tool(
                     &context.session_key,
                     crate::capture_sink::ToolCapture {

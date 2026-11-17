@@ -32,6 +32,10 @@ fn test_auth_exempt_path_truth_table() {
     // 可选 HMAC + per-IP 限流 + 审计；缺陷 11 修复 2026-09-23）
     assert!(auth_exempt_path("/api/workflow/webhook/webhook_flow"));
     assert!(auth_exempt_path("/api/workflow/webhook/a/b"));
+    // 豁免：事件源 webhook（token 即凭据；2026-11-16 事件源扩展 P1）
+    assert!(auth_exempt_path("/api/events/webhook/s3cret-token"));
+    // 近邻前缀不误豁免（/api/events/ 其余路径照常过闸）
+    assert!(!auth_exempt_path("/api/events/webhookfoo"));
     // 豁免：relay 自有信任边界（设备 hello token / 设备访问令牌 cookie /
     // admin cookie 各自把关；BUG-20261107-006：全量形态同样挂 route_layer，
     // 此前漏列 = dashboard token 非空时 relay 整体 401）

@@ -314,19 +314,7 @@ pub(crate) async fn init_agent(
             home.clone(),
             Box::new(move || {
                 // config.json 是真相源；读失败 = 全默认（auto/系统保底）。
-                let mut prefs = nemesis_browser::BrowserPrefs::default();
-                if let Ok(text) = std::fs::read_to_string(&config_path)
-                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-                    && let Some(seg) = v.get("browser")
-                {
-                    if let Some(k) = seg.get("kind").and_then(|k| k.as_str()) {
-                        prefs.kind = k.to_string();
-                    }
-                    if let Some(e) = seg.get("executable").and_then(|e| e.as_str()) {
-                        prefs.executable = e.to_string();
-                    }
-                }
-                prefs
+                load_browser_prefs(&config_path)
             }),
             Some(Arc::new(move |ev: &serde_json::Value| {
                 event_hub.publish("browser_event", ev.clone());
@@ -599,3 +587,41 @@ pub(crate) async fn init_agent(
         initial_tool_count,
     })
 }
+
+// ---------------------------------------------------------------------------
+// browser prefs 读取（BUG-20261116-044）
+// ---------------------------------------------------------------------------
+
+/// 从 config.json 文本解析 `browser` 段进 prefs（段缺席/解析失败 = 默认值
+/// 原样保留）。纯函数，`load_browser_prefs` 的解析半边。
+#[cfg(feature = "browser")]
+fn parse_browser_prefs(text: &str) -> nemesis_browser::BrowserPrefs {
+    let mut prefs = nemesis_browser::BrowserPrefs::default();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text)
+        && let Some(seg) = v.get("browser")
+    {
+        if let Some(k) = seg.get("kind").and_then(|k| k.as_str()) {
+            prefs.kind = k.to_string();
+        }
+        if let Some(e) = seg.get("executable").and_then(|e| e.as_str()) {
+            prefs.executable = e.to_string();
+        }
+    }
+    prefs
+}
+
+/// 读 config.json 并解析 browser 段（读失败/解析失败/段缺席 = 全默认）。
+///
+/// 读盘必须走 `fsutil::read_config_string` 剥 BOM——记事本保存的
+/// config.json 裸读会 parse 失败 → 用户 browser 配置被静默忽略
+/// （BUG-20261116-044；与 cache_warmer/config_watch/user_profile 等
+/// 全部 config.json 读取点同源纪律）。
+#[cfg(feature = "browser")]
+fn load_browser_prefs(config_path: &std::path::Path) -> nemesis_browser::BrowserPrefs {
+    nemesis_utils::fsutil::read_config_string(config_path)
+        .map(|text| parse_browser_prefs(&text))
+        .unwrap_or_default()
+}
+
+#[cfg(all(test, feature = "browser"))]
+mod tests;

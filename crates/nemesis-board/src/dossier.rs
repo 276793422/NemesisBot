@@ -113,8 +113,9 @@ fn export_core(
     out_root: &Path,
     usage_of: &dyn Fn(&str) -> Option<DossierUsage>,
 ) -> Result<DossierOutcome, String> {
-    // 确定性顺序：编号字典序（NB-N 编号即序）。
-    issues.sort_by(|a, b| a.number.cmp(&b.number).then(a.id.cmp(&b.id)));
+    // 确定性顺序：编号**数值**序（NB-N 编号即序；直排字典序在 N≥10 错乱
+    // ——"NB-10" < "NB-2"——见 models::sort_issues_deterministically）。
+    crate::models::sort_issues_deterministically(&mut issues);
     let by_id: BTreeMap<i64, &Issue> = issues.iter().map(|i| (i.id, i)).collect();
 
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");

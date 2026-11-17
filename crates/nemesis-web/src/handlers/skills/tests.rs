@@ -546,6 +546,28 @@ fn load_registry_config_missing_corrupt_and_valid_arms() {
     assert_eq!(cfg.clawhub.convex_url, "http://y");
 }
 
+// load_registry_config BOM 臂（BUG-20261116-044）：记事本「带 BOM 的
+// UTF-8」保存形态必须仍解析成功——裸 read_to_string 会 parse 失败 →
+// 静默落 default → 用户添加的 registry 源全部丢失。
+
+#[test]
+fn load_registry_config_bom_prefix_still_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("config.skills.json");
+    std::fs::write(
+        &p,
+        format!(
+            "\u{feff}{}",
+            r#"{"clawhub":{"enabled":true,"base_url":"http://bom","convex_url":"http://bomc"}}"#
+        ),
+    )
+    .unwrap();
+    let cfg = load_registry_config(&p);
+    assert!(cfg.clawhub.enabled, "BOM 前缀不得吞掉用户 registry 配置");
+    assert_eq!(cfg.clawhub.base_url, "http://bom");
+    assert_eq!(cfg.clawhub.convex_url, "http://bomc");
+}
+
 // learn 三态
 
 #[tokio::test]

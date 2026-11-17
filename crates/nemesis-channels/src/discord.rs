@@ -409,7 +409,7 @@ impl DiscordChannel {
 
                 info!("[DiscordChannel] connecting to gateway...");
 
-                let ws_result = tokio_tungstenite::connect_async(&connect_url).await;
+                let ws_result = crate::base::ws_connect_bounded(&connect_url).await;
                 let ws_stream = match ws_result {
                     Ok((stream, _)) => stream,
                     Err(e) => {

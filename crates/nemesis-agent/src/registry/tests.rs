@@ -53,12 +53,13 @@ fn case_insensitive_lookup() {
 #[test]
 fn list_agent_ids() {
     let registry = AgentRegistry::new();
-    registry.register("alpha".to_string(), AgentInstance::new(test_config("a")));
+    // 乱序注册——契约锁：list_agent_ids 必须返回字典序（HashMap 迭代序
+    // 是实现细节，消费方含 slash 命令 join 输出，BUG-20261117-052；
+    // 旧形态测试本地 sort 后断言，锁不住实现契约，已改直断言）。
     registry.register("beta".to_string(), AgentInstance::new(test_config("b")));
+    registry.register("alpha".to_string(), AgentInstance::new(test_config("a")));
 
-    let mut ids = registry.list_agent_ids();
-    ids.sort();
-    assert_eq!(ids, vec!["alpha", "beta"]);
+    assert_eq!(registry.list_agent_ids(), vec!["alpha", "beta"]);
 }
 
 #[test]
