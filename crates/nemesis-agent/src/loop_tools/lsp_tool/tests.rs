@@ -444,3 +444,119 @@ fn rename_diagnostics_none_reported_arm() {
     let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &[]);
     assert_eq!(out, "Diagnostics after rename (src/a.rs): none reported\n");
 }
+
+// ── （BUG-20261117-067）输入路径工作区边界回归锁 ─────────────────────────
+// 带边界时输入路径统一走 resolve_tool_path（Read 族）：restrict=true 下
+// 界外路径在入口拒绝（旧行为：相对 join 无包含检查、绝对路径不校验，
+// read_file 拒的路径经 lsp 读族可由语言服务器读取）。所有用例都在
+// spawn 路径之前定案（门在 manager 前置检查之前）。
+
+use std::sync::Arc as StdArc;
+
+fn boundary_at(
+    root: &std::path::Path,
+    restrict: bool,
+) -> StdArc<crate::loop_tools::WorkspaceBoundary> {
+    StdArc::new(crate::loop_tools::WorkspaceBoundary {
+        root: root.to_path_buf(),
+        restrict,
+        extra_roots: Vec::new(),
+        editor_gate: None,
+    })
+}
+
+/// restrict=true：绝对路径出界 → 入口即拒（read_file 同路径已拒，两
+/// fence 结论一致）。
+#[tokio::test]
+async fn execute_boundary_restrict_denies_absolute_outside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let outside = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
+    let err = t
+        .execute(
+            &format!(r#"{{"op":"hover","path":{outside:?},"line":0,"character":0}}"#),
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("outside the workspace"), "{err}");
+}
+
+/// restrict=true：相对路径 `..` 逃逸 → 入口即拒。
+#[tokio::test]
+async fn execute_boundary_restrict_denies_relative_dotdot_escape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let err = t
+        .execute(
+            r#"{"op":"definition","path":"notes/../../outside.txt","line":0,"character":0}"#,
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("outside the workspace"), "{err}");
+}
+
+/// restrict=true + 界内相对路径：不误拒（门放行，后续在 manager 的
+/// 文件存在性前置检查定案，无 spawn）。
+#[tokio::test]
+async fn execute_boundary_restrict_allows_in_workspace_relative() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let err = t
+        .execute(
+            r#"{"op":"definition","path":"notes/missing.rs","line":0,"character":0}"#,
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("file does not exist"), "{err}");
+}
+
+/// restrict=false：界外路径不拦（旧行为保持；定案在 manager 的
+/// 文件存在性前置检查）。
+#[tokio::test]
+async fn execute_boundary_unrestrict_keeps_outside_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), false));
+    let outside = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
+    let err = t
+        .execute(
+            &format!(r#"{{"op":"definition","path":{outside:?},"line":0,"character":0}}"#),
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("file does not exist"), "{err}");
+}
+
+/// restrict=true + op=rename + 界外输入：入口即拒（旧行为要到落盘阶段
+/// 才逐文件拒绝；结局一致、报错更早）。
+#[tokio::test]
+async fn execute_boundary_restrict_denies_rename_outside_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let outside = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
+    let err = t
+        .execute(
+            &format!(
+                r#"{{"op":"rename","path":{outside:?},"line":0,"character":0,"new_name":"x"}}"#
+            ),
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("outside the workspace"), "{err}");
+}

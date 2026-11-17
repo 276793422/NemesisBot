@@ -7,11 +7,27 @@ use super::*;
 /// Grep tool — regex search across workspace files. Returns file:line: match.
 pub struct GrepTool {
     workspace: String,
+    /// （BUG-20261117-067）工作区边界（与 read_file 同源的读族第二道闸）。
+    /// 显式 `path` 参数经 [`resolve_tool_path`]（Read 族）统一解析：
+    /// 相对锚定 + restrict 包含检查 + editor 读族臂。旧行为缺口：绝对
+    /// 路径不校验、相对 join 无包含检查——restrict=true 下 read_file
+    /// 拒绝的界外路径可被 grep 直接搜出匹配行内容（比 lsp 读族的
+    /// hover 披露更直接）。None = 基线/测试无界形态（行为同前）。
+    boundary: Option<std::sync::Arc<WorkspaceBoundary>>,
 }
 
 impl GrepTool {
     pub fn new(workspace: String) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            boundary: None,
+        }
+    }
+
+    /// 带工作区边界的生产形态（BUG-20261117-067）。
+    pub fn with_boundary(mut self, boundary: std::sync::Arc<WorkspaceBoundary>) -> Self {
+        self.boundary = Some(boundary);
+        self
     }
 }
 
@@ -42,18 +58,30 @@ impl Tool for GrepTool {
         let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {}", e))?;
         // FT：相对 path 锚定工作区根——此前只有缺省时回退
         // workspace，显式相对子目录按进程 cwd 解析（exe 直启形态下搜错树）。
+        // （BUG-20261117-067）带边界时显式 path 统一走 resolve_tool_path
+        // （Read 族）：相对锚边界根 + restrict 包含检查（界外拒绝，
+        // 与 read_file 同路径同结论）+ editor 读族臂。无界形态保持旧行为。
         let root = match v["path"].as_str() {
-            Some(s) if !s.is_empty() => {
-                let p = Path::new(s);
-                if p.is_absolute() {
-                    s.to_string()
-                } else {
-                    Path::new(&self.workspace)
-                        .join(p)
-                        .to_string_lossy()
-                        .to_string()
+            Some(s) if !s.is_empty() => match self.boundary.as_deref() {
+                Some(b) => crate::loop_tools::resolve_tool_path(
+                    s,
+                    Some(b),
+                    crate::loop_tools::FenceOpFamily::Read,
+                )?
+                .to_string_lossy()
+                .into_owned(),
+                None => {
+                    let p = Path::new(s);
+                    if p.is_absolute() {
+                        s.to_string()
+                    } else {
+                        Path::new(&self.workspace)
+                            .join(p)
+                            .to_string_lossy()
+                            .to_string()
+                    }
                 }
-            }
+            },
             _ => self.workspace.clone(),
         };
         let glob = v["glob"].as_str();

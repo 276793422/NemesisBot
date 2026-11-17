@@ -133,6 +133,9 @@ mod web_search_redirect_tests;
 // 修复中间星号 glob（test_*.rs）静默失配 → 裸「No matches」假阴性。
 #[cfg(test)]
 mod search_code_glob_tests;
+// grep 显式 path 工作区边界回归（BUG-20261117-067）：读族 fence 同源。
+#[cfg(test)]
+mod search_code_boundary_tests;
 
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]

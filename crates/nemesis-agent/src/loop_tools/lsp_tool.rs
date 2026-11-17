@@ -151,20 +151,34 @@ impl Tool for LspTool {
             .get("path")
             .and_then(|p| p.as_str())
             .ok_or("Missing 'path' argument")?;
-        let path = PathBuf::from(path_str);
-        // 相对路径解析基点与文件工具同源——有边界按边界根（工作区），
-        // 无边界回落进程 cwd（测试 / 独立 runner 形态）。旧注释声称「与
-        // exec/file 工具同一 cwd 约定」失实：文件工具在生产形态锚定的是
-        // 工作区根，不是 cwd。
-        let path = if path.is_relative() {
-            match self.boundary.as_deref() {
-                Some(b) => b.root.join(path),
-                None => std::env::current_dir()
-                    .map_err(|e| format!("cannot resolve relative path {path_str:?}: {e}"))?
-                    .join(path),
+        // （BUG-20261117-067）输入路径与文件工具同源——带边界时统一走
+        // [`resolve_tool_path`]（Read 族）：相对路径锚边界根 + restrict
+        // 包含检查 + editor 开关读族臂（Full Access 解锁语义与 read_file
+        // 一致）。旧行为缺陷：相对路径 join 边界根后**无包含检查**、绝对
+        // 路径不校验——restrict=true 下 read_file 拒绝的界外路径经 lsp
+        // 读族（definition/references/implementation/hover/code_action）
+        // 可由语言服务器读取（内容经 hover/引用披露），同一路径两道
+        // fence 结论分叉。rename 的落盘写面本就另行走 gate_and_write
+        // （WriteDelete），不受本改动影响；界外 rename 输入现在在入口
+        // 即拒（原先要到落盘阶段才被逐文件拒绝，结局一致、报错更早）。
+        // 无边界形态（测试 / 独立 runner）：保持旧行为——相对路径按进程
+        // cwd 锚定，绝对路径透传。
+        let path = match self.boundary.as_deref() {
+            Some(b) => crate::loop_tools::resolve_tool_path(
+                path_str,
+                Some(b),
+                crate::loop_tools::FenceOpFamily::Read,
+            )?,
+            None => {
+                let p = PathBuf::from(path_str);
+                if p.is_relative() {
+                    std::env::current_dir()
+                        .map_err(|e| format!("cannot resolve relative path {path_str:?}: {e}"))?
+                        .join(p)
+                } else {
+                    p
+                }
             }
-        } else {
-            path
         };
 
         let line = v

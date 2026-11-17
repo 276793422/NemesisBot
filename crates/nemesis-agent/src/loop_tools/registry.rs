@@ -577,11 +577,17 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Coding tools (grep / git) — read-only code search & git queries.
+    // （BUG-20261117-067）grep 显式 path 与文件工具同源过 resolve_tool_path
+    // （Read 族）——旧行为：绝对路径不校验、相对 join 无包含检查，restrict
+    // =true 下 read_file 拒绝的界外路径可被 grep 搜出内容（同族缺口第二例，
+    // 第一例 lsp_tool）。git 是 repo-bound 形态（cwd 钉工作区、路径在仓库
+    // 内解析），不属本族。
     if let Some(ref workspace) = config.workspace {
-        tools.insert(
-            "grep".to_string(),
-            Box::new(GrepTool::new(workspace.clone())),
-        );
+        let mut grep = GrepTool::new(workspace.clone());
+        if let Some(ref boundary) = config.workspace_boundary {
+            grep = grep.with_boundary(boundary.clone());
+        }
+        tools.insert("grep".to_string(), Box::new(grep));
         tools.insert("git".to_string(), Box::new(GitTool::new(workspace.clone())));
     }
 
