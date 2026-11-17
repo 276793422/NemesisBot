@@ -77,10 +77,13 @@ pub use spoken_form::spoken_pieces;
 pub use transcriber::{AudioFormat, Transcriber, TranscriptionResponse};
 
 // --- Local pipeline re-exports (Windows only) ---
+// DEFAULT_FILTER_LENGTH 单独全平台导出：真/桩 aec 模块都定义该常量（值同为
+// 8192），而 nemesis-web 的 aec_filter_length_from_cfg 回退逻辑跨平台引用它
+// （Linux 裁剪矩阵 E0425 实证：windows 门整体挡住了常量）。其余重量级 AEC
+// API 仍随 Windows 进出。
+pub use aec::DEFAULT_FILTER_LENGTH;
 #[cfg(target_os = "windows")]
-pub use aec::{
-    AEC_SAMPLE_RATE, DEFAULT_FILTER_LENGTH, DEFAULT_FRAME_SIZE, EchoCanceller, SpeexAec,
-};
+pub use aec::{AEC_SAMPLE_RATE, DEFAULT_FRAME_SIZE, EchoCanceller, SpeexAec};
 #[cfg(target_os = "windows")]
 pub use audio::{
     AudioCapture, AudioPlayback, Resampler, StopHandle, far_end_buffer, far_end_sample_rate,
