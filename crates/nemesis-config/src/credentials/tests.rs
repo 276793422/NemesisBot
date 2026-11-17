@@ -654,3 +654,37 @@ fn run_import_never_downgrades_vault_reference() {
     // credentials.yaml 不应被创建/写入。
     assert!(!cred_path.exists());
 }
+
+// BUG-20261117-081：serde_yaml 深嵌套栈溢出闸（与 workflow parser/drafts 同族）
+
+/// 深嵌套 flow YAML 在 serde_yaml 之前被词法深度闸拒绝（诚实 Validation
+/// 错误），而不是命中 serde_yaml 0.9 的递归下降栈溢出 abort。
+#[test]
+fn load_credentials_file_rejects_deep_nesting_before_yaml_parse() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("credentials.yaml");
+    // 1000 层 flow 序列（闸 64；真实文件 keys: {alias: value} 深度 ≤ 3）。
+    let deep = format!("keys: {}{}", "[".repeat(1000), "]".repeat(1000));
+    std::fs::write(&path, &deep).unwrap();
+
+    let err = load_credentials_file(&path).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("nesting depth"),
+        "期望深度闸拒绝（nesting depth 字样），实际: {msg}"
+    );
+}
+
+/// 正常浅层文件不受闸影响（零误伤对照）。
+#[test]
+fn load_credentials_file_accepts_normal_shape_after_gate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("credentials.yaml");
+    std::fs::write(&path, "keys:\n  openai-main: sk-test-123\n").unwrap();
+
+    let file = load_credentials_file(&path).unwrap();
+    assert_eq!(
+        file.keys.get("openai-main").map(String::as_str),
+        Some("sk-test-123")
+    );
+}
