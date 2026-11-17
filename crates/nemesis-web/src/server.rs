@@ -2394,6 +2394,25 @@ pub async fn send_history_to_session(
 // Agent tool-event pump (M1a)
 // ---------------------------------------------------------------------------
 
+/// Dashboard conversation id carried by an [`AgentEvent`] session_key, if any.
+///
+/// session_key 形态两族（BUG-20261117-073）：
+/// - **dashboard 会话**：`agent:main:session:{sid}`——sid 经
+///   `SessionStore::sanitize_session_id`（恒无冒号），末段即前端会话 id；
+/// - **IM/集群通道键**：`telegram:{chat}` / matrix room_id（`!x:y:z`，含冒号）/
+///   `cluster_rpc:{node}/{chat}` 等——没有 dashboard 会话身份，末段是通道
+///   数据尾段（room_id 服务器名、node/chat 复合段等）。
+///
+/// 历史实现按 `rsplit(':').next()` 无差别取末段：对后者产出的尾段可与用户
+/// 自选的 dashboard 会话 id 撞名（如 room `!x:y:org` ↔ 会话 id `org`），
+/// canvas.open / deliverables / subagent_reply / tool_event 等帧据此把
+/// IM 会话事件注进无关 dashboard 会话（跨会话事件串桶）。只有第一族注入。
+fn dashboard_session_id(session_key: &str) -> Option<&str> {
+    session_key
+        .strip_prefix("agent:main:session:")
+        .filter(|sid| !sid.is_empty())
+}
+
 /// Pump agent tool-events to their consumers: every event is published to the
 /// [`EventHub`] (SSE fallback / future subscribers), and events whose
 /// `chat_id` maps to a live web session (`web:<session_id>`) are additionally
@@ -2537,7 +2556,7 @@ pub async fn pump_agent_events(
                 } = &event
                 {
                     let mut payload = serde_json::json!({ "html": html, "index": index });
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish("canvas.open", payload);
@@ -2570,7 +2589,7 @@ pub async fn pump_agent_events(
                     if let Some(ms) = elapsed_ms {
                         payload["elapsed_ms"] = serde_json::Value::from(*ms);
                     }
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish_ephemeral("provider_stream_event", payload.clone());
@@ -2599,7 +2618,7 @@ pub async fn pump_agent_events(
                 } = &event
                 {
                     let mut payload = serde_json::json!({ "files": files });
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish("deliverables", payload.clone());
@@ -2650,7 +2669,7 @@ pub async fn pump_agent_events(
                         "status": status,
                         "summary": summary,
                     });
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     if let Some(session_id) = chat_id.strip_prefix("web:") {
@@ -2683,12 +2702,15 @@ pub async fn pump_agent_events(
                 // 派生），与前端会话 id（sessionStore.currentId，create/list
                 // 返回的会话 sid）不同域——前端按 `web:${currentId}` 过滤恒
                 // 不等，工具卡/任务清单/模式徽标的实时帧全灭（2026-09-20 实
-                // 测：服务端帧全数到达浏览器、UI 零反应）。session_key 末段
-                // = 发起会话 id（handle_chat_send 把前端 session_id 放
-                // metadata，loop 派生 session_key），注入后前端可精确过滤；
-                // 无 session_key 的事件不注入（SSE 消费方按字段缺席忽略）。
+                // 测：服务端帧全数到达浏览器、UI 零反应）。dashboard 会话键
+                // `agent:main:session:{sid}` 末段 = 发起会话 id
+                // （handle_chat_send 把前端 session_id 放 metadata，loop 派生
+                // session_key），注入后前端可精确过滤；其余形态键（IM/集群）
+                // 无 dashboard 身份不注入（`dashboard_session_id`，防尾段撞
+                // 名跨会话串桶 BUG-20261117-073）；无 session_key 的事件不
+                // 注入（SSE 消费方按字段缺席忽略）。
                 if let Some(sk) = event.session_key()
-                    && let Some(sid) = sk.rsplit(':').next()
+                    && let Some(sid) = dashboard_session_id(sk)
                     && let Some(inner) = data.get_mut("data")
                 {
                     inner["session_id"] = serde_json::Value::String(sid.to_string());
