@@ -343,11 +343,12 @@ const visibleNavGroups = computed(() => {
   return out
 })
 
-// 折叠分组（2026-11-06 用户决策：左侧导航收敛）：分组标题变可点开关，
-// 管理/配置/其他默认收起；导航进组内页面自动展开；状态持久化 localStorage。
+// 折叠分组（2026-11-06 用户决策：左侧导航收敛；2026-11-17 分组重组默认
+// 名单同步）：分组标题变可点开关，仓库型组（能力/自动化/开发/配置/安全/
+// 其他）默认收起；导航进组内页面自动展开；状态持久化 localStorage。
 // 纯渲染层行为——navModel 契约（皮肤脚本编程面）不动。
 const NAV_COLLAPSE_KEY = 'nb_nav_collapsed_groups'
-const NAV_DEFAULT_COLLAPSED = ['管理', '配置', '安全', '其他']
+const NAV_DEFAULT_COLLAPSED = ['能力', '自动化', '开发', '配置', '安全', '其他']
 const collapsedGroups = ref<Record<string, boolean>>(loadCollapsedGroups())
 
 function loadCollapsedGroups(): Record<string, boolean> {
