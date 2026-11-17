@@ -99,12 +99,14 @@ impl ModuleHandler for ChatHandler {
             nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
         );
         // H1（2026-09-05）：todo_get 是只读文件读取，不需要 AgentLoop——
-        // 提前返回，不占用 loop 句柄。L6++ G4（2026-09-08）：项目会话的
-        // todo 落在项目目录（TodoWriteTool 按 loop 的 workspace root 解析
-        // sessions/），先判项目根再读；无归属回落主 workspace。
+        // 提前返回，不占用 loop 句柄。todo 是 bot 域会话态数据恒锚主
+        // workspace（2026-11-17 污染修复：写侧 TodoToolConfig 已改锚主 ws，
+        // 此处旧的项目根路由随之作废——读写两侧统一主 ws，与回收站/
+        // 删除链/sweeper 同寻址）。
         if cmd == "todo_get" {
-            let workspace = crate::handlers::projects::project_root_for_session(&session_key)
-                .or_else(|| ctx.workspace.clone())
+            let workspace = ctx
+                .workspace
+                .clone()
                 .ok_or_else(|| "workspace not configured".to_string())?;
             let todos = read_session_todos(&workspace, &session_id);
             return Ok(Some(serde_json::json!({

@@ -121,6 +121,91 @@ pub fn migrate_stale_project_session_home(workspace: &Path, session_key: &str) {
     tracing::info!("[session_home] 存量项目资产树已迁回主 workspace: {id}");
 }
 
+/// 存量项目会话 todo 文件惰性迁移（2026-11-17 污染修复配套）。
+///
+/// 背景：2026-11-16 资产区修复漏网——todo 文件（bot 域会话态，锚
+/// `{主 ws}/sessions/todo_{safe}.json`）的写侧（TodoToolConfig /
+/// TodoCloseoutHook）此前被误判「合法项目根消费者」，项目会话的 todo 一直
+/// 落 `{项目目录}/sessions/`；而删侧（回收站 / sessions 删除清空 /
+/// logs_sweeper 孤儿清扫）全按主 workspace 寻址——删项目会话留孤儿文件在
+/// 用户项目目录。修复后写侧改锚主 workspace，本函数把设备上已长出的旧
+/// 文件搬回。
+///
+/// 搬移策略：同卷 rename 优先；失败（跨卷 / 句柄占用 / 并发）复核主侧
+/// 目标仍缺席后 copy + 删源（单文件，无需递归）。**主侧已在 = 主侧胜**：
+/// 修复后的写入恒落主侧，项目侧文件必是修复前旧态，best-effort 删除
+/// （顺带清用户仓库里的污染残留；删除失败 WARN 不炸）。幂等：主侧已在
+/// （无项目侧旧文件）/ 项目侧缺席 / meta 无项目路径 = no-op（稳态成本 =
+/// 一次 meta 读 + 两次 exists）。失败 = lenient（WARN 不炸调用方——迁移
+/// 失败会话降级为新空 todo 继续用，旧文件残留项目侧可人工搬）。
+pub fn migrate_stale_project_session_todo(workspace: &Path, session_key: &str) {
+    let Some(project_path) = chat_log::read_session_meta_full(session_key)
+        .and_then(|m| m.project_path)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    else {
+        return;
+    };
+    let main_todo = nemesis_path::session_todo_file_in_workspace(workspace, session_key);
+    let legacy_todo =
+        nemesis_path::session_todo_file_in_workspace(Path::new(&project_path), session_key);
+    if main_todo.exists() {
+        // 主侧已在（修复后写入落主侧）：项目侧若有旧文件必是修复前旧态，
+        // 顺手清掉（用户仓库不容残留）；失败 WARN 留待人工。
+        if legacy_todo.exists() {
+            if let Err(e) = std::fs::remove_file(&legacy_todo) {
+                tracing::warn!(
+                    "[session_home] 项目侧旧 todo 清理失败（主侧已生效，不影响功能）: \
+                     {legacy_todo:?}: {e}"
+                );
+            } else {
+                remove_project_sessions_shell(&legacy_todo);
+            }
+        }
+        return;
+    }
+    if !legacy_todo.exists() {
+        return; // 项目侧无旧文件（未受污染的会话 / project_path 已失效 / 已迁移过）
+    }
+    // 防呆：project_path == 主 workspace 时 legacy_todo == main_todo，
+    // 上方两个 exists 分支已拦截，走不到这——不会「自己删自己」。
+    if let Some(parent) = main_todo.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!("[session_home] todo 迁移中止：父目录创建失败 {parent:?}: {e}");
+        return;
+    }
+    if std::fs::rename(&legacy_todo, &main_todo).is_err() {
+        // rename 失败：复核并发窗口（目标已在 = 另一调用者完成，诚实放弃）。
+        if main_todo.exists() {
+            return;
+        }
+        if std::fs::copy(&legacy_todo, &main_todo).is_err() {
+            tracing::warn!(
+                "[session_home] 存量 todo 迁移失败，会话降级为新空 todo 继续: \
+                 {legacy_todo:?} → {main_todo:?}"
+            );
+            return;
+        }
+        if let Err(e) = std::fs::remove_file(&legacy_todo) {
+            tracing::warn!(
+                "[session_home] todo 迁移 copy 完成但项目侧旧文件删除未净: {legacy_todo:?}: {e}"
+            );
+        }
+    }
+    remove_project_sessions_shell(&legacy_todo);
+    tracing::info!("[session_home] 存量项目 todo 已迁回主 workspace: {session_key}");
+}
+
+/// 项目侧空壳摘除（best-effort `remove_dir` 只删空目录）：todo 搬走后
+/// `{project}/sessions/` 若已被搬空则归位；用户自己的内容永不触碰
+/// （非空 / Windows 瞬时句柄失败均静默跳过）。
+fn remove_project_sessions_shell(legacy_todo: &Path) {
+    if let Some(sessions_dir) = legacy_todo.parent() {
+        let _ = std::fs::remove_dir(sessions_dir);
+    }
+}
+
 /// fork 产物独立记忆域（2026-11-12 拍板「只在分叉时分叉」）：meta 有 fork
 /// 血缘（`parent` 在场）且 home 已绑定 → `Some(<home>/memory/memory_vector)`
 /// ——分支间与对父会话记忆隔离，域随 home 树存在；普通会话 / 未绑定 /
@@ -143,8 +228,10 @@ pub fn assign_session_home(workspace: &Path, session_key: &str) -> Result<String
     if let Some(existing) = resolve_home_agent_id(session_key) {
         // 幂等分支顺带惰性迁移（2026-11-16）：绑定在但主侧树缺席时，
         // 存量项目树搬回主 workspace——消息路径（admission/binding）与
-        // create 重入都经这里，无需各自感知迁移。
+        // create 重入都经这里，无需各自感知迁移。（2026-11-17 加）todo
+        // 文件同族迁移——写侧改锚主 ws 后旧文件搬回，挂同一消息路径。
         migrate_stale_project_session_home(workspace, session_key);
+        migrate_stale_project_session_todo(workspace, session_key);
         return Ok(existing);
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -186,6 +273,7 @@ pub fn fork_copy_session_home(
     // 触发迁移）——先迁移再解析，fork 复制才不会因「主侧缺席」把源资产
     // 误判成空 home。
     migrate_stale_project_session_home(workspace, source_key);
+    migrate_stale_project_session_todo(workspace, source_key);
     let Some(src_home) = resolve_session_home(workspace, source_key) else {
         return Ok(None);
     };

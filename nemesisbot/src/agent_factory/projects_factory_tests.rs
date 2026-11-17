@@ -989,3 +989,53 @@ fn memory_data_dir_gate_disabled_is_none_enabled_is_some() {
     );
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
 }
+
+/// 项目 loop todo + bot 产物锚定主 workspace（2026-11-17 污染修复回归锁）：
+/// todo 是 bot 域会话态数据——todowrite 真链路必须落主 workspace
+/// `sessions/`，用户项目工作树不得长出 bot 的 `sessions/`（删侧回收站/
+/// 删除链/sweeper 全按主 ws 寻址，写侧锚项目目录 = 孤儿 + 污染）。
+#[tokio::test]
+async fn project_loop_todowrite_anchors_main_workspace_sessions() {
+    let home = unique_home("todo-anchor");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+    let project_loop = build_project_agent_loop(
+        &shared,
+        &entry_for("p_todo0001", &project_dir),
+        session_store,
+    )
+    .expect("project loop builds");
+
+    let tool = project_loop
+        .tools()
+        .get("todowrite")
+        .cloned()
+        .expect("项目 loop 注册 todowrite");
+    let session_key = "agent:web:session:todo_anchor_e2e";
+    let args = serde_json::json!({
+        "todos": [{ "content": "t1", "status": "pending" }]
+    })
+    .to_string();
+    let ctx = nemesis_agent::RequestContext::new("web", "web:t1", "user", session_key);
+    tool.execute(&args, &ctx).await.expect("todowrite executes");
+
+    // 与写侧同真相源寻址（nemesis-path 单点）；根 = workspace_dir()
+    //（SharedResources 的「<home>/workspace」canonical 布局推导点）。
+    let main_todo =
+        nemesis_path::session_todo_file_in_workspace(&shared.workspace_dir(), session_key);
+    assert!(
+        main_todo.is_file(),
+        "todo 必须落主 workspace sessions/: {:?}",
+        main_todo
+    );
+    assert!(
+        !project_dir.join("sessions").exists(),
+        "用户项目目录不得长出 bot 的 sessions/（2026-11-17 污染修复回归锁）"
+    );
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
+}

@@ -541,3 +541,46 @@ fn s3a_extract_headers_validation_matrix() {
     let err = super::extract_headers(&serde_json::json!({"headers": obj}).to_string()).unwrap_err();
     assert!(err.contains("too many headers"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-17 数据归属视角统一：spill 根 = bot 域产物根——
+// register_shared_tools 装配面 `bot_artifacts_root` 优先（项目 loop 注入
+// 主 workspace），None 回落 workspace（主 loop 零变化）。项目 loop 的
+// workspace 是用户真实工作树，spill 不得落那里。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn registry_wiring_spill_root_prefers_bot_artifacts_root() {
+    use crate::loop_tools::registry::{SharedToolConfig, register_shared_tools};
+    let project = tempfile::tempdir().expect("project tempdir");
+    let main_ws = tempfile::tempdir().expect("main ws tempdir");
+    let body = "Z".repeat(60000);
+    let (base, _c) = spawn_raw_server(vec![("/big", ok(&body))]);
+    let cfg = SharedToolConfig {
+        // 模拟项目 loop 装配形态：workspace = 用户项目工作树，
+        // bot_artifacts_root = 主 workspace（spec.rs 项目臂同款）。
+        workspace: Some(project.path().to_string_lossy().to_string()),
+        bot_artifacts_root: Some(main_ws.path().to_path_buf()),
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let tool = tools.get("web_fetch").expect("web_fetch registered");
+    let out = tool
+        .execute(
+            &serde_json::json!({ "url": format!("{}/big", base) }).to_string(),
+            &RequestContext::new("web", "chat1", "user1", "sess1"),
+        )
+        .await
+        .expect("fetch should succeed");
+    assert!(
+        out.contains("已完整保存到"),
+        "spill active, got tail: {out}"
+    );
+    let path = j2b_locator_path(&out);
+    let p = std::path::Path::new(&path);
+    assert!(
+        p.starts_with(main_ws.path()),
+        "spill 必须落主 workspace（bot 域诊断产物），got: {p:?}"
+    );
+    assert!(!p.starts_with(project.path()), "spill 不得落用户项目目录");
+}
