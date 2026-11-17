@@ -12493,11 +12493,14 @@ async fn main() {
             return fail("T43", format!("config.set(auto_accept) failed: {e}"));
         }
 
-        // 1. sweep 超时热调 90s（sweep interval 烘死不动；恢复在重派前）。
-        //    90 = T46 同款：B 刚冷重启 + testai-1.2 是 30s 延迟桩，认领 +
-        //    started 回报在慢批 CI 上可超 30s 被 sweep 抢杀，等 running 窗
-        //    只见 ["failed"]（ET16 a2 / ET387 att4 双案例同签名）。
-        if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 90) {
+        // 1. sweep 超时热调 180s（sweep interval 烘死不动；恢复在重派前）。
+        //    拾取窗必须覆盖 started 回报：ET387 att4 实测 Node-B 日志——
+        //    送达 ~37s（12:11:49 收单）+ B 内部拾取 ~63s（12:12:52 才
+        //    exec_start）≈ 100s，而 30s 窗在 12:12:28 就把单抢杀成
+        //    ["failed"]（exec_start 晚到 24s，死单执行产生孤儿档案）。
+        //    ET16 a2 / ET387 att4 双案例同签名。180 = 1.8× 实测余量；
+        //    杀死后由步骤 4b 回调 30s 快杀，不拖累 ⛔ 时延。
+        if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 180) {
             return fail("T43", format!("hot-set sweep failed: {e}"));
         }
 
@@ -12527,12 +12530,11 @@ async fn main() {
         if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) {
             return fail("T43", format!("issue.dispatch unexpected: {disp}"));
         }
-        // 120s 与 T46 对齐：拾取走 dispatch sweep（默认 interval=20s，重启后
-        // 首拍最多 +20s），testai-1.2 桩延迟 30s 后才回 started，慢批 CI 上
-        // 认领+started 合计可达 60-90s；120s 覆盖 90s sweep 窗 + 一拍余量
-        // （超窗则见 sweep 的 ["failed"] 判定，错误面自明）。冻结/击杀窗口
-        // 锚在 running 之后，不削弱断言。
-        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 120).await {
+        // 240s 覆盖 180s 拾取窗 + 一拍余量（负载下 tick 可滞后 ~46s：
+        // ET387 att4 的 30s 判定实际 76s 后才落锤）。超窗则在此等待内
+        // 观察 sweep 的 ["failed"] 判定，错误面自明。冻结/击杀窗口锚在
+        // running 之后，不削弱断言。
+        if let Err(e) = wait_dispatch_running(&db_path, issue_id, 240).await {
             return fail("T43", e);
         }
 
@@ -12544,8 +12546,15 @@ async fn main() {
             return fail("T43", format!("B 被杀后 40s 内未判 Offline: {e}"));
         }
 
-        // 5. sweep 判定：⛔ 派发超时（≥90s 无回报；interval 2-10s；150s 与
-        //    T46 对齐，覆盖击杀前 running 到位偏晚 → ⛔ 相应晚到）。
+        // 4b. 快杀窗：Offline 判定后把 sweep 回调 30s——180s 拾取窗只为
+        //     started 回报竞速服务；B 已死，30s 无回报即足判 ⛔，不必拖
+        //     180s（T46 中途热调先例；sweep 逐拍热读，下一拍生效）。
+        if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 30) {
+            return fail("T43", format!("hot-set fast-kill sweep failed: {e}"));
+        }
+
+        // 5. sweep 判定：⛔ 派发超时（≥30s 无回报；负载下 tick 滞后可到
+        //    ~45s，150s 等窗覆盖）。
         let comment = match u_wait_system_comment(&mut ws, issue_id, "派发超时", 150).await {
             Ok(c) => c,
             Err(e) => return fail("T43", format!("sweep 未标失败: {e}")),
