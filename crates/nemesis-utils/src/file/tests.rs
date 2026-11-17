@@ -532,3 +532,25 @@ async fn test_write_file_atomic_async_concurrent_no_interleave() {
         .count();
     assert_eq!(leftovers, 0);
 }
+
+/// unix：sync 版经 symlink 写入同样保链（BUG-20261117-074——保链语义下沉
+/// 到 sync 单一真相源后，config.json / MEMORY.md 等直调面不再把 symlink
+/// 换成普通文件）。
+#[cfg(unix)]
+#[test]
+fn test_write_file_atomic_sync_write_through_symlink_keeps_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real.txt");
+    fs::write(&real, b"before").unwrap();
+    let link = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    write_file_atomic(&link.to_string_lossy(), b"after", 0o644).unwrap();
+
+    let meta = fs::symlink_metadata(&link).unwrap();
+    assert!(
+        meta.file_type().is_symlink(),
+        "symlink must not be replaced by a regular file"
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), "after");
+}

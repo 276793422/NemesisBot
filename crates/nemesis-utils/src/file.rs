@@ -55,6 +55,8 @@ pub fn atomic_tmp_path(parent: &Path) -> std::path::PathBuf {
 /// - **unix 权限在临时文件创建时即挂**（`mode(perm)`）：不存在先宽后收的
 ///   窗口；Windows 为 no-op（ACL 不处理，诚实边界）。
 /// - **失败清理**：任一步失败删除临时文件、原文件不动，错误带路径上下文。
+/// - **symlink 保链**：目标已是 symlink → 解析真实目标写入（follow 语义），
+///   symlink 本身不被 rename 替换（BUG-20261117-074；与 async 包装同语义）。
 /// - Windows `fs::rename` 即 `MOVEFILE_REPLACE_EXISTING`（覆盖已存在目标）；
 ///   目标被外部占用（AV 扫描/打开句柄）时 rename 失败属预期，由调用方决定
 ///   重试或上报。
@@ -63,7 +65,16 @@ pub fn atomic_tmp_path(parent: &Path) -> std::path::PathBuf {
 pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), String> {
     #[cfg(not(unix))]
     let _ = perm; // Windows：POSIX 权限不存在，ACL 不处理（诚实边界）
-    let p = Path::new(path);
+    let raw = Path::new(path);
+    // symlink 保链（BUG-20261117-074）：目标已存在（含 symlink）→ 解析真实
+    // 目标，rename 落在真实文件上，不把 symlink 本身换成普通文件；目标不
+    // 存在（含父目录未建）→ 原路径走 create 语义。与 async 包装
+    // （`write_file_atomic_async`，BUG-20261116-010 工具面加固）同语义——
+    // 此前只有 async 面保链，sync 直调面（config.json / MEMORY.md /
+    // 会话 sidecar 等用户文件，dotfiles symlink 模式的常见对象）会把
+    // symlink 条目整体替换成普通文件，用户 dotfile 静默脱管。临时文件落
+    // 真实目标同目录 ⇒ rename 恒同目录原子（symlink 指向跨设备时也成立）。
+    let p = raw.canonicalize().unwrap_or_else(|_| raw.to_path_buf());
     let parent = p.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("atomic write {}: mkdir: {e}", p.display()))?;
 
@@ -91,7 +102,7 @@ pub fn write_file_atomic(path: &str, data: &[u8], perm: u32) -> Result<(), Strin
         drop(tmp);
         // 覆盖语义：unix rename 天然替换；Windows std rename 即
         // MOVEFILE_REPLACE_EXISTING。
-        fs::rename(&tmp_path, p)
+        fs::rename(&tmp_path, &p)
             .map_err(|e| format!("atomic write {}: rename: {e}", p.display()))?;
         // rename 本身的持久化：尽力 sync 父目录（失败不影响结果正确性）。
         #[cfg(unix)]
