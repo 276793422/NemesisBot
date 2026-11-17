@@ -59,6 +59,19 @@ pub fn workspace_goals_guard(
     }
 }
 
+/// 出站订阅端 Lagged 处理（BUG-20261117-076）：丢帧先入 bus 出站丢失
+/// 账本再 WARN。bus 记账协议（`nemesis-bus` `record_outbound_lagged`：
+/// 全部订阅端 recv() 返回 Lagged(n) 时入账）此前在本 watcher 只 warn
+/// 不入账——`lagged_outbound()` 指标漏计（其余生产订阅端 adapters/
+/// web_init/local_dispatch/projects/channel_approval/post_agent/web
+/// pump 均已入账，此处是家族横扫的唯一漏网点）。AgentEvent 臂不经 bus
+/// （gateway 独立 broadcast，无对应账本），warn-only 维持。
+#[cfg(feature = "goals")]
+fn note_outbound_lagged(bus: &nemesis_bus::MessageBus, n: u64) {
+    bus.record_outbound_lagged(n);
+    tracing::warn!("[Goals] outbound stream lagged, dropped {n} frames");
+}
+
 /// 目标评估闸驱动器（watcher）。gateway 装配点 spawn 一次常驻。
 #[cfg(feature = "goals")]
 pub fn spawn_goals_engine(
@@ -97,7 +110,7 @@ pub fn spawn_goals_engine(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("[Goals] outbound stream lagged, dropped {n} frames");
+                        note_outbound_lagged(&engine.bus, n);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },

@@ -13,7 +13,7 @@
 //! 2. 无绑定 → 回落 `web:<会话id>` 通道原生形态（历史投递，不 panic 不空串）；
 //! 3. 绑定更新（latest-wins）→ target 跟进新值（tab 重开场景）。
 
-use super::inject_chat_id;
+use super::{inject_chat_id, note_outbound_lagged};
 
 /// 会话键形态（与生产注入路径一致的裸 session_key 输入）。
 const SESSION_KEY: &str = "agent:main:session:goal-echo-test";
@@ -54,5 +54,41 @@ fn other_session_binding_does_not_leak() {
     assert_eq!(
         chat_id, "web:goal-echo-test",
         "其他会话的绑定不得串到本会话（会话键隔离）"
+    );
+}
+
+// ============================================================
+// 出站 Lagged 记账（BUG-20261117-076）
+// ============================================================
+
+/// Lagged 丢帧必须先入 bus 出站丢失账本再 warn——`lagged_outbound()`
+/// 指标完整性（bus 记账协议要求全部订阅端入账；本 watcher 此前只 warn
+/// 是家族横扫的唯一漏网点）。突变验证：摘掉 helper 内 record 调用本测
+/// 必红。
+#[tokio::test]
+async fn outbound_lagged_records_into_bus_accounting() {
+    let bus = std::sync::Arc::new(nemesis_bus::MessageBus::with_capacity(2));
+    let mut rx = bus.subscribe_outbound();
+    // 容量 2 灌 4 条（订阅在先，发布不丢）→ 接收端首帧必报 Lagged(2)。
+    for i in 0..4 {
+        bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+            "web",
+            "chat-lag",
+            &format!("m{i}"),
+        ));
+    }
+    let n = match rx.recv().await {
+        Ok(_) => panic!("超容量灌入 + 零消费的首帧 recv 必报 Lagged"),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => n,
+        Err(e) => panic!("unexpected recv error: {e:?}"),
+    };
+    assert_eq!(n, 2, "容量 2 灌 4 条：首帧 recv 必报 Lagged(2)");
+    assert_eq!(bus.lagged_outbound(), 0, "处理前账本必须还是 0");
+
+    note_outbound_lagged(&bus, n);
+    assert_eq!(
+        bus.lagged_outbound(),
+        2,
+        "Lagged(n) 必须入 bus 出站丢失账本（不只 warn）"
     );
 }
