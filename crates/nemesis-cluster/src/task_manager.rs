@@ -480,12 +480,22 @@ impl TaskManager {
     /// 诊断直调以免等 tick）。与循环体共享同一参数装配。
     #[doc(hidden)]
     pub fn run_cleanup_once(&self) {
+        // 与 start() 的后台循环同款纪律：先把三个钩子克隆出注册表锁，
+        // 再调 cleanup_completed。实参位置的 `.lock().clone()` 临时守卫
+        // 活到整条语句结束——会把 on_complete / route_record_fn /
+        // on_stale_kill 三把锁持穿整个清扫（含钩子回调体）；parking_lot
+        // 非重入，回调体重入任一持锁入口（fire_route_record /
+        // set_callback / set_on_stale_kill）即同线程自锁死。对齐
+        // fire_callback / fire_route_record 的「克隆出锁再调用」纪律。
+        let on_complete = self.on_complete.lock().clone();
+        let route_record = self.route_record_fn.lock().clone();
+        let on_stale_kill = self.on_stale_kill.lock().clone();
         cleanup_completed(
             &self.store,
-            &self.on_complete.lock().clone(),
+            &on_complete,
             &self.pending_timeout,
-            &self.route_record_fn.lock().clone(),
-            &self.on_stale_kill.lock().clone(),
+            &route_record,
+            &on_stale_kill,
         );
     }
 

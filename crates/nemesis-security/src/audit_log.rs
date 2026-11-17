@@ -158,13 +158,13 @@ impl AuditLogger {
                     timestamp,
                     event_id,
                     decision,
-                    operation,
-                    user,
-                    source,
+                    sanitize_audit_field(operation, 200),
+                    sanitize_audit_field(user, 200),
+                    sanitize_audit_field(source, 200),
                     sanitize_target(target),
                     danger_level,
                     sanitize_reason(reason),
-                    policy_rule,
+                    sanitize_audit_field(policy_rule, 200),
                 );
                 // 明文审计不允许静默丢行：写失败必须可见（横扫
                 // 角度 A）。句柄已打开时写失败多为磁盘满/IO 瞬时错误，后续行
@@ -237,16 +237,29 @@ impl AuditLogger {
     }
 }
 
+/// 审计行字段级消毒（BUG-20261117-071）：审计明文行是 ` | ` 管道分隔
+/// 格式，解析器（nemesis-web `logs.rs::parse_security_audit_file`）按
+/// **同序列**切列——字段值含 `|` 会错位移列（exec/run_script 的
+/// target=命令串本体，shell 管道是日常形态；红证：`cargo build | tee x`
+/// 落行 split 后 12 列，danger 列被读成命令碎片），含 `\n` 会伪造整行。
+/// 全部内容承载字段写入前过本函数：控制字符转空格 + 管道转 Broken Bar
+/// （`¦` U+00A6，视觉近等价、UTF-8 字节序列与 ASCII 分隔符不相交）+
+/// 按预算截断。管道→¦ 是记录保真度的已知代价（同 sanitize_csv 的
+/// `'` 前缀先例）；时间戳/event_id/decision/danger 为内部受控值不走
+/// 本函数。
+fn sanitize_audit_field(s: &str, max_len: usize) -> String {
+    let s = s.replace(['\n', '\r', '\t'], " ").replace('|', "\u{00a6}");
+    utils::truncate(&s, max_len)
+}
+
 /// Sanitize a target string for log output.
 fn sanitize_target(target: &str) -> String {
-    let s = target.replace(['\n', '\r', '\t'], " ");
-    utils::truncate(&s, 200)
+    sanitize_audit_field(target, 200)
 }
 
 /// Sanitize a reason string for log output.
 fn sanitize_reason(reason: &str) -> String {
-    let s = reason.replace(['\n', '\r', '\t'], " ");
-    utils::truncate(&s, 100)
+    sanitize_audit_field(reason, 100)
 }
 
 /// Sanitize a string for CSV output（统一定义：原地委托

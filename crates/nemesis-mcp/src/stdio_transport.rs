@@ -432,6 +432,10 @@ impl Transport for StdioTransport {
         // 记 trace 后跳过；非 JSON 行（服务器 banner）同样跳过。旧实现读
         // 一行就当响应解析：服务器在响应前先发通知会让通知行反序列化失败
         // （TransportResponse 要求 id 字段）→ 整个请求报 send_failed。
+        // BUG-20261117-070 红证定性：此处 Add 形态保留——Instant + Duration
+        // 的 panic 窗（Windows Duration 支撑 u128 ns / Linux Timespec i64 secs
+        // 溢出阈值均 ~千亿年）远高于本参数 u64 ms 上限（~5.8 亿年）可达面，
+        // 不可达；checked_add 改写属无依据加固，按纪律不引入。
         let deadline = tokio::time::Instant::now() + effective_timeout;
         let response_line = {
             let mut reader = stdout.lock().await;

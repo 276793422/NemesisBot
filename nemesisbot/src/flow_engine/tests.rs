@@ -702,6 +702,102 @@ fn pick_latest_by_updated() {
     assert!(flows.pick("tpl", Some("GHOST")).is_err());
 }
 
+// BUG-20261117-069 回归锁：WSAPI `flow://` 代答面把面板 args 的 instance
+// 原样送进 pick → load → instance_path 裸 join——不校验则 `../`/`..\`
+// 穿越载荷可读 flows 根之外任意 `*.json`（可解析成 FlowInstance 的内容
+// 回传 dashboard；不可解析的借 serde 报错泄漏结构信息）。
+
+#[test]
+fn flow_instance_name_is_safe_accepts_creation_output_forms() {
+    // 创建期全部产物形态逐字节满足——校验不得误伤存量名（含 sanitize
+    // 白名单输出、`_` 保留名中和形态、hash 形态、`-fnv8hex` 碰撞后缀）。
+    assert!(flow_instance_name_is_safe("A"));
+    assert!(flow_instance_name_is_safe("I-1"));
+    assert!(flow_instance_name_is_safe("a_b-C"));
+    assert!(flow_instance_name_is_safe("v1.2")); // 点后随字母数字
+    assert!(flow_instance_name_is_safe("a._b")); // 点后随字母数字再接下划线
+    assert!(flow_instance_name_is_safe("_con")); // 保留名中和形态
+    assert!(flow_instance_name_is_safe("KEY-1a2b3c4d")); // 碰撞摘要后缀形态
+    // hash 形态（78 字符 head60__hex16）：二次 sanitize 会换名的形态，
+    // 这里必须结构直通（这正是不能改走「消毒再 join」的原因）。
+    assert!(flow_instance_name_is_safe(&format!(
+        "{}__0123456789abcdef",
+        "h".repeat(60)
+    )));
+    // 穿越与非常规形态全拒。
+    assert!(!flow_instance_name_is_safe("../x"));
+    assert!(!flow_instance_name_is_safe("..\\x"));
+    assert!(!flow_instance_name_is_safe(".."));
+    assert!(!flow_instance_name_is_safe("."));
+    assert!(!flow_instance_name_is_safe(".hidden"));
+    assert!(!flow_instance_name_is_safe("a/../../b"));
+    assert!(!flow_instance_name_is_safe("a..")); // 尾点形（Windows 剥尾点撞名）
+    assert!(!flow_instance_name_is_safe("a b")); // 空格
+    assert!(!flow_instance_name_is_safe("a:b")); // 盘符/ADS 分隔符
+    assert!(!flow_instance_name_is_safe(""));
+}
+
+#[test]
+fn pick_rejects_traversal_instance_names_before_path_join() {
+    let ws = temp_ws("traversal");
+    let flows = FlowStore::new(&ws);
+    let mut a = inst_with_steps("tpl", &[("s", KIND_LAND, "", "")]);
+    a.instance = "A".to_string();
+    flows.save(&a).unwrap();
+
+    // 在 flows 根外预置一个可解析成 FlowInstance 的目标
+    // （flows/tpl/../../../config/config.json == ws/config/config.json，
+    // 三层上跳 tpl→flows→logs→workspace 根——越出 flows 根与 workspace
+    // logs 子树）。修复前 pick 会把它读回来；修复后在 join 之前被结构
+    // 校验拒绝。
+    let outside_dir = ws.join("config");
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    let mut outside_inst = inst_with_steps("tpl", &[("s", KIND_LAND, "", "")]);
+    outside_inst.instance = "LEAKED".to_string();
+    std::fs::write(
+        outside_dir.join("config.json"),
+        serde_json::to_string_pretty(&outside_inst).unwrap(),
+    )
+    .unwrap();
+
+    for hostile in [
+        "../../../config/config",
+        "..\\..\\..\\config\\config",
+        "..",
+        ".hidden",
+        "a/../../b",
+    ] {
+        let err = flows.pick("tpl", Some(hostile)).unwrap_err();
+        // 拒绝发生在路径 join 之前——报错独立于「不存在」（诊断可辨）。
+        assert!(err.contains("不合法"), "hostile={hostile} err={err}");
+        assert!(!err.contains("不存在"), "hostile={hostile} err={err}");
+        assert!(!err.contains("LEAKED"), "hostile={hostile} err={err}");
+    }
+
+    // 合法名照常可达（校验不误伤）。
+    assert_eq!(flows.pick("tpl", Some("A")).unwrap().instance, "A");
+}
+
+#[test]
+fn save_and_exists_reject_unsafe_instance_names() {
+    let ws = temp_ws("save-guard");
+    let flows = FlowStore::new(&ws);
+    let mut evil = inst_with_steps("tpl", &[("s", KIND_LAND, "", "")]);
+    // 写侧对称闸：穿越形态实例名拒绝落盘。
+    evil.instance = "../../evil".to_string();
+    let err = flows.save(&evil).unwrap_err();
+    assert!(err.contains("不合法"), "err={err}");
+    assert!(!flows.exists("tpl", "../../evil"));
+    // exists 探测闸：穿越形态恒 false（不作为 flows 根外的存在性 oracle）。
+    assert!(!flows.exists("tpl", "../x"));
+    assert!(!flows.exists("tpl", "..\\x"));
+    // 合法名不受影响。
+    evil.instance = "ok-1".to_string();
+    flows.save(&evil).unwrap();
+    assert!(flows.exists("tpl", "ok-1"));
+    assert_eq!(flows.load("tpl", "ok-1").unwrap().instance, "ok-1");
+}
+
 #[test]
 fn answer_confirm_gate_semantics() {
     let ws = temp_ws("confirm");

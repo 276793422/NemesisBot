@@ -1242,3 +1242,15 @@ fn r336_one_shot_inner_timeout_follows_outer_budget_plus_grace() {
     assert_eq!(super::one_shot_request_timeout_ms(35), 36_000);
     assert_eq!(super::one_shot_request_timeout_ms(120), 121_000);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261117-070：one-shot 换算同族裸 `+ 1_000`——巨值 timeout_secs 下
+// debug panic / release 回绕 0。saturating 修复后饱和，常规值精确不变。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bug070_one_shot_request_timeout_saturates_not_wraps() {
+    assert_eq!(one_shot_request_timeout_ms(u64::MAX), u64::MAX);
+    // 常规值不受影响（毫秒换算 + 1s 让位宽限仍精确）。
+    assert_eq!(one_shot_request_timeout_ms(30), 31_000);
+}

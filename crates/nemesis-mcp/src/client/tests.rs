@@ -1610,3 +1610,22 @@ async fn session_expired_recovery_failure_returns_honest_error() {
         "恢复失败必须以传输层错误落面（本场景 = 原始 session_expired），实际: {err}"
     );
 }
+
+// =========================================================================
+// BUG-20261117-070：config `timeout` 巨值换算链不加闸——修复前
+// `as_millis() as u64 + 1_000` 裸加法 debug panic（溢出）/ release 静默
+// 回绕到 0（请求被无声切成 30s 默认档，错误方向）。修复后 saturating_add
+// 饱和到 u64::MAX，transport 侧按「不可表示 = 不限时」处理。
+// =========================================================================
+
+#[test]
+fn bug070_huge_config_timeout_saturates_not_wraps() {
+    let config: crate::types::ServerConfig = serde_json::from_value(serde_json::json!({
+        "name": "huge-timeout",
+        "command": "definitely-missing-server",
+        "timeout": u64::MAX
+    }))
+    .unwrap();
+    let client = McpClient::from_server_config(&config).expect("config 形态合法必须构造成功");
+    assert_eq!(client.request_timeout_ms(), u64::MAX, "饱和不回绕");
+}
