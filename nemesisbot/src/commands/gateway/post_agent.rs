@@ -1178,7 +1178,6 @@ pub(crate) async fn init_post_agent(
         let bus_for_events = bus.clone();
         let conv_router_for_events = conv_router.clone();
         let estop_for_events = std::sync::Arc::clone(&shared_resources.estop);
-        let conv_router_for_events = conv_router.clone();
         let events_rules_path = shared_resources
             .workspace_dir()
             .join("config")
@@ -1258,7 +1257,6 @@ pub(crate) async fn init_post_agent(
         let estop_for_loops = std::sync::Arc::clone(&shared_resources.estop);
         let loops_dir = shared_resources.workspace_dir().join("loops");
         let ds_for_loops = data_store.clone();
-        let conv_router_for_loops = conv_router.clone();
         let loop_inject: std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync> =
             std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
                 if !nemesis_agent::chat_log::session_occupied(session_key) {

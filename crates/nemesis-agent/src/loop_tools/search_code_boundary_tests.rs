@@ -19,6 +19,8 @@ fn boundary_at(root: &std::path::Path, restrict: bool) -> std::sync::Arc<Workspa
         restrict,
         extra_roots: Vec::new(),
         editor_gate: None,
+        // goals 批（2026-11-17）新增字段——测试桩一律 None（生产侧才注入闸）
+        goals_guard: None,
     })
 }
 
