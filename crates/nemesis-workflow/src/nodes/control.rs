@@ -624,14 +624,9 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // 保持同口径）。
     let mut negations = 0usize;
     let mut rest = resolved;
-    loop {
-        match rest.strip_prefix('!') {
-            Some(inner) => {
-                negations += 1;
-                rest = inner.trim();
-            }
-            None => break,
-        }
+    while let Some(inner) = rest.strip_prefix('!') {
+        negations += 1;
+        rest = inner.trim();
     }
     let core = eval_condition_core(rest, context);
     if negations % 2 == 1 { !core } else { core }
