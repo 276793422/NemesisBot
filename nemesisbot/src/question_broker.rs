@@ -10,7 +10,10 @@
 //! mpsc oneshot + broadcast 事件）：等待侧是 sync trait 方法内阻塞——tokio
 //! 上下文（工具经 spawn_blocking 进来的阻塞线程）直接 `recv_timeout`，
 //! 不新建 runtime。超时不是错误：广播 `QuestionResolved{timeout}` 并返回
-//! `QuestionOutcome::Timeout`，工具侧回灌「按最佳判断继续」。
+//! `QuestionOutcome::Timeout`，工具侧回灌「按最佳判断继续」。超时带
+//! [`QUESTION_TIMEOUT_GRACE_SECS`] 竞速宽限窗（同族三 broker 同款纪律）：
+//! deadline 已过的瞬间 respond 可能仍在途，立即定案会把已接受的作答随
+//! 通道关闭静默丢弃——宽限窗内条目留在册仍可作答，到点无作答才定案。
 //!
 //! （提问两形态）：同一 pending 通道承载两种作答形态
 //! （[`Answer`] 枚举）——选项形态（`respond`）/ 表单形态（`respond_form`）。
@@ -26,6 +29,13 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use nemesis_types::agent::{AgentEvent, QuestionField, QuestionOutcome, QuestionRequest};
+
+/// 超时竞速宽限窗（秒）。deadline 已过但 respond 可能仍在途（线程调度延迟
+/// 下「recv_timeout 判超时 → 本线程恢复运行」窗口可达数百毫秒）——三个同族
+/// broker（web_approval / channel_approval / credential_broker）都有
+/// 「超时→宽限收在途裁决」臂，本类曾是唯一漏网（BUG-20261118-088）。宽限
+/// 窗内条目留在册（仍可作答 = 仲裁态），到点无作答才定案 Timeout。
+const QUESTION_TIMEOUT_GRACE_SECS: u64 = 2;
 
 /// 用户作答载荷（两形态统一通道；ask 侧 match 还原成 QuestionOutcome）。
 enum Answer {
@@ -239,6 +249,29 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
             tokio::task::block_in_place(wait)
         } else {
             wait()
+        };
+
+        // 超时竞速宽限（BUG-20261118-088）：deadline 已过 ≠ 没有人在途——
+        // 「recv_timeout 判超时 → 本线程恢复运行」窗口内，respond 可能已完成
+        // 校验+摘卡+send（或正卡在校验与摘卡之间）。立即定案会把已接受的
+        // 作答随 rx drop 静默丢弃：respond 侧已广播 "answered" 且返回
+        // Ok(true)，模型却拿到 Timeout 按「无人作答」继续——用户以为答案
+        // 已送达，实际丢失。宽限窗内条目留在册（respond 照常
+        // validate+remove+send，仍可作答 = 仲裁态，等价审批族的台账仲裁），
+        // 到点无作答才合并回 Timeout 定案。timeout_secs==0 无限等路径无
+        // deadline，天然不进本臂；宽限窗内 estop/cancel 会话级取消照常生效
+        // （drain 条目 → Cancelled 送达 → 本臂收真实结局，比旧代码把竞态
+        // 窗口的急停误报成 Timeout 更准）。
+        let result = match result {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                match rx.recv_timeout(Duration::from_secs(QUESTION_TIMEOUT_GRACE_SECS)) {
+                    Ok(answer) => Ok(answer),
+                    // 宽限耗尽 = 定案（Disconnected 理论不可达——条目仍在
+                    // 册 sender 存活；并入同臂无害）。
+                    Err(_) => Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                }
+            }
+            other => other,
         };
 
         // 无论结果如何都清 pending（超时/断开后迟到的 respond 诚实报 unknown）。
