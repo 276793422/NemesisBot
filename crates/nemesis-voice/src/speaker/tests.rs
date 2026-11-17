@@ -107,6 +107,55 @@ fn cosine_similarity_large_vectors_do_not_overflow_to_nan() {
     );
 }
 
+// BUG-20261117-086：非有限范数闸——零范数闸 `norm == 0.0` 拦不住 NaN
+// （比较恒 false）也拦不住 inf（放行）。模型嵌入（sherpa-onnx 原始输出，
+// 无上游有限校验）与 f32 平方累加（有限大元素即可溢出 inf）都能把
+// 非有限范数送进除法。NaN 分数在 speaker_test 的 `similarity >= 0.0`
+// 事件闸静默消失（事件无声丢失=不诚实）；inf 分数过闸判 matched=true
+// 且 serde_json 把 inf 序列化为 null。非有限一律 0.0（不可比），与共享
+// 实现 nemesis_types::utils::cosine_similarity_f32（BUG-20261116-015）
+// 同一教义。
+#[test]
+fn cosine_similarity_nan_element_returns_zero_not_nan() {
+    // 嵌入向量携带 NaN（模型输出异常形态）：两侧各测一次。
+    let a = [f32::NAN, 1.0_f32];
+    let b = [1.0_f32, 1.0];
+    let s = cosine_similarity(&a, &b);
+    assert!(
+        s.is_finite(),
+        "NaN element must not leak NaN score, got {s}"
+    );
+    assert_eq!(s, 0.0, "non-comparable vectors must score 0.0");
+
+    let s2 = cosine_similarity(&b, &a);
+    assert!(s2.is_finite(), "NaN on b side must not leak, got {s2}");
+    assert_eq!(s2, 0.0);
+}
+
+#[test]
+fn cosine_similarity_infinite_element_returns_zero() {
+    // inf 元素 → 范数 inf → 旧代码 dot/(inf*inf) = NaN 静默泄漏。
+    let a = [f32::INFINITY, 1.0_f32];
+    let b = [f32::INFINITY, 1.0_f32];
+    let s = cosine_similarity(&a, &b);
+    assert!(
+        s.is_finite(),
+        "inf element must not leak non-finite, got {s}"
+    );
+    assert_eq!(s, 0.0);
+}
+
+#[test]
+fn cosine_similarity_f32_square_overflow_returns_zero_not_nan() {
+    // 有限大元素（1e20）平方溢出 f32 → 范数与点积双双 inf →
+    // 旧代码 inf/inf = NaN。守卫必须在此之前拦截。
+    let a = [1e20_f32, 1e20];
+    let b = [1e20_f32, 1e20];
+    let s = cosine_similarity(&a, &b);
+    assert!(s.is_finite(), "f32 overflow must not leak NaN, got {s}");
+    assert_eq!(s, 0.0);
+}
+
 // ===========================================================================
 // 覆盖率冲刺：引擎构造分支 + FFI 结构甄别
 // 无 DLL 时 sherpa_fn 包装器在符号查找处 panic "sherpa-onnx not initialized"

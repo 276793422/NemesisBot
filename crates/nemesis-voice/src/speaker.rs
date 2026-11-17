@@ -256,6 +256,19 @@ impl Drop for SpeakerManager {
 }
 
 /// Compute cosine similarity between two embedding vectors.
+///
+/// Returns 0.0 (not comparable) for length mismatch, empty input, zero
+/// norm, or a **non-finite norm**. Non-finite norms are rejected, not
+/// trusted to the zero-norm check: `NaN == 0.0` is always false (NaN
+/// sails through) and inf passes it too — a NaN score then silently
+/// vanishes at the speaker-test `similarity >= 0.0` event gate, and an
+/// inf score passes that gate, flips `matched` true and serializes as
+/// JSON `null`. See BUG-20261117-086 (same doctrine as the shared
+/// implementation `nemesis_types::utils::cosine_similarity_f32`,
+/// BUG-20261116-015): model-provided embeddings (sherpa-onnx output,
+/// copied raw with no upstream finiteness validation) and f32 square
+/// accumulation (which overflows to inf from finite large elements)
+/// both make non-finite norms reachable without any adversarial input.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -263,7 +276,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
+    if norm_a == 0.0 || norm_b == 0.0 || !norm_a.is_finite() || !norm_b.is_finite() {
         return 0.0;
     }
     dot / (norm_a * norm_b)
