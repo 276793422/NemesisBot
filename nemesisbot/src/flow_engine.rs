@@ -331,6 +331,26 @@ pub struct FlowStore {
     root: PathBuf,
 }
 
+/// 实例名结构安全校验：[`nemesis_utils::sanitize::sanitize_path_segment`]
+/// 白名单的**断言形态**（不做替换，只判定）。非空 + 每个字符要么白名单
+/// 直通，要么是「前随字母数字」的点。创建期全部产物（sanitize 输出、
+/// `_` 保留名中和、hash 形态、`-fnv8hex` 后缀）逐字节满足；`../`、`..\`、
+/// `..`、`.hidden`、含分隔符/空格/控制字符的名字全部拒绝。
+fn flow_instance_name_is_safe(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut prev_alnum = false;
+    for c in name.chars() {
+        let ok = c.is_ascii_alphanumeric() || c == '-' || c == '_' || (c == '.' && prev_alnum);
+        if !ok {
+            return false;
+        }
+        prev_alnum = c.is_ascii_alphanumeric();
+    }
+    true
+}
+
 impl FlowStore {
     pub fn new(workspace: &Path) -> Self {
         FlowStore {
@@ -347,7 +367,7 @@ impl FlowStore {
     }
 
     pub fn exists(&self, template: &str, instance: &str) -> bool {
-        self.instance_path(template, instance).is_file()
+        flow_instance_name_is_safe(instance) && self.instance_path(template, instance).is_file()
     }
 
     /// 原子落盘（[`nemesis_utils::file::write_file_atomic`]：唯一临时名 +
@@ -357,6 +377,11 @@ impl FlowStore {
     /// remove 成功而 rename 失败 = 实例文件整个丢失（Windows AV/打开句柄
     /// 占用目标是常态不是异常）。
     pub fn save(&self, inst: &FlowInstance) -> Result<(), String> {
+        // 写侧对称闸（BUG-20261117-069 横向加固）：实例名落盘前同样过结构
+        // 校验——inst.instance 正常来自创建期 sanitize 产物或磁盘已存文件，
+        // 但 confirm/resume 的 save 输入是「加载到的文件内容」，未来任何
+        // 新写入路径都不应能把穿越形态名字送进 instance_path。
+        Self::ensure_safe_instance_name(&inst.instance)?;
         let path = self.instance_path(&inst.template, &inst.instance);
         let body =
             serde_json::to_string_pretty(inst).map_err(|e| format!("serialize flow: {e}"))?;
@@ -365,10 +390,37 @@ impl FlowStore {
     }
 
     pub fn load(&self, template: &str, instance: &str) -> Result<FlowInstance, String> {
+        // 读侧闸（BUG-20261117-069）：WSAPI `flow://` 代答面把面板 args 的
+        // `instance` 经 pick 原样送进本函数 → instance_path 裸 join。不校验
+        // 则 `../`/`..\` 穿越载荷可读 flows 根之外（乃至 workspace 之外）的
+        // 任意 `*.json`——可解析成 FlowInstance 的内容回传 dashboard，不可
+        // 解析的也借 serde 报错泄漏结构信息（存在性/形状 oracle）。
+        Self::ensure_safe_instance_name(instance)?;
         let path = self.instance_path(template, instance);
         let raw = std::fs::read_to_string(&path)
             .map_err(|_| format!("流程实例不存在: {template}/{instance}"))?;
         serde_json::from_str(&raw).map_err(|e| format!("流程实例损坏: {template}/{instance}: {e}"))
+    }
+
+    /// 实例名结构校验（诚实拒绝，不是消毒改写）。
+    ///
+    /// 为什么不走「`sanitize_path_segment` 再 join」：hash 形态名（>80 键的
+    /// 创建期产物）按 sanitize 第 6 轮分离不变量**只有 hash 分支能产出**——
+    /// 对一个已是 hash 形态的存量名二次 sanitize 会强制再进 hash 分支换名，
+    /// 长键存量实例的查找就此被打断。故这里只做结构断言：创建期全部产物
+    /// （sanitize 白名单输出、`_` 保留名中和形态、hash 形态、`-fnv8hex`
+    /// 碰撞后缀）逐字节满足；任何穿越载荷（`/`、`\`、`..`、前导点、控制
+    /// 字符）至少一条不满足 → 拒绝且报错独立于「不存在」（诊断可辨）。
+    /// 模板名不经此闸：`answer()` 入口已按模板注册表精确匹配（manifest
+    /// valid_slug `[a-z0-9-]{1,64}`），无注册表命中的模板在 join 前就被拒。
+    fn ensure_safe_instance_name(instance: &str) -> Result<(), String> {
+        if flow_instance_name_is_safe(instance) {
+            Ok(())
+        } else {
+            Err(format!(
+                "流程实例名不合法（含路径分隔符或非常规字符，已拒绝）: {instance}"
+            ))
+        }
     }
 
     /// 列出模板下全部实例（文件名排序——read_dir 顺序是平台实现细节）。
