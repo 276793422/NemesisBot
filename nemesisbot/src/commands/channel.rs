@@ -902,7 +902,9 @@ fn set_channel_config(
     // 毒化成 JSON bool）。布尔键值集限定 true/false/yes/no/on/off/1/0
     // （大小写不敏感）；布尔键命中但值不在值集 → 原样落串，typed 读侧
     // loud 报错，不做静默猜值纠偏。
-    const BOOL_KEYS: &[&str] = &["enabled", "sync_to_web", "cors"];
+    // （BUG-20261117-066）sync_to_web 死旋钮已删：bool 全仓零读者（sync
+    // 路由单一真相源是 sync_to），CLI 设它本就无效，不再列布尔键面。
+    const BOOL_KEYS: &[&str] = &["enabled", "cors"];
     let coerced = if BOOL_KEYS.contains(&key) {
         match value.trim().to_ascii_lowercase().as_str() {
             "true" | "yes" | "on" | "1" => serde_json::Value::Bool(true),

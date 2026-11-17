@@ -413,15 +413,11 @@ impl Config {
 
     /// Populate deprecated fields from new fields for backward compatibility.
     ///
-    /// This mirrors the Go `postProcessForCompatibility` function:
-    /// - Sync `sync_to_web` from `sync_to` for External and WebSocket channels.
+    /// This mirrors the Go `postProcessForCompatibility` function.
+    /// （BUG-20261117-066）曾有的 `sync_to_web` 从 `sync_to` 派生臂已随
+    /// 该死旋钮一并删除：bool 全仓零读者，Go 蓝本兼容残留；sync 路由
+    /// 单一真相源是 `sync_to`（web_init setup_sync_targets 消费）。
     pub fn post_process_for_compatibility(&mut self) {
-        // External channel: populate SyncToWeb from SyncTo
-        self.channels.external.sync_to_web = !self.channels.external.sync_to.is_empty();
-
-        // WebSocket channel: populate SyncToWeb from SyncTo
-        self.channels.websocket.sync_to_web = !self.channels.websocket.sync_to.is_empty();
-
         // autonomy=autonomous 前置要求 unlimited_mode=true——
         // 防「监察环自动重派开着、评审 FAIL 却转人工」的矛盾态。加载期矛盾
         // 诚实降级为 assisted + WARN（安全方向回退，网关不被一个旗标卡死——

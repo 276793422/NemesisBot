@@ -63,48 +63,6 @@ fn extra_deserialize_flexible_string_vec_empty_default_field() {
 }
 
 // ============================================================================
-// AgentModelConfig visitor branches
-// ============================================================================
-
-#[test]
-fn extra_agent_model_config_visit_str_via_field() {
-    // String model on AgentConfigEntry.model
-    let json = r#"{"id":"a","model":"gpt-4"}"#;
-    let entry: AgentConfigEntry = serde_json::from_str(json).unwrap();
-    let model = entry.model.unwrap();
-    assert_eq!(model.primary, "gpt-4");
-    assert!(model.fallbacks.is_empty());
-}
-
-#[test]
-fn extra_agent_model_config_visit_map_via_field() {
-    let json = r#"{"id":"a","model":{"primary":"claude","fallbacks":["f1"]}}"#;
-    let entry: AgentConfigEntry = serde_json::from_str(json).unwrap();
-    let model = entry.model.unwrap();
-    assert_eq!(model.primary, "claude");
-    assert_eq!(model.fallbacks, vec!["f1".to_string()]);
-}
-
-#[test]
-fn extra_agent_model_config_visit_map_with_missing_fields() {
-    // Empty map should default primary/fallbacks
-    let json = r#"{"primary":null}"#;
-    // visit_map path with serde default on Raw struct fields
-    let res: std::result::Result<AgentModelConfig, _> = serde_json::from_str(json);
-    // Either errors on null or default — both acceptable; just exercise the path.
-    let _ = res;
-}
-
-#[test]
-fn extra_agent_model_config_invalid_type_array() {
-    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    // Passing an array should produce a deserialization error.
-    let json = r#"[1,2,3]"#;
-    let res: std::result::Result<AgentModelConfig, _> = serde_json::from_str(json);
-    assert!(res.is_err());
-}
-
-// ============================================================================
 // set_embedded_defaults_from_fs: per-file error paths
 // ============================================================================
 
@@ -999,19 +957,8 @@ fn extra_config_workspace_path_starts_with_home() {
 }
 
 // ============================================================================
-// Config::post_process_for_compatibility: empty-sync_to sets false
-// ============================================================================
-
-#[test]
-fn extra_post_process_empty_sync_to_sets_false() {
-    let mut cfg = Config::default();
-    cfg.channels.external.sync_to = vec![];
-    cfg.channels.websocket.sync_to = vec!["web".into()];
-    cfg.post_process_for_compatibility();
-    assert!(!cfg.channels.external.sync_to_web);
-    assert!(cfg.channels.websocket.sync_to_web);
-}
-
+// （BUG-20261117-066）sync_to_web 死旋钮删除后 post_process 的 sync 派生臂
+// 已不存在；post_process 剩余 autonomy 兼容逻辑由 tests.rs 覆盖。
 // ============================================================================
 // McpServerConfig::normalize additional cases
 // ============================================================================
@@ -1345,7 +1292,10 @@ fn extra_save_config_to_readonly_directory_errors() {
 // ============================================================================
 
 #[test]
-fn extra_agent_config_entry_with_subagents() {
+fn extra_agent_config_entry_minimal() {
+    // （BUG-20261117-066）死字段收敛后 AgentConfigEntry = {id, default}；
+    // 旧键（name/model/skills/subagents）进 serde 未知键通道被忽略，
+    // 条目仍正常解析——存量 config 兼容回归锁。
     let json = r#"{
         "id":"a",
         "default":true,
@@ -1357,10 +1307,6 @@ fn extra_agent_config_entry_with_subagents() {
     let entry: AgentConfigEntry = serde_json::from_str(json).unwrap();
     assert_eq!(entry.id, "a");
     assert!(entry.default);
-    assert_eq!(entry.skills, vec!["s1".to_string()]);
-    let sub = entry.subagents.unwrap();
-    assert_eq!(sub.allow_agents, vec!["sa1".to_string()]);
-    assert_eq!(sub.model.unwrap().primary, "sub-model");
 }
 
 // ============================================================================

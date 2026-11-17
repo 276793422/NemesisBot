@@ -435,10 +435,6 @@ pub struct WebSocketChannelConfig {
         deserialize_with = "deserialize_flexible_string_vec"
     )]
     pub sync_to: Vec<String>,
-    #[serde(default)]
-    pub sync_to_web: bool,
-    #[serde(default)]
-    pub web_session_id: String,
 }
 
 fn default_websocket_host() -> String {
@@ -461,7 +457,7 @@ fn default_websocket_sync_to() -> Vec<String> {
 }
 
 impl_redacted_debug!(WebSocketChannelConfig {
-    plain { enabled, host, port, path, allow_from, sync_to, sync_to_web, web_session_id }
+    plain { enabled, host, port, path, allow_from, sync_to }
     secret { auth_token }
 });
 
@@ -477,8 +473,6 @@ impl Default for WebSocketChannelConfig {
             auth_token: String::new(),
             allow_from: Vec::new(),
             sync_to: default_websocket_sync_to(),
-            sync_to_web: false,
-            web_session_id: String::new(),
         }
     }
 }
@@ -497,10 +491,6 @@ pub struct ExternalConfig {
     pub allow_from: Vec<String>,
     #[serde(default)]
     pub sync_to: Vec<String>,
-    #[serde(default)]
-    pub sync_to_web: bool,
-    #[serde(default)]
-    pub web_session_id: String,
 }
 
 // feature-gated 通道 config（Wave 3 集成面补齐）

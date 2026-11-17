@@ -78,7 +78,6 @@ fn r50_agents_list_coerces_unknown_binding_agent_to_default() {
     cfg.agents.list = vec![nemesis_config::AgentConfigEntry {
         id: "main".to_string(),
         default: true,
-        ..Default::default()
     }];
     cfg.bindings.push(nemesis_config::AgentBinding {
         agent_id: "ghost".to_string(),
