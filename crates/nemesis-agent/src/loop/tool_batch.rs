@@ -581,11 +581,11 @@ impl AgentLoop {
 
     /// 器官 8d：// 指令链触碰（自写窗口登记 / 懒发现队列 /
     /// touch-driven instruction-chain invalidation. A
-    /// successful read_file/write_file/edit_file may have touched
+    /// successful read_file/write_file/edit_file/multiedit may have touched
     /// a file on the workspace instruction chain — invalidate the
     /// context digests so the next build re-reads the chain.
     /// (File-level check only: the re-read happens at injection
-    /// time. Rare + cheap: only fires for these three tools and
+    /// time. Rare + cheap: only fires for these read/write-family tools and
     /// only when the path matches a chain file name.)
     pub(crate) fn touch_instruction_chain(
         &self,
@@ -594,47 +594,78 @@ impl AgentLoop {
         tool_succeeded: bool,
     ) {
         if tool_succeeded
-            && matches!(tc.name.as_str(), "read_file" | "write_file" | "edit_file")
+            && matches!(
+                tc.name.as_str(),
+                "read_file" | "write_file" | "edit_file" | "multiedit"
+            )
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
-            && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
         {
-            let touched = std::path::PathBuf::from(path_str);
-            // (devtool-upgrade): record agent-authored
-            // writes so the fs watcher's event for the same path is
-            // dropped inside the self-write window (the agent knows
-            // what it just wrote — must not surface as "外部修改").
-            if matches!(tc.name.as_str(), "write_file" | "edit_file") {
-                self.note_self_write(path_str);
-            }
-            // (devtool-upgrade): lazy sub-directory
-            // instruction discovery on successful reads — the file's
-            // directory may carry AGENTS.md/CLAUDE.md that was never
-            // injected (root chain only, by default). Queued here,
-            // injected one-shot at the next build.
-            if tc.name == "read_file" {
-                self.note_read_for_instructions(instance, path_str);
-            }
+            // multiedit 顶层无 path——批量目标在 edits[].path（提取形态与
+            // format-on-save / rewrite_tool_paths_for_base 的 PATH_ARG_TOOLS
+            // 同源）；其余工具单 path。
+            let paths: Vec<String> = if tc.name == "multiedit" {
+                args_val
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| e.get("path").and_then(|p| p.as_str()))
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                args_val
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .into_iter()
+                    .collect()
+            };
             let ws_root = self.workspace_root.read().clone();
-            if let Some(ref root) = ws_root {
-                // Chain files are <dir>/AGENTS.md or CLAUDE.md
-                // under the workspace — check by file name to
-                // avoid re-reading the whole chain on every
-                // file op (the full path_is_on_chain check
-                // happens against the loaded chain at
-                // injection; here the name match is the
-                // conservative trigger).
-                let name = touched
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if name == "AGENTS.md" || name == "CLAUDE.md" {
-                    let chain = crate::workspace_instructions::load_instruction_chain(root, root);
-                    if crate::workspace_instructions::path_is_on_chain(&chain, &touched) {
-                        info!(
-                            "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
-                            touched.display()
-                        );
-                        self.invalidate_context_digests();
+            for path_str in paths {
+                // (devtool-upgrade): record agent-authored
+                // writes so the fs watcher's event for the same path is
+                // dropped inside the self-write window (the agent knows
+                // what it just wrote — must not surface as "外部修改").
+                // multiedit 同为写族工具：单次调用批量编辑 N 个文件，
+                // 每个 edits[].path 都要登记（BUG-20261118-091：漏登记
+                // 会让 agent 刚批量编辑的文件在下轮上下文被谎报为
+                // 「外部修改（非本会话操作）」）。
+                if matches!(tc.name.as_str(), "write_file" | "edit_file" | "multiedit") {
+                    self.note_self_write(&path_str);
+                }
+                // (devtool-upgrade): lazy sub-directory
+                // instruction discovery on successful reads — the file's
+                // directory may carry AGENTS.md/CLAUDE.md that was never
+                // injected (root chain only, by default). Queued here,
+                // injected one-shot at the next build.
+                if tc.name == "read_file" {
+                    self.note_read_for_instructions(instance, &path_str);
+                }
+                if let Some(ref root) = ws_root {
+                    // Chain files are <dir>/AGENTS.md or CLAUDE.md
+                    // under the workspace — check by file name to
+                    // avoid re-reading the whole chain on every
+                    // file op (the full path_is_on_chain check
+                    // happens against the loaded chain at
+                    // injection; here the name match is the
+                    // conservative trigger).
+                    let touched = std::path::PathBuf::from(&path_str);
+                    let name = touched
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if name == "AGENTS.md" || name == "CLAUDE.md" {
+                        let chain =
+                            crate::workspace_instructions::load_instruction_chain(root, root);
+                        if crate::workspace_instructions::path_is_on_chain(&chain, &touched) {
+                            info!(
+                                "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
+                                touched.display()
+                            );
+                            self.invalidate_context_digests();
+                        }
                     }
                 }
             }
