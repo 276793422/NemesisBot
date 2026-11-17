@@ -1120,36 +1120,35 @@ async fn test_skills_source_toggle_unknown() {
     assert!(err.contains("不存在"), "got: {}", err);
 }
 
-// search — builtin 内嵌臂离线兜底（2026-11-16 翻转语义）
+// search — empty registries (no network)
 
 #[tokio::test]
 async fn test_skills_search_no_sources_message() {
-    // 2026-11-16 起 builtin 内嵌臂恒注册——「无源 → 提示加源」形态结构性
-    // 不再存在（registries 恒非空）。本测试翻转为：压制出厂源（disabled
-    // 同名条目，密闭不打真实 api.github.com）+ 关 ModelScope 后，仅 builtin
-    // 参与搜索——离线兜底臂可搜可装（query 命中 problem-analysis slug）。
+    // No sources configured → returns message prompting to add a source.
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证「无源」管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 出厂源 disabled 占位条目压制 apply_factory_sources（CI 密闭，不打真实
+    // api.github.com；name/repo 无 serde default，缺 repo 整份解析失败回落
+    // default 会复活出厂源）。
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::write(
         dir.path().join("config/config.skills.json"),
-        // name/repo 无 serde default——缺 repo 整份解析失败回落 default（出厂源复活）。
         r#"{"modelscope":{"enabled":false},"github_sources":[{"name":"nemesisbot","repo":"276793422/NemesisBot","enabled":false}]}"#,
     )
     .unwrap();
     let ctx = make_ctx(&dir);
 
-    let data = serde_json::json!({ "query": "problem-analysis" });
+    let data = serde_json::json!({ "query": "anything" });
     let result = handler
         .handle_cmd("search", Some(data), &ctx)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(result["query"], "problem-analysis");
-    let results = result["results"].as_array().unwrap();
-    assert_eq!(results.len(), 1, "builtin-only results: {results:?}");
-    assert_eq!(results[0]["slug"], "problem-analysis");
-    assert_eq!(results[0]["source"], "builtin");
+    assert_eq!(result["query"], "anything");
+    assert!(result["results"].as_array().unwrap().is_empty());
+    assert!(result["message"].as_str().is_some());
 }
 
 // install — already installed (no network)

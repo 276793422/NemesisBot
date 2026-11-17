@@ -251,12 +251,51 @@ struct JobEntry {
     /// 读出面据此就地遮蔽（明文不进 session_log / LLM 上下文）。纯内存态：
     /// JobEntry 不序列化，明文不出进程；空池 = 零成本直通。
     secrets: Arc<Vec<String>>,
+    /// 发起会话锚快照（2026-11-17 会话资源盘点）：watcher 闭包持原件之外
+    /// 在条目上留一份只读投影，供 `list_by_session` 按会话盘点（资源看板
+    /// background 类目）。None = 基线 start() 路径（无会话归属——不进任何
+    /// 会话的盘点，delegate 等系统面任务不出现在看板）。
+    origin: Option<JobOrigin>,
 }
 
 impl JobEntry {
     async fn is_running(&self) -> bool {
         self.status.lock().await.is_none()
     }
+}
+
+/// 任务行投影的单一真相源（`list()` 与 `list_by_session_snapshot()` 共用
+/// ——两读路径字段漂移 = WSAPI 与看板行不一致，抽此处钉死）。`None` 字节
+/// 计数（快照遇输出锁忙）序列化为 `null`；`status_json`（终态投影）的
+/// 键值平铺进行——exit_code/success/killed 与 [`Self::output`] 的终态
+/// 平铺同构。
+fn background_job_row(
+    id: u64,
+    cmd: &str,
+    cwd: &str,
+    started_at_unix: u64,
+    running: bool,
+    steerable: bool,
+    total_bytes: Option<u64>,
+    dropped_bytes: Option<u64>,
+    status_json: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut row = serde_json::json!({
+        "id": id,
+        "command": cmd,
+        "cwd": cwd,
+        "started_at_unix": started_at_unix,
+        "running": running,
+        "steerable": steerable,
+        "total_bytes": total_bytes,
+        "dropped_bytes": dropped_bytes,
+    });
+    if let Some(obj) = status_json.as_ref().and_then(serde_json::Value::as_object) {
+        for (k, v) in obj {
+            row[k.as_str()] = v.clone();
+        }
+    }
+    row
 }
 
 /// 网关级后台进程注册表。
@@ -366,32 +405,82 @@ impl BackgroundProcessRegistry {
             let job = &jobs[&id];
             let running = job.is_running().await;
             let buf = job.output.lock().await;
-            let mut row = serde_json::json!({
-                "id": id,
-                "command": job.cmd,
-                "cwd": job.cwd,
-                "started_at_unix": job
-                    .started_at
+            let status = job.status.lock().await;
+            rows.push(background_job_row(
+                id,
+                &job.cmd,
+                &job.cwd,
+                job.started_at
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or(0),
-                "running": running,
-                "steerable": job.steerable,
-                "total_bytes": buf.produced,
-                "dropped_bytes": buf.dropped,
-            });
-            let status = job.status.lock().await;
-            if !running
-                && let Some(s) = status.as_ref()
-                && let Some(obj) = s.to_json().as_object()
-            {
-                for (k, v) in obj {
-                    row[k.as_str()] = v.clone();
-                }
-            }
-            rows.push(row);
+                running,
+                job.steerable,
+                Some(buf.produced),
+                Some(buf.dropped),
+                status.as_ref().map(|s| s.to_json()),
+            ));
         }
         rows
+    }
+
+    /// 按发起会话盘点（2026-11-17 会话资源看板 background 类目）：
+    /// **同步 try_lock 快照**——`GlobalResourceProvider::collect` 是 sync
+    /// 契约，注册表主锁是 tokio Mutex（async），不能 `blocking_lock`（
+    /// runtime 内调用会 panic/deadlock）。全部走 `try_lock` 不等待：注册表
+    /// 主锁拿不到（起任务/收割窗口）= `Err` 忙，看板该拍 Unavailable、
+    /// 下拍自愈；输出锁拿不到（pump 写窗口）= 字节计数 `null`（诚实缺省，
+    /// 不是 0）；status 锁拿不到（完成写窗口，微秒级）= running best-effort
+    /// 视作仍在跑，下一拍自愈。try_lock 零等待 = 本方法与任何持锁任务
+    /// 结构性无死锁。
+    ///
+    /// 只返回 `origin.session_key` 精确匹配的条目，行形状与 [`Self::list`]
+    /// 一致（[`background_job_row`] 单一真相源）。基线 `start()` 路径
+    /// （origin=None，delegate 等系统面任务）不进任何会话的盘点——无归属
+    /// 即不归属，诚实口径。
+    pub fn list_by_session_snapshot(
+        &self,
+        session_key: &str,
+    ) -> Result<Vec<serde_json::Value>, &'static str> {
+        let Ok(jobs) = self.jobs.try_lock() else {
+            return Err("后台进程注册表忙，请稍后刷新");
+        };
+        let mut ids: Vec<u64> = jobs
+            .iter()
+            .filter(|(_, j)| j.origin.as_ref().map(|o| o.session_key.as_str()) == Some(session_key))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            let job = &jobs[&id];
+            // running 判据与 is_running 同源：status 槽 None = 仍在跑。
+            let status_guard = job.status.try_lock().ok();
+            let running = status_guard.as_ref().map(|s| s.is_none()).unwrap_or(true);
+            let status_json = status_guard
+                .as_ref()
+                .and_then(|s| s.as_ref())
+                .map(|st| st.to_json());
+            let (total_bytes, dropped_bytes) = match job.output.try_lock() {
+                Ok(buf) => (Some(buf.produced), Some(buf.dropped)),
+                Err(_) => (None, None),
+            };
+            rows.push(background_job_row(
+                id,
+                &job.cmd,
+                &job.cwd,
+                job.started_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                running,
+                job.steerable,
+                total_bytes,
+                dropped_bytes,
+                status_json,
+            ));
+        }
+        Ok(rows)
     }
 
     /// 起一个后台任务。`command` 经平台 shell 解释（cmd /C 或 sh -c）。
@@ -515,6 +604,7 @@ impl BackgroundProcessRegistry {
                 stdin,
                 steerable,
                 secrets,
+                origin: None,
             },
         );
         debug!(
@@ -822,6 +912,7 @@ impl BackgroundProcessRegistry {
                 stdin: Arc::new(Mutex::new(None)),
                 steerable: false,
                 secrets: Arc::clone(&secrets),
+                origin: origin.clone(),
             },
         );
         debug!(

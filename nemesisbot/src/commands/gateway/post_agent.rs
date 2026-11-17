@@ -1740,6 +1740,79 @@ pub(crate) async fn init_post_agent(
     web_server.set_agent_loop(agent_loop_ref.clone());
     info!("[Gateway] AgentLoop ref injected into web server for model switching");
 
+    // 会话资源盘点注册表装配（2026-11-17 会话资源盘点看板 B2，计划 §3.5）：
+    // 一行一 provider——构造收 `Option<件>` 无条件注册，运行态缺席由
+    // provider collect 内部诚实判三态；feature 裁剪的类目（loop=目标 /
+    // security=全部放行）在此缺席，响应无该键。静态槽注入（handler 侧
+    // install_session_allow_all 同款双注入形态）；relay 纯中继路径不经过
+    // 本函数 → 槽空 = `session.resources` 诚实报「未装配」。
+    {
+        use nemesis_types::resources::{ResourceProvider, SessionResourceRegistry};
+        fn put<R: nemesis_types::resources::GlobalResourceProvider + 'static>(
+            reg: &mut SessionResourceRegistry,
+            p: R,
+        ) {
+            reg.register(ResourceProvider::Global(Box::new(p)));
+        }
+        fn put_loop<R: nemesis_types::resources::PerLoopResourceProvider + 'static>(
+            reg: &mut SessionResourceRegistry,
+            p: R,
+        ) {
+            reg.register(ResourceProvider::PerLoop(Box::new(p)));
+        }
+        let mut registry = SessionResourceRegistry::new();
+        use nemesis_agent::resource_providers as rp;
+        put(&mut registry, rp::SubagentsProvider);
+        put(&mut registry, rp::TodosProvider);
+        put(&mut registry, rp::FileChangesProvider);
+        put(&mut registry, rp::IdentityProvider);
+        put(
+            &mut registry,
+            rp::BackgroundProvider::new(Some(std::sync::Arc::clone(
+                &shared_resources.background_registry,
+            ))),
+        );
+        put(&mut registry, rp::HooksSessionProvider);
+        put(
+            &mut registry,
+            rp::HooksGlobalProvider::new(Some(agent_loop_ref.clone())),
+        );
+        put(
+            &mut registry,
+            rp::ApprovalsPendingProvider::new(Some(agent_loop_ref.clone())),
+        );
+        put(
+            &mut registry,
+            rp::QuestionsPendingProvider::new(Some(agent_loop_ref.clone())),
+        );
+        put_loop(&mut registry, rp::CheckpointProvider);
+        put_loop(&mut registry, rp::ContextProvider);
+        put_loop(&mut registry, rp::ExecutionProvider);
+        put(
+            &mut registry,
+            nemesis_cron::resources::CronResourceProvider::new(Some(cron_service.clone())),
+        );
+        #[cfg(feature = "loop")]
+        put(
+            &mut registry,
+            nemesis_loop::DurableLoopsResourceProvider::new(),
+        );
+        put(
+            &mut registry,
+            nemesis_web::resource_providers::UsageProvider::new(data_store.clone()),
+        );
+        #[cfg(feature = "security")]
+        put(
+            &mut registry,
+            nemesis_web::resource_providers::SessionAllowProvider::new(
+                nemesis_web::handlers::security::session_allow_all_state(),
+            ),
+        );
+        let provider_count = registry.providers().len();
+        nemesis_web::handlers::resources::install_session_resources(std::sync::Arc::new(registry));
+        info!("[Gateway] Session resource registry assembled ({provider_count} providers)");
+    }
+
     // Inject WorkflowEngine into web server for /api/workflow/* endpoints
     #[cfg(feature = "workflow")]
     {

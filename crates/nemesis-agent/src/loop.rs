@@ -211,6 +211,11 @@ mod wiring;
 pub use wiring::*;
 #[allow(unused_imports)]
 pub(crate) use wiring::*;
+mod work_timeline;
+#[allow(unused_imports)]
+pub use work_timeline::*;
+#[allow(unused_imports)]
+pub(crate) use work_timeline::*;
 
 // ---------------------------------------------------------------------------
 // AgentLoop -- core execution engine
@@ -553,6 +558,10 @@ pub struct AgentLoop {
     /// continuation 两臂）——优雅停机 drain 的有界等待 gauge。与 checkpoint
     /// 用 [`Self::turn_counter`]（单调计数，非在途 gauge）语义正交。
     in_flight_turns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 会话运行态快照（资源看板 execution 类目数据源，2026-11-17）：
+    /// session_key → 在途轮次条目（开始时刻 + 当前工具）。turn 任务体
+    /// 入口插入 / Drop 移除；工具 dispatch 前后更新当前工具名。纯内存态。
+    work_timeline: crate::r#loop::work_timeline::WorkTimelineMap,
     /// 停机 drain 闸——置位后泵拒绝新 turn（外部通道诚实回执，内部
     /// 通道静默丢），在途 turn 照常收尾。estop（冻结 agent 活动）与之正交。
     draining: std::sync::atomic::AtomicBool,
@@ -1002,6 +1011,7 @@ impl AgentLoop {
             mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            work_timeline: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             draining: std::sync::atomic::AtomicBool::new(false),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -1179,6 +1189,13 @@ impl AgentLoop {
     /// Work 时间线累加器共享句柄（factory 注入 ToolEventHook 用）。
     pub fn work_recorder(&self) -> crate::work_timeline::WorkRecorder {
         self.work_recorder.clone()
+    }
+
+    /// hooks 方言桥句柄（资源看板 hooks_global 类目数据源，2026-11-17
+    /// 会话资源盘点）。未装配（standalone 简测 / 双配置文件均缺）= None，
+    /// provider 侧诚实 Unavailable。
+    pub fn cc_hook_bridge(&self) -> Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>> {
+        self.cc_bridge.read().clone()
     }
 
     /// 急停中断面的 ToolFinished 补发。被 estop

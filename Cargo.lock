@@ -4067,6 +4067,7 @@ dependencies = [
  "chrono-tz",
  "croner",
  "nemesis-taskstore",
+ "nemesis-types",
  "nemesis-utils",
  "parking_lot",
  "rand 0.8.6",
@@ -4295,6 +4296,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "croner",
+ "nemesis-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -4582,7 +4584,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "ed25519-dalek",
- "include_dir",
  "nemesis-config",
  "nemesis-security",
  "nemesis-types",

@@ -93,7 +93,10 @@ pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: tokio::sync::Mutex<()> =
 /// 无 await 点。
 static SESSION_ALLOW_PERSIST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-fn session_allow_all_state()
+/// 槽读取口。pub：资源盘点装配点（nemesisbot post_agent）取同一 Arc 构造
+/// SessionAllowProvider——盘点与 auditor / security handler 三方共享同一
+/// 运行时态（approval_auto() getter 同款先例）。
+pub fn session_allow_all_state()
 -> Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>> {
     SESSION_ALLOW_ALL
         .read()

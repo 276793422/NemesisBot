@@ -236,7 +236,9 @@ describe('ChatPanel M5 用量常驻条', () => {
     expect(tipText).toContain('已用(实报 400 + 增量 ~100) / 触发点 750')
     expect(tipText).toContain('窗口 1,000（触发点 = 窗口的 75%）')
     await w.find('.usage-text').trigger('mouseleave')
-    expect(w.find('.usage-tip').exists()).toBe(false)
+    // 延迟关闭（2026-11-17）：mouseleave 不再立即关（1s 延迟窗内给用户
+    // 移入弹层的机会）；终局关闭语义由下方专测用假时钟验证。
+    expect(w.find('.usage-tip').exists()).toBe(true)
     w.unmount()
   })
 
@@ -318,5 +320,50 @@ describe('ChatPanel M5 用量常驻条', () => {
     expect(w3.find('.usage-anchor-mark').exists()).toBe(false)
     expect(w3.find('.usage-ctx').text()).toBe('95% context')
     w3.unmount()
+  })
+
+  // 延迟关闭（2026-11-17 用户点名）：弹层悬在文字上方 8px 间隙处，鼠标
+  // 穿间隙触发 mouseleave —— 立即关闭 = 人还没到弹层就没了。契约：
+  // 离开延迟 1s 才关；期间重新进入（文字或弹层，二者都触发本元素
+  // mouseenter）取消 pending 关闭；彻底移开 1s 后才收起。
+  it('usage-tip 延迟关闭：mouseleave 不立即关；1s 后关；重入取消 pending 关闭', async () => {
+    vi.useFakeTimers()
+    try {
+      ctxResponse = {
+        context: {
+          pct: 50,
+          pct_trigger: 66,
+          window: 1000,
+          trigger: 750,
+          anchor_tokens: 400,
+          delta_tokens: 100,
+          anchor_state: 'stale',
+          breakdown: { system: 40, tools: 160, mcp: 60, skill: 30, memory: 10, summary: 100, history: 100, free: 500 },
+        },
+      }
+      usageResponse = { total_cost_usd: 0 }
+      installRequestMock()
+      const w = await mountPanelWithSession('s1')
+      const txt = w.find('.usage-text')
+
+      await txt.trigger('mouseenter')
+      expect(w.find('.usage-tip').exists()).toBe(true)
+      await txt.trigger('mouseleave')
+      // 延迟窗内不关。
+      expect(w.find('.usage-tip').exists()).toBe(true)
+      // 重入取消：pending 的 1s 关闭被清——2s 后弹层仍在。
+      await txt.trigger('mouseenter')
+      vi.advanceTimersByTime(2000)
+      await flushPromises()
+      expect(w.find('.usage-tip').exists()).toBe(true)
+      // 彻底移开：1s 延迟到期收起。
+      await txt.trigger('mouseleave')
+      vi.advanceTimersByTime(1000)
+      await flushPromises()
+      expect(w.find('.usage-tip').exists()).toBe(false)
+      w.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

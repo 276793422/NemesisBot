@@ -24,7 +24,7 @@ const EVENTS = [
   { id: 'PostToolUseFailure', label: 'PostToolUseFailure', hint: '工具执行失败后（观察型：stderr 只记日志）' },
   { id: 'SessionStart', label: 'SessionStart', hint: '每会话首条 prompt 到达时（观察型，不阻断）' },
   { id: 'UserPromptSubmit', label: 'UserPromptSubmit', hint: '用户消息进入历史之前——可拦下 prompt' },
-  { id: 'Stop', label: 'Stop', hint: '最终答案被接受后——可阻止收尾再答一轮（封顶 2 次）' },
+  { id: 'Stop', label: 'Stop', hint: '最终答案被接受后——可阻止收尾再答一轮（封顶 2 次）；提示词型钩子（LLM 执行体）在此钩点注入提示词开新轮（无封顶）' },
   { id: 'SessionEnd', label: 'SessionEnd', hint: '会话被清理/删除时（观察型，无阻断语义）' },
   { id: 'PreCompact', label: 'PreCompact', hint: '上下文压缩前（观察型：不阻止压缩）' },
   { id: 'PostCompact', label: 'PostCompact', hint: '上下文压缩后（观察型）' },
@@ -335,7 +335,7 @@ onMounted(() => {
                 <tr><td>PreToolUse</td><td>工具执行前（安全 8 层闸之后）</td><td>拦截工具调用，stderr 作理由回灌模型</td></tr>
                 <tr><td>PostToolUse</td><td>工具执行后（Forge 记录前）</td><td>stderr 追加到结果反馈模型（不撤销已执行操作）</td></tr>
                 <tr><td>PostToolUseFailure</td><td>工具执行失败后</td><td>观察型（stderr 只记日志）</td></tr>
-                <tr><td>Stop</td><td>最终答案被接受后、轮次结束前</td><td>阻止收尾，stderr 作反馈再答一轮（每轮封顶 2 次）</td></tr>
+                <tr><td>Stop</td><td>最终答案被接受后、轮次结束前</td><td>阻止收尾，stderr 作反馈再答一轮（每轮封顶 2 次）；提示词型钩子注入提示词开新轮（无封顶）</td></tr>
                 <tr><td>SessionEnd</td><td>会话被清理/删除时</td><td>观察型（无阻断语义）</td></tr>
                 <tr><td>PreCompact</td><td>上下文压缩前</td><td>观察型（不阻止压缩）</td></tr>
                 <tr><td>PostCompact</td><td>上下文压缩后</td><td>观察型</td></tr>
@@ -348,6 +348,15 @@ onMounted(() => {
               <code>timeout</code> 秒（默认 60）；可加
               <code>scope: {"sessions": ["<会话id>"]}</code> 圈定作用会话（「设置」TAB 按标题勾选、
               落盘存会话 id；不设 = 全部会话生效）。LLM 调用级钩子（K1b）无对应事件，不在此文件配置。
+            </p>
+            <p style="font-size: var(--text-sm); margin: var(--space-3) 0 0; color: var(--text-muted);">
+              提示词型钩子（LLM 执行体，仅 Stop 事件）：除子进程脚本外，钩子还可以是一段
+              <em>提示词</em>——每轮对话收尾后，该提示词作为新的用户消息注入，开启下一轮对话，
+              <strong>没有轮数上限</strong>（例如「继续检查代码是否正确，确认是否有问题」即可让模型
+              长期持续自查）。它不落在本文件（hooks.json 是 shell 方言），而是按会话存于
+              <code>hooks.session.json</code>，由 Agent 在对话内用 <code>hooks</code> 工具设置
+              （只能给当前会话设）——对 Agent 说「每轮结束后继续检查代码」即可；停止方式：让 Agent
+              删除该钩子（<code>hooks delete</code>）、急停开关，或删除对应会话。
             </p>
           </div>
         </div>

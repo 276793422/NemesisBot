@@ -80,6 +80,7 @@ fn fresh_state() -> TurnState {
         steer_escape_used: false,
         terminal_reason: None,
         turn_end_continues: 0,
+        pending_prompt_inject: None,
         canvas_retries: 0,
         log_boundaries: false,
         chat_opts: crate::types::ChatOptions {

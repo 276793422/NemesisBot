@@ -238,6 +238,7 @@ impl AgentLoop {
             mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            work_timeline: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             draining: std::sync::atomic::AtomicBool::new(false),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
@@ -1276,12 +1277,14 @@ impl AgentLoop {
         }
     }
 
-    pub(crate) fn spawn_turn_task<F>(&self, fut: F)
+    pub(crate) fn spawn_turn_task<F>(&self, fut: F, session_key: &str)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         let permits = self.turn_permits.clone();
         let gauge = Arc::clone(&self.in_flight_turns);
+        let timeline = Arc::clone(&self.work_timeline);
+        let timeline_key = session_key.to_string();
         let handle = tokio::spawn(async move {
             // acquire_owned 把许可与 Arc 绑定，async 块结束时（含 abort 展开丢弃）释放。
             let _permit = match permits {
@@ -1291,6 +1294,14 @@ impl AgentLoop {
             // W6：任务体全程持 in-flight gauge（guard Drop 保证 panic/abort
             // 展开路径也减账）。许可等待段不计——那不是在执行 turn。
             let _gauge = InFlightTurnGuard::acquire(&gauge);
+            // 资源看板 execution 类目（2026-11-17）：turn 任务体全程持
+            // 运行态条目（Drop 清理，panic/abort 展开同样减账）。空键不插
+            // （无会话身份的内部 turn 无盘点意义）。
+            let _timeline = if timeline_key.is_empty() {
+                None
+            } else {
+                Some(TurnTimelineGuard::acquire(&timeline, &timeline_key))
+            };
             fut.await;
         });
         let mut handles = self.turn_task_handles.lock();
@@ -1394,6 +1405,16 @@ impl AgentLoop {
                 );
                 // W6：inline continuation 也是在途 turn——gauge 与 spawn 臂同源。
                 let _gauge = InFlightTurnGuard::acquire(&self.in_flight_turns);
+                // 资源看板 execution 类目（2026-11-17）：continuation 轮次
+                // 同样进运行态快照（spawn 臂同语义；空键不插）。
+                let _timeline = if msg.session_key.is_empty() {
+                    None
+                } else {
+                    Some(TurnTimelineGuard::acquire(
+                        &self.work_timeline,
+                        &msg.session_key,
+                    ))
+                };
                 self.dispatch_continuation(task_id, msg).await;
             }
             GateOutcome::Immediate {
@@ -1433,30 +1454,35 @@ impl AgentLoop {
                 // 后发，均不碰 sent_in_round。
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    // R294（BUG-20261031-235）：panic 兜底守卫——
-                    // handle_maintenance（LLM 摘要，分钟级）panic 展开时
-                    // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
-                    // 显式 drop（= 原 release_session）。
-                    let _busy_guard = super::admission::SessionBusyGuard::new(&this, &session_key);
-                    // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
-                    // （可能是 LLM 摘要）= 终局（receipt=false）。两帧都
-                    // 是瞬态回执（落盘只有 user 行）→ Some(false) 不占
-                    // 行号锚（行号锚漂移根修）。
-                    this.finish_message(&m, receipt, None, false, true, Some(false))
-                        .await;
-                    let response = this
-                        .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
-                        .await;
-                    drop(_busy_guard);
-                    // 排队消息排空（2026-09-28 真模型验证发现）：
-                    // 分钟级维护期间排队的消息此前在维护尾巴
-                    // 永久滞留 next_turn——与 admitted 尾部共用
-                    // drain_next_turn_queue 对称排空。
-                    this.drain_next_turn_queue(&session_key).await;
-                    this.finish_message(&m, response, None, false, false, Some(false))
-                        .await;
-                });
+                let sk = session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        // R294（BUG-20261031-235）：panic 兜底守卫——
+                        // handle_maintenance（LLM 摘要，分钟级）panic 展开时
+                        // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
+                        // 显式 drop（= 原 release_session）。
+                        let _busy_guard =
+                            super::admission::SessionBusyGuard::new(&this, &session_key);
+                        // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
+                        // （可能是 LLM 摘要）= 终局（receipt=false）。两帧都
+                        // 是瞬态回执（落盘只有 user 行）→ Some(false) 不占
+                        // 行号锚（行号锚漂移根修）。
+                        this.finish_message(&m, receipt, None, false, true, Some(false))
+                            .await;
+                        let response = this
+                            .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
+                            .await;
+                        drop(_busy_guard);
+                        // 排队消息排空（2026-09-28 真模型验证发现）：
+                        // 分钟级维护期间排队的消息此前在维护尾巴
+                        // 永久滞留 next_turn——与 admitted 尾部共用
+                        // drain_next_turn_queue 对称排空。
+                        this.drain_next_turn_queue(&session_key).await;
+                        this.finish_message(&m, response, None, false, false, Some(false))
+                            .await;
+                    },
+                    &sk,
+                );
             }
             GateOutcome::UserDispatch {
                 task_text,
@@ -1469,30 +1495,42 @@ impl AgentLoop {
                 // （process_user_dispatch 内部负责）。
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
-                        .await;
-                });
+                let sk = session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
+                            .await;
+                    },
+                    &sk,
+                );
             }
             GateOutcome::Ungated => {
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    let (_, response, err) = this.process_ungated(&m).await;
-                    // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
-                    this.finish_message(&m, response, err, true, false, None)
-                        .await;
-                });
+                let sk = m.session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        let (_, response, err) = this.process_ungated(&m).await;
+                        // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
+                        this.finish_message(&m, response, err, true, false, None)
+                            .await;
+                    },
+                    &sk,
+                );
             }
             GateOutcome::Admitted(admission) => {
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    let (_, response, err) = this.process_admitted(&m, admission).await;
-                    // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
-                    this.finish_message(&m, response, err, true, false, None)
-                        .await;
-                });
+                let sk = m.session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        let (_, response, err) = this.process_admitted(&m, admission).await;
+                        // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
+                        this.finish_message(&m, response, err, true, false, None)
+                            .await;
+                    },
+                    &sk,
+                );
             }
         }
     }

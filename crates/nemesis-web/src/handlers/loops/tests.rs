@@ -343,3 +343,102 @@ fn commands_list_pinned() {
         ]
     );
 }
+
+// 初始排程（2026-11-17 会话资源盘点看板 B3「+ 设置目标」前置）：
+// delay_secs / cron 透传 compute_next_wake；缺省 = 不排程（旧行为）。
+
+#[tokio::test]
+async fn create_with_delay_schedules_initial_wake() {
+    let home = tempfile::tempdir().unwrap();
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ctx = make_ctx(home.path());
+    let out = LoopsHandler
+        .handle_cmd(
+            "create",
+            Some(serde_json::json!({
+                "goal": "delay 排程",
+                "session_id": "bench-loop-a",
+                "delay_secs": 120,
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let id = out["id"].as_str().unwrap().to_string();
+    let detail = LoopsHandler
+        .handle_cmd("get", Some(serde_json::json!({ "id": id })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    // next_wake 是 format_wake_time 人读串（有排程 = 非空）；cron 不设。
+    assert!(
+        detail["next_wake"].as_str().is_some_and(|s| !s.is_empty()),
+        "delay 排程应有 next_wake: {detail}"
+    );
+    assert_eq!(detail["cron"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn create_with_cron_sets_cron_field() {
+    let home = tempfile::tempdir().unwrap();
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ctx = make_ctx(home.path());
+    let out = LoopsHandler
+        .handle_cmd(
+            "create",
+            Some(serde_json::json!({
+                "goal": "cron 排程",
+                "session_id": "bench-loop-a",
+                "cron": "0 9 * * *",
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let id = out["id"].as_str().unwrap().to_string();
+    let detail = LoopsHandler
+        .handle_cmd("get", Some(serde_json::json!({ "id": id })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail["cron"].as_str(), Some("0 9 * * *"));
+    assert!(detail["next_wake"].as_str().is_some_and(|s| !s.is_empty()));
+}
+
+#[tokio::test]
+async fn create_invalid_cron_is_loud_error() {
+    let home = tempfile::tempdir().unwrap();
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ctx = make_ctx(home.path());
+    let err = LoopsHandler
+        .handle_cmd(
+            "create",
+            Some(serde_json::json!({
+                "goal": "坏 cron",
+                "session_id": "bench-loop-a",
+                "cron": "not a cron",
+            })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("排程无效"), "unexpected: {err}");
+}
+
+#[tokio::test]
+async fn create_without_schedule_keeps_legacy_behavior() {
+    let home = tempfile::tempdir().unwrap();
+    let _g = isolate(home.path(), SESSION_KEY);
+    let ctx = make_ctx(home.path());
+    let out = create_loop(&ctx).await.unwrap();
+    let id = out["id"].as_str().unwrap().to_string();
+    let detail = LoopsHandler
+        .handle_cmd("get", Some(serde_json::json!({ "id": id })), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(detail["next_wake"], serde_json::Value::Null);
+    assert_eq!(detail["cron"], serde_json::Value::Null);
+}

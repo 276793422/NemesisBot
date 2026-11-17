@@ -54,11 +54,13 @@ fn parse_add_minimal_defaults() {
         HooksCommand::Add {
             event,
             command,
+            prompt,
             matcher,
             timeout,
         } => {
             assert_eq!(event, "PreToolUse");
             assert_eq!(command, "echo hi");
+            assert_eq!(prompt, "");
             assert_eq!(matcher, None);
             assert_eq!(timeout, None);
         }
@@ -76,11 +78,13 @@ fn parse_add_full_and_trims() {
         HooksCommand::Add {
             event,
             command,
+            prompt,
             matcher,
             timeout,
         } => {
             assert_eq!(event, "Stop");
             assert_eq!(command, "echo hi");
+            assert_eq!(prompt, "");
             // 纯空白 matcher = None（= 全部工具）。
             assert_eq!(matcher, None);
             assert_eq!(timeout, Some(120));
@@ -143,6 +147,82 @@ fn parse_rejects_unknown_event_and_bad_timeout() {
         .err()
         .unwrap();
     assert!(err.contains("正整数秒"));
+}
+
+// ---------------------------------------------------------------------------
+// parse：prompt 型钩子（LLM 执行体）校验
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_add_prompt_hook_on_stop_ok() {
+    let cmd = parse_hooks_args(
+        r#"{"action":"add","event":"Stop","prompt":"继续检查代码是否正确，确认是否有问题"}"#,
+    )
+    .expect("prompt add parses");
+    match cmd {
+        HooksCommand::Add {
+            event,
+            command,
+            prompt,
+            matcher,
+            timeout: _,
+        } => {
+            assert_eq!(event, "Stop");
+            assert_eq!(command, "", "prompt 型条目 command 恒空");
+            assert_eq!(prompt, "继续检查代码是否正确，确认是否有问题");
+            assert_eq!(matcher, None);
+        }
+        _ => panic!("expected Add"),
+    }
+}
+
+#[test]
+fn parse_add_rejects_both_empty() {
+    // command 与 prompt 双空 = 没有执行体，拒绝。
+    let err = parse_hooks_args(r#"{"action":"add","event":"Stop"}"#)
+        .err()
+        .unwrap();
+    assert!(err.contains("至少一项非空"), "err={err}");
+    // command 空串 + prompt 缺席同罪。
+    let err = parse_hooks_args(r#"{"action":"add","event":"Stop","command":"  "}"#)
+        .err()
+        .unwrap();
+    assert!(err.contains("至少一项非空"));
+}
+
+#[test]
+fn parse_add_rejects_both_provided() {
+    // Exactly one 契约：双非空混合条目语义未定（shell 投影滤掉 prompt 条目
+    // → command 被静默忽略）——loud 拒绝，不静默偏向任何一型。
+    let err = parse_hooks_args(
+        r#"{"action":"add","event":"Stop","command":"echo hi","prompt":"继续检查"}"#,
+    )
+    .err()
+    .unwrap();
+    assert!(err.contains("二选一"), "err={err}");
+    assert!(err.contains("不可混合"), "err={err}");
+}
+
+#[test]
+fn parse_add_rejects_prompt_off_stop() {
+    // prompt 型仅 Stop 合法——只有 Stop 有「turn 结束」时机。
+    for event in [
+        "PreToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+        "SessionEnd",
+    ] {
+        let err = parse_hooks_args(&format!(
+            r#"{{"action":"add","event":"{event}","prompt":"x"}}"#
+        ))
+        .err()
+        .unwrap();
+        assert!(err.contains("Stop"), "event={event} err={err}");
+    }
+    // command 型不受此限（任意事件合法）。
+    assert!(
+        parse_hooks_args(r#"{"action":"add","event":"PreToolUse","command":"echo ok"}"#).is_ok()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -214,6 +294,55 @@ async fn add_timeout_zero_rejected_and_over_cap_clamped() {
         store.hooks.get("s-t").unwrap().get("Stop").unwrap()[0].timeout,
         Some(MAX_TIMEOUT_SECS)
     );
+}
+
+// ---------------------------------------------------------------------------
+// execute：prompt 型钩子（LLM 执行体）落盘 + 渲染
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn add_prompt_hook_writes_entry_and_renders_type() {
+    let cfg = tempdir();
+    let t = tool(&cfg);
+    let ctx = ctx_main("s-loop");
+    let out = t
+        .execute(
+            r#"{"action":"add","event":"Stop","prompt":"继续检查代码是否正确，确认是否有问题"}"#,
+            &ctx,
+        )
+        .await
+        .expect("prompt add ok");
+    assert!(out.contains("提示词型"), "渲染标注类型\n{out}");
+    assert!(
+        out.contains("没有轮数上限"),
+        "响应说明永续语义与停止方式\n{out}"
+    );
+
+    // 落盘形态：command 空 + prompt 非空。
+    let store = read_session_hook_store(&cfg);
+    let entry = &store.hooks.get("s-loop").unwrap().get("Stop").unwrap()[0];
+    assert_eq!(entry.command, "");
+    assert_eq!(entry.prompt, "继续检查代码是否正确，确认是否有问题");
+
+    // list 渲染 prompt 型（预览 + 提示词型标注），不显示超时/shell。
+    let listing = t
+        .execute(r#"{"action":"list"}"#, &ctx)
+        .await
+        .expect("list ok");
+    assert!(listing.contains("提示词型"), "list 标注类型\n{listing}");
+    assert!(
+        listing.contains("继续检查代码"),
+        "list 含 prompt 预览\n{listing}"
+    );
+
+    // delete 走同一条按 id 路径（prompt 型与 command 型同构）。
+    let del = t
+        .execute(r#"{"action":"delete","id":"h1"}"#, &ctx)
+        .await
+        .expect("delete ok");
+    assert!(del.contains("提示词型"), "delete 渲染条目类型\n{del}");
+    let store = read_session_hook_store(&cfg);
+    assert!(!store.hooks.contains_key("s-loop"), "全空摘键");
 }
 
 #[tokio::test]
@@ -408,6 +537,7 @@ fn reconcile_orphans_removes_dead_sessions_and_keeps_live() {
                 id: "h1".into(),
                 matcher: String::new(),
                 command: "echo live".into(),
+                prompt: String::new(),
                 timeout: Some(60),
             }],
         )]),
@@ -420,6 +550,7 @@ fn reconcile_orphans_removes_dead_sessions_and_keeps_live() {
                 id: "h1".into(),
                 matcher: String::new(),
                 command: "echo dead".into(),
+                prompt: String::new(),
                 timeout: Some(60),
             }],
         )]),

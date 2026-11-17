@@ -75,10 +75,13 @@ async fn in_flight_gauge_tracks_spawned_turn_and_guard_releases() {
     let (picked_up, picked_rx) = tokio::sync::oneshot::channel::<()>();
     // spawn_turn_task 的任务体自带 guard（接线本体）——测试不再手动
     // acquire（双 guard 会重复计数）。
-    al.spawn_turn_task(async move {
-        let _ = picked_up.send(());
-        let _ = rx.await;
-    });
+    al.spawn_turn_task(
+        async move {
+            let _ = picked_up.send(());
+            let _ = rx.await;
+        },
+        "agent:main:session:w6a",
+    );
     picked_rx.await.unwrap();
     assert_eq!(al.in_flight_turns(), 1, "任务体开始即计 1");
 
@@ -197,10 +200,13 @@ async fn wait_loops_drained_requires_all_loops_idle() {
     // b 在途：联合等待必须超时 false（只看 a 会假绿——本缺陷的回归锁）。
     let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
     let (picked_up, picked_rx) = tokio::sync::oneshot::channel::<()>();
-    b.spawn_turn_task(async move {
-        let _ = picked_up.send(());
-        let _ = release_rx.await;
-    });
+    b.spawn_turn_task(
+        async move {
+            let _ = picked_up.send(());
+            let _ = release_rx.await;
+        },
+        "agent:main:session:w6b",
+    );
     picked_rx.await.unwrap();
     assert_eq!(b.in_flight_turns(), 1);
     assert!(

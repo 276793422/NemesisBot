@@ -461,9 +461,12 @@ async fn test_skills_source_toggle_clawhub_then_persist() {
 
 #[tokio::test]
 async fn test_skills_search_no_sources_with_installed_dir() {
-    // 2026-11-16 起 builtin 内嵌臂恒注册——验证密闭配置（压制出厂源 + 关
-    // ModelScope，不打真实网络）+ skills/ 目录在场时搜索管道不 panic，
-    // installed 标记面照常工作。
+    // No registries but a skills/ dir exists; just verify no panic.
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证「无源」管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 出厂源 disabled 占位条目压制 apply_factory_sources（CI 密闭，不打真实
+    // api.github.com；name/repo 无 serde default，缺 repo 整份解析失败回落
+    // default 会复活出厂源）。
     let handler = SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
@@ -471,23 +474,20 @@ async fn test_skills_search_no_sources_with_installed_dir() {
     std::fs::create_dir_all(ws.join("config")).unwrap();
     std::fs::write(
         ws.join("config/config.skills.json"),
-        // name/repo 无 serde default——缺 repo 整份解析失败回落 default（出厂源复活）。
         r#"{"modelscope":{"enabled":false},"github_sources":[{"name":"nemesisbot","repo":"276793422/NemesisBot","enabled":false}]}"#,
     )
     .unwrap();
     let ctx = make_ctx(&dir);
 
-    let data = serde_json::json!({ "query": "problem-analysis" });
+    let data = serde_json::json!({ "query": "anything" });
     let r = handler
         .handle_cmd("search", Some(data), &ctx)
         .await
         .unwrap()
         .unwrap();
-    let results = r["results"].as_array().unwrap();
-    assert_eq!(results.len(), 1, "builtin-only results: {results:?}");
-    assert_eq!(results[0]["slug"], "problem-analysis");
-    // 本地未装 → installed=false（installed_slugs 面照常工作）
-    assert_eq!(results[0]["installed"], false);
+    assert!(r["results"].as_array().unwrap().is_empty());
+    // No sources → friendly message.
+    assert!(r["message"].as_str().is_some());
 }
 
 // browse — sort variants

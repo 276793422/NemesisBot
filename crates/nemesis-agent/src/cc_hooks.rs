@@ -82,6 +82,9 @@ pub const HOOKS_FILE: &str = "hooks.json";
 /// 落位，与用户 `hooks.json` 分文件互不踩写（Dashboard 编辑 hooks.json、
 /// agent 写本文件，无竞写窗口）。形态：
 /// `{"hooks":{"<sid>":{"PreToolUse":[{"id":"h1","matcher":"","command":"...","timeout":60}]}}}`。
+/// 条目二型：command 型（shell 执行体，任意事件）/ prompt 型（LLM 执行体，
+/// `prompt` 字段非空且 command 空——**仅 Stop 事件合法**，turn 收尾后注入
+/// 提示词开新轮，永续循环语义，见 `hooks.rs::TurnEndDecision::Inject`）。
 pub const HOOKS_SESSION_FILE: &str = "hooks.session.json";
 
 /// 一次性迁移：旧落位 `<home>/config/hooks.json` → 新落位
@@ -280,6 +283,39 @@ impl CcEvents {
             ("Notification", count(&self.notification)),
         ]
     }
+
+    /// 会话命中摘要（2026-11-17 会话资源盘点，hooks_global 类目）：逐事件
+    /// 统计「会话圈定命中本会话」的分组脚本数——圈定判定复用
+    /// [`CcHookGroup::matches_session`] 既有规则（裸 sid + 完整 session_key
+    /// 双串任一即中；未圈定/空列表 = 全命中，口径地雷 3：照抄勿自造）。
+    /// 顺序与 [`Self::script_counts`] 一致；0 计数事件不在返回里（看板只
+    /// 展示命中的）。
+    pub fn session_match_counts(&self, session_key: &str) -> Vec<(&'static str, usize)> {
+        let count_matched = |v: &Vec<CcHookGroup>| {
+            v.iter()
+                .filter(|g| g.matches_session(session_key))
+                .map(|g| g.hooks.len())
+                .sum::<usize>()
+        };
+        let all = [
+            ("PreToolUse", count_matched(&self.pre_tool_use)),
+            ("PostToolUse", count_matched(&self.post_tool_use)),
+            (
+                "PostToolUseFailure",
+                count_matched(&self.post_tool_use_failure),
+            ),
+            ("SessionStart", count_matched(&self.session_start)),
+            ("UserPromptSubmit", count_matched(&self.user_prompt_submit)),
+            ("Stop", count_matched(&self.stop)),
+            ("SessionEnd", count_matched(&self.session_end)),
+            ("PreCompact", count_matched(&self.pre_compact)),
+            ("PostCompact", count_matched(&self.post_compact)),
+            ("SubagentStart", count_matched(&self.subagent_start)),
+            ("SubagentStop", count_matched(&self.subagent_stop)),
+            ("Notification", count_matched(&self.notification)),
+        ];
+        all.into_iter().filter(|(_, n)| *n > 0).collect()
+    }
 }
 
 /// 解析 hooks.json 内容。两种形态都收：标准 `{"hooks":{...}}` 与裸顶层
@@ -409,8 +445,17 @@ pub struct SessionHookEntry {
     /// 工具名 matcher（方言正则语义；空串 = 全部工具，序列化保留空串）。
     #[serde(default)]
     pub matcher: String,
+    /// shell 型条目的命令。与 [`SessionHookEntry::prompt`] 恰好一项非空
+    /// （Exactly one，parse 校验强制——双空无执行体、双非空混合条目语义未定
+    /// 均 loud 拒绝；工具写入路径已保证，防御手编坏文件）。
+    #[serde(default)]
     pub command: String,
-    /// 秒。`None` = 桥侧缺省 [`DEFAULT_TIMEOUT_SECS`]。
+    /// 提示词型条目（LLM 执行体）：turn 收尾后把这段提示词作为新的用户消息
+    /// 注入会话开启全新一轮。仅 `Stop` 事件有意义——Stop 钩点每轮触发 →
+    /// 每轮收尾后注入 → 自然循环（无封顶，永续是钩点正常执行的自然副作用）。
+    #[serde(default)]
+    pub prompt: String,
+    /// 秒。`None` = 桥侧缺省 [`DEFAULT_TIMEOUT_SECS`]（仅 shell 型消费）。
     #[serde(default)]
     pub timeout: Option<u64>,
 }
@@ -447,15 +492,33 @@ impl SessionHookStore {
 pub fn parse_session_hook_store(text: &str) -> Result<SessionHookStore, String> {
     let store: SessionHookStore =
         serde_json::from_str(text).map_err(|e| format!("invalid hooks.session.json: {e}"))?;
-    // 条目校验：command 非空、id 非空（工具写入路径已保证，防御手编坏文件）。
+    // 条目校验：command/prompt 至少一项非空、id 非空（工具写入路径已保证，
+    // 防御手编坏文件）。
     for (sid, per_event) in &store.hooks {
         for (event, entries) in per_event {
             for e in entries {
                 if e.id.trim().is_empty() {
                     return Err(format!("session {sid} event {event}: empty hook id"));
                 }
-                if e.command.trim().is_empty() {
-                    return Err(format!("session {sid} event {event}: empty command"));
+                if e.command.trim().is_empty() && e.prompt.trim().is_empty() {
+                    return Err(format!(
+                        "session {sid} event {event}: hook needs non-empty command or prompt"
+                    ));
+                }
+                // 恰好一项（与工具写入路径 Exactly one 契约同源）：双非空混合
+                // 条目语义未定（shell 投影滤掉 prompt 条目 → command 被静默
+                // 忽略）——loud 拒绝整文件，让手编者修好再落。
+                if !e.command.trim().is_empty() && !e.prompt.trim().is_empty() {
+                    return Err(format!(
+                        "session {sid} event {event}: hook id {} has both command and prompt — \
+                         exactly one must be non-empty",
+                        e.id
+                    ));
+                }
+                if !e.prompt.trim().is_empty() && event != "Stop" {
+                    return Err(format!(
+                        "session {sid} event {event}: prompt hooks are only valid on Stop"
+                    ));
                 }
             }
         }
@@ -533,10 +596,21 @@ fn session_store_to_events(
         }],
     };
     let mut events = CcEvents::default();
+    // shell 组只收 shell 型条目；prompt 型条目不进 CcEvents（shell 执行路径
+    // 不认识它），由桥的会话 prompt 钩子表单独收集（load_from_dir /
+    // refresh_session_events 与本函数同源消费同一 store）。
+    let shell_only = |entries: &Vec<SessionHookEntry>| {
+        entries
+            .iter()
+            .filter(|e| e.prompt.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     let push = |slot: &mut Vec<CcHookGroup>, entries: &Vec<SessionHookEntry>| {
         slot.extend(entries.iter().map(&group));
     };
     for (event, entries) in per_event {
+        let entries = &shell_only(entries);
         match event.as_str() {
             "PreToolUse" => push(&mut events.pre_tool_use, entries),
             "PostToolUse" => push(&mut events.post_tool_use, entries),
@@ -554,6 +628,24 @@ fn session_store_to_events(
         }
     }
     events
+}
+
+/// 会话级条目（某 sid）的**提示词型**钩子提取：仅 `Stop` 事件下 prompt 非空
+/// 条目，按存储序收集 prompt 文本。与 [`session_store_to_events`] 同源消费
+/// 同一 store（load_from_dir / refresh_session_events 两处换装点成对调用）。
+fn session_store_to_prompt_hooks(
+    per_event: &std::collections::BTreeMap<String, Vec<SessionHookEntry>>,
+) -> Vec<String> {
+    per_event
+        .get("Stop")
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|e| !e.prompt.trim().is_empty())
+                .map(|e| e.prompt.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 把会话级 [`CcEvents`] 并入全局快照（同名字段 Vec 追加；会话组自带
@@ -920,6 +1012,13 @@ pub struct CcHookBridge {
     /// 会话级钩子内存态：`sid → CcEvents`（scope 已钉死 sid）。热更整表
     /// 换装；`on_session_end` 摘除单条。
     session_events: RwLock<HashMap<String, CcEvents>>,
+    /// 会话级**提示词型**钩子表：`sid → [prompt]`（仅 Stop 事件、prompt 非空
+    /// 条目）。与 [`Self::session_events`] 同闸同生命周期：同一内容比对触发
+    /// 同一次换装（load_from_dir / refresh_session_events 三分支同步）、
+    /// `on_session_end` purge 同步摘除。消费点在 [`Self::on_turn_end`] 尾部
+    /// （shell 全放行后）——返回 [`TurnEndDecision::Inject`]，由 loop 在
+    /// turn 收尾后把 prompt 作为新用户消息注入（永续循环语义，见 hooks.rs）。
+    session_prompt_hooks: RwLock<HashMap<String, Vec<String>>>,
     project_dir: PathBuf,
     /// SessionStart 只跑一次的判重（session_key → 已）。
     seen_sessions: Mutex<HashSet<String>>,
@@ -939,6 +1038,7 @@ impl CcHookBridge {
             session_path: None,
             seen_session_raw: Mutex::new(None),
             session_events: RwLock::new(HashMap::new()),
+            session_prompt_hooks: RwLock::new(HashMap::new()),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
@@ -1009,12 +1109,18 @@ impl CcHookBridge {
             },
             None => CcEvents::default(),
         };
-        // 会话级内存态：sid → CcEvents（scope 钉死）。
+        // 会话级内存态：sid → CcEvents（scope 钉死）+ sid → prompt 钩子表
+        // （两表同源消费同一 store，成对构建）。
         let mut session_events = HashMap::new();
+        let mut session_prompt_hooks = HashMap::new();
         if let Some(store) = &session_store {
             for (sid, per_event) in &store.hooks {
                 if !per_event.values().all(Vec::is_empty) {
                     session_events.insert(sid.clone(), session_store_to_events(sid, per_event));
+                }
+                let prompts = session_store_to_prompt_hooks(per_event);
+                if !prompts.is_empty() {
+                    session_prompt_hooks.insert(sid.clone(), prompts);
                 }
             }
         }
@@ -1037,6 +1143,7 @@ impl CcHookBridge {
             session_path: Some(session_path),
             seen_session_raw: Mutex::new(session_text),
             session_events: RwLock::new(session_events),
+            session_prompt_hooks: RwLock::new(session_prompt_hooks),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
@@ -1154,13 +1261,19 @@ impl CcHookBridge {
                     path.display()
                 );
                 self.session_events.write().unwrap().clear();
+                self.session_prompt_hooks.write().unwrap().clear();
             }
             Some(t) => match parse_session_hook_store(t) {
                 Ok(store) => {
                     let mut map = HashMap::new();
+                    let mut prompts = HashMap::new();
                     for (sid, per_event) in &store.hooks {
                         if !per_event.values().all(Vec::is_empty) {
                             map.insert(sid.clone(), session_store_to_events(sid, per_event));
+                        }
+                        let sid_prompts = session_store_to_prompt_hooks(per_event);
+                        if !sid_prompts.is_empty() {
+                            prompts.insert(sid.clone(), sid_prompts);
                         }
                     }
                     tracing::info!(
@@ -1169,6 +1282,7 @@ impl CcHookBridge {
                         map.len()
                     );
                     *self.session_events.write().unwrap() = map;
+                    *self.session_prompt_hooks.write().unwrap() = prompts;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1240,6 +1354,18 @@ impl CcHookBridge {
             .copied()
             .unwrap_or(0)
             > 0
+    }
+
+    /// 全局侧钩子的会话匹配计数（资源看板 hooks_global 类目，2026-11-17
+    /// 会话资源盘点）。锁内取全局 `CcEvents` 快照后委托
+    /// [`CcEvents::session_match_counts`]（双串匹配复用 matches_session；
+    /// 0 计数事件已过滤）。会话级钩子不走这里——hooks_session 类目按
+    /// 计划口径直读 `hooks.session.json`（裸 sid 键）。
+    pub fn global_session_match_counts(&self, session_key: &str) -> Vec<(&'static str, usize)> {
+        // 走 refresh（懒重载：盘上内容变化即热更）而非直读缓存——盘点面
+        // 与 dispatch 面同一新鲜度口径。
+        let events = self.refresh_global_events();
+        events.session_match_counts(session_key)
     }
 
     /// 方言 `SubagentStart`：spawn 闭包内、
@@ -1569,6 +1695,36 @@ impl LifecycleHook for CcHookBridge {
         }
         // 正常放行 → 清计数（下一个 turn 的 stop_hook_active 从 false 起）。
         self.stop_blocks.lock().unwrap().remove(&end.session_key);
+        // 提示词型钩子（LLM 执行体）：shell 全放行后查会话 prompt 表。
+        // 表的新鲜度由开头 current_events → refresh_session_events 保证
+        // （同一内容比对闸已触发换装）。多条 prompt 按存储序拼接为一条注入
+        // （一次注入一个消息；钩子内容全部到达）。空 = 无 prompt 钩子，照常
+        // Stop。Inject 由 loop 在 turn 收尾后注入新用户消息开启下一轮——
+        // 下一轮结束 Stop 钩点再次触发 → 自然循环（无封顶，永续是钩点正常
+        // 执行的自然副作用；estop/取消打断 turn → 非 Accept 路径 → 本钩子
+        // 不触发 → 循环自然停）。
+        if !end.session_key.is_empty() {
+            let sid = end
+                .session_key
+                .strip_prefix(WEB_SESSION_KEY_PREFIX)
+                .unwrap_or(&end.session_key);
+            let prompts = self.session_prompt_hooks.read().unwrap();
+            if let Some(list) = prompts
+                .get(sid)
+                .or_else(|| prompts.get(&end.session_key))
+                .filter(|list| !list.is_empty())
+            {
+                let prompt = list.join("\n\n");
+                tracing::info!(
+                    "[cc-hooks] prompt hook fired for session '{}' ({} hook(s), {} bytes) — \
+                     loop will inject after turn finalization",
+                    end.session_key,
+                    list.len(),
+                    prompt.len()
+                );
+                return TurnEndDecision::Inject { prompt };
+            }
+        }
         TurnEndDecision::Stop
     }
 }
@@ -1621,6 +1777,7 @@ impl CcHookBridge {
         if changed {
             // 内存侧同步：摘 map 条目 + 让下次热更比对不因内容倒退误判。
             self.session_events.write().unwrap().remove(sid);
+            self.session_prompt_hooks.write().unwrap().remove(sid);
             let mut seen = self.seen_session_raw.lock().unwrap();
             if let Some(raw) = seen.as_mut()
                 && let Ok(mut v) = serde_json::from_str::<Value>(raw)

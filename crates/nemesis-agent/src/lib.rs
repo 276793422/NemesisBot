@@ -95,6 +95,9 @@ pub mod remote_executor_tool;
 pub mod replay;
 pub mod request_logger;
 pub mod request_logger_observer;
+pub mod resource_providers;
+#[cfg(test)]
+mod resource_providers_tests;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;

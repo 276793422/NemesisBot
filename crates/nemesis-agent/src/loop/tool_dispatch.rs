@@ -461,6 +461,16 @@ impl AgentLoop {
         // HookToolCall 传入，ToolFinished duration 从这里起算；看门狗语义
         // 不变（仍只包执行链，不杀人工审批）。
         let dispatch_started = std::time::Instant::now();
+
+        // 运行态快照（2026-11-17 会话资源盘点 §3.2）：dispatch 全程在
+        // execution 类目标记当前工具名。会话无在跑 turn 条目（空
+        // session_key / 已收尾的极端交错）= 静默 no-op，绝不复活条目；
+        // Drop（含提前 return 与 panic 展开）复位 None（回到 LLM 段）。
+        let _tool_timeline = super::work_timeline::ToolTimelineGuard::acquire(
+            self.work_timeline_map(),
+            &context.session_key,
+            &tool_call.name,
+        );
         info!(
             "[AgentLoop] Executing tool: {} (id={})",
             tool_call.name, tool_call.id

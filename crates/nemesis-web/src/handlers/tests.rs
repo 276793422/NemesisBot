@@ -2245,15 +2245,16 @@ async fn test_channels_test_stub() {
     assert_eq!(result["status"], "not_implemented");
 }
 
-// Skills: search (builtin offline arm) ---
+// Skills: search (stub) ---
 #[tokio::test]
 async fn test_skills_search_stub() {
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    // 2026-11-16 起 builtin 内嵌臂恒注册——「无源空结果」形态已不存在。
-    // 本测试翻转为：压制出厂源（disabled 同名条目，密闭不打真实
-    // api.github.com）+ 关 ModelScope（密闭不打真实 modelscope.cn）后，
-    // 仅 builtin 参与搜索——query "automation" 命中 desktop-automation slug。
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证空结果管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 出厂源（config.skills.json 缺省无 sources 条目 → from_config 合流注入）
+    // 走真实 api.github.com——tempdir 无网闸，此处用 disabled 同名占位条目
+    // 压制合流（append-if-absent 见名跳过且 disabled 不构造 registry）。
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::write(
         dir.path().join("config/config.skills.json"),
@@ -2269,10 +2270,7 @@ async fn test_skills_search_stub() {
         .unwrap()
         .unwrap();
     assert_eq!(result["query"], "automation");
-    let results = result["results"].as_array().unwrap();
-    assert_eq!(results.len(), 1, "builtin-only results: {results:?}");
-    assert_eq!(results[0]["slug"], "desktop-automation");
-    assert_eq!(results[0]["source"], "builtin");
+    assert!(result["results"].as_array().unwrap().is_empty());
 }
 
 // Skills: install (stub) ---

@@ -993,6 +993,427 @@ async fn loop_integration_stop_block_forces_extra_rounds() {
     );
 }
 
+/// 永续循环 e2e（真 bus 链路）：Stop 提示词型钩子 → turn 完整收尾后注入
+/// 提示词开新轮（inbox 排队 → drain 重注入 → 正常闸门）→ 新轮结束钩点再
+/// 触发 → provider 在第 2 次调用时改写 hooks.session.json（模型「自删钩子」
+/// 的自然刹车形态）→ 热更摘除 → 第 3 轮不再注入，循环收敛。
+/// 断言：LLM 恰 2 次调用、第 2 次入参含注入的提示词原文。
+///
+/// 注意：reinject_tx 与泵入站是同一 mpsc，其存活让通道永不关闭——泵不靠
+/// close 收口，测尾只 stop() 不 await runner（s9 同款纪律）。
+#[tokio::test]
+async fn loop_integration_prompt_hook_loops_until_hook_removed() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // 会话侧：s-looptest 的 Stop prompt 钩子（永续提示词）。
+    let mut store = super::SessionHookStore::default();
+    store.hooks.insert(
+        "s-looptest".to_string(),
+        std::collections::BTreeMap::from([(
+            "Stop".to_string(),
+            vec![super::SessionHookEntry {
+                id: "h1".to_string(),
+                matcher: String::new(),
+                command: String::new(),
+                prompt: "继续检查代码是否正确，确认是否有问题".to_string(),
+                timeout: Some(60),
+            }],
+        )]),
+    );
+    super::write_session_hook_store(&cfg, &store).expect("seed session store");
+
+    /// call 1 → "r1"；call ≥ 2 → 清空 hooks.session.json（模型自删钩子）→
+    /// 返回对应轮次回复。记录每次 LLM 入参（共享句柄供测试断言）。
+    struct SelfRemovingProvider {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>>,
+        config_dir: std::path::PathBuf,
+    }
+    #[async_trait]
+    impl LlmProvider for SelfRemovingProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            let n = {
+                let mut c = self.calls.lock().unwrap();
+                c.push(messages);
+                c.len()
+            };
+            if n >= 2 {
+                // 模型「自删钩子」：存储清空 → 下轮 turn-end 热更摘除注入面。
+                super::write_session_hook_store(&self.config_dir, &Default::default())
+                    .expect("clear store");
+            }
+            Ok(LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
+                content: format!("r{n}"),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+    let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider = SelfRemovingProvider {
+        calls: calls.clone(),
+        config_dir: cfg.clone(),
+    };
+
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj).expect("bridge");
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(8);
+    let agent_loop = std::sync::Arc::new(AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        out_tx,
+        crate::r#loop::ConcurrentMode::Queue,
+        8,
+        0,
+    ));
+    bridge.register(&agent_loop);
+    // 重注入 = 泵入站通道本身（生产同形）。
+    agent_loop.set_reinject_tx(in_tx.clone());
+    tokio::spawn({
+        let al = agent_loop.clone();
+        async move {
+            AgentLoop::run_bus_arc(al, in_rx).await;
+        }
+    });
+
+    // 一条用户消息进闸 → turn 1（r1）→ 注入回灌 → turn 2（r2）→ 自删 → 收敛。
+    let msg = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "user1".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "开始工作".to_string(),
+        media: vec![],
+        session_key: "agent:main:session:s-looptest".to_string(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+    in_tx.send(msg).await.unwrap();
+
+    let mut got: Vec<String> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        while let Ok(o) = out_rx.try_recv() {
+            got.push(o.content);
+        }
+        if got.iter().any(|c| c.contains("r2")) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "injected round never completed: got={got:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // 收敛窗：钩子已删，第 3 轮不得出现（calls 停在 2）。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let calls_snapshot = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls_snapshot.len(),
+        2,
+        "hook removed → loop stops, no round 3"
+    );
+    assert!(
+        calls_snapshot[0]
+            .iter()
+            .all(|m| !m.content.contains("继续检查代码")),
+        "round 1 must be the original user message only"
+    );
+    assert!(
+        calls_snapshot[1]
+            .iter()
+            .any(|m| m.role == "user" && m.content.contains("继续检查代码是否正确")),
+        "injected prompt must reach the model as a user message"
+    );
+
+    // 泵停在 recv()（in_tx 克隆 = reinject_tx 使通道永不关闭）——stop() 后
+    // 不 await runner（tokio::test 运行时销毁即回收挂起任务，s9 同款纪律）。
+    agent_loop.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 刹车两态（PLAN 批次 2 承诺）：cancel 打断 / estop 冻结都走非 Accept 路径
+// （recovery.rs select 打断臂 drop chat future → judge_final_answer 不执行
+// → Stop 钩子不触发 → pending_prompt_inject 恒 None → 无注入，循环停）。
+// ---------------------------------------------------------------------------
+
+/// LLM 首呼挂起在长 sleep 上的 provider：call 1 睡 30s（模拟长 LLM 调用）；
+/// call ≥ 2 立即返回 "r{n}"（刹车失效时才会出现，断言用 calls 长度抓）。
+/// sleep 形态无需栅栏：future 被 cancel/estop 打断臂 drop 时 sleep 自取消；
+/// 若刹车失效，测试的 10s 终局断言先于 30s sleep 到期失败（不会真等）。
+struct BrakePromptProvider {
+    calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>>,
+}
+
+#[async_trait]
+impl LlmProvider for BrakePromptProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: Vec<LlmMessage>,
+        _options: Option<ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            c.push(messages);
+            c.len()
+        };
+        if n == 1 {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: format!("r{n}"),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// 刹车态共用夹具：seed 永续提示词钩子（刹车失效时 turn 正常收尾就会注入
+/// 开新轮）→ 装桥 → 泵链路起跑 → 送一条消息 → 等 LLM 首呼在飞。
+/// 返回 (agent_loop, in_tx, out_rx, calls)。
+#[allow(clippy::type_complexity)]
+async fn brake_fixture(
+    dir: &std::path::Path,
+    sid: &str,
+    estop: Option<Arc<crate::estop::EstopState>>,
+) -> (
+    Arc<AgentLoop>,
+    tokio::sync::mpsc::Sender<nemesis_types::channel::InboundMessage>,
+    tokio::sync::mpsc::Receiver<nemesis_types::channel::OutboundMessage>,
+    std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>>,
+) {
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    let mut store = super::SessionHookStore::default();
+    store.hooks.insert(
+        sid.to_string(),
+        std::collections::BTreeMap::from([(
+            "Stop".to_string(),
+            vec![super::SessionHookEntry {
+                id: "h1".to_string(),
+                matcher: String::new(),
+                command: String::new(),
+                prompt: "继续检查代码是否正确，确认是否有问题".to_string(),
+                timeout: Some(60),
+            }],
+        )]),
+    );
+    super::write_session_hook_store(&cfg, &store).expect("seed session store");
+
+    let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider = BrakePromptProvider {
+        calls: calls.clone(),
+    };
+
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj).expect("bridge");
+    let (out_tx, out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(8);
+    let agent_loop = Arc::new(AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        out_tx,
+        crate::r#loop::ConcurrentMode::Queue,
+        8,
+        0,
+    ));
+    bridge.register(&agent_loop);
+    agent_loop.set_reinject_tx(in_tx.clone());
+    if let Some(estop) = estop {
+        // 先接线后起泵：recovery select 的 estop 臂要 subscribe() 到已接线
+        // 状态（None 时该臂永不 resolve）。
+        agent_loop.set_estop(estop);
+    }
+    tokio::spawn({
+        let al = agent_loop.clone();
+        async move {
+            AgentLoop::run_bus_arc(al, in_rx).await;
+        }
+    });
+
+    let msg = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "user1".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "开始工作".to_string(),
+        media: vec![],
+        session_key: format!("agent:main:session:{sid}"),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+    in_tx.send(msg).await.unwrap();
+
+    // 等 LLM 首呼在飞。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while calls.lock().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first LLM call never started"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    (agent_loop, in_tx, out_rx, calls)
+}
+
+/// 刹车一：cancel 打断 turn → 非 Accept 路径 → Stop 钩子不触发 → 不注入
+/// 开新轮。首呼在飞时 cancel_session 命中在飞令牌 → recovery select 打断臂
+/// drop chat future → 终局「已取消」；此后恰 1 次调用（循环停）。
+#[tokio::test]
+async fn loop_integration_cancel_breaks_turn_prompt_hook_not_injected() {
+    let dir = tempdir();
+    let (agent_loop, _in_tx, mut out_rx, calls) = brake_fixture(&dir, "s-brake", None).await;
+
+    // cancel 打断（返回 true = 首呼在飞、令牌在册命中）。
+    assert!(
+        agent_loop.cancel_session("agent:main:session:s-brake"),
+        "首呼在飞时应命中会话取消令牌"
+    );
+    // 打断唤醒 select（cancel 臂是唯一就绪分支——挂起的 chat future 不可能
+    // 先就绪）；让泵跑完终局再进断言。
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    // 终局事件 = 「已取消」（CANCEL_DONE_MSG 单一真相源），不是 r1。
+    let mut done_seen = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done_seen {
+        while let Ok(o) = out_rx.try_recv() {
+            if o.content.contains("已取消") {
+                done_seen = true;
+            }
+        }
+        if done_seen {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel Done event never arrived"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // 收敛窗：非 Accept 路径 → Stop 钩子不触发 → 无注入 → 恰 1 次调用。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let calls_snapshot = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls_snapshot.len(),
+        1,
+        "cancel 必须打断 turn 且不注入开新轮（循环停）"
+    );
+    assert!(
+        !calls_snapshot[0]
+            .iter()
+            .any(|m| m.content.contains("继续检查代码")),
+        "取消打断后注入提示词不得到达模型"
+    );
+
+    // 泵收口纪律：stop() 后不 await runner（见永续循环 e2e 注记）。
+    agent_loop.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 刹车二：estop 冻结 → LLM 调用被 select 打断臂中断 → 非 Accept 路径 →
+/// Stop 钩子不触发 → 不注入开新轮；冻结期间追加消息也不烧 LLM 轮
+///（estop 早期闸兜底——「注入即使发出也过不去」的那道门）。
+#[tokio::test]
+async fn loop_integration_estop_freezes_turn_prompt_hook_not_injected() {
+    let dir = tempdir();
+    let estop = Arc::new(crate::estop::EstopState::new());
+    let (agent_loop, in_tx, mut out_rx, calls) =
+        brake_fixture(&dir, "s-brake2", Some(estop.clone())).await;
+
+    // 急停打断（首呼在飞时触发）。
+    estop.trigger();
+    assert!(estop.is_engaged());
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+
+    // 终局事件 = 急停文案（ESTOP_DONE_MSG），不是 r1。
+    let mut done_seen = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done_seen {
+        while let Ok(o) = out_rx.try_recv() {
+            if o.content.contains("急停") {
+                done_seen = true;
+            }
+        }
+        if done_seen {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "estop Done event never arrived"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // 冻结期间追加消息：不开新 LLM 轮（pump 链 estop 闸兜底；注入即使
+    // 发出也过不去同款门）。
+    let msg2 = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "user1".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "冻结期间的追加消息".to_string(),
+        media: vec![],
+        session_key: "agent:main:session:s-brake2".to_string(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+    in_tx.send(msg2).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // 排干追加消息可能产生的急停回执，防 16 槽出站通道积压。
+    while out_rx.try_recv().is_ok() {}
+
+    let calls_snapshot = calls.lock().unwrap().clone();
+    assert_eq!(
+        calls_snapshot.len(),
+        1,
+        "estop 冻结：不注入开新轮，追加消息也不烧 LLM 轮"
+    );
+    assert!(
+        !calls_snapshot[0]
+            .iter()
+            .any(|m| m.content.contains("继续检查代码")),
+        "急停打断后注入提示词不得到达模型"
+    );
+    assert!(estop.is_engaged(), "冻结态不得被泵自动解除");
+
+    agent_loop.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // handle_tool_call 集成需要一个 provider（AgentLoop 构造要求），但不会被调。
 struct NoopProvider2;
 
@@ -1981,6 +2402,7 @@ fn seed_session_store(cfg: &std::path::Path, sid: &str, event: &str, command: &s
                 id: "h1".to_string(),
                 matcher: String::new(),
                 command: command.to_string(),
+                prompt: String::new(),
                 timeout: Some(60),
             }],
         )]),
@@ -2193,6 +2615,7 @@ async fn session_end_fires_scoped_hook_then_purges_storage() {
             id: "h1".to_string(),
             matcher: String::new(),
             command: cmd.to_string(),
+            prompt: String::new(),
             timeout: Some(60),
         };
         store.hooks.insert(
@@ -2272,4 +2695,274 @@ fn test_resolve_hook_timeout_zero_falls_back_to_default() {
     assert_eq!(super::resolve_hook_timeout(Some(0)), 60);
     assert_eq!(super::resolve_hook_timeout(Some(5)), 5);
     assert_eq!(super::resolve_hook_timeout(Some(3600)), 3600);
+}
+
+// ---------------------------------------------------------------------------
+// 提示词型钩子（LLM 执行体，2026-11-18 HOOK 执行 LLM goal）
+// ---------------------------------------------------------------------------
+
+/// session_store_to_prompt_hooks：只收 Stop 下 prompt 非空条目，按存储序；
+/// command 型条目与其他事件下的条目一概不收。
+#[test]
+fn prompt_hooks_extraction_stop_only_in_order() {
+    let e = |id: &str, command: &str, prompt: &str| super::SessionHookEntry {
+        id: id.to_string(),
+        matcher: String::new(),
+        command: command.to_string(),
+        prompt: prompt.to_string(),
+        timeout: Some(60),
+    };
+    let mut per_event = std::collections::BTreeMap::new();
+    per_event.insert(
+        "Stop".to_string(),
+        vec![
+            e("h1", "echo shell-1", ""),         // command 型 → 不收
+            e("h2", "", "继续检查代码是否正确"), // prompt 型 → 收
+            e("h3", "", "复查边界条件"),         // prompt 型 → 收（按序）
+            e("h4", "echo shell-2", "  "),       // prompt 纯空白 = command 型 → 不收
+        ],
+    );
+    per_event.insert(
+        "PreToolUse".to_string(),
+        vec![e("h5", "", "不该出现在别的事件")], // 非 Stop → 不收
+    );
+    let prompts = super::session_store_to_prompt_hooks(&per_event);
+    assert_eq!(
+        prompts,
+        vec![
+            "继续检查代码是否正确".to_string(),
+            "复查边界条件".to_string()
+        ]
+    );
+    // 无 Stop 槽 = 空。
+    let mut no_stop = std::collections::BTreeMap::new();
+    no_stop.insert(
+        "PreToolUse".to_string(),
+        vec![e("h1", "", "prompt elsewhere")],
+    );
+    assert!(super::session_store_to_prompt_hooks(&no_stop).is_empty());
+}
+
+/// session_store_to_events（shell 方言投影）：prompt 型条目不进 CcEvents
+///（shell 执行路径不认识它）——同 store 双投影分离。
+#[test]
+fn session_store_events_projection_skips_prompt_entries() {
+    let e = |id: &str, command: &str, prompt: &str| super::SessionHookEntry {
+        id: id.to_string(),
+        matcher: String::new(),
+        command: command.to_string(),
+        prompt: prompt.to_string(),
+        timeout: Some(60),
+    };
+    let mut per_event = std::collections::BTreeMap::new();
+    per_event.insert(
+        "Stop".to_string(),
+        vec![e("h1", "echo shell", ""), e("h2", "", "prompt hook")],
+    );
+    let events = super::session_store_to_events("s1", &per_event);
+    assert_eq!(events.stop.len(), 1, "prompt 条目不进 shell 方言");
+    assert_eq!(events.stop[0].hooks[0].command, "echo shell");
+}
+
+/// parse_session_hook_store 条目校验（防御手编坏文件）：双空拒 / 混合
+/// （command+prompt 双非空）拒 / prompt 型非 Stop 拒；command 型任意事件
+/// 与 prompt 型 Stop 照常通过。
+#[test]
+fn parse_store_validates_entry_shapes() {
+    let entry = |command: &str, prompt: &str| {
+        format!(
+            r#"{{"id":"h1","matcher":"","command":"{command}","prompt":"{prompt}","timeout":60}}"#
+        )
+    };
+    let doc = |event: &str, entry_json: &str| {
+        format!(r#"{{"hooks":{{"s1":{{"{event}":[{entry_json}]}}}}}}"#)
+    };
+
+    // 双空 = 没有执行体。
+    let err = super::parse_session_hook_store(&doc("Stop", &entry("", "  ")))
+        .err()
+        .unwrap();
+    assert!(err.contains("non-empty command or prompt"), "err={err}");
+
+    // 混合（双非空）= 语义未定，loud 拒绝（ Exactly one 契约，与工具写入
+    // 路径同源）。
+    let err = super::parse_session_hook_store(&doc("Stop", &entry("echo hi", "继续检查")))
+        .err()
+        .unwrap();
+    assert!(err.contains("both command and prompt"), "err={err}");
+
+    // prompt 型非 Stop = 没有注入时机。
+    let err = super::parse_session_hook_store(&doc("PreToolUse", &entry("", "x")))
+        .err()
+        .unwrap();
+    assert!(err.contains("only valid on Stop"), "err={err}");
+
+    // 合法形态：command 型任意事件 + prompt 型 Stop。
+    assert!(super::parse_session_hook_store(&doc("PreToolUse", &entry("echo ok", ""))).is_ok());
+    assert!(super::parse_session_hook_store(&doc("Stop", &entry("", "继续检查"))).is_ok());
+}
+
+/// 桥级 e2e：seed hooks.session.json（prompt 条目）→ load_from_dir →
+/// on_turn_end 返回 Inject（prompt 文本按序拼接）；无 prompt 钩子的会话
+/// 照常 Stop。
+#[tokio::test]
+async fn bridge_turn_end_injects_seeded_prompt_hook() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    let mut store = super::SessionHookStore::default();
+    store.hooks.insert(
+        "s-loop".to_string(),
+        std::collections::BTreeMap::from([(
+            "Stop".to_string(),
+            vec![
+                super::SessionHookEntry {
+                    id: "h1".to_string(),
+                    matcher: String::new(),
+                    command: String::new(),
+                    prompt: "继续检查代码".to_string(),
+                    timeout: Some(60),
+                },
+                super::SessionHookEntry {
+                    id: "h2".to_string(),
+                    matcher: String::new(),
+                    command: String::new(),
+                    prompt: "确认没有问题".to_string(),
+                    timeout: Some(60),
+                },
+            ],
+        )]),
+    );
+    super::write_session_hook_store(&cfg, &store).expect("seed");
+
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let mk_end = |key: &str| HookTurnEnd {
+        session_key: key.to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    };
+    // WEB 前缀剥 sid（桥 lookup 双形态之一）。
+    match bridge
+        .on_turn_end(&mk_end("agent:main:session:s-loop"))
+        .await
+    {
+        crate::hooks::TurnEndDecision::Inject { prompt } => {
+            assert_eq!(prompt, "继续检查代码\n\n确认没有问题", "按存储序拼接");
+        }
+        other => panic!("expected Inject, got {other:?}"),
+    }
+    // 无钩子会话照常 Stop。
+    assert_eq!(
+        bridge
+            .on_turn_end(&mk_end("agent:main:session:s-other"))
+            .await,
+        crate::hooks::TurnEndDecision::Stop
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 优先级：shell Stop 钩子拦截（exit 2 → Continue）压过 prompt 注入
+///——shell 全放行后才查 prompt 表。
+#[tokio::test]
+async fn shell_continue_takes_precedence_over_prompt_inject() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // 全局 hooks.json：一个永远 exit 2 的 Stop shell 钩子（桥自己负责
+    // cmd/sh 包裹——hooks_doc 只给命令串）。
+    #[cfg(windows)]
+    let cmd = "cmd /c exit 2".to_string();
+    #[cfg(not(windows))]
+    let cmd = "exit 2".to_string();
+    std::fs::write(cfg.join("hooks.json"), hooks_doc("Stop", None, &cmd, None)).unwrap();
+
+    // 会话侧：prompt 钩子。
+    let mut store = super::SessionHookStore::default();
+    store.hooks.insert(
+        "s-mix".to_string(),
+        std::collections::BTreeMap::from([(
+            "Stop".to_string(),
+            vec![super::SessionHookEntry {
+                id: "h1".to_string(),
+                matcher: String::new(),
+                command: String::new(),
+                prompt: "不该被注入".to_string(),
+                timeout: Some(60),
+            }],
+        )]),
+    );
+    super::write_session_hook_store(&cfg, &store).expect("seed");
+
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let end = HookTurnEnd {
+        session_key: "agent:main:session:s-mix".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    };
+    match bridge.on_turn_end(&end).await {
+        crate::hooks::TurnEndDecision::Continue { .. } => {
+            // shell 拦截优先（Continue 进 MAX_TURN_END_CONTINUES 预算），
+            // prompt 注入被压住。
+        }
+        other => panic!("shell exit 2 must Continue before prompt check, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// purge_session_hooks 同步摘 prompt 表（会话死后注入面即时消失）。
+#[tokio::test]
+async fn purge_removes_prompt_hooks_from_bridge_memory() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    let mut store = super::SessionHookStore::default();
+    store.hooks.insert(
+        "s-doomed".to_string(),
+        std::collections::BTreeMap::from([(
+            "Stop".to_string(),
+            vec![super::SessionHookEntry {
+                id: "h1".to_string(),
+                matcher: String::new(),
+                command: String::new(),
+                prompt: "永远循环".to_string(),
+                timeout: Some(60),
+            }],
+        )]),
+    );
+    super::write_session_hook_store(&cfg, &store).expect("seed");
+
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let end = HookTurnEnd {
+        session_key: "agent:main:session:s-doomed".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    };
+    assert!(matches!(
+        bridge.on_turn_end(&end).await,
+        crate::hooks::TurnEndDecision::Inject { .. }
+    ));
+
+    // purge 后内存注入面即时摘除（不等热更）。
+    bridge.purge_session_hooks("agent:main:session:s-doomed");
+    assert_eq!(
+        bridge.on_turn_end(&end).await,
+        crate::hooks::TurnEndDecision::Stop,
+        "purge 后 prompt 注入面消失"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

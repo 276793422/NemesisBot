@@ -113,6 +113,10 @@ pub mod plugins_wasm;
 // rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
 // 未装配时 handler 诚实报「未装配」。
 pub mod projects;
+// 会话资源盘点聚合命令（session.resources；计划 2026-11-17 B2）。无
+// feature 闸——registry 槽未装配时 handler 诚实报「未装配」；feature 裁剪
+// 的类目在 provider 装配侧缺席（响应无该键）。
+pub mod resources;
 // （凭据 vault）：凭据索要卡 WSAPI（credential.respond /
 // credential.pending）。无 feature 闸——responder trait 在 nemesis-types，
 // broker 槽（静态注入）未装配时 handler 诚实报「not wired」。
@@ -170,6 +174,10 @@ mod subagents_handler_tests;
 pub mod background;
 #[cfg(test)]
 mod background_handler_tests;
+// 会话资源盘点聚合命令：session.resources（2026-11-17 会话资源盘点看板
+// B2）——registry 静态槽注入 + meta 投影 + 三态诚实 + PerLoop 路由。
+#[cfg(test)]
+mod resources_tests;
 // 独立代理配置 WSAPI（代理设置三项改造）：proxy.get/save——
 // `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
 // （独立文件不依赖任何子系统）。
@@ -314,6 +322,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(approval::ApprovalHandler));
     // 提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
     router.register(Arc::new(question::QuestionHandler));
+    // 会话资源盘点聚合命令（session.resources；registry 槽 gateway 注入）。
+    router.register(Arc::new(resources::ResourcesHandler));
     // 凭据索要卡响应端点（dashboard 凭据卡 → WebCredentialBroker）。
     router.register(Arc::new(credential::CredentialHandler));
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
