@@ -24,7 +24,7 @@ default = [
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
     "pricing-embed", "verify", "web-static", "lsp", "browser",
     "checkpoint-git", "image-process", "history-search", "usage-store",
-    "events", "loop",
+    "events", "loop", "goals",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -46,6 +46,7 @@ events = ["dep:nemesis-events", "nemesis-web/events"]
 # 预算三维保险丝 → 停车场；estop 全冻结）。nemesis-web/loop 穿透 =
 # loops.* WSAPI + LoopsView 同闸。paused/parked 只能由人置（防自锁）。
 loop = ["dep:nemesis-loop", "nemesis-web/loop"]
+goals = ["dep:nemesis-goals", "nemesis-web/goals"]
 # voice = 语音本体（STT/TTS/VAD/标点/声纹/云转写，缓冲区与文件驱动）；
 # voice-capture = 设备 IO（麦克风采集/扬声器播放/AEC/loopback，cpal+wasapi）。
 # capture 不隐含在 voice 里——IoT 可只留转写不带设备 IO；全量构建两者都开。
@@ -276,6 +277,7 @@ nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
 nemesis-events = { workspace = true, optional = true }
+nemesis-goals = { workspace = true, optional = true }
 nemesis-loop = { workspace = true, optional = true }
 nemesis-board = { workspace = true, optional = true }
 nemesis-state = { workspace = true }

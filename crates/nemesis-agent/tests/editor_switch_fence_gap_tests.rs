@@ -78,6 +78,7 @@ fn project_boundary(
         restrict: true,
         extra_roots: vec![agent_home.to_path_buf()],
         editor_gate: Some(editor.fence_gate()),
+        goals_guard: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn cluster_boundary(main_ws: &Path, editor: &Arc<EditorAccessState>) -> Workspac
         restrict: true,
         extra_roots: Vec::new(),
         editor_gate: Some(editor.fence_gate()),
+        goals_guard: None,
     }
 }
 

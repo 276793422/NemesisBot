@@ -322,6 +322,17 @@ fn registry_anchor_commands_present() {
             );
         }
     }
+    // 目标（goals）管理面：八命令锚点。
+    if cfg!(feature = "goals") {
+        for anchor in [
+            "list", "get", "create", "update", "enable", "disable", "delete", "evals",
+        ] {
+            assert!(
+                cmds_of(&reg, "goals").contains(&anchor),
+                "goals module missing anchor command {anchor}"
+            );
+        }
+    }
 }
 
 // system.commands dispatch 链路
@@ -381,6 +392,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "ziwei",
         "events",
         "loops",
+        "goals",
         "browser", // 浏览器接管管理面（不带 browser 重跑会把 browser.* 八命令整模块冲没）
     ];
     let missing_module = GATED_DOC_MODULES
@@ -389,6 +401,7 @@ fn docs_generation_writes_wsapi_commands_md() {
     let lsp_missing = !cmds_of(&reg, "coding").contains(&"lsp_status");
     let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
     let loops_missing = !cmds_of(&reg, "loops").contains(&"create");
+    let goals_missing = !cmds_of(&reg, "goals").contains(&"create");
     // 注：quic.relay.*（与集群解耦）挂在 quic 模块下且**恒注册**
     //（无 feature 闸，handler 内诚实降级）——命令表面不随 feature 进出，
     // 文档无被冲风险，不设前置闸（与上面 feature 门控行的区别是刻意的）。
@@ -397,13 +410,14 @@ fn docs_generation_writes_wsapi_commands_md() {
         .or(lsp_missing.then_some("coding(lsp_status)"))
         .or(wasm_missing.then_some("plugins(wasm.*)"))
         .or(loops_missing.then_some("loops(create)"))
+        .or(goals_missing.then_some("goals(create)"))
     {
         eprintln!(
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
              forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,events,loop,\
-             browser\" docs_generation"
+             goals,browser\" docs_generation"
         );
         return;
     }
@@ -416,7 +430,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
 security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,\
-events,loop,browser\" docs_generation` 刷新本文件\
+events,loop,goals,browser\" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));

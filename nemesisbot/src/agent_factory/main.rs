@@ -724,6 +724,23 @@ pub fn build_agent_loop(
         info!("[AgentFactory] plugin bootstrap tools registered (plugin_search/plugin_propose)");
     }
 
+    // 8g. 目标系统 agent 工具（2026-11-17）：`goal` 单工具三 action
+    //（主 agent 专属——项目 loop 工具子集不带、cluster worker agent 不装：
+    // 目标绑定主会话，worker 会话无 goals 语义；同 8c/8f 边界）。
+    // config_path 注入 disable 的 allow_agent_disable 热读（config.json
+    // 单一真相源）。tier 策略：不进 tier_allowed_tools（仅 big 全量档可见）。
+    #[cfg(feature = "goals")]
+    {
+        agent_loop.register_tool(
+            crate::goal_tool::GOAL_TOOL_NAME.to_string(),
+            Box::new(crate::goal_tool::GoalTool::new(
+                workspace_dir.clone(),
+                Some(shared.home.join("config.json")),
+            )),
+        );
+        info!("[AgentFactory] goal tool registered (goal add/delete/disable)");
+    }
+
     // 9. Continuation manager (disk-persisted — new instance).
     {
         let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(

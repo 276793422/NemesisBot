@@ -263,6 +263,7 @@ const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-loop-1.0",
     "testai-mem-1.0",
     "testai-bootstrap-1.0",
+    "testai-goals-1.0",
 ];
 
 /// 需强制流式（config 条目 `stream: "yes"`）的模型子集：openai 兼容 lane
@@ -459,6 +460,7 @@ async fn run_scenario(
         "memory_relevance" => scenarios::run_memory_relevance(ctx, runs).await,
         "memory_forget" => scenarios::run_memory_forget(ctx, runs).await,
         "memory_capacity_recall" => scenarios::run_memory_capacity_recall(ctx, runs).await,
+        "goal_gate" => scenarios::run_goal_gate(ctx, runs).await,
         // gateway_restart 不走本调度：它要吃掉/交还 gateway 进程所有权，
         // 在 main() 场景循环特判。
         other => {

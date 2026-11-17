@@ -278,6 +278,11 @@ pub struct Config {
     /// 见 [`BrowserConfig`]。
     #[serde(default)]
     pub browser: Option<BrowserConfig>,
+    /// 目标系统段（评估闸/权限全局开关；None = 全默认——
+    /// allow_agent_disable=true）。typed 字段化防 set_field round-trip
+    /// 丢键（plugins/browser 段同款）。见 [`GoalsConfig`]。
+    #[serde(default)]
+    pub goals: Option<GoalsConfig>,
 }
 
 /// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；

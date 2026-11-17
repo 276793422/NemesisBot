@@ -289,6 +289,8 @@ pub(super) fn build_shared_tool_config(
             // editor 开关（Full Access）闸：界外即将拒绝的分支先问一次
             // （热生效，与审批层同一开关同一判定）。
             editor_gate,
+            // 目标系统文件保护（D-Q3 创建者二分；goals feature 裁剪 = None）。
+            goals_guard: crate::goals_engine::workspace_goals_guard(&workspace_dir),
         })),
         // todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 ToolEventHook 共用同一 sender；gateway 建、

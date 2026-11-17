@@ -25,6 +25,7 @@
 //! | memory_relevance | testai-mem-1.0 | 存 10 问 1（R07）：命中目标 + 其余 9 码词零串扰 | 记忆检索相关性（串扰率=0，项2） |
 //! | memory_forget | testai-mem-1.0 | store 回执抠 ID → delete_by_id → 复查事实体召不回 | 记忆遗忘闭环（项2） |
 //! | memory_capacity_recall | testai-mem-1.0 | 存 20（≤5/turn 分块）问 5：命中率 ≥4/5 记分卡 | 记忆容量下召回质量（项2） |
+//! | goal_gate | testai-goals-1.0 | 四流：done（round 0 评估收口 rounds_used=0）；continue（gap 注入回声 + 台账 continue→done）；budget（max_rounds=1 round-limit 停车台账恰 1）；perm（goal delete 删人建 goal 诚实拒绝 + goal.md 原样） | 目标系统评估闸全链（goals，2026-11-17）：turn 结束独立评估 → DONE/CONTINUE 判定 → gap 注入经 bus 入站 → 预算闸先于评估停车 → agent 工具权限拒绝面 |
 //! | length_continuation | testai-lenbreak-1.0 | 终答 = 续写轮补全段 LENBREAK_PART_B OK | max_tokens 撞顶续行（L04 器官 6 usage 数值判定 + continue-generation） |
 //! | codemode_chain | testai-chain-step-1.0 / testai-chain-code-1.0 | 两臂效果面等价（chain_b.txt）+ code 臂 requests < steps 臂 | code_run 上下文经济学（L17：3 步依赖链 编排 vs 逐轮，墙钟+usage 双对比） |
 //! | honest_completion | testai-liar-1.0 / testai-honest-1.0 | 两臂收据面 read_file ok=false 各恰 1 条 + 终答判定一致性 | 最终陈述与执行收据一致（B 批待办 3：gateway 吞收据即判负） |
@@ -3165,6 +3166,362 @@ memory_run_wrapper!(run_memory_forget, memory_forget_one_round);
 memory_run_wrapper!(run_memory_capacity_recall, memory_capacity_recall_one_round);
 
 // ---------------------------------------------------------------------------
+// 目标系统评估闸（goals）：goal_gate 场景
+// ---------------------------------------------------------------------------
+
+/// goals.create 重试包装：会话在场判定是 chat.send 处理链的异步副作用
+/// ——create 先到会诚实拒绝「不存在」，300ms 步进等在场（15s 上限；
+/// 其他错误立即上抛不重试）。loops_create_with_retry 同构。
+async fn goals_create_with_retry(
+    api: &mut WsStream,
+    content: &str,
+    session_id: &str,
+    max_rounds: Option<u64>,
+) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let mut data = json!({ "content": content, "session_id": session_id });
+        if let Some(mr) = max_rounds {
+            data["max_rounds"] = json!(mr);
+        }
+        match wsapi_call_on(api, "goals", "create", data, Duration::from_secs(10)).await {
+            Ok(d) => {
+                let id = d["id"].as_str().unwrap_or_default().to_string();
+                anyhow::ensure!(!id.is_empty(), "goals.create 回执缺 id: {d}");
+                return Ok(id);
+            }
+            Err(e) if e.to_string().contains("不存在") => {
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "goals.create 持续被拒（会话始终不在场）: {e}"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// 轮询 goals.get 至谓词命中，返回命中时刻的详情视图（500ms 步进）。
+async fn poll_goal_until(
+    api: &mut WsStream,
+    id: &str,
+    timeout: Duration,
+    mut pred: impl FnMut(&Value) -> bool,
+) -> Result<Value> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let st = wsapi_call_on(
+            api,
+            "goals",
+            "get",
+            json!({ "id": id }),
+            Duration::from_secs(10),
+        )
+        .await?;
+        if pred(&st) {
+            return Ok(st);
+        }
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "轮询 goals.get 超时（{timeout:?}）——最后状态: {st}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// 目标系统评估闸基准场景（goals，2026-11-17 批4）：testai-goals-1.0
+/// 双角色脚本（执行 agent + 评估闸同一模型），四流全走真实 gateway 链路
+/// （chat.send → AgentLoop → turn 结束 → goals_engine 评估闸 → 判定落
+/// 注册表），断言全走 WSAPI goals.get（盘上状态真相源）：
+///
+/// - done 判定：turn 结束评估 round 0 → DONE → status=done（唯一 done
+///   出口是评估闸，agent 无 done 能力）；
+/// - CONTINUE 续轮：round 0 CONTINUE（gap）→ rounds_used+1 → goal 轮
+///   注入经 bus 入站 → agent 回声缺口（效果面：注入真实到达）→ round 1
+///   评估 DONE；台账 [continue(gap), done]；
+/// - 预算耗尽：max_rounds=1，第二轮 turn 结束预算闸**先于评估**停车
+///   （round-limit，无第三条台账——D-Q10 不猜 CONTINUE）；
+/// - 权限拒绝：agent 调 goal delete 删人建 goal → 诚实拒绝回执（回声
+///   含「人工创建」）→ goal 文件原样 → 拒绝轮结束评估照常 DONE。
+pub async fn run_goal_gate(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        out.push(goal_gate_one_round().await);
+    }
+    out
+}
+
+async fn goal_gate_one_round() -> Result<(u64, String)> {
+    let start = Instant::now();
+    let flow = async {
+        let mut notes = Vec::new();
+
+        // ── 流1 done 判定：round 0 评估 → DONE（评估闸唯一 done 出口）──
+        {
+            let session_id = fresh_session_id("bench-goal-fin");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-A 按目标推进",
+                None,
+            )
+            .await?;
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-A-ACK",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id = goals_create_with_retry(
+                &mut api,
+                "GOALS-BENCH-A 长期目标：完成即算达成（评估闸判定流）",
+                &session_id,
+                None,
+            )
+            .await?;
+            // 第二轮：goal 已在场，turn 结束评估闸 round 0 → DONE。
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-A 继续推进",
+                None,
+            )
+            .await?;
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-A-ACK",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let st = poll_goal_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("done")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["rounds_used"].as_u64() == Some(0),
+                "done 流 round 0 收口 rounds_used 应保持 0: {st}"
+            );
+            let evals = st["evals"]
+                .as_array()
+                .ok_or_else(|| anyhow!("done 流缺 evals 台账"))?;
+            anyhow::ensure!(
+                evals.len() == 1 && evals[0]["verdict"].as_str() == Some("done"),
+                "done 流台账应恰 1 条 done: {evals:?}"
+            );
+            notes.push(format!("done(id={id})"));
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        // ── 流2 CONTINUE 续轮：round 0 CONTINUE → gap 注入 → agent 回声
+        //    → round 1 DONE（台账 continue→done）──
+        {
+            let session_id = fresh_session_id("bench-goal-cont");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-B 按目标推进",
+                None,
+            )
+            .await?;
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-B-ACK",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id = goals_create_with_retry(
+                &mut api,
+                "GOALS-BENCH-B 长期目标：两轮完成（评估闸 round 0 判缺口续轮）",
+                &session_id,
+                None,
+            )
+            .await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-B 继续推进",
+                None,
+            )
+            .await?;
+            // 注入轮 agent 回声：缺口文本（GOALS-BENCH-B-GAP-ONE）真实
+            // 到达执行面（效果面断言——注入不是只写状态不投递）。
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-B-GAP-ONE",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let st = poll_goal_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("done")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["rounds_used"].as_u64() == Some(1),
+                "续轮流 CONTINUE 一次后 rounds_used 应为 1: {st}"
+            );
+            let evals = st["evals"]
+                .as_array()
+                .ok_or_else(|| anyhow!("续轮流缺 evals 台账"))?;
+            anyhow::ensure!(
+                evals.len() == 2
+                    && evals[0]["verdict"].as_str() == Some("continue")
+                    && evals[0]["gap"]
+                        .as_str()
+                        .is_some_and(|g| g.contains("GOALS-BENCH-B-GAP-ONE"))
+                    && evals[1]["verdict"].as_str() == Some("done"),
+                "续轮流台账应为 [continue(gap), done]: {evals:?}"
+            );
+            notes.push(format!("continue(id={id})"));
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        // ── 流3 预算耗尽：max_rounds=1，第二轮 turn 结束预算闸先于评估
+        //    停车（round-limit；无第三条台账——D-Q10 不猜 CONTINUE）──
+        {
+            let session_id = fresh_session_id("bench-goal-budget");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-C 按目标推进",
+                None,
+            )
+            .await?;
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-C-ACK",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id = goals_create_with_retry(
+                &mut api,
+                "GOALS-BENCH-C 长期目标：永远差一步（预算闸耗尽流）",
+                &session_id,
+                Some(1),
+            )
+            .await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-C 继续推进",
+                None,
+            )
+            .await?;
+            // CONTINUE → 注入 → 回声（确认注入轮真实发生），随后该轮结束
+            // 预算闸停车。
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-C-GAP-ONE",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let st = poll_goal_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("blocked")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["blocked_code"].as_str() == Some("round-limit"),
+                "预算耗尽流 blocked_code 应为 round-limit: {st}"
+            );
+            anyhow::ensure!(
+                st["rounds_used"].as_u64() == Some(1),
+                "预算耗尽流 rounds_used 应停在 1: {st}"
+            );
+            let evals = st["evals"]
+                .as_array()
+                .ok_or_else(|| anyhow!("预算耗尽流缺 evals 台账"))?;
+            anyhow::ensure!(
+                evals.len() == 1 && evals[0]["verdict"].as_str() == Some("continue"),
+                "预算耗尽流第二轮不再评估（台账应恰 1 条）: {evals:?}"
+            );
+            notes.push(format!("budget(id={id})"));
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        // ── 流4 权限拒绝：agent goal delete 删人建 goal → 诚实拒绝回执
+        //    → goal 文件原样 → 拒绝轮结束评估照常 ──
+        {
+            let session_id = fresh_session_id("bench-goal-perm");
+            let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-D 会话开始",
+                None,
+            )
+            .await?;
+            chat_wait(
+                &mut chat,
+                &session_id,
+                "GOALS-BENCH-D-ACK",
+                Duration::from_secs(90),
+            )
+            .await?;
+            let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let id = goals_create_with_retry(
+                &mut api,
+                "GOALS-BENCH-D 长期目标：人建目标（权限拒绝流）",
+                &session_id,
+                None,
+            )
+            .await?;
+            // agent 调 goal delete（模型脚本组工具调用）→ 诚实拒绝。
+            chat_send(
+                &mut chat,
+                &session_id,
+                "bench goal 任务：GOALS-BENCH-D 请删除本会话的目标",
+                None,
+            )
+            .await?;
+            let refusal =
+                chat_wait(&mut chat, &session_id, "人工创建", Duration::from_secs(90)).await?;
+            anyhow::ensure!(
+                refusal.contains("GOALS-BENCH-D-REFUSED"),
+                "拒绝回执应带脚本回声前缀: {refusal}"
+            );
+            // 拒绝轮结束评估闸照常跑（goal 在场）→ DONE 收口；goal.md
+            // 文件原样（删除被拒——内容面回读）。
+            let st = poll_goal_until(&mut api, &id, Duration::from_secs(90), |st| {
+                st["status"].as_str() == Some("done")
+            })
+            .await?;
+            anyhow::ensure!(
+                st["content"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("GOALS-BENCH-D")),
+                "权限拒绝后 goal.md 应原样保留: {st}"
+            );
+            notes.push(format!("perm(id={id})"));
+            let _ = chat.close(None).await;
+            let _ = api.close(None).await;
+        }
+
+        Ok(notes.join(" + "))
+    }
+    .await;
+    match flow {
+        Ok(reply) => Ok((start.elapsed().as_millis() as u64, reply)),
+        Err(e) => Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 场景目录
 // ---------------------------------------------------------------------------
 
@@ -3274,6 +3631,10 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         },
         ScenarioSpec {
             name: "memory_capacity_recall",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "goal_gate",
             runs: 1,
         },
     ]

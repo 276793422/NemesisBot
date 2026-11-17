@@ -26,6 +26,7 @@ members = [
     "crates/nemesis-auth",
     "crates/nemesis-cron",
     "crates/nemesis-events",
+    "crates/nemesis-goals",
     "crates/nemesis-loop",
     "crates/nemesis-devices",
     "crates/nemesis-health",
@@ -258,6 +259,7 @@ nemesis-web = { path = "crates/nemesis-web" }
 nemesis-auth = { path = "crates/nemesis-auth" }
 nemesis-cron = { path = "crates/nemesis-cron" }
 nemesis-events = { path = "crates/nemesis-events" }
+nemesis-goals = { path = "crates/nemesis-goals" }
 nemesis-loop = { path = "crates/nemesis-loop" }
 nemesis-devices = { path = "crates/nemesis-devices" }
 nemesis-health = { path = "crates/nemesis-health" }

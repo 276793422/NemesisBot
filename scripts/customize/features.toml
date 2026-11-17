@@ -262,6 +262,17 @@ desc = "agent 自排程唤醒（loop_wakeup/status/finish 工具 + 预算保险�
 category = "subsystems"
 default = true
 
+# NOTE: `goals` 目标系统（2026-11-17）：goal 文件监督 agent——turn 结束评估闸
+# 独立判定 DONE（唯一 done 出口）/CONTINUE（注入缺口续跑）。穿透
+# nemesisbot/goals = goals.* WSAPI + GoalsView（VITE_FEATURE_GOALS 同闸）。
+# 关闭 = goal 工具退出注册表面、评估闸引擎不装配、goals.* WSAPI 消失。
+[[feature]]
+id = "goals"
+label = "目标系统"
+desc = "goal 文件监督 agent（评估闸 turn-end 判定 + goal 轮注入 + 预算停车 + 管理页）。IoT/纯聊天场景可关"
+category = "subsystems"
+default = true
+
 [[feature]]
 id = "voice"
 label = "语音管线"

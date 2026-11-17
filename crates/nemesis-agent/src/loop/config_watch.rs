@@ -286,13 +286,29 @@ impl AgentLoop {
         prompt: String,
         max_tokens: u32,
     ) -> Result<String, String> {
-        if self.small_model_slot().is_none() {
+        self.chore_completion_ex(label, prompt, max_tokens, true)
+            .await
+    }
+
+    /// [`Self::chore_completion`] 的槽位参数化变体：`prefer_small=true`
+    /// 保持原语义（small 槽优先、未配置 WARN 回主模型）；`false` = 直接
+    /// 主模型（目标系统评估闸 D-Q5：评估默认走全局默认模型，goal 显式
+    /// `eval_model="small"` 才走杂务槽——默认主模型是设计语义不是回落，
+    /// 不打回落 warn）。
+    pub async fn chore_completion_ex(
+        &self,
+        label: &str,
+        prompt: String,
+        max_tokens: u32,
+        prefer_small: bool,
+    ) -> Result<String, String> {
+        if prefer_small && self.small_model_slot().is_none() {
             tracing::warn!(
                 "[chore:{label}] agents.small_model 未配置，回落主模型生成（预算 {} tokens）",
                 max_tokens
             );
         }
-        let (provider, model) = self.resolve_summary_provider(true);
+        let (provider, model) = self.resolve_summary_provider(prefer_small);
         let ledger = AuxLedger {
             aux_kind: "summary",
             model: &model,

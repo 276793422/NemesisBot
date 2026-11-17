@@ -605,6 +605,7 @@ pub fn default_config() -> Config {
         checkpoint: None,
         plugins: None,
         browser: None,
+        goals: None,
     }
 }
 /// Load MCP configuration from a separate config.mcp.json file.

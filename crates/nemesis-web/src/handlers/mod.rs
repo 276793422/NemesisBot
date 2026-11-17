@@ -77,6 +77,10 @@ pub mod events;
 // <workspace>/loops/*.json 人控面；项5）。
 #[cfg(feature = "loop")]
 pub mod loops;
+// 目标（goals）管理面（goals.* 八命令；`goals` feature 门控——
+// <workspace>/goals/*.goal.md + config/goals.json 人控面）。
+#[cfg(feature = "goals")]
+pub mod goals;
 // 专家子代理管理面（experts.*）——bot 侧资源层经静态槽桥注入。
 pub mod experts;
 // 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
@@ -295,6 +299,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "loop")]
     {
         router.register(Arc::new(loops::LoopsHandler));
+    }
+    // 目标（goals）管理面（`goals` feature 门控）。
+    #[cfg(feature = "goals")]
+    {
+        router.register(Arc::new(goals::GoalsHandler));
     }
     // 紫微系统（.5）：ziwei.* 全量命令清单随 feature 进出。
     #[cfg(feature = "ziwei")]

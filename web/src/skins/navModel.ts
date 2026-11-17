@@ -71,6 +71,8 @@ const ITEM_FEATURE: Record<string, string> = {
   events: 'EVENTS',
   // 循环管理面（项5 自配速 durable loop，loop feature / VITE_FEATURE_LOOP）。
   loops: 'LOOP',
+  // 目标管理面（目标系统，goals feature / VITE_FEATURE_GOALS）。
+  goals: 'GOALS',
   // 更新页（selfupdate feature / VITE_FEATURE_SELFUPDATE 门控）：版本对照 +
   // 手动更新完整面；侧栏自更新长条保留快速入口（同 feature）。
   update: 'SELFUPDATE',
@@ -138,6 +140,9 @@ export const NAV_GROUPS: NavGroupModel[] = [
       // 循环（项5 自配速 durable loop，2026-11-16）：agent 自排程唤醒台账 +
       // 人控 pause/resume（停车场解除）——loop feature / VITE_FEATURE_LOOP。
       { id: 'loops', label: '循环', route: '/loops', icon: 'M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15' },
+      // 目标（目标系统，2026-11-17）：goal 注册表 + 评估台账 +
+      // 人控 create/update/enable/disable——goals feature / VITE_FEATURE_GOALS。
+      { id: 'goals', label: '目标', route: '/goals', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z' },
     ],
   },
   {

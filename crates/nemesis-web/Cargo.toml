@@ -34,6 +34,7 @@ nemesis-board = { workspace = true, optional = true }
 nemesis-events = { workspace = true, optional = true }
 # 自配速 durable loop 管理面（handlers/loops.rs：loops.* 七命令；`loop`
 # feature 门控——状态真相源 <workspace>/loops/*.json，人控面 pause/resume）。
+nemesis-goals = { workspace = true, optional = true }
 nemesis-loop = { workspace = true, optional = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
@@ -170,6 +171,7 @@ events = ["dep:nemesis-events"]
 # feature 穿透）。关 = handler 整体退出注册表面；agent 工具面（loop_wakeup/
 # loop_status/loop_finish）在 nemesisbot 侧独立门控，两侧同 feature 名同开。
 loop = ["dep:nemesis-loop"]
+goals = ["dep:nemesis-goals"]
 # 行动代理连接器管理面（connectors.* / paperbroker.* WSAPI；由 nemesisbot
 # 的 connectors feature 穿透）。关 = handler 整体退出注册表面。
 connectors = ["dep:nemesis-connectors"]

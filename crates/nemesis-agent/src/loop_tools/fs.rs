@@ -229,6 +229,15 @@ pub struct WorkspaceBoundary {
     /// executor 子进程无开关通路）= 旧行为一概拒绝。闭包签名纯原始类型，
     /// 不引 security 类型（`--no-default-features` 裁剪编译不受影响）。
     pub editor_gate: Option<Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>,
+    /// 目标系统文件保护闸（D-Q3 创建者二分）：Some 时**写删族**路径在
+    /// restrict 短路**之前**先过守卫（restrict=false 也保护人配目标）；
+    /// 读族不设防。输入 workspace 相对路径（`/` 分隔归一），返回
+    /// Some(拒绝理由) = 拒、None = 放行。裁决逻辑单一真相源在
+    /// nemesis-goals `gate::fence_denial`（goals/ 下按创建者二分 +
+    /// evals.jsonl/注册表恒拒）；主 agent / 集群 worker / executor 子
+    /// 进程装守卫，项目 loop（spec.rs）不装（root=项目目录，主 ws
+    /// goals/ 不可达）。None = 不设防（feature 裁剪形态）。
+    pub goals_guard: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
 }
 
 impl std::fmt::Debug for WorkspaceBoundary {
@@ -238,6 +247,7 @@ impl std::fmt::Debug for WorkspaceBoundary {
             .field("restrict", &self.restrict)
             .field("extra_roots", &self.extra_roots)
             .field("editor_gate", &self.editor_gate.is_some())
+            .field("goals_guard", &self.goals_guard.is_some())
             .finish()
     }
 }
@@ -262,6 +272,22 @@ pub fn validate_workspace_path(
     } else {
         boundary.root.join(target)
     };
+    // 目标系统文件保护（D-Q3 创建者二分）：写删族在 restrict 短路**之前**
+    // 检查——restrict=false 也保护人配目标（goal.md 是评估的单一真相源，
+    // 不随边界开关松动）；读族放行。守卫裁决单一真相源在 nemesis-goals
+    // gate::fence_denial；界外路径不归本守卫管（由 restrict/editor_gate
+    // 既有语义处理）。
+    if family.is_write_delete()
+        && let Some(guard) = &boundary.goals_guard
+    {
+        let resolved_guard = canonicalize_for_compare(&canonical);
+        let ws_guard = canonicalize_for_compare(&boundary.root);
+        if let Ok(rel) = resolved_guard.strip_prefix(&ws_guard)
+            && let Some(reason) = guard(&rel.to_string_lossy().replace('\\', "/"))
+        {
+            return Err(reason);
+        }
+    }
     if !boundary.restrict {
         return Ok(canonical);
     }

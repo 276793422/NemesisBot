@@ -496,6 +496,9 @@ pub fn build_cluster_agent_loop(
         restrict: true,
         extra_roots: Vec::new(),
         editor_gate,
+        // 目标系统文件保护（D-Q3；worker 同主 agent 装守卫——人配目标在
+        // 集群执行语境同样只读）。
+        goals_guard: crate::goals_engine::workspace_goals_guard(&shared.workspace_dir()),
     }));
     // 集群 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {

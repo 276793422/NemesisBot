@@ -615,6 +615,9 @@ pub fn build_agent_loop_from_spec(
             roots
         },
         editor_gate,
+        // 项目 loop 不装 goals 守卫：root=项目目录，主 ws goals/ 本就界外
+        // （restrict 拒绝）；项目目录内无 goals 面。
+        goals_guard: None,
     }));
     // 项目 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
