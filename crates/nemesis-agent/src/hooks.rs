@@ -538,6 +538,14 @@ pub enum TurnEndDecision {
     /// model one more round. Bounded by [`MAX_TURN_END_CONTINUES`] in the
     /// loop (exhausted → stop anyway, fail-open).
     Continue { feedback: String },
+    /// 提示词型钩子（LLM 执行体）：turn **照常收尾**（Done 照发、checkpoint
+    /// 照落），收尾完成后由 loop 把 `prompt` 作为一条新的用户消息注入会话，
+    /// 开启全新一轮。与 [`TurnEndDecision::Continue`] 的本质区别：Continue
+    /// 拦截停止、turn 内续轮、受 [`MAX_TURN_END_CONTINUES`] 封顶；Inject
+    /// 不拦截、轮与轮之间接力、**无封顶**——「每轮结束注入提示词」的钩子
+    /// 在 Stop 钩点每次触发都会再注入，循环是钩点正常执行的自然副作用
+    /// （estop/取消打断 turn → 非 Accept 路径 → 钩子不触发 → 循环自然停）。
+    Inject { prompt: String },
 }
 
 /// A prompt/turn lifecycle hook. The hooks-dialect bridge is the primary
@@ -618,8 +626,9 @@ pub async fn run_user_prompt_hooks(
     None
 }
 
-/// Run turn-end hooks in order. The first `Continue` short-circuits (dialect: any
-/// hook may veto stopping); `Stop` when all agree (or none demand more).
+/// Run turn-end hooks in order. The first non-`Stop` short-circuits (dialect:
+/// any hook may veto stopping via `Continue`, or demand a post-turn prompt
+/// injection via `Inject`); `Stop` when all agree (or none demand more).
 pub async fn run_turn_end_hooks(
     hooks: &[Arc<dyn LifecycleHook>],
     end: &HookTurnEnd,
@@ -635,6 +644,16 @@ pub async fn run_turn_end_hooks(
                     feedback.len()
                 );
                 return TurnEndDecision::Continue { feedback };
+            }
+            TurnEndDecision::Inject { prompt } => {
+                tracing::info!(
+                    "[hooks] turn-end '{}' demands prompt injection for session '{}' \
+                     (prompt: {} bytes, loop continues after turn finalization)",
+                    hook.name(),
+                    end.session_key,
+                    prompt.len()
+                );
+                return TurnEndDecision::Inject { prompt };
             }
         }
     }

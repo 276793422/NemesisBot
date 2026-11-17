@@ -29,7 +29,8 @@ pub mod llm_bridge;
 // 入站 OpenAI 兼容端点（POST /v1/chat/completions）。
 pub mod openai_compat;
 pub mod pricing_sync;
-// LLM 代理请求用量记账（裸转发 lane + /api/chat/stream 的落账出口；
+// 会话资源盘点——web 侧 provider（usage / session_allow；计划 2026-11-17 B1）。
+pub mod resource_providers; // LLM 代理请求用量记账（裸转发 lane + /api/chat/stream 的落账出口；
 // 代理请求用量记账）。
 pub mod protocol;
 // LLM 代理调用方 key 鉴权面（per-caller key 匹配 + mtime 缓存热生效；
@@ -101,6 +102,11 @@ mod proxy_keys_extra_tests;
 // 入站过滤链 history 过滤器（BUG 项目会话历史加载修复）。
 #[cfg(test)]
 mod history_filter_tests;
+
+// 会话资源盘点 web 侧 provider 单测（usage 全态 + session_allow 三态；
+// session_allow 用例随 security feature 进出——provider 本体同门）。
+#[cfg(test)]
+mod resource_providers_tests;
 
 // chat.send 写入侧幂等键——LRU 容量 / LRU
 // touch / sidecar 持久化往返 / 损坏 sidecar 降级 / 纯图 seq=0 形态。

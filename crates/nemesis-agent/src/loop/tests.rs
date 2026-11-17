@@ -6605,13 +6605,16 @@ async fn test_turn_permits_bound_concurrency() {
         let r = running.clone();
         let p = peak.clone();
         let d = done.clone();
-        agent_loop.spawn_turn_task(async move {
-            let cur = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            p.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            r.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        agent_loop.spawn_turn_task(
+            async move {
+                let cur = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                p.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                r.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            "agent:main:session:parallel",
+        );
     }
     // 用完成计数等全收（running 初值 0 会抢在任务首跑前通过）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -9449,10 +9452,13 @@ async fn test_stop_aborts_tracked_turn_tasks() {
     let probe = TurnAbortProbe {
         dropped: dropped.clone(),
     };
-    arc.spawn_turn_task(async move {
-        let _probe = probe;
-        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-    });
+    arc.spawn_turn_task(
+        async move {
+            let _probe = probe;
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        },
+        "agent:main:session:abort_probe",
+    );
     // Let the spawned task actually start.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

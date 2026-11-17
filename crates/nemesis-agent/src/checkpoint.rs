@@ -150,12 +150,17 @@ pub struct Checkpoint {
 }
 
 /// Picker-facing summary of a checkpoint (no file contents).
+///
+/// `session`（2026-11-17 会话资源盘点投影扩展）：begin 该 turn 的会话键
+/// 原样透传（None = 旧条目/测试直构造）。资源看板 checkpoint 类目按它做
+/// 会话过滤——不扩展则聚合面拿到全 store 无差别条目（计划 §口径地雷 5）。
 #[derive(Debug, Clone)]
 pub struct CheckpointMeta {
     pub turn: usize,
     pub time: String,
     pub prompt: String,
     pub paths: Vec<String>,
+    pub session: Option<String>,
 }
 
 /// 某文件在本库的最早基线锚（首个声明过它的 checkpoint 条目）。
@@ -1939,6 +1944,7 @@ impl CheckpointStore {
                     time: c.time.clone(),
                     prompt: c.prompt.clone(),
                     paths,
+                    session: c.session.clone(),
                 }
             })
             .collect()

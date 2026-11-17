@@ -3,7 +3,6 @@
 //! Skill loading, remote registry, linting, quality scoring, signing,
 //! security checking, and management.
 
-pub mod builtin_registry;
 pub mod clawhub_registry;
 pub mod github_registry;
 pub mod github_tree;

@@ -209,7 +209,7 @@ fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, Stri
     // 值真相源；字段名差异 timeout/timeout_secs 在此显式映射）。append-if-absent
     // 名字已存在即跳过——用户可关不可丢；load_config 也是 RMW（update_skills_config）
     // 的读腿，下一条写事务会把合流结果落盘，与 registry 面收敛语义一致
-    // （老工作区零操作拿到出厂源）。builtin 内嵌臂不经 config，恒注册。
+    // （老工作区零操作拿到出厂源）。
     if !cfg
         .github_sources
         .iter()

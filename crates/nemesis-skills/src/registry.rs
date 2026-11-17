@@ -13,7 +13,6 @@ use tracing::{debug, info, warn};
 
 use nemesis_types::error::{NemesisError, Result};
 
-use crate::builtin_registry::BuiltinSkillsRegistry;
 use crate::clawhub_registry::ClawHubRegistry;
 use crate::github_registry::{GitHubRegistry, GitHubSourceConfig};
 use crate::modelscope_registry::ModelScopeRegistry;
@@ -241,11 +240,6 @@ impl RegistryManager {
                 registries.push(Arc::new(GitHubRegistry::from_source(&gh_source)));
             }
         }
-
-        // 内嵌臂恒注册（2026-11-16 拍板②同款双臂形态：live GitHub 臂在上，
-        // 本臂断网/纯内网兜底；无 config 开关——恒在，列表全量上架 13 个
-        // 技能，安装时统一内容安全关照常裁决，运维技能装时诚实报拦截理由）。
-        registries.push(Arc::new(BuiltinSkillsRegistry::new()));
 
         // Legacy: if no multi-source GitHub registries, use single-source.
         //（资格在出厂源合流前捕获，见上方注释）

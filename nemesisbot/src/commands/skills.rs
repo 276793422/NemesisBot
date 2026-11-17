@@ -1295,7 +1295,7 @@ async fn cmd_install_clawhub(
     );
 
     // 与 cmd_install 同源装配（2026-11-16 legacy 命令接入统一漏斗）：
-    // 主配置 skills 安全策略 → CLI 审批闸 → registry 合流（含 builtin/出厂源）。
+    // 主配置 skills 安全策略 → CLI 审批闸 → registry 合流（含出厂源）。
     // 此前本命令 raw URL 下载后直接落盘，绕过扫描/验签/审批/lockfile 全部
     // 安全面——现代路径有全链防护而 legacy 零防护的漏斗旁路。
     let workspace = skills_dir

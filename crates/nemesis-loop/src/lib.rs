@@ -24,15 +24,19 @@
 //! 预算三维（board.budget 先例，0=不限）：turns（唤醒次数）/ 墙钟
 //! （started_at 起算）/ tokens（usage 台账，宿主喂入）。耗尽 → parked。
 
+pub mod resources;
 pub mod state;
 pub mod store;
 pub mod wake;
 
 #[cfg(test)]
+mod resources_tests;
+#[cfg(test)]
 mod store_tests;
 #[cfg(test)]
 mod wake_tests;
 
+pub use resources::DurableLoopsResourceProvider;
 pub use state::{LoopBudget, LoopSpent, LoopState, LoopStatus, ProgressEntry, PROGRESS_LOG_CAP};
 pub use store::{alloc_id, list_loops, load_loop, loops_dir, remove_loop, save_loop};
 pub use wake::{

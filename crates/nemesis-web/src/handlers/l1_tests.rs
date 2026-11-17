@@ -105,7 +105,7 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 30 个模块（register_all 的无条件注册段； 起
+/// 无 feature 闸的 31 个模块（register_all 的无条件注册段； 起
 /// 含 projects，起含 canvas， 起含 roles——角色目录
 /// WSAPI 含 selfupdate——版本自切换通道；
 /// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖）；
@@ -147,6 +147,8 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "subagents",
     // 后台进程实时输出：background.list/output/kill/steer。
     "background",
+    // 会话资源盘点聚合命令：session.resources（2026-11-17）。
+    "session",
 ];
 
 // 结构不变量
@@ -154,7 +156,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
     let reg = build_registry();
-    // 30 个无条件模块必须全在；13 个 feature 门控模块按 cfg 计入下限。
+    // 31 个无条件模块必须全在；13 个 feature 门控模块按 cfg 计入下限。
     // （cfg! 的 feature 参数必须是字面量，无法循环展开——逐个列出。）
     let gated_on = [
         cfg!(feature = "cluster"),

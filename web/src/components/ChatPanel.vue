@@ -566,6 +566,29 @@ const fmtTok = (n: number): string => n.toLocaleString('en-US')
 // 口径）+ 已用/触发点（锚定口径头）+ 窗口行。迷你条 = ▉ 重复，宽度按
 // 段值占 used 比例（≤12 格）。
 const usageTipShow = ref(false)
+// 延迟关闭（2026-11-17 用户点名）：弹层绝对定位在文字上方 8px 间隙处
+//（.usage-tip bottom: calc(100% + 8px)），鼠标从文字移向弹层时穿过间隙
+// 触发 mouseleave —— 立即关闭 = 人还没到弹层就没了。改走「离开延迟
+// 1s 关闭 + 重入取消」：重新进入文字或弹层（弹层是 DOM 子元素，二者
+// 都触发本元素 mouseenter）即取消；彻底移开 1s 后才收起。
+let usageTipCloseTimer: ReturnType<typeof setTimeout> | null = null
+function usageTipEnter() {
+  if (usageTipCloseTimer !== null) {
+    clearTimeout(usageTipCloseTimer)
+    usageTipCloseTimer = null
+  }
+  usageTipShow.value = true
+}
+function usageTipLeave() {
+  if (usageTipCloseTimer !== null) clearTimeout(usageTipCloseTimer)
+  usageTipCloseTimer = setTimeout(() => {
+    usageTipShow.value = false
+    usageTipCloseTimer = null
+  }, 1000)
+}
+onUnmounted(() => {
+  if (usageTipCloseTimer !== null) clearTimeout(usageTipCloseTimer)
+})
 const usedTokens = computed(() => {
   const bd = ctxBreakdown.value
   if (!bd) return 0
@@ -1878,7 +1901,8 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
     // 路径，语义分列见 checkpoint.rs）。此前前端只数 conflicts：被拦原因
     // 是其他会话波及时 toast 显示「0 个文件被外部修改」（误导），且 rewind
     // 无 force 通道（redo 有确认流，不对称），用户被拦后无解。现分列展示 +
-    // window.confirm 确认后带 force 重试（与 doRedo 同构）。
+    // window.confirm 确认后带 force 重试（B3 前工具栏重做按钮已移除，
+    // 确认流形态沿用 rewind 自身）。
     // blocked ≠ 只有 conflict（复查 2026-11-12 收窄回归修复）：restore_failed
     // /commit_failed（rewind.rs 文件恢复/日志写回失败，同样零改动、可处理后
     // 重试）必须诚实报错终止，不能穿透 rewindToastSummary 假成功——旧代码
@@ -1928,48 +1952,6 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
   } catch (e: any) {
     toast.error(e?.message || String(e))
     return null
-  } finally {
-    rewinding.value = false
-  }
-}
-
-/** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。
- *  M4 冲突预检：回退窗口内外部改动过文件时后端返回 blocked（零副作用），
- *  列出受影响路径由用户确认，确认才带 force 重试（后端审计留痕）。 */
-async function doRedo() {
-  if (rewinding.value || !isDefaultChat.value) return
-  const sid = effectiveSid.value
-  if (!sid) return
-  rewinding.value = true
-  try {
-    let out = await request('sessions', 'redo', { session_id: sid })
-    // blocked 全拦（复查 2026-11-12 对齐 rewind 臂）：conflict 走确认 + force
-    // 重试；restore_failed 等（redo 前向恢复不完整，rewind.rs 904 起同样零
-    // 推进、条目还栈可重试）诚实报错终止——旧窄条件会穿透到「已重做」假
-    // 成功 toast。force 后仍可 blocked（force 只强过 conflict 预检），二次
-    // 检查同样必要。
-    if (out?.blocked) {
-      if (out?.reason !== 'conflict') {
-        toast.error(`重做未执行：${out?.note ?? '被后端拒绝，未做任何改动'}`)
-        return
-      }
-      const paths = (out.drifted_paths ?? []).join('\n')
-      if (
-        !window.confirm(
-          `回退窗口内外部修改了以下文件，重做将覆盖这些改动：\n${paths}\n\n确认覆盖？`,
-        )
-      )
-        return
-      out = await request('sessions', 'redo', { session_id: sid, force: true })
-      if (out?.blocked) {
-        toast.error(`强制重做仍被拒绝：${out?.note ?? '未做任何改动'}`)
-        return
-      }
-    }
-    toast.success('已重做上一次回退')
-    resyncFromLog()
-  } catch (e: any) {
-    toast.error(e?.message || String(e))
   } finally {
     rewinding.value = false
   }
@@ -4039,6 +4021,9 @@ onUnmounted(() => {
          归模板管而非皮肤 CSS display:none：scoped display:flex 与 :where 基线
          同特异性且后加载会赢回，2026-09-26 案例） -->
     <div v-if="!toolbarCollapsed && !launcherMode" class="voice-toolbar">
+      <!-- B3（2026-11-17）：工具栏三行分组（13 键单行在 944 主列上限下溢出）；
+           行一=模式/思考/分享/委派/插队，行二=三个放行开关，行三=语音四键 -->
+      <div class="vt-row">
       <button
         v-if="isDefaultChat"
         class="voice-btn mode-btn"
@@ -4071,6 +4056,35 @@ onUnmounted(() => {
         <option :title="effortNoteFor('xhigh') || undefined" value="xhigh">思考·极高{{ effortMarkFor('xhigh') }}</option>
         <option :title="effortNoteFor('max') || undefined" value="max">思考·最大{{ effortMarkFor('max') }}</option>
       </select>
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn share-btn"
+        title="分享本会话（只读链接，token 即凭据，可随时撤销）"
+        :disabled="rewinding"
+        @click="showShare = true"
+      >
+        🔗 分享
+      </button>
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn delegate-btn"
+        title="委派任务给子代理（选角色 + 工具档位，完成后回复交回本会话）"
+        @click="showDelegate = true"
+      >
+        🤝 委派
+      </button>
+      <button
+        v-if="steerEnabled"
+        class="voice-btn steer-btn"
+        title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
+        @click="prefixSteer"
+      >
+        <span class="steer-mark">!</span>
+        插队
+      </button>
+      </div>
+      <!-- 行二：放行开关组 -->
+      <div class="vt-row">
       <!-- Full Access 放行开关（2026-09-20 用户裁决；运行时态，
            Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->
       <button
@@ -4106,41 +4120,9 @@ onUnmounted(() => {
       >
         🔓 全部放行
       </button>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn redo-btn"
-        title="重做上一次回退（恢复被撤销的消息，文件尽力前向恢复；undo 栈在网关内存，重启即清）"
-        :disabled="rewinding"
-        @click="doRedo"
-      >
-        ↪ 重做
-      </button>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn share-btn"
-        title="分享本会话（只读链接，token 即凭据，可随时撤销）"
-        :disabled="rewinding"
-        @click="showShare = true"
-      >
-        🔗 分享
-      </button>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn delegate-btn"
-        title="委派任务给子代理（选角色 + 工具档位，完成后回复交回本会话）"
-        @click="showDelegate = true"
-      >
-        🤝 委派
-      </button>
-      <button
-        v-if="steerEnabled"
-        class="voice-btn steer-btn"
-        title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
-        @click="prefixSteer"
-      >
-        <span class="steer-mark">!</span>
-        插队
-      </button>
+      </div>
+      <!-- 行三：语音组 -->
+      <div class="vt-row">
       <button
         class="voice-btn"
         :class="{ active: voiceDictation }"
@@ -4195,6 +4177,7 @@ onUnmounted(() => {
         </svg>
         实时语音
       </button>
+      </div>
     </div>
 
     <!-- U7 inbox visibility: queued/steer chip + steer input hint -->
@@ -4242,8 +4225,8 @@ onUnmounted(() => {
         <span
           class="usage-text"
           :class="{ hot: usageHot, over: usageOver }"
-          @mouseenter="usageTipShow = true"
-          @mouseleave="usageTipShow = false"
+          @mouseenter="usageTipEnter"
+          @mouseleave="usageTipLeave"
         >
           <span v-if="ctxAnchor" class="usage-anchor-mark">{{ anchorMark }}</span
           >{{ ctxPct }}% context<template v-if="sessCost !== null && sessCost > 0">
@@ -4864,12 +4847,20 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .voice-toolbar {
+  /* B3（2026-11-17）：三行分组容器（行一=模式/思考/分享/委派/插队，
+     行二=放行开关组，行三=语音组）——单行 13 键在 944 主列上限下溢出。 */
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   padding: 6px 12px;
   background: var(--surface);
   min-height: 36px;
+}
+.vt-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .voice-btn {
   display: inline-flex;

@@ -14,6 +14,7 @@ pub mod error;
 pub mod forge;
 pub mod memory;
 pub mod provider;
+pub mod resources;
 pub mod security;
 pub mod tools;
 pub mod traits;
@@ -40,3 +41,6 @@ mod constants_tests;
 
 #[cfg(test)]
 mod memory_tests;
+
+#[cfg(test)]
+mod resources_tests;

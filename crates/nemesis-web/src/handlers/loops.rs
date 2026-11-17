@@ -165,6 +165,29 @@ impl ModuleHandler for LoopsHandler {
                 let id = nemesis_loop::alloc_id(&dir);
                 let mut st = LoopState::new(id.clone(), goal.to_string(), session_key.clone(), ts);
                 st.budget = budget;
+                // 初始排程（可选，2026-11-17 会话资源盘点看板 B3「+ 设置目标」
+                // 内联表单前置）：`delay_secs`（一次性）/ `cron`（周期表达式）
+                // 二选一，互斥校验与换算在 nemesis-loop::compute_next_wake
+                // 单一真相源（CLI loops create 同款形态）；都不给 = 等 agent
+                // 自配速（旧行为不变）。
+                {
+                    let delay_secs = data
+                        .get("delay_secs")
+                        .and_then(|v| v.as_u64())
+                        .filter(|d| *d > 0);
+                    let cron_expr = data
+                        .get("cron")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    if delay_secs.is_some() || cron_expr.is_some() {
+                        let (wake, cron_set) =
+                            nemesis_loop::compute_next_wake(ts, delay_secs, cron_expr)
+                                .map_err(|e| format!("排程无效：{e}"))?;
+                        st.next_wake_ms = wake;
+                        st.cron = cron_set;
+                    }
+                }
                 // token 基线：显式配了 max_tokens 且台账在场 → 记创建时刻
                 // 已耗 token（spent.tokens = 现值 − 基线）。
                 if st.budget.max_tokens > 0

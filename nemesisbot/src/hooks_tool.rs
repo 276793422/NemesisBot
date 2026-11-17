@@ -68,6 +68,10 @@ pub(crate) enum HooksCommand {
     Add {
         event: String,
         command: String,
+        /// 提示词型钩子（LLM 执行体；仅 Stop 事件合法）。command 与
+        /// prompt 恰好一项非空（Exactly one，双非空混合条目 loud 拒绝）
+        /// ——prompt 非空即 prompt 型条目。
+        prompt: String,
         matcher: Option<String>,
         timeout: Option<u64>,
     },
@@ -77,8 +81,8 @@ pub(crate) enum HooksCommand {
     List,
 }
 
-/// args JSON → 结构化子命令。event 合法性 / command 非空 / timeout 数值型
-/// 在这里守（args_validator 兜 schema 层，语义层自己守）。
+/// args JSON → 结构化子命令。event 合法性 / command+prompt 二选一非空 /
+/// timeout 数值型在这里守（args_validator 兜 schema 层，语义层自己守）。
 pub(crate) fn parse_hooks_args(args: &str) -> Result<HooksCommand, String> {
     let v: serde_json::Value =
         serde_json::from_str(args).map_err(|e| format!("invalid JSON args: {e}"))?;
@@ -111,8 +115,36 @@ pub(crate) fn parse_hooks_args(args: &str) -> Result<HooksCommand, String> {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            if command.is_empty() {
-                return Err("add: missing field \"command\"（要执行的 shell 命令）".to_string());
+            let prompt = v
+                .get("prompt")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            // 二选一非空：command 型（shell 执行体）或 prompt 型（LLM 执行体）。
+            if command.is_empty() && prompt.is_empty() {
+                return Err(
+                    "add: \"command\" 与 \"prompt\" 至少一项非空（command=shell 执行体；\
+                     prompt=提示词注入，turn 结束后作为新用户消息开新轮）"
+                        .to_string(),
+                );
+            }
+            // 恰好一项（schema 契约 Exactly one）：双非空的混合条目语义未定
+            // （shell 投影滤掉 prompt 条目 → command 被静默忽略）——loud 拒绝
+            // 而非静默偏向。
+            if !command.is_empty() && !prompt.is_empty() {
+                return Err(
+                    "add: \"command\" 与 \"prompt\" 只能二选一（command=shell 执行体；\
+                     prompt=提示词注入）——两类执行体不可混合"
+                        .to_string(),
+                );
+            }
+            // prompt 型仅 Stop 合法（唯一有「turn 结束」语义的钩点）。
+            if !prompt.is_empty() && event != "Stop" {
+                return Err(format!(
+                    "add: prompt 型钩子仅在 Stop 事件合法（收到 {event:?}）——\
+                     prompt 语义是「本轮结束后注入提示词开新轮」，只有 Stop 有这个时机"
+                ));
             }
             let matcher = v
                 .get("matcher")
@@ -126,6 +158,7 @@ pub(crate) fn parse_hooks_args(args: &str) -> Result<HooksCommand, String> {
             Ok(HooksCommand::Add {
                 event,
                 command,
+                prompt,
                 matcher,
                 timeout,
             })
@@ -164,7 +197,8 @@ fn max_hook_index(per_event: &std::collections::BTreeMap<String, Vec<SessionHook
     max
 }
 
-/// 本会话条目的单行渲染（add 响应与 list 共用）。
+/// 本会话条目的单行渲染（add 响应与 list 共用）。prompt 型条目带
+/// 「提示词」标注——command 与 prompt 是两种执行体，list 面必须可区分。
 fn render_entry(event: &str, e: &SessionHookEntry) -> String {
     let matcher = if e.matcher.is_empty() {
         "全部工具".to_string()
@@ -175,6 +209,19 @@ fn render_entry(event: &str, e: &SessionHookEntry) -> String {
         .timeout
         .map(|t| t.to_string())
         .unwrap_or_else(|| "默认".to_string());
+    if !e.prompt.is_empty() {
+        // 提示词型（LLM 执行体）：Stop 钩点注入提示词开新轮，无 shell。
+        let preview: String = e.prompt.chars().take(60).collect();
+        let ellipsis = if e.prompt.chars().count() > 60 {
+            "…"
+        } else {
+            ""
+        };
+        return format!(
+            "- [{}] {} · 提示词型 · {matcher} · 「{preview}{ellipsis}」",
+            e.id, event
+        );
+    }
     format!(
         "- [{}] {} · {matcher} · 超时 {timeout}s · `{}`",
         e.id, event, e.command
@@ -194,9 +241,12 @@ fn activation_note(bridge: Option<&Arc<nemesis_agent::cc_hooks::CcHookBridge>>) 
 impl nemesis_agent::r#loop::Tool for HooksTool {
     fn description(&self) -> String {
         "Manage lifecycle hooks **for the current session only** (session-scoped hooks). \
-         `add` registers a shell command that the gateway runs on a lifecycle event \
-         (PreToolUse can block tools with exit 2, UserPromptSubmit can block prompts, \
-         others observe); `delete` removes one by id; `list` shows this session's hooks. \
+         `add` registers either a shell command or a prompt hook: shell hooks run a command \
+         on a lifecycle event (PreToolUse can block tools with exit 2, UserPromptSubmit can \
+         block prompts, others observe); prompt hooks (Stop event only) re-inject a prompt \
+         as a new user message after each turn ends — the loop repeats naturally with no \
+         turn cap (stop by deleting the hook, estop, or asking the agent to hooks delete). \
+         `delete` removes one by id; `list` shows this session's hooks. \
          There is no session parameter on purpose — hooks always attach to the session \
          you are running in. add/delete write config and require user approval (HIGH); \
          list is read-only. Note: a SessionStart hook added mid-session takes effect \
@@ -222,7 +272,11 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                 },
                 "command": {
                     "type": "string",
-                    "description": "add: shell command to run. Receives the event payload as JSON on stdin. Exit 2 blocks (PreToolUse/UserPromptSubmit/SubagentStart); exit 0 passes."
+                    "description": "add: shell command to run. Receives the event payload as JSON on stdin. Exit 2 blocks (PreToolUse/UserPromptSubmit/SubagentStart); exit 0 passes. Exactly one of command/prompt must be non-empty."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "add: prompt text for a prompt-type hook (Stop event ONLY). After each turn ends, this prompt is injected as a new user message starting a new round — the loop repeats naturally (persistent self-review). Stop it by deleting the hook or via estop. timeout is ignored for prompt hooks."
                 },
                 "matcher": {
                     "type": "string",
@@ -284,6 +338,7 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
             HooksCommand::Add {
                 event,
                 command,
+                prompt,
                 matcher,
                 timeout,
             } => {
@@ -307,16 +362,34 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                     id: id.clone(),
                     matcher: matcher.unwrap_or_default(),
                     command: command.clone(),
+                    prompt: prompt.clone(),
                     timeout,
                 };
                 let rendered = render_entry(&event, &entry);
                 per_event.entry(event.clone()).or_default().push(entry);
                 write_session_hook_store(&self.config_dir, &store)?;
-                tracing::info!("[HooksTool] session hook added: sid={sid} id={id} event={event}");
+                tracing::info!(
+                    "[HooksTool] session hook added: sid={sid} id={id} event={event} kind={}",
+                    if prompt.is_empty() {
+                        "command"
+                    } else {
+                        "prompt"
+                    }
+                );
                 let mut out = format!(
                     "已为当前会话添加钩子 {id}（{event}）{clamped_note}\n{rendered}\n{}",
                     activation_note(self.bridge.as_ref()),
                 );
+                if !prompt.is_empty() {
+                    // 提示词型钩子的语义说明（永续循环 = 每轮结束 Stop 钩点
+                    // 再触发；estop/删除钩子即可停止）。
+                    out.push_str(
+                        "\n说明：这是提示词型钩子（LLM 执行体）——每轮对话结束时，\
+                         提示词会作为新的用户消息注入本会话开启新轮；如此往复自然循环，\
+                         没有轮数上限。停止方式：删除本钩子、触发急停，或让 Agent \
+                         用 hooks delete 自行移除。timeout 对本型无效（不跑 shell）。",
+                    );
+                }
                 if event == "SessionStart" {
                     out.push_str(
                         "\n注意：SessionStart 在本会话已错过——该钩子从下个会话开始时触发。",
