@@ -2,8 +2,10 @@
 //!
 //! 占位符替换顺序纪律：`{paths}` 必须先于 `{path}` 替换——否则 `{paths}` 会
 //! 被 `{path}` 的替换值吃掉尾字符变形态。未知占位符原样保留（不猜）。
-//! 路径列名超过 [`MAX_PATHS_LISTED`] 时截断 + 「…等 N 个」注记（诚实总量
-//! 由 `{count}` 承载）。
+//! 路径列名超过 [`MAX_PATHS_LISTED`] 时截断 + 「…等 N 个」注记——N 是
+//! `paths.len()`（去重路径总数；BUG-20261118-165：此前用 count 即事件总数，
+//! 同路径多事件场景把事件数冒充路径数，注记数字必然虚大）。事件总量由
+//! `{count}` 承载，两个数字语义不同不可互替。
 
 use super::throttle::MAX_PATHS_LISTED;
 
@@ -16,7 +18,9 @@ pub fn render_prompt(template: &str, count: u32, paths: &[String]) -> String {
             .iter()
             .map(String::as_str)
             .collect();
-        format!("{}\n…等 {} 个", shown.join("\n"), count)
+        // 注记用 paths.len()（去重路径总数）——count 是事件总数，同路径
+        // 多事件时两者分叉，「…等 N 个」的 N 修饰的是路径列表（BUG-20261118-165）。
+        format!("{}\n…等 {} 个", shown.join("\n"), paths.len())
     };
     template
         .replace("{count}", &count.to_string())
