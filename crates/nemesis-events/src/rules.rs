@@ -398,13 +398,22 @@ pub fn validate(rules: Vec<EventRule>) -> LoadedRules {
     out
 }
 
-/// 保存（美化 JSON）。测试与 P2 管理面共用。
+/// 保存（美化 JSON + 原子落盘）。测试与 P2 管理面共用。
+///
+/// BUG-20261119-176：此前裸 `std::fs::write`（截断直写）背离家族纪律
+/// （config.json / eval_rules.json / approval_rules.json / user_profile.json
+/// 全走 [`nemesis_utils::write_file_atomic`]）——(a) 写中段进程死亡 =
+/// events.json 撕裂，半截 JSON 下次启动规则静默清空；(b) 泵每 tick / 每
+/// channel 事件都跑 mtime 检查，截断写的 mtime 变化会让泵在半写窗口读到
+/// 坏文件 → 解析失败钉住游标（BUG-20261117-063 语义）→ 写完成 mtime 与
+/// 截断时同粒度时泵永久停在旧规则集（保存假成功）。原子写保证泵要么看到
+/// 完整旧文件要么看到完整新文件。0o600：webhook 规则 token 是明文凭据
+/// （与 credentials.yaml 同级信任，见 `WatchSpec::token` 注释）。
 pub fn save_rules(path: &Path, rules: &[EventRule]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    }
     let text = serde_json::to_string_pretty(rules).map_err(|e| e.to_string())?;
-    std::fs::write(path, text).map_err(|e| format!("write {}: {e}", path.display()))
+    // write_file_atomic 内部自含 create_dir_all(parent)（唯一临时名
+    // .tmp-{pid}-{seq}-{nanos} + sync_all 先于 rename + 失败清理）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), text.as_bytes(), 0o600)
 }
 
 #[cfg(test)]
