@@ -3164,7 +3164,10 @@ mod wave_a {
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         // 1 条 chat（收）+ 1 条 embedding（跳）+ 1 条缺 output 价（跳）。
-        let raw = serde_json::json!({
+        // BUG-20261118-157 起 validate_downloaded_entries 卡条目数下限
+        // （MIN_FILTERED_ENTRIES=100，<100 拒收整表防劫持页/截断 payload）
+        // ——再垫 99 条 chat 凑满 100，语义断言不变。
+        let mut raw = serde_json::json!({
             "import/chat-model": {
                 "mode": "chat",
                 "input_cost_per_token": 0.000001,
@@ -3175,6 +3178,17 @@ mod wave_a {
             "import/embed": {"mode": "embedding", "input_cost_per_token": 0.000001},
             "import/nocost": {"mode": "chat", "input_cost_per_token": 0.000001}
         });
+        let obj = raw.as_object_mut().unwrap();
+        for i in 0..99 {
+            obj.insert(
+                format!("import/bulk-{i:03}"),
+                serde_json::json!({
+                    "mode": "chat",
+                    "input_cost_per_token": 0.000001 + i as f64 * 1e-9,
+                    "output_cost_per_token": 0.000002
+                }),
+            );
+        }
         let file = th.home.join("litellm.json");
         std::fs::write(&file, raw.to_string()).unwrap();
         super::super::run_prices(
@@ -3185,13 +3199,17 @@ mod wave_a {
         )
         .await
         .expect("合法 LiteLLM 导入必须成功");
-        // 下载层状态：恰 1 条（embedding/缺价跳过），per-token → per-million ×1e6。
+        // 下载层状态：恰 100 条（1 语义 + 99 垫数；embedding/缺价跳过），
+        // per-token → per-million ×1e6。垫数按 model_id 排序在前，用 find。
         let ds = nemesis_data::DataStore::open(&db_path(&th.home)).unwrap();
         let downloaded = ds.pricing().list_downloaded().expect("导入必须建下载层");
-        assert_eq!(downloaded.len(), 1, "只收 chat 且双价齐全的条目");
-        assert_eq!(downloaded[0].model_id, "import/chat-model");
-        assert!((downloaded[0].input_cost_per_million - 1.0).abs() < 1e-9);
-        assert!((downloaded[0].output_cost_per_million - 2.0).abs() < 1e-9);
+        assert_eq!(downloaded.len(), 100, "只收 chat 且双价齐全的条目");
+        let chat = downloaded
+            .iter()
+            .find(|e| e.model_id == "import/chat-model")
+            .expect("import/chat-model 必须在下载层");
+        assert!((chat.input_cost_per_million - 1.0).abs() < 1e-9);
+        assert!((chat.output_cost_per_million - 2.0).abs() < 1e-9);
         let meta = ds.pricing().meta();
         assert_eq!(
             meta.source_url.as_deref(),
@@ -3555,13 +3573,26 @@ mod w5b2 {
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
 
-        let raw = serde_json::json!({
+        // 1 条语义条目 + 99 条垫数：下载层条目数闸 MIN_FILTERED_ENTRIES=100
+        // （BUG-20261118-157）下 1 条夹具会被整表拒收，Import 必须 ≥100。
+        let mut raw = serde_json::json!({
             "w5b2/chat": {
                 "mode": "chat",
                 "input_cost_per_token": 0.000001,
                 "output_cost_per_token": 0.000002
             }
         });
+        let obj = raw.as_object_mut().unwrap();
+        for i in 0..99 {
+            obj.insert(
+                format!("w5b2/bulk-{i:03}"),
+                serde_json::json!({
+                    "mode": "chat",
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002
+                }),
+            );
+        }
         let file = th.home.join("w5b2-litellm.json");
         std::fs::write(&file, raw.to_string()).unwrap();
         super::super::run(
