@@ -48,7 +48,10 @@ jobs:
     name: Full workspace tests (Linux)${{ inputs.seed_cache == true && ' 【SEED·仅构建落缓存·不跑测试·故意红】' || '' }}
     # seed_cache 引导轮只构建落缓存，测试 job 全跳过（省 VM 时长）
     if: ${{ inputs.seed_cache != true }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest 已迁 26.04（resolute），GTK/webkit2gtk dev 包 apt 找不到
+    # （libwebkit2gtk-4.1-dev 等 Unable to locate，exit 100）——本 job 装
+    # GTK 系依赖，钉回 24.04（迁移前原镜像，行为不变）。
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - name: Checkout code

@@ -2669,6 +2669,53 @@ async fn restore_skips_executions_with_config_drift() {
     assert_eq!(restored, 0, "config drift should prevent restore");
 }
 
+#[tokio::test]
+async fn restore_mid_crash_running_execution_has_no_ended_at() {
+    // 模拟「level 1 完成后、level 2 执行中进程死亡」：CheckpointHook 在
+    // level 收尾时落的正是 waiting_node=None / terminal=false 的非终态
+    // checkpoint，进程随即死亡——restore 把执行恢复为 Running。
+    // BUG-20261118-166：非终态（Waiting/Running）ended_at 必须空（缺陷 10
+    // 同戒律）——旧 Running 臂盖 Some(now)，按 ended_at 非空判完结的观察方
+    // 把中断现场当已结束，且每次重启重盖新值。
+    let store: Arc<dyn CheckpointStore> = Arc::new(InMemoryCheckpointStore::new());
+
+    let nodes = vec![
+        make_node("step1", "llm", vec![]),
+        make_node("step2", "llm", vec!["step1"]),
+    ];
+    let wf = make_workflow("mid_crash_wf", nodes);
+
+    let engine_a = WorkflowEngine::new_arc();
+    engine_a.set_checkpoint_store(store.clone());
+    engine_a.register_workflow(wf.clone()).unwrap();
+    // CheckpointHook 在层收尾时写的正是这个形态的 checkpoint。
+    engine_a
+        .save_checkpoint(
+            "exec-mid-crash",
+            "mid_crash_wf",
+            &WorkflowContext::new(HashMap::new()),
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    drop(engine_a);
+
+    let engine_b = WorkflowEngine::new_arc();
+    engine_b.set_checkpoint_store(store.clone());
+    engine_b.register_workflow(wf).unwrap();
+    let restored = engine_b.restore_incomplete_executions().await.unwrap();
+    assert_eq!(restored, 1, "mid-crash checkpoint should restore");
+
+    let revived = engine_b.get_execution("exec-mid-crash").await.unwrap();
+    assert_eq!(revived.state, ExecutionState::Running);
+    assert!(
+        revived.ended_at.is_none(),
+        "Running 是非终态：ended_at 必须空，恢复臂不得盖完结时间戳"
+    );
+}
+
 // ============================================================
 // chat_index helpers (workflow chat URL feature)
 // ============================================================
@@ -4086,8 +4133,9 @@ async fn w4a_restore_waiting_execution() {
 }
 
 /// restore_incomplete_executions restores a mid-flight (running) execution:
-/// no waiting node + partial completion -> Running + ended_at set
-/// (engine.rs ~1129-1136).
+/// no waiting node + partial completion -> Running + ended_at=None
+/// (engine.rs restore arm). BUG-20261118-166：非终态 ended_at 必须空
+/// （缺陷 10 同戒律）——旧断言钉住的 Some(now) 是误导观察方的缺陷本身。
 #[tokio::test]
 async fn w4a_restore_midflight_running_execution() {
     let wf = make_workflow(
@@ -4108,7 +4156,7 @@ async fn w4a_restore_midflight_running_execution() {
         .await
         .expect("restored");
     assert_eq!(exec.state, ExecutionState::Running);
-    assert!(exec.ended_at.is_some());
+    assert!(exec.ended_at.is_none());
 }
 
 /// Terminal-checkpoint save failure warns but the run still completes

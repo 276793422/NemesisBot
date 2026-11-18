@@ -1133,7 +1133,6 @@ impl WorkflowEngine {
             // Rebuild the Execution. We don't have the original input/trigger
             // metadata on the checkpoint (the snapshot carries variables/input
             // separately), so we lift them back out of the context snapshot.
-            let now = Local::now();
             let mut execution =
                 Execution::new(workflow.name.clone(), cp.context_snapshot.input.clone());
             execution.id = exec_id.clone();
@@ -1158,11 +1157,12 @@ impl WorkflowEngine {
                 // gateway can decide whether to auto-resume.
                 ExecutionState::Running
             };
-            execution.ended_at = if execution.state == ExecutionState::Waiting {
-                None
-            } else {
-                Some(now)
-            };
+            // 非终态（Waiting / Running）ended_at 必须空——缺陷 10 同戒律：
+            // 恢复的是「中断现场」不是「结束」。旧 Running 臂盖 Some(now)，
+            // 按 ended_at 非空判完结的观察方会把中断现场当已结束，且每次
+            // 重启重盖新值（该时间戳既非结束时刻也非崩溃时刻，漂移无意义）。
+            // 真正的终态时间戳由 resume / 取消 / run 收口臂在终态时落。
+            execution.ended_at = None;
 
             {
                 let mut execs = self.executions.write().await;
