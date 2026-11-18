@@ -397,6 +397,16 @@ impl AgentLoop {
                 return Ok(msg.clone());
             }
         }
+        // LLM 失败必须走 Err 通道（BUG-20261118-153）：run_with_trace 的失败
+        // 终态是 AgentEvent::Error（run_loop TurnFlow::Stop / recovery），本函数
+        // 曾只扫 Done、把 Error 事件吞成 Ok(兜底文案) 假成功——gateway handler
+        // 的 is_error 分支成死代码，心跳故障只在 debug 级留痕（每拍打满 LLM
+        // 尝试零观测）。对齐同文件 cron 兄弟路径的 Done→Ok / Error→Err 约定。
+        for event in events.iter().rev() {
+            if let AgentEvent::Error(msg) = event {
+                return Err(msg.clone());
+            }
+        }
         Ok("I've completed processing but have no response to give.".to_string())
     }
 
