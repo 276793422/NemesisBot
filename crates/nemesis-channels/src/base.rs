@@ -499,6 +499,38 @@ impl BaseChannel {
 }
 
 // ---------------------------------------------------------------------------
+// 对端 IP 准入判定（单一真相源）
+// ---------------------------------------------------------------------------
+
+/// 对端 IP 准入判定（maixcam BUG-20261110-054 接线；websocket
+/// BUG-20261118-155 同族共用——两处定义漂移过一次后收编单点）。
+/// `allow_from` 空 = 放行所有（兼容既有部署）；非空 = 对端 IP 必须命中
+/// 白名单。条目支持精确 IP（`192.168.1.50`）与 IPv4 前缀通配
+/// （`192.168.1.*`，尾段通配）。适用于「服务端监听通道的客户端无
+/// 可预知应用层身份」的场景（maixcam 设备无握手 / websocket client_id
+/// 进程内生成不可预知）——此时 allow_from 的真实语义是对端网络准入。
+pub(crate) fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
+    if allow_from.is_empty() {
+        return true;
+    }
+    let peer_ip = peer_ip.trim();
+    for entry in allow_from {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if let Some(prefix) = entry.strip_suffix('*') {
+            if peer_ip.starts_with(prefix) {
+                return true;
+            }
+        } else if peer_ip == entry {
+            return true;
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
 // 出站 HTTP client 单一构造点
 // ---------------------------------------------------------------------------
 
