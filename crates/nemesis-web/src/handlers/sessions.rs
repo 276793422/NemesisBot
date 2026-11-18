@@ -160,6 +160,15 @@ impl ModuleHandler for SessionsHandler {
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
                 // 上移服务端。
                 let bindings = crate::session_bindings::live_bindings(&workspace);
+                // BUG-20261118-168（同链路第三处：BUG-20261102-325 扫描纪律
+                // → BUG-20261116-011 logs.session_list 收尾重排）：scan_session_logs
+                // 返回序 = read_dir 枚举序（平台实现细节，NTFS 字典序 vs ext4
+                // 哈希序）。前端 SessionSidebar 对非 pinned 会话自排序，但
+                // pinned 组语义是「互相对序=列表原序不变」——原序即本列表序，
+                // 直传枚举序会让置顶区排列跨平台不一致。收尾统一「最近活跃
+                // 优先」全序（session_recency_cmp：lastTime 解析序 desc + id
+                // 破平），与 logs.session_list 同源同键。
+                web.sort_by(crate::handlers::logs::session_recency_cmp);
                 Ok(Some(
                     serde_json::json!({ "sessions": web, "bindings": bindings }),
                 ))

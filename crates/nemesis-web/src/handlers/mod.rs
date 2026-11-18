@@ -238,6 +238,11 @@ mod sessions_trash_tests;
 #[cfg(test)]
 mod sessions_l22_tests;
 
+// BUG-20261118-168 回归：sessions.list 后端收尾排序（最近活跃优先，
+// pinned 组前端继承列表原序——枚举序直传跨平台不一致）。
+#[cfg(test)]
+mod sessions_list_order_tests;
+
 // projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]
