@@ -358,7 +358,13 @@ async fn create_dir(val: &serde_json::Value, workspace: &Path) -> Result<String,
 async fn delete_file(val: &serde_json::Value, workspace: &Path) -> Result<String, String> {
     let path_str = arg_path(val)?.to_string();
     let path = resolve_in_workspace(workspace, &path_str)?;
-    tokio::fs::remove_file(&path)
+    if !path.exists() {
+        return Err(format!("File not found: {path_str}"));
+    }
+    // 韧性删除（同文件 delete_dir 家族纪律）：Defender/索引器瞬时句柄
+    // 单发失败 = 对端假报错；重试变体把窗口内 NotFound 吞成成功，
+    // 「删不存在文件要报错」由前置存在性检查保留（宿主同款语义）。
+    nemesis_utils::fsutil::remove_file_retry_async(&path)
         .await
         .map_err(|e| format!("failed to delete file: {e}"))?;
     Ok(format!("deleted file: {path_str}"))

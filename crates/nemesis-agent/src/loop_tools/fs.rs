@@ -1216,8 +1216,15 @@ impl Tool for DeleteFileTool {
             ));
         }
 
-        tokio::fs::remove_file(&path)
+        // 韧性删除（同 DeleteDirTool；3789f815 只补了目录侧，文件侧漏网）：
+        // Defender/索引器瞬时句柄是常态，单发失败 = 对模型假报错；
+        // spawn_blocking 装同步重试内核（最坏 ~4.4s，不占 async worker）。
+        // 重试变体把 NotFound 吞成成功——「删不存在文件要报错」的语义
+        // 由前置存在性检查保留（nemesis-tools 同款注记）。
+        let retry_path = path.clone();
+        tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_file_retry(&retry_path))
             .await
+            .map_err(|e| format!("Failed to delete file: {e}"))?
             .map_err(|e| format!("Failed to delete file: {}", e))?;
 
         Ok(format!("Deleted file: {}", path.display()))
