@@ -255,6 +255,29 @@ impl Channel for WebSocketChannel {
                     Ok((stream, remote_addr)) => {
                         debug!(addr = %remote_addr, "[WebSocketChannel] new TCP connection");
 
+                        // 对端 IP 准入闸（BUG-20261118-155）：allow_from 旧语义
+                        // 在 handle_text_message 按 `websocket:client_<纳秒>_<序号>`
+                        // chat_id 精确匹配——client_id 是进程内生成的不可预知值，
+                        // 配置永远无法命中，效果=配了 allow_from 就全禁（且出站
+                        // 路径零 allow_from 消费，「面向出站过滤」的旧定性无代码
+                        // 支撑）。改对端 IP 准入（maixcam BUG-20261110-054 同款
+                        // 家族方案，单一真相源 base::peer_allowed）：空 = 放行所有
+                        // （旧行为保底）；非空 = 对端 IP 必须命中（精确 IP 或 IPv4
+                        // 前缀通配 `192.168.1.*`）。闸放 accept 层（upgrade 成本
+                        // 之前淘汰，maixcam 同款）。
+                        if !base_allow_list.is_empty()
+                            && !crate::base::peer_allowed(
+                                &base_allow_list,
+                                &remote_addr.ip().to_string(),
+                            )
+                        {
+                            warn!(
+                                addr = %remote_addr,
+                                "[WebSocketChannel] connection rejected: peer not in allow_from"
+                            );
+                            continue;
+                        }
+
                         // Single-client check
                         {
                             let guard = active_conn.lock();
@@ -403,7 +426,6 @@ impl Channel for WebSocketChannel {
                         let read_send_tx = send_tx.clone();
                         let read_client_id = client_id.clone();
                         let read_base_name = base_name.clone();
-                        let read_allow_list = base_allow_list.clone();
                         let read_base = Arc::clone(&base_for_reader);
 
                         let read_task = tokio::spawn(async move {
@@ -417,7 +439,6 @@ impl Channel for WebSocketChannel {
                                             &read_bus,
                                             &read_send_tx,
                                             &read_base_name,
-                                            &read_allow_list,
                                         );
                                         // Matches Go's HandleMessage() which calls record_received()
                                         if sync_content.is_some() {
@@ -597,13 +618,16 @@ impl Channel for WebSocketChannel {
 ///
 /// Returns `Some(content)` if the message was a valid "message" type that was
 /// published to the bus (used for inbound sync_to_targets). Returns `None` otherwise.
+///
+/// allow_from 准入不在本函数（BUG-20261118-155 起迁 accept 层对端 IP 闸）：
+/// 旧实现按 `websocket:{client_id}` chat_id 精确匹配——client_id 进程内生成
+/// 不可预知，配置永远无法命中。
 fn handle_text_message(
     text: &str,
     client_id: &str,
     bus_sender: &tokio::sync::broadcast::Sender<InboundMessage>,
     send_tx: &tokio::sync::mpsc::UnboundedSender<String>,
     base_name: &str,
-    allow_list: &[String],
 ) -> Option<String> {
     let client_msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
@@ -623,12 +647,6 @@ fn handle_text_message(
 
             let chat_id = format!("websocket:{client_id}");
             info!(content = %client_msg.content, chat_id = %chat_id, "[WebSocketChannel] received message");
-
-            // Allow-list check (matches Go's HandleMessage → IsAllowed)
-            if !allow_list.is_empty() && !allow_list.iter().any(|a| a == &chat_id) {
-                warn!(chat_id = %chat_id, "[WebSocketChannel] message blocked by allow-list");
-                return None;
-            }
 
             let inbound = InboundMessage {
                 channel: base_name.to_string(),

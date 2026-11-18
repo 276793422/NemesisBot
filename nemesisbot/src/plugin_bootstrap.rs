@@ -183,16 +183,16 @@ pub fn load_quota_state(workspace: &Path) -> BootstrapQuotaState {
     }
 }
 
-/// 配额状态落盘（原子写：tmp + rename；目录缺席自动建）。
+/// 配额状态落盘——委托全仓唯一权威 helper
+/// [`nemesis_utils::write_file_atomic`]（BUG-20261118-152 横向同族：此前
+/// 自制 tmp+rename 用**固定临时名** `json.tmp`——并发写者（进程内多插件
+/// 引导并发记账 / 多实例部署跨进程）在同名 tmp 上交错可把半截 JSON 提交
+/// 成正式配额文件。helper 唯一临时名 + create_new + sync_all 先于 rename
+/// + 失败清理结构性消除该家族，且自带父目录创建）。
 pub fn save_quota_state(workspace: &Path, state: &BootstrapQuotaState) -> Result<(), String> {
-    let dir = plugins_config_dir(workspace);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建 {} 失败：{e}", dir.display()))?;
     let path = quota_file_path(workspace);
-    let tmp = path.with_extension("json.tmp");
     let raw = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    std::fs::write(&tmp, raw).map_err(|e| format!("写 {} 失败：{e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("rename {} 失败：{e}", path.display()))?;
-    Ok(())
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), raw.as_bytes(), 0o644)
 }
 
 /// 计数 +1 并落盘（成功安装后调用）。

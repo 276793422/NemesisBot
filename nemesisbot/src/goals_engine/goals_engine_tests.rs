@@ -92,3 +92,227 @@ async fn outbound_lagged_records_into_bus_accounting() {
         "Lagged(n) 必须入 bus 出站丢失账本（不只 warn）"
     );
 }
+
+// ============================================================
+// BUG-20261118-154 回归锁：工具记录消费点 + 引擎转移状态机闸
+// ============================================================
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use super::GoalsEngine;
+
+/// 最小测试引擎（无 LLM 依赖：evaluate 的无 goal / md 缺失路径在
+/// loop_for_session 之前返回；apply_verdict / block_goal 不调 LLM）。
+fn test_engine(ws: &std::path::Path) -> Arc<GoalsEngine> {
+    Arc::new(GoalsEngine {
+        bus: Arc::new(nemesis_bus::MessageBus::with_capacity(16)),
+        main_loop_ref: Arc::new(parking_lot::RwLock::new(None)),
+        estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+        workspace: ws.to_path_buf(),
+        conv_router: Arc::new(nemesis_web::ConvRouter::new()),
+        eval_lock: tokio::sync::Mutex::new(()),
+        cursors: tokio::sync::Mutex::new(HashMap::new()),
+        tool_calls: std::sync::Mutex::new(HashMap::new()),
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 工具记录消费点必须在评估周期入口（BUG-20261118-154 主发现）：无 goal
+/// 绑定会话（生产常态）的记录曾永远不消费——登记面对全部会话累积、唯一
+/// 消费点深在材料收集步，每会话 ≤30 条 KB 级预览只进不出 = 长驻进程
+/// 无界增长。突变验证：把 take 移回材料收集步本测必红。
+#[tokio::test]
+async fn tool_records_consumed_even_without_goal() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = test_engine(dir.path());
+    engine.record_tool_started("agent:main:session:s1", "c1", "exec", "ls");
+    engine.record_tool_finished("agent:main:session:s1", "c1", "exec", true, "ok");
+    assert_eq!(engine.tool_calls.lock().unwrap().len(), 1);
+    // 空注册表 → 无 Active goal 早退；消费必须已发生。
+    engine.evaluate("agent:main:session:s1").await;
+    assert!(
+        engine.tool_calls.lock().unwrap().is_empty(),
+        "无 goal 会话的评估周期必须消费（清空）工具记录——只进不出即无界增长"
+    );
+}
+
+/// goal.md 缺失早退路径同样消费（BUG-20261118-154 污染面半边）：记录
+/// 曾跨 turn 滞留，陈旧材料混入下一轮评估。
+#[tokio::test]
+async fn tool_records_consumed_when_goal_md_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s2";
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(nemesis_goals::GoalEntry::new(
+            "G1".to_string(),
+            sk.to_string(),
+            nemesis_goals::GoalCreatedBy::Agent,
+            None,
+            None,
+            now_ms(),
+        ));
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.record_tool_started(sk, "c1", "write_file", "x");
+    // goal.md 文件不存在 → md 缺失早退；消费必须已发生（入口 take）。
+    engine.evaluate(sk).await;
+    assert!(
+        engine.tool_calls.lock().unwrap().is_empty(),
+        "goal.md 缺失早退不得让工具记录跨 turn 滞留"
+    );
+}
+
+/// 评估 LLM 窗口内人已 disable：done 写入必须被状态机闸跳过——
+/// paused→done 是转移表禁止的非法态，引擎不得覆盖人操作。
+#[test]
+fn done_write_skipped_when_goal_no_longer_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s3";
+    let entry = nemesis_goals::GoalEntry::new(
+        "G1".to_string(),
+        sk.to_string(),
+        nemesis_goals::GoalCreatedBy::Human,
+        None,
+        None,
+        now_ms(),
+    );
+    // 注册表预置 Paused（模拟评估窗口内人 disable）；评估快照仍是 Active。
+    let mut paused = entry.clone();
+    paused.status = nemesis_goals::GoalStatus::Paused;
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(paused);
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.apply_verdict(
+        &entry,
+        nemesis_goals::EvalVerdict::Done,
+        None,
+        "main",
+        std::time::Instant::now(),
+        "{\"verdict\":\"DONE\"}",
+    );
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(
+        entries[0].status,
+        nemesis_goals::GoalStatus::Paused,
+        "评估窗口内人 pause 的 goal 不得被引擎写成 done（转移表 Paused→Done 禁止）"
+    );
+}
+
+/// Continue 臂同闸：paused goal 不占轮数预算。
+#[test]
+fn continue_round_bump_skipped_when_goal_no_longer_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s4";
+    let entry = nemesis_goals::GoalEntry::new(
+        "G1".to_string(),
+        sk.to_string(),
+        nemesis_goals::GoalCreatedBy::Human,
+        None,
+        None,
+        now_ms(),
+    );
+    let mut paused = entry.clone();
+    paused.status = nemesis_goals::GoalStatus::Paused;
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(paused);
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.apply_verdict(
+        &entry,
+        nemesis_goals::EvalVerdict::Continue,
+        Some("缺口".to_string()),
+        "main",
+        std::time::Instant::now(),
+        "{\"verdict\":\"CONTINUE\"}",
+    );
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(entries[0].status, nemesis_goals::GoalStatus::Paused);
+    assert_eq!(
+        entries[0].rounds_used, 0,
+        "评估窗口内人 pause 的 goal 不得被引擎无声 rounds+1（偷扣预算）"
+    );
+}
+
+/// block_goal 状态机闸：paused goal 不被引擎覆盖成 blocked。
+#[test]
+fn block_goal_skipped_when_goal_no_longer_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s5";
+    let mut paused = nemesis_goals::GoalEntry::new(
+        "G1".to_string(),
+        sk.to_string(),
+        nemesis_goals::GoalCreatedBy::Human,
+        None,
+        None,
+        now_ms(),
+    );
+    paused.status = nemesis_goals::GoalStatus::Paused;
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(paused);
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.block_goal("G1", "round-limit", "预算耗尽");
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(
+        entries[0].status,
+        nemesis_goals::GoalStatus::Paused,
+        "评估窗口内人 pause 的 goal 不得被引擎写成 blocked"
+    );
+    assert_eq!(entries[0].blocked_code, None);
+}
+
+/// 正向对照：Active goal 的 done 判定照常落地（闸不误伤正常路径）。
+#[test]
+fn done_write_applies_when_still_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    let sk = "agent:main:session:s6";
+    let entry = nemesis_goals::GoalEntry::new(
+        "G1".to_string(),
+        sk.to_string(),
+        nemesis_goals::GoalCreatedBy::Agent,
+        None,
+        None,
+        now_ms(),
+    );
+    nemesis_goals::update_registry(ws, |entries| {
+        entries.push(entry.clone());
+        Ok(())
+    })
+    .unwrap();
+    let engine = test_engine(ws);
+    engine.apply_verdict(
+        &entry,
+        nemesis_goals::EvalVerdict::Done,
+        None,
+        "main",
+        std::time::Instant::now(),
+        "{\"verdict\":\"DONE\"}",
+    );
+    let entries = nemesis_goals::load_registry(ws).unwrap();
+    assert_eq!(
+        entries[0].status,
+        nemesis_goals::GoalStatus::Done,
+        "Active goal 的 done 判定必须照常落地"
+    );
+}
