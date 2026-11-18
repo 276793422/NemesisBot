@@ -561,19 +561,19 @@ impl RequestLogger {
                 info.usage.prompt_tokens, info.usage.completion_tokens, info.usage.total_tokens,
             ));
             if info.usage.cached_tokens > 0 {
-                // Manual division guard: a checked_mul/checked_div chain is less
-                // readable and overflow is impossible for realistic token counts.
                 // 命中率分母 = 纯输入 + 缓存读（prompt 已按账本不变量归一为
-                // 非缓存纯输入，直接除会得出 >100%）。
-                #[allow(clippy::manual_checked_ops)]
-                let cache_pct = {
-                    let total_input = info.usage.prompt_tokens + info.usage.cached_tokens;
-                    if total_input > 0 {
-                        info.usage.cached_tokens * 100 / total_input
-                    } else {
-                        0
-                    }
-                };
+                // 非缓存纯输入，直接除会得出 >100%）。u64 饱和/checked 算术：
+                // usage 数字是服务器可控的（敌意/故障端点可报 u32 满量级），
+                // u32 裸加 + 乘 100 在 43M cached tokens 即溢出——debug panic
+                // 落在每次 LLM 请求都会跑的日志路径上（BUG-20261119-175；
+                // 旧注「现实 token 数不可能溢出」只对善意端点成立）。
+                let cache_pct = (info.usage.cached_tokens as u64)
+                    .saturating_mul(100)
+                    .checked_div(
+                        (info.usage.prompt_tokens as u64)
+                            .saturating_add(info.usage.cached_tokens as u64),
+                    )
+                    .unwrap_or(0);
                 content.push_str(&format!(
                     " - **Cached Tokens**: {} ({ }% cache hit)\n",
                     info.usage.cached_tokens, cache_pct,

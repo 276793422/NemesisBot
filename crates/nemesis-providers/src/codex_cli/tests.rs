@@ -438,3 +438,15 @@ fn test_decide_zero_turn_failed_classified() {
         "得到 {err:?}"
     );
 }
+
+// BUG-20261119-175：CLI stdout JSONL 外部可控——i64::MAX 级 usage 上报
+// 裸加曾 debug panic / release 回绕负 total 流入计价。
+#[test]
+fn test_parse_jsonl_hostile_usage_saturates_no_panic() {
+    let provider = CodexCliProvider::new(CodexCliConfig::default());
+    let output = r#"{"type":"turn.completed","usage":{"input_tokens":9223372036854775807,"cached_input_tokens":9223372036854775807,"output_tokens":9223372036854775807}}"#;
+    let resp = provider.parse_jsonl_events(output, "", &[]).unwrap();
+    let u = resp.usage.expect("usage 应解析成功");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
+    assert!(u.prompt_tokens > 0);
+}

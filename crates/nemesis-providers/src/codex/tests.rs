@@ -1251,3 +1251,20 @@ fn test_parse_sse_text_completed_without_output_is_format() {
         other => panic!("应 Format，实际 {other:?}"),
     }
 }
+
+// BUG-20261119-175：服务器可控 usage i64 满量级——裸加曾 debug panic / 回绕。
+#[test]
+fn test_parse_codex_response_hostile_usage_saturates_no_panic() {
+    let data = serde_json::json!({
+        "output": [{ "type": "message", "content": [{ "type": "output_text", "text": "x" }] }],
+        "usage": {
+            "input_tokens": 9223372036854775807i64,
+            "output_tokens": 9223372036854775807i64,
+            "cached_input_tokens": 9223372036854775807i64
+        }
+    });
+    let resp = parse_codex_response(&data);
+    let u = resp.usage.expect("usage 应存在");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
+    assert!(u.prompt_tokens > 0);
+}

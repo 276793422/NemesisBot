@@ -558,3 +558,13 @@ fn test_decide_zero_invalid_json_format() {
         .unwrap_err();
     assert!(matches!(err, FailoverError::Format { .. }), "得到 {err:?}");
 }
+
+// BUG-20261119-175：CLI stdout 外部可控——四项和裸加曾 debug panic / 回绕。
+#[test]
+fn test_parse_response_hostile_usage_saturates_no_panic() {
+    let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
+    let output = r#"{"type":"result","is_error":false,"result":"ok","usage":{"input_tokens":9223372036854775807,"output_tokens":9223372036854775807,"cache_creation_input_tokens":9223372036854775807,"cache_read_input_tokens":9223372036854775807}}"#;
+    let resp = provider.parse_response(output, &[], "").unwrap();
+    let u = resp.usage.expect("usage 应存在");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
+}

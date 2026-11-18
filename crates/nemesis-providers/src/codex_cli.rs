@@ -200,7 +200,12 @@ impl CodexCliProvider {
                         usage = Some(UsageInfo {
                             prompt_tokens: prompt,
                             completion_tokens: u.output_tokens,
-                            total_tokens: prompt + u.cached_input_tokens + u.output_tokens,
+                            // 饱和加：CLI stdout JSONL 外部可控，i64::MAX
+                            // 级上报裸加 debug panic / release 负值流入计价
+                            // （BUG-20261119-175）。
+                            total_tokens: prompt
+                                .saturating_add(u.cached_input_tokens)
+                                .saturating_add(u.output_tokens),
                             cached_tokens: Some(u.cached_input_tokens),
                             cache_creation_tokens: None,
                             cache_read_tokens: Some(u.cached_input_tokens),

@@ -299,7 +299,11 @@ impl MetricsCollector {
         let total = samples.len() as i64;
         let successes = samples.iter().filter(|s| s.success).count();
         let avg_latency = samples.iter().map(|s| s.latency_ms as f64).sum::<f64>() / total as f64;
-        let total_tokens: i64 = samples.iter().map(|s| s.tokens_used).sum();
+        // 饱和折叠：tokens_used 是 provider 可控 i64，裸 sum() 多样本
+        // i64::MAX 级上报 debug panic / release 回绕（BUG-20261119-175）。
+        let total_tokens: i64 = samples
+            .iter()
+            .fold(0i64, |acc, s| acc.saturating_add(s.tokens_used));
         let total_cost: f64 = samples.iter().map(|s| s.cost).sum();
 
         ProviderMetrics {
