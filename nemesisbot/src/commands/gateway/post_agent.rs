@@ -567,8 +567,15 @@ pub(crate) async fn init_post_agent(
             },
         ))
     };
+    // None 臂不得带类型注解：`crate::cluster_agent` 整模块门在 cluster
+    // feature 后（main.rs），no-cluster 裁剪组合下注解 = E0433（trim
+    // 矩阵实证）；裸 None 在 no-cluster 下又无消费点推型 = E0282。
+    // 唯一消费点（下方 adapter 装配）本身 cfg(cluster)——绑定的存在域
+    // 收窄为 cluster 且非 board+cluster（= cluster-without-board 形态），
+    // no-cluster 裁剪下绑定与消费点一并缺席，两型错误同消。
     #[cfg(not(all(feature = "board", feature = "cluster")))]
-    let reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote> = None;
+    #[cfg(feature = "cluster")]
+    let reply_failure_note = None;
     #[cfg(feature = "cluster")]
     {
         if let Some((cluster, task_list, work_queue, result_persister)) =
