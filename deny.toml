@@ -94,6 +94,14 @@ ignore = [
   # 用法是本机工具签名 + 自有二进制验签，无远程签名 oracle 暴露；时序攻击
   # 需对本地签名操作做大量高精度测量，实际不可达。（2026-10-24）
   { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 timing variability in constant-time ops; fix >=0.7.6 cross-major; pinned via p256 0.13/ecdsa 0.16 -> elliptic-curve 0.13; RFC 6979 deterministic nonce, local-only signing, no remote oracle exposure" },
+  # chrono / chrono-tz 上游公告 unmaintained（RUSTSEC-2026-0543 / -0555，
+  # chronotope/chrono#1768，无修复版本、影响全版本）。chrono 是 workspace
+  # 时间基础设施直依赖（agent/cron/config 等多 crate），chrono-tz 经
+  # nemesis-cron 传递；迁移候选（jiff 等）属独立重构任务，非 SC 闸可修。
+  # 移除条件：上游恢复维护或 workspace 完成时间库迁移。台账：
+  # docs/INFO/2026-08-31_dependency-rules.md（2026-11-18）
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained per upstream announcement (chronotope/chrono#1768); no fix, all versions affected; core time infra used workspace-wide, migration (jiff) is a standalone refactor" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained per upstream announcement (chronotope/chrono#1768); no fix, all versions affected; transitive via nemesis-cron, migration is a standalone refactor" },
 ]
 
 [licenses]
