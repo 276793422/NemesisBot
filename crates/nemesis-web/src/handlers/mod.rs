@@ -804,9 +804,15 @@ pub fn get_opt_str_loud(data: &serde_json::Value, field: &str) -> Result<Option<
 }
 
 /// Read a text file from the workspace.
+///
+/// BUG-20261119-179：走 `read_config_string` 剥前导 UTF-8 BOM——消费方
+/// （identity/skills detail/tasks/tools/memory/cluster 预览）全部是用户
+/// 可手工编辑文件，记事本「带 BOM 的 UTF-8」保存形态下裸读会把零宽
+/// BOM 带进前端编辑器内容与回写（BOM 永不清洗）。无 BOM 文件字节不变。
 pub fn read_workspace_file(workspace: &str, relative: &str) -> Result<String, String> {
     let path = resolve_path(workspace, relative)?;
-    std::fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {}", relative, e))
+    nemesis_utils::fsutil::read_config_string(&path)
+        .map_err(|e| format!("failed to read {}: {}", relative, e))
 }
 
 /// Write a text file to the workspace (atomic write via tmp + rename).

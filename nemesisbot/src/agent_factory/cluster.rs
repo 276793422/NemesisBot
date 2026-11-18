@@ -675,19 +675,22 @@ pub(super) fn load_cluster_system_prompt(
     let cluster_dir = home.join("workspace").join("cluster");
     let mut parts = Vec::new();
 
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("IDENTITY.md"))
+    // BUG-20261119-179：三处人格文件读取走 read_config_string 剥前导
+    // UTF-8 BOM（记事本保存形态）——BOM 前缀会原样进 system prompt 稳定
+    // 前缀；无 BOM 文件字节不变。
+    if let Ok(content) = nemesis_utils::fsutil::read_config_string(cluster_dir.join("IDENTITY.md"))
         && !content.trim().is_empty()
     {
         parts.push(content);
     }
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("SOUL.md"))
+    if let Ok(content) = nemesis_utils::fsutil::read_config_string(cluster_dir.join("SOUL.md"))
         && !content.trim().is_empty()
     {
         parts.push(content);
     }
     // （集群专业职能框架）：EXPERTISE.md 断线修复——档案曾经存在但装配
     // 从不读取。有则注入，无开关（职能方法论载体，稳定前缀组成部分）。
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("EXPERTISE.md"))
+    if let Ok(content) = nemesis_utils::fsutil::read_config_string(cluster_dir.join("EXPERTISE.md"))
         && !content.trim().is_empty()
     {
         parts.push(content);

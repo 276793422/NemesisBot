@@ -47,6 +47,12 @@ mod midnight_tests;
 #[cfg(test)]
 mod route_resolver_tests;
 
+// BUG-20261119-179：集群 B 端 system prompt 人格文件 BOM 剥离测试
+// （访问 cluster 模块 pub(super) 装配函数——同挂 cluster 门随模块走）。
+#[cfg(test)]
+#[cfg(feature = "cluster")]
+mod cluster_bom_tests;
+
 // L26 vault 域绑定路径公式对齐锁（无 feature 门——闸读/CLI 写两侧
 // 同 home 必须落到同一文件；模块名含 vault_domain 对齐过滤词）。
 #[cfg(test)]

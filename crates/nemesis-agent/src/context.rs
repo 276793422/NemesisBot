@@ -777,9 +777,13 @@ impl ContextBuilder {
     }
 
     /// Read a file from the workspace directory, returning None if it doesn't exist.
+    ///
+    /// BUG-20261119-179：走 `read_config_string` 剥前导 UTF-8 BOM（记事本
+    /// 保存形态）——人格/引导文件内容进 system prompt，零宽 BOM 前缀
+    /// 是杂质；无 BOM 文件字节不变。
     fn read_workspace_file(&self, filename: &str) -> Option<String> {
         let path = self.workspace.join(filename);
-        match std::fs::read_to_string(&path) {
+        match nemesis_utils::fsutil::read_config_string(&path) {
             Ok(content) => {
                 debug!("[ContextBuilder] Loaded workspace file: {}", filename);
                 Some(content)
@@ -791,7 +795,7 @@ impl ContextBuilder {
     /// 读指定根下的 bootstrap 文件（目录缺席/文件不存在 = None；与
     /// [`Self::read_workspace_file`] 同语义，根参数化）。
     fn read_file_in_dir(dir: &Path, filename: &str) -> Option<String> {
-        match std::fs::read_to_string(dir.join(filename)) {
+        match nemesis_utils::fsutil::read_config_string(dir.join(filename)) {
             Ok(content) => {
                 debug!(
                     "[ContextBuilder] Loaded bootstrap file from {}: {}",

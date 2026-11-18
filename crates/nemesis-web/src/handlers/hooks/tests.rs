@@ -97,6 +97,26 @@ async fn get_invalid_file_returns_raw_content_plus_error() {
     );
 }
 
+/// BUG-20261119-179：hooks.json 是用户可手工编辑的 JSON 配置，记事本
+/// 「带 BOM 的 UTF-8」保存形态此前裸读 → serde_json 报无从定位的
+/// 「expected value at line 1 column 1」。走 read_config_string 剥 BOM
+/// 后 parse 成立、valid=true，编辑器拿到的 content 无 BOM（读写回环
+/// 单向清洗）。
+#[tokio::test]
+async fn get_bom_file_strips_bom_and_parses_valid() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(hooks_path(dir.path()), format!("\u{feff}{GOOD}")).unwrap();
+    let h = HooksHandler;
+    let r = h.get(&home_str(&dir)).unwrap().unwrap();
+    assert_eq!(r["exists"], true);
+    assert_eq!(r["valid"], true, "BOM must be stripped before parse");
+    assert_eq!(r["error"], serde_json::Value::Null);
+    assert_eq!(r["summary"]["total"], 3);
+    // Editor content is BOM-free so save-back cleans the file.
+    assert_eq!(r["content"].as_str().unwrap(), GOOD);
+}
+
 #[tokio::test]
 async fn set_writes_verbatim_and_reports_summary() {
     let dir = tempfile::tempdir().unwrap();

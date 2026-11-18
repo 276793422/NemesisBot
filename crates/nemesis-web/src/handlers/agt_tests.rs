@@ -48,3 +48,21 @@ fn agt_write_workspace_file_atomic_roundtrip_and_absolute_reject() {
         "absolute paths not allowed"
     );
 }
+
+/// BUG-20261119-179：read_workspace_file 剥前导 UTF-8 BOM（记事本保存
+/// 形态）——零宽 BOM 不进前端编辑器内容与回写；无 BOM 文件字节不变。
+#[test]
+fn agt_read_workspace_file_strips_leading_bom() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+
+    // 带 BOM 文件：读回无 BOM。
+    std::fs::write(dir.path().join("bom.md"), "\u{feff}# Title\nbody").unwrap();
+    let back = read_workspace_file(&ws, "bom.md").unwrap();
+    assert_eq!(back, "# Title\nbody", "leading BOM must be stripped");
+
+    // 无 BOM 文件：字节原样（strip_prefix 不命中零拷贝路径）。
+    std::fs::write(dir.path().join("plain.md"), "# Title\nbody").unwrap();
+    let back = read_workspace_file(&ws, "plain.md").unwrap();
+    assert_eq!(back, "# Title\nbody");
+}
