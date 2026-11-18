@@ -137,7 +137,9 @@ impl ConversationPattern {
 /// 解析成 `DateTime<FixedOffset>` 比较（chrono Ord 按 UTC 时刻）；解析
 /// 失败排最后——stable sort 保持同组原序。与 cluster_task.rs /
 /// task_manager.rs 的既有纪律同源（RFC3339 一律解析后比较，不信字面序）。
-fn rfc3339_order(a: &str, b: &str) -> std::cmp::Ordering {
+/// pub(crate)：cycle_store::load_latest_cycle 同族消费（BUG-20261118-140），
+/// 单一真相源不复制。
+pub(crate) fn rfc3339_order(a: &str, b: &str) -> std::cmp::Ordering {
     match (
         chrono::DateTime::parse_from_rfc3339(a),
         chrono::DateTime::parse_from_rfc3339(b),

@@ -31,6 +31,11 @@ pub struct QuicClientConfig {
     /// rendezvous 注册表地址（如 `http://vps.example.com:3341`）；空 = 从
     /// relay_url host + 默认端口推导（自建中继同机部署零配置）。
     pub rendezvous_url: String,
+    /// 客户端 QUIC 直连端口固定（BUG-20261118 批次 E）。`0` = 动态端口
+    /// （缺省，内核随机选）；`>0` = 端点按 `0.0.0.0:{direct_port}` 固定
+    /// UDP 端口——NAT/防火墙/云安全组可显式放行该 UDP 端口，提升打洞
+    /// 成功率与可预测性。经 endpoint_start 透传插件端点构造（bind_addr）。
+    pub direct_port: u16,
 }
 
 /// config.quic.json 解析产物（服务端 `relay` 段 + 客户端 `client` 段）。
@@ -68,6 +73,13 @@ pub(crate) fn parse_quic_value(cfg: Option<&serde_json::Value>) -> QuicConfig {
         out.client.relay_url = str_field(client.get("relay_url"));
         out.client.relay_token = str_field(client.get("relay_token"));
         out.client.rendezvous_url = str_field(client.get("rendezvous_url"));
+        // direct_port：非 u64 / 超 u16 值域 → 0（动态缺省；0 是合法显式值
+        // 同语义，不与「缺键」区分——直连端口没有「显式关」形态）。
+        out.client.direct_port = client
+            .get("direct_port")
+            .and_then(|v| v.as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(0);
     }
     out
 }

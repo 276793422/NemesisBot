@@ -183,6 +183,21 @@ async fn write_read_delete_file_roundtrip() {
 }
 
 #[tokio::test]
+async fn delete_file_missing_path_errors_not_found() {
+    // BUG-20261118-156 前置存在性检查回归锁：delete_file 进韧性重试内核
+    // （remove_file_retry_async 把 NotFound 吞成成功）后，「删不存在文件
+    // 要报错」的语义必须由前置检查保留——缺席路径诚实报错而非谎报删除
+    // 成功（宿主 DeleteFileTool 同款语义；若无此检查，重试内核会把缺席
+    // 静默吞成 "deleted file"）。
+    let (agent, _dir) = agent_with_tmp();
+    let line = v2_line("delete_file", r#"{"path":"never-existed.txt"}"#);
+    let resp = agent.serve_line(&line).await;
+    let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();
+    assert!(!p.ok, "{resp}");
+    assert!(p.error.contains("File not found"), "{resp}");
+}
+
+#[tokio::test]
 async fn workspace_boundary_symlink_escape_denied() {
     // symlink 逃逸：workspace 内 symlink 指向外面 → 写穿透被拒。
     // Windows 上建 symlink 需要特权，skip（CI 本地等价覆盖在 Linux）。

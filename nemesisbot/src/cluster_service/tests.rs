@@ -36,6 +36,7 @@ async fn new_adapter_reports_not_running() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
@@ -66,6 +67,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
@@ -206,6 +208,7 @@ fn make_adapter(
         work_queue.clone(),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
     (adapter, cluster, shared, task_list, work_queue, flag)
@@ -460,6 +463,7 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         work_queue,
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
@@ -500,6 +504,7 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
@@ -783,6 +788,7 @@ async fn g5_first_start_reregisters_pending_continuations_from_disk() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None,
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019）
     );
     adapter.first_start().expect("first_start");
@@ -831,6 +837,7 @@ async fn first_start_with_discussion_inbox_wires_sender() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         Some(inbox.clone()),
+        None, // 无回帖失败注记（B.3 失败可见）
         None, // 无发件箱（BUG-20261114-019）
     );
 

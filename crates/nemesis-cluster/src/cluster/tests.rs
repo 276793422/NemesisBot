@@ -2188,6 +2188,125 @@ fn test_remove_node_then_readd() {
     cluster.stop();
 }
 
+// -- BUG-20261118 批次 C：cleanup_offline_nodes（批量清理 Offline 记录，
+//    不拉黑 / 跳过本节点与静态 peers / state.toml 落盘）----------------------
+
+fn reg_node(id: &str, name: &str, status: NodeStatus) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: name.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "dev".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    }
+}
+
+#[test]
+fn test_cleanup_offline_nodes_removes_only_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(reg_node("offline-a", "a", NodeStatus::Offline));
+    cluster.register_node(reg_node("online-b", "b", NodeStatus::Online));
+    cluster.register_node(reg_node("connecting-c", "c", NodeStatus::Connecting));
+
+    let removed = cluster.cleanup_offline_nodes();
+    assert_eq!(removed, vec!["offline-a".to_string()]);
+    assert!(cluster.get_node_info("offline-a").is_none());
+    assert!(cluster.get_node_info("online-b").is_some());
+    assert!(cluster.get_node_info("connecting-c").is_some());
+
+    // state.toml 已落盘（重启回读不会复活已清理条目）。
+    assert!(dir.path().join("cluster").join("state.toml").exists());
+    cluster.stop();
+}
+
+#[test]
+fn test_cleanup_keeps_self_and_static_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // 本节点条目（畸形场景防御：即使 self 以 Offline 入册也不清）。
+    let self_id = cluster.node_id().to_string();
+    cluster.register_node(reg_node(&self_id, "self", NodeStatus::Offline));
+    // 静态 peer（peers.toml 配置，用户意志）Offline → 保留。
+    cluster.register_node(reg_node("static-peer", "sp", NodeStatus::Offline));
+    assert!(cluster.registry.mark_static("static-peer"));
+    // 普通 Offline 动态发现节点 → 清。
+    cluster.register_node(reg_node("dynamic-dead", "dd", NodeStatus::Offline));
+
+    let removed = cluster.cleanup_offline_nodes();
+    assert_eq!(removed, vec!["dynamic-dead".to_string()]);
+    assert!(cluster.get_node_info(&self_id).is_some(), "self 保留");
+    assert!(
+        cluster.get_node_info("static-peer").is_some(),
+        "静态 peer 保留"
+    );
+    assert!(cluster.get_node_info("dynamic-dead").is_none());
+    cluster.stop();
+}
+
+#[test]
+fn test_cleanup_does_not_blacklist_rediscovery_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(reg_node("rejoin-x", "rx", NodeStatus::Offline));
+    let removed = cluster.cleanup_offline_nodes();
+    assert_eq!(removed, vec!["rejoin-x".to_string()]);
+
+    // 与 remove_node 的语义分叉：不进 removed_peers 黑名单。
+    assert!(
+        !cluster.removed_peers.read().contains("rejoin-x"),
+        "cleanup 不写黑名单"
+    );
+    // 节点若还活着，announce/发现可重新入册（无需 unban）。
+    cluster.handle_discovered_node(
+        "rejoin-x",
+        "rx-v2",
+        vec!["10.0.0.9".into()],
+        21949,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node = cluster
+        .get_node_info("rejoin-x")
+        .expect("清理后可被重新发现");
+    assert_eq!(node.base.name, "rx-v2");
+    cluster.stop();
+}
+
+#[test]
+fn test_cleanup_empty_registry_returns_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let removed = cluster.cleanup_offline_nodes();
+    assert!(removed.is_empty());
+    assert!(!dir.path().join("cluster").join("state.toml").exists());
+    cluster.stop();
+}
+
 #[test]
 fn test_bus_inbound_message_debug() {
     let msg = BusInboundMessage {

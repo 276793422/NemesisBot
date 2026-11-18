@@ -37,6 +37,9 @@ id = "quote"
 intent = ["查询行情"]
 risk = "low"
 class = "network"
+# BUG-20261118-158 起占位符白名单闸覆盖 http path——{symbol} 必须在
+# args_schema.properties 声明，否则装清单即拒（整连接器缺席殃及全部 op）。
+args_schema = { type = "object", required = ["symbol"], properties = { symbol = { type = "string" } } }
 http = { method = "GET", path = "/quote?symbol={symbol}" }
 
 [[op]]
@@ -650,6 +653,8 @@ id = "issue_close"
 risk = "high"
 class = "write"
 confirm = "required"
+# 占位符白名单闸（BUG-20261118-158）：path 占位符须在 args_schema 声明。
+args_schema = { type = "object", required = ["owner", "repo", "index"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" }, state = { type = "string" } } }
 http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
 "#
         .replace("{BASE}", &server.uri()),
@@ -743,6 +748,8 @@ pat = { required = true, into = "header:Authorization" }
 id = "issues_list"
 risk = "low"
 class = "network"
+# 占位符白名单闸（BUG-20261118-158）：path 占位符须在 args_schema 声明。
+args_schema = { type = "object", required = ["owner", "repo"], properties = { owner = { type = "string" }, repo = { type = "string" } } }
 http = { method = "GET", path = "/repos/{owner}/{repo}/issues" }
 "#,
     );
@@ -2769,6 +2776,8 @@ id = "get_item"
 intent = ["查询"]
 risk = "low"
 class = "read"
+# 占位符白名单闸（BUG-20261118-158）；index 按字符串传（测段编码逃逸）。
+args_schema = { type = "object", required = ["owner", "index"], properties = { owner = { type = "string" }, index = { type = "string" } } }
 http = { method = "GET", path = "/repos/{owner}/issues/{index}" }
 "#
         .replace("{BASE}", &server.uri()),

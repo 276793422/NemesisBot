@@ -7,25 +7,39 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "sqlite")]
 use rusqlite::{OptionalExtension, params};
 
-use nemesis_types::approval_journal::{
-    ApprovalDecision, ApprovalJournal, ApprovalJournalEntry, status,
-};
+#[cfg(feature = "sqlite")]
+use nemesis_types::approval_journal::status;
+use nemesis_types::approval_journal::{ApprovalDecision, ApprovalJournal, ApprovalJournalEntry};
 
 use crate::db::TaskDb;
+#[cfg(feature = "sqlite")]
 use crate::tasks::now_rfc3339;
 
 /// 审批台账（clone 廉价，共享同一 `Arc<TaskDb>`——与任务真相源同库）。
 #[derive(Clone)]
 pub struct SqliteApprovalJournal {
+    /// stub 态（sqlite 关）下字段仅由 from_db 写入不被读——同型构造面保留。
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
     db: Arc<TaskDb>,
 }
 
 impl SqliteApprovalJournal {
+    #[cfg(feature = "sqlite")]
     pub fn open(path: &std::path::Path) -> Result<Self, String> {
         Ok(Self {
             db: TaskDb::open(path)?,
+        })
+    }
+
+    /// sqlite 未编译进本构建：同型 open，写读皆 no-op（warn 一次诚实注记）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        TaskDb::open(path)?;
+        Ok(Self {
+            db: Arc::new(TaskDb {}),
         })
     }
 
@@ -34,6 +48,7 @@ impl SqliteApprovalJournal {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn row_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalJournalEntry> {
     let payload_str: String = r.get(7)?;
     Ok(ApprovalJournalEntry {
@@ -53,10 +68,12 @@ fn row_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<ApprovalJournalEntry> {
     })
 }
 
+#[cfg(feature = "sqlite")]
 const ENTRY_COLUMNS: &str = "id, broker, short_id, operation, target, risk_level, reason, \
      payload, status, created_at, decided_at, decision_note, decided_by";
 
 impl ApprovalJournal for SqliteApprovalJournal {
+    #[cfg(feature = "sqlite")]
     fn record_pending(&self, entry: &ApprovalJournalEntry) -> Result<(), String> {
         self.db.with_conn(|conn| {
             conn.execute(
@@ -81,6 +98,13 @@ impl ApprovalJournal for SqliteApprovalJournal {
         })
     }
 
+    /// 条件更新先到先得；无账 = 恒不生效（Ok(false)）。
+    #[cfg(not(feature = "sqlite"))]
+    fn record_pending(&self, _entry: &ApprovalJournalEntry) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(feature = "sqlite")]
     fn record_decision(
         &self,
         id: &str,
@@ -100,6 +124,25 @@ impl ApprovalJournal for SqliteApprovalJournal {
         })
     }
 
+    /// 条件更新恒不生效（无账可裁——Ok(false)）。
+    #[cfg(not(feature = "sqlite"))]
+    fn record_decision(
+        &self,
+        _id: &str,
+        _decision: ApprovalDecision,
+        _note: Option<&str>,
+        _decided_by: &str,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// 查询恒空 = 台账项不存在（Err 文案与真实现一致）。
+    #[cfg(not(feature = "sqlite"))]
+    fn entry(&self, id: &str) -> Result<ApprovalJournalEntry, String> {
+        Err(format!("approval not found: {id}"))
+    }
+
+    #[cfg(feature = "sqlite")]
     fn entry(&self, id: &str) -> Result<ApprovalJournalEntry, String> {
         self.db.with_conn(|conn| {
             conn.query_row(
@@ -113,6 +156,7 @@ impl ApprovalJournal for SqliteApprovalJournal {
         })
     }
 
+    #[cfg(feature = "sqlite")]
     fn pending_entries(&self) -> Vec<ApprovalJournalEntry> {
         self.db
             .with_conn(|conn| {
@@ -137,6 +181,13 @@ impl ApprovalJournal for SqliteApprovalJournal {
             })
     }
 
+    /// 查询恒空 = 无 pending 台账项。
+    #[cfg(not(feature = "sqlite"))]
+    fn pending_entries(&self) -> Vec<ApprovalJournalEntry> {
+        Vec::new()
+    }
+
+    #[cfg(feature = "sqlite")]
     fn find_pending(&self, id_or_short: &str) -> Option<ApprovalJournalEntry> {
         self.db
             .with_conn(|conn| {
@@ -155,5 +206,11 @@ impl ApprovalJournal for SqliteApprovalJournal {
                 tracing::warn!("tasks.db find pending approval failed: {e}");
                 None
             })
+    }
+
+    /// 查询恒空 = 找不到 pending 台账项。
+    #[cfg(not(feature = "sqlite"))]
+    fn find_pending(&self, _id_or_short: &str) -> Option<ApprovalJournalEntry> {
+        None
     }
 }

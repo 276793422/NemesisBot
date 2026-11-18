@@ -784,6 +784,18 @@ def handle(msg):
             # 写会塞满管道缓冲、永久阻塞写方（无超时包裹时测试进程挂死）。
             time.sleep(60)
             return
+        if MODE == "drain-garbage":
+            # drain 驱逐纪律回归（request 路径 BUG-20261027-93 同族）：
+            # didOpen 后立刻向 stdout 写**坏头块**（Content-Length 值非
+            # 数字）——drain_pushes 的读必须失败并以 StreamUnusable 上抛、
+            # wait_for_diagnostics 驱逐会话（下次查询透明重生），而非吞错
+            # 把毒化会话留在表里（下一次查询响亮失败一次后才自愈）。
+            # 发完即睡保活（杀不净会挂测试进程，同 hang 模式考量）。
+            with send_lock:
+                sys.stdout.buffer.write(b"Content-Length: abc\r\n\r\n")
+                sys.stdout.buffer.flush()
+            time.sleep(60)
+            return
         if MODE == "uri-normalize":
             # C3 回归（2026-09-05 实机根修）：服务器按 WHATWG 规范化回显
             # URI——rust-analyzer 真机实锤：Windows 盘符 `C:` → `c:`。
@@ -1329,6 +1341,36 @@ async fn c3_empty_clear_push_does_not_converge_early() {
     assert!(
         elapsed >= Duration::from_millis(900),
         "必须等满 max 兜底（而非空推送后 150ms 提前收敛），实际 {elapsed:?}"
+    );
+    let _ = mgr.shutdown_all().await;
+}
+
+/// red→green（drain 驱逐纪律，request 路径 BUG-20261027-93 同族）：
+/// drain_pushes 读到破坏流（坏 Content-Length 头块）——读错误必须以
+/// StreamUnusable 上抛并由 wait_for_diagnostics 驱逐会话（树杀 + 出表，
+/// 下次查询透明重生）。旧实现吞错直接返回，毒化会话滞留表里——下一
+/// 次查询撞同一流垃圾按 poisoning 响亮失败一次后才自愈。
+#[tokio::test]
+async fn c4_drain_broken_stream_evicts_session() {
+    let (dir, _path) = plant_fake_gopls("drain-garbage");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    assert_eq!(mgr.session_count().await, 1);
+    // drain 首读即撞垃圾 → 读错误 → 驱逐。等待本身立即返回（不等满
+    // max 兜底）。
+    let t0 = std::time::Instant::now();
+    let _ = mgr.wait_for_diagnostics(&go, 100, 5_000).await;
+    assert!(
+        t0.elapsed() < Duration::from_millis(2_000),
+        "读错误必须立即返回而非等满 max，实际 {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "drain 撞破坏流必须驱逐会话（request 路径 poisoning 同纪律）"
     );
     let _ = mgr.shutdown_all().await;
 }

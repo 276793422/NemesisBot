@@ -46,9 +46,13 @@ pub struct ClusterServiceAdapter {
     // set_result 落盘真结果；成功 → delete 清占位）。与 gateway 传给
     // peer_chat_handler 的是同一份 adapter（同一 result_store 真相源）。
     result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
-    // Swarm：看板讨论事件入站箱（worker 侧 Some；master/board
-    // 裁剪时 None）。每次 start 换入新管道（stop/start 周期安全）。
+    // Swarm：看板讨论事件入站箱（BUG-20261118 统一 handler 后全员装配
+    // ——worker 收唤醒、coordinator 同样可被点名参与）。每次 start 换入
+    // 新管道（stop/start 周期安全）。
     discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
+    // 回帖投递失败 → 本地注记回调（B.3 失败可见；None = board 裁剪 /
+    // board_store 缺席）。
+    reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
     /// 发件箱（BUG-20261114-019）：terminal 停机链经
     /// [`Self::stop_push_loop`] 收口推送循环——spawn 点句柄已丢弃，
@@ -69,6 +73,7 @@ impl ClusterServiceAdapter {
         cluster_work_queue: Arc<ClusterWorkQueue>,
         result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
         discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
+        reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote>,
         transfer_outbox: Option<Arc<nemesis_cluster::outbox::TransferOutbox>>,
     ) -> Self {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
@@ -85,6 +90,7 @@ impl ClusterServiceAdapter {
             cluster_work_queue,
             result_persister,
             discussion_inbox,
+            reply_failure_note,
             shutdown_tx,
             transfer_outbox,
         }
@@ -240,6 +246,7 @@ impl ClusterServiceAdapter {
         let rpc_client = self.cluster.rpc_client_arc();
         let cluster_arc = self.cluster.clone();
         let result_persister = self.result_persister.clone();
+        let reply_failure_note = self.reply_failure_note.clone();
         // 讨论通道：每次 start 造新管道换入 inbox（stop/start 周期安全）。
         let discussion_rx = match &self.discussion_inbox {
             Some(inbox) => {
@@ -267,6 +274,7 @@ impl ClusterServiceAdapter {
                         Some(result_persister),
                         discussion_rx,
                         self_node_id,
+                        reply_failure_note,
                         shutdown_rx,
                     )
                     .await;
@@ -321,6 +329,7 @@ impl LifecycleService for ClusterServiceAdapter {
                 &self.cluster_work_queue,
                 &self.result_persister,
                 self.discussion_inbox.as_ref(),
+                self.reply_failure_note.clone(),
                 self.shutdown_tx.clone(),
             ))
         })?;
@@ -418,6 +427,7 @@ async fn start_cluster_components(
     cluster_work_queue: &Arc<ClusterWorkQueue>,
     result_persister: &Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
     discussion_inbox: Option<&Arc<crate::cluster_agent::DiscussionInbox>>,
+    reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
 ) -> Result<Option<tokio::task::JoinHandle<()>>, String> {
     // 1. Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
@@ -489,6 +499,7 @@ async fn start_cluster_components(
                     Some(result_persister),
                     discussion_rx,
                     self_node_id,
+                    reply_failure_note,
                     shutdown_rx,
                 )
                 .await;

@@ -76,19 +76,36 @@ pub trait EventSource: Send + Sync {
 
 /// USB event source using udevadm (Linux only).
 /// On non-Linux platforms, start() returns an error.
+/// Per-generation child slot（BUG-20261118-150）。每次 `start()` 为自己的
+/// `udevadm` 子进程造一个**新槽位**，reader 线程只持有本代槽位；struct 只
+/// 记当前代。stop()/Drop 收割当前代；上一代 reader 线程（仍在排空被杀
+/// 子进程的 stdout 余量）退出时只收割**自己那一代**——跨代收割结构性
+/// 不可能。
+///
+/// 旧形态单一共享槽（struct 与所有代 reader 线程共享同一
+/// `Arc<Mutex<Option<Child>>>`）：stop→start 重启周期（BUG-20261114-015
+/// 明确支持的语义）下，旧代 reader 线程的退出收割与 start() 装新子进程
+/// 竞争同一槽位——旧线程 `kill_child(&child_slot)` 会 take 并杀死**新代**
+/// 刚装入的 udevadm，新代 reader 随即读到 EOF 退出、事件通道关闭，
+/// 重启后的 USB 监控静默死亡（零错误面）。触发窗口：旧线程退出不被
+/// stop() 同步（无 join），排空管道余量 / `blocking_send` 背压 / 调度
+/// 延迟都可达。同族正确对照组：`nemesis-channels/src/external.rs` reader
+/// task 独占持有自己的 child（按代隔离语义）。
+type ChildSlot = std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>;
+
 pub struct UsbEventSource {
-    /// The spawned `udevadm monitor` child, if running. Shared with the reader
-    /// thread so either exit path (`stop()` or receiver drop) can reap it —
-    /// udevadm monitor never exits on its own, so dropping the handle here
-    /// would leak one thread + one process per start() (3 orphans
+    /// The **current** generation's child slot, if started. Shared with the
+    /// reader thread so either exit path (`stop()` or receiver drop) can reap
+    /// it — udevadm monitor never exits on its own, so dropping the handle
+    /// here would leak one thread + one process per start() (3 orphans
     /// hung the remote Linux nightly's stdout pipe; root-fixed here).
-    child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
+    child: std::sync::Mutex<Option<ChildSlot>>,
 }
 
 impl UsbEventSource {
     pub fn new() -> Self {
         Self {
-            child: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            child: std::sync::Mutex::new(None),
         }
     }
 
@@ -107,9 +124,13 @@ impl UsbEventSource {
 impl Drop for UsbEventSource {
     fn drop(&mut self) {
         // Receiver drop alone cannot wake the reader thread (it blocks in
-        // read() until stdout closes) — kill the child here so a started
-        // source dropped without stop() doesn't leak the process/thread.
-        Self::kill_child(&self.child);
+        // read() until stdout closes) — kill the current generation's child
+        // here so a started source dropped without stop() doesn't leak the
+        // process/thread. Stale reader threads reap their own slots (see
+        // ChildSlot).
+        if let Some(slot) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            Self::kill_child(&slot);
+        }
     }
 }
 
@@ -141,10 +162,12 @@ impl EventSource for UsbEventSource {
 
             {
                 let stdout = child.stdout.take();
-                // Hand the child to the shared slot BEFORE moving stdout into
-                // the reader thread, so stop() can kill it at any time.
-                *self.child.lock().unwrap() = Some(child);
-                let child_slot = std::sync::Arc::clone(&self.child);
+                // BUG-20261118-150：本代专属槽位——装入 struct（当前代）并把
+                // 克隆交给 reader 线程，线程退出只收割本代，永不触达未来
+                // 世代（stop→start 重启周期不再被旧线程退出收割杀新进程）。
+                let slot: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+                *self.child.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(std::sync::Arc::clone(&slot));
                 std::thread::spawn(move || {
                     if let Some(stdout) = stdout {
                         use std::io::BufReader;
@@ -168,9 +191,9 @@ impl EventSource for UsbEventSource {
                         }
                     }
                     // Reader done (stdout EOF after stop()/kill, or receiver
-                    // dropped): reap the child so neither the thread nor the
-                    // udevadm process leaks.
-                    Self::kill_child(&child_slot);
+                    // dropped): reap OWN generation's child so neither the
+                    // thread nor the udevadm process leaks.
+                    Self::kill_child(&slot);
                 });
             }
 
@@ -184,9 +207,13 @@ impl EventSource for UsbEventSource {
     }
 
     fn stop(&self) -> Result<(), String> {
-        // Kill the udevadm child (if any); the reader thread exits on stdout
-        // EOF and reaps whatever it holds. Idempotent (no-op when not started).
-        Self::kill_child(&self.child);
+        // Take + reap the CURRENT generation's child (if any); a stale reader
+        // thread still draining an older killed child reaps only its own
+        // slot and can no longer kill a child spawned after this call
+        // (BUG-20261118-150). Idempotent (no-op when not started).
+        if let Some(slot) = self.child.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            Self::kill_child(&slot);
+        }
         Ok(())
     }
 }

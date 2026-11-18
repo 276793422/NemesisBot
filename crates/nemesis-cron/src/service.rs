@@ -460,6 +460,24 @@ impl CronService {
                     let start_time = now_ms;
                     {
                         let mut s = store.lock();
+                        // BUG-20261118-151：执行期并发 patch 判定——必须在下方
+                        // `updated_at_ms` 覆盖之前读（覆盖后无法区分）。快照
+                        // （callback_job）之后 store 侧 updated_at_ms 前进 ⟺
+                        // handler 执行期间发生过并发 mutator（patch_job/
+                        // update_job/toggle_job/enable_job 都写 updated_at_ms；
+                        // 快照之前的 patch 已反映在快照里，updated_at 相等不
+                        // 误判；remove_job 后 find 落 None，is_some_and 诚实
+                        // 给 false）。此判定封 retain 删除条件的最后一个口子：
+                        // 旧形态只豁免「patch 换入 enabled 调度」（next_run=
+                        // Some），patch 换入 enabled=false（disabled 不排程 →
+                        // next_run=None）的「停用+改期保留」意图照删——用户
+                        // 在 handler 执行期（分钟级 turn）内 patch 的任务被
+                        // 静默吞掉。
+                        let patched_during_exec = s
+                            .jobs
+                            .iter()
+                            .find(|j| j.id == *job_id)
+                            .is_some_and(|j| j.updated_at_ms > callback_job.updated_at_ms);
                         if let Some(job) = s.jobs.iter_mut().find(|j| j.id == *job_id) {
                             job.state.last_run_at_ms = Some(start_time);
                             job.updated_at_ms = Local::now().timestamp_millis();
@@ -543,6 +561,11 @@ impl CronService {
                         // Remove delete_after_run jobs that have completed
                         s.jobs.retain(|j| {
                             j.id != *job_id
+                                // BUG-20261118-151：执行期被并发 patch 过的任务
+                                // 不按「成功单发即删」移除——patch（含换入
+                                // disabled 形态）是用户在本次触发之后表达的
+                                // 保留意图，执行后收尾不得吞掉。
+                                || patched_during_exec
                                 || !j.delete_after_run
                                 || j.state.last_status.as_deref() != Some("ok")
                                 // 执行期内并发 patch 换入的新

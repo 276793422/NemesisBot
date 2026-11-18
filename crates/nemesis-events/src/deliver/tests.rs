@@ -27,6 +27,22 @@ fn oversize_paths_truncated_with_honest_total() {
     assert!(out.contains("共 10"));
 }
 
+/// BUG-20261118-165 回归锁：截断注记「…等 N 个」的 N 必须是 paths.len()
+/// （去重路径总数），不是 count（事件总数）——同路径多事件场景下两者
+/// 分叉，事件数冒充路径数会把注记数字吹大。
+#[test]
+fn oversize_paths_note_counts_paths_not_events() {
+    // 9 条不同路径、42 个事件（count 与 paths.len() 刻意分叉）。
+    let paths: Vec<String> = (0..9).map(|i| format!("f{i}.txt")).collect();
+    let out = render_prompt("{paths}（{count} 次事件）", 42, &paths);
+    assert!(out.contains("…等 9 个"), "注记必须是路径总数 9: {out}");
+    assert!(!out.contains("…等 42 个"), "事件数不得冒充路径数: {out}");
+    assert!(
+        out.contains("42 次事件"),
+        "{{count}} 占位符照常承载事件总量: {out}"
+    );
+}
+
 #[test]
 fn empty_paths_render_empty_placeholders() {
     let out = render_prompt("p={path} n={count}", 0, &[]);

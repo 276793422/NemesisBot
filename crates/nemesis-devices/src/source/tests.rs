@@ -705,6 +705,89 @@ fn bug135_emit_false_stops_pump_early() {
     assert_eq!(count, 1, "pump must stop at first false emit");
 }
 
+/// BUG-20261118-150 回归锁辅助：派生一个存活 30s 的子进程（平台分派，
+/// kill 直杀本体无孤儿链）。仅用于槽位代际隔离的真实进程活性断言。
+fn spawn_lingering_child() -> std::process::Child {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lingering test child (ping)")
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lingering test child (sleep)")
+    }
+}
+
+/// BUG-20261118-150 回归锁：UsbEventSource 子进程槽位按代隔离——旧代
+/// reader 线程的退出收割只触达自己那一代，绝不 kill 新代子进程。
+///
+/// 旧形态单一共享槽下，stop→start 重启周期（BUG-20261114-015 支持的
+/// 语义）里旧线程退出收割与新代装槽竞争同一 `Arc`：旧线程
+/// `kill_child(&child_slot)` 会 take 并杀死新代 udevadm，重启后监控
+/// 静默死亡。本测以真实子进程钉死「跨代收割结构性不可能」：gen1 收割
+/// 后 gen2 槽位仍在、进程仍活（try_wait=None）。
+#[test]
+fn bug150_stale_generation_reap_cannot_kill_new_generation_child() {
+    // gen1：旧代槽位（stale reader 线程持有的那份克隆）
+    let gen1: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(spawn_lingering_child())));
+    // gen2：重启周期里 start() 刚装入的当前代
+    let gen2: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(spawn_lingering_child())));
+
+    // 旧代 reader 线程退出收割路径：只收割自己那一代
+    UsbEventSource::kill_child(&gen1);
+    assert!(
+        gen1.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+        "gen1 slot must be reaped by its own exit path"
+    );
+
+    // 当前代必须完好：槽位仍持有子进程，且进程仍存活
+    {
+        let mut g2 = gen2.lock().unwrap_or_else(|p| p.into_inner());
+        let c = g2
+            .as_mut()
+            .expect("gen2 slot must still hold its child after stale-gen reap");
+        assert!(
+            c.try_wait().expect("try_wait gen2 child").is_none(),
+            "gen2 child must still be running (stale-gen reap must not touch it)"
+        );
+        // 测试清理：不留 30s 孤儿
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// BUG-20261118-150 回归锁：stop() 取走并收割**当前代**槽位（结构性
+/// 契约：stop 后 struct 槽位为空 ⇒ 后续 start() 装入的新代与任何
+/// stale reader 持有的旧代槽位互不相交），且幂等。
+#[test]
+fn bug150_stop_reaps_current_generation_slot() {
+    let source = UsbEventSource::new();
+    let slot: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(spawn_lingering_child())));
+    *source.child.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::sync::Arc::clone(&slot));
+    source.stop().expect("stop must succeed");
+    assert!(
+        source
+            .child
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none(),
+        "stop must take the current generation slot"
+    );
+    source
+        .stop()
+        .expect("second stop must succeed (idempotent)");
+}
+
 /// BUG-20261116-008 回归锁：kill_child（Drop/stop 共用收割路径）毒化锁
 /// 容毒恢复。持锁 panic 毒化后调用：修复前 `lock().unwrap()` 必 panic，
 /// 修复后 `into_inner` 恢复照常收割（空槽 no-op + 锁保持健康）。

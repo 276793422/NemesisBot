@@ -9,11 +9,12 @@
 //    参数走 quic.relay.config 保存——中继在启动时读 config，重新开关即以
 //    新配置生效；requires_restart 徽标 = config 闸与运行态差异（手改配置
 //    文件/拉起失败的诚实呈现）；
-// ② 客户端中继地址——client.relay_url / relay_token（relay_url 空 = n0
+// ② 客户端中继地址——头部「连接中继」滑动开关（= 集群设置跨网漫游同一
+//    配置键 config.cluster.json roaming.enabled，单一真相源两处 UI；关闭时
+//    本机完全不出连中继）+ client.relay_url / relay_token（relay_url 空 = n0
 //    公共中继；relay_token 与自建中继服务端 token 配对）；
 // ③ 中结名册——服务端全量名册（quic.registry.members，中继机视角）：接入
-//    即报到、周期心跳的设备全在这里。跨网开关（集群是否消费中继组网）在
-//    【集群 → 配置】跨网漫游卡——集群是 QUIC 的消费方，不是宿主。
+//    即报到、周期心跳的设备全在这里。
 //
 // 降级：quic.relay.status available:false → 整页诚实提示不可操作
 //（命令面恒注册，payload 带原因；M4 起 feature 已删恒编译——该分支仅防御性保留）。
@@ -273,6 +274,41 @@ async function clearClientToken() {
   }
 }
 
+// ---- 卡②头部「连接中继」实时开关（BUG-20261118 批次 D） ----
+// 与【集群 → 配置】跨网漫游卡是同一配置键 config.cluster.json roaming.enabled
+//（单一真相源两处 UI）：cluster roaming.enable/disable 同源命令。关闭 =
+// 本机完全不出连中继（叠加层不发起到中继的连接）；开启 = 本机客户端面
+// 经中继/打洞组网。失败回读真实状态（复选框以服务端回执为准自动回弹）。
+const togglingClientRoaming = ref(false)
+
+async function toggleClientRoaming(on: boolean) {
+  togglingClientRoaming.value = true
+  try {
+    const res = await request('cluster', on ? 'roaming.enable' : 'roaming.disable')
+    toast.success(
+      on
+        ? `连接中继已开启${res?.key_created ? '（已生成本节点漫游身份）' : ''}，重启网关后生效`
+        : '连接中继已关闭，重启网关后生效',
+    )
+  } catch (e: any) {
+    toast.error('开关失败: ' + e)
+  } finally {
+    togglingClientRoaming.value = false
+    await loadStatus()
+  }
+}
+
+// 批次 D：开关开 + relay_url 空 = 连 n0 公共中继——红警示（非自建中继场景
+// 容易误开：公网中继延迟高且不经自建名册，用户应知情）。
+const clientRoamingWarning = computed(() => {
+  const s = relayStatus.value
+  if (!s?.available || !s.client.roaming_enabled) return ''
+  if (!s.client.relay_url) {
+    return '当前未填自建中继地址——开启后本机将连接 n0 公共中继（默认）。如需自建中继组网，请在下方填写「中继地址」。'
+  }
+  return ''
+})
+
 // ---- 卡③ 中结名册（服务端全量名册；中继机视角） ----
 interface RegistryMember {
   node_id: string
@@ -438,10 +474,27 @@ onUnmounted(() => {
 
       <!-- ===== 卡② 客户端中继地址 ===== -->
       <div class="card">
-        <div class="card-header">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);">
           <h3 style="margin: 0;">客户端中继地址（本机出连中继）</h3>
+          <label class="toggle-switch" style="flex-shrink: 0;"
+            :title="relayStatus?.client.roaming_enabled ? '关闭后本机完全不出连中继（实时落盘，重启网关后生效）' : '开启后本机经中继/打洞组网（与集群设置 → 跨网漫游同一开关）'">
+            <input type="checkbox" :checked="relayStatus?.client.roaming_enabled === true"
+              :disabled="togglingClientRoaming"
+              @change="toggleClientRoaming(($event.target as HTMLInputElement).checked)" />
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">连接中继</span>
+          </label>
         </div>
         <div class="card-body">
+          <!-- 批次 D：与集群设置同一开关的说明（单一真相源两处 UI） -->
+          <div class="port-hint" style="margin: 0 0 var(--space-3);">
+            与【集群 → 配置】跨网漫游为同一开关；关闭时本机完全不出连中继。
+          </div>
+          <!-- 批次 D：开 + relay_url 空 = 连 n0 公共中继，红警示 -->
+          <p v-if="clientRoamingWarning"
+            style="margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); background: var(--error-bg, rgba(239, 68, 68, 0.10)); border: 1px solid var(--error-border, rgba(239, 68, 68, 0.45)); border-radius: var(--radius-md); font-size: var(--text-xs); color: var(--error, #ef4444);">
+            ⚠ {{ clientRoamingWarning }}
+          </p>
           <div class="settings-grid" style="grid-template-columns: 140px 1fr;">
             <span class="settings-key">中继地址</span>
             <input class="form-input" v-model="clientForm.relay_url" spellcheck="false"
@@ -465,7 +518,7 @@ onUnmounted(() => {
             中继地址留空时走 n0 公共中继（默认）；填自建中继 URL 后，本机叠加层经该中继与对端打洞互通，
             并自动接入该中继的成员名册（30s 周期同步，同令牌设备互相可见）。
             连通状态见【集群 → 拓扑/节点】——节点经中继握手后呈现在线。
-            跨网漫游开关（是否以 QUIC 组网）在【集群 → 配置】跨网漫游卡。
+            「连接中继」开关（是否以 QUIC 组网）即【集群 → 配置】的跨网漫游——同一配置键，两处任改一处即可。
           </div>
         </div>
       </div>

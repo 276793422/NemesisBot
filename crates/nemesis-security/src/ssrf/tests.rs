@@ -695,6 +695,16 @@ fn test_resolve_and_validate_ip_directly() {
 }
 
 #[test]
+fn test_check_ip_blocks_6to4_and_documentation_v6() {
+    // 6to4 内嵌 v4（2002:7f00:1:: = 127.0.0.1 的 6to4 命名形态）与
+    // documentation 2001:db8::/32——都不经 v4-mapped/compatible 归一，
+    // 必须由 is_private_ipv6 段表显式拦下（BUG-20261118-162 回归锁）。
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    assert!(guard.check_ip("2002:7f00:1::1").is_err());
+    assert!(guard.check_ip("2001:db8::1").is_err());
+}
+
+#[test]
 fn test_ssrf_error_variants() {
     let err = SsrfError::PrivateIp("10.0.0.1".to_string());
     assert!(err.to_string().contains("private IP"));

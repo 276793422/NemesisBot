@@ -1185,3 +1185,158 @@ fn test_parse_search_results_shape_invariant_across_uid_and_msn() {
         "只收 * SEARCH 行的裸数字 token"
     );
 }
+
+// ---- BUG-20261118-130：出站非 ASCII 编码面（RFC 2047 Subject / CTE 正文） ----
+
+/// 从消息头区抽取 Subject 值（含 CRLF+WSP 折行连续行——encoded-word 折行
+/// 形态的完整值，不得只取首个物理行）。
+fn extract_subject_value(msg: &str) -> String {
+    let header_region = msg.split("\r\n\r\n").next().expect("header region");
+    let mut val = String::new();
+    let mut capturing = false;
+    for line in header_region.split("\r\n") {
+        if let Some(rest) = line.strip_prefix("Subject: ") {
+            capturing = true;
+            val.push_str(rest);
+        } else if capturing && line.starts_with(' ') {
+            val.push_str(line.trim_start());
+        } else if capturing {
+            break;
+        }
+    }
+    val
+}
+
+/// encoded-word 序列解码 round-trip：先剥折行/空白（RFC 2047 相邻
+/// encoded-word 间的空白解码时丢弃）再逐块独立解码拼接。
+fn decode_rfc2047(encoded: &str) -> String {
+    let joined = encoded.replace("\r\n ", "").replace(' ', "");
+    let mut decoded = Vec::new();
+    for chunk in joined.split("=?UTF-8?B?") {
+        if let Some(b64) = chunk.strip_suffix("?=") {
+            decoded.extend(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+                    .expect("each encoded-word chunk must decode independently"),
+            );
+        }
+    }
+    String::from_utf8(decoded).expect("decoded subject must be utf-8")
+}
+
+/// 非 ASCII Subject 必须走 RFC 2047 B-encoding：裸 8-bit 头违反 RFC 5322
+/// 头 ASCII 域（未协商 SMTPUTF8 的会话严格 MTA 可拒收；收件端 MUA 按本地
+/// 编码猜测乱码）。断言：编码形态在场、头区恒纯 ASCII、解码 round-trip
+/// 等于原文；ASCII 正文不受影响（无 CTE 头）。
+#[test]
+fn test_build_smtp_message_rfc2047_encodes_non_ascii_subject() {
+    let subject = "Re: 项目周报与评审纪要";
+    let msg = EmailChannel::build_smtp_message(
+        "bot@example.com",
+        "user@example.com",
+        subject,
+        "ascii body",
+    );
+    assert!(
+        msg.contains("Subject: =?UTF-8?B?"),
+        "非 ASCII Subject 必须编码为 encoded-word: {msg}"
+    );
+    let header_end = msg.find("\r\n\r\n").expect("header/body boundary");
+    assert!(
+        msg[..header_end].is_ascii(),
+        "header region must be pure ASCII: {msg:?}"
+    );
+    assert_eq!(
+        decode_rfc2047(&extract_subject_value(&msg)),
+        subject,
+        "decoded subject must round-trip"
+    );
+    // ASCII 正文零漂移：无 CTE 头、正文原样。
+    assert!(!msg.contains("Content-Transfer-Encoding"));
+    assert!(msg.contains("\r\n\r\nascii body"));
+}
+
+/// 超长非 ASCII Subject 折行有界：每块载荷 ≤48 base64 字符（整个
+/// encoded-word 60 ≤ RFC 2047 的 75 字符 SHOULD）、4 对齐独立可解；
+/// 全序列拼接解码 = 原文。
+#[test]
+fn test_rfc2047_long_subject_chunked_bounded() {
+    let subject = "长".repeat(200); // 200 CJK → 600 UTF-8 bytes → 800 b64 chars
+    let enc = super::encode_rfc2047_subject(&subject);
+    for word in enc.split("\r\n ") {
+        assert!(
+            word.starts_with("=?UTF-8?B?") && word.ends_with("?="),
+            "fold unit must be a complete encoded-word: {word}"
+        );
+        let payload = &word[10..word.len() - 2];
+        assert!(
+            payload.len() <= 48 && payload.len() % 4 == 0,
+            "encoded-word payload must be 4-aligned and ≤48: {}",
+            payload.len()
+        );
+        assert!(
+            !base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload)
+                .expect("chunk decodes independently")
+                .is_empty()
+        );
+    }
+    assert_eq!(decode_rfc2047(&enc), subject);
+}
+
+/// 非 ASCII 正文必须带显式 CTE: base64（RFC 2045 缺省 CTE=7bit 与实际
+/// 8-bit 不符——严格 MTA 拒信或 8→7bit 转换损坏）。CTE 头恰在 Content-Type
+/// 与空行之间；载荷 76 字符折行、解码 round-trip 等于原文。
+#[test]
+fn test_build_smtp_message_base64_encodes_non_ascii_body() {
+    let body = "回复正文第一行\r\n第二行包含中文与 emoji 🎉";
+    let msg =
+        EmailChannel::build_smtp_message("bot@example.com", "user@example.com", "Re: Hello", body);
+    assert!(
+        msg.contains(
+            "Content-Type: text/plain; charset=UTF-8\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n"
+        ),
+        "CTE header must sit between Content-Type and the empty line: {msg:?}"
+    );
+    let body_region = msg.split("\r\n\r\n").nth(1).expect("body region");
+    assert!(
+        body_region.is_ascii(),
+        "base64 body region must be pure ASCII: {body_region:?}"
+    );
+    for line in body_region.lines() {
+        assert!(
+            !line.is_empty() && line.len() <= 76,
+            "base64 line must be 1..=76 chars, got {}",
+            line.len()
+        );
+    }
+    let joined: String = body_region.lines().collect();
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, joined)
+        .expect("wrapped base64 must decode");
+    assert_eq!(
+        String::from_utf8(decoded).unwrap(),
+        body,
+        "decoded body must round-trip (dot-stuffing input unchanged: base64 alphabet has no '.')"
+    );
+}
+
+/// 注入面与编码面叠加：CR/LF 先剥后编码——「中文\r\nBcc: victim」不得
+/// 以任何形态产生注入头（编码输入恒为拍平单行）；解码值 = 拍平后的单行。
+#[test]
+fn test_rfc2047_subject_flattens_crlf_before_encoding() {
+    let msg = EmailChannel::build_smtp_message(
+        "bot@example.com",
+        "user@example.com",
+        "中文\r\nBcc: victim@example.com",
+        "b",
+    );
+    assert!(
+        !msg.contains("Bcc: victim@example.com\r\n"),
+        "injected header line must not exist: {msg:?}"
+    );
+    assert_eq!(
+        decode_rfc2047(&extract_subject_value(&msg)),
+        "中文Bcc: victim@example.com",
+        "CRLF must be flattened before encoding"
+    );
+}

@@ -1,7 +1,9 @@
 //! 工具描述分档查表。
 //!
-//! 描述两档：lean（1-2 句精修，50 槽位全有）+ full（一句定位 + 用法要点 +
-//! 何时不用 + 兄弟工具路由，高频 38 个）。档位→文本的选取纯查表；模型能力
+//! 描述两档：lean（1-2 句精修，49 槽位全有）+ full（一句定位 + 用法要点 +
+//! 何时不用 + 兄弟工具路由，高频 37 个）。条目数由 tests.rs 的
+//! `EXPECTED_TOOL_ENTRIES` 钉住（2026-11-08 exec_async 封存 50→49），本文
+//! 档计数与该锚同步维护。档位→文本的选取纯查表；模型能力
 //! 档位（ModelTier）→ 描述档位的映射留在消费方 nemesis-agent（依赖
 //! nemesis-types，本 crate 保持零依赖）。
 //!
@@ -29,8 +31,9 @@ pub fn first_sentence(text: &str) -> &str {
     }
 }
 
-/// 工具描述查表：(工具名, lean 文案, Option<full> 文案)。50 个命名槽位
-/// 全有 lean，高频 38 个另有 full；查表未命中由调用方回落注册表原文
+/// 工具描述查表：(工具名, lean 文案, Option<full> 文案)。49 个命名槽位
+/// 全有 lean，高频 37 个另有 full（计数锚 [`table_len`] / tests.rs 的
+/// `EXPECTED_TOOL_ENTRIES`）；查表未命中由调用方回落注册表原文
 /// （forge/board/动态 MCP 工具自然回落，分批补表）。
 static TOOL_DESCRIPTIONS: &[(&str, &str, Option<&str>)] = &[
     (

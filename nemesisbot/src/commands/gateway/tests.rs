@@ -5835,7 +5835,7 @@ async fn init_cluster_disabled_builds_wiring_and_loads_static_peers() {
         "autopilot slot armed"
     );
 
-    // worker 分支：board_store 在手 + role=worker → 讨论入站箱装配。
+    // BUG-20261118 统一 handler：讨论入站箱全员装配（不分角色）。
     assert!(wiring.board_worker_inbox.is_some(), "worker inbox armed");
     assert!(
         wiring.board_estop_parked.lock().expect("parked").is_empty(),
@@ -5964,18 +5964,18 @@ async fn init_cluster_enabled_arms_rpc_call_fn_and_placeholder_snapshot() {
     feature = "security"
 ))]
 #[tokio::test]
-async fn init_cluster_coordinator_role_arms_master_nb_bus_without_worker_inbox() {
+async fn init_cluster_coordinator_role_arms_unified_nb_bus_with_discussion_inbox() {
     let f = gateway_ctx_fixture("{}");
     write_peers_toml(&f.ctx.home, "coordinator");
 
     let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
 
-    // master 判据用集群角色（board_store 全员在手不算）：
-    // coordinator + board_store → master nb_bus 分支，worker 入站箱不建。
+    // BUG-20261118 统一 handler：讨论入站箱**全员装配**——coordinator
+    // 也可能被 wake.post 点名参与讨论（历史上 master 分支不建 inbox）。
     assert!(!wiring.cluster_should_start);
     assert!(
-        wiring.board_worker_inbox.is_none(),
-        "master branch must not build worker inbox"
+        wiring.board_worker_inbox.is_some(),
+        "unified nb_bus arms discussion inbox on all nodes (incl. coordinator)"
     );
     let role = wiring
         .cluster_adapter_refs

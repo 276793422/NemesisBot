@@ -429,3 +429,79 @@ async fn agt_pair_rejects_refused_address() {
         started.elapsed()
     );
 }
+
+// BUG-20261118 批次 C：nodes.cleanup_offline（批量清理 Offline 记录，
+// 不拉黑/跳过本节点与静态 peers——语义细节由 nemesis-cluster 单测钉住，
+// 这里钉 WSAPI 表面契约：命令在册 + 清理明细 + 无集群诚实报错）
+
+fn agt_ext_node(
+    id: &str,
+    name: &str,
+    status: nemesis_cluster::types::NodeStatus,
+) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: NodeInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            role: NodeRole::Worker,
+            address: "10.0.0.1:9000".to_string(),
+            category: "dev".to_string(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: vec![],
+        tier: None,
+        agents: vec![],
+        runtime_backend: None,
+        node_type: "agent".to_string(),
+        build: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn agt_cleanup_offline_removes_only_offline_and_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = agt_cluster(&dir);
+    cluster.start();
+    cluster.register_node(agt_ext_node(
+        "dead-a",
+        "a",
+        nemesis_cluster::types::NodeStatus::Offline,
+    ));
+    cluster.register_node(agt_ext_node(
+        "live-b",
+        "b",
+        nemesis_cluster::types::NodeStatus::Online,
+    ));
+
+    let ctx = agt_make_ctx(&dir, Some(cluster.clone()), None, None);
+    let h = ClusterHandler::new();
+    // 命令在册（表面契约）。
+    assert!(h.commands().contains(&"nodes.cleanup_offline"));
+
+    let out = h
+        .handle_cmd("nodes.cleanup_offline", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["count"], serde_json::json!(1));
+    assert_eq!(out["removed"], serde_json::json!(["dead-a"]));
+    assert!(cluster.get_node_info("dead-a").is_none());
+    assert!(cluster.get_node_info("live-b").is_some());
+    // state.toml 已落盘（重启回读不复活）。
+    assert!(dir.path().join("cluster").join("state.toml").exists());
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn agt_cleanup_offline_without_cluster_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = agt_make_ctx(&dir, None, None, None);
+    let result = ClusterHandler::new()
+        .handle_cmd("nodes.cleanup_offline", None, &ctx)
+        .await;
+    assert!(result.is_err(), "无集群实例必须诚实报错而非假成功");
+}

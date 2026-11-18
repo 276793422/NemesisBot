@@ -585,4 +585,31 @@ describe('ChatPanel work 时间线（2026-10-30）', () => {
     expect(chat.pendingDeliverables).toHaveLength(0)
     wrapper.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // 2026-11-18 交付物定位链接：卡片每项「📂 打开所在目录」→ fs.reveal
+  // （文件管理器打开所在目录并选中该文件；挂载块与 pending 块同款）。
+  // -------------------------------------------------------------------------
+
+  it('交付物卡片定位链接点击调 fs.reveal（打开所在目录并选中）', async () => {
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    h(deliverablesPush([{ path: 'out/report.md', title: '报告', note: '' }]))
+    h(assistantReply('做完了'))
+    await flushPromises()
+
+    // 挂载块（回复落地 flush）与 pending 块同款链接——挂载块至少一项在场。
+    const links = wrapper.findAll('.deliverable-open')
+    expect(links.length).toBeGreaterThanOrEqual(1)
+    expect(links[0].text()).toContain('打开所在目录')
+    await links[0].trigger('click')
+    expect(requestMock).toHaveBeenCalledWith(
+      'fs',
+      'reveal',
+      expect.objectContaining({ path: 'out/report.md' }),
+    )
+    wrapper.unmount()
+  })
 })

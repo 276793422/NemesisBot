@@ -5323,6 +5323,154 @@ async fn test_run_async_recursion_limit_does_not_orphan_cancel_token() {
 }
 
 // ---------------------------------------------------------------------------
+// 红证：run_async 早退路径幻影 Running 执行记录（BUG-20261118-160）
+// ---------------------------------------------------------------------------
+
+// 上方两个孤儿 token 测试只钉了 token 回收；BUG-20261118-160 补执行记录
+// 收口面：早退 Err 前记录已以 Running 入 map + 落盘 + 广播 Started，
+// 不收口 = list_executions / UI 永远显示在跑、evict_oldest_terminal_
+// execution 逐不出（非终态）、观察者等不到终态事件（BUG-20261114-035
+// 的 exactly-once 契约同一形态）、start_async 文档承诺的「eventual
+// execution state (Failed)」不兑现。修复 = settle_early_run_failure
+// 四件套（状态 Failed + 落盘 + 账本 settle + Failed 观察者事件）。
+
+#[tokio::test]
+async fn test_run_async_workflow_not_found_settles_execution_failed() {
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder-wnf"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+    engine
+        .register_workflow(make_workflow(
+            "vanish_settle_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution("vanish_settle_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    // workflow 在 create 与 run 之间被移除（同孤儿 token 测试的竞态窗口）。
+    engine.unregister("vanish_settle_wf");
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(result, Err(EngineError::WorkflowNotFound(_))));
+
+    // 执行记录必须翻 Failed + 带原因 + 带终态时间（修复前永久 Running）。
+    let record = engine
+        .get_execution(&execution.id)
+        .await
+        .expect("执行记录必须在 map 中");
+    assert_eq!(record.state, ExecutionState::Failed);
+    assert!(
+        record
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not found"),
+        "error 必须带早退原因，实际 {:?}",
+        record.error
+    );
+    assert!(record.ended_at.is_some(), "终态记录必须带 ended_at");
+
+    // 观察者必须收到 Failed 终态事件（Started 在 create_execution 已发——
+    // exactly-once 契约：每个 Started 必有且仅有一个终态事件跟随）。
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(recorder.event_kinds(), vec!["started", "failed"]);
+}
+
+#[tokio::test]
+async fn test_run_async_recursion_limit_settles_execution_failed() {
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder-rl"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+    engine
+        .register_workflow(make_workflow(
+            "deep_settle_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution(
+            "deep_settle_wf",
+            HashMap::new(),
+            Some(TriggerSource::AgentTool {
+                tool_call_id: "tc-rl-1".to_string(),
+                recursion_depth: MAX_RECURSION_DEPTH + 1,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(
+        result,
+        Err(EngineError::RecursionLimitExceeded(_))
+    ));
+
+    let record = engine
+        .get_execution(&execution.id)
+        .await
+        .expect("执行记录必须在 map 中");
+    assert_eq!(record.state, ExecutionState::Failed);
+    assert!(
+        record
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("recursion limit"),
+        "error 必须带早退原因，实际 {:?}",
+        record.error
+    );
+    assert!(record.ended_at.is_some());
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(recorder.event_kinds(), vec!["started", "failed"]);
+}
+
+#[tokio::test]
+async fn test_run_async_engine_closed_settles_execution_failed() {
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder-closed"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+    engine
+        .register_workflow(make_workflow(
+            "closed_settle_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution("closed_settle_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    engine.close().await;
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(result, Err(EngineError::InvalidState(_))));
+
+    let record = engine
+        .get_execution(&execution.id)
+        .await
+        .expect("执行记录必须在 map 中");
+    assert_eq!(record.state, ExecutionState::Failed);
+    assert!(record.ended_at.is_some());
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(recorder.event_kinds(), vec!["started", "failed"]);
+}
+
+// ---------------------------------------------------------------------------
 // 红证：sanitize 文件名碰撞静默覆盖/误删
 // ---------------------------------------------------------------------------
 

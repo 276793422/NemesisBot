@@ -4,7 +4,6 @@
 //! 不炸整表；load 单文件 Err 透传（调用方诚实处理）。
 
 use crate::state::LoopState;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// loops 状态目录（`<workspace>/loops`）。
@@ -16,35 +15,20 @@ fn loop_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.json"))
 }
 
-/// 原子写单条 loop 状态（tmp + rename，掉电不留半文件）。
+/// 原子写单条 loop 状态——委托全仓唯一权威 helper
+/// [`nemesis_utils::write_file_atomic`]（BUG-20261118-152 横向同族：此前
+/// 自制 tmp+rename 用**固定临时名** `.{id}.tmp`——同 id 并发 save（项目
+/// loop 与主 loop 并发 / 多实例部署跨进程）在同名 tmp 上交错，先完成者
+/// 的 rename 可把另一方写一半的半截 JSON 提交成正式状态文件（goals
+/// store 同款复制粘贴源，同轮同修）。helper 唯一临时名 + create_new +
+/// sync_all 先于 rename + 失败清理结构性消除该家族；Windows 目标被占
+/// rename 失败由调用方诚实上报，不再自研重试。unix 0o644（workspace
+/// 资产）。
 pub fn save_loop(dir: &Path, st: &LoopState) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create loops dir failed: {e}"))?;
     let path = loop_path(dir, &st.id);
-    let tmp = dir.join(format!(".{}.tmp", st.id));
     let body = serde_json::to_string_pretty(st).map_err(|e| format!("serialize failed: {e}"))?;
-    {
-        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("open tmp failed: {e}"))?;
-        f.write_all(body.as_bytes())
-            .map_err(|e| format!("write tmp failed: {e}"))?;
-        f.sync_all().ok();
-    }
-    // Windows 上目标被占 rename 失败是常态（AV/索引器瞬时句柄；std rename
-    // 带 REPLACE_EXISTING 语义）——短退避重试后放弃并报错（轻量内联版，
-    // 单文件 rename 不引 fsutil）。
-    let mut attempt = 0;
-    loop {
-        match std::fs::rename(&tmp, &path) {
-            Ok(()) => return Ok(()),
-            Err(_e) if attempt < 5 => {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(20 * attempt));
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(format!("rename failed after {attempt} attempts: {e}"));
-            }
-        }
-    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
 }
 
 /// 读单条（None = 文件不存在）。

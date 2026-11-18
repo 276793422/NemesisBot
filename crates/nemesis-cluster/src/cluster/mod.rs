@@ -503,24 +503,42 @@ impl Cluster {
         // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
         // PoisonedTaskStore，任务操作响亮报错，不静默退回内存假装持久化；
         // ChatSecretStore 损坏熔断同款纪律）。`Cluster::new` 测试路径保持内存态。
-        let tasks_db_path = nemesis_path::resolve_tasks_db_path_in_workspace(&workspace);
-        let (task_db, task_manager) = match nemesis_taskstore::TaskDb::open(&tasks_db_path) {
-            Ok(db) => {
-                let store = nemesis_taskstore::SqliteTaskStore::from_db(db.clone());
-                (Some(db), Arc::new(TaskManager::with_store(Arc::new(store))))
-            }
-            Err(e) => {
-                tracing::error!(
-                    "[Cluster] tasks.db unavailable at {}, task persistence fail-closed \
-                     (task ops will error honestly): {e}",
-                    tasks_db_path.display()
-                );
-                (
-                    None,
-                    Arc::new(TaskManager::with_store(Arc::new(
-                        crate::task_manager::PoisonedTaskStore::new(e.clone()),
-                    ))),
-                )
+        // sqlite 未编译进本构建（taskstore-sqlite 裁剪形态）= 诚实回落内存态：
+        // 进程内任务生命周期全功能（submit/assign/detail 往返正常），跨重启
+        // 不持久。不能挂 taskstore 的空 stub store——写入 no-op、查询恒空会让
+        // store-backed TaskManager 变黑洞（submit 假成功、后续一切操作
+        // not found；694d1382 双门控裁剪实录）。
+        let (task_db, task_manager) = if !nemesis_taskstore::SQLITE_COMPILED {
+            tracing::warn!(
+                "[Cluster] nemesis-taskstore built without sqlite: task layer falls back \
+                 to in-memory (fully functional in-process, not durable across restart)"
+            );
+            (
+                None,
+                Arc::new(TaskManager::with_store(Arc::new(
+                    crate::task_manager::InMemoryTaskStore::new(),
+                ))),
+            )
+        } else {
+            let tasks_db_path = nemesis_path::resolve_tasks_db_path_in_workspace(&workspace);
+            match nemesis_taskstore::TaskDb::open(&tasks_db_path) {
+                Ok(db) => {
+                    let store = nemesis_taskstore::SqliteTaskStore::from_db(db.clone());
+                    (Some(db), Arc::new(TaskManager::with_store(Arc::new(store))))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "[Cluster] tasks.db unavailable at {}, task persistence fail-closed \
+                         (task ops will error honestly): {e}",
+                        tasks_db_path.display()
+                    );
+                    (
+                        None,
+                        Arc::new(TaskManager::with_store(Arc::new(
+                            crate::task_manager::PoisonedTaskStore::new(e.clone()),
+                        ))),
+                    )
+                }
             }
         };
 
@@ -987,8 +1005,16 @@ impl Cluster {
         let endpoint_cfg = serde_json::json!({
             "relay_url": quic_client.relay_url.trim(),
             "relay_token": quic_client.relay_token.trim(),
+            // BUG-20261118 批次 E：客户端直连端口固定透传（0 = 动态缺省）。
+            "direct_port": quic_client.direct_port,
         })
         .to_string();
+        if quic_client.direct_port > 0 {
+            tracing::info!(
+                direct_port = quic_client.direct_port,
+                "[Cluster] Roaming endpoint binds fixed UDP port (firewall/security-group may allow it)"
+            );
+        }
         match crate::roaming::plugin_bridge::endpoint_start(endpoint_cfg).await {
             crate::roaming::plugin_bridge::BridgeOutcome::Ok(_) => {}
             crate::roaming::plugin_bridge::BridgeOutcome::Absent => {

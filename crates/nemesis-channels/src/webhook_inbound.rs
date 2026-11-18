@@ -1,9 +1,22 @@
 //! Webhook inbound channel (HTTP POST, API key auth, request-response blocking).
 //!
-//! Receives HTTP POST requests, publishes them to the message bus as
-//! InboundMessages, and returns the resulting OutboundMessage content
-//! as the HTTP response. Supports API key authentication and path-based
-//! routing.
+//! ⚠ **状态（2026-11-18 用户裁定）：未接线保留件——不删、暂不接线，未来会有用。**
+//! - 生产装配面全缺是**有意现状**（manager 无配置段、gateway 无构造点、
+//!   nemesis-config 无配置段、config 模板无键），非待修缺陷；零件级测试
+//!   全部保留。BUG-20261031-247 排除项「半成品死通道」的处置以此注记为准。
+//! - 与 events 系统的 webhook **重名不同物**：活的 webhook 在
+//!   nemesis-web `handlers/events_webhook.rs` + `nemesis-events`
+//!   （`POST /api/events/webhook/{token}`，token→规则→投递进绑定会话，
+//!   只回成败）。本模块是另一形态：阻塞请求-响应式通用 webhook API
+//!   通道（LLM 回复作 HTTP 响应体返回）。
+//! - 未来接线时按当轮设计重审语义（阻塞响应/会话路由/鉴权默认不照本
+//!   模块现状默认采信）；装配五件套与参考先例（LINE 总线注入 /
+//!   wecom axum 端点）已在 2026-11-18 调查中摸清。
+//!
+//! Original design intent: Receives HTTP POST requests, publishes them to
+//! the message bus as InboundMessages, and returns the resulting
+//! OutboundMessage content as the HTTP response. Supports API key
+//! authentication and path-based routing.
 
 use async_trait::async_trait;
 use parking_lot::RwLock;

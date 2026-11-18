@@ -98,6 +98,7 @@ impl ModuleHandler for ClusterHandler {
             "nodes.list",
             "nodes.ping",
             "nodes.remove",
+            "nodes.cleanup_offline",
             "nodes.add",
             "pair",
             "nodes.refresh",
@@ -166,6 +167,8 @@ impl ModuleHandler for ClusterHandler {
                 let node_id = data["node_id"].as_str().ok_or("missing node_id")?;
                 self.nodes_remove(node_id, ctx)
             }
+            // BUG-20261118 批次 C：批量清理 Offline 节点记录（无 data 入参）。
+            "nodes.cleanup_offline" => self.nodes_cleanup_offline(ctx),
             "nodes.add" => {
                 let data = data.ok_or("missing data")?;
                 self.nodes_add(&data, ctx)
@@ -1054,6 +1057,10 @@ impl ClusterHandler {
                     "agents": n.agents,
                     "build": n.build,
                     "online": n.is_online(),
+                    // 严格三态（online/offline/connecting）：「清理无效」弹窗
+                    // 按它过滤——online:false 涵盖 offline+connecting 两态，
+                    // 而后端 cleanup 只删严格 Offline，前端必须同口径。
+                    "status": n.get_status_string(),
                     "lastSeen": n.base.last_seen,
                     "taskCount": task_count,
                     "successRate": success_rate,
@@ -1110,6 +1117,23 @@ impl ClusterHandler {
         let cluster = require_cluster(ctx)?;
         let ok = cluster.remove_node(node_id);
         Ok(Some(serde_json::json!({ "removed": ok })))
+    }
+
+    /// 批量清理 Offline 节点记录（BUG-20261118 批次 C）。
+    ///
+    /// 与 [`Self::nodes_remove`] 的语义分叉：清理只删注册表记录 +
+    /// state.toml 落盘，**不进 removed_peers 黑名单、不动 peers.toml**——
+    /// 对象是「已失效的历史发现残留」，节点若真还活着下一个 announce
+    /// 即重新入册。跳过本节点与静态 peers。
+    fn nodes_cleanup_offline(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let cluster = require_cluster(ctx)?;
+        let removed = cluster.cleanup_offline_nodes();
+        Ok(Some(
+            serde_json::json!({ "removed": removed, "count": removed.len() }),
+        ))
     }
 
     /// Add a peer node by writing to peers.toml.
@@ -2233,8 +2257,20 @@ impl ClusterHandler {
         let mut data = data.clone();
         super::config::update_json_file(&path, |existing| {
             crate::handlers::restore_masked_named_fields(&mut data, existing)?;
-            // 合并结果整体替换落盘（原子写由事务入口承担）。
-            *existing = data;
+            // 顶层浅合并（2026-11-18 抹段事故修复）：表单键覆盖存量，
+            // 存量独有的键（roaming 等 UI 表单之外的后加段）原样保留。
+            // 此前 `*existing = data` 整体替换，而 ClusterSettings
+            // saveConfig 只回传 6 个表单字段——集群设置页每保存一次，
+            // roaming.enabled 就被抹掉一次（实录：Dispatcher 凌晨保存一次
+            // → 集群重启后漫游叠加层静默失联 → 全网互见瘫痪）。
+            // data 非对象（防御臂）保持旧整体替换语义。
+            if let (Some(obj), Some(new)) = (existing.as_object_mut(), data.as_object()) {
+                for (k, v) in new {
+                    obj.insert(k.clone(), v.clone());
+                }
+            } else {
+                *existing = data;
+            }
             Ok(())
         })?;
 

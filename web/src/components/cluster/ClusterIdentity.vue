@@ -145,6 +145,11 @@ onMounted(async () => {
             <option value="worker">worker（执行者）</option>
             <option value="manager">manager（管理者）</option>
           </select>
+          <!-- B.4 信息性提示（不做拦截）：主持人角色任务只在 coordinator 节点装配 -->
+          <div v-if="!['coordinator', 'master', 'manager'].includes(nodeRole)"
+            style="color:var(--text-muted);font-size:var(--text-xs);margin-top:var(--space-1)">
+            ⓘ 本节点非 coordinator：看板讨论的主持人（无 @ 自动裁决）与档案停摆哨兵在本节点不运行；@ 点名讨论不受影响。
+          </div>
         </div>
         <div class="form-group">
           <label class="form-label">

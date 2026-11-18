@@ -617,6 +617,19 @@
   word-break: break-all;
 }
 
+/* 交付物定位链接（2026-11-18）：fs.reveal——文件管理器打开所在目录并
+   选中该文件。行内小链接，accent 色与卡片 hover 提亮呼应。 */
+.deliverable-open {
+  color: var(--accent);
+  text-decoration: none;
+  margin-left: var(--space-2);
+  white-space: nowrap;
+}
+
+.deliverable-open:hover {
+  text-decoration: underline;
+}
+
 .message.system .message-bubble {
   background: var(--info-bg);
   color: var(--info);

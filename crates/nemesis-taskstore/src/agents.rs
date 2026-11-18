@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "sqlite")]
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::TaskDb;
@@ -138,6 +139,9 @@ impl AgentRecord {
 /// Agent 记录存储（clone 廉价，共享同一 `Arc<TaskDb>`——与任务真相源同库）。
 #[derive(Clone)]
 pub struct SqliteAgentsStore {
+    /// stub 态（sqlite 关）下字段仅由 from_db 写入不被读——语义上仍保持
+    /// 同型构造面，allow 而非 cfg 掉（签名恒定纪律）。
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
     db: Arc<TaskDb>,
 }
 
@@ -148,6 +152,7 @@ impl SqliteAgentsStore {
 
     /// Upsert（元数据级全量写；状态转移必须走 [`Self::transition_status`]，
     /// 防止并发两阶段创建相互覆盖状态）。
+    #[cfg(feature = "sqlite")]
     pub fn upsert(&self, record: &AgentRecord) -> Result<(), String> {
         self.db.with_conn(|conn| {
             conn.execute(
@@ -193,6 +198,8 @@ impl SqliteAgentsStore {
         })
     }
 
+    /// 读取；查询恒空 = 记录不存在（Ok(None)）。
+    #[cfg(feature = "sqlite")]
     pub fn get(&self, agent_id: &str) -> Result<Option<AgentRecord>, String> {
         self.db.with_conn(|conn| {
             conn.query_row(AGENT_SELECT, params![agent_id], row_record)
@@ -202,6 +209,7 @@ impl SqliteAgentsStore {
     }
 
     /// 全量列举（created_at, agent_id 稳定序——跨平台 read_dir 顺序不依赖）。
+    #[cfg(feature = "sqlite")]
     pub fn list_all(&self) -> Result<Vec<AgentRecord>, String> {
         self.db.with_conn(|conn| {
             let mut stmt = conn
@@ -218,6 +226,7 @@ impl SqliteAgentsStore {
     }
 
     /// 状态条件转移：`from` 匹配才落 `to`（先到先得；返回是否本调用生效）。
+    #[cfg(feature = "sqlite")]
     pub fn transition_status(&self, agent_id: &str, from: &str, to: &str) -> Result<bool, String> {
         self.db.with_conn(|conn| {
             let n = conn
@@ -231,6 +240,7 @@ impl SqliteAgentsStore {
         })
     }
 
+    #[cfg(feature = "sqlite")]
     pub fn remove(&self, agent_id: &str) -> Result<(), String> {
         self.db.with_conn(|conn| {
             conn.execute("DELETE FROM agents WHERE agent_id=?1", params![agent_id])
@@ -239,6 +249,7 @@ impl SqliteAgentsStore {
         })
     }
 
+    #[cfg(feature = "sqlite")]
     pub fn touch_last_active(&self, agent_id: &str) -> Result<(), String> {
         self.db.with_conn(|conn| {
             conn.execute(
@@ -249,16 +260,58 @@ impl SqliteAgentsStore {
             Ok(())
         })
     }
+
+    // -- sqlite 未编译进本构建：空 stub（写入 no-op、查询恒空）-----------
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn upsert(&self, _record: &AgentRecord) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// 查询恒空 = 记录不存在（Ok(None)）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn get(&self, _agent_id: &str) -> Result<Option<AgentRecord>, String> {
+        Ok(None)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn list_all(&self) -> Result<Vec<AgentRecord>, String> {
+        Ok(Vec::new())
+    }
+
+    /// 条件转移恒不生效（无账可转——Ok(false) 与「记录不存在」一致）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn transition_status(
+        &self,
+        _agent_id: &str,
+        _from: &str,
+        _to: &str,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn remove(&self, _agent_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn touch_last_active(&self, _agent_id: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
+#[cfg(feature = "sqlite")]
 const AGENT_COLUMNS: &str = "agent_id, name, kind, status, persona_refs, memory_namespace, \
      exec_root, home_path, credential_refs, tool_policy, tier, runtime_backend, \
      principal, home_node, project_id, created_at, updated_at, last_active_at";
 // 列清单统一定义：按位置消费于 row_record，增列时同步改 row_record。
+#[cfg(feature = "sqlite")]
 const AGENT_SELECT: &str = "SELECT agent_id, name, kind, status, persona_refs, \
      memory_namespace, exec_root, home_path, credential_refs, tool_policy, tier, \
      runtime_backend, principal, home_node, project_id, created_at, updated_at, \
      last_active_at FROM agents WHERE agent_id = ?1";
+#[cfg(feature = "sqlite")]
 fn row_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRecord> {
     let persona_refs: String = r.get(4)?;
     let credential_refs: String = r.get(8)?;

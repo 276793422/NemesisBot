@@ -326,6 +326,12 @@ pub struct EndpointConfig {
     pub relay_url: String,
     #[serde(default)]
     pub relay_token: String,
+    /// 客户端直连端口固定（宿主 config.quic.json `client.direct_port`
+    /// 透传；BUG-20261118 批次 E）。`0` = 动态端口（缺省）；`>0` = 端点按
+    /// `0.0.0.0:{direct_port}` 固定 UDP 端口——防火墙/云安全组显式放行后
+    /// 打洞成功率与可预测性更高。serde default 兼容旧宿主（无此键 = 0）。
+    #[serde(default)]
+    pub direct_port: u16,
     /// 保留位（宿主侧 TcpConn 空闲监测语义的镜像声明，插件不消费——空闲闸
     /// 在宿主帧层照常生效；反序列化目标必须存在否则宿主 config 含此键即解析失败）。
     #[allow(dead_code)]
@@ -806,6 +812,15 @@ pub async fn spawn_endpoint(
     // 自家类型）。
     let secret = SecretKey::from_bytes(seed);
     let mut builder = Endpoint::builder(presets::N0).secret_key(secret);
+    // 直连端口固定（批次 E）：direct_port > 0 = 绑 `0.0.0.0:{port}`（UDP）；
+    // 0 = 缺省动态端口（不调 bind_addr，字节级同旧行为）。绑定失败（端口
+    // 被占/权限不足）= 诚实 Err 不静默降级动态——显式固定是用户意志，
+    // 悄悄改动态会让防火墙放行形同虚设。
+    if cfg.direct_port > 0 {
+        builder = builder
+            .bind_addr(format!("0.0.0.0:{}", cfg.direct_port))
+            .map_err(|e| format!("direct_port {} 绑定地址非法: {e}", cfg.direct_port))?;
+    }
     let relay_url = cfg.relay_url.trim();
     if !relay_url.is_empty() {
         // 自建中继回落形态（Minimal 基座 + RelayMode::Custom——照搬宿主

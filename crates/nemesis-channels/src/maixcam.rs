@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
-use crate::base::{BaseChannel, Channel};
+use crate::base::{BaseChannel, Channel, peer_allowed};
 
 use nemesis_utils::line_cap::read_line_capped;
 
@@ -39,33 +39,9 @@ fn sanitize_event_field(raw: &str) -> String {
         .collect()
 }
 
-/// 对端准入判定（BUG-20261110-054）：`allow_from` 空 = 放行所有（兼容既有
-/// 部署）；非空 = 对端 IP 必须命中白名单。设备协议无身份握手（sender_id
-/// 硬编码 "maixcam"），按 sender_id 过滤在协议上不可能生效——白名单的
-/// 真实语义是**对端 IP 准入**（accept 时检查；此前 `allow_from` 只是
-/// 声名未读取的装饰配置）。条目支持精确 IP（`192.168.1.50`）与 IPv4
-/// 前缀通配（`192.168.1.*`，尾段通配）。
-fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
-    if allow_from.is_empty() {
-        return true;
-    }
-    let peer_ip = peer_ip.trim();
-    for entry in allow_from {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
-        }
-        if let Some(prefix) = entry.strip_suffix('*') {
-            if peer_ip.starts_with(prefix) {
-                return true;
-            }
-        } else if peer_ip == entry {
-            return true;
-        }
-    }
-    false
-}
-
+/// 对端准入判定（BUG-20261110-054）：已收编为 [`crate::base::peer_allowed`]
+/// 单一真相源（BUG-20261118-155 websocket 同族共用时收编）——本模块经
+/// use 引入，语义文档见共享定义。
 /// 监听 host 是否确定落在回环（localhost 或回环 IP）。主机名等无法静态
 /// 判定的形态返回 false——告警面取保守方向（宁多勿漏）。
 fn host_is_definitely_loopback(host: &str) -> bool {

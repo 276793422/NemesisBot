@@ -5265,6 +5265,34 @@ async fn test_process_heartbeat_no_done_event() {
     assert_eq!(result, Ok("Heartbeat response".to_string()));
 }
 
+#[tokio::test]
+async fn test_process_heartbeat_error_event_returns_err() {
+    // BUG-20261118-153 回归锁：LLM 失败的终态事件是 AgentEvent::Error，
+    // process_heartbeat 曾只扫 Done、把 Error 吞成 Ok(兜底文案) 假成功
+    // （gateway handler 的 is_error 分支死代码，心跳故障 debug 级隐身）。
+    // 对齐 cron 兄弟路径约定：无 Done 有 Error → Err(错误消息)。
+    struct ErrorProvider;
+    #[async_trait]
+    impl LlmProvider for ErrorProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            Err("heartbeat provider down".to_string())
+        }
+    }
+
+    let agent_loop = AgentLoop::new(Box::new(ErrorProvider), test_config());
+    let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
+    assert!(result.is_err());
+    // 消息文本带 loop 错误格式化前缀（"Error: ..."），断言含根因即可
+    // （对齐 test_run_with_llm_error 的 contains 风格）。
+    assert!(result.unwrap_err().contains("heartbeat provider down"));
+}
+
 #[test]
 fn test_record_last_channel_no_state_manager() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());

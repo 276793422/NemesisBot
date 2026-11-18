@@ -1431,7 +1431,10 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("读取 {} 失败：{e}", file))?;
             let entries = nemesis_data::parse_litellm_json(&raw)
                 .map_err(|e| anyhow::anyhow!("解析失败：{e}"))?;
-            let n = entries.len();
+            // 条目数闸（BUG-20261118-157）：与下载路径同源——传错文件
+            // （1~99 条合法条目）不再静默替换下载层。
+            let n = nemesis_data::validate_downloaded_entries(&entries)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             pricing
                 .replace_downloaded(
                     entries,

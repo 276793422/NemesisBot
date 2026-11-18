@@ -18,7 +18,7 @@
 //! | 模块 | 内容 | 消费方 |
 //! |---|---|---|
 //! | [`system`] | 主 system prompt 段落池（Pre/Post 两层 17 段） | nemesis-agent |
-//! | [`tools`] | 工具描述两档查表（60 lean + 24 full） | nemesis-agent |
+//! | [`tools`] | 工具描述两档查表（49 lean + 37 full） | nemesis-agent |
 //! | [`subagents`] | 子代理十角色模板 | nemesis-agent |
 //! | [`slash`] | 内置 slash 深度模板（评审/排障/修复） | nemesis-agent |
 //! | [`aux`] | 内部调用点文案（compact 九段式/合并/标题/快照两节） | nemesis-agent |

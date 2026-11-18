@@ -477,6 +477,55 @@ async fn test_config_save_writes_file() {
     assert_eq!(parsed["token"], "secret-token");
 }
 
+// 2026-11-18 抹段事故回归锁：config.save 是表单保存不是整文件重写——
+// 存量里 UI 表单之外的键（roaming 等）必须在保存后原样存活。
+// 实录：ClusterSettings saveConfig 只回传 6 个表单字段，旧的
+// `*existing = data` 整体替换让集群设置页每保存一次就抹掉
+// roaming.enabled 一次 → 集群重启后漫游叠加层静默失联。
+#[tokio::test]
+async fn test_config_save_preserves_keys_outside_form() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+
+    // 存量文件带 roaming 段（UI 表单之外的后加段）。
+    let cfg_path = dir.path().join("config/config.cluster.json");
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    let existing = serde_json::json!({
+        "enabled": false,
+        "port": 11949,
+        "rpc_port": 21949,
+        "token": "old-token",
+        "roaming": {"enabled": true}
+    });
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+
+    // 表单保存只带 6 个字段（ClusterSettings saveConfig 同款形态），
+    // 其中 enabled/port/token 覆盖存量。
+    let data = serde_json::json!({
+        "enabled": true,
+        "port": 12000,
+        "rpc_port": 22000,
+        "broadcast_interval": 30,
+        "llm_timeout_secs": 7200,
+        "token": "new-token"
+    });
+    handler
+        .handle_cmd("config.save", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let written = std::fs::read_to_string(&cfg_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+    // 表单键覆盖生效。
+    assert_eq!(parsed["port"], 12000);
+    assert_eq!(parsed["enabled"], true);
+    assert_eq!(parsed["token"], "new-token");
+    // 表单之外的段存活（抹段回归）。
+    assert_eq!(parsed["roaming"]["enabled"], true);
+}
+
 #[tokio::test]
 async fn test_config_save_creates_config_dir() {
     let handler = cluster::ClusterHandler::new();

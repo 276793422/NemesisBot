@@ -146,7 +146,16 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
             return Err(e);
         }
     };
-    let entry_count = entries.len();
+    // 条目数闸（BUG-20261118-157）：`MIN_FILTERED_ENTRIES` 此前只护编译期
+    // 内嵌路径——1~99 条的劫持页/截断 payload 不再静默替换下载层
+    // （失败留痕纪律与上方解析失败同款）。
+    let entry_count = match nemesis_data::validate_downloaded_entries(&entries) {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = store.record_failed_fetch(url);
+            return Err(e);
+        }
+    };
 
     store
         .replace_downloaded(

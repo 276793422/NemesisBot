@@ -20,6 +20,7 @@ intent = ["查询行情", "现在多少钱"]
 risk = "low"
 class = "read"
 http = { method = "GET", path = "/quote?symbol={symbol}" }
+args_schema = { type = "object", required = ["symbol"], properties = { symbol = { type = "string" } } }
 
 [[op]]
 id = "place_order"
@@ -166,6 +167,7 @@ id = "get_quote"
 risk = "low"
 class = "network"
 http = { method = "GET", path = "/quote?symbol={symbol}" }
+args_schema = { type = "object", required = ["symbol"], properties = { symbol = { type = "string" } } }
 
 [[op]]
 id = "place_order"
@@ -214,8 +216,14 @@ fn rejects_invalid_path_placeholders() {
         let err = parse_connector_manifest(&bad).expect_err(bad_path);
         assert!(err.contains("http path 非法"), "path {bad_path}: {err}");
     }
-    // 合法占位符照常通过
-    let ok = VALID_REST.replace("/quote?symbol={symbol}", "/a/{x1}/{y_2}");
+    // 合法占位符照常通过（BUG-20261118-158 起必须随 args_schema 声明——
+    // 夹具同步补声明，与白名单闸共存）
+    let ok = VALID_REST
+        .replace("/quote?symbol={symbol}", "/a/{x1}/{y_2}")
+        .replace(
+            "args_schema = { type = \"object\", required = [\"symbol\"], properties = { symbol = { type = \"string\" } } }",
+            "args_schema = { type = \"object\", properties = { x1 = { type = \"string\" }, y_2 = { type = \"integer\" } } }",
+        );
     let c = parse_connector_manifest(&ok).expect("legal placeholders");
     match &c.ops[0].binding {
         OpBinding::Http { placeholders, .. } => {
@@ -223,6 +231,24 @@ fn rejects_invalid_path_placeholders() {
         }
         other => panic!("expected http binding, got {other:?}"),
     }
+}
+
+// BUG-20261118-158 回归锁（旧形态必红：未声明的 http path 占位符静默装进
+// 注册表，每次调用都在运行期缺参失败）——与 script 绑定的
+// rejects_script_undeclared_placeholder_loud 同闸对称。
+#[test]
+fn rejects_http_undeclared_placeholder_loud() {
+    // VALID_REST 的 get_quote 已声明 symbol：删掉声明保留占位符 = 缺声明形态。
+    let bad = VALID_REST.replace(
+        "args_schema = { type = \"object\", required = [\"symbol\"], properties = { symbol = { type = \"string\" } } }",
+        "",
+    );
+    let err = parse_connector_manifest(&bad).expect_err("未声明的 http 占位符必须 loud");
+    assert!(
+        err.contains("`{symbol}` 未在 args_schema.properties 声明"),
+        "got: {err}"
+    );
+    assert!(err.contains("http path"), "got: {err}");
 }
 
 #[test]
@@ -372,6 +398,7 @@ risk = "high"
 class = "write"
 confirm = "required"
 http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
+args_schema = { type = "object", required = ["owner", "repo", "index"], properties = { owner = { type = "string" }, repo = { type = "string" }, index = { type = "integer" } } }
 "#;
     let c = parse_connector_manifest(toml_text).expect("gitea-ish manifest");
     match &c.ops[0].binding {

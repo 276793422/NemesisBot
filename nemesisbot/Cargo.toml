@@ -23,7 +23,7 @@ default = [
     "connectors", "ziwei",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
     "pricing-embed", "verify", "web-static", "lsp", "browser",
-    "checkpoint-git", "image-process", "history-search", "usage-store",
+    "checkpoint-git", "image-process", "history-search", "usage-store", "taskstore-sqlite",
     "events", "loop", "goals",
 ]
 
@@ -192,6 +192,12 @@ git-https = ["nemesis-board/git-https"]
 # stub（写入 no-op、查询恒空、JSON 价目层照常，open() warn 一次），生产
 # 调用方零改动。测试构建经各消费 crate 的 [dev-dependencies] 带回真账本。
 usage-store = ["nemesis-data/usage-store"]
+
+# 统一任务层 SQLite（nemesis-taskstore 的 tasks.db：runs/attempts/approvals/
+# deliveries/agents/notify_outbox）。关 = 全部 store 空 stub（写入 no-op、
+# 查询恒空、open() warn 一次），生产调用方零改动。测试构建经各消费 crate
+# 的 [dev-dependencies] 带回真账本（nemesisbot/cluster/workflow/cron）。
+taskstore-sqlite = ["nemesis-taskstore/sqlite"]
 
 # WASM 插件框架（`plugin` CLI + Dashboard 插件页 + agent 工具桥；wasmtime
 # 运行时在宿主壳 DLL plugins/plugin-wasm（独立构建、exe 旁 plugins/ 查找）
@@ -373,6 +379,8 @@ git2 = { workspace = true }
 # usage-store 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
 # dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
 nemesis-data = { workspace = true, features = ["usage-store"] }
+# taskstore 行为测试经 dev-dependencies 带回真 SQLite 账本（同 usage-store 纪律）。
+nemesis-taskstore = { workspace = true, features = ["sqlite"] }
 # R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
 # 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
 # OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。

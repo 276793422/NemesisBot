@@ -13,31 +13,39 @@ use axum::routing::get;
 use super::fetch_and_replace;
 use nemesis_data::PricingStore;
 
-const TABLE_JSON_V1: &str = r#"{
-  "test-model-a": {
-    "max_tokens": 4096,
-    "input_cost_per_token": 1e-06,
-    "output_cost_per_token": 3e-06,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  },
-  "test-model-b": {
-    "input_cost_per_token": 5e-07,
-    "output_cost_per_token": 2e-06,
-    "litellm_provider": "zhipu",
-    "mode": "chat"
-  }
-}"#;
+/// 合成夹具表：2 个具名锚条目（既有 lookup 断言消费 test-model-a/b，
+/// 价格与原 const 夹具一致）+ 填充条目凑足 ≥ MIN_FILTERED_ENTRIES——
+/// BUG-20261118-157 起运行时下载路径拒绝小表，夹具必须过闸才能测
+/// HTTP/ETag 机制本身。
+fn fixture_json(model_a_in: f64, model_a_out: f64, model_a_max: i64) -> String {
+    const FILLERS: usize = 118; // 2 锚 + 118 填充 = 120 ≥ 100
+    let mut entries = vec![
+        format!(
+            r#""test-model-a": {{"max_tokens": {model_a_max}, "input_cost_per_token": {model_a_in}, "output_cost_per_token": {model_a_out}, "litellm_provider": "openai", "mode": "chat"}}"#
+        ),
+        r#""test-model-b": {"input_cost_per_token": 5e-07, "output_cost_per_token": 2e-06, "litellm_provider": "zhipu", "mode": "chat"}"#.to_string(),
+    ];
+    for i in 0..FILLERS {
+        entries.push(format!(
+            r#""filler-{i:03}": {{"input_cost_per_token": 1e-07, "output_cost_per_token": 2e-07, "litellm_provider": "openai", "mode": "chat"}}"#
+        ));
+    }
+    format!("{{{}}}", entries.join(","))
+}
 
-const TABLE_JSON_V2: &str = r#"{
-  "test-model-a": {
-    "max_tokens": 8192,
-    "input_cost_per_token": 2e-06,
-    "output_cost_per_token": 6e-06,
-    "litellm_provider": "openai",
-    "mode": "chat"
-  }
-}"#;
+fn table_v1() -> String {
+    fixture_json(1e-06, 3e-06, 4096)
+}
+
+fn table_v2() -> String {
+    fixture_json(2e-06, 6e-06, 8192)
+}
+
+/// 小表（1 条合法 chat 条目，能过 parse_litellm_json）：BUG-20261118-157
+/// 下载闸的阳性对照。
+fn table_tiny() -> String {
+    r#"{"tiny-a": {"input_cost_per_token": 9e-06, "output_cost_per_token": 9e-06, "litellm_provider": "openai", "mode": "chat"}}"#.to_string()
+}
 
 const ETAG_V1: &str = "\"table-v1\"";
 
@@ -63,7 +71,7 @@ async fn table_handler(headers: HeaderMap, State(st): State<FixtureState>) -> im
     (
         StatusCode::OK,
         [(axum::http::header::ETAG, ETAG_V1)],
-        TABLE_JSON_V1.to_string(),
+        table_v1(),
     )
 }
 
@@ -77,13 +85,13 @@ async fn updated_handler(headers: HeaderMap) -> impl IntoResponse {
         return (
             StatusCode::OK,
             [(axum::http::header::ETAG, "\"table-v2\"")],
-            TABLE_JSON_V2.to_string(),
+            table_v2(),
         );
     }
     (
         StatusCode::OK,
         [(axum::http::header::ETAG, ETAG_V1)],
-        TABLE_JSON_V1.to_string(),
+        table_v1(),
     )
 }
 
@@ -104,6 +112,12 @@ async fn huge_handler() -> impl IntoResponse {
     )
 }
 
+async fn tiny_handler() -> impl IntoResponse {
+    // 1 条合法 chat 条目（过 parse_litellm_json）+ 条目数不足
+    // （BUG-20261118-157 下载闸阳性对照）。
+    (StatusCode::OK, table_tiny())
+}
+
 async fn spawn_server() -> String {
     let state = FixtureState::default();
     let app = Router::new()
@@ -114,6 +128,7 @@ async fn spawn_server() -> String {
         .route("/broken", get(broken_handler))
         .route("/err", get(err_handler))
         .route("/huge", get(huge_handler))
+        .route("/tiny", get(tiny_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -138,7 +153,7 @@ async fn fetch_replaces_downloaded_layer_with_etag() {
         .await
         .unwrap();
     assert!(r.updated);
-    assert_eq!(r.entry_count, 2);
+    assert_eq!(r.entry_count, 120);
     assert_eq!(r.etag.as_deref(), Some(ETAG_V1));
 
     let p = store.lookup("test-model-a").unwrap();
@@ -151,7 +166,7 @@ async fn fetch_replaces_downloaded_layer_with_etag() {
 
     let meta = store.meta();
     assert_eq!(meta.etag.as_deref(), Some(ETAG_V1));
-    assert_eq!(meta.entry_count, 2);
+    assert_eq!(meta.entry_count, 120);
     assert!(meta.fetched_at.is_some());
 
     // 同一 etag 再拉 → 304 NotModified。
@@ -199,7 +214,7 @@ async fn http_error_keeps_old_table() {
     );
     assert_eq!(
         store.meta().entry_count,
-        2,
+        120,
         "meta entry_count still from last success"
     );
     assert!(
@@ -317,7 +332,7 @@ async fn mirror_chain_falls_back_to_next_mirror() {
         .await
         .unwrap();
     assert!(r.updated);
-    assert_eq!(r.entry_count, 2);
+    assert_eq!(r.entry_count, 120);
     assert!(r.source_url.ends_with("/table"), "source = winning mirror");
     assert!(store.lookup("test-model-a").is_some());
 }
@@ -370,4 +385,60 @@ async fn same_url_etag_still_gives_304() {
         .await
         .unwrap();
     assert!(!r.updated, "same-url refetch with etag should be 304");
+}
+
+// ---------------------------------------------------------------------------
+// 下载闸（BUG-20261118-157）：条目数不足的劫持页/截断 payload 不落下载层
+// ---------------------------------------------------------------------------
+
+// BUG-20261118-157 回归锁（旧形态必红：1 条合法 chat 条目静默替换下载层
+// + 刷写 meta）：MIN_FILTERED_ENTRIES 闸此前只在编译期内嵌路径接线，运行
+// 时下载路径必须同样拒小表——诚实报错 + 旧表原封不动 + meta 留尝试痕迹
+// （留痕纪律与解析失败/HTTP 失败同款）。
+#[tokio::test]
+async fn tiny_table_rejected_keeps_old_table() {
+    let base = spawn_server().await;
+    let store = tmp_store("tiny-gate");
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
+    let before = store.lookup("test-model-a").unwrap().input_cost_per_million;
+
+    let err = fetch_and_replace(&store, Some(&format!("{base}/tiny")))
+        .await
+        .unwrap_err();
+    assert!(err.contains("条目数过少"), "err: {err}");
+    assert!(err.contains("保留旧表"), "err: {err}");
+    assert_eq!(
+        store.lookup("test-model-a").unwrap().input_cost_per_million,
+        before,
+        "tiny table must keep old table"
+    );
+    assert!(
+        store.lookup("tiny-a").is_none(),
+        "rejected entry must not enter the downloaded layer"
+    );
+    assert!(
+        store
+            .meta()
+            .source_url
+            .as_deref()
+            .unwrap_or("")
+            .ends_with("/tiny"),
+        "gate rejection must record source_url, got {:?}",
+        store.meta().source_url
+    );
+    assert!(
+        store.meta().fetched_at.is_some(),
+        "gate rejection must bump fetched_at"
+    );
+    // 闸拒绝不 clobber 已存 etag（record_failed_fetch 保留语义）——注：
+    // 下一次拉 /table 不会走 304（source_url 已被失败留痕改写为 /tiny，
+    // etag 附带按「待拉 URL == meta.source_url」门控，全量 200 是既有
+    // 正确行为），这里只钉 etag 本身存活。
+    assert_eq!(
+        store.meta().etag.as_deref(),
+        Some(ETAG_V1),
+        "gate rejection must not clobber the stored etag"
+    );
 }

@@ -108,6 +108,19 @@ struct Inner {
     open_docs: HashMap<String, i64>,
 }
 
+/// [`Session::drain_pushes`] 的结束原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrainEnd {
+    /// quiet 窗静默收敛 / max 兜底——流边界完好，诊断快照照常可用。
+    Converged,
+    /// 读流出错（EOF=服务器死了 / 帧解析失败=流形态破坏，含读 future
+    /// 被窗口超时取消留下的半消费字节族）——帧边界不可信。调用方必须
+    /// 驱逐会话：与 request 路径的 [`is_session_poisoning`] 驱逐纪律同源
+    /// （drain 路径此前漏了这一臂——毒化会话滞留表里，下一次查询撞上
+    /// 流垃圾按 poisoning 响亮失败一次后才被那道臂自愈）。
+    StreamUnusable,
+}
+
 impl Session {
     /// 把一次 publishDiagnostics 推送写入缓存（整表覆盖该 uri）。
     /// 键用 [`proto::uri_key`] 规范化——服务器回显的是它自己规范化后的
@@ -211,7 +224,8 @@ impl Session {
     /// 连推多轮增量收敛），这里读到一条消息就把 quiet 窗口重新计时，连续
     /// `quiet` 无消息（≈ 编辑器的 debounce 收敛）或总时长到 `max` 兜底即
     /// 返回。途中的 server→client 请求照 never-ignore 政策回应（有的服务
-    /// 器会阻塞等回复）；读流出错（服务器死了）同样终止——不会再有推送。
+    /// 器会阻塞等回复）；读流出错（服务器死了）同样终止——不会再有推送，
+    /// 且以 [`DrainEnd::StreamUnusable`] 上抛由调用方驱逐会话。
     ///
     /// 实机验证修出的冷启动缺口：**首条非空
     /// publishDiagnostics 到达前** quiet 收敛不生效——（a）冷启动服务器
@@ -224,12 +238,12 @@ impl Session {
     /// 清屏推送等满 `max` 兜底返回空——等价结果（无错可报），代价是
     /// `max` 时长的等待税（默认 2000ms，可配）。LSP 规范要求服务器
     /// 分析完推送（哪怕空数组），等待始终有界。
-    async fn drain_pushes(&self, quiet: Duration, max: Duration) {
+    async fn drain_pushes(&self, quiet: Duration, max: Duration) -> DrainEnd {
         let start = Instant::now();
         let mut saw_nonempty_push = false;
         loop {
             if start.elapsed() >= max {
-                return;
+                return DrainEnd::Converged;
             }
             let remaining = max.saturating_sub(start.elapsed());
             let window = quiet.min(remaining);
@@ -264,11 +278,15 @@ impl Session {
                     // 别的（陈旧 id 的响应）——忽略。
                     proto::Incoming::Response(_) => {}
                 },
+                // 读流出错（EOF / 帧解析失败，含半消费字节族）——帧边界
+                // 不可信，按 [`DrainEnd::StreamUnusable`] 上抛由调用方
+                // 驱逐（与 request 路径 poisoning 臂同纪律）。
+                Ok(Err(_)) => return DrainEnd::StreamUnusable,
                 // 非空推送未到 → 继续等（冷启动/清屏后待真诊断，max 兜底；
                 // timeout 已耗掉整窗，continue 无自旋）。
                 Err(_) if !saw_nonempty_push => {}
-                // quiet 窗口内没有消息（已收敛）/ 读流出错（服务器死了）。
-                _ => return,
+                // quiet 窗口内没有消息（已收敛）。
+                Err(_) => return DrainEnd::Converged,
             }
         }
     }
@@ -959,18 +977,32 @@ impl LspManager {
         let root = find_root(path);
         let session = {
             let sessions = self.sessions.lock().await;
-            sessions.get(&(lang, root)).cloned()
+            sessions.get(&(lang, root.clone())).cloned()
         };
         let Some(session) = session else {
             return vec![];
         };
         *session.last_used.lock().unwrap() = Instant::now();
-        session
+        let outcome = session
             .drain_pushes(
                 Duration::from_millis(quiet_ms),
                 Duration::from_millis(max_ms),
             )
             .await;
+        if outcome == DrainEnd::StreamUnusable {
+            // drain 撞上破坏流（EOF 或帧垃圾）：会话不可信，立即驱逐
+            // （树杀 + 出表）——与 request 路径的 poisoning 臂同纪律。
+            // 不驱逐的话毒化会话滞留表里，下一次查询读到流垃圾按
+            // poisoning 响亮失败一次后才自愈。
+            tracing::warn!(
+                "[LSP] diagnostics drain for {} hit a broken stream (server died or frame desync); evicting the session so the next query respawns",
+                root.display()
+            );
+            self.sessions.lock().await.remove(&(lang, root.clone()));
+            if let Ok(mut inner) = session.inner.try_lock() {
+                kill_tree(&mut inner.child).await;
+            }
+        }
         session.diagnostics_for_uri(&proto::path_to_uri(path))
     }
 }

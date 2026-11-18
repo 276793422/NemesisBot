@@ -1182,9 +1182,12 @@ impl MemoryHandler {
         }
         if removed {
             let _guard = jsonl_write_lock().lock().unwrap();
-            let tmp = jsonl_path.with_extension("jsonl.tmp");
-            std::fs::write(&tmp, kept).map_err(|e| format!("failed to write tmp: {}", e))?;
-            std::fs::rename(&tmp, &jsonl_path).map_err(|e| format!("failed to rename: {}", e))?;
+            // 原子重写——委托统一 helper（BUG-20261118-152 横向同族：固定
+            // `jsonl.tmp` 临时名在跨进程并发写者（多实例部署）下互踩可把
+            // 半截 JSONL 提交成正式向量库文件。nemesis-memory crate 同族
+            // persist 已在 BUG-20261025-59 收编，本 handler 副本漏网）。
+            nemesis_utils::write_file_atomic(&jsonl_path.to_string_lossy(), kept.as_bytes(), 0o644)
+                .map_err(|e| format!("failed to rewrite {}: {e}", jsonl_path.display()))?;
         }
         Ok(Some(serde_json::json!({ "id": id, "deleted": removed })))
     }

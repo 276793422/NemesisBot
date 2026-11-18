@@ -137,15 +137,10 @@ fn test_channel_name() {
 // handle_text_message unit tests
 // ---------------------------------------------------------------------------
 
-/// Helper: empty allow list (allow all)
-fn empty_allow() -> Vec<String> {
-    vec![]
-}
-
-/// Helper: specific allow list
-fn specific_allow() -> Vec<String> {
-    vec!["websocket:client_allowed".to_string()]
-}
+// （BUG-20261118-155）：allow_from 准入已迁 accept 层对端 IP 闸
+// （bug155_allow_from_* 两测），handle_text_message 不再有 allow-list
+// 行为——empty_allow/specific_allow helper 与三个 allow-list 单测随之
+// 退役，覆盖由 accept 层真实连接测试承接。
 
 #[test]
 fn test_handle_text_message_ping() {
@@ -158,7 +153,6 @@ fn test_handle_text_message_ping() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let response = send_rx.try_recv().unwrap();
@@ -176,7 +170,6 @@ fn test_handle_text_message_empty_content() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let response = send_rx.try_recv().unwrap();
@@ -195,7 +188,6 @@ fn test_handle_text_message_valid() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let inbound = bus_rx.try_recv().unwrap();
@@ -215,7 +207,6 @@ fn test_handle_text_message_returns_content() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     assert_eq!(result, Some("sync me".to_string()));
@@ -232,7 +223,6 @@ fn test_handle_text_message_ping_returns_none() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     assert_eq!(result, None);
@@ -243,14 +233,7 @@ fn test_handle_text_message_invalid_json() {
     let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
     let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    handle_text_message(
-        "not json",
-        "client_123",
-        &bus_tx,
-        &send_tx,
-        "websocket",
-        &empty_allow(),
-    );
+    handle_text_message("not json", "client_123", &bus_tx, &send_tx, "websocket");
 
     let response = send_rx.try_recv().unwrap();
     assert!(response.contains(r#""type":"error""#));
@@ -267,49 +250,11 @@ fn test_handle_text_message_unknown_type() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let response = send_rx.try_recv().unwrap();
     assert!(response.contains(r#""type":"error""#));
     assert!(response.contains("Unknown message type"));
-}
-
-#[test]
-fn test_handle_text_message_allow_list_pass() {
-    let (bus_tx, mut bus_rx) = tokio::sync::broadcast::channel::<InboundMessage>(64);
-    let (send_tx, _) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-    handle_text_message(
-        r#"{"type":"message","content":"hello"}"#,
-        "client_allowed",
-        &bus_tx,
-        &send_tx,
-        "websocket",
-        &specific_allow(),
-    );
-
-    let inbound = bus_rx.try_recv().unwrap();
-    assert_eq!(inbound.content, "hello");
-}
-
-#[test]
-fn test_handle_text_message_allow_list_block() {
-    let (bus_tx, mut bus_rx) = tokio::sync::broadcast::channel::<InboundMessage>(64);
-    let (send_tx, _) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-    // Client not in allow list — message should be silently dropped
-    handle_text_message(
-        r#"{"type":"message","content":"hello"}"#,
-        "client_blocked",
-        &bus_tx,
-        &send_tx,
-        "websocket",
-        &specific_allow(),
-    );
-
-    // No message published (silently dropped)
-    assert!(bus_rx.try_recv().is_err());
 }
 
 // ============================================================
@@ -446,7 +391,6 @@ fn test_handle_text_message_with_custom_base_name() {
         &bus_tx,
         &send_tx,
         "websocket_custom",
-        &empty_allow(),
     );
 
     let inbound = bus_rx.try_recv().unwrap();
@@ -464,7 +408,6 @@ fn test_handle_text_message_ping_sends_pong_no_inbound() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     assert!(result.is_none());
@@ -487,7 +430,6 @@ fn test_handle_text_message_ping_with_content_ignored() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     assert!(result.is_none());
@@ -507,7 +449,6 @@ fn test_handle_text_message_unknown_type_sends_error() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     assert!(result.is_none());
@@ -522,14 +463,7 @@ fn test_handle_text_message_invalid_json_sends_error() {
     let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
     let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    let result = handle_text_message(
-        "{invalid json",
-        "client_x",
-        &bus_tx,
-        &send_tx,
-        "websocket",
-        &empty_allow(),
-    );
+    let result = handle_text_message("{invalid json", "client_x", &bus_tx, &send_tx, "websocket");
 
     assert!(result.is_none());
     let response = send_rx.try_recv().unwrap();
@@ -548,31 +482,11 @@ fn test_handle_text_message_empty_content_sends_error() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     assert!(result.is_none());
     let response = send_rx.try_recv().unwrap();
     assert!(response.contains("cannot be empty"));
-}
-
-#[test]
-fn test_handle_text_message_allow_list_partial_match() {
-    let (bus_tx, mut bus_rx) = tokio::sync::broadcast::channel::<InboundMessage>(64);
-    let (send_tx, _) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-    // The allow list contains websocket:allowed_client, but client is something_else
-    handle_text_message(
-        r#"{"type":"message","content":"hello"}"#,
-        "something_else",
-        &bus_tx,
-        &send_tx,
-        "websocket",
-        &["websocket:allowed_client".to_string()],
-    );
-
-    // Should be blocked
-    assert!(bus_rx.try_recv().is_err());
 }
 
 #[test]
@@ -586,7 +500,6 @@ fn test_handle_text_message_unicode_client_id() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let inbound = bus_rx.try_recv().unwrap();
@@ -602,14 +515,7 @@ fn test_handle_text_message_large_content() {
     let large = "x".repeat(10_000);
     let json = format!(r#"{{"type":"message","content":"{}"}}"#, large);
 
-    handle_text_message(
-        &json,
-        "client_1",
-        &bus_tx,
-        &send_tx,
-        "websocket",
-        &empty_allow(),
-    );
+    handle_text_message(&json, "client_1", &bus_tx, &send_tx, "websocket");
 
     let inbound = bus_rx.try_recv().unwrap();
     assert_eq!(inbound.content.len(), 10_000);
@@ -626,7 +532,6 @@ fn test_handle_text_message_special_chars_in_content() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let inbound = bus_rx.try_recv().unwrap();
@@ -645,7 +550,6 @@ fn test_handle_text_message_json_in_content() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     let inbound = bus_rx.try_recv().unwrap();
@@ -682,7 +586,6 @@ fn test_handle_text_message_when_bus_closed() {
         &bus_tx,
         &send_tx,
         "websocket",
-        &empty_allow(),
     );
 
     // Should still return Some because send succeeded
@@ -838,6 +741,114 @@ async fn bug344_silent_tcp_connection_does_not_block_channel_accept_loop() {
         matches!(served, Ok(Some(_))),
         "silent TCP connection must not block the channel accept loop (BUG-20261103-344)"
     );
+    ch.stop().await.unwrap();
+}
+
+#[tokio::test]
+// BUG-20261118-155 回归锁（放行臂）：allow_from 非空改按对端 IP 准入后，
+// 命中白名单（回环通配 `127.0.0.*`）的客户端必须照常完成升级、收到欢迎
+// 帧、消息入 bus。效果面断言——旧实现按 `websocket:client_<纳秒>_<序号>`
+// 不可预知 chat_id 精确匹配，配置即全禁（单测用可控字面量全绿、生产
+// 永不命中）。突变验证：把 accept 层 IP 闸改回旧 chat_id 匹配，本测连接
+// 升级/欢迎帧照旧但消息被拦在消息层 → 入 bus 断言超时红。
+async fn bug155_allow_from_peer_ip_admission_allows_matching_peer() {
+    use futures::StreamExt;
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+    let port = find_free_port();
+    let (bus_tx, mut bus_rx) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        allow_from: vec!["127.0.0.*".to_string()],
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    // 随机端口绑定后等监听就绪（lifecycle 测试同款）。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let (ws, _resp) = connect_async(&url)
+        .await
+        .expect("回环客户端必须命中 127.0.0.* 白名单完成升级");
+    let (mut write, mut read) = ws.split();
+
+    // 欢迎帧 = accept 层放行的直接证据（连接存活且升级完成）。
+    let welcome = read.next().await.unwrap().unwrap();
+    match &welcome {
+        Message::Text(t) => {
+            assert!(
+                t.contains("Connected to NemesisBot"),
+                "unexpected welcome: {t}"
+            );
+        }
+        _ => panic!("expected text welcome message"),
+    }
+
+    // 消息入 bus：消息层不再有 allow-list 拦截（已退役），IP 闸放行的
+    // 连接消息必须到达 agent 入口。
+    write
+        .send(Message::Text(
+            r#"{"type":"message","content":"hello"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
+        .await
+        .expect("消息须在超时内入 bus（被拦/未投递=红）")
+        .expect("bus 未关闭");
+    assert_eq!(inbound.content, "hello");
+    assert_eq!(inbound.channel, "websocket");
+
+    ch.stop().await.unwrap();
+}
+
+#[tokio::test]
+// BUG-20261118-155 回归锁（拒绝臂）：allow_from 配置不含回环（`10.9.9.*`）
+// 时，回环客户端必须在 accept 层被拒——连接被服务端丢弃，升级完不成、
+// 收不到欢迎帧。旧实现此场景连接照常升级且消息入 bus（chat_id 匹配
+// 永不命中=全禁在消息层，与「IP 不在白名单」语义完全脱节）。
+async fn bug155_allow_from_peer_ip_admission_rejects_nonmatching_peer() {
+    use futures::StreamExt;
+    use tokio_tungstenite::connect_async;
+
+    let port = find_free_port();
+    let (bus_tx, mut bus_rx) = tokio::sync::broadcast::channel::<InboundMessage>(64);
+    let config = WebSocketChannelConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/ws".to_string(),
+        allow_from: vec!["10.9.9.*".to_string()],
+        ..Default::default()
+    };
+    let ch = WebSocketChannel::new(config, bus_tx);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    // 服务端 accept 后立即 drop stream：客户端要么 connect 直接失败
+    // （RST/EOF），要么升级完成后连接关闭读不到欢迎帧——两者都不是
+    // 「升级成功且存活」。外层 30s 只是防挂死兜底（drop 是即时的）。
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
+        match connect_async(&url).await {
+            Err(_) => true, // 连接被拒（服务端丢弃）
+            Ok((ws, _resp)) => {
+                let (_write, mut read) = ws.split();
+                read.next().await.is_none() // 连接关闭，收不到欢迎帧
+            }
+        }
+    })
+    .await
+    .expect("拒绝判定须在超时内完成（挂死=IP 闸未拒绝）");
+    assert!(
+        outcome,
+        "非白名单对端不得完成升级且存活（BUG-20261118-155）"
+    );
+    // 被拒连接的消息绝不能入 bus（服务端根本没读它的消息）。
+    assert!(bus_rx.try_recv().is_err(), "被拒对端不得有任何消息入 bus");
+
     ch.stop().await.unwrap();
 }
 
