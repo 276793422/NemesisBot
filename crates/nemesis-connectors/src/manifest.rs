@@ -575,6 +575,19 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
                     meta.id, op.id
                 )
             })?;
+            // 声明白名单（BUG-20261118-158）：与 script 绑定同闸——占位符
+            // 必须被 args_schema.properties 声明。此前只有 script 接了这道
+            // 闸（模块头自述「http path / script command 占位符语法 + 白名
+            // 单」只兑现了一半），未声明的 http 占位符装得进清单但每次调用
+            // 都在运行期缺参失败（报错离根因远），与本 crate「装得进去 ≠
+            // 校验得住」同族防线的既有口径不一致。
+            ensure_placeholders_declared(
+                &meta.id,
+                &op.id,
+                "http path",
+                &placeholders,
+                op.args_schema.as_ref(),
+            )?;
             OpBinding::Http {
                 method: h.method,
                 path: h.path,
@@ -938,17 +951,14 @@ fn validate_script_binding(
     // 透传给 shell（提示词约定形态下模型自由发挥面大的根因就是它）。
     let placeholders =
         parse_path_placeholders(&command).map_err(|e| err(format!("command 占位符非法: {e}")))?;
-    let properties = schema
-        .and_then(|v| v.get("properties"))
-        .and_then(|v| v.as_object());
-    for ph in &placeholders {
-        let declared = properties.is_some_and(|p| p.contains_key(ph.as_str()));
-        if !declared {
-            return Err(err(format!(
-                "command 占位符 `{{{ph}}}` 未在 args_schema.properties 声明（占位符必须白名单化，未声明的占位符不透传给 shell）"
-            )));
-        }
-    }
+    ensure_placeholders_declared(
+        connector_id,
+        op_id,
+        "[op.script] command",
+        &placeholders,
+        schema,
+    )
+    .map_err(&err)?;
     // 超时：0 无意义（立即超时）；>600 是假承诺（exec 工具闸 cap 600）。
     if s.timeout_secs == Some(0) {
         return Err(err("timeout_secs 不能为 0（要禁 script op 用 config connectors.script.default_timeout_secs = 0）".to_string()));
@@ -1007,6 +1017,32 @@ fn validate_script_binding(
         workdir: s.workdir,
         capture: s.capture,
     })
+}
+
+/// 占位符声明白名单（http path 与 script command 共用，BUG-20261118-158
+/// 收口为单一真相源）：每个占位符必须被 args_schema.properties 声明——
+/// 未声明的 `{xxx}` 解析期报错，不把「装得进清单但每次调用都在运行期缺参
+/// 失败」的坏清单放进注册表（装得进去 ≠ 校验得住，报错离根因远）。
+fn ensure_placeholders_declared(
+    connector_id: &str,
+    op_id: &str,
+    label: &str,
+    placeholders: &[String],
+    schema: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let properties = schema
+        .and_then(|v| v.get("properties"))
+        .and_then(|v| v.as_object());
+    for ph in placeholders {
+        if !properties.is_some_and(|p| p.contains_key(ph.as_str())) {
+            return Err(format!(
+                "connector `{connector_id}` op `{op_id}`: {label} 占位符 \
+                 `{{{ph}}}` 未在 args_schema.properties 声明（占位符必须白名单化\
+                 ——缺声明的占位符装得进清单但每次调用都在运行期缺参失败）"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_path_placeholders(path: &str) -> Result<Vec<String>, String> {
