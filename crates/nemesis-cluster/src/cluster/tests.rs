@@ -2303,7 +2303,7 @@ fn test_cleanup_empty_registry_returns_empty() {
 
     let removed = cluster.cleanup_offline_nodes();
     assert!(removed.is_empty());
-    assert!(dir.path().join("cluster").join("state.toml").exists() == false);
+    assert!(!dir.path().join("cluster").join("state.toml").exists());
     cluster.stop();
 }
 
