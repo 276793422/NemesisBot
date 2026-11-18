@@ -308,6 +308,17 @@ impl GoalsEngine {
         if self.estop.is_engaged() {
             return;
         }
+        // 本轮工具调用记录在评估周期入口消费（BUG-20261118-154）：登记面
+        // （record_tool_started/finished）对全部会话累积（事件不过滤），
+        // 消费点曾深在材料收集步（goal.md 读取之后）——无 goal 绑定会话
+        // （常态）/ 预算停车 / goal.md 缺失 / LLM 硬失败等早退路径全部不
+        // 消费，记录（每会话 ≤30 条 × KB 级预览）只进不出 = 长驻进程
+        // 无界增长家族（BUG-20261116-001 同族；本 crate 建成晚于该轮
+        // 横扫 = 漏网站点）。提前到入口：任何后续路径都不得让记录跨
+        // turn 滞留（顺带根除评估 skip 后陈旧材料混入下一轮评估的污染
+        // 面）。estop 冻结期不消费（与「goal 状态不动」对称；release 后
+        // 首次评估一并消费，cap 30 有界）。
+        let tool_calls = self.take_tool_calls(session_key).await;
         let entries = match nemesis_goals::load_registry(&self.workspace) {
             Ok(e) => e,
             Err(e) => {
@@ -356,7 +367,6 @@ impl GoalsEngine {
         let (user_msg, final_reply) = nemesis_goals::extract_turn_material(&rows);
         let user_msg = user_msg.unwrap_or_default();
         let final_reply = final_reply.unwrap_or_default();
-        let tool_calls = self.take_tool_calls(session_key).await;
         let prefer_small = entry.eval_model.as_deref() == Some("small");
         let round = entry.rounds_used;
         let max_rounds = entry.max_rounds;
@@ -428,35 +438,67 @@ impl GoalsEngine {
         match verdict {
             nemesis_goals::EvalVerdict::Done => {
                 self.record_eval(entry, "done", None, model_label, started, raw);
+                // 状态机闸（BUG-20261118-154）：评估 LLM 窗口（秒~分钟级，
+                // 含 3 次重试）内人可能已 disable——paused→done 是转移表
+                // 禁止的非法态。闭包在注册表锁内重读 fresh 态，仅 Active
+                // 才落 done；状态已变 = 引擎让位人操作（跳过 + warn）。
+                let mut wrote = false;
                 if let Err(e) = nemesis_goals::update_registry(&self.workspace, |entries| {
-                    if let Some(e) = entries.iter_mut().find(|e| e.id == entry.id) {
-                        e.status = nemesis_goals::GoalStatus::Done;
-                        e.blocked_code = None;
-                        e.blocked_message = None;
-                        e.updated_at_ms = now_ms();
+                    match entries.iter_mut().find(|e| e.id == entry.id) {
+                        Some(e) if e.status == nemesis_goals::GoalStatus::Active => {
+                            e.status = nemesis_goals::GoalStatus::Done;
+                            e.blocked_code = None;
+                            e.blocked_message = None;
+                            e.updated_at_ms = now_ms();
+                            wrote = true;
+                        }
+                        Some(e) => tracing::warn!(
+                            "[Goals] goal {} state moved to {} during eval window, done write skipped (transition table)",
+                            entry.id,
+                            e.status.as_str()
+                        ),
+                        None => {}
                     }
                     Ok(())
                 }) {
                     tracing::warn!("[Goals] goal {} done transition failed: {e}", entry.id);
                     return;
                 }
-                tracing::info!(
-                    "[Goals] goal {} DONE — evaluation gate closed the loop (rounds {})",
-                    entry.id,
-                    entry.rounds_used
-                );
+                if wrote {
+                    tracing::info!(
+                        "[Goals] goal {} DONE — evaluation gate closed the loop (rounds {})",
+                        entry.id,
+                        entry.rounds_used
+                    );
+                }
             }
             nemesis_goals::EvalVerdict::Continue => {
                 self.record_eval(entry, "continue", gap.as_deref(), model_label, started, raw);
                 let next_round = entry.rounds_used + 1;
+                // 状态机闸（同 Done 臂，BUG-20261118-154）：评估窗口内人
+                // pause 的 goal 不占轮数预算也不注入——paused goal 本不
+                // 该触发评估，无声 rounds+1 等于偷扣预算。
+                let mut bumped = false;
                 if let Err(e) = nemesis_goals::update_registry(&self.workspace, |entries| {
-                    if let Some(e) = entries.iter_mut().find(|e| e.id == entry.id) {
-                        e.rounds_used = next_round;
-                        e.updated_at_ms = now_ms();
+                    match entries.iter_mut().find(|e| e.id == entry.id) {
+                        Some(e) if e.status == nemesis_goals::GoalStatus::Active => {
+                            e.rounds_used = next_round;
+                            e.updated_at_ms = now_ms();
+                            bumped = true;
+                        }
+                        Some(e) => tracing::warn!(
+                            "[Goals] goal {} state moved to {} during eval window, round bump skipped (transition table)",
+                            entry.id,
+                            e.status.as_str()
+                        ),
+                        None => {}
                     }
                     Ok(())
                 }) {
                     tracing::warn!("[Goals] goal {} round bump failed: {e}", entry.id);
+                    return;
+                }
+                if !bumped {
                     return;
                 }
                 // estop 途中急停：丢弃本轮 CONTINUE（状态已 +1 无害——下一
@@ -508,19 +550,33 @@ impl GoalsEngine {
 
     /// blocked 停车（预算耗尽 / 评估失败合并失败面，D-Q11）。
     fn block_goal(&self, id: &str, code: &str, message: &str) {
+        // 状态机闸（BUG-20261118-154）：仅 Active 可入 blocked——budget
+        // 判定基于评估开始时的条目快照，eval-failure 路径距快照已隔多次
+        // LLM 重试，窗口内人 pause/done 的 goal 不被引擎覆盖成 blocked。
+        let mut blocked = false;
         if let Err(e) = nemesis_goals::update_registry(&self.workspace, |entries| {
-            if let Some(e) = entries.iter_mut().find(|e| e.id == id) {
-                e.status = nemesis_goals::GoalStatus::Blocked;
-                e.blocked_code = Some(code.to_string());
-                e.blocked_message = Some(message.to_string());
-                e.updated_at_ms = now_ms();
+            match entries.iter_mut().find(|e| e.id == id) {
+                Some(e) if e.status == nemesis_goals::GoalStatus::Active => {
+                    e.status = nemesis_goals::GoalStatus::Blocked;
+                    e.blocked_code = Some(code.to_string());
+                    e.blocked_message = Some(message.to_string());
+                    e.updated_at_ms = now_ms();
+                    blocked = true;
+                }
+                Some(e) => tracing::warn!(
+                    "[Goals] goal {id} state is {} during eval window, block write skipped (transition table)",
+                    e.status.as_str()
+                ),
+                None => {}
             }
             Ok(())
         }) {
             tracing::warn!("[Goals] goal {id} block transition failed: {e}");
             return;
         }
-        tracing::warn!("[Goals] goal {id} blocked ({code}): {message}");
+        if blocked {
+            tracing::warn!("[Goals] goal {id} blocked ({code}): {message}");
+        }
     }
 
     /// 评估台账留痕（逐轮判定 + 模型 + 缺口 + 原始输出摘录）。
