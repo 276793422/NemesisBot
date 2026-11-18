@@ -4992,3 +4992,136 @@ fn test_bug_20261114_048_on_job_handler_bodies_never_overlap() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
+
+/// BUG-20261118-151 红证：成功单发（delete_after_run）在 handler 执行期间
+/// 被并发 patch 成「停用 + 改期」——执行后 retain 不得按「成功单发即删」
+/// 移除。旧形态 retain 只豁免「patch 换入 enabled 调度」（next_run=Some），
+/// patch disabled 形态（disabled 不排程 → next_run=None）落进删除条件，
+/// 用户在分钟级 agent turn 内 patch 的任务被静默吞掉。
+#[test]
+fn test_bug_20261118_151_patch_during_exec_survives_single_shot_retain() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    let job = svc
+        .add_job(
+            "one-shot-patched",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(Local::now().timestamp_millis() + 1500),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "fire me",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    let job_id = job.id.clone();
+
+    // handler：执行期间把任务 patch 成「停用 + 改期到远未来」，再返回成功。
+    // disabled 形态下 patch_job 不建立 next_run（不变量：disabled 不排程），
+    // 因此 retain 的既有 next_run=Some 豁免不命中——旧形态在此删除。
+    {
+        let svc_for_handler = std::sync::Arc::clone(&svc);
+        let job_id_for_handler = job_id.clone();
+        svc.set_on_job(move |_cb| {
+            let patch = CronJobPatch {
+                enabled: Some(false),
+                schedule: Some(CronSchedule {
+                    kind: "at".to_string(),
+                    at_ms: Some(Local::now().timestamp_millis() + 3_600_000),
+                    every_ms: None,
+                    expr: None,
+                    tz: None,
+                }),
+                ..Default::default()
+            };
+            svc_for_handler
+                .patch_job(&job_id_for_handler, &patch)
+                .unwrap();
+            Ok("done".to_string())
+        });
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc.arm();
+        svc.start().await.unwrap();
+    });
+    // 轮询等待触发完成（collect → handler（含 patch）→ 执行后写回）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match svc.get_job(&job_id) {
+            // 修复断言：patch 过的任务必须存活（旧形态在此 panic）。
+            None => panic!("BUG-20261118-151: 执行期被 patch 的成功单发被 retain 删除"),
+            Some(j) if j.state.last_run_at_ms.is_some() => {
+                assert!(!j.enabled, "patch 应已停用任务");
+                assert_eq!(j.state.next_run_at_ms, None, "disabled 任务不得排程");
+                assert_eq!(j.state.last_status.as_deref(), Some("ok"));
+                break;
+            }
+            Some(_) => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for one-shot to fire; job={job_id:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    svc.stop();
+}
+
+/// BUG-20261118-151 对照组：未 patch 的成功单发执行后仍被 retain 删除
+/// （「成功单发即删」既有语义不回归；豁免只对执行期并发 patch 生效）。
+#[test]
+fn test_bug_20261118_151_baseline_unpatched_one_shot_still_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    let job = svc
+        .add_job(
+            "one-shot-plain",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(Local::now().timestamp_millis() + 1500),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "fire me",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    let job_id = job.id.clone();
+    svc.set_on_job(move |_cb| Ok("done".to_string()));
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc.arm();
+        svc.start().await.unwrap();
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match svc.get_job(&job_id) {
+            None => break, // 成功单发被删 = 既有语义成立
+            Some(j) if j.state.last_status.is_some() => {
+                panic!(
+                    "未 patch 的成功单发执行后应被删除，实际留存: enabled={} next_run={:?}",
+                    j.enabled, j.state.next_run_at_ms
+                );
+            }
+            Some(_) => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for one-shot to fire and be deleted"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    svc.stop();
+}
