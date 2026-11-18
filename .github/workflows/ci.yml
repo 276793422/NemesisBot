@@ -43,7 +43,7 @@ permissions:
 jobs:
   rust-check:
     name: Rust check + inline-tests + clippy (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout code
@@ -160,7 +160,7 @@ jobs:
 
   coverage:
     name: Line coverage floor (cargo-llvm-cov)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
       # 扩展计划 T7a/D6（docs/INFO/2026-11-16_公开基准.md §5）：行覆盖硬地板，
