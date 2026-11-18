@@ -217,13 +217,25 @@ extern "C" fn host_file_size(path: *const c_char) -> i64 {
     }
 }
 
+/// 插件 host 下载硬上限（BUG-20261119-183）：此前走无帽 `download_file`
+/// （u64::MAX = 全量缓冲进内存再落盘），恶意/失控 URL 可把任意大响应灌进
+/// gateway 内存。2GiB 对齐 embedding 模型下载帽（nemesis-memory
+/// `MAX_MODEL_DOWNLOAD_BYTES`——同 workload 同类路径，家族口径一致）。
+const PLUGIN_DOWNLOAD_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 extern "C" fn host_download_file(url: *const c_char, dest_path: *const c_char) -> i32 {
     if url.is_null() || dest_path.is_null() {
         return -1;
     }
     let url_str = unsafe { CStr::from_ptr(url) }.to_string_lossy();
     let dest_str = unsafe { CStr::from_ptr(dest_path) }.to_string_lossy();
+    host_download_file_impl(&url_str, &dest_str, PLUGIN_DOWNLOAD_MAX_BYTES)
+}
 
+/// 实现体（测试缝：max_bytes 显式传入，测试用小帽实跑帽闸）。
+/// 走 [`nemesis_http_pool::pool::ConnectionPool::download_file_capped`]：
+/// Content-Length 预检 + 分块累积硬上限双闸。
+fn host_download_file_impl(url: &str, dest_path: &str, max_bytes: u64) -> i32 {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -233,7 +245,7 @@ extern "C" fn host_download_file(url: *const c_char, dest_path: *const c_char) -
     };
 
     let pool = nemesis_http_pool::pool::shared_pool();
-    match rt.block_on(pool.download_file(&url_str, &dest_str)) {
+    match rt.block_on(pool.download_file_capped(url, dest_path, max_bytes)) {
         Ok(()) => 0,
         Err(_) => -3,
     }

@@ -313,3 +313,30 @@ fn s12b_libc_strlen_null_pointer_returns_zero() {
         assert_eq!(libc_strlen(s.as_ptr() as *const c_char), 3usize);
     }
 }
+
+// BUG-20261119-183：host 下载此前走无帽 download_file（u64::MAX = 全量
+// 缓冲进内存再落盘），恶意/失控 URL 可把任意大响应灌进 gateway 内存。
+// 修复 = 走 download_file_capped（帽 2GiB 对齐 embedding 模型下载帽）。
+// 本锁用小帽实跑帽闸：超帽 -3 且不落盘，合帽成功且内容一致。
+#[test]
+fn download_file_impl_cap_exceeded_is_loud_error() {
+    let port = spawn_one_shot_http_server("MODEL_BYTES_12345"); // 17 字节
+    let url = format!("http://127.0.0.1:{port}/model.bin");
+    let dest_path = std::env::temp_dir().join(format!("hs_dl_cap_{}.bin", std::process::id()));
+    let _ = std::fs::remove_file(&dest_path);
+    let dest = dest_path.to_str().unwrap().to_string();
+
+    // 帽 10 < 17：Content-Length 预检即拒，返回 -3 且不落盘
+    assert_eq!(host_download_file_impl(&url, &dest, 10), -3);
+    assert!(!dest_path.exists(), "超帽下载不得在盘上留下产物");
+
+    // 帽 1000 ≥ 17：同 helper 服务器是一次性的，重开一个跑合帽臂
+    let port2 = spawn_one_shot_http_server("MODEL_BYTES_12345");
+    let url2 = format!("http://127.0.0.1:{port2}/model.bin");
+    assert_eq!(host_download_file_impl(&url2, &dest, 1000), 0);
+    assert_eq!(
+        std::fs::read(&dest_path).expect("dest file should be written"),
+        b"MODEL_BYTES_12345".to_vec()
+    );
+    let _ = std::fs::remove_file(&dest_path);
+}
