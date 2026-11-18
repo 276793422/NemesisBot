@@ -272,6 +272,11 @@ mod models_health_tests;
 #[cfg(test)]
 mod models_add_validation_tests;
 
+// BUG-20261118-169 回归: effort_probe 非 object 时
+// apply_effort_autofix 注记臂跳过（嵌套可变索引对非容器 panic）。
+#[cfg(test)]
+mod models_effort_autofix_tests;
+
 // (, devtool-upgrade): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + wsapi-commands 文档生成 +
 // 安全子集 dispatch 冒烟。

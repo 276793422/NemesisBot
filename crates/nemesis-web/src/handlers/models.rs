@@ -2076,8 +2076,14 @@ fn effort_auto_fix_target(
 /// 用户刚改的新档抹掉（自动修正代劳 ≠ 越权覆盖用户意志）。因此闭包内
 /// 校验磁盘**现值**（trim 后）仍等于 `from` 才动笔；不等 = 让位（返回
 /// `Ok(false)`），条目零改动、注记不写。返回值 = 是否真正落盘修正
-/// （调用方据此决定 receipt 是否带 auto_fix）。
-fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<bool, String> {
+/// （调用方据此决定 receipt 是否带 auto_fix）。pub(crate)：回归测试在
+/// handlers 兄弟子模块（内联测试被 check-inline-tests.sh 禁）。
+pub(crate) fn apply_effort_autofix(
+    home: &str,
+    name: &str,
+    from: &str,
+    to: &str,
+) -> Result<bool, String> {
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     super::config::update_raw_config(home, |cfg| {
         let list = cfg
@@ -2104,7 +2110,13 @@ fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<
         entry["reasoning_effort"] = serde_json::json!(to);
         // 注记挂 effort_probe 内（重探整体覆盖 record 时自然随旧记录消失
         // ——新探测后要么再修（新注记）要么当前档合法（注记不再需要））。
-        if entry.get("effort_probe").is_some() {
+        // BUG-20261118-169：守卫必须验「是 object」——is_some() 对
+        // false/字符串/数字恒真（Dashboard attr 编辑器与手改 config.json
+        // 可把 effort_probe 写成任意 JSON），嵌套可变索引
+        // entry["effort_probe"]["auto_fix"] 对非容器 panic
+        // （serde_json index_or_insert），探测自动修正链整段炸栈。
+        // 非 object = 跳过注记（附注语义，不挡修正本体）。
+        if entry.get("effort_probe").is_some_and(|v| v.is_object()) {
             entry["effort_probe"]["auto_fix"] = serde_json::json!({
                 "from": from, "to": to, "at": at,
             });
