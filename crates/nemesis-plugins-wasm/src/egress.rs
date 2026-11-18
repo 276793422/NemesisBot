@@ -147,7 +147,15 @@ pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
                 return is_private_v4(v4);
             }
             let seg = v6.segments();
-            if seg[0] == 0x0064 && seg[1] == 0xff9b && seg[2..6].iter().all(|s| *s == 0) {
+            // NAT64 两种保留前缀（RFC 6052）：well-known 64:ff9b::/96 与
+            // local-use 64:ff9b:1::/96（本地 NAT64 部署实际使用）——内嵌
+            // IPv4 都归一回 v4 判定（后者是私网闸同类绕过面：裸 v6 五项
+            // 全不命中）。
+            let nat64_embedded = seg[0] == 0x0064
+                && seg[1] == 0xff9b
+                && (seg[2..6].iter().all(|s| *s == 0)
+                    || seg[2] == 0x0001 && seg[3..6].iter().all(|s| *s == 0));
+            if nat64_embedded {
                 return is_private_v4(std::net::Ipv4Addr::new(
                     (seg[6] >> 8) as u8,
                     seg[6] as u8,
@@ -165,16 +173,27 @@ pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
 }
 
 /// IPv4 私网段（含 0.0.0.0/8「本网络」保留段——不只是单址 0.0.0.0）。
+///
+/// 封锁面按 IANA special-purpose registry 收口：benchmark 198.18/15
+/// （RFC 2544——VPN/网络测试环境**实际可路由**，私网闸真实绕过段）、
+/// reserved 240.0.0.0/4（Class E，`is_broadcast` 只盖单址
+/// 255.255.255.255，段内其余地址漏拦；部分运营商/设备内部偷用）、
+/// 6to4 relay anycast 192.88.99/24（RFC 7526 废弃保留）。组播 224/4
+/// 不在此表——TCP 无组播路径，请求目标无攻击面。
 fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
+    let o = v4.octets();
     v4.is_loopback()
         || v4.is_private()
         || v4.is_link_local()
         || v4.is_broadcast()
         || v4.is_unspecified()
         || v4.is_documentation()
-        || v4.octets()[0] == 0 // 0.0.0.0/8
-        || v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64 // CGNAT 100.64/10
-        || v4.octets()[0] == 169 && v4.octets()[1] == 254
+        || o[0] == 0 // 0.0.0.0/8
+        || o[0] == 100 && (o[1] & 0xC0) == 64 // CGNAT 100.64/10
+        || o[0] == 169 && o[1] == 254
+        || o[0] == 198 && (o[1] == 18 || o[1] == 19) // benchmark 198.18.0.0/15
+        || o[0] >= 240 // reserved 240.0.0.0/4（Class E）
+        || o[0] == 192 && o[1] == 88 && o[2] == 99 // 6to4 relay 192.88.99/24
 }
 
 /// allowlist 精确匹配（host 大小写不敏感；条目可带:port 钉端口）。

@@ -120,6 +120,11 @@ fn is_private_ip_v4_segments() {
         Ipv4Addr::new(203, 0, 113, 5),     // documentation
         Ipv4Addr::new(100, 64, 1, 1),      // CGNAT 100.64/10
         Ipv4Addr::new(100, 127, 255, 255), // CGNAT 上界
+        Ipv4Addr::new(198, 18, 0, 1),      // benchmark 198.18.0.0/15 下端
+        Ipv4Addr::new(198, 19, 255, 255),  // benchmark 198.18.0.0/15 上端
+        Ipv4Addr::new(240, 0, 0, 1),       // reserved 240.0.0.0/4 下端
+        Ipv4Addr::new(255, 255, 255, 254), // reserved 240/4 上端（broadcast 单址外）
+        Ipv4Addr::new(192, 88, 99, 1),     // 6to4 relay anycast 192.88.99/24
     ] {
         assert!(is_private_ip(std::net::IpAddr::V4(ip)), "{ip}");
     }
@@ -129,6 +134,9 @@ fn is_private_ip_v4_segments() {
         Ipv4Addr::new(1, 1, 1, 1),
         Ipv4Addr::new(100, 128, 0, 1),
         Ipv4Addr::new(100, 63, 255, 255),
+        Ipv4Addr::new(198, 20, 0, 1),      // benchmark /15 外邻接
+        Ipv4Addr::new(192, 88, 98, 1),     // 6to4 relay /24 外邻接
+        Ipv4Addr::new(239, 255, 255, 255), // 组播上界——224/4 有意不在私网表
     ] {
         assert!(!is_private_ip(std::net::IpAddr::V4(ip)), "{ip}");
     }
@@ -162,6 +170,19 @@ fn is_private_ip_v6_segments_and_nested_v4() {
     )));
     assert!(!is_private_ip(std::net::IpAddr::V6(
         "64:ff9b::808:808".parse().expect("nat64 8.8.8.8")
+    )));
+    // NAT64 local-use 64:ff9b:1::/96（RFC 6052）：内嵌私网同判私。
+    assert!(is_private_ip(std::net::IpAddr::V6(
+        "64:ff9b:1::192.168.0.1".parse().expect("nat64 local-use")
+    )));
+    assert!(!is_private_ip(std::net::IpAddr::V6(
+        "64:ff9b:1::808:808"
+            .parse()
+            .expect("nat64 local-use 8.8.8.8")
+    )));
+    // 非 /96 前缀形态（u 段后非零）不归一——64:ff9b:1:1:: 不属 NAT64 段。
+    assert!(!is_private_ip(std::net::IpAddr::V6(
+        "64:ff9b:1:1::c0a8:1".parse().expect("not a /96 prefix")
     )));
     // 公网 v6。
     assert!(!is_private_ip(std::net::IpAddr::V6(Ipv6Addr::new(
