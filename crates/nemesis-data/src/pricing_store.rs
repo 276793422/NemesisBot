@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::ModelPricing;
 use crate::pricing::PricingTable;
+use crate::pricing_filter::MIN_FILTERED_ENTRIES;
 
 const CUSTOM_FILE: &str = "pricing_custom.json";
 const DOWNLOADED_FILE: &str = "model_prices_downloaded.json";
@@ -340,6 +341,26 @@ fn validate_custom_entry(entry: &ModelPricing) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 下载层整体替换的条目数闸（BUG-20261118-157）：[`MIN_FILTERED_ENTRIES`]
+/// 防劫持阈值此前只在编译期内嵌路径（build.rs）接线——运行时三个替换入口
+/// （网络拉取 `pricing_sync` / CLI `model prices import` / Dashboard 离线
+/// 导入端点）都只过 `parse_litellm_json` 的 0 条检查，1~99 条的代理劫持
+/// 页 / 截断 payload / 传错文件会**静默替换下载层 + 刷写 meta**（etag/
+/// entry_count 同盘），违反 MIN_FILTERED_ENTRIES 文档声明的「宁可降级保
+/// 旧表」契约。单一真相源——三个入口共用本函数；[`PricingStore::replace_downloaded`]
+/// 本体不加闸（数据层原语：分层/合并语义测试用 1-2 条合成表是合法用法，
+/// 来源校验是入口职责不是存储职责）。返回收录条目数。
+pub fn validate_downloaded_entries(entries: &[ModelPricing]) -> Result<usize, String> {
+    let n = entries.len();
+    if n < MIN_FILTERED_ENTRIES {
+        return Err(format!(
+            "价目表条目数过少（{n} < {MIN_FILTERED_ENTRIES}）——疑似代理劫持页/截断 \
+             payload/传错文件，保留旧表；少量自定义价请用自定义层（model prices add）"
+        ));
+    }
+    Ok(n)
 }
 
 /// 原子写（起委托唯一临时名权威 helper——旧固定 `.json.tmp`

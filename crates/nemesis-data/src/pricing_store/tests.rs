@@ -276,3 +276,31 @@ fn upsert_custom_rejects_bad_tiers() {
     store.upsert_custom(ok).unwrap();
     assert_eq!(store.list_custom().len(), 1, "合法条目必须入库");
 }
+
+// BUG-20261118-157：下载层条目数闸（MIN_FILTERED_ENTRIES 单一真相源）。
+// 阈值以下诚实报错（不落下载层），阈值上照常放行——网络拉取 / CLI import
+// / Dashboard import 三个入口共用本函数（e2e 行为由 nemesis-web
+// pricing_sync 测试覆盖）。
+#[test]
+fn downloaded_entry_count_gate_rejects_small_tables() {
+    let small: Vec<ModelPricing> = (0..2).map(|i| entry(&format!("s{i}"), 1.0, 2.0)).collect();
+    let err = validate_downloaded_entries(&small).unwrap_err();
+    assert!(err.contains("条目数过少"), "{err}");
+    assert!(err.contains(&format!("< {MIN_FILTERED_ENTRIES}")), "{err}");
+
+    // 门槛值（== MIN_FILTERED_ENTRIES）放行；超阈值同样放行。
+    let at_threshold: Vec<ModelPricing> = (0..MIN_FILTERED_ENTRIES)
+        .map(|i| entry(&format!("t{i}"), 1.0, 2.0))
+        .collect();
+    assert_eq!(
+        validate_downloaded_entries(&at_threshold).unwrap(),
+        MIN_FILTERED_ENTRIES
+    );
+    let above: Vec<ModelPricing> = (0..MIN_FILTERED_ENTRIES + 5)
+        .map(|i| entry(&format!("a{i}"), 1.0, 2.0))
+        .collect();
+    assert_eq!(
+        validate_downloaded_entries(&above).unwrap(),
+        MIN_FILTERED_ENTRIES + 5
+    );
+}

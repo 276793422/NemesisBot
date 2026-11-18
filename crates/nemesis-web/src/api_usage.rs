@@ -375,7 +375,12 @@ pub async fn handle_api_usage_pricing_import(
     };
     match nemesis_data::parse_litellm_json(&raw) {
         Ok(entries) => {
-            let entry_count = entries.len();
+            // 条目数闸（BUG-20261118-157）：与网络下载路径同源——1~99 条
+            // 的劫持页/截断 payload/传错文件不落下载层。
+            let entry_count = match nemesis_data::validate_downloaded_entries(&entries) {
+                Ok(n) => n,
+                Err(e) => return Json(serde_json::json!({"error": e})),
+            };
             let r = ds.pricing().replace_downloaded(
                 entries,
                 nemesis_data::PricingMeta {
