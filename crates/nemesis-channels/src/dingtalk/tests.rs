@@ -310,3 +310,84 @@ async fn test_direct_reply_transport_error_redacts_access_token() {
         "脱敏占位缺失: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261119-181：webhook 200+errcode!=0 业务错误信封必须 loud（镜像
+// wecom 同族协议检查——钉钉关键词过滤/过期 sessionWebhook 均回 HTTP 200）
+// ---------------------------------------------------------------------------
+
+/// 拉起恒回指定 errcode 信封的 webhook 替身（HTTP 恒 200）。
+async fn spawn_dingtalk_errcode_server(errcode: i64) -> std::net::SocketAddr {
+    let app = axum::Router::new().route(
+        "/robot/send",
+        axum::routing::post(move || async move {
+            axum::Json(serde_json::json!({"errcode": errcode, "errmsg": "invalid webhook url"}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    addr
+}
+
+#[tokio::test]
+async fn test_direct_reply_errcode_nonzero_is_loud_error() {
+    let addr = spawn_dingtalk_errcode_server(310_000).await;
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    let url = format!("http://{addr}/robot/send?access_token=x");
+    let err = ch
+        .send_direct_reply(&url, "hello")
+        .await
+        .expect_err("200+errcode!=0 必须报错而非静默成功");
+    let msg = err.to_string();
+    assert!(msg.contains("errcode=310000"), "错误串应带业务码: {msg}");
+    assert!(
+        msg.contains("invalid webhook url"),
+        "错误串应带 errmsg: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_text_reply_errcode_nonzero_is_loud_error() {
+    let addr = spawn_dingtalk_errcode_server(310_000).await;
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    let url = format!("http://{addr}/robot/send?access_token=x");
+    let err = ch
+        .send_text_reply(&url, "hello")
+        .await
+        .expect_err("text reply 200+errcode!=0 必须报错");
+    assert!(err.to_string().contains("errcode=310000"));
+}
+
+#[tokio::test]
+async fn test_direct_reply_errcode_zero_ok() {
+    let addr = spawn_dingtalk_errcode_server(0).await;
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    let url = format!("http://{addr}/robot/send?access_token=x");
+    ch.send_direct_reply(&url, "hello")
+        .await
+        .expect("errcode=0 应成功");
+}

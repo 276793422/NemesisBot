@@ -265,6 +265,23 @@ impl DingTalkChannel {
             )));
         }
 
+        // errcode 闸（BUG-20261119-181）：钉钉 webhook 协议业务错误走
+        // 200+errcode!=0 信封（关键词过滤/过期 sessionWebhook 均回 HTTP 200）
+        // ——wecom 同族协议（其头注释钦定同族并实现同款检查）。仅查 HTTP
+        // status 会把业务失败静默吞成成功：消息丢失而 bot 自认已送达。
+        let payload: serde_json::Value = resp.json().await.map_err(|e| {
+            NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                "dingtalk reply 响应解析失败: {e}"
+            )))
+        })?;
+        let errcode = payload.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
+        if errcode != 0 {
+            let errmsg = payload.get("errmsg").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(NemesisError::Channel(format!(
+                "dingtalk reply errcode={errcode}: {errmsg}"
+            )));
+        }
+
         Ok(())
     }
 
@@ -294,6 +311,20 @@ impl DingTalkChannel {
             let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "dingtalk text reply error: {body}"
+            )));
+        }
+
+        // errcode 闸（BUG-20261119-181）：与 send_direct_reply 同面同口径。
+        let payload: serde_json::Value = resp.json().await.map_err(|e| {
+            NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                "dingtalk text reply 响应解析失败: {e}"
+            )))
+        })?;
+        let errcode = payload.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
+        if errcode != 0 {
+            let errmsg = payload.get("errmsg").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(NemesisError::Channel(format!(
+                "dingtalk text reply errcode={errcode}: {errmsg}"
             )));
         }
 
