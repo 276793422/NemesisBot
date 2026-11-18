@@ -557,7 +557,9 @@ impl DingTalkChannel {
                                     .and_then(|d| d.get("endpoint"))
                                     .and_then(|e| e.as_str())
                                 {
-                                    info!(endpoint = %endpoint, "[DingTalkChannel] stream connection opened");
+                                    // endpoint 带 ?ticket=<连接凭据>——裸打即凭据
+                                    // 进日志（BUG-20261119-182）。
+                                    info!(endpoint = %crate::base::redact_url_secrets(endpoint), "[DingTalkChannel] stream connection opened");
                                     backoff = INITIAL_BACKOFF;
 
                                     // Poll the stream endpoint for events
@@ -660,9 +662,11 @@ impl DingTalkChannel {
                                         }
                                     }
                                 } else {
+                                    // 整个响应体含 data.endpoint（ticket 凭据）——
+                                    // Debug 原样打日志同样泄露（BUG-20261119-182）。
                                     debug!(
-                                        "[DingTalkChannel] stream connection response: {:?}",
-                                        body
+                                        "[DingTalkChannel] stream connection response: {}",
+                                        crate::base::redact_url_secrets(body.to_string())
                                     );
                                     backoff = INITIAL_BACKOFF;
                                 }
