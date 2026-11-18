@@ -341,3 +341,35 @@ fn test_compute_dir_hashes_skips_outbound_link_file() {
         }
     }
 }
+
+/// BUG-20261119-180：save 走 write_file_atomic——落盘产物无 `.tmp-*` 残留
+/// （失败自清理形态），load 完整读回。原子性本体由 nemesis-utils file/tests
+/// 设施级覆盖，此锁钉调用形态（对齐 BUG-20261118-152 诚实边界）。
+#[test]
+fn test_save_atomic_no_tmp_residue_and_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lock = SkillsLockfile::new();
+    lock.record(LockedSkill {
+        slug: "demo".to_string(),
+        source: "github:acme/demo".to_string(),
+        commit: "c0ffee".to_string(),
+        files: BTreeMap::new(),
+        installed_at: 1_700_000_000,
+        verified_state: "review-required".to_string(),
+    });
+    lock.save(tmp.path()).unwrap();
+
+    let residue: Vec<String> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".tmp-"))
+        .collect();
+    assert!(
+        residue.is_empty(),
+        "save 后残留临时文件（原子写失败清理失守）: {residue:?}"
+    );
+
+    let reloaded = SkillsLockfile::load(tmp.path());
+    assert_eq!(reloaded.get("demo").unwrap().source, "github:acme/demo");
+}

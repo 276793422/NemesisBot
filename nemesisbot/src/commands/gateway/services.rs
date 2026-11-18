@@ -688,7 +688,14 @@ pub(crate) async fn init_services(
                 if let Some(parent) = url_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Err(e) = std::fs::write(&url_path, &base_url) {
+                // BUG-20261119-180：URL/node id 是 board_asset publish /
+                // delivery 签发 bundle 的落盘缓存，裸写撕裂 = 拿错地址直到
+                // heal/重启。改走原子写（与 gateway.json 同面同口径）。
+                if let Err(e) = nemesis_utils::write_file_atomic(
+                    &url_path.to_string_lossy(),
+                    base_url.as_bytes(),
+                    0o644,
+                ) {
                     warn!("[Gateway] asset node url persist failed: {}", e);
                 }
                 // 本节点集群 node_id 同拍落盘：publish / delivery 内联存档
@@ -700,7 +707,11 @@ pub(crate) async fn init_services(
                     .as_ref()
                     .map(|c| c.node_id().to_string())
                     .unwrap_or_default();
-                if let Err(e) = std::fs::write(&id_path, &self_node_id) {
+                if let Err(e) = nemesis_utils::write_file_atomic(
+                    &id_path.to_string_lossy(),
+                    self_node_id.as_bytes(),
+                    0o644,
+                ) {
                     warn!("[Gateway] asset node id persist failed: {}", e);
                 }
 
@@ -782,7 +793,12 @@ pub(crate) async fn init_services(
                         }
                         // heal_slot 内存态已生效，盘上缓存写失败 WARN 留痕（横扫
                         // 族 C 四轮，2026-11-06）——重启后回读旧值重 heal。
-                        if let Err(e) = std::fs::write(&url_path, &base_url) {
+                        // BUG-20261119-180：与 bind 拍同面，原子写防撕裂。
+                        if let Err(e) = nemesis_utils::write_file_atomic(
+                            &url_path.to_string_lossy(),
+                            base_url.as_bytes(),
+                            0o644,
+                        ) {
                             tracing::warn!(
                                 "[Gateway] Asset base url cache write failed ({}): {e}",
                                 url_path.display()
@@ -818,7 +834,12 @@ pub(crate) async fn init_services(
             "web_host": web_display_host,
             "web_port": real_port,
         });
-        if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
+        // BUG-20261119-180：与启动拍同面——跨进程发现链真相源走原子写。
+        if let Err(e) = nemesis_utils::write_file_atomic(
+            &state_path.to_string_lossy(),
+            state_json.to_string().as_bytes(),
+            0o644,
+        ) {
             warn!("[Gateway] Failed to update gateway state: {}", e);
         } else {
             info!("[Gateway] Gateway state updated: port={}", real_port);

@@ -249,3 +249,30 @@ fn test_resolve_model_files_rejects_bad_dimension_and_empty_name() {
     let err2 = resolve_model_files(&empty_name, temp_dir.path()).unwrap_err();
     assert!(err2.contains("model name is empty"), "{err2}");
 }
+
+/// BUG-20261119-180：默认创建臂走 write_file_atomic（339 修 save 臂漏接本
+/// 臂）——默认文件落盘无 `.tmp-*` 残留、盘上产物可被 parse 读回（撕裂形态
+/// 被 load 存在性守卫合法化的旧病理在此锁死）。
+#[test]
+fn test_default_create_atomic_no_tmp_residue() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = load_embedding_config(temp_dir.path());
+    assert!(!config.enabled);
+
+    let path = temp_dir.path().join("config.enhanced_memory.json");
+    let residue: Vec<String> = std::fs::read_dir(temp_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".tmp-"))
+        .collect();
+    assert!(
+        residue.is_empty(),
+        "默认创建后残留临时文件（原子写失败清理失守）: {residue:?}"
+    );
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).expect("默认创建臂落盘产物应可解析（裸写撕裂会留下半截 JSON）");
+    assert_eq!(parsed["enabled"], false);
+}

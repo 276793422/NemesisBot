@@ -374,7 +374,14 @@ impl GatewayCtx {
                 "web_host": "",
                 "web_port": 0,
             });
-            if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
+            // BUG-20261119-180：gateway.json 是 estop/estop_follower/dashboard/
+            // selfupdate/cron/run 六消费方的跨进程发现链真相源，裸写撕裂 =
+            // gateway 在跑被当不在（急停投递持久失效到下次重启）。改走原子写。
+            if let Err(e) = nemesis_utils::write_file_atomic(
+                &state_path.to_string_lossy(),
+                state_json.to_string().as_bytes(),
+                0o644,
+            ) {
                 warn!("[Gateway] Failed to write gateway state: {}", e);
             } else {
                 info!(
