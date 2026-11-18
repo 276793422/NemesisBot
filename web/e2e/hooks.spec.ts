@@ -121,7 +121,21 @@ test('HookView 编辑面：添加圈定钩子 → 落盘 → 总览徽标 → �
   await expect(preCard.locator('.hooks-scope-btn')).toHaveText(/已圈 1 个会话/)
 
   // T8: 保存全部钩子 → WSAPI hooks.get 硬核对落盘（嵌套方言 + scope）。
+  // 保存走 app WS、断言读走 e2e WS 单例——跨连接无读写序，组合跑高负载下
+  // 稳定竞速假红（2026-11-18 三连挂三不同断言点；旧 UI 对照复现=既有抖动
+  // 非本批引入）。「已保存」toast 信号也不可靠（上一保存的 toast 存活数秒
+  // 会被下次保存的等待复用），改 expect.poll 轮询读盘到目标形态——保存真坏
+  // = 超时诚实红，不掩盖。
   await page.locator('.page-hooks button', { hasText: '保存全部钩子' }).click()
+  await expect
+    .poll(
+      async () => {
+        const g = await wsapi(page, 'hooks', 'get')
+        return g.ok ? (g.data as { content: string }).content : ''
+      },
+      { timeout: 15_000 },
+    )
+    .toContain(TAG)
   const got = await wsapi(page, 'hooks', 'get')
   expect(got.ok, `hooks.get 失败: ${got.error}`).toBe(true)
   const saved = JSON.parse((got.data as { content: string }).content)
@@ -148,6 +162,16 @@ test('HookView 编辑面：添加圈定钩子 → 落盘 → 总览徽标 → �
   const raw = makeRaw([])
   await page.locator('.page-hooks textarea').fill(raw)
   await page.locator('.page-hooks button', { hasText: '保存原文' }).click()
+  // 同 T8 跨连接竞速：轮询到原文落盘（T8 落的 sidA 不在原文里，出现 = 新写完成）。
+  await expect
+    .poll(
+      async () => {
+        const g = await wsapi(page, 'hooks', 'get')
+        return g.ok ? (g.data as { content: string }).content : ''
+      },
+      { timeout: 15_000 },
+    )
+    .toContain('"sessions": []')
   const got2 = await wsapi(page, 'hooks', 'get')
   const saved2 = JSON.parse((got2.data as { content: string }).content)
   expect(saved2.hooks?.UserPromptSubmit?.[0]?.scope?.sessions).toEqual([])
@@ -178,6 +202,16 @@ test('HookView 冷启动语义 + 重启建桥 + 圈定钩子运行时实弹', as
   await expect(page.locator('.page-hooks')).toBeVisible({ timeout: 20_000 })
   await page.locator('.page-hooks textarea').fill(makeRaw([sidC]))
   await page.locator('.page-hooks button', { hasText: '保存原文' }).click()
+  // 同 T8 跨连接竞速：轮询到 sidC 落盘（编辑面留下的原文无 sidC）。
+  await expect
+    .poll(
+      async () => {
+        const g = await wsapi(page, 'hooks', 'get')
+        return g.ok ? (g.data as { content: string }).content : ''
+      },
+      { timeout: 15_000 },
+    )
+    .toContain(sidC)
   const got = await wsapi(page, 'hooks', 'get')
   const saved = JSON.parse((got.data as { content: string }).content)
   expect(saved.hooks?.UserPromptSubmit?.[0]?.scope?.sessions).toEqual([sidC])

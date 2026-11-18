@@ -136,8 +136,13 @@ function setRules(rules: any[]) {
 }
 
 async function mountView() {
-  const w = mount(EventsView, { global: { plugins: [createPinia()] } })
+  // 双 TAB（2026-11-18）默认落总览；编辑类用例需要规则设置 TAB，这里统一切过去。
+  // teleport stub：会话 picker Teleport 到 body 后，stub 让内容原地渲染可查。
+  const w = mount(EventsView, {
+    global: { plugins: [createPinia()], stubs: { teleport: true } },
+  })
   await flushPromises()
+  await w.find('[data-testid="events-tab-rules"]').trigger('click')
   return w
 }
 
@@ -335,8 +340,9 @@ describe('EventsView 表单化 · 编辑守护与会话 picker', () => {
     const w = await mountView()
     // 本地删除第一张卡（结构改动未保存）→ forms=[second]，总览仍 [mini-fs, second]。
     await w.find('[data-testid="rule-del-0"]').trigger('click')
-    // 点总览第二行（second）的启停：按下标取会拿到 forms[1]（不存在）→ 不保存；
-    // 按 id 定位应正确启停 second。
+    // 切总览 TAB（mountView 默认进规则设置），点第二行（second）的启停：
+    // 按下标取会拿到 forms[1]（不存在）→ 不保存；按 id 定位应正确启停 second。
+    await w.find('[data-testid="events-tab-overview"]').trigger('click')
     await w.find('[data-testid="toggle-1"]').trigger('click')
     await flushPromises()
     const payload = savePayload()
@@ -350,6 +356,7 @@ describe('EventsView 表单化 · 编辑守护与会话 picker', () => {
     setRules([MINIMAL_RULES[0]])
     const w = await mountView()
     await w.find('[data-testid="rule-del-0"]').trigger('click')
+    await w.find('[data-testid="events-tab-overview"]').trigger('click')
     await w.find('[data-testid="toggle-0"]').trigger('click')
     await flushPromises()
     expect(savePayload()).toBeNull()

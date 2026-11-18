@@ -1,5 +1,8 @@
 <script setup lang="ts">
-// 事件管理面（项1 事件驱动唤醒 P2，2026-11-16；2026-11-17 规则表单化重构）。
+// 事件管理面（项1 事件驱动唤醒 P2，2026-11-16；2026-11-17 规则表单化重构；
+// 2026-11-18 双 TAB——用户拍板首页只留信息展示、规则设置挪第二页：总览 =
+// 说明 + 泵统计 + 规则总览表 + cron/进程收编，规则设置 = 表单编辑区；切 TAB
+// 不强制重载，两 TAB 共享同一份数据 ref）。
 // 三族事件源统一视图：
 // ① fs 事件规则（events.json 热重载，events.* WSAPI：规则表 + **字段级表单编辑**
 //    （原裸 JSON textarea 改为规则卡列表：五族 watch 动态字段组 + deliver 表单 +
@@ -12,7 +15,7 @@
 // Schema 单一真相源 = crates/nemesis-events/src/rules.rs（五族放行面：
 // fs/webhook/proc/sys/probe；cron 已砍单）。前端校验一层（必填/数字域/target
 // 形态）提前拦明显错误，后端 rules.rs 校验兜底（错误原文回显保存钮旁）。
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useSessionStore } from '../stores/session'
@@ -24,6 +27,11 @@ const sessionStore = useSessionStore()
 
 const loading = ref(true)
 const available = ref(true)
+// 双 TAB（2026-11-18 用户拍板：首页只留信息展示，规则设置挪第二页）：
+// 总览 = 说明 + 泵统计 + 规则总览表 + cron/进程收编；规则设置 = 表单编辑区。
+// 切 TAB 不强制重载（两 TAB 共享同一份数据 ref；5s 轮询两 TAB 都续跑，
+// rulesDirty 守卫护编辑区——无「切页丢未保存编辑」的新行为）。
+const activeTab = ref<'overview' | 'rules'>('overview')
 const stats = ref<any>({})
 const rules = ref<any[]>([])
 const pending = ref<any[]>([])
@@ -428,13 +436,49 @@ function removeRule(i: number) {
 
 const pickerIdx = ref<number | null>(null)
 const pickerSearch = ref('')
+// 弹层坐标（Teleport + position:fixed）：absolute 原版挂在卡片内行上，
+// 弹层伸出卡片下缘被 .card{overflow:hidden} 裁掉（同 HookView picker，
+// 2026-11-18 用户实测形态）。
+let pickerAnchor: HTMLElement | null = null
+const pickerPos = ref({ top: 0, left: 0 })
+const pickerRoot = ref<HTMLElement | null>(null)
 
-async function openPicker(i: number) {
+async function openPicker(i: number, e: MouseEvent) {
   pickerIdx.value = i
   pickerSearch.value = ''
+  pickerAnchor = e.currentTarget as HTMLElement
+  placePicker()
   await sessionStore.fetchList()
   void sessionStore.fetchProjects()
 }
+
+/** fixed 定位收口：锚按钮下方展开；下方放不下且上方更宽裕则向上翻；
+ * 上下都放不下时钳到视口内（列表自带 max-height 滚动兜底）。 */
+function placePicker() {
+  if (!pickerAnchor) return
+  const r = pickerAnchor.getBoundingClientRect()
+  pickerPos.value = {
+    top: r.bottom + 6,
+    left: Math.max(8, Math.min(r.left, window.innerWidth - 428)),
+  }
+}
+
+watch(pickerIdx, async (v) => {
+  if (v == null) return
+  await nextTick()
+  const el = pickerRoot.value
+  if (!el || !pickerAnchor) return
+  const h = el.offsetHeight
+  const r = pickerAnchor.getBoundingClientRect()
+  let top = r.bottom + 6
+  if (top + h > window.innerHeight - 8 && r.top - h - 6 > 8) {
+    top = Math.max(8, r.top - h - 6)
+  }
+  pickerPos.value = {
+    top: Math.max(8, Math.min(top, Math.max(8, window.innerHeight - h - 8))),
+    left: Math.max(8, Math.min(pickerPos.value.left, window.innerWidth - el.offsetWidth - 8)),
+  }
+})
 
 function pickSid(sid: string) {
   if (pickerIdx.value == null) return
@@ -528,15 +572,9 @@ onUnmounted(() => {
     </div>
 
     <div class="page-body">
-      <div class="card" style="margin-bottom: var(--space-4);">
-        <div class="card-body">
-          <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">
-            出事主动叫人：多源事件按规则唤醒指定会话（<code>workspace/config/events.json</code> 热重载）。
-            事件源：fs 文件系统（可选 <code>content_pattern</code> 新增行正则过滤）、webhook 外部 POST 推送（token 即凭据）、
-            proc 后台任务输出行正则、sys 系统指标（CPU/内存/磁盘阈值滞回）、probe 外部端点存活探测（http/tcp/command 状态翻转触发）。
-            三闸语义（冷却/小时窗/estop 冻结）由后端统一执行，页面只展示。
-          </p>
-        </div>
+      <div class="tabs">
+        <button class="tab" :class="{ active: activeTab === 'overview' }" data-testid="events-tab-overview" @click="activeTab = 'overview'">总览</button>
+        <button class="tab" :class="{ active: activeTab === 'rules' }" data-testid="events-tab-rules" @click="activeTab = 'rules'">规则设置</button>
       </div>
 
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
@@ -553,7 +591,19 @@ onUnmounted(() => {
         </div>
       </template>
 
-      <template v-else>
+      <!-- ===================== 总览（信息展示） ===================== -->
+      <template v-else-if="activeTab === 'overview'">
+        <div class="card" style="margin-bottom: var(--space-4);">
+          <div class="card-body">
+            <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">
+              出事主动叫人：多源事件按规则唤醒指定会话（<code>workspace/config/events.json</code> 热重载）。
+              事件源：fs 文件系统（可选 <code>content_pattern</code> 新增行正则过滤）、webhook 外部 POST 推送（token 即凭据）、
+              proc 后台任务输出行正则、sys 系统指标（CPU/内存/磁盘阈值滞回）、probe 外部端点存活探测（http/tcp/command 状态翻转触发）。
+              三闸语义（冷却/小时窗/estop 冻结）由后端统一执行，页面只展示。
+            </p>
+          </div>
+        </div>
+
         <!-- 泵统计 -->
         <div class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header">
@@ -591,7 +641,7 @@ onUnmounted(() => {
           </div>
           <div class="card-body">
             <div v-if="rules.length === 0" class="empty-state" data-testid="rules-empty">
-              <p>暂无规则——在下方编辑区新增</p>
+              <p>暂无规则——切到「规则设置」TAB 新增</p>
             </div>
             <div v-else class="table-wrap">
               <table>
@@ -626,6 +676,45 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- 收编：时间触发源（只读） -->
+        <div class="card" style="margin-bottom: var(--space-4);">
+          <div class="card-header">
+            <h3>时间触发源（cron，只读）</h3>
+            <span style="font-size: var(--text-sm); color: var(--text-secondary);">管理走 <router-link to="/tasks">任务页</router-link></span>
+          </div>
+          <div class="card-body">
+            <div v-if="cronJobs.length === 0" class="empty-state"><p>暂无 cron 作业</p></div>
+            <div v-else class="table-wrap">
+              <table>
+                <thead><tr><th>名称</th><th>排程</th><th>状态</th></tr></thead>
+                <tbody>
+                  <tr v-for="(j, idx) in cronJobs" :key="j.id || idx">
+                    <td>{{ j.name || j.id }}</td>
+                    <td style="font-family: monospace;">{{ j.cron || j.schedule || '-' }}</td>
+                    <td><span class="badge" :class="j.enabled === false ? 'badge-neutral' : 'badge-success'">{{ j.enabled === false ? '停用' : '启用' }}</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 收编：进程完成唤醒（链接） -->
+        <div class="card">
+          <div class="card-header">
+            <h3>进程完成唤醒</h3>
+          </div>
+          <div class="card-body">
+            <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">
+              后台进程与后台子代理完成时自动回灌发起会话（CompletionEvent 先例）。
+              台账与管理走 <router-link to="/executors">执行单元页</router-link>。
+            </p>
+          </div>
+        </div>
+      </template>
+
+      <!-- ===================== 规则设置（表单编辑） ===================== -->
+      <template v-else>
         <!-- 规则编辑（表单卡列表） -->
         <div class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header">
@@ -792,8 +881,14 @@ onUnmounted(() => {
                       placeholder="agent:main:session:<会话id>（agent:/agents: 形态）"
                       :data-testid="'session-key-' + i"
                     />
-                    <button class="btn" :data-testid="'pick-session-' + i" @click="openPicker(i)">选会话 ▾</button>
-                    <div v-if="pickerIdx === i" class="ev-picker">
+                    <button class="btn" :data-testid="'pick-session-' + i" @click="openPicker(i, $event)">选会话 ▾</button>
+                    <Teleport to="body">
+                      <div
+                        v-if="pickerIdx === i"
+                        ref="pickerRoot"
+                        class="ev-picker"
+                        :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
+                      >
                       <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
                       <div class="ev-picker-list">
                         <div
@@ -813,7 +908,8 @@ onUnmounted(() => {
                         <span style="color: var(--text-muted); font-size: var(--text-xs);">单选——点击行即选定；群组形态（agents:）走手输</span>
                         <button class="btn btn-sm" @click="pickerIdx = null">关闭</button>
                       </div>
-                    </div>
+                      </div>
+                    </Teleport>
                   </div>
                 </div>
                 <div class="ev-field">
@@ -841,42 +937,6 @@ onUnmounted(() => {
                 </div>
               </template>
             </div>
-          </div>
-        </div>
-
-        <!-- 收编：时间触发源（只读） -->
-        <div class="card" style="margin-bottom: var(--space-4);">
-          <div class="card-header">
-            <h3>时间触发源（cron，只读）</h3>
-            <span style="font-size: var(--text-sm); color: var(--text-secondary);">管理走 <router-link to="/tasks">任务页</router-link></span>
-          </div>
-          <div class="card-body">
-            <div v-if="cronJobs.length === 0" class="empty-state"><p>暂无 cron 作业</p></div>
-            <div v-else class="table-wrap">
-              <table>
-                <thead><tr><th>名称</th><th>排程</th><th>状态</th></tr></thead>
-                <tbody>
-                  <tr v-for="(j, idx) in cronJobs" :key="j.id || idx">
-                    <td>{{ j.name || j.id }}</td>
-                    <td style="font-family: monospace;">{{ j.cron || j.schedule || '-' }}</td>
-                    <td><span class="badge" :class="j.enabled === false ? 'badge-neutral' : 'badge-success'">{{ j.enabled === false ? '停用' : '启用' }}</span></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- 收编：进程完成唤醒（链接） -->
-        <div class="card">
-          <div class="card-header">
-            <h3>进程完成唤醒</h3>
-          </div>
-          <div class="card-body">
-            <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0;">
-              后台进程与后台子代理完成时自动回灌发起会话（CompletionEvent 先例）。
-              台账与管理走 <router-link to="/executors">执行单元页</router-link>。
-            </p>
           </div>
         </div>
       </template>
@@ -1004,11 +1064,13 @@ onUnmounted(() => {
   min-width: 0;
 }
 .ev-picker {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
+  /* Teleport + position:fixed（挂 body）：absolute 原版伸出卡片下缘被
+     .card{overflow:hidden} 裁掉（同 HookView picker，2026-11-18 用户实测）。 */
+  position: fixed;
   z-index: var(--z-overlay);
   width: min(420px, 92vw);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
@@ -1019,7 +1081,7 @@ onUnmounted(() => {
   gap: var(--space-2);
 }
 .ev-picker-list {
-  max-height: 260px;
+  max-height: min(260px, calc(100vh - 160px));
   overflow-y: auto;
   display: flex;
   flex-direction: column;

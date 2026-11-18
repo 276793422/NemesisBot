@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted } from 'vue'
+import { ref, watch, computed, onMounted, nextTick } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useSessionStore } from '../stores/session'
@@ -189,14 +189,51 @@ watch(activeTab, () => {
 const pickerFor = ref<{ ev: string; idx: number } | null>(null)
 const pickerSearch = ref('')
 const pickerDraft = ref<string[]>([])
+// 弹层坐标（Teleport + position:fixed）：absolute 原版挂在卡片内行上，
+// 弹层伸出卡片下缘被 .card{overflow:hidden} 裁掉（2026-11-18 用户实测：
+// 底部卡片 picker 只露搜索框一条，列表完全看不见）。
+let pickerAnchor: HTMLElement | null = null
+const pickerPos = ref({ top: 0, left: 0 })
+const pickerRoot = ref<HTMLElement | null>(null)
 
-async function openPicker(evId: string, idx: number) {
+async function openPicker(evId: string, idx: number, e: MouseEvent) {
   pickerFor.value = { ev: evId, idx }
   pickerSearch.value = ''
   pickerDraft.value = [...entries.value[evId][idx].sessions]
+  pickerAnchor = e.currentTarget as HTMLElement
+  // 初始坐标先按锚按钮下方落（多数场景够用），watch 里 nextTick 量高后收口。
+  placePicker()
   await sessionStore.fetchList()
   void sessionStore.fetchProjects()
 }
+
+/** fixed 定位收口：锚按钮下方展开；下方放不下且上方更宽裕则向上翻；
+ * 上下都放不下时钳到视口内（列表自带 max-height 滚动兜底）。 */
+function placePicker() {
+  if (!pickerAnchor) return
+  const r = pickerAnchor.getBoundingClientRect()
+  pickerPos.value = {
+    top: r.bottom + 6,
+    left: Math.max(8, Math.min(r.left, window.innerWidth - 428)),
+  }
+}
+
+watch(pickerFor, async (v) => {
+  if (!v) return
+  await nextTick()
+  const el = pickerRoot.value
+  if (!el || !pickerAnchor) return
+  const h = el.offsetHeight
+  const r = pickerAnchor.getBoundingClientRect()
+  let top = r.bottom + 6
+  if (top + h > window.innerHeight - 8 && r.top - h - 6 > 8) {
+    top = Math.max(8, r.top - h - 6)
+  }
+  pickerPos.value = {
+    top: Math.max(8, Math.min(top, Math.max(8, window.innerHeight - h - 8))),
+    left: Math.max(8, Math.min(pickerPos.value.left, window.innerWidth - el.offsetWidth - 8)),
+  }
+})
 
 function togglePickerSid(sid: string) {
   const i = pickerDraft.value.indexOf(sid)
@@ -392,30 +429,37 @@ onMounted(() => {
                 <button
                   class="btn btn-sm hooks-scope-btn"
                   :class="{ 'hooks-scope-btn--scoped': e.sessions.length }"
-                  @click="openPicker(ev.id, i)"
+                  @click="openPicker(ev.id, i, $event)"
                 >
                   {{ scopeLabel(e) }} ▾
                 </button>
                 <span style="color: var(--text-muted); font-size: var(--text-xs);">作用会话（不选 = 全部会话生效）</span>
-                <div v-if="pickerFor && pickerFor.ev === ev.id && pickerFor.idx === i" class="hooks-scope-picker">
-                  <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
-                  <div class="hooks-scope-list">
-                    <label v-for="s in pickerRows" :key="s.id" class="hooks-scope-item">
-                      <input type="checkbox" :checked="pickerDraft.includes(s.id)" @change="togglePickerSid(s.id)" />
-                      <span class="hooks-scope-item-title">{{ s.title || s.id }}</span>
-                      <span v-if="s.projectId" class="hooks-scope-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
-                      <span class="hooks-scope-item-sid">{{ s.id }}</span>
-                    </label>
-                    <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
-                  </div>
-                  <div class="hooks-scope-picker-footer">
-                    <span style="color: var(--text-muted); font-size: var(--text-xs);">已选 {{ pickerDraft.length }} 个（不选 = 全部会话）</span>
-                    <div style="display: flex; gap: var(--space-2);">
-                      <button class="btn btn-sm" @click="pickerDraft = []">清空</button>
-                      <button class="btn btn-sm btn-primary" @click="applyPicker">完成</button>
+                <Teleport to="body">
+                  <div
+                    v-if="pickerFor && pickerFor.ev === ev.id && pickerFor.idx === i"
+                    ref="pickerRoot"
+                    class="hooks-scope-picker"
+                    :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
+                  >
+                    <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
+                    <div class="hooks-scope-list">
+                      <label v-for="s in pickerRows" :key="s.id" class="hooks-scope-item">
+                        <input type="checkbox" :checked="pickerDraft.includes(s.id)" @change="togglePickerSid(s.id)" />
+                        <span class="hooks-scope-item-title">{{ s.title || s.id }}</span>
+                        <span v-if="s.projectId" class="hooks-scope-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
+                        <span class="hooks-scope-item-sid">{{ s.id }}</span>
+                      </label>
+                      <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
+                    </div>
+                    <div class="hooks-scope-picker-footer">
+                      <span style="color: var(--text-muted); font-size: var(--text-xs);">已选 {{ pickerDraft.length }} 个（不选 = 全部会话）</span>
+                      <div style="display: flex; gap: var(--space-2);">
+                        <button class="btn btn-sm" @click="pickerDraft = []">清空</button>
+                        <button class="btn btn-sm btn-primary" @click="applyPicker">完成</button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                </Teleport>
               </div>
             </div>
           </div>
@@ -510,11 +554,13 @@ onMounted(() => {
   border-color: var(--accent);
 }
 .hooks-scope-picker {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
+  /* fixed + Teleport（body）：脱离 .card 的 overflow:hidden 裁剪域；
+     坐标由 placePicker/watch 按锚按钮实时计算。 */
+  position: fixed;
   z-index: var(--z-overlay);
   width: min(420px, 92vw);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
@@ -525,7 +571,7 @@ onMounted(() => {
   gap: var(--space-2);
 }
 .hooks-scope-list {
-  max-height: 260px;
+  max-height: min(260px, calc(100vh - 160px));
   overflow-y: auto;
   display: flex;
   flex-direction: column;

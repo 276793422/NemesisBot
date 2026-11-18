@@ -76,7 +76,9 @@ afterEach(() => {
 })
 
 async function mountView(tab: '总览' | '设置' = '总览') {
-  const w = mount(HookView, { global: { plugins: [createPinia()] } })
+  // teleport stub：会话 picker Teleport 到 body（2026-11-18 裁剪修复）后，
+  // stub 让弹层内容原地渲染仍可被 wrapper 查询。
+  const w = mount(HookView, { global: { plugins: [createPinia()], stubs: { teleport: true } } })
   await flushPromises()
   if (tab !== '总览') {
     await w.findAll('button.tab').find(b => b.text() === tab)!.trigger('click')

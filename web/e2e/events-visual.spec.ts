@@ -1,12 +1,14 @@
 /**
- * 事件规则表单编辑页视觉自测（2026-11-17，UI 视觉自测纪律）。
+ * 事件规则表单编辑页视觉自测（2026-11-17，UI 视觉自测纪律；2026-11-18 双 TAB
+ * 改版跟随——总览 = 信息展示，规则设置 = 表单编辑，用户拍板首页只留信息）。
  *
  * 事件规则从「直接编辑 JSON 脚本」改为钩子样式表单卡（用户拍板）。
  * 截图人工看图（test-results/events-visual/shots/）：
- *   1. /events 空态（泵统计卡 + 新增按钮 + cron/后台进程收编卡）
+ *   1. /events 总览空态（说明卡 + 泵统计 + 空规则表 + cron/后台进程收编卡）
+ *   1b. 规则设置 TAB 空态（新增按钮在场）
  *   2. 五族规则表单卡全览（fs/webhook/proc/sys/probe 动态字段组 + deliver 段）
  *   3. kind 切换到 probe 的探测字段组
- *   4. 会话 picker 弹层（单选形态）
+ *   4. 会话 picker 弹层（单选形态；Teleport 到 body 不再被卡片裁剪）
  *   5. 校验错误态（必填缺失错误显示在保存钮旁）
  *
  * 规则数据经真实 WSAPI events.rules.save 灌入（不走文件注入——同源消费路径）。
@@ -64,10 +66,14 @@ test('事件规则表单页五景截图（空态/五族全览/probe组/会话pic
     console.log('[page-err] ' + String(e).slice(0, 400))
   })
 
-  // —— 1. 空态（seed 前先看一眼）——
+  // —— 1. 空态总览（双 TAB 默认落总览：信息展示页）——
   await gotoRoute(page, '/#/events')
-  await page.locator('[data-testid="add-rule-btn"]').waitFor({ state: 'visible' })
+  await page.locator('[data-testid="events-tab-rules"]').waitFor({ state: 'visible' })
   await page.screenshot({ path: shotPath('1-events-empty.png'), fullPage: true })
+  // —— 1b. 规则设置 TAB 空态（新增按钮在场）——
+  await page.locator('[data-testid="events-tab-rules"]').click()
+  await page.locator('[data-testid="add-rule-btn"]').waitFor({ state: 'visible' })
+  await page.screenshot({ path: shotPath('1b-events-rules-empty.png'), fullPage: true })
 
   // —— 2. seed 五族规则（真实 WSAPI 保存路径）+ 重载看五张表单卡 ——
   // 注：gotoRoute 同 hash 不重挂载（status 投影停在挂载时旧数据），须 page.reload。
@@ -77,6 +83,8 @@ test('事件规则表单页五景截图（空态/五族全览/probe组/会话pic
   console.log('[seed] rules.save -> ' + JSON.stringify(saved).slice(0, 200))
   await page.reload()
   await page.locator('text=5 条').first().waitFor({ state: 'visible' })
+  // 双 TAB：reload 落总览（规则表行数已可见），编辑区在第二页。
+  await page.locator('[data-testid="events-tab-rules"]').click()
   const cards = page.locator('[data-testid^="rule-card-"]')
   await expect(cards).toHaveCount(5)
   await page.setViewportSize({ width: 1440, height: 3400 })

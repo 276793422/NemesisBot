@@ -16,10 +16,12 @@ const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
 
 // ---- 会话资源盘点看板（2026-11-17，B3 壳层）----
 //
-// 宽屏（容器 ≥ 1284px）右栏挂 SessionResourcesPanel，同时把 ChatPanel
-// （.page-chat）压到 max-width:944px；窄屏自动收起。开合偏好存
-// localStorage（全局统一键，不分会话）。收起态 = 右缘细竖条按钮
-//（组件 v-if 卸载 = 订阅/轮询全停）；首次（无偏好记录）默认展开。
+// 宽屏（容器 ≥ 1284px）右栏挂 SessionResourcesPanel；ChatPanel（.page-chat）
+// 靠左固定宽 944px，资源窗紧贴其右侧吃掉剩余宽度（2026-11-18 用户拍板：
+// 对话列恒在最左、宽度确定，看板是它右边的侧窗——勿再挪回居中/贴右）。
+// 窄屏自动收起。开合偏好存 localStorage（全局统一键，不分会话）。收起态 =
+// 右缘细竖条按钮（组件 v-if 卸载 = 订阅/轮询全停）；首次（无偏好记录）默认
+// 展开。
 const resourcesOpen = ref(localStorage.getItem('nb_resources_panel') !== '0')
 const viewportWide = ref(true)
 let resizeObserver: ResizeObserver | null = null
@@ -118,20 +120,24 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  /* B3: 资源看板在场时（.chat-main-narrow 动态挂上）把聊天主列压到 944
-     （上限含滚动条余量），保对话行宽不随窗口无限拉宽；看板收起 = 布局
-     与旧版一致（撑满）。margin-left:auto 让对话列靠右贴看板。 */
+  /* B3: 资源看板在场时（.chat-main-narrow 动态挂上）对话列固定 944 靠左
+     （上限含滚动条余量），看板收起 = 布局与旧版一致（撑满）。 */
   max-width: none;
   margin-left: 0;
 }
 .chat-page-layout > :deep(.chat-main-narrow) {
+  /* 固定 944 靠左（2026-11-18 用户拍板：flex-grow 分自由空间会把宽度变成
+     随机数，flex:0 0 定死才「确定」；margin-left:auto 把对话列推到中间——
+     旧版缺陷形态，勿恢复）。 */
+  flex: 0 0 944px;
   max-width: 944px;
-  margin-left: auto;
+  margin-left: 0;
 }
 .chat-resources-panel {
+  /* 紧贴对话列右侧吃掉剩余宽度（不设 max-width——设了上限宽窗口右缘会
+     留死空间；2026-11-18 用户拍板：资源窗 = 对话列右边的侧窗）。 */
   flex: 1 1 340px;
   min-width: 300px;
-  max-width: 480px;
   min-height: 0;
   border-left: 1px solid var(--border);
 }
