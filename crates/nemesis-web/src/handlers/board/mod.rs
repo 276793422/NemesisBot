@@ -1443,14 +1443,19 @@ impl ModuleHandler for BoardHandler {
                     // 留痕：项目无 comment 载体（惯例），系统注记落全部
                     // 顶层父单；消费掉的停车档案照常归档。
                     for p in &tops {
-                        let _ = store.add_comment(NewComment {
+                        if let Err(ce) = store.add_comment(NewComment {
                             issue_id: p.id,
                             author: actor.clone(),
                             content: "🔁 人工触发项目收口复评（review.retrigger project_id）"
                                 .to_string(),
                             parent_id: None,
                             ctype: CommentType::System,
-                        });
+                        }) {
+                            tracing::warn!(
+                                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                                p.id
+                            );
+                        }
                         archive_handoff_best_effort(&p.number);
                     }
                     hook(project_id);
@@ -1511,13 +1516,18 @@ impl ModuleHandler for BoardHandler {
                 } else {
                     "🔁 人工触发重新验收评审（review.retrigger）".to_string()
                 };
-                let _ = store.add_comment(NewComment {
+                if let Err(ce) = store.add_comment(NewComment {
                     issue_id: issue.id,
                     author: actor,
                     content: note,
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    tracing::warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        issue.id
+                    );
+                }
                 hook(issue.id);
                 // 复评启动 = 「等裁决」现场已被消费：归档停车档案。
                 archive_handoff_best_effort(&issue.number);

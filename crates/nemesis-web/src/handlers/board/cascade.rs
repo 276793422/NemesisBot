@@ -235,13 +235,15 @@ pub fn spawn_task_cancel(
             }
             Err(e) => {
                 tracing::warn!("[Board] task_cancel send failed (task_id={task_id}): {e}");
-                let _ = store.add_comment(nemesis_board::models::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                     issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!("⛔ 取消指令送达失败（{e}），worker 端可能仍在执行"),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+                }
             }
         }
     });
@@ -325,7 +327,7 @@ pub fn cascade_cancel_dependents(
         // 错误的 reopen 建议，审计线程事实性失真（cascaded 清单正确不含失败
         // 单，但单据自身评论在撒谎）。转移成功才落盘 = 评论恒为事实，且恒接
         // 在状态机自带的 status_change 评论之后（顺序可断言）。
-        let _ = store.add_comment(nemesis_board::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::NewComment {
             issue_id: dep.id,
             author: nemesis_board::Actor::system("board"),
             content: format!(
@@ -334,7 +336,12 @@ pub fn cascade_cancel_dependents(
             ),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                dep.id
+            );
+        }
         cascaded.push(dep.number.clone());
         if let Some(pid) = dep.parent_issue_id
             && let Err(e) = sync_parent_status(store, pid, actor)

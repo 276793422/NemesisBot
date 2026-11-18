@@ -577,13 +577,17 @@ async fn gate_pass_arm(deps: &BoardReviewDeps, issue: &nemesis_board::Issue, raw
             ),
             Err(e) => warn!("[BoardReview] issue {issue_id} 无人值守触点记档失败：{e}（照常收货）"),
         }
-        let _ = store.add_comment(NewComment {
+        // BUG-20261118-173：系统评论写失败不再静默——同函数上方触点记档失败
+        // 有 warn，此处同语义（惯例对齐，warn 不阻塞收货流）。
+        if let Err(e) = store.add_comment(NewComment {
             issue_id,
             author: reviewer.clone(),
             content: format!("🤖 原型机器行为闸通过（无人值守模式：不挂卡，直接收货）\n\n{brief}"),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            warn!("[BoardReview] issue {issue_id} 无人值守系统评论落库失败：{e}（照常收货）");
+        }
         let reasons = vec!["原型机器行为闸：全部试玩场景通过（无人值守自动收货）".to_string()];
         match auto_accept_and_settle(deps, issue_id, &reasons) {
             Ok(()) => {
@@ -619,7 +623,8 @@ async fn gate_pass_arm(deps: &BoardReviewDeps, issue: &nemesis_board::Issue, raw
     match hang {
         Ok(tp) => {
             if recheck {
-                let _ = store.add_comment(NewComment {
+                // BUG-20261118-173：评论失败不再静默（惯例对齐）。
+                if let Err(e) = store.add_comment(NewComment {
                     issue_id,
                     author: reviewer.clone(),
                     content: format!(
@@ -628,7 +633,11 @@ async fn gate_pass_arm(deps: &BoardReviewDeps, issue: &nemesis_board::Issue, raw
                     ),
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    warn!(
+                        "[BoardReview] issue {issue_id} 复验系统评论落库失败：{e}（复验卡已挂，人工可见性不受影响）"
+                    );
+                }
             }
             let (decision, mode) = if recheck {
                 ("pass_card_recheck", "unattended_recheck")
@@ -658,7 +667,10 @@ async fn gate_pass_arm(deps: &BoardReviewDeps, issue: &nemesis_board::Issue, raw
             warn!(
                 "[BoardReview] issue {issue_id} 原型触点卡挂卡失败：{e} → 评论降级（人工看板评论裁决）"
             );
-            let _ = store.add_comment(NewComment {
+            // BUG-20261118-173：本评论是挂卡失败时人工裁决请求的**唯一降级
+            // 载体**（「本评论即卡」）——双重失败=人工确认请求完全丢失，
+            // 必须 loud（warn 不阻塞）。
+            if let Err(e) = store.add_comment(NewComment {
                 issue_id,
                 author: reviewer.clone(),
                 content: format!(
@@ -666,7 +678,11 @@ async fn gate_pass_arm(deps: &BoardReviewDeps, issue: &nemesis_board::Issue, raw
                 ),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                warn!(
+                    "[BoardReview] issue {issue_id} 挂卡失败后的降级评论（即人工裁决卡）落库也失败：{e}——人工确认请求可能丢失，请人工检查该单"
+                );
+            }
         }
     }
 }
@@ -693,13 +709,18 @@ async fn gate_fail_arm(
         "机器行为闸未通过（失败场景：{}）\n\n{brief}",
         failing.join(", ")
     );
-    let _ = store.add_comment(NewComment {
+    // BUG-20261118-173：FAIL 通知评论写失败不再静默——人工侧需要知道闸未通过。
+    if let Err(e) = store.add_comment(NewComment {
         issue_id,
         author: reviewer.clone(),
         content: format!("🎮❌ 原型机器行为闸未通过\n\n{gap}"),
         parent_id: None,
         ctype: CommentType::Comment,
-    });
+    }) {
+        warn!(
+            "[BoardReview] issue {issue_id} 机器闸 FAIL 通知评论落库失败：{e}（重派/熔断流程照常）"
+        );
+    }
     record_auto_decide(
         deps,
         issue_id,
@@ -739,13 +760,18 @@ async fn gate_fail_arm(
             "{}⛔ 原型机器行为闸同因熔断：同一批失败场景连续 {n} 轮未通过，已停止重派，请人工上手试玩后裁决。\n{handoff_note}",
             human_mention
         );
-        let _ = store.add_comment(NewComment {
+        // BUG-20261118-173：熔断移交评论写失败不再静默——人工需看到「停止重派」。
+        if let Err(e) = store.add_comment(NewComment {
             issue_id,
             author: reviewer.clone(),
             content: comment,
             parent_id: None,
             ctype: CommentType::Comment,
-        });
+        }) {
+            warn!(
+                "[BoardReview] issue {issue_id} 机器闸熔断移交评论落库失败：{e}（熔断流程照常，人工侧可见性受损）"
+            );
+        }
         record_auto_decide(
             deps,
             issue_id,
@@ -776,7 +802,7 @@ async fn gate_fail_arm(
                 "[BoardReview] issue {issue_id} 机器闸重派预算超限（unlimited_mode 仅告警继续）：{breach}"
             );
         } else {
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id,
                 author: reviewer.clone(),
                 content: format!(
@@ -785,7 +811,9 @@ async fn gate_fail_arm(
                 ),
                 parent_id: None,
                 ctype: CommentType::Comment,
-            });
+            }) {
+                warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+            }
             record_auto_decide(
                 deps,
                 issue_id,
@@ -801,13 +829,15 @@ async fn gate_fail_arm(
         Ok(c) => c.into_target(),
         Err(e) => {
             let msg = format!("⛔ 机器闸未通过，确定重派目标失败：{e}（请人工派发或处置）");
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id,
                 author: Actor::system("board-review"),
                 content: msg,
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+            }
             record_auto_decide(
                 deps,
                 issue_id,

@@ -521,7 +521,8 @@ fn handle_delivery_files(
     }
 
     // 留痕：系统评论（附件区可见 + 决策/活动可追溯）。
-    let _ = deps.store.add_comment(nemesis_board::NewComment {
+    // BUG-20261118-173：留痕写失败不再静默（惯例对齐）。
+    if let Err(e) = deps.store.add_comment(nemesis_board::NewComment {
         issue_id,
         author: Actor::system("board"),
         content: format!(
@@ -531,7 +532,10 @@ fn handle_delivery_files(
         ),
         parent_id: None,
         ctype: nemesis_board::CommentType::System,
-    });
+    }) {
+        tracing::warn!(target: "board_bus", issue = %issue_id,
+            "[nb_bus] 交付回传留痕评论落库失败: {e}（文件已存储，仅留痕缺失）");
+    }
 
     EnvelopeResponse::success(
         env,
@@ -890,7 +894,9 @@ fn post_discussion_core(
                 let short: String = msg.chars().take(300).collect();
                 tracing::error!("[BoardBus] wake 投递/裁决链 panic thread={thread_id}: {short}");
                 if is_issue_thread {
-                    let _ = watch_store.add_comment(nemesis_board::NewComment {
+                    // BUG-20261118-173：panic 告知评论写失败不再静默——
+                    // 评论是人类感知投递链 panic 的唯一看板面，双失败必须 loud。
+                    if let Err(e) = watch_store.add_comment(nemesis_board::NewComment {
                         issue_id: thread_id,
                         author: Actor::system("board"),
                         content: format!(
@@ -898,7 +904,10 @@ fn post_discussion_core(
                         ),
                         parent_id: None,
                         ctype: nemesis_board::CommentType::System,
-                    });
+                    }) {
+                        tracing::error!(target: "board_bus", thread_id = %thread_id,
+                            "[nb_bus] 投递链 panic 告知评论落库失败: {e}（panic 本身已有 error 日志，人工请搜日志）");
+                    }
                 }
             }
         });
