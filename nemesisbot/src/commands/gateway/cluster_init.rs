@@ -1155,16 +1155,29 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 crate::agents::migrate::ACTION_AGENT_MIGRATE_COMMIT,
                 Box::new(move |payload| {
                     // BUG-20261118-172：sync RPC handler 跑在 server 的 tokio
-                    // worker 上，commit 主体是重阻塞 sync IO（幂等清理
-                    // remove_dir_all_retry 的 thread::sleep 退避最坏
-                    // ~4.4s×3 + 文件 rename + SQLite upsert）——专用线程
-                    // 执行 + join，不占 worker；线程 panic 经 join 原样传
-                    // 回 worker 任务（与直跑同语义）。
-                    std::thread::scope(|s| {
-                        s.spawn(|| crate::agents::migrate::handle_migrate_commit(&deps, payload))
-                            .join()
-                            .unwrap()
-                    })
+                    // worker 上（rpc/server.rs dispatch_wire_request async 链
+                    // 内直调，无 spawn_blocking 包裹），commit 主体是重阻塞
+                    // sync IO（幂等清理 remove_dir_all_retry 的 thread::sleep
+                    // 退避最坏 ~4.4s×3 + 文件 rename + SQLite upsert）。
+                    // BUG-20261119-174：首版 thread::scope+spawn+join 形态
+                    // 无效——worker 随即阻塞在 join() 上等待专用线程，阻塞
+                    // 时长与直跑完全相同（join 是同步阻塞等待，不让出
+                    // worker）。改 turn_wal.rs 同款守卫 block_in_place：多线
+                    // 程 runtime 下让出 worker 调度权（任务转入阻塞集，其余
+                    // 任务照常推进，阻塞只占本任务墙钟）；panic 直接传播
+                    // （payload 不丢失）；无 runtime / 单线程 runtime（测试
+                    // handle_request_sync 直调）= 直接执行（block_in_place
+                    // 在 current-thread runtime 会 panic，必须守卫）。
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(h)
+                            if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(|| {
+                                crate::agents::migrate::handle_migrate_commit(&deps, payload)
+                            })
+                        }
+                        _ => crate::agents::migrate::handle_migrate_commit(&deps, payload),
+                    }
                 }),
             ) {
                 Ok(()) => {
