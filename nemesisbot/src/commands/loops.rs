@@ -142,49 +142,55 @@ fn cmd_create(
         bail!("会话 {session_key} 不存在（先建会话再绑定 loop；不静默创建）");
     }
     let ts = now_ms();
-    let id = nemesis_loop::alloc_id(dir);
-    let mut st =
-        nemesis_loop::LoopState::new(id.clone(), goal.to_string(), session_key.clone(), ts);
-    st.budget = nemesis_loop::LoopBudget {
-        max_turns_total: max_turns,
-        wall_clock_budget_secs: wall_clock_secs,
-        max_tokens,
-    };
-    // token 基线：显式配了 max_tokens 且账本在场 → 记创建时刻已耗 token
-    // （spent.tokens = 现值 − 基线，只算 loop 期间；账本缺席 = 基线 0 诚实
-    // 降级，驱动器按全量现值计——warn 提示）。
-    if max_tokens > 0 {
-        let db_path = nemesis_path::workspace_data_dir(home).join("nemesisbot_data.db");
-        match nemesis_data::DataStore::open(&db_path) {
-            Ok(ds) => match ds.aggregate_session_usage(&session_key) {
-                Ok(agg) => {
-                    st.tokens_base = (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
-                }
-                Err(e) => eprintln!("⚠ token 基线读取失败（{e}）；预算按全量现值计"),
-            },
-            Err(e) => eprintln!(
-                "⚠ 用量账本不可用（{}：{e}）；token 预算按全量现值计",
-                db_path.display()
-            ),
+    // 创建串行化（BUG-20261119-186）：alloc+save 收进 create_loop 进程级
+    // 锁——CLI 与 gateway 内 WSAPI 并发创建时，进程内路径同锁互斥；跨进程
+    // 窗口是诚实边界（见 store.rs CREATE_LOCK 注释）。
+    let st = nemesis_loop::create_loop(dir, |id| {
+        let mut st =
+            nemesis_loop::LoopState::new(id.clone(), goal.to_string(), session_key.clone(), ts);
+        st.budget = nemesis_loop::LoopBudget {
+            max_turns_total: max_turns,
+            wall_clock_budget_secs: wall_clock_secs,
+            max_tokens,
+        };
+        // token 基线：显式配了 max_tokens 且账本在场 → 记创建时刻已耗 token
+        // （spent.tokens = 现值 − 基线，只算 loop 期间；账本缺席 = 基线 0 诚实
+        // 降级，驱动器按全量现值计——warn 提示）。
+        if max_tokens > 0 {
+            let db_path = nemesis_path::workspace_data_dir(home).join("nemesisbot_data.db");
+            match nemesis_data::DataStore::open(&db_path) {
+                Ok(ds) => match ds.aggregate_session_usage(&session_key) {
+                    Ok(agg) => {
+                        st.tokens_base =
+                            (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
+                    }
+                    Err(e) => eprintln!("⚠ token 基线读取失败（{e}）；预算按全量现值计"),
+                },
+                Err(e) => eprintln!(
+                    "⚠ 用量账本不可用（{}：{e}）；token 预算按全量现值计",
+                    db_path.display()
+                ),
+            }
         }
-    }
-    // 初始排程（可选）：给了 delay/cron 就立刻排，不给 = 等 agent 自配速。
-    if delay_secs > 0 || cron.is_some() {
-        let (wake, cron_set) = nemesis_loop::compute_next_wake(
-            ts,
-            if delay_secs == 0 {
-                None
-            } else {
-                Some(delay_secs)
-            },
-            cron.as_deref(),
-        )
-        .map_err(anyhow::Error::msg)?;
-        st.next_wake_ms = wake;
-        st.cron = cron_set;
-    }
-    st.push_progress(ts, format!("[create] 目标：{goal}（人经 CLI 创建）"));
-    nemesis_loop::save_loop(dir, &st).map_err(anyhow::Error::msg)?;
+        // 初始排程（可选）：给了 delay/cron 就立刻排，不给 = 等 agent 自配速。
+        if delay_secs > 0 || cron.is_some() {
+            let (wake, cron_set) = nemesis_loop::compute_next_wake(
+                ts,
+                if delay_secs == 0 {
+                    None
+                } else {
+                    Some(delay_secs)
+                },
+                cron.as_deref(),
+            )?;
+            st.next_wake_ms = wake;
+            st.cron = cron_set;
+        }
+        st.push_progress(ts, format!("[create] 目标：{goal}（人经 CLI 创建）"));
+        Ok(st)
+    })
+    .map_err(anyhow::Error::msg)?;
+    let id = st.id.clone();
 
     println!("Loop {id} created");
     println!("  目标:       {goal}");

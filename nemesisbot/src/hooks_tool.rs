@@ -36,6 +36,15 @@ pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// add 超时上限（秒）——超过钳到该值（响应里注明）。
 pub(crate) const MAX_TIMEOUT_SECS: u64 = 600;
 
+/// 会话钩子存储（hooks.session.json）读改写互斥。add/delete 都是
+/// 整文件 read→mutate→write（写原子只保单文件不撕裂，不保 RMW 串行）：
+/// 主 loop 与项目 loop 并发执行工具时，两个 RMW 交错 = 后写者整文件
+/// 覆盖，先写者的钩子条目静默丢失（不同 sid 段连 id 冲突都不会有，
+/// 纯丢条目）。进程级锁换零接线成本（goals REGISTRY_LOCK / nemesis-loop
+/// CREATE_LOCK 同款先例，BUG-20261119-186 同族同修）；gateway 启动期
+/// reconcile_session_orphans 单线程先行，与本锁无重叠。
+static SESSION_HOOK_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// hooks 工具：给自己（当前会话）增删查生命周期钩子。
 pub struct HooksTool {
     /// `<workspace>/config`（hooks.session.json 落位目录）。
@@ -354,6 +363,10 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                 } else {
                     ""
                 };
+                // RMW 互斥（SESSION_HOOK_STORE_LOCK）：读改写全程持锁。
+                let _guard = SESSION_HOOK_STORE_LOCK
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 let mut store = read_session_hook_store(&self.config_dir);
                 let per_event = store.hooks.entry(sid.clone()).or_default();
                 let next_index = max_hook_index(per_event) + 1;
@@ -398,6 +411,10 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                 Ok(out)
             }
             HooksCommand::Delete { id } => {
+                // RMW 互斥（SESSION_HOOK_STORE_LOCK）：读改写全程持锁。
+                let _guard = SESSION_HOOK_STORE_LOCK
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 let mut store = read_session_hook_store(&self.config_dir);
                 let Some(per_event) = store.hooks.get_mut(&sid) else {
                     return Err(format!("本会话（{sid}）当前没有已设置的钩子"));
