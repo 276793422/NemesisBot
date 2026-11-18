@@ -3,7 +3,8 @@
 //! 容错语义（nemesis-loop 同族）：坏文件 load 时 Err 透传（调用方诚实
 //! 处理）；evals.jsonl 单行损坏跳过不炸台账。注册表写入走 [`update_registry`]
 //! ——进程级互斥锁内 load-modify-save（WSAPI 人操作与评估闸引擎并发写
-//! 同一文件的串行点），原子写 tmp + rename 短退避重试。
+//! 同一文件的串行点），落盘走 [`nemesis_utils::write_file_atomic`] 统一
+//! 原子写（BUG-20261118-152）。
 
 use crate::state::{EvalRecord, GoalEntry};
 use std::io::Write;
@@ -44,33 +45,18 @@ fn evals_path(workspace: &Path, id: &str) -> PathBuf {
     evals_path_in(&goals_dir(workspace), id)
 }
 
-/// 原子写（tmp + rename，掉电不留半文件；Windows 目标被占 rename 失败是
-/// 常态——短退避重试后放弃）。
+/// 原子写——委托全仓唯一权威 helper
+/// [`nemesis_utils::write_file_atomic`]（BUG-20261118-152：此前自制
+/// tmp+rename 用**固定临时名** `path.with_extension("tmp")`——并发写者
+/// （多实例部署双 gateway 同 workspace / save_registry 直呼不持
+/// REGISTRY_LOCK）在同名 tmp 上交错，先完成者的 rename 可把另一方写到
+/// 一半的半截 JSON 提交成正式文件（坏账本顶掉好账本）。统一 helper 的
+/// pid+序数+nanos 唯一临时名 + create_new + sync_all 先于 rename +
+/// 失败清理结构性消除该家族（BUG-20261106-001 / BUG-20261109-024 同族
+/// 收敛先例；Windows 目标被占 rename 失败由调用方诚实上报，不再自研
+/// 重试）。unix 0o644（workspace 资产非凭据）。
 fn atomic_write(path: &Path, body: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create dir failed: {e}"))?;
-    }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("open tmp failed: {e}"))?;
-        f.write_all(body.as_bytes())
-            .map_err(|e| format!("write tmp failed: {e}"))?;
-        f.sync_all().ok();
-    }
-    let mut attempt = 0;
-    loop {
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(_e) if attempt < 5 => {
-                attempt += 1;
-                std::thread::sleep(std::time::Duration::from_millis(20 * attempt));
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(format!("rename failed after {attempt} attempts: {e}"));
-            }
-        }
-    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
 }
 
 /// 读注册表（文件不存在 = 空表；损坏 = Err 透传诚实报错）。
