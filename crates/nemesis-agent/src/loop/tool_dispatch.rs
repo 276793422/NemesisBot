@@ -516,7 +516,16 @@ impl AgentLoop {
         // fresh-read——陈旧 prompt cache 带出的 mcp_call 在 lazy off 时拒绝。
         // 内层名必须 mcp_ 前缀且 != mcp_call（防递归；meta 工具不是通用
         // 调度旁路）。
+        //
+        // BUG-20261118-095 自闸：本工具自身名被 agents.hidden_tools 隐藏
+        // 时拒绝。拦截臂位于通用 hidden 闸（下方）之前，无此闸则「供给
+        // 面隐藏（build_tool_defs 过滤含 meta 名）+ dispatch 面放行」双闸
+        // 矛盾对 meta 名同样成立（含 `mcp_*` 通配——通配命中 mcp_call）。
         if tool_call.name == "mcp_call" {
+            if tool_name_matches_hidden(&self.current_hidden_tools(), "mcp_call") {
+                warn!("[AgentLoop] Hidden meta tool mcp_call refused (agents.hidden_tools).");
+                return "Error: Tool 'mcp_call' is hidden by configuration (agents.hidden_tools) and cannot be executed. Inform the user; do NOT retry unless they un-hide it.".to_string();
+            }
             if !self.current_mcp_lazy_supply() {
                 warn!("[AgentLoop] mcp_call refused (agents.mcp_lazy_supply=false).");
                 return "Error: mcp_call 仅在 agents.mcp_lazy_supply=true 时可用（当前 MCP 工具已在工具列表中直连，无需 meta 调用）。Inform the user.".to_string();
@@ -570,7 +579,16 @@ impl AgentLoop {
         // 不可见的工具不可取——供给面看不见的 schema 取了也没用，且不暴露
         // 配置刻意藏起来的工具面。execute 直调是诚实报错安全网（同
         // McpCallTool——正常流程死代码）。
+        //
+        // BUG-20261118-095 自闸：本工具自身名被 hidden_tools 隐藏时拒绝
+        // （同 mcp_call——拦截臂先于通用 hidden 闸）。
         if tool_call.name == "tools_schema_get" {
+            if tool_name_matches_hidden(&self.current_hidden_tools(), "tools_schema_get") {
+                warn!(
+                    "[AgentLoop] Hidden meta tool tools_schema_get refused (agents.hidden_tools)."
+                );
+                return "Error: Tool 'tools_schema_get' is hidden by configuration (agents.hidden_tools) and cannot be executed. Inform the user; do NOT retry unless they un-hide it.".to_string();
+            }
             if !self.current_lazy_tool_schema() {
                 warn!("[AgentLoop] tools_schema_get refused (lazy schema supply inactive).");
                 return "Error: tools_schema_get 仅在惰性 schema 供给模式下可用（当前档位下全部工具的完整参数 schema 已随轮上行，直接按列表中的 schema 调用即可，无需取回）。Inform the user.".to_string();
@@ -635,6 +653,127 @@ impl AgentLoop {
                     want, desc, params, want
                 );
             }
+        }
+
+        // （加固）：mcp_list dispatch 拦截——BUG-20261118-095。MCP 工具面
+        // 的模型侧发现通路（清单 + 按名查 schema）。此前 execute 直读
+        // SharedToolConfig.mcp_tool_snapshot：①生产装配从未把 loop 快照
+        // 接进该槽（全生产构造点无一设置 → 恒空 Arc）→ 生产面 mcp_list
+        // 恒回「No MCP tools」——发现面死工具，lazy 两步流程第一步断供；
+        // ②即便接通，快照是注册面投影（无可见性过滤）——被 hidden_tools
+        // 隐藏（或独占接管 / tool_policy / tier 白名单过滤）的 mcp_* 工具，
+        // 名字、描述与完整参数 schema 全量泄漏，与 tools_schema_get 同面
+        // 明确拒绝的口径（「不暴露配置刻意藏起来的工具面」）矛盾，且
+        // mcp_call 错误文案指路 mcp_list，模型照做即撞闸形成误导循环。
+        //
+        // 修复形态：拦截后从 registry 真值渲染（快照保留给 connectors
+        // Dashboard 运营面，模型面不再消费）。列出/可查 face = mcp_call
+        // 可达 face（hidden/独占/policy/tier 四闸 + mcp_call 自身 lazy 闸，
+        // 文案镜像各 dispatch 闸），刻意**不含** lazy 供给裁剪——lazy on
+        // 时长尾经 mcp_call 仍可调用，列名正是两步流程的发现面；hidden
+        // 是绝对闸（内层调用必拒），从发现面消失才是契约语义。自闸：
+        // mcp_list 自身过同一不可见判定（mini+lazy-off 下 tier 白名单
+        // 不含它，dispatch 端如实拒）。按名排序（BUG-20261117-052 序稳定
+        // 纪律）。execute 直调是诚实报错安全网（正常流程死代码）。
+        if tool_call.name == "mcp_list" {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::Value::Null);
+            let want: Option<String> = parsed
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            // dispatch 各闸同源现读（fresh-read 双闸契约：dashboard/CLI
+            // 改动下一轮生效，此处读的就是执行时刻权威态）。
+            let hidden = self.current_hidden_tools();
+            let exclusive = self.current_exclusive_hidden_tools();
+            let policy_allow = self.tool_policy_allow();
+            let tier = *self.tier.read();
+            let mcp_lazy = self.current_mcp_lazy_supply();
+            // 不可见原因（顺序即 dispatch 拒绝优先级：hidden → 独占 →
+            // policy → tier → mcp_call 自身 lazy 闸；文案镜像各 dispatch 闸、
+            // 动词改为 schema 不可列）。独占闸镜像 dispatch 端出处豁免
+            // （connector-binding 回灌通道放行）。
+            let invisibility = |name: &str, min_tier: Option<&str>| -> Option<String> {
+                if tool_name_matches_hidden(&hidden, name) {
+                    Some(format!(
+                        "Error: Tool '{name}' is hidden by configuration (agents.hidden_tools) and its schema cannot be listed. Inform the user; do NOT retry."
+                    ))
+                } else if context.channel != "connector-binding"
+                    && tool_name_matches_hidden(&exclusive, name)
+                {
+                    Some(format!(
+                        "Error: Tool '{name}' is exclusively managed by an enabled connector（独占接管）; its schema cannot be listed. Discover it via connector_find and call via connector_invoke, or ask the user to set an exemption in Dashboard → Connectors."
+                    ))
+                } else if !policy_allow.is_empty() && !policy_allow.iter().any(|a| a == name) {
+                    Some(format!(
+                        "Error: Tool '{name}' is not permitted by this agent's tool_policy allow-list and its schema cannot be listed. Inform the user; do NOT retry."
+                    ))
+                } else if !tier_supplies_tool(min_tier, name, tier, mcp_lazy) {
+                    Some(format!(
+                        "Error: Tool '{name}' is not visible at the active model's tier and its schema cannot be listed. Inform the user; they can switch models via /model."
+                    ))
+                } else if name == "mcp_call" && !mcp_lazy {
+                    Some(
+                        "Error: mcp_call is only available when agents.mcp_lazy_supply=true (MCP tools are currently supplied directly with their schemas).".to_string(),
+                    )
+                } else {
+                    None
+                }
+            };
+            let tools_guard = self.tools.read();
+            // 自闸：mcp_list 自身过同一不可见判定（拦截臂先于通用闸）。
+            {
+                let self_min = tools_guard.get("mcp_list").and_then(|t| t.min_tier());
+                if let Some(msg) = invisibility("mcp_list", self_min) {
+                    warn!("[AgentLoop] mcp_list refused by visibility gate.");
+                    return msg;
+                }
+            }
+            if let Some(name) = want {
+                let Some(tool) = tools_guard
+                    .get(name.as_str())
+                    .filter(|_| name.starts_with("mcp_"))
+                else {
+                    return format!(
+                        "No MCP tool named `{name}` is registered. Call without arguments to list all registered MCP tools."
+                    );
+                };
+                if let Some(msg) = invisibility(&name, tool.min_tier()) {
+                    return msg;
+                }
+                let entry = McpToolSnapshotEntry {
+                    name: name.clone(),
+                    description: tool.description(),
+                    parameters: tool.parameters(),
+                    read_only_hint: tool.read_only_hint(),
+                    destructive_hint: tool.destructive_hint(),
+                };
+                drop(tools_guard);
+                return crate::loop_tools::render_mcp_tool_detail(&entry);
+            }
+            // 全量清单：mcp_* 注册面 ∩ 可见 face，按名排序。
+            let mut names: Vec<&String> = tools_guard
+                .keys()
+                .filter(|n| n.starts_with("mcp_"))
+                .collect();
+            names.sort();
+            let mut entries: Vec<McpToolSnapshotEntry> = Vec::with_capacity(names.len());
+            for name in names {
+                let tool = &tools_guard[name.as_str()];
+                if invisibility(name, tool.min_tier()).is_some() {
+                    continue;
+                }
+                entries.push(McpToolSnapshotEntry {
+                    name: name.clone(),
+                    description: tool.description(),
+                    parameters: tool.parameters(),
+                    read_only_hint: tool.read_only_hint(),
+                    destructive_hint: tool.destructive_hint(),
+                });
+            }
+            drop(tools_guard);
+            return crate::loop_tools::render_mcp_list(&entries);
         }
 
         // F-（UAT 实证）：档案管线任务的工作副本路径基准重写。位置在

@@ -8,15 +8,20 @@
 //! 台账缺席），不做静默自愈。
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "sqlite")]
+use std::sync::Mutex;
 
+#[cfg(feature = "sqlite")]
 use rusqlite::Connection;
 
 /// 当前 schema 版本。（agents 表）/（交付泛化）/项 C（通知三段）
 /// 增表时：追加迁移步 + 本常量 +1，历史步永不改写。
+#[cfg(feature = "sqlite")]
 pub(crate) const LATEST_SCHEMA_VERSION: i64 = 4;
 
 /// v1 基线 schema：统一任务层四表。
+#[cfg(feature = "sqlite")]
 pub(crate) const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS runs (
     id               TEXT PRIMARY KEY,
@@ -88,6 +93,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
 /// 后端 / 多租户预留（principal）/ 归属节点。三类组（main/project/
 /// selfbuilt）同表，`kind` 区分；`status` 承载两阶段创建
 /// （provisioning → active | failed）。
+#[cfg(feature = "sqlite")]
 pub(crate) const SCHEMA_V2: &str = r#"
 CREATE TABLE IF NOT EXISTS agents (
     agent_id          TEXT PRIMARY KEY,
@@ -118,6 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind);
 /// 两列（与 approvals 的 decided_at/decision_note 列式先例对称）。
 /// rejected 是终态：从任何非 rejected 状态条件进入（状态迁移走
 /// `reject_delivery`，带原因留痕）。
+#[cfg(feature = "sqlite")]
 pub(crate) const SCHEMA_V3: &str = r#"
 ALTER TABLE deliveries ADD COLUMN rejected_at TEXT;
 ALTER TABLE deliveries ADD COLUMN reject_reason TEXT;
@@ -133,6 +140,7 @@ ALTER TABLE deliveries ADD COLUMN reject_reason TEXT;
 /// notify_outbox：通道 send 失败的出站消息暂存（message = JSON 序列化的
 /// OutboundMessage），按 delivery_key UNIQUE（同笔交付同时至多一笔待重试，
 /// UPSERT 覆盖 message + 累计 attempts）。
+#[cfg(feature = "sqlite")]
 pub(crate) const SCHEMA_V4: &str = r#"
 ALTER TABLE deliveries ADD COLUMN notify_state TEXT NOT NULL DEFAULT '';
 ALTER TABLE deliveries ADD COLUMN notify_attempts INTEGER NOT NULL DEFAULT 0;
@@ -153,8 +161,13 @@ CREATE INDEX IF NOT EXISTS idx_notify_outbox_retry ON notify_outbox(next_retry_a
 
 /// tasks.db 连接持有者（`Arc<TaskDb>` 共享；内部 Mutex 串行写——
 /// 单写者权威与 board.db 同款，WAL 保读不阻塞）。
+///
+/// sqlite 关闭态：结构同型（构造/open 签名不变），不持有连接——写入
+/// no-op、查询恒空，open 时 warn 一次诚实注记（usage-store 空账本先例
+/// 同款纪律）。
 #[derive(Debug)]
 pub struct TaskDb {
+    #[cfg(feature = "sqlite")]
     conn: Mutex<Connection>,
 }
 
@@ -162,6 +175,7 @@ impl TaskDb {
     /// 打开（不存在则创建）+ 完整性快检 + 迁移到最新版。
     ///
     /// 损坏 / 无法迁移 = Err（fail-closed，调用方响亮降级）。
+    #[cfg(feature = "sqlite")]
     pub fn open(path: &Path) -> Result<Arc<TaskDb>, String> {
         let conn = Connection::open(path)
             .map_err(|e| format!("tasks.db open failed ({}): {e}", path.display()))?;
@@ -210,6 +224,7 @@ impl TaskDb {
 
     /// 在连接上执行一段访问（内部 Mutex 串行化；Mutex 中毒 = 库不可用，
     /// fail-closed 上抛不静默）。
+    #[cfg(feature = "sqlite")]
     pub(crate) fn with_conn<T>(
         &self,
         f: impl FnOnce(&Connection) -> Result<T, String>,
@@ -221,6 +236,7 @@ impl TaskDb {
         f(&guard)
     }
 
+    #[cfg(feature = "sqlite")]
     fn check_integrity(conn: &Connection) -> Result<(), String> {
         let verdict: String = conn
             .query_row("PRAGMA quick_check", [], |r| r.get(0))
@@ -237,6 +253,7 @@ impl TaskDb {
 
     /// user_version 顺序迁移。当前版本高于本 crate 认识的最新版 =
     /// Err（降级打开会破坏数据，fail-closed）。
+    #[cfg(feature = "sqlite")]
     fn migrate(mut conn: Connection) -> Result<Connection, String> {
         let current: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -274,5 +291,17 @@ impl TaskDb {
         tx.commit()
             .map_err(|e| format!("tasks.db migration commit failed: {e}"))?;
         Ok(conn)
+    }
+
+    /// sqlite 未编译进本构建：统一任务层不落盘（写入 no-op、查询恒空）。
+    /// open 签名同型——调用方响亮降级链路照常工作（PoisonedTaskStore /
+    /// 台账缺席语义不变），仅缺持久化。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn open(_path: &Path) -> Result<Arc<TaskDb>, String> {
+        tracing::warn!(
+            "[TaskDb] sqlite 未编译进本构建：统一任务层不落盘，查询恒空 \
+             （需持久化请以 taskstore-sqlite feature 重编）"
+        );
+        Ok(Arc::new(TaskDb {}))
     }
 }

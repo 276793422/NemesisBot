@@ -31,6 +31,13 @@ pub const NAV_WAIT_DEFAULT_MS: u64 = 30_000;
 pub const NAV_WAIT_MAX_MS: u64 = 120_000;
 pub const WAIT_FOR_DEFAULT_MS: u64 = 10_000;
 pub const WAIT_FOR_MAX_MS: u64 = 60_000;
+/// 就绪轮询类 evaluate 的短超时（六轮复核 2026-11-18）：JS 对话框开着时
+/// 轮询 evaluate 撞满超时——30s 的 [`cdp::CDP_CMD_TIMEOUT`] 把每次弹框
+/// 阻塞代价放大到 30s+（wait_document_ready 轮询被它拖死 = navigate
+/// 假超时；wait_for 假未命中）。轮询语义下空闲主线程的 readyState
+/// evaluate 毫秒级，2s 已足够；配合 eval_conn 超时臂自愈，弹框阻塞代价
+/// ≈ 2s 超时 + 毫秒级探测。一次性读取仍用 30s。
+pub const POLL_CDP_TIMEOUT: Duration = Duration::from_secs(2);
 /// extract 文本截断（head+tail，guest 同款 4000+4000）。
 const EXTRACT_HEAD: usize = 4000;
 const EXTRACT_TAIL: usize = 4000;
@@ -116,6 +123,47 @@ pub enum WebAction {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// DOM 元素结构化检视（只读，2026-11-18 DOM 只读动作计划）。状态字段
+    /// 读 property（open/checked/disabled/required——用户点击后 attribute
+    /// 不更新，读 attribute 会「勾了但显示没勾」）；expanded/role/name/type
+    /// 读 attribute；属性白名单输出（`value` 恒不在名单——凭据面硬规则）。
+    Inspect {
+        selector: String,
+        /// frame 定位（URL 子串匹配；缺省/"main" = 主 frame；同进程 iframe
+        /// 走 createIsolatedWorld、跨域 OOPIF 走 flatten 子会话——§3.7）。
+        #[serde(default)]
+        frame: Option<String>,
+    },
+    /// 有界 DOM 树快照（只读）。text 只给叶子节点（容器 textContent 是
+    /// 后代拼接会与子行重复）；shadowRoot 递归穿透；不进 iframe
+    /// contentDocument（iframe 元素本身出现在树里，src 可见——下一步用
+    /// frame 参数定位内部）。
+    #[serde(rename = "snapshot")]
+    SnapshotDom {
+        /// 遍历根（缺省 body；只主 frame 或 frame 指定的 document）。
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        frame: Option<String>,
+        /// 深度闸（缺省 12，钳 [1,30]）。
+        #[serde(default)]
+        max_depth: Option<u32>,
+        /// 节点数闸（缺省 300，钳 [1,2000]）。
+        #[serde(default)]
+        max_nodes: Option<u32>,
+    },
+    /// 子树 outerHTML（只读，脱敏序列化）：clone 后剥 input value 属性、
+    /// 清 textarea textContent、后代 script/style 整体删除。打字值
+    /// 走 native setter 设 property 天然不进 outerHTML——脱敏剥的是页面
+    /// 源码 value 属性（SSO 预填场景），两层各自有效。
+    GetDom {
+        selector: String,
+        #[serde(default)]
+        frame: Option<String>,
+        /// 输出字符上限（缺省 12000，钳 [200,50000]；head+tail 截断）。
+        #[serde(default)]
+        max_chars: Option<u32>,
+    },
 }
 
 /// 键盘事件相位。
@@ -143,6 +191,11 @@ pub fn action_op_slug(action: &WebAction) -> &'static str {
         WebAction::ExtractText { .. } => "internal",
         WebAction::Screenshot => "internal",
         WebAction::WaitFor { .. } => "internal",
+        // DOM 只读三动作与 extract_text 同级（免审批卡；审计照常——
+        // 2026-11-18 DOM 只读动作计划 §3.5）。
+        WebAction::Inspect { .. } => "internal",
+        WebAction::SnapshotDom { .. } => "internal",
+        WebAction::GetDom { .. } => "internal",
     }
 }
 
@@ -195,6 +248,12 @@ pub struct ChromiumCdpDriver {
     /// 页面级连接缓存（target_id → conn）。
     conns: Mutex<HashMap<String, Arc<CdpConn>>>,
     browser_conn: tokio::sync::OnceCell<Arc<CdpConn>>,
+    /// 同进程 iframe 隔离 world 缓存（frame_id → executionContextId；
+    /// per-call 创建会积累垃圾 world，复用 + 页面导航自动清）。
+    frame_worlds: Mutex<HashMap<String, u64>>,
+    /// OOPIF attach 会话缓存（target_id → sessionId；重复 attachToTarget
+    /// 同一 target 会积累会话）。失效靠执行期报错逐出自愈（§3.7）。
+    frame_sessions: Mutex<HashMap<String, String>>,
 }
 
 impl ChromiumCdpDriver {
@@ -205,6 +264,8 @@ impl ChromiumCdpDriver {
             browser_ws_path,
             conns: Mutex::new(HashMap::new()),
             browser_conn: tokio::sync::OnceCell::const_new(),
+            frame_worlds: Mutex::new(HashMap::new()),
+            frame_sessions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -282,13 +343,50 @@ impl ChromiumCdpDriver {
 
     /// Runtime.evaluate（returnByValue；exceptionDetails → Err）。
     async fn evaluate(&self, target_id: &str, expr: &str) -> Result<Value, String> {
+        self.evaluate_to(target_id, expr, cdp::CDP_CMD_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::evaluate`] 的显式超时变体（就绪轮询用 [`POLL_CDP_TIMEOUT`]）。
+    async fn evaluate_to(
+        &self,
+        target_id: &str,
+        expr: &str,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let conn = self.page_conn(target_id).await?;
+        self.eval_conn(&conn, None, None, expr, None, timeout).await
+    }
+
+    /// 核心 evaluate（conn + 可选 flatten 子会话/隔离 world 通路）——**全部**
+    /// evaluate 的单一通路（主 frame / 同进程 iframe contextId / OOPIF 子会话
+    /// 都走这里，对话框自愈臂才有全路由覆盖；2026-11-18 自查修正：此前
+    /// SameProcess/Oopif 分支内联 call 绕过本函数，iframe 里开着 JS 对话框时
+    /// DOM 读 evaluate 撞满 30s 超时且无 F33 探测）。returnByValue、
+    /// exceptionDetails → Err、超时臂 F33/F39 对话框自愈（四轮复核活体修正：
+    /// session 路由的 handleJavaScriptDialog 对 OOPIF frame target **失败**
+    /// ——JS 对话框是 tab 级、挂 WebContents 的 DialogManager，frame target
+    /// 的 Page 域不带对话框状态；`dismiss_fallback` 传页面 conn 时以
+    /// page conn + None 兜底，这才是实测有效的关框通路）。既有页面路径
+    /// [`Self::evaluate`] 是本函数的 `(page_conn, None, None)` 特例。
+    /// `timeout` 由调用方给定：一次性读取用 [`cdp::CDP_CMD_TIMEOUT`]，
+    /// 就绪轮询用 [`POLL_CDP_TIMEOUT`]（六轮复核：对话框开着时轮询撞满
+    /// 超时，30s 的轮询超时把每次弹框阻塞代价放大到 30s+）。
+    async fn eval_conn(
+        &self,
+        conn: &CdpConn,
+        session: Option<&str>,
+        context_id: Option<u64>,
+        expr: &str,
+        dismiss_fallback: Option<&CdpConn>,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let mut params = json!({"expression": expr, "returnByValue": true, "awaitPromise": false});
+        if let Some(ctx) = context_id {
+            params["contextId"] = json!(ctx);
+        }
         let res = match conn
-            .call(
-                "Runtime.evaluate",
-                json!({"expression": expr, "returnByValue": true, "awaitPromise": false}),
-                cdp::CDP_CMD_TIMEOUT,
-            )
+            .call_in_session(session, "Runtime.evaluate", params, timeout)
             .await
         {
             Ok(v) => v,
@@ -297,7 +395,14 @@ impl ChromiumCdpDriver {
             // 每个 evaluate 都撞满 30s（wait_document_ready/wait_for 轮询
             // = 超时风暴）。自动关闭 + 诚实回报（轮询调用下一轮自愈）。
             Err(e) if e.contains("timeout") => {
-                if dismiss_dialog_if_open(&conn).await {
+                let dismissed = dismiss_dialog_if_open(conn, session).await
+                    || match dismiss_fallback {
+                        // 四轮复核：OOPIF frame target 的 session 路由
+                        // dismiss 失败（对话框 tab 级）→ 页面会话兜底。
+                        Some(p) => dismiss_dialog_if_open(p, None).await,
+                        None => false,
+                    };
+                if dismissed {
                     // F39（2026-11-16 七审）：不带「可重试」的盲目鼓励——
                     // 若对话框由本动作的 JS 处理器**同步**弹出（el.click()
                     // → handler → alert），evaluate 被暂停前副作用已发生，
@@ -313,23 +418,221 @@ impl ChromiumCdpDriver {
             }
             Err(e) => return Err(e),
         };
-        if res.get("exceptionDetails").is_some() {
-            let msg = res
-                .pointer("/exceptionDetails/exception/description")
-                .and_then(|d| d.as_str())
-                .or_else(|| {
-                    res.pointer("/exceptionDetails/exception/details/0/text")
-                        .and_then(|t| t.as_str())
-                })
-                .unwrap_or("JS exception");
-            return Err(format!("JS 异常: {msg}"));
+        eval_result_value(res, expr)
+    }
+
+    /// 在 FrameRoute 上执行 evaluate（三路全走 [`Self::eval_conn`]——主
+    /// frame / 同进程隔离 world / OOPIF 子会话同一对话框自愈臂）。
+    async fn evaluate_routed(
+        &self,
+        target_id: &str,
+        route: &FrameRoute,
+        expr: &str,
+    ) -> Result<Value, String> {
+        match route {
+            FrameRoute::Main => {
+                let conn = self.page_conn(target_id).await?;
+                self.eval_conn(&conn, None, None, expr, None, cdp::CDP_CMD_TIMEOUT)
+                    .await
+            }
+            FrameRoute::SameProcess { context_id, .. } => {
+                let conn = self.page_conn(target_id).await?;
+                self.eval_conn(
+                    &conn,
+                    None,
+                    Some(*context_id),
+                    expr,
+                    None,
+                    cdp::CDP_CMD_TIMEOUT,
+                )
+                .await
+            }
+            FrameRoute::Oopif { session_id, .. } => {
+                let browser = self.browser().await?;
+                // dismiss 兜底 = 页面会话（对话框 tab 级；OOPIF frame
+                // target 的 session 路由关不掉——四轮复核活体实测）。
+                let page = self.page_conn(target_id).await?;
+                self.eval_conn(
+                    &browser,
+                    Some(session_id),
+                    None,
+                    expr,
+                    Some(&page),
+                    cdp::CDP_CMD_TIMEOUT,
+                )
+                .await
+            }
         }
-        Ok(res.get("result").cloned().unwrap_or(Value::Null))
+    }
+
+    /// DOM 只读三动作统一执行通路：frame 解析 → evaluate；context/target
+    /// 失效错误逐出对应缓存 → 重新解析 → 重试一次（§3.7 自愈——页面导航
+    /// 后隔离 world/OOPIF 换代是常态）。返回 (evaluate 结果, frame 回显)。
+    async fn eval_dom_routed(
+        &self,
+        target_id: &str,
+        frame: Option<&str>,
+        expr: &str,
+    ) -> Result<(Value, String), String> {
+        let want = frame.filter(|f| !f.is_empty() && *f != "main");
+        let (route, label) = match want {
+            None => (self.resolve_main(target_id).await?, "main".to_string()),
+            Some(w) => {
+                let r = self.resolve_frame(target_id, w).await?;
+                let label = w.to_string();
+                (r, label)
+            }
+        };
+        match self.evaluate_routed(target_id, &route, expr).await {
+            Ok(v) => Ok((v, label)),
+            Err(e) if is_stale_frame_error(&e) => {
+                // 逐出该 route 的缓存条目 → 重新解析 → 重试一次。
+                match &route {
+                    FrameRoute::SameProcess { frame_id, .. } => {
+                        self.frame_worlds.lock().remove(frame_id);
+                    }
+                    FrameRoute::Oopif {
+                        oopif_target_id, ..
+                    } => {
+                        self.frame_sessions.lock().remove(oopif_target_id);
+                    }
+                    FrameRoute::Main => {}
+                }
+                let fresh = match want {
+                    None => self.resolve_main(target_id).await?,
+                    Some(w) => self.resolve_frame(target_id, w).await?,
+                };
+                let v = self.evaluate_routed(target_id, &fresh, expr).await?;
+                Ok((v, label))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 主 frame 通路（页面级 conn 现成）。
+    async fn resolve_main(&self, target_id: &str) -> Result<FrameRoute, String> {
+        self.page_conn(target_id).await?;
+        Ok(FrameRoute::Main)
+    }
+
+    /// frame 参数解析（§3.7 双路径，分流顺序是正确性关键）：先查 OOPIF
+    /// targets（frame 树是 DOM 概念与进程无关——OOPIF frame 也在树里，
+    /// 先走 frameTree 会把 OOPIF frameId 误导入 createIsolatedWorld，拿
+    /// 到跨进程 contextId 后 page session 的 evaluate 必报 context not
+    /// found）；targets 无命中再走同进程 frame 树；都不中 = 诚实报错 +
+    /// 全 frame 清单（发现机制，不另设 list_frames 动作）。
+    async fn resolve_frame(&self, target_id: &str, want: &str) -> Result<FrameRoute, String> {
+        // 1) OOPIF targets（浏览器级 conn；HTTP /json 不列 iframe target）。
+        let browser = self.browser().await?;
+        let targets_res = browser
+            .call("Target.getTargets", json!({}), cdp::CDP_CMD_TIMEOUT)
+            .await?;
+        if let Some(list) = targets_res.get("targetInfos").and_then(|v| v.as_array()) {
+            for t in list {
+                if t.get("type").and_then(|v| v.as_str()) != Some("iframe") {
+                    continue;
+                }
+                let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                if !url.contains(want) {
+                    continue;
+                }
+                let tid = t
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if tid.is_empty() {
+                    continue;
+                }
+                let sid = self.oopif_session(&tid).await?;
+                return Ok(FrameRoute::Oopif {
+                    session_id: sid,
+                    oopif_target_id: tid,
+                });
+            }
+        }
+        // 2) 同进程 frame 树（页面级 conn；渲染器绑定——对话框兜底见
+        // [`call_with_dialog_arm`]）。
+        let page = self.page_conn(target_id).await?;
+        let tree_res = call_with_dialog_arm(&page, "Page.getFrameTree", json!({})).await?;
+        // 响应解包：call() 返回 result 载荷，顶层是 `frameTree` 键——纯函数
+        // 消费的是 frameTree **节点**（`{frame, childFrames}`）。不解包则
+        // flatten 首层即 return，清单恒「（无）」/查找恒未命中（edge_live
+        // 实测抓出——lib 测试只钉了节点形态，包络形态只有活体能验）。
+        let tree = tree_res.get("frameTree").cloned().unwrap_or(Value::Null);
+        if let Some(frame_id) = find_frame_id(&tree, want) {
+            let context_id = self.frame_world(&page, &frame_id).await?;
+            return Ok(FrameRoute::SameProcess {
+                frame_id,
+                context_id,
+            });
+        }
+        // 3) 都不中 → 报错 + 清单（标注进程归属）。
+        Err(format!(
+            "frame 未找到（按 URL 子串匹配「{want}」）。当前可见 frame：{}",
+            frame_url_list(&tree, &targets_res)
+        ))
+    }
+
+    /// 同进程 iframe 隔离 world（缓存复用；世界数量随页面导航自动清）。
+    /// createIsolatedWorld 同为渲染器绑定调用——对话框兜底同
+    /// [`call_with_dialog_arm`]（缓存命中路径不发起 CDP 调用，天然免疫）。
+    async fn frame_world(&self, page: &Arc<CdpConn>, frame_id: &str) -> Result<u64, String> {
+        if let Some(ctx) = self.frame_worlds.lock().get(frame_id) {
+            return Ok(*ctx);
+        }
+        let res = call_with_dialog_arm(
+            page,
+            "Page.createIsolatedWorld",
+            json!({"frameId": frame_id}),
+        )
+        .await?;
+        let ctx = res
+            .get("executionContextId")
+            .and_then(|v| v.as_u64())
+            .ok_or("Page.createIsolatedWorld 缺 executionContextId")?;
+        self.frame_worlds.lock().insert(frame_id.to_string(), ctx);
+        Ok(ctx)
+    }
+
+    /// OOPIF attach 会话（缓存复用；flatten 模式同一 browser socket 多路复用）。
+    async fn oopif_session(&self, oopif_target_id: &str) -> Result<String, String> {
+        if let Some(sid) = self.frame_sessions.lock().get(oopif_target_id) {
+            return Ok(sid.clone());
+        }
+        let browser = self.browser().await?;
+        let res = browser
+            .call(
+                "Target.attachToTarget",
+                json!({"targetId": oopif_target_id, "flatten": true}),
+                cdp::CDP_CMD_TIMEOUT,
+            )
+            .await?;
+        let sid = res
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .ok_or("Target.attachToTarget 缺 sessionId")?
+            .to_string();
+        self.frame_sessions
+            .lock()
+            .insert(oopif_target_id.to_string(), sid.clone());
+        Ok(sid)
     }
 
     /// evaluate 结果字符串值。
     async fn eval_string(&self, target_id: &str, expr: &str) -> Result<String, String> {
-        let v = self.evaluate(target_id, expr).await?;
+        self.eval_string_to(target_id, expr, cdp::CDP_CMD_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::eval_string`] 的显式超时变体（就绪轮询用 [`POLL_CDP_TIMEOUT`]）。
+    async fn eval_string_to(
+        &self,
+        target_id: &str,
+        expr: &str,
+        timeout: Duration,
+    ) -> Result<String, String> {
+        let v = self.evaluate_to(target_id, expr, timeout).await?;
         match v.get("value") {
             Some(Value::String(s)) => Ok(s.clone()),
             Some(Value::Null) | None => Ok(String::new()),
@@ -337,7 +640,10 @@ impl ChromiumCdpDriver {
         }
     }
 
-    /// readyState 轮询等待加载（超时 = 诚实报当前状态非报错）。
+    /// readyState 轮询等待加载（超时 = 诚实报当前状态非报错）。返回
+    /// `(状态, 对话框是否被自动关闭)`——调用方据此在结果面注记
+    /// `dialog_dismissed`（六轮复核：等待期间的关框是自愈副作用，模型
+    /// 必须可感知）。
     ///
     /// F14（2026-11-15 三审）：Page.navigate 的响应到达时导航仅「开始」
     /// （commit 前），旧文档 readyState 仍是 complete——无脑 poll 会在首轮
@@ -346,31 +652,59 @@ impl ChromiumCdpDriver {
     /// commit + load 完成 = origin 已变再 complete。same_doc（同 URL 去
     /// fragment）= 同文档导航无新文档，跳过身份闸。origin 读失败 = 旧文档
     /// 上下文已销毁（导航已 commit）——视为已换文档。
+    ///
+    /// 六轮复核（2026-11-18）：新页面加载期弹 alert 是常见形态（解析期
+    /// alert 阻塞渲染器 = readyState 停滞 + 轮询撞框）——轮询用
+    /// [`POLL_CDP_TIMEOUT`] 短超时，撞框由 eval_conn 超时臂自愈关框；
+    /// 关框阻塞不是页面加载时间，deadline 一次性顺延（只顺延一次，
+    /// 防 alert 循环页无界等待）。
     async fn wait_document_ready(
         &self,
         target_id: &str,
         timeout_ms: u64,
         old_origin: Option<String>,
         same_doc: bool,
-    ) -> String {
-        let deadline =
-            std::time::Instant::now() + Duration::from_millis(timeout_ms.min(u64::MAX / 2));
+    ) -> (String, bool) {
+        let budget = Duration::from_millis(timeout_ms.min(u64::MAX / 2));
+        let mut deadline = std::time::Instant::now() + budget;
+        let mut dialog_dismissed = false;
+        let mut deadline_extended = false;
         loop {
-            let state = self.eval_string(target_id, "document.readyState").await;
+            let state = self
+                .eval_string_to(target_id, "document.readyState", POLL_CDP_TIMEOUT)
+                .await;
+            if state.as_ref().is_err_and(|e| e.contains("已自动关闭")) {
+                dialog_dismissed = true;
+            }
             let committed = if same_doc {
                 true
             } else {
                 let origin = self
-                    .eval_string(target_id, "String(performance.timeOrigin)")
-                    .await
-                    .ok();
-                origin.as_deref() != old_origin.as_deref()
+                    .eval_string_to(
+                        target_id,
+                        "String(performance.timeOrigin)",
+                        POLL_CDP_TIMEOUT,
+                    )
+                    .await;
+                if origin.as_ref().is_err_and(|e| e.contains("已自动关闭")) {
+                    dialog_dismissed = true;
+                }
+                origin.as_deref().ok() != old_origin.as_deref()
             };
             if state.as_deref() == Ok("complete") && committed {
-                return "complete".to_string();
+                return ("complete".to_string(), dialog_dismissed);
+            }
+            if dialog_dismissed && !deadline_extended {
+                // 关框阻塞不计入加载预算；只顺延一次（alert 循环页不会
+                // 把等待拖成无界）。
+                deadline_extended = true;
+                deadline = std::time::Instant::now() + budget;
             }
             if std::time::Instant::now() >= deadline {
-                return state.unwrap_or_else(|_| "unknown".to_string());
+                return (
+                    state.unwrap_or_else(|_| "unknown".to_string()),
+                    dialog_dismissed,
+                );
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -451,6 +785,11 @@ impl BrowserDriver for ChromiumCdpDriver {
         match action {
             WebAction::Navigate { url, timeout_ms } => {
                 let conn = self.page_conn(target_id).await?;
+                // F33 同族（六轮复核 2026-11-18）：对话框开着时锚点
+                // evaluate 撞满 30s 超时被 `.ok()` 吞错 → same_doc 保守
+                // 判定（F14 闸退化），Page.navigate 与加载等待同样被阻塞
+                // ——动作入口前置探测关闭（探针即关框，无框毫秒级）。
+                let dismissed_entry = dismiss_dialog_if_open(&conn, None).await;
                 // F14：导航前采文档身份锚 + 同文档判定（见
                 // wait_document_ready 注释——commit 前旧文档 complete 会
                 // 假命中）。
@@ -465,7 +804,7 @@ impl BrowserDriver for ChromiumCdpDriver {
                 );
                 conn.call("Page.navigate", json!({"url": url}), cdp::CDP_CMD_TIMEOUT)
                     .await?;
-                let load_state = self
+                let (load_state, dismissed_during) = self
                     .wait_document_ready(
                         target_id,
                         timeout_ms
@@ -475,11 +814,14 @@ impl BrowserDriver for ChromiumCdpDriver {
                         same_doc,
                     )
                     .await;
-                Ok(json!({
-                    "ok": true,
-                    "url": url,
-                    "load_state": load_state,
-                }))
+                Ok(note_dialog_dismissed(
+                    json!({
+                        "ok": true,
+                        "url": url,
+                        "load_state": load_state,
+                    }),
+                    dismissed_entry || dismissed_during,
+                ))
             }
             WebAction::Click { selector, x, y } => {
                 if let Some(sel) = selector {
@@ -494,7 +836,7 @@ impl BrowserDriver for ChromiumCdpDriver {
                     let conn = self.page_conn(target_id).await?;
                     // F33：对话框开着时 trusted 输入被渲染器静默吞（命令
                     // ok 但页面无反应）——派发前探测关闭 + 回执注明。
-                    let dismissed = dismiss_dialog_if_open(&conn).await;
+                    let dismissed = dismiss_dialog_if_open(&conn, None).await;
                     conn.call(
                         "Input.dispatchMouseEvent",
                         json!({"type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1, "buttons": 1}),
@@ -554,7 +896,7 @@ impl BrowserDriver for ChromiumCdpDriver {
                 // F33：对话框开着时 trusted 键事件整包被渲染器静默丢弃——
                 // 派发前探测关闭（焦点承接的 evaluate 若撞对话框由其超时
                 // 臂自行处理，无需此处重复）。
-                let dismissed = dismiss_dialog_if_open(&conn).await;
+                let dismissed = dismiss_dialog_if_open(&conn, None).await;
                 // F52：复合键名（ctrl+shift+a）解析——修饰物理帧序列 + 基键
                 // （base.extra_mods 已并入组合位）。无 '+' 单键 = 空修饰序列。
                 let (mut mods, spec) = parse_combo(key)?;
@@ -599,7 +941,7 @@ impl BrowserDriver for ChromiumCdpDriver {
             WebAction::Scroll { x, y, dx, dy } => {
                 let conn = self.page_conn(target_id).await?;
                 // F33：滚轮与点击同族（对话框开着 = 静默吞）。
-                let dismissed = dismiss_dialog_if_open(&conn).await;
+                let dismissed = dismiss_dialog_if_open(&conn, None).await;
                 // 视口中心缺省（mouseWheel 必须带坐标）。
                 let (cx, cy) = match (x, y) {
                     (Some(x), Some(y)) => (*x, *y),
@@ -652,6 +994,11 @@ impl BrowserDriver for ChromiumCdpDriver {
                     return Err("当前驱动不支持截图".to_string());
                 }
                 let conn = self.page_conn(target_id).await?;
+                // F33 同族（六轮复核 2026-11-18）：视口 metrics evaluate
+                // 渲染器绑定，对话框开着时五个 `.ok()` 全吞错 → vw/vh/dpr
+                // 全 None → 连坐 device_px 降级截图（F32 坐标归一被击穿，
+                // 缩放屏上模型量坐标恒脱靶）。动作入口前置探测关闭。
+                let dismissed = dismiss_dialog_if_open(&conn, None).await;
                 // F32（2026-11-15 六审）：坐标系归一。裸 captureScreenshot
                 // 按设备缩放输出**物理像素**（Windows 125%/150% 缩放是常态
                 // 而非例外），而 Input.dispatchMouseEvent 的 x/y 是 **CSS
@@ -688,28 +1035,33 @@ impl BrowserDriver for ChromiumCdpDriver {
                     .ok()
                     .and_then(|s| s.trim().parse::<f64>().ok())
                     .unwrap_or(0.0);
-                let res = conn
-                    .call(
-                        "Page.captureScreenshot",
-                        screenshot_params(vw.zip(vh), (sx, sy)),
-                        cdp::CDP_CMD_TIMEOUT,
-                    )
-                    .await?;
+                // captureScreenshot 同为渲染器绑定调用（七轮复核发现 2）：
+                // 入口探针关框后页面恢复、排队 alert 立即弹的窄窗竞态仍在
+                // ——包对话框兜底臂（撞框 = 注解错误可重试，非裸 30s）。
+                let res = call_with_dialog_arm(
+                    &conn,
+                    "Page.captureScreenshot",
+                    screenshot_params(vw.zip(vh), (sx, sy)),
+                )
+                .await?;
                 let data = res
                     .get("data")
                     .and_then(|d| d.as_str())
                     .ok_or("Page.captureScreenshot 缺 data")?;
-                Ok(json!({
-                    "ok": true,
-                    "png_base64": data,
-                    "viewport": {"width": vw, "height": vh},
-                    "dpr": dpr,
-                    "coordinate_space": if vw.is_some() && vh.is_some() {
-                        "css_px"
-                    } else {
-                        "device_px"
-                    },
-                }))
+                Ok(note_dialog_dismissed(
+                    json!({
+                        "ok": true,
+                        "png_base64": data,
+                        "viewport": {"width": vw, "height": vh},
+                        "dpr": dpr,
+                        "coordinate_space": if vw.is_some() && vh.is_some() {
+                            "css_px"
+                        } else {
+                            "device_px"
+                        },
+                    }),
+                    dismissed,
+                ))
             }
             WebAction::WaitFor {
                 selector,
@@ -719,29 +1071,150 @@ impl BrowserDriver for ChromiumCdpDriver {
                     .unwrap_or(WAIT_FOR_DEFAULT_MS)
                     .min(WAIT_FOR_MAX_MS);
                 let expr = js_exists(selector);
-                let deadline = std::time::Instant::now() + Duration::from_millis(timeout);
+                let conn = self.page_conn(target_id).await?;
+                // F33 同族（六轮复核 2026-11-18）：等待中的元素常与对话框
+                // 并存（页面 alert 挡住渲染/脚本）——存在性轮询撞框会假报
+                // 「未命中」。入口前置探测 + 轮询短超时（撞框由 eval_conn
+                // 超时臂自愈），关框阻塞不计入等待预算（deadline 一次性
+                // 顺延，防 alert 循环页无界）。
+                let mut dialog_dismissed = dismiss_dialog_if_open(&conn, None).await;
+                let mut deadline_extended = false;
+                let budget = Duration::from_millis(timeout);
+                let mut deadline = std::time::Instant::now() + budget;
                 // F15：报实际等待时长而非配额上限（秒中即中却报「等了 10s」
                 // 是结果面撒谎，模型按此判断页面状态会被误导）。
                 let started = std::time::Instant::now();
                 let waited = |d: Duration| d.as_millis() as u64;
                 loop {
-                    let found = self
-                        .eval_string(target_id, &expr)
+                    let found = match self
+                        .eval_string_to(target_id, &expr, POLL_CDP_TIMEOUT)
                         .await
-                        .map(|s| s == "true")
-                        .unwrap_or(false);
+                    {
+                        Ok(s) => s == "true",
+                        Err(e) => {
+                            if e.contains("已自动关闭") {
+                                dialog_dismissed = true;
+                            }
+                            false
+                        }
+                    };
+                    if dialog_dismissed && !deadline_extended {
+                        deadline_extended = true;
+                        deadline = std::time::Instant::now() + budget;
+                    }
                     if found {
-                        return Ok(
+                        return Ok(note_dialog_dismissed(
                             json!({"ok": true, "found": true, "waited_ms": waited(started.elapsed())}),
-                        );
+                            dialog_dismissed,
+                        ));
                     }
                     if std::time::Instant::now() >= deadline {
-                        return Ok(
+                        return Ok(note_dialog_dismissed(
                             json!({"ok": false, "found": false, "waited_ms": waited(started.elapsed())}),
-                        );
+                            dialog_dismissed,
+                        ));
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
+            }
+            WebAction::Inspect { selector, frame } => {
+                let expr = js_inspect(selector);
+                let (v, frame_label) = self
+                    .eval_dom_routed(target_id, frame.as_deref(), &expr)
+                    .await?;
+                let out = v
+                    .get("value")
+                    .and_then(|x| x.as_str())
+                    .ok_or("inspect 返回非字符串（页面异常）")?;
+                if out == "ERROR:no-element" {
+                    return Err(format!("未找到元素: {selector}"));
+                }
+                let parsed: Value = serde_json::from_str(out)
+                    .map_err(|e| format!("inspect 结果 JSON 解析失败: {e}"))?;
+                // 扁平组装（§3.1 返回形态：selector/frame 回显 + JS 字段）。
+                let mut out_json = json!({"ok": true, "selector": selector, "frame": frame_label});
+                if let (Some(obj), Some(tgt)) = (parsed.as_object(), out_json.as_object_mut()) {
+                    for (k, val) in obj {
+                        tgt.insert(k.clone(), val.clone());
+                    }
+                }
+                Ok(out_json)
+            }
+            WebAction::SnapshotDom {
+                selector,
+                frame,
+                max_depth,
+                max_nodes,
+            } => {
+                // 钳制在 driver 层（run_script 编排步骤同源收敛——工具面
+                // schema 只是模型面指引，两条通路都过这里）。
+                let depth = max_depth
+                    .unwrap_or(SNAP_DEPTH_DEFAULT)
+                    .clamp(1, SNAP_DEPTH_MAX);
+                let nodes_cap = max_nodes
+                    .unwrap_or(SNAP_NODES_DEFAULT)
+                    .clamp(1, SNAP_NODES_MAX);
+                let expr = js_snapshot(selector.as_deref(), depth, nodes_cap);
+                let (v, frame_label) = self
+                    .eval_dom_routed(target_id, frame.as_deref(), &expr)
+                    .await?;
+                let out = v
+                    .get("value")
+                    .and_then(|x| x.as_str())
+                    .ok_or("snapshot 返回非字符串（页面异常）")?;
+                if out == "ERROR:no-element" {
+                    return Err(format!(
+                        "未找到元素: {}",
+                        selector.as_deref().unwrap_or("body")
+                    ));
+                }
+                let parsed: Value = serde_json::from_str(out)
+                    .map_err(|e| format!("snapshot 结果 JSON 解析失败: {e}"))?;
+                let mut out_json = json!({"ok": true, "frame": frame_label});
+                if let Some(sel) = selector {
+                    out_json["selector"] = json!(sel);
+                }
+                if let (Some(obj), Some(tgt)) = (parsed.as_object(), out_json.as_object_mut()) {
+                    for (k, val) in obj {
+                        tgt.insert(k.clone(), val.clone());
+                    }
+                }
+                Ok(out_json)
+            }
+            WebAction::GetDom {
+                selector,
+                frame,
+                max_chars,
+            } => {
+                let cap = max_chars
+                    .unwrap_or(GET_DOM_CHARS_DEFAULT)
+                    .clamp(200, GET_DOM_CHARS_MAX) as usize;
+                let expr = js_get_dom(selector);
+                let (v, frame_label) = self
+                    .eval_dom_routed(target_id, frame.as_deref(), &expr)
+                    .await?;
+                let out = v
+                    .get("value")
+                    .and_then(|x| x.as_str())
+                    .ok_or("get_dom 返回非字符串（页面异常）")?;
+                if out == "ERROR:no-element" {
+                    return Err(format!("未找到元素: {selector}"));
+                }
+                let total = out.chars().count();
+                if total <= cap {
+                    return Ok(json!({
+                        "ok": true, "selector": selector, "frame": frame_label,
+                        "html": out, "truncated": false, "chars": total,
+                    }));
+                }
+                // head+tail 截断（复用 extract 同款形态；注记内嵌）。
+                let head = cap * 2 / 3;
+                let tail = cap - head;
+                let (text, truncated) = truncate_head_tail(out, head, tail);
+                Ok(json!({
+                    "ok": true, "selector": selector, "frame": frame_label,
+                    "html": text, "truncated": truncated, "chars": total,
+                }))
             }
         }
     }
@@ -798,8 +1271,16 @@ fn screenshot_params(viewport: Option<(f64, f64)>, scroll: (f64, f64)) -> Value 
 /// 更阴险）。挂点：evaluate 超时臂 + 三个 trusted 输入臂（click 坐标/
 /// scroll/key）派发前置探针。无对话框时 handleJavaScriptDialog 报错 =
 /// 本函数 false，开销一次 2s 超时上界的 CDP 往返（常态毫秒级）。
-async fn dismiss_dialog_if_open(conn: &CdpConn) -> bool {
-    conn.call(
+/// `session` = flatten 子会话通路。四轮复核活体修正：session 路由对
+/// OOPIF frame target 的对话框**关不掉**（JS 对话框是 tab 级、挂
+/// WebContents 的 DialogManager，frame target 的 Page 域不带对话框状态
+/// ——edge_live OOPIF 弹框用例首跑实证）；OOPIF 臂的真正关框通路是
+/// `eval_conn` 的 `dismiss_fallback`（page conn + None）。此处 session
+/// 参数保留先试（失败毫秒级、无害），主 frame / 同进程场景仍走本通路
+/// （三轮实证有效）。
+async fn dismiss_dialog_if_open(conn: &CdpConn, session: Option<&str>) -> bool {
+    conn.call_in_session(
+        session,
         "Page.handleJavaScriptDialog",
         json!({"accept": false}),
         Duration::from_secs(2),
@@ -814,6 +1295,152 @@ fn note_dialog_dismissed(mut out: Value, dismissed: bool) -> Value {
         out["dialog_dismissed"] = json!(true);
     }
     out
+}
+
+/// 渲染器绑定调用的对话框兜底（同进程 route 路径专用，2026-11-18 三轮
+/// 复核活体抓出）：同进程 iframe 的 JS 对话框阻塞渲染器主线程，
+/// `Page.getFrameTree`/`Page.createIsolatedWorld` 由渲染器处理，同样撞满
+/// 30s 超时——eval_conn 的自愈臂救不了（根本走不到 evaluate，此前本路径
+/// 裸超时无自愈，重试永远失败）。超时 → 探测关框 → 回注解错误（重试
+/// 自愈；契约与 [`Self::eval_conn`] 超时臂同形）。浏览器级调用
+/// （Target.getTargets / attachToTarget）不经此——browser 进程处理，
+/// 不被页面对话框阻塞。
+///
+/// 注解用短版（无 F39 副作用警示）：三个接线点（getFrameTree /
+/// createIsolatedWorld / captureScreenshot——七轮复核接入）皆无副作用的
+/// 一次性调用，重试天然安全；eval_conn 臂服务 evaluate（常带副作用），
+/// 完整警示归它。「轮询类」限定词已删（八轮复核：接线点皆非轮询，
+/// 限定词错配会误导模型按「非轮询所以不重试」处理）。
+async fn call_with_dialog_arm(
+    page: &CdpConn,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    match page.call(method, params, cdp::CDP_CMD_TIMEOUT).await {
+        Ok(v) => Ok(v),
+        Err(e) if e.contains("timeout") => {
+            if dismiss_dialog_if_open(page, None).await {
+                return Err(format!(
+                    "{e}；检测到阻塞页面的 JS 对话框，已自动关闭（按拒绝处理）。\
+                     重试即可自愈"
+                ));
+            }
+            Err(e)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// frame 路由（DOM 只读动作，2026-11-18 计划 §3.7）
+// ---------------------------------------------------------------------------
+
+/// frame 参数解析结果（执行通路）。
+enum FrameRoute {
+    /// 主 frame（页面级 conn 直用）。
+    Main,
+    /// 同进程 iframe（隔离 world contextId；保留 frame_id 供失效逐出）。
+    SameProcess { frame_id: String, context_id: u64 },
+    /// 跨域 OOPIF（flatten 子会话 sessionId；保留 target_id 供失效逐出）。
+    Oopif {
+        session_id: String,
+        oopif_target_id: String,
+    },
+}
+
+/// 失效错误判别（逐出自愈触发器，§3.7）：页面导航后隔离 world 换 context、
+/// OOPIF 换 target、会话关闭——CDP 错误文本钉这四类。
+fn is_stale_frame_error(e: &str) -> bool {
+    const NEEDLES: [&str; 4] = [
+        "Cannot find context",
+        "No frame with given id",
+        "Target closed",
+        "Session closed",
+    ];
+    NEEDLES.iter().any(|n| e.contains(n))
+}
+
+/// Runtime.evaluate 响应 → result 值（exceptionDetails → Err）。
+fn eval_result_value(res: Value, expr: &str) -> Result<Value, String> {
+    let _ = expr;
+    if res.get("exceptionDetails").is_some() {
+        let msg = res
+            .pointer("/exceptionDetails/exception/description")
+            .and_then(|d| d.as_str())
+            .or_else(|| {
+                res.pointer("/exceptionDetails/exception/details/0/text")
+                    .and_then(|t| t.as_str())
+            })
+            .unwrap_or("JS exception");
+        return Err(format!("JS 异常: {msg}"));
+    }
+    Ok(res.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// frameTree JSON → [(frameId, url)] 扁平清单（先根后子；嵌套 childFrames
+/// 递归）。frameTree 形态：`{frame: {id, url, ...}, childFrames: [...]}`。
+fn flatten_frame_tree(v: &Value, out: &mut Vec<(String, String)>) {
+    let Some(frame) = v.get("frame") else { return };
+    let id = frame
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let url = frame
+        .get("url")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !id.is_empty() {
+        out.push((id, url));
+    }
+    if let Some(kids) = v.get("childFrames").and_then(|x| x.as_array()) {
+        for k in kids {
+            flatten_frame_tree(k, out);
+        }
+    }
+}
+
+/// frameTree 里按 URL 子串找 frameId（首个命中——多匹配与 querySelector
+/// 首个语义一致）。
+fn find_frame_id(tree: &Value, url_sub: &str) -> Option<String> {
+    let mut out = Vec::new();
+    flatten_frame_tree(tree, &mut out);
+    out.into_iter()
+        .find(|(_, url)| url.contains(url_sub))
+        .map(|(id, _)| id)
+}
+
+/// frame URL 清单（报错面，§3.7）：OOPIF targets 先列（cross-process
+/// 标注）+ 同进程 frame 树（仅 frame 树出现 = same-process；URL 已在
+/// OOPIF 列表的跳过）。清单即发现机制——模型据此换更精确子串重试。
+fn frame_url_list(tree: &Value, targets_res: &Value) -> String {
+    let mut items: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(list) = targets_res.get("targetInfos").and_then(|v| v.as_array()) {
+        for t in list {
+            if t.get("type").and_then(|x| x.as_str()) != Some("iframe") {
+                continue;
+            }
+            let url = t.get("url").and_then(|x| x.as_str()).unwrap_or("");
+            if url.is_empty() || !seen.insert(url.to_string()) {
+                continue;
+            }
+            items.push(format!("{url} [cross-process]"));
+        }
+    }
+    let mut frames = Vec::new();
+    flatten_frame_tree(tree, &mut frames);
+    for (_, url) in frames {
+        if url.is_empty() || !seen.insert(url.clone()) {
+            continue;
+        }
+        items.push(format!("{url} [same-process]"));
+    }
+    if items.is_empty() {
+        return "（无）".to_string();
+    }
+    items.join("；")
 }
 
 // ---------------------------------------------------------------------------
@@ -891,6 +1518,149 @@ fn js_extract(selector: Option<&str>) -> String {
 fn js_exists(selector: &str) -> String {
     let sel = cdp::js_str(selector);
     format!("String(!!document.querySelector({sel}))")
+}
+
+/// snapshot 钳制（缺省 + 上下限；真实页面 div 嵌套常超 6 层——默认 12、
+/// 上限 30 防频繁截断）。
+const SNAP_DEPTH_DEFAULT: u32 = 12;
+const SNAP_DEPTH_MAX: u32 = 30;
+const SNAP_NODES_DEFAULT: u32 = 300;
+const SNAP_NODES_MAX: u32 = 2000;
+/// get_dom 输出字符上限（缺省 12000 / 钳 [200, 50000]）。
+const GET_DOM_CHARS_DEFAULT: u32 = 12_000;
+const GET_DOM_CHARS_MAX: u32 = 50_000;
+
+/// DOM 元素结构化检视（只读；返回 JSON 字符串——宿主解析）。
+///
+/// 语义（计划 §3.2 property/attribute 分层）：open/checked/disabled/required
+/// 读 property（动态状态准——用户点击后 attribute 不更新）；expanded/
+/// role/name/type 读 attribute；属性白名单输出，`value` 恒不在名单（凭据
+/// 面硬规则）。`el.open === undefined` 归一 null（2026-11-18 探针实测：
+/// 非 details 元素 open 是 undefined，JSON.stringify 会整键丢掉——显式
+/// norm 保键位稳定）。visible = 有几何 + display/visibility 非隐藏。
+fn js_inspect(selector: &str) -> String {
+    let sel = cdp::js_str(selector);
+    format!(
+        r#"(() => {{
+  const el = document.querySelector({sel});
+  if (!el) return 'ERROR:no-element';
+  const norm = (v) => (v === undefined ? null : v);
+  const WL = ['id','class','name','type','role','placeholder','title','alt','lang','dir','href','src','action','method','for','disabled','checked','required','readonly','open','selected','multiple','autofocus','autocomplete'];
+  const attrs = {{}};
+  for (const a of el.attributes) {{
+    const n = a.name.toLowerCase();
+    const hit = WL.includes(n) || n.startsWith('aria-') || n.startsWith('data-');
+    if (!hit) continue;
+    let v = a.value;
+    if ((n === 'href' || n === 'src' || n === 'action') && v.length > 200) v = v.slice(0, 200) + '…';
+    attrs[n] = v;
+  }}
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const visible = r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+  return JSON.stringify({{
+    tag: el.tagName.toLowerCase(),
+    id: el.id || null,
+    name: el.getAttribute('name'),
+    type: el.getAttribute('type'),
+    role: el.getAttribute('role'),
+    open: norm(el.open),
+    checked: norm(el.checked),
+    disabled: norm(el.disabled),
+    expanded: el.getAttribute('aria-expanded'),
+    required: norm(el.required),
+    visible,
+    rect: {{x: r.x, y: r.y, w: r.width, h: r.height}},
+    attributes: attrs,
+  }});
+}})()"#
+    )
+}
+
+/// 有界 DOM 树快照（只读；返回 JSON 字符串——宿主解析）。
+///
+/// 语义（计划 §3.4）：深度优先，depth/节点数双闸触顶 truncated:true；
+/// text 只给无元素子节点的叶子（容器 textContent 是后代拼接会与子行
+/// 重复）；id≤80/cls≤120 截断（防构建 hash 类名）；class 一律
+/// getAttribute('class')（SVGElement.className 是 SVGAnimatedString，
+/// 直接取序列化成对象垃圾）；shadowRoot 递归穿透（shadow:true 标记，
+/// depth 预算同池）；不进 iframe contentDocument（iframe 元素本身入树，
+/// src 在 inspect 白名单内可见）。布尔投影 !!（open/disabled 是 property）。
+fn js_snapshot(selector: Option<&str>, max_depth: u32, max_nodes: u32) -> String {
+    let sel = match selector {
+        Some(s) => cdp::js_str(s),
+        None => "null".to_string(),
+    };
+    format!(
+        r#"(() => {{
+  const selEl = {sel} === null ? null : document.querySelector({sel});
+  const root = {sel} === null ? document.body : selEl;
+  if (!root) return 'ERROR:no-element';
+  const MD = {max_depth}, MN = {max_nodes};
+  let emitted = 0, truncated = false;
+  const nodes = [];
+  const clip = (s, n) => {{ s = String(s); return s.length > n ? s.slice(0, n) + '…' : s; }};
+  const walk = (el, depth, inShadow) => {{
+    if (depth > MD || emitted >= MN) {{ truncated = true; return; }}
+    emitted++;
+    const o = {{ tag: el.tagName.toLowerCase(), depth, childCount: el.childNodes.length }};
+    if (el.id) o.id = clip(el.id, 80);
+    const cls = el.getAttribute('class');
+    if (cls) o.cls = clip(cls, 120);
+    const role = el.getAttribute('role');
+    if (role) o.role = role;
+    if (el.children.length === 0) {{
+      const t = (el.textContent || '').trim().slice(0, 120);
+      if (t) o.text = t;
+    }}
+    if (el.open !== undefined) o.open = !!el.open;
+    const exp = el.getAttribute('aria-expanded');
+    if (exp !== null) o.expanded = exp;
+    if (el.disabled !== undefined) o.disabled = !!el.disabled;
+    if (inShadow) o.shadow = true;
+    nodes.push(o);
+    for (const k of el.children) walk(k, depth + 1, inShadow);
+    if (el.shadowRoot) for (const k of el.shadowRoot.children) walk(k, depth + 1, true);
+  }};
+  walk(root, 0, false);
+  return JSON.stringify({{ ts_ms: Date.now(), nodes, truncated, nodes_emitted: emitted }});
+}})()"#,
+        sel = sel,
+        max_depth = max_depth,
+        max_nodes = max_nodes,
+    )
+}
+
+/// 子树 outerHTML 脱敏序列化（只读；返回 HTML 字符串——宿主截断）。
+///
+/// 语义（计划 §3.3）：clone 后剥 input value 属性、清 textarea
+/// textContent（当前值在 textContent）、**后代 script/style 整体删除**
+/// （`remove()`——edge_live 断言标签不在场；根元素自身是 script/style 时
+/// 只清内容保标签，避免输出空串）。
+/// **根元素自脱敏**：querySelectorAll 只匹配后代——selector 直指密码框
+/// 本身时根也要剥（edge_live 实测抓出的缺口）。
+/// select/option 不动（选项索引是页面数据非打字值）。双层安全：打字值走
+/// native setter 设 property 天然不进 outerHTML——这里剥的是页面源码
+/// value 属性（SSO 预填场景）；两层各自有效缺一不可。已知信息损失：
+/// textarea 页面自带初始文本也被清（宁过度脱敏）。
+fn js_get_dom(selector: &str) -> String {
+    let sel = cdp::js_str(selector);
+    format!(
+        r#"(() => {{
+  const el = document.querySelector({sel});
+  if (!el) return 'ERROR:no-element';
+  const copy = el.cloneNode(true);
+  // 根元素自身命中脱敏对象时 querySelectorAll 覆盖不到（只匹配后代）
+  // ——根也要处理（edge_live 实测：selector 直指密码框本身）。
+  if (copy.matches('input')) copy.removeAttribute('value');
+  if (copy.matches('textarea')) copy.textContent = '';
+  if (copy.matches('script, style')) copy.textContent = '';
+  copy.querySelectorAll('input').forEach((i) => i.removeAttribute('value'));
+  copy.querySelectorAll('textarea').forEach((t) => {{ t.textContent = ''; }});
+  copy.querySelectorAll('script, style').forEach((s) => s.remove());
+  return copy.outerHTML;
+}})()"#
+    )
 }
 
 /// head+tail 截断（guest 同款形态），返回 (文本, 是否截断)。

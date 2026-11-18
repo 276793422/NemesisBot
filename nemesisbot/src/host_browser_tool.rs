@@ -2,9 +2,10 @@
 //! 浏览器里看页面 + 操作页面的 agent 消费点（与 VM 档 `browser` 工具并存，
 //! 命名空间无冲突）。
 //!
-//! 职责形态（计划 §5）：单动作八种（navigate/click/type/key/scroll/
-//! extract_text/screenshot/wait_for）+ `run_script` 编排（逐步展开八基础
-//! 动作，不进 Driver trait）。screenshot 的 b64 结果落盘
+//! 职责形态（计划 §5）：单动作十一种（navigate/click/type/key/scroll/
+//! extract_text/screenshot/wait_for + DOM 只读三动作 inspect/snapshot/
+//! get_dom，2026-11-18 计划）+ `run_script` 编排（逐步展开基础动作，不进
+//! Driver trait）。screenshot 的 b64 结果落盘
 //! `<workspace>/uploads/browser/`，只回路径不回字节（LLM 上下文塞不进
 //! 图像字节——generate_image 同纪律）。
 //!
@@ -12,7 +13,8 @@
 //! - **dispatch 主管线照常**：本工具在注册表里走完整 dispatch 瀑布
 //!   （estop/hidden/plan/8 层/hooks/凭据注入）。per-op 风险经
 //!   [`Tool::operation_override`] 投影（navigate=network_request、
-//!   click/type/key/scroll=network_upload、读类=internal；run_script=
+//!   click/type/key/scroll=network_upload、读类（extract/screenshot/wait +
+//!   DOM 只读三动作）=internal；run_script=
 //!   process_exec + **强制人工审批**展示完整脚本——D12③）；
 //! - **run_script 每步二次过闸**：编排步不经 dispatch（工具内自执行），
 //!   每步构造 ToolInvocation 过 SecurityPlugin（override_op_type=步 slug）
@@ -96,6 +98,28 @@ fn script_summary(
         v["stop_reason"] = serde_json::json!("estop");
     }
     v
+}
+
+/// DOM 只读三动作的编排回执摘要投影（2026-11-18 计划 §3.6）：全量结果
+/// （snapshot 可达 2000 节点 / get_dom 可达 50K 字符）会把 run_script 回执
+/// 撑爆——编排回执投影成小摘要；单动作路径不投影（全量结果是读面价值
+/// 本身）。inspect 摘 tag/open（元素识别 + 展开态最常用字段）。
+fn dom_action_summary(action: &WebAction, result: &serde_json::Value) -> Option<serde_json::Value> {
+    match action {
+        WebAction::Inspect { .. } => Some(serde_json::json!({
+            "tag": result.get("tag"),
+            "open": result.get("open"),
+        })),
+        WebAction::SnapshotDom { .. } => Some(serde_json::json!({
+            "nodes_emitted": result.get("nodes_emitted"),
+            "truncated": result.get("truncated"),
+        })),
+        WebAction::GetDom { .. } => Some(serde_json::json!({
+            "chars": result.get("chars"),
+            "truncated": result.get("truncated"),
+        })),
+        _ => None,
+    }
 }
 
 /// 截图序号（进程级单调；毫秒时间戳会撞名——run_script 连续两步
@@ -341,7 +365,7 @@ impl HostBrowserTool {
                 .to_string();
             if action_name == "run_script" {
                 return Err(format!(
-                    "第 {i} 步是 run_script：编排不允许嵌套（步骤只允许八基础动作；脚本未执行任何步骤）"
+                    "第 {i} 步是 run_script：编排不允许嵌套（步骤只允许基础动作；脚本未执行任何步骤）"
                 ));
             }
             let action: WebAction = serde_json::from_value(step_raw.clone()).map_err(|e| {
@@ -363,7 +387,8 @@ impl HostBrowserTool {
         })
     }
 
-    /// run_script 编排：逐步展开八基础动作。每步：estop 边界 → 安全闸
+    /// run_script 编排：逐步展开基础动作（含 DOM 只读三动作——serde 反序列化
+    /// 天然支持，2026-11-18 计划 §3.6）。每步：estop 边界 → 安全闸
     /// （per-op slug）→ 凭据自解析（步骤 text 别名 → 明文 + 三守卫）→
     /// act → 回执。失败停（continue_on_error 缺省 false）+ 失败截图。
     /// 步骤已前置校验（F42）——本函数循环内无 `?` 裸逃逸点，一切失败
@@ -495,10 +520,14 @@ impl HostBrowserTool {
                     };
                     match step_err {
                         None => {
+                            // DOM 只读三动作回执投影摘要（snapshot/get_dom 全量
+                            // 会撑爆编排回执；单动作路径回全量不投影）。
+                            let result_out =
+                                dom_action_summary(&wa_step, &result).unwrap_or(result);
                             receipts.push(serde_json::json!({
                                 "index": i, "action": step.action_name,
                                 "ok": true, "duration_ms": duration_ms,
-                                "result": result,
+                                "result": result_out,
                             }));
                         }
                         Some(err) => {
@@ -556,8 +585,11 @@ impl Tool for HostBrowserTool {
     fn description(&self) -> String {
         "Control the user's local browser (real Edge/Chrome window, not headless). \
          Single actions: navigate / click / type / key / scroll / extract_text / \
-         screenshot / wait_for; or run_script with a steps array to chain basic \
-         actions in order (no nesting). Screenshots are saved under the workspace \
+         screenshot / wait_for; read-only DOM inspection: inspect (element state \
+         and geometry), snapshot (bounded DOM tree outline), get_dom (sanitized \
+         subtree HTML) — these three accept frame=<URL substring> to read inside \
+         iframes; or run_script with a steps array to chain basic actions in \
+         order (no nesting). Screenshots are saved under the workspace \
          uploads/browser/ directory and returned as a path. For password fields, \
          pass vault:browser/<domain>/<name> as type text — the credential is \
          domain-bound and only accepted on input[type=password] fields of the \
@@ -573,7 +605,8 @@ impl Tool for HostBrowserTool {
                 "action": {
                     "type": "string",
                     "enum": ["navigate","click","type","key","scroll","extract_text",
-                             "screenshot","wait_for","run_script"],
+                             "screenshot","wait_for","inspect","snapshot","get_dom",
+                             "run_script"],
                     "description": "The browser action to perform"
                 },
                 "session_id": {
@@ -581,8 +614,9 @@ impl Tool for HostBrowserTool {
                     "description": "Target browser session id (optional; defaults to the first live session)"
                 },
                 "url": {"type": "string", "description": "navigate: absolute URL to open"},
-                "selector": {"type": "string", "description": "CSS selector (click/type/key/extract_text/wait_for; for key it focuses the element first)"},
+                "selector": {"type": "string", "description": "CSS selector (click/type/key/extract_text/wait_for/inspect/get_dom; for key it focuses the element first; snapshot: optional — defaults to body)"},
                 "text": {"type": "string", "description": "type: text to input; use vault:browser/<domain>/<name> for passwords"},
+                "frame": {"type": "string", "description": "inspect/snapshot/get_dom only: target iframe by URL substring (e.g. \"admin\"; pick a longer substring to disambiguate — first match wins). Omit or \"main\" for the top page. NOT finding it returns an honest error listing every frame URL tagged [cross-process] (OOPIF) or [same-process]. Read-only: click/type/key do NOT accept frame"},
                 "key": {"type": "string", "description": "key: key name, e.g. enter/escape/tab/a/w/s/d or single characters; combine with phase press|down|up. Uppercase single letters (e.g. \"W\") are auto-shift-wrapped (trusted Shift down→key→up) and only work with phase=press. Combo form \"ctrl+shift+a\" (prefixes ctrl/alt/shift) sends modifier physical frames + base frame with modifier bits (page sees ctrlKey/shiftKey correctly); combos only work with phase=press. Modifier state does NOT carry across separate calls — to HOLD an uppercase key, send shift phase=down, then the lowercase letter (phase=down / hold_ms / phase=up), then shift phase=up. Trusted key events need a focused element — pass selector so the element is focused first, otherwise the keystroke is silently dropped (or click the element first)"},
                 "phase": {"type": "string", "enum": ["press","down","up"], "description": "key phase (default press); for holding a key longer use press with hold_ms; uppercase letters only support press (auto Shift wrap)"},
                 "hold_ms": {"type": "integer", "description": "key press: how long to hold the key down in milliseconds before release (default 60, max 3000) — game hold scenarios"},
@@ -591,6 +625,9 @@ impl Tool for HostBrowserTool {
                 "dx": {"type": "integer", "description": "scroll: horizontal pixels (positive = right; omit for vertical-only scroll)"},
                 "dy": {"type": "integer", "description": "scroll: vertical pixels (positive = down)"},
                 "timeout_ms": {"type": "integer", "description": "wait_for: poll timeout in milliseconds (default 10000, max 60000); navigate: load-wait wall clock (default 30000, max 120000)"},
+                "max_depth": {"type": "integer", "description": "snapshot: max tree depth (default 12, clamped to [1,30])"},
+                "max_nodes": {"type": "integer", "description": "snapshot: max nodes emitted (default 300, clamped to [1,2000]); truncated=true when a bound is hit"},
+                "max_chars": {"type": "integer", "description": "get_dom: output character cap (default 12000, clamped to [200,50000]); html is head+tail with a truncation marker, chars = original size"},
                 "steps": {
                     "type": "array",
                     "description": "run_script: array of basic action objects executed in order; fails fast unless continue_on_error",
@@ -605,8 +642,9 @@ impl Tool for HostBrowserTool {
 
     /// per-op 风险投影（dispatch 8 层管线 per-op 分档通道）：
     /// navigate=network_request / click·type·key·scroll=network_upload /
-    /// extract·screenshot·wait=internal / run_script=process_exec +
-    /// **强制人工审批**（卡片展示完整脚本，跳过「总是允许」规则表）。
+    /// extract·screenshot·wait + DOM 只读三动作=internal /
+    /// run_script=process_exec + **强制人工审批**（卡片展示完整脚本，跳过
+    /// 「总是允许」规则表）。
     fn operation_override(&self, args: &str) -> Option<OperationOverride> {
         let v: serde_json::Value = serde_json::from_str(args).ok()?;
         let action = v.get("action").and_then(|a| a.as_str())?;

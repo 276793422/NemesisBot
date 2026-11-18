@@ -348,10 +348,27 @@ impl CdpConn {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
+        self.call_in_session(None, method, params, timeout).await
+    }
+
+    /// 带可选 flatten 子会话发送（DOM 只读动作 frame 路由，计划
+    /// 2026-11-18 §3.7）：`session = Some(sid)` 时消息体注入 `sessionId`
+    /// 字段——flatten 模式下子 target 会话与浏览器级会话走同一条 WS
+    /// socket，响应仍按 id 匹配（子会话响应带同 id），多路复用天然兼容。
+    pub async fn call_in_session(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);
-        let frame = serde_json::json!({"id": id, "method": method, "params": params});
+        let mut frame = serde_json::json!({"id": id, "method": method, "params": params});
+        if let Some(sid) = session {
+            frame["sessionId"] = Value::String(sid.to_string());
+        }
         {
             let mut sink = self.sink.lock().await;
             if let Err(e) = sink

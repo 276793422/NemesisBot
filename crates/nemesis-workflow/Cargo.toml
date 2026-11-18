@@ -46,6 +46,8 @@ tempfile = "3"
 # usage-store 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
 # dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
 nemesis-data = { workspace = true, features = ["usage-store"] }
+# taskstore 行为测试（integration_ledger）同款带回。
+nemesis-taskstore = { workspace = true, features = ["sqlite"] }
 
 [lints]
 workspace = true

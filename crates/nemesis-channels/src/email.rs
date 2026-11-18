@@ -419,18 +419,27 @@ impl EmailChannel {
                 .filter(|&c| c != '\r' && c != '\n')
                 .collect::<String>()
         };
+        // 非 ASCII Subject → RFC 2047 B-encoding（BUG-20261118-130：裸 8-bit
+        // 头违反 RFC 5322 头 ASCII 域——未协商 SMTPUTF8 的会话严格 MTA 可
+        // 拒收，收件端 MUA 按本地编码猜测乱码）。header_safe 先于编码：
+        // 编码输入恒为拍平后的单行（注入面语义保持）。
+        let subject = encode_rfc2047_subject(&header_safe(subject));
+        // 非 ASCII 正文 → 显式 CTE: base64（RFC 2045 缺省 CTE=7bit 与实际
+        // 8-bit UTF-8 不符面：严格 MTA 拒信或 8→7bit 转换损坏）；纯 ASCII
+        // 正文零漂移（无 CTE 头，行为不变）。
+        let (cte_line, body_out) = encode_body_mime(body);
         format!(
             "From: {}\r\n\
              To: {}\r\n\
-             Subject: {}\r\n\
+             Subject: {subject}\r\n\
              Date: {date}\r\n\
              MIME-Version: 1.0\r\n\
              Content-Type: text/plain; charset=UTF-8\r\n\
+             {cte_line}\
              \r\n\
-             {body}",
+             {body_out}",
             header_safe(from),
             header_safe(to),
-            header_safe(subject)
         )
     }
 
@@ -1315,6 +1324,54 @@ fn imap_quoted(s: &str) -> String {
 /// 对齐 `build_smtp_message` 的 header_safe 既有形态。
 fn smtp_envelope_safe(v: &str) -> String {
     v.chars().filter(|&c| c != '\r' && c != '\n').collect()
+}
+
+/// RFC 2047 B-encoding（BUG-20261118-130，出站非 ASCII Subject）：RFC 5322
+/// 头部值是 ASCII 域——裸 8-bit 头在未协商 SMTPUTF8 的会话可被严格 MTA
+/// 拒收（554），收件端 MUA 按本地编码猜测乱码，反垃圾栈罚分。非 ASCII →
+/// `=?UTF-8?B?...?=` encoded-word 序列：载荷按 48 base64 字符切块（4 对齐
+/// ——每块独立可解，RFC 2047 §2 相邻 encoded-word 间的空白解码时丢弃），
+/// 整个 encoded-word 60 ≤ RFC 2047 的 75 字符 SHOULD；相邻块以 CRLF+WSP
+/// 折行衔接（RFC 5322 折行形态，行长有界不破 998 硬限）。纯 ASCII 原样
+/// 返回（字节不变，既有测试与 prompt 面零漂移）。
+fn encode_rfc2047_subject(v: &str) -> String {
+    if v.is_ascii() {
+        return v.to_string();
+    }
+    const CHUNK: usize = 48;
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, v.as_bytes());
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < b64.len() {
+        let end = (i + CHUNK).min(b64.len());
+        parts.push(format!("=?UTF-8?B?{}?=", &b64[i..end]));
+        i = end;
+    }
+    parts.join("\r\n ")
+}
+
+/// 正文 MIME CTE 面（BUG-20261118-130）：RFC 2045 §6.1 缺省 CTE=7bit——
+/// 裸 8-bit UTF-8 正文未声明即发，严格 MTA 拒信或 qmail 类 8→7bit 转换
+/// 损坏。非 ASCII 正文 → 显式 `Content-Transfer-Encoding: base64` 头 +
+/// base64 载荷（76 字符折行 = RFC 2045 base64 行长硬限；base64 字母表无
+/// '.'，与 dot-stuffing 正交）。纯 ASCII 正文原样（无 CTE 头，行为不变）。
+/// 返回 (CTE 头行含自身 CRLF——空串=不加头, 编码后正文)。
+fn encode_body_mime(body: &str) -> (String, String) {
+    if body.is_ascii() {
+        return (String::new(), body.to_string());
+    }
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, body.as_bytes());
+    let mut wrapped = String::with_capacity(b64.len() + b64.len() / 76 * 2 + 2);
+    let mut i = 0usize;
+    while i < b64.len() {
+        let end = (i + 76).min(b64.len());
+        if i > 0 {
+            wrapped.push_str("\r\n");
+        }
+        wrapped.push_str(&b64[i..end]);
+        i = end;
+    }
+    ("Content-Transfer-Encoding: base64\r\n".to_string(), wrapped)
 }
 
 /// DATA 载荷装配（BUG-20261112-111③）：先裸 LF/CR 归一为 CRLF，再点填充。

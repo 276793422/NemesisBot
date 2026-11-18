@@ -586,3 +586,58 @@ async fn test_append_malformed_started_at_falls_back_instead_of_panicking() {
         "RFC3339 started_at must take the normal path"
     );
 }
+
+#[tokio::test]
+async fn bug140_load_latest_cycle_mixed_offset_compares_instants() {
+    // BUG-20261118-140：load_latest_cycle 旧代码对 started_at 裸字符串
+    // 排序（064 同族横扫漏点）。带本地 offset 的 RFC3339 在跨 DST/时区
+    // 变更后同批混存不同 offset 形态，字面序 ≠ 真实时刻序——
+    // "01:30+00:00"（=01:30Z）实际晚于 "09:00+09:00"（=00:00Z），字面序
+    // 却相反。现复用 pattern::rfc3339_order 解析比较，返回真实最新。
+    let dir = tempfile::tempdir().unwrap();
+    let store = CycleStore::from_base(dir.path());
+
+    let mut earlier_instant = make_cycle("tz-earlier");
+    earlier_instant.started_at = "2026-01-02T09:00:00+09:00".into(); // = 00:00Z
+    let mut later_instant = make_cycle("tz-later");
+    later_instant.started_at = "2026-01-02T01:30:00+00:00".into(); // = 01:30Z
+
+    // 先写字面序更小、时刻更晚的，再写字面序更大、时刻更早的——
+    // 裸字符串排序在此数据形态上必返回 tz-earlier（假最新）。
+    store.append(&later_instant).await.unwrap();
+    store.append(&earlier_instant).await.unwrap();
+
+    let latest = store.load_latest_cycle().await.unwrap().unwrap();
+    assert_eq!(
+        latest.id, "tz-later",
+        "must compare parsed instants, not string order"
+    );
+}
+
+#[tokio::test]
+async fn bug145_cleanup_continues_past_unremovable_entry() {
+    // BUG-20261118-145：单文件删除失败不得中断 sweep。目录伪装成
+    // .jsonl（remove_file 全平台失败：Unix EISDIR / Windows 拒绝访问，
+    // 等价于 AV/索引器瞬时句柄占用）时，旧代码 `?` 硬上浮 Err——本轮
+    // 余下旧文件全部漏删且 caller（run_cleanup_cycle 的 `if let Ok(..)`）
+    // 静默吞。现逐文件容错：真旧文件照删、毒条目留在原地、整体 Ok。
+    let dir = tempfile::tempdir().unwrap();
+    let month = dir.path().join("202001");
+    tokio::fs::create_dir_all(&month).await.unwrap();
+    let poison = month.join("20200101.jsonl");
+    tokio::fs::create_dir(&poison).await.unwrap();
+    let real_old = month.join("20200102.jsonl");
+    tokio::fs::write(&real_old, "{}\n").await.unwrap();
+
+    let store = CycleStore::from_base(dir.path());
+    let removed = store
+        .cleanup(1)
+        .await
+        .expect("cleanup must not hard-fail on one unremovable entry");
+    assert_eq!(removed, 1, "the real old file must still be swept");
+    assert!(!real_old.exists());
+    assert!(
+        poison.exists(),
+        "poison dir entry stays (remove_file cannot take directories)"
+    );
+}

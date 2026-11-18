@@ -489,12 +489,13 @@ desc = "版本自更新通道（`nemesisbot selfupdate` + gateway apply 编排�
 category = "subsystems"
 default = true
 
-# NOTE: 八个「构建体积细粒度」feature（2026-10-17 重新评估，全默认开 =
-# 全量构建不变）：pricing-embed（内嵌价目表）/ verify（启动签名自验）/
-# web-static（前端静态资源内嵌）/ lsp（LSP 语义代码查询）/
-# checkpoint-git（checkpoint 影子库）/ image-process（图片降采样）/
-# history-search（FTS 会话检索）/ usage-store（SQLite 用量账本）。
-# IoT/极小镜像预设全关（合计约省 3-4MB），消费版保持默认。
+# NOTE: 九个「构建体积细粒度」feature（2026-10-17 重新评估，2026-11-18 增
+# taskstore-sqlite，全默认开 = 全量构建不变）：pricing-embed（内嵌价目表）/
+# verify（启动签名自验）/ web-static（前端静态资源内嵌）/ lsp（LSP 语义代码
+# 查询）/ checkpoint-git（checkpoint 影子库）/ image-process（图片降采样）/
+# history-search（FTS 会话检索）/ usage-store（SQLite 用量账本）/
+# taskstore-sqlite（统一任务层 tasks.db）。
+# IoT/极小镜像预设全关，消费版保持默认。
 [[feature]]
 id = "pricing-embed"
 label = "内嵌价目表"
@@ -559,7 +560,14 @@ default = true
 [[feature]]
 id = "usage-store"
 label = "用量账本（SQLite）"
-desc = "LLM 用量账本（nemesis-data DataStore，rusqlite bundled ~1MB）：usage 统计/请求明细/模型健康/会话成本随它进出。关后写入 no-op、查询恒空（价目层 JSON 照常，open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（省 iotsmall 里最后一个 SQLite）"
+desc = "LLM 用量账本（nemesis-data DataStore，rusqlite bundled ~1MB）：usage 统计/请求明细/模型健康/会话成本随它进出。关后写入 no-op、查询恒空（价目层 JSON 照常，open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（与 taskstore-sqlite 同为可裁 SQLite 面）"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "taskstore-sqlite"
+label = "统一任务层（SQLite）"
+desc = "统一任务编排层 tasks.db（nemesis-taskstore，rusqlite bundled ~1MB）：集群任务/runs 记账/审批台账/交付账本/Agent 持久实体随它进出。关后全部 store 写入 no-op、查询恒空（open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（集群任务与看板派发记账不落盘）"
 category = "subsystems"
 default = true
 

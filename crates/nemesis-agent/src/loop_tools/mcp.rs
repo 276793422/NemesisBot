@@ -756,23 +756,68 @@ pub(super) fn format_discovery_result(result: &nemesis_mcp::manager::DiscoveryRe
     lines.join("\n")
 }
 
-/// Tool for listing all currently registered MCP tools.
-///
-/// Reads from a shared snapshot updated by AgentLoop when MCP tools change.
-pub struct McpListTool {
-    mcp_tools: Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>,
+/// 渲染：mcp_list 全量清单（历史字节格式不变，保输出兼容；空 = 诚实
+/// 空表文案）。消费方：tool_dispatch mcp_list 拦截臂（BUG-20261118-095
+/// ——模型面发现通路经 dispatch 各闸过滤后渲染，不再走快照）。
+pub(crate) fn render_mcp_list(entries: &[McpToolSnapshotEntry]) -> String {
+    if entries.is_empty() {
+        return "No MCP tools are currently registered.".to_string();
+    }
+    let mut lines = vec![format!(
+        "## Registered MCP Tools ({})
+",
+        entries.len()
+    )];
+    for entry in entries {
+        lines.push(format!("- **{}**: {}", entry.name, entry.description));
+    }
+    lines.join(
+        "
+",
+    )
 }
 
-impl McpListTool {
-    pub fn new(mcp_tools: Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>) -> Self {
-        Self { mcp_tools }
-    }
+/// 渲染：mcp_list 按名查单个工具完整 schema（历史字节格式不变）。
+pub(crate) fn render_mcp_tool_detail(entry: &McpToolSnapshotEntry) -> String {
+    format!(
+        "## MCP Tool `{}`
+
+- **description**: {}
+- **read_only_hint**: {}
+- **destructive_hint**: {}
+- **parameters**: {}
+
+Call it with `mcp_call` {{\"tool\": \"{}\", \"args\": {{...}}}}.",
+        entry.name,
+        entry.description,
+        entry
+            .read_only_hint
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        entry
+            .destructive_hint
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        serde_json::to_string_pretty(&entry.parameters).unwrap_or_default(),
+        entry.name
+    )
 }
+
+/// Tool for listing all currently registered MCP tools.
+///
+/// **执行走 dispatch 拦截，不走本 execute**：tool_dispatch 在闸门瀑布入口
+/// 按 dispatch 各闸（hidden/独占/policy/tier + mcp_call 自身 lazy 闸）
+/// 同源现读过滤后，从 registry 真值渲染清单/单工具 schema
+/// （BUG-20261118-095——此前 execute 直读快照：生产装配从未把 loop 快照
+/// 接进 SharedToolConfig 槽 → 恒空 Arc 死工具；接通形态下快照无可见性
+/// 过滤 → 隐藏工具面泄漏）。本 execute 只在绕过 loop 分发的直调场景
+/// 触达（诚实报错的安全网，正常流程死代码）——与 McpCallTool 同形态。
+pub struct McpListTool;
 
 #[async_trait]
 impl Tool for McpListTool {
     fn description(&self) -> String {
-        "List all currently registered MCP tools and their descriptions, or with \"name\"          given, show one tool's full parameter schema. Use this to see what MCP tools are          available in the current session (and how to call them via mcp_call)."
+        "List all currently registered MCP tools and their descriptions, or with \"name\"          given, show one tool's full parameter schema. Use this to see what MCP tools are          available in the current session (and how to call them via mcp_call). Hidden or          filtered tools are not listed."
             .to_string()
     }
 
@@ -788,62 +833,8 @@ impl Tool for McpListTool {
         })
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let tools = self.mcp_tools.read();
-        if tools.is_empty() {
-            return Ok("No MCP tools are currently registered.".to_string());
-        }
-        // 按名查询单工具完整 schema（惰性供给的 schema 查询面）。无名 =
-        // 全量列表（输出格式与历史版本逐字节一致，保 prompt cache 兼容）。
-        let want: Option<String> = serde_json::from_str::<serde_json::Value>(args)
-            .ok()
-            .and_then(|v| {
-                v.get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            });
-        if let Some(name) = want {
-            return match tools.iter().find(|e| e.name == name) {
-                Some(entry) => Ok(format!(
-                    "## MCP Tool `{}`
-
-- **description**: {}
-- **read_only_hint**: {}
-- **destructive_hint**: {}
-- **parameters**: {}
-
-Call it with `mcp_call` {{\"tool\": \"{}\", \"args\": {{...}}}}.",
-                    entry.name,
-                    entry.description,
-                    entry
-                        .read_only_hint
-                        .map(|b| b.to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    entry
-                        .destructive_hint
-                        .map(|b| b.to_string())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    serde_json::to_string_pretty(&entry.parameters).unwrap_or_default(),
-                    entry.name
-                )),
-                None => Ok(format!(
-                    "No MCP tool named `{name}` is registered. Call without arguments to list all registered MCP tools."
-                )),
-            };
-        }
-        let mut lines = vec![format!(
-            "## Registered MCP Tools ({})
-",
-            tools.len()
-        )];
-        for entry in tools.iter() {
-            lines.push(format!("- **{}**: {}", entry.name, entry.description));
-        }
-        Ok(lines.join(
-            "
-",
-        ))
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Err("mcp_list is dispatched by the agent loop (renders the visibility-filtered MCP tool list from the registry); direct invocation is not supported. Use the normal tool-call path.".to_string())
     }
 }
 

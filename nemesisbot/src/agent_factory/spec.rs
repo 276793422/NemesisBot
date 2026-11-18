@@ -577,12 +577,8 @@ pub fn build_agent_loop_from_spec(
     //    AgentLoop 对 None 优雅降级，零风险）。
 
     // 6. 工具注册：主配置构造后字段覆盖（项目锚 + 剥离三资产件套）。
-    let (mut tool_config, spawn_slot, steer_slot) = build_shared_tool_config(
-        shared,
-        &cfg,
-        &model_name,
-        Some(agent_loop.mcp_tool_snapshot()),
-    );
+    let (mut tool_config, spawn_slot, steer_slot) =
+        build_shared_tool_config(shared, &cfg, &model_name);
     // present_plan 工具供给（与 loop verdict 消费槽同一句柄）。
     tool_config.plan_present = Some(project_plan_present);
     // 项目 loop 同样接 present_files——交付物桶锚本 loop

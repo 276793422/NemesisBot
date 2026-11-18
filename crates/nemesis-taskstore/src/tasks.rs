@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "sqlite")]
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
@@ -17,6 +18,7 @@ use crate::db::TaskDb;
 
 /// TaskStatus ↔ runs.status 字符串（统一状态机口径：
 /// `pending/running/succeeded/failed/cancelled`）。
+#[cfg(feature = "sqlite")]
 pub(crate) fn status_to_str(s: &TaskStatus) -> &'static str {
     match s {
         TaskStatus::Pending => "pending",
@@ -28,6 +30,7 @@ pub(crate) fn status_to_str(s: &TaskStatus) -> &'static str {
 }
 
 /// 未知状态串（外来版本写入）不猜——响亮报错，由调用方决定跳过与否。
+#[cfg(feature = "sqlite")]
 pub(crate) fn status_from_str(s: &str) -> Result<TaskStatus, String> {
     match s {
         "pending" => Ok(TaskStatus::Pending),
@@ -39,6 +42,7 @@ pub(crate) fn status_from_str(s: &str) -> Result<TaskStatus, String> {
     }
 }
 
+#[cfg(feature = "sqlite")]
 pub(crate) fn is_terminal(status: &TaskStatus) -> bool {
     matches!(
         status,
@@ -46,6 +50,8 @@ pub(crate) fn is_terminal(status: &TaskStatus) -> bool {
     )
 }
 
+/// 当前时间（RFC3339 本地时）。数据类型构造路径（`AgentRecord::new_provisioning`）
+/// 也消费——恒编译，不随 sqlite 门控。
 pub(crate) fn now_rfc3339() -> String {
     chrono::Local::now().to_rfc3339()
 }
@@ -53,11 +59,13 @@ pub(crate) fn now_rfc3339() -> String {
 /// 当前时间 + `secs` 秒（项 C 通知重试的 next_retry_at；与 now_rfc3339
 /// 同为 RFC3339 本地时——同族字符串字典序 = 时间序，DST 折叠窗口的
 /// 既有误差口径与 deliveries 查询面一致）。
+#[cfg(feature = "sqlite")]
 pub(crate) fn rfc3339_after_secs(secs: u64) -> String {
     use chrono::TimeDelta;
     (chrono::Local::now() + TimeDelta::try_seconds(secs as i64).unwrap_or_default()).to_rfc3339()
 }
 
+#[cfg(feature = "sqlite")]
 const TASK_COLUMNS: &str = "id, status, action, peer_id, payload, result, original_channel, \
      original_chat_id, created_at, completed_at";
 
@@ -68,9 +76,19 @@ pub struct SqliteTaskStore {
 }
 
 impl SqliteTaskStore {
+    #[cfg(feature = "sqlite")]
     pub fn open(path: &std::path::Path) -> Result<Self, String> {
         Ok(Self {
             db: TaskDb::open(path)?,
+        })
+    }
+
+    /// sqlite 未编译进本构建：同型 open，写读皆 no-op（warn 一次诚实注记）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        TaskDb::open(path)?;
+        Ok(Self {
+            db: Arc::new(TaskDb {}),
         })
     }
 
@@ -83,6 +101,7 @@ impl SqliteTaskStore {
     }
 
     /// 新建。重复 id = Err（与 InMemory 文案一致）。
+    #[cfg(feature = "sqlite")]
     pub fn create(&self, task: Task) -> Result<(), String> {
         self.db.with_conn(|conn| {
             conn.execute(
@@ -116,6 +135,7 @@ impl SqliteTaskStore {
     }
 
     /// 读取。不存在 = Err（与 InMemory 文案一致）。
+    #[cfg(feature = "sqlite")]
     pub fn get(&self, task_id: &str) -> Result<Task, String> {
         self.db.with_conn(|conn| {
             let mut stmt = conn
@@ -136,6 +156,7 @@ impl SqliteTaskStore {
 
     /// 无条件更新状态与结果。不存在 = Err；终态盖 completed_at
     /// （本地时间，与 InMemory 同规），非终态保留既有盖章。
+    #[cfg(feature = "sqlite")]
     pub fn update_result(
         &self,
         task_id: &str,
@@ -157,6 +178,7 @@ impl SqliteTaskStore {
     /// 条件更新（期望状态集合）。原子：`UPDATE... WHERE status IN (...)`
     /// 单条语句先到先得。状态不匹配 = `Ok(false)`；任务不存在 = Err
     /// （与 InMemory 语义一致）。
+    #[cfg(feature = "sqlite")]
     pub fn update_result_if_status(
         &self,
         task_id: &str,
@@ -196,6 +218,7 @@ impl SqliteTaskStore {
     }
 
     /// 删除。不存在 = Err（与 InMemory 文案一致）。
+    #[cfg(feature = "sqlite")]
     pub fn delete(&self, task_id: &str) -> Result<(), String> {
         self.db.with_conn(|conn| {
             let n = conn
@@ -209,6 +232,7 @@ impl SqliteTaskStore {
     }
 
     /// 按状态列举（created_at 升序；坏状态行 warn 跳过，不让单行毒化全表）。
+    #[cfg(feature = "sqlite")]
     pub fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>, String> {
         let needle = status_to_str(&status).to_string();
         self.db.with_conn(|conn| {
@@ -223,6 +247,7 @@ impl SqliteTaskStore {
     }
 
     /// 全量列举（created_at 升序）。
+    #[cfg(feature = "sqlite")]
     pub fn list_all(&self) -> Result<Vec<Task>, String> {
         self.db.with_conn(|conn| {
             list_rows(
@@ -232,9 +257,56 @@ impl SqliteTaskStore {
             )
         })
     }
+
+    // -- sqlite 未编译进本构建：空 stub（写入 no-op、查询恒空；语义面
+    //    与「任务不存在」对齐——查询回 Err(not found)/Ok(false)，列表回
+    //    空集，与 usage-store 空账本同款纪律）。---------------------------
+
+    /// 读取。查询恒空 = 任务不存在（Err 文案与真实现一致）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn get(&self, task_id: &str) -> Result<Task, String> {
+        Err(format!("task not found: {task_id}"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn update_result(
+        &self,
+        task_id: &str,
+        _status: TaskStatus,
+        _result: Option<Value>,
+    ) -> Result<(), String> {
+        Err(format!("task not found: {task_id}"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn update_result_if_status(
+        &self,
+        task_id: &str,
+        _expected: &[TaskStatus],
+        _status: TaskStatus,
+        _result: Option<Value>,
+    ) -> Result<bool, String> {
+        Err(format!("task not found: {task_id}"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn delete(&self, task_id: &str) -> Result<(), String> {
+        Err(format!("task not found: {task_id}"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn list_by_status(&self, _status: TaskStatus) -> Result<Vec<Task>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn list_all(&self) -> Result<Vec<Task>, String> {
+        Ok(Vec::new())
+    }
 }
 
 /// 列举收集：坏状态/坏 JSON 行 warn 跳过（单行毒化全表不可取）。
+#[cfg(feature = "sqlite")]
 fn list_rows(conn: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<Task>, String> {
     let mut stmt = conn
         .prepare(sql)
@@ -256,6 +328,7 @@ fn list_rows(conn: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<V
 }
 
 /// 行 → Task（严格：未知状态/坏 JSON = Err；调用方决定响亮还是跳过）。
+#[cfg(feature = "sqlite")]
 fn row_task_strict(r: &rusqlite::Row<'_>) -> Result<Task, String> {
     let status_str: String = r.get(1).map_err(de)?;
     let payload_str: String = r.get(4).map_err(de)?;
@@ -278,17 +351,20 @@ fn row_task_strict(r: &rusqlite::Row<'_>) -> Result<Task, String> {
     })
 }
 
+#[cfg(feature = "sqlite")]
 fn de(e: rusqlite::Error) -> String {
     format!("tasks.db row decode failed: {e}")
 }
 
 /// UPDATE 语句与绑定参数的打包（占位序：?1 id, ?2 status, ?3 result,
 /// [?4 completed_at 终态才有], 末位 updated_at / 期望状态集）。
+#[cfg(feature = "sqlite")]
 struct UpdateBind {
     sql: String,
     params: Vec<Box<dyn rusqlite::ToSql>>,
 }
 
+#[cfg(feature = "sqlite")]
 impl UpdateBind {
     fn new(task_id: &str, status: &TaskStatus, result: Option<Value>) -> Self {
         let terminal = is_terminal(status);
@@ -320,6 +396,7 @@ impl UpdateBind {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn is_unique_violation(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(ffi, _)
         if ffi.code == rusqlite::ErrorCode::ConstraintViolation)

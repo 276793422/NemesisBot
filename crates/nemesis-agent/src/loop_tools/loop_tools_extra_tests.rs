@@ -572,12 +572,10 @@ fn test_shared_tool_config_debug_with_skills_and_memory() {
     let cfg = SharedToolConfig {
         exec_output_tx: None,
         memory_executor: Some(exec),
-        mcp_tool_snapshot: Some(Arc::new(parking_lot::RwLock::new(vec![]))),
         ..Default::default()
     };
     let s = format!("{:?}", cfg);
     assert!(s.contains("MemoryToolExecutor"));
-    assert!(s.contains("McpToolSnapshot"));
 }
 
 #[test]
@@ -617,8 +615,7 @@ fn test_mcp_discover_tool_description_and_params() {
 
 #[test]
 fn test_mcp_list_tool_description_and_params() {
-    let snap = Arc::new(parking_lot::RwLock::new(vec![]));
-    let t = McpListTool::new(snap);
+    let t = McpListTool;
     let d = t.description();
     assert!(d.contains("MCP tools"));
     let p = t.parameters();
@@ -1060,23 +1057,9 @@ fn test_register_shared_tools_i2c_spi_gated_off_by_default() {
     assert!(spi.description().contains("SPI"));
 }
 
-#[test]
-fn test_register_shared_tools_with_mcp_snapshot_provided() {
-    let snap = Arc::new(parking_lot::RwLock::new(vec![McpToolSnapshotEntry {
-        name: "foo".to_string(),
-        description: "bar".to_string(),
-        parameters: serde_json::json!({"type": "object"}),
-        read_only_hint: None,
-        destructive_hint: None,
-    }]));
-    let cfg = SharedToolConfig {
-        exec_output_tx: None,
-        mcp_tool_snapshot: Some(snap),
-        ..Default::default()
-    };
-    let tools = register_shared_tools(&cfg);
-    assert!(tools.contains_key("mcp_list"));
-}
+// （BUG-20261118-095）原 test_register_shared_tools_with_mcp_snapshot_provided
+// 已删：SharedToolConfig.mcp_tool_snapshot 槽随 mcp_list 拦截化一并移除
+// （注册恒在由既有 register_shared_tools 冒烟覆盖）。
 
 // ===========================================================================
 // ExecTool: description and parameters

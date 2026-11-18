@@ -37,6 +37,7 @@ fn make_ctx() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         cron: None,
         board: None,

@@ -3893,7 +3893,19 @@ onUnmounted(() => {
               >
                 <span class="deliverable-title">{{ d.title || deliverableFileName(d.path) }}</span>
                 <span v-if="d.note" class="deliverable-note">{{ d.note }}</span>
-                <span class="deliverable-path">{{ d.path }}</span>
+                <span class="deliverable-path">
+                  {{ d.path }}
+                  <!-- 2026-11-18 交付物定位链接：fs.reveal（文件管理器打开
+                       所在目录并选中该文件；explorer /select + 前台看门）。
+                       与右键菜单 revealLinkDir 同函数——路径按会话根解析
+                       （项目会话落项目目录），相对/绝对后端解析阶梯同源。 -->
+                  <a
+                    class="deliverable-open"
+                    href="#"
+                    title="在文件管理器中打开所在目录并选中该文件"
+                    @click.prevent="revealLinkDir(d.path)"
+                  >📂 打开所在目录</a>
+                </span>
               </div>
             </div>
           </div>
@@ -3986,7 +3998,15 @@ onUnmounted(() => {
               >
                 <span class="deliverable-title">{{ d.title || deliverableFileName(d.path) }}</span>
                 <span v-if="d.note" class="deliverable-note">{{ d.note }}</span>
-                <span class="deliverable-path">{{ d.path }}</span>
+                <span class="deliverable-path">
+                  {{ d.path }}
+                  <a
+                    class="deliverable-open"
+                    href="#"
+                    title="在文件管理器中打开所在目录并选中该文件"
+                    @click.prevent="revealLinkDir(d.path)"
+                  >📂 打开所在目录</a>
+                </span>
               </div>
             </div>
           </div>

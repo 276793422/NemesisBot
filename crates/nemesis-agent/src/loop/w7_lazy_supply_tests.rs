@@ -3,13 +3,14 @@
 //! tool_defs 无 mcp_* 长尾，有 meta 两件套 mcp_call + mcp_list；tier 白
 //! 名单放行 meta； 补 mcp_list 豁免——查询面被长尾隐藏
 //! 一并裁掉则两步流程无工具可用）、dispatch 解包（真实名重走瀑布、
-//! args 透传、四诚实拒绝臂）、mcp_list schema 查询面、lazy off 行为零变化。
+//! args 透传、四诚实拒绝臂）、mcp_list dispatch 拦截可见性面
+//! （BUG-20261118-095：hidden/tier 过滤 + 自闸 + registry 真值渲染）、
+//! lazy off 行为零变化。
 //!
 //! 独立测试文件（仓库纪律）。
 
 use super::AgentLoop;
 use crate::context::RequestContext;
-use crate::r#loop::McpToolSnapshotEntry;
 use crate::r#loop::Tool;
 use crate::r#loop::{LlmMessage, LlmProvider, LlmResponse};
 use crate::loop_tools::McpListTool;
@@ -91,9 +92,7 @@ fn w7_loop() -> AgentLoop {
         );
         t.insert(
             "mcp_list".to_string(),
-            Arc::new(crate::loop_tools::McpListTool::new(Arc::new(
-                parking_lot::RwLock::new(Vec::new()),
-            ))),
+            Arc::new(crate::loop_tools::McpListTool),
         );
     }
     al
@@ -301,42 +300,141 @@ async fn dispatch_meta_call_honest_refusals() {
 }
 
 // ---------------------------------------------------------------------------
-// mcp_list schema 查询面
+// mcp_list schema 查询面（BUG-20261118-095 后形态：dispatch 拦截 +
+// registry 真值可见性过滤渲染；execute 直调 = 诚实报错安全网）
 // ---------------------------------------------------------------------------
 
-fn snapshot() -> Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>> {
-    Arc::new(parking_lot::RwLock::new(vec![McpToolSnapshotEntry {
-        name: "mcp_fake_echo".to_string(),
-        description: "echo stub for tests".to_string(),
-        parameters: serde_json::json!({
-            "type": "object",
-            "properties": {"msg": {"type": "string"}},
-            "required": ["msg"]
-        }),
-        read_only_hint: Some(true),
-        destructive_hint: None,
-    }]))
+/// 写临时 config.json（agents.mcp_lazy_supply + agents.hidden_tools）并挂
+/// 到 loop（with_lazy_config 的 hidden 扩展形态；l10 with_config 同款
+/// 分段拼接——raw string 内嵌 `}}` 会被 format! 吃成一个 `}`，整段一次
+/// format! 会少闭合外层对象，JSON 坏文件落缺省全绿假象）。
+fn with_lazy_and_hidden_config(al: &AgentLoop, lazy: bool, hidden: &[&str]) {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let mut body = String::from(r#"{"agents": {"mcp_lazy_supply": "#);
+    body.push_str(if lazy { "true" } else { "false" });
+    if !hidden.is_empty() {
+        let list = hidden
+            .iter()
+            .map(|h| format!("\"{h}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        body.push_str(&format!(r#", "hidden_tools": [{list}]"#));
+    }
+    body.push_str("}}");
+    std::fs::write(&path, body).unwrap();
+    // tempdir 在函数尾析构会删目录——泄漏给进程退出回收（测试环境可接受，
+    // 换取 config_path 持有期内文件稳定在盘；w7 同款）。
+    std::mem::forget(dir);
+    al.set_config_path(path);
+}
+
+async fn mcp_list_call(al: &AgentLoop, args: &str) -> String {
+    al.handle_tool_call(
+        &ToolCallInfo {
+            id: "cl".to_string(),
+            name: "mcp_list".to_string(),
+            arguments: args.to_string(),
+        },
+        &ctx(),
+    )
+    .await
 }
 
 #[tokio::test]
-async fn mcp_list_by_name_prints_full_schema() {
-    let t = McpListTool::new(snapshot());
-    // 按名：完整 schema + mcp_call 用法提示。
-    let out = t
-        .execute(r#"{"name": "mcp_fake_echo"}"#, &ctx())
-        .await
-        .unwrap();
-    assert!(out.contains("## MCP Tool `mcp_fake_echo`"), "{out}");
-    assert!(out.contains("read_only_hint**: true"), "{out}");
-    assert!(out.contains("destructive_hint**: unknown"), "{out}");
-    assert!(out.contains("required"), "{out}");
-    assert!(out.contains("mcp_call"), "{out}");
-    // 未知名：诚实提示。
-    let out = t.execute(r#"{"name": "mcp_ghost"}"#, &ctx()).await.unwrap();
+async fn mcp_list_dispatch_hidden_tool_filtered_and_detail_refused() {
+    let al = w7_loop();
+    with_lazy_and_hidden_config(&al, false, &["mcp_fake_echo"]);
+    // 清单：hidden 工具消失（名字/描述都不出现）；mcp_list 自身可见；
+    // lazy off 下 mcp_call 不列（自身 lazy 闸——调了必拒，列了是误导）。
+    let out = mcp_list_call(&al, "{}").await;
+    assert!(!out.contains("mcp_fake_echo"), "hidden 工具不得列名: {out}");
+    assert!(out.contains("mcp_list"), "mcp_list 自身在清单: {out}");
+    // 条目级断言（**name**: 形态）——mcp_list 自身 description 文本里
+    // 含 "via mcp_call" 字样，裸子串断言会误伤。
+    assert!(
+        !out.contains("**mcp_call**"),
+        "lazy off 下 mcp_call 不列条目: {out}"
+    );
+    // 按名查 hidden 工具：拒绝（镜像 hidden 闸文案、schema 不可列）。
+    let out = mcp_list_call(&al, r#"{"name": "mcp_fake_echo"}"#).await;
+    assert!(out.contains("hidden by configuration"), "{out}");
+    assert!(out.contains("cannot be listed"), "{out}");
+    // 未知名：诚实提示（历史文案不变）。
+    let out = mcp_list_call(&al, r#"{"name": "mcp_ghost"}"#).await;
     assert!(out.contains("No MCP tool named `mcp_ghost`"), "{out}");
-    // 无名：全量列表（历史格式）。
-    let out = t.execute("{}", &ctx()).await.unwrap();
-    assert!(out.contains("## Registered MCP Tools (1)"), "{out}");
+}
+
+#[tokio::test]
+async fn mcp_list_dispatch_lazy_on_discovers_longtail_with_schema() {
+    let al = w7_loop();
+    with_lazy_and_hidden_config(&al, true, &[]);
+    // lazy on（big 档）：长尾经 mcp_call 仍可达——列名正是两步流程的
+    // 发现面；meta 两件套在列。
+    let out = mcp_list_call(&al, "{}").await;
+    assert!(out.contains("mcp_fake_echo"), "长尾列名（发现面）: {out}");
+    assert!(out.contains("mcp_call"), "{out}");
+    assert!(out.contains("mcp_list"), "{out}");
+    // 按名：完整 schema + mcp_call 用法提示（历史格式）。桩工具未覆写
+    // read_only_hint/destructive_hint——只断言键在 schema 里有投影。
+    let out = mcp_list_call(&al, r#"{"name": "mcp_fake_echo"}"#).await;
+    assert!(out.contains("## MCP Tool `mcp_fake_echo`"), "{out}");
+    assert!(out.contains("read_only_hint**"), "{out}");
+    assert!(out.contains("destructive_hint**"), "{out}");
+    assert!(out.contains("required"), "{out}");
+    assert!(out.contains("Call it with `mcp_call`"), "{out}");
+}
+
+#[tokio::test]
+async fn mcp_list_dispatch_tier_face_mini() {
+    let al = w7_loop();
+    *al.tier.write() = nemesis_types::capability::ModelTier::Mini;
+    with_lazy_and_hidden_config(&al, true, &[]);
+    // mini + lazy on：meta 两件套豁免白名单在列；长尾白名单外不可见
+    // （内层 mcp_call 必拒——列了是误导循环）。
+    let out = mcp_list_call(&al, "{}").await;
+    assert!(out.contains("mcp_call"), "{out}");
+    assert!(out.contains("mcp_list"), "{out}");
+    assert!(!out.contains("mcp_fake_echo"), "tier 外长尾不列: {out}");
+    let out = mcp_list_call(&al, r#"{"name": "mcp_fake_echo"}"#).await;
+    assert!(
+        out.contains("not visible at the active model's tier"),
+        "{out}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_list_self_hidden_refused() {
+    let al = w7_loop();
+    with_lazy_and_hidden_config(&al, true, &["mcp_list"]);
+    // 自闸：mcp_list 自身被 hidden 时拒绝（拦截臂先于通用 hidden 闸——
+    // 无自闸则「供给面隐藏 + dispatch 面放行」双闸矛盾对 meta 名成立）。
+    let out = mcp_list_call(&al, "{}").await;
+    assert!(out.contains("hidden by configuration"), "{out}");
+}
+
+#[tokio::test]
+async fn mcp_call_self_hidden_refused() {
+    let al = w7_loop();
+    with_lazy_and_hidden_config(&al, true, &["mcp_call"]);
+    let res = al
+        .handle_tool_call(
+            &ToolCallInfo {
+                id: "c9".to_string(),
+                name: "mcp_call".to_string(),
+                arguments: r#"{"tool": "mcp_fake_echo", "args": {}}"#.to_string(),
+            },
+            &ctx(),
+        )
+        .await;
+    assert!(res.contains("hidden by configuration"), "{res}");
+}
+
+#[tokio::test]
+async fn mcp_list_direct_execute_is_honest_dead_end() {
+    let t = McpListTool;
+    let err = t.execute("{}", &ctx()).await;
+    assert!(err.is_err(), "直调必须报错（dispatch 拦截是唯一执行路径）");
 }
 
 // ---------------------------------------------------------------------------

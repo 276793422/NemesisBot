@@ -130,6 +130,7 @@ fn feishu_config_debug_redacts_three_secrets() {
 }
 
 #[test]
+#[cfg(feature = "webhook")]
 fn webhook_inbound_config_debug_redacts_api_key() {
     let c = crate::webhook_inbound::WebhookInboundConfig {
         api_key: SECRET.into(),

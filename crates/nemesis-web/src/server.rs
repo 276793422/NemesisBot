@@ -295,6 +295,13 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// 急停触发/释放的审计钩子（BUG-20261118-096）：急停是最高级安全
+    /// 动作，此前只走 tracing::info（日志可改）不落 Merkle 审计链——事后
+    /// 取证「谁在何时触发/释放了急停」无防篡改记录。gateway 注入闭包
+    /// （持 SecurityPlugin 真身走 append_direct_audit_event；审计链未启用
+    /// 时 None = 诚实降级，tracing 兜底）。参数 (operation, source)：
+    /// operation ∈ {"engage","release"}；source ∈ {"cli","dashboard","tray"}。
+    estop_audit: Option<crate::handlers::estop::EstopAuditHook>,
     /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入，
     /// flows into AppState。None = 未注入（headless/relay/测试装配）→
     /// handler 诚实报错）。
@@ -417,6 +424,7 @@ impl WebServer {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            estop_audit: None,
             background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
@@ -590,6 +598,11 @@ impl WebServer {
     /// Set the global e-stop state for /api/internal estop commands.
     pub fn set_estop(&mut self, estop: Arc<nemesis_agent::estop::EstopState>) {
         self.estop = Some(estop);
+    }
+
+    /// Set the e-stop audit hook（触发/释放落 Merkle 审计链；gateway 注入）。
+    pub fn set_estop_audit(&mut self, hook: crate::handlers::estop::EstopAuditHook) {
+        self.estop_audit = Some(hook);
     }
 
     /// Set the gateway-level background process registry（background.* WSAPI
@@ -800,6 +813,7 @@ impl WebServer {
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
+            estop_audit: self.estop_audit.clone(),
             background_registry: self.background_registry.clone(),
             cors_manager: self.cors_manager.clone(),
             signature_verify: self.signature_verify.clone(),

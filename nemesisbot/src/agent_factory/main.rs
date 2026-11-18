@@ -533,12 +533,8 @@ pub fn build_agent_loop(
 
     // 7. Build tool config + register all tools + enable MCP.
     // 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
-    let (mut tool_config, spawn_slot, steer_slot) = build_shared_tool_config(
-        shared,
-        &cfg,
-        &model_name,
-        Some(agent_loop.mcp_tool_snapshot()),
-    );
+    let (mut tool_config, spawn_slot, steer_slot) =
+        build_shared_tool_config(shared, &cfg, &model_name);
     // present_plan 工具供给（plan 模式白名单 + SharedToolConfig
     // 注册同源；loop 侧 verdict 消费槽已装配）。
     tool_config.plan_present = Some(plan_present_handle);

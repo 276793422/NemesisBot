@@ -28,9 +28,11 @@ pub enum FileChangeKind {
 
 /// MCP 工具快照条目（`refresh_mcp_snapshot` 产出）。
 ///
-/// 消费方：`McpListTool`（name + description 列表展示）； 独占接管
-/// （name 供给闸/隐藏表比对，parameters 供镜像 op 的 args_schema 预检与
-/// connector_find 展示）。快照在 MCP 注册/reload 时整表重建。
+/// 消费方：connectors 运营面（独占接管 name 供给闸/隐藏表比对，
+/// parameters 供镜像 op 的 args_schema 预检与 connector_find 展示；
+/// Dashboard 镜像行）。**模型面 mcp_list 不消费**——dispatch 拦截 +
+/// registry 真值过滤渲染（BUG-20261118-095；渲染复用本类型作 DTO）。
+/// 快照在 MCP 注册/reload 时整表重建。
 #[derive(Debug, Clone)]
 pub struct McpToolSnapshotEntry {
     pub name: String,
@@ -494,16 +496,18 @@ impl AgentLoop {
             })
             .collect();
         // 确定性顺序（BUG-20261117-052）：HashMap 迭代序是实现细节
-        //（RandomState 跨进程不同 + MCP 热装 rehash 漂移），而 mcp_list
-        // 按 snapshot 顺序渲染全量清单且自声明「逐字节一致保 prompt
-        // cache 兼容」——同工具集不同进程输出序漂移 = 违反该前提。
+        //（RandomState 跨进程不同 + MCP 热装 rehash 漂移），而快照按序
+        // 投影给 connectors 运营面（清单 UI 不跳序）；模型侧 mcp_list
+        // 自行对 registry 键排序（BUG-20261118-095 后不读快照）。
         // 与 list_dir / grep_recursive 的平台序排序纪律同族。
         snapshot.sort_by(|a, b| a.name.cmp(&b.name));
         *self.mcp_tool_snapshot.write() = snapshot;
     }
 
     /// Return a shared reference to the MCP tool snapshot.
-    /// Used to wire up McpListTool.
+    /// 运营面投影 getter：connectors Dashboard / connector_tools 消费
+    /// （模型侧 mcp_list 不读快照——BUG-20261118-095 后走 registry
+    /// 真值 + 可见性过滤，快照仅运营视图）。
     pub fn mcp_tool_snapshot(&self) -> Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>> {
         self.mcp_tool_snapshot.clone()
     }

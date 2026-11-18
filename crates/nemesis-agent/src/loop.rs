@@ -530,7 +530,12 @@ pub struct AgentLoop {
     /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
     browser_profile: Option<String>,
     /// Snapshot of registered MCP tools (name + description + parameters).
-    /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
+    /// **运营面投影**：connectors Dashboard / connector_tools 镜像行消费
+    /// （`mcp_tool_snapshot()` accessor）。模型侧 mcp_list 不再读快照——
+    /// 走 dispatch 拦截 + registry 真值可见性过滤渲染
+    /// （BUG-20261118-095：生产装配从未把本快照接进 SharedToolConfig 槽 →
+    /// McpListTool 恒空 Arc 死工具；接通形态下快照无 hidden/tier 过滤会
+    /// 泄漏隐藏工具面）。
     mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<tools_trait::McpToolSnapshotEntry>>>,
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,

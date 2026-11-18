@@ -128,6 +128,10 @@ pub struct AppState {
     /// 全局急停状态。/api/internal 的 estop_* 命令直接操作它（无需 mpsc 往返，
     /// status 能即时返回）。EstopState 是线程安全 Arc<AtomicBool+watch>。
     pub estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// 急停触发/释放的审计钩子（BUG-20261118-096）：gateway 注入闭包
+    /// （持 SecurityPlugin 真身走 append_direct_audit_event 落 Merkle 审计
+    /// 链）。None = 未注入（headless/测试装配）→ 诚实降级，tracing 兜底。
+    pub estop_audit: Option<crate::handlers::estop::EstopAuditHook>,
     /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入。
     /// None = 未注入（headless/relay/测试装配）→ handler 诚实报错）。
     pub background_registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>,
@@ -967,10 +971,16 @@ pub async fn handle_api_internal(
             match cmd {
                 "estop_engage" => {
                     estop.trigger();
+                    if let Some(hook) = state.estop_audit.as_ref() {
+                        hook("engage", "cli");
+                    }
                     tracing::info!("[Web] E-stop engaged via /api/internal");
                 }
                 "estop_release" => {
                     estop.release();
+                    if let Some(hook) = state.estop_audit.as_ref() {
+                        hook("release", "cli");
+                    }
                     tracing::info!("[Web] E-stop released via /api/internal");
                 }
                 _ => {}

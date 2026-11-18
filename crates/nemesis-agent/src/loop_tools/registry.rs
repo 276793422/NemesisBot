@@ -138,8 +138,10 @@ pub struct SharedToolConfig {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)]
     pub memory_executor: Option<()>,
-    /// Snapshot of registered MCP tools for McpListTool.
-    pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>>,
+    // （BUG-20261118-095）原 `mcp_tool_snapshot` 槽已删：mcp_list 改走
+    // dispatch 拦截 + registry 真值过滤渲染，不再读快照（生产装配从未
+    // 接通本槽 → 恒空 Arc 死工具；接通形态下快照无可见性过滤会泄漏
+    // 隐藏工具面）。loop 侧快照保留（connectors Dashboard 运营面消费）。
     /// Workflow engine reference for the `workflow` agent tool（run/create/
     /// capabilities 三合一单工具，2026-11-06）。
     /// `None` means workflows aren't wired in (tool stays unregistered).
@@ -254,10 +256,6 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "memory_executor",
                 &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"),
-            )
-            .field(
-                "mcp_tool_snapshot",
-                &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"),
             )
             .field(
                 "workflow_engine",
@@ -955,13 +953,10 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         "history_search".to_string(),
         Box::new(HistorySearchTool::new()),
     );
-    {
-        let snapshot = config
-            .mcp_tool_snapshot
-            .clone()
-            .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(Vec::new())));
-        tools.insert("mcp_list".to_string(), Box::new(McpListTool::new(snapshot)));
-    }
+    // （BUG-20261118-095）mcp_list 注册恒在（生产恒注册工具面）；执行
+    // 走 dispatch 拦截（可见性过滤 + registry 真值渲染），execute 是
+    // 诚实报错安全网。
+    tools.insert("mcp_list".to_string(), Box::new(McpListTool));
     // 惰性供给 meta 工具（供给闸在 build_tool_defs，dispatch 拦截解包；
     // lazy off 时供给面不出现——注册恒在，行为零变化由双闸保证）。
     tools.insert("mcp_call".to_string(), Box::new(McpCallTool));
@@ -1058,7 +1053,6 @@ pub fn register_extended_tools(
         forge_executor: None,
         forge: None,
         memory_executor: None,
-        mcp_tool_snapshot: None,
         workflow_engine: None,
         approval_manager: None,
         skills_manage_approval: false,

@@ -1162,6 +1162,43 @@ pub(crate) async fn init_post_agent(
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
 
+    // 急停审计钩子（BUG-20261118-096）：触发/释放落 Merkle 审计链——急停
+    // 是最高级安全动作，此前只有 tracing::info（日志可改不算留痕）。闭包
+    // 持 SecurityPlugin 真身走 append_direct_audit_event（非工具管线直接
+    // 记账先例：cluster_support/delivery_ledger/selfupdate）；审计链未启用
+    // 时 append 返回 None（内部已 warn），tracing info 兜底可见性不变。
+    // 托盘入口不走此钩子（回调闭包在 run_runtime 直记）。
+    #[cfg(feature = "security")]
+    if let Some(plugin) = agent.security_plugin.clone() {
+        let hook: nemesis_web::handlers::estop::EstopAuditHook = std::sync::Arc::new(
+            move |operation: &str, source: &str| {
+                let reason = if operation == "engage" {
+                    "e-stop engaged (kill switch: freeze all agent activity)"
+                } else {
+                    "e-stop released (agent activity resumes)"
+                };
+                if plugin
+                    .append_direct_audit_event(
+                        "estop",
+                        "kill_switch",
+                        "system",
+                        source,
+                        "gateway",
+                        "allow",
+                        reason,
+                    )
+                    .is_none()
+                {
+                    tracing::debug!(
+                        "[Gateway] estop audit event not recorded (chain disabled or append failed); tracing fallback only"
+                    );
+                }
+            },
+        );
+        web_server.set_estop_audit(hook);
+        info!("[Gateway] E-stop audit hook injected into web server");
+    }
+
     // 项1（质变级能力开发计划 2026-11-16）：事件驱动唤醒——EventWatchManager
     // 构造 + 观测快照注入 + 泵启动（P2 EventsView 同点接线）。规则文件
     // <workspace>/config/events.json（mtime 热重载，解析失败保留旧规则）；

@@ -272,7 +272,7 @@ nemesis-plugin = { path = "crates/nemesis-plugin" }
 nemesis-routing = { path = "crates/nemesis-routing" }
 nemesis-state = { path = "crates/nemesis-state" }
 nemesis-sysint = { path = "crates/nemesis-sysint" }
-nemesis-taskstore = { path = "crates/nemesis-taskstore" }
+nemesis-taskstore = { path = "crates/nemesis-taskstore", default-features = false }
 nemesis-utils = { path = "crates/nemesis-utils" }
 nemesis-injector = { path = "crates/nemesis-injector" }
 nemesis-ziwei = { path = "crates/nemesis-ziwei" }
