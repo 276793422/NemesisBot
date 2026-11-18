@@ -164,6 +164,7 @@ id = "quote"
 intent = ["查询行情"]
 risk = "low"
 class = "network"
+args_schema = {{ type = "object", required = ["symbol"], properties = {{ symbol = {{ type = "string" }} }} }}
 
 [op.http]
 method = "GET"
