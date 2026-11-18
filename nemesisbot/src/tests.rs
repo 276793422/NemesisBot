@@ -965,6 +965,12 @@ pub(crate) fn singleton_test_home() -> std::path::PathBuf {
     HOME.get_or_init(|| {
         let base =
             std::env::temp_dir().join(format!("nemesisbot_r7_sandbox_{}", std::process::id()));
+        // 先清残留再建：Windows PID 回收会让下一轮测试进程拿到同 PID，
+        // 上一轮成功运行留下的沙箱（projects.json 注册表条目、评审账本行
+        // 等）会让本轮测试自碰撞/计数翻倍（假红实录：残留「绑定全路径」
+        // 条目 → create_project 重复路径拒绝）。残留目录属死进程（PID
+        // 归属我们即前任已死），删除安全。
+        let _ = std::fs::remove_dir_all(&base);
         let home = base.join(".nemesisbot");
         std::fs::create_dir_all(&home).expect("create singleton test home");
         nemesis_path::default_path_manager().set_home_dir(home.clone());

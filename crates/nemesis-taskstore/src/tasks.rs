@@ -262,6 +262,17 @@ impl SqliteTaskStore {
     //    与「任务不存在」对齐——查询回 Err(not found)/Ok(false)，列表回
     //    空集，与 usage-store 空账本同款纪律）。---------------------------
 
+    /// 新建。写入 no-op（恒 Ok；后续查询恒空 = 任务不存在，与 runs
+    /// create_run stub 同款口径）。⚠ 本 stub 缺失时（694d1382 引入双门控
+    /// 裁剪漏写），nemesis-cluster 适配层 `SqliteTaskStore::create` 在
+    /// 无 sqlite 构建下解析到自身 trait 方法 → 无限自递归 → 栈溢出
+    /// （回归锁：nemesis-web agt_tasks_detail_terminal*，仅 `-p nemesis-web
+    /// --features cluster` 纯子集构建暴露）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn create(&self, _task: Task) -> Result<(), String> {
+        Ok(())
+    }
+
     /// 读取。查询恒空 = 任务不存在（Err 文案与真实现一致）。
     #[cfg(not(feature = "sqlite"))]
     pub fn get(&self, task_id: &str) -> Result<Task, String> {

@@ -547,6 +547,28 @@ pub(crate) async fn init_post_agent(
     #[cfg(feature = "cluster")]
     let cluster_arc_ref: Option<std::sync::Arc<nemesis_cluster::cluster::Cluster>> =
         cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone());
+    // 回帖投递失败 → 本地注记回调（BUG-20261118 B.3 失败可见）：捕获本
+    // 节点 board_store，失败臂经 board_bus::note_discussion_reply_failure
+    // 落系统注记。board 裁剪形态 = None（cluster-only 编译不引 nemesis_board）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote> = {
+        let store = board_store.clone();
+        Some(Arc::new(
+            move |event: &nemesis_types::cluster::DiscussionEvent, detail: &str, reply: &str| {
+                match store.as_ref() {
+                    Some(store) => {
+                        crate::board_bus::note_discussion_reply_failure(store, event, detail, reply)
+                    }
+                    None => tracing::warn!(
+                        target: "board_bus",
+                        "[nb_bus] reply failure note skipped: no local board store"
+                    ),
+                }
+            },
+        ))
+    };
+    #[cfg(not(all(feature = "board", feature = "cluster")))]
+    let reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote> = None;
     #[cfg(feature = "cluster")]
     {
         if let Some((cluster, task_list, work_queue, result_persister)) =
@@ -561,6 +583,7 @@ pub(crate) async fn init_post_agent(
                 work_queue,
                 result_persister,
                 board_worker_inbox.take(),
+                reply_failure_note,
                 transfer_outbox,
             ));
             // Only perform first start when both config flags are enabled.

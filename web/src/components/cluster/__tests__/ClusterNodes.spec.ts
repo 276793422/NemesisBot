@@ -15,10 +15,11 @@ vi.mock('../../../composables/useWSAPI', () => ({
 import ClusterNodes from '../ClusterNodes.vue'
 
 const NODES = [
-  { id: 'node-alpha', name: 'Alpha', role: 'manager', online: true, isLocal: true, address: 'local', capabilities: ['ssh', 'build', 'dev', 'ops'], lastSeen: '刚刚', build: 'abc1234', roamingPath: 'direct' },
-  { id: 'node-beta', name: 'Beta', role: 'worker', online: true, address: '10.0.0.2:7900', capabilities: ['ssh'], roamingPath: 'relay' },
-  { id: 'node-gamma', name: 'Gamma', role: 'worker', online: false, address: '10.0.0.3:7900', capabilities: [], roamingPath: 'unknown' },
-  { id: 'placeholder-1', name: 'Delta', role: 'worker', online: false, address: '10.0.0.4:7900' },
+  { id: 'node-alpha', name: 'Alpha', role: 'manager', online: true, status: 'online', isLocal: true, address: 'local', capabilities: ['ssh', 'build', 'dev', 'ops'], lastSeen: '刚刚', build: 'abc1234', roamingPath: 'direct' },
+  { id: 'node-beta', name: 'Beta', role: 'worker', online: true, status: 'online', address: '10.0.0.2:7900', capabilities: ['ssh'], roamingPath: 'relay' },
+  { id: 'node-gamma', name: 'Gamma', role: 'worker', online: false, status: 'offline', address: '10.0.0.3:7900', capabilities: [], roamingPath: 'unknown' },
+  { id: 'placeholder-1', name: 'Delta', role: 'worker', online: false, status: 'offline', address: '10.0.0.4:7900' },
+  { id: 'node-epsilon', name: 'Epsilon', role: 'worker', online: false, status: 'connecting', address: '10.0.0.5:7900' },
 ]
 
 function defaultImpl(_m: string, cmd: string, _p?: any) {
@@ -28,6 +29,7 @@ function defaultImpl(_m: string, cmd: string, _p?: any) {
     case 'nodes.refresh': return Promise.resolve({ upgraded_from_placeholder: true, canonical_id: 'node-real-1' })
     case 'nodes.remove': return Promise.resolve({})
     case 'nodes.add': return Promise.resolve({})
+    case 'nodes.cleanup_offline': return Promise.resolve({ removed: ['node-gamma', 'placeholder-1'], count: 2 })
     default: return Promise.resolve({})
   }
 }
@@ -66,7 +68,7 @@ function hasToast(msg: string) {
 describe('ClusterNodes 列表渲染与过滤', () => {
   it('渲染节点行：本节点/占位 ID/路径徽标/能力截断/lastSeen 兜底', async () => {
     const w = await mountNodes()
-    expect(w.findAll('.node-row').length).toBe(4)
+    expect(w.findAll('.node-row').length).toBe(5)
     expect(w.text()).toContain('Alpha')
     expect(rowByText(w, 'Alpha').text()).toContain('本节点')
     expect(rowByText(w, 'Delta').text()).toContain('占位 ID')
@@ -318,5 +320,61 @@ describe('ClusterNodes 刷新与定时轮询', () => {
     vi.advanceTimersByTime(30000)
     await flushPromises()
     expect(listCalls()).toBe(base + 2)
+  })
+})
+
+// BUG-20261118 批次 C：清理无效（批量清理 Offline 记录；确认弹窗列清单；
+// 后端语义——不拉黑/跳过本节点与静态 peers——由 nemesis-cluster 单测钉住）
+describe('ClusterNodes 清理无效弹窗（批次 C）', () => {
+  it('弹窗列出离线节点（本节点排除），确认后调 cleanup_offline + 重拉列表', async () => {
+    const w = await mountNodes()
+    // NODES：Gamma + Delta 严格 offline（Alpha 本节点、Beta online、
+    // Epsilon connecting——online:false 但非清理对象）。
+    await w.find('[data-testid="cleanup-offline-btn"]').trigger('click')
+    const modal = w.find('.modal')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toContain('将清理以下 2 个离线节点的记录')
+    expect(modal.text()).toContain('Gamma')
+    expect(modal.text()).toContain('Delta')
+    // 本节点 Alpha 不进清单（后端也会跳过，前端不列）。
+    expect(modal.text()).not.toContain('Alpha')
+    // Connecting 节点（Epsilon）不进清理清单——后端只删严格 Offline，
+    // 清单必须 = 实际清理集（online:false 口径会把它误列进来）。
+    expect(modal.text()).not.toContain('Epsilon')
+    // 语义说明在场（不拉黑 / 单个移除仍拉黑）。
+    expect(modal.text()).toContain('不会加入黑名单')
+
+    await w.find('[data-testid="cleanup-confirm-btn"]').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('cluster', 'nodes.cleanup_offline')
+    expect(useToast().toasts.some(t => t.message === '已清理 2 个离线节点记录')).toBe(true)
+    expect(w.find('.modal').exists()).toBe(false)
+    // 成功后重拉列表（cleanup 前后各至少一次）。
+    expect(requestMock.mock.calls.filter(c => c[1] === 'nodes.list').length).toBeGreaterThan(1)
+    w.unmount()
+  })
+
+  it('无离线节点：弹窗提示无可清理，确认按钮禁用', async () => {
+    const w = await mountNodes((_m, cmd) =>
+      cmd === 'nodes.list'
+        ? Promise.resolve({ nodes: NODES.filter(n => n.online) })
+        : Promise.resolve({}))
+    await w.find('[data-testid="cleanup-offline-btn"]').trigger('click')
+    expect(w.find('.modal').exists()).toBe(true)
+    expect(w.find('.modal').text()).toContain('没有离线节点记录可清理')
+    const confirm = w.find('[data-testid="cleanup-confirm-btn"]')
+    expect((confirm.element as HTMLButtonElement).disabled).toBe(true)
+    w.unmount()
+  })
+
+  it('清理失败：错误提示 + 弹窗保留可重试', async () => {
+    const w = await mountNodes((_m, cmd) =>
+      cmd === 'nodes.cleanup_offline' ? Promise.reject('busy') : defaultImpl(_m, cmd))
+    await w.find('[data-testid="cleanup-offline-btn"]').trigger('click')
+    await w.find('[data-testid="cleanup-confirm-btn"]').trigger('click')
+    await flushPromises()
+    expect(hasToast('清理失败')).toBe(true)
+    expect(w.find('.modal').exists()).toBe(true)
+    w.unmount()
   })
 })

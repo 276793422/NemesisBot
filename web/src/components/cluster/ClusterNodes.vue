@@ -16,6 +16,17 @@ const filterStatus = ref('')
 const showAddModal = ref(false)
 const addForm = ref({ address: '', name: '', id: '', role: 'worker', category: '' })
 const addSubmitting = ref(false)
+// BUG-20261118 批次 C：批量清理 Offline 节点记录（不拉黑——节点还活着
+// 会被 announce 重新发现；单个移除仍走拉黑语义）。
+const showCleanupModal = ref(false)
+const cleanupBusy = ref(false)
+
+// 严格 Offline 才进清理清单（status 由 nodes.list 下发三态
+// online/offline/connecting）：!online 会把握手中的 Connecting 节点也算
+// 进来，而后端 cleanup 只删严格 Offline——两口径必须一致，清单=实际清理集。
+const offlineNodes = computed(() =>
+  nodes.value.filter(n => n.status === 'offline' && !n.isLocal),
+)
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -59,6 +70,25 @@ async function removeNode(id: string) {
     await loadNodes()
   } catch (e: any) {
     toast.error('移除失败: ' + (e || '未知错误'))
+  }
+}
+
+async function submitCleanupOffline() {
+  cleanupBusy.value = true
+  try {
+    const res = await request('cluster', 'nodes.cleanup_offline')
+    const count = res?.count ?? 0
+    const removed: string[] = res?.removed || []
+    if (count > 0) toast.success(`已清理 ${count} 个离线节点记录`)
+    else toast.info('没有可清理的离线节点')
+    showCleanupModal.value = false
+    await loadNodes()
+    return { count, removed }
+  } catch (e: any) {
+    toast.error('清理失败: ' + (e || '未知错误'))
+    return { count: 0, removed: [] }
+  } finally {
+    cleanupBusy.value = false
   }
 }
 
@@ -136,6 +166,8 @@ onUnmounted(() => {
       </select>
       <div style="flex:1" />
       <button class="btn btn-sm btn-primary" @click="showAddModal = true">添加节点</button>
+      <!-- 批次 C：清理无效（仅离线记录；本节点/静态 peers 后端保护） -->
+      <button class="btn btn-sm" data-testid="cleanup-offline-btn" @click="showCleanupModal = true">清理无效</button>
       <button class="btn btn-sm" @click="loadNodes">刷新</button>
     </div>
 
@@ -163,6 +195,36 @@ onUnmounted(() => {
       </div>
       <div v-if="expandedId === node.id" style="margin:var(--space-2) 0">
         <NodeCard :node="node" @ping="pingNode" @remove="removeNode" @refresh="refreshNodeId" />
+      </div>
+    </div>
+
+    <!-- Cleanup Offline Modal（批次 C）：确认弹窗列出将被清理的离线节点 -->
+    <div v-if="showCleanupModal" class="modal-overlay" @click.self="showCleanupModal = false">
+      <div class="modal">
+        <div class="modal-header"><h3>清理离线节点</h3></div>
+        <div class="modal-body">
+          <div v-if="offlineNodes.length">
+            <p style="margin:0 0 var(--space-2)">将清理以下 {{ offlineNodes.length }} 个离线节点的记录：</p>
+            <div class="cleanup-list">
+              <div v-for="n in offlineNodes" :key="n.id" class="cleanup-item">
+                <span style="font-weight:600">{{ n.name }}</span>
+                <span class="muted" style="font-size:var(--text-xs);font-family:monospace">{{ n.id }}</span>
+              </div>
+            </div>
+          </div>
+          <p v-else style="margin:0">当前没有离线节点记录可清理。</p>
+          <small style="color:var(--text-muted);font-size:var(--text-xs);display:block;margin-top:var(--space-2)">
+            只删除失效的历史发现记录；本节点与手动配置的静态节点不会被清理。
+            节点若仍在运行，之后会被自动重新发现（不会加入黑名单）。
+            单个节点的「移除」仍保持拉黑语义（不再自动重新发现）。
+          </small>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="showCleanupModal = false">取消</button>
+          <button class="btn btn-danger" data-testid="cleanup-confirm-btn" :disabled="cleanupBusy || !offlineNodes.length" @click="submitCleanupOffline">
+            {{ cleanupBusy ? '清理中...' : '确认清理' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -226,4 +288,20 @@ onUnmounted(() => {
 .node-caps { flex: 1; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-seen { color: var(--text-muted); font-size: var(--text-xs); min-width: 50px; text-align: right; }
 .node-expand { color: var(--text-muted); font-size: 10px; }
+.muted { color: var(--text-muted); }
+.cleanup-list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.cleanup-item {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+.cleanup-item:last-child { border-bottom: none; }
 </style>

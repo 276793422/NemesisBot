@@ -101,6 +101,51 @@ fn port_zero_is_honored_not_defaulted() {
     assert_eq!(cfg.relay.registry_port, 0);
 }
 
+// -- BUG-20261118 批次 E：client.direct_port（直连端口固定）-----------------
+
+#[test]
+fn client_direct_port_missing_defaults_zero() {
+    // 缺键 = 0（动态端口，旧行为字节不变；旧文件零迁移）。
+    let cfg = parse_quic_value(Some(&serde_json::json!({
+        "client": { "relay_url": "http://vps:3340" }
+    })));
+    assert_eq!(cfg.client.direct_port, 0);
+}
+
+#[test]
+fn client_direct_port_explicit_value_honored() {
+    let cfg = parse_quic_value(Some(&serde_json::json!({
+        "client": { "relay_url": "http://vps:3340", "direct_port": 7843 }
+    })));
+    assert_eq!(cfg.client.direct_port, 7843);
+}
+
+#[test]
+fn client_direct_port_type_mismatch_or_out_of_range_falls_back_zero() {
+    // 非数值 / 字符串 / 负数 / 超 u16 值域 → 0（动态缺省；直连端口没有
+    // 「显式关」形态，0 即缺省语义）。
+    for v in [
+        serde_json::json!("7843"),
+        serde_json::json!(-1),
+        serde_json::json!(65536),
+        serde_json::json!(true),
+        serde_json::json!(null),
+    ] {
+        let cfg = parse_quic_value(Some(&serde_json::json!({
+            "client": { "direct_port": v }
+        })));
+        assert_eq!(cfg.client.direct_port, 0, "v = {v}");
+    }
+}
+
+#[test]
+fn client_direct_port_u16_max_boundary_honored() {
+    let cfg = parse_quic_value(Some(&serde_json::json!({
+        "client": { "direct_port": 65535 }
+    })));
+    assert_eq!(cfg.client.direct_port, 65535);
+}
+
 // ---------------------------------------------------------------------------
 // 旧位置首读迁移（ensure_quic_config）
 // ---------------------------------------------------------------------------

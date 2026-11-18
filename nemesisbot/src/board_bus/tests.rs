@@ -411,6 +411,11 @@ fn make_worker_deps(self_id: &str) -> (WorkerBusDeps, Arc<crate::cluster_agent::
     (deps, inbox)
 }
 
+/// 统一 handler 组装（BUG-20261118 全员装配形态）：master ∪ worker。
+fn make_unified_deps(master: MasterBusDeps, worker: WorkerBusDeps) -> UnifiedBusDeps {
+    UnifiedBusDeps { master, worker }
+}
+
 /// master wake.post 下行信封（build_wake_envelope 的形状）。
 fn wake_payload(
     thread_kind: &str,
@@ -1116,8 +1121,12 @@ fn sweep_master_handler_entry_and_task_started_validation_arms() {
     let (store, dir) = temp_store("handler-entry");
     let _ = tracing_subscriber::fmt::try_init();
 
-    // 入口转发（Box::new 闭包）+ ns=task 未知 op。
-    let handler = build_master_nb_bus_handler(make_deps(store.clone(), quota(8)));
+    // 入口转发（Box::new 闭包）+ ns=task 未知 op。统一 handler：
+    // ns=task 落 master 臂（worker 臂只认 wake.post）。
+    let handler = build_nb_bus_handler(make_unified_deps(
+        make_deps(store.clone(), quota(8)),
+        make_worker_deps("node-master").0,
+    ));
     let (ok, code, _) = parse_reply(handler(
         serde_json::json!({"v": 1, "ns": "task", "op": "nope"}),
     ));
@@ -1180,6 +1189,157 @@ fn sweep_master_handler_entry_and_task_started_validation_arms() {
     assert_eq!(
         body.pointer("/body/running"),
         Some(&serde_json::json!(true))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-20261118 回归锁（当年挤死唤醒场景的结构性防护）：统一 handler
+/// 在**同一节点**上 `wake.post`（worker 臂）与 `comment.post`（master 臂）
+/// 双通——worker 节点发帖后远端回帖不再被打回 UNKNOWN_OP。
+#[tokio::test]
+async fn unified_handler_routes_wake_and_comment_union() {
+    // master 臂（comment.post）落库后进④投递段（tokio::spawn），需要
+    // reactor 在场——故 async 测试（spawn 的任务测试内不 await，随 runtime
+    // drop 回收，零副作用）。
+    let (store, dir) = temp_store("union");
+    let _ = tracing_subscriber::fmt::try_init();
+    let (wdeps, inbox) = make_worker_deps("node-union");
+    let handler =
+        build_nb_bus_handler(make_unified_deps(make_deps(store.clone(), quota(8)), wdeps));
+
+    // ① wake.post → worker 臂：活跃 inbox 在手 → queued。
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    inbox.set_sender(tx);
+    let (ok, _, body) = parse_reply(handler(wake_payload(
+        "channel",
+        7,
+        1,
+        "@node-union 你怎么看？",
+        "node-a",
+    )));
+    assert!(
+        ok,
+        "wake.post 必须双通（历史上 worker 只认它，master 节点打回）"
+    );
+    assert_eq!(body.pointer("/body/queued"), Some(&serde_json::json!(true)));
+    let ev = rx.try_recv().expect("wake event forwarded to inbox");
+    assert_eq!(ev.thread_kind, "channel");
+    assert_eq!(ev.thread_id, 7);
+
+    // ② comment.post → master 臂：落库成功（历史上 worker 节点打回
+    // UNKNOWN_OP = 讨论半残根因）。
+    store.ensure_default_channels().unwrap();
+    let channels = store.list_channels().unwrap();
+    let ch_id = channels.first().expect("default channel").id;
+    let (ok, code, _) = parse_reply(handler(post_payload(
+        "um-1",
+        "channel",
+        ch_id,
+        "远端回复落发帖节点本地库",
+    )));
+    assert!(
+        ok,
+        "comment.post 必须双通（BUG-20261118：worker 收帖被拒根因），code={code:?}"
+    );
+
+    // ③ 双通顺序无关：再来一次 wake.post 仍通（槽位被统一 handler 独占，
+    // 不存在二选一）。
+    let (ok, _, body) = parse_reply(handler(wake_payload(
+        "channel",
+        7,
+        2,
+        "第二条 @node-union",
+        "node-a",
+    )));
+    assert!(ok, "wake.post 在 comment.post 之后仍须双通");
+    assert_eq!(body.pointer("/body/queued"), Some(&serde_json::json!(true)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// note_discussion_reply_failure（B.3 失败可见）：channel 按标题匹配落
+/// 系统注记；不认识的线程诚实跳过不污染。
+#[test]
+fn note_reply_failure_lands_on_matching_channel_only() {
+    use nemesis_types::cluster::{DiscussionCtxMessage, DiscussionEvent};
+    let (store, dir) = temp_store("note-fail");
+    let _ = tracing_subscriber::fmt::try_init();
+    store.ensure_default_channels().unwrap();
+    let channels = store.list_channels().unwrap();
+    let team = channels.first().expect("default channel");
+
+    let event = DiscussionEvent {
+        event: "mention".to_string(),
+        thread_title: format!("#{}", team.name),
+        messages: vec![DiscussionCtxMessage {
+            sender: "node-a".to_string(),
+            kind: "agent".to_string(),
+            content: "原帖".to_string(),
+            at: 1,
+        }],
+        new_at: 2,
+        reply_to: None,
+        max_turns_left: 5,
+        thread_kind: "channel".to_string(),
+        thread_id: 999_999, // 发帖节点的本地 id——本节点对不上（按标题寻址）
+        from_node: "node-a".to_string(),
+        new_sender: "node-union".to_string(),
+        sender_kind: "agent".to_string(),
+        new_content: "这是一条远端回复".to_string(),
+        seq: 3,
+    };
+
+    // 标题匹配 → 注记落库。
+    note_discussion_reply_failure(&store, &event, "RPC 投递失败：conn refused", "远端回复正文");
+    let msgs = store
+        .list_channel_messages(team.id, 0, 50)
+        .expect("list messages");
+    let note = msgs.iter().find(|m| m.content.contains("回复投递失败"));
+    assert!(
+        note.is_some(),
+        "失败注记必须落在标题匹配的频道，got {msgs:?}"
+    );
+    assert_eq!(note.expect("note").sender.kind, "system");
+    assert!(
+        note.expect("note").content.contains("远端回复正文"),
+        "注记必须带回帖原文（本地可见说了什么）"
+    );
+
+    // 不认识的线程（标题对不上任何本地频道）→ 诚实跳过，零副作用。
+    let mut foreign = event.clone();
+    foreign.thread_title = "#no-such-channel".to_string();
+    let before = store.list_channel_messages(team.id, 0, 50).unwrap().len();
+    note_discussion_reply_failure(&store, &foreign, "detail", "x");
+    assert_eq!(
+        store.list_channel_messages(team.id, 0, 50).unwrap().len(),
+        before,
+        "标题不匹配不得污染本地频道"
+    );
+
+    // issue 线程：同 id 同题 → 系统评论；标题不匹配 → 跳过。
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "修复讨论闭环".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut issue_ev = event.clone();
+    issue_ev.thread_kind = "issue".to_string();
+    issue_ev.thread_id = issue.id;
+    issue_ev.thread_title = issue.title.clone();
+    note_discussion_reply_failure(&store, &issue_ev, "被对方拒绝：quota_exhausted", "回复");
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("回复投递失败")),
+        "issue 线程注记应落系统评论"
+    );
+    let mut mismatch = issue_ev.clone();
+    mismatch.thread_title = "不是这个单子的标题".to_string();
+    let before = store.list_comments(issue.id).unwrap().len();
+    note_discussion_reply_failure(&store, &mismatch, "d", "r");
+    assert_eq!(
+        store.list_comments(issue.id).unwrap().len(),
+        before,
+        "issue 标题不匹配不得污染"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -128,13 +128,14 @@ describe('QuicRelayTab 卡渲染', () => {
   })
 
   it('与集群解耦：页面不再有跨网漫游开关/集群闸分支（指引文案除外）', async () => {
-    // 解耦改版：总开关卡删除——roaming 开关归【集群 → 配置】跨网漫游卡
-    // （页面保留一行指引文案指向它）；cluster_gate 分支删除（QUIC 不再
-    // 依赖集群闸链）。
+    // 解耦改版：总开关卡删除；cluster_gate 分支删除（QUIC 不再
+    // 依赖集群闸链）。批次 D 后卡②有「连接中继」开关（= 集群跨网漫游
+    // 同一配置键的两处 UI 之一），但那是 cluster roaming.* 命令面，
+    // 不属于 QUIC 闸回归。
     const w = mount(QuicRelayTab)
     await flushPromises()
-    // 开关本体只剩卡①「中继服务」一个（总开关已删）
-    expect(w.findAll('.toggle-switch').length).toBe(1)
+    // 开关：卡①「中继服务」+ 卡②「连接中继」（批次 D）
+    expect(w.findAll('.toggle-switch').length).toBe(2)
     expect(w.text()).not.toContain('启用跨网漫游')
     expect(w.text()).not.toContain('集群未启用')
     expect(w.text()).not.toContain('token 异常')
@@ -203,8 +204,8 @@ describe('QuicRelayTab 卡渲染', () => {
     await flushPromises()
     expect(w.find('.toggle-switch').exists()).toBe(true)
     expect(w.find('.toggle-switch .toggle-slider').exists()).toBe(true)
-    // 解耦后整页只剩卡①头部这一个开关
-    expect(w.findAll('.toggle-switch').length).toBe(1)
+    // 卡①「中继服务」+ 卡②「连接中继」（批次 D）
+    expect(w.findAll('.toggle-switch').length).toBe(2)
   })
 })
 
@@ -237,11 +238,12 @@ describe('QuicRelayTab 中结名册（quic.registry.members）', () => {
 })
 
 describe('QuicRelayTab 交互', () => {
-  it('卡①头部「中继服务」开关（全页唯一 checkbox）关闭 → quic.relay.disable（实时面，非 relay.config）', async () => {
+  it('卡①头部「中继服务」开关关闭 → quic.relay.disable（实时面，非 relay.config）', async () => {
     const w = mount(QuicRelayTab)
     await flushPromises()
     const boxes = w.findAll('input[type="checkbox"]')
-    expect(boxes.length).toBe(1)
+    // 卡①「中继服务」+ 卡②「连接中继」（批次 D）两个 checkbox
+    expect(boxes.length).toBe(2)
     await boxes[0].setValue(false)
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('quic', 'relay.disable')
@@ -331,5 +333,83 @@ describe('QuicRelayTab 交互', () => {
     const calls = relayCalls()
     expect(calls.length).toBe(1)
     expect(calls[0][2]).toEqual({ relay_token: '' })
+  })
+})
+
+// BUG-20261118 批次 D：卡②「连接中继」开关 = 集群设置跨网漫游同一配置键
+//（config.cluster.json roaming.enabled，cluster roaming.enable/disable 同源
+// 命令）；开 + relay_url 空 = 连 n0 公共中继红警示。
+describe('QuicRelayTab 卡② 连接中继开关（批次 D）', () => {
+  it('开关渲染 + checked 跟随 client.roaming_enabled + 同一开关说明在场', async () => {
+    const w = mount(QuicRelayTab)
+    await flushPromises()
+    const boxes = w.findAll('input[type="checkbox"]')
+    expect(boxes.length).toBe(2)
+    // 卡②开关 checked = roaming_enabled: true（默认载荷）
+    expect((boxes[1].element as HTMLInputElement).checked).toBe(true)
+    // 单一真相源说明
+    expect(w.text()).toContain('与【集群 → 配置】跨网漫游为同一开关')
+    expect(w.text()).toContain('关闭时本机完全不出连中继')
+    // 底部指引也指向同一配置键
+    expect(w.text()).toContain('同一配置键')
+    w.unmount()
+  })
+
+  it('卡②开关切换 → cluster roaming.disable（同源命令，非 quic.relay.*）', async () => {
+    const w = mount(QuicRelayTab)
+    await flushPromises()
+    const boxes = w.findAll('input[type="checkbox"]')
+    await boxes[1].setValue(false)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('cluster', 'roaming.disable')
+    // 反向：模拟当前关 → 开
+    requestMock.mockImplementation(async (m: string, cmd: string) => {
+      if (m === 'quic' && cmd === 'relay.status')
+        return relayData({ client: { roaming_enabled: false, relay_url: 'http://vps.example.com:3340', relay_token_set: true } })
+      if (m === 'quic' && cmd === 'registry.members') return registryData()
+      return {}
+    })
+    const w2 = mount(QuicRelayTab)
+    await flushPromises()
+    const boxes2 = w2.findAll('input[type="checkbox"]')
+    expect((boxes2[1].element as HTMLInputElement).checked).toBe(false)
+    await boxes2[1].setValue(true)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('cluster', 'roaming.enable')
+    w.unmount()
+    w2.unmount()
+  })
+
+  it('开 + relay_url 空 → n0 公共中继红警示；有 url → 无警示', async () => {
+    // 默认载荷 relay_url 已填 → 无警示
+    const w1 = mount(QuicRelayTab)
+    await flushPromises()
+    expect(w1.text()).not.toContain('n0 公共中继（默认）。如需自建中继组网')
+    w1.unmount()
+
+    // relay_url 空 + 开 → 红警示
+    requestMock.mockImplementation(async (m: string, cmd: string) => {
+      if (m === 'quic' && cmd === 'relay.status')
+        return relayData({ client: { roaming_enabled: true, relay_url: '', relay_token_set: false } })
+      if (m === 'quic' && cmd === 'registry.members') return registryData()
+      return {}
+    })
+    const w2 = mount(QuicRelayTab)
+    await flushPromises()
+    expect(w2.text()).toContain('未填自建中继地址')
+    expect(w2.text()).toContain('连接 n0 公共中继')
+    w2.unmount()
+
+    // 关 + relay_url 空 → 无警示（未开启不警告）
+    requestMock.mockImplementation(async (m: string, cmd: string) => {
+      if (m === 'quic' && cmd === 'relay.status')
+        return relayData({ client: { roaming_enabled: false, relay_url: '', relay_token_set: false } })
+      if (m === 'quic' && cmd === 'registry.members') return registryData()
+      return {}
+    })
+    const w3 = mount(QuicRelayTab)
+    await flushPromises()
+    expect(w3.text()).not.toContain('未填自建中继地址')
+    w3.unmount()
   })
 })

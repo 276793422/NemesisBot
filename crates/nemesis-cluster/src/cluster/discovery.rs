@@ -183,6 +183,49 @@ impl Cluster {
         self.removed_peers.write().remove(node_id)
     }
 
+    /// 批量清理 Offline 节点记录（BUG-20261118 批次 C）。
+    ///
+    /// 与 [`Self::remove_node`] 的语义分叉是刻意的：
+    /// - 只清注册表记录，**不写 removed_peers 黑名单、不动 peers.toml**——
+    ///   清理的对象是「已失效的历史发现残留」，节点若真还活着，下一个
+    ///   announce/探针应能重新入册（拉黑语义只属于用户显式移除单个节点）；
+    /// - 跳过：本节点、静态 peers（peers.toml 显式配置，用户意志）、
+    ///   非 Offline 状态（Online/Connecting 是活着的或正在握手的节点）。
+    ///
+    /// 清理后调用 [`Self::sync_to_disk`] 落盘 state.toml（否则重启回读会把
+    /// 已清理的条目复活回来——write-only 假持久化的反面教训）。
+    ///
+    /// 返回被清理的节点 id 列表（按注册表 (name, id) 字典序）。
+    pub fn cleanup_offline_nodes(&self) -> Vec<String> {
+        let offline_ids: Vec<String> = self
+            .registry
+            .list_peers()
+            .iter()
+            .filter(|n| n.base.id != self.node_id && n.status == NodeStatus::Offline)
+            .map(|n| n.base.id.clone())
+            // is_static 在 PeerEntry 上（list_peers 投影不带），单查兜住。
+            .filter(|id| !self.registry.is_peer_static(id))
+            .collect();
+
+        for id in &offline_ids {
+            // 直接 registry.remove：不进 removed_peers（见方法 doc 语义分叉）。
+            if self.registry.remove(id) {
+                crate::logger::log_discovery("cleaned_offline", "", Some(id));
+            }
+        }
+
+        if !offline_ids.is_empty()
+            && let Err(e) = self.sync_to_disk()
+        {
+            tracing::warn!(
+                error = %e,
+                "[Cluster] Offline 节点清理后落盘 state.toml 失败（内存已清，重启可能回读复活）"
+            );
+        }
+
+        offline_ids
+    }
+
     /// Register the node-discovered callback (Swarm). Called once at
     /// gateway assembly; the closure receives `(node_id, role, category)` on
     /// every non-blacklisted discovery/refresh event.

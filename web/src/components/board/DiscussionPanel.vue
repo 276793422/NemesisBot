@@ -67,6 +67,14 @@ const draft = ref('')
 const sending = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
 
+// B.4 信息性提示：本节点非 coordinator = 主持人（无 @ 自动裁决）不可用。
+// 纯信息展示，不做发帖拦截——BUG-20261118 统一 handler 后所有节点收帖
+// 闭环已恢复，@ 点名讨论在任何节点都完整可用。
+const localRole = ref('')
+const isModeratorHost = computed(() =>
+  ['coordinator', 'master', 'manager'].includes(localRole.value),
+)
+
 function activeChannel(): Channel | undefined {
   return channels.value.find((c) => c.id === activeChannelId.value)
 }
@@ -275,6 +283,12 @@ async function send() {
 onMounted(async () => {
   // F1/F2：节点注册表（成员面板/@ 补全）——失败不阻塞消息加载。
   ensureNodes().catch(() => {})
+  // B.4：本节点角色（主持人提示的数据源）——失败静默（横幅不显示即可）。
+  request('cluster', 'config.get')
+    .then((r) => {
+      localRole.value = r?.role ?? ''
+    })
+    .catch(() => {})
   try {
     await loadChannels()
     await pullIncrement()
@@ -333,6 +347,11 @@ useBoardChanged(async () => {
     <!-- 消息流 -->
     <div class="thread-pane">
       <template v-if="activeChannelId !== null">
+        <!-- B.4 信息性提示（不做发帖拦截）：非 coordinator 节点主持人缺席 -->
+        <div v-if="localRole !== '' && !isModeratorHost" class="moderator-note">
+          ℹ️ 本节点非 coordinator：无 @ 的发言不会有主持人自动回应；用
+          @all 或 @设备名 点名可正常唤醒并收回回复。
+        </div>
         <div ref="messagesEl" class="message-flow">
           <div v-if="messages.length === 0 && !loading" class="empty-state">
             <h3>还没有消息</h3>
@@ -444,6 +463,13 @@ useBoardChanged(async () => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+.moderator-note {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  background: var(--bg-tertiary, transparent);
 }
 .message-item {
   padding: var(--space-2) var(--space-3);
