@@ -232,39 +232,9 @@ fn test_deref_str_with_value() {
     assert_eq!(deref_str(Some(&s), "default"), "hello");
 }
 
-#[test]
-fn test_validate_skill_identifier_valid() {
-    assert!(validate_skill_identifier("my-skill").is_ok());
-    assert!(validate_skill_identifier("author/my-skill").is_ok());
-    assert!(validate_skill_identifier("anthropics/skills/coder").is_err()); // multiple slashes
-}
-
-#[test]
-fn test_validate_skill_identifier_empty() {
-    assert!(validate_skill_identifier("").is_err());
-    assert!(validate_skill_identifier("   ").is_err());
-}
-
-#[test]
-fn test_validate_skill_identifier_backslash() {
-    assert!(validate_skill_identifier("path\\to\\skill").is_err());
-}
-
-#[test]
-fn test_validate_skill_identifier_double_dot() {
-    assert!(validate_skill_identifier("../skill").is_err());
-    assert!(validate_skill_identifier("skill/..").is_err());
-}
-
-#[test]
-fn test_validate_skill_identifier_multiple_slashes() {
-    assert!(validate_skill_identifier("a/b/c").is_err());
-}
-
-#[test]
-fn test_validate_skill_identifier_single_slash() {
-    assert!(validate_skill_identifier("author/skill").is_ok());
-}
+// validate_skill_identifier 弱化死副本已删除（R1772，真相源在
+// nemesis-skills::types）——其测试随之移除，真相源测试见
+// nemesis-skills/src/types/tests.rs。
 
 #[test]
 fn test_truncate_with_multibyte_chars() {
@@ -409,25 +379,6 @@ fn test_deref_str_with_empty_string() {
 #[test]
 fn test_deref_str_default_used() {
     assert_eq!(deref_str(None, "fallback"), "fallback");
-}
-
-#[test]
-fn test_validate_skill_identifier_with_spaces() {
-    // " my-skill " has spaces but trim() makes it "my-skill"
-    assert!(validate_skill_identifier("  my-skill  ").is_ok());
-}
-
-#[test]
-fn test_validate_skill_identifier_no_slash() {
-    assert!(validate_skill_identifier("simple-name").is_ok());
-}
-
-#[test]
-fn test_validate_skill_identifier_with_special_chars() {
-    // Special chars that are not backslash or.. are ok
-    assert!(validate_skill_identifier("my-skill-v2").is_ok());
-    assert!(validate_skill_identifier("my_skill").is_ok());
-    assert!(validate_skill_identifier("my.skill").is_ok());
 }
 
 #[test]
