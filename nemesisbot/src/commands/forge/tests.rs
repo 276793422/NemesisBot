@@ -686,6 +686,33 @@ fn test_cmd_learning_history_with_entries() {
     assert_eq!(cycles[1].actions_taken, 6);
 }
 
+#[test]
+fn test_cmd_learning_history_cross_offset_ordering() {
+    // BUG-20261118-167 回归锁：started_at 产自 `to_rfc3339()`（带本地
+    // offset），跨 DST 切换 / 系统时区变更后同批数据混存不同 offset 形态
+    // ——裸字符串字典序按钟面数字排与真实时刻序不一致，CLI learning
+    // history 列表乱序（同族先例 BUG-20261118-140 cycle_store
+    // load_latest_cycle）。构造字面序与时刻序分歧的输入：
+    // A = "2026-01-02T09:00:00+09:00" = 00:00Z（真实较早）
+    // B = "2026-01-02T08:30:00+08:00" = 00:30Z（真实较晚）
+    // 字面序 08:30 < 09:00 会把 B 排前；解析后按 UTC 时刻 A 必须在前。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let forge_dir = tmp.path().join("forge");
+    std::fs::create_dir_all(&forge_dir).unwrap();
+    seed_cycle(&forge_dir, "2026-01-02T09:00:00+09:00", 1, 1);
+    seed_cycle(&forge_dir, "2026-01-02T08:30:00+08:00", 2, 2);
+
+    let cycles = learning_history_cycles(&forge_dir).unwrap();
+    assert_eq!(cycles.len(), 2);
+    assert_eq!(
+        cycles[0].started_at, "2026-01-02T09:00:00+09:00",
+        "00:00Z 早于 00:30Z——解析序必须压过字面序"
+    );
+    assert_eq!(cycles[0].patterns_found, 1);
+    assert_eq!(cycles[1].started_at, "2026-01-02T08:30:00+08:00");
+    assert_eq!(cycles[1].patterns_found, 2);
+}
+
 // -------------------------------------------------------------------------
 // cmd_reflect edge cases (non-runtime parts)
 // -------------------------------------------------------------------------

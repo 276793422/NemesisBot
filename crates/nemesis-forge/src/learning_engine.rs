@@ -965,7 +965,17 @@ impl LearningEngine {
         let since = chrono::Local::now() - chrono::Duration::days(30);
 
         match self.cycle_store.read_cycles(Some(since)).await {
-            Ok(cycles) => cycles.into_iter().last(),
+            Ok(mut cycles) => {
+                // BUG-20261118-167 横向排查（同族 BUG-20261118-140）：started_at
+                // 是带本地 offset 的 RFC3339 字符串，read_cycles 只保证月目录/
+                // 文件名序 + JSONL 行 append 序，不保证 started_at 时刻序（跨
+                // DST 切换/系统时区变更后同批混存不同 offset 形态，文件序≠时刻
+                // 序）。doc 承诺 "most recent"，必须显式按 UTC 时刻排序后再取
+                // 尾——对齐同 crate load_latest_cycle 的 BUG-140 修复形态，
+                // 单一真相源 rfc3339_order。
+                cycles.sort_by(|a, b| crate::pattern::rfc3339_order(&a.started_at, &b.started_at));
+                cycles.into_iter().last()
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,

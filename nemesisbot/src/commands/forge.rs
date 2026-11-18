@@ -1001,13 +1001,21 @@ fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
 /// 学习周期读取（真相源 CycleStore 月目录 JSONL；按 started_at 升序——
 /// read_dir 顺序是平台实现细节）。独立成函数供测试断言排序/计数，
 /// 旧实现读的 learning/learning_cycles.jsonl 无生产写入方（幻影路径）。
+///
+/// BUG-20261118-167：started_at 是带本地 offset 的 RFC3339 字符串
+/// （cycle_store 写入），跨 DST 切换 / 系统时区变更后同批数据混存不同
+/// offset 形态——裸字符串字典序按钟面数字排与真实时刻序不一致
+/// （"09:00+09:00"=00:00Z 早于 "08:30+08:00"=00:30Z，字面序却排其后），
+/// CLI learning history 列表乱序。改用 forge 的单一真相源
+/// `rfc3339_order`（解析后按 UTC 时刻比较；同族先例
+/// BUG-20261118-140 cycle_store::load_latest_cycle）。
 fn learning_history_cycles(
     forge_dir: &std::path::Path,
 ) -> Result<Vec<nemesis_types::forge::LearningCycle>> {
     let mut cycles =
         block_on_async(nemesis_forge::cycle_store::CycleStore::new(forge_dir).read_all())
             .map_err(anyhow::Error::msg)?;
-    cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    cycles.sort_by(|a, b| nemesis_forge::pattern::rfc3339_order(&a.started_at, &b.started_at));
     Ok(cycles)
 }
 
