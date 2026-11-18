@@ -1154,7 +1154,17 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             match cluster.register_rpc_handler(
                 crate::agents::migrate::ACTION_AGENT_MIGRATE_COMMIT,
                 Box::new(move |payload| {
-                    crate::agents::migrate::handle_migrate_commit(&deps, payload)
+                    // BUG-20261118-172：sync RPC handler 跑在 server 的 tokio
+                    // worker 上，commit 主体是重阻塞 sync IO（幂等清理
+                    // remove_dir_all_retry 的 thread::sleep 退避最坏
+                    // ~4.4s×3 + 文件 rename + SQLite upsert）——专用线程
+                    // 执行 + join，不占 worker；线程 panic 经 join 原样传
+                    // 回 worker 任务（与直跑同语义）。
+                    std::thread::scope(|s| {
+                        s.spawn(|| crate::agents::migrate::handle_migrate_commit(&deps, payload))
+                            .join()
+                            .unwrap()
+                    })
                 }),
             ) {
                 Ok(()) => {

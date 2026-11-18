@@ -1064,17 +1064,29 @@ async fn delete_session_body(
     // Clear SessionStore (in-memory + sessions/*.json) +
     // session_logs/*.jsonl. Best-effort; absence is not an error.
     let mut trash_entry: Option<String> = None;
+    // BUG-20261118-172：hard 删除级联 delete_chat_log 走 remove_file_retry
+    // （thread::sleep 退避最坏 ~4.4s×4 + pending sidecar ×2）——与软删
+    // trash 路径（BUG-20261031-248 已 spawn_blocking）同族，hard 臂此前
+    // 漏包。store Arc 先克隆出 guard 作用域再 await（guard 不跨 await，
+    // 与下方 session_end_bridge 同纪律）。
+    let mut hard_store_delete: Option<(
+        std::sync::Arc<nemesis_agent::session::SessionStore>,
+        String,
+    )> = None;
     {
         let guard = ctx.state.agent_loop.read();
         if let Some(al) = guard.as_ref()
             && let Some(store) = al.session_store()
         {
             if hard {
-                store.delete_session(session_key);
+                hard_store_delete = Some((std::sync::Arc::clone(store), session_key.to_string()));
             } else {
                 store.detach_session(session_key);
             }
         }
+    }
+    if let Some((store, key)) = hard_store_delete {
+        let _ = tokio::task::spawn_blocking(move || store.delete_session(&key)).await;
     }
     // BUG①（2026-11-05）：hard=true 不走回收站（旧语义不可恢复），todo
     // 文件也要一并删——四件套接管只覆盖软删链路。软删（!hard）的 todo 由
