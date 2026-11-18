@@ -1,12 +1,16 @@
 //! agent 自举插件（项6）单测：源清单解析 / 配额持久化 / 搜索扫描 /
 //! auto_approve 资格矩阵 / 审批面裁决回传 / 政策闸矩阵（estop、总闸、
 //! 白名单、未找到、已装、配额）/ is_installed 判定。
-//! 全程无网络、无宿主壳 DLL——工具的闸与纯函数层，漏斗全程归
-//! nemesis-plugins-wasm 套件与 e2e。
+//! 全程无网络；被测面是工具的闸与纯函数层，漏斗全程归
+//! nemesis-plugins-wasm 套件与 e2e。但 manager 构造期
+//! `PluginRuntime::new` 无条件开壳（`HostDll::open`），CI 无预构建壳
+//! 产物、exe-相邻候选全摸空——凡构造 manager 的用例先过
+//! [`ensure_host_dll`]（plugin_bridge/tests 同纪律：按需构建 +
+//! `NEMESIS_WASM_HOST_DLL` 权威注入）。
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use futures::future::BoxFuture;
 
@@ -31,6 +35,53 @@ fn temp_ws(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(ws.join("config").join("plugin_bootstrap")).expect("mkdir ws");
     ws
+}
+
+/// 宿主壳 DLL 就绪保障（plugin_bridge/tests 同纪律）：产物缺席按需构建，
+/// 路径经 `NEMESIS_WASM_HOST_DLL` 注入 loader——测试二进制在
+/// target/debug/deps/，exe-相邻候选摸不到壳产物。
+fn ensure_host_dll() {
+    static HOST_DLL: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let path = HOST_DLL.get_or_init(|| {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/plugin-wasm");
+        let out = crate_dir
+            .join("target/release")
+            .join(if cfg!(target_os = "windows") {
+                "plugin_wasm.dll"
+            } else if cfg!(target_os = "macos") {
+                "libplugin_wasm.dylib"
+            } else {
+                "libplugin_wasm.so"
+            });
+        if !out.exists() {
+            let cargo = std::env::var_os("CARGO")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("cargo"));
+            let mut cmd = std::process::Command::new(cargo);
+            cmd.args(["build", "--release"]).current_dir(&crate_dir);
+            for k in [
+                "CARGO_TARGET_DIR",
+                "CARGO_ENCODED_RUSTFLAGS",
+                "CARGO_BUILD_TARGET",
+            ] {
+                cmd.env_remove(k);
+            }
+            match cmd.status() {
+                Ok(s) if s.success() => {}
+                s => {
+                    eprintln!("宿主壳 DLL 构建失败：{s:?}");
+                    return None;
+                }
+            }
+        }
+        out.exists().then_some(out)
+    });
+    let Some(p) = path else {
+        panic!("宿主壳 DLL 构建失败（环境错误）：需 cargo 可用 + 壳 crate 可编译");
+    };
+    // SAFETY: 单写点（OnceLock 串行化）；读者 = 同进程 loader，均在本函数
+    // 返回后触达。
+    unsafe { std::env::set_var("NEMESIS_WASM_HOST_DLL", p) };
 }
 
 /// InstallReview 全字段字面量（资格矩阵翻转单字段用）。
@@ -444,13 +495,21 @@ impl nemesis_plugins_wasm::host_impl::SecretResolver for NoSecrets {
 
 /// 最小 propose 工具（真 manager 假 plugins 目录；漏斗不走——闸全在漏斗前）。
 fn propose_tool(ws: &Path) -> PluginProposeTool {
-    let manager = PluginManager::new_with_dirs(
-        ws,
-        &ws.join("plugins"),
-        PluginLimits::default(),
-        Arc::new(NoSecrets),
-    )
-    .expect("manager");
+    // env 注入 + 壳解析窗口持 crate 级锁（native_plugins/plugin_bridge
+    // 同锁，防 cargo test 单进程并行 set_var 互踩）。
+    let manager = {
+        let _dll = crate::WASM_HOST_DLL_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        ensure_host_dll();
+        PluginManager::new_with_dirs(
+            ws,
+            &ws.join("plugins"),
+            PluginLimits::default(),
+            Arc::new(NoSecrets),
+        )
+        .expect("manager")
+    };
     let installer = Arc::new(PluginInstaller::new(
         Arc::new(manager),
         Arc::new(AutoApprove),
@@ -511,13 +570,21 @@ async fn propose_estop_frozen() {
     write_sources(&ws, true, &[]);
     let estop = Arc::new(nemesis_agent::estop::EstopState::new());
     estop.trigger();
-    let manager = PluginManager::new_with_dirs(
-        &ws,
-        &ws.join("plugins"),
-        PluginLimits::default(),
-        Arc::new(NoSecrets),
-    )
-    .expect("manager");
+    // 锁窗口只护 env 注入 + 壳解析（async fn——锁不得跨 await，
+    // await_holding_lock）；load-once 缓存后 env 翻转无影响。
+    let manager = {
+        let _dll = crate::WASM_HOST_DLL_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        ensure_host_dll();
+        PluginManager::new_with_dirs(
+            &ws,
+            &ws.join("plugins"),
+            PluginLimits::default(),
+            Arc::new(NoSecrets),
+        )
+        .expect("manager")
+    };
     let tool = PluginProposeTool::new(
         ws.to_path_buf(),
         Arc::new(PluginInstaller::new(
