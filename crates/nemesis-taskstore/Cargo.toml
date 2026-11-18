@@ -4,9 +4,19 @@ version.workspace = true
 license.workspace = true
 edition.workspace = true
 
+# sqlite：统一任务层 SQLite 落盘（rusqlite bundled ~1MB，tasks.db 单库）。
+# workspace 依赖 default-features=false，
+# 消费方（nemesisbot `taskstore-sqlite`）显式 opt-in；关后全部 store 保持
+# 同型 API：写入 no-op、查询恒空（open 时 warn 一次），生产调用方零改动。
+# 测试构建经消费方 [dev-dependencies] 显式带回（resolver 2 不泄漏到正常
+# 构建）。
+[features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite"]
+
 [dependencies]
 nemesis-types = { workspace = true }
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -15,6 +25,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# store_tests 直接开原生连接（造库 / 触发器 blocker）——测试树恒在场；
+# 真实现本体由本包 default（直接构建）或消费方 dev-deps 带回。
 rusqlite = { workspace = true }
 
 [lints]

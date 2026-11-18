@@ -12,9 +12,11 @@
 //! v4 前旧账（不参与通知管线）；dead = 重试耗尽死信终态。通道 send 失败
 //! 的出站消息进 `notify_outbox` 指数退避重试（同款退避曲线）。
 
+#[cfg(feature = "sqlite")]
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::TaskDb;
+#[cfg(feature = "sqlite")]
 use crate::tasks::now_rfc3339;
 
 #[derive(Debug, Clone)]
@@ -42,10 +44,12 @@ pub struct DeliveryRecord {
 }
 
 /// deliveries 查询列清单（与 row 映射共用，防 SELECT 与映射漂移）。
+#[cfg(feature = "sqlite")]
 const DELIVERY_COLUMNS: &str = "id, run_id, kind, idempotency_key, status, payload, \
      created_at, delivered_at, confirmed_at, rejected_at, reject_reason, \
      notify_state, notify_attempts, notify_last_error, notify_next_retry_at";
 
+#[cfg(feature = "sqlite")]
 fn row_to_delivery(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRecord> {
     let payload_str: String = r.get(5)?;
     Ok(DeliveryRecord {
@@ -109,9 +113,11 @@ pub struct NotifyOutboxRow {
     pub next_retry_at: String,
 }
 
+#[cfg(feature = "sqlite")]
 const NOTIFY_OUTBOX_COLUMNS: &str =
     "id, delivery_key, message, created_at, attempts, last_error, next_retry_at";
 
+#[cfg(feature = "sqlite")]
 fn row_to_notify_outbox(r: &rusqlite::Row<'_>) -> rusqlite::Result<NotifyOutboxRow> {
     Ok(NotifyOutboxRow {
         id: r.get(0)?,
@@ -132,6 +138,7 @@ impl TaskDb {
     /// delivered——落库只代表「义务已登记」，不代表「通道收下了」）。
     /// `notify_expected`：本笔交付是否有出站通知义务（true = pending 且
     /// 立即进入重试调度；false = none，通道接受/确认照常记账但不重试）。
+    #[cfg(feature = "sqlite")]
     pub fn record_delivery(
         &self,
         kind: &str,
@@ -172,6 +179,7 @@ impl TaskDb {
     /// 置位）+ notify_state 升 channel_accepted + 清重试到期。forward-only
     /// 幂等：仅 `status='recorded'` 时生效——confirmed/rejected 后到达的
     /// 迟到接受是 no-op（拒绝/确认语义不被投递回执覆盖）。
+    #[cfg(feature = "sqlite")]
     pub fn mark_delivery_channel_accepted(&self, idempotency_key: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
@@ -189,6 +197,7 @@ impl TaskDb {
 
     /// 通知死信（项 C）：pending → dead（重试耗尽终态，停止调度）。
     /// 幂等：非 pending（none/legacy/已 confirmed/已 dead）= Ok(false)。
+    #[cfg(feature = "sqlite")]
     pub fn mark_delivery_notify_dead(&self, idempotency_key: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
@@ -207,6 +216,7 @@ impl TaskDb {
     /// channel_accepted）。**rejected 终态不可翻转**——`WHERE` 收窄到
     /// `IN ('recorded','delivered')`：拒绝是人工复核结论，确认撞拒绝 =
     /// `Ok(false)` 原样保留（确认不得盖掉拒绝；推翻拒绝走新交付重跑）。
+    #[cfg(feature = "sqlite")]
     pub fn confirm_delivery(&self, idempotency_key: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
@@ -236,6 +246,7 @@ impl TaskDb {
     /// attempts、刷新 last_error 与退避后的 next_retry_at。首次入箱
     /// attempts=1。`delivery_key` 的交付必须存在且 notify_state='pending'
     /// （调用方守卫；无义务/已接受/已确认不产生重试债）。
+    #[cfg(feature = "sqlite")]
     pub fn notify_enqueue_failure(
         &self,
         delivery_key: &str,
@@ -285,6 +296,7 @@ impl TaskDb {
     }
 
     /// 到期重试行（next_retry_at <= now，升序 = 最先到期的先出）。
+    #[cfg(feature = "sqlite")]
     pub fn notify_due(&self, now: &str, limit: usize) -> Result<Vec<NotifyOutboxRow>, String> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -305,6 +317,7 @@ impl TaskDb {
     }
 
     /// 出箱（重试成功后清债）。
+    #[cfg(feature = "sqlite")]
     pub fn notify_remove(&self, outbox_id: &str) -> Result<(), String> {
         self.with_conn(|conn| {
             conn.execute(
@@ -317,6 +330,7 @@ impl TaskDb {
     }
 
     /// 按交付键清箱（通道在任意通道上成功接受时清该交付的重试债）。
+    #[cfg(feature = "sqlite")]
     pub fn notify_remove_by_delivery(&self, delivery_key: &str) -> Result<(), String> {
         self.with_conn(|conn| {
             conn.execute(
@@ -329,6 +343,7 @@ impl TaskDb {
     }
 
     /// 按幂等键查（不存在 = Ok(None)）。
+    #[cfg(feature = "sqlite")]
     pub fn delivery_by_key(&self, idempotency_key: &str) -> Result<Option<DeliveryRecord>, String> {
         self.with_conn(|conn| {
             conn.query_row(
@@ -347,6 +362,7 @@ impl TaskDb {
     /// 拒绝同时终止通知义务（清重试到期）并清空重试箱（
     /// sweep 只看箱内 next_retry_at，箱内残留行会让已拒绝的交付内容仍被
     /// 重投——拒绝语义必须拦住下游投递，不能只改账面状态）。
+    #[cfg(feature = "sqlite")]
     pub fn reject_delivery(&self, idempotency_key: &str, reason: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
@@ -376,6 +392,7 @@ impl TaskDb {
     /// 闸必须认 recorded。幂等：已 published = `Ok(false)`。PR 号等留痕
     /// 走 [`Self::merge_delivery_payload`]（调用方，payload 与状态分写
     /// ——状态机单列单一职责）。rejected 不在射程（拒绝的交付不发布）。
+    #[cfg(feature = "sqlite")]
     pub fn mark_delivery_published(&self, idempotency_key: &str) -> Result<bool, String> {
         self.with_conn(|conn| {
             let n = conn
@@ -399,6 +416,7 @@ impl TaskDb {
     /// 键逐一覆盖、其余键保留（不做深合并——payload 顶层是扁平摘要字段）。
     /// 返回合并后的完整 payload。幂等键不存在 = `Err`（注记必须落在真实
     /// 交付上，不凭空造行）。
+    #[cfg(feature = "sqlite")]
     pub fn merge_delivery_payload(
         &self,
         idempotency_key: &str,
@@ -439,6 +457,7 @@ impl TaskDb {
     /// 落账原子化——状态与 PR 留痕要么同落要么都不落，杜绝「状态已
     /// published 而 payload 无 pr_number」的半行账让重试误判）。事务语义同
     /// `merge_delivery_payload`（Immediate 写锁前置）。幂等键不存在 = `Err`。
+    #[cfg(feature = "sqlite")]
     pub fn mark_delivery_published_with_payload(
         &self,
         idempotency_key: &str,
@@ -479,6 +498,7 @@ impl TaskDb {
     }
 
     /// 按执行 ID 列交付（run 维证据包查询面；created_at + id 稳定序）。
+    #[cfg(feature = "sqlite")]
     pub fn deliveries_by_run(&self, run_id: &str) -> Result<Vec<DeliveryRecord>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
@@ -497,6 +517,7 @@ impl TaskDb {
 
     /// 最近 N 笔交付（审计/仪表查询面；created_at DESC + id DESC 稳定序，
     /// `limit` 为 0 = 空列表不做全量拉取）。
+    #[cfg(feature = "sqlite")]
     pub fn deliveries_recent(&self, limit: usize) -> Result<Vec<DeliveryRecord>, String> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -514,5 +535,109 @@ impl TaskDb {
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("tasks.db recent deliveries failed: {e}"))
         })
+    }
+
+    // -- sqlite 未编译进本构建：空 stub（写入 no-op、查询恒空；与
+    //    usage-store 空账本同款纪律）。写动作回 Ok(true)/Ok(())（视为
+    //    新记/成功），查询回恒空/实体不存在语义。--------------------------
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn record_delivery(
+        &self,
+        _kind: &str,
+        _run_id: Option<&str>,
+        _idempotency_key: &str,
+        _payload: &serde_json::Value,
+        _notify_expected: bool,
+    ) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn mark_delivery_channel_accepted(&self, _idempotency_key: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn mark_delivery_notify_dead(&self, _idempotency_key: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn confirm_delivery(&self, _idempotency_key: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn notify_enqueue_failure(
+        &self,
+        _delivery_key: &str,
+        _message: &str,
+        _last_error: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn notify_due(&self, _now: &str, _limit: usize) -> Result<Vec<NotifyOutboxRow>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn notify_remove(&self, _outbox_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn notify_remove_by_delivery(&self, _delivery_key: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// 查询恒空 = 交付不存在（Ok(None)）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn delivery_by_key(
+        &self,
+        _idempotency_key: &str,
+    ) -> Result<Option<DeliveryRecord>, String> {
+        Ok(None)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn reject_delivery(&self, _idempotency_key: &str, _reason: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn mark_delivery_published(&self, _idempotency_key: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// 幂等键不存在 = Err（与真实现一致——注记必须落在真实交付上）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn merge_delivery_payload(
+        &self,
+        idempotency_key: &str,
+        _patch: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!("delivery {idempotency_key} not found"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn mark_delivery_published_with_payload(
+        &self,
+        idempotency_key: &str,
+        _patch: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err(format!("delivery {idempotency_key} not found"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn deliveries_by_run(&self, _run_id: &str) -> Result<Vec<DeliveryRecord>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn deliveries_recent(&self, _limit: usize) -> Result<Vec<DeliveryRecord>, String> {
+        Ok(Vec::new())
     }
 }
