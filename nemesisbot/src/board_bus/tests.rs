@@ -1269,7 +1269,8 @@ fn note_reply_failure_lands_on_matching_channel_only() {
 
     let event = DiscussionEvent {
         event: "mention".to_string(),
-        thread_title: format!("#{}", team.name),
+        // BUG-20261118-159 根修后生产 stamp 形态 = 库内规范名（单 `#`）。
+        thread_title: team.name.clone(),
         messages: vec![DiscussionCtxMessage {
             sender: "node-a".to_string(),
             kind: "agent".to_string(),
@@ -1302,6 +1303,19 @@ fn note_reply_failure_lands_on_matching_channel_only() {
     assert!(
         note.expect("note").content.contains("远端回复正文"),
         "注记必须带回帖原文（本地可见说了什么）"
+    );
+
+    // 遗留 `##` 形态（159 根修前在途事件 / 旧 master wake 包）→ trim 容忍
+    // 照常落库（纵深防御层的形态兼容钉死）。
+    let mut legacy = event.clone();
+    legacy.thread_title = format!("##{}", team.name.trim_start_matches('#'));
+    // 与主事件正文区分开：另落一条可寻址注记（同线程第二条系统消息）。
+    legacy.new_content = "遗留形态回复".to_string();
+    note_discussion_reply_failure(&store, &legacy, "detail", "遗留形态回复");
+    let msgs = store.list_channel_messages(team.id, 0, 50).unwrap();
+    assert!(
+        msgs.iter().any(|m| m.content.contains("遗留形态回复")),
+        "`##`/`#`/裸名三形态 trim 容忍必须继续生效"
     );
 
     // 不认识的线程（标题对不上任何本地频道）→ 诚实跳过，零副作用。
@@ -1720,10 +1734,18 @@ fn sweep_build_wake_envelope_issue_and_channel_branches() {
     let env = build_wake_envelope(&store, &ctx_ghost, 1, "mention").unwrap();
     assert_eq!(env["body"]["thread"]["title"], serde_json::json!(""));
 
-    // channel 分支：title = 频道名（#前缀），prd_summary 恒空。
+    // channel 分支：title = 频道名库内规范形态（恒带单个 `#` 前缀），
+    // prd_summary 恒空。（BUG-20261118-159：此前期望值用
+    // `format!("#{}", c.name)` 拼出 `##dev` 把 stamp 侧双井号钉成预期——
+    // 根修后期望 = 库内原名透传。）
     let ctx_channel = make_wake_ctx("channel", channel_id);
     let env = build_wake_envelope(&store, &ctx_channel, 7, "moderator_call").unwrap();
-    let want = format!("#{}", store.list_channels().unwrap()[0].name);
+    let want = store.list_channels().unwrap()[0].name.clone();
+    assert!(
+        want.starts_with('#'),
+        "库内频道名规范形态应带 # 前缀: {want}"
+    );
+    assert!(!want.starts_with("##"), "规范形态不叠双井号: {want}");
     assert_eq!(env["body"]["thread"]["title"], serde_json::json!(want));
     assert_eq!(env["body"]["thread"]["prd_summary"], serde_json::json!(""));
 

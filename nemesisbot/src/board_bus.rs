@@ -1006,10 +1006,11 @@ pub(crate) fn note_discussion_reply_failure(
         }
     } else {
         // 库内频道名规范形态自带 `#` 前缀（ensure_default_channels /
-        // create_channel 双路径都落 `#name`），而发帖节点 stamp title 时
-        // 又叠了 `format!("#{}", c.name)` 一层——两端叠加出 `##dev`。先剥
-        // 净再按库内规范形态补回一个 `#`，兼容 `##dev` / `#dev` / `dev`
-        // 三种形态（BUG-20261118 回归：不补回则注记在生产上永远无处落）。
+        // create_channel 双路径都落 `#name`）。BUG-20261118-159 根修后
+        // 生产 stamp 透传的 title 就是规范形态（单 `#`）；这里的
+        // trim_start_matches('#') + 补回一个 `#` 降为纵深防御——仍兼容
+        // 旧 master（159 根修前 wake 包 `##dev`）/ 手工构造的 `#dev` /
+        // `dev` 三种在途形态，形态归一后精确匹配。
         let name = format!("#{}", event.thread_title.trim_start_matches('#'));
         let channel_id = store
             .list_channels()
@@ -1539,6 +1540,11 @@ fn build_wake_envelope(
     let messages = thread_context_json(store, ctx)?;
     // （goal）：频道名透传——channel 线程此前 title 恒空，worker 只见
     // 不透明的 "channel:N"，不知道自己在 #dev 还是 #general。
+    // BUG-20261118-159：库内频道名是规范形态（normalize_channel_name 恒带
+    // `#` 前缀），直接透传 `c.name` 即是 `#dev`——此前这里再叠一层
+    // `format!("#{}", …)` 拼出 `##dev`（wake 包 title 双井号，worker agent
+    // prompt 头显示失真；863fe440 曾在注记侧 trim 补偿但 stamp 根因未修，
+    // 本处是根修收口）。注记侧的三形态兼容 trim 保留作纵深防御。
     let (title, prd_summary) = if ctx.thread_kind == thread_kind::ISSUE {
         match store.get_issue(ctx.thread_id) {
             Ok(issue) => (issue.title.clone(), truncate_chars(&issue.description, 500)),
@@ -1551,7 +1557,7 @@ fn build_wake_envelope(
             .and_then(|cs| {
                 cs.iter()
                     .find(|c| c.id == ctx.thread_id)
-                    .map(|c| format!("#{}", c.name))
+                    .map(|c| c.name.clone())
             })
             .unwrap_or_default();
         (channel_name, String::new())
