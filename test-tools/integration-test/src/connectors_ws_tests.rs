@@ -42,6 +42,10 @@ id = "quote"
 intent = ["查询行情", "查股价"]
 risk = "low"
 class = "read"
+// BUG-20261118-158 起占位符白名单闸覆盖 http path（此前只闸 script
+// command）——{symbol} 必须在 args_schema.properties 声明，否则装清单
+// 即拒（本夹具随之补声明；web 侧同款先例见 connectors manifest tests）。
+args_schema = { type = "object", required = ["symbol"], properties = { symbol = { type = "string" } } }
 
 [op.http]
 method = "GET"
