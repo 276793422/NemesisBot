@@ -1303,6 +1303,33 @@ impl<'a> SecureNetworkWrapper<'a> {
             .check_operation(OperationType::NetworkUpload, url)
     }
 
+    /// 安全中间件网络出口统一 client 构造（BUG-20261119-184）：同源跟随/
+    /// 跨源终停重定向策略（BUG-20261119-177 家族）+ **总超时**。此前四个
+    /// 网络方法（download_url/get/post/do_request）的 builder 只挂重定向
+    /// 策略零时间界——reqwest 默认无总超时，慢/恶意服务器接受连接后不响应
+    /// 即无限挂死 send/bytes（全仓 Client::builder 位点唯本组裸奔）。
+    /// 30s 对齐安全邻域家族口径（skills/revocation/scanner 均 30s）。
+    const MIDDLEWARE_HTTP_TIMEOUT_SECS: u64 = 30;
+
+    /// 可参超时变体（测试缝：行为锁用短超时实跑超时闸，与 BUG-20261119-183
+    /// impl 缝同型）。
+    pub(crate) fn middleware_http_client_with_timeout(
+        timeout: std::time::Duration,
+    ) -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .timeout(timeout)
+            .build()
+            .expect("failed to build HTTP client")
+    }
+
+    /// 生产出口统一入口（const 超时）。
+    pub(crate) fn middleware_http_client() -> reqwest::Client {
+        Self::middleware_http_client_with_timeout(std::time::Duration::from_secs(
+            Self::MIDDLEWARE_HTTP_TIMEOUT_SECS,
+        ))
+    }
+
     /// Download a URL with security check.
     pub async fn download_url(&self, url: &str, max_size: usize) -> Result<Vec<u8>, String> {
         let validated = self.check_network_download(url)?;
@@ -1323,10 +1350,7 @@ impl<'a> SecureNetworkWrapper<'a> {
         // 挂同款策略时本方法漏网——同族三修二漏，裸 reqwest::get 默认
         // 策略跟随 ≤10 跳，过闸公网 URL 302 到 169.254.169.254 等内网/
         // 云元数据端点即整条绕闸，响应 body 原样返回调用方。
-        let client = reqwest::Client::builder()
-            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-            .build()
-            .expect("failed to build HTTP client");
+        let client = Self::middleware_http_client();
         let response = client
             .get(&validated)
             .send()
@@ -1367,10 +1391,7 @@ impl<'a> SecureNetworkWrapper<'a> {
         // ——同源跟随/跨源终停）：BUG-20261119-177 与 download_url 同族
         // 漏网（post/do_request/dial_http 已挂，本方法裸 reqwest::get
         // 默认跟随）——对端 302 跨源不再自动跟随，Layer 6 绕过不留门。
-        let client = reqwest::Client::builder()
-            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-            .build()
-            .expect("failed to build HTTP client");
+        let client = Self::middleware_http_client();
         let response = client
             .get(&validated)
             .send()
@@ -1407,10 +1428,7 @@ impl<'a> SecureNetworkWrapper<'a> {
         // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
         // 自动跟随——既不让请求自带头（模型/调用方可附鉴权头）泄去第三方
         // 主机，也不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
-        let client = reqwest::Client::builder()
-            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-            .build()
-            .expect("failed to build HTTP client");
+        let client = Self::middleware_http_client();
         let response = client
             .post(url)
             .header("Content-Type", content_type)
@@ -1446,10 +1464,7 @@ impl<'a> SecureNetworkWrapper<'a> {
         // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
         // 自动跟随——既不让请求自带头（模型/调用方可附鉴权头）泄去第三方
         // 主机，也不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
-        let client = reqwest::Client::builder()
-            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-            .build()
-            .expect("failed to build HTTP client");
+        let client = Self::middleware_http_client();
         let method = match req.method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
@@ -1470,6 +1485,8 @@ impl<'a> SecureNetworkWrapper<'a> {
             builder = builder.body(body.clone());
         }
 
+        // 缺省（None）= client 级 30s 总超时兜底（BUG-20261119-184，此前
+        // 无界）；显式 timeout_secs 覆盖（request 级优先于 client 级）。
         if let Some(timeout) = req.timeout_secs {
             builder = builder.timeout(std::time::Duration::from_secs(timeout));
         }
@@ -1506,10 +1523,7 @@ impl<'a> SecureNetworkWrapper<'a> {
         // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
         // 自动跟随——既不让请求自带头（模型/调用方可附鉴权头）泄去第三方
         // 主机，也不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
-        let client = reqwest::Client::builder()
-            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
-            .build()
-            .expect("failed to build HTTP client");
+        let client = Self::middleware_http_client();
         let response = client
             .head(&validated)
             .timeout(std::time::Duration::from_secs(10))
@@ -1801,3 +1815,5 @@ mod tests;
 mod cov_tests;
 #[cfg(test)]
 mod middleware_extra_tests;
+#[cfg(test)]
+mod timeout_tests;
