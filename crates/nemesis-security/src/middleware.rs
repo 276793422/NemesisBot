@@ -1316,7 +1316,20 @@ impl<'a> SecureNetworkWrapper<'a> {
             max_size,
         );
 
-        let response = reqwest::get(&validated)
+        // 网络出口统一重定向策略（nemesis-utils::http_redirect 单一真相源
+        // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
+        // 自动跟随——不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
+        // BUG-20261119-177：post/do_request/dial_http（:1387/:1426/:1482）
+        // 挂同款策略时本方法漏网——同族三修二漏，裸 reqwest::get 默认
+        // 策略跟随 ≤10 跳，过闸公网 URL 302 到 169.254.169.254 等内网/
+        // 云元数据端点即整条绕闸，响应 body 原样返回调用方。
+        let client = reqwest::Client::builder()
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .expect("failed to build HTTP client");
+        let response = client
+            .get(&validated)
+            .send()
             .await
             .map_err(|e| format!("request failed: {}", e))?;
 
@@ -1350,7 +1363,17 @@ impl<'a> SecureNetworkWrapper<'a> {
     pub async fn get(&self, url: &str) -> Result<HttpResponse, String> {
         let validated = self.check_network_request(url)?;
 
-        let response = reqwest::get(&validated)
+        // 网络出口统一重定向策略（nemesis-utils::http_redirect 单一真相源
+        // ——同源跟随/跨源终停）：BUG-20261119-177 与 download_url 同族
+        // 漏网（post/do_request/dial_http 已挂，本方法裸 reqwest::get
+        // 默认跟随）——对端 302 跨源不再自动跟随，Layer 6 绕过不留门。
+        let client = reqwest::Client::builder()
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .expect("failed to build HTTP client");
+        let response = client
+            .get(&validated)
+            .send()
             .await
             .map_err(|e| format!("GET request failed: {}", e))?;
 
