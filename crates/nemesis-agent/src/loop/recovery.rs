@@ -65,6 +65,40 @@ pub(crate) struct StreamPartial {
     pub(crate) has_tool_calls: bool,
 }
 
+/// 网络不可达形态识别（纯函数，退避资格补充判据）。
+///
+/// 背景（2026-11-03 BUG：退避闸误伤网络不可达）：退避资格此前纯按失败耗时
+/// 判（<1s = 上游立即拒绝不退避）——网络不可达（网卡禁用/路由缺失/VPN 断开，
+/// Windows `os error 10051` 等）通常 **11ms 内**失败，被误归「立即拒绝」，
+/// 3 次瞬发烧完后终局裸报错。实际上网络不可达属「真网络等待」类瞬态：
+/// 网卡恢复/VPN 重连通常在秒级窗口内见效，退避重试有效。
+///
+/// 锚点选取（语言无关）：Windows io::Error 的 FormatMessage 文案随系统语言
+/// 本地化，`os error NNNNN` 数字形态是唯一语言无关锚；类 Unix errno 文案
+/// （英文小写）作补充。匹配对整个错误链 lowercase 后 contains——传输层
+/// 盖章错误（"connect error (model …): …"）的根因链保留原始 os error。
+///
+/// 刻意排除：connection refused（os error 10061/111）与 DNS 解析失败——
+/// 对端明确拒绝/名字解析不了，等待解决不了（门已关上），维持 <1s 不退避
+/// 语义；CI 实调护栏（mock 立即失败链零退避不膨胀墙钟）也依赖此语义。
+pub(crate) fn is_unreachable_error_shape(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    [
+        // Windows socket 错误码（数字锚，语言无关）：
+        "os error 10051", // WSAENETUNREACH 网络不可达
+        "os error 10065", // WSAEHOSTUNREACH 主机不可达
+        "os error 10060", // WSAETIMEDOUT 连接超时（快路径兜底）
+        // 类 Unix errno 文案：
+        "network is unreachable", // ENETUNREACH（Linux 常见文案）
+        "network unreachable",    // ENETUNREACH（其他平台变体）
+        "host unreachable",       // EHOSTUNREACH
+        "no route to host",       // EHOSTUNREACH（macOS/部分发行版文案）
+        "network is down",        // ENETDOWN
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 impl AgentLoop {
     /// 器官 4：首呼（cancel/estop 可打断 + 超时包装）→ 失败分类进三恢复环 →
     /// post-hooks 终裁。`Ok` = 本轮响应；`Err` = 终局事件（含「已取消」/
@@ -366,7 +400,10 @@ impl AgentLoop {
                     // BUG-20261107-026：环接入 cancel/estop 中断面后，
                     // Err = 中断终局事件（Done 取消/急停），直接上抛给骨架
                     // push + 结束本 turn（与首呼两臂同型）；Ok 走既有耗尽
-                    // 终局路径。
+                    // 终局路径。transient 环额外带回实际发起的重试次数
+                    // （终局文案分层用——connect error 类耗尽换可行动提示
+                    // 时注明已自动重试几次；非 transient 路径恒 0）。
+                    let mut transient_retries = 0u32;
                     let (maybe_resp, mut last_err) = if is_rate_limit_error || classified_rate_limit
                     {
                         match self
@@ -400,7 +437,10 @@ impl AgentLoop {
                             )
                             .await
                         {
-                            Ok(pair) => pair,
+                            Ok((resp, e, r)) => {
+                                transient_retries = r;
+                                (resp, e)
+                            }
                             Err(ev) => return Err(ev),
                         }
                     } else {
@@ -531,8 +571,26 @@ impl AgentLoop {
                         // （多模态 ③）：同上——提示只进用户可见
                         // 文案，last_err 原文继续走 history / observer /
                         // capture。
+                        // 2026-11-03 BUG 修复（b 面）：connect error 类耗尽
+                        // 终局不再裸抛 `Error: connect error (…)`——用户面换
+                        // 可行动提示（网络/代理/端点三查 + 注明已自动重试几
+                        // 次），原始错误保真进 history / observer / capture
+                        // （上方三处已用 last_err 原文，诊断保真与
+                        // finish_llm_error_no_retry 同款分层）。流中断不适用
+                        // （其文案走上方 history 瘦身 + 全文出站路径）。
+                        let user_err = if !is_stream_interrupted
+                            && transient_retries > 0
+                            && last_err.to_lowercase().contains("connect error")
+                        {
+                            format!(
+                                "Error: 无法连接模型服务（网络层错误），已自动重试 {} 次仍未成功。请检查网络连接、VPN/代理设置与服务端地址是否可达，然后重发消息（原始错误：{}）",
+                                transient_retries, last_err
+                            )
+                        } else {
+                            format!("Error: {}", last_err)
+                        };
                         let formatted = context.format_rpc_message(&append_vision_fallback_hint(
-                            format!("Error: {}", last_err),
+                            user_err,
                             request_had_images,
                         ));
                         return Err(AgentEvent::Error(formatted));
@@ -1239,8 +1297,11 @@ impl AgentLoop {
     }
 
     /// 器官 4c：transient 退避环（原 is_transient_error 臂整体搬入）。P3B
-    /// 撞墙检测 + 退避资格（<1s 立即拒绝不退避，≥1s 按 1s/2s/4s 退避）+
-    /// 调用包超时。成功/耗尽返回 `Ok((Option, 最终 last_err))`。
+    /// 撞墙检测 + 退避资格（<1s 立即拒绝不退避，≥1s 按 1s/2s/4s 退避；
+    /// 网络不可达形态按错误形态补资格，见
+    /// [`is_unreachable_error_shape`]）+ 调用包超时。成功/耗尽返回
+    /// `Ok((Option, 最终 last_err, 实际发起的重试次数))`——重试次数供终局
+    /// 文案分层用（耗尽出口 retries 恒 ==MAX_TRANSIENT_RETRIES）。
     ///
     /// BUG-20261107-026：环接入 cancel/estop 中断面（三检查点同限流环）；
     /// Err = 中断终局事件直接上抛。
@@ -1256,7 +1317,7 @@ impl AgentLoop {
         stream_sink: Option<&ProviderStreamSink>,
         first_call_failed_after: std::time::Duration,
         err: String,
-    ) -> Result<(Option<LlmResponse>, String), AgentEvent> {
+    ) -> Result<(Option<LlmResponse>, String, u32), AgentEvent> {
         // 订阅急停（首呼同款）。
         let mut estop_rx = self.security.subscribe();
         let mut last_err = err;
@@ -1306,7 +1367,15 @@ impl AgentLoop {
         // 处理，mock 立即失败链从 40ms 膨胀到 8s，5×8s 推出
         // 30s 窗口（首挂；历史 3 连 PASS）。与 P3B 撞墙
         // 检测同哲学：立即失败的重试无效信号更早暴露。
-        let mut backoff_eligible = first_call_failed_after >= std::time::Duration::from_secs(1);
+        // 2026-11-03 BUG 修复（耗时判据盲区）：网络不可达
+        // （os error 10051 等，11ms 内失败）被耗时判据误归
+        // 「立即拒绝」3 次瞬发烧完——但它是真网络等待类瞬态
+        // （网卡/VPN 恢复在秒级窗口内见效，退避有效），按错误
+        // 形态补资格（is_unreachable_error_shape）；连接拒绝/
+        // DNS 刻意不收（等待解决不了 + CI mock 立即失败链
+        // 依赖瞬发语义不膨胀墙钟）。
+        let mut backoff_eligible = first_call_failed_after >= std::time::Duration::from_secs(1)
+            || is_unreachable_error_shape(&last_err);
         while retries < MAX_TRANSIENT_RETRIES {
             // 停机感知（tokio 停机 panic 根修）：循环顶先看停机
             // 令牌——立即拒绝形态（backoff_eligible=false，无 sleep）也会在
@@ -1315,6 +1384,7 @@ impl AgentLoop {
                 return Ok((
                     None,
                     "[AgentLoop] stopped; LLM transient retry aborted".to_string(),
+                    retries,
                 ));
             }
             // BUG-20261107-026：取消/急停环顶闸（stop 同位同型）——立即
@@ -1353,6 +1423,7 @@ impl AgentLoop {
                             None,
                             "[AgentLoop] stopped during LLM transient retry backoff; call aborted"
                                 .to_string(),
+                            retries,
                         ));
                     }
                     // BUG-20261107-026：取消/急停臂——急停后不再白等退避
@@ -1458,8 +1529,10 @@ impl AgentLoop {
                     }
                     let failed_after = attempt_start.elapsed();
                     // 下一轮退避资格按本次实际耗时重判
-                    // （立即拒绝 ↔ 真等待可能在重试间切换）。
-                    backoff_eligible = failed_after >= std::time::Duration::from_secs(1);
+                    // （立即拒绝 ↔ 真等待可能在重试间切换）；
+                    // 网络不可达形态同资格（与初始闸同判据）。
+                    backoff_eligible = failed_after >= std::time::Duration::from_secs(1)
+                        || is_unreachable_error_shape(&last_err);
                     if let Some(prev) = prev_fail_after
                         && prev.abs_diff(failed_after) <= std::time::Duration::from_secs(1)
                     {
@@ -1478,7 +1551,7 @@ impl AgentLoop {
                 }
             }
         }
-        Ok((maybe_resp, last_err))
+        Ok((maybe_resp, last_err, retries))
     }
 
     /// 器官 4d：LLM post-hooks 受守卫终裁（原 run_loop.rs 982-1123 搬入）。

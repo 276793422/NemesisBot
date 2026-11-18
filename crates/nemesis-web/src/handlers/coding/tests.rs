@@ -112,9 +112,11 @@ async fn coding_config_reads_defaults_from_fresh_home() {
     assert_eq!(r["codex"]["enabled"], false);
     assert_eq!(r["claude_code"]["permission_mode"], "");
     assert_eq!(r["codex"]["sandbox"], "");
-    // fresh default is queue — this assertion rides the whole
+    // fresh default is steer — this assertion rides the whole
     // flip chain (serde default → Default impl → handler read side).
-    assert_eq!(r["concurrent"]["mode"], "queue");
+    // 2026-11-03 二次翻转（queue → steer）：busy 输入锁死 BUG ① 修复，
+    // 默认值见 docs/REPORT/2026-11-03_busy期间输入全面锁死与插队默认形态.md。
+    assert_eq!(r["concurrent"]["mode"], "steer");
     assert_eq!(r["concurrent"]["queue_size"], 8);
     // delegate 段（配置页批次 4）：默认关 / 生命上限 3600 / passthrough 空串。
     assert_eq!(r["delegate"]["enabled"], false);

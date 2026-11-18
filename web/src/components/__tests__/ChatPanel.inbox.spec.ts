@@ -170,4 +170,55 @@ describe('ChatPanel U7 可见性', () => {
     expect(wrapper.find('.steer-hint').exists()).toBe(false)
     wrapper.unmount()
   })
+
+  // -------------------------------------------------------------------------
+  // 2026-11-03 BUG ① 回归锁（两则）：mode 兜底翻转 steer + busy 轮询自愈。
+  // 旧死锁链：默认 mode=reject + 快照缺席兜底 reject → busy 发送闸/轮询
+  // 启动闸/输入框禁用全锁死，而轮询恰被自己的启动闸锁住无法自愈。
+  // -------------------------------------------------------------------------
+
+  it('快照缺席/刷新失败 → busy 输入不锁死（mode 兜底 steer 回归锁）', async () => {
+    // inbox_status 刷新失败（后端短暂不可用/旧网关无命令），其余请求空响应。
+    requestMock.mockImplementation(async (module: string, cmd: string) => {
+      if (module === 'agent' && cmd === 'inbox_status') throw new Error('refresh failed')
+      return {}
+    })
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    chat.streaming = true
+    await nextTick()
+
+    // 无可用快照 → 兜底 steer（开放态，宁可放行让后端裁决）：textarea
+    // 不禁用、发送按钮在场（旧兜底 reject：禁用 + 按钮消失）。
+    expect(wrapper.find('textarea').attributes('disabled')).toBeUndefined()
+    const sendBtn = wrapper.findAll('button').find(b => b.text() === '发送')
+    expect(sendBtn).toBeDefined()
+
+    // 发送链路真实放行（旧兜底 reject 下 sendMessage 在 busy 闸直接 return）。
+    chat.input = '刷新失败期间也要能发'
+    await nextTick() // 让 :disabled 绑定刷新，否则 jsdom 对 disabled 按钮不派发 click
+    await sendBtn!.trigger('click')
+    await flushPromises()
+    expect(vi.mocked(send)).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('busy 开始 → 无条件启动 inbox 轮询（快照失败后的自愈通道）', async () => {
+    requestMock.mockResolvedValue(status({ mode: 'steer', busy: true }))
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+
+    const inboxCalls = () =>
+      requestMock.mock.calls.filter(([m, c]) => m === 'agent' && c === 'inbox_status').length
+    const before = inboxCalls()
+    expect(before, 'mount 时 syncInboxMode 已拉过一次快照').toBeGreaterThan(0)
+
+    // streaming 翻 true → watch(streaming) start 分支无条件 startPolling →
+    // startPolling 内部立即 refresh。旧 gated 形态下快照失败时
+    // queueEnabled=false，这条通道不存在——刷新失败后快照永不恢复。
+    chat.streaming = true
+    await flushPromises()
+    expect(inboxCalls()).toBeGreaterThan(before)
+    wrapper.unmount()
+  })
 })

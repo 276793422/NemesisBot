@@ -97,7 +97,7 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     agent_loop.stop();
 
-    let (maybe_resp, last_err) = task
+    let (maybe_resp, last_err, _retries) = task
         .await
         .expect("retry task must not panic (停机窗口 timer 注册回归锁)")
         .expect("stop 退出走 Ok 耗尽路径");
@@ -132,7 +132,7 @@ async fn stopped_loop_skips_transient_retry_entirely() {
 
     let started = std::time::Instant::now();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let (maybe_resp, last_err) = agent_loop
+    let (maybe_resp, last_err, _retries) = agent_loop
         .retry_transient(
             &instance,
             &context,

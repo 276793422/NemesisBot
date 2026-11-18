@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 
@@ -29,7 +30,7 @@ vi.mock('../../composables/useWebSocket', async () => {
   }
 })
 
-import { onMessage } from '../../composables/useWebSocket'
+import { onMessage, send } from '../../composables/useWebSocket'
 import ChatPanel from '../ChatPanel.vue'
 import { useChatStore } from '../../stores/chat'
 import { useSessionStore } from '../../stores/session'
@@ -67,10 +68,58 @@ describe('ChatPanel busy 按会话隔离 (D-3)', () => {
     expect(chat.isBusy('gen-1')).toBe(false)
     expect(wrapper.find('textarea').attributes('disabled')).toBeUndefined()
 
-    // 自身 busy → 输入禁用（inbox mock 无 queue → reject 语义）。
+    // 自身 busy → 输入仍可用：mode 兜底 steer（2026-11-03 BUG ①契约反转，
+    // busy 不再锁死；旧断言依赖 reject 兜底才有「禁用」语义）。本用例真正
+    // 钉的是「主聊天 busy 不泄漏进嵌入面板」——上半段已断言。
     chat.setBusy('gen-1', true)
     await flushPromises()
-    expect(wrapper.find('textarea').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('textarea').attributes('disabled')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('module≠chat 面板发送不启动 inbox/queue 轮询（isDefaultChat 门——其 watch 启停臂被守卫挡掉）', async () => {
+    // 2026-11-18 BUG ① 自查修正回归锁：sendValidated 轮询块翻「无条件」时
+    // 漏了 module≠chat 面板。isDefaultChat 判的是 module（'chat' 之外皆
+    // false，ChatPanel.vue:105），这类面板（workflow_chat standalone）的
+    // watch(streaming) 启停臂与 syncInboxMode 全被守卫挡掉——发送路径一旦
+    // 启动轮询就挂载期内永无停止路径。发送路径的 isDefaultChat 门恢复其
+    // 旧非轮询语义（旧 canQueueWhileBusy 门同样挡住此路径）。
+    // 注意：sessionId 嵌入面板（如 WorkflowAgentGen）module 缺省='chat'，
+    // isDefaultChat=true，watch 停止臂活着+composable onUnmounted 自清，
+    // 不在本门射程内——勿把本用例的挂载形态改成纯 sessionId。
+    const sessionStore = useSessionStore()
+    sessionStore.currentId = 'main-sess'
+    const chat = useChatStore()
+
+    const pollingCalls = () =>
+      requestMock.mock.calls.filter(
+        ([m, c]) =>
+          (m === 'agent' && c === 'inbox_status') || (m === 'chat' && c === 'queue_status'),
+      ).length
+
+    const wrapper = mount(ChatPanel, { props: { standalone: true, module: 'workflow_chat' } })
+    await flushPromises()
+    expect(
+      pollingCalls(),
+      'module≠chat 面板 mount 不拉 inbox/queue 快照（syncInboxMode 有 isDefaultChat 守卫）',
+    ).toBe(0)
+
+    // 普通发送：真实走到 send(...) 上行 = 代码已到达轮询块所在行（块在
+    // send 之后同步执行），轮询调用恒 0 = isDefaultChat 门生效。断言对准
+    // useWebSocket 的 mock send（真实发送通道；requestMock 不经手 chat.send）。
+    chat.input = '工作流面板普通发送'
+    await nextTick()
+    const sendBtn = wrapper.findAll('button').find(b => b.text() === '发送')
+    expect(sendBtn).toBeDefined()
+    await sendBtn!.trigger('click')
+    await flushPromises()
+
+    expect(
+      vi.mocked(send).mock.calls.length,
+      '发送必须真实发生（证明到达轮询块所在代码路径）',
+    ).toBeGreaterThan(0)
+    expect(pollingCalls(), 'module≠chat 面板发送不得启动 inbox/queue 轮询').toBe(0)
 
     wrapper.unmount()
   })

@@ -147,8 +147,9 @@ pub fn build_agent_loop(
 
     let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
     // +: concurrent_request_mode from config.
-    // Default is "queue" (config.default.json + serde default agree); explicit
-    // "reject" keeps legacy busy-bounce; "steer" adds the `!` interrupt channel.
+    // Default is "steer" (config.default.json + serde default agree; 2026-11-03
+    // product decision — busy sessions accept inline input by default); explicit
+    // "reject" keeps legacy busy-bounce, "queue" keeps inbox parking.
     // Unknown strings warn + parse_concurrent_mode fails safe to reject.
     let mode_str = cfg
         .agents

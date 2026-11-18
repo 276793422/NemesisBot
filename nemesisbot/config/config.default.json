@@ -12,7 +12,7 @@
       "max_tool_iterations": 100,
       "session_token_budget": 0,
       "rate_limit_retries": 10,
-      "concurrent_request_mode": "queue",
+      "concurrent_request_mode": "steer",
       "queue_size": 8,
       "max_continuation_permits": 0
     }

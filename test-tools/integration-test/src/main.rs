@@ -648,10 +648,9 @@ async fn main() -> Result<()> {
                     "max_tokens": 8192,
                     "temperature": 0.7,
                     "max_tool_iterations": 20,
-                    // 生产默认 queue（reject 会把同会话并发消息确定性弹回——
-                    // 旧 concurrent 测试 5 个连接全发同一默认 session，3 个被
-                    // 「⏳ AI is processing」弹回；现测试改独立 session +
-                    // queue 双保险，语义与生产对齐）。
+                    // 生产默认 steer（2026-11-03 翻转 queue→steer）；IT 侧显式
+                    // 钉 queue 作为本套件自身的双保险选择（独立 session 下
+                    // 同会话并发消息落收件箱而非插队），显式值仍合法。
                     "concurrent_request_mode": "queue",
                     "queue_size": 8
                 }

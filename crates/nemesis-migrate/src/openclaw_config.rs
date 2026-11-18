@@ -72,7 +72,7 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 "max_tool_iterations": 100,
                 // mirrors nemesisbot/config/config.default.json —
                 // migrated workspaces are new workspaces and get the new default.
-                "concurrent_request_mode": "queue",
+                "concurrent_request_mode": "steer",
                 "queue_size": 8
             }
         },

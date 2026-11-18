@@ -149,6 +149,16 @@ async fn run_retry(
     provider: &std::sync::Arc<dyn LlmProvider>,
     first_err: String,
 ) -> (Option<LlmResponse>, String) {
+    let (resp, err, _retries) = run_retry_full(agent_loop, provider, first_err).await;
+    (resp, err)
+}
+
+/// 全量三元组版本（重试次数面：耗尽出口恒 ==MAX_TRANSIENT_RETRIES）。
+async fn run_retry_full(
+    agent_loop: &AgentLoop,
+    provider: &std::sync::Arc<dyn LlmProvider>,
+    first_err: String,
+) -> (Option<LlmResponse>, String, u32) {
     let instance = AgentInstance::new(AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),

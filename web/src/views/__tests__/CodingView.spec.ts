@@ -187,11 +187,11 @@ describe('CodingView 并发请求模式（E2）', () => {
     expect(sizeWrite[2].value).toBe(6)
   })
 
-  it('queue 档容量可编辑；缺省回显 queue/8（E1 默认）', async () => {
+  it('容量可编辑；缺省回显 steer/8（2026-11-03 默认二次翻转 queue→steer，组件兜底跟随生产默认）', async () => {
     const w = await mountView(cfg({})) // 无 concurrent 段 → 前端缺省回显
     const modeSel = w.find('[data-test="concurrent-mode"]')
     const sizeInput = w.find('[data-test="concurrent-queue-size"]')
-    expect((modeSel.element as HTMLSelectElement).value).toBe('queue')
+    expect((modeSel.element as HTMLSelectElement).value).toBe('steer')
     expect((sizeInput.element as HTMLInputElement).value).toBe('8')
     expect((sizeInput.element as HTMLInputElement).disabled).toBe(false)
   })

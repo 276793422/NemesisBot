@@ -45,11 +45,11 @@ NemesisBot 会自动读取工作区内分层的 `AGENTS.md` 与 `CLAUDE.md`：�
 
 ## 并发消息（排队与 `!` 紧急插话）
 
-上一条消息还在处理时又发新消息，行为由配置 `agents.defaults.concurrent_request_mode` 决定（默认 `queue`，Dashboard「代码开发」页或 `nemesisbot agent set concurrent-mode` 可改，重启 Agent 生效）：
+上一条消息还在处理时又发新消息，行为由配置 `agents.defaults.concurrent_request_mode` 决定（默认 `steer`，Dashboard「代码开发」页或 `nemesisbot agent set concurrent-mode` 可改，重启 Agent 生效）：
 
-- `reject`：忙时直接拒绝（旧版行为，回执「会话正在处理」）。
-- `queue`（默认）：忙时自动排队，当前轮结束后继续处理，回执以 ⏳ 开头。
-- `steer`：queue 之上加 `!` 前缀紧急插话——长任务跑着时发「`! 先停一下，改用 X 方案`」，消息会在 AI 下一步思考前注入（回执以 ⚡ 开头）；非紧急消息去掉 `!` 走排队。
+- `reject`：忙时直接拒绝（旧版行为，回执「会话正在处理」；仅显式配置时生效）。
+- `queue`：忙时自动排队，当前轮结束后继续处理，回执以 ⏳ 开头。
+- `steer`（默认）：queue 之上加 `!` 前缀紧急插话——长任务跑着时发「`! 先停一下，改用 X 方案`」，消息会在 AI 下一步思考前注入（回执以 ⚡ 开头）；非紧急消息去掉 `!` 走排队。
 
 排队容量由 `agents.defaults.queue_size`（默认 8）控制，满员时回执「排队已满」。
 

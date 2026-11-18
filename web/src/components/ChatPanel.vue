@@ -2694,16 +2694,20 @@ function detectPendingTurn() {
 /** Work 时间线活查询（2026-10-30 ChatPanel 长任务时间线改造）：chat.work_current
  *  整体快照 → adoptWorkSnapshot 接管 pending 缓冲。执行中 turn 的过程视图
  *  数据源（后端活累加器无环 200 条滑窗限制），切走再切回/刷新页面的恢复
- *  通道。三道闸：会话围栏（响应期间切走丢弃）、turn 仍悬置（回复已落地则
- *  快照作废——迟到快照不得复活成 live 块盖在最终回复下面）、后端不可用/
- *  旧版无命令静默（回落环回放兜底）。 */
+ *  通道。四道闸：会话围栏（响应期间切走丢弃）、turn 仍悬置（回复已落地则
+ *  快照作废——迟到快照不得复活成 live 块盖在最终回复下面）、busy 中 null
+ *  快照反向闸（2026-11-03 BUG ②：后端 loop 级单槽三窗口——槽空/异会话覆盖/
+ *  帧晚到——返回 work:null 是查询盲区不是「没有在跑的工作」，照单全收会把
+ *  正在展示的 live 块清空收起；真正清空走 pollPendingTurn 死轮清算路径）、
+ *  后端不可用/旧版无命令静默（回落环回放兜底）。 */
 async function refreshWorkCurrent(sid: string | null) {
   if (!sid) return
   try {
     const res = await request('chat', 'work_current', { session_id: sid })
     if (effectiveSid.value !== sid) return
     if (!pendingTurn.value && !streaming.value) return
-    chatStore.adoptWorkSnapshot(res?.work ?? null)
+    if (res?.work == null) return
+    chatStore.adoptWorkSnapshot(res.work)
   } catch {
     /* 旧网关无 work_current / 网络抖动——静默，环回放兜底 */
   }
@@ -3045,8 +3049,20 @@ async function sendValidated(content: string, media: { id: string }[]) {
     media,
   })
 
-  // U7: busy 中排队/插队 → 立即拉一次队列快照并轮询，chip 才能出现。
-  if (canQueueWhileBusy.value) {
+  // U7: busy 发送 → 立即拉一次队列快照并轮询，chip 才能出现。
+  // 2026-11-03 BUG 修复：轮询不再 gated canQueueWhileBusy——busy 中轮询
+  // 同时是 mode 快照的自愈通道（刷新失败后快照恢复 → 发送闸/输入框随之
+  // 解锁）。gated 形态下「快照失败 → queueEnabled=false → 轮询不启动 →
+  // 快照永不恢复」是死锁环。startPolling 自身幂等（已在轮询则 no-op）。
+  // 门控 isDefaultChat（2026-11-18 自查修正；isDefaultChat 判的是 module
+  // 而非「主聊天 vs 嵌入」）：module≠chat 的面板（workflow_chat standalone）
+  // 其 watch(streaming) 启停臂与 syncInboxMode 全被 isDefaultChat 守卫挡
+  // 掉，发送路径一旦启动轮询就挂载期内永无停止路径（每 4s 空转直到卸载）。
+  // 旧 canQueueWhileBusy 门（含 isDefaultChat 与项）恰好挡住此路径，翻
+  // 「无条件」时漏了这层。module='chat' 的面板（主聊天 + sessionId 嵌入
+  // 如 WorkflowAgentGen）有完整停止路径（watch !s 臂 + composable
+  // onUnmounted），turn 结束即停，不受此门影响。
+  if (isDefaultChat.value) {
     startInboxPolling(effectiveSid.value || '')
     // P4（能力扩展 WS8）：queue_status 徽标同节奏轮询。
     startQueuePolling(effectiveSid.value || '')
@@ -3523,9 +3539,16 @@ const unwatchStatus = watch(wsStatus, (val) => {
 })
 
 // U7: streaming 结束 → 停轮询并刷新一次（队列里剩余条数清零/被消费）。
+// streaming 开始 → 启动轮询（2026-11-03 BUG 自愈兜底）：busy-send 之外的
+// busy 形态（steer 注入、IM 通道发起、页面刷新时已在跑的 turn）也要有
+// mode 快照活水——否则那些路径下快照一旦失败同样永久锁死且无人再拉。
+// startPolling 幂等（busy-send 路径已启动则 no-op）。
 const unwatchStreaming = watch(streaming, (s) => {
   if (!isDefaultChat.value) return
-  if (!s) {
+  if (s) {
+    startInboxPolling(effectiveSid.value || '')
+    startQueuePolling(effectiveSid.value || '')
+  } else {
     stopInboxPolling()
     stopQueuePolling()
     syncInboxMode()

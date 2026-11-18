@@ -1364,9 +1364,9 @@ fn test_agent_defaults_queue_size() {
 #[test]
 fn test_agent_defaults_concurrent_request_mode() {
     let defaults = AgentDefaults::default();
-    // default flipped reject → queue (busy sessions park
-    // messages in the inbox instead of bouncing; serde default = key absent).
-    assert_eq!(defaults.concurrent_request_mode, "queue");
+    // default flipped queue → steer (2026-11-03 decision: busy sessions
+    // accept inline input by default; serde default = key absent).
+    assert_eq!(defaults.concurrent_request_mode, "steer");
 }
 
 #[test]

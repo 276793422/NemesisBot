@@ -58,7 +58,9 @@ const diagEnabled = ref(false)
 const diagMaxErrors = ref(20)
 const diagWaitMaxMs = ref(2000)
 // E2: 并发请求模式（agents.defaults.concurrent_request_mode + queue_size）
-const concurrentMode = ref('queue')
+// 缺省回显跟随生产默认 steer（2026-11-03 二次翻转；后端 coding.config
+// 恒回 concurrent 段，此兜底只在响应缺段时兜住显示）
+const concurrentMode = ref('steer')
 const concurrentQueueSize = ref(8)
 // 委派持续操控（agents.delegate，配置页批次 4）：四工具开关 + 子代理
 // 生命上限 + claude permission-mode 透传。注册在 AgentLoop 装配期且要求
@@ -93,7 +95,7 @@ async function loadAll() {
     diagEnabled.value = cfg?.diagnostics?.enabled ?? false
     diagMaxErrors.value = cfg?.diagnostics?.max_errors ?? 20
     diagWaitMaxMs.value = cfg?.diagnostics?.wait_max_ms ?? 2000
-    concurrentMode.value = cfg?.concurrent?.mode || 'queue'
+    concurrentMode.value = cfg?.concurrent?.mode || 'steer'
     concurrentQueueSize.value = cfg?.concurrent?.queue_size ?? 8
     smallModel.value = cfg?.small_model?.model || ''
     modelNameOptions.value = cfg?.small_model?.model_names ?? []

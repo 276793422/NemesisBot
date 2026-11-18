@@ -548,14 +548,18 @@ fn default_temperature() -> f64 {
 fn default_max_tool_iterations() -> i64 {
     100
 }
-/// default concurrent mode is **queue** — busy sessions
-/// park messages in the per-session inbox instead of bouncing them (devtool
-/// upgrade: multi-entry coding agent needs turn-end continuation, not
-/// rejection). Applies ONLY when config.json omits the key (serde default);
-/// explicit `"reject"` configs keep legacy behavior. Unknown strings still
+/// default concurrent mode is **steer** — busy sessions accept new input
+/// inline (the model sees the latest user intent mid-turn). 2026-11-03
+/// product decision (BUG doc「busy期间输入全面锁死」): the previous default
+/// "queue" let a web-UI inbox-status refresh failure dead-lock the frontend
+/// into permanent reject (busy send gate + textarea disable + send button
+/// hide all keyed off a stale mode snapshot with no self-heal), so the
+/// default flips to the open mode and the backend adjudicates per turn.
+/// Applies ONLY when config.json omits the key (serde default); explicit
+/// `"reject"` / `"queue"` configs keep their behavior. Unknown strings still
 /// fail safe to reject at `parse_concurrent_mode` (nemesis-agent).
 fn default_concurrent_request_mode() -> String {
-    "queue".to_string()
+    "steer".to_string()
 }
 
 fn default_snapshot_role() -> String {

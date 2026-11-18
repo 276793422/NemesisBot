@@ -104,7 +104,9 @@ describe('NemesisSkin 契约 API', () => {
     // enum 有选项；number 有范围；秘密字段标记
     const mode = page!.fields.find((f) => f.key === 'agents.defaults.concurrent_request_mode')
     expect(mode!.options).toEqual(['queue', 'reject', 'steer'])
-    expect(mode!.default).toBe('queue')
+    // default 是 config.default.json 的编译期快照（单一真相源）——2026-11-03
+    // 生产默认翻转 steer 后此处随之变化（跟随翻转，不是回归）。
+    expect(mode!.default).toBe('steer')
     const temp = page!.fields.find((f) => f.key === 'agents.defaults.temperature')
     expect(temp!.range).toEqual({ min: 0, max: 2, step: 0.05 })
     const channels = window.NemesisSkin!.config.schema('channels')

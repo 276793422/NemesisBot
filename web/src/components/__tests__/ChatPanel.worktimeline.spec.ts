@@ -445,6 +445,58 @@ describe('ChatPanel work 时间线（2026-10-30）', () => {
     wrapper.unmount()
   })
 
+  // 2026-11-03 BUG ②回归锁：busy 中 work_current 返回 null 快照不清空
+  // live 块（反向闸）。后端 WorkRecorder 是 loop 级单槽——槽空/异会话
+  // 覆盖/帧晚到三窗口都返回 work:null，那是查询盲区不是「没有在跑的
+  // 工作」；照单全收会把正在展示的 live 块清空收起，且轮询每拍都撞
+  // 同一盲区（自愈不存在）。真正清空只走 pollPendingTurn 死轮清算。
+  it('busy 中 work_current 返回 null 快照 → live 块不被清空（反向闸）', async () => {
+    const { useSessionStore } = await import('../../stores/session')
+    useSessionStore().currentId = 's1'
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+
+    // 悬空 user 行 + 已载历史标记（重连补拉分支的准入条件）。
+    chat.addMessage({ role: 'user', content: '长任务', timestamp: 't0' })
+    chat.historyLoaded = true
+    // mount 时 onMounted 已发过 loadHistory（sendHistoryRequest 永不回包，
+    // historyLoading 挂到 10s 超时）——模拟在飞已收尾，否则 syncMissedChat
+    // 入口闸直接 bail。
+    chat.historyLoading = false
+
+    // sync 补拉回进行中工具事件（缓冲非空 = live 块在展示）；随后
+    // detectPendingTurn 起轮 → work_current 查询撞后端单槽盲区返回 null。
+    requestMock.mockImplementation(async (module: string, cmd: string) => {
+      if (module === 'chat' && cmd === 'sync') {
+        return {
+          events: [
+            { kind: 'tool', tool: { kind: 'ToolStarted', data: { chat_id: 'web:s1', call_id: 'c0', tool: 'exec', args_preview: 'run' } }, seq: 5 },
+          ],
+        }
+      }
+      if (module === 'chat' && cmd === 'work_current') {
+        return { work: null }
+      }
+      return {}
+    })
+
+    // 模拟重连：wsStatus 翻转 →「已载历史 → 断线补拉」分支 → 起轮即拉
+    // work_current（refreshWorkCurrent 立即查询拍）。
+    wsStatus.value = 'disconnected'
+    await flushPromises()
+    wsStatus.value = 'connected'
+    await flushPromises()
+    await new Promise(r => setTimeout(r, 0))
+    await flushPromises()
+
+    // 反向闸生效：null 快照不采纳——补拉摄取的工具轮保留，live 块不被
+    // 清空收起（修复前 adoptWorkSnapshot(null) 照单全收 → live 块消失）。
+    expect(chat.pendingWork?.rounds.flatMap(r => r.tools).map(t => t.call_id)).toEqual(['c0'])
+    const live = wrapper.find('.wt-block.live')
+    expect(live.exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   // -------------------------------------------------------------------------
   // BUG-20261030-208（R263）：错误帧 / 重复恢复帧不清 work/交付物缓冲——
   // live 块永挂 + 下一 turn 事件混进同一缓冲 + 下一回复落地整包误挂。

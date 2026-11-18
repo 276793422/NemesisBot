@@ -659,3 +659,161 @@ async fn genuine_429_still_enters_rate_limit_ring() {
     }
     assert!(saw_progress, "限流环进度通知必须发出（对照面）");
 }
+
+// -- ⑨ 网络不可达退避资格（2026-11-03 BUG a 面） -----------------------------
+
+#[tokio::test(start_paused = true)]
+async fn unreachable_error_backs_off_despite_sub_second_failure() {
+    // os error 10051（网络不可达）11ms 内失败——纯耗时判据会误归「立即拒绝」
+    // 零退避盲烧 3 次瞬发。修复后按错误形态补资格：虚拟时钟推进 ≥1s = 1s
+    // 退避档真发生了（立即拒绝形态零 sleep，虚拟时钟不推进）。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "connect error (model test-model): error sending request for url \
+                   (http://10.255.255.1/v1): os error 10051: 网络不可达。"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let vstart = tokio::time::Instant::now();
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+    let velapsed = vstart.elapsed();
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "网络不可达必须进 transient 环并退避后恢复: {events:?}"
+    );
+    assert!(
+        velapsed >= std::time::Duration::from_secs(1),
+        "<1s 失败的网络不可达必须真退避（虚拟时钟未推进 = 没睡）: {velapsed:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + 1s 退避后重试成功 = 恰好 2 次调用"
+    );
+}
+
+/// 对照面：连接拒绝（os error 10061）维持「立即拒绝」零退避语义——门已关
+/// 上等待无效，且 CI mock 立即失败链依赖瞬发不膨胀墙钟。虚拟时钟不推进
+/// （<1s）= 没有退避 sleep。
+#[tokio::test(start_paused = true)]
+async fn connection_refused_stays_instant_retry_without_backoff() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "connect error (model test-model): error sending request for url \
+                   (http://127.0.0.1:9/v1): os error 10061: 由于目标计算机积极拒绝，无法连接。"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let vstart = tokio::time::Instant::now();
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+    let velapsed = vstart.elapsed();
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "连接拒绝必须进 transient 环并恢复: {events:?}"
+    );
+    assert!(
+        velapsed < std::time::Duration::from_secs(1),
+        "连接拒绝维持零退避（虚拟时钟推进 ≥1s = 多睡了退避档，CI 实调护栏会被拖爆）: {velapsed:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + 立即重试成功 = 恰好 2 次调用"
+    );
+}
+
+// -- ⑩ connect error 耗尽终局文案分层（2026-11-03 BUG b 面） ------------------
+
+#[tokio::test(start_paused = true)]
+async fn connect_error_exhaustion_gets_actionable_hint_with_raw_in_history() {
+    // b 面：connect error 类耗尽终局不再裸抛 `Error: connect error (…)`——
+    // 用户面换可行动提示（含已自动重试次数），原始错误保真进 history。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = AlwaysFailing {
+        calls: calls.clone(),
+        err_text: "connect error (model test-model): error sending request for url \
+                   (http://10.255.255.1/v1): os error 10051: 网络不可达。"
+            .to_string(),
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let err_text = single_error_text(&events);
+    assert!(
+        err_text.contains("无法连接模型服务"),
+        "用户文案必须带可行动提示: {err_text}"
+    );
+    assert!(
+        err_text.contains("已自动重试 3 次"),
+        "提示必须注明已自动重试次数（1 首败 + 3 环内重试 = MAX）: {err_text}"
+    );
+    assert!(
+        err_text.contains("os error 10051"),
+        "原始错误必须保留在用户文案（诊断保真）: {err_text}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        4,
+        "首败 + MAX_TRANSIENT_RETRIES=3 次重试 = 恰好 4 次调用"
+    );
+    // history 保真：assistant 落账行保留原始错误全文，不含用户面提示词
+    // （提示只进出站文案——与 finish_llm_error_no_retry 同款分层）。
+    let hist = instance.get_history();
+    let assistant_err = hist
+        .iter()
+        .rfind(|t| t.role == "assistant" && t.content.starts_with("Error:"))
+        .expect("耗尽终局必须落一条 assistant Error 行");
+    assert!(
+        assistant_err.content.contains("connect error"),
+        "history 必须保留原始错误: {}",
+        assistant_err.content
+    );
+    assert!(
+        !assistant_err.content.contains("无法连接模型服务"),
+        "history 不得混入用户面提示词: {}",
+        assistant_err.content
+    );
+}

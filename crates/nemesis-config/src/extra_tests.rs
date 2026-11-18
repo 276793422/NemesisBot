@@ -781,8 +781,9 @@ fn extra_serde_default_agent_defaults_via_json() {
     );
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);
     assert_eq!(cfg.max_tool_iterations, 100);
-    // serde default flipped reject → queue.
-    assert_eq!(cfg.concurrent_request_mode, "queue");
+    // serde default flipped queue → steer (2026-11-03 决策：busy 默认可输入，
+    // 防前端 inbox-status 刷新失败把 UI 死锁成永久 reject)。
+    assert_eq!(cfg.concurrent_request_mode, "steer");
     assert_eq!(cfg.queue_size, 8);
 }
 
