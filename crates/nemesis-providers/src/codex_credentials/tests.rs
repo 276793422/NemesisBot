@@ -156,14 +156,30 @@ fn test_create_token_source_returns_function() {
 
 #[test]
 fn test_codex_credentials_debug_format() {
+    // SEC-002 Debug 脱敏（BUG-20261118-171）：旧断言 contains("tok")
+    // 钉的是泄漏形态，已随脱敏 Debug 改写——access_token 不得进 Debug，
+    // account_id（非凭据，plain）保留诊断价值。
     let creds = CodexCredentials {
-        access_token: "tok".into(),
+        access_token: "tok-DO-NOT-LEAK".into(),
         account_id: "acc".into(),
         expires_at: std::time::SystemTime::UNIX_EPOCH,
     };
     let debug_str = format!("{:?}", creds);
-    assert!(debug_str.contains("tok"));
-    assert!(debug_str.contains("acc"));
+    assert!(
+        !debug_str.contains("tok-DO-NOT-LEAK"),
+        "access_token 泄漏进 Debug: {debug_str}"
+    );
+    assert!(
+        debug_str.contains("<redacted>"),
+        "无 <redacted> 脱敏标记: {debug_str}"
+    );
+    assert!(debug_str.contains("acc"), "plain 字段应保留: {debug_str}");
+    // alternate 形态（dbg!("{:#?}") / panic 展开）同口径
+    let pretty = format!("{:#?}", creds);
+    assert!(
+        !pretty.contains("tok-DO-NOT-LEAK"),
+        "alternate 形态泄漏: {pretty}"
+    );
 }
 
 #[test]

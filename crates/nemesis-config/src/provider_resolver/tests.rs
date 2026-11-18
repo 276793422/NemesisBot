@@ -1387,3 +1387,58 @@ fn test_config_get_model_by_model_name_case_insensitive() {
     // 完全无关名字仍 Err（CI 层不制造假命中）。
     assert!(config.get_model_by_model_name("totally-other").is_err());
 }
+
+/// SEC-002 Debug 脱敏（BUG-20261111-068 家族，BUG-20261118-171）回归锁：
+/// ProviderResolution 持已解析明文 api_key / proxy（providers 侧孪生
+/// ProviderSelection 已走 impl_redacted_debug，本侧 config 域同族漏网），
+/// `{:?}` / `{:#?}` 不得携带明文，plain 字段保留诊断价值。
+#[test]
+fn provider_resolution_debug_redacts_key_and_proxy() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "sec".to_string(),
+            model: "anthropic/claude-3".to_string(),
+            api_key: "sk-secret-DO-NOT-LEAK".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "sec").unwrap();
+    // 解析路径确实带来明文 key（确认测试对齐生产数据形态）。
+    assert_eq!(res.api_key, "sk-secret-DO-NOT-LEAK");
+
+    let mut res2 = res.clone();
+    res2.proxy = "http://user:pass@corp-proxy:3128".to_string();
+    let dbg = format!("{:?}", res2);
+    assert!(
+        !dbg.contains("sk-secret-DO-NOT-LEAK") && !dbg.contains("user:pass"),
+        "api_key/proxy 泄漏进 Debug 输出: {}",
+        dbg
+    );
+    assert!(
+        dbg.contains("<redacted>"),
+        "无 <redacted> 脱敏标记: {}",
+        dbg
+    );
+    assert!(
+        dbg.contains("claude-3"),
+        "plain 字段应保留诊断价值: {}",
+        dbg
+    );
+    // alternate 形态（dbg!("{:#?}") / panic 展开）同口径。
+    let pretty = format!("{:#?}", res2);
+    assert!(
+        !pretty.contains("sk-secret-DO-NOT-LEAK") && !pretty.contains("user:pass"),
+        "alternate 形态泄漏: {}",
+        pretty
+    );
+    // 空密钥形态 → <empty>（未配置态可辨认）。
+    let empty = ProviderResolution::default();
+    let dbg_empty = format!("{:?}", empty);
+    assert!(
+        dbg_empty.contains("<empty>"),
+        "空密钥应显示 <empty>: {}",
+        dbg_empty
+    );
+}

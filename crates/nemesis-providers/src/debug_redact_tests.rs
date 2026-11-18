@@ -8,6 +8,7 @@
 
 use crate::anthropic::AnthropicConfig;
 use crate::codex::CodexConfig;
+use crate::codex_credentials::{CodexCliAuth, CodexCliTokens, CodexCredentials};
 use crate::factory::{FactoryConfig, ProviderSelection, ProviderType};
 use crate::http_provider::HttpProviderConfig;
 use crate::openai_compat::OpenAICompatConfig;
@@ -249,4 +250,50 @@ fn redact_helpers_three_states() {
     let mut one = std::collections::HashMap::new();
     one.insert("Authorization".to_string(), HEADER_VAL.to_string());
     assert_eq!(debug_secret_map(&one), "<redacted>");
+}
+
+/// BUG-20261118-171：codex_credentials 三结构（auth.json 解析形态 +
+/// 运行时持有形态，2026-05 即存在、同 crate 清扫漏网）与六结构同锁。
+/// OAuth access/refresh token 脱敏；account_id 非凭据归 plain（与
+/// ProviderSelection 同口径）；CodexCliAuth 的嵌套 tokens 经子结构
+/// 脱敏 Debug 传递。
+#[test]
+fn codex_credentials_family_debug_redacts_tokens() {
+    let tokens = CodexCliTokens {
+        access_token: "access-DO-NOT-LEAK".to_string(),
+        refresh_token: "refresh-DO-NOT-LEAK".to_string(),
+        account_id: "acct-visible".to_string(),
+    };
+    let dbg = format!("{:?}", tokens);
+    assert_redacted(
+        &dbg,
+        &["access-DO-NOT-LEAK", "refresh-DO-NOT-LEAK"],
+        &["acct-visible"],
+        "CodexCliTokens",
+    );
+
+    let auth = CodexCliAuth { tokens };
+    let dbg = format!("{:?}", auth);
+    assert_redacted(
+        &dbg,
+        &["access-DO-NOT-LEAK", "refresh-DO-NOT-LEAK"],
+        &["acct-visible"],
+        "CodexCliAuth",
+    );
+    let pretty = format!("{:#?}", auth);
+    assert!(
+        !pretty.contains("access-DO-NOT-LEAK") && !pretty.contains("refresh-DO-NOT-LEAK"),
+        "alternate 形态泄漏: {}",
+        pretty
+    );
+
+    let creds = CodexCredentials {
+        access_token: KEY.to_string(),
+        account_id: "acct-visible".to_string(),
+        expires_at: std::time::SystemTime::UNIX_EPOCH,
+    };
+    let dbg = format!("{:?}", creds);
+    assert_redacted(&dbg, &[KEY], &["acct-visible"], "CodexCredentials");
+    let pretty = format!("{:#?}", creds);
+    assert!(!pretty.contains(KEY), "alternate 形态泄漏: {}", pretty);
 }
