@@ -692,7 +692,13 @@ impl AnthropicProvider {
             // reqwest client 级 `.timeout()` 在 `bytes_stream()` 读路径不兜底
             // ——上游静默停流时整个任务在 `stream.next()` 挂死。以「请求起点
             // + timeout_secs」为绝对墙钟线，到线即 Timeout（可重试/可故障
-            // 转移）。timeout_secs == 0 = 不限（显式逃生口）。
+            // 转移）。BUG-20261119-178：timeout_secs == 0 的「不限」语义
+            // **不存在**——生产构造链 0 恒被 factory `effective_timeout`
+            // 归一为 lane 默认 600（config「0/缺省 = lane 默认」权威口径）；
+            // 直接构造本 config 传 0 时，client 级挂 `.timeout(ZERO)`（reqwest
+            // 0.12.28 `total_timeout.map(tokio::time::sleep)` 无 ZERO 特判）
+            // = 连接阶段立即超时，与「不限」相反。下方 deadline 分支仅为
+            // 防御保留，勿按旧注释当逃生口使用。
             let deadline = if stream_timeout_secs == 0 {
                 None
             } else {
