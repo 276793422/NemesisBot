@@ -1831,6 +1831,11 @@ impl WorkflowEngine {
     /// no-op for this execution afterwards.
     pub async fn run_async(&self, execution_id: &str) -> Result<Execution, EngineError> {
         if *self.closed.read().await {
+            // BUG-20261118-160：早退臂诚实收口——create_execution 已把
+            // 记录以 Running 入 map + 落盘并广播 Started，此臂此前直接
+            // Err，记录永久滞留 Running（收口契约见 settle_early_run_failure）。
+            self.settle_early_run_failure(execution_id, "engine is closed")
+                .await;
             return Err(EngineError::InvalidState("engine is closed".to_string()));
         }
 
@@ -1876,8 +1881,18 @@ impl WorkflowEngine {
                 // 早退必须回收刚装的 cancel token（resume
                 // 路径同款清理——「a failed lookup must not leave it
                 // orphaned」）。留着 = 此后任何 run_async 都撞「already in
-                // flight」，执行记录永久 Running，workflow 重新注册也救不回。
+                // flight」，即使 workflow 重新注册也救不回。
+                // BUG-20261118-160：token 之外执行记录同样要收口（此前
+                // 永久滞留 Running——本注释原文也只承诺了 token 卫生）。
                 self.cancel_tokens.remove(execution_id);
+                self.settle_early_run_failure(
+                    execution_id,
+                    &format!(
+                        "workflow '{}' not found at run time",
+                        execution.workflow_name
+                    ),
+                )
+                .await;
                 return Err(EngineError::WorkflowNotFound(
                     execution.workflow_name.clone(),
                 ));
@@ -1923,6 +1938,13 @@ impl WorkflowEngine {
         if let Err(reason) = self.call_stack.push(frame) {
             // 同上，早退前回收 cancel token。
             self.cancel_tokens.remove(execution_id);
+            // BUG-20261118-160：执行记录同样收口（绕过 WorkflowTool 预检
+            // 的防御臂也不留幻影 Running）。
+            self.settle_early_run_failure(
+                execution_id,
+                &format!("recursion limit exceeded: {reason}"),
+            )
+            .await;
             return Err(EngineError::RecursionLimitExceeded(reason));
         }
 
@@ -2586,6 +2608,56 @@ impl WorkflowEngine {
     /// 产品语义变更，超出本修复范围；run_async 首跑尾段的 TriggerEvent
     /// 发布维持原样。Waiting 非终态：保持沉默（观察者守卫必须留到下
     /// 一次 resume / 取消，与 run_async 首跑 Waiting 不发声一致）。
+    /// run_async 早期失败臂统一收口（BUG-20261118-160）。
+    ///
+    /// create_execution 已把执行以 Running 记入内存 map、落盘并广播
+    /// Started；run_async 在递归闸（begin_run 开账点）之前的任何早退
+    /// Err 此前都不收口——记录永久滞留 Running：list_executions / UI
+    /// 永远显示在跑、evict_oldest_terminal_execution 逐不出（非终态）、
+    /// 观察者等不到终态事件（BUG-20261114-035 的 exactly-once 契约同
+    /// 一形态）、start_async 文档承诺的「eventual execution state
+    /// (Failed)」从未兑现。本方法把 cancel_execution token 缺席臂的
+    /// 「谁翻状态谁负责终态四件套」卫生纪律应用到三条早退臂：状态翻
+    /// Failed + 落盘 + 账本收口 + 发 Failed 事件。
+    ///
+    /// - 幂等前提：只翻仍是我们账上 Running 的记录——并发
+    ///   cancel_execution 已落终态则不动（restore_waiting_after_failed_
+    ///   resume 同款纪律，BUG-20261114-008）。
+    /// - 账本：早退臂尚未过递归闸，begin_run 未调用，settle 落空 =
+    ///   无害 no-op（cancel_execution token 缺席臂同款判别），照走保持
+    ///   「先收账后发事件」不变式。
+    /// - 不落终态 checkpoint：早退臂之前不存在任何 checkpoint
+    ///   （save_checkpoint 只在跑起来之后发生），restore_incomplete_
+    ///   executions 按 id 找 checkpoint 找不到即跳过，无复活面；
+    ///   cancel 的 checkpoint 件是为翻既有非终态快照，此处无此物。
+    /// - 只发观察者事件、不发布触发器事件：run 从未进调度器，
+    ///   workflow.failed 触发器级联（事件触发型 workflow）对从未执行
+    ///   的 run 无意义；closed 臂在停机窗口里发布触发器事件还会诱发
+    ///   新 run。终态事件经 emit_terminal_event 只进 event_manager。
+    async fn settle_early_run_failure(&self, execution_id: &str, error: &str) {
+        let updated = {
+            let mut execs = self.executions.write().await;
+            let Some(execution) = execs.get_mut(execution_id) else {
+                return;
+            };
+            if execution.state != ExecutionState::Running {
+                // 并发收口（cancel_execution / 状态竞态）已落终态——exactly-once。
+                return;
+            }
+            execution.state = ExecutionState::Failed;
+            execution.error = Some(error.to_string());
+            execution.ended_at = Some(Local::now());
+            execution.clone()
+        };
+        self.persist_execution(&updated).await;
+        nemesis_taskstore::ledger::settle_run(
+            &nemesis_taskstore::ledger::workflow_run_id(execution_id),
+            "failed",
+            Some(error),
+        );
+        self.emit_terminal_event(&updated).await;
+    }
+
     async fn emit_terminal_event(&self, execution: &Execution) {
         let event = match execution.state {
             ExecutionState::Completed => WorkflowEvent::Completed {
