@@ -1533,6 +1533,81 @@ async fn bug31_read_resource_well_formed_still_ok() {
     assert_eq!(content.text.as_deref(), Some("still works"));
 }
 
+// --- BUG-20261118-163：list_page result 在场但缺 items_key 响亮报错
+// （缺陷 19 同族补漏——此前静默成空表，「空工具表比失败更难排查」）。-------
+
+#[tokio::test]
+async fn bug163_list_tools_missing_tools_key_is_loud() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    // result 是空对象、无 tools 键（协议违例——合规服务器空清单恒为
+    // {"tools": []}）。旧实现静默成空工具表，上层无从分辨
+    // 「服务器就这些（零个）」与「响应形状非法」。
+    mock.add_success("tools/list", serde_json::json!({}));
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client.list_tools().await.unwrap_err();
+    assert!(err.to_string().contains("missing 'tools'"), "{err}");
+    assert!(err.to_string().contains("tools/list"), "{err}");
+}
+
+#[tokio::test]
+async fn bug163_list_resources_missing_resources_key_is_loud() {
+    // 同一通用内核的第二消费面（items_key 插值正确性双证）。
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success("resources/list", serde_json::json!({ "nextCursor": "" }));
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client.list_resources().await.unwrap_err();
+    assert!(err.to_string().contains("missing 'resources'"), "{err}");
+}
+
+#[tokio::test]
+async fn bug163_null_result_is_loud() {
+    // `result: null` = JSON-RPC success 形态里 result 成员在场（null 是
+    // 合法 JSON 值）但不是 MCP 要求的结果对象 = 协议违例 → 响亮。
+    // （None→空表约定只覆盖 result 键整体缺失——经 MockTransport
+    // 不可构造，None 臂行为与旧实现逐字节一致，无需构造面。）
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success("tools/list", serde_json::json!(null));
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client.list_tools().await.unwrap_err();
+    assert!(err.to_string().contains("missing 'tools'"), "{err}");
+}
+
 /// 会话过期恢复回归锁（BUG-20261108-016）：Streamable HTTP server 重启/
 /// 会话过期（带会话 id 的 404）后，此前无任何层重握手——已挂载工具对每个
 /// 调用永久 404。恢复链：send 报 session_expired → client 重置传输 +
