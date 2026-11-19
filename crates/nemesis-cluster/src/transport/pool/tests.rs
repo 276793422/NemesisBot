@@ -308,6 +308,65 @@ async fn test_pool_remove_node_nonexistent() {
     assert_eq!(pool.active_connection_count(), 0);
 }
 
+/// BUG-20261120-008 回归锁：remove_node 只移除池内条目，**借出连接**的
+/// node_count 贡献必须保留（BUG-20261119-204 钉死的语义：node_count =
+/// 借出 + 池内）。旧实现 `counts.remove(node_id)` 整键清除 → 该 node 的
+/// per-node limit 从真实占用回卷到 0，后续可超卖 max_conns_per_node。
+#[tokio::test]
+async fn test_remove_node_preserves_borrowed_node_count() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 100,
+        max_conns_per_node: 5,
+        ..Default::default()
+    });
+
+    // 两条同 node 连接：c1 保持借出（调用方持有），c2 归还入池。
+    let (k1, c1) = pool.get("node-1", &addr).await.unwrap();
+    let (k2, c2) = pool.get("node-1", &addr).await.unwrap();
+    pool.return_connection(k2, c2);
+    // 204 语义：借出 + 池内 = 2。
+    assert_eq!(
+        pool.get_stats().node_conns.get("node-1"),
+        Some(&2),
+        "前置：node_count = 借出 + 池内"
+    );
+
+    // 摘除该 node：只应清掉池内的 c2，借出的 c1 贡献保留。
+    pool.remove_node("node-1");
+    assert_eq!(
+        pool.get_stats().node_conns.get("node-1"),
+        Some(&1),
+        "借出连接的计数贡献必须保留（旧实现整键清除 = 本 BUG）"
+    );
+
+    // limit 完整性：保留的 1 份占用 + 4 条新拨 = 5 封顶，第 5 条新拨被拒。
+    // 旧实现（键被清空）这里能再拨 5 条 → 6 条并发超过 max_conns_per_node。
+    let mut granted = 0;
+    for _ in 0..10 {
+        match pool.get("node-1", &addr).await {
+            Ok(_) => granted += 1,
+            Err(e) => {
+                assert!(
+                    e.contains("per-node limit"),
+                    "拒绝原因应是 per-node limit: {e}"
+                );
+                break;
+            }
+        }
+    }
+    assert_eq!(granted, 4, "1 借出 + 4 新拨 = 5 封顶（旧实现超卖到 6）");
+
+    let _ = k1;
+    let _ = c1;
+    pool.close();
+    server.abort();
+}
+
 #[test]
 fn test_async_pool_config_debug() {
     let config = AsyncPoolConfig::default();

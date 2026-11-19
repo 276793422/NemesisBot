@@ -373,7 +373,23 @@ impl Pool {
         }
         if removed > 0 {
             let mut counts = self.node_counts.lock();
-            counts.remove(node_id);
+            // BUG-20261120-008：本方法只移除池内条目，**借出连接**的计数
+            // 贡献必须保留（BUG-20261119-204 钉死的语义：node_count =
+            // 借出 + 池内）。旧实现 `counts.remove(node_id)` 整键清除会把
+            // 在途借出的份额一并抹掉——该 node 的 per-node limit 从真实
+            // 占用回卷到 0，后续可超卖 max_conns_per_node。与 dec_node_count
+            // 同语义：saturating 减 removed，归零才删键。记账全程持锁
+            // （锁序 conns → node_counts，与 remove/cleanup_dead 一致）。
+            let remaining = counts
+                .get(node_id)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(removed);
+            if remaining == 0 {
+                counts.remove(node_id);
+            } else {
+                counts.insert(node_id.to_string(), remaining);
+            }
             self.active_count.fetch_sub(removed, Ordering::SeqCst);
             self.semaphore.add_permits(removed);
         }

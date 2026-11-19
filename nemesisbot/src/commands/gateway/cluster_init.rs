@@ -251,6 +251,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // 运行时硬化批：announce 携带本节点构建号（编译期 git 短 hash），
         // 对端注册表透传 → Dashboard 节点面展示，三机换装偏斜一眼可见。
         cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
+        // 家族纪律 DI（BUG-20261120-009，208/R1988 同形态）：进程终态令牌
+        // 注入集群 → 漫游会话池心跳循环（nemesis-cluster 内常驻 timer-park
+        // 循环，023 横扫只覆盖 nemesisbot crate）。roaming 未启用时静默待用。
+        cluster.set_roaming_terminal_token(terminal_cancel_token().clone());
 
         // Swarm: 节点发现 → 自动收编进看板频道（first-join 语义：
         // 成员在 channel_member 全表零行 = 全新节点才自动入；管理员手动

@@ -124,6 +124,10 @@ pub struct Cluster {
     cont_store: Arc<ContinuationStore>,
     result_store: Arc<TaskResultStore>,
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
+    /// 进程终态令牌（BUG-20261120-009 家族纪律 DI；gateway 装配注入，
+    /// `setup_roaming` 时转喂 RpcClient → 漫游会话池心跳循环）。None =
+    /// 未注入 = never-cancelled 回落（旧行为）。
+    roaming_terminal: Mutex<Option<tokio_util::sync::CancellationToken>>,
     /// RPC server instance.
     rpc_server: Option<Arc<crate::rpc::server::RpcServer>>,
     /// iroh 漫游叠加层运行旗标（QUIC 插件化
@@ -336,6 +340,7 @@ impl Cluster {
             cont_store: Arc::new(ContinuationStore::new(cluster_dir_path.join("rpc_cache"))),
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
+            roaming_terminal: Mutex::new(None),
             rpc_server: None,
             roaming_started: AtomicBool::new(false),
             roaming_id: parking_lot::RwLock::new(None),
@@ -575,6 +580,7 @@ impl Cluster {
                 nemesis_path::resolve_cluster_results_dir_in_workspace(&workspace),
             )),
             rpc_client: Mutex::new(None),
+            roaming_terminal: Mutex::new(None),
             rpc_server: None,
             roaming_started: AtomicBool::new(false),
             roaming_id: parking_lot::RwLock::new(None),
@@ -1034,6 +1040,12 @@ impl Cluster {
         if let Some(client) = self.rpc_client.lock().clone() {
             let app_cfg = crate::config_loader::load_app_config(&self.workspace);
             client.set_roaming_heartbeat_interval(app_cfg.roaming_heartbeat_interval_secs);
+            // 进程终态令牌转喂（BUG-20261120-009 家族纪律 DI）：必须在
+            // `set_roaming_dialer`（心跳循环 spawn 触发点）之前到达。
+            // stop→start 重启语义下 setup_roaming 每次重跑，幂等覆盖。
+            if let Some(t) = self.roaming_terminal.lock().clone() {
+                client.set_roaming_terminal_token(t);
+            }
             client.set_roaming_dialer(Arc::new(crate::roaming::plugin_bridge::TrustGateDialer {
                 workspace: self.workspace.clone(),
                 inner: crate::roaming::plugin_bridge::BridgeDialer,
@@ -1679,6 +1691,14 @@ impl Cluster {
     /// Get a cloned reference to the RPC client (if initialized).
     pub fn rpc_client_arc(&self) -> Option<Arc<RpcClient>> {
         self.rpc_client.lock().clone()
+    }
+
+    /// 注入进程终态令牌（BUG-20261120-009 家族纪律 DI，gateway 装配期
+    /// 调用）。缓存到 `roaming_terminal`，`setup_roaming`（每次 start 重跑）
+    /// 转喂 RpcClient → 漫游会话池——心跳循环等待点消费；roaming 未启用
+    /// 时令牌静默待用，无害。
+    pub fn set_roaming_terminal_token(&self, token: tokio_util::sync::CancellationToken) {
+        *self.roaming_terminal.lock() = Some(token);
     }
 
     // -- RPC server accessor ---------------------------------------------------

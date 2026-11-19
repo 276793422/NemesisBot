@@ -166,6 +166,13 @@ pub(crate) struct RoamingSessionPool {
     /// 与在途拨号不再把会话插回池（复检持 sessions 锁，与 close_all 的
     /// drain 互斥——check-then-act 窗口闭合）。
     closed: AtomicBool,
+    /// 进程终态令牌（BUG-20261120-009 家族纪律 DI 形态，同
+    /// BUG-20261119-208 nemesis-web / BUG-20261120-007 nemesis-events）：
+    /// gateway 装配注入，心跳循环等待点消费——cancel 后排空窗内不再
+    /// ping/清扫。幕帘（close_all）不退循环的 reopen 语义不变——本令牌
+    /// 只在进程终态 cancel，与池级 stop→start 正交。None = 未注入 =
+    /// never-cancelled 回落（旧装配/测试行为逐字节不变）。
+    terminal: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
 }
 
 impl Default for RoamingSessionPool {
@@ -186,6 +193,7 @@ impl RoamingSessionPool {
             reconnect_delays: std::sync::Mutex::new(RECONNECT_DELAY_SECS.to_vec()),
             hb_started: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            terminal: std::sync::Mutex::new(None),
         }
     }
 
@@ -222,6 +230,13 @@ impl RoamingSessionPool {
     /// 注入后台 token 快照（RpcClient::set_auth_token 转发；幂等覆盖）。
     pub(crate) fn set_token(&self, token: &str) {
         *self.backend_token.lock().unwrap() = token.to_string();
+    }
+
+    /// 注入进程终态令牌（BUG-20261120-009；gateway 经 Cluster → RpcClient
+    /// 转发，必须在 `set_dialer` 拉起心跳循环**之前**到达——循环启动时
+    /// take 快照）。幂等覆盖。
+    pub(crate) fn set_terminal_token(&self, token: tokio_util::sync::CancellationToken) {
+        *self.terminal.lock().unwrap() = Some(token);
     }
 
     /// 配置心跳间隔（秒；0=关）。装配期在 `set_dialer` 前后调用皆可
@@ -270,10 +285,23 @@ impl RoamingSessionPool {
     /// 自动恢复；「退出再重生」形态会让 reopen 与旧循环退出竞态（检查
     /// hb_started 时旧循环尚未复位旗标 → no-op → 循环随后退出 → 心跳
     /// 永久失联），不做。
+    ///
+    /// 进程终态令牌（BUG-20261120-009，家族纪律 023 + 208/R1988 DI 形态）：
+    /// 等待点消费令牌——cancel 后排空窗内不再 ping/清扫。令牌只在进程
+    /// 终态被 cancel（gateway Step 24 / run / acp 收口），与幕帘正交；
+    /// 未注入 = never-cancelled 回落（行为与旧版逐字节一致）。启动时
+    /// take 快照（注入约定：set_terminal_token 必须先于 set_dialer 到达）。
     async fn heartbeat_loop(self: Arc<Self>) {
+        let terminal = self.terminal.lock().unwrap().take().unwrap_or_default();
+        if terminal.is_cancelled() {
+            return;
+        }
         let mut last_ping_sweep = now_ms();
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::select! {
+                _ = terminal.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
             let closed = self.closed.load(Ordering::SeqCst);
             let interval = self.heartbeat_interval.load(Ordering::Relaxed);
             let due = now_ms().saturating_sub(last_ping_sweep) >= interval.saturating_mul(1000);
