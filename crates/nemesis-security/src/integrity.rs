@@ -24,10 +24,11 @@ pub struct AuditEvent {
     #[serde(default)]
     pub sign: Option<String>,
     /// Hash formula version. 0 = legacy（prev/timestamp/operation/tool/user/
-    /// target/decision 七字段）；1 = v1（追加 source + reason——审计叙述与
-    /// 来源进防篡改覆盖）。serde default 让旧链照常加载与验证（BUG-
-    /// 20261102-305：旧公式不含 reason，篡改「为何放行/拒绝」的取证叙述
-    /// 不破坏链验证）。
+    /// target/decision 七字段裸拼接）；1 = v1（追加 source + reason——审计
+    /// 叙述与来源进防篡改覆盖）；2 = v2（现役，BUG-20261120-002：全字段
+    /// 长度前缀，消除裸拼接的字段边界歧义——见 compute_event_hash）。
+    /// serde default 让旧链照常加载与验证（BUG-20261102-305：旧公式不含
+    /// reason，篡改「为何放行/拒绝」的取证叙述不破坏链验证）。
     #[serde(default)]
     pub hash_version: u8,
 }
@@ -181,26 +182,11 @@ impl AuditChain {
             TailHeal::Clean => {}
         }
 
-        let mut hasher = Sha256::new();
         let timestamp = chrono::Local::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
-
         let prev_hash = self.last_hash.lock().clone();
 
-        // Hash: prev_hash + timestamp + operation + tool + user + target + decision
-        // （v1 追加 source + reason——见 AuditEvent::hash_version 注释）。
-        hasher.update(prev_hash.as_bytes());
-        hasher.update(timestamp.as_bytes());
-        hasher.update(operation.as_bytes());
-        hasher.update(tool_name.as_bytes());
-        hasher.update(user.as_bytes());
-        hasher.update(target.as_bytes());
-        hasher.update(decision.as_bytes());
-        hasher.update(source.as_bytes());
-        hasher.update(reason.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
-
-        let event = AuditEvent {
+        let mut event = AuditEvent {
             id,
             timestamp,
             operation: operation.to_string(),
@@ -210,11 +196,19 @@ impl AuditChain {
             target: target.to_string(),
             decision: decision.to_string(),
             reason: reason.to_string(),
-            hash: hash.clone(),
+            hash: String::new(),
             prev_hash: prev_hash.clone(),
             sign,
-            hash_version: 1,
+            // v2（BUG-20261120-002）：长度前缀消字段拼接歧义——旧公式九字段
+            // 裸拼接（"exec"+"x" 与 "execx"+"" 同哈希），盘上改字段切分可
+            // 不破坏链验证地篡改事件语义。v2 = 每字段 u64 LE 长度前缀 +
+            // 字节，字段边界唯一。见 compute_event_hash。
+            hash_version: 2,
         };
+        // 公式单一真相源（BUG-20261102-305 双拼漂移的结构性根治）：哈希
+        // 只在 compute_event_hash 一处计算，append 内不再手拼字段序。
+        let hash = Self::compute_event_hash(&event);
+        event.hash = hash.clone();
 
         // 盘先行（横扫角度 A）：磁盘是审计链的权威定义——只有
         // 行真正落盘才推进内存链状态（last_hash/计数器）并返回 Ok。旧的
@@ -372,21 +366,41 @@ impl AuditChain {
     }
 
     /// Canonical per-event hash computation（统一定义：append 与 verify
-    /// 及 Dashboard 诊断同源）。按事件自带 `hash_version` 选公式——0=旧
-    /// 七字段公式（存量链）；1=追加 source+reason；未知版本按旧公式算但
-    /// `verify_chain`/消费方必须先做版本守卫（fail-closed）。
+    /// 及 Dashboard 诊断同源）。按事件自带 `hash_version` 选公式：
+    /// - 0 = legacy（prev/timestamp/operation/tool/user/target/decision
+    ///   七字段裸拼接——存量链）；
+    /// - 1 = v1（追加 source + reason——审计叙述与来源进防篡改覆盖）；
+    /// - 2 = v2（BUG-20261120-002）：全字段 u64 LE **长度前缀**——旧公式
+    ///   裸拼接存在字段边界歧义（`operation="exec"+tool_name="x"` 与
+    ///   `operation="execx"+tool_name=""` 产生同一字节流同一哈希），持有
+    ///   盘上写权限的攻击者可把内容在字段间重切分而哈希不变、链验证照过
+    ///   （事件语义被篡改却检不出）。长度前缀使字段边界唯一，歧义消除。
+    ///   id/sign 不进哈希（覆盖面与 v1 等同，只加强度不加字段）。
+    /// - 未知版本：返回空串（fail-closed 单点）——空串与任何存 hash 不等
+    ///   → verify_chain / 消费方诊断自然报 mismatch（版本守卫不再散布在
+    ///   各消费方重复实现）。
     pub fn compute_event_hash(event: &AuditEvent) -> String {
+        if event.hash_version > 2 {
+            return String::new();
+        }
+        let prefixed = event.hash_version >= 2;
         let mut hasher = Sha256::new();
-        hasher.update(event.prev_hash.as_bytes());
-        hasher.update(event.timestamp.as_bytes());
-        hasher.update(event.operation.as_bytes());
-        hasher.update(event.tool_name.as_bytes());
-        hasher.update(event.user.as_bytes());
-        hasher.update(event.target.as_bytes());
-        hasher.update(event.decision.as_bytes());
+        let feed = |h: &mut Sha256, s: &str| {
+            if prefixed {
+                h.update((s.len() as u64).to_le_bytes());
+            }
+            h.update(s.as_bytes());
+        };
+        feed(&mut hasher, &event.prev_hash);
+        feed(&mut hasher, &event.timestamp);
+        feed(&mut hasher, &event.operation);
+        feed(&mut hasher, &event.tool_name);
+        feed(&mut hasher, &event.user);
+        feed(&mut hasher, &event.target);
+        feed(&mut hasher, &event.decision);
         if event.hash_version >= 1 {
-            hasher.update(event.source.as_bytes());
-            hasher.update(event.reason.as_bytes());
+            feed(&mut hasher, &event.source);
+            feed(&mut hasher, &event.reason);
         }
         format!("{:x}", hasher.finalize())
     }
@@ -397,9 +411,11 @@ impl AuditChain {
             if i > 0 && event.prev_hash != events[i - 1].hash {
                 return false;
             }
-            // 未知 hash_version = 覆盖面契约不可判定 → fail-closed（宁可报
-            // 断链也不静默按旧公式放行新版本事件）。
-            if event.hash_version > 1 {
+            // 未知 hash_version：compute_event_hash 返回空串（fail-closed
+            // 单点）→ 下方 computed != event.hash 必 false。显式分支保留
+            // 以 fast-path 亮明语义（宁可报断链也不静默按旧公式放行新版
+            // 本事件）。
+            if event.hash_version > 2 {
                 return false;
             }
             let computed = Self::compute_event_hash(event);
@@ -501,16 +517,26 @@ impl AuditChain {
         let mut total: u64 = 0;
         let mut last_hash =
             "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-
-        // Collect all segment files sorted
-        let mut files: Vec<PathBuf> = Vec::new();
-        let parent = self.config.storage_path.parent().unwrap_or(Path::new("."));
+        // 段游标恢复（BUG-20261120-001）：发生过段轮转的链重启后，若
+        // segment_count 不回载，append 会回写主文件（seg1 时代路径）——
+        // 新事件物理位置落在链中段文件的**前面**，盘上物理序与链序永久
+        // 错位，verify 从此恒红且无自愈路径。回载语义：当前段 = 已见的
+        // 最高段号文件（rotate 后新段立即在写），event_count = 该段行数
+        //（不回载则轮转计数每次重启清零，主文件/当前段可能无限增长）。
+        // 主文件 = 段 1。只有主文件（未轮转）→ seg=1、count=主文件行数
+        //（顺带修「重启后轮转永不触发」变体）。
+        let mut max_seg: u64 = 0;
+        let mut last_seg_lines: u64 = 0;
         let stem = self
             .config
             .storage_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "audit_chain".to_string());
+
+        // Collect all segment files sorted
+        let mut files: Vec<PathBuf> = Vec::new();
+        let parent = self.config.storage_path.parent().unwrap_or(Path::new("."));
 
         if self.config.storage_path.exists() {
             files.push(self.config.storage_path.clone());
@@ -541,12 +567,30 @@ impl AuditChain {
                     "[AuditChain] 段撕裂尾自愈失败（按原样解析）: {e}"
                 );
             }
+            let seg_no = if path == self.config.storage_path {
+                1
+            } else {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| segment_no_from_name(n, &stem))
+                    .unwrap_or(0)
+            };
+            let mut lines_this_seg: u64 = 0;
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for line in content.lines() {
                     if let Ok(event) = serde_json::from_str::<AuditEvent>(line) {
                         total += 1;
+                        lines_this_seg += 1;
                         last_hash = event.hash.clone();
                     }
+                }
+            }
+            if seg_no >= max_seg && seg_no >= 1 {
+                if seg_no > max_seg {
+                    max_seg = seg_no;
+                    last_seg_lines = lines_this_seg;
+                } else {
+                    last_seg_lines += lines_this_seg;
                 }
             }
         }
@@ -555,6 +599,11 @@ impl AuditChain {
             *self.last_hash.lock() = last_hash;
             self.total_events
                 .store(total, std::sync::atomic::Ordering::SeqCst);
+            let seg = max_seg.max(1);
+            self.segment_count
+                .store(seg, std::sync::atomic::Ordering::SeqCst);
+            self.event_count
+                .store(last_seg_lines, std::sync::atomic::Ordering::SeqCst);
         }
 
         Ok(total)
@@ -679,6 +728,23 @@ impl AuditChain {
         }
         Ok(events[from..to.min(events.len())].to_vec())
     }
+}
+
+// ---------------------------------------------------------------------------
+// 段号解析（BUG-20261120-001 段游标回载的支撑 helper）
+// ---------------------------------------------------------------------------
+
+/// 从段文件名解析段号：`{stem}_seg{NNNN}{ext}` → NNNN
+/// （`audit_chain_seg0002.jsonl` → 2）。与
+/// [`AuditChain::get_current_segment_path`] 的构造对称（前导数字取尽，
+/// 后缀 ext 剥离）。None = 非段名形态。
+fn segment_no_from_name(name: &str, stem: &str) -> Option<u64> {
+    let rest = name.strip_prefix(stem)?.strip_prefix("_seg")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u64>().ok()
 }
 
 // ---------------------------------------------------------------------------
