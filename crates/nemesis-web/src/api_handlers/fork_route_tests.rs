@@ -412,6 +412,73 @@ async fn test_fork_unknown_session_is_404() {
     assert_eq!(resp.status(), 404);
 }
 
+/// BUG-20261119-200 回归锁：fork 端点的 title 是用户显式命名，必须走
+/// manual 形态（E7：自动标题永不覆盖显式命名）+ trim/占位符过滤（家族
+/// 契约：sessions.create/rename/import 四位点同款）。旧形态裸
+/// write_session_meta：①title 恰为占位符时自动标题可覆盖显式名；②空白
+/// title 落成伪真标题永久挡住自动标题；③无 trim。
+#[tokio::test]
+async fn test_fork_explicit_title_is_manual_and_filtered() {
+    let _home = crate::test_home::lock_home();
+    let dir = tempfile::tempdir().unwrap();
+
+    // ① 显式命名 → trim 后落盘 + manual 标记（自动标题永不覆盖）。
+    let sid = unique_sid();
+    let key = chat_session_key(&sid);
+    seed_session(dir.path(), &key);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri(format!("/api/chat/sessions/{sid}/fork"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(
+            r#"{"at_turn": 2, "title": "  我的分支  "}"#,
+        ))
+        .unwrap();
+    let resp = oneshot(make_router(make_state(&dir, "")), req).await;
+    assert_eq!(resp.status(), 200);
+    let v = body_json(resp).await;
+    let new_key = v["new_key"].as_str().unwrap().to_string();
+    let meta =
+        nemesis_agent::chat_log::read_session_meta_full(&new_key).expect("fork meta must exist");
+    assert_eq!(
+        meta.title.as_deref(),
+        Some("我的分支"),
+        "title 必须 trim 落盘"
+    );
+    assert!(
+        meta.title_manual,
+        "显式命名必须置 manual 标记（E7：自动标题永不覆盖）"
+    );
+    nemesis_agent::chat_log::delete_chat_log(&key);
+    nemesis_agent::chat_log::delete_chat_log(&new_key);
+
+    // ② 占位符/空白/空 title = 非显式命名：不落任何 title（自动标题可
+    //    接管），绝不落成伪真标题或占位形态永久挡住自动标题。
+    for raw in ["新对话", "   ", ""] {
+        let sid = unique_sid();
+        let key = chat_session_key(&sid);
+        seed_session(dir.path(), &key);
+        let body = serde_json::json!({ "title": raw }).to_string();
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!("/api/chat/sessions/{sid}/fork"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body))
+            .unwrap();
+        let resp = oneshot(make_router(make_state(&dir, "")), req).await;
+        assert_eq!(resp.status(), 200);
+        let v = body_json(resp).await;
+        let new_key = v["new_key"].as_str().unwrap().to_string();
+        let title = nemesis_agent::chat_log::read_session_meta_full(&new_key).and_then(|m| m.title);
+        assert_eq!(
+            title, None,
+            "占位/空白/空 title 不得落盘（自动标题须可接管）: raw={raw:?}"
+        );
+        nemesis_agent::chat_log::delete_chat_log(&key);
+        nemesis_agent::chat_log::delete_chat_log(&new_key);
+    }
+}
+
 /// Prove the routes are wired into the REAL router the gateway serves (same
 /// construction as server::tests / sdk_route_tests).
 #[tokio::test]

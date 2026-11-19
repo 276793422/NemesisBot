@@ -1592,10 +1592,20 @@ pub async fn handle_api_chat_session_fork(
             Json(serde_json::json!({"error": e})),
         )
     })?;
-    // Optional title for the new session's meta (same call the sessions
-    // WSAPI rename uses).
-    if let Some(t) = title {
-        nemesis_agent::chat_log::write_session_meta(&info.new_key, &t);
+    // Optional title for the new session's meta. BUG-20261119-200：请求体
+    // 显式传入的 title = 用户意志，对齐家族契约（sessions.create/rename/
+    // import 四位点同款）——trim + 空/占位符过滤后走 write_session_meta_
+    // manual（E7：自动标题永不覆盖显式命名）。旧形态裸 write_session_meta
+    // （无 manual 标记、无 trim）：①title 恰为占位符「新对话」时自动标题
+    // 可覆盖显式名；②空白 title 落成伪真标题永久挡住自动标题；旧注释自称
+    // 「same call the sessions WSAPI rename uses」失实——rename 用的是
+    // manual 形态。
+    if let Some(t) = title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != nemesis_agent::chat_log::DEFAULT_SESSION_TITLE)
+    {
+        nemesis_agent::chat_log::write_session_meta_manual(&info.new_key, t);
     }
     // /：分叉缘由落盘（请求缺省/空白不写——谱系视图回退显示通用
     // 「fork」；write_session_fork_reason 内部同样 trim+空跳过）。完全
