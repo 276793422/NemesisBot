@@ -590,8 +590,12 @@ pub struct SkillsClawHubConfig {
 pub struct SkillsModelScopeConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_modelscope_timeout_secs")]
     pub timeout: i64,
+}
+
+fn default_modelscope_timeout_secs() -> i64 {
+    30
 }
 
 impl Default for SkillsModelScopeConfig {
