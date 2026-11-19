@@ -2456,17 +2456,28 @@ impl SelfUpdateManager {
             )
         })?;
         // 残留清场（同名 PID 复用的罕见遗留会让 rename 撞已存在目标；PID 后缀
-        // 名下通常本来就不存在）。
-        let _ = nemesis_utils::fsutil::remove_file_resilient(&old_path);
-        let _ = nemesis_utils::fsutil::remove_file_resilient(&new_path);
-        // plugins staging 同名 PID 残留清场（整目录韧性删除；清扫面只认
-        // `plugins.old-{pid}`/`plugins.new-{pid}` 前缀，裸 `plugins` 真实插件
-        // 目录永不被碰）。
-        if plugins_backup.exists() {
-            crate::handlers::release_fetch::remove_dir_all_resilient(&plugins_backup);
-        }
-        if plugins_new.exists() {
-            crate::handlers::release_fetch::remove_dir_all_resilient(&plugins_new);
+        // 名下通常本来就不存在）。BUG-20261118-172：remove_*_resilient 带
+        // thread::sleep 退避（最坏 ~4.4s/件），不占 tokio worker——
+        // spawn_blocking 移出（fsutil.rs LOW-5 家族纪律）。
+        {
+            let rm_old = old_path.clone();
+            let rm_new = new_path.clone();
+            let rm_backup = plugins_backup.clone();
+            let rm_newdir = plugins_new.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&rm_old);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&rm_new);
+                // plugins staging 同名 PID 残留清场（整目录韧性删除；清扫面
+                // 只认 `plugins.old-{pid}`/`plugins.new-{pid}` 前缀，裸
+                // `plugins` 真实插件目录永不被碰）。
+                if rm_backup.exists() {
+                    crate::handlers::release_fetch::remove_dir_all_resilient(&rm_backup);
+                }
+                if rm_newdir.exists() {
+                    crate::handlers::release_fetch::remove_dir_all_resilient(&rm_newdir);
+                }
+            })
+            .await;
         }
         // .new 先落盘再 fsync（sync_all 之后才轮到 journal 与 rename dance）：
         // 崩溃窗口不再留下「新二进制内容空/半截」的现场；磁盘满等写错误也在

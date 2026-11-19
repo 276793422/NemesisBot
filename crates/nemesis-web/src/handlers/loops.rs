@@ -162,42 +162,50 @@ impl ModuleHandler for LoopsHandler {
                 }
                 let budget = parse_budget(&data)?;
                 let ts = now_ms();
-                let id = nemesis_loop::alloc_id(&dir);
-                let mut st = LoopState::new(id.clone(), goal.to_string(), session_key.clone(), ts);
-                st.budget = budget;
-                // 初始排程（可选，2026-11-17 会话资源盘点看板 B3「+ 设置目标」
-                // 内联表单前置）：`delay_secs`（一次性）/ `cron`（周期表达式）
-                // 二选一，互斥校验与换算在 nemesis-loop::compute_next_wake
-                // 单一真相源（CLI loops create 同款形态）；都不给 = 等 agent
-                // 自配速（旧行为不变）。
-                {
-                    let delay_secs = data
-                        .get("delay_secs")
-                        .and_then(|v| v.as_u64())
-                        .filter(|d| *d > 0);
-                    let cron_expr = data
-                        .get("cron")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty());
-                    if delay_secs.is_some() || cron_expr.is_some() {
-                        let (wake, cron_set) =
-                            nemesis_loop::compute_next_wake(ts, delay_secs, cron_expr)
-                                .map_err(|e| format!("排程无效：{e}"))?;
-                        st.next_wake_ms = wake;
-                        st.cron = cron_set;
+                // 创建串行化（BUG-20261119-186）：alloc+save 两步收进
+                // create_loop 进程级锁——裸 alloc 后在 save 前有并发创建者
+                // 扫目录会拿到同一 max+1 → 同 id 互覆（Dashboard 双击连发
+                // 即可触发，goals store REGISTRY_LOCK 同款先例）。
+                let st = nemesis_loop::create_loop(&dir, |id| {
+                    let mut st =
+                        LoopState::new(id.clone(), goal.to_string(), session_key.clone(), ts);
+                    st.budget = budget;
+                    // 初始排程（可选，2026-11-17 会话资源盘点看板 B3「+ 设置目标」
+                    // 内联表单前置）：`delay_secs`（一次性）/ `cron`（周期表达式）
+                    // 二选一，互斥校验与换算在 nemesis-loop::compute_next_wake
+                    // 单一真相源（CLI loops create 同款形态）；都不给 = 等 agent
+                    // 自配速（旧行为不变）。
+                    {
+                        let delay_secs = data
+                            .get("delay_secs")
+                            .and_then(|v| v.as_u64())
+                            .filter(|d| *d > 0);
+                        let cron_expr = data
+                            .get("cron")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty());
+                        if delay_secs.is_some() || cron_expr.is_some() {
+                            let (wake, cron_set) =
+                                nemesis_loop::compute_next_wake(ts, delay_secs, cron_expr)
+                                    .map_err(|e| format!("排程无效：{e}"))?;
+                            st.next_wake_ms = wake;
+                            st.cron = cron_set;
+                        }
                     }
-                }
-                // token 基线：显式配了 max_tokens 且台账在场 → 记创建时刻
-                // 已耗 token（spent.tokens = 现值 − 基线）。
-                if st.budget.max_tokens > 0
-                    && let Some(ref ds) = ctx.state.data_store
-                    && let Ok(agg) = ds.aggregate_session_usage(&session_key)
-                {
-                    st.tokens_base = (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
-                }
-                st.push_progress(ts, format!("[create] 目标：{goal}（人经 WSAPI 创建）"));
-                save_loop(&dir, &st)?;
+                    // token 基线：显式配了 max_tokens 且台账在场 → 记创建时刻
+                    // 已耗 token（spent.tokens = 现值 − 基线）。
+                    if st.budget.max_tokens > 0
+                        && let Some(ref ds) = ctx.state.data_store
+                        && let Ok(agg) = ds.aggregate_session_usage(&session_key)
+                    {
+                        st.tokens_base =
+                            (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
+                    }
+                    st.push_progress(ts, format!("[create] 目标：{goal}（人经 WSAPI 创建）"));
+                    Ok(st)
+                })?;
+                let id = st.id.clone();
                 tracing::info!(
                     "[Web/WSAPI] loop {} created for session {}",
                     id,

@@ -1,16 +1,23 @@
 //! Read Codex CLI credentials from ~/.codex/auth.json.
+//!
+//! SEC-002 Debug 脱敏（BUG-20261118-171）：本文件三结构持 OAuth
+//! access/refresh token 明文（auth.json 解析形态 + 运行时持有形态），
+//! 2026-05 即存在、早于 BUG-20261111-068 与 providers 侧 2026-11-15
+//! 清扫——同 crate 漏网。Debug 一律走 [`crate::debug_redact`] 宏脱敏
+//! （token `<empty>/<redacted>`，account_id 非凭据归 plain 与
+//! ProviderSelection 同口径），不得改回 derive(Debug)。
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 /// The auth.json structure from the Codex CLI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexCliAuth {
     pub tokens: CodexCliTokens,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexCliTokens {
     #[serde(default)]
     pub access_token: String,
@@ -20,13 +27,40 @@ pub struct CodexCliTokens {
     pub account_id: String,
 }
 
+crate::debug_redact::impl_redacted_debug!(CodexCliAuth {
+    plain {
+        tokens,
+    }
+    secret {}
+});
+
+crate::debug_redact::impl_redacted_debug!(CodexCliTokens {
+    plain {
+        account_id,
+    }
+    secret {
+        access_token,
+        refresh_token,
+    }
+});
+
 /// Credentials read from the Codex CLI auth file.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CodexCredentials {
     pub access_token: String,
     pub account_id: String,
     pub expires_at: SystemTime,
 }
+
+crate::debug_redact::impl_redacted_debug!(CodexCredentials {
+    plain {
+        account_id,
+        expires_at,
+    }
+    secret {
+        access_token,
+    }
+});
 
 /// Resolve the path to the Codex CLI auth.json file.
 /// Checks `CODEX_HOME` env var first, then falls back to `~/.codex/auth.json`.

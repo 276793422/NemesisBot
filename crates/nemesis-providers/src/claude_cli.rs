@@ -200,10 +200,14 @@ impl ClaudeCliProvider {
             Some(UsageInfo {
                 prompt_tokens: resp.usage.input_tokens,
                 completion_tokens: resp.usage.output_tokens,
-                total_tokens: resp.usage.input_tokens
-                    + resp.usage.cache_creation_input_tokens
-                    + resp.usage.cache_read_input_tokens
-                    + resp.usage.output_tokens,
+                // 饱和加：CLI stdout JSONL 外部可控，i64::MAX 级上报裸加
+                // debug panic / release 回绕负值（BUG-20261119-175）。
+                total_tokens: resp
+                    .usage
+                    .input_tokens
+                    .saturating_add(resp.usage.cache_creation_input_tokens)
+                    .saturating_add(resp.usage.cache_read_input_tokens)
+                    .saturating_add(resp.usage.output_tokens),
                 cached_tokens: Some(resp.usage.cache_read_input_tokens),
                 cache_creation_tokens: Some(resp.usage.cache_creation_input_tokens),
                 cache_read_tokens: Some(resp.usage.cache_read_input_tokens),

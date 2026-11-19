@@ -129,7 +129,7 @@ pub(crate) fn sweep_dispatch_timeouts(
             "failed",
             Some(reason),
         );
-        let _ = store.add_comment(nemesis_board::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::NewComment {
             issue_id: rec.issue_id,
             author: nemesis_board::Actor::system("board"),
             content: format!(
@@ -138,7 +138,12 @@ pub(crate) fn sweep_dispatch_timeouts(
             ),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                rec.issue_id
+            );
+        }
         if let Err(e) = store.notify_dispatch_event(
             rec.issue_id,
             nemesis_board::notification_kind::DISPATCH_FAILED,
@@ -196,7 +201,7 @@ pub(crate) fn sweep_dispatch_timeouts(
         note: &str,
     ) {
         let store = &deps.store;
-        let _ = store.add_comment(nemesis_board::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::NewComment {
             issue_id: rec.issue_id,
             author: nemesis_board::Actor::system("board-sweep"),
             content: format!(
@@ -205,7 +210,12 @@ pub(crate) fn sweep_dispatch_timeouts(
             ),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                rec.issue_id
+            );
+        }
         if let Err(e) = store.notify_dispatch_event(
             rec.issue_id,
             nemesis_board::notification_kind::DISPATCH_FAILED,
@@ -333,8 +343,8 @@ pub(crate) fn sweep_dispatch_timeouts(
                             .flatten()
                             .map(|c| c.contains(nemesis_web::handlers::board::INFLIGHT_NOTICE_MARK))
                             .unwrap_or(false);
-                        if !already_noted {
-                            let _ = store.add_comment(nemesis_board::NewComment {
+                        if !already_noted
+                            && let Err(ce) = store.add_comment(nemesis_board::NewComment {
                                 issue_id: record.issue_id,
                                 author: nemesis_board::Actor::system("board-sweep"),
                                 content: format!(
@@ -345,7 +355,9 @@ pub(crate) fn sweep_dispatch_timeouts(
                                 ),
                                 parent_id: None,
                                 ctype: nemesis_board::CommentType::System,
-                            });
+                            })
+                        {
+                            warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", record.issue_id);
                         }
                         warn!(
                             "[Board][Sweep] task {} 目标 {canonical} 在途派发已满（{}/{}），本 tick 暂缓失败处置",
@@ -436,7 +448,7 @@ pub(crate) fn sweep_dispatch_timeouts(
         let Some(target) = target else {
             // 无可换节点：自治重派不可行 → 回落评审链（预算/同因熔断/转人工
             // 漏斗接管——「无可换节点转人工」语义由评审链兑现）。
-            let _ = store.add_comment(nemesis_board::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: rec.issue_id,
                 author: nemesis_board::Actor::system("board-sweep"),
                 content: format!(
@@ -445,7 +457,9 @@ pub(crate) fn sweep_dispatch_timeouts(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", rec.issue_id);
+            }
             if sweep_reflow_to_review(store, rec.issue_id) {
                 for_review.push(rec.issue_id);
             }
@@ -464,7 +478,7 @@ pub(crate) fn sweep_dispatch_timeouts(
             Ok(_) => {
                 // 🔁 审计评论 + 单一审计漏斗（对齐评审重派臂：成功后留痕）。
                 // 不回流评审链：重派已发车，等 worker 正常写回走标准评审。
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: rec.issue_id,
                     author: nemesis_board::Actor::system("board-sweep"),
                     content: format!(
@@ -473,7 +487,12 @@ pub(crate) fn sweep_dispatch_timeouts(
                     ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        rec.issue_id
+                    );
+                }
                 crate::board_review::record_auto_decide(
                     deps,
                     rec.issue_id,
@@ -492,7 +511,7 @@ pub(crate) fn sweep_dispatch_timeouts(
             Err(e) => {
                 // 重派失败：诚实留痕 + 回落评审链；estop 竞态窗口不回流
                 // （评审链自会按 estop 停车，push 无行为差）。
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: rec.issue_id,
                     author: nemesis_board::Actor::system("board-sweep"),
                     content: format!(
@@ -501,7 +520,9 @@ pub(crate) fn sweep_dispatch_timeouts(
                     ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", rec.issue_id);
+                }
                 let estop_now = deps.estop.is_engaged();
                 if !estop_now && sweep_reflow_to_review(store, rec.issue_id) {
                     for_review.push(rec.issue_id);

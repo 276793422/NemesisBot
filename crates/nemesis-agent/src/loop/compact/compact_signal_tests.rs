@@ -1204,3 +1204,54 @@ async fn b17_below_soft_no_trigger_even_boundary_on() {
     assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
     let _ = std::fs::remove_file(&cfg_path);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261119-175 敌意实报不 panic
+// ---------------------------------------------------------------------------
+
+/// 纯函数面：usize::MAX 级入参裸乘 90 曾 debug panic（BUG-20261119-175）；
+/// 饱和后常规 90% 平台语义不变。
+#[test]
+fn summarize_was_ineffective_hostile_no_panic() {
+    assert!(summarize_was_ineffective(usize::MAX, usize::MAX));
+    assert!(!summarize_was_ineffective(usize::MAX, 0));
+    assert!(summarize_was_ineffective(100, 90));
+    assert!(!summarize_was_ineffective(100, 89));
+}
+
+/// 敌意端点 u64 大量级实报（`usage_full_input` 钳负饱和后的形状）——
+/// soft 提示 signal*100、stuck 判定 last*90、观测面 used*100/比例投影/
+/// 展示乘法全部走通不 panic。第二轮前重新锚定（首轮压缩采纳已作废锚点、
+/// 信号回落纯估算），才能踩到 last_summary_tokens 已记账巨值的 stuck 比较。
+#[tokio::test]
+async fn hostile_provider_signal_no_panic() {
+    let (provider, _calls) =
+        QueueProvider::boxed(vec![Ok("SUMMARY".to_string()), Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = keep_tokens_config("hostile175", 10);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = low_estimate_history();
+
+    agent_loop.note_compaction_provider_signal("s", u64::MAX / 2, 8);
+    // 锚点在 = 观测面 used 巨值——pct_trigger / 比例投影 / 展示乘法全走。
+    let _status = agent_loop.session_context_status("s");
+    // 第一轮：soft 提示行（signal*100）+ 触发压缩 + last_summary_tokens 记账巨值。
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    assert!(instance.get_summary_cache().is_some(), "巨值实报应触发压缩");
+    // 第二轮：summarize_was_ineffective(last*90) 位点（首轮已记账巨值）。
+    agent_loop.note_compaction_provider_signal("s", u64::MAX / 2, 8);
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+    let _ = std::fs::remove_file(&cfg_path);
+}

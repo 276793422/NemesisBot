@@ -6802,3 +6802,86 @@ fn test_negation_prefix_mass_chain_no_crash() {
     // 50_001 层取反（奇）→ !true = false。
     assert!(!evaluate_condition("{{x}}", &ctx));
 }
+
+#[tokio::test]
+async fn test_http_node_body_read_timeout_stalled_server() {
+    // BUG-20261119-184 回归锁：响应头已回、body 永不发送——body 读取必须
+    // 受 timeout_secs 约束（修复前 chunk loop 无时间界，慢滴服务器一秒滴
+    // 一字即无限拖住节点；send 的 tokio timeout 只盖到响应头阶段）。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local server");
+    let addr = listener.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            use std::io::{Read as _, Write as _};
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req); // 先读请求（免 RST，plugin 同款模式）
+            std::thread::sleep(std::time::Duration::from_millis(50)); // 请求尾送达后再响应（防 hyper UnexpectedMessage 竞态）
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n");
+            // 不发 body、不关连接：chunk() 只能等超时。
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    });
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://{addr}/")),
+    );
+    config.insert("timeout_secs".to_string(), serde_json::json!(1));
+    let node = make_node("n1", "http", config);
+    let start = std::time::Instant::now();
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await;
+    let elapsed = start.elapsed();
+    match result {
+        Err(e) => assert!(
+            e.contains("body read timed out"),
+            "expected body-read timeout error, got: {e}"
+        ),
+        Ok(r) => panic!(
+            "stalled body must time out, got state={:?} output={:?}",
+            r.state, r.output
+        ),
+    }
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "timeout must fire near the 1s budget, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_http_node_body_read_healthy_path() {
+    // 阳性对照：完整响应体正常送达——超时包裹不改变健康路径行为。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local server");
+    let addr = listener.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            use std::io::{Read as _, Write as _};
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req); // 先读请求：收队列有未读数据即关闭会 RST 并丢弃响应（plugin 同款模式）
+            std::thread::sleep(std::time::Duration::from_millis(50)); // 请求尾送达后再响应（防 hyper UnexpectedMessage 竞态）
+            let body = b"hello workflow";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes());
+            let _ = sock.write_all(body);
+        }
+    });
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://{addr}/")),
+    );
+    config.insert("timeout_secs".to_string(), serde_json::json!(5));
+    let node = make_node("n1", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .expect("healthy path must not error at engine level");
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["body"].as_str(), Some("hello workflow"));
+    assert_eq!(result.output["truncated"].as_bool(), Some(false));
+}

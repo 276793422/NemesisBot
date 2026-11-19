@@ -1089,7 +1089,14 @@ impl TelegramChannel {
         // temp（std::env::temp_dir 不随 workspace 清理）永久残留一个
         // ogg（几百 KB~几 MB）。转写器读路径成功臂读完即无用，失败臂
         // 同样不应把语音内容残留磁盘。
-        let _ = nemesis_utils::fsutil::remove_file_resilient(&local_path);
+        // BUG-20261118-172：remove_file_resilient 带 thread::sleep 退避
+        // （最坏 ~4.4s），不占 tokio worker——spawn_blocking 移出
+        // （fsutil.rs LOW-5 家族纪律）。
+        let rm_path = local_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            nemesis_utils::fsutil::remove_file_resilient(&rm_path)
+        })
+        .await;
 
         match transcribed {
             Ok(text) => {

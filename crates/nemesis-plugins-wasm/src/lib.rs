@@ -33,6 +33,8 @@ pub mod observer;
 pub mod registry;
 pub mod runtime;
 #[cfg(test)]
+mod runtime_tests;
+#[cfg(test)]
 mod test_support;
 pub mod trust;
 

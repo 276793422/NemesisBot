@@ -535,8 +535,10 @@ pub(crate) const SESSION_STATE_MAX_ENTRIES: usize = 512;
 /// AND the current prompt is still at least [`COMPACT_STUCK_PLATEAU_RATIO`]% of
 /// the pre-summarization size. Extracted so the threshold logic is unit-testable.
 pub(crate) fn summarize_was_ineffective(last_summary_tokens: usize, current_tokens: usize) -> bool {
+    // saturating_mul：last_summary_tokens 记账自压缩信号（provider 实报钳负
+    // 饱和后可达 u64 大量级），usize 裸乘 90 debug panic（BUG-20261119-175）。
     last_summary_tokens > 0
-        && current_tokens >= last_summary_tokens * COMPACT_STUCK_PLATEAU_RATIO / 100
+        && current_tokens >= last_summary_tokens.saturating_mul(COMPACT_STUCK_PLATEAU_RATIO) / 100
 }
 
 /// Voice-playback suffix appended to the last user message when voice mode is
@@ -829,7 +831,9 @@ impl AgentLoop {
                 soft_note_fired = true;
                 info!(
                     "[AgentLoop] context pressure at ~{}% of compaction point ({} / {}, source: {}); summarization will trigger at {}",
-                    signal * 100 / trig.trigger.max(1),
+                    // saturating_mul：signal 可达 provider 实报钳负饱和后的
+                    // u64 大量级，裸乘 100 debug panic（BUG-20261119-175）。
+                    signal.saturating_mul(100) / trig.trigger.max(1),
                     signal,
                     trig.trigger,
                     trig.source,
@@ -1647,7 +1651,10 @@ impl AgentLoop {
         // 「距压缩还有多远」按提前后的触发点算（off 时二者相同，值零变化；
         // trigger_source 继续描述触发点推导来源，语义不变）。
         let effective = turn_end_effective_trigger(self.current_compact_boundary(), trig.trigger);
-        let pct_trigger = (used * 100).checked_div(effective).unwrap_or(0).min(100);
+        let pct_trigger = (used.saturating_mul(100))
+            .checked_div(effective)
+            .unwrap_or(0)
+            .min(100);
         // （B4.5 构成分解 7 段化，2026-11-09 用户拍板：严格按注入机制拆分。
         // SKILL = 启动冻结 skills 段 + 每轮 merged snapshot 的技能目录 digest
         // （都是注入面；对话中按需读取的 SKILL.md 全文是普通历史消息，归
@@ -1749,7 +1756,11 @@ impl AgentLoop {
                     + est_history;
                 if est_sum > 0 {
                     // est_sum > 0 已守卫（闭包捕获，规避 manual_checked_ops 误报）。
-                    let ratio = |part: usize| used * part / est_sum;
+                    // saturating_mul：used 可达 provider 实报钳负饱和后的 u64
+                    // 大量级，裸乘 debug panic（BUG-20261119-175）；饱和只把
+                    // 比例压到理想值以下（钳制分子 ≤ 理想），七段合计仍 ≤ used，
+                    // 尾段 used - Σratio 不会下溢。
+                    let ratio = |part: usize| used.saturating_mul(part) / est_sum;
                     let sys = ratio(est_system);
                     let skl = ratio(est_skill_total);
                     let mem = ratio(est_memory);
@@ -1800,7 +1811,7 @@ impl AgentLoop {
         let pct = if display_used == 0 {
             0
         } else {
-            (display_used * 100).div_ceil(window).min(100)
+            (display_used.saturating_mul(100)).div_ceil(window).min(100)
         };
         let free_seg = window.saturating_sub(display_used);
         // 压缩进行中登记投影（2026-11-09 刷新恢复方案 A）：前端 refreshUsage

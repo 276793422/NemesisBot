@@ -169,6 +169,25 @@ impl PluginRuntime {
         self.host.component_new(wasm_bytes)
     }
 
+    /// BUG-20261119-185：编译的 async 安全形态——卸载到 blocking 线程池。
+    ///
+    /// `nvwa_component_new` → wasmtime `Component::new` 是**即时全量编译**
+    /// （Cranelift 本机码生成，重 CPU：常规插件百 ms 级，漏斗载荷上限
+    /// 64MiB → 最坏数十秒级），且**无 fuel/epoch/墙钟预算**（预算闸都在
+    /// store 调用层）。install 漏斗两条 async 路径（install_core / load_one
+    /// ← gateway 启动 load_all）不得在 tokio worker 上 inline 跑——与
+    /// `run_call` 同纪律：guest 调用有三重预算封顶尚且 spawn_blocking，
+    /// 零预算的编译更不可 inline。
+    pub(crate) async fn compile_component_async(
+        &self,
+        wasm_bytes: Vec<u8>,
+    ) -> Result<u64, PluginError> {
+        let host = Arc::clone(&self.host);
+        tokio::task::spawn_blocking(move || host.component_new(&wasm_bytes))
+            .await
+            .map_err(|e| PluginError::Trap(format!("join: {e}")))?
+    }
+
     /// 一次壳调用的公共骨架（gate 许可 + env 会话 + 外层墙钟兜底）。
     /// `timeout_ms` = 本次调用墙钟（工具路径取 `limits.timeout_ms`；policy
     /// 路径按点推导——见 `PluginLimits::policy_call_timeout_ms`）。

@@ -160,6 +160,15 @@ impl ModuleHandler for SessionsHandler {
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
                 // 上移服务端。
                 let bindings = crate::session_bindings::live_bindings(&workspace);
+                // BUG-20261118-168（同链路第三处：BUG-20261102-325 扫描纪律
+                // → BUG-20261116-011 logs.session_list 收尾重排）：scan_session_logs
+                // 返回序 = read_dir 枚举序（平台实现细节，NTFS 字典序 vs ext4
+                // 哈希序）。前端 SessionSidebar 对非 pinned 会话自排序，但
+                // pinned 组语义是「互相对序=列表原序不变」——原序即本列表序，
+                // 直传枚举序会让置顶区排列跨平台不一致。收尾统一「最近活跃
+                // 优先」全序（session_recency_cmp：lastTime 解析序 desc + id
+                // 破平），与 logs.session_list 同源同键。
+                web.sort_by(crate::handlers::logs::session_recency_cmp);
                 Ok(Some(
                     serde_json::json!({ "sessions": web, "bindings": bindings }),
                 ))
@@ -1078,17 +1087,29 @@ async fn delete_session_body(
     // Clear SessionStore (in-memory + sessions/*.json) +
     // session_logs/*.jsonl. Best-effort; absence is not an error.
     let mut trash_entry: Option<String> = None;
+    // BUG-20261118-172：hard 删除级联 delete_chat_log 走 remove_file_retry
+    // （thread::sleep 退避最坏 ~4.4s×4 + pending sidecar ×2）——与软删
+    // trash 路径（BUG-20261031-248 已 spawn_blocking）同族，hard 臂此前
+    // 漏包。store Arc 先克隆出 guard 作用域再 await（guard 不跨 await，
+    // 与下方 session_end_bridge 同纪律）。
+    let mut hard_store_delete: Option<(
+        std::sync::Arc<nemesis_agent::session::SessionStore>,
+        String,
+    )> = None;
     {
         let guard = ctx.state.agent_loop.read();
         if let Some(al) = guard.as_ref()
             && let Some(store) = al.session_store()
         {
             if hard {
-                store.delete_session(session_key);
+                hard_store_delete = Some((std::sync::Arc::clone(store), session_key.to_string()));
             } else {
                 store.detach_session(session_key);
             }
         }
+    }
+    if let Some((store, key)) = hard_store_delete {
+        let _ = tokio::task::spawn_blocking(move || store.delete_session(&key)).await;
     }
     // 删除残留级联（2026-11-19）：软删/硬删两路同源——
     // ① 会话级全部放行内存态摘除（I1 重开干净：同键重建不得继承前任

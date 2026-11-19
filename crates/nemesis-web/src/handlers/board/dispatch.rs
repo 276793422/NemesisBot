@@ -724,13 +724,18 @@ pub fn dispatch_issue_core(
                 "failed",
                 Some(&e),
             );
-            let _ = store.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!("⛔ 派发中止：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             return Err(format!("派发中止：{e}"));
         }
     };
@@ -928,7 +933,7 @@ pub fn dispatch_issue_core(
                 Ok(false) => {}
                 Err(re) => tracing::warn!("[Board] 送达失败回退未执行（让位或异常）：{re}"),
             }
-            let _ = store_for_rpc.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store_for_rpc.add_comment(nemesis_board::models::NewComment {
                 issue_id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
@@ -940,7 +945,9 @@ pub fn dispatch_issue_core(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+            }
         }
     });
 
@@ -1150,7 +1157,7 @@ pub fn dispatch_subissue_auto_with_config(
                         } else {
                             format!("；已授予标签 [{}]", granted_new.join(","))
                         };
-                        let _ = store.add_comment(nemesis_board::NewComment {
+                        if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                             issue_id: issue.id,
                             author: nemesis_board::Actor::system("board"),
                             content: format!(
@@ -1158,7 +1165,9 @@ pub fn dispatch_subissue_auto_with_config(
                             ),
                             parent_id: None,
                             ctype: nemesis_board::CommentType::System,
-                        });
+                        }) {
+                            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+                        }
                         fb_target
                     } else {
                         // 诚实留痕：不悄悄留 backlog。sweep 静默路径（!notify_park）
@@ -1233,8 +1242,9 @@ pub fn dispatch_subissue_auto_with_config(
             .flatten()
             .map(|c| c.contains(INFLIGHT_NOTICE_MARK))
             .unwrap_or(false);
-        if notify_park && !already_noted {
-            let _ = store.add_comment(nemesis_board::NewComment {
+        if notify_park
+            && !already_noted
+            && let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
@@ -1244,7 +1254,9 @@ pub fn dispatch_subissue_auto_with_config(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            })
+        {
+            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
         }
         mark_parent_blocked_if_stalled(store, &issue, actor);
         return Ok(None);
@@ -1309,14 +1321,15 @@ pub(super) fn mark_parent_blocked_if_stalled(
     if store
         .transition_issue(pid, IssueStatus::Blocked, actor)
         .is_ok()
-    {
-        let _ = store.add_comment(nemesis_board::NewComment {
+        && let Err(ce) = store.add_comment(nemesis_board::NewComment {
             issue_id: pid,
             author: nemesis_board::Actor::system("board"),
             content: "⏸ 子任务自动派发暂缓（当前在线节点无可匹配），父任务转受阻；节点上线或要求调整后自动重试".to_string(),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        })
+    {
+        tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", pid);
     }
 }
 
@@ -1822,7 +1835,7 @@ pub async fn rebalance_queued_to_worker(
         ) {
             Ok(_) => {
                 moved += 1;
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: d.issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!(
@@ -1833,7 +1846,9 @@ pub async fn rebalance_queued_to_worker(
                     ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", d.issue_id);
+                }
             }
             Err(e) => {
                 tracing::warn!("[Board] D0b 重平衡重派 issue {} 失败：{e}", d.issue_id);
@@ -1843,7 +1858,7 @@ pub async fn rebalance_queued_to_worker(
                 // 回退）；issue 保留 in_progress 可被 dispatch_issue_core
                 // 直接重派（人工/autopilot 一发即活）。评论失败不影响主流程
                 // （数据已破坏，能留多少痕留多少痕）。
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: d.issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!(
@@ -1853,7 +1868,9 @@ pub async fn rebalance_queued_to_worker(
                     ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", d.issue_id);
+                }
             }
         }
     }
@@ -2325,13 +2342,18 @@ pub(super) fn auto_dispatch_with_config(
                 "[Board] auto-dispatch failed for issue #{}: {e}",
                 issue.number
             );
-            let _ = store.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!("⛔ 自动派发失败：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             false
         }
     }
@@ -2396,13 +2418,18 @@ pub fn dispatch_issue_for_flow(
                     "[Board] flow auto-dispatch failed for issue #{}: {e}",
                     issue.number
                 );
-                let _ = store.add_comment(nemesis_board::models::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                     issue_id: issue.id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!("⛔ flow 导入自动派发失败：{e}"),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        issue.id
+                    );
+                }
                 false
             }
         };
@@ -2424,13 +2451,18 @@ pub fn dispatch_issue_for_flow(
         let msg =
             "⏸ flow 导入暂缓派发：无匹配节点（职能/能力/兜底均未命中），等待节点上线由 sweep 承接";
         tracing::info!("[Board] flow issue #{}: {msg}", issue.number);
-        let _ = store.add_comment(nemesis_board::models::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
             issue_id: issue.id,
             author: nemesis_board::Actor::system("board"),
             content: msg.to_string(),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                issue.id
+            );
+        }
         return false;
     };
     match dispatch_issue_core(store, Some(cluster), issue.id, &target, actor, None) {
@@ -2446,13 +2478,18 @@ pub fn dispatch_issue_for_flow(
                 "[Board] flow auto-dispatch failed for issue #{}: {e}",
                 issue.number
             );
-            let _ = store.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!("⛔ flow 导入自动派发失败：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             false
         }
     }
@@ -2712,7 +2749,7 @@ pub fn dispatch_issue_local(
             Ok(false) => {}
             Err(re) => tracing::warn!("[Board] 本地发车失败回退未执行（让位或异常）：{re}"),
         }
-        let _ = store.add_comment(nemesis_board::models::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
             issue_id: issue.id,
             author: nemesis_board::Actor::system("board"),
             content: format!(
@@ -2721,7 +2758,12 @@ pub fn dispatch_issue_local(
             ),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                issue.id
+            );
+        }
         return Err(format!("本地发车失败：{e}"));
     }
 

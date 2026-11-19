@@ -642,7 +642,9 @@ impl FeishuChannel {
                     continue;
                 }
 
-                info!(url = %ws_url, "[FeishuChannel] connecting to WebSocket endpoint");
+                // ws_url 为 endpoint API 原样返回（wss://…?ticket=<连接凭据>
+                // 形态）——裸打即凭据进日志（BUG-20261119-182）。
+                info!(url = %crate::base::redact_url_secrets(&ws_url), "[FeishuChannel] connecting to WebSocket endpoint");
 
                 // Step 3: Connect to WebSocket
                 match crate::base::ws_connect_bounded(&ws_url).await {

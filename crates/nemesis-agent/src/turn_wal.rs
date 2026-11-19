@@ -254,7 +254,23 @@ impl TurnWal {
         *guard = None;
         let reopened = (|| {
             if self.old_path.exists() {
-                let _ = nemesis_utils::fsutil::remove_file_resilient(&self.old_path);
+                // BUG-20261118-172：remove_file_resilient 带 thread::sleep
+                // 退避（最坏 ~4.4s）。本函数是 sync（append → 派发路径直调，
+                // 跑在 tokio worker 上），且删除必须先于 rename 完成（顺序
+                // 约束），spawn_blocking 不可用——block_in_place 让出 worker
+                // 调度权（多线程 runtime 下其余任务照常推进，阻塞只占本任
+                // 务墙钟）；无 runtime / 单线程 runtime（测试直调）= 直接删。
+                match tokio::runtime::Handle::try_current() {
+                    Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                        let p = self.old_path.clone();
+                        let _ = tokio::task::block_in_place(|| {
+                            nemesis_utils::fsutil::remove_file_resilient(&p)
+                        });
+                    }
+                    _ => {
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.old_path);
+                    }
+                }
             }
             std::fs::rename(&self.path, &self.old_path)?;
             std::fs::OpenOptions::new()

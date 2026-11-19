@@ -1069,3 +1069,35 @@ fn cached_tokens_reported_in_response_md() {
     let md2 = std::fs::read_to_string(dir2.join("00.AI.Response.md")).unwrap();
     assert!(md2.contains("Cached Tokens"));
 }
+
+// BUG-20261119-175：服务器可控 usage 报 u32 满量级——u32 裸加/乘 100 曾
+// debug panic（43M cached tokens 即触）。u64 饱和算术后链路走通且命中率
+// 整除正确（50% = sat(MAX*100)/(MAX+MAX)）。
+#[test]
+fn log_llm_response_hostile_usage_no_panic() {
+    let tmp = TempDir::new().unwrap();
+    let logger = RequestLogger::new(test_config(), tmp.path());
+    logger.create_session().unwrap();
+    logger.log_llm_response(&LLMResponseInfo {
+        round: 1,
+        timestamp: Local::now(),
+        duration_ms: 10,
+        content: "x".to_string(),
+        tool_calls_count: 0,
+        finish_reason: "stop".to_string(),
+        tool_calls: Vec::new(),
+        usage: UsageInfo {
+            prompt_tokens: u32::MAX,
+            completion_tokens: u32::MAX,
+            total_tokens: u32::MAX,
+            cached_tokens: u32::MAX,
+        },
+    });
+    let dir = logger.session_dir().unwrap();
+    let md = std::fs::read_to_string(dir.join("00.AI.Response.md")).unwrap();
+    assert!(
+        md.contains("50% cache hit"),
+        "命中率应渲染 50%，实际:\n{}",
+        md
+    );
+}

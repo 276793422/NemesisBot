@@ -1301,7 +1301,7 @@ pub(super) fn spawn_plan_chain_watched(
             let msg = nemesis_utils::string_utils::panic_message(je.into_panic());
             let short: String = msg.chars().take(300).collect();
             tracing::error!("[Board] plan chain PANIC issue={issue_id} plan={plan_id}: {short}");
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id,
                 author: Actor::system("board"),
                 content: format!(
@@ -1309,7 +1309,9 @@ pub(super) fn spawn_plan_chain_watched(
                 ),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+            }
             if let Some(hub) = hub {
                 hub.publish(
                     "board.plan_failed",
@@ -1548,7 +1550,7 @@ pub(super) fn spawn_plan_timeout_watch(
                     "result": format!("第 {attempt} 次拆解超时（{} 分钟）", minutes),
                 })],
             );
-            let _ = env.store.add_comment(NewComment {
+            if let Err(ce) = env.store.add_comment(NewComment {
                 issue_id: env.issue.id,
                 author: Actor::system("board"),
                 content: format!(
@@ -1557,7 +1559,12 @@ pub(super) fn spawn_plan_timeout_watch(
                 ),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    env.issue.id
+                );
+            }
             if let Some(hub) = env.hub.as_deref() {
                 hub.publish(
                     "board.plan_failed",
@@ -1571,7 +1578,7 @@ pub(super) fn spawn_plan_timeout_watch(
             return;
         }
         let next = attempt + 1;
-        let _ = env.store.add_comment(NewComment {
+        if let Err(ce) = env.store.add_comment(NewComment {
             issue_id: env.issue.id,
             author: Actor::system("board"),
             content: format!(
@@ -1580,7 +1587,12 @@ pub(super) fn spawn_plan_timeout_watch(
             ),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                env.issue.id
+            );
+        }
         // 新链配置现读（热生效：改阈值/上限对重拆链即时生效）。
         let new_cfg = plan_chain_cfg(env.home.as_deref());
         let new_plan_id = format!("plan-{}", uuid::Uuid::new_v4());
@@ -1678,13 +1690,18 @@ pub fn recover_interrupted_plans(
                 issue.number,
                 issue.title
             );
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
                 content: "🔄 检测到上次拆解因重启中断，自动重新发起拆解".to_string(),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             let env = Arc::new(PlanChainEnv {
                 store: store.clone(),
                 cluster: cluster.clone(),
@@ -1726,13 +1743,18 @@ pub fn respawn_plan_chain(
         tracing::info!("[Board] 中断续拆让位：issue {} 已有在途拆解链", issue.id);
         return false;
     }
-    let _ = store.add_comment(NewComment {
+    if let Err(ce) = store.add_comment(NewComment {
         issue_id: issue.id,
         author: Actor::system("board"),
         content: "🔄 LLM 端点已恢复，中断的拆解自动续做".to_string(),
         parent_id: None,
         ctype: CommentType::System,
-    });
+    }) {
+        tracing::warn!(
+            "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+            issue.id
+        );
+    }
     let env = Arc::new(PlanChainEnv {
         store: store.clone(),
         cluster,
@@ -1852,13 +1874,15 @@ pub async fn execute_plan_chain(
                 }));
             }
             Some(SpecGateAction::DistillWait) => {
-                let _ = store.add_comment(NewComment {
+                if let Err(ce) = store.add_comment(NewComment {
                     issue_id: issue.id,
                     author: Actor::system("board"),
                     content: "📐 体验型任务：先蒸馏规格草案供你确认（工作台 /workbench 处理；确认后自动继续拆解，超时按草案发车）".to_string(),
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+                }
                 let swap = board_plan_model_swap(home);
                 let spec = run_spec_distill(&agent_loop, &issue, swap).await;
                 let tp_cfg = super::touchpoints::live_attendance_config();
@@ -1906,7 +1930,7 @@ pub async fn execute_plan_chain(
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
-                let _ = store.add_comment(NewComment {
+                if let Err(ce) = store.add_comment(NewComment {
                     issue_id: issue.id,
                     author: Actor::system("board"),
                     content: format!(
@@ -1914,7 +1938,9 @@ pub async fn execute_plan_chain(
                     ),
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+                }
                 // 触点照常记档并按默认收口（无人值守是默认态，全程留痕；
                 // 汇报包的替决假设清单读它）。失败只 warn——蒸馏链照常。
                 if let Err(e) = super::touchpoints::create_and_default_touchpoint(
@@ -1955,14 +1981,16 @@ pub async fn execute_plan_chain(
             }
         }
     }
-    let _ = store.add_comment(NewComment {
+    if let Err(ce) = store.add_comment(NewComment {
         issue_id: issue.id,
         author: Actor::system("board"),
         content: "🧩 已开始自动拆解（planner 运行中，通常 3~8 分钟；完成后按 auto_confirm 自动发车或转人工确认）"
             .to_string(),
         parent_id: None,
         ctype: CommentType::System,
-    });
+    }) {
+        tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+    }
     // .5：planner 的 meta 级经验注入——同步检索渲染（发起点定格，避免长
     // LLM 调用期间的经验变更串进本次拆解）。meta 注入不计 use_count（计数
     // 只认面向 worker 的派发注入）。
@@ -2081,13 +2109,18 @@ pub async fn execute_plan_chain(
                     "result": err_short,
                 })],
             );
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
                 content: format!("❌ planner 拆解失败：{err_short}"),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             if let Some(hub) = hub {
                 hub.publish(
                         "board.plan_failed",
@@ -2137,13 +2170,15 @@ pub async fn execute_plan_chain(
                 match store.update_issue(issue.id, &patch, &Actor::system("board")) {
                     Ok(_) => {
                         issue.acceptance_criteria = Some(draft);
-                        let _ = store.add_comment(NewComment {
+                        if let Err(ce) = store.add_comment(NewComment {
                             issue_id: issue.id,
                             author: Actor::system("board"),
                             content: "🧩 父单此前无验收标准，已依据子单计划自动起草（详情页可编辑）；父单收口评审将以此为准，不再因「未提供」转人工".to_string(),
                             parent_id: None,
                             ctype: CommentType::System,
-                        });
+                        }) {
+                            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+                        }
                     }
                     Err(e) => {
                         tracing::warn!("[Board] 父单 AC 起草落库失败 issue={}：{e}", issue.id);
@@ -2155,7 +2190,7 @@ pub async fn execute_plan_chain(
                     "[Board] 父单 AC 起草失败 issue={}：{e}（不阻塞发车）",
                     issue.id
                 );
-                let _ = store.add_comment(NewComment {
+                if let Err(ce) = store.add_comment(NewComment {
                     issue_id: issue.id,
                     author: Actor::system("board"),
                     content: format!(
@@ -2163,7 +2198,9 @@ pub async fn execute_plan_chain(
                     ),
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+                }
             }
         }
     }
@@ -2221,7 +2258,7 @@ pub async fn execute_plan_chain(
     //   顶部还挂「拆解中」是误报）。
     // 观测面：拆解成功评论留痕（含 plan_id；措辞按发车模式分支——
     // 人工模式附 TTL 提示，自动发车臂随后另有发车评论，不重复诱导确认）。
-    let _ = store.add_comment(NewComment {
+    if let Err(ce) = store.add_comment(NewComment {
         issue_id: issue.id,
         author: Actor::system("board"),
         content: if auto_confirm {
@@ -2234,7 +2271,12 @@ pub async fn execute_plan_chain(
         },
         parent_id: None,
         ctype: CommentType::System,
-    });
+    }) {
+        tracing::warn!(
+            "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+            issue.id
+        );
+    }
     if !auto_confirm {
         return Ok(serde_json::json!({
             "status": "planned",
@@ -2251,7 +2293,7 @@ pub async fn execute_plan_chain(
     }
     match confirm_plan(store, cluster.as_ref(), &issue, subs, &actor, &downgrades) {
         Ok(mut out) => {
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
                 content: format!(
@@ -2264,7 +2306,12 @@ pub async fn execute_plan_chain(
                 ),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             // 决策审计：自动发车入决策流（失败只 warn，不炸发车结果）。
             if let Err(ae) = store.add_activity(
                 issue.id,
@@ -2294,7 +2341,7 @@ pub async fn execute_plan_chain(
             );
             // 观测面：发车失败评论留痕（预览保留转人工，评论给入口指引）。
             let err_short: String = e.chars().take(200).collect();
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
                 content: format!(
@@ -2302,7 +2349,12 @@ pub async fn execute_plan_chain(
                 ),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             if let Some(hub) = hub {
                 hub.publish(
                     "board.plan_failed",
@@ -2481,16 +2533,19 @@ pub fn confirm_plan(
         if milestone {
             // 里程碑单标记留痕：评审链会先跑机器行为闸（试玩+红队）再
             // 挂原型卡，不走 Done 直通——单上可见，防「为什么它卡评审」。
-            let _ = store.add_comment(nemesis_board::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: created.id,
                 author: nemesis_board::Actor::system("board"),
                 content: "🎯 里程碑单：完成后先过机器行为闸（试玩+红队取证）再挂原型卡等人工把玩，不直接进验收。".to_string(),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", created.id);
+            }
         }
-        if downgraded && let Some((_, original)) = downgrades.iter().find(|(di, _)| *di == idx) {
-            let _ = store.add_comment(nemesis_board::NewComment {
+        if downgraded
+            && let Some((_, original)) = downgrades.iter().find(|(di, _)| *di == idx)
+            && let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: created.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
@@ -2498,7 +2553,12 @@ pub fn confirm_plan(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            })
+        {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                created.id
+            );
         }
         id_by_idx.push(created.id);
     }
@@ -2528,13 +2588,18 @@ pub fn confirm_plan(
             Ok(None) => deferred.push(cid),
             Err(e) => {
                 tracing::warn!("[Board] 子单 {cid} 自动派发失败：{e}");
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: cid,
                     author: nemesis_board::Actor::system("board"),
                     content: format!("⛔ 自动派发失败：{e}"),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        cid
+                    );
+                }
             }
         }
     }
@@ -2550,13 +2615,15 @@ pub fn confirm_plan(
             .iter()
             .any(|s| nemesis_board::has_content_regex_anchor(&s.acceptance_criteria))
     {
-        let _ = store.add_comment(nemesis_board::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::NewComment {
             issue_id: parent.id,
             author: nemesis_board::Actor::system("board"),
             content: "⚠ 锚点下放检查：父单验收标准含 [CHECK] re: 锚点，但拆解出的子单均未继承任何 re: 锚点——父单收口时这些锚点没有交付文本可核验，验收将失败。请给至少一个子单补上可独立核验的锚点行，或修正父单验收标准。".to_string(),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", parent.id);
+        }
         tracing::warn!(
             "[Board] 父单 {} AC 含 re: 锚点但子单均未继承（已落评论提醒人工）",
             parent.id
@@ -2766,13 +2833,18 @@ fn pause_bound_autopilot(
     match store.list_issues_by_origin("autopilot", &ap.id.to_string(), 1) {
         Ok(issues) => {
             if let Some(latest) = issues.first() {
-                let _ = store.add_comment(NewComment {
+                if let Err(ce) = store.add_comment(NewComment {
                     issue_id: latest.id,
                     author: Actor::system("board"),
                     content,
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    tracing::warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        latest.id
+                    );
+                }
             } else {
                 tracing::warn!(
                     "[Board] autopilot #{}「{}」绑定父会话已消失并自动暂停（{}）；规则从未运行，无评论面，留痕仅此处",
@@ -2948,7 +3020,7 @@ pub fn fire_autopilot(
     if ap.mode == nemesis_board::models::AUTOPILOT_MODE_SHADOW {
         use nemesis_board::models::{CommentType, NewComment};
         let intent = autopilot_decision_intent(ap);
-        let _ = store.add_comment(NewComment {
+        if let Err(ce) = store.add_comment(NewComment {
             issue_id: issue.id,
             author: Actor::system("autopilot"),
             content: format!(
@@ -2958,7 +3030,9 @@ pub fn fire_autopilot(
             ),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+        }
         write_autopilot_shadow_trace(&issue, ap, &intent);
         store.mark_autopilot_run(ap.id)?;
         return Ok(serde_json::json!({
@@ -2996,7 +3070,7 @@ pub fn fire_autopilot(
                 issue.id,
                 ap.id
             );
-            let _ = store.add_comment(nemesis_board::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
                 content: format!(
@@ -3004,7 +3078,9 @@ pub fn fire_autopilot(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+            }
             Some(serde_json::json!({
                 "dispatched": false,
                 "parked": "inflight_full",
@@ -3070,14 +3146,19 @@ pub(super) fn spawn_project_auto_start(
                 "[Board] 项目自动启动 issue={}：agent 未运行，仅建父单不拆解",
                 issue.id
             );
-            let _ = store.add_comment(NewComment {
+            if let Err(ce) = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("board"),
                 content: "🤖 项目自动启动已建父单，但 agent 未运行，未自动拆解（可在看板手动拆解）"
                     .to_string(),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             return Ok(issue);
         }
     };
@@ -3118,13 +3199,15 @@ fn fire_autopilot_plan_chain(
         tracing::warn!(
             "[Board] autopilot auto_plan issue={issue_id}：moderator loop 未就绪（agent 未装配完成），本轮跳过拆解",
         );
-        let _ = store.add_comment(NewComment {
+        if let Err(ce) = store.add_comment(NewComment {
             issue_id,
             author: Actor::system("board"),
             content: "🤖 autopilot auto_plan 已开启，但 moderator agent 未就绪，本轮未自动拆解（下轮触发自动恢复）".to_string(),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            tracing::warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+        }
         return serde_json::json!({
             "status": "skipped",
             "reason": "moderator loop 未就绪",
@@ -3179,7 +3262,7 @@ pub fn fire_autopilot(
     // 意图——评论照落，留痕照写。
     if ap.mode == nemesis_board::models::AUTOPILOT_MODE_SHADOW {
         let intent = autopilot_decision_intent(ap);
-        let _ = store.add_comment(NewComment {
+        if let Err(ce) = store.add_comment(NewComment {
             issue_id: issue.id,
             author: Actor::system("autopilot"),
             content: format!(
@@ -3189,7 +3272,9 @@ pub fn fire_autopilot(
             ),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+        }
         write_autopilot_shadow_trace(&issue, ap, &intent);
         store.mark_autopilot_run(ap.id)?;
         return Ok(serde_json::json!({
@@ -3203,14 +3288,19 @@ pub fn fire_autopilot(
     }
     let auto_plan_skipped = ap.auto_plan;
     if auto_plan_skipped {
-        let _ = store.add_comment(NewComment {
+        if let Err(ce) = store.add_comment(NewComment {
             issue_id: issue.id,
             author: Actor::system("board"),
             content: "🤖 autopilot auto_plan 已开启，但本节点未编译集群支持，无法自动拆解"
                 .to_string(),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                issue.id
+            );
+        }
     }
     store.mark_autopilot_run(ap.id)?;
     Ok(serde_json::json!({

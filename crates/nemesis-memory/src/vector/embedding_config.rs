@@ -263,7 +263,15 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
                 e
             );
         } else {
-            match std::fs::write(&path, default_config_json()) {
+            // BUG-20261119-180：默认创建臂与 save_embedding_config 同链（339
+            // 修复 save 臂漏接本臂）——裸写撕裂 = 半截 JSON 被存在性守卫合法化，
+            // load 解析失败回落 enabled=false 静默自禁且需手工清理。原子写消除
+            // 撕裂形态（失败自清理，原文件不动——create-if-missing 语义保持）。
+            match nemesis_utils::write_file_atomic(
+                &path.to_string_lossy(),
+                default_config_json().as_bytes(),
+                0o644,
+            ) {
                 Ok(()) => {
                     info!(
                         "[EmbeddingConfig] Default embedding config saved to {}",

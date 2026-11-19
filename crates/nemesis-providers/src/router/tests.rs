@@ -1305,3 +1305,24 @@ async fn test_b_default_chat_stream_reports_not_implemented() {
     // 通道终止：不再有第二条。
     assert!(rx.recv().await.is_none());
 }
+
+// BUG-20261119-175：tokens_used provider 可控 i64——裸 sum() 多样本
+// i64::MAX 上报曾 debug panic / release 回绕。
+#[test]
+fn test_metrics_hostile_tokens_sum_saturates_no_panic() {
+    let c = MetricsCollector::new(8);
+    for _ in 0..3 {
+        c.record(Metric {
+            provider: "p".to_string(),
+            latency_ms: 1,
+            success: true,
+            tokens_used: i64::MAX,
+            cost: 0.0,
+            timestamp: chrono::Local::now(),
+        });
+    }
+    let m = c.get_metrics("p");
+    // no-panic 即达意；total_tokens 是 get_metrics 内部量（喂 avg_cost_per_1k
+    // 分母），经饱和折叠后钳在 i64::MAX、均值分母有限。
+    assert!(m.avg_cost_per_1k.is_finite());
+}

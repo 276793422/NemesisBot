@@ -1291,7 +1291,7 @@ fn prototype_resume(
                     Ok(())
                 }
                 Err(e) => {
-                    let _ = store.add_comment(NewComment {
+                    if let Err(ce) = store.add_comment(NewComment {
                         issue_id: r.issue_id,
                         author: actor.clone(),
                         content: format!(
@@ -1299,7 +1299,12 @@ fn prototype_resume(
                         ),
                         parent_id: None,
                         ctype: CommentType::System,
-                    });
+                    }) {
+                        tracing::warn!(
+                            "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                            r.issue_id
+                        );
+                    }
                     Err(format!("prototype 局部返工重派失败: {e}"))
                 }
             }

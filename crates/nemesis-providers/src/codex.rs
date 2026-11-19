@@ -584,7 +584,8 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt_raw + completion,
+            // 饱和加：usage 数字服务器可控 i64（BUG-20261119-175 同族）。
+            total_tokens: prompt_raw.saturating_add(completion),
             cached_tokens: Some(cached),
             cache_creation_tokens: None,
             cache_read_tokens: Some(cached),

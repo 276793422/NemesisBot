@@ -99,3 +99,41 @@ fn vars_render_count_independent_of_vars() {
     let out = render_prompt_vars("x{count}y", 3, &[]);
     assert_eq!(out, "x3y");
 }
+
+/// BUG-20261119-176 渲染面回归锁：值内容里的占位符样字面量不得被二次
+/// 替换——`{}` 是 Windows/Linux 均合法的文件名字符，fs 路径含 `{path}`
+/// 字面量时旧实现（逐占位符全串 replace）会把路径碎成双前缀形态。
+#[test]
+fn fs_value_content_placeholder_kept_literal() {
+    let out = render_prompt("更新：{paths}", 1, &[r"C:\logs\{path}.txt".to_string()]);
+    assert_eq!(out, r"更新：C:\logs\{path}.txt");
+    // 中文文件名 + 嵌在中间的字面量同理。
+    let out = render_prompt("更新：{path}", 1, &["报告{path}备份.md".to_string()]);
+    assert_eq!(out, "更新：报告{path}备份.md");
+    // 多路径列表里的一条含字面量，其余路径照常列出。
+    let out = render_prompt(
+        "{paths}",
+        2,
+        &["a.log".to_string(), "b{path}c.log".to_string()],
+    );
+    assert_eq!(out, "a.log\nb{path}c.log");
+}
+
+/// vars 面：短名占位符不得吃掉长名值内容里的同名样文本
+/// （旧实现长名值先进串、短名后替换会回扫命中）。
+#[test]
+fn vars_value_content_short_placeholder_kept_literal() {
+    let out = render_prompt_vars(
+        "{payload}{p}",
+        1,
+        &[("payload", "x{p}y".to_string()), ("p", "WRONG".to_string())],
+    );
+    assert_eq!(out, "x{p}yWRONG");
+    // 值含 {count} 字面量照常保留（count 在同批替换，单遍不回扫）。
+    let out = render_prompt_vars(
+        "推送：{payload}",
+        5,
+        &[("payload", "{count} 条待处理".to_string())],
+    );
+    assert_eq!(out, "推送：{count} 条待处理");
+}

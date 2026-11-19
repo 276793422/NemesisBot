@@ -281,22 +281,34 @@ impl NodeExecutor for HTTPNodeExecutor {
         // 且整包 ×2 拷贝（bytes→String）进 output 落 checkpoint/日志）。
         // 分块累计到上限即停（chunked 无 Content-Length 也被盖住）；
         // 截断不是失败——output 带 truncated 诚实标记供下游分支。
+        // 整个读取循环同受 timeout_secs 约束（BUG-20261119-184）：1MB 帽
+        // 只限体积不限时间——对端拿到请求、回完响应头后一秒滴一字，chunk
+        // loop 无时间界即无限拖住节点（send 的 tokio timeout 盖不到 body
+        // 阶段）。body 预算与 send 同额（每跳 timeout_secs），健康路径零变化。
         const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
-        let mut body_bytes: Vec<u8> = Vec::new();
-        let mut truncated = false;
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| format!("failed to read response body: {}", e))?
-        {
-            if body_bytes.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
-                let take = MAX_RESPONSE_BODY_BYTES - body_bytes.len();
-                body_bytes.extend_from_slice(&chunk[..take]);
-                truncated = true;
-                break;
+        let body_read = async {
+            let mut body_bytes: Vec<u8> = Vec::new();
+            let mut truncated = false;
+            while let Some(chunk) = resp
+                .chunk()
+                .await
+                .map_err(|e| format!("failed to read response body: {}", e))?
+            {
+                if body_bytes.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                    let take = MAX_RESPONSE_BODY_BYTES - body_bytes.len();
+                    body_bytes.extend_from_slice(&chunk[..take]);
+                    truncated = true;
+                    break;
+                }
+                body_bytes.extend_from_slice(&chunk);
             }
-            body_bytes.extend_from_slice(&chunk);
-        }
+            Ok::<_, String>((body_bytes, truncated))
+        };
+        let (body_bytes, truncated) =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), body_read)
+                .await
+                .map_err(|_| format!("HTTP response body read timed out after {timeout_secs}s"))?
+                .map_err(|e| format!("failed to read response body: {}", e))?;
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
         // 诚实失败契约（计划）：≥400 是应用层失败，默认节点

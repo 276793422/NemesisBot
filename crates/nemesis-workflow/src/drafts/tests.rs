@@ -157,6 +157,69 @@ fn apply_over_existing_backs_up_to_history() {
 }
 
 #[test]
+fn apply_over_yml_variant_backs_up_and_cleans_stale_file() {
+    // BUG-20261119-188 回归锁：既有定义落 .yml（load 接受三扩展名的受支持
+    // 盘面状态）时——备份必须覆盖 .yml（旧实现只查 .yaml，旧 .yml 无备份
+    // 且会在重启后遮蔽新定义），persist 的同名单名变体清理必须删掉旧 .yml。
+    let root = temp_dir("backup-yml");
+    let defs = root.join("definitions");
+    std::fs::create_dir_all(&defs).unwrap();
+    let store = DraftStore::new(root.join("drafts"), defs.clone());
+
+    let engine = crate::engine::WorkflowEngine::new();
+    engine.set_workflow_defs_dir(defs.clone());
+
+    // Seed an existing definition as a .yml file（手工/迁移放置形态）。
+    std::fs::write(
+        defs.join("yml-flow.yml"),
+        serde_yaml::to_string(&sample_workflow("yml-flow")).unwrap(),
+    )
+    .unwrap();
+
+    // Draft a modified version (different node count so we can tell them apart).
+    let mut wf = sample_workflow("yml-flow");
+    wf.nodes.push(NodeDef {
+        id: "second".into(),
+        node_type: "delay".into(),
+        config: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("seconds".to_string(), serde_json::json!(1));
+            m
+        },
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    });
+    store.save(&wf).unwrap();
+
+    let applied = store.apply(&engine, "yml-flow").unwrap();
+    assert!(applied.replaced_existing);
+    let backup = applied.backup_file.expect("backup recorded");
+    assert!(
+        backup.ends_with(".yml"),
+        "备份必须抓到 .yml 变体，实得 {backup}"
+    );
+
+    let hist_dir = defs.join(".history");
+    let backup_path = hist_dir.join(&backup);
+    assert!(backup_path.exists(), "backup file on disk");
+    let old: Workflow =
+        serde_yaml::from_str(&std::fs::read_to_string(&backup_path).unwrap()).unwrap();
+    assert_eq!(old.nodes.len(), 1, "backup holds the OLD definition");
+
+    // 旧 .yml 已被 persist 的变体清理删除；新定义落 .yaml。
+    assert!(
+        !defs.join("yml-flow.yml").exists(),
+        "旧 .yml 必须被 persist 变体清理删除，防重启后遮蔽新定义"
+    );
+    assert!(defs.join("yml-flow.yaml").exists(), "新 .yaml 主文件落盘");
+    assert_eq!(engine.get_workflow("yml-flow").unwrap().nodes.len(), 2);
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn rapid_reapplies_keep_distinct_history_backups() {
     // Two applies inside the same second must not overwrite each other's
     // .history/ backup (fs::copy replaces the destination silently) — an

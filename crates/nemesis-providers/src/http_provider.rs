@@ -670,7 +670,13 @@ impl HttpProvider {
             // 虚设，直到 B 端 2h 兜底才解）。以「请求起点 + timeout_secs」为
             // 绝对墙钟线，SSE 每次读都在线内——到线即 Timeout（可重试/可
             // 故障转移），超时阶梯「provider 单请求墙钟」在流式 lane 真正
-            // 落地。timeout_secs == 0 = 不限（显式逃生口）。
+            // 落地。BUG-20261119-178：timeout_secs == 0 的「不限」语义
+            // **不存在**——生产构造链 0 恒被 factory `effective_timeout`
+            // 归一为 lane 默认 600（config「0/缺省 = lane 默认」权威口径）；
+            // 直接构造本 config 传 0 时，client 级挂 `.timeout(ZERO)`（reqwest
+            // 0.12.28 `total_timeout.map(tokio::time::sleep)` 无 ZERO 特判）
+            // = 连接阶段立即超时，与「不限」相反。下方 deadline 分支仅为
+            // 防御保留，勿按旧注释当逃生口使用。
             let deadline = if stream_timeout_secs == 0 {
                 None
             } else {

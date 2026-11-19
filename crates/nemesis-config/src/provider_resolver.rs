@@ -28,7 +28,14 @@ pub struct ModelResolution {
 
 /// Resolved provider and model configuration.
 /// Mirrors Go `ProviderResolution`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002 Debug 脱敏（BUG-20261111-068 家族，BUG-20261118-171）：api_key
+/// 明文 + proxy（可携带 userinfo 凭据）不得进 Debug/panic/错误上下文日志
+/// ——providers 侧孪生 [`crate::ProviderSelection`](nemesis-providers 侧
+/// factory.rs) 已走 impl_redacted_debug，本侧是 config 域同族漏网（结构
+/// 2026-05 即存在，早于 BUG-20261111-068 的 40 结构排查与 providers 侧
+/// 2026-11-15 补漏清扫）。手写 Debug 与 crate 根 proxy_file /
+/// proxy_keys_file 先例同形；诊断信息以 config.json / Dashboard 回显为准。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderResolution {
     pub provider_name: String,
     pub model_name: String,
@@ -71,6 +78,31 @@ pub struct ProviderResolution {
     /// 合并。其他 lane 忽略 + 构造期一次 WARN。
     #[serde(default)]
     pub extra_body: serde_json::Value,
+}
+
+// SEC-002 Debug 脱敏（BUG-20261118-171）：plain 先、secret 后（与
+// impl_redacted_debug! 宏输出顺序一致）；api_key / proxy 输出
+// `<empty>/<redacted>`，其余字段原样保留诊断价值。
+impl std::fmt::Debug for ProviderResolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderResolution")
+            .field("provider_name", &self.provider_name)
+            .field("model_name", &self.model_name)
+            .field("api_base", &self.api_base)
+            .field("auth_method", &self.auth_method)
+            .field("connect_mode", &self.connect_mode)
+            .field("protocol", &self.protocol)
+            .field("workspace", &self.workspace)
+            .field("enabled", &self.enabled)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("stream_mode", &self.stream_mode)
+            .field("cache_breakpoints", &self.cache_breakpoints)
+            .field("extra_body", &self.extra_body)
+            .field("api_key", &crate::debug_secret_value(&self.api_key))
+            .field("proxy", &crate::debug_secret_value(&self.proxy))
+            .finish()
+    }
 }
 
 impl Default for ProviderResolution {

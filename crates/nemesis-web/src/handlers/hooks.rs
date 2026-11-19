@@ -80,7 +80,11 @@ impl HooksHandler {
     pub(crate) fn get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let path =
             nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
-        match std::fs::read_to_string(&path) {
+        // BUG-20261119-179：走 read_config_string 剥 BOM（hooks.json 是用户
+        // 可手工编辑的 JSON 配置，记事本「带 BOM 的 UTF-8」保存形态会让
+        // serde_json 报无从定位的「expected value at line 1 column 1」）——
+        // 与 cc_hooks 模块内部读取点同口径（本模块此前是唯一裸读臂）。
+        match nemesis_utils::fsutil::read_config_string(&path) {
             Ok(content) => {
                 let (valid, error, summary) = match cc_hooks::parse_cc_hooks(&content) {
                     Ok(events) => (true, serde_json::Value::Null, Some(events_summary(&events))),

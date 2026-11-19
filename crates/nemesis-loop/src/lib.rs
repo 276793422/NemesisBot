@@ -38,7 +38,7 @@ mod wake_tests;
 
 pub use resources::DurableLoopsResourceProvider;
 pub use state::{LoopBudget, LoopSpent, LoopState, LoopStatus, ProgressEntry, PROGRESS_LOG_CAP};
-pub use store::{alloc_id, list_loops, load_loop, loops_dir, remove_loop, save_loop};
+pub use store::{alloc_id, create_loop, list_loops, load_loop, loops_dir, remove_loop, save_loop};
 pub use wake::{
     budget_exhausted, compute_next_wake, format_wake_time, sweep_loop, SweepOutcome, WAKE_MARKER,
 };

@@ -1234,6 +1234,35 @@ fn redact_url_secrets_boundary_guards_prefix_collisions() {
     assert!(out2.contains("webhook_key=<redacted>"));
 }
 
+// BUG-20261119-182：钉钉 stream endpoint / 飞书 WS endpoint 都是
+// `wss://…?ticket=<连接凭据>` 形态，凭据随 URL 进日志即泄露。
+#[test]
+fn redact_url_secrets_masks_ticket_stream_endpoint() {
+    // 钉钉 stream 连接响应形态：ticket 在中段
+    let out = super::redact_url_secrets(
+        r#"{"data":{"endpoint":"wss://wss.api.dingtalk.com/connect?ticket=TK-77&ua=bot"}}"#,
+    );
+    assert!(!out.contains("TK-77"));
+    assert!(out.contains("ticket=<redacted>"));
+    // 非凭据参数原样保留
+    assert!(out.contains("ua=bot"));
+
+    // 飞书 endpoint 形态：ticket 在末段（截断到串尾）
+    let out2 = super::redact_url_secrets(
+        "connecting to wss://open.feishu.cn/callback/ws/endpoint?ticket=FS-1",
+    );
+    assert!(!out2.contains("FS-1"));
+    assert!(out2.contains("ticket=<redacted>"));
+
+    // 路径段 tickets/（无 =）不得误伤
+    let out3 = super::redact_url_secrets("GET https://h.example/tickets/list failed");
+    assert!(out3.contains("/tickets/list"));
+
+    // 参数名残撞（`?x=ticket=`，ticket= 前面是 `=`）不命中
+    let out4 = super::redact_url_secrets("u?x=ticket=PLAIN");
+    assert!(out4.contains("PLAIN"));
+}
+
 #[test]
 fn redact_url_secrets_preserves_non_secret_strings() {
     // 无凭据参数的普通字符串透传；含 "token" 字样但非 ?/& 起头参数不误伤

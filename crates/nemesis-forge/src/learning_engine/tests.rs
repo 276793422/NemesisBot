@@ -1629,6 +1629,63 @@ async fn test_get_latest_cycle_from_store() {
     assert!(latest.is_some());
 }
 
+// BUG-20261118-167 横向排查回归锁：get_latest_cycle_from_store 曾直接
+// read_cycles(...).last()，把「月目录/文件名序 + JSONL 行 append 序」当
+// started_at 时刻序——时钟回拨 / NTP 校时 / 并发写交错下行序≠时刻序，
+// .last() 取到非最新 cycle（doc 承诺 "most recent"）。修复后显式
+// rfc3339_order 排序再取尾（对齐 load_latest_cycle 的 BUG-140 形态）。
+// 构造：同一文件先写时刻较晚的 B、再写时刻较早的 A（模拟时钟回拨），
+// 正确答案必须是 B（时刻最新）而非文件尾行的 A。
+#[tokio::test]
+async fn test_get_latest_cycle_from_store_out_of_order_appends() {
+    use nemesis_types::forge::{CycleStatus, LearningCycle};
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Arc::new(Registry::new(RegistryConfig::default()));
+    let engine = LearningEngine::new(
+        ForgeConfig::default(),
+        registry,
+        CycleStore::new(dir.path()),
+    );
+    // 播种用独立 store 实例（CycleStore 无 Clone；同 base_dir 读写同盘）。
+    let seed_store = CycleStore::new(dir.path());
+
+    // 播种在 30 天窗口内（since 按文件名钟面日期过滤）：昨天同一天的两个
+    // 时刻，落同一 JSONL 文件，行序与时刻序刻意相反。
+    let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+    let base_day = (chrono::Local::now() - chrono::Duration::days(1)).date_naive();
+    let late_dt = base_day.and_hms_opt(12, 0, 0).unwrap(); // 时刻较晚
+    let early_dt = base_day.and_hms_opt(8, 0, 0).unwrap(); // 时刻较早
+    let cycle_late = LearningCycle {
+        id: "cycle-late".into(),
+        started_at: late_dt.and_local_timezone(tz).unwrap().to_rfc3339(),
+        completed_at: None,
+        patterns_found: 2,
+        actions_taken: 2,
+        status: CycleStatus::Completed,
+    };
+    let cycle_early = LearningCycle {
+        id: "cycle-early".into(),
+        started_at: early_dt.and_local_timezone(tz).unwrap().to_rfc3339(),
+        completed_at: None,
+        patterns_found: 1,
+        actions_taken: 1,
+        status: CycleStatus::Completed,
+    };
+    // 先写晚的、再写早的（append 序≠时刻序）
+    seed_store.append(&cycle_late).await.unwrap();
+    seed_store.append(&cycle_early).await.unwrap();
+
+    let latest = engine
+        .get_latest_cycle_from_store()
+        .await
+        .expect("30 天窗口内的播种数据必须可见");
+    assert_eq!(
+        latest.id, "cycle-late",
+        "时刻最新的 cycle 必须胜过文件尾行——显式排序必须压过 append 序"
+    );
+}
+
 // ============================================================
 // Additional tests for set_* methods, detect patterns, and
 // evaluate outcome edge cases

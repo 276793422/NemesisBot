@@ -2716,3 +2716,38 @@ async fn test_chat_stream_eof_drains_truncated_message_delta_usage_survives() {
         "usage from the truncated message_delta must reach the terminal chunk (BUG-20261113-163)"
     );
 }
+
+// BUG-20261119-175：服务器可控 usage i64 满量级——裸加曾 debug panic /
+// release 回绕负 total 流入计价。
+#[test]
+fn test_final_chunk_hostile_usage_saturates_no_panic() {
+    let chunk = anthropic_final_chunk(
+        Some("end_turn"),
+        &[],
+        &HashMap::new(),
+        Some(i64::MAX),
+        Some(i64::MAX),
+        Some(i64::MAX),
+        Some(i64::MAX),
+        None,
+    );
+    let u = chunk.usage.expect("usage 应存在");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
+}
+
+#[test]
+fn test_parse_response_hostile_usage_saturates_no_panic() {
+    let data = serde_json::json!({
+        "content": [{ "type": "text", "text": "hi" }],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 9223372036854775807i64,
+            "output_tokens": 9223372036854775807i64,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        }
+    });
+    let resp = parse_response(&data);
+    let u = resp.usage.expect("usage 应存在");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
+}

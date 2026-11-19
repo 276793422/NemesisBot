@@ -120,6 +120,52 @@ fn loops_dir_layout() {
 }
 
 #[test]
+fn create_loop_concurrent_threads_allocates_distinct_ids() {
+    // BUG-20261119-186 回归锁：裸 alloc_id+save_loop 两步在并发创建者
+    // 下互拿到同一 max+1 → 同 id 互覆（先建 loop 静默丢失）。create_loop
+    // 进程级锁串行化后，多线程并发创建必须各得唯一 id 且全落盘。
+    let dir = tempfile::tempdir().unwrap();
+    let dir_path = dir.path().to_path_buf();
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let p = dir_path.clone();
+            std::thread::spawn(move || {
+                crate::store::create_loop(&p, |id| {
+                    let mut s = st(&id, &format!("agent:main:session:t{i}"));
+                    s.goal = format!("goal-{i}");
+                    Ok(s)
+                })
+                .unwrap()
+            })
+        })
+        .collect();
+    let mut ids = Vec::new();
+    for h in handles {
+        ids.push(h.join().unwrap().id);
+    }
+    ids.sort();
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(
+        unique.len(),
+        8,
+        "并发创建必须各得唯一 id（同 id = 后写者覆盖前者）: {ids:?}"
+    );
+    // 全部落盘且 list 可见（8 条状态文件，无互相覆盖的丢失）。
+    let all = list_loops(dir.path());
+    assert_eq!(all.len(), 8, "并发创建必须全部落盘: {}", all.len());
+}
+
+#[test]
+fn create_loop_build_error_aborts_without_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = crate::store::create_loop(dir.path(), |_id| Err("校验失败".to_string())).unwrap_err();
+    assert_eq!(err, "校验失败");
+    // 放弃不落盘：目录里无 L*.json 残留（id 作废留空档是预期语义）。
+    assert!(list_loops(dir.path()).is_empty());
+    assert_eq!(alloc_id(dir.path()), "L1", "作废号不留死档，下分配从头起");
+}
+
+#[test]
 fn status_terminal_and_str_roundtrip() {
     assert!(LoopStatus::Done.is_terminal());
     assert!(LoopStatus::Failed.is_terminal());

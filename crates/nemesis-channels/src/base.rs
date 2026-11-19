@@ -87,9 +87,12 @@ pub trait Channel: Send + Sync {
 pub(crate) fn redact_url_secrets(msg: impl std::fmt::Display) -> String {
     // 前缀长的参数名在前（access_token= 先于 token=）；同名前缀残撞由
     // `?`/`&` 边界检查兜住（access_token= 中的 token= 前面是 `_`，不命中）。
-    const SECRET_PARAMS: [&str; 6] = [
+    // ticket=（BUG-20261119-182）：钉钉 stream endpoint / 飞书 WS endpoint
+    // 都是 `wss://…?ticket=<连接凭据>` 形态——凭据随 URL 进日志即泄露。
+    const SECRET_PARAMS: [&str; 7] = [
         "access_token=",
         "webhook_key=",
+        "ticket=",
         "key=",
         "token=",
         "sign=",

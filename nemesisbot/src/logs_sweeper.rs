@@ -85,7 +85,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 
@@ -862,7 +862,15 @@ pub fn spawn_logs_sweeper(ttl: LogsTtl) {
         "[LogsSweeper] logs 十六族 TTL 清扫装配"
     );
     tokio::spawn(async move {
-        run_sweep_once(&ttl);
+        // BUG-20261118-172：run_sweep_once 是重阻塞 sync 清扫（十六族遍历，
+        // Trash 族经 trash_purge_in → fsutil::remove_file_retry /
+        // remove_dir_all_retry 的 thread::sleep 退避最坏 ~4.4s/条目）——
+        // 直跑 tokio worker 会阻塞 executor。fsutil.rs LOW-5 家族纪律：
+        // spawn_blocking 移出（同族先例 anchors.rs、sessions.rs
+        // BUG-20261031-248、outbox.rs BUG-20261114-013）。
+        if let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&ttl)).await {
+            warn!("[LogsSweeper] 启动清扫任务 join 失败: {e}");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECS));
         interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
         loop {
@@ -871,7 +879,9 @@ pub fn spawn_logs_sweeper(ttl: LogsTtl) {
             if !terminal_loop_tick(terminal_cancel_token(), interval.tick()).await {
                 break;
             }
-            run_sweep_once(&ttl);
+            if let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&ttl)).await {
+                warn!("[LogsSweeper] 周期清扫任务 join 失败: {e}");
+            }
         }
     });
 }

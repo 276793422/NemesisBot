@@ -692,7 +692,13 @@ impl AnthropicProvider {
             // reqwest client 级 `.timeout()` 在 `bytes_stream()` 读路径不兜底
             // ——上游静默停流时整个任务在 `stream.next()` 挂死。以「请求起点
             // + timeout_secs」为绝对墙钟线，到线即 Timeout（可重试/可故障
-            // 转移）。timeout_secs == 0 = 不限（显式逃生口）。
+            // 转移）。BUG-20261119-178：timeout_secs == 0 的「不限」语义
+            // **不存在**——生产构造链 0 恒被 factory `effective_timeout`
+            // 归一为 lane 默认 600（config「0/缺省 = lane 默认」权威口径）；
+            // 直接构造本 config 传 0 时，client 级挂 `.timeout(ZERO)`（reqwest
+            // 0.12.28 `total_timeout.map(tokio::time::sleep)` 无 ZERO 特判）
+            // = 连接阶段立即超时，与「不限」相反。下方 deadline 分支仅为
+            // 防御保留，勿按旧注释当逃生口使用。
             let deadline = if stream_timeout_secs == 0 {
                 None
             } else {
@@ -1054,7 +1060,10 @@ fn anthropic_final_chunk(
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt + completion,
+            // 饱和加：usage 数字是服务器可控 i64，敌意/故障端点报 i64::MAX
+            // 级数值时裸加 debug panic / release 回绕成负 total 流入计价
+            // （BUG-20261119-175）。
+            total_tokens: prompt.saturating_add(completion),
             cached_tokens: None,
             cache_creation_tokens: cache_creation,
             cache_read_tokens: cache_read,
@@ -1299,7 +1308,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt + completion,
+            total_tokens: prompt.saturating_add(completion),
             // cached_tokens is intentionally None here; Anthropic uses cache_read_tokens
             // instead. The fallback chain in loop_executor.rs uses.or(cached_tokens).
             cached_tokens: None,

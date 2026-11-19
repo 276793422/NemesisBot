@@ -1546,7 +1546,12 @@ impl AgentLoop {
         let Some(wal) = self.turn_wal() else {
             return;
         };
-        let candidates = wal.recover_and_finalize();
+        // BUG-20261118-172：recover_and_finalize 内部含 fsutil 韧性删除
+        // （thread::sleep 退避最坏 ~4.4s），不占 tokio worker——
+        // spawn_blocking 移出（fsutil.rs LOW-5 家族纪律）。
+        let candidates = tokio::task::spawn_blocking(move || wal.recover_and_finalize())
+            .await
+            .unwrap_or_default();
         if candidates.is_empty() {
             return;
         }

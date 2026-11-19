@@ -238,6 +238,11 @@ mod sessions_trash_tests;
 #[cfg(test)]
 mod sessions_l22_tests;
 
+// BUG-20261118-168 回归：sessions.list 后端收尾排序（最近活跃优先，
+// pinned 组前端继承列表原序——枚举序直传跨平台不一致）。
+#[cfg(test)]
+mod sessions_list_order_tests;
+
 // projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]
@@ -266,6 +271,11 @@ mod models_health_tests;
 // 反斜杠/空段 loud 拒，且先于 config 触达）。
 #[cfg(test)]
 mod models_add_validation_tests;
+
+// BUG-20261118-169 回归: effort_probe 非 object 时
+// apply_effort_autofix 注记臂跳过（嵌套可变索引对非容器 panic）。
+#[cfg(test)]
+mod models_effort_autofix_tests;
 
 // (, devtool-upgrade): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + wsapi-commands 文档生成 +
@@ -794,9 +804,15 @@ pub fn get_opt_str_loud(data: &serde_json::Value, field: &str) -> Result<Option<
 }
 
 /// Read a text file from the workspace.
+///
+/// BUG-20261119-179：走 `read_config_string` 剥前导 UTF-8 BOM——消费方
+/// （identity/skills detail/tasks/tools/memory/cluster 预览）全部是用户
+/// 可手工编辑文件，记事本「带 BOM 的 UTF-8」保存形态下裸读会把零宽
+/// BOM 带进前端编辑器内容与回写（BOM 永不清洗）。无 BOM 文件字节不变。
 pub fn read_workspace_file(workspace: &str, relative: &str) -> Result<String, String> {
     let path = resolve_path(workspace, relative)?;
-    std::fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {}", relative, e))
+    nemesis_utils::fsutil::read_config_string(&path)
+        .map_err(|e| format!("failed to read {}: {}", relative, e))
 }
 
 /// Write a text file to the workspace (atomic write via tmp + rename).

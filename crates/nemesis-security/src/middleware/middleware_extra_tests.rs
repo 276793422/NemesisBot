@@ -2836,3 +2836,79 @@ async fn extra_network_dial_http_success_from_local_server() {
     let status = w.dial_http(&base).await.unwrap();
     assert_eq!(status, 200);
 }
+
+// ============================================================
+// BUG-20261119-177 回归锁：get / download_url 的跨源 302 必须终停
+// （no_cross_host_redirect_policy 同源跟随/跨源透传），不得按 reqwest
+// 默认策略跟随到 Location 指向的另一主机。post/do_request/dial_http
+// 修复时本两方法漏网（裸 reqwest::get 默认跟随 ≤10 跳）——过闸公网
+// URL 302 指内网/云元数据端点即整条绕过 Layer 6。origin 键含 port
+// （同主机不同端口 = 跨源），故双 listener 即构造跨源。
+// ============================================================
+
+/// 跨源 302 服务器：每个连接返回 `302 Found` + `Location: {location}`。
+fn s3_redirect_server(location: String) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..4 {
+            let (mut stream, _) = match listener.accept() {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            // 读完请求头（GET 无 body，见 \r\n\r\n 即止）。
+            let mut got = String::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        got.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if got.contains("\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let resp = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    });
+    format!("http://{}/", addr)
+}
+
+#[tokio::test]
+async fn extra_network_get_cross_origin_redirect_stops_not_follows() {
+    let target = s3_local_http_server(vec![(200, "SECRET-INNER".to_string())]);
+    let base = s3_redirect_server(target);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    let resp = w.get(&base).await.unwrap();
+    // 302 透传为最终响应——绝不出现目标服务器的 200/SECRET-INNER。
+    assert_eq!(
+        resp.status_code, 302,
+        "cross-origin 302 must pass through, not follow: {resp:?}"
+    );
+    assert!(
+        !resp.body.contains("SECRET-INNER"),
+        "followed redirect to target host: {resp:?}"
+    );
+}
+
+#[tokio::test]
+async fn extra_network_download_url_cross_origin_redirect_stops_not_follows() {
+    let target = s3_local_http_server(vec![(200, "SECRET-INNER".to_string())]);
+    let base = s3_redirect_server(target);
+    let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
+    let w = SecureNetworkWrapper::new(&mw);
+    // download_url 对非成功状态诚实报错——302 透传形态 = Err 带 HTTP 302。
+    let err = w.download_url(&base, 1024).await.unwrap_err();
+    assert!(
+        err.contains("HTTP 302"),
+        "expected passthrough 302 error, got: {err}"
+    );
+}
