@@ -422,6 +422,19 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             match rx.recv().await {
                 Some(Ok(next)) => chunk = Some(next),
                 Some(Err(e)) => {
+                    // 终态唯一性契约（BUG-20261120-003，与
+                    // collect_stream_response Err 臂同款）：finish_reason 已
+                    // 聚合后再到的 Err 是终态后传输噪音（http lane SSE 读
+                    // 错误/deadline 臂在 finish_emitted 后仍可发射）——wire
+                    // 语义下响应已完成，改写 StreamInterrupted 会触发拼接
+                    // 续写把完整回复当半截去续写。break 走正常收尾（Ok）。
+                    if finish_reason.is_some() {
+                        tracing::debug!(
+                            "[LlmBridge] ignoring post-terminal stream error — finish_reason already aggregated: {}",
+                            e
+                        );
+                        break;
+                    }
                     // 契约对齐（stream_util::collect_stream_response Err 臂
                     // 同款语义）：流中断但已聚合非空部分内容/工具调用 → 包装
                     // StreamInterrupted（partial 随错误 Display 携带不丢——
