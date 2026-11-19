@@ -362,12 +362,23 @@ fn dir_size(dir: &Path) -> u64 {
 /// `trash_loc` 仅 [`Family::Trash`] 消费：条目删除走
 /// [`nemesis_agent::chat_trash::trash_purge_in`] 单点（先清 live todo 孤儿
 /// 再删条目，与手动 purge 同语义）；None（非 trash 族）回落整目录直删。
+/// SessionLogs 正文删除后的随葬面（2026-11-19 删除残留修复）：FTS 索引 /
+/// event_ledger / store json 三面与正文同生命周期（正文没了 = 会话死），
+/// 不得以孤儿滞留到各自 TTL。capture 目录不在此列——capture 目录名用
+/// capture_sink 私有 sanitize 命名，从 stem 反推不可靠，由 capture 族自身
+/// TTL 收敛（写端同构拼装，路径真相源 = logs 根 + 固定段）。
+struct SessionLogCascade {
+    ledger_dir: PathBuf,
+    sessions_dir: PathBuf,
+}
+
 fn sweep_family(
     dir: &Path,
     ttl_days: u64,
     family: Family,
     now: SystemTime,
     trash_loc: Option<&nemesis_agent::chat_trash::TrashLocations>,
+    session_cascade: Option<&SessionLogCascade>,
 ) -> SweepStats {
     let mut stats = SweepStats::default();
     if ttl_days == 0 {
@@ -457,6 +468,32 @@ fn sweep_family(
                         // sidecar 必须跟走，否则本拍就产生幽灵）。
                         stats.deleted += 1;
                         stats.bytes_freed += sidecar_size.len();
+                    }
+                    // 随葬级联（2026-11-19 删除残留修复；与用户删除链路
+                    // delete_chat_log 同语义）：正文删除成功后 FTS 索引 /
+                    // event_ledger / store json 三面跟随——正文没了 = 会话
+                    // 死，索引继续命中 = I2 删即不可见破约，账本/上下文缓存
+                    // 滞留 = 孤儿占盘。全部 best-effort（失败由各族 TTL
+                    // 兜底：event_ledger 族末行 append 判定 / 7d store
+                    // cleanup 下次启动）。
+                    if let Some(c) = session_cascade {
+                        nemesis_agent::history_search::invalidate_session_stem(stem);
+                        let ledger = c.ledger_dir.join(format!("{stem}.jsonl"));
+                        if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&ledger) {
+                            tracing::warn!(
+                                path = %ledger.display(),
+                                error = %e,
+                                "[LogsSweeper] session_logs 随葬：ledger 删除重试耗尽"
+                            );
+                        }
+                        let ctx_json = c.sessions_dir.join(format!("{stem}.json"));
+                        if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&ctx_json) {
+                            tracing::warn!(
+                                path = %ctx_json.display(),
+                                error = %e,
+                                "[LogsSweeper] session_logs 随葬：store json 删除重试耗尽"
+                            );
+                        }
                     }
                 }
             }
@@ -660,7 +697,7 @@ fn sweep_ziwei(ws: &Path, ttl_days: u64, now: SystemTime) -> SweepStats {
         ws.join("reports").join("ziwei-verify"),
         ws.join("reports").join("ziwei-recover"),
     ] {
-        let part = sweep_family(&root, ttl_days, Family::Ziwei, now, None);
+        let part = sweep_family(&root, ttl_days, Family::Ziwei, now, None, None);
         stats.deleted += part.deleted;
         stats.failed += part.failed;
         stats.bytes_freed += part.bytes_freed;
@@ -700,7 +737,16 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
         session_logs_dir.clone(),
         boundary_dir.clone(),
         nemesis_path::resolve_sessions_dir_in_workspace(ws),
+        event_ledger_dir.clone(),
+        capture_dir.clone(),
     );
+    // SessionLogs 正文随葬面（2026-11-19 删除残留修复）：FTS 索引由
+    // invalidate_session_stem 摘（DB 内部寻址），ledger / store json 两面
+    // 按同构 stem 命名跟随删。
+    let session_cascade = SessionLogCascade {
+        ledger_dir: event_ledger_dir.clone(),
+        sessions_dir: nemesis_path::resolve_sessions_dir_in_workspace(ws),
+    };
     let mut swept: Vec<(Family, SweepStats)> = [
         (Family::SessionLogs, session_logs_dir, ttl.session_logs),
         (Family::Boundary, boundary_dir, ttl.boundary),
@@ -727,7 +773,8 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
             sweep_two_level(&dir, days, now, family)
         } else {
             let loc = (family == Family::Trash).then_some(&trash_loc);
-            sweep_family(&dir, days, family, now, loc)
+            let cascade = (family == Family::SessionLogs).then_some(&session_cascade);
+            sweep_family(&dir, days, family, now, loc, cascade)
         };
         (family, stats)
     })

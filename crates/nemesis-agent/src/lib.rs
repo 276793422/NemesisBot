@@ -149,6 +149,11 @@ mod workspace_lease_tests;
 #[cfg(test)]
 mod test_support;
 
+// 测试专用：进程级 home 重定向（chat_log 单例寻址防泄漏真实 home），
+// 由 chat_log::singleton() 在测试构建下首访触发，详见模块文档。
+#[cfg(test)]
+mod test_home;
+
 pub use background_registry::BackgroundProcessRegistry;
 pub use background_registry::{CompletionEvent, JobOrigin};
 pub use capture_sink::{CaptureSink, SessionWriteCapture, ToolCapture};

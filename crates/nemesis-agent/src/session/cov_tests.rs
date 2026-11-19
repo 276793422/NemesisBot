@@ -43,28 +43,25 @@ fn migrate_legacy_main_moves_log_and_json() {
         r#"{"key":"agent:main:main","messages":[{"role":"user","content":"legacy"}]}"#,
     )
     .unwrap();
-    SessionStore::migrate_legacy_main(dir.path());
+
+    // JSONL 侧：DI 私有目录（2026-11-19）——此前打全局 sessions_log_dir
+    // 固定名共享文件，重定向后成为 rename 竞争者，改注入与 append-only
+    // 测试零竞争。
+    let logs_dir = dir.path().join("session_logs");
+    std::fs::create_dir_all(&logs_dir).unwrap();
+    let main_log = logs_dir.join("agent_main_main.jsonl");
+    let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
+    std::fs::write(&main_log, "{\"role\":\"user\"}\n").unwrap();
+
+    SessionStore::migrate_legacy_main_in(dir.path(), &logs_dir);
     let legacy_json = dir.path().join("agent_main_session_legacy.json");
     assert!(legacy_json.exists(), "json migrated");
     assert!(!main_json.exists(), "main json removed after copy");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&legacy_json).unwrap()).unwrap();
     assert_eq!(v["key"], "agent:main:session:legacy");
-
-    // JSONL 侧（全局 sessions_log_dir，幂等守卫下能搬则搬）。
-    let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
-    let _ = std::fs::create_dir_all(&logs_dir);
-    let main_log = logs_dir.join("agent_main_main.jsonl");
-    let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
-    let legacy_pre = legacy_log.exists();
-    if !legacy_pre {
-        std::fs::write(&main_log, "{\"role\":\"user\"}\n").unwrap();
-    }
-    SessionStore::migrate_legacy_main(dir.path());
-    if !legacy_pre {
-        assert!(legacy_log.exists(), "jsonl migrated");
-        assert!(!main_log.exists());
-    }
+    assert!(legacy_log.exists(), "jsonl migrated");
+    assert!(!main_log.exists());
 }
 
 /// cleanup：storage_dir 是普通文件 → read_dir 失败诚实返回空。

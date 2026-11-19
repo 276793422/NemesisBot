@@ -3163,18 +3163,40 @@ mod wave_a {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
-        // 1 条 chat（收）+ 1 条 embedding（跳）+ 1 条缺 output 价（跳）。
-        let raw = serde_json::json!({
-            "import/chat-model": {
+        // 目标条目 1 条 chat（收）+ 1 条 embedding（跳）+ 1 条缺 output 价
+        // （跳）；另加 100 条收录形态填充条目过 BUG-20261118-157 防劫持
+        // 条目数闸（MIN_FILTERED_ENTRIES=100：CLI import 入口防传错文件
+        // 静默替换下载层，小合成表只允许走数据层原语/自定义层）。
+        let mut entries = serde_json::Map::new();
+        entries.insert(
+            "import/chat-model".to_string(),
+            serde_json::json!({
                 "mode": "chat",
                 "input_cost_per_token": 0.000001,
                 "output_cost_per_token": 0.000002,
                 "cache_read_input_token_cost": 0.0000001,
                 "max_input_tokens": 8192
-            },
-            "import/embed": {"mode": "embedding", "input_cost_per_token": 0.000001},
-            "import/nocost": {"mode": "chat", "input_cost_per_token": 0.000001}
-        });
+            }),
+        );
+        entries.insert(
+            "import/embed".to_string(),
+            serde_json::json!({"mode": "embedding", "input_cost_per_token": 0.000001}),
+        );
+        entries.insert(
+            "import/nocost".to_string(),
+            serde_json::json!({"mode": "chat", "input_cost_per_token": 0.000001}),
+        );
+        for i in 0..100 {
+            entries.insert(
+                format!("import/filler-{}", i),
+                serde_json::json!({
+                    "mode": "chat",
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002
+                }),
+            );
+        }
+        let raw = serde_json::Value::Object(entries);
         let file = th.home.join("litellm.json");
         std::fs::write(&file, raw.to_string()).unwrap();
         super::super::run_prices(
@@ -3185,13 +3207,21 @@ mod wave_a {
         )
         .await
         .expect("合法 LiteLLM 导入必须成功");
-        // 下载层状态：恰 1 条（embedding/缺价跳过），per-token → per-million ×1e6。
+        // 下载层状态：恰 101 条（目标 + 填充；embedding/缺价跳过），
+        // per-token → per-million ×1e6。
         let ds = nemesis_data::DataStore::open(&db_path(&th.home)).unwrap();
         let downloaded = ds.pricing().list_downloaded().expect("导入必须建下载层");
-        assert_eq!(downloaded.len(), 1, "只收 chat 且双价齐全的条目");
-        assert_eq!(downloaded[0].model_id, "import/chat-model");
-        assert!((downloaded[0].input_cost_per_million - 1.0).abs() < 1e-9);
-        assert!((downloaded[0].output_cost_per_million - 2.0).abs() < 1e-9);
+        assert_eq!(
+            downloaded.len(),
+            101,
+            "只收 chat 且双价齐全的条目（目标 + 填充）"
+        );
+        let target = downloaded
+            .iter()
+            .find(|e| e.model_id == "import/chat-model")
+            .expect("目标条目必须收录");
+        assert!((target.input_cost_per_million - 1.0).abs() < 1e-9);
+        assert!((target.output_cost_per_million - 2.0).abs() < 1e-9);
         let meta = ds.pricing().meta();
         assert_eq!(
             meta.source_url.as_deref(),
@@ -3555,13 +3585,28 @@ mod w5b2 {
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
 
-        let raw = serde_json::json!({
-            "w5b2/chat": {
+        // 目标条目 + 100 条收录形态填充过 BUG-20261118-157 防劫持条目数闸
+        // （MIN_FILTERED_ENTRIES=100）。
+        let mut entries = serde_json::Map::new();
+        entries.insert(
+            "w5b2/chat".to_string(),
+            serde_json::json!({
                 "mode": "chat",
                 "input_cost_per_token": 0.000001,
                 "output_cost_per_token": 0.000002
-            }
-        });
+            }),
+        );
+        for i in 0..100 {
+            entries.insert(
+                format!("w5b2/filler-{}", i),
+                serde_json::json!({
+                    "mode": "chat",
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002
+                }),
+            );
+        }
+        let raw = serde_json::Value::Object(entries);
         let file = th.home.join("w5b2-litellm.json");
         std::fs::write(&file, raw.to_string()).unwrap();
         super::super::run(

@@ -295,12 +295,11 @@ impl CaptureSink {
             .unwrap_or_default();
 
         let ts = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        let dir = self
-            .workspace
-            .join("logs")
-            .join("capture")
-            .join(sanitize(session_key))
-            .join(format!("{}_{}", ts, sanitize(signal)));
+        let dir = capture_session_dir(&self.workspace, session_key).join(format!(
+            "{}_{}",
+            ts,
+            sanitize(signal)
+        ));
 
         if let Err(e) = fs::create_dir_all(&dir) {
             warn!("[CaptureSink] failed to create capture dir: {}", e);
@@ -353,6 +352,55 @@ fn sanitize(s: &str) -> String {
             }
         })
         .collect()
+}
+
+/// 会话 capture 目录的单一真相源（flush 落盘与删除级联共用同款 sanitize）。
+///
+/// 删除链路（`chat_log::delete_chat_log` 硬删 / `chat_trash::trash_chat_log`
+/// 软删）必须经本函数寻址——capture 目录名用的是本模块私有 sanitize（保
+/// 留点号、无 80 截断），与 `sanitize_path_segment`（jsonl/ledger/store
+/// 文件名）在非 ASCII/超长键下**不同**，按 stem 反推 capture 目录名会错删
+/// /漏删。
+pub fn capture_session_dir(workspace: &std::path::Path, session_key: &str) -> std::path::PathBuf {
+    capture_dir_at(&workspace.join("logs").join("capture"), session_key)
+}
+
+/// [`capture_session_dir`] 的 capture 根直输形态（`logs/capture` 目录本身）：
+/// trash 注入形态（`TrashLocations::with_dirs`）按根注入，不持 workspace；
+/// 与 [`remove_capture_at`] 对称供测试按同源 sanitize 预置目录。
+pub fn capture_dir_at(capture_root: &std::path::Path, session_key: &str) -> std::path::PathBuf {
+    capture_root.join(sanitize(session_key))
+}
+
+/// [`remove_session_capture`] 的删除核心：整目录韧性删除；缺席 = 幂等成功。
+fn remove_capture_dir(dir: &std::path::Path) -> bool {
+    if !dir.exists() {
+        return true;
+    }
+    if nemesis_utils::fsutil::remove_dir_all_resilient(dir) {
+        true
+    } else {
+        warn!(
+            "[CaptureSink] 会话 capture 目录删除重试耗尽（残留交 capture TTL 清扫）: {}",
+            dir.display()
+        );
+        false
+    }
+}
+
+/// 会话删除级联：摘除该会话的 capture 目录（含全部证据条目）。
+///
+/// capture 是会话内容的**副本**（工具入参/回执全文），隐私清理语义下删除
+/// 会话必须同步清——软删同样删（诊断证据不承诺恢复：回收站恢复只覆盖
+/// chat/boundary/meta/todo 四件套，见 trash_chat_log 注释）。best-effort
+/// 韧性删除（Windows 瞬时句柄重试）；目录缺席 = 幂等成功。
+pub fn remove_session_capture(workspace: &std::path::Path, session_key: &str) -> bool {
+    remove_capture_dir(&capture_session_dir(workspace, session_key))
+}
+
+/// [`remove_session_capture`] 的 capture 根直输形态（trash 注入链路用）。
+pub fn remove_capture_at(capture_root: &std::path::Path, session_key: &str) -> bool {
+    remove_capture_dir(&capture_dir_at(capture_root, session_key))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) {

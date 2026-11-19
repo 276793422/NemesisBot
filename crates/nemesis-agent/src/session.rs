@@ -994,9 +994,18 @@ impl SessionStore {
     /// best-effort: only renames when the legacy target is absent, and a
     /// rename failure just warns (original files stay, data not lost).
     /// Called once at gateway startup, before SessionStore loads from disk.
+    ///
+    /// jsonl 侧目录 = 进程单例 sessions_log_dir（共享文件）；测试请用
+    /// [`Self::migrate_legacy_main_in`] 注入私有目录，避免与 append-only
+    /// 测试在共享 `agent_main_main.jsonl` 上竞争（2026-11-19）。
     pub fn migrate_legacy_main(storage_dir: &Path) {
-        use nemesis_path::default_path_manager;
-        let logs_dir = default_path_manager().sessions_log_dir();
+        let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
+        Self::migrate_legacy_main_in(storage_dir, &logs_dir);
+    }
+
+    /// [`Self::migrate_legacy_main`] 的目录注入形态（单一实现）。
+    pub fn migrate_legacy_main_in(storage_dir: &Path, sessions_log_dir: &Path) {
+        let logs_dir = sessions_log_dir;
 
         // session_logs/agent_main_main.jsonl → agent_main_session_legacy.jsonl
         let main_log = logs_dir.join("agent_main_main.jsonl");

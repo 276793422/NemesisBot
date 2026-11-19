@@ -1563,6 +1563,17 @@ impl AgentLoop {
                 );
                 continue;
             }
+            // 删除残留修复（2026-11-19）：会话在断电前已被用户删除（jsonl
+            // 缺席 = 会话死）则不合成续轮——合成消息会经 self-heal 复活一个
+            // 空壳会话（已删会话借尸还魂，I1 重开干净破约）。interrupted
+            // 留痕照写（finalize 已完成），诚实放弃与「非预置键」同款。
+            if !crate::chat_log::chat_log_exists(&rec.session_key) {
+                info!(
+                    "[AgentLoop] Turn WAL：会话 {} 的 chat_log 已不存在（断电前被删除），跳过自动续轮",
+                    rec.session_key
+                );
+                continue;
+            }
             let content = format!(
                 "⟳ 系统续轮：上次进程在工具执行中被中断（tool={}，args={}）。该次调用的结果已丢失；请从中断处继续完成任务（必要时重新执行该工具）。",
                 rec.tool, rec.args_preview

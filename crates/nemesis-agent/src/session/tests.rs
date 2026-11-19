@@ -2434,23 +2434,23 @@ fn test_cleanup_readonly_expired_file_survives() {
 }
 
 /// migrate_legacy_main happy path: jsonl renamed, store json rewritten with
-/// the new key and the old file removed; second call is a no-op.
-/// SAFETY: the jsonl side uses the REAL sessions_log_dir with FIXED names --
-/// skipped entirely when either file already exists (real user data).
+/// the old file removed; second call is a no-op.
+/// jsonl 侧经 DI 形态 migrate_legacy_main_in 注入私有目录——重定向
+/// （test_home）后守卫恒假曾让本测试成为共享 agent_main_main.jsonl 的
+/// rename 竞争者，改 DI 与 append-only 测试零竞争（2026-11-19）。
 #[test]
 fn test_migrate_legacy_main_happy_path() {
-    let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("session_store");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let logs_dir = dir.path().join("session_logs");
+    std::fs::create_dir_all(&logs_dir).unwrap();
     let main_log = logs_dir.join("agent_main_main.jsonl");
     let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
-    if main_log.exists() || legacy_log.exists() {
-        return; // production home carries real data; do not touch it
-    }
-    std::fs::create_dir_all(&logs_dir).unwrap();
     std::fs::write(&main_log, "{\"role\":\"user\",\"content\":\"legacy q\"}\n").unwrap();
 
-    let dir = tempfile::tempdir().unwrap();
     std::fs::write(
-        dir.path().join("agent_main_main.json"),
+        store_dir.join("agent_main_main.json"),
         serde_json::json!({
             "key": "agent:main:main",
             "messages": [],
@@ -2462,21 +2462,19 @@ fn test_migrate_legacy_main_happy_path() {
     )
     .unwrap();
 
-    SessionStore::migrate_legacy_main(dir.path());
+    SessionStore::migrate_legacy_main_in(&store_dir, &logs_dir);
 
     assert!(legacy_log.exists(), "jsonl renamed to legacy name");
     assert!(!main_log.exists());
-    let legacy_json = dir.path().join("agent_main_session_legacy.json");
+    let legacy_json = store_dir.join("agent_main_session_legacy.json");
     assert!(legacy_json.exists(), "store json rewritten");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&legacy_json).unwrap()).unwrap();
     assert_eq!(v["key"], "agent:main:session:legacy");
-    assert!(!dir.path().join("agent_main_main.json").exists());
+    assert!(!store_dir.join("agent_main_main.json").exists());
 
     // Idempotent: nothing left to migrate, no panic.
-    SessionStore::migrate_legacy_main(dir.path());
-
-    let _ = std::fs::remove_file(&legacy_log); // cleanup what we created
+    SessionStore::migrate_legacy_main_in(&store_dir, &logs_dir);
 }
 
 /// migrate_legacy_main json-side edge arms: corrupt source kept; a source
@@ -2484,17 +2482,14 @@ fn test_migrate_legacy_main_happy_path() {
 /// NOT rewritten.
 #[test]
 fn test_migrate_legacy_main_json_edge_arms() {
-    let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
-    let main_log = logs_dir.join("agent_main_main.jsonl");
-    let legacy_log = logs_dir.join("agent_main_session_legacy.jsonl");
-    if main_log.exists() || legacy_log.exists() {
-        return; // never touch real user data
-    }
+    // jsonl 侧走私有空目录：main_log 不存在 = no-op（DI 后守卫退役 2026-11-19）。
+    let logs_dir = tempfile::tempdir().unwrap();
+    let logs = logs_dir.path().to_path_buf();
 
     // Corrupt json: read ok, parse fails -> warn, source untouched.
     let dir1 = tempfile::tempdir().unwrap();
     std::fs::write(dir1.path().join("agent_main_main.json"), "NOT JSON").unwrap();
-    SessionStore::migrate_legacy_main(dir1.path());
+    SessionStore::migrate_legacy_main_in(dir1.path(), &logs);
     assert!(
         dir1.path().join("agent_main_main.json").exists(),
         "corrupt source kept (data not lost)"
@@ -2508,7 +2503,7 @@ fn test_migrate_legacy_main_json_edge_arms() {
         r#"{"key":"other:key","x":1}"#,
     )
     .unwrap();
-    SessionStore::migrate_legacy_main(dir2.path());
+    SessionStore::migrate_legacy_main_in(dir2.path(), &logs);
     let p = dir2.path().join("agent_main_session_legacy.json");
     assert!(p.exists(), "migrated regardless of key value");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
