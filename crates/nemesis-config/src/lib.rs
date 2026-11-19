@@ -387,7 +387,8 @@ impl Config {
     pub fn get_model_by_model_name(&self, model_ref: &str) -> Result<&ModelConfig> {
         // 层序与 provider_resolver::model_ref_eq doc 恒等：精确 model_name →
         // 精确 model 字段 → CI model_name → CI model 字段（CI 兜底层 =
-        // BUG-20261117-077，与查找族其余站点同口径）。
+        // BUG-20261117-077，与查找族其余站点同口径）→ bare-suffix →
+        // bare-CI（bare 兜底层 = BUG-20261119-207，与查找族其余站点同步）。
         for ci in [false, true] {
             // First try exact match with model_name
             for mc in &self.model_list {
@@ -399,6 +400,15 @@ impl Config {
             // Then try prefix match with model field (vendor/model)
             for mc in &self.model_list {
                 if provider_resolver::model_ref_eq(&mc.model, model_ref, ci) {
+                    return Ok(mc);
+                }
+            }
+        }
+
+        // bare-suffix 兜底层（BUG-20261119-207）：同查找族其余站点。
+        for ci in [false, true] {
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_bare_eq(&mc.model, model_ref, ci) {
                     return Ok(mc);
                 }
             }

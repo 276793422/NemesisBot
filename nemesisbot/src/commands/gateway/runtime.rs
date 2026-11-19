@@ -1183,7 +1183,12 @@ pub(crate) async fn run_runtime(
         // headless（run/acp）形态不进 gateway runtime，天然无此卡。
         {
             let default_model = nemesis_config::get_effective_llm(Some(&cfg));
-            let entry_present = cfg.model_list.iter().any(|m| m.model_name == default_model);
+            // 「条目在场」判定与 resolved_no_key 同族谓词（find_model_by_name
+            // 四层家族：精确 name/model → CI → bare-suffix，BUG-20261119-207
+            // 层序）。旧裸 `==` 单层判定：CI 变体 / model 字段 / bare 短名
+            // 形态的默认引用（077 实证的手打路径）解析命中条目但 entry_present
+            // = false → 缺 key 交互卡静默跳过，只剩启动 warn。
+            let entry_present = nemesis_config::find_model_by_name(&cfg, &default_model).is_ok();
             let resolved_no_key = nemesis_config::resolve_model_config(&cfg, &default_model)
                 .map(|r| r.api_key.is_empty())
                 .unwrap_or(false);

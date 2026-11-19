@@ -1442,3 +1442,150 @@ fn provider_resolution_debug_redacts_key_and_proxy() {
         dbg_empty
     );
 }
+
+// ============================================================================
+// BUG-20261119-207 回归锁：装配族 bare-suffix 兜底层（家族口径对齐第三形态）
+//
+// 此前 nemesis_types::capability::find_model_entry（tier/vision/timeout 九键
+// 族）有 bare-suffix 回落层、nemesis-config 装配族四处站点没有：同一 bare
+// 短名 ref「tier 命中条目、装配面落裸推断」（默认 base + 空 key =
+// gpt-5.6-sol 风暴同款失败形态；crate 内 resolve_active_timeout_secs 与
+// resolve_model_config 对同一 ref 判定分裂）。077（config CI）/192（types
+// CI）两轮家族对齐均未扫 bare 维度。
+// ============================================================================
+
+/// 共享夹具：model_name 与 model 尾段不同的条目（手编 config / 自定义别名
+/// 形态）。`model add` 产出 model_name=bare 别名与尾段同值，精确层即可命中，
+/// bare-suffix 分裂只在 alias ≠ 尾段形态暴露。
+fn bare_suffix_cfg() -> Config {
+    Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "my-alias".to_string(),
+            model: "zhipu/glm-4.7".to_string(),
+            api_key: "sk-entry-key".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+/// bare 短名 ref 必须命中条目而非落推断（空 key = 风暴同款失败形态）；
+/// 装配族与查找族同判定。
+#[test]
+fn test_resolve_model_config_bare_suffix_hits_entry() {
+    let cfg = bare_suffix_cfg();
+    let res = resolve_model_config(&cfg, "glm-4.7").unwrap();
+    assert_eq!(
+        res.api_key, "sk-entry-key",
+        "bare 短名必须命中条目而非落推断（默认 base + 空 key）"
+    );
+    assert_eq!(res.provider_name, "zhipu");
+    assert_eq!(res.model_name, "glm-4.7");
+    // 家族一致性：find_model_by_name 同 ref 同命中。
+    assert_eq!(
+        find_model_by_name(&cfg, "glm-4.7").unwrap().model,
+        "zhipu/glm-4.7"
+    );
+}
+
+/// bare-CI 层：大小写变体短名同命中（对齐 find_model_entry 的 bare-CI 层）。
+#[test]
+fn test_resolve_model_config_bare_suffix_ci_hits_entry() {
+    let cfg = bare_suffix_cfg();
+    let res = resolve_model_config(&cfg, "GLM-4.7").unwrap();
+    assert_eq!(res.api_key, "sk-entry-key");
+}
+
+/// 跨族口径钉死：同一 cfg/ref，装配族（resolve_model_config）与 tier 族
+/// （nemesis_types::capability::find_model_entry）命中的必须是同一条目。
+#[test]
+fn test_bare_suffix_family_alignment_with_tier_lookup() {
+    let cfg = bare_suffix_cfg();
+    let raw = serde_json::json!({
+        "model_list": [{
+            "model_name": "my-alias",
+            "model": "zhipu/glm-4.7",
+            "api_key": "sk-entry-key"
+        }]
+    });
+    let tier_entry =
+        nemesis_types::capability::find_model_entry(&raw, "glm-4.7").expect("tier 族应 bare 命中");
+    assert_eq!(
+        tier_entry.get("model").and_then(|v| v.as_str()),
+        Some("zhipu/glm-4.7")
+    );
+    let res = resolve_model_config(&cfg, "glm-4.7").unwrap();
+    assert_eq!(
+        res.api_key, "sk-entry-key",
+        "装配族必须与 tier 族同判定（bare 命中同一条目，非落推断）"
+    );
+}
+
+/// 精确层先行：model_name 恰等于 ref 的条目优先于 bare 候选（层序不回退）。
+#[test]
+fn test_exact_still_wins_over_bare_suffix() {
+    let cfg = Config {
+        model_list: vec![
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "glm-4.7".to_string(),
+                model: "openai/gpt-4".to_string(),
+                api_key: "sk-exact".to_string(),
+                ..Default::default()
+            },
+            ModelConfig {
+                extra: Default::default(),
+                model_name: "other".to_string(),
+                model: "zhipu/glm-4.7".to_string(),
+                api_key: "sk-bare".to_string(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    // ref="glm-4.7"：精确 name 命中条目 1（bare 层到不了）。
+    let res = resolve_model_config(&cfg, "glm-4.7").unwrap();
+    assert_eq!(res.api_key, "sk-exact", "精确层必须先行于 bare 层");
+    // 精确全 miss 的 ref="glm-4.7" 变体路径才进 bare——CI 层验证既有语义。
+    let res2 = resolve_model_config(&cfg, "GLM-4.7").unwrap();
+    assert_eq!(res2.api_key, "sk-exact", "CI name 层先于 bare 层");
+}
+
+/// 无关名字不被 bare 层制造假命中（仍落既有推断/Err 路径）。
+#[test]
+fn test_unrelated_name_not_bare_matched() {
+    let cfg = bare_suffix_cfg();
+    // 无关键词 → 推断空 → Err（既有语义不变）。
+    assert!(resolve_model_config(&cfg, "totally-unknown-xyz").is_err());
+    assert!(find_model_by_name(&cfg, "totally-unknown-xyz").is_err());
+    assert!(get_model_by_name(&cfg, "totally-unknown-xyz").is_err());
+}
+
+/// 四处站点 bare 层一致：find_model_by_name / get_model_by_name /
+/// Config::get_model_by_model_name 与 resolve_model_config 同判定
+/// （077 契约「改层序必须四处同步」对 bare 层同等适用）。
+#[test]
+fn test_bare_suffix_all_family_sites_consistent() {
+    let cfg = bare_suffix_cfg();
+    assert_eq!(
+        find_model_by_name(&cfg, "glm-4.7").unwrap().api_key,
+        "sk-entry-key",
+        "find_model_by_name bare 命中"
+    );
+    assert_eq!(
+        get_model_by_name(&cfg, "glm-4.7").unwrap().api_key,
+        "sk-entry-key",
+        "get_model_by_name bare 命中"
+    );
+    assert_eq!(
+        cfg.get_model_by_model_name("glm-4.7").unwrap().api_key,
+        "sk-entry-key",
+        "get_model_by_model_name bare 命中"
+    );
+    assert_eq!(
+        resolve_model_config(&cfg, "glm-4.7").unwrap().api_key,
+        "sk-entry-key",
+        "resolve_model_config bare 命中"
+    );
+}
