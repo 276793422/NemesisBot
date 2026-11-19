@@ -544,7 +544,7 @@ fn resolve_add_manifest(
 
 /// connector 签名信任库路径（与 skills 共用的 skill_trust.json）。
 fn skill_trust_path(workspace: &std::path::Path) -> std::path::PathBuf {
-    workspace.join("config").join("skill_trust.json")
+    nemesis_path::resolve_skill_trust_path_in_workspace(workspace)
 }
 
 /// 信任吊销面：--key/--name 解析为库内条目（mirror plugin 同名助手）。

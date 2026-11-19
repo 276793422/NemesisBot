@@ -494,7 +494,7 @@ pub struct TransferSink {
 impl TransferSink {
     /// 创建 sink（构造期同步建目录 + 加载持久化去重索引）。
     pub fn new(workspace: &Path, max_bytes: u64) -> Self {
-        let inbox_root = nemesis_path::cluster_dir_in_workspace(workspace).join("inbox");
+        let inbox_root = nemesis_path::resolve_cluster_inbox_dir_in_workspace(workspace);
         let staging_root = inbox_root.join(".staging");
         let _ = std::fs::create_dir_all(&staging_root);
         let dedup = load_dedup(&inbox_root);

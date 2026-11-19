@@ -321,6 +321,53 @@ fn test_resolve_scanner_config_path_in_workspace() {
 }
 
 #[test]
+fn test_resolve_cluster_inbox_dir_in_workspace() {
+    // BUG-20261119-193 回归锁：集群收件箱跨 crate 读/写对（cluster transfer
+    // 写 / board dossier + bot archive_ingest + agent migrate landing 读）
+    // 的唯一拼接点，布局值钉死。
+    let ws = Path::new("/data/workspace");
+    assert_eq!(
+        resolve_cluster_inbox_dir_in_workspace(ws),
+        PathBuf::from("/data/workspace/cluster/inbox")
+    );
+    // 与既有 cluster 根拼接点同源（改 cluster 布局时 inbox 自动跟随）。
+    assert_eq!(
+        resolve_cluster_inbox_dir_in_workspace(ws),
+        cluster_dir_in_workspace(ws).join("inbox")
+    );
+}
+
+#[test]
+fn test_resolve_skill_trust_path_in_workspace() {
+    // BUG-20261119-193 回归锁：skills/connectors 共用信任库唯一拼接点
+    //（分叉 = 双侧验签结论不一致）。
+    let ws = Path::new("/data/workspace");
+    assert_eq!(
+        resolve_skill_trust_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/skill_trust.json")
+    );
+    assert_eq!(
+        resolve_skill_trust_path_in_workspace(ws),
+        workspace_config_dir(ws).join("skill_trust.json")
+    );
+}
+
+#[test]
+fn test_resolve_plugin_trust_path_in_workspace() {
+    // BUG-20261119-193 回归锁：WASM 插件信任库唯一拼接点（CLI trust 管理
+    // ↔ gateway 装配期验签的读/写对，分叉 = CLI 吊销失效）。
+    let ws = Path::new("/data/workspace");
+    assert_eq!(
+        resolve_plugin_trust_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/plugin_trust.json")
+    );
+    assert_eq!(
+        resolve_plugin_trust_path_in_workspace(ws),
+        workspace_config_dir(ws).join("plugin_trust.json")
+    );
+}
+
+#[test]
 fn test_env_constants() {
     assert_eq!(ENV_HOME, "NEMESISBOT_HOME");
     assert_eq!(ENV_CONFIG, "NEMESISBOT_CONFIG");

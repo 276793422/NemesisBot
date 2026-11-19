@@ -19,6 +19,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
+nemesis-path = { workspace = true }
 nemesis-utils = { workspace = true }
 nemesis-mcp = { workspace = true }
 ed25519-dalek = { workspace = true }
