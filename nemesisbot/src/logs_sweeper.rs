@@ -477,6 +477,11 @@ fn sweep_family(
                     // 兜底：event_ledger 族末行 append 判定 / 7d store
                     // cleanup 下次启动）。
                     if let Some(c) = session_cascade {
+                        // 裁剪矩阵闸（BUG-20261119-179）：history_search 模块
+                        // 在 nemesis-agent 里由 feature 编译出——minimal-iot/
+                        // desktop 档不含它，未门控引用 = E0433 整连接器缺席。
+                        // 关 feature = FTS 索引本就不存在，跳过失效化即正确。
+                        #[cfg(feature = "history-search")]
                         nemesis_agent::history_search::invalidate_session_stem(stem);
                         let ledger = c.ledger_dir.join(format!("{stem}.jsonl"));
                         if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&ledger) {
