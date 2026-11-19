@@ -419,7 +419,14 @@ impl PluginInstaller {
         let (component, tool_meta, policy_meta, step_meta) = if declarative {
             (0u64, None, None, None)
         } else {
-            let component = self.manager.runtime().compile_component(&wasm_bytes)?;
+            // BUG-20261119-185：编译卸载 blocking 线程池（全量编译重 CPU
+            // 且无预算闸，install 是 WSAPI/CLI async 路径，inline 会阻塞
+            // tokio worker；wasm_bytes 后续落位还要用，clone 进闭包）。
+            let component = self
+                .manager
+                .runtime()
+                .compile_component_async(wasm_bytes.clone())
+                .await?;
             let (tool_meta, policy_meta, step_meta) = self
                 .probe_and_reconcile(&manifest, component, trust_state)
                 .await?;
@@ -957,7 +964,14 @@ impl PluginInstaller {
                 "wasm sha256 mismatch (payload changed after install?): manifest {expect} actual {actual_hash}",
             )));
         }
-        let component = self.manager.runtime().compile_component(&wasm_bytes)?;
+        // BUG-20261119-185：同 install_core——编译卸载 blocking 线程池
+        // （load_all ← gateway 启动装配同属 async 路径；bytes 此后不再用，
+        // move 进闭包免复制）。
+        let component = self
+            .manager
+            .runtime()
+            .compile_component_async(wasm_bytes)
+            .await?;
         let (tool_meta, policy_meta, step_meta) = self
             .probe_and_reconcile(&manifest, component, trust_state)
             .await?;

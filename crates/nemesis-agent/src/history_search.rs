@@ -377,6 +377,28 @@ pub fn invalidate_session(session_key: &str) {
     });
 }
 
+/// [`invalidate_session`] 的 stem 直输形态（logs_sweeper TTL 清扫用，
+/// 2026-11-19 删除残留修复）：sweeper 只有文件 stem（=
+/// `sanitize_path_segment(key)` 的产物，DB session_key 列存的就是 stem——
+/// insert_row 以 stem 入库），无原始 key 可走 `stem_of` 反推。幂等；
+/// DB 打不开（`with_conn` 失败）静默跳过——下次查询前 reindex 的孤儿
+/// 清理兜底（DB-vs-disk 对比同族）。
+pub fn invalidate_session_stem(stem: &str) {
+    // DB 缺席短路：索引从未建立（fresh home / 无 gateway 活动的测试进程）
+    // = 无行可删，免开 DB（open_conn 会创建空 DB 文件 = 无谓落盘）。
+    // 语义等价：无 DB 必无行。
+    if !index_db_path().exists() {
+        return;
+    }
+    let _ = with_conn(|conn, indexed| {
+        let _ = conn.execute(
+            "DELETE FROM history_fts WHERE session_key = ?1",
+            rusqlite::params![stem],
+        );
+        indexed.remove(stem);
+    });
+}
+
 /// Build the FTS5 match expression: the raw query as a phrase against
 /// `content`, OR every bigram token of the query against `content_bigram`
 /// (any-hit semantics — a phrase match on the bigram column would require

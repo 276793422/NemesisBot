@@ -210,10 +210,12 @@ async fn multi_turn_round(
 // 场景实现（每个场景产出 Vec<单轮结果>；Ok=(耗时ms,回复) Err=诊断）
 // ---------------------------------------------------------------------------
 
-/// TestAI 端点基址（场景运行时注入，main.rs 持有）。
+/// TestAI 端点基址（场景运行时注入，main.rs 持有）。`mail` 仅在场景过滤
+/// 器选中 mail_roundtrip 时装配（[`stage_mail_env`]，gateway spawn 前调用）。
 #[derive(Clone, Copy)]
 pub struct BenchCtx {
     pub ai_port: u16,
+    pub mail: Option<MailEnv>,
 }
 
 /// basic_chat ×N：固定回复基线。
@@ -3684,6 +3686,473 @@ async fn goal_gate_one_round() -> Result<(u64, String)> {
 }
 
 // ---------------------------------------------------------------------------
+// 邮件基础设施 LLM e2e（mail_roundtrip，2026-11-19）：agent 驱动 mail 工具
+// 双腿全链——外发腿 client.rs → implicit TLS → bench relay sink（外部
+// SMTP relay 替身，TestAIServer 同哲学：外部服务用替身，被测侧零 mock）；
+// 收信腿 gateway SMTP 面 → maildir 分库 → WSAPI/tool list/read → agent。
+// preflight 探 mail.status：插件未装载 = 诚实报错带修复指引（签名闸/release
+// DLL 构建指引），不静默、不假绿。
+// ---------------------------------------------------------------------------
+
+/// mail_roundtrip 环境快照（stage 产物；BenchCtx 携带进场景）。
+#[derive(Clone, Copy)]
+pub struct MailEnv {
+    /// gateway SMTP 收信面端口（bench 明文投递进站信）。
+    pub smtp_port: u16,
+    /// bench TLS relay sink 端口（agent 外发腿的落地目标）。
+    pub sink_port: u16,
+}
+
+/// 选一个当前可绑定的回环端口（bind :0 探测后释放；TOCTOU 竞态窗口对本
+/// 套件可接受——cleanup_ports 同款纪律）。
+fn pick_free_port() -> Result<u16> {
+    let l = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let port = l.local_addr()?.port();
+    drop(l);
+    Ok(port)
+}
+
+/// 当前平台 plugin_mail 库文件名。
+fn mail_plugin_filename() -> &'static str {
+    if cfg!(windows) {
+        "plugin_mail.dll"
+    } else if cfg!(target_os = "macos") {
+        "libplugin_mail.dylib"
+    } else {
+        "libplugin_mail.so"
+    }
+}
+
+/// mail_roundtrip 环境装配（**gateway spawn 前**调用，仅场景过滤器选中
+/// 本场景时）：
+/// 1. 写 `<ws>/config/config.mail.json`（enabled 总闸 + SMTP 收信面——
+///    回环明文面合法（投递面明文只 WARN）+ client 指向 bench TLS sink）；
+/// 2. 写 `<ws>/config/config.plugin.native.json` 名册（plugin_mail 启用）；
+/// 3. 写 `<home>/mail/addresses.json` 预注册 inbox@bench.local（首个注册
+///    地址 = 默认主库；域须 ∈ local_domains——两级 RCPT 闸都过）；
+/// 4. 部署 plugin_mail 库到 gateway 旁 `plugins/`（构建产物候选序与
+///    build-windows.bat/build-linux.sh 一致；全部缺席只 WARN——preflight
+///    会以 loaded:false 诚实报，附构建指引）。
+///
+/// ⚠ 签名闸：release gateway 会拒绝未签名 DLL（verify feature + 编译期锚
+/// 是默认构建形态）；本地 e2e 用 `--gateway target/debug/nemesisbot.exe`
+/// 跑（dev 形态 Unsigned warn 放行），或以测试根签 DLL。
+pub fn stage_mail_env(ws: &TestWorkspace, gateway_dir: &std::path::Path) -> Result<MailEnv> {
+    let smtp_port = pick_free_port()?;
+    let sink_port = pick_free_port()?;
+    let cfg_dir = ws.workspace().join("config");
+    std::fs::create_dir_all(&cfg_dir)?;
+    let ca_path = cfg_dir.join("bench_mail_ca.pem");
+    let ca_path_str = ca_path.to_string_lossy().replace('\\', "/");
+
+    // 1. config.mail.json（键名与插件侧宽容解析面同源：smtp/port/bind/
+    //    local_domains/tls + client/smtp_host/smtp_port/username/password/
+    //    ca_cert_path）。
+    let mail_cfg = json!({
+        "enabled": true,
+        "smtp": {
+            "enabled": true,
+            "bind": "127.0.0.1",
+            "port": smtp_port,
+            "local_domains": ["bench.local"],
+            "tls": {"enabled": false}
+        },
+        "client": {
+            "enabled": true,
+            "smtp_host": "127.0.0.1",
+            "smtp_port": sink_port,
+            "username": "bench-agent@bench.local",
+            "password": "",
+            "ca_cert_path": ca_path_str
+        }
+    });
+    std::fs::write(
+        cfg_dir.join("config.mail.json"),
+        serde_json::to_string_pretty(&mail_cfg)?,
+    )?;
+
+    // 2. 名册（形态：{"plugins":{"plugin_mail":{"enabled":true}}}——顶层散键无效）。
+    let roster = json!({"plugins": {"plugin_mail": {"enabled": true}}});
+    std::fs::write(
+        cfg_dir.join("config.plugin.native.json"),
+        serde_json::to_string_pretty(&roster)?,
+    )?;
+
+    // 3. 地址注册表（AddrEntry 同形：{address, registered_at_ms}；首个注册
+    //    地址 = 默认主库）。
+    let mail_root = ws.home().join("mail");
+    std::fs::create_dir_all(&mail_root)?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let addrs = json!([{"address": "inbox@bench.local", "registered_at_ms": now_ms}]);
+    std::fs::write(
+        mail_root.join("addresses.json"),
+        serde_json::to_string_pretty(&addrs)?,
+    )?;
+
+    // 4. DLL 部署（候选序：构建脚本重定向目标 → 直跑 cargo 的插件本地 target；
+    //    库名按当前平台三分支——mac 构建产物是 dylib，与部署名同源）。
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let base = mail_plugin_filename();
+    let candidates = [
+        root.join(format!(
+            "target/target_windows/plugins/plugin-mail/release/{base}"
+        )),
+        root.join(format!(
+            "target/target_linux/plugins/plugin-mail/release/{base}"
+        )),
+        root.join(format!("plugins/plugin-mail/target/release/{base}")),
+    ];
+    let src = candidates.iter().find(|p| p.is_file());
+    match src {
+        Some(src) => {
+            let dst_dir = gateway_dir.join("plugins");
+            std::fs::create_dir_all(&dst_dir)?;
+            let dst = dst_dir.join(mail_plugin_filename());
+            std::fs::copy(src, &dst)?;
+            println!("  mail 插件已部署：{} → {}", src.display(), dst.display());
+        }
+        None => println!(
+            "  WARN plugin_mail 库缺席（候选 {:?} 均不存在）——构建：\
+             cargo build --release --manifest-path plugins/plugin-mail/Cargo.toml；\
+             mail_roundtrip 将以 loaded:false 诚实报错",
+            candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+        ),
+    }
+
+    Ok(MailEnv {
+        smtp_port,
+        sink_port,
+    })
+}
+
+/// bench TLS relay sink：implicit TLS SMTP 会话（220/250/354/221 极简形态，
+/// 与 plugin-mail client.rs 的协议期望逐字对齐——多行 EHLO 终行 250 空格、
+/// DATA 354、终止符后 250、QUIT 221）。收到的 DATA 原样落 `out_path`
+/// （效果面断言读文件——codemode_out.txt 先例）。
+async fn spawn_bench_mail_sink(
+    cert_pem: &str,
+    key_pem: &str,
+    port: u16,
+    out_path: std::path::PathBuf,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let cfg = nemesis_mail_protocol::tls_server_config(cert_pem.as_bytes(), key_pem.as_bytes())
+        .map_err(|e| anyhow!("sink TLS 装配失败: {e}"))?;
+    let acceptor = std::sync::Arc::new(tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(cfg)));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    Ok(tokio::spawn(async move {
+        loop {
+            let (tcp, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let acceptor = acceptor.clone();
+            let out_path = out_path.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let (reader, mut writer) = tokio::io::split(tls);
+                let mut reader = tokio::io::BufReader::new(reader);
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+                let _ = writer.write_all(b"220 bench-sink ESMTP ready\r\n").await;
+                let mut data = String::new();
+                let mut in_data = false;
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let trimmed = line.trim_end_matches(['\r', '\n']).to_string();
+                    if in_data {
+                        if trimmed == "." {
+                            in_data = false;
+                            let _ = std::fs::write(&out_path, &data);
+                            let _ = writer.write_all(b"250 queued as bench\r\n").await;
+                        } else {
+                            // dot-stuffing 还原（领先一个 '.' 的行剥前缀）。
+                            if let Some(stripped) = trimmed.strip_prefix('.') {
+                                data.push_str(stripped);
+                            } else {
+                                data.push_str(&trimmed);
+                            }
+                            data.push_str("\r\n");
+                        }
+                        continue;
+                    }
+                    let lower = trimmed.to_lowercase();
+                    if lower.starts_with("ehlo") || lower.starts_with("helo") {
+                        let _ = writer
+                            .write_all(b"250-bench-sink greets you\r\n250 8BITMIME\r\n")
+                            .await;
+                    } else if lower.starts_with("mail from:") || lower.starts_with("rcpt to:") {
+                        let _ = writer.write_all(b"250 OK\r\n").await;
+                    } else if lower == "data" {
+                        in_data = true;
+                        data.clear();
+                        let _ = writer.write_all(b"354 end with <CRLF>.<CRLF>\r\n").await;
+                    } else if lower.starts_with("quit") {
+                        let _ = writer.write_all(b"221 bench-sink bye\r\n").await;
+                        break;
+                    } else {
+                        let _ = writer.write_all(b"500 unrecognized\r\n").await;
+                    }
+                }
+            });
+        }
+    }))
+}
+
+/// 收信腿投递：bench 作为外部 MTA 向 gateway SMTP 面明文投递一封信到
+/// inbox@bench.local（投递面明文合法——回环 bind，产品只 WARN）。响应码
+/// 读取与 plugin client 同语义（`250-` 续行直至 `250 ` 终行）。
+async fn deliver_inbound_smtp(port: u16, subject: &str, body: &str) -> Result<()> {
+    // 连接重试（gateway server_start 在 spawn 期完成，此重试只吸收时序毛刺）。
+    let mut tcp = None;
+    for _ in 0..20 {
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(s) => {
+                tcp = Some(s);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
+        }
+    }
+    let mut tcp = tcp.ok_or_else(|| anyhow!("gateway SMTP 面 {} 连接失败（20×500ms）", port))?;
+    let (r, mut w) = tcp.split();
+    let mut reader = tokio::io::BufReader::new(r);
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    // 读多行响应，校验末行码。
+    async fn expect(
+        reader: &mut tokio::io::BufReader<tokio::net::tcp::ReadHalf<'_>>,
+        expect: u16,
+    ) -> Result<String> {
+        loop {
+            let mut line = String::new();
+            let n = reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| anyhow!("SMTP 面响应读取失败: {e}"))?;
+            anyhow::ensure!(n > 0, "SMTP 面连接被关闭（等 {expect}）");
+            let trimmed = line.trim_end().to_string();
+            anyhow::ensure!(trimmed.len() >= 3, "SMTP 面响应畸形: {trimmed:?}");
+            let code: u16 = trimmed
+                .get(0..3)
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow!("响应码非数字: {trimmed:?}"))?;
+            if trimmed.as_bytes().get(3) != Some(&b'-') {
+                anyhow::ensure!(
+                    code == expect,
+                    "SMTP 面响应码 {code}（期望 {expect}）: {trimmed}"
+                );
+                return Ok(trimmed);
+            }
+        }
+    }
+    async fn send(w: &mut tokio::net::tcp::WriteHalf<'_>, line: &str) -> Result<()> {
+        w.write_all(format!("{line}\r\n").as_bytes())
+            .await
+            .map_err(|e| anyhow!("SMTP 面写入失败: {e}"))
+    }
+
+    let greeting = expect(&mut reader, 220).await?;
+    anyhow::ensure!(greeting.contains("220"), "greeting 异常: {greeting}");
+    send(&mut w, "EHLO bench-bench inbound").await?;
+    expect(&mut reader, 250).await?;
+    send(&mut w, "MAIL FROM:<outside@elsewhere.local>").await?;
+    expect(&mut reader, 250).await?;
+    send(&mut w, "RCPT TO:<inbox@bench.local>").await?;
+    expect(&mut reader, 250).await?;
+    send(&mut w, "DATA").await?;
+    expect(&mut reader, 354).await?;
+    let payload = format!(
+        "From: outside@elsewhere.local\r\nTo: inbox@bench.local\r\nSubject: {subject}\r\nDate: bench\r\n\r\n{body}\r\n"
+    );
+    w.write_all(payload.as_bytes())
+        .await
+        .map_err(|e| anyhow!("SMTP 面载荷写入失败: {e}"))?;
+    w.write_all(b".\r\n").await?;
+    expect(&mut reader, 250).await?;
+    send(&mut w, "QUIT").await?;
+    let _ = expect(&mut reader, 221).await;
+    Ok(())
+}
+
+/// mail_roundtrip ×N（runs 建议 1：收信库跨 run 不清理，unread_only 闸 +
+/// 单轮语义已够）。双腿时序：
+/// 1. rcgen 自签证书（IP SAN 127.0.0.1）→ `<ws>/config/bench_mail_ca.pem`
+///    （client ca_cert_path 同源信任）→ 起 TLS sink；
+/// 2. 外发腿：`<MAIL_SEND>` → 模型发 mail send 工具调用 → client.rs 隐式
+///    TLS 到 sink → DATA 落 `bench_mail_out.eml` → 断言 Subject/body 标记；
+/// 3. 收信腿：bench 明文 SMTP 投递进 gateway 面（RCPT 两级闸：域名 +
+///    注册地址）→ maildir 分库落盘；
+/// 4. 读信腿：`<MAIL_READ>` → 模型 mail list（unread_only）→ 取首个 id →
+///    mail read → 正文含 NBMK 标记 → MAIL_READ_OK。
+pub async fn run_mail_roundtrip(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let Some(env) = ctx.mail else {
+        return vec![Err(anyhow!(
+            "mail 环境未装配（BenchCtx.mail = None）——main.rs stage 段未跑（场景过滤装配缺口）"
+        ))];
+    };
+    let mut out = Vec::new();
+
+    // ---- preflight：插件装载 + SMTP 面在跑（一次，覆盖全部 runs）----
+    let preflight = async {
+        let mut api = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+        let st = wsapi_call_on(
+            &mut api,
+            "mail",
+            "status",
+            json!({}),
+            Duration::from_secs(10),
+        )
+        .await?;
+        let _ = api.close(None).await;
+        anyhow::ensure!(
+            st["loaded"].as_bool() == Some(true),
+            "mail 插件未装载（mail.status = {st}）。修复路径：\
+             ①构建库 cargo build --release --manifest-path plugins/plugin-mail/Cargo.toml；\
+             ②重启 bench（stage 段自动部署到 gateway 旁 plugins/）；\
+             ③release gateway 会拒未签名 DLL（编译期锚签名闸）——用 \
+             --gateway target/debug/nemesisbot.exe 跑 bench（dev 形态放行）"
+        );
+        anyhow::ensure!(
+            st["smtp"]["running"].as_bool() == Some(true),
+            "gateway SMTP 面未运行（mail.status.smtp = {}）",
+            st["smtp"]
+        );
+        Ok(())
+    };
+    if let Err(e) = preflight.await {
+        return vec![Err(e)];
+    }
+
+    let ca_path = ws.workspace().join("config").join("bench_mail_ca.pem");
+    let out_eml = ws.workspace().join("bench_mail_out.eml");
+    for r in 0..runs {
+        let start = Instant::now();
+        let flow = async {
+            // 1. 每轮新证书（密钥新鲜，防跨 run 会话复用残留面）。
+            let mut params = rcgen::CertificateParams::default();
+            params.subject_alt_names = vec![rcgen::SanType::IpAddress(std::net::IpAddr::V4(
+                std::net::Ipv4Addr::LOCALHOST,
+            ))];
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "bench-mail-sink");
+            let key = rcgen::KeyPair::generate()?;
+            let cert = params.self_signed(&key)?;
+            let cert_pem = cert.pem();
+            let key_pem = key.serialize_pem();
+            std::fs::write(&ca_path, &cert_pem)?;
+            let _ = std::fs::remove_file(&out_eml);
+            let sink =
+                spawn_bench_mail_sink(&cert_pem, &key_pem, env.sink_port, out_eml.clone()).await?;
+
+            // 2. 外发腿。
+            let session_a = fresh_session_id("bench-mail-a");
+            let send_res: Result<String> = async {
+                let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+                chat_send(
+                    &mut stream,
+                    &session_a,
+                    "<MAIL_SEND>peer@elsewhere.local</MAIL_SEND>",
+                    None,
+                )
+                .await?;
+                let reply = chat_wait(
+                    &mut stream,
+                    &session_a,
+                    "MAIL_SEND",
+                    Duration::from_secs(90),
+                )
+                .await?;
+                let _ = stream.close(None).await;
+                Ok(reply)
+            }
+            .await;
+            let send_reply = match send_res {
+                Ok(v) => v,
+                Err(e) => {
+                    sink.abort();
+                    anyhow::bail!("外发腿未获 MAIL_SEND 回执: {e}");
+                }
+            };
+            if !send_reply.contains("MAIL_SEND_OK") {
+                sink.abort();
+                anyhow::bail!("外发腿判败: {send_reply}");
+            }
+            let eml = std::fs::read_to_string(&out_eml).map_err(|e| {
+                sink.abort();
+                anyhow!("sink 未收到外发信（bench_mail_out.eml 缺席: {e}）——client→TLS→relay 链断")
+            })?;
+            if !eml.contains("Subject: bench mail subject NBMK") || !eml.contains("NBMK-MAIL-BODY")
+            {
+                sink.abort();
+                anyhow::bail!(
+                    "外发载荷效果面不符（Subject/body 标记缺失）：{:?}",
+                    // chars 截断防非字符边界 panic（byte-slice 越界 char boundary）。
+                    eml.chars().take(400).collect::<String>()
+                );
+            }
+
+            // 3. 收信腿投递。
+            let subject = format!("bench inbound NBMK r{r}");
+            if let Err(e) =
+                deliver_inbound_smtp(env.smtp_port, &subject, "NBMK-INBOUND-BODY.").await
+            {
+                sink.abort();
+                anyhow::bail!("收信腿投递失败: {e}");
+            }
+
+            // 4. 读信腿。
+            let session_b = fresh_session_id("bench-mail-b");
+            let read_res: Result<String> = async {
+                let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+                chat_send(&mut stream, &session_b, "<MAIL_READ>", None).await?;
+                let reply = chat_wait(
+                    &mut stream,
+                    &session_b,
+                    "MAIL_READ",
+                    Duration::from_secs(90),
+                )
+                .await?;
+                let _ = stream.close(None).await;
+                Ok(reply)
+            }
+            .await;
+            sink.abort();
+            let read_reply = read_res?;
+            // MAIL_READ_OK 本身即内容完整性断言：Go 模型只在 read 结果 body
+            // 含 NBMK 时才回该裁决（maildir→read→LLM 工具结果→模型 全链）。
+            anyhow::ensure!(
+                read_reply.contains("MAIL_READ_OK"),
+                "读信腿判败: {read_reply}"
+            );
+            Ok("send+inbound+read OK".to_string())
+        }
+        .await;
+        out.push(match flow {
+            Ok(note) => Ok((start.elapsed().as_millis() as u64, note)),
+            Err(e) => Err(e),
+        });
+    }
+    let _ = std::fs::remove_file(&out_eml);
+    out
+}
+
+// ---------------------------------------------------------------------------
 // 场景目录
 // ---------------------------------------------------------------------------
 
@@ -3797,6 +4266,10 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         },
         ScenarioSpec {
             name: "goal_gate",
+            runs: 1,
+        },
+        ScenarioSpec {
+            name: "mail_roundtrip",
             runs: 1,
         },
     ]

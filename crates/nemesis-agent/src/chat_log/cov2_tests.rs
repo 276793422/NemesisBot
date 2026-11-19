@@ -99,6 +99,11 @@ fn read_chat_log_whole_log_window_eviction() {
         body.push_str(&row.to_string());
         body.push('\n');
     }
+    // test_home 重定向（2026-11-19）后 home 是 fresh temp 目录，sessions/
+    // 子目录由生产 append 路径的 create_dir_all 惰性建立；本测试裸 fs::write
+    // 须自建母目录（nextest 每 test 独立进程，无先行 append 兜底——同波
+    // cov_tests::first_user_message 同款前置）。
+    fs::create_dir_all(path.parent().expect("log path has parent")).unwrap();
     fs::write(&path, body).unwrap();
 
     let (page, total, more, oldest) = read_chat_log(&key, 100_000, None);

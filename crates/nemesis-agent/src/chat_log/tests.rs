@@ -1234,3 +1234,30 @@ fn test_session_exec_stats_concurrent_increments() {
     assert_eq!(read_session_stats(&key).tool_calls, 200);
     delete_chat_log(&key);
 }
+
+// 删除残留修复（2026-11-19）：硬删级联摘除 capture 目录（会话内容副本
+// 隐私面）。capture 目录在 test home 的 workspace/logs/capture 下，经
+// capture_sink::capture_session_dir 同源 sanitize 寻址——与生产删除路径
+// 消费的是同一个函数。
+#[test]
+fn test_delete_chat_log_cascades_capture_dir() {
+    let key = format!(
+        "test:capture:cascade:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let ws = nemesis_path::default_path_manager().workspace();
+    let cap = crate::capture_sink::capture_session_dir(&ws, &key);
+    std::fs::create_dir_all(&cap).unwrap();
+    std::fs::write(cap.join("00.summary.json"), "{}").unwrap();
+    std::fs::write(cap.join("01.tools.json"), "[]").unwrap();
+
+    crate::chat_log::delete_chat_log(&key);
+    assert!(!cap.exists(), "capture 目录随硬删级联摘除（隐私面）");
+
+    // 幂等：目录已缺席再删一次不炸不建。
+    crate::chat_log::delete_chat_log(&key);
+    assert!(!cap.exists());
+}

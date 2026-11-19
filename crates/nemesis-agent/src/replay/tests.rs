@@ -47,6 +47,9 @@ static KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Unique-per-process session key so parallel test runs never share a ledger.
 fn unique_key(prefix: &str) -> String {
+    // 本文件多数测试的第一个 helper：账本写入走生产 replay（直打单例，
+    // 不经 chat_log::singleton 的惰性 ensure），在此显式收敛（幂等）。
+    crate::test_home::ensure_redirected();
     format!(
         "{}_{}_{}",
         prefix,
@@ -57,6 +60,7 @@ fn unique_key(prefix: &str) -> String {
 
 /// Best-effort removal of this test's sidecars from the global boundary dir.
 fn cleanup_sidecars(key: &str) {
+    crate::test_home::ensure_redirected(); // 直调单例前显式重定向（幂等；删除语义）
     let dir = nemesis_path::default_path_manager().boundary_events_dir();
     let safe = key.replace(':', "_");
     let _ = std::fs::remove_file(dir.join(format!("{}.replay.jsonl", safe)));
@@ -64,6 +68,7 @@ fn cleanup_sidecars(key: &str) {
 }
 
 fn temp_store(key: &str) -> (SessionStore, std::path::PathBuf) {
+    crate::test_home::ensure_redirected(); // 同上（生产 replay 写路径直打单例）
     let dir = std::env::temp_dir().join(format!("t8_replay_{}_{}", key, std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let store = SessionStore::new_with_storage(&dir);

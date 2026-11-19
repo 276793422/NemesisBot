@@ -120,6 +120,22 @@ impl SessionAllowAllState {
         }
     }
 
+    /// 会话删除级联摘除（2026-11-19 删除残留修复）：软删/硬删/回收站清空
+    /// 后内存放行态必须跟随消失——此前接口只有 set/bump/status/hydrate，
+    /// 删除会话后 `check()` 仍命中（enabled=True 僵尸），同键重建的会话
+    /// 继承前任全部放行 = 安全面。删除即摘**整条条目**（非置 disabled——
+    /// 重开是全新会话，不是「暂停中的旧会话」，无 since/count 可回看）；
+    /// meta sidecar（持久真相源）由删除链路随四件套走回收站或删除。
+    /// 返回摘除前是否处于放行中（调用方留痕用）；未知会话 no-op。
+    pub fn remove(&self, session_key: &str) -> bool {
+        let mut map = self.map.write();
+        let was_enabled = map.remove(session_key).is_some_and(|e| e.enabled);
+        if was_enabled {
+            tracing::info!("[SessionAllowAll] 会话删除级联摘除放行态: {session_key}");
+        }
+        was_enabled
+    }
+
     /// 全部启用中的会话键（sessions.list 投影 / 状态盘点用）。
     pub fn enabled_keys(&self) -> Vec<String> {
         self.map

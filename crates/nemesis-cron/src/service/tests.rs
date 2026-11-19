@@ -5125,3 +5125,79 @@ fn test_bug_20261118_151_baseline_unpatched_one_shot_still_deleted() {
     }
     svc.stop();
 }
+
+#[test]
+fn test_bug_20261119_189_status_no_abba_with_running_holder() {
+    // BUG-20261119-189 回归锁：status() 旧形态在持有 store guard 时嵌套取
+    // running——与 start() 的 running→store 序（running guard 全程持有 +
+    // recompute/save_store 请求 store）构成 ABBA 死锁。
+    //
+    // 确定性红证的关键交错：**status(T2) 必须先于 T1 进入 store**。做法：
+    // 主线程先持 store，T1 持 running 后停在放行栅栏前（不发 store 请求），
+    // 放行 store 后 T2 是唯一竞争者（200ms 足够它卡进 store 临界区），此时
+    // 才放行 T1 的 store 请求——
+    // 旧形态：T2 持 store 等 running（T1 持）、T1 等 store（T2 持）= 永久
+    //   互等，status_done 永不到达（recv_timeout 红）；
+    // 新形态：T2 的 store 临界区不嵌套 running（读完即放锁、阻塞在 running
+    //   上），T1 拿 store 后释放两锁，T2 立即完成（绿）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    svc.add_job(
+        "abba",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "hello",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let (t1_hold_tx, t1_hold_rx) = std::sync::mpsc::channel::<()>();
+    let (release_t1_tx, release_t1_rx) = std::sync::mpsc::channel::<()>();
+    let (status_done_tx, status_done_rx) = std::sync::mpsc::channel::<()>();
+
+    // T1：模拟 start() 临界区——先持 running，停在栅栏前；放行后才请求
+    // store（保证 T2 先入 store）。
+    let svc1 = std::sync::Arc::clone(&svc);
+    std::thread::spawn(move || {
+        let running_guard = svc1.running.lock();
+        t1_hold_tx.send(()).unwrap();
+        release_t1_rx.recv().unwrap();
+        let store_guard = svc1.store.lock();
+        drop(store_guard);
+        drop(running_guard);
+    });
+
+    // 主线程先持 store——T1/T2 的 store 请求都排在它后面，无竞争窗口。
+    let store_guard = svc.store.lock();
+    t1_hold_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("T1 must acquire running and park before the release gate");
+
+    // T2：并发 status——drop 后它是唯一的 store 竞争者（T1 还在栅栏前）。
+    let svc2 = std::sync::Arc::clone(&svc);
+    std::thread::spawn(move || {
+        let _ = svc2.status();
+        status_done_tx.send(()).unwrap();
+    });
+
+    // 放行 store，给 T2 时间卡进 store 临界区（200ms >> 无竞争锁的微秒级
+    // 获取），此时旧形态的 T2 已持 store 并阻塞在 running 上。
+    drop(store_guard);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // 放行 T1 的 store 请求：旧形态 = 死锁起点；新形态 = T1 拿 store 放锁，
+    // 解除 T2 在 running 上的阻塞。
+    release_t1_tx.send(()).unwrap();
+
+    match status_done_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(()) => {}
+        Err(_) => panic!("status() 与持 running 的 start 临界区并发时死锁（ABBA 锁序倒置回归）"),
+    }
+}

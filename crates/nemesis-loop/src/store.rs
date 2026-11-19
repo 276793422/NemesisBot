@@ -5,6 +5,7 @@
 
 use crate::state::LoopState;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// loops 状态目录（`<workspace>/loops`）。
 pub fn loops_dir(workspace: &Path) -> PathBuf {
@@ -101,4 +102,28 @@ pub fn alloc_id(dir: &Path) -> String {
         }
     }
     format!("L{}", max + 1)
+}
+
+/// 进程级创建串行锁。`alloc_id`（扫目录）与 `save_loop`（落盘）是两步，
+/// 并发创建者都在对方落盘前扫到同一 max → 同 id 互覆（后写者赢，先建的
+/// loop 状态静默丢失——Dashboard 双击连发两请求即可触发）。goals store
+/// 的 REGISTRY_LOCK + update_registry 闭包纪律是同款先例；BUG-20261118-152
+/// 修了本文件族的原子写（固定临时名互踩）、分配串行化是同族漏网面。
+/// 跨 workspace 串行无害（临界区毫秒级文件读写）；跨进程（CLI vs gateway
+/// 同时创建）不在本锁射程——与 goals 同款诚实边界（进程级锁换消费方
+/// 零接线成本，文件锁属更大改动）。
+static CREATE_LOCK: Mutex<()> = Mutex::new(());
+
+/// 创建新 loop（锁内 alloc+save 串行化，防并发创建同 id 互覆）。`build`
+/// 在锁内以已分配 id 构造状态；返回 Err = 放弃不落盘（id 作废——id 单调
+/// 语义下作废号留空档无害，下次分配跳过）。
+pub fn create_loop(
+    dir: &Path,
+    build: impl FnOnce(String) -> Result<LoopState, String>,
+) -> Result<LoopState, String> {
+    let _guard = CREATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let id = alloc_id(dir);
+    let st = build(id.clone())?;
+    save_loop(dir, &st)?;
+    Ok(st)
 }

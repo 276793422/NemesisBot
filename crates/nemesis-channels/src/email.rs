@@ -253,19 +253,11 @@ impl EmailChannel {
     /// Extracts an email address from a From header.
     /// Examples: "John Doe <john@example.com>" -> "john@example.com"
     ///           "john@example.com" -> "john@example.com"
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源，B1 搬移）——
+    /// 本关联函数是薄委托（插件 DLL 消费同一实现）。
     pub fn extract_email_address(from: &str) -> &str {
-        let from = from.trim();
-
-        // Try angle brackets
-        if let Some(start) = from.rfind('<')
-            && let Some(end) = from.rfind('>')
-            && end > start
-        {
-            return from[start + 1..end].trim();
-        }
-
-        // No angle brackets, check if it looks like an email
-        if from.contains('@') { from } else { "" }
+        nemesis_mail_protocol::extract_email_address(from)
     }
 
     /// Parses IMAP SEARCH results into UIDs（`UID SEARCH` 与 `SEARCH` 的
@@ -408,109 +400,25 @@ impl EmailChannel {
     }
 
     /// Builds a full email message for SMTP.
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
     pub fn build_smtp_message(from: &str, to: &str, subject: &str, body: &str) -> String {
-        let date = chrono::Utc::now().to_rfc2822();
-        // 加固臂：RFC 5322 头部值是单行的——from/to/subject
-        // 一旦混入 CR/LF 即构成头部注入（当前数据流经 IMAP 行解析不可达，
-        // 但本函数是 pub 编码单一入口，纵深防御在编码点收敛；body 区由
-        // SMTP dot-stuffing 负责，不受此影响）。CR/LF 直接剥除。
-        let header_safe = |v: &str| {
-            v.chars()
-                .filter(|&c| c != '\r' && c != '\n')
-                .collect::<String>()
-        };
-        // 非 ASCII Subject → RFC 2047 B-encoding（BUG-20261118-130：裸 8-bit
-        // 头违反 RFC 5322 头 ASCII 域——未协商 SMTPUTF8 的会话严格 MTA 可
-        // 拒收，收件端 MUA 按本地编码猜测乱码）。header_safe 先于编码：
-        // 编码输入恒为拍平后的单行（注入面语义保持）。
-        let subject = encode_rfc2047_subject(&header_safe(subject));
-        // 非 ASCII 正文 → 显式 CTE: base64（RFC 2045 缺省 CTE=7bit 与实际
-        // 8-bit UTF-8 不符面：严格 MTA 拒信或 8→7bit 转换损坏）；纯 ASCII
-        // 正文零漂移（无 CTE 头，行为不变）。
-        let (cte_line, body_out) = encode_body_mime(body);
-        format!(
-            "From: {}\r\n\
-             To: {}\r\n\
-             Subject: {subject}\r\n\
-             Date: {date}\r\n\
-             MIME-Version: 1.0\r\n\
-             Content-Type: text/plain; charset=UTF-8\r\n\
-             {cte_line}\
-             \r\n\
-             {body_out}",
-            header_safe(from),
-            header_safe(to),
-        )
+        nemesis_mail_protocol::build_smtp_message(from, to, subject, body)
     }
 
     /// Parses email headers from IMAP FETCH response lines.
     /// Returns (from, subject, message_id).
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
     pub fn parse_email_headers(responses: &[String]) -> (String, String, String) {
-        let mut from = String::new();
-        let mut subject = String::new();
-        let mut message_id = String::new();
-        let mut in_literal = false;
-        let mut header_data = String::new();
-
-        for line in responses {
-            // Detect literal string marker {N}
-            if line.contains('{')
-                && line.contains('}')
-                && let Some(start) = line.find('{')
-                && let Some(end) = line.find('}')
-                && end > start
-            {
-                in_literal = true;
-                continue;
-            }
-
-            if in_literal {
-                header_data.push_str(line);
-                header_data.push_str("\r\n");
-                continue;
-            }
-
-            apply_header_field(
-                line,
-                &mut from,
-                &mut subject,
-                &mut message_id,
-                FieldWriteMode::Overwrite,
-            );
-        }
-
-        // Also parse from the header literal data if present
-        for hdr_line in header_data.split("\r\n") {
-            apply_header_field(
-                hdr_line,
-                &mut from,
-                &mut subject,
-                &mut message_id,
-                FieldWriteMode::KeepExisting,
-            );
-        }
-
-        (from, subject, message_id)
+        nemesis_mail_protocol::parse_email_headers(responses)
     }
 
     /// Parses email body from IMAP FETCH BODY[TEXT] response lines.
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
     pub fn parse_email_body(responses: &[String]) -> String {
-        if responses.is_empty() {
-            return String::new();
-        }
-
-        let mut body_parts = Vec::new();
-        for line in responses {
-            if line.starts_with("* ") && line.contains("FETCH") {
-                continue;
-            }
-            if line == ")" {
-                continue;
-            }
-            body_parts.push(line.clone());
-        }
-
-        body_parts.join("\n").trim().to_string()
+        nemesis_mail_protocol::parse_email_body(responses)
     }
 
     // -----------------------------------------------------------------------
@@ -1018,34 +926,11 @@ impl tokio::io::AsyncWrite for EmailStream {
     }
 }
 
-/// rustls ClientConfig 装配（ring provider；显式 CA 信任根，mqtt 同模板
-/// ——CA PEM 解析失败/空文件响亮拒绝，不静默降级为无信任根）。
+/// rustls ClientConfig 装配——实现下沉协议层（`tls_client_config` 单一真相
+/// 源，email 通道与 plugin-mail 共用）；错误 String → `NemesisError::Channel`
+/// 包装（crate 级错误约定）。
 fn tls_client_config(ca_pem: &[u8]) -> Result<rustls::ClientConfig> {
-    use rustls::RootCertStore;
-    use rustls::pki_types::CertificateDer;
-    use rustls::pki_types::pem::PemObject;
-
-    let mut roots = RootCertStore::empty();
-    let ca_certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(ca_pem)
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|e| NemesisError::Channel(format!("email CA 证书 PEM 解析失败: {e}")))?;
-    if ca_certs.is_empty() {
-        return Err(NemesisError::Channel(
-            "email CA 证书文件不含有效 PEM 证书".to_string(),
-        ));
-    }
-    for cert in ca_certs {
-        roots
-            .add(cert)
-            .map_err(|e| NemesisError::Channel(format!("email CA 证书加入信任库失败: {e}")))?;
-    }
-
-    let provider = rustls::crypto::ring::default_provider();
-    Ok(rustls::ClientConfig::builder_with_provider(provider.into())
-        .with_safe_default_protocol_versions()
-        .map_err(|e| NemesisError::Channel(format!("email TLS 协议版本装配失败: {e}")))?
-        .with_root_certificates(roots)
-        .with_no_client_auth())
+    nemesis_mail_protocol::tls_client_config(ca_pem).map_err(NemesisError::Channel)
 }
 
 /// implicit TLS 包装：TcpStream → rustls 握手 → EmailStream::Tls。握手
@@ -1319,71 +1204,28 @@ fn imap_quoted(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// SMTP envelope 命令值安全化（R737 协议注入面）：CR/LF 直接剥除——
-/// envelope 值混入 CR/LF 即构成命令注入（DATA 前引入额外命令行）；
-/// 对齐 `build_smtp_message` 的 header_safe 既有形态。
+/// SMTP envelope 命令值安全化——实现下沉协议层（薄委托，tests `super::` 引用兼容）。
 fn smtp_envelope_safe(v: &str) -> String {
-    v.chars().filter(|&c| c != '\r' && c != '\n').collect()
+    nemesis_mail_protocol::smtp_envelope_safe(v)
 }
 
-/// RFC 2047 B-encoding（BUG-20261118-130，出站非 ASCII Subject）：RFC 5322
-/// 头部值是 ASCII 域——裸 8-bit 头在未协商 SMTPUTF8 的会话可被严格 MTA
-/// 拒收（554），收件端 MUA 按本地编码猜测乱码，反垃圾栈罚分。非 ASCII →
-/// `=?UTF-8?B?...?=` encoded-word 序列：载荷按 48 base64 字符切块（4 对齐
-/// ——每块独立可解，RFC 2047 §2 相邻 encoded-word 间的空白解码时丢弃），
-/// 整个 encoded-word 60 ≤ RFC 2047 的 75 字符 SHOULD；相邻块以 CRLF+WSP
-/// 折行衔接（RFC 5322 折行形态，行长有界不破 998 硬限）。纯 ASCII 原样
-/// 返回（字节不变，既有测试与 prompt 面零漂移）。
+/// RFC 2047 B-encoding（BUG-20261118-130，出站非 ASCII Subject）——实现下沉
+/// 协议层（薄委托）。原文档：RFC 5322 头部值是 ASCII 域——裸 8-bit 头在
+/// 未协商 SMTPUTF8 的会话可被严格 MTA 拒收（554）。
 fn encode_rfc2047_subject(v: &str) -> String {
-    if v.is_ascii() {
-        return v.to_string();
-    }
-    const CHUNK: usize = 48;
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, v.as_bytes());
-    let mut parts: Vec<String> = Vec::new();
-    let mut i = 0usize;
-    while i < b64.len() {
-        let end = (i + CHUNK).min(b64.len());
-        parts.push(format!("=?UTF-8?B?{}?=", &b64[i..end]));
-        i = end;
-    }
-    parts.join("\r\n ")
+    nemesis_mail_protocol::encode_rfc2047_subject(v)
 }
 
-/// 正文 MIME CTE 面（BUG-20261118-130）：RFC 2045 §6.1 缺省 CTE=7bit——
-/// 裸 8-bit UTF-8 正文未声明即发，严格 MTA 拒信或 qmail 类 8→7bit 转换
-/// 损坏。非 ASCII 正文 → 显式 `Content-Transfer-Encoding: base64` 头 +
-/// base64 载荷（76 字符折行 = RFC 2045 base64 行长硬限；base64 字母表无
-/// '.'，与 dot-stuffing 正交）。纯 ASCII 正文原样（无 CTE 头，行为不变）。
-/// 返回 (CTE 头行含自身 CRLF——空串=不加头, 编码后正文)。
+/// 正文 MIME CTE 面——实现下沉协议层（薄委托）。返回 (CTE 头行含自身
+/// CRLF——空串=不加头, 编码后正文)。
 fn encode_body_mime(body: &str) -> (String, String) {
-    if body.is_ascii() {
-        return (String::new(), body.to_string());
-    }
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, body.as_bytes());
-    let mut wrapped = String::with_capacity(b64.len() + b64.len() / 76 * 2 + 2);
-    let mut i = 0usize;
-    while i < b64.len() {
-        let end = (i + 76).min(b64.len());
-        if i > 0 {
-            wrapped.push_str("\r\n");
-        }
-        wrapped.push_str(&b64[i..end]);
-        i = end;
-    }
-    ("Content-Transfer-Encoding: base64\r\n".to_string(), wrapped)
+    nemesis_mail_protocol::encode_body_mime(body)
 }
 
-/// DATA 载荷装配（BUG-20261112-111③）：先裸 LF/CR 归一为 CRLF，再点填充。
-/// RFC 5321 会话行终止恒为 CRLF，点填充只覆盖 CRLF-dot——正文中的裸 LF
-/// 行首点不被填充，宽容解析裸 LF 的中继（SMTP smuggling 类）可把它当数据
-/// 终止、后续字节当新命令（冒认证身份发信）。归一后点填充覆盖全部行首。
+/// DATA 载荷装配（BUG-20261112-111③：CRLF 归一 + 点填充）——实现下沉
+/// 协议层（薄委托，tests `super::` 引用兼容）。
 fn prepare_smtp_payload(message: &str) -> String {
-    let normalized = message
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', "\r\n");
-    normalized.replace("\r\n.", "\r\n..")
+    nemesis_mail_protocol::prepare_smtp_payload(message)
 }
 
 /// IMAP tagged 完成行状态判定（BUG-20261112-111①）：完成行形态恒为
@@ -1417,56 +1259,6 @@ fn trailing_literal_size(line: &str) -> Option<usize> {
         return None;
     }
     digits.parse().ok()
-}
-
-/// 按「首个冒号」切出 RFC 5322 头字段 (小写字段名, 值)（BUG-20261112-111②）：
-/// 字段名大小写不敏感（RFC 5322 §2.2），判定与截取必须同源——此前判定用
-/// 小写 starts_with、截取用精确大小写 `trim_start_matches("Message-ID:")`，
-/// 「Message-Id:」（实务同义拼写）命中判定后截取失败 → 值整行污染（字段
-/// 名混入去重键）；小写「from:」无尖括号形态则 chat_id 被污染 →
-/// allow-list 误拦 / 回信投递地址错误。
-fn split_header_field(line: &str) -> Option<(String, String)> {
-    let (name, value) = line.split_once(':')?;
-    Some((name.trim().to_lowercase(), value.trim().to_string()))
-}
-
-/// 头字段写入模式（BUG-20261112-111② 语义保真）：直接 untagged 行 =
-/// 后写覆盖（原语义）；literal 头数据 = 首个命中保留（原语义）。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FieldWriteMode {
-    Overwrite,
-    KeepExisting,
-}
-
-/// 解析一行头字段并按模式写入目标槽（字段名/值同源切分，message-id 额外
-/// 剥尖括号与空白）。
-fn apply_header_field(
-    line: &str,
-    from: &mut String,
-    subject: &mut String,
-    message_id: &mut String,
-    mode: FieldWriteMode,
-) {
-    let Some((name, value)) = split_header_field(line) else {
-        return;
-    };
-    let write = |slot: &mut String, v: &str| match mode {
-        FieldWriteMode::Overwrite => *slot = v.to_string(),
-        FieldWriteMode::KeepExisting => {
-            if slot.is_empty() {
-                *slot = v.to_string();
-            }
-        }
-    };
-    match name.as_str() {
-        "from" => write(from, &value),
-        "subject" => write(subject, &value),
-        "message-id" => write(
-            message_id,
-            value.trim_matches(|c| c == '<' || c == '>' || c == ' '),
-        ),
-        _ => {}
-    }
 }
 
 fn parse_search_results_static(responses: &[String]) -> Vec<String> {

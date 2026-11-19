@@ -54,17 +54,24 @@ fn missing_origin_fails_closed() {
 
 #[test]
 fn hop_cap_matches_reqwest_default() {
-    // 与 reqwest 默认 Policy::limited(10) 同语义：第 10 跳仍在限内，
-    // 第 11 跳（hops=10）终停。
+    // 与 reqwest 默认 Policy::limited(10) 同语义（BUG-20261119-191 钉死）：
+    // hops = attempt.previous().len()，第 N 次判定 = N（含初始 URL）。
+    // reqwest limited 判定是 `len() > max` → 第 10 跳（hops=10）放行，
+    // 第 11 次判定（hops=11）终停。旧形态 `hops >= 10` 只放行 9 跳（差一跳）。
     assert!(cross_host_redirect_decision(
         Some("https://a.com:443"),
         Some("https://a.com:443"),
         MAX_REDIRECT_HOPS - 1
     ));
-    assert!(!cross_host_redirect_decision(
+    assert!(cross_host_redirect_decision(
         Some("https://a.com:443"),
         Some("https://a.com:443"),
         MAX_REDIRECT_HOPS
+    ));
+    assert!(!cross_host_redirect_decision(
+        Some("https://a.com:443"),
+        Some("https://a.com:443"),
+        MAX_REDIRECT_HOPS + 1
     ));
 }
 

@@ -893,3 +893,24 @@ fn concurrent_set_last_channel_last_snapshot_wins_on_disk() {
         "BUG-20261103-335: 并发保存不得让旧快照的 rename 晚落覆盖新值（重启后 last_channel 回退）"
     );
 }
+
+// ----- BUG-20261119-190：load() 对「文件不存在」的契约兑现 -----
+
+/// 契约（new() 的 BUG-20261114-026 注释所依赖）："load() 对『文件不存在』
+/// 返回 Ok（空串约定），Err 必为真损坏"。旧实现 map_err 把「不存在」
+/// 映射成空 String 错误值后 `?` 照常传播 Err("")——文件不存在（正常
+/// 空态）被当错误上报，契约从未成立；唯一调用方靠前置 exists 检查兜住，
+/// 未来任何直接调用方都会把全新工作区当损坏。修复 = 显式 match：
+/// 不存在 → Ok(())；存在但读失败 → 真错误。
+#[test]
+fn test_bug_20261119_190_load_missing_file_is_ok_not_empty_error() {
+    let tmp = TempDir::new().unwrap();
+    // new() 构造后 state 文件不存在（默认空状态，未 save）。
+    let mgr = WorkspaceStateManager::new(tmp.path());
+    // 私有 load() 直调（tests 子模块可见）：必须 Ok(())，不得 Err("")。
+    assert_eq!(
+        mgr.load(),
+        Ok(()),
+        "BUG-20261119-190: load() 对文件不存在必须返回 Ok（空态），不得 Err(\"\")（假损坏）"
+    );
+}

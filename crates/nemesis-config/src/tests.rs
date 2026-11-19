@@ -4823,3 +4823,78 @@ fn test_browser_config_typed_roundtrip() {
     assert_eq!(out2["browser"]["kind"], "custom");
     assert_eq!(out2["browser"]["executable"], "C:/b/my.exe");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261119-187 回归锁：serde 双路径 default 分歧收敛
+//
+// 容器级 `#[serde(default)]` 与字段级裸 `#[serde(default)]` 并存时，
+// 「节存在、字段缺」路径按 serde 实证（字段 attr 优先于容器 default 填充）
+// 拿**类型零值**（bool=false / 数值=0 / String=""），而「节整体缺席」路径走
+// impl Default 的文档化缺省（use_tls=true / imap_port=993 / skin="default"
+// 等）——两路径分歧（web enabled 双路径事故同族）。本批字段已全部收敛为
+// 与 impl Default 同值的显式缺省函数；这里钉死「部分节 == 缺席节」。
+// ---------------------------------------------------------------------------
+
+/// 部分节（`{}` 全字段缺）逐字段等于 impl Default 的分歧字段值。
+#[test]
+fn test_partial_section_defaults_match_impl_default_bug_20261119_187() {
+    // IRC：use_tls=false 曾静默明文连 IRC 服务器（通道侧默认 true）。
+    let irc: IrcConfig = serde_json::from_str("{}").unwrap();
+    assert!(irc.use_tls, "IRC 部分节 use_tls 必须与缺席节一致 = true");
+    assert_eq!(irc.reconnect_backoff_secs, 5);
+    assert_eq!(irc.max_reconnect_backoff_secs, 300);
+
+    // Bluesky 轮询间隔。
+    let bsky: BlueskyConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(bsky.poll_interval, 10);
+
+    // Email 端口/文件夹/轮询（993/465 曾变 0 = 连接响亮失败）。
+    let email: EmailConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(email.imap_port, 993);
+    assert_eq!(email.smtp_port, 465);
+    assert_eq!(email.folder, "INBOX");
+    assert_eq!(email.poll_interval, 30);
+
+    // MQTT：qos 曾静默降级 AtMostOnce、clean_session 曾语义翻转 false。
+    let mqtt: MqttConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(mqtt.broker_host, "127.0.0.1");
+    assert_eq!(mqtt.broker_port, 1883);
+    assert_eq!(mqtt.keep_alive_secs, 30);
+    assert!(mqtt.clean_session);
+    assert_eq!(mqtt.reconnect_delay_secs, 5);
+    assert_eq!(mqtt.qos, 1);
+
+    // WeChat 协议形态常量。
+    let wechat: WeChatConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(wechat.base_url, "https://ilink.bot.weixin.qq.com");
+    assert_eq!(wechat.send_path, "/v1/message/send");
+    assert_eq!(wechat.callback_listen_addr, "0.0.0.0:9541");
+    assert_eq!(wechat.callback_path, "/wechat/callback");
+    assert_eq!(wechat.signature_scheme, "hmac-sha256");
+
+    // UI 皮肤（下游 "default"/空 同义，此处对齐 round-trip 形态）。
+    let ui: UiConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(ui.skin, "default");
+
+    // ModelScope 技能源超时（0 曾立即超时）。
+    let ms: SkillsModelScopeConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(ms.timeout, 30);
+    assert!(ms.enabled);
+}
+
+/// 端到端：Config 整档解析下「channels 节在 + irc 子节在但字段缺」与
+/// 「channels 节缺」的 use_tls 必须同值（安全语义字段单钉）。
+#[test]
+fn test_config_partial_irc_section_tls_matches_absent_section() {
+    let absent: crate::Config = serde_json::from_str(r#"{"model_list": []}"#).unwrap();
+    let partial: crate::Config =
+        serde_json::from_str(r#"{"model_list": [], "channels": {"irc": {}}}"#).unwrap();
+    assert!(
+        absent.channels.irc.use_tls,
+        "缺席节 = impl Default use_tls=true"
+    );
+    assert_eq!(
+        partial.channels.irc.use_tls, absent.channels.irc.use_tls,
+        "部分节（字段缺）必须与缺席节同值——裸 default 曾给 false = 明文连 IRC"
+    );
+}

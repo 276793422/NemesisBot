@@ -264,6 +264,7 @@ const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-mem-1.0",
     "testai-bootstrap-1.0",
     "testai-goals-1.0",
+    "testai-mail-1.0",
 ];
 
 /// 需强制流式（config 条目 `stream: "yes"`）的模型子集：openai 兼容 lane
@@ -461,6 +462,7 @@ async fn run_scenario(
         "memory_forget" => scenarios::run_memory_forget(ctx, runs).await,
         "memory_capacity_recall" => scenarios::run_memory_capacity_recall(ctx, runs).await,
         "goal_gate" => scenarios::run_goal_gate(ctx, runs).await,
+        "mail_roundtrip" => scenarios::run_mail_roundtrip(ctx, runs, ws).await,
         // gateway_restart 不走本调度：它要吃掉/交还 gateway 进程所有权，
         // 在 main() 场景循环特判。
         other => {
@@ -536,6 +538,19 @@ async fn main() -> Result<()> {
     allow_spawn_rule(&ws)?;
     enable_audit_chain(&ws)?;
 
+    // mail_roundtrip 环境装配（gateway spawn **前**——DLL 部署与
+    // config.mail.json 必须先于 gateway 启动，ctx.rs 启动链自动 load +
+    // server_start）。仅当过滤器选中该场景时执行，其他场景零开销。
+    let mail_env = if catalog.iter().any(|s| s.name == "mail_roundtrip") {
+        let gateway_dir = cfg.gateway_bin.parent().ok_or_else(|| {
+            anyhow::anyhow!("gateway 二进制无父目录: {}", cfg.gateway_bin.display())
+        })?;
+        println!("  mail 环境：装配 config.mail.json + 名册 + DLL 部署...");
+        Some(scenarios::stage_mail_env(&ws, gateway_dir)?)
+    } else {
+        None
+    };
+
     println!("[3/4] 启动 AI Server（端口 {}）...", ai_server_port());
     let mut ai_server = ManagedProcess::spawn(
         "AI Server",
@@ -572,6 +587,7 @@ async fn main() -> Result<()> {
     // ---- 逐场景执行 ----
     let ctx = scenarios::BenchCtx {
         ai_port: ai_server_port(),
+        mail: mail_env,
     };
     let security_target =
         std::env::temp_dir().join(format!("agent-bench-pwned-{}.txt", std::process::id()));

@@ -266,6 +266,10 @@ pub struct WebServer {
     /// Copy 直接持值；nemesisbot gateway 装载插件后经 set_roaming_plugin 注入）。
     /// M4 起恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
     quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
+    /// plugin_mail 运行面句柄（邮件基础设施：SMTP/POP3/客户端/存储在插件内；
+    /// nemesisbot gateway 装载后经 set_mail_plugin 注入。fn 指针 Copy 持值）。
+    /// None = 插件未装载（mail.* 命令诚实报「插件未装载」）。恒编译。
+    mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -414,6 +418,7 @@ impl WebServer {
             agent_loop: None,
             cluster: None,
             quic_relay: None,
+            mail_plugin: None,
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
@@ -557,6 +562,13 @@ impl WebServer {
     /// 装载 plugin_roaming 后注入；与 cluster 装配独立）。
     pub fn set_roaming_plugin(&mut self, handle: nemesis_plugin::roaming::RoamingPluginHandle) {
         self.quic_relay = Some(handle);
+    }
+
+    /// Set the mail plugin handle（邮件基础设施 B3：nemesisbot gateway 装载
+    /// plugin_mail 后注入；`mail` feature 关时本方法无人调用，槽恒 None——
+    /// 恒编译与 quic_relay 同款）。
+    pub fn set_mail_plugin(&mut self, handle: nemesis_plugin::mail::MailPluginHandle) {
+        self.mail_plugin = Some(handle);
     }
 
     /// Set the cluster lifecycle service for start/stop control.
@@ -766,6 +778,7 @@ impl WebServer {
         let cluster = self.cluster;
         // RoamingPluginHandle 是 fn 指针 Copy——Option 也 Copy，clone 塌缩单行。
         let quic_relay = self.quic_relay;
+        let mail_plugin = self.mail_plugin;
         #[cfg(feature = "workflow")]
         let workflow_engine = self.workflow_engine.clone();
         #[cfg(not(feature = "workflow"))]
@@ -801,6 +814,7 @@ impl WebServer {
                 .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
             cluster,
             quic_relay,
+            mail_plugin,
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine,

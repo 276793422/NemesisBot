@@ -388,6 +388,7 @@ fn session_key() -> String {
 }
 
 fn chat_log_path() -> std::path::PathBuf {
+    crate::test_home::ensure_redirected(); // 直调单例前显式重定向（幂等；见 test_home doc）
     let safe = nemesis_utils::sanitize::sanitize_path_segment(&session_key());
     nemesis_path::default_path_manager()
         .sessions_log_dir()
@@ -395,6 +396,7 @@ fn chat_log_path() -> std::path::PathBuf {
 }
 
 fn boundary_log_path() -> std::path::PathBuf {
+    crate::test_home::ensure_redirected(); // 同上（cleanup_golden_files 删除语义）
     let safe = nemesis_utils::sanitize::sanitize_path_segment(&session_key());
     nemesis_path::default_path_manager()
         .boundary_events_dir()

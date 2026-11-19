@@ -2,6 +2,12 @@
 //! engine-missing branches (the engine-present path needs a full running
 //! workflow and is covered by integration tests elsewhere).
 
+// 刻意设计：#[tokio::test] 每测试独立 current_thread runtime，持锁 guard
+// 跨 await 不会死锁（持锁方在自己线程上恢复运行）。测试域统一豁免
+// （upload/tests.rs 同款）——send/history 写路径经 chat_log 单例，须持
+// test_home 锁（锁内一次性重定向 home，防泄漏真实盘）。
+#![allow(clippy::await_holding_lock)]
+
 use crate::api_handlers::AppState;
 use crate::protocol::ProtocolMessage;
 use crate::workflow_chat::handle_workflow_chat_message;
@@ -15,6 +21,7 @@ use std::time::Instant;
 fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        mail_plugin: None,
         events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
@@ -344,6 +351,7 @@ async fn send_engine_human_review_workflow_rejected() {
 
 #[tokio::test]
 async fn send_engine_starts_workflow_returns_ok() {
+    let _home = crate::test_home::lock_home();
     // Happy path: index resolves, no human_review, start_async succeeds.
     // handle_send writes the user turn to chat_log, stores the per-workflow
     // mutex guard, and returns Ok. The background execution is
@@ -437,6 +445,7 @@ fn capture_queue(state: &AppState, session_id: &str) -> tokio::sync::mpsc::Recei
 
 #[tokio::test]
 async fn bound_send_pins_workflow_ignoring_client_index() {
+    let _home = crate::test_home::lock_home();
     // Both workflows are registered, so the client-supplied index WOULD
     // resolve on its own — the bound session must still land on its own
     // workflow only.
@@ -531,6 +540,7 @@ async fn bound_history_pins_workflow_ignoring_client_index() {
 
 #[tokio::test]
 async fn history_limit_clamped_end_to_end() {
+    let _home = crate::test_home::lock_home();
     // 210 entries in the log; a client asking for limit=100_000 (the
     // whole-file threshold) must get a 200-entry page, not the full log;
     // a missing limit must get the 50-entry default. The workflow name

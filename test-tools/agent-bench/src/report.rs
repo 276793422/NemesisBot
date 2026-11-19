@@ -264,6 +264,9 @@ pub(crate) fn scenario_model(name: &str) -> &'static str {
         // goal_gate：执行 agent 与评估闸共用 testai-goals-1.0（双角色
         // 对话机，goals——评估无 eval_model 配置时走主模型）。
         "goal_gate" => "testai-goals-1.0",
+        // mail_roundtrip：send/read 双腿共用 testai-mail-1.0（marker
+        // 对话机——外发 <MAIL_SEND>、读信 <MAIL_READ>，工具结果驱动）。
+        "mail_roundtrip" => "testai-mail-1.0",
         _ => "testai-1.1",
     }
 }

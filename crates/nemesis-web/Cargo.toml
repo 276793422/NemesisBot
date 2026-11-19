@@ -171,6 +171,10 @@ events = ["dep:nemesis-events"]
 # feature 穿透）。关 = handler 整体退出注册表面；agent 工具面（loop_wakeup/
 # loop_status/loop_finish）在 nemesisbot 侧独立门控，两侧同 feature 名同开。
 loop = ["dep:nemesis-loop"]
+# 邮件基础设施管理面（mailbox.* WSAPI；由 nemesisbot 的 mail feature 穿透）。
+# 关 = handler 整体退出注册表面；plugin_mail 装载臂在 nemesisbot 侧恒编译
+# （总闸+名册开关双闸运行期判），两侧职责分离。
+mail = []
 goals = ["dep:nemesis-goals"]
 # 行动代理连接器管理面（connectors.* / paperbroker.* WSAPI；由 nemesisbot
 # 的 connectors feature 穿透）。关 = handler 整体退出注册表面。

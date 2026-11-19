@@ -139,6 +139,13 @@ pub fn quic_config_path(home: &Path) -> PathBuf {
     nemesis_path::resolve_quic_config_path_in_workspace(&workspace_path(home))
 }
 
+/// Get the mail infrastructure config file path（config.mail.json——enabled
+/// 总闸 + smtp/pop3/client 各段；forge 分文件先例）。
+pub fn mail_config_path(home: &Path) -> PathBuf {
+    // 委托 nemesis-path 唯一拼接点（与 quic_config_path 同款纪律）。
+    nemesis_path::resolve_mail_config_path_in_workspace(&workspace_path(home))
+}
+
 /// Get the enhanced memory config file path.
 pub fn enhanced_memory_config_path(home: &Path) -> PathBuf {
     // 委托 nemesis-path 唯一拼接点。

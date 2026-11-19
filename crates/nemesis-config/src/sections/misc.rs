@@ -195,11 +195,15 @@ pub struct UiConfig {
     /// static 皮肤原样）；其余值 = 服务端从 exe 同级 `skins/<id>.nbskin`
     /// 加载并在 `/skins/active.css` 提供 CSS（前端注入后打
     /// `<html data-skin="<id>">`）。Dashboard 设置页「皮肤」tab 写回此处。
-    #[serde(default)]
+    #[serde(default = "default_ui_skin")]
     pub skin: String,
     /// 皮肤子系统策略段（require_signed 后手开关等）。
     #[serde(default)]
     pub skins: SkinsPolicy,
+}
+
+fn default_ui_skin() -> String {
+    "default".to_string()
 }
 
 impl Default for UiConfig {

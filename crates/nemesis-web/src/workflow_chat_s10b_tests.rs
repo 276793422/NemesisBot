@@ -49,6 +49,7 @@ fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: engine,

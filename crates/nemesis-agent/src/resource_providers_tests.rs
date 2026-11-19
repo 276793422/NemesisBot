@@ -304,9 +304,15 @@ fn hooks_session_counts_by_bare_sid() {
     let rows = view.summary["rows"].as_array().expect("rows array");
     assert_eq!(rows.len(), 3);
     assert!(rows.iter().all(|r| r["kind"] == json!("command")));
-    let stop = rows.iter().find(|r| r["event"] == json!("Stop")).expect("stop row");
+    let stop = rows
+        .iter()
+        .find(|r| r["event"] == json!("Stop"))
+        .expect("stop row");
     assert_eq!(stop["content"], json!("echo hi"));
-    let pre_a = rows.iter().find(|r| r["content"] == json!("echo a")).expect("pre a row");
+    let pre_a = rows
+        .iter()
+        .find(|r| r["content"] == json!("echo a"))
+        .expect("pre a row");
     assert_eq!(pre_a["event"], json!("PreToolUse"));
     assert_eq!(pre_a["matcher"], json!(""));
     // count/list 同谓词：count_session_hooks 与行数一致（双串语义同源）。

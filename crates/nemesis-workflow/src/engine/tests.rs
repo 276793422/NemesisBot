@@ -5561,6 +5561,85 @@ async fn test_persist_workflow_rejects_filename_collision() {
     assert_eq!(existing.nodes.len(), 2, "同名更新必须照常落盘");
 }
 
+// ---------------------------------------------------------------------------
+// BUG-20261119-188 回归锁：persist 后同名 .yml 变体残留 → 重启后旧定义
+// 静默遮蔽新定义（加载排序「字典序最后者赢」中 .yml > .yaml）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_persist_workflow_removes_stale_same_name_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(dir.path().to_path_buf());
+
+    // 存量 .yml 定义（手工/迁移放置——load_workflows_from_dir 接受
+    // 三扩展名的受支持盘面状态，delete_workflow_file 同样显式处理）。
+    let old = make_workflow("foo", vec![make_node("n1", "transform", vec![])]);
+    std::fs::write(
+        dir.path().join("foo.yml"),
+        serde_yaml::to_string(&old).unwrap(),
+    )
+    .unwrap();
+
+    // 同名更新经 persist_workflow（UI update / 草稿 apply 共同收口）。
+    let updated = make_workflow(
+        "foo",
+        vec![
+            make_node("n1", "transform", vec![]),
+            make_node("n2", "transform", vec!["n1"]),
+        ],
+    );
+    engine.persist_workflow(updated).unwrap();
+
+    // 旧 .yml 必须被清理——否则重启后 load 排序中 .yml 在后、赢回旧定义。
+    assert!(
+        !dir.path().join("foo.yml").exists(),
+        "同名 .yml 变体必须在 persist 后清理，防重启后旧定义静默遮蔽新定义"
+    );
+    assert!(
+        dir.path().join("foo.yaml").exists(),
+        "新 .yaml 主文件必须落盘"
+    );
+
+    // 重启模拟：全新引擎重载，注册表里必须是新定义（两节点版）。
+    let engine2 = WorkflowEngine::new();
+    engine2.set_workflow_defs_dir(dir.path().to_path_buf());
+    let loaded = engine2.load_workflows_from_dir(dir.path()).unwrap();
+    assert_eq!(loaded, 1);
+    let wf = engine2
+        .get_workflow("foo")
+        .expect("重载后 foo 必须在注册表");
+    assert_eq!(wf.nodes.len(), 2, "重载后必须是新版定义，不得被旧变体遮蔽");
+}
+
+#[tokio::test]
+async fn test_persist_workflow_keeps_variant_owned_by_other_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(dir.path().to_path_buf());
+
+    // foo.yml 内容属于 "bar"（sanitize 同文件名但内容名不同的他人定义，
+    // 同 test_persist_workflow_rejects_filename_collision 的存量碰撞形态）。
+    let other = make_workflow("bar", vec![make_node("n1", "transform", vec![])]);
+    std::fs::write(
+        dir.path().join("foo.yml"),
+        serde_yaml::to_string(&other).unwrap(),
+    )
+    .unwrap();
+
+    engine
+        .persist_workflow(make_workflow(
+            "foo",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+
+    assert!(
+        dir.path().join("foo.yml").exists(),
+        "属他人的同名变体不得被误删"
+    );
+}
+
 #[tokio::test]
 async fn test_delete_workflow_file_skips_collision_sibling_file() {
     let dir = tempfile::tempdir().unwrap();

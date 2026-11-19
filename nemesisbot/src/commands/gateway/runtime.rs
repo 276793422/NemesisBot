@@ -2017,6 +2017,18 @@ pub(crate) async fn run_runtime(
         crate::roaming_plugin_loader::shutdown_plugin_roaming();
     }
 
+    // 邮件基础设施停机（estop 不触达传输面——挂 gateway 进程停机链）：
+    // 停 SMTP/POP3 面（插件内优雅收监听）+ shutdown_plugin_mail 终态收尾
+    // （幂等；不 unload 库，活线程 UB——同库 OS 引用计数新句柄）。插件
+    // 缺席（未装载）= Err/无操作诚实吞掉，不炸停机链。
+    {
+        match crate::mail_plugin_loader::mail_server_stop().await {
+            Ok(_) => info!("[Gateway] mail servers stopped (plugin_mail)"),
+            Err(e) => tracing::debug!("[Gateway] mail server stop skipped: {e}"),
+        }
+        crate::mail_plugin_loader::shutdown_plugin_mail();
+    }
+
     // Clean up gateway state file
     let _ = nemesis_utils::fsutil::remove_file_resilient(
         nemesis_path::resolve_gateway_state_path_in_workspace(&common::workspace_path(&home)),

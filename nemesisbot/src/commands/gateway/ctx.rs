@@ -1530,6 +1530,36 @@ impl GatewayCtx {
             }
         }
 
+        // plugin_mail 装载（邮件基础设施）：**总闸前置**——`config.mail.json`
+        // enabled 缺省 false，装了 DLL 也不自动起（显式开启形态；与 roaming
+        // 的「文件在场即加载」刻意不同：邮件面带对外监听 + 认证语义，默认
+        // 静默）。总闸开 → 名册开关闸（loader 内）→ 签名 → init（password_ref
+        // 宿主解析注入）→ server_start（按 smtp/pop3 各自 enabled 起面）。
+        // 缺席/拒载 = 服务端面诚实降级（warn 留痕，不炸装配）。
+        if crate::mail_plugin_loader::mail_enabled(&home) {
+            let native_config_dir =
+                nemesis_path::workspace_config_dir(&common::workspace_path(&home));
+            match crate::mail_plugin_loader::load_mail_plugin(&home, &native_config_dir) {
+                crate::mail_plugin_loader::MailLoadOutcome::Absent => {
+                    warn!("[Gateway] mail 总闸开启但 plugin_mail 缺席（服务端面诚实降级）");
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::Loaded => {
+                    match crate::mail_plugin_loader::mail_server_start().await {
+                        Ok(v) => info!("[Gateway] plugin_mail server_start: {v}"),
+                        Err(e) => warn!("[Gateway] plugin_mail server_start 失败（诚实降级）: {e}"),
+                    }
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::DisabledBySwitch => {
+                    info!(
+                        "[Gateway] plugin_mail 已停用（本地插件库开关）——邮件面不装配（重启后生效）"
+                    );
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::Rejected(reason) => {
+                    warn!("[Gateway] plugin_mail 拒载（服务端面诚实降级）: {reason}");
+                }
+            }
+        }
+
         Ok(Some(GatewayCtx {
             // 身份与配置
             home,
