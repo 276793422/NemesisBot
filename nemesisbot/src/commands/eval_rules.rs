@@ -45,7 +45,8 @@ pub enum RulesAction {
         #[arg(long)]
         local: bool,
     },
-    /// Replace an existing rule from a JSON file (single rule object; id in file wins).
+    /// Replace an existing rule from a JSON file (single rule object; its id
+    /// must match the target rule id — mismatch is rejected loud).
     Edit {
         id: String,
         /// Path to the new rule JSON file.

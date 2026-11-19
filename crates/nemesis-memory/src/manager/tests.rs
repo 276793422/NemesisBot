@@ -2263,7 +2263,8 @@ async fn delete_paths_run_outside_vector_store_guard() {
             .to_string_lossy()
             .to_string(),
     };
-    mgr.init_vector_store_with_embed(embed, store_config).unwrap();
+    mgr.init_vector_store_with_embed(embed, store_config)
+        .unwrap();
     mgr.set_vector_enabled(true);
 
     // 探针：delete_entry 重写 IO 前回调——manager 级锁必须无任何持有者。
