@@ -399,8 +399,14 @@ async fn test_s4_async_pool_reuses_returned_connection() {
     let (key2, conn2) = pool.get("s4-reuse", &addr).await.unwrap();
     assert_eq!(key2, key);
     assert!(conn2.is_active());
-    // dec_node_count ran during reuse: counts for the node are empty again.
-    assert!(pool.get_stats().node_conns.is_empty());
+    // BUG-20261119-204：取出（池内→借出）是占用态转移，node_count 保持——
+    // 借出连接仍是该 node 的占用连接（旧实现此处 dec 清空计数，per-node
+    // limit 渐进失效）。
+    assert_eq!(
+        pool.get_stats().node_conns.get("s4-reuse"),
+        Some(&1),
+        "取出活连接不得减 per-node 计数——借出态仍是占用态"
+    );
 
     drop(conn2);
     pool.close();
@@ -842,5 +848,64 @@ async fn test_return_connection_curtain_recheck_closes_race_window() {
         max_conns
     );
 
+    server.abort();
+}
+
+// ===========================================================================
+// BUG-20261119-204 回归锁：get_inner 取出活连接不得减 per-node 计数
+//
+// node_count 语义 = 该 node 占用连接数（借出 + 池内，镜像 dial 的消耗——
+// T5 注释钦定）。取出（池内→借出）是占用态转移，三账均不得变；旧实现
+// 取出时 dec、归还 insert 不补，「池内↔借出」循环一轮计数虚低 1，
+// per-node limit 渐进失效（假限流失效方向），且池里来的借出连接在
+// dup/dead/remove 终止路径双 dec（saturating 兜住不 panic 但账面漂移，
+// get_stats 的 node_conns 显示面同步失真）。
+#[tokio::test]
+async fn test_get_return_cycle_preserves_node_count() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+    let pool = Pool::with_defaults();
+
+    // 第一轮：dial（inc → 1）→ 归还 insert（池内 1，计数 1）
+    let (k1, c1) = pool.get("node-a", &addr).await.unwrap();
+    pool.return_connection(k1, c1);
+    assert_eq!(pool.get_stats().node_conns.get("node-a"), Some(&1));
+
+    // 第二轮：取出（借出态仍是占用态，计数必须保持 1；旧实现 dec → 0）
+    let (k2, c2) = pool.get("node-a", &addr).await.unwrap();
+    assert_eq!(
+        pool.get_stats().node_conns.get("node-a"),
+        Some(&1),
+        "取出活连接（池内→借出）不得减 per-node 计数——借出态仍是占用态"
+    );
+    pool.return_connection(k2, c2);
+    assert_eq!(pool.get_stats().node_conns.get("node-a"), Some(&1));
+
+    // 第三轮：循环稳定性（旧实现每轮虚低 1）
+    let (k3, c3) = pool.get("node-a", &addr).await.unwrap();
+    assert_eq!(pool.get_stats().node_conns.get("node-a"), Some(&1));
+    pool.return_connection(k3, c3);
+    assert_eq!(pool.get_stats().node_conns.get("node-a"), Some(&1));
+
+    // 并发借出 + dup-return 平账（修复面闭合钉死）：
+    // 取出池内条目（账保持 1）→ 再 get 池空 dial 第二条（inc → 2）→
+    // 先归还 dial 条（insert 占池，账 2）→ 后归还池里来条（同 key 冲突
+    // 走 dup 分支 dec）→ 账 1 = 池内 1 条（平账）。旧实现取出已 dec、
+    // dup 再 dec = saturating 虚低 → None 红。
+    let (k4, c4) = pool.get("node-a", &addr).await.unwrap(); // 取出池内
+    let (k5, c5) = pool.get("node-a", &addr).await.unwrap(); // 池空 dial
+    assert_eq!(pool.get_stats().node_conns.get("node-a"), Some(&2));
+    pool.return_connection(k5, c5); // insert 占池
+    assert_eq!(pool.get_stats().node_conns.get("node-a"), Some(&2));
+    pool.return_connection(k4, c4); // dup 分支 dec 平账
+    assert_eq!(
+        pool.get_stats().node_conns.get("node-a"),
+        Some(&1),
+        "dup-return 平账后计数应等于池内条目数（1）——池里来的借出连接终止不得双 dec"
+    );
+
+    pool.close();
     server.abort();
 }
