@@ -1,5 +1,10 @@
 use super::*;
 
+// spawn 真实 powershell.exe 的测试必须全部持此锁串行（cargo 并行调度下
+// w5 回归锁的「无孤儿 powershell」宿主级断言会把并行测试的枚举子进程误
+// 计为孤儿——对齐 background_registry 模块级 TEST_LOCK 串行先例）。
+static POWERSHELL_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[test]
 fn test_desktop_action_from_str() {
     assert_eq!(
@@ -342,6 +347,7 @@ async fn test_desktop_tool_get_window_text_with_hwnd_no_mcp() {
 
 #[tokio::test]
 async fn test_desktop_tool_list_windows_no_mcp() {
+    let _serial = POWERSHELL_TEST_LOCK.lock().await;
     let tool = DesktopTool::new(PathBuf::from("/tmp"), None);
     // This should try PowerShell and either succeed or fail - just verify no panic
     let _ = tool
@@ -910,6 +916,7 @@ async fn test_desktop_tool_mcp_disconnected() {
     let tool = DesktopTool::new(PathBuf::from("."), Some(Arc::new(DisconnectedMCPCaller)));
     assert!(!tool.has_mcp());
     // Should fall back to standalone PowerShell (or error on non-Windows)
+    let _serial = POWERSHELL_TEST_LOCK.lock().await;
     let _ = tool
         .execute(&serde_json::json!({"action": "list_windows"}))
         .await;
@@ -1874,6 +1881,7 @@ async fn test_list_windows_no_title_does_not_set_title_contains() {
 
 #[tokio::test]
 async fn w4a_find_window_without_mcp_runs_standalone_enumeration() {
+    let _serial = POWERSHELL_TEST_LOCK.lock().await;
     let tool = DesktopTool::new(PathBuf::from("."), None);
     let result = tool
         .execute(&serde_json::json!({
@@ -1907,6 +1915,7 @@ fn s2_enable_tracing() {
 #[tokio::test]
 async fn s2_take_screenshot_without_mcp_uses_standalone_capture() {
     s2_enable_tracing();
+    let _serial = POWERSHELL_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let tool = DesktopTool::new(dir.path().to_path_buf(), None);
 
@@ -1936,6 +1945,7 @@ async fn s2_take_screenshot_without_mcp_uses_standalone_capture() {
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn s2_find_window_without_mcp_found_path_via_live_title() {
+    let _serial = POWERSHELL_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let tool = DesktopTool::new(dir.path().to_path_buf(), None);
 
@@ -2026,4 +2036,55 @@ fn test_escape_sendkeys_then_ps_quote_orthogonal() {
     let sendkeys = escape_sendkeys(text);
     let ps = sendkeys.replace('\'', "''");
     assert_eq!(ps, "it''s {{}a{+}b{}}");
+}
+
+// ===========================================================================
+// BUG-20261119-203 回归锁：run_powershell 超时必须杀掉 powershell 子进程
+// （kill_on_drop 家族纪律）。tokio Child 默认 kill_on_drop=false，timeout
+// future 被 drop 后 powershell 泄漏为孤儿；SendWait 挂死场景还会在挂起解
+// 除后把积压键序注入失焦窗口。归属用脚本文本 needle（查询进程 needle 分
+// 裂拼接防自中 + $PID 自排除，exec_workspace kill_matching_cmdline 同款），
+// 确定性断言子进程已死，不依赖宿主上无关 powershell 进程状态。
+// ===========================================================================
+
+#[cfg(target_os = "windows")]
+#[tokio::test]
+async fn w5_run_powershell_timeout_kills_child() {
+    let _serial = POWERSHELL_TEST_LOCK.lock().await;
+    let tool = DesktopTool::new(PathBuf::from("."), None);
+    let t0 = std::time::Instant::now();
+    let result = tool
+        .run_powershell("Start-Sleep -Seconds 120", Duration::from_millis(600))
+        .await;
+    assert!(
+        result.unwrap_err().contains("timed out"),
+        "expected timeout error"
+    );
+    assert!(
+        t0.elapsed() < Duration::from_secs(10),
+        "timeout did not fire promptly: {:?}",
+        t0.elapsed()
+    );
+    // kill_on_drop 异步落地宽限。
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    // 孤儿检测：WQL 服务端 Filter（等值+LIKE 在 WinMgmt 内做，实测 ~0.3s；
+    // 客户端全表 Where-Object 形态在本机 118s——禁用）。needle 归属被测
+    // 子进程；查询进程自身命令行同样含 needle，用 $PID 动态排除（
+    // exec_workspace kill_matching_cmdline 同款自排除手法）。持
+    // POWERSHELL_TEST_LOCK 串行后，并行测试的枚举子进程不会误入计数。
+    let script = "Get-CimInstance Win32_Process -Filter (\"Name='powershell.exe' \
+AND CommandLine LIKE '%Start-Sleep -Seconds 120%' AND ProcessId <> \" + $PID) \
+| Measure-Object | Select-Object -ExpandProperty Count";
+    let out = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .unwrap();
+    let count = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(-1);
+    assert_eq!(
+        count, 0,
+        "orphaned powershell child survived the timeout (kill_on_drop missing?)"
+    );
 }
