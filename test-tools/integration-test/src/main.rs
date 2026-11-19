@@ -17,6 +17,7 @@ mod cors_ws_tests;
 mod eval_rules_ws_tests;
 mod forge_tests;
 mod gateway_tests;
+mod mail_ws_tests;
 mod projects_ws_tests;
 mod scanner_tests;
 mod security_tests;
@@ -941,6 +942,13 @@ async fn main() -> Result<()> {
     // 自清理（remove 自建条目 / reset 恢复默认集），无残留。
     all_results
         .extend(eval_rules_ws_tests::test_rules_mgmt_ws_surface(&ws, &cfg.gateway_bin).await);
+
+    // mail WSAPI 空态表面契约（2026-11-19 邮件基础设施 IT）：IT 环境无
+    // plugin_mail DLL → 钉空态三层（status loaded:false 非报错 / config_*
+    // 先于句柄闸 / 业务+未知命令统一「未装载」报错）；装载态全链归
+    // agent-bench mail_roundtrip（LLM e2e）。写 config.mail.json 套件内
+    // 自清理，沿「改共享状态套件排尾」纪律。
+    all_results.extend(mail_ws_tests::test_mail_wsapi_surface(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an
