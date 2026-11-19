@@ -57,6 +57,15 @@ impl WorkflowObserver for WorkflowChatReplyObserver {
         let exec = match self.engine.get_execution(&execution_id).await {
             Some(e) => e,
             None => {
+                // BUG-20261120-012：执行记录可被 evict_oldest_terminal_execution
+                // 驱逐——emit 是 fire-and-forget（终态先落跟踪表、observer 后
+                // 跑），窗口内 create_execution 的驱逐可吃掉刚终态的 chat 执行。
+                // 此分支提前 return 前必须先释放序列化守卫：send 侧 store_guard
+                // 已把守卫停进 pending_guards，不释放 = 该工作流 chat 互斥锁
+                // 永久死锁（后续消息全部 hang 在 acquire）。非 chat 执行经
+                // take_guard 在 early_completions 留下的条目无害（量级 =
+                // 驱逐未命中频次）。
+                let _ = self.engine.workflow_chat_state().take_guard(&execution_id);
                 tracing::warn!(
                     execution_id = %execution_id,
                     "[workflow_chat_observer] execution not found (may have been evicted)"
