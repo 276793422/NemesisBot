@@ -135,8 +135,21 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
 }
 
 /// `model_list` 条目定位（统一定义）：active 别名对 `model_name`
-/// / `model` 字段的**精确**匹配优先；未命中回落 **bare-suffix**——`model`
-/// 字段末段与 active 别名末段相等（`"glm-4.7"` ↔ `"zhipu/glm-4.7"`）。
+/// / `model` 字段的**精确**匹配优先；未命中回落 **CI 兜底**——大小写
+/// 不敏感（`eq_ignore_ascii_case`，ASCII 标识符域，BUG-20261119-192：
+/// BUG-20261117-077 修复了 nemesis-config 查找族四站点，漏扫本函数——
+/// 活跃别名手打大小写变体（`Zhipu/GLM-4.7`）时解析面
+/// （`resolve_model_config`）CI 命中条目全通，而 tier / vision /
+/// timeout / max_output_tokens / context_window / compact_context_tokens /
+/// reasoning_effort / summarizer_prefix_reuse / display_model 九键全走本
+/// 函数 miss → 用户显式 per-model 配置（model_tier=mini、vision=no 等）
+/// 静默失效落默认）；再未命中回落 **bare-suffix**——`model` 字段末段与
+/// active 别名末段相等（`"glm-4.7"` ↔ `"zhipu/glm-4.7"`），同样带 CI
+/// 兜底（`"GLM-4.7"` ↔ `"zhipu/glm-4.7"`）。层序（与 nemesis-config
+/// `model_ref_eq` doc 家族口径一致，改层序必须两端同步）：**精确
+/// name/model → CI name/model → bare-suffix → bare-suffix CI**（每层
+/// 全空才进下一层；同层内按数组序先到先得——两个仅大小写不同的条目是
+/// 合法配置形态，精确层先行保住区分能力）。
 ///
 /// 为什么需要 bare-suffix：活 gateway 的 active_model 是剥前缀裸名
 /// （provider_resolver `resolve_from_model_config` 对含 '/' 的 model 切尾段；
@@ -161,13 +174,28 @@ pub fn find_model_entry<'a>(
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         name == active_alias || full == active_alias
     };
+    // BUG-20261119-192：CI 兜底层（BUG-20261117-077 家族口径对齐）。
+    let matches_ci = |m: &serde_json::Value| {
+        let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        name.eq_ignore_ascii_case(active_alias) || full.eq_ignore_ascii_case(active_alias)
+    };
     let matches_bare = |m: &serde_json::Value| {
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         full.rsplit('/').next().unwrap_or(full) == bare
     };
+    let matches_bare_ci = |m: &serde_json::Value| {
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        full.rsplit('/')
+            .next()
+            .unwrap_or(full)
+            .eq_ignore_ascii_case(bare)
+    };
     arr.iter()
         .find(|m| matches_exact(m))
+        .or_else(|| arr.iter().find(|m| matches_ci(m)))
         .or_else(|| arr.iter().find(|m| matches_bare(m)))
+        .or_else(|| arr.iter().find(|m| matches_bare_ci(m)))
 }
 
 /// Resolve the capability tier for the active model in a `config.json` Value.
