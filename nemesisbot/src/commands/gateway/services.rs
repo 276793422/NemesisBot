@@ -75,6 +75,12 @@ pub(crate) async fn init_services(
     web_port: i64,
     bridge_client_launch: Option<nemesis_config::BridgeClientConfig>,
     agent_adapter: Arc<crate::adapters::AgentLoopServiceAdapter>,
+    // BUG-20261119-194：通道管理器句柄（init_web 装配、注册完成）。
+    // `start_all` 在 Step 14b（agent 订阅 bus inbound）之后调用——
+    // 通道 polling 是 inbound 生产者，先于订阅上线会让启动期拉到的
+    // 消息 publish 进零订阅者 broadcast = 永久丢失（telegram offset
+    // 先推进使丢失不可重拉）。
+    channel_manager: Arc<nemesis_channels::manager::ChannelManager>,
     initial_tool_count: usize,
     cluster_handoff: ClusterHandoff,
 ) -> Result<ServicesWiring> {
@@ -422,13 +428,32 @@ pub(crate) async fn init_services(
     // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移）
     // 订阅必须在所有 inbound 生产者上线之前完成：
     //   - web server（Step 17 起 accept WS 消息 → bus.publish_inbound）；
-    //   - cron.arm()（下移到 Step 17 之后，armed 后第一个 tick 即 fire）。
+    //   - cron.arm()（下移到 Step 17 之后，armed 后第一个 tick 即 fire）；
+    //   - channel start_all（BUG-20261119-194 下移到本步之后：通道
+    //     polling——telegram getUpdates 等——也是 inbound 生产者，此前在
+    //     init_web 内启动，首轮拉停机积压 publish 进零订阅者 broadcast =
+    //     永久丢失。与 cron arm 同款「订阅 → 生产者上线」不变量收敛）。
     // tokio broadcast 零订阅者时 publish 即丢，所以顺序不变量是：
-    // agent 订阅 → web 上线 → cron arm。
+    // agent 订阅 → channels start_all → web 上线 → cron arm。
     if let Err(e) = agent_adapter.start() {
         warn!("[Gateway] Agent adapter start note: {}", e);
     }
     info!("[Gateway] Agent loop started via adapter, listening on bus");
+
+    // Step 14c（BUG-20261119-194）：通道启动——必须在 agent 订阅（14b）
+    // 之后、web 上线（Step 17）之前。幂等安全：start_all 对已运行通道
+    // 跳过（BUG-20261110-037 is_running 守卫），dispatch loop 有独立
+    // started 守卫（init_web 已单独启动，此处 auto-start 臂空转）。
+    // 防御观测：此刻接收者计数为 0 = 订阅顺序被破坏，loud 留痕。
+    if ctx.bus.inbound_receiver_count() == 0 {
+        warn!(
+            "[Gateway] channels start_all: bus inbound has ZERO receivers — \
+             顺序不变量被破坏（agent 未订阅？），本批启动通道拉到的消息会静默丢失"
+        );
+    }
+    if let Err(e) = channel_manager.start_all().await {
+        warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);
+    }
 
     // Step 15: Print agent startup info
     print_agent_startup_info(&home, initial_tool_count);

@@ -360,6 +360,17 @@ impl ChannelManager {
         Ok(())
     }
 
+    /// Returns whether any registered channel reports itself running.
+    ///
+    /// 可观测性查询（BUG-20261119-194 回归锁消费面）：gateway 装配纪律是
+    /// 「agent 订阅 bus inbound 之后才 start_all」——init_web 返回时刻
+    /// 必须没有任何通道在跑。只统计维护 running 旗标的通道（BaseChannel
+    /// 系；未维护者恒 false，与 `start_all` 的 037 守卫同口径）。
+    pub async fn any_channel_running(&self) -> bool {
+        let map = self.channels.read().await;
+        map.values().any(|ch| ch.is_running())
+    }
+
     /// Stops all registered channels.
     ///
     /// Iterates through all registered channels and calls `stop()` on each.

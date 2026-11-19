@@ -285,6 +285,11 @@ impl Channel for WebChannel {
 
         self.running.store(true, Ordering::SeqCst);
         self.base.set_enabled(true);
+        // BUG-20261119-194 横向（BUG-20261110-037 同族漏网）：此前从未
+        // set_running——trait is_running()（读 base 旗标）恒 false，违反
+        // 「start 成功后、stop 前为 running」契约，manager 的运行中守卫
+        // （start_all 重复调用跳过）对本通道失效。
+        self.base.set_running(true);
 
         info!(
             url = format!("http://{}:{}", self.config.host, self.config.port),
@@ -299,6 +304,7 @@ impl Channel for WebChannel {
 
         self.running.store(false, Ordering::SeqCst);
         self.base.set_enabled(false);
+        self.base.set_running(false);
 
         let server = self.server.read();
         if let Some(srv) = server.as_ref() {
