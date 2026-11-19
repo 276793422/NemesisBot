@@ -1125,13 +1125,12 @@ impl GatewayCtx {
                             // run history、账本 settle failed——「本次未投递」属实。
                             return Err(msg);
                         }
-                        let chat_id = if !session_key.is_empty() {
-                            router_for_cron
-                                .target(&session_key)
-                                .unwrap_or_else(|| job.payload.to.clone().unwrap_or_default())
-                        } else {
-                            job.payload.to.clone().unwrap_or_default()
-                        };
+                        let chat_id = cron_fire_chat_id(
+                            &channel,
+                            &session_key,
+                            router_for_cron.target(&session_key),
+                            job.payload.to.as_deref(),
+                        );
                         let inbound = nemesis_types::channel::InboundMessage {
                             channel,
                             sender_id: format!("cron:{}", job.id),
@@ -1689,6 +1688,32 @@ pub(crate) fn cron_parent_session_exists(home: &std::path::Path, session_key: &s
         .exists()
 }
 
+/// cron 触发消息的 chat_id 决策（单一真相源，供 on_job handler 与回归锁
+/// 共用）。Opt2 实时推送只对 web 通道成立——`ConvRouter::target` 恒返回
+/// `web:<ws_conn_id>` 形态（conv_router.rs 模块文档：web 通道按
+/// `chat_id = web:<ws_conn_id>` 严格路由），非 web 通道（telegram/discord/
+/// …）拿到这个值必然投递失败：channel/chat_id 形态错配，本应送达 `to`
+/// 目标的消息丢失（通道侧 fail-soft，用户零回执）。此前本决策内联在
+/// on_job 闭包里且无通道闸——payload.channel 显式非 web 且该会话恰好有
+/// live tab 绑定（Dashboard 开着对应会话）时触发。session_key 本身照旧
+/// 随 InboundMessage 下发（历史持久化与会话归属，与投递通道无关）。
+pub(crate) fn cron_fire_chat_id(
+    channel: &str,
+    session_key: &str,
+    router_target: Option<String>,
+    to: Option<&str>,
+) -> String {
+    let fallback = to.unwrap_or_default().to_string();
+    // 通道闸（BUG-20261119-197）：Opt2 的 router_target 是 web 专属语义
+    // （`web:<ws_conn_id>`），非 web 通道必须恒走 `to`——否则 channel=
+    // telegram + chat_id=web:xxx 形态错配，投递必败（fail-soft 零回执）。
+    if channel == "web" && !session_key.is_empty() {
+        router_target.unwrap_or(fallback)
+    } else {
+        fallback
+    }
+}
+
 /// （扩展计划）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +
 /// 装配前后槽语义）。security feature 门内——与被测函数同门。
 #[cfg(all(test, feature = "security"))]
@@ -1698,3 +1723,7 @@ mod dlp_gate_tests;
 /// 消毒对齐）。独立测试文件（仓库纪律：生产文件只留声明行）。
 #[cfg(test)]
 mod w3_session_gate_tests;
+
+/// （BUG-20261119-197）：cron chat_id 决策单测（Opt2 通道闸）。
+#[cfg(test)]
+mod w4_cron_chat_id_tests;
