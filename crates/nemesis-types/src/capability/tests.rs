@@ -549,6 +549,46 @@ fn resolve_context_window_bare_name_reaches_custom_alias_entry() {
     );
 }
 
+// BUG-20261119-210 回归锁：层内顺序 name-first-across-entries（与
+// nemesis-config 装配族四站点恒等）。交叉别名形态：条目 0 的 model 字段
+// 与条目 1 的 model_name 交叉——装配族（resolve_model_config）按 name 层
+// 先扫全部条目命中条目 1；本函数旧实现（条目优先，name/model 任一命中
+// 即返回该条目）命中条目 0 → per-model 九键族与装配面读不同条目，
+// 显式 per-model 配置静默错位（tier/vision/timeout 走条目 0、provider
+// 构造走条目 1）。
+#[test]
+fn find_model_entry_name_layer_precedes_model_layer_across_entries() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "fast-alias", "model": "glm-4.7", "max_output_tokens": 111},
+            {"model_name": "glm-4.7", "model": "zhipu/glm-4.7", "max_output_tokens": 222}
+        ]
+    });
+    // 精确层：name 字段全数组先行——条目 1 的 model_name 命中压过条目 0 的
+    // model 字段交叉命中（旧条目优先实现会返回条目 0 = 111）。
+    assert_eq!(
+        find_model_entry(&cfg, "glm-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(222),
+        "model_name layer spans all entries before model field layer (config family parity)"
+    );
+
+    // CI 层同序：精确层全 miss 时，CI name 先于 CI model（旧实现条目 0 的
+    // model 字段 CI 命中会返回条目 0 = 333）。
+    let cfg_ci = serde_json::json!({
+        "model_list": [
+            {"model_name": "other-alias", "model": "zhipu/GLM-4.7", "max_output_tokens": 333},
+            {"model_name": "Zhipu/glm-4.7", "model": "vendor/other", "max_output_tokens": 444}
+        ]
+    });
+    assert_eq!(
+        find_model_entry(&cfg_ci, "ZHIPU/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(444),
+        "CI name layer also spans all entries before CI model layer"
+    );
+}
+
 #[test]
 fn resolve_compact_context_tokens_bare_name_reaches_custom_alias_entry() {
     let cfg = serde_json::json!({
