@@ -271,3 +271,28 @@ fn replay_carries_occupies_key_for_row_anchor_accounting() {
     assert_eq!(j0["occupies"], false);
     assert!(j2.get("occupies").is_none());
 }
+
+#[test]
+fn evict_session_drops_ring_and_replay_goes_gap() {
+    // 删除残留修复（2026-11-19）：evict 后 replay_after 返回 gap=true
+    // （客户端持旧 seq = 缺口提示全量刷新），latest_seq 归零；未知会话
+    // 幂等 no-op；evict 后同键 record 从 seq 1 重开（全新会话语义）。
+    let _guard = table_guard!();
+    let sid = unique_session("evict");
+    record(&sid, "assistant", "m1", None, None, None, None);
+    record(&sid, "user", "m2", None, None, None, None);
+    assert_eq!(latest_seq(&sid), 2);
+
+    evict_session(&sid);
+    let (events, gap) = replay_after(&sid, 1);
+    assert!(events.is_empty(), "环已摘桶无帧可回放");
+    assert!(gap, "持旧 seq 的客户端必须收到缺口信号");
+    assert_eq!(latest_seq(&sid), 0, "seq 归零");
+
+    // 同键重开 = 全新序列。
+    assert_eq!(record(&sid, "assistant", "new", None, None, None, None), 1);
+
+    // 未知会话 no-op（不炸不建桶）。
+    evict_session("never-existed-987");
+    assert_eq!(latest_seq("never-existed-987"), 0);
+}

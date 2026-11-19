@@ -14,6 +14,16 @@ use std::path::PathBuf;
 use crate::r#loop::FileChange;
 use crate::work_timeline::WorkTimeline;
 
+/// 进程单例访问口——本模块全部寻址（jsonl/meta/pending/boundary/迁移）的
+/// 唯一入口。测试构建下首访先把单例 home 重定向到进程级临时目录
+/// （`crate::test_home`），单元测试的 chat_log / meta 侧车写入不再泄漏
+/// 真实 `~/.nemesisbot`；生产构建直通。
+fn singleton() -> &'static nemesis_path::PathManager {
+    #[cfg(test)]
+    crate::test_home::ensure_redirected();
+    default_path_manager()
+}
+
 /// N5（2026-10-13 机会项）：交付物条目单一真相源在 `nemesis_types::agent`
 /// （`AgentEvent::DeliverablesRegistered` 载荷与本字段共用同一 serde 形态，
 /// 不维护两份镜像 struct）；本模块 re-export 保持 `crate::chat_log::
@@ -596,7 +606,7 @@ pub(crate) fn log_path(session_key: &str) -> PathBuf {
     // 无 `/` 的键新旧映射一致，存量平面文件零迁移（嵌套目录由
     // [`migrate_nested_session_logs`] 启动平化）。
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .sessions_log_dir()
         .join(format!("{}.jsonl", safe_key))
 }
@@ -1249,6 +1259,13 @@ pub fn delete_chat_log(session_key: &str) {
             e
         );
     }
+    // 诊断捕获（capture）跟随删（2026-11-19 删除残留修复）：capture 目录
+    // 是会话内容的副本（工具入参/回执全文），隐私清理语义下硬删必须同步
+    // 清；失败降级交 capture 族 TTL 清扫兜底。
+    crate::capture_sink::remove_session_capture(
+        &nemesis_path::default_path_manager().workspace(),
+        session_key,
+    );
     // L22（2026-11-03 snooze 排队）：第四件套——暂停期 pending 队列随会话
     // 删除级联清理（会话没了，重放无主；滞留会被 orphan sweep 无限重试）。
     delete_session_pending(session_key);
@@ -1314,7 +1331,7 @@ pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
 /// management without touching the lazy-created SessionStore.
 pub(crate) fn meta_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .sessions_log_dir()
         .join(format!("{}.meta.json", safe_key))
 }
@@ -1716,7 +1733,7 @@ pub fn clear_session_snooze(session_key: &str) -> Option<(String, Option<String>
 /// `agent_main_session_{sid}` 前缀还原裸 sid，logs.rs 同款规则）。输出按
 /// stem 排序——消费与条目顺序无关（每条独立处理），排序只为测试确定性。
 pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
-    let dir = default_path_manager().sessions_log_dir();
+    let dir = singleton().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -1770,7 +1787,7 @@ pub const SESSION_PENDING_CAP: usize = 64;
 /// `*.jsonl` 扫描为会话，`.jsonl` 后缀会造出幻影会话条目。
 pub(crate) fn pending_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .sessions_log_dir()
         .join(format!("{}.pending", safe_key))
 }
@@ -1874,7 +1891,7 @@ pub fn session_pending_count(session_key: &str) -> usize {
 /// 流程（snooze 标记已摘）与兜底扫描都没有下一个 take，注释假设的
 /// 「下一次 take 优先收走它」永远不会发生，暂停期排队消息静默永久滞留。
 pub fn pending_sessions() -> Vec<String> {
-    let dir = default_path_manager().sessions_log_dir();
+    let dir = singleton().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -2003,7 +2020,7 @@ pub fn read_session_allow_all(session_key: &str) -> Option<(bool, String)> {
 /// 会话键排序（read_dir 顺序是平台实现细节，消费与顺序无关，排序只为
 /// 测试确定性）。
 pub fn allow_all_sessions() -> Vec<(String, String)> {
-    let dir = default_path_manager().sessions_log_dir();
+    let dir = singleton().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -2284,7 +2301,7 @@ mod tests;
 /// a sidecar there would appear as a phantom session.
 pub(crate) fn boundary_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .boundary_events_dir()
         .join(format!("{}.jsonl", safe_key))
 }
@@ -2353,7 +2370,7 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
 /// 跳过/失败）的点同时 eprintln 到 stderr 兜底；无迁移时零输出（幂等），
 /// 不产生启动噪音。
 pub fn migrate_nested_session_logs() {
-    let pm = default_path_manager();
+    let pm = singleton();
     for root in [pm.sessions_log_dir(), pm.boundary_events_dir()] {
         flatten_legacy_nested_dirs(&root);
     }

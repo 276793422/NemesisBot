@@ -944,27 +944,50 @@ impl ModuleHandler for SessionsHandler {
                 // project_id 仍注册则 bind 回去；已移除/未注册 = 摘除陈旧
                 // sidecar 字段（会话落未分组，不进孤儿灰组）。
                 let mut out = out;
-                if out.get("conflict") != Some(&serde_json::Value::Bool(true))
-                    && let Some(pid) = out
+                if out.get("conflict") != Some(&serde_json::Value::Bool(true)) {
+                    // 恢复后放行态重注（2026-11-19 删除残留修复）：meta
+                    // sidecar（持久真相源）随四件套回到 session_logs，运行态
+                    // 投影按缓存语义单条重注（hydrate 同族语义——保留 sidecar
+                    // 的开启时刻，不生成新 since）。allow_all 缺省 = 默认关
+                    // 无需动作；security 未装配 = 无放行语义跳过。
+                    // ⚠ 读侧必须走 read_session_meta_full（SessionMeta 结构体）
+                    // ——read_session_meta 返回的是 title 字段（历史命名陷阱），
+                    // 拿它当 JSON 解析恒失败 = 重注静默死代码（回归锁
+                    // trash_restore_rehydrates_allow_all_from_sidecar 抓出）。
+                    #[cfg(feature = "security")]
+                    {
+                        let restored_key = out["restored"].as_str().unwrap_or_default().to_string();
+                        if !restored_key.is_empty()
+                            && let Some(meta) =
+                                nemesis_agent::chat_log::read_session_meta_full(&restored_key)
+                            && meta.allow_all
+                            && let Some(st) = crate::handlers::security::session_allow_all_state()
+                        {
+                            let since = meta.allow_all_since.unwrap_or_default();
+                            st.hydrate(vec![(restored_key, since)]);
+                        }
+                    }
+                    if let Some(pid) = out
                         .get("project_id")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
-                {
-                    let restored = out["restored"].as_str().unwrap_or_default().to_string();
-                    let rebound = match crate::handlers::projects::projects_bridge() {
-                        Some(bridge) => match bridge.bind_session(&restored, &pid) {
-                            Ok(()) => Some(pid),
-                            Err(_) => {
-                                bridge.forget_session(&restored);
-                                None
-                            }
-                        },
-                        None => None,
-                    };
-                    out["project_rebound"] = match rebound {
-                        Some(p) => serde_json::Value::String(p),
-                        None => serde_json::Value::Null,
-                    };
+                    {
+                        let restored = out["restored"].as_str().unwrap_or_default().to_string();
+                        let rebound = match crate::handlers::projects::projects_bridge() {
+                            Some(bridge) => match bridge.bind_session(&restored, &pid) {
+                                Ok(()) => Some(pid),
+                                Err(_) => {
+                                    bridge.forget_session(&restored);
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        out["project_rebound"] = match rebound {
+                            Some(p) => serde_json::Value::String(p),
+                            None => serde_json::Value::Null,
+                        };
+                    }
                 }
                 Ok(Some(out))
             }
@@ -1087,6 +1110,34 @@ async fn delete_session_body(
     }
     if let Some((store, key)) = hard_store_delete {
         let _ = tokio::task::spawn_blocking(move || store.delete_session(&key)).await;
+    }
+    // 删除残留级联（2026-11-19）：软删/硬删两路同源——
+    // ① 会话级全部放行内存态摘除（I1 重开干净：同键重建不得继承前任
+    //    放行；sidecar 持久真相源已随 meta 走回收站/删除，运行态投影
+    //    必须同步消失，否则 auditor 继续放行 = 安全面）。
+    // ② chat_event_log 内存环摘桶（I2 删即不可见：chat.sync 不得再回放
+    //    已删会话的帧；环是易逝缓存但删除到重启之间的窗口必须清）。
+    // ③ episodic 记忆随删（memory 装配时检索面不再命中已删会话）；
+    //    best-effort，失败留痕不阻塞删除主链。
+    #[cfg(feature = "security")]
+    if let Some(st) = crate::handlers::security::session_allow_all_state() {
+        st.remove(session_key);
+    }
+    crate::chat_event_log::evict_session(session_key);
+    #[cfg(feature = "memory")]
+    if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+        match mgr.get_episodic_store().delete_session(session_key).await {
+            Ok(n) if n > 0 => tracing::info!(
+                "[sessions] delete cascade: removed {n} episodic episode(s) of {}",
+                session_key
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                "[sessions] delete cascade: episodic cleanup failed for {}: {}",
+                session_key,
+                e
+            ),
+        }
     }
     // BUG①（2026-11-05）：hard=true 不走回收站（旧语义不可恢复），todo
     // 文件也要一并删——四件套接管只覆盖软删链路。软删（!hard）的 todo 由

@@ -83,3 +83,31 @@ fn enabled_keys_lists_only_active() {
     keys.sort();
     assert_eq!(keys, vec!["a".to_string(), "b".to_string()]);
 }
+
+/// 会话删除级联摘除：enabled 条目整条消失（check 不再命中、status None、
+/// enabled_keys 不列）；关闭态条目同样摘（返回 false）；未知会话 no-op；
+/// 重新 set = 全新条目（重开不继承前任 since/count）。
+#[test]
+fn remove_evicts_entry_and_reopen_starts_fresh() {
+    let state = SessionAllowAllState::new();
+    state.set("s1", true);
+    state.bump("s1");
+    assert!(state.remove("s1"), "放行中的条目摘除返回 true");
+    assert!(!state.check("s1"), "摘除后 check 不命中（I1 重开干净）");
+    assert!(state.status("s1").is_none(), "条目整条消失无残影");
+    assert!(!state.enabled_keys().contains(&"s1".to_string()));
+
+    // 关闭态条目（enabled=false）：摘除返回 false（未在放行中）但条目照样清。
+    state.set("s2", true);
+    state.set("s2", false);
+    assert!(!state.remove("s2"));
+    assert!(state.status("s2").is_none(), "关闭态条目同样摘干净");
+
+    // 未知会话 no-op。
+    assert!(!state.remove("ghost"));
+
+    // 同键重建：set 出全新条目，不继承前任任何状态。
+    let (since, count) = state.set("s1", true);
+    assert!(!since.is_empty());
+    assert_eq!(count, 0, "重开计数从零起");
+}

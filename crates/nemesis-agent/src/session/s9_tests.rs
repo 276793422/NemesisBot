@@ -7,9 +7,10 @@
 //!   预置为目录 → remove_file 失败非 NotFound）。
 //! - 829-830：clear_session 同上。
 //! - 861-883：migrate_legacy_main 的 storage_dir json 部分（读成功改 key /
-//!   读失败 warn）。⚠️ 849-858 的 jsonl 分支走 default_path_manager 的真实
-//!   sessions_log_dir——测试不可造 legacy 文件（触生产数据），见报告环境
-//!   依赖组；真实目录存在 agent_main_main.jsonl 时本测试跳过（防误迁移）。
+//!   读失败 warn）。jsonl 分支（849-858）同样真实覆盖：经 DI 形态
+//!   migrate_legacy_main_in 注入私有目录断言 rename，守卫「真实文件存在
+//!   则 SKIP」随 home 重定向退役（2026-11-19），详见
+//!   migrate_legacy_main_moves_storage_json 注释。
 //! - 916-917/920：cleanup_old_sessions 的 read_dir 失败 warn（storage_dir
 //!   指向普通文件）。
 //! - 959-960/964/986：cleanup 过期文件删除失败 warn（readonly，探针门控）
@@ -20,7 +21,6 @@
 
 use super::*;
 use crate::test_support::capture_logs;
-use nemesis_path::default_path_manager;
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
@@ -103,19 +103,25 @@ fn clear_session_json_path_blocked_by_directory_warns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// migrate_legacy_main 的 storage_dir json 部分：读成功改 key 迁移
+/// migrate_legacy_main 的 storage json 部分：读成功改 key 迁移
 /// （863-880）；读失败（路径是目录）warn（881）。
+///
+/// jsonl 分支（849-858）同样真实覆盖：经 DI 形态 migrate_legacy_main_in
+/// 注入**私有** session_logs 目录断言 rename——此前因「不可造 legacy 文件
+/// 触生产数据」长期守卫豁免（环境依赖组），守卫随重定向一起退役；走 DI
+/// 而非单例目录，是与 append-only 测试（共享 agent_main_main.jsonl）零
+/// 竞争的根（rename 搬走共享文件的竞速 2026-11-19 实锤后收口）。
 #[test]
 fn migrate_legacy_main_moves_storage_json() {
-    // 守卫：真实 sessions_log_dir 若存在 legacy jsonl，本测试会触发真实
-    // rename（动生产数据）→ 跳过（该场景由环境决定，见报告）。
-    let real_legacy = default_path_manager()
-        .sessions_log_dir()
-        .join("agent_main_main.jsonl");
-    if real_legacy.exists() {
-        eprintln!("[s9] real agent_main_main.jsonl exists; skipping migrate test");
-        return;
-    }
+    // jsonl 分支真实覆盖：私有目录预置 legacy main log → rename 成 legacy。
+    let logs_dir = temp_dir("migrate_logs");
+    let _ = std::fs::remove_dir_all(&logs_dir);
+    std::fs::create_dir_all(&logs_dir).unwrap();
+    std::fs::write(
+        logs_dir.join("agent_main_main.jsonl"),
+        "{\"role\":\"user\",\"content\":\"legacy row\"}\n",
+    )
+    .unwrap();
 
     // 1) 正常迁移：main json 带 key 字段
     let dir = temp_dir("migrate");
@@ -126,7 +132,7 @@ fn migrate_legacy_main_moves_storage_json() {
         r#"{"key":"agent:main:main","messages":[],"updated":"2026-01-01T00:00:00+08:00"}"#,
     )
     .unwrap();
-    SessionStore::migrate_legacy_main(&dir);
+    SessionStore::migrate_legacy_main_in(&dir, &logs_dir);
     let legacy = dir.join("agent_main_session_legacy.json");
     assert!(legacy.exists(), "legacy json written");
     let v: serde_json::Value =
@@ -137,20 +143,33 @@ fn migrate_legacy_main_moves_storage_json() {
         "key field rewritten"
     );
     assert!(!dir.join("agent_main_main.json").exists(), "main removed");
+    assert!(
+        logs_dir.join("agent_main_session_legacy.jsonl").exists(),
+        "legacy jsonl written (849-858 rename branch)"
+    );
+    assert!(
+        !logs_dir.join("agent_main_main.jsonl").exists(),
+        "main jsonl removed (849-858 rename branch)"
+    );
 
     // 2) 幂等：main 已不在 → 不动
-    SessionStore::migrate_legacy_main(&dir);
+    SessionStore::migrate_legacy_main_in(&dir, &logs_dir);
     assert!(legacy.exists());
-
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        logs_dir.join("agent_main_session_legacy.jsonl").exists(),
+        "second run must not touch the already-renamed legacy log"
+    );
 
     // 3) 读失败：main json 是目录 → warn（881）
     let _logs = capture_logs();
     let dir2 = temp_dir("migrbad");
     let _ = std::fs::remove_dir_all(&dir2);
     std::fs::create_dir_all(dir2.join("agent_main_main.json")).unwrap();
-    SessionStore::migrate_legacy_main(&dir2); // 必须不 panic
+    SessionStore::migrate_legacy_main_in(&dir2, &logs_dir); // 必须不 panic
+
+    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&dir2);
+    let _ = std::fs::remove_dir_all(&logs_dir);
 }
 
 /// cleanup_old_sessions：storage_dir 是普通文件 → read_dir 失败 → warn

@@ -312,6 +312,86 @@ fn session_meta_sidecar_pairs_with_body_deletion() {
     );
 }
 
+/// 删除残留修复（2026-11-19）级联回归锁：session_logs 正文 TTL 删除
+/// 成功后，event_ledger 账本与 store json 按同构 stem 命名跟随删（
+/// SessionLogCascade）。隔离证明设计：ledger 夹具内容为非 append 尾行
+///（`ledger_tail_is_append` = false）→ event_ledger 族自身**保留**它们
+///（family.deleted == 0），级联成为其唯一删除路径；sessions/ 下 store
+/// json 不属任何清扫族，级联同样是唯一删除路径。FTS 面经
+/// `invalidate_session_stem`（stem 精确 DELETE；测试进程真实 home 无
+/// history_index.db 时缺席短路零触碰，有 DB 时 stem "old"/"ctrl" 与
+/// 真实会话 stem 不同域 = 无行命中 no-op）。
+#[test]
+fn session_logs_sweep_cascades_ledger_and_store_json() {
+    let ws = tempfile::tempdir().unwrap();
+    let sl = ws.path().join("logs").join("session_logs");
+    let el = ws.path().join("logs").join("event_ledger");
+    let sessions = nemesis_path::resolve_sessions_dir_in_workspace(ws.path());
+    std::fs::create_dir_all(&sl).unwrap();
+    std::fs::create_dir_all(&el).unwrap();
+    std::fs::create_dir_all(&sessions).unwrap();
+    // 两个会话条目：old 带 meta sidecar、ctrl 只裸正文（级联不依赖
+    // sidecar 在场）。ledger / store json 按 stem 同构命名预置。
+    std::fs::write(sl.join("old.jsonl"), "old body").unwrap();
+    std::fs::write(sl.join("old.meta.json"), "{}").unwrap();
+    std::fs::write(sl.join("ctrl.jsonl"), "ctrl body").unwrap();
+    std::fs::write(el.join("old.jsonl"), "not a ledger tail").unwrap();
+    std::fs::write(el.join("ctrl.jsonl"), "not a ledger tail").unwrap();
+    std::fs::write(sessions.join("old.json"), r#"{"id":"old"}"#).unwrap();
+    std::fs::write(sessions.join("ctrl.json"), r#"{"id":"ctrl"}"#).unwrap();
+
+    // 拍 1（时钟拨老 40 天）：正文全超 30d 删 → 级联跟随。
+    let stats = sweep_workspace_logs(ws.path(), &LogsTtl::default(), old_now());
+    let session = stats
+        .iter()
+        .find(|(f, _)| f.name() == "session_logs")
+        .unwrap()
+        .1;
+    let ledger = stats
+        .iter()
+        .find(|(f, _)| f.name() == "event_ledger")
+        .unwrap()
+        .1;
+    assert_eq!(
+        session.deleted, 3,
+        "两正文 + old 的 meta sidecar（配对同删）: {stats:?}"
+    );
+    assert_eq!(
+        ledger.deleted, 0,
+        "非 append 尾行账本被本族保留（级联是唯一删除路径的前提）: {stats:?}"
+    );
+    assert_eq!(
+        names(&el),
+        Vec::<String>::new(),
+        "ledger 两件由级联跟随删（内容口径）"
+    );
+    assert_eq!(
+        names(&sessions),
+        Vec::<String>::new(),
+        "store json 两件由级联跟随删（内容口径）"
+    );
+
+    // 拍 2（时钟拨 8 天 < 30d）：正文存活 → 级联不得触发。三面夹具
+    // 重建后全部原样保留（ledger 本族 8d < 30d 同样保留）。
+    std::fs::write(sl.join("old.jsonl"), "live body").unwrap();
+    std::fs::write(el.join("old.jsonl"), "not a ledger tail").unwrap();
+    std::fs::write(sessions.join("old.json"), r#"{"id":"old"}"#).unwrap();
+    let stats = sweep_workspace_logs(
+        ws.path(),
+        &LogsTtl::default(),
+        SystemTime::now() + Duration::from_secs(8 * 86400),
+    );
+    let session = stats
+        .iter()
+        .find(|(f, _)| f.name() == "session_logs")
+        .unwrap()
+        .1;
+    assert_eq!(session.deleted, 0, "正文存活: {stats:?}");
+    assert!(sl.join("old.jsonl").is_file(), "正文保留");
+    assert!(el.join("old.jsonl").is_file(), "ledger 不被误级联");
+    assert!(sessions.join("old.json").is_file(), "store json 不被误级联");
+}
+
 // —— request_logs：会话目录形态 ——
 
 #[test]

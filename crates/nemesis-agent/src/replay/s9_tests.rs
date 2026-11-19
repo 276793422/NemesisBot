@@ -13,6 +13,8 @@ use nemesis_path::default_path_manager;
 #[test]
 fn append_projection_record_blocked_by_directory_warns() {
     let _logs = capture_logs();
+    // 直调单例前显式重定向（幂等；账本写入走生产 replay，不经惰性 ensure）。
+    crate::test_home::ensure_redirected();
     let key = format!("test:s9:replay:{}", std::process::id());
     let safe_key = key.replace(':', "_");
     let ledger = default_path_manager()
