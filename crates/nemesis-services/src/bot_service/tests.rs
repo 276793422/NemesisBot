@@ -1,5 +1,73 @@
 use super::*;
 
+// ---------------------------------------------------------------------------
+// CI 宿主 VM 瞬态弹性夹具（家族档案 botservice-tempdir-instant-death-family）
+// ---------------------------------------------------------------------------
+// 病征：活跃 tempdir 在 CI Windows 宿主 VM 上偶发整体消失（变体 A：夹具
+// fs::write 撞 Os code 3 NotFound），或写成功后 load_config 的 exists()
+// 微秒级假阴（变体 B："config file not found"）。跨 VM/跨 head 亚秒复红、
+// 本地全 workspace 33k 测试全并行（nextest 独立进程形态）零复现 = 环境
+// 专属瞬态，非产品缺陷。夹具层弹性吸收：NotFound → 重建母目录 + 退避
+// 重试；重试耗尽照常 panic（保留真红面，不吞失败）。
+
+thread_local! {
+    /// 最近夹具写入的 config 内容（path → bytes）——变体 B 的 start 重试
+    /// 重建用。nextest 每测试独立进程且夹具写-启动紧邻，同线程单测粒度
+    /// 键查询安全。
+    static FIXTURE_CONFIG_STASH: std::cell::RefCell<
+        std::collections::HashMap<std::path::PathBuf, String>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// 夹具写盘：NotFound（tempdir 母目录被抽走）时重建母目录并退避重试。
+/// 收 `AsRef<[u8]>` 与原 `fs::write` 调用形（String/&String/&str/字节串）对齐。
+fn write_config_resilient(path: &std::path::Path, bytes: impl AsRef<[u8]>) {
+    let text = String::from_utf8_lossy(bytes.as_ref()).into_owned();
+    FIXTURE_CONFIG_STASH.with(|m| {
+        m.borrow_mut().insert(path.to_path_buf(), text);
+    });
+    for attempt in 0..3u32 {
+        match std::fs::write(path, bytes.as_ref()) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1 << attempt));
+            }
+            Err(e) => panic!("fixture write failed: {e}"),
+        }
+    }
+    panic!("fixture tempdir vanished thrice: {}", path.display());
+}
+
+/// 变体 B 吸收：写成功后 load_config 的 exists() 微秒级假阴 → 从 stash
+/// 重建 config 并重试 start。失败点在任何组件 spawn 之前（load_config
+/// 在 broadcast 通道之后立即返回），state=Error 不阻塞重入，&self 重入安全。
+fn start_resilient(svc: &BotService) {
+    for attempt in 0..3u32 {
+        match svc.start() {
+            Ok(()) => return,
+            Err(e) if e.to_string().contains("config file not found") => {
+                let path = svc.config().config_path.clone();
+                let bytes = FIXTURE_CONFIG_STASH.with(|m| m.borrow().get(&path).cloned());
+                let bytes = bytes
+                    .unwrap_or_else(|| panic!("start_resilient: no stash for {}", path.display()));
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&path, &bytes).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(1 << attempt));
+            }
+            Err(e) => panic!("start failed: {e}"),
+        }
+    }
+    panic!(
+        "start lost config thrice: {}",
+        svc.config().config_path.display()
+    );
+}
+
 fn make_config() -> BotServiceConfig {
     BotServiceConfig {
         config_path: PathBuf::from("test_config.json"),
@@ -50,11 +118,10 @@ fn make_config_with_file(dir: &std::path::Path) -> BotServiceConfig {
             }
         }
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string_pretty(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     BotServiceConfig {
         config_path,
@@ -119,11 +186,10 @@ fn test_save_config_writes_to_disk() {
             }
         ]
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string_pretty(&initial_config).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path: config_path.clone(),
@@ -156,7 +222,7 @@ fn test_save_config_writes_to_disk() {
 fn test_save_config_rejects_invalid_json() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -173,7 +239,7 @@ fn test_save_config_rejects_invalid_json() {
 fn test_save_config_rejects_no_models() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -189,7 +255,7 @@ fn test_save_config_rejects_no_models() {
 fn test_save_config_rejects_no_api_key() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -213,7 +279,7 @@ fn test_validate_config_checks_models() {
     // start() Ok + state=Running + last_error 保留失败记录 + can_stop（shutdown
     // 路径能完整停机，此前 Error 态跳过 bot stop）。
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, r#"{"models": []}"#).unwrap();
+    write_config_resilient(&config_path, r#"{"models": []}"#);
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -232,11 +298,10 @@ fn test_validate_config_checks_models() {
 fn test_validate_config_checks_api_keys() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         r#"{"models": [{"model": "test/1.0", "api_key": "", "base_url": "", "is_default": true}]}"#,
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -289,7 +354,7 @@ fn test_restart_cycle() {
     let svc = BotService::new(config);
 
     // Start
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 
     // Restart
@@ -304,7 +369,7 @@ fn test_double_start_fails() {
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     let result = svc.start();
     assert!(result.is_err());
 }
@@ -372,7 +437,7 @@ fn test_save_config_atomic_write() {
     let initial = serde_json::json!({
         "models": [{ "model": "test/1.0", "api_key": "key1", "base_url": "", "is_default": true }]
     });
-    std::fs::write(&config_path, serde_json::to_string(&initial).unwrap()).unwrap();
+    write_config_resilient(&config_path, serde_json::to_string(&initial).unwrap());
 
     let svc = BotService::new(BotServiceConfig {
         config_path: config_path.clone(),
@@ -439,7 +504,7 @@ fn test_get_components_reflects_enabled() {
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
 
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let components = svc.get_components();
     assert!(components.contains_key("bus"));
@@ -456,7 +521,7 @@ fn test_workspace_returns_resolved_path() {
     // Before start, workspace is empty
     assert!(svc.workspace().as_os_str().is_empty() || svc.workspace().exists());
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     // After start, workspace should be resolved
     assert!(!svc.workspace().as_os_str().is_empty());
 }
@@ -910,10 +975,10 @@ fn test_create_heartbeat_handler_skips_bootstrap() {
     let config = make_config_with_file(dir.path());
 
     // Create BOOTSTRAP.md in workspace
-    std::fs::write(dir.path().join("BOOTSTRAP.md"), "# init").unwrap();
+    write_config_resilient(&dir.path().join("BOOTSTRAP.md"), "# init");
 
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let handler = svc.create_heartbeat_handler();
     // Should not panic when bootstrap exists
@@ -926,7 +991,7 @@ fn test_create_heartbeat_handler_no_agent() {
     let config = make_config_with_file(dir.path());
 
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     // No agent injected, so handler should log warning but not panic
     let handler = svc.create_heartbeat_handler();
@@ -956,7 +1021,7 @@ async fn test_create_heartbeat_handler_with_agent() {
     }
 
     svc.inject_agent(Arc::new(MockAgentHeartbeat));
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let handler = svc.create_heartbeat_handler();
     handler(); // Should call process_heartbeat
@@ -985,7 +1050,7 @@ async fn test_create_heartbeat_handler_agent_error() {
     }
 
     svc.inject_agent(Arc::new(MockAgentError));
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let handler = svc.create_heartbeat_handler();
     handler(); // Should handle error gracefully
@@ -1005,7 +1070,7 @@ fn test_cancel_receiver_some_after_start() {
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert!(svc.cancel_receiver().is_some());
 }
 
@@ -1095,11 +1160,10 @@ fn test_load_config_workspace_from_config_file() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1107,7 +1171,7 @@ fn test_load_config_workspace_from_config_file() {
         ..BotServiceConfig::default()
     });
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.workspace(), workspace_dir);
 }
 
@@ -1122,11 +1186,10 @@ fn test_load_config_workspace_from_config_field() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1134,7 +1197,7 @@ fn test_load_config_workspace_from_config_field() {
         ..BotServiceConfig::default()
     });
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.workspace(), PathBuf::from("/fallback/workspace"));
 }
 
@@ -1150,11 +1213,10 @@ fn test_load_config_workspace_default_to_parent() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1162,7 +1224,7 @@ fn test_load_config_workspace_default_to_parent() {
         ..BotServiceConfig::default()
     });
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     // Should fall back to parent directory of config file
     assert_eq!(svc.workspace(), subdir);
 }
@@ -1190,11 +1252,10 @@ fn make_config_with_flags(
         "heartbeat": { "enabled": heartbeat_enabled, "interval": 60 },
         "security": { "enabled": true }
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     BotServiceConfig {
         config_path,
@@ -1212,7 +1273,7 @@ fn test_init_components_forge_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), true, false, false, false, false, true);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(enabled.is_enabled(Component::Forge));
@@ -1223,7 +1284,7 @@ fn test_init_components_cluster_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), false, false, false, true, false, true);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(enabled.is_enabled(Component::Cluster));
@@ -1234,7 +1295,7 @@ fn test_init_components_memory_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), false, true, false, false, false, true);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(enabled.is_enabled(Component::Memory));
@@ -1245,7 +1306,7 @@ fn test_init_components_workflow_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), false, false, true, false, false, true);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(enabled.is_enabled(Component::Workflow));
@@ -1256,7 +1317,7 @@ fn test_init_components_devices_enabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), false, false, false, false, true, true);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(enabled.is_enabled(Component::Devices));
@@ -1267,7 +1328,7 @@ fn test_init_components_heartbeat_disabled() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), false, false, false, false, false, false);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(!enabled.is_enabled(Component::Heartbeat));
@@ -1289,11 +1350,10 @@ fn test_init_components_all_disabled_optional() {
         "heartbeat": { "enabled": false, "interval": 60 },
         "security": { "enabled": false }
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1301,7 +1361,7 @@ fn test_init_components_all_disabled_optional() {
         security_enabled: false,
         ..BotServiceConfig::default()
     });
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let enabled = svc.enabled_components();
     assert!(!enabled.is_enabled(Component::Forge));
@@ -1337,7 +1397,7 @@ fn test_start_services_with_channel_manager() {
     }
 
     svc.inject_channels(Arc::new(MockChannelsWithNames));
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert!(svc.get_channel_manager().is_some());
     let channels = svc.get_channel_manager().unwrap();
     assert_eq!(channels.enabled_channels(), vec!["web", "discord"]);
@@ -1511,7 +1571,7 @@ async fn test_stop_all_with_injected_services() {
     svc.inject_agent(Arc::new(MockFullService));
     svc.inject_cron(Arc::new(MockFullService));
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert!(svc.get_forge().is_some());
     assert!(svc.get_memory().is_some());
 
@@ -1553,7 +1613,7 @@ async fn test_stop_all_with_service_stop_errors() {
     svc.inject_channels(Arc::new(ErrorOnStop));
     svc.inject_agent(Arc::new(ErrorOnStop));
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     // stop should succeed even with errors from individual services
     let result = svc.stop();
     assert!(result.is_ok());
@@ -1576,7 +1636,7 @@ fn test_double_stop_fails() {
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     svc.stop().unwrap();
 
     let result = svc.stop();
@@ -1591,7 +1651,7 @@ fn test_start_after_stop() {
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     svc.stop().unwrap();
     assert_eq!(svc.get_state(), BotState::NotStarted);
 
@@ -1610,7 +1670,7 @@ fn test_start_when_already_starting_blocked() {
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     // Second start should fail because already running
     let result = svc.start();
     assert!(result.is_err());
@@ -1622,7 +1682,7 @@ fn test_start_when_already_starting_blocked() {
 fn test_load_config_invalid_json() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "not valid json{{{").unwrap();
+    write_config_resilient(&config_path, "not valid json{{{");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1658,7 +1718,7 @@ fn test_config_file_with_logging() {
         "gateway": { "host": "0.0.0.0", "port": 3000 },
         "heartbeat": { "enabled": false, "interval": 600 }
     });
-    std::fs::write(&config_path, serde_json::to_string(&content).unwrap()).unwrap();
+    write_config_resilient(&config_path, serde_json::to_string(&content).unwrap());
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1666,7 +1726,7 @@ fn test_config_file_with_logging() {
         ..BotServiceConfig::default()
     });
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 }
 
@@ -1676,7 +1736,7 @@ fn test_config_file_with_logging() {
 fn test_config_file_empty_json() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1714,7 +1774,7 @@ async fn test_start_services_health_server_start() {
     impl HealthServer for MockHealthSvc {}
 
     svc.inject_health(Arc::new(MockHealthSvc));
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 
     // Give spawned task time to start
@@ -1741,7 +1801,7 @@ async fn test_start_services_health_stop_error() {
     impl HealthServer for ErrorHealthStop {}
 
     svc.inject_health(Arc::new(ErrorHealthStop));
-    svc.start().unwrap();
+    start_resilient(&svc);
     // stop_all should handle health stop error gracefully
     svc.stop().unwrap();
 }
@@ -1770,7 +1830,7 @@ fn test_stop_all_forge_stop_error() {
     }
 
     svc.inject_forge(Arc::new(ErrorForgeStop));
-    svc.start().unwrap();
+    start_resilient(&svc);
     svc.stop().unwrap();
 }
 
@@ -1794,7 +1854,7 @@ fn test_stop_all_with_memory_service() {
     impl MemoryService for MockMemorySvc {}
 
     svc.inject_memory(Arc::new(MockMemorySvc));
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert!(svc.get_memory().is_some());
     svc.stop().unwrap();
     assert!(svc.get_memory().is_none());
@@ -1811,11 +1871,10 @@ async fn test_save_config_and_restart_while_running() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = Arc::new(BotService::new(BotServiceConfig {
         config_path,
@@ -1834,7 +1893,7 @@ async fn test_save_config_and_restart_while_running() {
         Ok(())
     }));
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 
     let new_config = serde_json::json!({
@@ -1861,11 +1920,10 @@ async fn test_save_config_restart_no_callback() {
             { "model": "test/1.0", "api_key": "test-key", "base_url": "", "is_default": true }
         ]
     });
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&config_content).unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -1873,7 +1931,7 @@ async fn test_save_config_restart_no_callback() {
         ..BotServiceConfig::default()
     });
 
-    svc.start().unwrap();
+    start_resilient(&svc);
 
     let new_config = serde_json::json!({
         "models": [
@@ -1908,7 +1966,7 @@ async fn test_start_services_agent_in_background() {
     impl AgentLoopService for MockAgentBg {}
 
     svc.inject_agent(Arc::new(MockAgentBg));
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 
     // Give agent background task time to start
@@ -1937,7 +1995,7 @@ fn test_stop_all_heartbeat_stop_error() {
     impl HeartbeatService for ErrorHeartbeatStop {}
 
     svc.inject_heartbeat(Arc::new(ErrorHeartbeatStop));
-    svc.start().unwrap();
+    start_resilient(&svc);
     svc.stop().unwrap();
 }
 
@@ -1961,7 +2019,7 @@ fn test_stop_all_cron_stop_error() {
     impl CronService for ErrorCronStop {}
 
     svc.inject_cron(Arc::new(ErrorCronStop));
-    svc.start().unwrap();
+    start_resilient(&svc);
     svc.stop().unwrap();
 }
 
@@ -1985,7 +2043,7 @@ fn test_stop_all_devices_stop_error() {
     impl DeviceService for ErrorDeviceStop {}
 
     svc.inject_devices(Arc::new(ErrorDeviceStop));
-    svc.start().unwrap();
+    start_resilient(&svc);
     svc.stop().unwrap();
 }
 
@@ -2013,7 +2071,7 @@ fn test_load_config_unreadable_file() {
 fn test_save_config_rejects_array() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -2029,7 +2087,7 @@ fn test_save_config_rejects_array() {
 fn test_save_config_rejects_null() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -2045,7 +2103,7 @@ fn test_save_config_rejects_null() {
 fn test_save_config_rejects_number() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -2063,7 +2121,7 @@ fn test_save_config_rejects_number() {
 fn test_save_config_rejects_bad_structure() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -2103,7 +2161,7 @@ fn test_validate_config_not_loaded() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
     // Write an empty file so load_config passes but config_loaded is set
-    std::fs::write(&config_path, "{}").unwrap();
+    write_config_resilient(&config_path, "{}");
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -2200,7 +2258,7 @@ fn test_config_file_serde_defaults_subfields() {
     // 466（default_true）：键存在但子字段缺失 → 字段级 default 生效。
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&serde_json::json!({
             "models": [
@@ -2211,8 +2269,7 @@ fn test_config_file_serde_defaults_subfields() {
             "tools": { "cron": {} }
         }))
         .unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
@@ -2220,7 +2277,7 @@ fn test_config_file_serde_defaults_subfields() {
         ..BotServiceConfig::default()
     });
     // 反序列化成功（default 未报错）+ 校验通过 + 无注入启动
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
     svc.stop().unwrap();
 }
@@ -2231,7 +2288,7 @@ fn test_config_file_serde_default_cron_struct() {
     // 结构体级 default 函数生效。
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    std::fs::write(
+    write_config_resilient(
         &config_path,
         serde_json::to_string(&serde_json::json!({
             "models": [
@@ -2240,15 +2297,14 @@ fn test_config_file_serde_default_cron_struct() {
             "tools": {}
         }))
         .unwrap(),
-    )
-    .unwrap();
+    );
 
     let svc = BotService::new(BotServiceConfig {
         config_path,
         workspace: dir.path().to_path_buf(),
         ..BotServiceConfig::default()
     });
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
     svc.stop().unwrap();
 }
@@ -2265,7 +2321,7 @@ fn test_init_components_all_labels_with_subscriber() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_flags(dir.path(), true, true, true, true, true, true);
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 
     let enabled = svc.enabled_components();
@@ -2362,7 +2418,7 @@ async fn test_save_config_restart_callback_error() {
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
-    svc.start().unwrap();
+    start_resilient(&svc);
     assert_eq!(svc.get_state(), BotState::Running);
 
     svc.set_restart_callback(Box::new(|| {
@@ -2416,7 +2472,7 @@ async fn test_start_with_failing_health_service() {
     impl HealthServer for FailingHealth {}
     svc.inject_health(Arc::new(FailingHealth));
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     // 让 spawn 的 health 任务有机会执行
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(svc.get_state(), BotState::Running);
@@ -2440,7 +2496,7 @@ async fn test_start_with_failing_agent_service() {
     impl AgentLoopService for FailingAgent {}
     svc.inject_agent(Arc::new(FailingAgent));
 
-    svc.start().unwrap();
+    start_resilient(&svc);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(svc.get_state(), BotState::Running);
     svc.stop().unwrap();
