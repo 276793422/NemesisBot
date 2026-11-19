@@ -139,6 +139,7 @@ fn agt_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(al)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,

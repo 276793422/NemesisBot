@@ -273,6 +273,21 @@ impl PluginsHandler {
         resources["capabilities"] =
             serde_json::json!(["persona-catalog 快照（prs_manifest/prs_get 纯数据查询面）"]);
 
+        // 邮件基础设施（SMTP 直投收信 + relay 发信；maildir 按地址分库；
+        // C-ABI 解冻第四例。gateway/CLI 装配期装载，v4 签名闸 + config.mail.json
+        // enabled 双闸——缺登记会被 scan_unrecognized 误列「未识别的库」）。
+        let mut mail = self.native_entry(
+            "plugin_mail",
+            "邮件基础设施",
+            "agent 原生邮件收发（mail.* WSAPI / CLI mail / MailboxView）",
+            &config_dir,
+            sig_of("plugin_mail"),
+        );
+        mail["capabilities"] = serde_json::json!([
+            "SMTP 服务端直投收信（RCPT 两级判定 + 按地址分库）",
+            "SMTP relay 发信（发信回执 notify）"
+        ]);
+
         // 管线插件（三段化的进程内插件；启停经 set_metrics_enabled）。
         let metrics = nemesis_agent::hooks::metrics_plugin_slot();
         let pipeline_plugins = serde_json::json!([{
@@ -283,7 +298,7 @@ impl PluginsHandler {
         }]);
 
         Ok(serde_json::json!({
-            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display, roaming, resources],
+            "plugins": [onnx, ui, eval_monitor, wasm_shell, vm_display, roaming, resources, mail],
             "pipeline_plugins": pipeline_plugins,
             "unrecognized_libraries": unrecognized,
         }))

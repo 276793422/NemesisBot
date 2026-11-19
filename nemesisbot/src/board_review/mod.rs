@@ -2438,6 +2438,18 @@ async fn review_issue(
                         }),
                     );
                     info!("[BoardReview] issue {issue_id} 预算超限 → 停止重派转人工（{breach}）");
+                    // 邮件通知（B3 消费点②，计划 §6）：预算熔断停车 → 通知
+                    // （config.mail.json notify.on 含 "board_budget" 才发；
+                    // 尽力而为——停车主流程不被邮件阻塞，静态槽未安装 =
+                    // 静默 no-op）。
+                    crate::mail_notify::try_notify(
+                        "board_budget",
+                        "🛑 NemesisBot 看板预算熔断",
+                        &format!(
+                            "看板单 {} 自动重派预算超限，已停止自动重派转人工。\n\n超限项：{breach}{handoff_note}",
+                            issue.number
+                        ),
+                    );
                     // 触发点①：重派无意义停车 → 重规划起草。
                     crate::board_replan::spawn_replan_draft(
                         deps.clone(),

@@ -12,6 +12,7 @@ members = [
     "crates/nemesis-sandbox",
     "crates/nemesis-providers",
     "crates/nemesis-tools",
+    "crates/nemesis-mail-protocol",
     "crates/nemesis-memory",
     "crates/nemesis-workflow",
     "crates/nemesis-skills",
@@ -266,6 +267,7 @@ nemesis-health = { path = "crates/nemesis-health" }
 nemesis-heartbeat = { path = "crates/nemesis-heartbeat" }
 nemesis-http-pool = { path = "crates/nemesis-http-pool" }
 nemesis-logger = { path = "crates/nemesis-logger" }
+nemesis-mail-protocol = { path = "crates/nemesis-mail-protocol" }
 nemesis-migrate = { path = "crates/nemesis-migrate" }
 nemesis-path = { path = "crates/nemesis-path" }
 nemesis-plugin = { path = "crates/nemesis-plugin" }

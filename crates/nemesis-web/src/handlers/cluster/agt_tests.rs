@@ -63,6 +63,7 @@ fn agt_make_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: log_dir,
         workflow_engine: None,
@@ -99,6 +100,15 @@ fn agt_cluster(dir: &tempfile::TempDir) -> Arc<Cluster> {
         ClusterConfig::default(),
         dir.path().to_path_buf(),
     ))
+}
+
+/// 内存态 TaskManager 姊妹 fixture（任务面测试专用）——tasks.db 换装是
+/// with_workspace（生产路径）专属；stub 编译态（nemesis-taskstore sqlite
+/// feature 关，`-p nemesis-web` 单包测试即此形态）下 tasks.db 写入 no-op、
+/// 查询恒空，任务面测试必须与持久化后端解耦（2026-11-18 裁剪门控暴露）。
+fn agt_cluster_mem(dir: &tempfile::TempDir) -> Arc<Cluster> {
+    let _ = dir;
+    Arc::new(Cluster::new(ClusterConfig::default()))
 }
 
 fn agt_task(id: &str, status: TaskStatus, created: &str, completed: Option<&str>) -> Task {
@@ -314,7 +324,7 @@ async fn agt_tasks_list_empty_with_log_dir_takes_empty_summaries_arm() {
 #[tokio::test]
 async fn agt_tasks_detail_terminal_labels_and_list_duration_null() {
     let dir = tempfile::tempdir().unwrap();
-    let cluster = agt_cluster(&dir);
+    let cluster = agt_cluster_mem(&dir);
     cluster.register_node(ExtendedNodeInfo {
         base: NodeInfo {
             id: "n1".to_string(),

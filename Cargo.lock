@@ -3968,6 +3968,7 @@ dependencies = [
  "hmac",
  "http",
  "k256",
+ "nemesis-mail-protocol",
  "nemesis-path",
  "nemesis-types",
  "nemesis-utils",
@@ -4336,6 +4337,15 @@ dependencies = [
  "tracing",
  "url",
  "which",
+]
+
+[[package]]
+name = "nemesis-mail-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "rustls",
 ]
 
 [[package]]

@@ -1,0 +1,38 @@
+[package]
+name = "plugin-mail"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+edition = "2024"
+description = "NemesisBot mail plugin — SMTP/POP3 servers + SMTP client + per-address maildir store (cdylib)"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate
+# target). 邮件基础设施插件（C-ABI 解冻第四例，新式交互插件样板）。
+# Build: cargo build --release --manifest-path plugins/plugin-mail/Cargo.toml
+# Output: plugins/plugin-mail/target/release/plugin_mail.dll (libplugin_mail.so/.dylib)
+# （构建脚本经 CARGO_TARGET_DIR 重定向到 target_target_*/plugins/plugin-mail/）
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 协议层单一真相源（宿主 crates/ 同源 path 依赖——源码共享、编译进 DLL 产物，
+# 产物仍自包含；该 crate 已去 workspace 继承键，双 workspace 上下文均可解析）。
+nemesis-mail-protocol = { path = "../../crates/nemesis-mail-protocol" }
+# 发信 implicit TLS 465（ring provider，与协议层 rustls 同源，不装 aws-lc-rs）。
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+# client.ca_cert_path 缺省时的公共信任根（fail-closed 原则下的便利缺省；
+# 显式 CA 优先——配了 ca_cert_path 就不用这个）。
+webpki-roots = "1.0"
+# 插件自持 runtime（FFI 同步导出内 block_on；SMTP/POP3 常驻服务跑任务）。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+# 投递文件名时间戳 + 收信时间元数据。
+chrono = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -98,6 +98,12 @@ pub struct AppState {
     /// None = 插件未装载（诚实降级：启停/成员查询报 not loaded）。
     /// 恒编译（cluster-roaming feature 已删）。
     pub quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
+    /// plugin_mail 运行面句柄（邮件基础设施：SMTP/POP3 服务端 + 客户端发信
+    /// + 分库存储在插件内——宿主 nemesisbot 装载后注入，quic_relay 同款）。
+    ///
+    /// None = 插件未装载（诚实降级：mail.* 命令报「插件未装载」）。
+    /// 恒编译（契约 crate 非 optional；`mail` feature 只门 handler 注册面）。
+    pub mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.

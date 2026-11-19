@@ -1838,6 +1838,73 @@ pub(crate) async fn init_post_agent(
         crate::roaming_plugin_loader::refresh_roaming_config(&relay_refresh_cfg)
     }));
 
+    // ---- 邮件基础设施（B3）：WSAPI 句柄 + notify/audit 消费面 + 通知钩子 ----
+    // 句柄注入（roaming 同款——句柄 fn 指针 Copy，直接解引用值拷贝；未装载
+    // = web 面保持 None，mail.* 命令诚实报「插件未装载」）。
+    if let Some(handle) = crate::mail_plugin_loader::plugin_handle() {
+        web_server.set_mail_plugin(*handle);
+        info!("[Gateway] plugin_mail handle injected into web server");
+    }
+    // notify 槽：SMTP 落信 → SSE `mailbox.updated`（邮件页实时刷新）；发信
+    // 回执 → `mail.sent`。publish_global_event 跨 crate 全局口——EventHub
+    // 未装配（relay 纯中继形态）时静默跳过，闸内消费面零感知。
+    crate::mail_plugin_loader::set_notify_in_sink(std::sync::Arc::new(|meta_json: &str| {
+        let data: serde_json::Value = serde_json::from_str(meta_json)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": meta_json }));
+        nemesis_web::chat_event_log::publish_global_event("mailbox.updated", data);
+    }));
+    crate::mail_plugin_loader::set_notify_sent_sink(std::sync::Arc::new(|result_json: &str| {
+        let data: serde_json::Value = serde_json::from_str(result_json)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": result_json }));
+        nemesis_web::chat_event_log::publish_global_event("mail.sent", data);
+    }));
+    // audit 槽：插件审计事件 → 安全审计链（estop audit hook 同款 append 直记
+    // ——非工具管线记账先例；链未启用 = append 返回 None，debug 留痕）。
+    // 槽未注入 = loader 侧 tracing 兜底（事件不丢形态）。
+    #[cfg(feature = "security")]
+    if let Some(plugin) = agent.security_plugin.clone() {
+        crate::mail_plugin_loader::set_audit_sink(std::sync::Arc::new(
+            move |event: &str, detail: &str| {
+                if plugin
+                    .append_direct_audit_event(
+                        event,
+                        "plugin_mail",
+                        "system",
+                        "plugin",
+                        detail,
+                        "allow",
+                        "mail infrastructure plugin event",
+                    )
+                    .is_none()
+                {
+                    tracing::debug!(
+                        "[Gateway] mail audit event not recorded (chain disabled); tracing fallback only"
+                    );
+                }
+            },
+        ));
+        info!("[Gateway] plugin_mail audit sink connected to security chain");
+    }
+    // 通知钩子安装（estop 急停通知 + board 预算熔断通知；config.mail.json
+    // notify 段白名单驱动，缺省静默）+ estop watch 订阅任务（CLI/托盘/
+    // Dashboard/WSAPI 四入口全走同一 EstopState——watch 即全覆盖；estop 中
+    // 照发——邮件基础设施不是 agent 活动面，契约注释同文；release 只改
+    // watch 值不重发，闸在 *borrow() 判 true）。
+    crate::mail_notify::install(&home);
+    let mut estop_mail_rx = shared_resources.estop.subscribe();
+    tokio::spawn(async move {
+        while estop_mail_rx.changed().await.is_ok() {
+            if *estop_mail_rx.borrow() {
+                let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                crate::mail_notify::try_notify(
+                    "estop",
+                    "⛔ NemesisBot 急停触发",
+                    &format!("急停已于 {ts} 触发，全部 agent 活动已冻结。释放后本通知不重发。"),
+                );
+            }
+        }
+    });
+
     // Inject AgentLoop ref into web server for runtime model switching
     web_server.set_agent_loop(agent_loop_ref.clone());
     info!("[Gateway] AgentLoop ref injected into web server for model switching");

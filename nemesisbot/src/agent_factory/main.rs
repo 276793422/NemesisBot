@@ -772,6 +772,22 @@ pub fn build_agent_loop(
         info!("[AgentFactory] goal tool registered (goal add/delete/disable)");
     }
 
+    // 8h. 邮件 agent 工具（B4，2026-11-18）：`mail` 单工具三 action
+    //（send/list/read——**无 delete**，schema 层面不存在，删信/地址注册
+    // 只经宿主治理面；min_tier=normal 双闸防 mini 误用外传面；send 投影
+    // network_request 过 8 层、list/read 投影 internal）。handle 缺席
+    //（总闸关 / 名册关 / DLL 缺席 / 装载失败）= 不注册，零影响。gateway
+    // 装载链（GatewayCtx 构造期 load_mail_plugin）先于本函数——注册判定
+    // 无时序缺口；run/acp headless 不 load 插件 = 自然不注册。
+    #[cfg(feature = "mail")]
+    if crate::mail_plugin_loader::plugin_handle().is_some() {
+        agent_loop.register_tool(
+            crate::mail_tool::TOOL_NAME.to_string(),
+            Box::new(crate::mail_tool::MailTool::new()),
+        );
+        info!("[AgentFactory] mail tool registered (mail send/list/read)");
+    }
+
     // 9. Continuation manager (disk-persisted — new instance).
     {
         let cont_mgr = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(

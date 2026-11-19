@@ -388,6 +388,22 @@ pub fn resolve_quic_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.quic.json")
 }
 
+/// `<workspace>/config/config.mail.json` —— 邮件基础设施子系统配置
+/// （enabled 总闸 + smtp/pop3/client 各段 + notify.on；forge 分文件先例；
+/// 统一定义）。
+pub fn resolve_mail_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.mail.json")
+}
+
+/// `<home>/mail/` —— 邮件库根（邮件基础设施单一拼接点）。
+///
+/// 刻意 **home 平级**（非 workspace 内）：agent 文件工具（restrict_to_workspace
+/// 围栏）结构性够不着，防 LLM 删信掩盖（能力矩阵「不可删」的路径半边）；
+/// 也不在任何清理射程内（logs TTL / checkpoint gc / uploads 清扫）。
+pub fn mail_dir(home: &Path) -> PathBuf {
+    home.join("mail")
+}
+
 /// `<workspace>/config/vault.enc` —— 凭据 vault 加密存储（安全升级，
 /// `credential-vault-and-risk-limits`；统一定义）。
 pub fn resolve_vault_path_in_workspace(workspace: &Path) -> PathBuf {

@@ -22,6 +22,10 @@
 #   │                              upstream snapshot embedded at build time —
 #   │                              FILE cache (pre-downloaded) > baseline fallback;
 #   │                              absent = shop pure online)
+#   │   └── libplugin_mail.so  (SMTP/POP3 servers + client + per-address
+#   │                           maildir store; gate = config.mail.json
+#   │                           enabled, default off; absent = mail honestly
+#   │                           disabled)
 #   ├── plugins_wasm/          (WASM plugin payload dir, preset empty + README;
 #   │                           installed plugins land here, NOT loaded by default)
 #   └── tests/
@@ -404,6 +408,24 @@ else
         echo "  SKIP $PLUGIN_RESOURCES_DIR/Cargo.toml not found"
     fi
     echo ""
+
+    # --- plugin-mail（SMTP/POP3 服务端 + SMTP 客户端 + 按地址 maildir 存储；
+    #     邮件基础设施 C-ABI 插件第四例；缺席 = 邮件子系统诚实关闭——装载闸
+    #     是 config.mail.json enabled（缺省 false），文件在场也不自动起） ---
+    PLUGIN_MAIL_DIR="plugins/plugin-mail"
+    if [ -f "$PLUGIN_MAIL_DIR/Cargo.toml" ]; then
+        echo "  Building plugin-mail..."
+        MAIL_START=$SECONDS
+        if (cd "$PLUGIN_MAIL_DIR" && CARGO_TARGET_DIR="${ROOT_DIR}/target/target_linux/plugins/plugin-mail" cargo build --release 2>&1); then
+            MAIL_DURATION=$(( SECONDS - MAIL_START ))
+            echo "  OK Plugin-mail built in ${MAIL_DURATION}s"
+        else
+            echo "  WARN Plugin-mail build failed (non-fatal — 邮件子系统将不可用)"
+        fi
+    else
+        echo "  SKIP $PLUGIN_MAIL_DIR/Cargo.toml not found"
+    fi
+    echo ""
 fi
 
 # ============================================
@@ -506,6 +528,23 @@ for so_path in "target/target_linux/plugins/plugin-resources/release/libplugin_r
 done
 if [ "$RESOURCES_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
     echo "  WARN libplugin_resources.so not found in build output (人格超市快照将不可用)"
+fi
+
+# plugin-mail 邮件基础设施面（exe 旁 plugins/ 查找——缺席 = 邮件子系统诚实
+# 关闭；运行闸 workspace config.mail.json enabled，缺省 false）
+MAIL_DLL_FOUND=false
+for so_path in "target/target_linux/plugins/plugin-mail/release/libplugin_mail.so"; do
+    if [ -f "$so_path" ]; then
+        cp "$so_path" "$BIN_DIR/plugins/"
+        SIZE=$(wc -c < "$so_path")
+        SIZE_MB=$(( SIZE / 1048576 ))
+        COPIED+=("libplugin_mail.so (${SIZE_MB} MB)")
+        MAIL_DLL_FOUND=true
+        break
+    fi
+done
+if [ "$MAIL_DLL_FOUND" = false ] && [ "$SKIP_PLUGIN" = false ]; then
+    echo "  WARN libplugin_mail.so not found in build output (邮件子系统将不可用)"
 fi
 
 # 预置空 plugins_wasm/ 目录（2026-10-22 纪律：WASM 插件载荷落用户可见的
