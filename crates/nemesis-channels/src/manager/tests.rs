@@ -1313,14 +1313,22 @@ impl Channel for FailStartChannel {
 #[allow(dead_code)]
 struct SlowChannel {
     name: String,
+    /// 每条 send 的固定耗时（timeout/deadline 类测试的时钟预算锚；
+    /// `new()` 保持历史 100ms 语义，更长预算走 `with_per_send`）。
+    per_send: std::time::Duration,
     sent: Arc<parking_lot::RwLock<Vec<String>>>,
 }
 
 #[allow(dead_code)]
 impl SlowChannel {
     fn new(name: &str) -> Self {
+        Self::with_per_send(name, std::time::Duration::from_millis(100))
+    }
+
+    fn with_per_send(name: &str, per_send: std::time::Duration) -> Self {
         Self {
             name: name.to_string(),
+            per_send,
             sent: Arc::new(parking_lot::RwLock::new(Vec::new())),
         }
     }
@@ -1342,7 +1350,7 @@ impl Channel for SlowChannel {
         Ok(())
     }
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(self.per_send).await;
         self.sent.write().push(msg.content);
         Ok(())
     }
@@ -2293,6 +2301,84 @@ async fn test_w4c_dispatch_loop_breaks_after_shutdown_flag() {
         stub.sent_messages(),
         vec!["one", "two", "three"],
         "循环冲刷毕退出后不得再派发新消息"
+    );
+}
+
+/// BUG-20261119-209 契约钉：SHUTDOWN_FLUSH_SECS 必须 < gateway 残余任务
+/// shielding（main.rs `shutdown_timeout(5s)`，真相源
+/// nemesisbot/src/main.rs——nemesis-channels 不反向依赖 nemesisbot，
+/// 5s 以字面量 + 注释锚定）。旧值 10s 的实际可用窗口由 teardown 尾巴
+/// （快机 ≈0s）+ 5s shielding 隐式拼出 ≈5-6s：deadline 分支不可达 →
+/// runtime 硬砍时任务被 drop（不是再 poll）→ 队列余额无声蒸发零痕迹，
+/// 恰好复现 flush 注释宣称消灭的「无声蒸发」。改回 ≥5s 必须同时改
+/// gateway shielding，两处一起动并重审本契约。
+/// 断言放编译期（`const _: () = assert!`）：契约违反 = 编译失败，
+/// 先于任何测试执行；保留测试壳让契约在测试清单可见。
+#[test]
+fn test_shutdown_flush_secs_below_gateway_shielding() {
+    const _: () = assert!(
+        SHUTDOWN_FLUSH_SECS < 5,
+        "SHUTDOWN_FLUSH_SECS 必须 < gateway shielding 5s（main.rs \
+         shutdown_timeout）——否则 deadline 分支在 runtime 硬砍前不可达，\
+         停机 flush 余额蒸发零痕迹（BUG-20261119-209 契约）"
+    );
+}
+
+/// send 每条睡固定时长的 stub（复用 SlowChannel + per_send）：确定性制造
+/// 「冲刷需求总时长 > deadline」的截断形态（BUG-20261119-209 回归钉）。
+/// BUG-20261119-209 回归钉：冲刷撞 deadline 必须有界退出 + 余额诚实计数。
+/// 6 条消息 × 1.2s/条 = 7.2s 冲刷需求 > 4s deadline：flush 截断后循环
+/// 退出（rx drop → send 拒绝），已投数 < 6，余额精确进
+/// dropped_flush_deadline（metrics 可编程面，不再 trace-only）。
+/// 时钟预算：截断路径退出上界 ≈ 4×per_send（主循环 1 条 + 冲刷 ≤3 条），
+/// 裸「冲完再退」形态 = 6×per_send——等待窗口 8s ∈ (4.8s, 7.2s)×膨胀余量，
+/// 对 CI 时钟抖动（<33%）鲁棒：截断形态必已退出，裸冲形态必仍在冲（红）。
+#[tokio::test]
+async fn test_shutdown_flush_deadline_truncates_and_counts() {
+    let mgr = Arc::new(ChannelManager::new());
+    let ch = Arc::new(SlowChannel::with_per_send(
+        "slow",
+        std::time::Duration::from_millis(1200),
+    ));
+    mgr.register(ch.clone()).await.unwrap();
+    mgr.start_dispatch_loop().unwrap();
+
+    let tx = mgr.outbound_sender();
+    for i in 0..6 {
+        tx.send(OutboundMessage::new("slow", "c1", &format!("m{i}")))
+            .await
+            .unwrap();
+    }
+
+    // 置旗标：loop 在当前（或下一）send 完成后见旗标 → 冲刷撞 deadline。
+    mgr.stop_all().await.unwrap();
+
+    // 有界等待退出（窗口推导见测试头注释）。
+    tokio::time::sleep(std::time::Duration::from_secs(SHUTDOWN_FLUSH_SECS + 4)).await;
+
+    // deadline 截断形态：loop 必已退出（rx drop → send 拒）；
+    // 裸「冲完队列再退」形态此刻仍在冲（7.2s > 8s 窗口边缘为膨胀域）→ 红。
+    let probe = OutboundMessage::new("slow", "probe", "probe");
+    assert!(
+        tx.send(probe).await.is_err(),
+        "冲刷必须在 deadline 处截断退出（裸冲完形态 = 常量未生效/契约破）"
+    );
+
+    // 截断事实 + 精确恒等式：已投数 < 6；余额清点全部进
+    // dropped_flush_deadline 且 == 6 - 已投（probe 在退出后才发，不入计数）。
+    let sent = ch.sent_messages().len();
+    assert!(
+        (1..6).contains(&sent),
+        "deadline 截断形态：已投数必须有界（实测 {sent}）"
+    );
+    let dropped = mgr
+        .metrics()
+        .dropped_flush_deadline
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        dropped as usize,
+        6 - sent,
+        "deadline 余额必须精确进 dropped_flush_deadline 计数器（dropped={dropped}, sent={sent}）"
     );
 }
 

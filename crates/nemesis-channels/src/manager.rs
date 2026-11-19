@@ -35,7 +35,21 @@ pub struct ManagerMetrics {
     pub dropped_internal: std::sync::atomic::AtomicU64,
     /// Messages that failed to send.
     pub send_errors: std::sync::atomic::AtomicU64,
+    /// Messages left in the queue when the shutdown flush hit its deadline
+    /// (BUG-20261119-209：诚实下界从 trace-only 日志升级为可编程面——
+    /// 余额在 runtime 硬砍前真实计数，消费方可查询/测试可断言)。
+    pub dropped_flush_deadline: std::sync::atomic::AtomicU64,
 }
+
+/// Shutdown flush 冲刷窗口（秒）。**契约：必须 < main.rs 的
+/// `shutdown_timeout(5s)`**（gateway 残余任务 shielding，真相源
+/// nemesisbot/src/main.rs）。BUG-20261119-209：旧值 10s 的实际可用窗口
+/// 由「teardown 尾巴（快机 ≈0s）+ 5s shielding」隐式拼出 ≈5-6s——
+/// deadline 分支不可达，runtime 硬砍时任务被 drop（不是再 poll），队列
+/// 余额无声蒸发且零痕迹，恰好复现本 flush 注释宣称消灭的「无声蒸发」。
+/// 4s 保证 deadline 分支在任何机器上都跑在硬砍之前，余额走
+/// `dropped_flush_deadline` 诚实计数（契约由测试钉死）。
+pub const SHUTDOWN_FLUSH_SECS: u64 = 4;
 
 /// Channel status information for reporting.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -180,8 +194,10 @@ impl ChannelManager {
                 // 确立的「丢失必须留痕」不变量。现 bounded
                 // 冲刷：队列清空或截止先到为止，截止后余额 warn 计数（诚实下
                 // 界——此后新推入不追；出站桥对收摊后的迟到消息留痕，见
-                // web_init spawn_bus_outbound_bridge）。
-                const SHUTDOWN_FLUSH_SECS: u64 = 10;
+                // web_init spawn_bus_outbound_bridge）。窗口常量 = 模块级
+                // SHUTDOWN_FLUSH_SECS（BUG-20261119-209 契约：<
+                // main.rs shutdown_timeout(5s)，保证 deadline 分支跑在
+                // runtime 硬砍之前）。
                 let deadline =
                     std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_FLUSH_SECS);
                 let mut flushed = 0usize;
@@ -205,11 +221,16 @@ impl ChannelManager {
                     }
                 }
                 // 截止后余额一次性清点（此后 bridge 等存活发送方的新推入不再追）。
+                // BUG-20261119-209：余额计数从 trace-only 升级为
+                // dropped_flush_deadline 计数器（日志 + metrics 双面）。
                 let mut dropped = 0usize;
                 while let Ok(_msg) = rx.try_recv() {
                     dropped += 1;
                 }
                 if dropped > 0 {
+                    self.metrics
+                        .dropped_flush_deadline
+                        .fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
                     warn!(
                         flushed,
                         dropped,
