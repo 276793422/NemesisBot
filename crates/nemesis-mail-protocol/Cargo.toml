@@ -1,0 +1,19 @@
+[package]
+name = "nemesis-mail-protocol"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "邮件协议层单一真相源：SMTP 出站消息编码 / RFC 5322 头解析 / TLS 客户端配置（纯函数零 tokio）"
+
+[dependencies]
+# rustls 只用于 tls_client_config 的 ClientConfig 装配（无 IO）——ring provider
+# 与 nemesis-channels email / plugin-mail 同源，不装进程级默认。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+base64 = "0.22"
+# 刻意内联不走 workspace 继承（与主 workspace [workspace.dependencies] chrono
+# 同值）——本 crate 被独立 workspace 的 plugin-mail path 依赖（继承键只在
+# 主 workspace 上下文可解析），双上下文构建兼容性优先。
+chrono = { version = "0.4", features = ["serde"] }
+
+[lints]
+workspace = true

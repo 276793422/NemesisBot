@@ -42,6 +42,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -81,10 +82,11 @@ fn plugins_list_reports_full_native_catalog_without_error() {
     let r = PluginsHandler::new().plugins_list(&ws(&dir)).unwrap();
 
     let arr = r["plugins"].as_array().unwrap();
-    // 目录 = nemesis-config NativePluginId::ALL 七成员（补登记
+    // 目录 = nemesis-config NativePluginId::ALL 八成员（补登记
     // plugin_vm——此前 VM 显示通道被误列「未识别的库」的花名册缺口根修；
     // 补登记 plugin_roaming——同款缺口第二例；补登记 plugin_resources
-    // ——附加资源载体，第三例 2026-11-12）。
+    // ——附加资源载体，第三例 2026-11-12；补登记 plugin_mail——邮件
+    // 基础设施，第四例 2026-11-18）。
     let ids: Vec<&str> = arr.iter().filter_map(|p| p["id"].as_str()).collect();
     assert_eq!(
         ids,
@@ -95,7 +97,8 @@ fn plugins_list_reports_full_native_catalog_without_error() {
             "plugin_wasm",
             "plugin_vm",
             "plugin_roaming",
-            "plugin_resources"
+            "plugin_resources",
+            "plugin_mail"
         ]
     );
 

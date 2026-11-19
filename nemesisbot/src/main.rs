@@ -366,6 +366,21 @@ mod plugin_lib;
 /// 走插件（iroh 家族重依赖随迁出主二进制）。
 mod roaming_plugin_loader;
 
+/// plugin_mail 宿主装载器（C-ABI 解冻第四例：邮件基础设施——SMTP/POP3
+/// 服务端 + 客户端发信；roaming 同款装载纪律，恒编译）。双闸：总闸
+/// `config.mail.json` enabled（缺省 false）+ 名册开关（config.plugin.native.json）；
+/// password_ref 宿主解析注入（插件不见 vault）；notify/audit 经静态槽分发。
+mod mail_plugin_loader;
+
+/// 邮件通知钩子（B3 消费点静态槽：estop 急停通知 + board 预算熔断通知；
+/// config.mail.json notify 段白名单驱动，缺省静默）。
+mod mail_notify;
+
+/// `mail` agent 工具（B4：单工具三 action send/list/read——无 delete，
+/// schema 层面不存在；min_tier=normal 双闸；handle 缺席 = 不注册）。
+#[cfg(feature = "mail")]
+mod mail_tool;
+
 /// plugin_resources 宿主装载器（C-ABI 解冻第三例：纯数据资源载体——无
 /// init/vtable/停机语义，装载即静止）。附加资源统一载体（首例 persona-catalog
 /// 快照），缺席 = 消费方诚实降级纯在线。
@@ -612,6 +627,12 @@ enum Commands {
     Issue {
         #[command(subcommand)]
         action: commands::issue::IssueAction,
+    },
+    /// Mail infrastructure (status / list / send / addr registry)
+    #[cfg(feature = "mail")]
+    Mail {
+        #[command(subcommand)]
+        action: commands::mail::MailAction,
     },
     /// Manage board autopilot rules (cron-triggered issue creation)
     #[cfg(feature = "board")]
@@ -1264,6 +1285,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Issue { action } => {
             common::ensure_default_logger();
             commands::issue::run(action, cli.local)?;
+        }
+        #[cfg(feature = "mail")]
+        Commands::Mail { action } => {
+            common::ensure_default_logger();
+            commands::mail::run(action, cli.local).await?;
         }
         #[cfg(feature = "board")]
         Commands::Autopilot { action } => {

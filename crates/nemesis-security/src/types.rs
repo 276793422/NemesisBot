@@ -497,6 +497,14 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 扫描/DLP/审计链全跑；不做 executor 隔离（不出 MOVE_TOOLS——
         // 沙盒断网反而打不通端点）。
         "generate_image" => Some(OperationType::NetworkRequest),
+        // 邮件 agent 工具（B4，2026-11-18）：主分档走 `MailTool::
+        // operation_override` 按 action 投影（send=NetworkRequest /
+        // list=read=Internal，workflow 三合一同款）——本静态表只兜底 args
+        // 畸形 / action 缺失的调用（override None → 落本表），按最危险
+        // 分支挂 NetworkRequest（宁过勿漏）。收件人地址不是 URL——SSRF
+        // 层不适用（投递端点 = config.client 固定 relay，LLM 不控端点），
+        // 刻意不加 extract_url 臂。
+        "mail" => Some(OperationType::NetworkRequest),
         // 只读语义代码查询。
         "lsp" => Some(OperationType::FileRead),
         // 硬件具名档（此前未映射 → 旧未知名放行；补齐后走具名类型）。
@@ -677,6 +685,17 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
         // 注入检测/凭据扫描层已全文过筛，不重复进 target 字段）。
         "generate_image" => args
             .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // 邮件工具：target = 对象标识（send=收件人 / list=邮箱 / read=邮件
+        // id）——审计链 target 列与按对象匹配的 ABAC 规则可见（web_search
+        // 无臂恒空 target 的审计失明教训同族）。subject/body 是自由文本，
+        // 注入检测/凭据扫描层已全文过筛，不重复进 target 字段。
+        "mail" => args
+            .get("to")
+            .or_else(|| args.get("mailbox"))
+            .or_else(|| args.get("id"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),

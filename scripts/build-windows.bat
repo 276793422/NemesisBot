@@ -25,6 +25,10 @@ REM       plugin_resources.dll  (add-on resource carrier; persona supermarket
 REM                           upstream snapshot embedded at build time —
 REM                           FILE cache (pre-downloaded) > baseline fallback;
 REM                           absent = shop pure online)
+REM       plugin_mail.dll  (SMTP/POP3 servers + SMTP client + per-address
+REM                           maildir store; gate = workspace config.mail.json
+REM                           enabled, default off; absent = mail honestly
+REM                           disabled)
 REM     plugins_wasm\        (WASM plugin payload dir, preset empty + README;
 REM                           installed plugins land here, NOT loaded by default)
 REM     tests\
@@ -478,13 +482,37 @@ if exist "plugins\plugin-roaming\Cargo.toml" (
         echo   WARN Plugin-roaming DLL build failed ^(non-fatal, QUIC relay server unavailable^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto plugin_vm
+        goto plugin_mail
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
     echo   OK Plugin-roaming DLL built
 ) else (
     echo   SKIP plugins\plugin-roaming\Cargo.toml not found
+)
+echo.
+
+:plugin_mail
+REM --- plugin-mail (SMTP/POP3 servers + SMTP client + per-address maildir
+REM     store; mail infra C-ABI plugin #4; absent = mail subsystem honestly
+REM     disabled — loader gate is config.mail.json enabled, default off) ---
+if exist "plugins\plugin-mail\Cargo.toml" (
+    echo   Building plugin-mail...
+    pushd plugins\plugin-mail
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-mail
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-mail DLL build failed ^(non-fatal, mail subsystem unavailable^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto plugin_vm
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-mail DLL built
+) else (
+    echo   SKIP plugins\plugin-mail\Cargo.toml not found
 )
 echo.
 
@@ -678,6 +706,15 @@ if exist "target\target_windows\plugins\plugin-resources\release\plugin_resource
     set /a COPIED+=1
 ) else (
     if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_resources.dll not found in build output ^(persona supermarket snapshot unavailable^)
+)
+
+REM Copy plugin-mail DLL into plugins\ subdir (SMTP/POP3 servers + client;
+REM absent = mail subsystem honestly disabled; gate config.mail.json enabled).
+if exist "target\target_windows\plugins\plugin-mail\release\plugin_mail.dll" (
+    copy /y "target\target_windows\plugins\plugin-mail\release\plugin_mail.dll" "bin\bin_windows\plugins\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_mail.dll not found in build output ^(mail subsystem unavailable^)
 )
 
 REM Copy test-tools binaries to bin\bin_windows\tests\

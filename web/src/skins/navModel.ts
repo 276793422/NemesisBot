@@ -59,6 +59,9 @@ const ITEM_FEATURE: Record<string, string> = {
   'layer-audit': 'SECURITY',
   guardian: 'SECURITY',
   approval: 'SECURITY',
+  // 邮箱页（邮件基础设施 2026-11-18，mail feature / VITE_FEATURE_MAIL 门控）：
+  // mail.* WSAPI 管理面（mailbox 列表/读信/写信/地址注册制）。
+  mailbox: 'MAIL',
   // 扫描器挂独立 scanner feature（2026-09-28 从 security 拆出）。
   scanner: 'SCANNER',
   sandbox: 'SANDBOX',
@@ -137,6 +140,9 @@ export const NAV_GROUPS: NavGroupModel[] = [
     title: '通道',
     items: [
       { id: 'channels', label: '通道', route: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+      // 邮箱（邮件基础设施 2026-11-18，mail feature 门控）：SMTP/POP3 收发 +
+      // 地址注册制管理面——对外触达域，与通道组同域。
+      { id: 'mailbox', label: '邮箱', route: '/mailbox', icon: 'M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6' },
       // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
       // 标签更名（2026-11-17 用户拍板）：Connectors → 连接器（仅侧栏文案）。
       { id: 'connectors', label: '连接器', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },

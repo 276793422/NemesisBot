@@ -24,7 +24,7 @@ default = [
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
     "pricing-embed", "verify", "web-static", "lsp", "browser",
     "checkpoint-git", "image-process", "history-search", "usage-store", "taskstore-sqlite",
-    "events", "loop", "goals",
+    "events", "loop", "goals", "mail",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -47,6 +47,12 @@ events = ["dep:nemesis-events", "nemesis-web/events"]
 # loops.* WSAPI + LoopsView 同闸。paused/parked 只能由人置（防自锁）。
 loop = ["dep:nemesis-loop", "nemesis-web/loop"]
 goals = ["dep:nemesis-goals", "nemesis-web/goals"]
+# mail = 邮件基础设施子系统（2026-11-18）：plugin_mail.dll 装载臂恒编译
+# （roaming 同款纪律——双闸在运行期：config.mail.json enabled 总闸缺省 false
+# + config.plugin.native.json 名册开关）。本 feature 只穿透 nemesis-web/mail
+# = mailbox.* WSAPI / MailboxView（B3）。关 = WSAPI 不注册、页面不进包；
+# 装载器/契约仍在（总闸关 = 双保险第二道）。
+mail = ["nemesis-web/mail"]
 # voice = 语音本体（STT/TTS/VAD/标点/声纹/云转写，缓冲区与文件驱动）；
 # voice-capture = 设备 IO（麦克风采集/扬声器播放/AEC/loopback，cpal+wasapi）。
 # capture 不隐含在 voice 里——IoT 可只留转写不带设备 IO；全量构建两者都开。
