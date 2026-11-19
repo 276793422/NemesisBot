@@ -356,7 +356,7 @@ async fn c7_gate_and_write_deny_blocks_everything() {
     let audit_dir = tempfile::tempdir().unwrap();
     let plugin = {
         use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-        SecurityPlugin::new(SecurityPluginConfig {
+        std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             default_action: "allow".to_string(),
             audit_chain_enabled: true,
@@ -373,7 +373,7 @@ async fn c7_gate_and_write_deny_blocks_everything() {
                 comment: "C7 test: deny rs writes".to_string(),
             }],
             ..Default::default()
-        })
+        }))
     };
     let (_dir, files) = c7_two_files();
     let err = gate_and_write(&files, Some(&plugin), None, &test_ctx())
@@ -386,15 +386,17 @@ async fn c7_gate_and_write_deny_blocks_everything() {
 }
 
 #[cfg(feature = "security")]
-fn allow_all_plugin(audit_path: &std::path::Path) -> nemesis_security::pipeline::SecurityPlugin {
+fn allow_all_plugin(
+    audit_path: &std::path::Path,
+) -> std::sync::Arc<nemesis_security::pipeline::SecurityPlugin> {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-    SecurityPlugin::new(SecurityPluginConfig {
+    std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "allow".to_string(),
         audit_chain_enabled: true,
         audit_chain_path: Some(audit_path.to_string_lossy().into_owned()),
         ..Default::default()
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
