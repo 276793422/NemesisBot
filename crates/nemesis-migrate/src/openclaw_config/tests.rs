@@ -569,8 +569,39 @@ fn test_convert_config_agents_without_defaults_key() {
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     // defaults 保持初始模板值
-    assert_eq!(config["agents"]["defaults"]["max_tokens"], 8192);
+    assert_eq!(
+        config["agents"]["defaults"]["max_tokens"],
+        nemesis_types::capability::DEFAULT_MAX_TOKENS,
+        "骨架 max_tokens 必须引用出厂单一真相源（BUG-20261120-016：8192 旧值是 d083e51e 已定性的撞顶截断形态）"
+    );
     assert_eq!(config["agents"]["defaults"]["max_tool_iterations"], 100);
+}
+
+#[test]
+fn test_convert_config_skeleton_matches_factory_defaults() {
+    // BUG-20261120-016：迁移骨架（fresh-write 路径 = 迁移后整份 config）
+    // 必须与出厂缺省收敛同值——onboard（config.default.json）与迁移两条
+    // 全新安装路径不得分叉。
+    // - security：出厂显式 false（default_config() / 模板一致）；骨架缺段
+    //   时消费方 unwrap_or(true) 会给迁移装机开 8 层管线，姿态反转。
+    // - mcp：模板显式 true；骨架缺段时消费方 unwrap_or(false) 会给迁移
+    //   装机静默关掉 MCP 子系统。
+    let mut data = HashMap::new();
+    data.insert("gateway".to_string(), serde_json::json!({"port": 18790}));
+    let (config, _) = convert_config(&data);
+    assert_eq!(
+        config["agents"]["defaults"]["max_tokens"],
+        nemesis_types::capability::DEFAULT_MAX_TOKENS,
+        "迁移装机不得独享 8192 撞顶截断"
+    );
+    assert_eq!(
+        config["security"]["enabled"], false,
+        "迁移装机安全姿态必须等于出厂（false），不得因缺段走 unwrap_or(true)"
+    );
+    assert_eq!(
+        config["mcp"]["enabled"], true,
+        "MCP 子系统开关必须与出厂模板（true）一致，不得因缺段走 unwrap_or(false)"
+    );
 }
 
 #[test]

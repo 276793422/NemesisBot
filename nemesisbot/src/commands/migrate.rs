@@ -221,6 +221,21 @@ fn atty_isnt() -> bool {
     !std::io::stdin().is_terminal()
 }
 
+/// 迁移目标根解析。
+///
+/// set-but-empty 视同 unset（BUG-20261117-047 统一纪律的 CLI 参数面补口：
+/// 047 横扫只裁了 `env::var` 位点）——`--nemesisbot-home ""`（shell 展开
+/// 空变量的常态产物）此前落 `PathBuf::from("")` = config.json/workspace
+/// 写进 cwd 相对路径，静默无告警（BUG-20261120-017）。源侧
+/// `--openclaw-home ""` 走 detect_openclaw_home 的存在性检查 = 诚实
+/// not found，无需同款守卫。
+fn resolve_nemesis_home(home: &Option<String>, local: bool) -> PathBuf {
+    match home.as_deref() {
+        Some(h) if !h.is_empty() => PathBuf::from(h),
+        _ => common::resolve_home(local),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Config conversion using nemesis_migrate crate
 // ---------------------------------------------------------------------------
@@ -265,7 +280,11 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
             "web": {"enabled": true, "host": "127.0.0.1", "port": 8080},
             "websocket": {"enabled": false},
         },
-        "security": {"enabled": true},
+        "security": {"enabled": false},
+        // mcp 与出厂模板（true）同值；security 收敛出厂姿态 false——
+        // INIT 时代的 true 是 8 层管线定稿前残值（BUG-20261120-016），
+        // 迁移装机不得独享「安全开」，否则与 onboard 全新安装分叉。
+        "mcp": {"enabled": true},
         "forge": {"enabled": false},
     });
 
@@ -339,11 +358,7 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
 // ---------------------------------------------------------------------------
 
 pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
-    let nemesis_home = if let Some(ref home) = options.nemesisbot_home {
-        PathBuf::from(home)
-    } else {
-        common::resolve_home(local)
-    };
+    let nemesis_home = resolve_nemesis_home(&options.nemesisbot_home, local);
 
     // Step 1: Detect OpenClaw installation.
     let openclaw_home = match detect_openclaw_home(&options.openclaw_home) {
