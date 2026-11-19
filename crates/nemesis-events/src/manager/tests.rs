@@ -3,6 +3,7 @@ use crate::rules::{DeliverSpec, EventRule, WatchSpec};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 fn rule(id: &str, root: &str) -> EventRule {
     EventRule {
@@ -1313,4 +1314,46 @@ async fn pump_sys_sampling_exposes_sys_current_and_snapshot_carries_it() {
         contents.lock().unwrap()
     );
     handle.abort();
+}
+
+// ── 进程终态令牌（BUG-20261115-023 家族纪律；DI 形态同 nemesis-web
+//    uploads/snooze sweeper，BUG-20261119-208）：泵是常驻 timer-park 循环
+//    （select interval tick），cancel 后必须确定性退出、排空窗内不采样不
+//    注入。局部令牌（shutdown_tests 纪律：CancellationToken 无复位，全局
+//    令牌测试绝不可 cancel）。timeout(5s) 是活锁兜底——旧行为（无令牌
+//    消费面）下两则都会 timeout FAIL（红证形态）。
+
+#[tokio::test]
+async fn pump_pre_cancelled_exits_immediately() {
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel(); // 预取消：spawn 前已终态 → 前置 is_cancelled 零工作退出
+    let mgr = EventWatchManager::new(
+        PathBuf::from("unused.json"),
+        Arc::new(|_, _| false),
+        Arc::new(|| false),
+    )
+    .with_terminal_token(token);
+    let handle = mgr.start();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("预取消后泵必须立即退出（不重新 park timer）")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn pump_cancel_during_park_exits_promptly() {
+    let token = tokio_util::sync::CancellationToken::new();
+    let mgr = EventWatchManager::new(
+        PathBuf::from("unused.json"),
+        Arc::new(|_, _| false),
+        Arc::new(|| false),
+    )
+    .with_terminal_token(token.clone());
+    let handle = mgr.start();
+    // 泵已 park 在 select（tick/rx 臂）上 → cancel 后令牌臂胜出即退。
+    token.cancel();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("cancel 后泵必须及时退出（令牌臂优先于 tick）")
+        .unwrap();
 }

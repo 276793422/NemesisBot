@@ -90,3 +90,106 @@ async fn test_global_terminal_token_single_instance() {
     assert!(local.is_cancelled());
     assert!(!terminal_loop_tick(&local, pending::<()>()).await);
 }
+
+// ── run_loop_driver 家族回归锁（R1988 / BUG-20261120-007）────────────────
+//
+// 模块纪律注记（「不 spawn 生产循环本体」三条原因逐一核对）：run_loop_driver
+// 的 loops_dir **参数化**（tempdir 不触真实 workspace）、无 OnceLock spawn-once、
+// 无进程级槽（bus/estop/conv_router 全部局部构造）——与 run_board_change_watcher
+// （pa2）同款可注入口，spawn 本体安全。令牌一律**局部**（全局令牌绝不可
+// cancel，见上）。timeout(5s) 是活锁兜底：旧行为（驱动器不消费令牌）下两则
+// 都 timeout FAIL（红证形态——2026-11-20 实录 Elapsed）。
+#[cfg(feature = "loop")]
+mod loop_driver_family {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+
+    use nemesis_agent::estop::EstopState;
+    use nemesis_bus::MessageBus;
+    use nemesis_loop::{LoopState, LoopStatus, list_loops, save_loop};
+    use nemesis_web::ConvRouter;
+
+    use super::super::post_agent::run_loop_driver;
+
+    fn spawn_args(
+        dir: &TempDir,
+        token: CancellationToken,
+    ) -> (
+        std::path::PathBuf,
+        Arc<MessageBus>,
+        Arc<ConvRouter>,
+        Arc<EstopState>,
+        Option<Arc<nemesis_data::DataStore>>,
+        CancellationToken,
+    ) {
+        (
+            dir.path().to_path_buf(),
+            Arc::new(MessageBus::new()),
+            Arc::new(ConvRouter::new()),
+            Arc::new(EstopState::new()),
+            None,
+            token,
+        )
+    }
+
+    /// 预取消：spawn 前已终态 → 前置检查短路，驱动器零工作退出。
+    /// 正面证据：目录里已到期的 loop **未被唤醒改写**（status 仍 Active、
+    /// next_wake 原值、零 progress——旧驱动器会立即 Wake→注入→改写）。
+    #[tokio::test]
+    async fn loop_driver_pre_cancelled_exits_immediately_zero_work() {
+        let dir = TempDir::new().expect("tempdir");
+        let now = 1_000_000_000i64;
+        let mut st = LoopState::new(
+            "L99".into(),
+            "预取消零工作验证".into(),
+            "agent:main:session:gone".into(),
+            now,
+        );
+        st.next_wake_ms = Some(now - 1_000); // 已到期：未换装的旧驱动器会立刻唤醒
+        save_loop(dir.path(), &st).expect("seed loop state");
+
+        let token = CancellationToken::new();
+        token.cancel(); // 预取消：spawn 前已终态 → 不得进入任何 sweep
+
+        let (d, bus, router, estop, ds, token) = spawn_args(&dir, token);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_loop_driver(d, bus, router, estop, ds, token),
+        )
+        .await
+        .expect("预取消后驱动器必须立即退出（不 re-park 10s tick）");
+
+        // 零工作正面证据：到期 loop 原样（未 Wake/Park/落盘）。
+        let d = dir.path().to_path_buf();
+        let states = list_loops(&d);
+        assert_eq!(states.len(), 1, "loop 文件不得增删");
+        assert_eq!(states[0].id, "L99");
+        assert_eq!(states[0].status, LoopStatus::Active, "不得被置 Parked");
+        assert_eq!(
+            states[0].next_wake_ms,
+            Some(now - 1_000),
+            "到期锚不得被消费"
+        );
+        assert_eq!(states[0].spent.turns, 0, "不得注入唤醒");
+    }
+
+    /// park 中取消：驱动器 park 在 10s tick 上，100ms 后 cancel——令牌臂
+    /// 优先于下一拍 tick，及时退出（取消语义不吞整拍工作量）。
+    #[tokio::test]
+    async fn loop_driver_cancel_during_park_exits_promptly() {
+        let dir = TempDir::new().expect("tempdir");
+        let token = CancellationToken::new();
+        let (d, bus, router, estop, ds, driver_token) = spawn_args(&dir, token.clone());
+        let handle = tokio::spawn(run_loop_driver(d, bus, router, estop, ds, driver_token));
+        // 进 park 窗口后再 cancel（首拍 sweep 已完成——空目录零工作）。
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("cancel 后驱动器必须及时退出（令牌臂优先于下一拍）")
+            .expect("驱动器任务正常收尾");
+    }
+}
