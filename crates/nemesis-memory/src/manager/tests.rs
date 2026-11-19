@@ -2229,3 +2229,86 @@ async fn embed_inference_runs_outside_vector_store_guard() {
     let res = mgr.query_semantic("alpha memory", 10).await.unwrap();
     assert!(res.total >= 1, "query_semantic 应命中向量结果");
 }
+
+// ===================================================================
+// BUG-20261119-201：manager 三处 delete 路径守卫纪律回归锁
+// ===================================================================
+
+/// delete_by_id / delete_episode_session / cleanup_episodic 三路径的
+/// delete_entry 命中时做全量重写持久化文件的同步 IO——必须发生在
+/// manager vector_store 读守卫之外（BUG-20261114-032 家族纪律；R1257
+/// 横向排查把这三处误分类为「瞬时读」的漏网点）。探针挂在
+/// VectorStore::set_delete_io_probe（delete_entry 命中、重写 IO 前回调），
+/// 回调内断言 manager 级 try_write 探针为 true——守卫在持即当场击发
+/// （红）；Arc 外提后绿。三路径一测全覆盖。
+/// 注意：回调运行在 VectorStore 自身 docs 写锁持有期内，回调体不得
+/// 触碰 VectorStore（会自锁）——只断言 manager 级锁。
+#[tokio::test]
+async fn delete_paths_run_outside_vector_store_guard() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+
+    let embed: crate::vector::EmbeddingFunc =
+        Box::new(|text: &str| Ok(vec![text.len() as f32, 1.0, 0.0, 0.0]));
+    let store_config = StoreConfig {
+        embedding_tier: "test".into(),
+        plugin_path: None,
+        config_dir: None,
+        max_results: 10,
+        similarity_threshold: 0.1,
+        storage_path: dir
+            .path()
+            .join("vs_delete_guard_probe.jsonl")
+            .to_string_lossy()
+            .to_string(),
+    };
+    mgr.init_vector_store_with_embed(embed, store_config).unwrap();
+    mgr.set_vector_enabled(true);
+
+    // 探针：delete_entry 重写 IO 前回调——manager 级锁必须无任何持有者。
+    let mgr_for_probe = Arc::clone(&mgr);
+    let vs_arc = mgr
+        .vector_store
+        .read()
+        .clone()
+        .expect("vector store must be initialized");
+    vs_arc.set_delete_io_probe(Some(Arc::new(move || {
+        assert!(
+            mgr_for_probe.vector_store_lock_free_for_write(),
+            "delete_entry 重写 IO 期间 vector_store 锁仍被持有（BUG-20261119-201 \
+             守卫纪律被违反：守卫不跨同步 IO——init/close 写者被阻塞，写偏好下 \
+             搜索互相串行）"
+        );
+    })));
+
+    // ① delete_by_id：store_entry 镜像（同 id 进 vector）→ 按 id 删。
+    let entry = Entry::new(MemoryType::LongTerm, "fact to be deleted".to_string());
+    let id = mgr.store_entry(entry).await.unwrap();
+    assert!(mgr.delete_by_id(&id).await.unwrap(), "delete_by_id 应命中");
+
+    // ② delete_episode_session：append_episode 镜像（同 id）→ 按会话删。
+    mgr.append_episode(Episode::new(
+        "guard-probe-sess".into(),
+        "user".into(),
+        "episode to be deleted".into(),
+    ))
+    .await
+    .unwrap();
+    let removed = mgr
+        .delete_episode_session("guard-probe-sess")
+        .await
+        .unwrap();
+    assert!(removed >= 1, "delete_episode_session 应删掉 episode");
+
+    // ③ cleanup_episodic：老 episode（10 天前）→ cleanup(5) 触发删除。
+    let mut old = Episode::new(
+        "old-guard-probe".into(),
+        "user".into(),
+        "old content".into(),
+    );
+    old.timestamp = chrono::Local::now() - chrono::Duration::days(10);
+    mgr.append_episode(old).await.unwrap();
+    let removed = mgr.cleanup_episodic(5).await.unwrap();
+    assert_eq!(removed, 1, "cleanup_episodic 应删掉 10 天前的 episode");
+}
