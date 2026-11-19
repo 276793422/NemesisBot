@@ -1068,6 +1068,22 @@ impl AgentLoop {
             return;
         }
 
+        // W1 #26（2026-11-19 安全图谱批）：出站聊天文本复扫
+        // （security.chat_scan.outbound，缺省 redact）——复用工具出侧
+        // 同源双扫描器（rescan_pair），明文秘密不落 IM 通道。终局回复
+        // 才扫（回执/错误文案不背）。位置在 RPC correlation 前缀组装
+        // 之前：寻址语义不受脱敏改写影响。
+        #[cfg(feature = "security")]
+        let response = if err.is_none() && !receipt {
+            chat_guard_scan::guard_chat_outbound(
+                self.security.security_plugin.as_deref(),
+                self.current_chat_scan().1,
+                response,
+            )
+        } else {
+            response
+        };
+
         // 降级用户面标注（fallback 链末跳）：仅终局回复（非回执、非错误
         // 文案）消费注记——排队回执/slash 确认（receipt=true）与错误文案
         // （err=Some）既不背标注也不消费槽。取件即清，只改展示面：对话

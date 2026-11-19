@@ -1077,6 +1077,10 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     // mandate 签名公钥声明（L13-a）：init 期无运行时签名密钥
                     //（L13-b 落地后真相源改为运行时 leaf key 派生），不写声明。
                     pubkey: None,
+                    // #2 三档基线：init 不写声明（缺省未宣告）。需要档位
+                    // 画像的部署手工编辑 peers.toml `[node].security_level`
+                    // 或走 WSAPI `node.update_identity`（值域校验同源）。
+                    security_level: None,
                 },
             };
             if let Err(e) = nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc) {

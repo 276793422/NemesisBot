@@ -180,6 +180,7 @@ fn node(id: &str, name: &str, role: NodeRole, online: bool, address: &str) -> Ex
         runtime_backend: None,
         node_type: "agent".to_string(),
         build: String::new(),
+        security_level: None,
     }
 }
 

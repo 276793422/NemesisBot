@@ -206,6 +206,11 @@ mod turn;
 pub use turn::*;
 #[allow(unused_imports)]
 pub(crate) use turn::*;
+// W1 #30（2026-11-19）：全局用量配额顶检器官（usage.budget；run_loop
+// 骨架 mandate 块之后挂；纯裁决 budget_breach 与接线同文件）。
+mod usage_budget_guard;
+#[allow(unused_imports)]
+pub(crate) use usage_budget_guard::*;
 mod wiring;
 #[allow(unused_imports)]
 pub use wiring::*;
@@ -1430,6 +1435,17 @@ mod session_secrets_pipeline_tests;
 // 配置缺席与损坏 fail-secure）。
 #[cfg(test)]
 mod credential_domain_tests;
+// W1 #46（2026-11-19 安全图谱批）：内容隔离——外部来源工具结果
+// <untrusted_content> 包裹 + 快照边界声明（纯字符串面，零安全依赖，
+// security feature 关闭时包裹照常可用）。pub = 治理面消费窄导出
+// （connector 回执提取剥壳 strip_untrusted_wrap；包裹与剥壳必须同源
+// 单一真相源，壳格式变两处一起变）。
+pub mod chat_guard;
+// W1 #26/#45（同批）：聊天面扫描（入站 log-only / 出站 redact 复用
+// rescan_pair 同源双扫描器）+ 工具结果间接注入注记（安全 crate 扫描器，
+// security 门控）。
+#[cfg(feature = "security")]
+mod chat_guard_scan;
 // ②：主线工具输出凭据/DLP 复扫（脱敏式；
 // 8 层管线只看入参，出侧此前零检查）。
 #[cfg(feature = "security")]
@@ -1437,6 +1453,15 @@ mod output_rescan;
 // ②：复扫测试（凭据/DLP 双路 + 组合 + 观测档不改写）。
 #[cfg(all(test, feature = "security"))]
 mod output_rescan_tests;
+// W1 #46 包裹/逃逸防护/声明测试（纯字符串面）。
+#[cfg(test)]
+mod chat_guard_tests;
+// W1 #26/#45 效果面测试（真扫描器真秘密：脱敏必发生）。
+#[cfg(all(test, feature = "security"))]
+mod chat_guard_scan_tests;
+// W1 #30 全局用量配额纯裁决测试（budget_breach 四维矩阵 + 窗口起点）。
+#[cfg(test)]
+mod usage_budget_guard_tests;
 // （内部专项）：续行回灌路径复扫测试（cluster/子代理两条
 // 路 × inline/spawned 两臂 + 无插件明文直通）。
 #[cfg(all(test, feature = "security"))]

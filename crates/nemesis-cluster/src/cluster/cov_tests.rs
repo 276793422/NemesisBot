@@ -85,6 +85,7 @@ fn node(id: &str, name: &str, addr: &str, status: NodeStatus) -> ExtendedNodeInf
         runtime_backend: None,
         node_type: "gateway".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -161,6 +162,7 @@ fn start_restores_discovered_entries_with_fallbacks() {
             last_seen: last_seen.into(),
             ..PeerStatus::default()
         },
+        security_level: None,
     };
     let state = DynamicState {
         discovered: vec![
@@ -325,6 +327,7 @@ fn merge_real_node_matches_full_address_candidates() {
         runtime_backend: None,
         node_type: "gateway".into(),
         build: String::new(),
+        security_level: None,
     });
     assert_eq!(got, "real-b");
     let peers = cluster.list_nodes();
@@ -377,6 +380,7 @@ fn upgrade_removes_legacy_sanitized_key() {
         runtime_backend: None,
         node_type: "gateway".into(),
         build: String::new(),
+        security_level: None,
     });
     assert_eq!(got, "real-dot");
 

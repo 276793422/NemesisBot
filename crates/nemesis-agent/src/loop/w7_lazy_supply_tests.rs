@@ -223,7 +223,10 @@ async fn dispatch_unwraps_meta_call_to_real_name_with_args() {
             &ctx(),
         )
         .await;
-    assert!(res.starts_with("ECHO:"), "解包后真实工具执行: {res}");
+    // W1 #46（2026-11-19）：解包后的真实工具名 mcp_fake_echo 是 mcp_*
+    // 外部内容源，结果带 <untrusted_content> 包裹（设计内交互）——断言
+    // 语义（执行 + args 透传）而非前缀字节。
+    assert!(res.contains("ECHO:"), "解包后真实工具执行: {res}");
     assert!(
         res.contains(r#""msg":"hi""#) || res.contains(r#""msg": "hi""#),
         "args 逐字透传: {res}"

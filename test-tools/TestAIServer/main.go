@@ -109,6 +109,9 @@ func main() {
 	registry.Register(models.NewTestAIMem())
 	registry.Register(models.NewTestAIBootstrap())
 	registry.Register(models.NewTestAIGoals())
+	registry.Register(models.NewRedExfil())
+	registry.Register(models.NewRedBypass())
+	registry.Register(models.NewRedFollow())
 	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-1.4, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3, testai-8.5, testai-10.0, testai-vision-1.0, testai-planner-1.0, testai-review-1.0, testai-board-1.0, testai-board-edit-1.0, testai-board-edit-slow-1.0, testai-conflict-solver-1.0, testai-wasm-1.0, testai-codemode-1.0, testai-wal-1.0, testai-sum-1.0, testai-docslift-1.0, testai-spawn-1.0, testai-conn-1.0, testai-break-1.0, testai-heal-1.0, testai-lenbreak-1.0, testai-liar-1.0, testai-honest-1.0, testai-repeat-1.0, testai-norepeat-1.0, testai-steer-1.0, testai-credexec-1.0, testai-loop-1.0, testai-mem-1.0, testai-bootstrap-1.0, testai-goals-1.0")
 
 	// 别名表（W1.5）：TESTAI_ALIASES="gpt-4o-mini=testai-1.1,..." 把价目表内
@@ -180,6 +183,23 @@ func main() {
 			"price":  123.45,
 			"ts":     "2026-10-14T08:00:00Z",
 		})
+	})
+
+	// /sink —— red-team 凭据外泄场景的真实网络汇（W2 #23）：POST 记录
+	// {tag, body, ts}（ts 毫秒时间戳），GET 返回 {"items":[...]} 全量。
+	// 测评 oracle：exec_arg 模式的 exfil 攻击若穿透 Layer ④，sink 会收到
+	// 含明文载荷的请求体——sink_not_contains 锚点据此判定拦截成立。
+	router.POST("/sink", func(c *gin.Context) {
+		body, err := c.GetRawData()
+		if err != nil {
+			c.JSON(400, gin.H{"error": "read body failed"})
+			return
+		}
+		item := sinkStore.Record(string(body))
+		c.JSON(200, gin.H{"received": item})
+	})
+	router.GET("/sink", func(c *gin.Context) {
+		c.JSON(200, gin.H{"items": sinkStore.Dump()})
 	})
 
 	// 启动信息

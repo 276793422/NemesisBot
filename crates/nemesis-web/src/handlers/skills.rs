@@ -750,6 +750,11 @@ impl SkillsHandler {
                 if let Some(g) = &mut rollback_guard {
                     g.disarm();
                 }
+                // 资产盘点快照刷新（W1 #11：安装事件自动刷新；fire-and-forget，
+                // 失败只 WARN——快照是投影非真相源）。
+                if let Some(c) = ctx {
+                    super::assets::spawn_snapshot_refresh(c);
+                }
                 Ok(v)
             }
             Err(e) => {

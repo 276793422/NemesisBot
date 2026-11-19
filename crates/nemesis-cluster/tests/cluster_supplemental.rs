@@ -1222,6 +1222,7 @@ fn make_test_extended_node(
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -1944,6 +1945,7 @@ fn test_extended_node_info_with_addresses() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -1985,6 +1987,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let config = coordinator.to_peer_config();
     // 规范配置词表：Coordinator → "coordinator"。
@@ -2009,6 +2012,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let config = worker.to_peer_config();
     assert_eq!(config.role, "worker");

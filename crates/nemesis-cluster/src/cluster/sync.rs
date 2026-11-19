@@ -99,6 +99,8 @@ impl Cluster {
                 // runtime_backend 与 agents 相反是静态身份——持久化并回读
                 // （同 professions/tier）。
                 runtime_backend: pc.runtime_backend.clone(),
+                // security_level 同 runtime_backend：静态身份，回读种入。
+                security_level: pc.security_level.clone(),
                 // build 同纪律：回读种入的 Offline 占位不带构建号（空 =
                 // 未宣告），下次 announce/探针到达自会补齐。
                 build: String::new(),
@@ -228,6 +230,7 @@ impl Cluster {
             tier: self.tier.read().clone(),
             agents: self.current_agent_roster(),
             runtime_backend: self.runtime_backend.read().clone(),
+            security_level: self.security_level.read().clone(),
             build: self.build_hash.read().clone(),
             node_type: self.node_type.clone(),
         };

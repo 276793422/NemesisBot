@@ -11,12 +11,15 @@
 //!   agent-bench --scenarios basic_chat   # 只跑指定场景（逗号分隔）
 //!   agent-bench --save-baseline bench-baseline.json
 //!   agent-bench --compare bench-baseline.json   # 回退即 exit 1
+//!   agent-bench --suite redteam                 # 安全红队套件（W2 #23）
+//!   agent-bench --suite behavior [--rules FILE] # 业务可控准则套件（W2 #22）
 //!
 //! 前置：`cargo build --release -p nemesisbot` + TestAIServer 已构建
 //! （test-tools/TestAIServer/testaiserver.exe，需含 testai-2.1/9.3/vision）。
 
 mod report;
 mod scenarios;
+mod security_suite;
 
 #[cfg(test)]
 mod main_tests;
@@ -32,6 +35,26 @@ use test_harness::*;
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
+
+/// 套件选择：core = 既有 27 场景可靠性基准；redteam / behavior = 安全测评
+/// 套件（W2 #23/#22）——同一骨架（真实 WS 链路 + 确定性 oracle + baseline
+/// 门），但网关安全姿态不同（SSRF 层不关、spawn 不放行、审批超时 4s）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Suite {
+    Core,
+    RedTeam,
+    Behavior,
+}
+
+impl Suite {
+    fn label(self) -> &'static str {
+        match self {
+            Suite::Core => "core",
+            Suite::RedTeam => "redteam",
+            Suite::Behavior => "behavior",
+        }
+    }
+}
 
 struct BenchConfig {
     ai_server_bin: PathBuf,
@@ -49,6 +72,10 @@ struct BenchConfig {
     sweep_levels: Option<Vec<usize>>,
     /// A3：导出 chrome trace（`--trace` → out_dir/trace.json）。
     trace: bool,
+    /// 套件选择（默认 core）。
+    suite: Suite,
+    /// 行为准则文件（仅 behavior 套件；缺省 = 随包 rules/behavior_rules.json）。
+    rules_path: Option<PathBuf>,
 }
 
 impl BenchConfig {
@@ -64,6 +91,8 @@ impl BenchConfig {
         let mut latency_tolerance = 0.30;
         let mut sweep_levels = None;
         let mut trace = false;
+        let mut suite = Suite::Core;
+        let mut rules_path = None;
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
@@ -132,6 +161,19 @@ impl BenchConfig {
                     sweep_levels = Some(levels);
                 }
                 "--trace" => trace = true,
+                "--suite" => {
+                    i += 1;
+                    suite = match args[i].as_str() {
+                        "core" => Suite::Core,
+                        "redteam" => Suite::RedTeam,
+                        "behavior" => Suite::Behavior,
+                        v => bail!("--suite 只接受 core|redteam|behavior，得到: {v}"),
+                    };
+                }
+                "--rules" => {
+                    i += 1;
+                    rules_path = Some(PathBuf::from(&args[i]));
+                }
                 other => bail!("未知参数: {other}"),
             }
             i += 1;
@@ -155,6 +197,29 @@ impl BenchConfig {
                 .unwrap_or_else(|_| PathBuf::from("."))
         });
 
+        // 组合校验：--rules 只属 behavior；sweep/trace 只属 core（安全套件
+        // 要的是拦截率不是吞吐曲线——给错开关是哑弹不是功能）。
+        if rules_path.is_some() && suite != Suite::Behavior {
+            bail!("--rules 只在 --suite behavior 下可用");
+        }
+        if scenario_filter.is_some() && suite != Suite::Core {
+            bail!("--scenarios 只在 core 套件可用（安全套件的规则面是目录/文件，不是场景清单）");
+        }
+        if suite != Suite::Core {
+            if sweep_levels.is_some() {
+                bail!("--sweep 只在 core 套件可用");
+            }
+            if trace {
+                bail!("--trace 只在 core 套件可用");
+            }
+        }
+        let rules_path = match suite {
+            Suite::Behavior => {
+                Some(rules_path.unwrap_or_else(security_suite::default_behavior_rules_path))
+            }
+            _ => None,
+        };
+
         Ok(Self {
             ai_server_bin,
             gateway_bin,
@@ -166,6 +231,8 @@ impl BenchConfig {
             latency_tolerance,
             sweep_levels,
             trace,
+            suite,
+            rules_path,
         })
     }
 }
@@ -264,6 +331,11 @@ const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-mem-1.0",
     "testai-bootstrap-1.0",
     "testai-goals-1.0",
+    // 安全测评套件（--suite redteam/behavior）的攻击执行体脚本模型——
+    // 进同一张表：契约探针同时保护 core 与安全套件（陈旧 exe 同样 fail-fast）。
+    "testai-red-exfil-1.0",
+    "testai-red-bypass-1.0",
+    "testai-red-follow-1.0",
 ];
 
 /// 需强制流式（config 条目 `stream: "yes"`）的模型子集：openai 兼容 lane
@@ -419,6 +491,25 @@ fn enable_audit_chain(ws: &TestWorkspace) -> Result<()> {
     Ok(())
 }
 
+/// 安全套件网关姿态（--suite redteam/behavior 专用；core 不吃这份改动）：
+/// 1. **SSRF 层不关**——安全套件没有 web_fetch 回环场景，防御面保持完整；
+/// 2. **spawn 不放行**——默认 `spawn = ask` 姿态保留（审批面本身是被测面）；
+/// 3. **审批超时压到 4s**——无人值守下审批卡 = 快速自动拒绝，拒绝本身就是
+///    被测防御面（审批绕过三场景靠它判定）；300s 缺省会把套件拖成假死。
+/// 4. **审计链开**——#4 准则闭环的载体（违反项追加进 Merkle 链可验）。
+fn harden_security_profile(ws: &TestWorkspace) -> Result<()> {
+    let path = ws
+        .home()
+        .join("workspace")
+        .join("config")
+        .join("config.security.json");
+    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    cfg["approval_timeout_seconds"] = json!(4);
+    cfg["audit_chain_enabled"] = json!(true);
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 场景调度
 // ---------------------------------------------------------------------------
@@ -470,6 +561,71 @@ async fn run_scenario(
     }
 }
 
+// ---------------------------------------------------------------------------
+// 安全测评套件调度（--suite redteam | behavior；W2 批② #23/#22）
+// ---------------------------------------------------------------------------
+
+/// 安全套件逐规则执行：per-规则 models.set_default 热切 → run_rule（夹具 →
+/// sink 探针 → chat 轮 → 锚点评估）。返回 (rule_id, 违反原因) 列表——#4
+/// 审计闭环的输入（gateway 停机后追加进 Merkle 链）。
+async fn run_security_suite(
+    card: &mut Scorecard,
+    rules: Vec<security_suite::RuleSpec>,
+    ai_port: u16,
+) -> Vec<(String, String)> {
+    let mut api = match WsApi::connect().await {
+        Ok(a) => a,
+        Err(e) => {
+            // 连不上 WSAPI = 全套件装配失败：每条规则记装配失败，审计闭环
+            // 不判「违反」（环境问题不是防御失败，语义要分清）。
+            eprintln!("WSAPI 连接失败（{e}）——安全套件无法热切模型，按装配失败计");
+            for rule in &rules {
+                let score = card.score_named(&rule.id, &rule.model);
+                score.record_fail(format!("WSAPI 连接失败: {e}"));
+            }
+            return Vec::new();
+        }
+    };
+    let mut failures = Vec::new();
+    for rule in &rules {
+        println!(
+            "\n=== 规则 {}（{}，模型 {}）===",
+            rule.id, rule.title, rule.model
+        );
+        let (_, err) = api
+            .call("models", "set_default", Some(json!({ "name": rule.model })))
+            .await;
+        if let Some(e) = err {
+            let score = card.score_named(&rule.id, &rule.model);
+            let note = format!("models.set_default({}) 失败: {e}", rule.model);
+            score.record_fail(note.clone());
+            println!("  FAIL  {note}");
+            continue;
+        }
+        let sctx = security_suite::SuiteCtx { ai_port };
+        let score = card.score_named(&rule.id, &rule.model);
+        match security_suite::run_rule(rule, &sctx).await {
+            Ok((ms, _)) => {
+                score.record_pass_at(ms, 0);
+                println!("  PASS  {ms}ms");
+            }
+            Err(e) => {
+                let note = format!("{e:#}");
+                score.record_fail(note.clone());
+                println!("  FAIL  {note}");
+                failures.push((rule.id.clone(), note));
+            }
+        }
+        println!(
+            "  通过率 {:.1}%（{}/{}）",
+            score.pass_rate() * 100.0,
+            score.passed,
+            score.total()
+        );
+    }
+    failures
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("{}", "=".repeat(60));
@@ -484,6 +640,7 @@ async fn main() -> Result<()> {
         bail!("Gateway not found: {}", cfg.gateway_bin.display());
     }
 
+    let suite_label = cfg.suite.label();
     let catalog: Vec<_> = scenarios::default_catalog()
         .into_iter()
         .filter(|s| {
@@ -492,20 +649,24 @@ async fn main() -> Result<()> {
                 .is_none_or(|f| f.iter().any(|n| n == s.name))
         })
         .collect();
-    if catalog.is_empty() {
+    if cfg.suite == Suite::Core && catalog.is_empty() {
         bail!("场景过滤后为空（--scenarios 拼写检查）");
     }
 
     println!("\n  AI Server: {}", cfg.ai_server_bin.display());
     println!("  Gateway:   {}", cfg.gateway_bin.display());
-    println!(
-        "  场景:      {}",
-        catalog
-            .iter()
-            .map(|s| s.name)
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    if cfg.suite == Suite::Core {
+        println!(
+            "  场景:      {}",
+            catalog
+                .iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!("  套件:      安全测评（{suite_label}）");
+    }
 
     let ws = TestWorkspace::new()?;
     println!("  Workspace: {}", ws.path().display());
@@ -528,13 +689,17 @@ async fn main() -> Result<()> {
     }
 
     println!(
-        "[2/4] 写基准 config（4+1 模型 + 边界围栏，prompt_system={}）+ 关 SSRF 层...",
+        "[2/4] 写基准 config（模型全集 + 边界围栏，prompt_system={}）+ 套件安全姿态...",
         cfg.prompt_system
     );
     write_bench_config(&ws, &cfg.prompt_system)?;
-    disable_ssrf_layer(&ws)?;
-    allow_spawn_rule(&ws)?;
-    enable_audit_chain(&ws)?;
+    if cfg.suite == Suite::Core {
+        disable_ssrf_layer(&ws)?;
+        allow_spawn_rule(&ws)?;
+        enable_audit_chain(&ws)?;
+    } else {
+        harden_security_profile(&ws)?;
+    }
 
     println!("[3/4] 启动 AI Server（端口 {}）...", ai_server_port());
     let mut ai_server = ManagedProcess::spawn(
@@ -569,105 +734,145 @@ async fn main() -> Result<()> {
     .await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    // ---- 逐场景执行 ----
-    let ctx = scenarios::BenchCtx {
-        ai_port: ai_server_port(),
-    };
-    let security_target =
-        std::env::temp_dir().join(format!("agent-bench-pwned-{}.txt", std::process::id()));
-    scenarios::drop_png_fixture(&ws)?;
+    // ---- 执行（core = 场景循环；安全套件 = 逐规则）----
     let mut card = Scorecard::new(gateway_version_stub(&cfg));
-    let mut api = WsApi::connect().await?;
-
-    // L10-量测（改进项三期）：tool defs 供给面字节快照——场景热切前采集
-    // （默认模型 testai-1.1 = big 档全量供给基线），`chat.context_status`
-    // 单一真相源量测（openai 形态代理口径）；L10-建设惰性 schema 的前后
-    // 对比锚点。失败不炸套件（附随产出，记分卡不带该块）。
-    let (td_data, td_err) = api
-        .call(
-            "chat",
-            "context_status",
-            Some(json!({ "session_id": "bench-tooldefs" })),
-        )
-        .await;
-    match td_err {
-        None => {
-            let td = td_data.and_then(|d| d.get("tool_defs").cloned());
-            if let Some(td) = td.filter(|v| v.is_object()) {
-                println!(
-                    "tool defs 供给面：{} 工具 / {} 字节（openai 形态代理口径）",
-                    td.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
-                    td.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0)
-                );
-                card.tool_defs = Some(td);
-            } else {
-                eprintln!("tool defs 量测返回缺 tool_defs 块（记分卡不带该块）");
-            }
-        }
-        Some(e) => eprintln!("tool defs 量测失败（记分卡不带该块）: {e}"),
-    }
     let bench_start = Instant::now();
+    let mut security_failures: Vec<(String, String)> = Vec::new();
 
-    for spec in &catalog {
-        let model = report::scenario_model(spec.name);
-        println!(
-            "\n=== 场景 {}（模型 {model}，{} 轮）===",
-            spec.name, spec.runs
-        );
-
-        // 逐场景热切默认模型（WSAPI，运行时生效——board_ws_tests 同款）。
-        let (_, err) = api
-            .call("models", "set_default", Some(json!({ "name": model })))
-            .await;
-        if let Some(e) = err {
-            let score = card.score(spec.name);
-            score.record_fail(format!("models.set_default({model}) 失败: {e}"));
-            continue;
-        }
-
-        // gateway_restart 在场景内部完成优雅重启：吃掉 gateway 进程
-        // 所有权、交还新句柄（本循环持有方更新，收尾停机不漏进程）；
-        // 其余场景走统一入口。
-        let results = if spec.name == "gateway_restart" {
-            let (res, gw) =
-                scenarios::run_gateway_restart(ctx, spec.runs, &ws, &cfg.gateway_bin, gateway)
-                    .await;
-            gateway = gw;
-            res
-        } else {
-            run_scenario(spec.name, ctx, spec.runs, &ws, &security_target).await
+    if cfg.suite == Suite::Core {
+        let ctx = scenarios::BenchCtx {
+            ai_port: ai_server_port(),
         };
-        let score = card.score(spec.name);
-        for r in results {
-            match r {
-                Ok((ms, _)) => {
-                    // A3：记墙钟偏移（chrome trace 时间轴）。
-                    let offset = bench_start.elapsed().as_millis() as u64;
-                    score.record_pass_at(ms, offset);
-                    println!("  PASS  {ms}ms");
-                }
-                Err(e) => {
-                    score.record_fail(format!("{e:#}"));
-                    println!("  FAIL  {e:#}");
+        let security_target =
+            std::env::temp_dir().join(format!("agent-bench-pwned-{}.txt", std::process::id()));
+        scenarios::drop_png_fixture(&ws)?;
+        let mut api = WsApi::connect().await?;
+
+        // L10-量测（改进项三期）：tool defs 供给面字节快照——场景热切前采集
+        // （默认模型 testai-1.1 = big 档全量供给基线），`chat.context_status`
+        // 单一真相源量测（openai 形态代理口径）；L10-建设惰性 schema 的前后
+        // 对比锚点。失败不炸套件（附随产出，记分卡不带该块）。
+        let (td_data, td_err) = api
+            .call(
+                "chat",
+                "context_status",
+                Some(json!({ "session_id": "bench-tooldefs" })),
+            )
+            .await;
+        match td_err {
+            None => {
+                let td = td_data.and_then(|d| d.get("tool_defs").cloned());
+                if let Some(td) = td.filter(|v| v.is_object()) {
+                    println!(
+                        "tool defs 供给面：{} 工具 / {} 字节（openai 形态代理口径）",
+                        td.get("tools").and_then(|v| v.as_u64()).unwrap_or(0),
+                        td.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0)
+                    );
+                    card.tool_defs = Some(td);
+                } else {
+                    eprintln!("tool defs 量测返回缺 tool_defs 块（记分卡不带该块）");
                 }
             }
+            Some(e) => eprintln!("tool defs 量测失败（记分卡不带该块）: {e}"),
         }
+
+        for spec in &catalog {
+            let model = report::scenario_model(spec.name);
+            println!(
+                "\n=== 场景 {}（模型 {model}，{} 轮）===",
+                spec.name, spec.runs
+            );
+
+            // 逐场景热切默认模型（WSAPI，运行时生效——board_ws_tests 同款）。
+            let (_, err) = api
+                .call("models", "set_default", Some(json!({ "name": model })))
+                .await;
+            if let Some(e) = err {
+                let score = card.score(spec.name);
+                score.record_fail(format!("models.set_default({model}) 失败: {e}"));
+                continue;
+            }
+
+            // gateway_restart 在场景内部完成优雅重启：吃掉 gateway 进程
+            // 所有权、交还新句柄（本循环持有方更新，收尾停机不漏进程）；
+            // 其余场景走统一入口。
+            let results = if spec.name == "gateway_restart" {
+                let (res, gw) =
+                    scenarios::run_gateway_restart(ctx, spec.runs, &ws, &cfg.gateway_bin, gateway)
+                        .await;
+                gateway = gw;
+                res
+            } else {
+                run_scenario(spec.name, ctx, spec.runs, &ws, &security_target).await
+            };
+            let score = card.score(spec.name);
+            for r in results {
+                match r {
+                    Ok((ms, _)) => {
+                        // A3：记墙钟偏移（chrome trace 时间轴）。
+                        let offset = bench_start.elapsed().as_millis() as u64;
+                        score.record_pass_at(ms, offset);
+                        println!("  PASS  {ms}ms");
+                    }
+                    Err(e) => {
+                        score.record_fail(format!("{e:#}"));
+                        println!("  FAIL  {e:#}");
+                    }
+                }
+            }
+            println!(
+                "  通过率 {:.1}%（{}/{}）",
+                score.pass_rate() * 100.0,
+                score.passed,
+                score.total()
+            );
+            // 场景后重连 WSAPI：gateway_restart 换过进程，旧连接已死；
+            // 无条件重连对其他场景是廉价幂等（比按场景特判更鲁棒）。
+            api = WsApi::connect().await?;
+        }
+    } else {
+        // 安全测评套件（W2 批② #23 redteam / #22 behavior）：装载规则目录
+        // → 逐规则真实链路攻击/准则轮 → 效果面锚点判定。
+        let ai_port = ai_server_port();
+        let tmp_dir = ws.path().join("security-suite");
+        std::fs::create_dir_all(&tmp_dir)?;
+        let secrets = security_suite::generate_secrets();
+        let vars = security_suite::base_vars(&ws, &tmp_dir, ai_port, &secrets);
+        let raw_rules = match cfg.suite {
+            Suite::RedTeam => security_suite::redteam_catalog(&secrets),
+            Suite::Behavior => security_suite::load_behavior_rules(
+                cfg.rules_path
+                    .as_deref()
+                    .expect("behavior rules path resolved"),
+                &vars,
+            )?,
+            Suite::Core => unreachable!("guarded by if above"),
+        };
+        let rules: Vec<security_suite::RuleSpec> = raw_rules
+            .iter()
+            .map(|r| security_suite::resolve_rule(r, &vars))
+            .collect::<Result<Vec<_>>>()?;
         println!(
-            "  通过率 {:.1}%（{}/{}）",
-            score.pass_rate() * 100.0,
-            score.passed,
-            score.total()
+            "\n安全套件 {suite_label}：{} 条规则（姿态：审批超时 4s / SSRF 层开 / spawn ask / 审计链开）",
+            rules.len()
         );
-        // 场景后重连 WSAPI：gateway_restart 换过进程，旧连接已死；
-        // 无条件重连对其他场景是廉价幂等（比按场景特判更鲁棒）。
-        api = WsApi::connect().await?;
+        security_failures = run_security_suite(&mut card, rules, ai_port).await;
     }
     card.bench_wall_secs = bench_start.elapsed().as_secs();
 
     // ---- 记分卡落盘 + baseline ----
     std::fs::create_dir_all(&cfg.out_dir)?;
-    let json_path = cfg.out_dir.join("scorecard.json");
-    let md_path = cfg.out_dir.join("scorecard.md");
+    let (json_path, md_path) = if cfg.suite == Suite::Core {
+        (
+            cfg.out_dir.join("scorecard.json"),
+            cfg.out_dir.join("scorecard.md"),
+        )
+    } else {
+        (
+            cfg.out_dir.join(format!("{suite_label}_scorecard.json")),
+            cfg.out_dir.join(format!("{suite_label}_scorecard.md")),
+        )
+    };
     std::fs::write(&json_path, serde_json::to_string_pretty(&card.to_json())?)?;
     std::fs::write(&md_path, card.to_markdown())?;
     println!("\n记分卡：\n  {}", json_path.display());
@@ -679,11 +884,12 @@ async fn main() -> Result<()> {
     }
 
     // A3：并发度扫描（与场景目录解耦——扫的是吞吐/延迟曲线，不是通过率）。
+    // 只可能出现在 core 套件（resolve 已对安全套件 bail）。
     if let Some(levels) = &cfg.sweep_levels {
         println!("\n=== 并发度扫描（档位 {levels:?}）===");
-        // 记住扫前默认（models.list 的 is_default 行），扫完恢复——bench
-        // 不留环境副作用（场景热切模型属既有行为，sweep 是新增入口，
-        // 自己收尾）。
+        // 场景循环结束后原连接已随作用域回收：扫描自建连接（与场景后
+        // 重连语义一致，廉价幂等）。
+        let mut api = WsApi::connect().await?;
         let prev_default: Option<String> = match api.call("models", "list", None).await {
             (Some(v), None) => v.get("models").and_then(|m| m.as_array()).and_then(|arr| {
                 arr.iter()
@@ -711,7 +917,13 @@ async fn main() -> Result<()> {
         if let Some(e) = err {
             eprintln!("sweep 前置 models.set_default 失败: {e}（跳过扫描）");
         } else {
-            let sweep = scenarios::run_concurrency_sweep(ctx, levels).await;
+            let sweep = scenarios::run_concurrency_sweep(
+                scenarios::BenchCtx {
+                    ai_port: ai_server_port(),
+                },
+                levels,
+            )
+            .await;
             std::fs::write(
                 cfg.out_dir.join("sweep.json"),
                 serde_json::to_string_pretty(&scenarios::sweep_to_json(&sweep))?,
@@ -748,7 +960,10 @@ async fn main() -> Result<()> {
 
     let mut exit_code = 0;
     if let Some(base) = &cfg.compare_baseline {
-        match report::compare_baseline(&card, base, cfg.latency_tolerance) {
+        // 安全套件延迟门关闭：deny 路径延迟（<200ms 秒拦 / 4s 审批超时固定墙）
+        // 不承载信号，同机相对门在毫秒级基线上只会假红。
+        match report::compare_baseline(&card, base, cfg.latency_tolerance, cfg.suite == Suite::Core)
+        {
             Ok(findings) => {
                 // A3 修订：findings 混合倒退项与 `[note]`/`[ok]` 提示项——
                 // 只有非提示项判失败（exit 1）。
@@ -796,6 +1011,25 @@ async fn main() -> Result<()> {
         }
     }
     ai_server.kill().await;
+
+    // #4 准则闭环（安全套件）：违反项在 gateway 停机后追加进 Merkle 审计链
+    // （停机 = 链文件无并发写者窗口；装载走 chain-tail 重放）。失败 loud
+    // 提示但不改 exit code——对比门才是闸，闭环是可观测性。
+    if cfg.suite != Suite::Core && !security_failures.is_empty() {
+        match security_suite::audit_closure(&ws.home(), suite_label, &security_failures) {
+            Ok(n) => println!(
+                "\n审计闭环：{} 条违反已追加进审计链（{}）——logs.chain_verify 可验",
+                n,
+                ws.home()
+                    .join("workspace")
+                    .join("logs")
+                    .join("security_logs")
+                    .join("audit_chain.jsonl")
+                    .display()
+            ),
+            Err(e) => eprintln!("审计闭环失败（记分卡照常交付）: {e:#}"),
+        }
+    }
 
     println!(
         "\n总通过率 {:.1}%（{}/{}，墙钟 {}s）",

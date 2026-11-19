@@ -50,6 +50,22 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
     let cfg_path = common::config_path(home);
     let workspace_dir = home.join("workspace");
 
+    // --- Step 0: 用途登记种子（W1 #1 安全图谱批）---
+    // agent_charter.json（用途/场景/边界声明）种子落盘（已存在不覆盖
+    // ——登记是用户意志，onboard 只补缺席）。purpose 留空引导填写；
+    // 编辑面 = 直接改文件 / WSAPI charter.set / Dashboard。
+    {
+        let charter_path = workspace_dir.join("config").join("agent_charter.json");
+        let seed = crate::commands::charter_seed_json();
+        write_if_absent(&charter_path, seed, mode, "用途登记 charter");
+        if charter_path.exists() {
+            println!(
+                "  Charter: {} —— 填写用途/场景/边界（read_only=true 建议 plan 模式）",
+                charter_path.display()
+            );
+        }
+    }
+
     // --- Step 1: Main config from embedded default ---
     // Determine whether to write main config.
     // Cli：已存在时交互确认覆盖（原行为）；Seed：已存在直接跳过（种子语义，
@@ -665,6 +681,114 @@ fn materialize_persona_slot(
         );
     } else if written > 0 {
         println!("  Persona slot '{slot_label}' materialized ({written} file(s))");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #5 安全模板（W2，2026-11-20）：`onboard template <场景>`——分级 × 场景
+// 生成安全配置预设。
+// ---------------------------------------------------------------------------
+
+/// 安全模板场景。v1 四场景；档位映射走 [`SecurityScenario::level_str`]，
+/// config 面只写 `security.level` 一个键（档位表是缺省真相源——模板不把
+/// 档位表物化进 config，避免两处漂移），差异在打印面讲清楚。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityScenario {
+    /// 家用单机：basic（出厂形态）。
+    Personal,
+    /// 开发机：standard（流控 + 配额 + charter WARN）。
+    Dev,
+    /// 常驻服务器：strict（+ 执行体隔离 + plan 默认 + 装前扫描强制）。
+    Server,
+    /// 低资源设备：basic（资源裁剪是构建期 customize 的事，config 与
+    /// personal 同面——模板诚实注明，不造假差异）。
+    Iot,
+}
+
+impl SecurityScenario {
+    /// 按名解析（大小写不敏感）。未知名 = None（CLI loud 报错列清单）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "personal" => Some(Self::Personal),
+            "dev" => Some(Self::Dev),
+            "server" => Some(Self::Server),
+            "iot" => Some(Self::Iot),
+            _ => None,
+        }
+    }
+
+    /// 场景对应的安全档位（`security.level` 值）。
+    pub fn level_str(self) -> &'static str {
+        match self {
+            Self::Personal | Self::Iot => "basic",
+            Self::Dev => "standard",
+            Self::Server => "strict",
+        }
+    }
+
+    /// 场景说明（apply 时打印——用户看得见这个模板给了什么）。
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Personal => "家用单机（basic 档：8 层管线 + 聊天面扫描缺省；流控/配额/隔离关）",
+            Self::Dev => {
+                "开发机（standard 档：basic + 网关流控 + 日/月 token 配额 2M/20M + charter 未登记 WARN）"
+            }
+            Self::Server => {
+                "常驻服务器（strict 档：standard + 执行体隔离开 + 默认 plan 模式 + MCP/技能装前扫描强制）"
+            }
+            Self::Iot => {
+                "低资源设备（basic 档；资源裁剪走构建期 scripts/customize.sh iot——config 面与 personal 相同）"
+            }
+        }
+    }
+}
+
+/// `onboard template <场景>`：同 [`onboard_default`] 12 步初始化，然后把
+/// 场景档位写进 config.json 的 `security.level`（merge 语义——只动这一个
+/// 键，其余配置原样保留），最后打印场景/档位说明。
+pub fn onboard_template(
+    home: &Path,
+    local: bool,
+    scenario: SecurityScenario,
+) -> anyhow::Result<()> {
+    onboard_default(home, local, OnboardMode::Cli)?;
+
+    let cfg_path = common::config_path(home);
+    let mut raw: serde_json::Value = if cfg_path.exists() {
+        let text = std::fs::read_to_string(&cfg_path)?;
+        serde_json::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("config.json 解析失败（{}）：{e}", cfg_path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+    raw["security"]["level"] = serde_json::json!(scenario.level_str());
+    nemesis_utils::write_file_atomic(
+        &cfg_path.to_string_lossy(),
+        serde_json::to_string_pretty(&raw)?.as_bytes(),
+        0o600,
+    )
+    .map_err(|e| anyhow::anyhow!("config.json 写入失败（{}）：{e}", cfg_path.display()))?;
+
+    println!(
+        "  Template: {} —— {}",
+        scenario_name(scenario),
+        scenario.description()
+    );
+    println!(
+        "  security.level = \"{}\" 已写入 {}（显式开关优先于档位表；各键缺席时按档位取缺省）",
+        scenario.level_str(),
+        cfg_path.display()
+    );
+    Ok(())
+}
+
+/// 场景显示名（打印面用）。
+fn scenario_name(s: SecurityScenario) -> &'static str {
+    match s {
+        SecurityScenario::Personal => "personal",
+        SecurityScenario::Dev => "dev",
+        SecurityScenario::Server => "server",
+        SecurityScenario::Iot => "iot",
     }
 }
 

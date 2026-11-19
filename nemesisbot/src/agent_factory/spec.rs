@@ -338,6 +338,8 @@ pub fn build_agent_loop_from_spec(
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
+    // #2 安全分级：项目 loop 同主 loop——默认对话模式按档位（strict → plan）。
+    super::apply_default_chat_mode(&agent_loop, &cfg);
     // （凭据 vault）：项目 loop 同款凭据卡装配（broker 未
     // install = None 零回归；config 与主 loop 同一份，patch 语义一致）。
     agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {

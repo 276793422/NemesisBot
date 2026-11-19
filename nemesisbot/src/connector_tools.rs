@@ -1929,8 +1929,14 @@ impl ConnectorInvokeTool {
                 // receipt 主键镜像 run_http——manifest 声明 receipt_key
                 // 时对结果文本尽力 JSON 顶层字段解析（playwright-mcp 等
                 // 返回 JSON 的 MCP 工具可抠主键；非形态匹配 = None 不强求）。
+                // 剥壳后解析：W1 #46 起 mcp_* 绑定结果带 <untrusted_content>
+                // 包裹（模型上下文面标记），治理面回执提取要原始 JSON 载荷
+                // ——剥壳与包裹同源单一真相源（chat_guard::strip_untrusted_wrap）。
                 receipt_key: op.receipt_key.clone(),
-                receipt_value: text_receipt_value(&result, &op.receipt_key),
+                receipt_value: text_receipt_value(
+                    nemesis_agent::r#loop::chat_guard::strip_untrusted_wrap(&result),
+                    &op.receipt_key,
+                ),
                 result_text: result,
             },
         })

@@ -1173,6 +1173,11 @@ impl SessionFactory for RealSessionFactory {
             });
             let agent_loop = crate::agent_factory::build_agent_loop(&shared)
                 .map_err(|e| format!("failed to build agent loop: {e}"))?;
+            // #2 安全分级（W2）：ACP 是编辑面（用户开编辑器就是来改代码的），
+            // 且 ACP v1 无模式切换入口——strict 档的 plan 起步默认（工厂
+            // apply_default_chat_mode 已应用）在这里显式重置回 build，否则
+            // 编辑会话被写闸砖死（写类工具全被 plan 供给闸拦）。
+            agent_loop.set_mode_with_event(nemesis_agent::AgentMode::Build, "", "");
             // 急停跟随任务进程级一次性 spawn（幂等，每会话装配都调也不泄漏）。
             crate::estop_follower::ensure_spawned(self.home.clone());
             // 审批桥：ACP 进程无 dashboard，编辑器即唯一审批面。

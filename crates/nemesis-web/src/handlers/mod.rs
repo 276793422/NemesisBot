@@ -10,6 +10,9 @@ pub mod agent;
 // handler 诚实报「未装配」。
 pub mod agents;
 pub mod approval;
+pub mod assets;
+/// 用途登记（W1 #1：agent_charter.json + charter.get/set + plan 建议投影）。
+pub mod charter;
 // 看板三模块（board.* WSAPI / U-B 本地封存数据面 / Swarm 资产下载端点）
 // 随 `board` feature 进出——nemesis-board 是 optional 依赖（rusqlite bundled
 // 随它退出 iotsmall 依赖图）。关 = board.* 命令从注册表面消失（诚实体裁）。
@@ -359,6 +362,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(channels::ChannelsHandler::new()));
     router.register(Arc::new(identity::IdentityHandler));
     router.register(Arc::new(tools::ToolsHandler));
+    // 资产盘点 + AI-BOM（W1 #11+#6–10：实时聚合视图 + 快照落盘）。
+    // 资产盘点管理面（W1 #11+#6–10 AI-BOM；inventory 实时聚合 + 快照落盘）。
+    router.register(Arc::new(assets::AssetsHandler));
+    // 用途登记管理面（W1 #1：agent_charter.json；charter.get/set）。
+    router.register(Arc::new(charter::CharterHandler));
     #[cfg(feature = "scanner")]
     {
         router.register(Arc::new(scanner::ScannerHandler::new()));

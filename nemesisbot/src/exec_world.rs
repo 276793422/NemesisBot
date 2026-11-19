@@ -195,11 +195,19 @@ pub fn build_executor_channel_with_extra_roots(
     config_handle: ConfigHandle,
     extra_roots: Vec<std::path::PathBuf>,
 ) -> anyhow::Result<Option<Arc<nemesis_agent::ExecutorChannel>>> {
-    let enabled = config_handle
-        .read()
-        .executor
-        .as_ref()
-        .is_some_and(|e| e.enabled);
+    // #2 安全分级（W2，2026-11-20）：enabled 走 raw resolver（键缺席 →
+    // 档位缺省，strict 开）。**不走 ConfigHandle typed 读**：typed
+    // `ExecutorSeparationConfig.enabled`（serde default bool）无法区分
+    // 「键缺席」与「显式 false」，档位联动会静默失效（resolver 文档有
+    // 完整论证）。装配期一次性读盘（dashboard 改盘后下次 loop 重建生效，
+    // 与旧行为一致）；读失败（无 config.json 等）= None → Basic 档位表
+    // （= 旧缺省 false）。sandbox/strict 探针仍走 ConfigHandle（显式键，
+    // 语义不变）。
+    let raw = nemesis_utils::fsutil::read_config_string(&crate::common::config_path(home))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    // 读失败（无 config.json 等）= None → resolver 按 Basic 档位表（= 旧缺省 false）。
+    let enabled = nemesis_config::resolve_executor_enabled(raw.as_ref());
     if !enabled {
         return Ok(None);
     }

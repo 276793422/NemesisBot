@@ -27,7 +27,8 @@ fn missing_models_empty_served_reports_all() {
 /// a3fa6f86 起再缺饱和人消息模型 testai-9.2；2026-11-16 起还缺
 /// subagent_steer 的 testai-steer-1.0、durable_loop 的 testai-loop-1.0、
 /// 记忆四场景的 testai-mem-1.0、agent 自举插件的 testai-bootstrap-1.0；
-/// c2e4496d 起又缺 goals 评估闸的 testai-goals-1.0）
+/// c2e4496d 起又缺 goals 评估闸的 testai-goals-1.0；安全测评批起再缺
+/// 红队三模型 red-exfil/red-bypass/red-follow）
 /// → 精确差集，不多不少。
 #[test]
 fn missing_models_stale_server_reports_exact_missing() {
@@ -60,6 +61,9 @@ fn missing_models_stale_server_reports_exact_missing() {
             "testai-mem-1.0",
             "testai-bootstrap-1.0",
             "testai-goals-1.0",
+            "testai-red-exfil-1.0",
+            "testai-red-bypass-1.0",
+            "testai-red-follow-1.0",
         ]
     );
 }
@@ -127,7 +131,7 @@ fn bench_build_mismatch_emits_note_without_regression() {
 
     let mut card = Scorecard::new("gw".into());
     card.bench_build_unix = 2000;
-    let findings = compare_baseline(&card, &path, 0.30).expect("compare");
+    let findings = compare_baseline(&card, &path, 0.30, true).expect("compare");
     assert_eq!(findings[0], "[ok] 无回退", "构建戳差异不判门");
     assert!(
         findings.iter().any(|f| f.contains("bench 构建戳不一致")),
@@ -155,7 +159,7 @@ fn bench_build_match_or_absent_stays_silent() {
     .expect("write");
     let mut card = Scorecard::new("gw".into());
     card.bench_build_unix = 42;
-    let findings = compare_baseline(&card, &path, 0.30).expect("compare");
+    let findings = compare_baseline(&card, &path, 0.30, true).expect("compare");
     assert!(
         !findings.iter().any(|f| f.contains("bench 构建戳")),
         "一致时不应有 note: {findings:?}"
@@ -171,7 +175,7 @@ fn bench_build_match_or_absent_stays_silent() {
         .to_string(),
     )
     .expect("write");
-    let findings = compare_baseline(&card, &path, 0.30).expect("compare");
+    let findings = compare_baseline(&card, &path, 0.30, true).expect("compare");
     assert!(
         !findings.iter().any(|f| f.contains("bench 构建戳")),
         "缺字段时静默跳过: {findings:?}"

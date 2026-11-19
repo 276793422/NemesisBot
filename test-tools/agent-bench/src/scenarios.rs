@@ -45,7 +45,7 @@ use test_harness::*;
 // ---------------------------------------------------------------------------
 
 /// 在既有 WS 连接上发一条 chat.send（带 session_id 路由；可选 media）。
-async fn chat_send(
+pub(crate) async fn chat_send(
     stream: &mut WsStream,
     session_id: &str,
     content: &str,
@@ -66,7 +66,7 @@ async fn chat_send(
 }
 
 /// 按谓词等一帧指定会话的回复，返回回复文本。
-async fn chat_wait_pred(
+pub(crate) async fn chat_wait_pred(
     stream: &mut WsStream,
     session_id: &str,
     timeout: Duration,
@@ -103,7 +103,7 @@ async fn chat_wait(
     .await
 }
 
-fn fresh_session_id(prefix: &str) -> String {
+pub(crate) fn fresh_session_id(prefix: &str) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

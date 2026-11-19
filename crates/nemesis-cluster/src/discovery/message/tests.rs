@@ -1045,3 +1045,58 @@ fn validate_passes_on_extreme_timestamp() {
     msg.validate().expect("validate does not police timestamps");
     let _ = msg.age_secs(); // must not panic
 }
+
+// -----------------------------------------------------------------------
+// a（W2 #2）：安全基线档位 wire 兼容（security_level 携带）
+// -----------------------------------------------------------------------
+
+/// security_level 经 with_security_level 携带后序列化往返保全。
+#[test]
+fn security_level_roundtrip_preserved() {
+    let msg = DiscoveryMessage::new_announce(
+        "node-seclvl",
+        "SecLvlNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    )
+    .with_security_level(Some("strict".into()));
+
+    let bytes = msg.to_bytes().expect("serialize");
+    let back = DiscoveryMessage::from_bytes(&bytes).expect("deserialize");
+    assert_eq!(
+        back.security_level.as_deref(),
+        Some("strict"),
+        "security_level must survive wire roundtrip"
+    );
+}
+
+/// 旧节点 / Go 节点的 announce JSON 无 security_level 字段 → serde
+/// default None（wire 兼容），且该消息 validate 照常通过。
+#[test]
+fn security_level_absent_defaults_none() {
+    let raw = serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": "legacy-node",
+        "name": "LegacyNode",
+        "addresses": ["10.0.0.1"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": 1700000000
+    });
+    let msg: DiscoveryMessage =
+        serde_json::from_value(raw).expect("legacy announce without security_level");
+    assert!(
+        msg.security_level.is_none(),
+        "absent field defaults to None"
+    );
+    msg.validate().expect("legacy announce still validates");
+}

@@ -58,6 +58,11 @@ mod cluster_bom_tests;
 #[cfg(test)]
 mod vault_domain_formula_tests;
 
+// #2 三档基线档位 → 默认对话模式效果面测试（无 feature 门——装配链路
+// build_agent_loop 默认构建必跑；模块名含 security_level 对齐过滤词）。
+#[cfg(test)]
+mod security_level_tests;
+
 // ---------------------------------------------------------------------------
 // SharedResources — infrastructure that survives Agent restart
 // ---------------------------------------------------------------------------
@@ -475,6 +480,32 @@ pub(crate) fn register_request_logger_observer(
         })
     });
     true
+}
+
+/// #2 安全分级（W2，2026-11-20）：默认对话模式按档位起步——strict 档
+/// plan 模式（写类工具闸先收紧，用户 `/build` 或 `chat.set_mode` 放开），
+/// 其余档位 build（= 旧缺省，零行为变化）。
+///
+/// 直接写 mode Arc（不走 `set_mode_with_event`）——装配期无人订阅事件，
+/// 静默起步是正确形态；档位表（`SecurityLevel::default_chat_mode`）是
+/// 唯一真相源，此处只做字符串 → AgentMode 投影。主 loop 与项目 loop
+/// 共用（项目会话也是对话，同一档位语义）。
+pub(crate) fn apply_default_chat_mode(
+    agent_loop: &nemesis_agent::r#loop::AgentLoop,
+    cfg: &nemesis_config::Config,
+) {
+    let level = nemesis_config::security_level_from_flag(cfg.security.as_ref());
+    let Some(mode) = nemesis_agent::AgentMode::parse(level.default_chat_mode()) else {
+        return; // 档位表不可能给出非法值——防御臂，保持构建缺省
+    };
+    if mode != agent_loop.mode() {
+        *agent_loop.mode_arc().write() = mode;
+        tracing::info!(
+            "[AgentFactory] security level {:?} → 默认对话模式 {}（/build 或 chat.set_mode 可切回）",
+            level,
+            mode.as_str()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

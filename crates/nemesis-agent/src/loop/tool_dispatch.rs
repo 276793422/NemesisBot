@@ -2229,6 +2229,31 @@ impl AgentLoop {
                 }
             } => result,
         };
+        // W1 #46：内容隔离——外部来源工具结果（web 抓取/搜索/MCP/远程
+        // 节点）包 <untrusted_content> 标记入上下文；快照区边界声明
+        // （chat_guard::UNTRUSTED_DECLARATION）告知模型标记语义。包裹在
+        // 出侧复扫之前：复扫尾注落在闭合标签之外。错误/拦截形态结果
+        // （⛔ 前缀族 / Error: 族）不包裹——那是 gateway 诊断文本不是
+        // 外部内容，且包裹会破坏同刻度 ⛔/错误前缀判定。运行开关
+        // security.untrusted_wrap 缺省开（世代快照读，改键下轮生效）。
+        // 集群异步 marker 两态不包裹（同刻度先例）：__ASYNC__: 前缀是
+        // loop 内部 starts_with 检测的挂起协议信号（tool_batch/
+        // maintenance/loop_continuation），__CLUSTER_ASYNC__ 是会话内
+        // find+JSON 提取信号（cluster_agent extract_async_info）——包裹
+        // 破坏两者检测（bot 套件 8 假红实证）；且 marker 结果在挂起路径
+        // 永不被模型消费（挂起即冻结、resume 时 replace_tool_result
+        // 整体替换），包裹无收益纯破坏。
+        let result = if chat_guard::is_wrappable_tool(&tool_call.name)
+            && self.current_untrusted_wrap()
+            && !result.starts_with('⛔')
+            && !result.starts_with("__ASYNC__:")
+            && !result.contains("__CLUSTER_ASYNC__")
+            && !crate::turn_guard::tool_result_indicates_error(&result)
+        {
+            chat_guard::wrap_untrusted(&result)
+        } else {
+            result
+        };
         // ②：出侧复扫。8 层管线只看工具
         // 入参，输出侧此前零检查（eval 沙盒 worker 除外）——read_file 读
         // 到明文 key / exec 回显秘钥会原文进上下文与历史。脱敏式：命中即
@@ -2245,6 +2270,21 @@ impl AgentLoop {
         // 追加在复扫之后、Forge 记录之前，台账同样带提示。非 security
         // 编译时 script_advisory 恒 None，此 match 直通零成本。
         let result = match script_advisory {
+            Some(note) => format!("{result}\n{note}"),
+            None => result,
+        };
+        // W1 #45：间接注入检测——工具结果入上下文前过注入检测层（Layer ①
+        // 只扫入参，结果侧此前零检查）。数据已执行、拦停无意义；
+        // medium 及以上命中追加诚实尾注提醒模型（闸=medium 的理由见
+        // chat_guard_scan::injection_note_with 注释；开关 security.result_scan，
+        // 缺省 note，世代快照读）。注记落在包裹闭合标签之后（若有包裹）。
+        #[cfg(feature = "security")]
+        let result = match chat_guard_scan::injection_note(
+            self.security.security_plugin.as_deref(),
+            self.current_result_scan(),
+            &tool_call.name,
+            &result,
+        ) {
             Some(note) => format!("{result}\n{note}"),
             None => result,
         };

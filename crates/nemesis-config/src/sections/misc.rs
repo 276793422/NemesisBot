@@ -473,6 +473,41 @@ impl Default for ProjectsConfig {
     }
 }
 
+/// #30 全局用量配额（`usage.budget`；各维 0 = 关，默认全关）。
+///
+/// 语义解析单一真相源在 [`crate::resolve_usage_budget`]（raw-JSON 与
+/// typed 字段共用同一缺省表）。达限行为：`mode="reject"`（默认）=
+/// 每轮 LLM 调用前顶检终局停车（诚实报错文案）；`mode="warn"` = 只
+/// WARN 告警不阻断。token 口径 = **完整输入 + output**（prompt +
+/// cache_creation + cache_read + output——与账本聚合
+/// `aggregate_usage_since` 同源的列直和）；费用口径 = 账本折算 USD。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct UsageBudgetConfig {
+    /// 日 token 上限（input+output 合计；0 = 关，默认）。
+    pub daily_token_limit: u64,
+    /// 月 token 上限（自然月；0 = 关，默认）。
+    pub monthly_token_limit: u64,
+    /// 日费用上限（USD；0.0 = 关，默认）。
+    pub daily_cost_limit_usd: f64,
+    /// 月费用上限（USD；0.0 = 关，默认）。
+    pub monthly_cost_limit_usd: f64,
+    /// 达限行为：`"reject"`（默认，终局停车）| `"warn"`（只告警）。
+    pub mode: String,
+}
+
+impl Default for UsageBudgetConfig {
+    fn default() -> Self {
+        Self {
+            daily_token_limit: 0,
+            monthly_token_limit: 0,
+            daily_cost_limit_usd: 0.0,
+            monthly_cost_limit_usd: 0.0,
+            mode: DEFAULT_BUDGET_MODE.to_string(),
+        }
+    }
+}
+
 /// 使用统计保留策略（`config.json` 的 `usage` 段；`#[serde(default)]`
 /// 每字段全可省）。gateway 周期任务（启动 + 每 6h）对 request_logs 执行
 /// retention sweep：到期行 rollup 进 daily_rollups 后删除；条数超限按
@@ -486,6 +521,8 @@ pub struct UsageConfig {
     /// 明细行条数上限（0 = 无上限；默认 500_000）。超出按 created_at
     /// 最旧优先直接删除。
     pub max_rows: i64,
+    /// #30 全局用量配额（默认全关）。
+    pub budget: UsageBudgetConfig,
 }
 
 impl Default for UsageConfig {
@@ -493,6 +530,32 @@ impl Default for UsageConfig {
         Self {
             retention_days: 30,
             max_rows: 500_000,
+            budget: UsageBudgetConfig::default(),
+        }
+    }
+}
+
+/// 资产盘点段（W1 #11+#6–10 AI-BOM；`config.json` 的 `assets` 段；
+/// None = 全默认）。typed 字段化防 set_field round-trip 丢键（plugins/
+/// browser 段同款教训）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AssetsConfig {
+    /// inventory 快照（`<workspace>/logs/assets/inventory.json`）周期
+    /// 刷新间隔秒。gateway 启动即刷一次，此后每 interval 刷一次；
+    /// 0 = 只在启动时刷一次。默认 300（skills 安装另有事件即刷钩）。
+    #[serde(default = "default_assets_inventory_refresh_secs")]
+    pub inventory_refresh_secs: u64,
+}
+
+fn default_assets_inventory_refresh_secs() -> u64 {
+    300
+}
+
+impl Default for AssetsConfig {
+    fn default() -> Self {
+        Self {
+            inventory_refresh_secs: default_assets_inventory_refresh_secs(),
         }
     }
 }
@@ -609,24 +672,123 @@ impl Default for DevicesConfig {
         }
     }
 }
+/// #26 聊天面扫描方向配置（`security.chat_scan`；字段全可省——`#[serde(default)]`
+/// 段级 + 手写 Default 双路径同向，BUG-20261031-226 纪律）。
+///
+/// 语义单一真相源在 [`crate::resolve_chat_scan`]（raw-JSON 解析与 typed 字段共用
+/// 同一张缺省/合法值表）；缺省 inbound=`"log"`（只观测不阻断，防误报——用户是
+/// 受信主体）、outbound=`"redact"`（出站红线：High/Medium 置信凭据命中即遮蔽，
+/// 低置信维持观测）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ChatScanConfig {
+    /// 入站扫描模式：`"log"`（默认）| `"off"`。
+    pub inbound: String,
+    /// 出站扫描模式：`"redact"`（默认）| `"log"` | `"off"`。
+    pub outbound: String,
+}
+
+impl Default for ChatScanConfig {
+    fn default() -> Self {
+        Self {
+            inbound: DEFAULT_CHAT_SCAN_INBOUND.to_string(),
+            outbound: DEFAULT_CHAT_SCAN_OUTBOUND.to_string(),
+        }
+    }
+}
+
+/// #25 网关流控（`security.rate_limit`；默认关——开启后对 REST `/api/*`
+/// 面做按 token 的令牌桶限流 + 每凭据并发流上限，超限 429）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    /// 总开关（默认 false = 零行为变化）。
+    pub enabled: bool,
+    /// 每凭据稳态速率（请求/秒；缺省 20）。
+    pub qps: u32,
+    /// 每凭据桶容量（突发配额；缺省 40）。
+    pub burst: u32,
+    /// 每凭据并发 `/api/chat/stream` 上限（缺省 4；0 = 不限并发只限 QPS）。
+    pub max_concurrent_streams: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            qps: DEFAULT_RATE_LIMIT_QPS,
+            burst: DEFAULT_RATE_LIMIT_BURST,
+            max_concurrent_streams: DEFAULT_RATE_LIMIT_MAX_CONCURRENT_STREAMS,
+        }
+    }
+}
+
+impl RateLimitConfig {
+    /// 运行参数投影（钳制逻辑单一真相源，#25）：qps/burst 钳下界 1
+    /// （0 无语义 = 回落缺省，防误配把网关整体关死）；`max_concurrent_
+    /// streams` 0 = 不限并发只限 QPS（有语义，透传）。raw-JSON 解析
+    /// （[`crate::resolve_rate_limit`]）与 typed 直读共用本投影。
+    pub fn settings(&self) -> crate::RateLimitSettings {
+        crate::RateLimitSettings {
+            enabled: self.enabled,
+            qps: self.qps.max(1),
+            burst: self.burst.max(1),
+            max_concurrent_streams: self.max_concurrent_streams,
+        }
+    }
+}
+
 /// 安全 8 层总开关段（`config.json` 的 `security` 段）。
 ///
 /// `enabled` 缺省 true（BUG-20261109-035 收敛）：消费点全部
 /// `unwrap_or(true)`（段整体缺席 = 开，gateway tests 钉死该方向）；
 /// serde/Default 曾缺省 false——「段在键缺 = 关」与「段缺席 = 开」
-/// 方向相反，手写空段会静默旁路安全 8 层（fail-open）。出厂
+/// 方向相反，手精简 config 会静默旁路安全 8 层（fail-open）。出厂
 /// default_config() / config.default.json 显式 false 不受缺省影响
 /// （BUG-20261031-226 monitor_usb 同族先例）。
+///
+/// W1 安全图谱地基批（2026-11-19）新增三键：`chat_scan`（#26 聊天面
+/// 扫描方向）、`untrusted_wrap`（#46 不可信内容包裹，默认开）、
+/// `result_scan`（#45 工具结果注入扫描，`"note"` 默认 / `"off"`）。
+/// 语义解析单一真相源在 lib.rs 的 `resolve_chat_scan` /
+/// `resolve_untrusted_wrap` / `resolve_result_scan`（raw-JSON 与 typed
+/// 字段共用同一缺省表）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityFlagConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// #2 安全分级：`"basic"`（缺省，= 现形态）/ `"standard"` / `"strict"`。
+    /// 档位是各开关缺席缺省的查表起点，显式键优先于档位。非法值在装配面
+    /// WARN（resolve_security_level_checked）。
+    #[serde(default = "default_security_level")]
+    pub level: String,
+    /// #26 聊天面扫描（入站 log-only / 出站 redact 缺省）。
+    #[serde(default)]
+    pub chat_scan: ChatScanConfig,
+    /// #46 不可信内容包裹（web_fetch/web_search/mcp_*/cluster_rpc 结果
+    /// `<untrusted_content>` 包裹 + 边界声明注入；默认开）。
+    #[serde(default = "default_true")]
+    pub untrusted_wrap: bool,
+    /// #45 工具结果注入扫描模式：`"note"`（默认，high/critical 命中追加
+    /// 诚实尾注）/ `"off"`。
+    #[serde(default = "default_result_scan_mode")]
+    pub result_scan: String,
+    /// #25 网关流控（默认关）。
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 impl Default for SecurityFlagConfig {
     /// 与 serde 字段级缺省 / 消费点 unwrap_or(true) 同向（缺省开）。
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            level: default_security_level(),
+            chat_scan: ChatScanConfig::default(),
+            untrusted_wrap: true,
+            result_scan: default_result_scan_mode(),
+            rate_limit: RateLimitConfig::default(),
+        }
     }
 }
 /// 用户习惯画像配置（B 线）。

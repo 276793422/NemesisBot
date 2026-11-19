@@ -114,6 +114,7 @@ async fn rig_with_fake_peer(
         runtime_backend: None,
         node_type: "gateway".into(),
         build: String::new(),
+        security_level: None,
     };
     peer.base.address = format!("127.0.0.1:{port}");
     cluster.register_node(peer);

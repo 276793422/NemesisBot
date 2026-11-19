@@ -1778,6 +1778,7 @@ fn sample_node(id: &str, name: &str, role: NodeRole, online: bool) -> ExtendedNo
         runtime_backend: None,
         node_type: "agent".to_string(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -2513,4 +2514,85 @@ async fn test_snapshots_list_sorted_by_name() {
     let snaps = result["snapshots"].as_array().unwrap();
     let names: Vec<&str> = snaps.iter().map(|s| s["name"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["aaa.json", "mmm.json", "zzz.json"]);
+}
+
+// -----------------------------------------------------------------------
+// a（W2 #2）：node.update_identity 的 security_level 编辑面——合法值
+// 归一小写、非法值 loud 拒绝、null 清除回未宣告（同 tier 家族语义）。
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_node_update_identity_security_level_valid() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cluster(&dir);
+
+    let result = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"security_level":"STRICT"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result["security_level"], "strict",
+        "合法值必须归一小写后宣告（SecurityLevel::parse 单一真相源）"
+    );
+    assert_eq!(result["current_security_level"], "strict");
+}
+
+#[tokio::test]
+async fn test_node_update_identity_security_level_invalid_errors() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cluster(&dir);
+
+    let err = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"security_level":"paranoid"})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("security_level must be 'basic'/'standard'/'strict' or null"),
+        "非法档位必须 loud 拒绝，got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_node_update_identity_security_level_clear_to_null() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cluster(&dir);
+
+    // 先设上，再清除。
+    let result = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"security_level":"basic"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["security_level"], "basic");
+
+    let result = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"security_level":null})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result["security_level"],
+        serde_json::Value::Null,
+        "null = 清除宣告（不再广播档位）"
+    );
 }

@@ -78,6 +78,15 @@ pub struct NodeInfo {
     /// leaf key 派生，本声明降级为对账锚（同 iroh_id 与 roaming.key 分工）。
     #[serde(default)]
     pub pubkey: Option<String>,
+    /// 自报安全基线档位（#2 三档基线；`basic`/`standard`/`strict`）。
+    /// **手工声明**——不从 config.json `security.level` 自动推导（announce
+    /// 与运行配置解耦，同 tier/runtime_backend 先例）；对端经 announce/
+    /// get_info 学习后在节点面展示（拓扑安全画像），本批只宣告不做消费闸。
+    /// 缺省 None = 未宣告；非法值种子期 loud WARN 且不宣告（同 pubkey
+    /// 归一失败不进 announce 纪律）。值域单一真相源 =
+    /// `nemesis_config::SecurityLevel::parse`。
+    #[serde(default)]
+    pub security_level: Option<String>,
 }
 
 impl Default for NodeInfo {
@@ -95,6 +104,7 @@ impl Default for NodeInfo {
             iroh_id: None,
             runtime_backend: None,
             pubkey: None,
+            security_level: None,
         }
     }
 }
@@ -142,6 +152,10 @@ pub struct PeerConfig {
     /// 用——静态身份，不同于 agents 运行时清单，重启后经回读种回注册表）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
+    /// 自报安全基线档位（#2 三档基线；state.toml 持久化 discovered
+    /// 条目用——静态身份同 runtime_backend，重启后经回读种回注册表）。
+    #[serde(default)]
+    pub security_level: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_enabled")]
@@ -164,6 +178,7 @@ impl Default for PeerConfig {
             professions: Vec::new(),
             tier: None,
             runtime_backend: None,
+            security_level: None,
             priority: default_priority(),
             enabled: default_enabled(),
             status: PeerStatus::default(),
@@ -359,6 +374,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
             iroh_id: None,
             runtime_backend: None,
             pubkey: None,
+            security_level: None,
         },
     }
 }

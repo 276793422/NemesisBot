@@ -756,7 +756,10 @@ fn test_full_config_roundtrip() {
             },
             ..Default::default()
         },
-        security: Some(SecurityFlagConfig { enabled: false }),
+        security: Some(SecurityFlagConfig {
+            enabled: false,
+            ..Default::default()
+        }),
         ..Default::default()
     };
 
@@ -2108,7 +2111,10 @@ fn test_apply_env_overrides_bool_unparseable_keeps_config_value() {
 
     // security/forge：文件值 enabled=true + env 乱值 → 保持 true（不静默关）。
     let mut config = Config::default();
-    config.security = Some(SecurityFlagConfig { enabled: true });
+    config.security = Some(SecurityFlagConfig {
+        enabled: true,
+        ..Default::default()
+    });
     unsafe {
         std::env::set_var("NEMESISBOT_SECURITY_ENABLED", "maybe");
     }

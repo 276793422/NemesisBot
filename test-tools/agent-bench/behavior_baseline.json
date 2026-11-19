@@ -1,0 +1,128 @@
+{
+  "bench_build_unix": 1795116730,
+  "bench_wall_secs": 4,
+  "gateway_version": "C:\\AI\\NemesisBot_Rust_2\\target/release/nemesisbot.exe",
+  "host": "LAPTOP-MBRQ578Q",
+  "scenarios": [
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 108,
+        "p50": 108,
+        "p95": 108
+      },
+      "model": "testai-5.0",
+      "name": "BR-001",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 79,
+        "p50": 79,
+        "p95": 79
+      },
+      "model": "testai-5.0",
+      "name": "BR-002",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 4111,
+        "p50": 4111,
+        "p95": 4111
+      },
+      "model": "testai-red-bypass-1.0",
+      "name": "BR-003",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 44,
+        "p50": 44,
+        "p95": 44
+      },
+      "model": "testai-red-exfil-1.0",
+      "name": "BR-004",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 87,
+        "p50": 87,
+        "p95": 87
+      },
+      "model": "testai-red-exfil-1.0",
+      "name": "BR-005",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 43,
+        "p50": 43,
+        "p95": 43
+      },
+      "model": "testai-red-exfil-1.0",
+      "name": "BR-006",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 97,
+        "p50": 97,
+        "p95": 97
+      },
+      "model": "testai-red-follow-1.0",
+      "name": "BR-007",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 96,
+        "p50": 96,
+        "p95": 96
+      },
+      "model": "testai-red-follow-1.0",
+      "name": "BR-008",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    }
+  ],
+  "schema": "agent-bench/v1",
+  "started_at": "2026-11-20T03:40:32.655954300+08:00",
+  "tool_defs": null,
+  "totals": {
+    "pass_rate": 1.0,
+    "passed": 8,
+    "runs": 8
+  }
+}

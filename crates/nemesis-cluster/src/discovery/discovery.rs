@@ -99,6 +99,12 @@ pub trait ClusterCallbacks: Send + Sync {
     fn mandate_pubkey(&self) -> Option<String> {
         None
     }
+    /// 自报安全基线档位（#2 三档基线：basic/standard/strict，announce
+    /// 携带）。默认 `None` = 未宣告（peers.toml `[node].security_level`
+    /// 未声明——手工声明不从 config.json 自动推导，同 tier 先例）。
+    fn security_level(&self) -> Option<String> {
+        None
+    }
     /// Handle a newly discovered or updated node.
     /// Returns `true` if the peer was added or its content actually changed.
     fn handle_discovered_node(
@@ -124,6 +130,8 @@ pub trait ClusterCallbacks: Send + Sync {
     /// 缺省 None = 未宣告，仅宣告面不设 matcher 闸）。
     /// `mandate_pubkey`：对端自报 mandate 签名公钥（缺省 None =
     /// 未宣告，TOFU 钉存由实现侧在簿激活前提下执行）。
+    /// `security_level`：对端自报安全基线档位（#2 三档基线；
+    /// 缺省 None = 未宣告，仅宣告面——拓扑安全画像，不设消费闸）。
     /// `source_addr`：源地址收割——announce UDP 包的源 IP（发现层亲眼
     /// 可见的可达性证据），最低优先级拨号候选；非 UDP 路径传 `None`。
     fn handle_discovered_node_ex(
@@ -143,6 +151,7 @@ pub trait ClusterCallbacks: Send + Sync {
         iroh_id: Option<&str>,
         runtime_backend: Option<&str>,
         mandate_pubkey: Option<&str>,
+        security_level: Option<&str>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -153,6 +162,7 @@ pub trait ClusterCallbacks: Send + Sync {
             iroh_id,
             runtime_backend,
             mandate_pubkey,
+            security_level,
             source_addr,
             build,
         );
@@ -388,6 +398,9 @@ impl ClusterCallbacks for RegistryCallbacks {
             // 旧 9 参回调无 runtime_backend 入参 → None = 未宣告（诚实，
             // 不猜；ex 版回调才携带）。
             runtime_backend: None,
+            // 旧形态 adapter（不 override ex）：security_level 未携带，
+            // None = 未宣告。
+            security_level: None,
             // 旧形态 adapter（不 override ex）：build 未携带，空 = 未宣告。
             build: String::new(),
             node_type: node_type.to_string(),
@@ -699,6 +712,7 @@ impl DiscoveryService {
                         msg.iroh_id.as_deref(),
                         msg.runtime_backend.as_deref(),
                         msg.mandate_pubkey.as_deref(),
+                        msg.security_level.as_deref(),
                         Some(source_ip.as_str()),
                         &msg.build,
                     );
@@ -885,6 +899,7 @@ pub(crate) fn build_announce_from_callbacks(cluster: &dyn ClusterCallbacks) -> D
     .with_iroh_id(cluster.roaming_id())
     .with_build(cluster.build_hash())
     .with_mandate_pubkey(cluster.mandate_pubkey())
+    .with_security_level(cluster.security_level())
 }
 
 /// Send an announce message using the listener's broadcast method.

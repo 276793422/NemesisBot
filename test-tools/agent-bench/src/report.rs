@@ -119,6 +119,14 @@ impl Scorecard {
         self.scenarios.last_mut().expect("just pushed")
     }
 
+    /// 按调用方给定的模型名记分（安全套件用：规则 id 不在 scenario_model
+    /// 缺省表里，缺省会错落到 "testai-1.1"——规则自带 model 字段透传）。
+    pub fn score_named(&mut self, name: &str, model: &str) -> &mut ScenarioScore {
+        let entry = ScenarioScore::new(name, model);
+        self.scenarios.push(entry);
+        self.scenarios.last_mut().expect("just pushed")
+    }
+
     // -- JSON -------------------------------------------------------------
 
     pub fn to_json(&self) -> Value {
@@ -323,6 +331,7 @@ pub fn compare_baseline(
     card: &Scorecard,
     baseline_path: &Path,
     latency_tolerance: f64,
+    latency_gate_enabled: bool,
 ) -> Result<Vec<String>> {
     let raw = std::fs::read_to_string(baseline_path)?;
     let base: Value = serde_json::from_str(&raw)?;
@@ -341,32 +350,38 @@ pub fn compare_baseline(
         .cloned()
         .unwrap_or_default();
 
-    // 延迟门资格：基线带 host 且与本机一致。
-    let base_host = base.get("host").and_then(|v| v.as_str());
-    let latency_gate = match base_host {
-        None => {
-            findings.push(
-                "[note] 老基线无 host 字段，跳过延迟对比（重新 --save-baseline 后生效）"
-                    .to_string(),
-            );
-            false
+    // 延迟门资格：基线带 host 且与本机一致。安全套件（latency_gate_enabled=false）
+    // 整段跳过——deny 路径延迟是调度噪声（<200ms 秒拦）/固定墙（4s 审批超时），
+    // 不承载信号，门它只会假红（82→108ms +32% 实录）。
+    let latency_gate = if !latency_gate_enabled {
+        false
+    } else {
+        let base_host = base.get("host").and_then(|v| v.as_str());
+        match base_host {
+            None => {
+                findings.push(
+                    "[note] 老基线无 host 字段，跳过延迟对比（重新 --save-baseline 后生效）"
+                        .to_string(),
+                );
+                false
+            }
+            // 两侧都是 "unknown"（env 取不到）≠ 同机——未知身份不猜，跳过门。
+            Some(h) if h == "unknown" || card.host == "unknown" => {
+                findings.push(
+                    "[note] 本机或基线的 host 指纹缺失（unknown），无法确认同机，跳过延迟对比"
+                        .to_string(),
+                );
+                false
+            }
+            Some(h) if h != card.host => {
+                findings.push(format!(
+                    "[note] 基线来自其他机器（{h} vs 本机 {}），跳过延迟对比（跨机噪声不判门）",
+                    card.host
+                ));
+                false
+            }
+            Some(_) => true,
         }
-        // 两侧都是 "unknown"（env 取不到）≠ 同机——未知身份不猜，跳过门。
-        Some(h) if h == "unknown" || card.host == "unknown" => {
-            findings.push(
-                "[note] 本机或基线的 host 指纹缺失（unknown），无法确认同机，跳过延迟对比"
-                    .to_string(),
-            );
-            false
-        }
-        Some(h) if h != card.host => {
-            findings.push(format!(
-                "[note] 基线来自其他机器（{h} vs 本机 {}），跳过延迟对比（跨机噪声不判门）",
-                card.host
-            ));
-            false
-        }
-        Some(_) => true,
     };
 
     for bs in &base_scenarios {

@@ -995,6 +995,7 @@ fn register_node(cluster: &Cluster, id: &str, role: NodeRole, category: &str, on
         runtime_backend: None,
         node_type: "agent".to_string(),
         build: String::new(),
+        security_level: None,
     });
 }
 
@@ -2199,6 +2200,7 @@ async fn worker_sync_env(
         runtime_backend: None,
         node_type: "agent".to_string(),
         build: String::new(),
+        security_level: None,
     });
     let client = Arc::new(RpcClient::with_resolver(Arc::new(FixedPeerResolver {
         addr: "127.0.0.1".to_string(),
@@ -3100,6 +3102,7 @@ fn register_claim_node(cluster: &Cluster, id: &str, professions: &[&str], tier: 
         runtime_backend: None,
         node_type: "agent".to_string(),
         build: String::new(),
+        security_level: None,
     });
 }
 

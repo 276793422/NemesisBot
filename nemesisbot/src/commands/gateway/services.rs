@@ -753,6 +753,70 @@ pub(crate) async fn init_services(
                     }
                 });
 
+                // 资产盘点快照周期刷新（W1 #11+#6–10 AI-BOM）：启动即刷
+                // 一次 + 每 `assets.inventory_refresh_secs` 刷一次（0 = 只
+                // 启动一次）。跑在 web bind 之后——RUNNING_APP_STATE 在
+                // start() 内先于 bind 落槽，此处 running_app_state() 必有
+                // 句柄。刷新失败只 WARN（快照是投影非真相源；WSAPI
+                // assets.* 调用侧恒即时重建）。停机走 terminal_loop_tick
+                // 家族纪律（BUG-20261115-023 同款终态令牌等待点）。
+                let assets_interval_secs = cfg
+                    .assets
+                    .as_ref()
+                    .map(|a| a.inventory_refresh_secs)
+                    .unwrap_or(300);
+                tokio::spawn(async move {
+                    loop {
+                        match nemesis_web::server::running_app_state() {
+                            Some(state) => match state.workspace.clone() {
+                                // workspace 缺席 = 诚实跳过本轮（不拿空串出
+                                // 假清单），落回循环底部的间隔等待。
+                                None => warn!(
+                                    "[Gateway] assets inventory: workspace unknown, refresh skipped"
+                                ),
+                                Some(ws) => {
+                                    let h = state.home.clone();
+                                    let res = tokio::task::spawn_blocking(move || {
+                                        nemesis_web::handlers::assets::build_and_write_snapshot(
+                                            &state,
+                                            &ws,
+                                            h.as_deref(),
+                                        )
+                                    })
+                                    .await;
+                                    match res {
+                                        Ok(Ok(path)) => info!(
+                                            "[Gateway] assets inventory snapshot refreshed: {path}"
+                                        ),
+                                        Ok(Err(e)) => warn!(
+                                            "[Gateway] assets inventory snapshot refresh failed: {e}"
+                                        ),
+                                        Err(e) => warn!(
+                                            "[Gateway] assets inventory snapshot refresh task failed: {e}"
+                                        ),
+                                    }
+                                }
+                            },
+                            None => {
+                                warn!(
+                                    "[Gateway] assets inventory: web state unavailable, refresh skipped"
+                                );
+                            }
+                        }
+                        if assets_interval_secs == 0 {
+                            break;
+                        }
+                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(
+                            assets_interval_secs,
+                        ));
+                        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        tick.tick().await; // interval 首 tick 立即返回——消费掉
+                        if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                            break;
+                        }
+                    }
+                });
+
                 // 自愈：每 30s 按最新注册表重算对外基址，变化才更新槽与
                 // 落盘（UDP 发现的 peer 入表 / 本机 IP 变化后 bundle 广告
                 // 自动修正）。槽是可更新句柄（AdvertisedUrl），刷新无碍

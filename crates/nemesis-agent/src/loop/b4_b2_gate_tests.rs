@@ -258,8 +258,10 @@ async fn exclusive_gate_blocks_native_and_passes_binding_channel() {
     // 绑定回灌（connector-binding 通道）→ 放行，真正执行（治理正向路由）。
     let bctx = RequestContext::new("connector-binding", "chat1", "session1", "sess1");
     let out = agent_loop.handle_tool_call(&tc, &bctx).await;
-    assert_eq!(
-        out, "echo_ok",
+    // W1 #46（2026-11-19）：mcp_stub__read_page 是 mcp_* 外部内容源，结果
+    // 带 <untrusted_content> 包裹（设计内交互，非回归）——断言语义。
+    assert!(
+        out.contains("echo_ok"),
         "绑定回灌必须放行（拒了它独占一开连接器自己先瘫），实际: {out}"
     );
 
@@ -344,8 +346,11 @@ async fn master_off_releases_exclusive_takeover() {
         "总开关关时被独占的原生工具必须恢复供给，实际 {names:?}"
     );
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
-    assert_eq!(
-        out, "echo_ok",
+    // W1 #46（2026-11-19）：mcp_* 是外部内容源，结果包 <untrusted_content>
+    // 入上下文（设计内交互，非回归）——断言语义「工具真执行了」而非字节
+    // 级相等。
+    assert!(
+        out.contains("echo_ok"),
         "总开关关时原生直调必须恢复执行，实际: {out}"
     );
 

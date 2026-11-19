@@ -315,6 +315,7 @@ impl Cluster {
             None,
             None,
             None,
+            None,
             "",
         )
     }
@@ -336,6 +337,10 @@ impl Cluster {
     /// `mandate_pubkey`：对端自报 mandate 签名公钥（a；P-256 SEC1 hex
     /// 66/130。合法形态且 trust.toml 已激活时 TOFU 首见钉存进
     /// `[mandate_keys]`——验签消费在 -b；无 key 旧节点维持现行行为）。
+    ///
+    /// `security_level`：对端自报安全基线档位（#2 三档基线
+    /// basic/standard/strict；None = 未宣告）。学习后进注册表 + 节点面
+    /// （拓扑安全画像）；本批只宣告不做消费闸。
     #[allow(clippy::too_many_arguments)]
     pub fn handle_discovered_node_ex(
         &self,
@@ -354,6 +359,7 @@ impl Cluster {
         iroh_id: Option<String>,
         runtime_backend: Option<String>,
         mandate_pubkey: Option<String>,
+        security_level: Option<String>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -373,6 +379,7 @@ impl Cluster {
             iroh_id,
             runtime_backend,
             mandate_pubkey,
+            security_level,
             source_addr,
             build,
         )
@@ -396,6 +403,7 @@ impl Cluster {
         iroh_id: Option<String>,
         runtime_backend: Option<String>,
         mandate_pubkey: Option<String>,
+        security_level: Option<String>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -531,6 +539,7 @@ impl Cluster {
             merged.tier = tier.clone();
             merged.agents = agents.clone();
             merged.runtime_backend = runtime_backend;
+            merged.security_level = security_level;
             merged.node_type = node_type.to_string();
             merged.build = build.to_string();
             // iroh 漫游身份入池（新增非覆盖——空地址分支保留原地址的
@@ -644,6 +653,7 @@ impl Cluster {
             tier: tier.clone(),
             agents: agents.clone(),
             runtime_backend: runtime_backend.clone(),
+            security_level: security_level.clone(),
             build: build.to_string(),
             node_type: node_type.to_string(),
         };
@@ -802,6 +812,7 @@ impl Cluster {
                         tier: tier.clone(),
                         agents: agents.clone(),
                         runtime_backend: runtime_backend.clone(),
+                        security_level: security_level.clone(),
                         build: build.to_string(),
                         node_type: node_type.into(),
                     },
@@ -954,6 +965,7 @@ impl Cluster {
             existing.tier = info.tier.clone();
             existing.agents = info.agents.clone();
             existing.runtime_backend = info.runtime_backend.clone();
+            existing.security_level = info.security_level.clone();
             existing.build = info.build.clone();
             existing.node_type = info.node_type.clone();
             let static_pinned_address = if self.registry.is_peer_static(&info.id) {
@@ -1042,6 +1054,7 @@ impl Cluster {
             tier: info.tier.clone(),
             agents: info.agents.clone(),
             runtime_backend: info.runtime_backend.clone(),
+            security_level: info.security_level.clone(),
             build: info.build.clone(),
             node_type: info.node_type.clone(),
         };
@@ -1451,6 +1464,10 @@ pub struct RealNodeInfo {
     /// 对端自报运行时后端形态（get_info/announce 携带；
     /// None = 未宣告）。本批只宣告不做 matcher 闸（上位）。
     pub runtime_backend: Option<String>,
+    /// 对端自报安全基线档位（#2 三档基线：basic/standard/strict；
+    /// get_info/announce 携带；None = 未宣告）。merge 进注册表
+    /// ExtendedNodeInfo（拓扑安全画像）。
+    pub security_level: Option<String>,
     /// 对端自报构建号（运行时硬化批；announce/探针/get_info 携带；
     /// merge 进注册表 ExtendedNodeInfo）。不落 peers.toml（写盘手选字段，
     /// 下次 announce 自会重学）。

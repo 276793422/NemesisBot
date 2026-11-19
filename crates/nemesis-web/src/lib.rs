@@ -33,6 +33,8 @@ pub mod pricing_sync;
 pub mod resource_providers; // LLM 代理请求用量记账（裸转发 lane + /api/chat/stream 的落账出口；
 // 代理请求用量记账）。
 pub mod protocol;
+// #25 网关流控（W1 安全图谱批）：/api/* 令牌桶 QPS + SSE 流端点并发闸。
+pub mod rate_limit;
 // LLM 代理调用方 key 鉴权面（per-caller key 匹配 + mtime 缓存热生效；
 // LLM代理调用方key管理）。
 pub(crate) mod proxy_keys;

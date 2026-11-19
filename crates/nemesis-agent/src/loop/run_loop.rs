@@ -240,6 +240,16 @@ impl AgentLoop {
                 break;
             }
 
+            // W1 #30（2026-11-19）：全局用量配额顶检。usage.budget 四维
+            // 各 0 = 关（默认全关零开销直通）；任一超限 = mode=reject 终局
+            // 停车 / mode=warn 只告警。data_store 缺席/聚合失败 = 诚实下界
+            // （按 0 放行，宁可晚炸不误炸）。
+            if let Some(ev) = self.check_usage_budget_round(instance, context) {
+                st.terminal_reason = Some("usage_budget");
+                events.push(ev);
+                break;
+            }
+
             // 器官 2（§4.2）：inbox claim → @file 展开 → URL 媒体预取 →
             // 附加链 → chat_log 落行。
             self.claim_steer_messages(instance, context, &st).await;

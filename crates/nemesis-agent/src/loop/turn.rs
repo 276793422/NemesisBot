@@ -739,6 +739,13 @@ impl AgentLoop {
             }
         }
 
+        // W1 #26（2026-11-19 安全图谱批）：入站聊天文本扫描
+        // （security.chat_scan.inbound，缺省 log-only）——8 层管线只看
+        // 工具面，用户消息此前零检查。只观测不改写：用户输入是主体意志，
+        // 改写破坏对话保真；命中 WARN 记账（泄露路径可见），处置交给出
+        // 站红线。安全模块未装配 = 零操作。
+        #[cfg(feature = "security")]
+        chat_guard_scan::scan_chat_inbound(self.security.security_plugin.as_deref(), user_message);
         // Add user message to instance history.
         // （多模态）：带图片路径引用的变体（引用进 ConversationTurn.image_refs，
         // build_messages 每轮水合；无图时与 add_user_message 等价）。

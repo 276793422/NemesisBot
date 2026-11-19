@@ -822,21 +822,20 @@ pub(crate) async fn init_post_agent(
                     // （executor.enabled=true 才装配）。vm 总闸开而载体缺席 =
                     // VM 档不可达（管理面/切档可用，工具执行诚实 Unavailable
                     // 回落 per-call）——装配期提醒，不静默。
-                    let exec_cfg = nemesis_utils::fsutil::read_config_string(&vm_config_path)
+                    let full_cfg = nemesis_utils::fsutil::read_config_string(&vm_config_path)
                         .ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        .and_then(|v| v.get("executor").cloned());
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+                    let exec_cfg = full_cfg.as_ref().and_then(|v| v.get("executor").cloned());
                     let vm_on = exec_cfg
                         .as_ref()
                         .and_then(|e| e.get("vm"))
                         .and_then(|v| v.get("enabled"))
                         .and_then(|b| b.as_bool())
                         .unwrap_or(false);
-                    let carrier_on = exec_cfg
-                        .as_ref()
-                        .and_then(|e| e.get("enabled"))
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false);
+                    // #2 安全分级（W2）：载体开关走 raw resolver（键缺席 →
+                    // 档位缺省）——strict 档缺省开执行体隔离时，本 WARN 不应
+                    // 因「模板键缺席」误报。
+                    let carrier_on = nemesis_config::resolve_executor_enabled(full_cfg.as_ref());
                     if vm_on && !carrier_on {
                         warn!(
                             "[Gateway] executor.vm.enabled=true 但 executor.enabled=false：RemoteExecutorTool 桥未装配，VM 档工具执行不可达（调用将诚实 Unavailable 回落 per-call）；如需 VM 执行请同时开启 executor.enabled"

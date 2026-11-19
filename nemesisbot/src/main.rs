@@ -514,6 +514,11 @@ enum Commands {
     },
     /// Show system status
     Status,
+    /// Read asset inventory snapshot / AI-BOM view (gateway-generated)
+    Assets {
+        #[command(subcommand)]
+        action: commands::assets::AssetsAction,
+    },
     /// Search conversation history across sessions (full-text search)
     #[cfg(feature = "history-search")]
     History {
@@ -1129,6 +1134,25 @@ async fn run_command(cli: Cli) -> Result<()> {
             let use_default = default || args.iter().any(|a| a == "default");
             let home = common::resolve_home(cli.local);
 
+            // `onboard template <场景>`（#5 安全模板）：分级 × 场景安全预设。
+            if let Some(pos) = args.iter().position(|a| a == "template") {
+                let scenario_str = args.get(pos + 1).map(String::as_str).unwrap_or("");
+                let scenario =
+                    commands::onboard::SecurityScenario::parse(scenario_str).unwrap_or_else(|| {
+                        eprintln!(
+                            "未知场景 {:?}。可用场景：personal / dev / server / iot\n用法：nemesisbot onboard template <场景>",
+                            scenario_str
+                        );
+                        std::process::exit(2);
+                    });
+                println!(
+                    "Initializing NemesisBot with security template '{}'...",
+                    scenario_str
+                );
+                commands::onboard::onboard_template(&home, cli.local, scenario)?;
+                return Ok(());
+            }
+
             if use_default {
                 println!("Initializing NemesisBot with default settings...");
             } else {
@@ -1181,6 +1205,10 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Status => {
             common::ensure_default_logger();
             commands::status::run(cli.local)?;
+        }
+        Commands::Assets { action } => {
+            common::ensure_default_logger();
+            commands::assets::run(action, cli.local)?;
         }
         #[cfg(feature = "history-search")]
         Commands::History { action } => {

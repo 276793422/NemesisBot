@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// 支持的最高 hash 公式版本。fail-closed 守卫（`verify_chain`）与
+/// Dashboard 诊断（nemesis-web logs 的 wrapper cap）**同源消费本常量**
+/// ——v2 漂移实录：#31 加 v2 后 web 侧 wrapper 恒 cap >1，v2 事件在
+/// Dashboard 链诊断恒算空 hash 报假 mismatch（本次 #3 批顺手根修）。
+/// 新增版本必须同时改本常量、`compute_event_hash` 的 `>=` 臂与本守卫。
+pub const MAX_SUPPORTED_HASH_VERSION: u8 = 3;
+
 /// Audit event for the integrity chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -25,11 +32,23 @@ pub struct AuditEvent {
     pub sign: Option<String>,
     /// Hash formula version. 0 = legacy（prev/timestamp/operation/tool/user/
     /// target/decision 七字段）；1 = v1（追加 source + reason——审计叙述与
-    /// 来源进防篡改覆盖）。serde default 让旧链照常加载与验证（BUG-
-    /// 20261102-305：旧公式不含 reason，篡改「为何放行/拒绝」的取证叙述
-    /// 不破坏链验证）。
+    /// 来源进防篡改覆盖）；2 = v2（v1 字段追加 instance_id——单机实例身份
+    /// 进防篡改覆盖，W1 #31，2026-11-19）。serde default 让旧链照常加载
+    /// 与验证（BUG-20261102-305：旧公式不含 reason，篡改「为何放行/拒绝」
+    /// 的取证叙述不破坏链验证）。
     #[serde(default)]
     pub hash_version: u8,
+    /// 产出本事件的 bot 实例身份（workspace/identity.json 持久 UUID，
+    /// W1 #31）。None = 实例身份未注入（hash 走 v1，字节不变零扰动）；
+    /// Some = hash_version 2（v1 字段 + instance_id 进覆盖）。
+    #[serde(default)]
+    pub instance_id: Option<String>,
+    /// 事件发生时的安全档位（#2 审计携带级别，W2 2026-11-20）。None =
+    /// 档位未注入（hash 走 v2 及以下公式，字节不变零扰动）；Some =
+    /// hash_version 3（v2 字段 + security_level 进覆盖）——审计叙述
+    /// 「这条放行/拒绝发生在什么安全姿态下」，事后取证可按档位分层。
+    #[serde(default)]
+    pub security_level: Option<String>,
 }
 
 /// Audit chain configuration.
@@ -82,6 +101,14 @@ pub struct AuditChain {
     /// （verify 的 prev_hash != 前一行 hash 必 FAIL）。本锁罩「读 prev →
     /// 算 hash → 写 last → 落盘 → rotation」全程。
     append_lock: parking_lot::Mutex<()>,
+    /// #31 单机实例身份（W1）：Some = 新事件走 hash v2（v1 字段 +
+    /// instance_id 进覆盖）；None = v1 字节不变（默认，零扰动）。装配点
+    /// 注入（[`AuditChain::set_instance_id`]，gateway build_security_plugin）。
+    instance_id: parking_lot::Mutex<Option<String>>,
+    /// #2 审计携带级别（W2）：Some = 新事件走 hash v3（v2 字段 +
+    /// security_level 进覆盖）；None = v2 及以下字节不变（默认）。装配点
+    /// 注入（[`AuditChain::set_security_level`]，build_security_plugin）。
+    security_level: parking_lot::Mutex<Option<String>>,
 }
 
 impl AuditChain {
@@ -97,7 +124,22 @@ impl AuditChain {
             total_events: std::sync::atomic::AtomicU64::new(0),
             closed: std::sync::atomic::AtomicBool::new(false),
             append_lock: parking_lot::Mutex::new(()),
+            instance_id: parking_lot::Mutex::new(None),
+            security_level: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// #31：实例身份注入（builder 形态，装配点调用；None = 保持 v1）。
+    /// Interior Mutex——注入后所有后续 append 的新事件带身份（hash v2）。
+    pub fn set_instance_id(&self, instance_id: Option<String>) {
+        *self.instance_id.lock() = instance_id;
+    }
+
+    /// #2：安全档位注入（builder 形态，装配点调用；None = 不盖章，v2
+    /// 及以下公式）。Interior Mutex——注入后所有后续 append 的新事件带
+    /// 档位（hash v3）。值应是规范小写（`SecurityLevel::as_str`）。
+    pub fn set_security_level(&self, security_level: Option<String>) {
+        *self.security_level.lock() = security_level;
     }
 
     /// Append an event to the audit chain.
@@ -181,26 +223,20 @@ impl AuditChain {
             TailHeal::Clean => {}
         }
 
-        let mut hasher = Sha256::new();
         let timestamp = chrono::Local::now().to_rfc3339();
         let id = uuid::Uuid::new_v4().to_string();
 
         let prev_hash = self.last_hash.lock().clone();
 
-        // Hash: prev_hash + timestamp + operation + tool + user + target + decision
-        // （v1 追加 source + reason——见 AuditEvent::hash_version 注释）。
-        hasher.update(prev_hash.as_bytes());
-        hasher.update(timestamp.as_bytes());
-        hasher.update(operation.as_bytes());
-        hasher.update(tool_name.as_bytes());
-        hasher.update(user.as_bytes());
-        hasher.update(target.as_bytes());
-        hasher.update(decision.as_bytes());
-        hasher.update(source.as_bytes());
-        hasher.update(reason.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
-
-        let event = AuditEvent {
+        // #31（W1，2026-11-19）：实例身份 Some → hash v2（v1 字段 +
+        // instance_id 进覆盖）；None → v1 字节不变（既有部署零扰动）。
+        // #2（W2，2026-11-20）：安全档位 Some → hash v3（v2 字段 +
+        // security_level 进覆盖）——审计事件盖「发生时的安全姿态」。
+        // hash 计算走 compute_event_hash 单一真相源（append 与 verify
+        // 同源——公式变更只改一处，防 append/verify 漂移）。
+        let instance_id = self.instance_id.lock().clone();
+        let security_level = self.security_level.lock().clone();
+        let mut event = AuditEvent {
             id,
             timestamp,
             operation: operation.to_string(),
@@ -210,11 +246,21 @@ impl AuditChain {
             target: target.to_string(),
             decision: decision.to_string(),
             reason: reason.to_string(),
-            hash: hash.clone(),
+            hash: String::new(),
             prev_hash: prev_hash.clone(),
             sign,
-            hash_version: 1,
+            hash_version: if security_level.is_some() {
+                3
+            } else if instance_id.is_some() {
+                2
+            } else {
+                1
+            },
+            instance_id,
+            security_level,
         };
+        let hash = Self::compute_event_hash(&event);
+        event.hash = hash.clone();
 
         // 盘先行（横扫角度 A）：磁盘是审计链的权威定义——只有
         // 行真正落盘才推进内存链状态（last_hash/计数器）并返回 Ok。旧的
@@ -373,9 +419,15 @@ impl AuditChain {
 
     /// Canonical per-event hash computation（统一定义：append 与 verify
     /// 及 Dashboard 诊断同源）。按事件自带 `hash_version` 选公式——0=旧
-    /// 七字段公式（存量链）；1=追加 source+reason；未知版本按旧公式算但
-    /// `verify_chain`/消费方必须先做版本守卫（fail-closed）。
+    /// 七字段公式（存量链）；1=追加 source+reason；2=v2（v1 字段追加
+    /// instance_id，#31）；3=v3（v2 字段追加 security_level，#2 W2 审计
+    /// 携带级别）；未知版本返回空串（消费方对比恒不等 = fail-closed，
+    /// 与 verify_chain 版本守卫同语义）。版本支持上限见
+    /// [`MAX_SUPPORTED_HASH_VERSION`]。
     pub fn compute_event_hash(event: &AuditEvent) -> String {
+        if event.hash_version > MAX_SUPPORTED_HASH_VERSION {
+            return String::new();
+        }
         let mut hasher = Sha256::new();
         hasher.update(event.prev_hash.as_bytes());
         hasher.update(event.timestamp.as_bytes());
@@ -388,6 +440,12 @@ impl AuditChain {
             hasher.update(event.source.as_bytes());
             hasher.update(event.reason.as_bytes());
         }
+        if event.hash_version >= 2 {
+            hasher.update(event.instance_id.as_deref().unwrap_or("").as_bytes());
+        }
+        if event.hash_version >= 3 {
+            hasher.update(event.security_level.as_deref().unwrap_or("").as_bytes());
+        }
         format!("{:x}", hasher.finalize())
     }
 
@@ -398,8 +456,10 @@ impl AuditChain {
                 return false;
             }
             // 未知 hash_version = 覆盖面契约不可判定 → fail-closed（宁可报
-            // 断链也不静默按旧公式放行新版本事件）。
-            if event.hash_version > 1 {
+            // 断链也不静默按旧公式放行新版本事件）。3 = v3（security_level，
+            // #2 W2 审计携带级别）。compute_event_hash 对超限版本返回空串
+            // → 与任何存 hash 不等，双保险。
+            if event.hash_version > MAX_SUPPORTED_HASH_VERSION {
                 return false;
             }
             let computed = Self::compute_event_hash(event);

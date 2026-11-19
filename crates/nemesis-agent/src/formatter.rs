@@ -102,11 +102,9 @@ fn resolve_config(config_path: Option<&Path>) -> (FormatOnSaveConfig, bool) {
                 .and_then(|s| serde_json::from_value::<FormatOnSaveConfig>(s.clone()).ok())
                 .unwrap_or_default();
             // executor 分离（Layer 1/2）开启 → 格式化诚实停用（见模块注释）。
-            let executor_on = v
-                .get("executor")
-                .and_then(|e| e.get("enabled"))
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false);
+            // #2 安全分级（W2）：走 raw resolver（键缺席 → 档位缺省，strict
+            // 开时停用同步生效——分离开着还做进程内格式化违背隔离语义）。
+            let executor_on = nemesis_config::resolve_executor_enabled(Some(&v));
             (cfg, executor_on)
         }
         None => (FormatOnSaveConfig::default(), false),

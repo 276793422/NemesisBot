@@ -4,6 +4,9 @@
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
 pub mod env_sanitize;
+// 单机实例身份（W1 #31，2026-11-19）：workspace/identity.json 持久
+// instance_id——审计链（hash v2）/启动日志的归属锚点。
+pub mod instance_identity;
 // 子进程文本输出解码单一真相源（BUG-20261115-034）——exec 家族 stdout/
 // stderr 严格 UTF-8 优先 + Windows OEM 码页（CJK 族）回落。
 pub mod child_decode;

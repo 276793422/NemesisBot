@@ -633,6 +633,7 @@ fn cd4_cluster() -> Arc<nemesis_cluster::cluster::Cluster> {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     cluster
 }

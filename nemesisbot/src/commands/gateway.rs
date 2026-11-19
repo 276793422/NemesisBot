@@ -199,6 +199,95 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
     }
 }
 
+/// #2 安全分级（W2，2026-11-20）：装配期档位态势日志。三件事：
+/// ① `security.level` 非法值响亮 WARN（`resolve_security_level_checked`
+///    的 Some(raw) 臂——「以为 strict 实际 basic」的静默降级风险必须响）；
+/// ② posture INFO 一行：档位 + 各档位联动键的生效形态（哪些来自档位
+///    缺省、哪些被显式键覆盖）——strict 升级用户排查「为什么执行体隔离
+///    没开」（模板/typed save 写下的显式 false 覆盖档位缺省）的直接答案；
+/// ③ charter 未登记 WARN（standard+ 且 `<workspace>/config/agent_charter.
+///    json` 缺席——登记是建议面不是闸门，只提醒不拦截）。
+///
+/// 读失败 = 按缺省档位 Basic 报告（与装配行为一致），不阻塞启动。
+pub(crate) fn log_security_level_posture(home: &std::path::Path) {
+    let raw = nemesis_utils::fsutil::read_config_string(&crate::common::config_path(home))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let (level, invalid) = nemesis_config::resolve_security_level_checked(raw.as_ref());
+    if let Some(bad) = invalid {
+        tracing::warn!(
+            "[Security] security.level='{bad}' 不是合法档位（basic/standard/strict），按 basic 运行。\
+             请修正 config.json（大小写不敏感）。"
+        );
+    }
+    // 生效形态投影：显式键（键在场）标注 explicit，键缺席标注 tier-default。
+    let key_bool = |path: &[&str]| -> Option<bool> {
+        let mut cur = raw.as_ref();
+        for step in path {
+            cur = cur.and_then(|v| v.get(*step));
+        }
+        cur.and_then(|b| b.as_bool())
+    };
+    let rl_explicit = key_bool(&["security", "rate_limit", "enabled"]);
+    let budget_sec = raw
+        .as_ref()
+        .and_then(|v| v.get("usage"))
+        .and_then(|u| u.get("budget"));
+    let daily_explicit = budget_sec
+        .and_then(|b| b.get("daily_token_limit"))
+        .is_some();
+    let monthly_explicit = budget_sec
+        .and_then(|b| b.get("monthly_token_limit"))
+        .is_some();
+    let budget_explicit = daily_explicit || monthly_explicit;
+    let exec_explicit = key_bool(&["executor", "enabled"]);
+    let rl_enabled = nemesis_config::resolve_rate_limit(raw.as_ref()).enabled;
+    let budget = nemesis_config::resolve_usage_budget(raw.as_ref());
+    let exec_enabled = nemesis_config::resolve_executor_enabled(raw.as_ref());
+    let rl_src = if rl_explicit.is_none() {
+        "tier-default"
+    } else {
+        "explicit"
+    };
+    let budget_src = if budget_explicit {
+        "explicit"
+    } else {
+        "tier-default"
+    };
+    let exec_src = if exec_explicit.is_none() {
+        "tier-default"
+    } else {
+        "explicit"
+    };
+    tracing::info!(
+        security_level = ?level,
+        rate_limit = rl_enabled,
+        rate_limit_source = rl_src,
+        daily_token_limit = budget.daily_token_limit,
+        monthly_token_limit = budget.monthly_token_limit,
+        budget_source = budget_src,
+        executor_enabled = exec_enabled,
+        executor_source = exec_src,
+        default_chat_mode = level.default_chat_mode(),
+        "[Security] 档位态势（#2 安全分级）：*_source 字段标注各联动键生效来源\
+         （tier-default=按档位缺省，explicit=显式配置覆盖档位）"
+    );
+    if level.charter_required() {
+        let charter = crate::common::workspace_path(home)
+            .join("config")
+            .join("agent_charter.json");
+        if !charter.exists() {
+            tracing::warn!(
+                "[Security] {:?} 档要求用途登记（agent_charter）但 {} 不存在：\
+                 建议完成用途/场景/边界声明（Dashboard 设置页或 WSAPI charter.set）。\
+                 登记是建议面，不拦截启动。",
+                level,
+                charter.display()
+            );
+        }
+    }
+}
+
 /// Run the gateway command.
 pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[String]) -> Result<()> {
     // macOS: acquire the tray-handoff channel guard first, so that ANY return
@@ -222,6 +311,9 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
         // 读配置：AgentLoop 的轮顶预算每轮新鲜读 raw config.json，
         // 迁移落盘后热读与 typed 装配双面一致。
         migrate_legacy_max_tool_iterations(&crate::common::config_path(&home));
+        // #2 安全分级：装配期档位态势（非法值 WARN / 生效形态 INFO /
+        // charter 未登记 WARN——standard+）。一次性，不阻塞启动。
+        log_security_level_posture(&home);
         let ws_dir = crate::common::workspace_path(&home);
         // 子代理可见性：注册表落盘路径早期注入（幂等；
         // 必须先于 global() 首次物化——首个 spawn 闭包运行远晚于此）。

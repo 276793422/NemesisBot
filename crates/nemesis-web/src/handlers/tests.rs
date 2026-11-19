@@ -4864,6 +4864,8 @@ fn make_audit_event(
         prev_hash: String::new(),
         sign: None,
         hash_version: 0,
+        instance_id: None,
+        security_level: None,
     }
 }
 

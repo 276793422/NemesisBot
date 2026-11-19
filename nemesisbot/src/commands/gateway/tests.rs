@@ -1442,7 +1442,10 @@ fn test_web_host_resolution_custom() {
 #[test]
 fn test_security_enabled_check_with_security() {
     let mut cfg = nemesis_config::Config::default();
-    cfg.security = Some(nemesis_config::SecurityFlagConfig { enabled: true });
+    cfg.security = Some(nemesis_config::SecurityFlagConfig {
+        enabled: true,
+        ..Default::default()
+    });
     let enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     assert!(enabled);
 }
@@ -1458,7 +1461,10 @@ fn test_security_enabled_check_without_security() {
 #[test]
 fn test_security_disabled_check() {
     let mut cfg = nemesis_config::Config::default();
-    cfg.security = Some(nemesis_config::SecurityFlagConfig { enabled: false });
+    cfg.security = Some(nemesis_config::SecurityFlagConfig {
+        enabled: false,
+        ..Default::default()
+    });
     let enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     assert!(!enabled);
 }

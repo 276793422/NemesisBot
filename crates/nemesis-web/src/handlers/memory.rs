@@ -843,7 +843,7 @@ impl MemoryHandler {
 // Enhanced memory: statistics & entries
 
 impl MemoryHandler {
-    fn stats(
+    pub(crate) fn stats(
         &self,
         config_dir: &Path,
         workspace: &str,

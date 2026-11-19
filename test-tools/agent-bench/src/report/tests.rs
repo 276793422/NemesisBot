@@ -64,7 +64,7 @@ fn pass_rate_regression_fails_on_any_machine() {
         vec![scenario_entry("basic_chat", 1.0, 100)],
     );
     let card = card_with("basic_chat", 0, 100, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert!(
         findings.iter().any(|f| f.contains("通过率回退")),
         "{findings:?}"
@@ -83,9 +83,47 @@ fn latency_gate_same_host_over_tolerance() {
     );
     // 3 轮全 2000ms → p50 = 2000 > 1000 × 1.30。
     let card = card_with("basic_chat", 3, 2000, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert!(
         findings.iter().any(|f| f.contains("p50 延迟回退")),
+        "{findings:?}"
+    );
+    assert!(has_regression(&findings));
+}
+
+// 安全套件形态（latency_gate_enabled=false）：p50 大幅超容忍也不判门
+// （deny 路径延迟是调度噪声/固定墙，不承载信号——82→108ms +32% 假红实录）。
+#[test]
+fn latency_gate_disabled_security_suite_skips_latency_only() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let base = baseline_file(
+        dir.path(),
+        Some("this-machine"),
+        vec![scenario_entry("rt-cred-exec", 1.0, 82)],
+    );
+    // 同机 + p50 82 → 108（+32% > 容忍 30%）：门开着必红，关着必须不判。
+    let card = card_with("rt-cred-exec", 1, 108, "this-machine");
+    let findings = compare_baseline(&card, &base, 0.30, false).unwrap();
+    assert!(
+        !findings.iter().any(|f| f.contains("p50 延迟回退")),
+        "{findings:?}"
+    );
+    assert!(!has_regression(&findings));
+}
+
+// 安全套件形态下通过率回退照判（rate 门与延迟门正交，关一不关二）。
+#[test]
+fn latency_gate_disabled_rate_regression_still_gated() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let base = baseline_file(
+        dir.path(),
+        Some("this-machine"),
+        vec![scenario_entry("rt-oob-abs", 1.0, 82)],
+    );
+    let card = card_with("rt-oob-abs", 0, 82, "this-machine");
+    let findings = compare_baseline(&card, &base, 0.30, false).unwrap();
+    assert!(
+        findings.iter().any(|f| f.contains("通过率回退")),
         "{findings:?}"
     );
     assert!(has_regression(&findings));
@@ -101,7 +139,7 @@ fn latency_gate_same_host_within_tolerance() {
         vec![scenario_entry("basic_chat", 1.0, 1000)],
     );
     let card = card_with("basic_chat", 3, 1000, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert_eq!(findings, vec!["[ok] 无回退".to_string()], "{findings:?}");
 }
 
@@ -115,7 +153,7 @@ fn latency_gate_cross_host_skipped() {
         vec![scenario_entry("basic_chat", 1.0, 1000)],
     );
     let card = card_with("basic_chat", 3, 10_000, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert!(
         findings
             .iter()
@@ -136,7 +174,7 @@ fn latency_gate_unknown_host_skipped() {
         vec![scenario_entry("basic_chat", 1.0, 1000)],
     );
     let card = card_with("basic_chat", 3, 10_000, "unknown");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert!(
         findings
             .iter()
@@ -152,7 +190,7 @@ fn latency_gate_unknown_host_skipped() {
         vec![scenario_entry("basic_chat", 1.0, 1000)],
     );
     let card2 = card_with("basic_chat", 3, 10_000, "unknown");
-    let findings2 = compare_baseline(&card2, &base2, 0.30).unwrap();
+    let findings2 = compare_baseline(&card2, &base2, 0.30, true).unwrap();
     assert!(!has_regression(&findings2), "{findings2:?}");
 }
 
@@ -166,7 +204,7 @@ fn latency_gate_legacy_baseline_skipped() {
         vec![scenario_entry("basic_chat", 1.0, 1000)],
     );
     let card = card_with("basic_chat", 3, 10_000, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert!(
         findings
             .iter()
@@ -189,7 +227,7 @@ fn coverage_shrinkage_is_regression() {
         ],
     );
     let card = card_with("basic_chat", 1, 100, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert!(
         findings
             .iter()
@@ -209,7 +247,7 @@ fn latency_gate_skips_zero_base_p50() {
         vec![scenario_entry("basic_chat", 1.0, 0)],
     );
     let card = card_with("basic_chat", 3, 10_000, "this-machine");
-    let findings = compare_baseline(&card, &base, 0.30).unwrap();
+    let findings = compare_baseline(&card, &base, 0.30, true).unwrap();
     assert_eq!(findings, vec!["[ok] 无回退".to_string()], "{findings:?}");
 }
 
@@ -288,7 +326,7 @@ fn tool_defs_snapshot_recorded_and_compared_as_note() {
     });
     let path = dir.path().join("b.json");
     std::fs::write(&path, serde_json::to_string_pretty(&base).unwrap()).unwrap();
-    let same = compare_baseline(&card, &path, 0.30).unwrap();
+    let same = compare_baseline(&card, &path, 0.30, true).unwrap();
     assert!(
         !same.iter().any(|f| f.contains("tool defs")),
         "同字节不得出提示，实际 {same:?}"
@@ -303,7 +341,7 @@ fn tool_defs_snapshot_recorded_and_compared_as_note() {
     });
     let path2 = dir.path().join("b2.json");
     std::fs::write(&path2, serde_json::to_string_pretty(&base2).unwrap()).unwrap();
-    let diff = compare_baseline(&card, &path2, 0.30).unwrap();
+    let diff = compare_baseline(&card, &path2, 0.30, true).unwrap();
     assert!(
         diff.iter()
             .any(|f| f.starts_with("[note]") && f.contains("tool defs")),

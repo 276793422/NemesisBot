@@ -3,6 +3,15 @@
 /// （devtool-upgrade）：ACP server（编辑器等客户端 stdio 接入）。
 pub mod acp;
 pub mod agent;
+/// 资产盘点快照读取（W1 #11+#6–10 AI-BOM；读 gateway 落盘的
+/// logs/assets/inventory.json，BOM 投影与 WSAPI 同源）。
+pub mod assets;
+
+/// 用途登记种子内容（W1 #1；单一真相源 = nemesis-web charter 模块，
+/// onboard 落盘与 WSAPI/文档面同源同形）。
+pub(crate) fn charter_seed_json() -> &'static str {
+    nemesis_web::handlers::charter::seed_json()
+}
 #[cfg(feature = "auth")]
 pub mod auth;
 #[cfg(feature = "board")]

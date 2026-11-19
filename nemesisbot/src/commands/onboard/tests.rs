@@ -446,3 +446,106 @@ mod persona_preinstall_2026_11_16 {
         assert_eq!(active["name"], "default");
     }
 }
+
+// ---------------------------------------------------------------------------
+// #5 安全模板（W2，2026-11-20）：场景解析表 + template 落盘 merge 语义。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w5_template_scenario_parse_table() {
+    use super::SecurityScenario;
+    // 大小写不敏感 + 首尾空白容忍。
+    assert_eq!(
+        SecurityScenario::parse("personal"),
+        Some(SecurityScenario::Personal)
+    );
+    assert_eq!(SecurityScenario::parse("DEV"), Some(SecurityScenario::Dev));
+    assert_eq!(
+        SecurityScenario::parse(" Server "),
+        Some(SecurityScenario::Server)
+    );
+    assert_eq!(SecurityScenario::parse("iot"), Some(SecurityScenario::Iot));
+    // 未知名 = None（CLI loud 报错列清单，不静默纠偏）。
+    assert_eq!(SecurityScenario::parse("paranoid"), None);
+    assert_eq!(SecurityScenario::parse(""), None);
+}
+
+#[test]
+fn w5_template_scenario_level_table() {
+    use super::SecurityScenario;
+    // 档位映射：personal/iot=basic，dev=standard，server=strict。
+    assert_eq!(SecurityScenario::Personal.level_str(), "basic");
+    assert_eq!(SecurityScenario::Iot.level_str(), "basic");
+    assert_eq!(SecurityScenario::Dev.level_str(), "standard");
+    assert_eq!(SecurityScenario::Server.level_str(), "strict");
+    // 说明文案非空（打印面是模板的价值所在）。
+    for s in [
+        SecurityScenario::Personal,
+        SecurityScenario::Dev,
+        SecurityScenario::Server,
+        SecurityScenario::Iot,
+    ] {
+        assert!(
+            !s.description().is_empty(),
+            "{} description 非空",
+            s.level_str()
+        );
+    }
+}
+
+#[test]
+fn w5_template_writes_security_level_into_fresh_home() {
+    use super::{SecurityScenario, onboard_template};
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join("tpl-home");
+
+    onboard_template(&home, false, SecurityScenario::Server).unwrap();
+
+    // 12 步初始化照常发生（workspace/persona 等都在）。
+    assert!(home.join("workspace").exists(), "workspace 目录已物化");
+    // config.json 的 security.level = strict（merge 进完整 config，其余键在）。
+    let cfg_path = super::common::config_path(&home);
+    let cfg: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(cfg["security"]["level"], serde_json::json!("strict"));
+    // 档位表不物化：模板只写 level 一个键——流控/配额/executor 等缺席，
+    // 由档位缺省真相源在运行期取值（防两处漂移的设计决策）。
+    assert!(
+        cfg["security"].get("rate_limit").is_none(),
+        "模板不得物化档位表（rate_limit 应缺席，由档位缺省供给）"
+    );
+    assert!(
+        cfg["security"].get("executor").is_none(),
+        "模板不得物化档位表（executor 应缺席）"
+    );
+}
+
+#[test]
+fn w5_template_merges_into_existing_config_without_clobber() {
+    use super::{SecurityScenario, onboard_template};
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join("merge-home");
+    // 先正常初始化，再手写一个用户自定义键，最后套模板——只动 security.level。
+    super::onboard_default(&home, false, OnboardMode::Cli).unwrap();
+    let cfg_path = super::common::config_path(&home);
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    cfg["custom_user_key"] = serde_json::json!("keep-me");
+    cfg["model_list"] = serde_json::json!([{ "model_name": "user-model" }]);
+    fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+    onboard_template(&home, false, SecurityScenario::Dev).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    assert_eq!(after["security"]["level"], serde_json::json!("standard"));
+    assert_eq!(
+        after["custom_user_key"],
+        serde_json::json!("keep-me"),
+        "merge 语义：用户自定义键必须原样保留"
+    );
+    assert!(
+        after["model_list"].as_array().map(|a| a.len()) == Some(1),
+        "用户 model_list 不被模板重写"
+    );
+}

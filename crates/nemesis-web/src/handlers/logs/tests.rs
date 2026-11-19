@@ -145,6 +145,8 @@ fn compute_audit_hash_is_deterministic() {
         prev_hash: "genesis".into(),
         sign: None,
         hash_version: 0,
+        instance_id: None,
+        security_level: None,
     };
     let h1 = compute_audit_hash(&ev);
     let h2 = compute_audit_hash(&ev);
@@ -168,12 +170,59 @@ fn compute_audit_hash_changes_with_field() {
         prev_hash: "p".into(),
         sign: None,
         hash_version: 0,
+        instance_id: None,
+        security_level: None,
     };
     let mut ev = base();
     let h1 = compute_audit_hash(&ev);
     ev.operation = "file_delete".into();
     let h2 = compute_audit_hash(&ev);
     assert_ne!(h1, h2);
+}
+
+#[test]
+fn compute_audit_hash_v2_v3_delegated_not_empty() {
+    // 漂移实录根修锁：#31 加 v2 时 wrapper cap 恒 >1，v2/v3 事件在此恒算
+    // 空 hash → Dashboard 链诊断假 mismatch。现 cap 走共享常量，v2/v3
+    // 委托真相源非空；仅超限版本（v4+）空串。
+    let base = |hash_version: u8, security_level: Option<String>| {
+        nemesis_security::integrity::AuditEvent {
+            id: "e1".into(),
+            timestamp: "t".into(),
+            operation: "op".into(),
+            tool_name: "tn".into(),
+            user: "u".into(),
+            source: "s".into(),
+            target: "tgt".into(),
+            decision: "allow".into(),
+            reason: "r".into(),
+            hash: String::new(),
+            prev_hash: "p".into(),
+            sign: None,
+            hash_version,
+            instance_id: Some("inst".into()),
+            security_level,
+        }
+    };
+    let v2 = base(2, None);
+    assert!(!compute_audit_hash(&v2).is_empty(), "v2 事件必须可算 hash");
+    let v3 = base(3, Some("strict".into()));
+    assert!(!compute_audit_hash(&v3).is_empty(), "v3 事件必须可算 hash");
+    assert_ne!(
+        compute_audit_hash(&v2),
+        compute_audit_hash(&v3),
+        "v2/v3 公式不同（v3 多覆盖 security_level）"
+    );
+    let v4 = base(4, Some("strict".into()));
+    assert!(
+        compute_audit_hash(&v4).is_empty(),
+        "超支持上限版本空串（fail-closed，与 verify 同语义）"
+    );
+    // v3 与真相源逐字节一致（单一真相源委托）。
+    assert_eq!(
+        compute_audit_hash(&v3),
+        nemesis_security::integrity::AuditChain::compute_event_hash(&v3)
+    );
 }
 
 // parse_local_tool_results ----

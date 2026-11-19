@@ -434,6 +434,33 @@ impl AgentLoop {
         nemesis_config::resolve_tool_result_cap(self.config_generation().as_deref())
     }
 
+    /// W1 #26（2026-11-19 安全图谱批）：`security.chat_scan` 世代快照读
+    /// → (入站, 出站) 模式对。键路径/缺省/非法值语义的单一真相源
+    /// `nemesis_config::resolve_chat_scan`（typed 字段同源）。无
+    /// config_path / 无代 = 缺省（log / redact）。唯一消费点在 security
+    /// cfg 块内（bus 出站脱敏），定义随 feature 门控（非 security 编译
+    /// 时本 fn 不存在，避免 dead_code）。
+    #[cfg(feature = "security")]
+    pub(crate) fn current_chat_scan(
+        &self,
+    ) -> (nemesis_config::ChatScanMode, nemesis_config::ChatScanMode) {
+        nemesis_config::resolve_chat_scan(self.config_generation().as_deref())
+    }
+
+    /// W1 #46（同批）：`security.untrusted_wrap` 世代快照读（缺省开，
+    /// 极性与 image_downscale 同：读不到按开，包裹能力保持可用）。
+    pub(crate) fn current_untrusted_wrap(&self) -> bool {
+        nemesis_config::resolve_untrusted_wrap(self.config_generation().as_deref())
+    }
+
+    /// W1 #45（同批）：`security.result_scan` 世代快照读（缺省 note）。
+    /// 唯一消费点在 security cfg 块内（tool_dispatch 注入尾注），定义随
+    /// feature 门控（同 current_chat_scan）。
+    #[cfg(feature = "security")]
+    pub(crate) fn current_result_scan(&self) -> nemesis_config::ResultScanMode {
+        nemesis_config::resolve_result_scan(self.config_generation().as_deref())
+    }
+
     /// 429 重试环：`agents.defaults.rate_limit_retries` 世代快照读
     /// （世代化——以 config.json 为准，改键下轮生效）。无 config_path /
     /// 无代 = 默认 10（default_rate_limit_retries 同源口径）。

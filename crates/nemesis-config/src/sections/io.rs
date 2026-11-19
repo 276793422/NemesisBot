@@ -399,7 +399,18 @@ pub fn apply_env_overrides(config: &mut Config) {
     // Security
     if let Ok(v) = std::env::var("NEMESISBOT_SECURITY_ENABLED") {
         match parse_env_bool(&v) {
-            Some(enabled) => config.security = Some(SecurityFlagConfig { enabled }),
+            // W1（2026-11-19）：env 覆盖改走字段级赋值——整结构体替换会把
+            // 文件里的 chat_scan/untrusted_wrap/result_scan/rate_limit 一并
+            // 丢掉（新键加入后显形）。
+            Some(enabled) => match config.security.as_mut() {
+                Some(sec) => sec.enabled = enabled,
+                None => {
+                    config.security = Some(SecurityFlagConfig {
+                        enabled,
+                        ..Default::default()
+                    })
+                }
+            },
             None => warn!(
                 "[Config] NEMESISBOT_SECURITY_ENABLED={v:?} 值无法识别——保留 config 文件值（安全开关不会被静默翻转，当前 {:?}）",
                 config.security.as_ref().map(|s| s.enabled)
@@ -599,7 +610,10 @@ pub fn default_config() -> Config {
             }),
             general: None,
         }),
-        security: Some(SecurityFlagConfig { enabled: false }),
+        security: Some(SecurityFlagConfig {
+            enabled: false,
+            ..Default::default()
+        }),
         forge: Some(ForgeFlagConfig { enabled: false }),
         user_profile: None,
         cluster: None,
@@ -623,6 +637,7 @@ pub fn default_config() -> Config {
         plugins: None,
         browser: None,
         goals: None,
+        assets: None,
     }
 }
 /// Load MCP configuration from a separate config.mcp.json file.

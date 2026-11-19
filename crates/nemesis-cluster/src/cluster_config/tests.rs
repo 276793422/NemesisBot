@@ -95,6 +95,7 @@ fn test_static_config_roundtrip() {
             capabilities: Vec::new(),
             iroh_id: None,
             pubkey: None,
+            security_level: None,
         },
     };
 
@@ -1090,6 +1091,7 @@ rpc_port = 29422
             capabilities: Vec::new(),
             iroh_id: None,
             pubkey: None,
+            security_level: None,
         },
     };
     save_static_config(&path, &updated).unwrap();

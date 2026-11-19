@@ -390,6 +390,31 @@ impl SecurityPlugin {
         plugin
     }
 
+    /// #31 单机实例身份注入（W1，builder 形态）：
+    /// `SecurityPlugin::new(cfg).with_instance_id(Some(id))`。转发给审计链
+    /// （`AuditChain::set_instance_id`）——注入后新审计事件走 hash v2
+    /// （v1 字段 + instance_id 进防篡改覆盖）；None/未调用 = v1 字节不变。
+    /// 审计链未启用时为诚实 no-op（无面可注）。
+    pub fn with_instance_id(self, instance_id: Option<String>) -> Self {
+        if let Some(chain) = self.audit_chain.as_ref() {
+            chain.set_instance_id(instance_id);
+        }
+        self
+    }
+
+    /// #2 审计携带级别注入（W2 2026-11-20，builder 形态）：
+    /// `SecurityPlugin::new(cfg).with_security_level(Some("strict"))`。
+    /// 转发给审计链（`AuditChain::set_security_level`）——注入后新审计
+    /// 事件走 hash v3（v2 字段 + security_level 进防篡改覆盖：审计叙述
+    /// 「这条放行发生在什么安全姿态下」）；None/未调用 = v2 及以下字节
+    /// 不变。审计链未启用时为诚实 no-op（无面可注）。
+    pub fn with_security_level(self, security_level: Option<String>) -> Self {
+        if let Some(chain) = self.audit_chain.as_ref() {
+            chain.set_security_level(security_level);
+        }
+        self
+    }
+
     /// Initialize with an explicit config file path.
     ///
     /// This is the Rust equivalent of the Go `Init(pluginConfig)` method.

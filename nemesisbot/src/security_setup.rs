@@ -204,9 +204,39 @@ pub(crate) async fn build_security_plugin(
         nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(b);
         info!("[Security] sanitize_child_env: {}", b);
     }
-    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
-        security_config,
-    ));
+    // #31（W1 安全图谱批，2026-11-19）：单机实例身份——workspace/identity.json
+    // 持久 UUID（workspace 级：同 workspace 多进程共享身份）。注入审计链
+    // （启用时新事件走 hash v2，instance_id 进防篡改覆盖）+ 启动日志归属
+    // 锚点。fs 失败 = 瞬态身份（WARN，不阻塞启动）。
+    let instance_identity =
+        nemesis_utils::instance_identity::resolve_or_fallback(&common::workspace_path(home));
+    // #2 审计携带级别（W2，2026-11-20）：审计事件盖当前档位（hash v3）
+    // ——审计叙述「这条放行/拒绝发生在什么安全姿态下」，事后取证可按
+    // 档位分层。档位从 config.json raw 读（与 gateway 态势日志同源；
+    // typed bool 不适用场景无关——level 是字符串但 raw 读保「键缺席 vs
+    // 非法值」区分度）。非法值 WARN + 按解析结果（basic）盖章；config
+    // 读失败 = basic（与装配行为一致，不阻塞启动）。
+    let (sec_level, invalid_level) = {
+        let raw = nemesis_utils::fsutil::read_config_string(&common::config_path(home))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        nemesis_config::resolve_security_level_checked(raw.as_ref())
+    };
+    if let Some(bad) = invalid_level {
+        warn!(
+            "[Security] security.level='{bad}' 不是合法档位（basic/standard/strict），\
+             审计链按 basic 盖章。请修正 config.json（大小写不敏感）。"
+        );
+    }
+    let plugin = Arc::new(
+        nemesis_security::pipeline::SecurityPlugin::new(security_config)
+            .with_instance_id(Some(instance_identity.instance_id.clone()))
+            .with_security_level(Some(sec_level.as_str().to_string())),
+    );
+    info!(
+        "[Security] instance identity: {} (audit chain events stamped v2 when chain enabled)",
+        instance_identity.instance_id
+    );
 
     // Load security rules from config.security.json (mirrors Go's config loading)
     let sec_config_path = common::security_config_path(home);

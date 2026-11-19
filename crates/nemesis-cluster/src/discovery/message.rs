@@ -126,6 +126,14 @@ pub struct DiscoveryMessage {
     /// trust.toml `[mandate_keys]`（验签消费在 -b）。
     #[serde(default)]
     pub mandate_pubkey: Option<String>,
+    /// 自报安全基线档位（#2 三档基线：`"basic"`/`"standard"`/`"strict"`）。
+    /// **手工声明**（peers.toml `[node].security_level`），不从 config.json
+    /// 自动推导（同 tier/runtime_backend 解耦先例）。旧节点 / Go 节点的
+    /// announce 无此字段 → serde default None = 未宣告（wire 兼容）。
+    /// 对端学习后进注册表 + 节点面展示（拓扑安全画像）；本批只宣告不做
+    /// 消费闸。
+    #[serde(default)]
+    pub security_level: Option<String>,
     /// Unix timestamp (seconds since epoch).
     pub timestamp: i64,
 }
@@ -166,6 +174,7 @@ impl DiscoveryMessage {
             runtime_backend: None,
             build: String::new(),
             mandate_pubkey: None,
+            security_level: None,
             timestamp: now_unix(),
         }
     }
@@ -218,6 +227,14 @@ impl DiscoveryMessage {
         self
     }
 
+    /// 附自报安全基线档位（#2 三档基线；`None` = 未宣告——peers.toml
+    /// 未声明语义。生产 announce 构造点 `build_announce_from_callbacks`
+    /// 链式调用，与 with_mandate_pubkey 同一单一真相源纪律）。
+    pub fn with_security_level(mut self, level: Option<String>) -> Self {
+        self.security_level = level;
+        self
+    }
+
     /// Create a new bye message, mirroring Go's `NewByeMessage`.
     pub fn new_bye(node_id: impl Into<String>) -> Self {
         Self {
@@ -239,6 +256,7 @@ impl DiscoveryMessage {
             runtime_backend: None,
             build: String::new(),
             mandate_pubkey: None,
+            security_level: None,
             timestamp: now_unix(),
         }
     }

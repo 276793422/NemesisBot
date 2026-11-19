@@ -219,10 +219,17 @@ impl ModuleHandler for ChatHandler {
         // F1：当前模式只读查询（前端打开会话时初始化徽标用）。
         if cmd == "get_mode" {
             let mode = agent_loop.mode();
+            // W1 #1 用途登记联动建议：charter 声明只读用途 × build 模式
+            // → 提示建议切 plan（建议不是强制——闸门仍是 plan 模式本体；
+            // workspace 未知/charter 缺席 = 不投影不撒谎）。
+            let charter_hint =
+                super::charter::plan_mode_hint(ctx.workspace.as_deref(), mode.as_str());
             return Ok(Some(serde_json::json!({
                 "session_id": session_id,
                 "session_key": session_key,
                 "mode": mode.as_str(),
+                "charter_read_only": charter_hint.is_some(),
+                "charter_hint": charter_hint,
             })));
         }
         // G3（2026-11-09）：会话级思考强度 override。data.effort =

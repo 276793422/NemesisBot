@@ -283,6 +283,11 @@ pub struct Config {
     /// 丢键（plugins/browser 段同款）。见 [`GoalsConfig`]。
     #[serde(default)]
     pub goals: Option<GoalsConfig>,
+    /// 资产盘点段（W1 #11+#6–10 AI-BOM 快照周期刷新；None = 全默认——
+    /// 300s）。typed 字段化防 set_field round-trip 丢键（plugins/browser
+    /// 段同款）。见 [`AssetsConfig`]。
+    #[serde(default)]
+    pub assets: Option<AssetsConfig>,
 }
 
 /// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；
@@ -653,6 +658,342 @@ pub fn resolve_tool_result_cap(cfg: Option<&serde_json::Value>) -> usize {
         .map(|n| n.max(0) as usize)
         .unwrap_or(DEFAULT_TOOL_RESULT_CAP)
 }
+
+// ---------------------------------------------------------------------------
+// W1 安全图谱地基批（2026-11-19）：#26/#45/#46/#25/#30 缺省常量 + 解析器。
+// 单一真相源纪律：typed serde 缺省（sections/misc.rs）与 raw-JSON 解析
+// （下方 resolve_*）共用同一张常量表——两路解析方向相反但缺省同值。
+// ---------------------------------------------------------------------------
+
+/// #26 聊天面扫描入站缺省模式（只观测不阻断——用户是受信主体，防误报）。
+pub const DEFAULT_CHAT_SCAN_INBOUND: &str = "log";
+/// #26 聊天面扫描出站缺省模式（红线脱敏：High/Medium 置信凭据命中即遮蔽）。
+pub const DEFAULT_CHAT_SCAN_OUTBOUND: &str = "redact";
+/// #45 工具结果注入扫描缺省模式（high/critical 命中追加诚实尾注）。
+pub const DEFAULT_RESULT_SCAN_MODE: &str = "note";
+/// #25 网关流控缺省 QPS。
+pub const DEFAULT_RATE_LIMIT_QPS: u32 = 20;
+/// #25 网关流控缺省突发桶容量。
+pub const DEFAULT_RATE_LIMIT_BURST: u32 = 40;
+/// #25 网关流控缺省每凭据并发流上限。
+pub const DEFAULT_RATE_LIMIT_MAX_CONCURRENT_STREAMS: u32 = 4;
+/// #30 用量配额缺省达限行为。
+pub const DEFAULT_BUDGET_MODE: &str = "reject";
+
+/// [`DEFAULT_RESULT_SCAN_MODE`] 的 serde 缺省函数形态。
+fn default_result_scan_mode() -> String {
+    DEFAULT_RESULT_SCAN_MODE.to_string()
+}
+
+/// #2 安全分级缺省（basic = 现形态）。
+pub const DEFAULT_SECURITY_LEVEL: &str = "basic";
+
+/// [`DEFAULT_SECURITY_LEVEL`] 的 serde 缺省函数形态。
+fn default_security_level() -> String {
+    DEFAULT_SECURITY_LEVEL.to_string()
+}
+
+/// #26 聊天面扫描解析后的方向语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatScanMode {
+    /// 命中只告警（tracing WARN + 审计），不改写内容。
+    Log,
+    /// 命中即遮蔽（redact_content）+ 尾注告知。
+    Redact,
+    /// 关闭该方向扫描。
+    Off,
+}
+
+/// #26：raw config JSON 读取 `security.chat_scan` 两方向模式。
+///
+/// typed 字段（`SecurityFlagConfig.chat_scan`）与本解析共用常量表。未知
+/// 字符串值按该方向缺省处理（不做静默纠偏到 off——缺省是安全侧语义）。
+/// `security.enabled=false` 不影响本键（聊天面扫描独立于 8 层管线总闸，
+/// 有独立模式开关本身就是它的闸）。
+pub fn resolve_chat_scan(cfg: Option<&serde_json::Value>) -> (ChatScanMode, ChatScanMode) {
+    let parse = |v: Option<&serde_json::Value>, default: &str| match v.and_then(|x| x.as_str()) {
+        Some("log") => ChatScanMode::Log,
+        Some("redact") => ChatScanMode::Redact,
+        Some("off") => ChatScanMode::Off,
+        _ if default == "redact" => ChatScanMode::Redact,
+        _ => ChatScanMode::Log,
+    };
+    let sec = cfg
+        .and_then(|v| v.get("security"))
+        .and_then(|v| v.get("chat_scan"));
+    (
+        parse(
+            sec.and_then(|v| v.get("inbound")),
+            DEFAULT_CHAT_SCAN_INBOUND,
+        ),
+        parse(
+            sec.and_then(|v| v.get("outbound")),
+            DEFAULT_CHAT_SCAN_OUTBOUND,
+        ),
+    )
+}
+
+/// #46：raw config JSON 读取 `security.untrusted_wrap`（默认 **true**——
+/// 读不到/键缺失按开处理，与 image_downscale 同极性：包裹能力保持可用）。
+pub fn resolve_untrusted_wrap(cfg: Option<&serde_json::Value>) -> bool {
+    cfg.and_then(|v| v.get("security"))
+        .and_then(|s| s.get("untrusted_wrap"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(true)
+}
+
+/// #45 工具结果注入扫描模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultScanMode {
+    /// high/critical 命中追加诚实尾注（不阻断——数据已执行）。
+    Note,
+    /// 关闭。
+    Off,
+}
+
+/// #45：raw config JSON 读取 `security.result_scan`（缺省 `"note"`；未知值
+/// 回落缺省）。
+pub fn resolve_result_scan(cfg: Option<&serde_json::Value>) -> ResultScanMode {
+    match cfg
+        .and_then(|v| v.get("security"))
+        .and_then(|s| s.get("result_scan"))
+        .and_then(|x| x.as_str())
+    {
+        Some("off") => ResultScanMode::Off,
+        Some("note") => ResultScanMode::Note,
+        _ => ResultScanMode::Note,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #2 安全分级（W2 批，2026-11-20 拍板：三档基线按草案）
+// ---------------------------------------------------------------------------
+
+/// 安全分级档位。`security.level`，缺省 [`SecurityLevel::Basic`]（= 现形态，
+/// 升级零行为突变）。档位是**起点不是锁死**：各开关显式键优先于档位表
+/// （resolver 族的缺席缺省值按档位查表，显式写的键照常生效）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SecurityLevel {
+    /// 出厂默认：8 层管线开，W1 开关维持缺省，流控/配额/隔离关。
+    #[default]
+    Basic,
+    /// Basic + 网关流控开 + 日/月 token 配额开 + charter 未登记 WARN。
+    Standard,
+    /// Standard + 执行体隔离开 + 默认 plan 模式 + MCP/技能装前扫描强制。
+    Strict,
+}
+
+impl SecurityLevel {
+    /// 按字符串解析（`"basic"`/`"standard"`/`"strict"`，大小写不敏感）。
+    /// 未知值 → None（调用方决定回落或报警告——安全档位配错静默降级
+    /// basic 有「以为 strict 实际 basic」的风险，装配面必须响）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "basic" => Some(SecurityLevel::Basic),
+            "standard" => Some(SecurityLevel::Standard),
+            "strict" => Some(SecurityLevel::Strict),
+            _ => None,
+        }
+    }
+
+    /// 档位规范小写形态（wire 宣告 / 审计盖章 / 显示投影用——单一真相源，
+    /// 防各处手写小写字面量漂移）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SecurityLevel::Basic => "basic",
+            SecurityLevel::Standard => "standard",
+            SecurityLevel::Strict => "strict",
+        }
+    }
+
+    /// #25 流控 enabled 缺席缺省（basic 关 = 现形态；standard+ 开）。
+    pub fn rate_limit_enabled_default(self) -> bool {
+        matches!(self, SecurityLevel::Standard | SecurityLevel::Strict)
+    }
+
+    /// #30 日 token 配额缺席缺省（0 = 关；standard+ 2M ≈ 100 轮深度会话
+    /// ×20 的余量，烧新钱前停车的护栏而非精确配额）。费用维不设档位缺省
+    /// （模型价差大，定死数字反而误伤——显式配置才生效）。
+    pub fn daily_token_limit_default(self) -> u64 {
+        match self {
+            SecurityLevel::Basic => 0,
+            SecurityLevel::Standard | SecurityLevel::Strict => 2_000_000,
+        }
+    }
+
+    /// #30 月 token 配额缺席缺省（日限 ×10 的量级：日限是护栏，月限是
+    /// 撑爆预算的最终闸，给 10 倍余量覆盖突发 legitimate 用量）。
+    pub fn monthly_token_limit_default(self) -> u64 {
+        match self {
+            SecurityLevel::Basic => 0,
+            SecurityLevel::Standard | SecurityLevel::Strict => 20_000_000,
+        }
+    }
+
+    /// 执行体隔离开关缺席缺省（`executor.enabled`；strict 开）。
+    pub fn executor_enabled_default(self) -> bool {
+        self == SecurityLevel::Strict
+    }
+
+    /// 默认对话模式缺席缺省（strict 默认 plan——写类工具闸先收紧，用户
+    /// 显式 `/build` 或 `chat.set_mode` 放开）。
+    pub fn default_chat_mode(self) -> &'static str {
+        match self {
+            SecurityLevel::Strict => "plan",
+            _ => "build",
+        }
+    }
+
+    /// MCP/技能装前扫描是否强制（#14 闸消费；strict 强制不可关）。
+    pub fn preinstall_scan_required(self) -> bool {
+        self == SecurityLevel::Strict
+    }
+
+    /// charter（用途登记）是否要求（standard+：缺席只 WARN 不拦截——
+    /// 登记是建议面不是闸门）。
+    pub fn charter_required(self) -> bool {
+        matches!(self, SecurityLevel::Standard | SecurityLevel::Strict)
+    }
+}
+
+/// #2：raw config JSON 解析档位 + 非法值注记。合法值（含大小写变体）→
+/// 对应档位；键缺席 → (Basic, None)；**键在场但值非法 → (Basic, Some(原文))**
+/// ——静默降级的风险必须在装配面响出来。
+pub fn resolve_security_level_checked(
+    cfg: Option<&serde_json::Value>,
+) -> (SecurityLevel, Option<String>) {
+    match cfg
+        .and_then(|v| v.get("security"))
+        .and_then(|s| s.get("level"))
+        .and_then(|x| x.as_str())
+    {
+        None => (SecurityLevel::Basic, None),
+        Some(raw) => match SecurityLevel::parse(raw) {
+            Some(l) => (l, None),
+            None => (SecurityLevel::Basic, Some(raw.to_string())),
+        },
+    }
+}
+
+/// #2：档位解析便捷形态（丢弃非法值注记——测试/展示面用；生产装配走
+/// `resolve_security_level_checked`）。
+pub fn resolve_security_level(cfg: Option<&serde_json::Value>) -> SecurityLevel {
+    resolve_security_level_checked(cfg).0
+}
+
+/// #2：typed 形态档位解析（ConfigHandle 已解析的 `security` 段）。
+/// `SecurityFlagConfig.level` 的 serde 缺省 = `"basic"`，与「键缺席 →
+/// Basic」同语义；非法值 → Basic（响铃职责在装配面
+/// `resolve_security_level_checked` 的 WARN——typed 读丢失了「非法」
+/// 区分度，只适合装配后的旁路消费，如默认对话模式）。
+pub fn security_level_from_flag(flag: Option<&SecurityFlagConfig>) -> SecurityLevel {
+    flag.and_then(|f| SecurityLevel::parse(&f.level))
+        .unwrap_or_default()
+}
+
+/// #2：执行体隔离总开关（`executor.enabled`）。**键在场粒度**：显式键
+/// 照读（显式 false 永远生效——档位是起点不是锁死）；键缺席（含段缺席
+/// 与段在场无键两态）→ 按档位查表（strict 开）。
+///
+/// ⚠ 消费面纪律：此键的档位联动依赖「键缺席可观测」，typed
+/// `ExecutorSeparationConfig.enabled`（`#[serde(default)]` bool）无法区分
+/// 「缺席」与「显式 false」，所以生产消费点一律走本 resolver 读 raw
+/// config JSON（exec_world / formatter / gateway 装配 WARN 三处同源）；
+/// 出厂模板（config.default.json）也已摘除 `executor.enabled` 键——模板
+/// 显式写 false 会让 strict 档缺省永不生效。
+pub fn resolve_executor_enabled(cfg: Option<&serde_json::Value>) -> bool {
+    cfg.and_then(|v| v.get("executor"))
+        .and_then(|e| e.get("enabled"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or_else(|| resolve_security_level(cfg).executor_enabled_default())
+}
+
+/// #25 网关流控解析后的运行参数。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RateLimitSettings {
+    pub enabled: bool,
+    pub qps: u32,
+    pub burst: u32,
+    pub max_concurrent_streams: u32,
+}
+
+/// #25：raw config JSON 读取 `security.rate_limit`。先按 typed
+/// `RateLimitConfig` 逐键解析（缺键 = 字段缺省），再经
+/// `RateLimitConfig::settings()` 投影（钳制单一真相源：qps/burst 钳下界
+/// 1——0 无语义 = 回落缺省，防误配把网关整体关死；`max_concurrent_streams`
+/// 0 = 不限并发只限 QPS，有语义，透传）。
+pub fn resolve_rate_limit(cfg: Option<&serde_json::Value>) -> RateLimitSettings {
+    let rl = cfg
+        .and_then(|v| v.get("security"))
+        .and_then(|v| v.get("rate_limit"));
+    let num = |key: &str, default: u32| -> u32 {
+        rl.and_then(|v| v.get(key))
+            .and_then(|x| x.as_u64())
+            .map(|n| n as u32)
+            .unwrap_or(default)
+    };
+    // #2：enabled 缺席按档位（standard+ 开）；显式 false 照常生效（档位是
+    // 起点不是锁死）。
+    let level = resolve_security_level(cfg);
+    RateLimitConfig {
+        enabled: rl
+            .and_then(|v| v.get("enabled"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or_else(|| level.rate_limit_enabled_default()),
+        qps: num("qps", DEFAULT_RATE_LIMIT_QPS),
+        burst: num("burst", DEFAULT_RATE_LIMIT_BURST),
+        max_concurrent_streams: num(
+            "max_concurrent_streams",
+            DEFAULT_RATE_LIMIT_MAX_CONCURRENT_STREAMS,
+        ),
+    }
+    .settings()
+}
+
+/// #30 用量配额解析后的运行参数。
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageBudgetSettings {
+    pub daily_token_limit: u64,
+    pub monthly_token_limit: u64,
+    pub daily_cost_limit_usd: f64,
+    pub monthly_cost_limit_usd: f64,
+    /// true = reject（达限终局停车）；false = warn（只告警）。
+    pub reject: bool,
+}
+
+/// #30：raw config JSON 读取 `usage.budget`。token/费用四维：显式键照读
+/// （显式 0 = 关是合法意志），**键缺席按安全档位查表**（#2：basic 全 0 =
+/// 现形态；standard+ 日 2M/月 20M）。费用维无档位缺省（模型价差大）。
+pub fn resolve_usage_budget(cfg: Option<&serde_json::Value>) -> UsageBudgetSettings {
+    let b = cfg
+        .and_then(|v| v.get("usage"))
+        .and_then(|v| v.get("budget"));
+    let level = resolve_security_level(cfg);
+    // 显式在场才读值（区分「显式 0 = 关」与「缺席 = 按档位」）。
+    let u64_of = |key: &str, level_default: u64| -> u64 {
+        b.and_then(|v| v.get(key))
+            .and_then(|x| x.as_u64())
+            .unwrap_or(level_default)
+    };
+    let f64_of = |key: &str| -> f64 {
+        b.and_then(|v| v.get(key))
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0)
+            .max(0.0)
+    };
+    UsageBudgetSettings {
+        daily_token_limit: u64_of("daily_token_limit", level.daily_token_limit_default()),
+        monthly_token_limit: u64_of("monthly_token_limit", level.monthly_token_limit_default()),
+        daily_cost_limit_usd: f64_of("daily_cost_limit_usd"),
+        monthly_cost_limit_usd: f64_of("monthly_cost_limit_usd"),
+        reject: b
+            .and_then(|v| v.get("mode"))
+            .and_then(|x| x.as_str())
+            .map(|m| m != "warn")
+            .unwrap_or(true),
+    }
+}
+
 fn default_gateway_host() -> String {
     "0.0.0.0".to_string()
 }
@@ -720,6 +1061,11 @@ mod eval_rules_tests;
 
 #[cfg(test)]
 mod tool_result_cap_tests;
+
+// W1 安全图谱地基批（2026-11-19）：chat_scan / untrusted_wrap /
+// result_scan / rate_limit / usage.budget 配置面测试。
+#[cfg(test)]
+mod security_scan_tests;
 
 #[cfg(test)]
 mod port_normalization_tests;

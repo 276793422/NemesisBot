@@ -172,6 +172,29 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     if let Some(mgr) = cors_manager {
         web_server.set_cors_manager(mgr);
     }
+    // #25（W1 安全图谱批，2026-11-19）：网关流控注入。配置面
+    // `security.rate_limit`（typed `RateLimitConfig`，round-trip 保留；
+    // 钳制经 `settings()` 单一真相源）。
+    // #2 安全分级（W2，2026-11-20）：enabled 解析走 raw resolver
+    // （`resolve_rate_limit`，键缺席 → 档位缺省 standard+ 开）——**不走
+    // typed 字段直读**：serde `#[serde(default)]` 把「键缺席」物化成
+    // Default（enabled=false），档位联动会静默失效。钳制两面共用
+    // `RateLimitConfig::settings()` 投影，行为一致。
+    let raw = nemesis_utils::fsutil::read_config_string(&crate::common::config_path(&home))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let settings = nemesis_config::resolve_rate_limit(raw.as_ref());
+    if settings.enabled {
+        web_server.set_rate_limiter(std::sync::Arc::new(
+            nemesis_web::rate_limit::GatewayRateLimiter::new(settings),
+        ));
+        info!(
+            qps = settings.qps,
+            burst = settings.burst,
+            max_streams = settings.max_concurrent_streams,
+            "[Gateway] rate limiting enabled for /api/*"
+        );
+    }
     // channels.web.session_timeout → WS 会话闲置逐出超时。此前 session 侧
     // 硬编码 3600s、config 键声明后零消费（BUG-20261116-035 接线，同 055
     // heartbeat_interval 先例）；<=0 = 不限（翻译语义在 nemesis-web 侧单一

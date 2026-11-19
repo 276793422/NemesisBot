@@ -187,6 +187,8 @@ pub fn build_agent_loop(
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
+    // #2 安全分级：默认对话模式按档位（strict → plan 起步，见 fn 文档）。
+    super::apply_default_chat_mode(&agent_loop, &cfg);
     // （凭据 vault）：Auth 凭据卡装配——provider 重建器恒挂
     // （纯数据件）；broker 走全局槽（security feature 门控；headless/acp
     // 未 install → None → Auth 臂走原终局零回归）。

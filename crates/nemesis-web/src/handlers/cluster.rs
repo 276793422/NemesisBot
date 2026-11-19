@@ -1056,6 +1056,8 @@ impl ClusterHandler {
                     "tier": n.tier,
                     "agents": n.agents,
                     "build": n.build,
+                    // #2 三档基线：拓扑安全画像（null = 未宣告）。
+                    "securityLevel": n.security_level,
                     "online": n.is_online(),
                     // 严格三态（online/offline/connecting）：「清理无效」弹窗
                     // 按它过滤——online:false 涵盖 offline+connecting 两态，
@@ -1192,6 +1194,7 @@ impl ClusterHandler {
                 // 手工加节点/配对时对端能力未探明 → None = 未宣告
                 // （announce/get_info 到达时自会学习，同 professions 先例）。
                 runtime_backend: None,
+                security_level: None,
                 node_type: String::new(),
                 build: String::new(),
             };
@@ -1258,6 +1261,7 @@ impl ClusterHandler {
                 // 配对探测不采集运行时后端形态 → None = 未宣告（announce
                 // 到达时自会学习）。
                 runtime_backend: None,
+                security_level: None,
                 node_type: String::new(),
                 build: String::new(),
             };
@@ -1405,6 +1409,9 @@ impl ClusterHandler {
         // 自报运行时后端形态（旧节点 get_info 无此键 →
         // None = 未宣告）。
         let runtime_backend = resp["runtime_backend"].as_str().map(String::from);
+        // #2 三档基线：自报安全基线档位（旧节点 get_info 无此键 →
+        // None = 未宣告）。
+        let security_level = resp["security_level"].as_str().map(String::from);
 
         let primary_address = if !addresses.is_empty() && rpc_port > 0 {
             format!("{}:{}", addresses[0], rpc_port)
@@ -1432,6 +1439,7 @@ impl ClusterHandler {
             tier,
             agents,
             runtime_backend,
+            security_level,
             node_type,
             build: String::new(),
         };
@@ -1597,6 +1605,27 @@ impl ClusterHandler {
             updated["runtime_backend"] = serde_json::json!(parsed);
             backend_parsed = Some(parsed);
         }
+        // #2 三档基线：security_level 宣告编辑（basic|standard|strict；
+        // null/空 = 清除未宣告状态）。与 tier/runtime_backend 同款：运行时
+        // 热改写（下一 announce 拍生效）+ peers.toml [node] 段持久化。
+        // 值域单一真相源 = `nemesis_config::SecurityLevel::parse`。
+        let mut level_parsed: Option<Option<String>> = None;
+        if let Some(v) = data.get("security_level") {
+            let s = v.as_str().map(str::trim).unwrap_or("").to_ascii_lowercase();
+            let parsed = if s.is_empty() {
+                None
+            } else if nemesis_config::SecurityLevel::parse(&s).is_some() {
+                Some(s)
+            } else {
+                return Err(
+                    "security_level must be 'basic'/'standard'/'strict' or null (undeclared)"
+                        .to_string(),
+                );
+            };
+            cluster.set_security_level(parsed.clone());
+            updated["security_level"] = serde_json::json!(parsed);
+            level_parsed = Some(parsed);
+        }
 
         // Persist to peers.toml [node] section
         if let Ok(workspace) = require_workspace(ctx) {
@@ -1628,6 +1657,9 @@ impl ClusterHandler {
                 if let Some(b) = &backend_parsed {
                     node.runtime_backend = b.clone();
                 }
+                if let Some(l) = &level_parsed {
+                    node.security_level = l.clone();
+                }
                 Ok(())
             })?;
         }
@@ -1642,6 +1674,8 @@ impl ClusterHandler {
         updated["current_capabilities"] = serde_json::json!(caps);
         updated["current_professions"] = serde_json::json!(cluster.professions());
         updated["current_tier"] = serde_json::json!(cluster.tier());
+        updated["current_runtime_backend"] = serde_json::json!(cluster.runtime_backend());
+        updated["current_security_level"] = serde_json::json!(cluster.security_level());
 
         Ok(Some(updated))
     }

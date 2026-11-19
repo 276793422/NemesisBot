@@ -397,6 +397,7 @@ fn test_message_to_node_info_from_message() {
         mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
+        security_level: None,
     };
     let info = message_to_node_info(&msg);
     assert_eq!(info.base.id, "node-1");
@@ -428,6 +429,7 @@ fn test_handle_discovery_message_own_node_ignored() {
         mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
+        security_level: None,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
     assert!(matches!(action, DiscoveryAction::Ignore));
@@ -458,6 +460,7 @@ fn test_handle_discovery_message_remote_announce() {
         mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
+        security_level: None,
     };
     let action = handle_discovery_message(&msg, "local-node", &registry);
     assert!(matches!(action, DiscoveryAction::None));
@@ -489,6 +492,7 @@ fn test_handle_discovery_message_bye() {
         mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
+        security_level: None,
     };
     handle_discovery_message(&announce, "local-node", &registry);
 
@@ -513,6 +517,7 @@ fn test_handle_discovery_message_bye() {
         mandate_pubkey: None,
         timestamp: 1700000001,
         build: String::new(),
+        security_level: None,
     };
     let action = handle_discovery_message(&bye, "local-node", &registry);
     assert!(matches!(action, DiscoveryAction::None));
@@ -580,6 +585,7 @@ fn test_message_to_node_info_empty_name_and_category_fallbacks() {
         mandate_pubkey: None,
         timestamp: 1700000000,
         build: String::new(),
+        security_level: None,
     };
     let info = message_to_node_info(&msg);
     assert_eq!(info.base.name, "node-abcdefgh");

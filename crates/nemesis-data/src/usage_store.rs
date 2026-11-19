@@ -632,6 +632,44 @@ impl DataStore {
         .map_err(|e| format!("aggregate_session_usage_by_task: {e}"))
     }
 
+    /// #30 全局用量配额（W1，2026-11-19）：本地时区窗口（unix 秒起点，
+    /// 调用方给自然日/自然月 00:00 界）的全账本聚合。与
+    /// `aggregate_session_usage` 同口径（input_tokens 列含 cache 补全）。
+    /// usage-store 关：恒全零聚合（空账本语义——配额闸读 0 占用）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn aggregate_usage_since(&self, _since_unix_secs: i64) -> Result<SessionUsageAgg, String> {
+        Ok(SessionUsageAgg {
+            requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_cost_usd: 0.0,
+        })
+    }
+
+    #[cfg(feature = "usage-store")]
+    pub fn aggregate_usage_since(&self, since_unix_secs: i64) -> Result<SessionUsageAgg, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(input_tokens + cache_creation_tokens + cache_read_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(total_cost_usd), 0.0)
+                 FROM request_logs WHERE created_at >= ?1",
+            )
+            .map_err(|e| format!("prepare aggregate_usage_since: {e}"))?;
+        stmt.query_row(params![since_unix_secs], |row| {
+            Ok(SessionUsageAgg {
+                requests: row.get(0)?,
+                input_tokens: row.get(1)?,
+                output_tokens: row.get(2)?,
+                total_cost_usd: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("aggregate_usage_since: {e}"))
+    }
+
     /// P2B（根修配套）：记一笔工具调用与参数校验结果
     /// （天×模型 upsert 增量）。`failed` = 本次调用 args_validator 判 Invalid。
     /// Valid/Fixed 都算成功（Fixed 已自动修复，不是模型失败证据）。

@@ -150,7 +150,7 @@ impl McpHandler {
         })))
     }
 
-    fn servers(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    pub(crate) fn servers(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_mcp_config(workspace)?;
         let servers: Vec<_> = config
             .servers

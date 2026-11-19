@@ -91,6 +91,12 @@ pub struct ExtendedNodeInfo {
     /// 后经回读种回注册表。本批只宣告不做 matcher 闸（上位）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
+    /// 自报安全基线档位（#2 三档基线：basic/standard/strict；None =
+    /// 未宣告）。静态身份同 runtime_backend——持久化到 state.toml，重启
+    /// 后经回读种回注册表。本批只宣告（拓扑安全画像），不做消费闸。
+    /// serde default 兼容旧 state.toml / 旧 announce。
+    #[serde(default)]
+    pub security_level: Option<String>,
     /// 对端自报构建号（git 短 hash； 运行时硬化批）。旧 state.toml /
     /// 旧 announce 无此字段 → serde default 空 = 未宣告（同 professions
     /// 先例）。Dashboard 节点面展示，三机换装偏斜一眼可见。
@@ -171,6 +177,7 @@ impl ExtendedNodeInfo {
             professions: self.professions.clone(),
             tier: self.tier.clone(),
             runtime_backend: self.runtime_backend.clone(),
+            security_level: self.security_level.clone(),
             priority: 1,
             enabled: true,
             status: PeerStatus {
@@ -210,6 +217,7 @@ impl ExtendedNodeInfo {
             && self.tier == other.tier
             && self.agents == other.agents
             && self.runtime_backend == other.runtime_backend
+            && self.security_level == other.security_level
             && self.build == other.build
             && self.addresses == other.addresses
             && self.node_type == other.node_type

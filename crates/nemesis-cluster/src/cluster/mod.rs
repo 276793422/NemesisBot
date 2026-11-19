@@ -159,6 +159,14 @@ pub struct Cluster {
     /// 静态种入（同 tier/professions 先例）；-b 落地运行时 key 源后由
     /// key 派生接管。None = 未宣告（announce 不带字段）。
     mandate_pubkey: parking_lot::RwLock<Option<String>>,
+    /// 本节点安全基线档位（#2 三档基线：basic/standard/strict；announce
+    /// 携带，对端学习后进节点面拓扑安全画像）。构造期从 peers.toml
+    /// `[node].security_level` 静态种入——**手工声明**，不从 config.json
+    /// `security.level` 自动推导（announce 与运行配置解耦，同 tier/
+    /// runtime_backend 先例）；运行时身份编辑热改走
+    /// [`Cluster::set_security_level`]。None = 未宣告（announce 不带字段）。
+    /// 本批只宣告不做消费闸。
+    security_level: parking_lot::RwLock<Option<String>>,
     /// Arc 自根槽（弱引用；gateway 装配在 `Arc::new(cluster)` 后经
     /// [`Cluster::install_self_weak`] 安装一次）。RPC handler 闭包与后台
     /// 循环经它活读自身身份——构造期只有 `&self`（无 Arc），安装先后无关
@@ -344,6 +352,7 @@ impl Cluster {
             rendezvous_params: parking_lot::RwLock::new(None),
             build_hash: parking_lot::RwLock::new(String::new()),
             mandate_pubkey: parking_lot::RwLock::new(None),
+            security_level: parking_lot::RwLock::new(None),
             self_weak: Arc::new(Mutex::new(None)),
             rpc_channel: RwLock::new(None),
             udp_port: DEFAULT_UDP_PORT,
@@ -498,6 +507,28 @@ impl Cluster {
                     None
                 }
             });
+        // #2 三档基线：`[node].security_level` 手工声明种入。
+        // 归一（trim/小写）+ 值域校验（单一真相源
+        // `nemesis_config::SecurityLevel::parse`）——非法值 warn 一次且不进
+        // announce（同 pubkey 归一失败不宣告纪律：配错的档位宁可不宣告，
+        // 不把错误值广播给对端做安全画像）。
+        let security_level_default = sc
+            .as_ref()
+            .and_then(|s| s.node.security_level.as_deref())
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| match nemesis_config::SecurityLevel::parse(s) {
+                Some(_) => {
+                    let v = s.trim().to_ascii_lowercase();
+                    Some(v)
+                }
+                None => {
+                    tracing::warn!(
+                        level = %s,
+                        "[Cluster] peers.toml [node].security_level 值非法（期待 basic/standard/strict）——本节点不宣告安全档位"
+                    );
+                    None
+                }
+            });
 
         // 统一任务层：生产路径任务库换 tasks.db（SQLite）——内存态根除，
         // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
@@ -555,6 +586,7 @@ impl Cluster {
             tier: parking_lot::RwLock::new(tier_default),
             runtime_backend: parking_lot::RwLock::new(runtime_backend_default),
             mandate_pubkey: parking_lot::RwLock::new(mandate_pubkey_default),
+            security_level: parking_lot::RwLock::new(security_level_default),
             agent_roster: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             capabilities: Arc::new(std::sync::Mutex::new(Vec::new())),
             static_capabilities: parking_lot::RwLock::new(static_caps_default),
@@ -666,6 +698,7 @@ impl Cluster {
             tier: self.tier.read().clone(),
             agents: self.current_agent_roster(),
             runtime_backend: self.runtime_backend.read().clone(),
+            security_level: self.security_level.read().clone(),
             build: self.build_hash.read().clone(),
             node_type: self.node_type.clone(),
         };
@@ -1257,6 +1290,7 @@ impl Cluster {
                 None,
                 None,
                 None,
+                None,
                 &m.build,
             );
             if accepted {
@@ -1492,6 +1526,19 @@ impl Cluster {
     /// Set 自报运行时后端形态（身份编辑；下一 announce 拍生效）。
     pub fn set_runtime_backend(&self, backend: Option<String>) {
         *self.runtime_backend.write() = backend;
+        self.sync_local_node_to_registry();
+    }
+
+    /// 本节点安全基线档位（#2 三档基线：basic/standard/strict；以
+    /// peers.toml `[node].security_level` 手工声明为准，不从 config.json
+    /// `security.level` 自动推导；None = 未宣告）。
+    pub fn security_level(&self) -> Option<String> {
+        self.security_level.read().clone()
+    }
+
+    /// Set 安全基线档位（身份编辑；下一 announce 拍生效）。
+    pub fn set_security_level(&self, level: Option<String>) {
+        *self.security_level.write() = level;
         self.sync_local_node_to_registry();
     }
 
@@ -1734,6 +1781,7 @@ impl Cluster {
             msg.iroh_id,
             msg.runtime_backend,
             msg.mandate_pubkey,
+            msg.security_level,
             None,
             &msg.build,
         );
@@ -1892,6 +1940,7 @@ impl ClusterCallbacks for Cluster {
         iroh_id: Option<&str>,
         runtime_backend: Option<&str>,
         mandate_pubkey: Option<&str>,
+        security_level: Option<&str>,
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
@@ -1911,6 +1960,7 @@ impl ClusterCallbacks for Cluster {
             iroh_id.map(|s| s.to_string()),
             runtime_backend.map(|s| s.to_string()),
             mandate_pubkey.map(|s| s.to_string()),
+            security_level.map(|s| s.to_string()),
             source_addr,
             build,
         )
@@ -1922,6 +1972,10 @@ impl ClusterCallbacks for Cluster {
 
     fn mandate_pubkey(&self) -> Option<String> {
         self.mandate_pubkey.read().clone()
+    }
+
+    fn security_level(&self) -> Option<String> {
+        self.security_level.read().clone()
     }
 
     fn handle_node_offline(&self, node_id: &str, reason: &str) {

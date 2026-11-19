@@ -597,6 +597,7 @@ fn sweep_autonomous_offline_no_switch_candidates_falls_back_to_review() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     cluster.handle_node_offline("cov-worker", "cov-test");
     // 回填派发时间越过离线宽限期。

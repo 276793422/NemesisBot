@@ -194,6 +194,7 @@ fn settle_deps_with_store(
             runtime_backend: None,
             node_type: "agent".to_string(),
             build: String::new(),
+            security_level: None,
         });
     }
 
@@ -385,6 +386,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             runtime_backend: None,
             node_type: "agent".to_string(),
             build: String::new(),
+            security_level: None,
         });
     }
 

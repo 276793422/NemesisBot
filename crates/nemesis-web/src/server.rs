@@ -384,6 +384,10 @@ pub struct WebServer {
     /// （不进 WebServerConfig——同 skins 理由：测试字面量装配面大），
     /// build_router 时 clone 进 AppState。None = 未注入，handler 诚实报错。
     cors_manager: Option<Arc<crate::cors::CORSManager>>,
+    /// #25 网关流控器（W1，gateway 注入——`set_rate_limiter`；不进
+    /// WebServerConfig 同 cors_manager 理由：47 处测试字面量不动）。
+    /// None = 流控不挂载（默认部署形态）。
+    rate_limiter: Option<Arc<crate::rate_limit::GatewayRateLimiter>>,
 }
 
 impl WebServer {
@@ -444,7 +448,14 @@ impl WebServer {
             skin_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
             cors_manager: None,
             events_snapshot: None,
+            rate_limiter: None,
         }
+    }
+
+    /// #25 网关流控注入（须在 `build_router` 前调用）：`/api/*` 令牌桶
+    /// QPS + SSE 流并发闸。None（缺省/未调用）= 不挂流控中间件。
+    pub fn set_rate_limiter(&mut self, limiter: Arc<crate::rate_limit::GatewayRateLimiter>) {
+        self.rate_limiter = Some(limiter);
     }
 
     /// 注入皮肤装配（须在 `build_router` 前调用）：exe 同级 `skins/`
@@ -1235,17 +1246,36 @@ impl WebServer {
             // WS 路径成立，其余路径照常鉴权。
             let ws_path = self.config.ws_path.clone();
             let auth_state = state.clone();
-            router
-                .route_layer(axum::middleware::from_fn(
-                    move |req: axum::extract::Request, next: axum::middleware::Next| {
-                        let ws_path = ws_path.clone();
-                        let state = auth_state.clone();
-                        async move { auth_middleware(AxumState(state), req, next, &ws_path).await }
-                    },
-                ))
-                // CORS layer（外层——preflight OPTIONS 不进鉴权闸）
-                .layer(cors)
-                .with_state(state.clone())
+            let mut router = router.route_layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let ws_path = ws_path.clone();
+                    let state = auth_state.clone();
+                    async move { auth_middleware(AxumState(state), req, next, &ws_path).await }
+                },
+            ));
+            // #25（W1，2026-11-19）：网关流控——挂在 auth **外层**（洪水
+            // 先于鉴权被拒，不给未认证请求消耗鉴权/处理器资源的机会），
+            // CORS 再外一层（preflight OPTIONS 不计费）。缺省未注入 =
+            // 不挂（enabled 缺省 false，既有部署零行为变化）。
+            if let Some(ref limiter) = self.rate_limiter
+                && limiter.enabled()
+            {
+                tracing::info!(
+                    "[WebServer] rate limiting: /api/* token bucket + SSE stream concurrency gate"
+                );
+                let limiter = limiter.clone();
+                router =
+                    router.route_layer(axum::middleware::from_fn(
+                        move |req: axum::extract::Request, next: axum::middleware::Next| {
+                            let limiter = limiter.clone();
+                            async move {
+                                crate::rate_limit::rate_limit_middleware(limiter, req, next).await
+                            }
+                        },
+                    ));
+            }
+            // CORS layer（外层——preflight OPTIONS 不进鉴权闸）
+            router.layer(cors).with_state(state.clone())
         };
 
         // Add static file serving if configured（`--relay` 纯中继不挂——

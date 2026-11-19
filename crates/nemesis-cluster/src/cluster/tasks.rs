@@ -730,6 +730,7 @@ impl Cluster {
         let snap_professions = self.professions.read().clone();
         let snap_tier = self.tier.read().clone();
         let snap_runtime_backend = self.runtime_backend.read().clone();
+        let snap_security_level = self.security_level.read().clone();
         // agent roster：Arc 过闭包读活值（提供者每次现读 AgentManager，
         // 运行期增删 agent 无需重启即反映）。
         let roster_slot = self.agent_roster.clone();
@@ -744,27 +745,37 @@ impl Cluster {
                 let capabilities = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let agents = roster_slot.read().as_ref().map(|p| p()).unwrap_or_default();
                 let identity = self_weak_slot.lock().clone().and_then(|w| w.upgrade());
-                let (name, role, category, tags, professions, tier, runtime_backend) =
-                    match identity {
-                        Some(c) => (
-                            c.node_name.read().clone(),
-                            c.role.read().clone(),
-                            c.category.read().clone(),
-                            c.tags.read().clone(),
-                            c.professions.read().clone(),
-                            c.tier.read().clone(),
-                            c.runtime_backend.read().clone(),
-                        ),
-                        None => (
-                            snap_name.clone(),
-                            snap_role.clone(),
-                            snap_category.clone(),
-                            snap_tags.clone(),
-                            snap_professions.clone(),
-                            snap_tier.clone(),
-                            snap_runtime_backend.clone(),
-                        ),
-                    };
+                let (
+                    name,
+                    role,
+                    category,
+                    tags,
+                    professions,
+                    tier,
+                    runtime_backend,
+                    security_level,
+                ) = match identity {
+                    Some(c) => (
+                        c.node_name.read().clone(),
+                        c.role.read().clone(),
+                        c.category.read().clone(),
+                        c.tags.read().clone(),
+                        c.professions.read().clone(),
+                        c.tier.read().clone(),
+                        c.runtime_backend.read().clone(),
+                        c.security_level.read().clone(),
+                    ),
+                    None => (
+                        snap_name.clone(),
+                        snap_role.clone(),
+                        snap_category.clone(),
+                        snap_tags.clone(),
+                        snap_professions.clone(),
+                        snap_tier.clone(),
+                        snap_runtime_backend.clone(),
+                        snap_security_level.clone(),
+                    ),
+                };
                 Ok(serde_json::json!({
                     "version": "1.0",
                     "node_id": node_id,
@@ -781,6 +792,9 @@ impl Cluster {
                     // 自报运行时后端形态（None = 未宣告，
                     // 旧对端不读未知键，兼容）。
                     "runtime_backend": runtime_backend,
+                    // #2 三档基线：自报安全基线档位（None = 未宣告，
+                    // 旧对端不读未知键，兼容）。
+                    "security_level": security_level,
                     // 自报 agent 实体清单（announce 子对象同源携带）。
                     "agents": agents,
                     "node_type": node_type,

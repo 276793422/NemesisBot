@@ -147,6 +147,7 @@ fn test_register_and_list_nodes() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     cluster.register_node(remote);
 
@@ -428,6 +429,7 @@ fn test_get_capabilities() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let caps = cluster.get_capabilities();
@@ -879,6 +881,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -930,6 +933,7 @@ fn test_cluster_peer_resolver_offline_peer() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -1518,6 +1522,7 @@ fn test_find_peers_by_capability() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let llm_peers = cluster.find_peers_by_capability("llm");
@@ -1762,6 +1767,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let result = cluster.sync_to_disk();
@@ -1794,6 +1800,7 @@ fn test_register_node_updates_existing() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     // Re-register same node with updated name
@@ -1816,6 +1823,7 @@ fn test_register_node_updates_existing() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let node = cluster.get_node_info("node-1").unwrap();
@@ -1852,6 +1860,7 @@ fn test_get_online_peers_includes_online_nodes() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     cluster.register_node(ExtendedNodeInfo {
@@ -1873,6 +1882,7 @@ fn test_get_online_peers_includes_online_nodes() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let online = cluster.get_online_peers();
@@ -1907,6 +1917,7 @@ fn test_get_capabilities_dedup() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     cluster.register_node(ExtendedNodeInfo {
@@ -1928,6 +1939,7 @@ fn test_get_capabilities_dedup() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let caps = cluster.get_capabilities();
@@ -2124,6 +2136,7 @@ fn test_find_peers_by_capability_offline_excluded() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let peers = cluster.find_peers_by_capability("llm");
@@ -2211,6 +2224,7 @@ fn reg_node(id: &str, name: &str, status: NodeStatus) -> ExtendedNodeInfo {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -3169,6 +3183,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -3210,6 +3225,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -3509,6 +3525,7 @@ fn test_get_peer_after_register() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let peer = cluster.get_peer("peer-x").unwrap();
@@ -3623,6 +3640,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -3665,6 +3683,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let changed = cluster.handle_discovered_node_ex(
@@ -3683,6 +3702,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         None,       // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
         "",
     );
@@ -3735,6 +3755,7 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
         None,
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -3773,6 +3794,7 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
         None,
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -3918,6 +3940,7 @@ fn roaming_hex_of_extracts_iroh_hex_and_normalizes() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     let got = cluster
         .roaming_hex_of("roam-peer")
@@ -3975,6 +3998,7 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         None,       // 桥接成员登记：无 source_addr
         "",
     );
@@ -4009,6 +4033,7 @@ fn test_discovered_node_malformed_id_charset_gate_rejected() {
             None,
             None,
             None, // mandate 公钥：未宣告
+            None, // security_level：未宣告
             None,
             "",
         );
@@ -4049,6 +4074,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -4428,6 +4454,7 @@ fn test_sync_to_disk_with_connecting_status() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let result = cluster.sync_to_disk();
@@ -5070,6 +5097,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -5121,6 +5149,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let resolver = ClusterPeerResolver {
@@ -5284,6 +5313,7 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -5345,6 +5375,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         runtime_backend: None,
         node_type: "new_type".into(),
         build: String::new(),
+        security_level: None,
     });
 
     assert_eq!(canonical, "node-real-1");
@@ -5399,6 +5430,7 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     assert_eq!(canonical, "node-master-1");
@@ -5452,6 +5484,7 @@ fn test_merge_real_node_info_static_pin_survives_peers_toml_persist() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     assert_eq!(canonical, "node-master-1");
@@ -5521,6 +5554,7 @@ fn test_merge_real_node_info_static_peer_extras_survive_persist() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let doc = std::fs::read_to_string(&peers_path)
@@ -5575,6 +5609,7 @@ fn test_upgrade_peer_in_peers_toml_carries_extras_to_real_key() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     cluster.upgrade_peer_in_peers_toml("ph-a", "real-a", &info);
 
@@ -5630,6 +5665,7 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let p = cluster.get_peer("node-dyn-1").unwrap();
@@ -5663,6 +5699,7 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     assert!(cluster.get_peer("MyNodeName").is_some());
@@ -5784,6 +5821,7 @@ fn test_merge_placeholder_upgrade_matches_secondary_address() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     // 对端自报 primary=10.103.1.5，但全量数组含 placeholder 配的地址
@@ -5825,6 +5863,7 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     let changed = cluster.handle_discovered_node(
@@ -5880,6 +5919,7 @@ fn test_handle_discovered_node_never_consumes_local_self_entry_as_placeholder() 
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     cluster.handle_discovered_node(
@@ -5932,6 +5972,7 @@ fn test_merge_real_node_info_never_consumes_local_self_entry_as_placeholder() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     cluster.merge_real_node_info(&make_real_node_info(
@@ -5978,6 +6019,7 @@ fn test_announce_address_arm_never_consumes_real_remote_entry() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     // 同地址的 C 的 announce 到达。
@@ -6040,6 +6082,7 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     cluster.merge_real_node_info(&make_real_node_info(
@@ -6092,6 +6135,7 @@ fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
     assert!(cluster.get_peer("ManualPeer").is_some());
 
@@ -6146,6 +6190,7 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     assert_eq!(
@@ -6185,6 +6230,7 @@ fn test_set_peer_status_restores_offline() {
         runtime_backend: None,
         node_type: String::new(),
         build: String::new(),
+        security_level: None,
     });
 
     cluster.set_peer_status("peer-y", NodeStatus::Offline);
@@ -6381,6 +6427,7 @@ fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> Ext
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -6792,6 +6839,7 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             runtime_backend: None,
             node_type: "agent".into(),
             build: String::new(),
+            security_level: None,
         },
     );
 
@@ -6830,6 +6878,7 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             runtime_backend: None,
             node_type: "agent".into(),
             build: String::new(),
+            security_level: None,
         },
     );
     // No panic; the directory stays a directory (no write happened through it).
@@ -6868,6 +6917,7 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             runtime_backend: None,
             node_type: "agent".into(),
             build: String::new(),
+            security_level: None,
         },
     );
 
@@ -6913,6 +6963,7 @@ fn test_upgrade_peer_in_peers_toml_bom_file_upgrades_in_place() {
             runtime_backend: None,
             node_type: "agent".into(),
             build: String::new(),
+            security_level: None,
         },
     );
 
@@ -6967,6 +7018,7 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             runtime_backend: None,
             node_type: "agent".into(),
             build: String::new(),
+            security_level: None,
         },
     );
     // Original file content is untouched (the failed write never landed).
@@ -7002,6 +7054,7 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     assert_eq!(merged, "master-1");
     let info = cluster.get_node_info("master-1").unwrap();
@@ -7863,6 +7916,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
 
     // (a) fresh workspace, ensure no peers.toml exists
@@ -7908,6 +7962,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
 
@@ -8592,6 +8647,7 @@ fn test_peer_config(id: &str, address: &str) -> PeerConfig {
         priority: 1,
         enabled: true,
         status: PeerStatus::default(),
+        security_level: None,
     }
 }
 
@@ -8646,6 +8702,7 @@ fn restore_skips_self_banned_existing_and_unusable() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     // 预置一个黑名单节点。
     cluster.removed_peers.write().insert("node-banned".into());
@@ -8707,6 +8764,7 @@ fn restore_skips_address_shadow_of_existing_entry() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     // state.toml 里留着占位名条目（升级前形态）：id=名字、同地址。
     write_state_toml(
@@ -8760,6 +8818,7 @@ fn restore_skips_name_shadow_of_existing_entry() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     // id=占位名、地址不同（对端换了地址），但名字相同 → 同节点，不种。
     let mut pc = test_peer_config("Node-A", "10.9.9.9:21949");
@@ -8839,6 +8898,7 @@ async fn health_probe_loop_sprint_then_fifth_tick() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     // 探针循环要求 RPC client 已初始化（None 直接 return）。
     *cluster.rpc_client.lock() = Some(Arc::new(RpcClient::new()));
@@ -8907,6 +8967,7 @@ fn resolve_dial_candidates_iroh_pinned_base_address_atomic() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
     cluster.mark_peer_static("nb-relay-peer");
 
@@ -8965,6 +9026,7 @@ fn mark_peer_healthy_recovery_fires_node_discovered() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let fired: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -9031,6 +9093,7 @@ fn canonical_peer_id_resolves_name_and_id() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     // 节点 id → 幂等（matcher 路径产物形态）。
@@ -9071,6 +9134,7 @@ fn canonical_peer_id_case_insensitive_fallback() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     // 名字大小写失配 → 回落命中（此前精确匹配直接 None → 派发放行原名
@@ -9609,6 +9673,7 @@ fn make_addr_chain_peer(
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -9647,6 +9712,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         None,
         "",
     );
@@ -9683,6 +9749,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         None,
         "",
     );
@@ -9723,6 +9790,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         None,
         "",
     );
@@ -9766,6 +9834,7 @@ fn test_merge_real_node_info_merges_addresses_for_static_peer() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let info = cluster.registry.get("stat-1").unwrap();
@@ -9992,6 +10061,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         Some("203.0.113.99"),
         "",
     );
@@ -10020,6 +10090,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         Some("203.0.113.96"),
         "",
     );
@@ -10099,6 +10170,7 @@ fn test_pool_order_pin_then_payload_then_source() {
         None,       // iroh_id：未宣告
         None,       // 自报运行时后端形态：未宣告
         None,       // mandate 公钥：未宣告
+        None,       // security_level：未宣告
         Some("203.0.113.29"),
         "",
     );
@@ -10271,6 +10343,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -10295,6 +10368,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -10317,6 +10391,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -10352,8 +10427,9 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None, // iroh_id：未宣告
         Some("vm".into()),
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
-        "", // build：未宣告（期测试补齐 参数）
+        "",
     );
     assert!(changed, "首次入册必 changed");
     let node = cluster.registry.get("vm-peer").expect("入册");
@@ -10376,8 +10452,9 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None, // iroh_id：未宣告
         Some("vm".into()),
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
-        "", // build：未宣告（期测试补齐 参数）
+        "",
     );
     assert!(!changed2, "同值重复宣告不得算内容变化");
 
@@ -10398,8 +10475,9 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None, // iroh_id：未宣告
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
-        "", // build：未宣告（期测试补齐 参数）
+        "",
     );
     assert!(changed3, "旧节点入册必 changed");
     let old = cluster.registry.get("old-peer").expect("入册");
@@ -10453,6 +10531,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let roster = vec![crate::types::AgentAnnouncement {
@@ -10478,6 +10557,7 @@ fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -10519,6 +10599,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     });
 
     let roster = vec![crate::types::AgentAnnouncement {
@@ -10544,6 +10625,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     cluster.merge_real_node_info(&info);
 
@@ -10628,8 +10710,9 @@ fn test_handle_discovered_node_iroh_id_pools() {
         Some(hex.clone()),
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-        "",   // build：未宣告（期测试补齐 参数）
+        "",
     );
 
     let node = cluster.get_node_info("iroh-node-1").expect("node stored");
@@ -10667,8 +10750,9 @@ fn test_handle_discovered_node_iroh_id_pools() {
         Some(hex.clone()),
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-        "",   // build：未宣告（期测试补齐 参数）
+        "",
     );
     let node = cluster.get_node_info("iroh-node-1").unwrap();
     assert_eq!(
@@ -10706,8 +10790,9 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
             Some(bad.to_string()),
             None, // 自报运行时后端形态：未宣告
             None, // mandate 公钥：未宣告
+            None, // security_level：未宣告
             None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-            "",   // build：未宣告（期测试补齐 参数）
+            "",
         );
     }
     let node = cluster.get_node_info("iroh-bad").expect("node stored");
@@ -10743,8 +10828,9 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
         None, // iroh_id：未宣告
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-        "",   // build：未宣告（期测试补齐 参数）
+        "",
     );
 
     let node = cluster.get_node_info("iroh-node-2").expect("node stored");
@@ -10816,6 +10902,7 @@ fn test_announce_build_propagates_to_registry_new_entry() {
         None,
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None, // runtime_backend：未宣告（合并补齐 参数位）
         "6f96d056",
     );
@@ -10845,6 +10932,7 @@ fn test_announce_build_refreshes_existing_entry() {
         None,
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None, // runtime_backend：未宣告（合并补齐 参数位）
         "aaaa1111",
     );
@@ -10865,6 +10953,7 @@ fn test_announce_build_refreshes_existing_entry() {
         None,
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None, // runtime_backend：未宣告（合并补齐 参数位）
         "bbbb2222",
     );
@@ -11117,6 +11206,7 @@ fn l16_revoked_announce_veto_whole_entry() {
         Some(revoked_hex.clone()),
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -11143,6 +11233,7 @@ fn l16_revoked_announce_veto_whole_entry() {
         Some(revoked_hex),
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -11182,6 +11273,7 @@ fn l16_unknown_announce_tofu_pins_and_registers() {
         Some(newcomer_hex.clone()),
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -11225,6 +11317,7 @@ fn l16_no_book_announce_adopts_without_creating_file() {
         Some(hex),
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -11266,6 +11359,7 @@ fn l16_announce_without_iroh_skips_gate() {
         None,
         None,
         None, // mandate 公钥：未宣告
+        None, // security_level：未宣告
         None,
         "",
     );
@@ -11313,6 +11407,7 @@ fn l13a_announce_pubkey_pins_into_active_book() {
         None,
         Some(l13a_pk(1)),
         None,
+        None,
         "",
     );
     assert!(changed, "带 mandate 公钥的 announce 照常入册");
@@ -11356,6 +11451,7 @@ fn l13a_announce_pubkey_book_absent_no_touch() {
         None,
         Some(l13a_pk(2)),
         None,
+        None,
         "",
     );
     assert!(changed, "无簿时 announce 照常入册");
@@ -11396,6 +11492,7 @@ fn l13a_announce_pubkey_conflict_keeps_first_and_registers() {
         None,
         None,
         Some(l13a_pk(4)),
+        None,
         None,
         "",
     );
@@ -11439,6 +11536,7 @@ fn l13a_revoked_iroh_veto_skips_mandate_pin() {
         None,
         Some(l13a_pk(5)),
         None,
+        None,
         "",
     );
     assert!(!changed, "iroh revoked veto 整条不采信");
@@ -11475,6 +11573,7 @@ fn route_peer(id: &str, status: NodeStatus) -> ExtendedNodeInfo {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -11886,5 +11985,190 @@ fn test_pick_auto_route_exploratory_neutral() {
         Some("fresh"),
         "零样本节点乐观中性（success 1.0 / avg 0）= 探索优先：同胜率下 avg=0 \
          赢 veteran 的实测 avg>0，新节点不饿死"
+    );
+}
+
+// -----------------------------------------------------------------------
+// a（W2 #2）：security_level 节点身份携带（peers.toml 手工声明 →
+// announce wire → 注册表 → state.toml 持久化）。语义族同 tier：
+// 手工声明、无条件覆盖合并、静态身份回读。
+// -----------------------------------------------------------------------
+
+/// handle_discovered_node_ex 携带 security_level 入注册表；二次携带
+/// None 无条件覆盖（同 tier 族语义——最新宣告说话）。
+#[test]
+fn handle_discovered_node_carries_and_overwrites_security_level() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    let common = |cluster: &Cluster, level: Option<String>| {
+        cluster.handle_discovered_node_ex(
+            "seclvl-peer",
+            "seclvl-peer",
+            vec!["10.0.0.5".into()],
+            21949,
+            "worker",
+            "development",
+            Vec::new(),
+            Vec::new(),
+            "agent",
+            Vec::new(),
+            None, // tier：未宣告
+            Vec::new(),
+            None,  // iroh_id：未宣告
+            None,  // 自报运行时后端形态：未宣告
+            None,  // mandate 公钥：未宣告
+            level, // security_level：本测试主角
+            None,  // UDP 隔离拓扑：无 source_addr
+            "",
+        )
+    };
+
+    let changed = common(&cluster, Some("strict".to_string()));
+    assert!(
+        changed,
+        "security_level None->strict must register as change"
+    );
+    let node = cluster.registry.get("seclvl-peer").expect("registered");
+    assert_eq!(
+        node.security_level,
+        Some("strict".to_string()),
+        "announce 携带的 security_level 必须合并进注册表"
+    );
+
+    // 二次宣告 None → 无条件覆盖回未宣告（同 runtime_backend/tier 族）。
+    let changed = common(&cluster, None);
+    assert!(
+        changed,
+        "security_level strict->None must register as change"
+    );
+    let node = cluster.registry.get("seclvl-peer").expect("still there");
+    assert_eq!(
+        node.security_level, None,
+        "第二次宣告缺 security_level = 无条件覆盖回 None"
+    );
+}
+
+/// state.toml 持久化往返：sync_to_disk 写出 PeerConfig.security_level，
+/// restore_discovered_from_state 以 Offline 种回注册表（静态身份同
+/// runtime_backend/tier 纪律）。
+#[test]
+fn state_toml_roundtrip_preserves_security_level() {
+    let dir = std::env::temp_dir().join(format!("nemesis-seclvl-roundtrip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_path = dir.join("state.toml");
+
+    // A 节点：注册带 security_level 的对端并落盘。
+    {
+        let mut cluster = Cluster::new(make_config());
+        cluster.dynamic_state_path = state_path.clone();
+        cluster.start();
+        cluster.register_node(ExtendedNodeInfo {
+            base: nemesis_types::cluster::NodeInfo {
+                id: "strict-node".into(),
+                name: "strict-node".into(),
+                role: nemesis_types::cluster::NodeRole::Worker,
+                address: "10.0.0.7:21949".into(),
+                category: "development".into(),
+                last_seen: chrono::Local::now().to_rfc3339(),
+            },
+            status: NodeStatus::Online,
+            capabilities: Vec::new(),
+            tags: Vec::new(),
+            addresses: vec![],
+            professions: Vec::new(),
+            tier: None,
+            agents: Vec::new(),
+            runtime_backend: None,
+            security_level: Some("standard".to_string()),
+            node_type: "agent".into(),
+            build: String::new(),
+        });
+        cluster.sync_to_disk().expect("sync to disk");
+        cluster.stop();
+
+        // 磁盘真相：PeerConfig.security_level 必须落盘。
+        let state =
+            crate::cluster_config::load_dynamic_state(&state_path).expect("state.toml readable");
+        let pc = state
+            .discovered
+            .iter()
+            .find(|p| p.id == "strict-node")
+            .expect("strict-node persisted");
+        assert_eq!(
+            pc.security_level,
+            Some("standard".to_string()),
+            "to_peer_config 必须携带 security_level"
+        );
+    }
+
+    // B 节点（新实例）：回读种入注册表（Offline），security_level 保全。
+    let mut cluster = Cluster::new(make_config());
+    cluster.dynamic_state_path = state_path.clone();
+    let seeded = cluster.restore_discovered_from_state();
+    assert_eq!(seeded, 1, "strict-node must be seeded back");
+    let node = cluster
+        .get_node_info("strict-node")
+        .expect("seeded node in registry");
+    assert_eq!(node.status, NodeStatus::Offline, "回读绝不直接 Online");
+    assert_eq!(
+        node.security_level,
+        Some("standard".to_string()),
+        "静态身份回读必须保全 security_level"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// peers.toml [node].security_level 种入：合法值归一小写；非法值 WARN +
+/// 不宣告（宁可不宣告，不把配错的档位广播给对端做安全画像）。
+#[test]
+fn security_level_seed_from_peers_toml_valid_and_invalid() {
+    // 合法值（含大写）→ 归一小写种入。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster_dir = dir.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        "[node]\nid = \"seclvl-seed-1\"\nname = \"SeedNode\"\nsecurity_level = \"STRICT\"\n",
+    )
+    .unwrap();
+    let cluster = Cluster::with_workspace(
+        ClusterConfig {
+            node_id: String::new(),
+            bind_address: "0.0.0.0:9000".into(),
+            peers: vec![],
+            node_name: String::new(),
+        },
+        dir.path().to_path_buf(),
+    );
+    assert_eq!(
+        cluster.security_level(),
+        Some("strict".to_string()),
+        "合法档位必须归一小写后种入"
+    );
+
+    // 非法值 → 不宣告（None），不炸不猜。
+    let dir2 = tempfile::tempdir().unwrap();
+    let cluster_dir2 = dir2.path().join("cluster");
+    std::fs::create_dir_all(&cluster_dir2).unwrap();
+    std::fs::write(
+        cluster_dir2.join("peers.toml"),
+        "[node]\nid = \"seclvl-seed-2\"\nname = \"SeedNode2\"\nsecurity_level = \"paranoid\"\n",
+    )
+    .unwrap();
+    let cluster2 = Cluster::with_workspace(
+        ClusterConfig {
+            node_id: String::new(),
+            bind_address: "0.0.0.0:9000".into(),
+            peers: vec![],
+            node_name: String::new(),
+        },
+        dir2.path().to_path_buf(),
+    );
+    assert_eq!(
+        cluster2.security_level(),
+        None,
+        "非法档位必须 WARN 且不宣告（宁缺勿错）"
     );
 }

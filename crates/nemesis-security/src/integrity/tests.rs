@@ -262,6 +262,8 @@ fn test_legacy_hash_version_events_verify() {
         prev_hash: genesis,
         sign: None,
         hash_version: 0,
+        instance_id: None,
+        security_level: None,
     };
     e1.hash = legacy_formula_hash(&e1);
     let mut e2 = AuditEvent {
@@ -293,6 +295,8 @@ fn test_unknown_hash_version_fails_closed() {
         prev_hash: "0".repeat(64),
         sign: None,
         hash_version: 9,
+        instance_id: None,
+        security_level: None,
     };
     // 即便 hash 恰好匹配某个公式，未知版本也必须整链判负。
     ev.hash = legacy_formula_hash(&ev);
@@ -315,6 +319,8 @@ fn test_compute_event_hash_v1_covers_source_and_reason() {
         prev_hash: "p".to_string(),
         sign: None,
         hash_version: 1,
+        instance_id: None,
+        security_level: None,
     };
     let mut other_reason = base.clone();
     other_reason.reason = "r2".to_string();
@@ -504,6 +510,8 @@ fn test_audit_event_serialization() {
         prev_hash: "000000".to_string(),
         sign: None,
         hash_version: 0,
+        instance_id: None,
+        security_level: None,
     };
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains("test-id"));
@@ -533,6 +541,8 @@ fn test_audit_event_with_sign_serialization() {
         prev_hash: "abc123".to_string(),
         sign: Some("ed25519_signature_data".to_string()),
         hash_version: 0,
+        instance_id: None,
+        security_level: None,
     };
     let json = serde_json::to_string(&event).unwrap();
     let de: AuditEvent = serde_json::from_str(&json).unwrap();
@@ -1195,6 +1205,8 @@ fn test_heal_restores_complete_event_missing_newline() {
         prev_hash: e2.hash.clone(),
         sign: None,
         hash_version: 1,
+        instance_id: None,
+        security_level: None,
     };
     let mut torn_hasher = sha2::Sha256::new();
     torn_hasher.update(torn.prev_hash.as_bytes());
@@ -1225,4 +1237,286 @@ fn test_heal_restores_complete_event_missing_newline() {
         "恢复 + 采纳 + 续写后链完整"
     );
     assert_eq!(chain.total_event_count(), 4, "恢复事件计入链计数");
+}
+
+// ---- #31 单机实例身份（W1，2026-11-19）----
+
+#[test]
+fn test_instance_id_append_stamps_v2_and_verifies() {
+    // 注入身份后：新事件 hash_version=2 + instance_id 盖章 + 全链可验。
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    chain.set_instance_id(Some("inst-abc".to_string()));
+
+    let e1 = chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    assert_eq!(e1.hash_version, 2, "注入身份后新事件走 v2 公式");
+    assert_eq!(e1.instance_id.as_deref(), Some("inst-abc"));
+
+    let e2 = chain
+        .append("exec", "exec", "u", "cli", "ls", "denied", "blocked")
+        .unwrap();
+    assert_eq!(e2.instance_id.as_deref(), Some("inst-abc"));
+    assert_eq!(e2.prev_hash, e1.hash, "v2 事件链式推进照常");
+
+    assert!(AuditChain::verify_chain(&[e1, e2]), "v2 事件全链可验");
+}
+
+#[test]
+fn test_instance_id_none_keeps_v1_bytes() {
+    // 未注入身份（默认）：新事件 hash_version=1 且 hash 与 v1 公式逐字节
+    // 一致（既有部署零扰动——盘上既有链 v1 事件与新事件混合可验）。
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+
+    let e1 = chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    assert_eq!(e1.hash_version, 1, "默认（None）走 v1");
+    assert!(e1.instance_id.is_none());
+
+    // 与 v1 内联公式逐字节对账（防 append/verify 漂移回归锁）。
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(e1.prev_hash.as_bytes());
+    hasher.update(e1.timestamp.as_bytes());
+    hasher.update(e1.operation.as_bytes());
+    hasher.update(e1.tool_name.as_bytes());
+    hasher.update(e1.user.as_bytes());
+    hasher.update(e1.target.as_bytes());
+    hasher.update(e1.decision.as_bytes());
+    hasher.update(e1.source.as_bytes());
+    hasher.update(e1.reason.as_bytes());
+    assert_eq!(e1.hash, format!("{:x}", hasher.finalize()));
+
+    // None 注入（显式）与未注入同语义。
+    chain.set_instance_id(None);
+    let e2 = chain
+        .append("exec", "exec", "u", "cli", "ls", "allowed", "ok")
+        .unwrap();
+    assert_eq!(e2.hash_version, 1);
+    assert!(AuditChain::verify_chain(&[e1, e2]));
+}
+
+#[test]
+fn test_instance_id_changes_hash_and_tamper_breaks_verify() {
+    // v2 公式覆盖面：instance_id 进 hash（不同身份 → 不同 hash）；
+    // 篡改 instance_id（冒名归属）→ verify 判负。
+    let make = |inst: Option<&str>| {
+        let mut e = AuditEvent {
+            id: "e".to_string(),
+            timestamp: "t".to_string(),
+            operation: "op".to_string(),
+            tool_name: "tn".to_string(),
+            user: "u".to_string(),
+            source: "s".to_string(),
+            target: "tg".to_string(),
+            decision: "allowed".to_string(),
+            reason: "r".to_string(),
+            hash: String::new(),
+            prev_hash: "0".repeat(64),
+            sign: None,
+            hash_version: 2,
+            instance_id: inst.map(|s| s.to_string()),
+            security_level: None,
+        };
+        e.hash = AuditChain::compute_event_hash(&e);
+        e
+    };
+    let a = make(Some("inst-1"));
+    let b = make(Some("inst-2"));
+    assert_ne!(a.hash, b.hash, "instance_id 进 hash 覆盖");
+
+    let mut forged = make(Some("inst-1"));
+    forged.instance_id = Some("inst-victim".to_string());
+    assert!(
+        AuditChain::compute_event_hash(&forged) != forged.hash,
+        "身份冒名后重算 hash 不匹配"
+    );
+    assert!(
+        !AuditChain::verify_chain(&[forged]),
+        "篡改 instance_id 破坏链验证"
+    );
+
+    // v2 与 v1 事件共存同链可验（旧链上叠加新事件是常态形态）。
+    let mut v1 = AuditEvent {
+        hash_version: 1,
+        instance_id: None,
+        security_level: None,
+        ..make(Some("inst-1"))
+    };
+    v1.hash = AuditChain::compute_event_hash(&v1);
+    let mut v2chained = make(Some("inst-1"));
+    v2chained.prev_hash = v1.hash.clone();
+    v2chained.hash = AuditChain::compute_event_hash(&v2chained);
+    assert!(AuditChain::verify_chain(&[v1, v2chained]));
+}
+
+// ---------------------------------------------------------------------------
+// #2 审计携带级别（W2，2026-11-20）：hash v3 = v2 字段 + security_level
+// 进防篡改覆盖。盖「放行/拒绝发生在什么安全姿态下」。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_security_level_append_stamps_v3_and_verifies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let chain = AuditChain::new(AuditChainConfig {
+        enabled: true,
+        storage_path: tmp.path().join("chain.jsonl"),
+        verify_on_load: false,
+        ..Default::default()
+    });
+    // 档位 + 身份双注入（生产装配两注都打——v3 优先级高于 v2）。
+    chain.set_instance_id(Some("inst-1".to_string()));
+    chain.set_security_level(Some("strict".to_string()));
+    let e1 = chain
+        .append("exec", "exec", "u", "cli", "ls", "allowed", "ok")
+        .unwrap();
+    assert_eq!(e1.hash_version, 3, "档位注入后新事件走 v3");
+    assert_eq!(e1.security_level.as_deref(), Some("strict"));
+    assert_eq!(e1.instance_id.as_deref(), Some("inst-1"));
+    // 事件延续盖档位 + 全链可验（含盘回路）。
+    let e2 = chain
+        .append(
+            "file_write",
+            "filesystem",
+            "u",
+            "web",
+            "x.txt",
+            "allowed",
+            "r",
+        )
+        .unwrap();
+    assert_eq!(e2.security_level.as_deref(), Some("strict"));
+    assert!(AuditChain::verify_chain(&[e1.clone(), e2]));
+    let disk = std::fs::read_to_string(tmp.path().join("chain.jsonl")).unwrap();
+    let events: Vec<AuditEvent> = disk
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(AuditChain::verify_chain(&events), "盘回路 v3 链可验");
+}
+
+#[test]
+fn test_security_level_none_keeps_v2_bytes() {
+    // 未注入档位（默认）= v2 及以下公式字节不变（既有部署零扰动）。
+    let tmp = tempfile::tempdir().unwrap();
+    let chain = AuditChain::new(AuditChainConfig {
+        enabled: true,
+        storage_path: tmp.path().join("chain.jsonl"),
+        verify_on_load: false,
+        ..Default::default()
+    });
+    chain.set_instance_id(Some("inst-1".to_string()));
+    let e1 = chain
+        .append("exec", "exec", "u", "cli", "ls", "allowed", "ok")
+        .unwrap();
+    assert_eq!(e1.hash_version, 2, "无档位注入保持 v2");
+    assert!(e1.security_level.is_none());
+
+    // 显式 None 注入（档位清除）同语义。
+    chain.set_security_level(None);
+    let e2 = chain
+        .append("exec", "exec", "u", "cli", "ls", "allowed", "ok2")
+        .unwrap();
+    assert_eq!(e2.hash_version, 2);
+    assert!(AuditChain::verify_chain(&[e1, e2]));
+}
+
+#[test]
+fn test_security_level_changes_hash_and_tamper_breaks_verify() {
+    // v3 公式覆盖面：security_level 进 hash（不同档位 → 不同 hash）；
+    // 篡改档位（伪造「放行发生在 strict 姿态下」的取证叙述）→ verify 判负。
+    let make = |lvl: Option<&str>| {
+        let mut e = AuditEvent {
+            id: "e".to_string(),
+            timestamp: "t".to_string(),
+            operation: "op".to_string(),
+            tool_name: "tn".to_string(),
+            user: "u".to_string(),
+            source: "s".to_string(),
+            target: "tg".to_string(),
+            decision: "allowed".to_string(),
+            reason: "r".to_string(),
+            hash: String::new(),
+            prev_hash: "0".repeat(64),
+            sign: None,
+            hash_version: 3,
+            instance_id: Some("inst-1".to_string()),
+            security_level: lvl.map(|s| s.to_string()),
+        };
+        e.hash = AuditChain::compute_event_hash(&e);
+        e
+    };
+    let a = make(Some("basic"));
+    let b = make(Some("strict"));
+    assert_ne!(a.hash, b.hash, "security_level 进 hash 覆盖");
+
+    let mut forged = make(Some("basic"));
+    forged.security_level = Some("strict".to_string());
+    assert!(
+        AuditChain::compute_event_hash(&forged) != forged.hash,
+        "档位冒名后重算 hash 不匹配"
+    );
+    assert!(
+        !AuditChain::verify_chain(&[forged]),
+        "篡改 security_level 破坏链验证"
+    );
+
+    // v3 与 v2 事件共存同链可验（#31 部署上叠加 #2 批事件是常态形态）。
+    let mut v2 = AuditEvent {
+        hash_version: 2,
+        security_level: None,
+        ..make(Some("strict"))
+    };
+    v2.hash = AuditChain::compute_event_hash(&v2);
+    let mut v3chained = make(Some("strict"));
+    v3chained.prev_hash = v2.hash.clone();
+    v3chained.hash = AuditChain::compute_event_hash(&v3chained);
+    assert!(AuditChain::verify_chain(&[v2, v3chained]));
+}
+
+#[test]
+fn test_unknown_hash_version_above_v3_fails_closed() {
+    // 超支持上限（v4+）= 覆盖面契约不可判定 → verify fail-closed +
+    // compute_event_hash 空串（Dashboard 诊断同语义）。
+    let mut e = AuditEvent {
+        id: "e".to_string(),
+        timestamp: "t".to_string(),
+        operation: "op".to_string(),
+        tool_name: "tn".to_string(),
+        user: "u".to_string(),
+        source: "s".to_string(),
+        target: "tg".to_string(),
+        decision: "allowed".to_string(),
+        reason: "r".to_string(),
+        hash: String::new(),
+        prev_hash: "0".repeat(64),
+        sign: None,
+        hash_version: 4,
+        instance_id: Some("i".to_string()),
+        security_level: Some("strict".to_string()),
+    };
+    // 签发者按 v3 公式预填一个「合法」hash——即便如此版本守卫仍判负。
+    e.hash_version = 3;
+    e.hash = AuditChain::compute_event_hash(&e);
+    e.hash_version = 4;
+    assert!(
+        !AuditChain::verify_chain(&[e.clone()]),
+        "hash_version=4 超支持上限 → fail-closed"
+    );
+    assert!(
+        AuditChain::compute_event_hash(&e).is_empty(),
+        "超限版本 compute 返回空串（诊断面恒 mismatch）"
+    );
 }

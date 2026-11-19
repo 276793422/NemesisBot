@@ -1093,8 +1093,10 @@ impl SecurityHandler {
     }
 
     /// 执行体隔离（⑨ 沙盒 / ⑩ 虚拟化的 config 面）：主 config.json
-    /// `executor` 段（enabled/sandbox）+ `executor.vm.enabled`。全部缺省
-    /// false（ExecutorSeparationConfig `#[serde(default)]`）。
+    /// `executor` 段（enabled/sandbox）+ `executor.vm.enabled`。sandbox/vm
+    /// 缺省 false（ExecutorSeparationConfig `#[serde(default)]`）；enabled
+    /// 走 raw resolver（#2 安全分级：键缺席 → 档位缺省 strict 开——状态页
+    /// 必须报**生效值**，否则 strict 用户看到 false 而隔离实际在跑）。
     fn executor_snapshot(ctx: &RequestContext) -> serde_json::Value {
         let Some(home) = ctx.state.home.as_deref() else {
             return serde_json::json!({ "available": false });
@@ -1109,9 +1111,10 @@ impl SecurityHandler {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         };
+        let enabled = nemesis_config::resolve_executor_enabled(Some(&raw));
         serde_json::json!({
             "available": true,
-            "enabled": flag("enabled"),
+            "enabled": enabled,
             "sandbox": flag("sandbox"),
             "vm": executor
                 .and_then(|e| e.get("vm"))

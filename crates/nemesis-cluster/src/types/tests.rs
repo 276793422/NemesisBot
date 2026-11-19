@@ -26,6 +26,7 @@ fn make_test_node(
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn test_extended_node_info_serialization() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -97,6 +99,7 @@ fn test_extended_node_info_get_uptime() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let uptime = node.get_uptime();
     // Should be very small since we just set it
@@ -178,6 +181,7 @@ fn test_to_peer_config() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let config = node.to_peer_config();
     assert_eq!(config.id, "node-1");
@@ -226,6 +230,7 @@ fn test_addresses_field_preserved() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let json = serde_json::to_string(&node).unwrap();
     let back: ExtendedNodeInfo = serde_json::from_str(&json).unwrap();
@@ -289,6 +294,7 @@ fn test_extended_node_info_getters() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     assert_eq!(node.get_id(), "node-42");
     assert_eq!(node.get_name(), "TestBot");
@@ -317,6 +323,7 @@ fn test_to_peer_config_coordinator_role() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let config = node.to_peer_config();
     // 规范配置词表：Coordinator → "coordinator"（读侧 from_role_str 兼容旧值）。
@@ -441,6 +448,7 @@ fn test_content_eq_different_addresses() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let b = ExtendedNodeInfo {
         base: NodeInfo {
@@ -461,6 +469,7 @@ fn test_content_eq_different_addresses() {
         runtime_backend: None,
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     assert!(!a.content_eq(&b));
 }
@@ -539,6 +548,7 @@ fn content_eq_distinguishes_professions_and_tier() {
         addresses: vec![],
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let mut other = base.clone();
     assert!(base.content_eq(&other));
@@ -574,6 +584,7 @@ fn to_peer_config_preserves_professions_and_tier() {
         addresses: vec![],
         node_type: "agent".into(),
         build: String::new(),
+        security_level: None,
     };
     let pc = info.to_peer_config();
     assert_eq!(pc.professions, vec!["test-whitebox"]);

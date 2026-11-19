@@ -600,6 +600,13 @@ impl AgentLoop {
              - 工作区外文件：必须用完整绝对路径（如 C:/path/file.md），相对路径或裸文件名无法被前端链接解析。\n\
              - 罗列文件清单（列目录/表格式回复）时：逐条带完整路径，不要只写文件名。",
         );
+        // W1 #46（2026-11-19 安全图谱批）：内容隔离边界声明——告知模型
+        // <untrusted_content> 标记语义（chat_guard::UNTRUSTED_DECLARATION，
+        // 常量文本跨轮字节稳定，cache 纪律成立）。开关关时不注入——
+        // 声明与实际包裹行为一致，不撒谎。
+        if self.current_untrusted_wrap() {
+            snapshot_section.push_str(chat_guard::UNTRUSTED_DECLARATION);
+        }
         snapshot_section.push_str("\n(本快照取代之前的时间/环境快照)");
 
         // /（多模态）：turn → 请求消息统一走 `turn_to_request_message`
