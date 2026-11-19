@@ -100,17 +100,64 @@ pub enum McpAction {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn find_server(mcp_cfg_path: &std::path::Path, name: &str) -> Result<Option<serde_json::Value>> {
+/// 读取 config.mcp.json 的**宽容真相源视图**（BUG-20261120-011）：
+/// 经 [`nemesis_config::McpConfig`] 宽容解析（三形状 + servers/mcpServers
+/// 混合吸收合并），CLI 诊断/查重面不再只认 servers 数组——mcpServers
+/// 形状条目（宽容契约明示接纳的外部生态形态）此前对 find_server/list/
+/// 查重/remove 整体隐形，而运行期 gateway 却正常挂载它们。返回
+/// (enabled, 条目 Value 投影)；文件缺失 = (false, 空)。解析失败诚实 Err
+/// （与运行期同命运）。投影为 Value 让 display/find 既有 Value 面零改动。
+fn read_effective_mcp_config(
+    mcp_cfg_path: &std::path::Path,
+) -> Result<(bool, Vec<serde_json::Value>)> {
     if !mcp_cfg_path.exists() {
-        return Ok(None);
+        return Ok((false, Vec::new()));
     }
     let data = nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?;
-    let cfg: serde_json::Value = serde_json::from_str(&data)?;
-    if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
-        for s in servers {
-            if s.get("name").and_then(|v| v.as_str()) == Some(name) {
-                return Ok(Some(s.clone()));
+    let raw: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| anyhow::anyhow!("Invalid MCP config: {}", e))?;
+    let cfg: nemesis_config::McpConfig = match serde_json::from_value(raw.clone()) {
+        Ok(cfg) => cfg,
+        // 坏类型文件（如 servers 是 map 的存量形状）typed 解析 Err——查重/
+        // 诊断面退化为 raw 扫描（best-effort），不得堵死 cmd_add 的修复
+        // 重写通路（test_cmd_add_non_array_servers_is_repaired_not_dropped
+        // 钉住的契约：坏形状被修复而不是拒绝）。
+        Err(_) => {
+            let enabled = raw
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let mut servers = Vec::new();
+            if let Some(arr) = raw.get("servers").and_then(|v| v.as_array()) {
+                servers.extend(arr.iter().filter(|v| v.is_object()).cloned());
             }
+            if let Some(map) = raw.get("mcpServers").and_then(|v| v.as_object()) {
+                for (key, sv) in map {
+                    if sv.is_object() {
+                        let mut entry = sv.clone();
+                        if entry.get("name").is_none() {
+                            entry["name"] = serde_json::Value::String(key.clone());
+                        }
+                        servers.push(entry);
+                    }
+                }
+            }
+            return Ok((enabled, servers));
+        }
+    };
+    let servers = cfg
+        .servers
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
+        .collect();
+    Ok((cfg.enabled, servers))
+}
+
+fn find_server(mcp_cfg_path: &std::path::Path, name: &str) -> Result<Option<serde_json::Value>> {
+    let (_, servers) = read_effective_mcp_config(mcp_cfg_path)?;
+    for s in servers {
+        if s.get("name").and_then(|v| v.as_str()) == Some(name) {
+            return Ok(Some(s));
         }
     }
     Ok(None)
@@ -434,78 +481,68 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
     }
 
     if mcp_cfg_path.exists() {
-        let data = nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?;
-        let cfg: serde_json::Value = serde_json::from_str(&data)?;
+        // 宽容真相源视图（BUG-20261120-011）：servers 数组 + mcpServers
+        // 吸收合并后统一渲染，诊断面与运行期挂载面同源。
+        let (enabled, servers) = read_effective_mcp_config(mcp_cfg_path)?;
+        println!("Configured MCP Servers ({}):", servers.len());
+        println!("-------------------------");
 
-        let enabled = cfg
-            .get("enabled")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        if servers.is_empty() {
+            println!("  No servers configured.");
+        } else {
+            for server in servers {
+                let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let command = display_command_for(&server);
+                let args = server
+                    .get("args")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default();
+                // 收敛：规范键 timeout_secs，旧文件 timeout 键兼容读
+                let timeout = server
+                    .get("timeout_secs")
+                    .or_else(|| server.get("timeout"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let env_count = server
+                    .get("env")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
 
-        if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
-            println!("Configured MCP Servers ({}):", servers.len());
-            println!("-------------------------");
-
-            if servers.is_empty() {
-                println!("  No servers configured.");
-            } else {
-                for server in servers {
-                    let name = server.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let command = display_command_for(server);
-                    let args = server
-                        .get("args")
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str())
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        })
-                        .unwrap_or_default();
-                    // 收敛：规范键 timeout_secs，旧文件 timeout 键兼容读
-                    let timeout = server
-                        .get("timeout_secs")
-                        .or_else(|| server.get("timeout"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let env_count = server
-                        .get("env")
+                println!("  {}", name);
+                if server_entry_is_http(&server) {
+                    // HTTP 条目显示 URL——无 command 键，
+                    // 走旧分支会打出误导性的 "Command: ?"。
+                    let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("?");
+                    println!("    Transport: HTTP");
+                    println!("    URL: {}", url);
+                    let header_count = server
+                        .get("headers")
                         .and_then(|v| v.as_array())
                         .map(|a| a.len())
                         .unwrap_or(0);
-
-                    println!("  {}", name);
-                    if server_entry_is_http(server) {
-                        // HTTP 条目显示 URL——无 command 键，
-                        // 走旧分支会打出误导性的 "Command: ?"。
-                        let url = server.get("url").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("    Transport: HTTP");
-                        println!("    URL: {}", url);
-                        let header_count = server
-                            .get("headers")
-                            .and_then(|v| v.as_array())
-                            .map(|a| a.len())
-                            .unwrap_or(0);
-                        if header_count > 0 {
-                            println!("    Headers: {} line(s)", header_count);
-                        }
-                    } else {
-                        println!("    Command: {} {}", command, args);
+                    if header_count > 0 {
+                        println!("    Headers: {} line(s)", header_count);
                     }
-                    if timeout > 0 {
-                        println!("    Timeout: {} seconds", timeout);
-                    }
-                    if env_count > 0 {
-                        println!("    Environment: {} variable(s)", env_count);
-                    }
-                    println!();
+                } else {
+                    println!("    Command: {} {}", command, args);
                 }
+                if timeout > 0 {
+                    println!("    Timeout: {} seconds", timeout);
+                }
+                if env_count > 0 {
+                    println!("    Environment: {} variable(s)", env_count);
+                }
+                println!();
             }
-            println!("  MCP enabled: {}", enabled);
-        } else {
-            println!("Configured MCP Servers (0):");
-            println!("  No servers configured.");
         }
+        println!("  MCP enabled: {}", enabled);
     } else {
         println!("Configured MCP Servers (0):");
         println!("  No MCP configuration found.");
@@ -534,17 +571,21 @@ fn cmd_add(
         serde_json::json!({"enabled": true, "servers": []})
     };
 
-    // Check for duplicate
-    if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
-        for s in servers {
-            if s.get("name").and_then(|v| v.as_str()) == Some(req.name.as_str()) {
-                anyhow::bail!(
-                    "Server '{}' already exists.
+    // Check for duplicate —— 宽容真相源视图（BUG-20261120-011）：查重面
+    // 看到的是「运行期会挂载的全体条目」（servers 数组 + mcpServers 吸收
+    // 合并），不再对 mcpServers 形状盲区假成功写出重复名条目。
+    {
+        let (_, effective) = read_effective_mcp_config(mcp_cfg_path)?;
+        if effective
+            .iter()
+            .any(|s| s.get("name").and_then(|v| v.as_str()) == Some(req.name.as_str()))
+        {
+            anyhow::bail!(
+                "Server '{}' already exists.
 Remove it first: nemesisbot mcp remove {}",
-                    req.name,
-                    req.name
-                );
-            }
+                req.name,
+                req.name
+            );
         }
     }
 
@@ -663,24 +704,16 @@ Remove it first: nemesisbot mcp remove {}",
 
 fn cmd_remove(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
     if mcp_cfg_path.exists() {
-        let mut cfg: serde_json::Value =
-            serde_json::from_str(&nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?)?;
-        let mut found = false;
-        if let Some(servers) = cfg.get_mut("servers").and_then(|v| v.as_array_mut()) {
-            let before = servers.len();
-            servers.retain(|s| s.get("name").and_then(|v| v.as_str()) != Some(name));
-            found = servers.len() < before;
-        }
-        if found {
-            // 统一原子写入（config.mcp.json）。
-            nemesis_utils::write_file_atomic(
-                &mcp_cfg_path.to_string_lossy(),
-                serde_json::to_string_pretty(&cfg)
-                    .unwrap_or_default()
-                    .as_bytes(),
-                0o600,
-            )
-            .map_err(anyhow::Error::msg)?;
+        // 宽容真相源视图（BUG-20261120-011）：移除面吃全量条目（含
+        // mcpServers 吸收合并），typed 落盘顺带把外来形状收敛为标准形状
+        //（save_mcp_config 原子写，与 web/manager 写路径同一实现）。
+        let data = nemesis_utils::fsutil::read_config_string(mcp_cfg_path)?;
+        let mut cfg: nemesis_config::McpConfig = serde_json::from_str(&data)
+            .map_err(|e| anyhow::anyhow!("Invalid MCP config: {}", e))?;
+        let before = cfg.servers.len();
+        cfg.servers.retain(|s| s.name != name);
+        if cfg.servers.len() < before {
+            nemesis_config::save_mcp_config(mcp_cfg_path, &cfg).map_err(anyhow::Error::msg)?;
             println!("MCP server '{}' removed.", name);
             println!("Restart agent/gateway to apply changes.");
         } else {
