@@ -321,6 +321,111 @@ describe('修复③：重灌后从环回放挂回工具卡', () => {
   })
 })
 
+describe('BUG-20261120-006：重灌恢复行号锚 + 分页游标同步', () => {
+  it('landed 重灌后整批按 oldest_index 推导 rowIndex，后续 live 行继续编号', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo A1')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    // 磁盘窗口 4 行，oldest_index=42（raw 行号坐标——分页契约，非 0 起）。
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'history_response',
+      data: {
+        request_id: lastRequestId(),
+        messages: [
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: 'a1' },
+          { role: 'user', content: 'run echo A1' },
+          { role: 'assistant', content: 'A1 输出完成' },
+        ],
+        has_more: true,
+        oldest_index: 42,
+      },
+    })
+    await flushPromises()
+
+    // 行号锚恢复：整批 oldest+j 编号（修复前全 undefined → 回退/重生成/
+    // 删除入口消失、fork 点击报「找不到本轮提问行」）。
+    expect(chat.messages.map((m: any) => m.rowIndex)).toEqual([42, 43, 44, 45])
+    // nextRowIndex 重推成功：后续 live 行继续编号（46）。
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'receive',
+      data: { session_id: 's1', role: 'assistant', content: '跟进回复', timestamp: new Date().toISOString() },
+    })
+    await flushPromises()
+    expect(chat.messages[chat.messages.length - 1].rowIndex).toBe(46)
+    w.unmount()
+  })
+
+  it('重灌后滚到顶翻页用重灌游标（before=响应 oldest_index），不取视图内旧行', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    // 首拉喂 has_more:true + oldest_index:20（>20 行会话形态：游标 20）。
+    const w = mount(ChatPanel)
+    await flushPromises()
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'history_response',
+      data: {
+        request_id: lastRequestId(),
+        messages: [
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: 'a1' },
+        ],
+        has_more: true,
+        oldest_index: 20,
+      },
+    })
+    await flushPromises()
+    const chat = useChatStore()
+    expect(chat.oldestIndex).toBe(20)
+    await sendFromUI(w, 'run echo A2')
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushPromises()
+    // watchdog 重灌窗口 50 行，oldest_index=4（视图真覆盖起点）。
+    mountedHandler()({
+      type: 'message',
+      module: 'chat',
+      cmd: 'history_response',
+      data: {
+        request_id: lastRequestId(),
+        messages: [
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: 'a1' },
+          { role: 'user', content: 'run echo A2' },
+          { role: 'assistant', content: 'A2 输出完成' },
+        ],
+        has_more: true,
+        oldest_index: 4,
+      },
+    })
+    await flushPromises()
+
+    // 滚到顶触发翻页：before 必须是重灌游标 4（视图外旧行）而非陈旧的
+    // 20（视图内——修复前 prependHistory 无条件前插 = 整批重复）。
+    const before = vi.mocked(sendHistoryRequest).mock.calls.length
+    const el = w.find('.chat-messages').element as HTMLElement
+    el.scrollTop = 0
+    await w.find('.chat-messages').trigger('scroll')
+    await flushPromises()
+    expect(vi.mocked(sendHistoryRequest).mock.calls.length).toBe(before + 1)
+    const pageCall = vi.mocked(sendHistoryRequest).mock.calls[before]
+    expect(pageCall[2]).toBe(4)
+    expect(chat.oldestIndex).toBe(4)
+    w.unmount()
+  })
+})
+
 describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在飞登记', () => {
   it('3 次重载均「未落」→ 放弃：streaming=false、inflight 清、视图不重灌、输入解锁', async () => {
     prepareSession()

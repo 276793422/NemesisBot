@@ -2306,6 +2306,15 @@ function handleHistoryResponse(data: any) {
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
+    // BUG-20261120-006 同根第二面：resync 同为 replace 语义——分页游标
+    // （oldestIndex/hasMoreHistory）按本响应重同步，否则回退/redo/委派后
+    // 滚到顶翻页用陈旧 before_index 前插已在视图内的行（整批重复）。
+    // historyLoaded 守卫同 watchdog 分支（false 时重连全量重拉须走
+    // mergeHistoryTail，游标非空会把重拉钉成 paginated 无条件前插）。
+    if (chatStore.historyLoaded) {
+      chatStore.oldestIndex = oldest
+      chatStore.hasMoreHistory = data.has_more || false
+    }
     chatStore.setBusy(effectiveSid.value, false)
     clearWatchdog()
     nextTick(() => {
@@ -2342,8 +2351,14 @@ function handleHistoryResponse(data: any) {
     if (streaming.value && landed) {
       // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底。
       const viewportAnchor = captureViewportAnchor()
+      // BUG-20261120-006：重灌批是磁盘真相信——与 resync/prependHistory
+      // 同构，响应恒带 oldest_index（raw 行号坐标，分页契约），照
+      // oldest + j 推导行号。旧行为整批 fresh 无行号 → nextRowIndex 归
+      // null → 全视图回退/重生成/删除入口静默消失、fork 点击报「找不到
+      // 本轮提问行」，直至切会话才自愈；新 live 行也不再编号。
+      const oldest = typeof data.oldest_index === 'number' ? data.oldest_index : null
       chatStore.replaceMessages(
-        rawMsgs.map((m: any) => ({
+        rawMsgs.map((m: any, j: number) => ({
           role: m.role,
           content: m.content,
           timestamp: m.timestamp || new Date().toISOString(),
@@ -2357,8 +2372,20 @@ function handleHistoryResponse(data: any) {
           // 系统通知标记（2026-11-16）：同上，watchdog 重灌同款透传。
           systemNotice: m.system_notice,
           cronJobId: m.cron_job_id,
+          rowIndex: oldest !== null ? oldest + j : undefined,
         })),
       )
+      // BUG-20261120-006 同根第二面：replace 分支早退不同步分页游标
+      // （oldestIndex/hasMoreHistory 停留在首拉旧值）→ 之后滚到顶触发的
+      // 翻页用陈旧 before_index 取「已在视图内」的行 → prependHistory 无
+      // 条件前插 = 整批重复（重复渲染 ①②③ 同族）。historyLoaded 守卫：
+      // false 时（justCreated 跳拉/历史失败角）保持 null——重连的全量重拉
+      // 须走 mergeHistoryTail 去重，此处若同步游标会把那次重拉钉成
+      // paginated 无条件前插（W1 语义），反而制造重复。
+      if (chatStore.historyLoaded) {
+        chatStore.oldestIndex = oldest
+        chatStore.hasMoreHistory = data.has_more || false
+      }
       chatStore.setBusy(effectiveSid.value, false)
       clearWatchdog()
       // 重灌只有文本行——从环回放挂回最后一轮工具卡(与 F5/切回的
