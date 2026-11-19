@@ -1646,6 +1646,42 @@ impl WorkflowEngine {
         nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), yaml.as_bytes(), 0o600)
             .map_err(|e| EngineError::PersistenceError(format!("write {:?}: {}", path, e)))?;
 
+        // 同名单名变体清理（BUG-20261119-188）：定义文件合法扩展名有三个
+        // （.yaml/.yml/.json——load_workflows_from_dir 全收、delete_workflow_file
+        // 全删），而本方法只写 .yaml。同名 .yml 残留时，加载的显式排序契约
+        // 是「字典序最后者赢」且 .yml 排在 .yaml 之后——本次持久化的新定义
+        // **当场**在内存注册表里是新版，**重启后**却被旧 .yml 静默遮蔽回退
+        // （无任何报错；drafts apply 的 .yaml-only 备份也漏掉旧 .yml，回滚
+        // 资产同缺）。写盘成功后清理同名单名变体，保「一 workflow 名一文件」
+        // 不变量。守卫同 delete_workflow_file：属他人（sanitize 同文件名但
+        // 内容名不同）跳过不删；坏文件（parse 失败、加载时本就被跳过不遮蔽）
+        // 照删，同 delete 语义。清理失败不 fail persist（韧性删除，与 delete
+        // 同款）——主文件已落盘，内存注册语义不受影响；Windows 上被 AV/索引
+        // 器瞬时占住的残留会在下次同名 persist 时再试。
+        for ext in &["yml", "json"] {
+            let stale = dir.join(format!(
+                "{}.{}",
+                sanitize_workflow_filename(&workflow.name),
+                ext
+            ));
+            if !stale.exists() {
+                continue;
+            }
+            if let Some(owner) = workflow_file_owner(&stale)
+                && owner != workflow.name
+            {
+                warn!(
+                    target: "nemesis_workflow::engine",
+                    file = %path_dbg(&stale),
+                    owner = %owner,
+                    requested = %workflow.name,
+                    "skip stale-variant cleanup: sanitize filename collision, file belongs to another workflow"
+                );
+                continue;
+            }
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&stale);
+        }
+
         self.workflows.insert(workflow.name.clone(), workflow);
         Ok(())
     }
