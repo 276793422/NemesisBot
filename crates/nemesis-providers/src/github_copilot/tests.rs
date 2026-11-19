@@ -35,7 +35,8 @@ fn test_config_default() {
     let config = GitHubCopilotConfig::default();
     assert_eq!(config.connect_mode, "grpc");
     assert_eq!(config.default_model, DEFAULT_COPILOT_MODEL);
-    assert_eq!(config.timeout_secs, 120);
+    // BUG-20261120-014：lane 默认 120 → 600（P3A 全 lane 统一）。
+    assert_eq!(config.timeout_secs, 600);
 }
 
 #[test]
@@ -68,7 +69,8 @@ fn test_github_copilot_config_deserialization_defaults() {
     assert!(config.uri.is_empty());
     assert!(config.connect_mode.is_empty());
     assert!(config.default_model.is_empty());
-    assert_eq!(config.timeout_secs, 120); // from serde default
+    // BUG-20261120-014：serde default 同步对齐 600（P3A 全 lane 统一）。
+    assert_eq!(config.timeout_secs, 600);
 }
 
 #[test]
@@ -119,7 +121,8 @@ fn test_config_default_values() {
     assert!(config.uri.is_empty());
     assert_eq!(config.connect_mode, "grpc");
     assert_eq!(config.default_model, DEFAULT_COPILOT_MODEL);
-    assert_eq!(config.timeout_secs, 120);
+    // BUG-20261120-014：lane 默认 120 → 600（P3A 全 lane 统一）。
+    assert_eq!(config.timeout_secs, 600);
 }
 
 use std::collections::HashMap;
