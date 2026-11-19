@@ -272,6 +272,42 @@ fn test_extract_url_mcp_discover_reads_url() {
     );
 }
 
+// BUG-20261120-010：动态 MCP 工具（`mcp_{server}_{tool}` 命名，adapter.rs
+// 统一前缀）此前落 catch-all → url/source 参数整体失明。prefix 臂与
+// mcp_discover 同语义同闸。
+#[test]
+fn test_extract_url_dynamic_mcp_tools() {
+    // url 键直接命中。
+    assert_eq!(
+        extract_url(
+            "mcp_myserver_fetch",
+            &serde_json::json!({"url": "http://127.0.0.1/x"})
+        ),
+        "http://127.0.0.1/x"
+    );
+    // source fallback（与 mcp_discover 臂同形）。
+    assert_eq!(
+        extract_url(
+            "mcp_myserver_fetch",
+            &serde_json::json!({"source": "http://127.0.0.1/y"})
+        ),
+        "http://127.0.0.1/y"
+    );
+    // 无 url 字段 = 空串（Layer 6 照常跳过）。
+    assert_eq!(
+        extract_url("mcp_myserver_fs", &serde_json::json!({"path": "/tmp/a"})),
+        ""
+    );
+    // 非 mcp 前缀未知名保持旧行为（catch-all 空串）。
+    assert_eq!(
+        extract_url(
+            "unknown_tool",
+            &serde_json::json!({"url": "http://127.0.0.1/x"})
+        ),
+        ""
+    );
+}
+
 #[test]
 fn test_is_safe_command() {
     assert!(is_safe_command("ls -la").0);
