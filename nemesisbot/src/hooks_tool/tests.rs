@@ -1,12 +1,15 @@
-//! hooks 工具单元测试：解析（合法/非法/event 枚举/timeout 类型）、CRUD
-//! 落盘形态（id 递增/裸 sid 键/删除清壳）、schema 无 session 参数（只能
-//! 给自己设的结构保证）、operation_override 投影（list=internal）、
-//! min_tier、桥在/不在的生效文案、tier 白名单成员、孤儿对账函数。
+//! hooks 工具单元测试：解析（合法/非法/event 枚举/timeout 类型/prompt 型
+//! 校验）、CRUD 落盘形态（统一存储——工具专属圈定组 scope.sessions == [sid]，
+//! id 跨事件递增）、schema 无 session 参数（只能给自己设的结构保证）、
+//! operation_override 投影（list=internal）、min_tier、桥在/不在的生效文案、
+//! tier 白名单成员、孤儿对账函数。
+//!
+//! 测试访问边界（外部 crate）：只用 cc_hooks pub API（list_session_hooks /
+//! add_session_hook / parse_cc_hooks / global_hook_counts）+ hooks.json 原文
+//! 断言——CcEvents/组结构私有字段不可触。
 
 use super::*;
-use nemesis_agent::cc_hooks::session_hooks_path;
 use nemesis_agent::r#loop::Tool as _;
-use std::collections::BTreeMap;
 
 fn tempdir() -> std::path::PathBuf {
     tempfile::tempdir().expect("tempdir").keep()
@@ -40,6 +43,11 @@ async fn add(tool: &HooksTool, ctx: &RequestContext, event: &str, command: &str)
     )
     .await
     .expect("add ok")
+}
+
+/// hooks.json 原文（统一存储落盘断言用）。
+fn raw_hooks(cfg: &std::path::Path) -> String {
+    std::fs::read_to_string(cfg.join(nemesis_agent::cc_hooks::HOOKS_FILE)).expect("hooks.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -192,8 +200,8 @@ fn parse_add_rejects_both_empty() {
 
 #[test]
 fn parse_add_rejects_both_provided() {
-    // Exactly one 契约：双非空混合条目语义未定（shell 投影滤掉 prompt 条目
-    // → command 被静默忽略）——loud 拒绝，不静默偏向任何一型。
+    // Exactly one 契约：双非空混合条目语义未定（shell 执行路径不读 prompt
+    // → command/prompt 必有一侧被静默忽略）——loud 拒绝，不静默偏向任何一型。
     let err = parse_hooks_args(
         r#"{"action":"add","event":"Stop","command":"echo hi","prompt":"继续检查"}"#,
     )
@@ -226,7 +234,7 @@ fn parse_add_rejects_prompt_off_stop() {
 }
 
 // ---------------------------------------------------------------------------
-// execute：add/delete/list 落盘形态
+// execute：add/delete/list 落盘形态（统一存储）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -239,18 +247,34 @@ async fn add_writes_store_with_incrementing_ids() {
     let out2 = add(&t, &ctx, "Stop", "echo two").await;
     assert!(out2.contains("h2"), "跨事件递增 = h2\n{out2}");
 
-    // 落盘形态：sid → event → entries（BTreeMap 键序确定）。
-    let store = read_session_hook_store(&cfg);
-    let per = store.hooks.get("s-abc").expect("sid key");
-    assert_eq!(per.get("PreToolUse").unwrap()[0].command, "echo one");
+    // 查询面：本会话 2 条（跨事件组），数组序 = SESSION_HOOK_EVENTS 定序。
+    let views = list_session_hooks(&cfg, "s-abc").expect("list");
+    assert_eq!(views.len(), 2);
+    assert_eq!(views[0].id, "h1");
+    assert_eq!(views[0].event, "PreToolUse");
+    assert_eq!(views[0].command, "echo one");
+    assert_eq!(views[1].id, "h2");
+    assert_eq!(views[1].event, "Stop");
     assert_eq!(
-        per.get("Stop").unwrap()[0].timeout,
-        Some(DEFAULT_TIMEOUT_SECS)
+        views[1].timeout,
+        Some(DEFAULT_TIMEOUT_SECS),
+        "缺省超时写 60s"
     );
-    // scope 不落存储——圈定是按 sid 键的结构性事实，无需逐条 scope。
+
+    // 落盘形态（统一存储）：圈定是结构性事实——scope.sessions 落在
+    // hooks.json 里（scope-is-storage），条目自身不携带会话键。
+    let raw = raw_hooks(&cfg);
     assert!(
-        !serde_json::to_string(&store).unwrap().contains("scope"),
-        "存储形态不应携带 scope 键"
+        raw.contains("scope"),
+        "统一存储形态：圈定落 scope 键\n{raw}"
+    );
+    assert!(raw.contains("s-abc"), "圈定组含会话 sid");
+
+    // 工具专属组不进全局分账（global_hook_counts 只数未圈定组）。
+    let events = nemesis_agent::cc_hooks::parse_cc_hooks(&raw).expect("parse");
+    assert!(
+        events.global_hook_counts().is_empty(),
+        "工具圈定组不得计入全局钩子"
     );
 }
 
@@ -258,12 +282,18 @@ async fn add_writes_store_with_incrementing_ids() {
 async fn add_uses_full_key_when_no_prefix() {
     let cfg = tempdir();
     let t = tool(&cfg);
-    // 无 web 前缀的键（RPC/通道形态）→ 整键作存储键（桥侧同款双形态）。
+    // 无 web 前缀的键（RPC/通道形态）→ 整键剥前缀兜底 = 裸键本身作圈定 sid。
     let ctx = nemesis_agent::context::RequestContext::new("rpc", "c", "u", "plain-sess");
-    add(&t, &ctx, "Stop", "echo x").await;
-    let store = read_session_hook_store(&cfg);
-    assert!(store.hooks.contains_key("plain-sess"));
-    assert!(!store.hooks.contains_key("agent:main:session:plain-sess"));
+    let out1 = add(&t, &ctx, "Stop", "echo x").await;
+    assert!(out1.contains("h1"), "\n{out1}");
+
+    // web 整键形态剥前缀后落同一 sid——同一会话双口径一致（h2 连续递增）。
+    let out2 = add(&t, &ctx_main("plain-sess"), "PreToolUse", "echo y").await;
+    assert!(out2.contains("h2"), "剥前缀同 sid → id 连续递增\n{out2}");
+    assert_eq!(
+        list_session_hooks(&cfg, "plain-sess").expect("list").len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -289,10 +319,12 @@ async fn add_timeout_zero_rejected_and_over_cap_clamped() {
         .await
         .expect("clamped add");
     assert!(out.contains("600"), "响应注明钳到上限\n{out}");
-    let store = read_session_hook_store(&cfg);
+    let views = list_session_hooks(&cfg, "s-t").expect("list");
+    assert_eq!(views.len(), 1);
     assert_eq!(
-        store.hooks.get("s-t").unwrap().get("Stop").unwrap()[0].timeout,
-        Some(MAX_TIMEOUT_SECS)
+        views[0].timeout,
+        Some(MAX_TIMEOUT_SECS),
+        "落盘条目被钳到上限"
     );
 }
 
@@ -318,11 +350,11 @@ async fn add_prompt_hook_writes_entry_and_renders_type() {
         "响应说明永续语义与停止方式\n{out}"
     );
 
-    // 落盘形态：command 空 + prompt 非空。
-    let store = read_session_hook_store(&cfg);
-    let entry = &store.hooks.get("s-loop").unwrap().get("Stop").unwrap()[0];
-    assert_eq!(entry.command, "");
-    assert_eq!(entry.prompt, "继续检查代码是否正确，确认是否有问题");
+    // 落盘形态：command 空 + prompt 非空（同一 CcCommand 结构二型分派）。
+    let views = list_session_hooks(&cfg, "s-loop").expect("list");
+    assert_eq!(views.len(), 1);
+    assert_eq!(views[0].command, "");
+    assert_eq!(views[0].prompt, "继续检查代码是否正确，确认是否有问题");
 
     // list 渲染 prompt 型（预览 + 提示词型标注），不显示超时/shell。
     let listing = t
@@ -341,8 +373,10 @@ async fn add_prompt_hook_writes_entry_and_renders_type() {
         .await
         .expect("delete ok");
     assert!(del.contains("提示词型"), "delete 渲染条目类型\n{del}");
-    let store = read_session_hook_store(&cfg);
-    assert!(!store.hooks.contains_key("s-loop"), "全空摘键");
+    assert!(
+        !raw_hooks(&cfg).contains("s-loop"),
+        "全空圈定组整组摘除（统一存储）"
+    );
 }
 
 #[tokio::test]
@@ -371,15 +405,14 @@ async fn delete_removes_entry_and_cleans_empty_key() {
         .expect("delete ok");
     assert!(out.contains("h1") && out.contains("已删除"));
 
-    // h1 摘除后 h2 仍在；再删 h2 → 空壳整键摘除。
-    let store = read_session_hook_store(&cfg);
-    assert_eq!(store.session_len("s-del"), 1);
+    // h1 摘除后 h2 仍在；再删 h2 → 工具专属圈定组整组摘除（统一存储）。
+    assert_eq!(list_session_hooks(&cfg, "s-del").expect("list").len(), 1);
     t.execute(r#"{"action":"delete","id":"h2"}"#, &ctx)
         .await
         .expect("delete ok");
-    let store = read_session_hook_store(&cfg);
-    assert!(!store.hooks.contains_key("s-del"), "空壳键应整键摘除");
-    assert!(store.is_empty());
+    assert!(list_session_hooks(&cfg, "s-del").expect("list").is_empty());
+    let raw = raw_hooks(&cfg);
+    assert!(!raw.contains("s-del"), "空壳圈定组整组摘除\n{raw}");
 }
 
 #[tokio::test]
@@ -451,7 +484,6 @@ async fn bridge_presence_switches_activation_wording() {
     );
 
     // 同目录换桥在形态：落盘即热更文案（bridge 不实际读盘——文案语义）。
-    std::fs::remove_file(session_hooks_path(&cfg)).unwrap();
     let warm = tool_with_bridge(&cfg);
     let out = add(&warm, &ctx, "Stop", "echo y").await;
     assert!(out.contains("下条消息起生效"), "桥在 = 即时生效文案\n{out}");
@@ -522,48 +554,42 @@ fn min_tier_is_normal() {
 }
 
 // ---------------------------------------------------------------------------
-// 孤儿对账（reconcile_session_orphans）——批次三启动对账的行为钉
+// 孤儿对账（reconcile_session_orphans）——启动对账的行为钉（统一存储）
 // ---------------------------------------------------------------------------
 
 #[test]
 fn reconcile_orphans_removes_dead_sessions_and_keeps_live() {
     let cfg = tempdir();
-    let mut store = SessionHookStore::default();
-    store.hooks.insert(
-        "live-1".into(),
-        BTreeMap::from([(
-            "Stop".into(),
-            vec![SessionHookEntry {
-                id: "h1".into(),
-                matcher: String::new(),
-                command: "echo live".into(),
-                prompt: String::new(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    store.hooks.insert(
-        "dead-1".into(),
-        BTreeMap::from([(
-            "Stop".into(),
-            vec![SessionHookEntry {
-                id: "h1".into(),
-                matcher: String::new(),
-                command: "echo dead".into(),
-                prompt: String::new(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    write_session_hook_store(&cfg, &store).expect("seed write");
+    // 统一存储：经生产 RMW API 种两个会话的工具专属圈定组。
+    let id = nemesis_agent::cc_hooks::add_session_hook(
+        &cfg,
+        "live-1",
+        "Stop",
+        "",
+        "echo live",
+        "",
+        Some(60),
+    )
+    .expect("seed live");
+    assert_eq!(id, "h1");
+    let id = nemesis_agent::cc_hooks::add_session_hook(
+        &cfg,
+        "dead-1",
+        "Stop",
+        "",
+        "echo dead",
+        "",
+        Some(60),
+    )
+    .expect("seed dead");
+    assert_eq!(id, "h1", "不同会话各自工具组 id 独立起算");
 
     let live: std::collections::HashSet<String> = ["live-1".to_string()].into();
     let removed = nemesis_agent::cc_hooks::reconcile_session_orphans(&cfg, &live);
-    assert_eq!(removed, 1);
+    assert_eq!(removed, 1, "摘除死者圈定组");
 
-    let after = read_session_hook_store(&cfg);
-    assert!(after.hooks.contains_key("live-1"));
-    assert!(!after.hooks.contains_key("dead-1"));
+    assert_eq!(list_session_hooks(&cfg, "live-1").expect("live").len(), 1);
+    assert!(list_session_hooks(&cfg, "dead-1").expect("dead").is_empty());
 
     // 幂等：再跑一遍 0 摘除。
     assert_eq!(

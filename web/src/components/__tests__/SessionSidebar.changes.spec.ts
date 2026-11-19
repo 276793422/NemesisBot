@@ -45,6 +45,7 @@ vi.mock('../../composables/useChatApi', () => ({
 }))
 
 import SessionSidebar from '../SessionSidebar.vue'
+import { reloadSessionGroupingFromStorage } from '../../utils/sessionGrouping'
 import SessionChangesPanel from '../logs/SessionChangesPanel.vue'
 import { useSessionStore } from '../../stores/session'
 
@@ -76,6 +77,8 @@ beforeEach(() => {
 })
 
 async function mountWith(sessions: any[], projects: any[] = []) {
+  // pin/排序状态是模块级单例（import 时读 localStorage）——种子须挂载前重载。
+  reloadSessionGroupingFromStorage()
   listMock.mockResolvedValue({ sessions })
   listProjectsMock.mockResolvedValue({ projects })
   const w = mount(SessionSidebar)

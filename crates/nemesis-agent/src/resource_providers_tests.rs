@@ -275,52 +275,44 @@ fn identity_reads_meta_and_absent_is_empty() {
 #[test]
 fn hooks_session_counts_by_bare_sid() {
     let dir = std::env::temp_dir().join(format!("nb-rp-hooks-{}", std::process::id()));
+    // RMW 计数测试：先清残留（上次崩溃留下的 hooks.json 会污染分账）。
+    let _ = std::fs::remove_dir_all(&dir);
     let config_dir = dir.join("config");
     let _ = std::fs::create_dir_all(&config_dir);
     let sid = unique_sid("hook");
-    let mut store = crate::cc_hooks::SessionHookStore::default();
-    store.hooks.insert(
-        sid.clone(),
-        [
-            (
-                "Stop".to_string(),
-                vec![crate::cc_hooks::SessionHookEntry {
-                    id: "h1".into(),
-                    matcher: String::new(),
-                    command: "echo hi".into(),
-                    prompt: String::new(),
-                    timeout: None,
-                }],
-            ),
-            (
-                "PreToolUse".to_string(),
-                vec![
-                    crate::cc_hooks::SessionHookEntry {
-                        id: "h2".into(),
-                        matcher: String::new(),
-                        command: "echo a".into(),
-                        prompt: String::new(),
-                        timeout: None,
-                    },
-                    crate::cc_hooks::SessionHookEntry {
-                        id: "h3".into(),
-                        matcher: String::new(),
-                        command: "echo b".into(),
-                        prompt: String::new(),
-                        timeout: None,
-                    },
-                ],
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    );
-    crate::cc_hooks::write_session_hook_store(&config_dir, &store).expect("write");
+    // 统一存储：经生产 RMW API（add_session_hook）种工具专属圈定组——
+    // Stop → h1、PreToolUse → h2/h3。
+    let id = crate::cc_hooks::add_session_hook(&config_dir, &sid, "Stop", "", "echo hi", "", None)
+        .expect("seed stop");
+    assert_eq!(id, "h1");
+    let id =
+        crate::cc_hooks::add_session_hook(&config_dir, &sid, "PreToolUse", "", "echo a", "", None)
+            .expect("seed pre-a");
+    assert_eq!(id, "h2");
+    let id =
+        crate::cc_hooks::add_session_hook(&config_dir, &sid, "PreToolUse", "", "echo b", "", None)
+            .expect("seed pre-b");
+    assert_eq!(id, "h3");
     let view =
         HooksSessionProvider.collect(&ctx_for(&dir, &format!("agent:main:session:{sid}"), &sid));
     assert_eq!(view.status, CategoryStatus::Ok);
     assert_eq!(view.total, 3);
     assert_eq!(view.summary["count"], json!(3));
+    // 明细行（2026-11-19「只有个数不知道是啥」补齐）：3 条命令型，事件/
+    // 类型/内容逐条对得上（断言按内容寻行不按位次——groups() 迭代序 =
+    // 结构体字段序，事件排序不是本函数契约）。
+    let rows = view.summary["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().all(|r| r["kind"] == json!("command")));
+    let stop = rows.iter().find(|r| r["event"] == json!("Stop")).expect("stop row");
+    assert_eq!(stop["content"], json!("echo hi"));
+    let pre_a = rows.iter().find(|r| r["content"] == json!("echo a")).expect("pre a row");
+    assert_eq!(pre_a["event"], json!("PreToolUse"));
+    assert_eq!(pre_a["matcher"], json!(""));
+    // count/list 同谓词：count_session_hooks 与行数一致（双串语义同源）。
+    let n = crate::cc_hooks::count_session_hooks(&config_dir, &format!("agent:main:session:{sid}"))
+        .expect("count by full key");
+    assert_eq!(n, rows.len());
     // 他会话不计入：另一个 sid 无条目 → Empty。
     let other = unique_sid("hook-other");
     let view = HooksSessionProvider.collect(&ctx_for(
@@ -329,6 +321,43 @@ fn hooks_session_counts_by_bare_sid() {
         &other,
     ));
     assert_eq!(view.status, CategoryStatus::Empty);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 用户手写圈定组（非工具 RMW API 写入的另一分账来源，prompt 型——线上
+/// 实景：Dashboard 手写 Stop prompt 钩子）也进明细行；count 与行数同账。
+#[test]
+fn hooks_session_rows_expose_user_scoped_prompt_hook() {
+    let dir = std::env::temp_dir().join(format!("nb-rp-hookrows-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config_dir = dir.join("config");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let sid = unique_sid("hookrows");
+    std::fs::write(
+        config_dir.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {
+                "Stop": [{
+                    "scope": {"sessions": [sid]},
+                    "hooks": [{"type": "prompt", "prompt": "现在几点了"}]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("seed hooks.json");
+    let view =
+        HooksSessionProvider.collect(&ctx_for(&dir, &format!("agent:main:session:{sid}"), &sid));
+    assert_eq!(view.status, CategoryStatus::Ok);
+    assert_eq!(view.total, 1);
+    assert_eq!(view.summary["count"], json!(1));
+    let rows = view.summary["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["event"], json!("Stop"));
+    assert_eq!(rows[0]["kind"], json!("prompt"));
+    assert_eq!(rows[0]["content"], json!("现在几点了"));
+    let n = crate::cc_hooks::count_session_hooks(&config_dir, &sid).expect("count by bare sid");
+    assert_eq!(n, 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

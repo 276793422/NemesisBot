@@ -1330,6 +1330,24 @@ impl AgentLoop {
             }
         }
 
+        // 系统注入行实时可见（2026-11-19）：注入消息（hook 提示词 / cron
+        // tick / 后台唤醒）不走 WS chat.send 入站臂回声——loop 内部队列
+        // 回灌绕过 web 入站咽喉，实时面此前只在重开面板（历史重载）才
+        // 可见。落盘后补发事件，web pump 转 receive 帧（seq 入环，
+        // chat.sync 断线重放同覆盖）。真人消息不发（入站臂已有回声，
+        // 双发重复）；agent_event_tx 未装配（CLI / B 端 worker）= no-op。
+        if let Some(kind) = system_notice_of(&msg)
+            && let Some(tx) = self.agent_event_tx.read().as_ref()
+        {
+            let _ = tx.send(nemesis_types::agent::AgentEvent::SystemNotice {
+                session_key: session_key.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: msg.content.clone(),
+                kind: kind.to_string(),
+                cron_job_id: cron_job_id.map(|s| s.to_string()),
+            });
+        }
+
         // （@文件引用）：内联被引用文件内容。相对路径以 workspace 根为基准
         // 解析（与 read_file 同源，不再是 cwd 漂移基准）；安全闸与图片附加
         // 同一套管线（挂真实 SecurityPlugin 时 Layer 7 block_in_place，

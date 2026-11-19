@@ -2545,6 +2545,56 @@ pub async fn pump_agent_events(
                     event_hub.publish("expert-degraded", data.get("data").cloned().unwrap_or(data));
                     continue;
                 }
+                // 系统注入行实时推送（2026-11-19）：hook 提示词注入 / cron
+                // tick / 后台唤醒的 user 行不走 WS chat.send 入站臂回声
+                // （loop 内部队列回灌）——这里转 `chat.receive` 帧（role=
+                // user + system_notice + cron_job_id + session_id，seq 入
+                // chat_event_log 环）。入环 = 断线 chat.sync 重放同覆盖；
+                // 广播走可丢通道同用户回声（环已记录，慢客户端 sync 补拉
+                // 自愈）。前端按既有通知条分支渲染（历史行 system_notice
+                // 同一标记，2026-11-16）。
+                if let nemesis_types::agent::AgentEvent::SystemNotice {
+                    session_key,
+                    chat_id,
+                    content,
+                    kind,
+                    cron_job_id,
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "role": "user",
+                        "content": content,
+                        "system_notice": kind,
+                    });
+                    if let Some(cid) = cron_job_id {
+                        payload["cron_job_id"] = serde_json::Value::String(cid.clone());
+                    }
+                    if let Some(sid) = dashboard_session_id(session_key) {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    let seq = crate::chat_event_log::record(
+                        session_key,
+                        "user",
+                        content,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                    payload["seq"] = serde_json::json!(seq);
+                    let frame = crate::protocol::ProtocolMessage::new(
+                        "message",
+                        "chat",
+                        "receive",
+                        Some(payload),
+                    );
+                    if let Ok(bytes) = frame.to_json()
+                        && let Some(session_id) = chat_id.strip_prefix("web:")
+                    {
+                        let _ = session_manager.broadcast_droppable(session_id, &bytes);
+                    }
+                    continue;
+                }
                 // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
                 // ——前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
                 // 语义（侧栏是跨会话面），不做 web: 定向 push。

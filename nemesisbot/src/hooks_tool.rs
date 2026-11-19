@@ -1,15 +1,16 @@
-//! 会话钩子自管面（2026-11-16 HOOK 会话圈定 goal 批次三）：`hooks` 工具——
-//! 单工具多 action（add/delete/list），让 agent 在对话里给自己（当前会话）
-//! 设置生命周期钩子。
+//! 会话钩子自管面（2026-11-16 HOOK 会话圈定 goal 批次三；2026-11-19 统一
+//! 存储重构）：`hooks` 工具——单工具多 action（add/delete/list），让 agent
+//! 在对话里给自己（当前会话）设置生命周期钩子。
 //!
 //! **只能给自己设置是结构保证**：schema 无 session 参数，sid 一律取
 //! `context.session_key`（剥 [`WEB_SESSION_KEY_PREFIX`]）——模型想给别人设
 //! 都没有入参通道。
 //!
-//! 存储与生效链路：写 `hooks.session.json`（[`write_session_hook_store`]
-//! 原子写）→ 桥（`CcHookBridge`）按内容比对热更在下次分发时捡到（工具不
-//! 直改桥内存，单一写入路径）。桥缺席（双文件双缺的冷启动）= 已落盘但无
-//! 热更载体，诚实提示「重启 Agent 后生效」。
+//! 存储与生效链路（统一存储）：写 `hooks.json` 的工具专属组（scope 圈定
+//! 单会话；[`add_session_hook`] 等 RMW API 原子写，与 Dashboard hooks.set
+//! 共享文件互斥）→ 桥（`CcHookBridge`）按内容比对热更在下次分发时捡到
+//! （工具不直改桥内存，单一写入路径）。桥缺席（此前无任何钩子的冷启动）
+//! = 已落盘但无热更载体，诚实提示「重启 Agent 后生效」。
 //!
 //! 注册面：仅主 gateway loop（`register_hooks_tool`）；集群走
 //! `register_tools_and_mcp` 公共路径天然排除；run/acp headless 不装。
@@ -23,8 +24,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nemesis_agent::cc_hooks::{
-    SESSION_HOOK_EVENTS, SessionHookEntry, SessionHookStore, WEB_SESSION_KEY_PREFIX,
-    read_session_hook_store, write_session_hook_store,
+    HookEntryView, PROMPT_HOOK_EVENTS, SESSION_HOOK_EVENTS, WEB_SESSION_KEY_PREFIX,
+    add_session_hook, delete_session_hook, list_session_hooks,
 };
 use nemesis_agent::context::RequestContext;
 
@@ -38,9 +39,9 @@ pub(crate) const MAX_TIMEOUT_SECS: u64 = 600;
 
 /// hooks 工具：给自己（当前会话）增删查生命周期钩子。
 pub struct HooksTool {
-    /// `<workspace>/config`（hooks.session.json 落位目录）。
+    /// `<workspace>/config`（hooks.json 落位目录）。
     config_dir: PathBuf,
-    /// 主 loop 的 cc 桥（None = 冷启动双缺，无热更载体——响应诚实降级）。
+    /// 主 loop 的 cc 桥（None = 冷启动无钩子，无热更载体——响应诚实降级）。
     bridge: Option<Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 }
 
@@ -130,8 +131,8 @@ pub(crate) fn parse_hooks_args(args: &str) -> Result<HooksCommand, String> {
                 );
             }
             // 恰好一项（schema 契约 Exactly one）：双非空的混合条目语义未定
-            // （shell 投影滤掉 prompt 条目 → command 被静默忽略）——loud 拒绝
-            // 而非静默偏向。
+            // （shell 执行路径不读 prompt → command/prompt 必有一侧被静默
+            // 忽略）——loud 拒绝而非静默偏向。
             if !command.is_empty() && !prompt.is_empty() {
                 return Err(
                     "add: \"command\" 与 \"prompt\" 只能二选一（command=shell 执行体；\
@@ -139,11 +140,13 @@ pub(crate) fn parse_hooks_args(args: &str) -> Result<HooksCommand, String> {
                         .to_string(),
                 );
             }
-            // prompt 型仅 Stop 合法（唯一有「turn 结束」语义的钩点）。
-            if !prompt.is_empty() && event != "Stop" {
+            // prompt 型仅 PROMPT_HOOK_EVENTS 合法（单一真相源；今天只有 Stop
+            // ——唯一有「turn 结束」语义的钩点）。
+            if !prompt.is_empty() && !PROMPT_HOOK_EVENTS.contains(&event.as_str()) {
                 return Err(format!(
-                    "add: prompt 型钩子仅在 Stop 事件合法（收到 {event:?}）——\
-                     prompt 语义是「本轮结束后注入提示词开新轮」，只有 Stop 有这个时机"
+                    "add: prompt 型钩子仅在 {} 事件合法（收到 {event:?}）——\
+                     prompt 语义是「本轮结束后注入提示词开新轮」，只有 Stop 有这个时机",
+                    PROMPT_HOOK_EVENTS.join("/")
                 ));
             }
             let matcher = v
@@ -184,47 +187,34 @@ pub(crate) fn parse_hooks_args(args: &str) -> Result<HooksCommand, String> {
     }
 }
 
-/// 本会话已有条目里的最大编号（`h<N>` 形态；无 → 0）。
-fn max_hook_index(per_event: &std::collections::BTreeMap<String, Vec<SessionHookEntry>>) -> usize {
-    let mut max = 0;
-    for entries in per_event.values() {
-        for e in entries {
-            if let Some(n) = e.id.strip_prefix('h').and_then(|n| n.parse::<usize>().ok()) {
-                max = max.max(n);
-            }
-        }
-    }
-    max
-}
-
-/// 本会话条目的单行渲染（add 响应与 list 共用）。prompt 型条目带
+/// 条目的单行渲染（add 响应与 list 共用）。prompt 型条目带
 /// 「提示词」标注——command 与 prompt 是两种执行体，list 面必须可区分。
-fn render_entry(event: &str, e: &SessionHookEntry) -> String {
-    let matcher = if e.matcher.is_empty() {
+fn render_entry(view: &HookEntryView) -> String {
+    let matcher = if view.matcher.is_empty() {
         "全部工具".to_string()
     } else {
-        format!("matcher={}", e.matcher)
+        format!("matcher={}", view.matcher)
     };
-    let timeout = e
+    let timeout = view
         .timeout
         .map(|t| t.to_string())
         .unwrap_or_else(|| "默认".to_string());
-    if !e.prompt.is_empty() {
+    if !view.prompt.is_empty() {
         // 提示词型（LLM 执行体）：Stop 钩点注入提示词开新轮，无 shell。
-        let preview: String = e.prompt.chars().take(60).collect();
-        let ellipsis = if e.prompt.chars().count() > 60 {
+        let preview: String = view.prompt.chars().take(60).collect();
+        let ellipsis = if view.prompt.chars().count() > 60 {
             "…"
         } else {
             ""
         };
         return format!(
             "- [{}] {} · 提示词型 · {matcher} · 「{preview}{ellipsis}」",
-            e.id, event
+            view.id, view.event
         );
     }
     format!(
         "- [{}] {} · {matcher} · 超时 {timeout}s · `{}`",
-        e.id, event, e.command
+        view.id, view.event, view.command
     )
 }
 
@@ -354,20 +344,31 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                 } else {
                     ""
                 };
-                let mut store = read_session_hook_store(&self.config_dir);
-                let per_event = store.hooks.entry(sid.clone()).or_default();
-                let next_index = max_hook_index(per_event) + 1;
-                let id = format!("h{next_index}");
-                let entry = SessionHookEntry {
+                let matcher_str = matcher.unwrap_or_default();
+                // 统一存储 RMW API：id 分配/工具专属组建组/原子写全部在
+                // cc_hooks 侧（与 Dashboard hooks.set 同一文件互斥闸）。
+                let id = add_session_hook(
+                    &self.config_dir,
+                    &sid,
+                    &event,
+                    &matcher_str,
+                    &command,
+                    &prompt,
+                    timeout,
+                )?;
+                let view = HookEntryView {
+                    event: SESSION_HOOK_EVENTS
+                        .iter()
+                        .find(|e| **e == event.as_str())
+                        .copied()
+                        .unwrap_or(""),
                     id: id.clone(),
-                    matcher: matcher.unwrap_or_default(),
+                    matcher: matcher_str,
                     command: command.clone(),
                     prompt: prompt.clone(),
                     timeout,
                 };
-                let rendered = render_entry(&event, &entry);
-                per_event.entry(event.clone()).or_default().push(entry);
-                write_session_hook_store(&self.config_dir, &store)?;
+                let rendered = render_entry(&view);
                 tracing::info!(
                     "[HooksTool] session hook added: sid={sid} id={id} event={event} kind={}",
                     if prompt.is_empty() {
@@ -398,60 +399,37 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                 Ok(out)
             }
             HooksCommand::Delete { id } => {
-                let mut store = read_session_hook_store(&self.config_dir);
-                let Some(per_event) = store.hooks.get_mut(&sid) else {
-                    return Err(format!("本会话（{sid}）当前没有已设置的钩子"));
-                };
-                let mut removed: Option<(String, SessionHookEntry)> = None;
-                for (event, entries) in per_event.iter_mut() {
-                    if let Some(pos) = entries.iter().position(|e| e.id == id) {
-                        let e = entries.remove(pos);
-                        let event = event.clone();
-                        removed = Some((event, e));
-                        break;
+                match delete_session_hook(&self.config_dir, &sid, &id) {
+                    Ok(view) => {
+                        tracing::info!("[HooksTool] session hook deleted: sid={sid} id={id}");
+                        Ok(format!(
+                            "已删除当前会话钩子 {id}（{}）\n{}\n{}",
+                            view.event,
+                            render_entry(&view),
+                            activation_note(self.bridge.as_ref()),
+                        ))
+                    }
+                    Err(e) => {
+                        // 会话一个钩子都没有 → 友好空态文案；其余（id 不存在
+                        // 等）原样透传（API 错误已带现有 id 清单）。
+                        if list_session_hooks(&self.config_dir, &sid)
+                            .map(|v| v.is_empty())
+                            .unwrap_or(false)
+                        {
+                            return Err(format!("本会话（{sid}）当前没有已设置的钩子"));
+                        }
+                        Err(e)
                     }
                 }
-                let Some((event, e)) = removed else {
-                    let ids: Vec<String> = per_event
-                        .values()
-                        .flat_map(|v| v.iter().map(|e| e.id.clone()))
-                        .collect();
-                    return Err(if ids.is_empty() {
-                        format!("本会话（{sid}）当前没有已设置的钩子")
-                    } else {
-                        format!("未找到钩子 {id:?}——本会话现有 id：{}", ids.join(", "))
-                    });
-                };
-                // 全空则整键摘除（存储不积攒空壳；is_empty 语义干净）。
-                if per_event.values().all(Vec::is_empty) {
-                    store.hooks.remove(&sid);
-                }
-                write_session_hook_store(&self.config_dir, &store)?;
-                tracing::info!("[HooksTool] session hook deleted: sid={sid} id={id}");
-                Ok(format!(
-                    "已删除当前会话钩子 {id}（{event}）\n{}\n{}",
-                    render_entry(&event, &e),
-                    activation_note(self.bridge.as_ref()),
-                ))
             }
             HooksCommand::List => {
-                let store: SessionHookStore = read_session_hook_store(&self.config_dir);
-                let Some(per_event) = store.hooks.get(&sid) else {
-                    return Ok(format!(
-                        "本会话（{sid}）当前没有已设置的钩子。\n全局钩子（对全部会话生效）请在 Dashboard Hooks 页或 hooks.json 配置。"
-                    ));
-                };
-                let mut lines = Vec::new();
-                for (event, entries) in per_event {
-                    for e in entries {
-                        lines.push(render_entry(event, e));
-                    }
-                }
-                if lines.is_empty() {
+                let views = list_session_hooks(&self.config_dir, &sid)?;
+                if views.is_empty() {
                     return Ok(format!(
                         "本会话（{sid}）当前没有已设置的钩子。\n全局钩子（对全部会话生效）请在 Dashboard Hooks 页或 hooks.json 配置。"
                     ));
                 }
+                let lines: Vec<String> = views.iter().map(render_entry).collect();
                 Ok(format!(
                     "本会话（{sid}）共 {} 个钩子（只对本会话生效）：\n{}",
                     lines.len(),

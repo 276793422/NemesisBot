@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { nextTick, reactive } from 'vue'
 import { SkinStructureEngine } from '../engine'
 import { parseSkinStructure, URL_ATTRS } from '../sanitize'
+import { registerChatBridge } from '../chatBridge'
 import type { SkinProjection } from '../types'
 
 function proj(): SkinProjection {
@@ -29,8 +30,10 @@ function proj(): SkinProjection {
         ],
       },
     ],
+    projectGroups: [],
     hasSessions: true,
     currentSessionId: 's1',
+    sortLabel: '最近',
     estopEngaged: false,
     estopBusy: false,
     estopLabel: '急停',
@@ -42,6 +45,8 @@ function proj(): SkinProjection {
     chatBusy: false,
     inputText: '',
     mode: 'build',
+    isPlan: false,
+    work: null,
     pages: {},
   })
 }
@@ -495,5 +500,100 @@ describe('SkinStructureEngine：v3 内容区原语', () => {
     expect(span.querySelector('img')?.hasAttribute('onerror')).toBe(false)
     // 合法内联标记存活（消毒 ≠ 清空）。
     expect(span.innerHTML).toContain('<b>保留</b>')
+  })
+})
+
+describe('SkinStructureEngine：v3.1 media 原语（2026-11-18 focus 皮肤）', () => {
+  /** jsdom 无完整 FileList——引擎只读 `files.length` / 整体透传，array-like 足够。 */
+  function fakeFileList(file: File): unknown {
+    return { 0: file, length: 1, item: () => file }
+  }
+
+  it('data-nb-media-source：file input change → chatBridge.addFiles + value 清空（同文件可重复选）', () => {
+    const addFiles = vi.fn()
+    registerChatBridge({ send: vi.fn(), stop: vi.fn(), addFiles })
+    const { engine, container } = mountWith(
+      `<template data-nb-slot="titlebar" data-nb-engine="1"><input type="file" data-nb-media-source></template>`
+    )
+    engine.mount('titlebar', container)
+    const input = container.querySelector('input')!
+    const file = new File(['x'], 'a.png', { type: 'image/png' })
+    Object.defineProperty(input, 'files', { value: fakeFileList(file), configurable: true })
+    input.dispatchEvent(new Event('change'))
+    expect(addFiles).toHaveBeenCalledTimes(1)
+    expect(input.value).toBe('')
+  })
+
+  it('data-nb-media：粘贴带文件 → 接管 addFiles；纯文本不拦（照常走 input 链）', () => {
+    const addFiles = vi.fn()
+    registerChatBridge({ send: vi.fn(), stop: vi.fn(), addFiles })
+    const { engine, container } = mountWith(
+      `<template data-nb-slot="titlebar" data-nb-engine="1">` +
+        `<div data-nb-media><textarea data-nb-field="chat.input"></textarea></div></template>`
+    )
+    engine.mount('titlebar', container)
+    const box = container.querySelector('div')!
+
+    const file = new File(['x'], 'b.png', { type: 'image/png' })
+    const pasteFiles = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(pasteFiles, 'clipboardData', {
+      value: { files: fakeFileList(file) },
+    })
+    box.dispatchEvent(pasteFiles)
+    expect(pasteFiles.defaultPrevented).toBe(true)
+    expect(addFiles).toHaveBeenCalledTimes(1)
+
+    const plain = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(plain, 'clipboardData', { value: { files: { length: 0, item: () => null } } })
+    box.dispatchEvent(plain)
+    expect(plain.defaultPrevented).toBe(false)
+    expect(addFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it('data-nb-media：dragover 带 Files 加 nb-media-dragover 类 / dragleave 移除 / drop 接管并清类', () => {
+    const addFiles = vi.fn()
+    registerChatBridge({ send: vi.fn(), stop: vi.fn(), addFiles })
+    const { engine, container } = mountWith(
+      `<template data-nb-slot="titlebar" data-nb-engine="1"><div data-nb-media></div></template>`
+    )
+    engine.mount('titlebar', container)
+    const box = container.querySelector('div')!
+
+    const over = new Event('dragover', { cancelable: true })
+    Object.defineProperty(over, 'dataTransfer', { value: { types: ['Files'] } })
+    box.dispatchEvent(over)
+    expect(over.defaultPrevented).toBe(true)
+    expect(box.classList.contains('nb-media-dragover')).toBe(true)
+
+    box.dispatchEvent(new Event('dragleave'))
+    expect(box.classList.contains('nb-media-dragover')).toBe(false)
+
+    const file = new File(['x'], 'c.png', { type: 'image/png' })
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', {
+      value: { files: fakeFileList(file), types: ['Files'] },
+    })
+    box.dispatchEvent(drop)
+    expect(drop.defaultPrevented).toBe(true)
+    expect(addFiles).toHaveBeenCalledTimes(1)
+    expect(box.classList.contains('nb-media-dragover')).toBe(false)
+  })
+
+  it('卸载后 media 监听全部移除（paste/drop 不再触发 addFiles）', () => {
+    const addFiles = vi.fn()
+    registerChatBridge({ send: vi.fn(), stop: vi.fn(), addFiles })
+    const { engine, container } = mountWith(
+      `<template data-nb-slot="titlebar" data-nb-engine="1"><div data-nb-media></div></template>`
+    )
+    engine.mount('titlebar', container)
+    const box = container.querySelector('div')!
+    engine.unmount('titlebar')
+
+    const file = new File(['x'], 'd.png', { type: 'image/png' })
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: { files: fakeFileList(file) } })
+    box.dispatchEvent(paste)
+    expect(paste.defaultPrevented).toBe(false)
+    expect(addFiles).not.toHaveBeenCalled()
   })
 })

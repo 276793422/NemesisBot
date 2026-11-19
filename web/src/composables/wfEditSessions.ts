@@ -80,6 +80,29 @@ export function useWfEditSessions() {
   return { register, targetOf, ids, unregister }
 }
 
+/**
+ * 工作流编辑会话**隐藏判定**单一真相源（2026-11-18 focus 皮肤抽取）：
+ * 登记表（localStorage）+ 服务端绑定表（sessions.list 回带 bindings，
+ * `wf_agentgen:*` 键命中的存活会话）取**并集**——本地登记富信息（target
+ * 名）但换端口/换浏览器/清站点数据会失忆；服务端绑定表跟会话列表同源
+ * 不丢。原生 SessionSidebar 与皮肤投影（projectGroups 派生）共用。
+ *
+ * 传入 store 需暴露 `bindings: Record<string, string>`（useSessionStore
+ * 满足）；谓词在 computed/watchEffect 内调用时 bindings 读取被响应式追踪。
+ */
+export function makeWfEditHiddenPredicate(sessionStore: {
+  bindings: Record<string, string>
+}): (id: string) => boolean {
+  const wf = useWfEditSessions()
+  return (id: string) => {
+    if (wf.targetOf(id) !== undefined) return true
+    for (const [key, sid] of Object.entries(sessionStore.bindings)) {
+      if (key.startsWith('wf_agentgen:') && sid === id) return true
+    }
+    return false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 草稿 diff 类型与计算
 // ---------------------------------------------------------------------------

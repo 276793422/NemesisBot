@@ -128,7 +128,7 @@ pub struct ResourceCtx<'a> {
     pub session_key: &'a str,
     /// 剥前缀裸 sid（hooks 双口径用，口径地雷 3）。
     pub bare_sid: &'a str,
-    /// 工作区根（文件读类 provider 用：hooks.session.json / todo / loops）。
+    /// 工作区根（文件读类 provider 用：hooks.json / todo / loops）。
     pub workspace_root: &'a Path,
 }
 
