@@ -59,6 +59,11 @@ pub struct AgentLoopSpec {
     /// 落 home；None = 全部缺席（主/记录形态零变化；项目形态记录缺位时
     /// 也为 None——agents 记录是增强面，缺位 warn 降级不拒建 loop）。
     pub agent_home: Option<std::path::PathBuf>,
+    /// （围栏多根，2026-11-19 D 批）：项目注册表 `extra_dirs`（canonical
+    /// 绝对路径）——boundary.extra_roots 追加注入 + executor 子进程 env
+    /// 透传（开关两侧围栏同根）。诚实边界：不进 checkpoint 快照、不进
+    /// 前端文件树。非项目形态 = 空。
+    pub extra_dirs: Vec<std::path::PathBuf>,
     /// 子代理可见性：本 loop 的宿主形态标识——`project:{id}`（项目
     /// loop）/ `agent:{id}`（记录/自建 loop）/ `main`（主 loop，不经 spec
     /// 构建）。子代理注册表 `loop_origin` 字段的赋值源：详情视图按它区分
@@ -118,6 +123,13 @@ impl AgentLoopSpec {
             // 项目 loop 共享形态（浏览器 profile 不 per-project）。
             browser_profile: None,
             agent_home,
+            // 围栏多根：注册表 extra_dirs 原样透传（canonical 字符串 →
+            // PathBuf；校验/去重在 add_project_dir 落盘前已保证）。
+            extra_dirs: project
+                .extra_dirs
+                .iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
             loop_origin,
         }
     }
@@ -158,6 +170,8 @@ impl AgentLoopSpec {
             // 记录形态（selfbuilt/main）不设第二根——selfbuilt 的 home
             // 就是 exec_root（两根重合无意义），main 无 home 语义。
             agent_home: None,
+            // 记录形态无多根（注册表 extra_dirs 是项目形态专属契约）。
+            extra_dirs: Vec::new(),
             loop_origin: format!("agent:{}", record.agent_id),
         }
     }
@@ -614,6 +628,10 @@ pub fn build_agent_loop_from_spec(
             roots.push(nemesis_path::resolve_agents_root_in_workspace(
                 &shared.workspace_dir(),
             ));
+            // 围栏多根（2026-11-19 D 批）：注册表 extra_dirs 追加放行
+            // （canonical 校验在 add_project_dir 落盘前已保证——这里信任
+            // 注册表，主根/重叠检测不重跑）。
+            roots.extend(spec.extra_dirs.iter().cloned());
             roots
         },
         editor_gate,
@@ -688,12 +706,15 @@ pub fn build_agent_loop_from_spec(
     // cwd 执行；enabled/sandbox 开关与主 loop 同源 config）。：常驻
     // 路由按 spec 的解析闭包挂接（项目=kind+project_id 记录匹配；记录缺
     // 席时调用时诚实回落 per-call）。：围栏第二根（项目 agent home）
-    // 透传 per-call 子进程 env——开关两侧围栏同根。
+    // 透传 per-call 子进程 env——开关两侧围栏同根；多根 extra_dirs 同通道
+    // 透传（executor 子进程围栏与 gateway 侧一致，2026-11-19 D 批）。
+    let mut executor_extra_roots: Vec<std::path::PathBuf> = agent_home.iter().cloned().collect();
+    executor_extra_roots.extend(spec.extra_dirs.iter().cloned());
     let executor_channel = crate::exec_world::build_executor_channel_with_extra_roots(
         &shared.home,
         &project_dir,
         shared.config_store.handle(),
-        agent_home.iter().cloned().collect(),
+        executor_extra_roots,
     )?;
     let persistent_route = spec
         .persistent_resolve

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, provide, onMounted, onUnmounted, ref } from 'vue'
 import ChatPanel from '../components/ChatPanel.vue'
 import SessionSidebar from '../components/SessionSidebar.vue'
 import FileTreePanel from '../components/chat/FileTreePanel.vue'
 import BrowserPickPanel from '../components/chat/BrowserPickPanel.vue'
 import SessionResourcesPanel from '../components/chat/SessionResourcesPanel.vue'
+import { RESOURCES_PANEL_CTL } from '../composables/useResourcesPanel'
 import { useSessionStore } from '../stores/session'
 import { skinHasSlot } from '../composables/useSkin'
 
@@ -14,34 +15,73 @@ const sessionStore = useSessionStore()
 // 默认包含，同 router 门控惯例）；关 = 面板不挂载（侧栏按钮同闸）。
 const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
 
-// ---- 会话资源盘点看板（2026-11-17，B3 壳层）----
+// ---- 会话资源看板（2026-11-17，B3 壳层；2026-11-19 交互改造）----
 //
-// 宽屏（容器 ≥ 1284px）右栏挂 SessionResourcesPanel；ChatPanel（.page-chat）
-// 靠左固定宽 944px，资源窗紧贴其右侧吃掉剩余宽度（2026-11-18 用户拍板：
-// 对话列恒在最左、宽度确定，看板是它右边的侧窗——勿再挪回居中/贴右）。
-// 窄屏自动收起。开合偏好存 localStorage（全局统一键，不分会话）。收起态 =
-// 右缘细竖条按钮（组件 v-if 卸载 = 订阅/轮询全停）；首次（无偏好记录）默认
-// 展开。
+// 两种形态（按布局宽度自动切换，同一份开合状态）：
+// - 并排形态（布局 ≥ RESOURCES_OPEN_AT）：右栏并排，ChatPanel 靠左固定
+//   944px，资源窗紧贴其右吃掉剩余宽度（2026-11-18 用户拍板：对话列恒在
+//   最左、宽度确定）；
+// - overlay 抽屉形态（布局 < RESOURCES_OPEN_AT）：资源窗悬浮覆盖右侧 +
+//   遮罩，不挤压对话列——任何宽度都能打开（2026-11-19 用户拍板，取代旧
+//   「窄屏强制收起」：窄窗口点开不再失败，只是换形态）。
+//
+// 自动开（2026-11-19 用户提案 A）：布局从窄到宽穿越 OPEN_AT 那一刻自动
+// 打开一次（边缘触发 + 滞后带防拖动抖动）；本次页面生命周期内用户手动
+// 收起过则不再自动开（意志优先；手动开一次即恢复资格）。窄方向不强制
+// 收——overlay 不挤压对话列，开着不碍事。
+// 开合偏好存 localStorage（全局统一键，不分会话）；首次（无偏好）默认展开。
 const resourcesOpen = ref(localStorage.getItem('nb_resources_panel') !== '0')
 const viewportWide = ref(true)
+/** overlay 抽屉形态判定：布局不足以并排时，打开的资源窗走悬浮形态。 */
+const overlayMode = computed(() => !viewportWide.value)
+/** 用户手动收起后置 true（本次生命周期内抑制自动开；手动开复位）。 */
+let userClosedManually = localStorage.getItem('nb_resources_panel') === '0'
 let resizeObserver: ResizeObserver | null = null
 const layoutEl = ref<HTMLElement | null>(null)
 
-// 阈值 = ChatPanel 上限 944（含滚动条余量）+ 面板最小 340。
-const RESOURCES_LAYOUT_MIN = 1284
+// 并排下限 = ChatPanel 上限 944（含滚动条余量）+ 面板最小 340；
+// 滞后带下缘低于它一截——拖动穿越阈值时不会在临界点反复翻转。
+const RESOURCES_OPEN_AT = 1284
+const RESOURCES_CLOSE_AT = 1180
+
+/** 首屏判宽哨兵：首次 applyViewport 前为 true（窄窗口静默收起只此一次）。 */
+let firstViewportCheck = true
 
 function applyViewport(): void {
   const w = layoutEl.value?.clientWidth ?? 0
-  const wide = w >= RESOURCES_LAYOUT_MIN
+  const prev = viewportWide.value
+  // 滞后带：≥OPEN_AT 判宽、<CLOSE_AT 判窄、带间保持原值。
+  const wide = w >= RESOURCES_OPEN_AT ? true : w < RESOURCES_CLOSE_AT ? false : prev
   viewportWide.value = wide
-  if (!wide && resourcesOpen.value) resourcesOpen.value = false
+  // 首屏：窄窗口 + 展开态 → 静默收起（不写偏好、不算手动关）——抽屉不该
+  // 在首屏盖住对话列；转宽时边缘触发自动开会把它带回来。
+  if (firstViewportCheck) {
+    firstViewportCheck = false
+    if (!wide && resourcesOpen.value && !userClosedManually) resourcesOpen.value = false
+  }
+  // 边缘触发自动开：仅窄→宽穿越那一刻（带间移动 prev===wide 不触发）。
+  if (wide && !prev && !resourcesOpen.value && !userClosedManually) {
+    setResourcesOpen(true)
+  }
 }
 
-// 窄屏强收后转宽屏不自动重开（用户意志优先；竖条按钮常在可手动开）。
-function toggleResources(): void {
-  resourcesOpen.value = !resourcesOpen.value
-  localStorage.setItem('nb_resources_panel', resourcesOpen.value ? '1' : '0')
+function setResourcesOpen(v: boolean): void {
+  resourcesOpen.value = v
+  localStorage.setItem('nb_resources_panel', v ? '1' : '0')
+  userClosedManually = !v
 }
+
+function toggleResources(): void {
+  setResourcesOpen(!resourcesOpen.value)
+}
+
+// 提案 C（2026-11-19，用户原始提案）：输入框右侧【收起工具栏】按钮已改为
+// 【打开/收起资源窗】——ChatPanel 经注入拿到这份控制（无 ChatView 的挂载
+// 面 inject 缺省 null，按钮不渲染）。
+provide(RESOURCES_PANEL_CTL, {
+  open: computed(() => resourcesOpen.value),
+  toggle: toggleResources,
+})
 
 // On entering the chat page, load the session list + auto-select a sensible
 // default (legacy "历史对话" if present, else the most recent) so the user
@@ -50,7 +90,7 @@ function toggleResources(): void {
 // because the sidebar is v-if'd on showSidebar — its onMounted only fires
 // when the user opens it, which is too late for the initial auto-select.
 onMounted(async () => {
-  // B3: 判宽先行（窄屏强收在会话列表 await 之前生效，防面板闪一帧）。
+  // 判宽先行（overlay/并排形态判定在会话列表 await 之前生效，防面板闪一帧）。
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(applyViewport)
     if (layoutEl.value) resizeObserver.observe(layoutEl.value)
@@ -85,26 +125,32 @@ onUnmounted(() => {
     <!-- 皮肤 sidebar 槽（结构皮肤）自带会话历史（AppLayout 层），避免
          双侧栏；CSS-only 包 / 无皮肤回落原生 SessionSidebar -->
     <SessionSidebar v-if="sessionStore.showSidebar && !skinHasSlot('sidebar')" />
-    <ChatPanel :class="{ 'chat-main-narrow': resourcesOpen }" />
-    <!-- B3: 会话资源盘点看板（宽屏右栏；收起态右缘细竖条） -->
+    <ChatPanel :class="{ 'chat-main-narrow': resourcesOpen && !overlayMode }" />
+    <!-- B3: 会话资源看板。并排 = 右栏；overlay = 悬浮抽屉 + 遮罩（遮罩
+         点击收起；抽屉头部 ✕ 同款，经 @close 上抛）。 -->
+    <div
+      v-if="resourcesOpen && overlayMode"
+      class="chat-resources-backdrop"
+      @click="setResourcesOpen(false)"
+    />
     <SessionResourcesPanel
       v-if="resourcesOpen"
       :session-id="sessionStore.currentId || null"
+      :overlay="overlayMode"
       class="chat-resources-panel"
+      :class="{ 'chat-resources-overlay': overlayMode }"
+      @close="setResourcesOpen(false)"
     />
-    <button
-      v-if="!resourcesOpen && viewportWide"
-      class="chat-resources-rail"
-      type="button"
-      title="打开资源看板"
-      @click="toggleResources"
-    >‹ 资源</button>
+    <!-- #6 rail 竖条入口已删（2026-11-19）：收起后重开走 ChatPanel 输入
+         行右侧资源窗开关（resourcesCtl 注入面，任何宽度可用）；两处入口
+         语义重复且竖条与 overlay 形态并存时视觉冗余。 -->
   </div>
 </template>
 
 <style scoped>
 .chat-page-layout {
   display: flex;
+  position: relative;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -120,8 +166,9 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  /* B3: 资源看板在场时（.chat-main-narrow 动态挂上）对话列固定 944 靠左
-     （上限含滚动条余量），看板收起 = 布局与旧版一致（撑满）。 */
+  /* B3: 资源看板并排在场时（.chat-main-narrow 动态挂上）对话列固定 944
+     靠左（上限含滚动条余量）；overlay 形态不挂——对话列撑满，抽屉悬浮。
+     看板收起 = 布局与旧版一致（撑满）。 */
   max-width: none;
   margin-left: 0;
 }
@@ -134,25 +181,29 @@ onUnmounted(() => {
   margin-left: 0;
 }
 .chat-resources-panel {
-  /* 紧贴对话列右侧吃掉剩余宽度（不设 max-width——设了上限宽窗口右缘会
-     留死空间；2026-11-18 用户拍板：资源窗 = 对话列右边的侧窗）。 */
+  /* 并排形态：紧贴对话列右侧吃掉剩余宽度（不设 max-width——设了上限宽
+     窗口右缘会留死空间；2026-11-18 用户拍板：资源窗 = 对话列右边的侧窗）。
+     overlay 形态由 .chat-resources-overlay 接管（绝对定位脱离 flex 流）。 */
   flex: 1 1 340px;
   min-width: 300px;
   min-height: 0;
   border-left: 1px solid var(--border);
 }
-.chat-resources-rail {
-  writing-mode: vertical-rl;
-  align-self: center;
-  border: 1px solid var(--border);
-  border-right: none;
-  border-radius: 8px 0 0 8px;
-  background: var(--bg-elev);
-  color: var(--text-muted);
-  padding: 12px 3px;
-  cursor: pointer;
-  font-size: 11px;
-  letter-spacing: 2px;
+.chat-resources-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 88vw);
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.22);
+  z-index: var(--z-overlay);
 }
-.chat-resources-rail:hover { color: var(--accent); border-color: var(--accent); }
+.chat-resources-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  z-index: calc(var(--z-overlay) - 1);
+}
 </style>

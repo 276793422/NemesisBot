@@ -377,3 +377,202 @@ fn test_registry_accepts_utf8_bom_file() {
     std::fs::write(&reg, "\u{feff}{not-json").unwrap();
     assert!(try_load_projects(&reg).is_err(), "真损坏仍必须 loud 拒绝");
 }
+
+// ---------------------------------------------------------------------------
+// 附加放行目录（extra_dirs，2026-11-19 D 批）：add/remove 是读-校验-写 RMW，
+// 校验链三向不重叠（主 workspace / 任何项目主根 / 任何已有 extra_dir），
+// remove 摘列表不动磁盘。canonical 表示与 path 同源（剥 verbatim + 归一
+// 8.3），serde default 零迁移。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_entry_extra_dirs_serde_default_empty() {
+    // 老形态 JSON（无 extra_dirs 键）→ 空 vec（零迁移）。
+    let legacy: ProjectEntry = serde_json::from_str(
+        r#"{"id":"p-00000002","name":"老条目","path":"C:/p","created_at":"2026-09-08T00:00:00Z"}"#,
+    )
+    .unwrap();
+    assert!(legacy.extra_dirs.is_empty());
+
+    // 显式非空 round-trip 保留。
+    let e = ProjectEntry {
+        extra_dirs: vec!["D:/assets".to_string()],
+        ..legacy.clone()
+    };
+    let back: ProjectEntry = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+    assert_eq!(back, e);
+}
+
+#[test]
+fn test_add_remove_project_dir_happy_path_and_canonical_form() {
+    let ws = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let proj = parent.path().join("demo");
+    let assets = parent.path().join("assets");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&assets).unwrap();
+    let reg = registry_path(ws.path());
+
+    let e = create_project(&reg, ws.path(), "演示项目", proj.to_str().unwrap(), 4).unwrap();
+    let updated = add_project_dir(&reg, &e.id, assets.to_str().unwrap(), ws.path()).unwrap();
+    let want = canonicalize_for_compare(&assets)
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        updated.extra_dirs,
+        vec![want.clone()],
+        "烧入 canonical 表示"
+    );
+
+    // 盘上 roundtrip。
+    assert_eq!(
+        find_project(&reg, &e.id).unwrap().extra_dirs,
+        vec![want.clone()]
+    );
+
+    // 重复添加 = 诚实拒绝。
+    let err = add_project_dir(&reg, &e.id, assets.to_str().unwrap(), ws.path())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("已存在"), "unexpected: {err}");
+
+    // remove：出列表；目录与其内容原样（注册不拥有）。
+    let after = remove_project_dir(&reg, &e.id, assets.to_str().unwrap()).unwrap();
+    assert!(after.extra_dirs.is_empty());
+    assert!(assets.is_dir(), "remove 只摘列表，绝不动磁盘");
+    assert!(
+        find_project(&reg, &e.id).unwrap().extra_dirs.is_empty(),
+        "盘上状态必须与返回值一致"
+    );
+}
+
+#[test]
+fn test_add_dir_validation_and_overlap_matrix() {
+    let root = tempfile::tempdir().unwrap();
+    let ws = root.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let reg = registry_path(&ws);
+    let mk = |name: &str| {
+        let p = root.path().join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    };
+
+    let proj_a = mk("proj-a");
+    let e = create_project(&reg, &ws, "A", proj_a.to_str().unwrap(), 8).unwrap();
+    let proj_b = mk("proj-b");
+    let eb = create_project(&reg, &ws, "B", proj_b.to_str().unwrap(), 8).unwrap();
+
+    // 入参校验：空 / 相对 / 不存在。
+    let nope = root.path().join("nope");
+    for (bad, needle) in [
+        ("", "不能为空"),
+        ("relative/path", "绝对路径"),
+        (nope.to_str().unwrap(), "不存在"),
+    ] {
+        let err = add_project_dir(&reg, &e.id, bad, &ws)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(needle), "unexpected: {err}");
+    }
+
+    // 与主 workspace 重叠：相等 / 子目录。
+    let sub_of_ws = mk("ws/sub");
+    for cand in [ws.to_str().unwrap(), sub_of_ws.to_str().unwrap()] {
+        let err = add_project_dir(&reg, &e.id, cand, &ws)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("主工作区"), "unexpected: {err}");
+    }
+
+    // 与项目主根重叠：自己 / 别的项目（相等或子目录——extra_dir 命中别的
+    // 项目主根 = 跨项目越权写通道，围栏嵌套歧义禁令）。
+    let child_of_b = mk("proj-b/child");
+    for (cand, proj_name) in [
+        (proj_b.to_str().unwrap(), "B"),
+        (child_of_b.to_str().unwrap(), "B"),
+        (proj_a.to_str().unwrap(), "A"),
+    ] {
+        let err = add_project_dir(&reg, &e.id, cand, &ws)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("重叠") && err.contains(proj_name),
+            "extra_dir 命中项目主根必须拒绝（目标 {proj_name}）: {err}"
+        );
+    }
+
+    // 与已有 extra_dir 重叠（别的项目的附加目录：相等或子目录）。
+    let b_assets = mk("b-assets");
+    add_project_dir(&reg, &eb.id, b_assets.to_str().unwrap(), &ws).unwrap();
+    let b_assets_child = mk("b-assets/inner");
+    for cand in [b_assets.to_str().unwrap(), b_assets_child.to_str().unwrap()] {
+        let err = add_project_dir(&reg, &e.id, cand, &ws)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("重叠"), "unexpected: {err}");
+    }
+
+    // ws 的兄弟目录合法（不在任何禁区）。
+    let ok_dir = mk("ok-assets");
+    let updated = add_project_dir(&reg, &e.id, ok_dir.to_str().unwrap(), &ws).unwrap();
+    assert_eq!(updated.extra_dirs.len(), 1);
+}
+
+#[test]
+fn test_add_dir_cap_and_unknown_project_and_corrupt() {
+    let ws = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let proj = parent.path().join("demo");
+    std::fs::create_dir_all(&proj).unwrap();
+    let reg = registry_path(ws.path());
+
+    let e = create_project(&reg, ws.path(), "demo", proj.to_str().unwrap(), 4).unwrap();
+
+    // 上限 EXTRA_DIRS_MAX：第 max+1 个拒绝且不落盘。
+    for i in 0..EXTRA_DIRS_MAX {
+        let d = parent.path().join(format!("d{i}"));
+        std::fs::create_dir_all(&d).unwrap();
+        add_project_dir(&reg, &e.id, d.to_str().unwrap(), ws.path())
+            .unwrap_or_else(|err| panic!("add {i} must succeed: {err}"));
+    }
+    let over = parent.path().join("d-over");
+    std::fs::create_dir_all(&over).unwrap();
+    let err = add_project_dir(&reg, &e.id, over.to_str().unwrap(), ws.path())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("上限") && err.contains('8'),
+        "unexpected: {err}"
+    );
+    assert_eq!(
+        find_project(&reg, &e.id).unwrap().extra_dirs.len(),
+        EXTRA_DIRS_MAX,
+        "被拒条目不落盘"
+    );
+
+    // 未知项目：与 remove/rename 同报错语义。
+    let some = parent.path().join("some");
+    std::fs::create_dir_all(&some).unwrap();
+    let err = add_project_dir(&reg, "p-ffffffff", some.to_str().unwrap(), ws.path())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("项目不存在"), "unexpected: {err}");
+    let err = remove_project_dir(&reg, "p-ffffffff", some.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("项目不存在"), "unexpected: {err}");
+
+    // remove 不存在的附加目录：诚实报错。
+    let err = remove_project_dir(&reg, &e.id, some.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("附加目录不存在"), "unexpected: {err}");
+
+    // 损坏注册表：写路径 loud 拒绝。
+    std::fs::write(&reg, "{not json").unwrap();
+    let err = add_project_dir(&reg, &e.id, some.to_str().unwrap(), ws.path())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("损坏"), "unexpected: {err}");
+}

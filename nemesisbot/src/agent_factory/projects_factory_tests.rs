@@ -63,6 +63,7 @@ fn entry_for(id: &str, dir: &Path) -> ProjectEntry {
         path: dir.to_path_buf(),
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     }
 }
 
@@ -957,6 +958,50 @@ async fn agent_home_spec_materializes_and_routes_data_to_home() {
     );
 
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
+}
+
+/// D 批围栏多根：`from_project` 把注册表 extra_dirs 原样透传进 spec
+/// （canonical 字符串 → PathBuf，顺序保持）；`from_record` 恒空（记录
+/// 形态无多根契约）。boundary / executor 两处消费在 build 内联
+/// （spec.rs 两处 extend）——围栏语义由 nemesis-agent
+/// workspace_boundary_tests 的 extra_roots 矩阵 + remote_executor_tool
+/// tests 的 env_pairs 两则钉死；这里钉数据流源头，防注册表 → spec 断链
+/// （断链 = extra_dirs 全静默失效且无任何报错）。
+#[test]
+fn spec_from_project_carries_extra_dirs_and_record_form_is_empty() {
+    let dir = unique_home("b2extra");
+    let project_dir = dir.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let mut entry = entry_for("p_b2extra01", &project_dir);
+    entry.extra_dirs = vec![
+        "D:/assets/lib".to_string(),
+        "C:/shared cache/docs".to_string(),
+    ];
+    let spec = super::AgentLoopSpec::from_project(&entry);
+    assert_eq!(
+        spec.extra_dirs,
+        vec![
+            std::path::PathBuf::from("D:/assets/lib"),
+            std::path::PathBuf::from("C:/shared cache/docs"),
+        ],
+        "注册表 extra_dirs 必须原样进 spec（顺序保持，不做二次加工）"
+    );
+
+    // 记录形态：无多根（注册表 extra_dirs 是项目形态专属契约）。
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "cccccccccccccccccccccccccccccccc",
+        "plain",
+        "selfbuilt",
+    );
+    record.exec_root = project_dir.to_string_lossy().to_string();
+    let spec = super::AgentLoopSpec::from_record(&record);
+    assert!(
+        spec.extra_dirs.is_empty(),
+        "记录形态必须无多根（零迁移契约）"
+    );
+
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&dir);
 }
 
 /// 记忆选域闸（姊妹函数 [`super::memory_manager_for_data_dir`]）：

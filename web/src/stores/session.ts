@@ -73,6 +73,24 @@ export const useSessionStore = defineStore('session', () => {
     if (p) p.name = resp.project.name
   }
 
+  /** 添加附加放行目录（围栏多根，2026-11-19 D 批）：本地以响应条目原位
+   *  替换（extra_dirs 更新）。失败抛出（调用方 toast 错误原文）。 */
+  async function addProjectDir(projectId: string, dir: string): Promise<ProjectInfo> {
+    const resp = await api.addProjectDir(projectId, dir)
+    const idx = projects.value.findIndex(x => x.id === projectId)
+    if (idx >= 0) projects.value.splice(idx, 1, resp.project)
+    return resp.project
+  }
+
+  /** 移除附加放行目录（摘列表不动磁盘；生效时机同 add——重启网关或
+   *  重建项目后生效）。失败抛出。 */
+  async function removeProjectDir(projectId: string, dir: string): Promise<ProjectInfo> {
+    const resp = await api.removeProjectDir(projectId, dir)
+    const idx = projects.value.findIndex(x => x.id === projectId)
+    if (idx >= 0) projects.value.splice(idx, 1, resp.project)
+    return resp.project
+  }
+
   /** projectId → 显示名（注册表已无此 pid = 已移除 → null，不误导）。 */
   function projectNameOf(projectId: string): string | null {
     return projects.value.find(p => p.id === projectId)?.name ?? null
@@ -283,5 +301,5 @@ export const useSessionStore = defineStore('session', () => {
     showSidebar.value = !showSidebar.value
   }
 
-  return { sessions, bindings, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, settlePendingCreates, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
+  return { sessions, bindings, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, settlePendingCreates, createProject, removeProject, renameProject, addProjectDir, removeProjectDir, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
 })

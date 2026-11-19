@@ -32,6 +32,8 @@ const ID_PREFIX: &str = "p-";
 const ID_HEX_LEN: usize = 8;
 /// 项目名称最大长度（防滥用；超限拒绝）。
 const NAME_MAX: usize = 100;
+/// 每项目附加放行目录上限（防滥用；超限拒绝）。
+const EXTRA_DIRS_MAX: usize = 8;
 
 /// `#[serde(default = "default_true")]` 的默认值函数（老条目零迁移——缺键
 /// 反序列化为 true，保持主循环同款行为）。
@@ -56,6 +58,17 @@ pub struct ProjectEntry {
     /// （annotate=注入但加不可信来源横幅 / isolated=整段跳过）。
     #[serde(default = "default_true")]
     pub instructions_trusted: bool,
+    /// 附加放行根（围栏多根，2026-11-19 D 批）：canonical 绝对路径字符串
+    /// （与 `path` 同表示——剥 verbatim + 归一 8.3）。项目 loop 的
+    /// `WorkspaceBoundary.extra_roots` 注入（主根之外 bot 可读写的目录——
+    /// 资产库/交付盘等）。serde default 零迁移；无重叠由 `add_project_dir`
+    /// 校验保证（对主 workspace / 任何项目主根 / 任何已有 extra_dir 双向
+    /// 不重叠）。
+    /// **诚实边界**：extra_dirs 不进 checkpoint 快照（影子库枚举走
+    /// workspace root）、不进前端文件树（fs.tree root=项目目录）——rewind/
+    /// undo 对 extra_dirs 的变更无回退网，文件树可见性不在多根范围。
+    #[serde(default)]
+    pub extra_dirs: Vec<String>,
 }
 
 /// projects.json 根结构。
@@ -206,6 +219,7 @@ pub fn build_new_entry(
         path,
         created_at: chrono::Local::now().to_rfc3339(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     })
 }
 
@@ -275,6 +289,119 @@ pub fn set_project_trust(path: &Path, id: &str, trusted: bool) -> Result<Project
         .find(|p| p.id == id)
         .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
     entry.instructions_trusted = trusted;
+    let updated = entry.clone();
+    save_projects(path, &file)?;
+    Ok(updated)
+}
+
+/// 校验附加放行目录（D3 add_dir 入参）：非空、绝对、存在且为目录、canonical
+/// 后与主 workspace / 任何项目主根 / 任何已有 extra_dir 双向不重叠（围栏
+/// 嵌套歧义禁令——extra_dir 命中别的项目主根 = 跨项目越权写通道）。返回
+/// canonical 字符串（与 [`ProjectEntry::extra_dirs`] 存储同表示）。
+/// `target_id` = 正在添加的目标项目：对**自己的**已有 extra_dir 只豁免
+/// 精确相等（那是重复添加，由 [`add_project_dir`] 以「已存在」诚实报错），
+/// 嵌套（祖先/后代）照旧拒绝；对**别人的** extra_dir 精确相等也拒绝
+/// （同一路径挂两个项目语义上允许但报错更防呆——先摘再加，避免误配）。
+pub fn canonicalize_extra_dir(
+    raw: &str,
+    main_workspace: &Path,
+    existing: &[ProjectEntry],
+    target_id: &str,
+) -> Result<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        bail!("附加目录路径不能为空");
+    }
+    let p = Path::new(raw);
+    if !p.is_absolute() {
+        bail!("附加目录必须是绝对路径: {raw}");
+    }
+    let canon = canonicalize_for_compare(p);
+    if !canon.is_dir() {
+        bail!("附加目录不存在或不是目录: {}", canon.display());
+    }
+    let ws = canonicalize_for_compare(main_workspace);
+    if paths_overlap(&ws, &canon) {
+        bail!(
+            "附加目录与主工作区重叠: {}（围栏嵌套歧义，禁止）",
+            canon.display()
+        );
+    }
+    for e in existing {
+        if paths_overlap(&e.path, &canon) {
+            bail!(
+                "附加目录与项目「{}」重叠: {} vs {}",
+                e.name,
+                e.path.display(),
+                canon.display()
+            );
+        }
+        let self_entry = e.id == target_id;
+        for d in &e.extra_dirs {
+            let d_canon = canonicalize_for_compare(Path::new(d));
+            if d_canon == canon && self_entry {
+                // 自己的重复添加：不在这里拦，交 add_project_dir 报「已存在」。
+                continue;
+            }
+            if paths_overlap(&d_canon, &canon) {
+                bail!("附加目录与已有附加目录重叠: {} vs {}", d, canon.display());
+            }
+        }
+    }
+    Ok(canon.to_string_lossy().into_owned())
+}
+
+/// 给项目添加附加放行目录（读-校验-写；损坏文件 loud 拒绝）。返回更新后
+/// 条目（调用方负责热更新对应 loop 的 boundary——重启前注册表是真相源）。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]（同 [`create_project`]）。
+pub fn add_project_dir(
+    path: &Path,
+    id: &str,
+    raw: &str,
+    main_workspace: &Path,
+) -> Result<ProjectEntry> {
+    let _serial = REGISTRY_WRITE_LOCK.lock();
+    let mut file = try_load_projects(path)?.unwrap_or_default();
+    let canon = canonicalize_extra_dir(raw, main_workspace, &file.projects, id)?;
+    let entry = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
+    if entry.extra_dirs.iter().any(|d| d == &canon) {
+        bail!("附加目录已存在: {canon}");
+    }
+    if entry.extra_dirs.len() >= EXTRA_DIRS_MAX {
+        bail!("附加目录数已达上限（{EXTRA_DIRS_MAX}）");
+    }
+    entry.extra_dirs.push(canon);
+    let updated = entry.clone();
+    save_projects(path, &file)?;
+    Ok(updated)
+}
+
+/// 移除项目的附加放行目录（**摘列表不动磁盘**——注册不拥有；入参按
+/// canonical 比较匹配，不匹配=不存在报错）。返回更新后条目。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]（同 [`create_project`]）。
+pub fn remove_project_dir(path: &Path, id: &str, dir: &str) -> Result<ProjectEntry> {
+    let _serial = REGISTRY_WRITE_LOCK.lock();
+    let mut file = try_load_projects(path)?.unwrap_or_default();
+    let canon = canonicalize_for_compare(Path::new(dir.trim()))
+        .to_string_lossy()
+        .into_owned();
+    let entry = file
+        .projects
+        .iter_mut()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow!("项目不存在: {id}"))?;
+    let idx = entry
+        .extra_dirs
+        .iter()
+        .position(|d| d == &canon)
+        .ok_or_else(|| anyhow!("附加目录不存在: {dir}"))?;
+    entry.extra_dirs.remove(idx);
     let updated = entry.clone();
     save_projects(path, &file)?;
     Ok(updated)

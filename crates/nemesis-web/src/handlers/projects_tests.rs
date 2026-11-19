@@ -134,6 +134,10 @@ struct MockState {
     missing_loops: HashSet<String>,
     /// 最近一次 set_trust 入参（handler→bridge 传递验证）。
     last_trust: Option<(String, bool)>,
+    /// 最近一次 add_dir 入参（同上）。
+    last_add_dir: Option<(String, String)>,
+    /// 最近一次 remove_dir 入参（同上）。
+    last_remove_dir: Option<(String, String)>,
 }
 
 impl MockBridge {
@@ -147,10 +151,13 @@ impl MockBridge {
                     created_at: "2026-09-08T00:00:00+08:00".to_string(),
                     running: true,
                     instructions_trusted: true,
+                    extra_dirs: Vec::new(),
                 }],
                 bound: HashMap::new(),
                 missing_loops: HashSet::new(),
                 last_trust: None,
+                last_add_dir: None,
+                last_remove_dir: None,
             }),
             project_loop: std::sync::OnceLock::new(),
         }
@@ -179,6 +186,7 @@ impl ProjectsBridge for MockBridge {
             created_at: "2026-09-08T00:00:00+08:00".to_string(),
             running: true,
             instructions_trusted: true,
+            extra_dirs: Vec::new(),
         };
         s.projects.push(info.clone());
         Ok(info)
@@ -216,6 +224,39 @@ impl ProjectsBridge for MockBridge {
             .find(|p| p.id == project_id)
             .ok_or_else(|| format!("项目不存在: {project_id}"))?;
         e.instructions_trusted = trusted;
+        Ok(e.clone())
+    }
+
+    fn add_dir(&self, project_id: &str, dir: &str) -> Result<ProjectInfo, String> {
+        let mut s = self.inner.lock();
+        s.last_add_dir = Some((project_id.to_string(), dir.to_string()));
+        let e = s
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("项目不存在: {project_id}"))?;
+        // 模拟真实 registry 语义：重复目录诚实拒绝。
+        if e.extra_dirs.iter().any(|d| d == dir) {
+            return Err(format!("附加目录已存在: {dir}"));
+        }
+        e.extra_dirs.push(dir.to_string());
+        Ok(e.clone())
+    }
+
+    fn remove_dir(&self, project_id: &str, dir: &str) -> Result<ProjectInfo, String> {
+        let mut s = self.inner.lock();
+        s.last_remove_dir = Some((project_id.to_string(), dir.to_string()));
+        let e = s
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| format!("项目不存在: {project_id}"))?;
+        let idx = e
+            .extra_dirs
+            .iter()
+            .position(|d| d == dir)
+            .ok_or_else(|| format!("附加目录不存在: {dir}"))?;
+        e.extra_dirs.remove(idx);
         Ok(e.clone())
     }
 
@@ -303,7 +344,16 @@ async fn projects_cmds_without_bridge_are_honest_errors() {
     let _g = BridgeGuard::empty();
     let ctx = make_ctx(None);
     let h = ProjectsHandler;
-    for cmd in ["list", "create", "remove", "rename", "open_dir", "trust"] {
+    for cmd in [
+        "list",
+        "create",
+        "remove",
+        "rename",
+        "open_dir",
+        "trust",
+        "add_dir",
+        "remove_dir",
+    ] {
         let data = if cmd == "list" {
             None
         } else {
@@ -462,6 +512,101 @@ async fn projects_trust_routes_through_bridge_and_reflects_flag() {
             .await
             .expect_err("missing/mistyped trusted must fail loudly");
         assert!(err.contains("trusted"), "error must name the field: {err}");
+    }
+    drop(g);
+}
+
+/// D3：`projects.add_dir` / `projects.remove_dir` 全臂——成功（响应带更新后
+/// extra_dirs + 诚实 note）/ 缺参 loud 拒绝 / 未知项目文案透传；入参必须
+/// 原样传给 bridge。
+#[tokio::test]
+async fn projects_add_remove_dir_route_through_bridge_with_honest_notes() {
+    let (g, mock) = BridgeGuard::with_mock();
+    let ctx = make_ctx(None);
+    let h = ProjectsHandler;
+
+    // add_dir 成功臂：响应带更新后的 extra_dirs + 生效时机 note。
+    let out = h
+        .handle_cmd(
+            "add_dir",
+            Some(serde_json::json!({"project_id": SENTINEL_PID, "dir": "D:/assets/lib"})),
+            &ctx,
+        )
+        .await
+        .expect("add_dir succeeds")
+        .expect("add_dir returns payload");
+    assert_eq!(out["project"]["extra_dirs"][0], "D:/assets/lib");
+    assert!(
+        out["note"].as_str().unwrap().contains("不热生效"),
+        "note must state the not-hot-applied semantics: {}",
+        out["note"]
+    );
+    {
+        let state = mock.inner.lock();
+        assert_eq!(
+            state
+                .last_add_dir
+                .as_ref()
+                .map(|(id, d)| (id.as_str(), d.as_str())),
+            Some((SENTINEL_PID, "D:/assets/lib")),
+            "handler must pass project_id/dir to the bridge verbatim"
+        );
+    }
+
+    // remove_dir 成功臂：摘列表（extra_dirs 回空）+ 不动磁盘 note。
+    let out = h
+        .handle_cmd(
+            "remove_dir",
+            Some(serde_json::json!({"project_id": SENTINEL_PID, "dir": "D:/assets/lib"})),
+            &ctx,
+        )
+        .await
+        .expect("remove_dir succeeds")
+        .expect("remove_dir returns payload");
+    assert_eq!(out["project"]["extra_dirs"].as_array().unwrap().len(), 0);
+    assert!(
+        out["note"].as_str().unwrap().contains("未删除"),
+        "note must state the no-delete semantics: {}",
+        out["note"]
+    );
+    {
+        let state = mock.inner.lock();
+        assert_eq!(
+            state
+                .last_remove_dir
+                .as_ref()
+                .map(|(id, d)| (id.as_str(), d.as_str())),
+            Some((SENTINEL_PID, "D:/assets/lib")),
+        );
+    }
+
+    // 未知项目：诚实文案透传（两命令同臂）。
+    for cmd in ["add_dir", "remove_dir"] {
+        let err = h
+            .handle_cmd(
+                cmd,
+                Some(serde_json::json!({"project_id": "p-nope", "dir": "D:/x"})),
+                &ctx,
+            )
+            .await
+            .expect_err("unknown project must fail honestly");
+        assert!(err.contains("不存在"), "{cmd} must pass through: {err}");
+    }
+
+    // 缺 dir 参数：loud 拒绝（错误点名缺失字段）。
+    for cmd in ["add_dir", "remove_dir"] {
+        let err = h
+            .handle_cmd(
+                cmd,
+                Some(serde_json::json!({"project_id": SENTINEL_PID})),
+                &ctx,
+            )
+            .await
+            .expect_err("missing dir must fail loudly");
+        assert!(
+            err.contains("dir"),
+            "{cmd} error must name the field: {err}"
+        );
     }
     drop(g);
 }

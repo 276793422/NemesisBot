@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, reactive, nextTick, onMounted, onUnmounted, watch, computed, inject } from 'vue'
 import { useChatStore, type ChatMessage } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
@@ -19,6 +19,14 @@ import { useToast } from '../composables/useToast'
 import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useSessionAllowAll } from '../composables/useSessionAllowAll'
+// 会话工具状态单例（2026-11-19 拆分迁移）：思考强度/分享/委派状态真值，
+// 与 SessionResourcesPanel「会话工具」分节共享（弹窗渲染仍在本组件）。
+import { useComposerTools } from '../composables/useComposerTools'
+import { RESOURCES_PANEL_CTL, type ResourcesPanelCtl } from '../composables/useResourcesPanel'
+import { useVoiceControls } from '../composables/useVoiceControls'
+// 提案 C（2026-11-19）：资源窗开合控制由 ChatView 提供（provide/inject）；
+// 无 ChatView 的挂载面 = null → 输入框右侧资源窗开关按钮不渲染。
+const resourcesCtl = inject<ResourcesPanelCtl | null>(RESOURCES_PANEL_CTL, null)
 // 2026-11-12 会话分叉入口（PLAN 234）：fork 走 HTTP（WSAPI 无 sessions.fork）
 // + 「⋯」菜单与全局右键菜单互斥单开。
 import { useChatApi } from '../composables/useChatApi'
@@ -216,76 +224,23 @@ async function toggleAgentMode() {
   }
 }
 
-// --- G3: 会话级思考强度下拉（chat.get_effort 对齐 + chat.set_effort 切换；
+// --- G3: 会话级思考强度（chat.get_effort 对齐 + chat.set_effort 切换；
 // 后端按会话分键——只影响当前会话，同 loop 其他会话不受牵连；仅内存态，
-// 重启后回落 config 模型级默认） ---
-const sessionEffort = ref('') // '' = 默认（无 override，跟随模型配置）
+// 重启后回落 config 模型级默认）---
+// 2026-11-19 拆分迁移：状态真值挪进 useComposerTools 单例（与资源窗
+// 「会话工具」分节共享）；下拉 UI 也迁到资源窗，本组件只保留调用时机
+// （WS ready / 会话切换 / 挂载对齐）与探针标记拉取。
+const {
+  loadEffortMarks,
+  syncSessionEffort: syncComposerEffort,
+  showShare,
+  showDelegate,
+} = useComposerTools()
 
-// effort 探针标记（probe 二期）：挂载时拉一次 models.list 取默认模型的
-// effort_marks/effort_notes（后端 effort_wire_target 方言映射，前端零
-// 重建），会话强度下拉渲染 ✓/✗/?。拉取失败 = 空标记（诚实不标）。
-// EFFORT_TIERS 顺序与后端 capability::EFFORT_TIERS 对齐（7 档平行数组）。
-const EFFORT_TIERS_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-const effortMarks = ref<string[]>([])
-const effortNotes = ref<string[]>([])
-
-function effortMarkFor(value: string): string {
-  // 空数组 = models.list 拉取失败（无数据可比对）→ 不渲染标记（与
-  // 「探测过但未定」的 ? 相区分——前者是数据面不可用，后者是判定面未知）。
-  if (effortMarks.value.length === 0) return ''
-  const i = EFFORT_TIERS_ORDER.indexOf(value)
-  if (i < 0) return ''
-  const mark = effortMarks.value[i]
-  if (mark === 'ok') return ' ✓'
-  if (mark === 'bad') return ' ✗'
-  return ' ?'
-}
-function effortNoteFor(value: string): string {
-  const i = EFFORT_TIERS_ORDER.indexOf(value)
-  return (i >= 0 ? effortNotes.value[i] : '') || ''
-}
-
-async function loadEffortMarks() {
-  try {
-    const data = await request('models', 'list', {}, 8000)
-    const rows: Array<{ is_default?: boolean; effort_marks?: string[]; effort_notes?: string[] }> =
-      data?.models || []
-    const def = rows.find((m) => m.is_default)
-    effortMarks.value = def?.effort_marks || []
-    effortNotes.value = def?.effort_notes || []
-  } catch {
-    effortMarks.value = []
-    effortNotes.value = []
-  }
-}
-
-/** 进会话 / 重连时对齐一次 override（失败保持当前值，不炸 UI）。 */
+/** 进会话对齐（晚到回包围栏闭包：本组件持 effectiveSid 真值）。 */
 function syncSessionEffort() {
   if (!isDefaultChat.value) return
-  const sid = effectiveSid.value
-  if (!sid) return
-  request('chat', 'get_effort', { session_id: sid })
-    .then((data) => {
-      if (effectiveSid.value !== sid) return
-      sessionEffort.value = typeof data?.effort === 'string' ? data.effort : ''
-    })
-    .catch(() => {})
-}
-
-/** 下拉切换（乐观更新 + 失败回滚；'' = 清除 override 回落 config 默认）。 */
-async function onSessionEffortChange(e: Event) {
-  const v = (e.target as HTMLSelectElement).value
-  const prev = sessionEffort.value
-  sessionEffort.value = v
-  try {
-    await request('chat', 'set_effort', {
-      session_id: effectiveSid.value || '',
-      effort: v === '' ? null : v,
-    })
-  } catch (err) {
-    sessionEffort.value = prev
-    toast.error(String((err as Error)?.message ?? err))
-  }
+  syncComposerEffort(effectiveSid.value ?? '', () => effectiveSid.value ?? '')
 }
 
 /** 输入以 ! 开头且处于 steer 模式 → 提示将以插队发送。 */
@@ -662,17 +617,23 @@ const usageTipWindow = computed(() => {
 
 let usagePollTimer: ReturnType<typeof setInterval> | null = null
 
-// Voice toolbar state
-const sttReady = ref(false)
-const ttsReady = ref(false)
-const voiceDictation = ref(false)
-const voiceDialogue = ref(false)
-const voicePlayback = ref(false)
-// 实时语音主开关（realtime P1 G6）：热态经 chat_config_set 即时生效，无 pipeline
-// 态（不随刷新重置）；子开关（流式/接力/打断/口播清洗…）在语音通道页。
-const voiceRealtime = ref(false)
-const toolbarCollapsed = ref(false)
-const silenceTimeout = ref(3.0)
+// Voice toolbar state（2026-11-19 九键全迁资源窗：状态真值挪进
+// useVoiceControls 模块级单例——资源窗「语音」分节与本组件（standalone/
+// workflow 挂载面保留的原工具栏）读写同一份；STT push 帧处理仍留本组件）。
+const {
+  sttReady,
+  ttsReady,
+  voiceDictation,
+  voiceDialogue,
+  voicePlayback,
+  voiceRealtime,
+  silenceTimeout,
+  initVoiceState,
+  toggleDictation,
+  toggleDialogue,
+  togglePlayback,
+  toggleRealtime,
+} = useVoiceControls()
 // 流式 partial 的拼接锚（stt_accumulate 设置，auto_send 清空）。
 let lastAccumulated = ''
 // partial 草稿过期定时器：3s 无后续 partial/accumulate/auto_send 跟进即撤
@@ -806,6 +767,14 @@ function isCompactNoteRunning(msg: ChatMessage): boolean {
 /** 通知条谓词：role=user 且带 systemNotice 或 cronJobId 标记。 */
 function isSystemNotice(msg: ChatMessage): boolean {
   return msg.role === 'user' && !!(msg.systemNotice || msg.cronJobId)
+}
+
+/** A4（2026-11-19 头像语义）：过程行谓词——压缩注记徽标 / 系统通知条是
+ *  过程时间线的一部分，不是 NB 的发言。头像只属于答案：过程行一律无头像
+ *  细条（头像没出现 = 还在跑；头像出现 = 答案到了），与 live 占位行（无
+ *  头像）同一语义。 */
+function isProcessRow(msg: ChatMessage): boolean {
+  return isCompactNote(msg) || isSystemNotice(msg)
 }
 
 /** 通知条图标：cron tick ⏰ / 其他系统注入 ⚙。 */
@@ -1812,10 +1781,9 @@ function onWatchdog() {
 // ---------------------------------------------------------------------------
 
 const rewinding = ref(false)
-/** L4：会话分享弹窗开关（工具栏 🔗 按钮）。 */
-const showShare = ref(false)
-/** 角色目录与客户端委派（2026-09-28）：委派弹窗开关（工具栏按钮）。 */
-const showDelegate = ref(false)
+// L4 分享 / 委派（2026-09-28）弹窗触发器：2026-11-19 拆分迁移进
+// useComposerTools 单例（触发按钮挪到资源窗「会话工具」分节，弹窗渲染
+// 仍在本组件——ShareModal/DelegateDialog 挂载点不动）。
 
 /** 委派已发出（2026-11-04 委派 UX fire-and-forget）：弹窗发出即关，`done`
  *  在发送时触发（此时服务端尚未落盘）。延迟重同步让委派请求行（服务端
@@ -2649,6 +2617,10 @@ function stopPendingTurnPolling() {
     pendingTurnTimer = null
   }
   if (pendingTurn.value) pendingTurn.value = false
+  // B2（2026-11-19 切换恢复整改）：恢复中旗标在此统一收口——停轮的全部
+  // 路径（回复到场 / 死轮清算 / 硬上限到期 / streaming 接管）都经此，骨架
+  // 不留残骸。置位在 detectPendingTurn 起轮分支（晚于任何 stop 调用）。
+  chatStore.workRestoring = false
   retryStatus.value = null
   stopRetrySecsTick()
   pendingTurnDeadPolls = 0
@@ -2688,6 +2660,10 @@ function detectPendingTurn() {
     pendingTurnDeadPolls = 0
     pendingTurnStartedAt = Date.now()
     pendingTurn.value = true
+    // B2（2026-11-19 切换恢复整改）：恢复期立起「过程视图恢复中」骨架——
+    // work_current 回包落地前占位行不再裸等（快照采纳后让位给真时间线；
+    // null 盲区不解骨架，轮询下一拍继续）。
+    chatStore.workRestoring = true
     pendingTurnTimer = window.setInterval(() => {
       void pollPendingTurn()
     }, PENDING_TURN_POLL_MS)
@@ -2714,6 +2690,9 @@ async function refreshWorkCurrent(sid: string | null) {
     if (!pendingTurn.value && !streaming.value) return
     if (res?.work == null) return
     chatStore.adoptWorkSnapshot(res.work)
+    // B2：快照采纳 = 恢复完成——骨架让位给真时间线。null 盲区（上面
+    // return）不复位：骨架继续显示，等轮询下一拍重试。
+    chatStore.workRestoring = false
   } catch {
     /* 旧网关无 work_current / 网络抖动——静默，环回放兜底 */
   }
@@ -3172,108 +3151,10 @@ const showStopButton = computed(() => {
   return activeModule === 'chat'
 })
 
-// Voice toolbar toggle functions
-async function toggleDictation() {
-  if (voiceDictation.value) {
-    await request('voice', 'stt_to_input_stop').catch(() => {})
-    voiceDictation.value = false
-  } else {
-    if (!sttReady.value) return
-    // Close dialogue if open
-    if (voiceDialogue.value) {
-      await request('voice', 'stt_dialogue_stop').catch(() => {})
-      voiceDialogue.value = false
-    }
-    try {
-      await request('voice', 'stt_to_input_start')
-      voiceDictation.value = true
-    } catch {}
-  }
-  saveVoiceConfig()
-}
-
-async function toggleDialogue() {
-  if (voiceDialogue.value) {
-    await request('voice', 'stt_dialogue_stop').catch(() => {})
-    voiceDialogue.value = false
-  } else {
-    if (!sttReady.value) return
-    // Close dictation if open
-    if (voiceDictation.value) {
-      await request('voice', 'stt_to_input_stop').catch(() => {})
-      voiceDictation.value = false
-    }
-    try {
-      await request('voice', 'stt_dialogue_start', {
-        silence_timeout: silenceTimeout.value,
-        // realtime 接力寻址（G6）：后端据此注册 session_key → TTS 接力/打断
-        // 只作用于本会话。
-        session_id: effectiveSid.value,
-      })
-      voiceDialogue.value = true
-    } catch {}
-  }
-  saveVoiceConfig()
-}
-
-async function togglePlayback() {
-  if (voicePlayback.value) {
-    await request('voice', 'tts_playback_stop').catch(() => {})
-    voicePlayback.value = false
-  } else {
-    if (!ttsReady.value) return
-    voicePlayback.value = true
-  }
-  saveVoiceConfig()
-}
-
-function toggleToolbar() {
-  toolbarCollapsed.value = !toolbarCollapsed.value
-  saveVoiceConfig()
-}
-
-async function saveVoiceConfig() {
-  try {
-    // read-merge-write：chat_config_set 是整文件替换语义——只写 4 个键会把
-    // realtime 块（实时语音开关/语音通道页子开关）静默抹掉。先读后并再写。
-    // 读不到全文就中止：以空 base 写回会把其余键全部丢掉（get 失败时 set
-    // 仍可能成功——如读超时后连接恢复）。
-    const cur = await request('voice', 'chat_config_get').catch(() => null)
-    if (!cur) return
-    const merged = {
-      ...((cur as Record<string, unknown>) ?? {}),
-      toolbar_collapsed: toolbarCollapsed.value,
-      dictation_enabled: voiceDictation.value,
-      dialogue_enabled: voiceDialogue.value,
-      playback_enabled: voicePlayback.value,
-    }
-    await request('voice', 'chat_config_set', merged)
-  } catch {}
-}
-
-async function toggleRealtime() {
-  voiceRealtime.value = !voiceRealtime.value
-  try {
-    // read-merge-write realtime 块：后端写盘成功即 apply 热态（出站广播/
-    // 管线下一拍生效，无需重启）。读不到全文就中止（空 base 写回丢键）；
-    // 任何失败回滚本地态。
-    const cur = await request('voice', 'chat_config_get').catch(() => null)
-    if (!cur) {
-      voiceRealtime.value = !voiceRealtime.value
-      return
-    }
-    const base = (cur as Record<string, unknown>) as Record<string, unknown>
-    await request('voice', 'chat_config_set', {
-      ...base,
-      realtime: {
-        ...((base.realtime as Record<string, unknown>) ?? {}),
-        enabled: voiceRealtime.value,
-      },
-    })
-  } catch {
-    voiceRealtime.value = !voiceRealtime.value
-  }
-}
+// Voice toolbar toggle functions（2026-11-19 九键全迁：开关函数挪进
+// useVoiceControls 单例——资源窗「语音」分节与本组件共用；本组件模板的
+// 绑定名不变，经解构继续可用。saveVoiceConfig 的 toolbar_collapsed 退役
+// 注记随实现一起迁走）。
 
 function handleKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === 'Enter') {
@@ -3454,38 +3335,8 @@ function renderCodeBlocks() {
   })
 }
 
-async function initVoiceState() {
-  try {
-    const [config, engines, voiceCfg] = await Promise.all([
-      request('voice', 'chat_config_get'),
-      request('voice', 'engine_status'),
-      request('voice', 'voice_config_get'),
-    ])
-    if (config) {
-      toolbarCollapsed.value = config.toolbar_collapsed ?? false
-      // Visual-only restore: buttons show enabled state but pipelines are NOT started
-      voiceDictation.value = config.dictation_enabled ?? false
-      voiceDialogue.value = config.dialogue_enabled ?? false
-      voicePlayback.value = config.playback_enabled ?? false
-      // Reset to false since pipelines aren't actually running
-      voiceDictation.value = false
-      voiceDialogue.value = false
-      voicePlayback.value = false
-      // 实时语音是纯配置态（无 pipeline），恢复显示；后端热态在 gateway
-      // 启动时从同一文件装载，两边同源。
-      voiceRealtime.value = (config.realtime as { enabled?: boolean } | undefined)?.enabled ?? false
-    }
-    if (engines) {
-      sttReady.value = engines.stt_ready ?? false
-      ttsReady.value = engines.tts_ready ?? false
-    }
-    if (voiceCfg) {
-      silenceTimeout.value = voiceCfg.silence_timeout ?? 3.0
-    }
-  } catch {
-    // Voice not available — keep buttons disabled
-  }
-}
+// initVoiceState（2026-11-19 迁 useVoiceControls 单例，幂等；调用时机留在
+// 本组件：WS ready / 会话切换钩子在这边，资源窗挂载时也各自调一次）。
 
 // Scroll listener for history
 let scrollHandler: (() => void) | null = null
@@ -3858,7 +3709,9 @@ onUnmounted(() => {
       </div>
 
       <div v-for="(msg, idx) in chatStore.messages" :key="idx" class="message" :class="msg.role">
-        <div class="message-avatar">{{ isSystemNotice(msg) ? '⚙' : getAvatar(msg.role) }}</div>
+        <!-- A4（2026-11-19 头像语义）：过程行（压缩注记/系统通知）不渲染
+             头像——头像只属于答案，过程一律细条。 -->
+        <div v-if="!isProcessRow(msg)" class="message-avatar">{{ getAvatar(msg.role) }}</div>
         <div class="message-content">
           <!-- 2026-10-30 Work 时间线：本 turn 的「叙述+工具」交错过程折叠块
                （历史行 work 键 / 实时 flush 挂载双路；默认收起，点开回看）。 -->
@@ -3997,12 +3850,15 @@ onUnmounted(() => {
       <!-- pendingTurn：切页恢复的「处理中」占位——历史尾部悬空 user 行时复用
            同款 typing-indicator（AI 仍在处理，assistant 行落盘后自动补上）。
            2026-10-30：过程可见面 = WorkTimelineBlock live 态（实时 push 与
-           work_current 恢复共用 pendingWork 缓冲；新内容到达 grown 事件贴底）。 -->
+           work_current 恢复共用 pendingWork 缓冲；新内容到达 grown 事件贴底）。
+           A4（2026-11-19 头像语义）：整行是过程视图（进行中的工作），无头像
+           ——头像只属于答案，assistant 回复行落地时才出现。
+           B2：workRestoring = 切回恢复期（work_current 回包落地前）占位行也
+           可见，内部渲染「恢复中」骨架，不裸等。 -->
       <div
-        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.liveThinking || chatStore.pendingDeliverables.length"
-        class="message assistant"
+        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.liveThinking || chatStore.pendingDeliverables.length || chatStore.workRestoring"
+        class="message assistant process-live"
       >
-        <div class="message-avatar">NB</div>
         <div class="message-content">
           <!-- live 态时间线：执行中展开实时滚动；回复落地时随缓冲 flush
                卸载，由落地消息上的折叠块接棒。live-thinking = B3 流式思考
@@ -4014,6 +3870,14 @@ onUnmounted(() => {
             live
             @grown="scrollToBottomIfNear()"
           />
+          <!-- B2（2026-11-19 切换恢复整改）：恢复期骨架——work_current 快照
+               采纳前的空白窗不裸等；快照一旦采纳即让位（v-else-if 挂在
+               WorkTimelineBlock 的 v-if 上）。null 盲区（后端查无快照）不解
+               骨架，轮询下一拍继续；停轮（回复到场/死轮清算）统一收口复位。 -->
+          <div v-else-if="chatStore.workRestoring" class="work-restoring">
+            <span class="typing-indicator"><span></span><span></span><span></span></span>
+            <span class="work-restoring-text">正在恢复过程视图…</span>
+          </div>
           <!-- N5: 登记已到、回复帧未到的交付物（push 先于回复帧的窗口期
                实时可见；回复落地时 flush 挂载，与 toolCards 同语义）。 -->
           <div v-if="chatStore.pendingDeliverables.length" class="deliverables">
@@ -4066,13 +3930,16 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Toolbar（launcher 启动器模式不渲染——首屏只留品牌 + 输入盒；
-         归模板管而非皮肤 CSS display:none：scoped display:flex 与 :where 基线
-         同特异性且后加载会赢回，2026-09-26 案例） -->
-    <div v-if="!toolbarCollapsed && !launcherMode" class="voice-toolbar">
-      <!-- B3（2026-11-17）：工具栏三行分组（13 键单行在 944 主列上限下溢出）；
-           行一=模式/思考/分享/委派/插队，行二=三个放行开关，行三=语音四键 -->
-      <div class="vt-row">
+    <!-- Toolbar（2026-11-19 九键全迁：有 ChatView 资源窗注入面（resourcesCtl
+         在场）时工具栏整个不渲染——九键搬进资源窗对应分节（会话工具/放行
+         开关/语音），竖向空间还给消息流；standalone chat / workflow 挂载面
+         无资源窗，工具栏保留原样。launcher 启动器模式不渲染——首屏只留
+         品牌 + 输入盒；归模板管而非皮肤 CSS display:none：scoped display:flex
+         与 :where 基线同特异性且后加载会赢回，2026-09-26 案例） -->
+    <div v-if="!resourcesCtl && !launcherMode" class="voice-toolbar">
+      <!-- 单行兜底（2026-11-19 九键全迁后本工具栏只在无资源窗挂载面出现）：
+           9 键（构建/插队｜放行三开关｜语音四键）~820px 单行放得下；
+           flex-wrap 兜底更窄列（项目会话）。 -->
       <button
         v-if="isDefaultChat"
         class="voice-btn mode-btn"
@@ -4085,43 +3952,9 @@ onUnmounted(() => {
         <span class="mode-mark">{{ chatStore.agentMode === 'plan' ? '📋' : '🛠' }}</span>
         {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
       </button>
-      <!-- G3（2026-11-09）：会话级思考强度下拉——只影响当前会话，默认跟随
-           模型配置；后端内存态，重启回落默认。7 档值域扩档（2026-11-09）：
-           minimal/xhigh/max 对齐 OpenAI 官方枚举上界；端点不支持某档 =
-           400 带端点原文诚实透传 -->
-      <select
-        v-if="isDefaultChat"
-        class="voice-btn effort-select"
-        :value="sessionEffort"
-        title="思考强度（会话级，仅本会话生效）：默认=跟随模型配置；off=关闭思考（省 token）；极简/低/中/高/极高/最大=思考预算档位。✓=端点已验证接受，✗=端点拒绝（悬停看原文），?=未探测。重启后回落默认"
-        @change="onSessionEffortChange"
-      >
-        <option value="">思考·默认</option>
-        <option value="off">思考·关</option>
-        <option :title="effortNoteFor('minimal') || undefined" value="minimal">思考·极简{{ effortMarkFor('minimal') }}</option>
-        <option :title="effortNoteFor('low') || undefined" value="low">思考·低{{ effortMarkFor('low') }}</option>
-        <option :title="effortNoteFor('medium') || undefined" value="medium">思考·中{{ effortMarkFor('medium') }}</option>
-        <option :title="effortNoteFor('high') || undefined" value="high">思考·高{{ effortMarkFor('high') }}</option>
-        <option :title="effortNoteFor('xhigh') || undefined" value="xhigh">思考·极高{{ effortMarkFor('xhigh') }}</option>
-        <option :title="effortNoteFor('max') || undefined" value="max">思考·最大{{ effortMarkFor('max') }}</option>
-      </select>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn share-btn"
-        title="分享本会话（只读链接，token 即凭据，可随时撤销）"
-        :disabled="rewinding"
-        @click="showShare = true"
-      >
-        🔗 分享
-      </button>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn delegate-btn"
-        title="委派任务给子代理（选角色 + 工具档位，完成后回复交回本会话）"
-        @click="showDelegate = true"
-      >
-        🤝 委派
-      </button>
+      <!-- G3 思考强度下拉 / L4 分享 / 委派三键已迁资源窗「会话工具」分节
+           （2026-11-19 拆分迁移：低频配置键不再占输入框近邻；状态单例
+           useComposerTools 共享，弹窗渲染仍在文件尾部） -->
       <button
         v-if="steerEnabled"
         class="voice-btn steer-btn"
@@ -4131,9 +3964,6 @@ onUnmounted(() => {
         <span class="steer-mark">!</span>
         插队
       </button>
-      </div>
-      <!-- 行二：放行开关组 -->
-      <div class="vt-row">
       <!-- Full Access 放行开关（2026-09-20 用户裁决；运行时态，
            Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->
       <button
@@ -4169,9 +3999,6 @@ onUnmounted(() => {
       >
         🔓 全部放行
       </button>
-      </div>
-      <!-- 行三：语音组 -->
-      <div class="vt-row">
       <button
         class="voice-btn"
         :class="{ active: voiceDictation }"
@@ -4191,7 +4018,7 @@ onUnmounted(() => {
         :class="{ active: voiceDialogue }"
         :disabled="!sttReady"
         :title="sttReady ? '语音对话：说话后自动发送给 AI' : '请先在语音通道页启用 STT 引擎'"
-        @click="toggleDialogue"
+        @click="toggleDialogue(effectiveSid || undefined)"
       >
         <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
@@ -4226,7 +4053,6 @@ onUnmounted(() => {
         </svg>
         实时语音
       </button>
-      </div>
     </div>
 
     <!-- U7 inbox visibility: queued/steer chip + steer input hint -->
@@ -4246,16 +4072,26 @@ onUnmounted(() => {
     </div>
     <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
     <div v-if="isDefaultChat && chatStore.agentMode === 'plan'" class="plan-strip">
-      📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击上方徽标或发送 /build 切回
+      📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击{{ resourcesCtl ? '右侧资源窗「构建/计划」' : '上方徽标' }}或发送 /build 切回
     </div>
     <!-- Full Access 放行常驻条（安全相关状态始终可见，plan-strip 同款） -->
     <div v-if="fullAccess" class="editor-strip">
-      <template v-if="externalWrite">⚡ Full Access + 外部写删：全放行中（exec 由真沙盒兜底；自毁硬拦仍生效）— 点击上方按钮或设置页【编辑器】关闭</template>
+      <template v-if="externalWrite">⚡ Full Access + 外部写删：全放行中（exec 由真沙盒兜底；自毁硬拦仍生效）— 点击{{ resourcesCtl ? '右侧资源窗「放行开关」' : '上方按钮' }}或设置页【编辑器】关闭</template>
       <template v-else>⚡ Full Access：项目内全放行 + 项目外读/执行/网络/系统放行（项目外写删仍审批）— Agent 重启后自动关闭</template>
     </div>
     <!-- 会话级全部放行常驻条（无人值守时安全状态必须始终可见） -->
     <div v-if="sessionAllowActive" class="editor-strip session-allow-strip">
-      🔓 全部放行中（本会话）：已自动批准 {{ allowAllBySession[effectiveSid ?? '']?.count ?? 0 }} 条 — 硬拒绝与急停不受影响；长任务跑完请点击上方按钮关闭
+      🔓 全部放行中（本会话）：已自动批准 {{ allowAllBySession[effectiveSid ?? '']?.count ?? 0 }} 条 — 硬拒绝与急停不受影响；长任务跑完请在{{ resourcesCtl ? '右侧资源窗「放行开关」' : '上方按钮' }}关闭
+    </div>
+    <!-- 语音激活常驻条（2026-11-19 九键全迁：语音开关住资源窗后，工具栏
+         不在场的挂载面靠这条看见「语音还开着」——所有激活形态并列表述） -->
+    <div v-if="voiceDictation || voiceDialogue || voicePlayback || voiceRealtime" class="editor-strip voice-strip">
+      🎙 语音激活：{{ [
+        voiceDictation ? '听写' : null,
+        voiceDialogue ? '语音对话' : null,
+        voicePlayback ? '语音播放' : null,
+        voiceRealtime ? '实时语音' : null,
+      ].filter(Boolean).join(' / ') }} —— 开关在{{ resourcesCtl ? '右侧资源窗「语音」分节' : '上方工具栏' }}
     </div>
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
@@ -4481,15 +4317,19 @@ onUnmounted(() => {
           <line x1="9" y1="4" x2="9" y2="20" />
         </svg>
       </button>
+      <!-- 提案 C（2026-11-19）：原【收起工具栏】按钮改为【打开/收起资源窗】
+           ——单行工具栏无折叠语义，这个位置的开关给了资源窗（状态机在
+           ChatView，经 RESOURCES_PANEL_CTL 注入；无 ChatView 挂载面不渲染） -->
       <button
+        v-if="resourcesCtl"
         class="toolbar-toggle"
-        :class="{ active: !toolbarCollapsed }"
-        @click="toggleToolbar"
-        :title="toolbarCollapsed ? '展开工具栏' : '收起工具栏'"
+        :class="{ active: resourcesCtl.open.value }"
+        @click="resourcesCtl.toggle()"
+        :title="resourcesCtl.open.value ? '收起资源窗' : '打开资源窗'"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12,2 20.66,7 20.66,17 12,22 3.34,17 3.34,7"/>
-          <circle cx="12" cy="12" r="3.5"/>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <line x1="15" y1="4" x2="15" y2="20" />
         </svg>
       </button>
     </div>
@@ -4896,20 +4736,16 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .voice-toolbar {
-  /* B3（2026-11-17）：三行分组容器（行一=模式/思考/分享/委派/插队，
-     行二=放行开关组，行三=语音组）——单行 13 键在 944 主列上限下溢出。 */
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 12px;
-  background: var(--surface);
-  min-height: 36px;
-}
-.vt-row {
+  /* 单行工具栏（2026-11-19「三行变一行」）：拆分迁移后 9 键单行 ~820px，
+     944 主列放得下——竖向空间还给消息流（承诺兑现）。flex-wrap 兜底更窄
+     列（项目会话窄容器）。 */
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  padding: 6px 12px;
+  background: var(--surface);
+  min-height: 36px;
 }
 .voice-btn {
   display: inline-flex;
@@ -4925,15 +4761,6 @@ onUnmounted(() => {
   transition: all 0.15s;
   white-space: nowrap;
   line-height: 1;
-}
-/* G3: 会话级思考强度下拉——复用 voice-btn 基调，select 形态的少量修正 */
-.effort-select {
-  padding: 6px 8px;
-  appearance: auto;
-}
-.effort-select:focus {
-  outline: none;
-  border-color: var(--primary, #4a90d9);
 }
 .voice-btn-icon {
   width: 16px;

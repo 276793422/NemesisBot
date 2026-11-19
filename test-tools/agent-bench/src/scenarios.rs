@@ -1709,12 +1709,14 @@ async fn wsapi_call_err_on(
 /// subagent_steer ×N：子代理飞行中驾驶全链（项3 验收）。
 ///
 /// 链路（testai-steer-1.0 单模型双角色，见 TestAIServer models/steer_model.go）：
-/// master（`<STEER_E2E>`）spawn 后台子代理（首回合 loop 固定中间消息收尾）
-/// → subagents.list 找本会话 running 行 → WSAPI `subagents.steer` 注入指令 →
-/// 轮询至终态 → summary 含 `STEER_OK` 且含注入指令子串（子代理真的在下一轮
-/// 轮边界吃到了注入，效果面断言非 ack 面）→ master 续行终局
-/// MASTER_ACK_CHILD_DONE（回灌链通）。附带验收（同轮完成）：estop 期间
-/// steer 诚实拒绝（急停文案）+ release 恢复；终态任务 steer 拒绝（终态文案）。
+/// master（`<STEER_E2E>`）spawn 后台子代理（2026-11-19 park 化：master 回合
+/// 停在 park 等待、无中间回复——子代理在 spawn 闭包里独立启动）
+/// → subagents.list 找本会话 running 行（受理信号）→ WSAPI `subagents.steer`
+/// 注入指令 → 轮询至终态 → summary 含 `STEER_OK` 且含注入指令子串（子代理
+/// 真的在下一轮轮边界吃到了注入，效果面断言非 ack 面）→ 完成回灌唤醒
+/// master park → master 续行终局 MASTER_ACK_CHILD_DONE（回灌链通）。附带
+/// 验收（同轮完成）：estop 期间 steer 诚实拒绝（急停文案）+ release 恢复；
+/// 终态任务 steer 拒绝（终态文案）。
 pub async fn run_subagent_steer(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
     let _ = ctx;
     let mut out = Vec::new();
@@ -1730,21 +1732,14 @@ async fn steer_one_round() -> Result<(u64, String)> {
     let flow = async {
         let session_id = fresh_session_id("bench-steer");
         let mut chat = ws_connect(WS_PORT, AUTH_TOKEN).await?;
-        // 1) master spawn 后台子代理：首回合在 __BG_SPAWN__ marker 处被
-        //    loop 固定中间消息收尾（master 模型不说话），该中间消息即
-        //    spawn 受理信号（TestAI 每请求 1s Delay，秒级）。
+        // 1) master spawn 后台子代理：park 化后 master 回合停在 park 等待、
+        //    无中间回复——受理信号 = subagents.list 出现本会话 running 行
+        //    （spawn 闭包独立启动子代理，先于 master park）。
         chat_send(
             &mut chat,
             &session_id,
             "bench: <STEER_E2E> 派一个后台子代理调查工作区结构",
             None,
-        )
-        .await?;
-        chat_wait(
-            &mut chat,
-            &session_id,
-            "已派后台子代理任务",
-            Duration::from_secs(90),
         )
         .await?;
 
@@ -1761,25 +1756,23 @@ async fn steer_one_round() -> Result<(u64, String)> {
                 Duration::from_secs(10),
             )
             .await?;
-            let hit = data["tasks"]
-                .as_array()
-                .and_then(|arr| {
-                    arr.iter()
-                        .find(|t| {
-                            t["status"].as_str() == Some("running")
-                                && (t["parent_chat_id"].as_str() == Some(session_id.as_str())
-                                    || t["parent_session_key"]
-                                        .as_str()
-                                        .is_some_and(|k| k.ends_with(&session_id)))
-                        })
-                        .and_then(|t| t["id"].as_str().map(String::from))
-                });
+            let hit = data["tasks"].as_array().and_then(|arr| {
+                arr.iter()
+                    .find(|t| {
+                        t["status"].as_str() == Some("running")
+                            && (t["parent_chat_id"].as_str() == Some(session_id.as_str())
+                                || t["parent_session_key"]
+                                    .as_str()
+                                    .is_some_and(|k| k.ends_with(&session_id)))
+                    })
+                    .and_then(|t| t["id"].as_str().map(String::from))
+            });
             if let Some(id) = hit {
                 break id;
             }
             anyhow::ensure!(
                 Instant::now() < deadline,
-                "30s 内未见本会话 running 子代理行（SPAWNED_OK 已回但注册表无行——后台 spawn 链断裂）"
+                "30s 内未见本会话 running 子代理行（spawn 闭包未启动子代理——后台 spawn 链断裂）"
             );
             tokio::time::sleep(Duration::from_millis(300)).await;
         };

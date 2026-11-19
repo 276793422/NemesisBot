@@ -63,6 +63,12 @@ fn cap_rows(rows: Vec<Value>) -> (Vec<Value>, usize) {
 /// 子代理工作面（`subagents` / 子代理）。数据源 =
 /// [`crate::subagent_registry`] 全局单例，按 `parent_session_key` 归会话；
 /// 已归档条目（`archived_at` 在场）不在工作面，不计入。
+///
+/// C 批选择规则（2026-11-19 用户拍板）：**running 全列**（超过 4 个也不
+/// 砍——「以子 agent 数量为主」）；**最近终态补齐至 max(4, running 数)**
+/// （少于 4 个 running 时，列出已完成至多 max(4, running) 条）。卡头计数
+/// =「运行中 N / 历史 M」：`running` = 运行中数，`finished_total` = 本会话
+/// 全部非归档终态数（不受展示预算影响——历史是历史，不因没展示而消失）。
 pub struct SubagentsProvider;
 
 impl GlobalResourceProvider for SubagentsProvider {
@@ -71,6 +77,7 @@ impl GlobalResourceProvider for SubagentsProvider {
     }
 
     fn collect(&self, ctx: &ResourceCtx) -> CategoryView {
+        // list() 契约：新的在前。running / finished 两个切片保持该序。
         let mine: Vec<_> = crate::subagent_registry::global()
             .list()
             .into_iter()
@@ -79,12 +86,22 @@ impl GlobalResourceProvider for SubagentsProvider {
         if mine.is_empty() {
             return CategoryView::empty();
         }
-        let active = mine
+        let running: Vec<&crate::subagent_registry::SubagentTask> = mine
             .iter()
             .filter(|t| t.status == crate::subagent_registry::SubagentStatus::Running)
-            .count();
-        let rows: Vec<Value> = mine
+            .collect();
+        let finished: Vec<&crate::subagent_registry::SubagentTask> = mine
             .iter()
+            .filter(|t| t.status != crate::subagent_registry::SubagentStatus::Running)
+            .collect();
+        let finished_budget = running.len().max(4);
+        // 「最近完成」按 finished_at_ms 降序（registry list() 是插入序——
+        // 老任务后完成时插入序会把它们排在最后，不是「最近」）。
+        let mut finished: Vec<&crate::subagent_registry::SubagentTask> = finished;
+        finished.sort_by_key(|t| std::cmp::Reverse(t.finished_at_ms));
+        let rows: Vec<Value> = running
+            .iter()
+            .chain(finished.iter().take(finished_budget))
             .map(|t| {
                 json!({
                     "id": t.id,
@@ -100,10 +117,15 @@ impl GlobalResourceProvider for SubagentsProvider {
                 })
             })
             .collect();
-        let (rows, omitted) = cap_rows(rows);
+        let omitted = finished.len().saturating_sub(finished_budget);
         CategoryView::ok(
             mine.len(),
-            json!({"active": active, "rows": rows, "omitted": omitted}),
+            json!({
+                "running": running.len(),
+                "finished_total": finished.len(),
+                "rows": rows,
+                "omitted": omitted,
+            }),
         )
     }
 }

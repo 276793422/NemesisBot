@@ -1,14 +1,17 @@
 // (devtool-upgrade)：subagent 后台化 + 完成回灌测试。
 //
-// 覆盖面（对应实施计划 验收）：
+// 覆盖面（对应实施计划 验收；2026-11-19 spawn park 化迁移）：
 // ① schema：background 可选参数（不在 required）；
 // ② SpawnFn 第 8 参透传——background=true / 缺省 false 到闭包；
-// ③ `__BG_SPAWN__` marker → 续行快照 inline 落内存 + 中间回复 + 回合收尾；
+// ③ `__BG_SPAWN__` marker → 续行快照 inline 落内存 + **park 等待**（回合
+//    不收口）→ 完成 parcel 唤醒 → 真实结果回灌 LLM 续跑（不再伪造 Done）；
 // ④ gate_inbound 拦截 `subagent_continuation:` 前缀 → GateOutcome::Continuation
 //    （集群前缀不回归、非前缀不误拦）；
-// ⑤ 完成回灌端到端——bus 消息 → dispatch_continuation →
-//    handle_cluster_continuation 复用路径 → 续行回复出站 + 快照自清；
-// ⑥ 无 continuation_manager 时 marker 优雅降级（仍收尾回合，不 panic）；
+// ⑤ 完成回灌端到端——bus 消息 → run_continuation_turn park 分支 →
+//    parcel 投递 → park 唤醒 → 真实结果经守卫链回灌 → 续行回复出站 +
+//    快照自清（到达行随 work block 落盘）；
+// ⑥ park slot 缺席（闭包未注册，契约破坏/legacy）诚实降级——marker
+//    即返形态，回合照常收尾不 panic 不悬挂；
 // ⑦ list_bg_spawn_pending_sync 前缀过滤 + 只读不删（重启恢复数据源）。
 //
 // 自带迷你 Mock（本文件独立，不与 s9/tests 共享私有类型）。
@@ -225,11 +228,11 @@ async fn spawn_fn_receives_background_flag() {
 }
 
 // ---------------------------------------------------------------------------
-// ③ __BG_SPAWN__ marker：快照 inline 落内存 + 中间回复 + 回合收尾
+// ③ __BG_SPAWN__ marker：快照 inline 落内存 + park 等待 + parcel 唤醒续跑
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn bg_marker_saves_snapshot_and_ends_turn() {
+async fn bg_marker_saves_snapshot_and_parks_until_delivery() {
     let _logs = crate::test_support::capture_logs();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
@@ -240,7 +243,7 @@ async fn bg_marker_saves_snapshot_and_ends_turn() {
                 "spawn",
                 r#"{"task":"long research","background":true}"#,
             )]),
-            g4_resp("never reached in the same turn"),
+            g4_resp("resumed after park: research done"),
         ])),
         g4_config(),
         out_tx,
@@ -254,24 +257,70 @@ async fn bg_marker_saves_snapshot_and_ends_turn() {
     let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
     agent_loop.set_continuation_manager(mgr.clone());
 
+    // park slot 预注册（生产中由 agent_factory spawn 闭包在 tokio::spawn
+    // 之前注册；测试闭包只回 marker，故测试侧手动注册同位）。
+    crate::bg_park::global().register("bg_t1", "web:chat1", "chat1");
+
+    // 延迟投递者：等快照 inline 落内存（park 入口先存快照再 wait），
+    // 再稍候 50ms 让回合走到 wait()，然后投 parcel。投递结果经 oneshot
+    // 带回测试主线（分离任务内 panic 不会自动判失败，必须显式回传核验）。
+    let (deliver_tx, deliver_rx) = tokio::sync::oneshot::channel();
+    {
+        let mgr = mgr.clone();
+        tokio::spawn(async move {
+            for _ in 0..100 {
+                if mgr.has_continuation("bg_t1").await {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let outcome = crate::bg_park::global().deliver(
+                "bg_t1",
+                crate::bg_park::ParkParcel {
+                    content: "PARK RESULT: research done".to_string(),
+                    failed: false,
+                    error: None,
+                },
+            );
+            let _ = deliver_tx.send(outcome);
+        });
+    }
+
     in_tx.send(g4_plain("run it in background")).await.unwrap();
     drop(in_tx);
+    // pump 在 channel 关闭时返回（不 drain 在飞 turn）——parked 回合
+    // 继续在后台 Arc 上等待 parcel。
     agent_loop.run_bus_owned(in_rx).await;
 
-    // 中间回复（已派后台任务）先出站，主回合收尾——不再消耗第二个 LLM 响应。
-    let out = out_rx.recv().await.expect("intermediate reply published");
+    // park 化后**没有**中间回复——回合停在 park 等待，parcel 到达唤醒
+    // 真实结果回灌 LLM 续跑，首条出站就是续行后的最终回复。
+    let out = out_rx.recv().await.expect("final reply after park resume");
     assert!(
-        out.content.contains("后台子代理"),
-        "intermediate must announce background dispatch, got: {}",
+        out.content.contains("resumed after park"),
+        "parked turn must resume with the real result and finish with the LLM reply, got: {}",
         out.content
     );
 
-    // 快照保存是 inline await —— run_bus_owned 返回时必然已落内存
-    // （对照 __ASYNC__ 集群路径的 spawn 保存需要轮询等待）。
+    // 投递者核验：parcel 必须命中等待者（Delivered）——若 slot 缺席或
+    // 时序错位落 WaiterGone，上面同一份静态回复也会出现（降级路径形态
+    // 相同），此处是 park 路径成立的唯一判别锚。
+    let outcome = deliver_rx.await.expect("deliverer must finish");
+    assert!(
+        matches!(outcome, crate::bg_park::DeliverOutcome::Delivered { .. }),
+        "parcel must be delivered to the parked waiter, got: {outcome:?}"
+    );
+
+    // 快照保留：本测试直接经 bg_park 投递、不经 bus Delivered 臂——
+    // 快照删除是 bus 投递臂职责（⑤ 验证）；这里证明快照作为恢复保险
+    // 在 park 消费后仍然在场。
     assert!(
         mgr.has_continuation("bg_t1").await,
-        "continuation snapshot for bg_t1 must be saved inline"
+        "snapshot must stay parked until bus-path cleanup"
     );
+
+    // 清理全局注册表（Delivered 已摘 slot；兜底防投递者早退残留）。
+    crate::bg_park::global().mark_cancelled("bg_t1");
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +356,7 @@ fn gate_inbound_routes_subagent_continuation_prefix() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑤ 完成回灌端到端（复用集群续行路径）
+// ⑤ 完成回灌端到端（bus 消息 → park 投递臂 → parked 回合续跑）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -316,7 +365,9 @@ async fn completion_message_resumes_with_subagent_result() {
     let tmp = tempfile::tempdir().unwrap();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
 
-    // 第一回合：spawn(background=true) → __BG_SPAWN__ marker → 中间回复。
+    // 第一回合：spawn(background=true) → __BG_SPAWN__ marker → 快照 +
+    // park 等待（回合不收口、无中间回复）。pump spawn tracked task 后
+    // channel 关闭即返回——parked 回合在后台 Arc 上继续等待。
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(G4MockProvider::new(vec![
@@ -339,18 +390,36 @@ async fn completion_message_resumes_with_subagent_result() {
     agent_loop.register_tool("spawn".to_string(), Box::new(tool));
     let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
     agent_loop.set_continuation_manager(mgr.clone());
+    // park slot 预注册（生产 = spawn 闭包注册；测试闭包只回 marker）。
+    crate::bg_park::global().register("bg_r1", "web:chat1", "chat1");
     // 两个回合各消费一次 run_bus（按值 receiver）——包 Arc 走 run_bus_arc。
     let agent_loop = std::sync::Arc::new(agent_loop);
 
     in_tx.send(g4_plain("start the build")).await.unwrap();
     drop(in_tx);
     agent_loop.clone().run_bus_arc(in_rx).await;
-    let intermediate = out_rx.recv().await.expect("intermediate reply");
-    assert!(intermediate.content.contains("后台子代理"));
 
-    // 第二回合：后台完成回灌（agent_factory 后台路径发布的 bus 消息形状）
-    // → gate 拦截 → dispatch_continuation（permits=0 inline）→
-    // run_continuation_turn（续行回主路 2026-11-12）→ 续行 LLM → 最终回复出站。
+    // park 化后第一回合无出站（旧世界的「后台子代理」中间回复已废）。
+    assert!(
+        out_rx.try_recv().is_err(),
+        "parked turn must not publish an intermediate reply"
+    );
+
+    // 等 parked 回合走到 wait()：快照落内存（park 入口先存）后稍候
+    // 50ms——否则完成回灌先到会落 WaiterGone 降级路径（测试形态失真）。
+    for _ in 0..100 {
+        if mgr.has_continuation("bg_r1").await {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // 第二回合：后台完成回灌（agent_factory 完成回调发布的 bus 消息形状）
+    // → gate 拦截 → run_continuation_turn park 投递臂：parcel 命中等待者
+    // （Delivered）→ 快照回收 + 到达行（work block 落盘，不进 out_rx）；
+    // parked 回合被唤醒，真实结果经守卫链 replace 分支回灌 LLM 续跑 →
+    // 最终回复出站。
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("status".to_string(), "ok".to_string());
     metadata.insert("source".to_string(), "background_subagent".to_string());
@@ -372,19 +441,19 @@ async fn completion_message_resumes_with_subagent_result() {
         "final reply must carry the sub-agent result, got: {}",
         final_msg.content
     );
-    // 快照消费后自清（run_continuation_turn → finish_handling）。
+    // 快照消费后自清（park Delivered 臂 remove_continuation）。
     assert!(
         !mgr.has_continuation("bg_r1").await,
-        "snapshot must be cleaned up after resume"
+        "snapshot must be cleaned up after park delivery"
     );
 }
 
 // ---------------------------------------------------------------------------
-// ⑥ 无 continuation_manager：marker 优雅降级
+// ⑥ park slot 缺席：诚实降级 marker 即返，回合照常收尾
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn bg_marker_without_manager_still_ends_turn() {
+async fn bg_marker_without_slot_falls_back_and_ends_turn() {
     let _logs = crate::test_support::capture_logs();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
@@ -403,17 +472,20 @@ async fn bg_marker_without_manager_still_ends_turn() {
     let mut tool = crate::loop_tools::SpawnTool::new(g4_spawn_config());
     tool.set_spawn_fn(bg_marker_spawn_fn("bg_t2"));
     agent_loop.register_tool("spawn".to_string(), Box::new(tool));
-    // 刻意不 set_continuation_manager。
+    // 刻意不注册 park slot（闭包契约破坏 / legacy 形态），也不设
+    // continuation_manager——park 入口 wait() 落 None → marker 即返降级，
+    // 回合继续走守卫链 → 下一次 LLM（响应耗尽 → mock 兜底）→ 正常收尾。
 
     in_tx.send(g4_plain("go")).await.unwrap();
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
 
-    let out = out_rx
-        .recv()
-        .await
-        .expect("intermediate reply still published");
-    assert!(out.content.contains("后台子代理"), "got: {}", out.content);
+    let out = out_rx.recv().await.expect("turn must still finish");
+    assert!(
+        out.content.contains("g4 exhausted"),
+        "degraded marker-return must let the turn continue to completion, got: {}",
+        out.content
+    );
 }
 
 // ---------------------------------------------------------------------------

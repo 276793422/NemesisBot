@@ -31,6 +31,11 @@ pub struct ProjectInfo {
     pub running: bool,
     /// 项目工作区指令是否受信（`projects.trust` 可翻转；缺省 true）。
     pub instructions_trusted: bool,
+    /// 附加放行目录（围栏多根，2026-11-19 D 批；canonical 绝对路径）。
+    /// 对在跑 loop **不热生效**（围栏在工具注册期烧入 Arc）——重启网关
+    /// 或重建项目后生效；未在跑的 loop spawn 时自然读新注册表。
+    #[serde(default)]
+    pub extra_dirs: Vec<String>,
 }
 
 /// nemesisbot 侧项目管理能力的抽象（[`ProjectLoopManager`](动态)）。
@@ -51,6 +56,15 @@ pub trait ProjectsBridge: Send + Sync {
     /// （下一轮 build_messages 生效）；未在跑 = 仅写盘，spawn 时按注册表
     /// 解析起点。
     fn set_trust(&self, project_id: &str, trusted: bool) -> Result<ProjectInfo, String>;
+    /// 添加附加放行目录（围栏多根，2026-11-19 D 批；`projects.add_dir`）。
+    /// 校验链：绝对路径→存在且为目录→canonical→对主 workspace/任何项目
+    /// 主根/任何已有 extra_dir 双向不重叠→去重→上限→写 registry。
+    /// **不热更在跑 loop**（围栏 Arc 注册期烧入——重启网关或重建项目后
+    /// 生效，未在跑 loop spawn 时自然读新注册表）。
+    fn add_dir(&self, project_id: &str, dir: &str) -> Result<ProjectInfo, String>;
+    /// 移除附加放行目录（`projects.remove_dir`；**摘列表不动磁盘**——
+    /// 注册不拥有；入参按 canonical 比较匹配）。生效时机同 [`Self::add_dir`]。
+    fn remove_dir(&self, project_id: &str, dir: &str) -> Result<ProjectInfo, String>;
     /// 会话归属查询（session_key → project_id；None = 对话组）。
     fn owner_of(&self, session_key: &str) -> Option<String>;
     /// 项目 loop 句柄（未运行 / 目录消失 = None——调用方诚实报错）。
@@ -204,7 +218,16 @@ impl ModuleHandler for ProjectsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "create", "remove", "rename", "open_dir", "trust"]
+        &[
+            "list",
+            "create",
+            "remove",
+            "rename",
+            "open_dir",
+            "trust",
+            "add_dir",
+            "remove_dir",
+        ]
     }
 
     async fn handle_cmd(
@@ -253,6 +276,27 @@ impl ModuleHandler for ProjectsHandler {
                     .ok_or("missing field: trusted")?;
                 let info = bridge.set_trust(&project_id, trusted)?;
                 Ok(Some(serde_json::json!({ "project": info })))
+            }
+            "add_dir" => {
+                let data = data.ok_or("missing data")?;
+                let project_id = crate::handlers::get_str(&data, "project_id")?;
+                let dir = crate::handlers::get_str(&data, "dir")?;
+                let info = bridge.add_dir(&project_id, &dir)?;
+                Ok(Some(serde_json::json!({
+                    "project": info,
+                    "note": "已写入注册表；在跑的项目 loop 围栏不热生效——重启网关或重建项目后生效",
+                })))
+            }
+            "remove_dir" => {
+                let data = data.ok_or("missing data")?;
+                let project_id = crate::handlers::get_str(&data, "project_id")?;
+                let dir = crate::handlers::get_str(&data, "dir")?;
+                let info = bridge.remove_dir(&project_id, &dir)?;
+                // 文案与 remove 项目同语义：摘列表不动磁盘。
+                Ok(Some(serde_json::json!({
+                    "project": info,
+                    "note": "仅解除放行（摘列表），未删除目录内任何文件；围栏生效时机同 add_dir",
+                })))
             }
             "open_dir" => {
                 let data = data.ok_or("missing data")?;

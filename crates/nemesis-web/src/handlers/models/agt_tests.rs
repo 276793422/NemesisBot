@@ -322,6 +322,20 @@ impl crate::handlers::projects::ProjectsBridge for AgtRecordingBridge {
     ) -> Result<crate::handlers::projects::ProjectInfo, String> {
         Err("not wired".to_string())
     }
+    fn add_dir(
+        &self,
+        _project_id: &str,
+        _dir: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn remove_dir(
+        &self,
+        _project_id: &str,
+        _dir: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }

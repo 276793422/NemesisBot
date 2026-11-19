@@ -346,7 +346,7 @@ impl Tool for SpawnTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run the sub-agent in the background (default false). When true, this tool returns immediately with a task marker and the main conversation continues; the sub-agent's result is automatically delivered back to this session when it completes. Use for long-running tasks (builds, large refactors, research) where waiting would stall the conversation."
+                    "description": "Run the sub-agent as a tracked background task (default false). When true, THIS tool call parks and waits until the sub-agent finishes, then returns its REAL result (failure = Error: text). The conversation pauses during the wait — the user sees live progress and can stop the task; new user messages queue up. Use it for long-running work (builds, large refactors, research) whose result you need before continuing. Do NOT repeat the call while waiting: the result arrives as this call's tool result."
                 },
                 "inherit_context": {
                     "type": "boolean",
@@ -403,8 +403,10 @@ impl Tool for SpawnTool {
         detached_tools_for_profile(tools_profile)?;
 
         // 后台化开关（缺省 false=同步等待子代理完成）。true 时闭包
-        // 侧转后台，本调用立即返回 `__BG_SPAWN__` marker（loop 侧存续行
-        // 快照 + 中间消息收尾回合；完成结果经 subagent_continuation 回灌）。
+        // 侧转后台并返回 `__BG_SPAWN__` marker——loop 侧 park 在本工具
+        // 调用上等真实完成（2026-11-19 park 化：不再伪造 Done 收口；
+        // 完成 parcel 原地覆写 marker 结果回灌 LLM；estop/cancel 臂
+        // 诚实打断）。
         let background = val
             .get("background")
             .and_then(|v| v.as_bool())

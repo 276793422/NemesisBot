@@ -21,6 +21,10 @@
 
 pub mod args_validator;
 pub mod background_registry;
+/// spawn park 注册表（2026-11-19 会话流过程语言整改）：后台子代理
+/// 完成投递信箱——主 turn park 在 spawn 工具调用上等真实完成，不再
+/// 伪造 Done 收口（详见模块头）。
+pub mod bg_park;
 pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;

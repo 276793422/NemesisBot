@@ -683,6 +683,7 @@ fn open_resolve_anchor_chain_reaches_registered_project() {
                 created_at: "t".to_string(),
                 running: false,
                 instructions_trusted: true,
+                extra_dirs: Vec::new(),
             }]
         }
         fn create(&self, _n: &str, _p: &str) -> Result<ProjectInfo, String> {
@@ -695,6 +696,12 @@ fn open_resolve_anchor_chain_reaches_registered_project() {
             Err("noop".to_string())
         }
         fn set_trust(&self, _id: &str, _t: bool) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn add_dir(&self, _id: &str, _d: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn remove_dir(&self, _id: &str, _d: &str) -> Result<ProjectInfo, String> {
             Err("noop".to_string())
         }
         fn owner_of(&self, _s: &str) -> Option<String> {
@@ -749,6 +756,7 @@ fn open_resolve_project_leaf_prefix_strip() {
                 created_at: "t".to_string(),
                 running: false,
                 instructions_trusted: true,
+                extra_dirs: Vec::new(),
             }]
         }
         fn create(&self, _n: &str, _p: &str) -> Result<ProjectInfo, String> {
@@ -761,6 +769,12 @@ fn open_resolve_project_leaf_prefix_strip() {
             Err("noop".to_string())
         }
         fn set_trust(&self, _id: &str, _t: bool) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn add_dir(&self, _id: &str, _d: &str) -> Result<ProjectInfo, String> {
+            Err("noop".to_string())
+        }
+        fn remove_dir(&self, _id: &str, _d: &str) -> Result<ProjectInfo, String> {
             Err("noop".to_string())
         }
         fn owner_of(&self, _s: &str) -> Option<String> {

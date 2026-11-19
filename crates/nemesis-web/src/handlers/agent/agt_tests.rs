@@ -94,6 +94,12 @@ impl ProjectsBridge for AgtStubBridge {
     fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
         Err("not wired".to_string())
     }
+    fn add_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn remove_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }

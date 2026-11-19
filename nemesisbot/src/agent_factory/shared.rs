@@ -805,6 +805,15 @@ pub(super) fn inject_spawn_fn(
                 );
                 nemesis_agent::subagent_registry::global()
                     .attach_token(&bg_registry_id, bg_cancel_token.clone());
+                // park 信箱注册（2026-11-19 spawn park 化）：先于
+                // tokio::spawn——完成回灌（deliver）只可能晚于本行，杜绝
+                // 「完成先到、park 未挂」竞态（该竞态会双丢：快照未存 +
+                // slot 未挂，完成帧无处落地）。
+                nemesis_agent::bg_park::global().register(
+                    &bg_task_id,
+                    &parent_session_key,
+                    &chat_id,
+                );
                 let bg_parent_session_key = parent_session_key.clone();
                 tokio::spawn(async move {
                     let result = match weak.upgrade() {

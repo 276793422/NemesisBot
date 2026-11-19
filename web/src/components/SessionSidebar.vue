@@ -43,7 +43,7 @@ import ProjectCreateModal from './ProjectCreateModal.vue'
 // L22（2026-11-03 session PR 最小形态）：变更对比弹窗复用 M3 会话变更面板
 // （file_changes 聚合 + 逐文件 sessions.file_diff unified diff 渲染）。
 import SessionChangesPanel from './logs/SessionChangesPanel.vue'
-import type { SessionEntry } from '../composables/useChatApi'
+import type { SessionEntry, ProjectInfo } from '../composables/useChatApi'
 // WS9/P17（2026-09-26）：谱系树重排（组内子会话紧跟父会话 + 缩进深度）
 // 与弹窗「谱系」节祖先链行——纯视图工具，真相源在后端 meta。
 import { lineageChainLines } from '../utils/sessionLineage'
@@ -260,6 +260,30 @@ async function openDir(key: string) {
 
 // 新建项目 modal（F1）。
 const showProjectModal = ref(false)
+
+// D 批（2026-11-19）围栏多根：＋按钮语义分叉——当前会话属某项目 → 打开
+// 该项目的「添加目录」弹窗（给围栏加放行根）；非项目会话/无选中 → 原语义
+// 新建项目。addDirTarget 非空 = add-dir 模式在开（互斥挂载，v-if/v-else-if）。
+const addDirTarget = ref<ProjectInfo | null>(null)
+
+function onProjectPlusClick() {
+  const cur = sessionStore.sessions.find(s => s.id === sessionStore.currentId)
+  const pid = cur?.projectId
+  const proj = pid ? sessionStore.projects.find(p => p.id === pid) : undefined
+  if (proj) {
+    addDirTarget.value = proj
+  } else {
+    showProjectModal.value = true
+  }
+}
+
+/** ＋按钮 tooltip 随分叉语义走（当前会话属项目时提示「添加目录」）。 */
+const projectPlusTitle = computed(() => {
+  const cur = sessionStore.sessions.find(s => s.id === sessionStore.currentId)
+  const pid = cur?.projectId
+  const proj = pid ? sessionStore.projects.find(p => p.id === pid) : undefined
+  return proj ? `添加放行目录 — ${proj.name}` : '新建项目'
+})
 
 // ── projects.max 就近编辑（批次 3 配置页补全）：项目区标题条上的数字
 // 输入，撞上限报错处即可调；config.set_field 写 config.json projects.max，
@@ -798,7 +822,8 @@ function relTime(ts: string): string {
             @click.stop
           />
         </label>
-        <button class="project-create-btn" @click="showProjectModal = true" title="新建项目">＋</button>
+        <!-- D 批：＋语义分叉——项目会话 = 给该项目加放行目录；否则新建项目 -->
+        <button class="project-create-btn" :title="projectPlusTitle" @click="onProjectPlusClick">＋</button>
       </div>
       <div v-if="sessionStore.projects.length === 0" class="section-empty">暂无项目——点「＋」注册一个目录</div>
 
@@ -1065,6 +1090,15 @@ function relTime(ts: string): string {
     />
     <!-- L6++ F1: 新建项目弹窗 -->
     <ProjectCreateModal v-if="showProjectModal" @close="showProjectModal = false" />
+    <!-- D 批围栏多根：给当前会话所属项目添加放行目录（＋按钮分叉的项目臂）。
+         @updated 原位刷新 addDirTarget，弹窗内 extra_dirs 列表即时反映摘除/新增。 -->
+    <ProjectCreateModal
+      v-else-if="addDirTarget"
+      mode="add-dir"
+      :project="addDirTarget"
+      @close="addDirTarget = null"
+      @updated="p => (addDirTarget = p)"
+    />
   </div>
 </template>
 

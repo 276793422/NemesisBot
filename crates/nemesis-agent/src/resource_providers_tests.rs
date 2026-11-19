@@ -645,7 +645,8 @@ fn subagents_filter_parent_and_exclude_archived() {
     let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "sub"));
     assert_eq!(view.status, CategoryStatus::Ok);
     assert_eq!(view.total, 1);
-    assert_eq!(view.summary["active"], json!(1));
+    assert_eq!(view.summary["running"], json!(1));
+    assert_eq!(view.summary["finished_total"], json!(0));
     assert_eq!(view.summary["rows"][0]["task"], json!("帮我跑测试"));
 
     // 完成一个 + 归档一个 → 工作面清空。
@@ -658,6 +659,118 @@ fn subagents_filter_parent_and_exclude_archived() {
     );
     reg.archive(&[format!("{key}::a")]);
     let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "sub"));
+    assert_eq!(view.status, CategoryStatus::Empty);
+}
+
+/// C 批选择规则（2026-11-19 用户拍板）：running 全列（>4 不砍）+ 最近
+/// 终态补齐至 max(4, running 数)。新注册在前（registry list 契约）。
+fn begin_sub(reg: &crate::subagent_registry::SubagentRegistry, id: String, parent: &str) {
+    let task = format!("task-{id}");
+    reg.begin(crate::subagent_registry::SubagentBegin {
+        id,
+        parent_session_key: parent.to_string(),
+        parent_chat_id: "web:t".into(),
+        origin: "model_spawn".into(),
+        agent_id: "agent-z".into(),
+        task,
+        role: String::new(),
+        tools_profile: String::new(),
+        depth: 1,
+        background: false,
+        loop_origin: "main".into(),
+        bg_task_id: None,
+    });
+}
+
+#[test]
+fn subagents_many_running_all_listed_with_finished_topup() {
+    let key = format!("agent:main:session:{}", unique_sid("subsel"));
+    let reg = crate::subagent_registry::global();
+    // 注册序 a..f（a 最老）；c/d/e/f 完成（a/b 仍 running）。
+    for tag in ["a", "b", "c", "d", "e", "f"] {
+        begin_sub(reg, format!("{key}::{tag}"), &key);
+    }
+    for tag in ["c", "d", "e", "f"] {
+        // 完成时刻错开 ≥1ms：同毫秒完成时稳定排序退回插入序，「最近完成
+        // 优先」的断言会随机器速度漂移。
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        reg.finish(
+            &format!("{key}::{tag}"),
+            crate::subagent_registry::SubagentStatus::Done,
+            Some(1),
+            Some(format!("ok-{tag}")),
+            None,
+        );
+    }
+    let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "subsel"));
+    assert_eq!(view.status, CategoryStatus::Ok);
+    // running 2 + finished 4：预算 = max(4, 2) = 4 → 全列，omitted 0。
+    assert_eq!(view.summary["running"], json!(2));
+    assert_eq!(view.summary["finished_total"], json!(4));
+    let rows = view.summary["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 6);
+    assert_eq!(view.summary["omitted"], json!(0));
+    // 新的在前：首行 = b（最新注册的 running）。
+    assert_eq!(rows[0]["id"], json!(format!("{key}::b")));
+    // running 全在前、finished 在后。
+    assert_eq!(rows[1]["id"], json!(format!("{key}::a")));
+    assert_eq!(rows[2]["id"], json!(format!("{key}::f"))); // 最新完成优先
+
+    // 少 running 多终态：再完成 a/b（0 running + 6 finished）→
+    // 预算 = max(4, 0) = 4 → 只列最近 4 个终态，omitted 2。
+    for tag in ["a", "b"] {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        reg.finish(
+            &format!("{key}::{tag}"),
+            crate::subagent_registry::SubagentStatus::Done,
+            Some(1),
+            Some(format!("ok-{tag}")),
+            None,
+        );
+    }
+    let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "subsel"));
+    assert_eq!(view.summary["running"], json!(0));
+    assert_eq!(view.summary["finished_total"], json!(6));
+    let rows = view.summary["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 4);
+    assert_eq!(view.summary["omitted"], json!(2));
+    // 最近 4 个 = b/a/f/e（新在前）。
+    assert_eq!(rows[0]["id"], json!(format!("{key}::b")));
+    assert_eq!(rows[3]["id"], json!(format!("{key}::e")));
+
+    // running > 4 不砍：重开 6 个 running（g..l）→ 全列。
+    for tag in ["g", "h", "i", "j", "k", "l"] {
+        begin_sub(reg, format!("{key}::{tag}"), &key);
+    }
+    let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "subsel"));
+    assert_eq!(view.summary["running"], json!(6));
+    let rows = view.summary["rows"].as_array().expect("rows");
+    // 6 running 全列 + 6 终态（预算 max(4,6)=6，在册 6 条全进）= 12。
+    assert_eq!(rows.len(), 12);
+    assert_eq!(view.summary["omitted"], json!(0));
+    // 清场：终态行全部归档 → 工作面只剩 running 6 个（后续测试不串台）。
+    reg.archive(&[
+        format!("{key}::a"),
+        format!("{key}::b"),
+        format!("{key}::c"),
+        format!("{key}::d"),
+        format!("{key}::e"),
+        format!("{key}::f"),
+    ]);
+    let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "subsel"));
+    assert_eq!(view.summary["running"], json!(6));
+    assert_eq!(view.summary["finished_total"], json!(0));
+    // 逐个 cancel 清场 + 全量归档（全局注册表无重置——测试间隔离靠唯一键，
+    // 条目留在册不影响他人会话的过滤口径）。
+    for tag in ["g", "h", "i", "j", "k", "l"] {
+        reg.cancel(&format!("{key}::{tag}"));
+    }
+    let all: Vec<String> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]
+        .iter()
+        .map(|tag| format!("{key}::{tag}"))
+        .collect();
+    reg.archive(&all);
+    let view = SubagentsProvider.collect(&ctx_for(Path::new("."), &key, "subsel"));
     assert_eq!(view.status, CategoryStatus::Empty);
 }
 
