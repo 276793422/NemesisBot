@@ -18,7 +18,10 @@ function loadStructure(pkg: string): string {
   return readFileSync(`${SKINS_DIR}/${pkg}/skin/structure.html`, 'utf-8')
 }
 
-const PACKAGES = ['bot', 'openlikebuddy', 'focus']
+// BUG-20261119-195：focus 包尚未入库 skins 子模块（全史无 focus/ 路径），
+// 契约测试读包文件必 ENOENT。摘除待 skins 仓库真落 focus 皮肤后随
+// EXPECTED_SLOTS/BRANDS 一并恢复。
+const PACKAGES = ['bot', 'openlikebuddy']
 
 // 每包声明的槽位（structure.html template 清单——加槽先改这里）
 const EXPECTED_SLOTS: Record<string, string[]> = {
