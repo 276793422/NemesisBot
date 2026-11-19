@@ -9,6 +9,10 @@
 /** 引擎支持的 structure 协议版本（`data-nb-engine` 协商；高于此值整包拒载）。 */
 export const SKIN_ENGINE_VERSION = 1
 
+// WorkTimeline 形状单一真相源 = 后端 WorkRecorder serde（stores/chat.ts
+// 注释契约）；投影原样透传，皮肤按 snake_case 字段绑定。
+import type { WorkTimeline } from '../stores/chat'
+
 /** 槽位名集合（宿主挂载点：SkinSlot name 属性）。 */
 export type SkinSlotName = 'sidebar' | 'titlebar' | 'statusbar' | 'launcher'
 
@@ -28,11 +32,24 @@ export interface SkinSessionItem {
   relTime: string
   active: boolean
   pinned: boolean
+  /** 谱系树缩进深度（WS9/P17；pin 行恒 0。projectGroups 消费；缺省 0）。 */
+  depth?: number
 }
 
 /** 会话时间分组（今天/昨天/7天内/更早，空组宿主已滤除）。 */
 export interface SkinSessionGroup {
   label: string
+  sessions: SkinSessionItem[]
+}
+
+/** L6++ 双分组组行（2026-11-18 focus 皮肤；与原生 SessionSidebar 同源
+ * 派生——utils/sessionGrouping.ts 单一真相源）。展示顺序：置顶项目组 →
+ * 未置顶项目组 → 对话组（key='__chat'）→ 孤儿组（key='__orphan'，垫底）。 */
+export interface SkinSessionColGroup {
+  /** 组寻址键：项目 id / '__chat' / '__orphan'。 */
+  key: string
+  /** 组头；null = 对话组（无组头，模板自加区块标题条）。 */
+  header: { name: string; available: boolean; orphan: boolean } | null
   sessions: SkinSessionItem[]
 }
 
@@ -91,8 +108,13 @@ export interface SkinProjection {
   navPrimary: SkinNavItem[]
   navMore: SkinNavItem[]
   sessionGroups: SkinSessionGroup[]
+  /** L6++ 双分组（项目组/对话组/孤儿组；与原生侧栏同源派生。focus 皮肤
+   * 侧栏消费；sessionGroups 时间分组保留给只想要扁平时间线的包）。 */
+  projectGroups: SkinSessionColGroup[]
   hasSessions: boolean
   currentSessionId: string
+  /** 当前会话排序档标签（最近/创建/名称；cycle-sort 动作轮转，focus 侧栏消费）。 */
+  sortLabel: string
   /** E-Stop 三态（estopEngaged 与 estopBusy 同时真 = 执行中） */
   estopEngaged: boolean
   estopBusy: boolean
@@ -112,6 +134,11 @@ export interface SkinProjection {
   inputText: string
   /** 编辑器模式（'plan' | 'build'）。 */
   mode: string
+  /** mode === 'plan' 派生布尔（引擎无比较表达式，类名/条件切换用）。 */
+  isPlan: boolean
+  /** 工具活动时间线（WorkRecorder 形态原样透传；null = 当前会话无活动。
+   *  皮肤渲染成折叠工作块——原生 live 折叠块的同构投影）。 */
+  work: WorkTimeline | null
   /** 管理页数据切片（page:<path> 槽用；视图经 useSkinPageData 注册，
    * 未注册路由为空对象——皮肤自担布局）。 */
   pages: Record<string, Record<string, unknown>>

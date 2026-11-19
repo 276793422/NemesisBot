@@ -284,10 +284,13 @@ impl GlobalResourceProvider for BackgroundProvider {
     }
 }
 
-/// 会话级钩子（`hooks_session` / 会话钩子）。口径（计划 §4 地雷 3）：
-/// 直读 `<workspace>/config/hooks.session.json`（agent `hooks` 工具存储，
-/// 键 = **裸 sid**），与盘上真相一致；桥内存态是同一文件的懒重载镜像，
-/// 两读等价、盘读更直接。0 条 = Empty（会话没装钩子是常态）。
+/// 会话级钩子（`hooks_session` / 会话钩子）。口径（计划 §4 地雷 3，统一
+/// 存储 2026-11-19 起直读 hooks.json）：[`crate::cc_hooks::
+/// list_session_hooks_scoped`] 列 **scope 圈定命中本会话**的条目（工具
+/// 专属组 + 用户手写圈定组同账；未圈定组归 hooks_global 不双计）——与
+/// count 同谓词，total = 行数永不分裂。行带明细（event/kind/content，
+/// 2026-11-19「只有个数不知道是啥」补齐）。0 条 = Empty（会话没装钩子
+/// 是常态）。
 pub struct HooksSessionProvider;
 
 impl GlobalResourceProvider for HooksSessionProvider {
@@ -297,20 +300,34 @@ impl GlobalResourceProvider for HooksSessionProvider {
 
     fn collect(&self, ctx: &ResourceCtx) -> CategoryView {
         let dir = nemesis_path::workspace_config_dir(ctx.workspace_root);
-        let store = crate::cc_hooks::read_session_hook_store(&dir);
-        let count = store.session_len(ctx.bare_sid);
-        if count == 0 {
-            return CategoryView::empty();
+        match crate::cc_hooks::list_session_hooks_scoped(&dir, ctx.session_key) {
+            Ok(rows) if rows.is_empty() => CategoryView::empty(),
+            Ok(rows) => {
+                let total = rows.len();
+                let view_rows: Vec<Value> = rows
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "event": h.event,
+                            "kind": if h.prompt.is_empty() { "command" } else { "prompt" },
+                            "content": if h.prompt.is_empty() { &h.command } else { &h.prompt },
+                            "matcher": h.matcher,
+                            "timeout": h.timeout,
+                        })
+                    })
+                    .collect();
+                CategoryView::ok(total, json!({"count": total, "rows": view_rows}))
+            }
+            Err(reason) => CategoryView::unavailable(reason),
         }
-        CategoryView::ok(count, json!({"count": count}))
     }
 }
 
 /// 全局钩子（`hooks_global` / 全局钩子）。构造收主 loop 槽（[`LoopSlot`]），
 /// collect 时解析**当前** loop 的 hooks 桥（跨重建存活）；槽空 / 桥缺席
-/// （workspace 无任何钩子配置）= Empty（合法无）；有桥无匹配 = Empty；
-/// 有匹配 = 按事件名计数。匹配口径复用桥侧 `matches_session` 双串匹配
-/// （完整 session_key）。
+/// （workspace 无任何钩子配置）= Empty（合法无）；有桥无未圈定钩子 =
+/// Empty；有 = 按事件名计数（**只数未圈定组**——圈定组归 hooks_session
+/// 类目，统一存储一张表两处分账不双计）。
 pub struct HooksGlobalProvider {
     loop_slot: Option<LoopSlot>,
 }
@@ -326,17 +343,16 @@ impl GlobalResourceProvider for HooksGlobalProvider {
         ProviderMeta::new("hooks_global", "全局钩子", 40, false)
     }
 
-    fn collect(&self, ctx: &ResourceCtx) -> CategoryView {
+    fn collect(&self, _ctx: &ResourceCtx) -> CategoryView {
         let Some(slot) = &self.loop_slot else {
             return CategoryView::empty();
         };
         let bridge = slot.read().as_ref().and_then(|l| l.cc_hook_bridge());
         let Some(bridge) = bridge else {
-            // 桥缺席 = load_from_dir 判定两侧（hooks.json / hooks.session.json）
-            // 均无内容——全局钩子合法无。
+            // 桥缺席 = load_from_dir 判定 hooks.json 无内容——全局钩子合法无。
             return CategoryView::empty();
         };
-        let counts = bridge.global_session_match_counts(ctx.session_key);
+        let counts = bridge.global_hook_counts();
         if counts.is_empty() {
             return CategoryView::empty();
         }

@@ -659,3 +659,95 @@ func (m *TestAIStreamErrNoCode) PartialContent() string { return serrPartialCont
 func (m *TestAIStreamErrNoCode) Process(messages []Message) string {
 	return "SERR_RETRY_OK: retry succeeded (nocode variant)"
 }
+
+// ------------------------------------------------------------- testai-mail-1.0
+//
+// Mail roundtrip benchmark model (agent-bench mail_roundtrip scenario).
+//
+// User message contains <MAIL_SEND>inbox@bench.local</MAIL_SEND> → ONE
+// response with a single `mail` tool call {action:"send", to:<addr>,
+// subject:<NBMK-tagged>, body:...}. When the tool result comes back
+// (last message role=tool), the model reports what actually happened:
+//   - result mentions 已发送 (send receipt) → "MAIL_SEND_OK"
+//   - otherwise                            → "MAIL_SEND_FAIL:<truncated>"
+//
+// The benchmark asserts the gateway→plugin SMTP TLS path end-to-end by
+// checking the maildir store on disk (effect-side), so the model only
+// needs to relay success/failure honestly.
+type TestAIMail struct{}
+
+func NewTestAIMail() *TestAIMail { return &TestAIMail{} }
+
+func (m *TestAIMail) Name() string { return "testai-mail-1.0" }
+
+func (m *TestAIMail) Process(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	last := messages[len(messages)-1]
+
+	// Tool result round → next step or terminal verdict.
+	if last.Role == "tool" {
+		// mail list result（pretty JSON {"ok":true,"items":[...]}）→ 取首个 id 发起 read。
+		if strings.Contains(last.Content, `"items"`) {
+			if i := strings.Index(last.Content, `"id": "`); i >= 0 {
+				rest := last.Content[i+len(`"id": "`):]
+				if j := strings.Index(rest, `"`); j >= 0 {
+					return buildSingleToolCall("mail", map[string]interface{}{
+						"action": "read",
+						"id":     rest[:j],
+					})
+				}
+			}
+			return "MAIL_READ_EMPTY"
+		}
+		// mail read result（{"ok":true,"meta":{...},"body":"..."}）→ 正文标记裁决。
+		if strings.Contains(last.Content, `"body"`) {
+			if strings.Contains(last.Content, "NBMK") {
+				return "MAIL_READ_OK"
+			}
+			trimmed := last.Content
+			if len(trimmed) > 120 {
+				trimmed = trimmed[:120]
+			}
+			return "MAIL_READ_FAIL:" + trimmed
+		}
+		// mail send result（「邮件已发送到 ...」）。
+		if strings.Contains(last.Content, "已发送") {
+			return "MAIL_SEND_OK"
+		}
+		trimmed := last.Content
+		if len(trimmed) > 120 {
+			trimmed = trimmed[:120]
+		}
+		return "MAIL_SEND_FAIL:" + trimmed
+	}
+
+	// <MAIL_SEND>addr</MAIL_SEND> → single mail send tool call.
+	if i := strings.Index(last.Content, "<MAIL_SEND>"); i >= 0 {
+		rest := last.Content[i+len("<MAIL_SEND>"):]
+		if j := strings.Index(rest, "</MAIL_SEND>"); j >= 0 {
+			addr := strings.TrimSpace(rest[:j])
+			return buildSingleToolCall("mail", map[string]interface{}{
+				"action":  "send",
+				"to":      addr,
+				"subject": "bench mail subject NBMK",
+				"body":    "mail_roundtrip effect-side marker body. NBMK-MAIL-BODY.",
+			})
+		}
+	}
+
+	// <MAIL_READ> → mail list（unread_only，默认主库=首个注册地址）。
+	if strings.Contains(last.Content, "<MAIL_READ>") {
+		return buildSingleToolCall("mail", map[string]interface{}{
+			"action":      "list",
+			"mailbox":     "inbox@bench.local",
+			"unread_only": true,
+			"limit":       10,
+		})
+	}
+
+	return "send <MAIL_SEND>addr@bench.local</MAIL_SEND> or <MAIL_READ> to exercise the mail tool"
+}
+
+func (m *TestAIMail) Delay() time.Duration { return 0 }

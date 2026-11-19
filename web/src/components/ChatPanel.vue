@@ -1244,6 +1244,12 @@ function handleWSMessage(data: any) {
             content: data.data.content,
             timestamp: data.timestamp,
             model: data.data.model,
+            // 系统注入行（2026-11-19）：hook 提示词注入 / cron tick 的
+            // user 行经后端 SystemNotice 事件转 receive 帧实时到达——
+            // 标记透传给通知条分支（历史行 system_notice / cron_job_id
+            // 同一谓词渲染，缺省 undefined = 普通气泡旧行为）。
+            systemNotice: data.data.system_notice,
+            cronJobId: data.data.cron_job_id,
             // 集群续行归属（2026-09-23）：worker 节点名 →「节点 X」徽章。
             sourceNode: data.data.source_node,
             // A1：环 seq 随消息存档——历史响应 last_seq 到达后据此剔除
@@ -3639,7 +3645,7 @@ onMounted(() => {
   // chat-send / chat-stop 动作调用。仅默认聊天模块注册（嵌入面板不抢桥，
   // 后注册覆盖语义会把主聊天页的皮肤动作路由进工作流会话）。
   if (isDefaultChat.value) {
-    registerChatBridge({ send: sendMessage, stop: stopGeneration })
+    registerChatBridge({ send: sendMessage, stop: stopGeneration, addFiles: addImageFiles })
     // effort 探针标记（probe 二期）：默认模型 effort_marks 拉取（失败=
     // 空标记诚实不标，不打扰聊天主链路）。
     void loadEffortMarks()

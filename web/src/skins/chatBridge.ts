@@ -10,25 +10,37 @@
  * 选委托而不是下沉到 store：3074 行组件内的管线牵扯会话锚定/媒体/在飞
  * 登记，复制一份必然漂移；SkinSlot 本就挂在 ChatPanel 内部，桥的生命
  * 周期与挂载天然同步。
+ *
+ * 2026-11-18（focus 皮肤）：addFiles 入口——皮肤 media 原语（file input
+ * change / 粘贴 / 拖拽）经桥把文件交给 ChatPanel 现有上传管线
+ * （validateImageFile → uploadImage → pendingImages → sendMessage media），
+ * 皮肤不复制上传/校验/上限逻辑。
  */
 
 interface ChatBridgeHooks {
   send: (() => void) | null
   stop: (() => void) | null
+  addFiles: ((files: FileList | File[] | null) => void) | null
 }
 
-const bridge: ChatBridgeHooks = { send: null, stop: null }
+const bridge: ChatBridgeHooks = { send: null, stop: null, addFiles: null }
 
 /** ChatPanel 挂载时注册真实管线入口（幂等覆盖）。 */
-export function registerChatBridge(hooks: { send: () => void; stop: () => void }): void {
+export function registerChatBridge(hooks: {
+  send: () => void
+  stop: () => void
+  addFiles?: (files: FileList | File[] | null) => void
+}): void {
   bridge.send = hooks.send
   bridge.stop = hooks.stop
+  bridge.addFiles = hooks.addFiles ?? null
 }
 
 /** ChatPanel 卸载时注销。 */
 export function unregisterChatBridge(): void {
   bridge.send = null
   bridge.stop = null
+  bridge.addFiles = null
 }
 
 /** 皮肤动作入口（桥空 = no-op）。 */
@@ -38,4 +50,9 @@ export function bridgeSend(): void {
 
 export function bridgeStop(): void {
   bridge.stop?.()
+}
+
+/** 皮肤 media 原语入口（桥空 = no-op——路由不在聊天页时诚实空转）。 */
+export function bridgeAddFiles(files: FileList | File[] | null): void {
+  bridge.addFiles?.(files)
 }

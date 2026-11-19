@@ -37,7 +37,7 @@ import { on as onSSE, off as offSSE } from '../composables/useSSE'
 import { fmtUsageLine as usage } from '../composables/useUsageFormat'
 // 对话生成（AI workflow generator，2026-09-22）：wf_edit 会话只在工作流页
 // 「对话生成」TAB 使用——登记表识别 + 主侧栏三处过滤，不在聊天侧栏出现。
-import { useWfEditSessions } from '../composables/wfEditSessions'
+import { makeWfEditHiddenPredicate } from '../composables/wfEditSessions'
 import ForkSessionModal from './ForkSessionModal.vue'
 import ProjectCreateModal from './ProjectCreateModal.vue'
 // L22（2026-11-03 session PR 最小形态）：变更对比弹窗复用 M3 会话变更面板
@@ -46,12 +46,29 @@ import SessionChangesPanel from './logs/SessionChangesPanel.vue'
 import type { SessionEntry } from '../composables/useChatApi'
 // WS9/P17（2026-09-26）：谱系树重排（组内子会话紧跟父会话 + 缩进深度）
 // 与弹窗「谱系」节祖先链行——纯视图工具，真相源在后端 meta。
-import { arrangeLineage, lineageChainLines } from '../utils/sessionLineage'
+import { lineageChainLines } from '../utils/sessionLineage'
+// 分组/排序/pin 派生单一真相源（2026-11-18 focus 皮肤抽取）：原生侧栏与
+// 皮肤投影共用同一模块级状态（pin×2 + 排序键，localStorage 持久），任何
+// 一侧变更两侧同步重算。本组件只保留视图态（折叠/展开/菜单/弹窗）。
+import {
+  deriveSessionGroups,
+  cycleSort,
+  sessionTitle as title,
+  sessionSort,
+  SORT_LABELS,
+  isPinned,
+  togglePin as pinSession,
+  unpinIfDeleted,
+  isProjectPinned,
+  toggleProjectPin as pinProject,
+  unpinProjectIfRemoved,
+  type DerivedGroupRow as GroupRow,
+  type LineageRow,
+} from '../utils/sessionGrouping'
 
 const sessionStore = useSessionStore()
 const toast = useToast()
 const router = useRouter()
-const wfEditSessions = useWfEditSessions()
 const { openProjectDir, snooze, unsnooze, detach, importSession } = useChatApi()
 const { request } = useWSAPI()
 
@@ -59,18 +76,8 @@ const { request } = useWSAPI()
 // 会话一律视为工作流编辑会话。隐藏判定与 localStorage 登记取**并集**——
 // 本地登记富信息（target 名）但换端口/换浏览器/清站点数据会失忆；
 // 服务端绑定表（sessions.list 回带 bindings）跟会话列表同源，不丢。
-const wfEditBoundSids = computed(() => {
-  const out = new Set<string>()
-  for (const [key, sid] of Object.entries(sessionStore.bindings)) {
-    if (key.startsWith('wf_agentgen:')) out.add(sid)
-  }
-  return out
-})
-
-/** 工作流编辑会话（对话生成 TAB 专用）→ 主聊天侧栏隐藏。 */
-function isWfEditSession(id: string): boolean {
-  return wfEditSessions.targetOf(id) !== undefined || wfEditBoundSids.value.has(id)
-}
+// 2026-11-18：判定工厂抽至 wfEditSessions.ts（皮肤投影同源共用）。
+const isWfEditSession = makeWfEditHiddenPredicate(sessionStore)
 const fileTree = useFileTreePanel()
 const browserPanel = useBrowserPanel()
 // 浏览器接管 feature gate（`!== 'false'` = 默认包含，同 router 门控惯例）。
@@ -91,154 +98,10 @@ function gotoPage(path: string) {
 }
 
 // ---------------------------------------------------------------------------
-// M6（devtool-upgrade 阶段 7）：会话 pin。纯前端——pinned 集合存
-// localStorage，pinned 会话置顶显示（组内保持原排序），后端 sessions.list
-// 协议不动。删除会话时顺带清 pin，防残留 id 永久占顶。
-// L6++：pin 语义=组内置顶（双分组 computed 各自内部排序，互不跨越组边界）。
+// 会话 pin / 排序键 / 项目置顶 / 双分组派生 → utils/sessionGrouping.ts
+// （2026-11-18 focus 皮肤抽取：原生侧栏与皮肤投影共用的单一真相源，
+// 模块级状态 + localStorage 持久；任何一侧变更两侧同步重算）。
 // ---------------------------------------------------------------------------
-const PIN_KEY = 'nb_pinned_sessions'
-
-function loadPinned(): Set<string> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(PIN_KEY) || '[]')
-    return new Set(Array.isArray(raw) ? raw.filter((x: unknown) => typeof x === 'string') : [])
-  } catch {
-    return new Set()
-  }
-}
-
-const pinnedIds = ref<Set<string>>(loadPinned())
-
-function persistPinned() {
-  localStorage.setItem(PIN_KEY, JSON.stringify([...pinnedIds.value]))
-}
-
-function isPinned(id: string): boolean {
-  return pinnedIds.value.has(id)
-}
-
-function togglePin(id: string) {
-  closeMenus()
-  if (pinnedIds.value.has(id)) {
-    pinnedIds.value.delete(id)
-  } else {
-    pinnedIds.value.add(id)
-  }
-  // 换新 Set 触发 computed 重算（Set 内部变更不改变 ref 引用）。
-  pinnedIds.value = new Set(pinnedIds.value)
-  persistPinned()
-}
-
-function unpinIfDeleted(id: string) {
-  if (!pinnedIds.value.has(id)) return
-  pinnedIds.value.delete(id)
-  pinnedIds.value = new Set(pinnedIds.value)
-  persistPinned()
-}
-
-/** 组内排序：pinned 置顶（互相对序=列表原序不变），其余按当前排序键。 */
-function sortSessions(list: SessionEntry[]): SessionEntry[] {
-  return [
-    ...list.filter(s => pinnedIds.value.has(s.id)),
-    ...list.filter(s => !pinnedIds.value.has(s.id)).sort(cmpSessions),
-  ]
-}
-
-// ---------------------------------------------------------------------------
-// 会话排序键（纯前端偏好，localStorage 持久；sessions.list 行自带
-// startTime/lastTime，零后端改动）：recent=最后活动新→旧（默认）/
-// created=创建时间新→旧 / name=标题 zh-CN 字典序。入口=对话区标题条
-// 循环按钮。
-// ---------------------------------------------------------------------------
-type SessionSort = 'recent' | 'created' | 'name'
-const SORT_KEY = 'nb_session_sort'
-const SORT_LABELS: Record<SessionSort, string> = { recent: '最近', created: '创建', name: '名称' }
-
-function loadSort(): SessionSort {
-  const v = localStorage.getItem(SORT_KEY)
-  return v === 'created' || v === 'name' ? v : 'recent'
-}
-
-const sessionSort = ref<SessionSort>(loadSort())
-
-function cycleSort() {
-  const order: SessionSort[] = ['recent', 'created', 'name']
-  sessionSort.value = order[(order.indexOf(sessionSort.value) + 1) % order.length]
-  localStorage.setItem(SORT_KEY, sessionSort.value)
-}
-
-function cmpSessions(a: SessionEntry, b: SessionEntry): number {
-  if (sessionSort.value === 'name') {
-    return title(a).localeCompare(title(b), 'zh-CN')
-  }
-  const key = sessionSort.value === 'created' ? 'startTime' : 'lastTime'
-  // 必须解析成时间戳比较，不能裸字典序（服务端 scan_session_logs 同课：
-  // crates/nemesis-web/src/handlers/logs.rs 排序注记）。服务端行是 Local
-  // offset RFC3339（`2026-11-07T12:34+08:00`），乐观行是 toISOString 的
-  // UTC `Z` 形态（`2026-11-07T04:34Z`）——UTC+8 机器同日 10:00 后裸字符串
-  // 序把最新会话压到组底，点「新建对话」后 active 行落出 SHOW_MORE_CAP
-  // 可见窗（2026-11-07 FF 全量实录 capsule:38 点击后 10s 零 active 行）。
-  // 解析失败/空值沉底（降序最旧位），同刻稳定原序。
-  const ta = parseSessionTime(a[key])
-  const tb = parseSessionTime(b[key])
-  if (ta === tb) return 0
-  return ta > tb ? -1 : 1
-}
-
-/** lastTime/startTime 解析为毫秒时间戳；空值/不可解析（旧格式脏行）→
- * NEGATIVE_INFINITY 沉底（仅向前语义：无时间锚不参与排序红利，与服务端
- * scan_session_logs 口径一致）。 */
-function parseSessionTime(ts?: string): number {
-  if (!ts) return Number.NEGATIVE_INFINITY
-  const t = Date.parse(ts)
-  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t
-}
-
-// ---------------------------------------------------------------------------
-// B（2026-09-08 验收轮）：项目组置顶。与 M6 会话 pin 同构——纯前端偏好，
-// localStorage `nb_pinned_projects` 持久；置顶项目组排在项目区最前
-// （组间相对序保持注册表序不变）。移除项目成功后顺带清 pin，防残留 id。
-// ---------------------------------------------------------------------------
-const PROJ_PIN_KEY = 'nb_pinned_projects'
-
-function loadPinnedProjects(): Set<string> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(PROJ_PIN_KEY) || '[]')
-    return new Set(Array.isArray(raw) ? raw.filter((x: unknown) => typeof x === 'string') : [])
-  } catch {
-    return new Set()
-  }
-}
-
-const pinnedProjectIds = ref<Set<string>>(loadPinnedProjects())
-
-function persistPinnedProjects() {
-  localStorage.setItem(PROJ_PIN_KEY, JSON.stringify([...pinnedProjectIds.value]))
-}
-
-function isProjectPinned(key: string): boolean {
-  return pinnedProjectIds.value.has(key)
-}
-
-function toggleProjectPin(key: string) {
-  closeMenus()
-  if (pinnedProjectIds.value.has(key)) {
-    pinnedProjectIds.value.delete(key)
-  } else {
-    pinnedProjectIds.value.add(key)
-  }
-  // 换新 Set 触发 displayGroups 重算（同 M6 注释）。
-  pinnedProjectIds.value = new Set(pinnedProjectIds.value)
-  persistPinnedProjects()
-}
-
-/** 移除项目成功后清 pin（注册表已无此 id，残留只会占位）。 */
-function unpinProjectIfRemoved(key: string) {
-  if (!pinnedProjectIds.value.has(key)) return
-  pinnedProjectIds.value.delete(key)
-  pinnedProjectIds.value = new Set(pinnedProjectIds.value)
-  persistPinnedProjects()
-}
 
 // ---------------------------------------------------------------------------
 // L6++：双分组派生。项目区（按注册表聚合，每个注册项目一个组头，含空
@@ -247,64 +110,17 @@ function unpinProjectIfRemoved(key: string) {
 // 对话在下、孤儿垫底。
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// WS9/P17（2026-09-26）：组内展示行 = sortSessions（pin 优先 + 排序键）→
-// 谱系树重排（arrangeLineage：子会话紧跟父会话之后、兄弟保持排序键序）
-// + 缩进深度（lineageDepth，模板按深度加左内边距形成树形缩进）。pin 行
-// 不参与树排（置顶是更强的用户意愿，深度恒 0）；父不在本组（已删/跨组）
-// = 本组根，诚实降级。v1 只做「同组内按谱系树缩进排序」，不做整棵 DAG
-// 树视图（计划钦定边界）。
+// L6++ 双分组 / WS9-P17 谱系树派生 → utils/sessionGrouping.ts deriveSessionGroups
+// （单一真相源；侧栏只补视图态：chatSessions 空态判定 + 折叠/展开）。
 // ---------------------------------------------------------------------------
-type LineageRow = SessionEntry & { lineageDepth: number }
-
-function groupItems(list: SessionEntry[]): LineageRow[] {
-  const sorted = sortSessions(list)
-  const pinned = sorted
-    .filter(s => pinnedIds.value.has(s.id))
-    .map(s => ({ ...s, lineageDepth: 0 }))
-  const arranged = arrangeLineage(sorted.filter(s => !pinnedIds.value.has(s.id)))
-  return [
-    ...pinned,
-    ...arranged.ordered.map(s => ({ ...s, lineageDepth: arranged.depthOf(s.id) })),
-  ]
-}
-
-const chatSessions = computed(() =>
-  groupItems(sessionStore.sessions.filter(s => !s.projectId && !isWfEditSession(s.id))),
+const displayGroups = computed<GroupRow[]>(() =>
+  deriveSessionGroups(sessionStore.sessions, sessionStore.projects, isWfEditSession),
 )
 
-const orphanSessions = computed(() => {
-  const known = new Set(sessionStore.projects.map(p => p.id))
-  return groupItems(
-    sessionStore.sessions.filter(s => s.projectId && !known.has(s.projectId) && !isWfEditSession(s.id)),
-  )
-})
-
-interface GroupRow {
-  /** 折叠持久化与菜单/重命名寻址键。 */
-  key: string
-  header: { name: string; available: boolean; orphan: boolean } | null
-  items: LineageRow[]
-}
-
-/** 展示顺序：置顶项目组（组内保持注册序）→ 未置顶项目组（注册序）→
- *  对话组 → 孤儿组（垫底）。对话组无组头——区块标题条由模板按 key
- *  注入（项目区标题条在循环外，含新建入口）。 */
-const displayGroups = computed<GroupRow[]>(() => {
-  const all: GroupRow[] = sessionStore.projects.map(p => ({
-    key: p.id,
-    header: { name: p.name, available: p.running !== false, orphan: false },
-    items: groupItems(sessionStore.sessions.filter(s => s.projectId === p.id && !isWfEditSession(s.id))),
-  }))
-  const rows = [
-    ...all.filter(g => pinnedProjectIds.value.has(g.key)),
-    ...all.filter(g => !pinnedProjectIds.value.has(g.key)),
-  ]
-  rows.push({ key: '__chat', header: null, items: chatSessions.value })
-  if (orphanSessions.value.length > 0) {
-    rows.push({ key: '__orphan', header: { name: '已移除', available: false, orphan: true }, items: orphanSessions.value })
-  }
-  return rows
-})
+/** 对话区空态判定（模板 :1147）。 */
+const chatSessions = computed(
+  () => displayGroups.value.find(g => g.key === '__chat')?.items ?? [],
+)
 
 // 组折叠：localStorage 持久（F-14 重启恢复）。
 const COLLAPSE_KEY = 'nb_collapsed_projects'
@@ -382,6 +198,19 @@ function toggleRowMenu(id: string) {
 
 function closeMenus() {
   menu.value = null
+}
+
+// 模块级 pinSession/pinProject 只管状态；关菜单是组件 UI 副作用，留在
+// 组件侧（旧行为：菜单动作先 closeMenus——单开互斥纪律，置顶后行序变化，
+// 菜单开着会吃掉下一次行菜单的 toggle）。
+function togglePin(id: string) {
+  closeMenus()
+  pinSession(id)
+}
+
+function toggleProjectPin(key: string) {
+  closeMenus()
+  pinProject(key)
 }
 
 // 组头行内重命名。
@@ -564,10 +393,6 @@ async function onForked(newSessionId: string) {
   forkTarget.value = null
   await sessionStore.fetchList(true)
   sessionStore.switchTo(newSessionId)
-}
-
-function title(s: { title?: string; firstMessage: string; id: string }): string {
-  return s.title || s.firstMessage || s.id.slice(0, 8)
 }
 
 /** P2（2026-09-11）：未送达徽标文案——无未读返回 null（不渲染），

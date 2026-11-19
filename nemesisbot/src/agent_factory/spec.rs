@@ -859,8 +859,8 @@ pub fn build_agent_loop_from_spec(
     // 见 register_connector_governance 文档）。cfg 对齐注册条件。
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
-    // 会话钩子自管面：hooks 工具与主 loop 同源（存储同一份
-    // hooks.session.json；项目会话同样只能给自己设）。桥缺席 = 冷启动诚实
+    // 会话钩子自管面：hooks 工具与主 loop 同源（写同一份 hooks.json 的
+    // scope 圈定组；项目会话同样只能给自己设）。桥缺席 = 冷启动诚实
     // 「重启后生效」（项目 loop 桥未建时）。
     register_hooks_tool(&agent_loop, shared, project_cc_bridge.clone());
     // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。

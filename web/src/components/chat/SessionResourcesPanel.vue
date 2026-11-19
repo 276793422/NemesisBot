@@ -283,6 +283,22 @@ sseOn('approval-resolved', onApprovalRes)
 sseOn('question-asked', onQuestionAsk)
 sseOn('question-resolved', onQuestionRes)
 
+/** revision 乱序丢弃的代际语义（2026-11-19 修「钩子设了面板永远不显示」）：
+ *  revision = EventHub 全局 seq，**每个 gateway 进程从 0 重新计数**。
+ *  面板开着跨了一次 gateway 重启 → lastRevision 残留旧进程高位 → 重启后
+ *  所有新回包 revision 更小 → 被当乱序旧包永久丢弃 → 面板冻结在重启前
+ *  的数据（钩子/待审批等一切变化都不可见，直到切会话或刷新页面）。
+ *  重连（WS connected）与 SSE resync（L2 缺口提示）都是「可能换了进程
+ *  代」的信号——归零高水位再拉，让下一包无条件生效。 */
+function resetRevisionGuard(): void {
+  lastRevision.value = -1
+}
+function onSseResync(): void {
+  resetRevisionGuard()
+  void fetchResources()
+}
+sseOn('resync', onSseResync)
+
 /** 30s 兜底轮询（组件挂载期生效；壳层收起态 v-if 卸载本组件 = 自动停）。 */
 let pollTimer: ReturnType<typeof setInterval> | null = null
 pollTimer = setInterval(() => { void fetchResources() }, 30000)
@@ -302,7 +318,10 @@ watch(() => props.sessionId, (sid) => {
 }, { immediate: true })
 
 watch(wsStatus, (val) => {
-  if (val === 'connected') void fetchResources()
+  if (val === 'connected') {
+    resetRevisionGuard()
+    void fetchResources()
+  }
 })
 
 onUnmounted(() => {
@@ -311,6 +330,7 @@ onUnmounted(() => {
   sseOff('approval-resolved', onApprovalRes)
   sseOff('question-asked', onQuestionAsk)
   sseOff('question-resolved', onQuestionRes)
+  sseOff('resync', onSseResync)
   if (refreshTimer) clearTimeout(refreshTimer)
   if (pollTimer) clearInterval(pollTimer)
 })
@@ -353,6 +373,30 @@ function cronJobs(summary: Record<string, unknown>): Record<string, unknown>[] {
 function genericRows(entry: CategoryEntry): Record<string, unknown>[] {
   const v = entry.summary?.rows
   return Array.isArray(v) ? (v as Record<string, unknown>[]) : []
+}
+
+/** 会话钩子明细行（summary.rows：event/kind/content/matcher/timeout）。 */
+function hookRows(summary: Record<string, unknown>): Record<string, unknown>[] {
+  return genericRows({ summary } as CategoryEntry)
+}
+
+/** 钩子类型中文标（command=命令 / prompt=提示词）。 */
+function hookKindLabel(row: Record<string, unknown>): string {
+  return row.kind === 'prompt' ? '提示词' : '命令'
+}
+
+/** 钩子行悬浮详情（matcher/timeout 后端给了才显示）。 */
+function hookRowTitle(row: Record<string, unknown>): string {
+  const parts = [`${String(row.event ?? '')}·${hookKindLabel(row)}`]
+  if (typeof row.matcher === 'string' && row.matcher) parts.push(`matcher=${row.matcher}`)
+  if (typeof row.timeout === 'number') parts.push(`timeout=${row.timeout}s`)
+  return parts.join(' / ')
+}
+
+/** 头部截断（truncPath 是尾截、留给路径；钩子内容是自然语句用头截）。 */
+function truncHead(s: unknown, n: number): string {
+  const v = typeof s === 'string' ? s : ''
+  return v.length > n ? `${v.slice(0, n)}…` : v
 }
 
 /** 审批/提问行的展示文本（pending() 行字段开放集——优先 name/description/
@@ -490,9 +534,16 @@ function pendingRowText(row: Record<string, unknown>): string {
             </div>
           </template>
 
-          <!-- hooks_session / context：键值行 -->
+          <!-- hooks_session：计数 + 明细行（2026-11-19「只有个数不知道是啥」
+               补齐：每行 事件·类型 + 内容预览，悬浮看全文/matcher/timeout） -->
           <template v-else-if="id === 'hooks_session'">
             <div class="srp-metrics"><span>本会话钩子 {{ c.total }} 个</span></div>
+            <ul v-if="hookRows(c.summary ?? {}).length" class="srp-rows">
+              <li v-for="(hk, i) in hookRows(c.summary ?? {})" :key="i" class="srp-row">
+                <span class="srp-key">{{ String(hk.event ?? '') }}·{{ hookKindLabel(hk) }}</span>
+                <span :title="hookRowTitle(hk)">{{ truncHead(hk.content, 48) }}</span>
+              </li>
+            </ul>
           </template>
           <template v-else-if="id === 'context'">
             <pre class="srp-pre">{{ JSON.stringify(c.summary, null, 1) }}</pre>

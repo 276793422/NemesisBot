@@ -22,6 +22,7 @@
 import { effectScope, nextTick, reactive, watchEffect, type EffectScope } from 'vue'
 import { sanitizeHtmlFragment } from '../utils/markdown'
 import { sanitizeCssUrls, URL_ATTRS } from './sanitize'
+import { bridgeAddFiles } from './chatBridge'
 import type { SkinProjection, SkinActionHandler, SkinFieldSink } from './types'
 
 /** 作用域链项：for 行变量（值快照——行响应性由整块重建承担）。 */
@@ -449,6 +450,59 @@ export class SkinStructureEngine {
       this.outsideRegs.push({ el: () => el, path })
       cleanups.push(() => {
         this.outsideRegs = this.outsideRegs.filter((r) => r.el() !== el)
+      })
+    }
+
+    // v3.1 data-nb-media-source（2026-11-18 focus 皮肤）：file input 选图 →
+    // chatBridge.addFiles（ChatPanel 现有上传管线：校验/上限/上传/待发列表；
+    // 桥空 = 诚实空转）。change 后清 value——同一文件可重复选择。
+    const mediaSrc = el.getAttribute('data-nb-media-source')
+    if (mediaSrc != null && el instanceof HTMLInputElement && el.type === 'file') {
+      const onChange = () => {
+        bridgeAddFiles(el.files)
+        el.value = ''
+      }
+      el.addEventListener('change', onChange)
+      cleanups.push(() => el.removeEventListener('change', onChange))
+    }
+
+    // v3.1 data-nb-media：容器粘贴/拖拽文件 → chatBridge.addFiles。仅当
+    // 剪枝板/拖拽载荷确有文件时接管并 preventDefault（纯文本粘贴照常走
+    // data-nb-field 的 input 事件链，不拦）。拖拽悬停加 `nb-media-dragover`
+    // 类（皮肤可选样式钩子）。
+    const mediaBox = el.getAttribute('data-nb-media')
+    if (mediaBox != null) {
+      const box = el as HTMLElement
+      const hasFiles = (dt: DataTransfer | null): boolean => !!dt && dt.files.length > 0
+      const onPaste = (e: ClipboardEvent) => {
+        if (hasFiles(e.clipboardData)) {
+          e.preventDefault()
+          bridgeAddFiles(e.clipboardData!.files)
+        }
+      }
+      const onDragOver = (e: DragEvent) => {
+        if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+          e.preventDefault()
+          box.classList.add('nb-media-dragover')
+        }
+      }
+      const onDragLeave = () => box.classList.remove('nb-media-dragover')
+      const onDrop = (e: DragEvent) => {
+        box.classList.remove('nb-media-dragover')
+        if (hasFiles(e.dataTransfer)) {
+          e.preventDefault()
+          bridgeAddFiles(e.dataTransfer!.files)
+        }
+      }
+      box.addEventListener('paste', onPaste)
+      box.addEventListener('dragover', onDragOver)
+      box.addEventListener('dragleave', onDragLeave)
+      box.addEventListener('drop', onDrop)
+      cleanups.push(() => {
+        box.removeEventListener('paste', onPaste)
+        box.removeEventListener('dragover', onDragOver)
+        box.removeEventListener('dragleave', onDragLeave)
+        box.removeEventListener('drop', onDrop)
       })
     }
   }

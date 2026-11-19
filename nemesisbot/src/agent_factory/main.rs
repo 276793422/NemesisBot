@@ -498,13 +498,17 @@ pub fn build_agent_loop(
         );
     }
 
-    // 会话钩子孤儿对账（HOOK 会话圈定批次三，启动一次）：hooks.session.json
-    // 里 sid 不在存活会话集的条目直删。正常删除路径（dashboard 删会话 /
-    // TTL 清理）已有 SessionEnd → purge 兜底；这里兜手动删日志文件等旁路。
-    // live 集来自 session_logs 扫描（与 Dashboard 会话列表同一真相）；
+    // 会话钩子孤儿对账（HOOK 会话圈定批次三，启动一次；统一存储 2026-11-19
+    // 起对账对象 = hooks.json 的 scope 圈定组）：scope 圈定了不存在活会话的
+    // 组，把该会话从 scope 摘除（摘空整组删）。正常删除路径（dashboard 删
+    // 会话 / TTL 清理）已有 SessionEnd → purge 兜底；这里兜手动删日志文件等
+    // 旁路。live 集来自 session_logs 扫描（与 Dashboard 会话列表同一真相）；
     // 集群/RPC 等非 web 键不在扫描面——它们的会话钩子按原样保留（工具只在
     // 主/项目 loop 注册，生产写入面只有 web 键）。
+    // 先行一步退役清理：旧 hooks.session.json（分离存储时代）在场即删 +
+    // warn（零数据迁移——统一存储重构的诚实降级，见 retire_session_store）。
     {
+        nemesis_agent::cc_hooks::retire_session_store(&ws_config_dir);
         let rows = nemesis_web::handlers::logs::scan_session_logs(
             &shared.workspace_dir().to_string_lossy(),
         );

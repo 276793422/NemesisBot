@@ -60,6 +60,16 @@
 //! （[`CcHookBridge::load_from_dir`]）；**集群 agent 不挂**（远端节点跑的是
 //! 本地用户的任务，hook 拦截语义不该跨节点复制——挂账决策，报告注明）。
 //! 解析失败 = warn + 跳过（fail-open，绝不拖死 gateway）。
+//!
+//! # 统一存储（2026-11-19 重构）
+//!
+//! **单存储双类型**：全部钩子（全局 + 会话圈定 + command/prompt 两型）住
+//! 同一个 hooks.json，`type` 字段分派执行体，`scope.sessions` 圈定会话。
+//! 旧 hooks.session.json 退役（[`retire_session_store`] 启动清理，零数据
+//! 迁移）；agent `hooks` 工具经本文件 RMW API（[`add_session_hook`] 等）
+//! 写同一文件，与 Dashboard hooks.set 共享 [`lock_hooks_file`] 互斥。
+//! 会话钩子 = 工具专属组（scope == `[sid]`、id `h1..hn`），与用户手写组
+//! 同表共存、同一条 matches_session 过滤路径。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -67,7 +77,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::hooks::{
@@ -78,13 +88,9 @@ use crate::hooks::{
 /// hooks.json 文件名（相对 config 目录）。
 pub const HOOKS_FILE: &str = "hooks.json";
 
-/// 会话级钩子存储文件名（HOOK 会话维度批次三）。agent `hooks` 工具写入的
-/// 落位，与用户 `hooks.json` 分文件互不踩写（Dashboard 编辑 hooks.json、
-/// agent 写本文件，无竞写窗口）。形态：
-/// `{"hooks":{"<sid>":{"PreToolUse":[{"id":"h1","matcher":"","command":"...","timeout":60}]}}}`。
-/// 条目二型：command 型（shell 执行体，任意事件）/ prompt 型（LLM 执行体，
-/// `prompt` 字段非空且 command 空——**仅 Stop 事件合法**，turn 收尾后注入
-/// 提示词开新轮，永续循环语义，见 `hooks.rs::TurnEndDecision::Inject`）。
+/// 旧会话级钩子存储文件名（**已退役**，2026-11-19 统一存储重构）：会话钩子
+/// 现住 hooks.json 的 `scope` 圈定组（单存储双类型，不再分文件）。本常量仅
+/// 供 [`retire_session_store`] 启动清理引用（在场即删 + warn，零数据迁移）。
 pub const HOOKS_SESSION_FILE: &str = "hooks.session.json";
 
 /// 一次性迁移：旧落位 `<home>/config/hooks.json` → 新落位
@@ -125,22 +131,105 @@ pub const WEB_SESSION_KEY_PREFIX: &str = "agent:main:session:";
 // 配置解析（方言格式）
 // ---------------------------------------------------------------------------
 
-/// 一条 hook 命令。方言 schema：`{"type":"command","command":"...","timeout":60}`。
-#[derive(Debug, Clone, Deserialize)]
+/// 一条 hook 条目。方言 schema **二型**（`type` 分派，2026-11-19 统一存储）：
+/// - command 型：`{"type":"command","command":"...","timeout":60}`（shell
+///   执行体，全部 12 事件合法）
+/// - prompt 型：`{"type":"prompt","prompt":"..."}`（LLM 执行体，**仅 Stop
+///   事件**——turn 收尾后注入提示词开新轮，永续循环语义，见
+///   `hooks.rs::TurnEndDecision::Inject`；合法事件单一真相源
+///   [`PROMPT_HOOK_EVENTS`]）
+///
+/// `command`/`prompt` 按 type 恰好一项非空（parse 校验强制：双空无执行体、
+/// 双非空混合条目语义未定，均 loud 拒绝）。`id`：agent `hooks` 工具分配的
+/// 条目标识（`h1..hn`），用户手写条目缺省。序列化跳过空值——原子写产物
+/// 字节确定，diff/测试可断言。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CcCommand {
-    #[serde(default)]
+    /// `command` / `prompt`；空 = 按内容回填（[`parse_cc_hooks`] 归一）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     r#type: String,
+    /// shell 型条目的命令；prompt 型条目为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     command: String,
-    /// 秒。缺省 [`DEFAULT_TIMEOUT_SECS`]。
-    #[serde(default)]
+    /// prompt 型条目的提示词文本；command 型条目为空。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    prompt: String,
+    /// 会话工具（`hooks` 工具）分配的条目 id；用户手写条目缺省。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    id: String,
+    /// 秒。缺省 [`DEFAULT_TIMEOUT_SECS`]（仅 command 型消费）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout: Option<u64>,
+}
+
+impl CcCommand {
+    /// type 归一 + 二型校验（[`parse_cc_hooks`] 唯一调用方）。空 type 按内容
+    /// 回填（手写省略 type 的兼容）；其余非法形态 loud Err：
+    /// - 未知 type（只认 `command`/`prompt`）
+    /// - 双空执行体（无 shell 也无提示词 = 无语义）
+    /// - 双非空（混合条目语义未定——shell 路径不读 prompt、prompt 路径不读
+    ///   command，写双值必有一侧被静默忽略）
+    /// - prompt 出现在非 Stop 事件（prompt 执行体只挂 turn 收尾钩点）
+    fn normalize_kind(&mut self, event: &str) -> Result<(), String> {
+        if self.r#type.is_empty() {
+            let has_command = !self.command.trim().is_empty();
+            let has_prompt = !self.prompt.trim().is_empty();
+            if has_command == has_prompt {
+                // 双空无法回填 / 双非空无法推断——统一报形态错。
+                return Err(format!(
+                    "hook needs exactly one of command/prompt (event {event})"
+                ));
+            }
+            self.r#type = if has_prompt { "prompt" } else { "command" }.to_string();
+        }
+        let command_empty = self.command.trim().is_empty();
+        let prompt_empty = self.prompt.trim().is_empty();
+        match self.r#type.as_str() {
+            "command" => {
+                if !prompt_empty {
+                    return Err(format!(
+                        "hook type=command must not carry prompt (event {event})"
+                    ));
+                }
+                if command_empty {
+                    return Err(format!(
+                        "hook type=command needs non-empty command (event {event})"
+                    ));
+                }
+            }
+            "prompt" => {
+                if !command_empty {
+                    return Err(format!(
+                        "hook type=prompt must not carry command (event {event})"
+                    ));
+                }
+                if prompt_empty {
+                    return Err(format!(
+                        "hook type=prompt needs non-empty prompt (event {event})"
+                    ));
+                }
+                if !PROMPT_HOOK_EVENTS.contains(&event) {
+                    return Err(format!(
+                        "prompt hooks are only valid on {} (event {event})",
+                        PROMPT_HOOK_EVENTS.join("/")
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unsupported hook type {other:?} (event {event}) — expected \"command\" or \"prompt\""
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// 会话圈定（HOOK 会话维度，2026-11-16）。匹配语义 = **精确相等**（不搞
 /// 正则/通配——会话 id 是稳定身份）。`sessions` 条目按剥
 /// [`WEB_SESSION_KEY_PREFIX`] 的裸 sid 落盘；解析时归一去空白、空条目
 /// loud 拒绝（见 [`parse_cc_hooks`]）。空列表 = 全部会话（缺省兼容）。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CcScope {
     #[serde(default)]
     sessions: Vec<String>,
@@ -158,19 +247,36 @@ fn resolve_hook_timeout(timeout: Option<u64>) -> u64 {
 
 /// 一个事件下的 matcher 分组：`{"matcher":"Edit|Write","hooks":[...]}`。
 /// 可选 `scope`（会话圈定）：`{"scope":{"sessions":["<sid>"]}}`。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CcHookGroup {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     matcher: Option<String>,
     /// 会话圈定。`None` / 空 `sessions` = 全部会话（缺省兼容，老配置行为
     /// 零变化）；非空 = 只对列出的会话生效（[`Self::matches_session`]）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     scope: Option<CcScope>,
     #[serde(default)]
     hooks: Vec<CcCommand>,
 }
 
 impl CcHookGroup {
+    /// 是否为会话圈定组（scope 在场且 sessions 非空）。统一存储后的计数
+    /// 分账闸：圈定组归 hooks_session 类目（[`count_session_hooks`]），未
+    /// 圈定组归 hooks_global 类目（[`CcEvents::global_hook_counts`]）——
+    /// 一张表里两族并存，不按此分账就会双计。
+    fn is_session_scoped(&self) -> bool {
+        self.scope.as_ref().is_some_and(|s| !s.sessions.is_empty())
+    }
+
+    /// 是否 agent `hooks` 工具专属组（scope.sessions == 恰好 `[sid]`）。
+    /// 工具 add 恒建新组、delete/list 只认这种形态——用户手写组（多会话
+    /// 圈定或带 matcher 语义）永不被工具改写（动它 = 用户配置被工具篡改）。
+    fn tool_owned_by(&self, sid: &str) -> bool {
+        self.scope
+            .as_ref()
+            .is_some_and(|s| s.sessions.len() == 1 && s.sessions[0] == sid)
+    }
+
     /// 会话圈定是否命中：未圈定（`scope: None`）/ 圈了但列表为空 = 全命中；
     /// 圈定 = 精确相等，候选双串（剥前缀 sid + 完整 session_key）任一即中。
     /// 空 `session_key` 输入（无会话身份的事件）只被未圈定的组命中——空串
@@ -212,49 +318,92 @@ impl CcHookGroup {
     }
 }
 
-/// 五个方言事件各自的分组列表。
-#[derive(Debug, Clone, Default, Deserialize)]
+/// 十二个方言事件各自的分组列表。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct CcEvents {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pre_tool_use: Vec<CcHookGroup>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     post_tool_use: Vec<CcHookGroup>,
     /// 工具执行失败后（三段化扩展）。观察型：stderr 只记日志。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     post_tool_use_failure: Vec<CcHookGroup>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     session_start: Vec<CcHookGroup>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     user_prompt_submit: Vec<CcHookGroup>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     stop: Vec<CcHookGroup>,
     /// 会话结束（TTL 过期清理 / 显式删除）。观察型（会话已结束，无阻断）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     session_end: Vec<CcHookGroup>,
     /// 压缩前后（扩展）。观察型：exit 2 不阻止压缩（稳定性机制）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pre_compact: Vec<CcHookGroup>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     post_compact: Vec<CcHookGroup>,
     /// 子代理开始。exit 2 / JSON block = 拒绝
     /// spawn。仅挂本地 spawn 闭包（内部 LLM 委托不发，见模块头表）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagent_start: Vec<CcHookGroup>,
     /// 子代理结束。观察型：任务已跑完，exit 2
     /// 无阻断语义。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagent_stop: Vec<CcHookGroup>,
     /// 审批/提问观察通知。纯观察型：边界处
     /// fire-and-forget，exit 2 无任何语义。层：loop 提问端（问题流）/
     /// auditor 审批 manager（security 三入口 + 管道 RequireApproval）。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     notification: Vec<CcHookGroup>,
 }
 
 impl CcEvents {
+    /// 全部 12 个事件组的统一遍历（共享引用；`（事件名, 组列表）` 定序数组，
+    /// 顺序 = [`SESSION_HOOK_EVENTS`]）。解析归一 / matcher 体检 / 计数全走
+    /// 这里——**新增事件先加字段再在这里加一行**，遍历清单不可能再漏组
+    /// （旧实现 parse 过滤与 matcher 体检各自手写 12 项清单，漏组即契约
+    /// 失效，那是两组清单永不同步的结构性风险）。
+    fn groups(&self) -> [(&'static str, &Vec<CcHookGroup>); 12] {
+        [
+            ("PreToolUse", &self.pre_tool_use),
+            ("PostToolUse", &self.post_tool_use),
+            ("PostToolUseFailure", &self.post_tool_use_failure),
+            ("SessionStart", &self.session_start),
+            ("UserPromptSubmit", &self.user_prompt_submit),
+            ("Stop", &self.stop),
+            ("SessionEnd", &self.session_end),
+            ("PreCompact", &self.pre_compact),
+            ("PostCompact", &self.post_compact),
+            ("SubagentStart", &self.subagent_start),
+            ("SubagentStop", &self.subagent_stop),
+            ("Notification", &self.notification),
+        ]
+    }
+
+    /// [`Self::groups`] 的可变版（RMW 写路径用；借用不相交，数组字面量合法）。
+    fn groups_mut(&mut self) -> [(&'static str, &mut Vec<CcHookGroup>); 12] {
+        [
+            ("PreToolUse", &mut self.pre_tool_use),
+            ("PostToolUse", &mut self.post_tool_use),
+            ("PostToolUseFailure", &mut self.post_tool_use_failure),
+            ("SessionStart", &mut self.session_start),
+            ("UserPromptSubmit", &mut self.user_prompt_submit),
+            ("Stop", &mut self.stop),
+            ("SessionEnd", &mut self.session_end),
+            ("PreCompact", &mut self.pre_compact),
+            ("PostCompact", &mut self.post_compact),
+            ("SubagentStart", &mut self.subagent_start),
+            ("SubagentStop", &mut self.subagent_stop),
+            ("Notification", &mut self.notification),
+        ]
+    }
+
     fn total_scripts(&self) -> usize {
-        self.script_counts().iter().map(|(_, n)| n).sum()
+        self.groups()
+            .iter()
+            .map(|(_, v)| v.iter().map(|g| g.hooks.len()).sum::<usize>())
+            .sum()
     }
 
     fn is_empty(&self) -> bool {
@@ -267,85 +416,51 @@ impl CcEvents {
     /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact,
     /// SubagentStart, SubagentStop, Notification。
     pub fn script_counts(&self) -> [(&'static str, usize); 12] {
-        let count = |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
-        [
-            ("PreToolUse", count(&self.pre_tool_use)),
-            ("PostToolUse", count(&self.post_tool_use)),
-            ("PostToolUseFailure", count(&self.post_tool_use_failure)),
-            ("SessionStart", count(&self.session_start)),
-            ("UserPromptSubmit", count(&self.user_prompt_submit)),
-            ("Stop", count(&self.stop)),
-            ("SessionEnd", count(&self.session_end)),
-            ("PreCompact", count(&self.pre_compact)),
-            ("PostCompact", count(&self.post_compact)),
-            ("SubagentStart", count(&self.subagent_start)),
-            ("SubagentStop", count(&self.subagent_stop)),
-            ("Notification", count(&self.notification)),
-        ]
+        self.groups()
+            .map(|(name, groups)| (name, groups.iter().map(|g| g.hooks.len()).sum::<usize>()))
     }
 
-    /// 会话命中摘要（2026-11-17 会话资源盘点，hooks_global 类目）：逐事件
-    /// 统计「会话圈定命中本会话」的分组脚本数——圈定判定复用
-    /// [`CcHookGroup::matches_session`] 既有规则（裸 sid + 完整 session_key
-    /// 双串任一即中；未圈定/空列表 = 全命中，口径地雷 3：照抄勿自造）。
-    /// 顺序与 [`Self::script_counts`] 一致；0 计数事件不在返回里（看板只
-    /// 展示命中的）。
-    pub fn session_match_counts(&self, session_key: &str) -> Vec<(&'static str, usize)> {
-        let count_matched = |v: &Vec<CcHookGroup>| {
-            v.iter()
-                .filter(|g| g.matches_session(session_key))
-                .map(|g| g.hooks.len())
-                .sum::<usize>()
-        };
-        let all = [
-            ("PreToolUse", count_matched(&self.pre_tool_use)),
-            ("PostToolUse", count_matched(&self.post_tool_use)),
-            (
-                "PostToolUseFailure",
-                count_matched(&self.post_tool_use_failure),
-            ),
-            ("SessionStart", count_matched(&self.session_start)),
-            ("UserPromptSubmit", count_matched(&self.user_prompt_submit)),
-            ("Stop", count_matched(&self.stop)),
-            ("SessionEnd", count_matched(&self.session_end)),
-            ("PreCompact", count_matched(&self.pre_compact)),
-            ("PostCompact", count_matched(&self.post_compact)),
-            ("SubagentStart", count_matched(&self.subagent_start)),
-            ("SubagentStop", count_matched(&self.subagent_stop)),
-            ("Notification", count_matched(&self.notification)),
-        ];
-        all.into_iter().filter(|(_, n)| *n > 0).collect()
+    /// 未圈定（全局生效）条目的逐事件计数（资源看板 hooks_global 类目）。
+    /// **只数未圈定组**——会话圈定组归 hooks_session 类目（[`count_session_hooks`]），
+    /// 这里再数就双计（统一存储里 pinned + global 并存一张表）。顺序同
+    /// [`Self::script_counts`]；0 计数事件不在返回里（看板只展示命中的）。
+    pub fn global_hook_counts(&self) -> Vec<(&'static str, usize)> {
+        self.groups()
+            .map(|(name, groups)| {
+                (
+                    name,
+                    groups
+                        .iter()
+                        .filter(|g| !g.is_session_scoped())
+                        .map(|g| g.hooks.len())
+                        .sum::<usize>(),
+                )
+            })
+            .into_iter()
+            .filter(|(_, n)| *n > 0)
+            .collect()
     }
 }
 
 /// 解析 hooks.json 内容。两种形态都收：标准 `{"hooks":{...}}` 与裸顶层
 /// `{"PreToolUse":[...]}`（手写文件常见省略外层）。
+///
+/// 条目二型（`type` 分派）：`command`（shell）/ `prompt`（LLM，仅 Stop）。
+/// 归一：空 type 按内容回填（手写省略 type 的老配置零迁移）；其余非法形态
+/// （未知 type / 双空执行体 / 双非空 / prompt 出现在非 Stop 事件 /
+/// scope.sessions 空条目）一律 **Err**——手写坏配置 loud 拒绝（fail-closed），
+/// 由调用方分诊（Dashboard hooks.set 拒写、桥侧 warn 保旧），绝不静默丢
+/// 条目（旧实现非 command 条目 retain-丢弃 + skipped 计数，写错 type 的
+/// 条目消失得无声无息）。
 pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
     let root: Value = serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
     let events_value = match root.get("hooks") {
         Some(inner) => inner.clone(),
         None => root,
     };
-    let mut events: CcEvents = serde_json::from_value(events_value.clone())
+    let mut events: CcEvents = serde_json::from_value(events_value)
         .map_err(|e| format!("unsupported hooks.json format: {e}"))?;
-    // 只认 type=="command"（方言唯一类型）；未知的跳过并统计。
-    // 必须覆盖全部 12 个事件组（漏组 = type 写错的条目
-    // 在该组照跑 command，「只认 command」契约失效）。
-    let mut skipped = 0usize;
-    for groups in [
-        &mut events.pre_tool_use,
-        &mut events.post_tool_use,
-        &mut events.post_tool_use_failure,
-        &mut events.session_start,
-        &mut events.session_end,
-        &mut events.user_prompt_submit,
-        &mut events.stop,
-        &mut events.pre_compact,
-        &mut events.post_compact,
-        &mut events.subagent_start,
-        &mut events.subagent_stop,
-        &mut events.notification,
-    ] {
+    for (event, groups) in events.groups_mut() {
         for g in groups.iter_mut() {
             // scope.sessions 归一 + 校验（会话圈定）：条目去空白；去空白后
             // 为空的条目 = 永不命中的静默配置错误，loud 拒绝（走现有
@@ -360,14 +475,10 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
                     return Err("scope.sessions contains empty entry".to_string());
                 }
             }
-            let before = g.hooks.len();
-            g.hooks
-                .retain(|h| h.r#type.is_empty() || h.r#type == "command");
-            skipped += before - g.hooks.len();
+            for h in g.hooks.iter_mut() {
+                h.normalize_kind(event)?;
+            }
         }
-    }
-    if skipped > 0 {
-        tracing::warn!("[cc-hooks] skipped {} non-command hook(s)", skipped);
     }
     // matcher 加载期编译验证（BUG-20261117-054）：无效正则运行期按既定
     // 语义退化为字面量子串匹配（`CcHookGroup::matches`，模块头「诚实边界」
@@ -384,24 +495,10 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
 }
 
 /// 逐事件组编译 matcher 正则，无效则逐条 warn（含 pattern 原文与编译错误），
-/// 返回无效条数。12 个事件组必须全覆盖（与上方 type 过滤同清单纪律——
-/// 漏组 = 该组的坏 matcher 零诊断）。
+/// 返回无效条数。清单走 [`CcEvents::groups`]（12 组统一遍历，不可能漏组）。
 fn warn_invalid_matchers(events: &CcEvents) -> usize {
     let mut invalid = 0usize;
-    for groups in [
-        &events.pre_tool_use,
-        &events.post_tool_use,
-        &events.post_tool_use_failure,
-        &events.session_start,
-        &events.session_end,
-        &events.user_prompt_submit,
-        &events.stop,
-        &events.pre_compact,
-        &events.post_compact,
-        &events.subagent_start,
-        &events.subagent_stop,
-        &events.notification,
-    ] {
+    for (_, groups) in events.groups() {
         for g in groups {
             if let Some(pattern) = &g.matcher
                 && let Err(e) = regex::Regex::new(pattern)
@@ -417,10 +514,10 @@ fn warn_invalid_matchers(events: &CcEvents) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// 会话级钩子存储（hooks.session.json，agent `hooks` 工具的落盘形态）
+// 统一存储常量 + agent `hooks` 工具的 RMW API（hooks.json 单一真相源）
 // ---------------------------------------------------------------------------
 
-/// 会话钩子合法事件名（12 事件全量；单一真相源——`hooks` 工具 add 校验、
+/// 会话工具合法事件名（12 事件全量；单一真相源——`hooks` 工具 add 校验、
 /// 测试断言同源引用，顺序同 [`CcEvents::script_counts`] 注释）。
 pub const SESSION_HOOK_EVENTS: [&str; 12] = [
     "PreToolUse",
@@ -437,238 +534,378 @@ pub const SESSION_HOOK_EVENTS: [&str; 12] = [
     "Notification",
 ];
 
-/// 会话级钩子条目（agent `hooks` 工具写入的存储形态，比方言 CcCommand 多
-/// `id`——本会话内 `h1..hn` 递增分配，delete 按它摘除）。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SessionHookEntry {
-    pub id: String,
-    /// 工具名 matcher（方言正则语义；空串 = 全部工具，序列化保留空串）。
-    #[serde(default)]
-    pub matcher: String,
-    /// shell 型条目的命令。与 [`SessionHookEntry::prompt`] 恰好一项非空
-    /// （Exactly one，parse 校验强制——双空无执行体、双非空混合条目语义未定
-    /// 均 loud 拒绝；工具写入路径已保证，防御手编坏文件）。
-    #[serde(default)]
-    pub command: String,
-    /// 提示词型条目（LLM 执行体）：turn 收尾后把这段提示词作为新的用户消息
-    /// 注入会话开启全新一轮。仅 `Stop` 事件有意义——Stop 钩点每轮触发 →
-    /// 每轮收尾后注入 → 自然循环（无封顶，永续是钩点正常执行的自然副作用）。
-    #[serde(default)]
-    pub prompt: String,
-    /// 秒。`None` = 桥侧缺省 [`DEFAULT_TIMEOUT_SECS`]（仅 shell 型消费）。
-    #[serde(default)]
-    pub timeout: Option<u64>,
+/// 提示词型（prompt）钩子合法事件名单一真相源。今天只有 `Stop`——turn 收尾
+/// 钩点每轮触发 → 注入提示词开新轮 → 自然循环。扩事件 = 在这里加名字，
+/// parse 校验（[`CcCommand::normalize_kind`]）/ `hooks` 工具 add 校验 /
+/// HookView 前端全部同源跟进。
+pub const PROMPT_HOOK_EVENTS: [&str; 1] = ["Stop"];
+
+/// hooks.json 读-改-写的进程内互斥（gateway 内 Dashboard hooks.set 与 agent
+/// `hooks` 工具并发写同一文件；跨进程不设防——编辑器手编是用户自己的事，
+/// 原子写兜底）。`std::sync::Mutex` **不可重入**：持锁期间禁止再调任何
+/// 内部加锁的 API（`_locked` 后缀 = 调用方已持锁的约定）。
+static HOOKS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 获取 hooks.json RMW 互斥（Dashboard hooks.set 写前调用；本文件 RMW API
+/// 内部自持，外部勿重复加锁——不可重入）。毒锁恢复 = into_inner：互斥保护
+/// 的是 RMW 完整性，单次 panic 不值得报废整个闸门。
+pub fn lock_hooks_file() -> std::sync::MutexGuard<'static, ()> {
+    HOOKS_FILE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// hooks.session.json 存储形态：`sid → 事件名 → 条目`。BTreeMap 保证序列化
-/// 键序确定（原子写产物字节稳定，diff/测试可断言）。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SessionHookStore {
-    #[serde(default)]
-    pub hooks: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, Vec<SessionHookEntry>>,
-    >,
+/// 读 hooks.json 为 [`CcEvents`]（RMW 内部件）。缺失 = 空表（正常态，可
+/// 起步）；解析失败 = **Err**——RMW 写回前必须拒绝（绝不拿空表覆盖用户的
+/// 坏文件：「读失败就写空」会把用户手编到一半的配置静默清空）；非缺失的
+/// 读失败（瞬时锁等）同 Err。
+fn read_hooks_events(config_dir: &Path) -> Result<CcEvents, String> {
+    let path = config_dir.join(HOOKS_FILE);
+    let text = match nemesis_utils::fsutil::read_config_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CcEvents::default()),
+        Err(e) => return Err(format!("read {}: {e}", path.display())),
+    };
+    parse_cc_hooks(&text)
 }
 
-impl SessionHookStore {
-    /// 是否有实际内容（任一会话任一事件有条目）。空存储 ≠ 在场——
-    /// load_from_dir 的建桥判定与冷启动提示都按它。
-    pub fn is_empty(&self) -> bool {
-        self.hooks.values().all(|m| m.values().all(Vec::is_empty))
-    }
-
-    /// 某会话（裸 sid）的全部条目数。
-    pub fn session_len(&self, sid: &str) -> usize {
-        self.hooks
-            .get(sid)
-            .map(|m| m.values().map(Vec::len).sum())
-            .unwrap_or(0)
-    }
-}
-
-/// 解析 hooks.session.json 文本。顶层 `{"hooks":{...}}`（与 hooks.json 同款
-/// 外层包装，手写/排查时形态一致）。
-pub fn parse_session_hook_store(text: &str) -> Result<SessionHookStore, String> {
-    let store: SessionHookStore =
-        serde_json::from_str(text).map_err(|e| format!("invalid hooks.session.json: {e}"))?;
-    // 条目校验：command/prompt 至少一项非空、id 非空（工具写入路径已保证，
-    // 防御手编坏文件）。
-    for (sid, per_event) in &store.hooks {
-        for (event, entries) in per_event {
-            for e in entries {
-                if e.id.trim().is_empty() {
-                    return Err(format!("session {sid} event {event}: empty hook id"));
-                }
-                if e.command.trim().is_empty() && e.prompt.trim().is_empty() {
-                    return Err(format!(
-                        "session {sid} event {event}: hook needs non-empty command or prompt"
-                    ));
-                }
-                // 恰好一项（与工具写入路径 Exactly one 契约同源）：双非空混合
-                // 条目语义未定（shell 投影滤掉 prompt 条目 → command 被静默
-                // 忽略）——loud 拒绝整文件，让手编者修好再落。
-                if !e.command.trim().is_empty() && !e.prompt.trim().is_empty() {
-                    return Err(format!(
-                        "session {sid} event {event}: hook id {} has both command and prompt — \
-                         exactly one must be non-empty",
-                        e.id
-                    ));
-                }
-                if !e.prompt.trim().is_empty() && event != "Stop" {
-                    return Err(format!(
-                        "session {sid} event {event}: prompt hooks are only valid on Stop"
-                    ));
-                }
-            }
-        }
-    }
-    Ok(store)
-}
-
-/// 会话级钩子存储的盘上路径（config 目录 + [`HOOKS_SESSION_FILE`]）。
-pub fn session_hooks_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(HOOKS_SESSION_FILE)
-}
-
-/// 读 hooks.session.json。文件缺失/读失败 = 空存储（正常态，非错误）。
-pub fn read_session_hook_store(config_dir: &Path) -> SessionHookStore {
-    let path = session_hooks_path(config_dir);
-    match nemesis_utils::fsutil::read_config_string(&path) {
-        Ok(text) => match parse_session_hook_store(&text) {
-            Ok(store) => store,
-            Err(e) => {
-                tracing::warn!(
-                    "[cc-hooks] failed to parse {} — ignoring: {e}",
-                    path.display()
-                );
-                SessionHookStore::default()
-            }
-        },
-        Err(_) => SessionHookStore::default(),
-    }
-}
-
-/// 原子写 hooks.session.json（BTreeMap 键序确定，产物字节稳定）。
-pub fn write_session_hook_store(config_dir: &Path, store: &SessionHookStore) -> Result<(), String> {
-    let path = session_hooks_path(config_dir);
-    let text = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
+/// 原子写 hooks.json（`{"hooks":{...}}` 外层 + 事件键 PascalCase + 空组
+/// 跳过，产物字节确定；0o600——hook 命令行/提示词含用户工作流细节）。
+fn write_hooks_events(config_dir: &Path, events: &CcEvents) -> Result<(), String> {
+    let path = config_dir.join(HOOKS_FILE);
+    let text = serde_json::to_string_pretty(&serde_json::json!({ "hooks": events }))
+        .map_err(|e| e.to_string())?;
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), text.as_bytes(), 0o600)
         .map_err(|e| e.to_string())
 }
 
-/// 孤儿对账（gateway 启动一次）：存储里 sid 不在 `live_sids` 的条目直删。
-/// 返回摘除的 sid 数。幂等；写失败 warn 不 panic（下次启动重试）。
-pub fn reconcile_session_orphans(config_dir: &Path, live_sids: &HashSet<String>) -> usize {
-    let mut store = read_session_hook_store(config_dir);
-    if store.is_empty() {
-        return 0;
-    }
-    let before = store.hooks.len();
-    store.hooks.retain(|sid, _| live_sids.contains(sid));
-    let removed = before - store.hooks.len();
-    if removed > 0 && write_session_hook_store(config_dir, &store).is_err() {
-        tracing::warn!("[cc-hooks] reconcile_session_orphans: failed to write back");
-    }
-    removed
+/// 会话工具侧的条目视图（list/delete 返回形态）。id/matcher/command/prompt/
+/// timeout 全量拷贝——agent 读回展示用，不暴露存储结构。
+#[derive(Debug, Clone)]
+pub struct HookEntryView {
+    pub event: &'static str,
+    pub id: String,
+    pub matcher: String,
+    pub command: String,
+    pub prompt: String,
+    pub timeout: Option<u64>,
 }
 
-/// 会话级条目（某 sid）→ 方言 [`CcEvents`]：每条各自成组，组内
-/// `scope.sessions` 钉死该 sid——**与用户 hooks.json 走同一
-/// [`CcHookGroup::matches_session`] 过滤路径，零特殊分支**。
-fn session_store_to_events(
+/// agent `hooks` 工具 add：给会话 `sid` 在 `event` 下追加一条钩子（type 按
+/// command/prompt 恰好一项非空自动分派；matcher 空 = 全部工具）。条目落进
+/// **新建工具专属组**（scope.sessions == `[sid]`；永不并进/改写用户手写组），
+/// id 在本会话工具专属组内 `h{n}` 递增分配（扫描已有最大值 +1，跨事件连续）。
+/// 返回分配的 id。调用方**不要**预先加锁（内部自持，不可重入）。
+pub fn add_session_hook(
+    config_dir: &Path,
     sid: &str,
-    per_event: &std::collections::BTreeMap<String, Vec<SessionHookEntry>>,
-) -> CcEvents {
-    let group = |e: &SessionHookEntry| CcHookGroup {
-        matcher: if e.matcher.trim().is_empty() {
+    event: &str,
+    matcher: &str,
+    command: &str,
+    prompt: &str,
+    timeout: Option<u64>,
+) -> Result<String, String> {
+    let _guard = lock_hooks_file();
+    if !SESSION_HOOK_EVENTS.contains(&event) {
+        return Err(format!("unknown hook event {event}"));
+    }
+    let has_command = !command.trim().is_empty();
+    let has_prompt = !prompt.trim().is_empty();
+    if has_command == has_prompt {
+        return Err("hook needs exactly one of command/prompt".to_string());
+    }
+    if has_prompt && !PROMPT_HOOK_EVENTS.contains(&event) {
+        return Err(format!(
+            "prompt hooks are only valid on {} (event {event})",
+            PROMPT_HOOK_EVENTS.join("/")
+        ));
+    }
+    let mut events = read_hooks_events(config_dir)?;
+    // id 分配：扫描本会话工具专属组已有的 hN，取 max+1。
+    let mut max = 0usize;
+    for (_, groups) in events.groups_mut() {
+        for g in groups.iter_mut().filter(|g| g.tool_owned_by(sid)) {
+            for h in g.hooks.iter().filter(|h| !h.id.is_empty()) {
+                if let Some(n) = h.id.strip_prefix('h').and_then(|n| n.parse::<usize>().ok()) {
+                    max = max.max(n);
+                }
+            }
+        }
+    }
+    let id = format!("h{}", max + 1);
+    let matcher_trim = matcher.trim();
+    let group = CcHookGroup {
+        matcher: if matcher_trim.is_empty() {
             None
         } else {
-            Some(e.matcher.trim().to_string())
+            Some(matcher_trim.to_string())
         },
+        // 工具专属组：scope 钉死单会话——与全局钩子走同一条
+        // matches_session 过滤路径，零特殊分支。
         scope: Some(CcScope {
             sessions: vec![sid.to_string()],
         }),
         hooks: vec![CcCommand {
-            r#type: "command".to_string(),
-            command: e.command.clone(),
-            timeout: e.timeout,
+            r#type: if has_prompt { "prompt" } else { "command" }.to_string(),
+            command: command.trim().to_string(),
+            prompt: prompt.trim().to_string(),
+            id: id.clone(),
+            timeout: timeout.filter(|t| *t > 0),
         }],
     };
-    let mut events = CcEvents::default();
-    // shell 组只收 shell 型条目；prompt 型条目不进 CcEvents（shell 执行路径
-    // 不认识它），由桥的会话 prompt 钩子表单独收集（load_from_dir /
-    // refresh_session_events 与本函数同源消费同一 store）。
-    let shell_only = |entries: &Vec<SessionHookEntry>| {
-        entries
-            .iter()
-            .filter(|e| e.prompt.trim().is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    let push = |slot: &mut Vec<CcHookGroup>, entries: &Vec<SessionHookEntry>| {
-        slot.extend(entries.iter().map(&group));
-    };
-    for (event, entries) in per_event {
-        let entries = &shell_only(entries);
-        match event.as_str() {
-            "PreToolUse" => push(&mut events.pre_tool_use, entries),
-            "PostToolUse" => push(&mut events.post_tool_use, entries),
-            "PostToolUseFailure" => push(&mut events.post_tool_use_failure, entries),
-            "SessionStart" => push(&mut events.session_start, entries),
-            "UserPromptSubmit" => push(&mut events.user_prompt_submit, entries),
-            "Stop" => push(&mut events.stop, entries),
-            "SessionEnd" => push(&mut events.session_end, entries),
-            "PreCompact" => push(&mut events.pre_compact, entries),
-            "PostCompact" => push(&mut events.post_compact, entries),
-            "SubagentStart" => push(&mut events.subagent_start, entries),
-            "SubagentStop" => push(&mut events.subagent_stop, entries),
-            "Notification" => push(&mut events.notification, entries),
-            other => tracing::warn!("[cc-hooks] session store: unknown event {other:?} ignored"),
+    let mut slots = events.groups_mut();
+    let slot = slots
+        .iter_mut()
+        .find(|(name, _)| *name == event)
+        .map(|(_, groups)| groups)
+        .ok_or_else(|| format!("unknown hook event {event}"))?;
+    slot.push(group);
+    write_hooks_events(config_dir, &events)?;
+    tracing::info!(
+        "[cc-hooks] session hook added: sid={sid} event={event} id={id} type={}",
+        if has_prompt { "prompt" } else { "command" }
+    );
+    Ok(id)
+}
+
+/// agent `hooks` 工具 delete：按 id 摘除该会话工具专属组里的条目。返回被
+/// 摘条目视图（工具回显用）。id 不存在/不属本会话 = Err 列出现有 id 清单；
+/// 条目删空后组整组摘除（不留 matcher/scope 空壳）。调用方**不要**预先
+/// 加锁（内部自持，不可重入）。
+pub fn delete_session_hook(
+    config_dir: &Path,
+    sid: &str,
+    id: &str,
+) -> Result<HookEntryView, String> {
+    let _guard = lock_hooks_file();
+    let mut events = read_hooks_events(config_dir)?;
+    let mut found = None;
+    for (event, groups) in events.groups_mut() {
+        for g in groups.iter_mut() {
+            if !g.tool_owned_by(sid) {
+                continue;
+            }
+            if let Some(pos) = g.hooks.iter().position(|h| h.id == id) {
+                let h = g.hooks.remove(pos);
+                found = Some(HookEntryView {
+                    event,
+                    id: h.id,
+                    matcher: g.matcher.clone().unwrap_or_default(),
+                    command: h.command,
+                    prompt: h.prompt,
+                    timeout: h.timeout,
+                });
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
         }
     }
-    events
+    let Some(view) = found else {
+        let ids: Vec<String> = events
+            .groups()
+            .iter()
+            .flat_map(|(_, gs)| gs.iter())
+            .filter(|g| g.tool_owned_by(sid))
+            .flat_map(|g| g.hooks.iter().map(|h| h.id.clone()))
+            .collect();
+        return Err(if ids.is_empty() {
+            format!("session {sid} has no tool-owned hooks")
+        } else {
+            format!(
+                "hook id {id} not found; session {sid} has: {}",
+                ids.join(", ")
+            )
+        });
+    };
+    // 摘掉删空的组（全表清 no-op 空壳——空 hooks 列表无语义，删了不伤人）。
+    for (_, groups) in events.groups_mut() {
+        groups.retain(|g| !g.hooks.is_empty());
+    }
+    write_hooks_events(config_dir, &events)?;
+    tracing::info!(
+        "[cc-hooks] session hook deleted: sid={sid} id={} event={}",
+        view.id,
+        view.event
+    );
+    Ok(view)
 }
 
-/// 会话级条目（某 sid）的**提示词型**钩子提取：仅 `Stop` 事件下 prompt 非空
-/// 条目，按存储序收集 prompt 文本。与 [`session_store_to_events`] 同源消费
-/// 同一 store（load_from_dir / refresh_session_events 两处换装点成对调用）。
-fn session_store_to_prompt_hooks(
-    per_event: &std::collections::BTreeMap<String, Vec<SessionHookEntry>>,
-) -> Vec<String> {
-    per_event
-        .get("Stop")
-        .map(|entries| {
-            entries
-                .iter()
-                .filter(|e| !e.prompt.trim().is_empty())
-                .map(|e| e.prompt.clone())
-                .collect()
-        })
-        .unwrap_or_default()
+/// agent `hooks` 工具 list：该会话工具专属组的全部条目（数组序 =
+/// [`SESSION_HOOK_EVENTS`] 定序 = 存储序，组内按存储序）。不含用户手写组
+/// （用户全量视图在 Dashboard）。
+pub fn list_session_hooks(config_dir: &Path, sid: &str) -> Result<Vec<HookEntryView>, String> {
+    let _guard = lock_hooks_file();
+    let events = read_hooks_events(config_dir)?;
+    let mut out = Vec::new();
+    for (event, groups) in events.groups() {
+        if !SESSION_HOOK_EVENTS.contains(&event) {
+            continue;
+        }
+        for g in groups.iter().filter(|g| g.tool_owned_by(sid)) {
+            for h in &g.hooks {
+                out.push(HookEntryView {
+                    event,
+                    id: h.id.clone(),
+                    matcher: g.matcher.clone().unwrap_or_default(),
+                    command: h.command.clone(),
+                    prompt: h.prompt.clone(),
+                    timeout: h.timeout,
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// 把会话级 [`CcEvents`] 并入全局快照（同名字段 Vec 追加；会话组自带
-/// scope 钉死，run_group 过滤天然只对属主会话放行）。
-fn merge_session_events(base: &mut CcEvents, extra: &CcEvents) {
-    base.pre_tool_use.extend(extra.pre_tool_use.iter().cloned());
-    base.post_tool_use
-        .extend(extra.post_tool_use.iter().cloned());
-    base.post_tool_use_failure
-        .extend(extra.post_tool_use_failure.iter().cloned());
-    base.session_start
-        .extend(extra.session_start.iter().cloned());
-    base.user_prompt_submit
-        .extend(extra.user_prompt_submit.iter().cloned());
-    base.stop.extend(extra.stop.iter().cloned());
-    base.session_end.extend(extra.session_end.iter().cloned());
-    base.pre_compact.extend(extra.pre_compact.iter().cloned());
-    base.post_compact.extend(extra.post_compact.iter().cloned());
-    base.subagent_start
-        .extend(extra.subagent_start.iter().cloned());
-    base.subagent_stop
-        .extend(extra.subagent_stop.iter().cloned());
-    base.notification.extend(extra.notification.iter().cloned());
+/// 该会话在统一存储中被圈定的钩子条目数（资源看板 hooks_session 类目口径）：
+/// **scope 圈定组**（[`CcHookGroup::is_session_scoped`]）里圈定命中本会话的
+/// 全部条目（含用户手写圈定组；未圈定组不在此账——归 hooks_global 类目，
+/// 两处分账不双计）。入参可传裸 sid 或完整 session_key（matches_session
+/// 双串语义同源）。调用方**不要**预先加锁。
+pub fn count_session_hooks(config_dir: &Path, session_key: &str) -> Result<usize, String> {
+    let _guard = lock_hooks_file();
+    let events = read_hooks_events(config_dir)?;
+    Ok(events
+        .groups()
+        .iter()
+        .flat_map(|(_, gs)| gs.iter())
+        .filter(|g| g.is_session_scoped() && g.matches_session(session_key))
+        .map(|g| g.hooks.len())
+        .sum())
+}
+
+/// 该会话被圈定钩子的**明细视图**（资源看板 hooks_session 类目行数据，
+/// 2026-11-19「只有个数不知道是啥」补齐）：与 [`count_session_hooks`]
+/// 同一谓词（`is_session_scoped` && `matches_session`——count/list 永不
+/// 分裂），逐条展开 [`HookEntryView`]（事件 · 命令/提示词原文 · matcher ·
+/// timeout）。入参可传裸 sid 或完整 session_key（双串语义同源）。调用方
+/// **不要**预先加锁。
+pub fn list_session_hooks_scoped(
+    config_dir: &Path,
+    session_key: &str,
+) -> Result<Vec<HookEntryView>, String> {
+    let _guard = lock_hooks_file();
+    let events = read_hooks_events(config_dir)?;
+    let mut out = Vec::new();
+    for (event, groups) in events.groups() {
+        for g in groups
+            .iter()
+            .filter(|g| g.is_session_scoped() && g.matches_session(session_key))
+        {
+            for h in &g.hooks {
+                out.push(HookEntryView {
+                    event,
+                    id: h.id.clone(),
+                    matcher: g.matcher.clone().unwrap_or_default(),
+                    command: h.command.clone(),
+                    prompt: h.prompt.clone(),
+                    timeout: h.timeout,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 从 hooks.json 摘除给定会话集合的**圈定**（`_locked` = 调用方已持
+/// [`HOOKS_FILE_LOCK`]，内部不再加锁——std Mutex 不可重入，重复加锁 =
+/// 死锁）。摘除语义：只从 scope.sessions 里删死会话（scope 剩别的会话的
+/// 组保留）；**本 round 被摘空的组整组删除**——绝不能留空 scope 组（空 =
+/// 全部会话命中，钉死的钩子会瞬间变成全局钩子，语义反转事故）；未触碰
+/// 的组（含用户手写的空 sessions 全局组）原样保留。返回改写组数（无改动
+/// = 0 = 零写入）。
+fn remove_session_scopes_locked(
+    config_dir: &Path,
+    dead_sids: &HashSet<String>,
+) -> Result<usize, String> {
+    if dead_sids.is_empty() {
+        return Ok(0);
+    }
+    let mut events = read_hooks_events(config_dir)?;
+    let mut changed = 0usize;
+    for (_, groups) in events.groups_mut() {
+        let mut emptied = Vec::new();
+        for (gi, g) in groups.iter_mut().enumerate() {
+            let Some(scope) = g.scope.as_mut() else {
+                continue;
+            };
+            let before = scope.sessions.len();
+            scope.sessions.retain(|s| !dead_sids.contains(s));
+            if scope.sessions.len() != before {
+                changed += 1;
+                if scope.sessions.is_empty() {
+                    emptied.push(gi);
+                }
+            }
+        }
+        for gi in emptied.into_iter().rev() {
+            groups.remove(gi);
+        }
+    }
+    if changed == 0 {
+        return Ok(0);
+    }
+    write_hooks_events(config_dir, &events)?;
+    Ok(changed)
+}
+
+/// 孤儿对账（gateway 启动一次）：hooks.json 里 scope 圈定了不在 `live_sids`
+/// 的会话 → 该会话从 scope 摘除（圈定组随会话消亡；scope 摘空 → 整组删，
+/// 见 [`remove_session_scopes_locked`]）。未圈定组不动（全局配置不随会话
+/// 生死）。返回改写组数。幂等；写失败 warn 不 panic（下次启动重试）。
+pub fn reconcile_session_orphans(config_dir: &Path, live_sids: &HashSet<String>) -> usize {
+    let _guard = lock_hooks_file();
+    let events = match read_hooks_events(config_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("[cc-hooks] reconcile skipped: {e}");
+            return 0;
+        }
+    };
+    let scoped: HashSet<String> = events
+        .groups()
+        .iter()
+        .flat_map(|(_, gs)| gs.iter())
+        .filter_map(|g| g.scope.as_ref())
+        .flat_map(|s| s.sessions.iter().cloned())
+        .collect();
+    let dead: HashSet<String> = scoped
+        .into_iter()
+        .filter(|sid| !live_sids.contains(sid))
+        .collect();
+    match remove_session_scopes_locked(config_dir, &dead) {
+        Ok(n) => {
+            if n > 0 {
+                tracing::info!("[cc-hooks] reconciled {n} group(s) scoped to ended sessions");
+            }
+            n
+        }
+        Err(e) => {
+            tracing::warn!("[cc-hooks] reconcile write failed (retry next start): {e}");
+            0
+        }
+    }
+}
+
+/// hooks.session.json 退役清理（gateway 启动一次，先于对账）：该文件自统一
+/// 存储重构（2026-11-19）后不再是真相源——会话钩子现住 hooks.json 的
+/// scope 圈定组。在场即删 + warn；**零数据迁移**（不读内容重建 scope 组：
+/// 语义不等价的静默转换比诚实提示更危险，存量使用者极少、手迁成本几行
+/// JSON）。删除失败 warn 不阻塞启动。
+pub fn retire_session_store(config_dir: &Path) {
+    let path = config_dir.join(HOOKS_SESSION_FILE);
+    match std::fs::remove_file(&path) {
+        Ok(_) => tracing::warn!(
+            "[cc-hooks] retired legacy {} — session hooks now live in {} (scope 圈定组); \
+             本文件内容未自动迁移",
+            path.display(),
+            HOOKS_FILE
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::warn!("[cc-hooks] failed to remove legacy {}: {e}", path.display())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -991,9 +1228,9 @@ impl ScriptOutcome {
 /// 内存桥（[`Self::from_json`]，测试/手工构造）无热更。
 pub struct CcHookBridge {
     /// 当前生效配置（热更换装点）。分发入口取 clone 快照再跑脚本——锁不跨
-    /// await（CcEvents 为 Vec 簇小结构，clone 便宜）。含会话级合并结果：
-    /// 会话级组自带 scope 钉死（[`session_store_to_events`]），与全局组同
-    /// 一过滤路径。
+    /// await（CcEvents 为 Vec 簇小结构，clone 便宜）。全局组与会话圈定组
+    /// 同住一张表（统一存储），圈定过滤在 run_group 统一走
+    /// [`CcHookGroup::matches_session`]。
     events: RwLock<CcEvents>,
     /// hooks.json 盘上路径；`None` = 纯内存桥，热更关闭。
     hooks_path: Option<PathBuf>,
@@ -1003,22 +1240,6 @@ pub struct CcHookBridge {
     /// （同族收编：Windows 毫秒级粒度下同刻改写漏检 =
     /// 换装静默滞留旧版）。
     seen_raw: Mutex<Option<String>>,
-    /// hooks.session.json 盘上路径（agent `hooks` 工具存储；`None` = 纯内存
-    /// 桥，会话级热更关闭）。
-    session_path: Option<PathBuf>,
-    /// 会话级文件上次记账的原始文本（与 [`Self::seen_raw`] 同语义，双文件
-    /// 各自独立内容比对）。
-    seen_session_raw: Mutex<Option<String>>,
-    /// 会话级钩子内存态：`sid → CcEvents`（scope 已钉死 sid）。热更整表
-    /// 换装；`on_session_end` 摘除单条。
-    session_events: RwLock<HashMap<String, CcEvents>>,
-    /// 会话级**提示词型**钩子表：`sid → [prompt]`（仅 Stop 事件、prompt 非空
-    /// 条目）。与 [`Self::session_events`] 同闸同生命周期：同一内容比对触发
-    /// 同一次换装（load_from_dir / refresh_session_events 三分支同步）、
-    /// `on_session_end` purge 同步摘除。消费点在 [`Self::on_turn_end`] 尾部
-    /// （shell 全放行后）——返回 [`TurnEndDecision::Inject`]，由 loop 在
-    /// turn 收尾后把 prompt 作为新用户消息注入（永续循环语义，见 hooks.rs）。
-    session_prompt_hooks: RwLock<HashMap<String, Vec<String>>>,
     project_dir: PathBuf,
     /// SessionStart 只跑一次的判重（session_key → 已）。
     seen_sessions: Mutex<HashSet<String>>,
@@ -1035,50 +1256,26 @@ impl CcHookBridge {
             events: RwLock::new(events),
             hooks_path: None,
             seen_raw: Mutex::new(None),
-            session_path: None,
-            seen_session_raw: Mutex::new(None),
-            session_events: RwLock::new(HashMap::new()),
-            session_prompt_hooks: RwLock::new(HashMap::new()),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
         })
     }
 
-    /// 从 config 目录加载。**任一文件在场且有内容即建桥**（HOOK 会话维度
-    /// 批次三冷启动扩展）：hooks.json 缺失但 hooks.session.json 有钩子 →
-    /// 照常建桥（全局侧空 `CcEvents`），否则 agent 先装的会话级钩子永不
-    /// 生效（写盘无载体）。两侧都空（双缺/零脚本/空存储）→ None（静默，
-    /// 正常态，HookView 冷启动提示即此）；hooks.json 存在但解析失败且会话
-    /// 侧也无内容 → warn + None（fail-open，不拖死 gateway）——会话侧有
-    /// 内容时全局侧降级为空 + warn（桥照建，会话钩子不受全局坏文件拖累，
-    /// 下次内容变化热更自然重试全局侧）。
+    /// 从 config 目录加载。hooks.json 在场且有条目（command/prompt 皆算，
+    /// [`CcEvents::is_empty`]）→ 建桥；缺失/零条目 → None（静默，正常态，
+    /// HookView 冷启动提示即此）；在场但解析失败 → warn + None（fail-open，
+    /// 不拖死 gateway）。桥在场 = 统一存储热更闸在场：agent `hooks` 工具写
+    /// hooks.json 后下次分发内容比对即生效；桥缺席（此前无任何钩子）时
+    /// 工具侧诚实提示「重启后生效」。
     pub fn load_from_dir(config_dir: &Path, project_dir: PathBuf) -> Option<Arc<Self>> {
         let path = config_dir.join(HOOKS_FILE);
-        let session_path = session_hooks_path(config_dir);
-        let global_text = nemesis_utils::fsutil::read_config_string(&path).ok();
-        let session_text = nemesis_utils::fsutil::read_config_string(&session_path).ok();
-        // 会话侧解析（缺失/失败 = 空存储；失败 warn 一次）。
-        let session_store = match &session_text {
-            Some(t) => match parse_session_hook_store(t) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    tracing::warn!(
-                        "[cc-hooks] failed to parse {} — session hooks ignored: {e}",
-                        session_path.display()
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-        let has_session = session_store.as_ref().is_some_and(|s| !s.is_empty());
-        // 全局侧文本在场但两边都无内容 → 与旧语义一致：不建桥。
-        let global_empty_or_missing = global_text
+        let text = nemesis_utils::fsutil::read_config_string(&path).ok();
+        let empty_or_bad = text
             .as_deref()
             .is_none_or(|t| parse_cc_hooks(t).map(|e| e.is_empty()).unwrap_or(true));
-        if !has_session && global_empty_or_missing {
-            if let Some(t) = &global_text {
+        if empty_or_bad {
+            if let Some(t) = &text {
                 // 在场但空/坏：区分日志（坏 = warn 保旧语义；空 = info）。
                 if parse_cc_hooks(t).is_err() {
                     tracing::warn!(
@@ -1094,61 +1291,23 @@ impl CcHookBridge {
             }
             return None;
         }
-        // 到这里至少一侧有内容：建桥。全局侧缺失/坏 = 空 CcEvents + warn。
-        let global_events = match &global_text {
-            Some(t) => match parse_cc_hooks(t) {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!(
-                        "[cc-hooks] failed to parse {} — global hooks DISABLED (fail-open), \
-                         session hooks stay active: {e}",
-                        path.display()
-                    );
-                    CcEvents::default()
-                }
-            },
-            None => CcEvents::default(),
-        };
-        // 会话级内存态：sid → CcEvents（scope 钉死）+ sid → prompt 钩子表
-        // （两表同源消费同一 store，成对构建）。
-        let mut session_events = HashMap::new();
-        let mut session_prompt_hooks = HashMap::new();
-        if let Some(store) = &session_store {
-            for (sid, per_event) in &store.hooks {
-                if !per_event.values().all(Vec::is_empty) {
-                    session_events.insert(sid.clone(), session_store_to_events(sid, per_event));
-                }
-                let prompts = session_store_to_prompt_hooks(per_event);
-                if !prompts.is_empty() {
-                    session_prompt_hooks.insert(sid.clone(), prompts);
-                }
-            }
-        }
-        let total = global_events.total_scripts()
-            + session_events
-                .values()
-                .map(|e| e.total_scripts())
-                .sum::<usize>();
+        // 到这里文件在场、非空、可解析（上一分支已筛掉其余形态）。
+        let events = parse_cc_hooks(text.as_deref().expect("text checked above"))
+            .expect("parseable — screened above");
         tracing::info!(
-            "[cc-hooks] loaded {} script(s) from {} (+{} session-scoped) — {:?}",
-            global_events.total_scripts(),
+            "[cc-hooks] loaded {} script(s) from {} — {:?}",
+            events.total_scripts(),
             path.display(),
-            total - global_events.total_scripts(),
-            global_events.script_counts()
+            events.script_counts()
         );
-        let bridge = Self {
-            events: RwLock::new(global_events),
+        Some(Arc::new(Self {
+            events: RwLock::new(events),
             hooks_path: Some(path),
-            seen_raw: Mutex::new(global_text),
-            session_path: Some(session_path),
-            seen_session_raw: Mutex::new(session_text),
-            session_events: RwLock::new(session_events),
-            session_prompt_hooks: RwLock::new(session_prompt_hooks),
+            seen_raw: Mutex::new(text),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
-        };
-        Some(Arc::new(bridge))
+        }))
     }
 
     /// 挂到 AgentLoop（工具钩子 + 生命周期钩子一起）。
@@ -1157,40 +1316,20 @@ impl CcHookBridge {
         agent_loop.add_lifecycle_hook(self);
     }
 
-    /// **分发入口**：hooks.json + hooks.session.json 内容变化则热更换装，
-    /// 返回当前生效配置（全局 + 该会话圈定钩子合并）的 clone 快照（锁不跨
-    /// await）。纯内存桥直接返回快照。`session`：发起事件的会话身份——
-    /// 会话级钩子按剥 [`WEB_SESSION_KEY_PREFIX`] 的 sid（或整键）取出并
-    /// 并入快照（组自带 scope 钉死，[`CcHookGroup::matches_session`] 再滤
-    /// 一道，纵深防御）。
+    /// **分发入口**：hooks.json 内容变化则热更换装，返回当前生效配置的
+    /// clone 快照（锁不跨 await）。纯内存桥直接返回快照。会话圈定组与全局
+    /// 组同住一张表（统一存储）——快照全量携带，[`CcHookGroup::matches_session`]
+    /// 在 run_group 里过滤（零特殊分支）。
     ///
-    /// 换装语义（hooks.json 与 hooks.session.json 各自独立、同构）：
+    /// 换装语义：
     /// - 内容变化 + 解析成功 → 原子换装（info 记脚本计数）。
     /// - 内容变化 + 解析失败 → warn + **保留旧配置**；文本已记账，同版
     ///   坏文件只 warn 一次。
     /// - 文件消失（NotFound）→ 视同用户清空：换装为空 = 事实注销，与
     ///   启动态「没有 hooks.json = 没配」同一语义。
     /// - 瞬时读失败（编辑器/杀软锁，非 NotFound）→ 保留现状不记账，下轮
-    ///   重试（与「消失」分立——读不到 ≠ 不存在； 同款
-    ///   教训。旧实现 metadata 一并 Err 混同两态，此处顺手分立）。
-    fn current_events(&self, session: &str) -> CcEvents {
-        let mut events = self.refresh_global_events();
-        if !session.is_empty() {
-            let per = self.refresh_session_events();
-            if !per.is_empty() {
-                let sid = session
-                    .strip_prefix(WEB_SESSION_KEY_PREFIX)
-                    .unwrap_or(session);
-                if let Some(extra) = per.get(sid).or_else(|| per.get(session)) {
-                    merge_session_events(&mut events, extra);
-                }
-            }
-        }
-        events
-    }
-
-    /// hooks.json 侧热更（原 current_events 主体，逻辑零变化）。
-    fn refresh_global_events(&self) -> CcEvents {
+    ///   重试（与「消失」分立——读不到 ≠ 不存在）。
+    fn current_events(&self) -> CcEvents {
         let Some(path) = self.hooks_path.clone() else {
             return self.events.read().unwrap().clone();
         };
@@ -1237,65 +1376,6 @@ impl CcHookBridge {
         self.events.read().unwrap().clone()
     }
 
-    /// hooks.session.json 侧热更（与 hooks.json 同构三分支；整表换装）。
-    /// 纯内存桥（session_path None）直接返回现表——工具写入的即时生效由
-    /// 「桥在场 → 有路径 → 下次分发内容比对捡到」承载；桥不在场（双文件
-    /// 双缺的冷启动）工具侧诚实提示「重启后生效」。
-    fn refresh_session_events(&self) -> HashMap<String, CcEvents> {
-        let Some(path) = self.session_path.clone() else {
-            return self.session_events.read().unwrap().clone();
-        };
-        let text = match nemesis_utils::fsutil::read_config_string(&path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return self.session_events.read().unwrap().clone(),
-        };
-        if text == *self.seen_session_raw.lock().unwrap() {
-            return self.session_events.read().unwrap().clone();
-        }
-        *self.seen_session_raw.lock().unwrap() = text.clone();
-        match text.as_deref() {
-            None => {
-                tracing::info!(
-                    "[cc-hooks] {} gone — session hooks deactivated (hot-reload)",
-                    path.display()
-                );
-                self.session_events.write().unwrap().clear();
-                self.session_prompt_hooks.write().unwrap().clear();
-            }
-            Some(t) => match parse_session_hook_store(t) {
-                Ok(store) => {
-                    let mut map = HashMap::new();
-                    let mut prompts = HashMap::new();
-                    for (sid, per_event) in &store.hooks {
-                        if !per_event.values().all(Vec::is_empty) {
-                            map.insert(sid.clone(), session_store_to_events(sid, per_event));
-                        }
-                        let sid_prompts = session_store_to_prompt_hooks(per_event);
-                        if !sid_prompts.is_empty() {
-                            prompts.insert(sid.clone(), sid_prompts);
-                        }
-                    }
-                    tracing::info!(
-                        "[cc-hooks] hot-reloaded {} ({} session(s) with hooks)",
-                        path.display(),
-                        map.len()
-                    );
-                    *self.session_events.write().unwrap() = map;
-                    *self.session_prompt_hooks.write().unwrap() = prompts;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "[cc-hooks] hot-reload failed to parse {} — keeping previous config: {}",
-                        path.display(),
-                        e
-                    );
-                }
-            },
-        }
-        self.session_events.read().unwrap().clone()
-    }
-
     /// 依次跑一组里所有命中**会话圈定**与 matcher 的命令。`session`：发起
     /// 事件的会话身份（session_key 或裸 sid；空串 = 无会话身份的事件，如
     /// subagent 历史载荷——只被未圈定的组命中）。圈定过滤先于 matcher：
@@ -1318,6 +1398,11 @@ impl CcHookBridge {
                 continue;
             }
             for h in &g.hooks {
+                // prompt 型条目不进 shell 执行路径（LLM 执行体；Stop 事件的
+                // prompt 条目由 on_turn_end 从同一快照单独收集注入）。
+                if !h.prompt.trim().is_empty() {
+                    continue;
+                }
                 let timeout = resolve_hook_timeout(h.timeout);
                 let o = run_hook_script(&h.command, timeout, payload, &self.project_dir).await;
                 // 非阻断失败（超时/非 0 非 2 退出码/启动失败）响亮 warn 后继续。
@@ -1356,16 +1441,13 @@ impl CcHookBridge {
             > 0
     }
 
-    /// 全局侧钩子的会话匹配计数（资源看板 hooks_global 类目，2026-11-17
-    /// 会话资源盘点）。锁内取全局 `CcEvents` 快照后委托
-    /// [`CcEvents::session_match_counts`]（双串匹配复用 matches_session；
-    /// 0 计数事件已过滤）。会话级钩子不走这里——hooks_session 类目按
-    /// 计划口径直读 `hooks.session.json`（裸 sid 键）。
-    pub fn global_session_match_counts(&self, session_key: &str) -> Vec<(&'static str, usize)> {
-        // 走 refresh（懒重载：盘上内容变化即热更）而非直读缓存——盘点面
-        // 与 dispatch 面同一新鲜度口径。
-        let events = self.refresh_global_events();
-        events.session_match_counts(session_key)
+    /// 全局（未圈定）钩子的逐事件计数（资源看板 hooks_global 类目）。锁内
+    /// 取快照后委托 [`CcEvents::global_hook_counts`]（**只数未圈定组**——
+    /// 会话圈定组归 hooks_session 类目，两处分账不双计）。走 current_events
+    /// （懒重载：盘上内容变化即热更）而非直读缓存——盘点面与 dispatch 面同
+    /// 一新鲜度口径。
+    pub fn global_hook_counts(&self) -> Vec<(&'static str, usize)> {
+        self.current_events().global_hook_counts()
     }
 
     /// 方言 `SubagentStart`：spawn 闭包内、
@@ -1373,7 +1455,7 @@ impl CcHookBridge {
     /// 阻断文案即拒绝原因，由调用方作为 SpawnFn 的 Err 上抛。无子代理钩子
     /// 配置时零开销直通。
     pub async fn dispatch_subagent_start(&self, info: &SubagentInfo) -> Result<(), String> {
-        let events = self.current_events(&info.session_key);
+        let events = self.current_events();
         if events.subagent_start.is_empty() {
             return Ok(());
         }
@@ -1403,7 +1485,7 @@ impl CcHookBridge {
         outcome: &str,
         error: Option<&str>,
     ) {
-        let events = self.current_events(&info.session_key);
+        let events = self.current_events();
         if events.subagent_stop.is_empty() {
             return;
         }
@@ -1433,7 +1515,7 @@ impl CcHookBridge {
         layer: &str,
         extra: Value,
     ) {
-        let events = self.current_events(session_key);
+        let events = self.current_events();
         if events.notification.is_empty() {
             return;
         }
@@ -1523,7 +1605,7 @@ impl ToolHook for CcHookBridge {
     }
 
     async fn pre_tool_use(&self, call: &HookToolCall) -> HookDecision {
-        let events = self.current_events(&call.session_key);
+        let events = self.current_events();
         let payload = pre_tool_use_payload(call, &self.project_dir);
         for o in self
             .run_group(
@@ -1547,7 +1629,7 @@ impl ToolHook for CcHookBridge {
     }
 
     async fn post_tool_use(&self, call: &HookToolCall, result: &str) -> PostHookAction {
-        let events = self.current_events(&call.session_key);
+        let events = self.current_events();
         let payload = build_event_payload(
             "PostToolUse",
             &call.session_key,
@@ -1585,7 +1667,7 @@ impl ToolHook for CcHookBridge {
     /// 方言 `PostToolUseFailure`（三段化扩展）：工具执行失败后触发。
     /// 观察型——stderr 只记日志（失败已发生，无撤销/改写语义）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
-        let events = self.current_events(&call.session_key);
+        let events = self.current_events();
         let payload = build_event_payload(
             "PostToolUseFailure",
             &call.session_key,
@@ -1620,7 +1702,7 @@ impl LifecycleHook for CcHookBridge {
     }
 
     async fn on_user_prompt(&self, prompt: &HookPrompt) -> PromptDecision {
-        let events = self.current_events(&prompt.session_key);
+        let events = self.current_events();
         // SessionStart：该 session 第一条 prompt 时先跑（source=startup）。
         let first_prompt = !self
             .seen_sessions
@@ -1670,7 +1752,7 @@ impl LifecycleHook for CcHookBridge {
     }
 
     async fn on_turn_end(&self, end: &crate::hooks::HookTurnEnd) -> TurnEndDecision {
-        let events = self.current_events(&end.session_key);
+        let events = self.current_events();
         let payload = build_event_payload(
             "Stop",
             &end.session_key,
@@ -1695,31 +1777,30 @@ impl LifecycleHook for CcHookBridge {
         }
         // 正常放行 → 清计数（下一个 turn 的 stop_hook_active 从 false 起）。
         self.stop_blocks.lock().unwrap().remove(&end.session_key);
-        // 提示词型钩子（LLM 执行体）：shell 全放行后查会话 prompt 表。
-        // 表的新鲜度由开头 current_events → refresh_session_events 保证
-        // （同一内容比对闸已触发换装）。多条 prompt 按存储序拼接为一条注入
-        // （一次注入一个消息；钩子内容全部到达）。空 = 无 prompt 钩子，照常
-        // Stop。Inject 由 loop 在 turn 收尾后注入新用户消息开启下一轮——
-        // 下一轮结束 Stop 钩点再次触发 → 自然循环（无封顶，永续是钩点正常
-        // 执行的自然副作用；estop/取消打断 turn → 非 Accept 路径 → 本钩子
-        // 不触发 → 循环自然停）。
+        // 提示词型钩子（LLM 执行体）：shell 全放行后从**同一快照**收集 Stop
+        // 事件下会话圈定命中的 prompt 条目（开头 current_events 已热更换装，
+        // 新鲜度同源；matches_session 复用统一过滤路径）。多条 prompt 按存储
+        // 序拼接为一条注入（一次注入一个消息；钩子内容全部到达）。空 = 无
+        // prompt 钩子，照常 Stop。Inject 由 loop 在 turn 收尾后注入新用户
+        // 消息开启下一轮——下一轮结束 Stop 钩点再次触发 → 自然循环（无封顶，
+        // 永续是钩点正常执行的自然副作用；estop/取消打断 turn → 非 Accept
+        // 路径 → 本钩子不触发 → 循环自然停）。
         if !end.session_key.is_empty() {
-            let sid = end
-                .session_key
-                .strip_prefix(WEB_SESSION_KEY_PREFIX)
-                .unwrap_or(&end.session_key);
-            let prompts = self.session_prompt_hooks.read().unwrap();
-            if let Some(list) = prompts
-                .get(sid)
-                .or_else(|| prompts.get(&end.session_key))
-                .filter(|list| !list.is_empty())
-            {
-                let prompt = list.join("\n\n");
+            let prompts: Vec<&str> = events
+                .stop
+                .iter()
+                .filter(|g| g.matches_session(&end.session_key))
+                .flat_map(|g| g.hooks.iter())
+                .filter(|h| !h.prompt.trim().is_empty())
+                .map(|h| h.prompt.as_str())
+                .collect();
+            if !prompts.is_empty() {
+                let prompt = prompts.join("\n\n");
                 tracing::info!(
                     "[cc-hooks] prompt hook fired for session '{}' ({} hook(s), {} bytes) — \
                      loop will inject after turn finalization",
                     end.session_key,
-                    list.len(),
+                    prompts.len(),
                     prompt.len()
                 );
                 return TurnEndDecision::Inject { prompt };
@@ -1733,11 +1814,11 @@ impl CcHookBridge {
     /// 方言 `SessionEnd`（观察型）：会话被清理/删除时触发。exit 2 无阻断语义。
     /// 固有方法而非 trait——唯一实现者是本桥，不建单实现 trait（YAGNI）。
     ///
-    /// 分发之后顺手做**会话钩子孤儿对账**：该会话在 hooks.session.json 里的
-    /// 专属钩子随会话一起摘除（先分发后 purge——SessionEnd 钩子自身若被
+    /// 分发之后顺手做**会话钩子孤儿对账**：hooks.json 里圈定到该会话的
+    /// 钩子随会话一起摘除（先分发后 purge——SessionEnd 钩子自身若被
     /// 圈定到本会话，仍要在死前响最后一次）。
     pub async fn on_session_end(&self, session_key: &str, reason: &str) {
-        let events = self.current_events(session_key);
+        let events = self.current_events();
         let payload = build_event_payload(
             "SessionEnd",
             session_key,
@@ -1749,45 +1830,34 @@ impl CcHookBridge {
         self.purge_session_hooks(session_key);
     }
 
-    /// 会话结束后的孤儿清理：从 hooks.session.json 摘除该会话的全部条目，
-    /// 并同步内存缓存（session_events map + seen_session_raw）。磁盘无该
-    /// 会话条目 = 零写入；session 槽缺席（None）= 跳过（存储面未接线）。
+    /// 会话结束后的孤儿清理：从 hooks.json 摘除该会话的圈定（scope 圈定组
+    /// 随会话消亡；scope 摘空 → 整组删，见 [`remove_session_scopes_locked`]；
+    /// 未圈定组不动）。磁盘无该会话圈定 = 零写入；纯内存桥（无盘上路径）=
+    /// 跳过（存储面未接线）。内存侧无需手工同步——下次分发 current_events
+    /// 内容比对自然捡到 purge 刚写的盘上真相。
     fn purge_session_hooks(&self, session_key: &str) {
-        let Some(path) = self.session_path.as_ref() else {
+        if self.hooks_path.is_none() {
             return;
-        };
+        }
         let sid = session_key
             .strip_prefix(WEB_SESSION_KEY_PREFIX)
             .unwrap_or(session_key);
-        let changed = {
-            let config_dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let mut store = read_session_hook_store(config_dir);
-            let removed = store.hooks.remove(sid).is_some();
-            if !removed {
-                return;
-            }
-            if let Err(e) = write_session_hook_store(config_dir, &store) {
-                tracing::warn!(
-                    "[cc-hooks] session hook purge write failed (kept in memory clean): {e}"
-                );
-                return;
-            }
-            true
-        };
-        if changed {
-            // 内存侧同步：摘 map 条目 + 让下次热更比对不因内容倒退误判。
-            self.session_events.write().unwrap().remove(sid);
-            self.session_prompt_hooks.write().unwrap().remove(sid);
-            let mut seen = self.seen_session_raw.lock().unwrap();
-            if let Some(raw) = seen.as_mut()
-                && let Ok(mut v) = serde_json::from_str::<Value>(raw)
-            {
-                if let Some(map) = v.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-                    map.remove(sid);
-                }
-                *raw = v.to_string();
-            }
-            tracing::info!("[cc-hooks] purged session-scoped hooks for ended session {sid}");
+        let config_dir = self
+            .hooks_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mut dead = HashSet::new();
+        dead.insert(sid.to_string());
+        // 分发（SessionEnd 钩子自身若圈定到本会话已在上面响过最后一次）之后
+        // 摘圈定；锁在 remove_session_scopes_locked 内部自持。
+        match remove_session_scopes_locked(&config_dir, &dead) {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                "[cc-hooks] purged session-scoped hooks for ended session {sid} ({n} group(s))"
+            ),
+            Err(e) => tracing::warn!("[cc-hooks] session hook purge write failed: {e}"),
         }
     }
 }
@@ -1798,7 +1868,7 @@ impl CcHookBridge {
     /// 会话身份——会话圈定过滤锚点 + payload 的 session_id 字段（旧实现
     /// 占位 "system"，会话维度上线后改传真值，诚实标注来源会话）。
     pub async fn run_compact_hooks(&self, trigger: &str, phase: &str, session_key: &str) {
-        let events = self.current_events(session_key);
+        let events = self.current_events();
         let event = if phase == "pre" {
             "PreCompact"
         } else {

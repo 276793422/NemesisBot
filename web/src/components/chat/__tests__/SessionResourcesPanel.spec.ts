@@ -62,7 +62,7 @@ vi.mock('../../../composables/useSessionAllowAll', () => ({
   }),
 }))
 
-import { addMessageHandler } from '../../../composables/useWebSocket'
+import { addMessageHandler, wsStatus } from '../../../composables/useWebSocket'
 import SessionResourcesPanel from '../SessionResourcesPanel.vue'
 
 function wsHandler(): (frame: any) => void {
@@ -187,6 +187,35 @@ describe('渲染分区', () => {
     const w = mount(SessionResourcesPanel, { props: { sessionId: 's1' } })
     await flushPromises()
     expect(w.find('.srp-error').text()).toContain('资源盘点未装配')
+    w.unmount()
+  })
+
+  // 明细行（2026-11-19「只有个数不知道是啥」补齐）：事件·类型 + 内容
+  // 预览，长内容头截断，悬浮 title 带 matcher/timeout。
+  it('hooks_session 明细行：事件·类型 + 内容（prompt/command 两形态 + 头截断）', async () => {
+    const p = resourcesPayload(1)
+    p.categories.hooks_session = {
+      label: '会话钩子', order: 30, transient: false, status: 'ok', total: 2,
+      summary: {
+        count: 2,
+        rows: [
+          { event: 'Stop', kind: 'prompt', content: '现在几点了', matcher: '', timeout: null },
+          { event: 'PreToolUse', kind: 'command', content: 'echo ' + 'x'.repeat(60), matcher: 'Bash', timeout: 30 },
+        ],
+      },
+    }
+    const w = await mountPanel('s1', p)
+    expect(w.text()).toContain('本会话钩子 2 个')
+    expect(w.text()).toContain('Stop·提示词')
+    expect(w.text()).toContain('现在几点了')
+    expect(w.text()).toContain('PreToolUse·命令')
+    // 60 字符命令被头截到 48 + 省略号（全文在 title 悬浮可见）。
+    const truncated = w.findAll('.srp-row').map(r => r.text()).join('\n')
+    expect(truncated).toContain('…')
+    const longRow = w.findAll('.srp-row').find(r => r.text().includes('PreToolUse'))
+    const title = longRow?.find('span[title]')?.attributes('title')
+    expect(title).toContain('matcher=Bash')
+    expect(title).toContain('timeout=30s')
     w.unmount()
   })
 
@@ -355,6 +384,45 @@ describe('B4 活态刷新', () => {
     await vi.advanceTimersByTimeAsync(500)
     await flushPromises()
     expect(w.text()).toContain('新标题')
+    w.unmount()
+  })
+
+  it('WS 重连归零 revision 高水位：跨 gateway 重启不冻结（2026-11-19 修「钩子设了面板不显示」）', async () => {
+    // 旧进程代拿到高水位 revision=500；gateway 重启后新进程 seq 归零，
+    // 回包 revision=3（带会话钩子变化）。无归零修复时 3 < 500 恒被当
+    // 乱序旧包丢弃 = 面板永久冻结在重启前数据。
+    const w = await mountPanel('s1', resourcesPayload(500))
+    expect(w.text()).toContain('修 bug 会话')
+    const p3 = resourcesPayload(3)
+    p3.categories.hooks_session = { label: '会话钩子', order: 30, transient: false, status: 'ok', total: 1, summary: { count: 1 } }
+    requestMock.mockImplementation(async (mod: string, cmd: string) => {
+      if (mod === 'session' && cmd === 'resources') return p3
+      if (mod === 'system' && cmd === 'status') return { workspace: 'C:/ws' }
+      return {}
+    })
+    wsStatus.value = 'disconnected'
+    await vi.advanceTimersByTimeAsync(10)
+    wsStatus.value = 'connected'
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(w.text()).toContain('本会话钩子 1 个')
+    w.unmount()
+  })
+
+  it('SSE resync 归零 revision 高水位：缺口提示后旧代回包照常应用', async () => {
+    const w = await mountPanel('s1', resourcesPayload(500))
+    expect(w.text()).toContain('修 bug 会话')
+    const p3 = resourcesPayload(3)
+    p3.categories.hooks_session = { label: '会话钩子', order: 30, transient: false, status: 'ok', total: 1, summary: { count: 1 } }
+    requestMock.mockImplementation(async (mod: string, cmd: string) => {
+      if (mod === 'session' && cmd === 'resources') return p3
+      if (mod === 'system' && cmd === 'status') return { workspace: 'C:/ws' }
+      return {}
+    })
+    expect(sseHandlers['resync']?.length, 'SSE resync 应有订阅').toBeGreaterThan(0)
+    sseHandlers['resync'][0](undefined)
+    await flushPromises()
+    expect(w.text()).toContain('本会话钩子 1 个')
     w.unmount()
   })
 

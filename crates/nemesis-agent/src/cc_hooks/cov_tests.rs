@@ -221,7 +221,7 @@ fn load_from_dir_fail_open_semantics() {
     .unwrap();
     let bridge = CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf());
     assert!(bridge.is_some());
-    assert_eq!(bridge.unwrap().current_events("").total_scripts(), 1);
+    assert_eq!(bridge.unwrap().current_events().total_scripts(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,17 +249,17 @@ fn current_events_hot_reload_three_branches() {
     )
     .unwrap();
     let bridge = hot_bridge(r#"{"hooks":{}}"#, &hooks_json);
-    let ev = bridge.current_events("");
+    let ev = bridge.current_events();
     assert_eq!(ev.total_scripts(), 1, "reloaded config takes effect");
 
     // ② 内容再变 + 解析失败 → 保留旧配置（fail-open 保旧）。
     std::fs::write(&hooks_json, "{broken").unwrap();
-    let ev = bridge.current_events("");
+    let ev = bridge.current_events();
     assert_eq!(ev.total_scripts(), 1, "parse failure keeps old config");
 
     // ③ 文件消失 → 换装为空 = 事实注销。
     std::fs::remove_file(&hooks_json).unwrap();
-    let ev = bridge.current_events("");
+    let ev = bridge.current_events();
     assert_eq!(ev.total_scripts(), 0, "file gone = deactivated");
 }
 

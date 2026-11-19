@@ -3,9 +3,11 @@
 //! copy-once 迁移——见 cc_hooks::migrate_legacy_home_hooks_config。）
 //!
 //! `<workspace>/config/hooks.json` 是 hooks.json 方言（`nemesis_agent::cc_hooks`）：
-//! 八事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop/
-//! SubagentStart/SubagentStop/Notification（2026-09-24 +件3，
-//! 后三事件），每条 hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
+//! 十二事件（PascalCase），每条 hook 二型——command 型 = 子进程脚本（stdin
+//! JSON / env / 退出码拦放行，任意事件）；prompt 型 = 提示词注入（LLM 执行
+//! 体，仅 Stop——turn 收尾后开新轮）。统一存储（2026-11-19）：会话钩子（agent
+//! `hooks` 工具写入）同住本文件的 scope 圈定组——`set` 写前持
+//! [`cc_hooks::lock_hooks_file`] 互斥，避免与工具 RMW 竞态。
 //!
 //! - `get`：读文件；**不存在 → 返回空模板而非错误**（fresh home 常态）。
 //!   文件存在但解析失败也照样返回原文 + `valid:false` + 错误详情 —— 用户
@@ -114,7 +116,10 @@ impl HooksHandler {
         workspace: &str,
         content: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 语义校验先于一切 IO（goal：校验失败不落盘）。
+        // 语义校验先于一切 IO（goal：校验失败不落盘）。校验 + 写入全程持
+        // hooks.json RMW 互斥——agent `hooks` 工具与 Dashboard 并发写同一
+        // 文件，读-改-写竞态靠这把闸封（bridge 侧热更只读，无竞态）。
+        let _guard = cc_hooks::lock_hooks_file();
         let events = cc_hooks::parse_cc_hooks(content)?;
         let path =
             nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));

@@ -146,7 +146,7 @@ fn parse_full_cc_format() {
 }
 
 #[test]
-fn parse_bare_top_level_and_ignores_unknown_type() {
+fn parse_bare_top_level_and_rejects_unknown_type() {
     // 裸顶层（无 "hooks" 外层）也要收——外层花括号还是得有（JSON 根必须是
     // 对象）。
     let ev =
@@ -154,12 +154,13 @@ fn parse_bare_top_level_and_ignores_unknown_type() {
     assert_eq!(ev.total_scripts(), 1);
     // 空 / 无已知事件 = 空配置。
     assert!(parse_cc_hooks("{}").expect("empty").is_empty());
-    // type != command 的跳过。
-    let ev = parse_cc_hooks(&hook_json(
-        "\"PreToolUse\":[{\"hooks\":[{\"type\":\"http\",\"command\":\"x\"},{\"command\":\"y\"}]}]",
+    // 未知 type = loud Err（统一存储重构：不再静默过滤——写错 type 的条目
+    // 消失得无声无息是旧实现的结构性缺陷；坏条目必须挡在加载/写盘前）。
+    let err = parse_cc_hooks(&hook_json(
+        "\"PreToolUse\":[{\"hooks\":[{\"type\":\"http\",\"command\":\"x\"}]}]",
     ))
-    .expect("mixed types");
-    assert_eq!(ev.total_scripts(), 1);
+    .expect_err("unknown type must be rejected");
+    assert!(err.contains("http"), "err={err}");
 }
 
 #[test]
@@ -995,7 +996,7 @@ async fn loop_integration_stop_block_forces_extra_rounds() {
 
 /// 永续循环 e2e（真 bus 链路）：Stop 提示词型钩子 → turn 完整收尾后注入
 /// 提示词开新轮（inbox 排队 → drain 重注入 → 正常闸门）→ 新轮结束钩点再
-/// 触发 → provider 在第 2 次调用时改写 hooks.session.json（模型「自删钩子」
+/// 触发 → provider 在第 2 次调用时改写 hooks.json（模型「自删钩子」
 /// 的自然刹车形态）→ 热更摘除 → 第 3 轮不再注入，循环收敛。
 /// 断言：LLM 恰 2 次调用、第 2 次入参含注入的提示词原文。
 ///
@@ -1009,24 +1010,17 @@ async fn loop_integration_prompt_hook_loops_until_hook_removed() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    // 会话侧：s-looptest 的 Stop prompt 钩子（永续提示词）。
-    let mut store = super::SessionHookStore::default();
-    store.hooks.insert(
-        "s-looptest".to_string(),
-        std::collections::BTreeMap::from([(
-            "Stop".to_string(),
-            vec![super::SessionHookEntry {
-                id: "h1".to_string(),
-                matcher: String::new(),
-                command: String::new(),
-                prompt: "继续检查代码是否正确，确认是否有问题".to_string(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    super::write_session_hook_store(&cfg, &store).expect("seed session store");
+    // 会话侧：s-looptest 的 Stop prompt 钩子（永续提示词；统一存储形态 =
+    // hooks.json 的工具专属圈定组）。
+    let seed_doc = serde_json::json!({
+        "hooks": { "Stop": [ {
+            "scope": { "sessions": ["s-looptest"] },
+            "hooks": [ { "type": "prompt", "prompt": "继续检查代码是否正确，确认是否有问题" } ]
+        } ] }
+    });
+    std::fs::write(cfg.join("hooks.json"), seed_doc.to_string()).expect("seed hooks.json");
 
-    /// call 1 → "r1"；call ≥ 2 → 清空 hooks.session.json（模型自删钩子）→
+    /// call 1 → "r1"；call ≥ 2 → 清空 hooks.json（模型自删钩子）→
     /// 返回对应轮次回复。记录每次 LLM 入参（共享句柄供测试断言）。
     struct SelfRemovingProvider {
         calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>>,
@@ -1047,9 +1041,10 @@ async fn loop_integration_prompt_hook_loops_until_hook_removed() {
                 c.len()
             };
             if n >= 2 {
-                // 模型「自删钩子」：存储清空 → 下轮 turn-end 热更摘除注入面。
-                super::write_session_hook_store(&self.config_dir, &Default::default())
-                    .expect("clear store");
+                // 模型「自删钩子」：hooks.json 清空 → 下轮 turn-end 热更摘除
+                // 注入面（生产形态 = 删工具专属圈定组，测试等价简化为清表）。
+                std::fs::write(self.config_dir.join(super::HOOKS_FILE), r#"{"hooks":{}}"#)
+                    .expect("clear hooks.json");
             }
             Ok(LlmResponse {
                 finish_reason: None,
@@ -1213,21 +1208,13 @@ async fn brake_fixture(
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    let mut store = super::SessionHookStore::default();
-    store.hooks.insert(
-        sid.to_string(),
-        std::collections::BTreeMap::from([(
-            "Stop".to_string(),
-            vec![super::SessionHookEntry {
-                id: "h1".to_string(),
-                matcher: String::new(),
-                command: String::new(),
-                prompt: "继续检查代码是否正确，确认是否有问题".to_string(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    super::write_session_hook_store(&cfg, &store).expect("seed session store");
+    let seed_doc = serde_json::json!({
+        "hooks": { "Stop": [ {
+            "scope": { "sessions": [sid] },
+            "hooks": [ { "type": "prompt", "prompt": "继续检查代码是否正确，确认是否有问题" } ]
+        } ] }
+    });
+    std::fs::write(cfg.join("hooks.json"), seed_doc.to_string()).expect("seed hooks.json");
 
     let calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<LlmMessage>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -2369,56 +2356,115 @@ fn alias_table_covers_dialect_write_subagent_web_tools() {
     assert!(mk("WebFetch").matches("web_fetch"));
 }
 
-/// 非 command 类型过滤必须覆盖全部 12 个事件组——
-/// 旧实现只遍历 8 组，PostToolUseFailure/SessionEnd/PreCompact/PostCompact
-/// 里 type 写错的条目照跑 command（「只认 command 类型」契约漏 4 组）。
+/// 未知 type 必须在全部 12 个事件组都 loud 拒绝——统一存储后 parse 是唯一
+/// 入口（Dashboard hooks.set 拒写 / 桥侧保旧 / RMW API 全走它），任何一组
+/// 漏校验 = 该组坏条目静默进执行面（旧实现只遍历 8 组的教训平移到新契约）。
+/// 逐事件单组文档各 parse 一次（单文档多组会在首个 Err 处短路，覆盖不到
+/// 其余组）。
 #[test]
-fn parse_filters_non_command_type_across_all_events() {
-    let typo = r#"[{"hooks":[{"type":"http","command":"echo should-not-run"}]}]"#;
-    let doc = format!(
-        r#"{{"hooks":{{"PostToolUseFailure":{typo},"SessionEnd":{typo},"PreCompact":{typo},"PostCompact":{typo}}}}}"#
+fn parse_rejects_unknown_type_across_all_events() {
+    for (event, _) in super::CcEvents::default().groups() {
+        let doc = hook_json(&format!(
+            "\"{event}\":[{{\"hooks\":[{{\"type\":\"http\",\"command\":\"echo should-not-run\"}}]}}]"
+        ));
+        let err = parse_cc_hooks(&doc)
+            .err()
+            .unwrap_or_else(|| panic!("unknown type must be rejected for event {event}"));
+        assert!(err.contains("http"), "event={event} err={err}");
+    }
+}
+
+/// 条目二型校验（防御手编坏 hooks.json）：双空拒 / 双非空混合拒 /
+/// prompt 型非 Stop 拒；command 型任意事件、prompt 型 Stop、空 type 内容
+/// 回填照常通过。
+#[test]
+fn parse_validates_hook_entry_shapes() {
+    let doc = |hook: serde_json::Value, event: &str| {
+        serde_json::json!({ "hooks": { event: [ { "hooks": [hook] } ] } }).to_string()
+    };
+
+    // 双空 = 没有执行体。
+    let err = parse_cc_hooks(&doc(serde_json::json!({"type":"command"}), "Stop"))
+        .err()
+        .unwrap();
+    assert!(err.contains("non-empty command"), "err={err}");
+
+    // 双非空混合（显式 type=command 带 prompt）= 语义未定，loud 拒绝。
+    let err = parse_cc_hooks(&doc(
+        serde_json::json!({"type":"command","command":"echo hi","prompt":"继续检查"}),
+        "Stop",
+    ))
+    .err()
+    .unwrap();
+    assert!(err.contains("must not carry prompt"), "err={err}");
+
+    // 空 type 双非空 = 无法回填，同罪。
+    let err = parse_cc_hooks(&doc(
+        serde_json::json!({"command":"a","prompt":"b"}),
+        "Stop",
+    ))
+    .err()
+    .unwrap();
+    assert!(err.contains("exactly one"), "err={err}");
+
+    // prompt 型非 Stop = 没有注入时机。
+    let err = parse_cc_hooks(&doc(
+        serde_json::json!({"type":"prompt","prompt":"x"}),
+        "PreToolUse",
+    ))
+    .err()
+    .unwrap();
+    assert!(err.contains("only valid on"), "err={err}");
+
+    // 合法形态：空 type 回填 command（任意事件）+ prompt 型 Stop。
+    assert!(
+        parse_cc_hooks(&doc(serde_json::json!({"command":"echo ok"}), "PreToolUse")).is_ok(),
+        "空 type 按内容回填 command"
     );
-    let ev = parse_cc_hooks(&doc).expect("parse");
-    assert_eq!(
-        ev.total_scripts(),
-        0,
-        "non-command hooks must be filtered in ALL event groups, got {:?}",
-        ev.script_counts()
+    assert!(
+        parse_cc_hooks(&doc(
+            serde_json::json!({"type":"prompt","prompt":"继续检查"}),
+            "Stop"
+        ))
+        .is_ok(),
+        "prompt 型 Stop 合法"
     );
 }
 
 // ---------------------------------------------------------------------------
-// 会话级钩子存储 + 冷启动矩阵 + 合并 e2e + purge（2026-11-16 批次三）
+// 会话圈定组（统一存储）+ 冷启动矩阵 + 合并 e2e + purge（2026-11-16 批次三，
+// 2026-11-19 统一存储重构：hooks.session.json 退役，会话钩子住 hooks.json
+// 的 scope 圈定组）
 // ---------------------------------------------------------------------------
 
-/// 预置 hooks.session.json（经 write_session_hook_store 单一写路径）。
-fn seed_session_store(cfg: &std::path::Path, sid: &str, event: &str, command: &str) {
-    let mut store = super::SessionHookStore::default();
-    store.hooks.insert(
-        sid.to_string(),
-        std::collections::BTreeMap::from([(
-            event.to_string(),
-            vec![super::SessionHookEntry {
-                id: "h1".to_string(),
-                matcher: String::new(),
-                command: command.to_string(),
-                prompt: String::new(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    super::write_session_hook_store(cfg, &store).expect("seed session store");
+/// 预置 hooks.json 的工具专属圈定组（统一存储形态：scope == [sid]）。
+fn seed_scoped_hook(cfg: &std::path::Path, sid: &str, event: &str, command: &str) {
+    std::fs::write(
+        cfg.join("hooks.json"),
+        hooks_doc_scoped(event, &[sid], command),
+    )
+    .expect("seed hooks.json");
 }
 
-/// 冷启动矩阵（load_from_dir 批次三语义）：
-/// - 双缺 → None（旧语义）
-/// - 只有 hooks.session.json 且有内容 → Some（会话钩子有桥，全局侧空）
-/// - hooks.json 坏 + 会话侧有内容 → Some（会话钩子不被全局坏文件拖累）
-/// - hooks.json 坏 + 会话侧无内容 → None（旧 fail-open 语义不变）
-/// - 双空（会话文件空壳 + 全局空脚本）→ None（旧「declares no scripts」）
+/// 快照里命中给定会话的 Stop 条目数（统一存储后 current_events 无会话参，
+/// 圈定过滤在 matches_session——测试侧按同一路径分账）。
+fn stop_hits_for(events: &super::CcEvents, session_key: &str) -> usize {
+    events
+        .stop
+        .iter()
+        .filter(|g| g.matches_session(session_key))
+        .map(|g| g.hooks.len())
+        .sum()
+}
+
+/// 冷启动矩阵（统一存储后回归单文件）：
+/// - 缺文件 → None（旧语义）
+/// - 只有会话圈定组且有内容 → Some（会话钩子有桥）
+/// - 坏文件 → None（fail-open；单文件世界里不再有第二文件兜底）
+/// - 空脚本 → None（旧「declares no scripts」）
 #[test]
-fn load_from_dir_cold_start_matrix_with_session_file() {
-    // ① 双缺 → None。
+fn load_from_dir_cold_start_matrix() {
+    // ① 缺文件 → None。
     let dir = tempdir();
     let cfg = dir.join("config");
     let proj = dir.join("ws");
@@ -2426,61 +2472,43 @@ fn load_from_dir_cold_start_matrix_with_session_file() {
     std::fs::create_dir_all(&proj).unwrap();
     assert!(
         CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none(),
-        "双缺 = 无桥（旧语义）"
+        "缺文件 = 无桥（旧语义）"
     );
 
-    // ② 只有 hooks.session.json 有内容 → Some。
-    seed_session_store(&cfg, "s-only", "Stop", "echo session-only");
+    // ② 只有会话圈定组 → Some。
+    seed_scoped_hook(&cfg, "s-only", "Stop", "echo session-only");
     let bridge =
-        CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("session file alone builds bridge");
-    // 会话侧钩子在 current_events 合并快照里可见。
-    let ev = bridge.current_events("agent:main:session:s-only");
-    assert_eq!(ev.stop.len(), 1, "会话级 Stop 钩子并入快照");
+        CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("scoped group alone builds bridge");
+    // 圈定组在快照里按 matches_session 过滤可见。
     assert_eq!(
-        bridge.current_events("agent:main:session:other").stop.len(),
+        stop_hits_for(&bridge.current_events(), "agent:main:session:s-only"),
+        1,
+        "会话圈定 Stop 钩子在快照中命中本会话"
+    );
+    assert_eq!(
+        stop_hits_for(&bridge.current_events(), "agent:main:session:other"),
         0
     );
 
-    // ③ hooks.json 坏 + 会话侧有内容 → Some（全局降级空 + warn）。
-    std::fs::write(cfg.join("hooks.json"), "{broken-global").unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone())
-        .expect("bad global + session content still builds bridge");
-    let ev = bridge.current_events("agent:main:session:s-only");
-    assert_eq!(ev.stop.len(), 1, "会话钩子不受全局坏文件拖累");
-    assert_eq!(ev.total_scripts(), 1, "全局侧坏 = 0 脚本");
-
-    // ④ hooks.json 坏 + 会话侧无内容 → None（旧 fail-open）。
-    let dir2 = tempdir();
-    let cfg2 = dir2.join("config");
-    let proj2 = dir2.join("ws");
-    std::fs::create_dir_all(&cfg2).unwrap();
-    std::fs::create_dir_all(&proj2).unwrap();
-    std::fs::write(cfg2.join("hooks.json"), "{broken").unwrap();
+    // ③ 坏文件 → None（fail-open，旧语义不变）。
+    std::fs::write(cfg.join("hooks.json"), "{broken").unwrap();
     assert!(
-        CcHookBridge::load_from_dir(&cfg2, proj2).is_none(),
-        "全局坏且无会话钩子 = None（旧语义）"
+        CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none(),
+        "坏文件 = None（fail-open）"
     );
 
-    // ⑤ 双空 → None（会话文件在场但空壳）。
-    let dir3 = tempdir();
-    let cfg3 = dir3.join("config");
-    let proj3 = dir3.join("ws");
-    std::fs::create_dir_all(&cfg3).unwrap();
-    std::fs::create_dir_all(&proj3).unwrap();
-    std::fs::write(cfg3.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
-    super::write_session_hook_store(&cfg3, &super::SessionHookStore::default()).unwrap();
+    // ④ 空脚本 → None。
+    std::fs::write(cfg.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
     assert!(
-        CcHookBridge::load_from_dir(&cfg3, proj3).is_none(),
-        "双空 = None（旧语义）"
+        CcHookBridge::load_from_dir(&cfg, proj).is_none(),
+        "空脚本 = None（旧语义）"
     );
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&dir2);
-    let _ = std::fs::remove_dir_all(&dir3);
 }
 
-/// 合并 e2e（真子进程）：hooks.json 全局钩子 + hooks.session.json 会话钩子
-/// 同触发——圈定会话两脚本都跑，其他会话只跑全局；工具写盘路径
-///（write_session_hook_store）→ 桥内容比对热更捡到。
+/// 合并 e2e（真子进程）：hooks.json 全局组 + 会话圈定组同触发——圈定会话
+/// 两脚本都跑，其他会话只跑全局；工具 RMW 写盘路径（add_session_hook，
+/// 统一存储的生产写入）→ 桥内容比对热更捡到。
 #[tokio::test]
 async fn merged_global_and_session_hooks_fire_per_session() {
     let dir = tempdir();
@@ -2489,28 +2517,25 @@ async fn merged_global_and_session_hooks_fire_per_session() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    // 全局钩子（无 scope）：PreToolUse 记 global。
-    std::fs::write(
-        cfg.join("hooks.json"),
-        hooks_doc(
-            "PreToolUse",
-            None,
-            &append_cmd(&proj.join("global.txt"), "global"),
-            None,
-        ),
-    )
-    .unwrap();
-    // 会话钩子（存储形态）：s-1 专属 PreToolUse 记 scoped。
-    seed_session_store(
-        &cfg,
-        "s-1",
-        "PreToolUse",
-        &append_cmd(&proj.join("scoped.txt"), "scoped"),
-    );
+    // 单文件两形态并存：全局组（无 scope）记 global；s-1 圈定组记 scoped。
+    let global_cmd = append_cmd(&proj.join("global.txt"), "global");
+    let scoped_cmd = append_cmd(&proj.join("scoped.txt"), "scoped");
+    let doc = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [
+                {"hooks": [{"type": "command", "command": global_cmd}]},
+                {
+                    "scope": {"sessions": ["s-1"]},
+                    "hooks": [{"type": "command", "command": scoped_cmd}]
+                }
+            ]
+        }
+    });
+    std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
 
-    // s-1 会话：全局 + 会话钩子都触发。
+    // s-1 会话：全局 + 会话圈定组都触发。
     use crate::hooks::ToolHook as _;
     let _ = bridge
         .pre_tool_use(&call_in_session("agent:main:session:s-1"))
@@ -2518,7 +2543,7 @@ async fn merged_global_and_session_hooks_fire_per_session() {
     let global = proj.join("global.txt");
     let scoped = proj.join("scoped.txt");
     assert!(global.exists(), "全局钩子对任意会话触发");
-    assert!(scoped.exists(), "会话钩子对圈定会话触发");
+    assert!(scoped.exists(), "会话圈定组对圈定会话触发");
 
     // 其他会话：只触发全局（删 marker 重跑对照）。
     std::fs::remove_file(&scoped).unwrap();
@@ -2528,16 +2553,21 @@ async fn merged_global_and_session_hooks_fire_per_session() {
     assert!(global.exists());
     assert!(
         !scoped.exists(),
-        "会话钩子对非圈定会话不得触发（session 维度圈定的核心语义）"
+        "圈定组对非圈定会话不得触发（session 维度圈定的核心语义）"
     );
 
-    // 热更：工具写盘路径（write_session_hook_store）→ 桥内容比对捡到。
-    seed_session_store(
+    // 热更：工具 RMW 写盘路径（add_session_hook）→ 桥内容比对捡到。
+    let id = super::add_session_hook(
         &cfg,
         "s-2",
         "PreToolUse",
-        &append_cmd(&proj.join("scoped.txt"), "hot"),
-    );
+        "",
+        &append_cmd(&scoped, "hot"),
+        "",
+        Some(60),
+    )
+    .expect("add session hook");
+    assert_eq!(id, "h1", "工具专属组 id 从 h1 起算");
     let _ = bridge
         .pre_tool_use(&call_in_session("agent:main:session:s-2"))
         .await;
@@ -2598,7 +2628,7 @@ async fn scoped_subagent_start_fires_only_for_matching_session() {
 }
 
 /// on_session_end 先分发（圈定 SessionEnd 钩子死前响最后一次）后 purge
-///（hooks.session.json 摘除该会话条目 + 内存态同步；其他会话保留）。
+///（hooks.json 摘除该会话圈定组 + 内存态同步；其他会话保留）。
 #[tokio::test]
 async fn session_end_fires_scoped_hook_then_purges_storage() {
     let dir = tempdir();
@@ -2607,46 +2637,35 @@ async fn session_end_fires_scoped_hook_then_purges_storage() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    // 会话侧：s-gone 条目 + s-keep 条目（对照）——一次写入（存储写路径
-    // 是整表覆写，分次写后者胜）。
-    {
-        let mut store = super::SessionHookStore::default();
-        let entry = |cmd: &str| super::SessionHookEntry {
-            id: "h1".to_string(),
-            matcher: String::new(),
-            command: cmd.to_string(),
-            prompt: String::new(),
-            timeout: Some(60),
-        };
-        store.hooks.insert(
-            "s-gone".to_string(),
-            std::collections::BTreeMap::from([("Stop".to_string(), vec![entry("echo gone-hook")])]),
-        );
-        store.hooks.insert(
-            "s-keep".to_string(),
-            std::collections::BTreeMap::from([("Stop".to_string(), vec![entry("echo keep-hook")])]),
-        );
-        super::write_session_hook_store(&cfg, &store).expect("seed session store");
-    }
-
-    // 桥在（SessionEnd 钩子经 hooks.json——圈定到 s-gone 的组）。
-    std::fs::write(
-        cfg.join("hooks.json"),
-        hooks_doc_scoped(
-            "SessionEnd",
-            &["s-gone"],
-            &append_cmd(&proj.join("end.txt"), "end"),
-        ),
-    )
-    .unwrap();
+    // 单文件三组：SessionEnd 圈定 s-gone（死前响）+ Stop 圈定 s-gone +
+    // Stop 圈定 s-keep（对照）。
+    let end_cmd = append_cmd(&proj.join("end.txt"), "end");
+    let doc = serde_json::json!({
+        "hooks": {
+            "SessionEnd": [
+                {
+                    "scope": {"sessions": ["s-gone"]},
+                    "hooks": [{"type": "command", "command": end_cmd}]
+                }
+            ],
+            "Stop": [
+                {
+                    "scope": {"sessions": ["s-gone"]},
+                    "hooks": [{"type": "command", "command": "echo gone-hook"}]
+                },
+                {
+                    "scope": {"sessions": ["s-keep"]},
+                    "hooks": [{"type": "command", "command": "echo keep-hook"}]
+                }
+            ]
+        }
+    });
+    std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
 
-    // purge 前快照可见。
+    // purge 前快照可见（matches_session 过滤分账）。
     assert_eq!(
-        bridge
-            .current_events("agent:main:session:s-gone")
-            .stop
-            .len(),
+        stop_hits_for(&bridge.current_events(), "agent:main:session:s-gone"),
         1
     );
 
@@ -2655,34 +2674,27 @@ async fn session_end_fires_scoped_hook_then_purges_storage() {
         .await;
 
     // ① SessionEnd 圈定钩子死前触发。
-    let end_marker = proj.join("end.txt");
-    assert!(end_marker.exists(), "SessionEnd 钩子在 purge 前响最后一次");
+    assert!(
+        proj.join("end.txt").exists(),
+        "SessionEnd 钩子在 purge 前响最后一次"
+    );
 
-    // ② 存储 purge：s-gone 摘除、s-keep 保留。
-    let store = super::read_session_hook_store(&cfg);
-    assert!(!store.hooks.contains_key("s-gone"), "死者条目应摘除");
-    assert!(store.hooks.contains_key("s-keep"), "活者条目保留");
-
-    // ③ 内存态同步：purge 后快照不再含 s-gone（无需等热更重解析）。
+    // ② 内存态同步：purge 后快照不再含 s-gone（无需等热更重解析）。
     assert_eq!(
-        bridge
-            .current_events("agent:main:session:s-gone")
-            .stop
-            .len(),
+        stop_hits_for(&bridge.current_events(), "agent:main:session:s-gone"),
         0,
         "purge 后内存快照即时摘除"
     );
     assert_eq!(
-        bridge
-            .current_events("agent:main:session:s-keep")
-            .stop
-            .len(),
-        1
+        stop_hits_for(&bridge.current_events(), "agent:main:session:s-keep"),
+        1,
+        "其他会话的圈定组保留"
     );
 
-    // ④ 磁盘上确实无 s-gone（热更重解析也回不来）。
-    let text = std::fs::read_to_string(cfg.join("hooks.session.json")).unwrap();
+    // ③ 磁盘上确实无 s-gone（热更重解析也回不来）；s-keep 仍在。
+    let text = std::fs::read_to_string(cfg.join("hooks.json")).unwrap();
     assert!(!text.contains("s-gone"));
+    assert!(text.contains("s-keep"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2698,113 +2710,13 @@ fn test_resolve_hook_timeout_zero_falls_back_to_default() {
 }
 
 // ---------------------------------------------------------------------------
-// 提示词型钩子（LLM 执行体，2026-11-18 HOOK 执行 LLM goal）
+// 提示词型钩子（type=prompt 条目，LLM 执行体；统一存储后就是 Stop 事件里
+// 的 prompt 型 hook——方言校验矩阵见 parse_validates_hook_entry_shapes）
 // ---------------------------------------------------------------------------
 
-/// session_store_to_prompt_hooks：只收 Stop 下 prompt 非空条目，按存储序；
-/// command 型条目与其他事件下的条目一概不收。
-#[test]
-fn prompt_hooks_extraction_stop_only_in_order() {
-    let e = |id: &str, command: &str, prompt: &str| super::SessionHookEntry {
-        id: id.to_string(),
-        matcher: String::new(),
-        command: command.to_string(),
-        prompt: prompt.to_string(),
-        timeout: Some(60),
-    };
-    let mut per_event = std::collections::BTreeMap::new();
-    per_event.insert(
-        "Stop".to_string(),
-        vec![
-            e("h1", "echo shell-1", ""),         // command 型 → 不收
-            e("h2", "", "继续检查代码是否正确"), // prompt 型 → 收
-            e("h3", "", "复查边界条件"),         // prompt 型 → 收（按序）
-            e("h4", "echo shell-2", "  "),       // prompt 纯空白 = command 型 → 不收
-        ],
-    );
-    per_event.insert(
-        "PreToolUse".to_string(),
-        vec![e("h5", "", "不该出现在别的事件")], // 非 Stop → 不收
-    );
-    let prompts = super::session_store_to_prompt_hooks(&per_event);
-    assert_eq!(
-        prompts,
-        vec![
-            "继续检查代码是否正确".to_string(),
-            "复查边界条件".to_string()
-        ]
-    );
-    // 无 Stop 槽 = 空。
-    let mut no_stop = std::collections::BTreeMap::new();
-    no_stop.insert(
-        "PreToolUse".to_string(),
-        vec![e("h1", "", "prompt elsewhere")],
-    );
-    assert!(super::session_store_to_prompt_hooks(&no_stop).is_empty());
-}
-
-/// session_store_to_events（shell 方言投影）：prompt 型条目不进 CcEvents
-///（shell 执行路径不认识它）——同 store 双投影分离。
-#[test]
-fn session_store_events_projection_skips_prompt_entries() {
-    let e = |id: &str, command: &str, prompt: &str| super::SessionHookEntry {
-        id: id.to_string(),
-        matcher: String::new(),
-        command: command.to_string(),
-        prompt: prompt.to_string(),
-        timeout: Some(60),
-    };
-    let mut per_event = std::collections::BTreeMap::new();
-    per_event.insert(
-        "Stop".to_string(),
-        vec![e("h1", "echo shell", ""), e("h2", "", "prompt hook")],
-    );
-    let events = super::session_store_to_events("s1", &per_event);
-    assert_eq!(events.stop.len(), 1, "prompt 条目不进 shell 方言");
-    assert_eq!(events.stop[0].hooks[0].command, "echo shell");
-}
-
-/// parse_session_hook_store 条目校验（防御手编坏文件）：双空拒 / 混合
-/// （command+prompt 双非空）拒 / prompt 型非 Stop 拒；command 型任意事件
-/// 与 prompt 型 Stop 照常通过。
-#[test]
-fn parse_store_validates_entry_shapes() {
-    let entry = |command: &str, prompt: &str| {
-        format!(
-            r#"{{"id":"h1","matcher":"","command":"{command}","prompt":"{prompt}","timeout":60}}"#
-        )
-    };
-    let doc = |event: &str, entry_json: &str| {
-        format!(r#"{{"hooks":{{"s1":{{"{event}":[{entry_json}]}}}}}}"#)
-    };
-
-    // 双空 = 没有执行体。
-    let err = super::parse_session_hook_store(&doc("Stop", &entry("", "  ")))
-        .err()
-        .unwrap();
-    assert!(err.contains("non-empty command or prompt"), "err={err}");
-
-    // 混合（双非空）= 语义未定，loud 拒绝（ Exactly one 契约，与工具写入
-    // 路径同源）。
-    let err = super::parse_session_hook_store(&doc("Stop", &entry("echo hi", "继续检查")))
-        .err()
-        .unwrap();
-    assert!(err.contains("both command and prompt"), "err={err}");
-
-    // prompt 型非 Stop = 没有注入时机。
-    let err = super::parse_session_hook_store(&doc("PreToolUse", &entry("", "x")))
-        .err()
-        .unwrap();
-    assert!(err.contains("only valid on Stop"), "err={err}");
-
-    // 合法形态：command 型任意事件 + prompt 型 Stop。
-    assert!(super::parse_session_hook_store(&doc("PreToolUse", &entry("echo ok", ""))).is_ok());
-    assert!(super::parse_session_hook_store(&doc("Stop", &entry("", "继续检查"))).is_ok());
-}
-
-/// 桥级 e2e：seed hooks.session.json（prompt 条目）→ load_from_dir →
-/// on_turn_end 返回 Inject（prompt 文本按序拼接）；无 prompt 钩子的会话
-/// 照常 Stop。
+/// 桥级 e2e：hooks.json 圈定 Stop 组混排（1 command + 2 prompt）→
+/// load_from_dir → on_turn_end：shell 先跑（marker 计数），prompt 按存储序
+/// 拼接 Inject；无钩子会话照常 Stop。
 #[tokio::test]
 async fn bridge_turn_end_injects_seeded_prompt_hook() {
     let dir = tempdir();
@@ -2813,30 +2725,22 @@ async fn bridge_turn_end_injects_seeded_prompt_hook() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    let mut store = super::SessionHookStore::default();
-    store.hooks.insert(
-        "s-loop".to_string(),
-        std::collections::BTreeMap::from([(
-            "Stop".to_string(),
-            vec![
-                super::SessionHookEntry {
-                    id: "h1".to_string(),
-                    matcher: String::new(),
-                    command: String::new(),
-                    prompt: "继续检查代码".to_string(),
-                    timeout: Some(60),
-                },
-                super::SessionHookEntry {
-                    id: "h2".to_string(),
-                    matcher: String::new(),
-                    command: String::new(),
-                    prompt: "确认没有问题".to_string(),
-                    timeout: Some(60),
-                },
-            ],
-        )]),
-    );
-    super::write_session_hook_store(&cfg, &store).expect("seed");
+    let marker = proj.join("turn_end.txt");
+    let doc = serde_json::json!({
+        "hooks": {
+            "Stop": [
+                {
+                    "scope": {"sessions": ["s-loop"]},
+                    "hooks": [
+                        {"type": "command", "command": append_cmd(&marker, "shell")},
+                        {"type": "prompt", "prompt": "继续检查代码"},
+                        {"type": "prompt", "prompt": "确认没有问题"}
+                    ]
+                }
+            ]
+        }
+    });
+    std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
     let mk_end = |key: &str| HookTurnEnd {
@@ -2856,6 +2760,13 @@ async fn bridge_turn_end_injects_seeded_prompt_hook() {
         }
         other => panic!("expected Inject, got {other:?}"),
     }
+    // 同一 on_turn_end 里 shell 先行：混排组的 command 条目真跑了（一次）。
+    assert_eq!(
+        marker_lines(&marker),
+        1,
+        "混排组内 command 条目先于注入执行"
+    );
+
     // 无钩子会话照常 Stop。
     assert_eq!(
         bridge
@@ -2867,7 +2778,7 @@ async fn bridge_turn_end_injects_seeded_prompt_hook() {
 }
 
 /// 优先级：shell Stop 钩子拦截（exit 2 → Continue）压过 prompt 注入
-///——shell 全放行后才查 prompt 表。
+///——shell 全放行后才查 prompt 条目（同一 hooks.json 内两型并存）。
 #[tokio::test]
 async fn shell_continue_takes_precedence_over_prompt_inject() {
     let dir = tempdir();
@@ -2876,30 +2787,24 @@ async fn shell_continue_takes_precedence_over_prompt_inject() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    // 全局 hooks.json：一个永远 exit 2 的 Stop shell 钩子（桥自己负责
-    // cmd/sh 包裹——hooks_doc 只给命令串）。
+    // 同一 hooks.json：全局组永远 exit 2 的 Stop shell 钩子（桥自己负责
+    // cmd/sh 包裹）+ s-mix 圈定 prompt 组。
     #[cfg(windows)]
     let cmd = "cmd /c exit 2".to_string();
     #[cfg(not(windows))]
     let cmd = "exit 2".to_string();
-    std::fs::write(cfg.join("hooks.json"), hooks_doc("Stop", None, &cmd, None)).unwrap();
-
-    // 会话侧：prompt 钩子。
-    let mut store = super::SessionHookStore::default();
-    store.hooks.insert(
-        "s-mix".to_string(),
-        std::collections::BTreeMap::from([(
-            "Stop".to_string(),
-            vec![super::SessionHookEntry {
-                id: "h1".to_string(),
-                matcher: String::new(),
-                command: String::new(),
-                prompt: "不该被注入".to_string(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    super::write_session_hook_store(&cfg, &store).expect("seed");
+    let doc = serde_json::json!({
+        "hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": cmd}]},
+                {
+                    "scope": {"sessions": ["s-mix"]},
+                    "hooks": [{"type": "prompt", "prompt": "不该被注入"}]
+                }
+            ]
+        }
+    });
+    std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
     let end = HookTurnEnd {
@@ -2919,7 +2824,8 @@ async fn shell_continue_takes_precedence_over_prompt_inject() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// purge_session_hooks 同步摘 prompt 表（会话死后注入面即时消失）。
+/// purge_session_hooks 同步摘 prompt 注入面（会话死后注入即时消失；统一
+/// 存储下内存态同步反映盘上摘除结果）。
 #[tokio::test]
 async fn purge_removes_prompt_hooks_from_bridge_memory() {
     let dir = tempdir();
@@ -2928,21 +2834,17 @@ async fn purge_removes_prompt_hooks_from_bridge_memory() {
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
 
-    let mut store = super::SessionHookStore::default();
-    store.hooks.insert(
-        "s-doomed".to_string(),
-        std::collections::BTreeMap::from([(
-            "Stop".to_string(),
-            vec![super::SessionHookEntry {
-                id: "h1".to_string(),
-                matcher: String::new(),
-                command: String::new(),
-                prompt: "永远循环".to_string(),
-                timeout: Some(60),
-            }],
-        )]),
-    );
-    super::write_session_hook_store(&cfg, &store).expect("seed");
+    let doc = serde_json::json!({
+        "hooks": {
+            "Stop": [
+                {
+                    "scope": {"sessions": ["s-doomed"]},
+                    "hooks": [{"type": "prompt", "prompt": "永远循环"}]
+                }
+            ]
+        }
+    });
+    std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
     let end = HookTurnEnd {
