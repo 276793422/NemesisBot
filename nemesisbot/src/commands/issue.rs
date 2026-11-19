@@ -105,9 +105,12 @@ fn resolve_issue_id(store: &BoardStore, spec: &str) -> Result<i64> {
     if let Ok(id) = trimmed.parse::<i64>() {
         return Ok(id);
     }
-    let issue = store
-        .get_issue_by_number(trimmed)
-        .map_err(|_| anyhow::anyhow!("找不到 issue: {trimmed}（支持编号 NB-1 或数字 id）"))?;
+    let issue = store.get_issue_by_number(trimmed).map_err(|e| {
+        // store 错误原文透传（dossier.rs 同款形态）：not-found 时 store
+        // 自述「issue NB-9 not found」，真 store 错误（BUSY/库损坏/行反
+        // 序列化）带真实根因——此前 |_| 把任何失败都捏造成「找不到」。
+        anyhow::anyhow!("读取 issue {trimmed} 失败: {e}（支持编号 NB-1 或数字 id）")
+    })?;
     Ok(issue.id)
 }
 
