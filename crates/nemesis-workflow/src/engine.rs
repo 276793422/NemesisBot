@@ -1554,27 +1554,33 @@ impl WorkflowEngine {
 
     /// Resolve a chat URL index back to a workflow name. O(n) scan — fine for
     /// realistic workflow counts. 16-hex (current) indexes match exactly;
-    /// legacy 8-hex indexes match by prefix — and an ambiguous prefix
-    /// (multiple registered workflows share those 8 hex chars) refuses the
+    /// legacy 8-hex indexes match by prefix — and an ambiguous match
+    /// (multiple registered workflows share the index or prefix) refuses the
     /// resolution instead of silently picking one: a wrong pick would route
     /// chat messages and passwords to the wrong workflow. Returns None if no
-    /// registered workflow's chat_index matches (or the prefix is ambiguous).
+    /// registered workflow's chat_index matches (or the match is ambiguous).
     pub fn workflow_by_chat_index(&self, index: &str) -> Option<String> {
         let lower = index.to_lowercase();
-        if lower.len() == 16 {
-            // Canonical form: exact match only.
-            return self
-                .workflows
-                .iter()
-                .find(|e| Self::chat_index(e.key()) == lower)
-                .map(|e| e.key().clone());
-        }
-        if lower.len() != 8 {
+        if lower.len() != 16 && lower.len() != 8 {
             return None;
         }
+        // Ambiguity is refused for BOTH forms (BUG-20261120-004): a wrong
+        // pick would route chat messages and passwords to the wrong workflow.
+        // For the 16-hex exact arm this is reachable — the index input is
+        // lowercased, so two workflow names differing only in case share the
+        // *same* 16-hex index deterministically (a normalization collision,
+        // not a hash birthday collision — the 64-bit width does not help).
+        // Registration deliberately allows both names (the map key is
+        // case-sensitive), so the exact arm can see multiple matches and must
+        // not silently pick whichever entry the registry yields first.
         let mut matched: Option<String> = None;
         for entry in self.workflows.iter() {
-            if Self::chat_index(entry.key()).starts_with(&lower) {
+            let hit = if lower.len() == 16 {
+                Self::chat_index(entry.key()) == lower
+            } else {
+                Self::chat_index(entry.key()).starts_with(&lower)
+            };
+            if hit {
                 if matched.is_some() {
                     return None;
                 }
