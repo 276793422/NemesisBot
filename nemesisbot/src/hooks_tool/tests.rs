@@ -1,7 +1,7 @@
 //! hooks 工具单元测试：解析（合法/非法/event 枚举/timeout 类型/prompt 型
 //! 校验）、CRUD 落盘形态（统一存储——工具专属圈定组 scope.sessions == [sid]，
 //! id 跨事件递增）、schema 无 session 参数（只能给自己设的结构保证）、
-//! operation_override 投影（list=internal）、min_tier、桥在/不在的生效文案、
+//! operation_override 投影（list=internal）、min_tier、即刻生效文案（2026-11-20 桥恒在）、
 //! tier 白名单成员、孤儿对账函数。
 //!
 //! 测试访问边界（外部 crate）：只用 cc_hooks pub API（list_session_hooks /
@@ -16,14 +16,7 @@ fn tempdir() -> std::path::PathBuf {
 }
 
 fn tool(config_dir: &std::path::Path) -> HooksTool {
-    HooksTool::new(config_dir.to_path_buf(), None)
-}
-
-fn tool_with_bridge(config_dir: &std::path::Path) -> HooksTool {
-    let bridge =
-        nemesis_agent::cc_hooks::CcHookBridge::from_json(r#"{"hooks":{}}"#, std::env::temp_dir())
-            .expect("empty bridge");
-    HooksTool::new(config_dir.to_path_buf(), Some(std::sync::Arc::new(bridge)))
+    HooksTool::new(config_dir.to_path_buf())
 }
 
 /// 主会话形态的 ctx（web 键 `agent:main:session:<sid>`）。
@@ -473,21 +466,18 @@ async fn empty_session_key_is_honest_error() {
 }
 
 #[tokio::test]
-async fn bridge_presence_switches_activation_wording() {
+async fn activation_note_immediate_effect_wording() {
+    // 2026-11-20 即刻生效语义：桥恒在（load_from_dir 缺失/坏文件也建桥
+    // 待命）——add 响应恒「落盘即热更」，无「重启 Agent」分支文案。
     let cfg = tempdir();
     let ctx = ctx_main("s-word");
-    let cold = tool(&cfg);
-    let out = add(&cold, &ctx, "Stop", "echo x").await;
+    let t = tool(&cfg);
+    let out = add(&t, &ctx, "Stop", "echo x").await;
+    assert!(out.contains("下条消息起生效"), "即刻生效文案\n{out}");
     assert!(
-        out.contains("重启 Agent 后生效"),
-        "冷启动无桥诚实降级\n{out}"
+        !out.contains("重启"),
+        "无重启分支（旧冷启动文案退役）\n{out}"
     );
-
-    // 同目录换桥在形态：落盘即热更文案（bridge 不实际读盘——文案语义）。
-    let warm = tool_with_bridge(&cfg);
-    let out = add(&warm, &ctx, "Stop", "echo y").await;
-    assert!(out.contains("下条消息起生效"), "桥在 = 即时生效文案\n{out}");
-    assert!(!out.contains("重启"));
 }
 
 // ---------------------------------------------------------------------------

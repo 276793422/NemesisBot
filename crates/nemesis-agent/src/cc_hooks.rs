@@ -56,10 +56,12 @@
 //! `nemesis_path::resolve_hooks_config_path_in_workspace`）。原先游离在
 //! `<home>/config/hooks.json`——08-28 路径大迁移的漏网项；读取方启动时经
 //! `migrate_legacy_home_hooks_config` 一次性 copy-once 迁移（legacy 保留
-//! 作备份）。网关主 agent 工厂（`agent_factory.rs`）启动时若存在则加载并注册
-//! （[`CcHookBridge::load_from_dir`]）；**集群 agent 不挂**（远端节点跑的是
-//! 本地用户的任务，hook 拦截语义不该跨节点复制——挂账决策，报告注明）。
-//! 解析失败 = warn + 跳过（fail-open，绝不拖死 gateway）。
+//! 作备份）。网关主 agent 工厂（`agent_factory.rs`）启动即加载并注册
+//! （[`CcHookBridge::load_from_dir`] **恒建桥**——缺失/零条目/坏文件也建
+//! 桥待命，首个钩子落盘即被热更闸捡到，即刻生效无需重启）；**集群 agent
+//! 不挂**（远端节点跑的是本地用户的任务，hook 拦截语义不该跨节点复制——
+//! 挂账决策，报告注明）。解析失败 = warn + 空快照待命（fail-open，绝不
+//! 拖死 gateway）。
 //!
 //! # 统一存储（2026-11-19 重构）
 //!
@@ -406,6 +408,10 @@ impl CcEvents {
             .sum()
     }
 
+    /// 仅测试面使用（断言「空快照/待命桥」形态）——生产代码不读它（恒建桥
+    /// 后生产空态走 events 内部惰性热更，无需查询）。cfg(test) 防 lib 视角
+    /// dead_code 告警；crate 内 cc_hooks/tests.rs + cov_tests.rs 在用。
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.total_scripts() == 0
     }
@@ -1221,7 +1227,8 @@ impl ScriptOutcome {
 /// [`LifecycleHook`]（SessionStart/UserPromptSubmit/Stop）。
 ///
 /// **热更（hooks）**：盘上加载的桥（经
-/// [`Self::load_from_dir`]）在每次分发入口惰性检查 hooks.json 的内容，
+/// [`Self::load_from_dir`]，**恒建桥**——启动时文件缺失/空/坏也建桥待命）
+/// 在每次分发入口惰性检查 hooks.json 的内容，
 /// 变化即重新解析并原子换装——保存即下条消息生效，无需重启 Agent。语义：
 /// 解析失败保留旧配置（fail-open 保旧，坏文件不炸会话）；文件清空/消失 =
 /// 换装为空 = 事实注销（与启动态「没有 hooks.json = 没配」同一语义）。纯
@@ -1262,52 +1269,71 @@ impl CcHookBridge {
         })
     }
 
-    /// 从 config 目录加载。hooks.json 在场且有条目（command/prompt 皆算，
-    /// [`CcEvents::is_empty`]）→ 建桥；缺失/零条目 → None（静默，正常态，
-    /// HookView 冷启动提示即此）；在场但解析失败 → warn + None（fail-open，
-    /// 不拖死 gateway）。桥在场 = 统一存储热更闸在场：agent `hooks` 工具写
-    /// hooks.json 后下次分发内容比对即生效；桥缺席（此前无任何钩子）时
-    /// 工具侧诚实提示「重启后生效」。
-    pub fn load_from_dir(config_dir: &Path, project_dir: PathBuf) -> Option<Arc<Self>> {
+    /// 从 config 目录加载。**恒建桥**（2026-11-20 即刻生效语义；原「缺/空/坏
+    /// → None = 无热更载体，重启建桥」语义退役——hook 点是真实钩点，设置
+    /// 必须即刻生效或失效，不该要求重启）：hooks.json 缺失/零条目/解析失败
+    /// 也建桥待命——空快照起步 + [`Self::hooks_path`] 记账，内容完全交由
+    /// 分发入口 [`Self::current_events`] 惰性热更（每次分发读文件比对）。
+    /// 此后任何通道的首个钩子（Dashboard `hooks.set` / agent `hooks` 工具 /
+    /// 手工编辑）都在下次分发即刻生效，不存在「重启建桥」中间态；文件清空/
+    /// 消失同样即刻失效（换装空快照）。
+    ///
+    /// 日志口径：缺失 = 静默（绝大多数部署的常态，不打扰）；可解析（含零
+    /// 条目，info 文案带 `0 script(s)`）= info 一条；解析失败 = warn + 空快照
+    /// 待命（fail-open 不拖死 gateway；坏文已记 [`Self::seen_raw`]，同版只
+    /// warn 一次，用户改好后下次分发自动激活）。
+    ///
+    /// 代价注记：桥恒在 = 每次工具/生命周期分发多一次 hooks.json 小文件读
+    /// （内容比对热更闸）；与「有钩子部署」同价，换即刻生效语义。
+    pub fn load_from_dir(config_dir: &Path, project_dir: PathBuf) -> Arc<Self> {
         let path = config_dir.join(HOOKS_FILE);
-        let text = nemesis_utils::fsutil::read_config_string(&path).ok();
-        let empty_or_bad = text
-            .as_deref()
-            .is_none_or(|t| parse_cc_hooks(t).map(|e| e.is_empty()).unwrap_or(true));
-        if empty_or_bad {
-            if let Some(t) = &text {
-                // 在场但空/坏：区分日志（坏 = warn 保旧语义；空 = info）。
-                if parse_cc_hooks(t).is_err() {
-                    tracing::warn!(
-                        "[cc-hooks] failed to parse {} — hooks DISABLED (fail-open): 不可解析",
-                        path.display()
-                    );
-                } else {
-                    tracing::info!(
-                        "[cc-hooks] {} loaded but declares no scripts",
-                        path.display()
-                    );
-                }
+        let Some(text) = nemesis_utils::fsutil::read_config_string(&path).ok() else {
+            // 缺失：空快照待命（seen_raw=None；文件首次落盘即被内容比对捡到）。
+            return Arc::new(Self::armed(project_dir, path, None));
+        };
+        let events = match parse_cc_hooks(&text) {
+            Ok(events) => {
+                tracing::info!(
+                    "[cc-hooks] loaded {} script(s) from {} — {:?}",
+                    events.total_scripts(),
+                    path.display(),
+                    events.script_counts()
+                );
+                events
             }
-            return None;
-        }
-        // 到这里文件在场、非空、可解析（上一分支已筛掉其余形态）。
-        let events = parse_cc_hooks(text.as_deref().expect("text checked above"))
-            .expect("parseable — screened above");
-        tracing::info!(
-            "[cc-hooks] loaded {} script(s) from {} — {:?}",
-            events.total_scripts(),
-            path.display(),
-            events.script_counts()
-        );
-        Some(Arc::new(Self {
+            Err(_) => {
+                tracing::warn!(
+                    "[cc-hooks] failed to parse {} — hooks DISABLED until the file parses (fail-open)",
+                    path.display()
+                );
+                // 解析失败：空快照待命，seen_raw 记坏文（同版只 warn 一次；
+                // 用户改好后内容再变，下次分发自动激活）。
+                return Arc::new(Self::armed(project_dir, path, Some(text)));
+            }
+        };
+        Arc::new(Self {
             events: RwLock::new(events),
             hooks_path: Some(path),
-            seen_raw: Mutex::new(text),
+            seen_raw: Mutex::new(Some(text)),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
-        }))
+        })
+    }
+
+    /// 冷启动/坏文件待命桥：空快照 + hooks_path 记账——热更入口
+    /// （[`Self::current_events`]）从这份记账出发捡到后续落盘的任何内容。
+    /// `seen` 语义与启动时文件形态对齐：缺失 = `None`、坏文 = `Some(坏文)`
+    /// （同版坏文件不再重复 warn）。
+    fn armed(project_dir: PathBuf, path: PathBuf, seen: Option<String>) -> Self {
+        Self {
+            events: RwLock::new(CcEvents::default()),
+            hooks_path: Some(path),
+            seen_raw: Mutex::new(seen),
+            project_dir,
+            seen_sessions: Mutex::new(HashSet::new()),
+            stop_blocks: Mutex::new(HashMap::new()),
+        }
     }
 
     /// 挂到 AgentLoop（工具钩子 + 生命周期钩子一起）。
