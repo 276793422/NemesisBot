@@ -1445,7 +1445,9 @@ pub(crate) async fn run_runtime(
     // 每 6 小时一次，7 天 TTL）。uploads 是 temp 语义；被清扫文件的历史引用
     // 由 T6 水合层诚实降级 `[图片已失效]`，不依赖此处。路径唯一真相源
     // nemesis-path resolve_uploads_dir_in_workspace。
-    nemesis_web::handlers::upload::spawn_uploads_sweeper();
+    nemesis_web::handlers::upload::spawn_uploads_sweeper(
+        crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
+    );
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
     // M7/M8（2026-10-27 整改批次三）：logs 十六族统一 TTL 清扫（session_logs /
@@ -1543,7 +1545,9 @@ pub(crate) async fn run_runtime(
                 delivered
             },
         )));
-        nemesis_web::handlers::sessions::spawn_snooze_sweeper();
+        nemesis_web::handlers::sessions::spawn_snooze_sweeper(
+            crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
+        );
         info!("[Gateway] snooze sweeper started (10s interval, replay hook armed)");
     }
 

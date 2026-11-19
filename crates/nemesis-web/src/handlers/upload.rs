@@ -264,10 +264,28 @@ pub fn sweep_uploads_older_than(uploads_dir: &std::path::Path, max_age: Duration
 /// 项目目录两棵树都扫——项目会话的资产区根 = 项目目录）——同一 TTL 语义。
 /// 目录列表每轮重枚举（运行期新建的会话 home 也要进清扫；每 6h 一次的
 /// 枚举成本可忽略）。
-pub fn spawn_uploads_sweeper() {
+///
+/// `shutdown` = gateway 终态令牌（runtime.rs 传
+/// `shutdown::terminal_cancel_token().clone()`）。BUG-20261119-208：本循环
+/// 是 BUG-20261115-023 停机家族的 nemesis-web 侧漏网成员（023 横扫只扫了
+/// nemesisbot crate）——裸 timer park 无停机臂，gateway Step 24
+/// `cancel_terminal_tasks()` 后五个已收口循环退出了，本循环还会在 6h park
+/// 上继续活着并在排空窗内做 FS 清扫。等待点换装同族契约：前置
+/// `is_cancelled` 检查（预取消零工作）+ select 令牌优先于 tick（取消后
+/// 确定性退出，不 re-park）。
+/// 返回任务 JoinHandle（生产调用点丢弃 = detach，令牌承担停机收口；
+/// 测试用 join 断言退出时序）。
+pub fn spawn_uploads_sweeper(
+    shutdown: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let workspace = nemesis_path::default_path_manager().workspace();
         loop {
+            // 前置取消检查：收口语义优先于最后一拍工作量（预取消形态连
+            // 目录枚举都不做）。
+            if shutdown.is_cancelled() {
+                break;
+            }
             let mut dirs: Vec<PathBuf> =
                 vec![nemesis_path::resolve_uploads_dir_in_workspace(&workspace)];
             // 主 workspace 的会话 home 树 + 各注册项目目录的会话 home 树
@@ -300,9 +318,14 @@ pub fn spawn_uploads_sweeper() {
             }
             let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
             interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
-            interval.tick().await;
+            // BUG-20261119-208：等待点换装——令牌取消优先于 6h park，取消后
+            // 确定性退出（裸 park 跨停机排空窗 = BUG-20261115-023 家族形态）。
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {}
+            }
         }
-    });
+    })
 }
 
 #[cfg(test)]
