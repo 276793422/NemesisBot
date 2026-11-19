@@ -31,6 +31,8 @@ use anyhow::Result;
 use nemesis_services::LifecycleService;
 use tracing::{error, info, warn};
 
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 use super::GatewayCtx;
 use super::print_agent_startup_info;
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -73,6 +75,12 @@ pub(crate) async fn init_services(
     web_port: i64,
     bridge_client_launch: Option<nemesis_config::BridgeClientConfig>,
     agent_adapter: Arc<crate::adapters::AgentLoopServiceAdapter>,
+    // BUG-20261119-194：通道管理器句柄（init_web 装配、注册完成）。
+    // `start_all` 在 Step 14b（agent 订阅 bus inbound）之后调用——
+    // 通道 polling 是 inbound 生产者，先于订阅上线会让启动期拉到的
+    // 消息 publish 进零订阅者 broadcast = 永久丢失（telegram offset
+    // 先推进使丢失不可重拉）。
+    channel_manager: Arc<nemesis_channels::manager::ChannelManager>,
     initial_tool_count: usize,
     cluster_handoff: ClusterHandoff,
 ) -> Result<ServicesWiring> {
@@ -420,13 +428,32 @@ pub(crate) async fn init_services(
     // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移）
     // 订阅必须在所有 inbound 生产者上线之前完成：
     //   - web server（Step 17 起 accept WS 消息 → bus.publish_inbound）；
-    //   - cron.arm()（下移到 Step 17 之后，armed 后第一个 tick 即 fire）。
+    //   - cron.arm()（下移到 Step 17 之后，armed 后第一个 tick 即 fire）；
+    //   - channel start_all（BUG-20261119-194 下移到本步之后：通道
+    //     polling——telegram getUpdates 等——也是 inbound 生产者，此前在
+    //     init_web 内启动，首轮拉停机积压 publish 进零订阅者 broadcast =
+    //     永久丢失。与 cron arm 同款「订阅 → 生产者上线」不变量收敛）。
     // tokio broadcast 零订阅者时 publish 即丢，所以顺序不变量是：
-    // agent 订阅 → web 上线 → cron arm。
+    // agent 订阅 → channels start_all → web 上线 → cron arm。
     if let Err(e) = agent_adapter.start() {
         warn!("[Gateway] Agent adapter start note: {}", e);
     }
     info!("[Gateway] Agent loop started via adapter, listening on bus");
+
+    // Step 14c（BUG-20261119-194）：通道启动——必须在 agent 订阅（14b）
+    // 之后、web 上线（Step 17）之前。幂等安全：start_all 对已运行通道
+    // 跳过（BUG-20261110-037 is_running 守卫），dispatch loop 有独立
+    // started 守卫（init_web 已单独启动，此处 auto-start 臂空转）。
+    // 防御观测：此刻接收者计数为 0 = 订阅顺序被破坏，loud 留痕。
+    if ctx.bus.inbound_receiver_count() == 0 {
+        warn!(
+            "[Gateway] channels start_all: bus inbound has ZERO receivers — \
+             顺序不变量被破坏（agent 未订阅？），本批启动通道拉到的消息会静默丢失"
+        );
+    }
+    if let Err(e) = channel_manager.start_all().await {
+        warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);
+    }
 
     // Step 15: Print agent startup info
     print_agent_startup_info(&home, initial_tool_count);
@@ -496,7 +523,10 @@ pub(crate) async fn init_services(
             let interval_secs = if dw.interval_secs == 0 {
                 60
             } else {
-                dw.interval_secs
+                // 上界钳制（BUG-20261116-001）：巨值配置穿透 Instant 算术界
+                // panic / far_future 静默停摆防护——本循环死了磁盘水位监控
+                // 无感知停摆。
+                crate::common::bounded_tick_interval_secs(dw.interval_secs, 1)
             };
             let workspace = common::workspace_path(&home);
             // disk_level：0=ok/未知 1=warn 2=critical（watchdog 写，检查闭包读）。
@@ -524,7 +554,11 @@ pub(crate) async fn init_services(
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    tick.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                        break;
+                    }
                     // 查询失败不打搅（偶发 IO 抖动，下轮再来）；升档错过比误报好。
                     let Ok(free) = nemesis_health::volume_free_bytes(&workspace) else {
                         continue;
@@ -594,7 +628,11 @@ pub(crate) async fn init_services(
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    tick.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                        break;
+                    }
                     for d in nemesis_utils::degraded::take_pending() {
                         hub_for_degraded.publish(
                             "system-alert",
@@ -675,7 +713,14 @@ pub(crate) async fn init_services(
                 if let Some(parent) = url_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Err(e) = std::fs::write(&url_path, &base_url) {
+                // BUG-20261119-180：URL/node id 是 board_asset publish /
+                // delivery 签发 bundle 的落盘缓存，裸写撕裂 = 拿错地址直到
+                // heal/重启。改走原子写（与 gateway.json 同面同口径）。
+                if let Err(e) = nemesis_utils::write_file_atomic(
+                    &url_path.to_string_lossy(),
+                    base_url.as_bytes(),
+                    0o644,
+                ) {
                     warn!("[Gateway] asset node url persist failed: {}", e);
                 }
                 // 本节点集群 node_id 同拍落盘：publish / delivery 内联存档
@@ -687,7 +732,11 @@ pub(crate) async fn init_services(
                     .as_ref()
                     .map(|c| c.node_id().to_string())
                     .unwrap_or_default();
-                if let Err(e) = std::fs::write(&id_path, &self_node_id) {
+                if let Err(e) = nemesis_utils::write_file_atomic(
+                    &id_path.to_string_lossy(),
+                    self_node_id.as_bytes(),
+                    0o644,
+                ) {
                     warn!("[Gateway] asset node id persist failed: {}", e);
                 }
 
@@ -742,7 +791,11 @@ pub(crate) async fn init_services(
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     ticker.tick().await; // 首个 tick 立即返回，跳过（bind 刚算过）
                     loop {
-                        ticker.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
                         let Some(ref ca) = heal_adapter else {
                             continue;
                         };
@@ -765,7 +818,12 @@ pub(crate) async fn init_services(
                         }
                         // heal_slot 内存态已生效，盘上缓存写失败 WARN 留痕（横扫
                         // 族 C 四轮，2026-11-06）——重启后回读旧值重 heal。
-                        if let Err(e) = std::fs::write(&url_path, &base_url) {
+                        // BUG-20261119-180：与 bind 拍同面，原子写防撕裂。
+                        if let Err(e) = nemesis_utils::write_file_atomic(
+                            &url_path.to_string_lossy(),
+                            base_url.as_bytes(),
+                            0o644,
+                        ) {
                             tracing::warn!(
                                 "[Gateway] Asset base url cache write failed ({}): {e}",
                                 url_path.display()
@@ -801,7 +859,12 @@ pub(crate) async fn init_services(
             "web_host": web_display_host,
             "web_port": real_port,
         });
-        if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
+        // BUG-20261119-180：与启动拍同面——跨进程发现链真相源走原子写。
+        if let Err(e) = nemesis_utils::write_file_atomic(
+            &state_path.to_string_lossy(),
+            state_json.to_string().as_bytes(),
+            0o644,
+        ) {
             warn!("[Gateway] Failed to update gateway state: {}", e);
         } else {
             info!("[Gateway] Gateway state updated: port={}", real_port);

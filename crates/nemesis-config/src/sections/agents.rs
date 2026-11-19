@@ -181,6 +181,56 @@ pub struct AgentsConfig {
     /// `probed_at` 超龄的条目（保鲜层②；后台错峰，不阻塞启动）。
     #[serde(default = "default_probe_effort_refresh_days")]
     pub probe_effort_refresh_days: u32,
+    /// 专家子代理模式段（2026-11-13 总开关 + 自动降级）。缺键/缺段 =
+    /// [`ExpertsModeConfig::default`]（模式关、降级开、通知关）。消费方
+    /// spawn 工具/spawn 闭包每次调用现读（fresh-read），运行中改键即时
+    /// 生效（无需重启）。typed 字段化 = 防 typed save_config round-trip
+    /// 静默抹键（AgentsConfig 无 flatten extra 的同类预防）。
+    #[serde(default)]
+    pub experts: ExpertsModeConfig,
+}
+
+/// `agents.experts` 配置节：专家子代理模式总开关与无匹配专家自动降级。
+///
+/// 语义（用户拍板 2026-11-13）：
+/// - `enabled` 默认 **false**——专家模式是 opt-in 高级功能；关闭时 spawn
+///   点名 `expert`/`prompt` 诚实拒绝（文案自带开启指引），`action=list`
+///   照列名册 + 停用注记。开启动作经 WSAPI 落结构化日志（后台记录 opt-in）。
+///   存量工作区不自动开启（用户裁定：拦截文案指引即可）。
+/// - `degrade` 默认 **true**——点名专家不存在/停用时，回灌降级指引
+///   （指示模型自拟专家提示词带 `prompt` 重调，勿停车问用户）；false =
+///   现行诚实拒绝行为（长任务无人值守不建议关）。
+/// - `notify` 默认 false——降级发生时是否发 `expert-degraded` 事件通知
+///   用户（Dashboard toast）。false = 静默降级（审计/日志照常留痕）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpertsModeConfig {
+    /// 专家模式总开关（默认 false，opt-in）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 无匹配专家自动降级（默认 true）。
+    #[serde(default = "default_experts_degrade")]
+    pub degrade: bool,
+    /// 降级时通知用户（默认 false = 静默）。
+    #[serde(default)]
+    pub notify: bool,
+}
+
+/// `agents.experts.degrade` 缺键默认（降级默认开）。
+pub(super) fn default_experts_degrade() -> bool {
+    true
+}
+
+// 手写 Default（不 derive）：degrade 的本意默认是 true，derive 给零值
+// false——「缺省值只认 serde default fn 单一真相源」纪律（FsWatcherConfig
+// 同款）：缺段/缺键两条路都落同一组默认值。
+impl Default for ExpertsModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            degrade: default_experts_degrade(),
+            notify: false,
+        }
+    }
 }
 
 /// 手写 Default（不 derive）：本结构 9 个直接字段带非零 serde 字段默认
@@ -227,6 +277,7 @@ impl Default for AgentsConfig {
             lazy_tool_schema: None,
             probe_effort_on_save: default_true(),
             probe_effort_refresh_days: default_probe_effort_refresh_days(),
+            experts: ExpertsModeConfig::default(),
         }
     }
 }
@@ -619,10 +670,6 @@ pub struct AgentDefaults {
     pub restrict_to_workspace: bool,
     #[serde(default)]
     pub llm: String,
-    #[serde(default)]
-    pub image_model: String,
-    #[serde(default)]
-    pub image_model_fallbacks: Vec<String>,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: i64,
     #[serde(default = "default_temperature")]
@@ -719,8 +766,6 @@ impl Default for AgentDefaults {
             workspace: String::new(),
             restrict_to_workspace: true,
             llm: String::new(),
-            image_model: String::new(),
-            image_model_fallbacks: vec![],
             max_tokens: default_max_tokens(),
             temperature: default_temperature(),
             max_tool_iterations: default_max_tool_iterations(),
@@ -742,85 +787,21 @@ impl Default for AgentDefaults {
     }
 }
 
+/// 路由条目实体（BUG-20261117-066 死面收敛后的形态）。
+///
+/// `agents.list` 的唯一生产读者是 agent_factory `build_route_resolver`
+/// （nemesisbot/src/agent_factory/shared.rs），只消费 `id`/`default`
+/// （→ nemesis-routing `AgentDef { id, is_default }`）。此前并存的
+/// `name`/`workspace`/`model`/`skills`/`subagents` 五字段自 INIT 起全仓
+/// 零读者（多代理持久实体的真相源在 2026-10-16 落地的 agent store 持久桥，
+/// 不在 config 路由表），连同无父的 `AgentModelConfig`/`SubagentsConfig`
+/// 两类型一并删除；serde 忽略未知键，存量 config.json 里的旧键保持可加载。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfigEntry {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub default: bool,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub workspace: String,
-    #[serde(default)]
-    pub model: Option<AgentModelConfig>,
-    #[serde(default)]
-    pub skills: Vec<String>,
-    #[serde(default)]
-    pub subagents: Option<SubagentsConfig>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AgentModelConfig {
-    #[serde(default)]
-    pub primary: String,
-    #[serde(default)]
-    pub fallbacks: Vec<String>,
-}
-
-/// Support both string and structured model config during deserialization.
-impl<'de> serde::Deserialize<'de> for AgentModelConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        use serde::de::{self, Visitor};
-        use std::fmt;
-
-        pub struct AgentModelConfigVisitor;
-
-        impl<'de> Visitor<'de> for AgentModelConfigVisitor {
-            type Value = AgentModelConfig;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                write!(f, "a string or an object with primary and fallbacks")
-            }
-
-            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
-                Ok(AgentModelConfig {
-                    primary: v.to_string(),
-                    fallbacks: vec![],
-                })
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                #[derive(Deserialize)]
-                struct Raw {
-                    #[serde(default)]
-                    primary: String,
-                    #[serde(default)]
-                    fallbacks: Vec<String>,
-                }
-                let raw = Raw::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(AgentModelConfig {
-                    primary: raw.primary,
-                    fallbacks: raw.fallbacks,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(AgentModelConfigVisitor)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubagentsConfig {
-    #[serde(default)]
-    pub allow_agents: Vec<String>,
-    #[serde(default)]
-    pub model: Option<AgentModelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

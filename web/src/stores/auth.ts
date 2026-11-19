@@ -26,6 +26,13 @@ export const useAuthStore = defineStore('auth', () => {
   async function autoLogin(testToken: string): Promise<boolean> {
     const success = await testConnection(testToken)
     if (success) {
+      // 认证成功即落盘（2026-11-13）：注入链（plugin-ui __DASHBOARD_TOKEN__ /
+      // URL token / 桌面 runtime 事件）此前只写内存，独立页（prompt-viewer 等
+      // 与 Dashboard 同源的新 JS 上下文）读不到凭据——提示词查看器恒报
+      // 「未检测到登录凭据」。同类坑第二例是 SSE 恒 401（2026-10-18，当时按
+      // 内存优先散点修补）。凭据投影收口在此：任何认证成功路径都写，
+      // 失败/登出都清；login(remember=false) 是唯一显式豁免。
+      localStorage.setItem('nemesisbot_auth_token', testToken)
       token.value = testToken
       authenticated.value = true
       connect(null, testToken)

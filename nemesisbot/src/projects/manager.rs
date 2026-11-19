@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_agent::session::SessionStore;
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -444,7 +444,18 @@ impl ProjectLoopManager {
         }
         let owner = self.owner_of(&msg.session_key);
         let RouteDecision::ToProject(pid) = route_decision(msg, owner.as_deref()) else {
-            return; // ToMain：主桥放行，这里丢弃
+            // ToMain：主桥放行，这里丢弃。debug 留痕（丢失必须留痕纪律）：
+            // 主桥 skip 臂与本臂**各自独立查归属索引**，forget_session
+            // （sessions.clear/delete 联动）恰落在两读之间时主桥已让出、
+            // 本臂按 ToMain 丢弃——消息双输。桥侧 skip 臂同样留痕，两侧
+            // debug 对得上即可从日志定性该窗口（结构性消除需单决策点
+            // 重构，代价是路由器成为全部入站的存活单点，不值）。
+            debug!(
+                channel = %msg.channel,
+                session_key = %msg.session_key,
+                "[ProjectLoops] route ToMain drop (main bridge consumes)"
+            );
+            return;
         };
         // 开工闸（VM 档项目）：投递前确保 VM 内工作副本与宿主一致。
         // 拦截/冲突都扣住消息（不出半就绪的工作副本给 agent 撞，不出半
@@ -892,6 +903,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
                 path: e.path.to_string_lossy().to_string(),
                 created_at: e.created_at,
                 instructions_trusted: e.instructions_trusted,
+                extra_dirs: e.extra_dirs.clone(),
             })
             .collect()
     }
@@ -920,6 +932,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
             instructions_trusted: entry.instructions_trusted,
+            extra_dirs: entry.extra_dirs.clone(),
         })
     }
 
@@ -952,6 +965,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
             instructions_trusted: entry.instructions_trusted,
+            extra_dirs: entry.extra_dirs.clone(),
         })
     }
 
@@ -969,6 +983,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
             instructions_trusted: entry.instructions_trusted,
+            extra_dirs: entry.extra_dirs.clone(),
         })
     }
 
@@ -1012,6 +1027,49 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
             path: entry.path.to_string_lossy().to_string(),
             created_at: entry.created_at,
             instructions_trusted: entry.instructions_trusted,
+            extra_dirs: entry.extra_dirs.clone(),
+        })
+    }
+
+    fn add_dir(
+        &self,
+        project_id: &str,
+        dir: &str,
+    ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
+        // 只写注册表（校验链在 registry::add_project_dir：绝对路径/存在/
+        // canonical/三向不重叠/去重/上限）。**不热更在跑 loop**——围栏
+        // Arc 在工具注册期烧入，重启网关或重建项目后生效（WSAPI note 已
+        // 向用户声明该时机）；未在跑 loop spawn 时自然读新注册表。
+        let entry =
+            registry::add_project_dir(&self.registry_path, project_id, dir, &self.main_workspace)
+                .map_err(|e| format!("{e:#}"))?;
+        Ok(nemesis_web::handlers::projects::ProjectInfo {
+            running: self.is_running(project_id),
+            id: entry.id,
+            name: entry.name,
+            path: entry.path.to_string_lossy().to_string(),
+            created_at: entry.created_at,
+            instructions_trusted: entry.instructions_trusted,
+            extra_dirs: entry.extra_dirs.clone(),
+        })
+    }
+
+    fn remove_dir(
+        &self,
+        project_id: &str,
+        dir: &str,
+    ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
+        // 摘列表不动磁盘（注册不拥有）；生效时机同 add_dir。
+        let entry = registry::remove_project_dir(&self.registry_path, project_id, dir)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok(nemesis_web::handlers::projects::ProjectInfo {
+            running: self.is_running(project_id),
+            id: entry.id,
+            name: entry.name,
+            path: entry.path.to_string_lossy().to_string(),
+            created_at: entry.created_at,
+            instructions_trusted: entry.instructions_trusted,
+            extra_dirs: entry.extra_dirs.clone(),
         })
     }
 

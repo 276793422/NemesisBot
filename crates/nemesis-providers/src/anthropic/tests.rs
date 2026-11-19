@@ -1313,9 +1313,115 @@ fn test_request_body_tool_result_content_stays_string() {
     assert_eq!(msg["content"][0]["content"], "工具输出");
 }
 
-// 2026-09-03 二次回归 F1 回归锁：非 user 位（system / assistant / tool_result）
-// 携带 Parts 时不得 raw 序列化产出非法 wire 块——文本视图（+诚实注记，D7 同族），
-// 全请求无 base64 泄漏；Text 形态保持原字节（既有快照测试覆盖）。
+// BUG-20261114-003 回归锁：并行工具批的 tool_result 必须收回同一条 user
+// 消息（官方并行工具合同——拆成多条连续 user 消息会「silently train
+// Claude to stop making parallel calls」）。assistant 多 tool_use → N 条
+// 连续 tool 消息 → 单条 user 多 tool_result 块（保 tool_use 顺序）；
+// 真 user 文本消息不并块（打破段后重新开条）。
+#[test]
+fn test_request_body_parallel_tool_results_merge_into_single_user_message() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let tc = |id: &str| ToolCall {
+        id: id.to_string(),
+        call_type: None,
+        function: None,
+        name: Some("web_fetch".to_string()),
+        arguments: Some(HashMap::from([(
+            "url".to_string(),
+            serde_json::json!("https://example.com"),
+        )])),
+    };
+    let tr = |id: &str, body: &str| Message {
+        role: "tool".to_string(),
+        content: MessageContent::Text(body.to_string()),
+        tool_calls: vec![],
+        tool_call_id: Some(id.to_string()),
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    };
+    let messages = vec![
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("抓两个页面".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: String::new().into(),
+            tool_calls: vec![tc("tc-1"), tc("tc-2")],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        tr("tc-1", "page A"),
+        tr("tc-2", "page B"),
+    ];
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let api_msgs = body["messages"].as_array().unwrap();
+    assert_eq!(api_msgs.len(), 3, "两工具结果必须并成一条 user 消息");
+    assert_eq!(api_msgs[2]["role"], "user");
+    let blocks = api_msgs[2]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0]["type"], "tool_result");
+    assert_eq!(blocks[0]["tool_use_id"], "tc-1");
+    assert_eq!(blocks[0]["content"], "page A");
+    assert_eq!(blocks[1]["type"], "tool_result");
+    assert_eq!(blocks[1]["tool_use_id"], "tc-2");
+    assert_eq!(blocks[1]["content"], "page B");
+}
+
+#[test]
+fn test_request_body_real_user_message_breaks_tool_result_merge() {
+    // 真 user 文本（无 tool_call_id）在两条工具结果之间：不得把文本并入
+    // tool_result 块，也不得把第二条工具结果并进文本消息。
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![
+        Message {
+            role: "tool".to_string(),
+            content: MessageContent::Text("result A".to_string()),
+            tool_calls: vec![],
+            tool_call_id: Some("tc-1".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("用户新输入".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: MessageContent::Text("result B".to_string()),
+            tool_calls: vec![],
+            tool_call_id: Some("tc-2".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let api_msgs = body["messages"].as_array().unwrap();
+    assert_eq!(api_msgs.len(), 3);
+    assert_eq!(api_msgs[0]["content"][0]["tool_use_id"], "tc-1");
+    assert_eq!(api_msgs[1]["content"], "用户新输入");
+    assert_eq!(api_msgs[2]["content"][0]["tool_use_id"], "tc-2");
+}
+
+// 2026-09-03 二次回归 F1 回归锁（Phase 5 E1 更约）：非 user 位携带 Parts
+// 时 system / assistant 仍降级为文本视图（+诚实注记），不得产出非法 wire 块；
+// **tool_result 位图像随 blocks 数组直通**（E1：read_image/screen_capture/
+// MCP 产图工具的结果图像真实上行 vision 通路）；Text 形态保持原字节。
 #[test]
 fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
@@ -1363,9 +1469,15 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
     let raw = serde_json::to_string(&body).unwrap();
 
-    // 非 user 位不得出现 image block / base64 泄漏（非 user 标记全请求消失）
-    assert!(!raw.contains("aGVsbG8="), "base64 泄漏进请求: {raw}");
-    // user 位对照组的图片照常保留（降级只作用于非 user 位）
+    // Phase 5 E1 更约：tool_result 位图像随 blocks 数组**直通**——`aGVsbG8=`
+    // （两个 tool_result 的图）恰好出现 2 次；system/assistant 位仍降级为
+    // 文本视图（不得出现）。
+    assert_eq!(
+        raw.matches("aGVsbG8=").count(),
+        2,
+        "tool_result 图像应恰好 2 处直通: {raw}"
+    );
+    // user 位对照组的图片照常保留。
     assert!(raw.contains("Y29udHJvbA=="), "user 位图片被误剥: {raw}");
 
     // system：**纯文本视图**（to_text）——system 是内部指令位，无"用户附带"
@@ -1380,25 +1492,25 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     assert!(asst["content"].is_string());
     assert!(asst["content"].as_str().unwrap().contains("1 张图片"));
 
-    // user/tool 两个 tool_result 位：content 字符串 + 注记
-    let tr1 = &body["messages"][2];
-    assert_eq!(tr1["content"][0]["type"], "tool_result");
-    assert!(
-        tr1["content"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("1 张图片")
-    );
-    let tr2 = &body["messages"][3];
-    assert_eq!(tr2["content"][0]["type"], "tool_result");
-    assert!(
-        tr2["content"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("1 张图片")
-    );
+    // user/tool 两个 tool_result 位（Phase 5 E1）：紧邻连续 → 并成**同一条**
+    // user 消息（BUG-20261114-003 并块语义）；各块 content 为 blocks 数组
+    // （text 块 + image 块），图像直通 vision 通路、无降级注记。
+    let tr = &body["messages"][2];
+    assert_eq!(tr["role"], "user");
+    let tr_blocks = tr["content"].as_array().unwrap();
+    assert_eq!(tr_blocks.len(), 2);
+    let expected_texts = ["工具结果", "工具结果2"];
+    for (b, exp) in tr_blocks.iter().zip(expected_texts) {
+        assert_eq!(b["type"], "tool_result");
+        let content = b["content"].as_array().expect("E1: content blocks 数组");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], exp);
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["data"], "aGVsbG8=");
+    }
 
-    // 对照组：user 位 Parts 正常转 blocks（image block 仍在，证明降级只作用于非 user 位）
+    // 对照组：user 位 Parts 正常转 blocks（image block 仍在）
     let user = &body["messages"][0];
     let ucontent = user["content"].as_array().expect("user 位 blocks 数组");
     assert_eq!(ucontent[1]["type"], "image");
@@ -1969,6 +2081,93 @@ async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261115-024 成功体有帽（body_cap）：>64MB application/json 成功体
+// 必须在读入中途断开并归 Unknown + "response body exceeds limit" 前缀
+// （可重试，fallback 轮转换下一家），而不是把失控 body 全量灌进内存。
+// 灌流「中途停止」的传输级语义由 http_cap 的同名测试钉死，这里钉的是
+// lane 装配（错误分型 + provider/model 归位 + is_retriable）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_bug_20261115_024_success_body_over_cap_maps_unknown_retriable() {
+    // 服务器宣告 64MB+1 的 200 JSON 成功体并持续灌流（「服务端忽略
+    // stream 回整包」分支的极端形态）。
+    const BODY: usize = 64 * 1024 * 1024 + 1;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // 读掉请求头（\r\n\r\n 为止）再写响应——规范 HTTP 时序。
+        let mut req = vec![0u8; 8192];
+        let mut got = 0usize;
+        loop {
+            let n = sock.read(&mut req[got..]).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got += n;
+            if req[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {BODY}\r\nconnection: close\r\n\r\n"
+        );
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut sent = 0usize;
+        while sent < BODY {
+            let n = chunk.len().min(BODY - sent);
+            if sock.write_all(&chunk[..n]).await.is_err() {
+                // 客户端帽化中途断开 → 写失败退出（不是挂满 120s）。
+                break;
+            }
+            sent += n;
+        }
+    });
+
+    // 墙钟 120s >> loopback 灌 64MB 的时间：错误必须来自帽，不是超时。
+    let config = AnthropicConfig {
+        api_key: "ak-test".to_string(),
+        base_url: format!("http://{addr}"),
+        default_model: "claude-default".to_string(),
+        timeout_secs: 120,
+        proxy: None,
+        stream_mode: String::new(),
+        cache_breakpoints: false,
+    };
+    let provider = AnthropicProvider::new(config);
+    let err = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, FailoverError::Unknown { ref provider, .. } if provider == "anthropic"),
+        "expected Unknown body-limit error, got: {err:?}"
+    );
+    let FailoverError::Unknown { message, .. } = &err else {
+        unreachable!("just asserted Unknown")
+    };
+    assert!(
+        message.starts_with("response body exceeds limit"),
+        "prefix anchor missing: {message}"
+    );
+    assert!(
+        message.contains("(model m)"),
+        "model must be embedded in message: {message}"
+    );
+    assert!(
+        err.is_retriable(),
+        "body-limit unknown must rotate fallback chain"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // B13 缓存断点显式化（2026-10-18 B 级清零）：cache_breakpoints 只在
 // anthropic lane 的 request body 注入 ephemeral 断点；缺省关 = 字节兼容。
 // ---------------------------------------------------------------------------
@@ -2386,4 +2585,169 @@ fn s15_build_request_body_updates_timestamp_when_breakpoints_on() {
         0,
         "断点关：不进观测块，last_request_ts 保持 0"
     );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-163：EOF pending 事件派发（半截流末事件不再静默丢失）
+// ---------------------------------------------------------------------------
+
+async fn mount_sse(server: &MockServer, body: &str) {
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(server)
+        .await;
+}
+
+fn eof_test_provider(base_url: String) -> AnthropicProvider {
+    let mut cfg = AnthropicConfig::default();
+    cfg.api_key = "test-key".to_string();
+    cfg.base_url = base_url;
+    AnthropicProvider::new(cfg)
+}
+
+fn eof_test_message() -> Message {
+    Message {
+        role: "user".to_string(),
+        content: "hi".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }
+}
+
+/// BUG-20261113-163 红证：末事件文本与终结空行之间断流（body 末尾无
+/// `\n\n`）时，缓冲里的 pending text_delta 此前被静默丢弃（EOF 合成只补
+/// 终态，正文增量丢失）。SSE 规范：EOF 时 pending 事件必须派发。修复后
+/// EOF drain 补虚拟终结空行，残余尾经同一分派体正常发射。
+#[tokio::test]
+async fn test_chat_stream_eof_drains_truncated_pending_event() {
+    let server = MockServer::start().await;
+    let provider = eof_test_provider(server.uri());
+
+    let sse_body = concat!(
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"keep\"}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"-tail\"}}"
+    );
+    mount_sse(&server, sse_body).await;
+
+    let mut rx = provider.chat_stream(
+        &[eof_test_message()],
+        &[],
+        "claude-x",
+        &ChatOptions::default(),
+    );
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                deltas.push_str(&chunk.delta);
+                if chunk.finish_reason.is_some() {
+                    finals += 1;
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(
+        deltas, "keep-tail",
+        "truncated final event content must be dispatched at EOF (BUG-20261113-163)"
+    );
+    assert_eq!(finals, 1, "exactly one synthesized terminal chunk");
+}
+
+/// BUG-20261113-163 红证（usage/stop_reason 变体）：截断发生在
+/// message_delta 与终结空行之间时，真实 stop_reason（end_turn）与
+/// output_tokens（21）此前整帧丢失——EOF 合成拿默认值（stop_reason 空、
+/// output=0）。修复后该帧经 EOF drain 正常派发更新状态，EOF 合成按真实
+/// 值出终态（end_turn→stop 归一 + usage 10+21=31）。
+#[tokio::test]
+async fn test_chat_stream_eof_drains_truncated_message_delta_usage_survives() {
+    let server = MockServer::start().await;
+    let provider = eof_test_provider(server.uri());
+
+    let sse_body = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"body\"}}\n\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":21}}"
+    );
+    mount_sse(&server, sse_body).await;
+
+    let mut rx = provider.chat_stream(
+        &[eof_test_message()],
+        &[],
+        "claude-x",
+        &ChatOptions::default(),
+    );
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    let mut terminal_usage: Option<(i64, i64)> = None;
+    let mut terminal_finish: Option<String> = None;
+    while let Some(chunk_result) = rx.recv().await {
+        match chunk_result {
+            Ok(chunk) => {
+                deltas.push_str(&chunk.delta);
+                if chunk.finish_reason.is_some() {
+                    finals += 1;
+                    terminal_finish = chunk.finish_reason.clone();
+                    if let Some(usage) = chunk.usage.as_ref() {
+                        terminal_usage = Some((usage.prompt_tokens, usage.completion_tokens));
+                    }
+                }
+            }
+            Err(e) => panic!("unexpected stream error: {:?}", e),
+        }
+    }
+    assert_eq!(deltas, "body");
+    assert_eq!(finals, 1, "exactly one synthesized terminal chunk");
+    assert_eq!(terminal_finish.as_deref(), Some("stop"));
+    assert_eq!(
+        terminal_usage,
+        Some((10, 21)),
+        "usage from the truncated message_delta must reach the terminal chunk (BUG-20261113-163)"
+    );
+}
+
+// BUG-20261119-175：服务器可控 usage i64 满量级——裸加曾 debug panic /
+// release 回绕负 total 流入计价。
+#[test]
+fn test_final_chunk_hostile_usage_saturates_no_panic() {
+    let chunk = anthropic_final_chunk(
+        Some("end_turn"),
+        &[],
+        &HashMap::new(),
+        Some(i64::MAX),
+        Some(i64::MAX),
+        Some(i64::MAX),
+        Some(i64::MAX),
+        None,
+    );
+    let u = chunk.usage.expect("usage 应存在");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
+}
+
+#[test]
+fn test_parse_response_hostile_usage_saturates_no_panic() {
+    let data = serde_json::json!({
+        "content": [{ "type": "text", "text": "hi" }],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 9223372036854775807i64,
+            "output_tokens": 9223372036854775807i64,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0
+        }
+    });
+    let resp = parse_response(&data);
+    let u = resp.usage.expect("usage 应存在");
+    assert_eq!(u.total_tokens, i64::MAX, "饱和加钳在 i64::MAX");
 }

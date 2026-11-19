@@ -287,51 +287,6 @@ pub(crate) fn select_lan_ip_for_advertisement(
     select_advertised_lan_ip(&local_ips, &peer_addrs)
 }
 
-/// Count enabled channels.
-pub(crate) fn count_enabled_channels(cfg: &nemesis_config::Config) -> usize {
-    let mut count = 0;
-    if cfg.channels.web.enabled {
-        count += 1;
-    }
-    if cfg.channels.websocket.enabled {
-        count += 1;
-    }
-    if cfg.channels.telegram.enabled {
-        count += 1;
-    }
-    if cfg.channels.discord.enabled {
-        count += 1;
-    }
-    if cfg.channels.feishu.enabled {
-        count += 1;
-    }
-    if cfg.channels.slack.enabled {
-        count += 1;
-    }
-    if cfg.channels.external.enabled {
-        count += 1;
-    }
-    if cfg.channels.whatsapp.enabled {
-        count += 1;
-    }
-    if cfg.channels.dingtalk.enabled {
-        count += 1;
-    }
-    if cfg.channels.qq.enabled {
-        count += 1;
-    }
-    if cfg.channels.line.enabled {
-        count += 1;
-    }
-    if cfg.channels.onebot.enabled {
-        count += 1;
-    }
-    if cfg.channels.maixcam.enabled {
-        count += 1;
-    }
-    count
-}
-
 /// Print agent startup information.
 pub(crate) fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
     // Use register_default_tools just for counting display purposes

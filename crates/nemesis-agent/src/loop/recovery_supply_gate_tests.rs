@@ -149,7 +149,7 @@ async fn transient_retry_respects_supply_gate() {
 
     // 首败 <1s → backoff_eligible=false → 零退避，测试毫秒级。
     let cancel = tokio_util::sync::CancellationToken::new();
-    let (maybe_resp, last_err) = agent_loop
+    let (maybe_resp, last_err, _retries) = agent_loop
         .retry_transient(
             &instance,
             &context,

@@ -144,21 +144,22 @@ impl QuotaLedger {
         let mut inner = self.lock();
         let cfg = (self.config_provider)();
 
+        // 滑窗扫尾无条件执行（BUG-20261114-023；对齐 connectors/budget.rs
+        // 同族纪律「滑窗扫尾不因限频关闭而缺席」）：retain 原先只在对应闸
+        // 开启时跑，而记账段 push 恒在——闸关闭配置（rate_limit_per_min=0
+        // / hourly_budget_per_node=0）下 minute/hour 账本只进不出，无界
+        // 堆积（长驻 master 内存卫生），且开闸热改后关闭期的旧历史全量
+        // 滞留窗口账。剪枝与限额判定解耦：判定只看限额值。
+        let node = inner.nodes.entry(node_id.to_string()).or_default();
+        node.minute.retain(|t| now_secs - *t < 60);
+        node.hour.retain(|t| now_secs - *t < 3600);
         // 闸 1：上行限速（60s 滑窗）。
-        if cfg.rate_limit_per_min > 0 {
-            let node = inner.nodes.entry(node_id.to_string()).or_default();
-            node.minute.retain(|t| now_secs - *t < 60);
-            if node.minute.len() as u32 >= cfg.rate_limit_per_min {
-                return Err(QuotaDenied::RateLimited);
-            }
+        if cfg.rate_limit_per_min > 0 && node.minute.len() as u32 >= cfg.rate_limit_per_min {
+            return Err(QuotaDenied::RateLimited);
         }
         // 闸 2：节点小时额度（1h 滑窗）。
-        if cfg.hourly_budget_per_node > 0 {
-            let node = inner.nodes.entry(node_id.to_string()).or_default();
-            node.hour.retain(|t| now_secs - *t < 3600);
-            if node.hour.len() as u32 >= cfg.hourly_budget_per_node {
-                return Err(QuotaDenied::HourlyBudgetExhausted);
-            }
+        if cfg.hourly_budget_per_node > 0 && node.hour.len() as u32 >= cfg.hourly_budget_per_node {
+            return Err(QuotaDenied::HourlyBudgetExhausted);
         }
         // 闸 3：线程 agent 发言额度。
         if cfg.max_agent_turns_per_thread > 0 {

@@ -22,6 +22,14 @@ use anyhow::{Context, Result, bail};
 const SEVEN_ZIP_ZIP_URL: &str =
     "https://raw.githubusercontent.com/276793422/NemesisBot/refs/heads/main/test-tools/bins/7z.zip";
 
+/// Archive fetch response-body cap (BUG-20261116-027 下载加固横扫补位)：裸
+/// `response.bytes()` 无上限，timeout 只约束墙钟不约束体积，失控端点可把
+/// GB 级响应灌满进程内存。7z.zip ~1.5MB、Sandboxie installer ~5MB，取 64MB
+/// 与家族帽值一致（nemesis-skills / pricing_sync / providers 同量级）；
+/// 超限在读入中途断开（nemesis_utils::http_cap 单一真相源），内存峰值 =
+/// 已到达前缀。
+const MAX_ARCHIVE_FETCH_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Resolve a usable 7z.exe: (1) a previously-downloaded copy in
 /// `runtime/7z/7z.exe`, (2) a system 7-Zip in PATH / common install dirs,
 /// (3) download `7z.zip` from GitHub + unzip into `runtime/7z/`. Returns the
@@ -61,6 +69,11 @@ pub async fn resolve_seven_zip(runtime_dir: &Path) -> Result<PathBuf> {
 /// HTTP 错误，且三次重试全打在同一错误页上。error_for_status 让错误状态
 /// 与网络错误同走重试链，错误消息诚实带状态码。
 async fn fetch_zip_bytes_with_retry(url: &str) -> Result<bytes::Bytes> {
+    fetch_zip_bytes_with_retry_capped(url, MAX_ARCHIVE_FETCH_BYTES).await
+}
+
+/// [`fetch_zip_bytes_with_retry`] 的参数化形态（测试缝：小帽值真实行为测试）。
+async fn fetch_zip_bytes_with_retry_capped(url: &str, cap: u64) -> Result<bytes::Bytes> {
     // Download with a timeout + retry — raw.githubusercontent.com (Fastly CDN)
     // occasionally resets mid-transfer; a fresh connection usually completes.
     let client = reqwest::Client::builder()
@@ -72,9 +85,11 @@ async fn fetch_zip_bytes_with_retry(url: &str) -> Result<bytes::Bytes> {
     for attempt in 1..=3u32 {
         match client.get(url).send().await {
             Ok(resp) => match resp.error_for_status() {
-                Ok(r) => match r.bytes().await {
+                // 有帽读取（BUG-20261116-027）：超限在读入中途断开，
+                // Err 消息带 exceeds limit 锚（nemesis_utils::http_cap 单一真相源）。
+                Ok(r) => match nemesis_utils::http_cap::read_body_capped(r, cap).await {
                     Ok(b) => {
-                        got = Some(b);
+                        got = Some(bytes::Bytes::from(b));
                         break;
                     }
                     Err(e) => last = Some(anyhow::anyhow!("read body (attempt {attempt}): {e}")),
@@ -138,7 +153,7 @@ async fn download_and_unzip_7z(runtime_dir: &Path) -> Result<()> {
     .context("unzip task join")??;
 
     // Keep runtime/ clean — the zip has served its purpose.
-    let _ = tokio::fs::remove_file(&zip_path).await;
+    let _ = nemesis_utils::fsutil::remove_file_resilient_async(&zip_path).await;
     Ok(())
 }
 

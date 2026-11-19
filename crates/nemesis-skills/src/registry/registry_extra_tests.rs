@@ -10,6 +10,27 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// BUG-20261114-034：RegistryConfig 缺省启用 ModelScope（与 Dashboard 面收敛）。
+/// 只测单一注册表/开关的 from_config 用例用它隔离掉缺省注册，保持计数断言精准。
+/// 2026-11-16 起再隔离出厂源（disabled `nemesisbot` 占位条目——append-if-absent
+/// 见名跳过且 disabled 不构造 registry）。
+fn isolated_default_config() -> RegistryConfig {
+    let mut c = RegistryConfig::default();
+    c.modelscope.enabled = false;
+    c.github_sources.push(crate::types::GitHubSourceConfig {
+        name: crate::registry::FACTORY_SOURCE.name.to_string(),
+        repo: String::new(),
+        enabled: false,
+        branch: String::new(),
+        index_type: String::new(),
+        index_path: String::new(),
+        skill_path_pattern: String::new(),
+        timeout_secs: 0,
+        max_size: 0,
+    });
+    c
+}
+
 // ============================================================
 // Helper mock registries
 // ============================================================
@@ -463,23 +484,28 @@ async fn test_install_missing_registry_returns_not_found() {
 
 #[test]
 fn test_from_config_with_modelscope_enabled() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.modelscope.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
     assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "modelscope");
+    assert!(reg.contains(&"modelscope".to_string()));
 }
 
 #[test]
 fn test_from_config_all_three_registries() {
+    // legacy github lane（不能用 helper——占位条目杀 legacy 资格）+ clawhub
+    // + modelscope，出厂源 live 臂叠加 → 4。
     let mut config = RegistryConfig::default();
     config.github.enabled = true;
     config.clawhub.enabled = true;
     config.modelscope.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 3);
+    assert_eq!(reg.len(), 4);
+    for name in ["github", "clawhub", "modelscope", FACTORY_SOURCE.name] {
+        assert!(reg.iter().any(|r| r == name), "missing {name}: {reg:?}");
+    }
 }
 
 #[test]
@@ -487,22 +513,27 @@ fn test_from_config_with_disabled_modelscope() {
     let mut config = RegistryConfig::default();
     config.modelscope.enabled = false;
     let manager = RegistryManager::from_config(config);
-    assert!(manager.registries().is_empty());
+    // modelscope 关；出厂源 live 臂 → 1
+    let reg = manager.registries();
+    assert_eq!(reg.len(), 1);
+    assert!(reg.contains(&FACTORY_SOURCE.name.to_string()));
 }
 
 #[test]
 fn test_from_config_with_disabled_clawhub() {
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.clawhub.enabled = false;
     let manager = RegistryManager::from_config(config);
-    assert!(manager.registries().is_empty());
+    let reg = manager.registries();
+    // 出厂源已被 helper 占位隔离，其余全关 → 空注册面
+    assert!(reg.is_empty());
 }
 
 #[test]
 fn test_from_config_multi_source_overrides_legacy() {
     // When github_sources has entries AND github.enabled is true,
     // multi-source takes precedence (legacy skipped)
-    let mut config = RegistryConfig::default();
+    let mut config = isolated_default_config();
     config.github.enabled = true;
     config.github_sources.push(TypesGitHubSourceConfig {
         name: "multi".to_string(),
@@ -517,19 +548,23 @@ fn test_from_config_multi_source_overrides_legacy() {
     });
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    // Only multi-source, legacy skipped because github_sources is non-empty
+    // Only multi-source (helper 隔离出厂源), legacy skipped → 1
     assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "multi");
+    assert!(reg.iter().any(|r| r == "multi"));
 }
 
 #[test]
 fn test_from_config_legacy_only_when_no_multi_source() {
+    // legacy 单源 lane（github.enabled + sources 空）；出厂源 live 臂叠加
+    // → 2。注：不能用 isolated_default_config——占位条目使 sources 非空，
+    // legacy 资格（sources 空 + github.enabled）为 false。
     let mut config = RegistryConfig::default();
+    config.modelscope.enabled = false;
     config.github.enabled = true;
     let manager = RegistryManager::from_config(config);
     let reg = manager.registries();
-    assert_eq!(reg.len(), 1);
-    assert_eq!(reg[0], "github");
+    assert_eq!(reg.len(), 2);
+    assert!(reg.iter().any(|r| r == "github"));
 }
 
 #[test]

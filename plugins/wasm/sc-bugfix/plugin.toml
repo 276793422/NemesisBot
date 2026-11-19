@@ -4,67 +4,52 @@
 # table 段之前——TOML 语义。流程编排全在宿主 flow 引擎（guest 无驻留）；
 # 本清单是声明面。
 #
-# 0.1.0（2026-11-04 sc-bugfix 批）：Jira（Server/DC）取 BUG → 代码仓副本
-# （GitLab / Gerrit 按 code_host 二选一）→ 修复 → 发布（GitLab MR /
-# Gerrit change）→ Jira 回帖上报，全链自持声明。双源形态：同一份模板
-# 声明 gitlab / gerrit 两臂步骤（`when = "{{config.code_host}} == <源>"`
-# 装载期裁剪——假臂 = Skipped 非失败，同 tick 推进），凭据/坐标各臂独立。
+# 0.1.0（2026-11-04 sc-bugfix 批）：Jira（Server/DC）取 BUG → GitLab 仓
+# 副本 → 修复 → GitLab MR 发布 → Jira 回帖上报，全链自持声明。发布线
+# 单源 GitLab（PR 模型）；凭据/坐标随源声明。
 #
 # Jira 双认证形态（jira_auth_mode）：`pat`（缺省，Bearer 令牌 jira_pat
 # secret）| `basic`（账号密码——jira_username 配置 + jira_password secret，
 # HTTP Basic base64(user:pass)）。jira_transition_name 缺省空 = report
 # 只回帖不转状态（诚实跳过）；需要自动转状态时填 transition 名。
-#
-# Gerrit 臂发布形态：refs/for/<target> 推送（refs/for/ 前缀触发宿主
-# publish Gerrit 臂）+ change:<Change-Id> query-as-create（create 即检索，
-# 经对账保守分支收敛）+ $.change_id 对账匹配 + Change-Id 页脚（宿主
-# derive_change_id 由 task_id 确定性派生，重试 = 同 change 新 patchset）。
-# guest change_list 归一投影 ChangeInfo（number/web_url 构造）供宿主
-# parse_publish_result 直读。Gerrit REST = HTTP Basic（gerrit_username +
-# gerrit_http_pass）+ `)]}'` 魔法前缀剥离。
-wasm-sha256 = "69e2e242e2404c8ef854e1487d3204e19e232aca0c378a07cd9fb26c18981c50"
+wasm-sha256 = "bec606668b4b0cc823501b124df44b1928dc297674a8749abc8d0e34fd0353d8"
 api-version = 1
 slug = "sc-bugfix"
 kind = "panel"
 name = "SC BUG 修复流水线"
 version = "0.1.0"
-description = "Jira 取 BUG → GitLab/Gerrit 仓副本修复 → MR/change 发布 → Jira 回帖上报全链流水线（自持形态：面板 + flow 剧本 + guest 直连 Jira/GitLab/Gerrit REST；凭据走 vault）"
+description = "Jira 取 BUG → GitLab 仓副本修复 → MR 发布 → Jira 回帖上报全链流水线（自持形态：面板 + flow 剧本 + guest 直连 Jira/GitLab REST；凭据走 vault）"
 
-# 出网面：三个 base_url 整条目 token（配置热渲染；未配置 = 条目丢弃，
+# 出网面：base_url 整条目 token（配置热渲染；未配置 = 条目丢弃，
 # 全部未配置 = 能力整体关闭——deny-by-default 不破）；allow-private：
-# 自托管 Jira/GitLab/Gerrit 本就常驻企业内网，私网放行是产品语义不是
+# 自托管 Jira/GitLab 本就常驻企业内网，私网放行是产品语义不是
 # 测试后门——allowlist 仍钉 base_url 精确值，DNS 钉地址照常。凭据面：
 # pat（GitLab PAT，宿主 publish 推送凭据推导同名钉死）/ jira_pat（Bearer）/
-# jira_password（Basic）/ gerrit_http_pass（Gerrit HTTP 密码），全走
-# vault（面板表单只写不读）。
+# jira_password（Basic），全走 vault（面板表单只写不读）。
 [permissions]
-egress = ["{{config.jira_base_url}}", "{{config.gitlab_base_url}}", "{{config.gerrit_base_url}}"]
+egress = ["{{config.jira_base_url}}", "{{config.gitlab_base_url}}"]
 allow-private = true
-x-secret = ["pat", "jira_pat", "jira_password", "gerrit_http_pass"]
+x-secret = ["pat", "jira_pat", "jira_password"]
 
 [limits]
 fuel = 20_000_000
 timeout-ms = 10_000
 
 # 实例配置（插件页「配置」钮或面板「实例设置」表单可改；{{config.<键>}}
-# 装载期单遍渲染，已声明未配置 = 空串——proxy / gerrit_* 这类可选键靠它
-# 免于整模板拒绝，未配置的臂运行期诚实报错）。凭据走 x-secret 不进这里。
+# 装载期单遍渲染，已声明未配置 = 空串——proxy 这类可选键靠它
+# 免于整模板拒绝）。凭据走 x-secret 不进这里。
 # JQL 不做 config 键：project_key 内联在 JQL 模板里（换靶改 project_key）。
 [config-schema]
-code_host = { desc = "代码托管源（gitlab | gerrit，双臂步骤按此裁剪）", default = "gitlab" }
+code_host = { desc = "代码托管源（gitlab）", default = "gitlab" }
 jira_base_url = { desc = "Jira REST 基址（如 https://jira.example.com）" }
 jira_project_key = { desc = "Jira 项目键（PROJ-123 的 PROJ 段）", default = "PROJ" }
 jira_auth_mode = { desc = "Jira 认证形态（pat = Bearer 令牌 | basic = 账号密码）", default = "pat" }
 jira_username = { desc = "Jira 账号（仅 jira_auth_mode=basic 需要）" }
 jira_transition_name = { desc = "report 步目标状态（transition name，不分大小写）；留空 = 只回帖不转状态" }
-gitlab_base_url = { desc = "GitLab 基址（code_host=gitlab 时必填，如 https://gitlab.example.com）" }
+gitlab_base_url = { desc = "GitLab 基址（必填，如 https://gitlab.example.com）" }
 gitlab_owner = { desc = "GitLab 仓库属主（group/namespace；兼任 git 推送凭据用户名——GitLab HTTPS+PAT 任意非空用户名均可）", default = "group" }
 gitlab_repo = { desc = "GitLab 仓库名", default = "project" }
 gitlab_target_branch = { desc = "MR 目标分支", default = "main" }
-gerrit_base_url = { desc = "Gerrit 基址（code_host=gerrit 时必填，如 https://gerrit.example.com）" }
-gerrit_username = { desc = "Gerrit HTTP 凭据用户名（Basic 认证；HTTP Password 在 Gerrit 设置里生成）" }
-gerrit_project = { desc = "Gerrit 项目名（如 team/app）" }
-gerrit_target_branch = { desc = "refs/for/ 目标分支", default = "main" }
 board_project = { desc = "看板项目名（须已注册且带 directory——repo_sync 目录真相源）", default = "sc-bugfix" }
 proxy = { desc = "出站代理 URL（http:// 或 socks5h://；留空 = 直连；作用于 guest HTTP 与 git 推送/同步）" }
 
@@ -166,7 +151,7 @@ bind = "cmd://save_settings"
 [[ui.page.views.fields]]
 key = "code_host"
 label = "代码托管源"
-placeholder = "gitlab 或 gerrit（默认 gitlab）"
+placeholder = "gitlab（默认）"
 
 [[ui.page.views.fields]]
 key = "jira_base_url"
@@ -214,26 +199,6 @@ label = "GitLab MR 目标分支"
 placeholder = "main"
 
 [[ui.page.views.fields]]
-key = "gerrit_base_url"
-label = "Gerrit 基址"
-placeholder = "如 https://gerrit.example.com"
-
-[[ui.page.views.fields]]
-key = "gerrit_username"
-label = "Gerrit HTTP 凭据用户名"
-placeholder = "如 zhangsan"
-
-[[ui.page.views.fields]]
-key = "gerrit_project"
-label = "Gerrit 项目名"
-placeholder = "如 team/app"
-
-[[ui.page.views.fields]]
-key = "gerrit_target_branch"
-label = "Gerrit 目标分支"
-placeholder = "main"
-
-[[ui.page.views.fields]]
 key = "board_project"
 label = "看板项目名（须已注册且带目录）"
 placeholder = "sc-bugfix"
@@ -261,12 +226,6 @@ label = "GitLab 访问令牌（PAT）"
 field-type = "secret"
 placeholder = "留空 = 保持已存令牌"
 
-[[ui.page.views.fields]]
-key = "gerrit_http_pass"
-label = "Gerrit HTTP Password"
-field-type = "secret"
-placeholder = "留空 = 保持已存密码"
-
 [[ui.page.views]]
 kind = "actions"
 bind = ""
@@ -283,10 +242,10 @@ command = "flow://sc-bugfix-pipeline/confirm"
 label = "恢复停车实例"
 command = "flow://sc-bugfix-pipeline/resume"
 
-# 剧本：取 → 同步仓副本（gitlab/gerrit 双臂按 code_host 裁剪）→ 落项目 →
-# 修复循环（人工闸唯一一道）→ 验收 → 发布（双臂；自动不停，缺口对账三态）
-# → Jira 回帖上报。域知识声明面：origin 三件套 + on-transition + publish
-# 协议 + repo_sync（双臂）+ guest 自报步骤；宿主只提供通用原语与 token 插值。
+# 剧本：取 → 同步仓副本 → 落项目 → 修复循环（人工闸唯一一道）→ 验收 →
+# 发布（自动不停，缺口对账三态）→ Jira 回帖上报。域知识声明面：origin
+# 三件套 + on-transition + publish 协议 + repo_sync + guest 自报步骤；
+# 宿主只提供通用原语与 token 插值。
 [[flow.template]]
 id = "sc-bugfix-pipeline"
 interval-secs = 600
@@ -318,24 +277,14 @@ id = "fetch"
 kind = "plugin:sc-bugfix:fetch"
 args = { jql = "project = {{config.jira_project_key}} AND status not in (Done, Closed) ORDER BY created DESC", max_results = "50", key_field = "$.key", title_field = "$.fields.summary", body_field = "$.fields.description" }
 
-# 仓副本同步（宿主 repo_sync 原语）双臂：when 装载期按 code_host 渲染成
-# 字面比较（`gitlab == gitlab` / `gitlab == gerrit`），假臂 = Skipped 非失败
-# （同 tick 推进）。GitLab 凭据 = pat（HTTPS+PAT 任意非空用户名，cred_user
-# 取 owner）；Gerrit 凭据 = gerrit_http_pass（HTTP Basic，cred_user 取
-# gerrit_username；URL 带 /a/ 认证前缀）。clone/pull 失败 = 没法修复，停车。
+# 仓副本同步（宿主 repo_sync 原语）。GitLab 凭据 = pat（HTTPS+PAT 任意
+# 非空用户名，cred_user 取 owner）。clone/pull 失败 = 没法修复，停车。
 [[flow.template.steps]]
 id = "sync-gitlab"
 kind = "repo_sync"
 when = "{{config.code_host}} == gitlab"
 on-fail = "park_human"
 args = { project = "{{config.board_project}}", url = "{{config.gitlab_base_url}}/{{config.gitlab_owner}}/{{config.gitlab_repo}}.git", cred_secret = "plugin/sc-bugfix/pat", cred_user = "{{config.gitlab_owner}}", proxy = "{{config.proxy}}" }
-
-[[flow.template.steps]]
-id = "sync-gerrit"
-kind = "repo_sync"
-when = "{{config.code_host}} == gerrit"
-on-fail = "park_human"
-args = { project = "{{config.board_project}}", url = "{{config.gerrit_base_url}}/a/{{config.gerrit_project}}.git", cred_secret = "plugin/sc-bugfix/gerrit_http_pass", cred_user = "{{config.gerrit_username}}", proxy = "{{config.proxy}}" }
 
 # 落项目（任务副本项目绑定；fixloop 经项目 loop 在该目录内执行）。
 # body_preamble = 六阶段修复契约确定性注入 issue description 头部（宿主
@@ -360,29 +309,16 @@ args = { target = "self" }
 id = "regress"
 kind = "check_regress"
 
-# 发布步双臂（声明化）。GitLab 臂：推交付分支 nemesis/task-<task_id> +
-# 建 MR + 缺口对账三态；凭据别名显式钉 plugin/sc-bugfix/pat（= 推送推导
-# 同名，repo_sync 同源）。on-fail=continue：发布失败=缺口记账（不停车），
-# report 照常出报告——dossier/timeline 携带缺口。
+# 发布步（声明化）：推交付分支 nemesis/task-<task_id> + 建 MR + 缺口对账
+# 三态；凭据别名显式钉 plugin/sc-bugfix/pat（= 推送推导同名，repo_sync
+# 同源）。on-fail=continue：发布失败=缺口记账（不停车），report 照常出
+# 报告——dossier/timeline 携带缺口。
 [[flow.template.steps]]
 id = "publish-gitlab"
 kind = "publish"
 when = "{{config.code_host}} == gitlab"
 on-fail = "continue"
 args = { owner = "{{config.gitlab_owner}}", repo = "{{config.gitlab_repo}}", cred_secret = "plugin/sc-bugfix/pat", proxy = "{{config.proxy}}", create_op = "plugin:sc-bugfix:create_mr", create_args = '{"owner": "{{config.gitlab_owner}}", "repo": "{{config.gitlab_repo}}", "source_branch": "{{branch}}", "target_branch": "{{config.gitlab_target_branch}}", "title": "[{{board_issue}}] {{title}}", "description": "看板单 {{board_issue}}；交付分支 `{{branch}}`（commit {{commit}}，基线 {{base_sha}}）。\n\n来源 issue {{ext_key}}；由 sc-bugfix 流水线自动发布。"}', result_ref = "$.iid", result_url = "$.web_url", reconcile_op = "plugin:sc-bugfix:mr_list", reconcile_args = '{"owner": "{{config.gitlab_owner}}", "repo": "{{config.gitlab_repo}}", "state": "all"}', reconcile_match = "$.source_branch == {{branch}}" }
-
-# Gerrit 臂：refs/for/<target> 推送（refs/for/ 前缀触发宿主 publish Gerrit
-# 臂——单 commit 于交付分支顶 + commit_message 模板 + Change-Id 页脚）+
-# change:<Change-Id> query-as-create（create 即检索：create 臂解析落空 →
-# 对账保守分支 → 同 query 收敛；Change-Id 由 task_id 确定性派生，重试 =
-# 同 change 新 patchset 不重复建）+ $.change_id 对账匹配 + $.number/
-# $.web_url 抽取（guest 归一投影直读）。
-[[flow.template.steps]]
-id = "publish-gerrit"
-kind = "publish"
-when = "{{config.code_host}} == gerrit"
-on-fail = "continue"
-args = { owner = "{{config.gerrit_username}}", repo = "{{config.gerrit_project}}", push_ref = "refs/for/{{config.gerrit_target_branch}}", cred_secret = "plugin/sc-bugfix/gerrit_http_pass", cred_user = "{{config.gerrit_username}}", proxy = "{{config.proxy}}", create_op = "plugin:sc-bugfix:change_list", create_args = '{"project": "{{config.gerrit_project}}", "query": "change:{{change_id}}"}', result_ref = "$.number", result_url = "$.web_url", reconcile_op = "plugin:sc-bugfix:change_list", reconcile_args = '{"project": "{{config.gerrit_project}}", "query": "change:{{change_id}}"}', reconcile_match = "$.change_id == {{change_id}}", commit_message = "{{ext_key}}: {{title}}\n\n看板单 {{board_issue}}；交付分支 `{{branch}}`（commit {{commit}}，基线 {{base_sha}}）。\n\n来源 issue {{ext_key}}；由 sc-bugfix 流水线自动发布。\n\nChange-Id: {{change_id}}" }
 
 # 报告回帖 + 幂等转状态（guest 自报 report op：jira_transition_name 留空 =
 # 只回帖不转状态；非空时同文去重回帖 → transition name/to.name 不分大小写

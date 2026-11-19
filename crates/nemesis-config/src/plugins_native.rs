@@ -1,7 +1,7 @@
 //! 原生插件库开关（本地 C-ABI 插件 DLL 的启用/停用持久化）。
 //!
-//! 六个原生插件（plugin_ui / plugin_onnx / eval_monitor_dll / plugin_wasm /
-//! plugin_vm / plugin_roaming）共用一份开关文件
+//! 七个原生插件（plugin_ui / plugin_onnx / eval_monitor_dll / plugin_wasm /
+//! plugin_vm / plugin_roaming / plugin_resources）共用一份开关文件
 //! `<workspace>/config/config.plugin.native.json`（独立
 //! 配置文件作为长期记忆；2026-10-22 前身文件名 `plugins_native.json`，
 //! 首次读取时惰性迁移改名，见 [`migrate_legacy_file`]）。schema：
@@ -38,6 +38,12 @@ pub enum NativePluginId {
     PluginVm,
     /// QUIC 中继/名册传输面（iroh 组网；C-ABI 解冻第二例，新式交互插件）。
     PluginRoaming,
+    /// 附加资源载体（人格超市上游快照编译期内嵌；C-ABI 解冻第三例，
+    /// 纯数据资源查询面——无 init/vtable/停机语义）。
+    PluginResources,
+    /// 邮件基础设施（SMTP/POP3 服务端 + 客户端发信；C-ABI 解冻第四例，
+    /// 新式交互插件——maildir 分库存储按地址注册制）。
+    PluginMail,
 }
 
 impl NativePluginId {
@@ -49,6 +55,8 @@ impl NativePluginId {
         NativePluginId::PluginWasm,
         NativePluginId::PluginVm,
         NativePluginId::PluginRoaming,
+        NativePluginId::PluginResources,
+        NativePluginId::PluginMail,
     ];
 
     /// 库探测名（find_plugin_library base_name）。
@@ -60,6 +68,8 @@ impl NativePluginId {
             NativePluginId::PluginWasm => "plugin_wasm",
             NativePluginId::PluginVm => "plugin_vm",
             NativePluginId::PluginRoaming => "plugin_roaming",
+            NativePluginId::PluginResources => "plugin_resources",
+            NativePluginId::PluginMail => "plugin_mail",
         }
     }
 
@@ -101,7 +111,7 @@ fn migrate_legacy_file(path: &Path) {
     }
     if path.exists() {
         // 新版已在场（并发或先前迁移过写了一半）——旧文件作废弃副本清理。
-        let _ = std::fs::remove_file(&legacy);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&legacy);
         return;
     }
     // 同目录 rename = 原子迁移（旧「读+写+删」中段崩溃

@@ -14,26 +14,61 @@
 //   天然兼容（只清 focus、保留 tab）。
 // - TAB 切换 = 组件销毁/重建（轮询定时器随 onMounted/onBeforeUnmount 正确
 //   清理重建）；两 TAB 数据面本就独立（subagents vs background WSAPI）。
+// - 已归档 TAB（2026-11-15）：SubagentsView 挂 archived prop 复用（归档是
+//   子代理台账的过滤视角，不是独立数据面）；TAB 标签带已归档计数
+//   （N != null 时渲染 `(N)`）——计数由面板 loadList 后 emit('archived-count')
+//   投影（列表加载时点的全库投影），宿主 ref 收敛；进程 TAB 先行时计数
+//   缺席（null → 不渲染括号），进入子代理/归档任一面板即补上。
+// - 执行循环 TAB（2026-11-17 项5 durable loop 并入，用户拍板）：原独立
+//   /loops 页降为 TAB 面板——loop 也是 agent 派生执行单元；feature gate
+//   + 按需异步加载（裁 loop 时 LoopsView 整体剔除）；旧 /loops 深链
+//   redirect 落 ?tab=loops（query 全透传，与 subagents/processes 同构）。
 // - 布局契约（2026-11-09 对齐全仓骨架）：本页是路由页根（page- 前缀拿
 //   `.main-content > [class^="page-"]` 的 flex+height:100%），page-header
 //   归宿主页；TAB 条用全局 .tabs/.tab 下划线式（components.css，与通道/
 //   看板页签等全仓一致）；两个面板 View 均无自身 page-header（标题层级
 //   = 大标题→TAB→内容，与 Scanner/Board 等同款）。
-import { computed } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SubagentsView from './SubagentsView.vue'
 import ProcessesView from './ProcessesView.vue'
+import BrowserView from './BrowserView.vue'
 
-type Tab = 'subagents' | 'processes'
+// 浏览器接管（2026-11-15，计划 D10）：第四 TAB，feature gate（`!== 'false'`
+// = 默认包含，同 router 门控惯例）；关 = TAB 不渲染，路由/侧栏零改动。
+const browserEnabled = import.meta.env.VITE_FEATURE_BROWSER !== 'false'
+
+// 执行循环 TAB（2026-11-17 项5 durable loop 并入，用户拍板）：loop 也是
+// agent 派生的执行单元，管理面从独立 /loops 页收编为 TAB。feature gate
+// 同 browser TAB；组件按需异步加载——customize 裁剪 loop 时 LoopsView
+// 整体 tree-shake 掉（保留原 /loops 路由时代的动态导入语义）。
+const loopEnabled = import.meta.env.VITE_FEATURE_LOOP !== 'false'
+const LoopsPanel = loopEnabled ? defineAsyncComponent(() => import('./LoopsView.vue')) : null
+
+type Tab = 'subagents' | 'processes' | 'archived' | 'browser' | 'loops'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'subagents', label: '子代理' },
   { key: 'processes', label: '后台任务' },
+  ...(loopEnabled ? [{ key: 'loops' as Tab, label: '执行循环' }] : []),
+  { key: 'archived', label: '已归档' },
+  ...(browserEnabled ? [{ key: 'browser' as Tab, label: '浏览器' }] : []),
 ]
 
 const route = useRoute()
 const router = useRouter()
 
-const tab = computed<Tab>(() => (route.query.tab === 'processes' ? 'processes' : 'subagents'))
+const tab = computed<Tab>(() => {
+  if (route.query.tab === 'processes') return 'processes'
+  if (route.query.tab === 'loops' && loopEnabled) return 'loops'
+  if (route.query.tab === 'archived') return 'archived'
+  if (route.query.tab === 'browser' && browserEnabled) return 'browser'
+  return 'subagents'
+})
+
+// 已归档计数（TAB 徽标数据源）：面板每次 loadList 后 emit 投影；
+// null = 尚未有任何面板加载过（如直链后台任务 TAB——不渲染括号；
+// 缺省/归档 TAB 一挂载即投影，0 也渲染括号）。
+const archivedCount = ref<number | null>(null)
 
 function switchTab(t: Tab) {
   if (t === tab.value) return
@@ -55,11 +90,21 @@ function switchTab(t: Tab) {
           :class="{ active: tab === t.key }"
           @click="switchTab(t.key)"
         >
-          {{ t.label }}
+          {{ t.label }}<template v-if="t.key === 'archived' && archivedCount != null"> ({{ archivedCount }})</template>
         </button>
       </div>
-      <SubagentsView v-if="tab === 'subagents'" />
-      <ProcessesView v-else />
+      <SubagentsView
+        v-if="tab === 'subagents'"
+        @archived-count="(n: number) => (archivedCount = n)"
+      />
+      <ProcessesView v-else-if="tab === 'processes'" />
+      <LoopsPanel v-else-if="tab === 'loops'" />
+      <BrowserView v-else-if="tab === 'browser'" />
+      <SubagentsView
+        v-else
+        :archived="true"
+        @archived-count="(n: number) => (archivedCount = n)"
+      />
     </div>
   </div>
 </template>

@@ -837,3 +837,57 @@ fn bug87_reload_reembeds_entries_so_dimensions_follow_current_model() {
         .expect("reload re-embeds entries; dimension mismatch has no occurrence path");
     assert!(res.total >= 1, "re-embedded entry must be retrievable");
 }
+
+// ============================================================
+// BUG-20261114-032: query_with_embedding equivalence
+// ============================================================
+
+/// query_with_embedding 与 query_with_threshold 评分语义单一真相源：
+/// 同一 embedding、同一查询喂给两个入口，结果（条目/顺序/分数/total）
+/// 必须完全一致——前者是后者的 embed 拆分形态，任何语义漂移都会让
+/// 守卫纪律调用方（manager 三处搜索）与便捷壳产生分叉。
+#[test]
+fn query_with_embedding_matches_query_with_threshold() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("equiv.jsonl");
+    let embed: crate::vector::EmbeddingFunc =
+        Box::new(|t: &str| Ok(vec![t.len() as f32, 1.0, 0.0]));
+    let config = StoreConfig {
+        embedding_tier: "test".into(),
+        plugin_path: None,
+        config_dir: None,
+        max_results: 10,
+        similarity_threshold: 0.1,
+        storage_path: path.to_string_lossy().to_string(),
+    };
+    let store = VectorStore::new_from_embed(embed, config);
+
+    store
+        .store_entry(&make_entry("e1", "alpha memory about paris"))
+        .unwrap();
+    store
+        .store_entry(&make_entry("e2", "beta memory about london"))
+        .unwrap();
+    store
+        .store_entry(&make_entry("e3", "gamma note unrelated"))
+        .unwrap();
+
+    let query = "alpha memory";
+    let emb = (store.embed_handle())(query).unwrap();
+
+    let via_shell = store.query_with_threshold(query, 0, &[], 0.1).unwrap();
+    let via_split = store
+        .query_with_embedding(&emb, query, 0, &[], 0.1)
+        .unwrap();
+
+    assert_eq!(via_shell.total, via_split.total);
+    assert_eq!(via_shell.entries.len(), via_split.entries.len());
+    for (a, b) in via_shell.entries.iter().zip(via_split.entries.iter()) {
+        assert_eq!(a.id, b.id);
+        assert!(
+            (a.score - b.score).abs() < 1e-12,
+            "score drift between embed-split and shell entry points"
+        );
+    }
+    assert_eq!(via_shell.query, via_split.query);
+}

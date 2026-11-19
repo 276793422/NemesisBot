@@ -21,6 +21,14 @@ REM       plugin_vm.dll  (image script + guest ELFs embedded; released on first 
 REM       plugin_roaming.dll  (QUIC relay server + rendezvous registry; QUIC
 REM                           plugin M1 — iroh stack lives here, host exe
 REM                           zero increment; absent = relay honestly degraded)
+REM       plugin_resources.dll  (add-on resource carrier; persona supermarket
+REM                           upstream snapshot embedded at build time —
+REM                           FILE cache (pre-downloaded) > baseline fallback;
+REM                           absent = shop pure online)
+REM       plugin_mail.dll  (SMTP/POP3 servers + SMTP client + per-address
+REM                           maildir store; gate = workspace config.mail.json
+REM                           enabled, default off; absent = mail honestly
+REM                           disabled)
 REM     plugins_wasm\        (WASM plugin payload dir, preset empty + README;
 REM                           installed plugins land here, NOT loaded by default)
 REM     tests\
@@ -300,7 +308,9 @@ if exist "certs\root_cert.der" (
     echo   WARN certs\root_cert.der not found - no compile-time anchor, self-update refuses ^(fail-closed^)
 )
 
-cargo build --release --features git-https
+REM sandbox-mxc: 非默认 feature（2026-11-14 审查三轮 #5——mxc-sdk 的 ureq
+REM native-tls 依赖破 Linux rustls-only 纪律），发行构建在此显式带回全量。
+cargo build --release --features git-https,sandbox-mxc
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed!
@@ -312,7 +322,7 @@ REM vm-display pass (plugin-vm host loader; plugin-vm package = single distribut
 REM dependency of the whole VM stack, packaged exe must carry the display loader.
 REM Incremental: only the nemesisbot crate recompiles; failure = keep default exe, non-fatal)
 echo   Building nemesisbot with vm-display (plugin-vm loader)...
-cargo build --release -p nemesisbot --features vm-display,git-https
+cargo build --release -p nemesisbot --features vm-display,git-https,sandbox-mxc
 if errorlevel 1 (
     echo   WARN vm-display build failed, keeping default exe ^(VM display relay unavailable^)
 )
@@ -330,6 +340,45 @@ if "%SKIP_PLUGIN%"=="1" (
 )
 
 echo [Step 4/5] Building plugin DLLs...
+
+REM --- persona snapshot pre-download (对齐价目表 FILE 模式：脚本在此把上游
+REM     tarball 预下载到缓存 = 本构建会话唯一网络点，成功 ->
+REM     NEMESIS_PERSONA_FILE 指缓存 + NEMESIS_PERSONA_REFRESH=<40位SHA>
+REM     （manifest 溯源 commit + rerun-if-env-changed 重跑信号——同 commit
+REM     的后续 pass 读缓存零网络）；ls-remote 或下载任一失败 -> 两变量落空 =
+REM     plugin-resources build.rs 仓库基线兜底 fail-open（cargo:warning，绝不
+REM     炸构建）。日常 cargo 构建不带这些变量 = 纯离线基线；
+REM     NEMESIS_PERSONA_OFFLINE=1 可强制基线） ---
+set "NEMESIS_PERSONA_FILE="
+set "NEMESIS_PERSONA_REFRESH="
+set "PERSONA_CACHE=%CD%\target\persona\agency-agents.tar.gz"
+set "PERSONA_UPSTREAM_COMMIT="
+for /f "tokens=1" %%i in ('git ls-remote https://github.com/msitarzewski/agency-agents.git main 2^>nul') do (
+    if not defined PERSONA_UPSTREAM_COMMIT set PERSONA_UPSTREAM_COMMIT=%%i
+)
+if not defined PERSONA_UPSTREAM_COMMIT (
+    echo   Persona snapshot: upstream probe failed ^(offline?^) - baseline fallback
+    goto persona_done
+)
+if not exist "%CURL_EXE%" (
+    REM No curl: fixed refresh still pins the fingerprint - build.rs does its
+    REM own single download inside the plugin pass (prices legacy shape).
+    set "NEMESIS_PERSONA_REFRESH=!PERSONA_UPSTREAM_COMMIT!"
+    echo   SKIP curl.exe not found - build.rs will fetch once itself
+    goto persona_done
+)
+if not exist "%CD%\target\persona" mkdir "%CD%\target\persona" >nul 2>&1
+echo   Persona snapshot: downloading upstream tarball ^(!PERSONA_UPSTREAM_COMMIT!^)...
+"%CURL_EXE%" -fsSL --connect-timeout 15 --max-time 300 -o "%PERSONA_CACHE%" "https://codeload.github.com/msitarzewski/agency-agents/tar.gz/refs/heads/main"
+if errorlevel 1 (
+    del /q "%PERSONA_CACHE%" 2>nul
+    echo   WARN persona tarball download failed - baseline fallback
+    goto persona_done
+)
+set "NEMESIS_PERSONA_FILE=%PERSONA_CACHE%"
+set "NEMESIS_PERSONA_REFRESH=!PERSONA_UPSTREAM_COMMIT!"
+echo   OK persona tarball cached - commit !PERSONA_UPSTREAM_COMMIT! ^(plugin pass reads this file, no further downloads^)
+:persona_done
 
 REM --- plugin-ui ---
 if exist "plugins\plugin-ui\Cargo.toml" (
@@ -433,13 +482,37 @@ if exist "plugins\plugin-roaming\Cargo.toml" (
         echo   WARN Plugin-roaming DLL build failed ^(non-fatal, QUIC relay server unavailable^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto plugin_vm
+        goto plugin_mail
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
     echo   OK Plugin-roaming DLL built
 ) else (
     echo   SKIP plugins\plugin-roaming\Cargo.toml not found
+)
+echo.
+
+:plugin_mail
+REM --- plugin-mail (SMTP/POP3 servers + SMTP client + per-address maildir
+REM     store; mail infra C-ABI plugin #4; absent = mail subsystem honestly
+REM     disabled — loader gate is config.mail.json enabled, default off) ---
+if exist "plugins\plugin-mail\Cargo.toml" (
+    echo   Building plugin-mail...
+    pushd plugins\plugin-mail
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-mail
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-mail DLL build failed ^(non-fatal, mail subsystem unavailable^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto plugin_vm
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-mail DLL built
+) else (
+    echo   SKIP plugins\plugin-mail\Cargo.toml not found
 )
 echo.
 
@@ -481,7 +554,7 @@ if exist "plugins\plugin-vm\Cargo.toml" (
         echo   WARN Plugin-vm DLL build failed ^(non-fatal, VM display relay unavailable^)
         echo.
         set CARGO_TARGET_DIR=target\target_windows
-        goto step5
+        goto plugin_resources
     )
     popd
     set CARGO_TARGET_DIR=target\target_windows
@@ -489,6 +562,32 @@ if exist "plugins\plugin-vm\Cargo.toml" (
     echo   OK Plugin-vm DLL built
 ) else (
     echo   SKIP plugins\plugin-vm\Cargo.toml not found
+)
+echo.
+
+:plugin_resources
+REM --- plugin-resources（附加资源载体 C-ABI 插件；人格超市上游快照编译期内嵌：
+REM     Step 4 预下载缓存（NEMESIS_PERSONA_FILE）> 缓存缺席 = 仓库基线兜底
+REM     （fail-open，build.rs 内 cargo:warning，绝不炸构建）；插件缺席 =
+REM     人格超市纯在线（现有行为）。未签名的 dev 产物经 loader 签名闸放行
+REM     仅限 dev 形态，release 出包走签名流程） ---
+if exist "plugins\plugin-resources\Cargo.toml" (
+    echo   Building plugin-resources...
+    pushd plugins\plugin-resources
+    set CARGO_TARGET_DIR=..\..\target\target_windows\plugins\plugin-resources
+    cargo build --release
+    if errorlevel 1 (
+        popd
+        echo   WARN Plugin-resources DLL build failed ^(non-fatal, persona supermarket snapshot unavailable^)
+        echo.
+        set CARGO_TARGET_DIR=target\target_windows
+        goto step5
+    )
+    popd
+    set CARGO_TARGET_DIR=target\target_windows
+    echo   OK Plugin-resources DLL built
+) else (
+    echo   SKIP plugins\plugin-resources\Cargo.toml not found
 )
 echo.
 
@@ -598,6 +697,24 @@ if exist "target\target_windows\plugins\plugin-roaming\release\plugin_roaming.dl
     set /a COPIED+=1
 ) else (
     if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_roaming.dll not found in build output ^(QUIC relay server unavailable^)
+)
+
+REM Copy plugin-resources DLL into plugins\ subdir (add-on resource carrier;
+REM persona supermarket upstream snapshot; absent = shop pure online).
+if exist "target\target_windows\plugins\plugin-resources\release\plugin_resources.dll" (
+    copy /y "target\target_windows\plugins\plugin-resources\release\plugin_resources.dll" "bin\bin_windows\plugins\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_resources.dll not found in build output ^(persona supermarket snapshot unavailable^)
+)
+
+REM Copy plugin-mail DLL into plugins\ subdir (SMTP/POP3 servers + client;
+REM absent = mail subsystem honestly disabled; gate config.mail.json enabled).
+if exist "target\target_windows\plugins\plugin-mail\release\plugin_mail.dll" (
+    copy /y "target\target_windows\plugins\plugin-mail\release\plugin_mail.dll" "bin\bin_windows\plugins\" >nul 2>&1
+    set /a COPIED+=1
+) else (
+    if "%SKIP_PLUGIN%"=="0" echo   WARN plugin_mail.dll not found in build output ^(mail subsystem unavailable^)
 )
 
 REM Copy test-tools binaries to bin\bin_windows\tests\

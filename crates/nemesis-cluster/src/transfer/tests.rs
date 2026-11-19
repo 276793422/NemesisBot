@@ -1087,3 +1087,56 @@ fn manifest_file_count_gate() {
     let ok = mk(MAX_MANIFEST_FILES);
     assert!(validate_manifest(&ok).is_ok(), "闸值内通过结构校验");
 }
+
+// 回归锁 BUG-20261113-129（与 nemesis-migrate workspace/tests.rs 同族形态）：
+// 目录符号链接环必须诚实跳过（不递归）。旧实现 from.is_dir() 跟随链接，
+// 链接环 = 病态嵌套复制直到 OS 路径上限（Windows ~260 / Linux PATH_MAX）
+// 才 Err，dst 留深层垃圾树。链接创建免提权降级链：symlink_dir（开发者
+// 模式/管理员）→ junction（mklink /J，任何用户）。
+#[cfg(windows)]
+fn make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn test_copy_dir_symlink_cycle_skipped_not_recursed() {
+    let root = temp_root("symlink-cycle");
+    let src = root.join("src");
+    let dst = root.join("dst");
+    let mem = src.join("memory");
+    std::fs::create_dir_all(&mem).unwrap();
+    std::fs::write(mem.join("notes.txt"), "real content").unwrap();
+
+    // 链接环：memory/loop → memory 自身（旧实现跟随 = 无限嵌套复制）。
+    make_dir_link(&mem, &mem.join("loop"));
+
+    copy_dir_recursive(&src, &dst).unwrap();
+    // 链接条目被跳过：dst 无 loop 目录、无深层垃圾嵌套树。
+    assert!(!dst.join("memory").join("loop").exists());
+    assert!(!dst.join("memory").join("loop").join("loop").exists());
+    // 常规文件照常拷贝。
+    assert_eq!(
+        std::fs::read_to_string(dst.join("memory").join("notes.txt")).unwrap(),
+        "real content"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

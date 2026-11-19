@@ -104,7 +104,9 @@ describe('NemesisSkin 契约 API', () => {
     // enum 有选项；number 有范围；秘密字段标记
     const mode = page!.fields.find((f) => f.key === 'agents.defaults.concurrent_request_mode')
     expect(mode!.options).toEqual(['queue', 'reject', 'steer'])
-    expect(mode!.default).toBe('queue')
+    // default 是 config.default.json 的编译期快照（单一真相源）——2026-11-03
+    // 生产默认翻转 steer 后此处随之变化（跟随翻转，不是回归）。
+    expect(mode!.default).toBe('steer')
     const temp = page!.fields.find((f) => f.key === 'agents.defaults.temperature')
     expect(temp!.range).toEqual({ min: 0, max: 2, step: 0.05 })
     const channels = window.NemesisSkin!.config.schema('channels')
@@ -196,7 +198,14 @@ describe('导航模型与路由一致性（契约 vs router）', () => {
     )
     const navFeatures = new Set([...table.matchAll(/: '([A-Z_]+)'/g)].map((m) => m[1]))
     expect(navFeatures.size).toBeGreaterThan(10) // 表解析失败（空集）= 红，防假绿
-    expect([...routerFeatures].sort()).toEqual([...navFeatures].sort())
+    // 例外（2026-11-17 循环并入执行单元复合页【执行循环】TAB）：/loops 旧深链
+    // redirect 保留 LOOP 门控（裁剪构建连 redirect 也不注册）；navModel 已无
+    // loops 条目，TAB 闸在 ExecutorsView（同 VITE_FEATURE_LOOP，browser TAB 同款
+    // 惯例——browser 从来没有 navModel 条目，不在两侧比对面）。
+    const ROUTER_ONLY = new Set(['LOOP'])
+    expect([...routerFeatures].filter((f) => !ROUTER_ONLY.has(f)).sort()).toEqual([
+      ...navFeatures,
+    ].sort())
   })
 })
 

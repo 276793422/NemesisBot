@@ -24,7 +24,7 @@ pub enum Outcome {
     /// Args had near-miss field names that were all confidently remapped.
     /// Carries the fixed arguments as a JSON string to feed to the tool.
     Fixed(String),
-    /// Args violate the schema. `class` is the failure class for telemetry:
+    /// Args violate the schema. `class` is the failure class for diagnostics:
     /// `"A"` = args are not valid JSON, `"B"` = schema violation.
     Invalid {
         message: String,
@@ -253,6 +253,16 @@ pub fn try_autofix(schema: &Value, args: &Value) -> Option<Value> {
         let target = candidates[0].0;
         if used_targets.contains(target) {
             return None; // two unknowns would collide on the same field
+        }
+        // BUG-20261114-039：改名目标已是 args 里的原始键 = 改名后
+        // `Map::insert` 落同一个最终键——幸存者是排序靠后的那个键的值
+        // （serde_json Map 迭代序），即**输入形状决定静默改写方向**：
+        // typo 键排序靠后时正确值被覆盖（写类工具执行在错误目标上），
+        // 靠前时 typo 值被静默丢弃。同「两未知撞同目标」的歧义纪律：
+        // 不猜，整单回灌让模型自纠。改名键 ∉ schema 字段、目标 ∈
+        // schema 字段，二者恒不同名，本检查不会误伤自身改名。
+        if args_obj.contains_key(target) {
+            return None;
         }
         used_targets.insert(target.clone());
         rename.push((key.clone(), target.clone()));

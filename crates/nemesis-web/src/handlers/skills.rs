@@ -202,13 +202,43 @@ fn skills_config_path(workspace: &str) -> PathBuf {
 
 fn load_config(workspace: &str) -> Result<nemesis_config::SkillsFullConfig, String> {
     let path = skills_config_path(workspace);
-    nemesis_config::load_skills_config(&path)
-        .map_err(|e| format!("failed to load skills config: {}", e))
+    let mut cfg = nemesis_config::load_skills_config(&path)
+        .map_err(|e| format!("failed to load skills config: {}", e))?;
+    // 出厂第三源显示面合流（registry 面 = nemesis-skills
+    // `apply_factory_sources`，两处共享同一 [`nemesis_skills::registry::FACTORY_SOURCE`]
+    // 值真相源；字段名差异 timeout/timeout_secs 在此显式映射）。append-if-absent
+    // 名字已存在即跳过——用户可关不可丢；load_config 也是 RMW（update_skills_config）
+    // 的读腿，下一条写事务会把合流结果落盘，与 registry 面收敛语义一致
+    // （老工作区零操作拿到出厂源）。
+    if !cfg
+        .github_sources
+        .iter()
+        .any(|s| s.name == nemesis_skills::registry::FACTORY_SOURCE.name)
+    {
+        cfg.github_sources.push(nemesis_config::GitHubSourceConfig {
+            name: nemesis_skills::registry::FACTORY_SOURCE.name.to_string(),
+            repo: nemesis_skills::registry::FACTORY_SOURCE.repo.to_string(),
+            enabled: true,
+            branch: nemesis_skills::registry::FACTORY_SOURCE.branch.to_string(),
+            index_type: nemesis_skills::registry::FACTORY_SOURCE
+                .index_type
+                .to_string(),
+            index_path: String::new(),
+            skill_path_pattern: nemesis_skills::registry::FACTORY_SOURCE.pattern.to_string(),
+            timeout: 0,
+            max_size: 0,
+        });
+    }
+    Ok(cfg)
 }
 
 fn load_registry_config(path: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
     if path.exists()
-        && let Ok(data) = std::fs::read_to_string(path)
+        // read_config_string 剥 BOM——记事本保存的 config.skills.json 裸读会
+        // parse 失败 → 静默落 default → 用户添加的 registry 源全部丢失
+        // （BUG-20261116-044；CLI 侧 commands/skills.rs:183 同文件早已走
+        // fsutil，此处补齐同源纪律）。
+        && let Ok(data) = nemesis_utils::fsutil::read_config_string(path)
         && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
     {
         return config;
@@ -400,20 +430,13 @@ impl SkillsHandler {
 
     fn open_dir(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
         let skill_dir = Self::resolve_skill_dir(workspace, name)?;
-        let path = skill_dir.to_string_lossy().to_string();
-        #[cfg(target_os = "windows")]
-        std::process::Command::new("explorer")
-            .arg(&path)
-            .spawn()
-            .ok();
-        #[cfg(target_os = "macos")]
-        std::process::Command::new("open").arg(&path).spawn().ok();
-        #[cfg(target_os = "linux")]
-        std::process::Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .ok();
-        Ok(Some(serde_json::json!({ "opened": true, "path": path })))
+        // 单一归宿（2026-11-14 收编）：此前三平台 `.ok()` 吞错——spawn 失败
+        // 也回 opened:true（假成功）。改走 shell_open::open_dir 诚实返错，
+        // 前端 SkillsView 已有失败 toast 契约（try/catch + toast.error）。
+        crate::handlers::shell_open::open_dir(&skill_dir)?;
+        Ok(Some(
+            serde_json::json!({ "opened": true, "path": skill_dir.to_string_lossy() }),
+        ))
     }
 
     fn uninstall(&self, workspace: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
@@ -1217,12 +1240,20 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
 
 /// Auto-detect skill structure of a GitHub repo.
 /// Returns Ok((index_type, skill_path_pattern, branch)) on success, Err(reason) on failure.
+///
+/// 探测响应体有帽读（2026-11-15 六轮复查补，BUG-20261114-046 同类横扫）：
+/// 四处成功臂 `json()/text()` 全量读入无上界——046 横扫收口了
+/// nemesis-skills 三个 registry crate，漏掉本 handler 侧探测路径（同信任
+/// 域：用户可配第三方源）。帽值 = nemesis-skills registry 单一真相源
+/// 16MB；blocking 响应经 [`nemesis_utils::http_cap::read_body_capped_blocking`]
+/// 读入过程中断。
 fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, String), String> {
     let branches = ["main", "master"];
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+    const CAP: u64 = nemesis_skills::registry::MAX_API_JSON_BODY_BYTES;
 
     for branch in &branches {
         let base_url = format!("https://api.github.com/repos/{}/{}/contents", owner, repo);
@@ -1234,7 +1265,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .header("User-Agent", "nemesisbot")
             .send()
             && resp.status().is_success()
-            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>()
+            && let Ok(body) = nemesis_utils::http_cap::read_body_capped_blocking(resp, CAP)
+            && let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&body)
         {
             let skill_dirs: Vec<&str> = entries
                 .iter()
@@ -1281,8 +1313,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .header("User-Agent", "nemesisbot")
             .send()
             && resp.status().is_success()
-            && let Ok(data) = resp.text()
-            && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok()
+            && let Ok(body) = nemesis_utils::http_cap::read_body_capped_blocking(resp, CAP)
+            && serde_json::from_slice::<Vec<serde_json::Value>>(&body).is_ok()
         {
             return Ok((
                 "skills_json".to_string(),
@@ -1298,7 +1330,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
             .header("User-Agent", "nemesisbot")
             .send()
             && resp.status().is_success()
-            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>()
+            && let Ok(body) = nemesis_utils::http_cap::read_body_capped_blocking(resp, CAP)
+            && let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&body)
         {
             let skip_dirs = [
                 "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests", "examples",
@@ -1328,7 +1361,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
                     .header("User-Agent", "nemesisbot")
                     .send()
                     && r.status().is_success()
-                    && let Ok(sub) = r.json::<Vec<serde_json::Value>>()
+                    && let Ok(sub_body) = nemesis_utils::http_cap::read_body_capped_blocking(r, CAP)
+                    && let Ok(sub) = serde_json::from_slice::<Vec<serde_json::Value>>(&sub_body)
                     && sub.iter().any(|e| {
                         e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
                             && e.get("type").and_then(|v| v.as_str()) == Some("file")

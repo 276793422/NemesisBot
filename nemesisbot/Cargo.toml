@@ -22,8 +22,9 @@ default = [
     "forge", "memory", "workflow", "security", "scanner", "sandbox", "vm", "eval", "usage", "board",
     "connectors", "ziwei",
     "terminal", "skins", "plugins-wasm", "codemode", "selfupdate",
-    "pricing-embed", "verify", "web-static", "lsp",
-    "checkpoint-git", "image-process", "history-search", "usage-store",
+    "pricing-embed", "verify", "web-static", "lsp", "browser",
+    "checkpoint-git", "image-process", "history-search", "usage-store", "taskstore-sqlite",
+    "events", "loop", "goals", "mail",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -33,6 +34,25 @@ desktop = ["dep:nemesis-desktop"]
 health = ["dep:nemesis-health"]
 heartbeat = ["dep:nemesis-heartbeat"]
 auth = ["dep:nemesis-auth"]
+# events = 事件驱动唤醒（项1 P1，质变计划 2026-11-16）：fs 事件按规则唤醒会话
+# （`<workspace>/config/events.json` 热重载；三闸：per-rule 冷却 / 小时窗 /
+# estop 冻结）。nemesis-events crate 解耦 bus/estop（闭包注入，gateway
+# post_agent.rs 装配）。穿透 nemesis-web/events = EventsView 管理面同闸。
+# 关 = 泵任务不装配、events.json 无消费者、events.* WSAPI 退出注册表面。
+events = ["dep:nemesis-events", "nemesis-web/events"]
+# loop = 自配速 durable loop（项5，质变计划 2026-11-16）：`<workspace>/loops/
+# {id}.json` 状态对象 + loop_wakeup/loop_status/loop_finish 三工具（绑定
+# 会话）+ gateway 驱动器（sweep 纯逻辑裁决 → 项1 注入面同款 bus 注入；
+# 预算三维保险丝 → 停车场；estop 全冻结）。nemesis-web/loop 穿透 =
+# loops.* WSAPI + LoopsView 同闸。paused/parked 只能由人置（防自锁）。
+loop = ["dep:nemesis-loop", "nemesis-web/loop"]
+goals = ["dep:nemesis-goals", "nemesis-web/goals"]
+# mail = 邮件基础设施子系统（2026-11-18）：plugin_mail.dll 装载臂恒编译
+# （roaming 同款纪律——双闸在运行期：config.mail.json enabled 总闸缺省 false
+# + config.plugin.native.json 名册开关）。本 feature 只穿透 nemesis-web/mail
+# = mailbox.* WSAPI / MailboxView（B3）。关 = WSAPI 不注册、页面不进包；
+# 装载器/契约仍在（总闸关 = 双保险第二道）。
+mail = ["nemesis-web/mail"]
 # voice = 语音本体（STT/TTS/VAD/标点/声纹/云转写，缓冲区与文件驱动）；
 # voice-capture = 设备 IO（麦克风采集/扬声器播放/AEC/loopback，cpal+wasapi）。
 # capture 不隐含在 voice 里——IoT 可只留转写不带设备 IO；全量构建两者都开。
@@ -58,6 +78,17 @@ scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
 sandbox = ["dep:nemesis-sandbox", "nemesis-web/sandbox"]
+# MXC 护栏后端（2026-11-14，2026-11-16_mxc-sdk-crates-io切换报告）：
+# 穿透 nemesis-sandbox/mxc 模块（crates.io mxc-sdk =1.1.0，微软官方发布）。
+# opt-in 后端
+# （executor.backend="mxc"），默认配置恒 native——编译进去 ≠ 默认选用。
+# 【非默认 feature】（审查三轮 #5 定案）：mxc-sdk 依赖 ureq(native-tls)
+# → Linux 落 openssl-sys，破 rustls-only 纪律；默认构建全平台零 mxc-sdk 引用，
+# Windows 发行版由
+# build-windows.bat 显式 --features sandbox-mxc 保持全量。Linux opt-in 需
+# libssl-dev。遥测红线经根 .cargo/config.toml [env] 强制（见
+# nemesis-sandbox/Cargo.toml 注记）。
+sandbox-mxc = ["sandbox", "nemesis-sandbox/mxc", "nemesis-web/sandbox-mxc"]
 # P5 桌面级 VM 后端（executor.vm）：穿透 nemesis-sandbox/vm 模块 + Dashboard
 # VM 页。关 = vm 模块整包不编译、executor.vm 配置缺消费者（诚实报未编译）。
 # IoT/无虚拟化环境默认关（IoT 预设钉 false）。libloading 已恒编译（M4 起非
@@ -143,6 +174,12 @@ web-static = []
 # nemesisbot/nemesis-agent/nemesis-web）。运行闸 config agents.lsp_tool
 # （默认关）+ PATH 探测本来就关着，编译内含 ~0.2MB；IoT 建议关。
 lsp = ["dep:nemesis-lsp", "nemesis-agent/lsp", "nemesis-web/lsp"]
+
+# 浏览器接管框架（2026-11-15）：bot 在用户机器浏览器（真 Edge/Chrome 窗口）
+# 里看页面 + 操作页面。nemesis-browser CDP 驱动 + host_browser 工具 +
+# Dashboard 执行单元浏览器面板（browser.* WSAPI）。关 = 工具/WSAPI/前端
+# 页面整体消失（与 VM 档 browser 工具无关，那个随 vm feature）。
+browser = ["dep:nemesis-browser", "nemesis-web/browser"]
 # 2026-10-17 体积细粒度三件套（nemesis-agent 重依赖拆分）：
 # checkpoint-git：D2 影子库（libgit2 ~1.5MB）；关 = checkpoint 恒 JSON 快照回落
 # image-process：J6 图片降采样（~0.8MB）；关 = 超限图按原图链路（验真链照常把关）
@@ -161,6 +198,12 @@ git-https = ["nemesis-board/git-https"]
 # stub（写入 no-op、查询恒空、JSON 价目层照常，open() warn 一次），生产
 # 调用方零改动。测试构建经各消费 crate 的 [dev-dependencies] 带回真账本。
 usage-store = ["nemesis-data/usage-store"]
+
+# 统一任务层 SQLite（nemesis-taskstore 的 tasks.db：runs/attempts/approvals/
+# deliveries/agents/notify_outbox）。关 = 全部 store 空 stub（写入 no-op、
+# 查询恒空、open() warn 一次），生产调用方零改动。测试构建经各消费 crate
+# 的 [dev-dependencies] 带回真账本（nemesisbot/cluster/workflow/cron）。
+taskstore-sqlite = ["nemesis-taskstore/sqlite"]
 
 # WASM 插件框架（`plugin` CLI + Dashboard 插件页 + agent 工具桥；wasmtime
 # 运行时在宿主壳 DLL plugins/plugin-wasm（独立构建、exe 旁 plugins/ 查找）
@@ -239,17 +282,22 @@ nemesis-web = { workspace = true }
 # shutdown_all + web server share the same Arc the LspTool registers with.
 # LSP 只读语义查询（lsp feature 门控；穿透 nemesis-agent/lsp + nemesis-web/lsp）
 nemesis-lsp = { workspace = true, optional = true }
+# 浏览器接管框架（browser feature 门控；穿透 nemesis-web/browser）
+nemesis-browser = { workspace = true, optional = true }
 nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }
 nemesis-cron = { workspace = true }
+nemesis-events = { workspace = true, optional = true }
+nemesis-goals = { workspace = true, optional = true }
+nemesis-loop = { workspace = true, optional = true }
 nemesis-board = { workspace = true, optional = true }
 nemesis-state = { workspace = true }
 nemesis-desktop = { workspace = true, optional = true }
 nemesis-devices = { workspace = true, optional = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-logger = { workspace = true }
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 # 系统集成执行体（system register/unregister/cert 子命令；安装器 spawn 契约面）。
 nemesis-sysint = { workspace = true }
 # Z1 session fork: chat_log copy goes through the process-global path manager;
@@ -337,6 +385,8 @@ git2 = { workspace = true }
 # usage-store 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
 # dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
 nemesis-data = { workspace = true, features = ["usage-store"] }
+# taskstore 行为测试经 dev-dependencies 带回真 SQLite 账本（同 usage-store 纪律）。
+nemesis-taskstore = { workspace = true, features = ["sqlite"] }
 # R9：子进程级测试（REPL 管道 stdin / eval 探测式真链路 / main 短路退码断言）
 # 需要 resolve_nemesisbot_bin + run_cli_with_stdin + MockAiServer（scripted
 # OpenAI 兼容回环服务器——TestAIServer 回复内容钉死，测不了工具选择/精确文本）。

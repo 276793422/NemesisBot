@@ -87,20 +87,6 @@ fn one_call(id: &str, name: &str) -> crate::types::ToolCallInfo {
     }
 }
 
-/// 收 outbound 直到 200ms 静默（spawn 的回合任务不保证在 runner 返回前
-/// 完成；timeout 等待非 sleep 竞态驱动）。
-async fn drain_outbound(
-    out_rx: &mut tokio::sync::mpsc::Receiver<nemesis_types::channel::OutboundMessage>,
-) -> Vec<String> {
-    let mut got = Vec::new();
-    while let Ok(Some(m)) =
-        tokio::time::timeout(std::time::Duration::from_millis(200), out_rx.recv()).await
-    {
-        got.push(m.content);
-    }
-    got
-}
-
 // ---------------------------------------------------------------------------
 // 场景 ③ 单元层：取消方法与 approval_responder 槽联动（无 security）
 // ---------------------------------------------------------------------------
@@ -212,6 +198,87 @@ async fn cancel_all_sessions_drains_every_active_session() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 5 A3：提问等待联动（question_responder 槽 drain）
+// ---------------------------------------------------------------------------
+
+/// 记录会话级取消调用的 question responder 假件（重写 trait 新方法；
+/// respond 族本测试不触达，落空实现）。
+#[derive(Default)]
+struct RecordingQuestionResponder {
+    cancels: std::sync::Mutex<Vec<(String, String)>>,
+}
+
+impl nemesis_types::agent::QuestionResponder for RecordingQuestionResponder {
+    fn respond(&self, _question_id: &str, _selected: Vec<String>) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn respond_form(
+        &self,
+        _question_id: &str,
+        _values: &std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, String> {
+        Ok(false)
+    }
+    fn pending(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+    fn cancel_session_questions(&self, session_key: &str, reason: &str) -> usize {
+        self.cancels
+            .lock()
+            .unwrap()
+            .push((session_key.to_string(), reason.to_string()));
+        1
+    }
+}
+
+/// 单会话取消：提问 drain 只命中该会话，参数 =（session_key, "turn cancelled"）；
+/// 其余会话不受影响；全量取消逐会话 drain。
+#[tokio::test]
+async fn cancel_drains_questions_per_session() {
+    let _logs = capture_logs();
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), cfg());
+    let q = std::sync::Arc::new(RecordingQuestionResponder::default());
+    agent_loop.set_question_responder(q.clone());
+    for k in ["agent:main:main", "agent:other:s2"] {
+        agent_loop
+            .cancel_tokens
+            .insert(k.to_string(), tokio_util::sync::CancellationToken::new());
+    }
+
+    assert!(agent_loop.cancel_session("agent:main:main"));
+    assert_eq!(
+        q.cancels.lock().unwrap().clone(),
+        vec![("agent:main:main".to_string(), "turn cancelled".to_string())],
+        "定向取消只 drain 该会话的提问卡"
+    );
+    q.cancels.lock().unwrap().clear();
+    assert_eq!(agent_loop.cancel_all_sessions(), 2);
+    let mut cancels = q.cancels.lock().unwrap().clone();
+    cancels.sort();
+    assert_eq!(
+        cancels,
+        vec![
+            ("agent:main:main".to_string(), "turn cancelled".to_string()),
+            ("agent:other:s2".to_string(), "turn cancelled".to_string()),
+        ],
+        "全量取消逐会话 drain 提问卡"
+    );
+}
+
+/// 无 question responder 槽（None）：提问 drain 臂 no-op，取消路径不炸
+/// （trait 默认 no-op 语义的槽空形态验证）。
+#[tokio::test]
+async fn cancel_without_question_responder_slot_is_noop() {
+    let _logs = capture_logs();
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), cfg());
+    agent_loop.cancel_tokens.insert(
+        "agent:main:main".to_string(),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    assert!(agent_loop.cancel_session("agent:main:main"));
+}
+
+// ---------------------------------------------------------------------------
 // 场景 ②：Queue 模式旧 turn 失败收尾不破坏已排队新 turn（零 sleep）
 // ---------------------------------------------------------------------------
 
@@ -306,10 +373,32 @@ async fn queue_mode_stale_turn_failure_keeps_queued_turn_intact() {
     .await
     .expect("turn B chat started after A's failure tail drain");
     drop(in_tx);
-    let _ = runner.await;
 
+    // 出站两帧事件驱动收集（2026-11-16 flake 根修）：Admitted turn 是
+    // detached spawn（bus.rs pump_dispatch → spawn_turn_task），泵随
+    // in_tx drop 返回时既不 join 在飞轮——A 的错误回复在 process_admitted
+    // 返回后才由 finish_message 发布、B-done 更是 B′ 任务的收尾动作
+    // （结构性发生在泵退出之后）。旧 `runner.await + 200ms 静默窗收口`
+    // 是在赌墙钟：重负载下发布被调度延迟超窗 → 空收口假红。改为 recv
+    // 循环直到两帧齐活或总死线（10s）——测试语义「两轮都收尾」以两帧
+    // 抵达为凭；两帧分别是各自 turn 任务的最后一条出站，见帧 = 该轮
+    // 收尾完成（busy guard 已在 process_admitted 尾部释放），尾部
+    // busy 归零断言随之成立。
     let mut outs = vec![receipt.content];
-    outs.extend(drain_outbound(&mut out_rx).await);
+    let mut saw_a_error = false;
+    let mut saw_b_done = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !(saw_a_error && saw_b_done) {
+        let m = match tokio::time::timeout_at(deadline, out_rx.recv()).await {
+            Ok(Some(m)) => m,
+            _ => break, // 死线到（真丢帧）或通道关——断言给出现场
+        };
+        saw_a_error |=
+            m.content.contains("Error processing message") && m.content.contains("boom-a");
+        saw_b_done |= m.content.contains("B-done");
+        outs.push(m.content);
+    }
+    let _ = runner.await;
     assert!(
         outs.iter()
             .any(|c| c.contains("Error processing message") && c.contains("boom-a")),

@@ -192,6 +192,8 @@ async fn gateway_internal(
     let base_url = format!("http://{}:{}", info.web_host, info.web_port);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
+        // BUG-20261115-045：X-Auth-Token 凭据面不跟随跨主机重定向。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()?;
     let resp = client
         .post(format!("{base_url}/api/internal"))
@@ -201,7 +203,13 @@ async fn gateway_internal(
         .await
         .map_err(|e| anyhow::anyhow!("Gateway {} 不可达: {e}", base_url))?;
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
+    // 双用拆分（BUG-20261113-164）：成功体是内部 API 小 JSON，全量读合法；
+    // 错误体只喂 bail 文案——有帽读取。
+    let text = if status.is_success() {
+        resp.text().await.unwrap_or_default()
+    } else {
+        nemesis_utils::http_cap::read_error_body(resp).await
+    };
     if !status.is_success() {
         anyhow::bail!("内部命令失败（{}）: {text}", status);
     }

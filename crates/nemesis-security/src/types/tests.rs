@@ -940,11 +940,13 @@ fn test_extract_target_web_fetch() {
 
 #[test]
 fn test_extract_target_web_search() {
-    let args = serde_json::json!({"url": "http://search.example.com"});
-    assert_eq!(
-        extract_target("web_search", &args),
-        "http://search.example.com"
-    );
+    // BUG-20261116-037：web_search 实参是 `query`（web.rs schema required:
+    // ["query"]），旧实现读 `url` 键恒空 target。
+    let args = serde_json::json!({"query": "rust async book"});
+    assert_eq!(extract_target("web_search", &args), "rust async book");
+    // query 缺席 → 空（与空 target 既有口径一致）
+    let no_query = serde_json::json!({"url": "http://search.example.com"});
+    assert_eq!(extract_target("web_search", &no_query), "");
 }
 
 #[test]

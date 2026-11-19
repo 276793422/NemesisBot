@@ -24,7 +24,11 @@ fn missing_models_empty_served_reports_all() {
 
 /// 陈旧二进制形态（10-22 exe：有基础/codemode 模型，缺 L21 断流与 chain 对；
 /// aadf9a27 起又缺诚实性 liar/honest 与不可逆重复 norepeat/repeat 两对；
-/// a3fa6f86 起再缺饱和人消息模型 testai-9.2）
+/// a3fa6f86 起再缺饱和人消息模型 testai-9.2；2026-11-16 起还缺
+/// subagent_steer 的 testai-steer-1.0、durable_loop 的 testai-loop-1.0、
+/// 记忆四场景的 testai-mem-1.0、agent 自举插件的 testai-bootstrap-1.0；
+/// c2e4496d 起又缺 goals 评估闸的 testai-goals-1.0；2026-11-19 起还缺
+/// mail_roundtrip 的 testai-mail-1.0）
 /// → 精确差集，不多不少。
 #[test]
 fn missing_models_stale_server_reports_exact_missing() {
@@ -52,6 +56,12 @@ fn missing_models_stale_server_reports_exact_missing() {
             "testai-honest-1.0",
             "testai-norepeat-1.0",
             "testai-repeat-1.0",
+            "testai-steer-1.0",
+            "testai-loop-1.0",
+            "testai-mem-1.0",
+            "testai-bootstrap-1.0",
+            "testai-goals-1.0",
+            "testai-mail-1.0",
         ]
     );
 }

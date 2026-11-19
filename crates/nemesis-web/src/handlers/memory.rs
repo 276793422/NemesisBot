@@ -79,7 +79,7 @@ impl ModuleHandler for MemoryHandler {
 
         match cmd {
             // Document memory (original) ---
-            "status" => self.status(workspace, home),
+            "status" => self.status(workspace, home, ctx),
             "documents" => self.documents(workspace),
             "document.get" => {
                 let data = data.ok_or("missing data")?;
@@ -366,8 +366,40 @@ fn jsonl_write_lock() -> &'static std::sync::Mutex<()> {
 
 // Document memory (original commands)
 
+/// 项2 P2：召回质量闸状态段（`memory.status` 消费）。
+/// - manager 缺席（config memory.enabled=false）→ `available:false`；
+/// - manager 在场 + gate 装配 → `available:true, enabled:true, stats:{...}`；
+/// - manager 在场 + gate 未装配（默认关/诚实跳过）→ `available:true, enabled:false`
+///   （闸统计只在 gateway 进程内存中，重启归零——诚实边界）。
+fn recall_gate_status(ctx: &RequestContext) -> serde_json::Value {
+    #[cfg(feature = "memory")]
+    {
+        match ctx.state.memory_manager.as_ref() {
+            None => serde_json::json!({ "available": false }),
+            Some(mgr) => {
+                let stats = mgr.recall_gate_stats();
+                serde_json::json!({
+                    "available": true,
+                    "enabled": stats.is_some(),
+                    "stats": stats,
+                })
+            }
+        }
+    }
+    #[cfg(not(feature = "memory"))]
+    {
+        let _ = ctx;
+        serde_json::json!({ "available": false })
+    }
+}
+
 impl MemoryHandler {
-    fn status(&self, workspace: &str, home: &str) -> Result<Option<serde_json::Value>, String> {
+    fn status(
+        &self,
+        workspace: &str,
+        home: &str,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let memory_dir = PathBuf::from(workspace).join("memory");
         let doc_count = if memory_dir.exists() {
             count_files_recursive(&memory_dir)
@@ -388,6 +420,10 @@ impl MemoryHandler {
 
         let main_enabled = read_main_switch(home);
 
+        // 项2 P2：召回质量闸统计（manager 装配的 gate 缺席 = enabled:false；
+        // manager 本身缺席（memory.enabled=false）= available:false）。
+        let recall_gate = recall_gate_status(ctx);
+
         Ok(Some(serde_json::json!({
             "document_memory": {
                 "enabled": true,
@@ -398,6 +434,7 @@ impl MemoryHandler {
                 "enabled": vector_enabled,
                 "main_enabled": main_enabled,
             },
+            "recall_gate": recall_gate,
         })))
     }
 
@@ -776,8 +813,27 @@ impl MemoryHandler {
         // Embedding config content (full overwrite of config.enhanced_memory.json)
         if let Some(content) = get_opt_str_loud(data, "embedding_config_content")? {
             let emb_path = config_dir.join("config.enhanced_memory.json");
-            std::fs::write(&emb_path, content)
-                .map_err(|e| format!("write embedding config error: {}", e))?;
+            // Typed 解析预检（BUG-20261115-037）：非法内容若落盘，loader 侧
+            // from_str::<EmbeddingConfig> 失败会**静默回落 default**——编辑器
+            // 存进一份坏 JSON = 配置无声丢失。loud 拒绝让坏内容停在编辑器；
+            // 与 loader 同型同源（字段 serde default，仅拒类型失配字段）。
+            serde_json::from_str::<nemesis_memory::vector::embedding_config::EmbeddingConfig>(
+                &content,
+            )
+            .map_err(|e| {
+                format!("embedding 配置解析失败（拒绝写入，防加载期静默回落默认值）: {e}")
+            })?;
+            // 原子写家族（BUG-20261115-037）：裸 std::fs::write 直写终路径，
+            // 写一半（进程被杀/磁盘满）残留半截 JSON → load 回落 default →
+            // 下一次无关的 RMW 保存把默认配置固化覆写。同文件 typed 臂
+            // save_embedding_config 已走 write_file_atomic（其注释即本失败链），
+            // 本臂是漏网——同形补齐。
+            nemesis_utils::write_file_atomic(
+                &emb_path.to_string_lossy(),
+                content.as_bytes(),
+                0o644,
+            )
+            .map_err(|e| format!("write embedding config error: {}", e))?;
         }
 
         Ok(Some(serde_json::json!({ "updated": true })))
@@ -1126,9 +1182,12 @@ impl MemoryHandler {
         }
         if removed {
             let _guard = jsonl_write_lock().lock().unwrap();
-            let tmp = jsonl_path.with_extension("jsonl.tmp");
-            std::fs::write(&tmp, kept).map_err(|e| format!("failed to write tmp: {}", e))?;
-            std::fs::rename(&tmp, &jsonl_path).map_err(|e| format!("failed to rename: {}", e))?;
+            // 原子重写——委托统一 helper（BUG-20261118-152 横向同族：固定
+            // `jsonl.tmp` 临时名在跨进程并发写者（多实例部署）下互踩可把
+            // 半截 JSONL 提交成正式向量库文件。nemesis-memory crate 同族
+            // persist 已在 BUG-20261025-59 收编，本 handler 副本漏网）。
+            nemesis_utils::write_file_atomic(&jsonl_path.to_string_lossy(), kept.as_bytes(), 0o644)
+                .map_err(|e| format!("failed to rewrite {}: {e}", jsonl_path.display()))?;
         }
         Ok(Some(serde_json::json!({ "id": id, "deleted": removed })))
     }

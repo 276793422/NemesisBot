@@ -22,6 +22,23 @@ use tracing::{info, warn};
 
 use crate::types::ConversationTurn;
 
+/// 测试钩子登记表（BUG-20261118-092 回归锁）：登记的 key 下次进入
+/// [`SessionStore::save`] 时模拟落盘失败（消费一次即摘除）。仅测试编译；
+/// key 定向而非全局开关——fork 测试并行跑，全局开关会串扰。镜像
+/// `chat_log::arm_test_fail_open` 的设计（目录占位注入会被 fork 的
+/// unique_key taken 检查避让，够不到 save 写入位点）。
+#[cfg(test)]
+static TEST_FAIL_SAVE_KEYS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// 武装一次 store save 失败注入（见 [`TEST_FAIL_SAVE_KEYS`]）。
+#[cfg(test)]
+pub(crate) fn arm_test_fail_save(key: &str) {
+    TEST_FAIL_SAVE_KEYS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(key.to_string());
+}
+
 // ---------------------------------------------------------------------------
 // Session (active session tracking)
 // ---------------------------------------------------------------------------
@@ -365,18 +382,38 @@ impl SessionStore {
         // key and later `save()` would overwrite the fork file with that
         // near-empty history (the fork silently lost). Construction-time
         // `load_from_disk` still covers the restart path; this covers the
-        // live path. Corrupt/absent file → same empty-session behavior as
-        // before.
+        // live path. Absent file → silent (new-session normal); corrupt/
+        // unreadable file → warn (BUG-20261115-021：故障必须可见——静默落穿
+        // 会让随后的 save 用重建内容覆盖损坏文件、销毁证据), then the same
+        // rebuild/empty fallback as before.
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
-            if let Ok(data) = std::fs::read_to_string(&path)
-                && let Ok(session) = serde_json::from_str::<StoredSession>(&data)
-            {
-                self.sessions
-                    .write()
-                    .unwrap()
-                    .insert(key.to_string(), session.clone());
-                return session;
+            match std::fs::read_to_string(&path) {
+                // NotFound 是新会话常态（文件在 store 构造后才出现才是 Z1
+                // 的主场景），静默。
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // BUG-20261115-021：读失败（权限/锁等）静默落穿重建臂 =
+                // 故障不可见。warn 留信号，行为不变。
+                Err(e) => tracing::warn!(
+                    "[session-store] sidecar {} 读取失败（走自愈重建）: {e}",
+                    path.display()
+                ),
+                Ok(data) => match serde_json::from_str::<StoredSession>(&data) {
+                    Ok(session) => {
+                        self.sessions
+                            .write()
+                            .unwrap()
+                            .insert(key.to_string(), session.clone());
+                        return session;
+                    }
+                    // BUG-20261115-021：解析失败静默落穿重建臂——随后 save
+                    // 会用重建内容覆盖原文件、销毁损坏证据（BUG-20261028-95
+                    // 同族的上游检测点补漏）。warn 后落穿，行为不变。
+                    Err(e) => tracing::warn!(
+                        "[session-store] sidecar {} 解析失败（走自愈重建）: {e}",
+                        path.display()
+                    ),
+                },
             }
         }
 
@@ -753,6 +790,17 @@ impl SessionStore {
 
     /// Save a session to disk.
     pub fn save(&self, key: &str) -> Result<(), String> {
+        #[cfg(test)]
+        {
+            let mut armed = TEST_FAIL_SAVE_KEYS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(pos) = armed.iter().position(|k| k == key) {
+                armed.swap_remove(pos);
+                tracing::warn!("[session_store] (test hook) simulated save failure: {key}");
+                return Err(format!("simulated save failure for {key}"));
+            }
+        }
         let storage_dir = match &self.storage_dir {
             Some(d) => d.clone(),
             None => return Ok(()),
@@ -821,7 +869,16 @@ impl SessionStore {
                         .insert(session.key.clone(), session);
                     loaded += 1;
                 }
-                Err(_) => continue,
+                // BUG-20261115-021：损坏 sidecar 静默跳过 = 故障不可见（后续
+                // save 会用自愈重建内容覆盖原文件、销毁证据）。warn 留信号，
+                // 行为不变（跳过该文件，等 get_or_create 自愈重建）。
+                Err(e) => {
+                    warn!(
+                        "[session-store] sidecar {} 解析失败，跳过（等 get_or_create 自愈重建）: {e}",
+                        path.display()
+                    );
+                    continue;
+                }
             }
         }
 
@@ -937,9 +994,18 @@ impl SessionStore {
     /// best-effort: only renames when the legacy target is absent, and a
     /// rename failure just warns (original files stay, data not lost).
     /// Called once at gateway startup, before SessionStore loads from disk.
+    ///
+    /// jsonl 侧目录 = 进程单例 sessions_log_dir（共享文件）；测试请用
+    /// [`Self::migrate_legacy_main_in`] 注入私有目录，避免与 append-only
+    /// 测试在共享 `agent_main_main.jsonl` 上竞争（2026-11-19）。
     pub fn migrate_legacy_main(storage_dir: &Path) {
-        use nemesis_path::default_path_manager;
-        let logs_dir = default_path_manager().sessions_log_dir();
+        let logs_dir = nemesis_path::default_path_manager().sessions_log_dir();
+        Self::migrate_legacy_main_in(storage_dir, &logs_dir);
+    }
+
+    /// [`Self::migrate_legacy_main`] 的目录注入形态（单一实现）。
+    pub fn migrate_legacy_main_in(storage_dir: &Path, sessions_log_dir: &Path) {
+        let logs_dir = sessions_log_dir;
 
         // session_logs/agent_main_main.jsonl → agent_main_session_legacy.jsonl
         let main_log = logs_dir.join("agent_main_main.jsonl");
@@ -976,7 +1042,7 @@ impl SessionStore {
                             )
                             .is_ok()
                         {
-                            let _ = std::fs::remove_file(&main_json);
+                            let _ = nemesis_utils::fsutil::remove_file_resilient(&main_json);
                             info!(
                                 "[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json"
                             );

@@ -29,19 +29,23 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         return Some(Duration::from_secs(secs));
     }
 
-    // Try Go-style duration string: strip the unit suffix and parse the number
+    // 单位换算必须饱和：数值部分 parse::<u64> 通过但 ×60/×3600 可溢出
+    // （阈值：分钟 > u64::MAX/60 ≈ 3.07e17、小时 > u64::MAX/3600 ≈ 5.12e15），
+    // 溢出在 debug panic / release 回绕成垃圾时长（BUG-20261114-057）。
+    // 饱和到 u64::MAX 秒 = 事实不限时：荒谬的超时请求诚实退化为近似无限，
+    // 与 config 侧算术族 saturating_mul（BUG-20261107-025）同一语义。
     if let Some(num_str) = s.strip_suffix('s') {
         if let Ok(secs) = num_str.parse::<u64>() {
             return Some(Duration::from_secs(secs));
         }
     } else if let Some(num_str) = s.strip_suffix('m') {
         if let Ok(mins) = num_str.parse::<u64>() {
-            return Some(Duration::from_secs(mins * 60));
+            return Some(Duration::from_secs(mins.saturating_mul(60)));
         }
     } else if let Some(num_str) = s.strip_suffix('h')
         && let Ok(hours) = num_str.parse::<u64>()
     {
-        return Some(Duration::from_secs(hours * 3600));
+        return Some(Duration::from_secs(hours.saturating_mul(3600)));
     }
 
     None

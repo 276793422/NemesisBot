@@ -57,6 +57,11 @@ mod vm_bridge_tests;
 #[cfg(all(test, feature = "vm"))]
 mod vm_bridge_sync_tests;
 
+/// 伴生测试（vm_bridge.rs 构建排水韧性——BUG-20261113-133 同族回归锁；
+/// 零内联纪律）。
+#[cfg(all(test, feature = "vm"))]
+mod vm_bridge_drain_tests;
+
 use std::path::{Path, PathBuf};
 
 use nemesis_path::{resolve_agent_home_in_workspace, resolve_agent_memory_dir_in_workspace};

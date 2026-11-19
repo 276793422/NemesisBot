@@ -1250,3 +1250,70 @@ async fn test_fallback_cooldown_honors_retry_after_hint() {
         remaining
     );
 }
+
+/// 降级事实章（fallback 用户面标注第一跳）：主级失败 → 备选级应答时
+/// extra 盖「主模型 → lane/模型」内部键（llm_bridge ProviderAdapter 取件
+/// 后移除）；主级成功零盖章直通。
+#[tokio::test]
+async fn test_fallback_stamps_degradation_on_non_primary_success() {
+    let provider = FallbackProvider::new(
+        "stamp-chain",
+        vec![
+            FallbackEntry {
+                provider: Arc::new(MockFailProvider {
+                    name: "p1".to_string(),
+                    model: "m1".to_string(),
+                    retriable: true,
+                }),
+                model: "primary-alias".to_string(),
+            },
+            FallbackEntry {
+                provider: Arc::new(MockSuccessProvider {
+                    name: "p2".to_string(),
+                    model: "m2".to_string(),
+                }),
+                model: "secondary-model".to_string(),
+            },
+        ],
+    );
+
+    let resp = provider
+        .chat(&[], &[], "primary-alias", &ChatOptions::default())
+        .await
+        .unwrap();
+    let stamp = resp
+        .extra
+        .get("_served_by_fallback")
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        stamp,
+        Some("primary-alias → p2/secondary-model"),
+        "备选级应答必须盖章: {:?}",
+        resp.extra
+    );
+    assert_eq!(resp.content, "response from p2");
+}
+
+#[tokio::test]
+async fn test_fallback_primary_success_has_no_stamp() {
+    let provider = FallbackProvider::new(
+        "stamp-primary",
+        vec![FallbackEntry {
+            provider: Arc::new(MockSuccessProvider {
+                name: "p1".to_string(),
+                model: "m1".to_string(),
+            }),
+            model: "m1".to_string(),
+        }],
+    );
+
+    let resp = provider
+        .chat(&[], &[], "m1", &ChatOptions::default())
+        .await
+        .unwrap();
+    assert!(
+        !resp.extra.contains_key("_served_by_fallback"),
+        "首级成功零盖章: {:?}",
+        resp.extra
+    );
+}

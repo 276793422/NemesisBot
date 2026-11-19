@@ -21,18 +21,18 @@ fn agt_default_impl_matches_new() {
     let _n = PersonaHandler::new();
 }
 
-// Wave5 批次：invalidate_cache 三清臂 + fetch_agent_content 的「树中查无
+// Wave5 批次：invalidate_cache 全清臂 + fetch_agent_content 的「树中查无
 // 此 agent」诚实臂（种子缓存后短路，不打网络）+ extract_identity_info 的
 // ASCII 冒号无空格形态（197）。
 
-/// 种子三级缓存 → invalidate_cache() 全清（253-258）。
+/// 种子全部缓存 → invalidate_cache() 全清（含 builtin 清单级）。
 /// 触碰全局缓存：持 tests::SHOP_TEST_LOCK 串行。
 #[tokio::test]
 async fn w5_invalidate_cache_clears_all_three_levels() {
     let _shop_guard = crate::handlers::persona::tests::SHOP_TEST_LOCK.lock().await;
     *TREE_CACHE.lock().unwrap() = Some(vec![("x/a.md".to_string(), 1)]);
     FM_CACHE.lock().unwrap().insert(
-        "x/a".to_string(),
+        "agency/x/a".to_string(),
         Frontmatter {
             name: "A".to_string(),
             emoji: "🤖".to_string(),
@@ -46,7 +46,8 @@ async fn w5_invalidate_cache_clears_all_three_levels() {
     CONTENT_CACHE
         .lock()
         .unwrap()
-        .insert("x/a".to_string(), "body".to_string());
+        .insert("agency/x/a".to_string(), "body".to_string());
+    *BUILTIN_LIST_CACHE.lock().unwrap() = Some(vec!["bug-analyst".to_string()]);
 
     invalidate_cache();
 
@@ -55,6 +56,10 @@ async fn w5_invalidate_cache_clears_all_three_levels() {
     assert!(
         CONTENT_CACHE.lock().unwrap().is_empty(),
         "content cache cleared"
+    );
+    assert!(
+        BUILTIN_LIST_CACHE.lock().unwrap().is_none(),
+        "builtin list cache cleared"
     );
 }
 

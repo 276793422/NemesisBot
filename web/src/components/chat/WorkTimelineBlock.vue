@@ -281,17 +281,20 @@ watch(liveTailSig, () => {
 }
 /* 思考链（批次二 2026-10-31）：头部计数徽标 + 正文折叠卡。元素限定选择
    器——徽标 span 与 details 共用 wt-think 类名但形态不同。紫色系 = 「思
-   考/推理」次级语义，与工具（accent）/失败（红）区分。 */
+   考/推理」次级语义，与工具（accent）/失败（红）区分。2026-11-15 用户
+   拍板：紫色升格为思考卡全程身份色——落地卡不再退灰（流式 0.45 浓档 =
+   进行中，落地 0.3 淡档 = 已完成），正文/标题/hover 同走紫色相，静态
+   回看行为（默认折叠、无动画）不变。 */
 span.wt-think {
   color: #9b7fd4;
   background: rgba(155, 127, 212, 0.12);
 }
 details.wt-think {
-  border: 1px solid var(--border);
+  border: 1px solid rgba(155, 127, 212, 0.3);
   border-radius: 6px;
   padding: 2px 8px;
   font-size: var(--text-xs, 12px);
-  color: var(--text-muted);
+  color: #9b7fd4;
 }
 details.wt-think > summary {
   cursor: pointer;
@@ -299,10 +302,11 @@ details.wt-think > summary {
   line-height: 1.6;
 }
 details.wt-think > summary:hover {
-  color: var(--text);
+  color: #b39ae4;
 }
 /* 折叠正文：pre-wrap 原样保留模型思考的换行/缩进；高度钳制 + 滚动——
-   65k 级思考展开后不撑爆时间线，也不截断内容（滚动能看全）。 */
+   65k 级思考展开后不撑爆时间线，也不截断内容（滚动能看全）。正文紫色
+   （全程身份色，2026-11-15）：靠既有 opacity 0.9 自然柔一档，长文不刺眼。 */
 .wt-think-body {
   white-space: pre-wrap;
   word-break: break-word;
@@ -311,7 +315,7 @@ details.wt-think > summary:hover {
   line-height: 1.5;
   margin-top: 2px;
   padding: 4px 0 2px;
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed rgba(155, 127, 212, 0.35);
   opacity: 0.9;
 }
 /* B3 流式思考卡（live）：轮未发布的增长中思考，默认展开 + 尾随省略号
@@ -352,7 +356,9 @@ details.wt-think-live > summary {
   gap: 4px;
 }
 .wt-round-text {
-  color: var(--text-muted);
+  /* 中间轮叙述与正常回复同色（2026-11-13 用户反馈：muted 灰在明暗两套
+     主题下都看不清；叙述是对话内容不是元数据，应继承主文本色）。 */
+  color: var(--text);
   font-size: var(--text-sm, 13px);
   line-height: 1.5;
   white-space: pre-wrap;

@@ -3,7 +3,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -105,7 +105,22 @@ CREATE TABLE IF NOT EXISTS guard_event_stats (
 );
 "#;
 
-/// 门面迁移链（v1-v3 数组化；语义与原散装 if 链等价：每步原子
+/// v3 → v4（工具使用率账）：按 天×工具 聚合的**真实执行**调用计数
+/// （拒绝不计——`checks_capture::classify_result` None 臂在 dispatch
+/// 包装层短路）。`tools.list` 的 `usage_count` 面（Dashboard/工作流
+/// 工具选择器按使用率排序）数据源；与 tool_validation_stats 互补——
+/// 那张按模型看健康，这张按工具看热度。
+/// upsert 增量写（每次工具调用 ~µs，相对秒级工具耗时忽略不计）。
+const SCHEMA_V4: &str = r#"
+CREATE TABLE IF NOT EXISTS tool_usage_stats (
+    day  TEXT    NOT NULL,
+    tool TEXT    NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, tool)
+);
+"#;
+
+/// 门面迁移链（v1-v4 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[DataStore] {note}`，门面按序跳过已应用步）。
 static DATA_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
     nemesis_utils::sqlite_preflight::Migration {
@@ -123,10 +138,20 @@ static DATA_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
         sql: SCHEMA_V3,
         log_note: "Schema v3 applied (P2B: tool_validation_stats)",
     },
+    nemesis_utils::sqlite_preflight::Migration {
+        version: 4,
+        sql: SCHEMA_V4,
+        log_note: "Schema v4 applied (tool_usage_stats)",
+    },
 ];
 
 /// 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
-/// 门面；无 extra pragmas——data.db 单写者，无多进程并开退避需求）。
+/// 门面；busy_timeout = 5000 与 board.db 同值——`dossier export` /
+/// `model prices` / `model probe` 等 CLI 与常驻 gateway **并开同一
+/// data.db** 是常规拓扑（同为 workspace_data_dir 真相源），且 open 面的
+/// 迁移链收尾还会无条件写 `user_version`（拿写锁）——无退避的撞锁 =
+/// CLI 立即 SQLITE_BUSY（dossier 的 usage 闭包静默缺行、prices loud 失败）。
+/// in-process 第二连接（watcher 轮询连接）自带同值 busy_timeout，口径一致）。
 static DATA_STORE: nemesis_utils::sqlite_preflight::StoreSpec =
     nemesis_utils::sqlite_preflight::StoreSpec {
         label: "[DataStore]",
@@ -144,7 +169,11 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     }
     // 装配序（能力准入/WAL/漂移对账/迁移前备份/原子迁移链）单一真相源在
     // 共享件 sqlite_preflight::open_sqlite_store（门面）。
-    nemesis_utils::sqlite_preflight::open_sqlite_store(db_path, &DATA_STORE, &[])
+    nemesis_utils::sqlite_preflight::open_sqlite_store(
+        db_path,
+        &DATA_STORE,
+        &["PRAGMA busy_timeout = 5000"],
+    )
 }
 
 #[cfg(test)]

@@ -87,12 +87,24 @@ impl RemoteAskRegistry {
         let mut map = self.lock();
         Self::sweep(&mut map);
         let id = entry.request_id.clone();
-        let mut len = 8usize.min(id.len()).max(1);
+        // 短号截断必须落在字符边界——request_id 是 worker 上行输入
+        // （nb_bus ask_register 信封体，bus 层只验非空不验编码），非
+        // ASCII id（中文/emoji，≥8 字节）裸 `[..8]` 会在 RPC 派发线程
+        // panic（远程可达）。floor 语义同时兜住空串（→0→候选 ""）。
+        // 冲突逐级加长同样 floor；倍增落进多字节字符中间时 floor 原地
+        // 踏步——直接跳全长（全长键冲突按覆盖语义）防死循环。
+        let mut len = nemesis_types::utils::floor_char_boundary(&id, 8);
         let key = loop {
             let candidate = id[..len].to_string();
             match map.get(&candidate) {
                 Some(existing) if existing.request_id == id => break candidate,
-                Some(_) if len < id.len() => len = (len * 2).min(id.len()),
+                Some(_) if len < id.len() => {
+                    let next = nemesis_types::utils::floor_char_boundary(
+                        &id,
+                        len.saturating_mul(2).min(id.len()),
+                    );
+                    len = if next > len { next } else { id.len() };
+                }
                 // 空位，或键被别的请求占满全长（uuid 撞满长≈不可能）：
                 // 都落此键（后者覆盖）。
                 Some(_) | None => break candidate,

@@ -79,6 +79,7 @@ fn make_deep_ctx(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: ws.clone(),
@@ -101,6 +102,7 @@ fn make_deep_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: service
             .map(|s| s as Arc<dyn nemesis_services::bot_service::LifecycleService>),
         cluster_log_dir: log_dir,
@@ -117,6 +119,7 @@ fn make_deep_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -152,6 +155,14 @@ fn test_cluster(dir: &tempfile::TempDir) -> Arc<Cluster> {
         ClusterConfig::default(),
         dir.path().to_path_buf(),
     ))
+}
+
+/// 内存态 TaskManager 姊妹 fixture（任务面测试专用）——tasks.db 换装是
+/// with_workspace（生产路径）专属；stub 编译态（nemesis-taskstore sqlite
+/// feature 关，`-p nemesis-web` 单包测试即此形态）下 tasks.db 写入 no-op、
+/// 查询恒空，任务面测试必须与持久化后端解耦（2026-11-18 裁剪门控暴露）。
+fn test_cluster_mem() -> Arc<Cluster> {
+    Arc::new(Cluster::new(ClusterConfig::default()))
 }
 
 fn node(id: &str, name: &str, role: NodeRole, online: bool, address: &str) -> ExtendedNodeInfo {
@@ -210,7 +221,7 @@ fn log_event(event: &str, data: serde_json::Value) -> serde_json::Value {
 async fn rt_status_task_state_metrics() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     cluster.register_node(node(
         "n1",
         "alpha",
@@ -991,7 +1002,7 @@ async fn node_update_identity_save_failure() {
 async fn tasks_list_states_string_payload_and_summaries() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     let log_dir = dir.path().join("cluster_logs");
     let ctx = ctx_ws(
         &dir,
@@ -1074,7 +1085,7 @@ async fn tasks_list_states_string_payload_and_summaries() {
 async fn tasks_detail_enriched_from_log() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
     let c = ctx.state.cluster.as_ref().unwrap();
     let t1 = c.submit_task(
@@ -1143,7 +1154,7 @@ async fn tasks_detail_enriched_from_log() {
 async fn tasks_submit_regular_creates_dashboard_task() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     let result = handler
@@ -1175,7 +1186,7 @@ async fn tasks_submit_regular_creates_dashboard_task() {
 async fn tasks_submit_peer_chat_paths() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     // 无 RPC client → Err（本地任务已建，但 RPC 无法发出）
@@ -1455,7 +1466,9 @@ async fn diagnostics_run_gates_and_fails_fast() {
         .unwrap_err();
     assert_eq!(err, "RPC client not available");
 
-    // 注入无 resolver 的 RpcClient → 对未知 peer 快速失败
+    // 注入无 resolver 的 RpcClient → 预热探针两次失败（unknown peer 对
+    // 无 resolver 的 dispatch 立即报 unresolvable，双探针瞬时失败）诚实
+    // 报对端不可达，不翻 Online/Offline 状态（预热是工具性探测）。
     cluster.set_rpc_client(Arc::new(RpcClient::new()));
     let err = handler
         .handle_cmd(
@@ -1465,7 +1478,8 @@ async fn diagnostics_run_gates_and_fails_fast() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("RPC call failed"), "{err}");
+    assert!(err.contains("预热探针两次失败"), "{err}");
+    assert!(err.contains("n1"), "{err}");
 }
 
 // persona_generate / persona_apply
@@ -1501,6 +1515,7 @@ fn ctx_ws_with_provider(
     }
     let state = AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -1523,6 +1538,7 @@ fn ctx_ws_with_provider(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: service
             .map(|s| s as Arc<dyn nemesis_services::bot_service::LifecycleService>),
         cluster_log_dir: None,
@@ -1539,6 +1555,7 @@ fn ctx_ws_with_provider(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -1982,7 +1999,7 @@ async fn tasks_list_maps_cancelled_status_to_failed() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_string_lossy().to_string();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     let ctx = ctx_ws(&dir, Some(cluster.clone()), Some(ws.clone()), None);
 
     use nemesis_types::cluster::{Task, TaskStatus};
@@ -2015,7 +2032,7 @@ async fn tasks_detail_reports_running_status() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_string_lossy().to_string();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     cluster.register_node(node(
         "n1",
         "alpha",
@@ -2102,7 +2119,7 @@ async fn nodes_refresh_merges_self_reported_tags() {
 async fn tasks_submit_peer_chat_spawn_failure_is_swallowed() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let cluster = test_cluster(&dir);
+    let cluster = test_cluster_mem();
     cluster.set_rpc_client(Arc::new(RpcClient::new()));
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 

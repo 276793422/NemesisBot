@@ -52,6 +52,9 @@ fn append_meta_writes_all_optional_fields() {
         deliverables: &[],
         checkpoint_turn: Some(7),
         work: None,
+
+        source_node: None,
+        system_notice: Some("system"),
     };
     append_chat_log_meta(&key, "assistant", "done", &meta);
 
@@ -69,11 +72,41 @@ fn append_meta_writes_all_optional_fields() {
     assert_eq!(row["file_changes"][0]["path"].as_str(), Some("src/a.rs"));
     assert_eq!(row["file_changes"][1]["kind"].as_str(), Some("Modify"));
     assert_eq!(row["checkpoint_turn"].as_u64(), Some(7));
+    // 系统通知标记（2026-11-16）：Some 落键。
+    assert_eq!(row["system_notice"].as_str(), Some("system"));
 
     // dedup：同 path 保留首次出现序、kind 取最后一次声明。
     let deduped = dedup_file_changes(changes);
     assert_eq!(deduped.len(), 1);
     assert_eq!(deduped[0].kind, FileChangeKind::Modify);
+
+    delete_chat_log(&key);
+}
+
+/// 系统通知标记（2026-11-16 系统注入消息渲染成用户气泡 BUG）：role=user
+/// 行带 `system_notice` 落键；None 不写键（真人消息/旧行为逐字节一致）。
+#[test]
+fn system_notice_key_written_only_when_set() {
+    let key = cov_key("system_notice");
+    delete_chat_log(&key);
+
+    // Some → 键在。
+    let meta = ChatLogMeta {
+        system_notice: Some("system"),
+        ..Default::default()
+    };
+    append_chat_log_meta(&key, "user", "Background job #1 finished", &meta);
+    // None → 键不在（缺字段 = 用户气泡旧行为）。
+    append_chat_log_meta(&key, "user", "真实用户消息", &ChatLogMeta::default());
+
+    let (msgs, _, _, _) = read_chat_log(&key, 10, None);
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0]["system_notice"].as_str(), Some("system"));
+    assert!(
+        msgs[1].get("system_notice").is_none(),
+        "未标记行不得带 system_notice 键: {:?}",
+        msgs[1]
+    );
 
     delete_chat_log(&key);
 }

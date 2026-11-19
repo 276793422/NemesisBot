@@ -10,19 +10,6 @@ use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
 use crate::types::RegistryConfig;
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Monotonic counter for unique atomic-write temp filenames (F-). Unique per
-/// write so concurrent writes to the same path (e.g. parallel tests sharing the
-/// default index) don't collide on the temp file.
-static REGISTRY_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn atomic_tmp_path(index_path: &str) -> PathBuf {
-    let n = REGISTRY_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    PathBuf::from(format!("{}.{}.tmp", index_path, n))
-}
-
 /// The registry manages a collection of forge artifacts.
 pub struct Registry {
     config: RegistryConfig,
@@ -36,6 +23,40 @@ impl Registry {
             config,
             artifacts: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Read-only peek over a registry file at an arbitrary path (cross-registry
+    /// queries).
+    ///
+    /// 跨注册表互查面（BUG 批次 2026-11-14）：蒸馏/闭环引擎两侧的同名撞车
+    /// 防线与反思输入并集借此读取**对方**的注册表文件。返回独立 Registry
+    /// 实例——不落盘（不调 save 系列即零副作用）、与调用方现有实例无共享
+    /// 状态。文件缺失 = 空注册表（与 load 家族约定同口径）；读取/解析失败
+    /// = WARN 留痕 + 空注册表（peek 是防御性互查，不阻塞主流程；loud 只
+    /// 留给装配点——BUG-20261114-026 的分工）。
+    pub fn peek_sync(path: &std::path::Path) -> Registry {
+        let registry = Self::new(RegistryConfig {
+            index_path: path.to_string_lossy().to_string(),
+        });
+        if !path.exists() {
+            return registry;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_json::from_str::<Vec<Artifact>>(&content) {
+                Ok(arts) => *registry.artifacts.lock() = arts,
+                Err(e) => tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "[ForgeRegistry] peek parse failed — treating as empty"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[ForgeRegistry] peek read failed — treating as empty"
+            ),
+        }
+        registry
     }
 
     /// Add a new artifact to the registry. Returns the artifact ID.
@@ -188,23 +209,19 @@ impl Registry {
                 return;
             }
         };
-        let tmp = atomic_tmp_path(&self.config.index_path);
-        if let Err(e) = std::fs::write(&tmp, &json) {
+        // BUG-20261115-013：改走家族唯一真相源 write_file_atomic——旧
+        // `{index}.{n}.tmp` 仅进程内计数器 + std::fs::write 截断写，跨进程
+        // 同 workspace 并发 save 互踩同名 tmp，半截内容被 rename 成坏索引。
+        // helper = pid+序数+纳秒唯一名 + create_new + sync_all + 失败清理
+        // （孤儿纪律 BUG-20261109-005 同源承担）。
+        if let Err(e) =
+            nemesis_utils::file::write_file_atomic(&self.config.index_path, json.as_bytes(), 0o644)
+        {
             tracing::warn!(
                 path = %self.config.index_path,
                 error = %e,
-                "[ForgeRegistry] index tmp write failed — auto-persist skipped"
+                "[ForgeRegistry] index atomic write failed — on-disk index stale until next save"
             );
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-            return;
-        }
-        if let Err(e) = std::fs::rename(&tmp, &self.config.index_path) {
-            tracing::warn!(
-                path = %self.config.index_path,
-                error = %e,
-                "[ForgeRegistry] index rename failed — on-disk index stale until next save"
-            );
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         }
     }
 
@@ -221,23 +238,31 @@ impl Registry {
             serde_json::to_string_pretty(&*arts)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
         };
-        // F-: atomic write (unique temp + rename). 计数器唯一名 = 错误路径
-        // 漏清即永久孤儿（BUG-20261109-005）——tmp 写与 rename 失败都清残留。
-        let tmp = atomic_tmp_path(&self.config.index_path);
-        if let Err(e) = tokio::fs::write(&tmp, &json).await {
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-            return Err(e);
-        }
-        if let Err(e) = tokio::fs::rename(&tmp, &self.config.index_path).await {
-            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
-            return Err(e);
-        }
-        Ok(())
+        // F-: atomic write 走家族唯一真相源（BUG-20261115-013，与
+        // save_sync 同根修：旧计数器名 + 截断写跨进程互踩）。sync_all 属
+        // 阻塞操作，按 BUG-20261114-013 同族纪律挪 spawn_blocking，不占
+        // async 执行器线程。
+        let path = self.config.index_path.clone();
+        tokio::task::spawn_blocking(move || {
+            nemesis_utils::file::write_file_atomic(&path, json.as_bytes(), 0o644)
+        })
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+        .map_err(std::io::Error::other)
     }
 
     /// Load the registry index from disk.
+    ///
+    /// (BUG-20261114-026) 「索引文件不存在」= 全新工作区常态，返回 Ok（空
+    /// 注册表），与 AuthStore::load / TrustStore::load / WorkspaceState::load
+    /// 的家族约定同口径——缺失不是损坏，构造/重载调用方据 Err 触发的 loud
+    /// 留痕只应面向真损坏（撕裂 JSON / IO 错误）。此前缺失 = Err(NotFound)，
+    /// 调用方只能 `let _ =` 一刀切吞掉，连带真损坏也零痕迹。
     pub async fn load(&self) -> std::io::Result<()> {
         if self.config.index_path.is_empty() {
+            return Ok(());
+        }
+        if !std::path::Path::new(&self.config.index_path).exists() {
             return Ok(());
         }
         let content = tokio::fs::read_to_string(&self.config.index_path).await?;

@@ -659,3 +659,30 @@ async fn auto_summarize_in_flight_visible_during_and_cleared_after() {
     crate::chat_log::delete_chat_log(&key);
     let _ = std::fs::remove_file(&cfg_path);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-170：summarizing 槽 RAII guard——Drop 摘除旗标，panic/
+// 取消路径不再滞留（旧行为：函数尾显式 remove 被跳过 → 旗标滞留，
+// 该会话自动压缩静默失效到重启）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn summarizing_slot_guard_removes_flag_on_drop() {
+    let agent_loop = AgentLoop::new(Box::new(OnceProvider { reply: "S".into() }), test_config());
+    let key = "main:guard-session";
+    agent_loop.summarizing.lock().insert(key.to_string(), true);
+    {
+        let _slot = SummarizingSlotGuard {
+            registry: agent_loop.summarizing.clone(),
+            session_key: key.to_string(),
+        };
+        assert!(
+            agent_loop.summarizing.lock().contains_key(key),
+            "guard 存活期旗标在场"
+        );
+    }
+    assert!(
+        !agent_loop.summarizing.lock().contains_key(key),
+        "guard drop 必须摘除旗标（panic 路径兜底语义）"
+    );
+}

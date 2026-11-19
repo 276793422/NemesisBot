@@ -6,6 +6,12 @@ use std::path::Path;
 
 use crate::sherpa;
 
+/// FFI 字符串边界：CString::new 失败（内嵌 NUL）转 Result 错误臂而非
+/// panic（BUG-20261115-014，与 stt.rs 同款 helper 形态一致）。
+fn c_string(s: &str) -> Result<CString> {
+    CString::new(s).map_err(|e| anyhow::anyhow!("字符串含内嵌 NUL 字节，无法转 C 字符串: {e}"))
+}
+
 pub struct SpeakerEngine {
     extractor: *const sherpa::SherpaOnnxSpeakerEmbeddingExtractor,
     dim: i32,
@@ -34,8 +40,11 @@ impl SpeakerEngine {
             anyhow::bail!("Speaker model not found: {}", model_path.display());
         }
 
-        let model_c = CString::new(model_path.to_str().unwrap_or("")).unwrap();
-        let provider_c = CString::new("cpu").unwrap();
+        // BUG-20261115-014：同 stt.rs——模型目录源自用户配置，防御内嵌
+        // NUL 走错误臂（当前 model_path 有 exists() 闸先拦，本臂属纵深
+        // 防御；形态与 stt.rs c_string 一致）。
+        let model_c = c_string(model_path.to_str().unwrap_or(""))?;
+        let provider_c = c_string("cpu")?;
 
         let config = sherpa::SherpaOnnxSpeakerEmbeddingExtractorConfig {
             model: model_c.as_ptr(),
@@ -247,6 +256,19 @@ impl Drop for SpeakerManager {
 }
 
 /// Compute cosine similarity between two embedding vectors.
+///
+/// Returns 0.0 (not comparable) for length mismatch, empty input, zero
+/// norm, or a **non-finite norm**. Non-finite norms are rejected, not
+/// trusted to the zero-norm check: `NaN == 0.0` is always false (NaN
+/// sails through) and inf passes it too — a NaN score then silently
+/// vanishes at the speaker-test `similarity >= 0.0` event gate, and an
+/// inf score passes that gate, flips `matched` true and serializes as
+/// JSON `null`. See BUG-20261117-086 (same doctrine as the shared
+/// implementation `nemesis_types::utils::cosine_similarity_f32`,
+/// BUG-20261116-015): model-provided embeddings (sherpa-onnx output,
+/// copied raw with no upstream finiteness validation) and f32 square
+/// accumulation (which overflows to inf from finite large elements)
+/// both make non-finite norms reachable without any adversarial input.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -254,7 +276,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
+    if norm_a == 0.0 || norm_b == 0.0 || !norm_a.is_finite() || !norm_b.is_finite() {
         return 0.0;
     }
     dot / (norm_a * norm_b)

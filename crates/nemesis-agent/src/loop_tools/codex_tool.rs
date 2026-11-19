@@ -53,7 +53,11 @@ impl CodexTool {
     pub fn new(cli_path: String, timeout_secs: Option<u64>, sandbox: Option<&str>) -> Self {
         Self {
             cli_path,
-            timeout_secs: timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            // BUG-20261117-061：0 视作缺省（Some(0) 直通 = cli_delegation
+            // tokio timeout(0) 立即超时，委派静默永久废）。
+            timeout_secs: timeout_secs
+                .filter(|t| *t > 0)
+                .unwrap_or(DEFAULT_TIMEOUT_SECS),
             sandbox: cli_delegation::resolve_codex_sandbox(sandbox.unwrap_or("")),
         }
     }

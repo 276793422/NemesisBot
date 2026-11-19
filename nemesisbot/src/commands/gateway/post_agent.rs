@@ -34,6 +34,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{error, info, warn};
 
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 use super::{AgentWiring, ClusterWiring, GatewayCtx};
 use crate::adapters;
 
@@ -52,6 +54,53 @@ pub(crate) fn roster_state(
     } else {
         record_status.to_string()
     }
+}
+
+/// 会话键 → web 通道出站路由键映射（事件/循环/审批续执行注入器共用，
+/// 纯函数，单测钉死）。
+///
+/// 入站 `chat_id` 必须是通道原生形态 `web:<session-id>`：AgentLoop 的
+/// 最终回复**原样回显**入站 (channel, chat_id)（`loop/bus.rs` send_reply），
+/// WebChannel 只认 `web:<session-id>`（`nemesis-channels/src/web.rs`）。
+/// 回灌 session_key 本身（`agent:main:session:<uuid>`）会让每条注入回合
+/// 的回复在通道派发面被拒（invalid chat ID format）——回复只落 chat log、
+/// Dashboard 在线客户端收不到实时推送（真实系统 UAT 实录：69 条派发
+/// 失败与 delivered_messages 一一对应）。
+///
+/// 非 `agent:main:session:` 形态 = 目标通道不明（IM 通道会话等），
+/// 诚实原样保留：行为与修复前一致，不在注入面猜测通道。
+#[cfg_attr(
+    not(any(feature = "events", feature = "loop", feature = "security")),
+    allow(dead_code)
+)]
+pub(crate) fn web_chat_id_from_session_key(session_key: &str) -> String {
+    match session_key.strip_prefix("agent:main:session:") {
+        Some(sid) => format!("web:{sid}"),
+        None => session_key.to_string(),
+    }
+}
+
+/// 注入面出站 `chat_id` 解析（单一真相源，三注入器共用）：**ConvRouter
+/// 活页绑定优先**——web 入站在册 `session_key → web:<ws_conn_id>` 映射
+/// （`process_messages_with_router` 每条 chat.send 都 `bind`），据此解析
+/// 才能把回复实时推到「正开着该会话」的标签页（SessionManager 按 WS
+/// 连接 id 键控，会话 uuid 不是连接 id，直接喂 `web:<uuid>` 只会命中
+/// 死会话软失败）；与 cron Opt2 实时推送消费**同一张绑定表**。
+///
+/// 无绑定（标签页没开过/已重连）回落 [`web_chat_id_from_session_key`]：
+/// `web:<会话id>` 形态合法，派发面死会话软失败（一次性 WARN + Ok），
+/// 正文照落 chat log、历史加载即恢复——与 cron 无绑定臂同一降级语义。
+#[cfg_attr(
+    not(any(feature = "events", feature = "loop", feature = "security")),
+    allow(dead_code)
+)]
+pub(crate) fn resolve_inject_chat_id(
+    session_key: &str,
+    conv_router: &nemesis_web::SharedConvRouter,
+) -> String {
+    conv_router
+        .target(session_key)
+        .unwrap_or_else(|| web_chat_id_from_session_key(session_key))
 }
 
 /// PB-5 产物 struct。
@@ -127,6 +176,22 @@ pub(crate) async fn init_post_agent(
     let board_selfcheck_registry = cluster.board_selfcheck_registry.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_playtest_registry = cluster.board_playtest_registry.clone();
+    // BUG-20261114-019：发件箱 Arc 进 adapter（terminal 停机链收口推送
+    // 循环的唯一样携带面；spawn 点句柄已丢弃，此前全进程无终止通路）。
+    // 三分臂声明：wiring 字段随 board+cluster 门。
+    // cluster-on（board 有无皆可）：类型 nemesis_cluster::outbox 恒可用
+    // （依赖随 cluster feature 门）；board-off 时槽恒 None——wiring 在
+    // 下方消费块随 board+cluster 门。
+    // cluster-off：消费块（cfg cluster）整体缺席，槽位仅保位；此处命名
+    // nemesis_cluster 会在裁剪矩阵 cluster-off 组合下 E0433，故占位类型
+    // 退 Option<()>（2026-11-15 云端 ET minimal-iot 实录）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let transfer_outbox = cluster.transfer_outbox.clone();
+    #[cfg(all(feature = "cluster", not(feature = "board")))]
+    let transfer_outbox: Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>> = None;
+    #[cfg(not(feature = "cluster"))]
+    #[allow(unused_variables)] // cluster-off：消费块缺席，槽位无读者
+    let transfer_outbox: Option<()> = None;
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // 注记：None 前向声明随 迁入本函数——赋值在下方 ClusterService
     // Adapter 构建（四元组消费点）。
@@ -482,6 +547,35 @@ pub(crate) async fn init_post_agent(
     #[cfg(feature = "cluster")]
     let cluster_arc_ref: Option<std::sync::Arc<nemesis_cluster::cluster::Cluster>> =
         cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone());
+    // 回帖投递失败 → 本地注记回调（BUG-20261118 B.3 失败可见）：捕获本
+    // 节点 board_store，失败臂经 board_bus::note_discussion_reply_failure
+    // 落系统注记。board 裁剪形态 = None（cluster-only 编译不引 nemesis_board）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let reply_failure_note: Option<crate::cluster_agent::ReplyFailureNote> = {
+        let store = board_store.clone();
+        Some(Arc::new(
+            move |event: &nemesis_types::cluster::DiscussionEvent, detail: &str, reply: &str| {
+                match store.as_ref() {
+                    Some(store) => {
+                        crate::board_bus::note_discussion_reply_failure(store, event, detail, reply)
+                    }
+                    None => tracing::warn!(
+                        target: "board_bus",
+                        "[nb_bus] reply failure note skipped: no local board store"
+                    ),
+                }
+            },
+        ))
+    };
+    // None 臂不得带类型注解：`crate::cluster_agent` 整模块门在 cluster
+    // feature 后（main.rs），no-cluster 裁剪组合下注解 = E0433（trim
+    // 矩阵实证）；裸 None 在 no-cluster 下又无消费点推型 = E0282。
+    // 唯一消费点（下方 adapter 装配）本身 cfg(cluster)——绑定的存在域
+    // 收窄为 cluster 且非 board+cluster（= cluster-without-board 形态），
+    // no-cluster 裁剪下绑定与消费点一并缺席，两型错误同消。
+    #[cfg(not(all(feature = "board", feature = "cluster")))]
+    #[cfg(feature = "cluster")]
+    let reply_failure_note = None;
     #[cfg(feature = "cluster")]
     {
         if let Some((cluster, task_list, work_queue, result_persister)) =
@@ -496,6 +590,8 @@ pub(crate) async fn init_post_agent(
                 work_queue,
                 result_persister,
                 board_worker_inbox.take(),
+                reply_failure_note,
+                transfer_outbox,
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.
@@ -1096,6 +1192,196 @@ pub(crate) async fn init_post_agent(
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
 
+    // 急停审计钩子（BUG-20261118-096）：触发/释放落 Merkle 审计链——急停
+    // 是最高级安全动作，此前只有 tracing::info（日志可改不算留痕）。闭包
+    // 持 SecurityPlugin 真身走 append_direct_audit_event（非工具管线直接
+    // 记账先例：cluster_support/delivery_ledger/selfupdate）；审计链未启用
+    // 时 append 返回 None（内部已 warn），tracing info 兜底可见性不变。
+    // 托盘入口不走此钩子（回调闭包在 run_runtime 直记）。
+    #[cfg(feature = "security")]
+    if let Some(plugin) = agent.security_plugin.clone() {
+        let hook: nemesis_web::handlers::estop::EstopAuditHook = std::sync::Arc::new(
+            move |operation: &str, source: &str| {
+                let reason = if operation == "engage" {
+                    "e-stop engaged (kill switch: freeze all agent activity)"
+                } else {
+                    "e-stop released (agent activity resumes)"
+                };
+                if plugin
+                    .append_direct_audit_event(
+                        "estop",
+                        "kill_switch",
+                        "system",
+                        source,
+                        "gateway",
+                        "allow",
+                        reason,
+                    )
+                    .is_none()
+                {
+                    tracing::debug!(
+                        "[Gateway] estop audit event not recorded (chain disabled or append failed); tracing fallback only"
+                    );
+                }
+            },
+        );
+        web_server.set_estop_audit(hook);
+        info!("[Gateway] E-stop audit hook injected into web server");
+    }
+
+    // 项1（质变级能力开发计划 2026-11-16）：事件驱动唤醒——EventWatchManager
+    // 构造 + 观测快照注入 + 泵启动（P2 EventsView 同点接线）。规则文件
+    // <workspace>/config/events.json（mtime 热重载，解析失败保留旧规则）；
+    // 注入复用 web_approval 续行注入器的 bus 先例（channel "web" sender
+    // "system"，会话在位检查 chat_log_exists 在注入器内做——会话已删=
+    // 诚实失败留痕不造假投递）；estop 冻结在 manager 侧判定（冻结期
+    // pending 诚实丢弃，release 恢复积累）。放 security 块之外：事件源与
+    // 安全中间件无依赖（裁剪组合下独立工作）。时序：agent loop 此刻已
+    // 订阅 bus（「loop 订阅 bus → web bind」不变量），泵注入不会掉进
+    // 无人订阅窗口。JoinHandle detach（gateway 生命周期任务，停机随
+    // runtime 收敛——bus sender drop → pump channel 关闭即退）。
+    #[cfg(feature = "events")]
+    {
+        let bus_for_events = bus.clone();
+        let conv_router_for_events = conv_router.clone();
+        let estop_for_events = std::sync::Arc::clone(&shared_resources.estop);
+        let events_rules_path = shared_resources
+            .workspace_dir()
+            .join("config")
+            .join("events.json");
+        let injector: nemesis_events::InjectorFn =
+            std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
+                if !nemesis_agent::chat_log::chat_log_exists(session_key) {
+                    return false;
+                }
+                // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
+                // 活页绑定优先（回复实时推到正开着该会话的标签页），
+                // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
+                // 通道原生形态硬前提不变（docs/BUG 同名文档）。
+                bus_for_events.publish_inbound(nemesis_types::channel::InboundMessage {
+                    channel: "web".to_string(),
+                    sender_id: "system".to_string(),
+                    chat_id: resolve_inject_chat_id(session_key, &conv_router_for_events),
+                    content: content.to_string(),
+                    media: Vec::new(),
+                    session_key: session_key.to_string(),
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                    voice_playback: None,
+                });
+                true
+            });
+        let events_mgr = nemesis_events::EventWatchManager::new(
+            events_rules_path.clone(),
+            injector,
+            std::sync::Arc::new(move || estop_for_events.is_engaged()),
+        )
+        // 家族纪律（BUG-20261115-023；DI 形态同 BUG-20261119-208 nemesis-web
+        // sweeper）：泵是常驻 timer-park 循环，等待点必须消费进程终态令牌
+        // ——Step 24 cancel 后排空窗内不再采样不注入。
+        .with_terminal_token(terminal_cancel_token().clone())
+        // proc 事件源（2026-11-16 事件源扩展 P1）：增量读闭包持
+        // background_registry Arc——`output(id, offset)` 公开 API，零 registry
+        // 侵入（泵每 ~1s 逐 proc 规则读新增字节 → 正则行匹配）。
+        .with_proc_reader({
+            let registry = std::sync::Arc::clone(&shared_resources.background_registry);
+            std::sync::Arc::new(move |job_id: u64, offset: u64| {
+                let registry = std::sync::Arc::clone(&registry);
+                Box::pin(async move { registry.output(job_id, offset).await })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    >
+            }) as nemesis_events::ProcReaderFn
+        });
+        // 泵观测快照句柄注入 web 面（P2：events.status 读泵统计/规则/在攒）。
+        web_server.set_events_snapshot(events_mgr.snapshot_handle());
+        // webhook 事件源提交句柄注入 web 面静态槽（HTTP POST
+        // /api/events/webhook/{token} → 泵；start 前注入——路由已挂，
+        // 注入前调用诚实 503）。
+        nemesis_web::handlers::events_webhook::set_events_webhook(events_mgr.webhook_handle());
+        let _events_pump = events_mgr.start();
+        info!(
+            "[Gateway] event wakeup manager armed (rules: {})",
+            events_rules_path.display()
+        );
+    }
+
+    // 项5（质变级能力开发计划 2026-11-16）：自配速 durable loop 驱动器。
+    // 每 10s sweep 一轮 `<workspace>/loops/*.json`：sweep_loop 纯函数裁决
+    // （非 active/未排程/未到期 → None；预算耗尽 → Park；到期 → Wake）→
+    // 宿主执行注入与落盘。注入复用项1 同款 bus 形态（channel "web" sender
+    // "system"；在场判定 session_occupied——jsonl ∥ meta 双形态，新建未
+    // 发言的会话也算在场，区别于 events 的 chat_log_exists 语义）。estop
+    // 冻结期 sweep 恒零动作（唤醒留到期，release 后下一轮补投——不过期
+    // 不丢失）；loop_wakeup 工具侧同步拒绝（双保险）。
+    // token 维：budget.max_tokens 显式配置的 loop 才查 usage 台账
+    // （aggregate_session_usage 现值 − tokens_base 基线 = loop 期间消耗；
+    // 基线在 loop create 时由创建方写入）。save 失败只 warn（下轮重试，
+    // 最坏重复唤醒一次——唤醒消息幂等语义，计划容忍极小重复）。
+    #[cfg(feature = "loop")]
+    {
+        let bus_for_loops = bus.clone();
+        let conv_router_for_loops = conv_router.clone();
+        let estop_for_loops = std::sync::Arc::clone(&shared_resources.estop);
+        let loops_dir = shared_resources.workspace_dir().join("loops");
+        let ds_for_loops = data_store.clone();
+        let loops_dir_for_task = loops_dir.clone();
+        // 家族纪律（BUG-20261115-023）：驱动器循环本体抽 run_loop_driver
+        // （令牌参数化，与 run_board_change_watcher 同款测试注入口形态；
+        // 注入闭包随之内迁），等待点消费进程终态令牌——cancel 后排空窗内
+        // 不再扫盘/注入。
+        tokio::spawn(run_loop_driver(
+            loops_dir_for_task,
+            bus_for_loops,
+            conv_router_for_loops,
+            estop_for_loops,
+            ds_for_loops,
+            terminal_cancel_token().clone(),
+        ));
+        info!(
+            "[Gateway] durable loop driver armed (loops dir: {})",
+            loops_dir.display()
+        );
+    }
+
+    // 目标系统评估闸驱动器（feature=`goals`）：订阅 bus outbound（带会话
+    // 键的终局回复 = turn 结束）+ AgentEvent（ToolStarted 工具名累积）；
+    // 评估闸 LLM 独立评审 goal.md → DONE 落状态（唯一 done 出口）/
+    // CONTINUE 注入 goal 轮（bus 入站，durable loop 注入同款形态）。裁决
+    // 逻辑单一真相源在 nemesis-goals crate；estop 冻结期评估跳过（goal
+    // 状态不动）。agent_event_tx 缺席（装配形态变体）= 空 channel 的
+    // sender 刻意 forget 保活（rx 永远收不到事件但不 Closed——工具名
+    // 材料缺失是诚实降级，watcher 不退）。
+    #[cfg(feature = "goals")]
+    {
+        let bus_for_goals = bus.clone();
+        let estop_for_goals = std::sync::Arc::clone(&shared_resources.estop);
+        let ws_for_goals = shared_resources.workspace_dir();
+        let loop_ref_for_goals = ctx.board_moderator_loop.clone();
+        let event_rx_for_goals = shared_resources
+            .agent_event_tx
+            .as_ref()
+            .map(|tx| tx.subscribe())
+            .unwrap_or_else(|| {
+                let (tx, rx) =
+                    tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(1);
+                std::mem::forget(tx); // 保活防 Closed → watcher 提前退出
+                rx
+            });
+        crate::goals_engine::spawn_goals_engine(
+            bus_for_goals,
+            loop_ref_for_goals,
+            estop_for_goals,
+            ws_for_goals,
+            event_rx_for_goals,
+            conv_router.clone(),
+        );
+        info!("[Gateway] goals evaluation engine armed");
+    }
+
     // 后台进程实时输出：同一 B4 注册表 Arc 注入 web 侧
     // ——background.* WSAPI 与 agent 工具通道（background_start 等）同源，
     // 操作员在 Dashboard 看到的就是 agent 起的那些进程。
@@ -1169,6 +1455,16 @@ pub(crate) async fn init_post_agent(
     {
         web_server.set_lsp_manager(shared_resources.lsp_manager.clone());
         info!("[Gateway] LSP manager injected into web server");
+    }
+
+    // 浏览器接管管理面注入（2026-11-15）：BrowserManager 单例移交 web 面
+    //（browser.* WSAPI 投影 + Dashboard 执行单元浏览器面板；host_browser
+    // 工具经 SharedResources 同源）。模块级 OnceLock 槽（同 BOARD_ESTOP
+    // 裁决——AppState 字面量测试遍布全库，加字段是断点级改动）。
+    #[cfg(feature = "browser")]
+    if let Some(mgr) = shared_resources.browser_manager.clone() {
+        nemesis_web::handlers::browser::set_browser_manager(mgr);
+        info!("[Gateway] browser manager injected into web server");
     }
 
     // hand the tool-event receiver to the web server — its pump (spawned
@@ -1281,42 +1577,26 @@ pub(crate) async fn init_post_agent(
         // CLI 子命令（跨进程）的每次落库都会被看见——写路径零埋点覆盖全部
         // 写入方。变化 → SSE `board-changed` → 前端各面板 200ms 防抖刷新。
         // 无 SSE 订阅者（dashboard 未开）时跳过轮询读数，空闲零成本。
-        const BOARD_CHANGE_POLL_SECS: u64 = 2;
+        // 循环体抽 `run_board_change_watcher`（令牌参数化）：生产挂进程终态
+        // 令牌（语义不变）；测试挂私有令牌——run_runtime 全链测试的 Step 24
+        // 会 cancel 进程令牌（OnceLock 无复位），同进程并行的其他测试 watcher
+        // 会被跨测试毒杀（pa2 干涉面根修，2026-11-16 配对复现实锤）。
         let board_db_for_watch = home.join("workspace").join("board").join("board.db");
-        let event_hub_for_watch = web_server.event_hub().clone();
-        match nemesis_board::watcher::open_conn(&board_db_for_watch) {
-            Ok(watch_conn) => {
-                tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                        BOARD_CHANGE_POLL_SECS,
-                    ));
-                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                    let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
-                    loop {
-                        ticker.tick().await;
-                        if event_hub_for_watch.subscriber_count() == 0 {
-                            continue;
-                        }
-                        let Ok(v) = nemesis_board::watcher::data_version(&watch_conn) else {
-                            continue;
-                        };
-                        if last != Some(v) {
-                            last = Some(v);
-                            event_hub_for_watch.publish(
-                                "board-changed",
-                                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
-                            );
-                            tracing::debug!(
-                                "[Board] change detected (data_version={v}) → board-changed"
-                            );
-                        }
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::warn!("[Gateway] board change watcher disabled: {e}");
-            }
-        }
+        // 终态令牌：测试注入口优先（BUG-20261115-046 根修）——ctx 带局部
+        // 令牌时 watcher 挂局部（对进程全局令牌被 run_runtime 全链测试经
+        // 生产停机路径 cancel 的毒化免疫）；生产 None = 全局令牌。循环体
+        // 抽 `run_board_change_watcher`（令牌参数化）：测试 pa2 回落臂可
+        // 重挂同一生产循环体（跨测试毒杀干涉面根修，2026-11-16 配对复现
+        // 实锤）。
+        let watcher_terminal = ctx
+            .terminal_cancel_override
+            .clone()
+            .unwrap_or_else(|| terminal_cancel_token().clone());
+        tokio::spawn(run_board_change_watcher(
+            board_db_for_watch,
+            web_server.event_hub().clone(),
+            watcher_terminal,
+        ));
     }
 
     // Inject DataStore into web server for usage statistics API
@@ -1346,7 +1626,11 @@ pub(crate) async fn init_post_agent(
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         let mut last = nemesis_data::watcher::data_version(&watch_conn).ok();
                         loop {
-                            ticker.tick().await;
+                            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                                break;
+                            }
                             if event_hub_for_usage.subscriber_count() == 0 {
                                 continue;
                             }
@@ -1384,7 +1668,11 @@ pub(crate) async fn init_post_agent(
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             // interval 首个 tick 立即返回 = 启动时先跑一次。
             loop {
-                ticker.tick().await;
+                // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                    break;
+                }
                 let max_rows = (usage_cfg.max_rows > 0).then_some(usage_cfg.max_rows);
                 if let Err(e) = ds_for_sweep.retention_sweep(
                     (usage_cfg.retention_days > 0).then_some(usage_cfg.retention_days),
@@ -1474,9 +1762,159 @@ pub(crate) async fn init_post_agent(
         info!("[Gateway] plugin_roaming handle injected into web server");
     }
 
+    // 中继配置刷新钩子（快照缺口 BUG 修复，2026-11-15 档案）：quic.relay.enable
+    // 开关拉起前把盘上最新 relay 段重灌插件快照（init 幂等重入）——否则页面
+    // 保存的 token/端口/TLS 对 roaming_start 永远不可见（快照定格于网关启动）。
+    // 钩子闭包内诚实 no-op：插件未装载时 refresh_roaming_config 回 Ok（开关
+    // 保持落盘-only 行为）；OnceLock 首写为准，网关进程内只注入一次。
+    let relay_refresh_cfg = crate::common::quic_config_path(&home);
+    nemesis_web::handlers::quic::set_relay_config_refresh(std::sync::Arc::new(move || {
+        crate::roaming_plugin_loader::refresh_roaming_config(&relay_refresh_cfg)
+    }));
+
+    // ---- 邮件基础设施（B3）：WSAPI 句柄 + notify/audit 消费面 + 通知钩子 ----
+    // 句柄注入（roaming 同款——句柄 fn 指针 Copy，直接解引用值拷贝；未装载
+    // = web 面保持 None，mail.* 命令诚实报「插件未装载」）。
+    if let Some(handle) = crate::mail_plugin_loader::plugin_handle() {
+        web_server.set_mail_plugin(*handle);
+        info!("[Gateway] plugin_mail handle injected into web server");
+    }
+    // notify 槽：SMTP 落信 → SSE `mailbox.updated`（邮件页实时刷新）；发信
+    // 回执 → `mail.sent`。publish_global_event 跨 crate 全局口——EventHub
+    // 未装配（relay 纯中继形态）时静默跳过，闸内消费面零感知。
+    crate::mail_plugin_loader::set_notify_in_sink(std::sync::Arc::new(|meta_json: &str| {
+        let data: serde_json::Value = serde_json::from_str(meta_json)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": meta_json }));
+        nemesis_web::chat_event_log::publish_global_event("mailbox.updated", data);
+    }));
+    crate::mail_plugin_loader::set_notify_sent_sink(std::sync::Arc::new(|result_json: &str| {
+        let data: serde_json::Value = serde_json::from_str(result_json)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": result_json }));
+        nemesis_web::chat_event_log::publish_global_event("mail.sent", data);
+    }));
+    // audit 槽：插件审计事件 → 安全审计链（estop audit hook 同款 append 直记
+    // ——非工具管线记账先例；链未启用 = append 返回 None，debug 留痕）。
+    // 槽未注入 = loader 侧 tracing 兜底（事件不丢形态）。
+    #[cfg(feature = "security")]
+    if let Some(plugin) = agent.security_plugin.clone() {
+        crate::mail_plugin_loader::set_audit_sink(std::sync::Arc::new(
+            move |event: &str, detail: &str| {
+                if plugin
+                    .append_direct_audit_event(
+                        event,
+                        "plugin_mail",
+                        "system",
+                        "plugin",
+                        detail,
+                        "allow",
+                        "mail infrastructure plugin event",
+                    )
+                    .is_none()
+                {
+                    tracing::debug!(
+                        "[Gateway] mail audit event not recorded (chain disabled); tracing fallback only"
+                    );
+                }
+            },
+        ));
+        info!("[Gateway] plugin_mail audit sink connected to security chain");
+    }
+    // 通知钩子安装（estop 急停通知 + board 预算熔断通知；config.mail.json
+    // notify 段白名单驱动，缺省静默）+ estop watch 订阅任务（CLI/托盘/
+    // Dashboard/WSAPI 四入口全走同一 EstopState——watch 即全覆盖；estop 中
+    // 照发——邮件基础设施不是 agent 活动面，契约注释同文；release 只改
+    // watch 值不重发，闸在 *borrow() 判 true）。
+    crate::mail_notify::install(&home);
+    let mut estop_mail_rx = shared_resources.estop.subscribe();
+    tokio::spawn(async move {
+        while estop_mail_rx.changed().await.is_ok() {
+            if *estop_mail_rx.borrow() {
+                let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                crate::mail_notify::try_notify(
+                    "estop",
+                    "⛔ NemesisBot 急停触发",
+                    &format!("急停已于 {ts} 触发，全部 agent 活动已冻结。释放后本通知不重发。"),
+                );
+            }
+        }
+    });
+
     // Inject AgentLoop ref into web server for runtime model switching
     web_server.set_agent_loop(agent_loop_ref.clone());
     info!("[Gateway] AgentLoop ref injected into web server for model switching");
+
+    // 会话资源盘点注册表装配（2026-11-17 会话资源盘点看板 B2，计划 §3.5）：
+    // 一行一 provider——构造收 `Option<件>` 无条件注册，运行态缺席由
+    // provider collect 内部诚实判三态；feature 裁剪的类目（loop=目标 /
+    // security=全部放行）在此缺席，响应无该键。静态槽注入（handler 侧
+    // install_session_allow_all 同款双注入形态）；relay 纯中继路径不经过
+    // 本函数 → 槽空 = `session.resources` 诚实报「未装配」。
+    {
+        use nemesis_types::resources::{ResourceProvider, SessionResourceRegistry};
+        fn put<R: nemesis_types::resources::GlobalResourceProvider + 'static>(
+            reg: &mut SessionResourceRegistry,
+            p: R,
+        ) {
+            reg.register(ResourceProvider::Global(Box::new(p)));
+        }
+        fn put_loop<R: nemesis_types::resources::PerLoopResourceProvider + 'static>(
+            reg: &mut SessionResourceRegistry,
+            p: R,
+        ) {
+            reg.register(ResourceProvider::PerLoop(Box::new(p)));
+        }
+        let mut registry = SessionResourceRegistry::new();
+        use nemesis_agent::resource_providers as rp;
+        put(&mut registry, rp::SubagentsProvider);
+        put(&mut registry, rp::TodosProvider);
+        put(&mut registry, rp::FileChangesProvider);
+        put(&mut registry, rp::IdentityProvider);
+        put(
+            &mut registry,
+            rp::BackgroundProvider::new(Some(std::sync::Arc::clone(
+                &shared_resources.background_registry,
+            ))),
+        );
+        put(&mut registry, rp::HooksSessionProvider);
+        put(
+            &mut registry,
+            rp::HooksGlobalProvider::new(Some(agent_loop_ref.clone())),
+        );
+        put(
+            &mut registry,
+            rp::ApprovalsPendingProvider::new(Some(agent_loop_ref.clone())),
+        );
+        put(
+            &mut registry,
+            rp::QuestionsPendingProvider::new(Some(agent_loop_ref.clone())),
+        );
+        put_loop(&mut registry, rp::CheckpointProvider);
+        put_loop(&mut registry, rp::ContextProvider);
+        put_loop(&mut registry, rp::ExecutionProvider);
+        put(
+            &mut registry,
+            nemesis_cron::resources::CronResourceProvider::new(Some(cron_service.clone())),
+        );
+        #[cfg(feature = "loop")]
+        put(
+            &mut registry,
+            nemesis_loop::DurableLoopsResourceProvider::new(),
+        );
+        put(
+            &mut registry,
+            nemesis_web::resource_providers::UsageProvider::new(data_store.clone()),
+        );
+        #[cfg(feature = "security")]
+        put(
+            &mut registry,
+            nemesis_web::resource_providers::SessionAllowProvider::new(
+                nemesis_web::handlers::security::session_allow_all_state(),
+            ),
+        );
+        let provider_count = registry.providers().len();
+        nemesis_web::handlers::resources::install_session_resources(std::sync::Arc::new(registry));
+        info!("[Gateway] Session resource registry assembled ({provider_count} providers)");
+    }
 
     // Inject WorkflowEngine into web server for /api/workflow/* endpoints
     #[cfg(feature = "workflow")]
@@ -1700,4 +2138,161 @@ pub(crate) async fn init_post_agent(
         #[cfg(feature = "cluster")]
         cluster_arc_ref,
     })
+}
+
+/// board.db 变化侦测循环本体（init_post_agent 的「---.5」装配点；令牌参数化）。
+///
+/// 生产挂进程终态令牌克隆（BUG-20261115-023 家族纪律：cancel 后 break，不在
+/// runtime 排空窗 re-park timer）。抽函数的动机是测试干涉面：run_runtime 全链
+/// 七测试跑到 Step 24 会 `cancel_terminal_tasks()` 毒化进程级 OnceLock 令牌
+/// （无复位），同进程并行的其他测试里 spawn 的 watcher 首 tick 即死——pa2
+/// 「board watcher must broadcast」假红（2026-11-16 配对复现实锤：毒源测试 +
+/// pa2 同进程两线程必红，单跑恒绿）。测试侧用局部令牌挂同一循环体（pa2 干涉
+/// 回落臂），循环逻辑断言不受令牌毒化影响；生产行为不变（同一循环、同一令牌
+/// 语义；open_conn 失败 WARN 后不进循环，与旧装配 Ok/Err 分臂等价）。
+/// 连接在函数内经 `nemesis_board::watcher::open_conn` 自开——rusqlite 仅是
+/// 本 crate dev-dependency，生产签名不得命名其类型。
+#[cfg(feature = "board")]
+pub(crate) async fn run_board_change_watcher(
+    board_db: std::path::PathBuf,
+    event_hub: Arc<nemesis_web::EventHub>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let watch_conn = match nemesis_board::watcher::open_conn(&board_db) {
+        Ok(conn) => {
+            info!("[Gateway] board change watcher armed (poll=2s)");
+            conn
+        }
+        Err(e) => {
+            tracing::warn!("[Gateway] board change watcher disabled: {e}");
+            return;
+        }
+    };
+    const BOARD_CHANGE_POLL_SECS: u64 = 2;
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(BOARD_CHANGE_POLL_SECS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last = nemesis_board::watcher::data_version(&watch_conn).ok();
+    // 首拍基线观测（BUG-20261115-046 诊断存留）：基线在任务首 poll 才拍
+    // ——满载下首 poll 可晚于启动期早段写入，基线吃掉首个变化 → 该变化
+    // 漏报（低频、后续写入照常广播）。日志给排障一个「watcher 活没活/
+    // 基线多少」的直接观测面。
+    tracing::info!("[Gateway] board change watcher started (baseline data_version={last:?})");
+    loop {
+        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再 re-park
+        // timer（家族纪律见 shutdown.rs 模块文档）。
+        if !terminal_loop_tick(&cancel, ticker.tick()).await {
+            break;
+        }
+        if event_hub.subscriber_count() == 0 {
+            continue;
+        }
+        let Ok(v) = nemesis_board::watcher::data_version(&watch_conn) else {
+            continue;
+        };
+        if last != Some(v) {
+            last = Some(v);
+            event_hub.publish(
+                "board-changed",
+                serde_json::json!({ "ts": chrono::Utc::now().to_rfc3339() }),
+            );
+            tracing::debug!("[Board] change detected (data_version={v}) → board-changed");
+        }
+    }
+}
+
+/// durable loop 驱动器循环本体（init_post_agent 的「项5」装配点；令牌参数化）。
+///
+/// 每 10s sweep 一轮 `<workspace>/loops/*.json`：sweep_loop 纯函数裁决 →
+/// 注入与落盘。抽函数动机与 run_board_change_watcher 同款（测试注入口：
+/// 参数化路径、无进程全局态，家族回归锁用局部令牌——全局令牌测试绝不可
+/// cancel，shutdown_tests 纪律）。
+#[cfg(feature = "loop")]
+pub(crate) async fn run_loop_driver(
+    loops_dir: std::path::PathBuf,
+    bus: Arc<nemesis_bus::MessageBus>,
+    conv_router: nemesis_web::SharedConvRouter,
+    estop: Arc<nemesis_agent::estop::EstopState>,
+    data_store: Option<Arc<nemesis_data::DataStore>>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let loop_inject: std::sync::Arc<dyn Fn(&str, &str) -> bool + Send + Sync> =
+        std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
+            if !nemesis_agent::chat_log::session_occupied(session_key) {
+                return false;
+            }
+            // 出站回显键（单一解析 resolve_inject_chat_id）：ConvRouter
+            // 活页绑定优先（回复实时推到正开着该会话的标签页），
+            // 无绑定回落 web:<会话id>（死会话软失败 + 历史照落）——
+            // 通道原生形态硬前提不变（docs/BUG 同名文档）。
+            bus.publish_inbound(nemesis_types::channel::InboundMessage {
+                channel: "web".to_string(),
+                sender_id: "system".to_string(),
+                chat_id: resolve_inject_chat_id(session_key, &conv_router),
+                content: content.to_string(),
+                media: Vec::new(),
+                session_key: session_key.to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+                voice_playback: None,
+            });
+            true
+        });
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        // 家族纪律等待点（BUG-20261115-023）：cancel 后排空窗内不再扫盘/
+        // 注入（前置短路 + 令牌臂优先于 tick，取消语义不吞整拍工作量）。
+        if !terminal_loop_tick(&cancel, tick.tick()).await {
+            break;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let estop = estop.is_engaged();
+        let mut states = nemesis_loop::list_loops(&loops_dir);
+        for st in states.iter_mut() {
+            // token 维喂入：仅显式配了 max_tokens 的 loop 查台账
+            // （其他 loop 零查询成本）。
+            if st.budget.max_tokens > 0
+                && let Some(ref ds) = data_store
+                && let Ok(agg) = ds.aggregate_session_usage(&st.session_key)
+            {
+                let total = (agg.input_tokens.max(0) + agg.output_tokens.max(0)) as u64;
+                st.spent.tokens = total.saturating_sub(st.tokens_base);
+            }
+            match nemesis_loop::sweep_loop(st, now, estop) {
+                Some(nemesis_loop::SweepOutcome::Wake { message }) => {
+                    if loop_inject(&st.session_key, &message) {
+                        st.push_progress(now, format!("[wake] 第 {} 次唤醒", st.spent.turns));
+                        info!(
+                            "[LoopDriver] loop {} woke session {} (turn {})",
+                            st.id, st.session_key, st.spent.turns
+                        );
+                    } else {
+                        // 目标会话缺席（已删除）→ 诚实停车，不静默。
+                        st.status = nemesis_loop::LoopStatus::Parked;
+                        st.next_wake_ms = None;
+                        st.cron = None;
+                        st.push_progress(
+                            now,
+                            "[parked] 目标会话不存在（可能已删除）——人工处理后可 resume",
+                        );
+                        warn!("[LoopDriver] loop {} target session missing, parked", st.id);
+                    }
+                    if let Err(e) = nemesis_loop::save_loop(&loops_dir, st) {
+                        warn!("[LoopDriver] save loop {} failed: {e}", st.id);
+                    }
+                }
+                Some(nemesis_loop::SweepOutcome::Park { dim }) => {
+                    if let Err(e) = nemesis_loop::save_loop(&loops_dir, st) {
+                        warn!("[LoopDriver] save loop {} failed: {e}", st.id);
+                    } else {
+                        warn!("[LoopDriver] loop {} parked (budget: {dim})", st.id);
+                    }
+                }
+                None => {}
+            }
+        }
+    }
 }

@@ -7,11 +7,27 @@ use super::*;
 /// Grep tool — regex search across workspace files. Returns file:line: match.
 pub struct GrepTool {
     workspace: String,
+    /// （BUG-20261117-067）工作区边界（与 read_file 同源的读族第二道闸）。
+    /// 显式 `path` 参数经 [`resolve_tool_path`]（Read 族）统一解析：
+    /// 相对锚定 + restrict 包含检查 + editor 读族臂。旧行为缺口：绝对
+    /// 路径不校验、相对 join 无包含检查——restrict=true 下 read_file
+    /// 拒绝的界外路径可被 grep 直接搜出匹配行内容（比 lsp 读族的
+    /// hover 披露更直接）。None = 基线/测试无界形态（行为同前）。
+    boundary: Option<std::sync::Arc<WorkspaceBoundary>>,
 }
 
 impl GrepTool {
     pub fn new(workspace: String) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            boundary: None,
+        }
+    }
+
+    /// 带工作区边界的生产形态（BUG-20261117-067）。
+    pub fn with_boundary(mut self, boundary: std::sync::Arc<WorkspaceBoundary>) -> Self {
+        self.boundary = Some(boundary);
+        self
     }
 }
 
@@ -29,7 +45,7 @@ impl Tool for GrepTool {
             "properties": {
                 "pattern": {"type": "string", "description": "Regex pattern to search for"},
                 "path": {"type": "string", "description": "Directory or single file to search (default: workspace root)"},
-                "glob": {"type": "string", "description": "File-name filter, e.g. *.rs (simple suffix match)"},
+                "glob": {"type": "string", "description": "File-name glob filter, e.g. *.rs or test_*.rs (* = any run, ? = single char)"},
                 "max_results": {"type": "integer", "description": "Max matches (default 50)"}
             },
             "required": ["pattern"]
@@ -42,18 +58,30 @@ impl Tool for GrepTool {
         let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {}", e))?;
         // FT：相对 path 锚定工作区根——此前只有缺省时回退
         // workspace，显式相对子目录按进程 cwd 解析（exe 直启形态下搜错树）。
+        // （BUG-20261117-067）带边界时显式 path 统一走 resolve_tool_path
+        // （Read 族）：相对锚边界根 + restrict 包含检查（界外拒绝，
+        // 与 read_file 同路径同结论）+ editor 读族臂。无界形态保持旧行为。
         let root = match v["path"].as_str() {
-            Some(s) if !s.is_empty() => {
-                let p = Path::new(s);
-                if p.is_absolute() {
-                    s.to_string()
-                } else {
-                    Path::new(&self.workspace)
-                        .join(p)
-                        .to_string_lossy()
-                        .to_string()
+            Some(s) if !s.is_empty() => match self.boundary.as_deref() {
+                Some(b) => crate::loop_tools::resolve_tool_path(
+                    s,
+                    Some(b),
+                    crate::loop_tools::FenceOpFamily::Read,
+                )?
+                .to_string_lossy()
+                .into_owned(),
+                None => {
+                    let p = Path::new(s);
+                    if p.is_absolute() {
+                        s.to_string()
+                    } else {
+                        Path::new(&self.workspace)
+                            .join(p)
+                            .to_string_lossy()
+                            .to_string()
+                    }
                 }
-            }
+            },
             _ => self.workspace.clone(),
         };
         let glob = v["glob"].as_str();
@@ -66,11 +94,10 @@ impl Tool for GrepTool {
         // 一律诚实注明，绝不裸「No matches」掩盖「根本没搜」。
         if root_path.is_file() {
             if let Some(g) = glob {
-                let suffix = g.trim_start_matches('*');
                 let matched = root_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .map(|f| f.ends_with(suffix))
+                    .map(|f| glob_matches_file(g, f))
                     .unwrap_or(false);
                 if !matched {
                     return Ok(format!("Skipped {}: does not match glob '{}'.", root, g));
@@ -444,11 +471,9 @@ pub(super) fn grep_recursive(
         } else if path.is_file() {
             if let Some(g) = glob
                 && let Some(fname) = path.file_name().and_then(|n| n.to_str())
+                && !glob_matches_file(g, fname)
             {
-                let suffix = g.trim_start_matches('*');
-                if !fname.ends_with(suffix) {
-                    continue;
-                }
+                continue;
             }
             if let Ok(meta) = std::fs::metadata(&path)
                 && meta.len() > 1_000_000
@@ -457,6 +482,50 @@ pub(super) fn grep_recursive(
             }
             grep_file(&path, re, max, out);
         }
+    }
+}
+
+/// glob 文件名匹配（fnmatch 子集：`*` = 任意串、`?` = 单字符，其余字面）。
+///
+/// BUG-20261117-050 根修：此前只有后缀形态可用——`trim_start_matches('*')`
+/// 把 `test_*.rs` 剥成字面 `ends_with("test_*.rs")` 永不匹配 → 目录走查
+/// 把全部文件静默筛掉 → 裸「No matches」假阴性（模型误读为内容不存在，
+/// 反复换 pattern 烧轮次——与单文件路径一等公民改造根治的是同一族失败）。
+///
+/// 语义边界：本过滤器只作用于**文件名**（path 参数另管目录），故 pattern
+/// 按最后一段 `/` 取值（`src/*.rs`、`**/*.rs` 的目录部分无语义；旧后缀
+/// 实现对 `src/*.rs` 实际退化为 `.rs` 后缀，宽松口径保持兼容）；连续 `*`
+/// 折叠为一；空 pattern 保持旧语义 = 不过滤（旧实现 `ends_with("")` 恒真）。
+pub(crate) fn glob_matches_file(pattern: &str, file_name: &str) -> bool {
+    let pat = pattern.rsplit('/').next().unwrap_or(pattern);
+    if pat.is_empty() {
+        return true;
+    }
+    let mut re = String::with_capacity(pat.len() * 2 + 2);
+    re.push('^');
+    let mut prev_star = false;
+    for c in pat.chars() {
+        match c {
+            '*' => {
+                if !prev_star {
+                    re.push_str(".*");
+                }
+                prev_star = true;
+            }
+            '?' => {
+                re.push('.');
+                prev_star = false;
+            }
+            other => {
+                re.push_str(&regex::escape(&other.to_string()));
+                prev_star = false;
+            }
+        }
+    }
+    re.push('$');
+    match regex::Regex::new(&re) {
+        Ok(r) => r.is_match(file_name),
+        Err(_) => false,
     }
 }
 

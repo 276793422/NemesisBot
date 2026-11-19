@@ -65,6 +65,51 @@ pub(crate) enum ParkedKind {
     Project,
 }
 
+/// 批二（无人值守加固）：瞬态退避重试内存计数（per-issue，进程内）。
+/// 语义 = 单次连续瞬态回合内的累计尝试数；不变量：任一非瞬态 verdict /
+/// 超限落决策表 / 派发终态都清零（review_issue 瞬态臂）。重启清零可接受
+/// （拥塞窗分钟级，重启即环境剧变——计划定案）。std Mutex：持锁不跨 await。
+///
+/// 键 = home 路径 + issue_id（[`transient_key_for`] 单一来源）：生产里
+/// 一进程一 home，等价 per-issue；带 home 段是测试并行的隔离必需——各
+/// 测试独立 BoardStore 的 issue id 都从 1 起，裸 id 键在进程级全局表里
+/// 必然串台（全量套件实录：锚点 FAIL 夹具测试的清零臂互抹他人计数）。
+static TRANSIENT_RETRY_COUNTS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u32>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// 计数键单一真相源：home + issue_id 复合（生产恒同 home = per-issue
+/// 语义；测试独立 temp home 天然互不相扰）。
+pub(crate) fn transient_key_for(home: &std::path::Path, issue_id: i64) -> String {
+    format!("{}:{issue_id}", home.display())
+}
+
+/// 计数 +1 并返回新值（原子取增，防并发评审双计）。
+fn transient_retry_bump(key: &str) -> u32 {
+    let mut m = TRANSIENT_RETRY_COUNTS
+        .lock()
+        .expect("transient retry 计数锁中毒");
+    let e = m.entry(key.to_string()).or_insert(0);
+    *e += 1;
+    *e
+}
+
+/// 清零（终结当前瞬态回合）。
+fn transient_retry_clear(key: &str) {
+    TRANSIENT_RETRY_COUNTS
+        .lock()
+        .expect("transient retry 计数锁中毒")
+        .remove(key);
+}
+
+#[cfg(test)]
+pub(crate) fn transient_retry_count_for_tests(key: &str) -> Option<u32> {
+    TRANSIENT_RETRY_COUNTS
+        .lock()
+        .expect("transient retry 计数锁中毒")
+        .get(key)
+        .copied()
+}
+
 /// 验收依赖集（gateway 回调闭包构造，一次快照传入）。
 /// `Clone` 供父单收口钩子每次触发时从 Arc 快照派生。
 #[derive(Clone)]
@@ -1680,6 +1725,137 @@ async fn review_issue(
     // task_id 幂等，评审重放 / estop 复评不重复计数；开关无关（见 fn 注释）。
     record_fingerprint_outcome(deps, &issue, &dispatches, output.verdict);
 
+    // 批二（无人值守加固）：瞬态失败退避重试臂（decide_review_action
+    // 之前分流）。终态 fail_class 属 TransientRetry 集（LLM 超时/限流/
+    // 失败/空结果——上游 failover 全面耗尽才到 board 层的罕见事件）时，
+    // 立即重派大概率原样撞同一拥塞：退避 60s 后同目标重派给环境自愈窗
+    // 口。独立内存预算（board.review.transient_retry_max，默认 6，0=关）
+    // 不烧重派轮次——轮次语义是「worker 真做了事还不过」，瞬态是
+    // 「worker 根本没干成」；派发行照落审计可追溯。本臂在决策表之前
+    // return：熔断账本不记瞬态回合（record_and_check 在 Redispatch 臂
+    // 内），非瞬态回合的记账语义不受影响。
+    if output.verdict == nemesis_board::ReviewVerdict::Fail {
+        let transient = latest_fail_class(&comments)
+            .filter(|fc| redispatch_policy(fc) == FailClassPolicy::TransientRetry);
+        let cap = cfg.review.transient_retry_max;
+        let target = dispatches.last().map(|d| d.worker_id.clone());
+        let tkey = transient_key_for(&deps.home, issue_id);
+        match (transient, target) {
+            (Some(fc), Some(target)) if cap > 0 => {
+                let attempt = transient_retry_bump(&tkey);
+                if attempt > cap {
+                    // 超限：清零落回决策表。round 已被瞬态回合推大——
+                    // 非 unlimited 落 EscalateHuman；unlimited 落回重派臂
+                    // 由熔断账本接手（表内回合重新记账，3 连同签名必停）。
+                    // 全程有界。
+                    transient_retry_clear(&tkey);
+                } else {
+                    // 退避等待（board.review.transient_retry_delay_secs，
+                    // 默认 60；0=不等——测试注入）。复用评审侧延迟重评
+                    // 先例：立即重派大概率撞同一个拥塞。
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        cfg.review.transient_retry_delay_secs,
+                    ))
+                    .await;
+                    // estop 检查点（镜像检查点 ③）：退避期间挂起 → 停车
+                    // 等释放，不越过急停发车。
+                    if estop_fuse_engaged(deps, issue_id, ParkedKind::Issue) {
+                        return Ok(false);
+                    }
+                    // 并发让位（镜像闭环-13）：退避期间其他触发源已抢到
+                    // claim → 让位，不落评论（瞬时竞态对 ⛔ 文案是误导）。
+                    if store.has_active_dispatch(issue_id).unwrap_or(false) {
+                        info!(
+                            "[BoardReview] issue {issue_id} 瞬态退避期间已有在途派发接管，重试让位"
+                        );
+                        return Ok(true);
+                    }
+                    let msg = format!(
+                        "⏳ 上次执行失败为瞬态（fail_class: {fc}，环境拥塞）：{}s 后第 {attempt}/{cap} 次退避重试（同目标 {target}，重派轮次预算不消耗；超限后落回常规决策）",
+                        cfg.review.transient_retry_delay_secs
+                    );
+                    post_review_comment(store, issue_id, &deps.cluster, &msg)?;
+                    let dispatch_result = nemesis_web::handlers::board::dispatch_issue_core(
+                        store,
+                        Some(&deps.cluster),
+                        issue_id,
+                        &target,
+                        &reviewer,
+                        None,
+                    );
+                    return match dispatch_result {
+                        Ok(_) => {
+                            info!(
+                                "[BoardReview] issue {issue_id} 瞬态失败（{fc}）退避重试 #{attempt}/{cap} → {target}"
+                            );
+                            record_auto_decide(
+                                deps,
+                                issue_id,
+                                "transient_retry",
+                                output.verdict.as_str(),
+                                serde_json::json!({
+                                    "round": round,
+                                    "fail_class": fc,
+                                    "attempt": attempt,
+                                    "cap": cap,
+                                    "target": target,
+                                }),
+                            );
+                            Ok(true)
+                        }
+                        Err(e) => {
+                            // 派发 Err 三分诊（镜像重派臂）：estop → 尊重
+                            // 冻结不落评论；并发让位不落评论；其余 ⛔ 终态
+                            // 转人工（清计数——人工接管后回合作废）。
+                            if deps.estop.is_engaged() {
+                                debug!(
+                                    "[BoardReview] issue {issue_id} 瞬态重试受阻（estop 生效，留待 release 后复评）：{e}"
+                                );
+                                return Ok(false);
+                            }
+                            if store.has_active_dispatch(issue_id).unwrap_or(false) {
+                                info!(
+                                    "[BoardReview] issue {issue_id} 瞬态重试竞态让位（在途派发已接管）：{e}"
+                                );
+                                return Ok(true);
+                            }
+                            transient_retry_clear(&tkey);
+                            let msg =
+                                format!("⛔ 瞬态退避重试失败：{e}（已停止退避，请人工派发或处置）");
+                            store.add_comment(NewComment {
+                                issue_id,
+                                author: Actor::system("board-review"),
+                                content: msg,
+                                parent_id: None,
+                                ctype: CommentType::System,
+                            })?;
+                            record_auto_decide(
+                                deps,
+                                issue_id,
+                                "escalate_human",
+                                output.verdict.as_str(),
+                                serde_json::json!({
+                                    "round": round,
+                                    "stop_kind": "transient_dispatch_failed",
+                                    "fail_class": fc,
+                                    "error": e,
+                                }),
+                            );
+                            warn!(
+                                "[BoardReview] issue {issue_id} 瞬态退避重试派发失败：{e} → 转人工"
+                            );
+                            Ok(true)
+                        }
+                    };
+                }
+            }
+            // 非瞬态 verdict / 无派发行（手工单）/ cap=0（关）：清计数落
+            // 回决策表（清零 = 单次连续瞬态回合不变量：任何非瞬态回合 /
+            // 关闸 / 无目标回合都终结上一回合的计数）。
+            _ => transient_retry_clear(&tkey),
+        }
+    }
+
     let unlimited = cfg.unlimited_mode;
     let action = decide_review_action(
         output.verdict,
@@ -2170,17 +2346,12 @@ async fn review_issue(
                 parent_id: None,
                 ctype: CommentType::Comment,
             })?;
-            record_auto_decide(
-                deps,
-                issue_id,
-                "redispatch",
-                output.verdict.as_str(),
-                serde_json::json!({
-                    "round": next_round,
-                    "unlimited": unlimited,
-                    "reasons": render_reasons(&output.reasons),
-                }),
-            );
+            // 审计时序（BUG-20261113-125 回归锁）：此处**不落**「redispatch」
+            // 决策审计——记录只在下方实际派发成功后落（带 target）。此前
+            // （merge 3b1ce444 冲突消解把 510839fb 已删的发车前记录带回）
+            // 在 estop 停车/预算停车/目标决策失败/派发失败的轮次都被记成
+            // 已重派——审计假象，且重启后重放守卫（review_already_concluded）
+            // 误判已定案跳过重放，单据卡死 in_review 无自愈。
             // 停滞可观测（配套，复审补充）：连续重派且差距文本与上一轮
             // 完全相同 → WARN 告警（只告警不停流程，人可观测不干预）。
             // （第 6 轮审计）：comments 是评审入口快照（761
@@ -2200,6 +2371,17 @@ async fn review_issue(
                         "[BoardReview] issue {issue_id} 停滞嫌疑：第 {next_round} 轮重派差距与上轮相同（unlimited_mode 仅告警不停，estop 可随时止血）"
                     );
                 }
+            }
+            // 批一②（无人值守加固）：unlimited FAIL 重派第 5 轮起每轮
+            // WARN。到达此点 = 五道停车闸（token_budget / worker_loop /
+            // 同因熔断 / UNSURE / Freeze）全部未命中——签名逐轮翻转的
+            // FAIL 正是熔断账本的唯一漏网形态（翻转在账本内清零重计）。
+            // 纯可观测不停流程：estop 可随时止血，预算配置是正解（批一①
+            // 启动 WARN 已提示）。
+            if unlimited && output.verdict == nemesis_board::ReviewVerdict::Fail && round >= 5 {
+                warn!(
+                    "[BoardReview] issue {issue_id} unlimited_mode 已第 {next_round} 轮 FAIL 重派且无任何停车闸命中（签名可能逐轮翻转绕过同因熔断）：建议核查 board.budget.* 或人工介入；estop 可随时止血"
+                );
             }
             // 换节点重派：同一 worker 连续 ≥2 次派发仍 FAIL → 换历史
             // 未用过的次优匹配节点；否则维持同 worker（会话上下文延续）。
@@ -2256,6 +2438,18 @@ async fn review_issue(
                         }),
                     );
                     info!("[BoardReview] issue {issue_id} 预算超限 → 停止重派转人工（{breach}）");
+                    // 邮件通知（B3 消费点②，计划 §6）：预算熔断停车 → 通知
+                    // （config.mail.json notify.on 含 "board_budget" 才发；
+                    // 尽力而为——停车主流程不被邮件阻塞，静态槽未安装 =
+                    // 静默 no-op）。
+                    crate::mail_notify::try_notify(
+                        "board_budget",
+                        "🛑 NemesisBot 看板预算熔断",
+                        &format!(
+                            "看板单 {} 自动重派预算超限，已停止自动重派转人工。\n\n超限项：{breach}{handoff_note}",
+                            issue.number
+                        ),
+                    );
                     // 触发点①：重派无意义停车 → 重规划起草。
                     crate::board_replan::spawn_replan_draft(
                         deps.clone(),
@@ -2563,6 +2757,7 @@ mod anchors;
 mod decision;
 mod evidence;
 mod llm_review;
+mod notify;
 mod parent_project;
 mod prototype_gate;
 mod selfcheck;
@@ -2573,6 +2768,7 @@ pub(crate) use anchors::*;
 pub(crate) use decision::*;
 pub(crate) use evidence::*;
 pub(crate) use llm_review::*;
+pub(crate) use notify::*;
 pub(crate) use parent_project::*;
 pub(crate) use prototype_gate::*;
 pub(crate) use selfcheck::*;

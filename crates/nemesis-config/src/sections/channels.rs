@@ -30,6 +30,11 @@ macro_rules! impl_redacted_debug {
     };
 }
 
+// 路径宏导出（BUG-20261114-063）：宏本体是 channels.rs 文本作用域私有，
+// sections 兄弟模块（misc/models——bridge 段与 tools.web 搜索段）经
+// `use super::channels::impl_redacted_debug` 复用同一脱敏形态。
+pub(crate) use impl_redacted_debug;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -430,10 +435,6 @@ pub struct WebSocketChannelConfig {
         deserialize_with = "deserialize_flexible_string_vec"
     )]
     pub sync_to: Vec<String>,
-    #[serde(default)]
-    pub sync_to_web: bool,
-    #[serde(default)]
-    pub web_session_id: String,
 }
 
 fn default_websocket_host() -> String {
@@ -456,7 +457,7 @@ fn default_websocket_sync_to() -> Vec<String> {
 }
 
 impl_redacted_debug!(WebSocketChannelConfig {
-    plain { enabled, host, port, path, allow_from, sync_to, sync_to_web, web_session_id }
+    plain { enabled, host, port, path, allow_from, sync_to }
     secret { auth_token }
 });
 
@@ -472,8 +473,6 @@ impl Default for WebSocketChannelConfig {
             auth_token: String::new(),
             allow_from: Vec::new(),
             sync_to: default_websocket_sync_to(),
-            sync_to_web: false,
-            web_session_id: String::new(),
         }
     }
 }
@@ -492,10 +491,6 @@ pub struct ExternalConfig {
     pub allow_from: Vec<String>,
     #[serde(default)]
     pub sync_to: Vec<String>,
-    #[serde(default)]
-    pub sync_to_web: bool,
-    #[serde(default)]
-    pub web_session_id: String,
 }
 
 // feature-gated 通道 config（Wave 3 集成面补齐）
@@ -546,7 +541,7 @@ pub struct IrcConfig {
     #[serde(default)]
     pub server: String,
     /// 是否走 TLS（通道侧默认 true）。
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub use_tls: bool,
     /// 昵称。
     #[serde(default)]
@@ -558,10 +553,10 @@ pub struct IrcConfig {
     #[serde(default)]
     pub channel: String,
     /// 重连退避基数秒（通道侧默认 5）。
-    #[serde(default)]
+    #[serde(default = "default_irc_backoff_secs")]
     pub reconnect_backoff_secs: i64,
     /// 重连退避上限秒（通道侧默认 300）。
-    #[serde(default)]
+    #[serde(default = "default_irc_max_backoff_secs")]
     pub max_reconnect_backoff_secs: i64,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
@@ -589,6 +584,17 @@ impl_redacted_debug!(IrcConfig {
     plain { enabled, server, use_tls, nick, channel, reconnect_backoff_secs, max_reconnect_backoff_secs, allow_from, sync_to }
     secret { password }
 });
+
+// 缺省函数（BUG-20261119-187）：字段级 `#[serde(default)]` 裸形态在「节存在、
+// 字段缺」路径下拿类型零值（bool=false/数值=0），与容器级 default 走的 impl
+// Default 值分歧——裸 default 必须收敛为与 impl Default 同值的显式缺省函数
+// （web enabled 双路径事故同款纪律）。下同（Bluesky/Mqtt/Email 各组）。
+fn default_irc_backoff_secs() -> i64 {
+    5
+}
+fn default_irc_max_backoff_secs() -> i64 {
+    300
+}
 
 /// Signal 通道配置（对应 `nemesis_channels::signal:SignalConfig`，
 /// signal-cli-rest-api 桥接形态）。
@@ -649,7 +655,7 @@ pub struct BlueskyConfig {
     #[serde(default)]
     pub did: String,
     /// 通知轮询间隔秒（通道侧默认 10）。
-    #[serde(default)]
+    #[serde(default = "default_bluesky_poll_interval")]
     pub poll_interval: i64,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
@@ -675,6 +681,10 @@ impl_redacted_debug!(BlueskyConfig {
     plain { enabled, server, handle, did, poll_interval, allow_from, sync_to }
     secret { password }
 });
+
+fn default_bluesky_poll_interval() -> i64 {
+    10
+}
 
 /// WeCom（企业微信）通道配置（对应 `nemesis_channels::wecom:WeComConfig`）。
 /// 字段默认全空——通道侧 new 对 listen_addr/callback_path 有空值归一。
@@ -813,10 +823,10 @@ pub struct MqttConfig {
     #[serde(default)]
     pub enabled: bool,
     /// broker 地址（默认 127.0.0.1）。
-    #[serde(default)]
+    #[serde(default = "default_mqtt_broker_host")]
     pub broker_host: String,
     /// broker 端口（默认 1883）。
-    #[serde(default)]
+    #[serde(default = "default_mqtt_broker_port")]
     pub broker_port: i64,
     /// MQTT client id；空 = 通道侧自动生成 `nemesisbot-<pid>`。
     #[serde(default)]
@@ -828,16 +838,16 @@ pub struct MqttConfig {
     #[serde(default)]
     pub password: String,
     /// keep-alive 秒数（默认 30；0 = 关闭保活）。
-    #[serde(default)]
+    #[serde(default = "default_mqtt_keep_alive_secs")]
     pub keep_alive_secs: i64,
     /// clean session（默认 true）。
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub clean_session: bool,
     /// 断线重连退避秒数（默认 5，通道侧下限 1）。
-    #[serde(default)]
+    #[serde(default = "default_mqtt_reconnect_delay_secs")]
     pub reconnect_delay_secs: i64,
     /// 订阅与出站统一 QoS（默认 1；0/1/2，>2 通道侧构造期拒绝）。
-    #[serde(default)]
+    #[serde(default = "default_mqtt_qos")]
     pub qos: i64,
     /// 订阅 + 回包映射表。
     #[serde(default)]
@@ -894,6 +904,22 @@ impl_redacted_debug!(MqttConfig {
     secret { username, password }
 });
 
+fn default_mqtt_broker_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_mqtt_broker_port() -> i64 {
+    1883
+}
+fn default_mqtt_keep_alive_secs() -> i64 {
+    30
+}
+fn default_mqtt_reconnect_delay_secs() -> i64 {
+    5
+}
+fn default_mqtt_qos() -> i64 {
+    1
+}
+
 /// 微信个人微信通道配置（iLink Bot API，对应
 /// `nemesis_channels::wechat:WeChatConfig`）。Default 对齐通道侧
 /// （base_url/send_path/回调监听/签名方案均为通道侧常量——协议形态为
@@ -904,22 +930,22 @@ pub struct WeChatConfig {
     #[serde(default)]
     pub enabled: bool,
     /// 出站 REST 基址（通道侧默认 `https://ilink.bot.weixin.qq.com`，假设值）。
-    #[serde(default)]
+    #[serde(default = "default_wechat_base_url")]
     pub base_url: String,
     /// 回调鉴权 token（鉴权验证类；必填，通道侧空值拒绝启动；支持引用）。
     #[serde(default)]
     pub token: String,
     /// 出站消息接口路径（通道侧默认 /v1/message/send，假设值）。
-    #[serde(default)]
+    #[serde(default = "default_wechat_send_path")]
     pub send_path: String,
     /// 回调监听地址（通道侧默认 0.0.0.0:9541）。
-    #[serde(default)]
+    #[serde(default = "default_wechat_callback_listen_addr")]
     pub callback_listen_addr: String,
     /// 回调路径（通道侧默认 /wechat/callback）。
-    #[serde(default)]
+    #[serde(default = "default_wechat_callback_path")]
     pub callback_path: String,
     /// 签名方案：`hmac-sha256`（默认）/ `sha1` / `none`（未知值通道侧 loud 拒绝）。
-    #[serde(default)]
+    #[serde(default = "default_wechat_signature_scheme")]
     pub signature_scheme: String,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
@@ -951,6 +977,22 @@ impl_redacted_debug!(WeChatConfig {
     secret { token }
 });
 
+fn default_wechat_base_url() -> String {
+    "https://ilink.bot.weixin.qq.com".to_string()
+}
+fn default_wechat_send_path() -> String {
+    "/v1/message/send".to_string()
+}
+fn default_wechat_callback_listen_addr() -> String {
+    "0.0.0.0:9541".to_string()
+}
+fn default_wechat_callback_path() -> String {
+    "/wechat/callback".to_string()
+}
+fn default_wechat_signature_scheme() -> String {
+    "hmac-sha256".to_string()
+}
+
 // 邮件通道配置（IMAP 轮询收件 + SMTP 发件，对应
 // `nemesis_channels::email:EmailConfig`）。Default 对齐通道侧（IMAP 993 /
 // SMTP 465 / folder INBOX / 轮询 30s / TLS 显式 opt-in 默认关——通道侧对
@@ -964,7 +1006,7 @@ pub struct EmailConfig {
     #[serde(default)]
     pub imap_host: String,
     /// IMAP 端口（默认 993）。
-    #[serde(default)]
+    #[serde(default = "default_email_imap_port")]
     pub imap_port: i64,
     /// IMAP 用户名（必填；支持 vault/env/yaml 引用）。
     #[serde(default)]
@@ -980,7 +1022,7 @@ pub struct EmailConfig {
     #[serde(default)]
     pub smtp_host: String,
     /// SMTP 端口（默认 465，implicit TLS 提交端口）。
-    #[serde(default)]
+    #[serde(default = "default_email_smtp_port")]
     pub smtp_port: i64,
     /// SMTP 用户名；空 = 沿用 imap_username。
     #[serde(default)]
@@ -998,11 +1040,11 @@ pub struct EmailConfig {
     #[serde(default)]
     pub ca_cert_path: String,
     /// IMAP 收件文件夹（默认 INBOX）。
-    #[serde(default)]
+    #[serde(default = "default_email_folder")]
     pub folder: String,
     /// 轮询间隔秒数（默认 30；0 = 回落默认 30——通道侧收口，tokio
     /// interval 零周期 panic 防线）。
-    #[serde(default)]
+    #[serde(default = "default_email_poll_interval_secs")]
     pub poll_interval: i64,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
@@ -1038,6 +1080,19 @@ impl_redacted_debug!(EmailConfig {
     plain { enabled, imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls, ca_cert_path, folder, poll_interval, allow_from, sync_to }
     secret { imap_username, imap_password, smtp_username, smtp_password }
 });
+
+fn default_email_imap_port() -> i64 {
+    993
+}
+fn default_email_smtp_port() -> i64 {
+    465
+}
+fn default_email_folder() -> String {
+    "INBOX".to_string()
+}
+fn default_email_poll_interval_secs() -> i64 {
+    30
+}
 
 // ============================================================================
 // Model Config

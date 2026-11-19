@@ -1,0 +1,30 @@
+[package]
+name = "plugin-resources"
+version = "0.1.0"
+license = "AGPL-3.0-only"
+edition = "2024"
+description = "NemesisBot add-on resources plugin — persona catalog snapshot carrier (cdylib)"
+
+# Standalone project — NOT part of the main workspace (cdylib has separate
+# target). 附加资源 C-ABI 插件首例：人格超市快照载体。纯数据查询面——
+# 无常驻线程、无 runtime、无回调，装载即静止；缺席 = 宿主诚实降级纯在线。
+# Build: cargo build --release --manifest-path plugins/plugin-resources/Cargo.toml
+# Output: target_plugin_resources/release/plugin_resources.dll (libplugin_resources.so/.dylib)
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# catalog/manifest/envelope 全部 JSON 语义（构建期产物解析 + FFI envelope 构造）。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+# 编译期上游 tarball 拉取（REFRESH 路径）：blocking + rustls，与 nemesis-data
+# 价目表 build.rs 同栈同款 fail-open 纪律。
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+flate2 = "1"
+tar = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

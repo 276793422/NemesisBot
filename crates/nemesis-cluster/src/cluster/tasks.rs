@@ -102,6 +102,7 @@ impl Cluster {
             &self.task_manager,
             task_id,
             ok,
+            ROUTE_RECORDED_CAP,
         );
     }
 
@@ -117,7 +118,70 @@ impl Cluster {
         let task_manager = Arc::clone(&self.task_manager);
         self.task_manager
             .set_route_record_fn(Arc::new(move |task_id, ok| {
-                record_route_outcome_core(&stats, &recorded, &node_id, &task_manager, task_id, ok);
+                record_route_outcome_core(
+                    &stats,
+                    &recorded,
+                    &node_id,
+                    &task_manager,
+                    task_id,
+                    ok,
+                    ROUTE_RECORDED_CAP,
+                );
+            }));
+    }
+
+    /// 构造期安装 TaskManager 安全网判死唤醒钩子（与
+    /// `install_route_record_hook` 同例：清理 tick 判死臂是拿不到
+    /// `&Cluster` 的旁路 settle 点）。清理循环（30s tick）与恢复 sweep
+    /// （120s tick）对同一 `pending_timeout` 阈值竞速——清理赢时任务即
+    /// Failed，sweep 只扫 Pending 从此永远看不到，若判死只落状态不发布
+    /// 唤醒帧（生产 on_complete 恒 None）= 续行快照孤儿 + 等待方对话
+    /// 挂死。钩子补发与 sweep 判死臂同形状的 `cluster_continuation`
+    /// error 帧（`publish_continuation_to_bus`，15s 接收者就绪等待）；
+    /// exactly-once 由条件转移 CAS 保证（输方 Ok(false) 不触发钩子），
+    /// 双杀臂互斥不双发。bus 句柄在钩子体内现读——`set_message_bus`
+    /// 可发生在构造之后（gateway 装配顺序 cluster 构造 → start →
+    /// set_message_bus），tick 级快照会拿过期 None。幂等覆盖（重复
+    /// 构造/重启安全）。
+    pub(super) fn install_stale_kill_hook(&self) {
+        let bus_handle = Arc::clone(&self.bus);
+        self.task_manager
+            .set_on_stale_kill(Box::new(move |task: &Task| {
+                let Some(bus) = bus_handle.lock().clone() else {
+                    return;
+                };
+                let task_id = task.id.clone();
+                let peer_id = task.peer_id.clone();
+                // 错误文案单一真相源 = 判死写入 task.result 的 error 字段
+                // （与恢复 sweep「文案先落变量、状态与唤醒帧共用」同一纪律）。
+                let error = task
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("error"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("task timed out (safety net)")
+                    .to_string();
+                // 发布 fire-and-forget spawn 化：不阻塞清理循环下一 tick；
+                // publish 内部自带 15s 接收者就绪等待。无 runtime（纯同步
+                // 单测直调 run_cleanup_once）= 诚实跳过留痕，不 panic。
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        "[Cluster] stale-kill wake skipped: no tokio runtime"
+                    );
+                    return;
+                };
+                handle.spawn(async move {
+                    publish_continuation_to_bus(
+                        bus.as_ref(),
+                        &task_id,
+                        "",
+                        "error",
+                        &peer_id,
+                        Some(&error),
+                    )
+                    .await;
+                });
             }));
     }
 
@@ -652,16 +716,20 @@ impl Cluster {
         )?;
 
         // get_info — returns data matching DiscoveryMessage broadcast format
-        // Static fields (cloned, immutable after startup):
+        // 身份字段活读（ping handler 同款 self_weak 槽升级）：本 handler 是
+        // 对端身份查询面，`node.update_identity` 热改（set_node_name 等
+        // setter）后必须反映新值——注册期快照形态会让热改后所有对端永远
+        // 看到旧身份。upgrade 失败（停机窗口/未接线）退回注册期快照：
+        // 字段形态不变，最坏旧值，不炸。
         let node_id = self.node_id.clone();
-        let node_name = self.node_name.read().clone();
-        let role = self.role.read().clone();
-        let category = self.category.read().clone();
-        let tags = self.tags.read().clone();
-        let professions = self.professions.read().clone();
-        let tier = self.tier.read().clone();
-        // 自报运行时后端形态（静态身份，构造期捕获同 tier）。
-        let runtime_backend = self.runtime_backend.read().clone();
+        let self_weak_slot = self.self_weak.clone();
+        let snap_name = self.node_name.read().clone();
+        let snap_role = self.role.read().clone();
+        let snap_category = self.category.read().clone();
+        let snap_tags = self.tags.read().clone();
+        let snap_professions = self.professions.read().clone();
+        let snap_tier = self.tier.read().clone();
+        let snap_runtime_backend = self.runtime_backend.read().clone();
         // agent roster：Arc 过闭包读活值（提供者每次现读 AgentManager，
         // 运行期增删 agent 无需重启即反映）。
         let roster_slot = self.agent_roster.clone();
@@ -675,10 +743,32 @@ impl Cluster {
                 let addresses = network::get_all_local_ips();
                 let capabilities = caps_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let agents = roster_slot.read().as_ref().map(|p| p()).unwrap_or_default();
+                let identity = self_weak_slot.lock().clone().and_then(|w| w.upgrade());
+                let (name, role, category, tags, professions, tier, runtime_backend) =
+                    match identity {
+                        Some(c) => (
+                            c.node_name.read().clone(),
+                            c.role.read().clone(),
+                            c.category.read().clone(),
+                            c.tags.read().clone(),
+                            c.professions.read().clone(),
+                            c.tier.read().clone(),
+                            c.runtime_backend.read().clone(),
+                        ),
+                        None => (
+                            snap_name.clone(),
+                            snap_role.clone(),
+                            snap_category.clone(),
+                            snap_tags.clone(),
+                            snap_professions.clone(),
+                            snap_tier.clone(),
+                            snap_runtime_backend.clone(),
+                        ),
+                    };
                 Ok(serde_json::json!({
                     "version": "1.0",
                     "node_id": node_id,
-                    "name": node_name,
+                    "name": name,
                     "addresses": addresses,
                     "rpc_port": rpc_port,
                     "role": role,
@@ -1128,20 +1218,46 @@ impl Cluster {
     }
 }
 
+/// 负载感知路由去重集：set + 插入序队列双账。满 `cap` 时**按序逐出最老一条**
+/// （2026-11-14 审查发现 #1：旧实现满 cap 即 `clear()` 全清，把仍在活跃窗口
+/// 内的其他任务去重记录一并冲掉——重复回调（送达重试/恢复轮询重放）再次
+/// 穿过闸门 → 同任务双计、成功率失真；10 万 cap 下高频任务集里逐出路径
+/// 触发即伤害一批，不是只影响最老那条）。
+#[derive(Default)]
+pub(super) struct RouteRecordedSet {
+    seen: std::collections::HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl RouteRecordedSet {
+    /// 去重插入：已存在返回 false（记账闸拒绝）；不存在则先按序逐出最老
+    /// 条（若已满 cap）再插入，返回 true。
+    pub(super) fn insert_evicting_oldest(&mut self, task_id: &str, cap: usize) -> bool {
+        if !self.seen.insert(task_id.to_string()) {
+            return false;
+        }
+        if self.seen.len() > cap
+            && let Some(old) = self.order.pop_front()
+        {
+            self.seen.remove(&old);
+        }
+        self.order.push_back(task_id.to_string());
+        true
+    }
+}
+
 fn record_route_outcome_core(
     stats: &Mutex<std::collections::HashMap<String, RoutePeerStats>>,
-    recorded: &Mutex<std::collections::HashSet<String>>,
+    recorded: &Mutex<RouteRecordedSet>,
     node_id: &str,
     task_manager: &Arc<TaskManager>,
     task_id: &str,
     ok: bool,
+    cap: usize,
 ) {
     {
         let mut recorded = recorded.lock();
-        if recorded.len() >= ROUTE_RECORDED_CAP {
-            recorded.clear();
-        }
-        if !recorded.insert(task_id.to_string()) {
+        if !recorded.insert_evicting_oldest(task_id, cap) {
             return;
         }
     }
@@ -1170,10 +1286,24 @@ fn record_route_outcome_core(
     }
 }
 
+/// 单次 query_task_result 查询结局（并行查询阶段的产物，结算阶段消费）。
+enum QueryOutcome {
+    /// 收到响应字节——进入状态机结算。
+    Answer(Vec<u8>),
+    /// 不可达 / 对端拒答 / 空载荷 / 无 client——保持 Pending，下轮 sweep
+    /// 重试（对应旧逐个循环的全部 `continue` 臂，语义不变）。
+    Unreachable,
+}
+
 /// Poll stale pending tasks: query the B-node for any task that has been
 /// pending for longer than 2 minutes. If the B-node reports it done, complete
 /// the task locally; if not found, fail it; if older than the safety net,
 /// time it out.
+///
+/// 查询阶段并行（2026-11-14 审查 #2 根修）：query_task_result 以 JoinSet
+/// 并行发出（Semaphore 限并发 16），结算阶段按原 list 顺序串行——
+/// complete_callback / delivery_cb / 路由去重 / bus 唤醒语义与旧逐个处理
+/// 一致；N 个失联对端不再把单轮 sweep 拖成 Σ(30s)，墙钟收敛到 ~max(30s)。
 ///
 /// Uses the real RPC client when available, falling back to the synchronous
 /// test override (`call_fn`). This matches Go's `pollStalePendingTasks`
@@ -1182,7 +1312,10 @@ fn record_route_outcome_core(
 /// 的形状向总线重发 `cluster_continuation:{task_id}`（含真实响应内容 +
 /// metadata），唤醒 A 端主 agent 的续行恢复——生产装配不接
 /// TaskManager.on_complete，仅靠 complete_callback 只会更新任务状态、不会
-/// 唤醒 agent。（安全网分支补齐 publish。）
+/// 唤醒 agent。（安全网分支补齐 publish。）清理 tick（`cleanup_completed`
+/// 30s）对同一 pending_timeout 阈值的判死臂经构造期 stale-kill 钩子
+/// （`install_stale_kill_hook`）补发同形唤醒帧——两杀臂对同一任务竞速，
+/// 条件转移 CAS 恰一方生效，互斥不双发。
 ///
 /// `delivery_cb` 非空时，done 分支先触发交付回调（看板写回 / chat
 /// 交付判定，路由在 gateway 注入的闭包里），回调返回 true 才向 worker 发
@@ -1192,7 +1325,7 @@ pub(super) async fn poll_stale_pending_tasks(
     call_fn: &Option<
         Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
     >,
-    rpc_client: Option<&RpcClient>,
+    rpc_client: Option<Arc<RpcClient>>,
     safety_net: chrono::Duration,
     // （根修）：bus / delivery_cb 传句柄不传快照——publish 与交付
     // 回调在分支内**取用时现读**。此前每 tick 开头快照一次，而首 tick 快照
@@ -1215,7 +1348,17 @@ pub(super) async fn poll_stale_pending_tasks(
         tracing::debug!(count = tasks.len(), "[Cluster] Polling stale pending tasks",);
     }
 
-    for task in tasks {
+    // ---- 阶段 A：串行本地过滤（纯内存，无 RPC）+ 查询并行发射 ----
+    // 查询并行化（2026-11-14 审查 #2 根修）：旧实现逐任务 await（每查询
+    // 30s 超时）——N 个失联对端把单轮 sweep 拖成 Σ(30s)；A 端重启首 tick
+    // （include_young=true）恢复 N 个 pending 任务时最坏 N×30s。现查询以
+    // JoinSet 并行发出（Semaphore 限并发 16，防连接风暴），结算阶段按原
+    // list 顺序串行执行——complete_callback / delivery_cb / 路由去重 /
+    // bus 唤醒语义与旧逐个处理完全一致，墙钟收敛到 ~max(30s)。
+    const QUERY_CONCURRENCY: usize = 16;
+    let query_gate = Arc::new(tokio::sync::Semaphore::new(QUERY_CONCURRENCY));
+    let mut queries = tokio::task::JoinSet::new();
+    for (idx, task) in tasks.into_iter().enumerate() {
         // Parse created_at (RFC 3339) and compute age.
         let created = match chrono::DateTime::parse_from_rfc3339(&task.created_at) {
             Ok(dt) => dt.with_timezone(&chrono::Local),
@@ -1275,47 +1418,81 @@ pub(super) async fn poll_stale_pending_tasks(
             continue;
         }
 
-        // Query the remote peer for the task result.
+        // Query the remote peer for the task result（阶段 B 并行发射）。
         let payload = serde_json::json!({"task_id": task.id});
-
-        // Prefer real RPC client (matching Go's c.CallWithContext), fall back
-        // to synchronous test override.
-        let result = if let Some(client) = rpc_client {
-            let request = crate::rpc_types::RPCRequest {
-                id: uuid::Uuid::new_v4().to_string(),
-                action: crate::rpc_types::ActionType::Custom("query_task_result".to_string()),
-                payload: payload.clone(),
-                source: String::new(),
-                target: Some(task.peer_id.clone()),
-            };
-            match client
-                .call_with_timeout(&task.peer_id, request, Duration::from_secs(30))
-                .await
-            {
-                Ok(resp) => {
-                    if let Some(ref err) = resp.error {
-                        tracing::warn!(
-                            task_id = %task.id,
-                            error = %err,
-                            "[Cluster] query_task_result returned error"
-                        );
-                        continue;
+        let rpc_client = rpc_client.clone();
+        let call_fn = call_fn.clone();
+        let permit = query_gate.clone();
+        queries.spawn(async move {
+            // 并发闸任务内 acquire：JoinSet 槽全量 spawn（内存占用可忽略），
+            // 真正在途的查询数被闸在 QUERY_CONCURRENCY。
+            let _permit = permit.acquire_owned().await;
+            // Prefer real RPC client (matching Go's c.CallWithContext), fall
+            // back to synchronous test override.
+            let outcome = if let Some(client) = rpc_client.as_deref() {
+                let request = crate::rpc_types::RPCRequest {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    action: crate::rpc_types::ActionType::Custom("query_task_result".to_string()),
+                    payload: payload.clone(),
+                    source: String::new(),
+                    target: Some(task.peer_id.clone()),
+                };
+                match client
+                    .call_with_timeout(&task.peer_id, request, Duration::from_secs(30))
+                    .await
+                {
+                    Ok(resp) => {
+                        if let Some(ref err) = resp.error {
+                            tracing::warn!(
+                                task_id = %task.id,
+                                error = %err,
+                                "[Cluster] query_task_result returned error"
+                            );
+                            QueryOutcome::Unreachable
+                        } else {
+                            match resp.result {
+                                Some(val) => QueryOutcome::Answer(val.to_string().into_bytes()),
+                                None => QueryOutcome::Unreachable,
+                            }
+                        }
                     }
-                    match resp.result {
-                        Some(val) => val.to_string().into_bytes(),
-                        None => continue,
-                    }
+                    Err(_) => QueryOutcome::Unreachable,
                 }
-                Err(_) => continue,
+            } else if let Some(call) = call_fn {
+                match call(&task.peer_id, "query_task_result", payload) {
+                    Ok(data) => QueryOutcome::Answer(data),
+                    Err(_) => QueryOutcome::Unreachable,
+                }
+            } else {
+                // No client available, skip.
+                QueryOutcome::Unreachable
+            };
+            (idx, task, outcome)
+        });
+    }
+
+    // ---- 阶段 B：join 全部查询（panic 隔离——单查询 panic 只丢该任务
+    // 本轮查询，下轮 sweep 重试，不牵连其余任务结算）----
+    let mut settled: Vec<(usize, Task, QueryOutcome)> = Vec::new();
+    while let Some(joined) = queries.join_next().await {
+        match joined {
+            Ok(triple) => settled.push(triple),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "[Cluster] Recovery query task panicked; task stays pending for next sweep"
+                );
             }
-        } else if let Some(call) = call_fn {
-            match call(&task.peer_id, "query_task_result", payload) {
-                Ok(data) => data,
-                Err(_) => continue,
-            }
-        } else {
-            // No client available, skip.
-            continue;
+        }
+    }
+    // 恢复原 list 顺序：结算按序执行，与旧逐个处理语义一致。
+    settled.sort_by_key(|(idx, _, _)| *idx);
+
+    for (_, task, outcome) in settled {
+        let result = match outcome {
+            QueryOutcome::Answer(bytes) => bytes,
+            // 不可达 / 拒答 / 空载荷 / 无 client：保持 Pending，下轮重试。
+            QueryOutcome::Unreachable => continue,
         };
 
         let resp: serde_json::Value = match serde_json::from_slice(&result) {
@@ -1385,7 +1562,8 @@ pub(super) async fn poll_stale_pending_tasks(
                 };
                 if delivery_ok {
                     // Best-effort delivery confirmation
-                    confirm_delivery_with(call_fn, rpc_client, &task.peer_id, &task.id).await;
+                    confirm_delivery_with(call_fn, rpc_client.as_deref(), &task.peer_id, &task.id)
+                        .await;
                 }
             }
             "not_found" => {
@@ -1453,7 +1631,10 @@ pub(super) async fn poll_stale_pending_tasks(
 /// broadcast send 对无接收者是**静默丢弃**（publish_inbound 返回），
 /// 故发布前等待接收者就位，上界 15s（150×100ms 轮询）——超时照发不吞
 /// （宁试勿丢；总线侧仍有 no-receiver WARN 可观测）。
-async fn publish_continuation_to_bus(
+/// `pub(super)`：Cluster 构造期 stale-kill 唤醒钩子（`install_stale_kill_hook`）
+/// 复用同一发布形状——清理 tick 判死臂与恢复 sweep 判死臂是同一义务的两个
+/// 竞速执行者，发布形状必须逐字节一致（exactly-once 由条件转移 CAS 保证）。
+pub(super) async fn publish_continuation_to_bus(
     bus: &dyn MessageBus,
     task_id: &str,
     content: &str,
@@ -1547,12 +1728,23 @@ pub(super) struct ClusterPeerResolver {
 ///
 /// 判定 = **端口全匹配** 且（主机为回环 或 主机在本机 IP 集合内）。
 /// 同机多节点（cluster-uat / 本地双实例）靠端口区分——裸 IP 判定会把
-/// 合法同机对端误杀。`host` 允许携带端口（取 host 部分）。
+/// 合法同机对端误杀。`host` 允许携带端口（取 host 部分；IPv6 带端口的
+/// `[::1]:8080` 取括号内——2026-11-14 审查发现 #3：旧实现 `split(':').next()`
+/// 对该形态取到 `[`，IPv6 自投递防护失效；裸 IPv6（≥2 个冒号）整体即主机）。
 pub(crate) fn is_self_endpoint(host: &str, port: u16, own_port: u16, own_ips: &[String]) -> bool {
     if port != own_port {
         return false;
     }
-    let host_only = host.split(':').next().unwrap_or(host);
+    let host_only = if let Some(rest) = host.strip_prefix('[') {
+        match rest.find(']') {
+            Some(end) => &rest[..end],
+            None => rest,
+        }
+    } else if host.matches(':').count() > 1 {
+        host
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
     if let Ok(ip) = host_only.parse::<std::net::IpAddr>()
         && ip.is_loopback()
     {

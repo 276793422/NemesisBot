@@ -98,6 +98,12 @@ pub struct AppState {
     /// None = 插件未装载（诚实降级：启停/成员查询报 not loaded）。
     /// 恒编译（cluster-roaming feature 已删）。
     pub quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
+    /// plugin_mail 运行面句柄（邮件基础设施：SMTP/POP3 服务端 + 客户端发信
+    /// + 分库存储在插件内——宿主 nemesisbot 装载后注入，quic_relay 同款）。
+    ///
+    /// None = 插件未装载（诚实降级：mail.* 命令报「插件未装载」）。
+    /// 恒编译（契约 crate 非 optional；`mail` feature 只门 handler 注册面）。
+    pub mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -128,6 +134,10 @@ pub struct AppState {
     /// 全局急停状态。/api/internal 的 estop_* 命令直接操作它（无需 mpsc 往返，
     /// status 能即时返回）。EstopState 是线程安全 Arc<AtomicBool+watch>。
     pub estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// 急停触发/释放的审计钩子（BUG-20261118-096）：gateway 注入闭包
+    /// （持 SecurityPlugin 真身走 append_direct_audit_event 落 Merkle 审计
+    /// 链）。None = 未注入（headless/测试装配）→ 诚实降级，tracing 兜底。
+    pub estop_audit: Option<crate::handlers::estop::EstopAuditHook>,
     /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入。
     /// None = 未注入（headless/relay/测试装配）→ handler 诚实报错）。
     pub background_registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>,
@@ -161,6 +171,14 @@ pub struct AppState {
     /// CORS 管理器句柄（cors.* WSAPI 真实现；gateway 启动装配注入）。
     /// None = 未注入（headless/relay/测试装配）→ handler 诚实报错。
     pub cors_manager: Option<Arc<crate::cors::CORSManager>>,
+    /// 事件唤醒泵观测快照句柄（events.* WSAPI 读面；`events` feature 门控，
+    /// gateway post_agent 注入 `Some`——泵任务每周期覆写，handler 读）。
+    /// None = 泵未装配（feature 关 / headless / 测试装配）→ 诚实报错。
+    #[cfg(feature = "events")]
+    pub events_snapshot: Option<Arc<parking_lot::RwLock<nemesis_events::EventSnapshot>>>,
+    #[cfg(not(feature = "events"))]
+    #[allow(dead_code)]
+    pub events_snapshot: Option<()>,
 }
 
 impl AppState {
@@ -959,10 +977,16 @@ pub async fn handle_api_internal(
             match cmd {
                 "estop_engage" => {
                     estop.trigger();
+                    if let Some(hook) = state.estop_audit.as_ref() {
+                        hook("engage", "cli");
+                    }
                     tracing::info!("[Web] E-stop engaged via /api/internal");
                 }
                 "estop_release" => {
                     estop.release();
+                    if let Some(hook) = state.estop_audit.as_ref() {
+                        hook("release", "cli");
+                    }
                     tracing::info!("[Web] E-stop released via /api/internal");
                 }
                 _ => {}
@@ -1536,13 +1560,10 @@ pub async fn handle_api_chat_session_fork(
             at_turn,
             independent,
         )?;
-        // 资产树根 = 新会话所属 workspace：fork 血缘把 project_id 一并写入
-        // 新 meta（fork_session_opts），此处按新会话解析项目目录——项目
-        // 会话的 home 在项目目录下（与项目 loop 围栏同根）；对话组 =
-        // 主 workspace。解析不出（未装配/未注册）回落主 workspace。
-        let ws = crate::handlers::projects::project_root_for_session(&info.new_key)
-            .or(ws_opt.clone())
-            .ok_or_else(|| "workspace 未装配".to_string())?;
+        // 资产树根恒主 workspace（2026-11-16 污染修复）：项目会话的
+        // home 不再锚项目目录，fork 复制源/目标同根——与 sessions.create
+        // / upload / admission / hydrate 同源。
+        let ws = ws_opt.ok_or_else(|| "workspace 未装配".to_string())?;
         if let Err(e) = nemesis_agent::session_home::fork_copy_session_home(
             std::path::Path::new(&ws),
             &info.source_key,
@@ -1571,10 +1592,20 @@ pub async fn handle_api_chat_session_fork(
             Json(serde_json::json!({"error": e})),
         )
     })?;
-    // Optional title for the new session's meta (same call the sessions
-    // WSAPI rename uses).
-    if let Some(t) = title {
-        nemesis_agent::chat_log::write_session_meta(&info.new_key, &t);
+    // Optional title for the new session's meta. BUG-20261119-200：请求体
+    // 显式传入的 title = 用户意志，对齐家族契约（sessions.create/rename/
+    // import 四位点同款）——trim + 空/占位符过滤后走 write_session_meta_
+    // manual（E7：自动标题永不覆盖显式命名）。旧形态裸 write_session_meta
+    // （无 manual 标记、无 trim）：①title 恰为占位符「新对话」时自动标题
+    // 可覆盖显式名；②空白 title 落成伪真标题永久挡住自动标题；旧注释自称
+    // 「same call the sessions WSAPI rename uses」失实——rename 用的是
+    // manual 形态。
+    if let Some(t) = title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != nemesis_agent::chat_log::DEFAULT_SESSION_TITLE)
+    {
+        nemesis_agent::chat_log::write_session_meta_manual(&info.new_key, t);
     }
     // /：分叉缘由落盘（请求缺省/空白不写——谱系视图回退显示通用
     // 「fork」；write_session_fork_reason 内部同样 trim+空跳过）。完全

@@ -43,6 +43,8 @@ fn make_ctx(home: &Path) -> RequestContext {
     let ws = home.join("workspace").to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        mail_plugin: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -78,6 +80,7 @@ fn make_ctx(home: &Path) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -411,5 +414,121 @@ async fn restore_conflict_rename_flow_through_handler() {
 
     // 清场。
     nemesis_agent::chat_log::delete_chat_log(&new_key);
+    nemesis_agent::chat_log::delete_chat_log(&key);
+}
+
+// —— 删除残留级联（2026-11-19）：allow-all 内存态 + chat_event_log 环 ——
+
+/// 删除级联回归锁：sessions.delete（hard=true 主链）后 ① 会话级全部放行
+/// 内存态整条摘除（I1 重开干净——重开是全新会话不得继承前任放行）；
+/// ② chat_event_log 环摘桶（I2 删即不可见——chat.sync 不得再回放已删
+/// 会话的帧，replay_after 以 gap=true 诚实上报）。两个全局表各取串行闸
+///（SESSION_LOGS / SESSION_ALLOW_ALL 均进程级，env-test-race 同款纪律）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn delete_cascades_allow_all_state_and_chat_ring() {
+    let _allow_lock = crate::handlers::security::SESSION_ALLOW_ALL_TEST_LOCK
+        .lock()
+        .await;
+    let _ring_lock = crate::chat_event_log::test_support::GLOBAL_TABLE_LOCK
+        .lock()
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+    let ctx = make_ctx(&home);
+
+    crate::handlers::security::set_session_allow_all_for_test(Some(std::sync::Arc::new(
+        nemesis_security::session_allow_all::SessionAllowAllState::new(),
+    )));
+    let sid = "cascade1";
+    let key = seed(&home, sid, "正文");
+    let st = crate::handlers::security::session_allow_all_state().unwrap();
+    st.set(&key, true);
+    assert!(st.check(&key), "夹具前置：放行态已开");
+    let seq = crate::chat_event_log::record(&key, "assistant", "hi", None, None, None, None);
+    assert!(seq >= 1, "夹具前置：环内已有帧");
+
+    run(
+        &ctx,
+        "delete",
+        Some(serde_json::json!({ "session_id": sid, "hard": true })),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert!(
+        st.status(&key).is_none(),
+        "放行态整条摘除（非置 disabled——重开是全新会话）"
+    );
+    let (events, gap) = crate::chat_event_log::replay_after(&key, seq);
+    assert!(events.is_empty() && gap, "环已摘桶：补拉以 gap 诚实上报");
+
+    // 清场（置换 None 防污染同进程后续用例）。
+    crate::handlers::security::set_session_allow_all_for_test(None);
+}
+
+/// 软删→恢复全链锁：删除级联摘放行态后，trash_restore 按 meta sidecar
+/// （随四件套进回收站、恢复时回到 session_logs 的持久真相源）单条重注
+/// ——hydrate 同族语义保留 sidecar 的开启时刻（不生成新 since）。换新空
+/// state 步骤模拟 gateway 重启（内存态丢失、sidecar 独存）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn trash_restore_rehydrates_allow_all_from_sidecar() {
+    let _allow_lock = crate::handlers::security::SESSION_ALLOW_ALL_TEST_LOCK
+        .lock()
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    let _g = isolate(&home);
+    let ctx = make_ctx(&home);
+
+    crate::handlers::security::set_session_allow_all_for_test(Some(std::sync::Arc::new(
+        nemesis_security::session_allow_all::SessionAllowAllState::new(),
+    )));
+    let sid = "reh1";
+    let key = seed(&home, sid, "正文");
+    let st = crate::handlers::security::session_allow_all_state().unwrap();
+    let (since, _) = st.set(&key, true);
+    nemesis_agent::chat_log::write_session_allow_all(&key, true, &since).unwrap();
+
+    // 软删：级联摘内存态，sidecar 随 meta 进回收站。
+    let entry = run(
+        &ctx,
+        "delete",
+        Some(serde_json::json!({ "session_id": sid })),
+    )
+    .await
+    .unwrap()
+    .unwrap()["trash_entry"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!st.check(&key), "删除即摘内存放行态");
+
+    // 模拟重启：内存态全丢，唯一真相源 = 回收站里的 sidecar。
+    crate::handlers::security::set_session_allow_all_for_test(Some(std::sync::Arc::new(
+        nemesis_security::session_allow_all::SessionAllowAllState::new(),
+    )));
+    let st2 = crate::handlers::security::session_allow_all_state().unwrap();
+    assert!(!st2.check(&key));
+
+    let out = run(
+        &ctx,
+        "trash_restore",
+        Some(serde_json::json!({ "entry": entry })),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let restored_key = out["restored"].as_str().unwrap().to_string();
+    assert_eq!(restored_key, key, "无冲突恢复落回原键");
+    let (enabled, restored_since, _) = st2.status(&key).expect("恢复后放行态按 sidecar 重注");
+    assert!(enabled, "allow_all=true 随条目恢复");
+    assert_eq!(restored_since, since, "hydrate 保留 sidecar 开启时刻");
+
+    // 清场。
+    crate::handlers::security::set_session_allow_all_for_test(None);
     nemesis_agent::chat_log::delete_chat_log(&key);
 }

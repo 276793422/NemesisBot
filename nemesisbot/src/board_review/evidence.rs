@@ -742,7 +742,9 @@ pub(super) fn try_parent_remediation(
         // sweep 在节点可用时自动接力——父单不必为此弹回人工。
         Ok(None) => false,
         Err(e) => {
-            let _ = store.add_comment(nemesis_board::NewComment {
+            // BUG-20261118-173：评论写失败不再 `let _ =` 静默吞没（本仓库惯例
+            // = warn! 不阻塞但 loud）。此处是自动派发失败的人工可见性载体。
+            if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: rem.id,
                 author: nemesis_board::Actor::system("board-review"),
                 content: format!(
@@ -750,7 +752,12 @@ pub(super) fn try_parent_remediation(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                warn!(
+                    issue = %rem.number,
+                    "[BoardReview] 自动派发失败通知评论落库失败：{ce}（人工请检查该单，可 issue.dispatch 或等 sweep 重试）"
+                );
+            }
             return Ok(ParentRemediation::Declined(format!(
                 "返工子单 {} 已创建但自动派发失败：{e}",
                 rem.number

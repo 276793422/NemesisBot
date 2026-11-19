@@ -1,9 +1,9 @@
 //! 工具批次执行（器官 8 子器官自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
 //! 2026-09-23_.md /8a-8e）。
 //! 语义零变化：`__ASYNC__` 集群续行快照（8a）、`__BG_SPAWN__` 后台子代理
-//! 快照（8b，inline await 语义保持）、⑤/⑤′/⑥ 环守卫 + 诊断回灌 +
-//! spill/prune 门 + projection（8c）、// 指令链触碰（8d）、
-//! escalation 与校验预算两终局判定（8e）。
+//! park 等待（8b，2026-11-19 park 化——不再伪造 Done 收口）、⑤/⑤′/⑥
+//! 环守卫 + 诊断回灌 + spill/prune 门 + projection（8c）、// 指令链触碰
+//! （8d）、escalation 与校验预算两终局判定（8e）。
 //!
 //! 器官出口约定（对照表）：8a/8b 命中即 `Some(Done(中间消息))`/`Done`
 //! 返回，骨架统一 `push + break`；8e 命中即 `Some(终局事件)` 返回，骨架置
@@ -19,6 +19,16 @@ use super::*;
 /// 计划钦定文案（原样，不翻译）：模型据此知道调用被用户插队让路，而非
 /// 执行失败或结果未知。
 pub(crate) const STEER_SKIP_TOOL_RESULT: &str = "Skipped due to queued user message.";
+
+/// 器官 8b park 等待的结论（organ 8b 据此取回灌文本）。
+pub(crate) enum BgParkOutcome {
+    /// 真实完成（成功结果或 `Error:` 失败文本——都作为工具真实结果
+    /// 走统一守卫链：ToolResult 事件 + projection/历史落账 + 8d/8e）。
+    Completed(String),
+    /// estop/cancel 打断（⛔ 文案回灌，模型当轮自停；文本与
+    /// tool_dispatch chokepoint 两臂逐字节一致）。
+    Interrupted(String),
+}
 
 impl AgentLoop {
     /// 器官 8 间隙检查：批内每个工具执行前的间隙做
@@ -209,35 +219,55 @@ impl AgentLoop {
         Some(AgentEvent::Done(formatted))
     }
 
-    /// 器官 8b：`__BG_SPAWN__:{task_id}` 后台子代理续行快照 + 中间消息。
-    /// (devtool-upgrade)：后台 subagent —— spawn 闭包
-    /// （background=true）已在闭包侧把任务转入后台 tokio 任务并
-    /// 立即返回此 marker。这里与 __ASYNC__（集群）同构：存续行
-    /// 快照 + 中间消息收尾本回合；任务完成时闭包侧向 bus 发布
-    /// `subagent_continuation:{task_id}`，gate_inbound 拦截后走
-    /// dispatch_continuation → handle_cluster_continuation 全复用
-    /// （单飞闸认领 + 快照加载 + 续行 + 持久化 + finish_handling
-    /// 收口自清——磁盘快照保留到最终回复持久化后，发现 F）。
+    /// 器官 8b：`__BG_SPAWN__:{task_id}` 后台子代理 **park 等待**
+    /// （2026-11-19 spawn park 化，替代旧 save_bg_spawn_continuation 的
+    /// 伪造 Done 收口）。spawn 闭包（background=true）把任务转入后台
+    /// tokio 任务并返回 marker；本 turn **不再收口**，而是 park 在本
+    /// 工具调用上等真实完成——一个逻辑任务=一个 turn=一块连续过程
+    /// 时间线=一次 stop（未来 stop hook 挂回合边界的语义前提）。
     ///
-    /// 快照保存必须 **inline await**（不能像 __ASYNC__ 那样
-    /// spawn）：后台子代理毫秒级即可完成并回灌，spawn 式保存要
-    /// 等下一个 await 点才落内存，load 端扑空即静默且回复
-    /// （handle_cluster_continuation 的 debug-skip 分支）。inline
-    /// 消除该竞态；一次小盘写的延迟可忽略。
+    /// 流程：
+    /// 1. 续行快照 inline 保存（语义不变——park 是活体等待，快照降格
+    ///    为崩溃恢复保险；estop 打断后的释放恢复也走它）。inline await
+    ///    消除「毫秒级完成先于保存」竞态的语义保持原样。
+    /// 2. marker 落史（`add_tool_result`）——等待期间历史完整、时间线
+    ///    不收口；真实完成后由 `apply_tool_guards` 的 replace 分支原地
+    ///    覆写本条（APPEND 会同 call_id 双 tool message，LLM API 400）。
+    /// 3. park 等待：rx 取自 `bg_park` 注册表（slot 由 spawn 闭包在
+    ///    `tokio::spawn` **前**注册，先于任何可能完成，无竞态窗口）。
+    ///    select 三臂（biased，estop 优先——chokepoint 同序）：
+    ///    - 完成 parcel → 真实结果（失败 = `Error:` 前缀，与
+    ///      `tool_result_indicates_error`/WAL ok 判定同刻度——
+    ///      run_continuation_turn legacy 臂同形）；
+    ///    - estop → slot 留 Waiting + 快照保留，⛔ 文案回灌（完成回灌
+    ///      撞 WaiterGone 落回 legacy 快照续行 = estop 释放恢复旧世界
+    ///      语义）；
+    ///    - session cancel → 先尽力取消子代理执行体
+    ///      （`SubagentRegistry::cancel_by_bg_task_id`——不能只唤醒主
+    ///      turn 留下无人收养的子代理继续烧 token）+ slot 置 Cancelled
+    ///      + 快照回收，⛔ 文案回灌。
     ///
-    /// 格式：`__BG_SPAWN__:{task_id}`（编码端 = agent_factory 注入
-    /// 的 spawn 闭包）。
-    /// 调用方（strip_prefix 分类留在骨架）拿到返回值后统一
-    /// `push + hit_async + break`。快照保存 **inline await**（原注释所述
-    /// 竞态消除语义保持）。
-    pub(crate) async fn save_bg_spawn_continuation(
+    /// park 期间本 turn 持 session busy guard——新消息走 queue/steer
+    /// （旧世界假空闲会开并行轮，是界面乱象根源之一，占用反而正确）。
+    ///
+    /// 并行批同享本器官：spawn parallel-safe，`precompute_parallel_batch`
+    /// 并发跑全部 spawn 闭包后，重放循环按源序逐个 park——一批多个
+    /// 后台子代理天然 wait-all（总等待 = max，非 sum）。
+    ///
+    /// 格式：`__BG_SPAWN__:{task_id}`（编码端 = agent_factory 注入的
+    /// spawn 闭包，主/项目 loop 两处注入点同契约）。
+    pub(crate) async fn park_bg_spawn(
         &self,
         instance: &AgentInstance,
         context: &RequestContext,
         tc: &crate::types::ToolCallInfo,
         bg_task_id: &str,
-    ) -> AgentEvent {
+    ) -> BgParkOutcome {
         let bg_task_id = bg_task_id.trim().to_string();
+        // 快照（恢复保险）：peer_id 留空——后台任务是进程内 tokio 任务，
+        // 无对端可 poll；cluster first_start 恢复循环对空 peer_id 快照
+        // 本就跳过（留给 TTL 清扫）；重启丢失场景由适配器启动期的诚实
+        // 丢失注入兜底（见 nemesisbot adapters）。
         if let Some(ref mgr) = self.continuation_manager {
             let messages = self.build_messages(instance);
             let channel = context.channel.clone();
@@ -252,10 +282,6 @@ impl AgentLoop {
                 .find(|t| t.role == "user")
                 .map(|t| t.image_refs.clone())
                 .unwrap_or_default();
-            // peer_id 留空：后台任务是进程内 tokio 任务，无对端
-            // 可 poll —— cluster first_start 恢复循环对空 peer_id
-            // 快照本就跳过（留给 TTL 清扫）；重启丢失场景由适配器
-            // 启动期的诚实丢失注入兜底（见 nemesisbot adapters）。
             mgr.save_continuation_with_images(
                 &bg_task_id,
                 messages,
@@ -268,13 +294,14 @@ impl AgentLoop {
             )
             .await;
             info!(
-                "[AgentLoop] Continuation saved for background subagent: task_id={}, tool_call_id={}",
+                "[AgentLoop] Continuation saved for background subagent (park insurance): task_id={}, tool_call_id={}",
                 bg_task_id, tc.id
             );
         }
 
-        // 工具结果 marker：与 __CLUSTER_ASYNC__ 刻意不同名，两套
-        // 异步路径在会话历史里互不误判。
+        // marker 落史：与 __CLUSTER_ASYNC__ 刻意不同名，两套异步路径
+        // 在会话历史里互不误判。等待期间本条作为占位；真实完成由守卫
+        // 链 replace 分支原地覆写。
         instance.add_tool_result(
             &tc.id,
             &format!(
@@ -283,9 +310,107 @@ impl AgentLoop {
             ),
         );
 
-        let intermediate = "已派后台子代理任务，完成后结果会自动带回本会话~".to_string();
-        let formatted = context.format_rpc_message(&intermediate);
-        AgentEvent::Done(formatted)
+        // park 等待 rx。None = slot 缺席/已消费/已取消（异常装配：闭包
+        // 未注册、等待已发生过）——落回旧世界 marker 即返形态，完成走
+        // legacy 快照续行（诚实降级，不悬挂）。
+        let Some(rx) = crate::bg_park::global().wait(&bg_task_id) else {
+            warn!(
+                "[AgentLoop] bg spawn park slot missing for task {} — falling back to marker-return (legacy async delivery)",
+                bg_task_id
+            );
+            return BgParkOutcome::Completed(format!(
+                "Background sub-agent accepted (park unavailable; result will arrive asynchronously). Task ID: {} | __BG_ASYNC__{{\"task_id\":\"{}\"}}",
+                bg_task_id, bg_task_id
+            ));
+        };
+
+        let interrupted_at = std::time::Instant::now();
+        let mut estop_rx = self.security.subscribe();
+        let session_cancel_token = self
+            .cancel_tokens
+            .get(&context.session_key)
+            .map(|e| e.value().clone());
+        let parcel = tokio::select! {
+            biased;
+            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                warn!(
+                    "[AgentLoop] E-stop interrupted bg-spawn park (task {}); snapshot kept for release-resume.",
+                    bg_task_id
+                );
+                self.emit_tool_interrupted(
+                    &context.session_key,
+                    &context.chat_id,
+                    &tc.id,
+                    &tc.name,
+                    interrupted_at,
+                    "⛔ interrupted by e-stop (estop engaged mid-park)",
+                );
+                return BgParkOutcome::Interrupted(
+                    "⛔ ESTOP: 已急停 — 工具调用已被打断 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。"
+                        .to_string(),
+                );
+            }
+            _ = async {
+                match session_cancel_token.as_ref() {
+                    Some(tok) => tok.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                info!(
+                    "[AgentLoop] Session cancel interrupted bg-spawn park (task {}) — cancelling sub-agent executor.",
+                    bg_task_id
+                );
+                // 尽力取消子代理执行体（结果丢弃——不留无人收养的子代理
+                // 继续烧 token）+ slot 置 Cancelled + 快照回收（此后完成
+                // 回灌 deliver=CancelledNoResume 幂等兜底）。
+                crate::subagent_registry::global().cancel_by_bg_task_id(&bg_task_id);
+                crate::bg_park::global().mark_cancelled(&bg_task_id);
+                if let Some(ref mgr) = self.continuation_manager {
+                    mgr.remove_continuation(&bg_task_id).await;
+                }
+                self.emit_tool_interrupted(
+                    &context.session_key,
+                    &context.chat_id,
+                    &tc.id,
+                    &tc.name,
+                    interrupted_at,
+                    "⛔ interrupted by session cancel (stop requested mid-park)",
+                );
+                return BgParkOutcome::Interrupted(
+                    "⛔ CANCELLED: 已取消 — 工具调用已被打断（用户请求停止）。不要重试该工具；停止当前工作，简短确认已停止即可。"
+                        .to_string(),
+                );
+            }
+            parcel = rx => match parcel {
+                Ok(p) => p,
+                // rx 死亡（防御臂：tx 侧意外弃发）。落回 marker 即返，
+                // 完成走 legacy 快照续行。
+                Err(_) => {
+                    return BgParkOutcome::Completed(format!(
+                        "Background sub-agent accepted (park link lost; result will arrive asynchronously). Task ID: {} | __BG_ASYNC__{{\"task_id\":\"{}\"}}",
+                        bg_task_id, bg_task_id
+                    ));
+                }
+            },
+        };
+        // 真实完成：parcel → 结果文本。失败 = `Error:` 前缀（与
+        // `tool_result_indicates_error`/WAL ok 判定/守卫同刻度）。
+        let real = if parcel.failed {
+            format!(
+                "Error: {}",
+                parcel
+                    .error
+                    .filter(|e| !e.trim().is_empty())
+                    .unwrap_or_else(|| parcel.content.clone())
+            )
+        } else {
+            parcel.content
+        };
+        info!(
+            "[AgentLoop] bg-spawn park delivered (task {}) — real result fed back to LLM.",
+            bg_task_id
+        );
+        BgParkOutcome::Completed(real)
     }
 
     /// 器官 8c：⑤/⑤′/⑥ 环守卫 + 诊断回灌 + spill/prune 门 +
@@ -302,6 +427,7 @@ impl AgentLoop {
         tc: &crate::types::ToolCallInfo,
         result: String,
         turn_guard: &mut crate::turn_guard::TurnGuard,
+        replace_existing: bool,
     ) -> bool {
         let tool_succeeded = !crate::turn_guard::tool_result_indicates_error(&result);
 
@@ -562,17 +688,42 @@ impl AgentLoop {
             } else {
                 None
             };
-        instance.add_tool_result_projected(&tc.id, &original_result, &tc.name, projection);
+        // (Phase 5 图像工具层) 工具产出的图片路径随 tool 轮落史——串行
+        // dispatch 主路径的唯一取图点（dispatch 前 clear_tool_images、
+        // 工具 push、此处 take）。并行批回放走同一入口但槽恒空（图片工具
+        // 非 parallel-safe，进不了并行批）。异步占位臂 __ASYNC__ 在守卫
+        // 之前 return，不经过此处；__BG_SPAWN__ park 臂经此处但走
+        // replace 分支（marker 已在史）。
+        let tool_images = context.take_tool_images();
+        if replace_existing {
+            // spawn park 落地（2026-11-19）：marker 已在史，真实结果
+            // 原地覆写（同 call_id 唯一 tool message）。
+            instance.replace_tool_result_projected(
+                &tc.id,
+                &original_result,
+                &tc.name,
+                projection,
+                tool_images,
+            );
+        } else {
+            instance.add_tool_result_projected_with_images(
+                &tc.id,
+                &original_result,
+                &tc.name,
+                projection,
+                tool_images,
+            );
+        }
         tool_succeeded
     }
 
     /// 器官 8d：// 指令链触碰（自写窗口登记 / 懒发现队列 /
     /// touch-driven instruction-chain invalidation. A
-    /// successful read_file/write_file/edit_file may have touched
+    /// successful read_file/write_file/edit_file/multiedit may have touched
     /// a file on the workspace instruction chain — invalidate the
     /// context digests so the next build re-reads the chain.
     /// (File-level check only: the re-read happens at injection
-    /// time. Rare + cheap: only fires for these three tools and
+    /// time. Rare + cheap: only fires for these read/write-family tools and
     /// only when the path matches a chain file name.)
     pub(crate) fn touch_instruction_chain(
         &self,
@@ -581,47 +732,78 @@ impl AgentLoop {
         tool_succeeded: bool,
     ) {
         if tool_succeeded
-            && matches!(tc.name.as_str(), "read_file" | "write_file" | "edit_file")
+            && matches!(
+                tc.name.as_str(),
+                "read_file" | "write_file" | "edit_file" | "multiedit"
+            )
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
-            && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
         {
-            let touched = std::path::PathBuf::from(path_str);
-            // (devtool-upgrade): record agent-authored
-            // writes so the fs watcher's event for the same path is
-            // dropped inside the self-write window (the agent knows
-            // what it just wrote — must not surface as "外部修改").
-            if matches!(tc.name.as_str(), "write_file" | "edit_file") {
-                self.note_self_write(path_str);
-            }
-            // (devtool-upgrade): lazy sub-directory
-            // instruction discovery on successful reads — the file's
-            // directory may carry AGENTS.md/CLAUDE.md that was never
-            // injected (root chain only, by default). Queued here,
-            // injected one-shot at the next build.
-            if tc.name == "read_file" {
-                self.note_read_for_instructions(instance, path_str);
-            }
+            // multiedit 顶层无 path——批量目标在 edits[].path（提取形态与
+            // format-on-save / rewrite_tool_paths_for_base 的 PATH_ARG_TOOLS
+            // 同源）；其余工具单 path。
+            let paths: Vec<String> = if tc.name == "multiedit" {
+                args_val
+                    .get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| e.get("path").and_then(|p| p.as_str()))
+                            .map(String::from)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                args_val
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .into_iter()
+                    .collect()
+            };
             let ws_root = self.workspace_root.read().clone();
-            if let Some(ref root) = ws_root {
-                // Chain files are <dir>/AGENTS.md or CLAUDE.md
-                // under the workspace — check by file name to
-                // avoid re-reading the whole chain on every
-                // file op (the full path_is_on_chain check
-                // happens against the loaded chain at
-                // injection; here the name match is the
-                // conservative trigger).
-                let name = touched
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if name == "AGENTS.md" || name == "CLAUDE.md" {
-                    let chain = crate::workspace_instructions::load_instruction_chain(root, root);
-                    if crate::workspace_instructions::path_is_on_chain(&chain, &touched) {
-                        info!(
-                            "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
-                            touched.display()
-                        );
-                        self.invalidate_context_digests();
+            for path_str in paths {
+                // (devtool-upgrade): record agent-authored
+                // writes so the fs watcher's event for the same path is
+                // dropped inside the self-write window (the agent knows
+                // what it just wrote — must not surface as "外部修改").
+                // multiedit 同为写族工具：单次调用批量编辑 N 个文件，
+                // 每个 edits[].path 都要登记（BUG-20261118-091：漏登记
+                // 会让 agent 刚批量编辑的文件在下轮上下文被谎报为
+                // 「外部修改（非本会话操作）」）。
+                if matches!(tc.name.as_str(), "write_file" | "edit_file" | "multiedit") {
+                    self.note_self_write(&path_str);
+                }
+                // (devtool-upgrade): lazy sub-directory
+                // instruction discovery on successful reads — the file's
+                // directory may carry AGENTS.md/CLAUDE.md that was never
+                // injected (root chain only, by default). Queued here,
+                // injected one-shot at the next build.
+                if tc.name == "read_file" {
+                    self.note_read_for_instructions(instance, &path_str);
+                }
+                if let Some(ref root) = ws_root {
+                    // Chain files are <dir>/AGENTS.md or CLAUDE.md
+                    // under the workspace — check by file name to
+                    // avoid re-reading the whole chain on every
+                    // file op (the full path_is_on_chain check
+                    // happens against the loaded chain at
+                    // injection; here the name match is the
+                    // conservative trigger).
+                    let touched = std::path::PathBuf::from(&path_str);
+                    let name = touched
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if name == "AGENTS.md" || name == "CLAUDE.md" {
+                        let chain =
+                            crate::workspace_instructions::load_instruction_chain(root, root);
+                        if crate::workspace_instructions::path_is_on_chain(&chain, &touched) {
+                            info!(
+                                "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
+                                touched.display()
+                            );
+                            self.invalidate_context_digests();
+                        }
                     }
                 }
             }
@@ -811,6 +993,20 @@ impl AgentLoop {
                     .to_string(),
             ));
         }
+        // 批后取消检查点（Phase 5 A2）——并行批窗口内到达的会话取消
+        // （chokepoint cancel 臂已中断在飞执行并补发中断面 ToolFinished）
+        // 在此收口，与上方批后急停检查点同形：拒绝整批回灌、终局本轮。
+        // （并行路径 skip_cancel_estop=true 跳过下方 per-item 检查——若
+        // 无此闸，取消结果照回灌、模型下一轮读到 ⛔ 才自停 = 多烧一轮
+        // LLM 且「停止」变两跳。）串行路径 per-item 检查已覆盖，不受影响。
+        if precomputed.is_some() && cancel_token.is_cancelled() {
+            info!(
+                "[AgentLoop] Session cancel arrived during/after parallel batch ({} calls) — stopping turn.",
+                tool_calls.len()
+            );
+            st.terminal_reason = Some("cancelled");
+            return TurnFlow::Stop(AgentEvent::Done("已取消".to_string()));
+        }
         for (batch_idx, tc) in tool_calls.iter().enumerate() {
             // Check cancellation before each tool execution.
             if !skip_cancel_estop && cancel_token.is_cancelled() {
@@ -897,7 +1093,17 @@ impl AgentLoop {
                 // 阻塞链的派发侧护栏之一）。
                 let r = match super::tool_dispatch::environment_constraint_refusal(
                     instance, &tc.name,
-                ) {
+                )
+                .or_else(|| {
+                    // (Phase 5 图像工具层) vision 前置闸：产出图片的工具
+                    // 在 vision=no 的模型面前零 IO 拒绝（注册点
+                    // vision_gated_image_tool_refusal；并行批不含图片工具，
+                    // 无需并行臂）。
+                    super::tool_dispatch::vision_gated_image_tool_refusal(
+                        self.current_vision().supported,
+                        &tc.name,
+                    )
+                }) {
                     // 压测①a：detached 工具闸——no_tools/白名单外
                     // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
                     // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游
@@ -914,6 +1120,10 @@ impl AgentLoop {
                         crate::args_validator::Outcome::Valid => {
                             st.validation_failures = 0;
                             self.record_tool_validation_stats(false);
+                            // (Phase 5 图像工具层) 每次串行分派前清图片槽：
+                            // 上一次调用的残留（工具 push 后守卫前中断的边角）
+                            // 不得泄进本次 tool 轮。取图在 apply_tool_guards。
+                            context.clear_tool_images();
                             // dispatch at this instance's sub-agent depth so
                             // depth-aware tools (spawn) enforce max_depth.
                             self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
@@ -928,6 +1138,7 @@ impl AgentLoop {
                             );
                             let mut fixed = tc.clone();
                             fixed.arguments = fixed_args;
+                            context.clear_tool_images();
                             self.handle_tool_call_at_depth(
                                 &fixed,
                                 context,
@@ -983,7 +1194,14 @@ impl AgentLoop {
             // so this is what catches a bloated output blowing out the
             // context window (the suspected bug trigger). No-op unless
             // capture is enabled; flushed only on a later failure signal.
-            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+            // The `enabled()` gate must come FIRST: the ToolCapture literal
+            // below clones the full result twice, and a bare `global()` check
+            // would do that cloning even when capture is disabled (only to
+            // drop it inside record_tool) — every tool call on every session
+            // would pay it.
+            if crate::capture_sink::CaptureSink::enabled()
+                && let Some(sink) = crate::capture_sink::CaptureSink::global()
+            {
                 sink.record_tool(
                     &context.session_key,
                     crate::capture_sink::ToolCapture {
@@ -1013,14 +1231,26 @@ impl AgentLoop {
                 return TurnFlow::Stop(ev);
             }
 
-            // 器官 8b（tool_batch.rs）：__BG_SPAWN__ 后台子代理
-            // 快照（inline await 语义保持）。
-            if let Some(bg_task_id) = result.strip_prefix("__BG_SPAWN__:") {
-                let ev = self
-                    .save_bg_spawn_continuation(instance, context, tc, bg_task_id)
-                    .await;
-                return TurnFlow::Stop(ev);
-            }
+            // 器官 8b（tool_batch.rs）：__BG_SPAWN__ 后台子代理 park
+            // 等待（2026-11-19 park 化：废除伪造 Done 收口——turn 停在
+            // 本工具调用上等真实完成；完成 parcel / estop/cancel ⛔
+            // 文案都作为本调用的最终结果落回统一守卫链）。等待后不再
+            // return，走 8c 历史落账；bg_park_replace 告知 apply_tool_
+            // guards 落账走 replace 语义（marker 已在史——park 前落账
+            // ——APPEND 会同 call_id 双 tool message，LLM API 400）。
+            let (result, bg_park_replace) =
+                if let Some(bg_task_id) = result.strip_prefix("__BG_SPAWN__:") {
+                    let parked = self.park_bg_spawn(instance, context, tc, bg_task_id).await;
+                    (
+                        match parked {
+                            BgParkOutcome::Completed(real) => real,
+                            BgParkOutcome::Interrupted(text) => text,
+                        },
+                        true,
+                    )
+                } else {
+                    (result, false)
+                };
 
             let tool_result = ToolCallResult {
                 tool_name: tc.name.clone(),
@@ -1033,7 +1263,14 @@ impl AgentLoop {
             // 回灌 + spill/prune 门 + projection + 历史落账；返回
             // tool_succeeded 供 8d 与边界判定。
             let tool_succeeded = self
-                .apply_tool_guards(instance, context, tc, result, &mut st.turn_guard)
+                .apply_tool_guards(
+                    instance,
+                    context,
+                    tc,
+                    result,
+                    &mut st.turn_guard,
+                    bg_park_replace,
+                )
                 .await;
 
             // 器官 8d：// 指令链触碰。

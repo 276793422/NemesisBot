@@ -368,6 +368,38 @@ pub enum AgentEvent {
         /// 进程累计产出字节数（单调）。
         total_bytes: u64,
     },
+    /// 专家无匹配自动降级事件（2026-11-13 专家总开关与降级）。spawn 点名
+    /// 专家不存在/停用且降级策略激活 + notify 开时发布；web pump 转 SSE
+    /// `expert-degraded` 全局广播，前端 toast 提示。`reason` 是原始
+    /// resolve 错误文本（unknown/disabled 文案区分在 ExpertsStore 侧），
+    /// 截断 ≤300 字符。
+    ExpertDegraded {
+        session_key: String,
+        chat_id: String,
+        /// 模型点名的专家名（原样，未归一）。
+        requested: String,
+        /// 降级原因（resolve 错误原文）。
+        reason: String,
+    },
+    /// 系统注入行落盘事件（2026-11-19）：`sender_id=="system"` 的注入
+    /// 消息（hook 提示词注入 / cron tick / 后台唤醒）chat_log user 行
+    /// 落盘后发布——web pump 转 `chat.receive` 帧（role=user +
+    /// system_notice + seq 入环），前端实时渲染系统通知条（修「注入
+    /// 通知重开面板才可见」）。真人消息不发（WS chat.send 入站臂已有
+    /// 环行回声，双发会重复显示）。
+    SystemNotice {
+        session_key: String,
+        chat_id: String,
+        /// 注入行原文（与 chat_log 落盘行同 content——@未展开的原始文本）。
+        content: String,
+        /// 通知类别（`system_notice_of` 推导值；前端历史行 system_notice
+        /// 键同源）。
+        kind: String,
+        /// cron 行的任务 id（非 cron 注入 = None）。前端据此渲染
+        /// 「定时任务」标签与 ⏰ 图标（历史行 cron_job_id 同源）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cron_job_id: Option<String>,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -435,6 +467,10 @@ impl AgentEvent {
             AgentEvent::SubagentReplyLanded { chat_id, .. } => chat_id,
             // exec 执行中输出流绑定发起会话（走默认 tool_event 通用路径）。
             AgentEvent::ToolOutput { chat_id, .. } => chat_id,
+            // 专家降级事件绑定发起会话（spawn 所在会话）。
+            AgentEvent::ExpertDegraded { chat_id, .. } => chat_id,
+            // 系统注入行绑定注入会话（web pump 转 receive 帧定向房间）。
+            AgentEvent::SystemNotice { chat_id, .. } => chat_id,
         }
     }
 
@@ -463,6 +499,10 @@ impl AgentEvent {
             AgentEvent::CredentialRequested { .. } | AgentEvent::CredentialResolved { .. } => None,
             // exec 执行中输出流绑发起会话。
             AgentEvent::ToolOutput { session_key, .. } => Some(session_key),
+            // 专家降级事件绑发起会话。
+            AgentEvent::ExpertDegraded { session_key, .. } => Some(session_key),
+            // 系统注入行绑注入会话。
+            AgentEvent::SystemNotice { session_key, .. } => Some(session_key),
         }
     }
 
@@ -486,6 +526,8 @@ impl AgentEvent {
             AgentEvent::CredentialRequested { .. } => "CredentialRequested",
             AgentEvent::CredentialResolved { .. } => "CredentialResolved",
             AgentEvent::ToolOutput { .. } => "ToolOutput",
+            AgentEvent::ExpertDegraded { .. } => "ExpertDegraded",
+            AgentEvent::SystemNotice { .. } => "SystemNotice",
         }
     }
 }
@@ -644,6 +686,17 @@ pub trait QuestionResponder: Send + Sync {
 
     /// 当前等待作答的提问元数据列表（前端刷新/恢复用）。
     fn pending(&self) -> Vec<serde_json::Value>;
+
+    /// 会话级取消（Phase 5 A3，2026-11-15）：`agent.cancel`（dashboard
+    /// 停止按钮）对**指定会话**全部 pending 提问的强制了结——与
+    /// `cancel_pending_all`（estop 全局 watcher，终止全部会话）互补，
+    /// 只了结 `session_key` 匹配的条目（.send(Cancelled) +
+    /// broadcast resolved，前端卡片摘除），其余会话提问不受影响。
+    /// 返回了结条数。默认 no-op（返回 0）——既有实现零破坏，broker
+    /// 缺席/不关心会话粒度的实现等价旧行为。
+    fn cancel_session_questions(&self, _session_key: &str, _reason: &str) -> usize {
+        0
+    }
 }
 
 /// B4（2026-10-18 凭据 vault §7）：单次凭据索要请求（触发点 → broker 方向

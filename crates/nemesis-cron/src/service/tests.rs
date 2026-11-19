@@ -3367,6 +3367,52 @@ fn add_job_internal_still_allows_legacy_dead_schedule() {
 }
 
 #[test]
+fn add_job_ext_gate_and_write_share_one_clock_read_at_kind() {
+    // BUG-20261114-056 回归锁：死排程闸与内部注册必须共用同一时钟读。
+    // 修复前形态：闸在 add_job_ext 用 now₁ 判定，add_job_internal 用
+    // 第二次时钟读 now₂ 重算 next_run——at 类单发的 at_ms 落在
+    // (now₁, now₂] 之间时，闸放行（at_ms > now₁）而写入得 None
+    // （at_ms <= now₂），产出 enabled + next_run=None 静默僵尸（恰是
+    // 死排程闸存在要防的状态）。测试用 add_gate_delay_ms 钩子在闸通过
+    // 后停顿 60ms、at_ms 只提前 5ms，把过期点确定性挤进闸-写间隙：
+    // 修复前内部重算必得 None（红）；修复后全漏斗单时钟读（闸与写入
+    // 共用 now₁，同一纯函数同一输入 ⇒ 结果恒等），next_run 恒
+    // Some(at_ms)（绿）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let at_ms = chrono::Local::now().timestamp_millis() + 5;
+    let schedule = CronSchedule {
+        kind: "at".to_string(),
+        at_ms: Some(at_ms),
+        every_ms: None,
+        expr: None,
+        tz: None,
+    };
+    svc.add_gate_delay_ms
+        .store(60, std::sync::atomic::Ordering::SeqCst);
+    let job = svc
+        .add_job_ext(
+            "gate-write-race",
+            schedule,
+            "m",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(job.enabled);
+    assert_eq!(
+        job.state.next_run_at_ms,
+        Some(at_ms),
+        "闸-写共用同一时钟读：at_ms 在闸判定时未过期 ⇒ 写入必须同判定 Some(at_ms)，绝不产出静默僵尸"
+    );
+}
+
+#[test]
 fn add_job_ext_rejects_empty_message_enabled_loud() {
     // 空 message 闸（死排程闸同族不变量）——enabled 作
     // 业 message 空白 = 每次触发都落 on_job 的 "No message to deliver"
@@ -4854,5 +4900,304 @@ fn test_execute_job_detached_does_not_block_caller() {
             "detached execution did not settle in 5s"
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+// BUG-20261114-048：on_job 锁持穿 handler 执行期 = **刻意串行语义**（既有
+// 拍板「手动/计划执行串行是意图」，见 R955 O1 / R1227 #2 / R1265 审计台账
+// 与 BUG-20261114-048 修复文档裁决链）。本测试钉住该语义：detached 手动
+// 触发与同步手动触发的 handler 体不得并发执行——若未来把 on_job 的
+// Box<dyn Fn> 改 Arc 锁内 clone 锁外调用（并发化），本测试红，必须先推翻
+// 既有拍板再动（-033 注释「三层阻塞全部解除」的 ③ 误述曾连续误导审计轮）。
+#[test]
+fn test_bug_20261114_048_on_job_handler_bodies_never_overlap() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let mk_job = |name: &str| {
+        svc.add_job(
+            name,
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+    };
+    let job_a = mk_job("ser_a").unwrap();
+    let job_b = mk_job("ser_b").unwrap();
+
+    // handler 记录自身 [start, end] 区间。400ms 睡眠远大于线程 spawn 抖动
+    //（ms 级）——锁若被绕开，两区间几乎必然重叠，断言裕量 100×。
+    let spans = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
+        std::time::Instant,
+        std::time::Instant,
+    )>::new()));
+    let spans_for_handler = std::sync::Arc::clone(&spans);
+    svc.set_on_job(move |_job| {
+        let start = std::time::Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let end = std::time::Instant::now();
+        spans_for_handler.lock().unwrap().push((start, end));
+        Ok("ok".to_string())
+    });
+
+    // detached（独立线程）+ 同步（调用线程）先后触发两个 job——
+    // 串行语义下第二个 handler 必须等第一个完成后才开始。
+    svc.execute_job_detached(&job_a.id).unwrap();
+    svc.execute_job(&job_b.id).unwrap();
+
+    // 等 detached 侧收口（同步侧返回时其区间已在表中；共 2 条为齐）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while spans.lock().unwrap().len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "both handler invocations did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    // 串行不变量：按 start 排序后第二段 start >= 第一段 end（零重叠）。
+    let mut ivals = spans.lock().unwrap().clone();
+    ivals.sort_by_key(|(s, _)| *s);
+    assert!(
+        ivals[1].0 >= ivals[0].1,
+        "on_job handler 体必须串行（既有拍板语义，BUG-20261114-048 钉）：\
+         {:?} 与 {:?} 重叠",
+        ivals[0],
+        ivals[1]
+    );
+
+    // 等 detached 侧状态写回收口再退出（tempdir drop 后线程仍写盘 =
+    // save 失败噪声，同 test_execute_job_detached_does_not_block_caller 纪律）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let done = svc
+            .get_job(&job_a.id)
+            .map(|j| j.state.last_status.as_deref() == Some("executed"))
+            .unwrap_or(false);
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached execution did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// BUG-20261118-151 红证：成功单发（delete_after_run）在 handler 执行期间
+/// 被并发 patch 成「停用 + 改期」——执行后 retain 不得按「成功单发即删」
+/// 移除。旧形态 retain 只豁免「patch 换入 enabled 调度」（next_run=Some），
+/// patch disabled 形态（disabled 不排程 → next_run=None）落进删除条件，
+/// 用户在分钟级 agent turn 内 patch 的任务被静默吞掉。
+#[test]
+fn test_bug_20261118_151_patch_during_exec_survives_single_shot_retain() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    let job = svc
+        .add_job(
+            "one-shot-patched",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(Local::now().timestamp_millis() + 1500),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "fire me",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    let job_id = job.id.clone();
+
+    // handler：执行期间把任务 patch 成「停用 + 改期到远未来」，再返回成功。
+    // disabled 形态下 patch_job 不建立 next_run（不变量：disabled 不排程），
+    // 因此 retain 的既有 next_run=Some 豁免不命中——旧形态在此删除。
+    {
+        let svc_for_handler = std::sync::Arc::clone(&svc);
+        let job_id_for_handler = job_id.clone();
+        svc.set_on_job(move |_cb| {
+            let patch = CronJobPatch {
+                enabled: Some(false),
+                schedule: Some(CronSchedule {
+                    kind: "at".to_string(),
+                    at_ms: Some(Local::now().timestamp_millis() + 3_600_000),
+                    every_ms: None,
+                    expr: None,
+                    tz: None,
+                }),
+                ..Default::default()
+            };
+            svc_for_handler
+                .patch_job(&job_id_for_handler, &patch)
+                .unwrap();
+            Ok("done".to_string())
+        });
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc.arm();
+        svc.start().await.unwrap();
+    });
+    // 轮询等待触发完成（collect → handler（含 patch）→ 执行后写回）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match svc.get_job(&job_id) {
+            // 修复断言：patch 过的任务必须存活（旧形态在此 panic）。
+            None => panic!("BUG-20261118-151: 执行期被 patch 的成功单发被 retain 删除"),
+            Some(j) if j.state.last_run_at_ms.is_some() => {
+                assert!(!j.enabled, "patch 应已停用任务");
+                assert_eq!(j.state.next_run_at_ms, None, "disabled 任务不得排程");
+                assert_eq!(j.state.last_status.as_deref(), Some("ok"));
+                break;
+            }
+            Some(_) => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for one-shot to fire; job={job_id:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    svc.stop();
+}
+
+/// BUG-20261118-151 对照组：未 patch 的成功单发执行后仍被 retain 删除
+/// （「成功单发即删」既有语义不回归；豁免只对执行期并发 patch 生效）。
+#[test]
+fn test_bug_20261118_151_baseline_unpatched_one_shot_still_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    let job = svc
+        .add_job(
+            "one-shot-plain",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(Local::now().timestamp_millis() + 1500),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "fire me",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    let job_id = job.id.clone();
+    svc.set_on_job(move |_cb| Ok("done".to_string()));
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc.arm();
+        svc.start().await.unwrap();
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        match svc.get_job(&job_id) {
+            None => break, // 成功单发被删 = 既有语义成立
+            Some(j) if j.state.last_status.is_some() => {
+                panic!(
+                    "未 patch 的成功单发执行后应被删除，实际留存: enabled={} next_run={:?}",
+                    j.enabled, j.state.next_run_at_ms
+                );
+            }
+            Some(_) => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for one-shot to fire and be deleted"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    svc.stop();
+}
+
+#[test]
+fn test_bug_20261119_189_status_no_abba_with_running_holder() {
+    // BUG-20261119-189 回归锁：status() 旧形态在持有 store guard 时嵌套取
+    // running——与 start() 的 running→store 序（running guard 全程持有 +
+    // recompute/save_store 请求 store）构成 ABBA 死锁。
+    //
+    // 确定性红证的关键交错：**status(T2) 必须先于 T1 进入 store**。做法：
+    // 主线程先持 store，T1 持 running 后停在放行栅栏前（不发 store 请求），
+    // 放行 store 后 T2 是唯一竞争者（200ms 足够它卡进 store 临界区），此时
+    // 才放行 T1 的 store 请求——
+    // 旧形态：T2 持 store 等 running（T1 持）、T1 等 store（T2 持）= 永久
+    //   互等，status_done 永不到达（recv_timeout 红）；
+    // 新形态：T2 的 store 临界区不嵌套 running（读完即放锁、阻塞在 running
+    //   上），T1 拿 store 后释放两锁，T2 立即完成（绿）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    svc.add_job(
+        "abba",
+        CronSchedule {
+            kind: "every".to_string(),
+            at_ms: None,
+            every_ms: Some(60000),
+            expr: None,
+            tz: None,
+        },
+        "hello",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let (t1_hold_tx, t1_hold_rx) = std::sync::mpsc::channel::<()>();
+    let (release_t1_tx, release_t1_rx) = std::sync::mpsc::channel::<()>();
+    let (status_done_tx, status_done_rx) = std::sync::mpsc::channel::<()>();
+
+    // T1：模拟 start() 临界区——先持 running，停在栅栏前；放行后才请求
+    // store（保证 T2 先入 store）。
+    let svc1 = std::sync::Arc::clone(&svc);
+    std::thread::spawn(move || {
+        let running_guard = svc1.running.lock();
+        t1_hold_tx.send(()).unwrap();
+        release_t1_rx.recv().unwrap();
+        let store_guard = svc1.store.lock();
+        drop(store_guard);
+        drop(running_guard);
+    });
+
+    // 主线程先持 store——T1/T2 的 store 请求都排在它后面，无竞争窗口。
+    let store_guard = svc.store.lock();
+    t1_hold_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("T1 must acquire running and park before the release gate");
+
+    // T2：并发 status——drop 后它是唯一的 store 竞争者（T1 还在栅栏前）。
+    let svc2 = std::sync::Arc::clone(&svc);
+    std::thread::spawn(move || {
+        let _ = svc2.status();
+        status_done_tx.send(()).unwrap();
+    });
+
+    // 放行 store，给 T2 时间卡进 store 临界区（200ms >> 无竞争锁的微秒级
+    // 获取），此时旧形态的 T2 已持 store 并阻塞在 running 上。
+    drop(store_guard);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // 放行 T1 的 store 请求：旧形态 = 死锁起点；新形态 = T1 拿 store 放锁，
+    // 解除 T2 在 running 上的阻塞。
+    release_t1_tx.send(()).unwrap();
+
+    match status_done_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(()) => {}
+        Err(_) => panic!("status() 与持 running 的 start 临界区并发时死锁（ABBA 锁序倒置回归）"),
     }
 }

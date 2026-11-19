@@ -284,6 +284,20 @@ pub fn latest_seq(session_id: &str) -> u64 {
     }
 }
 
+/// 会话删除级联摘桶（2026-11-19 删除残留修复）：删除会话后 `chat.sync`
+/// 不得再回放该会话的内存环帧——活进程内残留 = 已删会话仍可补拉出内容
+/// = 删即不可见破约（I2）。环是易逝缓存（重启即空），但删除到重启之间
+/// 的窗口必须清。幂等；未知会话 no-op。map 与 order 同键集不变量：
+/// 两处同步删（与 FIFO 逐出同款纪律）。
+pub fn evict_session(session_id: &str) {
+    let mut table = logs().lock();
+    if table.map.remove(session_id).is_some()
+        && let Some(pos) = table.order.iter().position(|k| k == session_id)
+    {
+        table.order.remove(pos);
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     /// 测试专用串行闸：SESSION_LOGS 是进程级全局表且带逐出——并行测试

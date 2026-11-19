@@ -266,6 +266,10 @@ pub struct WebServer {
     /// Copy 直接持值；nemesisbot gateway 装载插件后经 set_roaming_plugin 注入）。
     /// M4 起恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
     quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
+    /// plugin_mail 运行面句柄（邮件基础设施：SMTP/POP3/客户端/存储在插件内；
+    /// nemesisbot gateway 装载后经 set_mail_plugin 注入。fn 指针 Copy 持值）。
+    /// None = 插件未装载（mail.* 命令诚实报「插件未装载」）。恒编译。
+    mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -295,6 +299,13 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// 急停触发/释放的审计钩子（BUG-20261118-096）：急停是最高级安全
+    /// 动作，此前只走 tracing::info（日志可改）不落 Merkle 审计链——事后
+    /// 取证「谁在何时触发/释放了急停」无防篡改记录。gateway 注入闭包
+    /// （持 SecurityPlugin 真身走 append_direct_audit_event；审计链未启用
+    /// 时 None = 诚实降级，tracing 兜底）。参数 (operation, source)：
+    /// operation ∈ {"engage","release"}；source ∈ {"cli","dashboard","tray"}。
+    estop_audit: Option<crate::handlers::estop::EstopAuditHook>,
     /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入，
     /// flows into AppState。None = 未注入（headless/relay/测试装配）→
     /// handler 诚实报错）。
@@ -317,6 +328,13 @@ pub struct WebServer {
     #[cfg(not(feature = "board"))]
     #[allow(dead_code)]
     board: Option<()>,
+    /// 事件唤醒泵观测快照句柄（`events` feature 门控；gateway post_agent 注入，
+    /// flows into AppState for events.* WSAPI。泵任务每周期覆写，handler 读）。
+    #[cfg(feature = "events")]
+    events_snapshot: Option<Arc<parking_lot::RwLock<nemesis_events::EventSnapshot>>>,
+    #[cfg(not(feature = "events"))]
+    #[allow(dead_code)]
+    events_snapshot: Option<()>,
     /// Conversation→WS router for cron-initiated live delivery (Opt 2).
     /// Populated on inbound in `process_messages`; read by the gateway cron
     /// fire handler to pick a live `chat_id` for the targeted conversation.
@@ -400,6 +418,7 @@ impl WebServer {
             agent_loop: None,
             cluster: None,
             quic_relay: None,
+            mail_plugin: None,
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
@@ -410,6 +429,7 @@ impl WebServer {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            estop_audit: None,
             background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
@@ -428,6 +448,7 @@ impl WebServer {
             #[cfg(feature = "skins")]
             skin_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
             cors_manager: None,
+            events_snapshot: None,
         }
     }
 
@@ -543,6 +564,13 @@ impl WebServer {
         self.quic_relay = Some(handle);
     }
 
+    /// Set the mail plugin handle（邮件基础设施 B3：nemesisbot gateway 装载
+    /// plugin_mail 后注入；`mail` feature 关时本方法无人调用，槽恒 None——
+    /// 恒编译与 quic_relay 同款）。
+    pub fn set_mail_plugin(&mut self, handle: nemesis_plugin::mail::MailPluginHandle) {
+        self.mail_plugin = Some(handle);
+    }
+
     /// Set the cluster lifecycle service for start/stop control.
     pub fn set_cluster_service(
         &mut self,
@@ -584,6 +612,11 @@ impl WebServer {
         self.estop = Some(estop);
     }
 
+    /// Set the e-stop audit hook（触发/释放落 Merkle 审计链；gateway 注入）。
+    pub fn set_estop_audit(&mut self, hook: crate::handlers::estop::EstopAuditHook) {
+        self.estop_audit = Some(hook);
+    }
+
     /// Set the gateway-level background process registry（background.* WSAPI
     /// 投影面；gateway 注入共享 Arc——与 agent 工具通道同一注册表实例）。
     pub fn set_background_registry(&mut self, reg: Arc<nemesis_agent::BackgroundProcessRegistry>) {
@@ -613,6 +646,16 @@ impl WebServer {
         self.cron = Some(cron);
     }
 
+    /// 注入事件唤醒泵观测快照句柄（`events` feature；gateway post_agent 在
+    /// 泵 start 前调用——句柄 new() 即存在，AppState 随 build_router 携带）。
+    #[cfg(feature = "events")]
+    pub fn set_events_snapshot(
+        &mut self,
+        snap: Arc<parking_lot::RwLock<nemesis_events::EventSnapshot>>,
+    ) {
+        self.events_snapshot = Some(snap);
+    }
+
     /// L14（2026-11-01）：注入会话执行统计读侧（nemesisbot 聚合器，
     /// `sessions.stats` 消费）。None = 未装配（诚实返回 unavailable）。
     pub fn set_session_stats(&mut self, reader: Arc<dyn nemesis_agent::SessionStatsReader>) {
@@ -624,6 +667,21 @@ impl WebServer {
     /// clone 进 AppState。
     pub fn set_cors_manager(&mut self, mgr: Arc<crate::cors::CORSManager>) {
         self.cors_manager = Some(mgr);
+    }
+
+    /// 注入 WS 会话闲置逐出超时（`channels.web.session_timeout`，
+    /// BUG-20261116-035 接线——此前 WebServer 构造恒 `with_default_timeout()`
+    /// 3600s 硬编码，config 键声明后零消费）。
+    ///
+    /// 与 `set_cors_manager` 同款 setter 形态（不进 WebServerConfig——测试
+    /// 字面量装配面大）。必须在 `start()`/`build_router` **之前**调用：
+    /// AppState 构造时 clone session_manager 句柄，之后替换不生效。替换
+    /// 丢弃默认构造的管理器是安全的——旧 cleanup 线程经 Drop→watch 通道
+    /// `changed()` Err 退出（session.rs cleanup_cancel_tx 注释的兜底路径）。
+    /// 超时翻译（含 0/负=不限）单一真相源：
+    /// `SessionManager::timeout_from_config_secs`。
+    pub fn set_session_timeout(&mut self, timeout: std::time::Duration) {
+        self.session_manager = Arc::new(crate::session::SessionManager::new(timeout));
     }
 
     /// Set the managed-agent board service (gateway injects when the `board`
@@ -720,6 +778,7 @@ impl WebServer {
         let cluster = self.cluster;
         // RoamingPluginHandle 是 fn 指针 Copy——Option 也 Copy，clone 塌缩单行。
         let quic_relay = self.quic_relay;
+        let mail_plugin = self.mail_plugin;
         #[cfg(feature = "workflow")]
         let workflow_engine = self.workflow_engine.clone();
         #[cfg(not(feature = "workflow"))]
@@ -755,6 +814,7 @@ impl WebServer {
                 .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
             cluster,
             quic_relay,
+            mail_plugin,
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine,
@@ -767,6 +827,7 @@ impl WebServer {
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
+            estop_audit: self.estop_audit.clone(),
             background_registry: self.background_registry.clone(),
             cors_manager: self.cors_manager.clone(),
             signature_verify: self.signature_verify.clone(),
@@ -774,6 +835,10 @@ impl WebServer {
             session_stats: self.session_stats.clone(),
             cron: self.cron.clone(),
             board,
+            #[cfg(feature = "events")]
+            events_snapshot: self.events_snapshot.clone(),
+            #[cfg(not(feature = "events"))]
+            events_snapshot: self.events_snapshot,
         };
 
         let state = Arc::new(state);
@@ -912,6 +977,16 @@ impl WebServer {
             // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
             .route("/api/share/{token}", get(crate::share::handle_api_share));
 
+        // webhook 事件源（2026-11-16 事件源扩展 P1）：外部系统 POST 推送。
+        // **token 即凭据**（/api/share/ 同款公开端点先例）——token 与
+        // events.json webhook 规则精确匹配，404=无规则认领、503=泵未装配；
+        // events 关：路由整体退出编译。
+        #[cfg(feature = "events")]
+        let router = router.route(
+            "/api/events/webhook/{token}",
+            axum::routing::post(crate::handlers::events_webhook::handle_events_webhook),
+        );
+
         // Swarm M3（§5.4/D6）：看板资产下载——公开端点（asset_token 即
         // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
         // board 关：路由与 handlers/board_asset 模块整体退出编译。
@@ -995,8 +1070,10 @@ impl WebServer {
             let relay_dev = relay.clone();
             let relay_auth_get = relay.clone();
             let relay_auth_post = relay.clone();
+            let relay_challenge = relay.clone();
             let relay_page = relay.clone();
             let relay_login = relay.clone();
+            let relay_login_nonce = relay.clone();
             let relay_api = relay.clone();
             router
                 .route(
@@ -1053,6 +1130,13 @@ impl WebServer {
                     ),
                 )
                 .route(
+                    "/d/{node_id}/__challenge",
+                    get(move |node_id: axum::extract::Path<String>| {
+                        let relay = relay_challenge.clone();
+                        async move { crate::relay::handle_device_challenge(relay, node_id.0).await }
+                    }),
+                )
+                .route(
                     "/relay",
                     get(move |req: axum::extract::Request| {
                         let relay = relay_page.clone();
@@ -1064,6 +1148,13 @@ impl WebServer {
                     post(move |req: axum::extract::Request| {
                         let relay = relay_login.clone();
                         async move { crate::relay::handle_relay_login(relay, req).await }
+                    }),
+                )
+                .route(
+                    "/relay/login-nonce",
+                    get(move || {
+                        let relay = relay_login_nonce.clone();
+                        async move { crate::relay::handle_relay_login_nonce(relay).await }
                     }),
                 )
                 .route(
@@ -2116,11 +2207,29 @@ pub async fn process_messages_with_router(
 // Send to session helpers
 // ---------------------------------------------------------------------------
 
+/// BUG-20261113-139：单帧广播超时（慢/死客户端隔离墙）。
+///
+/// `SessionManager::broadcast` 的 `queue.send().await` 在 hi 通道满时
+/// **可等待任意久**（挂起客户端：TCP 半开、移动端后台——dashboard 30s
+/// 心跳的 pong 恒走 hi，约 32 分钟填满 64 槽，此后只进不出）。此等待
+/// 的宿主经 `WebServerOpsAdapter`（block_in_place‖block_on）回溯到
+/// **manager 出站泵**（dispatch_outbound 单任务串行派发全部通道）——
+/// 泵被卡死 = 全部通道全部会话的出站投递停摆。BUG-20261025-84 只修了
+/// 守卫跨 await 的锁面（不卡同分片写与 GC），「可等待任意久」的等待
+/// 本体保留至今。
+///
+/// 超时放弃是安全的：chat 行帧已入环（`record` 先于 `broadcast` 的
+/// 不变量），`chat.sync` 补拉自愈；超时沿既有失败路径接管——
+/// `chat_dirty` hint 全房间扇出 + adapter 层 `mark_undelivered_reply`
+/// 未读标记。历史响应不入环，但可由前端重拉。3s 与 `send_sync_mirror`
+/// 超时惯例对齐；正常客户端毫秒级入队，永不触及。
+pub const WS_BROADCAST_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Send a chat message to a specific session using the broadcast protocol.
 ///
 /// `model` (optional, `provider/name`) is forwarded into the `receive` frame
 /// so the Dashboard can render a per-message "供应商·模型名" badge; `None`
-/// omits it (non-assistant / badge-less messages).
+/// omits it (non-assistant / badge-less deliveries).
 ///
 /// `session_key`（L2，optional）是 agent 会话键——chat_event_log 环形缓冲的
 /// 记录键。缺省回退到 `session_id`（连接级 id；旧路径/无元数据帧仍可补拉，
@@ -2207,23 +2316,33 @@ pub async fn send_to_session(
         .to_json()
         .map_err(|e| format!("failed to marshal message: {}", e))?;
 
-    session_manager
-        .broadcast(session_id, &data)
-        .await
-        .map_err(|e| {
-            // BUG②（2026-11-05）死房间 hint：目标房间（连接级 chat_id）已随
-            // 页面刷新/断连消亡时（后台子代理续行回复的典型场景——spawn 时
-            // 钉死的连接 id 在刷新后失效），帧投递失败但已进环形缓冲（record
-            // 先于 broadcast 的不变量）。旧链路只有 WS 重连触发 chat.sync，
-            // 活着的其他连接（同会话另一标签页/另一设备）永远看不到这条回复。
-            // 向全部活房间扇出 chat_dirty push（只带会话定位 + 原因，不带
-            // 内容），前端对当前会话节流触发 chat.sync 补拉。session_key
-            // 缺席（无元数据旧帧）不扇出——没有稳定键，前端无法定位会话。
-            if let Some(sk) = session_key {
-                broadcast_chat_dirty_hint(session_manager, sk);
-            }
-            format!("failed to broadcast: {}", e)
-        })?;
+    // BUG-20261113-139：超时放弃（WS_BROADCAST_TIMEOUT 注释论证）——
+    // hi 满时旧实现在此无限期等待，卡死调用宿主（manager 出站泵）。
+    let send_result = match tokio::time::timeout(
+        WS_BROADCAST_TIMEOUT,
+        session_manager.broadcast(session_id, &data),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => Err(format!(
+            "broadcast timed out after {WS_BROADCAST_TIMEOUT:?} (slow/dead client isolation; frame already in ring, chat.sync heals)"
+        )),
+    };
+    send_result.map_err(|e| {
+        // BUG②（2026-11-05）死房间 hint：目标房间（连接级 chat_id）已随
+        // 页面刷新/断连消亡时（后台子代理续行回复的典型场景——spawn 时
+        // 钉死的连接 id 在刷新后失效），帧投递失败但已进环形缓冲（record
+        // 先于 broadcast 的不变量）。旧链路只有 WS 重连触发 chat.sync，
+        // 活着的其他连接（同会话另一标签页/另一设备）永远看不到这条回复。
+        // 向全部活房间扇出 chat_dirty push（只带会话定位 + 原因，不带
+        // 内容），前端对当前会话节流触发 chat.sync 补拉。session_key
+        // 缺席（无元数据旧帧）不扇出——没有稳定键，前端无法定位会话。
+        if let Some(sk) = session_key {
+            broadcast_chat_dirty_hint(session_manager, sk);
+        }
+        format!("failed to broadcast: {}", e)
+    })?;
 
     // 接力入队放在广播成功后：帧先落 UI，TTS 随后出声（顺序可感知）。
     if voice_relay {
@@ -2282,15 +2401,45 @@ pub async fn send_history_to_session(
         .to_json()
         .map_err(|e| format!("failed to create protocol message: {}", e))?;
 
-    session_manager
-        .broadcast(session_id, &bytes)
-        .await
-        .map_err(|e| format!("failed to broadcast: {}", e))
+    // BUG-20261113-139：同款慢客户端隔离（WS_BROADCAST_TIMEOUT 注释论证）
+    // ——本函数同样经 adapter 桥被 manager 出站泵调用。历史响应不入环，
+    // 超时丢弃由前端重拉兜底（本来就有「历史加载失败」重试语义）。
+    match tokio::time::timeout(
+        WS_BROADCAST_TIMEOUT,
+        session_manager.broadcast(session_id, &bytes),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_elapsed) => Err(format!(
+            "broadcast timed out after {WS_BROADCAST_TIMEOUT:?} (slow/dead client isolation; client retries history)"
+        )),
+    }
+    .map_err(|e| format!("failed to broadcast: {}", e))
 }
 
 // ---------------------------------------------------------------------------
 // Agent tool-event pump (M1a)
 // ---------------------------------------------------------------------------
+
+/// Dashboard conversation id carried by an [`AgentEvent`] session_key, if any.
+///
+/// session_key 形态两族（BUG-20261117-073）：
+/// - **dashboard 会话**：`agent:main:session:{sid}`——sid 经
+///   `SessionStore::sanitize_session_id`（恒无冒号），末段即前端会话 id；
+/// - **IM/集群通道键**：`telegram:{chat}` / matrix room_id（`!x:y:z`，含冒号）/
+///   `cluster_rpc:{node}/{chat}` 等——没有 dashboard 会话身份，末段是通道
+///   数据尾段（room_id 服务器名、node/chat 复合段等）。
+///
+/// 历史实现按 `rsplit(':').next()` 无差别取末段：对后者产出的尾段可与用户
+/// 自选的 dashboard 会话 id 撞名（如 room `!x:y:org` ↔ 会话 id `org`），
+/// canvas.open / deliverables / subagent_reply / tool_event 等帧据此把
+/// IM 会话事件注进无关 dashboard 会话（跨会话事件串桶）。只有第一族注入。
+fn dashboard_session_id(session_key: &str) -> Option<&str> {
+    session_key
+        .strip_prefix("agent:main:session:")
+        .filter(|sid| !sid.is_empty())
+}
 
 /// Pump agent tool-events to their consumers: every event is published to the
 /// [`EventHub`] (SSE fallback / future subscribers), and events whose
@@ -2400,6 +2549,66 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
+                // 专家无匹配自动降级（2026-11-13 专家总开关与降级）：SSE
+                // `expert-degraded` 全局广播（approval 家族同款展平内层）——
+                // 前端 toast「专家 X 不存在/停用，已降级为通用子代理」。
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::ExpertDegraded { .. }
+                ) {
+                    event_hub.publish("expert-degraded", data.get("data").cloned().unwrap_or(data));
+                    continue;
+                }
+                // 系统注入行实时推送（2026-11-19）：hook 提示词注入 / cron
+                // tick / 后台唤醒的 user 行不走 WS chat.send 入站臂回声
+                // （loop 内部队列回灌）——这里转 `chat.receive` 帧（role=
+                // user + system_notice + cron_job_id + session_id，seq 入
+                // chat_event_log 环）。入环 = 断线 chat.sync 重放同覆盖；
+                // 广播走可丢通道同用户回声（环已记录，慢客户端 sync 补拉
+                // 自愈）。前端按既有通知条分支渲染（历史行 system_notice
+                // 同一标记，2026-11-16）。
+                if let nemesis_types::agent::AgentEvent::SystemNotice {
+                    session_key,
+                    chat_id,
+                    content,
+                    kind,
+                    cron_job_id,
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "role": "user",
+                        "content": content,
+                        "system_notice": kind,
+                    });
+                    if let Some(cid) = cron_job_id {
+                        payload["cron_job_id"] = serde_json::Value::String(cid.clone());
+                    }
+                    if let Some(sid) = dashboard_session_id(session_key) {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    let seq = crate::chat_event_log::record(
+                        session_key,
+                        "user",
+                        content,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                    payload["seq"] = serde_json::json!(seq);
+                    let frame = crate::protocol::ProtocolMessage::new(
+                        "message",
+                        "chat",
+                        "receive",
+                        Some(payload),
+                    );
+                    if let Ok(bytes) = frame.to_json()
+                        && let Some(session_id) = chat_id.strip_prefix("web:")
+                    {
+                        let _ = session_manager.broadcast_droppable(session_id, &bytes);
+                    }
+                    continue;
+                }
                 // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
                 // ——前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
                 // 语义（侧栏是跨会话面），不做 web: 定向 push。
@@ -2425,7 +2634,7 @@ pub async fn pump_agent_events(
                 } = &event
                 {
                     let mut payload = serde_json::json!({ "html": html, "index": index });
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish("canvas.open", payload);
@@ -2458,7 +2667,7 @@ pub async fn pump_agent_events(
                     if let Some(ms) = elapsed_ms {
                         payload["elapsed_ms"] = serde_json::Value::from(*ms);
                     }
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish_ephemeral("provider_stream_event", payload.clone());
@@ -2487,7 +2696,7 @@ pub async fn pump_agent_events(
                 } = &event
                 {
                     let mut payload = serde_json::json!({ "files": files });
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     event_hub.publish("deliverables", payload.clone());
@@ -2538,7 +2747,7 @@ pub async fn pump_agent_events(
                         "status": status,
                         "summary": summary,
                     });
-                    if let Some(sid) = session_key.rsplit(':').next() {
+                    if let Some(sid) = dashboard_session_id(session_key) {
                         payload["session_id"] = serde_json::Value::String(sid.to_string());
                     }
                     if let Some(session_id) = chat_id.strip_prefix("web:") {
@@ -2571,12 +2780,15 @@ pub async fn pump_agent_events(
                 // 派生），与前端会话 id（sessionStore.currentId，create/list
                 // 返回的会话 sid）不同域——前端按 `web:${currentId}` 过滤恒
                 // 不等，工具卡/任务清单/模式徽标的实时帧全灭（2026-09-20 实
-                // 测：服务端帧全数到达浏览器、UI 零反应）。session_key 末段
-                // = 发起会话 id（handle_chat_send 把前端 session_id 放
-                // metadata，loop 派生 session_key），注入后前端可精确过滤；
-                // 无 session_key 的事件不注入（SSE 消费方按字段缺席忽略）。
+                // 测：服务端帧全数到达浏览器、UI 零反应）。dashboard 会话键
+                // `agent:main:session:{sid}` 末段 = 发起会话 id
+                // （handle_chat_send 把前端 session_id 放 metadata，loop 派生
+                // session_key），注入后前端可精确过滤；其余形态键（IM/集群）
+                // 无 dashboard 身份不注入（`dashboard_session_id`，防尾段撞
+                // 名跨会话串桶 BUG-20261117-073）；无 session_key 的事件不
+                // 注入（SSE 消费方按字段缺席忽略）。
                 if let Some(sk) = event.session_key()
-                    && let Some(sid) = sk.rsplit(':').next()
+                    && let Some(sid) = dashboard_session_id(sk)
                     && let Some(inner) = data.get_mut("data")
                 {
                     inner["session_id"] = serde_json::Value::String(sid.to_string());
@@ -2798,7 +3010,10 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
 ///   （`handlers/workflow.rs` 注册处注释自认 unauthenticated，凭据是 per-workflow 密码）；
 /// - `/api/sdk/`：SDK 源码包/pip 包下载——公开静态产物（与 GitHub release 资产同性质，
 ///   外部消费者没有 dashboard token，token 闸 = 端点失效；2026-09-22 统一鉴权上线
-///   时漏列，CI integration-test `ui/p2_sdk_http` 钉住的公开契约当场红）。
+///   时漏列，CI integration-test `ui/p2_sdk_http` 钉住的公开契约当场红）；
+/// - `/api/events/webhook/`：事件源 webhook——token 即凭据（events.json webhook
+///   规则 `watch.token` 精确匹配；2026-11-16 事件源扩展，`handlers/events_webhook.rs`
+///   模块头注释；与 /api/workflow/webhook/ 同类外部回调语义）。
 fn auth_exempt_path(path: &str) -> bool {
     path == "/health"
         || path == "/api/health"
@@ -2811,22 +3026,26 @@ fn auth_exempt_path(path: &str) -> bool {
         // 鉴权上线时漏列（与 /api/sdk/ 漏列同类事故），外部回调恒 401。
         || path.starts_with("/api/workflow/webhook/")
         || path.starts_with("/api/sdk/")
+        // 事件源 webhook（2026-11-16 事件源扩展 P1）：token 即凭据的公开端点。
+        || path.starts_with("/api/events/webhook/")
         // relay 自有信任边界（BUG-20261107-006，2026-11-07）：/bridge、/d/*、
-        // /relay、/relay/login、/api/relay/status 五条路由面在 relay-only 与
-        // 全量（dashboard hub）两种形态共用（build_router 里 set_relay 后统一
-        // 注册），设备/管理侧凭据是 relay 自有的 hello token / 设备访问令牌
-        // cookie / admin cookie——dashboard token 对其无意义。统一鉴权上线时
-        // 只对 relay-only 形态免挂中间件（见 build_router 注释），漏了全量
-        // 形态的同名路由：auth_token 非空时设备桥入/隧道/状态页整体 401
+        // /relay、/relay/login、/relay/login-nonce、/api/relay/status 六条路由
+        // 面在 relay-only 与全量（dashboard hub）两种形态共用（build_router 里
+        // set_relay 后统一注册），设备/管理侧凭据是 relay 自有的 hello token /
+        // 设备访问令牌 cookie / admin cookie——dashboard token 对其无意义。统一
+        // 鉴权上线时只对 relay-only 形态免挂中间件（见 build_router 注释），漏了
+        // 全量形态的同名路由：auth_token 非空时设备桥入/隧道/状态页整体 401
         // （与 /api/sdk/、/api/workflow/webhook/ 漏列同类事故第三次）。
-        // 各路由自有闸：/bridge=hello token（10s 内）、/d/*=设备 cookie、
-        // /relay+login+status=admin cookie（ws token SHA-256）。批次三
-        // /api/relay/overview|enabled|client/reconnect **不豁免**——dashboard
-        // 信任边界（与 /api/status 同语义，见 build_router 批次三注释）。
+        // 各路由自有闸：/bridge=hello token（10s 内）、/d/*=设备 cookie
+        // （__challenge 挑战发放端点无需 cookie——nonce 本身无特权）、
+        // /relay+login+login-nonce+status=admin cookie（ws token 挑战-应答）。
+        // 批次三 /api/relay/overview|enabled|client/reconnect **不豁免**——
+        // dashboard 信任边界（与 /api/status 同语义，见 build_router 批次三注释）。
         || path == "/bridge"
         || path.starts_with("/d/")
         || path == "/relay"
         || path == "/relay/login"
+        || path == "/relay/login-nonce"
         || path == "/api/relay/status"
 }
 

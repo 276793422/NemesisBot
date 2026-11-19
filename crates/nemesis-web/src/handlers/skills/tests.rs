@@ -360,7 +360,17 @@ fn write_clawhub_config(ws: &std::path::Path, server_uri: &str, enabled: bool) {
             "base_url": server_uri,
             "convex_url": server_uri,
             "convex_site_url": server_uri,
-        }
+        },
+        // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——
+        // 本 helper 的意图是「wiremock 限定的 ClawHub 单源」，显式关掉 ModelScope
+        // 保证测试密闭（不打真实 modelscope.cn）。
+        "modelscope": { "enabled": false },
+        // 2026-11-16：出厂源 disabled 同名条目压制 from_config 合流——否则
+        // search 路径会带真实 api.github.com 出厂源（CI 可达 → 拉回真数据 /
+        // 限流 = 非密闭）。
+        // 注意 name/repo 无 serde default（必填）——缺 repo 会让整份
+        // RegistryConfig 解析失败静默回落 default（clawhub 配置全丢）。
+        "github_sources": [ { "name": "nemesisbot", "repo": "276793422/NemesisBot", "enabled": false } ]
     });
     std::fs::write(
         ws.join("config/config.skills.json"),
@@ -404,6 +414,7 @@ fn learn_ctx(
     let ws_str = ws.to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws_str.clone()),
@@ -426,6 +437,7 @@ fn learn_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -439,6 +451,7 @@ fn learn_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -533,6 +546,28 @@ fn load_registry_config_missing_corrupt_and_valid_arms() {
     assert!(cfg.clawhub.enabled);
     assert_eq!(cfg.clawhub.base_url, "http://x");
     assert_eq!(cfg.clawhub.convex_url, "http://y");
+}
+
+// load_registry_config BOM 臂（BUG-20261116-044）：记事本「带 BOM 的
+// UTF-8」保存形态必须仍解析成功——裸 read_to_string 会 parse 失败 →
+// 静默落 default → 用户添加的 registry 源全部丢失。
+
+#[test]
+fn load_registry_config_bom_prefix_still_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("config.skills.json");
+    std::fs::write(
+        &p,
+        format!(
+            "\u{feff}{}",
+            r#"{"clawhub":{"enabled":true,"base_url":"http://bom","convex_url":"http://bomc"}}"#
+        ),
+    )
+    .unwrap();
+    let cfg = load_registry_config(&p);
+    assert!(cfg.clawhub.enabled, "BOM 前缀不得吞掉用户 registry 配置");
+    assert_eq!(cfg.clawhub.base_url, "http://bom");
+    assert_eq!(cfg.clawhub.convex_url, "http://bomc");
 }
 
 // learn 三态

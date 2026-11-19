@@ -166,6 +166,17 @@ fn copy_dir_recursive(src: &Path, dst: &Path, refresh: bool) -> Result<u32> {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
+        // Directory symlink cycle guard (same origin as nemesis-migrate
+        // workspace.rs plan_dir_copy): DirEntry::file_type does not follow
+        // symlinks; recursing via is_dir() (follow) on a directory link loop
+        // = pathological nested copying until the OS path limit, then Err
+        // aborts the migration leaving a garbage tree in dst. Skip dir links
+        // entirely; plain symlinked files still copy by content below.
+        let ft = entry.file_type()?;
+        if ft.is_symlink() && src_path.is_dir() {
+            continue;
+        }
+
         if src_path.is_dir() {
             count += copy_dir_recursive(&src_path, &dst_path, refresh)?;
         } else {

@@ -99,7 +99,7 @@ func TestToolCallIndexWireFidelity(t *testing.T) {
 	data, err := json.Marshal(models.ToolCall{
 		ID:       "call-1",
 		Type:     "function",
-		Function: &models.FunctionCall{Name: "sleep", Arguments: `{"duration":30}`},
+		Function: &models.FunctionCall{Name: "sleep", Arguments: `{"seconds":30}`},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -97,11 +97,13 @@ impl SkillsLockfile {
         }
     }
 
-    /// 写回 workspace（原子性要求低：记账文件，直接整写）。
+    /// 写回 workspace（原子写：撕裂 = 全量注册表被 load 侧按空表降级，
+    /// BUG-20261025-45 插件开关文件同族形态——记账文件不等于低风险）。
     pub fn save(&self, workspace: &Path) -> Result<()> {
         let path = Self::path_for(workspace);
         let data = serde_json::to_string_pretty(self).map_err(NemesisError::Serialization)?;
-        std::fs::write(&path, data).map_err(NemesisError::Io)?;
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o644)
+            .map_err(|e| NemesisError::Io(std::io::Error::other(e)))?;
         Ok(())
     }
 

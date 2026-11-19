@@ -160,6 +160,10 @@ impl AgentHandler {
                     "retry": st.retry,
                     "max_retries": st.max_retries,
                     "wait_secs": st.wait_secs,
+                    // 倒计时滚动投影（2026-11-17）：按快照写入至今的 elapsed
+                    // 折算剩余等待秒数——前端每拍拿到的值单调递减，本地秒级
+                    // tick 在轮询拍间插值；旧前端忽略此字段不受影响。
+                    "remaining_secs": st.remaining_secs(),
                     "model": st.model,
                     // 展示标签：「上游限流」/「上游过载」按真类；
                     // 旧 loop 无此字段时前端回落「上游限流」。

@@ -151,20 +151,34 @@ impl Tool for LspTool {
             .get("path")
             .and_then(|p| p.as_str())
             .ok_or("Missing 'path' argument")?;
-        let path = PathBuf::from(path_str);
-        // 相对路径解析基点与文件工具同源——有边界按边界根（工作区），
-        // 无边界回落进程 cwd（测试 / 独立 runner 形态）。旧注释声称「与
-        // exec/file 工具同一 cwd 约定」失实：文件工具在生产形态锚定的是
-        // 工作区根，不是 cwd。
-        let path = if path.is_relative() {
-            match self.boundary.as_deref() {
-                Some(b) => b.root.join(path),
-                None => std::env::current_dir()
-                    .map_err(|e| format!("cannot resolve relative path {path_str:?}: {e}"))?
-                    .join(path),
+        // （BUG-20261117-067）输入路径与文件工具同源——带边界时统一走
+        // [`resolve_tool_path`]（Read 族）：相对路径锚边界根 + restrict
+        // 包含检查 + editor 开关读族臂（Full Access 解锁语义与 read_file
+        // 一致）。旧行为缺陷：相对路径 join 边界根后**无包含检查**、绝对
+        // 路径不校验——restrict=true 下 read_file 拒绝的界外路径经 lsp
+        // 读族（definition/references/implementation/hover/code_action）
+        // 可由语言服务器读取（内容经 hover/引用披露），同一路径两道
+        // fence 结论分叉。rename 的落盘写面本就另行走 gate_and_write
+        // （WriteDelete），不受本改动影响；界外 rename 输入现在在入口
+        // 即拒（原先要到落盘阶段才被逐文件拒绝，结局一致、报错更早）。
+        // 无边界形态（测试 / 独立 runner）：保持旧行为——相对路径按进程
+        // cwd 锚定，绝对路径透传。
+        let path = match self.boundary.as_deref() {
+            Some(b) => crate::loop_tools::resolve_tool_path(
+                path_str,
+                Some(b),
+                crate::loop_tools::FenceOpFamily::Read,
+            )?,
+            None => {
+                let p = PathBuf::from(path_str);
+                if p.is_relative() {
+                    std::env::current_dir()
+                        .map_err(|e| format!("cannot resolve relative path {path_str:?}: {e}"))?
+                        .join(p)
+                } else {
+                    p
+                }
             }
-        } else {
-            path
         };
 
         let line = v
@@ -259,12 +273,11 @@ impl LspTool {
 
         // + 2: gate ALL files, then write ALL files (atomic enough:
         // a mid-write failure is reported honestly with which files landed).
-        // cfg 分支取引用（`` 占位不 impl Deref，as_deref 在 no-security
-        // 编译下不存在——单 crate 无 feature 构建曾在此炸，25 号
-        // 雷区家族：workspace 全量 feature 统一会掩盖这个分支）。
-        #[cfg(feature = "security")]
-        let security = self.security.as_deref();
-        #[cfg(not(feature = "security"))]
+        // `as_ref()` 对两个 cfg 形态都可用（security 形态字段是
+        // Option<Arc<SecurityPlugin>> → Option<&Arc<...>>；占位形态是
+        // Option<()> → Option<&()>），调用方 cfg-free——BUG-20261119-199
+        // 起 security 形态签名收 &Arc（spawn_blocking 需 'static），
+        // 旧 as_deref 分支不再适用。
         let security = self.security.as_ref();
         let (written, rejected) =
             gate_and_write(&outcome.files, security, self.boundary.as_deref(), context).await?;
@@ -286,8 +299,6 @@ impl LspTool {
                 .await;
         }
         let diags = self.manager.wait_for_diagnostics(path, 150, 2000).await;
-        let errs = diags.iter().filter(|d| d.severity == 1).count();
-        let warns = diags.iter().filter(|d| d.severity == 2).count();
 
         if written.is_empty() {
             // 全部文件被边界拒绝 = rename 一个字节都没落——诚实失败并把
@@ -327,34 +338,50 @@ impl LspTool {
                 out.push_str(&format!("- {e}\n"));
             }
         }
-        if diags.is_empty() {
-            out.push_str(&format!(
-                "Diagnostics after rename ({}): none reported\n",
-                path.display()
-            ));
-        } else {
-            out.push_str(&format!(
-                "Diagnostics after rename ({}): {errs} error(s), {warns} warning(s)\n",
-                path.display()
-            ));
-            for d in diags.iter().take(20) {
-                let sev = match d.severity {
-                    1 => "error",
-                    2 => "warning",
-                    3 => "info",
-                    _ => "hint",
-                };
-                out.push_str(&format!(
-                    "- [{sev}] {}:{}:{}: {}\n",
-                    d.source.as_deref().unwrap_or("lsp"),
-                    d.range_start.0,
-                    d.range_start.1,
-                    d.message
-                ));
-            }
-        }
+        out.push_str(&format_rename_diagnostics(path, &diags));
         Ok(out)
     }
+}
+
+/// rename 后诊断块渲染（execute_rename 收尾段提纯为纯函数，行号惯例可
+/// 直接单测）。BUG-20261113-144：此处曾**裸印 LSP 0-based 行/列号且无
+/// 任何标注**——未标注的 `source:line:col` 按通用惯例（编译器/编辑器/
+/// 诊断回灌面）读作 1-based，模型拿这个行号去 edit_file 会偏一行。
+/// 修复 = +1 转 1-based 展示，与诊断回灌面（config_watch
+/// apply_diagnostics_feedback 的 L{} 渲染）同惯例。manager.rs 查询面
+/// （definition/references 列表）不跟随、维持「显式标注 0-based」——
+/// 该面的数字会被模型原样回填为 lsp 工具的 line/character 入参（入参
+/// 契约 0-based），标注比转换更不易错；两个消费面各自成立。
+fn format_rename_diagnostics(file: &Path, diags: &[nemesis_lsp::proto::Diagnostic]) -> String {
+    if diags.is_empty() {
+        return format!(
+            "Diagnostics after rename ({}): none reported\n",
+            file.display()
+        );
+    }
+    let errs = diags.iter().filter(|d| d.severity == 1).count();
+    let warns = diags.iter().filter(|d| d.severity == 2).count();
+    let mut out = format!(
+        "Diagnostics after rename ({}): {errs} error(s), {warns} warning(s)\n",
+        file.display()
+    );
+    for d in diags.iter().take(20) {
+        let sev = match d.severity {
+            1 => "error",
+            2 => "warning",
+            3 => "info",
+            _ => "hint",
+        };
+        // LSP 位置 0-based → 1-based 展示（+1，行与列同转）。
+        out.push_str(&format!(
+            "- [{sev}] {}:{}:{}: {}\n",
+            d.source.as_deref().unwrap_or("lsp"),
+            d.range_start.0 + 1,
+            d.range_start.1 + 1,
+            d.message
+        ));
+    }
+    out
 }
 
 /// 两阶段落盘：先全部过安全闸（合成 `write_file` ToolInvocation 走完整
@@ -397,7 +424,7 @@ pub(crate) fn approval_routing_metadata(
 #[cfg(feature = "security")]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
-    security: Option<&nemesis_security::pipeline::SecurityPlugin>,
+    security: Option<&std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>,
     boundary: Option<&WorkspaceBoundary>,
     context: &RequestContext,
 ) -> Result<(Vec<String>, Vec<(String, String)>), String> {
@@ -440,7 +467,37 @@ async fn gate_and_write(
                 // approval_routing_metadata 的 doc）。
                 metadata: approval_routing_metadata(context),
             };
-            let (allowed, deny) = security.execute(&invocation);
+            // BUG-20261119-199：execute 含审批等待——auditor RequireApproval
+            // 时 request_approval_sync_ctx 在 auditor 内同步阻塞（最长 300s），
+            // 裸调占死 tokio worker（dispatch 主路径 tool_dispatch.rs 修过的
+            // 同一问题：并行批 N 张审批卡 = N 个 worker 饿死；current_thread
+            // runtime 上 WebApprovalManager 的 block_in_place 还会 panic）。
+            // 包 spawn_blocking 出 worker 线程，阻塞语义不变（仍等裁决/超时）。
+            // estop 打断不在本层（AgentLoop 订阅句柄不可达，dispatch 专有）。
+            // BUG-20261119-199：execute 含审批等待——auditor RequireApproval
+            // 时 request_approval_sync_ctx 在 auditor 内同步阻塞（最长 300s），
+            // 裸调占死 tokio worker（dispatch 主路径 tool_dispatch.rs 修过的
+            // 同一问题：并行批 N 张审批卡 = N 个 worker 饿死；current_thread
+            // runtime 上 WebApprovalManager 的 block_in_place 还会 panic）。
+            // 包 spawn_blocking 出 worker 线程，阻塞语义不变（仍等裁决/超时）。
+            // estop 打断不在本层（AgentLoop 订阅句柄不可达，dispatch 专有）。
+            let (allowed, deny) = {
+                let tracked_security = std::sync::Arc::clone(security);
+                let tracked_invocation = invocation.clone();
+                tokio::task::spawn_blocking(move || tracked_security.execute(&tracked_invocation))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            false,
+                            Some(nemesis_security::types::DenyInfo {
+                                layer: "runtime",
+                                policy: "spawn_blocking".to_string(),
+                                summary: format!("security check aborted: {e}"),
+                                suggestion: None,
+                            }),
+                        )
+                    })
+            };
             if !allowed {
                 let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
                     layer: "unknown",

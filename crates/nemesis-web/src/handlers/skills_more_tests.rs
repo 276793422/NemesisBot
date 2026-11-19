@@ -33,6 +33,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -55,6 +56,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -64,6 +66,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -359,10 +362,10 @@ async fn test_skills_source_add_manual_multiple() {
         .unwrap()
         .unwrap();
     let sources = list["sources"].as_array().unwrap();
-    // 3 github + 1 clawhub + 1 modelscope
-    assert_eq!(sources.len(), 5);
+    // 3 github 用户源 + 出厂源合流（首次 RMW 落盘收敛）+ 1 clawhub + 1 modelscope
+    assert_eq!(sources.len(), 6);
     let gh_count = sources.iter().filter(|s| s["type"] == "github").count();
-    assert_eq!(gh_count, 3);
+    assert_eq!(gh_count, 4);
 }
 
 // source.remove — remove one of many
@@ -414,7 +417,13 @@ async fn test_skills_source_remove_one_of_many() {
         .filter(|s| s["type"] == "github")
         .map(|s| s["name"].as_str().unwrap())
         .collect();
-    assert_eq!(gh_names, vec!["a", "c"]);
+    // b 被摘除；出厂源 nemesisbot 经 RMW 读腿合流落盘（append-if-absent）
+    assert!(
+        !gh_names.contains(&"b"),
+        "removed source still present: {gh_names:?}"
+    );
+    assert!(gh_names.contains(&"a") && gh_names.contains(&"c"));
+    assert!(gh_names.contains(&"nemesisbot"));
 }
 
 // source.toggle — clawhub disabled then re-enabled
@@ -455,10 +464,21 @@ async fn test_skills_source_toggle_clawhub_then_persist() {
 #[tokio::test]
 async fn test_skills_search_no_sources_with_installed_dir() {
     // No registries but a skills/ dir exists; just verify no panic.
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证「无源」管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 出厂源 disabled 占位条目压制 apply_factory_sources（CI 密闭，不打真实
+    // api.github.com；name/repo 无 serde default，缺 repo 整份解析失败回落
+    // default 会复活出厂源）。
     let handler = SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     std::fs::create_dir_all(ws.join("skills/installed-one")).unwrap();
+    std::fs::create_dir_all(ws.join("config")).unwrap();
+    std::fs::write(
+        ws.join("config/config.skills.json"),
+        r#"{"modelscope":{"enabled":false},"github_sources":[{"name":"nemesisbot","repo":"276793422/NemesisBot","enabled":false}]}"#,
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
 
     let data = serde_json::json!({ "query": "anything" });

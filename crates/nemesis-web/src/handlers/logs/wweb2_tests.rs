@@ -23,6 +23,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -45,6 +46,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -58,6 +60,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -429,4 +432,36 @@ fn extract_md_first_message_truncates_at_200_chars() {
     assert!(got.chars().all(|c| c == '中'));
     // 无 Message 节 → 空串
     assert_eq!(extract_md_first_message("# nothing\n"), "");
+}
+
+/// BUG-20261117-071 配对锁：写入端（nemesis-security `audit_log.rs`）已把
+/// 字段内 `|` 中和为 Broken Bar `¦`（exec/run_script target=命令串本体，
+/// shell 管道是日常形态——未中和时行 split(" | ") 错位移列，danger 列被
+/// 读成命令碎片）。锁定新形态行的列对位：10 段、danger/reason/policy
+/// 落正确列。
+#[test]
+fn parse_security_audit_file_bug071_neutralized_pipes_align_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("security_audit_2026-11-17.log");
+    // 与修复后写入端逐字节同形：target = "cargo build ¦ tee build.log"，
+    // reason = "reason ¦ with pipe second line"。
+    std::fs::write(
+        &path,
+        "2026-11-17 13:00:00.000 | evt-pipe | allowed | process_exec | sess-user | web | cargo build \u{00a6} tee build.log | HIGH | reason \u{00a6} with pipe second line | policy-rule-1\n",
+    )
+    .unwrap();
+    let entries = parse_security_audit_file(&path);
+    assert_eq!(
+        entries.len(),
+        1,
+        "neutralized-pipe line parses as one entry"
+    );
+    let e = &entries[0];
+    assert_eq!(e["target"], "cargo build \u{00a6} tee build.log");
+    assert_eq!(
+        e["risk_level"], "HIGH",
+        "danger column must not be a command fragment"
+    );
+    assert_eq!(e["reason"], "reason \u{00a6} with pipe second line");
+    assert_eq!(e["policy"], "policy-rule-1");
 }

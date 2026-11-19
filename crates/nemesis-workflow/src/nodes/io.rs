@@ -5,7 +5,9 @@
 use super::*;
 
 // 跨子文件引用（机械拆分）：helpers 定义在 llm.rs / tool.rs
-use super::llm::{failed_node_result, resolve_runtime_string, resp_status_reason};
+use super::llm::{
+    failed_node_result, resolve_prompt_template, resolve_runtime_string, resp_status_reason,
+};
 use super::tool::resolve_template_value;
 
 /// HTTP 节点 SSRF 闸槽：`SecurityPlugin::ssrf_guard()` 的
@@ -177,10 +179,11 @@ impl NodeExecutor for HTTPNodeExecutor {
         // workflow http 节点的 url 支持 {{var}} 运行时注入，威胁面与
         // web_fetch 同级）。语义对齐 reqwest 默认跟随：301/302/303 把非
         // GET/HEAD 转为 GET 并剥 body；307/308 保持 method+body；跨源
-        //（host/端口/scheme 任一变化）时剥敏感头；跳数
-        // 上限 5。
+        //（host/端口/scheme 任一变化）时剥**全部**请求头（BUG-20261116-013：
+        // 作者配置头本身就是凭据载体——014 防线认定的 x-api-key 类自定义
+        // 凭据头不在标准三头名单内，固定名单拦不住；同源跳保留全部头，
+        // 带 cookie 站点跟随语义不变）；跳数上限 5。
         const HTTP_MAX_HOPS: usize = 5;
-        const SENSITIVE_HEADERS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
 
         let mut current_url = url;
         let mut current_method = method;
@@ -251,8 +254,8 @@ impl NodeExecutor for HTTPNodeExecutor {
                     current_body.clear();
                 }
                 if redirect_cross_origin(&base, &next) {
-                    current_headers
-                        .retain(|k, _| !SENSITIVE_HEADERS.contains(&k.to_lowercase().as_str()));
+                    // 跨源跳剥全部请求头（BUG-20261116-013）——同源跳不动。
+                    current_headers.clear();
                 }
                 current_url = next.to_string();
                 continue;
@@ -278,22 +281,34 @@ impl NodeExecutor for HTTPNodeExecutor {
         // 且整包 ×2 拷贝（bytes→String）进 output 落 checkpoint/日志）。
         // 分块累计到上限即停（chunked 无 Content-Length 也被盖住）；
         // 截断不是失败——output 带 truncated 诚实标记供下游分支。
+        // 整个读取循环同受 timeout_secs 约束（BUG-20261119-184）：1MB 帽
+        // 只限体积不限时间——对端拿到请求、回完响应头后一秒滴一字，chunk
+        // loop 无时间界即无限拖住节点（send 的 tokio timeout 盖不到 body
+        // 阶段）。body 预算与 send 同额（每跳 timeout_secs），健康路径零变化。
         const MAX_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
-        let mut body_bytes: Vec<u8> = Vec::new();
-        let mut truncated = false;
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| format!("failed to read response body: {}", e))?
-        {
-            if body_bytes.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
-                let take = MAX_RESPONSE_BODY_BYTES - body_bytes.len();
-                body_bytes.extend_from_slice(&chunk[..take]);
-                truncated = true;
-                break;
+        let body_read = async {
+            let mut body_bytes: Vec<u8> = Vec::new();
+            let mut truncated = false;
+            while let Some(chunk) = resp
+                .chunk()
+                .await
+                .map_err(|e| format!("failed to read response body: {}", e))?
+            {
+                if body_bytes.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                    let take = MAX_RESPONSE_BODY_BYTES - body_bytes.len();
+                    body_bytes.extend_from_slice(&chunk[..take]);
+                    truncated = true;
+                    break;
+                }
+                body_bytes.extend_from_slice(&chunk);
             }
-            body_bytes.extend_from_slice(&chunk);
-        }
+            Ok::<_, String>((body_bytes, truncated))
+        };
+        let (body_bytes, truncated) =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), body_read)
+                .await
+                .map_err(|_| format!("HTTP response body read timed out after {timeout_secs}s"))?
+                .map_err(|e| format!("failed to read response body: {}", e))?;
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
         // 诚实失败契约（计划）：≥400 是应用层失败，默认节点
@@ -605,6 +620,13 @@ impl NodeExecutor for ScriptNodeExecutor {
         // direct spawn.
         let mut cmd = tokio::process::Command::new(interpreter);
         cmd.arg(flag).arg(&resolved_script);
+        // 取消安全纪律（对齐全仓其余 spawn 位点——stdio/pipe 传输车道、
+        // guarded_direct_spawn、background/delegate registry、cc_hooks 均带
+        // kill_on_drop）：节点超时 / workflow 取消 / 兄弟失败联动取消都会
+        // drop 本 future，裸 spawn 无 kill_on_drop 时脚本子进程成为孤儿
+        // 继续跑完（工作流已判死、文件副作用还在写）。有序路径 output()
+        // 已等进程退出，drop 时不触发，无副作用。（BUG-20261116-034）
+        cmd.kill_on_drop(true);
         // 黑窗根修：直跑臂与生产 execution-world 车道
         // （guarded_direct_spawn）同纪律压 CREATE_NO_WINDOW。
         // （tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）
@@ -714,20 +736,18 @@ pub(super) fn script_tool_result_to_node_result(
 ///
 /// Replaces `{{variable_name}}` patterns with the corresponding values
 /// from the context map.
+///
+/// BUG-20261114-028：实现委托 [`resolve_prompt_template`]（单一真相源）。
+/// 旧副本是同款按 HashMap 迭代序的循环 `str::replace`——script 节点的
+/// 脚本文本里上下文值内嵌的 `{{键}}` 是否二次展开随每次执行漂移
+/// （被执行的脚本内容不确定 = 最重的变异面）。委托后与 llm prompt /
+/// 条件边 / tool args / http 配置全部模板面同一语义：单遍扫描、替换值
+/// 永不二次展开、缺失键原样保留。
 pub(super) fn resolve_template(
     template: &str,
     context: &HashMap<String, serde_json::Value>,
 ) -> String {
-    let mut result = template.to_string();
-    for (key, value) in context {
-        let pattern = format!("{{{{{}}}}}", key);
-        let replacement = match value {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        result = result.replace(&pattern, &replacement);
-    }
-    result
+    resolve_prompt_template(template, context)
 }
 
 // ---------------------------------------------------------------------------

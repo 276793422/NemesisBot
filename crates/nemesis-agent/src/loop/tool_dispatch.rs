@@ -91,6 +91,33 @@ pub(crate) fn fence_exempt_tool(tool: &str) -> bool {
     FENCE_EXEMPT_TOOLS.contains(&tool)
 }
 
+/// (Phase 5 图像工具层) 产出图片的工具清单——vision 前置闸的单一真相源。
+/// vision=no 的模型调这些工具 = 产出无人能看的图（纯浪费 + 截屏连拍的
+/// 隐私面），dispatch 层诚实拒绝、零 IO。新图片工具注册时同步登记。
+pub(crate) const IMAGE_RESULT_TOOLS: &[&str] =
+    &["read_image", "screen_capture", "desktop_automation"];
+
+/// 工具是否产出图片（[`IMAGE_RESULT_TOOLS`] 成员测试）。
+pub(crate) fn is_image_result_tool(tool: &str) -> bool {
+    IMAGE_RESULT_TOOLS.contains(&tool)
+}
+
+/// (Phase 5 图像工具层) vision 前置闸（值形态）——产出图片的工具在
+/// vision=no 的模型面前零 IO 拒绝。串行派发路径消费（图片工具全部非
+/// parallel-safe，并行批天然不含它们——`tool_is_parallel_safe` fail-closed
+/// 默认值兜底）。`vision_allows` = `resolve_active_vision` 的放行判定。
+pub(crate) fn vision_gated_image_tool_refusal(vision_allows: bool, tool: &str) -> Option<String> {
+    if is_image_result_tool(tool) && !vision_allows {
+        return Some(format!(
+            "Error: tool '{tool}' produces image output, but the current model does not support \
+vision input (vision=no) — the image would never reach any model. Refused without side effects. \
+If you need image content, ask the user to switch to a vision-capable model, or work from the \
+text-only information available. Do NOT retry this tool."
+        ));
+    }
+    None
+}
+
 /// 派发闸拒绝文案的统一定义（serial 与 parallel 两条派发路径共用，
 /// 文案不允许劈叉）。`profession` = `AgentConfig.tool_fence_profession`
 ///（Some 时文案带职能名，None 时通用措辞——讨论唤醒轮的宣言交集形态）。
@@ -339,6 +366,12 @@ impl AgentLoop {
             &tool_call.arguments,
             &result,
         );
+        // 工具使用率落账：真实执行才计（`classify_result` None 臂 = 拒绝，
+        // 单点判定不入账——所有调度路径（串行/批次/子代理）都过本入口，
+        // 一处包装全覆盖）。
+        if checks_capture::classify_result(&tool_call.name, &result).is_some() {
+            self.record_tool_usage_stats(&tool_call.name);
+        }
         result
     }
 
@@ -401,6 +434,11 @@ impl AgentLoop {
             &effective.arguments,
             &result,
         );
+        // 工具使用率落账（workflow 节点程序化调用同口径：真实执行才计，
+        // 拒绝/校验拒绝不入账——校验拒绝臂已在上方提前 return）。
+        if checks_capture::classify_result(&effective.name, &result).is_some() {
+            self.record_tool_usage_stats(&effective.name);
+        }
         result
     }
 
@@ -423,6 +461,16 @@ impl AgentLoop {
         // HookToolCall 传入，ToolFinished duration 从这里起算；看门狗语义
         // 不变（仍只包执行链，不杀人工审批）。
         let dispatch_started = std::time::Instant::now();
+
+        // 运行态快照（2026-11-17 会话资源盘点 §3.2）：dispatch 全程在
+        // execution 类目标记当前工具名。会话无在跑 turn 条目（空
+        // session_key / 已收尾的极端交错）= 静默 no-op，绝不复活条目；
+        // Drop（含提前 return 与 panic 展开）复位 None（回到 LLM 段）。
+        let _tool_timeline = super::work_timeline::ToolTimelineGuard::acquire(
+            self.work_timeline_map(),
+            &context.session_key,
+            &tool_call.name,
+        );
         info!(
             "[AgentLoop] Executing tool: {} (id={})",
             tool_call.name, tool_call.id
@@ -468,7 +516,16 @@ impl AgentLoop {
         // fresh-read——陈旧 prompt cache 带出的 mcp_call 在 lazy off 时拒绝。
         // 内层名必须 mcp_ 前缀且 != mcp_call（防递归；meta 工具不是通用
         // 调度旁路）。
+        //
+        // BUG-20261118-095 自闸：本工具自身名被 agents.hidden_tools 隐藏
+        // 时拒绝。拦截臂位于通用 hidden 闸（下方）之前，无此闸则「供给
+        // 面隐藏（build_tool_defs 过滤含 meta 名）+ dispatch 面放行」双闸
+        // 矛盾对 meta 名同样成立（含 `mcp_*` 通配——通配命中 mcp_call）。
         if tool_call.name == "mcp_call" {
+            if tool_name_matches_hidden(&self.current_hidden_tools(), "mcp_call") {
+                warn!("[AgentLoop] Hidden meta tool mcp_call refused (agents.hidden_tools).");
+                return "Error: Tool 'mcp_call' is hidden by configuration (agents.hidden_tools) and cannot be executed. Inform the user; do NOT retry unless they un-hide it.".to_string();
+            }
             if !self.current_mcp_lazy_supply() {
                 warn!("[AgentLoop] mcp_call refused (agents.mcp_lazy_supply=false).");
                 return "Error: mcp_call 仅在 agents.mcp_lazy_supply=true 时可用（当前 MCP 工具已在工具列表中直连，无需 meta 调用）。Inform the user.".to_string();
@@ -522,7 +579,16 @@ impl AgentLoop {
         // 不可见的工具不可取——供给面看不见的 schema 取了也没用，且不暴露
         // 配置刻意藏起来的工具面。execute 直调是诚实报错安全网（同
         // McpCallTool——正常流程死代码）。
+        //
+        // BUG-20261118-095 自闸：本工具自身名被 hidden_tools 隐藏时拒绝
+        // （同 mcp_call——拦截臂先于通用 hidden 闸）。
         if tool_call.name == "tools_schema_get" {
+            if tool_name_matches_hidden(&self.current_hidden_tools(), "tools_schema_get") {
+                warn!(
+                    "[AgentLoop] Hidden meta tool tools_schema_get refused (agents.hidden_tools)."
+                );
+                return "Error: Tool 'tools_schema_get' is hidden by configuration (agents.hidden_tools) and cannot be executed. Inform the user; do NOT retry unless they un-hide it.".to_string();
+            }
             if !self.current_lazy_tool_schema() {
                 warn!("[AgentLoop] tools_schema_get refused (lazy schema supply inactive).");
                 return "Error: tools_schema_get 仅在惰性 schema 供给模式下可用（当前档位下全部工具的完整参数 schema 已随轮上行，直接按列表中的 schema 调用即可，无需取回）。Inform the user.".to_string();
@@ -587,6 +653,127 @@ impl AgentLoop {
                     want, desc, params, want
                 );
             }
+        }
+
+        // （加固）：mcp_list dispatch 拦截——BUG-20261118-095。MCP 工具面
+        // 的模型侧发现通路（清单 + 按名查 schema）。此前 execute 直读
+        // SharedToolConfig.mcp_tool_snapshot：①生产装配从未把 loop 快照
+        // 接进该槽（全生产构造点无一设置 → 恒空 Arc）→ 生产面 mcp_list
+        // 恒回「No MCP tools」——发现面死工具，lazy 两步流程第一步断供；
+        // ②即便接通，快照是注册面投影（无可见性过滤）——被 hidden_tools
+        // 隐藏（或独占接管 / tool_policy / tier 白名单过滤）的 mcp_* 工具，
+        // 名字、描述与完整参数 schema 全量泄漏，与 tools_schema_get 同面
+        // 明确拒绝的口径（「不暴露配置刻意藏起来的工具面」）矛盾，且
+        // mcp_call 错误文案指路 mcp_list，模型照做即撞闸形成误导循环。
+        //
+        // 修复形态：拦截后从 registry 真值渲染（快照保留给 connectors
+        // Dashboard 运营面，模型面不再消费）。列出/可查 face = mcp_call
+        // 可达 face（hidden/独占/policy/tier 四闸 + mcp_call 自身 lazy 闸，
+        // 文案镜像各 dispatch 闸），刻意**不含** lazy 供给裁剪——lazy on
+        // 时长尾经 mcp_call 仍可调用，列名正是两步流程的发现面；hidden
+        // 是绝对闸（内层调用必拒），从发现面消失才是契约语义。自闸：
+        // mcp_list 自身过同一不可见判定（mini+lazy-off 下 tier 白名单
+        // 不含它，dispatch 端如实拒）。按名排序（BUG-20261117-052 序稳定
+        // 纪律）。execute 直调是诚实报错安全网（正常流程死代码）。
+        if tool_call.name == "mcp_list" {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&tool_call.arguments).unwrap_or(serde_json::Value::Null);
+            let want: Option<String> = parsed
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            // dispatch 各闸同源现读（fresh-read 双闸契约：dashboard/CLI
+            // 改动下一轮生效，此处读的就是执行时刻权威态）。
+            let hidden = self.current_hidden_tools();
+            let exclusive = self.current_exclusive_hidden_tools();
+            let policy_allow = self.tool_policy_allow();
+            let tier = *self.tier.read();
+            let mcp_lazy = self.current_mcp_lazy_supply();
+            // 不可见原因（顺序即 dispatch 拒绝优先级：hidden → 独占 →
+            // policy → tier → mcp_call 自身 lazy 闸；文案镜像各 dispatch 闸、
+            // 动词改为 schema 不可列）。独占闸镜像 dispatch 端出处豁免
+            // （connector-binding 回灌通道放行）。
+            let invisibility = |name: &str, min_tier: Option<&str>| -> Option<String> {
+                if tool_name_matches_hidden(&hidden, name) {
+                    Some(format!(
+                        "Error: Tool '{name}' is hidden by configuration (agents.hidden_tools) and its schema cannot be listed. Inform the user; do NOT retry."
+                    ))
+                } else if context.channel != "connector-binding"
+                    && tool_name_matches_hidden(&exclusive, name)
+                {
+                    Some(format!(
+                        "Error: Tool '{name}' is exclusively managed by an enabled connector（独占接管）; its schema cannot be listed. Discover it via connector_find and call via connector_invoke, or ask the user to set an exemption in Dashboard → Connectors."
+                    ))
+                } else if !policy_allow.is_empty() && !policy_allow.iter().any(|a| a == name) {
+                    Some(format!(
+                        "Error: Tool '{name}' is not permitted by this agent's tool_policy allow-list and its schema cannot be listed. Inform the user; do NOT retry."
+                    ))
+                } else if !tier_supplies_tool(min_tier, name, tier, mcp_lazy) {
+                    Some(format!(
+                        "Error: Tool '{name}' is not visible at the active model's tier and its schema cannot be listed. Inform the user; they can switch models via /model."
+                    ))
+                } else if name == "mcp_call" && !mcp_lazy {
+                    Some(
+                        "Error: mcp_call is only available when agents.mcp_lazy_supply=true (MCP tools are currently supplied directly with their schemas).".to_string(),
+                    )
+                } else {
+                    None
+                }
+            };
+            let tools_guard = self.tools.read();
+            // 自闸：mcp_list 自身过同一不可见判定（拦截臂先于通用闸）。
+            {
+                let self_min = tools_guard.get("mcp_list").and_then(|t| t.min_tier());
+                if let Some(msg) = invisibility("mcp_list", self_min) {
+                    warn!("[AgentLoop] mcp_list refused by visibility gate.");
+                    return msg;
+                }
+            }
+            if let Some(name) = want {
+                let Some(tool) = tools_guard
+                    .get(name.as_str())
+                    .filter(|_| name.starts_with("mcp_"))
+                else {
+                    return format!(
+                        "No MCP tool named `{name}` is registered. Call without arguments to list all registered MCP tools."
+                    );
+                };
+                if let Some(msg) = invisibility(&name, tool.min_tier()) {
+                    return msg;
+                }
+                let entry = McpToolSnapshotEntry {
+                    name: name.clone(),
+                    description: tool.description(),
+                    parameters: tool.parameters(),
+                    read_only_hint: tool.read_only_hint(),
+                    destructive_hint: tool.destructive_hint(),
+                };
+                drop(tools_guard);
+                return crate::loop_tools::render_mcp_tool_detail(&entry);
+            }
+            // 全量清单：mcp_* 注册面 ∩ 可见 face，按名排序。
+            let mut names: Vec<&String> = tools_guard
+                .keys()
+                .filter(|n| n.starts_with("mcp_"))
+                .collect();
+            names.sort();
+            let mut entries: Vec<McpToolSnapshotEntry> = Vec::with_capacity(names.len());
+            for name in names {
+                let tool = &tools_guard[name.as_str()];
+                if invisibility(name, tool.min_tier()).is_some() {
+                    continue;
+                }
+                entries.push(McpToolSnapshotEntry {
+                    name: name.clone(),
+                    description: tool.description(),
+                    parameters: tool.parameters(),
+                    read_only_hint: tool.read_only_hint(),
+                    destructive_hint: tool.destructive_hint(),
+                });
+            }
+            drop(tools_guard);
+            return crate::loop_tools::render_mcp_list(&entries);
         }
 
         // F-（UAT 实证）：档案管线任务的工作副本路径基准重写。位置在
@@ -1664,12 +1851,12 @@ impl AgentLoop {
                         // 缺席/被拒/超时 = 原错误串即工具结果，工具不执行，
                         // fail loud 零回归）。
                         Some(tool) => {
-                            let (exec_args, vault_secrets) =
+                            let (exec_args, vault_secrets, cred_bindings) =
                                 match credential_injection::inject_credential_aliases_with_secrets(
                                     tool.as_ref(),
                                     &call.arguments,
                                 ) {
-                                    Ok((a, s)) => (a, s),
+                                    Ok((a, s, b)) => (a, s, b),
                                     Err(inj_err) => {
                                         match credential_injection::try_card_recovery(
                                             cred_broker.clone(),
@@ -1682,11 +1869,23 @@ impl AgentLoop {
                                         )
                                         .await
                                         {
-                                            Some((a, s)) => (a, s),
+                                            Some((a, s, b)) => (a, s, b),
                                             None => return inj_err.to_string(),
                                         }
                                     }
                                 };
+                            // 浏览器接管（2026-11-15）凭据绑定 sidecar：注入层
+                            // 解析出的 (字段路径, 别名) 清单合入 exec_args 专键
+                            // ——工具 execute 侧防伪造验证的数据源（凭据守卫③
+                            // ：工具自解别名与槽内明文比对）。别名非明文无泄
+                            // 漏面；不认识该键的工具按多余字段忽略。
+                            let exec_args = match credential_injection::attach_credential_bindings(
+                                &exec_args,
+                                &cred_bindings,
+                            ) {
+                                Some(v) => v,
+                                None => exec_args,
+                            };
                             // B4（2026-11-08 批次④）会话凭据占位符：声明槽
                             // 注入之后、execute 之前——安全 8 层已在上方跑完
                             //（各层看到占位符原文；Layer 4/DLP 的匹配级引用
@@ -1955,6 +2154,20 @@ impl AgentLoop {
         // （⛔ 前缀 → ok=false），不会留 interrupted 假崩溃态。
         let mut estop_rx = self.security.subscribe();
         let estop_call_id = hook_call_id;
+        // 会话取消臂（Phase 5 A1）：`agent.cancel`（dashboard 停止按钮 /
+        // WSAPI agent.cancel → `cancel_session`）取消 per-session 令牌——
+        // estop 臂只听急停，会话级停止此前要等工具自愿返回（用户痛点：
+        // 「点击停止立刻就能停止」）。按 session_key 查令牌（零签名扩散
+        // ——串行与并行批两条路径都经本 chokepoint，单点双覆盖）；令牌
+        // 缺席（standalone/测试/code_run 内层调度专用 key）= 无此臂，
+        // 等价旧行为。drop 安全性与 estop 臂同审计（上方逐类清单对
+        // cancel 同样成立：exec 族 Job Object RAII 收杀树 / 网络断连
+        // 天然安全 / 写完成不记账=安全方向）；code_run 的 spawn_blocking
+        // 脚本线程不受 drop 影响（跑完即弃，结果不记账——同看门狗语义）。
+        let session_cancel_token = self
+            .cancel_tokens
+            .get(&context.session_key)
+            .map(|e| e.value().clone());
         let chain_fut = chain(hook_call_owned);
         let result = tokio::select! {
             biased;
@@ -1972,6 +2185,26 @@ impl AgentLoop {
                     "⛔ interrupted by e-stop (estop engaged mid-call)",
                 );
                 "⛔ ESTOP: 已急停 — 工具调用已被打断 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。".to_string()
+            }
+            _ = async {
+                match session_cancel_token.as_ref() {
+                    Some(tok) => tok.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                info!(
+                    "[AgentLoop] Session cancel interrupted in-flight tool {}.",
+                    tool_call.name
+                );
+                self.emit_tool_interrupted(
+                    &context.session_key,
+                    &context.chat_id,
+                    &estop_call_id,
+                    &tool_call.name,
+                    dispatch_started,
+                    "⛔ interrupted by session cancel (stop requested mid-call)",
+                );
+                "⛔ CANCELLED: 已取消 — 工具调用已被打断（用户请求停止）。不要重试该工具；停止当前工作，简短确认已停止即可。".to_string()
             }
             result = async {
                 match watchdog {
@@ -2214,14 +2447,15 @@ impl AgentLoop {
     }
 
     /// 会话资产区（2026-11-12）：会话感知产物目录——绑定会话 =
-    /// `<session_home>/plans`（home 在本 loop 的 workspace_root 下），未绑定
-    /// / 解析失败 = 回落 [`Self::plan_products_dir`]（项目 loop = 项目 agent
-    /// home/plans，主 loop = workspace/plans，存量行为零变化）。放行判定、
-    /// 拒绝文案、/plan 回执、模式快照行四处同读本函数，永不漂移。
+    /// `<session_home>/plans`（home 在会话资产区根下；2026-11-16 污染
+    /// 修复：根走 session_homes_root 统一裁决——项目会话 home 在主
+    /// workspace，不再落项目目录），未绑定 / 解析失败 = 回落
+    /// [`Self::plan_products_dir`]（项目 loop = 项目 agent home/plans，
+    /// 主 loop = workspace/plans，存量行为零变化）。放行判定、拒绝文案、
+    /// /plan 回执、模式快照行四处同读本函数，永不漂移。
     pub(crate) fn plan_products_dir_for(&self, session_key: &str) -> Option<std::path::PathBuf> {
-        if let Some(root) = self.workspace_root.read().clone()
-            && let Some(home) = crate::session_home::resolve_session_home(&root, session_key)
-        {
+        let root = self.session_homes_root();
+        if let Some(home) = crate::session_home::resolve_session_home(&root, session_key) {
             return Some(home.join("plans"));
         }
         self.plan_products_dir()

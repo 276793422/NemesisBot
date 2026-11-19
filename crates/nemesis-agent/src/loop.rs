@@ -211,6 +211,11 @@ mod wiring;
 pub use wiring::*;
 #[allow(unused_imports)]
 pub(crate) use wiring::*;
+mod work_timeline;
+#[allow(unused_imports)]
+pub use work_timeline::*;
+#[allow(unused_imports)]
+pub(crate) use work_timeline::*;
 
 // ---------------------------------------------------------------------------
 // AgentLoop -- core execution engine
@@ -377,6 +382,13 @@ pub struct AgentLoop {
     /// Active model name, kept in sync with the provider above.
     /// Separated from `config.model` so runtime swaps don't need `&mut self`.
     active_model: parking_lot::RwLock<String>,
+    /// 降级注记槽（fallback 用户面标注第三跳）：[`AgentLoop::chat_call_escalating`]
+    /// 每次成功调用后从 provider 取件覆盖（last-call wins，None=清除）；
+    /// `finish_message` 终局回复取件消费（receipt/err 不消费——排队回执/
+    /// slash 确认/错误文案不背标注）。诚实边界：跨会话并行 turn
+    /// （`max_concurrent_turns>0`）极端交错下 loop 级槽可能串帧——默认
+    /// reject/queue 形态恒串行，fallback 又是稀有事件，v1 接受。
+    response_degradation: parking_lot::Mutex<Option<String>>,
     /// Tool registry: name -> tool implementation.
     /// Each tool is wrapped in `Arc` so the map can be cloned and shared
     /// with spawned tasks without requiring `Box` clone support.
@@ -470,8 +482,8 @@ pub struct AgentLoop {
     turn_permits: Option<Arc<tokio::sync::Semaphore>>,
     max_concurrent_turns: usize,
     /// Tracks which sessions are currently being summarized.
-    /// Wrapped in `Arc` so the flag can be cleared from a spawned task
-    /// after summarization completes (mirrors Go's `defer al.summarizing.Delete()`).
+    /// 摘除由 [`crate::r#loop::compact::SummarizingSlotGuard`] RAII Drop
+    /// 承担（BUG-20261113-170）：成功/失败/panic 各出口一致，不滞留。
     summarizing: Arc<parking_lot::Mutex<HashMap<String, bool>>>,
     /// ⑩ Per-session compaction state for graded tiers (soft/summarize) and
     /// stuck self-check. See `maybe_summarize`.
@@ -518,7 +530,12 @@ pub struct AgentLoop {
     /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
     browser_profile: Option<String>,
     /// Snapshot of registered MCP tools (name + description + parameters).
-    /// Shared with McpListTool so it can list MCP tools without accessing the full tool registry.
+    /// **运营面投影**：connectors Dashboard / connector_tools 镜像行消费
+    /// （`mcp_tool_snapshot()` accessor）。模型侧 mcp_list 不再读快照——
+    /// 走 dispatch 拦截 + registry 真值可见性过滤渲染
+    /// （BUG-20261118-095：生产装配从未把本快照接进 SharedToolConfig 槽 →
+    /// McpListTool 恒空 Arc 死工具；接通形态下快照无 hidden/tier 过滤会
+    /// 泄漏隐藏工具面）。
     mcp_tool_snapshot: Arc<parking_lot::RwLock<Vec<tools_trait::McpToolSnapshotEntry>>>,
     /// Optional data store for recording LLM usage statistics.
     data_store: Option<Arc<nemesis_data::DataStore>>,
@@ -546,6 +563,10 @@ pub struct AgentLoop {
     /// continuation 两臂）——优雅停机 drain 的有界等待 gauge。与 checkpoint
     /// 用 [`Self::turn_counter`]（单调计数，非在途 gauge）语义正交。
     in_flight_turns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 会话运行态快照（资源看板 execution 类目数据源，2026-11-17）：
+    /// session_key → 在途轮次条目（开始时刻 + 当前工具）。turn 任务体
+    /// 入口插入 / Drop 移除；工具 dispatch 前后更新当前工具名。纯内存态。
+    work_timeline: crate::r#loop::work_timeline::WorkTimelineMap,
     /// 停机 drain 闸——置位后泵拒绝新 turn（外部通道诚实回执，内部
     /// 通道静默丢），在途 turn 照常收尾。estop（冻结 agent 活动）与之正交。
     draining: std::sync::atomic::AtomicBool,
@@ -573,14 +594,18 @@ pub struct AgentLoop {
     /// 最旧。
     rewind_undo_stacks:
         parking_lot::Mutex<HashMap<String, std::collections::VecDeque<RewindUndoEntry>>>,
-    /// 回退中、尚未压入 undo 栈的 forward_tree 在途保护
-    /// 集。forward_tree 采集于 truncate 之前、压栈在 jsonl 提交之后——这个
-    /// 窗口里它既不在索引（本会话 turn ≥ 锚的条目待截）也不在栈里，重建式
-    /// gc 的保留集看不到它 = 当孤儿对象清掉，redo 的文件前向恢复必炸「tree
-    /// 查找失败」。经 [`Self::undo_stack_tree_refs`] 并入 gc extras；注册/
-    /// 注销由 rewind 模块的 RAII guard 管理（早退路径 drop 兜底，不残留陈
-    /// 旧 hex——残留 = gc 永久清不掉对应对象，反向泄漏）。
-    gc_inflight_trees: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// 回退中、尚未压入 undo 栈的 tree 在途保护集（hex → 持有者
+    /// 计数）。forward_tree 采集于 truncate 之前、压栈在 jsonl 提交
+    /// 之后——这个窗口里它既不在索引（本会话 turn ≥ 锚的条目待截）也不在
+    /// 栈里，重建式 gc 的保留集看不到它 = 当孤儿对象清掉，redo 的文件前
+    /// 向恢复必炸「tree 查找失败」。经 [`Self::undo_stack_tree_refs`] 并
+    /// 入 gc extras；注册/注销由 rewind 模块的 RAII guard 管理（早退路径
+    /// drop 兜底，不残留陈旧 hex——残留 = gc 永久清不掉对应对象，反向泄
+    /// 漏）。**引用计数而非集合**（BUG-20261112-122）：GcInflightGuard 与
+    /// RedoInflightGuard 可对同一 tree 重叠持有（多会话 undo 条目捕获同一
+    /// undo_disk_tree 后并发 redo 双双 pop），集合语义下先 drop 者会摘走
+    /// 另一方仍需要的保护——计数到 0 才真正注销。
+    gc_inflight_trees: parking_lot::Mutex<std::collections::HashMap<String, usize>>,
     /// // 钩子三槽（收拢 [`HooksState`]；字段语义见该类型）。
     hooks: HooksState,
     /// 内存四槽（收拢 [`MemoryState`]；字段语义见该类型）。
@@ -741,6 +766,13 @@ pub struct AgentLoop {
     /// 不可作推导根）。`None` = dispatch 闸回落 config.json 同目录（测试/
     /// 裸装配旁路形态；生产恒注入）。
     vault_domain_config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// 会话资产区根（`agents/<id>/home` 树所在 workspace）。`None` = 回落
+    /// workspace_root（主/集群/headless loop 的 workspace_root 就是资产区
+    /// 根，行为不变）；项目 loop 构造时注入主 workspace——项目 loop 的
+    /// workspace_root 是项目目录（用户真实工作树），资产区树不得落进去
+    /// （2026-11-16 污染修复；vault_domain_config_path 同族先例：项目 loop
+    /// 不可从 workspace_root 推导的根一律显式注入）。
+    session_home_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// VM 档执行环境注记 resolver（审计收口）。`Some` 时每轮
     /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
     /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
@@ -926,6 +958,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
+            response_degradation: parking_lot::Mutex::new(None),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: None,
@@ -983,11 +1016,12 @@ impl AgentLoop {
             mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            work_timeline: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             draining: std::sync::atomic::AtomicBool::new(false),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
-            gc_inflight_trees: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            gc_inflight_trees: parking_lot::Mutex::new(std::collections::HashMap::new()),
             hooks: HooksState {
                 tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
                 llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
@@ -1043,6 +1077,7 @@ impl AgentLoop {
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
             vault_domain_config_path: parking_lot::RwLock::new(None),
+            session_home_root: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -1159,6 +1194,38 @@ impl AgentLoop {
     /// Work 时间线累加器共享句柄（factory 注入 ToolEventHook 用）。
     pub fn work_recorder(&self) -> crate::work_timeline::WorkRecorder {
         self.work_recorder.clone()
+    }
+
+    /// hooks 方言桥句柄（资源看板 hooks_global 类目数据源，2026-11-17
+    /// 会话资源盘点）。未装配（standalone 简测 / 双配置文件均缺）= None，
+    /// provider 侧诚实 Unavailable。
+    pub fn cc_hook_bridge(&self) -> Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>> {
+        self.cc_bridge.read().clone()
+    }
+
+    /// BUG-20261118-090：ToolEventHook 预览净化器（factory 注入用）——与
+    /// dispatch 尾部出侧复扫（`output_rescan::rescan_tool_output`）同源
+    /// 同一 SecurityPlugin 实例，让 `ToolFinished.result_preview` / work
+    /// 时间线预览不落复扫前原文（模型上下文已脱敏而观测面/落盘面拿原文
+    /// 的口径分裂）。只净化预览副本，不触碰 dispatch 权威复扫语义。
+    /// 安全 feature 裁掉或插件未装配 = `None`（预览原样，退回旧形态）。
+    #[cfg(feature = "security")]
+    pub fn output_preview_sanitizer(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>> {
+        let plugin = self.security.security_plugin.clone()?;
+        Some(std::sync::Arc::new(
+            move |tool: &str, result: &str| -> String {
+                output_rescan::rescan_tool_output(Some(plugin.as_ref()), tool, result.to_string())
+            },
+        ))
+    }
+
+    #[cfg(not(feature = "security"))]
+    pub fn output_preview_sanitizer(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>> {
+        None
     }
 
     /// 急停中断面的 ToolFinished 补发。被 estop
@@ -1409,6 +1476,11 @@ mod diagnostics_session_tests;
 // (devtool-upgrade)：SpawnTool 生产化 + run_detached 测试。
 #[cfg(test)]
 mod spawn_detached_tests;
+// （续行回主路 2026-11-12）：交接函数契约哨兵（LLM 请求带工具定义 /
+// 工具执行走 dispatch 瀑布 / 出站 meta 保真 / estop 交接前冻结 / busy
+// 两臂 / final_persisted 幂等重投递 / 落库保真 / 失败任务错误文本）。
+#[cfg(test)]
+mod continuation_handoff_tests;
 // (devtool-upgrade)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
@@ -1440,6 +1512,10 @@ mod role_catalog_tests;
 // (devtool-upgrade)：会话级 context 占用快照测试。
 #[cfg(test)]
 mod m5_context_status_tests;
+// 提示词内容可视化（2026-11-13）：session_prompt_segment 七段全文分解
+// 测试（同源口径锁 + 各段形态）。
+#[cfg(test)]
+mod prompt_segment_tests;
 // (devtool-upgrade)：子目录指令懒注入（发现 + 会话去重 + 一次性注入）测试。
 #[cfg(test)]
 mod i3_lazy_instructions_tests;
@@ -1598,6 +1674,10 @@ mod recovery_concat_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
+// 工具使用率落账（usage-ranked tool index）：dispatch 包装层单点记账
+// ——真实执行入账 / 拒绝短路 / 执行失败照常入账 / 无账本静默跳过。
+#[cfg(test)]
+mod tool_dispatch_usage_tests;
 // workflow 工具节点 dispatch 入口五闸回归锁（A 批，非 security 面）：
 // estop / plan 写闸 / hidden_tools / 插件 min-tier / args_validator
 // 经 handle_tool_call_with_attrib 全部生效（PLAN 回归锁 2-6）。

@@ -106,7 +106,17 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
         ("sh", "-c")
     };
     let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg(flag).arg(command).current_dir(&cwd);
+    cmd.arg(flag);
+    // raw_arg（BUG-20261114-002，对齐宿主 exec/cc_hooks/anchor 同型修复）：
+    // Windows 默认 argv 转义把内嵌引号变 `\"`（MSVCRT 规则），cmd 不认
+    // `\"`——guest 侧带引号的命令（`echo "a b"`、含空格引号路径）会被
+    // 打挂或行为错乱。raw_arg 让 cmd 按原生语法逐字解析；Unix execv 无
+    // 引号层，`.arg()` 本就逐字。
+    #[cfg(target_os = "windows")]
+    cmd.raw_arg(command);
+    #[cfg(not(target_os = "windows"))]
+    cmd.arg(command);
+    cmd.current_dir(&cwd);
     // 显式 env 透传（模块文档「差异」节声明的语义；形态对齐宿主
     // ShellTool——args["env"] 只取字符串值逐键叠加）。此前实现缺失
     // 此消费点：模型带 env 调 guest exec 时变量被静默丢弃，违反
@@ -114,9 +124,16 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     // sanitize 不进来（VM 内无宿主凭据可剥）。
     if let Some(env_obj) = val.get("env").and_then(|v| v.as_object()) {
         for (key, value) in env_obj {
-            if let Some(val_str) = value.as_str() {
-                cmd.env(key, val_str);
-            }
+            let Some(val_str) = value.as_str() else {
+                continue;
+            };
+            // 环境块硬校验（BUG-20261116-025 横向同族）：与宿主
+            // parse_env_slot 同源校验器（nemesis-utils::env_sanitize::
+            // check_env_slot_pair）——病态键值（空 / `=` / NUL）诚实 Err
+            // 带槽位指向，不裸奔到 std Command::env 的 panic 面
+            //（Unix 即时 panic）/ spawn 期通用错误（Windows）。
+            nemesis_utils::env_sanitize::check_env_slot_pair(key, val_str)?;
+            cmd.env(key, val_str);
         }
     }
     cmd.stdin(std::process::Stdio::null())
@@ -208,7 +225,10 @@ async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>) -> S
     // 有界排干（横扫角度 B）：1 MiB 丢头保尾。与旧 is_ok
     // 分支的差异（刻意）：读错误时旧版丢弃已收字节返空串，本版保留部分
     // 数据——kill_tree 场景拿到的 pidlist 片段仍是证据， partial 好过空。
-    String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
+    // 解码走单一真相源（BUG-20261115-034）。
+    nemesis_utils::child_decode::decode_child_output(
+        &nemesis_utils::pipe_cap::drain_capped_async(pipe).await,
+    )
 }
 
 fn truncate(s: &str) -> String {
@@ -338,7 +358,13 @@ async fn create_dir(val: &serde_json::Value, workspace: &Path) -> Result<String,
 async fn delete_file(val: &serde_json::Value, workspace: &Path) -> Result<String, String> {
     let path_str = arg_path(val)?.to_string();
     let path = resolve_in_workspace(workspace, &path_str)?;
-    tokio::fs::remove_file(&path)
+    if !path.exists() {
+        return Err(format!("File not found: {path_str}"));
+    }
+    // 韧性删除（同文件 delete_dir 家族纪律）：Defender/索引器瞬时句柄
+    // 单发失败 = 对端假报错；重试变体把窗口内 NotFound 吞成成功，
+    // 「删不存在文件要报错」由前置存在性检查保留（宿主同款语义）。
+    nemesis_utils::fsutil::remove_file_retry_async(&path)
         .await
         .map_err(|e| format!("failed to delete file: {e}"))?;
     Ok(format!("deleted file: {path_str}"))

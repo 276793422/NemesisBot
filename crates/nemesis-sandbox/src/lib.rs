@@ -35,6 +35,11 @@ pub mod extract;
 pub mod ini;
 pub mod install;
 pub mod kmdutil;
+// MXC 护栏后端（2026-11-14）：feature `mxc` 门控——关 = 整个模块不编译，
+// executor.backend="mxc" 诚实报未编译。见模块文档 + docs/PLAN/
+// 2026-11-14_mxc-sandbox-integration.md。
+#[cfg(feature = "mxc")]
+pub mod mxc_backend;
 pub mod pending;
 pub mod selftest;
 pub mod status;

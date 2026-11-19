@@ -403,3 +403,74 @@ mod r10_start_wait_direct {
         );
     }
 }
+
+// ===========================================================================
+// BUG-20261115-045 回归锁：X-Auth-Token 凭据面不跟随跨源重定向。
+// 旧形态：/api/internal client 未配重定向策略 → reqwest 默认跟随 ≤10 跳，
+// 跨主机只剥标准四头（authorization/cookie 等）——X-Auth-Token（自定义头）
+// 原样流向 302 目标主机（gateway 反代误配 / 端口撞车 = token 外泄）。
+// 修复：builder 换 no_cross_host_redirect_policy（同源跟随 + 跨源终止）。
+// 断言双半：①send_internal_command 报错（302 透传非 2xx 分支；修复前
+// 跟随 → 目标 200 → Ok 假成功）；②目标主机零请求。
+// ===========================================================================
+
+#[tokio::test]
+async fn send_internal_command_cross_origin_redirect_not_followed() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // 计数目标：被跟随才会收到请求（回 200 制造「假成功」路径）。
+    let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let target_port = target.local_addr().unwrap().port();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits2 = hits.clone();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        loop {
+            let Ok((mut stream, _)) = target.accept() else {
+                break;
+            };
+            hits2.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+        }
+    });
+
+    // 重定向器：/api/internal 一律 302 → 计数目标（端口不同 = 跨源）。
+    let redirector = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let redirector_port = redirector.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for _ in 0..4 {
+            let Ok((mut stream, _)) = redirector.accept() else {
+                break;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/steal\r\nContent-Length: 0\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+        }
+    });
+
+    let err = send_internal_command(
+        &format!("http://127.0.0.1:{redirector_port}"),
+        "SECRET_TOKEN",
+        "open_dashboard",
+    )
+    .await
+    .expect_err("跨源 302 必须终止——跟随 = X-Auth-Token 流向第二主机");
+    assert!(
+        err.to_string().contains("302"),
+        "302 原样透传非 2xx 分支: {err}"
+    );
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "重定向目标不得收到任何请求（旧形态跟随路径 hits=1 且 Ok 假成功）"
+    );
+}

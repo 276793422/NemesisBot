@@ -27,8 +27,12 @@ const h = vi.hoisted(() => ({
   sessionCreate: vi.fn(),
   sessionSwitchTo: vi.fn(),
   sessionRemove: vi.fn(),
+  sessionRename: vi.fn(),
+  sessionClear: vi.fn(),
+  sessionExport: vi.fn(),
   sessionFetchList: vi.fn(),
   sessionFetchProjects: vi.fn(),
+  chatApiFork: vi.fn(),
   toastError: vi.fn(),
   themeRef: null as any,
   fullAccessRef: null as any,
@@ -69,6 +73,11 @@ vi.mock('../../stores/auth', () => ({
 vi.mock('../../stores/chat', () => ({ useChatStore: () => h.chatState }))
 
 vi.mock('../../stores/session', () => ({ useSessionStore: () => h.sessionState }))
+
+// useChatApi（fork 端点等）整体 mock——真实实现会走 fetch/apiFetch。
+vi.mock('../../composables/useChatApi', () => ({
+  useChatApi: () => ({ fork: (...a: unknown[]) => h.chatApiFork(...a) }),
+}))
 
 // skinState / engine 经 getter 导出：projection 每次 resetModules 重新求值
 // 时都读到**当前**实例（旧 watcher 绑定旧对象，翻新后自动失活）。
@@ -162,13 +171,23 @@ beforeEach(() => {
     agentMode: 'build',
     messages: [] as unknown[],
     focusInputNonce: 0,
+    pendingWork: null as unknown,
+    // F1 模式切换回包入口（projection toggle-mode 动作消费）。
+    setAgentMode(m: 'build' | 'plan') {
+      this.agentMode = m
+    },
   })
   h.sessionState = reactive({
     sessions: [] as SessionEntry[],
+    projects: [] as { id: string; name: string; running?: boolean }[],
+    bindings: {} as Record<string, string>,
     currentId: null as string | null,
     create: h.sessionCreate,
     switchTo: h.sessionSwitchTo,
     remove: h.sessionRemove,
+    rename: h.sessionRename,
+    clear: h.sessionClear,
+    exportSession: h.sessionExport,
     fetchList: h.sessionFetchList,
     fetchProjects: h.sessionFetchProjects,
   })
@@ -189,10 +208,24 @@ beforeEach(() => {
   h.logout.mockReset()
   h.sessionCreate.mockReset()
   h.sessionSwitchTo.mockReset()
+  // store 契约：remove/rename/clear 吞错返回布尔 Promise（projection 动作
+  // 面 .then(ok) 消费——mock 必须返回 Promise 否则动作触发即 TypeError）。
   h.sessionRemove.mockReset()
+  h.sessionRemove.mockResolvedValue(true)
+  h.sessionRename.mockReset()
+  h.sessionRename.mockResolvedValue(true)
+  h.sessionClear.mockReset()
+  h.sessionClear.mockResolvedValue(true)
+  h.sessionExport.mockReset()
   h.sessionFetchList.mockReset()
   h.sessionFetchProjects.mockReset()
+  h.chatApiFork.mockReset()
   h.toastError.mockReset()
+  // 分组派生偏好（pin×2 / 排序键）——module 单例每次 resetModules 重读
+  // localStorage，键必须清干净防用例间泄漏。
+  localStorage.removeItem('nb_pinned_sessions')
+  localStorage.removeItem('nb_pinned_projects')
+  localStorage.removeItem('nb_session_sort')
   localStorage.removeItem('nemesisbot_auth_token')
 })
 
@@ -221,22 +254,29 @@ describe('skinProjection 模块单例缺省值', () => {
 })
 
 describe('setupSkinProjection 装配', () => {
-  it('引擎挂投影 + 10 动作 / chat.input sink 全注册；meta 投影；重复调用幂等 no-op', async () => {
+  it('引擎挂投影 + 全动作白名单 / chat.input sink 注册；meta 投影；重复调用幂等 no-op', async () => {
     const { mod } = await setupProjection({
       meta: { brand: 'WB 品牌', version: '2.0.0', scenes: ['写代码', '查资料'] },
     })
     expect(h.engine.projection).toBe(mod.skinProjection)
     expect([...h.engine.actionHandlers.keys()].sort()).toEqual(
       [
+        'branch-session',
         'chat-send',
         'chat-stop',
+        'clear-session',
+        'cycle-sort',
         'estop-toggle',
+        'export-session',
         'fill-input',
         'logout',
         'new-chat',
+        'pin-session',
         'remove-session',
+        'rename-session',
         'route',
         'switch-session',
+        'toggle-mode',
         'toggle-theme',
       ].sort()
     )
@@ -298,13 +338,16 @@ describe('setupSkinProjection 装配', () => {
     vi.stubEnv('VITE_FEATURE_FORGE', 'true')
     const { mod } = await setupProjection()
     const paths = mod.skinProjection.navMore.map(n => n.path)
-    // 全量 26 项 − usage（feature=false）− cluster（未注册路由）
-    expect(paths).toHaveLength(24)
+    // 全量 29 项 − usage（feature=false）− cluster（未注册路由）
+    expect(paths).toHaveLength(27)
     expect(paths).not.toContain('/usage')
     expect(paths).not.toContain('/cluster')
     expect(paths).toContain('/forge') // feature=true 放行
     expect(paths).toContain('/overview') // 无 feature 门控
     expect(paths).toContain('/license')
+    expect(paths).toContain('/events') // 事件管理面（events feature 默认开）
+    expect(paths).toContain('/executors?tab=loops') // 循环并入执行单元复合页 TAB（loop feature 默认开）
+    expect(paths).toContain('/goals') // 目标管理面（goals feature 默认开）
   })
 
   it('会话分组：今天/昨天/7天内/更早 + relTime 四档 + 标题三级回退 + active 随路由', async () => {
@@ -495,7 +538,7 @@ describe('动作白名单', () => {
 
     confirmSpy.mockReturnValueOnce(false)
     removeSession('s1')
-    expect(confirmSpy).toHaveBeenCalledWith('删除会话「标题A」？此操作不可恢复。')
+    expect(confirmSpy).toHaveBeenCalledWith('删除会话「标题A」？将移入回收站，90 天后自动清除。')
     expect(h.sessionRemove).not.toHaveBeenCalled()
 
     removeSession('s1')
@@ -524,6 +567,267 @@ describe('动作白名单', () => {
     expect(h.toggleTheme).toHaveBeenCalledTimes(1)
     actions.get('logout')!('')
     expect(h.logout).toHaveBeenCalledTimes(1)
+  })
+
+  // ---- 会话操作补全（2026-11-18 focus 皮肤批次 1）----
+
+  it('pin-session：写 nb_pinned_sessions（localStorage 持久）；projectGroups pinned 跟随', async () => {
+    const { mod } = await actionSetup()
+    h.sessionState.sessions = [
+      sess({ id: 's1', title: '甲' }),
+      sess({ id: 's2', title: '乙' }),
+    ]
+    h.engine.actionHandlers.get('pin-session')!('')
+    h.engine.actionHandlers.get('pin-session')!('s1')
+    await nextTick()
+    expect(JSON.parse(localStorage.getItem('nb_pinned_sessions') || '[]')).toEqual(['s1'])
+    const chat = mod.skinProjection.projectGroups.find((g: any) => g.key === '__chat')!
+    expect(chat.sessions.map((s: any) => s.id)).toEqual(['s1', 's2'])
+    expect(chat.sessions[0]!.pinned).toBe(true)
+    expect(chat.sessions[1]!.pinned).toBe(false)
+  })
+
+  it('rename-session：找不到 no-op；prompt 取消/空串不写；成功写 store；失败 toast', async () => {
+    await actionSetup()
+    h.sessionState.sessions = [sess({ id: 's1', title: '旧名' })]
+    const rename = h.engine.actionHandlers.get('rename-session')!
+    const promptSpy = vi.fn()
+    vi.stubGlobal('prompt', promptSpy)
+
+    rename('missing')
+    expect(promptSpy).not.toHaveBeenCalled()
+
+    promptSpy.mockReturnValueOnce(null)
+    rename('s1')
+    expect(h.sessionRename).not.toHaveBeenCalled()
+
+    promptSpy.mockReturnValueOnce('   ')
+    rename('s1')
+    expect(h.sessionRename).not.toHaveBeenCalled()
+
+    promptSpy.mockReturnValueOnce('新名')
+    rename('s1')
+    await flushPromises()
+    expect(h.sessionRename).toHaveBeenCalledWith('s1', '新名')
+
+    h.sessionRename.mockResolvedValueOnce(false)
+    promptSpy.mockReturnValueOnce('新名')
+    rename('s1')
+    await flushPromises()
+    expect(h.toastError).toHaveBeenCalledWith('重命名失败')
+  })
+
+  it('clear-session：confirm 取消不调 store；确认后调；失败 toast', async () => {
+    await actionSetup()
+    h.sessionState.sessions = [sess({ id: 's1', title: '标题A' })]
+    const clear = h.engine.actionHandlers.get('clear-session')!
+    const confirmSpy = vi.fn(() => true)
+    vi.stubGlobal('confirm', confirmSpy)
+
+    confirmSpy.mockReturnValueOnce(false)
+    clear('s1')
+    expect(h.sessionClear).not.toHaveBeenCalled()
+
+    clear('s1')
+    await flushPromises()
+    expect(h.sessionClear).toHaveBeenCalledWith('s1')
+
+    h.sessionClear.mockResolvedValueOnce(false)
+    clear('s1')
+    await flushPromises()
+    expect(h.toastError).toHaveBeenCalledWith('清空失败')
+  })
+
+  it('export-session：成功触发 JSON 下载；失败 toast', async () => {
+    await actionSetup()
+    h.sessionState.sessions = [sess({ id: 's1', title: '标题A' })]
+    const exp = h.engine.actionHandlers.get('export-session')!
+    const createObjectURL = vi.fn((_b: Blob) => 'blob:mock')
+    const revokeObjectURL = vi.fn()
+    Object.assign(URL, { createObjectURL, revokeObjectURL })
+    const clickSpy = vi.fn()
+    const origCreate = document.createElement.bind(document)
+    vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+      const el = origCreate(tag)
+      if (tag === 'a') (el as HTMLAnchorElement).click = clickSpy
+      return el
+    })
+
+    h.sessionExport.mockResolvedValueOnce({ messages: [{ role: 'user', content: 'hi' }] })
+    exp('s1')
+    await flushPromises()
+    expect(h.sessionExport).toHaveBeenCalledWith('s1')
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    const blob = createObjectURL.mock.calls[0]![0]
+    expect(blob.type).toBe('application/json')
+    expect(clickSpy).toHaveBeenCalledTimes(1)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+
+    h.sessionExport.mockRejectedValueOnce(new Error('boom'))
+    exp('s1')
+    await flushPromises()
+    expect(h.toastError).toHaveBeenCalledWith('导出失败')
+  })
+
+  it('branch-session：fork 成功 → 刷列表 + 切新会话 + push /；失败 toast', async () => {
+    const { router } = await actionSetup()
+    const branch = h.engine.actionHandlers.get('branch-session')!
+
+    h.chatApiFork.mockResolvedValueOnce({ session_id: 's-new', kept_messages: 7 })
+    h.sessionFetchList.mockResolvedValue(undefined)
+    branch('s1')
+    await flushPromises()
+    expect(h.chatApiFork).toHaveBeenCalledWith('s1')
+    expect(h.sessionFetchList).toHaveBeenCalledWith(true)
+    expect(h.sessionSwitchTo).toHaveBeenCalledWith('s-new')
+    expect(router.push).toHaveBeenCalledWith('/')
+
+    h.chatApiFork.mockRejectedValueOnce(new Error('boom'))
+    branch('s1')
+    await flushPromises()
+    expect(h.toastError).toHaveBeenCalledWith('boom')
+  })
+
+  it('toggle-mode：按当前模式取反 set_mode；回包更新 store；失败 toast 不翻转', async () => {
+    await actionSetup()
+    const toggle = h.engine.actionHandlers.get('toggle-mode')!
+    h.sessionState.currentId = 's1'
+
+    h.request.mockResolvedValueOnce({ mode: 'plan' })
+    toggle('')
+    await flushPromises()
+    expect(h.request).toHaveBeenCalledWith('chat', 'set_mode', { session_id: 's1', mode: 'plan' })
+    expect(h.chatState.agentMode).toBe('plan')
+
+    h.chatState.agentMode = 'plan'
+    h.request.mockRejectedValueOnce(new Error('boom'))
+    toggle('')
+    await flushPromises()
+    expect(h.request).toHaveBeenCalledWith('chat', 'set_mode', { session_id: 's1', mode: 'build' })
+    expect(h.chatState.agentMode).toBe('plan')
+    expect(h.toastError).toHaveBeenCalledWith('boom')
+  })
+
+  it('cycle-sort：排序键轮转 + sortLabel 跟随（sidebar 槽在场才投影）', async () => {
+    localStorage.setItem('nb_session_sort', 'name')
+    const { mod } = await setupProjection({ slots: ['sidebar'] })
+    expect(mod.skinProjection.sortLabel).toBe('名称')
+
+    const cycle = h.engine.actionHandlers.get('cycle-sort')!
+    cycle('')
+    await nextTick()
+    // name → recent（轮转序 recent→created→name）
+    expect(localStorage.getItem('nb_session_sort')).toBe('recent')
+    expect(mod.skinProjection.sortLabel).toBe('最近')
+
+    // 槽不在场：sortLabel 停在装配时刻快照（'created' → '创建'），不跟随
+    localStorage.setItem('nb_session_sort', 'created')
+    const { mod: modNoSlot } = await setupProjection({ slots: [] })
+    expect(modNoSlot.skinProjection.sortLabel).toBe('创建')
+    localStorage.removeItem('nb_session_sort')
+  })
+
+  it('isPlan：mode 派生布尔（plan/build 双分支）', async () => {
+    const { mod } = await setupProjection({ slots: [] })
+    h.chatState.agentMode = 'plan'
+    await nextTick()
+    expect(mod.skinProjection.isPlan).toBe(true)
+    h.chatState.agentMode = 'build'
+    await nextTick()
+    expect(mod.skinProjection.isPlan).toBe(false)
+  })
+
+  it('remove-session：删除成功清 pin（BUG-20261106-029 纪律）；失败 toast', async () => {
+    await actionSetup()
+    h.sessionState.sessions = [sess({ id: 's1', title: '标题A' }), sess({ id: 's2', title: '标题B' })]
+    const removeSession = h.engine.actionHandlers.get('remove-session')!
+    const pin = h.engine.actionHandlers.get('pin-session')!
+    vi.stubGlobal('confirm', vi.fn(() => true))
+
+    pin('s1')
+    removeSession('s1')
+    await flushPromises()
+    expect(h.sessionRemove).toHaveBeenCalledWith('s1')
+    expect(JSON.parse(localStorage.getItem('nb_pinned_sessions') || '[]')).toEqual([])
+
+    pin('s2')
+    h.sessionRemove.mockResolvedValueOnce(false)
+    removeSession('s2')
+    await flushPromises()
+    expect(JSON.parse(localStorage.getItem('nb_pinned_sessions') || '[]')).toEqual(['s2'])
+    expect(h.toastError).toHaveBeenCalledWith('删除会话失败')
+  })
+})
+
+describe('projectGroups 双分组投影（2026-11-18 focus 皮肤）', () => {
+  it('sidebar 槽在场：项目组/对话组派生（depth/pinned 跟随）；孤儿组垫底', async () => {
+    // 分组模块是模块级单例、import 时读 localStorage——置顶种子必须先落，
+    // 再装配（setupProjection 内 resetModules + 动态 import）。
+    localStorage.setItem('nb_pinned_projects', JSON.stringify(['p2']))
+    const { mod } = await setupProjection({ slots: ['sidebar'] })
+    h.sessionState.projects = [
+      { id: 'p1', name: '项目一' },
+      { id: 'p2', name: '项目二', running: false },
+    ]
+    h.sessionState.sessions = [
+      sess({ id: 's-p1', projectId: 'p1', title: '项目会话' }),
+      sess({ id: 's-chat', title: '对话' }),
+      sess({ id: 's-orphan', projectId: 'gone', title: '孤儿' }),
+    ]
+    await nextTick()
+    const groups = mod.skinProjection.projectGroups
+    expect(groups.map((g: any) => g.key)).toEqual(['p2', 'p1', '__chat', '__orphan'])
+    expect(groups[0]!.header).toEqual({ name: '项目二', available: false, orphan: false })
+    expect(groups[1]!.header).toEqual({ name: '项目一', available: true, orphan: false })
+    expect(groups[2]!.header).toBeNull()
+    expect(groups[3]!.header!.orphan).toBe(true)
+    const projRow = groups[1]!.sessions[0]!
+    expect(projRow.id).toBe('s-p1')
+    expect(projRow.depth).toBe(0)
+  })
+
+  it('sidebar 槽不在场：置空省算', async () => {
+    const { mod } = await setupProjection({ slots: [] })
+    h.sessionState.sessions = [sess({ id: 's1', title: '甲' })]
+    await nextTick()
+    expect(mod.skinProjection.projectGroups).toEqual([])
+  })
+
+  it('wf_edit 会话过滤：登记表命中不进任何组（与原生侧栏同源谓词）', async () => {
+    // 登记表是模块级单例、import 时读 localStorage——种子必须先落再装配。
+    localStorage.setItem('nemesisbot_wf_edit_sessions', JSON.stringify({ 's-wf': 'flowA' }))
+    const { mod } = await setupProjection({ slots: ['sidebar'] })
+    h.sessionState.sessions = [
+      sess({ id: 's-wf', title: '生成会话' }),
+      sess({ id: 's-chat', title: '对话' }),
+    ]
+    await nextTick()
+    const chat = mod.skinProjection.projectGroups.find((g: any) => g.key === '__chat')!
+    expect(chat.sessions.map((s: any) => s.id)).toEqual(['s-chat'])
+    localStorage.removeItem('nemesisbot_wf_edit_sessions')
+  })
+})
+
+describe('work 工具活动投影（2026-11-18 focus 皮肤）', () => {
+  const timeline = {
+    started_at_ms: 1,
+    ended_at_ms: 2,
+    rounds: [{ text: '', tools: [{ tool: 'exec', call_id: 'c1', ok: false, duration_ms: 10, running: true }] }],
+  }
+
+  it('chat 槽在场：pendingWork 原样透传', async () => {
+    const { mod } = await setupProjection({ slots: ['chat'] })
+    h.chatState.pendingWork = timeline
+    await nextTick()
+    // reactive 代理化后身份不同，深相等即透传成立
+    expect(mod.skinProjection.work).toEqual(timeline)
+  })
+
+  it('无 chat 槽：置空（渲染成本闸）', async () => {
+    const { mod } = await setupProjection({ slots: [] })
+    h.chatState.pendingWork = timeline
+    await nextTick()
+    expect(mod.skinProjection.work).toBeNull()
   })
 })
 

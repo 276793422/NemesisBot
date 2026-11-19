@@ -105,6 +105,20 @@ pub struct AppConfig {
     /// 缺省 on——契约是质量底线不是可选项；关掉 = 回退纯人格提示词。
     #[serde(default = "default_worker_discipline")]
     pub worker_discipline: bool,
+    /// outbox 推送全局并发上限：单 tick 内同时在跑的推送 worker 数上限
+    /// （执行记录/基线回传 2026-11-14 队头阻塞根修）。默认 8；0 按 1 处理。
+    #[serde(default = "default_outbox_push_concurrency")]
+    pub outbox_push_concurrency: usize,
+    /// outbox 单目标并发上限：对同一 master 节点的同时在跑推送数。
+    /// 默认 2；0 按 1 处理。
+    #[serde(default = "default_outbox_per_target_concurrency")]
+    pub outbox_per_target_concurrency: usize,
+    /// iroh 漫游会话心跳间隔（秒）：宿主侧会话池对闲置会话周期发应用层
+    /// ping——保 QUIC 会话与 NAT/打洞映射不断（洞不丢），断线在此被检出
+    /// 并触发后台带退避重连。默认 30；0 = 关（会话按闲置 TTL 逐出，真实
+    /// 请求按需重拨——无保活，打洞映射可能自然失效）。
+    #[serde(default = "default_roaming_heartbeat_interval_secs")]
+    pub roaming_heartbeat_interval_secs: u64,
     /// b（三期）：mandate 签名授权段。全部键可缺省（serde
     /// default）——旧 config.cluster.json 零迁移；默认形态 = A 端签名开 +
     /// B 端 verify（mandate 缺失放行 = 旧行为，旧节点兼容）。
@@ -114,6 +128,18 @@ pub struct AppConfig {
 
 fn default_worker_discipline() -> bool {
     true
+}
+
+fn default_outbox_push_concurrency() -> usize {
+    8
+}
+
+fn default_outbox_per_target_concurrency() -> usize {
+    2
+}
+
+fn default_roaming_heartbeat_interval_secs() -> u64 {
+    30
 }
 
 /// b：mandate 签名授权配置（config.cluster.json `[mandate]` 段；JSON
@@ -216,6 +242,9 @@ impl Default for AppConfig {
             token: String::new(),
             node_name: String::new(),
             worker_discipline: default_worker_discipline(),
+            outbox_push_concurrency: default_outbox_push_concurrency(),
+            outbox_per_target_concurrency: default_outbox_per_target_concurrency(),
+            roaming_heartbeat_interval_secs: default_roaming_heartbeat_interval_secs(),
             mandate: MandateConfig::default(),
         }
     }

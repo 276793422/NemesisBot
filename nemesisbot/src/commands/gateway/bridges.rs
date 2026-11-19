@@ -226,6 +226,19 @@ impl ApprovalPopupAdapter {
     }
 }
 
+/// BUG-20261117-070 同族：审批桥两段等待预算（子进程等待 +10s / 主线程
+/// 收口 +15s 让位）。config.security.json `approval_timeout_seconds` 是
+/// 仅 0 值守卫、无上界钳制的 u64——裸 `+ N` debug panic / release 回绕
+/// 成极小值（审批卡瞬间假超时）。saturating_add；纯函数便于单测
+/// （弹窗路径 headless 不可达，dll 早退分支挡在算术之前）。
+#[cfg(all(feature = "desktop", feature = "security"))]
+pub(super) fn approval_bridge_budgets(timeout_secs: u64) -> (u64, u64) {
+    (
+        timeout_secs.saturating_add(10),
+        timeout_secs.saturating_add(15),
+    )
+}
+
 #[cfg(all(feature = "desktop", feature = "security"))]
 impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
     fn is_running(&self) -> bool {
@@ -282,7 +295,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         // The oneshot receiver is async but we're in a sync context.
         // Use a dedicated thread with its own tokio runtime to wait for the result.
         let (tx, rx) = std::sync::mpsc::channel::<Result<serde_json::Value, String>>();
-        let wait_secs = timeout_secs + 10;
+        let wait_secs = approval_bridge_budgets(timeout_secs).0;
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let result = rt.block_on(async {
@@ -302,7 +315,8 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         });
 
         // Block until the user responds or timeout
-        match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs + 15)) {
+        let recv_secs = approval_bridge_budgets(timeout_secs).1;
+        match rx.recv_timeout(std::time::Duration::from_secs(recv_secs)) {
             Ok(Ok(value)) => {
                 let action = value
                     .get("action")
@@ -406,6 +420,11 @@ pub(crate) struct ClusterResultPersisterAdapter {
     /// worker 侧档案工作副本根（`<workspace>`；变更集组装定位 exec
     /// 目录用）。outbox 未装配时永不消费。
     pub(crate) workspace: Option<std::path::PathBuf>,
+    /// 测试同步点：线程化终态钩子的 join 句柄（仅 test 构建持有——生产
+    /// 编译零字段零开销）。测试 join 等钩子落地后再断言磁盘终态，不靠
+    /// sleep 猜时序。
+    #[cfg(test)]
+    pub(crate) test_join: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 #[cfg(feature = "cluster")]
@@ -462,11 +481,31 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
     /// 推送不依赖 A 端是否收到本轮结果；source 为空时 enqueue 诚实拒绝）。
     /// 档案工作副本在场 = 先全树 diff 组装变更集随行入队（保序：
     /// 合并不可能抢在交付前）；入队失败保留现场（启动清扫重试）。
+    ///
+    /// 执行线程化（BUG-20261113-152）：finish_task_exec = 树杀（taskkill
+    /// 慢机单发秒级）+ 150ms 句柄窗 + 全树 diff 组装——调用线程是 tokio
+    /// worker（peer_chat_handler send_callback_or_persist 直调，async 上下
+    /// 文），同步执行会阻塞 worker 数秒并拖累同 worker 的定时器/IO 任务。
+    /// 兜底清扫（exec_workspace spawn_periodic_residual_sweep）同活早已
+    /// 专用线程化，终态钩子主路径补齐同款治理。并发形态不变：钩子与
+    /// sweep 本就跨线程并存，`.assembling-*` 标记 + 发件箱幂等闸既有防御
+    /// 照旧；档案推送本就是 best-effort + 启动清扫兜底，effectual 语义不受
+    /// 异步化影响。spawn 失败（线程资源耗尽）= 诚实降级回当前线程同步
+    /// 执行，不丢钩子。
     fn on_task_terminal(&self, task_id: &str, source_node_id: &str) {
         let Some(ob) = &self.outbox else { return };
-        if let Some(ws) = self.workspace.as_deref() {
-            match nemesis_cluster::exec_workspace::finish_task_exec(ws, ob, task_id, source_node_id)
-            {
+        let Some(ws) = self.workspace.as_deref() else {
+            // 无工作副本 = 纯记录交付（轻活），当前线程直调。
+            if let Err(e) = ob.enqueue(task_id, source_node_id) {
+                tracing::warn!(task_id = %task_id, "[Transfer] 执行档案入队失败: {e}");
+            }
+            return;
+        };
+        let run = |ob: &Arc<nemesis_cluster::outbox::TransferOutbox>,
+                   ws: &std::path::Path,
+                   task_id: &str,
+                   source: &str| {
+            match nemesis_cluster::exec_workspace::finish_task_exec(ws, ob, task_id, source) {
                 Ok(true) => return, // 档案管线已处理（变更集随行或零差异）
                 Ok(false) => {}     // 无工作副本/sidecar → 非档案管线
                 Err(e) => {
@@ -477,9 +516,34 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
                     return;
                 }
             }
-        }
-        if let Err(e) = ob.enqueue(task_id, source_node_id) {
-            tracing::warn!(task_id = %task_id, "[Transfer] 执行档案入队失败: {e}");
+            if let Err(e) = ob.enqueue(task_id, source) {
+                tracing::warn!(task_id = %task_id, "[Transfer] 执行档案入队失败: {e}");
+            }
+        };
+        let task_id_owned = task_id.to_string();
+        let handle = std::thread::Builder::new()
+            .name(format!("task-terminal-{task_id_owned}"))
+            .spawn({
+                let ob = Arc::clone(ob);
+                let ws = ws.to_path_buf();
+                let source = source_node_id.to_string();
+                move || run(&ob, &ws, &task_id_owned, &source)
+            });
+        match handle {
+            Ok(h) => {
+                #[cfg(test)]
+                self.test_join.lock().unwrap().push(h);
+                #[cfg(not(test))]
+                drop(h);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    task_id = %task_id,
+                    error = %e,
+                    "[Transfer] 终态钩子线程 spawn 失败，回退同步执行"
+                );
+                run(ob, ws, task_id, source_node_id);
+            }
         }
     }
 }

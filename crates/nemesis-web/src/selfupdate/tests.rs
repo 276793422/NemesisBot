@@ -1627,8 +1627,11 @@ mod gated {
 
     /// `updates/`（测试二进制同目录）是跨测试共享面：download/apply 读
     /// pending，任何测试遗留 pending 都会改写他人断言——所有触碰方持同一
-    /// 把 crate 级锁串行化。
-    static UPDATES_SHARED_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// 把 crate 级锁串行化（guard 有意横跨 await 直到异步体结束）。
+    /// tokio::sync::Mutex：持锁跨 await 是它的设计用途——std/parking_lot
+    /// 同步 guard 都会触发 `await_holding_lock`（-D warnings 下即错；
+    /// parking_lot 同样不豁免，实测）。
+    static UPDATES_SHARED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// meta 后写不变量 + 正常往返：zip 先于 meta 在场时 load=None（半截下载
     /// 不产生可装形态——「见 meta 必有 zip」）；meta 落盘后完整读回。
@@ -1691,10 +1694,11 @@ mod gated {
     /// download 前置闸（离线可达）：estop 生效 = 拒绝（pending 未就绪时
     /// estop 闸是第一道——测试进程 exe 目录无 updates/，不触网）。
     #[tokio::test]
+    // 整测试体持锁串行（updates/ 跨测试共享面，见 UPDATES_SHARED_LOCK 注）
+    // ——跨 await 刻意为之（锁语义就是「整个测试独占」），非误用。
+    #[allow(clippy::await_holding_lock)]
     async fn download_denied_by_estop() {
-        let _shared_updates = UPDATES_SHARED_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
         let m = manager_for(tmp_dir("dl-estop"), estop);
@@ -1708,10 +1712,10 @@ mod gated {
     // coverage 三连红，——教训保持）。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_denied_by_estop() {
-        let _shared_updates = UPDATES_SHARED_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
         let ws = tmp_dir("gate-estop");
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
@@ -1723,10 +1727,10 @@ mod gated {
 
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_denied_by_pending_journal() {
-        let _shared_updates = UPDATES_SHARED_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
         let ws = tmp_dir("gate-journal");
         save_journal(&ws, &journal("staging", "x", "y")).unwrap();
         let m = manager_for(
@@ -1744,10 +1748,10 @@ mod gated {
     /// （前端粘滞态解挂依据）。estop/journal 两闸离线可达，恰好覆盖记录流转。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_failure_recorded_and_replaced_by_next_attempt() {
-        let _shared_updates = UPDATES_SHARED_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _shared_updates = UPDATES_SHARED_LOCK.lock().await;
         let ws = tmp_dir("gate-apply-error");
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         estop.trigger();
@@ -2771,10 +2775,10 @@ mod gated {
     /// ② 同持锁 + 活跃进度 = 幂等受理 Ok；
     /// ③ estop 生效 + force = force 审计文案行后 estop 拒（不碰网络）。
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn download_flight_busy_and_force_estop_arms() {
-        let _shared = UPDATES_SHARED_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _shared = UPDATES_SHARED_LOCK.lock().await;
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         let m = manager_for(tmp_dir("dl-matrix"), estop.clone());
 
@@ -2811,10 +2815,10 @@ mod gated {
     /// 密钥载体恒 Untrusted——确定性离线终点。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
+    // 整测试体持锁串行（见 download_denied_by_estop 注）。
+    #[allow(clippy::await_holding_lock)]
     async fn apply_reaches_pending_and_manifest_gates_with_deterministic_denial() {
-        let _shared = UPDATES_SHARED_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _shared = UPDATES_SHARED_LOCK.lock().await;
         // 锚确定性：测试构建无编译期锚时 builtin_root_anchors 回落运行时
         // NEMESIS_ROOT_ANCHOR——测试内注入已知指纹使锚闸恒通过（终点确定）。
         let runtime_anchor_hex =

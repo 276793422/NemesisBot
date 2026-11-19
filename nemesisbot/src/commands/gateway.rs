@@ -52,11 +52,15 @@ mod display;
 #[cfg(feature = "memory")]
 mod dreaming_job;
 mod migrate;
-mod post_agent;
+// resolve_inject_chat_id（注入面出站键单一真相源）被 goals 引擎跨模块
+// 消费——pub(crate)。
+pub(crate) mod post_agent;
 mod relay;
 mod runtime;
 mod services;
-mod shutdown;
+// 终态令牌/等待点 helper 被五常驻循环（logs_sweeper / session_group_
+// sweeper / notify / board_bus / profile_service）跨模块消费——pub(crate)。
+pub(crate) mod shutdown;
 #[cfg(feature = "workflow")]
 mod workflow_secure_executor;
 // workflow 安全执行通道 gateway 实现回归锁（A 批；identity→RequestContext
@@ -64,6 +68,9 @@ mod workflow_secure_executor;
 mod web_init;
 #[cfg(all(test, feature = "workflow"))]
 mod workflow_secure_executor_tests;
+// 终态令牌等待点 helper 回归锁（BUG-20261115-023）。
+#[cfg(test)]
+mod shutdown_tests;
 
 pub(crate) use self::agent_build::{AgentWiring, init_agent};
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -102,12 +109,11 @@ pub(crate) use self::ctx::GatewayCtx;
 pub(crate) use self::display::select_advertised_lan_ip;
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) use self::display::{advertise_host_for, select_lan_ip_for_advertisement};
-pub(crate) use self::display::{
-    count_enabled_channels, print_agent_startup_info, print_gateway_banner,
-    web_bind_and_display_hosts,
-};
 #[cfg(all(feature = "desktop", not(target_os = "android")))]
 pub(crate) use self::display::{open_browser, open_plugin_window};
+pub(crate) use self::display::{
+    print_agent_startup_info, print_gateway_banner, web_bind_and_display_hosts,
+};
 #[cfg(feature = "workflow")]
 pub(crate) use self::migrate::migrate_legacy_workflow_dir;
 pub(crate) use self::post_agent::init_post_agent;
@@ -254,6 +260,14 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     let Some(ctx) = GatewayCtx::assemble(local, relay, quic_relay, extra_args).await? else {
         return Ok(());
     };
+    // plugin_resources 装载（附加资源 C-ABI 载体，首例 persona-catalog 快照）。
+    // 缺席 = 静默（人格超市纯在线现状行为）；名册开关关 = DisabledBySwitch
+    // （用户意志，纯在线）；在场拒载/ABI 不匹配 = 装载器内部已留痕
+    // （WARN/ERROR），消费方按缺席诚实降级。幂等；此处晚于 logger 初始化
+    // （装载留痕可见）。结果四变体均为可继续态，不 goto fail。
+    crate::resources_plugin_loader::load_resources_plugin(&nemesis_path::workspace_config_dir(
+        &crate::common::workspace_path(&ctx.home),
+    ));
     // ctx 影子说明：– 各相位 fn 均自行从 ctx 克隆/借取所需字段（建
     // ctx 时的 16 无门影子已随相位迁移逐 PR 删除， 收尾后根部不再持有
     // 任何 ctx 影子）；root 仅保留 wiring 产物局部名供下游调用传参。
@@ -267,13 +281,15 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     let cluster_wiring = init_cluster(&ctx).await?;
     // Phase （计划）：PB-3 Web/Channel 装配提取为 init_web
     //（gateway/web_init.rs）——依赖 ctx 三件（home/cfg/bus）+ cluster wiring
-    // 二件（均在 cfg(cluster) 门内消费）。产物 WebWiring 六项供 PB-4–PB-7
-    // 消费； mem::forget 挂账随块原样保留。
+    // 二件（均在 cfg(cluster) 门内消费）。产物 WebWiring 七项供 PB-4–PB-7
+    // 消费；channel_manager 以 Arc 随产物携出（BUG-20261119-194：
+    // start_all 推迟到 init_services Step 14c——agent 订阅之后）。
     let web_wiring = init_web(&ctx, &cluster_wiring).await?;
     // wiring 影子重绑：web_server 移动推迟到 init_agent 之后（其以
     // &WebWiring 借读整体），其余 clone 保结构完整（起不再借 web）。
     // enabled_channels 不留影子：唯一消费者 PB-4 已迁入 init_agent（其内
-    // 自行 clone），Step 21 另建同名局部（count_enabled_channels）。
+    // 自行 clone），RuntimeHandoff 再 clone 移交 run_runtime（Step 21 横幅
+    // 计数消费，BUG-20261114-049 起为横幅唯一取数源）。
     let web_bind_host = web_wiring.web_bind_host.clone();
     let web_display_host = web_wiring.web_display_host.clone();
     let web_port = web_wiring.web_port;
@@ -387,6 +403,7 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     // 仅持 web_handle 句柄）+ web_bind_host/web_port/bridge_client_launch/
     // initial_tool_count 按值（下游零消费）+ agent_adapter/web_display_host
     // 克隆（Step 18/19/24 仍消费原对象；agent_loop 非本块消费不入参）
+    // + channel_manager 克隆（BUG-20261119-194：Step 14c 延迟 start_all）
     // + cluster 三件经 ClusterHandoff（无门结构体+@cluster
     // 门控字段——调用点不支持逐参 cfg 属性，ClusterWiring 同款先例）；
     // 产物 ServicesWiring 五项（health_server @health，其余无门）——
@@ -408,6 +425,9 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
         web_port,
         bridge_client_launch,
         agent_adapter.clone(),
+        // BUG-20261119-194：通道管理器句柄——start_all 在 Step 14c
+        // （agent 订阅之后）执行，不再于 init_web 内即时启动。
+        web_wiring.channel_manager.clone(),
         initial_tool_count,
         cluster_handoff,
     )

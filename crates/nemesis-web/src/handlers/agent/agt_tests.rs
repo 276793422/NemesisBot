@@ -94,6 +94,12 @@ impl ProjectsBridge for AgtStubBridge {
     fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
         Err("not wired".to_string())
     }
+    fn add_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn remove_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }
@@ -116,6 +122,7 @@ fn agt_ctx(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -138,6 +145,7 @@ fn agt_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(al)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -151,6 +159,7 @@ fn agt_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,

@@ -17,6 +17,7 @@ mod cors_ws_tests;
 mod eval_rules_ws_tests;
 mod forge_tests;
 mod gateway_tests;
+mod mail_ws_tests;
 mod projects_ws_tests;
 mod scanner_tests;
 mod security_tests;
@@ -648,10 +649,9 @@ async fn main() -> Result<()> {
                     "max_tokens": 8192,
                     "temperature": 0.7,
                     "max_tool_iterations": 20,
-                    // 生产默认 queue（reject 会把同会话并发消息确定性弹回——
-                    // 旧 concurrent 测试 5 个连接全发同一默认 session，3 个被
-                    // 「⏳ AI is processing」弹回；现测试改独立 session +
-                    // queue 双保险，语义与生产对齐）。
+                    // 生产默认 steer（2026-11-03 翻转 queue→steer）；IT 侧显式
+                    // 钉 queue 作为本套件自身的双保险选择（独立 session 下
+                    // 同会话并发消息落收件箱而非插队），显式值仍合法。
                     "concurrent_request_mode": "queue",
                     "queue_size": 8
                 }
@@ -942,6 +942,13 @@ async fn main() -> Result<()> {
     // 自清理（remove 自建条目 / reset 恢复默认集），无残留。
     all_results
         .extend(eval_rules_ws_tests::test_rules_mgmt_ws_surface(&ws, &cfg.gateway_bin).await);
+
+    // mail WSAPI 空态表面契约（2026-11-19 邮件基础设施 IT）：IT 环境无
+    // plugin_mail DLL → 钉空态三层（status loaded:false 非报错 / config_*
+    // 先于句柄闸 / 业务+未知命令统一「未装载」报错）；装载态全链归
+    // agent-bench mail_roundtrip（LLM e2e）。写 config.mail.json 套件内
+    // 自清理，沿「改共享状态套件排尾」纪律。
+    all_results.extend(mail_ws_tests::test_mail_wsapi_surface(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an

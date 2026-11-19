@@ -1,0 +1,31 @@
+[package]
+name = "nemesis-events"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+# fs 事件源（notify = workspace 无此共享依赖，nemesis-agent 亦按 crate 直声明）
+notify = "8"
+# proc_output 源的输出行匹配
+regex = "1"
+# sys 阈值源的 CPU/内存/磁盘采样（无 workspace 共享依赖，按 crate 直声明）
+sysinfo = "0.33"
+# probe http 探测（workspace 共享：rustls-tls，无 openssl）
+reqwest = { workspace = true }
+# probe command 源的 env 窄版闸（nemesis_utils::env_sanitize，BUG-20261117-048）
+nemesis-utils = { workspace = true }
+# 泵常驻循环的进程终态令牌（BUG-20261115-023 家族纪律；BUG-20261119-208 同款
+# DI 形态——gateway 装配传 terminal_cancel_token().clone()）
+tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

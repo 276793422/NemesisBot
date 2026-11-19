@@ -35,6 +35,14 @@ pub use nemesis_utils::sse::push_chunk_incremental;
 /// （半截不可当纯文本续用）。`raw_request_body` / `raw_response_body` 恒
 /// `None`——流式路径没有完整响应体快照（请求日志器对 None 字段本就省略，
 /// 非流式路径不受影响）。
+///
+/// **终态唯一性契约（BUG-20261120-003）**：终态 chunk（finish_reason Some）
+/// 已聚合后再到的 Err 是终态后传输噪音（http lane 的 SSE 读错误臂 / 墙钟
+/// deadline 臂在 finish_emitted 后仍可发射——RST-after-FIN keep-alive 竞态、
+/// 挂死代理不发 `[DONE]` 撞墙钟），一律忽略并按正常完成收尾。wire 语义下
+/// finish_reason 即响应完成；不闸会把已完成响应改写成 `StreamInterrupted`
+/// → 拼接续写把完整回复当半截去续写（缝合怪终答）+ 白烧一轮重试。同 lane
+/// BUG-20261114-030 已把流内 error 事件闸在终态后帧闸之后，传输层错误同契约。
 pub async fn collect_stream_response(
     provider: &str,
     model: &str,
@@ -64,9 +72,44 @@ pub async fn collect_stream_response(
                 }
             }
             Err(e) => {
+                // 终态唯一性契约（BUG-20261120-003）：终态 chunk 已聚合后再
+                // 到的 Err 是终态后传输噪音（http lane SSE 读错误臂 / deadline
+                // 臂在 finish_emitted 后仍可发射），一律忽略——wire 语义下
+                // finish_reason 即响应完成，改写 StreamInterrupted 会触发
+                // 拼接续写把已完成回复当半截去续写。break 走下方正常收尾
+                //（finish_reason 在场 → Ok）。闸位在空判定之前：终态后的
+                // 合法空补全不走「空 → 原错误上抛」臂。
+                if finish_reason.is_some() {
+                    tracing::debug!(
+                        provider = %provider,
+                        model = %model,
+                        error = %e,
+                        "[stream_util] post-terminal stream error ignored — finish_reason already aggregated"
+                    );
+                    break;
+                }
                 // 已聚合文本/工具调用非空 → partial 随错误携带不丢；
                 // 空 → lane 原错误原样上抛（诚实分类不吞）。
                 if content.trim().is_empty() && tool_calls.is_empty() {
+                    return Err(e);
+                }
+                // LLM-ERR-B（2026-11-17 治本批）：确定性应用层错误（限流/
+                // 认证/计费）**透传不包 StreamInterrupted**——上游 error 事件
+                // 明确宣告本次请求失败，partial 是被拒请求的半成品不是可续写
+                // 工作成果。包 StreamInterrupted 会：(a) 把分类拍扁进 reason
+                // 字符串（Display 前缀短路恒判 Timeout → 限流信号被当传输
+                // 抖动零退避立即重试，429 风暴形态，实测基线复现）；(b) 触发
+                // 拼接续写把半截文本缝进重试后的完整回复（实测缝合怪终答）。
+                // 透传保住变体语义：loop 侧 classified/词表双轨都按 RateLimit
+                // 进限流退避环（或 Auth/Billing 诚实终局），重试成功后终答
+                // 干净。Timeout/Overloaded/Format/Unknown 等维持既有
+                // StreamInterrupted 携带契约（传输中断的 partial 是真成果）。
+                if matches!(
+                    e,
+                    FailoverError::RateLimit { .. }
+                        | FailoverError::Auth { .. }
+                        | FailoverError::Billing { .. }
+                ) {
                     return Err(e);
                 }
                 return Err(FailoverError::StreamInterrupted {

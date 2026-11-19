@@ -34,6 +34,88 @@ fn test_parse_host_port_no_port() {
 }
 
 // -------------------------------------------------------------------------
+// web_chat_id_from_session_key（事件/循环/审批续执行注入器共用映射）。
+// 回归锚：注入回合回复曾以 session_key 形态出站 → WebChannel 拒收
+// （invalid chat ID format）→ Dashboard 收不到实时推送（UAT 实录 69 条）。
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_web_chat_id_from_main_session_key() {
+    // 事件规则钦定的 preset 会话键形态 → 通道原生形态
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key(
+            "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181"
+        ),
+        "web:f42ec545-c2b0-4239-b027-fc742ae0e181"
+    );
+}
+
+#[test]
+fn test_web_chat_id_passthrough_non_main_session_key() {
+    // 非 `agent:main:session:` 形态 = 目标通道不明，诚实原样保留
+    // （派发面按既有语义处理，不在注入面猜通道）。
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key("agents:foo:bar"),
+        "agents:foo:bar"
+    );
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key("board_dispatch:t1"),
+        "board_dispatch:t1"
+    );
+    assert_eq!(
+        super::post_agent::web_chat_id_from_session_key("agent:main:telegram:42"),
+        "agent:main:telegram:42"
+    );
+}
+
+// -------------------------------------------------------------------------
+// resolve_inject_chat_id（注入面出站键解析单一真相源）：ConvRouter 活页
+// 绑定优先（cron Opt2 同一张表），无绑定回落 web_chat_id_from_session_key。
+// 回归锚：仅 web:<会话id> 形态合法还不够——SessionManager 按 WS 连接 id
+// 键控，会话 uuid 不是连接 id，不查绑定表则实时推送仍死（UAT L3 实录：
+// "Session not found or no send queue"）。
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_resolve_inject_chat_id_prefers_conv_router_binding() {
+    let router = std::sync::Arc::new(nemesis_web::ConvRouter::new());
+    let sk = "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181";
+    // 有活绑定（标签页在位）→ 活连接键优先，实时推送可达
+    router.bind(sk, "web:ce17140269794c10");
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id(sk, &router),
+        "web:ce17140269794c10"
+    );
+}
+
+#[test]
+fn test_resolve_inject_chat_id_falls_back_without_binding() {
+    let router = std::sync::Arc::new(nemesis_web::ConvRouter::new());
+    // 无绑定 → 回落 web:<会话id>（死会话软失败 + 历史照落）
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id(
+            "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181",
+            &router
+        ),
+        "web:f42ec545-c2b0-4239-b027-fc742ae0e181"
+    );
+    // 非 main 形态 + 无绑定 → 原样透传（不在注入面猜通道）
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id("agent:main:telegram:42", &router),
+        "agent:main:telegram:42"
+    );
+    // 绑定表对其他会话有条目不影响本会话的回落判定
+    router.bind("agent:main:session:other", "web:aaaabbbbccccdddd");
+    assert_eq!(
+        super::post_agent::resolve_inject_chat_id(
+            "agent:main:session:f42ec545-c2b0-4239-b027-fc742ae0e181",
+            &router
+        ),
+        "web:f42ec545-c2b0-4239-b027-fc742ae0e181"
+    );
+}
+
+// -------------------------------------------------------------------------
 // GatewayMemoryGate (memory approval bridge) — mock ApprovalManager tests
 // Covers the three boundary cases: user approves, user denies, popup
 // times out / errors (must be treated as deny — never let a memory write
@@ -903,20 +985,6 @@ fn test_apply_security_layer_switches_injection_threshold_out_of_range_rejected(
 }
 
 // -------------------------------------------------------------------------
-// count_enabled_channels tests
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_count_enabled_channels_none() {
-    // 后 WebChannelConfig::default().enabled=true（与字段级
-    // default_true 收敛）——「无启用通道」场景须显式关掉 web 才成立。
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = false;
-    let count = count_enabled_channels(&config);
-    assert_eq!(count, 0);
-}
-
-// -------------------------------------------------------------------------
 // Approval popup data construction tests
 // -------------------------------------------------------------------------
 
@@ -1063,42 +1131,6 @@ fn test_parse_host_port_multiple_colons() {
 // -------------------------------------------------------------------------
 // Additional tests for maximum coverage
 // -------------------------------------------------------------------------
-
-#[test]
-fn test_count_enabled_channels_zero() {
-    // 后 WebChannelConfig::default().enabled=true（与字段级
-    // default_true 收敛）——「全零」场景须显式关掉 web 才成立。
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = false;
-    assert_eq!(count_enabled_channels(&config), 0);
-}
-
-#[test]
-fn test_count_enabled_channels_web_only() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 1);
-}
-
-#[test]
-fn test_count_enabled_channels_multiple() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 3);
-}
-
-#[test]
-fn test_count_enabled_channels_all() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    config.channels.feishu.enabled = true;
-    config.channels.slack.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 5);
-}
 
 #[test]
 fn test_parse_host_port_ipv6_bracket() {
@@ -2588,29 +2620,6 @@ fn test_cron_message_metadata_construction() {
 }
 
 // -------------------------------------------------------------------------
-// count_enabled_channels additional channels
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_count_enabled_channels_web_telegram() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 2);
-}
-
-#[test]
-fn test_count_enabled_channels_all_five() {
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    config.channels.feishu.enabled = true;
-    config.channels.slack.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 5);
-}
-
-// -------------------------------------------------------------------------
 // parse_host_port additional edge cases
 // -------------------------------------------------------------------------
 
@@ -3203,27 +3212,6 @@ mod gateway_agent_runner_tests {
 mod wave_b {
     use super::*;
 
-    #[test]
-    fn wave_b_count_enabled_channels_all_flags() {
-        // 13 个通道位全开（web/websocket/telegram/discord/feishu/slack/external/
-        // whatsapp/dingtalk/qq/line/onebot/maixcam），点亮剩余 11 个 miss 推入臂。
-        let mut config = nemesis_config::Config::default();
-        config.channels.web.enabled = true;
-        config.channels.websocket.enabled = true;
-        config.channels.telegram.enabled = true;
-        config.channels.discord.enabled = true;
-        config.channels.feishu.enabled = true;
-        config.channels.slack.enabled = true;
-        config.channels.external.enabled = true;
-        config.channels.whatsapp.enabled = true;
-        config.channels.dingtalk.enabled = true;
-        config.channels.qq.enabled = true;
-        config.channels.line.enabled = true;
-        config.channels.onebot.enabled = true;
-        config.channels.maixcam.enabled = true;
-        assert_eq!(count_enabled_channels(&config), 13);
-    }
-
     // -------------------------------------------------------------------------
     // GatewayLlmJudge —— guardian LLM 二审桥（security）
     // -------------------------------------------------------------------------
@@ -3422,6 +3410,27 @@ mod wave_b {
         }
     }
 
+    // BUG-20261117-070 同族：审批桥两段等待预算 saturating（弹窗路径
+    // headless 不可达，纯函数直接断言——巨值 config 输入不得 panic /
+    // 回绕成极小值造成审批卡瞬间假超时）。
+    #[cfg(all(feature = "desktop", feature = "security"))]
+    #[test]
+    fn bug070_approval_bridge_budgets_saturates_not_wraps() {
+        // 常规值：精确 +10 / +15 让位。
+        assert_eq!(bridges::approval_bridge_budgets(30), (40, 45));
+        assert_eq!(bridges::approval_bridge_budgets(0), (10, 15));
+        // 巨值：饱和不回绕（裸 `+ N` 在此 debug panic / release 回绕成
+        // 极小值）。
+        assert_eq!(
+            bridges::approval_bridge_budgets(u64::MAX),
+            (u64::MAX, u64::MAX)
+        );
+        assert_eq!(
+            bridges::approval_bridge_budgets(u64::MAX - 5),
+            (u64::MAX, u64::MAX)
+        );
+    }
+
     // -------------------------------------------------------------------------
     // 集群桥接适配器（cluster）
     // -------------------------------------------------------------------------
@@ -3438,6 +3447,7 @@ mod wave_b {
             node_id: "node-wave-b".to_string(),
             outbox: None,
             workspace: None,
+            test_join: std::sync::Mutex::new(Vec::new()),
         };
 
         // set_running → 以 "peer_chat"/running 占位结果成功态写入。
@@ -5715,6 +5725,10 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
         cfg,
         resolution: nemesis_config::ProviderResolution::default(),
         model_name: "cov/test-model".to_string(),
+        // 测试注入口默认 None；断言常驻循环活性的测试显式注入局部令牌
+        // （BUG-20261115-046：pa2——全局令牌会被 run_runtime 全链测试
+        // 经生产停机路径 cancel 毒化）。
+        terminal_cancel_override: None,
         bus,
         cron_service,
         conv_router,
@@ -5821,7 +5835,7 @@ async fn init_cluster_disabled_builds_wiring_and_loads_static_peers() {
         "autopilot slot armed"
     );
 
-    // worker 分支：board_store 在手 + role=worker → 讨论入站箱装配。
+    // BUG-20261118 统一 handler：讨论入站箱全员装配（不分角色）。
     assert!(wiring.board_worker_inbox.is_some(), "worker inbox armed");
     assert!(
         wiring.board_estop_parked.lock().expect("parked").is_empty(),
@@ -5950,18 +5964,18 @@ async fn init_cluster_enabled_arms_rpc_call_fn_and_placeholder_snapshot() {
     feature = "security"
 ))]
 #[tokio::test]
-async fn init_cluster_coordinator_role_arms_master_nb_bus_without_worker_inbox() {
+async fn init_cluster_coordinator_role_arms_unified_nb_bus_with_discussion_inbox() {
     let f = gateway_ctx_fixture("{}");
     write_peers_toml(&f.ctx.home, "coordinator");
 
     let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
 
-    // master 判据用集群角色（board_store 全员在手不算）：
-    // coordinator + board_store → master nb_bus 分支，worker 入站箱不建。
+    // BUG-20261118 统一 handler：讨论入站箱**全员装配**——coordinator
+    // 也可能被 wake.post 点名参与讨论（历史上 master 分支不建 inbox）。
     assert!(!wiring.cluster_should_start);
     assert!(
-        wiring.board_worker_inbox.is_none(),
-        "master branch must not build worker inbox"
+        wiring.board_worker_inbox.is_some(),
+        "unified nb_bus arms discussion inbox on all nodes (incl. coordinator)"
     );
     let role = wiring
         .cluster_adapter_refs
@@ -6503,6 +6517,7 @@ async fn ci2_task_cancel_covers_error_queued_terminal_not_found() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
@@ -6735,6 +6750,7 @@ async fn ci2_peer_chat_callback_routes_all_branches() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     let resp = rpc
         .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
@@ -7510,6 +7526,17 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     );
 
     // board watcher 需要 SSE 订阅者在场才轮询 data_version（sub_count>0）。
+    // BUG-20261115-046 根修：watcher 终态令牌改挂局部令牌（ctx 注入口）。
+    // 根因：模块内 run_runtime 全链测试（run_runtime_full_cycle_* 家族）
+    // 经生产停机路径（Step 24 cancel_terminal_tasks）不可逆 cancel 进程
+    // 全局令牌——并行调度下本测试的 watcher 可 born-dead（首 poll 拍完
+    // 基线即被 terminal_loop_tick 前置 is_cancelled 短路收线），
+    // board-changed 永不发布（全量三轮红、单跑恒绿的完整解释；诊断排除
+    // 链：影子连接证明 SQLite 跨连接可见性正常、EventHub 探针证明
+    // hub/replay/broadcast 链路正常、15s 预算排除首拍延迟击穿）。局部
+    // 令牌对全局毒化免疫；测试收线时显式 cancel 保 runtime 优雅退出。
+    let watcher_terminal = tokio_util::sync::CancellationToken::new();
+    f.ctx.terminal_cancel_override = Some(watcher_terminal.clone());
     let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
     let agent = make_agent_wiring(&f.ctx);
     let mut web = make_web_server(&f.ctx.home);
@@ -7540,33 +7567,68 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
             std::collections::HashMap::new(),
         ),
     );
-    // 先放行 spawn 任务起跑（watcher 先拍下 data_version 基线），再写库。
+    // 先放行 spawn 任务起跑（watcher 首调度 + 触发循环消费），再进写库等待循环。
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     // ③ board watcher：store 连接写 board.db → watcher 连接 data_version 变化
-    //    → board-changed 广播。
-    if let Some(store) = f.ctx.board_store.as_ref() {
-        store
-            .create_issue(nemesis_board::NewIssue {
-                title: "watcher".to_string(),
-                ..Default::default()
-            })
-            .expect("create issue for watcher");
-    }
-    // 放行：触发循环消费 + watcher 2s 轮询次轮拍到变化 + retention sweep。
-    tokio::time::sleep(std::time::Duration::from_millis(2400)).await;
-
-    // board-changed 至少一条送达（watcher 循环体真实执行的证据）。
-    let mut got_board_changed = false;
-    while let Ok(ev) = hub_rx.try_recv() {
-        if ev.event_type == "board-changed" {
-            got_board_changed = true;
+    //    → board-changed 广播。等待事件驱动（写库 → 死线收帧，未到再写再等，
+    //    旧形态「写库一次 + 固定窗轮询抽干」是赌注）。watcher 终态令牌已注入
+    //    局部（上方 watcher_terminal——BUG-20261115-046 根修），对进程全局
+    //    令牌的跨测试毒杀（run_runtime Step 24 cancel、OnceLock 无复位）免疫：
+    //    此处 miss = 真回归，无回落臂（旧回落臂会掩盖 init_post_agent 接线回归）。
+    async fn write_and_wait_board_changed(
+        store: &std::sync::Arc<nemesis_board::BoardStore>,
+        hub_rx: &mut tokio::sync::broadcast::Receiver<nemesis_web::events::Event>,
+        title_prefix: &str,
+        rounds: usize,
+    ) -> bool {
+        for round in 0..rounds {
+            store
+                .create_issue(nemesis_board::NewIssue {
+                    title: format!("{title_prefix}-r{round}"),
+                    ..Default::default()
+                })
+                .expect("create issue for watcher");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match tokio::time::timeout_at(deadline, hub_rx.recv()).await {
+                    Ok(Ok(ev)) => {
+                        if ev.event_type == "board-changed" {
+                            return true;
+                        }
+                        // 其他事件（工具/心跳等）继续等
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
+                        // 256 槽溢出丢帧：跳本轮，重写库重触发（不致命）
+                        break;
+                    }
+                    Ok(Err(e)) => panic!("event hub closed: {e}"),
+                    Err(_) => break, // 本轮 5s 死线到 → 下一轮重写
+                }
+            }
         }
+        false
     }
-    assert!(
-        got_board_changed,
-        "board watcher must broadcast board-changed after db write"
-    );
-    // retention sweep / usage watcher 已在 sleep 期间跑过首轮——无 panic 即过。
+
+    let mut got_board_changed = false;
+    if let Some(store) = f.ctx.board_store.as_ref().map(std::sync::Arc::clone) {
+        got_board_changed = write_and_wait_board_changed(&store, &mut hub_rx, "watcher", 5).await;
+    }
+    // 收线：cancel 局部令牌 → watcher 确定性退出（023 语义：终态前置
+    // 检查保证不 re-park timer），runtime Drop 无悬空 timer。
+    watcher_terminal.cancel();
+    if !got_board_changed {
+        // 失败信息自带现场纪律：replay 直方图（board-changed 在缓冲 =
+        // broadcast 通道侧丢；不在 = watcher 根本没发布）。
+        let (events, _) = web.event_hub().replay_after(0);
+        let kinds: Vec<String> = events.iter().map(|e| e.event_type.clone()).collect();
+        panic!(
+            "board watcher must broadcast board-changed after db write \
+             （5 轮写库×5s 死线均未见广播——watcher 挂局部令牌对全局毒杀免疫，miss=真回归） \
+             [diag] replay_total={} replay_kinds={kinds:?}",
+            events.len()
+        );
+    }
+    // retention sweep / usage watcher 在收帧等待期间被调度跑过首轮——无 panic 即过。
 }
 
 /// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + 重建 +

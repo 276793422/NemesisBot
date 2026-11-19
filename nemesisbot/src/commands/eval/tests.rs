@@ -2417,3 +2417,54 @@ fn split_origin_path_codex_default_base() {
     assert_eq!(o, "https://chatgpt.com");
     assert_eq!(p, "/backend-api/codex");
 }
+
+// ---------------------------------------------------------------------------
+// skill 名围栏（BUG-20261115-042 回归钉）——入口闸 + copy_skill_dir 纵深闸
+// ---------------------------------------------------------------------------
+
+#[test]
+fn skill_name_gate_rejects_traversal_forms() {
+    // 单一真相源 validate_skill_identifier 的围栏行为钉定：穿越 /
+    // 盘符相对形态（join 整段换基座）/分隔符/保留名全拒。
+    for bad in [
+        "../victim",
+        r"..\victim",
+        "C:evil",
+        "a/b",
+        r"a\b",
+        "..",
+        ".",
+        "CON",
+    ] {
+        assert!(
+            nemesis_skills::types::validate_skill_identifier(bad).is_err(),
+            "must reject {bad:?}"
+        );
+    }
+    for good in ["weather", "learn", "skill-creator", "my-skill2"] {
+        assert!(
+            nemesis_skills::types::validate_skill_identifier(good).is_ok(),
+            "must accept {good:?}"
+        );
+    }
+}
+
+#[test]
+fn copy_skill_dir_rejects_hostile_subject() {
+    // 纵深闸自防御：敌意 subject（头部名含穿越）→ 校验失败，不落到
+    // join（无 IO）；合法名但 skills 目录不存在 → Ok(())（builtin
+    // 兜底路径不受闸影响）。
+    let td = t();
+    let real = td.path().join("real");
+    let ws = td.path().join("ws");
+    std::fs::create_dir_all(&real).unwrap();
+    let hostile = format!("# Skill: ../{}\n\nbody", "victim");
+    let err = copy_skill_dir(&real, &ws, &hostile).unwrap_err();
+    assert!(err.to_string().contains("failed validation"), "{err}");
+    // 敌意路径没产生任何落盘（ws 下无 skills 目录）。
+    assert!(!ws.join("skills").exists());
+    // 合法名 + skills 目录不存在 → Ok(())（builtin 兜底路径不受闸影响，
+    // 同样无落盘）。
+    copy_skill_dir(&real, &ws, "# Skill: weather\n\nbody").unwrap();
+    assert!(!ws.join("skills").exists());
+}

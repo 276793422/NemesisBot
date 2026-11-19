@@ -148,6 +148,19 @@ fn test_connect_error_unknown_is_retriable() {
 }
 
 #[test]
+fn test_body_limit_unknown_is_retriable() {
+    // BUG-20261115-024 配套：成功体超帽（body_cap）落 Unknown，带
+    // "response body exceeds limit" 前缀锚——端点失控/恶意是端点问题，
+    // fallback 链必须照常轮转（坏端点换下一家，对齐 connect error 同门）。
+    let err = FailoverError::Unknown {
+        provider: "anthropic".to_string(),
+        message: "response body exceeds limit (model claude-x): >67108864 bytes; aborted mid-read"
+            .to_string(),
+    };
+    assert!(err.is_retriable(), "body-limit unknown must be retriable");
+}
+
+#[test]
 fn test_from_status_401() {
     let err = FailoverError::from_status("anthropic", "claude-3", 401, "bad key", None);
     assert!(matches!(err, FailoverError::Auth { status: 401, .. }));
@@ -602,4 +615,156 @@ fn test_classify_message_error_context_overflow_maps_unknown_with_original() {
         other => panic!("400+overflow body 应维持 status 400 形态 Unknown，实际 {other:?}"),
     }
     assert!(!e.is_retriable());
+}
+
+// ==========================================================================
+// classify_stream_error_payload 统一分类入口（2026-11-17 治本批）
+// ------------------------------------------------------------------
+// 三 lane 流内错误事件采集点此前各自手搓（openai 兼容 lane 只抽 message
+// 丢 code——cc-switch 429 风暴根因：状态码在采集点丢弃，文案不在两级
+// 词表 → Unknown 不可重试，429 信号永不进限流退避环）。本矩阵钉死探测
+// 序：码（code/status/status_code）→ anthropic type 枚举 → 文案 → fallback。
+// ==========================================================================
+
+#[test]
+fn stream_error_payload_numeric_code_maps_via_from_status() {
+    // cc-switch 实测形态（带码变体）：code=429 数字在场，message 无词表词
+    // ——命中唯一解释是码采集，不是文本兜底（证据链隔离）。
+    let payload: serde_json::Value = serde_json::from_str(
+        r#"{"error":{"code":429,"message":"SERR_CODE_429_MARK upstream busy, try later"}}"#,
+    )
+    .unwrap();
+    let err = classify_stream_error_payload(&payload, "http-compat", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "code=429 必须经 from_status 归 RateLimit: {err:?}"
+    );
+    assert!(err.is_retriable(), "限流必须可轮转: {err:?}");
+}
+
+#[test]
+fn stream_error_payload_string_code_and_key_aliases() {
+    // "429" 纯数字字符串形态 + 三键位别名（不同网关命名习惯）。
+    for key in ["code", "status", "status_code"] {
+        let payload = serde_json::json!({ "error": { key: "429", "message": "busy" } });
+        let err = classify_stream_error_payload(&payload, "p", "m", "fb".into());
+        assert!(
+            matches!(err, FailoverError::RateLimit { .. }),
+            "key={key} 纯数字字符串码应命中: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn stream_error_payload_zero_code_falls_through_to_message() {
+    // code=0（缺省哨兵）跳过 → 文案探测兜底。
+    let payload =
+        serde_json::json!({"error": {"code": 0, "message": "quota exceeded for project"}});
+    let err = classify_stream_error_payload(&payload, "p", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "code=0 跳过，文案 quota exceeded 兜底: {err:?}"
+    );
+}
+
+#[test]
+fn stream_error_payload_unmapped_code_defers_to_message() {
+    // 未收录码（418）不产 Unknown 掩埋 message 真语义——让位文案探测。
+    let payload = serde_json::json!({"error": {"code": 418, "message": "teapot quota exceeded"}});
+    let err = classify_stream_error_payload(&payload, "p", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "未收录码让位文案探测: {err:?}"
+    );
+}
+
+#[test]
+fn stream_error_payload_nocode_concurrency_wording_maps_rate_limit() {
+    // cc-switch 实测形态（无码变体）：无 code 键，文案兜底
+    //（matches_rate_limit "concurrency limit" 词，llm_error_class 同批加入）。
+    let payload =
+        serde_json::json!({"error": {"message": "Concurrency limit exceeded for account"}});
+    let err = classify_stream_error_payload(&payload, "http-compat", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "无码文案 concurrency limit 应归 RateLimit: {err:?}"
+    );
+}
+
+#[test]
+fn stream_error_payload_anthropic_type_enumeration() {
+    // anthropic 官方 type 全集（原 lane 私有表并入单点），信封形态
+    // {"type":"error","error":{...}}。
+    let envelope =
+        |t: &str| serde_json::json!({"type": "error", "error": {"type": t, "message": "boom"}});
+    for t in ["overloaded_error", "api_error"] {
+        let err = classify_stream_error_payload(&envelope(t), "anthropic", "m", "fb".into());
+        match err {
+            FailoverError::Overloaded { status, .. } => {
+                assert_eq!(status, 0, "SSE error 事件无状态码 → 0（{t}）");
+            }
+            other => panic!("{t} 应归 Overloaded{{status:0}}，实际 {other:?}"),
+        }
+    }
+    let err =
+        classify_stream_error_payload(&envelope("rate_limit_error"), "anthropic", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "rate_limit_error: {err:?}"
+    );
+    for t in ["authentication_error", "permission_error"] {
+        let err = classify_stream_error_payload(&envelope(t), "anthropic", "m", "fb".into());
+        match err {
+            FailoverError::Auth { status, .. } => {
+                assert_eq!(status, 0, "SSE error 事件无状态码 → 0（{t}）");
+            }
+            other => panic!("{t} 应归 Auth{{status:0}}，实际 {other:?}"),
+        }
+    }
+    let err =
+        classify_stream_error_payload(&envelope("billing_error"), "anthropic", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::Billing { .. }),
+        "billing_error: {err:?}"
+    );
+    let err =
+        classify_stream_error_payload(&envelope("timeout_error"), "anthropic", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::Timeout { .. }),
+        "timeout_error: {err:?}"
+    );
+}
+
+#[test]
+fn stream_error_payload_error_as_string_form() {
+    // `error` 本身是字符串的形态（部分网关）：文案兜底收录。
+    let payload = serde_json::json!({"error": "resource has been exhausted"});
+    let err = classify_stream_error_payload(&payload, "p", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "error 字符串形态应走文案兜底: {err:?}"
+    );
+}
+
+#[test]
+fn stream_error_payload_bare_event_whole_payload_probe() {
+    // codex 裸 `error` 事件形态：无 /error 子对象 → 整个 payload 探测。
+    let payload = serde_json::json!({"type": "error", "code": 429, "message": "slow down"});
+    let err = classify_stream_error_payload(&payload, "codex", "m", "fb".into());
+    assert!(
+        matches!(err, FailoverError::RateLimit { .. }),
+        "裸事件整载荷码探测: {err:?}"
+    );
+}
+
+#[test]
+fn stream_error_payload_unrecognized_falls_back_to_unknown() {
+    // 全无（无码/无收录 type/无 message）→ Unknown 携调用方现场描述。
+    let payload = serde_json::json!({"error": {"whatever": 1}});
+    let err = classify_stream_error_payload(&payload, "p", "m", "fb fallback".into());
+    match &err {
+        FailoverError::Unknown { message, .. } => assert_eq!(message, "fb fallback"),
+        other => panic!("全无探测命中应落 Unknown 兜底，实际 {other:?}"),
+    }
+    assert!(!err.is_retriable(), "Unknown 兜底不可重试（语义不变）");
 }

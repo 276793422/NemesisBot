@@ -1911,3 +1911,49 @@ mod cov_wf {
         );
     }
 }
+
+// ===========================================================================
+// BUG-20261116-024 回归锁：目录链接（symlink/junction）环不重复枚举
+// （BUG-20261110-059 同源家族横扫补漏——migrate/transfer/dossier/spill/
+// session_home/bulk 全带守卫，scan_recursive 是漏网）。
+// ===========================================================================
+
+/// 平台分叉建目录链接：Windows = junction（mklink /J 免管理员），
+/// unix = symlink。
+fn create_dir_link_for_test(
+    target: &std::path::Path,
+    link: &std::path::Path,
+) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!("mklink /J failed: {status}")));
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+}
+
+/// 目录链接环（loop → 自身所在目录）下 scan_workflow_files 只产出真实
+/// 文件条目，不沿链接环以 loop/loop/... 假路径重复枚举（修复前 = 每个
+/// 环层级把同一 yaml 重复列出直到 OS 路径上限收敛）。
+#[test]
+fn test_scan_workflow_files_dir_link_loop_no_duplicates() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("real.yaml"), "name: real").unwrap();
+    create_dir_link_for_test(&dir, &dir.join("loop")).expect("建目录链接");
+
+    let files = scan_workflow_files(&dir);
+    assert_eq!(files.len(), 1, "链接环不得产出重复条目，got: {files:?}");
+    assert_eq!(files[0].0, "real");
+}

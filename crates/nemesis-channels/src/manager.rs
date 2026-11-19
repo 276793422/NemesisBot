@@ -35,7 +35,21 @@ pub struct ManagerMetrics {
     pub dropped_internal: std::sync::atomic::AtomicU64,
     /// Messages that failed to send.
     pub send_errors: std::sync::atomic::AtomicU64,
+    /// Messages left in the queue when the shutdown flush hit its deadline
+    /// (BUG-20261119-209：诚实下界从 trace-only 日志升级为可编程面——
+    /// 余额在 runtime 硬砍前真实计数，消费方可查询/测试可断言)。
+    pub dropped_flush_deadline: std::sync::atomic::AtomicU64,
 }
+
+/// Shutdown flush 冲刷窗口（秒）。**契约：必须 < main.rs 的
+/// `shutdown_timeout(5s)`**（gateway 残余任务 shielding，真相源
+/// nemesisbot/src/main.rs）。BUG-20261119-209：旧值 10s 的实际可用窗口
+/// 由「teardown 尾巴（快机 ≈0s）+ 5s shielding」隐式拼出 ≈5-6s——
+/// deadline 分支不可达，runtime 硬砍时任务被 drop（不是再 poll），队列
+/// 余额无声蒸发且零痕迹，恰好复现本 flush 注释宣称消灭的「无声蒸发」。
+/// 4s 保证 deadline 分支在任何机器上都跑在硬砍之前，余额走
+/// `dropped_flush_deadline` 诚实计数（契约由测试钉死）。
+pub const SHUTDOWN_FLUSH_SECS: u64 = 4;
 
 /// Channel status information for reporting.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -164,7 +178,9 @@ impl ChannelManager {
     /// queued backlog (deadline 10s) before exiting, so replies of turns
     /// that completed during the shutdown drain are delivered instead of
     /// being dropped with the receiver; anything left after the deadline
-    /// is logged with an honest count (trace, not silence).
+    /// is logged with an honest count (trace, not silence). Messages
+    /// arriving after the flush ends are not chased (W4C invariant, pinned
+    /// by test) — the outbound bridge leaves a trace for each of them.
     async fn dispatch_loop(&self, mut rx: mpsc::Receiver<OutboundMessage>) {
         info!("[ChannelManager] outbound dispatcher started");
         loop {
@@ -177,8 +193,11 @@ impl ChannelManager {
                 // 成，最后一跳丢弃把 drain 的目的打折；且零痕迹违背
                 // 确立的「丢失必须留痕」不变量。现 bounded
                 // 冲刷：队列清空或截止先到为止，截止后余额 warn 计数（诚实下
-                // 界——此后新推入不追）。
-                const SHUTDOWN_FLUSH_SECS: u64 = 10;
+                // 界——此后新推入不追；出站桥对收摊后的迟到消息留痕，见
+                // web_init spawn_bus_outbound_bridge）。窗口常量 = 模块级
+                // SHUTDOWN_FLUSH_SECS（BUG-20261119-209 契约：<
+                // main.rs shutdown_timeout(5s)，保证 deadline 分支跑在
+                // runtime 硬砍之前）。
                 let deadline =
                     std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_FLUSH_SECS);
                 let mut flushed = 0usize;
@@ -202,11 +221,16 @@ impl ChannelManager {
                     }
                 }
                 // 截止后余额一次性清点（此后 bridge 等存活发送方的新推入不再追）。
+                // BUG-20261119-209：余额计数从 trace-only 升级为
+                // dropped_flush_deadline 计数器（日志 + metrics 双面）。
                 let mut dropped = 0usize;
                 while let Ok(_msg) = rx.try_recv() {
                     dropped += 1;
                 }
                 if dropped > 0 {
+                    self.metrics
+                        .dropped_flush_deadline
+                        .fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
                     warn!(
                         flushed,
                         dropped,
@@ -357,6 +381,17 @@ impl ChannelManager {
         Ok(())
     }
 
+    /// Returns whether any registered channel reports itself running.
+    ///
+    /// 可观测性查询（BUG-20261119-194 回归锁消费面）：gateway 装配纪律是
+    /// 「agent 订阅 bus inbound 之后才 start_all」——init_web 返回时刻
+    /// 必须没有任何通道在跑。只统计维护 running 旗标的通道（BaseChannel
+    /// 系；未维护者恒 false，与 `start_all` 的 037 守卫同口径）。
+    pub async fn any_channel_running(&self) -> bool {
+        let map = self.channels.read().await;
+        map.values().any(|ch| ch.is_running())
+    }
+
     /// Stops all registered channels.
     ///
     /// Iterates through all registered channels and calls `stop()` on each.
@@ -426,21 +461,67 @@ impl ChannelManager {
                 self.metrics
                     .dispatched
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // BUG-20261112-118：出站镜像集中触发（单一扇出点）。此前
+                // 依赖各通道 send() 末尾自行调 sync_outbound——但 Channel
+                // trait 的 add_sync_target 默认是 Ok(()) 存根（24 通道仅
+                // 6 个 override），setup_sync_targets 经 trait 调用在惰性
+                // 通道上无效：manager 层 sync_targets 表即使配好，通道级
+                // map 恒空 → send 侧无扩散 → sync_to 配置静默断线。现改
+                // 为 manager 在投递成功后按本表扇出，不依赖通道 override。
+                // 回环防护：镜像消息（sync_via 已盖章）不再二次扩散。
+                let mirrors: Vec<(String, Arc<dyn Channel>)> = if msg.meta.sync_via.is_none() {
+                    self.sync_targets
+                        .read()
+                        .await
+                        .get(&channel_name)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(|t| map.get(t).map(|c| (t.clone(), Arc::clone(c))))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                // send 按值收消息：仅在确有镜像义务时预拷贝 content
+                //（无 sync 配置的热路径零拷贝）。
+                let mirror_content = (!mirrors.is_empty()).then(|| msg.content.clone());
                 // 项 C：钩子接线时发消息副本、留原值投递后记账（send 按
                 // 值收消息）；未接线形态零拷贝零回调，与历史行为一致。
+                // send 走 panic 隔离包裹（见 base::send_panic_isolated）：
+                // 单任务串行派发环不容任一通道 future 的 panic 炸环。
                 let hook_wired = self.notify_hook.lock().is_some();
                 let result = if hook_wired {
-                    let r = ch.send(msg.clone()).await;
+                    let r = crate::base::send_panic_isolated(
+                        &channel_name,
+                        Arc::clone(ch),
+                        msg.clone(),
+                    )
+                    .await;
                     // 真实投递尝试完成，记账（成功 → 通道接受；失败 → 入
                     // 重试箱）。钩子内部 swallow 自身错误——记账故障不改
                     // 变投递语义。
                     self.fire_notify_hook(&msg, &r);
                     r
                 } else {
-                    ch.send(msg).await
+                    crate::base::send_panic_isolated(&channel_name, Arc::clone(ch), msg).await
                 };
                 match result {
-                    Ok(()) => Ok(()),
+                    Ok(()) => {
+                        if let Some(content) = mirror_content.as_deref() {
+                            for (target_name, target_ch) in mirrors {
+                                crate::base::send_sync_mirror(
+                                    &channel_name,
+                                    &target_name,
+                                    target_ch,
+                                    content,
+                                )
+                                .await;
+                            }
+                        }
+                        Ok(())
+                    }
                     Err(e) => {
                         error!(
                             "[ChannelManager] Failed to dispatch outbound message to {}: {}",

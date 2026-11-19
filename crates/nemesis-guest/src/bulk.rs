@@ -126,7 +126,13 @@ async fn gc_stale(transfers: &TransferMap) {
         .collect();
     for (id, file) in stale {
         map.remove(&id);
-        let _ = std::fs::remove_file(&file);
+        // BUG-20261118-172：remove_file_resilient 带 thread::sleep 退避
+        // （最坏 ~4.4s/件），不占 tokio worker——spawn_blocking 移出
+        // （fsutil.rs LOW-5 家族纪律）。
+        let _ = tokio::task::spawn_blocking(move || {
+            nemesis_utils::fsutil::remove_file_resilient(&file)
+        })
+        .await;
     }
 }
 
@@ -254,7 +260,13 @@ pub async fn bulk_write(
     }
     let (written, skipped_symlinks) = extract_tar_safe(&state.file, workspace)?;
     // 解包完成后临时 tar 才可删（先删后解 = 必然失败的顺序）。
-    let _ = std::fs::remove_file(&state.file);
+    // BUG-20261118-172：remove_file_resilient 带 thread::sleep 退避
+    // （最坏 ~4.4s），不占 tokio worker——spawn_blocking 移出。
+    let tar_path = state.file.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        nemesis_utils::fsutil::remove_file_resilient(&tar_path)
+    })
+    .await;
     Ok(serde_json::json!({
         "written": written,
         "skipped_symlinks": skipped_symlinks,
@@ -588,9 +600,18 @@ pub async fn bulk_read_chunk(
     .map_err(|e| format!("读块任务失败: {e}"))??;
 
     if is_final {
-        let mut map = transfers.lock().await;
-        if let Some(t) = map.remove(id) {
-            let _ = std::fs::remove_file(&t.file);
+        // BUG-20261118-172：remove_file_resilient 带 thread::sleep 退避
+        // （最坏 ~4.4s），不占 tokio worker——spawn_blocking 移出；
+        // map 锁不跨 await（先摘条目再删文件）。
+        let final_file = {
+            let mut map = transfers.lock().await;
+            map.remove(id).map(|t| t.file)
+        };
+        if let Some(f) = final_file {
+            let _ = tokio::task::spawn_blocking(move || {
+                nemesis_utils::fsutil::remove_file_resilient(&f)
+            })
+            .await;
         }
     }
     Ok(serde_json::json!({

@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 
-// U7 inbox visibility (G1): useInboxStatus — snapshot 刷新、保守降级、
-// 派生态（mode/queueEnabled/queuedTotal/queueFull）与轮询生命周期。
+// U7 inbox visibility (G1): useInboxStatus — snapshot 刷新、无快照兜底
+// steer（2026-11-03 契约反转：旧兜底 reject 是 busy 死锁根因）、派生态
+// （mode/queueEnabled/queuedTotal/queueFull）与轮询生命周期。
 
 const requestMock = vi.fn()
 vi.mock('../useWSAPI', () => ({
@@ -78,23 +79,25 @@ describe('useInboxStatus 快照与派生态', () => {
     wrapper.unmount()
   })
 
-  it('available:false → 保守按 reject 处理', async () => {
+  it('available:false → 兜底 steer 开放态（2026-11-03 契约反转）', async () => {
     requestMock.mockResolvedValue(steerStatus({ available: false, mode: 'reject' }))
     const { api, wrapper } = mountHost()
     await api.refresh()
-    expect(api.mode.value).toBe('reject')
-    expect(api.queueEnabled.value).toBe(false)
+    // 无快照（available=false）→ mode 兜底 steer（开放态，宁可放行让后端
+    // 裁决）——旧兜底 reject 是 busy 死锁根因（2026-11-03 BUG ①）。
+    expect(api.mode.value).toBe('steer')
+    expect(api.queueEnabled.value).toBe(true)
     expect(api.queuedTotal.value).toBe(0)
     wrapper.unmount()
   })
 
-  it('请求失败 → status 置 null（保守默认，不残留旧快照）', async () => {
+  it('请求失败 → status 置 null（不残留旧快照），mode 兜底 steer', async () => {
     requestMock.mockRejectedValueOnce('WS not initialized')
     const { api, wrapper } = mountHost()
     await api.refresh()
     expect(api.status.value).toBeNull()
-    expect(api.mode.value).toBe('reject')
-    expect(api.queueEnabled.value).toBe(false)
+    expect(api.mode.value).toBe('steer')
+    expect(api.queueEnabled.value).toBe(true)
     wrapper.unmount()
   })
 
@@ -138,7 +141,8 @@ describe('useInboxStatus 换目标清快照（2026-09-24 先判断再展示）',
     expect(api.queuedTotal.value).toBe(3)
     expect(api.queueEnabled.value).toBe(true)
 
-    // s2 的快照还在路上：切换瞬间 status 必须已清空（mode 兜底 reject）。
+    // s2 的快照还在路上：切换瞬间 status 必须已清空（旧会话的排队数清零、
+    // mode 落兜底 steer——开放态下新会话的排队数以到货快照为准）。
     let resolveNew!: (v: InboxStatusData) => void
     requestMock.mockImplementation(
       () => new Promise<InboxStatusData>(resolve => { resolveNew = resolve }),
@@ -146,7 +150,7 @@ describe('useInboxStatus 换目标清快照（2026-09-24 先判断再展示）',
     const pending = api.refresh('s2')
     expect(api.status.value).toBeNull()
     expect(api.queuedTotal.value).toBe(0)
-    expect(api.queueEnabled.value).toBe(false)
+    expect(api.mode.value).toBe('steer')
 
     resolveNew(steerStatus({ mode: 'queue', next_turn: 1 }))
     await pending

@@ -238,12 +238,17 @@ fn test_learning_config_serialization() {
         degrade_threshold: -0.3,
         degradation_cooldown_days: 14,
         llm_budget_tokens: 3000,
+        success_template_skill_threshold: 7,
+        error_recovery_suggest_min: 0.35,
     };
     let json = serde_json::to_string(&lc).unwrap();
     let back: LearningConfig = serde_json::from_str(&json).unwrap();
     assert!(back.enabled);
     assert_eq!(back.min_pattern_frequency, 10);
     assert!((back.high_conf_threshold - 0.9).abs() < 0.001);
+    // B2 决策表新键 round-trip（2026-11-14 缺陷整改批次）
+    assert_eq!(back.success_template_skill_threshold, 7);
+    assert!((back.error_recovery_suggest_min - 0.35).abs() < 0.001);
 }
 
 #[test]
@@ -302,4 +307,25 @@ fn test_s8_save_forge_config_root_path_has_no_parent() {
     // a directory. Deterministic Err on Windows and Unix, no side effect.
     let result = save_forge_config(std::path::Path::new("/"), &ForgeConfig::default());
     assert!(result.is_err());
+}
+
+/// BUG-20261114-022 回归锁：config.forge.json 是 RMW 活配置
+/// （replay_auto_ingest / judge 阈值 / optimize 预算）——直写撕裂 +
+/// load 解析失败静默回默认 + 再保存固化默认 = 用户 forge 调参永久丢失。
+/// save_forge_config 必须走 `write_file_atomic`，生产代码零直写。
+#[test]
+fn save_forge_config_routes_through_atomic_helper() {
+    let src: String = include_str!("../config.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        !src.contains("fs::write("),
+        "config.rs 生产代码出现直写 fs::write（BUG-20261114-022 回归）：\
+         forge 活配置必须走 write_file_atomic 原子落盘"
+    );
+    assert!(
+        src.contains("nemesis_utils::write_file_atomic("),
+        "save_forge_config 必须经 write_file_atomic 落盘（关键配置写入唯一权威 helper）"
+    );
 }

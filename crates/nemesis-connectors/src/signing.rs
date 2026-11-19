@@ -193,7 +193,7 @@ fn assess_signed_text(
 #[cfg(feature = "security")]
 pub fn workspace_trust_store(workspace: &Path) -> nemesis_security::signature::TrustStore {
     nemesis_security::signature::TrustStore::new(Some(
-        workspace.join("config").join("skill_trust.json"),
+        &nemesis_path::resolve_skill_trust_path_in_workspace(workspace),
     ))
 }
 

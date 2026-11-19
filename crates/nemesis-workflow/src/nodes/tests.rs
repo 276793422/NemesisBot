@@ -100,6 +100,149 @@ async fn test_parallel_node_executor_with_registry() {
     assert!(obj.contains_key("branch_1"));
 }
 
+/// BUG-20261113-169 回归锁：parallel 子分支任务必须在父 executor future 被
+/// 丢弃时随之 abort（JoinSet drop = abort），不得 detached 存活——scheduler
+/// 的 node timeout/cancel 正是靠丢弃 executor future 停节点（`timeout(dur,
+/// executor.execute(..))` / cancel select 两臂）；子分支若 detached 会带着
+/// 副作用跑完（timeout+retry 组合下重试再 spawn 同一节点 = 并发双跑）。
+#[tokio::test]
+async fn parallel_children_aborted_when_parent_future_dropped() {
+    struct SlowProbe(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl NodeExecutor for SlowProbe {
+        async fn execute(
+            &self,
+            _node: &NodeDef,
+            _context: &HashMap<String, serde_json::Value>,
+            _wf_ctx: &WorkflowContext,
+        ) -> Result<NodeResult, String> {
+            // 睡 1s 再 +1：父 future 50ms 被丢弃（模拟 scheduler timeout 臂
+            // 胜出）。修复前僵尸探针 detached 存活、1s 后 +1；修复后 JoinSet
+            // drop = abort，探针的 sleep 随父死而取消、永不 +1。
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(NodeResult {
+                node_id: "probe".to_string(),
+                output: serde_json::json!({}),
+                error: None,
+                state: ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            })
+        }
+    }
+
+    let probe_hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let registry = NodeExecutorRegistry::new_with_composite();
+    registry.register("slow_probe", Arc::new(SlowProbe(probe_hits.clone())));
+    let exec = registry.get("parallel").unwrap();
+
+    let mut config = HashMap::new();
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "p", "node_type": "slow_probe", "config": {} },
+        ]),
+    );
+    let node = make_node("n1", "parallel", config);
+
+    // 模拟 scheduler timeout：50ms 后丢弃 executor future（tokio::time::
+    // timeout 超时即 drop 内层 future，与 scheduler 的 timeout 臂同语义）。
+    let args = HashMap::new();
+    let wf_ctx = empty_wf_ctx();
+    let fut = exec.execute(&node, &args, &wf_ctx);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), fut)
+            .await
+            .is_err(),
+        "探针 50ms 内不该完成（timeout 丢弃父 future 正是修复面）"
+    );
+
+    // 修复前：僵尸探针 1s 后 +1（断言红）；修复后：abort，恒 0。
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(
+        probe_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "父 future 被丢弃后子分支必须被 abort，不得 detached 跑完副作用"
+    );
+}
+
+/// BUG-20261116-034 回归锁：script 节点裸 spawn 臂（无 registry / 无 world，
+/// IoT/minimal 裁剪构建的 CLI 裸引擎可达）必须 kill_on_drop——scheduler 的
+/// timeout / cancel 臂正是靠丢弃 executor future 停节点；无 kill_on_drop 时
+/// 脚本 shell 随 future 丢弃逃逸成孤儿，工作流已判死而 shell 后续的文件
+/// 副作用照常发生。断言面 = shell 内建重定向落盘的标记文件永不出现（写
+/// 动作由 shell 执行，shell 被杀 ⇒ 写不发生；不再查进程表，跨平台无 PID
+/// 竞态）。与 parallel_children_aborted_when_parent_future_dropped 同款
+/// 「drop = 收副作用」模式。阳性对照（同形态脚本跑完必须落盘）先于负断言
+/// ——防脚本机制坏掉时负断言空转变假绿（首轮实录：cmd /C 嵌套引号解析坏
+/// 脚本，负断言恒过）。
+#[tokio::test]
+async fn script_node_bare_spawn_killed_when_future_dropped() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 路径不带空格（tempfile 根通常无空格），Windows 侧裸路径免引号——
+    // cmd /C 的嵌套引号解析会吃掉内层引号致 type 失败（假绿根因）。
+    let control = tmp.path().join("control_marker.txt");
+    let marker = tmp.path().join("marker.txt");
+
+    // 标记写法用 shell 内建重定向（写动作活在 shell 进程里），不用 touch
+    // 等子进程——kill_on_drop 杀的是 shell 本体，子进程逃逸（Layer 1 跨进程
+    // 疑点，见 BUG_HUNT R1492 台账观察项）不在本测试断言面内。
+    #[cfg(windows)]
+    let shape = |path: &std::path::Path| {
+        format!("ping -n 2 127.0.0.1 >nul & type nul > {}", path.display())
+    };
+    #[cfg(not(windows))]
+    let shape = |path: &std::path::Path| format!("sleep 1 && echo x > {}", path.display());
+
+    let exec = ScriptNodeExecutor::new(); // 无 tools / 无 world = 裸 spawn 臂
+    let wf_ctx = empty_wf_ctx();
+    let args = HashMap::new();
+
+    // 阳性对照：同形态脚本（ping/sleep 1s + 重定向）不丢弃跑完 → 标记必须
+    // 落盘。对照不过 = 脚本机制坏，负断言无意义。
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!(shape(&control)));
+    #[cfg(windows)]
+    config.insert("language".to_string(), serde_json::json!("cmd"));
+    let node = make_node("n0", "script", config);
+    let result = exec
+        .execute(&node, &args, &wf_ctx)
+        .await
+        .expect("对照脚本必须执行成功");
+    assert_eq!(result.state, ExecutionState::Completed, "对照脚本执行失败");
+    assert!(
+        control.exists(),
+        "对照标记未落盘——脚本机制无效，后续负断言空转"
+    );
+
+    // 负断言：同形态脚本模拟 scheduler timeout 臂胜出，50ms 丢弃 executor
+    // future（脚本还睡在 ping/sleep 里）。
+    let mut config = HashMap::new();
+    config.insert("script".to_string(), serde_json::json!(shape(&marker)));
+    #[cfg(windows)]
+    config.insert("language".to_string(), serde_json::json!("cmd"));
+    let node = make_node("n1", "script", config);
+    let fut = exec.execute(&node, &args, &wf_ctx);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), fut)
+            .await
+            .is_err(),
+        "脚本 50ms 内不该完成（timeout 丢弃 future 正是修复面）"
+    );
+
+    // 修复前：shell 孤儿存活，ping/sleep 到点后重定向落盘，标记出现（断言红）；
+    // 修复后：kill_on_drop 杀 shell，标记永不出现。等待期覆盖脚本全长
+    // （Windows ping -n 2 ≈ 1s，Unix sleep 1s）再断言。
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    assert!(
+        !marker.exists(),
+        "future 被丢弃后脚本 shell 必须被收杀，不得孤儿存活落盘副作用"
+    );
+}
+
 #[tokio::test]
 async fn test_parallel_node_stub() {
     let exec = ParallelNodeStub;
@@ -608,6 +751,61 @@ fn test_resolve_template_missing_var() {
     let result = resolve_template("Hello {{name}}", &ctx);
     // Unresolved variables remain as-is
     assert_eq!(result, "Hello {{name}}");
+}
+
+/// BUG-20261114-028 回归锁：占位符替换必须是单遍扫描——上下文**值**里
+/// 内嵌的 `{{另一键}}` 不得被二次展开。旧实现按 HashMap 迭代序循环
+/// replace：键 a（值含 {{b}}）先于 b 迭代时 b 会被二次展开，后于 b 时
+/// 保留字面量——同输入两次构造 HashMap 输出不同（RandomState 每构造
+/// 随机）。本测 128 次独立构造（每次新 RandomState = 迭代序独立掷币）
+/// 钉死确定性契约：全部输出一致且等于「字面量保留」形态。旧实现下
+/// 全同概率 ≈ 2^-128，必红。
+#[test]
+fn resolve_template_is_single_pass_values_never_reexpanded() {
+    for _ in 0..128 {
+        let ctx = HashMap::from([
+            ("a".to_string(), serde_json::json!("see {{b}}")),
+            ("b".to_string(), serde_json::json!("http://x")),
+        ]);
+        let out = resolve_template("{{a}}", &ctx);
+        assert_eq!(
+            out, "see {{b}}",
+            "context value's embedded placeholder must stay literal"
+        );
+    }
+}
+
+/// 修复后语义钉：多占位符一次全解 / 非字符串值 JSON 形态 / 缺失键保留 /
+/// 无闭合保留 / 带空格键不 trim（exact-match 契约——placeholder_refs 的
+/// trim 只服务可证伪性首段提取，替换语义从不含糊）。
+#[test]
+fn resolve_template_single_pass_semantics_pins() {
+    let ctx = HashMap::from([
+        ("name".to_string(), serde_json::json!("World")),
+        ("count".to_string(), serde_json::json!(42)),
+        ("obj".to_string(), serde_json::json!({"k": 1})),
+    ]);
+    assert_eq!(
+        resolve_template("Hello {{name}}, count={{count}}, obj={{obj}}", &ctx),
+        "Hello World, count=42, obj={\"k\":1}"
+    );
+    assert_eq!(resolve_template("{{nope}}", &ctx), "{{nope}}");
+    assert_eq!(resolve_template("{{unclosed", &ctx), "{{unclosed");
+    assert_eq!(resolve_template("{{ name }}", &ctx), "{{ name }}");
+}
+
+/// 两处实现同源（llm 条件面 / script 面委托）：同输入同输出。
+#[test]
+fn resolve_prompt_template_matches_resolve_template() {
+    let ctx = HashMap::from([
+        ("a".to_string(), serde_json::json!("x {{b}} y")),
+        ("b".to_string(), serde_json::json!("z")),
+    ]);
+    assert_eq!(
+        resolve_prompt_template("{{a}}", &ctx),
+        resolve_template("{{a}}", &ctx),
+    );
+    assert_eq!(resolve_prompt_template("{{a}}", &ctx), "x {{b}} y");
 }
 
 #[test]
@@ -1702,6 +1900,40 @@ async fn test_script_node_with_context_variables() {
     let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
     assert!(result.output["stdout"].as_str().unwrap().contains("World"));
+}
+
+/// BUG-20261114-028 功能级回归锁（真 spawn 链路）：上下文**值**内嵌
+/// `{{x}}` 时，被执行脚本看到的必须是字面量——值是数据不是模板，永不
+/// 二次展开。旧实现按 HashMap 迭代序循环 replace，同输入可能把 `{{x}}`
+/// 展开成 `bare`（若 x 键后迭代），被执行脚本内容随进程随机漂移。
+#[tokio::test]
+async fn test_script_node_context_value_placeholders_stay_literal() {
+    let exec = ScriptNodeExecutor::new();
+    let mut config = HashMap::new();
+    // 脚本把 a 的值原样回显（printf %s 避免 shell 对花括号做任何解释）。
+    config.insert(
+        "script".to_string(),
+        serde_json::json!("printf '%s' \"{{a}}\""),
+    );
+    config.insert("language".to_string(), serde_json::json!("bash"));
+    let node = make_node("n1", "script", config);
+
+    let ctx = HashMap::from([
+        ("a".to_string(), serde_json::json!("value {{x}} tail")),
+        ("x".to_string(), serde_json::json!("bare")),
+    ]);
+
+    let result = exec.execute(&node, &ctx, &empty_wf_ctx()).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let stdout = result.output["stdout"].as_str().unwrap();
+    assert!(
+        stdout.contains("value {{x}} tail"),
+        "script must see the literal placeholder, got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("bare"),
+        "context value's embedded placeholder must NOT be expanded, got: {stdout:?}"
+    );
 }
 
 #[tokio::test]
@@ -5567,6 +5799,62 @@ fn bug_105_numeric_string_context_compare() {
     assert!(!evaluate_condition("n > 7", &ctx));
 }
 
+/// BUG-20261119-195 回归锁：模板替换值内的运算符字符不得劫持条件切分。
+/// 修复前 `{{msg}} >= 5` 遇 msg="3>=1" → resolved="3>=1 >= 5"，`>=`
+/// 切在数据内位置 1 → left="3" right="1 >= 5" 字典序 → true；裸名形态
+/// `msg >= 5` 同数据走 context 查询得 "3>=1" 字典序 → false——两种文档
+/// 形态给相反路由。修后切分跳过数据值区间，模板形与裸名形同结论。
+#[test]
+fn bug_195_template_value_operator_not_split() {
+    let mut ctx = HashMap::new();
+    ctx.insert("msg".to_string(), serde_json::json!("3>=1"));
+
+    // 模板形：整个 "3>=1" 作左操作数，字典序 "3>=1" < "5" → false
+    //（修复前 true）。
+    assert!(!evaluate_condition("{{msg}} >= 5", &ctx));
+    // 裸名形（既有行为锚，两形一致性钉死）。
+    assert!(!evaluate_condition("msg >= 5", &ctx));
+    // 数据值含 `==` 同族劫持面。
+    ctx.insert("eq".to_string(), serde_json::json!("x==y"));
+    assert!(!evaluate_condition("{{eq}} == 5", &ctx));
+    // 数据干净时模板形照常数值比较（既有行为回归面）。
+    ctx.insert("count".to_string(), serde_json::json!("10"));
+    assert!(evaluate_condition("{{count}} >= 5", &ctx));
+    // 邻接无空格形态（切点落在数据区间终点上，边界外合法）。
+    ctx.insert("n".to_string(), serde_json::json!("3"));
+    assert!(evaluate_condition("{{n}}>=2", &ctx));
+}
+
+/// BUG-20261119-195 引号臂：引号字面量内的运算符不是切点（与
+/// resolve_operand 首尾配对剥引号同口径）。修复前 `{{x}} == "a>=b"`
+/// 遇 x="a>=b"：`>=` 先命中数据内位置 1（split_once 取第一个出现）→
+/// 切分错位 → false；修后数据区间与引号段双双跳过，切在真正的 `==`
+/// → 引号剥离后两侧相等 → true。
+#[test]
+fn bug_195_quoted_operand_operator() {
+    let mut ctx = HashMap::new();
+    ctx.insert("x".to_string(), serde_json::json!("a>=b"));
+    // 修复前 false（数据内 >= 劫持切分），修后 true。
+    assert!(evaluate_condition("{{x}} == \"a>=b\"", &ctx));
+    // 纯字面量引号臂（无占位符）：引号内运算符不参与切分。
+    assert!(evaluate_condition("'a>b' == 'a>b'", &ctx));
+    assert!(!evaluate_condition("'a>b' == 'b>a'", &ctx));
+}
+
+/// BUG-20261119-195 整占位符形态锚：`{{expr}}`（值本身是表达式文本）
+/// 的运算符在数据区间内被跳过 → 无切点 → Step 4 truthy（非空即真）。
+/// 「数据不参与运算符语法」的定向推论：整值占位符按 truthy 处理，
+/// 不被二次解析成表达式（与劫持形态同一根因的另一半）。
+#[test]
+fn bug_195_whole_placeholder_truthy_fallback() {
+    let mut ctx = HashMap::new();
+    ctx.insert("expr".to_string(), serde_json::json!("count > 5"));
+    assert!(evaluate_condition("{{expr}}", &ctx));
+    // 空串数据仍 false（truthy 空值臂）。
+    ctx.insert("empty".to_string(), serde_json::json!(""));
+    assert!(!evaluate_condition("{{empty}}", &ctx));
+}
+
 #[test]
 fn w4a_resolve_operand_literal_kinds() {
     let mut ctx = HashMap::new();
@@ -6141,10 +6429,13 @@ async fn test_parallel_completed_child_still_succeeds() {
 static HTTP_SSRF_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// RAII：测试结束（含 panic）把闸槽清回 None，不污染同进程后续用例。
+/// （仅 security 构造——唯一构造点是两个 `#[cfg(feature = "security")]`
+/// SSRF 用例；本体不门控时 security 关裁剪组合下 dead_code 红。）
+#[cfg(feature = "security")]
 struct SsrfSlotReset;
+#[cfg(feature = "security")]
 impl Drop for SsrfSlotReset {
     fn drop(&mut self) {
-        #[cfg(feature = "security")]
         super::set_http_ssrf_guard(None);
     }
 }
@@ -6486,4 +6777,167 @@ async fn bug352_http_node_redirect_keeps_auth_same_origin() {
         h2.contains("authorization: bearer secret-cred"),
         "hop2（同源）必须保留 Authorization: {h2}"
     );
+}
+
+/// 红证（BUG-20261116-013）：跨源 302 携带**自定义**凭据头（x-api-key——
+/// 014 防线认定的凭据载体类，不在 authorization/cookie/proxy-authorization
+/// 三头名单内）→ 旧代码三头固定名单拦不住，header 原样流向重定向目标主机。
+/// 修复 = 跨源跳剥**全部**请求头（作者配置头整体视为潜在凭据材料；
+/// 同源跳语义不变）。断言：hop1 带 X-Api-Key，hop2（跨端口）不带任何
+/// 作者配置头。
+#[tokio::test]
+async fn bug20261116013_http_node_custom_credential_header_stripped_cross_origin() {
+    let _serial = HTTP_SSRF_TEST_LOCK.lock().await;
+    let (p2, heads2) = bug352_sequenced_mock_heads(vec![bug324_ok_body("final")]);
+    let (p1, heads1) = bug352_sequenced_mock_heads(vec![format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/b\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        p2
+    )]);
+    let exec = HTTPNodeExecutor;
+    let config = HashMap::from([
+        (
+            "url".to_string(),
+            serde_json::json!(format!("http://127.0.0.1:{}/a", p1)),
+        ),
+        ("method".to_string(), serde_json::json!("GET")),
+        (
+            "headers".to_string(),
+            serde_json::json!({"X-Api-Key": "custom-secret-key"}),
+        ),
+    ]);
+    let node = make_node("r13a", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    let h1 = heads1.lock()[0].to_lowercase();
+    assert!(
+        h1.contains("x-api-key: custom-secret-key"),
+        "hop1 必须携带作者配置的 X-Api-Key: {h1}"
+    );
+    let h2 = heads2.lock()[0].to_lowercase();
+    assert!(
+        !h2.contains("x-api-key"),
+        "hop2（跨源）必须剥掉自定义凭据头 X-Api-Key: {h2}"
+    );
+}
+
+// ── BUG-20261117-062：`!` 前缀迭代化（旧自递归 `!×N` 每层一帧无深度帽，
+// 模板解析后的数据值可携带上万 `!` → 栈溢出 abort 全进程；现剥前缀计数 +
+// 按奇偶取反，核心只求值一次，语义与旧递归逐字节一致）──
+
+#[test]
+fn test_negation_prefix_parity() {
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    assert!(evaluate_condition("true", &ctx));
+    assert!(!evaluate_condition("!true", &ctx));
+    assert!(evaluate_condition("!!true", &ctx));
+    assert!(!evaluate_condition("!!!true", &ctx));
+    // 旧递归形态空串锚点：剥空 → false（再按奇偶取反）。
+    assert!(evaluate_condition("!", &ctx));
+    assert!(!evaluate_condition("!!", &ctx));
+}
+
+#[test]
+fn test_negation_prefix_interleaved_whitespace() {
+    let ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    assert!(!evaluate_condition("!  true", &ctx));
+    assert!(evaluate_condition("!  !  true", &ctx));
+}
+
+#[test]
+fn test_negation_prefix_mass_chain_no_crash() {
+    // 数据面实锤形态：节点输出值携带 5 万零一个 `!` 经 {{x}} 模板解析进
+    // 条件——修复前 5 万帧自递归 = 栈溢出 abort 全进程；修复后迭代零递归。
+    let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
+    ctx.insert(
+        "x".to_string(),
+        serde_json::json!(format!("{}true", "!".repeat(50_001))),
+    );
+    // 50_001 层取反（奇）→ !true = false。
+    assert!(!evaluate_condition("{{x}}", &ctx));
+}
+
+#[tokio::test]
+async fn test_http_node_body_read_timeout_stalled_server() {
+    // BUG-20261119-184 回归锁：响应头已回、body 永不发送——body 读取必须
+    // 受 timeout_secs 约束（修复前 chunk loop 无时间界，慢滴服务器一秒滴
+    // 一字即无限拖住节点；send 的 tokio timeout 只盖到响应头阶段）。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local server");
+    let addr = listener.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            use std::io::{Read as _, Write as _};
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req); // 先读请求（免 RST，plugin 同款模式）
+            std::thread::sleep(std::time::Duration::from_millis(50)); // 请求尾送达后再响应（防 hyper UnexpectedMessage 竞态）
+            let _ = sock
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n");
+            // 不发 body、不关连接：chunk() 只能等超时。
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    });
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://{addr}/")),
+    );
+    config.insert("timeout_secs".to_string(), serde_json::json!(1));
+    let node = make_node("n1", "http", config);
+    let start = std::time::Instant::now();
+    let result = exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await;
+    let elapsed = start.elapsed();
+    match result {
+        Err(e) => assert!(
+            e.contains("body read timed out"),
+            "expected body-read timeout error, got: {e}"
+        ),
+        Ok(r) => panic!(
+            "stalled body must time out, got state={:?} output={:?}",
+            r.state, r.output
+        ),
+    }
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "timeout must fire near the 1s budget, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_http_node_body_read_healthy_path() {
+    // 阳性对照：完整响应体正常送达——超时包裹不改变健康路径行为。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind local server");
+    let addr = listener.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            use std::io::{Read as _, Write as _};
+            let mut req = [0u8; 4096];
+            let _ = sock.read(&mut req); // 先读请求：收队列有未读数据即关闭会 RST 并丢弃响应（plugin 同款模式）
+            std::thread::sleep(std::time::Duration::from_millis(50)); // 请求尾送达后再响应（防 hyper UnexpectedMessage 竞态）
+            let body = b"hello workflow";
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes());
+            let _ = sock.write_all(body);
+        }
+    });
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://{addr}/")),
+    );
+    config.insert("timeout_secs".to_string(), serde_json::json!(5));
+    let node = make_node("n1", "http", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .expect("healthy path must not error at engine level");
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["body"].as_str(), Some("hello workflow"));
+    assert_eq!(result.output["truncated"].as_bool(), Some(false));
 }

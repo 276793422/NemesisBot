@@ -81,6 +81,11 @@ pub fn agent_message_to_provider(
 pub struct ProviderAdapter {
     inner: Arc<dyn nemesis_providers::router::LLMProvider>,
     default_model: String,
+    /// 降级注记槽（fallback 用户面标注）：chat / fallback_non_stream 每次
+    /// Ok 都重写（last-call 覆盖，None=清）；trait 取件口
+    /// [`LlmProvider::take_response_degradation`] 取件即清。盖章源 =
+    /// FallbackProvider 备选级应答（extra `_served_by_fallback`）。
+    degradation_slot: parking_lot::Mutex<Option<String>>,
 }
 
 impl ProviderAdapter {
@@ -91,8 +96,20 @@ impl ProviderAdapter {
         Self {
             inner,
             default_model,
+            degradation_slot: parking_lot::Mutex::new(None),
         }
     }
+}
+
+/// FallbackProvider 降级事实章取件：extra 内部键（盖章见 nemesis-providers
+/// fallback_provider chat Ok 臂）取件即移除——extra 不携带内部键下行
+/// （raw 日志 / 序列化面干净）。
+const FALLBACK_STAMP_KEY: &str = "_served_by_fallback";
+
+fn take_fallback_stamp(resp: &mut nemesis_providers::types::LLMResponse) -> Option<String> {
+    resp.extra
+        .remove(FALLBACK_STAMP_KEY)
+        .and_then(|v| v.as_str().map(str::to_string))
 }
 
 /// FailoverError → loop 层 String 的单一映射源（chat /
@@ -208,6 +225,11 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         self.inner.name()
     }
 
+    /// 降级注记取件（fallback 用户面标注链路）：槽取件即清。
+    fn take_response_degradation(&self) -> Option<String> {
+        self.degradation_slot.lock().take()
+    }
+
     async fn chat(
         &self,
         model: &str,
@@ -239,7 +261,12 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             )
             .await
         {
-            Ok(resp) => Ok(provider_response_to_agent(resp)),
+            Ok(mut resp) => {
+                // 降级事实入槽（last-call 覆盖）：备选级应答时 FallbackProvider
+                // 盖章，这里取件（章随取件从 extra 移除）再转 agent 形态。
+                *self.degradation_slot.lock() = take_fallback_stamp(&mut resp);
+                Ok(provider_response_to_agent(resp))
+            }
             Err(e) => {
                 warn!("[LlmBridge] LLM provider error: {}", e);
                 Err(map_provider_error(&e))
@@ -395,6 +422,19 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             match rx.recv().await {
                 Some(Ok(next)) => chunk = Some(next),
                 Some(Err(e)) => {
+                    // 终态唯一性契约（BUG-20261120-003，与
+                    // collect_stream_response Err 臂同款）：finish_reason 已
+                    // 聚合后再到的 Err 是终态后传输噪音（http lane SSE 读
+                    // 错误/deadline 臂在 finish_emitted 后仍可发射）——wire
+                    // 语义下响应已完成，改写 StreamInterrupted 会触发拼接
+                    // 续写把完整回复当半截去续写。break 走正常收尾（Ok）。
+                    if finish_reason.is_some() {
+                        tracing::debug!(
+                            "[LlmBridge] ignoring post-terminal stream error — finish_reason already aggregated: {}",
+                            e
+                        );
+                        break;
+                    }
                     // 契约对齐（stream_util::collect_stream_response Err 臂
                     // 同款语义）：流中断但已聚合非空部分内容/工具调用 → 包装
                     // StreamInterrupted（partial 随错误 Display 携带不丢——
@@ -406,6 +446,25 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                     // partial 丢弃—— agent-bench stream_break 终局臂实证
                     if content.trim().is_empty() && last_tool_calls.is_empty() {
                         warn!("[LlmBridge] LLM stream error: {}", e);
+                        return Err(map_provider_error(&e));
+                    }
+                    // LLM-ERR-B（2026-11-17 治本批，与 collect_stream_response
+                    // 同款透传）：确定性应用层错误（限流/认证/计费）是上游对
+                    // 本次请求的明确拒绝——partial 是被拒请求的半成品不是可续
+                    // 写成果，**透传不包 StreamInterrupted**。包装会把分类拍扁
+                    // 进 reason 文本（Display 前缀短路恒判 Timeout → 限流信号
+                    // 被当传输抖动零退避立即重试，429 风暴）且触发拼接续写
+                    // 把半截文本缝进重试后的完整回复（缝合怪终答，基线实测）。
+                    if matches!(
+                        e,
+                        nemesis_providers::failover::FailoverError::RateLimit { .. }
+                            | nemesis_providers::failover::FailoverError::Auth { .. }
+                            | nemesis_providers::failover::FailoverError::Billing { .. }
+                    ) {
+                        warn!(
+                            "[LlmBridge] LLM stream definitive error, passing through: {}",
+                            e
+                        );
                         return Err(map_provider_error(&e));
                     }
                     let chars = content.chars().count();
@@ -506,7 +565,11 @@ impl ProviderAdapter {
             )
             .await
         {
-            Ok(resp) => {
+            Ok(mut resp) => {
+                // 与 chat() 同款降级事实入槽（last-call 覆盖）——流式 lane
+                // 的非流式回落也过这里（FallbackProvider 无流式 lane →
+                // 首块即 not implemented → 本路径全链轮转）。
+                *self.degradation_slot.lock() = take_fallback_stamp(&mut resp);
                 let mapped = provider_response_to_agent(resp);
                 if !mapped.content.is_empty() {
                     on_delta(mapped.content.clone());
@@ -645,3 +708,6 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
         .await
     }
 }
+
+#[cfg(test)]
+mod llm_bridge_tests;

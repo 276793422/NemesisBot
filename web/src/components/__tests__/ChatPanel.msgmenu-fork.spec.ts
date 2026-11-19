@@ -42,6 +42,7 @@ vi.mock('../../composables/useWebSocket', async () => {
 })
 
 import ChatPanel from '../ChatPanel.vue'
+import ContextMenu from '../ContextMenu.vue'
 import { sendHistoryRequest } from '../../composables/useWebSocket'
 import { useSessionStore } from '../../stores/session'
 import { useToast } from '../../composables/useToast'
@@ -94,10 +95,12 @@ async function openMsgMenu(w: any, role: 'user' | 'assistant'): Promise<string[]
   )
 }
 
-async function mountWithHistory(messages: any[]) {
+async function mountWithHistory(messages: any[], attach = false) {
   prepareSessions()
   installContextMenu()
-  const w = mount(ChatPanel)
+  // attach：右键贡献项用例要挂在真文档上——脱离文档树的事件不冒泡到
+  // window，全局 contextmenu listener 收不到。
+  const w = mount(ChatPanel, attach ? { attachTo: document.body } : {})
   await flushPromises()
   feedHistory(lastHistoryRequestId(), messages)
   await flushPromises()
@@ -239,6 +242,150 @@ describe('ChatPanel「⋯」消息菜单与会话分叉入口', () => {
     ])
     await flushPromises()
     expect(w.findAll('.msg-menu-trigger')).toHaveLength(0)
+    w.unmount()
+  })
+})
+
+// 2026-11-13 右键菜单贡献项：文件链接（linkify a.file-link）右键追加
+// 「复制路径 / 打开所在目录」（底部两项）。ChatPanel 贡献函数带会话上下
+// 文（effectiveSid）与本面板消息区 containment——集成面在此钉住。
+describe('ChatPanel 文件链接右键贡献项', () => {
+  it('右键 .file-link → 菜单四项（两项贡献项在底部）；点「打开所在目录」→ fs.reveal 带 session_id', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+
+    const link = w.find('a.file-link')
+    expect(link.exists(), '文件路径应被 linkify 成链接').toBe(true)
+
+    link.element.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    const texts = Array.from(document.querySelectorAll('.ctx-item')).map((b) =>
+      (b.textContent ?? '').trim(),
+    )
+    expect(texts).toEqual(['复制', '全选', '复制路径', '打开所在目录'])
+
+    const open = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('打开所在目录'),
+    ) as HTMLElement
+    open.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('fs', 'reveal', {
+      path: 'C:/ws/reports/a.md',
+      session_id: 's1',
+    })
+    cm.unmount()
+    w.unmount()
+  })
+
+  it('右键非链接消息区 → 仅默认两项（贡献函数空数组不出项）', async () => {
+    const w = await mountWithHistory([{ role: 'assistant', content: '普通回复，没有路径' }], true)
+    const cm = mount(ContextMenu, { attachTo: document.body })
+
+    const bubble = w.find('.message-content')
+    expect(bubble.exists()).toBe(true)
+    bubble.element.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    const texts = Array.from(document.querySelectorAll('.ctx-item')).map((b) =>
+      (b.textContent ?? '').trim(),
+    )
+    expect(texts).toEqual(['复制', '全选'])
+    cm.unmount()
+    w.unmount()
+  })
+
+  // 2026-11-14 复制路径解析化（B3）：复制的是 fs.resolve 解析后的绝对
+  // 路径（与打开/定位同一解析阶梯），不是 data-path 原文。
+  it('点「复制路径」→ fs.resolve 带 session_id + 剪贴板收解析后绝对路径', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    requestMock.mockResolvedValue({ path: 'C:/resolved/reports/a.md', kind: 'file', exists: true })
+
+    const link = w.find('a.file-link')
+    link.element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    const copy = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('复制路径'),
+    ) as HTMLElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('fs', 'resolve', {
+      path: 'C:/ws/reports/a.md',
+      session_id: 's1',
+    })
+    expect(writeText).toHaveBeenCalledWith('C:/resolved/reports/a.md')
+    cm.unmount()
+    w.unmount()
+  })
+
+  it('exists=false（祖先回退）→ 复制所在目录路径 + warn 注记', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    requestMock.mockResolvedValue({ path: 'C:/resolved', kind: 'dir', exists: false })
+
+    const link = w.find('a.file-link')
+    link.element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    const copy = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('复制路径'),
+    ) as HTMLElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledWith('C:/resolved')
+    const toasts = useToast().toasts
+    const last = toasts[toasts.length - 1]
+    expect(last.type, JSON.stringify(toasts)).toBe('warn')
+    expect(last.message).toContain('C:/resolved')
+    cm.unmount()
+    w.unmount()
+  })
+
+  // B4：LAN HTTP 部署 navigator.clipboard 缺席/被拒 → execCommand 隐藏
+  // textarea 回退通路（jsdom 无 execCommand 实现即抛错 → 诚实「复制失败」，
+  // 不炸不假成功）。
+  it('clipboard 缺席 → 回退通路失败面诚实报错（不再恒败无提示）', async () => {
+    const w = await mountWithHistory(
+      [{ role: 'assistant', content: '报告已生成：C:/ws/reports/a.md 请查收' }],
+      true,
+    )
+    const cm = mount(ContextMenu, { attachTo: document.body })
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    requestMock.mockResolvedValue({ path: 'C:/resolved/reports/a.md', kind: 'file', exists: true })
+
+    const link = w.find('a.file-link')
+    link.element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))
+    await flushPromises()
+    const copy = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('复制路径'),
+    ) as HTMLElement
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    const toasts = useToast().toasts
+    const last = toasts[toasts.length - 1]
+    expect(last.type, JSON.stringify(toasts)).toBe('error')
+    cm.unmount()
     w.unmount()
   })
 })

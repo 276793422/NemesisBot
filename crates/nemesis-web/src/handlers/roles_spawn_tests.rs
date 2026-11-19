@@ -43,13 +43,17 @@ impl nemesis_agent::r#loop::LlmProvider for NoopProvider {
     }
 }
 
-fn make_ctx(
+/// 测试态 AppState + RequestContext（pub(crate)：experts handler 测试
+/// 复用同一份字面量——AppState 全字段散布复制是既有测试形态，能共享就
+/// 不再造第三份）。
+pub(crate) fn make_ctx(
     dir: &tempfile::TempDir,
     agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
 ) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -72,6 +76,7 @@ fn make_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(agent_loop)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -87,6 +92,7 @@ fn make_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -114,7 +120,7 @@ fn role_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
 }
 
 /// SpawnFn 实参捕获记录：(agent_id, task, model, channel, chat_id,
-/// tools_profile, depth, background, role, parent_session_key)。
+/// tools_profile, depth, background, role, parent_session_key, expert)。
 type CapturedSpawn = Arc<
     parking_lot::Mutex<
         Vec<(
@@ -126,6 +132,7 @@ type CapturedSpawn = Arc<
             String,
             usize,
             bool,
+            String,
             String,
             String,
         )>,
@@ -146,7 +153,9 @@ fn recording_spawn(
               depth: usize,
               background: bool,
               role: &str,
-              _psk: &str|
+              _psk: &str,
+              _expert: &str,
+              _prompt: &str|
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'static>,
         > {
@@ -161,6 +170,7 @@ fn recording_spawn(
             let tools_profile = tools_profile.to_string();
             let role = role.to_string();
             let _psk = _psk.to_string();
+            let _expert = _expert.to_string();
             Box::pin(async move {
                 captured.lock().push((
                     agent_id,
@@ -173,6 +183,7 @@ fn recording_spawn(
                     background,
                     role,
                     _psk,
+                    _expert,
                 ));
                 Ok(reply.to_string())
             })
@@ -372,8 +383,19 @@ async fn spawn_happy_path_invokes_slot_fn_with_client_identity() {
 
     let calls = captured.lock();
     assert_eq!(calls.len(), 1);
-    let (agent_id, task, model, channel, chat_id, tools_profile, depth, background, role, _psk) =
-        &calls[0];
+    let (
+        agent_id,
+        task,
+        model,
+        channel,
+        chat_id,
+        tools_profile,
+        depth,
+        background,
+        role,
+        _psk,
+        _expert,
+    ) = &calls[0];
     assert_eq!(agent_id, "client");
     assert_eq!(task, "跑一遍单元测试");
     assert_eq!(model, "", "model 空 = detached 沿用主模型");

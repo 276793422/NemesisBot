@@ -128,3 +128,46 @@ async fn w4a_default_matches_new() {
     store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
     assert_eq!(store.latest("e").await.unwrap().unwrap().id, "cp1");
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-157 回归锁：saved_at 等值（同毫秒连续 save）时 tie-break 语义。
+// 旧实现 binary_search_by 等值分支插在等值区间前面，latest()（取 last）
+// 在同时间戳批次里返回最早保存的。修复后 partition_point 恒插区间末尾
+// =「同时间戳后保存者视为更新」。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_latest_tie_breaks_to_last_saved() {
+    let store = InMemoryCheckpointStore::new();
+    let cp1 = make_checkpoint("e", "cp1", 0);
+    let mut cp2 = make_checkpoint("e", "cp2", 0);
+    // 显式钉同一 saved_at（now() 两次调用纳秒不同，不钉死测不出等值分支）。
+    cp2.saved_at = cp1.saved_at;
+    store.save(cp1).await.unwrap();
+    store.save(cp2).await.unwrap();
+
+    let latest = store.latest("e").await.unwrap().unwrap();
+    assert_eq!(
+        latest.id, "cp2",
+        "同 saved_at 批次里最后保存的应在尾部（latest=last 语义）"
+    );
+    // list 顺序同源（有序 vec）：等值批次内保持保存序，末位=最后保存。
+    let metas = store.list("e").await.unwrap();
+    assert_eq!(metas.last().unwrap().id, "cp2");
+    assert_eq!(metas[0].saved_at, metas[1].saved_at);
+}
+
+#[tokio::test]
+async fn test_latest_tie_batch_then_newer_ts_wins() {
+    let store = InMemoryCheckpointStore::new();
+    let a = make_checkpoint("e", "a", 0);
+    let mut b = make_checkpoint("e", "b", 0);
+    b.saved_at = a.saved_at;
+    store.save(a).await.unwrap();
+    store.save(b).await.unwrap();
+    // 新时间戳的仍照常胜出（等值修复不破坏主序）。
+    store.save(make_checkpoint("e", "c", 10)).await.unwrap();
+
+    let latest = store.latest("e").await.unwrap().unwrap();
+    assert_eq!(latest.id, "c");
+}

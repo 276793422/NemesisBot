@@ -371,6 +371,21 @@ async fn dispatch_hidden_name_refused() {
     assert!(res.contains("hidden by configuration"), "{res}");
 }
 
+// BUG-20261118-095 自闸：tools_schema_get 自身名被 hidden_tools 隐藏时
+// 拒绝（拦截臂先于通用 hidden 闸——无自闸则「供给面隐藏 + dispatch 面
+// 放行」双闸矛盾对 meta 名成立）。
+#[tokio::test]
+async fn dispatch_tools_schema_get_self_hidden_refused() {
+    let al = l10_loop();
+    *al.tier.write() = nemesis_types::capability::ModelTier::Normal;
+    with_config(&al, Some(true), &["tools_schema_get"]);
+    let res = fetch(&al, "read_file").await;
+    assert!(
+        res.contains("Tool 'tools_schema_get' is hidden by configuration"),
+        "{res}"
+    );
+}
+
 // tier 可见性镜像 build_tool_defs 同一判定：白名单外（mini 档的 multiedit）
 // 与 min_tier 秩不足（normal 档的 big_only）都不可取；秩足（big 档的
 // big_only）可取。

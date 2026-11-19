@@ -328,8 +328,9 @@ onMounted(async () => {
 <template>
   <div class="page-security-approval">
     <SecurityLayerHeader
+      num="⑫"
       title="人工审批"
-      duty="附加机制（不在八层编号内）：高危操作规则层放行后再过人工审批卡（Dashboard 模态 / IM 通道回源文本卡）；「总是允许」可把规则记入下方记忆表免重复确认。"
+      duty="第⑫道闸 人工审批：高危操作规则层放行后再过人工审批卡（Dashboard 模态 / IM 通道回源文本卡）；「总是允许」可把规则记入下方记忆表免重复确认。"
       status-label="运行态"
       status-tone="na"
     />

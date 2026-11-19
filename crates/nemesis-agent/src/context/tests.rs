@@ -45,6 +45,7 @@ fn format_rpc_message() {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     };
     assert_eq!(rpc_no_cid.format_rpc_message("Hello"), "Hello");
 }
@@ -77,6 +78,33 @@ fn context_builder_with_identity_file() {
     assert!(prompt.contains("I am a helpful assistant."));
     assert!(prompt.contains("USER.md"));
     assert!(prompt.contains("User prefers English."));
+}
+
+/// BUG-20261119-179：人格/引导文件带前导 UTF-8 BOM（记事本保存形态）
+/// 时，BOM 不得进 system prompt——装配读取走 read_config_string 剥 BOM。
+#[test]
+fn context_builder_bom_files_clean_in_system_prompt() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("IDENTITY.md"),
+        "\u{feff}I am a helpful assistant.",
+    )
+    .unwrap();
+
+    // 常规模式。
+    let builder = ContextBuilder::new(tmp.path());
+    let prompt = builder.build_system_prompt(false);
+    assert!(prompt.contains("I am a helpful assistant."));
+    assert!(
+        !prompt.contains('\u{feff}'),
+        "zero-width BOM must not leak into system prompt"
+    );
+
+    // skip_bootstrap（heartbeat 模式）同走 read_file_in_dir。
+    let builder2 = ContextBuilder::new(tmp.path());
+    let prompt2 = builder2.build_system_prompt(true);
+    assert!(prompt2.contains("I am a helpful assistant."));
+    assert!(!prompt2.contains('\u{feff}'));
 }
 
 #[test]

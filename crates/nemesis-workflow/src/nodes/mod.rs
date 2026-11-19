@@ -378,8 +378,12 @@ impl NodeExecutor for ParallelNodeStub {
             });
         }
 
-        // Execute each child node concurrently using tokio::spawn
-        let mut handles = Vec::new();
+        // Execute each child node concurrently. JoinSet（而非 Vec<JoinHandle>）：
+        // scheduler 的 node timeout/cancel 靠丢弃本 executor future 停节点——
+        // JoinHandle drop = detach（子分支带副作用继续跑；timeout+retry 组合
+        // 下重试 = 子分支并发双跑），JoinSet drop = abort 全部子分支
+        // （BUG-20261113-169，与 ParallelNodeExecutor 同修）。
+        let mut children_set = tokio::task::JoinSet::new();
         for (idx, child_def) in children.into_iter().enumerate() {
             let ctx = context.clone();
             let branch_key = if child_def.id.is_empty() {
@@ -388,19 +392,19 @@ impl NodeExecutor for ParallelNodeStub {
                 child_def.id.clone()
             };
 
-            handles.push(tokio::spawn(async move {
+            children_set.spawn(async move {
                 // Execute child node based on its type
                 let result = execute_inline_node(&child_def, &ctx).await;
                 (branch_key, result)
-            }));
+            });
         }
 
         // Collect results
         let mut merged = serde_json::Map::new();
         let mut first_error: Option<String> = None;
 
-        for handle in handles {
-            match handle.await {
+        while let Some(joined) = children_set.join_next().await {
+            match joined {
                 Ok((key, Ok(result))) => {
                     if result.state == ExecutionState::Failed {
                         if first_error.is_none() {

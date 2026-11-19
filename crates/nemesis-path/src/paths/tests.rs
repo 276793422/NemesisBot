@@ -321,6 +321,53 @@ fn test_resolve_scanner_config_path_in_workspace() {
 }
 
 #[test]
+fn test_resolve_cluster_inbox_dir_in_workspace() {
+    // BUG-20261119-193 回归锁：集群收件箱跨 crate 读/写对（cluster transfer
+    // 写 / board dossier + bot archive_ingest + agent migrate landing 读）
+    // 的唯一拼接点，布局值钉死。
+    let ws = Path::new("/data/workspace");
+    assert_eq!(
+        resolve_cluster_inbox_dir_in_workspace(ws),
+        PathBuf::from("/data/workspace/cluster/inbox")
+    );
+    // 与既有 cluster 根拼接点同源（改 cluster 布局时 inbox 自动跟随）。
+    assert_eq!(
+        resolve_cluster_inbox_dir_in_workspace(ws),
+        cluster_dir_in_workspace(ws).join("inbox")
+    );
+}
+
+#[test]
+fn test_resolve_skill_trust_path_in_workspace() {
+    // BUG-20261119-193 回归锁：skills/connectors 共用信任库唯一拼接点
+    //（分叉 = 双侧验签结论不一致）。
+    let ws = Path::new("/data/workspace");
+    assert_eq!(
+        resolve_skill_trust_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/skill_trust.json")
+    );
+    assert_eq!(
+        resolve_skill_trust_path_in_workspace(ws),
+        workspace_config_dir(ws).join("skill_trust.json")
+    );
+}
+
+#[test]
+fn test_resolve_plugin_trust_path_in_workspace() {
+    // BUG-20261119-193 回归锁：WASM 插件信任库唯一拼接点（CLI trust 管理
+    // ↔ gateway 装配期验签的读/写对，分叉 = CLI 吊销失效）。
+    let ws = Path::new("/data/workspace");
+    assert_eq!(
+        resolve_plugin_trust_path_in_workspace(ws),
+        PathBuf::from("/data/workspace/config/plugin_trust.json")
+    );
+    assert_eq!(
+        resolve_plugin_trust_path_in_workspace(ws),
+        workspace_config_dir(ws).join("plugin_trust.json")
+    );
+}
+
+#[test]
 fn test_env_constants() {
     assert_eq!(ENV_HOME, "NEMESISBOT_HOME");
     assert_eq!(ENV_CONFIG, "NEMESISBOT_CONFIG");
@@ -533,6 +580,76 @@ fn test_resolve_scanner_config_path_default() {
     set_local_mode(false);
     let result = resolve_scanner_config_path();
     assert!(result.to_string_lossy().ends_with("config.scanner.json"));
+}
+
+/// 回归锁（set-but-empty 视同 unset，BUG-20261117-047）：docker `-e VAR=` /
+/// systemd `Environment=VAR=` / shell `export VAR=` 都会留下**已设但空**的
+/// 环境变量——Go 蓝本 os.Getenv 对 unset 与 empty 同返回 ""（空值跳过走
+/// 默认检测链），裸 `if let Ok` 会让空串走通 → home 落 cwd 相对路径
+/// `.nemesisbot`（workspace/data/logs 全部落错根）。
+#[test]
+fn test_resolve_home_dir_set_but_empty_env() {
+    let _g = EnvGuard::set(ENV_HOME, "");
+    set_local_mode(false);
+    let result = resolve_home_dir();
+    set_local_mode(false);
+    assert!(result.is_ok());
+    let home = result.unwrap();
+    assert_ne!(
+        home,
+        PathBuf::from(DEFAULT_HOME_DIR),
+        "空 NEMESISBOT_HOME 不得落 cwd 相对路径 .nemesisbot"
+    );
+    assert!(
+        home.is_absolute(),
+        "空 NEMESISBOT_HOME 应走默认检测链落绝对路径，实得 {home:?}"
+    );
+    assert!(home.to_string_lossy().ends_with(".nemesisbot"));
+}
+
+/// 同族（BUG-20261117-047）：空 NEMESISBOT_CONFIG 不得返回裸空
+/// `PathBuf::from("")`——必须跳过覆盖落默认链。
+#[test]
+fn test_resolve_config_path_set_but_empty_env() {
+    let _g1 = EnvGuard::set(ENV_CONFIG, "");
+    let _g2 = EnvGuard::remove(ENV_HOME);
+    set_local_mode(false);
+    let result = resolve_config_path();
+    assert!(
+        result.to_string_lossy().ends_with("config.json"),
+        "空 NEMESISBOT_CONFIG 不得返回裸空路径，实得 {result:?}"
+    );
+}
+
+/// 同族（BUG-20261117-047）：mcp/security/skills/scanner 四键空值同纪律。
+#[test]
+fn test_resolve_other_config_paths_set_but_empty_env() {
+    let _g0 = EnvGuard::remove(ENV_HOME);
+    let _g1 = EnvGuard::set(ENV_MCP_CONFIG, "");
+    let _g2 = EnvGuard::set(ENV_SECURITY_CONFIG, "");
+    let _g3 = EnvGuard::set(ENV_SKILLS_CONFIG, "");
+    let _g4 = EnvGuard::set(ENV_SCANNER_CONFIG, "");
+    set_local_mode(false);
+    assert!(
+        resolve_mcp_config_path()
+            .to_string_lossy()
+            .ends_with("config.mcp.json")
+    );
+    assert!(
+        resolve_security_config_path()
+            .to_string_lossy()
+            .ends_with("config.security.json")
+    );
+    assert!(
+        resolve_skills_config_path()
+            .to_string_lossy()
+            .ends_with("config.skills.json")
+    );
+    assert!(
+        resolve_scanner_config_path()
+            .to_string_lossy()
+            .ends_with("config.scanner.json")
+    );
 }
 
 #[test]
@@ -2842,4 +2959,33 @@ fn test_workspace_ignored_images_runtime_dir() {
     assert!(is_workspace_ignored(&PathBuf::from("Images").join("b.PNG")));
     // 普通文件名只做组件匹配不吃前缀：imagesque.png 是普通文件不误伤。
     assert!(!is_workspace_ignored(&PathBuf::from("imagesque.png")));
+}
+
+#[test]
+fn test_minimal_config_workspace_path_bare_tilde_expands() {
+    // BUG-20261114-014：裸 `~` workspace 此前字面量穿透——四个
+    // side-config（mcp/security/skills/scanner）落到 cwd 下字面 `~` 目录，
+    // 与主 workspace（expand_tilde，正确落 home）分叉。家族口径
+    // （expand_home「裸 ~ = home」）对齐。
+    let cfg: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":"~"}}}"#).unwrap();
+    let got = cfg.workspace_path().expect("bare ~ must expand to home");
+    assert_eq!(got, dirs::home_dir().unwrap());
+
+    // `~/sub` 斜杠形态不回归（既有行为）。
+    let cfg2: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":"~/ws"}}}"#).unwrap();
+    let got2 = cfg2.workspace_path().unwrap();
+    assert_eq!(got2, dirs::home_dir().unwrap().join("ws"));
+
+    // 普通路径逐字面量穿透（既有行为）。
+    let cfg3: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":"D:/data/ws"}}}"#).unwrap();
+    let got3 = cfg3.workspace_path().unwrap();
+    assert_eq!(got3, PathBuf::from("D:/data/ws"));
+
+    // 空 workspace = None（既有行为）。
+    let cfg4: MinimalConfig =
+        serde_json::from_str(r#"{"agents":{"defaults":{"workspace":""}}}"#).unwrap();
+    assert!(cfg4.workspace_path().is_none());
 }

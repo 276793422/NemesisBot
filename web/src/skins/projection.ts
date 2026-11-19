@@ -44,6 +44,11 @@ import { useToast } from '../composables/useToast'
 import { useTheme } from '../composables/useTheme'
 import { fullAccess } from '../composables/useEditorMode'
 import { renderMarkdownHtml } from '../utils/markdown'
+// L6++ 双分组派生单一真相源（与原生 SessionSidebar 同源——2026-11-18
+// focus 皮肤抽取；pin/排序/谱系树口径不再各写一份）。
+import { deriveSessionGroups, sessionTitle, togglePin, unpinIfDeleted, isPinned, cycleSort, sessionSort, SORT_LABELS } from '../utils/sessionGrouping'
+import { useChatApi } from '../composables/useChatApi'
+import { makeWfEditHiddenPredicate } from '../composables/wfEditSessions'
 import { skinState, skinHasSlot, getSkinEngine } from '../composables/useSkin'
 import { registerSkinActions, registerSkinFields } from './actions'
 import { bridgeSend, bridgeStop } from './chatBridge'
@@ -63,8 +68,10 @@ export const skinProjection = reactive<SkinProjection>({
   navPrimary: [],
   navMore: [],
   sessionGroups: [],
+  projectGroups: [],
   hasSessions: false,
   currentSessionId: '',
+  sortLabel: SORT_LABELS[sessionSort.value],
   estopEngaged: false,
   estopBusy: false,
   estopLabel: '急停',
@@ -76,6 +83,8 @@ export const skinProjection = reactive<SkinProjection>({
   chatBusy: false,
   inputText: '',
   mode: 'build',
+  isPlan: false,
+  work: null,
   pages: {},
 })
 
@@ -115,6 +124,12 @@ const NAV_MORE: { id: string; label: string; path: string }[] = [
   { id: 'plugins', label: '插件', path: '/plugins' },
   { id: 'channels', label: '通道', path: '/channels' },
   { id: 'workflows', label: '工作流', path: '/workflows' },
+  // 事件管理面（项1 事件驱动唤醒 P2）/ 循环管理面（项5 durable loop，
+  // 2026-11-17 并入执行单元复合页【执行循环】TAB——旧 /loops 深链 redirect
+  // 落 ?tab=loops，皮肤紧凑导航直接指向 TAB 深链）。
+  { id: 'events', label: '事件', path: '/events' },
+  { id: 'loops', label: '循环', path: '/executors?tab=loops' },
+  { id: 'goals', label: '目标', path: '/goals' },
   { id: 'forge', label: 'Forge', path: '/forge' },
   { id: 'board', label: '看板', path: '/board' },
   { id: 'cluster', label: '集群', path: '/cluster' },
@@ -146,13 +161,15 @@ const ITEM_FEATURE: Record<string, string> = {
   vm: 'VM',
   board: 'BOARD',
   terminal: 'TERMINAL',
+  // 事件/循环/目标管理面（项1/项5/目标系统）：events / loop / goals
+  // feature 闸（与 navModel 同源映射；VITE_FEATURE_X=false 裁掉）。
+  events: 'EVENTS',
+  loops: 'LOOP',
+  goals: 'GOALS',
 }
 
-// ---- 会话时间分组（SkinSidebar L104-138 迁移）----
-
-function sessionTitle(s: SessionEntry): string {
-  return s.title || s.firstMessage || s.id.slice(0, 8)
-}
+// ---- 会话时间分组（SkinSidebar L104-138 迁移；展示名 sessionTitle
+// 自 2026-11-18 起用 utils/sessionGrouping 单一真相源）----
 
 function relTime(s: SessionEntry): string {
   if (!s.lastTime) return ''
@@ -237,6 +254,8 @@ export function setupSkinProjection(router: Router): void {
 
   const scope = effectScope()
   scope.run(() => {
+    // 工作流编辑会话隐藏谓词（与原生侧栏同源工厂——登记表+绑定表并集）。
+    const isWfEditSession = makeWfEditHiddenPredicate(sessionStore)
     // 引擎挂投影（唯一数据通道）+ 白名单（唯一交互出口）。
     const engine = getSkinEngine()
     engine.projection = skinProjection
@@ -267,8 +286,83 @@ export function setupSkinProjection(router: Router): void {
       'remove-session': (arg) => {
         const s = sessionStore.sessions.find((x) => x.id === arg)
         if (!s) return
-        if (!window.confirm(`删除会话「${sessionTitle(s)}」？此操作不可恢复。`)) return
-        void sessionStore.remove(arg)
+        if (!window.confirm(`删除会话「${sessionTitle(s)}」？将移入回收站，90 天后自动清除。`)) return
+        void sessionStore.remove(arg).then((ok) => {
+          // pin 只在真删成功后清（BUG-20261106-029 横向纪律，与原生侧栏同源）。
+          if (ok) unpinIfDeleted(arg)
+          else toast.error('删除会话失败')
+        })
+      },
+      // ---- 会话操作补全（2026-11-18 focus 皮肤：能力不能丢——原生侧栏
+      // 全部行级操作经动作白名单开放给结构皮肤）----
+      'pin-session': (arg) => {
+        if (arg) togglePin(arg)
+      },
+      'rename-session': (arg) => {
+        const s = sessionStore.sessions.find((x) => x.id === arg)
+        if (!s) return
+        const name = window.prompt('会话名称', sessionTitle(s))
+        if (name === null) return
+        const trimmed = name.trim()
+        if (!trimmed) return
+        void sessionStore.rename(arg, trimmed).then((ok) => {
+          if (!ok) toast.error('重命名失败')
+        })
+      },
+      'clear-session': (arg) => {
+        const s = sessionStore.sessions.find((x) => x.id === arg)
+        if (!s) return
+        if (!window.confirm(`清空「${sessionTitle(s)}」的所有消息？会话保留，历史清空。`)) return
+        void sessionStore.clear(arg).then((ok) => {
+          if (!ok) toast.error('清空失败')
+        })
+      },
+      'export-session': (arg) => {
+        const s = sessionStore.sessions.find((x) => x.id === arg)
+        if (!s) return
+        void sessionStore.exportSession(arg)
+          .then((resp) => {
+            const blob = new Blob([JSON.stringify(resp.messages, null, 2)], {
+              type: 'application/json',
+            })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `session-${arg}.json`
+            a.click()
+            URL.revokeObjectURL(url)
+          })
+          .catch(() => toast.error('导出失败'))
+      },
+      'branch-session': (arg) => {
+        // 默认全量分叉（对齐 CLI 省略 --at 的语义；分岔点选择等高级形态
+        // 仍是原生侧栏弹窗的领地——皮肤 V1 不带弹窗组件）。
+        const api = useChatApi()
+        void api
+          .fork(arg)
+          .then(async (resp) => {
+            toast.success(`已分叉出新会话（保留 ${resp.kept_messages} 条消息）`)
+            await sessionStore.fetchList(true)
+            sessionStore.switchTo(resp.session_id)
+            void router.push('/')
+          })
+          .catch((e) => toast.error(String((e as Error)?.message ?? e)))
+      },
+      'toggle-mode': () => {
+        const target = chatStore.agentMode === 'plan' ? 'build' : 'plan'
+        void request('chat', 'set_mode', {
+          session_id: sessionStore.currentId || '',
+          mode: target,
+        })
+          .then((data: any) => {
+            if (data?.mode === 'plan' || data?.mode === 'build') chatStore.setAgentMode(data.mode)
+          })
+          .catch((e) => toast.error(String((e as Error)?.message ?? e)))
+      },
+      'cycle-sort': () => {
+        // 排序键轮转（recent→created→name，localStorage 持久）——原生侧栏
+        // 顶部排序按钮同源 sessionGrouping 单例，皮肤侧栏标签跟随 sortLabel。
+        cycleSort()
       },
       'fill-input': (arg) => {
         chatStore.input = arg ? `${arg}：` : ''
@@ -335,6 +429,35 @@ export function setupSkinProjection(router: Router): void {
       skinProjection.currentSessionId = cur || ''
     })
 
+    // L6++ 双分组（2026-11-18 focus 皮肤）：项目组/对话组/孤儿组，与原生
+    // 侧栏同一 deriveSessionGroups 派生（pin/排序/谱系树口径天然一致）。
+    // sidebar 槽不在场 = 置空省算（与 messages 的 chat 槽闸同款纪律）。
+    watchEffect(() => {
+      if (!skinHasSlot('sidebar')) {
+        skinProjection.projectGroups = []
+        return
+      }
+      const cur = sessionStore.currentId
+      const p = router.currentRoute.value.path
+      skinProjection.sortLabel = SORT_LABELS[sessionSort.value]
+      skinProjection.projectGroups = deriveSessionGroups(
+        sessionStore.sessions,
+        sessionStore.projects,
+        isWfEditSession,
+      ).map((g) => ({
+        key: g.key,
+        header: g.header,
+        sessions: g.items.map((s) => ({
+          id: s.id,
+          title: sessionTitle(s),
+          relTime: relTime(s),
+          active: s.id === cur && p === '/',
+          pinned: isPinned(s.id),
+          depth: s.lineageDepth,
+        })),
+      }))
+    })
+
     // Full Access / 主题投影。
     watchEffect(() => {
       skinProjection.fullAccess = fullAccess.value
@@ -352,12 +475,17 @@ export function setupSkinProjection(router: Router): void {
       skinProjection.chatBusy = chatStore.streaming
       skinProjection.inputText = chatStore.input
       skinProjection.mode = chatStore.agentMode
+      skinProjection.isPlan = chatStore.agentMode === 'plan'
     })
     watchEffect(() => {
       if (!chatSlotActive.value) {
         skinProjection.messages = []
+        skinProjection.work = null
         return
       }
+      // 工具活动时间线（WorkRecorder 形态原样透传；原生 live 折叠块同源
+      // 缓冲——ingest/adopt 三路入口统一落 pendingWork，零第二份转换）。
+      skinProjection.work = chatStore.pendingWork
       if (mdCache.size > 500) mdCache.clear()
       const msgs = chatStore.messages
       skinProjection.messages = msgs.map((m, i) => {

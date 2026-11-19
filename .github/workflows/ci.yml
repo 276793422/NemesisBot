@@ -43,7 +43,7 @@ permissions:
 jobs:
   rust-check:
     name: Rust check + inline-tests + clippy (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout code
@@ -143,6 +143,16 @@ jobs:
       - name: Linux cross-platform smoke tests
         run: cargo test -p nemesis-types -p nemesis-config -p nemesis-bus
 
+      # MXC opt-in 门（2026-11-14 审查三轮 #5：sandbox-mxc 转非默认 feature 后，
+      # workspace 全量 check/clippy/nextest 不再覆盖 opt-in 编译面与 mxc 单测
+      # ——不设本步则「选了 MXC 就编不过/一改就 rot」无闸）。libssl-dev 为
+      # runner 镜像预装（mxc-sdk → ureq native-tls → openssl-sys 的 Linux 侧
+      # 代价；这也是它进不了默认构建的原因，见 nemesisbot/Cargo.toml 注记）。
+      - name: MXC opt-in feature gate (compile + unit tests)
+        run: |
+          cargo check -p nemesisbot --features sandbox-mxc
+          cargo test -p nemesis-sandbox --features mxc
+
       # 架构依赖矩阵门禁（扩展计划 T3/D7：分层规则 R1-R7 违规即红，
       # 防依赖倒流/越层直依赖——纯 cargo metadata 读图，秒级）
       - name: Architecture dependency gate
@@ -150,10 +160,10 @@ jobs:
 
   coverage:
     name: Line coverage floor (cargo-llvm-cov)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      # 扩展计划 T7a/D6（docs/INFO/2026-09-24_公开基准.md §5）：行覆盖硬地板，
+      # 扩展计划 T7a/D6（docs/INFO/2026-11-16_公开基准.md §5）：行覆盖硬地板，
       # 防倒退不追高。基线口径：全 workspace lib（nemesis-config 除外——
       # llvm-cov 独立 target-dir 环境特定失败；test-harness / nemesis-build-config
       # 为测试基建 lib 非产品代码，一并排除），见 docs/INFO/2026-06-27_coverage-baseline.md。
@@ -663,6 +673,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      # 环境指纹（设备归因）；本 job defaults.run.working-directory=web，
+      # dump-env 用 GITHUB_WORKSPACE 绝对路径故无需显式回根
       - name: Environment fingerprint
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/dump-env.sh"

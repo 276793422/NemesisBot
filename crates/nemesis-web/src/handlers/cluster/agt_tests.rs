@@ -40,6 +40,7 @@ fn agt_make_ctx(
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -62,6 +63,7 @@ fn agt_make_ctx(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: log_dir,
         workflow_engine: None,
@@ -75,6 +77,7 @@ fn agt_make_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -97,6 +100,15 @@ fn agt_cluster(dir: &tempfile::TempDir) -> Arc<Cluster> {
         ClusterConfig::default(),
         dir.path().to_path_buf(),
     ))
+}
+
+/// 内存态 TaskManager 姊妹 fixture（任务面测试专用）——tasks.db 换装是
+/// with_workspace（生产路径）专属；stub 编译态（nemesis-taskstore sqlite
+/// feature 关，`-p nemesis-web` 单包测试即此形态）下 tasks.db 写入 no-op、
+/// 查询恒空，任务面测试必须与持久化后端解耦（2026-11-18 裁剪门控暴露）。
+fn agt_cluster_mem(dir: &tempfile::TempDir) -> Arc<Cluster> {
+    let _ = dir;
+    Arc::new(Cluster::new(ClusterConfig::default()))
 }
 
 fn agt_task(id: &str, status: TaskStatus, created: &str, completed: Option<&str>) -> Task {
@@ -312,7 +324,7 @@ async fn agt_tasks_list_empty_with_log_dir_takes_empty_summaries_arm() {
 #[tokio::test]
 async fn agt_tasks_detail_terminal_labels_and_list_duration_null() {
     let dir = tempfile::tempdir().unwrap();
-    let cluster = agt_cluster(&dir);
+    let cluster = agt_cluster_mem(&dir);
     cluster.register_node(ExtendedNodeInfo {
         base: NodeInfo {
             id: "n1".to_string(),
@@ -426,4 +438,80 @@ async fn agt_pair_rejects_refused_address() {
         "refused must fail fast, took {:?}",
         started.elapsed()
     );
+}
+
+// BUG-20261118 批次 C：nodes.cleanup_offline（批量清理 Offline 记录，
+// 不拉黑/跳过本节点与静态 peers——语义细节由 nemesis-cluster 单测钉住，
+// 这里钉 WSAPI 表面契约：命令在册 + 清理明细 + 无集群诚实报错）
+
+fn agt_ext_node(
+    id: &str,
+    name: &str,
+    status: nemesis_cluster::types::NodeStatus,
+) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: NodeInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            role: NodeRole::Worker,
+            address: "10.0.0.1:9000".to_string(),
+            category: "dev".to_string(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        professions: vec![],
+        tier: None,
+        agents: vec![],
+        runtime_backend: None,
+        node_type: "agent".to_string(),
+        build: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn agt_cleanup_offline_removes_only_offline_and_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = agt_cluster(&dir);
+    cluster.start();
+    cluster.register_node(agt_ext_node(
+        "dead-a",
+        "a",
+        nemesis_cluster::types::NodeStatus::Offline,
+    ));
+    cluster.register_node(agt_ext_node(
+        "live-b",
+        "b",
+        nemesis_cluster::types::NodeStatus::Online,
+    ));
+
+    let ctx = agt_make_ctx(&dir, Some(cluster.clone()), None, None);
+    let h = ClusterHandler::new();
+    // 命令在册（表面契约）。
+    assert!(h.commands().contains(&"nodes.cleanup_offline"));
+
+    let out = h
+        .handle_cmd("nodes.cleanup_offline", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["count"], serde_json::json!(1));
+    assert_eq!(out["removed"], serde_json::json!(["dead-a"]));
+    assert!(cluster.get_node_info("dead-a").is_none());
+    assert!(cluster.get_node_info("live-b").is_some());
+    // state.toml 已落盘（重启回读不复活）。
+    assert!(dir.path().join("cluster").join("state.toml").exists());
+    cluster.stop();
+}
+
+#[tokio::test]
+async fn agt_cleanup_offline_without_cluster_is_honest_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = agt_make_ctx(&dir, None, None, None);
+    let result = ClusterHandler::new()
+        .handle_cmd("nodes.cleanup_offline", None, &ctx)
+        .await;
+    assert!(result.is_err(), "无集群实例必须诚实报错而非假成功");
 }

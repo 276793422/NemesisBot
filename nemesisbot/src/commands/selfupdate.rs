@@ -203,6 +203,9 @@ fn read_auth_token(workspace: &Path) -> Result<String> {
 async fn post_internal(base_url: &str, token: &str, body: &serde_json::Value) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        // BUG-20261115-045：X-Auth-Token 不在 reqwest 默认重定向剥离清单内，
+        // 跨源 302 会把 token 带走——同源跟随 + 跨源终止。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()
         .context("HTTP client 构建失败")?;
     let url = format!("{base_url}/api/internal");
@@ -213,8 +216,9 @@ async fn post_internal(base_url: &str, token: &str, body: &serde_json::Value) ->
     }
     let resp = req.send().await.context("POST /api/internal 失败")?;
     let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
+        // 错误体有帽读取（BUG-20261113-164）；成功路径 body 未消费，不读。
+        let text = nemesis_utils::http_cap::read_error_body(resp).await;
         bail!("gateway 拒绝（HTTP {status}）：{text}");
     }
     Ok(())

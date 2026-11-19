@@ -31,6 +31,11 @@ pub struct ProjectInfo {
     pub running: bool,
     /// 项目工作区指令是否受信（`projects.trust` 可翻转；缺省 true）。
     pub instructions_trusted: bool,
+    /// 附加放行目录（围栏多根，2026-11-19 D 批；canonical 绝对路径）。
+    /// 对在跑 loop **不热生效**（围栏在工具注册期烧入 Arc）——重启网关
+    /// 或重建项目后生效；未在跑的 loop spawn 时自然读新注册表。
+    #[serde(default)]
+    pub extra_dirs: Vec<String>,
 }
 
 /// nemesisbot 侧项目管理能力的抽象（[`ProjectLoopManager`](动态)）。
@@ -51,6 +56,15 @@ pub trait ProjectsBridge: Send + Sync {
     /// （下一轮 build_messages 生效）；未在跑 = 仅写盘，spawn 时按注册表
     /// 解析起点。
     fn set_trust(&self, project_id: &str, trusted: bool) -> Result<ProjectInfo, String>;
+    /// 添加附加放行目录（围栏多根，2026-11-19 D 批；`projects.add_dir`）。
+    /// 校验链：绝对路径→存在且为目录→canonical→对主 workspace/任何项目
+    /// 主根/任何已有 extra_dir 双向不重叠→去重→上限→写 registry。
+    /// **不热更在跑 loop**（围栏 Arc 注册期烧入——重启网关或重建项目后
+    /// 生效，未在跑 loop spawn 时自然读新注册表）。
+    fn add_dir(&self, project_id: &str, dir: &str) -> Result<ProjectInfo, String>;
+    /// 移除附加放行目录（`projects.remove_dir`；**摘列表不动磁盘**——
+    /// 注册不拥有；入参按 canonical 比较匹配）。生效时机同 [`Self::add_dir`]。
+    fn remove_dir(&self, project_id: &str, dir: &str) -> Result<ProjectInfo, String>;
     /// 会话归属查询（session_key → project_id；None = 对话组）。
     fn owner_of(&self, session_key: &str) -> Option<String>;
     /// 项目 loop 句柄（未运行 / 目录消失 = None——调用方诚实报错）。
@@ -190,38 +204,10 @@ pub(crate) fn resolve_open_target(
     Ok(path)
 }
 
-/// 用系统文件管理器打开目录（Windows=explorer / macOS=open / Linux=
-/// xdg-open）。spawn 后不等待——文件管理器的生命周期不归网关管；参数经
-/// `Command::arg` 直传不经 shell，路径含空格/特殊字符安全。
-/// 系统文件管理器打开目录（Windows explorer / macOS open / Linux
-/// xdg-open；CREATE_NO_WINDOW spawn 不等待）。pub(crate)：board 模块的
-/// `project.open_dir`（看板项目档案）同源复用，不复制第二份。
-pub(crate) fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
-    let spawn = || -> std::io::Result<std::process::Child> {
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW：explorer 是 GUI 程序本无控制台，旗标只防
-            // 意外父控台窗口（同 Windows 后台进程纪律：绝不弹新窗口）。
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            std::process::Command::new("explorer")
-                .arg(path)
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("open").arg(path).spawn()
-        }
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            std::process::Command::new("xdg-open").arg(path).spawn()
-        }
-    };
-    spawn()
-        .map(|_| ())
-        .map_err(|e| format!("打开目录失败: {e}"))
-}
+// 用系统文件管理器打开目录的动作已收编到 [`crate::handlers::shell_open`]
+// （单一归宿：projects / skills / sandbox / board / system / fs 全部消费方
+// 同源；Windows 臂 = explorer spawn + AttachThreadInput 激活阶梯前台看门
+// ——后台进程 spawn explorer 开窗落后台的根修，2026-11-14）。
 
 pub struct ProjectsHandler;
 
@@ -232,7 +218,16 @@ impl ModuleHandler for ProjectsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "create", "remove", "rename", "open_dir", "trust"]
+        &[
+            "list",
+            "create",
+            "remove",
+            "rename",
+            "open_dir",
+            "trust",
+            "add_dir",
+            "remove_dir",
+        ]
     }
 
     async fn handle_cmd(
@@ -282,11 +277,32 @@ impl ModuleHandler for ProjectsHandler {
                 let info = bridge.set_trust(&project_id, trusted)?;
                 Ok(Some(serde_json::json!({ "project": info })))
             }
+            "add_dir" => {
+                let data = data.ok_or("missing data")?;
+                let project_id = crate::handlers::get_str(&data, "project_id")?;
+                let dir = crate::handlers::get_str(&data, "dir")?;
+                let info = bridge.add_dir(&project_id, &dir)?;
+                Ok(Some(serde_json::json!({
+                    "project": info,
+                    "note": "已写入注册表；在跑的项目 loop 围栏不热生效——重启网关或重建项目后生效",
+                })))
+            }
+            "remove_dir" => {
+                let data = data.ok_or("missing data")?;
+                let project_id = crate::handlers::get_str(&data, "project_id")?;
+                let dir = crate::handlers::get_str(&data, "dir")?;
+                let info = bridge.remove_dir(&project_id, &dir)?;
+                // 文案与 remove 项目同语义：摘列表不动磁盘。
+                Ok(Some(serde_json::json!({
+                    "project": info,
+                    "note": "仅解除放行（摘列表），未删除目录内任何文件；围栏生效时机同 add_dir",
+                })))
+            }
             "open_dir" => {
                 let data = data.ok_or("missing data")?;
                 let project_id = crate::handlers::get_str(&data, "project_id")?;
                 let path = resolve_open_target(bridge.as_ref(), &project_id)?;
-                open_in_file_manager(&path)?;
+                crate::handlers::shell_open::open_dir(&path)?;
                 Ok(Some(
                     serde_json::json!({ "opened": path.to_string_lossy() }),
                 ))
@@ -298,7 +314,7 @@ impl ModuleHandler for ProjectsHandler {
 
 // AGT 覆盖率批次：ProjectsBridge 两个默认方法体（display_label
 // pid 兜底 + reload_provider_all no-op）——既有 MockBridge 覆写了 display_label，
-// 默认体从未执行；本批用不覆写的最小桩直调。豁免（open_in_file_manager 弹窗
+// 默认体从未执行；本批用不覆写的最小桩直调。豁免（open_dir 弹窗
 // 纪律）见 agt_tests 头注。
 #[cfg(test)]
 mod agt_tests;

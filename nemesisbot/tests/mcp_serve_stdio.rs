@@ -207,6 +207,39 @@ impl McpClient {
         }
     }
 
+    /// 读下一帧（不过滤 id；成帧层回归测试用——坏帧的响应是 id:null 的
+    /// 独立帧，`request` 的 id 匹配循环会跳过它）。
+    fn recv_frame_raw(&self, timeout: Duration) -> Result<Value, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remain = deadline.saturating_duration_since(Instant::now());
+            if remain.is_zero() {
+                return Err(format!(
+                    "timeout waiting frame; stderr tail:\n{}",
+                    self.stderr_snapshot()
+                ));
+            }
+            match self.rx.recv_timeout(remain) {
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(format!(
+                        "timeout waiting frame; stderr tail:\n{}",
+                        self.stderr_snapshot()
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(format!(
+                        "child closed stdout; stderr tail:\n{}",
+                        self.stderr_snapshot()
+                    ));
+                }
+                Ok(line) => match serde_json::from_str::<Value>(&line) {
+                    Ok(v) => return Ok(v),
+                    Err(_) => continue, // 非 JSON 行跳过（不该出现，防御）
+                },
+            }
+        }
+    }
+
     /// 发通知（无 id 帧，按协议不回帧）。
     fn notify(&mut self, method: &str) {
         let frame = json!({"jsonrpc": "2.0", "method": method});
@@ -535,4 +568,39 @@ fn run_tool_security_disabled_leaves_no_audit_chain() {
         "security 关闭时审计链不应落盘: {}",
         chain.display()
     );
+}
+
+// ---------------------------------------------------------------------------
+// 6. 成帧层韧性（BUG-20261113-133）：一行非 UTF-8 坏字节不杀 server
+// ---------------------------------------------------------------------------
+
+/// 回归锁（BUG-20261113-133，真 二进制端到端）：旧 `BufReader::lines()`
+/// 形态遇非 UTF-8 字节 → next_line Err(InvalidData) → run_server 返回
+/// Err → 整个 mcp-serve 进程退出（本测试的 ping 永无响应 = 超时红）。
+/// 新契约：lossy 替换 → -32700 → 同一连接继续服务。
+#[test]
+fn invalid_utf8_frame_yields_parse_error_and_server_survives() {
+    let home = TestHome::new("http://127.0.0.1:1");
+    let mut c = McpClient::spawn(home.path());
+    c.initialize();
+
+    // 非 UTF-8 原始字节帧（0xff 0xfe 开头 + ASCII 尾 + 换行）。
+    c.stdin
+        .write_all(&[0xff, 0xfe, b'g', b'a', b'r', b'b', b'a', b'g', b'e', b'\n'])
+        .expect("write raw bytes");
+    c.stdin.flush().expect("flush stdin");
+
+    let frame = c
+        .recv_frame_raw(FAST_TIMEOUT)
+        .expect("坏帧必须回 -32700 响应而非进程退出");
+    assert_eq!(
+        frame["error"]["code"], -32700,
+        "非 UTF-8 帧必须 lossy 收敛为 parse error: {frame}"
+    );
+
+    // 服务存活：同一连接上 ping 照常应答。
+    let pong = c
+        .request("ping", json!({}), FAST_TIMEOUT)
+        .expect("坏帧后服务必须存活（ping 可应答）");
+    assert!(pong.get("result").is_some(), "ping 应成功: {pong}");
 }

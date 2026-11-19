@@ -1,5 +1,12 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 
+// 旧 /loops 深链 redirect（独立常量拿 RouteRecordRaw 上下文类型——条目
+// 落在条件 spread 里会丢失上下文推断，redirect 回调参数变隐式 any）。
+const loopsRedirect: RouteRecordRaw = {
+  path: '/loops',
+  redirect: (to) => ({ path: '/executors', query: { ...to.query, tab: 'loops' } }),
+}
+
 const routes: RouteRecordRaw[] = [
   // Main
   { path: '/', name: 'chat', component: () => import('../views/ChatView.vue') },
@@ -21,6 +28,9 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_MEMORY !== 'false' ? [{ path: '/memory', name: 'memory', component: () => import('../views/MemoryView.vue') }] : []),
   { path: '/skills', name: 'skills', component: () => import('../views/SkillsView.vue') },
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
+  // 专家Agent（2026-11-13 专家子代理）：恒编译无 feature 闸（与 navModel
+  // experts 条目同构——资源层无裁剪面）。
+  { path: '/experts', name: 'experts', component: () => import('../views/ExpertsView.vue') },
   // 2026-08-29：管理分组新增页（MCP 之后）。Hook 页自设置页迁移；
   // 命令/插件为实页（命令=slash 命令 CRUD，插件=三 Tab 含 WASM）。
   // 执行单元复合页（2026-11-07 布局重构）：子代理 + 后台任务两 TAB
@@ -45,6 +55,15 @@ const routes: RouteRecordRaw[] = [
   // lsp_install）全部挂在 coding 模块，IoT 预设 lsp=false 时整模块退出。
   ...(import.meta.env.VITE_FEATURE_LSP !== 'false' ? [{ path: '/coding', name: 'coding', component: () => import('../views/CodingView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_WORKFLOW !== 'false' ? [{ path: '/workflows', name: 'workflows', component: () => import('../views/WorkflowView.vue') }] : []),
+  // 事件管理面（项1 事件驱动唤醒 P2，events feature / VITE_FEATURE_EVENTS
+  // 门控）：fs 事件规则（events.json）+ 泵统计 + cron/后台进程源只读收编。
+  ...(import.meta.env.VITE_FEATURE_EVENTS !== 'false' ? [{ path: '/events', name: 'events', component: () => import('../views/EventsView.vue') }] : []),
+  // 循环管理面（项5 自配速 durable loop）已并入执行单元复合页【执行循环】
+  // TAB（2026-11-17）；旧 /loops 深链 redirect 保兼容（loop feature 门控同构）。
+  ...(import.meta.env.VITE_FEATURE_LOOP !== 'false' ? [loopsRedirect] : []),
+  // 目标管理面（目标系统，goals feature / VITE_FEATURE_GOALS 门控）：
+  // goal 注册表 + 评估台账 + 人控 create/update/enable/disable/delete。
+  ...(import.meta.env.VITE_FEATURE_GOALS !== 'false' ? [{ path: '/goals', name: 'goals', component: () => import('../views/GoalsView.vue') }] : []),
   // Note: `/workflow/chat/<index>` is served as a standalone HTML page
   // (workflow-chat.html, see vite.config.ts + serve_embedded_static),
   // not as a Vue Router route. The dashboard SPA never renders this path;
@@ -91,6 +110,10 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/vault', name: 'vault', component: () => import('../views/VaultView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SCANNER !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),
+  // 邮箱页（邮件基础设施 B3，mail feature / VITE_FEATURE_MAIL 门控）：
+  // mail.* 命令管理面（列表/读信/写信/地址注册制）。插件未装载时页面
+  // 顶部横幅诚实提示（mail.* 命令后端报「插件未装载」）。
+  ...(import.meta.env.VITE_FEATURE_MAIL !== 'false' ? [{ path: '/mailbox', name: 'mailbox', component: () => import('../views/MailboxView.vue') }] : []),
   // P5 第 4 步 ②：桌面级 VM 管理页（vm feature / VITE_FEATURE_VM 门控）。
   ...(import.meta.env.VITE_FEATURE_VM !== 'false' ? [{ path: '/vm', name: 'vm', component: () => import('../views/VmView.vue') }] : []),
   // 紫微系统（2026-10-22）：三方程序受控接管（【万物皆工具】）。

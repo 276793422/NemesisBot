@@ -15,6 +15,7 @@ security = ["dep:nemesis-security"]
 [dependencies]
 nemesis-types = { workspace = true }
 nemesis-utils = { workspace = true, features = ["http"] }
+nemesis-path = { workspace = true }
 nemesis-security = { workspace = true, optional = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -36,6 +37,10 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 tokio = { workspace = true, features = ["test-util", "macros"] }
 tempfile = "3"
 wiremock = "0.6"
+# BUG-20261114-034 漂移闸（tests/config_drift_tests.rs）：钉住运行时面
+# RegistryConfig 与 Dashboard 面 SkillsFullConfig 对同一份 config.skills.json
+# 的缺省键同答——仅 dev 树依赖，运行时依赖面不变。
+nemesis-config = { workspace = true }
 
 [lints]
 workspace = true

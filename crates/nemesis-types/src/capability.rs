@@ -135,8 +135,34 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
 }
 
 /// `model_list` 条目定位（统一定义）：active 别名对 `model_name`
-/// / `model` 字段的**精确**匹配优先；未命中回落 **bare-suffix**——`model`
-/// 字段末段与 active 别名末段相等（`"glm-4.7"` ↔ `"zhipu/glm-4.7"`）。
+/// / `model` 字段的匹配。层序（与 nemesis-config `model_ref_eq` doc 家族
+/// 口径恒等，改层序必须两端同步）：**精确 name → 精确 model → CI name →
+/// CI model → bare-suffix → bare-CI**（每层全数组扫完才进下一层；同层内
+/// 按数组序先到先得——两个仅大小写不同的条目是合法配置形态，精确层先行
+/// 保住区分能力；同层内 name 字段全数组先于 model 字段，BUG-20261119-210）。
+///
+/// BUG-20261119-210（层内顺序分叉）：旧实现是**条目优先**——
+/// `matches_exact = name==alias || full==alias` 整条数组扫完才进 CI 层，
+/// 条目内 name/model 任一命中即返回该条目。nemesis-config 装配族四站点
+/// （`resolve_model_config`/`get_model_by_model_name`/`find_model_by_name`/
+/// `get_model_by_name`）则全部是 **name-first-across-entries**——model_name
+/// 字段在全部条目上先扫完，才轮到 model 字段。交叉别名配置形态（合法：
+/// Dashboard 允许 model_name ≠ 裸名）下两面命中**不同条目**：
+/// `[{model_name:"fast-alias", model:"glm-4.7"}, {model_name:"glm-4.7",
+/// model:"zhipu/glm-4.7"}]` 查 "glm-4.7"——本函数命中条目 0（model 字段
+/// 交叉命中）、装配族命中条目 1（name 层精确）→ per-model 九键族
+/// （tier/vision/timeout/…）读条目 0、provider 构造读条目 1，用户在
+/// "glm-4.7" 条目上的显式配置（model_tier/vision/…）静默错位——
+/// BUG-20261119-207 消灭的「同 ref 两族判定分裂」家族的层内顺序残余
+/// （207 只同步了 bare-suffix 层的存在性，未同步层内顺序）。
+///
+/// CI 兜底层（BUG-20261119-192：BUG-20261117-077 修复了 nemesis-config 查找族四站点，漏扫本函数——
+/// 活跃别名手打大小写变体（`Zhipu/GLM-4.7`）时解析面
+/// （`resolve_model_config`）CI 命中条目全通，而 tier / vision /
+/// timeout / max_output_tokens / context_window / compact_context_tokens /
+/// reasoning_effort / summarizer_prefix_reuse / display_model 九键全走本
+/// 函数 miss → 用户显式 per-model 配置（model_tier=mini、vision=no 等）
+/// 静默失效落默认）。
 ///
 /// 为什么需要 bare-suffix：活 gateway 的 active_model 是剥前缀裸名
 /// （provider_resolver `resolve_from_model_config` 对含 '/' 的 model 切尾段；
@@ -156,18 +182,43 @@ pub fn find_model_entry<'a>(
 ) -> Option<&'a serde_json::Value> {
     let arr = cfg.get("model_list")?.as_array()?;
     let bare = active_alias.rsplit('/').next().unwrap_or(active_alias);
-    let matches_exact = |m: &serde_json::Value| {
+    let matches_name = |m: &serde_json::Value, ci: bool| {
         let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-        name == active_alias || full == active_alias
+        if ci {
+            name.eq_ignore_ascii_case(active_alias)
+        } else {
+            name == active_alias
+        }
     };
+    let matches_full = |m: &serde_json::Value, ci: bool| {
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        if ci {
+            full.eq_ignore_ascii_case(active_alias)
+        } else {
+            full == active_alias
+        }
+    };
+    // BUG-20261119-192：CI 兜底层（BUG-20261117-077 家族口径对齐）。
     let matches_bare = |m: &serde_json::Value| {
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         full.rsplit('/').next().unwrap_or(full) == bare
     };
+    let matches_bare_ci = |m: &serde_json::Value| {
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        full.rsplit('/')
+            .next()
+            .unwrap_or(full)
+            .eq_ignore_ascii_case(bare)
+    };
+    // 六层顺序 = nemesis-config 装配族四站点的恒等形态（每层全数组扫完
+    // 才进下层；同层内条目序先到先得）。
     arr.iter()
-        .find(|m| matches_exact(m))
+        .find(|m| matches_name(m, false))
+        .or_else(|| arr.iter().find(|m| matches_full(m, false)))
+        .or_else(|| arr.iter().find(|m| matches_name(m, true)))
+        .or_else(|| arr.iter().find(|m| matches_full(m, true)))
         .or_else(|| arr.iter().find(|m| matches_bare(m)))
+        .or_else(|| arr.iter().find(|m| matches_bare_ci(m)))
 }
 
 /// Resolve the capability tier for the active model in a `config.json` Value.
@@ -195,9 +246,17 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
             .get("real_name")
             .and_then(|v| v.as_str())
             .map(String::from),
+        // BUG-20261114-055：越域值按「未设」（None）处理——0 = resolver
+        // 家族缺席惯例（max_output_tokens / context_window /
+        // compact_context_tokens 全 `.filter(>0)` 同族）；>u32::MAX 旧代码
+        // 裸 `as u32` 静默回绕（4_294_967_296→0→Mini 钉死，恰是本模块
+        // 设计原则点名的「误判强模型为小 = 不可恢复」方向；loud 拒绝
+        // 先例：config_port_to_u16 同理由拒绝裸 `as u16`）。误输入宁落
+        // 名字检测 / 默认 Big，不吞进错误桶。
         size_b: entry
             .get("model_size_b")
             .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0 && *n <= u32::MAX as u64)
             .map(|n| n as u32),
     };
 
@@ -236,11 +295,18 @@ pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) ->
 /// JSON object — caller falls back to the startup value. Negative values are
 /// passed through unmolested; the consumer (run_loop organ 1) already maps
 /// <=0 to "unlimited".
+///
+/// BUG-20261117-085：上界 `u32::MAX` 闸（消费侧 `n as u32`）——越域值
+/// 按「未设」（None）回落启动值，拒绝裸 `as u32`。截断是语义反转：
+/// 2^32 → 0 → 消费侧判「不限」（用户设上限反而得到无限轮次），同族
+/// 惯例先例：BUG-20261114-055（model_size_b 越域按 None）。
 pub fn resolve_max_tool_iterations(cfg: &serde_json::Value) -> Option<i64> {
     cfg.get("agents")
         .and_then(|v| v.get("defaults"))
         .and_then(|v| v.get("max_tool_iterations"))
         .and_then(|v| v.as_i64())
+        // 负值（≤0=不限）照透传：负数天然 ≤ u32::MAX，只拦上界越域。
+        .filter(|v| *v <= u32::MAX as i64)
 }
 
 /// （无人值守）：`agents.defaults.max_output_ceiling` 缺席
@@ -332,11 +398,17 @@ pub fn valid_effort(s: &str) -> bool {
 /// matching `model_list[]` entry and returns its `reasoning_effort` string
 /// (one of [`EFFORT_TIERS`]); None/empty/"off" → None (send nothing);
 /// unknown values → None (defensive: garbage config never injects keys).
+///
+/// 归一与 [`valid_effort`] 同一容忍语义（trim + 大小写不敏感，
+/// BUG-20261113-151）：保存入口（WSAPI/CLI）只 lowercase 不 trim，
+/// 手改 config 亦无归一层——`"High"` / `" high "` 是 [`valid_effort`]
+/// 认可的合法变体，不能在读取端被当垃圾静默丢档（effort 无声失效，
+/// 用户以为开档实际未生效）。返回值恒为 canonical 小写。
 pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> Option<String> {
     let e = find_model_entry(cfg, active_alias)
         .and_then(|m| m.get("reasoning_effort"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(|s| s.trim().to_ascii_lowercase())
         .unwrap_or_default();
     match e.as_str() {
         "" | "off" => None,
@@ -597,6 +669,19 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
     if big_markers.iter().any(|m| l.contains(m)) {
         return Some(ModelTier::Big);
     }
+    // Qwen 云端 API 档位命名（qwen*-max/plus/turbo/long）是 DashScope/
+    // 百炼 API 专属 tier 词（旗舰/中杯/小杯/长上下文），不是开源权重命名——
+    // 开源权重名必带尺寸标记（7b/30b/72b/…）已在 parse_size_marker 解析，
+    // 到不了这里；而这些 API 名不含任何 big marker，却命中下方 small 裸
+    // 前缀 "qwen-"/"qwen2.5-"/"qwen3-" → qwen-max/qwen2.5-max/qwen3-max/
+    // qwen-vl-max 等旗舰全被砍到 Mini（13 工具 + 重试预算 3）。dashscope
+    // preset 的 default_model 就是 qwen-max（provider_resolver），一键接入
+    // 首选路径即触发。宁大勿小（模块头设计原则：误判强模型为小 = 不可恢复
+    // 的工具面损失）：档位词族按 Big 处理。
+    const QWEN_API_TIER_WORDS: &[&str] = &["-max", "-plus", "-turbo", "-long"];
+    if l.contains("qwen") && QWEN_API_TIER_WORDS.iter().any(|w| l.contains(w)) {
+        return Some(ModelTier::Big);
+    }
     // Known-small local families — absent a size marker, assume small.
     let small_markers = [
         "llama-3-8",
@@ -731,6 +816,15 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // normal 档开启——取回工具随档必含（同 mini 侧注释；lazy 关闭
             // 时由供给闸隐藏，白名单成员无害）。
             "tools_schema_get",
+            // (Phase 5 图像工具层) LLM 主动读图。Mini 不给——
+            // 小模型视觉质量不可控（附图 token 成本高、利用率低）；big 全量
+            // 天然含。vision=no 的模型由 dispatch 层 vision 前置闸零 IO 拒绝，
+            // 白名单成员无副作用。
+            "read_image",
+            // 会话钩子自管（add/delete/list 单工具）。Mini 不给——
+            // HIGH 落盘走审批卡 + 只能给自己设，小模型容易在琐碎场景
+            // 滥用审批交互；big 全量天然含。
+            "hooks",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

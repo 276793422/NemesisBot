@@ -13,6 +13,11 @@
 
 use crate::*;
 
+// BUG-20261114-063 面：独立配置文件模块的结构（未 re-export 到 crate 根）。
+use crate::credentials::CredentialsFile;
+use crate::proxy_file::{EnvProxyConfig, SelfupdateProxyConfig};
+use crate::proxy_keys_file::{ProxyKeyEntry, ProxyKeysFile};
+
 /// 特征凭据值——若 Debug 泄露必然原样出现。
 const SECRET: &str = "SK-SECRET-VALUE-9f8e7d6c5b4a";
 
@@ -347,5 +352,221 @@ fn whole_config_debug_does_not_leak_channel_secrets() {
     assert!(
         out.contains("<redacted>"),
         "Config 整段 Debug 缺脱敏形态: {out}"
+    );
+}
+
+// ============================================================================
+// BUG-20261114-063：bridge / web-search / credentials / proxy-keys / proxy
+// 五族漏网结构——068 修复清单（18 通道结构 + WeCom + ModelConfig.proxy）与
+// 横向排查表都未覆盖的 config 家族段（bridge 段、tools.web 搜索段、
+// credentials.yaml / config.proxy_keys.json / config.proxy.json 三个独立
+// 文件形态）。全部在 Config derive(Debug)（lib.rs）递归面或自身
+// format!("/{:?}") 消费面上。
+// ============================================================================
+
+#[test]
+fn bridge_server_config_debug_redacts_token() {
+    let c = BridgeServerConfig {
+        token: SECRET.into(),
+    };
+    assert_redacted(&format!("{c:?}"), "BridgeServerConfig");
+}
+
+#[test]
+fn bridge_client_config_debug_redacts_token_and_access_token() {
+    let c = BridgeClientConfig {
+        enabled: true,
+        relay_url: "ws://vps.example.com:60600".into(),
+        token: SECRET.into(),
+        access_token: format!("panel-{SECRET}"),
+    };
+    let out = format!("{c:?}");
+    assert_redacted(&out, "BridgeClientConfig");
+    assert!(
+        out.matches("<redacted>").count() >= 2,
+        "BridgeClientConfig: token 与 access_token 都应脱敏: {out}"
+    );
+    // plain 字段保留诊断价值。
+    assert!(
+        out.contains("ws://vps.example.com:60600"),
+        "BridgeClientConfig: relay_url 应原样输出: {out}"
+    );
+}
+
+#[test]
+fn brave_config_debug_redacts_api_key() {
+    let c = BraveConfig {
+        enabled: true,
+        api_key: SECRET.into(),
+        ..Default::default()
+    };
+    assert_redacted(&format!("{c:?}"), "BraveConfig");
+}
+
+#[test]
+fn perplexity_config_debug_redacts_api_key() {
+    let c = PerplexityConfig {
+        enabled: true,
+        api_key: SECRET.into(),
+        ..Default::default()
+    };
+    assert_redacted(&format!("{c:?}"), "PerplexityConfig");
+}
+
+#[test]
+fn whole_config_debug_does_not_leak_bridge_and_search_secrets() {
+    // 威胁模型本尊（063 面）：Config 整段 Debug 递归进 bridge 段与
+    // tools.web 搜索段。
+    let cfg = Config {
+        bridge: Some(BridgeConfig {
+            server: BridgeServerConfig {
+                token: SECRET.into(),
+            },
+            client: BridgeClientConfig {
+                enabled: true,
+                relay_url: "ws://vps.example.com:60600".into(),
+                token: SECRET.into(),
+                access_token: format!("panel-{SECRET}"),
+            },
+        }),
+        tools: ToolsConfig {
+            web: WebToolsConfig {
+                brave: BraveConfig {
+                    enabled: true,
+                    api_key: format!("brave-{SECRET}"),
+                    ..Default::default()
+                },
+                perplexity: PerplexityConfig {
+                    enabled: true,
+                    api_key: format!("pplx-{SECRET}"),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let out = format!("{cfg:?}");
+    assert!(
+        !out.contains(SECRET),
+        "Config 整段 Debug 泄露 bridge/搜索凭据: {out}"
+    );
+    assert!(
+        out.contains("<redacted>"),
+        "Config 整段 Debug 缺脱敏形态: {out}"
+    );
+}
+
+#[test]
+fn credentials_file_debug_redacts_key_values() {
+    // CredentialsFile.keys 就是别名→明文 API key 账本：Debug 只报规模，
+    // 不落任何别名与值。
+    let f = CredentialsFile {
+        keys: [
+            ("openai-main".to_string(), format!("sk-{SECRET}")),
+            ("zhipu-free".to_string(), format!("zp-{SECRET}")),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let out = format!("{f:?}");
+    assert!(
+        !out.contains(SECRET),
+        "CredentialsFile Debug 泄露 key 明文: {out}"
+    );
+    assert!(
+        !out.contains("openai-main"),
+        "CredentialsFile Debug 落别名（账本条目应整体脱敏）: {out}"
+    );
+    assert!(
+        out.contains("<redacted: 2 entries>"),
+        "CredentialsFile Debug 缺规模脱敏形态: {out}"
+    );
+}
+
+#[test]
+fn proxy_key_entry_debug_redacts_key() {
+    let e = ProxyKeyEntry {
+        name: "caller-a".into(),
+        key: format!("nbk-{SECRET}"),
+        enabled: true,
+        created_at: 1_700_000_000,
+        note: "test caller".into(),
+    };
+    let out = format!("{e:?}");
+    assert_redacted(&out, "ProxyKeyEntry");
+    assert!(
+        out.contains("caller-a"),
+        "ProxyKeyEntry: name（非秘密）应原样输出: {out}"
+    );
+}
+
+#[test]
+fn proxy_keys_file_debug_redacts_all_keys() {
+    // Vec 的 Debug 逐元素走 ProxyKeyEntry 的脱敏 impl——整文件遍历形态
+    // 也要闭合。
+    let f = ProxyKeysFile {
+        keys: vec![
+            ProxyKeyEntry {
+                name: "caller-a".into(),
+                key: format!("nbk-{SECRET}"),
+                enabled: true,
+                created_at: 0,
+                note: String::new(),
+            },
+            ProxyKeyEntry {
+                name: "caller-b".into(),
+                key: format!("nbk-2-{SECRET}"),
+                enabled: false,
+                created_at: 0,
+                note: String::new(),
+            },
+        ],
+    };
+    let out = format!("{f:?}");
+    assert!(
+        !out.contains(SECRET),
+        "ProxyKeysFile Debug 泄露 key 明文: {out}"
+    );
+    assert!(
+        out.contains("<redacted>"),
+        "ProxyKeysFile Debug 缺脱敏形态: {out}"
+    );
+}
+
+#[test]
+fn env_proxy_config_debug_redacts_urls_with_userinfo() {
+    // 与 ModelConfig.proxy 同口径（068）：代理 URL 可携带 userinfo 凭据
+    // （http://user:pass@host:port——reqwest/hyper from_env 直接消费）。
+    let c = EnvProxyConfig {
+        http_proxy: format!("http://user:{SECRET}@proxy:8080"),
+        https_proxy: format!("http://u2:{SECRET}@proxy:8443"),
+        all_proxy: format!("socks5://u3:{SECRET}@p:1080"),
+        no_proxy: "localhost,.internal".into(),
+    };
+    let out = format!("{c:?}");
+    assert_redacted(&out, "EnvProxyConfig");
+    assert!(
+        !out.contains("user:"),
+        "EnvProxyConfig: proxy userinfo 泄露: {out}"
+    );
+    // no_proxy 是豁免主机列表（非凭据）——保留诊断价值。
+    assert!(
+        out.contains("localhost"),
+        "EnvProxyConfig: no_proxy 应原样输出: {out}"
+    );
+}
+
+#[test]
+fn selfupdate_proxy_config_debug_redacts_url() {
+    let c = SelfupdateProxyConfig {
+        proxy: format!("http://user:{SECRET}@proxy:8080"),
+    };
+    let out = format!("{c:?}");
+    assert_redacted(&out, "SelfupdateProxyConfig");
+    assert!(
+        !out.contains("user:"),
+        "SelfupdateProxyConfig: proxy userinfo 泄露: {out}"
     );
 }

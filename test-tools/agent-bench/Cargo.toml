@@ -18,6 +18,14 @@ futures = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
+sha2 = { workspace = true }
+rcgen = "0.14"
+# mail_roundtrip TLS relay sink：rustls 特性集与 nemesis-mail-protocol /
+# plugin-mail 同源（ring provider + tls12），版本统一 0.23/0.26。
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+# tls_server_config（bench sink TLS 装配，与产品面同一构造）
+nemesis-mail-protocol = { path = "../../crates/nemesis-mail-protocol" }
 tempfile = "3"
 
 [lints]

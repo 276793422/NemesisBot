@@ -174,8 +174,11 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                     tz: None,
                 }
             } else {
-                println!("Error: Either --every or --cron must be specified.");
-                return Ok(());
+                // usage 错误必须非零退码（BUG-20261119-198）：此前打印提示
+                // 后 Ok(())——脚本化 `cron add ... && echo ok` 对什么都没创建
+                // 的调用假成功。同族对照：--every 0 / 非法表达式 / 死排程
+                // 全是 bail，本臂是唯一退码 0 的参数错误。
+                anyhow::bail!("必须指定 --every 或 --cron 之一（缺调度参数的任务永远不会触发）");
             };
 
             let job = svc

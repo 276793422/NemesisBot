@@ -49,6 +49,48 @@ static INFLIGHT_BACKUPS: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashSet<PathBuf>>,
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
 
+/// BUG-20261118-172：staging 韧性删除统一走 spawn_blocking（fsutil.rs
+/// LOW-5 家族纪律——remove_dir_all_resilient 内部 thread::sleep 退避最坏
+/// ~4.4s/次，直跑 tokio worker 会阻塞 executor）。async 装配路径
+/// （plan_github_install / commit_install / install）的 staging 清理点
+/// 统一经此。**不得在 INSTALL_COMMIT_LOCK 临界区内 await**——见
+/// [`commit_staging_sync`] / [`place_staging_sync`] 的锁外 deferred 模式。
+async fn rm_staging_resilient(staging: &Path) {
+    let p = staging.to_path_buf();
+    let _ =
+        tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_dir_all_resilient(&p))
+            .await;
+}
+
+/// GitHub 落位临界区内的同步落位步（BUG-20261118-172：INSTALL_COMMIT_LOCK
+/// 段内禁 await——parking_lot guard 跨 await 即 GuardNoSend、future 失
+/// Send。建父目录 + rename 纯同步；失败不就地清理 staging，由调用方在
+/// 锁外统一 deferred 韧性清理）。
+fn commit_staging_sync(staging: &Path, target: &Path) -> Result<()> {
+    // skills/ 父目录可能尚不存在（Windows rename 不自动建父目录）。
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
+    }
+    std::fs::rename(staging, target).map_err(NemesisError::Io)
+}
+
+/// Registry 落位临界区内的同步落位步（BUG-20261118-172：同上段内禁
+/// await；staging 不存在 = registry 没写任何文件——建空目录落位，保持
+/// 历史行为）。
+fn place_staging_sync(staging: &Path, target: &Path) -> Result<()> {
+    // skills/ 父目录可能尚不存在。
+    if let Some(parent) = target.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        return Err(NemesisError::Io(e));
+    }
+    if staging.exists() {
+        std::fs::rename(staging, target).map_err(NemesisError::Io)
+    } else {
+        std::fs::create_dir_all(target).map_err(NemesisError::Io)
+    }
+}
+
 /// GitHub 安装结果（pinned 路径）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallOutcome {
@@ -418,7 +460,14 @@ impl SkillInstaller {
         } else {
             requested_ref
         };
-        let url = format!("{}/repos/{}/commits/{}", api_base, repo, reference);
+        // BUG-20261113-162：ref 段 percent-encoding（sha/HEAD 不受影响，
+        // 分支名/tag 可合法含 `#`，裸插值会被 fragment 切断）。
+        let url = format!(
+            "{}/repos/{}/commits/{}",
+            api_base.trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(repo),
+            crate::url_enc::percent_encode_component(reference)
+        );
         let response = client
             .get(&url)
             .header("User-Agent", USER_AGENT)
@@ -434,9 +483,14 @@ impl SkillInstaller {
                 response.status()
             )));
         }
-        let body: serde_json::Value = response
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（commit 元数据 KB 量级）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse commit response: {}", e)))?;
         let sha = body["sha"].as_str().unwrap_or_default().to_string();
         if sha.is_empty() {
@@ -459,10 +513,9 @@ impl SkillInstaller {
         if !dir.join(".signature").exists() {
             return VerificationOutcome::default();
         }
-        let config_path = self
-            .trust_store_path
-            .clone()
-            .unwrap_or_else(|| self.workspace.join("config").join("skill_trust.json"));
+        let config_path = self.trust_store_path.clone().unwrap_or_else(|| {
+            nemesis_path::resolve_skill_trust_path_in_workspace(&self.workspace)
+        });
         let signer = crate::signer::SkillSigner::with_persistence(&config_path.to_string_lossy());
         match signer.verify_skill(&dir.to_string_lossy()) {
             Ok(v) => VerificationOutcome {
@@ -584,10 +637,11 @@ impl SkillInstaller {
             "", // 仓库根为技能根（空前缀匹配全部 blob）
             &staging.to_string_lossy(),
             0,
+            0,
         )
         .await
         {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(e);
         }
 
@@ -596,7 +650,7 @@ impl SkillInstaller {
         let trust = match self.enforce_trust(&outcome) {
             Ok(t) => t,
             Err(e) => {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(e);
             }
         };
@@ -616,20 +670,23 @@ impl SkillInstaller {
         // 脚本形态）——藏在 scripts/ 里的恶意载荷不再绕过检查。
         let skill_md_path = staging.join("SKILL.md");
         if !skill_md_path.exists() {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(NemesisError::Validation(format!(
                 "skill '{}' has no SKILL.md at repo root",
                 slug
             )));
         }
-        let content = std::fs::read_to_string(&skill_md_path).map_err(|e| {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-            NemesisError::Io(e)
-        })?;
+        let content = match std::fs::read_to_string(&skill_md_path) {
+            Ok(c) => c,
+            Err(e) => {
+                rm_staging_resilient(&staging).await;
+                return Err(NemesisError::Io(e));
+            }
+        };
         let security = check_skill_security_dir(&staging, &content, &slug, "");
         self.set_last_security_check(security.clone());
         if security.blocked {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(NemesisError::Security(format!(
                 "skill '{}' blocked by security check: {}",
                 slug, security.block_reason
@@ -648,7 +705,7 @@ impl SkillInstaller {
         let (age_days, age_decision) = match self.check_age(published_at, &mut warnings) {
             Ok(v) => v,
             Err(e) => {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(e);
             }
         };
@@ -657,7 +714,7 @@ impl SkillInstaller {
         let files_map = match SkillsLockfile::compute_dir_hashes(&staging) {
             Ok(h) => h,
             Err(e) => {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(e);
             }
         };
@@ -705,7 +762,7 @@ impl SkillInstaller {
         match gate.decide(&plan).await {
             InstallDecision::Approve => {}
             InstallDecision::Deny { reason } => {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(NemesisError::Security(format!(
                     "install denied by approval gate ({}): {}",
                     gate.name(),
@@ -726,31 +783,34 @@ impl SkillInstaller {
             .map(|f| (f.path.clone(), f.sha256.clone()))
             .collect::<std::collections::BTreeMap<_, _>>();
         if let Err(e) = self.verify_staging_matches_plan(&staging, &approved) {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(e);
         }
 
         // 落位临界区——exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下
-        // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段。
-        let _commit_guard = INSTALL_COMMIT_LOCK.lock();
-
+        // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。段内全
+        // 同步是硬约束（BUG-20261118-172：parking_lot guard 跨 await 即
+        // GuardNoSend、future 失 Send）——失败路径的 staging 韧性清理挪到
+        // 锁外 deferred 执行。
         let target = self.workspace.join("skills").join(&plan.slug);
-        // plan 阶段已检查不存在；二次防御（并发竞态兜底）。
-        if target.exists() {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-            return Err(NemesisError::Validation(format!(
-                "skill '{}' already exists",
-                plan.slug
-            )));
+        let committed = {
+            let _commit_guard = INSTALL_COMMIT_LOCK.lock();
+
+            // plan 阶段已检查不存在；二次防御（并发竞态兜底）。
+            if target.exists() {
+                Err(NemesisError::Validation(format!(
+                    "skill '{}' already exists",
+                    plan.slug
+                )))
+            } else {
+                // skills/ 父目录可能尚不存在（Windows rename 不自动建父目录）。
+                commit_staging_sync(&staging, &target)
+            }
+        };
+        if let Err(e) = committed {
+            rm_staging_resilient(&staging).await;
+            return Err(e);
         }
-        // skills/ 父目录可能尚不存在（Windows rename 不自动建父目录）。
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(NemesisError::Io)?;
-        }
-        std::fs::rename(&staging, &target).map_err(|e| {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-            NemesisError::Io(e)
-        })?;
 
         // origin tracking（GitHub 路径 registry 名固定 "github"，version = 短 commit）。
         let short_commit: String = plan.commit.chars().take(12).collect();
@@ -947,14 +1007,14 @@ impl SkillInstaller {
         {
             Ok(r) => r,
             Err(e) => {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(e);
             }
         };
 
         // Check if the download result indicates malware or suspicious content.
         if dl_result.is_malware_blocked {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(NemesisError::Security(format!(
                 "skill '{}' was blocked as malware",
                 slug
@@ -970,7 +1030,7 @@ impl SkillInstaller {
         // 不得残留（plan_github_install 同场景本就有清理，此处对齐）。
         let outcome = self.verify_signature_state(&staging);
         if let Err(e) = self.enforce_trust(&outcome) {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(e);
         }
 
@@ -993,10 +1053,13 @@ impl SkillInstaller {
             // SKILL.md 存在但读不出（非 UTF-8 等）= fail loud（与
             // plan_github_install 同场景同口径）——不允许读失败静默短路成
             // 默认满分放行安装（安全检查逃逸口）。
-            let content = std::fs::read_to_string(&skill_md_path).map_err(|e| {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-                NemesisError::Io(e)
-            })?;
+            let content = match std::fs::read_to_string(&skill_md_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    rm_staging_resilient(&staging).await;
+                    return Err(NemesisError::Io(e));
+                }
+            };
             let check_result = check_skill_security_dir(&staging, &content, slug, "");
             security_result = check_result.clone();
             {
@@ -1005,7 +1068,7 @@ impl SkillInstaller {
             }
 
             if check_result.blocked {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(NemesisError::Security(format!(
                     "skill '{}' blocked by security check: {}",
                     slug, check_result.block_reason
@@ -1039,7 +1102,7 @@ impl SkillInstaller {
         {
             Ok(v) => v,
             Err(e) => {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                rm_staging_resilient(&staging).await;
                 return Err(e);
             }
         };
@@ -1051,7 +1114,7 @@ impl SkillInstaller {
             match SkillsLockfile::compute_dir_hashes(&staging) {
                 Ok(h) => h,
                 Err(e) => {
-                    nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+                    rm_staging_resilient(&staging).await;
                     return Err(e);
                 }
             }
@@ -1093,7 +1156,7 @@ impl SkillInstaller {
         };
         let gate = self.gate_or_default();
         if let InstallDecision::Deny { reason } = gate.decide(&plan).await {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(NemesisError::Security(format!(
                 "install denied by approval gate ({}): {}",
                 gate.name(),
@@ -1108,43 +1171,37 @@ impl SkillInstaller {
         // 提交前 digest 复核——审批等待窗口内 staging 内容被换 = abort
         // （不落位、内容不进 skills）。
         if let Err(e) = self.verify_staging_matches_plan(&staging, &files_map) {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
+            rm_staging_resilient(&staging).await;
             return Err(e);
         }
 
         // 落位临界区——exists 复检→rename→记账在 INSTALL_COMMIT_LOCK 下
-        // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段，
-        // parking_lot 停等安全；异步审批在锁外。
-        let _commit_guard = INSTALL_COMMIT_LOCK.lock();
+        // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。段内全
+        // 同步，parking_lot 停等安全；异步审批在锁外（BUG-20261118-172：
+        // 段内禁 await——guard 跨 await 即 GuardNoSend；失败路径的 staging
+        // 韧性清理挪到锁外 deferred 执行）。
+        let committed = {
+            let _commit_guard = INSTALL_COMMIT_LOCK.lock();
 
-        // 函数开头的 exists 检查在下载 + 审批等待之前（可能
-        // 相距 300s+），不在本临界区内——等待窗口内另一安装落位时，rename 撞
-        // 现存目录只给裸 IO 错误（Windows）/静默替换空目录（Unix）。与
-        // commit_install 的「二次防御」同款：锁内诚实报 already exists，
-        // 先到者内容不动。
-        if skill_dir.exists() {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-            return Err(NemesisError::Validation(format!(
-                "skill '{}' already exists",
-                slug
-            )));
-        }
-
-        // 落位 + lockfile 记账（skills/ 父目录可能尚不存在；
-        // staging 不存在 = registry 没写任何文件——建空目录落位，保持历史行为）。
-        if let Some(parent) = skill_dir.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-                NemesisError::Io(e)
-            })?;
-        }
-        if staging.exists() {
-            if let Err(e) = std::fs::rename(&staging, &skill_dir) {
-                nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
-                return Err(NemesisError::Io(e));
+            // 函数开头的 exists 检查在下载 + 审批等待之前（可能
+            // 相距 300s+），不在本临界区内——等待窗口内另一安装落位时，rename 撞
+            // 现存目录只给裸 IO 错误（Windows）/静默替换空目录（Unix）。与
+            // commit_install 的「二次防御」同款：锁内诚实报 already exists，
+            // 先到者内容不动。
+            if skill_dir.exists() {
+                Err(NemesisError::Validation(format!(
+                    "skill '{}' already exists",
+                    slug
+                )))
+            } else {
+                // 落位（skills/ 父目录可能尚不存在；staging 不存在 =
+                // registry 没写任何文件——建空目录落位，保持历史行为）。
+                place_staging_sync(&staging, &skill_dir)
             }
-        } else {
-            std::fs::create_dir_all(&skill_dir).map_err(NemesisError::Io)?;
+        };
+        if let Err(e) = committed {
+            rm_staging_resilient(&staging).await;
+            return Err(e);
         }
 
         // Write origin tracking.

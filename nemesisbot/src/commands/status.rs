@@ -48,24 +48,12 @@ pub fn run(local: bool) -> Result<()> {
             {
                 println!();
                 println!("  Configured Models:");
-                let mut provider_counts: std::collections::HashMap<String, (usize, bool)> =
-                    std::collections::HashMap::new();
-                for m in models {
-                    let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                    let parts: Vec<&str> = model.splitn(2, '/').collect();
-                    if parts.len() == 2 {
-                        let provider = parts[0].to_lowercase();
-                        let has_key = m
-                            .get("api_key")
-                            .and_then(|v| v.as_str())
-                            .map(|k| !k.is_empty())
-                            .unwrap_or(false);
-                        let entry = provider_counts.entry(provider).or_insert((0, false));
-                        entry.0 += 1;
-                        entry.1 = entry.1 || has_key;
-                    }
-                }
-                for (provider, (count, has_key)) in &provider_counts {
+                // BTreeMap（非 HashMap）：provider 分组聚合按字典序输出——
+                // user-visible listings must be deterministic（BUG-20261114-050，
+                // 与 AuthStore list_providers 排序约定同源；HashMap 迭代序
+                // 逐进程漂移，同机两次 status 输出顺序不同）。聚合逻辑
+                // 单一真相源 = aggregate_provider_stats。
+                for (provider, (count, has_key)) in &aggregate_provider_stats(models) {
                     println!(
                         "    {}: {} model(s), API key: {}",
                         provider,
@@ -143,6 +131,34 @@ pub fn run(local: bool) -> Result<()> {
     println!("  Home directory: {}", home.display());
 
     Ok(())
+}
+
+/// model_list → provider 分组聚合（模型数 + 是否有任一 API key）。
+/// BTreeMap 保证输出序确定性（BUG-20261114-050：HashMap 迭代序逐进程
+/// 漂移，违反 user-visible listings 确定性约定）；provider 段小写归一
+/// （大小写形态归并同组）；无 slash 前缀的模型名不计入任何 provider
+/// （与既有行为一致）。单一真相源：run() 与测试直测同一函数。
+fn aggregate_provider_stats(
+    models: &[serde_json::Value],
+) -> std::collections::BTreeMap<String, (usize, bool)> {
+    let mut provider_counts: std::collections::BTreeMap<String, (usize, bool)> =
+        std::collections::BTreeMap::new();
+    for m in models {
+        let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        let parts: Vec<&str> = model.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            let provider = parts[0].to_lowercase();
+            let has_key = m
+                .get("api_key")
+                .and_then(|v| v.as_str())
+                .map(|k| !k.is_empty())
+                .unwrap_or(false);
+            let entry = provider_counts.entry(provider).or_insert((0, false));
+            entry.0 += 1;
+            entry.1 = entry.1 || has_key;
+        }
+    }
+    provider_counts
 }
 
 #[cfg(test)]

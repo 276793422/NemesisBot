@@ -153,6 +153,40 @@ fn test_nip04_content_format_and_deterministic_iv() {
     );
 }
 
+// BUG-20261117-049 回归锁：生产路径的随机性必须锁行为面——同 keys 同明文
+// 两次 encrypt_dm 密文必不同（IV 常量化会弱化 CBC）；build_dm_event 同输入
+// 两次 content 必不同（随机 IV + BIP-340 aux，aux 可预测 ⇒ nonce 可预测
+// ⇒ 私钥可恢复）。与 encrypt_dm_with_iv 的确定性锚定测试互为对照：
+// 确定性由显式 IV 变体提供，生产变体必须随机。
+#[test]
+fn test_nip04_random_iv_distinct_ciphertexts() {
+    let a = NostrKeys::from_hex_secret(TEST_SK_A).unwrap();
+    let b = NostrKeys::from_hex_secret(TEST_SK_B).unwrap();
+
+    let c1 = encrypt_dm(&a, b.x_only_public_key(), "same plaintext").unwrap();
+    let c2 = encrypt_dm(&a, b.x_only_public_key(), "same plaintext").unwrap();
+    assert_ne!(
+        c1, c2,
+        "同 keys 同明文两次 encrypt_dm 密文必须不同（随机 IV）"
+    );
+    // 随机 IV 不得破坏正确性：两条都能解回原明文。
+    assert_eq!(
+        decrypt_dm(&b, a.x_only_public_key(), &c1).unwrap(),
+        "same plaintext"
+    );
+    assert_eq!(
+        decrypt_dm(&b, a.x_only_public_key(), &c2).unwrap(),
+        "same plaintext"
+    );
+
+    let e1 = build_dm_event(&a, b.x_only_public_key(), "aux-random", 1_700_000_000).unwrap();
+    let e2 = build_dm_event(&a, b.x_only_public_key(), "aux-random", 1_700_000_000).unwrap();
+    assert_ne!(
+        e1.content, e2.content,
+        "同输入两次 build_dm_event 的 content 必须不同（随机 IV + aux）"
+    );
+}
+
 #[test]
 fn test_nip04_decrypt_garbage_rejected() {
     let a = NostrKeys::from_hex_secret(TEST_SK_A).unwrap();

@@ -125,3 +125,104 @@ async fn test_mastodon_double_stop() {
     ch.stop().await.unwrap();
     ch.stop().await.unwrap();
 }
+
+// ---- BUG-20261113-149（allow_from 死键） / BUG-20261113-150（首启回灌）回归 ----
+
+fn mastodon_mention_json(id: &str, username: &str, content: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "type": "mention",
+        "account": {"id": "a1", "username": username, "display_name": null},
+        "status": {"id": format!("s-{id}"), "content": content, "in_reply_to_id": null}
+    })
+}
+
+fn seen_map() -> std::sync::Arc<parking_lot::RwLock<HashMap<String, bool>>> {
+    std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new()))
+}
+
+/// BUG-20261113-149：allow_from 白名单闸——白名单外 mention 不发布；
+/// 白名单内照常；空 = 全放行。
+#[test]
+fn test_bug149_ingest_notification_allow_from_gate() {
+    let seen = seen_map();
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let notif = mastodon_mention_json("n1", "intruder", "<p>hello</p>");
+    let allowed = vec!["alice".to_string()];
+
+    // 白名单外：不发布
+    assert!(!MastodonChannel::ingest_notification(
+        &notif, &seen, &allowed, &bus
+    ));
+    assert!(rx.try_recv().is_err());
+    // 白名单外 mention 不应消耗去重表（闸在去重前）
+    assert!(!seen.read().contains_key("n1"));
+
+    // 白名单内：发布
+    let notif_alice = mastodon_mention_json("n2", "alice", "<p>hi bot</p>");
+    assert!(MastodonChannel::ingest_notification(
+        &notif_alice,
+        &seen,
+        &allowed,
+        &bus
+    ));
+    let inbound = rx.try_recv().expect("allowed sender must publish");
+    assert_eq!(inbound.channel, "mastodon");
+    assert_eq!(inbound.sender_id, "alice");
+    assert_eq!(inbound.chat_id, "s-n2");
+    assert_eq!(inbound.content, "hi bot");
+}
+
+/// BUG-20261113-149：空 allow_from = 全放行（家族惯例）。
+#[test]
+fn test_bug149_ingest_notification_empty_allow_from_allows_all() {
+    let seen = seen_map();
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let notif = mastodon_mention_json("n1", "anyone", "<p>hello</p>");
+    assert!(MastodonChannel::ingest_notification(
+        &notif,
+        &seen,
+        &[],
+        &bus
+    ));
+    assert!(rx.try_recv().is_ok());
+}
+
+/// BUG-20261113-150：mark_mentions_seen 首轮基线——窗口内 mention 全标
+/// 已见不发布；后续对同 id 再 ingest 被去重（不重复回复旧帖）。
+#[test]
+fn test_bug150_mark_mentions_seen_baseline_then_dedup() {
+    let seen = seen_map();
+    let bus = test_bus();
+    let mut rx = bus.subscribe();
+
+    let notifications = vec![
+        mastodon_mention_json("old-1", "alice", "<p>old question</p>"),
+        mastodon_mention_json("old-2", "bob", "<p>old other</p>"),
+        serde_json::json!({
+            "id": "f-1",
+            "type": "follow",
+            "account": {"id": "a3", "username": "carol", "display_name": null}
+        }),
+    ];
+
+    // 首轮基线：全标已见（follow 类型不标），零发布
+    MastodonChannel::mark_mentions_seen(&notifications, &seen);
+    assert!(rx.try_recv().is_err(), "baseline must not publish");
+    assert!(seen.read().contains_key("old-1"));
+    assert!(seen.read().contains_key("old-2"));
+    assert!(!seen.read().contains_key("f-1"));
+
+    // 同一 mention 再进来（重启场景下 seen 表存活时的重复投递）→ 去重不发布
+    assert!(!MastodonChannel::ingest_notification(
+        &notifications[0],
+        &seen,
+        &[],
+        &bus
+    ));
+    assert!(rx.try_recv().is_err());
+}

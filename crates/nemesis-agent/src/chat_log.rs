@@ -14,6 +14,16 @@ use std::path::PathBuf;
 use crate::r#loop::FileChange;
 use crate::work_timeline::WorkTimeline;
 
+/// 进程单例访问口——本模块全部寻址（jsonl/meta/pending/boundary/迁移）的
+/// 唯一入口。测试构建下首访先把单例 home 重定向到进程级临时目录
+/// （`crate::test_home`），单元测试的 chat_log / meta 侧车写入不再泄漏
+/// 真实 `~/.nemesisbot`；生产构建直通。
+fn singleton() -> &'static nemesis_path::PathManager {
+    #[cfg(test)]
+    crate::test_home::ensure_redirected();
+    default_path_manager()
+}
+
 /// N5（2026-10-13 机会项）：交付物条目单一真相源在 `nemesis_types::agent`
 /// （`AgentEvent::DeliverablesRegistered` 载荷与本字段共用同一 serde 形态，
 /// 不维护两份镜像 struct）；本模块 re-export 保持 `crate::chat_log::
@@ -66,6 +76,22 @@ pub struct ChatLogMeta<'a> {
     /// assistant 最终回复行随行落盘（`"work"` 键）。`None` 不写——直答
     /// （无中间轮）与旧条目读侧不受影响（与 file_changes 同一宽容读契约）。
     pub work: Option<&'a WorkTimeline>,
+    /// 集群续行节点徽章（2026-09-23 集群续行归属，2026-11-12 续行回主路
+    /// 收编进 meta）：`"source_node"` 字段 = 实际执行任务的集群节点名
+    /// （`cluster_rpc` 派发的续行回复由主 LLM 转述，干活的是远端节点）。
+    /// `Some` 时 Dashboard 渲染「节点 X」徽章（与模型徽章并列）；`None`
+    /// （普通回复）不写该键——旧 jsonl 条目照常解析，读侧缺字段 = 无徽章。
+    pub source_node: Option<&'a str>,
+    /// 系统通知标记（2026-11-16 系统注入消息渲染成用户气泡 BUG）：本行是
+    /// **系统注入**消息（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮等
+    /// `sender_id=="system"` 的注入源）而非真人发言——role 仍是 `"user"`
+    /// （通知轮是真实轮次：`is_projected_chat_row` 上下文重建投影与
+    /// `is_user_turn_boundary` 轮边界判定全依赖 role=user，改 role 会破
+    /// 重建与 rewind），但 Dashboard 据此渲染成系统通知条而非用户气泡。
+    /// admission 落盘点按 `sender_id=="system"` 推导（metadata 显式值
+    /// 优先）。`None` 不写——真人消息/旧条目缺字段 = 用户气泡，逐字节
+    /// 旧行为。
+    pub system_notice: Option<&'a str>,
 }
 
 /// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
@@ -81,10 +107,11 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.file_changes,
         meta.deliverables,
         meta.checkpoint_turn,
-        None,
+        meta.source_node,
         meta.steer,
         meta.work,
         None,
+        meta.system_notice,
     );
 }
 
@@ -190,6 +217,7 @@ pub fn append_chat_log_with_model_and_node(
         false,
         None,
         None,
+        None,
     );
 }
 
@@ -220,6 +248,7 @@ pub fn append_chat_log_full(
         None,
         None,
         false,
+        None,
         None,
         None,
     );
@@ -255,6 +284,7 @@ pub fn append_chat_log_full_with_images(
         false,
         None,
         None,
+        None,
     );
 }
 
@@ -278,6 +308,7 @@ pub fn append_compaction_note(session_key: &str, content: &str) {
         false,
         None,
         Some("compaction"),
+        None,
     );
 }
 
@@ -291,6 +322,9 @@ pub fn append_compaction_note(session_key: &str, content: &str) {
 /// 中间过程交错随行；直答/旧条目缺字段读侧宽容）.
 /// `note_kind` Some → extra `"note_kind"` 字段（2026-11-09 压缩注记徽标化
 /// ——前端据此渲染小徽标而非整段气泡，缺省不写键=旧条目照常解析）.
+/// `system_notice` Some → extra `"system_notice"` 字段（2026-11-16 系统通知
+/// 标记——前端据此把 role=user 的系统注入行渲染成通知条而非用户气泡，
+/// 缺省不写键=旧条目照常解析）.
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
@@ -307,6 +341,7 @@ fn write_chat_entry(
     steer: bool,
     work: Option<&WorkTimeline>,
     note_kind: Option<&str>,
+    system_notice: Option<&str>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -379,6 +414,13 @@ fn write_chat_entry(
     // 折叠小徽标而非整段蓝底气泡。缺字段 = 旧行，前端走文案前缀兜底识别。
     if let Some(kind) = note_kind {
         entry["note_kind"] = serde_json::Value::String(kind.to_string());
+    }
+    // 系统通知标记（2026-11-16）：role=user 的系统注入行（后台任务完成
+    // 唤醒/审批裁决回灌/Turn WAL 续轮/cron tick）——前端据此渲染成系统
+    // 通知条而非用户气泡。缺字段 = 真人消息/旧条目，前端用户气泡逐字节
+    // 旧行为（与 model/cron/note_kind 同一宽容读契约）。
+    if let Some(kind) = system_notice {
+        entry["system_notice"] = serde_json::Value::String(kind.to_string());
     }
     // R100（BUG-20261025-25）：整行（含换行）先序列化成 String 再**单次**
     // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的
@@ -564,7 +606,7 @@ pub(crate) fn log_path(session_key: &str) -> PathBuf {
     // 无 `/` 的键新旧映射一致，存量平面文件零迁移（嵌套目录由
     // [`migrate_nested_session_logs`] 启动平化）。
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .sessions_log_dir()
         .join(format!("{}.jsonl", safe_key))
 }
@@ -1217,6 +1259,13 @@ pub fn delete_chat_log(session_key: &str) {
             e
         );
     }
+    // 诊断捕获（capture）跟随删（2026-11-19 删除残留修复）：capture 目录
+    // 是会话内容的副本（工具入参/回执全文），隐私清理语义下硬删必须同步
+    // 清；失败降级交 capture 族 TTL 清扫兜底。
+    crate::capture_sink::remove_session_capture(
+        &nemesis_path::default_path_manager().workspace(),
+        session_key,
+    );
     // L22（2026-11-03 snooze 排队）：第四件套——暂停期 pending 队列随会话
     // 删除级联清理（会话没了，重放无主；滞留会被 orphan sweep 无限重试）。
     delete_session_pending(session_key);
@@ -1233,6 +1282,14 @@ pub fn delete_chat_log(session_key: &str) {
 /// 写失败仍是 warn 降级（主日志成功 = 操作成立，账本差集已入账）。
 pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
     let path = log_path(session_key);
+    // 零历史会话幂等（BUG-20261116-033）：jsonl 不存在 = 无事可清，直接
+    // Ok——不为空会话创建空文件。此前对全新会话（session_logs/ 目录尚未
+    // 懒创建）fs::write 直接撞「系统找不到指定的路径 (os error 3)」，
+    // CLI /clear（BUG-20261116-032 修复后走本函数）与 WSAPI chat.clear
+    // 对零历史会话都会误报失败。
+    if !path.exists() {
+        return Ok(());
+    }
     // T6（扩展计划 D5）：清空即全删——清空前取原始行，成功后全额按
     // truncate 语义入账（被清内容全文可从账本找回，与 rewind 同一保障）。
     let raw_lines: Vec<String> = fs::File::open(&path)
@@ -1274,7 +1331,7 @@ pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
 /// management without touching the lazy-created SessionStore.
 pub(crate) fn meta_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .sessions_log_dir()
         .join(format!("{}.meta.json", safe_key))
 }
@@ -1676,7 +1733,7 @@ pub fn clear_session_snooze(session_key: &str) -> Option<(String, Option<String>
 /// `agent_main_session_{sid}` 前缀还原裸 sid，logs.rs 同款规则）。输出按
 /// stem 排序——消费与条目顺序无关（每条独立处理），排序只为测试确定性。
 pub fn snoozed_sessions() -> Vec<(String, String, Option<String>)> {
-    let dir = default_path_manager().sessions_log_dir();
+    let dir = singleton().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -1730,7 +1787,7 @@ pub const SESSION_PENDING_CAP: usize = 64;
 /// `*.jsonl` 扫描为会话，`.jsonl` 后缀会造出幻影会话条目。
 pub(crate) fn pending_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .sessions_log_dir()
         .join(format!("{}.pending", safe_key))
 }
@@ -1776,6 +1833,9 @@ pub fn append_session_pending(
 /// 消息不可）。崩溃残留恢复臂：rename 后、删除前进程终止会留 `.taking`，
 /// 下一次 take 优先收走它（Windows rename 不覆盖已存在目标，先收残留是
 /// 顺序必需）；残留臂的并发双读理论可双投（残留只在崩溃后出现），接受。
+/// 「下一次 take」的触发保证 = [`pending_sessions`] 把 `.taking` 纳入扫描
+/// 名单（BUG-20261112-119）——web 侧 drain_orphan_pending 每 10s 依它
+/// 补投，否则标记已摘的会话再无 take 机会（残留永久滞留）。
 pub fn take_session_pending(session_key: &str) -> Vec<nemesis_types::channel::InboundMessage> {
     let path = pending_path(session_key);
     let tmp = path.with_extension("taking");
@@ -1824,15 +1884,22 @@ pub fn session_pending_count(session_key: &str) -> usize {
 /// [`append_session_pending`] 烧入裁决键保证本函数可靠）。空文件/坏首行
 /// 跳过（warn 留痕）。输出按键排序去重（read_dir 顺序是平台实现细节，
 /// 消费与顺序无关，排序只为测试确定性）。
+///
+/// BUG-20261112-119：扫描面同时含 `.taking`（[`take_session_pending`]
+/// rename 后、删除前进程终止的崩溃残留，同格式同首行键还原）。不扫它
+/// 则滞留兜底（web drain_orphan_pending，每 10s）对这种残留失明——唤醒
+/// 流程（snooze 标记已摘）与兜底扫描都没有下一个 take，注释假设的
+/// 「下一次 take 优先收走它」永远不会发生，暂停期排队消息静默永久滞留。
 pub fn pending_sessions() -> Vec<String> {
-    let dir = default_path_manager().sessions_log_dir();
+    let dir = singleton().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("pending") {
+        let ext = path.extension().and_then(|e| e.to_str());
+        if ext != Some("pending") && ext != Some("taking") {
             continue;
         }
         let Ok(data) = fs::read_to_string(&path) else {
@@ -1953,7 +2020,7 @@ pub fn read_session_allow_all(session_key: &str) -> Option<(bool, String)> {
 /// 会话键排序（read_dir 顺序是平台实现细节，消费与顺序无关，排序只为
 /// 测试确定性）。
 pub fn allow_all_sessions() -> Vec<(String, String)> {
-    let dir = default_path_manager().sessions_log_dir();
+    let dir = singleton().sessions_log_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -2234,7 +2301,7 @@ mod tests;
 /// a sidecar there would appear as a phantom session.
 pub(crate) fn boundary_path(session_key: &str) -> PathBuf {
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    default_path_manager()
+    singleton()
         .boundary_events_dir()
         .join(format!("{}.jsonl", safe_key))
 }
@@ -2303,7 +2370,7 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
 /// 跳过/失败）的点同时 eprintln 到 stderr 兜底；无迁移时零输出（幂等），
 /// 不产生启动噪音。
 pub fn migrate_nested_session_logs() {
-    let pm = default_path_manager();
+    let pm = singleton();
     for root in [pm.sessions_log_dir(), pm.boundary_events_dir()] {
         flatten_legacy_nested_dirs(&root);
     }

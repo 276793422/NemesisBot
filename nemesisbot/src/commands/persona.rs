@@ -96,6 +96,9 @@ fn cmd_current(workspace: &std::path::Path) -> Result<()> {
 }
 
 fn cmd_list(workspace: &std::path::Path) -> Result<()> {
+    // §4.4 快照降级面注记：list 列的是**本地已装**人格（读 workspace/personas，
+    // 零网络）——上游不可达降级臂只属于拉取型命令（search/install），本命令
+    // 无上游依赖，快照注记不适用。
     let personas_dir = workspace.join("personas");
 
     if !personas_dir.exists() {
@@ -226,9 +229,28 @@ fn cmd_restore(workspace: &std::path::Path) -> Result<()> {
 // Remote commands (async, GitHub API)
 // ---------------------------------------------------------------------------
 
+/// 快照插件按需装载 + 诚实注记（幂等；缺席 = 静默走纯在线；名册开关关 =
+/// 用户意志，注记一行；被拒 = stderr 留痕——headless CLI 无 tracing 面板，
+/// 用户需要知道为什么没有快照兜底）。
+fn ensure_snapshot_plugin(workspace: &std::path::Path) {
+    use crate::resources_plugin_loader::ResourcesLoadOutcome;
+    let config_dir = nemesis_path::workspace_config_dir(workspace);
+    match crate::resources_plugin_loader::load_resources_plugin(&config_dir) {
+        ResourcesLoadOutcome::Rejected(reason) => {
+            eprintln!("[plugin-resources] 快照插件装载被拒（{reason}）——超市将走纯在线");
+        }
+        ResourcesLoadOutcome::DisabledBySwitch => {
+            eprintln!("[plugin-resources] 快照插件已被本地插件库开关停用——超市将走纯在线");
+        }
+        _ => {}
+    }
+}
+
 fn cmd_search(workspace: &std::path::Path, query: Option<&str>) -> Result<()> {
     let query = query.unwrap_or("");
     println!("正在搜索人格超市...");
+    // 快照插件按需装载（缺席/拒绝/开关关 = 纯在线，装载结果不影响流程）。
+    ensure_snapshot_plugin(workspace);
 
     let rt = tokio::runtime::Handle::current();
     let ws = workspace.to_path_buf();
@@ -276,10 +298,12 @@ fn cmd_install(workspace: &std::path::Path, id: &str) -> Result<()> {
     }
 
     println!("正在下载人格 '{}'...", id);
+    // 快照插件按需装载（上游不可达时 install 走内置快照兜底）。
+    ensure_snapshot_plugin(workspace);
 
     let ws_str = workspace.to_string_lossy().to_string();
     let rt = tokio::runtime::Handle::current();
-    tokio::task::block_in_place(|| rt.block_on(async { fetch_and_convert(&ws_str, id).await }))??;
+    tokio::task::block_in_place(|| rt.block_on(async { fetch_and_convert(&ws_str, id).await }))?;
 
     println!("已安装人格: {}。", id);
     println!("使用 'nemesisbot persona activate {}' 激活。", id);
@@ -291,7 +315,89 @@ fn cmd_install(workspace: &std::path::Path, id: &str) -> Result<()> {
 // GitHub API helpers (reuse persona handler logic)
 // ---------------------------------------------------------------------------
 
+/// 路径 → 搜索结果行（在线/快照两臂共用：id/名/类别推导 + query 过滤 +
+/// installed 探测）。
+fn path_to_result(
+    path: &str,
+    query: &str,
+    workspace: &std::path::Path,
+) -> Option<(String, String, String, String, bool)> {
+    let parts: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
+    let id = parts.last().unwrap_or(&"").to_string();
+    let cat_dir = parts.first().unwrap_or(&"").to_string();
+    let name = id
+        .split('-')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let category = nemesis_web::handlers::persona::map_category(&cat_dir);
+
+    let query_lower = query.to_lowercase();
+    if !query_lower.is_empty() {
+        let haystack = format!("{} {} {}", name, category, id).to_lowercase();
+        if !haystack.contains(&query_lower) {
+            return None;
+        }
+    }
+
+    let installed = workspace.join(format!("personas/{}", id)).exists();
+    Some((id, name, "🤖".to_string(), category.to_string(), installed))
+}
+
+/// 路径清单 → 搜索结果行（快照臂与在线臂的 json 解包分叉点之后共用）。
+fn paths_to_results(
+    paths: &[String],
+    query: &str,
+    workspace: &std::path::Path,
+) -> Vec<(String, String, String, String, bool)> {
+    paths
+        .iter()
+        .filter_map(|p| path_to_result(p, query, workspace))
+        .collect()
+}
+
+/// 快照树（插件缺席 / manifest 无该 kind / 过滤后空 = None → 纯在线）。
+/// 语义过滤与 web 面同源（is_agent_file 单一真相源）。
+fn snapshot_persona_tree() -> Option<(Vec<String>, nemesis_plugin::resources::ResourceEntry)> {
+    nemesis_plugin::resources::snapshot_tree_filtered(
+        nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+        nemesis_web::handlers::persona::is_agent_file,
+    )
+}
+
+/// 在线臂故障注入钩子（cfg(test) 专供：2 = 强制上游失败，快照降级臂离线
+/// 回归用；生产恒 0 走真实网络。web 面同款 TEST_REFRESH_MODE 先例）。
+#[cfg(test)]
+static TEST_ONLINE_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 async fn search_personas(
+    query: &str,
+    workspace: &std::path::Path,
+) -> Result<Vec<(String, String, String, String, bool)>> {
+    match search_personas_online(query, workspace).await {
+        Ok(results) => Ok(results),
+        Err(e) => {
+            let Some((paths, entry)) = snapshot_persona_tree() else {
+                return Err(e);
+            };
+            let class = nemesis_web::handlers::persona::classify_github_error(&e.to_string());
+            eprintln!(
+                "GitHub 上游不可达（{}），搜索结果来自内置快照（{}）",
+                class,
+                entry.short_label()
+            );
+            Ok(paths_to_results(&paths, query, workspace))
+        }
+    }
+}
+
+async fn search_personas_online(
     query: &str,
     workspace: &std::path::Path,
 ) -> Result<Vec<(String, String, String, String, bool)>> {
@@ -307,7 +413,16 @@ async fn search_personas(
     if !resp.status().is_success() {
         anyhow::bail!("GitHub API error: {}", resp.status());
     }
-    let json: serde_json::Value = resp.json().await?;
+    // 响应体有帽读取（BUG-20261116-027 下载加固横扫补位）：裸 resp.json()
+    // 无上限，API/中转异常时巨大响应灌满内存。与 web 面 twin
+    // (handlers/persona.rs) 同一常量单一真相源。
+    let body = nemesis_utils::http_cap::read_body_capped(
+        resp,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("read GitHub API response: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
 
     let mut results = Vec::new();
     if let Some(tree) = json["tree"].as_array() {
@@ -316,39 +431,113 @@ async fn search_personas(
             if !nemesis_web::handlers::persona::is_agent_file(path) {
                 continue;
             }
-            let parts: Vec<&str> = path.trim_end_matches(".md").split('/').collect();
-            let id = parts.last().unwrap_or(&"").to_string();
-            let cat_dir = parts.first().unwrap_or(&"").to_string();
-            let name = id
-                .split('-')
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            let category = nemesis_web::handlers::persona::map_category(&cat_dir);
-
-            let query_lower = query.to_lowercase();
-            if !query_lower.is_empty() {
-                let haystack = format!("{} {} {}", name, category, id).to_lowercase();
-                if !haystack.contains(&query_lower) {
-                    continue;
-                }
+            if let Some(row) = path_to_result(path, query, workspace) {
+                results.push(row);
             }
-
-            let installed = workspace.join(format!("personas/{}", id)).exists();
-            results.push((id, name, "🤖".to_string(), category.to_string(), installed));
         }
     }
 
     Ok(results)
 }
 
-async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
+/// 内容 → 转换 → 落盘（在线/快照两臂共用；转换与 web shop.download 同源：
+/// convert_agent_content 的 AGENT/TOOLS 拼系统模板、PERSONA.json 含扩展字段
+/// ——前 CLI 简化转换缺字段，web 语义消费方读到空值）。
+fn write_converted_persona(workspace: &str, id: &str, content: &str) -> Result<()> {
+    let converted = nemesis_web::handlers::persona::convert_agent_content(content);
+
+    // Write to disk
+    let dir = std::path::Path::new(workspace).join(format!("personas/{}", id));
+    std::fs::create_dir_all(&dir)?;
+
+    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)?;
+    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)?;
+    std::fs::write(dir.join("SOUL.md"), &converted.soul)?;
+    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)?;
+    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)?;
+
+    // 空心跳文件与 web shop.download 对齐：缺失/空 HEARTBEAT.md 会让心跳
+    // 服务跳过 LLM，之后 web activate 本人格时根 HEARTBEAT.md 被清掉不补。
+    std::fs::write(dir.join("HEARTBEAT.md"), "")?;
+
+    Ok(())
+}
+
+/// install 在线臂 + 快照降级（拍板 2026-11-12：GitHub 上游错误分类只影响
+/// stderr 措辞，不分支降级行为——有快照且快照含该 id 时**全部错误类别一律
+/// 降级**，快照无该 id 或无快照时维持原始错误）。生产入口。
+async fn fetch_and_convert(workspace: &str, id: &str) -> Result<()> {
+    fetch_and_convert_with(
+        workspace,
+        id,
+        snapshot_persona_tree().map(|(paths, entry)| {
+            (paths, entry, |p: &str| {
+                nemesis_plugin::resources::snapshot_content(
+                    nemesis_plugin::resources::RESOURCES_KIND_PERSONA_CATALOG,
+                    p,
+                )
+            })
+        }),
+    )
+    .await
+}
+
+/// 快照源参数化的降级臂本体。在线臂所有失败路径（HTTP 状态/网络/内容异常/
+/// 未找到）统一 `Err` 上抛——前形态 `Ok(Err(..))` 内层 Result 会被
+/// `Ok(r) => Ok(r)` 透传**绕过快照臂**（BUG-20261113-146 根因：GitHub 未认
+/// 证限流 403 这类最常见不可达形态下 install 无快照兜底），已坍缩为单层
+/// `Result<()>` 杜绝再犯。
+///
+/// 快照三元组走参数而非 BRIDGE 全局注入：BRIDGE 是进程级 OnceLock，测试
+/// 注入会永久污染同 binary 的 r10 系列（其前提 = 无快照插件 → 死上游必须
+/// Err），桥不可作为测试 seam。
+async fn fetch_and_convert_with<C>(
+    workspace: &str,
+    id: &str,
+    snapshot: Option<(Vec<String>, nemesis_plugin::resources::ResourceEntry, C)>,
+) -> Result<()>
+where
+    C: Fn(&str) -> Result<String, String>,
+{
+    match fetch_and_convert_online(workspace, id).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let Some((paths, entry, content_of)) = snapshot else {
+                return Err(e);
+            };
+            // 匹配口径与 web 面同源（stem == id || filename == id，且 .md +
+            // is_agent_file——在线臂同款四条件）。
+            let path = paths.iter().find(|p| {
+                let filename = p.rsplit('/').next().unwrap_or("");
+                (filename.trim_end_matches(".md") == id || filename == id)
+                    && p.ends_with(".md")
+                    && nemesis_web::handlers::persona::is_agent_file(p)
+            });
+            let Some(path) = path else {
+                // 快照里也没有该 id（快照较旧或 id 真缺失）→ 维持原始错误。
+                return Err(e);
+            };
+            let class = nemesis_web::handlers::persona::classify_github_error(&e.to_string());
+            eprintln!(
+                "GitHub 上游不可达（{}），'{}' 改读内置快照（{}）",
+                class,
+                id,
+                entry.short_label()
+            );
+            let content = content_of(path).map_err(anyhow::Error::msg)?;
+            write_converted_persona(workspace, id, &content)?;
+            Ok(())
+        }
+    }
+}
+
+async fn fetch_and_convert_online(workspace: &str, id: &str) -> Result<()> {
+    // 测试注入点：强制上游失败（快照降级臂离线回归；生产恒 0 不可达）。
+    #[cfg(test)]
+    if TEST_ONLINE_MODE.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+        anyhow::bail!("GitHub API error: 403 Forbidden");
+    }
+
     // Find path from tree
     let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1"
         .to_string();
@@ -359,9 +548,16 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
 
     let resp = client.get(&url).send().await?;
     if !resp.status().is_success() {
-        return Ok(Err(anyhow::anyhow!("GitHub API error: {}", resp.status())));
+        anyhow::bail!("GitHub API error: {}", resp.status());
     }
-    let json: serde_json::Value = resp.json().await?;
+    // 响应体有帽读取（BUG-20261116-027，同上：单一真相源常量与 web twin 共享）。
+    let body = nemesis_utils::http_cap::read_body_capped(
+        resp,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("read GitHub API response: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
 
     let mut agent_path = None;
     if let Some(tree) = json["tree"].as_array() {
@@ -382,7 +578,7 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
 
     let path = match agent_path {
         Some(p) => p,
-        None => return Ok(Err(anyhow::anyhow!("人格 '{}' 在仓库中未找到", id))),
+        None => anyhow::bail!("人格 '{}' 在仓库中未找到", id),
     };
 
     // Fetch file content
@@ -392,9 +588,16 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
     );
     let resp = client.get(&content_url).send().await?;
     if !resp.status().is_success() {
-        return Ok(Err(anyhow::anyhow!("下载失败: {}", resp.status())));
+        anyhow::bail!("下载失败: {}", resp.status());
     }
-    let cjson: serde_json::Value = resp.json().await?;
+    // 响应体有帽读取（BUG-20261116-027，同上：单一真相源常量与 web twin 共享）。
+    let cbody = nemesis_utils::http_cap::read_body_capped(
+        resp,
+        nemesis_skills::registry::MAX_API_JSON_BODY_BYTES,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("read persona content response: {e}"))?;
+    let cjson: serde_json::Value = serde_json::from_slice(&cbody)?;
     let content_b64 = cjson["content"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing content"))?;
@@ -403,26 +606,9 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
         .map_err(|e| anyhow::anyhow!("base64 decode error: {}", e))?;
     let content = String::from_utf8(decoded)?;
 
-    // 转换与 web shop.download 同源（convert_agent_content：AGENT/TOOLS 拼
-    // 系统模板、PERSONA.json 含 color/tools/vibe/frontmatter 扩展字段——
-    // 前 CLI 简化转换缺字段，web 语义消费方读到空值）。
-    let converted = nemesis_web::handlers::persona::convert_agent_content(&content);
+    write_converted_persona(workspace, id, &content)?;
 
-    // Write to disk
-    let dir = std::path::Path::new(workspace).join(format!("personas/{}", id));
-    std::fs::create_dir_all(&dir)?;
-
-    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)?;
-    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)?;
-    std::fs::write(dir.join("SOUL.md"), &converted.soul)?;
-    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)?;
-    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)?;
-
-    // 空心跳文件与 web shop.download 对齐：缺失/空 HEARTBEAT.md 会让心跳
-    // 服务跳过 LLM，之后 web activate 本人格时根 HEARTBEAT.md 被清掉不补。
-    std::fs::write(dir.join("HEARTBEAT.md"), "")?;
-
-    Ok(Ok(()))
+    Ok(())
 }
 
 #[cfg(test)]

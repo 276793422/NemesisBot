@@ -168,6 +168,12 @@ impl AgentLoop {
             // last attempt 的 max_tokens——token_cap 判定与触顶文案的事实值。
             resp.escalated_to = current;
         }
+        // 降级事实取件（fallback 用户面标注第三跳）：主路径每次成功 LLM
+        // 调用后统一取件覆盖 loop 槽（last-call wins，None=清除）——多
+        // 会话共享同一 loop 时上一会话的标注不会串台；cache_warmer 辅道
+        // 走 chat_call_bounded 不经过这里，辅道陈旧章由下一次主路径取件
+        // 覆盖。取件即清由 provider 实现（adapter 槽 take）保证。
+        *self.response_degradation.lock() = provider.take_response_degradation();
         Ok(resp)
     }
     /// per-model learned floor 读取（无记录 = 0，不叠加）。

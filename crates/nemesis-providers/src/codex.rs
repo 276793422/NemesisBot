@@ -12,7 +12,8 @@ const CODEX_DEFAULT_INSTRUCTIONS: &str = "You are Codex, a coding assistant.";
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Codex provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CodexConfig {
     pub api_key: String,
     #[serde(default)]
@@ -36,6 +37,23 @@ pub struct CodexConfig {
     #[serde(default)]
     pub stream_mode: String,
 }
+
+crate::debug_redact::impl_redacted_debug!(CodexConfig {
+    plain {
+        account_id,
+        default_model,
+        base_url,
+        enable_web_search,
+        timeout_secs,
+        stream_mode,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 fn default_true() -> bool {
     true
@@ -132,7 +150,21 @@ impl CodexProvider {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    instructions = msg.content.to_text();
+                    // 多条 system 合并（非 last-wins 覆写）：hook 重呼会在
+                    // 消息尾部追加一条 system 角色 "# Hook feedback: ..."
+                    //（nemesis-agent loop/recovery.rs），覆写形态会把 persona
+                    // 整个顶掉——instructions 只剩 hook 文案，模型失去身份
+                    // 与行为契约。anthropic lane（system_parts 全收集合并）
+                    // 与 http lane（多条 system 原样透传）都保留全部 system
+                    // 内容，本 lane 是唯一覆写者——对齐合并语义。空段不拼
+                    //（避免悬空分隔符，全空仍回落默认 instructions）。
+                    let text = msg.content.to_text();
+                    if !text.is_empty() {
+                        if !instructions.is_empty() {
+                            instructions.push_str("\n\n");
+                        }
+                        instructions.push_str(&text);
+                    }
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
@@ -552,7 +584,8 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt_raw + completion,
+            // 饱和加：usage 数字服务器可控 i64（BUG-20261119-175 同族）。
+            total_tokens: prompt_raw.saturating_add(completion),
             cached_tokens: Some(cached),
             cache_creation_tokens: None,
             cache_read_tokens: Some(cached),
@@ -579,8 +612,10 @@ enum SseOutcome {
     /// `response.completed` / `response.incomplete`——携带最终 response 对象
     /// （与非流式响应体同构，可直送 `parse_codex_response`）。
     Finished(serde_json::Value),
-    /// `response.failed` / `error`——上游显式失败，带可读原因。
-    Failed(String),
+    /// `response.failed` / `error`——上游显式失败，携**完整事件载荷**
+    /// （2026-11-17 治本批：此前只携 message 文案丢 code/status——统一
+    /// 分类入口 `classify_stream_error_payload` 需要整个事件做码探测）。
+    Failed(serde_json::Value),
     /// 中间事件（response.created / in_progress / output_text.delta 等）继续收。
     Continue,
 }
@@ -609,23 +644,33 @@ fn handle_sse_event(ev: &serde_json::Value) -> SseOutcome {
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         ),
-        "response.failed" => {
-            let msg = ev
-                .pointer("/response/error/message")
-                .or_else(|| ev.pointer("/response/status"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("upstream reported response.failed");
-            SseOutcome::Failed(msg.to_string())
-        }
-        "error" => {
-            let msg = ev
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("upstream SSE error event");
-            SseOutcome::Failed(msg.to_string())
-        }
+        "response.failed" | "error" => SseOutcome::Failed(ev.clone()),
         _ => SseOutcome::Continue,
     }
+}
+
+/// 200-包装错误诚实化（对齐 http lane 2026-09-17 CC Switch 根修与
+/// anthropic lane content-array 守卫）：部分网关对未知路径/上游故障回
+/// HTTP 200 + 合法 JSON 错误体（实测形态 {"code":500,"msg":"404 NOT_FOUND"}）。
+/// Responses wire 的合法 200 响应体必带 output 数组（空数组 = 合法空响应，
+/// 既有测试钉住）；error 字段在场或 output 缺席/非数组 → 上游真相被吞成
+/// 静默空成功（content=""/finish=stop），现响亮报 Format 带 body 摘要。
+/// 消费点：decode_codex_response（非流式 JSON 臂）与 parse_sse_text
+/// （response.completed/incomplete 终态臂）——同一谓词两处共用。
+fn codex_200_guard(data: &serde_json::Value, raw_excerpt: &str) -> Result<(), FailoverError> {
+    if data.get("error").is_some_and(|e| !e.is_null()) {
+        return Err(FailoverError::Format {
+            provider: "codex".to_string(),
+            message: format!("error body with HTTP 200: {raw_excerpt}"),
+        });
+    }
+    if data.get("output").and_then(|o| o.as_array()).is_none() {
+        return Err(FailoverError::Format {
+            provider: "codex".to_string(),
+            message: format!("HTTP 200 response body missing output array: {raw_excerpt}"),
+        });
+    }
+    Ok(())
 }
 
 /// 解析完整 SSE 文本流（聚合模式：找终态事件出结果）。
@@ -645,29 +690,43 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
             continue;
         };
         match handle_sse_event(&ev) {
-            SseOutcome::Finished(response) => return Ok(parse_codex_response(&response)),
-            SseOutcome::Failed(msg) => {
-                // 流内 failed/error 文案与真相源同判
-                //（classify_llm_error 统一定义）——此前恒 Unknown（不带
-                // "connect error" 前缀 = is_retriable false），上游显式瞬态
-                // 文案（"quota exceeded"/"overloaded"）反而放弃 fallback
-                // 轮转，比断流（Timeout 可重试）处置更差。分类命中 → 对应
-                // 变体（轮转语义与 HTTP 429/500 同判）；分类不出维持 Unknown
-                // 兜底（不可重试语义不变）。
-                let provider = "codex".to_string();
-                // 根因文案随日志保留（RateLimit/Auth 等变体槽位无 message，
-                // Display 不含上游原文）。
+            SseOutcome::Finished(response) => {
+                // 终态载荷同过 200-guard（codex_200_guard）：网关把错误
+                // 包成 completed 事件（response 对象缺 output/error 在场）
+                // 时上游真相不静默——空 output 数组仍合法放行。
+                let excerpt = serde_json::to_string(&response)
+                    .unwrap_or_else(|_| "<unserializable response>".to_string());
+                codex_200_guard(&response, &excerpt.chars().take(200).collect::<String>())?;
+                return Ok(parse_codex_response(&response));
+            }
+            SseOutcome::Failed(ev) => {
+                // 流内 failed/error 事件经 `classify_stream_error_payload`
+                // 统一入口（码探测 → type 枚举 → 文案兜底；2026-11-17 治本
+                // 批）——此前只抽 message 文案丢 code/status，`Failed` 只携
+                // String。根因文案随日志保留（RateLimit/Auth 等变体槽位无
+                // message，Display 不含上游原文）。
+                let log_msg = ev
+                    .pointer("/response/error/message")
+                    .or_else(|| ev.pointer("/response/status"))
+                    .or_else(|| ev.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("upstream reported response.failed");
                 tracing::warn!(
                     provider = "codex",
                     model = %model,
-                    error_message = %msg,
+                    error_message = %log_msg,
                     "[Provider] Codex SSE stream failed"
                 );
-                // 与真相源同判（classify_message_error 单一
-                // 入口）——此前恒 Unknown 不可重试，上游显式瞬态文案放弃轮转
-                // 比断流（Timeout）处置更差。
-                return Err(crate::failover::classify_message_error(
-                    &provider, model, &msg,
+                let excerpt = serde_json::to_string(&ev)
+                    .unwrap_or_else(|_| "upstream SSE failed event (unserializable)".to_string());
+                return Err(crate::failover::classify_stream_error_payload(
+                    &ev,
+                    "codex",
+                    model,
+                    format!(
+                        "upstream SSE failed event: {}",
+                        excerpt.chars().take(200).collect::<String>()
+                    ),
                 ));
             }
             SseOutcome::Continue => {}
@@ -687,10 +746,10 @@ async fn parse_sse_response(
     model: &str,
 ) -> Result<crate::types::LLMResponse, FailoverError> {
     // 中途断流：客户端超时→Timeout；其余读错误诚实携带根因链（同 send 臂）。
-    let text = resp
-        .text()
+    // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚（可重试）。
+    let text = crate::body_cap::read_success_body(resp)
         .await
-        .map_err(|e| transport_error("codex", model, &e))?;
+        .map_err(|e| crate::body_cap::to_failover_error("codex", model, e))?;
     parse_sse_text(&text, model)
 }
 
@@ -716,10 +775,10 @@ async fn decode_codex_response(
     // 重试），fallback 链直接终止不轮转（本文件 parse_sse_response 的
     // SSE 聚合路径早已 transport_error，此路径此前未对齐）。现传输失败
     // →transport_error（可重试）；解析失败→Format 带 body 摘要。
-    let raw = resp
-        .text()
+    // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚。
+    let raw = crate::body_cap::read_success_body(resp)
         .await
-        .map_err(|e| transport_error("codex", model, &e))?;
+        .map_err(|e| crate::body_cap::to_failover_error("codex", model, e))?;
     let data: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
             provider: "codex".to_string(),
@@ -730,6 +789,7 @@ async fn decode_codex_response(
             ),
         })?;
 
+    codex_200_guard(&data, &raw.chars().take(200).collect::<String>())?;
     Ok(parse_codex_response(&data))
 }
 
@@ -815,7 +875,7 @@ impl LLMProvider for CodexProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             // effort 词表自愈（真机实证）：gpt-6 系砍掉 minimal
             // 后首跳 off→minimal 撞 400 unsupported_value；上游错误信息自带
             // 权威词表，按其最低档降档重试一次（仅此一跳，不循环——重试跳
@@ -837,7 +897,7 @@ impl LLMProvider for CodexProvider {
                 let status2 = resp2.status().as_u16();
                 if status2 >= 400 {
                     let retry_after2 = crate::failover::retry_after_from_headers(resp2.headers());
-                    let text2 = resp2.text().await.unwrap_or_default();
+                    let text2 = nemesis_utils::http_cap::read_error_body(resp2).await;
                     return Err(FailoverError::from_status(
                         "codex",
                         &resolved_model,

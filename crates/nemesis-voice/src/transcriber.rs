@@ -121,7 +121,7 @@ impl Transcriber {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(anyhow::anyhow!("API error (status {}): {}", status, body));
         }
 
@@ -176,7 +176,7 @@ impl Transcriber {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(anyhow::anyhow!("API error (status {}): {}", status, body));
         }
 

@@ -17,8 +17,10 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// Web fetch tool - retrieves URL content via HTTP GET.
 pub struct WebFetchTool {
-    /// HTTP client.
-    client: reqwest::Client,
+    /// HTTP client（pub(crate) 供 tests 子模块直连验证重定向策略——
+    /// execute 全链的 validate_url 会拦一切本地 host，网络行为测试
+    /// 只能绕开闸直测 client）。
+    pub(crate) client: reqwest::Client,
     /// Maximum response size in bytes.
     max_size: usize,
     /// Request timeout.
@@ -36,6 +38,14 @@ impl WebFetchTool {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .user_agent("NemesisBot/1.0")
+            // BUG-20261113-155：不跟随重定向。reqwest 默认 Policy 会静默跟随
+            // 最多 10 跳，而 validate_url 只在首跳 URL 上执行——公网恶意站
+            // 302 → http://127.0.0.1 / 169.254.169.254 即绕过 SSRF 闸。禁跟
+            // 随后 3xx 原样返回，execute 把 Location 带进错误消息（见下方
+            // 3xx 分支），模型自行 fetch 新地址时重新过闸——每一跳都校验。
+            // 与 image_attach URL 预取 / plugins-wasm egress / http-pool /
+            // release_fetch 等安全敏感出口的 Policy::none 惯例一致。
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
 
@@ -116,6 +126,17 @@ impl Tool for WebFetchTool {
             Ok(Ok(response)) => {
                 let status = response.status();
                 if !status.is_success() {
+                    // 重定向禁跟随（BUG-20261113-155）：3xx 带 Location 回给
+                    // 模型——它可自行 fetch 新地址，新 URL 重新过 validate_url
+                    // 首跳闸；不回 Location 模型就看不到跳转去向。
+                    if status.is_redirection()
+                        && let Some(loc) = response
+                            .headers()
+                            .get(reqwest::header::LOCATION)
+                            .and_then(|v| v.to_str().ok())
+                    {
+                        return ToolResult::error(&redirect_refetch_message(status, loc));
+                    }
                     return ToolResult::error(&format!(
                         "HTTP {} {}",
                         status.as_u16(),
@@ -142,6 +163,17 @@ impl Tool for WebFetchTool {
             )),
         }
     }
+}
+
+/// 重定向禁跟随（BUG-20261113-155）的 3xx 错误消息：状态码 + 跳转去向
+/// 一并回给模型（它可自行 fetch 新地址，新 URL 重新过 validate_url 首跳闸）。
+fn redirect_refetch_message(status: reqwest::StatusCode, location: &str) -> String {
+    format!(
+        "HTTP {} {} (redirected, not followed — re-fetch this URL to continue: {})",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("Unknown"),
+        location
+    )
 }
 
 /// Validate URL to prevent SSRF attacks.
@@ -201,6 +233,8 @@ pub trait SearchProvider: Send + Sync {
 /// DuckDuckGo search provider using HTML scraping.
 pub struct DuckDuckGoSearchProvider {
     client: reqwest::Client,
+    /// 查询端点根（默认官方 html 端点；测试侧可注入本地 mock——BUG-20261115-017 回归锁）。
+    base_url: String,
 }
 
 impl DuckDuckGoSearchProvider {
@@ -211,7 +245,18 @@ impl DuckDuckGoSearchProvider {
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_default();
-        Self { client }
+        Self {
+            client,
+            base_url: "https://html.duckduckgo.com/html/".to_string(),
+        }
+    }
+
+    /// 测试专用：注入本地 mock 端点（生产路径不可达硬编码官方端点，回归锁需要可控服务器）。
+    #[cfg(test)]
+    fn with_base_url(base_url: &str) -> Self {
+        let mut p = Self::new();
+        p.base_url = base_url.to_string();
+        p
     }
 
     /// Extract search results from DuckDuckGo HTML response.
@@ -281,7 +326,7 @@ impl Default for DuckDuckGoSearchProvider {
 #[async_trait]
 impl SearchProvider for DuckDuckGoSearchProvider {
     async fn search(&self, query: &str, count: usize) -> Result<String, String> {
-        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
+        let url = format!("{}?q={}", self.base_url, urlencoding(query));
 
         let resp = self
             .client
@@ -290,10 +335,21 @@ impl SearchProvider for DuckDuckGoSearchProvider {
             .await
             .map_err(|e| format!("request failed: {}", e))?;
 
+        let status = resp.status();
         let body = resp
             .text()
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
+
+        // BUG-20261115-017：非 2xx 必须报错而非进解析——html.duckduckgo.com
+        // 的 403 异常页/429 限流页（反爬常态）此前被当普通 HTML 提取，稳定
+        // 落「No results found or extraction failed」假象：agent 把「传输被拒」
+        // 误读为「网上没有」。错误体前缀 200 字符（char 边界安全）喂回
+        // agent 供定性（限流 vs 拒绝 vs 端点变更）。
+        if !status.is_success() {
+            let preview: String = body.chars().take(200).collect();
+            return Err(format!("DuckDuckGo HTTP {status}: {preview}"));
+        }
 
         self.extract_results(&body, count, query)
     }
@@ -307,6 +363,8 @@ impl SearchProvider for DuckDuckGoSearchProvider {
 pub struct BraveSearchProvider {
     api_key: String,
     client: reqwest::Client,
+    /// 查询端点根（默认官方 API；测试侧可注入本地 mock——BUG-20261115-017 回归锁）。
+    base_url: String,
 }
 
 impl BraveSearchProvider {
@@ -314,23 +372,34 @@ impl BraveSearchProvider {
     pub fn new(api_key: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
+            // BUG-20261115-045：X-Subscription-Token 是自定义凭据头——reqwest
+            // 默认重定向策略跨主机只剥 authorization/cookie 等标准四头，自定义
+            // 头会原样带到 302 目标主机。换同源跟随 + 跨源终止策略（与
+            // nemesis-providers 六 lane / channels 三 builder 同源纪律，见
+            // nemesis_utils::http_redirect）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .unwrap_or_default();
         Self {
             api_key: api_key.to_string(),
             client,
+            base_url: "https://api.search.brave.com/res/v1/web/search".to_string(),
         }
+    }
+
+    /// 测试专用：注入本地 mock 端点。
+    #[cfg(test)]
+    fn with_base_url(api_key: &str, base_url: &str) -> Self {
+        let mut p = Self::new(api_key);
+        p.base_url = base_url.to_string();
+        p
     }
 }
 
 #[async_trait]
 impl SearchProvider for BraveSearchProvider {
     async fn search(&self, query: &str, count: usize) -> Result<String, String> {
-        let url = format!(
-            "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-            urlencoding(query),
-            count
-        );
+        let url = format!("{}?q={}&count={}", self.base_url, urlencoding(query), count);
 
         let resp = self
             .client
@@ -341,10 +410,20 @@ impl SearchProvider for BraveSearchProvider {
             .await
             .map_err(|e| format!("request failed: {}", e))?;
 
+        // BUG-20261115-017：非 2xx 必须报错而非进解析。Brave 4xx/429 的 JSON
+        // 错误体（如 {"error":[{"id":"RATE_LIMITED"}]}）没有 "web" 键——下方
+        // `#[serde(default)]` typed struct 会把它静默解析成「零结果成功」，
+        // 配额耗尽被伪装成「网上没有结果」，agent 无从触发重试/降级。
+        let status = resp.status();
         let body = resp
             .text()
             .await
             .map_err(|e| format!("failed to read response: {}", e))?;
+
+        if !status.is_success() {
+            let preview: String = body.chars().take(200).collect();
+            return Err(format!("Brave HTTP {status}: {preview}"));
+        }
 
         #[derive(serde::Deserialize)]
         struct SearchResult {
@@ -400,6 +479,10 @@ impl PerplexitySearchProvider {
     pub fn new(api_key: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            // BUG-20261115-045：凭据外呼统一走跨源终止策略（Authorization
+            // 虽在 reqwest 默认剥离清单内，但显式策略不再依赖「记得哪些头
+            // 会被剥」——日后换自定义凭据头时不再裸奔）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .unwrap_or_default();
         Self {

@@ -124,7 +124,7 @@ fn test_create_pool() {
 #[test]
 fn test_custom_config() {
     let config = PoolConfig {
-        max_connections_per_host: 5,
+        max_idle_connections_per_host: 5,
         user_agent: "TestBot/1.0".to_string(),
         ..Default::default()
     };
@@ -142,7 +142,7 @@ fn test_shared_pool() {
 #[test]
 fn test_default_config_values() {
     let config = PoolConfig::default();
-    assert_eq!(config.max_connections_per_host, 10);
+    assert_eq!(config.max_idle_connections_per_host, 10);
     assert_eq!(config.max_retries, 3);
     assert_eq!(config.user_agent, "NemesisBot/1.0");
 }
@@ -150,7 +150,7 @@ fn test_default_config_values() {
 #[test]
 fn test_pool_config_default_all_fields() {
     let config = PoolConfig::default();
-    assert_eq!(config.max_connections_per_host, 10);
+    assert_eq!(config.max_idle_connections_per_host, 10);
     assert_eq!(config.connect_timeout, Duration::from_secs(10));
     assert_eq!(config.request_timeout, Duration::from_secs(30));
     assert_eq!(config.idle_timeout, Duration::from_secs(90));
@@ -162,7 +162,7 @@ fn test_pool_config_default_all_fields() {
 #[test]
 fn test_pool_config_custom_all_fields() {
     let config = PoolConfig {
-        max_connections_per_host: 20,
+        max_idle_connections_per_host: 20,
         connect_timeout: Duration::from_secs(5),
         request_timeout: Duration::from_secs(60),
         idle_timeout: Duration::from_secs(120),
@@ -170,7 +170,7 @@ fn test_pool_config_custom_all_fields() {
         retry_delay: Duration::from_millis(1000),
         user_agent: "MyBot/2.0".to_string(),
     };
-    assert_eq!(config.max_connections_per_host, 20);
+    assert_eq!(config.max_idle_connections_per_host, 20);
     assert_eq!(config.connect_timeout, Duration::from_secs(5));
     assert_eq!(config.request_timeout, Duration::from_secs(60));
     assert_eq!(config.idle_timeout, Duration::from_secs(120));
@@ -182,11 +182,11 @@ fn test_pool_config_custom_all_fields() {
 #[test]
 fn test_pool_config_partial_custom() {
     let config = PoolConfig {
-        max_connections_per_host: 5,
+        max_idle_connections_per_host: 5,
         connect_timeout: Duration::from_secs(3),
         ..Default::default()
     };
-    assert_eq!(config.max_connections_per_host, 5);
+    assert_eq!(config.max_idle_connections_per_host, 5);
     assert_eq!(config.connect_timeout, Duration::from_secs(3));
     assert_eq!(config.request_timeout, Duration::from_secs(30));
     assert_eq!(config.max_retries, 3);
@@ -197,19 +197,19 @@ fn test_pool_config_partial_custom() {
 fn test_connection_pool_new() {
     let config = PoolConfig::default();
     let pool = ConnectionPool::new(config);
-    assert_eq!(pool.config().max_connections_per_host, 10);
+    assert_eq!(pool.config().max_idle_connections_per_host, 10);
     assert_eq!(pool.config().user_agent, "NemesisBot/1.0");
 }
 
 #[test]
 fn test_connection_pool_with_custom_config() {
     let config = PoolConfig {
-        max_connections_per_host: 15,
+        max_idle_connections_per_host: 15,
         user_agent: "TestAgent/1.0".to_string(),
         ..Default::default()
     };
     let pool = ConnectionPool::new(config);
-    assert_eq!(pool.config().max_connections_per_host, 15);
+    assert_eq!(pool.config().max_idle_connections_per_host, 15);
     assert_eq!(pool.config().user_agent, "TestAgent/1.0");
 }
 
@@ -228,7 +228,7 @@ fn test_connection_pool_config_returns_reference() {
     let pool = ConnectionPool::new(config);
     let config_ref = pool.config();
     assert_eq!(config_ref.user_agent, "RefTest/3.0");
-    assert_eq!(config_ref.max_connections_per_host, 10);
+    assert_eq!(config_ref.max_idle_connections_per_host, 10);
 }
 
 #[test]
@@ -244,14 +244,14 @@ fn test_shared_pool_returns_same_instance() {
 fn test_shared_pool_config_is_default() {
     let pool = shared_pool();
     assert_eq!(pool.config().user_agent, "NemesisBot/1.0");
-    assert_eq!(pool.config().max_connections_per_host, 10);
+    assert_eq!(pool.config().max_idle_connections_per_host, 10);
 }
 
 #[test]
 fn test_pool_config_debug() {
     let config = PoolConfig::default();
     let debug = format!("{:?}", config);
-    assert!(debug.contains("max_connections_per_host"));
+    assert!(debug.contains("max_idle_connections_per_host"));
     assert!(debug.contains("NemesisBot/1.0"));
 }
 
@@ -260,8 +260,8 @@ fn test_pool_config_clone() {
     let config = PoolConfig::default();
     let cloned = config.clone();
     assert_eq!(
-        config.max_connections_per_host,
-        cloned.max_connections_per_host
+        config.max_idle_connections_per_host,
+        cloned.max_idle_connections_per_host
     );
     assert_eq!(config.user_agent, cloned.user_agent);
     assert_eq!(config.connect_timeout, cloned.connect_timeout);
@@ -274,11 +274,11 @@ fn test_pool_config_clone() {
 #[test]
 fn test_pool_with_zero_connections() {
     let config = PoolConfig {
-        max_connections_per_host: 0,
+        max_idle_connections_per_host: 0,
         ..Default::default()
     };
     let pool = ConnectionPool::new(config);
-    assert_eq!(pool.config().max_connections_per_host, 0);
+    assert_eq!(pool.config().max_idle_connections_per_host, 0);
 }
 
 #[test]
@@ -1209,11 +1209,11 @@ fn test_pool_config_empty_user_agent() {
 #[test]
 fn test_pool_with_very_large_connection_limit() {
     let config = PoolConfig {
-        max_connections_per_host: 10000,
+        max_idle_connections_per_host: 10000,
         ..Default::default()
     };
     let pool = ConnectionPool::new(config);
-    assert_eq!(pool.config().max_connections_per_host, 10000);
+    assert_eq!(pool.config().max_idle_connections_per_host, 10000);
 }
 
 // ================================================================
@@ -1914,7 +1914,7 @@ async fn test_shared_pool_concurrent_access() {
     let pool2 = shared_pool();
 
     let handle1 = tokio::spawn(async move { pool1.config().user_agent.clone() });
-    let handle2 = tokio::spawn(async move { pool2.config().max_connections_per_host });
+    let handle2 = tokio::spawn(async move { pool2.config().max_idle_connections_per_host });
 
     let ua = handle1.await.unwrap();
     let max_conn = handle2.await.unwrap();
@@ -2253,11 +2253,11 @@ fn test_pool_config_clone_independence() {
 
     // Modify original
     config.user_agent = "Modified".to_string();
-    config.max_connections_per_host = 99;
+    config.max_idle_connections_per_host = 99;
 
     // Cloned should be unchanged
     assert_eq!(cloned.user_agent, "NemesisBot/1.0");
-    assert_eq!(cloned.max_connections_per_host, 10);
+    assert_eq!(cloned.max_idle_connections_per_host, 10);
 }
 
 // ================================================================
@@ -2699,4 +2699,58 @@ impl ErrContext for Result<(), String> {
             Err(e) => e,
         }
     }
+}
+
+// ================================================================
+// BUG-20261114-037：strict client 构建失败必须 fail-closed
+// ================================================================
+
+/// 旧实现 `unwrap_or_default()` 在 no-redirect client 构建失败时静默回退
+/// 到默认 client——默认重定向策略是**跟随 ≤10 跳**，等于 SSRF 重定向纪律
+/// fail-open。修复后 strict 面诚实报错，绝不静默降级。
+#[tokio::test]
+async fn test_strict_client_build_failure_fails_closed() {
+    // user_agent 含控制字符 → HeaderValue 非法 → builder build Err
+    //（确定性触发构建失败，不依赖 TLS 后端状态）。
+    let config = PoolConfig {
+        user_agent: "bad\nua".to_string(),
+        ..PoolConfig::default()
+    };
+    let pool = ConnectionPool::new(config);
+    let err = pool
+        .download_file_capped_strict("http://127.0.0.1:9/never-reached", "/tmp/never", 1024)
+        .await
+        .err_context();
+    assert!(
+        err.contains("no-redirect client unavailable"),
+        "fail-closed 错误信息必须诚实点明 client 不可用：{err}"
+    );
+    assert!(
+        err.contains("refusing to fall back"),
+        "错误信息必须点明拒绝回退：{err}"
+    );
+    // 主 client（非安全语义）不受影响：client() 照常可访问。
+    let _ = pool.client();
+}
+
+/// 同一构建失败下，非 strict 面（跟随重定向的普通下载）维持旧语义——
+/// fail-closed 只收紧守卫类路径，不误伤普通面。
+#[tokio::test]
+async fn test_build_failure_keeps_plain_download_semantics() {
+    let config = PoolConfig {
+        user_agent: "bad\nua".to_string(),
+        ..PoolConfig::default()
+    };
+    let pool = ConnectionPool::new(config);
+    // 构建失败的主 client 回退 reqwest::Client::default()：请求可达性
+    // 与旧实现一致（此处对不可达端口发起，断言能拿到 reqwest 层错误而非
+    // pool 层新增拒绝——strict 的 fail-closed 错误只属于 strict 面）。
+    let err = pool
+        .download_file("http://127.0.0.1:9/never-reached", "/tmp/never")
+        .await
+        .unwrap_err();
+    assert!(
+        !err.contains("no-redirect client unavailable"),
+        "普通下载面不得被 strict fail-closed 误伤：{err}"
+    );
 }

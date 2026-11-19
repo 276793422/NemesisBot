@@ -238,6 +238,54 @@ desc = "`nemesisbot auth` 命令 + status 显示凭证（OAuth/PKCE）"
 category = "subsystems"
 default = true
 
+# NOTE: `events` 事件驱动唤醒（项1 P1，质变计划 2026-11-16）：fs 事件按
+# `<workspace>/config/events.json` 规则唤醒指定会话（热重载 + 三闸：per-rule
+# 冷却 / 小时窗 / estop 冻结）。P2 起穿透 nemesis-web/events = EventsView
+# 管理面（events.* WSAPI + 前端 /events 页 VITE_FEATURE_EVENTS 同闸）。
+# 关闭 = 泵任务不装配、events.json 无消费者、events.* WSAPI 退出注册表面。
+[[feature]]
+id = "events"
+label = "事件驱动唤醒"
+desc = "fs 事件按规则唤醒会话（events.json 热重载 + 冷却/小时窗/estop 三闸 + 事件管理页）。IoT/纯被动应答场景可关"
+category = "subsystems"
+default = true
+
+# NOTE: `loop` 自配速 durable loop（项5，质变计划 2026-11-16）：`<workspace>/
+# loops/{id}.json` 状态对象 + loop_wakeup/loop_status/loop_finish 三工具 +
+# gateway 驱动器（预算三维保险丝 → 停车场；estop 全冻结）。穿透
+# nemesis-web/loop = loops.* WSAPI + LoopsView（VITE_FEATURE_LOOP 同闸）。
+# 关闭 = 三工具退出注册表面、驱动器不装配、loops.* WSAPI 消失。
+[[feature]]
+id = "loop"
+label = "自配速 durable loop"
+desc = "agent 自排程唤醒（loop_wakeup/status/finish 工具 + 预算保险丝 + 停车场 + 管理页）。IoT/无人值守场景可关"
+category = "subsystems"
+default = true
+
+# NOTE: `goals` 目标系统（2026-11-17）：goal 文件监督 agent——turn 结束评估闸
+# 独立判定 DONE（唯一 done 出口）/CONTINUE（注入缺口续跑）。穿透
+# nemesisbot/goals = goals.* WSAPI + GoalsView（VITE_FEATURE_GOALS 同闸）。
+# 关闭 = goal 工具退出注册表面、评估闸引擎不装配、goals.* WSAPI 消失。
+[[feature]]
+id = "goals"
+label = "目标系统"
+desc = "goal 文件监督 agent（评估闸 turn-end 判定 + goal 轮注入 + 预算停车 + 管理页）。IoT/纯聊天场景可关"
+category = "subsystems"
+default = true
+
+# NOTE: `mail` 邮件基础设施（2026-11-18）：plugin_mail.dll 装载臂恒编译
+# （roaming 同款——双闸在运行期：config.mail.json enabled 总闸缺省 false +
+# config.plugin.native.json 名册开关）。本 feature 穿透 nemesis-web/mail =
+# mail.* WSAPI + MailboxView（VITE_FEATURE_MAIL 同闸）+ CLI `mail`
+# 四族。关 = WSAPI 不注册、页面不进包、CLI 消失；插件装载/SMTP/POP3 服务
+# 端面不受影响（恒编译，运行闸裁决）。
+[[feature]]
+id = "mail"
+label = "邮件基础设施"
+desc = "plugin_mail（SMTP/POP3 服务端 + 发信 + 按地址分库）+ mail.* WSAPI + 邮箱管理页 + CLI。IoT/无邮件场景可关"
+category = "subsystems"
+default = true
+
 [[feature]]
 id = "voice"
 label = "语音管线"
@@ -454,12 +502,13 @@ desc = "版本自更新通道（`nemesisbot selfupdate` + gateway apply 编排�
 category = "subsystems"
 default = true
 
-# NOTE: 八个「构建体积细粒度」feature（2026-10-17 重新评估，全默认开 =
-# 全量构建不变）：pricing-embed（内嵌价目表）/ verify（启动签名自验）/
-# web-static（前端静态资源内嵌）/ lsp（LSP 语义代码查询）/
-# checkpoint-git（checkpoint 影子库）/ image-process（图片降采样）/
-# history-search（FTS 会话检索）/ usage-store（SQLite 用量账本）。
-# IoT/极小镜像预设全关（合计约省 3-4MB），消费版保持默认。
+# NOTE: 九个「构建体积细粒度」feature（2026-10-17 重新评估，2026-11-18 增
+# taskstore-sqlite，全默认开 = 全量构建不变）：pricing-embed（内嵌价目表）/
+# verify（启动签名自验）/ web-static（前端静态资源内嵌）/ lsp（LSP 语义代码
+# 查询）/ checkpoint-git（checkpoint 影子库）/ image-process（图片降采样）/
+# history-search（FTS 会话检索）/ usage-store（SQLite 用量账本）/
+# taskstore-sqlite（统一任务层 tasks.db）。
+# IoT/极小镜像预设全关，消费版保持默认。
 [[feature]]
 id = "pricing-embed"
 label = "内嵌价目表"
@@ -488,6 +537,18 @@ desc = "只读 LSP 客户端（lsp 工具 definition/references/implementation/h
 category = "subsystems"
 default = true
 
+# NOTE: `browser`（2026-11-15 浏览器接管框架）：CDP 客户端（nemesis-browser）
+# + host_browser 工具（九动作：navigate/click/type/key/scroll/extract_text/
+# screenshot/wait_for/run_script）+ browser.* WSAPI + Dashboard 执行单元浏览器
+# 面板。run_script 步进安全闸（每步过 8 层 + 强制审批）；凭据注入走 vault:
+# 别名（域名绑定 + 密码框校验 + 防伪造三守卫）。IoT/无头建议关。
+[[feature]]
+id = "browser"
+label = "浏览器接管（host_browser）"
+desc = "控制本机已装浏览器看页面+操作页面（host_browser 工具九动作 + browser.* WSAPI + Dashboard 浏览器面板；CDP 驱动 Edge/Chrome/Brave）。run_script 每步过安全闸+审批；IoT/无头建议关"
+category = "subsystems"
+default = true
+
 [[feature]]
 id = "checkpoint-git"
 label = "Checkpoint 影子库（git）"
@@ -512,7 +573,14 @@ default = true
 [[feature]]
 id = "usage-store"
 label = "用量账本（SQLite）"
-desc = "LLM 用量账本（nemesis-data DataStore，rusqlite bundled ~1MB）：usage 统计/请求明细/模型健康/会话成本随它进出。关后写入 no-op、查询恒空（价目层 JSON 照常，open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（省 iotsmall 里最后一个 SQLite）"
+desc = "LLM 用量账本（nemesis-data DataStore，rusqlite bundled ~1MB）：usage 统计/请求明细/模型健康/会话成本随它进出。关后写入 no-op、查询恒空（价目层 JSON 照常，open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（与 taskstore-sqlite 同为可裁 SQLite 面）"
+category = "subsystems"
+default = true
+
+[[feature]]
+id = "taskstore-sqlite"
+label = "统一任务层（SQLite）"
+desc = "统一任务编排层 tasks.db（nemesis-taskstore，rusqlite bundled ~1MB）：集群任务/runs 记账/审批台账/交付账本/Agent 持久实体随它进出。关后全部 store 写入 no-op、查询恒空（open 时 warn 一次），生产调用方零改动。IoT/极小镜像建议关（集群任务与看板派发记账不落盘）"
 category = "subsystems"
 default = true
 
@@ -565,3 +633,21 @@ category = "build"
 type = "enum"
 default = "release"
 options = ["release", "iotsmall"]
+
+# NOTE: `sandbox-mxc`（2026-11-14，2026-11-16_mxc-sdk-crates-io切换报告）
+# 依赖 sandbox（nemesis-sandbox/mxc 模块住同一 crate；cargo 复合 feature 蕴含
+# sandbox，export.validate 的 depends 与之同向）。Microsoft eXecution Container
+# 护栏后端（opt-in，executor.backend="mxc"，默认恒 native）：crates.io
+# mxc-sdk =1.1.0（微软官方发布）；ACL 授权模型=授权路径真写，非写虚拟化盒——
+# 选 MXC 时 UI 强制警告
+# 「护栏非沙盒」。遥测红线见根 .cargo/config.toml。【非默认】mxc-sdk 的
+# ureq(native-tls) 在 Linux 落 openssl-sys，默认构建保持全平台零 mxc-sdk 引用；
+# Windows 发行版经 build-windows.bat
+# 显式带回。
+[[feature]]
+id = "sandbox-mxc"
+label = "MXC 护栏后端（微软执行容器）"
+desc = "MXC 护栏后端（executor.backend=\"mxc\"，opt-in 默认关）。Windows/Linux/macOS 统一，ACL 最小授权+网络出口管控；无驱动免安装；护栏非沙盒，引爆场景用 SandboxIE。Linux 编译需 libssl-dev"
+category = "subsystems"
+default = false
+depends = ["sandbox"]

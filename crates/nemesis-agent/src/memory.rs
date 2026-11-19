@@ -216,6 +216,10 @@ impl MemoryStore {
     }
 
     /// Write content to the long-term memory file.
+    ///
+    /// 原子落盘走 `write_file_atomic`（BUG-20261114-022）：MEMORY.md 是
+    /// 用户长期记忆，直写撕裂 = 记忆正文截断丢失。helper 自带
+    /// mkdir/唯一临时名/sync_all 先于 rename/失败清理。
     pub fn write_long_term(&self, content: &str) -> std::io::Result<()> {
         debug!(
             "[MemoryStore] Writing long-term memory, {} bytes",
@@ -224,10 +228,12 @@ impl MemoryStore {
         let _g = MEMORY_FILE_WRITE_LOCK
             .lock()
             .map_err(|_| std::io::Error::other("memory file write lock poisoned"))?;
-        if let Some(parent) = self.memory_file.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&self.memory_file, content)
+        nemesis_utils::write_file_atomic(
+            &self.memory_file.to_string_lossy(),
+            content.as_bytes(),
+            0o600,
+        )
+        .map_err(std::io::Error::other)
     }
 
     /// Read today's daily note.
@@ -254,6 +260,8 @@ impl MemoryStore {
         }
 
         // 读→拼接→写全程持锁（RMW：并发 append 各读同一基线会互丢笔记）。
+        // 落盘走 `write_file_atomic`（BUG-20261114-022）：直写撕裂 = 当日
+        // 笔记整体截断；同锁内读旧-写新，原子替换不影响 RMW 语义。
         let _g = MEMORY_FILE_WRITE_LOCK
             .lock()
             .map_err(|_| std::io::Error::other("memory file write lock poisoned"))?;
@@ -265,7 +273,8 @@ impl MemoryStore {
             format!("{}\n{}", existing, content)
         };
 
-        fs::write(&path, new_content)
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), new_content.as_bytes(), 0o600)
+            .map_err(std::io::Error::other)
     }
 
     /// Return daily notes from the last `days` days, joined with `---`.

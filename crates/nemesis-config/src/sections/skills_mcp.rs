@@ -97,6 +97,18 @@ impl<'de> serde::Deserialize<'de> for McpConfig {
 ///    env/args/headers/tags 逐字段宽容（`null`/map/数组皆收，见
 ///    [`flexible_string_list`]）；全局与 per-server timeout 皆宽容
 ///    （`null`/字符串数字 → 默认值）。
+///    Value 类型名（错误文案用——「got string」比裸 panics 可诊断）。
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig, String> {
     let obj = match v {
         serde_json::Value::Object(o) => o,
@@ -127,6 +139,20 @@ fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig,
         match ms {
             serde_json::Value::Object(map) => {
                 for (key, sv) in map {
+                    // 标量/数组条目 loud Err（BUG-20261117-055）：旧形态
+                    // `entry.get("name").is_none()` 对非对象恒真 → 走
+                    // `entry["name"] = ...` 下标赋值——serde_json 的
+                    // IndexMut 对非 object/Null 容器是 panic（"cannot access
+                    // key in JSON scalar"），一条标量条目把整个 config 解析
+                    // 打崩。本函数其余畸形形态全部 Err 返回（"must be a
+                    // JSON object" / "must be an object or array" / 逐 key
+                    // from_value 报错），此路径是唯一漏网的 panic 面。
+                    if !sv.is_object() {
+                        return Err(format!(
+                            "mcpServers[{key}] 必须是 server 配置对象（got {}）",
+                            json_type_name(sv)
+                        ));
+                    }
                     let mut entry = sv.clone();
                     if entry.get("name").is_none() {
                         entry["name"] = serde_json::Value::String(key.clone());
@@ -528,7 +554,11 @@ pub struct GitHubSourceConfig {
     pub name: String,
     #[serde(default)]
     pub repo: String,
-    #[serde(default)]
+    /// BUG-20261114-034：缺省收敛 true——与 nemesis-skills::types::GitHubSourceConfig
+    /// （运行时面 `default_true`）及出厂模板显式值一致。旧 derive 零值使手写极简
+    /// 源条目（缺 enabled 键）Dashboard 显示停用而运行时注册；且 typed save 会把
+    /// 解析出的 false 物化回盘，下次 gateway 重启翻转运行时行为（源被关）。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub branch: String,
@@ -560,8 +590,12 @@ pub struct SkillsClawHubConfig {
 pub struct SkillsModelScopeConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_modelscope_timeout_secs")]
     pub timeout: i64,
+}
+
+fn default_modelscope_timeout_secs() -> i64 {
+    30
 }
 
 impl Default for SkillsModelScopeConfig {

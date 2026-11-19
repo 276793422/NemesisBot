@@ -1002,6 +1002,49 @@ fn status(paths: &nemesis_sandbox::SandboxPaths, home: &std::path::Path) -> Resu
         "  executor.acl:      dacl={} strict={} max_files={}",
         acl.acl.dacl, acl.acl.strict, acl.acl.max_files
     );
+    println!(
+        "  executor.backend:  {}{}",
+        acl.backend,
+        if acl.backend == "mxc" {
+            "（MXC 护栏后端，重启后生效）"
+        } else {
+            ""
+        }
+    );
+
+    // MXC 护栏后端状态（2026-11-14，feature sandbox-mxc 门控）：探测三态 +
+    // 警告文案（未编译 = 诚实「未编译」，不假装探测）。
+    #[cfg(feature = "sandbox-mxc")]
+    {
+        let report = nemesis_sandbox::mxc_backend::probe_mxc_cached(false);
+        println!(
+            "  MXC:               {} [{}] {}",
+            report.status,
+            report.platform_backend,
+            if acl.backend == "mxc" {
+                nemesis_sandbox::mxc_backend::MXC_WARNING
+            } else {
+                ""
+            }
+        );
+        println!("  MXC 详情:          {}", report.detail);
+        println!(
+            "  executor.mxc:      network={} egress_allow={}",
+            acl.mxc.network,
+            if acl.mxc.egress_allow.is_empty() {
+                "（空）".to_string()
+            } else {
+                acl.mxc.egress_allow.join(", ")
+            }
+        );
+    }
+    #[cfg(not(feature = "sandbox-mxc"))]
+    if acl.backend == "mxc" {
+        println!(
+            "  MXC:               未编译（sandbox-mxc feature 缺席）——backend=\"mxc\" \
+             本次启动回落原生路径"
+        );
+    }
     #[cfg(target_os = "windows")]
     {
         use nemesis_sandbox::backend::Availability;

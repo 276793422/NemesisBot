@@ -262,6 +262,31 @@ fn test_create_default_heartbeat_template() {
     assert!(content.contains("heartbeat tasks below this line"));
 }
 
+/// BUG-20261115-006 回归锁：文件已在场时 create_default_heartbeat_template
+/// 绝不覆写用户内容。产码触发面是 build_prompt 的 `Err(_)` 臂——瞬时读错误
+/// （Windows AV/索引器共享冲突）会误入该臂，无守卫时用户任务被默认模板
+/// 整体覆盖。守卫与 static 变体同款。
+#[test]
+fn test_create_default_template_never_overwrites_existing_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let svc = HeartbeatService::new(HeartbeatConfig {
+        workspace: Some(dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let path = dir.path().join("HEARTBEAT.md");
+    let user_content = "# My Tasks\n\n- 每天早上查看邮件\n- Review PR #42\n";
+    std::fs::write(&path, user_content).unwrap();
+
+    svc.create_default_heartbeat_template();
+
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        content, user_content,
+        "既有 HEARTBEAT.md 用户内容必须原样保留，不得被默认模板覆盖"
+    );
+}
+
 #[test]
 fn test_build_prompt_no_workspace() {
     let svc = HeartbeatService::new(HeartbeatConfig {
@@ -461,6 +486,49 @@ fn test_config_new_clamps_interval() {
         HeartbeatConfig::new(7, true, "/tmp".to_string()).interval,
         Duration::from_secs(7 * 60)
     );
+}
+
+// 回归锁（BUG-20261114-057）：config heartbeat.interval 是 i64 直通 as u64
+// （仅 .max(0) 下限钳制，无上界）——修复前巨值分钟 ×60 在 debug panic
+// （gateway 启动 Step 12 假死）/ release 回绕垃圾心跳节奏。修复 = 上限钳
+// 30 天（MAX_INTERVAL_MINUTES，与 5 分钟下限构成对称钳契约）。
+#[test]
+fn test_config_new_clamps_interval_upper_bound() {
+    const MAX: Duration = Duration::from_secs(30 * 24 * 60 * 60); // 43200 分钟 → 秒
+    // 全量程巨值：钳到 30 天，不炸不回绕。
+    assert_eq!(
+        HeartbeatConfig::new(u64::MAX, true, "/tmp".to_string()).interval,
+        MAX
+    );
+    // 越上限的普通巨值（此前会溢出的形态）同钳。
+    assert_eq!(
+        HeartbeatConfig::new(u64::MAX / 60 + 1, true, "/tmp".to_string()).interval,
+        MAX
+    );
+    // 恰在上限：原样换算。
+    assert_eq!(
+        HeartbeatConfig::new(30 * 24 * 60, true, "/tmp".to_string()).interval,
+        MAX
+    );
+    // 上限之下不受影响。
+    assert_eq!(
+        HeartbeatConfig::new(30 * 24 * 60 - 1, true, "/tmp".to_string()).interval,
+        Duration::from_secs((30 * 24 * 60 - 1) * 60)
+    );
+}
+
+// 回归锁（BUG-20261114-057 二阶面）：tick 循环
+// `interval_at(tokio::time::Instant::now() + interval, interval)` 的算术
+// 位点——裸 saturating 到 u64::MAX 秒在此 panic（std time.rs「overflow
+// when adding duration to instant」，tokio-rt-worker 线程死 = 心跳永久
+// 停摆）。钳 30 天后 Instant 算术恒安全（实测 gateway 巨值间隔启动红证
+// 转绿）。
+#[tokio::test]
+async fn test_config_interval_is_instant_add_safe() {
+    let cfg = HeartbeatConfig::new(u64::MAX, true, "/tmp".to_string());
+    // 修复前此行 panic——与 service.rs run 循环同一算术形态。
+    let deadline = tokio::time::Instant::now() + cfg.interval;
+    assert!(deadline > tokio::time::Instant::now());
 }
 
 // 回归锁：on_beat 回调在有效 tick（通过 skip 检查、内部

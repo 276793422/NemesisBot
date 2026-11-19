@@ -82,7 +82,7 @@ fn test_mask_token_exactly_9() {
 
 #[test]
 fn test_generate_token_length() {
-    let token = generate_token(32);
+    let token = generate_token(32).unwrap();
     // base64 of 32 bytes = 44 chars (ceil(32/3)*4 = 44)
     assert_eq!(token.len(), 44);
     // Should be valid base64 characters
@@ -93,15 +93,15 @@ fn test_generate_token_length() {
 
 #[test]
 fn test_generate_token_16_bytes() {
-    let token = generate_token(16);
+    let token = generate_token(16).unwrap();
     // base64 of 16 bytes = 24 chars (ceil(16/3)*4 = 24)
     assert_eq!(token.len(), 24);
 }
 
 #[test]
 fn test_generate_token_unique() {
-    let t1 = generate_token(32);
-    let t2 = generate_token(32);
+    let t1 = generate_token(32).unwrap();
+    let t2 = generate_token(32).unwrap();
     assert_ne!(t1, t2, "Two generated tokens should differ");
 }
 
@@ -360,7 +360,7 @@ fn test_base64_encode_all_ones() {
 
 #[test]
 fn test_generate_token_128_bytes() {
-    let token = generate_token(128);
+    let token = generate_token(128).unwrap();
     // base64 of 128 bytes = 172 chars (ceil(128/3)*4 = 172)
     assert_eq!(token.len(), 172);
 }
@@ -703,11 +703,12 @@ fn test_cluster_config_parsing_all_fields() {
 #[test]
 fn test_cluster_config_missing_fields_use_defaults() {
     let cfg = serde_json::json!({});
-    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
+    // u64 域读回（不截断），与 run() 生产形态一致（BUG-20261116-043）。
+    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949);
     let cur_rpc = cfg
         .get("rpc_port")
         .and_then(|v| v.as_u64())
-        .unwrap_or(21949) as u16;
+        .unwrap_or(21949);
     let cur_interval = cfg
         .get("broadcast_interval")
         .and_then(|v| v.as_u64())
@@ -803,13 +804,13 @@ fn test_peer_defaults() {
 
 #[test]
 fn test_generate_token_zero_bytes() {
-    let token = generate_token(0);
+    let token = generate_token(0).unwrap();
     assert_eq!(token.len(), 0);
 }
 
 #[test]
 fn test_generate_token_one_byte() {
-    let token = generate_token(1);
+    let token = generate_token(1).unwrap();
     assert_eq!(token.len(), 4); // base64 of 1 byte = 4 chars
 }
 
@@ -2598,7 +2599,7 @@ async fn test_run_node_not_initialized_bails() {
             udp_port: None,
             rpc_port: None,
             name: None,
-            broadcast_interval: 10,
+            broadcast_interval: Some(10),
         },
         false,
     )
@@ -2674,7 +2675,8 @@ fn test_update_main_config_cluster_writes_section() {
 //
 // 豁免不碰：firewall netsh 臂（spawn 进程 + 宿主防火墙变更）、run_node
 // 主流程臂（UDP 发现 + RPC server 绑定 + ctrl_c 无限循环）、Init/Reset
-// 的 TTY 确认分支、generate_token 的 getrandom 失败兜底。
+// 的 TTY 确认分支、generate_token 的 RNG 失败 hard-fail 臂（无法模拟
+// OS 随机源故障——结构性豁免；兜底路径已删除，见 generate_token 文档）。
 // 本批覆盖：错误传播臂（corrupt JSON Enable/Disable/Start/Stop）、
 // 静默跳过臂（Status/Config 对坏文件）、"(not set)" 显示臂、保存失败打印
 // 臂（只读文件；root/admin 会无视只读位——断言保持弱语义）、Remove 的
@@ -3423,7 +3425,8 @@ mod wave_c {
 // 进程有看门狗限时强杀保护（单测试 ≤ ~75s）。
 // 结构性豁免（本轮不碰）：firewall netsh 全臂；Init 的 TTY 确认分支
 // （is_terminal 在管道下恒 false）；显示循环 tick 变更臂（需真实对端上线）
-// 与 ctrl_c 臂（无信号注入通道）；generate_token 的 RNG 失败兜底。
+// 与 ctrl_c 臂（无信号注入通道）；generate_token 的 RNG 失败 hard-fail
+// 臂（无法模拟 OS 随机源故障——结构性豁免；uuid 兜底已删除）。
 // 仅 Windows：resolve_nemesisbot_bin 解析.exe（与既有子进程测试同门）。
 // =========================================================================
 #[cfg(windows)]
@@ -4219,4 +4222,69 @@ async fn test_roaming_trust_mutate_corrupt_book_loud_reject() {
         "{{ not toml",
         "坏簿不得被静默覆盖"
     );
+}
+
+/// BUG-20261114-021 决策表：run_node 的有效广播间隔单一裁决点。
+/// 旧缺陷：`cluster node --broadcast-interval` 只进 println 从不应用、
+/// config.broadcast_interval 完全不读——node 恒跑 30s 常量，打印/默认
+/// (clap 10)/实际 (30) 三方矛盾。变异锁：删 run_node 里的
+/// set_broadcast_interval 调用或把裁决点改回 `.unwrap_or(30)`，本表即
+/// 失去意义——配合 grep 断言 `set_broadcast_interval` 在 run_node 内被调用。
+#[test]
+fn effective_broadcast_interval_decision_table() {
+    // 缺省 flag → config 值（含 UAT 风格 3s 与出厂默认 30s）。
+    assert_eq!(effective_broadcast_interval(None, 30), 30);
+    assert_eq!(effective_broadcast_interval(None, 3), 3);
+    // 显式 flag 优先。
+    assert_eq!(effective_broadcast_interval(Some(5), 30), 5);
+    assert_eq!(effective_broadcast_interval(Some(3), 30), 3);
+    // 0 钳 1（tokio interval 构造 0 时长 panic；gateway 装载臂同款钳制）。
+    assert_eq!(effective_broadcast_interval(Some(0), 30), 1);
+    assert_eq!(effective_broadcast_interval(None, 0), 1);
+}
+
+/// 装配面回归：run_node 源码必须把裁决结果真正喂给
+/// Cluster::set_broadcast_interval（旧缺陷的根因正是只打印不应用）。
+/// 文件级 grep 断言——轻量但锁得住「再删接线」这类回归。
+#[test]
+fn run_node_wires_broadcast_interval_into_cluster() {
+    // 剥除全部空白后匹配（rustfmt 会折行/调整缩进，语义断言不得依赖排版形态）。
+    let normalize = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let src = normalize(include_str!("../cluster.rs"));
+    assert!(
+        src.contains(
+            "cluster.set_broadcast_interval(std::time::Duration::from_secs(broadcast_interval_secs));"
+        ),
+        "run_node must apply effective_broadcast_interval via set_broadcast_interval \
+         (BUG-20261114-021: flag used to be printed but never applied)"
+    );
+}
+
+/// BUG-20261116-043 回归：写闸比较必须在 u64 域（读回不截断）。
+/// 裸 `as u16` 读回会把越域存量回绕（66000→464）与合法请求撞相等，
+/// 用户写请求被静默跳过。
+#[test]
+fn cluster_config_differs_compares_in_u64_domain() {
+    use super::cluster_config_differs;
+    // 越域存量 66000 vs 合法请求 464：必须判差异（截断域会误判相等）。
+    assert!(cluster_config_differs((66000, 21949, 30), (464, 21949, 30)));
+    // 越域 rpc 同理。
+    assert!(cluster_config_differs(
+        (11949, 70000, 30),
+        (11949, 4464, 30)
+    ));
+    // 全等不写。
+    assert!(!cluster_config_differs(
+        (11949, 21949, 30),
+        (11949, 21949, 30)
+    ));
+    // 任一维差异即写。
+    assert!(cluster_config_differs(
+        (11949, 21949, 30),
+        (11949, 21949, 31)
+    ));
+    assert!(cluster_config_differs(
+        (11949, 21949, 30),
+        (11950, 21949, 30)
+    ));
 }

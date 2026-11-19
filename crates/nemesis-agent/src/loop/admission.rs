@@ -63,8 +63,8 @@ pub(crate) enum GateOutcome {
     /// `/build <task> repo:<node>`。会话已在 gate 获取（Maintenance 同款，
     /// 防并发回合踩会话）；tail 走 `process_user_dispatch`：经
     /// `handle_tool_call` 全管线（安全 8 层 / estop / Plan 闸）提交
-    /// `cluster_rpc`，ACK 后存自足续行快照，完成回调复用
-    /// `handle_cluster_continuation` 呈现结果并回原通道。
+    /// `cluster_rpc`，ACK 后存自足续行快照，完成回调经
+    /// `run_continuation_turn`（续行回主路）呈现结果并回原通道。
     UserDispatch {
         task_text: String,
         node_id: String,
@@ -397,6 +397,16 @@ impl AgentLoop {
                 return Ok(msg.clone());
             }
         }
+        // LLM 失败必须走 Err 通道（BUG-20261118-153）：run_with_trace 的失败
+        // 终态是 AgentEvent::Error（run_loop TurnFlow::Stop / recovery），本函数
+        // 曾只扫 Done、把 Error 事件吞成 Ok(兜底文案) 假成功——gateway handler
+        // 的 is_error 分支成死代码，心跳故障只在 debug 级留痕（每拍打满 LLM
+        // 尝试零观测）。对齐同文件 cron 兄弟路径的 Done→Ok / Error→Err 约定。
+        for event in events.iter().rev() {
+            if let AgentEvent::Error(msg) = event {
+                return Err(msg.clone());
+            }
+        }
         Ok("I've completed processing but have no response to give.".to_string())
     }
 
@@ -659,6 +669,9 @@ impl AgentLoop {
                 checkpoint_turn: None, // 回绝消息不开始 turn，无 checkpoint 标记
                 steer: false,
                 work: None,
+
+                source_node: None,
+                system_notice: system_notice_of(msg),
             },
         );
         crate::chat_log::append_chat_log_meta(
@@ -675,6 +688,9 @@ impl AgentLoop {
                 checkpoint_turn: None,
                 steer: false,
                 work: None,
+
+                source_node: None,
+                system_notice: None, // assistant 回实行正常气泡展示，无标记
             },
         );
         if !log_existed {
@@ -725,8 +741,8 @@ impl AgentLoop {
                 return GateOutcome::Continuation(task_id.to_string());
             }
             // (devtool-upgrade)：后台 subagent 完成回灌 —— 与集群
-            // 续行同构：同走 dispatch_continuation → handle_cluster_continuation
-            // （快照加载 + 续行 + 持久化 + 自清，全复用零新路径）。
+            // 续行同构：同走 dispatch_continuation → run_continuation_turn
+            // （快照加载 + 回主路续行 + 持久化 + 自清，全复用零新路径）。
             if msg
                 .sender_id
                 .starts_with(nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX)
@@ -1155,7 +1171,8 @@ impl AgentLoop {
     /// 接线 adapters/loop_manager/projects manager reinject_tx 恒 Some）。
     /// 未接线（standalone/测试）诚实留痕跳过——消息仍由下一回合尾巴排空，
     /// 与修复前行为一致，不回退。
-    fn kick_orphaned_queue_if_idle(&self, session_key: &str) {
+    /// pub(crate)：bus.rs（兄弟模块）的续行交接排空臂复用（续行回主路 2026-11-12）。
+    pub(crate) fn kick_orphaned_queue_if_idle(&self, session_key: &str) {
         if self.is_session_busy(session_key) {
             return; // 正常路径：在途回合的尾巴负责排空
         }
@@ -1296,6 +1313,9 @@ impl AgentLoop {
                     checkpoint_turn: cp_turn,
                     steer: false,
                     work: None,
+
+                    source_node: None,
+                    system_notice: system_notice_of(&msg),
                 },
             );
             if !log_existed {
@@ -1308,6 +1328,24 @@ impl AgentLoop {
                 crate::chat_log::write_session_meta_principal(&session_key, &principal);
                 self.emit_session_created(&session_key);
             }
+        }
+
+        // 系统注入行实时可见（2026-11-19）：注入消息（hook 提示词 / cron
+        // tick / 后台唤醒）不走 WS chat.send 入站臂回声——loop 内部队列
+        // 回灌绕过 web 入站咽喉，实时面此前只在重开面板（历史重载）才
+        // 可见。落盘后补发事件，web pump 转 receive 帧（seq 入环，
+        // chat.sync 断线重放同覆盖）。真人消息不发（入站臂已有回声，
+        // 双发重复）；agent_event_tx 未装配（CLI / B 端 worker）= no-op。
+        if let Some(kind) = system_notice_of(&msg)
+            && let Some(tx) = self.agent_event_tx.read().as_ref()
+        {
+            let _ = tx.send(nemesis_types::agent::AgentEvent::SystemNotice {
+                session_key: session_key.clone(),
+                chat_id: msg.chat_id.clone(),
+                content: msg.content.clone(),
+                kind: kind.to_string(),
+                cron_job_id: cron_job_id.map(|s| s.to_string()),
+            });
         }
 
         // （@文件引用）：内联被引用文件内容。相对路径以 workspace 根为基准
@@ -1336,13 +1374,12 @@ impl AgentLoop {
         // URL media 先经 fetch_url_media 预取（SSRF 闸 + http-pool 下载 →
         // uploads 落盘改写为本地路径引用），再统一走同步附加链；失败注记随
         // 附加注记一并合并进轮次文本。
-        let ws_for_uploads = self.workspace_root.read().clone();
-        let uploads_base =
-            ws_for_uploads.unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-        // 会话资产区（2026-11-12）：不经 sessions.create 到达的会话在此
-        // 惰性补分配（幂等——已绑定零写入）；绑定会话的 URL 预取产物落
-        // 自家 home/uploads，未绑定（存量 lenient / 分配失败）落全局
-        // workspace/uploads——行为零变化。
+        // 会话资产区根（2026-11-16 污染修复）：session_homes_root 统一裁决
+        // （项目 loop = 主 workspace，不再落项目目录）。会话资产区（2026-11-12）：
+        // 不经 sessions.create 到达的会话在此惰性补分配（幂等——已绑定零写入）；
+        // 绑定会话的 URL 预取产物落自家 home/uploads，未绑定（存量 lenient /
+        // 分配失败）落全局 workspace/uploads——行为零变化。
+        let uploads_base = self.session_homes_root();
         if let Err(e) = crate::session_home::assign_session_home(&uploads_base, &session_key) {
             tracing::warn!("[admission] lazy home assign failed for {session_key}: {e}");
         }
@@ -1613,17 +1650,27 @@ impl AgentLoop {
     /// Release a session after processing.
     /// Returns true if there are queued requests remaining.
     /// Mirrors Go's `releaseSession()`.
+    ///
+    /// 完全释放（无排队）时**摘除条目**（BUG-20261113-170）：此前只置
+    /// `busy=false` 留条目在场，每个 admit 过的会话都留下一条死条目直到
+    /// 进程重启——24/7 网关下按会话数无界累积。所有读路径
+    /// （`get_session_busy_state`/`is_session_busy`/`session_queue_length`）
+    /// 对缺席键都回落默认值 (false, 0) / 0，摘除后观测等价；排队路径
+    /// （queue_length > 0）条目保留不动。
     pub fn release_session(&self, session_key: &str) -> bool {
         let mut map = self.session_busy.lock();
-        if let Some(state) = map.get_mut(session_key) {
-            if state.queue_length > 0 {
+        let has_queued = match map.get_mut(session_key) {
+            Some(state) if state.queue_length > 0 => {
                 state.queue_length -= 1;
                 // Keep busy since there are queued requests.
-                return true;
+                true
             }
-            state.busy = false;
+            Some(_) | None => false,
+        };
+        if !has_queued {
+            map.remove(session_key);
         }
-        false
+        has_queued
     }
 
     /// Check whether a session is currently busy.
@@ -1743,6 +1790,18 @@ impl AgentLoop {
                     );
                 }
             }
+            // 提问等待联动（Phase 5 A3）：同审批 drain 语义——该会话
+            // pending 提问以 Cancelled 强制了结（question 工具醒来按
+            // 「停止」语义处理）。槽空 = trait 默认 no-op（返回 0）。
+            if let Some(responder) = self.question_responder() {
+                let closed = responder.cancel_session_questions(session_key, "turn cancelled");
+                if closed > 0 {
+                    info!(
+                        "[AgentLoop] session cancel closed {} pending question card(s): {}",
+                        closed, session_key
+                    );
+                }
+            }
             info!(
                 "[AgentLoop] Session cancellation requested: {}",
                 session_key
@@ -1778,6 +1837,17 @@ impl AgentLoop {
                     );
                 }
             }
+            // 提问等待联动（Phase 5 A3）：与 cancel_session 同款 drain，
+            // 覆盖全局停止按钮（不带 session_id 的 agent.cancel）路径。
+            if let Some(responder) = self.question_responder() {
+                let closed = responder.cancel_session_questions(session_key, "turn cancelled");
+                if closed > 0 {
+                    info!(
+                        "[AgentLoop] session cancel closed {} pending question card(s): {}",
+                        closed, session_key
+                    );
+                }
+            }
         }
         if count > 0 {
             info!("[AgentLoop] Cancelled {} active session(s)", count);
@@ -1787,7 +1857,11 @@ impl AgentLoop {
 
     /// Create and store a cancellation token for a session.
     /// Returns the token for the caller to pass into the processing pipeline.
-    fn create_cancel_token(&self, session_key: &str) -> tokio_util::sync::CancellationToken {
+    /// pub(crate)：bus.rs 续行交接复用（续行回主路 2026-11-12）。
+    pub(crate) fn create_cancel_token(
+        &self,
+        session_key: &str,
+    ) -> tokio_util::sync::CancellationToken {
         let token = tokio_util::sync::CancellationToken::new();
         self.cancel_tokens
             .insert(session_key.to_string(), token.clone());
@@ -1795,7 +1869,8 @@ impl AgentLoop {
     }
 
     /// Remove the cancellation token for a session after processing completes.
-    fn remove_cancel_token(&self, session_key: &str) {
+    /// pub(crate)：bus.rs 续行交接复用（续行回主路 2026-11-12）。
+    pub(crate) fn remove_cancel_token(&self, session_key: &str) {
         self.cancel_tokens.remove(session_key);
     }
 
@@ -1953,6 +2028,22 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
         session_key: route.session_key,
         matched_by: route.matched_by,
     }
+}
+
+/// 系统通知标记推导（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
+/// metadata 显式 `system_notice` 优先（注入点可指定更细的类别文案），
+/// 否则 `sender_id=="system"` 的注入源一律视为系统通知——后台任务完成
+/// 唤醒（agent_build）、审批裁决回灌（runtime）、Turn WAL 崩溃恢复续轮
+/// （bus）三个已知生产注入点全部命中；未来任何 `sender="system"` 的新
+/// 注入点自动正确（推导而非逐注入点打标）。真人消息经各通道携带真实
+/// 用户 id，不命中——返回 None 不写键，前端用户气泡逐字节旧行为。
+/// role 仍是 `"user"`（通知轮是真实轮次：上下文重建投影与轮边界判定
+/// 依赖 role=user），标记只影响 Dashboard 展示形态。
+fn system_notice_of(msg: &nemesis_types::channel::InboundMessage) -> Option<&str> {
+    msg.metadata
+        .get("system_notice")
+        .map(|s| s.as_str())
+        .or_else(|| (msg.sender_id == "system").then_some("system"))
 }
 
 // 覆盖率补充批次：审批卡回执语法 / 会话闸队列账目 / inbox_status 模式。

@@ -447,3 +447,24 @@ fn memory_config_default_values() {
     assert_eq!(c.max_tokens, 32000);
     assert_eq!(c.keep_tokens, 16000);
 }
+
+/// BUG-20261114-022 回归锁：memory.rs 生产代码禁止直写 `fs::write`——
+/// MEMORY.md/每日笔记是 RMW 活状态，撕裂写 = 记忆正文截断丢失；统一走
+/// `write_file_atomic`（唯一临时名 + sync_all 先于 rename + 失败清理）。
+/// 剥除全部空白后匹配，rustfmt 排版变化不影响判定。
+#[test]
+fn memory_writes_route_through_atomic_helper() {
+    let src: String = include_str!("../memory.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    assert!(
+        !src.contains("fs::write("),
+        "memory.rs 生产代码出现直写 fs::write（BUG-20261114-022 回归）：\
+         MEMORY.md/每日笔记必须走 write_file_atomic 原子落盘"
+    );
+    assert!(
+        src.contains("nemesis_utils::write_file_atomic("),
+        "memory.rs 必须经 write_file_atomic 落盘（关键状态写入唯一权威 helper）"
+    );
+}

@@ -50,6 +50,16 @@ fn persister(
         node_id: "self-node".to_string(),
         outbox,
         workspace: workspace.map(|p| p.to_path_buf()),
+        test_join: std::sync::Mutex::new(Vec::new()),
+    }
+}
+
+/// 等待该 adapter 的线程化终态钩子全部落地（BUG-20261113-152：workspace
+/// 在场的钩子走专用线程，磁盘终态断言前必须 join——不靠 sleep 猜时序）。
+fn join_terminal_hooks(p: &ClusterResultPersisterAdapter) {
+    let handles: Vec<_> = p.test_join.lock().unwrap().drain(..).collect();
+    for h in handles {
+        h.join().expect("终态钩子线程不应 panic");
     }
 }
 
@@ -100,6 +110,7 @@ fn on_task_terminal_enqueues_seeded_record() {
     // → 回落纯记录 enqueue → 命中 seeded 记录 → entry.json 落盘。
     let p = persister(&tmp, true, Some(&ws));
     p.on_task_terminal("task-ok", "peer-a");
+    join_terminal_hooks(&p);
     let entry = ws
         .join("cluster")
         .join("outbox")
@@ -123,6 +134,7 @@ fn on_task_terminal_with_workspace_and_empty_source_still_fails_honest() {
     // → enqueue 拒绝（task_id/source 为空诚实臂）。
     let p = persister(&tmp, true, Some(&ws));
     p.on_task_terminal("task-empty-src", "");
+    join_terminal_hooks(&p);
     let entry = ws
         .join("cluster")
         .join("outbox")
@@ -147,6 +159,7 @@ fn on_task_terminal_exec_sidecar_corrupt_keeps_scene_and_skips_enqueue() {
     .unwrap();
     let p = persister(&tmp, true, Some(&ws));
     p.on_task_terminal("task-bad-sidecar", "peer-a");
+    join_terminal_hooks(&p);
     // 现场保留：sidecar 原样在；诚实降级：无 entry.json。
     assert!(
         exec_dir
@@ -188,6 +201,7 @@ fn on_task_terminal_exec_zero_diff_archives_and_clears_exec_dir() {
 
     let p = persister(&tmp, true, Some(&ws));
     p.on_task_terminal(task, "peer-a");
+    join_terminal_hooks(&p);
 
     // Ok(true)：exec 目录已清（归档完成）；记录入队成功。
     assert!(!exec_dir.exists(), "零差异归档后 exec 工作副本目录必须清除");

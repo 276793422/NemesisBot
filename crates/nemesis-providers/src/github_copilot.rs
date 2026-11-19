@@ -114,7 +114,7 @@ impl LLMProvider for GitHubCopilotProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(FailoverError::from_status(
                 "github-copilot",
                 &self.config.default_model,
@@ -127,9 +127,12 @@ impl LLMProvider for GitHubCopilotProvider {
         // body 读传输失败诚实上抛（同族）：unwrap_or_default
         // 会把断连伪装成「空内容 + 成功」假成功（finish_reason=stop、零报错）
         // ——比伪装 Format 更糟，agent 拿到空回复无从重试。
-        let content: String = resp.text().await.map_err(|e| {
-            crate::failover::transport_error("github-copilot", &self.config.default_model, &e)
-        })?;
+        // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚（可重试）。
+        let content: String = crate::body_cap::read_success_body(resp)
+            .await
+            .map_err(|e| {
+                crate::body_cap::to_failover_error("github-copilot", &self.config.default_model, e)
+            })?;
 
         Ok(LLMResponse {
             content,

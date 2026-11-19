@@ -166,6 +166,13 @@ async fn call_nonexistent_tool() {
     );
     let resp = server.handle_request(&req).await;
     assert!(resp.is_error());
+    // MCP spec tools/call：未知工具 = -32602 Invalid params
+    //（BUG-20261118-164 回归锁——此前 -32603 Internal）。
+    assert_eq!(
+        resp.error.unwrap().code,
+        JSONRPCError::INVALID_PARAMS,
+        "unknown tool must be invalid params per MCP spec"
+    );
 }
 
 #[tokio::test]
@@ -190,6 +197,13 @@ async fn read_nonexistent_resource() {
     );
     let resp = server.handle_request(&req).await;
     assert!(resp.is_error());
+    // MCP spec 保留错误码：资源不存在 = -32002（BUG-20261118-164
+    // 回归锁——此前 -32603 Internal）。
+    assert_eq!(
+        resp.error.unwrap().code,
+        JSONRPCError::RESOURCE_NOT_FOUND,
+        "missing resource must use the protocol-reserved -32002"
+    );
 }
 
 #[tokio::test]

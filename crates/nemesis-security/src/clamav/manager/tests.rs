@@ -3,50 +3,139 @@ use std::time::Duration;
 
 #[test]
 fn test_parse_duration_24h() {
-    assert_eq!(parse_duration_string("24h"), Duration::from_secs(24 * 3600));
+    assert_eq!(
+        parse_duration_string("24h"),
+        Some(Duration::from_secs(24 * 3600))
+    );
 }
 
 #[test]
 fn test_parse_duration_1h30m() {
-    assert_eq!(parse_duration_string("1h30m"), Duration::from_secs(90 * 60));
+    assert_eq!(
+        parse_duration_string("1h30m"),
+        Some(Duration::from_secs(90 * 60))
+    );
 }
 
 #[test]
 fn test_parse_duration_30m() {
-    assert_eq!(parse_duration_string("30m"), Duration::from_secs(30 * 60));
+    assert_eq!(
+        parse_duration_string("30m"),
+        Some(Duration::from_secs(30 * 60))
+    );
 }
 
 #[test]
 fn test_parse_duration_1d() {
-    assert_eq!(parse_duration_string("1d"), Duration::from_secs(86400));
+    assert_eq!(
+        parse_duration_string("1d"),
+        Some(Duration::from_secs(86400))
+    );
 }
 
 #[test]
 fn test_parse_duration_seconds() {
-    assert_eq!(parse_duration_string("45s"), Duration::from_secs(45));
+    assert_eq!(parse_duration_string("45s"), Some(Duration::from_secs(45)));
 }
 
 #[test]
 fn test_parse_duration_composite() {
     assert_eq!(
         parse_duration_string("1d2h30m15s"),
-        Duration::from_secs(86400 + 7200 + 1800 + 15)
+        Some(Duration::from_secs(86400 + 7200 + 1800 + 15))
     );
 }
 
 #[test]
 fn test_parse_duration_empty() {
-    assert_eq!(parse_duration_string(""), Duration::ZERO);
+    // 空串 = Some(ZERO)：文档化的「禁用」哨兵（向后兼容）。
+    assert_eq!(parse_duration_string(""), Some(Duration::ZERO));
 }
 
 #[test]
 fn test_parse_duration_invalid() {
-    assert_eq!(parse_duration_string("abc"), Duration::ZERO);
+    // 非法值 -> None（fail-loud 契约：调用方 WARN + 回落默认，不再静默禁用）。
+    assert_eq!(parse_duration_string("abc"), None);
 }
 
 #[test]
 fn test_parse_duration_invalid_mixed() {
-    assert_eq!(parse_duration_string("1x"), Duration::ZERO);
+    assert_eq!(parse_duration_string("1x"), None);
+}
+
+// --- BUG-20261116-026 新契约（修复后绿证形态） ---
+
+#[test]
+fn test_parse_duration_plain_digits_are_seconds() {
+    // 纯数字 = 秒（对齐 nemesis-workflow parse_duration 语义）；旧实现
+    // 尾部数字永不消费 → ZERO = 静默禁用病毒库自动更新（红证修复前实测）。
+    assert_eq!(parse_duration_string("123"), Some(Duration::from_secs(123)));
+}
+
+#[test]
+fn test_parse_duration_trailing_digits_consumed() {
+    // 尾部数字按秒消费（"24h30" -> 24h + 30s）；旧实现静默丢弃尾部 "30"。
+    assert_eq!(
+        parse_duration_string("24h30"),
+        Some(Duration::from_secs(24 * 3600 + 30))
+    );
+}
+
+#[test]
+fn test_parse_duration_word_value_is_none() {
+    // "daily"（ScannerView 测试 mock 里的真实历史形态值）旧实现解析为
+    // ZERO = 自动更新被静默禁用；新契约 None -> 调用方 WARN + 回落默认。
+    assert_eq!(parse_duration_string("daily"), None);
+}
+
+#[test]
+fn test_parse_duration_whitespace_trimmed() {
+    assert_eq!(
+        parse_duration_string("  12h  "),
+        Some(Duration::from_secs(12 * 3600))
+    );
+}
+
+#[test]
+fn test_parse_duration_unit_without_number_is_none() {
+    // 单位前无数字（"h30"）= 畸形 -> None，不静默按 30s 收。
+    assert_eq!(parse_duration_string("h30"), None);
+}
+
+#[test]
+fn test_parse_duration_overflow_saturates() {
+    // 巨值饱和到「事实不限时」（与 nemesis-workflow parse_duration
+    // BUG-20261114-057 同族语义），debug 不 panic。
+    let parsed = parse_duration_string("99999999999999999999999h");
+    assert!(parsed.is_some());
+    assert!(parsed.unwrap() > Duration::from_secs(u64::MAX / 2));
+}
+
+#[test]
+fn test_resolve_update_interval_passthrough() {
+    assert_eq!(
+        resolve_update_interval("1h30m"),
+        Duration::from_secs(90 * 60)
+    );
+}
+
+#[test]
+fn test_resolve_update_interval_malformed_falls_back_to_24h() {
+    // 畸形配置值（"daily"/空格形态）不再静默禁用自动更新，回落 24h 默认。
+    assert_eq!(
+        resolve_update_interval("daily"),
+        Duration::from_secs(24 * 3600)
+    );
+    assert_eq!(
+        resolve_update_interval("1 day"),
+        Duration::from_secs(24 * 3600)
+    );
+}
+
+#[test]
+fn test_resolve_update_interval_empty_stays_disabled() {
+    // 空串哨兵语义保持：禁用自动更新（向后兼容）。
+    assert_eq!(resolve_update_interval(""), Duration::ZERO);
 }
 
 #[test]
@@ -203,42 +292,45 @@ async fn test_manager_hook_and_scanner_none_before_start() {
 
 #[test]
 fn test_parse_duration_2h() {
-    assert_eq!(parse_duration_string("2h"), Duration::from_secs(7200));
+    assert_eq!(parse_duration_string("2h"), Some(Duration::from_secs(7200)));
 }
 
 #[test]
 fn test_parse_duration_15m() {
-    assert_eq!(parse_duration_string("15m"), Duration::from_secs(900));
+    assert_eq!(parse_duration_string("15m"), Some(Duration::from_secs(900)));
 }
 
 #[test]
 fn test_parse_duration_90s() {
-    assert_eq!(parse_duration_string("90s"), Duration::from_secs(90));
+    assert_eq!(parse_duration_string("90s"), Some(Duration::from_secs(90)));
 }
 
 #[test]
 fn test_parse_duration_7d() {
-    assert_eq!(parse_duration_string("7d"), Duration::from_secs(7 * 86400));
+    assert_eq!(
+        parse_duration_string("7d"),
+        Some(Duration::from_secs(7 * 86400))
+    );
 }
 
 #[test]
 fn test_parse_duration_1d12h() {
     assert_eq!(
         parse_duration_string("1d12h"),
-        Duration::from_secs(86400 + 43200)
+        Some(Duration::from_secs(86400 + 43200))
     );
 }
 
 #[test]
 fn test_parse_duration_zero() {
-    assert_eq!(parse_duration_string("0s"), Duration::from_secs(0));
+    assert_eq!(parse_duration_string("0s"), Some(Duration::from_secs(0)));
 }
 
 #[test]
 fn test_parse_duration_only_digits() {
-    // Just digits without unit suffix -> current_num stays non-zero but is never added
-    // After loop, total_secs remains 0, returns Duration::ZERO
-    assert_eq!(parse_duration_string("123"), Duration::from_secs(0));
+    // 纯数字 = 秒（BUG-20261116-026 修复：旧实现尾部数字永不消费返回
+    // ZERO，此测试彼时钉住的是缺陷形态本身）。
+    assert_eq!(parse_duration_string("123"), Some(Duration::from_secs(123)));
 }
 
 #[test]
@@ -338,33 +430,42 @@ fn test_parse_duration_complex_composite() {
     let expected = 2 * 86400 + 8 * 3600 + 45 * 60 + 30;
     assert_eq!(
         parse_duration_string("2d8h45m30s"),
-        Duration::from_secs(expected)
+        Some(Duration::from_secs(expected))
     );
 }
 
 #[test]
 fn test_parse_duration_invalid_char_in_middle() {
-    assert_eq!(parse_duration_string("10x5m"), Duration::ZERO);
+    assert_eq!(parse_duration_string("10x5m"), None);
 }
 
 #[test]
 fn test_parse_duration_only_days() {
-    assert_eq!(parse_duration_string("3d"), Duration::from_secs(3 * 86400));
+    assert_eq!(
+        parse_duration_string("3d"),
+        Some(Duration::from_secs(3 * 86400))
+    );
 }
 
 #[test]
 fn test_parse_duration_only_hours() {
-    assert_eq!(parse_duration_string("12h"), Duration::from_secs(12 * 3600));
+    assert_eq!(
+        parse_duration_string("12h"),
+        Some(Duration::from_secs(12 * 3600))
+    );
 }
 
 #[test]
 fn test_parse_duration_only_minutes() {
-    assert_eq!(parse_duration_string("45m"), Duration::from_secs(45 * 60));
+    assert_eq!(
+        parse_duration_string("45m"),
+        Some(Duration::from_secs(45 * 60))
+    );
 }
 
 #[test]
 fn test_parse_duration_only_seconds() {
-    assert_eq!(parse_duration_string("30s"), Duration::from_secs(30));
+    assert_eq!(parse_duration_string("30s"), Some(Duration::from_secs(30)));
 }
 
 #[test]
@@ -372,7 +473,7 @@ fn test_parse_duration_hours_and_minutes() {
     let expected = 2 * 3600 + 30 * 60;
     assert_eq!(
         parse_duration_string("2h30m"),
-        Duration::from_secs(expected)
+        Some(Duration::from_secs(expected))
     );
 }
 
@@ -505,6 +606,30 @@ async fn fake_manager_start_missing_database_refuses() {
     let err = manager.start().await.unwrap_err();
     assert!(err.contains("virus database missing"), "{err}");
     assert!(!manager.is_running());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn fake_manager_start_with_malformed_update_interval_still_starts() {
+    // BUG-20261116-026 端到端臂：畸形 update_interval（"daily"）经
+    // resolve_update_interval 回落 24h（WARN 留痕）→ start() 照常拉起、
+    // 自动更新照常 spawn——不再被 ZERO 闸静默禁用。
+    let clamav_dir = tempfile::tempdir().unwrap();
+    place_where_as(clamav_dir.path(), "clamd");
+    let data_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
+    std::fs::write(
+        data_dir.path().join("database").join("main.cvd"),
+        "fake cvd",
+    )
+    .unwrap();
+    let addr = serve_pong().await;
+    let mut cfg = fake_manager_config(clamav_dir.path(), data_dir.path(), addr);
+    cfg.update_interval = "daily".to_string();
+    let mut manager = Manager::new(cfg);
+    manager.start().await.unwrap();
+    assert!(manager.is_running());
+    manager.stop().await.unwrap();
 }
 
 #[cfg(windows)]

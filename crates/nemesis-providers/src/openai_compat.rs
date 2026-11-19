@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// OpenAI-compatible provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OpenAICompatConfig {
     /// Provider display name.
     pub name: String,
@@ -35,6 +36,21 @@ pub struct OpenAICompatConfig {
     #[serde(default)]
     pub proxy: Option<String>,
 }
+
+crate::debug_redact::impl_redacted_debug!(OpenAICompatConfig {
+    plain {
+        name,
+        base_url,
+        default_model,
+        timeout_secs,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 fn default_timeout() -> u64 {
     600 // 10 minutes (matches Go implementation)
@@ -326,7 +342,7 @@ impl LLMProvider for OpenAICompatProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(FailoverError::from_status(
                 &self.config.name,
                 model,
@@ -340,11 +356,11 @@ impl LLMProvider for OpenAICompatProvider {
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send 路径同判）；解析失败→Format 带 body 摘要
-        //（应用层，不可重试）。
-        let raw = resp
-            .text()
+        //（应用层，不可重试）。成功体有帽（BUG-20261115-024）：超限中途
+        // 断开→Unknown + "response body exceeds limit" 前缀（可重试）。
+        let raw = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error(&self.config.name, model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
                 provider: self.config.name.clone(),

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, reactive, nextTick, onMounted, onUnmounted, watch, computed, inject } from 'vue'
 import { useChatStore, type ChatMessage } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
@@ -19,6 +19,14 @@ import { useToast } from '../composables/useToast'
 import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useSessionAllowAll } from '../composables/useSessionAllowAll'
+// 会话工具状态单例（2026-11-19 拆分迁移）：思考强度/分享/委派状态真值，
+// 与 SessionResourcesPanel「会话工具」分节共享（弹窗渲染仍在本组件）。
+import { useComposerTools } from '../composables/useComposerTools'
+import { RESOURCES_PANEL_CTL, type ResourcesPanelCtl } from '../composables/useResourcesPanel'
+import { useVoiceControls } from '../composables/useVoiceControls'
+// 提案 C（2026-11-19）：资源窗开合控制由 ChatView 提供（provide/inject）；
+// 无 ChatView 的挂载面 = null → 输入框右侧资源窗开关按钮不渲染。
+const resourcesCtl = inject<ResourcesPanelCtl | null>(RESOURCES_PANEL_CTL, null)
 // 2026-11-12 会话分叉入口（PLAN 234）：fork 走 HTTP（WSAPI 无 sessions.fork）
 // + 「⋯」菜单与全局右键菜单互斥单开。
 import { useChatApi } from '../composables/useChatApi'
@@ -216,76 +224,23 @@ async function toggleAgentMode() {
   }
 }
 
-// --- G3: 会话级思考强度下拉（chat.get_effort 对齐 + chat.set_effort 切换；
+// --- G3: 会话级思考强度（chat.get_effort 对齐 + chat.set_effort 切换；
 // 后端按会话分键——只影响当前会话，同 loop 其他会话不受牵连；仅内存态，
-// 重启后回落 config 模型级默认） ---
-const sessionEffort = ref('') // '' = 默认（无 override，跟随模型配置）
+// 重启后回落 config 模型级默认）---
+// 2026-11-19 拆分迁移：状态真值挪进 useComposerTools 单例（与资源窗
+// 「会话工具」分节共享）；下拉 UI 也迁到资源窗，本组件只保留调用时机
+// （WS ready / 会话切换 / 挂载对齐）与探针标记拉取。
+const {
+  loadEffortMarks,
+  syncSessionEffort: syncComposerEffort,
+  showShare,
+  showDelegate,
+} = useComposerTools()
 
-// effort 探针标记（probe 二期）：挂载时拉一次 models.list 取默认模型的
-// effort_marks/effort_notes（后端 effort_wire_target 方言映射，前端零
-// 重建），会话强度下拉渲染 ✓/✗/?。拉取失败 = 空标记（诚实不标）。
-// EFFORT_TIERS 顺序与后端 capability::EFFORT_TIERS 对齐（7 档平行数组）。
-const EFFORT_TIERS_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-const effortMarks = ref<string[]>([])
-const effortNotes = ref<string[]>([])
-
-function effortMarkFor(value: string): string {
-  // 空数组 = models.list 拉取失败（无数据可比对）→ 不渲染标记（与
-  // 「探测过但未定」的 ? 相区分——前者是数据面不可用，后者是判定面未知）。
-  if (effortMarks.value.length === 0) return ''
-  const i = EFFORT_TIERS_ORDER.indexOf(value)
-  if (i < 0) return ''
-  const mark = effortMarks.value[i]
-  if (mark === 'ok') return ' ✓'
-  if (mark === 'bad') return ' ✗'
-  return ' ?'
-}
-function effortNoteFor(value: string): string {
-  const i = EFFORT_TIERS_ORDER.indexOf(value)
-  return (i >= 0 ? effortNotes.value[i] : '') || ''
-}
-
-async function loadEffortMarks() {
-  try {
-    const data = await request('models', 'list', {}, 8000)
-    const rows: Array<{ is_default?: boolean; effort_marks?: string[]; effort_notes?: string[] }> =
-      data?.models || []
-    const def = rows.find((m) => m.is_default)
-    effortMarks.value = def?.effort_marks || []
-    effortNotes.value = def?.effort_notes || []
-  } catch {
-    effortMarks.value = []
-    effortNotes.value = []
-  }
-}
-
-/** 进会话 / 重连时对齐一次 override（失败保持当前值，不炸 UI）。 */
+/** 进会话对齐（晚到回包围栏闭包：本组件持 effectiveSid 真值）。 */
 function syncSessionEffort() {
   if (!isDefaultChat.value) return
-  const sid = effectiveSid.value
-  if (!sid) return
-  request('chat', 'get_effort', { session_id: sid })
-    .then((data) => {
-      if (effectiveSid.value !== sid) return
-      sessionEffort.value = typeof data?.effort === 'string' ? data.effort : ''
-    })
-    .catch(() => {})
-}
-
-/** 下拉切换（乐观更新 + 失败回滚；'' = 清除 override 回落 config 默认）。 */
-async function onSessionEffortChange(e: Event) {
-  const v = (e.target as HTMLSelectElement).value
-  const prev = sessionEffort.value
-  sessionEffort.value = v
-  try {
-    await request('chat', 'set_effort', {
-      session_id: effectiveSid.value || '',
-      effort: v === '' ? null : v,
-    })
-  } catch (err) {
-    sessionEffort.value = prev
-    toast.error(String((err as Error)?.message ?? err))
-  }
+  syncComposerEffort(effectiveSid.value ?? '', () => effectiveSid.value ?? '')
 }
 
 /** 输入以 ! 开头且处于 steer 模式 → 提示将以插队发送。 */
@@ -566,6 +521,29 @@ const fmtTok = (n: number): string => n.toLocaleString('en-US')
 // 口径）+ 已用/触发点（锚定口径头）+ 窗口行。迷你条 = ▉ 重复，宽度按
 // 段值占 used 比例（≤12 格）。
 const usageTipShow = ref(false)
+// 延迟关闭（2026-11-17 用户点名）：弹层绝对定位在文字上方 8px 间隙处
+//（.usage-tip bottom: calc(100% + 8px)），鼠标从文字移向弹层时穿过间隙
+// 触发 mouseleave —— 立即关闭 = 人还没到弹层就没了。改走「离开延迟
+// 1s 关闭 + 重入取消」：重新进入文字或弹层（弹层是 DOM 子元素，二者
+// 都触发本元素 mouseenter）即取消；彻底移开 1s 后才收起。
+let usageTipCloseTimer: ReturnType<typeof setTimeout> | null = null
+function usageTipEnter() {
+  if (usageTipCloseTimer !== null) {
+    clearTimeout(usageTipCloseTimer)
+    usageTipCloseTimer = null
+  }
+  usageTipShow.value = true
+}
+function usageTipLeave() {
+  if (usageTipCloseTimer !== null) clearTimeout(usageTipCloseTimer)
+  usageTipCloseTimer = setTimeout(() => {
+    usageTipShow.value = false
+    usageTipCloseTimer = null
+  }, 1000)
+}
+onUnmounted(() => {
+  if (usageTipCloseTimer !== null) clearTimeout(usageTipCloseTimer)
+})
 const usedTokens = computed(() => {
   const bd = ctxBreakdown.value
   if (!bd) return 0
@@ -590,6 +568,28 @@ const usageTipRows = computed(() => {
     { key: 'history', label: '会话历史', val: `~${fmtTok(bd.history)} tok`, bar: usageMiniBar(bd.history) },
   ]
 })
+
+// 提示词内容可视化（2026-11-13）：段圆点 → 同色按钮，点击新标签页打开
+// 独立查看器页。一次性页面语义（2026-11-13 UX 收口）：先 chat.prompt_ticket
+// 取一次性票据（服务端 TTL 10s 单次消费，绑定会话+段），URL 携 &ticket=
+// 打开——链接打开一次后即失效，查看器内容驻留内存可持续查看。相对路径
+// （base './' + 桥子路径 <base href> 同款语义）；hash 路由不影响 path 解析。
+async function openPromptSegment(key: string) {
+  const sid = effectiveSid.value
+  if (!sid) return
+  try {
+    const data = await request('chat', 'prompt_ticket', { session_id: sid, segment: key })
+    const ticket = data?.ticket
+    if (!ticket) throw new Error('未取到一次性访问票据')
+    window.open(
+      `prompt-viewer/index.html?session=${encodeURIComponent(sid)}&segment=${encodeURIComponent(key)}&ticket=${encodeURIComponent(ticket)}`,
+      '_blank',
+      'noopener',
+    )
+  } catch (e) {
+    toast.error(`无法打开提示词查看器：${String((e as Error)?.message ?? e)}`)
+  }
+}
 const usageTipHead = computed(() => {
   const bd = ctxBreakdown.value
   const trig = ctxTriggerTok.value
@@ -617,17 +617,23 @@ const usageTipWindow = computed(() => {
 
 let usagePollTimer: ReturnType<typeof setInterval> | null = null
 
-// Voice toolbar state
-const sttReady = ref(false)
-const ttsReady = ref(false)
-const voiceDictation = ref(false)
-const voiceDialogue = ref(false)
-const voicePlayback = ref(false)
-// 实时语音主开关（realtime P1 G6）：热态经 chat_config_set 即时生效，无 pipeline
-// 态（不随刷新重置）；子开关（流式/接力/打断/口播清洗…）在语音通道页。
-const voiceRealtime = ref(false)
-const toolbarCollapsed = ref(false)
-const silenceTimeout = ref(3.0)
+// Voice toolbar state（2026-11-19 九键全迁资源窗：状态真值挪进
+// useVoiceControls 模块级单例——资源窗「语音」分节与本组件（standalone/
+// workflow 挂载面保留的原工具栏）读写同一份；STT push 帧处理仍留本组件）。
+const {
+  sttReady,
+  ttsReady,
+  voiceDictation,
+  voiceDialogue,
+  voicePlayback,
+  voiceRealtime,
+  silenceTimeout,
+  initVoiceState,
+  toggleDictation,
+  toggleDialogue,
+  togglePlayback,
+  toggleRealtime,
+} = useVoiceControls()
 // 流式 partial 的拼接锚（stt_accumulate 设置，auto_send 清空）。
 let lastAccumulated = ''
 // partial 草稿过期定时器：3s 无后续 partial/accumulate/auto_send 跟进即撤
@@ -749,6 +755,36 @@ function isCompactNote(msg: ChatMessage): boolean {
  *  见 removeCompactRunningNotes 调用点）。 */
 function isCompactNoteRunning(msg: ChatMessage): boolean {
   return msg.noteKind === 'compaction_start'
+}
+
+// --- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）-------------
+// role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮，
+// 后端按 sender_id=="system" 推导落 `system_notice` 键；cron tick 行带既有
+// `cron_job_id` 键）渲染为折叠单行通知条而非用户气泡——通知轮是真实轮次
+// （agent 会回复），行照常占行号锚/可 rewind，只是展示形态区分于真人发言。
+// 仅历史行携带（wake/cron 注入不经 WS 售票点，无实时帧与 sync 事件）。
+
+/** 通知条谓词：role=user 且带 systemNotice 或 cronJobId 标记。 */
+function isSystemNotice(msg: ChatMessage): boolean {
+  return msg.role === 'user' && !!(msg.systemNotice || msg.cronJobId)
+}
+
+/** A4（2026-11-19 头像语义）：过程行谓词——压缩注记徽标 / 系统通知条是
+ *  过程时间线的一部分，不是 NB 的发言。头像只属于答案：过程行一律无头像
+ *  细条（头像没出现 = 还在跑；头像出现 = 答案到了），与 live 占位行（无
+ *  头像）同一语义。 */
+function isProcessRow(msg: ChatMessage): boolean {
+  return isCompactNote(msg) || isSystemNotice(msg)
+}
+
+/** 通知条图标：cron tick ⏰ / 其他系统注入 ⚙。 */
+function systemNoticeGlyph(msg: ChatMessage): string {
+  return msg.cronJobId ? '⏰' : '⚙'
+}
+
+/** 通知条类别词：cron tick 「定时任务」/ 其他「系统通知」。 */
+function systemNoticeLabel(msg: ChatMessage): string {
+  return msg.cronJobId ? '定时任务' : '系统通知'
 }
 
 /** 压缩进行中（实时态）：驱动 context 进度条流光特效（2026-11-09 用户点名——
@@ -936,7 +972,11 @@ async function onFileLinkClick(ev: MouseEvent) {
       path,
       session_id: effectiveSid.value || undefined,
     })
-    if (res?.action === 'reveal') {
+    // 存在性分级（2026-11-14）：祖先目录回退产物 exists=false（文件未
+    // 命中、已打开最近存在祖先目录）——warn 注记，不冒充成功。
+    if (res?.exists === false) {
+      toast.warn(`文件未找到（${res?.path ?? path}），已打开最接近的目录`)
+    } else if (res?.action === 'reveal') {
       toast.info('该文件类型不支持直接打开，已在文件管理器中定位')
     } else if (res?.kind === 'dir') {
       toast.success('已在文件管理器中打开目录')
@@ -1173,6 +1213,12 @@ function handleWSMessage(data: any) {
             content: data.data.content,
             timestamp: data.timestamp,
             model: data.data.model,
+            // 系统注入行（2026-11-19）：hook 提示词注入 / cron tick 的
+            // user 行经后端 SystemNotice 事件转 receive 帧实时到达——
+            // 标记透传给通知条分支（历史行 system_notice / cron_job_id
+            // 同一谓词渲染，缺省 undefined = 普通气泡旧行为）。
+            systemNotice: data.data.system_notice,
+            cronJobId: data.data.cron_job_id,
             // 集群续行归属（2026-09-23）：worker 节点名 →「节点 X」徽章。
             sourceNode: data.data.source_node,
             // A1：环 seq 随消息存档——历史响应 last_seq 到达后据此剔除
@@ -1194,6 +1240,14 @@ function handleWSMessage(data: any) {
           // 同步排空（内容与磁盘行重复，丢弃即可），否则残留混进下一 turn。
           chatStore.flushPendingWork()
           chatStore.flushPendingDeliverables()
+          // ①（2026-11-16 用户消息重复渲染修复）：重复帧 = 环里已有此行
+          // ——把环 seq 盖回已渲染的行（user 回声帧盖乐观回显、assistant
+          // 重复帧盖 legacy 无 seq 行）。盖章后该行获得确认标记：sync 回放
+          // 消费面（consumeReplayRow）把它剔出候选、A1 语义面一致；游标
+          // 推进（上方 L2 块）本就先行，此处只补行侧锚。
+          if (typeof data.data?.seq === 'number' && last.seq === undefined) {
+            last.seq = data.data.seq
+          }
         }
         // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
         // 完成信号——不关 streaming、不清 watchdog（本地发送态保持到
@@ -1461,10 +1515,26 @@ async function syncMissedChat() {
         added = true
         continue
       }
-      // 尾行同文比对（与 receive 分支 isDuplicateRecovery 同语义）：发送方
-      // 极端时序下自己的 user 行可能已由回声帧先落视图，补拉不重复渲染。
-      const tail = chatStore.messages[chatStore.messages.length - 1]
-      if (ev.role === 'user' && tail && tail.role === 'user' && tail.content === ev.content) {
+      // ③（2026-11-16 用户消息重复渲染修复）：补拉 user/assistant 行先走
+      // 「回放消费」——视图里已有同一行的本地未确认形态（发送链乐观回显 /
+      // legacy 无 seq 行）则认领盖章并跳过渲染。旧「尾行同文比对」只看
+      // 一行：补拉批量 ≥2 行（断线窗口跨多轮）时，中间行渲染推进尾巴后，
+      // 后续同文行必然漏比对 → 级联重复（路径 α：光标陈旧 + 重放批 ≥2
+      // user 行的根因形态）。认领面规则见 store consumeReplayRow。
+      if (
+        (ev.role === 'user' || ev.role === 'assistant') &&
+        chatStore.consumeReplayRow(
+          ev.role,
+          String(ev.content ?? ''),
+          typeof ev.seq === 'number' ? ev.seq : undefined,
+        )
+      ) {
+        // R263 同族：认领 = 该行已在视图（时间线/交付物已随 live 渲染），
+        // 但缓冲必须同步排空（assistant 认领臂），否则残留混进下一 turn。
+        if (ev.role === 'assistant') {
+          chatStore.flushPendingWork()
+          chatStore.flushPendingDeliverables()
+        }
         if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
         continue
       }
@@ -1711,10 +1781,9 @@ function onWatchdog() {
 // ---------------------------------------------------------------------------
 
 const rewinding = ref(false)
-/** L4：会话分享弹窗开关（工具栏 🔗 按钮）。 */
-const showShare = ref(false)
-/** 角色目录与客户端委派（2026-09-28）：委派弹窗开关（工具栏按钮）。 */
-const showDelegate = ref(false)
+// L4 分享 / 委派（2026-09-28）弹窗触发器：2026-11-19 拆分迁移进
+// useComposerTools 单例（触发按钮挪到资源窗「会话工具」分节，弹窗渲染
+// 仍在本组件——ShareModal/DelegateDialog 挂载点不动）。
 
 /** 委派已发出（2026-11-04 委派 UX fire-and-forget）：弹窗发出即关，`done`
  *  在发送时触发（此时服务端尚未落盘）。延迟重同步让委派请求行（服务端
@@ -1806,7 +1875,8 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
     // 路径，语义分列见 checkpoint.rs）。此前前端只数 conflicts：被拦原因
     // 是其他会话波及时 toast 显示「0 个文件被外部修改」（误导），且 rewind
     // 无 force 通道（redo 有确认流，不对称），用户被拦后无解。现分列展示 +
-    // window.confirm 确认后带 force 重试（与 doRedo 同构）。
+    // window.confirm 确认后带 force 重试（B3 前工具栏重做按钮已移除，
+    // 确认流形态沿用 rewind 自身）。
     // blocked ≠ 只有 conflict（复查 2026-11-12 收窄回归修复）：restore_failed
     // /commit_failed（rewind.rs 文件恢复/日志写回失败，同样零改动、可处理后
     // 重试）必须诚实报错终止，不能穿透 rewindToastSummary 假成功——旧代码
@@ -1856,48 +1926,6 @@ async function rewindToTurnStart(msg: ChatMessage): Promise<RegenPlan | null> {
   } catch (e: any) {
     toast.error(e?.message || String(e))
     return null
-  } finally {
-    rewinding.value = false
-  }
-}
-
-/** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。
- *  M4 冲突预检：回退窗口内外部改动过文件时后端返回 blocked（零副作用），
- *  列出受影响路径由用户确认，确认才带 force 重试（后端审计留痕）。 */
-async function doRedo() {
-  if (rewinding.value || !isDefaultChat.value) return
-  const sid = effectiveSid.value
-  if (!sid) return
-  rewinding.value = true
-  try {
-    let out = await request('sessions', 'redo', { session_id: sid })
-    // blocked 全拦（复查 2026-11-12 对齐 rewind 臂）：conflict 走确认 + force
-    // 重试；restore_failed 等（redo 前向恢复不完整，rewind.rs 904 起同样零
-    // 推进、条目还栈可重试）诚实报错终止——旧窄条件会穿透到「已重做」假
-    // 成功 toast。force 后仍可 blocked（force 只强过 conflict 预检），二次
-    // 检查同样必要。
-    if (out?.blocked) {
-      if (out?.reason !== 'conflict') {
-        toast.error(`重做未执行：${out?.note ?? '被后端拒绝，未做任何改动'}`)
-        return
-      }
-      const paths = (out.drifted_paths ?? []).join('\n')
-      if (
-        !window.confirm(
-          `回退窗口内外部修改了以下文件，重做将覆盖这些改动：\n${paths}\n\n确认覆盖？`,
-        )
-      )
-        return
-      out = await request('sessions', 'redo', { session_id: sid, force: true })
-      if (out?.blocked) {
-        toast.error(`强制重做仍被拒绝：${out?.note ?? '未做任何改动'}`)
-        return
-      }
-    }
-    toast.success('已重做上一次回退')
-    resyncFromLog()
-  } catch (e: any) {
-    toast.error(e?.message || String(e))
   } finally {
     rewinding.value = false
   }
@@ -1985,7 +2013,7 @@ function rewindActions(msg: ChatMessage) {
 // registerCloser 登记（useContextMenu 事件开头统一回调）。
 // ---------------------------------------------------------------------------
 
-const { close: closeContextMenu, registerCloser } = useContextMenu()
+const { close: closeContextMenu, registerCloser, registerContextMenuItems } = useContextMenu()
 
 /** 当前展开「⋯」菜单的消息行号（null=全关；单值天然互斥单开）。 */
 const msgMenuFor = ref<number | null>(null)
@@ -2088,6 +2116,111 @@ function onMsgMenuKeydown(e: KeyboardEvent) {
 /** onMounted 装的清理闭包（互斥登记注销 + Esc listener 摘除）；onUnmounted 消费。 */
 let onMsgMenuCleanup: (() => void) | null = null
 
+// ---------------------------------------------------------------------------
+// 右键菜单贡献项（2026-11-13）：文件链接（markdown linkify 产出的
+// a.file-link）右键追加「复制路径 / 打开所在目录」两项（菜单底部）。
+// 打开走 fs.reveal——reveal 语义：目录链接直接打开该目录，文件链接打开
+// 所在目录并选中该文件（explorer /select），与左键 fs.open 的「能用就开」
+// 分工（右键诉求是找文件/移动走，不执行）。相对路径按 effectiveSid 会话
+// 根解析（项目会话落项目目录）——贡献函数活在组件侧正是为了拿到会话上下
+// 文；只对本面板消息区内的链接出项，多面板共存（主聊天 + workflow 嵌入）
+// 互不串。
+// ---------------------------------------------------------------------------
+
+/** 贡献函数：命中本面板消息区内的 a.file-link 才出项；否则空数组。 */
+function fileLinkMenuItems(t: EventTarget | null) {
+  const el = t instanceof HTMLElement ? t : null
+  const a = el?.closest('a.file-link') as HTMLAnchorElement | null
+  if (!a?.dataset.path) return []
+  if (!chatMessages.value || !chatMessages.value.contains(a)) return []
+  const path = a.dataset.path
+  return [
+    {
+      label: '复制路径',
+      title: '复制解析后的绝对路径（相对/跨根链接按会话根与项目目录解析）',
+      run: () => void copyLinkPath(path),
+    },
+    {
+      label: '打开所在目录',
+      title: '在文件管理器中打开所在目录（文件同时选中，便于移动）',
+      run: () => void revealLinkDir(path),
+    },
+  ]
+}
+
+// 剪贴板写入（2026-11-14 B4 根修）：navigator.clipboard 仅 secure context
+// （HTTPS/localhost）——LAN HTTP 部署恒 undefined 或 NotAllowedError，
+// 此前复制路径在该形态下必败。隐藏 textarea + execCommand('copy') 回退
+// 是无 HTTPS 依赖的通路（execCommand 虽标记废弃，剪贴板场景浏览器仍
+// 全量保留）。
+async function writeClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // secure context 但权限被拒（iframe/用户设置等）→ 落 execCommand 回退
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+// 复制路径（2026-11-14 B3 根修）：先 fs.resolve 解析成绝对路径（与
+// 打开/定位同一解析阶梯——相对/跨根/越界判定同源），再复制。此前直接
+// 复制 data-path 原文（相对串），粘进资源管理器打不开。exists=false =
+// 祖先回退产物（文件未找到），warn 注记不冒充成功。
+async function copyLinkPath(path: string) {
+  try {
+    const res = await request('fs', 'resolve', {
+      path,
+      session_id: effectiveSid.value || undefined,
+    })
+    const abs: string = res?.path ?? path
+    if (await writeClipboard(abs)) {
+      if (res?.exists === false) {
+        toast.warn(`文件未找到，已复制其所在目录路径：${abs}`)
+      } else {
+        toast.success(`已复制路径：${abs}`)
+      }
+    } else {
+      toast.error('复制失败：剪贴板不可用')
+    }
+  } catch (e: any) {
+    toast.error(`复制失败：${e?.message ?? e}`)
+  }
+}
+
+async function revealLinkDir(path: string) {
+  try {
+    const res = await request('fs', 'reveal', {
+      path,
+      session_id: effectiveSid.value || undefined,
+    })
+    if (res?.exists === false) {
+      toast.warn(`文件未找到，已打开其所在目录：${res?.path ?? path}`)
+    } else if (res?.kind === 'dir') {
+      toast.success('已在文件管理器中打开目录')
+    } else {
+      toast.success('已打开所在目录并选中文件')
+    }
+  } catch (e: any) {
+    toast.error(`打开失败：${e?.message ?? e}`)
+  }
+}
+
 // M6：命令面板「插入不发送」——草稿追加进输入框并聚焦（消费后清空）。
 watch(
   () => chatStore.commandDraft,
@@ -2166,9 +2299,22 @@ function handleHistoryResponse(data: any) {
         // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（compaction_start
         // 不落盘，历史里只有静态注记）。
         noteKind: m.note_kind,
+        // 系统通知标记（2026-11-16）：历史行 system_notice / cron_job_id
+        // 透传——role=user 的系统注入行渲染通知条而非用户气泡。
+        systemNotice: m.system_notice,
+        cronJobId: m.cron_job_id,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
+    // BUG-20261120-006 同根第二面：resync 同为 replace 语义——分页游标
+    // （oldestIndex/hasMoreHistory）按本响应重同步，否则回退/redo/委派后
+    // 滚到顶翻页用陈旧 before_index 前插已在视图内的行（整批重复）。
+    // historyLoaded 守卫同 watchdog 分支（false 时重连全量重拉须走
+    // mergeHistoryTail，游标非空会把重拉钉成 paginated 无条件前插）。
+    if (chatStore.historyLoaded) {
+      chatStore.oldestIndex = oldest
+      chatStore.hasMoreHistory = data.has_more || false
+    }
     chatStore.setBusy(effectiveSid.value, false)
     clearWatchdog()
     nextTick(() => {
@@ -2205,8 +2351,14 @@ function handleHistoryResponse(data: any) {
     if (streaming.value && landed) {
       // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底。
       const viewportAnchor = captureViewportAnchor()
+      // BUG-20261120-006：重灌批是磁盘真相信——与 resync/prependHistory
+      // 同构，响应恒带 oldest_index（raw 行号坐标，分页契约），照
+      // oldest + j 推导行号。旧行为整批 fresh 无行号 → nextRowIndex 归
+      // null → 全视图回退/重生成/删除入口静默消失、fork 点击报「找不到
+      // 本轮提问行」，直至切会话才自愈；新 live 行也不再编号。
+      const oldest = typeof data.oldest_index === 'number' ? data.oldest_index : null
       chatStore.replaceMessages(
-        rawMsgs.map((m: any) => ({
+        rawMsgs.map((m: any, j: number) => ({
           role: m.role,
           content: m.content,
           timestamp: m.timestamp || new Date().toISOString(),
@@ -2217,8 +2369,23 @@ function handleHistoryResponse(data: any) {
           work: m.work ?? undefined,
           // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传。
           noteKind: m.note_kind,
+          // 系统通知标记（2026-11-16）：同上，watchdog 重灌同款透传。
+          systemNotice: m.system_notice,
+          cronJobId: m.cron_job_id,
+          rowIndex: oldest !== null ? oldest + j : undefined,
         })),
       )
+      // BUG-20261120-006 同根第二面：replace 分支早退不同步分页游标
+      // （oldestIndex/hasMoreHistory 停留在首拉旧值）→ 之后滚到顶触发的
+      // 翻页用陈旧 before_index 取「已在视图内」的行 → prependHistory 无
+      // 条件前插 = 整批重复（重复渲染 ①②③ 同族）。historyLoaded 守卫：
+      // false 时（justCreated 跳拉/历史失败角）保持 null——重连的全量重拉
+      // 须走 mergeHistoryTail 去重，此处若同步游标会把那次重拉钉成
+      // paginated 无条件前插（W1 语义），反而制造重复。
+      if (chatStore.historyLoaded) {
+        chatStore.oldestIndex = oldest
+        chatStore.hasMoreHistory = data.has_more || false
+      }
       chatStore.setBusy(effectiveSid.value, false)
       clearWatchdog()
       // 重灌只有文本行——从环回放挂回最后一轮工具卡(与 F5/切回的
@@ -2248,53 +2415,60 @@ function handleHistoryResponse(data: any) {
 
   const historyMessages = data.messages || []
 
-  // A1/A2（2026-09-22 聊天切会话竞态）：prepend 前清洗「实时帧先到的尾巴」。
-  // 切会话 reset() 清空视图的窗口内，assistant 实时帧先入列（无尾部可比），
-  // 随后历史快照前置拼接会把它重复一遍。清洗规则（顺序敏感）：
-  // ① A1 seq 剔除：历史已含回复 ⟹ 后端读取晚于其落盘 ⟹ last_seq ≥ 其环
-  //    seq（assistant 入环在落盘后）——先剔精确的；last_seq 缺省（旧网关/
-  //    未注入）自然跳过。
-  // ② A2 尾行同文兜底：剔除后的列表尾部与历史批次尾部同 role 同文则丢
-  //    尾部——覆盖 user 回声帧重复与 ① 的采样缝隙。
-  // W1 修正（2026-09-22 审计修复）：原注释「翻页时两规则天然不命中」对 ①
-  // 不成立——后端翻页响应同样携带**全会话最新** last_seq（采样不区分
-  // before_index），dropAssistantBelowSeq 会把视图内所有带 seq 的 assistant
-  // 实时帧删掉，而这些帧不在更旧的翻页批次里 → 直接消失，且行号重算连带
-  // 错算 rewind 锚。故翻页请求（在飞登记 paginated 钉子）跳过两规则：翻页
-  // 批次严格更旧、与尾部实时帧零交集，清洗既无必要也有害（宁可不删不错删）。
+  // A1/②（2026-09-22 聊天切会话竞态 → 2026-11-16 用户消息重复渲染修复升级）：
+  // prepend 前清洗「实时帧先到的尾巴」。清洗规则（顺序敏感）：
+  // ① ② 尾段对齐合并先行：两列表从尾同步向头逐行比对（role+content），
+  //    连续一致段 = 同一批 jsonl 行的两份渲染（乐观回显/live 帧 vs 快照）
+  //    ——整段由批次副本替换，批次只插入视图没有的更旧前缀。旧 A2 只比
+  //    一行，历史批量 ≥2 行与视图尾巴重复时必然漏（路径 β：historyLoaded
+  //    =false 会话重连全量重拉无 reset → 已渲染行整段重复）。
+  // ② A1 seq 剔除后置兜底：历史已含回复 ⟹ 快照读取晚于其落盘 ⟹ last_seq
+  //    ≥ 其环 seq——扫残余（合并后批次副本不带 seq，A1 只作用于未被认领
+  //    的 live 行，不重复不丢失）。**必须在合并之后跑**：先 A1 会把视图里
+  //    的 assistant 重复行先删掉，行走对齐在中间断档提前停止 → 认领段
+  //    缩短 → 夹在中间的 user 乐观行残留重复。
+  // W1 修正（2026-09-22 审计修复）：翻页请求（在飞登记 paginated 钉子）
+  // 跳过两规则——翻页批次严格更旧、与尾部实时帧零交集，清洗既无必要也有害
+  // （宁可不删不错删）。
+  const newMessages: ChatMessage[] = historyMessages.map((m: any) => ({
+    role: m.role,
+    content: m.content,
+    timestamp: m.timestamp || new Date().toISOString(),
+    model: m.model,
+    sourceNode: m.source_node,
+    imageCount: Array.isArray(m.images) ? m.images.length : undefined,
+    deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
+    // Work 时间线（2026-10-30）：已完成任务的过程折叠块数据源——历史行
+    // `"work"` 键整行透传（后端整行透传链已验证，前端零转换）。
+    work: m.work ?? undefined,
+    // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（jsonl 整行
+    // 透传链同一渲染分支——切走再切回看到的是同一枚折叠徽标，不蹦蓝底长文）。
+    noteKind: m.note_kind,
+    // 系统通知标记（2026-11-16）：历史行 system_notice / cron_job_id
+    // 透传（同一整行透传链）——系统注入行渲染通知条而非用户气泡。
+    systemNotice: m.system_notice,
+    cronJobId: m.cron_job_id,
+  }))
   if (!inflight.paginated) {
+    if (historyMessages.length > 0) {
+      chatStore.mergeHistoryTail(
+        newMessages,
+        typeof data.oldest_index === 'number' ? data.oldest_index : null,
+      )
+    }
     const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
     chatStore.dropAssistantBelowSeq(lastSeq)
-    if (historyMessages.length > 0) {
-      const histTail = historyMessages[historyMessages.length - 1]
-      chatStore.dropTailIfSame(String(histTail.role ?? ''), String(histTail.content ?? ''))
-    }
-  }
-
-  if (historyMessages.length > 0) {
-    const container = chatMessages.value
-    const oldScrollHeight = container ? container.scrollHeight : 0
-
-    const newMessages: ChatMessage[] = historyMessages.map((m: any) => ({
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp || new Date().toISOString(),
-      model: m.model,
-      sourceNode: m.source_node,
-      imageCount: Array.isArray(m.images) ? m.images.length : undefined,
-      deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
-      // Work 时间线（2026-10-30）：已完成任务的过程折叠块数据源——历史行
-      // `"work"` 键整行透传（后端整行透传链已验证，前端零转换）。
-      work: m.work ?? undefined,
-      // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（jsonl 整行
-      // 透传链同一渲染分支——切走再切回看到的是同一枚折叠徽标，不蹦蓝底长文）。
-      noteKind: m.note_kind,
-    }))
+  } else if (historyMessages.length > 0) {
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
     chatStore.prependHistory(
       newMessages,
       typeof data.oldest_index === 'number' ? data.oldest_index : null,
     )
+  }
+
+  if (historyMessages.length > 0) {
+    const container = chatMessages.value
+    const oldScrollHeight = container ? container.scrollHeight : 0
 
     nextTick(() => {
       if (container) {
@@ -2432,7 +2606,14 @@ const pendingTurn = ref(false)
 // BUG 2026-09-21 ①：占位区的限流重试实时态（agent.retry_status 轮询）——
 // 切走切回后用户看到「第 N/M 次重试」而非哑转圈；重试不落盘（既有裁决
 // 进度只走实时帧），这里是唯一的过程可见面。
-const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string; label?: string } | null>(null)
+const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; remaining_secs?: number; model: string; label?: string } | null>(null)
+// 倒计时滚动（2026-11-17）：wait_secs 是本轮完整等待值（写侧每轮只写一次
+// 快照），直显会静止不动。本地秒级 tick 在轮询拍（4s）间插值：每拍拿后端
+// remaining_secs（按快照写入至今 elapsed 折算的剩余值，单调递减）重置基准，
+// 拍间每秒 -1——数字持续下滚且不回跳。旧后端无 remaining_secs 字段回落
+// wait_secs（首拍起点正确，只是拍间无后端折算）。
+const retrySecs = ref(0)
+let retrySecsTimer: number | null = null
 let pendingTurnTimer: number | null = null
 let pendingTurnDeadPolls = 0
 let pendingTurnStartedAt = 0
@@ -2440,13 +2621,35 @@ const PENDING_TURN_POLL_MS = 4000
 const PENDING_TURN_MAX_DEAD_POLLS = 2
 const PENDING_TURN_MAX_MS = 15 * 60 * 1000
 
+function stopRetrySecsTick() {
+  if (retrySecsTimer !== null) {
+    clearInterval(retrySecsTimer)
+    retrySecsTimer = null
+  }
+  retrySecs.value = 0
+}
+
+function startRetrySecsTick(base: number) {
+  retrySecs.value = Math.max(0, Math.floor(base))
+  if (retrySecsTimer === null) {
+    retrySecsTimer = window.setInterval(() => {
+      if (retrySecs.value > 0) retrySecs.value -= 1
+    }, 1000)
+  }
+}
+
 function stopPendingTurnPolling() {
   if (pendingTurnTimer !== null) {
     clearInterval(pendingTurnTimer)
     pendingTurnTimer = null
   }
   if (pendingTurn.value) pendingTurn.value = false
+  // B2（2026-11-19 切换恢复整改）：恢复中旗标在此统一收口——停轮的全部
+  // 路径（回复到场 / 死轮清算 / 硬上限到期 / streaming 接管）都经此，骨架
+  // 不留残骸。置位在 detectPendingTurn 起轮分支（晚于任何 stop 调用）。
+  chatStore.workRestoring = false
   retryStatus.value = null
+  stopRetrySecsTick()
   pendingTurnDeadPolls = 0
 }
 
@@ -2484,6 +2687,10 @@ function detectPendingTurn() {
     pendingTurnDeadPolls = 0
     pendingTurnStartedAt = Date.now()
     pendingTurn.value = true
+    // B2（2026-11-19 切换恢复整改）：恢复期立起「过程视图恢复中」骨架——
+    // work_current 回包落地前占位行不再裸等（快照采纳后让位给真时间线；
+    // null 盲区不解骨架，轮询下一拍继续）。
+    chatStore.workRestoring = true
     pendingTurnTimer = window.setInterval(() => {
       void pollPendingTurn()
     }, PENDING_TURN_POLL_MS)
@@ -2496,16 +2703,23 @@ function detectPendingTurn() {
 /** Work 时间线活查询（2026-10-30 ChatPanel 长任务时间线改造）：chat.work_current
  *  整体快照 → adoptWorkSnapshot 接管 pending 缓冲。执行中 turn 的过程视图
  *  数据源（后端活累加器无环 200 条滑窗限制），切走再切回/刷新页面的恢复
- *  通道。三道闸：会话围栏（响应期间切走丢弃）、turn 仍悬置（回复已落地则
- *  快照作废——迟到快照不得复活成 live 块盖在最终回复下面）、后端不可用/
- *  旧版无命令静默（回落环回放兜底）。 */
+ *  通道。四道闸：会话围栏（响应期间切走丢弃）、turn 仍悬置（回复已落地则
+ *  快照作废——迟到快照不得复活成 live 块盖在最终回复下面）、busy 中 null
+ *  快照反向闸（2026-11-03 BUG ②：后端 loop 级单槽三窗口——槽空/异会话覆盖/
+ *  帧晚到——返回 work:null 是查询盲区不是「没有在跑的工作」，照单全收会把
+ *  正在展示的 live 块清空收起；真正清空走 pollPendingTurn 死轮清算路径）、
+ *  后端不可用/旧版无命令静默（回落环回放兜底）。 */
 async function refreshWorkCurrent(sid: string | null) {
   if (!sid) return
   try {
     const res = await request('chat', 'work_current', { session_id: sid })
     if (effectiveSid.value !== sid) return
     if (!pendingTurn.value && !streaming.value) return
-    chatStore.adoptWorkSnapshot(res?.work ?? null)
+    if (res?.work == null) return
+    chatStore.adoptWorkSnapshot(res.work)
+    // B2：快照采纳 = 恢复完成——骨架让位给真时间线。null 盲区（上面
+    // return）不复位：骨架继续显示，等轮询下一拍重试。
+    chatStore.workRestoring = false
   } catch {
     /* 旧网关无 work_current / 网络抖动——静默，环回放兜底 */
   }
@@ -2527,8 +2741,15 @@ async function pollPendingTurn() {
   try {
     const rs = await request('agent', 'retry_status', { session_id: effectiveSid.value || '' })
     retryStatus.value = rs?.retrying
-      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model, label: rs.label }
+      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, remaining_secs: rs.remaining_secs, model: rs.model, label: rs.label }
       : null
+    // 倒计时基准重置（2026-11-17）：后端 remaining_secs 单调递减（elapsed
+    // 折算），本地 tick 从它续走；retrying 终局 → tick 一并停。
+    if (retryStatus.value) {
+      startRetrySecsTick(retryStatus.value.remaining_secs ?? retryStatus.value.wait_secs)
+    } else {
+      stopRetrySecsTick()
+    }
   } catch {
     /* 后端不可用/非 default chat——占位退化为转圈，无害 */
   }
@@ -2785,6 +3006,11 @@ async function sendValidated(content: string, media: { id: string }[]) {
     content: content || (media.length ? '[图片]' : ''),
     timestamp: new Date().toISOString(),
     imageCount: media.length || undefined,
+    // ③（2026-11-16 用户消息重复渲染修复）：乐观行标记——此行先于后端
+    // 回执创建，sync 回放消费面（consumeReplayRow）据此把它与历史区
+    // 同文行区分开（历史行永不带标记），回声帧/补拉盖章 seq 后标记
+    // 自然失活。
+    optimistic: true,
   })
   if (switchedToFresh) chatStore.anchorFreshSession()
 
@@ -2835,8 +3061,20 @@ async function sendValidated(content: string, media: { id: string }[]) {
     media,
   })
 
-  // U7: busy 中排队/插队 → 立即拉一次队列快照并轮询，chip 才能出现。
-  if (canQueueWhileBusy.value) {
+  // U7: busy 发送 → 立即拉一次队列快照并轮询，chip 才能出现。
+  // 2026-11-03 BUG 修复：轮询不再 gated canQueueWhileBusy——busy 中轮询
+  // 同时是 mode 快照的自愈通道（刷新失败后快照恢复 → 发送闸/输入框随之
+  // 解锁）。gated 形态下「快照失败 → queueEnabled=false → 轮询不启动 →
+  // 快照永不恢复」是死锁环。startPolling 自身幂等（已在轮询则 no-op）。
+  // 门控 isDefaultChat（2026-11-18 自查修正；isDefaultChat 判的是 module
+  // 而非「主聊天 vs 嵌入」）：module≠chat 的面板（workflow_chat standalone）
+  // 其 watch(streaming) 启停臂与 syncInboxMode 全被 isDefaultChat 守卫挡
+  // 掉，发送路径一旦启动轮询就挂载期内永无停止路径（每 4s 空转直到卸载）。
+  // 旧 canQueueWhileBusy 门（含 isDefaultChat 与项）恰好挡住此路径，翻
+  // 「无条件」时漏了这层。module='chat' 的面板（主聊天 + sessionId 嵌入
+  // 如 WorkflowAgentGen）有完整停止路径（watch !s 臂 + composable
+  // onUnmounted），turn 结束即停，不受此门影响。
+  if (isDefaultChat.value) {
     startInboxPolling(effectiveSid.value || '')
     // P4（能力扩展 WS8）：queue_status 徽标同节奏轮询。
     startQueuePolling(effectiveSid.value || '')
@@ -2940,108 +3178,10 @@ const showStopButton = computed(() => {
   return activeModule === 'chat'
 })
 
-// Voice toolbar toggle functions
-async function toggleDictation() {
-  if (voiceDictation.value) {
-    await request('voice', 'stt_to_input_stop').catch(() => {})
-    voiceDictation.value = false
-  } else {
-    if (!sttReady.value) return
-    // Close dialogue if open
-    if (voiceDialogue.value) {
-      await request('voice', 'stt_dialogue_stop').catch(() => {})
-      voiceDialogue.value = false
-    }
-    try {
-      await request('voice', 'stt_to_input_start')
-      voiceDictation.value = true
-    } catch {}
-  }
-  saveVoiceConfig()
-}
-
-async function toggleDialogue() {
-  if (voiceDialogue.value) {
-    await request('voice', 'stt_dialogue_stop').catch(() => {})
-    voiceDialogue.value = false
-  } else {
-    if (!sttReady.value) return
-    // Close dictation if open
-    if (voiceDictation.value) {
-      await request('voice', 'stt_to_input_stop').catch(() => {})
-      voiceDictation.value = false
-    }
-    try {
-      await request('voice', 'stt_dialogue_start', {
-        silence_timeout: silenceTimeout.value,
-        // realtime 接力寻址（G6）：后端据此注册 session_key → TTS 接力/打断
-        // 只作用于本会话。
-        session_id: effectiveSid.value,
-      })
-      voiceDialogue.value = true
-    } catch {}
-  }
-  saveVoiceConfig()
-}
-
-async function togglePlayback() {
-  if (voicePlayback.value) {
-    await request('voice', 'tts_playback_stop').catch(() => {})
-    voicePlayback.value = false
-  } else {
-    if (!ttsReady.value) return
-    voicePlayback.value = true
-  }
-  saveVoiceConfig()
-}
-
-function toggleToolbar() {
-  toolbarCollapsed.value = !toolbarCollapsed.value
-  saveVoiceConfig()
-}
-
-async function saveVoiceConfig() {
-  try {
-    // read-merge-write：chat_config_set 是整文件替换语义——只写 4 个键会把
-    // realtime 块（实时语音开关/语音通道页子开关）静默抹掉。先读后并再写。
-    // 读不到全文就中止：以空 base 写回会把其余键全部丢掉（get 失败时 set
-    // 仍可能成功——如读超时后连接恢复）。
-    const cur = await request('voice', 'chat_config_get').catch(() => null)
-    if (!cur) return
-    const merged = {
-      ...((cur as Record<string, unknown>) ?? {}),
-      toolbar_collapsed: toolbarCollapsed.value,
-      dictation_enabled: voiceDictation.value,
-      dialogue_enabled: voiceDialogue.value,
-      playback_enabled: voicePlayback.value,
-    }
-    await request('voice', 'chat_config_set', merged)
-  } catch {}
-}
-
-async function toggleRealtime() {
-  voiceRealtime.value = !voiceRealtime.value
-  try {
-    // read-merge-write realtime 块：后端写盘成功即 apply 热态（出站广播/
-    // 管线下一拍生效，无需重启）。读不到全文就中止（空 base 写回丢键）；
-    // 任何失败回滚本地态。
-    const cur = await request('voice', 'chat_config_get').catch(() => null)
-    if (!cur) {
-      voiceRealtime.value = !voiceRealtime.value
-      return
-    }
-    const base = (cur as Record<string, unknown>) as Record<string, unknown>
-    await request('voice', 'chat_config_set', {
-      ...base,
-      realtime: {
-        ...((base.realtime as Record<string, unknown>) ?? {}),
-        enabled: voiceRealtime.value,
-      },
-    })
-  } catch {
-    voiceRealtime.value = !voiceRealtime.value
-  }
-}
+// Voice toolbar toggle functions（2026-11-19 九键全迁：开关函数挪进
+// useVoiceControls 单例——资源窗「语音」分节与本组件共用；本组件模板的
+// 绑定名不变，经解构继续可用。saveVoiceConfig 的 toolbar_collapsed 退役
+// 注记随实现一起迁走）。
 
 function handleKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === 'Enter') {
@@ -3222,38 +3362,8 @@ function renderCodeBlocks() {
   })
 }
 
-async function initVoiceState() {
-  try {
-    const [config, engines, voiceCfg] = await Promise.all([
-      request('voice', 'chat_config_get'),
-      request('voice', 'engine_status'),
-      request('voice', 'voice_config_get'),
-    ])
-    if (config) {
-      toolbarCollapsed.value = config.toolbar_collapsed ?? false
-      // Visual-only restore: buttons show enabled state but pipelines are NOT started
-      voiceDictation.value = config.dictation_enabled ?? false
-      voiceDialogue.value = config.dialogue_enabled ?? false
-      voicePlayback.value = config.playback_enabled ?? false
-      // Reset to false since pipelines aren't actually running
-      voiceDictation.value = false
-      voiceDialogue.value = false
-      voicePlayback.value = false
-      // 实时语音是纯配置态（无 pipeline），恢复显示；后端热态在 gateway
-      // 启动时从同一文件装载，两边同源。
-      voiceRealtime.value = (config.realtime as { enabled?: boolean } | undefined)?.enabled ?? false
-    }
-    if (engines) {
-      sttReady.value = engines.stt_ready ?? false
-      ttsReady.value = engines.tts_ready ?? false
-    }
-    if (voiceCfg) {
-      silenceTimeout.value = voiceCfg.silence_timeout ?? 3.0
-    }
-  } catch {
-    // Voice not available — keep buttons disabled
-  }
-}
+// initVoiceState（2026-11-19 迁 useVoiceControls 单例，幂等；调用时机留在
+// 本组件：WS ready / 会话切换钩子在这边，资源窗挂载时也各自调一次）。
 
 // Scroll listener for history
 let scrollHandler: (() => void) | null = null
@@ -3313,9 +3423,16 @@ const unwatchStatus = watch(wsStatus, (val) => {
 })
 
 // U7: streaming 结束 → 停轮询并刷新一次（队列里剩余条数清零/被消费）。
+// streaming 开始 → 启动轮询（2026-11-03 BUG 自愈兜底）：busy-send 之外的
+// busy 形态（steer 注入、IM 通道发起、页面刷新时已在跑的 turn）也要有
+// mode 快照活水——否则那些路径下快照一旦失败同样永久锁死且无人再拉。
+// startPolling 幂等（busy-send 路径已启动则 no-op）。
 const unwatchStreaming = watch(streaming, (s) => {
   if (!isDefaultChat.value) return
-  if (!s) {
+  if (s) {
+    startInboxPolling(effectiveSid.value || '')
+    startQueuePolling(effectiveSid.value || '')
+  } else {
     stopInboxPolling()
     stopQueuePolling()
     syncInboxMode()
@@ -3406,7 +3523,7 @@ onMounted(() => {
   // chat-send / chat-stop 动作调用。仅默认聊天模块注册（嵌入面板不抢桥，
   // 后注册覆盖语义会把主聊天页的皮肤动作路由进工作流会话）。
   if (isDefaultChat.value) {
-    registerChatBridge({ send: sendMessage, stop: stopGeneration })
+    registerChatBridge({ send: sendMessage, stop: stopGeneration, addFiles: addImageFiles })
     // effort 探针标记（probe 二期）：默认模型 effort_marks 拉取（失败=
     // 空标记诚实不标，不打扰聊天主链路）。
     void loadEffortMarks()
@@ -3488,10 +3605,13 @@ onMounted(() => {
 
   // 2026-11-12「⋯」消息菜单：右键菜单互斥登记（右键事件开头统一回调关
   // 本菜单）+ Esc 关闭（capture）。卸载对称注销。
+  // 2026-11-13 右键菜单贡献项：文件链接「复制路径/打开所在目录」同批装卸。
   const unregisterMsgMenuCloser = registerCloser(closeMsgMenu)
+  const unregisterCtxItems = registerContextMenuItems(fileLinkMenuItems)
   window.addEventListener('keydown', onMsgMenuKeydown, true)
   onMsgMenuCleanup = () => {
     unregisterMsgMenuCloser()
+    unregisterCtxItems()
     window.removeEventListener('keydown', onMsgMenuKeydown, true)
   }
 })
@@ -3616,7 +3736,9 @@ onUnmounted(() => {
       </div>
 
       <div v-for="(msg, idx) in chatStore.messages" :key="idx" class="message" :class="msg.role">
-        <div class="message-avatar">{{ getAvatar(msg.role) }}</div>
+        <!-- A4（2026-11-19 头像语义）：过程行（压缩注记/系统通知）不渲染
+             头像——头像只属于答案，过程一律细条。 -->
+        <div v-if="!isProcessRow(msg)" class="message-avatar">{{ getAvatar(msg.role) }}</div>
         <div class="message-content">
           <!-- 2026-10-30 Work 时间线：本 turn 的「叙述+工具」交错过程折叠块
                （历史行 work 键 / 实时 flush 挂载双路；默认收起，点开回看）。 -->
@@ -3645,6 +3767,22 @@ onUnmounted(() => {
               <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
             </template>
           </div>
+          <!-- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
+               role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL
+               续轮 system_notice + cron tick cron_job_id）渲染折叠单行
+               通知条，明确区分于真人发言。点击展开全文（与压缩注记徽标
+               同款 expandedCompactNotes 复用）。 -->
+          <div
+            v-else-if="isSystemNotice(msg)"
+            class="system-notice"
+            :class="{ expanded: expandedCompactNotes.has(msg) }"
+            :title="msg.content"
+            @click="toggleCompactNote(msg)"
+          >
+            <span class="system-notice-glyph" aria-hidden="true">{{ systemNoticeGlyph(msg) }}</span>
+            <span class="system-notice-tag">{{ systemNoticeLabel(msg) }}</span>
+            <span class="system-notice-text">{{ msg.content }}</span>
+          </div>
           <div v-else class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <div v-else class="message-text">{{ msg.content }}</div>
@@ -3664,7 +3802,19 @@ onUnmounted(() => {
               >
                 <span class="deliverable-title">{{ d.title || deliverableFileName(d.path) }}</span>
                 <span v-if="d.note" class="deliverable-note">{{ d.note }}</span>
-                <span class="deliverable-path">{{ d.path }}</span>
+                <span class="deliverable-path">
+                  {{ d.path }}
+                  <!-- 2026-11-18 交付物定位链接：fs.reveal（文件管理器打开
+                       所在目录并选中该文件；explorer /select + 前台看门）。
+                       与右键菜单 revealLinkDir 同函数——路径按会话根解析
+                       （项目会话落项目目录），相对/绝对后端解析阶梯同源。 -->
+                  <a
+                    class="deliverable-open"
+                    href="#"
+                    title="在文件管理器中打开所在目录并选中该文件"
+                    @click.prevent="revealLinkDir(d.path)"
+                  >📂 打开所在目录</a>
+                </span>
               </div>
             </div>
           </div>
@@ -3727,12 +3877,15 @@ onUnmounted(() => {
       <!-- pendingTurn：切页恢复的「处理中」占位——历史尾部悬空 user 行时复用
            同款 typing-indicator（AI 仍在处理，assistant 行落盘后自动补上）。
            2026-10-30：过程可见面 = WorkTimelineBlock live 态（实时 push 与
-           work_current 恢复共用 pendingWork 缓冲；新内容到达 grown 事件贴底）。 -->
+           work_current 恢复共用 pendingWork 缓冲；新内容到达 grown 事件贴底）。
+           A4（2026-11-19 头像语义）：整行是过程视图（进行中的工作），无头像
+           ——头像只属于答案，assistant 回复行落地时才出现。
+           B2：workRestoring = 切回恢复期（work_current 回包落地前）占位行也
+           可见，内部渲染「恢复中」骨架，不裸等。 -->
       <div
-        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.liveThinking || chatStore.pendingDeliverables.length"
-        class="message assistant"
+        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.liveThinking || chatStore.pendingDeliverables.length || chatStore.workRestoring"
+        class="message assistant process-live"
       >
-        <div class="message-avatar">NB</div>
         <div class="message-content">
           <!-- live 态时间线：执行中展开实时滚动；回复落地时随缓冲 flush
                卸载，由落地消息上的折叠块接棒。live-thinking = B3 流式思考
@@ -3744,6 +3897,14 @@ onUnmounted(() => {
             live
             @grown="scrollToBottomIfNear()"
           />
+          <!-- B2（2026-11-19 切换恢复整改）：恢复期骨架——work_current 快照
+               采纳前的空白窗不裸等；快照一旦采纳即让位（v-else-if 挂在
+               WorkTimelineBlock 的 v-if 上）。null 盲区（后端查无快照）不解
+               骨架，轮询下一拍继续；停轮（回复到场/死轮清算）统一收口复位。 -->
+          <div v-else-if="chatStore.workRestoring" class="work-restoring">
+            <span class="typing-indicator"><span></span><span></span><span></span></span>
+            <span class="work-restoring-text">正在恢复过程视图…</span>
+          </div>
           <!-- N5: 登记已到、回复帧未到的交付物（push 先于回复帧的窗口期
                实时可见；回复落地时 flush 挂载，与 toolCards 同语义）。 -->
           <div v-if="chatStore.pendingDeliverables.length" class="deliverables">
@@ -3757,7 +3918,15 @@ onUnmounted(() => {
               >
                 <span class="deliverable-title">{{ d.title || deliverableFileName(d.path) }}</span>
                 <span v-if="d.note" class="deliverable-note">{{ d.note }}</span>
-                <span class="deliverable-path">{{ d.path }}</span>
+                <span class="deliverable-path">
+                  {{ d.path }}
+                  <a
+                    class="deliverable-open"
+                    href="#"
+                    title="在文件管理器中打开所在目录并选中该文件"
+                    @click.prevent="revealLinkDir(d.path)"
+                  >📂 打开所在目录</a>
+                </span>
               </div>
             </div>
           </div>
@@ -3767,8 +3936,9 @@ onUnmounted(() => {
                  转圈。streaming（本地发送）不显示——重试进度已有实时帧。 -->
             <template v-if="pendingTurn && retryStatus">
               <div class="retry-status-text">
-                <!-- label 按真类（上游限流/上游过载，2026-10-13）；旧后端无 label 字段回落「上游限流」。 -->
-                ⏳ {{ retryStatus.label || '上游限流' }}（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
+                <!-- label 按真类（上游限流/上游过载，2026-10-13）；旧后端无 label 字段回落「上游限流」。
+                     等待秒数 = retrySecs 本地秒级递减（2026-11-17 倒计时滚动，基准每拍由后端 remaining_secs 重置）。 -->
+                ⏳ {{ retryStatus.label || '上游限流' }}（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retrySecs }} 秒…
               </div>
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>
@@ -3787,10 +3957,16 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Toolbar（launcher 启动器模式不渲染——首屏只留品牌 + 输入盒；
-         归模板管而非皮肤 CSS display:none：scoped display:flex 与 :where 基线
-         同特异性且后加载会赢回，2026-09-26 案例） -->
-    <div v-if="!toolbarCollapsed && !launcherMode" class="voice-toolbar">
+    <!-- Toolbar（2026-11-19 九键全迁：有 ChatView 资源窗注入面（resourcesCtl
+         在场）时工具栏整个不渲染——九键搬进资源窗对应分节（会话工具/放行
+         开关/语音），竖向空间还给消息流；standalone chat / workflow 挂载面
+         无资源窗，工具栏保留原样。launcher 启动器模式不渲染——首屏只留
+         品牌 + 输入盒；归模板管而非皮肤 CSS display:none：scoped display:flex
+         与 :where 基线同特异性且后加载会赢回，2026-09-26 案例） -->
+    <div v-if="!resourcesCtl && !launcherMode" class="voice-toolbar">
+      <!-- 单行兜底（2026-11-19 九键全迁后本工具栏只在无资源窗挂载面出现）：
+           9 键（构建/插队｜放行三开关｜语音四键）~820px 单行放得下；
+           flex-wrap 兜底更窄列（项目会话）。 -->
       <button
         v-if="isDefaultChat"
         class="voice-btn mode-btn"
@@ -3803,26 +3979,18 @@ onUnmounted(() => {
         <span class="mode-mark">{{ chatStore.agentMode === 'plan' ? '📋' : '🛠' }}</span>
         {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
       </button>
-      <!-- G3（2026-11-09）：会话级思考强度下拉——只影响当前会话，默认跟随
-           模型配置；后端内存态，重启回落默认。7 档值域扩档（2026-11-09）：
-           minimal/xhigh/max 对齐 OpenAI 官方枚举上界；端点不支持某档 =
-           400 带端点原文诚实透传 -->
-      <select
-        v-if="isDefaultChat"
-        class="voice-btn effort-select"
-        :value="sessionEffort"
-        title="思考强度（会话级，仅本会话生效）：默认=跟随模型配置；off=关闭思考（省 token）；极简/低/中/高/极高/最大=思考预算档位。✓=端点已验证接受，✗=端点拒绝（悬停看原文），?=未探测。重启后回落默认"
-        @change="onSessionEffortChange"
+      <!-- G3 思考强度下拉 / L4 分享 / 委派三键已迁资源窗「会话工具」分节
+           （2026-11-19 拆分迁移：低频配置键不再占输入框近邻；状态单例
+           useComposerTools 共享，弹窗渲染仍在文件尾部） -->
+      <button
+        v-if="steerEnabled"
+        class="voice-btn steer-btn"
+        title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
+        @click="prefixSteer"
       >
-        <option value="">思考·默认</option>
-        <option value="off">思考·关</option>
-        <option :title="effortNoteFor('minimal') || undefined" value="minimal">思考·极简{{ effortMarkFor('minimal') }}</option>
-        <option :title="effortNoteFor('low') || undefined" value="low">思考·低{{ effortMarkFor('low') }}</option>
-        <option :title="effortNoteFor('medium') || undefined" value="medium">思考·中{{ effortMarkFor('medium') }}</option>
-        <option :title="effortNoteFor('high') || undefined" value="high">思考·高{{ effortMarkFor('high') }}</option>
-        <option :title="effortNoteFor('xhigh') || undefined" value="xhigh">思考·极高{{ effortMarkFor('xhigh') }}</option>
-        <option :title="effortNoteFor('max') || undefined" value="max">思考·最大{{ effortMarkFor('max') }}</option>
-      </select>
+        <span class="steer-mark">!</span>
+        插队
+      </button>
       <!-- Full Access 放行开关（2026-09-20 用户裁决；运行时态，
            Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->
       <button
@@ -3859,41 +4027,6 @@ onUnmounted(() => {
         🔓 全部放行
       </button>
       <button
-        v-if="isDefaultChat"
-        class="voice-btn redo-btn"
-        title="重做上一次回退（恢复被撤销的消息，文件尽力前向恢复；undo 栈在网关内存，重启即清）"
-        :disabled="rewinding"
-        @click="doRedo"
-      >
-        ↪ 重做
-      </button>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn share-btn"
-        title="分享本会话（只读链接，token 即凭据，可随时撤销）"
-        :disabled="rewinding"
-        @click="showShare = true"
-      >
-        🔗 分享
-      </button>
-      <button
-        v-if="isDefaultChat"
-        class="voice-btn delegate-btn"
-        title="委派任务给子代理（选角色 + 工具档位，完成后回复交回本会话）"
-        @click="showDelegate = true"
-      >
-        🤝 委派
-      </button>
-      <button
-        v-if="steerEnabled"
-        class="voice-btn steer-btn"
-        title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
-        @click="prefixSteer"
-      >
-        <span class="steer-mark">!</span>
-        插队
-      </button>
-      <button
         class="voice-btn"
         :class="{ active: voiceDictation }"
         :disabled="!sttReady"
@@ -3912,7 +4045,7 @@ onUnmounted(() => {
         :class="{ active: voiceDialogue }"
         :disabled="!sttReady"
         :title="sttReady ? '语音对话：说话后自动发送给 AI' : '请先在语音通道页启用 STT 引擎'"
-        @click="toggleDialogue"
+        @click="toggleDialogue(effectiveSid || undefined)"
       >
         <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
@@ -3966,16 +4099,26 @@ onUnmounted(() => {
     </div>
     <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
     <div v-if="isDefaultChat && chatStore.agentMode === 'plan'" class="plan-strip">
-      📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击上方徽标或发送 /build 切回
+      📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击{{ resourcesCtl ? '右侧资源窗「构建/计划」' : '上方徽标' }}或发送 /build 切回
     </div>
     <!-- Full Access 放行常驻条（安全相关状态始终可见，plan-strip 同款） -->
     <div v-if="fullAccess" class="editor-strip">
-      <template v-if="externalWrite">⚡ Full Access + 外部写删：全放行中（exec 由真沙盒兜底；自毁硬拦仍生效）— 点击上方按钮或设置页【编辑器】关闭</template>
+      <template v-if="externalWrite">⚡ Full Access + 外部写删：全放行中（exec 由真沙盒兜底；自毁硬拦仍生效）— 点击{{ resourcesCtl ? '右侧资源窗「放行开关」' : '上方按钮' }}或设置页【编辑器】关闭</template>
       <template v-else>⚡ Full Access：项目内全放行 + 项目外读/执行/网络/系统放行（项目外写删仍审批）— Agent 重启后自动关闭</template>
     </div>
     <!-- 会话级全部放行常驻条（无人值守时安全状态必须始终可见） -->
     <div v-if="sessionAllowActive" class="editor-strip session-allow-strip">
-      🔓 全部放行中（本会话）：已自动批准 {{ allowAllBySession[effectiveSid ?? '']?.count ?? 0 }} 条 — 硬拒绝与急停不受影响；长任务跑完请点击上方按钮关闭
+      🔓 全部放行中（本会话）：已自动批准 {{ allowAllBySession[effectiveSid ?? '']?.count ?? 0 }} 条 — 硬拒绝与急停不受影响；长任务跑完请在{{ resourcesCtl ? '右侧资源窗「放行开关」' : '上方按钮' }}关闭
+    </div>
+    <!-- 语音激活常驻条（2026-11-19 九键全迁：语音开关住资源窗后，工具栏
+         不在场的挂载面靠这条看见「语音还开着」——所有激活形态并列表述） -->
+    <div v-if="voiceDictation || voiceDialogue || voicePlayback || voiceRealtime" class="editor-strip voice-strip">
+      🎙 语音激活：{{ [
+        voiceDictation ? '听写' : null,
+        voiceDialogue ? '语音对话' : null,
+        voicePlayback ? '语音播放' : null,
+        voiceRealtime ? '实时语音' : null,
+      ].filter(Boolean).join(' / ') }} —— 开关在{{ resourcesCtl ? '右侧资源窗「语音」分节' : '上方工具栏' }}
     </div>
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
@@ -3994,8 +4137,8 @@ onUnmounted(() => {
         <span
           class="usage-text"
           :class="{ hot: usageHot, over: usageOver }"
-          @mouseenter="usageTipShow = true"
-          @mouseleave="usageTipShow = false"
+          @mouseenter="usageTipEnter"
+          @mouseleave="usageTipLeave"
         >
           <span v-if="ctxAnchor" class="usage-anchor-mark">{{ anchorMark }}</span
           >{{ ctxPct }}% context<template v-if="sessCost !== null && sessCost > 0">
@@ -4005,7 +4148,13 @@ onUnmounted(() => {
             <!-- 行首段色块：与构成条段色一一对应（复用 usage-seg-* 背景类，
                  配色单一真相源；chip 不带基类 .usage-seg，不吃缝隙/高度规则） -->
             <span v-for="row in usageTipRows" :key="row.key" class="usage-tip-row">
-              <span class="usage-tip-chip" :class="`usage-seg-${row.key}`"></span>
+              <button
+                type="button"
+                class="usage-tip-chip"
+                :class="`usage-seg-${row.key}`"
+                :title="`查看${row.label}全文`"
+                @click="openPromptSegment(row.key)"
+              ></button>
               <span class="usage-tip-label">{{ row.label }}</span>
               <span class="usage-tip-val">{{ row.val }}</span>
               <span class="usage-tip-bar">{{ row.bar }}</span>
@@ -4195,15 +4344,19 @@ onUnmounted(() => {
           <line x1="9" y1="4" x2="9" y2="20" />
         </svg>
       </button>
+      <!-- 提案 C（2026-11-19）：原【收起工具栏】按钮改为【打开/收起资源窗】
+           ——单行工具栏无折叠语义，这个位置的开关给了资源窗（状态机在
+           ChatView，经 RESOURCES_PANEL_CTL 注入；无 ChatView 挂载面不渲染） -->
       <button
+        v-if="resourcesCtl"
         class="toolbar-toggle"
-        :class="{ active: !toolbarCollapsed }"
-        @click="toggleToolbar"
-        :title="toolbarCollapsed ? '展开工具栏' : '收起工具栏'"
+        :class="{ active: resourcesCtl.open.value }"
+        @click="resourcesCtl.toggle()"
+        :title="resourcesCtl.open.value ? '收起资源窗' : '打开资源窗'"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="12,2 20.66,7 20.66,17 12,22 3.34,17 3.34,7"/>
-          <circle cx="12" cy="12" r="3.5"/>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <line x1="15" y1="4" x2="15" y2="20" />
         </svg>
       </button>
     </div>
@@ -4489,12 +4642,21 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
 }
-/* 行首段色块：8×8 圆角方块，背景由复用的 usage-seg-* 类提供 */
+/* 行首段色块：8×8 圆角方块（可点按钮，提示词内容可视化 2026-11-13）——
+   背景由复用的 usage-seg-* 类提供（配色单一真相源）；button 形态的
+   reset（边框/内边距清零）+ hover 提亮 + pointer 光标。 */
 .usage-tip-chip {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: none;
   border-radius: 2px;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.usage-tip-chip:hover {
+  filter: brightness(1.35);
 }
 .usage-tip-label {
   width: 56px;
@@ -4565,32 +4727,8 @@ onUnmounted(() => {
 .usage-seg + .usage-seg {
   border-left: 2px solid var(--bg);
 }
-.usage-seg-system {
-  background: #909399;
-}
-.usage-seg-tools {
-  background: #9a6dd7;
-}
-.usage-seg-mcp {
-  background: #e6a23c;
-}
-.usage-seg-skill {
-  background: #2fbdd9;
-}
-.usage-seg-memory {
-  background: #e0648c;
-}
-.usage-seg-summary {
-  background: #409eff;
-}
-.usage-seg-history {
-  background: #67c23a;
-}
-/* 空闲段（· 空闲）：点状纹理低对比可见 */
-.usage-seg-free {
-  background: repeating-linear-gradient(90deg, var(--text-muted) 0 1px, transparent 1px 4px);
-  opacity: 0.35;
-}
+/* 段配色（usage-seg-{system,tools,mcp,skill,memory,summary,history,free}）
+   在 styles/prompt-segments.css（全局，单一真相源——独立查看器页共用）。 */
 .usage-trigger-line {
   position: absolute;
   top: 0;
@@ -4625,8 +4763,12 @@ onUnmounted(() => {
   font-weight: 700;
 }
 .voice-toolbar {
+  /* 单行工具栏（2026-11-19「三行变一行」）：拆分迁移后 9 键单行 ~820px，
+     944 主列放得下——竖向空间还给消息流（承诺兑现）。flex-wrap 兜底更窄
+     列（项目会话窄容器）。 */
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 6px 12px;
   background: var(--surface);
@@ -4646,15 +4788,6 @@ onUnmounted(() => {
   transition: all 0.15s;
   white-space: nowrap;
   line-height: 1;
-}
-/* G3: 会话级思考强度下拉——复用 voice-btn 基调，select 形态的少量修正 */
-.effort-select {
-  padding: 6px 8px;
-  appearance: auto;
-}
-.effort-select:focus {
-  outline: none;
-  border-color: var(--primary, #4a90d9);
 }
 .voice-btn-icon {
   width: 16px;
@@ -4936,6 +5069,55 @@ onUnmounted(() => {
   opacity: 0.4;
   transform-origin: bottom;
   animation: compact-bar-flow 1.2s ease-in-out infinite;
+}
+
+/* ===== 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）=====
+   role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL 续轮/cron
+   tick）渲染为折叠单行通知条。中性灰调（区别于压缩注记的 --info 蓝系
+   与用户气泡）——一眼区分「系统说的」与「我说的」。折叠态单行截断，
+   点击展开全文（与压缩注记同款 expandedCompactNotes）。 */
+.system-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(560px, 100%);
+  margin: 2px 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border: 1px dashed var(--border-color);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+.system-notice:hover {
+  filter: brightness(1.15);
+}
+.system-notice-glyph {
+  flex: none;
+  font-size: 12px;
+}
+.system-notice-tag {
+  flex: none;
+  font-weight: 600;
+}
+.system-notice-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  opacity: 0.85;
+}
+.system-notice.expanded .system-notice-text {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+}
+.system-notice.expanded {
+  max-width: 100%;
 }
 .compact-note-bars i:nth-child(1) { height: 8px; animation-delay: 0s; }
 .compact-note-bars i:nth-child(2) { height: 13px; animation-delay: 0.15s; }

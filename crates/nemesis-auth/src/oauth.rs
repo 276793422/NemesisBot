@@ -7,7 +7,6 @@ use crate::token::AuthCredential;
 
 use base64::Engine;
 use chrono::Local;
-use rand::Rng;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -20,16 +19,43 @@ const CALLBACK_CONN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 带 bounded 超时的共享 HTTP client（a：reqwest 默认
 /// client 零超时，挂死端点会让 `auth login` 无限卡住）。
-fn http_client(cfg: &OAuthProviderConfig) -> reqwest::Client {
-    let secs = if cfg.request_timeout_secs == 0 {
-        DEFAULT_REQUEST_TIMEOUT_SECS
-    } else {
-        cfg.request_timeout_secs
-    };
+///
+/// 构建失败 fail-closed 诚实报错（BUG-20261114-040）：不再
+/// `unwrap_or_default()` 静默回落零超时默认 client——那会把本函数
+/// 要封闭的挂死面原样重新打开。构建失败不是纯理论形态（rustls
+/// CryptoProvider 歧义等，本 workspace reqwest 走 rustls-tls，实测
+/// 见 BUG-20261114-037）；四调用点均为 `Result<_, String>`，错误
+/// 语义与「0 视作缺省、不允许 0=不限」的配置契约同向。
+fn http_client(cfg: &OAuthProviderConfig) -> Result<reqwest::Client, String> {
+    let secs = resolve_timeout_secs(cfg.request_timeout_secs);
     reqwest::Client::builder()
         .timeout(Duration::from_secs(secs))
+        // 凭据随重定向跨主机泄漏防线（BUG-20261117-075；单一真相源
+        // `nemesis_utils::http_redirect`——同源跟随/跨源终停）：refresh /
+        // code 交换 / device 轮询把 refresh_token / code_verifier /
+        // device_code 放请求体，reqwest 默认策略对跨主机 307/308 保方法
+        // 转发 body、自定义头原样带去目标主机——凭据直接出站。provider
+        // 六 lane / channels / MCP / search 均已挂同款策略，本函数是凭据
+        // lane 家族横向扫的最后一个漏网点。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()
-        .unwrap_or_default()
+        .map_err(|e| {
+            format!(
+                "OAuth HTTP client build failed (refusing zero-timeout default client, \
+                 which would hang auth flows indefinitely): {}",
+                e
+            )
+        })
+}
+
+/// 请求超时解析：`0` 视作缺省（30s）。配置契约明令不允许 0=不限
+/// （重新打开挂死面），见 `OAuthProviderConfig::request_timeout_secs`。
+fn resolve_timeout_secs(request_timeout_secs: u64) -> u64 {
+    if request_timeout_secs == 0 {
+        DEFAULT_REQUEST_TIMEOUT_SECS
+    } else {
+        request_timeout_secs
+    }
 }
 
 /// OAuth provider configuration.
@@ -111,7 +137,7 @@ impl OAuthProviderConfig {
     /// Requests a device code, displays it for the user, and polls
     /// until the user authorizes the request.
     pub async fn login_device_code(&self) -> Result<AuthCredential, String> {
-        let client = http_client(self);
+        let client = http_client(self)?;
 
         // Request device code
         let resp = client
@@ -122,7 +148,7 @@ impl OAuthProviderConfig {
             .map_err(|e| format!("requesting device code: {}", e))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(format!("device code request failed: {}", body));
         }
 
@@ -209,7 +235,7 @@ impl OAuthProviderConfig {
             return Err("no refresh token available".to_string());
         }
 
-        let client = http_client(self);
+        let client = http_client(self)?;
         let params = [
             ("client_id", self.client_id.as_str()),
             ("grant_type", "refresh_token"),
@@ -225,7 +251,7 @@ impl OAuthProviderConfig {
             .map_err(|e| format!("refreshing token: {}", e))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(format!("token refresh failed: {}", body));
         }
 
@@ -375,7 +401,7 @@ impl OAuthProviderConfig {
         code_verifier: &str,
         redirect_uri: &str,
     ) -> Result<AuthCredential, String> {
-        let client = http_client(self);
+        let client = http_client(self)?;
         let params = [
             ("grant_type", "authorization_code".to_string()),
             ("code", code.to_string()),
@@ -392,7 +418,7 @@ impl OAuthProviderConfig {
             .map_err(|e| format!("exchanging code for tokens: {}", e))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(format!("token exchange failed: {}", body));
         }
 
@@ -488,7 +514,7 @@ pub async fn poll_device_code(
     device_auth_id: &str,
     user_code: &str,
 ) -> Result<Option<AuthCredential>, String> {
-    let client = http_client(cfg);
+    let client = http_client(cfg)?;
     cfg.poll_device_code_impl(&client, device_auth_id, user_code)
         .await
 }
@@ -802,8 +828,11 @@ fn base64url_decode(input: &str) -> Result<Vec<u8>, String> {
 
 /// Generate a random state parameter for OAuth.
 fn generate_state() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.r#gen();
+    // BUG-20261117-049：state 是 OAuth CSRF 防护值（RFC 6749 §10.12 要求
+    // 不可猜测），thread_rng 是非加密 PRNG——OsRng。
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     hex_encode(&bytes)
 }
 
@@ -877,6 +906,10 @@ fn url_encode(s: &str) -> String {
 }
 
 /// Open a URL in the default browser.
+///
+/// 三平台统一走 [`nemesis_utils::spawn_reap::spawn_detached`]（fire-and-forget
+/// spawn + 后台收尸线程）：裸 spawn 后 drop `std Child` 在 Unix 上不回收
+/// ——gateway 长命进程内每次浏览器唤起留一个僵尸（BUG-20261117-087）。
 fn open_browser_impl(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -888,27 +921,29 @@ fn open_browser_impl(url: &str) -> Result<(), String> {
         // URL 走单一 argv（无 shell 中间层，& 不经任何解析），explorer 对
         // http(s) 经 ShellExecute 打开默认浏览器；GUI 子系统无控制台窗，
         // 无需 CREATE_NO_WINDOW。
-        windows_browser_command(url)
-            .spawn()
-            .map_err(|e| format!("opening browser: {}", e))?;
+        let url = url.to_string();
+        nemesis_utils::spawn_reap::spawn_detached(|| windows_browser_command(&url).spawn())
+            .map_err(|e| format!("opening browser: {e}"))?;
         Ok(())
     }
 
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| format!("opening browser: {}", e))?;
+        let url = url.to_string();
+        nemesis_utils::spawn_reap::spawn_detached(|| {
+            std::process::Command::new("open").arg(&url).spawn()
+        })
+        .map_err(|e| format!("opening browser: {e}"))?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
     {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map_err(|e| format!("opening browser: {}", e))?;
+        let url = url.to_string();
+        nemesis_utils::spawn_reap::spawn_detached(|| {
+            std::process::Command::new("xdg-open").arg(&url).spawn()
+        })
+        .map_err(|e| format!("opening browser: {e}"))?;
         Ok(())
     }
 

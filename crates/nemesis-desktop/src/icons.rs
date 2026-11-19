@@ -91,7 +91,8 @@ impl Icon {
     /// upscaling, pixels are duplicated. This is intentionally simple --
     /// production code would use a proper image resampling library.
     pub fn get_scaled(&self, target_width: u32, target_height: u32) -> Icon {
-        let mut out = Vec::with_capacity((target_width * target_height * 4) as usize);
+        // u64 中转：u32 直接乘 target 巨值时 release 静默回绕（capacity 失真）。
+        let mut out = Vec::with_capacity((target_width as u64 * target_height as u64 * 4) as usize);
 
         for y in 0..target_height {
             // Map target pixel y back to source pixel y
@@ -99,7 +100,17 @@ impl Icon {
             for x in 0..target_width {
                 let src_x = (x as u64 * self.width as u64 / target_width.max(1) as u64) as u32;
                 let src_idx = ((src_y * self.width + src_x) * 4) as usize;
-                out.extend_from_slice(&self.data[src_idx..src_idx + 4]);
+                // s7 同族守卫（BUG-20261118-170）：Icon 字段 pub 且 derive
+                // Deserialize，构造不变量 data == width*height*4 可被字面量/
+                // 反序列化绕过——`pixel()` 已为该形态补过逐点守卫
+                // （s7_tests），本采样读是同族漏网点，修复前裸切片
+                // `src_idx..src_idx+4` 对畸形 Icon panic。越界采样点以透明
+                // 填充，输出恒良构（target_w*target_h*4 字节）。
+                if src_idx + 4 <= self.data.len() {
+                    out.extend_from_slice(&self.data[src_idx..src_idx + 4]);
+                } else {
+                    out.extend_from_slice(&[0, 0, 0, 0]);
+                }
             }
         }
 

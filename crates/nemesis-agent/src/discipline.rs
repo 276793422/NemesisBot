@@ -113,7 +113,9 @@ impl Declaration {
     /// 闸拦截文案）。
     pub fn from_workspace(workspace: &Path) -> Result<Self, String> {
         let path = workspace.join(DISCIPLINE_DIR).join(DECLARATION_FILE);
-        let text = std::fs::read_to_string(&path)
+        // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 →「不是
+        // 合法 JSON」误导报错，文件完好，BUG-20261103-334 同族）。
+        let text = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|_| format!("声明缺失：{DISCIPLINE_DIR}/{DECLARATION_FILE} 不存在"))?;
         let v: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("声明不是合法 JSON：{e}"))?;
@@ -543,6 +545,11 @@ impl DisciplineFalsificationHook {
         command: &str,
     ) -> FalsificationOutcome {
         // 规则层安全管线（拦截面与主循环 dispatch 前置检查同源）。
+        // BUG-20261119-199：execute 撞 RequireApproval 时审批等待在 auditor
+        // 内同步阻塞（最长 300s）——「不含弹窗类」的既有拍板管不住 auditor
+        // 的事实语义（管理器在场即阻塞等裁决），裸调占死 tokio worker
+        // （dispatch 主路径 tool_dispatch.rs 修过的同一问题）。包
+        // spawn_blocking 出 worker 线程，阻塞语义不变。
         #[cfg(feature = "security")]
         if let Some(ref security) = self.security {
             let invocation = nemesis_security::types::ToolInvocation {
@@ -555,7 +562,23 @@ impl DisciplineFalsificationHook {
                 source: "discipline".to_string(),
                 metadata: std::collections::HashMap::new(),
             };
-            let (allowed, deny) = security.execute(&invocation);
+            let (allowed, deny) = {
+                let tracked_security = std::sync::Arc::clone(security);
+                let tracked_invocation = invocation.clone();
+                tokio::task::spawn_blocking(move || tracked_security.execute(&tracked_invocation))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            false,
+                            Some(nemesis_security::types::DenyInfo {
+                                layer: "runtime",
+                                policy: "spawn_blocking".to_string(),
+                                summary: format!("security check aborted: {e}"),
+                                suggestion: None,
+                            }),
+                        )
+                    })
+            };
             if !allowed {
                 let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
                     layer: "unknown",
@@ -603,6 +626,7 @@ impl DisciplineFalsificationHook {
             tool_path_base: None,
             approval_ref: None,
             secrets: std::sync::Arc::new(Vec::new()),
+            tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         };
         let outcome = exec.execute(&args, &ctx).await;
         // 成败判定走 loop_tools 统一定义 [`crate::loop_tools:exec_output_passed`]

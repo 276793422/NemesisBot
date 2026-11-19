@@ -125,7 +125,9 @@ fn data_payload(block: &str) -> Option<String> {
 }
 
 /// HTTP provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy /
+/// headers（可带 Authorization 类私有凭据头，map 整体脱敏）。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct HttpProviderConfig {
     pub name: String,
     pub base_url: String,
@@ -156,6 +158,27 @@ pub struct HttpProviderConfig {
     #[serde(default)]
     pub extra_body: serde_json::Value,
 }
+
+crate::debug_redact::impl_redacted_debug!(HttpProviderConfig {
+    plain {
+        name,
+        base_url,
+        default_model,
+        timeout_secs,
+        preserve_prefix,
+        stream_mode,
+        extra_body,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+    secret_map {
+        headers,
+    }
+});
 
 // P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
 // （原 120s——评审 LLM 连续 120s 超时根因的 http 分支）。
@@ -388,7 +411,12 @@ impl HttpProvider {
         // 模型在严格 OpenAI 形态端点上账本恒按 0 记（usage 面板/审计/
         // board token 预算保险丝漏记）；usage 内嵌 finish chunk 的端点
         // （DeepSeek 等）不受影响。主流兼容实现均支持该键；个别严格端点
-        // 若拒绝，诚实 400 走故障转移，好过静默零账。
+        // 若拒绝（400 unknown parameter 点名 stream_options），下方任务内
+        // 剥掉该键重试一次（BUG-20261114-051：原注释声称「诚实 400 走故障
+        // 转移」，实际 400 归 Unknown 不可重试、fallback/router 均不轮转，
+        // stream=yes 模型在这类端点上从「可用零记账」变「每次硬失败」；
+        // 降级形态与 anthropic 剥 thinking 块 / images 剥 response_format
+        // 同族——可选参数被端点拒绝时由本 lane 负责收回）。
         body["stream_options"] = serde_json::json!({ "include_usage": true });
 
         let api_key = self.config.api_key.clone();
@@ -408,53 +436,78 @@ impl HttpProvider {
         );
 
         tokio::spawn(async move {
-            let mut req = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json");
+            // stream_options 拒绝降级（BUG-20261114-051）：400 + body 点名
+            // 抱怨该参数 → 剥掉重试一次。对接受该键的端点零影响（重试只在
+            // 立即拒绝的快路径上，不占流式时长）；其余 400（额度/模型不存在）
+            // 与一切非 400 错误照旧走 from_status 定类。
+            let mut stream_options_attached = true;
+            let resp = loop {
+                let mut req = client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json");
 
-            for (key, value) in &headers {
-                req = req.header(key.as_str(), value.as_str());
-            }
+                for (key, value) in &headers {
+                    req = req.header(key.as_str(), value.as_str());
+                }
 
-            let resp = match req.json(&body).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
-                    // Unknown + "connect error: <根因链>"（不伪装）。
+                let resp = match req.json(&body).send().await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
+                        // Unknown + "connect error: <根因链>"（不伪装）。
+                        let _ = tx
+                            .send(Err(crate::failover::transport_error(
+                                &provider_name,
+                                &model,
+                                &e,
+                            )))
+                            .await;
+                        return;
+                    }
+                };
+
+                let status = resp.status().as_u16();
+                if status >= 400 {
+                    // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
+                    let retry_after = crate::failover::retry_after_from_headers(resp.headers());
+                    let text = nemesis_utils::http_cap::read_error_body(resp).await;
+                    // 降级闸：仅 400 + 点名抱怨 stream_options + 尚未剥过
+                    //（一次性——剥后仍 400 说明拒绝另有其因，原样定类上抛）。
+                    if status == 400
+                        && stream_options_attached
+                        && complains_about_stream_options(&text)
+                    {
+                        tracing::warn!(
+                            provider = %provider_name,
+                            model = %model,
+                            "[Provider] endpoint rejected stream_options — stripping it and retrying once"
+                        );
+                        stream_options_attached = false;
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.remove("stream_options");
+                        }
+                        continue;
+                    }
+                    tracing::error!(
+                        provider = %provider_name,
+                        model = %model,
+                        status = status,
+                        "[Provider] Streaming request failed with HTTP error"
+                    );
                     let _ = tx
-                        .send(Err(crate::failover::transport_error(
+                        .send(Err(FailoverError::from_status(
                             &provider_name,
                             &model,
-                            &e,
+                            status,
+                            &text,
+                            retry_after,
                         )))
                         .await;
                     return;
                 }
+                break resp;
             };
-
-            let status = resp.status().as_u16();
-            if status >= 400 {
-                // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
-                let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-                let text = resp.text().await.unwrap_or_default();
-                tracing::error!(
-                    provider = %provider_name,
-                    model = %model,
-                    status = status,
-                    "[Provider] Streaming request failed with HTTP error"
-                );
-                let _ = tx
-                    .send(Err(FailoverError::from_status(
-                        &provider_name,
-                        &model,
-                        status,
-                        &text,
-                        retry_after,
-                    )))
-                    .await;
-                return;
-            }
 
             // 200-包装错误诚实化（同 chat() 根修，2026-09-17）：显式
             // application/json 的 200 响应不是 SSE 流——两种可能：
@@ -473,15 +526,16 @@ impl HttpProvider {
                 // body 读传输失败诚实上抛（BUG-20261029-153 同族）：空串会让
                 // 下方 from_str 落 Format("non-SSE JSON body") 伪装应用层错误，
                 // fallback 链不轮转。unwrap_or_default 只留给 4xx 路径（状态码
-                // 本身已定类）。
-                let body = match resp.text().await {
+                // 本身已定类）。成功体有帽（BUG-20261115-024）：超限中途断开
+                // →Unknown + "response body exceeds limit" 前缀（可重试）。
+                let body = match crate::body_cap::read_success_body(resp).await {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = tx
-                            .send(Err(crate::failover::transport_error(
+                            .send(Err(crate::body_cap::to_failover_error(
                                 &provider_name,
                                 &model,
-                                &e,
+                                e,
                             )))
                             .await;
                         return;
@@ -616,7 +670,13 @@ impl HttpProvider {
             // 虚设，直到 B 端 2h 兜底才解）。以「请求起点 + timeout_secs」为
             // 绝对墙钟线，SSE 每次读都在线内——到线即 Timeout（可重试/可
             // 故障转移），超时阶梯「provider 单请求墙钟」在流式 lane 真正
-            // 落地。timeout_secs == 0 = 不限（显式逃生口）。
+            // 落地。BUG-20261119-178：timeout_secs == 0 的「不限」语义
+            // **不存在**——生产构造链 0 恒被 factory `effective_timeout`
+            // 归一为 lane 默认 600（config「0/缺省 = lane 默认」权威口径）；
+            // 直接构造本 config 传 0 时，client 级挂 `.timeout(ZERO)`（reqwest
+            // 0.12.28 `total_timeout.map(tokio::time::sleep)` 无 ZERO 特判）
+            // = 连接阶段立即超时，与「不限」相反。下方 deadline 分支仅为
+            // 防御保留，勿按旧注释当逃生口使用。
             let deadline = if stream_timeout_secs == 0 {
                 None
             } else {
@@ -671,12 +731,19 @@ impl HttpProvider {
                     },
                     None => stream.next().await,
                 };
-                let Some(chunk_result) = next else {
-                    break;
-                };
-                let bytes = match chunk_result {
-                    Ok(b) => b,
-                    Err(e) => {
+                // BUG-20261113-163：EOF（next=None）不再直接 break——服务端在
+                // 末事件文本与终结空行之间断流（半截响应）时，缓冲里的
+                // pending 事件此前被静默丢弃（末段正文增量 / 末 usage 帧 /
+                // 收尾 tool_calls 帧全丢）。SSE 规范：EOF 时 pending 事件必须
+                // 派发。EOF drain 在 push 之后补虚拟终结空行，残余尾经下方
+                // 同一事件分派体走完全部既有闸（终态后帧闸 / finish_emitted /
+                // [DONE] 纪律 / think-strip 定谳）——零新增分派逻辑；EOF 合成
+                // chunk 仍在 drain 之后（唯一终态不双发）。截断残尾里的不完整
+                // UTF-8 半字符仍按既有纪律滞留 utf8_pending 不入缓冲。
+                let eof = next.is_none();
+                let bytes = match next {
+                    Some(Ok(b)) => b,
+                    Some(Err(e)) => {
                         tracing::error!(
                             provider = %provider_name,
                             error = %e,
@@ -697,11 +764,18 @@ impl HttpProvider {
                             .await;
                         return;
                     }
+                    // EOF：bytes 留空（push 为 no-op），drain 见下方 push 后。
+                    None => Default::default(),
                 };
 
                 // 增量解码（R38）：劈在 chunk 边界上的多字节字符先 holdback，
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
+
+                // EOF drain（BUG-20261113-163）：pending 事件补终结空行派发。
+                if eof && !buffer.is_empty() {
+                    buffer.push_str("\n\n");
+                }
 
                 // Process complete SSE lines. 事件边界全形态（规范行终止
                 // LF/CR/CRLF 三态逐行独立；判定单一真相源在
@@ -811,6 +885,59 @@ impl HttpProvider {
                                 }
                             }
                             continue;
+                        }
+
+                        // BUG-20261114-030：SSE 流内 error 事件与真相源同判
+                        //（failover.rs「流内错误事件」家族——anthropic `error`
+                        // 事件 / codex `response.failed` 已各自映射，本 lane
+                        // 此前漏网：error 事件落进全空闸被静默吞掉，EOF 合成
+                        // 干净 "stop"，网关 200 后流中途上游故障（one-api /
+                        // LiteLLM / CC Switch 实测形态）被当成完整终答，瞬态
+                        // 故障永不触发重试/故障转移。分类命中 → 对应变体
+                        // （限流/过载文案可轮转）；未收录文案 → Unknown 原样
+                        // 保留。位处终态后帧闸之后：finish 已发后到达的
+                        // error 事件被闸吞掉（终态唯一性契约——二次 Err 会让
+                        // 覆盖式聚合侧把干净终态改写成 StreamInterrupted）。
+                        // `"error": null`（部分 Azure 形态每 chunk 带该键）
+                        // 不误判。partial 正文已作为 Ok chunk 发出的部分随
+                        // StreamInterrupted 携带（聚合侧既有语义），不丢。
+                        // `classify_stream_error_payload` 统一入口（码探测
+                        // → type 枚举 → 文案兜底）。2026-11-17 治本：此前
+                        // 只抽 message 丢 code——cc-switch 实测流内
+                        // `{"error":{"code":429,...}}` 的状态码被丢弃，文案
+                        // 不在两级词表 → Unknown 不可重试，429 信号永不进
+                        // 限流退避环（零退避立即重试打回限流上游 = 风暴）。
+                        // 位处终态后帧闸之后：finish 已发后到达的
+                        // error 事件被闸吞掉（终态唯一性契约——二次 Err 会让
+                        // 覆盖式聚合侧把干净终态改写成 StreamInterrupted）。
+                        // `"error": null`（部分 Azure 形态每 chunk 带该键）
+                        // 不误判。
+                        if parsed.get("error").is_some_and(|e| !e.is_null()) {
+                            // 日志现场：上游原始文案（RateLimit/Auth 等变体
+                            // 槽位无 message，Display 不含上游原文）。
+                            let raw_msg = parsed
+                                .pointer("/error/message")
+                                .and_then(|m| m.as_str())
+                                .or_else(|| parsed.get("error").and_then(|e| e.as_str()))
+                                .unwrap_or("<no message field>");
+                            let err = crate::failover::classify_stream_error_payload(
+                                &parsed,
+                                &provider_name,
+                                &model,
+                                format!(
+                                    "upstream SSE error event: {}",
+                                    data.chars().take(200).collect::<String>()
+                                ),
+                            );
+                            tracing::warn!(
+                                provider = %provider_name,
+                                model = %model,
+                                error_message = %raw_msg,
+                                classified = %err,
+                                "[Provider] SSE stream error event"
+                            );
+                            let _ = tx.send(Err(err)).await;
+                            return;
                         }
 
                         let delta_content = parsed["choices"][0]["delta"]["content"]
@@ -992,6 +1119,11 @@ impl HttpProvider {
                         }
                     }
                 }
+
+                // EOF（BUG-20261113-163）：drain 已跑完一轮分派，退出循环。
+                if eof {
+                    break;
+                }
             }
 
             // J1：EOF 无 [DONE]（半截响应）——不悬挂 receiver。合成唯一
@@ -1083,6 +1215,26 @@ pub struct StreamChunk {
     pub reasoning_content: Option<String>,
 }
 
+/// 400 响应体是否明确抱怨 `stream_options` 参数：body 同时点名参数名与
+/// 抱怨措辞（unknown/unrecognized/not supported/invalid 族，大小写不敏感，
+/// 覆盖 OpenAI `"code": "unknown_parameter"` 与 message 两种承载形态）。
+/// 从严激活——只认端点点名该参数的 400，额度/模型不存在类不触发剥键重试
+/// （images.rs `complains_about_response_format` 同款谓词形态，同族互锚）。
+fn complains_about_stream_options(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("stream_options")
+        && [
+            "unknown parameter",
+            "unknown_parameter",
+            "unrecognized",
+            "not supported",
+            "unsupported",
+            "invalid parameter",
+        ]
+        .iter()
+        .any(|m| lower.contains(m))
+}
+
 #[async_trait]
 impl LLMProvider for HttpProvider {
     async fn chat(
@@ -1161,7 +1313,7 @@ impl LLMProvider for HttpProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             tracing::error!(
                 provider = %self.config.name,
                 model = model,
@@ -1182,10 +1334,10 @@ impl LLMProvider for HttpProvider {
         // 其余→Unknown + "connect error" 前缀（可重试，与 send 路径同判——
         // BUG-20261029-153：此前归 Format 不可重试，fallback 链在 body 断连
         // 时直接终止不轮转）。下方 from_str 的解析错误才是 Format（应用层）。
-        let raw_response_text = resp
-            .text()
+        // 成功体有帽（BUG-20261115-024）：超限中途断开→Unknown + 前缀锚。
+        let raw_response_text = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error(&self.config.name, model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw_response_text).map_err(|e| FailoverError::Format {
                 provider: self.config.name.clone(),

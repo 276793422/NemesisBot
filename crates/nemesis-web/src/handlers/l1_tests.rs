@@ -34,6 +34,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -56,6 +57,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -71,6 +73,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -103,7 +106,7 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 30 个模块（register_all 的无条件注册段； 起
+/// 无 feature 闸的 31 个模块（register_all 的无条件注册段； 起
 /// 含 projects，起含 canvas， 起含 roles——角色目录
 /// WSAPI 含 selfupdate——版本自切换通道；
 /// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖）；
@@ -145,6 +148,8 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "subagents",
     // 后台进程实时输出：background.list/output/kill/steer。
     "background",
+    // 会话资源盘点聚合命令：session.resources（2026-11-17）。
+    "session",
 ];
 
 // 结构不变量
@@ -152,7 +157,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
     let reg = build_registry();
-    // 30 个无条件模块必须全在；12 个 feature 门控模块按 cfg 计入下限。
+    // 31 个无条件模块必须全在；13 个 feature 门控模块按 cfg 计入下限。
     // （cfg! 的 feature 参数必须是字面量，无法循环展开——逐个列出。）
     let gated_on = [
         cfg!(feature = "cluster"),
@@ -167,6 +172,7 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "board"),      // nemesis-board 转 optional
         cfg!(feature = "connectors"), // 同时带 paperbroker，两个模块
         cfg!(feature = "ziwei"),      // 进下限清单（紫微管理面 feature 门控，此前漏列）
+        cfg!(feature = "browser"),    // 浏览器接管管理面（2026-11-15 browser.* 八命令）
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
@@ -309,6 +315,28 @@ fn registry_anchor_commands_present() {
             );
         }
     }
+    // 自配速 durable loop（项5）：loops 模块七命令锚点。
+    if cfg!(feature = "loop") {
+        for anchor in [
+            "list", "get", "create", "update", "pause", "resume", "remove",
+        ] {
+            assert!(
+                cmds_of(&reg, "loops").contains(&anchor),
+                "loops module missing anchor command {anchor}"
+            );
+        }
+    }
+    // 目标（goals）管理面：八命令锚点。
+    if cfg!(feature = "goals") {
+        for anchor in [
+            "list", "get", "create", "update", "enable", "disable", "delete", "evals",
+        ] {
+            assert!(
+                cmds_of(&reg, "goals").contains(&anchor),
+                "goals module missing anchor command {anchor}"
+            );
+        }
+    }
 }
 
 // system.commands dispatch 链路
@@ -366,12 +394,19 @@ fn docs_generation_writes_wsapi_commands_md() {
         "connectors",
         "paperbroker",
         "ziwei",
+        "events",
+        "loops",
+        "goals",
+        "mail",
+        "browser", // 浏览器接管管理面（不带 browser 重跑会把 browser.* 八命令整模块冲没）
     ];
     let missing_module = GATED_DOC_MODULES
         .iter()
         .find(|m| cmds_of(&reg, m).is_empty());
     let lsp_missing = !cmds_of(&reg, "coding").contains(&"lsp_status");
     let wasm_missing = !cmds_of(&reg, "plugins").contains(&"wasm.list");
+    let loops_missing = !cmds_of(&reg, "loops").contains(&"create");
+    let goals_missing = !cmds_of(&reg, "goals").contains(&"create");
     // 注：quic.relay.*（与集群解耦）挂在 quic 模块下且**恒注册**
     //（无 feature 闸，handler 内诚实降级）——命令表面不随 feature 进出，
     // 文档无被冲风险，不设前置闸（与上面 feature 门控行的区别是刻意的）。
@@ -379,12 +414,15 @@ fn docs_generation_writes_wsapi_commands_md() {
         .copied()
         .or(lsp_missing.then_some("coding(lsp_status)"))
         .or(wasm_missing.then_some("plugins(wasm.*)"))
+        .or(loops_missing.then_some("loops(create)"))
+        .or(goals_missing.then_some("goals(create)"))
     {
         eprintln!(
             "SKIP docs_generation: 编译缺 feature 门控模块 `{missing}`——重写会把 \
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
-             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei\" docs_generation"
+             forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,events,loop,\
+             goals,mail,browser\" docs_generation"
         );
         return;
     }
@@ -396,8 +434,8 @@ fn docs_generation_writes_wsapi_commands_md() {
 docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
-security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei\
-\" docs_generation` 刷新本文件\
+security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,\
+events,loop,goals,mail,browser\" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));

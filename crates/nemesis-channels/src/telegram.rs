@@ -18,10 +18,20 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
-/// 单块原始文本字符预算：Telegram Bot API 硬限 4096，
+/// 单块原始文本预算（UTF-16 code units）：Telegram Bot API 硬限 4096
+/// 按 UTF-16 units 计（官方 entities 文档；astral emoji = 2 units），
 /// 预算留 ~600 给 markdown→HTML 的转义/标签膨胀；纯文本回退落在原始块
-/// 上恒 < 4096。
+/// 上恒 < 4096。拆分必须用 UTF-16 口径（split_message_utf16）——纯标量
+/// 计数在 emoji 密集内容上少算至 2×，拆完仍会被整条拒收
+/// （BUG-20261113-166）。
 const TELEGRAM_SPLIT_BUDGET: usize = 3500;
+
+/// 媒体（voice/photo/document）单文件下载上限：64MB。
+///
+/// Telegram Bot API 标准模式单文件 20MB 硬上限，64MB = 3x 余量；
+/// local Bot API server 模式可传 GB 级文件，超帽在读入中途诚实断开
+/// 而不是灌满进程内存（BUG-20261115-025，http_cap 单一真相源）。
+const VOICE_DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Thinking cancel mechanism
@@ -370,15 +380,19 @@ impl TelegramChannel {
         let mut client_builder = crate::base::outbound_http_builder();
 
         // Apply proxy if configured
-        if let Some(ref proxy_url) = config.proxy {
-            if !proxy_url.is_empty() {
-                match reqwest::Proxy::all(proxy_url.as_str()) {
-                    Ok(proxy) => {
-                        client_builder = client_builder.proxy(proxy);
-                    }
-                    Err(e) => {
-                        warn!("[TelegramChannel] invalid proxy URL '{}': {}", proxy_url, e);
-                    }
+        if let Some(ref proxy_url) = config.proxy
+            && !proxy_url.is_empty()
+        {
+            match reqwest::Proxy::all(proxy_url.as_str()) {
+                Ok(proxy) => {
+                    client_builder = client_builder.proxy(proxy);
+                }
+                Err(e) => {
+                    // proxy 是 opt_secret（userinfo 凭据面，SEC-002 口径，
+                    // 与 Debug 脱敏同判）——日志只落 scheme 不落完整 URL
+                    //（proxy_file 读侧 WARN 同口径，BUG-20261115-005）。
+                    let scheme = proxy_url.split("://").next().unwrap_or("");
+                    warn!("[TelegramChannel] invalid proxy URL (scheme=\"{scheme}\"): {e}");
                 }
             }
         }
@@ -704,34 +718,34 @@ impl TelegramChannel {
         // Photo — （多模态）：getFile → 下载落盘 uploads → **本地路径引用**
         // 进 统一 attach（安全闸 → 历史引用 → build_messages 水合）。
         // 下载失败诚实降级为 "[Photo received]" 文案（不产出无法水合的引用）。
-        if let Some(ref photos) = msg.photo {
-            if !photos.is_empty() {
-                // Use the largest photo (last in array)
-                let photo = &photos[photos.len() - 1];
-                let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
-                    &nemesis_path::default_path_manager().workspace(),
-                );
-                let attachment = Self::fetch_file_attachment(
-                    http,
-                    api,
-                    &photo.file_id,
-                    "image",
-                    "jpg",
-                    &uploads_dir,
-                )
-                .await;
-                if let Some(ref att) = attachment {
-                    media.push(att.clone());
-                }
-                if !content.is_empty() {
-                    content.push('\n');
-                }
-                match (&attachment, &msg.caption) {
-                    (Some(_), Some(cap)) => content.push_str(&format!("[image: {cap}]")),
-                    (Some(_), None) => content.push_str("[image: photo]"),
-                    (None, Some(cap)) => content.push_str(&format!("[Photo received: {cap}]")),
-                    (None, None) => content.push_str("[Photo received]"),
-                }
+        if let Some(ref photos) = msg.photo
+            && !photos.is_empty()
+        {
+            // Use the largest photo (last in array)
+            let photo = &photos[photos.len() - 1];
+            let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
+                &nemesis_path::default_path_manager().workspace(),
+            );
+            let attachment = Self::fetch_file_attachment(
+                http,
+                api,
+                &photo.file_id,
+                "image",
+                "jpg",
+                &uploads_dir,
+            )
+            .await;
+            if let Some(ref att) = attachment {
+                media.push(att.clone());
+            }
+            if !content.is_empty() {
+                content.push('\n');
+            }
+            match (&attachment, &msg.caption) {
+                (Some(_), Some(cap)) => content.push_str(&format!("[image: {cap}]")),
+                (Some(_), None) => content.push_str("[image: photo]"),
+                (None, Some(cap)) => content.push_str(&format!("[Photo received: {cap}]")),
+                (None, None) => content.push_str("[Photo received]"),
             }
         }
 
@@ -973,7 +987,13 @@ impl TelegramChannel {
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status()));
         }
-        let bytes = resp.bytes().await.map_err(|e| api.redact(e))?;
+        // BUG-20261115-025：媒体下载有帽读取——裸 `bytes()` 把整文件灌进内存
+        // （Telegram Bot API 标准模式单文件上限 20MB；local Bot API server
+        // 模式可达 GB 级）。64MB 帽对标准模式余量充足；local 模式超帽文件
+        // 诚实报 exceeds limit（读入中途断开，内存峰值=已到达前缀）。
+        let bytes = nemesis_utils::http_cap::read_body_capped(resp, VOICE_DOWNLOAD_LIMIT_BYTES)
+            .await
+            .map_err(|e| api.redact(e))?;
         std::fs::write(local_path, &bytes).map_err(|e| e.to_string())
     }
 
@@ -1063,7 +1083,22 @@ impl TelegramChannel {
         let path_str = local_path.to_string_lossy().to_string();
 
         // Step 3: Call transcriber
-        match transcriber.transcribe(&path_str).await {
+        let transcribed = transcriber.transcribe(&path_str).await;
+        // 转写完成即删临时文件——Ok/Err 两臂统一（finally 语义）。
+        // BUG-20261113-158：此前两臂都不删，每条语音消息在系统级
+        // temp（std::env::temp_dir 不随 workspace 清理）永久残留一个
+        // ogg（几百 KB~几 MB）。转写器读路径成功臂读完即无用，失败臂
+        // 同样不应把语音内容残留磁盘。
+        // BUG-20261118-172：remove_file_resilient 带 thread::sleep 退避
+        // （最坏 ~4.4s），不占 tokio worker——spawn_blocking 移出
+        // （fsutil.rs LOW-5 家族纪律）。
+        let rm_path = local_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            nemesis_utils::fsutil::remove_file_resilient(&rm_path)
+        })
+        .await;
+
+        match transcribed {
             Ok(text) => {
                 info!("[TelegramChannel] voice transcribed successfully");
                 Some(format!("[voice transcription: {text}]"))
@@ -1236,7 +1271,7 @@ impl TelegramChannel {
 
             // ATX heading (# through ######) → bold
             if let Some(heading) = parse_heading(trimmed) {
-                blocks.push(format!("<b>{}</b>", render_inline(&heading)));
+                blocks.push(format!("<b>{}</b>", render_inline(heading)));
                 i += 1;
                 continue;
             }
@@ -1461,13 +1496,12 @@ fn render_inline(text: &str) -> String {
             Some(chars[idx + 1])
         };
 
-        let star_marker =
-            c == '*' && prev.map_or(true, |p| p != '*') && next.map_or(true, |n| n != '*');
+        let star_marker = c == '*' && (prev != Some('*')) && (next != Some('*'));
         let underscore_marker = c == '_'
-            && prev.map_or(true, |p| p != '_')
-            && next.map_or(true, |n| n != '_')
-            && !(prev.map_or(false, |p| p.is_alphanumeric())
-                && next.map_or(false, |n| n.is_alphanumeric()));
+            && (prev != Some('_'))
+            && (next != Some('_'))
+            && !(prev.is_some_and(|p| p.is_alphanumeric())
+                && next.is_some_and(|n| n.is_alphanumeric()));
 
         if star_marker || underscore_marker {
             if in_italic {
@@ -1561,11 +1595,14 @@ impl Channel for TelegramChannel {
         // before sending the actual response.
         self.stop_thinking_animation(&msg.chat_id);
 
-        // Telegram Bot API sendMessage/editMessageText 硬限 4096 字符——超长
-        // 回复 HTML 与纯文本两次尝试全 400，整条投递失败。
-        // 预算 3500 留 HTML 转义/标签膨胀余量；即便病理转义内容把 HTML 版
-        // 顶过 4096，纯文本回退落在原始块（≤3500 < 4096）上恒可达。
-        let raw_chunks = nemesis_types::utils::split_message(&msg.content, TELEGRAM_SPLIT_BUDGET);
+        // Telegram Bot API sendMessage/editMessageText 硬限 4096 ——按
+        // UTF-16 code units 计（官方 entities 文档；astral emoji = 2
+        // units），超长回复 HTML 与纯文本两次尝试全 400，整条投递失败。
+        // 预算 3500 units 留 HTML 转义/标签膨胀余量；即便病理转义内容把
+        // HTML 版顶过 4096，纯文本回退落在原始块（≤3500 units < 4096）
+        // 上恒可达。
+        let raw_chunks =
+            nemesis_types::utils::split_message_utf16(&msg.content, TELEGRAM_SPLIT_BUDGET);
         let html_chunks: Vec<String> = raw_chunks
             .iter()
             .map(|c| Self::markdown_to_telegram_html(c))

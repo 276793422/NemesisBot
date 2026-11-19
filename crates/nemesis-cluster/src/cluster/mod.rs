@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use nemesis_types::cluster::Task;
 
-use crate::cluster_config::{DynamicState, PeerConfig, PeerStatus};
+use crate::cluster_config::{DynamicState, PeerConfig};
 use crate::config_loader::ConfigError;
 use crate::continuation_store::ContinuationStore;
 use crate::discovery::ClusterCallbacks;
@@ -124,6 +124,10 @@ pub struct Cluster {
     cont_store: Arc<ContinuationStore>,
     result_store: Arc<TaskResultStore>,
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
+    /// 进程终态令牌（BUG-20261120-009 家族纪律 DI；gateway 装配注入，
+    /// `setup_roaming` 时转喂 RpcClient → 漫游会话池心跳循环）。None =
+    /// 未注入 = never-cancelled 回落（旧行为）。
+    roaming_terminal: Mutex<Option<tokio_util::sync::CancellationToken>>,
     /// RPC server instance.
     rpc_server: Option<Arc<crate::rpc::server::RpcServer>>,
     /// iroh 漫游叠加层运行旗标（QUIC 插件化
@@ -243,7 +247,7 @@ pub struct Cluster {
     /// （送达重试/B 端重发/恢复轮询重放）会让 Cluster 层再次看到 ok=true，
     /// 无去重则同一任务双计、成功率失真。每任务只计首次 settle。
     /// Arc 包裹：同 route_stats，构造期路由钩子闭包捕获。
-    route_recorded: Arc<Mutex<std::collections::HashSet<String>>>,
+    route_recorded: Arc<Mutex<crate::cluster::tasks::RouteRecordedSet>>,
 }
 
 /// 单个对端节点的路由统计（负载感知路由最小版数据面）。胜负与耗时均由
@@ -336,6 +340,7 @@ impl Cluster {
             cont_store: Arc::new(ContinuationStore::new(cluster_dir_path.join("rpc_cache"))),
             result_store: Arc::new(TaskResultStore::new(1000)),
             rpc_client: Mutex::new(None),
+            roaming_terminal: Mutex::new(None),
             rpc_server: None,
             roaming_started: AtomicBool::new(false),
             roaming_id: parking_lot::RwLock::new(None),
@@ -358,7 +363,9 @@ impl Cluster {
             bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             route_stats: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            route_recorded: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            route_recorded: Arc::new(Mutex::new(
+                crate::cluster::tasks::RouteRecordedSet::default(),
+            )),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
@@ -366,6 +373,7 @@ impl Cluster {
             on_recovered_delivery: Arc::new(Mutex::new(None)),
         };
         cluster.install_route_record_hook();
+        cluster.install_stale_kill_hook();
         cluster
     }
 
@@ -500,24 +508,42 @@ impl Cluster {
         // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
         // PoisonedTaskStore，任务操作响亮报错，不静默退回内存假装持久化；
         // ChatSecretStore 损坏熔断同款纪律）。`Cluster::new` 测试路径保持内存态。
-        let tasks_db_path = nemesis_path::resolve_tasks_db_path_in_workspace(&workspace);
-        let (task_db, task_manager) = match nemesis_taskstore::TaskDb::open(&tasks_db_path) {
-            Ok(db) => {
-                let store = nemesis_taskstore::SqliteTaskStore::from_db(db.clone());
-                (Some(db), Arc::new(TaskManager::with_store(Arc::new(store))))
-            }
-            Err(e) => {
-                tracing::error!(
-                    "[Cluster] tasks.db unavailable at {}, task persistence fail-closed \
-                     (task ops will error honestly): {e}",
-                    tasks_db_path.display()
-                );
-                (
-                    None,
-                    Arc::new(TaskManager::with_store(Arc::new(
-                        crate::task_manager::PoisonedTaskStore::new(e.clone()),
-                    ))),
-                )
+        // sqlite 未编译进本构建（taskstore-sqlite 裁剪形态）= 诚实回落内存态：
+        // 进程内任务生命周期全功能（submit/assign/detail 往返正常），跨重启
+        // 不持久。不能挂 taskstore 的空 stub store——写入 no-op、查询恒空会让
+        // store-backed TaskManager 变黑洞（submit 假成功、后续一切操作
+        // not found；694d1382 双门控裁剪实录）。
+        let (task_db, task_manager) = if !nemesis_taskstore::SQLITE_COMPILED {
+            tracing::warn!(
+                "[Cluster] nemesis-taskstore built without sqlite: task layer falls back \
+                 to in-memory (fully functional in-process, not durable across restart)"
+            );
+            (
+                None,
+                Arc::new(TaskManager::with_store(Arc::new(
+                    crate::task_manager::InMemoryTaskStore::new(),
+                ))),
+            )
+        } else {
+            let tasks_db_path = nemesis_path::resolve_tasks_db_path_in_workspace(&workspace);
+            match nemesis_taskstore::TaskDb::open(&tasks_db_path) {
+                Ok(db) => {
+                    let store = nemesis_taskstore::SqliteTaskStore::from_db(db.clone());
+                    (Some(db), Arc::new(TaskManager::with_store(Arc::new(store))))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "[Cluster] tasks.db unavailable at {}, task persistence fail-closed \
+                         (task ops will error honestly): {e}",
+                        tasks_db_path.display()
+                    );
+                    (
+                        None,
+                        Arc::new(TaskManager::with_store(Arc::new(
+                            crate::task_manager::PoisonedTaskStore::new(e.clone()),
+                        ))),
+                    )
+                }
             }
         };
 
@@ -554,6 +580,7 @@ impl Cluster {
                 nemesis_path::resolve_cluster_results_dir_in_workspace(&workspace),
             )),
             rpc_client: Mutex::new(None),
+            roaming_terminal: Mutex::new(None),
             rpc_server: None,
             roaming_started: AtomicBool::new(false),
             roaming_id: parking_lot::RwLock::new(None),
@@ -575,7 +602,9 @@ impl Cluster {
             bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             route_stats: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            route_recorded: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            route_recorded: Arc::new(Mutex::new(
+                crate::cluster::tasks::RouteRecordedSet::default(),
+            )),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
@@ -583,6 +612,7 @@ impl Cluster {
             on_recovered_delivery: Arc::new(Mutex::new(None)),
         };
         cluster.install_route_record_hook();
+        cluster.install_stale_kill_hook();
         cluster
     }
 
@@ -648,7 +678,10 @@ impl Cluster {
         self.registry.upsert(local_node);
 
         // Initialize RPC client with peer resolver backed by our registry.
-        // If a client was already set via set_rpc_client(), this is a no-op.
+        // If a client was already set via set_rpc_client(), this is a no-op
+        // ——但 Gateway LifecycleService 的 stop→start 重启语义下 stop() 落过
+        // 漫游池幕帘，这里抬起（reopen：会话按需重拨、心跳恢复；未关闭时
+        // no-op）。
         if self.rpc_client.lock().is_none() {
             let resolver = Arc::new(ClusterPeerResolver {
                 registry: self.registry.clone(),
@@ -662,6 +695,8 @@ impl Cluster {
                 self.rpc_port,
             );
             *self.rpc_client.lock() = Some(client);
+        } else if let Some(ref client) = *self.rpc_client.lock() {
+            client.reopen();
         }
 
         // Load RPC auth token from config.cluster.json and apply to server/client.
@@ -692,9 +727,12 @@ impl Cluster {
         // （旧 &mut self 签名无法经 Arc<TaskManager> 调用）——2h 终态清理
         // 与 pending/running 安全网兜底双双失效，终态任务（含完整
         // payload+result）在 tasks.db 无限累积。接线后 on_complete 生产恒
-        // None（gateway 走 with_workspace 不挂回调），清理只落状态不重复
-        // 唤醒——pending 唤醒仍由 recovery_loop 独占（settle 幂等，双循环
-        // 竞争无害）。
+        // None（gateway 走 with_workspace 不挂回调），清理只落状态；
+        // **判死的唤醒义务由构造期 stale-kill 钩子承担**
+        // （`install_stale_kill_hook`）：清理 tick（30s）与 recovery sweep
+        // （120s）对同一 pending_timeout 阈值竞速，清理赢时任务即 Failed，
+        // sweep 只扫 Pending 从此永远看不到——不补发唤醒帧 = 续行快照孤儿
+        // + 等待方挂死。exactly-once 由条件转移 CAS 保证，双杀臂互斥不双发。
         self.task_manager.start();
 
         // 主动健康探针循环（health_check_interval_secs=0 关闭）。
@@ -973,8 +1011,16 @@ impl Cluster {
         let endpoint_cfg = serde_json::json!({
             "relay_url": quic_client.relay_url.trim(),
             "relay_token": quic_client.relay_token.trim(),
+            // BUG-20261118 批次 E：客户端直连端口固定透传（0 = 动态缺省）。
+            "direct_port": quic_client.direct_port,
         })
         .to_string();
+        if quic_client.direct_port > 0 {
+            tracing::info!(
+                direct_port = quic_client.direct_port,
+                "[Cluster] Roaming endpoint binds fixed UDP port (firewall/security-group may allow it)"
+            );
+        }
         match crate::roaming::plugin_bridge::endpoint_start(endpoint_cfg).await {
             crate::roaming::plugin_bridge::BridgeOutcome::Ok(_) => {}
             crate::roaming::plugin_bridge::BridgeOutcome::Absent => {
@@ -988,8 +1034,18 @@ impl Cluster {
         // 出站：RPC client dial 分派按 `iroh:` 前缀走桥拨号（插件 loopback
         // 交接；测试可注入 LocalDialer 同 trait）。：包一层 TrustGateDialer
         // 吊销 veto（簿缺席 = 未启用透传字节不变；revoked 诚实 Err，调用方
-        // ⛔ 重试语义照常）。
+        // ⛔ 重试语义照常）。会话池心跳间隔自 config.cluster.json
+        // `roaming_heartbeat_interval_secs`（默认 30s；0=关——长连接保活
+        // 与断线重连见 rpc::roaming_pool）。
         if let Some(client) = self.rpc_client.lock().clone() {
+            let app_cfg = crate::config_loader::load_app_config(&self.workspace);
+            client.set_roaming_heartbeat_interval(app_cfg.roaming_heartbeat_interval_secs);
+            // 进程终态令牌转喂（BUG-20261120-009 家族纪律 DI）：必须在
+            // `set_roaming_dialer`（心跳循环 spawn 触发点）之前到达。
+            // stop→start 重启语义下 setup_roaming 每次重跑，幂等覆盖。
+            if let Some(t) = self.roaming_terminal.lock().clone() {
+                client.set_roaming_terminal_token(t);
+            }
             client.set_roaming_dialer(Arc::new(crate::roaming::plugin_bridge::TrustGateDialer {
                 workspace: self.workspace.clone(),
                 inner: crate::roaming::plugin_bridge::BridgeDialer,
@@ -1265,6 +1321,14 @@ impl Cluster {
             && let Err(e) = server.stop()
         {
             tracing::warn!(error = %e, "[Cluster] RPC server stop error");
+        }
+
+        // Stop RPC client（iroh 漫游会话池全摘 + 心跳停摆 + 后台重连退场；
+        // LAN 路径为每请求短连接，无池可关）。不关的话停机后心跳循环继续
+        // ping、插件连接悬挂到进程退出。重启路径由 start() 的 reopen 分支
+        // 对称复活（Gateway LifecycleService stop→start 同实例语义）。
+        if let Some(ref client) = *self.rpc_client.lock() {
+            client.close();
         }
 
         // iroh 漫游叠加层停机（QUIC 插件化：端点本体在 plugin_roaming
@@ -1627,6 +1691,14 @@ impl Cluster {
     /// Get a cloned reference to the RPC client (if initialized).
     pub fn rpc_client_arc(&self) -> Option<Arc<RpcClient>> {
         self.rpc_client.lock().clone()
+    }
+
+    /// 注入进程终态令牌（BUG-20261120-009 家族纪律 DI，gateway 装配期
+    /// 调用）。缓存到 `roaming_terminal`，`setup_roaming`（每次 start 重跑）
+    /// 转喂 RpcClient → 漫游会话池——心跳循环等待点消费；roaming 未启用
+    /// 时令牌静默待用，无害。
+    pub fn set_roaming_terminal_token(&self, token: tokio_util::sync::CancellationToken) {
+        *self.roaming_terminal.lock() = Some(token);
     }
 
     // -- RPC server accessor ---------------------------------------------------

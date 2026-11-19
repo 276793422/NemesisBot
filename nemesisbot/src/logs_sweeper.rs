@@ -85,7 +85,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use tracing::info;
+use tracing::{info, warn};
+
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 
 /// 每族每拍删除上限（防 IO 尖峰；一次扫不完下次周期继续）。
 const MAX_DELETIONS_PER_SWEEP: usize = 200;
@@ -286,12 +288,19 @@ pub struct SweepStats {
 }
 
 /// 纯函数：mtime 距 `now` 是否超 `ttl_days`（`ttl_days=0` = 族关，恒否）。
+///
+/// `ttl_days` 是 config 值（无上界 u64）——裸乘在 `ttl_days > u64::MAX/86400`
+/// （~2.14e14 天）时溢出：debug panic 杀死清扫任务；release 回绕出不可预测
+/// 乘积，**可精确构造归零**（`2^57 × 86400 = 2^64 × 675 ≡ 0` → `age >= 0`
+/// 恒真 → 该族不分年龄整族误删，trash 回收站同罹）。饱和封顶后巨值语义
+/// 诚实落「保留一切」（同族先例：R735 usage_store 入口钳制、spill.rs
+/// cleanup_expired saturating_mul——本形态第三处漏网）。
 fn is_expired(mtime: SystemTime, ttl_days: u64, now: SystemTime) -> bool {
     if ttl_days == 0 {
         return false;
     }
     now.duration_since(mtime)
-        .map(|age| age.as_secs() >= ttl_days * DAY_SECS)
+        .map(|age| age.as_secs() >= ttl_days.saturating_mul(DAY_SECS))
         .unwrap_or(false)
 }
 
@@ -319,12 +328,25 @@ fn ledger_tail_is_append(bytes: &[u8]) -> bool {
 
 /// 会话目录字节量（request_logs 条目内部文件累计；读不到的项跳过——
 /// 尺寸只服务 INFO 日志，读失败不值得让清扫失败）。
+///
+/// BUG-20261113-137：目录下探判定用 `DirEntry::file_type()`（**非跟随**，
+/// 等价 symlink_metadata）——旧形态 `Path::is_dir()` 跟随链接，条目内
+/// junction/symlink 环（agent 可用 `mklink /J` 无特权在 workspace logs
+/// 子树内种）= 无限递归栈溢出，gateway 崩溃级（stack overflow 不可捕获）；
+/// 外指链接 = 越界统计。BUG-20261110-059 统一守卫形态（checkpoint/gc.rs
+/// dir_size 先例）——该轮 24 位点枚举漏网的第 25 处。
 fn dir_size(dir: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.filter_map(|e| e.ok()) {
             let p = e.path();
-            if p.is_dir() {
+            let Ok(ft) = e.file_type() else {
+                continue; // 消失/不可达条目不计不入栈
+            };
+            if ft.is_symlink() {
+                continue; // 链接条目（含 Windows junction）不跟随
+            }
+            if ft.is_dir() {
                 total += dir_size(&p);
             } else if let Ok(m) = e.metadata() {
                 total += m.len();
@@ -340,12 +362,23 @@ fn dir_size(dir: &Path) -> u64 {
 /// `trash_loc` 仅 [`Family::Trash`] 消费：条目删除走
 /// [`nemesis_agent::chat_trash::trash_purge_in`] 单点（先清 live todo 孤儿
 /// 再删条目，与手动 purge 同语义）；None（非 trash 族）回落整目录直删。
+/// SessionLogs 正文删除后的随葬面（2026-11-19 删除残留修复）：FTS 索引 /
+/// event_ledger / store json 三面与正文同生命周期（正文没了 = 会话死），
+/// 不得以孤儿滞留到各自 TTL。capture 目录不在此列——capture 目录名用
+/// capture_sink 私有 sanitize 命名，从 stem 反推不可靠，由 capture 族自身
+/// TTL 收敛（写端同构拼装，路径真相源 = logs 根 + 固定段）。
+struct SessionLogCascade {
+    ledger_dir: PathBuf,
+    sessions_dir: PathBuf,
+}
+
 fn sweep_family(
     dir: &Path,
     ttl_days: u64,
     family: Family,
     now: SystemTime,
     trash_loc: Option<&nemesis_agent::chat_trash::TrashLocations>,
+    session_cascade: Option<&SessionLogCascade>,
 ) -> SweepStats {
     let mut stats = SweepStats::default();
     if ttl_days == 0 {
@@ -435,6 +468,37 @@ fn sweep_family(
                         // sidecar 必须跟走，否则本拍就产生幽灵）。
                         stats.deleted += 1;
                         stats.bytes_freed += sidecar_size.len();
+                    }
+                    // 随葬级联（2026-11-19 删除残留修复；与用户删除链路
+                    // delete_chat_log 同语义）：正文删除成功后 FTS 索引 /
+                    // event_ledger / store json 三面跟随——正文没了 = 会话
+                    // 死，索引继续命中 = I2 删即不可见破约，账本/上下文缓存
+                    // 滞留 = 孤儿占盘。全部 best-effort（失败由各族 TTL
+                    // 兜底：event_ledger 族末行 append 判定 / 7d store
+                    // cleanup 下次启动）。
+                    if let Some(c) = session_cascade {
+                        // 裁剪矩阵闸（BUG-20261119-179）：history_search 模块
+                        // 在 nemesis-agent 里由 feature 编译出——minimal-iot/
+                        // desktop 档不含它，未门控引用 = E0433 整连接器缺席。
+                        // 关 feature = FTS 索引本就不存在，跳过失效化即正确。
+                        #[cfg(feature = "history-search")]
+                        nemesis_agent::history_search::invalidate_session_stem(stem);
+                        let ledger = c.ledger_dir.join(format!("{stem}.jsonl"));
+                        if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&ledger) {
+                            tracing::warn!(
+                                path = %ledger.display(),
+                                error = %e,
+                                "[LogsSweeper] session_logs 随葬：ledger 删除重试耗尽"
+                            );
+                        }
+                        let ctx_json = c.sessions_dir.join(format!("{stem}.json"));
+                        if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&ctx_json) {
+                            tracing::warn!(
+                                path = %ctx_json.display(),
+                                error = %e,
+                                "[LogsSweeper] session_logs 随葬：store json 删除重试耗尽"
+                            );
+                        }
                     }
                 }
             }
@@ -638,7 +702,7 @@ fn sweep_ziwei(ws: &Path, ttl_days: u64, now: SystemTime) -> SweepStats {
         ws.join("reports").join("ziwei-verify"),
         ws.join("reports").join("ziwei-recover"),
     ] {
-        let part = sweep_family(&root, ttl_days, Family::Ziwei, now, None);
+        let part = sweep_family(&root, ttl_days, Family::Ziwei, now, None, None);
         stats.deleted += part.deleted;
         stats.failed += part.failed;
         stats.bytes_freed += part.bytes_freed;
@@ -678,7 +742,16 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
         session_logs_dir.clone(),
         boundary_dir.clone(),
         nemesis_path::resolve_sessions_dir_in_workspace(ws),
+        event_ledger_dir.clone(),
+        capture_dir.clone(),
     );
+    // SessionLogs 正文随葬面（2026-11-19 删除残留修复）：FTS 索引由
+    // invalidate_session_stem 摘（DB 内部寻址），ledger / store json 两面
+    // 按同构 stem 命名跟随删。
+    let session_cascade = SessionLogCascade {
+        ledger_dir: event_ledger_dir.clone(),
+        sessions_dir: nemesis_path::resolve_sessions_dir_in_workspace(ws),
+    };
     let mut swept: Vec<(Family, SweepStats)> = [
         (Family::SessionLogs, session_logs_dir, ttl.session_logs),
         (Family::Boundary, boundary_dir, ttl.boundary),
@@ -705,7 +778,8 @@ fn sweep_workspace_logs(ws: &Path, ttl: &LogsTtl, now: SystemTime) -> Vec<(Famil
             sweep_two_level(&dir, days, now, family)
         } else {
             let loc = (family == Family::Trash).then_some(&trash_loc);
-            sweep_family(&dir, days, family, now, loc)
+            let cascade = (family == Family::SessionLogs).then_some(&session_cascade);
+            sweep_family(&dir, days, family, now, loc, cascade)
         };
         (family, stats)
     })
@@ -793,12 +867,26 @@ pub fn spawn_logs_sweeper(ttl: LogsTtl) {
         "[LogsSweeper] logs 十六族 TTL 清扫装配"
     );
     tokio::spawn(async move {
-        run_sweep_once(&ttl);
+        // BUG-20261118-172：run_sweep_once 是重阻塞 sync 清扫（十六族遍历，
+        // Trash 族经 trash_purge_in → fsutil::remove_file_retry /
+        // remove_dir_all_retry 的 thread::sleep 退避最坏 ~4.4s/条目）——
+        // 直跑 tokio worker 会阻塞 executor。fsutil.rs LOW-5 家族纪律：
+        // spawn_blocking 移出（同族先例 anchors.rs、sessions.rs
+        // BUG-20261031-248、outbox.rs BUG-20261114-013）。
+        if let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&ttl)).await {
+            warn!("[LogsSweeper] 启动清扫任务 join 失败: {e}");
+        }
         let mut interval = tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECS));
         interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
         loop {
-            interval.tick().await;
-            run_sweep_once(&ttl);
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(terminal_cancel_token(), interval.tick()).await {
+                break;
+            }
+            if let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&ttl)).await {
+                warn!("[LogsSweeper] 周期清扫任务 join 失败: {e}");
+            }
         }
     });
 }

@@ -505,10 +505,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
+/// 测试 RequestContext（sibling 测试模块复用：recommend_tests 等）。
+pub(crate) fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -531,6 +533,7 @@ fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -544,6 +547,7 @@ fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -568,8 +572,9 @@ fn seed_tree_and_fm() {
         ("security/pentest-pro.md".to_string(), 200),
     ]);
     let mut fm = FM_CACHE.lock().unwrap();
+    // 复合键（2026-11-15）：`<source>/<id>`，browse/search 按 agency 复合键取。
     fm.insert(
-        "rust-dev".to_string(),
+        "agency/rust-dev".to_string(),
         Frontmatter {
             name: "Rusty".to_string(),
             emoji: "🦀".to_string(),
@@ -597,8 +602,12 @@ async fn shop_browse_offline_via_seeded_caches() {
     let dir = tempfile::tempdir().unwrap();
     seed_tree_and_fm();
     // 预装一个 persona → installed=true 臂。注意 installed 探测路径是
-    // personas/<id>（id=文件名 stem，不含目录），不是仓库的分类子路径。
-    std::fs::create_dir_all(dir.path().join("personas/pentest-pro")).unwrap();
+    // personas/<id>（id=文件名 stem，不含目录），不是仓库的分类子路径；
+    // 安装态口径（2026-11-15）：PERSONA.json 在场——只雇佣专家落盘的
+    // raw.md-only 目录不算已安装。
+    let pdir = dir.path().join("personas/pentest-pro");
+    std::fs::create_dir_all(&pdir).unwrap();
+    std::fs::write(pdir.join("PERSONA.json"), r#"{"name": "pentest-pro"}"#).unwrap();
 
     let h = PersonaHandler::new();
     let ctx = shop_ctx(&dir);
@@ -608,17 +617,24 @@ async fn shop_browse_offline_via_seeded_caches() {
         .unwrap()
         .unwrap();
     let items = out["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
+    // 2 条目录源 + builtin 伪源合并的内建 bug-analyst（内嵌模板随编译期
+    // 进列表，division「内置」）。
+    assert_eq!(items.len(), 3);
     let rusty = items.iter().find(|i| i["id"] == "rust-dev").unwrap();
     // FM_CACHE 覆盖 parse_agent_from_path 的默认名/emoji。
     assert_eq!(rusty["name"], "Rusty");
     assert_eq!(rusty["emoji"], "🦀");
     assert_eq!(rusty["division"], "开发");
     assert_eq!(rusty["installed"], false);
+    assert_eq!(rusty["source"], "agency");
     let pentest = items.iter().find(|i| i["id"] == "pentest-pro").unwrap();
     assert_eq!(pentest["installed"], true);
+    let builtin = items.iter().find(|i| i["id"] == "bug-analyst").unwrap();
+    assert_eq!(builtin["source"], "builtin");
+    assert_eq!(builtin["division"], "内置");
+    assert_eq!(builtin["installed"], false);
 
-    // division 过滤臂：只要安全类。
+    // division 过滤臂：只要安全类（builtin 条目 division=内置，不混入）。
     let out = h
         .handle_cmd(
             "shop.browse",
@@ -666,13 +682,28 @@ async fn shop_search_offline_via_seeded_caches() {
         .unwrap();
     assert_eq!(out["items"].as_array().unwrap().len(), 0);
 
-    // 空 query = browse 全量。
+    // 空 query = browse 全量（2 目录源 + 1 builtin）。
     let out = h
         .handle_cmd("shop.search", Some(serde_json::json!({"query": ""})), &ctx)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(out["items"].as_array().unwrap().len(), 2);
+    assert_eq!(out["items"].as_array().unwrap().len(), 3);
+
+    // builtin 条目可被搜到（haystack 含「内置」与 id）。
+    let out = h
+        .handle_cmd(
+            "shop.search",
+            Some(serde_json::json!({"query": "bug-analyst"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let items = out["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], "bug-analyst");
+    assert_eq!(items[0]["source"], "builtin");
     invalidate_cache();
 }
 
@@ -680,11 +711,11 @@ async fn shop_search_offline_via_seeded_caches() {
 async fn shop_preview_offline_via_content_cache() {
     let _shop_guard = SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    // 内容缓存命中 → fetch_agent_content 不发网络请求。
-    CONTENT_CACHE
-        .lock()
-        .unwrap()
-        .insert("code-reviewer".to_string(), AGENT_MD_SAMPLE.to_string());
+    // 内容缓存命中 → fetch_agent_content 不发网络请求（复合键）。
+    CONTENT_CACHE.lock().unwrap().insert(
+        "agency/code-reviewer".to_string(),
+        AGENT_MD_SAMPLE.to_string(),
+    );
 
     let h = PersonaHandler::new();
     let ctx = shop_ctx(&dir);
@@ -729,10 +760,10 @@ async fn shop_preview_offline_via_content_cache() {
 async fn shop_download_offline_via_content_cache() {
     let _shop_guard = SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    CONTENT_CACHE
-        .lock()
-        .unwrap()
-        .insert("code-reviewer".to_string(), AGENT_MD_SAMPLE.to_string());
+    CONTENT_CACHE.lock().unwrap().insert(
+        "agency/code-reviewer".to_string(),
+        AGENT_MD_SAMPLE.to_string(),
+    );
 
     let h = PersonaHandler::new();
     let ctx = shop_ctx(&dir);
@@ -772,4 +803,242 @@ async fn shop_download_offline_via_content_cache() {
         .unwrap_err();
     assert!(err.contains("already installed"), "{err}");
     invalidate_cache();
+}
+
+// ============================================================
+// 覆盖率：超市数据源降级臂（2026-11-12 附加资源 C-ABI 插件）。
+// 分类纯函数 / 消息构造纯函数 / ShopSource 序列化 / tree_path_for 匹配规则 /
+// refresh 强制臂的缓存语义 / 快照树缺席形态（测试进程无桥注入）。
+// ============================================================
+
+#[test]
+fn classify_github_error_category_table() {
+    // 顺序敏感的特定类别：rate limit（403+专属文案）先于泛 4xx。
+    assert_eq!(
+        classify_github_error(
+            "GitHub tree API returned 403 Forbidden: {\"message\":\"API rate limit exceeded\"}"
+        ),
+        "rate_limited"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 403 Forbidden: x"),
+        "rate_limited"
+    );
+    // upstream_gone：404（仓库/分支被删主形态）/ 409。
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 404 Not Found: {}"),
+        "upstream_gone"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 409 Conflict: {}"),
+        "upstream_gone"
+    );
+    // network：reqwest source 链展开后的各形态。
+    assert_eq!(
+        classify_github_error(
+            "GitHub tree API error: error sending request for url (https://api.github.com/...): client error (Connect): dns error"
+        ),
+        "network"
+    );
+    assert_eq!(
+        classify_github_error(
+            "GitHub contents API error: error sending request for url (...): operation timed out"
+        ),
+        "network"
+    );
+    assert_eq!(
+        classify_github_error("connect error (os error 10061)"),
+        "network"
+    );
+    assert_eq!(classify_github_error("connection reset by peer"), "network");
+    assert_eq!(
+        classify_github_error("stream closed: broken pipe"),
+        "network"
+    );
+    // http_5xx / http_4xx / other。
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 502 Bad Gateway: {}"),
+        "http_5xx"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 503 Service Unavailable: {}"),
+        "http_5xx"
+    );
+    assert_eq!(
+        classify_github_error("GitHub tree API returned 418 Teapot: {}"),
+        "http_4xx"
+    );
+    assert_eq!(
+        classify_github_error("failed to parse tree response: eof"),
+        "other"
+    );
+}
+
+#[test]
+fn refresh_failure_message_both_arms() {
+    let with = refresh_failure_message("network", Some("8ae6164 @ 2026-11-12"));
+    assert!(with.contains("无法刷新"), "{with}");
+    assert!(with.contains("上游不可达（network）"), "{with}");
+    assert!(with.contains("内置快照（8ae6164 @ 2026-11-12）"), "{with}");
+    let without = refresh_failure_message("upstream_gone", None);
+    assert!(without.contains("无法刷新"), "{without}");
+    assert!(without.contains("无内置快照插件"), "{without}");
+    assert!(!without.contains("当前展示"), "{without}");
+}
+
+#[test]
+fn shop_source_serialization_shapes() {
+    // live：as_str=live、info=null。
+    let live = ShopSource::Live;
+    assert_eq!(live.as_str(), "live");
+    assert_eq!(live.info_json(), serde_json::Value::Null);
+    // snapshot：info 四字段齐全。
+    let snap = ShopSource::Snapshot(SnapshotInfo {
+        commit: "8ae6164602c95ca78828b148b9052460ee426885".to_string(),
+        fetched_at: "2026-11-12T12:22:00Z".to_string(),
+        file_count: 330,
+        label: "8ae6164 @ 2026-11-12".to_string(),
+    });
+    assert_eq!(snap.as_str(), "snapshot");
+    let info = snap.info_json();
+    assert_eq!(info["commit"], "8ae6164602c95ca78828b148b9052460ee426885");
+    assert_eq!(info["fetched_at"], "2026-11-12T12:22:00Z");
+    assert_eq!(info["file_count"], 330);
+    assert_eq!(info["label"], "8ae6164 @ 2026-11-12");
+}
+
+#[test]
+fn tree_path_for_matching_rules() {
+    let tree = vec![
+        ("engineering/rust-dev.md".to_string(), 100),
+        ("game-dev/unity/unity-architect.md".to_string(), 200),
+    ];
+    // stem 命中（id 不带 .md）
+    assert_eq!(
+        tree_path_for(&tree, "rust-dev"),
+        Some("engineering/rust-dev.md")
+    );
+    // 深路径 stem 命中
+    assert_eq!(
+        tree_path_for(&tree, "unity-architect"),
+        Some("game-dev/unity/unity-architect.md")
+    );
+    // 完整文件名命中（id 带 .md）
+    assert_eq!(
+        tree_path_for(&tree, "rust-dev.md"),
+        Some("engineering/rust-dev.md")
+    );
+    // 无命中
+    assert_eq!(tree_path_for(&tree, "no-such"), None);
+    // stem 不前缀误命中：另一文件名的前缀子串不算
+    let tree2 = vec![("x/rust-dev-pro.md".to_string(), 1)];
+    assert_eq!(tree_path_for(&tree2, "rust-dev"), None);
+}
+
+#[tokio::test]
+async fn shop_refresh_forced_success_leaves_tree_cache_empty() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    *TREE_CACHE.lock().unwrap() = Some(vec![("x/y.md".to_string(), 1)]);
+    TEST_REFRESH_MODE.store(1, std::sync::atomic::Ordering::Relaxed);
+    invalidate_cache();
+    let ok = refresh_fetch_tree().await;
+    assert!(ok.is_ok(), "强制成功臂必须 Ok");
+    // 强制臂/快照臂都不写 TREE_CACHE（缓存只服务在线臂）→ refresh 后树缓存空。
+    assert!(TREE_CACHE.lock().unwrap().is_none());
+    TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+    invalidate_cache();
+}
+
+#[tokio::test]
+async fn shop_refresh_forced_failure_classifies() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    TEST_REFRESH_MODE.store(2, std::sync::atomic::Ordering::Relaxed);
+    let err = refresh_fetch_tree().await.unwrap_err();
+    assert!(err.contains("forced for test"), "{err}");
+    assert_eq!(
+        classify_github_error(&err),
+        "network",
+        "强制文案必须落 network 类"
+    );
+    TEST_REFRESH_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[test]
+fn snapshot_tree_absent_in_test_process() {
+    // nemesis-web 测试进程从不装载 plugin_resources（桥空）→ None =
+    // 纯在线形态。若未来桥被注入（不应发生），该断言会翻红提示重新审视。
+    assert!(
+        snapshot_tree().is_none(),
+        "测试进程不应有 resources 桥（无 loader 装配）"
+    );
+}
+
+#[tokio::test]
+async fn shop_browse_seeded_cache_reports_live_source() {
+    let _shop_guard = SHOP_TEST_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    seed_tree_and_fm();
+    let h = PersonaHandler::new();
+    let ctx = shop_ctx(&dir);
+    let out = h
+        .handle_cmd("shop.browse", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    // 树缓存命中 = 在线臂（缓存只由在线臂写入）→ source=live、info=null。
+    assert_eq!(out["source"].as_str(), Some("live"));
+    assert_eq!(out["snapshot_info"], serde_json::Value::Null);
+    invalidate_cache();
+}
+
+// BUG-20261116-016：目录符号链接环——旧实现 `src_path.is_dir()` 跟随
+// 链接（metadata 语义），链接指回祖先目录时无限递归拷贝，以
+// 「loop\loop\...」假路径重复整子树直到 OS 路径长度上限才收敛（与
+// dossier.rs copy_dir_sorted 已修先例同族；仓内其余 7 份目录递归实现
+// 均有防护，persona 这份是漏接位点）。链接创建免提权降级链：
+// symlink_dir（开发者模式/管理员）→ junction（mklink /J，任何用户）。
+#[cfg(windows)]
+fn persona_make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(not(windows))]
+fn persona_make_dir_link(target: &std::path::Path, link: &std::path::Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn copy_dir_recursive_skips_symlink_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("persona_src");
+    let sub = src.join("assets").join("deep");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.md"), "data").unwrap();
+
+    // 链接环：persona_src/loop → persona_src 自身
+    persona_make_dir_link(&src, &src.join("loop"));
+
+    // 旧实现：跟随环病态重复递归（红证 = dst/loop 在位——整子树被
+    // 重复拷贝进假路径）。
+    let dst = dir.path().join("persona_dst");
+    copy_dir_recursive(&src, &dst).unwrap();
+    assert!(
+        dst.join("assets").join("deep").join("a.md").is_file(),
+        "真实子树照常拷贝"
+    );
+    assert!(!dst.join("loop").exists(), "目录链接必须跳过");
 }

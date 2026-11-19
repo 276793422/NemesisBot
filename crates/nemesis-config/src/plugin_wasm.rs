@@ -145,9 +145,13 @@ const LEGACY_INSTANCE_DIR: &str = "plugins";
 pub fn load_switches(config_dir: &Path) -> BTreeMap<String, WasmSwitch> {
     let _serial = crate::config_write_lock();
     let mut file = read_switch_file(config_dir);
-    if migrate_legacy_instances(config_dir, &mut file) {
-        // 读路径的迁移写失败不阻塞读（WARN 在写函数内部；下次读再试）。
-        let _ = write_switch_file(config_dir, &file);
+    let (changed, legacy_pending) = migrate_legacy_instances(config_dir, &mut file);
+    if changed && write_switch_file(config_dir, &file).is_ok() {
+        // BUG-20261115-007：删旧只发生在合并结果成功持久化之后。读路径的
+        // 迁移写失败不阻塞读（本调用返回内存态合并结果，语义正确）；写
+        // 失败时旧实例文件原样保留，下次读再迁移——「下次读再试」是真
+        // 语义而非失真注释（旧序列先删旧后写新，写失败即数据永久丢失）。
+        remove_migrated_legacy_files(config_dir, &legacy_pending);
     }
     file.plugins
 }
@@ -157,8 +161,11 @@ pub fn load_switches(config_dir: &Path) -> BTreeMap<String, WasmSwitch> {
 pub fn switch(config_dir: &Path, slug: &str) -> WasmSwitch {
     let _serial = crate::config_write_lock();
     let mut file = read_switch_file(config_dir);
-    if !file.plugins.contains_key(slug) && migrate_legacy_instances(config_dir, &mut file) {
-        let _ = write_switch_file(config_dir, &file);
+    if !file.plugins.contains_key(slug) {
+        let (changed, legacy_pending) = migrate_legacy_instances(config_dir, &mut file);
+        if changed && write_switch_file(config_dir, &file).is_ok() {
+            remove_migrated_legacy_files(config_dir, &legacy_pending);
+        }
     }
     file.plugins.get(slug).cloned().unwrap_or_default()
 }
@@ -228,12 +235,20 @@ fn write_switch_file(config_dir: &Path, file: &SwitchFile) -> Result<(), String>
 
 /// 旧实例文件并入（一次性惰性迁移）：扫 `<config_dir>/plugins/*.json`，
 /// 主文件无该 slug 的 → 并入（**enabled 强制 false**，entries 转 config
-/// 字符串值保留）+ 删旧文件；主文件已有的 slug（用户已用新纪律表态）→
-/// 旧文件直接作废弃副本删除。返回是否有任何变更。
-fn migrate_legacy_instances(config_dir: &Path, file: &mut SwitchFile) -> bool {
+/// 字符串值保留）；主文件已有的 slug（用户已用新纪律表态）→ 旧文件按
+/// 废弃副本对待。返回（是否有任何变更, 待删旧文件路径列表）。
+///
+/// **本函数不删任何文件**（BUG-20261115-007）：旧序列「内存合并 → 删旧
+/// → 调用方吞写结果」在写失败时旧文件已删、数据不可恢复。删除移交
+/// [`remove_migrated_legacy_files`]，仅在调用方写盘成功后执行；写失败时
+/// 旧文件原样保留，下次读再迁移。
+fn migrate_legacy_instances(
+    config_dir: &Path,
+    file: &mut SwitchFile,
+) -> (bool, Vec<std::path::PathBuf>) {
     let legacy_dir = config_dir.join(LEGACY_INSTANCE_DIR);
     let Ok(entries) = std::fs::read_dir(&legacy_dir) else {
-        return false;
+        return (false, Vec::new());
     };
     // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——显式排序。
     let mut names: BTreeSet<String> = BTreeSet::new();
@@ -244,13 +259,28 @@ fn migrate_legacy_instances(config_dir: &Path, file: &mut SwitchFile) -> bool {
         }
     }
     let mut changed = false;
+    let mut pending: Vec<std::path::PathBuf> = Vec::new();
     for name in names {
         let legacy_path = legacy_dir.join(&name);
         let slug = name.trim_end_matches(".json").to_string();
         let Ok(content) = nemesis_utils::fsutil::read_config_string(&legacy_path) else {
             continue;
         };
-        let legacy = serde_json::from_str::<LegacyInstanceFile>(&content).unwrap_or_default();
+        // BUG-20261115-035：解析失败 ≠ 空配置。旧文件截断/手改损坏时按
+        // unwrap_or_default 空壳迁移并删除原文件 = 用户插件实例配置静默
+        // 永久丢失。读失败臂 continue 保文件重试，两失败形态处置必须
+        // 对称：损坏文件诚实跳过（WARN 注明），下次读再试。
+        let legacy = match serde_json::from_str::<LegacyInstanceFile>(&content) {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    path = %legacy_path.display(),
+                    error = %e,
+                    "[WasmPlugin] 旧实例文件解析失败——跳过迁移（文件保留，下次读重试）"
+                );
+                continue;
+            }
+        };
         if !file.plugins.contains_key(&slug) {
             let config: BTreeMap<String, serde_json::Value> = legacy
                 .entries
@@ -265,7 +295,23 @@ fn migrate_legacy_instances(config_dir: &Path, file: &mut SwitchFile) -> bool {
                 },
             );
         }
-        match std::fs::remove_file(&legacy_path) {
+        pending.push(legacy_path);
+        changed = true;
+    }
+    (changed, pending)
+}
+
+/// 迁移收尾删除：**仅在合并结果成功持久化后调用**。逐个删旧文件（失败
+/// WARN——残留副本下次迁移按「主文件已有 slug」废弃副本路径或重并入路径
+/// 再试，无数据风险）+ 目录空了顺手清掉（失败不致命——残留空目录下次
+/// 迁移再试）。
+fn remove_migrated_legacy_files(config_dir: &Path, pending: &[std::path::PathBuf]) {
+    for legacy_path in pending {
+        let slug = legacy_path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match std::fs::remove_file(legacy_path) {
             Ok(()) => tracing::info!(
                 slug = %slug,
                 from = %legacy_path.display(),
@@ -275,14 +321,12 @@ fn migrate_legacy_instances(config_dir: &Path, file: &mut SwitchFile) -> bool {
                 slug = %slug,
                 path = %legacy_path.display(),
                 error = %e,
-                "[WasmPlugin] 旧实例文件删除失败（合并已生效，残留副本下次重试）"
+                "[WasmPlugin] 旧实例文件删除失败（合并已持久化，残留副本下次重试）"
             ),
         }
-        changed = true;
     }
-    if changed {
+    if !pending.is_empty() {
         // 目录空了顺手清掉（失败不致命——残留空目录下次迁移再试）。
-        let _ = std::fs::remove_dir(&legacy_dir);
+        let _ = std::fs::remove_dir(config_dir.join(LEGACY_INSTANCE_DIR));
     }
-    changed
 }

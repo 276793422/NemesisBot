@@ -4,14 +4,17 @@
 //! 终态不可再转移（恢复重入语义由上层 status 语义承载；这里守住
 //! 「终态不被静默改写」的统一层底线）。
 
+#[cfg(feature = "sqlite")]
 use rusqlite::{OptionalExtension, params};
 
 use crate::db::TaskDb;
+#[cfg(feature = "sqlite")]
 use crate::tasks::now_rfc3339;
 
 /// runs.status 合法值集（TaskStore 适配层之外的通用面用字符串口径）。
 pub const RUN_STATUSES: [&str; 5] = ["pending", "running", "succeeded", "failed", "cancelled"];
 
+#[cfg(feature = "sqlite")]
 fn is_terminal_str(s: &str) -> bool {
     matches!(s, "succeeded" | "failed" | "cancelled")
 }
@@ -55,9 +58,17 @@ pub struct AttemptRecord {
 
 impl TaskDb {
     /// 建run（status=pending）。返回新 run id（uuid）。
+    #[cfg(feature = "sqlite")]
     pub fn create_run(&self, run: &NewRun) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         self.create_run_with_id(&id, run)
+    }
+
+    /// sqlite 未编译：写入 no-op，返回生成的 id（查询恒空——后续 get_run
+    /// 回 not found，与空账本语义一致）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn create_run(&self, _run: &NewRun) -> Result<String, String> {
+        Ok(uuid::Uuid::new_v4().to_string())
     }
 
     /// 以调用方指定的 id 建 run（status=pending）。 运行账本漏斗的
@@ -65,6 +76,7 @@ impl TaskDb {
     /// `workflow_run:{execution_id}`）——id 先于内容确定，跨重启凭 id 直解，
     /// 不需要内存关联表。幂等：id 已在账（防御性重入/并发建账）→ 原样
     /// 返回既有行，不覆盖（内容由同源确定性输入推导，重复建账无意义）。
+    #[cfg(feature = "sqlite")]
     pub fn create_run_with_id(&self, id: &str, run: &NewRun) -> Result<String, String> {
         if self.get_run(id).is_ok() {
             return Ok(id.to_string());
@@ -99,6 +111,7 @@ impl TaskDb {
     /// 守卫下推到单语句 CAS——SELECT 后裸 UPDATE 在两连接并发时后写
     /// 会覆盖先到的终态；现在放行条件（同值幂等 / 当前非终态）编码进
     /// WHERE，终态互斥由单条 UPDATE 的原子性保证，先到的终态写赢。
+    #[cfg(feature = "sqlite")]
     pub fn set_run_status(&self, run_id: &str, status: &str) -> Result<(), String> {
         if !RUN_STATUSES.contains(&status) {
             return Err(format!("invalid run status: {status}"));
@@ -142,6 +155,7 @@ impl TaskDb {
         })
     }
 
+    #[cfg(feature = "sqlite")]
     fn run_from_row(r: &rusqlite::Row) -> rusqlite::Result<RunRecord> {
         let payload_str: String = r.get(6)?;
         let result_str: Option<String> = r.get(7)?;
@@ -159,6 +173,7 @@ impl TaskDb {
         })
     }
 
+    #[cfg(feature = "sqlite")]
     fn get_run_row(conn: &rusqlite::Connection, run_id: &str) -> Result<RunRecord, String> {
         conn.query_row(
             "SELECT id, kind, title, status, action, peer_id, payload, result, \
@@ -172,12 +187,14 @@ impl TaskDb {
     }
 
     /// 读 run。不存在 = Err。
+    #[cfg(feature = "sqlite")]
     pub fn get_run(&self, run_id: &str) -> Result<RunRecord, String> {
         self.with_conn(|conn| Self::get_run_row(conn, run_id))
     }
 
     /// 记一次执行尝试（seq 自动递增；重派语义的账面）。
     /// 终态 run 拒绝新尝试（收口后不再重派——重开须新 run）。
+    #[cfg(feature = "sqlite")]
     pub fn begin_attempt(&self, run_id: &str, worker: &str) -> Result<i64, String> {
         self.with_conn(|conn| {
             // run 存在性先验（外键在 PRAGMA foreign_keys 未开时不拦——
@@ -208,6 +225,7 @@ impl TaskDb {
 
     /// 收口一次尝试（只能终态收口：succeeded|failed|cancelled；pending/
     /// running/非法值拒绝—— 对齐本注释与实现）。
+    #[cfg(feature = "sqlite")]
     pub fn finish_attempt(
         &self,
         attempt_id: i64,
@@ -245,6 +263,7 @@ impl TaskDb {
     }
 
     /// 某 run 的尝试史（seq 升序）。
+    #[cfg(feature = "sqlite")]
     pub fn attempts_of(&self, run_id: &str) -> Result<Vec<AttemptRecord>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
@@ -281,6 +300,7 @@ impl TaskDb {
     /// 启动 sweep 的扫描面：重启孤儿按 kind 圈定（cron_job 单发语义
     /// 的在途触发），不越界到他类目（board/cluster/workflow 的在途 run
     /// 由各自生产收口路径负责，重启不等于死亡）。
+    #[cfg(feature = "sqlite")]
     pub fn list_open_runs(&self, kind: &str) -> Result<Vec<RunRecord>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
@@ -303,13 +323,18 @@ impl TaskDb {
 
     /// 某类目最近 N 条 run（created_at 降序）。记账面的查询口
     /// （回归锁/后续 Dashboard 记账视图同源）。
+    #[cfg(feature = "sqlite")]
     pub fn list_runs_by_kind(&self, kind: &str, limit: usize) -> Result<Vec<RunRecord>, String> {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
+                    // created_at 是 RFC3339 亚秒精度（写入点 now_rfc3339），
+                    // 同值碰撞罕见——id 决胜 tie 是预防性对齐（同文件
+                    // tasks.rs 列表查询 `ORDER BY created_at, id` 同款纪律；
+                    // TEXT id 字典序与创建序一致），非独立缺陷修复。
                     "SELECT id, kind, title, status, action, peer_id, payload, result, \
                      created_at, completed_at FROM runs \
-                     WHERE kind = ?1 ORDER BY created_at DESC LIMIT ?2",
+                     WHERE kind = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2",
                 )
                 .map_err(|e| format!("tasks.db list runs failed: {e}"))?;
             let rows = stmt
@@ -321,5 +346,58 @@ impl TaskDb {
             }
             Ok(out)
         })
+    }
+
+    // -- sqlite 未编译进本构建：空 stub（写入 no-op、查询恒空；与 usage-store
+    //    空账本同款纪律）。ledger 漏斗经这些同型签名自然退化为零账面。-----
+
+    /// 以指定 id 建 run（no-op 幂等——恒返回 Ok(id)）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn create_run_with_id(&self, id: &str, _run: &NewRun) -> Result<String, String> {
+        Ok(id.to_string())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn set_run_status(&self, _run_id: &str, _status: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// 读 run。查询恒空 = run 不存在（Err 文案与真实现一致）。
+    #[cfg(not(feature = "sqlite"))]
+    pub fn get_run(&self, run_id: &str) -> Result<RunRecord, String> {
+        Err(format!("run not found: {run_id}"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn begin_attempt(&self, _run_id: &str, _worker: &str) -> Result<i64, String> {
+        Err(format!("run not found: {_run_id}"))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn finish_attempt(
+        &self,
+        _attempt_id: i64,
+        _status: &str,
+        _error: Option<&str>,
+        _usage: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        Err(format!(
+            "attempt not found or already finished: {_attempt_id}"
+        ))
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn attempts_of(&self, _run_id: &str) -> Result<Vec<AttemptRecord>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn list_open_runs(&self, _kind: &str) -> Result<Vec<RunRecord>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(not(feature = "sqlite"))]
+    pub fn list_runs_by_kind(&self, _kind: &str, _limit: usize) -> Result<Vec<RunRecord>, String> {
+        Ok(Vec::new())
     }
 }

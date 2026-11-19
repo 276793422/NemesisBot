@@ -71,7 +71,7 @@ impl AssemblingMarker {
 
 impl Drop for AssemblingMarker {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.0);
     }
 }
 
@@ -152,8 +152,7 @@ impl ExecReceiveHook {
         task_id: &str,
         baseline_commit: &str,
     ) -> Result<(PathBuf, usize), String> {
-        let inbox_dir = nemesis_path::cluster_dir_in_workspace(&self.workspace)
-            .join("inbox")
+        let inbox_dir = nemesis_path::resolve_cluster_inbox_dir_in_workspace(&self.workspace)
             .join(sanitize_transfer_id(task_id));
         let exec_dir = exec_dir_for(&self.workspace, task_id);
         crate::fsutil::remove_dir_all_resilient(&exec_dir);

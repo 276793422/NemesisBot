@@ -1293,7 +1293,8 @@ impl ModelsHandler {
                 let s = value
                     .as_str()
                     .ok_or("reasoning_effort must be a string")?
-                    .to_lowercase();
+                    .trim()
+                    .to_lowercase(); // trim：valid_effort 容忍空白，落盘不留（BUG-20261113-151 读侧精确匹配）
                 if !nemesis_types::capability::valid_effort(&s) {
                     return Err(format!(
                         "Invalid effort '{s}'. Use one of: {}",
@@ -1372,20 +1373,20 @@ impl ModelsHandler {
                 }
             }
             "proxy" => {
-                // 代理设置页：空串 = 清除（直连）；非空做
-                // 前缀校验（reqwest Proxy::all 支持的形态），彻底校验留给
-                // provider 构造（非法 warn 回落直连，不阻断）。注意：代理
-                // 在 provider 构造时消费——改默认模型的代理后需 set_default
-                // 热切或重启网关生效（前端代理页已自动跟发 set_default）。
+                // 代理设置页：空串 = 清除（直连）；非空做前缀校验——白名单
+                // 单一真相源 = nemesis_config::proxy_file::PROXY_PREFIXES
+                //（BUG-20261114-064：socks:// 已除名，reqwest/hyper-util 都
+                // 不认这个 scheme——env 路径静默直连、显式路径连接期按
+                // HTTP CONNECT 打 SOCKS 端口失败），彻底校验留给 provider
+                // 构造（非法 warn 回落直连，不阻断）。注意：代理在 provider
+                // 构造时消费——改默认模型的代理后需 set_default 热切或重启
+                // 网关生效（前端代理页已自动跟发 set_default）。
                 let s = value.as_str().ok_or("proxy must be a string")?.trim();
-                let valid_prefix = ["http://", "https://", "socks://", "socks5://", "socks5h://"]
-                    .iter()
-                    .any(|p| s.starts_with(p));
-                if !s.is_empty() && !valid_prefix {
-                    return Err(
-                        "proxy must start with http:// | https:// | socks:// | socks5:// | socks5h:// (or be empty to clear)"
-                            .to_string(),
-                    );
+                if !s.is_empty() && !nemesis_config::proxy_file::scheme_supported(s) {
+                    return Err(format!(
+                        "proxy must start with {} (or be empty to clear)",
+                        nemesis_config::proxy_file::PROXY_PREFIXES.join(" | ")
+                    ));
                 }
                 serde_json::Value::String(s.to_string())
             }
@@ -1465,6 +1466,26 @@ impl ModelsHandler {
                     if model_name == name || model == name {
                         entry_is_default = default_owner.as_deref() == Some(model_name);
                         entry_model_name = model_name.to_string();
+                        // 守卫②b（原地转换面，2026-11-15）：protocol 在
+                        // provider 构造期消费，图像协议条目唯一消费点 =
+                        // generate_image 工具——**当前默认条目**经属性编辑
+                        // 原地转成 images-openai 与 set_default 守卫②同罪
+                        // （写盘前 loud 拒绝，不产生「盘上默认条目非法、
+                        // 重启 factory 拒绝 → NullProvider 降级」半状态）。
+                        // 非默认条目放行——图像条目的正常创建路径就是
+                        // 属性编辑 / 带协议 add。
+                        if field == "protocol"
+                            && entry_is_default
+                            && nemesis_types::capability::is_image_protocol(
+                                normalized.as_str().unwrap_or(""),
+                            )
+                        {
+                            return Err(format!(
+                                "'{name}' 是当前默认对话模型，不能原地改为 images-openai \
+                                 图像协议（仅供 generate_image 工具消费）——\
+                                 请先把默认模型切到其他条目再改"
+                            ));
+                        }
                         // Null 哨兵 = 清除：移键落盘（写 Null 会留 `"key": null`
                         // 字节垃圾；resolver 对缺席本就按 None 处理）。
                         if normalized.is_null() {
@@ -2055,8 +2076,14 @@ fn effort_auto_fix_target(
 /// 用户刚改的新档抹掉（自动修正代劳 ≠ 越权覆盖用户意志）。因此闭包内
 /// 校验磁盘**现值**（trim 后）仍等于 `from` 才动笔；不等 = 让位（返回
 /// `Ok(false)`），条目零改动、注记不写。返回值 = 是否真正落盘修正
-/// （调用方据此决定 receipt 是否带 auto_fix）。
-fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<bool, String> {
+/// （调用方据此决定 receipt 是否带 auto_fix）。pub(crate)：回归测试在
+/// handlers 兄弟子模块（内联测试被 check-inline-tests.sh 禁）。
+pub(crate) fn apply_effort_autofix(
+    home: &str,
+    name: &str,
+    from: &str,
+    to: &str,
+) -> Result<bool, String> {
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     super::config::update_raw_config(home, |cfg| {
         let list = cfg
@@ -2083,7 +2110,13 @@ fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<
         entry["reasoning_effort"] = serde_json::json!(to);
         // 注记挂 effort_probe 内（重探整体覆盖 record 时自然随旧记录消失
         // ——新探测后要么再修（新注记）要么当前档合法（注记不再需要））。
-        if entry.get("effort_probe").is_some() {
+        // BUG-20261118-169：守卫必须验「是 object」——is_some() 对
+        // false/字符串/数字恒真（Dashboard attr 编辑器与手改 config.json
+        // 可把 effort_probe 写成任意 JSON），嵌套可变索引
+        // entry["effort_probe"]["auto_fix"] 对非容器 panic
+        // （serde_json index_or_insert），探测自动修正链整段炸栈。
+        // 非 object = 跳过注记（附注语义，不挡修正本体）。
+        if entry.get("effort_probe").is_some_and(|v| v.is_object()) {
             entry["effort_probe"]["auto_fix"] = serde_json::json!({
                 "from": from, "to": to, "at": at,
             });

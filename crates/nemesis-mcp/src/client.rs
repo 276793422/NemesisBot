@@ -264,13 +264,15 @@ impl McpClient {
         // per-call——确定性先到并报 `timed out after Ns`；内层只兜住
         // 「config > 30 旧硬编码截断」的洞）。0/缺省 = 默认外层 30s →
         // 内层 31s（`new()` 裸构造默认 30s 不变：测试/直连无外层配对）。
-        client.request_timeout_ms = std::time::Duration::from_secs(if config.timeout_secs > 0 {
+        // BUG-20261117-070：`as u64 + 1_000` 裸加法在 timeout_secs 巨值时
+        // debug panic / release 静默回绕到 ~999ms（错误方向）——saturating_add。
+        client.request_timeout_ms = (std::time::Duration::from_secs(if config.timeout_secs > 0 {
             config.timeout_secs
         } else {
             30
         })
-        .as_millis() as u64
-            + 1_000;
+        .as_millis() as u64)
+            .saturating_add(1_000);
         Ok(client)
     }
 
@@ -495,8 +497,23 @@ impl McpClient {
             if let Some(err) = &resp.error {
                 return Err(ClientError::Server(err.clone()));
             }
-            let result = resp.result.unwrap_or(serde_json::Value::Null);
-            if let Some(batch) = result.get(items_key) {
+            // result 键整体缺失（None / null）保留同族 None→Default 约定
+            // （call_tool / read_resource 各自注释声明）→ 空列表。
+            let result = match resp.result {
+                Some(v) => v,
+                None => return Ok(items),
+            };
+            // 缺陷 19 同族补漏（BUG-20261118-163）：result 在场但缺
+            // items_key（如 tools/list 返回 {} 无 tools 数组）此前静默成
+            // 空表——「空工具表比失败更难排查」正是本函数分页注释声明的
+            // 纪律；对齐 read_resource 缺 contents 响亮报错（bug31 同族）。
+            // 合规服务器空清单恒为 `{"tools": []}`（键在场），不受影响。
+            let batch = result.get(items_key).ok_or_else(|| {
+                ClientError::ResponseParse(format!(
+                    "{method}: result missing '{items_key}' array (protocol violation)"
+                ))
+            })?;
+            {
                 // 缺陷 19：批量形状非法（如工具条目缺 name /
                 // inputSchema）此前整批静默清空 → 上层把「解析失败」误当
                 // 「服务器就这些工具」。响亮报错，与 分页防失控同纪律。

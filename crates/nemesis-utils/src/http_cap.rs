@@ -33,32 +33,122 @@ where
     Ok(out)
 }
 
+/// 有帽读取的分型错误（BUG-20261115-024）：provider 成功体路径需要区分
+/// 「传输读失败」（归 transport_error，保持既有可重试语义）与「超限」（
+/// 端点失控/恶意，独立错误类）。String 版 [`read_body_capped`] 是本枚举
+/// 的视图（消息形态不变，既有消费方零迁移）。
+#[derive(Debug)]
+pub enum BodyReadError {
+    /// 响应体读取传输失败（连接中断/超时等）。
+    Transport(reqwest::Error),
+    /// 累计超 `cap`，读取中途断开。
+    ExceedsLimit { cap: u64 },
+}
+
+/// [`read_body_capped`] 的分型核心：错误分类由类型承载，不靠消息子串
+/// 反解。读循环与 String 版完全同形（单一真相源在循环，两版只是错误
+/// 视图不同）。
+pub async fn read_body_capped_typed(
+    mut response: reqwest::Response,
+    cap: u64,
+) -> Result<Vec<u8>, BodyReadError> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    while let Some(chunk) = response.chunk().await.map_err(BodyReadError::Transport)? {
+        total = total.saturating_add(chunk.len() as u64);
+        if total > cap {
+            return Err(BodyReadError::ExceedsLimit { cap });
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 /// 流式读响应体，累计超 `cap` **中途断开**：超限判定发生在每个 chunk 到达
 /// 时，Err 返回即 drop `response`（连接关闭，后续数据不再拉取）——恶意源
 /// 的巨大 body 在撑内存前被拒，内存峰值 = 已到达的前缀。
 ///
 /// 错误返回 `String`（本模块不依赖 nemesis-types），调用方按各自错误
 /// 体系 map。消息形态含 `exceeds limit`（273 既有测试断言的子串）。
-pub async fn read_body_capped(
-    mut response: reqwest::Response,
+/// 需要区分传输失败与超限的调用方用 [`read_body_capped_typed`]。
+pub async fn read_body_capped(response: reqwest::Response, cap: u64) -> Result<Vec<u8>, String> {
+    match read_body_capped_typed(response, cap).await {
+        Ok(v) => Ok(v),
+        Err(BodyReadError::Transport(e)) => Err(format!("failed to read response body: {e}")),
+        Err(BodyReadError::ExceedsLimit { cap }) => Err(format!(
+            "response exceeds limit (>{cap} bytes); aborted mid-read"
+        )),
+    }
+}
+
+/// [`read_body_capped`] 的 **blocking** 形态（2026-11-15 persona shop 同类
+/// 横扫补）：`reqwest::blocking::Response` 无 `chunk()` 流式接口，但实现
+/// [`std::io::Read`]——泛型收窄到 `Read`，读循环与 async 版逐行同形
+///（chunk 换 `read` 判零），超限同样在读入过程中断（返回即 drop 调用方
+/// 手里的 Response，连接关闭）。消息形态与 async 版一致（`exceeds limit`
+/// 子串契约）。skills 源结构探测（reqwest::blocking）为此首个消费面。
+pub fn read_body_capped_blocking<R: std::io::Read>(
+    mut reader: R,
     cap: u64,
 ) -> Result<Vec<u8>, String> {
     let mut out: Vec<u8> = Vec::new();
     let mut total: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("failed to read response body: {e}"))?
-    {
-        total = total.saturating_add(chunk.len() as u64);
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("failed to read response body: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n as u64);
         if total > cap {
             return Err(format!(
                 "response exceeds limit (>{cap} bytes); aborted mid-read"
             ));
         }
-        out.extend_from_slice(&chunk);
+        out.extend_from_slice(&buf[..n]);
     }
     Ok(out)
+}
+
+/// 错误响应体有帽读取（BUG-20261113-164 单一真相源）。
+///
+/// 错误体只喂错误消息摘要（`from_status` 取 200 字符）与日志——全量读入
+/// 毫无收益，却让失控/恶意源的巨大错误体（GB 级调试转储、中转网关回显
+/// 请求体）在 `text()` 里灌满进程内存（reqwest 无默认体上限；600s 超时
+/// 在快管路上不约束体积）。帽取 MCP 先例同款 256KB
+///（`nemesis-mcp` http_transport `MAX_ERROR_BODY_READ_BYTES`）。
+///
+/// 语义与 [`read_body_capped` 的「超限即 hard error」]刻意不同：错误路径
+/// 状态码已定类，截断信息够用——**超帽截断加注记**（不是 Err），读中断
+/// 返回已积累前缀（调用方旧 `unwrap_or_default` 的「失败=空串」语义保留
+/// 为零积累下位形态，信息严格不减）。成功路径响应本体**不得**用本函数
+/// （图像 b64 / API JSON 是合法大载荷，须全量读）。
+pub async fn read_error_body(mut response: reqwest::Response) -> String {
+    const ERROR_BODY_READ_CAP: usize = 256 * 1024;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(c) => c,
+            // 读中断（连接断/超时）：返回已积累前缀，不伪装成完整错误体。
+            Err(_) => break,
+        };
+        let Some(chunk) = chunk else { break };
+        let room = ERROR_BODY_READ_CAP - bytes.len();
+        if chunk.len() >= room {
+            bytes.extend_from_slice(&chunk[..room]);
+            truncated = true;
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let mut s = String::from_utf8_lossy(&bytes).into_owned();
+    if truncated {
+        s.push_str("\n…[error body truncated]");
+    }
+    s
 }
 
 #[cfg(test)]

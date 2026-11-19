@@ -10,7 +10,8 @@ use rusqlite::{Connection, ToSql, params, params_from_iter};
 #[cfg(feature = "usage-store")]
 use crate::db;
 use crate::models::{
-    LogFilter, ModelToolHealth, RequestLog, SessionUsageAgg, TrendPoint, UsageSummary,
+    LogFilter, ModelToolHealth, RequestLog, SessionUsageAgg, ToolUsageTotal, TrendPoint,
+    UsageSummary,
 };
 use crate::pricing_store::PricingStore;
 
@@ -453,6 +454,13 @@ impl DataStore {
             .map_err(|e| format!("count logs: {e}"))?;
 
         let select_sql = format!(
+            // created_at 是秒级（写入点 `Local::now().timestamp()`），逐请求
+            // 一行 → 同秒多行是常态；排序键非唯一时同值组内行序由查询计划
+            // 决定（当前反向索引扫描恰好 = id DESC，是巧合不是契约）。id
+            // （自增主键）决胜 tie 把组内序钉死在 schema 层——与下方
+            // retention sweep 裁剪子查询（BUG-20261107-021）同一纪律。
+            // 边界：翻页期间插入新行导致的重行是 offset 分页固有语义，
+            // tie 不改变它。
             "SELECT id, trace_id, model, provider_type, input_tokens, output_tokens,
                     cache_creation_tokens, cache_read_tokens, total_cost_usd,
                     latency_ms, status_code, error_message, is_streaming, created_at,
@@ -461,7 +469,7 @@ impl DataStore {
                     first_token_ms, session_key
              FROM request_logs
              WHERE {where_clause}
-             ORDER BY created_at DESC
+             ORDER BY created_at DESC, id DESC
              LIMIT ?{} OFFSET ?{}",
             bind.len() + 1,
             bind.len() + 2,
@@ -736,6 +744,104 @@ impl DataStore {
             }
         }
         rows.sort_by_key(|b| std::cmp::Reverse(b.tool_calls));
+        Ok(rows)
+    }
+
+    /// 工具使用率账：记一笔**真实执行**的工具调用（天×工具 upsert 增量）。
+    /// 拒绝（estop/安全拦截/hidden/未知工具等）由调用方按
+    /// `checks_capture::classify_result` None 臂短路——不入账（拒绝不是
+    /// 使用热度）。调用方对错误只 warn——账本是增值动作，不反压轮次。
+    ///
+    /// usage-store 关：no-op（使用率账不落盘，`tools.list` usage_count
+    /// 恒 0）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn record_tool_usage(&self, _tool: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(feature = "usage-store")]
+    pub fn record_tool_usage(&self, tool: &str) -> Result<(), String> {
+        let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO tool_usage_stats (day, tool, calls)
+             VALUES (?1, ?2, 1)
+             ON CONFLICT(day, tool) DO UPDATE SET
+                calls = calls + 1",
+            params![day, tool],
+        )
+        .map_err(|e| format!("record_tool_usage: {e}"))?;
+        Ok(())
+    }
+
+    /// 工具使用率账：近 `days` 天的每工具执行总数（`tools.list`
+    /// `usage_count` 面）。`days <= 0` = 全史聚合（窗口语义与
+    /// [`Self::query_model_tool_health`] 的「<=0 视为 1」不同——本查询
+    /// 的消费面是排序展示，全史是合法口径；调用方显式传 30 即窗口态）。
+    /// 无记录的工具不出现（零使用 = 无行；消费侧按缺省 0 兜）。
+    ///
+    /// usage-store 关：空列表（使用率账未编译）。
+    #[cfg(not(feature = "usage-store"))]
+    pub fn query_tool_usage_totals(&self, _days: i64) -> Result<Vec<ToolUsageTotal>, String> {
+        Ok(Vec::new())
+    }
+
+    #[cfg(feature = "usage-store")]
+    pub fn query_tool_usage_totals(&self, days: i64) -> Result<Vec<ToolUsageTotal>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let sql = if days <= 0 {
+            "SELECT tool, COALESCE(SUM(calls), 0)
+             FROM tool_usage_stats
+             GROUP BY tool
+             ORDER BY calls DESC, tool ASC"
+        } else {
+            let cutoff = (chrono::Local::now() - chrono::Duration::days(days))
+                .format("%Y-%m-%d")
+                .to_string();
+            return self.query_tool_usage_totals_since(&conn, &cutoff);
+        };
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| format!("prepare tool usage totals: {e}"))?;
+        let rows: Vec<ToolUsageTotal> = stmt
+            .query_map([], |row| {
+                Ok(ToolUsageTotal {
+                    tool: row.get(0)?,
+                    calls: row.get(1)?,
+                })
+            })
+            .map_err(|e| format!("query tool usage totals: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// [`Self::query_tool_usage_totals`] 的窗口臂（cutoff 当天起算含）。
+    #[cfg(feature = "usage-store")]
+    fn query_tool_usage_totals_since(
+        &self,
+        conn: &Connection,
+        cutoff: &str,
+    ) -> Result<Vec<ToolUsageTotal>, String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool, COALESCE(SUM(calls), 0)
+                 FROM tool_usage_stats
+                 WHERE day >= ?1
+                 GROUP BY tool
+                 ORDER BY calls DESC, tool ASC",
+            )
+            .map_err(|e| format!("prepare tool usage totals: {e}"))?;
+        let rows: Vec<ToolUsageTotal> = stmt
+            .query_map(params![cutoff], |row| {
+                Ok(ToolUsageTotal {
+                    tool: row.get(0)?,
+                    calls: row.get(1)?,
+                })
+            })
+            .map_err(|e| format!("query tool usage totals: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(rows)
     }
 

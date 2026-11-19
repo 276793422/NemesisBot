@@ -146,8 +146,17 @@ impl DraftStore {
             .map_err(|e| format!("create drafts dir {:?}: {}", self.dir, e))?;
         let stem = sanitize_workflow_filename(&wf.name);
         let path = self.dir.join(format!("{}.yaml", stem));
-        std::fs::write(&path, workflow_to_yaml(wf)?)
-            .map_err(|e| format!("write draft {:?}: {}", path, e))?;
+        // 原子写（BUG-20261117-046）：草稿是覆盖写的用户资产——写中段
+        // 进程死亡/磁盘满 = 半截 YAML 覆盖掉上一版（list 虽诚实报
+        // valid=false，但草稿内容已丢）。委托统一 helper（唯一临时名 +
+        // sync + rename + 失败清理），与 save_config / persist_workflow
+        // 同纪律。
+        nemesis_utils::file::write_file_atomic(
+            &path.to_string_lossy(),
+            workflow_to_yaml(wf)?.as_bytes(),
+            0o600,
+        )
+        .map_err(|e| format!("write draft {:?}: {}", path, e))?;
         Ok(self.summarize(&stem, wf))
     }
 
@@ -229,12 +238,19 @@ impl DraftStore {
             ));
         }
 
-        // Back up the current definition before overwriting (only when one exists).
-        let existing = self.defs_dir.join(format!("{}.yaml", stem));
+        // Back up the current definition before overwriting (only when one
+        // exists). 三变体全覆盖（BUG-20261119-188 同族）：既有定义可能落
+        // .yml/.json（load_workflows_from_dir 接受三个扩展名）——只查 .yaml
+        // 会漏备份旧 .yml，而旧 .yml 随后会被 persist_workflow 的同名单名
+        // 变体清理删除，备份契约（"AI 改坏了我的正式工作流"一瞥回滚）失守。
         let mut replaced_existing = false;
         let mut backup_file = None;
-        if existing.exists() {
-            let hist_dir = self.defs_dir.join(".history");
+        let hist_dir = self.defs_dir.join(".history");
+        for ext in ["yaml", "yml", "json"] {
+            let existing = self.defs_dir.join(format!("{}.{}", stem, ext));
+            if !existing.exists() {
+                continue;
+            }
             std::fs::create_dir_all(&hist_dir)
                 .map_err(|e| format!("create history dir {:?}: {}", hist_dir, e))?;
             // Millisecond precision: two applies inside the same second must
@@ -242,7 +258,7 @@ impl DraftStore {
             // the destination) — an agent iterating create→apply without
             // runs can easily produce rapid consecutive applies.
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S%3f");
-            let backup_name = format!("{}.{}.yaml", stem, ts);
+            let backup_name = format!("{}.{}.{}", stem, ts, ext);
             std::fs::copy(&existing, hist_dir.join(&backup_name))
                 .map_err(|e| format!("backup {:?}: {}", existing, e))?;
             replaced_existing = true;
@@ -255,7 +271,7 @@ impl DraftStore {
 
         // Registered successfully — remove the draft. A leftover on failure
         // here is harmless (next apply discards it after persisting).
-        let _ = std::fs::remove_file(self.draft_path(&stem));
+        let _ = nemesis_utils::fsutil::remove_file_resilient(self.draft_path(&stem));
 
         Ok(AppliedDraft {
             name: name.to_string(),

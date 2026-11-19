@@ -13,8 +13,12 @@ import { useWSAPI } from './useWSAPI'
  * poll interval while the chat is streaming (queue depth changes as the
  * agent drains messages).
  *
- * Conservative by design: until a successful response says otherwise the
- * mode is treated as `reject`, i.e. NO extra send capability is unlocked.
+ * Mode fallback (2026-11-03 BUG 修复)：快照缺席/刷新失败回落 `steer`
+ * （开放态，与后端新默认一致——宁可放行让后端按本轮模式裁决），不再回落
+ * `reject`。旧兜底是死锁根因：busy 中一次刷新失败 → mode='reject' →
+ * busy 发送闸 + 轮询启动闸 + 输入框禁用全部锁死，而轮询恰恰被自己的
+ * 启动闸锁住无法自愈。只有 `available: true` 且明确报告 `mode: "reject"`
+ * 的快照才锁 busy 输入——那是用户的显式配置，照常尊重。
  */
 
 /** Shape of the `agent.inbox_status` WSAPI response. */
@@ -43,7 +47,7 @@ export function useInboxStatus() {
   async function refresh(sid?: string) {
     if (sid !== undefined) {
       // 换目标先清旧快照（2026-09-24，先判断再展示）：旧会话的排队数/
-      // queue 放行态不得短暂带到新会话（mode 兜底 'reject' 保守态）。
+      // queue 放行态不得短暂带到新会话（mode 兜底 'steer' 开放态）。
       if (sid !== sessionId) status.value = null
       sessionId = sid
     }
@@ -72,8 +76,12 @@ export function useInboxStatus() {
     }
   }
 
-  /** Backend routing mode; 'reject' until proven otherwise. */
-  const mode = computed(() => (status.value?.available ? status.value.mode : 'reject'))
+  /**
+   * Backend routing mode. 快照缺席（null / available=false / 刷新失败）回落
+   * 'steer'（2026-11-03 BUG 修复，见头部注释）；显式 reject 配置的真实快照
+   * 照常锁 busy 输入。
+   */
+  const mode = computed(() => (status.value?.available ? status.value.mode : 'steer'))
   /** Steer mode: `!`-prefixed input is delivered into the running turn. */
   const steerEnabled = computed(() => mode.value === 'steer')
   /** busy 时发送是否仍有效（后端排队/插队而不是弹回 BUSY_MESSAGE）。 */

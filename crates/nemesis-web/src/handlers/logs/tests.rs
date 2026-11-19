@@ -276,3 +276,74 @@ fn parse_local_tool_results_multiple_operations_flush() {
     assert_eq!(out[0]["name"], "a");
     assert_eq!(out[1]["name"], "b");
 }
+
+// session_recency_cmp（BUG-20261116-011）----
+//
+// logs.session_list 收尾重排此前用 lastTime 裸字典序——scan_session_logs 的
+// BUG-20261102-325 纪律（解析成时间戳 + id 破平）没跟进到该位点。以下各测
+// 钉住解析序的语义：desc（最近在前）+ 混 offset 正确 + 自适应小数位正确 +
+// 不可解析沉底 + 同刻 id 破平。
+
+#[test]
+fn session_recency_cmp_mixed_offsets_orders_by_instant() {
+    // 10:00+08:00 = 02:00Z，比 03:00Z 早——desc 序里 03:00Z 排前。比较器
+    // 语义：cmp(a,b)=Greater ⟺ b 更新 ⟺ b 排前。裸字典序会把 '1' > '0'
+    // 判成 a 更新（错序实锤形态）。
+    let a = serde_json::json!({"id": "s1", "lastTime": "2026-11-16T10:00:00+08:00"});
+    let b = serde_json::json!({"id": "s2", "lastTime": "2026-11-16T03:00:00Z"});
+    assert_eq!(session_recency_cmp(&a, &b), std::cmp::Ordering::Greater);
+    assert_eq!(session_recency_cmp(&b, &a), std::cmp::Ordering::Less);
+}
+
+#[test]
+fn session_recency_cmp_adaptive_fraction_digits_z_suffix() {
+    // UTC 形态下「无小数 + Z 后缀」vs「有小数」：22.5 > 22.0，b（22.5Z）
+    // 更新、排前。裸字典序在公共前缀 "22" 后比较 'Z'(0x5A) vs '.'(0x2E)
+    // 会把 22Z 判大（+08:00 形态因 '+' < '.' 恰好不出错——错序随 offset
+    // 形态翻转）。
+    let a = serde_json::json!({"id": "s1", "lastTime": "2026-11-16T10:00:22Z"});
+    let b = serde_json::json!({"id": "s2", "lastTime": "2026-11-16T10:00:22.5Z"});
+    assert_eq!(session_recency_cmp(&a, &b), std::cmp::Ordering::Greater);
+}
+
+#[test]
+fn session_recency_cmp_unparseable_sinks_to_oldest() {
+    let good = serde_json::json!({"id": "s1", "lastTime": "2026-11-16T10:00:00+08:00"});
+    let bad = serde_json::json!({"id": "s2", "lastTime": ""});
+    let missing = serde_json::json!({"id": "s3"});
+    // 不可解析（空串/缺字段）= i64::MIN 沉底（仅向前语义）——good 更新、
+    // 排前，cmp(good, X) = Less。
+    assert_eq!(session_recency_cmp(&good, &bad), std::cmp::Ordering::Less);
+    assert_eq!(
+        session_recency_cmp(&good, &missing),
+        std::cmp::Ordering::Less
+    );
+    // 两个都不可解析 → 回落 id 破平（升序）。
+    assert_eq!(
+        session_recency_cmp(&bad, &missing),
+        std::cmp::Ordering::Less
+    );
+}
+
+#[test]
+fn session_recency_cmp_equal_last_time_breaks_tie_by_id() {
+    let a = serde_json::json!({"id": "s2", "lastTime": "2026-11-16T10:00:00+08:00"});
+    let b = serde_json::json!({"id": "s1", "lastTime": "2026-11-16T10:00:00+08:00"});
+    // 同刻：id 升序破平（s1 在前 → cmp(a=s2, b=s1) = Greater）。
+    assert_eq!(session_recency_cmp(&a, &b), std::cmp::Ordering::Greater);
+    assert_eq!(session_recency_cmp(&b, &a), std::cmp::Ordering::Less);
+}
+
+#[test]
+fn session_recency_cmp_sorts_slice_recent_first() {
+    let mut sessions = [
+        serde_json::json!({"id": "old", "lastTime": "2026-11-16T10:00:22Z"}),
+        // 与 old 同刻但有小数——真序在 old 之前（22.5 > 22.0）。
+        serde_json::json!({"id": "frac", "lastTime": "2026-11-16T10:00:22.5Z"}),
+        serde_json::json!({"id": "new", "lastTime": "2026-11-16T10:01:00Z"}),
+        serde_json::json!({"id": "bad", "lastTime": "garbage"}),
+    ];
+    sessions.sort_by(session_recency_cmp);
+    let ids: Vec<&str> = sessions.iter().map(|s| s["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["new", "frac", "old", "bad"]);
+}

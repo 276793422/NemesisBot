@@ -100,7 +100,16 @@ pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
 #[derive(Default)]
 #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
 pub(crate) struct DiagnosticsTouchRegistry {
-    sessions: std::collections::HashMap<String, Vec<(std::path::PathBuf, std::time::SystemTime)>>,
+    /// (最近 record 时刻, 锚点表)。Instant 用于会话 cap 淘汰最旧**活跃**
+    /// 会话（LRU）——旧实现 `keys().next()` 是 RandomState 随机序，可把
+    /// 刚活跃会话的登记逐掉（注释承诺「旧会话条目」与实现不符）。
+    sessions: std::collections::HashMap<
+        String,
+        (
+            std::time::Instant,
+            Vec<(std::path::PathBuf, std::time::SystemTime)>,
+        ),
+    >,
 }
 
 #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
@@ -115,11 +124,15 @@ impl DiagnosticsTouchRegistry {
         &self,
         session_key: &str,
     ) -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
-        self.sessions.get(session_key).cloned().unwrap_or_default()
+        self.sessions
+            .get(session_key)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
     }
 
     /// 回写本轮采集锚点（upsert：已登记文件刷新锚点并移到尾部 = 最近
-    /// 采集序；未登记文件追加）。双 cap 收口。
+    /// 采集序；未登记文件追加）。双 cap 收口；会话 cap 逐出按最近
+    /// record 时刻最旧者（平局回字典序保确定）。
     pub(crate) fn record_anchors(
         &mut self,
         session_key: &str,
@@ -128,20 +141,30 @@ impl DiagnosticsTouchRegistry {
         if anchors.is_empty() {
             return;
         }
-        if !self.sessions.contains_key(session_key)
-            && self.sessions.len() >= Self::MAX_SESSIONS
-            && let Some(k) = self.sessions.keys().next().cloned()
-        {
-            self.sessions.remove(&k);
+        if !self.sessions.contains_key(session_key) && self.sessions.len() >= Self::MAX_SESSIONS {
+            // 淘汰最旧会话（LRU：last_touch 最小；平局取字典序最小键，
+            // min_by_key 前先按键排序语义——复合序显式给出）。
+            if let Some(k) = self
+                .sessions
+                .iter()
+                .min_by_key(|(k, (t, _))| (*t, (*k).clone()))
+                .map(|(k, _)| k.clone())
+            {
+                self.sessions.remove(&k);
+            }
         }
-        let entry = self.sessions.entry(session_key.to_string()).or_default();
+        let entry = self
+            .sessions
+            .entry(session_key.to_string())
+            .or_insert_with(|| (std::time::Instant::now(), Vec::new()));
+        entry.0 = std::time::Instant::now();
         for (path, mtime) in anchors {
-            entry.retain(|(p, _)| p != path);
-            entry.push((path.clone(), *mtime));
+            entry.1.retain(|(p, _)| p != path);
+            entry.1.push((path.clone(), *mtime));
         }
-        let overflow = entry.len().saturating_sub(Self::MAX_FILES_PER_SESSION);
+        let overflow = entry.1.len().saturating_sub(Self::MAX_FILES_PER_SESSION);
         if overflow > 0 {
-            entry.drain(0..overflow);
+            entry.1.drain(0..overflow);
         }
     }
 }
@@ -211,8 +234,12 @@ impl AgentLoop {
     }
 
     /// Available model aliases (from config.models), for `/model` listing.
+    /// Sorted deterministically（HashMap 迭代序是实现细节，输出进用户可见
+    /// join，见 BUG-20261117-052）。
     pub fn model_aliases(&self) -> Vec<String> {
-        self.config.models.keys().cloned().collect()
+        let mut aliases: Vec<String> = self.config.models.keys().cloned().collect();
+        aliases.sort();
+        aliases
     }
     /// 装配小模型杂务通道（工厂从 `agents.small_model` 解析后调用；
     /// 重复调用覆盖前值）。传 `None` 显式清除（= 回退主模型）。
@@ -263,13 +290,29 @@ impl AgentLoop {
         prompt: String,
         max_tokens: u32,
     ) -> Result<String, String> {
-        if self.small_model_slot().is_none() {
+        self.chore_completion_ex(label, prompt, max_tokens, true)
+            .await
+    }
+
+    /// [`Self::chore_completion`] 的槽位参数化变体：`prefer_small=true`
+    /// 保持原语义（small 槽优先、未配置 WARN 回主模型）；`false` = 直接
+    /// 主模型（目标系统评估闸 D-Q5：评估默认走全局默认模型，goal 显式
+    /// `eval_model="small"` 才走杂务槽——默认主模型是设计语义不是回落，
+    /// 不打回落 warn）。
+    pub async fn chore_completion_ex(
+        &self,
+        label: &str,
+        prompt: String,
+        max_tokens: u32,
+        prefer_small: bool,
+    ) -> Result<String, String> {
+        if prefer_small && self.small_model_slot().is_none() {
             tracing::warn!(
                 "[chore:{label}] agents.small_model 未配置，回落主模型生成（预算 {} tokens）",
                 max_tokens
             );
         }
-        let (provider, model) = self.resolve_summary_provider(true);
+        let (provider, model) = self.resolve_summary_provider(prefer_small);
         let ledger = AuxLedger {
             aux_kind: "summary",
             model: &model,
@@ -968,11 +1011,15 @@ impl AgentLoop {
 
     /// 内置 slash 命令名（与 [`Self::handle_command_with_context`] 的 match 臂
     /// **同步维护**）：自定义命令表命中这些名字时跳过改写——内置优先。
-    /// `compact`/`clear` 是 会话维护命令（gate 内 `parse_maintenance_command`
+    /// `compact`/`clear`/`undo` 是 会话维护命令（gate 内 `parse_maintenance_command`
     /// 拦截，有副作用，同样不许被自定义命令表遮蔽）；`plan`/`build` 是
-    /// 模式切换（gate 内独立臂，要先拿 chat_id 发布 ModeChanged）。
-    /// 清单本体收敛到 `nemesis_types::constants:BUILTIN_SLASH_COMMANDS`
+    /// 模式切换（gate 内独立臂，要先拿 chat_id 发布 ModeChanged）；
+    /// `approve`/`deny` 是 IM 审批卡回执（gate `parse_approval_reply` 短路，
+    /// 遮蔽 = 丢静态确认 + 误起 agent 轮）；`discipline` 是纪律切换
+    /// （gate 独立臂）。清单本体收敛到
+    /// `nemesis_types::constants:BUILTIN_SLASH_COMMANDS`
     /// （dashboard `commands.list` 的 `builtins` 下发同源），这里只做转发。
+    /// BUG-20261118-093：**新增 gate 短路臂必须同步补清单**。
     pub(crate) const BUILTIN_SLASH_COMMANDS: &'static [&'static str] =
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS;
 
@@ -1053,10 +1100,20 @@ impl AgentLoop {
     /// 会话级强度 override（G3，2026-11-09）：`chat.set_effort` 写入。
     /// `Some(v)` = 设置（合法值集 off/low/medium/high，调用方校验）；
     /// `None` = 清除回落 config 模型级值。仅内存态——重启清空。
+    ///
+    /// 有界纪律（BUG-20261113-170，与 compact_state/summarizing 同约定）：
+    /// 写入是显式 per-session 用户动作，此前完全无驱逐——每个设过的会话
+    /// 留一条直到重启。超限时整体 clear（override 被清 = 会话回落 config
+    /// 模型级值，无不变量破坏，用户可重设）。
     pub fn set_session_effort(&self, session_key: &str, effort: Option<String>) {
         let mut m = self.effort_overrides.write();
         match effort {
             Some(v) => {
+                if m.len() > super::compact::SESSION_STATE_MAX_ENTRIES
+                    && !m.contains_key(session_key)
+                {
+                    m.clear();
+                }
                 m.insert(session_key.to_string(), v);
             }
             None => {
@@ -1330,7 +1387,9 @@ pub(crate) fn mark_effort_probe_stale_at(path: &std::path::Path, model_name: &st
     // write_config_atomic）共用同一把写串行锁：无锁 RMW 的读旧快照回写
     // 会与并发写者（dashboard 保存 / 探针重写）交错丢更新。
     let _serial = nemesis_config::config_write_lock();
-    let Ok(raw) = std::fs::read_to_string(path) else {
+    // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → stale 标记
+    // 静默不落盘，BUG-20261103-334 同族）。
+    let Ok(raw) = nemesis_utils::fsutil::read_config_string(path) else {
         debug!(
             "[AgentLoop] effort stale mark: config unreadable at {}",
             path.display()
@@ -1383,7 +1442,7 @@ pub(crate) fn effort_probe_accepted_at(
     path: &std::path::Path,
     model_name: &str,
 ) -> Option<Vec<String>> {
-    let raw = std::fs::read_to_string(path).ok()?;
+    let raw = nemesis_utils::fsutil::read_config_string(path).ok()?;
     let cfg = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
     let list = cfg.get("model_list")?.as_array()?;
     let entry = list

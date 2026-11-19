@@ -163,6 +163,49 @@ fn release_session_drains_queue_before_releasing() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261113-170：完全释放摘除条目（24/7 会话数无界累积根修）。
+// 排队路径条目保留；全释放后 map 回空；缺席键读路径观测等价
+// （旧行为留 busy=false 死条目，读路径 (false,0) 不可区分）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn release_session_evicts_entry_on_full_release() {
+    let al = AgentLoop::new(Box::new(CovQuietProvider), test_config());
+    let key = "agent:main:session:evict";
+
+    // busy + 排队：release 只消耗队列，条目保留（排队期间闸语义需要它）。
+    al.session_busy.lock().insert(
+        key.to_string(),
+        SessionBusyState {
+            busy: true,
+            queue_length: 1,
+        },
+    );
+    assert!(al.release_session(key), "queue remaining → stays busy");
+    assert_eq!(al.session_busy.lock().len(), 1, "排队未排空前条目保留");
+
+    // 队列已空：完全释放 → 条目摘除，map 回空。
+    assert!(!al.release_session(key));
+    assert!(
+        al.session_busy.lock().is_empty(),
+        "完全释放后条目必须摘除（无界累积根修）"
+    );
+    // 缺席键读路径观测等价。
+    assert_eq!(al.get_session_busy_state(key), (false, 0));
+    assert_eq!(al.session_queue_length(key), 0);
+    assert!(!al.is_session_busy(key));
+
+    // 摘除后可正常重新认领；再完全释放再摘。
+    assert!(al.try_acquire_session(key));
+    assert!(!al.release_session(key));
+    assert!(al.session_busy.lock().is_empty());
+
+    // 重复 release（条目已不在）：no-op false，不复活条目。
+    assert!(!al.release_session(key));
+    assert!(al.session_busy.lock().is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // inbox_status：三模式快照（dashboard 可见性）
 // ---------------------------------------------------------------------------
 
@@ -504,4 +547,61 @@ async fn busy_race_orphan_kick_reinjects_parked_head() {
     let _ = al.inbox.enqueue_for_mode(key, queued2, false);
     al.kick_orphaned_queue_if_idle(key);
     assert_eq!(al.inbox.pending(key), (1, 0), "busy session must not kick");
+}
+
+// ---------------------------------------------------------------------------
+// system_notice_of：系统通知标记推导（2026-11-16 系统注入消息渲染成用户
+// 气泡 BUG）——sender 推导 / metadata 覆盖 / 真人消息不命中。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_notice_of_derivation_table() {
+    let mk =
+        |sender: &str, metadata: HashMap<String, String>| nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: sender.to_string(),
+            chat_id: "c".to_string(),
+            content: "x".to_string(),
+            media: vec![],
+            session_key: "s".to_string(),
+            correlation_id: String::new(),
+            metadata,
+            voice_playback: None,
+        };
+
+    // ① 后台任务完成唤醒形态：sender=system、无 metadata → 推导命中。
+    let wake = mk("system", HashMap::new());
+    assert_eq!(super::system_notice_of(&wake), Some("system"));
+
+    // ② Turn WAL 续轮形态：sender=system + 自有 metadata（不含
+    // system_notice）→ 仍推导命中（自有键不受影响）。
+    let wal = mk(
+        "system",
+        [("turn_wal_resume".to_string(), "1".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(super::system_notice_of(&wal), Some("system"));
+
+    // ③ metadata 显式值优先（注入点可指定更细类别）。
+    let explicit = mk(
+        "system",
+        [("system_notice".to_string(), "background_wake".to_string())]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(super::system_notice_of(&explicit), Some("background_wake"));
+
+    // ④ 真人消息：web 通道真实会话 id → None（不写键，用户气泡旧行为）。
+    let human = mk("web-session-abc", HashMap::new());
+    assert_eq!(super::system_notice_of(&human), None);
+
+    // ⑤ cron 投递形态：sender=cron:{id} → None（cron 行已有 cron_job_id
+    // meta，前端按 cronJobId 渲染，不走本标记）。
+    let cron = mk("cron:job-7", HashMap::new());
+    assert_eq!(super::system_notice_of(&cron), None);
+
+    // ⑥ 集群桥接远端用户：sender 为远端真实 id → None。
+    let remote = mk("remote-user-9", HashMap::new());
+    assert_eq!(super::system_notice_of(&remote), None);
 }

@@ -495,6 +495,78 @@ async fn test_r845_error_body_bounded_ingestion() {
     t.close().await.unwrap();
 }
 
+/// BUG-20261114-046 回归锁：成功路径响应体有帽摄取（JSON 臂）。此前
+/// `response.text()` 字节无界——reqwest 请求总超时只约束时间不约束体积，
+/// 崩溃/被替换的 MCP 服务器在快管道超时窗口内可把 GB 级 body 灌进网关
+/// 内存。修复 = `capped_response_body` 16MB 帽（与 stdio 侧
+/// MAX_RESPONSE_LINE_BYTES 对称——单条 JSON-RPC 响应同语义载荷），超帽
+/// 读入中途断开 + 诚实 hard error（成功路径不得截断）。
+#[tokio::test]
+async fn bug_20261114_046_json_body_over_cap_is_honest_error() {
+    let server = MockServer::start().await;
+    // 合法 TransportResponse 形态但载荷超 16MB 帽——修复前整包读入且解析
+    // 成功（Ok），修复后读入中途断开（Err 带 cap 定性）。
+    let body = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"pad\":\"{}\"}}}}",
+        "A".repeat(17 * 1024 * 1024)
+    );
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t
+        .send(&w4c_request("tools/list", 1), 15000)
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("response body exceeds"),
+        "超帽须诚实 hard error: {err}"
+    );
+    assert!(
+        !err.message.contains("AAAA"),
+        "截断载荷不得整包进错误串: len={}",
+        err.message.len()
+    );
+    t.close().await.unwrap();
+}
+
+/// BUG-20261114-046 回归锁（SSE 臂）：未终结事件缓冲同受 16MB 帽。正常
+/// 流逐事件消费排干、buffer 只持有未消费尾（既有
+/// `test_w4c_http_send_sse_stream_parsed` 锁小事件路径）；涨破帽 = 单事件
+/// 迟迟不带终结符（服务器输出不可信），诚实报错不静默整包进内存。
+#[tokio::test]
+async fn bug_20261114_046_sse_event_over_cap_is_honest_error() {
+    let server = MockServer::start().await;
+    // 第一事件 data 17MB（非 JSON 垃圾载荷）；其后合法响应事件。修复前：
+    // 第一事件 Skipped、第二事件返回 Ok——巨事件静默整包过内存；修复后：
+    // buffer 涨破帽即 Err。
+    let body = format!(
+        "data: {}\r\n\r\ndata: {{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{{\"ok\":true}}}}\r\n\r\n",
+        "x".repeat(17 * 1024 * 1024)
+    );
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let err = t
+        .send(&w4c_request("initialize", 7), 15000)
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("SSE event exceeds"),
+        "SSE 未终结事件超帽须诚实报错: {err}"
+    );
+    t.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_w4c_http_send_connection_failure_maps_send_failed() {
     // 指向必然拒绝连接的端口

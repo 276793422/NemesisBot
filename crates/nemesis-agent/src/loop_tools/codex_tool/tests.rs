@@ -16,6 +16,7 @@ fn test_ctx() -> RequestContext {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -139,4 +140,16 @@ async fn test_codex_sandbox_flags_passed_to_cli() {
         got2.contains("--sandbox workspace-write"),
         "explicit tier kebab: {got2}"
     );
+}
+
+/// BUG-20261117-061 回归锁：timeout_secs=0 视作缺省 300（Some(0) 直通
+/// = cli_delegation tokio timeout(0) 立即超时，委派静默永久废）。
+#[test]
+fn test_codex_timeout_zero_falls_back_to_default() {
+    let t = CodexTool::new("C:/fake/codex.exe".into(), Some(0), None);
+    assert_eq!(t.timeout_secs, 300);
+    let t = CodexTool::new("C:/fake/codex.exe".into(), Some(30), None);
+    assert_eq!(t.timeout_secs, 30);
+    let t = CodexTool::new("C:/fake/codex.exe".into(), None, None);
+    assert_eq!(t.timeout_secs, 300);
 }

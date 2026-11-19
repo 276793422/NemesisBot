@@ -104,6 +104,18 @@ fn write_zip(out_path: &Path, files: &[(String, PathBuf)]) {
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+
+    // builtin 伪源人格模板（persona.rs include_dir! 内嵌）：include_dir! 宏
+    // 不声明 rerun-if-changed——改 raw.md / 模板文件不会触发重编，漂移锁会
+    // 读陈旧内嵌假装通过。此处补目录级追踪。
+    let builtin_personas_dir = manifest_dir
+        .join("..")
+        .join("..")
+        .join("nemesisbot")
+        .join("workspace")
+        .join("personas");
+    println!("cargo:rerun-if-changed={}", builtin_personas_dir.display());
+
     let sdk_dir = manifest_dir
         .join("..")
         .join("..")

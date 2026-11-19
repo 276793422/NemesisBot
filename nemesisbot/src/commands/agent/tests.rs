@@ -1843,9 +1843,11 @@ mod r9_repl {
     async fn r9_repl_builtin_slash_trio_recognized_loop_survives() {
         // ASM-05后 REPL 走 agent_factory 工厂装配，registry
         // 恒 Some（原「standalone 构造 registry=None」结构性事实已退役）：
-        // /history 打印真实会话历史、/clear 恒打 "History cleared."、
-        // /status 打印 Session + State: Idle（N messages）。三者都应被识别
-        // 并继续循环直到 quit。
+        // /history 打印真实会话历史、/clear 恒打 "✓ 已清空会话历史"
+        // （BUG-20261116-032 起 /clear 走 AgentLoop::clear_session 完整闭环，
+        // receipt 由 maintenance.rs 返回——旧文案 "History cleared." 随旧实现
+        // 退役）、/status 打印 Session + State: Idle（N messages）。三者都应
+        // 被识别并继续循环直到 quit。
         let srv = MockAiServer::start(vec![]).expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
         // B39 SaveCheck ping：同未知命令测——基线取夹具之后（含 add 的
@@ -1870,8 +1872,8 @@ mod r9_repl {
             out.stdout
         );
         assert!(
-            out.stdout.contains("History cleared."),
-            "/clear 恒打印清理确认:\n{}",
+            out.stdout.contains("已清空会话历史"),
+            "/clear 恒打印清理确认（BUG-20261116-032 receipt 文案）:\n{}",
             out.stdout
         );
         assert!(

@@ -63,6 +63,7 @@ fn entry_for(id: &str, dir: &Path) -> ProjectEntry {
         path: dir.to_path_buf(),
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     }
 }
 
@@ -959,6 +960,50 @@ async fn agent_home_spec_materializes_and_routes_data_to_home() {
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
 }
 
+/// D 批围栏多根：`from_project` 把注册表 extra_dirs 原样透传进 spec
+/// （canonical 字符串 → PathBuf，顺序保持）；`from_record` 恒空（记录
+/// 形态无多根契约）。boundary / executor 两处消费在 build 内联
+/// （spec.rs 两处 extend）——围栏语义由 nemesis-agent
+/// workspace_boundary_tests 的 extra_roots 矩阵 + remote_executor_tool
+/// tests 的 env_pairs 两则钉死；这里钉数据流源头，防注册表 → spec 断链
+/// （断链 = extra_dirs 全静默失效且无任何报错）。
+#[test]
+fn spec_from_project_carries_extra_dirs_and_record_form_is_empty() {
+    let dir = unique_home("b2extra");
+    let project_dir = dir.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let mut entry = entry_for("p_b2extra01", &project_dir);
+    entry.extra_dirs = vec![
+        "D:/assets/lib".to_string(),
+        "C:/shared cache/docs".to_string(),
+    ];
+    let spec = super::AgentLoopSpec::from_project(&entry);
+    assert_eq!(
+        spec.extra_dirs,
+        vec![
+            std::path::PathBuf::from("D:/assets/lib"),
+            std::path::PathBuf::from("C:/shared cache/docs"),
+        ],
+        "注册表 extra_dirs 必须原样进 spec（顺序保持，不做二次加工）"
+    );
+
+    // 记录形态：无多根（注册表 extra_dirs 是项目形态专属契约）。
+    let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
+        "cccccccccccccccccccccccccccccccc",
+        "plain",
+        "selfbuilt",
+    );
+    record.exec_root = project_dir.to_string_lossy().to_string();
+    let spec = super::AgentLoopSpec::from_record(&record);
+    assert!(
+        spec.extra_dirs.is_empty(),
+        "记录形态必须无多根（零迁移契约）"
+    );
+
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&dir);
+}
+
 /// 记忆选域闸（姊妹函数 [`super::memory_manager_for_data_dir`]）：
 /// 总开关关（shared.memory_manager None）→ 项目域不旁路恒 None（
 /// 「旧数据不管」语义：增强内存不开就谁都没有）；开关开 → manager 在位
@@ -986,6 +1031,56 @@ fn memory_data_dir_gate_disabled_is_none_enabled_is_some() {
         super::memory_manager_for_data_dir(&shared_on, &home.join("memory").join("memory_vector"))
             .is_some(),
         "增强内存总开关开 → 项目域 manager 必须在位"
+    );
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
+}
+
+/// 项目 loop todo + bot 产物锚定主 workspace（2026-11-17 污染修复回归锁）：
+/// todo 是 bot 域会话态数据——todowrite 真链路必须落主 workspace
+/// `sessions/`，用户项目工作树不得长出 bot 的 `sessions/`（删侧回收站/
+/// 删除链/sweeper 全按主 ws 寻址，写侧锚项目目录 = 孤儿 + 污染）。
+#[tokio::test]
+async fn project_loop_todowrite_anchors_main_workspace_sessions() {
+    let home = unique_home("todo-anchor");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+    let project_loop = build_project_agent_loop(
+        &shared,
+        &entry_for("p_todo0001", &project_dir),
+        session_store,
+    )
+    .expect("project loop builds");
+
+    let tool = project_loop
+        .tools()
+        .get("todowrite")
+        .cloned()
+        .expect("项目 loop 注册 todowrite");
+    let session_key = "agent:web:session:todo_anchor_e2e";
+    let args = serde_json::json!({
+        "todos": [{ "content": "t1", "status": "pending" }]
+    })
+    .to_string();
+    let ctx = nemesis_agent::RequestContext::new("web", "web:t1", "user", session_key);
+    tool.execute(&args, &ctx).await.expect("todowrite executes");
+
+    // 与写侧同真相源寻址（nemesis-path 单点）；根 = workspace_dir()
+    //（SharedResources 的「<home>/workspace」canonical 布局推导点）。
+    let main_todo =
+        nemesis_path::session_todo_file_in_workspace(&shared.workspace_dir(), session_key);
+    assert!(
+        main_todo.is_file(),
+        "todo 必须落主 workspace sessions/: {:?}",
+        main_todo
+    );
+    assert!(
+        !project_dir.join("sessions").exists(),
+        "用户项目目录不得长出 bot 的 sessions/（2026-11-17 污染修复回归锁）"
     );
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
 }

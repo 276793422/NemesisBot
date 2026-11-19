@@ -151,7 +151,7 @@ pub(crate) async fn init_agent(
     // 块 bind 真身 WebApprovalManager（晚绑槽模式，skills gate 同款）；
     // 启动装载走 installer.load_all（无审批/无扫描——安装期已裁决）。
     #[cfg(feature = "plugins-wasm")]
-    let (plugin_manager, plugin_gate) = {
+    let (plugin_manager, plugin_gate, plugin_installer) = {
         let gate = Arc::new(crate::plugin_bridge::LateInstallApprover::new(300));
         match crate::plugin_bridge::build_plugin_stack(
             &home,
@@ -165,15 +165,19 @@ pub(crate) async fn init_agent(
                 }
                 // 整槽注入 web 管理面（plugins.wasm.* 命令的 install /
                 // uninstall / enable 均消费同一 installer——审批/扫描/验签
-                // 统一定义，handler 零旁路）。
-                nemesis_web::handlers::plugins_wasm::set_installer(Arc::new(installer));
-                (Some(manager), Some(gate))
+                // 统一定义，handler 零旁路）。Arc 先于 move 建立：同一
+                // Arc 克隆进 SharedResources.plugin_installer（项6 agent
+                // 自举工具与 web 管理面共用一个漏斗真相源）。
+                let installer = Arc::new(installer);
+                nemesis_web::handlers::plugins_wasm::set_installer(installer.clone());
+                (Some(manager), Some(gate), Some(installer))
             }
-            None => (None, None),
+            None => (None, None, None),
         }
     };
     #[cfg(not(feature = "plugins-wasm"))]
-    let (plugin_manager, plugin_gate): (Option<()>, Option<()>) = (None, None);
+    let (plugin_manager, plugin_gate, plugin_installer): (Option<()>, Option<()>, Option<()>) =
+        (None, None, None);
 
     // 原生插件状态 probe 注入（与 plugins_wasm::set_installer 同批）：签名
     // 验签执行体在 nemesisbot（nemesis-verify + 编译期锚），web handler 只
@@ -295,6 +299,28 @@ pub(crate) async fn init_agent(
         info!("[Gateway] persistent executor supervisor ready (watchdog started)");
         sup
     };
+    // 浏览器接管框架（2026-11-15）：BrowserManager 单例（host_browser 工具
+    // 与 browser.* WSAPI 同源；跨 agent 重启存活）。prefs_getter 每次 spawn
+    // 现读 config.json `browser` 段（Dashboard 设置页改完即生效）；sink 接
+    // EventHub（编排操作路 → SSE 日志子页签；AI 动作路走 tool_event）。
+    #[cfg(feature = "browser")]
+    let browser_manager = {
+        // 直接取字段借用（web_init.rs 字段恒存在）——不走 `web_server`
+        // 影子（那扇门 = board_event_hub 消费点的 board+cluster 窄门，
+        // browser-only 裁剪构建下影子缺席；2026-11-15 复审 E0425 根修）。
+        let event_hub = web.web_server.event_hub().clone();
+        let config_path = common::config_path(&home);
+        Arc::new(nemesis_browser::BrowserManager::new(
+            home.clone(),
+            Box::new(move || {
+                // config.json 是真相源；读失败 = 全默认（auto/系统保底）。
+                load_browser_prefs(&config_path)
+            }),
+            Some(Arc::new(move |ev: &serde_json::Value| {
+                event_hub.publish("browser_event", ev.clone());
+            })),
+        ))
+    };
     let shared_resources = crate::agent_factory::SharedResources {
         home: home.clone(),
         // gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
@@ -346,7 +372,31 @@ pub(crate) async fn init_agent(
         // Arc 同时挂在 SharedResources 供 web_server 读侧（sessions.stats）取用。
         session_stats: Some(crate::session_stats::spawn_session_stats(&agent_event_tx)),
         background_registry,
+        // 专家子代理资源层（2026-11-13）：workspace/experts/ 目录即注册表
+        //（scan-on-read 单一真相源）。spawn 工具名册面 + spawn 闭包执行面
+        // 同一 store 注入；目录缺席 = 空名册常态（雇用后生效，无重启门槛）。
+        experts: {
+            let experts_store = Arc::new(
+                crate::experts_store::ExpertsStore::new(&home.join("workspace"))
+                    // 专家模式策略现读源（agents.experts fresh-read）。
+                    .with_config_path(home.join("config.json")),
+            );
+            // 管理面 WSAPI 桥（experts.*）静态槽注入——plugins_wasm
+            // INSTALLER 槽同款先例；gateway 生命周期单发（OnceLock 首胜）。
+            nemesis_web::handlers::experts::set_experts_bridge(experts_store.clone());
+            Some(experts_store)
+        },
         plugin_manager,
+        // agent 自举插件（项6）：同一 installer Arc + 审批门 Arc
+        //（8f 注册块消费；任一缺席 = plugin_search/plugin_propose 不注册）。
+        plugin_installer,
+        plugin_install_gate: plugin_gate.clone(),
+        // 浏览器接管框架（2026-11-15）：BrowserManager 单例（host_browser
+        // 工具注册闸 + browser.* WSAPI 同源；headless/测试 = None 诚实缺省）。
+        #[cfg(feature = "browser")]
+        browser_manager: Some(browser_manager.clone()),
+        #[cfg(not(feature = "browser"))]
+        browser_manager: None,
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
         // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级
         // 动态解析槽（AgentLoopServiceAdapter start 填 Some / stop 写
@@ -537,3 +587,41 @@ pub(crate) async fn init_agent(
         initial_tool_count,
     })
 }
+
+// ---------------------------------------------------------------------------
+// browser prefs 读取（BUG-20261116-044）
+// ---------------------------------------------------------------------------
+
+/// 从 config.json 文本解析 `browser` 段进 prefs（段缺席/解析失败 = 默认值
+/// 原样保留）。纯函数，`load_browser_prefs` 的解析半边。
+#[cfg(feature = "browser")]
+fn parse_browser_prefs(text: &str) -> nemesis_browser::BrowserPrefs {
+    let mut prefs = nemesis_browser::BrowserPrefs::default();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text)
+        && let Some(seg) = v.get("browser")
+    {
+        if let Some(k) = seg.get("kind").and_then(|k| k.as_str()) {
+            prefs.kind = k.to_string();
+        }
+        if let Some(e) = seg.get("executable").and_then(|e| e.as_str()) {
+            prefs.executable = e.to_string();
+        }
+    }
+    prefs
+}
+
+/// 读 config.json 并解析 browser 段（读失败/解析失败/段缺席 = 全默认）。
+///
+/// 读盘必须走 `fsutil::read_config_string` 剥 BOM——记事本保存的
+/// config.json 裸读会 parse 失败 → 用户 browser 配置被静默忽略
+/// （BUG-20261116-044；与 cache_warmer/config_watch/user_profile 等
+/// 全部 config.json 读取点同源纪律）。
+#[cfg(feature = "browser")]
+fn load_browser_prefs(config_path: &std::path::Path) -> nemesis_browser::BrowserPrefs {
+    nemesis_utils::fsutil::read_config_string(config_path)
+        .map(|text| parse_browser_prefs(&text))
+        .unwrap_or_default()
+}
+
+#[cfg(all(test, feature = "browser"))]
+mod tests;

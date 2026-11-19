@@ -52,7 +52,11 @@ impl GitHubRegistry {
         let base_url = if base_url.is_empty() {
             "https://raw.githubusercontent.com".to_string()
         } else {
-            base_url.to_string()
+            // BUG-20261113-162：尾斜杠归一——用户从文档复制
+            // `https://raw.githubusercontent.com/` 会拼出 `//{repo}` 双斜杠
+            // 路径（raw 端点 404）。同族先例 = BUG-20261109-012
+            // （telegram/bluesky/mastodon）+ modelscope 构造期归一。
+            base_url.trim_end_matches('/').to_string()
         };
 
         let timeout = if timeout_secs > 0 {
@@ -159,9 +163,13 @@ impl GitHubRegistry {
             .map_err(|e| NemesisError::Validation(format!("invalid slug '{}': {}", slug, e)))?;
 
         if self.index_type == "skills_json" {
-            let url = format!(
-                "{}/{}/{}/{}",
-                self.base_url, self.repo, self.branch, self.index_path
+            // BUG-20261113-162：raw URL 构造单点（尾斜杠归一 + 路径段
+            // percent-encoding，`#`/`?` 不再沦为 fragment/query 分隔符）。
+            let url = crate::url_enc::raw_content_url(
+                &self.base_url,
+                &self.repo,
+                &self.branch,
+                &self.index_path,
             );
 
             let body = self.do_get(&url).await?;
@@ -257,6 +265,7 @@ impl GitHubRegistry {
                 &self.branch,
                 &dir_prefix,
                 target_dir,
+                0,
                 0,
             )
             .await?;
@@ -362,9 +371,12 @@ impl GitHubRegistry {
         query: &str,
         limit: usize,
     ) -> Result<Vec<SkillSearchResult>> {
-        let url = format!(
-            "{}/{}/{}/{}",
-            self.base_url, self.repo, self.branch, self.index_path
+        // BUG-20261113-162：raw URL 构造单点（同 get_skill_meta）。
+        let url = crate::url_enc::raw_content_url(
+            &self.base_url,
+            &self.repo,
+            &self.branch,
+            &self.index_path,
         );
 
         let body = self.do_get(&url).await?;
@@ -398,11 +410,26 @@ impl GitHubRegistry {
 
     /// Search using GitHub Contents API (two-layer).
     async fn search_two_layer(&self, query: &str, limit: usize) -> Result<Vec<SkillSearchResult>> {
-        let api_url = format!(
-            "{}/repos/{}/contents/skills",
-            self.api_base_url(),
-            self.repo
-        );
+        // 列表目录由 pattern 推导（[`Self::listing_dir`]；历史硬编码
+        // `contents/skills` 的接替点一）。
+        // BUG-20261114-043：repo 段 percent-encoding + api_base 尾斜杠归一
+        // （BUG-20261113-162 横向漏点——同文件 raw URL 三处已修，API URL
+        // 两处漏网；`#`/`?` 沦为 fragment/query 分隔符指向错误资源）。
+        let listing = self.listing_dir();
+        let api_url = if listing.is_empty() {
+            format!(
+                "{}/repos/{}/contents",
+                self.api_base_url().trim_end_matches('/'),
+                crate::url_enc::percent_encode_path(&self.repo)
+            )
+        } else {
+            format!(
+                "{}/repos/{}/contents/{}",
+                self.api_base_url().trim_end_matches('/'),
+                crate::url_enc::percent_encode_path(&self.repo),
+                crate::url_enc::percent_encode_path(&listing)
+            )
+        };
 
         let response = self
             .client
@@ -414,7 +441,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "GitHub API HTTP {}: {}",
                 status,
@@ -422,9 +449,17 @@ impl GitHubRegistry {
             )));
         }
 
-        let entries: Vec<GitHubContentEntry> = response.json().await.map_err(|e| {
-            NemesisError::Other(format!("failed to parse directory listing: {}", e))
-        })?;
+        // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let entries: Vec<GitHubContentEntry> =
+            serde_json::from_slice(&body_bytes).map_err(|e| {
+                NemesisError::Other(format!("failed to parse directory listing: {}", e))
+            })?;
 
         let mut results = Vec::new();
         for entry in &entries {
@@ -459,11 +494,15 @@ impl GitHubRegistry {
     /// 拉取仓库全树（Trees API recursive）——search_three_layer 与安装期
     /// slug→author 反查（[`Self::resolve_author`]）共用。
     async fn fetch_repo_tree(&self) -> Result<GithubTreeResponse> {
+        // BUG-20261114-043：repo/branch 段 percent-encoding + api_base 尾斜杠
+        // 归一（BUG-20261113-162 横向漏点；分支名可合法含 `#`，裸插值在
+        // `?recursive=1` 前被 fragment 切断。github_tree.rs 同款 URL 形态
+        // 162 轮已修，本处漏网）。与 github_tree.rs 保持同一构造形态。
         let api_url = format!(
             "{}/repos/{}/git/trees/{}?recursive=1",
-            self.api_base_url(),
-            self.repo,
-            self.branch
+            self.api_base_url().trim_end_matches('/'),
+            crate::url_enc::percent_encode_path(&self.repo),
+            crate::url_enc::percent_encode_component(&self.branch)
         );
 
         let response = self
@@ -476,7 +515,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "GitHub API HTTP {}: {}",
                 status,
@@ -484,19 +523,28 @@ impl GitHubRegistry {
             )));
         }
 
-        response
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（大仓库 Trees API 载荷
+        // MB 量级，16MB 数十倍裕量）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            response,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("failed to parse tree: {}", e)))
     }
 
-    /// Search using GitHub Trees API (three-layer: skills/{author}/{slug}/SKILL.md).
+    /// Search using GitHub Trees API (three-layer: {prefix}{author}/{slug}/SKILL.md).
     async fn search_three_layer(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<SkillSearchResult>> {
         let tree_response = self.fetch_repo_tree().await?;
+        // 列表前缀由 pattern 推导（[`Self::listing_prefix`]；历史硬编码
+        // `skills/` 的接替点二）。
+        let prefix = self.listing_prefix();
 
         let mut results = Vec::new();
         let mut seen_slugs = std::collections::HashSet::new();
@@ -511,16 +559,14 @@ impl GitHubRegistry {
             }
 
             let path = &entry.path;
-            if !path.starts_with("skills/") || !path.ends_with("/SKILL.md") {
+            if !path.starts_with(prefix.as_str()) || !path.ends_with("/SKILL.md") {
                 continue;
             }
 
-            // Extract author/slug from "skills/{author}/{slug}/SKILL.md".
-            let inner = path
-                .strip_prefix("skills/")
-                .unwrap()
+            // Extract author/slug from "{prefix}{author}/{slug}/SKILL.md".
+            let inner = path[prefix.len()..]
                 .strip_suffix("/SKILL.md")
-                .unwrap();
+                .expect("path ends with /SKILL.md checked above");
             let parts: Vec<&str> = inner.splitn(2, '/').collect();
             if parts.len() != 2 {
                 continue;
@@ -581,6 +627,37 @@ impl GitHubRegistry {
         self.skill_path_pattern.contains("{author}")
     }
 
+    /// 从 [`Self::skill_path_pattern`] 推导**列表目录**（listing 面单一
+    /// 推导点）。
+    ///
+    /// pattern 形态 `前缀/{slug}/SKILL.md` 或 `前缀/{author}/{slug}/SKILL.md`
+    /// ——列表目录 = **最早**出现的占位符（`{slug}`/`{author}` 取位置最小者
+    /// ——三段式的 `{author}` 在 `{slug}` 之前，只查 `{slug}` 会把
+    /// `skills/{author}` 误当列表目录）之前的前缀剥尾 `/`；根形态
+    /// `{slug}/SKILL.md` = 空串（仓库根）。历史代码三处硬编码 `skills` /
+    /// `skills/`（contents URL、tree 前缀、author 反查），仓库根形态源
+    /// （`Skills/{slug}/SKILL.md`）接入后不再成立——统一改 pattern 推导，
+    /// 旧 `skills/` 模式推导结果与硬编码逐字节一致（向后兼容零迁移）。
+    fn listing_dir(&self) -> String {
+        let pattern = &self.skill_path_pattern;
+        let cut = pattern
+            .find("{slug}")
+            .unwrap_or(pattern.len())
+            .min(pattern.find("{author}").unwrap_or(pattern.len()));
+        pattern[..cut].trim_end_matches('/').to_string()
+    }
+
+    /// 列表前缀形态（带尾 `/`；根形态 = 空串）——tree 路径过滤 /
+    /// `strip_prefix` 用（contents URL 用 [`Self::listing_dir`]）。
+    fn listing_prefix(&self) -> String {
+        let dir = self.listing_dir();
+        if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{dir}/")
+        }
+    }
+
     /// 三段式源安装期 slug→author 反查（BUG-20261111-066）。
     ///
     /// search 产出的 slug 按安装目录名纪律不带 author（`/` 被
@@ -594,12 +671,15 @@ impl GitHubRegistry {
     /// 的也是首个）。拉树失败/无命中 = None（回落 bare slug 旧行为）。
     async fn resolve_author(&self, slug: &str) -> Option<String> {
         let tree = self.fetch_repo_tree().await.ok()?;
+        // 列表前缀由 pattern 推导（[`Self::listing_prefix`]；历史硬编码
+        // `skills/` 的接替点三）。
+        let prefix = self.listing_prefix();
         let suffix = format!("/{slug}/SKILL.md");
         for entry in &tree.tree {
             if entry.entry_type != "blob" {
                 continue;
             }
-            let Some(inner) = entry.path.strip_prefix("skills/") else {
+            let Some(inner) = entry.path.strip_prefix(prefix.as_str()) else {
                 continue;
             };
             let Some(author) = inner.strip_suffix(&suffix) else {
@@ -663,7 +743,9 @@ impl GitHubRegistry {
             self.skill_path_pattern.replace("{slug}", slug)
         };
 
-        format!("{}/{}/{}/{}", self.base_url, self.repo, self.branch, path)
+        // BUG-20261113-162：raw URL 构造单点（尾斜杠归一 + `#`/`?` 等分段
+        // percent-encoding——分支名与文件名均可合法容纳这两个 URL 保留字）。
+        crate::url_enc::raw_content_url(&self.base_url, &self.repo, &self.branch, &path)
     }
 
     /// Perform an HTTP GET request with error handling.
@@ -683,7 +765,7 @@ impl GitHubRegistry {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(response).await;
             return Err(NemesisError::Other(format!(
                 "HTTP {}: {}",
                 status,
@@ -711,6 +793,7 @@ impl GitHubRegistry {
             dir_prefix,
             target_dir,
             self.max_size,
+            0,
         )
         .await
     }
@@ -722,7 +805,10 @@ impl GitHubRegistry {
         let base_url = if config.base_url.is_empty() {
             "https://raw.githubusercontent.com".to_string()
         } else {
-            config.base_url.clone()
+            // BUG-20261114-043：与 [`Self::new`] 同源尾斜杠归一——162 修复轮
+            // 只补了 new，本构造器漏网。当前 join 点均经 raw_content_url
+            // （use-site trim）行为惰性，归一属构造器对称性防御。
+            config.base_url.trim_end_matches('/').to_string()
         };
 
         let timeout = if config.timeout_secs > 0 {

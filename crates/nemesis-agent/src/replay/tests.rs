@@ -47,6 +47,9 @@ static KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Unique-per-process session key so parallel test runs never share a ledger.
 fn unique_key(prefix: &str) -> String {
+    // 本文件多数测试的第一个 helper：账本写入走生产 replay（直打单例，
+    // 不经 chat_log::singleton 的惰性 ensure），在此显式收敛（幂等）。
+    crate::test_home::ensure_redirected();
     format!(
         "{}_{}_{}",
         prefix,
@@ -57,6 +60,7 @@ fn unique_key(prefix: &str) -> String {
 
 /// Best-effort removal of this test's sidecars from the global boundary dir.
 fn cleanup_sidecars(key: &str) {
+    crate::test_home::ensure_redirected(); // 直调单例前显式重定向（幂等；删除语义）
     let dir = nemesis_path::default_path_manager().boundary_events_dir();
     let safe = key.replace(':', "_");
     let _ = std::fs::remove_file(dir.join(format!("{}.replay.jsonl", safe)));
@@ -64,6 +68,7 @@ fn cleanup_sidecars(key: &str) {
 }
 
 fn temp_store(key: &str) -> (SessionStore, std::path::PathBuf) {
+    crate::test_home::ensure_redirected(); // 同上（生产 replay 写路径直打单例）
     let dir = std::env::temp_dir().join(format!("t8_replay_{}_{}", key, std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let store = SessionStore::new_with_storage(&dir);
@@ -1412,6 +1417,60 @@ fn l24_store_object_idempotent_and_hex_named() {
         std::fs::read_to_string(dir.join(format!("{}.txt", sha256_hex("beta")))).unwrap(),
         "beta"
     );
+}
+
+/// BUG-20261115-013 回归锁：同内容并发 store_object（跨进程并发的进程内
+/// 仿真）——旧 `{hash}.tmp` 内容寻址同名 + `fs::write` 截断写，多写者
+/// 互踩同名 tmp，竞窗内 rename 可发布半截对象（hash≠内容 = 寻址存储
+/// 腐蚀，重放水合读出撕裂快照）。write_file_atomic 的 pid+序数+纳秒唯一
+/// 名根除互踩：对象内容恒完整；目录零 tmp 孤儿。诚实边界：真跨进程碰撞
+/// 不可单测复现，机制由 utils 层 8 测试覆盖（含 no_temp_file_left），
+/// 本锁钉 wiring + 孤儿卫生。
+#[test]
+fn l24_store_object_concurrent_same_content_no_corruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let boundary = tmp.path().join("boundary");
+    std::fs::create_dir_all(&boundary).unwrap();
+
+    let content = "shared prompt body\n".repeat(64);
+    let hash = sha256_hex(&content);
+    let handles: Vec<_> = (0..4)
+        .map(|_| {
+            let boundary = boundary.clone();
+            let content = content.clone();
+            let hash = hash.clone();
+            std::thread::spawn(move || {
+                store_object(&boundary, "system_prompt", &content, &hash, "txt");
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("writer thread");
+    }
+
+    let obj = boundary
+        .join("objects")
+        .join("system_prompt")
+        .join(format!("{hash}.txt"));
+    assert_eq!(
+        std::fs::read_to_string(&obj).unwrap(),
+        content,
+        "object bytes intact after concurrent same-content stores"
+    );
+
+    let dir = boundary.join("objects").join("system_prompt");
+    let orphans: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(nemesis_utils::file::ATOMIC_TMP_PREFIX))
+        .collect();
+    assert!(orphans.is_empty(), "no tmp orphans: {orphans:?}");
+    let entries: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec![format!("{hash}.txt")], "exactly one object");
 }
 
 /// 台账记录 serde 兼容双向：旧形态（缺新字段）解析 = None；新形态往返保真。

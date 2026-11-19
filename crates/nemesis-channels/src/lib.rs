@@ -17,6 +17,12 @@ pub mod base;
 pub mod manager;
 pub mod rpc_channel;
 pub mod web;
+// webhook 入站通道随 `webhook` feature 门控（IoT 最小包关——无外部
+// webhook 推送消费面；默认开 = 全量构建行为不变）。
+// ⚠ 未接线保留件（2026-11-18 用户裁定）：生产装配面全缺是有意现状，
+// 不删、暂不接线，未来会有用；与 events 系统的活 webhook 重名不同物，
+// 详见 webhook_inbound.rs 模块头注记。
+#[cfg(feature = "webhook")]
 pub mod webhook_inbound;
 #[cfg(feature = "websocket")]
 pub mod websocket;

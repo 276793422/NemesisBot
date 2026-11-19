@@ -4157,6 +4157,79 @@ async fn test_handle_tool_call_with_security_block() {
     );
 }
 
+// BUG-20261118-090：output_preview_sanitizer 同源集成——插件在位时净化器
+// 脱敏真实凭据形态（与 dispatch 尾部 rescan 同一 plugin 语义）；插件缺席
+// = None（预览原样，退回旧形态）。
+#[cfg(feature = "security")]
+#[test]
+fn output_preview_sanitizer_masks_real_credential_when_plugin_present() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    use nemesis_security::types::SecurityRule;
+
+    let config = SecurityPluginConfig {
+        enabled: true,
+        injection_enabled: false,
+        injection_threshold: 0.7,
+        command_guard_enabled: false,
+        credential_enabled: true,
+        dlp_enabled: false,
+        dlp_action: "block".to_string(),
+        dlp_enabled_rules: vec![],
+        dlp_low_confidence_action: "log".to_string(),
+        dlp_inbound_action: "log".to_string(),
+        ssrf_enabled: false,
+        ssrf_allowed_hosts: vec![],
+        audit_chain_enabled: false,
+        audit_chain_path: None,
+        audit_log_enabled: false,
+        audit_log_dir: None,
+        default_action: "deny".to_string(),
+        approval_timeout_secs: 300,
+        log_all_operations: true,
+        preexec_scan_enabled: false,
+        file_rules: vec![],
+        dir_rules: vec![],
+        process_rules: vec![],
+        network_rules: vec![],
+        hardware_rules: vec![],
+        registry_rules: vec![SecurityRule {
+            pattern: ".*".to_string(),
+            action: "allow".to_string(),
+            comment: "allow all (本测只打出侧复扫面)".to_string(),
+        }],
+    };
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_security_plugin(Arc::new(SecurityPlugin::new(config)));
+    let sanitize = agent_loop
+        .output_preview_sanitizer()
+        .expect("插件在位 = 净化器必须在位");
+    // 注：AWS 官方文档示例键（AKIAIOSFODNN7EXAMPLE）被豁免表
+    // is_canonical_doc_example 刻意放行（文档占位符不是泄漏），此处用
+    // 非 example 形态的真实键格式断言遮蔽。
+    let raw = "aws_key = AKIAQWERNMXC7H2K9PL4 and more content here to pass length gate";
+    let out = sanitize("read_file", raw);
+    assert!(
+        !out.contains("AKIAQWERNMXC7H2K9PL4"),
+        "净化器必须遮蔽真实凭据形态: {out}"
+    );
+    assert!(
+        out.contains("[REDACTED_CREDENTIAL]"),
+        "出侧脱敏标记必须在位: {out}"
+    );
+    // 无命中文本直通（净化器不改写干净输出）。
+    let clean = sanitize("read_file", "plain output without secrets");
+    assert_eq!(clean, "plain output without secrets");
+}
+
+#[test]
+fn output_preview_sanitizer_none_without_plugin() {
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    assert!(
+        agent_loop.output_preview_sanitizer().is_none(),
+        "插件缺席 = None（预览原样，退回旧形态）"
+    );
+}
+
 #[tokio::test]
 async fn test_checkpoint_e2e_write_then_rewind_restores() {
     // AgentLoop-level e2e: write_file snapshots pre-edit content via the
@@ -5190,6 +5263,34 @@ async fn test_process_heartbeat_no_done_event() {
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
     let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
     assert_eq!(result, Ok("Heartbeat response".to_string()));
+}
+
+#[tokio::test]
+async fn test_process_heartbeat_error_event_returns_err() {
+    // BUG-20261118-153 回归锁：LLM 失败的终态事件是 AgentEvent::Error，
+    // process_heartbeat 曾只扫 Done、把 Error 吞成 Ok(兜底文案) 假成功
+    // （gateway handler 的 is_error 分支死代码，心跳故障 debug 级隐身）。
+    // 对齐 cron 兄弟路径约定：无 Done 有 Error → Err(错误消息)。
+    struct ErrorProvider;
+    #[async_trait]
+    impl LlmProvider for ErrorProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            Err("heartbeat provider down".to_string())
+        }
+    }
+
+    let agent_loop = AgentLoop::new(Box::new(ErrorProvider), test_config());
+    let result = agent_loop.process_heartbeat("ping", "web", "chat1").await;
+    assert!(result.is_err());
+    // 消息文本带 loop 错误格式化前缀（"Error: ..."），断言含根因即可
+    // （对齐 test_run_with_llm_error 的 contains 风格）。
+    assert!(result.unwrap_err().contains("heartbeat provider down"));
 }
 
 #[test]
@@ -6532,13 +6633,16 @@ async fn test_turn_permits_bound_concurrency() {
         let r = running.clone();
         let p = peak.clone();
         let d = done.clone();
-        agent_loop.spawn_turn_task(async move {
-            let cur = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            p.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            r.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        });
+        agent_loop.spawn_turn_task(
+            async move {
+                let cur = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                p.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                r.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+            "agent:main:session:parallel",
+        );
     }
     // 用完成计数等全收（running 初值 0 会抢在任务首跑前通过）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -8176,6 +8280,96 @@ async fn test_forge_records_successful_tool_experience() {
     assert!(!exp.id.is_empty());
 }
 
+/// A1（缺陷整改批次 2026-11-14）：每轮 LLM 响应落定发一次 `llm_turn`
+/// 轨迹事件——反思侧 avg_rounds / avg_tool_calls_per_round 的轮次锚点
+/// （tool_call 只刻画工具节奏，不计轮）。回归钉咬合：摘掉 run_loop
+/// 发射块，本测试翻红（trace store 无 llm_turn 事件）。
+#[cfg(feature = "forge")]
+#[tokio::test]
+async fn test_forge_records_llm_turn_trace_event_per_response() {
+    // 与 gateway 装配点同款（ctx.rs：TraceStore::new(forge_dir/"traces")
+    // + init_trace）——forge 构造器不自动装配 trace 面，record_trace_event
+    // 对 None 静默无操作；须在 Arc 包装前完成 &mut 初始化，故不走
+    // create_test_forge（它直接返回 Arc）。
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = nemesis_forge::config::ForgeConfig::default();
+    config.enabled = true;
+    let mut forge_raw = nemesis_forge::forge::Forge::new(config, dir.path().to_path_buf());
+    forge_raw.init_trace(nemesis_forge::trace_store::TraceStore::new(
+        forge_raw.forge_dir().join("traces"),
+    ));
+    let forge = Arc::new(forge_raw);
+    let _dir = dir;
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "tc_lt".to_string(),
+                name: "calculator".to_string(),
+                arguments: r#"{"expr":"2+2"}"#.to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "The answer is 4.".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "calculator".to_string(),
+        Box::new(MockTool {
+            result: "4".to_string(),
+        }),
+    );
+    agent_loop.set_forge(forge.clone());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let _events = agent_loop.run(&instance, "What is 2+2?", &context).await;
+
+    // 两轮 LLM 响应各发一次 llm_turn；session_key 与经验台账同格式
+    // （channel:chat_id）。
+    let store = forge.trace_store().expect("trace store must exist");
+    let all_events = store.read_all().await.unwrap();
+    let llm_turns: Vec<_> = all_events
+        .iter()
+        .filter(|e| e.event_type == "llm_turn")
+        .collect();
+    assert_eq!(
+        llm_turns.len(),
+        2,
+        "两轮 LLM 响应各发一次 llm_turn，实际 {:?}",
+        all_events
+            .iter()
+            .map(|e| e.event_type.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        llm_turns.iter().all(|e| e.session_key == "web:chat1"),
+        "llm_turn session_key 必须与经验台账同格式"
+    );
+    // tool_call 事件与 llm_turn 共存于同一轨迹（build_conversation_traces
+    // 消费前提）。
+    assert!(
+        all_events.iter().any(|e| e.event_type == "tool_call"),
+        "同一会话轨迹里应有 tool_call 事件与 llm_turn 并存"
+    );
+}
+
 #[cfg(feature = "forge")]
 #[tokio::test]
 async fn test_forge_records_tool_error_experience() {
@@ -9286,10 +9480,13 @@ async fn test_stop_aborts_tracked_turn_tasks() {
     let probe = TurnAbortProbe {
         dropped: dropped.clone(),
     };
-    arc.spawn_turn_task(async move {
-        let _probe = probe;
-        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-    });
+    arc.spawn_turn_task(
+        async move {
+            let _probe = probe;
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        },
+        "agent:main:session:abort_probe",
+    );
     // Let the spawned task actually start.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -10553,4 +10750,63 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
     assert_eq!(rows.len(), 4, "两轮 = 恰好 4 行: {content}");
 
     cleanup_session_log(&key);
+}
+
+// =========================================================================
+// BUG-20261117-052 回归锁：HashMap 迭代序不得消费为有序输出
+// =========================================================================
+
+/// 最小桩工具：Tool trait 只要求 execute，其余全走默认。
+struct SortedNameStubTool;
+
+#[async_trait]
+impl Tool for SortedNameStubTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        Ok("ok".to_string())
+    }
+}
+
+#[tokio::test]
+async fn mcp_snapshot_and_tool_names_sorted_after_out_of_order_registration() {
+    // 乱序注册三个 mcp_ 工具 → refresh_mcp_snapshot → snapshot 必须按名
+    // 字典序。HashMap RandomState 跨进程不同 + MCP 热装 rehash 漂移——
+    // 不排序则 mcp_list 全量清单输出序漂移，违反其「逐字节一致保
+    // prompt cache 兼容」自声明（BUG-20261117-052）。
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(Vec::new())), test_config());
+    agent_loop.register_plugin_tool("mcp_zulu".to_string(), Arc::new(SortedNameStubTool));
+    agent_loop.register_plugin_tool("mcp_alpha".to_string(), Arc::new(SortedNameStubTool));
+    agent_loop.register_plugin_tool("mcp_mid".to_string(), Arc::new(SortedNameStubTool));
+
+    agent_loop.refresh_mcp_snapshot();
+
+    let snap = agent_loop.mcp_tool_snapshot().read().clone();
+    let names: Vec<&str> = snap.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["mcp_alpha", "mcp_mid", "mcp_zulu"],
+        "mcp snapshot 必须按名字典序"
+    );
+
+    // tool_names() 本身同样必须定序（消费方含 slash 命令 join 输出）。
+    let all = agent_loop.tool_names();
+    let mut sorted = all.clone();
+    sorted.sort();
+    assert_eq!(all, sorted, "tool_names() 必须已排序");
+    assert!(all.contains(&"mcp_alpha".to_string()));
+}
+
+#[tokio::test]
+async fn model_aliases_sorted_deterministically() {
+    // /model 无参输出 joinaliases——HashMap 键迭代序是实现细节，
+    // 必须字典序（BUG-20261117-052）。
+    let mut cfg = test_config();
+    cfg.models.insert("zeta".to_string(), "m1".to_string());
+    cfg.models.insert("alpha".to_string(), "m2".to_string());
+    cfg.models.insert("mid".to_string(), "m3".to_string());
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(Vec::new())), cfg);
+    assert_eq!(
+        agent_loop.model_aliases(),
+        vec!["alpha", "mid", "zeta"],
+        "model_aliases 必须按别名排序"
+    );
 }

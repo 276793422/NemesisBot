@@ -287,6 +287,11 @@ async fn bus_resume_replays_only_agent_keyed_interrupted_sessions() {
     };
     wal.log(&call_a, STATE_ADMITTED, r#"{"cmd":"npm run build"}"#, None);
     wal.log(&call_a, STATE_STARTED, r#"{"cmd":"npm run build"}"#, None);
+    // 生产形态预置：jsonl user 行在 process_admitted 早落盘块物化（先于
+    // 工具执行），断头会话 jsonl 必然在场——恢复闸（2026-11-19 删除残留
+    // 修复）以 jsonl 缺席判「断电前已被删除」跳过续轮，本测试验证恢复
+    // 主链，须复刻在场形态。
+    crate::chat_log::append_chat_log(&call_a.session_key, "user", "请跑构建");
     // 断头调用 B：非 agent 键 → interrupted 留痕但不自动续轮。
     let call_b = WalCall {
         session_key: "web:skip-me".into(),
@@ -344,6 +349,67 @@ async fn bus_resume_replays_only_agent_keyed_interrupted_sessions() {
     let recs = read_wal(&dir.path().join("wal.jsonl"));
     assert_eq!(recs.len(), 2, "interrupted 留痕: {recs:?}");
     assert!(recs.iter().all(|r| r.state == STATE_INTERRUPTED));
+}
+
+/// 删除残留修复（2026-11-19）恢复闸：agent 键但 chat_log 已不在（断电前
+/// 会话被用户删除）→ 不合成续轮（self-heal 复活空壳 = 已删会话借尸还魂），
+/// interrupted 留痕照写。与上例互为镜像：键合法但落盘面已死 = 诚实放弃。
+#[tokio::test]
+async fn bus_resume_skips_when_chat_log_deleted() {
+    let _logs = capture_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let wal = TurnWal::open(dir.path()).expect("open wal");
+
+    // agent 键、状态 STARTED（断头现场完整），但故意**不**预置 jsonl
+    // （上例的预置 append 不做）= 「会话已删除」形态。
+    let call = WalCall {
+        session_key: "agent:main:session:s-deleted".into(),
+        channel: "web".into(),
+        chat_id: "chat-deleted".into(),
+        user: "carol".into(),
+        call_id: "call-deleted-1".into(),
+        tool: "exec".into(),
+    };
+    wal.log(&call, STATE_ADMITTED, r#"{"cmd":"npm test"}"#, None);
+    wal.log(&call, STATE_STARTED, r#"{"cmd":"npm test"}"#, None);
+    assert!(
+        !crate::chat_log::chat_log_exists(&call.session_key),
+        "夹具前置条件：会话已删（jsonl 缺席）"
+    );
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(CapturingProvider {
+            seen: std::sync::Arc::clone(&seen),
+            reply: "SHOULD_NOT_APPEAR",
+        }),
+        wal_cfg(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_turn_wal(std::sync::Arc::new(wal));
+
+    drop(in_tx);
+    agent_loop.run_bus_owned(in_rx).await;
+
+    let captured = seen.lock().unwrap().clone();
+    assert!(
+        captured.is_empty(),
+        "已删会话不得触发续轮 LLM 调用: {:?}",
+        captured
+    );
+    assert!(
+        out_rx.try_recv().is_err(),
+        "不得发布任何续轮回复（空壳复活破 I1）"
+    );
+    // interrupted 留痕照写（与「非预置键跳过」同款诚实放弃）。
+    let recs = read_wal(&dir.path().join("wal.jsonl"));
+    assert_eq!(recs.len(), 1, "interrupted 留痕: {recs:?}");
+    assert_eq!(recs[0].state, STATE_INTERRUPTED);
 }
 
 /// WAL 干净（零候选）时恢复是 no-op：正常消息照常处理，无续轮注入。

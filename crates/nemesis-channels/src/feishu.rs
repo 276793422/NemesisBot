@@ -10,7 +10,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -24,6 +24,10 @@ const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 /// Default WebSocket ping interval in seconds.
 const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 30;
+/// 单帧写超时上限（秒）。BUG-20261115-016：半死连接上无界写 await 会冻结
+/// 整个读循环（select 单臂卡住 = Pong/Ping/关停全停），有界超时让既有
+/// break/return 语义可达，重连臂接管。家族值对齐 IRC WRITE_TIMEOUT_SECS。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 
 /// Feishu channel configuration.
 /// SEC-002（BUG-20261111-068）：app_secret / verification_token /
@@ -255,7 +259,7 @@ impl FeishuChannel {
             .map_err(|e| NemesisError::Channel(format!("feishu send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("feishu send error: {body}")));
         }
 
@@ -638,10 +642,12 @@ impl FeishuChannel {
                     continue;
                 }
 
-                info!(url = %ws_url, "[FeishuChannel] connecting to WebSocket endpoint");
+                // ws_url 为 endpoint API 原样返回（wss://…?ticket=<连接凭据>
+                // 形态）——裸打即凭据进日志（BUG-20261119-182）。
+                info!(url = %crate::base::redact_url_secrets(&ws_url), "[FeishuChannel] connecting to WebSocket endpoint");
 
                 // Step 3: Connect to WebSocket
-                match connect_async(&ws_url).await {
+                match crate::base::ws_connect_bounded(&ws_url).await {
                     Ok((ws_stream, _)) => {
                         info!("[FeishuChannel] WebSocket connected successfully");
                         backoff = INITIAL_BACKOFF;
@@ -695,7 +701,12 @@ impl FeishuChannel {
                                             }
                                         }
                                         Some(Ok(Message::Ping(payload))) => {
-                                            let _ = write.send(Message::Pong(payload)).await;
+                                            // BUG-20261115-016：有界写，超时静默放弃本帧
+                                            let _ = tokio::time::timeout(
+                                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                                write.send(Message::Pong(payload)),
+                                            )
+                                            .await;
                                         }
                                         Some(Ok(Message::Close(frame))) => {
                                             info!(frame = ?frame, "[FeishuChannel] WebSocket closed by server");
@@ -717,14 +728,26 @@ impl FeishuChannel {
                                 }
                                 _ = ping_interval_timer.tick() => {
                                     // Send a text ping (Feishu accepts text-based pings)
-                                    if write.send(Message::Ping(vec![].into())).await.is_err() {
+                                    // BUG-20261115-016：有界写，超时与发送失败同走 break 重连
+                                    if tokio::time::timeout(
+                                        std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                        write.send(Message::Ping(vec![].into())),
+                                    )
+                                    .await
+                                    .is_err()
+                                    {
                                         warn!("[FeishuChannel] WebSocket ping failed");
                                         break;
                                     }
                                 }
                                 _ = &mut cancel_rx => {
                                     info!("[FeishuChannel] WebSocket receive loop shutting down");
-                                    let _ = write.close().await;
+                                    // BUG-20261115-016：关停路径 close 也有界（挂死连接上 close 同样可永远 pending）
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                        write.close(),
+                                    )
+                                    .await;
                                     return;
                                 }
                             }

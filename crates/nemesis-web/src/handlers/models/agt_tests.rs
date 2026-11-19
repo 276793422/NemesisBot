@@ -37,6 +37,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -59,6 +60,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -72,6 +74,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -170,6 +173,40 @@ async fn agt_update_field_proxy_rejects_bad_prefix() {
     // 拒绝后 config 不变
     let cfg = agt_read_config_raw(dir.path());
     assert!(cfg["model_list"][0].get("proxy").is_none());
+}
+
+/// BUG-20261114-064：socks:// scheme 拒绝——reqwest/hyper-util 都不认
+/// （env 路径静默直连、显式路径连接期失败），保存期必须 loud 拒绝。
+#[tokio::test]
+async fn agt_update_field_proxy_rejects_socks_scheme() {
+    let dir = tempfile::tempdir().unwrap();
+    agt_write_config(
+        dir.path(),
+        r#"{ "model_list": [ { "model_name": "m1", "model": "test/testai-1.1" } ] }"#,
+    );
+    let ctx = agt_make_ctx(&dir);
+    let err = ModelsHandler::new()
+        .update_field(
+            &agt_home_str(&dir),
+            &serde_json::json!({ "name": "m1", "field": "proxy", "value": "socks://proxy:1080" }),
+            &ctx,
+        )
+        .unwrap_err();
+    assert!(err.contains("proxy must start with"), "err: {err}");
+    // socks5:// 仍合法（reqwest socks feature 支持面）
+    let out = ModelsHandler::new()
+        .update_field(
+            &agt_home_str(&dir),
+            &serde_json::json!({ "name": "m1", "field": "proxy", "value": "socks5://proxy:1080" }),
+            &ctx,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["updated"], true);
+    assert_eq!(
+        agt_read_config_raw(dir.path())["model_list"][0]["proxy"],
+        "socks5://proxy:1080"
+    );
 }
 
 /// entry_is_default 的两个非 model_name 命中臂（719-720）：
@@ -282,6 +319,20 @@ impl crate::handlers::projects::ProjectsBridge for AgtRecordingBridge {
         &self,
         _project_id: &str,
         _trusted: bool,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn add_dir(
+        &self,
+        _project_id: &str,
+        _dir: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn remove_dir(
+        &self,
+        _project_id: &str,
+        _dir: &str,
     ) -> Result<crate::handlers::projects::ProjectInfo, String> {
         Err("not wired".to_string())
     }

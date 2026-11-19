@@ -698,7 +698,7 @@ impl InstallableEngine for ClamAVEngine {
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     drop(tmp_file);
-                    let _ = std::fs::remove_file(&tmp_path);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
                     return Err("download cancelled".to_string());
                 }
                 chunk = stream.next() => {
@@ -707,7 +707,7 @@ impl InstallableEngine for ClamAVEngine {
                             tmp_file.write_all(&data)
                                 .await
                                 .map_err(|e| {
-                                    let _ = std::fs::remove_file(&tmp_path);
+                                    let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
                                     format!("download write failed: {}", e)
                                 })?;
                             written += data.len() as u64;
@@ -737,7 +737,7 @@ impl InstallableEngine for ClamAVEngine {
                             }
                         }
                         Some(Err(e)) => {
-                            let _ = std::fs::remove_file(&tmp_path);
+                            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
                             return Err(format!("download read failed: {}", e));
                         }
                         None => break,
@@ -767,7 +767,7 @@ impl InstallableEngine for ClamAVEngine {
         extract_zip_archive(&tmp_path, dir_path)?;
 
         // Clean up temp file
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
 
         // Auto-detect install path
         let install_path = self.detect_install_path(dir_path)?;

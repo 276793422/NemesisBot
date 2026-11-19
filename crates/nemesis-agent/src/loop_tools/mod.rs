@@ -47,7 +47,9 @@ mod mcp;
 mod memory_skills;
 mod messaging;
 mod misc;
+mod read_image;
 mod registry;
+mod screen_tools;
 mod search_code;
 mod spawn;
 mod web;
@@ -61,7 +63,9 @@ pub use mcp::*;
 pub use memory_skills::*;
 pub use messaging::*;
 pub use misc::*;
+pub use read_image::*;
 pub use registry::*;
+pub use screen_tools::*;
 pub use search_code::*;
 pub use spawn::*;
 pub use web::*;
@@ -89,10 +93,19 @@ mod git_tool_tests;
 // web_fetch 重定向循环 + SSRF 逐跳复查测试。
 #[cfg(test)]
 mod exec_timeout_tests;
+// AsyncExecTool 启动确认臂信号终止诚实上报（BUG-20261117-056）：
+// wait Ok 臂 code None = 信号终止必须 Err，不得谎报「确认运行中」。
+// 裁决纯函数全平台单测；真进程 e2e 用例 unix 门控。
+#[cfg(test)]
+mod exec_async_signal_tests;
 // exec deny 词表接线测试（2026-11-08 激活 tools.exec.* 死键：
 // 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
 #[cfg(test)]
 mod exec_deny_tests;
+// env 槽硬校验回归（BUG-20261116-025）：空键/含 `=` 键/含 NUL 键值
+// 诚实 Err（std Command::env panic 面前置拦截），execute 面红证锁。
+#[cfg(test)]
+mod exec_env_slot_tests;
 // exec 执行中输出流 tee（2026-11-08）：返回值路径不变 + EOF flush +
 // 窗丢头保尾 + 节流 + hook 装配 e2e + exec_output_tx 广播接线。
 #[cfg(test)]
@@ -113,6 +126,16 @@ mod cron_tool_tests;
 mod tests;
 #[cfg(test)]
 mod web_fetch_tests;
+// BUG-20261115-009 回归锁：带凭据 search client 的跨源重定向终停行为级测试。
+#[cfg(test)]
+mod web_search_redirect_tests;
+// search_code glob 过滤回归（BUG-20261117-050）：fnmatch 子集（`*`/`?`）
+// 修复中间星号 glob（test_*.rs）静默失配 → 裸「No matches」假阴性。
+#[cfg(test)]
+mod search_code_glob_tests;
+// grep 显式 path 工作区边界回归（BUG-20261117-067）：读族 fence 同源。
+#[cfg(test)]
+mod search_code_boundary_tests;
 
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]

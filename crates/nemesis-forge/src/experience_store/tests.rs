@@ -610,3 +610,70 @@ async fn r735_cleanup_i64_min_converges_to_delete_past_only() {
         "flat 文件中旧经验应被 trim"
     );
 }
+
+#[tokio::test]
+async fn bug145_cleanup_continues_past_unremovable_entry_and_trims_flat() {
+    // BUG-20261118-145：sweep 中断的连带代价是平文件 trim 被整体跳过
+    // （trim 在 sweep 之后）且 caller 静默吞 Err——清理永久失效零可观测。
+    // 目录伪装 .jsonl 挡路时（remove_file 全平台失败），现逐文件容错：
+    // 整体 Ok、真旧文件照删、毒条目留在原地、**平文件 trim 照常执行**。
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let exp_dir = dir.path().join("experiences");
+    std::fs::create_dir_all(&exp_dir).unwrap();
+
+    // 旧月目录：毒条目（目录伪装 .jsonl）+ 真旧文件。
+    let month = exp_dir.join("202001");
+    std::fs::create_dir_all(&month).unwrap();
+    let poison = month.join("20200101.jsonl");
+    std::fs::create_dir(&poison).unwrap();
+    let real_old = month.join("20200102.jsonl");
+    std::fs::write(&real_old, "{}\n").unwrap();
+
+    // 平文件：一条 2020 旧经验（应被 trim）+ 一条当前经验（应存活）。
+    let mk = |tool: &str, ts: &str| {
+        serde_json::to_string(&CollectedExperience {
+            experience: Experience {
+                id: tool.into(),
+                tool_name: tool.into(),
+                input_summary: "x".into(),
+                output_summary: "y".into(),
+                success: true,
+                duration_ms: 1,
+                timestamp: ts.into(),
+                session_key: "s".into(),
+            },
+            dedup_hash: tool.into(),
+        })
+        .unwrap()
+    };
+    let now = chrono::Local::now().to_rfc3339();
+    std::fs::write(
+        exp_dir.join("experiences.jsonl"),
+        format!(
+            "{}\n{}\n",
+            mk("old_tool", "2020-01-01T00:00:00+08:00"),
+            mk("new_tool", &now)
+        ),
+    )
+    .unwrap();
+
+    let store = ExperienceStore::from_forge_dir(dir.path());
+    let removed = store
+        .cleanup(30)
+        .await
+        .expect("cleanup must not hard-fail on one unremovable entry");
+    // 真旧文件删 1 + 平文件旧经验 trim 1（毒条目不计）。
+    assert_eq!(removed, 2, "swept file + trimmed old flat entry");
+    assert!(!real_old.exists(), "real old file must still be swept");
+    assert!(poison.exists(), "poison dir entry stays in place");
+    let remaining = std::fs::read_to_string(exp_dir.join("experiences.jsonl")).unwrap();
+    assert!(
+        !remaining.contains("old_tool"),
+        "flat trim must still run after sweep hit the poison entry: {remaining}"
+    );
+    assert!(
+        remaining.contains("new_tool"),
+        "recent flat entry must survive: {remaining}"
+    );
+}

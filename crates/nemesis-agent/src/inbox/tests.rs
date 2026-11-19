@@ -339,3 +339,42 @@ fn test_has_pending_cron_job() {
     );
     assert!(inbox.has_pending_cron_job("s", "job-1"));
 }
+
+// ---------------------------------------------------------------------------
+// enqueue_steer（项3 子代理飞行中驾驶）：程序化 steer 直插 next_step。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_enqueue_steer_lands_next_step_without_marker() {
+    let inbox = Inbox::new(8);
+    // 无 `!` 前缀也进 next_step（语义本就是 steer，不经标记检测）。
+    let out = inbox.enqueue_steer("s", msg("[父代理指令] 转向"));
+    assert_eq!(out, EnqueueOutcome::QueuedForNextStep);
+    let (nt, ns) = inbox.pending("s");
+    assert_eq!((nt, ns), (0, 1), "只进 next_step，不动 next_turn");
+    let batch = inbox.claim_next_step("s");
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].msg.content, "[父代理指令] 转向", "内容原样保留");
+}
+
+#[test]
+fn test_enqueue_steer_ignores_soft_watermark_but_not_hard_cap() {
+    let inbox = Inbox::new(8);
+    // 软水位（90% = 7）之上 steer 仍入队（与 enqueue_for_mode 的 steer
+    // 豁免同规则）——先填 7 条普通消息。
+    for i in 0..7 {
+        let out = inbox.enqueue_for_mode("s", msg(&format!("m{i}")), false);
+        assert_eq!(out, EnqueueOutcome::QueuedForNextTurn);
+    }
+    let out = inbox.enqueue_steer("s", msg("steer 越过软水位"));
+    assert_eq!(
+        out,
+        EnqueueOutcome::QueuedForNextStep,
+        "steer 不受软水位约束"
+    );
+    // 此时 7 普通 + 1 steer = 8 = 容量：硬上限满，steer 不豁免。
+    assert_eq!(
+        inbox.enqueue_steer("s", msg("第 9 条")),
+        EnqueueOutcome::Rejected
+    );
+}

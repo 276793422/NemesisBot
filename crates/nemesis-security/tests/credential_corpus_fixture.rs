@@ -3,7 +3,8 @@
 //! 背景：四批横扫 + 语料矩阵普查（32 条 L4 规则 × 文体全格 74 格）后，
 //! 全部误报豁免收拢进单一真相源 `credential/exemptions.rs`（数据驱动豁免
 //! 表，L4 scan/redact 两面单行调用消费；DLP validator 直调同源判据 helper）。
-//! 本 fixture 把普查矩阵钉成回归锁：
+//! 本 fixture 把普查矩阵钉成回归锁（BUG-20261113-124 批在普查基线上补
+//! 2 格防修过头负样本 + 1 格 DLP 对称补面）：
 //! - `l4_corpus_matrix`：占位/教程/模板形态**不命中**（豁免表失效一格即红）；
 //! - `l4_real_credentials_still_flagged`：防修过头——真实形态照常命中；
 //! - `dlp_placeholder_forms_demoted` / `dlp_real_forms_still_block`：
@@ -64,6 +65,16 @@ fn corpus() -> Vec<(&'static str, &'static str, String, bool)> {
         "全零",
         "aws_access_key_id = AKIA0000000000000000".into(),
         false,
+    );
+    // 全字母尾段 = 真实键形态（base36 真实键全字母概率 (26/36)^16≈0.66%；
+    // 2026-11-12 词表收窄根修：占位豁免需命中占位词表，顺序字母段不是
+    // 占位词——裸 SCREAMING 误豁免 = 每约 150 把真键漏检一把）。
+    g(
+        &mut c,
+        "aws_access_key",
+        "全字母真实形态",
+        "aws_access_key_id = AKIAABCDEFGHIJKLMNOP".into(),
+        true,
     );
     // ── aws_secret_key ──
     g(
@@ -376,6 +387,23 @@ fn corpus() -> Vec<(&'static str, &'static str, String, bool)> {
         "postgres://${DB_USER}:${DB_PASSWORD}@localhost/db".into(),
         false,
     );
+    // BUG-20261113-124 回归锁：裸 `$`/`{`（无 `${…}` 对）是真实口令高频
+    // 字符——旧裸模板字符判据把 `Pa$$w0rd` 类整串豁免（L4 拦截与 DLP
+    // demote 双面漏检）。修正后必须照常拦截。
+    g(
+        &mut c,
+        "db_connection_postgres",
+        "真实口令含裸$（防修过头）",
+        "postgres://admin:Pa$$w0rd@prod-db.internal/app".into(),
+        true,
+    );
+    g(
+        &mut c,
+        "db_connection_mysql",
+        "真实口令含裸{（防修过头）",
+        "mysql://deploy:S3cur3d{K9@db.prod.internal/app".into(),
+        true,
+    );
     g(
         &mut c,
         "db_connection_mysql",
@@ -670,6 +698,9 @@ format!("stripe_key = sk_test_4eC39HqLyjWDarjtT1zdp{}", "7dc")),
         // DLP slack regex 为四段式（xox?-数字-数字-值）；末段 SCREAMING 占位
         // 34 字符恰在上限。运行时拼接绕 GitHub push protection（同上注记）。
         ("slack_token", format!("xoxb-123456789012-1234567890123-{}", "YOURSLACKTOKENHEREPLACEWITHYOURSXXX")),
+        // BUG-20261113-124 伴生：DLP db 格补齐（此前面 fixture 的 DLP 两测
+        // 无 db_connection 格）——compose 模板对形态 demote 不 block。
+        ("database_connection_string", "postgres://${DB_USER}:${DB_PASSWORD}@db:5432/app".into()),
     ];
     for (rule, sample) in &cases {
         let r = dlp.scan_text(sample);
@@ -691,11 +722,20 @@ fn dlp_real_forms_still_block() {
     let dlp = DlpEngine::new(true, "block");
     let cases: Vec<(&str, String)> = vec![
         ("aws_access_key", "aws_access_key_id = AKIANCDC6VFQTFGRMBKW".into()),
+        // BUG-20261113-148：全字母无词表 SCREAMING 真实形态（占位豁免词表
+        // 收窄的行为增量面）必须保持 block——上一行含数字样本在收窄前后
+        // 两版判据下都不过 SCREAMING（含数字即失格），钉不住收窄；此格
+        // 让 dlp validator（aws_access_not_doc_example）回退裸 SCREAMING
+        // 旧判据时当场翻红。
+        ("aws_access_key", "aws_access_key_id = AKIAABCDEFGHIJKLMNOP".into()),
         ("aws_secret_key", "aws_secret_access_key = K7MdE1NgBpXrFiCy3Wj9QaZt5uVwS8xY2hJ4mN6pQ0".into()),
         // jwt.io demo 常量尾字符改写（d→d 不行,取末位替换为 9）——非 demo 真 JWT
         ("jwt_token", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.flKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c9".into()),
         ("stripe_key", "stripe_key = sk_test_AbCdEf123456GhIjKl12MnOpQr".into()),
         ("slack_token", format!("xoxb-123456789012-1234567890123-{}", "AbCdEf123456GhIjKl12MnOpQr")),
+        // BUG-20261113-124 伴生：裸 `$` 真实口令（无 `${…}` 对）必须保持
+        // block——validator 与 Layer 4 同源（is_placeholder_db_credential）。
+        ("database_connection_string", "postgres://admin:Pa$$w0rd@prod-db.internal/app".into()),
     ];
     for (rule, sample) in &cases {
         let r = dlp.scan_text(sample);

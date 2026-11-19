@@ -96,6 +96,39 @@ async fn test_read_body_capped_wire_over_limit() {
     assert!(err.contains("aborted mid-read"), "msg: {err}");
 }
 
+// ---- read_body_capped_typed（BUG-20261115-024：分型错误视图）----
+
+#[tokio::test]
+async fn test_read_body_capped_typed_ok() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/f"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("hello"))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/f", server.uri())).await.unwrap();
+    let out = super::read_body_capped_typed(resp, 100).await.unwrap();
+    assert_eq!(out, b"hello");
+}
+
+#[tokio::test]
+async fn test_read_body_capped_typed_exceeds_limit_variant() {
+    // 分型核心：超限错误由类型承载（ExceedsLimit{cap}），调用方不再靠
+    // 消息子串反解分类。
+    let server = wiremock::MockServer::start().await;
+    let big = "x".repeat(10_000);
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/big"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(big))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/big", server.uri())).await.unwrap();
+    match super::read_body_capped_typed(resp, 1024).await {
+        Err(super::BodyReadError::ExceedsLimit { cap }) => assert_eq!(cap, 1024),
+        other => panic!("expected ExceedsLimit {{cap}}, got {other:?}"),
+    }
+}
+
 // ---- 传输级「中途断开」观测（钉 [`super::read_body_capped`] 本体）----
 //
 // wiremock 只能观测最终错误消息，观测不了「读了多少」——若未来有人把
@@ -160,4 +193,163 @@ async fn test_read_body_capped_aborts_transport_mid_read() {
         (sent as u64) < CAP + 8 * 1024 * 1024,
         "server sent {sent} bytes; client must stop consuming near cap ({CAP}), not drain all {BODY}"
     );
+}
+
+// ---- read_error_body（BUG-20261113-164：错误体有帽读取）----
+
+#[tokio::test]
+async fn test_read_error_body_small_body_untouched() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/e"))
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("{\"error\":\"boom\"}"))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/e", server.uri())).await.unwrap();
+    let out = super::read_error_body(resp).await;
+    assert_eq!(out, "{\"error\":\"boom\"}");
+    assert!(!out.contains("truncated"));
+}
+
+#[tokio::test]
+async fn test_read_error_body_over_cap_truncates_with_note() {
+    let server = wiremock::MockServer::start().await;
+    let big = "y".repeat(512 * 1024);
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/big"))
+        .respond_with(wiremock::ResponseTemplate::new(500).set_body_string(big))
+        .mount(&server)
+        .await;
+    let resp = reqwest::get(format!("{}/big", server.uri())).await.unwrap();
+    let out = super::read_error_body(resp).await;
+    assert!(out.contains("…[error body truncated]"), "must carry note");
+    // 帽 256KB + 注记；512KB body 不得全量进内存。
+    assert!(
+        out.len() < 300 * 1024,
+        "capped length must stay near cap, got {}",
+        out.len()
+    );
+    assert!(out.starts_with('y'), "prefix must be preserved");
+}
+
+#[tokio::test]
+async fn test_read_error_body_aborts_transport_mid_read() {
+    // 与 read_body_capped 的传输级测试同形：64MB body + 客户端帽 256KB，
+    // 服务器实际写出必须远小于全量（客户端帽化停读断开）。
+    const BODY: usize = 64 * 1024 * 1024;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut req = vec![0u8; 8192];
+        let mut got = 0usize;
+        loop {
+            let n = sock.read(&mut req[got..]).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            got += n;
+            if req[..got].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = format!(
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-length: {BODY}\r\nconnection: close\r\n\r\n"
+        );
+        if sock.write_all(head.as_bytes()).await.is_err() {
+            return 0usize;
+        }
+        let chunk = vec![b'z'; 64 * 1024];
+        let mut sent = 0usize;
+        while sent < BODY {
+            let n = chunk.len().min(BODY - sent);
+            match sock.write_all(&chunk[..n]).await {
+                Ok(()) => sent += n,
+                Err(_) => break,
+            }
+        }
+        sent
+    });
+
+    let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+    let out = super::read_error_body(resp).await;
+    assert!(out.contains("…[error body truncated]"), "must carry note");
+
+    let sent = tokio::time::timeout(std::time::Duration::from_secs(30), server)
+        .await
+        .expect("server task must terminate")
+        .unwrap();
+    const CAP: usize = 256 * 1024;
+    assert!(
+        sent < CAP + 8 * 1024 * 1024,
+        "server sent {sent} bytes; client must stop consuming near cap ({CAP}), not drain all {BODY}"
+    );
+}
+
+// ---- read_body_capped_blocking（2026-11-15 persona shop 同类横扫补）----
+
+#[test]
+fn blocking_reader_passes_within_cap() {
+    let out = super::read_body_capped_blocking(b"hello world".as_slice(), 12).unwrap();
+    assert_eq!(out, b"hello world");
+}
+
+#[test]
+fn blocking_reader_aborts_mid_read_over_cap() {
+    // 超限在读入过程断（Err，无部分态返回）——与 async 版同契约。
+    let data = vec![b'x'; 4096];
+    let err = super::read_body_capped_blocking(data.as_slice(), 1024).unwrap_err();
+    assert!(err.contains("exceeds limit"), "{err}");
+    assert!(err.contains("aborted mid-read"), "{err}");
+}
+
+#[test]
+fn blocking_reader_exact_cap_passes_zero_cap_rejects_nonempty() {
+    assert!(super::read_body_capped_blocking(b"12345".as_slice(), 5).is_ok());
+    let err = super::read_body_capped_blocking(b"1".as_slice(), 0).unwrap_err();
+    assert!(err.contains("exceeds limit"), "{err}");
+    assert!(super::read_body_capped_blocking(std::io::empty(), 0).is_ok());
+}
+
+#[test]
+fn blocking_reader_propagates_read_error() {
+    struct Broken;
+    impl std::io::Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("boom"))
+        }
+    }
+    let err = super::read_body_capped_blocking(Broken, 1024).unwrap_err();
+    assert!(err.contains("failed to read response body"), "{err}");
+    assert!(err.contains("boom"), "{err}");
+}
+
+#[test]
+fn blocking_reader_stops_consuming_reader_on_over_cap() {
+    // 计数 Reader：超限后不得继续消费底层（读入过程中断，非读完后核对）。
+    use std::io::Read;
+    struct Counting<'a> {
+        inner: &'a [u8],
+        reads: usize,
+    }
+    impl<'a> Read for Counting<'a> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            let n = buf.len().min(self.inner.len());
+            buf[..n].copy_from_slice(&self.inner[..n]);
+            self.inner = &self.inner[n..];
+            Ok(n)
+        }
+    }
+    let mut r = Counting {
+        inner: &[b'a'; 2048],
+        reads: 0,
+    };
+    let err = super::read_body_capped_blocking(r.by_ref(), 512).unwrap_err();
+    assert!(err.contains("exceeds limit"), "{err}");
+    // 8192 缓冲一读即超限：恰好 1 次 read 后断，不再拖尾。
+    assert_eq!(r.reads, 1, "must abort after the first over-cap read");
 }

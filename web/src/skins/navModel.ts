@@ -59,6 +59,9 @@ const ITEM_FEATURE: Record<string, string> = {
   'layer-audit': 'SECURITY',
   guardian: 'SECURITY',
   approval: 'SECURITY',
+  // 邮箱页（邮件基础设施 2026-11-18，mail feature / VITE_FEATURE_MAIL 门控）：
+  // mail.* WSAPI 管理面（mailbox 列表/读信/写信/地址注册制）。
+  mailbox: 'MAIL',
   // 扫描器挂独立 scanner feature（2026-09-28 从 security 拆出）。
   scanner: 'SCANNER',
   sandbox: 'SANDBOX',
@@ -67,6 +70,10 @@ const ITEM_FEATURE: Record<string, string> = {
   // 交付审核页与看板同一 feature 闸（发布命令 delivery.publish 挂 board 模块）。
   deliveries: 'BOARD',
   terminal: 'TERMINAL',
+  // 事件管理面（项1 事件驱动唤醒 P2，events feature / VITE_FEATURE_EVENTS）。
+  events: 'EVENTS',
+  // 目标管理面（目标系统，goals feature / VITE_FEATURE_GOALS）。
+  goals: 'GOALS',
   // 更新页（selfupdate feature / VITE_FEATURE_SELFUPDATE 门控）：版本对照 +
   // 手动更新完整面；侧栏自更新长条保留快速入口（同 feature）。
   update: 'SELFUPDATE',
@@ -76,10 +83,13 @@ const ITEM_FEATURE: Record<string, string> = {
 
 export const NAV_GROUPS: NavGroupModel[] = [
   {
+    // 主要（2026-11-17 分组重组：日志自管理组挪入）——概览/日志/使用统计
+    // 组成「看系统状态」观测角，聊天与人格是每日入口。
     title: '主要',
     items: [
       { id: 'chat', label: '聊天', route: '/', icon: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' },
       { id: 'overview', label: '概览', route: '/overview', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z' },
+      { id: 'logs', label: '日志', route: '/logs', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8' },
       { id: 'usage', label: '使用统计', route: '/usage', icon: 'M18 20V10M12 20V4M6 20v-6' },
       { id: 'persona', label: '人格', route: '/persona', icon: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z' },
     ],
@@ -98,32 +108,81 @@ export const NAV_GROUPS: NavGroupModel[] = [
     ],
   },
   {
-    title: '管理',
+    // 模型（2026-11-17 自能力组三分拆）：agent 的大脑供给域——用什么脑
+    // （模型/本地模型）、怎么联网（代理设置）。
+    title: '模型',
     items: [
-      { id: 'logs', label: '日志', route: '/logs', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8' },
       { id: 'models', label: '模型', route: '/models', icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
+      { id: 'local-models', label: '本地模型', route: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },
+      // 代理设置（2026-09-17）：per-model 代理总览 + 环境变量 + lane 支持。
+      { id: 'proxy-settings', label: '代理设置', route: '/proxy-settings', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' },
+    ],
+  },
+  {
+    // 能力（2026-11-17 二次收窄：模型/通道/钩子三域分拆出走）：给 agent
+    // 本体装能力的供给面——记忆/人格超市/Skills/MCP/插件/专家Agent。
+    title: '能力',
+    items: [
       { id: 'memory', label: '记忆', route: '/memory', icon: 'M12 2a7 7 0 0 1 7 7c0 5.25-7 13-7 13S5 14.25 5 9a7 7 0 0 1 7-7z M12 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2z' },
       { id: 'persona-shop', label: '人格超市', route: '/persona-shop', icon: 'M3 3h18v18H3V3zm3 3h12v3H6V6zm0 5h12v3H6v-3zm0 5h8v3H6v-3z' },
       { id: 'skills', label: 'Skills', route: '/skills', icon: 'M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 1 1 7.072 0l-.548.547A3.374 3.374 0 0 0 14 18.469V19a2 2 0 1 1-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z' },
       { id: 'mcp', label: 'MCP', route: '/mcp', icon: 'M4 6h16M4 12h16M4 18h16' },
-      // 2026-08-29：MCP 之下新增 HOOK/命令/插件页。
-      // （子Agent 骨架页 2026-10-20 下线；2026-11-03 子代理可见性以实页
-      // 回归——spawn/后台/集群委派台账 + 事件环回放；2026-11-07 并入执行
-      // 单元复合页 /executors。）
-      { id: 'hooks', label: 'HOOK', route: '/hooks', icon: 'M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2m6.65 2H5a2 2 0 0 1 0-4h.01L7.9 8.08A4 4 0 0 1 12 2a4 4 0 0 1 4 4c0 .35-.05.71-.14 1.05M12 8a4 4 0 0 1 4 4c0 1.1-.45 2.1-1.17 2.83L12 18' },
-      { id: 'commands', label: '命令', route: '/commands', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'plugins', label: '插件', route: '/plugins', icon: 'M12 22v-5M9 8V2M15 8V2M6 8h12v4a6 6 0 0 1-12 0V8z' },
+      // 专家Agent（2026-11-13 专家子代理）：单机专家名册管理面——spawn
+      // `expert` 参数的供给侧（卡片栅格 + 默认子代理置顶锁定卡 + 雇佣
+      // 入口指向人格超市）。恒编译无 feature 闸（资源层无裁剪面）。
+      { id: 'experts', label: '专家Agent', route: '/experts', icon: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M23 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75' },
+    ],
+  },
+  {
+    // 通道（2026-11-17 自能力组三分拆）：对外触达域——收发消息的通道 +
+    // AI 原生行动连接器。
+    title: '通道',
+    items: [
+      { id: 'channels', label: '通道', route: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+      // 邮箱（邮件基础设施 2026-11-18，mail feature 门控）：SMTP/POP3 收发 +
+      // 地址注册制管理面——对外触达域，与通道组同域。
+      { id: 'mailbox', label: '邮箱', route: '/mailbox', icon: 'M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z M22 6l-10 7L2 6' },
+      // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
+      // 标签更名（2026-11-17 用户拍板）：Connectors → 连接器（仅侧栏文案）。
+      { id: 'connectors', label: '连接器', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },
+    ],
+  },
+  {
+    // 自动化（2026-11-17 分组重组；钩子同日自能力组收编）：agent 自主
+    // 运行与行为反射的编排面——工作流/事件/钩子/目标/执行单元/cron 任务。
+    title: '自动化',
+    items: [
+      { id: 'workflows', label: '工作流', route: '/workflows', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7zM10 6.5h4M10 17.5h4M6.5 10v4M17.5 10v4' },
+      // 事件（项1 事件驱动唤醒 P2，2026-11-16）：出事主动叫人——fs 事件规则
+      // （events.json 热重载）+ 泵统计 + cron/后台进程源只读收编。
+      { id: 'events', label: '事件', route: '/events', icon: 'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0' },
+      // 钩子（2026-11-17 自能力组收编进自动化）：生命周期事件 → 脚本/提示
+      // 反射，与【事件】相邻——事件 = 发生了什么，钩子 = 对它自动做反应。
+      // 标签更名（2026-11-17 用户拍板）：HOOK → 钩子（仅侧栏文案，id/路由不动）。
+      { id: 'hooks', label: '钩子', route: '/hooks', icon: 'M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2m6.65 2H5a2 2 0 0 1 0-4h.01L7.9 8.08A4 4 0 0 1 12 2a4 4 0 0 1 4 4c0 .35-.05.71-.14 1.05M12 8a4 4 0 0 1 4 4c0 1.1-.45 2.1-1.17 2.83L12 18' },
+      // 目标（目标系统，2026-11-17）：goal 注册表 + 评估台账 +
+      // 人控 create/update/enable/disable——goals feature / VITE_FEATURE_GOALS。
+      { id: 'goals', label: '目标', route: '/goals', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14l-4-4 1.41-1.41L10 13.17l6.59-6.59L18 8l-8 8z' },
       // 执行单元（2026-11-07 布局重构，原「子代理」更名扩容）：agent 派生
       // 执行单元复合页——【子代理】spawn/后台/集群委派台账 + 【后台任务】
       // background_start 进程台账两 TAB（/executors?tab=）。旧 /subagents、
       // /processes 路由 redirect 保深链兼容（?focus= 透传）。原独立「后台
-      // 任务」侧栏条目撤并（管理组 15 → 14 项）。
-      { id: 'executors', label: '执行单元', route: '/executors', icon: 'M12 2a3 3 0 0 1 3 3c0 1.3-.84 2.4-2 2.82V10h3a3 3 0 0 1 3 3v1.18c1.16.42 2 1.52 2 2.82a3 3 0 1 1-5.83-1H13v1.18a3 3 0 1 1-2 0V14H7.83A3.001 3.001 0 1 1 2 17c0-1.3.84-2.4 2-2.82V13a3 3 0 0 1 3-3h3V7.82A3.001 3.001 0 0 1 12 2z' },
-      { id: 'channels', label: '通道', route: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
-      // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
-      { id: 'connectors', label: 'Connectors', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },
+      // 任务」侧栏条目撤并（原管理组 15 → 14 项）。
+      { id: 'executors', label: '执行单元', route: '/executors', icon: 'M12 2a3 3 0 0 1 3 3c0 1.3-.84 2.4-2 2.82V10h3a3 3 0 0 1 3 3v1.18c1.16.42 2 1.52 2 2.82a3 3 0 1 1-5.83-1H13v1.18a3 3 0 1 1-2 0V14H7.83A3.001 3.001 0 0 1 12 2z' },
+      { id: 'tasks', label: '任务', route: '/tasks', icon: 'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
+    ],
+  },
+  {
+    // 开发（2026-11-17 分组重组）：开发者工具与参考面——代码开发/终端/
+    // 二次开发/命令注册表。
+    title: '开发',
+    items: [
       { id: 'coding', label: '代码开发', route: '/coding', icon: 'M16 18l6-6-6-6M8 6l-6 6 6 6' },
-      { id: 'workflows', label: '工作流', route: '/workflows', icon: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7zM10 6.5h4M10 17.5h4M6.5 10v4M17.5 10v4' },
+      // L8：PTY 内嵌终端（VITE_FEATURE_TERMINAL 门控）。
+      { id: 'terminal', label: '终端', route: '/terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
+      { id: 'sdk', label: '二次开发', route: '/sdk', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
+      { id: 'commands', label: '命令', route: '/commands', icon: 'M4 17l6-6-6-6M12 19h8' },
     ],
   },
   {
@@ -135,20 +194,17 @@ export const NAV_GROUPS: NavGroupModel[] = [
     ],
   },
   {
+    // 配置（2026-11-17 重组后收窄）：系统级设置与运行闸门——设置/工具/
+    // 紫微系统；模型域三件迁能力组、任务/终端迁自动化/开发组。
     title: '配置',
     items: [
       { id: 'settings', label: '设置', route: '/settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.18V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0-1.18-2.82H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 2.82-1.18V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1.08 1.51 1.65 1.65 0 0 0 1.82-.33l-.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0 1.18 2.82H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1.08z' },
-      { id: 'tools', label: 'Tools', route: '/tools', icon: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' },
-      { id: 'tasks', label: '任务', route: '/tasks', icon: 'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
+      // 工具注册表 + 运行闸门（tool_doc_folding/codemode 等行为开关）。
+      // 标签更名（2026-11-17 用户拍板）：Tools → 工具（仅侧栏文案，id/路由不动）。
+      { id: 'tools', label: '工具', route: '/tools', icon: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z' },
       // 紫微系统（2026-10-22）：三方程序受控接管【万物皆工具】
       // （VITE_FEATURE_ZIWEI 门控；config ziwei.enabled 运行闸默认关）。
       { id: 'ziwei', label: '紫微系统', route: '/ziwei', icon: 'M12 2l2.4 7.2H22l-6 4.4 2.3 7.2-6.3-4.5-6.3 4.5L8 13.6 2 9.2h7.6z' },
-      // L8：PTY 内嵌终端（VITE_FEATURE_TERMINAL 门控）。
-      { id: 'terminal', label: '终端', route: '/terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
-      { id: 'local-models', label: '本地模型', route: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },
-      { id: 'sdk', label: '二次开发', route: '/sdk', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
-      // 代理设置（2026-09-17）：per-model 代理总览 + 环境变量 + lane 支持。
-      { id: 'proxy-settings', label: '代理设置', route: '/proxy-settings', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' },
     ],
   },
   {
@@ -169,15 +225,19 @@ export const NAV_GROUPS: NavGroupModel[] = [
       // ⑦ 病毒扫描：独立子系统页归组（路由/组件不动，label 加层号）。
       { id: 'scanner', label: '⑦病毒扫描', route: '/scanner', icon: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z' },
       { id: 'layer-audit', label: '⑧审计链', route: '/security/layer/audit', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8' },
-      // ⑨⑩ 执行体隔离双页：独立子系统页归组（路由/组件不动）。
+      // ⑨沙盒保留层号（真实第 9 层兜底红线）；虚拟化是管线外独立子系统页。
       { id: 'sandbox', label: '⑨沙盒', route: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
-      { id: 'vm', label: '⑩虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
-      // 附加机制两页（不在十层编号内）：LLM judge 语义二审 + 人工审批
-      // （eval 评估规则暂放 Approval 页一节，位置后议）。
+      { id: 'vm', label: '虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
+      // 附加机制两页（管线外独立机制，⑪⑫ 序号 2026-11-17 移除——层号
+      // 到 ⑨ 兜底为止，侧栏不再暗示 13 步管线；总览层表编号体系不动）：
+      // LLM judge 语义二审 + 人工审批（eval 评估规则暂放 Approval 页一节，
+      // 位置后议）。
       { id: 'guardian', label: 'Guardian 二审', route: '/security/guardian', icon: 'M9 12l2 2 4-4M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
       { id: 'approval', label: '人工审批', route: '/security/approval', icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM17 11l2 2 4-4' },
-      // L7c：凭据 Vault（组尾；VITE_FEATURE_SECURITY 门控）。
-      { id: 'vault', label: '凭据', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
+      // L7c：凭据隔离（原名「凭据」易与 ④凭据扫描混淆，2026-11-16 用户
+      // 拍板更名；组尾；VITE_FEATURE_SECURITY 门控）。⑬ 序号 2026-11-17
+      // 移除（管线外附加机制不占层号，侧栏与总览层表编号体系解耦）。
+      { id: 'vault', label: '凭据隔离', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
     ],
   },
   {

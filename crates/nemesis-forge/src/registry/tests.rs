@@ -400,6 +400,9 @@ async fn test_load_no_path_noop() {
 
 #[tokio::test]
 async fn test_load_from_nonexistent_file() {
+    // (BUG-20261114-026) 约定更新：缺失 = 全新工作区常态 → Ok（空注册表），
+    // 与 AuthStore/TrustStore/WorkspaceState load 家族同口径——Err 保留给
+    // 真损坏（撕裂 JSON / IO 错误），让调用方的 loud 留痕只打真损坏。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("no-such-file.json");
     let config = RegistryConfig {
@@ -407,7 +410,29 @@ async fn test_load_from_nonexistent_file() {
     };
     let registry = Registry::new(config);
     let result = registry.load().await;
-    assert!(result.is_err());
+    assert!(
+        result.is_ok(),
+        "缺失索引文件必须 Ok（空注册表），实得：{result:?}"
+    );
+    assert!(registry.is_empty());
+}
+
+/// (BUG-20261114-026 配套) 真损坏必须仍是 Err——调用方（gateway ctx /
+/// web handler）的 loud warn 靠它触发；此臂松动会让损坏重新变回静默。
+#[tokio::test]
+async fn test_load_from_corrupted_file_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.json");
+    std::fs::write(&path, "{torn json from a crashed write}").unwrap();
+    let config = RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    };
+    let registry = Registry::new(config);
+    let result = registry.load().await;
+    assert!(
+        result.is_err(),
+        "损坏索引文件必须 Err（触发调用方 loud 留痕）"
+    );
 }
 
 #[tokio::test]
@@ -619,15 +644,16 @@ fn test_add_existing_resets_generation_ledger() {
     assert_eq!(gen2.created_at, created_at_gen1);
 }
 
-// ── 错误路径零 tmp 孤儿（BUG-20261109-005 回归锁）─────────────────────
-// tmp 名 `{index}.{n}.tmp` 计数唯一：错误臂漏清 = 永久孤儿累积。
+// ── 错误路径零 tmp 孤儿（BUG-20261109-005 回归锁；BUG-20261115-013 起
+// tmp 走 nemesis_utils::file::write_file_atomic 家族唯一名
+// `.tmp-{pid}-{seq}-{nanos}`，孤儿扫描按 ATOMIC_TMP_PREFIX 前缀）。
 
 fn registry_tmp_orphans(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .expect("dir exists")
         .flatten()
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".tmp"))
+        .filter(|n| n.starts_with(nemesis_utils::file::ATOMIC_TMP_PREFIX))
         .collect()
 }
 
@@ -650,11 +676,37 @@ fn save_sync_rename_failure_leaves_no_tmp_orphan() {
     );
 }
 
-/// save_sync tmp 写臂：父目录缺失 → write 失败 → 清理路径不 panic、无孤儿。
+/// save_sync 父目录缺失臂（BUG-20261115-013 语义更新）：write_file_atomic
+/// 自动 create_dir_all 父目录——缺失不再是失败路径，保存**成功**且文件落盘。
 #[test]
-fn save_sync_write_failure_leaves_no_panic_or_orphan() {
+fn save_sync_missing_parent_dir_autocreated() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("missing").join("registry.json"); // 父目录不存在
+    let registry = Registry::new(RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    });
+    registry.add(make_artifact("auto-mkdir", ArtifactKind::Skill));
+    assert_eq!(registry.len(), 1);
+    assert!(path.exists(), "父目录缺失由 write_file_atomic 自动补建");
+    let on_disk: usize =
+        serde_json::from_str::<Vec<Artifact>>(&std::fs::read_to_string(&path).unwrap())
+            .map(|v| v.len())
+            .unwrap_or(0);
+    assert_eq!(on_disk, 1, "落盘内容有效");
+    assert!(
+        registry_tmp_orphans(dir.path()).is_empty(),
+        "成功路径也不得留 tmp"
+    );
+}
+
+/// save_sync 真写失败臂：父路径被普通文件占用 → mkdir 失败 → 不 panic、
+/// 无孤儿（write_file_atomic 在 create temp 之前失败，无 tmp 可留）。
+#[test]
+fn save_sync_mkdir_failure_leaves_no_panic_or_orphan() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"occupied").unwrap(); // 父路径 = 普通文件
+    let path = blocker.join("registry.json");
     let registry = Registry::new(RegistryConfig {
         index_path: path.to_string_lossy().to_string(),
     });
@@ -662,7 +714,7 @@ fn save_sync_write_failure_leaves_no_panic_or_orphan() {
     assert_eq!(registry.len(), 1);
     assert!(
         registry_tmp_orphans(dir.path()).is_empty(),
-        "tmp 写失败臂不得留孤儿"
+        "mkdir 失败臂不得留孤儿"
     );
 }
 
@@ -683,11 +735,13 @@ async fn save_rename_failure_leaves_no_tmp_orphan() {
     );
 }
 
-/// async save tmp 写臂：父目录缺失 → Err 且无孤儿、不 panic。
+/// async save 真写失败臂：父路径被普通文件占用 → mkdir 失败 → Err 且无孤儿。
 #[tokio::test]
-async fn save_write_failure_returns_err_and_leaves_no_orphan() {
+async fn save_mkdir_failure_returns_err_and_leaves_no_orphan() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("missing").join("registry.json");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"occupied").unwrap(); // 父路径 = 普通文件
+    let path = blocker.join("registry.json");
     let registry = Registry::new(RegistryConfig {
         index_path: path.to_string_lossy().to_string(),
     });
@@ -695,6 +749,50 @@ async fn save_write_failure_returns_err_and_leaves_no_orphan() {
     assert!(registry.save().await.is_err());
     assert!(
         registry_tmp_orphans(dir.path()).is_empty(),
-        "async tmp 写失败臂不得留孤儿"
+        "async mkdir 失败臂不得留孤儿"
+    );
+}
+
+/// BUG-20261115-013 回归锁：两个独立 Registry 实例（跨进程并发的进程内
+/// 仿真）同 index_path 并发 add→save_sync——旧 `{index}.{n}.tmp` 计数器名
+/// 仅进程内唯一，跨实例互踩同名 tmp（fs::write 截断写）→ 半截内容被
+/// rename 成坏索引。write_file_atomic 的 pid+序数+纳秒唯一名根除互踩：
+/// 落盘 index 恒为完整有效 JSON；目录零 tmp 孤儿。诚实边界：真跨进程
+/// 碰撞（同 pid 不可能）不可单测复现，机制由 utils 层 8 测试覆盖
+/// （含 test_write_file_atomic_no_temp_file_left），本锁钉 wiring + 孤儿卫生。
+#[test]
+fn concurrent_save_sync_same_index_valid_json_no_orphans() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.json");
+    let index_path = path.to_string_lossy().to_string();
+
+    let handles: Vec<_> = (0..4)
+        .map(|i| {
+            let idx = index_path.clone();
+            std::thread::spawn(move || {
+                let registry = Registry::new(RegistryConfig { index_path: idx });
+                registry.add(make_artifact(
+                    &format!("concurrent-{i}"),
+                    ArtifactKind::Skill,
+                ));
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("writer thread");
+    }
+
+    // 落盘 index 必为完整有效 JSON（并发写者各自原子替换，绝不半截）。
+    let content = std::fs::read_to_string(&path).expect("index exists");
+    let parsed: Vec<Artifact> =
+        serde_json::from_str(&content).expect("index is valid JSON after concurrent saves");
+    assert!(
+        !parsed.is_empty(),
+        "at least one artifact landed: {content}"
+    );
+
+    assert!(
+        registry_tmp_orphans(dir.path()).is_empty(),
+        "concurrent saves must not leak tmp files"
     );
 }

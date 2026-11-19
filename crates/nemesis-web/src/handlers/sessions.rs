@@ -132,10 +132,11 @@ impl ModuleHandler for SessionsHandler {
                     }
                 }
                 // 会话资产区投影（2026-11-12）：已绑定 home 的会话带 `home`
-                // 解析路径（会话信息模态展示行）。根与会话归属同源（L6++
-                // 项目会话 = 项目目录，其余 = 主 workspace——project_root_
-                // for_session 是归属裁决单点）；未绑定（存量 lenient）不加
-                // 字段——前端缺席即不渲染，无假缺省。
+                // 解析路径（会话信息模态展示行）。根恒主 workspace（2026-11-16
+                // 污染修复：项目会话 home 树统一锚主 workspace，不再随项目
+                // 归属落项目目录）；未绑定（存量 lenient）不加字段——前端
+                // 缺席即不渲染，无假缺省。每会话先惰性迁移（存量项目树搬
+                // 回主 workspace，幂等 no-op 为主），再投影。
                 for row in web.iter_mut() {
                     let Some(sid) = row["id"].as_str() else {
                         continue;
@@ -144,9 +145,9 @@ impl ModuleHandler for SessionsHandler {
                         "agent:main:session:{}",
                         nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                     );
-                    let root = crate::handlers::projects::project_root_for_session(&key)
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|| std::path::PathBuf::from(&workspace));
+                    let root = std::path::PathBuf::from(&workspace);
+                    nemesis_agent::session_home::migrate_stale_project_session_home(&root, &key);
+                    nemesis_agent::session_home::migrate_stale_project_session_todo(&root, &key);
                     if let Some(home) =
                         nemesis_agent::session_home::resolve_session_home(&root, &key)
                             .filter(|p| p.is_dir())
@@ -159,6 +160,15 @@ impl ModuleHandler for SessionsHandler {
                 // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
                 // 上移服务端。
                 let bindings = crate::session_bindings::live_bindings(&workspace);
+                // BUG-20261118-168（同链路第三处：BUG-20261102-325 扫描纪律
+                // → BUG-20261116-011 logs.session_list 收尾重排）：scan_session_logs
+                // 返回序 = read_dir 枚举序（平台实现细节，NTFS 字典序 vs ext4
+                // 哈希序）。前端 SessionSidebar 对非 pinned 会话自排序，但
+                // pinned 组语义是「互相对序=列表原序不变」——原序即本列表序，
+                // 直传枚举序会让置顶区排列跨平台不一致。收尾统一「最近活跃
+                // 优先」全序（session_recency_cmp：lastTime 解析序 desc + id
+                // 破平），与 logs.session_list 同源同键。
+                web.sort_by(crate::handlers::logs::session_recency_cmp);
                 Ok(Some(
                     serde_json::json!({ "sessions": web, "bindings": bindings }),
                 ))
@@ -332,11 +342,11 @@ impl ModuleHandler for SessionsHandler {
                 // （bridge bind_session：项目存在 + 目录在 → sidecar project
                 // 字段 + 内存索引），失败则整个 create 失败、不落任何 meta
                 // （放在 title 写入之前：归属失败不产生半途副作用）。
-                // 会话资产区（2026-11-12）：项目会话的 home 树 = 项目目录
-                // （与项目 loop 的 workspace_root/围栏同根——资产天然在
-                // 项目围栏内；主 workspace 下落点会让项目会话的文件围栏
-                // 拦住自家资产）。
-                let mut home_root: Option<std::path::PathBuf> = None;
+                // 会话资产区（2026-11-16 污染修复）：项目会话的 home 树
+                // **恒锚主 workspace**——项目目录是用户真实工作树，派生
+                // 资产（uploads/images/plans/memory 域）不得污染（checkpoint
+                // 影子库主 ws 锚同原则）；项目 loop 围栏已把主 ws agents 树
+                // 设为第二放行根，资产读写不受项目围栏拦截。
                 if let Some(project_id) = data
                     .as_ref()
                     .and_then(|d| d.get("project_id"))
@@ -348,7 +358,6 @@ impl ModuleHandler for SessionsHandler {
                         "项目管理未装配（projects bridge 未接线，无法创建项目会话）".to_string()
                     })?;
                     bridge.bind_session(&session_key, &project_id)?;
-                    home_root = bridge.project_path(&project_id);
                 }
                 // E7：显式命名 = 用户意志（manual，自动标题永不覆盖）；
                 // 未带 title = 默认占位符（自动标题可覆盖）。
@@ -369,15 +378,13 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::chat_log::write_session_meta(&session_key, &title);
                 }
                 // 会话资产区分配（2026-11-12）：新建即绑 `agents/<id>/home`。
-                // 根 = 会话所属 workspace（项目会话 = 项目目录，其余 = 主
-                // workspace）。失败 = lenient（WARN，会话照常返回；资产区是
+                // 根恒主 workspace（2026-11-16 污染修复：项目会话不再锚项目
+                // 目录）。失败 = lenient（WARN，会话照常返回；资产区是
                 // 增量能力，不得绑架 create 主流程——存量/失败会话走全局旧位置）。
-                let assign_root = home_root
-                    .as_deref()
-                    .unwrap_or_else(|| std::path::Path::new(workspace));
-                if let Err(e) =
-                    nemesis_agent::session_home::assign_session_home(assign_root, &session_key)
-                {
+                if let Err(e) = nemesis_agent::session_home::assign_session_home(
+                    std::path::Path::new(workspace),
+                    &session_key,
+                ) {
                     tracing::warn!("[sessions] home assign failed for {session_key}: {e}");
                 }
                 Ok(Some(
@@ -937,27 +944,50 @@ impl ModuleHandler for SessionsHandler {
                 // project_id 仍注册则 bind 回去；已移除/未注册 = 摘除陈旧
                 // sidecar 字段（会话落未分组，不进孤儿灰组）。
                 let mut out = out;
-                if out.get("conflict") != Some(&serde_json::Value::Bool(true))
-                    && let Some(pid) = out
+                if out.get("conflict") != Some(&serde_json::Value::Bool(true)) {
+                    // 恢复后放行态重注（2026-11-19 删除残留修复）：meta
+                    // sidecar（持久真相源）随四件套回到 session_logs，运行态
+                    // 投影按缓存语义单条重注（hydrate 同族语义——保留 sidecar
+                    // 的开启时刻，不生成新 since）。allow_all 缺省 = 默认关
+                    // 无需动作；security 未装配 = 无放行语义跳过。
+                    // ⚠ 读侧必须走 read_session_meta_full（SessionMeta 结构体）
+                    // ——read_session_meta 返回的是 title 字段（历史命名陷阱），
+                    // 拿它当 JSON 解析恒失败 = 重注静默死代码（回归锁
+                    // trash_restore_rehydrates_allow_all_from_sidecar 抓出）。
+                    #[cfg(feature = "security")]
+                    {
+                        let restored_key = out["restored"].as_str().unwrap_or_default().to_string();
+                        if !restored_key.is_empty()
+                            && let Some(meta) =
+                                nemesis_agent::chat_log::read_session_meta_full(&restored_key)
+                            && meta.allow_all
+                            && let Some(st) = crate::handlers::security::session_allow_all_state()
+                        {
+                            let since = meta.allow_all_since.unwrap_or_default();
+                            st.hydrate(vec![(restored_key, since)]);
+                        }
+                    }
+                    if let Some(pid) = out
                         .get("project_id")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
-                {
-                    let restored = out["restored"].as_str().unwrap_or_default().to_string();
-                    let rebound = match crate::handlers::projects::projects_bridge() {
-                        Some(bridge) => match bridge.bind_session(&restored, &pid) {
-                            Ok(()) => Some(pid),
-                            Err(_) => {
-                                bridge.forget_session(&restored);
-                                None
-                            }
-                        },
-                        None => None,
-                    };
-                    out["project_rebound"] = match rebound {
-                        Some(p) => serde_json::Value::String(p),
-                        None => serde_json::Value::Null,
-                    };
+                    {
+                        let restored = out["restored"].as_str().unwrap_or_default().to_string();
+                        let rebound = match crate::handlers::projects::projects_bridge() {
+                            Some(bridge) => match bridge.bind_session(&restored, &pid) {
+                                Ok(()) => Some(pid),
+                                Err(_) => {
+                                    bridge.forget_session(&restored);
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        out["project_rebound"] = match rebound {
+                            Some(p) => serde_json::Value::String(p),
+                            None => serde_json::Value::Null,
+                        };
+                    }
                 }
                 Ok(Some(out))
             }
@@ -1057,16 +1087,56 @@ async fn delete_session_body(
     // Clear SessionStore (in-memory + sessions/*.json) +
     // session_logs/*.jsonl. Best-effort; absence is not an error.
     let mut trash_entry: Option<String> = None;
+    // BUG-20261118-172：hard 删除级联 delete_chat_log 走 remove_file_retry
+    // （thread::sleep 退避最坏 ~4.4s×4 + pending sidecar ×2）——与软删
+    // trash 路径（BUG-20261031-248 已 spawn_blocking）同族，hard 臂此前
+    // 漏包。store Arc 先克隆出 guard 作用域再 await（guard 不跨 await，
+    // 与下方 session_end_bridge 同纪律）。
+    let mut hard_store_delete: Option<(
+        std::sync::Arc<nemesis_agent::session::SessionStore>,
+        String,
+    )> = None;
     {
         let guard = ctx.state.agent_loop.read();
         if let Some(al) = guard.as_ref()
             && let Some(store) = al.session_store()
         {
             if hard {
-                store.delete_session(session_key);
+                hard_store_delete = Some((std::sync::Arc::clone(store), session_key.to_string()));
             } else {
                 store.detach_session(session_key);
             }
+        }
+    }
+    if let Some((store, key)) = hard_store_delete {
+        let _ = tokio::task::spawn_blocking(move || store.delete_session(&key)).await;
+    }
+    // 删除残留级联（2026-11-19）：软删/硬删两路同源——
+    // ① 会话级全部放行内存态摘除（I1 重开干净：同键重建不得继承前任
+    //    放行；sidecar 持久真相源已随 meta 走回收站/删除，运行态投影
+    //    必须同步消失，否则 auditor 继续放行 = 安全面）。
+    // ② chat_event_log 内存环摘桶（I2 删即不可见：chat.sync 不得再回放
+    //    已删会话的帧；环是易逝缓存但删除到重启之间的窗口必须清）。
+    // ③ episodic 记忆随删（memory 装配时检索面不再命中已删会话）；
+    //    best-effort，失败留痕不阻塞删除主链。
+    #[cfg(feature = "security")]
+    if let Some(st) = crate::handlers::security::session_allow_all_state() {
+        st.remove(session_key);
+    }
+    crate::chat_event_log::evict_session(session_key);
+    #[cfg(feature = "memory")]
+    if let Some(mgr) = ctx.state.memory_manager.as_ref() {
+        match mgr.get_episodic_store().delete_session(session_key).await {
+            Ok(n) if n > 0 => tracing::info!(
+                "[sessions] delete cascade: removed {n} episodic episode(s) of {}",
+                session_key
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                "[sessions] delete cascade: episodic cleanup failed for {}: {}",
+                session_key,
+                e
+            ),
         }
     }
     // BUG①（2026-11-05）：hard=true 不走回收站（旧语义不可恢复），todo
@@ -1276,19 +1346,41 @@ pub(crate) fn parse_snooze_until(raw: &str) -> Result<String, String> {
 
 /// 到期唤醒 sweeper（gateway 常驻；upload sweeper 同款装配形态）。每 10s
 /// 扫一遍 meta sidecar——量级 = 会话数（每个一个小 JSON 读），可忽略。
-pub fn spawn_snooze_sweeper() {
+///
+/// `shutdown` = gateway 终态令牌（runtime.rs 传
+/// `shutdown::terminal_cancel_token().clone()`）。BUG-20261119-208：本循环
+/// 是 BUG-20261115-023 停机家族的 nemesis-web 侧漏网成员（023 横扫只扫了
+/// nemesisbot crate）——裸 timer park 无停机臂，gateway Step 24
+/// `cancel_terminal_tasks()` 后本循环还在 10s park 上活着，排空窗内每
+/// 10s 继续唤醒到期会话注入新 turn（对抗 drain「在途 turn 归零」不变量）
+/// 并补投滞留 pending。等待点换装同族契约：前置 `is_cancelled` 检查
+/// （预取消零工作）+ select 令牌优先于 tick（取消后确定性退出，不
+/// re-park）。工作在等待点之后——取消抢占发生在任何一轮工作之前。
+/// 返回任务 JoinHandle（生产调用点丢弃 = detach，令牌承担停机收口；
+/// 测试用 join 断言退出时序）。
+pub fn spawn_snooze_sweeper(
+    shutdown: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         interval.tick().await; // 首 tick 立即返回（启动期无需抢跑，10s 内兜住）
         loop {
-            interval.tick().await;
+            // 前置取消检查：收口语义优先于最后一拍工作量（预取消形态
+            // wake/drain 都不跑）。
+            if shutdown.is_cancelled() {
+                break;
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             let woken = wake_due_sessions();
             if woken > 0 {
                 tracing::info!("[sessions] snooze sweeper 唤醒 {woken} 个会话");
             }
             drain_orphan_pending();
         }
-    });
+    })
 }
 
 // —— L22（2026-11-03 snooze 排队）：暂停期消息重放 hook ——

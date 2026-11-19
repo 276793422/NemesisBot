@@ -4,6 +4,10 @@
 
 use super::*;
 
+// SEC-002 Debug 脱敏宏（BUG-20261111-068 定义；BUG-20261114-063 起向
+// sections 兄弟模块开放——bridge 段凭据结构复用同一脱敏形态）。
+use super::channels::impl_redacted_debug;
+
 /// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；M6 2026-10-27
 /// 整改批次五）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -191,11 +195,15 @@ pub struct UiConfig {
     /// static 皮肤原样）；其余值 = 服务端从 exe 同级 `skins/<id>.nbskin`
     /// 加载并在 `/skins/active.css` 提供 CSS（前端注入后打
     /// `<html data-skin="<id>">`）。Dashboard 设置页「皮肤」tab 写回此处。
-    #[serde(default)]
+    #[serde(default = "default_ui_skin")]
     pub skin: String,
     /// 皮肤子系统策略段（require_signed 后手开关等）。
     #[serde(default)]
     pub skins: SkinsPolicy,
+}
+
+fn default_ui_skin() -> String {
+    "default".to_string()
 }
 
 impl Default for UiConfig {
@@ -210,6 +218,8 @@ impl Default for UiConfig {
 /// 反向桥配置（`config.json` 的 `bridge` 段；`#[serde(default)]` 每字段全可省）。
 /// 分服务端/客户端两侧：服务端 = 中继接入门（`--relay` 与正常启动共用）；
 /// 客户端 = 本机作为桥设备连远端中继服务端（goal：节点显示名 + 反向桥）。
+// derive(Debug) 保留：本结构无凭据专字段，Debug 递归进 server/client 走
+// 下方脱敏 impl（BUG-20261114-063）——容器层 derive 安全。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BridgeConfig {
@@ -220,7 +230,11 @@ pub struct BridgeConfig {
 }
 
 /// 服务端接入门配置。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+// SEC-002 Debug 脱敏（BUG-20261114-063）：token = 预共享钥匙的服务端半把，
+// derive(Debug) 会把明文带进 Debug/panic/错误上下文（Config 顶层
+// derive(Debug) 递归面）——走 impl_redacted_debug! 宏（BUG-20261111-068
+// 同款纪律）。
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BridgeServerConfig {
     /// 接入门 ws token（预共享钥匙的服务端半把；与桥客户端 `client.token`
@@ -231,7 +245,9 @@ pub struct BridgeServerConfig {
 }
 
 /// 客户端（桥设备）配置。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+// SEC-002 Debug 脱敏（BUG-20261114-063）：token（接入门钥匙）+
+// access_token（面板访问密码，只存本机）同脱敏面。
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BridgeClientConfig {
     /// 客户端总开关（false = 零行为变化，不连中继）。
@@ -246,6 +262,12 @@ pub struct BridgeClientConfig {
     /// 拒绝所有远程面板访问（fail-closed）。本地直连面板不受影响（两回事）。
     pub access_token: String,
 }
+
+impl_redacted_debug!(BridgeServerConfig { plain { } secret { token } });
+impl_redacted_debug!(BridgeClientConfig {
+    plain { enabled, relay_url }
+    secret { token, access_token }
+});
 
 /// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；L8。交互 shell 无法
 /// 逐命令审批——默认关闭，启用即接受「dashboard 登录用户=shell 信任级」
@@ -267,6 +289,53 @@ impl Default for TerminalConfig {
             enabled: false,
             max_sessions: 4,
             shell: None,
+        }
+    }
+}
+
+/// 浏览器接管配置段（`config.json` 的 `browser` 段；2026-11-15
+/// 浏览器接管框架。消费方 = gateway prefs_getter（每次 spawn 现读）+
+/// Dashboard 设置页（config.get/set_field 读写）。typed 字段化是硬要求：
+/// `config.set_field` 的 typed round-trip 校验会丢弃非建模键（plugins
+/// 段同款教训）——不建模则设置页保存 kind/executable 恒报
+/// 「unknown config field」，spawn 永远走 auto。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BrowserConfig {
+    /// 浏览器选择：`auto`（缺省——Chrome 检出即偏好 > 平台保底
+    /// Edge/Chromium）/ edge / chrome / brave / vivaldi / chromium /
+    /// custom（配 executable）。值域解释单一真相源在
+    /// nemesis-browser `resolve_browser`。
+    pub kind: String,
+    /// 自定义可执行文件路径（非空 = 最高优先，覆盖 kind）。
+    pub executable: String,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            kind: "auto".to_string(),
+            executable: String::new(),
+        }
+    }
+}
+
+/// 目标系统配置段（`config.json` 的 `goals` 段；2026-11-17 目标系统。
+/// None = 全默认——allow_agent_disable=true。typed 字段化是硬要求：
+/// `config.set_field` 的 typed round-trip 校验会丢弃非建模键（plugins/
+/// browser 段同款教训）——不建模则设置页保存恒报 unknown config field。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct GoalsConfig {
+    /// agent 可否 disable **人创建**的 goal（全局开关，默认允许；关闭后
+    /// agent disable 人建 goal 恒拒）。agent 自建 goal 不受此闸。
+    pub allow_agent_disable: bool,
+}
+
+impl Default for GoalsConfig {
+    fn default() -> Self {
+        Self {
+            allow_agent_disable: true,
         }
     }
 }
@@ -629,6 +698,55 @@ pub struct MemoryFlagConfig {
     /// P31 记忆 dreaming（三段式记忆巩固；None = 全默认——enabled=false 关）。
     #[serde(default)]
     pub dreaming: Option<DreamingConfig>,
+    /// 项2 P2 召回质量闸（None = 缺省——enabled=false 直通现状）。
+    #[serde(default)]
+    pub recall_gate: Option<RecallGateConfig>,
+}
+
+/// `memory.recall_gate` 配置节（项2 P2 召回质量闸）。
+///
+/// top-k 召回 → 一次批量小模型判相关（保留/丢弃）→ 过滤后注入。判定走
+/// `model` 显式别名 → `agents.small_model` 回落链，**无主模型臂**——主模型
+/// 每轮判召回正是闸要省的成本，链上无可用模型 = 诚实跳过（WARN 一次，
+/// 直通现状）。判定失败/解析失败 = fail-open 全保留（不确定时判保留，
+/// 绝不因闸失败丢注入）。默认关——多一次 LLM 调用是成本，opt-in。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecallGateConfig {
+    /// 总开关，默认 false（opt-in）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 判定模型别名（空 = 走 agents.small_model 回落链）。
+    #[serde(default)]
+    pub model: String,
+    /// 注入条数上限（闸后截断；0 = 不再截断，沿用 auto_inject top_k）。
+    #[serde(default)]
+    pub max_items: usize,
+    /// 成本闸：召回候选 ≥ 该数才启用判定（低于 = 直通现状不花 token）。
+    #[serde(default = "default_recall_gate_min_candidates")]
+    pub min_candidates: usize,
+    /// 判定缓存 TTL 秒（同 query+候选集短窗复用判定；0 = 用内置缺省）。
+    #[serde(default = "default_recall_gate_cache_secs")]
+    pub cache_secs: u64,
+}
+
+fn default_recall_gate_min_candidates() -> usize {
+    4
+}
+
+fn default_recall_gate_cache_secs() -> u64 {
+    300
+}
+
+impl Default for RecallGateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: String::new(),
+            max_items: 0,
+            min_candidates: default_recall_gate_min_candidates(),
+            cache_secs: default_recall_gate_cache_secs(),
+        }
+    }
 }
 
 /// `memory.dreaming` 配置节（P31 记忆巩固）。

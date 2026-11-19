@@ -53,6 +53,12 @@ pub trait Channel: Send + Sync {
     ///
     /// Returns an error if the target name matches this channel's own name
     /// (self-sync prevention).
+    ///
+    /// 默认实现是**静默 no-op 存根**（`Ok(())`）：未 override 的通道上
+    /// 此调用不落任何状态。出站镜像不依赖它（`ChannelManager`
+    /// dispatch_outbound 集中触发，BUG-20261112-118）；只有带 BaseChannel
+    /// 且有**入站镜像扇出**（读循环 `sync_to_targets`）的通道
+    /// （external/websocket）必须 override 委托固有实现。
     fn add_sync_target(&self, _name: &str, _channel: Arc<dyn Channel>) -> Result<()> {
         Ok(())
     }
@@ -81,9 +87,12 @@ pub trait Channel: Send + Sync {
 pub(crate) fn redact_url_secrets(msg: impl std::fmt::Display) -> String {
     // 前缀长的参数名在前（access_token= 先于 token=）；同名前缀残撞由
     // `?`/`&` 边界检查兜住（access_token= 中的 token= 前面是 `_`，不命中）。
-    const SECRET_PARAMS: [&str; 6] = [
+    // ticket=（BUG-20261119-182）：钉钉 stream endpoint / 飞书 WS endpoint
+    // 都是 `wss://…?ticket=<连接凭据>` 形态——凭据随 URL 进日志即泄露。
+    const SECRET_PARAMS: [&str; 7] = [
         "access_token=",
         "webhook_key=",
+        "ticket=",
         "key=",
         "token=",
         "sign=",
@@ -201,6 +210,109 @@ fn split_sender_id(sender_id: &str) -> (&str, &str) {
     match sender_id.find('|') {
         Some(idx) if idx > 0 => (&sender_id[..idx], &sender_id[idx + 1..]),
         _ => (sender_id, ""),
+    }
+}
+
+/// 通道 send 的 panic 隔离包裹。
+///
+/// dispatch 环是单任务串行派发（`ChannelManager::dispatch_loop`）：任一
+/// 通道 send future 内的 panic（三方库解析、毒化锁 unwrap、越界——26
+/// 通道 × 三方依赖面非全仓自审）会沿 unwind 炸掉整个 dispatch loop
+/// task——出站 mpsc 无接收者静默堆积，gateway 其余功能照常，全部通道
+/// 出站停摆且零错误零日志。对齐既有长环隔离纪律（heartbeat 逐拍
+/// `catch_unwind` / cron hook / agent loop 工具执行 future 同款）：panic
+/// 映射为 `Err(..)` 返回，消费方走既有 Err 臂记账（send_errors），环
+/// 存活继续派发后续消息。
+///
+/// 诚实边界：`iotsmall` profile 是 `panic=abort`，`catch_unwind` 接不住
+/// abort（进程死即任务死，与工具隔离同一取舍）；send 半程副作用（消息
+/// 可能已送达外部服务）与超时放弃 future 的孤儿语义同级，错误串注明
+/// 「送达状态未知」。
+pub(crate) async fn send_panic_isolated(
+    channel_name: &str,
+    ch: Arc<dyn Channel>,
+    msg: OutboundMessage,
+) -> Result<()> {
+    match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(ch.send(msg))).await {
+        Ok(result) => result,
+        Err(payload) => {
+            let detail = if let Some(s) = payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "opaque panic".to_string()
+            };
+            warn!(
+                channel = %channel_name,
+                "[Channel] send PANIC caught, dispatch loop survives: {detail}"
+            );
+            Err(NemesisError::Channel(format!(
+                "{channel_name} send panicked: {detail} (delivery state unknown, partial side effects possible)"
+            )))
+        }
+    }
+}
+
+/// Sends a single sync mirror message to one target channel.
+///
+/// Single truth source for mirror construction (BUG-20261112-118): stamp
+/// `meta.sync_via` with the source channel name (the receiving side's loop
+/// guard), use `"web:broadcast"` as chat ID for the `"web"` target, and
+/// apply a 3-second send timeout. Both mirror origins share this path:
+/// channel-level `sync_to_targets` (inbound-origin fan-outs from
+/// external/websocket read loops) and the manager-level centralized trigger
+/// in `ChannelManager::dispatch_outbound` (outbound-origin fan-outs).
+pub(crate) async fn send_sync_mirror(
+    source_name: &str,
+    target_name: &str,
+    target_ch: Arc<dyn Channel>,
+    content: &str,
+) {
+    let mut chat_id = String::new();
+    if target_name == "web" {
+        chat_id = "web:broadcast".to_string();
+    }
+
+    let mut msg = OutboundMessage::new(target_name, &chat_id, content);
+    // 单一盖章点：接收侧（manager dispatch_outbound 的集中触发）见到
+    // 该标记不再二次扩散——互配 `sync_to` 的两通道会无限乒乓，每轮都是
+    // 一次真实外部投递的消息风暴（BUG-57 回环防护语义，随出站触发点
+    // 迁到 manager 层保持不变）。
+    msg.meta.sync_via = Some(source_name.to_string());
+
+    debug!(
+        channel = %source_name,
+        target = %target_name,
+        content_len = content.len(),
+        chat_id = %chat_id,
+        "[Channel] sending to sync target"
+    );
+
+    // panic 隔离在 timeout 内层：send future 的 panic 不穿透 timeout
+    // 炸调用方任务（镜像扇出跑在 manager dispatch 环内，同一条命）。
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        send_panic_isolated(target_name, target_ch, msg),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!(
+                channel = %source_name,
+                target = %target_name,
+                error = %e,
+                "[Channel] failed to sync to target"
+            );
+        }
+        Err(_) => {
+            warn!(
+                channel = %source_name,
+                target = %target_name,
+                "[Channel] sync to target timed out"
+            );
+        }
     }
 }
 
@@ -339,13 +451,12 @@ impl BaseChannel {
     /// Sends a message to all configured sync targets.
     ///
     /// Skips any target whose name matches this channel's name (double-check).
-    /// For the `"web"` target, uses `"web:broadcast"` as the chat ID.
-    /// Each send has a 3-second timeout to avoid blocking.
+    /// Each send is delegated to [`send_sync_mirror`] (stamp + web:broadcast
+    /// + 3s timeout, single truth source).
     ///
-    /// 构造的镜像消息统一盖 `meta.sync_via` 章（单一盖章
-    /// 点）：接收通道 `send()` 里的出站镜像（`sync_outbound`）见到该标记
-    /// 不再二次扩散——互配 `sync_to` 的两通道会无限乒乓，每轮都是一次
-    /// 真实外部投递的消息风暴。
+    /// 入站镜像起点（external/websocket 读循环）经此扇出；出站镜像的扇出
+    /// 已集中到 `ChannelManager::dispatch_outbound`（send 成功后触发），
+    /// 不再依赖各通道 `send()` 自行扩散。
     pub async fn sync_to_targets(&self, content: &str) {
         // Collect targets into a Vec within a block scope so the RwLockReadGuard
         // is dropped before any.await. parking_lot::RwLockReadGuard is !Send,
@@ -370,63 +481,8 @@ impl BaseChannel {
         );
 
         for (target_name, target_ch) in entries {
-            let mut chat_id = String::new();
-            if target_name == "web" {
-                chat_id = "web:broadcast".to_string();
-            }
-
-            let mut msg = OutboundMessage::new(&target_name, &chat_id, content);
-            msg.meta.sync_via = Some(self.name.clone());
-
-            debug!(
-                channel = %self.name,
-                target = %target_name,
-                content_len = content.len(),
-                chat_id = %chat_id,
-                "[Channel] sending to sync target"
-            );
-
-            match tokio::time::timeout(std::time::Duration::from_secs(3), target_ch.send(msg)).await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    warn!(
-                        channel = %self.name,
-                        target = %target_name,
-                        error = %e,
-                        "[Channel] failed to sync to target"
-                    );
-                }
-                Err(_) => {
-                    warn!(
-                        channel = %self.name,
-                        target = %target_name,
-                        "[Channel] sync to target timed out"
-                    );
-                }
-            }
+            send_sync_mirror(&self.name, &target_name, target_ch, content).await;
         }
-    }
-
-    /// Outbound sync mirror for the `send()` path.
-    ///
-    /// Mirrors a message this channel just delivered to its sync targets —
-    /// but **not** if the message itself arrived via a sync mirror
-    /// (`meta.sync_via` set): channels that mutually configure each other as
-    /// sync targets would ping-pong every mirror forever, each hop being a
-    /// real external delivery (message storm). Inbound-origin fan-outs
-    /// (external/websocket read loops) are the mirror chain's origin and call
-    /// `sync_to_targets` directly.
-    pub async fn sync_outbound(&self, msg: &OutboundMessage) {
-        if msg.meta.sync_via.is_some() {
-            debug!(
-                channel = %self.name,
-                sync_via = msg.meta.sync_via.as_deref().unwrap_or_default(),
-                "[Channel] sync mirror message not re-propagated (loop guard)"
-            );
-            return;
-        }
-        self.sync_to_targets(&msg.content).await;
     }
 
     /// Handles an inbound message after checking the allow-list.
@@ -443,6 +499,38 @@ impl BaseChannel {
         self.record_received();
         true
     }
+}
+
+// ---------------------------------------------------------------------------
+// 对端 IP 准入判定（单一真相源）
+// ---------------------------------------------------------------------------
+
+/// 对端 IP 准入判定（maixcam BUG-20261110-054 接线；websocket
+/// BUG-20261118-155 同族共用——两处定义漂移过一次后收编单点）。
+/// `allow_from` 空 = 放行所有（兼容既有部署）；非空 = 对端 IP 必须命中
+/// 白名单。条目支持精确 IP（`192.168.1.50`）与 IPv4 前缀通配
+/// （`192.168.1.*`，尾段通配）。适用于「服务端监听通道的客户端无
+/// 可预知应用层身份」的场景（maixcam 设备无握手 / websocket client_id
+/// 进程内生成不可预知）——此时 allow_from 的真实语义是对端网络准入。
+pub(crate) fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
+    if allow_from.is_empty() {
+        return true;
+    }
+    let peer_ip = peer_ip.trim();
+    for entry in allow_from {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if let Some(prefix) = entry.strip_suffix('*') {
+            if peer_ip.starts_with(prefix) {
+                return true;
+            }
+        } else if peer_ip == entry {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +565,71 @@ pub(crate) fn outbound_http_client() -> Result<reqwest::Client> {
     outbound_http_builder()
         .build()
         .map_err(|e| NemesisError::Channel(format!("HTTP client creation failed: {e}")))
+}
+
+// ---------------------------------------------------------------------------
+// 出站 WebSocket 拨号单一构造点
+// ---------------------------------------------------------------------------
+
+/// 出站 WS 握手超时帽（BUG-20261116-041）。15s 对齐 cdp.rs 先例
+/// （`connect_async` 无内建超时——对端接受 TCP 后不回 HTTP 101 时
+/// `connect_async` 永久挂起：重连任务停在 await 内，退避/取消检查全失
+/// 效，通道静默停摆零错误零日志。裸 TCP connect 有 OS SYN 超时兜底，
+/// WS 握手没有——握手是 HTTP-over-TCP，纯等对端字节）。
+// default 构建形态无消费通道（7 个 WS 通道默认关）——同
+// outbound_http_builder 房规，dead_code 只在 default 构建出现。
+#[allow(dead_code)]
+pub(crate) const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// [`ws_connect_bounded`] 的显式超时形态（测试用小超时；生产走 15s 帽）。
+#[allow(dead_code)]
+pub(crate) async fn ws_connect_bounded_with_timeout<R>(
+    target: R,
+    timeout: std::time::Duration,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+>
+where
+    R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
+{
+    match tokio::time::timeout(timeout, tokio_tungstenite::connect_async(target)).await {
+        Ok(Ok(pair)) => Ok(pair),
+        Ok(Err(e)) => Err(format!("websocket connect failed: {e}")),
+        Err(_) => Err(format!(
+            "websocket handshake timeout ({timeout:?}): server accepted TCP but never sent \
+             HTTP 101 (half-open?)"
+        )),
+    }
+}
+
+/// 出站 WebSocket 拨号单一构造点：带握手超时帽的 `connect_async`。
+///
+/// 通道重连环统一走此入口（discord/slack/qq/nostr/mattermost/feishu/
+/// onebot）；超时 Err 与 connect Err 同形态（String），消费方既有退避
+/// 重试臂无需区分。取消安全：超时丢 future 即关 socket，握手未完成前
+/// 无共享流状态。
+#[allow(dead_code)]
+pub(crate) async fn ws_connect_bounded<R>(
+    target: R,
+) -> std::result::Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+>
+where
+    R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
+{
+    ws_connect_bounded_with_timeout(target, WS_HANDSHAKE_TIMEOUT).await
 }
 
 // ---------------------------------------------------------------------------

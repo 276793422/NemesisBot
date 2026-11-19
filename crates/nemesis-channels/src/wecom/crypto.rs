@@ -199,7 +199,14 @@ pub fn encrypt_message(aes_key: &[u8; 32], msg: &str, receiveid: &str) -> Result
     let raw_len = PLAINTEXT_HEADER + msg_bytes.len() + receiveid_bytes.len();
 
     let mut plaintext = Vec::with_capacity(raw_len + WECOM_PAD_BLOCK);
-    plaintext.extend_from_slice(&rand::random::<[u8; 16]>());
+    // BUG-20261117-049：协议头的 16 字节 random 在加密语义域内（防重放/
+    // 字典预计算），必须 CSPRNG——rand::random 走 thread_rng 非加密 PRNG。
+    {
+        use rand::RngCore;
+        let mut rnd = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut rnd);
+        plaintext.extend_from_slice(&rnd);
+    }
     plaintext.extend_from_slice(&(msg_bytes.len() as u32).to_be_bytes());
     plaintext.extend_from_slice(msg_bytes);
     plaintext.extend_from_slice(receiveid_bytes);

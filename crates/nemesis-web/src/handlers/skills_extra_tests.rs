@@ -20,6 +20,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -42,6 +43,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -51,6 +53,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -71,6 +74,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -93,6 +97,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -102,6 +107,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -781,14 +787,23 @@ async fn test_skills_source_list_defaults() {
         .unwrap()
         .unwrap();
     let sources = result["sources"].as_array().unwrap();
-    // Default has no github_sources but always includes clawhub + modelscope
-    assert_eq!(sources.len(), 2);
+    // Default has no github_sources on disk but the factory source merges in
+    // append-if-absent（nemesisbot Skills/{slug}/SKILL.md，可关不可丢），
+    // plus always includes clawhub + modelscope → 3.
+    assert_eq!(sources.len(), 3);
     let types: Vec<&str> = sources
         .iter()
         .map(|s| s["type"].as_str().unwrap())
         .collect();
     assert!(types.contains(&"clawhub"));
     assert!(types.contains(&"modelscope"));
+    let factory = sources
+        .iter()
+        .find(|s| s["name"] == "nemesisbot")
+        .expect("factory source missing from source.list");
+    assert_eq!(factory["type"], "github");
+    assert_eq!(factory["repo"], "276793422/NemesisBot");
+    assert_eq!(factory["skill_path_pattern"], "Skills/{slug}/SKILL.md");
 }
 
 #[tokio::test]
@@ -816,7 +831,8 @@ async fn test_skills_source_list_with_github() {
         .unwrap()
         .unwrap();
     let sources = result["sources"].as_array().unwrap();
-    assert_eq!(sources.len(), 3);
+    // 1 github on disk + factory merge (append-if-absent) + clawhub + modelscope = 4.
+    assert_eq!(sources.len(), 4);
     let gh = sources.iter().find(|s| s["type"] == "github").unwrap();
     assert_eq!(gh["name"], "my-gh");
     assert_eq!(gh["repo"], "owner/repo");
@@ -858,7 +874,9 @@ async fn test_skills_source_add_manual_happy() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["type"] == "github")
+        // 按名字定位（出厂源 nemesisbot 合流后排在 github 首位，
+        // find-by-type 会撞上它）
+        .find(|s| s["name"] == "manual-src")
         .unwrap();
     assert_eq!(gh["branch"], "develop");
     assert_eq!(gh["index_type"], "skills_json");
@@ -1111,8 +1129,19 @@ async fn test_skills_source_toggle_unknown() {
 #[tokio::test]
 async fn test_skills_search_no_sources_message() {
     // No sources configured → returns message prompting to add a source.
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证「无源」管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 出厂源 disabled 占位条目压制 apply_factory_sources（CI 密闭，不打真实
+    // api.github.com；name/repo 无 serde default，缺 repo 整份解析失败回落
+    // default 会复活出厂源）。
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.skills.json"),
+        r#"{"modelscope":{"enabled":false},"github_sources":[{"name":"nemesisbot","repo":"276793422/NemesisBot","enabled":false}]}"#,
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
 
     let data = serde_json::json!({ "query": "anything" });

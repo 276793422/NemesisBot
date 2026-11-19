@@ -27,6 +27,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
+
 /// 轮询间隔（秒）。急停是人工尺度的操作，2s 的最坏生效延迟可接受。
 pub const POLL_SECS: u64 = 2;
 
@@ -94,8 +96,9 @@ pub fn mirror(local: &nemesis_agent::estop::EstopState, engaged: bool) -> bool {
 }
 
 /// 复用 client 的单次轮询（spawn 循环体唯一 HTTP 路径；测试经子模块
-/// 可见性直测）。Ok(None) = 响应形态不符合预期（当作本轮无信号，下轮
-/// 重试）。
+/// 可见性直测）。Ok(None) = 响应缺 engaged 键（版本漂移/envelope 改版）
+/// ——按无信号返回，**调用方必须翻转沿 loud 留痕**（安全机制静默失效
+/// 面收口；spawn 循环的 None 臂兑现该契约）。
 async fn poll_with(
     client: &reqwest::Client,
     target: &FollowerTarget,
@@ -109,7 +112,13 @@ async fn poll_with(
         .await
         .map_err(|e| e.to_string())?;
     let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
+    // 双用拆分（BUG-20261113-164）：成功体是内部 API 小 JSON，全量读合法；
+    // 错误体只喂错误消息——有帽读取。
+    let body = if status.is_success() {
+        resp.text().await.unwrap_or_default()
+    } else {
+        nemesis_utils::http_cap::read_error_body(resp).await
+    };
     if !status.is_success() {
         return Err(format!("estop_status returned {status}: {body}"));
     }
@@ -130,8 +139,18 @@ pub fn spawn(
         // 翻转沿日志标志（初值与实际状态比较后按需打印）。
         let mut announced_following = false;
         let mut announced_unreachable = false;
+        let mut announced_shape_broken = false;
         loop {
-            tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(
+                terminal_cancel_token(),
+                tokio::time::sleep(Duration::from_secs(POLL_SECS)),
+            )
+            .await
+            {
+                break;
+            }
             let Some(target) = discover(&home) else {
                 if announced_following {
                     eprintln!("estop-follower: gateway state 消失（停机？），等待重新发现");
@@ -142,18 +161,32 @@ pub fn spawn(
             let client = client.get_or_insert_with(|| {
                 reqwest::Client::builder()
                     .timeout(Duration::from_secs(3))
+                    // BUG-20261115-045：poll_with 每轮都带 X-Auth-Token（不在
+                    // reqwest 默认重定向剥离清单内）——同源跟随 + 跨源终止。
+                    .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
                     .build()
                     .expect("reqwest client build")
             });
             match poll_with(client, &target).await {
-                Ok(engaged) => {
+                Ok(Some(engaged)) => {
                     if !announced_following {
                         eprintln!("estop-follower: 跟随 gateway {}", target.base_url);
                         announced_following = true;
                     }
                     announced_unreachable = false;
-                    if let Some(e) = engaged {
-                        mirror(&estop, e);
+                    announced_shape_broken = false;
+                    mirror(&estop, engaged);
+                }
+                Ok(None) => {
+                    // 响应缺 engaged 键（gateway 版本漂移 / envelope 改版）——
+                    // 按无信号处理但翻转沿 loud：安全机制的静默失效面收口。
+                    // 旧行为只打「跟随中」就再无痕迹，跟随实际永不生效。
+                    if !announced_shape_broken {
+                        eprintln!(
+                            "estop-follower: estop_status 响应缺 engaged 字段（gateway 版本漂移？）——跟随失效，持续重试"
+                        );
+                        announced_shape_broken = true;
+                        announced_following = false;
                     }
                 }
                 Err(_) => {

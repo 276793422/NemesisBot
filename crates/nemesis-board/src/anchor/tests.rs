@@ -267,6 +267,52 @@ fn content_regex_still_matches_evidence_outside_quoted_line() {
     assert!(results[0].passed, "{}", results[0].detail);
 }
 
+// 近逐字回显变体（BUG-20261114-045 红侧回归锁）：逐字 replace 只打得中
+// 逐字原文——回显去 ` # 注释` 尾（复述验收标准最自然的形态）、内部多
+// 空格、markdown 强调、行首列表符、行内嵌引文，全部绕过逐字 replace →
+// 引文里自命中假 PASS（正是自指防御注释宣称要防的「假 PASS → 自动收货」）。
+// 修复后这些形态必须诚实 FAIL。
+#[test]
+fn content_regex_ignores_near_verbatim_anchor_echo_variants() {
+    let ws = temp_workspace("echo-variants");
+    // 锚点带 ` # 注释` 尾：raw 全行含注释，回显丢注释尾 = 最自然变体。
+    let (anchors, _, _rej) = parse_anchors("[CHECK] re:BUG45NEEDLE # 汇报须含结论");
+    let echo_variants = [
+        // ① 去注释尾复述
+        "[CHECK] re:BUG45NEEDLE",
+        // ② 内部多空格
+        "[CHECK]  re:BUG45NEEDLE",
+        // ③ markdown 强调进引文
+        "[CHECK] re:**BUG45NEEDLE**",
+        // ④ 行首列表符
+        "- [CHECK] re:BUG45NEEDLE",
+        // ⑤ 反引号包裹
+        "`[CHECK] re:BUG45NEEDLE`",
+        // ⑥ 行内嵌引文（非独立行）
+        "任务卡要求 [CHECK] re:BUG45NEEDLE（原文如此），实际未能完成",
+    ];
+    for (i, variant) in echo_variants.iter().enumerate() {
+        let delivery = format!("# 看板任务 NB-45\n\n## 验收标准\n交付说明文本。\n{variant}\n");
+        let results = run_anchors(&anchors, &ws, &delivery);
+        assert!(
+            !results[0].passed,
+            "回显变体[{i}] 引述锚点行不得自命中: {}",
+            results[0].detail
+        );
+    }
+}
+
+// 防御扩面不得误伤：回显行（变体形态）被剥除后，独立真实证据行照常命中
+// → PASS（「复述标准 + 交付」合法汇报不受影响）。
+#[test]
+fn content_regex_near_verbatim_strip_keeps_genuine_evidence() {
+    let ws = temp_workspace("echo-variants-pass");
+    let (anchors, _, _rej) = parse_anchors("[CHECK] re:BUG45PASSNEEDLE # 汇报须含结论");
+    let report = "# 看板任务 NB-45\n\n## 验收标准\n- [CHECK] re:**BUG45PASSNEEDLE**\n\n## 结论\n交付已完成，BUG45PASSNEEDLE 指标达成。\n";
+    let results = run_anchors(&anchors, &ws, report);
+    assert!(results[0].passed, "{}", results[0].detail);
+}
+
 #[test]
 fn run_chinese_keyword_contains() {
     let ws = temp_workspace("chinese");
@@ -911,6 +957,71 @@ fn exec_anchor_quoted_command_runs() {
         "带引号验证命令应原样到达 shell 并通过: {}",
         results[0].detail
     );
+}
+
+/// env 凭据剥离回归锁（BUG-20261117-048）：exec 锚点命令是 planner LLM
+/// 产物，黑名单拦删/网络/破坏类但**不拦 `%VAR%` 展开**——
+/// `exec:echo %NEMESISBOT_VAULT_PASSPHRASE%` 过黑名单（echo 是 shell 内建），
+/// 凭据经 stdout「输出尾部」进评审评论外泄。run_exec_anchor 的 spawn 接
+/// env_sanitize 全版闸后，敏感命名空间变量到不了子进程 env，外泄链在
+/// 源头掐断。差分设计：非敏感名变量照常展开（证明 echo 与展开管线工作
+/// 正常），敏感名变量拿不到值——不依赖进程级开关的临时翻转，不毒化
+/// 并行测试。
+#[test]
+fn exec_anchor_env_sanitized_secret_namespace_stripped() {
+    let ws = temp_workspace("exec-env-san");
+    const SECRET_VAR: &str = "NEMESISBOT_TEST_SECRET_R1531";
+    const SECRET_VAL: &str = "SUP3RSECRET42";
+    const PLAIN_VAR: &str = "ANCHOR_PLAIN_R1531";
+    const PLAIN_VAL: &str = "PLAINOK77";
+    // SAFETY: 进程内唯一名变量，其他测试不读这两个名字；测试尾移除。
+    unsafe {
+        std::env::set_var(SECRET_VAR, SECRET_VAL);
+        std::env::set_var(PLAIN_VAR, PLAIN_VAL);
+    }
+    let (command, secret_literal) = if cfg!(windows) {
+        // cmd：设置变量展开为值；剥离后未设置变量按字面回显。
+        (
+            format!("echo {PLAIN_VAR}-%{PLAIN_VAR}%-%{SECRET_VAR}%"),
+            format!("%{SECRET_VAR}%"),
+        )
+    } else {
+        // sh：未设置变量展开为空串（引号防 set -u 环境炸场）。
+        (
+            format!("echo {PLAIN_VAR}-\"${PLAIN_VAR}\"-\"${SECRET_VAR}\""),
+            String::new(),
+        )
+    };
+    let results = run_anchors_dual_ext(
+        &exec_anchor(&command),
+        &ws,
+        None,
+        "",
+        &ExecAnchorPolicy::Enabled { timeout_secs: 30 },
+    )
+    .0;
+    unsafe {
+        std::env::remove_var(SECRET_VAR);
+        std::env::remove_var(PLAIN_VAR);
+    }
+    if results.is_empty() {
+        return; // echo 缺席 = EnvSkip 通道（诚实跳过，不假红）
+    }
+    let detail = &results[0].detail;
+    assert!(
+        detail.contains(PLAIN_VAL),
+        "非敏感名变量应照常展开（管线健康对照）：{detail}"
+    );
+    assert!(
+        !detail.contains(SECRET_VAL),
+        "敏感命名空间值经剥离闸不得进锚点输出尾部：{detail}"
+    );
+    if cfg!(windows) {
+        assert!(
+            detail.contains(&secret_literal),
+            "剥离后未设置变量应按字面回显（证明 cmd 展开真发生了但拿不到值）：{detail}"
+        );
+    }
 }
 
 /// 探针目标提取纯函数：env 赋值 / 路径形态 / shell 内建不探（None），裸词

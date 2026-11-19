@@ -1909,13 +1909,18 @@ fn run_project_report(deps: &BoardReviewDeps, project_id: i64) -> Result<(), Str
         .map(|i| i.id)
         .collect();
     for pid in &top_parents {
-        let _ = store.add_comment(NewComment {
+        if let Err(ce) = store.add_comment(NewComment {
             issue_id: *pid,
             author: Actor::agent(deps.cluster.node_id()),
             content: comment.clone(),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                *pid
+            );
+        }
     }
     if let Err(e) = store.notify(nemesis_board::models::NewNotification {
         recipient: Actor::admin("dashboard"),
@@ -1983,13 +1988,18 @@ fn dossier_fail_note(deps: &BoardReviewDeps, project_id: i64, err: &str) {
                 "📁 任务档案自动导出失败（不阻塞收口，可 `nemesisbot dossier export --project-id {project_id}` 手动补导）：{err}"
             );
             for p in issues.iter().filter(|i| i.parent_issue_id.is_none()) {
-                let _ = deps.store.add_comment(NewComment {
+                if let Err(ce) = deps.store.add_comment(NewComment {
                     issue_id: p.id,
                     author: Actor::agent(deps.cluster.node_id()),
                     content: comment.clone(),
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        p.id
+                    );
+                }
             }
         }
     }
@@ -2014,13 +2024,18 @@ pub(super) fn summarize_fail_note(deps: &BoardReviewDeps, project_id: i64, err: 
             ..Default::default()
         }) {
             for p in issues.iter().filter(|i| i.parent_issue_id.is_none()) {
-                let _ = deps.store.add_comment(NewComment {
+                if let Err(ce) = deps.store.add_comment(NewComment {
                     issue_id: p.id,
                     author: Actor::agent(deps.cluster.node_id()),
                     content: comment.clone(),
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        p.id
+                    );
+                }
             }
         }
     }

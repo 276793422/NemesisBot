@@ -412,3 +412,14 @@ fn l02_short_circuit_still_precedes_overflow_family() {
     );
     assert_eq!(classify_llm_error(&display), Some(LlmErrorClass::Timeout));
 }
+
+#[test]
+fn concurrency_limit_wording_maps_rate_limit() {
+    // 2026-11-17 治本批：cc-switch / one-api 系流内限流实测文案——流内
+    // error 事件码采集缺失时的文案兜底（loop 层 RATE_LIMIT_ERROR_KEYWORDS
+    // 双写同步）。
+    assert_eq!(
+        classify_llm_error("Concurrency limit exceeded for account"),
+        Some(LlmErrorClass::RateLimit)
+    );
+}

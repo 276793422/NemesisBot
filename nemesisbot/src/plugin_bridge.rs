@@ -320,7 +320,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
                 self.inner.as_ref(),
                 args,
             ) {
-                Ok((a, secrets)) => (a, secrets),
+                Ok((a, secrets, _bindings)) => (a, secrets),
                 Err(inj_err) => {
                     match nemesis_agent::r#loop::credential_injection::try_card_recovery(
                         self.credential_broker.clone(),
@@ -333,7 +333,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
                     )
                     .await
                     {
-                        Some((retried, secrets)) => (retried, secrets),
+                        Some((retried, secrets, _bindings)) => (retried, secrets),
                         None => return Err(inj_err.to_string()),
                     }
                 }
@@ -828,8 +828,10 @@ pub fn build_plugin_audit_logger(
     home: &std::path::Path,
 ) -> Option<nemesis_plugins_wasm::host_impl::SharedAuditLogger> {
     // 审计文件开关（CFG-06，缺省 true——与 security_setup 同键同语义）。
+    // read_config_string 剥 BOM：裸读时记事本 BOM → parse 失败 → 用户
+    // `audit_log_file_enabled=false` 被静默忽略（BUG-20261103-334 同族）。
     let sec_path = common::security_config_path(home);
-    let enabled = std::fs::read_to_string(&sec_path)
+    let enabled = nemesis_utils::fsutil::read_config_string(&sec_path)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("audit_log_file_enabled").and_then(|f| f.as_bool()))
@@ -898,8 +900,15 @@ impl InstallApprover for LateInstallApprover {
             // 非多线程 runtime 会 panic，同 skills gate 理由）。
             let manager = manager.clone();
             let timeout_secs = self.timeout_secs;
+            // agent 自举提案论证（项6）：有提案时卡片带「提案论证」段——
+            // 人批的是一段有理由的请求，不是裸 manifest；常规安装 None =
+            // 卡面字节零变化。
+            let reason_note = match review.proposer_reason.as_deref() {
+                Some(r) if !r.trim().is_empty() => format!("\n提案论证：{}", r.trim()),
+                _ => String::new(),
+            };
             let summary = format!(
-                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}{}",
+                "WASM 插件安装：{} v{}（kind={}，信任={}，sha256={}…，出站 {} 项，凭据 {} 项，{} 字节）\n来源：{}{}{}",
                 review.slug,
                 review.version,
                 review.kind,
@@ -925,6 +934,7 @@ impl InstallApprover for LateInstallApprover {
                 } else {
                     String::new()
                 },
+                reason_note,
             );
             let target = review.source_dir.clone();
             let wait = tokio::task::spawn_blocking(move || {

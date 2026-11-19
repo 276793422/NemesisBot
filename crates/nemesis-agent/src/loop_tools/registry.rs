@@ -37,6 +37,10 @@ pub fn register_default_tools() -> HashMap<String, Box<dyn Tool>> {
     );
     tools.insert("create_dir".to_string(), Box::new(CreateDirTool::default()));
     tools.insert("delete_dir".to_string(), Box::new(DeleteDirTool::default()));
+    // (Phase 5 图像工具层) read_image：LLM 主动读图（基线工具——纯读侧，
+    // 图片路径进 tool_images 槽随 tool 轮落史；vision=no 由 dispatch 层
+    // vision 前置闸零 IO 拒绝）。
+    tools.insert("read_image".to_string(), Box::new(ReadImageTool::default()));
     tools.insert("sleep".to_string(), Box::new(SleepTool));
     tools
 }
@@ -61,12 +65,30 @@ pub struct SharedToolConfig {
     /// SpawnTool 与其共享同一 Arc。`None` = SpawnTool 自建空槽（行为与
     /// 旧「无 spawn_fn」完全一致：execute 诚实报 not available）。
     pub spawn_slot: Option<Arc<std::sync::OnceLock<SpawnFn>>>,
+    /// （项3 子代理飞行中驾驶）：`subagent_steer` 工具闭包共享槽——
+    /// agent_factory 组装后注入（持 `Weak<AgentLoop>` 调 `steer_subagent`），
+    /// 与 SpawnTool 槽同款形态。`None` = 工具自建空槽（execute 诚实报
+    /// not available——与 spawn 无闭包形态一致）。
+    pub steer_slot: Option<Arc<std::sync::OnceLock<SubagentSteerFn>>>,
+    /// （专家子代理）：spawn 工具的专家解析面——`action=list` 名册与
+    /// `expert` 点名预检的消费面。`None`（Default）= 无专家子系统（list
+    /// 诚实空名册 / 点名诚实报错）；生产装配点把与 spawn 闭包同一
+    /// [`ExpertsHandle`] 注入，两条路径同源。
+    pub experts: Option<ExpertsHandle>,
     /// Skills registry manager for find/install tools.
     pub skills_registry: Option<Arc<nemesis_skills::registry::RegistryManager>>,
     /// Skills loader for listing local skills.
     pub skills_loader: Option<Arc<nemesis_skills::loader::SkillsLoader>>,
     /// Workspace path for skill installation.
     pub workspace: Option<String>,
+    /// bot 域产物根（2026-11-17 数据归属视角统一）：screen_capture /
+    /// desktop_automation 截图落盘（`{root}/temp/`）与 web_fetch 超限
+    /// spill 存档（`{root}/logs/spill/`）的落盘根。这些是 bot 诊断/临时
+    /// 产物，不属于用户仓库——项目 loop（workspace=用户项目工作树）必须
+    /// 显式注入主 workspace，避免落用户目录。`None`（Default）= 回落
+    /// `workspace`（主 loop / 对话组 / 集群 worker 的 workspace 本就是
+    /// 主 ws，行为零变化）。
+    pub bot_artifacts_root: Option<std::path::PathBuf>,
     /// Cron service for scheduling jobs.
     pub cron_service: Option<Arc<std::sync::Mutex<nemesis_cron::service::CronService>>>,
     /// (half): enable the claude_code delegation tool. Default false
@@ -116,8 +138,10 @@ pub struct SharedToolConfig {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)]
     pub memory_executor: Option<()>,
-    /// Snapshot of registered MCP tools for McpListTool.
-    pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>>,
+    // （BUG-20261118-095）原 `mcp_tool_snapshot` 槽已删：mcp_list 改走
+    // dispatch 拦截 + registry 真值过滤渲染，不再读快照（生产装配从未
+    // 接通本槽 → 恒空 Arc 死工具；接通形态下快照无可见性过滤会泄漏
+    // 隐藏工具面）。loop 侧快照保留（connectors Dashboard 运营面消费）。
     /// Workflow engine reference for the `workflow` agent tool（run/create/
     /// capabilities 三合一单工具，2026-11-06）。
     /// `None` means workflows aren't wired in (tool stays unregistered).
@@ -234,10 +258,6 @@ impl std::fmt::Debug for SharedToolConfig {
                 &self.memory_executor.as_ref().map(|_| "MemoryToolExecutor"),
             )
             .field(
-                "mcp_tool_snapshot",
-                &self.mcp_tool_snapshot.as_ref().map(|_| "McpToolSnapshot"),
-            )
-            .field(
                 "workflow_engine",
                 &self.workflow_engine.as_ref().map(|_| "WorkflowEngine"),
             )
@@ -350,6 +370,36 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             "delete_dir".to_string(),
             Box::new(DeleteDirTool::with_boundary(boundary.clone())),
         );
+        // (Phase 5 图像工具层) read_image 同批换带界生产形态——相对路径
+        // 锚定工作区根 + restrict 读界；uploads 降采样产物目录从边界根派生。
+        tools.insert(
+            "read_image".to_string(),
+            Box::new(ReadImageTool::with_boundary(boundary.clone())),
+        );
+    }
+
+    // (Phase 5 图像工具层) screen_capture / desktop_automation：截屏 +
+    // 桌面自动化接线（用户拍板「必须一起做」）。生产注册（workspace 在场
+    // ——截图落 `{workspace}/temp/`），基线/测试注册不含。tier 供给面：
+    // big 全量天然含，normal/mini 白名单不给（高敏感操作面最小暴露）。
+    // 安全分级静态表：screen_capture=FileWrite(HIGH 隐私敏感) /
+    // desktop_automation=ProcessSpawn(HIGH 键鼠注入)，审批卡照常走 8 层。
+    // 非 Windows 平台运行期诚实报错（PowerShell 后端缺席），不做编译期裁剪。
+    if let Some(ref ws) = config.workspace {
+        // 截图落盘根 = bot 域产物根（temp/ 是 bot 临时产物，不属于用户
+        // 仓库——项目 loop 经 bot_artifacts_root 锚主 workspace）。
+        let ws_root = config
+            .bot_artifacts_root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(ws));
+        tools.insert(
+            "screen_capture".to_string(),
+            Box::new(ScreenCaptureToolAdapter::new(ws_root.clone())),
+        );
+        tools.insert(
+            "desktop_automation".to_string(),
+            Box::new(DesktopAutomationToolAdapter::new(ws_root)),
+        );
     }
 
     // todowrite —— 全量提交式 todo 清单，写
@@ -377,12 +427,18 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // 宿主——重定向手动循环逐跳复查（无闸时仍限跳数 ≤5）。mut 只在
     // security 形态用到（ssrf 注入），minimal 形态 cfg_attr 压 unused_mut
     // （远端 minimal clippy；不能删 mut——security 形态需要）。
-    // 注入 workspace 根（超限全文存档 spill 用）。web_fetch
-    // 无条件注册（与 workspace 有无无关）——workspace 缺席时 with_workspace
-    // 收空串，超限退回旧「截断+注记」行为（诚实不静默）。
+    // 注入 workspace 根（超限全文存档 spill 用）。spill 是 bot 域诊断
+    // 产物——根优先取 bot_artifacts_root（项目 loop 锚主 workspace，
+    // 不落用户项目树）。web_fetch 无条件注册（与 workspace 有无无关）
+    // ——两者皆缺席时 with_workspace 收空串，超限退回旧「截断+注记」
+    // 行为（诚实不静默）。
+    let spill_root = config
+        .bot_artifacts_root
+        .clone()
+        .or_else(|| config.workspace.as_deref().map(std::path::PathBuf::from));
     #[cfg_attr(not(feature = "security"), allow(unused_mut))]
-    let mut web_fetch =
-        WebFetchTool::new(50000).with_workspace(config.workspace.as_deref().unwrap_or(""));
+    let mut web_fetch = WebFetchTool::new(50000)
+        .with_workspace(spill_root.as_deref().and_then(|p| p.to_str()).unwrap_or(""));
     #[cfg(feature = "security")]
     {
         web_fetch.ssrf = config.security.clone();
@@ -411,7 +467,31 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             ),
             None => SpawnTool::new(spawn_config.clone()),
         };
+        let tool = match config.experts.clone() {
+            Some(h) => tool.with_experts(h),
+            None => tool,
+        };
+        // 降级通知事件槽（2026-11-13）：exec_output_tx 同源（web pump 消费
+        // 同一 broadcast）；None = 无通知面（headless/测试缺省）。
+        let tool = match config.exec_output_tx.clone() {
+            Some(tx) => tool.with_event_tx(tx),
+            None => tool,
+        };
         tools.insert("spawn".to_string(), Box::new(tool));
+    }
+
+    // 子代理飞行中驾驶工具（项3）：随 spawn 面注册——无 spawn 面 = 无
+    // 子代理可驾驶，工具缺席。steer_slot Some = 共享槽（factory 延迟注入
+    // 闭包）；None 自建空槽（execute 诚实报 not available）。
+    if config.spawn.is_some() {
+        let slot = config
+            .steer_slot
+            .clone()
+            .unwrap_or_else(|| Arc::new(std::sync::OnceLock::new()));
+        tools.insert(
+            "subagent_steer".to_string(),
+            Box::new(SubagentSteerTool::new(slot)),
+        );
     }
 
     // Memory tools.
@@ -514,11 +594,17 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Coding tools (grep / git) — read-only code search & git queries.
+    // （BUG-20261117-067）grep 显式 path 与文件工具同源过 resolve_tool_path
+    // （Read 族）——旧行为：绝对路径不校验、相对 join 无包含检查，restrict
+    // =true 下 read_file 拒绝的界外路径可被 grep 搜出内容（同族缺口第二例，
+    // 第一例 lsp_tool）。git 是 repo-bound 形态（cwd 钉工作区、路径在仓库
+    // 内解析），不属本族。
     if let Some(ref workspace) = config.workspace {
-        tools.insert(
-            "grep".to_string(),
-            Box::new(GrepTool::new(workspace.clone())),
-        );
+        let mut grep = GrepTool::new(workspace.clone());
+        if let Some(ref boundary) = config.workspace_boundary {
+            grep = grep.with_boundary(boundary.clone());
+        }
+        tools.insert("grep".to_string(), Box::new(grep));
         tools.insert("git".to_string(), Box::new(GitTool::new(workspace.clone())));
     }
 
@@ -639,8 +725,12 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         }
         // timeout clamp 上限（2026-11-08 config 化）：None = 600 旧行为。
         // editor 开关围栏闸：链尾统一注入（None = 旧行为字节不变）。
+        // exec 超时收编（2026-11-16 B43）：gateway 注册表单例注入——超时
+        // 不杀，收编后台继续跑 + 完成唤醒回灌；executor 分离/测试构造
+        // （注册表缺席）= 树杀旧行为字节不变。
         .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600))
-        .with_editor_gate(editor_gate.clone());
+        .with_editor_gate(editor_gate.clone())
+        .with_background_registry(config.background_registry.clone());
         tools.insert("exec".to_string(), Box::new(exec_tool));
         // [SEALED 2026-11-08] exec_async 封存（用户拍板，实现保留不删除）。
         // 根因：fire-and-forget（管道只接不排，64KB 写满即死锁）+ 无
@@ -863,13 +953,10 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         "history_search".to_string(),
         Box::new(HistorySearchTool::new()),
     );
-    {
-        let snapshot = config
-            .mcp_tool_snapshot
-            .clone()
-            .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(Vec::new())));
-        tools.insert("mcp_list".to_string(), Box::new(McpListTool::new(snapshot)));
-    }
+    // （BUG-20261118-095）mcp_list 注册恒在（生产恒注册工具面）；执行
+    // 走 dispatch 拦截（可见性过滤 + registry 真值渲染），execute 是
+    // 诚实报错安全网。
+    tools.insert("mcp_list".to_string(), Box::new(McpListTool));
     // 惰性供给 meta 工具（供给闸在 build_tool_defs，dispatch 拦截解包；
     // lazy off 时供给面不出现——注册恒在，行为零变化由双闸保证）。
     tools.insert("mcp_call".to_string(), Box::new(McpCallTool));
@@ -945,8 +1032,11 @@ pub fn register_extended_tools(
         cluster_rpc: cluster_config,
         spawn: spawn_config,
         spawn_slot: None,
+        steer_slot: None,
+        experts: None,
         skills_registry: None,
         skills_loader: None,
+        bot_artifacts_root: None,
         workspace: None,
         cron_service: None,
         claude_code_tool_enabled: false,
@@ -963,7 +1053,6 @@ pub fn register_extended_tools(
         forge_executor: None,
         forge: None,
         memory_executor: None,
-        mcp_tool_snapshot: None,
         workflow_engine: None,
         approval_manager: None,
         skills_manage_approval: false,

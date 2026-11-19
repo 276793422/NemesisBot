@@ -82,6 +82,9 @@ tracing-subscriber = { workspace = true }
 # L13-b mandate parity 测试（digest 等价契约钉）：仅 dev 树——运行时依赖
 # 面保持轻（不引 nemesis-verify 的 reqwest/rustls 进生产构建）。
 nemesis-verify = { workspace = true }
+# taskstore 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
+# dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
+nemesis-taskstore = { workspace = true, features = ["sqlite"] }
 
 [lints]
 workspace = true

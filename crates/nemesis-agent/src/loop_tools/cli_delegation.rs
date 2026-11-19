@@ -89,7 +89,10 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
     #[cfg_attr(not(windows), allow(unused_variables))]
     let child_pid = child.id();
     let out = match tokio::time::timeout(
-        Duration::from_secs(spec.timeout_secs),
+        // BUG-20261117-061 纵深：0 不允许（tokio timeout(0) 立即超时 =
+        // spawn 即 tree-kill）；构造方已把 0 归缺省，此 max(1) 只兜未来
+        // 新调用方漏滤。
+        Duration::from_secs(spec.timeout_secs.max(1)),
         child.wait_with_output(),
     )
     .await
@@ -127,8 +130,11 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
         }
     };
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    // 解码走单一真相源（BUG-20261115-034）：Windows 上 CLI 经 .cmd 包装
+    // （cmd.exe 解释），CLI 自身 UTF-8 输出字节精确直通，cmd 层码页文本
+    // （错误横幅等）就地恢复。
+    let stdout = nemesis_utils::child_decode::decode_child_output(&out.stdout);
+    let stderr = nemesis_utils::child_decode::decode_child_output(&out.stderr);
     if !out.status.success() {
         return Ok(format!(
             "Error: {} exited with {}.\nstdout:\n{}\nstderr:\n{}",

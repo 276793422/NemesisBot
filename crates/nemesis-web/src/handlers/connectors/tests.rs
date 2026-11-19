@@ -24,6 +24,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
     let ws = dir.to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -46,6 +47,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -61,6 +63,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -82,6 +85,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -104,6 +108,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -119,6 +124,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -160,6 +166,7 @@ id = "quote"
 intent = ["查询行情"]
 risk = "low"
 class = "network"
+args_schema = {{ type = "object", required = ["symbol"], properties = {{ symbol = {{ type = "string" }} }} }}
 
 [op.http]
 method = "GET"

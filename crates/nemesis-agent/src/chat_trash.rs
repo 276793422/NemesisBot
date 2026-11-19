@@ -100,6 +100,12 @@ pub struct TrashLocations {
     boundary_path: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>,
     #[allow(clippy::type_complexity)]
     todo_path: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>,
+    /// 会话审计账本寻址（2026-11-19 删除残留修复，软删级联摘除用）。
+    #[allow(clippy::type_complexity)]
+    ledger_path: Arc<dyn Fn(&str) -> PathBuf + Send + Sync>,
+    /// 诊断捕获根目录（`logs/capture`，2026-11-19 删除残留修复，软删级联
+    /// 跟随删用；目录缺席 = capture 关闭态，删除幂等 no-op）。
+    capture_root: PathBuf,
 }
 
 impl TrashLocations {
@@ -112,21 +118,28 @@ impl TrashLocations {
             log_path: Arc::new(chat_log::log_path),
             meta_path: Arc::new(chat_log::meta_path),
             boundary_path: Arc::new(chat_log::boundary_path),
-            todo_path: Arc::new(move |k: &str| {
-                nemesis_path::session_todo_file_in_workspace(&workspace, k)
+            todo_path: Arc::new({
+                let workspace = workspace.clone();
+                move |k: &str| nemesis_path::session_todo_file_in_workspace(&workspace, k)
             }),
+            ledger_path: Arc::new(crate::event_ledger::ledger_path),
+            capture_root: workspace.join("logs").join("capture"),
         }
     }
 
     /// 测试注入：回收站根 + session_logs 目录 + boundary 目录 + sessions 目录
-    /// （todo 文件挂后者）。文件名格式与 chat_log / nemesis-path 真相源同源
-    /// （`{safe}.jsonl` / `{safe}.meta.json` / `todo_{safe}.json`，
-    /// `safe = sanitize_path_segment`；chat_log.rs::log_path 注释即契约）。
+    /// （todo 文件挂后者）+ ledger 目录 + capture 根。文件名格式与 chat_log /
+    /// nemesis-path / event_ledger / capture_sink 真相源同源（`{safe}.jsonl` /
+    /// `{safe}.meta.json` / `todo_{safe}.json` / `{safe}.jsonl` /
+    /// `{capture_safe}`，jsonl 族 `safe = sanitize_path_segment`、capture 目
+    /// 录名 = capture_sink 私有 sanitize；chat_log.rs::log_path 注释即契约）。
     pub fn with_dirs(
         trash_root: PathBuf,
         session_logs_dir: PathBuf,
         boundary_dir: PathBuf,
         sessions_dir: PathBuf,
+        ledger_dir: PathBuf,
+        capture_root: PathBuf,
     ) -> Self {
         let logs_dir = session_logs_dir.clone();
         Self {
@@ -155,6 +168,13 @@ impl TrashLocations {
                     nemesis_utils::sanitize::sanitize_path_segment(k)
                 ))
             }),
+            ledger_path: Arc::new(move |k: &str| {
+                ledger_dir.join(format!(
+                    "{}.jsonl",
+                    nemesis_utils::sanitize::sanitize_path_segment(k)
+                ))
+            }),
+            capture_root,
         }
     }
 
@@ -176,6 +196,17 @@ impl TrashLocations {
 
     pub fn todo_path(&self, session_key: &str) -> PathBuf {
         (self.todo_path)(session_key)
+    }
+
+    /// 会话审计账本路径（软删级联摘除面；2026-11-19 删除残留修复）。
+    pub fn ledger_path(&self, session_key: &str) -> PathBuf {
+        (self.ledger_path)(session_key)
+    }
+
+    /// 诊断捕获根目录（软删级联跟随删面；寻址走
+    /// `capture_sink::capture_dir_at` 同源 sanitize）。
+    pub fn capture_root(&self) -> &Path {
+        &self.capture_root
     }
 }
 
@@ -374,6 +405,27 @@ pub fn trash_chat_log_in(
     // seq（与 delete_chat_log 的级联清理同族；见 history_search::invalidate_session）。
     #[cfg(feature = "history-search")]
     crate::history_search::invalidate_session(session_key);
+
+    // 审计账本（event_ledger）随软删级联摘除（2026-11-19 删除残留修复）——
+    // 与硬删（delete_chat_log）同语义对齐：回收站已收走对话本体，ledger
+    // 不跟走会以孤儿滞留到 30 天 TTL 才被清扫，且同键重建的会话不得继承
+    // 前任审计事件。恢复（trash_restore）不回带 ledger——回收站承诺恢复的
+    // 是对话本体（chat/boundary/meta/todo 四件套），审计账本以删除时刻为
+    // 终点不随恢复复活（删除期间无新事件，账本空档如实反映）。
+    let lpath = (loc.ledger_path)(session_key);
+    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&lpath) {
+        tracing::warn!(
+            "[chat_trash] Failed to delete ledger {}: {}",
+            lpath.display(),
+            e
+        );
+    }
+
+    // 诊断捕获（capture）跟随删（2026-11-19 删除残留修复）：capture 目录
+    // 是会话内容的副本（工具入参/回执全文），隐私清理语义下软删必须同步
+    // 清；不进回收站（诊断证据非对话本体，恢复承诺只覆盖四件套）。失败
+    // 降级交 capture 族 TTL 清扫兜底。
+    crate::capture_sink::remove_capture_at(&loc.capture_root, session_key);
 
     // 返回实际占位条目名：同毫秒双删时第二删落在 `name-2` 槽位，返回循环前
     // 的 `name` 会让调用方拿到第一删的名字——按名 purge/restore 会误指前删

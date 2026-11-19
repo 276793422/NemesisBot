@@ -12,6 +12,7 @@ members = [
     "crates/nemesis-sandbox",
     "crates/nemesis-providers",
     "crates/nemesis-tools",
+    "crates/nemesis-mail-protocol",
     "crates/nemesis-memory",
     "crates/nemesis-workflow",
     "crates/nemesis-skills",
@@ -25,6 +26,9 @@ members = [
     "crates/nemesis-web",
     "crates/nemesis-auth",
     "crates/nemesis-cron",
+    "crates/nemesis-events",
+    "crates/nemesis-goals",
+    "crates/nemesis-loop",
     "crates/nemesis-devices",
     "crates/nemesis-health",
     "crates/nemesis-heartbeat",
@@ -46,6 +50,7 @@ members = [
     "crates/nemesis-voice",
     "crates/nemesis-ui",
     "crates/nemesis-lsp",
+    "crates/nemesis-browser",
     "crates/nemesis-board",
     "crates/nemesis-connectors",
     "nemesisbot",
@@ -77,6 +82,11 @@ members = [
     "test-tools/verify-probe",
     "test-tools/comment-gate",
 ]
+
+# 装配槽区（slots/）：专有/商业子系统槽位一律住这里（未来新增定制不再进根目录）。
+# 槽内 impl/（git submodule）自带独立 workspace，宿主构建经 build.rs 静态直链
+# 探测消费（不走 cargo 依赖图）——exclude 防其被工作区解析/吸收。
+exclude = ["slots/taiwei"]
 
 [workspace.package]
 version = "0.1.0"
@@ -239,6 +249,7 @@ nemesis-workflow = { path = "crates/nemesis-workflow" }
 nemesis-skills = { path = "crates/nemesis-skills", default-features = false }
 nemesis-mcp = { path = "crates/nemesis-mcp" }
 nemesis-lsp = { path = "crates/nemesis-lsp" }
+nemesis-browser = { path = "crates/nemesis-browser" }
 nemesis-agent = { path = "crates/nemesis-agent", default-features = false }
 nemesis-channels = { path = "crates/nemesis-channels" }
 nemesis-forge = { path = "crates/nemesis-forge" }
@@ -248,18 +259,22 @@ nemesis-desktop = { path = "crates/nemesis-desktop" }
 nemesis-web = { path = "crates/nemesis-web" }
 nemesis-auth = { path = "crates/nemesis-auth" }
 nemesis-cron = { path = "crates/nemesis-cron" }
+nemesis-events = { path = "crates/nemesis-events" }
+nemesis-goals = { path = "crates/nemesis-goals" }
+nemesis-loop = { path = "crates/nemesis-loop" }
 nemesis-devices = { path = "crates/nemesis-devices" }
 nemesis-health = { path = "crates/nemesis-health" }
 nemesis-heartbeat = { path = "crates/nemesis-heartbeat" }
 nemesis-http-pool = { path = "crates/nemesis-http-pool" }
 nemesis-logger = { path = "crates/nemesis-logger" }
+nemesis-mail-protocol = { path = "crates/nemesis-mail-protocol" }
 nemesis-migrate = { path = "crates/nemesis-migrate" }
 nemesis-path = { path = "crates/nemesis-path" }
 nemesis-plugin = { path = "crates/nemesis-plugin" }
 nemesis-routing = { path = "crates/nemesis-routing" }
 nemesis-state = { path = "crates/nemesis-state" }
 nemesis-sysint = { path = "crates/nemesis-sysint" }
-nemesis-taskstore = { path = "crates/nemesis-taskstore" }
+nemesis-taskstore = { path = "crates/nemesis-taskstore", default-features = false }
 nemesis-utils = { path = "crates/nemesis-utils" }
 nemesis-injector = { path = "crates/nemesis-injector" }
 nemesis-ziwei = { path = "crates/nemesis-ziwei" }

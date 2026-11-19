@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
-use nemesis_types::utils::split_message;
+use nemesis_types::utils::split_message_utf16;
 
 use crate::base::{BaseChannel, Channel};
 
@@ -232,7 +232,7 @@ impl LineChannel {
             .map_err(|e| NemesisError::Channel(format!("LINE reply failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("LINE reply error: {body}")));
         }
 
@@ -262,7 +262,7 @@ impl LineChannel {
             .map_err(|e| NemesisError::Channel(format!("LINE push failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("LINE push error: {body}")));
         }
 
@@ -275,6 +275,7 @@ impl LineChannel {
         bus: &broadcast::Sender<InboundMessage>,
         channel_secret: &str,
         webhook_path: &str,
+        allow_from: &[String],
         reply_tokens: &Arc<dashmap::DashMap<String, String>>,
         running: &Arc<parking_lot::RwLock<bool>>,
     ) {
@@ -407,6 +408,21 @@ impl LineChannel {
                 _ => sender_id,
             };
 
+            // allow_from 白名单闸（家族惯例：空 = 全放行；signal/whatsapp/qq
+            // 同款判据，匹配对象为 LINE userId，DM 与群消息一致按发送者判）。
+            // 签名闸保证「来自 LINE 平台」，白名单闸保证「来自配置允许的
+            // 用户」——此前 config `channels.line.allow_from` 是声名未读取的
+            // 死键，任何 LINE 用户都可驱动 bot（BUG-20261113-149；与
+            // webhook_host/webhook_path 同 struct 的第三颗死键，055 修复
+            // 横扫漏）。
+            if !allow_from.is_empty() && !allow_from.iter().any(|a| a == sender_id) {
+                warn!(
+                    sender = %sender_id,
+                    "[LineChannel] sender filtered by allow_from"
+                );
+                continue;
+            }
+
             // Store reply token for response
             if let Some(ref reply_token) = event.reply_token {
                 reply_tokens.insert(chat_id.to_string(), reply_token.clone());
@@ -424,7 +440,9 @@ impl LineChannel {
                 voice_playback: None,
             };
 
-            let _ = bus.send(inbound);
+            if let Err(e) = bus.send(inbound) {
+                warn!("[LineChannel] failed to publish inbound message to bus: {e}");
+            }
         }
     }
 }
@@ -447,6 +465,7 @@ impl Channel for LineChannel {
         let bus = self.bus_sender.clone();
         let channel_secret = self.config.channel_secret.clone();
         let webhook_path = self.config.webhook_path_resolved();
+        let allow_from = self.config.allow_from.clone();
         let reply_tokens = self.reply_tokens.clone();
         let running = self.running.clone();
         let port = if self.config.webhook_port == 0 {
@@ -487,6 +506,7 @@ impl Channel for LineChannel {
                 let bus = bus.clone();
                 let secret = channel_secret.clone();
                 let webhook_path = webhook_path.clone();
+                let allow_from = allow_from.clone();
                 let reply_tokens = reply_tokens.clone();
                 let running = running.clone();
 
@@ -496,6 +516,7 @@ impl Channel for LineChannel {
                         &bus,
                         &secret,
                         &webhook_path,
+                        &allow_from,
                         &reply_tokens,
                         &running,
                     )
@@ -527,9 +548,11 @@ impl Channel for LineChannel {
 
         self.base.record_sent();
 
-        // LINE 硬限 5000 字符（服务端 400 拒收整条），预算
-        // 4900 留余量。reply token 一次性——首块走 reply()，其余块走 push。
-        let chunks = split_message(&msg.content, 4900);
+        // LINE 硬限 5000 字符——按 UTF-16 code units 计（官方
+        // text-character-count 文档；astral emoji = 2 units），服务端
+        // 400 拒收整条，预算 4900 units 留余量。reply token 一次性——
+        // 首块走 reply()，其余块走 push。
+        let chunks = split_message_utf16(&msg.content, 4900);
 
         // Prefer reply token if available
         if let Some((_, reply_token)) = self.reply_tokens.remove(&msg.chat_id) {

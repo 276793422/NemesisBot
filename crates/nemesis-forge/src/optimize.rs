@@ -88,7 +88,8 @@ fn split_frontmatter(content: &str) -> (String, String) {
 /// 应用算子生成候选。
 ///
 /// `param`：AddExample / InjectFailureCase 的附加文本（其余算子忽略）。
-/// `budget_tokens`：输出预算（forge.optimize.budget_tokens；CJK ×2 折算）。
+/// `budget_tokens`：输出预算（forge.optimize.budget_tokens；CJK ×2 折算；
+/// **0=关预算闸**，与 board.budget.* 家族哨兵惯例一致）。
 pub fn apply(
     operator: Operator,
     content: &str,
@@ -125,7 +126,10 @@ pub fn apply(
         format!("{fm}\n{new_body}")
     };
     let budget_chars = budget_tokens as usize * 2;
-    if new_content.chars().count() > budget_chars {
+    // 预算闸（0=关）：与 board.budget.* / max_tool_iterations 家族同惯例
+    // ——0 是「关闭预算闸」哨兵，不是「预算为零全拒绝」（否则配置 0 会
+    // 把特性整体砖死，报错形态「exceeds budget 0」对用户是噪声）。
+    if budget_tokens > 0 && new_content.chars().count() > budget_chars {
         return Err(format!(
             "optimized content {} chars exceeds budget {budget_chars} ({budget_tokens} tokens)",
             new_content.chars().count()

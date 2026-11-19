@@ -60,6 +60,15 @@ pub struct RequestContext {
     /// `#[serde(skip)]`：凭据明文永不序列化出进程；Debug 只露长度。
     #[serde(skip)]
     pub secrets: Arc<Vec<String>>,
+    /// 工具产出图片槽（Phase 5 图像工具层，2026-11-15）：图片生产工具
+    /// （read_image / screen_capture / MCP 回图）execute 时把落盘路径 push
+    /// 进来；loop 串行 dispatch 路径「先清空、后取走」，取到的路径随 tool
+    /// 轮 `ConversationTurn.image_refs` 落史 → 水合进 LLM 请求（模型真看见）。
+    /// 并行批天然不经过此通道：图片工具全部非 parallel-safe（默认值），
+    /// 单写者不变量成立。只存路径引用不存字节（对齐 attach 侧纪律）。
+    /// `#[serde(skip)]`：临时槽，跨进程无意义；Debug 只露长度。
+    #[serde(skip)]
+    pub tool_images: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl std::fmt::Debug for RequestContext {
@@ -77,6 +86,10 @@ impl std::fmt::Debug for RequestContext {
             .field("tool_path_base", &self.tool_path_base)
             .field("approval_ref", &self.approval_ref)
             .field("secrets", &self.secrets.len())
+            .field(
+                "tool_images",
+                &self.tool_images.lock().map(|v| v.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -94,6 +107,7 @@ impl RequestContext {
             tool_path_base: None,
             approval_ref: None,
             secrets: Arc::new(Vec::new()),
+            tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -115,6 +129,7 @@ impl RequestContext {
             tool_path_base: None,
             approval_ref: None,
             secrets: Arc::new(Vec::new()),
+            tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -133,6 +148,7 @@ impl RequestContext {
             tool_path_base: None,
             approval_ref: None,
             secrets: Arc::new(Vec::new()),
+            tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -173,6 +189,34 @@ impl RequestContext {
         } else {
             false
         }
+    }
+
+    /// Push a tool-produced image path into the per-request slot.
+    ///
+    /// Called by image-producing tools (read_image / screen_capture / MCP
+    /// adapter). Path-only references — bytes stay on disk (attach-side
+    /// discipline). Tools are non-parallel-safe by default, so the slot has
+    /// a single writer per dispatch.
+    pub fn push_tool_image(&self, path: String) {
+        if let Ok(mut slot) = self.tool_images.lock() {
+            slot.push(path);
+        }
+    }
+
+    /// Clear the tool image slot (loop serial dispatch does this before each
+    /// tool call so stale paths from a previous call never leak in).
+    pub fn clear_tool_images(&self) {
+        if let Ok(mut slot) = self.tool_images.lock() {
+            slot.clear();
+        }
+    }
+
+    /// Take all accumulated tool image paths (leaves the slot empty).
+    pub fn take_tool_images(&self) -> Vec<String> {
+        self.tool_images
+            .lock()
+            .map(|mut slot| std::mem::take(&mut *slot))
+            .unwrap_or_default()
     }
 }
 
@@ -733,9 +777,13 @@ impl ContextBuilder {
     }
 
     /// Read a file from the workspace directory, returning None if it doesn't exist.
+    ///
+    /// BUG-20261119-179：走 `read_config_string` 剥前导 UTF-8 BOM（记事本
+    /// 保存形态）——人格/引导文件内容进 system prompt，零宽 BOM 前缀
+    /// 是杂质；无 BOM 文件字节不变。
     fn read_workspace_file(&self, filename: &str) -> Option<String> {
         let path = self.workspace.join(filename);
-        match std::fs::read_to_string(&path) {
+        match nemesis_utils::fsutil::read_config_string(&path) {
             Ok(content) => {
                 debug!("[ContextBuilder] Loaded workspace file: {}", filename);
                 Some(content)
@@ -747,7 +795,7 @@ impl ContextBuilder {
     /// 读指定根下的 bootstrap 文件（目录缺席/文件不存在 = None；与
     /// [`Self::read_workspace_file`] 同语义，根参数化）。
     fn read_file_in_dir(dir: &Path, filename: &str) -> Option<String> {
-        match std::fs::read_to_string(dir.join(filename)) {
+        match nemesis_utils::fsutil::read_config_string(dir.join(filename)) {
             Ok(content) => {
                 debug!(
                     "[ContextBuilder] Loaded bootstrap file from {}: {}",

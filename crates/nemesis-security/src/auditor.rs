@@ -1070,20 +1070,38 @@ impl SecurityAuditor {
                 &req.target,
                 &req.danger_level.to_string(),
             ) {
-                // 敏感 flag 放行臂二次校验：记忆规则的归约形态
+                // 敏感 flag 放行臂二次校验：**粗**记忆规则的归约形态
                 // （exec `git push *`）不区分破坏性 flag——已批准
                 // `git push origin main` 的记忆不得静默放行 --force
                 // 变体。命中 = 留痕 flag_hit 后**跳过本条自动放行**
                 // （fall through 到后续臂/人工卡）。仅命令行 op；会话
                 // allow-all / 免打扰开关是用户显式无人值守意志，
                 // 刻意不受本闸约束（显式意图优先）。
+                //
+                // BUG-20261118-094 显式批准豁免：匹配规则 pattern 前缀
+                // **本身含该 flag** = 用户对破坏力维度显式点过头（批准
+                // `git push --force origin main` + 总是允许 → B26 写侧
+                // 细化产出 `git push --force *`，matches_rule 读侧臂也
+                // 只对「flag 不在 pattern」拒绝）→ 该 flag 不再拦。
+                // 豁免前本闸无条件拦，B26 细化产出的显式 flag 规则全部
+                // 成为死信（每次弹卡，与「总是允许」语义自相矛盾；
+                // 同构对照：`git push --no-verify *` 不在 matcher 词表、
+                // 端到端能放行——同机制两 flag 相反行为，证伪「flag 永不
+                // 放行」的政策解释）。matcher 词表比 SENSITIVE_FLAGS 宽
+                // （rm -rf / taskkill /f / docker -f / clean -f 等），
+                // 未进 pattern 的 flag 照拦（粗规则防线不回归）。
                 let flag_blocked = matches!(
                     req.op_type,
                     OperationType::ProcessExec | OperationType::ProcessSpawn
                 ) && {
                     let flags =
                         matcher::scan_dangerous_flags(&matcher::exec_rule_segments(&req.target));
-                    if flags.is_empty() {
+                    let pattern_tokens = crate::command_arity::tokenize_command(&rule.pattern);
+                    let unapproved: Vec<&str> = flags
+                        .into_iter()
+                        .filter(|f| !pattern_tokens.iter().any(|p| p == f))
+                        .collect();
+                    if unapproved.is_empty() {
                         false
                     } else {
                         let event = AuditEvent {
@@ -1092,7 +1110,7 @@ impl SecurityAuditor {
                             decision: "require_approval".to_string(),
                             reason: format!(
                                 "sensitive flag_hit={} blocked auto-allow rule ({})",
-                                flags.join(","),
+                                unapproved.join(","),
                                 rule.pattern
                             ),
                             timestamp: chrono::Local::now().to_rfc3339(),
@@ -1775,7 +1793,13 @@ impl SecurityAuditor {
                 OperationType::NetworkDownload
                 | OperationType::NetworkUpload
                 | OperationType::NetworkRequest => {
-                    matcher::match_domain_pattern(&rule.pattern, &req.target)
+                    // BUG-20261116-037：target 是完整 URL（extract_target web
+                    // 族取 `url` 实参），域名词法对整串 URL 锚定恒败——出厂
+                    // 默认 `*.github.com` allow 规则是死规则、deny fail-open。
+                    // match_network_rule 先按 URL host 归位匹配（域名词法
+                    // 语义不变），整串兜底保 `**`-style URL 规则向后兼容。
+                    // `security rules test` 预览臂同源消费。
+                    matcher::match_network_rule(&rule.pattern, &req.target)
                 }
                 _ => rule.pattern == "*" || matcher::match_path_rule(&rule.pattern, &req.target),
             }

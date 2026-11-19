@@ -242,6 +242,19 @@ impl Channel for ExternalChannel {
         self.base.is_running()
     }
 
+    // BUG-20261112-118：trait 默认 add_sync_target 是 Ok(()) 静默存根——
+    // 模板默认 `external.sync_to=["web"]` 在本通道上通道级 map 恒空，
+    // 读循环的入站镜像（sync_to_targets）永远空转。委托 BaseChannel 固有
+    // 实现接通（出站面已由 manager dispatch_outbound 集中触发兜住，通道
+    // 级 map 只服务入站镜像扇出）。
+    fn add_sync_target(&self, name: &str, channel: Arc<dyn Channel>) -> Result<()> {
+        self.base.add_sync_target(name, channel)
+    }
+
+    fn remove_sync_target(&self, name: &str) {
+        self.base.remove_sync_target(name)
+    }
+
     async fn start(&self) -> Result<()> {
         info!(
             input_exe = %self.config.input_exe,

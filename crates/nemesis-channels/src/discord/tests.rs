@@ -258,3 +258,40 @@ fn test_sanitize_heartbeat_interval_ms() {
 async fn test_interval_zero_period_panics() {
     let _ = tokio::time::interval(std::time::Duration::from_millis(0));
 }
+
+/// 回归锁（BUG-20261117-079）：断线重连 RESUME 资格判定——session_id 与
+/// seq 双全才可 RESUME；任一缺失/空串回 IDENTIFY。修复前 HELLO 后无条件
+/// IDENTIFY：断线窗口内消息全丢 + 反复 IDENTIFY 撞 identify rate limit。
+#[test]
+fn test_can_resume_session() {
+    // 双全 = RESUME
+    assert!(super::can_resume_session(Some("sess-abc"), Some(42)));
+    // session 缺失/空串 = IDENTIFY
+    assert!(!super::can_resume_session(None, Some(42)));
+    assert!(!super::can_resume_session(Some(""), Some(42)));
+    // seq 缺失 = IDENTIFY（服务器无法对齐重放窗口）
+    assert!(!super::can_resume_session(Some("sess-abc"), None));
+    // 双缺 = IDENTIFY（首次连接）
+    assert!(!super::can_resume_session(None, None));
+}
+
+/// RESUME payload 形态钉死（BUG-20261117-079）：op 6 + d 三字段。
+#[test]
+fn test_build_resume_payload_shape() {
+    let p = super::build_resume_payload("tok", "sess-abc", 42);
+    assert_eq!(p["op"], super::opcode::RESUME);
+    assert_eq!(p["d"]["token"], "tok");
+    assert_eq!(p["d"]["session_id"], "sess-abc");
+    assert_eq!(p["d"]["seq"], 42);
+}
+
+/// op 常量与 Discord 协议文档对齐守卫（BUG-20261117-079）：RESUME 路径
+/// 依赖 op 6 正确——常量写错时 RESUME 会被网关当未知 op 忽略，静默退回
+/// 重连超时循环。
+#[test]
+fn test_resume_opcode_constants_align_with_protocol() {
+    assert_eq!(super::opcode::IDENTIFY, 2);
+    assert_eq!(super::opcode::RESUME, 6);
+    assert_eq!(super::opcode::INVALID_SESSION, 9);
+    assert_eq!(super::opcode::HELLO, 10);
+}

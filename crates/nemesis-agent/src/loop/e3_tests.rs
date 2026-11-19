@@ -12,6 +12,110 @@
 use super::*;
 use crate::chat_log::{append_chat_log, clear_chat_log, delete_chat_log, read_chat_log};
 
+// —— 外评探针翻转收编（2026-11-13 R2/R7 复评整改批）——
+
+/// R7 复评整改回归锁（外评探针 review_nov13_cancelled_redo_loses_retry_entry
+/// 翻转）：redo 被 abort（任务取消 unwind）时弹栈条目**还栈**
+///（PoppedRedoEntry Drop）——removed_rows 唯一副本不丢，重做安全网对
+/// panic/unwind 韧性。旧形态条目静默销毁，retry 撞「没有可重做」。
+#[test]
+fn e3_redo_cancelled_unwind_keeps_entry_retryable() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (al, key, _dir) = stage_two_turns("e3-cancel-redo").await;
+        let al = Arc::new(al);
+        al.rewind_to_message(&key, 0, false, None).await.unwrap();
+        assert_eq!(al.rewind_undo_stacks.lock().get(&key).unwrap().len(), 1);
+        // 单 blocking 线程被 blocker 占住 → redo 卡在守卫 1 的全量读上。
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _ = started_tx.send(());
+            release_rx.recv().unwrap();
+        });
+        started_rx.await.unwrap();
+        let al2 = al.clone();
+        let key2 = key.clone();
+        let redo = tokio::spawn(async move { al2.redo_rewind(&key2).await });
+        tokio::task::yield_now().await;
+        assert!(
+            al.rewind_undo_stacks.lock().get(&key).unwrap().is_empty(),
+            "场景设定：redo 已 pop 条目、await 被占满的 blocking 池"
+        );
+        redo.abort();
+        assert!(redo.await.unwrap_err().is_cancelled());
+        release_tx.send(()).unwrap();
+        blocker.await.unwrap();
+        // R7 契约：abort unwind → PoppedRedoEntry Drop → 条目还栈。
+        assert_eq!(
+            al.rewind_undo_stacks
+                .lock()
+                .get(&key)
+                .map(|s| s.len())
+                .unwrap_or(0),
+            1,
+            "R7: aborted redo 把条目还栈（removed_rows 唯一副本不丢）"
+        );
+        // 条目还在 → 重做成功：行回填恢复 4 行。
+        let retry = al.redo_rewind(&key).await.unwrap();
+        println!("E3 R7 cancelled redo retry={retry}");
+        assert_eq!(read_chat_log(&key, 100, None).1, 4, "redo 完成：行回填");
+        delete_chat_log(&key);
+    });
+}
+
+/// R2 复评整改回归锁（外评探针
+/// review_nov13_redo_retry_overwrites_new_edit_on_partial_path 翻转）：
+/// redo 半途失败的**自恢复面**在还栈后被外部改过（盘面指纹 ≠ 还栈时刻
+/// 指纹）→ 重试冲突预检不再豁免——blocked 冲突报外部漂移，外部改动不被
+/// 静默碾掉。旧形态只按路径豁免。
+#[cfg(windows)]
+#[tokio::test]
+async fn e3_redo_retry_drifted_self_restore_reports_conflict() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let (al, key, dir) = stage_redo_partial_fixture("e3-redo-drift").await;
+    let code = dir.path().join("ws/code.txt");
+    let side = dir.path().join("ws/side.txt");
+    al.rewind_to_message(&key, 0, false, None).await.unwrap();
+    // 只锁 side.txt：redo checkout（code→v3）成功、side 删除失败 → partial。
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&side)
+        .unwrap();
+    let first = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(first["file_restore"], "partial", "{first}");
+    assert_eq!(std::fs::read_to_string(&code).unwrap(), "v3");
+    // 外部改动落在自恢复面路径上（还栈后——指纹已不等）。
+    std::fs::write(&code, "user edit after failed redo").unwrap();
+    drop(lock);
+    let retry = al.redo_rewind(&key).await.unwrap();
+    println!("E3 R2 drifted retry={retry}");
+    assert_eq!(
+        retry["blocked"], true,
+        "外部改动必须走冲突面，不被路径豁免碾掉"
+    );
+    assert_eq!(retry["reason"], "conflict");
+    assert!(
+        retry["drifted_paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().ends_with("code.txt")),
+        "{retry}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&code).unwrap(),
+        "user edit after failed redo",
+        "冲突阻塞不写文件——用户改动原样保留"
+    );
+    delete_chat_log(&key);
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn review_nov02_original_rewind_commit_failure_keeps_checkpoint() {
@@ -707,6 +811,92 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
     );
 
     delete_chat_log(&key);
+}
+
+/// 回归（BUG-20261113-143）：无锚 undo（被截区间全无 checkpoint 标记的
+/// 旧行——migrate 导入 / feature 前会话）的 redo **不得碰文件**。修复前
+/// forward_tree 在无锚臂回落 `latest_tree_hex()`（loop 全局索引里任意会
+/// 话的最新 begin 树），redo 走 (Some,Some) 臂执行 undo 从未做过的文件
+/// 恢复：把工作区静默回滚到无关会话的 begin 树（Added 路径物理删除）
+/// 还盖「applied」戳——守卫 2（scoped 基线未变）与 drift 扫描（盘面自
+/// undo 后无变化）全部放行。对称语义：undo「只截断对话不回滚文件」，
+/// redo 同样只回填对话。git 形态才有影子 tree，JSON 形态恒 None 不受此
+/// 缺陷影响。
+#[cfg(windows)]
+#[tokio::test]
+async fn e3_git_redo_of_unanchored_undo_never_touches_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+
+    let al = AgentLoop::new(Box::new(E3NoopProvider), e3_config());
+    let store = Arc::new(crate::checkpoint::CheckpointStore::new(None, root.clone()));
+    assert_eq!(store.backend(), crate::checkpoint::CheckpointBackend::Git);
+    al.set_checkpoint_store(store);
+    let key_a = e3_uniq_key("gunanchor-a");
+    let key_b = e3_uniq_key("gunanchor-b");
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
+
+    let cp = al.attached_checkpoint().unwrap();
+
+    // 会话 B：一个带标记的 checkpoint turn（begin 树 = {code.txt: v1}）
+    // ，随后盘面推进（code.txt→v2 + 新增 side.txt，均相对 begin 树是
+    // 变更/Added）。这个 begin 树就是修复前 redo 误恢复的「无关树」。
+    cp.begin_for_session(1, "b1", Some(&key_b));
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    std::fs::write(root.join("side.txt"), "side").unwrap();
+    e3_append(&key_b, "user", "b turn 1 q", Some(1));
+    e3_append(&key_b, "assistant", "b turn 1 a", None);
+
+    // 会话 A：**全部无 checkpoint 标记的旧行**——对它回退
+    // restore_turn=None，undo 回执明示「只截断对话不回滚文件」。
+    e3_append(&key_a, "user", "old q1", None);
+    e3_append(&key_a, "assistant", "old a1", None);
+    e3_append(&key_a, "user", "old q2", None);
+    e3_append(&key_a, "assistant", "old a2", None);
+
+    let ws = root.clone();
+
+    // undo：截掉 turn 2（2 行），文件必须不动。
+    let out = al.rewind_to_message(&key_a, 0, false, None).await.unwrap();
+    assert_eq!(out["restore_turn"], serde_json::Value::Null, "{out}");
+    assert_eq!(out["file_restore"], "skipped", "{out}");
+    assert!(
+        out["file_restore_note"]
+            .as_str()
+            .is_some_and(|s| s.contains("checkpoint 标记")),
+        "无锚 undo 回执必须诚实注记只截断对话: {out}"
+    );
+    assert_eq!(std::fs::read_to_string(ws.join("code.txt")).unwrap(), "v2");
+    assert!(ws.join("side.txt").exists());
+
+    // redo：对称语义——只回填对话，文件不碰。修复前：
+    // restore_to_tree(B begin 树) 把 code.txt 碾回 v1、side.txt 当 Added
+    // 物理删除，file_restore 还盖「applied」戳。
+    let out = al.redo_rewind(&key_a).await.unwrap();
+    assert_eq!(out["file_restore"], "skipped", "{out}");
+    assert!(
+        out["file_restore_note"]
+            .as_str()
+            .is_some_and(|s| s.contains("未回滚文件")),
+        "redo 回执注记该 undo 本就未回滚文件（无锚对称）: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("code.txt")).unwrap(),
+        "v2",
+        "工作区文件不被 redo 恢复到无关会话的 begin 树: {out}"
+    );
+    assert!(
+        ws.join("side.txt").exists(),
+        "Added 路径不被 redo 物理删除: {out}"
+    );
+    let (_, total, _, _) = read_chat_log(&key_a, 100, None);
+    assert_eq!(total, 4, "对话行 verbatim 回填");
+
+    delete_chat_log(&key_a);
+    delete_chat_log(&key_b);
 }
 
 // ——： scoped 截断 × redo 守卫口径 ——

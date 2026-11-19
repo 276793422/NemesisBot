@@ -77,7 +77,9 @@ fn cron_next_fire_at_from_trigger(trigger: &TriggerConfig) -> Option<String> {
     if trigger.trigger_type != "cron" {
         return None;
     }
-    let schedule = trigger.config.get("schedule").and_then(|v| v.as_str())?;
+    // schedule 键解析走单一真相源 helper（schedule 优先、legacy expression
+    // 回落，BUG-20261114-042）——与 list_cron_workflows / TriggerManager 同源。
+    let schedule = crate::triggers::cron_schedule_from_config(&trigger.config)?;
     let tz_str = trigger.config.get("timezone").and_then(|v| v.as_str());
     let cron = croner::Cron::from_str(schedule).ok()?;
 
@@ -828,12 +830,13 @@ impl WorkflowEngine {
                 if trigger.trigger_type != "cron" {
                     continue;
                 }
-                let schedule = match trigger.config.get("schedule").and_then(|v| v.as_str()) {
+                let schedule = match crate::triggers::cron_schedule_from_config(&trigger.config) {
                     Some(s) => s.to_string(),
                     None => {
                         tracing::warn!(
                             workflow = %wf.name,
-                            "[Workflow] Cron trigger missing 'schedule' field, skipping"
+                            "[Workflow] Cron trigger missing 'schedule' field \
+                             (legacy alias 'expression' also accepted), skipping"
                         );
                         continue;
                     }
@@ -1130,7 +1133,6 @@ impl WorkflowEngine {
             // Rebuild the Execution. We don't have the original input/trigger
             // metadata on the checkpoint (the snapshot carries variables/input
             // separately), so we lift them back out of the context snapshot.
-            let now = Local::now();
             let mut execution =
                 Execution::new(workflow.name.clone(), cp.context_snapshot.input.clone());
             execution.id = exec_id.clone();
@@ -1155,11 +1157,12 @@ impl WorkflowEngine {
                 // gateway can decide whether to auto-resume.
                 ExecutionState::Running
             };
-            execution.ended_at = if execution.state == ExecutionState::Waiting {
-                None
-            } else {
-                Some(now)
-            };
+            // 非终态（Waiting / Running）ended_at 必须空——缺陷 10 同戒律：
+            // 恢复的是「中断现场」不是「结束」。旧 Running 臂盖 Some(now)，
+            // 按 ended_at 非空判完结的观察方会把中断现场当已结束，且每次
+            // 重启重盖新值（该时间戳既非结束时刻也非崩溃时刻，漂移无意义）。
+            // 真正的终态时间戳由 resume / 取消 / run 收口臂在终态时落。
+            execution.ended_at = None;
 
             {
                 let mut execs = self.executions.write().await;
@@ -1551,27 +1554,33 @@ impl WorkflowEngine {
 
     /// Resolve a chat URL index back to a workflow name. O(n) scan — fine for
     /// realistic workflow counts. 16-hex (current) indexes match exactly;
-    /// legacy 8-hex indexes match by prefix — and an ambiguous prefix
-    /// (multiple registered workflows share those 8 hex chars) refuses the
+    /// legacy 8-hex indexes match by prefix — and an ambiguous match
+    /// (multiple registered workflows share the index or prefix) refuses the
     /// resolution instead of silently picking one: a wrong pick would route
     /// chat messages and passwords to the wrong workflow. Returns None if no
-    /// registered workflow's chat_index matches (or the prefix is ambiguous).
+    /// registered workflow's chat_index matches (or the match is ambiguous).
     pub fn workflow_by_chat_index(&self, index: &str) -> Option<String> {
         let lower = index.to_lowercase();
-        if lower.len() == 16 {
-            // Canonical form: exact match only.
-            return self
-                .workflows
-                .iter()
-                .find(|e| Self::chat_index(e.key()) == lower)
-                .map(|e| e.key().clone());
-        }
-        if lower.len() != 8 {
+        if lower.len() != 16 && lower.len() != 8 {
             return None;
         }
+        // Ambiguity is refused for BOTH forms (BUG-20261120-004): a wrong
+        // pick would route chat messages and passwords to the wrong workflow.
+        // For the 16-hex exact arm this is reachable — the index input is
+        // lowercased, so two workflow names differing only in case share the
+        // *same* 16-hex index deterministically (a normalization collision,
+        // not a hash birthday collision — the 64-bit width does not help).
+        // Registration deliberately allows both names (the map key is
+        // case-sensitive), so the exact arm can see multiple matches and must
+        // not silently pick whichever entry the registry yields first.
         let mut matched: Option<String> = None;
         for entry in self.workflows.iter() {
-            if Self::chat_index(entry.key()).starts_with(&lower) {
+            let hit = if lower.len() == 16 {
+                Self::chat_index(entry.key()) == lower
+            } else {
+                Self::chat_index(entry.key()).starts_with(&lower)
+            };
+            if hit {
                 if matched.is_some() {
                     return None;
                 }
@@ -1635,8 +1644,49 @@ impl WorkflowEngine {
         let yaml = serde_yaml::to_string(&workflow).map_err(|e| {
             EngineError::PersistenceError(format!("serialize workflow {:?}: {}", workflow.name, e))
         })?;
-        std::fs::write(&path, yaml)
+        // 原子写（BUG-20261117-046）：定义文件是覆盖写的用户资产（UI
+        // update 正常路径反复覆盖同一路径）——裸 fs::write 写中段进程死亡
+        // = 半截 YAML 顶掉上一版。委托统一 helper（同 save_config /
+        // draft save 纪律）；错误带 "atomic write {path}: {step}" 前缀，
+        // 包 PersistenceError 保语义。
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), yaml.as_bytes(), 0o600)
             .map_err(|e| EngineError::PersistenceError(format!("write {:?}: {}", path, e)))?;
+
+        // 同名单名变体清理（BUG-20261119-188）：定义文件合法扩展名有三个
+        // （.yaml/.yml/.json——load_workflows_from_dir 全收、delete_workflow_file
+        // 全删），而本方法只写 .yaml。同名 .yml 残留时，加载的显式排序契约
+        // 是「字典序最后者赢」且 .yml 排在 .yaml 之后——本次持久化的新定义
+        // **当场**在内存注册表里是新版，**重启后**却被旧 .yml 静默遮蔽回退
+        // （无任何报错；drafts apply 的 .yaml-only 备份也漏掉旧 .yml，回滚
+        // 资产同缺）。写盘成功后清理同名单名变体，保「一 workflow 名一文件」
+        // 不变量。守卫同 delete_workflow_file：属他人（sanitize 同文件名但
+        // 内容名不同）跳过不删；坏文件（parse 失败、加载时本就被跳过不遮蔽）
+        // 照删，同 delete 语义。清理失败不 fail persist（韧性删除，与 delete
+        // 同款）——主文件已落盘，内存注册语义不受影响；Windows 上被 AV/索引
+        // 器瞬时占住的残留会在下次同名 persist 时再试。
+        for ext in &["yml", "json"] {
+            let stale = dir.join(format!(
+                "{}.{}",
+                sanitize_workflow_filename(&workflow.name),
+                ext
+            ));
+            if !stale.exists() {
+                continue;
+            }
+            if let Some(owner) = workflow_file_owner(&stale)
+                && owner != workflow.name
+            {
+                warn!(
+                    target: "nemesis_workflow::engine",
+                    file = %path_dbg(&stale),
+                    owner = %owner,
+                    requested = %workflow.name,
+                    "skip stale-variant cleanup: sanitize filename collision, file belongs to another workflow"
+                );
+                continue;
+            }
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&stale);
+        }
 
         self.workflows.insert(workflow.name.clone(), workflow);
         Ok(())
@@ -1693,7 +1743,7 @@ impl WorkflowEngine {
                 {
                     continue;
                 }
-                let _ = std::fs::remove_file(&p);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&p);
             }
         }
         Ok(())
@@ -1823,6 +1873,11 @@ impl WorkflowEngine {
     /// no-op for this execution afterwards.
     pub async fn run_async(&self, execution_id: &str) -> Result<Execution, EngineError> {
         if *self.closed.read().await {
+            // BUG-20261118-160：早退臂诚实收口——create_execution 已把
+            // 记录以 Running 入 map + 落盘并广播 Started，此臂此前直接
+            // Err，记录永久滞留 Running（收口契约见 settle_early_run_failure）。
+            self.settle_early_run_failure(execution_id, "engine is closed")
+                .await;
             return Err(EngineError::InvalidState("engine is closed".to_string()));
         }
 
@@ -1868,8 +1923,18 @@ impl WorkflowEngine {
                 // 早退必须回收刚装的 cancel token（resume
                 // 路径同款清理——「a failed lookup must not leave it
                 // orphaned」）。留着 = 此后任何 run_async 都撞「already in
-                // flight」，执行记录永久 Running，workflow 重新注册也救不回。
+                // flight」，即使 workflow 重新注册也救不回。
+                // BUG-20261118-160：token 之外执行记录同样要收口（此前
+                // 永久滞留 Running——本注释原文也只承诺了 token 卫生）。
                 self.cancel_tokens.remove(execution_id);
+                self.settle_early_run_failure(
+                    execution_id,
+                    &format!(
+                        "workflow '{}' not found at run time",
+                        execution.workflow_name
+                    ),
+                )
+                .await;
                 return Err(EngineError::WorkflowNotFound(
                     execution.workflow_name.clone(),
                 ));
@@ -1915,6 +1980,13 @@ impl WorkflowEngine {
         if let Err(reason) = self.call_stack.push(frame) {
             // 同上，早退前回收 cancel token。
             self.cancel_tokens.remove(execution_id);
+            // BUG-20261118-160：执行记录同样收口（绕过 WorkflowTool 预检
+            // 的防御臂也不留幻影 Running）。
+            self.settle_early_run_failure(
+                execution_id,
+                &format!("recursion limit exceeded: {reason}"),
+            )
+            .await;
             return Err(EngineError::RecursionLimitExceeded(reason));
         }
 
@@ -2564,6 +2636,93 @@ impl WorkflowEngine {
     /// executors to bail out), marks the execution as cancelled, and persists
     /// the state change. Only executions in `Running` or `Waiting` state can be
     /// cancelled. Returns the updated execution.
+    /// 终态事件单一发射点（BUG-20261114-035）：resume 收口（
+    /// [`resume_execution_node`] 尾段 / [`settle_resume_outcome`]）与
+    /// [`cancel_execution`] 的 token-缺席臂经此发 [`WorkflowEvent`]，与
+    /// run_async 首跑尾段同契约。此前这些收口路径不发任何事件——唯一
+    /// 生产观察者 WorkflowChatReplyObserver 只在 Completed/Failed/
+    /// Cancelled 事件里释放 workflow_chat per-workflow 互斥守卫，事件
+    /// 缺席 = 守卫永久滞留 = 该工作流后续聊天请求静默卡死。
+    ///
+    /// 刻意只发 observer 事件（event_manager.emit），不发布
+    /// publish_event TriggerEvent：resume 后的终态若再进入事件触发链，
+    /// 会把「resume 后的完成/取消」当新事件扩散给事件触发工作流——
+    /// 产品语义变更，超出本修复范围；run_async 首跑尾段的 TriggerEvent
+    /// 发布维持原样。Waiting 非终态：保持沉默（观察者守卫必须留到下
+    /// 一次 resume / 取消，与 run_async 首跑 Waiting 不发声一致）。
+    /// run_async 早期失败臂统一收口（BUG-20261118-160）。
+    ///
+    /// create_execution 已把执行以 Running 记入内存 map、落盘并广播
+    /// Started；run_async 在递归闸（begin_run 开账点）之前的任何早退
+    /// Err 此前都不收口——记录永久滞留 Running：list_executions / UI
+    /// 永远显示在跑、evict_oldest_terminal_execution 逐不出（非终态）、
+    /// 观察者等不到终态事件（BUG-20261114-035 的 exactly-once 契约同
+    /// 一形态）、start_async 文档承诺的「eventual execution state
+    /// (Failed)」从未兑现。本方法把 cancel_execution token 缺席臂的
+    /// 「谁翻状态谁负责终态四件套」卫生纪律应用到三条早退臂：状态翻
+    /// Failed + 落盘 + 账本收口 + 发 Failed 事件。
+    ///
+    /// - 幂等前提：只翻仍是我们账上 Running 的记录——并发
+    ///   cancel_execution 已落终态则不动（restore_waiting_after_failed_
+    ///   resume 同款纪律，BUG-20261114-008）。
+    /// - 账本：早退臂尚未过递归闸，begin_run 未调用，settle 落空 =
+    ///   无害 no-op（cancel_execution token 缺席臂同款判别），照走保持
+    ///   「先收账后发事件」不变式。
+    /// - 不落终态 checkpoint：早退臂之前不存在任何 checkpoint
+    ///   （save_checkpoint 只在跑起来之后发生），restore_incomplete_
+    ///   executions 按 id 找 checkpoint 找不到即跳过，无复活面；
+    ///   cancel 的 checkpoint 件是为翻既有非终态快照，此处无此物。
+    /// - 只发观察者事件、不发布触发器事件：run 从未进调度器，
+    ///   workflow.failed 触发器级联（事件触发型 workflow）对从未执行
+    ///   的 run 无意义；closed 臂在停机窗口里发布触发器事件还会诱发
+    ///   新 run。终态事件经 emit_terminal_event 只进 event_manager。
+    async fn settle_early_run_failure(&self, execution_id: &str, error: &str) {
+        let updated = {
+            let mut execs = self.executions.write().await;
+            let Some(execution) = execs.get_mut(execution_id) else {
+                return;
+            };
+            if execution.state != ExecutionState::Running {
+                // 并发收口（cancel_execution / 状态竞态）已落终态——exactly-once。
+                return;
+            }
+            execution.state = ExecutionState::Failed;
+            execution.error = Some(error.to_string());
+            execution.ended_at = Some(Local::now());
+            execution.clone()
+        };
+        self.persist_execution(&updated).await;
+        nemesis_taskstore::ledger::settle_run(
+            &nemesis_taskstore::ledger::workflow_run_id(execution_id),
+            "failed",
+            Some(error),
+        );
+        self.emit_terminal_event(&updated).await;
+    }
+
+    async fn emit_terminal_event(&self, execution: &Execution) {
+        let event = match execution.state {
+            ExecutionState::Completed => WorkflowEvent::Completed {
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+                timestamp: Local::now(),
+            },
+            ExecutionState::Failed => WorkflowEvent::Failed {
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+                error: execution.error.clone().unwrap_or_default(),
+                timestamp: Local::now(),
+            },
+            ExecutionState::Cancelled => WorkflowEvent::Cancelled {
+                execution_id: execution.id.clone(),
+                workflow_name: execution.workflow_name.clone(),
+                timestamp: Local::now(),
+            },
+            _ => return,
+        };
+        self.event_manager.emit(event).await;
+    }
+
     pub async fn cancel_execution(&self, id: &str) -> Result<Execution, EngineError> {
         let mut execs = self.executions.write().await;
         let execution = execs
@@ -2587,9 +2746,19 @@ impl WorkflowEngine {
         // miss a token that appears right after — either the scheduler sees
         // the fired token, or we observed the pre-run state and the run side
         // bails out on its own state check.
-        if let Some(entry) = self.cancel_tokens.get(id) {
+        //
+        // BUG-20261114-035 终态事件 exactly-once 判别器：token 在场 =
+        // run_async/resume 在飞，取消会经调度器被它们的收口尾段 settle
+        // 并发终态事件——本方法不得重复发；token 缺席 = Waiting 挂起
+        // （run_async/resume 收口前已摘 token）或 run 尚未起飞
+        // （create_execution 与 run_async 之间的窗口），无人再收口 →
+        // 本方法负责发 Cancelled 事件（见尾部）。
+        let had_inflight_token = if let Some(entry) = self.cancel_tokens.get(id) {
             entry.cancel();
-        }
+            true
+        } else {
+            false
+        };
 
         let updated = execution.clone();
         drop(execs); // Release lock before persistence I/O
@@ -2627,6 +2796,28 @@ impl WorkflowEngine {
                 error = %e,
                 "failed to save terminal checkpoint on cancel (stale checkpoint may resurrect this execution on restart)"
             );
+        }
+
+        // BUG-20261114-035：token 缺席臂在此补发 Cancelled 事件——
+        // Waiting 取消此前不发任何事件（run_async 已返回、无人再收口），
+        // 唯一生产观察者 WorkflowChatReplyObserver 等不到 Cancelled，
+        // workflow_chat 的 per-workflow 互斥守卫永久滞留。token 在场臂
+        // 不发（run/resume 收口尾段负责）——exactly-once。
+        if !had_inflight_token {
+            // BUG-20261114-036：账本收口走同一判别器。Waiting 取消此前
+            // 不收账——重启 sweep 只圈 cron_job（ledger.rs
+            // sweep_restart_orphans_on），resume 又因 state != Waiting 被拒，
+            // workflow_run:{id} 行 + attempt 永久停在 running（cancel_all_
+            // running / estop 批量取消放大泄漏面）。token 在场臂由 run/resume
+            // 收口尾段 settle（同一 exactly-once 契约，不重复收）；run 尚未
+            // 起飞的窗口行还不存在，settle 落空 = 无害 no-op。先收账后发
+            // 事件，与 run_async 尾段的账本→事件顺序一致。
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::workflow_run_id(id),
+                "cancelled",
+                None,
+            );
+            self.emit_terminal_event(&updated).await;
         }
 
         Ok(updated)
@@ -3054,6 +3245,12 @@ impl WorkflowEngine {
             execs.insert(execution.id.clone(), execution.clone());
         }
 
+        // BUG-20261114-035：resume 收口与 run_async 首跑同契约发终态
+        // 事件。此前缺失 = Waiting 恢复后的完成/失败/取消对观察者不可见
+        // （chat 守卫泄漏）；再次 Waiting 本方法不发声（非终态，守卫留
+        // 待下一次 resume）。
+        self.emit_terminal_event(&execution).await;
+
         Ok(execution)
     }
 
@@ -3214,9 +3411,20 @@ impl WorkflowEngine {
     /// 临界区，任何错误返回前必须翻回 Waiting（旧实现 workflow 查找
     /// 失败会留下 state=Running + 无 token 的卡死形态，进程内永远无法
     /// 再 resume，重启才被 checkpoint 治愈）。
+    ///
+    /// BUG-20261114-008：翻回的前提必须是「仍是我们自己翻的 Running」。
+    /// 错误窗口内并发 cancel_execution 可合法观察到 Running 并翻成
+    /// Cancelled（持久化 + 终态 checkpoint）——最宽窗口 = sub_workflow 子
+    /// 执行 resume 全程（分钟级，resume_subworkflow_node 的子评审臂）；
+    /// 无条件覆写会把已取消的执行在内存复活成 Waiting：此后 resume 照常
+    /// 放行（取消意图被静默抹除）、estop cancel_all_running 的取消同样
+    /// 被复活，且内存 Waiting 与盘上 Cancelled 分叉。只在 Running 时翻回，
+    /// 其余状态（并发 cancel 已落、未来新状态）一律不动。
     async fn restore_waiting_after_failed_resume(&self, id: &str) {
         let mut execs = self.executions.write().await;
-        if let Some(execution) = execs.get_mut(id) {
+        if let Some(execution) = execs.get_mut(id)
+            && execution.state == ExecutionState::Running
+        {
             execution.state = ExecutionState::Waiting;
             execution.ended_at = None;
         }
@@ -3280,6 +3488,10 @@ impl WorkflowEngine {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
         }
+        // BUG-20261114-035：早期收口臂（sub_workflow 子终态同步 /
+        // 取消竞态）同样发终态事件——观察者契约与公共尾段一致；
+        // Waiting 臂（嵌套审批）不发声。
+        self.emit_terminal_event(&execution).await;
         execution
     }
 

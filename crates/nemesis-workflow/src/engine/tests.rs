@@ -2669,6 +2669,53 @@ async fn restore_skips_executions_with_config_drift() {
     assert_eq!(restored, 0, "config drift should prevent restore");
 }
 
+#[tokio::test]
+async fn restore_mid_crash_running_execution_has_no_ended_at() {
+    // 模拟「level 1 完成后、level 2 执行中进程死亡」：CheckpointHook 在
+    // level 收尾时落的正是 waiting_node=None / terminal=false 的非终态
+    // checkpoint，进程随即死亡——restore 把执行恢复为 Running。
+    // BUG-20261118-166：非终态（Waiting/Running）ended_at 必须空（缺陷 10
+    // 同戒律）——旧 Running 臂盖 Some(now)，按 ended_at 非空判完结的观察方
+    // 把中断现场当已结束，且每次重启重盖新值。
+    let store: Arc<dyn CheckpointStore> = Arc::new(InMemoryCheckpointStore::new());
+
+    let nodes = vec![
+        make_node("step1", "llm", vec![]),
+        make_node("step2", "llm", vec!["step1"]),
+    ];
+    let wf = make_workflow("mid_crash_wf", nodes);
+
+    let engine_a = WorkflowEngine::new_arc();
+    engine_a.set_checkpoint_store(store.clone());
+    engine_a.register_workflow(wf.clone()).unwrap();
+    // CheckpointHook 在层收尾时写的正是这个形态的 checkpoint。
+    engine_a
+        .save_checkpoint(
+            "exec-mid-crash",
+            "mid_crash_wf",
+            &WorkflowContext::new(HashMap::new()),
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    drop(engine_a);
+
+    let engine_b = WorkflowEngine::new_arc();
+    engine_b.set_checkpoint_store(store.clone());
+    engine_b.register_workflow(wf).unwrap();
+    let restored = engine_b.restore_incomplete_executions().await.unwrap();
+    assert_eq!(restored, 1, "mid-crash checkpoint should restore");
+
+    let revived = engine_b.get_execution("exec-mid-crash").await.unwrap();
+    assert_eq!(revived.state, ExecutionState::Running);
+    assert!(
+        revived.ended_at.is_none(),
+        "Running 是非终态：ended_at 必须空，恢复臂不得盖完结时间戳"
+    );
+}
+
 // ============================================================
 // chat_index helpers (workflow chat URL feature)
 // ============================================================
@@ -2827,6 +2874,40 @@ async fn workflow_by_chat_index_legacy_prefix_ambiguous_refuses() {
             .as_deref(),
         Some(name_b.as_str())
     );
+}
+
+#[tokio::test]
+async fn workflow_by_chat_index_case_variant_collision_refuses() {
+    // BUG-20261120-004：chat_index 的输入是 name.to_lowercase()——两个仅
+    // 大小写不同的 workflow 名共享**完全相同**的 16-hex index（确定性归一
+    // 碰撞，64-bit 化只压概率碰撞压不了这类）。注册面三层都放行（validate
+    // 只查非空、DashMap 键区分大小写、register/persist 无 case-insensitive
+    // 守卫），此时 16-hex 精确臂不得随 registry 迭代序随机选边——错误选择
+    // 会把聊天消息和密码投给错误的 workflow（与 8-hex legacy 臂的歧义拒绝
+    // 同一标准，同函数内标准必须一致）。
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "MyWorkflow",
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "myworkflow",
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+
+    let shared = WorkflowEngine::chat_index("MyWorkflow");
+    assert_eq!(shared, WorkflowEngine::chat_index("myworkflow"));
+
+    // 16-hex canonical form: ambiguous → refuse, never silently pick one.
+    assert_eq!(engine.workflow_by_chat_index(&shared), None);
+    assert_eq!(engine.workflow_by_chat_index(&shared.to_uppercase()), None);
+
+    // Legacy 8-hex prefix of the same shared index is equally ambiguous.
+    assert_eq!(engine.workflow_by_chat_index(&shared[..8]), None);
 }
 
 #[tokio::test]
@@ -4086,8 +4167,9 @@ async fn w4a_restore_waiting_execution() {
 }
 
 /// restore_incomplete_executions restores a mid-flight (running) execution:
-/// no waiting node + partial completion -> Running + ended_at set
-/// (engine.rs ~1129-1136).
+/// no waiting node + partial completion -> Running + ended_at=None
+/// (engine.rs restore arm). BUG-20261118-166：非终态 ended_at 必须空
+/// （缺陷 10 同戒律）——旧断言钉住的 Some(now) 是误导观察方的缺陷本身。
 #[tokio::test]
 async fn w4a_restore_midflight_running_execution() {
     let wf = make_workflow(
@@ -4108,7 +4190,7 @@ async fn w4a_restore_midflight_running_execution() {
         .await
         .expect("restored");
     assert_eq!(exec.state, ExecutionState::Running);
-    assert!(exec.ended_at.is_some());
+    assert!(exec.ended_at.is_none());
 }
 
 /// Terminal-checkpoint save failure warns but the run still completes
@@ -5323,6 +5405,154 @@ async fn test_run_async_recursion_limit_does_not_orphan_cancel_token() {
 }
 
 // ---------------------------------------------------------------------------
+// 红证：run_async 早退路径幻影 Running 执行记录（BUG-20261118-160）
+// ---------------------------------------------------------------------------
+
+// 上方两个孤儿 token 测试只钉了 token 回收；BUG-20261118-160 补执行记录
+// 收口面：早退 Err 前记录已以 Running 入 map + 落盘 + 广播 Started，
+// 不收口 = list_executions / UI 永远显示在跑、evict_oldest_terminal_
+// execution 逐不出（非终态）、观察者等不到终态事件（BUG-20261114-035
+// 的 exactly-once 契约同一形态）、start_async 文档承诺的「eventual
+// execution state (Failed)」不兑现。修复 = settle_early_run_failure
+// 四件套（状态 Failed + 落盘 + 账本 settle + Failed 观察者事件）。
+
+#[tokio::test]
+async fn test_run_async_workflow_not_found_settles_execution_failed() {
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder-wnf"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+    engine
+        .register_workflow(make_workflow(
+            "vanish_settle_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution("vanish_settle_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    // workflow 在 create 与 run 之间被移除（同孤儿 token 测试的竞态窗口）。
+    engine.unregister("vanish_settle_wf");
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(result, Err(EngineError::WorkflowNotFound(_))));
+
+    // 执行记录必须翻 Failed + 带原因 + 带终态时间（修复前永久 Running）。
+    let record = engine
+        .get_execution(&execution.id)
+        .await
+        .expect("执行记录必须在 map 中");
+    assert_eq!(record.state, ExecutionState::Failed);
+    assert!(
+        record
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not found"),
+        "error 必须带早退原因，实际 {:?}",
+        record.error
+    );
+    assert!(record.ended_at.is_some(), "终态记录必须带 ended_at");
+
+    // 观察者必须收到 Failed 终态事件（Started 在 create_execution 已发——
+    // exactly-once 契约：每个 Started 必有且仅有一个终态事件跟随）。
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(recorder.event_kinds(), vec!["started", "failed"]);
+}
+
+#[tokio::test]
+async fn test_run_async_recursion_limit_settles_execution_failed() {
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder-rl"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+    engine
+        .register_workflow(make_workflow(
+            "deep_settle_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution(
+            "deep_settle_wf",
+            HashMap::new(),
+            Some(TriggerSource::AgentTool {
+                tool_call_id: "tc-rl-1".to_string(),
+                recursion_depth: MAX_RECURSION_DEPTH + 1,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
+            }),
+        )
+        .await
+        .unwrap();
+
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(
+        result,
+        Err(EngineError::RecursionLimitExceeded(_))
+    ));
+
+    let record = engine
+        .get_execution(&execution.id)
+        .await
+        .expect("执行记录必须在 map 中");
+    assert_eq!(record.state, ExecutionState::Failed);
+    assert!(
+        record
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("recursion limit"),
+        "error 必须带早退原因，实际 {:?}",
+        record.error
+    );
+    assert!(record.ended_at.is_some());
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(recorder.event_kinds(), vec!["started", "failed"]);
+}
+
+#[tokio::test]
+async fn test_run_async_engine_closed_settles_execution_failed() {
+    let engine = WorkflowEngine::new();
+    let recorder = Arc::new(RecordingObserver::new("recorder-closed"));
+    engine
+        .event_manager()
+        .register(Arc::clone(&recorder) as Arc<dyn WorkflowObserver>)
+        .await;
+    engine
+        .register_workflow(make_workflow(
+            "closed_settle_wf",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+    let execution = engine
+        .create_execution("closed_settle_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    engine.close().await;
+    let result = engine.run_async(&execution.id).await;
+    assert!(matches!(result, Err(EngineError::InvalidState(_))));
+
+    let record = engine
+        .get_execution(&execution.id)
+        .await
+        .expect("执行记录必须在 map 中");
+    assert_eq!(record.state, ExecutionState::Failed);
+    assert!(record.ended_at.is_some());
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(recorder.event_kinds(), vec!["started", "failed"]);
+}
+
+// ---------------------------------------------------------------------------
 // 红证：sanitize 文件名碰撞静默覆盖/误删
 // ---------------------------------------------------------------------------
 
@@ -5363,6 +5593,85 @@ async fn test_persist_workflow_rejects_filename_collision() {
     let data = std::fs::read(dir.path().join("a_b.yaml")).unwrap();
     let existing: Workflow = serde_yaml::from_slice(&data).unwrap();
     assert_eq!(existing.nodes.len(), 2, "同名更新必须照常落盘");
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261119-188 回归锁：persist 后同名 .yml 变体残留 → 重启后旧定义
+// 静默遮蔽新定义（加载排序「字典序最后者赢」中 .yml > .yaml）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_persist_workflow_removes_stale_same_name_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(dir.path().to_path_buf());
+
+    // 存量 .yml 定义（手工/迁移放置——load_workflows_from_dir 接受
+    // 三扩展名的受支持盘面状态，delete_workflow_file 同样显式处理）。
+    let old = make_workflow("foo", vec![make_node("n1", "transform", vec![])]);
+    std::fs::write(
+        dir.path().join("foo.yml"),
+        serde_yaml::to_string(&old).unwrap(),
+    )
+    .unwrap();
+
+    // 同名更新经 persist_workflow（UI update / 草稿 apply 共同收口）。
+    let updated = make_workflow(
+        "foo",
+        vec![
+            make_node("n1", "transform", vec![]),
+            make_node("n2", "transform", vec!["n1"]),
+        ],
+    );
+    engine.persist_workflow(updated).unwrap();
+
+    // 旧 .yml 必须被清理——否则重启后 load 排序中 .yml 在后、赢回旧定义。
+    assert!(
+        !dir.path().join("foo.yml").exists(),
+        "同名 .yml 变体必须在 persist 后清理，防重启后旧定义静默遮蔽新定义"
+    );
+    assert!(
+        dir.path().join("foo.yaml").exists(),
+        "新 .yaml 主文件必须落盘"
+    );
+
+    // 重启模拟：全新引擎重载，注册表里必须是新定义（两节点版）。
+    let engine2 = WorkflowEngine::new();
+    engine2.set_workflow_defs_dir(dir.path().to_path_buf());
+    let loaded = engine2.load_workflows_from_dir(dir.path()).unwrap();
+    assert_eq!(loaded, 1);
+    let wf = engine2
+        .get_workflow("foo")
+        .expect("重载后 foo 必须在注册表");
+    assert_eq!(wf.nodes.len(), 2, "重载后必须是新版定义，不得被旧变体遮蔽");
+}
+
+#[tokio::test]
+async fn test_persist_workflow_keeps_variant_owned_by_other_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = WorkflowEngine::new();
+    engine.set_workflow_defs_dir(dir.path().to_path_buf());
+
+    // foo.yml 内容属于 "bar"（sanitize 同文件名但内容名不同的他人定义，
+    // 同 test_persist_workflow_rejects_filename_collision 的存量碰撞形态）。
+    let other = make_workflow("bar", vec![make_node("n1", "transform", vec![])]);
+    std::fs::write(
+        dir.path().join("foo.yml"),
+        serde_yaml::to_string(&other).unwrap(),
+    )
+    .unwrap();
+
+    engine
+        .persist_workflow(make_workflow(
+            "foo",
+            vec![make_node("n1", "transform", vec![])],
+        ))
+        .unwrap();
+
+    assert!(
+        dir.path().join("foo.yml").exists(),
+        "属他人的同名变体不得被误删"
+    );
 }
 
 #[tokio::test]
@@ -5649,6 +5958,75 @@ async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
     let after = engine.get_execution(&parent_id).await.unwrap();
     assert_eq!(after.state, ExecutionState::Waiting);
     assert!(engine.cancel_tokens.is_empty());
+}
+
+/// BUG-20261114-008 回归锁（竞态臂）：restore_waiting_after_failed_resume
+/// 只翻回「自己翻的 Running」。resume 错误窗口内并发 cancel_execution 可
+/// 合法观察到 Running 并翻成 Cancelled（状态检查放行 + token fire + 持久
+/// 化）——最宽窗口 = sub_workflow 子执行 resume 全程。修复前 restore 无
+/// 条件翻回 Waiting：已取消执行在内存复活（此后 resume 照常放行，取消意
+/// 图被静默抹除；estop cancel_all_running 的取消同样被复活），且内存
+/// Waiting 与盘上 Cancelled 分叉。
+#[tokio::test]
+async fn test_restore_waiting_after_failed_resume_preserves_raced_cancel() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // 模拟错误窗口内的并发取消落地：cancel_execution 观察到 Running/
+    // Waiting → 合法翻成 Cancelled。
+    engine.cancel_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        engine.get_execution(&parent_id).await.unwrap().state,
+        ExecutionState::Cancelled
+    );
+
+    // 此时 resume 的错误臂跑到 restore——修复前无条件翻回 Waiting。
+    engine.restore_waiting_after_failed_resume(&parent_id).await;
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(
+        after.state,
+        ExecutionState::Cancelled,
+        "restore must not resurrect a cancelled execution"
+    );
+    assert!(
+        after.ended_at.is_some(),
+        "cancelled execution keeps its ended_at"
+    );
+
+    // 可观察语义闭环：复活被堵死后，已取消的执行不可再 resume。
+    let result = engine
+        .resume_execution(
+            &parent_id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(EngineError::InvalidState(_))),
+        "cancelled execution must not be resumable: {result:?}"
+    );
+}
+
+/// BUG-20261114-008 回归锁（正常臂）：无并发取消时，restore 仍把自己翻的
+/// Running 翻回 Waiting + ended_at=None——错误臂恢复语义不变。
+#[tokio::test]
+async fn test_restore_waiting_after_failed_resume_flips_own_running_back() {
+    let engine = WorkflowEngine::new_arc();
+    let (parent_id, _child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // resume 临界区翻 Running + ended_at=None 的形态（错误窗口内无并发
+    // 取消）。
+    {
+        let mut execs = engine.executions.write().await;
+        let exec = execs.get_mut(&parent_id).unwrap();
+        exec.state = ExecutionState::Running;
+        exec.ended_at = None;
+    }
+    engine.restore_waiting_after_failed_resume(&parent_id).await;
+
+    let after = engine.get_execution(&parent_id).await.unwrap();
+    assert_eq!(after.state, ExecutionState::Waiting);
+    assert!(after.ended_at.is_none());
 }
 
 /// 多等待同层：human_review 与 sub_workflow 并联（无
@@ -6025,4 +6403,93 @@ async fn b383_chain_extends_through_event_triggered_execution() {
         ev.data.get(B383_CHAIN_KEY),
         Some(&serde_json::json!(["link_a", "link_b"]))
     );
+}
+
+// BUG-20261114-042：cron 触发器 legacy `expression` 键双真相源分叉。
+//
+// manager 层（triggers.rs register_trigger）接受 `expression` 作为 `schedule`
+// 的向后兼容别名（注释明言 "backward compat"），但两个 engine 消费点
+// （cron_next_fire_at_from_trigger / list_cron_workflows）只读 `schedule`——
+// 别名被收编进无人消费的 cron_jobs 缓存，真实调度层却 warn「missing
+// 'schedule' field」跳过（字段明明写在本 crate 自己声称接受的别名下），
+// legacy 文件永不触发、TriggerSummary.next_fire_at 恒空。修法 = 别名在
+// 消费点兑现（仓库 timeout/protocol 别名同惯例），三层读同一 helper。
+
+#[tokio::test]
+async fn test_list_cron_workflows_honors_legacy_expression_alias() {
+    use crate::types::TriggerConfig;
+    use serde_json::json;
+
+    let mut wf = make_workflow("legacy_cron", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let crons = engine.list_cron_workflows();
+    assert_eq!(
+        crons.len(),
+        1,
+        "legacy expression 别名必须与 schedule 同权排程——假兼容（manager 收编、调度层拒收）已根修"
+    );
+    assert_eq!(crons[0].0, "legacy_cron");
+    assert_eq!(crons[0].1, "0 9 * * *");
+}
+
+#[tokio::test]
+async fn test_list_cron_workflows_schedule_takes_precedence_over_expression() {
+    use crate::types::TriggerConfig;
+    use serde_json::json;
+
+    // 两键并存：canonical schedule 赢，legacy alias 只是回落。
+    let mut wf = make_workflow("both_keys_cron", vec![make_node("n1", "delay", vec![])]);
+    wf.triggers = vec![TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([
+            ("schedule".to_string(), json!("*/5 * * * *")),
+            ("expression".to_string(), json!("0 9 * * *")),
+        ]),
+    }];
+
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let crons = engine.list_cron_workflows();
+    assert_eq!(crons.len(), 1);
+    assert_eq!(
+        crons[0].1, "*/5 * * * *",
+        "schedule 优先于 legacy expression"
+    );
+}
+
+#[test]
+fn test_cron_next_fire_at_honors_legacy_expression_alias() {
+    use serde_json::json;
+
+    // 别名下写合法 cron：next_fire_at 必须可算（TriggerSummary 展示面）。
+    let valid = crate::types::TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    };
+    assert!(
+        super::cron_next_fire_at_from_trigger(&valid).is_some(),
+        "legacy expression 别名下的合法 cron 必须算出 next_fire_at"
+    );
+
+    // 别名下的非法 cron：诚实 None（与 schedule 键同语义）。
+    let invalid = crate::types::TriggerConfig {
+        trigger_type: "cron".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("not a cron"))]),
+    };
+    assert!(super::cron_next_fire_at_from_trigger(&invalid).is_none());
+
+    // 非 cron 触发器：None 不变。
+    let not_cron = crate::types::TriggerConfig {
+        trigger_type: "webhook".to_string(),
+        config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
+    };
+    assert!(super::cron_next_fire_at_from_trigger(&not_cron).is_none());
 }

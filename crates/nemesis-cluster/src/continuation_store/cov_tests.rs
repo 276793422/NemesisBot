@@ -159,3 +159,54 @@ async fn recover_from_disk_read_failure_skips() {
     assert_eq!(n, 0, "读取失败臂跳过");
     assert!(!store.contains("t-locked"));
 }
+
+/// exists_on_disk：盘上有快照（agent 侧 twin store 落盘形态）→ true，
+/// 且内存 contains 同时为 false——这正是 BUG-20261113-165 的病灶：生产
+/// 路径快照全由 agent 侧 store 落盘，cluster 侧内存 map 恒空（无任何
+/// save/recover_from_disk 调用者），旧 board timeline 用 contains 判
+/// 「在途」= 分支永假。本断言钉死「内存判定不可用、盘上判定可用」。
+#[tokio::test]
+async fn exists_on_disk_true_while_memory_map_empty() {
+    let dir = temp_cache("exists-true");
+    let store = ContinuationStore::new(&dir);
+    // agent 侧 store 的落盘形态：同一 sanitize 映射 + .json 后缀。
+    std::fs::write(
+        dir.join(format!(
+            "{}.json",
+            nemesis_utils::sanitize::sanitize_path_segment("t-exists")
+        )),
+        serde_json::to_string_pretty(&snap("t-exists")).unwrap(),
+    )
+    .unwrap();
+
+    assert!(
+        !store.contains("t-exists"),
+        "内存 map 恒空（生产无 save 调用者）——旧 contains 判定死分支的根因"
+    );
+    assert!(store.exists_on_disk("t-exists").await);
+}
+
+/// exists_on_disk：无文件 → false。
+#[tokio::test]
+async fn exists_on_disk_false_for_missing_id() {
+    let dir = temp_cache("exists-false");
+    let store = ContinuationStore::new(&dir);
+    assert!(!store.exists_on_disk("t-missing").await);
+}
+
+/// exists_on_disk：异形 task_id（>80 字符 → 头 60+hash16 形态）经与写入
+/// 侧同源的 sanitize 映射对上盘上文件名——异形 id 在途判定不 false-negative。
+#[tokio::test]
+async fn exists_on_disk_resolves_hash_suffix_form() {
+    let dir = temp_cache("exists-hash");
+    let store = ContinuationStore::new(&dir);
+    let long_id = format!("t-{}", "x".repeat(90));
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(&long_id);
+    assert_ne!(safe, long_id, "90 字符 id 必然被消毒改写");
+    std::fs::write(
+        dir.join(format!("{safe}.json")),
+        serde_json::to_string_pretty(&snap(&long_id)).unwrap(),
+    )
+    .unwrap();
+    assert!(store.exists_on_disk(&long_id).await);
+}

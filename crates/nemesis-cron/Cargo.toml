@@ -15,11 +15,15 @@ uuid = { workspace = true }
 parking_lot = { workspace = true }
 rand = { workspace = true }
 croner = "3"
+nemesis-types = { workspace = true }
 nemesis-utils = { workspace = true }
 nemesis-taskstore = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# taskstore 行为测试经 dev-dependencies 带回真 SQLite 账本（resolver 2：
+# dev-dep features 不泄漏到正常构建——正常构建按需编译空账本 stub）。
+nemesis-taskstore = { workspace = true, features = ["sqlite"] }
 
 [lints]
 workspace = true

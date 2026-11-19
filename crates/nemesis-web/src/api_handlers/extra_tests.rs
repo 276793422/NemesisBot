@@ -29,6 +29,7 @@ fn make_state(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace,
@@ -51,6 +52,7 @@ fn make_state(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -60,6 +62,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -77,6 +80,7 @@ fn make_state_with_tx(
 ) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace,
@@ -99,6 +103,7 @@ fn make_state_with_tx(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -108,6 +113,7 @@ fn make_state_with_tx(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -124,6 +130,30 @@ fn make_state_with_estop(
     let mut s = make_state_with_tx(None, None, auth_token, None);
     Arc::get_mut(&mut s).expect("AppState Arc unique").estop = estop;
     s
+}
+
+/// BUG-20261118-096：带审计钩子的 state（hook 记 (operation, source) 进
+/// 共享 Vec，断言 /api/internal estop 命令的落账序列）。
+fn make_state_with_estop_audit(
+    auth_token: &str,
+    estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+) -> (
+    Arc<AppState>,
+    Arc<parking_lot::Mutex<Vec<(String, String)>>>,
+) {
+    let calls: Arc<parking_lot::Mutex<Vec<(String, String)>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&calls);
+    let mut s = make_state_with_tx(None, None, auth_token, None);
+    {
+        let state = Arc::get_mut(&mut s).expect("AppState Arc unique");
+        state.estop = estop;
+        state.estop_audit = Some(std::sync::Arc::new(move |operation: &str, source: &str| {
+            sink.lock()
+                .push((operation.to_string(), source.to_string()));
+        }));
+    }
+    (s, calls)
 }
 
 // ============================================================
@@ -294,6 +324,80 @@ async fn test_handle_api_internal_estop_not_available() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
+// BUG-20261118-096：/api/internal estop 命令触发审计钩子（source="cli"）；
+// status 只读不触发。
+#[tokio::test]
+async fn test_handle_api_internal_estop_audit_hook_engage_release_status_not() {
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    let (state, calls) = make_state_with_estop_audit("secret", Some(estop));
+
+    let auth_hdr = |token: &str| {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("X-Auth-Token", token.parse().unwrap());
+        h
+    };
+
+    // status → 只读，不落审计。
+    let r = handle_api_internal(
+        auth_hdr("secret"),
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({"cmd":"estop_status"})),
+    )
+    .await;
+    assert_eq!(r.unwrap().0["engaged"], false);
+    assert!(
+        calls.lock().is_empty(),
+        "status 不得触发审计钩子: {:?}",
+        calls.lock()
+    );
+
+    // engage → hook("engage", "cli")。
+    let r = handle_api_internal(
+        auth_hdr("secret"),
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({"cmd":"estop_engage"})),
+    )
+    .await;
+    assert_eq!(r.unwrap().0["engaged"], true);
+
+    // release → hook("release", "cli")。
+    let r = handle_api_internal(
+        auth_hdr("secret"),
+        axum::extract::State(state.clone()),
+        Json(serde_json::json!({"cmd":"estop_release"})),
+    )
+    .await;
+    assert_eq!(r.unwrap().0["engaged"], false);
+
+    let got = calls.lock().clone();
+    assert_eq!(
+        got,
+        vec![
+            ("engage".to_string(), "cli".to_string()),
+            ("release".to_string(), "cli".to_string()),
+        ],
+        "审计钩子调用序列: {got:?}"
+    );
+}
+
+// BUG-20261118-096：审计钩子缺失（None）→ /api/internal estop 照常执行，
+// 不 panic（记录面缺失 = 诚实降级，动作不受影响）。
+#[tokio::test]
+async fn test_handle_api_internal_estop_audit_hook_absent_is_noop() {
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    // make_state_with_estop 不设 estop_audit（保持 None）。
+    let state = make_state_with_estop("secret", Some(estop.clone()));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("X-Auth-Token", "secret".parse().unwrap());
+
+    let body = serde_json::json!({"cmd": "estop_engage"});
+    let result =
+        handle_api_internal(headers, axum::extract::State(state.clone()), Json(body)).await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap().0["engaged"], true);
+    assert!(estop.is_engaged());
+}
+
 #[tokio::test]
 async fn test_handle_api_internal_estop_unauthorized_wrong_token() {
     // estop 命令也吃鉴权——错 token → 401。
@@ -395,6 +499,7 @@ async fn test_handle_api_status_includes_model_base() {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -417,6 +522,7 @@ async fn test_handle_api_status_includes_model_base() {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -426,6 +532,7 @@ async fn test_handle_api_status_includes_model_base() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -802,6 +909,7 @@ async fn test_handle_api_sessions_returns_zero_active() {
 async fn test_handle_api_sessions_with_count() {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(42)),
         workspace: None,
@@ -824,6 +932,7 @@ async fn test_handle_api_sessions_with_count() {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -833,6 +942,7 @@ async fn test_handle_api_sessions_with_count() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -1207,6 +1317,7 @@ fn test_sanitize_map_partial_match_substring_key() {
 fn test_app_state_clone() {
     let state = AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: "tok".to_string(),
         session_count: Arc::new(AtomicUsize::new(5)),
         workspace: Some("/work".to_string()),
@@ -1229,6 +1340,7 @@ fn test_app_state_clone() {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -1238,6 +1350,7 @@ fn test_app_state_clone() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,

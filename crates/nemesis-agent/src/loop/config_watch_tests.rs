@@ -173,6 +173,43 @@ fn session_effort_priority_over_config() {
     assert_eq!(effective(&loop_, "web:s1"), Some("high".to_string()));
 }
 
+#[test]
+fn session_effort_map_is_bounded() {
+    // BUG-20261113-170：会话键控有界纪律（与 compact_state/summarizing
+    // 同约定）。写入是显式 per-session 动作，此前完全无驱逐。超限后
+    // 整体 clear——被清会话回落 config 模型级值（无不变量破坏），触发
+    // clear 的本次写入照常生效；overwrite 已有键不触发 clear。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [{"model": "m/plain", "model_name": "m-plain"}]
+    }));
+    let max = super::compact::SESSION_STATE_MAX_ENTRIES;
+    for i in 0..=max {
+        loop_.set_session_effort(&format!("web:s{i}"), Some("high".to_string()));
+    }
+    assert_eq!(
+        loop_.session_effort("web:s0"),
+        Some("high".to_string()),
+        "恰好在界限上（len == MAX+1）还不 clear——与 compact_state 同形态"
+    );
+    loop_.set_session_effort("web:overflow", Some("off".to_string()));
+    assert_eq!(
+        loop_.session_effort("web:s0"),
+        None,
+        "超限写入触发 clear，旧键全部回落"
+    );
+    assert_eq!(
+        loop_.session_effort("web:overflow"),
+        Some("off".to_string()),
+        "触发 clear 的本次写入正常生效"
+    );
+    loop_.set_session_effort("web:overflow", Some("low".to_string()));
+    assert_eq!(
+        loop_.session_effort("web:overflow"),
+        Some("low".to_string()),
+        "overwrite 已有键不触发 clear"
+    );
+}
+
 // --- BUG-20261108-030：外层包裹超时跟随 provider 请求超时（超时阶梯
 // 纪律：外层必须大于内层）。显式配置直接采信（含 0=关）——用户预算
 // 意志优先；缺省跟随活跃模型 per-model timeout + 30s 余量。 ---
@@ -429,5 +466,33 @@ fn effort_reader_sees_autofix_after_republish() {
         loop_.current_reasoning_effort_override(None),
         Some("low".to_string()),
         "写盘 + 对账发布后 effort 读者必须见新档位"
+    );
+}
+
+// BUG-20261115-036 回归锁：记事本「带 BOM 的 UTF-8」保存的 config.json——
+// effort 探针保鲜层两个助手旧形态裸 `read_to_string` → BOM → parse 失败 →
+// stale 标记静默不落盘 / accepted 建议静默消失。read_config_string 剥 BOM
+// 后照常解析（BUG-20261103-334 同族）。
+#[test]
+fn stale_mark_and_accepted_read_tolerate_bom_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = stale_write_config(
+        dir.path(),
+        "\u{feff}{ \"model_list\": [ { \"model_name\": \"m1\", \"effort_probe\": { \"accepted\": [\"low\"] } } ] }",
+    );
+    // 读臂：BOM config → accepted 照常读出。
+    let accepted = crate::r#loop::config_watch::effort_probe_accepted_at(&path, "m1");
+    assert_eq!(
+        accepted,
+        Some(vec!["low".to_string()]),
+        "BOM config 的 effort_probe.accepted 必须可读"
+    );
+    // 写臂：BOM config → stale 标记照常落盘。
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&path, "m1");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        cfg["model_list"][0]["effort_probe"]["stale"], true,
+        "BOM config 的 stale 标记必须落盘"
     );
 }

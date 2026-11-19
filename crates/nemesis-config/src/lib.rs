@@ -273,6 +273,16 @@ pub struct Config {
     /// 用户显式禁用，子系统静默重启用。
     #[serde(default)]
     pub plugins: Option<PluginsHostConfig>,
+    /// 浏览器接管段（spawn 浏览器选择 kind/executable；None = 全默认
+    /// auto）。typed 字段化防 set_field round-trip 丢键（plugins 段同款）。
+    /// 见 [`BrowserConfig`]。
+    #[serde(default)]
+    pub browser: Option<BrowserConfig>,
+    /// 目标系统段（评估闸/权限全局开关；None = 全默认——
+    /// allow_agent_disable=true）。typed 字段化防 set_field round-trip
+    /// 丢键（plugins/browser 段同款）。见 [`GoalsConfig`]。
+    #[serde(default)]
+    pub goals: Option<GoalsConfig>,
 }
 
 /// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；
@@ -375,17 +385,32 @@ impl Config {
 
     /// Find a model configuration by model name or vendor/model prefix.
     pub fn get_model_by_model_name(&self, model_ref: &str) -> Result<&ModelConfig> {
-        // First try exact match with model_name
-        for mc in &self.model_list {
-            if mc.model_name == model_ref {
-                return Ok(mc);
+        // 层序与 provider_resolver::model_ref_eq doc 恒等：精确 model_name →
+        // 精确 model 字段 → CI model_name → CI model 字段（CI 兜底层 =
+        // BUG-20261117-077，与查找族其余站点同口径）→ bare-suffix →
+        // bare-CI（bare 兜底层 = BUG-20261119-207，与查找族其余站点同步）。
+        for ci in [false, true] {
+            // First try exact match with model_name
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_eq(&mc.model_name, model_ref, ci) {
+                    return Ok(mc);
+                }
+            }
+
+            // Then try prefix match with model field (vendor/model)
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_eq(&mc.model, model_ref, ci) {
+                    return Ok(mc);
+                }
             }
         }
 
-        // Then try prefix match with model field (vendor/model)
-        for mc in &self.model_list {
-            if mc.model == model_ref {
-                return Ok(mc);
+        // bare-suffix 兜底层（BUG-20261119-207）：同查找族其余站点。
+        for ci in [false, true] {
+            for mc in &self.model_list {
+                if provider_resolver::model_ref_bare_eq(&mc.model, model_ref, ci) {
+                    return Ok(mc);
+                }
             }
         }
 
@@ -403,15 +428,11 @@ impl Config {
 
     /// Populate deprecated fields from new fields for backward compatibility.
     ///
-    /// This mirrors the Go `postProcessForCompatibility` function:
-    /// - Sync `sync_to_web` from `sync_to` for External and WebSocket channels.
+    /// This mirrors the Go `postProcessForCompatibility` function.
+    /// （BUG-20261117-066）曾有的 `sync_to_web` 从 `sync_to` 派生臂已随
+    /// 该死旋钮一并删除：bool 全仓零读者，Go 蓝本兼容残留；sync 路由
+    /// 单一真相源是 `sync_to`（web_init setup_sync_targets 消费）。
     pub fn post_process_for_compatibility(&mut self) {
-        // External channel: populate SyncToWeb from SyncTo
-        self.channels.external.sync_to_web = !self.channels.external.sync_to.is_empty();
-
-        // WebSocket channel: populate SyncToWeb from SyncTo
-        self.channels.websocket.sync_to_web = !self.channels.websocket.sync_to.is_empty();
-
         // autonomy=autonomous 前置要求 unlimited_mode=true——
         // 防「监察环自动重派开着、评审 FAIL 却转人工」的矛盾态。加载期矛盾
         // 诚实降级为 assisted + WARN（安全方向回退，网关不被一个旗标卡死——
@@ -425,6 +446,16 @@ impl Config {
                 "[Config] board.autonomy=autonomous 但 unlimited_mode=false（矛盾态）：降级为 assisted 生效（请在面板开启 unlimited_mode 后再切 autonomous）"
             );
             board.autonomy = BoardAutonomy::Assisted;
+        }
+        // 批一①（无人值守加固）：unlimited + 预算保险丝三维全关的组合
+        // WARN（纯可观测不拦截——用户显式选择不是错误）。谓词单一真相源
+        // BoardFlagConfig::unlimited_without_budget_fuse（sections/board.rs）。
+        if let Some(board) = self.board.as_ref()
+            && board.unlimited_without_budget_fuse()
+        {
+            warn!(
+                "[Config] board.unlimited_mode=true 且预算保险丝三维全关（max_total_redispatch=0 / wall_clock_budget_secs=0 / max_tokens_per_parent=0）：FAIL 重派无资源上限，签名逐轮翻转的失败不在任何停车闸内。无人值守请配置 board.budget.*（0=关该维是刻意的，后果自担）；estop 可随时止血"
+            );
         }
     }
 
@@ -527,14 +558,18 @@ fn default_temperature() -> f64 {
 fn default_max_tool_iterations() -> i64 {
     100
 }
-/// default concurrent mode is **queue** — busy sessions
-/// park messages in the per-session inbox instead of bouncing them (devtool
-/// upgrade: multi-entry coding agent needs turn-end continuation, not
-/// rejection). Applies ONLY when config.json omits the key (serde default);
-/// explicit `"reject"` configs keep legacy behavior. Unknown strings still
+/// default concurrent mode is **steer** — busy sessions accept new input
+/// inline (the model sees the latest user intent mid-turn). 2026-11-03
+/// product decision (BUG doc「busy期间输入全面锁死」): the previous default
+/// "queue" let a web-UI inbox-status refresh failure dead-lock the frontend
+/// into permanent reject (busy send gate + textarea disable + send button
+/// hide all keyed off a stale mode snapshot with no self-heal), so the
+/// default flips to the open mode and the backend adjudicates per turn.
+/// Applies ONLY when config.json omits the key (serde default); explicit
+/// `"reject"` / `"queue"` configs keep their behavior. Unknown strings still
 /// fail safe to reject at `parse_concurrent_mode` (nemesis-agent).
 fn default_concurrent_request_mode() -> String {
-    "queue".to_string()
+    "steer".to_string()
 }
 
 fn default_snapshot_role() -> String {
@@ -715,6 +750,11 @@ mod ws2_compact_config_tests;
 #[cfg(test)]
 mod dispatch_fallback_mode_tests;
 
+// memory.recall_gate 配置节（项2 P2 召回质量闸）：缺席 = None /
+// 部分键落默认 / roundtrip 零漂移。
+#[cfg(test)]
+mod recall_gate_config_tests;
+
 // 人工触点考勤（board.attendance）：serde 缺省 / mode 归一 / kind 等待窗
 // 测试。
 #[cfg(test)]
@@ -757,3 +797,8 @@ mod hot_reload_tests;
 // Debug 输出不落明文凭据。
 #[cfg(test)]
 mod channels_debug_redaction_tests;
+
+// 无人值守加固配置面：unlimited+预算全关组合谓词（批一①）/
+// transient_retry 两键（批二）/ board.notify 段（批三）默认与解析。
+#[cfg(test)]
+mod unattended_hardening_tests;

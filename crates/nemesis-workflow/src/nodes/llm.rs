@@ -307,20 +307,70 @@ pub(super) fn resp_status_reason(status_code: u16) -> String {
 /// 替换 `{{key}}` 占位符（键存在才替换；缺失键保留原样——调度器的条件边
 /// 语义靠这一点把「引用了不存在的字段」识别为不可解析，见
 /// `scheduler::eval_edge_conditions`）。
+///
+/// 单遍扫描实现（BUG-20261114-028）：逐占位符精确查表（**不 trim**，键
+/// 带空格即字面空格键），替换值**永不二次扫描**。旧实现按 HashMap 迭代序
+/// 对全表逐键 `str::replace`——某个上下文值里恰好含 `{{另一键}}`（LLM
+/// 输出里出现模板字样是常态）时，是否被二次展开取决于两键的迭代先后
+/// （RandomState 每进程每 HashMap 随机）→ 同输入两次运行不同输出；条件边
+/// 「残留 `{{`」的可证伪性判定方向也随之漂移（ spuriously 展开或 spurious
+/// 残留）。单遍语义：占位符只来自模板原文，替换值是数据不是模板——产出
+/// 确定性，输入同则输出恒同。扫描形态与 [`placeholder_refs`] 同构。
 pub(crate) fn resolve_prompt_template(
     template: &str,
     context: &HashMap<String, serde_json::Value>,
 ) -> String {
-    let mut out = template.to_string();
-    for (k, v) in context {
-        let placeholder = format!("{{{{{}}}}}", k);
-        let replacement = match v {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
+    // BUG-20261119-195：实现收敛到带区间变体（单一真相源）——条件求值
+    // 需要替换值的输出坐标区间（control.rs Step 3 切分跳过数据值），
+    // 展开结果本身零变化。
+    resolve_prompt_template_with_ranges(template, context).0
+}
+
+/// [`resolve_prompt_template`] 的带区间变体（BUG-20261119-195）：除展开
+/// 结果外返回每个替换值在**输出坐标**的字节区间 `(start, end)`（半开）。
+/// 区间供条件求值（control.rs）做运算符切分时跳过数据值——节点输出/
+/// 触发器载荷（LLM 生成）可携带 `>=`、`==` 等运算符字符，而模板替换是
+/// 裸字符串拼接、无任何转义；不知道哪些字节来自数据，切分就会落进数据
+/// 内部（缺陷形态与反例见 control.rs Step 3 注释）。
+///
+/// 区间语义：命中键的替换值记区间；缺失键占位符原样保留（含花括号）
+/// **不记区间**——原文不是数据，残留 `{{…}}` 另有可证伪性判定拦截
+/// （`eval_condition_with_falsifiability`）。区间边界恒为字符边界
+/// （`push_str` 只推进完整合法片段）。
+pub(crate) fn resolve_prompt_template_with_ranges(
+    template: &str,
+    context: &HashMap<String, serde_json::Value>,
+) -> (String, Vec<(usize, usize)>) {
+    let mut out = String::with_capacity(template.len());
+    let mut ranges = Vec::new();
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            // 无闭合 `}}`：余下原文照搬（不完整占位符不是键，旧 replace
+            // 语义同样不命中）。rest 清空防循环外尾段二次追加。
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
         };
-        out = out.replace(&placeholder, &replacement);
+        let key = &after[..end];
+        match context.get(key) {
+            Some(value) => {
+                let value_start = out.len();
+                match value {
+                    serde_json::Value::String(s) => out.push_str(s),
+                    other => out.push_str(&other.to_string()),
+                }
+                ranges.push((value_start, out.len()));
+            }
+            // 缺失键：占位符原样保留（含两侧花括号），不记区间。
+            None => out.push_str(&rest[start..start + end + 4]),
+        }
+        rest = &after[end + 2..];
     }
-    out
+    out.push_str(rest);
+    (out, ranges)
 }
 
 /// 提取表达式里的全部 `{{…}}` 占位符，拆成（首段, 可选字段名）。

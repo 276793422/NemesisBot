@@ -147,5 +147,40 @@ pub fn sanitize_tokio_command_narrow(cmd: &mut tokio::process::Command) -> usize
     stripped
 }
 
+/// 显式 env 槽单对键值硬校验（BUG-20261116-025）——模型侧 env 注入点
+/// 共用的**单一真相源**：std::process::Command::env 对空键 / 含 `=` 键 /
+/// 含 NUL 键（Unix 四查齐 panic：空、`=`、NUL、值 NUL）与含 NUL 值
+/// （全平台）的处理不可依赖——Unix 即时 panic（release 被 agent loop
+/// tool_dispatch catch_unwind 兜成合成错误；iotsmall panic=abort 直接
+/// 炸进程），Windows 推迟到 spawn 报不带槽位指向的通用错误。校验前移
+/// 为诚实 Err（消息带 env 槽位指向，模型可自纠）。`=` 键全平台一律拒
+/// （Windows 环境块对该形态同样病态）。
+///
+/// 消费方：nemesis-agent `parse_env_slot`（exec / run_checks /
+/// run_script / background_start 四工具共用解析单点）+
+/// nemesis-guest exec（VM 执行世界侧自建解析，crate 边界不共享
+/// parse_env_slot，但错误消息形态与本函数同源）。
+pub fn check_env_slot_pair(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("Invalid 'env' argument: variable name must not be empty".to_string());
+    }
+    if key.contains('=') {
+        return Err(format!(
+            "Invalid 'env' argument: variable name '{key}' must not contain '='"
+        ));
+    }
+    if key.contains('\0') {
+        return Err(format!(
+            "Invalid 'env' argument: variable name '{key}' must not contain NUL"
+        ));
+    }
+    if value.contains('\0') {
+        return Err(format!(
+            "Invalid 'env' argument: value of '{key}' must not contain NUL"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

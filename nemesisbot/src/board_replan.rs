@@ -604,7 +604,8 @@ fn autonomous_execute(
             ));
             continue;
         }
-        let _ = store.add_comment(nemesis_board::NewComment {
+        // BUG-20261118-173：取消通知评论写失败不再静默（惯例对齐）。
+        if let Err(e) = store.add_comment(nemesis_board::NewComment {
             issue_id: child.id,
             author: replan_actor(),
             content: format!(
@@ -614,7 +615,10 @@ fn autonomous_execute(
             ),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            warn!(issue = %child.number,
+                "[BoardReplan] 重规划取消通知评论落库失败：{e}（取消流程照常）");
+        }
         // 在途派发连带取消（竞态守卫赢才动派发行 + 下行 task_cancel）。
         if let Ok(Some(d)) = store.get_active_dispatch(child.id) {
             match store.cancel_dispatch(&d.task_id, &actor) {

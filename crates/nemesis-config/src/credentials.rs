@@ -32,10 +32,24 @@ use serde::{Deserialize, Serialize};
 use crate::{ConfigError, Result};
 
 /// Parsed contents of `credentials.yaml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CredentialsFile {
     /// alias -> API key value.
     pub keys: BTreeMap<String, String>,
+}
+
+// SEC-002 Debug 脱敏（BUG-20261114-063）：keys 就是别名→明文 API key 账本
+// （本文件唯一的数据形态），derive(Debug) 会把全部明文 key 带进
+// Debug/panic/错误上下文日志。Debug 只报条目规模——别名与值都不落。
+impl std::fmt::Debug for CredentialsFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialsFile")
+            .field(
+                "keys",
+                &format_args!("<redacted: {} entries>", self.keys.len()),
+            )
+            .finish()
+    }
 }
 
 /// Result of `run_import` — what the migration did, for CLI output and tests.
@@ -160,6 +174,19 @@ pub fn load_credentials_file(path: &Path) -> Result<CredentialsFile> {
     if content.trim().is_empty() {
         return Ok(CredentialsFile::default());
     }
+    // 深嵌套 flow 集合喂给 serde_yaml 0.9 会按嵌套深度递归下降 → 栈溢出
+    // abort（不可捕获，进程级 DoS）。与本仓另两个 serde_yaml 反序列化入口
+    // （workflow parser/drafts，BUG-20261110-044）对齐：反序列化前过词法
+    // 上界闸。credentials.yaml 虽是用户文件，但 workspace 内可被 agent 经
+    // 审批的 file_write 触及（LLM 代写模型配置是真实路径），不可信级别
+    // 与工作流草稿同档。真实文件形态 keys: {alias: value} 深度 ≤ 3，
+    // 64 上闸零误伤。
+    nemesis_utils::yaml_depth::check_yaml_nesting_depth(&content).map_err(|e| {
+        ConfigError::Validation(format!(
+            "credentials file '{}' rejected by nesting depth guard: {e}",
+            path.display()
+        ))
+    })?;
     serde_yaml::from_str(&content).map_err(|e| {
         ConfigError::Validation(format!(
             "credentials file '{}' is not valid YAML ({}) — expected shape: keys: {{ alias: value }}",

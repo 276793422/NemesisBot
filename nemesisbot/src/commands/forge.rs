@@ -24,6 +24,7 @@ pub enum ForgeAction {
     },
     /// List forge artifacts
     List {
+        /// Artifact kind filter: all | skill | script | mcp（大小写不敏感）
         #[arg(long, default_value = "all")]
         r#type: String,
     },
@@ -163,15 +164,52 @@ fn runtime_forge_config_path(forge_dir: &std::path::Path) -> std::path::PathBuf 
 }
 
 /// Load forge registry from registry.json.
+///
+/// peek 类防御读：缺失 = 空注册表；读/解析失败 = WARN 留痕后按空注册表
+/// 继续（BUG-20261114-026 同族纪律，与 web handler `read_registry_artifacts`
+/// 对齐）——损坏时按空注册表继续，status/list/evaluate 三个消费方
+/// 会把损坏误判为「无制品」，WARN 是唯一痕迹。
 fn load_registry(forge_dir: &std::path::Path) -> Vec<serde_json::Value> {
-    let registry_path = forge_dir.join("registry.json");
-    if registry_path.exists()
-        && let Ok(data) = std::fs::read_to_string(&registry_path)
-        && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&data)
-    {
-        return arr;
+    let registry_path = forge_dir.join(nemesis_forge::MANUAL_REGISTRY_FILE);
+    if !registry_path.exists() {
+        return Vec::new();
     }
-    Vec::new()
+    let data = match std::fs::read_to_string(&registry_path) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                path = %registry_path.display(),
+                error = %e,
+                "[forge] registry.json 读取失败，按空注册表继续（status/list/evaluate 显示归零）"
+            );
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str::<Vec<serde_json::Value>>(&data) {
+        Ok(arr) => arr,
+        Err(e) => {
+            tracing::warn!(
+                path = %registry_path.display(),
+                error = %e,
+                "[forge] registry.json 解析失败（文件损坏），按空注册表继续（status/list/evaluate 显示归零）"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// `--type` 过滤与注册表 kind 值的大小写不敏感匹配。
+///
+/// registry.json 是 Artifact 的 serde 序列化产物，kind 键值域
+/// `Skill`/`Script`/`Mcp`（PascalCase）；CLI 参数惯例是小写
+/// （`forge list --type skill`），故比对（含 `all` 短路）统一大小写
+/// 不敏感——`--type ALL` 与 `--type all` 语义一致。
+fn kind_matches_filter(kind: Option<&str>, filter: &str) -> bool {
+    if filter.eq_ignore_ascii_case("all") {
+        return true;
+    }
+    kind.map(|k| k.eq_ignore_ascii_case(filter))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +306,9 @@ fn cmd_status(
         let mut status_counts: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
         for artifact in &registry {
+            // Artifact serde 序列化键 = kind（值 Skill/Script/Mcp），非 Go 时代的 type
             let t = artifact
-                .get("type")
+                .get("kind")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             let s = artifact
@@ -348,7 +387,7 @@ fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result
     }
 
     // Create empty registry.json if not exists
-    let registry_path = forge_dir.join("registry.json");
+    let registry_path = forge_dir.join(nemesis_forge::MANUAL_REGISTRY_FILE);
     if !registry_path.exists() {
         std::fs::write(&registry_path, "[]")?;
     }
@@ -442,9 +481,17 @@ fn cmd_reflect(
     // F- 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
     // 不回载则 find_by_name 去重失效、add 会往 registry.json 追加同 id
     // 重复条目（CLI 每次新起进程必踩；gateway 路径 ctx.rs 启动即 load）。
-    let _ = tokio::task::block_in_place(|| {
+    // (BUG-20261114-026) 加载失败 loud——load 缺失=Ok，Err 只会来自真损坏；
+    // 静默吞掉 = 按空注册表继续，去重失效 + 反思空列表双盲，零痕迹。
+    // （web 手动反思 handler 同族纪律先例。）
+    if let Err(e) = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(forge.registry().load())
-    });
+    }) {
+        tracing::warn!(
+            error = %e,
+            "[forge] CLI 反思前 registry.json 加载失败，按空注册表继续（既有 artifacts 不可见，去重失效）"
+        );
+    }
 
     // Initialize a real Reflector with the reflections directory
     let reflect_dir = forge_dir.join("reflections");
@@ -481,19 +528,39 @@ fn cmd_reflect(
     println!("  Loaded {} raw experience(s).", experiences.len());
 
     // Run the real reflector（Stages 1-4 统计 + use_llm 时 LLM 语义分析）
+    // A1（缺陷整改批次 2026-11-14）：CLI 反思同样喂 TraceStore 真轨迹
+    //（与网关 run_reflection_cycle 同源）——读失败 = 诚实降级空轨迹，
+    // 报告无 Trace 段，不阻塞反思。
     let report = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            if use_llm {
+            let traces = match nemesis_forge::trace_store::TraceStore::new(forge_dir.join("traces"))
+                .read_all()
+                .await
+            {
+                Ok(events) => nemesis_forge::monitor::build_conversation_traces(&events),
+                Err(e) => {
+                    tracing::warn!(error = %e, "[Forge] Failed to read traces for CLI reflection");
+                    Vec::new()
+                }
+            };
+            // A4：period 标签与网关反思循环同源（单一真相源
+            // compute_reflection_period）——CLI 反思报告的 Period 行
+            // 反映实际数据窗口，不再硬编码 "today"。
+            let period =
+                nemesis_forge::reflector::Reflector::compute_reflection_period(&experiences);
+            let mut report = if use_llm {
                 forge
                     .reflector()
                     .expect("reflector initialized above")
                     .reflect_with_llm(
                         &experiences,
-                        // 与网关反思循环同源：带全量 artifacts，LLM 看到
+                        &traces,
+                        // 与网关反思循环同源（BUG 批次 2026-11-15）：带全量
+                        // artifacts = 手动库 ∪ 学习闭环库按 id 去重，LLM 看到
                         // 已部署技能不重复提名（注册表已从盘回载）。
-                        &forge.registry().list(None, None),
+                        &forge.merged_artifacts_for_reflection(),
                         None,
-                        "today",
+                        &period,
                         "all",
                         Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
                     )
@@ -502,8 +569,12 @@ fn cmd_reflect(
                 forge
                     .reflector()
                     .expect("reflector initialized above")
-                    .reflect(&experiences, None, "today", "all")
-            }
+                    .reflect(&experiences, &traces, None, &period, "all")
+            };
+            // 学习闭环状态入报告（与网关同源；CLI 侧用运行时原子旗标
+            // ——runtime enable/disable 热切后 config 值会说谎）。
+            report.learning_enabled = Some(forge.is_learning_enabled());
+            report
         })
     });
 
@@ -554,6 +625,14 @@ fn cmd_reflect(
     println!("  Reflection Results:");
     println!("    Date: {}", report.date);
     println!("    Period: {}", report.period);
+    // A5：学习闭环开关状态入 stdout 摘要（与报告文件同源注入；CLI
+    // 用户的第一眼——关着的学习开关不可见是「51 天零工件」审计教训）。
+    if let Some(enabled) = report.learning_enabled {
+        println!(
+            "    Learning loop: {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+    }
     println!("    Total records: {}", report.stats.total_records);
     println!("    Unique patterns: {}", report.stats.unique_patterns);
     println!(
@@ -591,8 +670,22 @@ fn cmd_reflect(
         println!();
         println!("    Trace analysis:");
         println!("      Total traces: {}", trace_stats.total_traces);
+        if trace_stats.traces_with_rounds < trace_stats.total_traces {
+            println!(
+                "      Traces with rounds: {}/{}",
+                trace_stats.traces_with_rounds, trace_stats.total_traces
+            );
+        }
+        if trace_stats.traces_with_rounds > 0 {
+            println!("      Avg rounds: {:.1}", trace_stats.avg_rounds);
+            println!(
+                "      Avg tool calls per round: {:.2}",
+                trace_stats.avg_tool_calls_per_round
+            );
+        } else {
+            println!("      Round data insufficient (no llm_turn events)");
+        }
         println!("      Avg duration: {}ms", trace_stats.avg_duration_ms);
-        println!("      Efficiency: {:.2}", trace_stats.efficiency_score);
     }
 
     Ok(())
@@ -608,13 +701,7 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
         // Use registry for formatted output (matches Go behavior)
         let filtered: Vec<_> = registry
             .iter()
-            .filter(|a| {
-                if r#type == "all" {
-                    true
-                } else {
-                    a.get("type").and_then(|v| v.as_str()).unwrap_or("") == r#type
-                }
-            })
+            .filter(|a| kind_matches_filter(a.get("kind").and_then(|v| v.as_str()), r#type))
             .collect();
 
         if filtered.is_empty() {
@@ -622,7 +709,7 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
         } else {
             for artifact in &filtered {
                 let id = artifact.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let t = artifact.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+                let t = artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
                 let name = artifact.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let version = artifact
                     .get("version")
@@ -643,10 +730,20 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
         }
     } else {
         // Fallback: scan directories for files
-        let dirs_to_check = if r#type == "all" {
+        // CLI 参数取 kind 值（skill/script/mcp，大小写不敏感）；落盘目录名
+        // 是复数形态（skills/scripts/mcp），映射后扫描，未知值原样透传诚实
+        // 显示「directory not found」
+        // （lowered 与 dirs_to_check 同作用域——借用存活期对齐）
+        let lowered = r#type.to_ascii_lowercase();
+        let dirs_to_check: Vec<&str> = if r#type == "all" {
             vec!["skills", "scripts", "mcp"]
         } else {
-            vec![r#type]
+            vec![match lowered.as_str() {
+                "skill" | "skills" => "skills",
+                "script" | "scripts" => "scripts",
+                "mcp" => "mcp",
+                other => other,
+            }]
         };
         for d in &dirs_to_check {
             let path = forge_dir.join(d);
@@ -688,7 +785,7 @@ fn cmd_evaluate(forge_dir: &std::path::Path, id: &str) -> Result<()> {
         );
         println!(
             "  Type: {}",
-            artifact.get("type").and_then(|v| v.as_str()).unwrap_or("?")
+            artifact.get("kind").and_then(|v| v.as_str()).unwrap_or("?")
         );
         println!(
             "  Version: {}",
@@ -705,8 +802,10 @@ fn cmd_evaluate(forge_dir: &std::path::Path, id: &str) -> Result<()> {
                 .unwrap_or("?")
         );
 
-        if let Some(score) = artifact.get("score").and_then(|v| v.as_f64()) {
-            println!("  Score: {:.2}", score);
+        // Artifact 真实字段 = success_rate（0.0~1.0 聚合成功率）；旧代码读
+        // `score`——字段不存在，该行此前永不显示
+        if let Some(rate) = artifact.get("success_rate").and_then(|v| v.as_f64()) {
+            println!("  Success rate: {:.1}%", rate * 100.0);
         }
         if let Some(usage) = artifact.get("usage_count").and_then(|v| v.as_u64()) {
             println!("  Usage count: {}", usage);
@@ -744,7 +843,7 @@ fn cmd_export(
     let registry = std::sync::Arc::new(nemesis_forge::registry::Registry::new(
         nemesis_forge::types::RegistryConfig {
             index_path: forge_dir
-                .join("registry.json")
+                .join(nemesis_forge::MANUAL_REGISTRY_FILE)
                 .to_string_lossy()
                 .to_string(),
         },
@@ -902,13 +1001,21 @@ fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
 /// 学习周期读取（真相源 CycleStore 月目录 JSONL；按 started_at 升序——
 /// read_dir 顺序是平台实现细节）。独立成函数供测试断言排序/计数，
 /// 旧实现读的 learning/learning_cycles.jsonl 无生产写入方（幻影路径）。
+///
+/// BUG-20261118-167：started_at 是带本地 offset 的 RFC3339 字符串
+/// （cycle_store 写入），跨 DST 切换 / 系统时区变更后同批数据混存不同
+/// offset 形态——裸字符串字典序按钟面数字排与真实时刻序不一致
+/// （"09:00+09:00"=00:00Z 早于 "08:30+08:00"=00:30Z，字面序却排其后），
+/// CLI learning history 列表乱序。改用 forge 的单一真相源
+/// `rfc3339_order`（解析后按 UTC 时刻比较；同族先例
+/// BUG-20261118-140 cycle_store::load_latest_cycle）。
 fn learning_history_cycles(
     forge_dir: &std::path::Path,
 ) -> Result<Vec<nemesis_types::forge::LearningCycle>> {
     let mut cycles =
         block_on_async(nemesis_forge::cycle_store::CycleStore::new(forge_dir).read_all())
             .map_err(anyhow::Error::msg)?;
-    cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    cycles.sort_by(|a, b| nemesis_forge::pattern::rfc3339_order(&a.started_at, &b.started_at));
     Ok(cycles)
 }
 

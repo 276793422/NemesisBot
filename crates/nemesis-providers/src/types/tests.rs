@@ -720,3 +720,203 @@ fn test_to_prompt_text_with_image_note_degrade() {
     ]);
     assert!(two.to_prompt_text_with_image_note().contains("2 张图片"));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 E2：messages_to_openai_json 工具结果图像提升
+// ---------------------------------------------------------------------------
+
+use crate::types::{ContentPart, ImageSource, Message, MessageContent};
+
+fn e2_img(b64: &str) -> ContentPart {
+    ContentPart::Image {
+        image: ImageSource::Base64 {
+            media_type: "image/png".to_string(),
+            data: b64.to_string(),
+        },
+        detail: None,
+    }
+}
+
+/// 纯文本流（无图）零变化：不插合成 user 消息，字节形态与旧版一致。
+#[test]
+fn e2_text_only_flow_unchanged() {
+    let messages = vec![
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("hi".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: MessageContent::Text("ok".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+    ];
+    let v = messages_to_openai_json(&messages);
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["content"], "hi");
+    assert_eq!(arr[1]["content"], "ok");
+}
+
+/// 工具结果组（两条 role=tool 带图）→ 图像合并提升为组后**一条**合成
+/// user 消息；工具消息本体 content = 纯文本视图（[图片: <path>] 标注
+/// 随文本保留），无 image_url part 泄漏进 tool 消息。
+#[test]
+fn e2_tool_images_hoisted_after_group() {
+    let messages = vec![
+        Message {
+            role: "user".to_string(),
+            content: MessageContent::Text("看图".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+        // assistant 带 tool_calls（组头）
+        Message {
+            role: "assistant".to_string(),
+            content: MessageContent::Text("".to_string()),
+            tool_calls: vec![crate::types::ToolCall {
+                id: "call_1".to_string(),
+                call_type: Some("function".to_string()),
+                function: Some(crate::types::FunctionCall {
+                    name: "read_image".to_string(),
+                    arguments: "{}".to_string(),
+                }),
+                name: None,
+                arguments: None,
+            }],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+        // 工具结果 1：文本 + [图片:] 标注 + 图
+        Message {
+            role: "tool".to_string(),
+            content: MessageContent::Parts(vec![
+                ContentPart::Text {
+                    text: "Image attached".to_string(),
+                },
+                ContentPart::Text {
+                    text: "[图片: /tmp/a.png]".to_string(),
+                },
+                e2_img("QUFB"),
+            ]),
+            tool_calls: vec![],
+            tool_call_id: Some("call_1".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+        // 工具结果 2：仅图
+        Message {
+            role: "tool".to_string(),
+            content: MessageContent::Parts(vec![e2_img("QkJC")]),
+            tool_calls: vec![],
+            tool_call_id: Some("call_2".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+        // 组后消息（触发提升点）
+        Message {
+            role: "assistant".to_string(),
+            content: MessageContent::Text("看到了".to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: Default::default(),
+        },
+    ];
+    let v = messages_to_openai_json(&messages);
+    let arr = v.as_array().unwrap();
+    // user, assistant, tool1, tool2, 合成 user(图), assistant = 6
+    assert_eq!(arr.len(), 6);
+    // 工具消息本体：纯文本视图，无 image_url
+    assert_eq!(arr[2]["role"], "tool");
+    assert_eq!(arr[2]["tool_call_id"], "call_1");
+    let t1 = arr[2]["content"].as_str().unwrap();
+    assert!(t1.contains("Image attached"));
+    assert!(t1.contains("[图片: /tmp/a.png]"));
+    assert!(!t1.contains("QUFB"), "图字节不得留在 tool 消息");
+    assert_eq!(arr[3]["content"], "");
+    // 合成 user 消息：两图依序（QUFB、QkJC）
+    assert_eq!(arr[4]["role"], "user");
+    let imgs = arr[4]["content"].as_array().unwrap();
+    let urls: Vec<&str> = imgs
+        .iter()
+        .map(|p| p["image_url"]["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(urls.len(), 2);
+    assert!(urls[0].ends_with("base64,QUFB"));
+    assert!(urls[1].ends_with("base64,QkJC"));
+    // 组后 assistant 排在合成消息之后
+    assert_eq!(arr[5]["role"], "assistant");
+    assert_eq!(arr[5]["content"], "看到了");
+}
+
+/// 流末仍挂未提升图像（历史以工具结果收尾）→ 尾部补插合成 user。
+#[test]
+fn e2_trailing_tool_images_flushed_at_end() {
+    let messages = vec![Message {
+        role: "tool".to_string(),
+        content: MessageContent::Parts(vec![e2_img("WEdE")]),
+        tool_calls: vec![],
+        tool_call_id: Some("call_9".to_string()),
+        timestamp: None,
+        reasoning_content: None,
+        extra: Default::default(),
+    }];
+    let v = messages_to_openai_json(&messages);
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[1]["role"], "user");
+    assert!(
+        arr[1]["content"][0]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("base64,WEdE")
+    );
+}
+
+/// user 轮 Parts（正常多模态消息）不受提升逻辑影响：content 数组原位保留。
+#[test]
+fn e2_user_parts_stay_inplace() {
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "看".to_string(),
+            },
+            e2_img("VVNFUg=="),
+        ]),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: Default::default(),
+    }];
+    let v = messages_to_openai_json(&messages);
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    let c = arr[0]["content"].as_array().unwrap();
+    assert_eq!(c[0]["type"], "text");
+    assert!(
+        c[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("VVNFUg==")
+    );
+}

@@ -18,6 +18,11 @@
  * 与 ChatPanel 消息「⋯」菜单互斥单开：open() 会触发 registered closers
  * （ChatPanel 注册自己的关闭回调）；反向（右键打开时关「⋯」菜单）由
  * ChatPanel 侧覆盖层 @contextmenu 处理。
+ *
+ * 消息区菜单项贡献位（registerContextMenuItems）：组件可注册贡献函数，
+ * 消息区分发命中时按返回值**追加菜单项到默认项（复制/全选）之后（底部）**
+ * ——ChatPanel 用它给文件链接（a.file-link）追加「复制路径/打开所在目录」
+ * （链接上下文与会话归属在组件侧，composable 保持纯 DOM 无组件依赖）。
  */
 import { reactive, ref } from 'vue'
 
@@ -38,6 +43,9 @@ const state = ref<ContextMenuState | null>(null)
 
 /** 互斥单开注册表：任一方开菜单前先关别人（ChatPanel「⋯」菜单在此登记）。 */
 const closers = new Set<() => void>()
+
+/** 消息区菜单项贡献者注册表：返回的项追加在区域默认项之后（菜单底部）。 */
+const contributors = new Set<(t: EventTarget | null) => ContextMenuItem[]>()
 
 export function useContextMenu() {
   /** 开关读取（每次打开现读——SettingsView 改完立即生效，无需事件通知）。 */
@@ -68,7 +76,17 @@ export function useContextMenu() {
     return () => closers.delete(fn)
   }
 
-  return { state, enabled, close, openAt, registerCloser }
+  /** 消息区菜单项贡献登记：消息区分发命中时逐个回调（传原始 e.target），
+   *  返回项追加在默认项（复制/全选）之后；返回空数组 = 本次不出项。注销
+   *  闭包对称（组件卸载时消费）。 */
+  function registerContextMenuItems(
+    fn: (t: EventTarget | null) => ContextMenuItem[],
+  ): () => void {
+    contributors.add(fn)
+    return () => contributors.delete(fn)
+  }
+
+  return { state, enabled, close, openAt, registerCloser, registerContextMenuItems }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +250,7 @@ export function installContextMenu(): void {
 
       const msg = nearestMessageContent(e.target)
       if (msg) {
-        openAt(e.clientX, e.clientY, [
+        const items: ContextMenuItem[] = [
           {
             label: '复制',
             disabled: !selectedText() && !messageBodyText(msg),
@@ -248,7 +266,11 @@ export function installContextMenu(): void {
               sel?.addRange(range)
             },
           },
-        ])
+        ]
+        // 贡献项追加在默认项之后（菜单底部）——文件链接「复制路径/打开
+        // 所在目录」等组件侧扩展在此汇入。
+        for (const c of contributors) items.push(...c(e.target))
+        openAt(e.clientX, e.clientY, items)
       }
       // 其余区域：已 preventDefault，不弹菜单（彻底静默）。
     },

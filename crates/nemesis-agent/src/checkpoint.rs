@@ -54,15 +54,24 @@ use crate::r#loop::{FileChange, FileChangeKind};
 mod gc;
 
 /// One file's pre-edit state at the moment it was first touched in a turn.
-/// `content == None` means the file did not exist then, so a restore deletes it.
+/// `content == None` **且** `kind == Create`（或旧 JSON 条目 kind 缺失）=
+/// 文件当时不存在，restore 走删除臂；`content == None` 且 `kind` 为
+/// Modify/Delete = 快照读取失败（非 UTF-8 / 文件被锁 / 权限拒绝）——
+/// 基线数据从未捕获，restore 诚实进 failures 保持现状，**绝不落删除臂**
+/// （把现存文件整删 = 数据毁坏）。
 ///
 /// git 模式下工作区内文件的 content 恒为 `None`（内容在影子库 tree 里，不
 /// 双份存储）；工作区外的声明路径（absolute path 写出工作区、restrict 关闭
-/// 时合法）仍按 JSON 语义读全文——影子树罩不住工作区外。
+/// 时合法）仍按 JSON 语义读全文——影子树罩不住工作区外。restore 侧对
+/// git 时代记录的 None 有独立守卫（tree 负责），不经本 kind 判别。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSnap {
     pub path: String,
     pub content: Option<String>,
+    /// 声明时的变更类别（serde default 兼容老 JSON：None = 旧条目不可
+    /// 归属，维持旧删除语义）。
+    #[serde(default)]
+    pub kind: Option<FileChangeKind>,
 }
 
 /// 单路径「变更后指纹」——turn 收尾封印
@@ -141,12 +150,17 @@ pub struct Checkpoint {
 }
 
 /// Picker-facing summary of a checkpoint (no file contents).
+///
+/// `session`（2026-11-17 会话资源盘点投影扩展）：begin 该 turn 的会话键
+/// 原样透传（None = 旧条目/测试直构造）。资源看板 checkpoint 类目按它做
+/// 会话过滤——不扩展则聚合面拿到全 store 无差别条目（计划 §口径地雷 5）。
 #[derive(Debug, Clone)]
 pub struct CheckpointMeta {
     pub turn: usize,
     pub time: String,
     pub prompt: String,
     pub paths: Vec<String>,
+    pub session: Option<String>,
 }
 
 /// 某文件在本库的最早基线锚（首个声明过它的 checkpoint 条目）。
@@ -299,7 +313,14 @@ struct Inner {
 /// checkpoint 每 turn 一次，开销可忽略。
 ///
 /// `op_lock` 保留旧 `Mutex<Repository>` 的操作串行语义（并发 open 会撞
-/// git lock 文件 / rename 窗口）。锁纪律：op_lock 与 inner 锁绝不互相
+/// git lock 文件 / rename 窗口）。**契约：一切影子库 git 操作（begin 的
+/// turn 树写入 / restore_code / current_tree_hex / 冲突预检全树补充 /
+/// 交付族 / restore_to_tree / read_file_from_tree / 冲突扫描 / gc 重建
+/// 全程）必须先持 op_lock 再 `open()`**——旧形态 `Mutex<Repository>` 结构
+/// 性串行化全部操作，非驻留化重构只给部分调用点补锁 = 串行语义静默丢失
+/// （BUG-20261119-205：四处漏接致并发会话 index.lock 竞态 / begin×restore
+/// 撕裂树 / gc 走查段与并发对象写竞态）。
+/// 锁纪律：op_lock 与 inner 锁绝不互相
 /// 嵌套持有（先 git 操作、放锁、再 inner，反之亦然），杜绝双锁排序死锁。
 #[cfg(feature = "checkpoint-git")]
 struct GitBackend {
@@ -1275,9 +1296,14 @@ impl CheckpointStore {
         let prompt = prompt.into();
 
         // git track 先行（git 操作锁独立短区间，不与 inner 锁嵌套）。
+        // （BUG-20261119-205）：op_lock 必须持——旧 Mutex<Repository> 形态
+        // 结构性串行化全部 git 操作，非驻留化重构漏接本点后并发会话 begin
+        // 直接撞影子库 index.lock，败者 turn tree=None → rewind 落到更早
+        // tree 过度回退。
         #[cfg(feature = "checkpoint-git")]
         let tree_hex = match self.git.as_ref() {
             Some(gb) => {
+                let _op = gb.op_lock.lock();
                 match gb
                     .open()
                     .and_then(|mut repo| Self::write_current_tree(&mut repo))
@@ -1391,6 +1417,7 @@ impl CheckpointStore {
         cp.files.push(FileSnap {
             path: change.path.clone(),
             content,
+            kind: Some(change.kind),
         });
         cp.paths.push(change.path.clone());
         let snap = cp.clone();
@@ -1634,7 +1661,13 @@ impl CheckpointStore {
                     excluded.insert(r);
                 }
             }
-            let (extra, extra_new) = match gb.open() {
+            // （BUG-20261119-205）：全树补充同样经 op_lock 串行——
+            // tree_diff_unchecked 内部有 write_current_tree（index 写入）。
+            let opened = {
+                let _op = gb.op_lock.lock();
+                gb.open()
+            };
+            let (extra, extra_new) = match opened {
                 // open 失败 = 全树 diff 预检不可用，按既有降级语义取空集
                 // （预检不误报，与 tree_diff_unchecked 内部失败同路）。
                 Ok(mut repo) => {
@@ -1753,7 +1786,7 @@ impl CheckpointStore {
         // 第三元 = 零条目信号（见 [`RestoreReport::no_checkpoint_from_turn`]）
         // ：from_turn 之后索引里没有任何条目 = tree/hybrid 双双无源、本次
         // 调用什么都没做，回执必须诚实反映（不得谎称「applied」）。
-        let (target_hex, hybrid, no_entries) = {
+        let (target_hex, hybrid, capture_failures, no_entries) = {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
             // cur 桶化——所有会话的进行中 turn 都参与全量收集。
@@ -1762,7 +1795,7 @@ impl CheckpointStore {
 
             // 与 JSON 模式同款语义守卫：from_turn 之后没有任何 checkpoint → no-op。
             if !all.iter().any(|c| c.turn >= from_turn) {
-                (None, Vec::new(), true)
+                (None, Vec::new(), Vec::new(), true)
             } else {
                 let target = all
                     .iter()
@@ -1777,6 +1810,14 @@ impl CheckpointStore {
                 // 纯 JSON 时代记录（tree=None）维持原语义：None = 不存在须删除。
                 let git_mode = self.git.is_some();
                 let mut hybrid: Vec<(String, Option<String>)> = Vec::new();
+                // 快照捕获失败集（BUG-20261117-058）：content=None 且声明
+                // 是 Modify/Delete = 基线读取失败（非 UTF-8 / 文件被锁 /
+                // 权限拒绝），不是「文件本不存在」（那是 Create 的 None
+                // 语义）。落删除臂会把现存文件整删=数据毁坏；诚实进
+                // failures、文件保持现状（基线从未捕获，无从恢复）。
+                // 先占 hybrid_seen 槽：同路径更晚 turn 的成功捕获不得回填
+                // （那是 mid-turn 内容冒充最早基线——BUG-20261110-047 同族）。
+                let mut capture_failures: Vec<(String, String)> = Vec::new();
                 // 最早基线去重走 comparable 形态（BUG-20261110-047，与快照
                 // 侧 seen 同款归一）——形态变体不归一会漏去重，mid-turn 内
                 // 容覆盖 turn-start 基线。
@@ -1789,13 +1830,28 @@ impl CheckpointStore {
                         {
                             continue; // 工作区内 None → tree 负责（或诚实 no-op）
                         }
+                        if f.content.is_none()
+                            && !matches!(f.kind, None | Some(FileChangeKind::Create))
+                        {
+                            // 旧 JSON 条目 kind=None 不可归属，维持旧删除
+                            // 语义（serde default 兼容；破坏性面已随新快照
+                            // 携带 kind 起对未来闭合）。
+                            if hybrid_seen.insert(self.comparable_path_form(&f.path)) {
+                                capture_failures.push((
+                                    f.path.clone(),
+                                    "基线内容不可读（非 UTF-8 或读取失败），无法恢复，文件保持现状"
+                                        .to_string(),
+                                ));
+                            }
+                            continue;
+                        }
                         if !hybrid_seen.insert(self.comparable_path_form(&f.path)) {
                             continue;
                         }
                         hybrid.push((f.path.clone(), f.content.clone()));
                     }
                 }
-                (target, hybrid, false)
+                (target, hybrid, capture_failures, false)
             }
         };
 
@@ -1805,23 +1861,31 @@ impl CheckpointStore {
             // 时 hybrid 恒空（无源），报告带信号位，调用方诚实化回执。
             let mut report = self.hybrid_restore(hybrid).await;
             report.no_checkpoint_from_turn = no_entries;
+            report.failures.extend(capture_failures);
             return report;
         };
 
         // ----：repo 锁内做 tree diff + checkout，随即放锁 ----
         #[cfg(feature = "checkpoint-git")]
         let mut result = match self.git.as_ref() {
-            Some(gb) => match gb.open() {
-                Ok(mut repo) => Self::git_restore(&self.root, &mut repo, &target_hex),
-                Err(e) => {
-                    // 跨模式（会话曾以 git 模式记录，现.git 消失回落 JSON）：tree
-                    // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
-                    warn!(
-                        "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复: {e}"
-                    );
-                    RestoreReport::default()
+            Some(gb) => {
+                // （BUG-20261119-205）：持 op_lock——git_restore 内部
+                // write_current_tree + checkout_tree 与并发会话 begin 的
+                // index 写入/文件哈希必须互斥，否则撕裂 begin 树 / index
+                // lock 竞态。
+                let _op = gb.op_lock.lock();
+                match gb.open() {
+                    Ok(mut repo) => Self::git_restore(&self.root, &mut repo, &target_hex),
+                    Err(e) => {
+                        // 跨模式（会话曾以 git 模式记录，现.git 消失回落 JSON）：tree
+                        // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
+                        warn!(
+                            "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复: {e}"
+                        );
+                        RestoreReport::default()
+                    }
                 }
-            },
+            }
             None => {
                 warn!(
                     "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用（JSON 形态），跳过工作区内恢复"
@@ -1841,6 +1905,7 @@ impl CheckpointStore {
         // ----：hybrid 工作区外内容恢复 ----
         let hw = self.hybrid_restore(hybrid).await;
         result.merge(hw);
+        result.failures.extend(capture_failures);
         result
     }
 
@@ -1904,6 +1969,7 @@ impl CheckpointStore {
                     time: c.time.clone(),
                     prompt: c.prompt.clone(),
                     paths,
+                    session: c.session.clone(),
                 }
             })
             .collect()
@@ -2004,6 +2070,9 @@ impl CheckpointStore {
     #[cfg(feature = "checkpoint-git")]
     pub fn current_tree_hex(&self) -> Option<String> {
         let gb = self.git.as_ref()?;
+        // （BUG-20261119-205）：持 op_lock——与 begin/restore 的 index 写入
+        // 互斥（redo 采集实时树与并发 turn begin 同窗并发是常态序列）。
+        let _op = gb.op_lock.lock();
         match gb
             .open()
             .and_then(|mut repo| Self::write_current_tree(&mut repo))
@@ -2385,3 +2454,9 @@ mod gc_tests;
 // 文件内自挂 cfg(windows)）。
 #[cfg(all(test, windows, feature = "checkpoint-git"))]
 mod pack_lock_tests;
+
+// BUG-20261119-205 回归锁：影子库 git 操作 op_lock 串行契约——四处漏接
+// （begin/restore_code/current_tree_hex/conflict_scan_scoped 全树补充）
+// 阻塞探测 + gc 重建全程持锁 + 并发 begin 无 index.lock 竞态败者。
+#[cfg(all(test, feature = "checkpoint-git"))]
+mod op_lock_tests;

@@ -156,9 +156,10 @@ test('后台进程边角：多任务排序/丢弃徽标/上滚暂停/暗色主�
   await page.goto(BASE_URL)
   // 点击 + toHaveURL 包 toPass 重试环（processes-visual 同款）：nav-item
   // 点击偶发被吞（Vue 重渲染竞速），内层 5s 短窗给外层重试机会重发点击。
-  // 9ae5fee1 导航分组默认收起：执行单元在「管理」组内，首态收起 → 先点组
-  // 标题幂等展开（is-collapsed 才点，重试重入不会二次点击把组收回）。
-  const mgmtToggle = page.locator('.nav-section-toggle', { hasText: '管理' })
+  // 9ae5fee1 导航分组默认收起（2026-11-17 分组重组后执行单元在「自动化」组）：
+  // 首态收起 → 先点组标题幂等展开（is-collapsed 才点，重试重入不会二次点击
+  // 把组收回）。
+  const mgmtToggle = page.locator('.nav-section-toggle', { hasText: '自动化' })
   if (await mgmtToggle.evaluate((el) => el.classList.contains('is-collapsed'))) {
     await mgmtToggle.click()
   }
@@ -169,7 +170,8 @@ test('后台进程边角：多任务排序/丢弃徽标/上滚暂停/暗色主�
   // toHaveURL（轮询）而非 waitForURL：webkit same-document hash 导航事件
   // 间歇不可见（见 processes-visual 同款注记）。
   await expect(page).toHaveURL(/\/executors/, { timeout: 15_000 })
-  await page.locator('.exec-tab', { hasText: '后台任务' }).click()
+  // 2026-11-17 修观察期红：2026-11-07 复合页布局重构 .exec-tab → .tabs .tab
+  await page.locator('.tabs .tab', { hasText: '后台任务' }).click()
   await expect(page).toHaveURL(/tab=processes/, { timeout: 15_000 })
   const rows = page.locator('.proc-row')
   await expect(rows.filter({ hasText: `#${bigId}` })).toBeVisible({ timeout: 15_000 })

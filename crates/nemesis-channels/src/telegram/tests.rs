@@ -94,7 +94,7 @@ fn test_thinking_cancel() {
     cancel.cancel();
     // The receiver should get the signal (or be errored because sender was dropped)
     // tokio::sync:oneshot::Receiver doesn't have is_ok()/is_err() until awaited
-    let _ = rx;
+    drop(rx);
 }
 
 #[test]
@@ -687,6 +687,60 @@ async fn t7_photo_download_without_http_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG-20261115-025：媒体下载有帽读取——超帽在读入中途断开，不落盘不灌内存
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn t_bug_20261115_025_voice_download_over_cap_aborts() {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let total = VOICE_DOWNLOAD_LIMIT_BYTES + 1;
+    std::thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf);
+        // 宣告 64MB+1 并实际灌出：reqwest Client::new() 默认无读超时，
+        // 错误必来自帽（读入中途断开）而非超时。
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/ogg\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        );
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        let chunk = [0u8; 65536];
+        let mut sent: u64 = 0;
+        while sent < total {
+            // 客户端在超帽点断开 → 写失败返回 = 预期路径
+            if stream.write_all(&chunk).is_err() {
+                return;
+            }
+            sent += chunk.len() as u64;
+        }
+    });
+
+    let uploads = tempfile::tempdir().expect("uploads tempdir");
+    let dest = uploads.path().join("voice.ogg");
+    let client = reqwest::Client::new();
+    // token 用「不出现于 exceeds limit 消息」的长串——api.redact 会把
+    // token 全文替换成 <redacted>，单字符 token（如 "t"）会把断言子串
+    // 一起打碎（首跑实录：exceeds limi<redacted> 假红）。
+    let api = TelegramApi::new(&format!("http://{addr}"), "TKN123");
+    let err =
+        TelegramChannel::download_voice_file(&client, &format!("http://{addr}/file"), &dest, &api)
+            .await
+            .expect_err("超帽必须 Err");
+    assert!(
+        err.contains("exceeds limit"),
+        "错误必须来自帽（实际: {err}）"
+    );
+    assert!(!dest.exists(), "超帽不得落盘");
+}
+
+// ---------------------------------------------------------------------------
 // BUG-20261109-006：URL 构造契约 + token 脱敏
 // ---------------------------------------------------------------------------
 
@@ -902,6 +956,116 @@ async fn send_splits_long_message_into_multiple_api_calls() {
     assert_eq!(total, 7500, "分块不得丢字：三块文本总长必须等于原文");
 }
 
+#[tokio::test]
+async fn send_splits_astral_dense_message_within_utf16_budget() {
+    use std::io::{Read, Write};
+
+    // BUG-20261113-166 回归锁（wire 级）：Telegram 长度口径是 UTF-16
+    // code units（官方 entities 文档），astral emoji = 2 units。3000 个
+    // 🍎 = 标量 3000 < 3500（标量口径会原样单块直发）但 6000 units > 4096
+    // 硬限——修复后必须拆 2 块（[3500, 2500] units）且逐块 ≤ 4096 units。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let addr = listener.local_addr().unwrap();
+    let bodies: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let bodies_srv = bodies.clone();
+    std::thread::spawn(move || {
+        fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+            hay.windows(needle.len()).position(|w| w == needle)
+        }
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // 12KB 级请求体可能被 hyper 拆多次 write——读循环直至
+            // Content-Length 满足，单次 read 拿不全。字节级解析（头是
+            // ASCII；body 长度比字节数，避免 lossy 截断多字节虚增）。
+            let mut req: Vec<u8> = Vec::new();
+            let mut tmp = [0u8; 65536];
+            loop {
+                let n = stream.read(&mut tmp).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&tmp[..n]);
+                let Some(hdr_end) = find_sub(&req, b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&req[..hdr_end]).to_lowercase();
+                let clen = headers
+                    .split("content-length:")
+                    .nth(1)
+                    .and_then(|x| x.split("\r\n").next())
+                    .and_then(|x| x.trim().parse::<usize>().ok());
+                match clen {
+                    Some(c) => {
+                        if req.len() - hdr_end - 4 >= c {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            let req = String::from_utf8_lossy(&req).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+            if path.ends_with("/sendMessage") {
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                bodies_srv.lock().unwrap().push(body);
+            }
+            let resp_body = br#"{"ok":true,"result":{"message_id":1,"chat":{"id":123,"type":"private"},"text":"ok"}}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                resp_body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(resp_body);
+        }
+    });
+
+    let config = TelegramConfig {
+        api_base: format!("http://{addr}"),
+        token: "test-token".to_string(),
+        ..Default::default()
+    };
+    let (bus_tx, _bus_rx) = tokio::sync::broadcast::channel(16);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let channel = TelegramChannel::new_with_client(config, bus_tx, http).unwrap();
+    *channel.running.write() = true;
+
+    let content = "🍎".repeat(3000); // 12000 bytes / 3000 scalars / 6000 units
+    let msg = OutboundMessage::new("telegram", "123", &content);
+    Channel::send(&channel, msg)
+        .await
+        .expect("send must succeed");
+
+    let recorded = bodies.lock().unwrap().clone();
+    assert_eq!(
+        recorded.len(),
+        2,
+        "6000 units 必须按 3500 预算拆成 2 次 sendMessage"
+    );
+    let mut total_units = 0usize;
+    for body in &recorded {
+        // 🍎 非 HTML 特殊字符，markdown→HTML 转换不改字节；JSON 体不转义
+        // 非 ASCII——text 字段即原始 emoji 序列。
+        let start = body.find(r#""text":""#).expect("text field") + r#""text":""#.len();
+        let end = body[start..]
+            .find(r#"","parse_mode""#)
+            .expect("text field terminator")
+            + start;
+        let text = &body[start..end];
+        let units: usize = text.chars().map(char::len_utf16).sum();
+        assert!(
+            units <= 4096,
+            "单块 UTF-16 units 必须低于 Telegram 硬限 4096: {units}"
+        );
+        total_units += units;
+    }
+    assert_eq!(
+        total_units, 6000,
+        "分块不得丢字：两块 units 总和必须等于原文"
+    );
+}
+
 // ---：入站 preview 截断必须字符安全 ---
 
 #[test]
@@ -916,7 +1080,7 @@ fn bug280_message_preview_multibyte_safe() {
     // 混合字符（emoji = 4 字节单 char）同样安全。
     let mixed = "👍".repeat(30);
     let p = super::message_preview(&mixed);
-    assert_eq!(p.chars().count(), 50.min(30));
+    assert_eq!(p.chars().count(), 30);
 
     // 短消息原样返回。
     assert_eq!(super::message_preview("hi"), "hi");
@@ -1093,4 +1257,77 @@ async fn test_polling_loop_replaces_and_aborts_previous_handle() {
 
     // 收尾：stop 兜底 abort 新任务。
     ch.stop().await.unwrap();
+}
+
+// -----------------------------------------------------------------------
+// BUG-20261113-158 回归锁：语音转写临时 ogg 必须在转写后删除（Ok/Err 两臂
+// finally 语义）。此前两臂都不删——每条语音消息在系统级 temp
+// （std::env::temp_dir/nemesisbot_telegram_voice，不随 workspace 清理）永久
+// 残留一个 ogg。mock 服务器两连接 = getFile + 文件下载；MockTranscriber
+// 不真读文件（纯返回），落盘字节内容无关紧要。
+// -----------------------------------------------------------------------
+
+/// 转写成功臂：临时 ogg 删除。
+#[tokio::test]
+async fn t15_voice_transcribe_removes_temp_ogg_on_success() {
+    let file_id = "nb_t15_voice_ok";
+    let base = spawn_mock_telegram_api(b"fake-ogg-bytes".to_vec(), "123456:nb-t15-token");
+    let api = TelegramApi::new(&base, "123456:nb-t15-token");
+    let transcriber: Arc<dyn crate::base::VoiceTranscriber> = Arc::new(MockTranscriber {
+        available: true,
+        text: "transcribed".to_string(),
+        should_fail: false,
+    });
+    let client = reqwest::Client::new();
+
+    let result =
+        TelegramChannel::transcribe_voice(&Some(transcriber), Some(&client), Some(&api), file_id)
+            .await;
+    assert_eq!(
+        result.as_deref(),
+        Some("[voice transcription: transcribed]"),
+        "成功臂返回形态"
+    );
+
+    let leaked = std::env::temp_dir()
+        .join("nemesisbot_telegram_voice")
+        .join(format!("{file_id}.ogg"));
+    assert!(
+        !leaked.exists(),
+        "转写成功后临时 ogg 必须被删: {}",
+        leaked.display()
+    );
+}
+
+/// 转写失败臂：临时 ogg 同样删除（finally 语义两侧都锁——失败臂是泄漏
+/// 主路径：转写服务异常时每条语音仍落盘）。
+#[tokio::test]
+async fn t16_voice_transcribe_removes_temp_ogg_on_failure() {
+    let file_id = "nb_t16_voice_err";
+    let base = spawn_mock_telegram_api(b"fake-ogg-bytes".to_vec(), "123456:nb-t16-token");
+    let api = TelegramApi::new(&base, "123456:nb-t16-token");
+    let transcriber: Arc<dyn crate::base::VoiceTranscriber> = Arc::new(MockTranscriber {
+        available: true,
+        text: String::new(),
+        should_fail: true,
+    });
+    let client = reqwest::Client::new();
+
+    let result =
+        TelegramChannel::transcribe_voice(&Some(transcriber), Some(&client), Some(&api), file_id)
+            .await;
+    assert_eq!(
+        result.as_deref(),
+        Some("[voice (transcription failed)]"),
+        "失败臂返回形态"
+    );
+
+    let leaked = std::env::temp_dir()
+        .join("nemesisbot_telegram_voice")
+        .join(format!("{file_id}.ogg"));
+    assert!(
+        !leaked.exists(),
+        "转写失败后临时 ogg 同样必须被删: {}",
+        leaked.display()
+    );
 }

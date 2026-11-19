@@ -17,6 +17,7 @@ fn test_ctx() -> RequestContext {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -355,7 +356,7 @@ async fn c7_gate_and_write_deny_blocks_everything() {
     let audit_dir = tempfile::tempdir().unwrap();
     let plugin = {
         use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-        SecurityPlugin::new(SecurityPluginConfig {
+        std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
             enabled: true,
             default_action: "allow".to_string(),
             audit_chain_enabled: true,
@@ -372,7 +373,7 @@ async fn c7_gate_and_write_deny_blocks_everything() {
                 comment: "C7 test: deny rs writes".to_string(),
             }],
             ..Default::default()
-        })
+        }))
     };
     let (_dir, files) = c7_two_files();
     let err = gate_and_write(&files, Some(&plugin), None, &test_ctx())
@@ -385,13 +386,181 @@ async fn c7_gate_and_write_deny_blocks_everything() {
 }
 
 #[cfg(feature = "security")]
-fn allow_all_plugin(audit_path: &std::path::Path) -> nemesis_security::pipeline::SecurityPlugin {
+fn allow_all_plugin(
+    audit_path: &std::path::Path,
+) -> std::sync::Arc<nemesis_security::pipeline::SecurityPlugin> {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-    SecurityPlugin::new(SecurityPluginConfig {
+    std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         default_action: "allow".to_string(),
         audit_chain_enabled: true,
         audit_chain_path: Some(audit_path.to_string_lossy().into_owned()),
         ..Default::default()
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-144 回归锁：rename 诊断块的行号惯例必须是 1-based（+1）。
+// 此前裸印 LSP 0-based 行/列且无标注，未标注 file:line:col 按通用惯例
+// 读作 1-based → 模型按错误行号修复（偏一行）。与诊断回灌面
+// （config_watch L{} 渲染）对齐。
+// ---------------------------------------------------------------------------
+
+fn diag(line: u32, ch: u32, severity: u8, msg: &str) -> nemesis_lsp::proto::Diagnostic {
+    nemesis_lsp::proto::Diagnostic {
+        range_start: (line, ch),
+        range_end: (line, ch + 1),
+        severity,
+        source: Some("rustc".to_string()),
+        message: msg.to_string(),
+    }
+}
+
+#[test]
+fn rename_diagnostics_render_one_based_positions() {
+    // LSP 0-based (322, 14) → 1-based 323:15。
+    let diags = vec![diag(322, 14, 1, "cannot find value `x`")];
+    let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &diags);
+    assert!(
+        out.contains("- [error] rustc:323:15: cannot find value `x`"),
+        "1-based rendering expected, got: {out}"
+    );
+    // (0,0) → 1:1（零基原点不越零）。
+    let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &[diag(0, 0, 2, "unused")]);
+    assert!(out.contains("- [warning] rustc:1:1: unused"), "got: {out}");
+    // 计数行按全量统计（不受 take(20) 影响）。
+    let many: Vec<_> = (0..25u32)
+        .map(|i| diag(i, 0, 1, &format!("e{i}")))
+        .collect();
+    let out = super::format_rename_diagnostics(Path::new("a.rs"), &many);
+    assert!(out.contains("25 error(s)"), "got: {out}");
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("- [error]")).count(),
+        20,
+        "listing capped at 20"
+    );
+}
+
+#[test]
+fn rename_diagnostics_none_reported_arm() {
+    let out = super::format_rename_diagnostics(Path::new("src/a.rs"), &[]);
+    assert_eq!(out, "Diagnostics after rename (src/a.rs): none reported\n");
+}
+
+// ── （BUG-20261117-067）输入路径工作区边界回归锁 ─────────────────────────
+// 带边界时输入路径统一走 resolve_tool_path（Read 族）：restrict=true 下
+// 界外路径在入口拒绝（旧行为：相对 join 无包含检查、绝对路径不校验，
+// read_file 拒的路径经 lsp 读族可由语言服务器读取）。所有用例都在
+// spawn 路径之前定案（门在 manager 前置检查之前）。
+
+use std::sync::Arc as StdArc;
+
+fn boundary_at(
+    root: &std::path::Path,
+    restrict: bool,
+) -> StdArc<crate::loop_tools::WorkspaceBoundary> {
+    StdArc::new(crate::loop_tools::WorkspaceBoundary {
+        root: root.to_path_buf(),
+        restrict,
+        extra_roots: Vec::new(),
+        editor_gate: None,
+        // goals 批（2026-11-17）新增字段——测试桩一律 None（生产侧才注入闸）
+        goals_guard: None,
     })
+}
+
+/// restrict=true：绝对路径出界 → 入口即拒（read_file 同路径已拒，两
+/// fence 结论一致）。
+#[tokio::test]
+async fn execute_boundary_restrict_denies_absolute_outside() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let outside = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
+    let err = t
+        .execute(
+            &format!(r#"{{"op":"hover","path":{outside:?},"line":0,"character":0}}"#),
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("outside the workspace"), "{err}");
+}
+
+/// restrict=true：相对路径 `..` 逃逸 → 入口即拒。
+#[tokio::test]
+async fn execute_boundary_restrict_denies_relative_dotdot_escape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let err = t
+        .execute(
+            r#"{"op":"definition","path":"notes/../../outside.txt","line":0,"character":0}"#,
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("outside the workspace"), "{err}");
+}
+
+/// restrict=true + 界内相对路径：不误拒（门放行，后续在 manager 的
+/// 文件存在性前置检查定案，无 spawn）。
+#[tokio::test]
+async fn execute_boundary_restrict_allows_in_workspace_relative() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let err = t
+        .execute(
+            r#"{"op":"definition","path":"notes/missing.rs","line":0,"character":0}"#,
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("file does not exist"), "{err}");
+}
+
+/// restrict=false：界外路径不拦（旧行为保持；定案在 manager 的
+/// 文件存在性前置检查）。
+#[tokio::test]
+async fn execute_boundary_unrestrict_keeps_outside_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), false));
+    let outside = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
+    let err = t
+        .execute(
+            &format!(r#"{{"op":"definition","path":{outside:?},"line":0,"character":0}}"#),
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("file does not exist"), "{err}");
+}
+
+/// restrict=true + op=rename + 界外输入：入口即拒（旧行为要到落盘阶段
+/// 才逐文件拒绝；结局一致、报错更早）。
+#[tokio::test]
+async fn execute_boundary_restrict_denies_rename_outside_input() {
+    let tmp = tempfile::tempdir().unwrap();
+    let t = LspTool::new(None, None).with_boundary(boundary_at(tmp.path(), true));
+    let outside = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
+    let err = t
+        .execute(
+            &format!(
+                r#"{{"op":"rename","path":{outside:?},"line":0,"character":0,"new_name":"x"}}"#
+            ),
+            &test_ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("outside the workspace"), "{err}");
 }

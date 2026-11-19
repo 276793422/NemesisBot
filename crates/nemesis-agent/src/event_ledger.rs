@@ -176,7 +176,7 @@ pub fn record_entry_at(
     // LEDGER_IO_LOCKS 注记）。
     let io_lock = ledger_io_lock(path);
     let _io = io_lock.lock();
-    let (seq, prev_hash) = read_chain_tail(path)?;
+    let (seq, prev_hash) = read_chain_tail_healed(path)?;
     let line = build_entry_line(seq, &prev_hash, op, actor, rows)?;
     append_entry_line(path, &line)?;
     Ok(seq)
@@ -267,22 +267,122 @@ pub fn ledger_verify(path: &std::path::Path) -> Result<LedgerStats, String> {
     Ok(stats)
 }
 
-/// 读链尾：末行的 (seq+1, hash)；空/缺失 = (0, GENESIS)。
-fn read_chain_tail(path: &std::path::Path) -> Result<(u64, String), String> {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return Ok((0, GENESIS_PREV_HASH.to_string())),
-    };
-    let mut last: Option<LedgerEntry> = None;
-    for line in BufReader::new(file).lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        if line.trim().is_empty() {
-            continue;
+/// 读链尾：末好行的 (seq+1, hash)；空/缺失 = (0, GENESIS)。
+///
+/// **撕裂尾自愈**（BUG-20261113-168）：追加是裸 `writeln!`（write_fmt 对
+/// 裸 File 可能拆成多次 write syscall，大行 write_all 还有部分写循环），
+/// 磁盘满/进程死/断电可留下半行或丢换行；丢换行的下一笔追加还会把新行拼
+/// 到残行上，连原本完整的好行一起不可解析。原实现对坏行 `?` 直接 Err——
+/// 追加从此永久失败（[`ledger_record`] 只 warn，best-effort 契约下零可
+/// 观测静默停摆），[`ledger_verify`] 也永久红，无修复路径。修复语义：
+/// append-only 不变量下自身故障只可能发生在尾部——**最后一个可解析完整行
+/// 之后的一切字节**（无换行残行/拼行/坏行）都是崩溃残迹，截断到最后好行
+/// 终点并 WARN；**最后好行之前若还有不可解析完整行 = 中间损坏**（篡改/
+/// 介质损坏），拒绝自动修复、原样 Err——verify 的红是对篡改的诚实报警，
+/// 静默截断会吃掉证据。诚实边界：链无外部锚，本自愈只针对崩溃残迹——
+/// 能写文件的对读本可重写/删除整个文件（原设计缺文件即回落 GENESIS），
+/// 这不是对抗性防线。
+fn read_chain_tail_healed(path: &std::path::Path) -> Result<(u64, String), String> {
+    let content = match std::fs::read(path) {
+        Ok(c) => c,
+        // 缺失 = 从未有账（与原 open Err 同口径回落 GENESIS）；其他读错误诚实报。
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((0, GENESIS_PREV_HASH.to_string()));
         }
-        last = Some(serde_json::from_str(&line).map_err(|e| e.to_string())?);
+        Err(e) => return Err(format!("read: {e}")),
+    };
+    // 逐完整行（\n 结尾）字节级扫描：跟踪最后可解析非空行的 (seq, hash)
+    // 与字节终点（追加锚点，含换行——锚点不含换行会让下一笔 writeln 拼行，
+    // 重建撕裂形态）。坏行先记账，出现更晚的好行即定性中间损坏。
+    // Option 区分「无好行」（截到空 = 链重启 GENESIS，下一笔 seq=0）与
+    // 「末条目 seq=0」（下一笔 seq=1）——裸 u64 初值 0 会混淆两态。
+    let mut last_good: Option<(u64, String)> = None;
+    let mut good_end = 0usize;
+    let mut saw_bad_line = false;
+    let mut line_no = 0usize;
+    let mut pos = 0usize;
+    while pos < content.len() {
+        let Some(nl) = content[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|i| pos + i)
+        else {
+            break; // 无换行尾巴：残行，归入尾部自愈区
+        };
+        let line = &content[pos..nl];
+        pos = nl + 1;
+        line_no += 1;
+        if line.iter().all(|&b| b.is_ascii_whitespace()) {
+            continue; // 空白行跳过（与 ledger_verify 同口径），不推进锚点
+        }
+        let parsed = std::str::from_utf8(line)
+            .ok()
+            .and_then(|s| serde_json::from_str::<LedgerEntry>(s).ok());
+        match parsed {
+            Some(entry) => {
+                if saw_bad_line {
+                    return Err(format!(
+                        "line {line_no}: 其之前存在不可解析中间损坏（最后好行之前的坏行 = 疑似篡改/介质损坏），拒绝自动修复"
+                    ));
+                }
+                last_good = Some((entry.body.seq, entry.hash));
+                good_end = pos;
+            }
+            None => saw_bad_line = true,
+        }
     }
-    Ok(match last {
-        Some(e) => (e.body.seq + 1, e.hash),
+    // 尾部自愈：锚点之后的字节 = 崩溃残迹区。两种形态分治：
+    // ① 残迹整体恰是一个完整 LedgerEntry（writeln 的 content 与 "\n" 是
+    //    两次独立 write_all——format_args 模板两段——崩溃卡在中间 = 好行
+    //    只丢了换行）：补写 "\n" 恢复该行，证据零丢失；
+    // ② 其余（半行 / 拼行 / 空白 / 坏行）：截断到锚点并 WARN（拼行形态下
+    //    被拼坏的好行字节随残迹一并截掉——账本是 best-effort 旁证，
+    //    chat_log 本体才是真相源，WARN 带丢弃字节数可观测）。
+    // 两种分支都只许在无中间坏行时执行（坏行之后的可解析尾条目 = 篡改
+    // 形态，恢复/截断都会吃掉坏行证据）。
+    if content.len() > good_end {
+        let tail = &content[good_end..];
+        // 残迹整体恰是一个完整 LedgerEntry（writeln 的 content 与 "\n" 是
+        // 两次独立 write_all——format_args 模板两段——崩溃卡在中间 = 好行
+        // 只丢了换行）→ 补写 "\n" 恢复该行，证据零丢失。可达性注记：
+        // 此态下 saw_bad_line 必为 false——坏行字节必落在尾区内，尾区整体
+        // 解析必然失败，不会进入本分支；「坏完整行之后接好行」的篡改形态
+        // 由上方扫描循环的中间损坏 Err 承接。
+        let restored = std::str::from_utf8(tail)
+            .ok()
+            .and_then(|s| serde_json::from_str::<LedgerEntry>(s).ok());
+        if let Some(entry) = restored {
+            use std::io::Write as _;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .map_err(|e| format!("heal open: {e}"))?;
+            f.write_all(b"\n")
+                .map_err(|e| format!("heal newline: {e}"))?;
+            let _ = f.sync_all();
+            tracing::warn!(
+                "[event_ledger] 撕裂尾自愈：尾区为丢换行的完整条目，已补换行恢复（seq {}）{}",
+                entry.body.seq,
+                path.display()
+            );
+            return Ok((entry.body.seq + 1, entry.hash));
+        }
+        let dropped = content.len() - good_end;
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|e| format!("heal open: {e}"))?;
+        f.set_len(good_end as u64)
+            .map_err(|e| format!("heal truncate: {e}"))?;
+        let _ = f.sync_all();
+        tracing::warn!(
+            "[event_ledger] 撕裂尾自愈：截掉 {dropped} 字节崩溃残迹 {}",
+            path.display()
+        );
+    }
+    Ok(match last_good {
+        Some((seq, hash)) => (seq + 1, hash),
+        // 无好行（空文件/残迹全截）：链重启，下一笔从 GENESIS seq 0 起。
         None => (0, GENESIS_PREV_HASH.to_string()),
     })
 }

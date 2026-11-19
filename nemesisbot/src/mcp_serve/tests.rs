@@ -250,3 +250,253 @@ async fn assemble_memory_flag_gates_executor() {
         "memory.enabled=true → 执行器在位"
     );
 }
+
+// ---------------------------------------------------------------------------
+// stdio 成帧循环（BUG-20261113-133：入站字节闸 + 非 UTF-8 lossy 收敛——
+// BUG-20261029-160 家族在 mcp-serve 方向的漏网站点）
+// ---------------------------------------------------------------------------
+
+/// 最小 stdio 测试客户端（acp TestClient 同款）：持久 Lines（防每次新建
+/// BufReader 丢缓冲字节），`send_raw` 支持非 UTF-8 原始字节。
+struct FrameClient {
+    write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    lines: tokio::io::Lines<tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
+}
+
+impl FrameClient {
+    fn new(stream: tokio::io::DuplexStream) -> Self {
+        use tokio::io::AsyncBufReadExt as _;
+        let (read, write) = tokio::io::split(stream);
+        Self {
+            write,
+            lines: tokio::io::BufReader::new(read).lines(),
+        }
+    }
+
+    async fn send_raw(&mut self, bytes: &[u8]) {
+        use tokio::io::AsyncWriteExt as _;
+        self.write.write_all(bytes).await.unwrap();
+        self.write.flush().await.unwrap();
+    }
+
+    async fn send_frame(&mut self, line: &str) {
+        self.send_raw(format!("{line}\n").as_bytes()).await;
+    }
+
+    /// 读下一帧（10s 超时防挂死）。
+    async fn recv_frame(&mut self) -> Value {
+        let line = tokio::time::timeout(std::time::Duration::from_secs(10), self.lines.next_line())
+            .await
+            .expect("timeout waiting for frame")
+            .expect("server side closed unexpectedly")
+            .expect("read line failed");
+        serde_json::from_str(&line).expect("frame not JSON")
+    }
+}
+
+/// 起一个带 cap 的成帧循环 server；收尾靠 drop 客户端 → EOF → serve 返回。
+async fn start_framed_server(
+    cap: usize,
+) -> (FrameClient, tokio::task::JoinHandle<Result<(), String>>) {
+    let server = Arc::new(McpServer::new("mcp-serve-test", "0.0.0"));
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    let (sr, sw) = tokio::io::split(server_side);
+    let task = tokio::spawn(serve_frames(sr, sw, server, cap));
+    (FrameClient::new(client_side), task)
+}
+
+/// 非 UTF-8 帧不再杀 server。旧 `BufReader::lines()` 形态：next_line
+/// Err("stream did not contain valid UTF-8") → serve_frames 返回 Err →
+/// server 退出（②的超时断言当场抓）。新契约：lossy 替换 → -32700 → 存活。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_frames_invalid_utf8_yields_parse_error_and_survives() {
+    let (mut c, task) = start_framed_server(MAX_FRAME_BYTES).await;
+    c.send_raw(&[0xff, 0xfe, b'g', b'a', b'r', b'b', b'a', b'g', b'e', b'\n'])
+        .await;
+    let frame = c.recv_frame().await;
+    assert_eq!(
+        frame["error"]["code"], -32700,
+        "非 UTF-8 帧必须 lossy 收敛为 parse error，而非杀进程: {frame}"
+    );
+    // 服务存活：同一连接上后续请求照常应答。
+    c.send_frame(r#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
+        .await;
+    let frame = c.recv_frame().await;
+    assert_eq!(frame["id"], 7, "坏帧后服务必须存活并继续响应");
+    assert!(frame.get("error").is_none(), "合法 ping 不应报错: {frame}");
+    drop(c);
+    let _ = task.await.unwrap();
+}
+
+/// 超限帧回 -32700 并继续服务。可证伪锁的关键：超限帧**不带换行**发送
+/// ——LineReader 在无换行累积 >cap 时即刻结算响应；旧裸 `lines()` 形态
+/// 要等满一行才处理，recv_frame 超时当场抓（acp
+/// `oversized_frame_is_rejected_and_server_survives` 同款契约）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_frames_oversized_frame_rejected_and_survives() {
+    // cap=256：300B 无换行累积即超限；后续合法 ping 帧远小于 cap 必须放行。
+    let (mut c, task) = start_framed_server(256).await;
+    let padded = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"ping","params":{{"pad":"{}"}}}}"#,
+        "x".repeat(200)
+    );
+    assert!(padded.len() > 256);
+    // 不带换行发送——超限闸必须在换行到达前就结算。
+    c.send_raw(padded.as_bytes()).await;
+    let frame = c.recv_frame().await;
+    assert_eq!(
+        frame["error"]["code"], -32700,
+        "超限帧必须回 parse error（id 未知 → null）: {frame}"
+    );
+    // 收尾换行终止超限行，随后合法请求正常响应（服务存活）。
+    c.send_raw(b"\n").await;
+    c.send_frame(r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#)
+        .await;
+    let frame = c.recv_frame().await;
+    assert_eq!(frame["id"], 2, "超限帧后服务必须存活并继续响应");
+    assert!(frame.get("error").is_none(), "合法 ping 不应报错: {frame}");
+    drop(c);
+    let _ = task.await.unwrap();
+}
+
+/// 通知（无 id 帧）在成帧循环里不产生任何帧（若误回帧，首个到达帧的
+/// id 校验当场抓到——server.rs 对通知会构造 id:null 响应，靠消费侧
+/// is_notification 过滤，这是该纪律的循环级证据）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_frames_notification_silent_then_request_answered() {
+    let (mut c, task) = start_framed_server(MAX_FRAME_BYTES).await;
+    c.send_frame(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+        .await;
+    c.send_frame(r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#)
+        .await;
+    let frame = c.recv_frame().await;
+    assert_eq!(
+        frame["id"], 3,
+        "通知不得产生任何响应帧（首帧必须是 ping 的响应）: {frame}"
+    );
+    drop(c);
+    let _ = task.await.unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// board_issue_query 详情视图（BUG-20261119-196）：数字 id 归一 / store
+// 错误透传不捏造 not-found / 评论读取错误响亮上抛不静默零评论
+// ---------------------------------------------------------------------------
+
+/// 造一个带真实 board.db（NB-1 + 一条评论）的装配。只取 asm.workspace
+/// （tool_board_issue_query 唯一消费字段）；装配走 assemble 全链
+/// （temp_home + dead provider，与上方装配测试同款）。
+#[cfg(feature = "board")]
+async fn assembly_with_seeded_board() -> (tempfile::TempDir, McpServeAssembly) {
+    let tmp = temp_home();
+    let asm = assemble(tmp.path()).await.expect("装配应成功");
+    let db_path = asm.workspace.join("board").join("board.db");
+    let store = nemesis_board::BoardStore::open(&db_path, "NB").expect("open store");
+    let issue = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "查询用单子".to_string(),
+            ..Default::default()
+        })
+        .expect("create issue");
+    store
+        .add_comment(nemesis_board::models::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::assignment::Actor::admin("admin"),
+            content: "种子评论".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::models::CommentType::Comment,
+        })
+        .expect("add comment");
+    (tmp, asm)
+}
+
+/// 纯数字 number 按数字 id 归一为 NB-{n}——提示文案声称支持数字 id，
+/// 此前不做归一（"5" 直落 number 列精确匹配必败）。
+#[cfg(feature = "board")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn board_query_numeric_id_normalized_to_nb_prefix() {
+    let (_tmp, asm) = assembly_with_seeded_board().await;
+    let result = tool_board_issue_query(&asm, &serde_json::json!({ "number": "1" }));
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.text.as_deref())
+        .unwrap_or("");
+    assert!(
+        !result.is_error,
+        "数字 id \"1\" 必须归一为 NB-1 并命中: {text}"
+    );
+    assert!(text.contains("\"NB-1\""), "{text}");
+    assert!(text.contains("种子评论"), "{text}");
+}
+
+/// store 错误原文透传：not-found 显示 store 自述「issue NB-999 not
+/// found」，不再捏造「issue not found: NB-999」事实断言（旧形态把 store
+/// 层任何失败都改写成单子不存在）。
+#[cfg(feature = "board")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn board_query_not_found_passes_through_store_message() {
+    let (_tmp, asm) = assembly_with_seeded_board().await;
+    let text_of = |r: &ToolCallResult| {
+        r.content
+            .first()
+            .and_then(|c| c.text.clone())
+            .unwrap_or_default()
+    };
+    // NB- 形态直查不存在单。
+    let result = tool_board_issue_query(&asm, &serde_json::json!({ "number": "NB-999" }));
+    let text = text_of(&result);
+    assert!(result.is_error, "不存在单必须报错: {text}");
+    assert!(
+        text.contains("NB-999 not found"),
+        "必须透传 store 自述文案: {text}"
+    );
+    assert!(
+        !text.contains("issue not found:"),
+        "不得出现旧捏造形态「issue not found: …」: {text}"
+    );
+    // 数字形态同样命中归一后的 not-found 文案。
+    let numeric = tool_board_issue_query(&asm, &serde_json::json!({ "number": "999" }));
+    let text = text_of(&numeric);
+    assert!(numeric.is_error, "{text}");
+    assert!(
+        text.contains("NB-999 not found"),
+        "数字 id 归一后的 not-found 文案: {text}"
+    );
+}
+
+/// 评论读取错误响亮上抛——畸形 comment 表（缺 issue_id 列）让
+/// list_comments 报错，工具必须带真实根因失败，而非静默成「零评论」
+/// 假象（旧 unwrap_or_default() 形态在该场景返回 is_error=false +
+/// comments: []，本测试当场抓）。
+#[cfg(feature = "board")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn board_query_comments_error_is_loud_not_silent_empty() {
+    let (_tmp, asm) = assembly_with_seeded_board().await;
+    let db_path = asm.workspace.join("board").join("board.db");
+    // 二次连接破坏 comment 表形状（drop 后建缺列同款表）——schema 漂移
+    // 对账只比 user_version（高版本拒开），IF NOT EXISTS 迁移不会修复
+    // 已存在的畸形表，list_comments 的 prepare 必败。
+    {
+        let conn = rusqlite::Connection::open(&db_path).expect("open raw sqlite");
+        conn.execute_batch(
+            "DROP TABLE comment;
+             CREATE TABLE comment (id INTEGER);",
+        )
+        .expect("corrupt comment table");
+    }
+    let result = tool_board_issue_query(&asm, &serde_json::json!({ "number": "NB-1" }));
+    let text = result
+        .content
+        .first()
+        .and_then(|c| c.text.as_deref())
+        .unwrap_or("");
+    assert!(
+        result.is_error,
+        "评论读取失败必须响亮报错而非静默零评论: {text}"
+    );
+    assert!(
+        text.contains("failed to list comments"),
+        "错误必须带真实根因: {text}"
+    );
+}

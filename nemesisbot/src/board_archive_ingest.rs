@@ -327,7 +327,7 @@ pub async fn sweep_missing_archives(
     transport: &dyn TransferTransport,
     no_archive_seen: &tokio::sync::Mutex<std::collections::HashSet<String>>,
 ) {
-    let inbox_root = nemesis_path::cluster_dir_in_workspace(workspace).join("inbox");
+    let inbox_root = nemesis_path::resolve_cluster_inbox_dir_in_workspace(workspace);
 
     // -- 腿 1：收件箱滞留重灌 ---------------------------------------------
     if let Ok(entries) = std::fs::read_dir(&inbox_root) {
@@ -650,7 +650,8 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
                 .to_string(),
             ),
         );
-        let _ = store.add_comment(NewComment {
+        // BUG-20261118-173：系统评论写失败不再静默（惯例对齐，warn 不阻塞）。
+        if let Err(e) = store.add_comment(NewComment {
             issue_id: issue.id,
             author: Actor::system("board-archive"),
             content: format!(
@@ -659,7 +660,13 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
             ),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                task_id = %task_id,
+                issue = %issue.number,
+                "[BoardArchive] 冻结通知评论落库失败：{e}（FrozenDeferred 流程照常）"
+            );
+        }
         tracing::info!(
             task_id = %task_id,
             issue = %issue.number,
@@ -1366,7 +1373,8 @@ fn superseded_note(
             .to_string(),
         ),
     );
-    let _ = store.add_comment(NewComment {
+    // BUG-20261118-173：丢弃通知评论写失败不再静默（惯例对齐）。
+    if let Err(e) = store.add_comment(NewComment {
         issue_id: dispatch.issue_id,
         author: Actor::system("board-archive"),
         content: format!(
@@ -1375,7 +1383,12 @@ fn superseded_note(
         ),
         parent_id: None,
         ctype: CommentType::System,
-    });
+    }) {
+        tracing::warn!(
+            issue = %dispatch.issue_id,
+            "[BoardArchive] 变更集丢弃通知评论落库失败：{e}（丢弃流程照常）"
+        );
+    }
 }
 
 /// 最小停车：决策流卡 + ⚠ 系统评论。单据不进 in_review（goal：合并
@@ -1400,13 +1413,20 @@ pub(crate) fn park_merge(
             .to_string(),
         ),
     );
-    let _ = store.add_comment(NewComment {
+    // BUG-20261118-173：停车评论写失败不再静默——停车原因人工侧必须可见。
+    if let Err(e) = store.add_comment(NewComment {
         issue_id,
         author: Actor::system("board-archive"),
         content: format!("⚠ 合并停车（task {task_id}）：{reason}"),
         parent_id: None,
         ctype: CommentType::System,
-    });
+    }) {
+        tracing::warn!(
+            task_id = %task_id,
+            issue = %issue_id,
+            "[BoardArchive] 合并停车评论落库失败：{e}（决策流已留痕，人工侧可见性受损）"
+        );
+    }
     MergeAttempt::Parked {
         reason: reason.to_string(),
     }

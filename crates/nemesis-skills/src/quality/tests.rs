@@ -161,6 +161,40 @@ fn test_completeness_score_details() {
     );
 }
 
+// 编号步骤启发式必须多行生效（BUG-20261117-084）：`^\d+\.\s` 无 (?m) 时
+// `^` 只匹配文档首行——步骤不在第一行的技能文档漏判 steps 指标。
+#[test]
+fn test_completeness_numbered_steps_beyond_first_line() {
+    let meta = std::collections::HashMap::new();
+
+    // 步骤在第 3 行（首行是标题）→ 必须命中 steps。
+    let content = "# My Skill\n\n1. Do the thing\n2. Do another thing";
+    let score = QualityScorer::score_completeness(content, &meta);
+    assert!(
+        score.details.contains("steps"),
+        "非首行编号步骤必须命中 steps 指标: {}",
+        score.details
+    );
+
+    // 步骤在标题与散文之后 → 同样必须命中（旧行为：details 无 steps）。
+    let content = "# Title\nIntro prose paragraph.\n\n## Usage\n1. First step here";
+    let score = QualityScorer::score_completeness(content, &meta);
+    assert!(
+        score.details.contains("steps"),
+        "深层编号步骤必须命中 steps 指标: {}",
+        score.details
+    );
+
+    // 无编号步骤 → 不命中（防启发式假阳）。
+    let content = "# Title\nJust prose, no numbered items.\n- bullet list item";
+    let score = QualityScorer::score_completeness(content, &meta);
+    assert!(
+        !score.details.contains("steps"),
+        "无编号步骤不得假阳: {}",
+        score.details
+    );
+}
+
 #[test]
 fn test_testing_score_with_test_mentions() {
     let content = "## Test Cases\nRun unit tests with coverage.\nValidate all edge cases.\nHandle error scenarios gracefully.";

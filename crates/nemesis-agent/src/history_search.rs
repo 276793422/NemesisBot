@@ -66,6 +66,14 @@ fn open_conn() -> Option<Connection> {
         let _ = std::fs::create_dir_all(parent);
     }
     let conn = Connection::open(&path).ok()?;
+    // BUG-20261115-029：CLI（`nemesisbot history search` / `history reindex`）
+    // 与常驻 gateway **并开同一索引库**是常规拓扑，而 rollback-journal
+    // （TRUNCATE）模式下读写互斥——无退避的撞锁 = 立即 SQLITE_BUSY：
+    // gateway reindex 半途失败仍登记 mtime → 该文件索引尾部缺口持久到
+    // mtime 再变；增量插行被吞 → 最近一条消息检索不到。busy_timeout 让
+    // 短锁竞争退避重试而不是立刻报错（与 board.db / taskstore / 两个
+    // watcher 连接的 5000ms 同值）；本库是可重建缓存，等待上限不伤语义。
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
     // Write performance: this is a REBUILDABLE cache (reindex regenerates it
     // from the jsonl source of truth), so durability pragmas can be relaxed.
     // Default journal (delete-mode, fsync per txn) made each append-hook
@@ -221,20 +229,34 @@ pub fn reindex_session_logs() -> usize {
                 return;
             }
             // Re-indexing a changed file: clear its rows first.
-            let _ = conn.execute(
-                "DELETE FROM history_fts WHERE session_key = ?1",
-                rusqlite::params![stem],
-            );
+            // BUG-20261115-029 横向加固：清旧行失败 = 库写锁被外部持有
+            // （另一进程并开同库且锁未被 busy_timeout 窗口消化）。此时
+            // 继续 INSERT 会在未清空的旧行上叠加重复行（DELETE-first
+            // 契约破坏）——诚实让位：本文件本轮不索引、不登记 mtime，
+            // 消费方下一次查询的 reindex 在锁释放后整文件重建。
+            if conn
+                .execute(
+                    "DELETE FROM history_fts WHERE session_key = ?1",
+                    rusqlite::params![stem],
+                )
+                .is_err()
+            {
+                return;
+            }
             if let Ok(file) = std::fs::File::open(&path) {
                 for (seq, line) in std::io::BufReader::new(file)
                     .lines()
                     .map_while(Result::ok)
                     .enumerate()
                 {
+                    // BUG-20261115-029 横向加固：插行失败（BUSY 残余/
+                    // 磁盘满等瞬态）不登记 mtime——登记会让后续 reindex
+                    // 恒跳过本文件，半索引尾部缺口持久到 mtime 再变；
+                    // 不登记则下轮 DELETE-first 整文件重建自愈（幂等）。
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
-                        && let Err(_) = insert_row(conn, stem, seq, &v)
+                        && insert_row(conn, stem, seq, &v).is_err()
                     {
-                        break;
+                        return;
                     }
                 }
             }
@@ -352,6 +374,28 @@ pub fn invalidate_session(session_key: &str) {
     let stem = stem_of(session_key);
     let _ = with_conn(|_, indexed| {
         indexed.remove(&stem);
+    });
+}
+
+/// [`invalidate_session`] 的 stem 直输形态（logs_sweeper TTL 清扫用，
+/// 2026-11-19 删除残留修复）：sweeper 只有文件 stem（=
+/// `sanitize_path_segment(key)` 的产物，DB session_key 列存的就是 stem——
+/// insert_row 以 stem 入库），无原始 key 可走 `stem_of` 反推。幂等；
+/// DB 打不开（`with_conn` 失败）静默跳过——下次查询前 reindex 的孤儿
+/// 清理兜底（DB-vs-disk 对比同族）。
+pub fn invalidate_session_stem(stem: &str) {
+    // DB 缺席短路：索引从未建立（fresh home / 无 gateway 活动的测试进程）
+    // = 无行可删，免开 DB（open_conn 会创建空 DB 文件 = 无谓落盘）。
+    // 语义等价：无 DB 必无行。
+    if !index_db_path().exists() {
+        return;
+    }
+    let _ = with_conn(|conn, indexed| {
+        let _ = conn.execute(
+            "DELETE FROM history_fts WHERE session_key = ?1",
+            rusqlite::params![stem],
+        );
+        indexed.remove(stem);
     });
 }
 

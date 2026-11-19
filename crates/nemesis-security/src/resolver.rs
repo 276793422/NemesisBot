@@ -192,8 +192,24 @@ fn is_private_ipv6(_ip: &Ipv6Addr) -> bool {
         return true;
     }
 
-    // RFC 6052 IPv4/IPv6 Translation: 64:ff9b:/96
+    // RFC 6052 IPv4/IPv6 Translation: 64:ff9b:/96（前两段匹配天然盖住
+    // well-known 64:ff9b::/96 与 local-use 64:ff9b:1::/96 两个保留前缀）
     if segments[0] == 0x0064 && segments[1] == 0xff9b {
+        return true;
+    }
+
+    // 6to4 2002::/16（RFC 7526 已废弃的隧道机制）：段内内嵌任意 IPv4——
+    // `2002:7f00:1::` 语义上命名的就是 127.0.0.1（公网形态经 6to4 relay
+    // 中转，relay 可达性取决于隧道在场）。与 NAT64 同族翻译形态，整体
+    // 封锁从严、不做内嵌 v4 归一（归一放行是 egress 插件面的语义——
+    // allow_private=true 场景要能经翻译形态取公网；SSRF 闸没有这个需求）。
+    if segments[0] == 0x2002 {
+        return true;
+    }
+
+    // RFC 3849 documentation: 2001:db8:/32——v4 TEST-NET 的 v6 对位
+    // （不可路由保留段，封锁零成本）。
+    if segments[0] == 0x2001 && segments[1] == 0x0db8 {
         return true;
     }
 

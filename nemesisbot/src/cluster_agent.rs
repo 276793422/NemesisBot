@@ -92,6 +92,13 @@ impl DiscussionInbox {
     }
 }
 
+/// 回帖投递失败 → 本地可见性注记回调（BUG-20261118 B.3 失败可见）。
+/// 三参：唤醒事件 / 失败原因（人读）/ 回帖原文。实现面在 post_agent
+/// 装配（写本节点 board.db 系统注记），None = 无注记通道（board 裁剪 /
+/// board_store 缺席），投递点 WARN 兜底。类型刻意不引用 nemesis_board
+/// ——cluster-only 编译形态（board feature 关）下本文件照常编译。
+pub type ReplyFailureNote = Arc<dyn Fn(&DiscussionEvent, &str, &str) + Send + Sync>;
+
 /// Run the cluster agent event loop.
 ///
 /// This is the main entry point for the cluster agent. It loops forever,
@@ -122,6 +129,8 @@ pub async fn cluster_agent_loop(
     mut discussion_rx: Option<tokio::sync::mpsc::UnboundedReceiver<DiscussionEvent>>,
     // 本节点 id（回复 board.comment.post 的 sender；来自 cluster.node_id()）。
     self_node_id: String,
+    // 回帖投递失败 → 本地注记回调（B.3 失败可见；None = 无通道）。
+    reply_failure_note: Option<ReplyFailureNote>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     tracing::info!("[ClusterAgent] Event loop started");
@@ -156,6 +165,7 @@ pub async fn cluster_agent_loop(
                             rpc_client.as_deref(),
                             cluster_observer.as_deref(),
                             &self_node_id,
+                            reply_failure_note.as_ref(),
                             &ev,
                         )
                         .await;
@@ -767,8 +777,13 @@ async fn resume_task(
     // 证据窗口与本轮交付 diff 窗口一致）。
     agent_loop.begin_checks_capture(&task.source.session_key);
     let events = agent_loop
-        .resume_execution_with_token(&instance, &context, &trace_id, &token)
+        // turn_budget=None：B 端沿用全局预算，行为不变（续行回主路 2026-11-12）。
+        .resume_execution_with_token(&instance, &context, &trace_id, &token, None)
         .await;
+    // BUG-20261106-039 work 桶收口：finish 职责已从 resume_execution_with_token
+    // 移交调用方（续行回主路 2026-11-12）——B 端续行回合不在 run_agent_loop_internal
+    // 落盘链上，桶在此收口，不留跨 turn 残余。
+    let _ = agent_loop.work_recorder().finish(&context.session_key);
     // typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
     // b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加）。
@@ -1820,6 +1835,7 @@ async fn handle_discussion(
     rpc_client: Option<&RpcClient>,
     cluster_observer: Option<&ClusterRequestLoggerObserver>,
     self_node_id: &str,
+    reply_failure_note: Option<&ReplyFailureNote>,
     event: &DiscussionEvent,
 ) {
     let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
@@ -1906,7 +1922,7 @@ async fn handle_discussion(
         return;
     }
 
-    post_discussion_reply(rpc_client, self_node_id, event, trimmed).await;
+    post_discussion_reply(rpc_client, self_node_id, reply_failure_note, event, trimmed).await;
 }
 
 /// 发送者身份标签：board 开 = [`crate::board_bus:actor_label`] 权威实现；
@@ -2049,17 +2065,23 @@ pub(crate) fn find_online_coordinator(
         })
 }
 
-/// 回帖 master（单次尝试：RPC 失败 / 被额度拒 → 日志诚实可见，不重试——
-/// 下行幂等游标已推进，重试只会造重复发言）。
+/// 回帖发帖节点（单次尝试：RPC 失败 / 被额度拒 → 日志诚实可见，不重试
+/// ——下行幂等游标已推进，重试只会造重复发言）。失败时经 `note` 回调落
+/// 本地系统注记（B.3 失败可见——发帖侧界面能感知「远端回了但没送到」），
+/// 注记失败只增日志不产生新失败路径。
 async fn post_discussion_reply(
     rpc_client: Option<&RpcClient>,
     self_node_id: &str,
+    note: Option<&ReplyFailureNote>,
     event: &DiscussionEvent,
     content: &str,
 ) {
     let Some(rpc) = rpc_client else {
         tracing::warn!(target: "board_bus",
             "[ClusterAgent] Discussion reply skipped: no rpc client");
+        if let Some(note) = note {
+            note(event, "本节点无 RPC 客户端（集群未运行）", content);
+        }
         return;
     };
     let payload = build_comment_post_envelope(self_node_id, event, content);
@@ -2083,11 +2105,17 @@ async fn post_discussion_reply(
                 tracing::warn!(target: "board_bus", code, message = %msg,
                     thread = %thread_key,
                     "[ClusterAgent] Discussion reply rejected by master");
+                if let Some(note) = note {
+                    note(event, &format!("被对方拒绝（{code}）：{msg}"), content);
+                }
             }
         }
         Err(e) => {
             tracing::warn!(target: "board_bus", error = %e, thread = %thread_key,
                 "[ClusterAgent] Discussion reply delivery failed");
+            if let Some(note) = note {
+                note(event, &format!("RPC 投递失败：{e}"), content);
+            }
         }
     }
 }
@@ -2232,12 +2260,18 @@ async fn post_board_ask_notice(
         );
         Ok(())
     } else {
-        Err(format!(
-            "master 拒绝注记（额度/校验）：{}",
-            body.get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        ))
+        // error 位是对象 {code, message}（envelope.rs 单一真相）——as_str()
+        // 对对象恒 None，拒绝原因会恒显 "unknown"（诊断信息丢失）。与
+        // post_discussion_reply 同款 pointer 解析。
+        let code = body
+            .pointer("/error/code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let msg = body
+            .pointer("/error/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Err(format!("master 拒绝注记（额度/校验）：{code} {msg}"))
     }
 }
 

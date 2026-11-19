@@ -22,12 +22,21 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # 只有启用 `sqlite-preflight` feature 的消费方（nemesis-data / nemesis-board）
 # 才会把 rusqlite 拉进依赖图，未启用方零成本。
 rusqlite = { workspace = true, optional = true }
+# 子进程文本输出解码（child_decode，BUG-20261115-034）：decode_with_codepage
+# 纯函数全平台编译（回归锁在 Linux CI 也跑 CJK 解码断言），依赖必须无条件；
+# 曾误钉 cfg(windows) 段致 Linux/裁剪矩阵全 E0433（BUG-20261115-035）。
+encoding_rs = "0.8"
 
 [features]
 sqlite-preflight = ["dep:rusqlite"]
 # 同 sqlite-preflight 模式：只有启用 `http` 的消费方才把 reqwest（含 ring C 代码）
 # 拉进依赖图，未启用方零成本。
 http = ["dep:reqwest"]
+
+# Windows API（GetOEMCP）只在 Windows 编译进依赖图（guest musl 静态构建零成本，
+# 同 sqlite-preflight 守卫模式）；码页解码器 encoding_rs 已上移无条件段。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Globalization"] }
 
 [dev-dependencies]
 tempfile = "3"

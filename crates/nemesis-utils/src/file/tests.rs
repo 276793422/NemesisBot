@@ -370,3 +370,187 @@ fn test_atomic_tmp_orphan_grace_bounds() {
         "grace beyond one sweep cadence leaves orphans visible indefinitely"
     );
 }
+
+// ============================================================
+// write_file_atomic_async（BUG-20261116-010）
+// ============================================================
+
+/// 基础写 + 覆盖写：内容正确、无 `.tmp-` 残留、父目录自动建。
+#[tokio::test]
+async fn test_write_file_atomic_async_basic_and_no_residue() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("deep/sub/async.txt");
+
+    write_file_atomic_async(&path, b"v1", 0o644).await.unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "v1");
+
+    write_file_atomic_async(&path, b"v2-longer-content", 0o644)
+        .await
+        .unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "v2-longer-content");
+
+    let leftovers: Vec<_> = fs::read_dir(dir.path().join("deep/sub"))
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(ATOMIC_TMP_PREFIX)
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no tmp residue: {:?}",
+        leftovers.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+}
+
+/// 空内容与二进制载荷 round-trip。
+#[tokio::test]
+async fn test_write_file_atomic_async_empty_and_binary() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty.bin");
+    write_file_atomic_async(&empty, b"", 0o644).await.unwrap();
+    assert_eq!(fs::read(&empty).unwrap(), Vec::<u8>::new());
+
+    let bin = dir.path().join("bin.dat");
+    let data: Vec<u8> = (0..=255).collect();
+    write_file_atomic_async(&bin, &data, 0o644).await.unwrap();
+    assert_eq!(fs::read(&bin).unwrap(), data);
+}
+
+/// 目标是已存在目录：rename 确定性失败 + 无 tmp 残留（失败清理同源 sync 版）。
+#[tokio::test]
+async fn test_write_file_atomic_async_target_is_directory_fails_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("adir");
+    fs::create_dir(&target).unwrap();
+
+    let result = write_file_atomic_async(&target, b"data", 0o644).await;
+    assert!(result.is_err());
+
+    assert!(target.is_dir(), "original directory must be untouched");
+    let leftovers = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(ATOMIC_TMP_PREFIX)
+        })
+        .count();
+    assert_eq!(leftovers, 0, "failed write must clean its tmp file");
+}
+
+/// unix：已存在文件权限位保留（0600 编辑后仍 0600，不被调用方 perm 覆盖）。
+#[cfg(unix)]
+#[tokio::test]
+async fn test_write_file_atomic_async_preserves_existing_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secret.cfg");
+    fs::write(&path, b"k=v").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    write_file_atomic_async(&path, b"k=v2", 0o644)
+        .await
+        .unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "existing file mode must survive an atomic edit"
+    );
+}
+
+/// unix：新建文件用调用方 perm 精确生效（不过 umask——sync 版 mode() 语义）。
+#[cfg(unix)]
+#[tokio::test]
+async fn test_write_file_atomic_async_new_file_perm_applied() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fresh.txt");
+    write_file_atomic_async(&path, b"x", 0o644).await.unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o644);
+}
+
+/// unix：经 symlink 写入 = 写真实目标（follow 语义保链），symlink 本身
+/// 不被 rename 换成普通文件。
+#[cfg(unix)]
+#[tokio::test]
+async fn test_write_file_atomic_async_write_through_symlink_keeps_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real.txt");
+    fs::write(&real, b"before").unwrap();
+    let link = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    write_file_atomic_async(&link, b"after", 0o644)
+        .await
+        .unwrap();
+
+    let meta = fs::symlink_metadata(&link).unwrap();
+    assert!(
+        meta.file_type().is_symlink(),
+        "symlink must not be replaced by a regular file"
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), "after");
+}
+
+/// 并发 async 写同一目标：终态必为某一次写入的完整内容，无 tmp 残留。
+#[tokio::test]
+async fn test_write_file_atomic_async_concurrent_no_interleave() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("race.txt");
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let path = path.clone();
+        handles.push(tokio::task::spawn(async move {
+            let payload = format!("payload-{i}-{}", "y".repeat(2048));
+            write_file_atomic_async(&path, payload.as_bytes(), 0o644).await
+        }));
+    }
+    for h in handles {
+        h.await.unwrap().unwrap();
+    }
+
+    let text = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+    assert!(
+        text.starts_with("payload-") && text.ends_with(&"y".repeat(2048)),
+        "final content must be ONE complete write"
+    );
+    let leftovers = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(ATOMIC_TMP_PREFIX)
+        })
+        .count();
+    assert_eq!(leftovers, 0);
+}
+
+/// unix：sync 版经 symlink 写入同样保链（BUG-20261117-074——保链语义下沉
+/// 到 sync 单一真相源后，config.json / MEMORY.md 等直调面不再把 symlink
+/// 换成普通文件）。
+#[cfg(unix)]
+#[test]
+fn test_write_file_atomic_sync_write_through_symlink_keeps_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real.txt");
+    fs::write(&real, b"before").unwrap();
+    let link = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    write_file_atomic(&link.to_string_lossy(), b"after", 0o644).unwrap();
+
+    let meta = fs::symlink_metadata(&link).unwrap();
+    assert!(
+        meta.file_type().is_symlink(),
+        "symlink must not be replaced by a regular file"
+    );
+    assert_eq!(fs::read_to_string(&real).unwrap(), "after");
+}

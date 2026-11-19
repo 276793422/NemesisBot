@@ -195,3 +195,63 @@ describe('全局自定义右键菜单（区域分发/开关/降级）', () => {
     w.unmount()
   })
 })
+
+// 2026-11-13 消息区菜单项贡献位（文件链接「复制路径/打开所在目录」汇入面）：
+// 贡献项追加在默认项之后（菜单底部）、空数组不出项、注销对称。
+describe('消息区菜单项贡献位（registerContextMenuItems）', () => {
+  /** 建一个带文件链接的消息区元素（模拟 linkify 产出形态）。 */
+  function makeMessageWithLink(): { wrap: HTMLElement; a: HTMLAnchorElement } {
+    const wrap = document.createElement('div')
+    wrap.className = 'message-content'
+    wrap.innerHTML =
+      '<p>报告在 <a class="file-link" data-path="C:/ws/reports/a.md">C:/ws/reports/a.md</a> 已生成</p>'
+    document.body.appendChild(wrap)
+    return { wrap, a: wrap.querySelector('a')! }
+  }
+
+  it('贡献项追加在消息区菜单底部；点项回调带链接路径', async () => {
+    const { w, items } = setup()
+    const opener = vi.fn()
+    const unregister = useContextMenu().registerContextMenuItems((t) => {
+      const a = t instanceof HTMLElement ? t.closest('a.file-link') : null
+      return a
+        ? [
+            { label: '复制路径', run: () => {} },
+            { label: '打开所在目录', run: () => opener((a as HTMLAnchorElement).dataset.path) },
+          ]
+        : []
+    })
+    const { wrap, a } = makeMessageWithLink()
+
+    ctxMenuOn(a)
+    await flushPromises()
+    expect(items().map((i) => i.text)).toEqual(['复制', '全选', '复制路径', '打开所在目录'])
+
+    const open = Array.from(document.querySelectorAll('.ctx-item')).find((b) =>
+      b.textContent?.includes('打开所在目录'),
+    ) as HTMLElement
+    open.click()
+    await flushPromises()
+    expect(opener).toHaveBeenCalledWith('C:/ws/reports/a.md')
+
+    // 注销对称：再右键回落两默认项。
+    unregister()
+    ctxMenuOn(a)
+    await flushPromises()
+    expect(items().map((i) => i.text)).toEqual(['复制', '全选'])
+    wrap.remove()
+    w.unmount()
+  })
+
+  it('非链接目标贡献者返回空数组 → 菜单保持默认两项（openAt 空数组兜底不炸）', async () => {
+    const { w, items } = setup()
+    useContextMenu().registerContextMenuItems(() => [])
+    const { wrap } = makeMessageWithLink()
+
+    ctxMenuOn(wrap)
+    await flushPromises()
+    expect(items().map((i) => i.text)).toEqual(['复制', '全选'])
+    wrap.remove()
+    w.unmount()
+  })
+})

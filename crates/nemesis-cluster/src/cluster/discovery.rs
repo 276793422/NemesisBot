@@ -183,6 +183,49 @@ impl Cluster {
         self.removed_peers.write().remove(node_id)
     }
 
+    /// 批量清理 Offline 节点记录（BUG-20261118 批次 C）。
+    ///
+    /// 与 [`Self::remove_node`] 的语义分叉是刻意的：
+    /// - 只清注册表记录，**不写 removed_peers 黑名单、不动 peers.toml**——
+    ///   清理的对象是「已失效的历史发现残留」，节点若真还活着，下一个
+    ///   announce/探针应能重新入册（拉黑语义只属于用户显式移除单个节点）；
+    /// - 跳过：本节点、静态 peers（peers.toml 显式配置，用户意志）、
+    ///   非 Offline 状态（Online/Connecting 是活着的或正在握手的节点）。
+    ///
+    /// 清理后调用 [`Self::sync_to_disk`] 落盘 state.toml（否则重启回读会把
+    /// 已清理的条目复活回来——write-only 假持久化的反面教训）。
+    ///
+    /// 返回被清理的节点 id 列表（按注册表 (name, id) 字典序）。
+    pub fn cleanup_offline_nodes(&self) -> Vec<String> {
+        let offline_ids: Vec<String> = self
+            .registry
+            .list_peers()
+            .iter()
+            .filter(|n| n.base.id != self.node_id && n.status == NodeStatus::Offline)
+            .map(|n| n.base.id.clone())
+            // is_static 在 PeerEntry 上（list_peers 投影不带），单查兜住。
+            .filter(|id| !self.registry.is_peer_static(id))
+            .collect();
+
+        for id in &offline_ids {
+            // 直接 registry.remove：不进 removed_peers（见方法 doc 语义分叉）。
+            if self.registry.remove(id) {
+                crate::logger::log_discovery("cleaned_offline", "", Some(id));
+            }
+        }
+
+        if !offline_ids.is_empty()
+            && let Err(e) = self.sync_to_disk()
+        {
+            tracing::warn!(
+                error = %e,
+                "[Cluster] Offline 节点清理后落盘 state.toml 失败（内存已清，重启可能回读复活）"
+            );
+        }
+
+        offline_ids
+    }
+
     /// Register the node-discovered callback (Swarm). Called once at
     /// gateway assembly; the closure receives `(node_id, role, category)` on
     /// every non-blacklisted discovery/refresh event.
@@ -210,6 +253,18 @@ impl Cluster {
     /// 是两回事。
     fn addr_is_roaming(a: &str) -> bool {
         crate::is_roaming_address(a)
+    }
+
+    /// 是否已自带端口（`ip:port` 单冒号 + 数字右段）。裸 IPv4/hostname
+    /// （0 冒号）= false 照旧拼 `:rpc_port`。2026-11-14 审查发现 #6：announce
+    /// 载荷若改为携带完整 `ip:port`（当前恒裸 IP），无条件拼接会造出
+    /// `ip:port:rpc_port` 非法 primary——补形态检查防御（当前不可触发，
+    /// 与 `is_self_endpoint` 的「host 允许携带端口」契约同口径）。
+    fn addr_has_port(a: &str) -> bool {
+        a.matches(':').count() == 1
+            && a.rsplit_once(':')
+                .map(|(_, p)| p.parse::<u16>().is_ok())
+                .unwrap_or(false)
     }
 
     /// iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，统一小写）。
@@ -491,9 +546,10 @@ impl Cluster {
 
         // iroh 形态地址自带完整寻址（node_id[+直连 socket]），拼
         // `:rpc_port` 会造出 `iroh:<hex>:<port>` 非法地址——原样作
-        // primary。TCP 地址照旧拼 port。
+        // primary。TCP 地址照旧拼 port；已自带端口的 `ip:port` 载荷
+        // 形态原样采用（防 `ip:port:rpc_port` 双拼，addr_has_port）。
         let primary_address = match addresses.first() {
-            Some(a) if Self::addr_is_roaming(a) => a.clone(),
+            Some(a) if Self::addr_is_roaming(a) || Self::addr_has_port(a) => a.clone(),
             Some(a) => format!("{}:{}", a, rpc_port),
             None => String::new(),
         };

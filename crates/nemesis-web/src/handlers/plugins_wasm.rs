@@ -471,24 +471,33 @@ fn require_slug(data: Option<&serde_json::Value>) -> Result<String, String> {
         .ok_or_else(|| "slug (string) is required".to_string())
 }
 
+/// enable 臂单一真相源（WSAPI `wasm.enable` 与 agent 自举工具共用，项6）：
+/// 装配注册 + 成功后工具/策略双面同步事件。返回 loaded 位（None = 已在册
+/// 幂等——面已在，无事件）。
+pub async fn enable_with_face_sync(
+    installer: &PluginInstaller,
+    slug: &str,
+) -> Result<Option<Arc<nemesis_plugins_wasm::registry::RegisteredPlugin>>, String> {
+    let loaded = installer
+        .set_enabled(slug, true)
+        .await
+        .map_err(|e| e.to_string())?;
+    if loaded.is_some() {
+        // 装配成功：注册表现在在场 → 面投影 add（工具 hook 先按 slug
+        // 前缀整面摘旧再挂新；策略 hook 收到即全槽对账）。
+        sync_tool_face(&installer.manager, slug, true);
+        sync_policy_face(&installer.manager, slug, true);
+    }
+    Ok(loaded)
+}
+
 /// `wasm.enable` / `wasm.disable`（开关 = 加载闸，热生效；记录落
 /// `config.plugin.wasm.json`，重启保持）。enable = 装配注册（lockfile 有
 /// 记录走原路，手工拷入补跑装配漏斗含审批卡）；disable = 真摘除。
 pub async fn cmd_set_enabled(slug: &str, on: bool) -> Result<serde_json::Value, String> {
     let installer = require_installer()?;
     let loaded = if on {
-        let loaded = installer
-            .set_enabled(slug, true)
-            .await
-            .map_err(|e| e.to_string())?;
-        if loaded.is_some() {
-            // 装配成功：注册表现在在场 → 面投影 add（工具 hook 先按 slug
-            // 前缀整面摘旧再挂新；策略 hook 收到即全槽对账）。
-            sync_tool_face(&installer.manager, slug, true);
-            sync_policy_face(&installer.manager, slug, true);
-        }
-        // loaded=None = 已在册幂等（面已在，无事件）。
-        loaded
+        enable_with_face_sync(&installer, slug).await?
     } else {
         // 摘除前先抓面事件（注册表摘除后拿不到元数据）；hook 侧语义 =
         // 工具前缀整面摘 + 策略全槽回内置。

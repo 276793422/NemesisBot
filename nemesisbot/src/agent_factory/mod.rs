@@ -47,6 +47,12 @@ mod midnight_tests;
 #[cfg(test)]
 mod route_resolver_tests;
 
+// BUG-20261119-179：集群 B 端 system prompt 人格文件 BOM 剥离测试
+// （访问 cluster 模块 pub(super) 装配函数——同挂 cluster 门随模块走）。
+#[cfg(test)]
+#[cfg(feature = "cluster")]
+mod cluster_bom_tests;
+
 // L26 vault 域绑定路径公式对齐锁（无 feature 门——闸读/CLI 写两侧
 // 同 home 必须落到同一文件；模块名含 vault_domain 对齐过滤词）。
 #[cfg(test)]
@@ -195,6 +201,12 @@ pub struct SharedResources {
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
     pub background_registry: Arc<nemesis_agent::BackgroundProcessRegistry>,
 
+    /// 专家子代理资源层单例（2026-11-13，workspace/experts/ 目录即注册表）。
+    /// gateway 建一次跨 loop 重启存活；经 SharedToolConfig（SpawnTool
+    /// list/预检）与 inject_spawn_fn（执行面解析+模型覆盖）两条路注入。
+    /// None（headless/测试缺省）= 无专家面，spawn 行为字节不变。
+    pub experts: Option<Arc<crate::experts_store::ExpertsStore>>,
+
     /// （WASM 插件框架）：插件注册表单例。gateway init_agent 建一次
     /// （config `plugins.wasm.enabled=false` = None 整面子系统缺席）；跨
     /// agent 重启存活——每次 build_agent_loop 重建时桥工具重新注册 + invoker
@@ -205,6 +217,30 @@ pub struct SharedResources {
     #[cfg(not(feature = "plugins-wasm"))]
     #[allow(dead_code)]
     pub plugin_manager: Option<()>,
+
+    /// agent 自举插件（项6）：installer Arc（漏斗 + 热装唯一执行体）与
+    /// 既有审批门（LateInstallApprover）。plugin_bootstrap 两工具的装配
+    /// 依赖；任一缺席 = 工具不注册，零影响。Dashboard 手动安装走 web
+    /// 全局槽的同一 installer（agent_build 同批 Arc），审批面不经过本槽。
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_installer: Option<Arc<nemesis_plugins_wasm::install::PluginInstaller>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
+    pub plugin_installer: Option<()>,
+    #[cfg(feature = "plugins-wasm")]
+    pub plugin_install_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
+    #[cfg(not(feature = "plugins-wasm"))]
+    #[allow(dead_code)]
+    pub plugin_install_gate: Option<()>,
+    /// 浏览器接管框架（2026-11-15）：会话注册表单例。gateway 装配期建
+    /// 一次（跨 agent 重启存活）；host_browser 工具注册闸（Some 才注册）
+    /// 与 Dashboard 执行单元浏览器面板同源。None（headless/测试/browser
+    /// feature 关）= 无浏览器面，诚实缺省。
+    #[cfg(feature = "browser")]
+    pub browser_manager: Option<Arc<nemesis_browser::BrowserManager>>,
+    #[cfg(not(feature = "browser"))]
+    #[allow(dead_code)]
+    pub browser_manager: Option<()>,
 
     /// 入口形态变体（gap ⑤）：gateway/eval 等既有装配点用缺省 Interactive
     /// （pro system prompt 渲染字节不变）；headless `run` 显式 Headless、
@@ -272,6 +308,7 @@ impl Default for SharedResources {
             cluster_peers_fn: None,
             cluster_auto_target_fn: None,
             cluster_rpc_enabled: parking_lot::RwLock::new(None),
+            browser_manager: None,
             mcp_config_path: PathBuf::default(),
             mcp_enabled: false,
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
@@ -285,7 +322,10 @@ impl Default for SharedResources {
             agent_event_tx: None,
             session_stats: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
+            experts: None,
             plugin_manager: None,
+            plugin_installer: None,
+            plugin_install_gate: None,
             entrance: nemesis_agent::prompt::Entrance::Interactive,
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_store: None,

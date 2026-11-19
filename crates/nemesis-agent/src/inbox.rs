@@ -205,6 +205,23 @@ impl Inbox {
         }
     }
 
+    /// Programmatic steer push（项3 子代理飞行中驾驶）：直接把消息插进
+    /// next_step 队列，不经 `!` 标记检测（调用方是 WSAPI/工具程序化面，
+    /// 语义本就是 steer，不依赖前缀路由），也不受软水位约束（steer 插话
+    /// 豁免，与 [`Self::enqueue_for_mode`] 同规则）；硬上限仍然生效——
+    /// 两队合计到容量 = [`EnqueueOutcome::Rejected`]，由调用方映射为诚实
+    /// 拒绝。消费点不变：轮边界 `claim_next_step`（claim_steer_messages）。
+    pub fn enqueue_steer(&self, session_key: &str, msg: QueuedMessage) -> EnqueueOutcome {
+        let mut all = self.queues.lock();
+        let q = all.entry(session_key.to_string()).or_default();
+        let total = q.next_turn.len() + q.next_step.len();
+        if total >= self.capacity {
+            return EnqueueOutcome::Rejected;
+        }
+        q.next_step.push_back(msg);
+        EnqueueOutcome::QueuedForNextStep
+    }
+
     /// Claim the batch for the next LLM call of a running turn: ALL pending
     /// next-step messages (interjections first).
     pub fn claim_next_step(&self, session_key: &str) -> Vec<QueuedMessage> {

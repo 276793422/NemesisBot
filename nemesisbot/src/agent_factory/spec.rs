@@ -59,6 +59,11 @@ pub struct AgentLoopSpec {
     /// 落 home；None = 全部缺席（主/记录形态零变化；项目形态记录缺位时
     /// 也为 None——agents 记录是增强面，缺位 warn 降级不拒建 loop）。
     pub agent_home: Option<std::path::PathBuf>,
+    /// （围栏多根，2026-11-19 D 批）：项目注册表 `extra_dirs`（canonical
+    /// 绝对路径）——boundary.extra_roots 追加注入 + executor 子进程 env
+    /// 透传（开关两侧围栏同根）。诚实边界：不进 checkpoint 快照、不进
+    /// 前端文件树。非项目形态 = 空。
+    pub extra_dirs: Vec<std::path::PathBuf>,
     /// 子代理可见性：本 loop 的宿主形态标识——`project:{id}`（项目
     /// loop）/ `agent:{id}`（记录/自建 loop）/ `main`（主 loop，不经 spec
     /// 构建）。子代理注册表 `loop_origin` 字段的赋值源：详情视图按它区分
@@ -118,6 +123,13 @@ impl AgentLoopSpec {
             // 项目 loop 共享形态（浏览器 profile 不 per-project）。
             browser_profile: None,
             agent_home,
+            // 围栏多根：注册表 extra_dirs 原样透传（canonical 字符串 →
+            // PathBuf；校验/去重在 add_project_dir 落盘前已保证）。
+            extra_dirs: project
+                .extra_dirs
+                .iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
             loop_origin,
         }
     }
@@ -158,6 +170,8 @@ impl AgentLoopSpec {
             // 记录形态（selfbuilt/main）不设第二根——selfbuilt 的 home
             // 就是 exec_root（两根重合无意义），main 无 home 语义。
             agent_home: None,
+            // 记录形态无多根（注册表 extra_dirs 是项目形态专属契约）。
+            extra_dirs: Vec::new(),
             loop_origin: format!("agent:{}", record.agent_id),
         }
     }
@@ -397,7 +411,12 @@ pub fn build_agent_loop_from_spec(
     agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（同主 loop）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
@@ -427,6 +446,11 @@ pub fn build_agent_loop_from_spec(
     // 指令链（AGENTS.md/CLAUDE.md）根锚项目目录——项目可带自己的指令
     // 文件，与主 workspace 互不影响。
     agent_loop.set_workspace_root(project_dir.clone());
+    // 会话资产区根（2026-11-16 污染修复）：**主 workspace 锚**——项目
+    // loop 的 workspace_root 是项目目录（用户真实工作树），`agents/<id>/
+    // home` 资产树不得落进去；uploads/plans/hydrate/图片/记忆域五族消费
+    // 统一走 loop 的 session_homes_root（本注入是唯一裁决点）。
+    agent_loop.set_session_home_root(shared.workspace_dir().to_path_buf());
     // vault 域绑定 sidecar 权威路径（L26 修复 2026-11-11）：**主 workspace
     // 锚**——项目 loop 的 workspace_root 是项目目录（上面一行），不可作
     // 推导根；恒走 SharedResources 单一推导点（与 CLI 写入侧同点）。
@@ -538,22 +562,21 @@ pub fn build_agent_loop_from_spec(
         }
     }
     // cc_hooks 与主 loop 同一份 workspace config 目录（用户级 hook 方言
-    // 跨项目一致）；相对路径锚项目目录。
+    // 跨项目一致）；相对路径锚项目目录。恒建桥（即刻生效语义，同主 loop）。
     let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
     // 件2：桥句柄提升到构建作用域——spawn 闭包发 SubagentStart/Stop 用。
-    let mut project_cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> = None;
-    if let Some(bridge) =
-        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, project_dir.clone())
-    {
-        agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
-        project_cc_bridge = Some(std::sync::Arc::clone(&bridge));
-        bridge.register(&agent_loop);
-    }
+    let bridge =
+        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, project_dir.clone());
+    agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
+    let project_cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        Some(std::sync::Arc::clone(&bridge));
+    bridge.register(&agent_loop);
     // Todo 收尾提醒：同主 loop——项目会话正是 todowrite 忘
-    // 收尾的重灾区。workspace 与项目 loop 的 TodoToolConfig 同根
-    // （project_dir）。注册在用户 hooks 桥之后（用户脚本优先）。
+    // 收尾的重灾区。todo 是 bot 域会话态数据，锚主 workspace（与下方
+    // TodoToolConfig 同根；不落用户项目工作树）。注册在用户 hooks 桥
+    // 之后（用户脚本优先）。
     agent_loop.add_lifecycle_hook(std::sync::Arc::new(nemesis_agent::TodoCloseoutHook::new(
-        project_dir.clone(),
+        shared.workspace_dir(),
     )));
 
     // 4. Session store：共享主 loop 的同一 Arc（存储全局集中、会话隔离靠
@@ -566,12 +589,8 @@ pub fn build_agent_loop_from_spec(
     //    AgentLoop 对 None 优雅降级，零风险）。
 
     // 6. 工具注册：主配置构造后字段覆盖（项目锚 + 剥离三资产件套）。
-    let (mut tool_config, spawn_slot) = build_shared_tool_config(
-        shared,
-        &cfg,
-        &model_name,
-        Some(agent_loop.mcp_tool_snapshot()),
-    );
+    let (mut tool_config, spawn_slot, steer_slot) =
+        build_shared_tool_config(shared, &cfg, &model_name);
     // present_plan 工具供给（与 loop verdict 消费槽同一句柄）。
     tool_config.plan_present = Some(project_plan_present);
     // 项目 loop 同样接 present_files——交付物桶锚本 loop
@@ -598,17 +617,41 @@ pub fn build_agent_loop_from_spec(
     tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
         root: project_dir.clone(),
         restrict: true,
-        extra_roots: agent_home.iter().cloned().collect(),
+        extra_roots: {
+            let mut roots: Vec<std::path::PathBuf> = agent_home.iter().cloned().collect();
+            // 会话资产区树（2026-11-16 污染修复配套）：home 锚主 workspace
+            // 后，plan 产物 / 图片产物 / 模型显式写自家 home 都在主 ws
+            // `agents/` 下——围栏第二根放行该树（Bot 可自改的数据域，与
+            // 项目 agent home 同语义域；边界仍在主 workspace 内）。
+            roots.push(nemesis_path::resolve_agents_root_in_workspace(
+                &shared.workspace_dir(),
+            ));
+            // 围栏多根（2026-11-19 D 批）：注册表 extra_dirs 追加放行
+            // （canonical 校验在 add_project_dir 落盘前已保证——这里信任
+            // 注册表，主根/重叠检测不重跑）。
+            roots.extend(spec.extra_dirs.iter().cloned());
+            roots
+        },
         editor_gate,
+        // 项目 loop 不装 goals 守卫：root=项目目录，主 ws goals/ 本就界外
+        // （restrict 拒绝）；项目目录内无 goals 面。
+        goals_guard: None,
     }));
     // 项目 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
         agent_loop.set_workspace_boundary(boundary.clone());
     }
+    // todowrite：bot 域会话态数据，锚主 workspace（2026-11-17 污染修复
+    // ——2026-11-16 修复漏网：当时误判「合法项目根消费者」，判定视角用了
+    // 路由自洽而非数据归属；删侧回收站/删除链/sweeper 早已按主 ws 寻址）。
+    // 会话键在文件名里消毒隔离，同主 ws 的对话组会话互不串扰。
     tool_config.todo = Some(nemesis_agent::loop_tools::TodoToolConfig {
-        workspace: project_dir.clone(),
+        workspace: shared.workspace_dir(),
         event_tx: shared.agent_event_tx.clone(),
     });
+    // bot 域产物根（截图 temp / web_fetch spill）：同上数据归属视角——
+    // None = 回落 workspace（主 loop 零变化），项目臂显式主 workspace。
+    tool_config.bot_artifacts_root = Some(shared.workspace_dir());
     // 剥离：skills/forge 不挂项目 loop（None 覆盖对 cfg 双臂类型
     // 都成立——字段在 feature 关闭时本就是 Option<>）。工具集差异 =
     // 项目 prompt 更短 + 两 loop 共有工具 schema 交集字节一致（测试钉死）。
@@ -633,11 +676,12 @@ pub fn build_agent_loop_from_spec(
                 memory_manager_for_namespace(shared, &spec.memory_namespace)
             };
             // 会话资产区（2026-11-12，拍板「只在分叉时分叉」）：项目 loop
-            // 同注 fork 独立域解析器——homes_root = 项目目录（项目会话的
-            // home 树根，与 workspace_root/围栏同根）；非 fork 会话回落
-            // 上面选出的 mgr（主镜像域 / 项目 agent 域，行为零变化）。
+            // 同注 fork 独立域解析器——homes_root = 主 workspace（2026-11-16
+            // 污染修复：项目会话 home 树统一锚主 workspace，不再落项目
+            // 目录——项目目录是用户真实工作树）；非 fork 会话回落上面选出的
+            // mgr（主镜像域 / 项目 agent 域，行为零变化）。
             mgr.map(|mgr| {
-                let homes_root = project_dir.clone();
+                let homes_root = shared.workspace_dir().to_path_buf();
                 let shared_for_domains = shared.clone();
                 let exec = nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr)
                     .with_session_domain_resolver(Arc::new(move |session_key| {
@@ -660,12 +704,15 @@ pub fn build_agent_loop_from_spec(
     // cwd 执行；enabled/sandbox 开关与主 loop 同源 config）。：常驻
     // 路由按 spec 的解析闭包挂接（项目=kind+project_id 记录匹配；记录缺
     // 席时调用时诚实回落 per-call）。：围栏第二根（项目 agent home）
-    // 透传 per-call 子进程 env——开关两侧围栏同根。
+    // 透传 per-call 子进程 env——开关两侧围栏同根；多根 extra_dirs 同通道
+    // 透传（executor 子进程围栏与 gateway 侧一致，2026-11-19 D 批）。
+    let mut executor_extra_roots: Vec<std::path::PathBuf> = agent_home.iter().cloned().collect();
+    executor_extra_roots.extend(spec.extra_dirs.iter().cloned());
     let executor_channel = crate::exec_world::build_executor_channel_with_extra_roots(
         &shared.home,
         &project_dir,
         shared.config_store.handle(),
-        agent_home.iter().cloned().collect(),
+        executor_extra_roots,
     )?;
     let persistent_route = spec
         .persistent_resolve
@@ -805,19 +852,36 @@ pub fn build_agent_loop_from_spec(
             );
         }
     }
+    // 专家面（2026-11-16 放开 v1 边界）：名册 handle + provider 解析器注入
+    // spawn 闭包（与主 loop 同源同 handle；None = 无专家面，第 11 参非空
+    // 诚实 Err）。reloader roots = 主 workspace（专家模型覆盖解析锚
+    // config.json 所在 workspace，与上方该 loop 的 provider reloader 同构造）。
     inject_project_spawn_fn(
         &agent_loop,
         &spawn_slot,
         project_cc_bridge.clone(),
         &shared.bus,
         &spec.loop_origin,
+        shared.experts.as_ref().map(|s| s.handle()),
+        Arc::new(ModelProviderReloader {
+            home: shared.home.clone(),
+            workspace: shared.workspace_dir(),
+        }),
     );
+    // 子代理飞行中驾驶（项3）：项目 loop 同款 steer 闭包注入——
+    // 校验链单点在 AgentLoop::steer_subagent（loop_origin 比对保证
+    // 只驾驶本项目 loop 派生的子代理）。
+    inject_steer_fn(&agent_loop, &steer_slot);
     // 治理补全：connector 治理面与主 loop 同源——项目/
     // selfbuilt loop 同装 MCP（enable_mcp_reload），独占接管与 connector
     // 工具必须同覆盖，否则项目会话成为独占旁路（治理资产仍锚主 workspace，
     // 见 register_connector_governance 文档）。cfg 对齐注册条件。
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
+    // 会话钩子自管面：hooks 工具与主 loop 同源（写同一份 hooks.json 的
+    // scope 圈定组；项目会话同样只能给自己设）。落盘即热更（桥恒在，
+    // 即刻生效语义）。
+    register_hooks_tool(&agent_loop, shared);
     // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
     // ASM-08：装配自检（与主/集群 loop 同一闸，=甲）。

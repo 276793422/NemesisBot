@@ -147,8 +147,9 @@ pub fn build_agent_loop(
 
     let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
     // +: concurrent_request_mode from config.
-    // Default is "queue" (config.default.json + serde default agree); explicit
-    // "reject" keeps legacy busy-bounce; "steer" adds the `!` interrupt channel.
+    // Default is "steer" (config.default.json + serde default agree; 2026-11-03
+    // product decision — busy sessions accept inline input by default); explicit
+    // "reject" keeps legacy busy-bounce, "queue" keeps inbox parking.
     // Unknown strings warn + parse_concurrent_mode fails safe to reject.
     let mode_str = cfg
         .agents
@@ -231,7 +232,13 @@ pub fn build_agent_loop(
     // 纯观察者（不改写/不拦截），事件由 gateway 建、web pump 消费。
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（work 时间线 /
+            // Dashboard 事件面不落复扫前原文；与 dispatch 尾部权威复扫同源）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     // （devtool-upgrade）：事件发送端注入 loop——/plan /build 切换
@@ -401,14 +408,11 @@ pub fn build_agent_loop(
             ),
         }
     }
-    // hooks.json 方言层——workspace config 目录下有 hooks.json
-    // 就加载并挂上（工具钩子 + 生命周期钩子）。集群 agent 不挂（远端节点跑
-    // 本地用户任务，hook 拦截语义不跨节点复制——挂账决策）。加载失败 =
-    // warn + 跳过（fail-open，见 cc_hooks::load_from_dir）。
-    let mut cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> = None;
-    #[allow(unused_assignments)]
-    let mut cc_bridge_for_daily: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
-        None;
+    // hooks.json 方言层——恒建桥挂上（工具钩子 + 生命周期钩子；2026-11-20
+    // 即刻生效语义：缺失/坏文件也建桥待命，首个钩子落盘下次分发即生效，
+    // 无「重启建桥」中间态）。集群 agent 不挂（远端节点跑
+    // 本地用户任务，hook 拦截语义不跨节点复制——挂账决策）。解析失败 =
+    // warn + 空快照待命（fail-open，见 cc_hooks::load_from_dir）。
     // 路径收编：hooks.json 落位 <workspace>/config/hooks.json
     // （nemesis-path 真相源）；legacy <home>/config/hooks.json copy-once 迁移。
     let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
@@ -416,16 +420,19 @@ pub fn build_agent_loop(
         &shared.home.join("config"),
         &ws_config_dir,
     );
-    if let Some(bridge) =
-        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, shared.workspace_dir())
-    {
-        // SessionEnd 触发用（启动清理删除的会话逐个触发）。
-        cc_bridge = Some(std::sync::Arc::clone(&bridge));
-        cc_bridge_for_daily = Some(std::sync::Arc::clone(&bridge));
-        // PreCompact/PostCompact 触发用（loop.rs 压缩流水线经 cc_bridge 调桥）。
-        agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
-        bridge.register(&agent_loop);
-    }
+    let bridge = nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(
+        &ws_config_dir,
+        shared.workspace_dir(),
+    );
+    // hooks 工具装配（register_hooks_tool）用。
+    let cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        Some(std::sync::Arc::clone(&bridge));
+    // SessionEnd 触发用（daily 清理删除的会话逐个触发）。
+    let cc_bridge_for_daily: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        Some(std::sync::Arc::clone(&bridge));
+    // PreCompact/PostCompact 触发用（loop.rs 压缩流水线经 cc_bridge 调桥）。
+    agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
+    bridge.register(&agent_loop);
     // Todo 收尾提醒：终答案接受后清单还有未完成项 → 注入
     // 一次性提醒再答一轮（lifecycle hook；stop_hook_active 自限每 turn
     // 一次 + MAX_TURN_END_CONTINUES 封顶 fail-open）。注册在用户 hooks 桥
@@ -491,6 +498,38 @@ pub fn build_agent_loop(
         );
     }
 
+    // 会话钩子孤儿对账（HOOK 会话圈定批次三，启动一次；统一存储 2026-11-19
+    // 起对账对象 = hooks.json 的 scope 圈定组）：scope 圈定了不存在活会话的
+    // 组，把该会话从 scope 摘除（摘空整组删）。正常删除路径（dashboard 删
+    // 会话 / TTL 清理）已有 SessionEnd → purge 兜底；这里兜手动删日志文件等
+    // 旁路。live 集来自 session_logs 扫描（与 Dashboard 会话列表同一真相）；
+    // 集群/RPC 等非 web 键不在扫描面——它们的会话钩子按原样保留（工具只在
+    // 主/项目 loop 注册，生产写入面只有 web 键）。
+    // 先行一步退役清理：旧 hooks.session.json（分离存储时代）在场即删 +
+    // warn（零数据迁移——统一存储重构的诚实降级，见 retire_session_store）。
+    {
+        nemesis_agent::cc_hooks::retire_session_store(&ws_config_dir);
+        let rows = nemesis_web::handlers::logs::scan_session_logs(
+            &shared.workspace_dir().to_string_lossy(),
+        );
+        let live: std::collections::HashSet<String> = rows
+            .iter()
+            .filter_map(|r| r["session_key"].as_str())
+            .map(|k| {
+                k.strip_prefix(nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX)
+                    .unwrap_or(k)
+                    .to_string()
+            })
+            .collect();
+        let purged = nemesis_agent::cc_hooks::reconcile_session_orphans(&ws_config_dir, &live);
+        if purged > 0 {
+            info!(
+                purged,
+                "[AgentFactory] session-hook orphan reconciliation (startup)"
+            );
+        }
+    }
+
     // 6. Workspace state manager (disk-based — new instance).
     {
         let state_mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(&workspace_dir);
@@ -499,12 +538,8 @@ pub fn build_agent_loop(
 
     // 7. Build tool config + register all tools + enable MCP.
     // 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
-    let (mut tool_config, spawn_slot) = build_shared_tool_config(
-        shared,
-        &cfg,
-        &model_name,
-        Some(agent_loop.mcp_tool_snapshot()),
-    );
+    let (mut tool_config, spawn_slot, steer_slot) =
+        build_shared_tool_config(shared, &cfg, &model_name);
     // present_plan 工具供给（plan 模式白名单 + SharedToolConfig
     // 注册同源；loop 侧 verdict 消费槽已装配）。
     tool_config.plan_present = Some(plan_present_handle);
@@ -572,6 +607,15 @@ pub fn build_agent_loop(
         agent_loop.set_memory_inject(shared.memory_manager.clone(), auto, top_k);
         if auto {
             info!("[AgentFactory] memory auto-inject enabled (top_k={top_k})");
+        }
+        // 项2 P2：召回质量闸装配（memory.recall_gate，默认关 = None 直通）。
+        // config 快照即取即放（guard 不跨 await）；幂等替换，gateway/run/acp
+        // 三入口同源生效。
+        if let Some(ref mgr) = shared.memory_manager {
+            let cfg_snapshot = shared.config_store.handle().read().clone();
+            if let Some(gate) = crate::recall_gate::build_recall_gate(&cfg_snapshot) {
+                mgr.set_recall_gate(gate);
+            }
         }
     }
     #[cfg(not(feature = "memory"))]
@@ -656,6 +700,96 @@ pub fn build_agent_loop(
                 n
             );
         }
+    }
+
+    // 8e. 自配速 durable loop（项5）：loop_wakeup/loop_status/loop_finish
+    // 三工具（主 agent 专属——绑定模型按 session_key 反查；项目 loop 工具
+    // 子集不带，loop 绑定项目会话 P1 不支持）。loops 目录 = <workspace>/loops
+    // （与 gateway 驱动器同一目录——工具写排程、驱动器 sweep 到期，双侧
+    // 经盘上状态文件交接，无共享内存依赖）。estop 冻结期 wakeup 拒绝。
+    #[cfg(feature = "loop")]
+    {
+        let loops_dir = nemesis_loop::loops_dir(&workspace_dir);
+        agent_loop.register_tool(
+            crate::loop_state_tool::WAKEUP_TOOL_NAME.to_string(),
+            Box::new(crate::loop_state_tool::LoopWakeupTool::new(
+                loops_dir.clone(),
+                std::sync::Arc::clone(&shared.estop),
+            )),
+        );
+        agent_loop.register_tool(
+            crate::loop_state_tool::STATUS_TOOL_NAME.to_string(),
+            Box::new(crate::loop_state_tool::LoopStatusTool::new(
+                loops_dir.clone(),
+            )),
+        );
+        agent_loop.register_tool(
+            crate::loop_state_tool::FINISH_TOOL_NAME.to_string(),
+            Box::new(crate::loop_state_tool::LoopFinishTool::new(loops_dir)),
+        );
+        info!("[AgentFactory] durable loop tools registered (loop_wakeup/loop_status/loop_finish)");
+    }
+
+    // 8f. agent 自举插件（项6）：plugin_search / plugin_propose 两工具
+    //（主 agent 专属——项目 loop 工具子集不带、cluster worker agent 不装：
+    // 远端节点不跑本地插件；同 8c 边界）。installer / 审批门任一缺席
+    //（plugins.wasm.enabled=false / feature 裁掉 / 构建失败）= 不注册，
+    // 零影响。min_tier=big 双闸（供给 + 分发）；提案经既有九步漏斗 +
+    // LateInstallApprover 审批卡（auto_approve 资格命中才短路，红线
+    // 「卡面永不静默跳过」由 plugins.install op 标签的规则表拒绝侧兜底）。
+    // 审计 sink = SharedResources.security_plugin 直记审计链。
+    #[cfg(feature = "plugins-wasm")]
+    if let (Some(installer), Some(gate)) = (&shared.plugin_installer, &shared.plugin_install_gate) {
+        agent_loop.register_tool(
+            crate::plugin_bootstrap::SEARCH_TOOL_NAME.to_string(),
+            Box::new(crate::plugin_bootstrap::PluginSearchTool::new(
+                workspace_dir.clone(),
+            )),
+        );
+        agent_loop.register_tool(
+            crate::plugin_bootstrap::PROPOSE_TOOL_NAME.to_string(),
+            Box::new(crate::plugin_bootstrap::PluginProposeTool::new(
+                workspace_dir.clone(),
+                installer.clone(),
+                gate.clone(),
+                std::sync::Arc::clone(&shared.estop),
+                shared.security_plugin.clone(),
+            )),
+        );
+        info!("[AgentFactory] plugin bootstrap tools registered (plugin_search/plugin_propose)");
+    }
+
+    // 8g. 目标系统 agent 工具（2026-11-17）：`goal` 单工具三 action
+    //（主 agent 专属——项目 loop 工具子集不带、cluster worker agent 不装：
+    // 目标绑定主会话，worker 会话无 goals 语义；同 8c/8f 边界）。
+    // config_path 注入 disable 的 allow_agent_disable 热读（config.json
+    // 单一真相源）。tier 策略：不进 tier_allowed_tools（仅 big 全量档可见）。
+    #[cfg(feature = "goals")]
+    {
+        agent_loop.register_tool(
+            crate::goal_tool::GOAL_TOOL_NAME.to_string(),
+            Box::new(crate::goal_tool::GoalTool::new(
+                workspace_dir.clone(),
+                Some(shared.home.join("config.json")),
+            )),
+        );
+        info!("[AgentFactory] goal tool registered (goal add/delete/disable)");
+    }
+
+    // 8h. 邮件 agent 工具（B4，2026-11-18）：`mail` 单工具三 action
+    //（send/list/read——**无 delete**，schema 层面不存在，删信/地址注册
+    // 只经宿主治理面；min_tier=normal 双闸防 mini 误用外传面；send 投影
+    // network_request 过 8 层、list/read 投影 internal）。handle 缺席
+    //（总闸关 / 名册关 / DLL 缺席 / 装载失败）= 不注册，零影响。gateway
+    // 装载链（GatewayCtx 构造期 load_mail_plugin）先于本函数——注册判定
+    // 无时序缺口；run/acp headless 不 load 插件 = 自然不注册。
+    #[cfg(feature = "mail")]
+    if crate::mail_plugin_loader::plugin_handle().is_some() {
+        agent_loop.register_tool(
+            crate::mail_tool::TOOL_NAME.to_string(),
+            Box::new(crate::mail_tool::MailTool::new()),
+        );
+        info!("[AgentFactory] mail tool registered (mail send/list/read)");
     }
 
     // 9. Continuation manager (disk-persisted — new instance).
@@ -805,7 +939,23 @@ pub fn build_agent_loop(
             info!("[AgentFactory] checkpoint gc enabled (keep_turns/keep_days per config)");
         }
     }
-    inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus, cc_bridge.clone());
+    // 专家面（2026-11-13）：名册 handle + provider 解析器注入 spawn 闭包
+    //（None = 无专家面，第 11 参非空时闭包诚实报错）。reloader 纯数据件，
+    // 与 loop provider 重建器同构造（home/workspace 锚定）。
+    inject_spawn_fn(
+        &agent_loop,
+        &spawn_slot,
+        &shared.bus,
+        cc_bridge.clone(),
+        shared.experts.as_ref().map(|s| s.handle()),
+        Arc::new(ModelProviderReloader {
+            home: shared.home.clone(),
+            workspace: shared.workspace_dir(),
+        }),
+    );
+    // 子代理飞行中驾驶（项3）：steer 闭包注入（Weak 同款防环；校验链
+    // 单点在 AgentLoop::steer_subagent）。
+    inject_steer_fn(&agent_loop, &steer_slot);
     // 插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
     // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。
@@ -974,6 +1124,9 @@ pub fn build_agent_loop(
     // 项目/selfbuilt loop 共用同一治理面装配）。
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
+    // 会话钩子自管面：hooks 工具（只能给自己设；桥在场 = 热更即时生效）。
+    // 挂在 connector governance 之后（独立面，无 connectors 依赖）。
+    register_hooks_tool(&agent_loop, shared);
     // 紫微系统.2：profile.tools[] → 动态工具注册（poll_report 可调；
     // call_fn/hook_capture 诚实报 实装中）。config 闸同 WSAPI 门关；
     // profile 新增后经 `ziwei.refresh` 幂等重注册（先清 zw_* 再装）。

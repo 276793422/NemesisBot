@@ -127,7 +127,9 @@ impl LlmProvider for FailThenHang {
     }
 }
 
-fn assert_estop_done(result: Result<(Option<LlmResponse>, String), AgentEvent>) {
+/// 泛型 Ok 载荷：transient 环返回三元组（带重试次数）、限流环返回二元组，
+/// 两臂共用本断言（急停终局文案逐字节一致）。
+fn assert_estop_done<T: std::fmt::Debug>(result: Result<T, AgentEvent>) {
     match result {
         Err(AgentEvent::Done(m)) => {
             assert_eq!(

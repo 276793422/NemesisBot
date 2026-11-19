@@ -102,6 +102,12 @@ pub struct VectorStore {
     /// rewrite 时先行写回——无关条目的改写不会把这些条目从磁盘抹掉。
     /// delete_entry 按 id 同步摘除，避免被删条目经留档行复活。
     unloaded_raw_lines: RwLock<Vec<String>>,
+    /// 回归探针（test/test-fixture only）：delete_entry 命中、即将进入
+    /// 全量重写持久化 IO 前回调——BUG-20261119-201 回归锁用（manager 层
+    /// delete 路径守卫纪律：同步 IO 必须在 manager 读守卫外执行）。
+    /// 生产构建 cfg 裁掉，字段与调用点一并消失，零开销。
+    #[cfg(any(test, feature = "test-fixture"))]
+    delete_io_probe: RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// Compute cosine similarity between two vectors.
@@ -143,6 +149,8 @@ impl VectorStore {
             persist_path,
             load_failed: std::sync::atomic::AtomicBool::new(false),
             unloaded_raw_lines: RwLock::new(Vec::new()),
+            #[cfg(any(test, feature = "test-fixture"))]
+            delete_io_probe: RwLock::new(None),
         };
 
         // Load persisted data
@@ -172,9 +180,19 @@ impl VectorStore {
             persist_path,
             load_failed: std::sync::atomic::AtomicBool::new(false),
             unloaded_raw_lines: RwLock::new(Vec::new()),
+            #[cfg(any(test, feature = "test-fixture"))]
+            delete_io_probe: RwLock::new(None),
         };
         let _ = store.load_persisted_sync();
         store
+    }
+
+    /// 注入回归探针（test/test-fixture only）。None = 清除。
+    /// 注意：回调运行在 delete_entry 的 docs 写锁持有期内，回调体不得
+    /// 触碰 VectorStore 自身（会自锁）——只允许断言外部锁状态。
+    #[cfg(any(test, feature = "test-fixture"))]
+    pub fn set_delete_io_probe(&self, probe: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        *self.delete_io_probe.write() = probe;
     }
 
     /// Store an entry in the vector store.
@@ -197,6 +215,12 @@ impl VectorStore {
         &self,
     ) -> std::sync::Arc<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync> {
         self.embed.clone()
+    }
+
+    /// Store config's similarity threshold（守卫纪律消费方需要显式阈值——
+    /// embed 外提后走 query_with_embedding，config 不再对调用方隐藏）。
+    pub fn similarity_threshold(&self) -> f64 {
+        self.config.similarity_threshold
     }
 
     // Round-5: removed dead `embed_raw` (zero callers). A second public embed
@@ -227,7 +251,22 @@ impl VectorStore {
         min_score: f64,
     ) -> Result<QueryResult, String> {
         let query_embedding = (self.embed)(query)?;
+        self.query_with_embedding(&query_embedding, query, limit, type_filter, min_score)
+    }
 
+    /// 以预计算 embedding 查询（BUG-20261114-032 守卫纪律配套 API）：
+    /// 调用方先 clone embed 句柄 / store Arc、丢上层守卫后再推理，把结果
+    /// 喂给这里——锁不跨 tens-of-ms ONNX 调用。评分/排序/limit 语义与
+    /// query_with_threshold 单一真相源（本函数即其 embed 拆分形态，
+    /// query_with_threshold 只是 embed+委托的便捷壳）。
+    pub fn query_with_embedding(
+        &self,
+        query_embedding: &[f32],
+        query: &str,
+        limit: usize,
+        type_filter: &[String],
+        min_score: f64,
+    ) -> Result<QueryResult, String> {
         let limit = if limit == 0 {
             self.config.max_results
         } else {
@@ -246,7 +285,7 @@ impl VectorStore {
                 }
             })
             .filter_map(|doc| {
-                let sim = cosine_similarity(&query_embedding, &doc.embedding);
+                let sim = cosine_similarity(query_embedding, &doc.embedding);
                 if sim >= min_score {
                     Some((sim, doc))
                 } else {
@@ -310,6 +349,15 @@ impl VectorStore {
             });
         }
         if found {
+            // 回归探针（test/test-fixture）：重写 IO 前回调——回归锁在
+            // 回调内断言 manager 级守卫已释放（BUG-20261119-201）。
+            #[cfg(any(test, feature = "test-fixture"))]
+            {
+                let probe = self.delete_io_probe.read().clone();
+                if let Some(probe) = probe {
+                    probe();
+                }
+            }
             self.rewrite_persist_file(&docs);
         }
         found

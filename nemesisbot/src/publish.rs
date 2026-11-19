@@ -66,6 +66,16 @@ const ST_FAILED: &str = "failed";
 /// guest 已执行过（可能已发 HTTP），**不带**本标记 → 走对账保守分支。
 const NOT_SENT_MARKER: &str = "[not-sent]";
 
+/// plugin 子系统句柄类型别名（R8 复评整改）：wasm 形态 = 真注册表类型；
+/// 非 wasm 裁剪形态 = 空枚举（**不可构造**——`Option<&Arc<_>>` 只能是
+/// `None`，plugin 路由臂恒走「子系统未编译」诚实失败）。调用点签名
+/// （publish_task_delivery / invoke_route / reconcile_by_match）以别名
+/// 书写，两形态零改动。
+#[cfg(feature = "plugins-wasm")]
+type PublishPluginManager = nemesis_plugins_wasm::registry::PluginManager;
+#[cfg(not(feature = "plugins-wasm"))]
+enum PublishPluginManager {}
+
 /// 发布协议声明（flow 模板 publish 步 args 解析产物；哑结构——全部是渲染
 /// 后的字面量，宿主不做任何域解释）。域剥离批 C-3：创建/对账的 op 名、
 /// args 形状、结果引用路径、匹配比较式全部来自模板声明。
@@ -94,11 +104,6 @@ pub(crate) struct PublishProtocol {
     pub reconcile_limit: usize,
     /// 页数硬上限（缺省 5；封顶 = Inconclusive）。
     pub reconcile_max_pages: usize,
-    /// Gerrit 臂提交信息模板（可选；push_ref 以 `refs/for/` 开头时消费）。
-    /// parse 期已渲染条目 token（ext_key/title/board_issue/report_path），
-    /// 发布侧 rt 期再渲染 change_id/branch/task_id；模板未带 Change-Id
-    /// footer 由发布侧补齐（Gerrit 缺 footer 拒收）。
-    pub commit_message: Option<String>,
 }
 
 impl Default for PublishProtocol {
@@ -115,7 +120,6 @@ impl Default for PublishProtocol {
             reconcile_page_key: "page".to_string(),
             reconcile_limit: 20,
             reconcile_max_pages: 5,
-            commit_message: None,
         }
     }
 }
@@ -130,11 +134,47 @@ pub(crate) enum OpRoute {
     Plugin { slug: String, op: String },
 }
 
+/// `plugin:<slug>:<op>` 步骤引用解析（cfg 双版，R8 复评整改）：wasm 形态
+/// 委托单一真相源 [`nemesis_plugins_wasm::manifest::parse_plugin_step_ref`]；
+/// 非 wasm 裁剪形态用本地等价实现（纯字符串解析——`plugin:` 前缀 + slug/op
+/// 两段，slug 段 `[a-z0-9-]{1,64}` 不以 - 开头结尾且不为 `all`，op 段非空
+/// ≤64 字节无空白/控制字符；漂移由 wasm 形态单测钉住两版对若干形态同判）。
+/// 非 wasm 形态解析仍然 full-fidelity：声明坏 loud 拒的运行期契约不因裁剪
+/// 缺席而放宽。
+#[cfg(feature = "plugins-wasm")]
+fn parse_plugin_step_ref(kind: &str) -> Option<(&str, &str)> {
+    nemesis_plugins_wasm::manifest::parse_plugin_step_ref(kind)
+}
+
+#[cfg(not(feature = "plugins-wasm"))]
+fn parse_plugin_step_ref(kind: &str) -> Option<(&str, &str)> {
+    fn valid_slug(slug: &str) -> bool {
+        (1..=64).contains(&slug.len())
+            && slug
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && !slug.starts_with('-')
+            && !slug.ends_with('-')
+            && slug != "all"
+    }
+    fn valid_step_op(op: &str) -> bool {
+        !op.is_empty()
+            && op.len() <= 64
+            && op.chars().all(|c| !c.is_whitespace() && !c.is_control())
+    }
+    let rest = kind.strip_prefix("plugin:")?;
+    let (slug, op) = rest.split_once(':')?;
+    if !valid_slug(slug) || !valid_step_op(op) {
+        return None;
+    }
+    Some((slug, op))
+}
+
 /// 路由解析（单点）：`plugin:` 前缀经 `parse_plugin_step_ref` 判定，解析
 /// 失败 = 声明坏 loud 拒（不给运行期留「当原语名静默错」黑洞）；其余 =
 /// Native 自由文本（词表裁决在 connector 侧，宿主不域解释）。
 pub(crate) fn parse_op_route(op: &str) -> Result<OpRoute, String> {
-    if let Some((slug, step_op)) = nemesis_plugins_wasm::manifest::parse_plugin_step_ref(op) {
+    if let Some((slug, step_op)) = parse_plugin_step_ref(op) {
         return Ok(OpRoute::Plugin {
             slug: slug.to_string(),
             op: step_op.to_string(),
@@ -230,14 +270,16 @@ enum Preflight {
         /// 交付内容树（payload `tree` 原样透传；缺席/空 = None）——git 半边
         /// 重试幂等判断的等值锚（分支树 == 交付树 → 上次产物复用）。
         delivery_tree: Option<String>,
-        /// 交付基线树（payload `base_tree` 透传；缺席/空 = None）——Gerrit
-        /// 臂三方合并的基树锚（缺席时回落基线提交的树）。
-        base_tree: Option<String>,
         /// 交付 payload 的 `publish_stage`（续作留痕）：`pr_pending` =
         /// 上次已到达发布条目创建阶段（进程崩溃/落账失败），重试先对账防
         /// 重复建条目；其余值（commit_generated/push_completed/published/
         /// 缺省）走常规路径。
         stage: Option<String>,
+        /// 意图已前进（R1 复评整改）：payload 已带非空 `published_commit`
+        /// 或 `published_branch`——发布意图曾真实落盘（git 半边已完成）。
+        /// 与 `stage` 解耦判定续作形态：旧账本/半行账（stage 缺失但意图
+        /// 在场）同样走对账先行的保守路径，不再单点信任 stage 字段。
+        intent_advanced: bool,
     },
 }
 
@@ -370,6 +412,14 @@ fn preflight(
         .get("publish_stage")
         .and_then(|v| v.as_str())
         .map(str::to_string);
+    // 意图前进判定（R1）：published_commit/published_branch 任一非空 =
+    // git 半边意图曾落盘。与 stage 双锚——半行账（stage 丢/旧格式）不漏判。
+    let intent_advanced = ["published_commit", "published_branch"].iter().any(|k| {
+        rec.payload
+            .get(k)
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.trim().is_empty())
+    });
 
     let issue_title = resolve_issue_title(store, task_id);
     let title = arg_str(args, "title")
@@ -385,8 +435,8 @@ fn preflight(
         title,
         already_merged,
         delivery_tree,
-        base_tree: expected_tree,
         stage,
+        intent_advanced,
     })
 }
 
@@ -408,21 +458,24 @@ const PREFLIGHT_NO_PATCH: &str =
 ///   [`nemesis_board::git_repo:apply_patch_new_branch`] 的内容级复用探针
 ///   （父基线一致 + patch-over-HEAD tree 等值， 复评 移植）——
 ///   载荷无 `tree` 锚也能安全续作，等值校验由 git 层完成；
-/// - 分支在场且树不等值（有锚可比）→ Err 诚实拒绝不猜（分支被其他内容占用）。
+/// - 分支在场且树不等值（有锚可比）→ Err 诚实拒绝不猜（分支被其他内容
+///   占用；人为改分支仍拒绝，验收保全）。
 fn branch_reuse_decision(
-    existing: Option<(String, String)>,
+    existing: Option<&(String, String)>,
     delivery_tree: Option<&str>,
 ) -> Result<Option<String>, String> {
-    match existing {
-        None => Ok(None),
-        Some((_commit, _branch_tree)) if delivery_tree.is_none() => Ok(None),
-        Some((commit, branch_tree)) => match delivery_tree {
-            Some(dt) if dt == branch_tree => Ok(Some(commit)),
-            _ => Err(format!(
-                "分支已存在且指向树 {branch_tree} ≠ 交付树——分支被其他内容占用，拒绝覆盖"
-            )),
-        },
+    let Some((commit, branch_tree)) = existing else {
+        return Ok(None);
+    };
+    if delivery_tree == Some(branch_tree.as_str()) {
+        return Ok(Some(commit.clone()));
     }
+    if delivery_tree.is_none() {
+        return Ok(None);
+    }
+    Err(format!(
+        "分支已存在且指向树 {branch_tree} ≠ 交付树——分支被其他内容占用，拒绝覆盖（人工删除本地交付分支后重试可重铸）"
+    ))
 }
 
 fn base_drift_detail(
@@ -456,7 +509,7 @@ pub(crate) async fn publish_task_delivery(
     workspace: &Path,
     args: &Value,
     protocol: Option<&PublishProtocol>,
-    plugin_manager: Option<&Arc<nemesis_plugins_wasm::registry::PluginManager>>,
+    plugin_manager: Option<&Arc<PublishPluginManager>>,
 ) -> Result<Value, String> {
     // 域剥离批 C-3：发布协议（创建/对账 op + args 形状）只来自 flow 模板
     // 声明；宿主无内置协议，缺席 = 诚实报错不猜。
@@ -483,15 +536,10 @@ pub(crate) async fn publish_task_delivery(
     let session_key = format!("publish:{task_id}");
     let branch = format!("nemesis/task-{task_id}");
     let branch_key = format!("{task_id}:branch");
-    // 批 B（SC 套件 Gerrit 臂 + 代理）：可选步参（模板声明面，值已装载期
-    // config 渲染）——
-    // - push_ref：推送 refspec（缺省 refs/heads/{branch}；`refs/for/` 前缀
-    //   = Gerrit 评审形态：push 本身建 change，交付重整单提交 + Change-Id）；
+    // 批 B：可选步参（模板声明面，值已装载期 config 渲染）——
+    // - push_ref：推送 refspec（缺省 refs/heads/{branch}）；
     // - proxy：git2 网络代理（socks5h://host:port；空值/含未渲染 token =
-    //   未配置语义——实例配置 proxy 键缺省空串，装载期渲染后即空）；
-    // - Change-Id：task_id 确定性派生（SHA-1）——重试重推同 Change-Id =
-    //   Gerrit 同一 change 的新 patchset，评审号稳定；仅 Gerrit 臂消费，
-    //   rt token 面恒可用（非 Gerrit 声明里引用 = 渲染为派生值，无副作用）。
+    //   未配置语义——实例配置 proxy 键缺省空串，装载期渲染后即空）。
     let push_ref = args
         .get("push_ref")
         .and_then(|v| v.as_str())
@@ -505,7 +553,6 @@ pub(crate) async fn publish_task_delivery(
         .map(str::trim)
         .filter(|s| !s.is_empty() && !s.contains("{{"))
         .map(str::to_string);
-    let change_id = nemesis_board::git_repo::derive_change_id(&task_id).ok();
 
     let pre = match preflight(db, store, &task_id, args) {
         Ok(Preflight::Already(v)) => return Ok(v),
@@ -519,13 +566,18 @@ pub(crate) async fn publish_task_delivery(
         title,
         already_merged,
         delivery_tree,
-        base_tree,
         stage,
+        intent_advanced,
     } = pre
     else {
         unreachable!("preflight 只产 Already/Proceed 两形态");
     };
-    let pr_pending_retry = stage.as_deref() == Some("pr_pending");
+    // 续作形态判定（R1 去单字段依赖）：stage==pr_pending 显式；stage 缺
+    // 失或中间态但意图已前进（published_commit/branch 在场——warn 时代的
+    // 半行账、旧格式账本）同样走对账先行的保守路径；published 终态不进
+    // 续作（preflight 已按 external_ref 短路，此处防御）。
+    let pr_pending_retry = stage.as_deref() == Some("pr_pending")
+        || (stage.as_deref() != Some("published") && intent_advanced);
 
     // ③ git 半边。重试幂等双层（真链第二缺口 + 复评）：上次
     // 发布可能 git 半边已完成（分支已推、条目创建卡审批/网络）——失败文案
@@ -543,7 +595,7 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
-    let commit_hex = match branch_reuse_decision(existing, delivery_tree.as_deref()) {
+    let commit_hex = match branch_reuse_decision(existing.as_ref(), delivery_tree.as_deref()) {
         Ok(Some(c)) => c,
         Ok(None) => {
             // 分支缺席（或锚缺席交 git 层探针裁决）→ 常规建分支。第三臂
@@ -587,116 +639,31 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
-    // ③.5 Gerrit 评审形态（批 B，SC 套件）：push_ref 以 `refs/for/` 开头 =
-    // Gerrit change 评审——push 本身建 change（无 MR 对象，REST 建条目走
-    // query-as-create：create_op = change_list 按 Change-Id 查询，已建 =
-    // 收口落账、未建 = 诚实失败留 pr_pending 由下轮对账收敛）。交付内容
-    // 重整为**单提交 atop 目标分支头**（refs/remotes/origin/<target>，目标
-    // 提交缺席 = 副本未 sync，诚实 Err）：
-    // - 交付树 = 当前 commit 的树（reuse/apply/already_merged 三臂通吃——
-    //   树是内容等价面）；基树 = payload `base_tree` 锚，缺席取基线提交的
-    //   树（基线漂移已在 preflight 挡过，此处只做树解析）；
-    // - 三方合并冲突 = 诚实 Err 人工 rebase；合并树 == 目标头树 = 诚实 Err
-    //   无可发布差异（交付已在目标分支）；目标分支被本地检出 = Err。
-    // 产出 commit 替换 commit_hex（refs/heads/{branch} 单亲重置——分支是
-    // 本地交付面，推送走 refs/for/<target>，远端主线零污染）。
-    let commit_hex = match push_ref.strip_prefix("refs/for/") {
-        Some(target) => {
-            let Some(change_id) = change_id.as_ref() else {
-                return Ok(fail_outcome(
-                    &task_id,
-                    &branch,
-                    "Change-Id 派生失败（git 哈希原语异常）——Gerrit 臂拒绝发布".to_string(),
-                ));
-            };
-            let delivery_tree_hex =
-                match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &commit_hex) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        return Ok(fail_outcome(
-                            &task_id,
-                            &branch,
-                            format!("Gerrit 臂交付树解析失败（确定失败，可重试）: {e}"),
-                        ));
-                    }
-                };
-            let base_tree_hex = match base_tree.as_deref().filter(|s| !s.trim().is_empty()) {
-                Some(t) => t.to_string(),
-                None => {
-                    match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &expected_base) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            return Ok(fail_outcome(
-                                &task_id,
-                                &branch,
-                                format!(
-                                    "Gerrit 臂基树解析失败（基线提交 {expected_base} 不在副本仓——副本被重物化？可重试，再失败需人工核查）: {e}"
-                                ),
-                            ));
-                        }
-                    }
-                }
-            };
-            // 提交信息：commit_message 模板 rt 第二遍渲染（change_id/branch/
-            // task_id 运行期 token；条目 token 已在 parse 期消化）；模板未
-            // 带 Change-Id footer 时补齐——Gerrit 缺 footer 直接拒收
-            //（missing Change-Id）。
-            let mut message = match &protocol.commit_message {
-                Some(tpl) => crate::flow_engine::render_tokens(tpl, |key: &str| match key {
-                    "change_id" => Some(change_id.clone()),
-                    "branch" => Some(branch.clone()),
-                    "task_id" => Some(task_id.clone()),
-                    _ => None,
-                }),
-                None => format!("NemesisBot task {task_id}: {title}"),
-            };
-            if !message.contains("Change-Id:") {
-                while message.ends_with('\n') {
-                    message.pop();
-                }
-                message.push_str(&format!("\n\nChange-Id: {change_id}"));
-            }
-            match nemesis_board::git_repo::single_commit_atop(
-                &copy_dir,
-                &branch,
-                target,
-                &base_tree_hex,
-                &delivery_tree_hex,
-                &message,
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    return Ok(fail_outcome(
-                        &task_id,
-                        &branch,
-                        format!(
-                            "Gerrit 单提交重整失败（确定失败，可重试——同 Change-Id 幂等）: {e}"
-                        ),
-                    ));
-                }
-            }
-        }
-        None => commit_hex,
-    };
     // 阶段留痕（续作；best-effort——留痕写失败不阻断发布本身，只降级
     // 重试续作的精确度，warn 可观测）。**阶段单调不回退**：pr_pending 现场
     // 续作时跳过中间态——把 pr_pending 覆盖成 commit_generated/push_completed
     // 后，若本次重试又在对账/创建窗口中断，下次重试丢失 pr_pending 语义 →
     // 不对账直建条目 = 重复建条目风险（stage 只前进不后退）。
-    if !pr_pending_retry
-        && let Err(e) = db.merge_delivery_payload(
-            &branch_key,
-            &json!({ "publish_stage": "commit_generated", "published_commit": commit_hex }),
-        )
-    {
-        tracing::warn!(task_id = %task_id, "[Publish] commit_generated 留痕失败: {e}");
+    if !pr_pending_retry {
+        let stage_payload =
+            json!({ "publish_stage": "commit_generated", "published_commit": commit_hex });
+        if let Err(e) = db.merge_delivery_payload(&branch_key, &stage_payload) {
+            // R1 复评整改：意图未落盘就不做外部写——warn+继续把「重试续
+            // 作精确度」降级成「重复建条目风险」。此处中止（commit 已在
+            // 本地分支，重试经 branch_reuse_decision 树等值/重整锚幂等复
+            // 用，安全）。
+            return Ok(fail_outcome(
+                &task_id,
+                &branch,
+                format!("发布意图落盘失败（可重试）: {e}"),
+            ));
+        }
     }
     // ④ 推送（vault PAT；匿名路径 = 公开仓语义，与 clone 凭据对称）。凭据
     // 别名从 create_op 路由推导（a 单点）：Plugin → plugin/<slug>/pat
     // （自持插件 PAT），Native → connector/<id>/pat。批 B：cred_secret 显式
-    // 覆盖优先（Gerrit = HTTP Basic 用户名 + HTTP Password，别名与 GitLab
-    // PAT 分开，如 plugin/sc-bugfix/gerrit_http_pass；cred_user 缺省回落
-    // owner——GitLab HTTPS+PAT 任意非空用户名语义不变）。
+    // 覆盖优先（cred_user 缺省回落 owner——HTTPS+PAT 任意非空用户名语义
+    // 不变）。
     let cred = match args
         .get("cred_secret")
         .and_then(|v| v.as_str())
@@ -733,25 +700,30 @@ pub(crate) async fn publish_task_delivery(
             format!("分支推送失败（确定失败，可重试——重推同内容幂等）: {e}"),
         ));
     }
-    if !pr_pending_retry
-        && let Err(e) = db.merge_delivery_payload(
-            &branch_key,
-            &json!({ "publish_stage": "push_completed", "published_commit": commit_hex }),
-        )
-    {
-        tracing::warn!(task_id = %task_id, "[Publish] push_completed 留痕失败: {e}");
+    if !pr_pending_retry {
+        let stage_payload =
+            json!({ "publish_stage": "push_completed", "published_commit": commit_hex });
+        if let Err(e) = db.merge_delivery_payload(&branch_key, &stage_payload) {
+            // R1 复评整改：push 已完成但意图未落盘 = 本地分支领先账本——
+            // 中止（重试树等值/重整锚复用 + 重推幂等，不做无账本锚的外部
+            // 推进）。
+            return Ok(fail_outcome(
+                &task_id,
+                &branch,
+                format!("发布意图落盘失败（可重试）: {e}"),
+            ));
+        }
     }
 
     // ⑤ 发布条目创建 + unknown 对账。运行期 token 第二遍渲染（git 步之后
     // commit/base_sha 才存在；branch/task_id 幂等重渲；未知 token 保持字面
     // 量——渲染原语契约，畸形声明由解析期校验兜底）。
     let rt = |tpl: &str| {
-        crate::flow_engine::render_tokens(tpl, |key: &str| match key {
+        crate::flow_proto::render_tokens(tpl, |key: &str| match key {
             "commit" => Some(commit_hex.clone()),
             "base_sha" => Some(expected_base.clone()),
             "branch" => Some(branch.clone()),
             "task_id" => Some(task_id.clone()),
-            "change_id" => change_id.clone(),
             _ => None,
         })
     };
@@ -813,16 +785,20 @@ pub(crate) async fn publish_task_delivery(
     }
     // 阶段留痕：pr_pending 在创建请求发出**之前**落账——创建请求发出后
     // 结果丢失（进程崩溃/响应不可解析）时，重试凭此先对账防重复建条目。
-    if let Err(e) = db.merge_delivery_payload(
-        &branch_key,
-        &json!({
-            "publish_stage": "pr_pending",
-            "published_commit": commit_hex,
-            "published_branch": branch,
-            "publish_op": protocol.create_op,
-        }),
-    ) {
-        tracing::warn!(task_id = %task_id, "[Publish] pr_pending 留痕失败: {e}");
+    // R1 复评整改：落账失败不再 warn+继续（无 pr_pending 锚的创建请求 =
+    // 中断后盲目重建），改中止——创建请求未发出，重试安全。
+    let pending_payload = json!({
+        "publish_stage": "pr_pending",
+        "published_commit": commit_hex,
+        "published_branch": branch,
+        "publish_op": protocol.create_op,
+    });
+    if let Err(e) = db.merge_delivery_payload(&branch_key, &pending_payload) {
+        return Ok(fail_outcome(
+            &task_id,
+            &branch,
+            format!("发布意图落盘失败（可重试）: {e}"),
+        ));
     }
     let (external_ref, external_url) = match invoke_route(
         agent_loop,
@@ -1119,7 +1095,7 @@ async fn invoke_native(
 
 /// plugin 步调用（a）：`run_flow_step(slug, op, {"op","args",
 /// "session_key"})` 四态映射（与 report_plugin_comment/plugin fetch 同源
-/// 解析单点 [`crate::flow_engine:plugin_step_outcome`]）。
+/// 解析单点 [`crate::flow_proto::plugin_step_outcome`]）。
 ///
 /// 语义分族（错误三态决定对账分支——诚实边界）：
 /// - 路由层失败（子系统缺席/插件停用/词表对账不过）= **确定未发出**，
@@ -1131,8 +1107,9 @@ async fn invoke_native(
 ///   错误**不带**标记 → 走「可能已送达」对账保守分支（failed = HTTP 层
 ///   失败可能已发出；running = guest 异步未决；skipped = 发布步无跳过
 ///   语义但声明者违约时不可断言零副作用）。
+#[cfg(feature = "plugins-wasm")]
 async fn invoke_plugin(
-    plugin_manager: &nemesis_plugins_wasm::registry::PluginManager,
+    plugin_manager: &PublishPluginManager,
     slug: &str,
     op: &str,
     session_key: &str,
@@ -1148,21 +1125,37 @@ async fn invoke_plugin(
         .run_flow_step(slug, op, input)
         .await
         .map_err(|e| format!("{NOT_SENT_MARKER} plugin:{slug}:{op} 投递失败: {e}"))?;
-    match crate::flow_engine::plugin_step_outcome(&out_json) {
-        crate::flow_engine::PluginOutcome::Done(payload) => Ok(payload.to_string()),
-        crate::flow_engine::PluginOutcome::Skipped(_) => Err(format!(
+    match crate::flow_proto::plugin_step_outcome(&out_json) {
+        crate::flow_proto::PluginOutcome::Done(payload) => Ok(payload.to_string()),
+        crate::flow_proto::PluginOutcome::Skipped(_) => Err(format!(
             "{NOT_SENT_MARKER} plugin:{slug}:{op} guest 自报 skipped——发布步无跳过语义（创建/对账必须实作）"
         )),
-        crate::flow_engine::PluginOutcome::Running => Err(format!(
+        crate::flow_proto::PluginOutcome::Running => Err(format!(
             "plugin:{slug}:{op} guest 处理中（running）——发布是单 tick 同步语义，op 应同步完成后返回"
         )),
-        crate::flow_engine::PluginOutcome::Failed(err) => {
+        crate::flow_proto::PluginOutcome::Failed(err) => {
             Err(format!("plugin:{slug}:{op} 失败: {err}"))
         }
-        crate::flow_engine::PluginOutcome::Malformed(err) => {
+        crate::flow_proto::PluginOutcome::Malformed(err) => {
             Err(format!("plugin:{slug}:{op} 出参畸形: {err}"))
         }
     }
+}
+
+/// 非 wasm 裁剪形态（R8 复评整改）：plugin 路由臂不可达——
+/// [`PublishPluginManager`] 空枚举不可构造，`Option` 恒 `None` 在
+/// [`invoke_route`] 已拦；本体是防御性兜底（恒「确定未发出」，重试安全）。
+#[cfg(not(feature = "plugins-wasm"))]
+async fn invoke_plugin(
+    _plugin_manager: &PublishPluginManager,
+    slug: &str,
+    op: &str,
+    _session_key: &str,
+    _args: Value,
+) -> Result<String, String> {
+    Err(format!(
+        "{NOT_SENT_MARKER} plugin:{slug}:{op} 投递失败: 插件子系统未编译（plugins-wasm feature 关）"
+    ))
 }
 
 /// op 路由统一入口（a）：Native 臂 = connector_invoke 工具面原样；
@@ -1171,7 +1164,7 @@ async fn invoke_plugin(
 async fn invoke_route(
     agent_loop: &Arc<AgentLoop>,
     connector: Option<&str>,
-    plugin_manager: Option<&Arc<nemesis_plugins_wasm::registry::PluginManager>>,
+    plugin_manager: Option<&Arc<PublishPluginManager>>,
     route: &OpRoute,
     session_key: &str,
     args: Value,
@@ -1197,7 +1190,7 @@ async fn invoke_route(
 }
 
 /// 创建结果解析（协议声明化）：result_ref JSON path 取「外部条目号」、
-/// result_url path 取人读链接（scheme 闸 [`crate::flow_engine:safe_external_url`]）。
+/// result_url path 取人读链接（scheme 闸 [`crate::flow_proto::safe_external_url`]）。
 /// 直接对象或单元素数组都认；认不出的形态交给对账（不猜）。
 fn parse_publish_result(
     text: &str,
@@ -1211,11 +1204,11 @@ fn parse_publish_result(
         Value::Array(a) => a.first().cloned()?,
         _ => return None,
     };
-    let n = crate::flow_engine::json_path_first(&obj_val, result_ref)?.as_i64()?;
+    let n = crate::flow_proto::json_path_first(&obj_val, result_ref)?.as_i64()?;
     let url = result_url
-        .and_then(|path| crate::flow_engine::json_path_first(&obj_val, path))
+        .and_then(|path| crate::flow_proto::json_path_first(&obj_val, path))
         .and_then(|u| u.as_str().map(str::to_string))
-        .and_then(|u| crate::flow_engine::safe_external_url(&u));
+        .and_then(|u| crate::flow_proto::safe_external_url(&u));
     Some((n, url))
 }
 
@@ -1273,19 +1266,19 @@ enum ItemMatch {
 /// （缺席 → "null"），另一侧 = 运行期已渲染的字面量；比较原语与 `when` 条
 /// 件步同源（flow_engine::split_compare_expr/compare_str）。
 fn match_item(item: &Value, expr: &str) -> ItemMatch {
-    let Some((left, op, right)) = crate::flow_engine::split_compare_expr(expr) else {
+    let Some((left, op, right)) = crate::flow_proto::split_compare_expr(expr) else {
         return ItemMatch::Unreadable;
     };
     let scalar = |side: &str| -> String {
         if side.starts_with("$.") {
-            crate::flow_engine::json_path_first(item, side)
-                .map(|v| crate::flow_engine::json_scalar(Some(v)))
+            crate::flow_proto::json_path_first(item, side)
+                .map(|v| crate::flow_proto::json_scalar(Some(v)))
                 .unwrap_or_else(|| "null".to_string())
         } else {
             side.to_string()
         }
     };
-    if crate::flow_engine::compare_str(op, &scalar(left), &scalar(right)) {
+    if crate::flow_proto::compare_str(op, &scalar(left), &scalar(right)) {
         ItemMatch::Hit
     } else {
         ItemMatch::NoMatch
@@ -1295,7 +1288,7 @@ fn match_item(item: &Value, expr: &str) -> ItemMatch {
 async fn reconcile_by_match(
     agent_loop: &Arc<AgentLoop>,
     connector: Option<&str>,
-    plugin_manager: Option<&Arc<nemesis_plugins_wasm::registry::PluginManager>>,
+    plugin_manager: Option<&Arc<PublishPluginManager>>,
     route: &OpRoute,
     session_key: &str,
     protocol: &PublishProtocol,
@@ -1346,14 +1339,14 @@ async fn reconcile_by_match(
                 ItemMatch::NoMatch => {}
                 ItemMatch::Unreadable => return ReconcileOutcome::Inconclusive,
                 ItemMatch::Hit => {
-                    let n = crate::flow_engine::json_path_first(item, &protocol.result_ref)
+                    let n = crate::flow_proto::json_path_first(item, &protocol.result_ref)
                         .and_then(|v| v.as_i64());
                     let url = protocol
                         .result_url
                         .as_deref()
-                        .and_then(|p| crate::flow_engine::json_path_first(item, p))
+                        .and_then(|p| crate::flow_proto::json_path_first(item, p))
                         .and_then(|v| v.as_str().map(str::to_string))
-                        .and_then(|u| crate::flow_engine::safe_external_url(&u));
+                        .and_then(|u| crate::flow_proto::safe_external_url(&u));
                     // 命中但引用不可读 = 判不清，保守 Inconclusive（绝不
                     // 丢弃已命中事实去重试建条目）。
                     return match n {

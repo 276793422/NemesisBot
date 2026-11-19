@@ -496,24 +496,38 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
     // BUG-20261102-325：会话列表确定性 + 最近活跃优先。read_dir 顺序是平台
     // 实现细节（NTFS 字典序 vs ext4 哈希序），前端侧栏「组内保持原排序」
     // 直接消费此序——无排序 = ext4 上每次启动列表漂移，且与新建会话乐观行
-    // unshift 置顶（最近在前）语义矛盾。lastTime 是 Local offset RFC3339
-    // 且 chrono 秒内小数位自适应（`22+08:00` 裸字典序会错压 `22.5+08:00`），
-    // 必须解析成时间戳比较；解析失败（空/坏行/无偏移旧行）视为最旧沉底
-    // （仅向前语义：无时间锚不参与排序红利）。同刻按 id 升序破平——全键
-    // 有序 = 跨平台逐位一致。
-    let rank = |e: &serde_json::Value| -> i64 {
-        e["lastTime"]
-            .as_str()
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|t| t.timestamp_millis())
-            .unwrap_or(i64::MIN)
-    };
-    sessions.sort_by(|a, b| {
-        rank(b)
-            .cmp(&rank(a))
-            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
-    });
+    // unshift 置顶（最近在前）语义矛盾。排序键与破平规则见
+    // [`session_recency_cmp`]（BUG-20261116-011 起与 logs.session_list
+    // 收尾重排共用同一实现——此前 session_list 重排用裸字典序，正是本条
+    // 注释记录的错压形态）。
+    sessions.sort_by(session_recency_cmp);
     sessions
+}
+
+/// 会话 lastTime 排序键（BUG-20261102-325 纪律单一真相源）。lastTime 是
+/// Local offset RFC3339 且 chrono 秒内小数位自适应（`22+08:00` 裸字典序
+/// 会错压 `22.5+08:00`；混 offset 历史——时区变更前后的条目并存——裸字典
+/// 序整段错序），必须解析成时间戳比较；解析失败（空/坏行/无偏移旧行）
+/// 视为最旧沉底（仅向前语义：无时间锚不参与排序红利）。
+fn last_time_rank(e: &serde_json::Value) -> i64 {
+    e["lastTime"]
+        .as_str()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.timestamp_millis())
+        .unwrap_or(i64::MIN)
+}
+
+/// 会话列表「最近活跃优先」全序比较（scan_session_logs 与
+/// logs.session_list 收尾重排共用，BUG-20261116-011；sessions.list 后端
+/// 收尾也用它——BUG-20261118-168）：lastTime 解析序 desc + id 字典序
+/// asc 破平——全键有序 = 跨平台逐位一致。
+pub(crate) fn session_recency_cmp(
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+) -> std::cmp::Ordering {
+    last_time_rank(b)
+        .cmp(&last_time_rank(a))
+        .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
 }
 
 /// Read the user-editable title from the sidecar meta file
@@ -896,13 +910,12 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
 /// 事件 hash 单一真相源委托（BUG-20261102-305：此处原是
 /// `AuditChain::append_with_sign` 七字段公式的手抄拷贝——v1 公式追加
 /// source+reason 后拷贝版对追加事件恒算出「hash mismatch」假阳性）。
-/// 未支持版本（hash_version>1）返回空串 → 与任何存 hash 不等 → 上层
-/// 诊断自然报 hash mismatch（与 verify_chain fail-closed 同语义）。
+/// 版本守卫已收进 `compute_event_hash` 单点（BUG-20261120-002）：未知
+/// 版本（hash_version>2）返回空串 → 与任何存 hash 不等 → 上层诊断自然
+/// 报 hash mismatch（与 verify_chain fail-closed 同语义）——本处不再
+/// 重复实现版本闸（双闸漂移会重演 305 假阳性事故）。
 #[cfg(feature = "security")]
 fn compute_audit_hash(ev: &AuditEvent) -> String {
-    if ev.hash_version > 1 {
-        return String::new();
-    }
     nemesis_security::integrity::AuditChain::compute_event_hash(ev)
 }
 
@@ -1169,6 +1182,18 @@ impl LogsHandler {
         if candidates.is_empty() {
             return Err(format!("cluster task '{}' not found", task_id));
         }
+
+        // BUG-20261115-011：多轮执行（同 task_id 多个 ts 前缀目录）取字典序
+        // 最大 = 最新轮（outbox `find_task_dir` 同纪律）。read_dir 顺序是
+        // 平台实现细节（NTFS 字典序 vs ext4 哈希序），无序基上 first-match
+        // 在 Windows 恒取最旧轮，与 cluster_task_list 的 ts 倒序逐轮展示相
+        // 矛盾。目录名 ts 前缀定宽（%Y-%m-%d_%H-%M-%S[-%3f]），字典序 =
+        // 时间序；perspective 过滤与 first() 兜底作用在有序基上即确定性。
+        candidates.sort_by(|a, b| {
+            b.0.file_name()
+                .unwrap_or_default()
+                .cmp(a.0.file_name().unwrap_or_default())
+        });
 
         let chosen = match perspective {
             "peer" => candidates
@@ -1513,11 +1538,11 @@ impl LogsHandler {
             }
         }
 
-        sessions.sort_by(|a, b| {
-            let la = a.get("lastTime").and_then(|v| v.as_str()).unwrap_or("");
-            let lb = b.get("lastTime").and_then(|v| v.as_str()).unwrap_or("");
-            lb.cmp(la)
-        });
+        // 收尾恢复「最近活跃优先」（BM25 相关性排序之后）。BUG-20261116-011：
+        // 此前用 lastTime 裸字典序重排——scan_session_logs 的 BUG-20261102-325
+        // 纪律（解析成时间戳 + id 破平）没有跟进到本位点，秒内小数位自适应
+        // 错压 + 混 offset 历史错序两形态都在。共用 [`session_recency_cmp`]。
+        sessions.sort_by(session_recency_cmp);
 
         let total = sessions.len();
         let mut page: Vec<_> = sessions.into_iter().skip(offset).take(limit).collect();
@@ -2729,3 +2754,9 @@ mod b11_snooze_tests;
 // agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
+
+// BUG-20261115-011 回归锁：cluster_task_detail 多轮执行（同 task_id 多个
+// ts 前缀目录）必须取最新轮——候选按目录名降序（定宽 ts 字典序=时间序）
+// 后再 perspective 过滤/first 兜底。旧 first-match 在 NTFS 恒取最旧轮。
+#[cfg(test)]
+mod cluster_task_detail_tests;

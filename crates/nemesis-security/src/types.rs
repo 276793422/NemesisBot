@@ -459,6 +459,9 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // ProcessSpawn（HIGH）。不上 CRITICAL：日常自动化工具，CRITICAL
         // 会挂 guardian LLM 二审常开。
         "desktop" => Some(OperationType::ProcessSpawn),
+        // (Phase 5 图像工具层) desktop_automation = loop 侧适配器注册名
+        // （DesktopTool 六动作；与旧 "desktop" 名同档同义，两键并存防混用）。
+        "desktop_automation" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
         "download" | "install_skill" => Some(OperationType::NetworkDownload),
         "upload" => Some(OperationType::NetworkUpload),
@@ -472,6 +475,11 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 进程」只对配置驱动路径成立，agent 工具的 command 来自 LLM。
         "browser" | "mcp_discover" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
+        // (Phase 5 图像工具层) read_image = 纯读（验真 + 降采样产物写
+        // uploads/ 由内部构造性钉死，arg 路径零写入）→ FileRead=LOW，
+        // 8 层全跑（注入检测/凭据扫描/DLP/审计链）；vision=no 由 dispatch
+        // 层 vision 前置闸先行拒绝（不进本表裁决）。
+        "read_image" => Some(OperationType::FileRead),
         // todowrite 本质是 workspace 内写文件（sessions/
         // todo_*.json），归 FileWrite 走同类审查（空 target 不匹配任何
         // ABAC 规则 → default action 兜底，默认配置放行）。
@@ -489,6 +497,14 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 扫描/DLP/审计链全跑；不做 executor 隔离（不出 MOVE_TOOLS——
         // 沙盒断网反而打不通端点）。
         "generate_image" => Some(OperationType::NetworkRequest),
+        // 邮件 agent 工具（B4，2026-11-18）：主分档走 `MailTool::
+        // operation_override` 按 action 投影（send=NetworkRequest /
+        // list=read=Internal，workflow 三合一同款）——本静态表只兜底 args
+        // 畸形 / action 缺失的调用（override None → 落本表），按最危险
+        // 分支挂 NetworkRequest（宁过勿漏）。收件人地址不是 URL——SSRF
+        // 层不适用（投递端点 = config.client 固定 relay，LLM 不控端点），
+        // 刻意不加 extract_url 臂。
+        "mail" => Some(OperationType::NetworkRequest),
         // 只读语义代码查询。
         "lsp" => Some(OperationType::FileRead),
         // 硬件具名档（此前未映射 → 旧未知名放行；补齐后走具名类型）。
@@ -597,9 +613,19 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             })
             .unwrap_or("")
             .to_string(),
-        "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
-        | "find_skills" => args
-            .get("url")
+        "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "find_skills" => {
+            args.get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+        // web_search 的实参是 `query` 不是 `url`（BUG-20261116-037 横扫）
+        // ——此前读 `url` 键恒空 target：审计链 target 列空白、网络规则
+        // 对 web_search 整体失明（`*` 形规则对空串的命中行为也失真）。
+        // query 文本非域名，域名词法规则不命中属预期（落 default_action）；
+        // 修复目标是审计可见性 + `*` 形规则语义恢复。
+        "web_search" => args
+            .get("query")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
@@ -659,6 +685,17 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
         // 注入检测/凭据扫描层已全文过筛，不重复进 target 字段）。
         "generate_image" => args
             .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // 邮件工具：target = 对象标识（send=收件人 / list=邮箱 / read=邮件
+        // id）——审计链 target 列与按对象匹配的 ABAC 规则可见（web_search
+        // 无臂恒空 target 的审计失明教训同族）。subject/body 是自由文本，
+        // 注入检测/凭据扫描层已全文过筛，不重复进 target 字段。
+        "mail" => args
+            .get("to")
+            .or_else(|| args.get("mailbox"))
+            .or_else(|| args.get("id"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),

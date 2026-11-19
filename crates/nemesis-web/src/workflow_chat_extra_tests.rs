@@ -2,6 +2,12 @@
 //! engine-missing branches (the engine-present path needs a full running
 //! workflow and is covered by integration tests elsewhere).
 
+// 刻意设计：#[tokio::test] 每测试独立 current_thread runtime，持锁 guard
+// 跨 await 不会死锁（持锁方在自己线程上恢复运行）。测试域统一豁免
+// （upload/tests.rs 同款）——send/history 写路径经 chat_log 单例，须持
+// test_home 锁（锁内一次性重定向 home，防泄漏真实盘）。
+#![allow(clippy::await_holding_lock)]
+
 use crate::api_handlers::AppState;
 use crate::protocol::ProtocolMessage;
 use crate::workflow_chat::handle_workflow_chat_message;
@@ -15,6 +21,8 @@ use std::time::Instant;
 fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        mail_plugin: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -44,6 +52,7 @@ fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -181,6 +190,104 @@ fn make_workflow(name: &str, nodes: Vec<NodeDef>) -> Workflow {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BUG-20261114-035：human_review 前门检查必须递归 sub_workflow 子工作流
+// ---------------------------------------------------------------------------
+
+fn make_sub_workflow_node(id: &str, child: &str) -> NodeDef {
+    NodeDef {
+        config: HashMap::from([("workflow".to_string(), serde_json::json!(child))]),
+        ..make_node(id, "sub_workflow", vec![])
+    }
+}
+
+#[test]
+fn reachable_human_review_recurses_subworkflow_children() {
+    let engine = Arc::new(WorkflowEngine::new());
+    engine
+        .register_workflow(make_workflow(
+            "leaf_review_wf",
+            vec![make_node("n1", "human_review", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "leaf_clean_wf",
+            vec![make_node("n1", "delay", vec![])],
+        ))
+        .unwrap();
+
+    let parent_review = make_workflow(
+        "p_review",
+        vec![make_sub_workflow_node("s1", "leaf_review_wf")],
+    );
+    let parent_clean = make_workflow(
+        "p_clean",
+        vec![make_sub_workflow_node("s1", "leaf_clean_wf")],
+    );
+
+    // 复合路径可达 human_review → true；干净子工作流 → false。
+    assert!(crate::workflow_chat::workflow_reachable_human_review(
+        &engine,
+        &parent_review,
+        "p_review"
+    ));
+    assert!(!crate::workflow_chat::workflow_reachable_human_review(
+        &engine,
+        &parent_clean,
+        "p_clean"
+    ));
+}
+
+#[tokio::test]
+async fn send_engine_indirect_human_review_rejected() {
+    // 顶层无 human_review，但 sub_workflow 子工作流里有——前门必须拒绝。
+    // 旧实现只查顶层节点，放行后父执行停在 Waiting（sub_workflow 的
+    // Waiting 合法透传）而聊天互斥守卫无人释放。断言点：会话队列收到
+    // 「含子工作流」的拒绝文案（递归检查接线的直接证据——旧实现根本
+    // 不会拒绝，也就不会有错误帧）。
+    let engine = Arc::new(WorkflowEngine::new());
+    engine
+        .register_workflow(make_workflow(
+            "indirect_child_wf",
+            vec![make_node("n1", "human_review", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "indirect_parent_wf",
+            vec![make_sub_workflow_node("s1", "indirect_child_wf")],
+        ))
+        .unwrap();
+
+    let index = WorkflowEngine::chat_index("indirect_parent_wf");
+    let state = make_state(Some(engine));
+    let mut rx = capture_queue(&state, "sess-indirect");
+
+    let res = handle_workflow_chat_message(
+        state,
+        "sess-indirect".into(),
+        "web:sess-indirect".into(),
+        pm(
+            "send",
+            Some(serde_json::json!({ "index": index, "content": "go" })),
+        ),
+        None,
+    )
+    .await;
+    assert!(res.is_ok());
+
+    let bytes = rx
+        .recv()
+        .await
+        .expect("复合路径 human_review 必须在前门被拒绝并回错误帧");
+    let frame = String::from_utf8_lossy(&bytes);
+    assert!(
+        frame.contains("含子工作流"),
+        "拒绝帧必须是递归版文案（旧文案不递归子工作流）：{frame}"
+    );
+}
+
 #[tokio::test]
 async fn send_engine_index_not_found_logs_error() {
     // Engine present and has a registered workflow, but the client sends
@@ -244,6 +351,7 @@ async fn send_engine_human_review_workflow_rejected() {
 
 #[tokio::test]
 async fn send_engine_starts_workflow_returns_ok() {
+    let _home = crate::test_home::lock_home();
     // Happy path: index resolves, no human_review, start_async succeeds.
     // handle_send writes the user turn to chat_log, stores the per-workflow
     // mutex guard, and returns Ok. The background execution is
@@ -337,6 +445,7 @@ fn capture_queue(state: &AppState, session_id: &str) -> tokio::sync::mpsc::Recei
 
 #[tokio::test]
 async fn bound_send_pins_workflow_ignoring_client_index() {
+    let _home = crate::test_home::lock_home();
     // Both workflows are registered, so the client-supplied index WOULD
     // resolve on its own — the bound session must still land on its own
     // workflow only.
@@ -431,6 +540,7 @@ async fn bound_history_pins_workflow_ignoring_client_index() {
 
 #[tokio::test]
 async fn history_limit_clamped_end_to_end() {
+    let _home = crate::test_home::lock_home();
     // 210 entries in the log; a client asking for limit=100_000 (the
     // whole-file threshold) must get a 200-entry page, not the full log;
     // a missing limit must get the 50-entry default. The workflow name

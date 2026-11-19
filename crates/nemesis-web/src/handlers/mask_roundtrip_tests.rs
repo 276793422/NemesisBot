@@ -18,6 +18,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -40,6 +41,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -55,6 +57,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -141,6 +144,76 @@ fn restore_masked_named_fields_restores_and_rejects() {
     let mut masked_orig = serde_json::json!({ "api_key": "sk-1****cdef" });
     let existing_masked = serde_json::json!({ "api_key": "sk-1****cdef" });
     assert!(restore_masked_named_fields(&mut masked_orig, &existing_masked).is_err());
+}
+
+#[test]
+fn restore_masked_named_fields_array_reordered_matches_by_fingerprint() {
+    // BUG-20261114-007：对象元素数组（model_list 等）按身份指纹（剥敏感
+    // 字段后深相等）配对而非下标——下标配对在重排/插入/删除时把 A 条目的
+    // 掩码 api_key 从 B 条目的原值还原（跨条目凭据串换，静默落盘）。
+    let existing = serde_json::json!([
+        { "model": "vendor/alpha", "api_key": "sk-alpha-real", "base_url": "http://127.0.0.1:1" },
+        { "model": "vendor/beta", "api_key": "sk-beta-real", "base_url": "http://127.0.0.1:2" }
+    ]);
+    // 重排（掩码跟随条目走）：beta 在前、alpha 在后。
+    let mut incoming = serde_json::json!([
+        { "model": "vendor/beta", "api_key": "sk-b****real", "base_url": "http://127.0.0.1:2" },
+        { "model": "vendor/alpha", "api_key": "sk-a****real", "base_url": "http://127.0.0.1:1" }
+    ]);
+    restore_masked_named_fields(&mut incoming, &existing).unwrap();
+    assert_eq!(
+        incoming[0]["api_key"], "sk-beta-real",
+        "beta must get beta's key (old code restored alpha's by position)"
+    );
+    assert_eq!(incoming[1]["api_key"], "sk-alpha-real");
+}
+
+#[test]
+fn restore_masked_named_fields_array_shifted_insert_matches_by_fingerprint() {
+    // 插入新条目于首位：旧条目整体右移一位，掩码仍须各归各主。
+    let existing = serde_json::json!([
+        { "model": "vendor/alpha", "api_key": "sk-alpha-real" },
+        { "model": "vendor/beta", "api_key": "sk-beta-real" }
+    ]);
+    let mut incoming = serde_json::json!([
+        { "model": "vendor/gamma", "api_key": "sk-gamma-typed" },
+        { "model": "vendor/alpha", "api_key": "sk-a****real" },
+        { "model": "vendor/beta", "api_key": "sk-b****real" }
+    ]);
+    restore_masked_named_fields(&mut incoming, &existing).unwrap();
+    // gamma 用户直输真值（无掩码）→ 不动；alpha/beta 掩码各还原各的。
+    assert_eq!(incoming[0]["api_key"], "sk-gamma-typed");
+    assert_eq!(incoming[1]["api_key"], "sk-alpha-real");
+    assert_eq!(incoming[2]["api_key"], "sk-beta-real");
+}
+
+#[test]
+fn restore_masked_named_fields_array_fingerprint_fallback_positional() {
+    // 元素同轮被编辑（指纹零命中）→ 回落按下标（无重排普通编辑的原行为）。
+    let existing = serde_json::json!([
+        { "model": "vendor/alpha", "api_key": "sk-alpha-real" }
+    ]);
+    let mut incoming = serde_json::json!([
+        { "model": "vendor/alpha", "api_key": "sk-a****real", "context_window": 128000 }
+    ]);
+    restore_masked_named_fields(&mut incoming, &existing).unwrap();
+    assert_eq!(incoming[0]["api_key"], "sk-alpha-real");
+}
+
+#[test]
+fn restore_masked_named_fields_array_ambiguous_fingerprint_falls_back_positional() {
+    // 重复指纹（两条仅 api_key 不同）→ 歧义不可裁决 → 回落按下标（旧语义）。
+    let existing = serde_json::json!([
+        { "model": "vendor/twin", "api_key": "sk-first-real" },
+        { "model": "vendor/twin", "api_key": "sk-second-real" }
+    ]);
+    let mut incoming = serde_json::json!([
+        { "model": "vendor/twin", "api_key": "sk-f****real" },
+        { "model": "vendor/twin", "api_key": "sk-s****real" }
+    ]);
+    restore_masked_named_fields(&mut incoming, &existing).unwrap();
+    assert_eq!(incoming[0]["api_key"], "sk-first-real");
+    assert_eq!(incoming[1]["api_key"], "sk-second-real");
 }
 
 // ② + ③ MCP 面 ------------------------------------------------------------

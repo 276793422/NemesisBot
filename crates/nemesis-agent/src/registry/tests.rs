@@ -53,12 +53,13 @@ fn case_insensitive_lookup() {
 #[test]
 fn list_agent_ids() {
     let registry = AgentRegistry::new();
-    registry.register("alpha".to_string(), AgentInstance::new(test_config("a")));
+    // 乱序注册——契约锁：list_agent_ids 必须返回字典序（HashMap 迭代序
+    // 是实现细节，消费方含 slash 命令 join 输出，BUG-20261117-052；
+    // 旧形态测试本地 sort 后断言，锁不住实现契约，已改直断言）。
     registry.register("beta".to_string(), AgentInstance::new(test_config("b")));
+    registry.register("alpha".to_string(), AgentInstance::new(test_config("a")));
 
-    let mut ids = registry.list_agent_ids();
-    ids.sort();
-    assert_eq!(ids, vec!["alpha", "beta"]);
+    assert_eq!(registry.list_agent_ids(), vec!["alpha", "beta"]);
 }
 
 #[test]
@@ -79,6 +80,32 @@ fn default_agent_id_falls_back_to_first() {
 fn default_agent_id_none_when_empty() {
     let registry = AgentRegistry::new();
     assert!(registry.default_agent_id().is_none());
+}
+
+/// 无 main 多 agent 时 fallback 必须确定（字典序最小）：HashMap
+/// keys().next() 是 RandomState 随机序——同一配置重启可能换默认 agent
+/// （admission standalone 路由 / commands 兜底随之漂移）。循环重建
+/// registry（每次新 HashMap 实例新种子），恒等 min；若退化回 .next()，
+/// 20 轮全撞最小键概率 ~8^-20 → 稳定红。
+#[test]
+fn default_agent_id_fallback_deterministic_no_main() {
+    let names: Vec<String> = [
+        "delta", "alpha", "zulu", "mike", "bravo", "echo", "tango", "kilo",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    for _ in 0..20 {
+        let registry = AgentRegistry::new();
+        for n in &names {
+            registry.register(n.clone(), AgentInstance::new(test_config(n)));
+        }
+        assert_eq!(
+            registry.default_agent_id(),
+            Some("alpha".to_string()),
+            "无 main 时默认 agent 必须恒为字典序最小注册项"
+        );
+    }
 }
 
 #[test]

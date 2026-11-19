@@ -17,8 +17,13 @@
 // 无消费者——fn 级 cfg_attr allow(unused_variables)（Phase A
 // advertise_host_for 同款形态），参数本体保持无门使调用点单行。
 //
-// 块内不变量随块内聚： mem::forget(channel_manager) 挂账原样随块；
-// relay 模式不经此路径（run_relay 独立轻量启动）的语义注释随块保留。
+// 块内不变量随块内聚：channel_manager 以 Arc 存入 WebWiring.channel_manager
+// 交 init_services 延迟启动（BUG-20261119-194：start_all 必须晚于 agent 的
+// bus inbound 订阅——Step 14b 之后；init_web 内启动会打开「通道 polling
+// 先拉积压 → publish 时零订阅者 = 永久丢失」窗口，telegram offset 先推进
+// 使丢失不可重拉）。dispatch loop / sweeper / 通道任务各自持 Arc，wiring
+// 生命周期结束后 manager 仍存活；relay 模式不经此路径（run_relay 独立轻量
+// 启动）的语义注释随块保留。
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -39,11 +44,19 @@ pub(crate) struct WebWiring {
     pub web_display_host: String,
     pub web_port: i64,
     pub bridge_client_launch: Option<nemesis_config::BridgeClientConfig>,
+    /// BUG-20261119-194：manager 句柄交 init_services——`start_all` 推迟
+    /// 到 Step 14b（agent 订阅 bus inbound）之后调用。此前 init_web 内
+    /// 即时 start_all + `mem::forget`，通道 polling（telegram 等）在 agent
+    /// 订阅存在前就开始拉停机积压，publish 进零订阅者的 broadcast = 静默
+    /// 永久丢失。此后存活链：run() 内 wiring 存活至 init_services；其后
+    /// dispatch loop / sweeper / 各通道任务持有 Arc 克隆保活。
+    pub channel_manager: Arc<nemesis_channels::manager::ChannelManager>,
 }
 
 /// WebServer + ChannelManager 装配（计划）。WebServer 早建以向
-/// WebChannel 注入 SessionManager；ChannelManager init/start/mem::forget 均
-/// 在本函数内完成。
+/// WebChannel 注入 SessionManager；ChannelManager init / dispatch loop /
+/// 通道**注册**在本函数内完成——通道**启动**（start_all）推迟到
+/// init_services Step 14b 之后（见 WebWiring.channel_manager 字段注释）。
 #[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Result<WebWiring> {
     // ctx 影子重绑（同款）：块内原文引用局部名不变，所有权拓扑不变。
@@ -157,9 +170,14 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
     // channels.web.heartbeat_interval → WS 保活 ping 间隔（秒）。此前 server
     // 侧硬编码 30s、config 键纯装饰（BUG-20261110-055 接线）。负值截 0 后
-    // 由 setter 统一回落缺省（tokio interval(0) panic 防护）。
+    // 由 setter 统一回落缺省（tokio interval(0) panic 防护）；上界钳 30 天
+    // （BUG-20261116-001）：i64::MAX 秒 ≈ 2920 亿年 ≫ Instant 算术界（≈584
+    // 年），不钳则 ping task missed-tick panic / far_future 停摆。
     nemesis_web::websocket_handler::configure_ws_ping_interval(
-        cfg.channels.web.heartbeat_interval.max(0) as u64,
+        cfg.channels
+            .web
+            .heartbeat_interval
+            .clamp(0, crate::common::MAX_TICK_INTERVAL_SECS as i64) as u64,
     );
     // CORS 管理器注入（cors.* WSAPI 真实现）：与 skins 同款 setter 形态
     // （不进 WebServerConfig——测试字面量装配面大）；None（配置缺失/加载
@@ -167,6 +185,21 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     if let Some(mgr) = cors_manager {
         web_server.set_cors_manager(mgr);
     }
+    // channels.web.session_timeout → WS 会话闲置逐出超时。此前 session 侧
+    // 硬编码 3600s、config 键声明后零消费（BUG-20261116-035 接线，同 055
+    // heartbeat_interval 先例）；<=0 = 不限（翻译语义在 nemesis-web 侧单一
+    // 真相源 SessionManager::timeout_from_config_secs，Duration::MAX 的
+    // as-i64 回绕陷阱见该函数注释）。setter 必须在 start 前调用（AppState
+    // 构造时 clone 句柄），与 set_cors_manager 同一窗口。
+    web_server.set_session_timeout(
+        nemesis_web::session::SessionManager::timeout_from_config_secs(
+            cfg.channels.web.session_timeout,
+        ),
+    );
+    info!(
+        secs = cfg.channels.web.session_timeout,
+        "channels.web.session_timeout wired (0/negative = never evict)"
+    );
     // 皮肤包（.nbskin）装配：目录 = exe 同级 `skins/`（与 static/ 同策略，
     // 不落 home）；激活 id = config `ui.skin`（"default"/空 = 内置皮肤）。
     // setter 注入而非 WebServerConfig 字段——后者有大量测试字面量装配，
@@ -437,6 +470,10 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         enabled_channels.push("email".to_string());
     }
 
+    // BUG-20261119-194：manager Arc 出块载体——块内装配完成后 move 进
+    // WebWiring.channel_manager（start_all 推迟到 init_services Step 14b
+    // 之后；曾以 mem::forget 挂账，现走显式所有权链）。
+    let channel_manager_for_wiring;
     {
         let channel_manager = Arc::new(
             nemesis_channels::manager::ChannelManager::with_allowed_channels(
@@ -444,6 +481,17 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             ),
         );
 
+        // channels.web.allow_from 装饰性定性（BUG-20261116-035）：web 入站
+        // 身份是每连接临时会话 id（nemesis-web session.rs `web:<uuid>`），
+        // 无稳定 sender 可做 allow_list 门控；web 入站准入由 auth_token
+        // 把守，出站经本通道按会话 id 路由。其他通道的 allow_from 靠稳定
+        // 身份生效，语义迁移不到 web——非空配置响亮告知而非静默忽略。
+        if !cfg.channels.web.allow_from.is_empty() {
+            warn!(
+                count = cfg.channels.web.allow_from.len(),
+                "channels.web.allow_from has no effect (web inbound identity is a per-connection ephemeral session id, nothing stable to allow-list; to restrict access set channels.web.auth_token)"
+            );
+        }
         // Build ChannelInitConfig from gateway config (web channel is always available).
         // Feature-gated channel fields only exist under some cfg combos, so the
         // `..Default::default()` base is required (not dead code); the lint can't see that.
@@ -456,12 +504,13 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     ws_path: cfg.channels.web.path.clone(),
                     // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
+                    // （session_timeout/allow_from 不经本结构携带——前者由
+                    // 上方 set_session_timeout 直接接线，后者装饰性 WARN，
+                    // 见 BUG-20261116-035。）
                     auth_token: crate::common::resolve_auth_token_or_random(
                         &cfg.channels.web.auth_token,
                         "channels.web.auth_token",
                     ),
-                    session_timeout_secs: cfg.channels.web.session_timeout as u64,
-                    allow_from: cfg.channels.web.allow_from.clone(),
                 })
             } else {
                 None
@@ -1135,18 +1184,27 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         channel_manager.set_notify_hook(std::sync::Arc::new(crate::notify::notify_accounting));
         crate::notify::spawn_sweeper(std::sync::Arc::clone(&channel_manager));
 
-        // Start all registered channels.
-        if let Err(e) = channel_manager.start_all().await {
-            warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);
-        }
+        // Start all registered channels — DEFERRED（BUG-20261119-194）：
+        // 此处启动会让通道 polling 在 agent 订阅 bus inbound（Step 14b，
+        // init_services）之前就开拉：broadcast publish 对零订阅者静默丢弃，
+        // telegram 首轮 getUpdates（offset=0）拉停机积压后 offset 先推进
+        // 再 publish（telegram.rs:609 在 handle 之前），publish 失败仅
+        // warn——积压消息**永久丢失且重启可复现**。同族隐患 cron arm 已
+        // 按「订阅 → 生产者上线」不变量下移（services.rs Step 14b 注释），
+        // 通道是这个不变量在启动装配里的最后一个漏网生产者。start_all
+        // 调用点移至 services.rs Step 14b 之后（agent_adapter.start() 成功
+        // 之后），经 WebWiring.channel_manager 传递。
 
-        // Keep the ChannelManager alive.
-        std::mem::forget(channel_manager);
+        // Keep the ChannelManager alive: Arc moves into WebWiring (returns
+        // to run(), which hands it to init_services for the deferred
+        // start_all). Downstream tasks (dispatch loop / sweeper / channels)
+        // hold their own clones, so the manager outlives the wiring.
         info!(
             "[Gateway] ChannelManager created with {} enabled channel(s)",
             enabled_channels.len()
         );
         // Channel manager injection into agent_loop is now handled by the factory function.
+        channel_manager_for_wiring = channel_manager;
     }
 
     Ok(WebWiring {
@@ -1156,6 +1214,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         web_display_host,
         web_port,
         bridge_client_launch,
+        channel_manager: channel_manager_for_wiring,
     })
 }
 
@@ -1172,8 +1231,22 @@ fn spawn_bus_outbound_bridge(
         loop {
             match rx.recv().await {
                 Ok(msg) => {
-                    if cm_outbound_tx.send(msg).await.is_err() {
-                        break; // ChannelManager dispatch loop stopped
+                    // BUG-20261113-138：接收侧（ChannelManager dispatch
+                    // loop）已退出，这条消息无处投递——留痕再断桥。旧形态
+                    // 静默 break，迟到的 turn 回复零痕迹蒸发，违背
+                    // 「丢失必须留痕」（Lagged/Closed 两条姊妹路径都有
+                    // 记录，唯此路径裸奔）。SendError 公开回收消息本体，
+                    // 留痕不引入热路径拷贝。
+                    if let Err(tokio::sync::mpsc::error::SendError(dead_msg)) =
+                        cm_outbound_tx.send(msg).await
+                    {
+                        tracing::warn!(
+                            channel = %dead_msg.channel,
+                            chat_id = %dead_msg.chat_id,
+                            content_len = dead_msg.content.len(),
+                            "[Gateway] outbound bridge: ChannelManager receiver gone — outbound message dropped, breaking bridge"
+                        );
+                        break;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

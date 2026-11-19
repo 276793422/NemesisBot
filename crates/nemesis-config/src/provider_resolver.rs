@@ -28,7 +28,14 @@ pub struct ModelResolution {
 
 /// Resolved provider and model configuration.
 /// Mirrors Go `ProviderResolution`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002 Debug 脱敏（BUG-20261111-068 家族，BUG-20261118-171）：api_key
+/// 明文 + proxy（可携带 userinfo 凭据）不得进 Debug/panic/错误上下文日志
+/// ——providers 侧孪生 [`crate::ProviderSelection`](nemesis-providers 侧
+/// factory.rs) 已走 impl_redacted_debug，本侧是 config 域同族漏网（结构
+/// 2026-05 即存在，早于 BUG-20261111-068 的 40 结构排查与 providers 侧
+/// 2026-11-15 补漏清扫）。手写 Debug 与 crate 根 proxy_file /
+/// proxy_keys_file 先例同形；诊断信息以 config.json / Dashboard 回显为准。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderResolution {
     pub provider_name: String,
     pub model_name: String,
@@ -73,6 +80,31 @@ pub struct ProviderResolution {
     pub extra_body: serde_json::Value,
 }
 
+// SEC-002 Debug 脱敏（BUG-20261118-171）：plain 先、secret 后（与
+// impl_redacted_debug! 宏输出顺序一致）；api_key / proxy 输出
+// `<empty>/<redacted>`，其余字段原样保留诊断价值。
+impl std::fmt::Debug for ProviderResolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderResolution")
+            .field("provider_name", &self.provider_name)
+            .field("model_name", &self.model_name)
+            .field("api_base", &self.api_base)
+            .field("auth_method", &self.auth_method)
+            .field("connect_mode", &self.connect_mode)
+            .field("protocol", &self.protocol)
+            .field("workspace", &self.workspace)
+            .field("enabled", &self.enabled)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("stream_mode", &self.stream_mode)
+            .field("cache_breakpoints", &self.cache_breakpoints)
+            .field("extra_body", &self.extra_body)
+            .field("api_key", &crate::debug_secret_value(&self.api_key))
+            .field("proxy", &crate::debug_secret_value(&self.proxy))
+            .finish()
+    }
+}
+
 impl Default for ProviderResolution {
     fn default() -> Self {
         Self {
@@ -99,6 +131,53 @@ impl Default for ProviderResolution {
 // Core resolution functions
 // ============================================================================
 
+/// 模型引用相等谓词——查找族（`resolve_model_config` / `find_model_by_name`
+/// / `get_model_by_name` / `Config::get_model_by_model_name`）的**单一匹配
+/// 真相源**。`ci=false` 精确（既有语义；两个仅大小写不同的条目是合法配置
+/// 形态，精确层先行保住区分能力）；`ci=true` 大小写不敏感兜底（ASCII 范围
+/// ——模型别名是 ASCII 标识符域）。
+///
+/// 各消费站点的匹配层序恒为：**精确 model_name → 精确 model 字段 → CI
+/// model_name → CI model 字段 → bare-suffix → bare-suffix CI**（每层全空
+/// 才进下层；同层内按列表序）。家族口径史：'/' 门控分裂曾致无前缀条目漏
+/// 匹配落裸推断（gpt-5.6-sol 风暴假超时的第二层）；CI 兜底层 =
+/// BUG-20261117-077；bare-suffix 兜底层 = BUG-20261119-207（此前
+/// `nemesis_types::capability::find_model_entry`——tier/vision/timeout
+/// 九键族——有 bare 回落而装配族没有，同一 ref「tier 命中条目、装配面落
+/// 裸推断」的家族口径第三形态残余）。改层序或改谓词必须四处站点同步。
+///
+/// CI 兜底的动机（BUG-20261117-077）：模型引用是用户手打别名
+/// （`/model Zhipu/GLM-4.7`、config 手改 `agents.defaults.llm`、`run
+/// --model`），大小写变体此前绕过已配 key/base 的条目直接落
+/// `infer_provider_from_model` 裸推断——而推断内部恰恰 `to_lowercase()`
+/// （同函数族内精确区分大小写、推断不区分，本身就是口径分裂），落点
+/// 「默认 base + 无 key」= 风暴同款失败形态。命中条目后 canonical 字段
+/// 随 resolution 下传，router / cache_warmer 等下游精确比对不受影响。
+pub(crate) fn model_ref_eq(candidate: &str, model_ref: &str, ci: bool) -> bool {
+    if ci {
+        candidate.eq_ignore_ascii_case(model_ref)
+    } else {
+        candidate == model_ref
+    }
+}
+
+/// bare-suffix 相等谓词——查找族 bare 兜底层的单一匹配真相源：条目 `model`
+/// 字段尾段（`rsplit('/')` 最后一段，无 `/` 即全值）与 model_ref 尾段全等
+/// /CI 全等。与 `nemesis_types::capability::find_model_entry` 的 bare-suffix
+/// 层同语义同层位（CI 层之后、bare-CI 收尾）。
+pub(crate) fn model_ref_bare_eq(candidate_model: &str, model_ref: &str, ci: bool) -> bool {
+    let cand_bare = candidate_model
+        .rsplit('/')
+        .next()
+        .unwrap_or(candidate_model);
+    let ref_bare = model_ref.rsplit('/').next().unwrap_or(model_ref);
+    if ci {
+        cand_bare.eq_ignore_ascii_case(ref_bare)
+    } else {
+        cand_bare == ref_bare
+    }
+}
+
 /// Resolve a model reference from the config's model list.
 ///
 /// `model_ref` can be either a `model_name` or a `vendor/model` string.
@@ -111,23 +190,39 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
         return Err(ConfigError::Validation("model reference is empty".into()));
     }
 
-    // First, try to find by model_name (exact match)
-    for mc in &cfg.model_list {
-        if mc.model_name == model_ref {
-            return resolve_from_model_config(mc);
+    // 匹配层序见 [`model_ref_eq`] doc。精确层说明：先按 model_name 精确，
+    // 再按条目 `model` 字段精确（无 '/' 门控——根修：旧实现只在该 ref 含
+    // '/' 时才比对 model 字段，无前缀条目（model: "gpt-5.6-sol"）+ 同名
+    // ref 会**错过**直接落 inference fallback（gpt→openai→api.openai.com
+    // 默认 base + 空 key → SYN 黑洞 21s 假超时，gpt-5.6-sol 风暴排查破案
+    // 的第二层）。精确命中条目就该命中——与 find_model_by_name /
+    // get_model_by_name 的无门控语义对齐（三函数同族，此前一个有门控
+    // 两个没有，本身就是口径分裂）。
+    for ci in [false, true] {
+        for mc in &cfg.model_list {
+            if model_ref_eq(&mc.model_name, model_ref, ci) {
+                return resolve_from_model_config(mc);
+            }
+        }
+
+        for mc in &cfg.model_list {
+            if model_ref_eq(&mc.model, model_ref, ci) {
+                return resolve_from_model_config(mc);
+            }
         }
     }
 
-    // Then, try to find by the entry's `model` field (exact match, no '/'
-    // gating). 根修：旧实现只在该 ref 含 '/' 时才比对 model 字段，
-    // 无前缀条目（model: "gpt-5.6-sol"）+ 同名 ref 会**错过**直接落 inference
-    // fallback（gpt→openai→api.openai.com 默认 base + 空 key → SYN 黑洞 21s
-    // 假超时，gpt-5.6-sol 风暴排查破案的第二层）。精确命中条目就该命中——
-    // 与 find_model_by_name / get_model_by_name 的无门控语义对齐（三函数
-    // 同族，此前一个有门控两个没有，本身就是口径分裂）。
-    for mc in &cfg.model_list {
-        if mc.model == model_ref {
-            return resolve_from_model_config(mc);
+    // bare-suffix 兜底层（BUG-20261119-207）：ref 尾段 == 条目 model 尾段，
+    // 层序 CI 之后（与 nemesis_types::capability::find_model_entry 同语义
+    // 同层位）。修复前 types 侧（tier/timeout 九键族）认 bare、装配族不认
+    // ——同一 bare 短名 ref「tier 命中条目、装配面落裸推断」（默认 base +
+    // 空 key = 风暴同款失败形态，crate 内 resolve_active_timeout_secs 与
+    // 本函数对同一 ref 判定分裂）。
+    for ci in [false, true] {
+        for mc in &cfg.model_list {
+            if model_ref_bare_eq(&mc.model, model_ref, ci) {
+                return resolve_from_model_config(mc);
+            }
         }
     }
 
@@ -342,17 +437,31 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
 /// Find a model configuration by name or model field (returns reference).
 /// For round-robin load balancing, use `get_model_by_name` instead.
 pub fn find_model_by_name<'a>(cfg: &'a Config, model_ref: &str) -> Result<&'a ModelConfig> {
-    // Search by model_name
-    for mc in &cfg.model_list {
-        if mc.model_name == model_ref {
-            return Ok(mc);
+    // 层序与 [`model_ref_eq`] doc 恒等：精确 model_name → 精确 model 字段 →
+    // CI model_name → CI model 字段 → bare-suffix → bare-CI（bare 层 =
+    // BUG-20261119-207）。
+    for ci in [false, true] {
+        // Search by model_name
+        for mc in &cfg.model_list {
+            if model_ref_eq(&mc.model_name, model_ref, ci) {
+                return Ok(mc);
+            }
+        }
+
+        // Search by model field
+        for mc in &cfg.model_list {
+            if model_ref_eq(&mc.model, model_ref, ci) {
+                return Ok(mc);
+            }
         }
     }
 
-    // Search by model field
-    for mc in &cfg.model_list {
-        if mc.model == model_ref {
-            return Ok(mc);
+    // bare-suffix 兜底层（BUG-20261119-207）：同 [`resolve_model_config`]。
+    for ci in [false, true] {
+        for mc in &cfg.model_list {
+            if model_ref_bare_eq(&mc.model, model_ref, ci) {
+                return Ok(mc);
+            }
         }
     }
 
@@ -1090,42 +1199,56 @@ pub fn infer_default_model(provider: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 同层多条目 RR 轮询取一（[`get_model_by_name`] 的负载分摊原语；全局
+/// 计数器跨层共用，分布语义不变）。
+fn pick_round_robin(matches: Vec<&ModelConfig>) -> ModelConfig {
+    if matches.len() == 1 {
+        return matches[0].clone();
+    }
+    static RR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let idx =
+        RR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (matches.len() as u64);
+    matches[idx as usize].clone()
+}
+
 /// Find a model configuration by name with round-robin load balancing.
 ///
 /// When multiple models match, uses an atomic counter to distribute load.
 /// Mirrors Go `GetModelByName`.
 pub fn get_model_by_name(cfg: &Config, model_ref: &str) -> Result<ModelConfig> {
-    let mut matches: Vec<&ModelConfig> = Vec::new();
+    // 层序与 [`model_ref_eq`] doc 恒等；同层全收集（RR 轮询语义保留——
+    // 同名多条目负载分摊），上层非空绝不混入下层条目（ci/bare 外层先行）。
+    // bare-suffix 兜底层 = BUG-20261119-207。
+    for (ci, bare) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut matches: Vec<&ModelConfig> = cfg
+            .model_list
+            .iter()
+            .filter(|mc| {
+                if bare {
+                    model_ref_bare_eq(&mc.model, model_ref, ci)
+                } else {
+                    model_ref_eq(&mc.model_name, model_ref, ci)
+                }
+            })
+            .collect();
 
-    for mc in &cfg.model_list {
-        if mc.model_name == model_ref {
-            matches.push(mc);
+        if matches.is_empty() && !bare {
+            matches = cfg
+                .model_list
+                .iter()
+                .filter(|mc| model_ref_eq(&mc.model, model_ref, ci))
+                .collect();
+        }
+
+        if !matches.is_empty() {
+            return Ok(pick_round_robin(matches));
         }
     }
 
-    if matches.is_empty() {
-        for mc in &cfg.model_list {
-            if mc.model == model_ref {
-                matches.push(mc);
-            }
-        }
-    }
-
-    if matches.is_empty() {
-        return Err(ConfigError::Validation(format!(
-            "model {:?} not found in model_list",
-            model_ref
-        )));
-    }
-
-    if matches.len() == 1 {
-        return Ok(matches[0].clone());
-    }
-
-    static RR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let idx =
-        RR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (matches.len() as u64);
-    Ok(matches[idx as usize].clone())
+    Err(ConfigError::Validation(format!(
+        "model {:?} not found in model_list",
+        model_ref
+    )))
 }
 
 /// Resolve the model resolution (primary + fallbacks) for the default agent.

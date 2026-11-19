@@ -9,10 +9,10 @@
       "llm": "zhipu/glm-4.7-flash",
       "max_tokens": 65536,
       "temperature": 0.7,
-      "max_tool_iterations": 0,
+      "max_tool_iterations": 100,
       "session_token_budget": 0,
       "rate_limit_retries": 10,
-      "concurrent_request_mode": "queue",
+      "concurrent_request_mode": "steer",
       "queue_size": 8,
       "max_continuation_permits": 0
     }
@@ -247,6 +247,13 @@
       "enabled": false,
       "cron": "30 3 * * *",
       "top_k": 8
+    },
+    "recall_gate": {
+      "enabled": false,
+      "model": "",
+      "max_items": 0,
+      "min_candidates": 4,
+      "cache_secs": 300
     }
   },
   "mcp": {

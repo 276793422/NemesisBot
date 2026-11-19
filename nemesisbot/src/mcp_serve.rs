@@ -25,6 +25,10 @@
 //! - stdout 是协议帧专用通道，任何日志一律 stderr（ACP 同纪律）。
 //! - JSON-RPC 通知（无 id 帧，如 `notifications/initialized`）按 JSON-RPC
 //!   语义不回帧（[`is_notification`] 判定）。
+//! - 入站帧带 64MB 字节闸（[`crate::acp::LineReader`]，acp 同源成帧纪律
+//!   ——BUG-20261029-160 家族）：超限帧回 -32700 继续服务、绝不无限物化
+//!   直到 OOM；非 UTF-8 帧 lossy 替换 → -32700，一行坏字节不再终止整个
+//!   server。
 //! - 无 resources/prompts 实际内容、无增量流式（`run` 整段返回）；MCP
 //!   客户端自带的超时对长任务生效。
 //! - sync ToolHandler → async 桥用 `block_in_place` + `Handle::block_on`
@@ -36,9 +40,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nemesis_mcp::server::{McpServer, ToolHandler};
-use nemesis_mcp::types::{McpTool, ToolCallResult};
+use nemesis_mcp::types::{JSONRPCError, JSONRPCResponse, McpTool, ToolCallResult};
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+
+use crate::acp::{LineReader, MAX_FRAME_BYTES};
 
 /// MCP server 身份名（initialize 的 serverInfo.name）。
 pub const SERVER_NAME: &str = "nemesisbot";
@@ -496,24 +502,41 @@ fn tool_board_issue_query(asm: &McpServeAssembly, args: &Value) -> ToolCallResul
         Err(e) => return ToolCallResult::err(format!("failed to open board store: {e}")),
     };
 
-    // 单卡详情优先：number（/ 数字 id）→ issue + 评论。
+    // 单卡详情优先：number（NB-1 形态；纯数字 = 数字 id → NB-{n} 归一，
+    // 与 board_issue_tool / board_evidence_tool 同纪律）→ issue + 评论。
     if let Some(number) = args
         .get("number")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let issue = match store.get_issue_by_number(number) {
+        // 纯数字输入按数字 id 归一为 NB-{n}——提示文案声称支持数字 id，
+        // 此前不做归一直落 number 列精确匹配（"5" ≠ "NB-5"）必败，失败
+        // 文案还叫用户改用数字 id，自相矛盾。
+        let normalized = if number.chars().all(|c| c.is_ascii_digit()) {
+            format!("NB-{number}")
+        } else {
+            number.to_string()
+        };
+        let issue = match store.get_issue_by_number(&normalized) {
             Ok(i) => i,
-            Err(_) => {
-                return ToolCallResult::err(format!(
-                    "issue not found: {number}（支持编号 NB-1 或数字 id）"
-                ));
+            // store 错误原文透传：not-found 时 store 自述「issue NB-9 not
+            // found」，真 store 错误（BUSY/库损坏/行反序列化）带真实根因
+            // ——此前 Err(_) 一律改写成「issue not found: {number}」，
+            // 把 store 层任何失败都捏造成「单子不存在」的事实断言。
+            Err(e) => {
+                return ToolCallResult::err(format!("{e}（支持编号 NB-1 或数字 id）"));
             }
         };
-        let comments: Vec<Value> = store
-            .list_comments(issue.id)
-            .unwrap_or_default()
+        // 评论读取错误响亮上抛——此前 unwrap_or_default() 把 store 错误
+        // 静默成「零评论」假象（缺陷 19 族：空比失败更难排查）。
+        let comment_rows = match store.list_comments(issue.id) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolCallResult::err(format!("failed to list comments: {e}"));
+            }
+        };
+        let comments: Vec<Value> = comment_rows
             .iter()
             .map(|c| {
                 json!({
@@ -637,13 +660,43 @@ pub async fn run_server(home: std::path::PathBuf) -> Result<(), String> {
     }
 
     let stdin = tokio::io::stdin();
-    let mut lines = tokio::io::BufReader::new(stdin).lines();
-    let mut stdout = tokio::io::stdout();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|e| format!("stdin read failed: {e}"))?
-    {
+    let stdout = tokio::io::stdout();
+    serve_frames(stdin, stdout, Arc::new(server), MAX_FRAME_BYTES).await
+}
+
+/// stdio 成帧循环：带字节闸的行读取（[`LineReader`]——acp 同源成帧纪律，
+/// BUG-20261029-160 家族）→ 通知不回帧 → [`McpServer::handle_raw`] →
+/// 逐帧写回。超限帧回 -32700 继续服务（绝不无限物化）；非 UTF-8 帧
+/// lossy 收敛为 -32700，一行坏字节不再终止整个 server。生产入口
+/// [`run_server`]；`frame_cap` 是测试 seam（小 cap 直接测超限路径——acp
+/// `serve_with_frame_cap` 同款）。
+async fn serve_frames<R, W>(
+    reader: R,
+    mut writer: W,
+    server: Arc<McpServer>,
+    frame_cap: usize,
+) -> Result<(), String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut frames = LineReader::new(reader, frame_cap);
+    while let Some((oversized, line)) = frames.next_line().await? {
+        if oversized {
+            // 成帧字节闸：超限帧回 -32700（id 未知 → null）并继续服务。
+            let err = JSONRPCError::new(
+                JSONRPCError::PARSE_ERROR,
+                "Parse error: frame exceeds size limit",
+            );
+            let resp = JSONRPCResponse::error(Value::Null, err);
+            let Ok(frame) = serde_json::to_string(&resp) else {
+                continue;
+            };
+            if write_frame(&mut writer, &frame).await.is_err() {
+                break; // stdout 断开 = 客户端退出：安静收尾。
+            }
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -653,17 +706,21 @@ pub async fn run_server(home: std::path::PathBuf) -> Result<(), String> {
             continue;
         }
         // stdout 断开 = 客户端退出：安静收尾。
-        if tokio::io::AsyncWriteExt::write_all(&mut stdout, format!("{resp}\n").as_bytes())
-            .await
-            .is_err()
-        {
-            break;
-        }
-        if tokio::io::AsyncWriteExt::flush(&mut stdout).await.is_err() {
+        if write_frame(&mut writer, &resp).await.is_err() {
             break;
         }
     }
     Ok(())
+}
+
+/// 写一行协议帧（追加换行）+ flush。
+async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    line: &str,
+) -> std::io::Result<()> {
+    writer.write_all(line.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await
 }
 
 #[cfg(test)]

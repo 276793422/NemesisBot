@@ -39,7 +39,6 @@ use super::GatewayCtx;
 use super::GatewayLlmJudge;
 #[cfg(all(feature = "memory", feature = "security"))]
 use super::GatewayMemoryGate;
-use super::count_enabled_channels;
 use super::print_gateway_banner;
 #[cfg(not(target_os = "android"))]
 use super::trigger_global_shutdown;
@@ -226,6 +225,11 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "cluster")]
     let mut cluster_adapter = runtime_handoff.cluster_adapter;
 
+    // 太微（taiwei，静态直链子系统）：runtime 相位起点 = exit 事件的
+    // duration 计时原点。
+    #[cfg(nb_taiwei)]
+    let taiwei_started = std::time::Instant::now();
+
     // 签名验证启动自验 → 审计链一条（接入计划 §4；Layer 8 Merkle
     // append-only——事后改日志藏不住）。warn 失败进程仍活着，此处如实记
     // denied；enforce 失败活不到这里（main 阶段已 exit 86）。
@@ -319,12 +323,18 @@ pub(crate) async fn run_runtime(
     let _chat_url = format!("http://{}:{}/chat/", web_display_host, real_port);
 
     // Step 21: Print startup banner
-    let enabled_channels = count_enabled_channels(&cfg);
+    // 横幅通道数直接消费 runtime_handoff.enabled_channels（WebWiring 同源
+    // 移交，兼 ChannelManager 出站白名单）——不再从 config 二次数。
+    // BUG-20261114-049：旧 count_enabled_channels 陈旧清单只数 13 通道，
+    // Wave 3 装配的 11 个（matrix/irc/signal/mastodon/bluesky/wecom/
+    // mattermost/nostr/mqtt/wechat/email）全盲——email-only 配置误报
+    // 「WARNING: No channels enabled」。双轨记账已消除，单一真相源 =
+    // 实际装配列表（成员正确性由 cov_tests push 矩阵钉住）。
     print_gateway_banner(
         &web_display_host,
         real_port,
         &cfg.channels.web.auth_token,
-        enabled_channels,
+        runtime_handoff.enabled_channels.len(),
         &cfg.gateway.host,
         cfg.gateway.port,
     );
@@ -341,6 +351,26 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "health")]
     {
         health_server.set_ready(true);
+    }
+
+    // 太微（taiwei，静态直链子系统）：装配完成即 spawn——先把隐私声明物化
+    // 进工作区（缺才写，best-effort；真相源 = 静态库内嵌资产），再 flush
+    // pending（离线期补发）后发 startup。spawn 不阻塞就绪；禁用/配置不完整
+    // 在任务内静默返回。
+    #[cfg(nb_taiwei)]
+    {
+        let taiwei_ws = common::workspace_path(&home);
+        let taiwei_privacy = taiwei_ws.join("PRIVACY.md");
+        if !taiwei_privacy.exists() {
+            // 空串 = taiwei 库侧异常（privacy_md 契约：调用方按缺资产降级）——
+            // 不落盘（写空文件再被 exists() 短路 = 空隐私声明永久驻留，升级
+            // 也不自愈），下次启动重试物化。
+            let privacy = crate::taiwei_bridge::privacy_md();
+            if !privacy.is_empty() {
+                let _ = std::fs::write(&taiwei_privacy, privacy);
+            }
+        }
+        crate::taiwei_bridge::spawn_startup(&home, &taiwei_ws, common::VERSION_INFO.version);
     }
 
     // Create and start ProcessManager for plugin window lifecycle + dedup
@@ -395,6 +425,7 @@ pub(crate) async fn run_runtime(
             // 只管「发什么」。
             web_mgr.set_continuation_injector({
                 let bus = bus.clone();
+                let conv_router = ctx.conv_router.clone();
                 std::sync::Arc::new(move |session_key: &str, content: &str| -> bool {
                     if !nemesis_agent::chat_log::chat_log_exists(session_key) {
                         return false;
@@ -402,7 +433,15 @@ pub(crate) async fn run_runtime(
                     bus.publish_inbound(nemesis_types::channel::InboundMessage {
                         channel: "web".to_string(),
                         sender_id: "system".to_string(),
-                        chat_id: session_key.to_string(),
+                        // 出站回显键（单一解析 resolve_inject_chat_id）：
+                        // ConvRouter 活页绑定优先（回复实时推到正开着该
+                        // 会话的标签页），无绑定回落 web:<会话id>（死会话
+                        // 软失败 + 历史照落）——通道原生形态硬前提不变
+                        // （docs/BUG 同名文档）。
+                        chat_id: super::post_agent::resolve_inject_chat_id(
+                            session_key,
+                            &conv_router,
+                        ),
                         content: content.to_string(),
                         media: Vec::new(),
                         session_key: session_key.to_string(),
@@ -941,6 +980,11 @@ pub(crate) async fn run_runtime(
         }
     }
 
+    // 项1（质变级能力开发计划 2026-11-16）：事件驱动唤醒泵已迁 post_agent.rs
+    // 装配（构造 + 观测快照注入 web 面 + 启动一处完成——runtime 阶段 web
+    // server 已 start，无法走 set_* 注入链；loop 订阅 bus 不变量在 post_agent
+    // 时点同样满足）。
+
     // W7：插件工具面热装 hook——WSAPI wasm.install/uninstall/enable/disable
     // 成功后经此把工具同步进**当前** AgentLoop 注册表（启动装载走
     // agent_factory 8c 的 register_plugin_tools，两路共用同一桥类型与操作
@@ -1139,7 +1183,12 @@ pub(crate) async fn run_runtime(
         // headless（run/acp）形态不进 gateway runtime，天然无此卡。
         {
             let default_model = nemesis_config::get_effective_llm(Some(&cfg));
-            let entry_present = cfg.model_list.iter().any(|m| m.model_name == default_model);
+            // 「条目在场」判定与 resolved_no_key 同族谓词（find_model_by_name
+            // 四层家族：精确 name/model → CI → bare-suffix，BUG-20261119-207
+            // 层序）。旧裸 `==` 单层判定：CI 变体 / model 字段 / bare 短名
+            // 形态的默认引用（077 实证的手打路径）解析命中条目但 entry_present
+            // = false → 缺 key 交互卡静默跳过，只剩启动 warn。
+            let entry_present = nemesis_config::find_model_by_name(&cfg, &default_model).is_ok();
             let resolved_no_key = nemesis_config::resolve_model_config(&cfg, &default_model)
                 .map(|r| r.api_key.is_empty())
                 .unwrap_or(false);
@@ -1396,7 +1445,9 @@ pub(crate) async fn run_runtime(
     // 每 6 小时一次，7 天 TTL）。uploads 是 temp 语义；被清扫文件的历史引用
     // 由 T6 水合层诚实降级 `[图片已失效]`，不依赖此处。路径唯一真相源
     // nemesis-path resolve_uploads_dir_in_workspace。
-    nemesis_web::handlers::upload::spawn_uploads_sweeper();
+    nemesis_web::handlers::upload::spawn_uploads_sweeper(
+        crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
+    );
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
     // M7/M8（2026-10-27 整改批次三）：logs 十六族统一 TTL 清扫（session_logs /
@@ -1494,7 +1545,9 @@ pub(crate) async fn run_runtime(
                 delivered
             },
         )));
-        nemesis_web::handlers::sessions::spawn_snooze_sweeper();
+        nemesis_web::handlers::sessions::spawn_snooze_sweeper(
+            crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
+        );
         info!("[Gateway] snooze sweeper started (10s interval, replay hook armed)");
     }
 
@@ -1699,15 +1752,53 @@ pub(crate) async fn run_runtime(
         // E-stop / release: tray is in-process, capture the same EstopState Arc
         // the agent loop reads (shared_resources.estop). trigger()/release() are
         // &self on a thread-safe AtomicBool+watch, safe to call from the tray thread.
+        // BUG-20261118-096：托盘入口与 CLI/Dashboard 同款落审计链（source=tray
+        // 区分入口）；审计链未启用 = append None（内部 warn），tracing 兜底。
         let estop_engage = Arc::clone(&shared_resources.estop);
+        let tray_audit_engage = security_plugin.clone();
         tray.set_on_estop(Box::new(move || {
             estop_engage.trigger();
+            if let Some(plugin) = tray_audit_engage.as_ref()
+                && plugin
+                    .append_direct_audit_event(
+                        "estop",
+                        "kill_switch",
+                        "system",
+                        "tray",
+                        "gateway",
+                        "allow",
+                        "e-stop engaged (kill switch: freeze all agent activity)",
+                    )
+                    .is_none()
+            {
+                tracing::debug!(
+                    "[Gateway] tray estop audit not recorded (chain disabled); tracing fallback only"
+                );
+            }
             tracing::info!("[Gateway] Tray: e-stop engaged");
         }));
 
         let estop_release = Arc::clone(&shared_resources.estop);
+        let tray_audit_release = security_plugin.clone();
         tray.set_on_release(Box::new(move || {
             estop_release.release();
+            if let Some(plugin) = tray_audit_release.as_ref()
+                && plugin
+                    .append_direct_audit_event(
+                        "estop",
+                        "kill_switch",
+                        "system",
+                        "tray",
+                        "gateway",
+                        "allow",
+                        "e-stop released (agent activity resumes)",
+                    )
+                    .is_none()
+            {
+                tracing::debug!(
+                    "[Gateway] tray estop audit not recorded (chain disabled); tracing fallback only"
+                );
+            }
             tracing::info!("[Gateway] Tray: e-stop released");
         }));
 
@@ -1754,6 +1845,26 @@ pub(crate) async fn run_runtime(
     // Step 24: Graceful shutdown
     println!();
     println!("Shutting down...");
+
+    // BUG-20261115-023（家族第四~八成员收口）：进程终态令牌先行 cancel
+    // —— logs_sweeper / session_group_sweeper / notify / board_bus /
+    // profile_service 五个常驻循环的周期等待点感知终态立即退出，不再在
+    // 排空窗内注册新 timer（裸 Drop 语义 runtime 的 shutdown 最后 poll
+    // 撞 "Tokio context is being shutdown" panic 面；机理与根修先例见
+    // heartbeat r9 / devices BUG-20261114-015 / outbox BUG-20261114-019，
+    // 家族纪律见 shutdown.rs 模块文档）。
+    crate::commands::gateway::shutdown::cancel_terminal_tasks();
+
+    // 太微（taiwei，静态直链子系统）：exit 事件先行 spawn（与下方 drain
+    // 并行跑，通常在 drain 窗口内就完成）；teardown 收尾处有界等待（3s
+    // 让路预算）。
+    #[cfg(nb_taiwei)]
+    crate::taiwei_bridge::spawn_exit(
+        &home,
+        &common::workspace_path(&home),
+        common::VERSION_INFO.version,
+        taiwei_started.elapsed().as_secs(),
+    );
 
     // W6（2026-10-25 加固）：优雅
     // 停机 drain——先关入口（draining 闸：外部通道新消息诚实回执，内部
@@ -1890,6 +2001,14 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "cluster")]
     {
         if let Some(adapter) = cluster_adapter.take() {
+            // BUG-20261114-019：推送循环终态收口必须先于 adapter.stop()
+            // ——循环的 JoinHandle 在 spawn 点已丢弃，本调用是全进程唯一
+            // 终止通路；不收口则循环存活跨进 shutdown_timeout 排空窗，
+            // 最后 poll 注册新 TimerEntry = 停机 panic（heartbeat r9 /
+            // devices BUG-20261114-015 家族第三例）。收口挂 terminal 链
+            // 而非 adapter.stop()：后者被 tray/Dashboard 动态 start/stop
+            // 周期复用，杀循环会永久失去推送能力。
+            adapter.stop_push_loop();
             let _ = adapter.stop();
         }
     }
@@ -1907,10 +2026,22 @@ pub(crate) async fn run_runtime(
         crate::roaming_plugin_loader::shutdown_plugin_roaming();
     }
 
+    // 邮件基础设施停机（estop 不触达传输面——挂 gateway 进程停机链）：
+    // 停 SMTP/POP3 面（插件内优雅收监听）+ shutdown_plugin_mail 终态收尾
+    // （幂等；不 unload 库，活线程 UB——同库 OS 引用计数新句柄）。插件
+    // 缺席（未装载）= Err/无操作诚实吞掉，不炸停机链。
+    {
+        match crate::mail_plugin_loader::mail_server_stop().await {
+            Ok(_) => info!("[Gateway] mail servers stopped (plugin_mail)"),
+            Err(e) => tracing::debug!("[Gateway] mail server stop skipped: {e}"),
+        }
+        crate::mail_plugin_loader::shutdown_plugin_mail();
+    }
+
     // Clean up gateway state file
-    let _ = std::fs::remove_file(nemesis_path::resolve_gateway_state_path_in_workspace(
-        &common::workspace_path(&home),
-    ));
+    let _ = nemesis_utils::fsutil::remove_file_resilient(
+        nemesis_path::resolve_gateway_state_path_in_workspace(&common::workspace_path(&home)),
+    );
 
     println!("  OK Gateway stopped");
 
@@ -1920,6 +2051,18 @@ pub(crate) async fn run_runtime(
     // event loop forever while the gateway worker had already finished.
     #[cfg(target_os = "macos")]
     nemesis_desktop::main_thread_handoff::request_exit();
+
+    // 太微（taiwei，静态直链子系统）：exit 任务有界收尾（3s 让路——正常
+    // 早已随 drain 完成；超时放弃 = 诚实边界「硬杀场景 exit 丢失」，pending
+    // 兜底不适用本路径，事件不落盘）。
+    #[cfg(nb_taiwei)]
+    {
+        let taiwei_exit_done = crate::taiwei_bridge::wait_exit(3000);
+        tracing::debug!(
+            taiwei_exit_flushed = taiwei_exit_done,
+            "taiwei exit 等待收尾"
+        );
+    }
 
     Ok(())
 }

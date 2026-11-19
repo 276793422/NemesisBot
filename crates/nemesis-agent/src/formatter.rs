@@ -36,7 +36,13 @@ pub struct FormatterSpec {
 /// 内置声明式表（常用工具的默认覆盖；扩展名小写）。
 fn builtin_spec(ext: &str) -> Option<FormatterSpec> {
     let (tool, args): (&str, &[&str]) = match ext {
-        "rs" => ("rustfmt", &["--edition", "2021", "{file}"]),
+        // (BUG-20261114-027) rustfmt edition 跟 2024：let-chains（`if let …
+        // && …`）只在 edition 2024+ 合法——默认表此前给 2021，rustfmt 对
+        // 含 let-chains 的文件 parse error 退非零，format-on_save 按「失败
+        // 静默」设计永远跳过它们（本仓库自身 edition=2024 且新代码大量
+        // 使用 let-chains，默认表在主场失灵）。2024 解析器是 2021 的超集
+        // （唯一倒挂是 `gen` 作标识符，极罕见），旧版代码照常格式化。
+        "rs" => ("rustfmt", &["--edition", "2024", "{file}"]),
         "go" => ("gofmt", &["-w", "{file}"]),
         "ts" | "tsx" | "js" | "jsx" | "vue" | "json" | "md" => ("prettier", &["--write", "{file}"]),
         "py" => ("black", &["-q", "{file}"]),
@@ -82,7 +88,9 @@ fn resolve_config(config_path: Option<&Path>) -> (FormatOnSaveConfig, bool) {
     let Some(p) = config_path else {
         return (FormatOnSaveConfig::default(), false);
     };
-    let parsed = std::fs::read_to_string(p)
+    // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → 用户开的
+    // format_on_save 静默落缺省关，BUG-20261103-334 同族）。
+    let parsed = nemesis_utils::fsutil::read_config_string(p)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     match parsed {
@@ -157,6 +165,11 @@ async fn format_file(spec: &FormatterSpec, path: &str, timeout: Duration) -> boo
         .stderr(std::process::Stdio::null())
         // 超时分支 drop Child 时兜底 kill（不留孤儿格式化进程）。
         .kill_on_drop(true);
+    // env 窄版闸（BUG-20261117-048，家族闸纪律对齐 cli_delegation）：第三方
+    // 格式化器（prettier/black…）是用户配置面 spawn 点，不继承 bot 内部
+    // 命名空间变量（NEMESISBOT_VAULT_PASSPHRASE 等）；窄剥保留第三方自身
+    // auth env，不砍登录态。
+    let _stripped = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
     // 格式化工具（prettier/black 等）是 console 程序；gateway 托盘/无控制台
     // 运行（release windows 子系统）时压掉弹窗（输出本就走 null）。
     #[cfg(target_os = "windows")]

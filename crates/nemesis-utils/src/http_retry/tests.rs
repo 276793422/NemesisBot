@@ -347,9 +347,11 @@ async fn test_do_request_with_retry_max_1() {
     })
     .await;
 
-    // With max_retries=1, it should only call once, then re-run once more
+    // max_retries=1 → 恰好 1 次调用，可重试结果原样返回（BUG-20261113-159
+    // 回归锁：旧实现此处补跑第二次，调用数 2）。
     assert!(result.is_ok());
     assert_eq!(result.unwrap().status, 500);
+    assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

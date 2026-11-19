@@ -285,9 +285,22 @@ pub fn fork_session_opts(
         chat_log::write_session_project(&new_key, &pid, &ppath);
         store.set_project(&new_key, Some(pid), Some(ppath));
     }
-    store
-        .save(&new_key)
-        .map_err(|e| format!("写入新会话失败: {}", e))?;
+    store.save(&new_key).map_err(|e| {
+        // BUG-20261118-092：step-2 落盘失败同样走原子回退——BUG-20261030-205
+        // 的契约「fork 从此要么完整成功、要么完全没发生」此前只落在 step-1
+        // （jsonl 写入校验），本臂裸 Err 不回退：此刻 jsonl 已提交、
+        // in-memory store 条目已建（get_or_create/set_history/set_summary）、
+        // 项目绑定 meta 可能已落盘——不回退 = 被告知失败但实际存在的幽灵
+        // fork 会话（sessions.list 可见；源绑项目时进项目组；无血缘无
+        // boundary 审计），重试被 unique_key 避让成 `_2` 第二份。
+        // delete_chat_log 全级联清 jsonl/boundary/meta（含项目绑定）+
+        // ledger；store.remove 摘内存条目（store json 盘面：save 失败 =
+        // write_file_atomic 未触碰目标，且 unique_key 保证此前不存在旧
+        // 文件，无残留可清）。源会话全程只读未受影响。
+        store.remove(&new_key);
+        chat_log::delete_chat_log(&new_key);
+        format!("写入新会话失败: {e}，fork 已完整回退（源会话未受影响）——请重试")
+    })?;
 
     // Boundary events on BOTH keys (U9 sidecar; new key = fresh ledger).
     chat_log::append_boundary_event(

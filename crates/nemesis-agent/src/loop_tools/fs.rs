@@ -229,6 +229,15 @@ pub struct WorkspaceBoundary {
     /// executor 子进程无开关通路）= 旧行为一概拒绝。闭包签名纯原始类型，
     /// 不引 security 类型（`--no-default-features` 裁剪编译不受影响）。
     pub editor_gate: Option<Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>,
+    /// 目标系统文件保护闸（D-Q3 创建者二分）：Some 时**写删族**路径在
+    /// restrict 短路**之前**先过守卫（restrict=false 也保护人配目标）；
+    /// 读族不设防。输入 workspace 相对路径（`/` 分隔归一），返回
+    /// Some(拒绝理由) = 拒、None = 放行。裁决逻辑单一真相源在
+    /// nemesis-goals `gate::fence_denial`（goals/ 下按创建者二分 +
+    /// evals.jsonl/注册表恒拒）；主 agent / 集群 worker / executor 子
+    /// 进程装守卫，项目 loop（spec.rs）不装（root=项目目录，主 ws
+    /// goals/ 不可达）。None = 不设防（feature 裁剪形态）。
+    pub goals_guard: Option<Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
 }
 
 impl std::fmt::Debug for WorkspaceBoundary {
@@ -238,6 +247,7 @@ impl std::fmt::Debug for WorkspaceBoundary {
             .field("restrict", &self.restrict)
             .field("extra_roots", &self.extra_roots)
             .field("editor_gate", &self.editor_gate.is_some())
+            .field("goals_guard", &self.goals_guard.is_some())
             .finish()
     }
 }
@@ -262,6 +272,22 @@ pub fn validate_workspace_path(
     } else {
         boundary.root.join(target)
     };
+    // 目标系统文件保护（D-Q3 创建者二分）：写删族在 restrict 短路**之前**
+    // 检查——restrict=false 也保护人配目标（goal.md 是评估的单一真相源，
+    // 不随边界开关松动）；读族放行。守卫裁决单一真相源在 nemesis-goals
+    // gate::fence_denial；界外路径不归本守卫管（由 restrict/editor_gate
+    // 既有语义处理）。
+    if family.is_write_delete()
+        && let Some(guard) = &boundary.goals_guard
+    {
+        let resolved_guard = canonicalize_for_compare(&canonical);
+        let ws_guard = canonicalize_for_compare(&boundary.root);
+        if let Ok(rel) = resolved_guard.strip_prefix(&ws_guard)
+            && let Some(reason) = guard(&rel.to_string_lossy().replace('\\', "/"))
+        {
+            return Err(reason);
+        }
+    }
     if !boundary.restrict {
         return Ok(canonical);
     }
@@ -360,7 +386,9 @@ impl Tool for WriteFileTool {
                 .map_err(|e| format!("Failed to create directories: {}", e))?;
         }
 
-        tokio::fs::write(&path, &content)
+        // 原子写（BUG-20261116-010）：tmp+fsync+rename 替代裸直写——写中段
+        // 进程死亡不再撕裂源文件；已存在文件保留权限位与 symlink 链。
+        nemesis_utils::write_file_atomic_async(&path, content.as_bytes(), 0o644)
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
@@ -781,7 +809,8 @@ impl EditFileTool {
             &path.to_string_lossy(),
         )?;
 
-        tokio::fs::write(path, &outcome.new_content)
+        // 原子写（BUG-20261116-010）：同 write_file——编辑结果经 tmp+rename 落盘。
+        nemesis_utils::write_file_atomic_async(path, outcome.new_content.as_bytes(), 0o644)
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
@@ -1076,7 +1105,10 @@ impl Tool for MultiEditTool {
             if f.current == f.original {
                 continue;
             }
-            if let Err(err) = tokio::fs::write(&f.path, &f.current).await {
+            // 原子写（BUG-20261116-010）：multiedit 统一写盘逐文件 tmp+rename。
+            if let Err(err) =
+                nemesis_utils::write_file_atomic_async(&f.path, f.current.as_bytes(), 0o644).await
+            {
                 // 磁盘写阶段失败无跨文件事务——诚实报告已写清单。
                 return Err(format!(
                     "multiedit write failed on {}: {}. Files already written: {}",
@@ -1184,8 +1216,15 @@ impl Tool for DeleteFileTool {
             ));
         }
 
-        tokio::fs::remove_file(&path)
+        // 韧性删除（同 DeleteDirTool；3789f815 只补了目录侧，文件侧漏网）：
+        // Defender/索引器瞬时句柄是常态，单发失败 = 对模型假报错；
+        // spawn_blocking 装同步重试内核（最坏 ~4.4s，不占 async worker）。
+        // 重试变体把 NotFound 吞成成功——「删不存在文件要报错」的语义
+        // 由前置存在性检查保留（nemesis-tools 同款注记）。
+        let retry_path = path.clone();
+        tokio::task::spawn_blocking(move || nemesis_utils::fsutil::remove_file_retry(&retry_path))
             .await
+            .map_err(|e| format!("Failed to delete file: {e}"))?
             .map_err(|e| format!("Failed to delete file: {}", e))?;
 
         Ok(format!("Deleted file: {}", path.display()))

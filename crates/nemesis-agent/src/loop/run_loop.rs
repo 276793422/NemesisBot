@@ -55,6 +55,14 @@ pub(crate) struct TurnState {
     /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
     /// （fail-open，与 MAX_LLM_HOOK_RETRIES 同纪律）。
     pub(crate) turn_end_continues: u32,
+    /// K2 扩展（提示词型钩子 / LLM 执行体）：turn-end 钩子返回
+    /// [`crate::hooks::TurnEndDecision::Inject`] 时暂存的提示词。turn 照常
+    /// 收尾（Done 照发、checkpoint 照落），`run_llm_loop` 在
+    /// [`Self::finalize_turn`] 之后把它作为新的用户消息注入会话开启全新
+    /// 一轮。**不受 [`MAX_TURN_END_CONTINUES`]** 约束——永续是钩点正常执行
+    /// 的自然副作用（每轮结束 Stop 钩点触发 → 注入 → 新轮 → 再触发）；
+    /// estop/取消打断 turn 走非 Accept 路径，本字段保持 None，循环自然停。
+    pub(crate) pending_prompt_inject: Option<String>,
     /// P30（WS14）：canvas 语法预检回灌预算（本 turn 内计数；[`crate::canvas::MAX_SYNTAX_RETRIES`]
     /// 封顶，耗尽后诚实放行——canvas 块按普通代码块留在正文，不发 CanvasOpen）。
     pub(crate) canvas_retries: u32,
@@ -116,8 +124,12 @@ impl AgentLoop {
         // set by run_agent_loop_internal when cron_job_id metadata is
         // present) — a recurring cron on a persistent session grows the
         // boundary sidecar unboundedly otherwise.
+        // 续行回主路（2026-11-12）：user=="continuation"（bus.rs
+        // run_continuation_turn 设置）同样豁免——续行回合落主会话，边界
+        // sidecar 会随每次异步回灌无界增长（与 heartbeat/cron 同一失败形态）。
         let log_boundaries = context.user != "heartbeat"
             && context.user != "cron"
+            && context.user != "continuation"
             && !is_internal_channel(&context.channel);
         if log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_start", "");
@@ -150,6 +162,7 @@ impl AgentLoop {
             steer_escape_used: false,
             terminal_reason: None,
             turn_end_continues: 0,
+            pending_prompt_inject: None,
             canvas_retries: 0,
             log_boundaries,
             chat_opts: crate::types::ChatOptions {
@@ -308,6 +321,27 @@ impl AgentLoop {
             )
             .await;
 
+            // A1（缺陷整改批次 2026-11-14）：会话轨迹的轮次锚点。反思侧
+            // avg_rounds / avg_tool_calls_per_round 从此读真实 LLM 轮数——
+            // tool_call 事件只刻画工具节奏，llm_turn 是「一轮对话完成」的
+            // 标记，build_conversation_traces 把两者合并成完整轨迹。
+            // session_key 与经验台账同格式（tool_dispatch 先例）。
+            #[cfg(feature = "forge")]
+            if let Some(ref forge) = self.forge {
+                // 与经验记录同闸：runtime 主开关关 = 不写观测数据。
+                if forge.is_enabled() {
+                    forge
+                        .record_trace_event(nemesis_forge::trace::TraceEvent {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            event_type: "llm_turn".into(),
+                            session_key: format!("{}:{}", context.channel, context.chat_id),
+                            timestamp: chrono::Local::now().to_rfc3339(),
+                            data: serde_json::json!({}),
+                        })
+                        .await;
+                }
+            }
+
             // 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全；B2 实报
             // 锚定）：provider 实报输入 token 进 compaction 混合触发信号
             // 缓存（完整输入 = prompt + cache_creation + cache_read，P8 会
@@ -388,6 +422,76 @@ impl AgentLoop {
         // 器官 9（§4.2）：turn 收尾——state Idle + turn_end 边界标记。
         self.finalize_turn(instance, context, cancel_token, &st);
 
+        // K2 扩展（提示词型钩子 / LLM 执行体）：turn **完整收尾后**注入。
+        // Done 已发、checkpoint 已落、前端已看到本轮回复——注入发生在轮与
+        // 轮之间。通道 = inbox next-turn 队列（gate 排队同款机理，用户拍板
+        // 「按正常方式执行 HOOK 点」）：enqueue 进 inbox → run_llm_loop 返回
+        // → process_admitted 尾部 drain_next_turn_queue 取队首 → reinject_tx
+        // 回灌 inbound mpsc → run_bus 消费 → pump_dispatch 正常闸门（estop
+        // 早期闸 / 会话路由全生效）。**零新基建**，与普通排队消息完全同路径。
+        // 新轮结束 Stop 钩点再次触发 → 自然循环（永续语义）。
+        // 仅 Accept 路径 armed（judge_final_answer 的 Inject 臂）；工具批次
+        // Stop / GiveUp / error / cancel 出口本字段恒 None，零副作用。
+        if let Some(prompt) = st.pending_prompt_inject.clone() {
+            // Reject 模式无 next-turn drain（drain_next_turn_queue 只在
+            // Queue|Steer 跑）——enqueue 进去是死信（滞留 inbox 永不消费），
+            // 诚实跳过。
+            if self.concurrent_mode == ConcurrentMode::Reject {
+                warn!(
+                    "[AgentLoop] prompt hook armed for session '{}' but concurrent mode is Reject \
+                     (no next-turn drain path) — injection skipped, loop stops",
+                    context.session_key
+                );
+            } else {
+                let msg = nemesis_types::channel::InboundMessage {
+                    channel: if context.channel.is_empty() {
+                        "web".to_string()
+                    } else {
+                        context.channel.clone()
+                    },
+                    sender_id: "system".to_string(),
+                    chat_id: context.chat_id.clone(),
+                    content: prompt,
+                    media: Vec::new(),
+                    session_key: context.session_key.clone(),
+                    correlation_id: String::new(),
+                    metadata: [("hook_prompt".to_string(), "1".to_string())]
+                        .into_iter()
+                        .collect(),
+                    voice_playback: None,
+                };
+                let queued = crate::inbox::QueuedMessage {
+                    msg,
+                    timestamp: chrono::Local::now().to_rfc3339(),
+                    priority: crate::inbox::MessagePriority::Normal,
+                };
+                match self.inbox.enqueue_for_mode(
+                    &context.session_key,
+                    queued,
+                    self.concurrent_mode == ConcurrentMode::Steer,
+                ) {
+                    crate::inbox::EnqueueOutcome::QueuedForNextTurn
+                    | crate::inbox::EnqueueOutcome::QueuedForNextStep => {
+                        info!(
+                            "[AgentLoop] prompt hook injected (session '{}') — new round queued, \
+                             begins after turn drain",
+                            context.session_key
+                        );
+                    }
+                    crate::inbox::EnqueueOutcome::Rejected
+                    | crate::inbox::EnqueueOutcome::RejectedSoft => {
+                        // 队满（容量/软水位）——注入未入队，循环就此停止
+                        //（诚实刹车，不静默丢）。
+                        warn!(
+                            "[AgentLoop] prompt hook injection rejected (queue full, session '{}') \
+                             — loop stops (honest brake)",
+                            context.session_key
+                        );
+                    }
+                }
+            }
+        }
+
         events
     }
 
@@ -407,7 +511,9 @@ impl AgentLoop {
         // When completion hits the cap, output is cut mid-way —
         // often mid tool-call JSON, which args_validator would report as
         // "Arguments are not valid JSON" and burn the validation budget
-        // (Big tier = 0 retries → instant force-stop with a misleading
+        // (big tier budget = 2 since P2C — one truncated burn gets the
+        // model a re-feed, but truncated JSON recurs every round, so
+        // consecutive invalid burns still force-stop with a misleading
         // error). Detect it here: drop the truncated tool calls (executing
         // them would write a partial file / run half-formed args), keep
         // partial content, append a "continue" prompt, re-loop. Bounded so
@@ -646,6 +752,15 @@ impl AgentLoop {
                     // fail-open). Only the normal Accept path fires —
                     // heartbeat (its own branch above), GiveUp and
                     // error/stop paths do not.
+                    //
+                    // K2 扩展（提示词型钩子 / LLM 执行体）：`Inject` 把
+                    // 提示词暂存进 st.pending_prompt_inject，turn 照常
+                    // 收尾（下面的 Done 照发、finalize_turn 照跑、
+                    // checkpoint 照落），收尾后由 run_llm_loop 注入开启
+                    // 新一轮。**无封顶**——每轮结束 Stop 钩点再次触发，
+                    // 循环是钩点正常执行的自然副作用（用户需求的永续
+                    // 语义）；estop/取消打断 turn → 非 Accept 路径 →
+                    // 本块不执行 → 循环自然停。
                     {
                         let lifecycle = self.hooks.lifecycle_hooks.read().snapshot();
                         if !lifecycle.is_empty() {
@@ -656,27 +771,38 @@ impl AgentLoop {
                                 final_content: content.clone(),
                                 stop_hook_active: st.turn_end_continues > 0,
                             };
-                            if let crate::hooks::TurnEndDecision::Continue { feedback } =
-                                crate::hooks::run_turn_end_hooks(&lifecycle, &end).await
-                            {
-                                if st.turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES {
-                                    st.turn_end_continues += 1;
-                                    info!(
-                                        "[AgentLoop] turn-end hook blocked stopping \
+                            match crate::hooks::run_turn_end_hooks(&lifecycle, &end).await {
+                                crate::hooks::TurnEndDecision::Continue { feedback } => {
+                                    if st.turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES
+                                    {
+                                        st.turn_end_continues += 1;
+                                        info!(
+                                            "[AgentLoop] turn-end hook blocked stopping \
                                              ({}/{}, session '{}') — one more round",
-                                        st.turn_end_continues,
+                                            st.turn_end_continues,
+                                            crate::hooks::MAX_TURN_END_CONTINUES,
+                                            context.session_key
+                                        );
+                                        instance.add_user_message(&feedback);
+                                        return Some(TurnFlow::Continue);
+                                    }
+                                    warn!(
+                                        "[AgentLoop] turn-end hook keeps blocking stop after {} \
+                                         continues; stopping anyway (fail-open), session '{}'",
                                         crate::hooks::MAX_TURN_END_CONTINUES,
                                         context.session_key
                                     );
-                                    instance.add_user_message(&feedback);
-                                    return Some(TurnFlow::Continue);
                                 }
-                                warn!(
-                                    "[AgentLoop] turn-end hook keeps blocking stop after {} \
-                                         continues; stopping anyway (fail-open), session '{}'",
-                                    crate::hooks::MAX_TURN_END_CONTINUES,
-                                    context.session_key
-                                );
+                                crate::hooks::TurnEndDecision::Inject { prompt } => {
+                                    st.pending_prompt_inject = Some(prompt);
+                                    info!(
+                                        "[AgentLoop] turn-end prompt hook armed for session \
+                                         '{}' — turn finalizes normally, then a new round \
+                                         starts with the injected prompt",
+                                        context.session_key
+                                    );
+                                }
+                                crate::hooks::TurnEndDecision::Stop => {}
                             }
                         }
                     }
@@ -831,6 +957,8 @@ impl AgentLoop {
         // mtime 翻转（同 tier 的热读纪律；turn_budget 仍最高优先）。
         let effective_max_turns = turn_budget.unwrap_or(
             self.current_max_tool_iterations()
+                // n ≤ u32::MAX 由 resolver 上界闸保证（BUG-20261117-085）；
+                // 负值→0=不限，正数 cast 安全。
                 .map(|n| if n <= 0 { 0 } else { n as u32 })
                 .unwrap_or(self.config.max_turns),
         );
@@ -935,12 +1063,13 @@ impl AgentLoop {
                 // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
                 // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
                 // 不静默丢图。
-                let ws_for_uploads = self.workspace_root.read().clone();
-                let uploads_base = ws_for_uploads
-                    .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-                // 会话资产区（2026-11-12）：steer 与首轮同源——绑定会话的
+                // 会话资产区根（2026-11-16 污染修复）：session_homes_root
+                // 统一裁决。steer 与首轮同源——同样可能携带图片（media 引用 +
+                // 文本点名路径）。走与 process_admitted 同一附加链（URL 预取 +
+                // 统一附加 + 诚实注记 + image_refs），不静默丢图。绑定会话的
                 // 预取产物落自家 home/uploads（home 已在首轮 admission 惰性
                 // 分配，此处只消费）；未绑定落全局。
+                let uploads_base = self.session_homes_root();
                 let uploads_dir =
                     crate::session_home::resolve_session_home(&uploads_base, &context.session_key)
                         .map(|h| h.join("uploads"))

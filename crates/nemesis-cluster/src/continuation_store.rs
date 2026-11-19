@@ -186,6 +186,25 @@ impl ContinuationStore {
         self.snapshots.lock().contains_key(task_id)
     }
 
+    /// 盘上快照存在性判定（BUG-20261113-165）。
+    ///
+    /// 在途判定的**真相源是磁盘**，不是内存 [`Self::contains`]：生产路径的
+    /// 续行快照由 agent 侧 twin store（`nemesis-agent` loop_continuation，
+    /// 同目录同文件名映射）落盘，本 store 的内存 map 只被本 store 的
+    /// [`Self::save`]/[`Self::recover_from_disk`] 填充——生产代码均不调用
+    /// （G5 崩溃恢复直接用 agent 侧 store）。用 `contains` 判在途 = 分支
+    /// 永假（board timeline 的「续行快照在场」事件从未出现过）。
+    ///
+    /// 文件名经 [`crate::fsutil::safe_task_file_name`]（与写入侧
+    /// `sanitize_path_segment` 同源恒等），异形 task_id 也能对上盘上名。
+    pub async fn exists_on_disk(&self, task_id: &str) -> bool {
+        let path = self.snapshot_path(task_id);
+        tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+    }
+
     /// Return the number of stored snapshots.
     pub fn len(&self) -> usize {
         self.snapshots.lock().len()

@@ -123,6 +123,12 @@ impl JSONRPCError {
     /// Internal JSON-RPC error.
     pub const INTERNAL_ERROR: i32 = -32603;
 
+    // MCP protocol-reserved error codes --------------------------------------
+
+    /// MCP spec 保留错误码：请求的资源不存在（resources/read 未知 URI
+    /// 专用，server-defined；BUG-20261118-164 错误码规范化）。
+    pub const RESOURCE_NOT_FOUND: i32 = -32002;
+
     /// Create a new error with the given code and message.
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {

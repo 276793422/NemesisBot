@@ -39,8 +39,9 @@ mod imp {
     use crate::payload_file::ensure_payload;
     use crate::pipe::{PipeError, PipeLink};
 
-    /// 单会话超时预算（read_mem/卸载应答）。
-    pub(super) const CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    /// 单会话超时预算（read_mem/卸载应答；resolve 分块扫描块读同源消费
+    /// ——BUG-20261116-022 收口后 crate 内唯一超时预算真相源）。
+    pub const CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     /// estop 全量卸载总预算。
     const ESTOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 

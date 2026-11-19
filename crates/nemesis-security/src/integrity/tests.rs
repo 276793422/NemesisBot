@@ -240,7 +240,8 @@ fn test_appended_events_roundtrip_verify() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].hash_version, 1);
+    // BUG-20261120-002 起 append 产 v2（长度前缀公式）事件。
+    assert_eq!(events[0].hash_version, 2);
     assert!(AuditChain::verify_chain(&events));
 }
 
@@ -340,6 +341,106 @@ fn test_compute_event_hash_v1_covers_source_and_reason() {
     );
 }
 
+// ---- BUG-20261120-002：v1 裸拼接字段边界歧义 ----
+// v1 公式九字段裸拼接：operation="exec"+tool_name="x" 与
+// operation="execx"+tool_name="" 产生同一字节流 → 同一哈希。持有盘上写
+// 权限的攻击者把内容在字段间重切分（工具名/操作语义被改写），哈希不变、
+// 链验证照过。v2 长度前缀使字段边界唯一，同一切分变换哈希必变。
+
+/// v2 公式（测试内复刻，钉死长度前缀契约不被静默改动）。
+fn v2_formula_hash(ev: &AuditEvent) -> String {
+    let mut hasher = Sha256::new();
+    for field in [
+        &ev.prev_hash,
+        &ev.timestamp,
+        &ev.operation,
+        &ev.tool_name,
+        &ev.user,
+        &ev.target,
+        &ev.decision,
+        &ev.source,
+        &ev.reason,
+    ] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn repartition_base(hash_version: u8) -> AuditEvent {
+    AuditEvent {
+        id: "e".to_string(),
+        timestamp: "t".to_string(),
+        operation: "exec".to_string(),
+        tool_name: "x".to_string(),
+        user: "u".to_string(),
+        source: "s".to_string(),
+        target: "tg".to_string(),
+        decision: "d".to_string(),
+        reason: "r".to_string(),
+        hash: String::new(),
+        prev_hash: "p".to_string(),
+        sign: None,
+        hash_version,
+    }
+}
+
+#[test]
+fn test_v2_hash_rejects_field_repartition() {
+    // 切分 A：operation="exec", tool_name="x"（字节流含 "execx" 段）。
+    let a = repartition_base(2);
+    // 切分 B：同一字节段在 operation/tool_name 间重切——语义完全不同
+    // （操作名与工具名互换归属），字节流总量相同。
+    let mut b = repartition_base(2);
+    b.operation = "execx".to_string();
+    b.tool_name = String::new();
+
+    // v2（长度前缀）：切分变化 → 哈希必变 → 篡改必检出。
+    assert_ne!(
+        AuditChain::compute_event_hash(&a),
+        AuditChain::compute_event_hash(&b)
+    );
+    assert_eq!(AuditChain::compute_event_hash(&a), v2_formula_hash(&a));
+
+    // 对照：v1（裸拼接）下同一切分变换哈希不变（歧义本貌——正是被修的洞）。
+    let mut a1 = a.clone();
+    a1.hash_version = 1;
+    let mut b1 = b.clone();
+    b1.hash_version = 1;
+    assert_eq!(
+        AuditChain::compute_event_hash(&a1),
+        AuditChain::compute_event_hash(&b1)
+    );
+}
+
+#[test]
+fn test_v2_append_produces_prefix_formula_and_verifies() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        ..Default::default()
+    };
+    let chain = AuditChain::new(config);
+    let e1 = chain
+        .append("exec", "exec", "u", "cli", "ls -la", "allowed", "ok")
+        .unwrap();
+    let e2 = chain
+        .append(
+            "file_write",
+            "write_file",
+            "u",
+            "cli",
+            "/tmp/b",
+            "denied",
+            "no",
+        )
+        .unwrap();
+    assert_eq!(e1.hash_version, 2);
+    assert_eq!(e1.hash, v2_formula_hash(&e1));
+    assert_eq!(e2.hash, v2_formula_hash(&e2));
+    assert!(AuditChain::verify_chain(&[e1, e2]));
+}
+
 #[test]
 fn test_jsonl_persistence() {
     let dir = tempfile::tempdir().unwrap();
@@ -384,6 +485,106 @@ fn test_segment_rotation() {
     // Should have rotated at least once
     assert!(chain.segment_count() >= 2);
     assert_eq!(chain.total_event_count(), 12);
+}
+
+// ---- BUG-20261120-001：段游标不回载 ----
+// load_segments 旧实现只回载 last_hash/total_events，segment_count/event_count
+// 保持 new() 初值（1/0）。发生过段轮转的链重启后 append 回写主文件——新事件
+// 物理位置落在段中文件**前面**，盘上物理序与链序永久错位，verify 恒红无自愈。
+
+#[test]
+fn test_rotation_restart_resumes_current_segment() {
+    let dir = tempfile::tempdir().unwrap();
+    let make_config = || AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        max_events_per_segment: 3,
+        ..Default::default()
+    };
+
+    // 进程 A：写 4 事件（3 触发轮转 → seg0002 持有第 4 事件）。
+    let chain_a = AuditChain::new(make_config());
+    let mut last = None;
+    for i in 0..4 {
+        last = Some(
+            chain_a
+                .append("test", "tool", "u", "c", &format!("a{i}"), "allowed", "")
+                .unwrap(),
+        );
+    }
+    let tail_a = last.unwrap().hash;
+    let seg2_path = dir.path().join("audit_seg0002.jsonl");
+    assert!(seg2_path.exists(), "rotation should have created seg0002");
+
+    // 进程 B（重启）：load_segments 回载后 append 必须续写 seg0002，
+    // 且物理序（main → seg0002）与链序一致、全链 verify 过。
+    let chain_b = AuditChain::new(make_config());
+    let loaded = chain_b.load_segments().unwrap();
+    assert_eq!(loaded, 4);
+    assert_eq!(chain_b.current_hash(), tail_a);
+    assert_eq!(
+        chain_b.segment_count(),
+        2,
+        "segment cursor must be restored"
+    );
+    assert_eq!(
+        chain_b.event_count(),
+        1,
+        "current segment line count must be restored"
+    );
+
+    let e5 = chain_b
+        .append("test", "tool", "u", "c", "a4", "allowed", "")
+        .unwrap();
+    assert_eq!(
+        e5.prev_hash, tail_a,
+        "new event must chain onto restored tail"
+    );
+    // 落点必须 seg0002（回写主文件 = BUG-20261120-001 本貌）。
+    let seg2_content = std::fs::read_to_string(&seg2_path).unwrap();
+    assert_eq!(
+        seg2_content.lines().count(),
+        2,
+        "new event must land in seg0002"
+    );
+
+    // 物理序 = 消费面读序（main → seg0002 升序），全链验证过。
+    let mut all = Vec::new();
+    for p in [dir.path().join("audit.jsonl"), seg2_path] {
+        for line in std::fs::read_to_string(&p).unwrap().lines() {
+            all.push(serde_json::from_str::<AuditEvent>(line).unwrap());
+        }
+    }
+    assert_eq!(all.len(), 5);
+    assert!(AuditChain::verify_chain(&all));
+}
+
+#[test]
+fn test_rotation_restart_single_segment_restores_event_count() {
+    // 未轮转链（只有主文件）重启：event_count 必须回载主文件行数——
+    // 旧实现回 0，轮转计数每次重启清零，段上限可能永不触发。
+    let dir = tempfile::tempdir().unwrap();
+    let make_config = || AuditChainConfig {
+        storage_path: dir.path().join("audit.jsonl"),
+        max_events_per_segment: 5,
+        ..Default::default()
+    };
+
+    let chain_a = AuditChain::new(make_config());
+    for i in 0..3 {
+        chain_a
+            .append("test", "tool", "u", "c", &format!("b{i}"), "allowed", "")
+            .unwrap();
+    }
+    assert_eq!(chain_a.segment_count(), 1);
+
+    let chain_b = AuditChain::new(make_config());
+    chain_b.load_segments().unwrap();
+    assert_eq!(chain_b.segment_count(), 1);
+    assert_eq!(
+        chain_b.event_count(),
+        3,
+        "main-file line count must be restored"
+    );
 }
 
 #[test]
@@ -1104,4 +1305,125 @@ fn test_bug374_without_replay_chain_breaks() {
         !AuditChain::verify_chain(&events),
         "无回载续写的盘上链必须 verify FAIL（缺陷机理钉死）"
     );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-005 回归锁：撕裂尾自愈（BUG-20261113-168 event_ledger 同族）。
+// writeln 撕裂（磁盘满中途落盘/断电）留半行残迹 ⇒ 旧行为下一笔追加拼行 =
+// 新事件盘上不可解析但内存已推进 ⇒ 解析视图永久断链（verify 恒红无修复）。
+// ---------------------------------------------------------------------------
+
+fn write_torn_bytes(path: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open for torn bytes");
+    f.write_all(bytes).expect("write torn bytes");
+    f.sync_all().expect("sync torn bytes");
+}
+
+fn read_parsed_events(path: &std::path::Path) -> Vec<AuditEvent> {
+    std::fs::read_to_string(path)
+        .expect("read segment")
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+#[test]
+fn test_heal_torn_half_line_truncates_and_chain_continues() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let chain = AuditChain::new(AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    });
+
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r2")
+        .unwrap();
+
+    // 模拟撕裂写：半行残迹（无换行、不可解析）。
+    write_torn_bytes(&path, b"{\"id\":\"torn");
+
+    // 下一笔追加必须先自愈（截残迹）再干净落链。
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t3", "allowed", "r3")
+        .unwrap();
+
+    let events = read_parsed_events(&path);
+    assert_eq!(events.len(), 3, "半行残迹被截，三事件全可解析");
+    assert!(
+        AuditChain::verify_chain(&events),
+        "自愈后链必须完整（不再永久红）"
+    );
+    assert_eq!(chain.total_event_count(), 3);
+}
+
+#[test]
+fn test_heal_restores_complete_event_missing_newline() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("audit.jsonl");
+    let chain = AuditChain::new(AuditChainConfig {
+        storage_path: path.clone(),
+        ..Default::default()
+    });
+
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t1", "allowed", "r1")
+        .unwrap();
+    let e2 = chain
+        .append("file_read", "read_file", "u", "cli", "/t2", "allowed", "r2")
+        .unwrap();
+
+    // 模拟「content 落盘、换行丢失」撕裂形态：完整事件 JSON 无换行。
+    // 该事件 prev=e2.hash、hash 按同一公式计算——盘上合法链尾，只是丢换行。
+    let torn = AuditEvent {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        operation: "file_write".into(),
+        tool_name: "write_file".into(),
+        user: "u".into(),
+        source: "cli".into(),
+        target: "/t3".into(),
+        decision: "allowed".into(),
+        reason: "r3".into(),
+        hash: String::new(),
+        prev_hash: e2.hash.clone(),
+        sign: None,
+        hash_version: 1,
+    };
+    let mut torn_hasher = sha2::Sha256::new();
+    torn_hasher.update(torn.prev_hash.as_bytes());
+    torn_hasher.update(torn.timestamp.as_bytes());
+    torn_hasher.update(torn.operation.as_bytes());
+    torn_hasher.update(torn.tool_name.as_bytes());
+    torn_hasher.update(torn.user.as_bytes());
+    torn_hasher.update(torn.target.as_bytes());
+    torn_hasher.update(torn.decision.as_bytes());
+    torn_hasher.update(torn.source.as_bytes());
+    torn_hasher.update(torn.reason.as_bytes());
+    let torn_json = {
+        let mut t = torn.clone();
+        t.hash = format!("{:x}", torn_hasher.finalize());
+        serde_json::to_string(&t).unwrap()
+    };
+    write_torn_bytes(&path, torn_json.as_bytes()); // 无换行
+
+    // 下一笔追加：先补换行恢复残迹事件 + 采纳进链尾，再落自己的事件。
+    chain
+        .append("file_read", "read_file", "u", "cli", "/t4", "allowed", "r4")
+        .unwrap();
+
+    let events = read_parsed_events(&path);
+    assert_eq!(events.len(), 4, "丢换行的完整事件被恢复入链");
+    assert!(
+        AuditChain::verify_chain(&events),
+        "恢复 + 采纳 + 续写后链完整"
+    );
+    assert_eq!(chain.total_event_count(), 4, "恢复事件计入链计数");
 }

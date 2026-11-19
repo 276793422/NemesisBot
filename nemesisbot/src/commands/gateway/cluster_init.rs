@@ -24,6 +24,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+
+use super::shutdown::{terminal_cancel_token, terminal_loop_tick};
 #[cfg(feature = "cluster")]
 use tracing::{error, info, warn};
 
@@ -78,8 +80,9 @@ pub(crate) struct ClusterWiring {
     /// 二期：桥身份 sink 注入（PB-3）+ 桥客户端 hello 身份快照（PB-7）。
     #[cfg(feature = "cluster")]
     pub bridge_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>>,
-    /// Swarm：worker 侧讨论事件入站箱（本节点不是 board 权威
-    /// 时创建；board feature 裁剪下恒 None——adapter 不接讨论通道）。
+    /// Swarm：讨论事件入站箱（BUG-20261118 统一 handler 后**全员装配**
+    /// ——worker 收唤醒、coordinator 同样可被 wake.post 点名参与；board
+    /// feature 裁剪下恒 None——adapter 不接讨论通道）。
     #[cfg(feature = "cluster")]
     pub board_worker_inbox: Option<std::sync::Arc<crate::cluster_agent::DiscussionInbox>>,
     /// 停车场 estop 挂起队列（PB-5 评审依赖集消费）。
@@ -94,6 +97,11 @@ pub(crate) struct ClusterWiring {
     /// 同源同形态：内存表 + playtest_pending 持久兜底，回调/sweep 共享）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_playtest_registry: crate::board_review::PlaytestRegistry,
+    /// 发件箱（BUG-20261114-019）：terminal 停机链经它收口推送循环——
+    /// push loop 的 JoinHandle 在 spawn 点丢弃，此前全进程无终止通路。
+    /// ClusterServiceAdapter 持同份 Arc；runtime.rs 终相块消费。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub transfer_outbox: Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
 }
 
 /// Step 9a：集群基础设施装配（计划）。Cluster 对象与 adapter refs
@@ -125,11 +133,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     #[cfg(all(feature = "forge", feature = "cluster"))]
     let forge_for_web = ctx.forge_for_web.clone();
 
-    // Swarm：worker 侧讨论事件入站箱前向声明（原 run() 项随
-    // 整体迁入——赋值在本块 nb_bus else 分支、消费在 PB-5；board feature 裁
-    // 剪下恒 None——adapter 不接讨论通道。）
+    // Swarm：讨论事件入站箱前向声明（原 run() 项随
+    // 整体迁入——赋值在本块 nb_bus 统一装配段（全员 Some，BUG-20261118）、
+    // 消费在 PB-5；board feature 裁剪下恒 None——adapter 不接讨论通道。）
     #[cfg(feature = "cluster")]
-    #[allow(unused_mut)]
+    #[allow(unused_mut, unused_assignments)]
     let mut board_worker_inbox: Option<std::sync::Arc<crate::cluster_agent::DiscussionInbox>> =
         None;
 
@@ -208,6 +216,15 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_playtest_registry =
         crate::board_review::PlaytestRegistry::with_store(board_store.clone());
+    // BUG-20261114-019：发件箱 Arc 越块导出槽。transfer_outbox 绑定活在下方
+    // #[cfg(feature = "cluster")] 裸块内（块在函数尾前收口），而 ClusterWiring
+    // 字面量在块外——Rust 块作用域无导出，经此外层槽把 Arc 带到返回点。
+    // 延迟初始化（无 None 初值）：三处同 gate（声明/赋值/字段读），
+    // all(board,cluster) 构建下赋值无条件先于读取，其余构建整体消失。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let transfer_outbox_for_wiring: Option<
+        std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>,
+    >;
     #[cfg(feature = "cluster")]
     {
         // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份；
@@ -227,12 +244,17 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // Set ports and node info from app config
         cluster.set_ports(cluster_app_cfg.port, cluster_app_cfg.rpc_port);
         cluster.set_broadcast_interval(std::time::Duration::from_secs(
-            cluster_app_cfg.broadcast_interval.max(1),
+            // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护。
+            crate::common::bounded_tick_interval_secs(cluster_app_cfg.broadcast_interval, 1),
         ));
         cluster.set_node_type("agent");
         // 运行时硬化批：announce 携带本节点构建号（编译期 git 短 hash），
         // 对端注册表透传 → Dashboard 节点面展示，三机换装偏斜一眼可见。
         cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
+        // 家族纪律 DI（BUG-20261120-009，208/R1988 同形态）：进程终态令牌
+        // 注入集群 → 漫游会话池心跳循环（nemesis-cluster 内常驻 timer-park
+        // 循环，023 横扫只覆盖 nemesisbot crate）。roaming 未启用时静默待用。
+        cluster.set_roaming_terminal_token(terminal_cancel_token().clone());
 
         // Swarm: 节点发现 → 自动收编进看板频道（first-join 语义：
         // 成员在 channel_member 全表零行 = 全新节点才自动入；管理员手动
@@ -601,7 +623,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     task_list_for_sweep.remove_terminal_tasks();
                 }
             });
@@ -745,6 +771,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let rc = rc.clone();
                     move |peer| rc.is_peer_online(peer).unwrap_or(true)
                 }));
+                // 推送并发上限注入（config.cluster.json 两键，缺省 8/2；
+                // 2026-11-14 审查发现 #4 队头阻塞根修——旧实现单循环串行，
+                // 一个离线目标的退避窗口把其他在线目标的条目全堵住）。
+                outbox.set_push_caps(
+                    cluster_app_cfg.outbox_push_concurrency,
+                    cluster_app_cfg.outbox_per_target_concurrency,
+                );
                 // /（看板项目档案 goal 合并批）：基线推送器装配——board.rs
                 // 派发链（dispatch_issue_core）消费；复用既有分块传输通路
                 //（begin/chunk/end，AEAD 鉴权）+ 同一 limit 热刷新 cell（
@@ -786,7 +819,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         loop {
-                            ticker.tick().await;
+                            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                                break;
+                            }
                             if let Ok(raw) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                                 && let Ok(live) =
                                     serde_json::from_str::<nemesis_config::Config>(&raw)
@@ -814,6 +851,12 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
             None => (None, None),
         };
+        // BUG-20261114-019：越块导出（块外 ClusterWiring 字面量经外层槽消费）。
+        // 裸块包裹：cfg 直挂赋值表达式语句是 E0658 实验特性。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            transfer_outbox_for_wiring = transfer_outbox.clone();
+        }
         #[cfg(not(all(feature = "board", feature = "cluster")))]
         let (_transfer_sink, transfer_outbox): (
             Option<std::sync::Arc<nemesis_cluster::transfer::TransferSink>>,
@@ -832,6 +875,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 node_id: node_id_for_handler.clone(),
                 outbox: transfer_outbox.clone(),
                 workspace: Some(home.join("workspace")),
+                #[cfg(test)]
+                test_join: std::sync::Mutex::new(Vec::new()),
             });
         handler.set_result_persister(persister.clone());
 
@@ -922,7 +967,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        ticker.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
                         crate::board_archive_ingest::sweep_missing_archives(
                             &store,
                             &ws_dir,
@@ -948,60 +997,31 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // --- Inject cluster task queue into cluster for callback routing ---
         cluster.set_cluster_task_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
-        // --- Swarm: nb_bus handler（board 信封协议）---
-        // master 与 worker 同名注册 `nb_bus`，按信封 ns/op 路由；本节点是
-        // master（coordinator 角色 + board_store 在手）才注册上行 op，否则装
-        // worker 侧唤醒通道 + 周期 board.sync 补拉。master 判据必须用集群
-        // 角色：board_store 是全员 open 的（每个节点都有本地 board.db 作
-        // dashboard 视图），拿它当 master 判据会让 worker 注册错 handler、
-        // 唤醒通道成死代码（UAT 根因）。cluster 未启动时
-        // 注册失败静默（register_rpc_handler 要求 running——与 peer_chat
-        // 同款忽略策略），board.sync 兜底语义不受影响。board feature 裁剪
-        // 形态不参与讨论。（dashboard 人工发言桥在下文 board_service 装配
-        // 处接线。）
+        // --- Swarm: nb_bus handler（board 信封协议）—— 统一 handler 全员装配 ---
+        // （BUG-20261118 看板讨论半残根治）：nb_bus 是同名单注册槽，此前
+        // 按角色二选一（worker 上只装 wake.post），副作用 = worker 发帖后
+        // 远端回帖 comment.post 被自己的 worker handler 打回 UNKNOWN_OP
+        // ——发得出去收不回来。现改统一 handler + 路由表并集（见
+        // board_bus::build_nb_bus_handler）：ns=board 同时认 wake.post
+        // （worker 能力）与 comment.post / comment.list / sync /
+        // claimable.list / claim（master 能力），ns=task / ns=approval 照
+        // 留。全员装配不再按角色二选一；落库按 from_node 寻址发帖节点本
+        // 地库——谁发帖谁收帖，无中心依赖。board_store 是全员 open 的（每
+        // 个节点都有本地 board.db 作 dashboard 视图），缺席（库打不开等装
+        // 配失败）时降级 worker-only 保唤醒通道 + loud warn。moderator 主
+        // 持、档案停摆哨兵等主动任务维持角色判据（is_moderator_host），
+        // 与讨论闭环无关。cluster 未启动时注册失败静默（register_rpc_handler
+        // 要求 running——与 peer_chat 同款忽略策略），board.sync 兜底语义
+        // 不受影响。board feature 裁剪形态不参与讨论。（dashboard 人工发
+        // 言桥在下文 board_service 装配处接线。）
         #[cfg(all(feature = "board", feature = "cluster"))]
-        let board_master_armed = board_store.is_some()
-            && matches!(
+        {
+            let is_moderator_host = matches!(
                 cluster.role().as_str(),
                 "coordinator" | "master" | "manager"
             );
-        #[cfg(all(feature = "board", feature = "cluster"))]
-        if board_master_armed {
-            let deps = crate::board_bus::MasterBusDeps {
-                store: board_store.clone().expect("board_store checked above"),
-                quota: board_quota.clone(),
-                cluster: cluster.clone(),
-                moderator_loop: board_moderator_loop.clone(),
-                workspace: home.join("workspace"),
-                now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
-            };
-            match cluster.register_rpc_handler(
-                nemesis_cluster::envelope::NB_BUS_ACTION,
-                crate::board_bus::build_master_nb_bus_handler(deps),
-            ) {
-                Ok(()) => info!("[Gateway] Registered nb_bus handler (board envelope protocol)"),
-                Err(e) => warn!("[Gateway] nb_bus handler registration skipped: {}", e),
-            }
-            // BUG- C：档案停摆哨兵（60s 周期，master 侧）。交付
-            // 评论后 15min 变更集仍未合并 → WARN + 单据警示评论（
-            // 实证双端「正常」死等 1.5h——停摆必须自己冒头）。
-            let stall_store = board_store.clone().expect("board_store checked above");
-            tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
-                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                loop {
-                    ticker.tick().await;
-                    super::board_dispatch::sweep_archive_stalls(
-                        &stall_store,
-                        super::board_dispatch::ARCHIVE_STALL_WARN_SECS,
-                        chrono::Utc::now().timestamp(),
-                    );
-                }
-            });
-            info!("[Gateway] Board archive stall sentinel armed (interval=60s)");
-        } else {
             let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
-            let deps = crate::board_bus::WorkerBusDeps {
+            let worker_deps = crate::board_bus::WorkerBusDeps {
                 self_node_id: cluster.node_id().to_string(),
                 node_name: cluster.node_name(),
                 node_role: cluster.role(),
@@ -1011,15 +1031,90 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     nemesis_path::board_wake_state_path(&home),
                 )),
             };
-            match cluster.register_rpc_handler(
-                nemesis_cluster::envelope::NB_BUS_ACTION,
-                crate::board_bus::build_worker_nb_bus_handler(deps.clone()),
-            ) {
-                Ok(()) => info!("[Gateway] Registered worker nb_bus handler (board wake channel)"),
-                Err(e) => warn!("[Gateway] worker nb_bus registration skipped: {}", e),
+            match board_store.as_ref() {
+                Some(store) => {
+                    // 统一 handler（master ∪ worker 路由表）。moderator 槽：
+                    // 主持人只在 coordinator 节点装配——非 host 节点传一次
+                    // 性空槽（共享槽会被 AgentLoopServiceAdapter 在所有节点
+                    // 写 Some，传它会令 worker 也起主持人裁决，违反主动任
+                    // 务角色判据）；run_moderator 对空槽诚实跳过。
+                    let moderator_slot = if is_moderator_host {
+                        board_moderator_loop.clone()
+                    } else {
+                        Arc::new(parking_lot::RwLock::new(None))
+                    };
+                    let deps = crate::board_bus::UnifiedBusDeps {
+                        master: crate::board_bus::MasterBusDeps {
+                            store: store.clone(),
+                            quota: board_quota.clone(),
+                            cluster: cluster.clone(),
+                            moderator_loop: moderator_slot,
+                            workspace: home.join("workspace"),
+                            now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
+                        },
+                        worker: worker_deps.clone(),
+                    };
+                    match cluster.register_rpc_handler(
+                        nemesis_cluster::envelope::NB_BUS_ACTION,
+                        crate::board_bus::build_nb_bus_handler(deps),
+                    ) {
+                        Ok(()) => {
+                            info!(
+                                "[Gateway] Registered unified nb_bus handler (board union routing)"
+                            )
+                        }
+                        Err(e) => warn!("[Gateway] nb_bus handler registration skipped: {}", e),
+                    }
+                    // 周期 board.sync 补拉全员装配：worker 补离线错过的讨论；
+                    // coordinator 上无其他 coordinator 时单拍诚实跳过
+                    // （worker_sync_once 防御性排除自己），无害。
+                    crate::board_bus::spawn_worker_sync_loop(worker_deps, cluster.clone());
+                }
+                None => {
+                    // board 库缺席：worker 能力兜底（唤醒通道仍可用），
+                    // master 能力缺失 loud 可见。
+                    warn!(
+                        "[Gateway] board_store unavailable — nb_bus armed worker-only (master ops disabled)"
+                    );
+                    match cluster.register_rpc_handler(
+                        nemesis_cluster::envelope::NB_BUS_ACTION,
+                        crate::board_bus::build_worker_nb_bus_handler(worker_deps.clone()),
+                    ) {
+                        Ok(()) => {
+                            info!("[Gateway] Registered worker nb_bus handler (board wake channel)")
+                        }
+                        Err(e) => {
+                            warn!("[Gateway] worker nb_bus registration skipped: {}", e)
+                        }
+                    }
+                    crate::board_bus::spawn_worker_sync_loop(worker_deps, cluster.clone());
+                }
             }
-            crate::board_bus::spawn_worker_sync_loop(deps, cluster.clone());
             board_worker_inbox = Some(inbox);
+
+            // BUG- C：档案停摆哨兵（60s 周期，主动任务维持角色判据）。
+            // 交付评论后 15min 变更集仍未合并 → WARN + 单据警示评论
+            // （实证双端「正常」死等 1.5h——停摆必须自己冒头）。
+            if is_moderator_host && let Some(store) = board_store.as_ref() {
+                let stall_store = store.clone();
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                            break;
+                        }
+                        super::board_dispatch::sweep_archive_stalls(
+                            &stall_store,
+                            super::board_dispatch::ARCHIVE_STALL_WARN_SECS,
+                            chrono::Utc::now().timestamp(),
+                        );
+                    }
+                });
+                info!("[Gateway] Board archive stall sentinel armed (interval=60s)");
+            }
         }
 
         // --- Swarm 资产 RPC 兜底通路（提供方侧）---
@@ -1063,7 +1158,30 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             match cluster.register_rpc_handler(
                 crate::agents::migrate::ACTION_AGENT_MIGRATE_COMMIT,
                 Box::new(move |payload| {
-                    crate::agents::migrate::handle_migrate_commit(&deps, payload)
+                    // BUG-20261118-172：sync RPC handler 跑在 server 的 tokio
+                    // worker 上（rpc/server.rs dispatch_wire_request async 链
+                    // 内直调，无 spawn_blocking 包裹），commit 主体是重阻塞
+                    // sync IO（幂等清理 remove_dir_all_retry 的 thread::sleep
+                    // 退避最坏 ~4.4s×3 + 文件 rename + SQLite upsert）。
+                    // BUG-20261119-174：首版 thread::scope+spawn+join 形态
+                    // 无效——worker 随即阻塞在 join() 上等待专用线程，阻塞
+                    // 时长与直跑完全相同（join 是同步阻塞等待，不让出
+                    // worker）。改 turn_wal.rs 同款守卫 block_in_place：多线
+                    // 程 runtime 下让出 worker 调度权（任务转入阻塞集，其余
+                    // 任务照常推进，阻塞只占本任务墙钟）；panic 直接传播
+                    // （payload 不丢失）；无 runtime / 单线程 runtime（测试
+                    // handle_request_sync 直调）= 直接执行（block_in_place
+                    // 在 current-thread runtime 会 panic，必须守卫）。
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(h)
+                            if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(|| {
+                                crate::agents::migrate::handle_migrate_commit(&deps, payload)
+                            })
+                        }
+                        _ => crate::agents::migrate::handle_migrate_commit(&deps, payload),
+                    }
                 }),
             ) {
                 Ok(()) => {
@@ -1194,6 +1312,32 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let sweep_cfg = cfg.board.clone().unwrap_or_default();
+            // 批三（无人值守加固）：停车推送 hook 注册（发射面在
+            // park_with_handoff 单一收口，config 门控在 notify.rs——本闭包
+            // 只管投递：文本拼装 + bus 出站发布，走现成 ChannelManager
+            // 派发面，不新建通道）。推送是增值通知：bus 无订阅者 /
+            // publish 失败自带日志，不炸停车收口。
+            let bus_for_notify = bus.clone();
+            crate::board_review::set_park_notify_hook(Some(std::sync::Arc::new(
+                move |notice: &crate::board_review::ParkNotice, channel: &str, chat_id: &str| {
+                    let text = format!(
+                        "🅿️ 看板任务 {} 已停车转人工（{}，建议：{}）\n原因：{}\n恢复：{}\n\n详情：Dashboard 看板该单评论与停车档案（board/handoffs/{}.json）",
+                        notice.issue_number,
+                        notice.stop_kind,
+                        notice.suggested_action,
+                        notice.hint,
+                        notice.resume_entry,
+                        notice.issue_number
+                    );
+                    bus_for_notify.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+                        channel, chat_id, &text,
+                    ));
+                    info!(
+                        "[BoardReview] issue {}（{}）停车摘要已推送 {}({})",
+                        notice.issue_id, notice.issue_number, channel, chat_id
+                    );
+                },
+            )));
             let store_for_sweep = board_store.clone();
             let cluster_for_sweep = cluster.clone();
             let home_for_sweep = home.clone();
@@ -1212,8 +1356,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
             let sweep_workspace = home.join("workspace");
             tokio::spawn(async move {
+                // 上界钳制（BUG-20261116-001）：巨值配置穿透 Instant 算术界
+                // panic / far_future 静默停摆防护——本 ticker 同时承载派发
+                // 超时 sweep + selfcheck/playtest 恢复兜底，死了三条全停。
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-                    sweep_cfg.dispatch_sweep_interval_secs.max(1),
+                    crate::common::bounded_tick_interval_secs(
+                        sweep_cfg.dispatch_sweep_interval_secs,
+                        1,
+                    ),
                 ));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 // （裁决⑫）：mtime 缓存——config 文件未
@@ -1232,7 +1382,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     u64,
                 )> = None;
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = store_for_sweep.as_ref() else {
                         continue;
                     };
@@ -1352,7 +1506,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!(
                 "[Gateway] Board dispatch sweep armed (timeout={}s, interval={}s)",
                 sweep_cfg.dispatch_timeout_secs,
-                sweep_cfg.dispatch_sweep_interval_secs.max(1)
+                crate::common::bounded_tick_interval_secs(
+                    sweep_cfg.dispatch_sweep_interval_secs,
+                    1
+                )
             );
         }
 
@@ -1375,7 +1532,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     if park_sweep_estop.is_engaged() {
                         continue;
                     }
@@ -1423,7 +1584,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     nemesis_config::BoardAttendanceConfig,
                 )> = None;
                 loop {
-                    ticker.tick().await;
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = tp_store.as_ref() else {
                         continue;
                     };
@@ -2258,5 +2423,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         board_selfcheck_registry,
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_playtest_registry,
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        transfer_outbox: transfer_outbox_for_wiring,
     })
 }

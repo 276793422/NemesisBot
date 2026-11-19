@@ -342,6 +342,75 @@ fn test_skill_dir_prefix_root_pattern() {
 }
 
 // ============================================================
+// pattern 驱动 listing 推导（2026-11-16 仓库根 Skills/ 第三源；三个硬编码
+// `skills/` 点收编为 listing_dir/listing_prefix 推导后的回归锁）
+// ============================================================
+
+fn source_with_pattern(pattern: &str) -> GitHubRegistry {
+    GitHubRegistry::from_source(&GitHubSourceConfig {
+        name: "probe".to_string(),
+        repo: "test/skills".to_string(),
+        enabled: true,
+        branch: "main".to_string(),
+        index_type: "github_api".to_string(),
+        index_path: String::new(),
+        skill_path_pattern: pattern.to_string(),
+        timeout_secs: 0,
+        max_size: 0,
+    })
+}
+
+#[test]
+fn test_listing_dir_derivation() {
+    // 两段式（skills/{slug}）→ listing 目录 skills
+    assert_eq!(
+        source_with_pattern("skills/{slug}/SKILL.md").listing_dir(),
+        "skills"
+    );
+    // 三段式 → 仍是 skills（{author} 也在占位符之后）
+    assert_eq!(
+        source_with_pattern("skills/{author}/{slug}/SKILL.md").listing_dir(),
+        "skills"
+    );
+    // 仓库根形态（出厂源）：Skills 大写目录
+    assert_eq!(
+        source_with_pattern("Skills/{slug}/SKILL.md").listing_dir(),
+        "Skills"
+    );
+    // 无 listing 目录（裸根）→ 空串
+    assert_eq!(source_with_pattern("{slug}/SKILL.md").listing_dir(), "");
+    // 自定义子目录
+    assert_eq!(
+        source_with_pattern("docs/skills/{slug}/SKILL.md").listing_dir(),
+        "docs/skills"
+    );
+}
+
+#[test]
+fn test_listing_prefix_derivation() {
+    // 有目录 → 带 `/` 前缀（tree 过滤 / strip_prefix 用）
+    assert_eq!(
+        source_with_pattern("skills/{slug}/SKILL.md").listing_prefix(),
+        "skills/"
+    );
+    assert_eq!(
+        source_with_pattern("Skills/{slug}/SKILL.md").listing_prefix(),
+        "Skills/"
+    );
+    // 裸根 → 空前缀（不加多余 `/`）
+    assert_eq!(source_with_pattern("{slug}/SKILL.md").listing_prefix(), "");
+}
+
+#[test]
+fn test_factory_source_pattern_derives_root_listing() {
+    // 出厂源值的推导形态钉定：pattern=Skills/{slug}/SKILL.md → Skills/。
+    assert_eq!(
+        source_with_pattern(crate::registry::FACTORY_SOURCE.pattern).listing_prefix(),
+        "Skills/"
+    );
+}
+
+// ============================================================
 // Additional coverage tests
 // ============================================================
 
@@ -1396,4 +1465,79 @@ fn test_new_from_config_enabled() {
     };
     let registry = GitHubRegistry::new_from_config(&config);
     assert_eq!(registry.name(), "github");
+}
+
+// ===========================================================================
+// BUG-20261113-162 回归锁：raw URL 构造单点（尾斜杠归一 + 路径段
+// percent-encoding）。`#`/`?` 在 git 文件名与 git ref 中合法，裸插值会
+// 沦为 URL fragment/query 分隔符指向错误资源。
+// ===========================================================================
+
+#[test]
+fn test_build_skill_url_encodes_slug_delimiters() {
+    let registry = GitHubRegistry::new("", 0, 0);
+    // 默认 pattern `skills/{slug}/SKILL.md`；slug 含 `#`/`?`/空格时逐段编码。
+    assert_eq!(
+        registry.build_skill_url("a#b"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/a%23b/SKILL.md"
+    );
+    assert_eq!(
+        registry.build_skill_url("a?b"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/a%3Fb/SKILL.md"
+    );
+    assert_eq!(
+        registry.build_skill_url("my skill"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/my%20skill/SKILL.md"
+    );
+    // 无保留字符 slug 原样直通（不破坏既有 URL 形态）。
+    assert_eq!(
+        registry.build_skill_url("pdf"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"
+    );
+}
+
+#[test]
+fn test_build_skill_url_encodes_branch_delimiter() {
+    // `#` 是合法 git ref 字符（如 `release#1` 分支）；ref 段必须编码否则
+    // fragment 切断。
+    let reg = GitHubRegistry::from_source(&GitHubSourceConfig {
+        name: "t".to_string(),
+        repo: "owner/repo".to_string(),
+        enabled: true,
+        branch: "release#1".to_string(),
+        index_type: "skills_json".to_string(),
+        index_path: "idx/skills.json".to_string(),
+        skill_path_pattern: "skills/{slug}/SKILL.md".to_string(),
+        timeout_secs: 0,
+        max_size: 0,
+    });
+    assert_eq!(
+        reg.build_skill_url("pdf"),
+        "https://raw.githubusercontent.com/owner/repo/release%231/skills/pdf/SKILL.md"
+    );
+}
+
+#[test]
+fn test_new_trailing_slash_base_normalized() {
+    // BUG-20261113-162：legacy config 尾斜杠归一——`//{repo}` 双斜杠路径
+    // 在 raw 端点 404（同族先例 BUG-20261109-012）。
+    let registry = GitHubRegistry::new("https://raw.githubusercontent.com/", 0, 0);
+    assert_eq!(
+        registry.build_skill_url("pdf"),
+        "https://raw.githubusercontent.com/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"
+    );
+}
+
+#[test]
+fn test_new_from_config_trailing_slash_base_normalized() {
+    // BUG-20261114-043：new_from_config 与 new 同源尾斜杠归一——162 修复
+    // 轮只补了 new，这条 pub 构造器（legacy GitHubConfig 入口）漏网。
+    // 当前所有 join 点经 raw_content_url 已免疫（行为惰性），归一属构造器
+    // 对称性防御——未来任何直用 base_url 的新 join 点不再踩双斜杠。
+    let cfg = crate::types::GitHubConfig {
+        base_url: "https://raw.githubusercontent.com/".to_string(),
+        ..Default::default()
+    };
+    let registry = GitHubRegistry::new_from_config(&cfg);
+    assert_eq!(registry.base_url, "https://raw.githubusercontent.com");
 }

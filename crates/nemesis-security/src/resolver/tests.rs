@@ -197,6 +197,26 @@ fn test_private_ipv6_rfc6052_translation() {
 }
 
 #[test]
+fn test_private_ipv6_rfc7526_6to4_embedded_v4() {
+    // 2002::/16 内嵌 IPv4 形态：`2002:7f00:1::` 语义上命名的就是
+    // 127.0.0.1——裸 v6 五项原生判定全不命中，必须显式段封锁
+    //（BUG-20261118-162 回归锁）。
+    assert!(is_private_ip(&"2002:7f00:1::".parse().unwrap()));
+    assert!(is_private_ip(&"2002:c0a8:1::1".parse().unwrap()));
+    // 相邻公网段（2003::/16 起）不误伤。
+    assert!(!is_private_ip(&"2003::1".parse().unwrap()));
+}
+
+#[test]
+fn test_private_ipv6_rfc3849_documentation() {
+    assert!(is_private_ip(&"2001:db8::5".parse().unwrap()));
+    assert!(is_private_ip(&"2001:db8:ffff:ffff::1".parse().unwrap()));
+    // /32 外邻接两侧不误伤。
+    assert!(!is_private_ip(&"2001:db7::1".parse().unwrap()));
+    assert!(!is_private_ip(&"2001:db9::1".parse().unwrap()));
+}
+
+#[test]
 fn test_metadata_ipv6() {
     assert!(is_metadata_ip(&"fd00:ec2::254".parse().unwrap()));
     assert!(!is_metadata_ip(&"fd00:ec2::253".parse().unwrap()));

@@ -126,6 +126,36 @@ pub(crate) fn is_screaming_placeholder(value: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || matches!(c, '-' | '_' | '.'))
 }
 
+/// 占位词表（[`is_screaming_vocab_placeholder`] 语义判据；规范教程形态
+/// 全部命中其中一词：`YOURACCESSKEY…`→YOUR、`CHANGEME`→CHANGE、
+/// `SECRET_PASSWORD`→SECRET、`REPLACE_WITH_YOUR_TOKEN`→REPLACE）。
+const PLACEHOLDER_VOCAB: [&str; 9] = [
+    "YOUR",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CHANGE",
+    "REPLACE",
+    "PLACEHOLDER",
+    "TOKEN",
+    "EXAMPLE",
+];
+
+/// 词表收窄 SCREAMING 占位判据（2026-11-12 漏检面根修）：SCREAMING 结构
+/// 判据**且**值段命中占位词表至少一词。
+///
+/// **为什么不能共用 [`is_screaming_placeholder`]**：该判据的漏检界推理
+/// 建立在值字符类为 base62 上（随机 ≥20 字符段全大写无数字 ≈ 2.4e-5）。
+/// `aws_access_key` 规则的字符类是 **base36 `[0-9A-Z]{16}`**——regex 本身
+/// 已保证全大写+数字，SCREAMING 对已命中串只剩「无数字」一个条件 =
+/// `(26/36)^16 ≈ 6.6e-3` 的**真实键**被误豁免（每 ~150 把真键漏检一把，
+/// 比判据自述安全界差两个半数量级）。叠加词表后，随机串命中词表的概率
+/// 回落到 ~e-5 量级（最长词 YOUR：~13×26⁻⁴ ≈ 2.9e-5），漏检界闭合。
+/// DLP `aws_access` demote 面与 L4 豁免表同源消费本函数。
+pub(crate) fn is_screaming_vocab_placeholder(value: &str) -> bool {
+    is_screaming_placeholder(value) && PLACEHOLDER_VOCAB.iter().any(|w| value.contains(w))
+}
+
 /// 模板语法对判据（2026-11-11 五批）：值段含完整 `${...}` 或 `<...>` 对
 /// ——compose/YAML 模板值（`"${POSTGRES_PASSWORD}"`、`"${DB_PASSWORD}"`）
 /// 与尖括号占位（`"<your-password-here>"`）。刻意用**对**而非裸模板字符：
@@ -211,9 +241,15 @@ fn is_canonical_placeholder_pass(pass: &str) -> bool {
 /// db_connection 族（Layer 4 四规则 + DLP `database_connection_string`）的
 /// 占位符豁免单一真相源（2026-11-11 横扫批；五批加 SCREAMING 臂）：凭据
 /// 段是教程/模板占位符形态时不构成泄漏。三类形态：
-/// 1. 模板语法字符（`$` `{` `}` `<` `>`，user 或 pass 任一段）：compose /
-///    k8s / envsubst 清单的 `${DB_USER}:${DB_PASSWORD}`、文档尖括号
-///    `<user>:<password>`；
+/// 1. 模板语法**对**（user 或 pass 任一段，is_template_placeholder_pair）：
+///    compose / k8s / envsubst 清单的 `${DB_USER}:${DB_PASSWORD}`、文档
+///    尖括号 `<user>:<password>`。BUG-20261113-124 修正：此处原用裸模板
+///    字符（任含 `$<>{}{` 之一即豁免），与同模块 is_template_placeholder_pair
+///    的既定原理（「刻意用对而非裸模板字符：`pa$$word` 类真实口令含 `$`
+///    但无 `${…}` 对，不受影响」）自相矛盾——`postgres://admin:Pa$$w0rd@host`
+///    类真实口令（`$` 是高频密码字符）被整串豁免，L4 拦截与 DLP demote
+///    双面漏检。改对判据后裸 `$`/`{`（无 `${…}` 配对）照旧拦截；教程
+///    模板形态全部带对，豁免面不变。
 /// 2. 密码段是 SCREAMING_SNAKE 占位（五批，is_screaming_placeholder）：
 ///    `SECRET_PASSWORD` / `CHANGE_ME_PLEASE` / `SUPER_SECRET`——矩阵实测
 ///    大写复合占位此前全拦；
@@ -239,10 +275,7 @@ pub(crate) fn is_placeholder_db_credential(matched: &str) -> bool {
         Some((u, p)) => (u, p),
         None => (cred, ""),
     };
-    const TEMPLATE_CHARS: [char; 5] = ['<', '>', '$', '{', '}'];
-    if user.chars().any(|c| TEMPLATE_CHARS.contains(&c))
-        || pass.chars().any(|c| TEMPLATE_CHARS.contains(&c))
-    {
+    if is_template_placeholder_pair(user) || is_template_placeholder_pair(pass) {
         return true;
     }
     if pass.is_empty() {
@@ -418,6 +451,9 @@ enum Pred {
     UniformCharIgnoringDashes,
     /// SCREAMING_SNAKE 占位符。
     ScreamingPlaceholder,
+    /// SCREAMING 占位符（词表收窄——base36 大写重字符类规则专用，见
+    /// [`is_screaming_vocab_placeholder`] 文档）。
+    ScreamingVocab,
     /// 散文值（无数字且非混排）。
     ProseToken,
     /// 匹配段含 "example"（ci）。
@@ -609,8 +645,9 @@ static EXEMPTIONS: &[Exemption] = &[
     Exemption {
         rules: &["aws_access_key"],
         extract: Extract::AfterLiteral("AKIA"),
-        pred: Pred::ScreamingPlaceholder,
-        why: "AKIA+YOURACCESSKEY 类大写词占位（五批矩阵）",
+        pred: Pred::ScreamingVocab,
+        why: "AKIA+YOURACCESSKEY 类占位词大写段（五批矩阵；2026-11-12 词表收窄\
+              ——base36 真实键全字母形态 (26/36)^16≈0.66% 被裸 SCREAMING 误豁免）",
     },
     Exemption {
         rules: &["aws_secret_key", "aws_session_token"],
@@ -743,6 +780,7 @@ fn evaluate(e: &Exemption, ctx: &ExemptionCtx) -> bool {
             value.is_some_and(|v| is_uniform_char_ignoring_dashes(&v))
         }
         Pred::ScreamingPlaceholder => value.is_some_and(|v| is_screaming_placeholder(&v)),
+        Pred::ScreamingVocab => value.is_some_and(|v| is_screaming_vocab_placeholder(&v)),
         Pred::ProseToken => value.is_some_and(|v| is_prose_token_value(&v)),
         Pred::ContainsExample => is_canonical_doc_example(ctx.full),
         Pred::KnownConstant(c) => ctx.full.contains(c),

@@ -97,6 +97,10 @@ fn pin_known_window(al: &AgentLoop) {
 }
 
 fn timing_log_path(session_key: &str) -> std::path::PathBuf {
+    // 直调单例前显式重定向（幂等快路径）：本 helper 供 cleanup（删除语义）
+    // 与断言读取，bootstrap（CRT 段）在增量链接下可能被丢弃（2026-11-19
+    // 实证夹具写进真实 home），正确性不依赖它——在此收敛。
+    crate::test_home::ensure_redirected();
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     nemesis_path::default_path_manager()
         .sessions_log_dir()

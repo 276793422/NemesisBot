@@ -1415,8 +1415,8 @@ async fn shipped_sc_bugfix_roundtrip() {
         .expect("enable")
         .expect("loaded");
 
-    // 安装期对账快照：六 op 词表自报（fetch/comment/report/create_mr/
-    // mr_list/change_list）。
+    // 安装期对账快照：五 op 词表自报（fetch/comment/report/create_mr/
+    // mr_list）。
     let mut kinds = reg
         .step_meta
         .as_ref()
@@ -1426,14 +1426,7 @@ async fn shipped_sc_bugfix_roundtrip() {
     kinds.sort();
     assert_eq!(
         kinds,
-        vec![
-            "change_list",
-            "comment",
-            "create_mr",
-            "fetch",
-            "mr_list",
-            "report"
-        ],
+        vec!["comment", "create_mr", "fetch", "mr_list", "report"],
         "kinds: {kinds:?}"
     );
 
@@ -1471,7 +1464,7 @@ async fn shipped_sc_bugfix_roundtrip() {
     let reply = mgr
         .invoke_ui(
             "sc-bugfix",
-            r#"{"command":"save_settings","args":{"jira_base_url":"https://jira.example.com/","gerrit_base_url":"https://gerrit.example.com","code_host":"gerrit","gerrit_username":"zhangsan","gerrit_http_pass":"hp-secret-1"}}"#.into(),
+            r#"{"command":"save_settings","args":{"jira_base_url":"https://jira.example.com/","gitlab_base_url":"https://gitlab.example.com","code_host":"gitlab","gitlab_owner":"zhangsan","pat":"gl-secret-1"}}"#.into(),
         )
         .await
         .expect("save_settings");
@@ -1489,14 +1482,14 @@ async fn shipped_sc_bugfix_roundtrip() {
             .config
             .get("code_host")
             .and_then(|v| v.as_str())
-            == Some("gerrit"),
+            == Some("gitlab"),
         "code_host 真落盘（面板 get_config 同源读回）"
     );
     {
         let calls = rec.calls.lock().expect("stub lock");
         assert_eq!(calls.len(), 1, "calls: {calls:?}");
-        assert_eq!(calls[0].0, "plugin/sc-bugfix/gerrit_http_pass");
-        assert_eq!(calls[0].1, "hp-secret-1");
+        assert_eq!(calls[0].0, "plugin/sc-bugfix/pat");
+        assert_eq!(calls[0].1, "gl-secret-1");
     }
 
     // ③ 全空保存 = 探活语义：诚实无写入应答（writer 计数不变）。

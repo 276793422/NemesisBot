@@ -745,3 +745,225 @@ async fn subagent_event_with_parent_room_gone_survives() {
         None,
     );
 }
+
+// SystemNotice（2026-11-19）：系统注入行（hook 提示词注入 / cron tick /
+// 后台唤醒）→ `chat.receive` 帧（role=user + system_notice + seq 入环），
+// 与用户回声臂同形状 + 通知条标记。专支短路：不进 tool_event/hub。
+
+#[tokio::test]
+async fn system_notice_becomes_receive_frame_with_ring_record() {
+    let manager = SessionManager::with_default_timeout();
+    let session = manager.create_session();
+    let mut queue_rx = attach_fake_queue(&manager, &session.id);
+
+    let event_hub = Arc::new(EventHub::new());
+    // 订阅先于发事件：专支 `continue` 短路 → hub 不得收到任何事件。
+    let mut hub_rx = event_hub.subscribe();
+
+    // 会话键用独立 marker（环是进程级全局表，防并行测试串扰）。
+    let session_key = format!("agent:main:session:notice-{}", session.id);
+    let chat_id = format!("web:{}", session.id);
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    tx.send(AgentEvent::SystemNotice {
+        session_key: session_key.clone(),
+        chat_id: chat_id.clone(),
+        content: "hook 注入：现在几点了".into(),
+        kind: "system".into(),
+        cron_job_id: Some("job-9".into()),
+    })
+    .unwrap();
+
+    // WS 侧：receive 帧（非 push），载荷带 role/user + system_notice +
+    // cron_job_id + session_id 注入 + seq。
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), queue_rx.recv())
+        .await
+        .expect("timed out waiting for notice frame")
+        .expect("queue closed");
+    let text = String::from_utf8(frame).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed["type"], "message", "frame: {text}");
+    assert_eq!(parsed["module"], "chat", "frame: {text}");
+    assert_eq!(parsed["cmd"], "receive", "frame: {text}");
+    let payload = &parsed["data"];
+    assert_eq!(payload["role"], "user", "frame: {text}");
+    assert_eq!(payload["content"], "hook 注入：现在几点了", "frame: {text}");
+    assert_eq!(payload["system_notice"], "system", "frame: {text}");
+    assert_eq!(payload["cron_job_id"], "job-9", "frame: {text}");
+    assert_eq!(
+        payload["session_id"],
+        format!("notice-{}", session.id),
+        "session_id must be injected from session_key tail: {text}"
+    );
+    let seq = payload["seq"].as_u64().expect("seq must be numeric");
+    assert!(seq > 0, "seq must be ring-assigned: {text}");
+
+    // 环侧：chat.sync 同键可重放（session_key 键空间，与用户回声臂一致）。
+    let (events, gap) = crate::chat_event_log::replay_after(&session_key, 0);
+    assert!(!gap, "fresh key must not report gap");
+    let row = events
+        .iter()
+        .find(|e| e.seq == seq)
+        .expect("notice row must be replayable from the ring");
+    assert_eq!(row.role, "user");
+    assert_eq!(row.content, "hook 注入：现在几点了");
+
+    // 专支短路：hub（SSE 面）不得收到该事件。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        hub_rx.try_recv().is_err(),
+        "SystemNotice must not leak into the SSE hub (WS-only, mirrors echo arm)"
+    );
+
+    pump.abort();
+}
+
+#[tokio::test]
+async fn system_notice_without_cron_and_im_key_records_ring_only() {
+    let manager = SessionManager::with_default_timeout();
+    let event_hub = Arc::new(EventHub::new());
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    // 非 web chat_id（IM 形态）：不广播任何房间；环照常记录（键 = session_key）。
+    let session_key = "telegram:42:main".to_string();
+    tx.send(AgentEvent::SystemNotice {
+        session_key: session_key.clone(),
+        chat_id: "telegram:42".into(),
+        content: "后台唤醒".into(),
+        kind: "system".into(),
+        cron_job_id: None,
+    })
+    .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!pump.is_finished(), "pump must survive non-web notice");
+
+    let (events, gap) = crate::chat_event_log::replay_after(&session_key, 0);
+    assert!(!gap);
+    let row = events
+        .iter()
+        .find(|e| e.content == "后台唤醒")
+        .expect("IM notice row must still land in the ring");
+    assert_eq!(row.role, "user");
+
+    pump.abort();
+}
+
+// BUG-20261117-073：session_key 末段提取（旧 rsplit(':').next()）只对
+// dashboard 形态 `agent:main:session:{sid}` 正确；IM/集群通道键（matrix
+// room_id 含冒号、cluster_rpc 复合键）的尾段是通道数据（room 服务器名、
+// node/chat 段），可与用户自选会话 id 撞名 → canvas/交付物/工具卡跨会话
+// 串桶。修复后非 dashboard 键一律不注入 session_id（前端按字段缺席忽略）。
+
+#[tokio::test]
+async fn im_session_key_injects_no_session_id() {
+    let manager = SessionManager::with_default_timeout();
+    let event_hub = Arc::new(EventHub::new());
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    // matrix room_id 形态 session_key（含冒号，尾段 = 服务器名）。
+    tx.send(AgentEvent::ToolFinished {
+        session_key: "!abc:matrix.example.org".into(),
+        chat_id: "!abc:matrix.example.org".into(),
+        call_id: "c73".into(),
+        tool: "exec".into(),
+        duration_ms: 1,
+        ok: true,
+        result_preview: "done".into(),
+    })
+    .unwrap();
+
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert_eq!(ev.event_type, "tool_event");
+    assert!(
+        ev.data
+            .get("data")
+            .and_then(|d| d.get("session_id"))
+            .is_none(),
+        "IM session_key must not inject a session_id (tail is channel data): {}",
+        ev.data
+    );
+
+    pump.abort();
+}
+
+#[tokio::test]
+async fn cluster_rpc_session_key_injects_no_session_id() {
+    let manager = SessionManager::with_default_timeout();
+    let event_hub = Arc::new(EventHub::new());
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    // cluster_rpc 复合键（`{node}/{chat}` 尾段，用户可控 node 名可含任意段）。
+    tx.send(AgentEvent::ToolFinished {
+        session_key: "cluster_rpc:node-a/42".into(),
+        chat_id: "cluster_rpc:node-a/42".into(),
+        call_id: "c74".into(),
+        tool: "exec".into(),
+        duration_ms: 1,
+        ok: true,
+        result_preview: "done".into(),
+    })
+    .unwrap();
+
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert!(
+        ev.data
+            .get("data")
+            .and_then(|d| d.get("session_id"))
+            .is_none(),
+        "cluster session_key must not inject a session_id: {}",
+        ev.data
+    );
+
+    pump.abort();
+}
+
+#[tokio::test]
+async fn dashboard_session_key_still_injects_session_id() {
+    let manager = SessionManager::with_default_timeout();
+    let event_hub = Arc::new(EventHub::new());
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    // dashboard 形态回归锁：注入行为与修复前逐字节一致。
+    tx.send(AgentEvent::ToolFinished {
+        session_key: "agent:main:session:s73".into(),
+        chat_id: "web:s73".into(),
+        call_id: "c75".into(),
+        tool: "exec".into(),
+        duration_ms: 1,
+        ok: true,
+        result_preview: "done".into(),
+    })
+    .unwrap();
+
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert_eq!(
+        ev.data["data"]["session_id"], "s73",
+        "dashboard session_key must keep injecting: {}",
+        ev.data
+    );
+
+    pump.abort();
+}

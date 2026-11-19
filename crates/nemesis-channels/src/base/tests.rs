@@ -1149,7 +1149,8 @@ async fn s2_sync_to_targets_logs_field_arms_with_subscriber() {
 }
 
 // ===========================================================================
-// sync 镜像回环防护（sync_via 标记 + sync_outbound 守卫）
+// sync 镜像语义（sync_via 盖章单一真相源 send_sync_mirror；出站扇出已
+// 集中到 manager dispatch_outbound——守卫/乒乓回归锁在 manager/tests.rs）
 // ===========================================================================
 
 #[tokio::test]
@@ -1168,101 +1169,22 @@ async fn bug57_sync_to_targets_marks_mirror_messages() {
 }
 
 #[tokio::test]
-async fn bug57_sync_outbound_skips_marked_message() {
-    let ch = BaseChannel::new("chan-a");
-    let target = Arc::new(MockChannel::new("target"));
-    ch.add_sync_target("target", Arc::clone(&target) as Arc<dyn Channel>)
-        .unwrap();
-
-    // 带 sync_via 标记的消息（来自别的通道的镜像）→ 守卫直接返回。
-    let mut marked = OutboundMessage::new("target", "c1", "from mirror");
-    marked.meta.sync_via = Some("chan-b".to_string());
-    ch.sync_outbound(&marked).await;
-    assert!(
-        target.sent_messages().is_empty(),
-        "marked message must not re-propagate through sync targets"
-    );
-
-    // 无标记消息照常镜像（守卫不误伤正常出站同步）。
-    ch.sync_outbound(&OutboundMessage::new("chan-a", "c1", "fresh outbound"))
-        .await;
+async fn bug57_send_sync_mirror_stamps_and_web_broadcast() {
+    // 单一真相源直测（通道侧入站扇出与 manager 出站扇出共用）：盖章 +
+    // web:broadcast 特例。回环守卫/乒乓回归锁迁到 manager 层测试。
+    let target = Arc::new(MockChannel::new("web"));
+    send_sync_mirror(
+        "source",
+        "web",
+        Arc::clone(&target) as Arc<dyn Channel>,
+        "mirror payload",
+    )
+    .await;
     let msgs = target.sent_messages();
     assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].content, "fresh outbound");
-    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("chan-a"));
-}
-
-/// 会再同步的 mock——复刻真实镜像通道形态（mattermost/mqtt/nostr/websocket/
-/// wechat/wecom 六通道 send()：记录 + sync 扩散），用于真实回环复现。
-struct SyncingMockChannel {
-    name: String,
-    base: BaseChannel,
-    sent: parking_lot::RwLock<Vec<OutboundMessage>>,
-}
-
-impl SyncingMockChannel {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            base: BaseChannel::new(name),
-            sent: parking_lot::RwLock::new(Vec::new()),
-        }
-    }
-
-    fn sent_messages(&self) -> Vec<OutboundMessage> {
-        self.sent.read().clone()
-    }
-}
-
-#[async_trait]
-impl Channel for SyncingMockChannel {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    async fn start(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn stop(&self) -> Result<()> {
-        Ok(())
-    }
-
-    async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        self.sent.write().push(msg.clone());
-        // 与六镜像通道同形：send 末尾出站同步镜像（守卫在场时标记消息止步）。
-        self.base.sync_outbound(&msg).await;
-        Ok(())
-    }
-}
-
-#[tokio::test]
-async fn bug57_mutual_sync_config_does_not_ping_pong() {
-    // 互配 sync_to（A→B 且 B→A）：旧形态 send 互镜无限乒乓，每轮一次
-    // 真实投递；驱动带 2s 超时——守卫缺失时此处超时红（而非挂死进程）。
-    let a = Arc::new(SyncingMockChannel::new("chan-a"));
-    let b = Arc::new(SyncingMockChannel::new("chan-b"));
-    a.base
-        .add_sync_target("chan-b", Arc::clone(&b) as Arc<dyn Channel>)
-        .unwrap();
-    b.base
-        .add_sync_target("chan-a", Arc::clone(&a) as Arc<dyn Channel>)
-        .unwrap();
-
-    let drive = a.send(OutboundMessage::new("chan-a", "c1", "loop probe"));
-    tokio::time::timeout(std::time::Duration::from_secs(2), drive)
-        .await
-        .expect("mutual sync must terminate (loop guard missing?)")
-        .unwrap();
-
-    // 各收一次即止：A 自己投递 + 镜像到 B；B 的再镜像被守卫拦截。
-    assert_eq!(a.sent_messages().len(), 1);
-    assert_eq!(b.sent_messages().len(), 1);
-    // B 收到的是 A 盖章的镜像。
-    assert_eq!(
-        b.sent_messages()[0].meta.sync_via.as_deref(),
-        Some("chan-a")
-    );
+    assert_eq!(msgs[0].content, "mirror payload");
+    assert_eq!(msgs[0].chat_id, "web:broadcast");
+    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("source"));
 }
 
 // 出站 client 单一构造点必须可构造（TLS backend 初始化
@@ -1312,6 +1234,35 @@ fn redact_url_secrets_boundary_guards_prefix_collisions() {
     assert!(out2.contains("webhook_key=<redacted>"));
 }
 
+// BUG-20261119-182：钉钉 stream endpoint / 飞书 WS endpoint 都是
+// `wss://…?ticket=<连接凭据>` 形态，凭据随 URL 进日志即泄露。
+#[test]
+fn redact_url_secrets_masks_ticket_stream_endpoint() {
+    // 钉钉 stream 连接响应形态：ticket 在中段
+    let out = super::redact_url_secrets(
+        r#"{"data":{"endpoint":"wss://wss.api.dingtalk.com/connect?ticket=TK-77&ua=bot"}}"#,
+    );
+    assert!(!out.contains("TK-77"));
+    assert!(out.contains("ticket=<redacted>"));
+    // 非凭据参数原样保留
+    assert!(out.contains("ua=bot"));
+
+    // 飞书 endpoint 形态：ticket 在末段（截断到串尾）
+    let out2 = super::redact_url_secrets(
+        "connecting to wss://open.feishu.cn/callback/ws/endpoint?ticket=FS-1",
+    );
+    assert!(!out2.contains("FS-1"));
+    assert!(out2.contains("ticket=<redacted>"));
+
+    // 路径段 tickets/（无 =）不得误伤
+    let out3 = super::redact_url_secrets("GET https://h.example/tickets/list failed");
+    assert!(out3.contains("/tickets/list"));
+
+    // 参数名残撞（`?x=ticket=`，ticket= 前面是 `=`）不命中
+    let out4 = super::redact_url_secrets("u?x=ticket=PLAIN");
+    assert!(out4.contains("PLAIN"));
+}
+
 #[test]
 fn redact_url_secrets_preserves_non_secret_strings() {
     // 无凭据参数的普通字符串透传；含 "token" 字样但非 ?/& 起头参数不误伤
@@ -1323,5 +1274,61 @@ fn redact_url_secrets_preserves_non_secret_strings() {
     assert_eq!(
         super::redact_url_secrets("u?foo=bar&baz=qux"),
         "u?foo=bar&baz=qux"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ws_connect_bounded（BUG-20261116-041）：握手超时帽
+// ---------------------------------------------------------------------------
+
+// 半开服务端：accept TCP 后保持静默不回 HTTP 101——裸 connect_async 会在此
+// 永久挂起；带帽 helper 必须在超时处有界返回，错误形态含 "handshake timeout"。
+#[tokio::test]
+async fn test_ws_connect_bounded_handshake_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        // 接受连接后故意不读写（挂起对端握手）；短持有即 drop
+        let (_sock, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    });
+
+    let started = std::time::Instant::now();
+    let result = ws_connect_bounded_with_timeout(
+        format!("ws://{addr}"),
+        std::time::Duration::from_millis(400),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let err = result.expect_err("stalled handshake must fail with timeout");
+    assert!(
+        err.contains("handshake timeout"),
+        "unexpected error shape: {err}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "handshake wait must be bounded by the cap, got {elapsed:?}"
+    );
+}
+
+// 真实 WS 服务端（accept_async 完成握手）：happy path 正常连通——帽子只拦
+// 半开形态，不误杀合法握手。
+#[tokio::test]
+async fn test_ws_connect_bounded_ok_against_real_ws_server() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        if let Ok((sock, _)) = listener.accept().await {
+            let _ = tokio_tungstenite::accept_async(sock).await;
+        }
+    });
+
+    let result =
+        ws_connect_bounded_with_timeout(format!("ws://{addr}"), std::time::Duration::from_secs(5))
+            .await;
+    assert!(
+        result.is_ok(),
+        "expected successful handshake against a real WS server, got {result:?}"
     );
 }

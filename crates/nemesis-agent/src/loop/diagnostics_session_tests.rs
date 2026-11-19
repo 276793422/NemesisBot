@@ -384,6 +384,57 @@ fn registry_empty_anchor_write_is_noop() {
     assert!(reg.snapshot_session("s").is_empty());
 }
 
+/// 会话 cap 淘汰必须是 LRU（最早 record 的会话逐出），不是 RandomState
+/// 随机序——旧实现 keys().next() 可把刚活跃会话的登记逐掉（注释承诺
+/// 「旧会话条目」与实现不符）。record 间隔 sleep 保证 Instant 单调可辨。
+#[test]
+fn registry_session_cap_evicts_oldest_touched_lru() {
+    let mut reg = DiagnosticsTouchRegistry::default();
+    for i in 0..15 {
+        reg.record_anchors(&format!("old-{i:02}"), &[anchor("a.go", 1)]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    reg.record_anchors("recent", &[anchor("a.go", 1)]);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    // 第 17 个会话触发 cap：总数收到 16，被逐的是最早 record 的 old-00。
+    reg.record_anchors("newcomer", &[anchor("a.go", 1)]);
+    assert!(
+        reg.snapshot_session("old-00").is_empty(),
+        "最早 record 的会话必须被 LRU 逐出"
+    );
+    assert_eq!(reg.snapshot_session("newcomer").len(), 1, "新会话必在");
+    assert_eq!(
+        reg.snapshot_session("recent").len(),
+        1,
+        "最近活跃会话不得被逐"
+    );
+    let total: usize = (0..15)
+        .map(|i| reg.snapshot_session(&format!("old-{i:02}")).len())
+        .sum::<usize>()
+        + reg.snapshot_session("recent").len()
+        + reg.snapshot_session("newcomer").len();
+    assert_eq!(total, 16, "总会话条目数收到 cap 内");
+}
+
+/// LRU 刷新：重 record 的旧会话刷新活跃时刻——再次触发 cap 时不再被逐。
+#[test]
+fn registry_session_touch_refreshes_lru_order() {
+    let mut reg = DiagnosticsTouchRegistry::default();
+    for i in 0..15 {
+        reg.record_anchors(&format!("old-{i:02}"), &[anchor("a.go", 1)]);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // old-00 是最早登记者；刷新它（upsert 已有会话也刷 Instant）。
+    reg.record_anchors("old-00", &[anchor("b.go", 2)]);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    reg.record_anchors("newcomer", &[anchor("a.go", 1)]);
+    assert!(
+        !reg.snapshot_session("old-00").is_empty(),
+        "刷新过活跃时刻的会话不得被逐"
+    );
+    assert_eq!(reg.snapshot_session("newcomer").len(), 1, "新会话必在");
+}
+
 /// max_errors=0 的诚实边界：聚合全空 → 原样返回（等价关闭回灌但锚点
 /// 照常登记——采集本身发生过）。
 #[tokio::test]

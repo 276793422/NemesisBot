@@ -107,6 +107,8 @@ pub struct MemoryManager {
     enabled: RwLock<bool>,
     /// Root data directory (used for vector store paths).
     data_dir: PathBuf,
+    /// 召回质量闸（项2 P2；gateway 装配期注入，缺席 = 过滤直通）。
+    recall_gate: RwLock<Option<Arc<crate::recall_gate::RecallGate>>>,
 }
 
 impl MemoryManager {
@@ -129,6 +131,7 @@ impl MemoryManager {
             vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
+            recall_gate: RwLock::new(None),
         }
     }
 
@@ -154,6 +157,7 @@ impl MemoryManager {
             vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
+            recall_gate: RwLock::new(None),
         })
     }
 
@@ -274,6 +278,23 @@ impl MemoryManager {
         *self.vector_enabled.read()
     }
 
+    /// BUG-20261114-032：vector 操作的守卫纪律执行点（单一真相源）。
+    /// 把 `Option<Arc<VectorStore>>` clone 出读守卫并立即丢守卫——后续
+    /// embed 推理（tens-of-ms ONNX，reply 通道同步阻塞）与持久化 IO 一律
+    /// 不在 manager 读守卫内跑。守卫只护 Option 槽位（init/close 换装）；
+    /// 槽位外的操作由 Arc 保活 + VectorStore 自身内部锁（docs RwLock）
+    /// 保护，语义与 `embed_text` 的句柄外提先例一致。
+    fn vector_store_cloned(&self) -> Option<Arc<VectorStore>> {
+        self.vector_store.read().clone()
+    }
+
+    /// 测试探针：vector_store 锁当前是否无任何持有者（读/写皆无）。
+    /// 回归锁用——embed 闭包内断言本探针为 true，锁死「守卫不跨推理」。
+    #[cfg(test)]
+    pub fn vector_store_lock_free_for_write(&self) -> bool {
+        self.vector_store.try_write().is_some()
+    }
+
     /// Initialize the vector store at runtime (e.g. from a Dashboard toggle).
     ///
     /// If the vector store is already initialized, just enables it.
@@ -322,6 +343,30 @@ impl MemoryManager {
             vector_enabled: RwLock::new(false),
             enabled: RwLock::new(true),
             data_dir: PathBuf::new(),
+            recall_gate: RwLock::new(None),
+        }
+    }
+
+    // -- 召回质量闸（项2 P2）------------------------------------------------
+
+    /// 注入召回质量闸（gateway/agent_factory 装配期调用；重复调用 = 替换）。
+    pub fn set_recall_gate(&self, gate: Arc<crate::recall_gate::RecallGate>) {
+        *self.recall_gate.write() = Some(gate);
+    }
+
+    /// 闸统计快照（`memory.status` / Dashboard 消费）；闸缺席 = None。
+    pub fn recall_gate_stats(&self) -> Option<crate::recall_gate::RecallGateStats> {
+        self.recall_gate.read().as_ref().map(|g| g.stats())
+    }
+
+    /// 召回命中过滤（loop 侧 `prefetch_memory_context` 消费点）。闸缺席 =
+    /// 原样返回（直通现状，loop 零新分支）；在场 = 一次批量小模型判定后
+    /// 过滤（失败 fail-open 全保留，语义见 [`crate::recall_gate`]）。
+    pub async fn filter_recall_hits(&self, query: &str, hits: Vec<String>) -> Vec<String> {
+        let gate = self.recall_gate.read().clone();
+        match gate {
+            None => hits,
+            Some(g) => g.filter(query, hits).await,
         }
     }
 
@@ -479,28 +524,32 @@ impl MemoryManager {
         if !*self.vector_enabled.read() {
             return;
         }
-        let vs_guard = self.vector_store.read();
-        if let Some(ref vs) = *vs_guard {
-            let ve = crate::vector::VectorEntry {
-                id: id.to_string(),
-                // Display form ("short_term") — the read path
-                // (parse_memory_type_from_str) parses Display forms; the
-                // former Debug-lowercase ("shortterm") lost the type on
-                // roundtrip (, quality-hardening goal).
-                entry_type: entry.typ.to_string(),
-                content: entry.content.clone(),
-                metadata: entry.metadata.clone(),
-                tags: entry.tags.clone(),
-                score: entry.score.unwrap_or(0.0),
-                created_at: entry.created_at.to_rfc3339(),
-                updated_at: entry.updated_at.to_rfc3339(),
-            };
-            if let Err(e) = vs.store_entry(&ve) {
-                tracing::debug!("[Memory] Failed to store entry in vector store: {}", e);
-            }
-            if let Err(e) = vs.persist_entry_sync(&ve) {
-                tracing::debug!("[Memory] Failed to persist entry to disk: {}", e);
-            }
+        // BUG-20261114-032 守卫纪律：store_entry 内含 embed 推理、
+        // persist_entry_sync 是同步磁盘 IO——都不得在 manager 读守卫内跑
+        // （阻塞 init/close 写者；parking_lot 写偏好使排队写者再阻塞新
+        // 读者）。Arc 外提后两条调用都发生在守卫外。
+        let Some(vs) = self.vector_store_cloned() else {
+            return;
+        };
+        let ve = crate::vector::VectorEntry {
+            id: id.to_string(),
+            // Display form ("short_term") — the read path
+            // (parse_memory_type_from_str) parses Display forms; the
+            // former Debug-lowercase ("shortterm") lost the type on
+            // roundtrip (, quality-hardening goal).
+            entry_type: entry.typ.to_string(),
+            content: entry.content.clone(),
+            metadata: entry.metadata.clone(),
+            tags: entry.tags.clone(),
+            score: entry.score.unwrap_or(0.0),
+            created_at: entry.created_at.to_rfc3339(),
+            updated_at: entry.updated_at.to_rfc3339(),
+        };
+        if let Err(e) = vs.store_entry(&ve) {
+            tracing::debug!("[Memory] Failed to store entry in vector store: {}", e);
+        }
+        if let Err(e) = vs.persist_entry_sync(&ve) {
+            tracing::debug!("[Memory] Failed to persist entry to disk: {}", e);
         }
     }
 
@@ -523,23 +572,41 @@ impl MemoryManager {
 
         // Try vector store first for semantic search (adapter pattern)
         if *self.vector_enabled.read() {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
+            // BUG-20261114-032 守卫纪律（embed_text 同款）：Arc 外提、
+            // 丢守卫后再 embed 推理——读守卫不跨 tens-of-ms ONNX 调用。
+            let vs = self.vector_store_cloned();
+            if let Some(vs) = vs {
                 let type_filter: Vec<String> =
                     memory_type.map(|mt| mt.to_string()).into_iter().collect();
+                let threshold = vs.similarity_threshold();
                 // embed 后端故障不毙掉整次搜索：warn + 视作 vector 未命中，
                 // 落到 keyword fallback（与空结果同路径）。
-                let result = vs.query(query, limit, &type_filter).unwrap_or_else(|e| {
-                    tracing::warn!(
-                        error = %e,
-                        "[Memory] vector query failed, falling back to keyword search"
-                    );
-                    crate::vector::QueryResult {
-                        entries: Vec::new(),
-                        total: 0,
-                        query: query.to_string(),
+                let result = match (vs.embed_handle())(query) {
+                    Ok(embedding) => vs
+                        .query_with_embedding(&embedding, query, limit, &type_filter, threshold)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                "[Memory] vector query failed, falling back to keyword search"
+                            );
+                            crate::vector::QueryResult {
+                                entries: Vec::new(),
+                                total: 0,
+                                query: query.to_string(),
+                            }
+                        }),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "[Memory] vector embed failed, falling back to keyword search"
+                        );
+                        crate::vector::QueryResult {
+                            entries: Vec::new(),
+                            total: 0,
+                            query: query.to_string(),
+                        }
                     }
-                });
+                };
                 if !result.entries.is_empty() {
                     let entries: Vec<ScoredEntry> = result
                         .entries
@@ -596,24 +663,38 @@ impl MemoryManager {
             });
         }
         if *self.vector_enabled.read() {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
+            // BUG-20261114-032 守卫纪律：Arc 外提、丢守卫后再 embed。
+            let vs = self.vector_store_cloned();
+            if let Some(vs) = vs {
                 // embed 后端故障与 vector inactive 同路径：空结果
                 // （auto-inject 是 vector-only 语义——keyword-only 匹配
                 // 不触发注入，故障时静默跳过本轮注入而非误用 keyword）。
-                let result = vs
-                    .query_with_threshold(query, limit, &[], AUTO_INJECT_MIN_SCORE)
-                    .unwrap_or_else(|e| {
+                let result = match (vs.embed_handle())(query) {
+                    Ok(embedding) => vs
+                        .query_with_embedding(&embedding, query, limit, &[], AUTO_INJECT_MIN_SCORE)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                "[Memory] vector query failed; auto-inject suppressed this turn"
+                            );
+                            crate::vector::QueryResult {
+                                entries: Vec::new(),
+                                total: 0,
+                                query: query.to_string(),
+                            }
+                        }),
+                    Err(e) => {
                         tracing::warn!(
                             error = %e,
-                            "[Memory] vector query failed; auto-inject suppressed this turn"
+                            "[Memory] vector embed failed; auto-inject suppressed this turn"
                         );
                         crate::vector::QueryResult {
                             entries: Vec::new(),
                             total: 0,
                             query: query.to_string(),
                         }
-                    });
+                    }
+                };
                 let entries: Vec<ScoredEntry> = result
                     .entries
                     .into_iter()
@@ -677,59 +758,76 @@ impl MemoryManager {
 
         let limit = if limit == 0 { 5 } else { limit };
 
-        // Try the vector store first. Scope the read guard to this block —
-        // the keyword-store fallback await below must not run under it
+        // Try the vector store first. Scope the vector branch to this block —
+        // the keyword-store fallback await below must not run inside it
         // (clippy's flow analysis recognizes block scoping, not a bare drop()).
+        // BUG-20261114-032 守卫纪律：本块内已无任何守卫（Arc 外提，embed
+        // 推理在 manager 读守卫之外跑）。
         let vector_result = {
-            let vs_guard = self.vector_store.read();
-            match vs_guard.as_ref() {
-                Some(vs) => match vs.query(query, limit, &[]) {
-                    Ok(result) => {
-                        // Convert VectorEntry results to SearchResult.
-                        let entries: Vec<ScoredEntry> = result
-                            .entries
-                            .into_iter()
-                            .map(|ve| {
-                                let entry = Entry {
-                                    id: ve.id,
-                                    typ: parse_memory_type_from_str(&ve.entry_type),
-                                    content: ve.content,
-                                    metadata: ve.metadata,
-                                    tags: ve.tags,
-                                    score: Some(ve.score),
-                                    created_at: chrono::DateTime::parse_from_rfc3339(
-                                        &ve.created_at,
-                                    )
-                                    .map(|dt| dt.with_timezone(&chrono::Local))
-                                    .unwrap_or_else(|_| chrono::Local::now()),
-                                    updated_at: chrono::DateTime::parse_from_rfc3339(
-                                        &ve.updated_at,
-                                    )
-                                    .map(|dt| dt.with_timezone(&chrono::Local))
-                                    .unwrap_or_else(|_| chrono::Local::now()),
-                                };
-                                ScoredEntry {
-                                    entry,
-                                    score: ve.score,
-                                }
-                            })
-                            .collect();
+            let vs = self.vector_store_cloned();
+            match vs {
+                Some(vs) => {
+                    let threshold = vs.similarity_threshold();
+                    match (vs.embed_handle())(query) {
+                        Ok(embedding) => {
+                            match vs.query_with_embedding(&embedding, query, limit, &[], threshold)
+                            {
+                                Ok(result) => {
+                                    // Convert VectorEntry results to SearchResult.
+                                    let entries: Vec<ScoredEntry> = result
+                                        .entries
+                                        .into_iter()
+                                        .map(|ve| {
+                                            let entry = Entry {
+                                                id: ve.id,
+                                                typ: parse_memory_type_from_str(&ve.entry_type),
+                                                content: ve.content,
+                                                metadata: ve.metadata,
+                                                tags: ve.tags,
+                                                score: Some(ve.score),
+                                                created_at: chrono::DateTime::parse_from_rfc3339(
+                                                    &ve.created_at,
+                                                )
+                                                .map(|dt| dt.with_timezone(&chrono::Local))
+                                                .unwrap_or_else(|_| chrono::Local::now()),
+                                                updated_at: chrono::DateTime::parse_from_rfc3339(
+                                                    &ve.updated_at,
+                                                )
+                                                .map(|dt| dt.with_timezone(&chrono::Local))
+                                                .unwrap_or_else(|_| chrono::Local::now()),
+                                            };
+                                            ScoredEntry {
+                                                entry,
+                                                score: ve.score,
+                                            }
+                                        })
+                                        .collect();
 
-                        let total = entries.len();
-                        Some(Ok(SearchResult { entries, total }))
+                                    let total = entries.len();
+                                    Some(Ok(SearchResult { entries, total }))
+                                }
+                                Err(e) => {
+                                    // embed 后端故障不毙掉整次查询：warn + 视作 vector
+                                    // 不可用（None），落 keyword fallback——与 vs=None
+                                    // 同路径。Ok 的空结果仍直接返回（既有语义：vector
+                                    // 存在即以 vector 为准）。
+                                    tracing::warn!(
+                                        error = %e,
+                                        "[Memory] vector query failed, falling back to keyword search"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "[Memory] vector embed failed, falling back to keyword search"
+                            );
+                            None
+                        }
                     }
-                    Err(e) => {
-                        // embed 后端故障不毙掉整次查询：warn + 视作 vector
-                        // 不可用（None），落 keyword fallback——与 vs=None
-                        // 同路径。Ok 的空结果仍直接返回（既有语义：vector
-                        // 存在即以 vector 为准）。
-                        tracing::warn!(
-                            error = %e,
-                            "[Memory] vector query failed, falling back to keyword search"
-                        );
-                        None
-                    }
-                },
+                }
                 None => None,
             }
         };
@@ -792,13 +890,12 @@ impl MemoryManager {
         let mut found = self.store.delete(id).await?;
         // Remove the vector mirror with the same id (id namespace is shared
         // across keyword store and vector mirror — see get()).
+        // BUG-20261114-032 同族：delete_entry 命中会重写持久化文件（同步
+        // IO），Arc 外提、守卫外跑。
+        if let Some(vs) = self.vector_store_cloned()
+            && vs.delete_entry(id)
         {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard
-                && vs.delete_entry(id)
-            {
-                found = true;
-            }
+            found = true;
         }
         Ok(found)
     }
@@ -903,25 +1000,27 @@ impl MemoryManager {
         if !*self.vector_enabled.read() {
             return;
         }
-        let vs_guard = self.vector_store.read();
-        if let Some(ref vs) = *vs_guard {
-            let typ = entry.typ.to_string();
-            let updated = entry.updated_at.to_rfc3339();
-            let hit = vs.patch_entry_fields(
-                &entry.id,
-                &entry.metadata,
-                &entry.tags,
-                Some(typ.as_str()),
-                Some(updated.as_str()),
+        // BUG-20261114-032 同族：patch 命中会全量重写持久化文件（同步 IO），
+        // 同样不在 manager 读守卫内跑。
+        let Some(vs) = self.vector_store_cloned() else {
+            return;
+        };
+        let typ = entry.typ.to_string();
+        let updated = entry.updated_at.to_rfc3339();
+        let hit = vs.patch_entry_fields(
+            &entry.id,
+            &entry.metadata,
+            &entry.tags,
+            Some(typ.as_str()),
+            Some(updated.as_str()),
+        );
+        if !hit {
+            // keyword store 有、vector 镜像缺（如本运行新建后 vector 暂时
+            // 不可用）——诚实 debug，不静默伪装成功。
+            tracing::debug!(
+                "[Memory] vector patch missed id={} (mirror absent)",
+                entry.id
             );
-            if !hit {
-                // keyword store 有、vector 镜像缺（如本运行新建后 vector 暂时
-                // 不可用）——诚实 debug，不静默伪装成功。
-                tracing::debug!(
-                    "[Memory] vector patch missed id={} (mirror absent)",
-                    entry.id
-                );
-            }
         }
     }
 
@@ -1121,12 +1220,14 @@ impl MemoryManager {
         let count = self.episodic.delete_session(session_key).await?;
 
         // Remove from vector store.
-        if !ids.is_empty() {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
-                for id in &ids {
-                    vs.delete_entry(id);
-                }
+        // 守卫纪律（BUG-20261119-201，BUG-20261114-032 家族）：delete_entry
+        // 命中时做全量重写持久化文件的同步 IO，不在 manager 读守卫内跑——
+        // 外提 Arc（同 forget / patch_vector_entry 形态）。
+        if !ids.is_empty()
+            && let Some(vs) = self.vector_store_cloned()
+        {
+            for id in &ids {
+                vs.delete_entry(id);
             }
         }
 
@@ -1158,12 +1259,13 @@ impl MemoryManager {
         let count = self.episodic.cleanup(older_than_days).await?;
 
         // Remove from vector store.
-        if !ids_to_remove.is_empty() {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
-                for id in &ids_to_remove {
-                    vs.delete_entry(id);
-                }
+        // 守卫纪律（BUG-20261119-201，BUG-20261114-032 家族）：同
+        // delete_episode_session——外提 Arc，同步重写 IO 不在读守卫内跑。
+        if !ids_to_remove.is_empty()
+            && let Some(vs) = self.vector_store_cloned()
+        {
+            for id in &ids_to_remove {
+                vs.delete_entry(id);
             }
         }
 
@@ -1177,14 +1279,13 @@ impl MemoryManager {
         if self.episodic.delete_by_id(id).await? {
             found = true;
         }
-        // Delete from vector store
+        // Delete from vector store.
+        // 守卫纪律（BUG-20261119-201，BUG-20261114-032 家族）：外提 Arc——
+        // delete_entry 命中时做全量重写持久化文件的同步 IO，不在读守卫内跑。
+        if let Some(vs) = self.vector_store_cloned()
+            && vs.delete_entry(id)
         {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard
-                && vs.delete_entry(id)
-            {
-                found = true;
-            }
+            found = true;
         }
         Ok(found)
     }

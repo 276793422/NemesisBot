@@ -168,8 +168,13 @@ pub async fn resolve_locates(
         .max()
         .unwrap_or(1)
         .max(1);
+    // 目标停摆止损旗（BUG-20261116-022）：块读超时取消落在 roundtrip 任意
+    // await 点 → 交换窗滞留（pipe.rs LinkUnreliable 纪律）——链路应答归属
+    // 已不可靠，后续块读恒 LinkUnreliable 自灭。不提前止损会逐节刷读取
+    // 失败 note + 未扫锚误报「锚未命中」（未完成扫描 ≠ 内存不在场）。
+    let mut stalled = false;
     for sec in sections {
-        if pending.is_empty() {
+        if pending.is_empty() || stalled {
             break;
         }
         let sec_base = base + u64::from(sec.rva);
@@ -178,10 +183,30 @@ pub async fn resolve_locates(
         let mut off: u64 = 0;
         while off < total && !pending.is_empty() {
             let want = SCAN_CHUNK.min((total - off) as u32);
-            let buf = match crate::pipe::read_mem(link, sec_base + off, want).await {
-                Ok(b) if b.is_empty() => break,
-                Ok(b) => b,
-                Err(e) => {
+            // 块读必须 CMD_TIMEOUT 包装（session read_mem/poll_events/
+            // dispatch 入口同纪律）：目标停摆（挂起/死锁）时裸 await 永挂并
+            // 持有 link 互斥锁——poll_loop 连锁挂、普通 detach（无超时预算）
+            // 永挂、estop 30s 预算内卸载失败（payload 带钩子常驻目标进程）。
+            // 此前分块扫描是会话层唯一未包装的命令路径（WSAPI ziwei.resolve
+            // 调用任务随之永挂——router 无外层超时）。
+            let chunk = tokio::time::timeout(
+                crate::session::CMD_TIMEOUT,
+                crate::pipe::read_mem(link, sec_base + off, want),
+            )
+            .await;
+            let buf = match chunk {
+                Err(_) => {
+                    report.notes.push(format!(
+                        "节 {} 读取超时 @+{off:#x}（{}s）：目标停摆——解析中止，链路应答归属已不可靠，请重建会话",
+                        sec.name,
+                        crate::session::CMD_TIMEOUT.as_secs()
+                    ));
+                    stalled = true;
+                    break;
+                }
+                Ok(Ok(b)) if b.is_empty() => break,
+                Ok(Ok(b)) => b,
+                Ok(Err(e)) => {
                     report
                         .notes
                         .push(format!("节 {} 读取失败 @+{off:#x}: {e}", sec.name));
@@ -209,9 +234,16 @@ pub async fn resolve_locates(
         }
     }
     for p in pending {
-        report
-            .notes
-            .push(format!("{}: 锚未命中（内存不在场——目标可能已更新）", p.key));
+        if stalled {
+            report.notes.push(format!(
+                "{}: 解析中止（目标停摆，该锚所在节未完成扫描）——恢复目标后重建会话重试",
+                p.key
+            ));
+        } else {
+            report
+                .notes
+                .push(format!("{}: 锚未命中（内存不在场——目标可能已更新）", p.key));
+        }
     }
     Ok(report)
 }
@@ -228,3 +260,9 @@ pub async fn resolve_locates(
 
 #[cfg(test)]
 mod tests;
+
+// BUG-20261116-022 回归锁（Windows 形态测试——具名管道）：
+// resolve_chunk_read_timeout_stalls_scan_and_poisons_link
+#[cfg(all(test, windows))]
+#[path = "resolve/timeout_tests.rs"]
+mod timeout_tests;

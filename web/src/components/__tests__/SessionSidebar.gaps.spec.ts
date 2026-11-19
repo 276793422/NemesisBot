@@ -89,6 +89,7 @@ vi.mock('../../composables/useSSE', () => {
 })
 
 import SessionSidebar from '../SessionSidebar.vue'
+import { reloadSessionGroupingFromStorage } from '../../utils/sessionGrouping'
 import ForkSessionModal from '../ForkSessionModal.vue'
 import SessionChangesPanel from '../logs/SessionChangesPanel.vue'
 import { useSessionStore } from '../../stores/session'
@@ -139,6 +140,8 @@ beforeEach(() => {
   promptSpy = vi.spyOn(window, 'prompt').mockReturnValue(null)
   useToast().toasts.splice(0)
   localStorage.clear()
+  // 模块级 pin/排序单例随清库同步（直挂 mount 的用例不经 mountWith）。
+  reloadSessionGroupingFromStorage()
 })
 
 afterEach(() => {
@@ -146,6 +149,8 @@ afterEach(() => {
 })
 
 async function mountWith(sessions: any[], projects: any[] = [], listOver: Record<string, unknown> = {}) {
+  // pin/排序状态是模块级单例（import 时读 localStorage）——种子须挂载前重载。
+  reloadSessionGroupingFromStorage()
   listMock.mockResolvedValue({ sessions, ...listOver })
   // 深拷贝项目 fixture：store.renameProject 会就地改 p.name，不能污染共享常量。
   listProjectsMock.mockResolvedValue({ projects: projects.map((p) => ({ ...p })) })

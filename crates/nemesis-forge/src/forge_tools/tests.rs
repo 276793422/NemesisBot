@@ -2433,7 +2433,10 @@ async fn test_s8_create_mcp_installer_failure() {
 }
 
 /// forge_update write failure: SKILL.md path replaced by a directory so the
-/// post-snapshot write fails.
+/// update fails cleanly.（BUG 批次 2026-11-14 适配）：快照 fail-closed 后，
+/// 目录顶替的 SKILL.md 在**快照读**处就诚实失败（拒绝访问 = 目录不可读），
+/// 更新在写盘前被拒——失败点比旧实现（快照吞错→写盘失败）更早，但测试
+/// 意图「更新干净失败」不变，且新失败信息自带回滚链保护语义。
 #[tokio::test]
 async fn test_s8_update_write_failure() {
     let dir = tempfile::tempdir().unwrap();
@@ -2472,9 +2475,144 @@ async fn test_s8_update_write_failure() {
         .await;
     assert!(!result.success);
     assert!(
-        result.content.contains("Failed to update file"),
+        result
+            .content
+            .contains("failed to snapshot current v1.0 before writing"),
         "content: {}",
         result.content
+    );
+}
+
+/// BUG 批次 2026-11-14（BUG-1）回归钉：version::save_snapshot 读失败必须
+/// 诚实上抛——目录顶替工件路径 = 读错误（非 NotFound），不得写空 .bak
+/// 伪装成有效备份（restore 恢复出空文件 = 回滚点被毁）。横扫族 C 同族
+/// 修复此前落在零生产调用的同步孪生上，本钉钉住生产实装的异步版。
+#[tokio::test]
+async fn test_save_snapshot_read_failure_is_err() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("SKILL.md");
+    std::fs::create_dir(&fake).unwrap();
+    let err = version::save_snapshot(&fake, "1.0")
+        .await
+        .expect_err("directory-as-artifact read failure must propagate");
+    assert_ne!(
+        err.kind(),
+        std::io::ErrorKind::NotFound,
+        "目录路径读失败不是 NotFound，不得走放行臂"
+    );
+}
+
+/// P 轮复查回归钉：version 段围栏——快照面的 artifact.version 来自磁盘态
+/// 注册表（毒版本经 increment_version 原样携带分隔符传播），rollback_version
+/// 是 agent 工具入参（LLM 可控）。`../../x` 形态在 save/load（含同步孪生）
+/// 四通路统一诚实拒绝（InvalidInput），不得拼出 `.versions/../../x.bak` 的
+/// 越界读写路径；合法版本 "1.0.2" 恒等通过零行为差异。
+#[tokio::test]
+async fn test_version_segment_fence() {
+    let dir = tempfile::tempdir().unwrap();
+    let artifact = dir.path().join("SKILL.md");
+    std::fs::write(&artifact, "body").unwrap();
+
+    let poison = "../../evil";
+    let err = version::save_snapshot(&artifact, poison)
+        .await
+        .expect_err("poison version must be fenced (async save)");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let err = version::load_snapshot(&artifact, poison)
+        .await
+        .expect_err("poison version must be fenced (async load)");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let err = save_version_snapshot(artifact.to_str().unwrap(), poison)
+        .expect_err("poison version must be fenced (sync save)");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let err = load_version_snapshot(artifact.to_str().unwrap(), poison)
+        .expect_err("poison version must be fenced (sync load)");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    // 越界目标没有产物
+    assert!(!dir.path().join("evil.bak").exists());
+
+    // 合法版本零行为差异：save→load 往返一致
+    version::save_snapshot(&artifact, "1.0.2").await.unwrap();
+    assert_eq!(
+        version::load_snapshot(&artifact, "1.0.2").await.unwrap(),
+        "body"
+    );
+}
+
+/// BUG 批次 2026-11-14（BUG-3）回归钉：execute_reflect 与调度反思循环
+/// 同源读盘——重启形态（磁盘有历史、新 Forge 实例内存空）下 reflect
+/// 仍报告全部历史（旧实现静默空报告）。
+#[tokio::test]
+async fn test_execute_reflect_reads_disk_experiences_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // 磁盘侧预置 3 条历史（不经 collector 内存——模拟重启后只剩磁盘）。
+    let store = crate::experience_store::ExperienceStore::from_forge_dir(&dir.path().join("forge"));
+    for i in 0..3 {
+        store
+            .append(&crate::types::CollectedExperience {
+                experience: crate::types::Experience {
+                    id: format!("id{}", i),
+                    tool_name: format!("tool{}", i),
+                    input_summary: "x".into(),
+                    output_summary: "y".into(),
+                    success: true,
+                    duration_ms: 1,
+                    timestamp: "2026-01-01T00:00:00+08:00".into(),
+                    session_key: "s".into(),
+                },
+                dedup_hash: format!("h{}", i),
+            })
+            .await
+            .unwrap();
+    }
+
+    // 重启形态：全新 Forge 实例（内存零经验）。
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    assert!(forge.collector().is_empty(), "新实例内存应为空");
+    let executor = ForgeToolExecutor::new(forge);
+    let result = executor
+        .execute("forge_reflect", &serde_json::json!({}))
+        .await;
+    assert!(result.success, "content: {}", result.content);
+    assert!(
+        result
+            .content
+            .contains("Overall success rate: 100.0% (3/3)"),
+        "reflect 必须消费磁盘历史（3 条全见），content: {}",
+        result.content
+    );
+}
+
+/// BUG 批次 2026-11-14（BUG-4）回归钉：execute_learning_status 跟随运行时
+/// 旗标（learning_enabled AtomicBool）而非构造时冻结的 config 镜像——
+/// 运行时关闭后报「not enabled」，重开后报 Enabled。
+#[tokio::test]
+async fn test_execute_learning_status_follows_runtime_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    forge.set_learning_enabled(true);
+    let executor = ForgeToolExecutor::new(forge.clone());
+
+    let on = executor
+        .execute("forge_learning_status", &serde_json::json!({}))
+        .await;
+    assert!(on.success, "content: {}", on.content);
+    assert!(
+        on.content.contains("Enabled"),
+        "运行时开启后不得误报未启用，content: {}",
+        on.content
+    );
+
+    forge.set_learning_enabled(false);
+    let off = executor
+        .execute("forge_learning_status", &serde_json::json!({}))
+        .await;
+    assert!(off.success, "content: {}", off.content);
+    assert!(
+        off.content.contains("not enabled"),
+        "运行时关闭后必须诚实报未启用，content: {}",
+        off.content
     );
 }
 

@@ -132,6 +132,51 @@ fn l22_pending_sessions_restores_stamped_keys() {
 }
 
 #[test]
+fn l22_pending_sessions_scans_taking_residue() {
+    // BUG-20261112-119：崩溃残留 `.taking`（rename 后、删除前进程终止的产物）
+    // 必须进 pending_sessions 扫描名单——drain_orphan_pending（10s 滞留兜底）
+    // 只认本函数输出；扫描盲区 = 标记已摘的会话无人再触发 take，残留消息
+    // 静默永久滞留（违反 L22「暂停期消息不丢」）。take 的残留臂本有恢复
+    // 能力，但修复前没有任何触发点能看到 `.taking`。
+    let key = unique_key("scan-taking");
+
+    // 形态一：只有 `.taking`（纯崩溃残留）。夹具走真实链路——append 烧入
+    // 键戳后 rename（take 在 rename 后、读删前被进程终止的忠实产物；
+    // 手写未盖键戳的行会让首行还原出空键）。
+    let p = pending_path(&key);
+    append_session_pending(&key, &msg("orphan")).unwrap();
+    let tmp = p.with_extension("taking");
+    std::fs::rename(&p, &tmp).unwrap();
+    let keys = pending_sessions();
+    assert!(
+        keys.contains(&key),
+        "崩溃残留 .taking 应进扫描名单: {keys:?}"
+    );
+
+    // take 残留臂收走后名单清空（sweep→take 自愈闭环）。
+    let rows = take_session_pending(&key);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].content, "orphan");
+    assert!(!pending_sessions().contains(&key), "收走后应离开名单");
+
+    // 形态二：残留 + 原文件并存 → 键去重单次列出（残留优先收走，原文件
+    // 下轮兜底补投，take 先收残留是 Windows rename 不覆盖的顺序必需）。
+    append_session_pending(&key, &msg("orphan2")).unwrap();
+    std::fs::rename(&p, &tmp).unwrap();
+    append_session_pending(&key, &msg("live")).unwrap();
+    let hits = pending_sessions().iter().filter(|k| **k == key).count();
+    assert_eq!(hits, 1, "并存时键应去重: {:?}", pending_sessions());
+
+    let rows = take_session_pending(&key);
+    assert_eq!(rows.len(), 1, "并存时先收残留");
+    assert_eq!(rows[0].content, "orphan2");
+    let rows = take_session_pending(&key);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].content, "live");
+    delete_chat_log(&key);
+}
+
+#[test]
 fn l22_delete_chat_log_cascades_pending() {
     let key = unique_key("cascade");
     append_session_pending(&key, &msg("bye")).unwrap();

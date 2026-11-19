@@ -1,4 +1,5 @@
 use super::*;
+use crate::cluster_config::PeerStatus;
 use nemesis_types::cluster::TaskStatus;
 
 /// 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
@@ -217,6 +218,46 @@ fn test_handle_discovered_node() {
     assert_eq!(node.base.name, "worker-2");
     assert_eq!(node.status, NodeStatus::Online);
     assert_eq!(node.capabilities.len(), 2);
+}
+
+/// 2026-11-14 审查发现 #6 回归锁：announce 载荷地址已自带端口（`ip:port`）
+/// 时 primary（base.address）必须原样采用，不得拼出 `ip:port:rpc_port`
+/// 双端口非法地址。当前 announce 载荷恒裸 IP（本测试钉防御分支——载荷
+/// 形态将来演进时不再静默损坏）；裸 IP 对照臂确认既有拼端口行为不变。
+#[test]
+fn test_discovered_node_pre_ported_address_not_double_ported() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // 已带端口载荷 → 原样采用
+    cluster.handle_discovered_node(
+        "remote-port-1",
+        "worker-port",
+        vec!["10.0.0.42:8899".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node = cluster.get_node_info("remote-port-1").unwrap();
+    assert_eq!(node.base.address, "10.0.0.42:8899");
+
+    // 裸 IP 对照 → 照旧拼 rpc_port（既有行为不变）
+    cluster.handle_discovered_node(
+        "remote-port-2",
+        "worker-bare",
+        vec!["10.0.0.43".into()],
+        21949,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node2 = cluster.get_node_info("remote-port-2").unwrap();
+    assert_eq!(node2.base.address, "10.0.0.43:21949");
 }
 
 // 回归（双机）：handle_discovered_node 曾把 role 硬编码 Worker，
@@ -575,6 +616,79 @@ async fn test_poll_safety_net_timeout_publishes_bus_error() {
 
     // 断言 2：任务状态被标 Failed（complete_callback 语义不回归）。
     let task = cluster.get_task("cd2-timeout-task").unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+}
+
+// --：清理 tick 判死臂必须补发 bus 唤醒帧（BUG-20261115-031）---------
+//
+// 根因：清理循环（30s tick）与恢复 sweep（120s tick）对同一
+// pending_timeout 阈值竞速——清理赢时任务即 Failed，sweep 只扫 Pending
+// 从此永远看不到；此前清理判死臂只落状态不发布 = 续行快照孤儿 +
+// 等待方对话挂死。修复 = 构造期 install_stale_kill_hook 补发与 sweep
+// 判死臂同形状的 cluster_continuation error 帧。
+
+#[tokio::test]
+async fn test_cleanup_stale_kill_publishes_bus_wake() {
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let bus = Arc::new(MockBus {
+        messages: messages.clone(),
+    });
+
+    // 不调 cluster.start()：恢复循环首 tick 即时且含年轻任务闸，会与
+    // 本测试抢判死（混淆被测路径）；构造期已装 stale-kill 钩子，直跑
+    // 清理一轮即可触发被测臂。
+    let cluster = Cluster::new(make_config());
+    cluster.set_message_bus(bus);
+
+    // 缩短安全网到 60s，构造一个 2h 前创建的 Pending 任务（年龄远超
+    // 安全网 → 命中清理循环判死臂）。
+    cluster
+        .task_manager()
+        .set_pending_timeout(chrono::Duration::seconds(60));
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(2)).to_rfc3339();
+    let task = nemesis_types::cluster::Task {
+        id: "ck-stale-kill-task".into(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".into(),
+        peer_id: "remote-001".into(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "web".into(),
+        original_chat_id: "chat-1".into(),
+        created_at: old_created,
+        completed_at: None,
+    };
+    cluster.task_manager().submit(task).unwrap();
+
+    // 生产清理循环同参装配跑一轮；钩子内 publish 是 spawn 化
+    // fire-and-forget，稍候让其落地。
+    cluster.task_manager().run_cleanup_once();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 断言 1：bus 收到 error 续行唤醒帧（agent 被唤醒），形状与 sweep
+    // 判死臂逐字段一致。
+    let msgs = messages.lock();
+    assert_eq!(msgs.len(), 1, "清理判死臂必须补发恰好一条 bus 唤醒帧");
+    assert_eq!(msgs[0].channel, "system");
+    assert_eq!(msgs[0].sender_id, "cluster_continuation:ck-stale-kill-task");
+    assert_eq!(msgs[0].content, "");
+    assert_eq!(
+        msgs[0].metadata.get("status").map(String::as_str),
+        Some("error")
+    );
+    let err = msgs[0]
+        .metadata
+        .get("error")
+        .expect("metadata.error 必须存在");
+    assert!(
+        err.contains("timed out"),
+        "metadata.error 应含清理判死文案，got: {}",
+        err
+    );
+    drop(msgs);
+
+    // 断言 2：任务状态被标 Failed（判死语义不回归）。
+    let task = cluster.get_task("ck-stale-kill-task").unwrap();
     assert_eq!(task.status, TaskStatus::Failed);
 }
 
@@ -2071,6 +2185,125 @@ fn test_remove_node_then_readd() {
     );
     let node = cluster.get_node_info("node-x").unwrap();
     assert_eq!(node.base.name, "x-v2");
+    cluster.stop();
+}
+
+// -- BUG-20261118 批次 C：cleanup_offline_nodes（批量清理 Offline 记录，
+//    不拉黑 / 跳过本节点与静态 peers / state.toml 落盘）----------------------
+
+fn reg_node(id: &str, name: &str, status: NodeStatus) -> ExtendedNodeInfo {
+    ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: id.into(),
+            name: name.into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.1:9000".into(),
+            category: "dev".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses: vec![],
+        professions: Vec::new(),
+        tier: None,
+        agents: Vec::new(),
+        runtime_backend: None,
+        node_type: "agent".into(),
+        build: String::new(),
+    }
+}
+
+#[test]
+fn test_cleanup_offline_nodes_removes_only_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(reg_node("offline-a", "a", NodeStatus::Offline));
+    cluster.register_node(reg_node("online-b", "b", NodeStatus::Online));
+    cluster.register_node(reg_node("connecting-c", "c", NodeStatus::Connecting));
+
+    let removed = cluster.cleanup_offline_nodes();
+    assert_eq!(removed, vec!["offline-a".to_string()]);
+    assert!(cluster.get_node_info("offline-a").is_none());
+    assert!(cluster.get_node_info("online-b").is_some());
+    assert!(cluster.get_node_info("connecting-c").is_some());
+
+    // state.toml 已落盘（重启回读不会复活已清理条目）。
+    assert!(dir.path().join("cluster").join("state.toml").exists());
+    cluster.stop();
+}
+
+#[test]
+fn test_cleanup_keeps_self_and_static_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    // 本节点条目（畸形场景防御：即使 self 以 Offline 入册也不清）。
+    let self_id = cluster.node_id().to_string();
+    cluster.register_node(reg_node(&self_id, "self", NodeStatus::Offline));
+    // 静态 peer（peers.toml 配置，用户意志）Offline → 保留。
+    cluster.register_node(reg_node("static-peer", "sp", NodeStatus::Offline));
+    assert!(cluster.registry.mark_static("static-peer"));
+    // 普通 Offline 动态发现节点 → 清。
+    cluster.register_node(reg_node("dynamic-dead", "dd", NodeStatus::Offline));
+
+    let removed = cluster.cleanup_offline_nodes();
+    assert_eq!(removed, vec!["dynamic-dead".to_string()]);
+    assert!(cluster.get_node_info(&self_id).is_some(), "self 保留");
+    assert!(
+        cluster.get_node_info("static-peer").is_some(),
+        "静态 peer 保留"
+    );
+    assert!(cluster.get_node_info("dynamic-dead").is_none());
+    cluster.stop();
+}
+
+#[test]
+fn test_cleanup_does_not_blacklist_rediscovery_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    cluster.register_node(reg_node("rejoin-x", "rx", NodeStatus::Offline));
+    let removed = cluster.cleanup_offline_nodes();
+    assert_eq!(removed, vec!["rejoin-x".to_string()]);
+
+    // 与 remove_node 的语义分叉：不进 removed_peers 黑名单。
+    assert!(
+        !cluster.removed_peers.read().contains("rejoin-x"),
+        "cleanup 不写黑名单"
+    );
+    // 节点若还活着，announce/发现可重新入册（无需 unban）。
+    cluster.handle_discovered_node(
+        "rejoin-x",
+        "rx-v2",
+        vec!["10.0.0.9".into()],
+        21949,
+        "worker",
+        "dev",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node = cluster
+        .get_node_info("rejoin-x")
+        .expect("清理后可被重新发现");
+    assert_eq!(node.base.name, "rx-v2");
+    cluster.stop();
+}
+
+#[test]
+fn test_cleanup_empty_registry_returns_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+
+    let removed = cluster.cleanup_offline_nodes();
+    assert!(removed.is_empty());
+    assert!(!dir.path().join("cluster").join("state.toml").exists());
     cluster.stop();
 }
 
@@ -4175,7 +4408,7 @@ fn test_sync_to_disk_with_connecting_status() {
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.start();
 
-    // Register a node with Connecting status to hit the "unknown" branch
+    // Register a node with Connecting status to hit the state projection
     cluster.register_node(ExtendedNodeInfo {
         base: nemesis_types::cluster::NodeInfo {
             id: "connecting-node".into(),
@@ -4204,11 +4437,15 @@ fn test_sync_to_disk_with_connecting_status() {
     let state_path = dir.path().join("cluster").join("state.toml");
     assert!(state_path.exists());
 
-    // Read back and verify the status is "unknown"
+    // sync_to_disk 走统一投影 to_peer_config()（2026-11-14 第七轮审查 T3）：
+    // status.state = get_status_string() 真实值（"connecting"），不再经旧
+    // 手写投影归一化成 "unknown"。回读侧 restore_discovered_from_state 只
+    // 消费 last_seen、恒 Offline 种回，state 字符串无行为消费方——落盘
+    // 真实值对排障面更诚实。
     let content = std::fs::read_to_string(&state_path).unwrap();
     assert!(
-        content.contains("unknown"),
-        "Connecting status should map to 'unknown' in state file, got: {}",
+        content.contains("connecting"),
+        "Connecting status should persist verbatim via to_peer_config, got: {}",
         content
     );
     cluster.stop();
@@ -4480,11 +4717,12 @@ fn test_confirm_delivery_with_call_fn_fallback() {
 }
 
 // -- 9. confirm_delivery with neither client nor fn --------------------------
-// NOTE: confirm_delivery() has a potential deadlock when call_with_context_fn
-// is None: it locks the mutex, then falls back to call_with_context() which
-// also tries to lock the same mutex. Instead we test the free function
-// confirm_delivery_with directly, which is the async path used by the
-// recovery loop.
+// NOTE: confirm_delivery() used to self-deadlock (guard held across the
+// fallback that re-locked the same mutex) -- root-fixed to a clone-out
+// shape, see the confirm_delivery comment in tasks.rs. This test still
+// targets the free function confirm_delivery_with (the async path used by
+// the recovery loop) as an independent regression lock alongside the
+// method-level coverage.
 
 #[tokio::test]
 async fn test_confirm_delivery_neither_client_nor_fn() {
@@ -6929,6 +7167,7 @@ async fn test_set_cluster_task_queue_routes_callback_to_work_queue() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     tl.save_async_state(
         "parent-1",
@@ -7002,6 +7241,7 @@ async fn test_callback_routing_with_full_work_queue_logs_error() {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     });
     tl.save_async_state(
         "parent-2",
@@ -7226,7 +7466,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7254,7 +7494,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7275,7 +7515,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -7289,7 +7529,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
     poll_stale_pending_tasks(
         &tm,
         &None,
-        Some(client.as_ref()),
+        Some(client.clone()),
         poll_defaults(),
         &poll_no_bus(),
         false,
@@ -9582,6 +9822,61 @@ fn test_is_self_endpoint_matrix() {
     assert!(is_self_endpoint("192.168.137.1", 21949, 21949, &own));
     // 非本机 host + 同端口 → 不命中
     assert!(!is_self_endpoint("other-host", 21949, 21949, &own));
+}
+
+/// 纯函数矩阵（IPv6，2026-11-14 审查发现 #3 回归锁）：`[::1]:port` 括号
+/// 形态 / 裸 `::1` / 裸多冒号 IPv6 三形态都必须取到完整主机——旧实现
+/// `split(':').next()` 对括号形态取 `[`、对裸形态取首段，自投递防护失效。
+#[test]
+fn test_is_self_endpoint_ipv6_matrix() {
+    let own = vec!["10.103.0.5".to_string(), "fe80::5".to_string()];
+    // 括号带端口 `[::1]:port` → 命中回环
+    assert!(is_self_endpoint("[::1]:21949", 21949, 21949, &own));
+    // 括号不带端口
+    assert!(is_self_endpoint("[::1]", 21949, 21949, &own));
+    // 裸回环 IPv6（多冒号，整体即主机）
+    assert!(is_self_endpoint("::1", 21949, 21949, &own));
+    // 本机 IPv6 + 同端口（裸多冒号形态，own_ips 精确比对）
+    assert!(is_self_endpoint("fe80::5", 21949, 21949, &own));
+    assert!(is_self_endpoint("[fe80::5]:21949", 21949, 21949, &own));
+    // 非本机 IPv6 + 同端口 → 不命中
+    assert!(!is_self_endpoint("fe80::6", 21949, 21949, &own));
+    // 端口不匹配 → 永不命中（IPv6 同样守端口全匹配闸）
+    assert!(!is_self_endpoint("[::1]:21950", 21950, 21949, &own));
+}
+
+/// 路由记账去重集（2026-11-14 审查发现 #1 回归锁）：满 cap **按序逐出最老
+/// 一条**，不是全清——cap=3 时 A,B,C,D 依次插入后仅 A 被逐出（A 重插成功），
+/// B/C 仍在（重复插入被去重闸拒绝；旧实现满 cap `clear()` 全清，重复回调
+/// （送达重试/恢复轮询重放）会再次穿过闸门双计成功率）。去重拒绝不扰动
+/// 集合（先查存在后逐出），幸存观察不触发新逐出。
+#[test]
+fn test_route_recorded_set_evicts_oldest_not_clear_all() {
+    let mut s = super::tasks::RouteRecordedSet::default();
+    let cap = 3;
+    assert!(s.insert_evicting_oldest("A", cap), "A 首插");
+    assert!(
+        !s.insert_evicting_oldest("A", cap),
+        "A 重复插入被去重闸拒绝"
+    );
+    assert!(s.insert_evicting_oldest("B", cap), "B 首插");
+    assert!(s.insert_evicting_oldest("C", cap), "C 首插（到 cap）");
+    // 满后再插 D：只逐出最老的 A（「逐出一条」与旧「clear 全清」的分界）
+    assert!(s.insert_evicting_oldest("D", cap), "D 首插触发逐出 A");
+    // B/C 幸存（clear-all 语义下这两条会被接受 = 双计）
+    assert!(
+        !s.insert_evicting_oldest("B", cap),
+        "B 未被误清，仍被去重闸拒绝"
+    );
+    assert!(
+        !s.insert_evicting_oldest("C", cap),
+        "C 未被误清，仍被去重闸拒绝"
+    );
+    assert!(!s.insert_evicting_oldest("D", cap), "D 在集内");
+    // A 已被逐出：重插成功；FIFO 逐出随之落到当前最老的 B
+    assert!(s.insert_evicting_oldest("A", cap), "A 已被逐出，重插成功");
+    assert!(!s.insert_evicting_oldest("C", cap), "C 仍幸存");
+    assert!(s.insert_evicting_oldest("B", cap), "B 已被逐出，重插成功");
 }
 
 /// 同机双节点（同 IP 不同端口）互不误杀——对端候选含本机 IP 但端口

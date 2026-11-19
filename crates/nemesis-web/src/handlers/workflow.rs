@@ -889,11 +889,15 @@ pub async fn handle_workflow_chat_info(
                     })),
                 )
             })?;
-            let has_human_review = wf.nodes.iter().any(|n| n.node_type == "human_review");
+            // BUG-20261114-035 横向统一：与 workflow_chat 前门同一真相源，
+            // 递归 sub_workflow 子工作流——否则列表/预检报 eligible、聊天
+            // 页前门拒绝，两层口径分裂。
+            let has_human_review =
+                crate::workflow_chat::workflow_reachable_human_review(&engine, &wf, &name);
             let chat_eligible = !has_human_review;
             let reason = if has_human_review {
                 Some(
-                    "工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）"
+                    "工作流（含子工作流）包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）"
                         .to_string(),
                 )
             } else {
@@ -1254,11 +1258,15 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                         let wf = engine
                             .get_workflow(&name)
                             .ok_or_else(|| format!("workflow vanished after resolve: {}", name))?;
+                        // BUG-20261114-035 横向统一：与 workflow_chat 前门
+                        // 同一真相源，递归 sub_workflow 子工作流。
                         let has_human_review =
-                            wf.nodes.iter().any(|n| n.node_type == "human_review");
+                            crate::workflow_chat::workflow_reachable_human_review(
+                                engine, &wf, &name,
+                            );
                         let chat_eligible = !has_human_review;
                         let reason = if has_human_review {
-                            Some("工作流包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）".to_string())
+                            Some("工作流（含子工作流）包含 human_review 节点，聊天测试不支持（v1 暂不处理 Waiting 状态）".to_string())
                         } else {
                             None
                         };

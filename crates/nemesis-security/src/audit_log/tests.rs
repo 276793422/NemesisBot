@@ -230,3 +230,140 @@ fn audit_logger_denied_event_warns_and_export_creates_parent() {
     logger.export_log(&dest).unwrap();
     assert!(dest.exists());
 }
+
+/// 跨日滚动回归（BUG-20261114-020）：模块契约是「daily log files」，旧实现
+/// 构造期开一次句柄长驻不滚——网关跨午夜后审计行全部落启动日文件（按日
+/// 取证的文件名归档错位）。变异锁：删掉 log_event 里的滚动比对块，本测试
+/// 第二段断言必红（e2 落旧日文件而非新日文件）。
+#[test]
+fn audit_log_rolls_over_when_handle_date_is_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut logger = AuditLogger::new(AuditLogConfig {
+        audit_log_dir: dir.path().to_path_buf(),
+        enabled: true,
+    })
+    .unwrap();
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today_file = dir.path().join(format!("security_audit_{today}.log"));
+
+    // 正常路径：首条事件落今日文件。
+    logger.log_event(
+        "e1",
+        "denied",
+        "process_exec",
+        "user",
+        "cli",
+        "cmd.exe",
+        "high",
+        "blocked",
+        "policy",
+    );
+    assert!(today_file.exists(), "first event must create today's file");
+    assert!(
+        std::fs::read_to_string(&today_file).unwrap().contains("e1"),
+        "first event must land in today's file"
+    );
+
+    // 伪造跨午夜态：把句柄重定向到旧日文件（同模块测试可直接触私有字段）。
+    let old_file = dir.path().join("security_audit_2000-01-01.log");
+    std::fs::write(&old_file, "# header\n").unwrap();
+    logger.log_file = Some(
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&old_file)
+            .unwrap(),
+    );
+    logger.log_file_path = Some(old_file.clone());
+
+    // 跨午夜后的第二条事件必须滚动进新日文件，旧日文件不被污染。
+    logger.log_event(
+        "e2",
+        "denied",
+        "process_exec",
+        "user",
+        "cli",
+        "reg.exe",
+        "critical",
+        "blocked",
+        "policy",
+    );
+    let today_content = std::fs::read_to_string(&today_file).unwrap();
+    assert!(
+        today_content.contains("e1") && today_content.contains("e2"),
+        "stale-handle event must roll into the new day file (got: {today_content})"
+    );
+    let old_content = std::fs::read_to_string(&old_file).unwrap();
+    assert!(
+        !old_content.contains("e2"),
+        "stale day file must not receive post-midnight events (got: {old_content})"
+    );
+    assert!(
+        logger
+            .log_file_path
+            .as_ref()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(&today),
+        "handle must now point at the new day file"
+    );
+}
+
+/// BUG-20261117-071 回归锁：exec/run_script 的 target=命令串本体，
+/// shell 管道（`cargo build | tee x`）是日常形态——审计行格式是
+/// ` | ` 管道分隔（解析器 nemesis-web logs.rs::parse_security_audit_file
+/// 按同序列切列），字段值里的 `|` 必须在写入侧中和，否则该行 split 后
+/// 错位移列：命令碎片被当 danger/reason/policy 展示（安全审计页失真）。
+#[test]
+fn test_bug071_pipe_in_fields_does_not_corrupt_line_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = AuditLogConfig {
+        audit_log_dir: dir.path().to_path_buf(),
+        enabled: true,
+    };
+    let mut logger = AuditLogger::new(config).unwrap();
+    logger.log_event(
+        "evt-pipe",
+        "allowed",
+        "process_exec",
+        "sess-user",
+        "web",
+        "cargo build | tee build.log", // exec target：日常 shell 管道
+        "HIGH",
+        "reason | with pipe\nsecond line", // reason 同族含管道+换行
+        "policy-rule-1",
+    );
+    let log_path = logger.log_file_path.as_ref().unwrap().clone();
+    let content = std::fs::read_to_string(&log_path).unwrap();
+    let data_lines: Vec<&str> = content.lines().filter(|l| l.contains("evt-pipe")).collect();
+    // 单行契约：target/reason 里的 \n 必须已中和，数据不落第二条线。
+    assert_eq!(
+        data_lines.len(),
+        1,
+        "field newlines must be neutralized, got {} lines: {data_lines:?}",
+        data_lines.len()
+    );
+    let data_line = data_lines[0];
+    // 列契约：split(" | ") 恰 10 段（字段内管道已转 ¦）。
+    let parts: Vec<&str> = data_line.split(" | ").collect();
+    assert_eq!(
+        parts.len(),
+        10,
+        "audit line must have exactly 10 columns, got {}: {data_line}",
+        parts.len()
+    );
+    // 关键列对位：danger 列必须还是 HIGH（错位形态下是命令碎片
+    // "tee build.log"），reason 列必须还是注入的 reason 原文。
+    assert_eq!(
+        parts[7].trim(),
+        "HIGH",
+        "danger column misaligned: {data_line}"
+    );
+    assert!(
+        parts[8]
+            .trim()
+            .starts_with("reason ¦ with pipe second line"),
+        "reason column misaligned: {data_line}"
+    );
+}

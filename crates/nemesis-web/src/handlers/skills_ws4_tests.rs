@@ -26,6 +26,7 @@ fn make_ctx_with_gate(
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -48,6 +49,7 @@ fn make_ctx_with_gate(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -57,6 +59,7 @@ fn make_ctx_with_gate(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: gate,
@@ -87,7 +90,11 @@ fn write_clawhub_config(ws: &Path, server_uri: &str) {
             "base_url": server_uri,
             "convex_url": server_uri,
             "convex_site_url": server_uri,
-        }
+        },
+        // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——
+        // 本 helper 的意图是「wiremock 限定的 ClawHub 单源」，显式关掉 ModelScope
+        // 保证测试密闭（不打真实 modelscope.cn）。
+        "modelscope": { "enabled": false }
     });
     std::fs::write(
         ws.join("config/config.skills.json"),

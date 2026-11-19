@@ -9,6 +9,393 @@ use std::sync::Arc;
 
 use super::*;
 
+// —— 外评探针翻转收编（2026-11-13 R4/R5/R6 复评整改批 + 正向锁定）——
+
+struct Nov13NoModel;
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for Nov13NoModel {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        panic!("review must not call a model")
+    }
+}
+struct Nov13Pages {
+    pages: Vec<String>,
+    calls: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::Tool for Nov13Pages {
+    async fn execute(
+        &self,
+        args: &str,
+        _: &nemesis_agent::context::RequestContext,
+    ) -> Result<String, String> {
+        let v: Value = serde_json::from_str(args).unwrap();
+        self.calls.lock().unwrap().push(v.clone());
+        let p = v["args"]["page"].as_u64().unwrap_or(1) as usize;
+        Ok(self
+            .pages
+            .get(p - 1)
+            .cloned()
+            .unwrap_or_else(|| "[]".into()))
+    }
+    fn operation_override(&self, _: &str) -> Option<nemesis_agent::r#loop::OperationOverride> {
+        Some(nemesis_agent::r#loop::OperationOverride {
+            op_type: "internal".into(),
+            force_approval: None,
+            receipt_ctx: None,
+        })
+    }
+}
+fn nov13_wire_pages(fx: &EngineFixture, pages: Vec<String>) -> Arc<std::sync::Mutex<Vec<Value>>> {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut lp = AgentLoop::new(
+        Box::new(Nov13NoModel),
+        nemesis_agent::types::AgentConfig {
+            model: "test".into(),
+            ..Default::default()
+        },
+    );
+    lp.register_tool(
+        crate::connector_tools::INVOKE_TOOL_NAME.into(),
+        Box::new(Nov13Pages {
+            pages,
+            calls: calls.clone(),
+        }),
+    );
+    *fx.engine.agent_loop_ref.write() = Some(Arc::new(lp));
+    calls
+}
+fn nov13_fetch_def() -> FlowTemplateDef {
+    let mut def = FlowTemplateDef {
+        slug: "sample".into(),
+        template: tpl("nov13-fetch", &[KIND_FETCH, KIND_LAND]),
+    };
+    def.template.steps[0].args = BTreeMap::from([
+        ("connector".into(), "test".into()),
+        ("op".into(), "list".into()),
+        ("page_size".into(), "2".into()),
+        ("max_pages".into(), "5".into()),
+        ("labels".into(), "agent-ready".into()),
+    ]);
+    def
+}
+
+/// 外评探针收编（正向锁定）：fetch 过滤后首页全被滤掉也继续翻页——
+/// page1 全 human 标签被滤、page2 有 agent-ready → 创建 1、调用 [1,2]。
+#[tokio::test]
+async fn fetch_filtered_first_page_reaches_second_page() {
+    let fx = make_engine("fetch-pages-fixed", true);
+    let calls = nov13_wire_pages(
+        &fx,
+        vec![
+            json!([{"key":"human1","labels":[{"name":"human"}]},{"key":"human2","labels":[{"name":"human"}]}]).to_string(),
+            json!([{"key":"agent1","labels":[{"name":"agent-ready"}]}]).to_string(),
+        ],
+    );
+    let out = fx.engine.fetch_template(&nov13_fetch_def()).await.unwrap();
+    println!(
+        "NOV13 filtered page fixed={out}; calls={:?}",
+        calls.lock().unwrap()
+    );
+    assert_eq!(out["created"], 1);
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|v| v["args"]["page"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+/// 外评探针收编（正向锁定）：截断 JSON 页 salvaged——完整前缀对象物化、
+/// 截断残尾不炸（created=1、entries=1、ext_key=complete）。
+#[tokio::test]
+async fn fetch_truncated_page_materializes_salvaged_entry() {
+    let fx = make_engine("salvage-fixed", true);
+    let calls = nov13_wire_pages(
+        &fx,
+        vec![format!(
+            "[{},{{\"key\":\"large\",\"body\":\"{}",
+            json!({"key":"complete","labels":[{"name":"agent-ready"}]}),
+            "a".repeat(9000)
+        )],
+    );
+    let out = fx.engine.fetch_template(&nov13_fetch_def()).await.unwrap();
+    println!(
+        "NOV13 salvage fixed={out}; invocations={}",
+        calls.lock().unwrap().len()
+    );
+    assert_eq!(out["created"], 1);
+    assert_eq!(
+        out["entries"], 1,
+        "only the complete prefix object was salvaged"
+    );
+    assert_eq!(fx.flows.list_all("nov13-fetch")[0].ext_key, "complete");
+}
+
+/// R6 复评整改回归锁（外评探针
+/// review_nov13_external_keys_collide_and_drop_second_instance 翻转）：
+/// 段安全化碰撞（`a/b` 与 `a_b` 同落实例名 `a_b`）不再静默吞第二条——
+/// 既有实例按 ext_key 核对，不等落 FNV 摘要后缀独立实例；两键各自物化、
+/// 重扫幂等。
+#[test]
+fn external_keys_collide_materialize_independent_instances() {
+    let ws = temp_ws("key-collision-r6");
+    let flows = FlowStore::new(&ws);
+    let def = FlowTemplateDef {
+        slug: "sample".into(),
+        template: tpl("tpl", &[KIND_FETCH, KIND_LAND]),
+    };
+    let entries = vec![
+        json!({"key":"a/b","title":"first distinct issue"}),
+        json!({"key":"a_b","title":"second distinct issue"}),
+    ];
+    let created = materialize_instances(&flows, &def, &entries).unwrap();
+    println!(
+        "NOV13 R6 created={created}; stored={:?}",
+        flows
+            .list_all("tpl")
+            .iter()
+            .map(|i| &i.ext_key)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(created, 2, "两个键各自物化（不再吞第二条）");
+    let mut keys: Vec<String> = flows
+        .list_all("tpl")
+        .iter()
+        .map(|i| i.ext_key.clone())
+        .collect();
+    keys.sort();
+    assert_eq!(keys, vec!["a/b".to_string(), "a_b".to_string()]);
+    assert_eq!(
+        materialize_instances(&flows, &def, &entries).unwrap(),
+        0,
+        "重扫幂等（两实例都按 ext_key 认领跳过）"
+    );
+}
+
+/// R4 复评整改回归锁（外评探针
+/// review_nov13_writeback_older_issue_starves_beyond_first_hundred 翻转）：
+/// 回写轮询换 updated_at 水位 + **三态过滤下推 SQL**——大量 backlog 单
+/// 不再占满 LIMIT 窗口挤掉三态单；老单的 done 转移被真实 attempt
+///（旧形态永不触达：游标停 in_review、零失败计数）。
+#[tokio::test]
+async fn writeback_three_state_filter_reaches_older_issue_beyond_backlog_window() {
+    let fx = make_engine("wb-filter-r4", true);
+    let def = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    let old = wb_issue(
+        &fx.store,
+        "old",
+        BTreeMap::from([("owner".into(), "acme".into())]),
+    );
+    // R5 孤儿闸要求订阅面单有模板实例——先物化（ext_key=old → fe/old）。
+    materialize_instances(&fx.flows, &def, &[json!({"key": "old"})]).unwrap();
+    to_review(&fx.store, &old);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/old").as_deref(),
+        Some("in_review")
+    );
+    // 100 条 backlog 单（非三态）——SQL 下推过滤后不占窗口。
+    for i in 0..100 {
+        wb_issue(&fx.store, &format!("new-{i}"), BTreeMap::new());
+    }
+    let selected = fx
+        .store
+        .list_issues_for_writeback("fe", 0, &["in_review", "done", "cancelled"], 100)
+        .unwrap();
+    assert!(
+        selected.iter().any(|i| i.id == old.id),
+        "三态下推：old 不被 backlog 挤出窗口"
+    );
+    fx.store
+        .transition_issue(
+            old.id,
+            nemesis_board::IssueStatus::Done,
+            &nemesis_board::Actor::system("review"),
+        )
+        .unwrap();
+    for _ in 0..3 {
+        fx.engine.poll_writebacks(&def).await.unwrap();
+    }
+    let failures = fx.engine.writeback_failures.lock().unwrap();
+    println!("NOV13 R4 failures={failures:?}");
+    assert_eq!(
+        failures.get("wb/fe/old"),
+        Some(&3),
+        "done 转移被 attempt（每 poll 恰一次，Retried break 停推不跳批）"
+    );
+}
+
+/// R5 复评整改回归锁（外评探针
+/// review_nov13_writeback_subscribes_to_other_template_origin 翻转）：
+/// 回写订阅**孤儿闸**——模板名下无实例的外部单（他项目 origin）确定性
+/// 跳过：不采纳游标、不回写（旧形态跨模板误采纳+误投递）。
+#[tokio::test]
+async fn writeback_skips_issues_without_template_instance() {
+    let fx = make_engine("wb-orphan-r5", true);
+    let mut def = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    def.template.origin_id = "jira/PROJECT-A/{{key}}".into();
+    def.template.steps[0].args.insert(
+        "args_json".into(),
+        json!({"project":"PROJECT-A"}).to_string(),
+    );
+    let foreign = fx
+        .store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "belongs to project B and another flow".into(),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "fe".into(),
+                origin_id: "jira/PROJECT-B/7".into(),
+                origin_meta: BTreeMap::from([("project".into(), "PROJECT-B".into())]),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+    to_review(&fx.store, &foreign);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows
+            .load_transition_state("wb", "jira/PROJECT-B/7")
+            .as_deref(),
+        None,
+        "孤儿单不采纳游标（R5：模板名下无实例 = 确定性跳过）"
+    );
+    fx.store
+        .transition_issue(
+            foreign.id,
+            nemesis_board::IssueStatus::Done,
+            &nemesis_board::Actor::system("review"),
+        )
+        .unwrap();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    let failures = fx.engine.writeback_failures.lock().unwrap();
+    println!("NOV13 R5 orphan failures={failures:?}");
+    assert!(
+        !failures.keys().any(|k| k.contains("jira/PROJECT-B/7")),
+        "孤儿单不投递（不产生回写失败计数）"
+    );
+}
+
+/// BUG-20261115-038 回归锁：水位**不得越过未收口单**——同批内熔断单（A，
+/// 游标 in_review → done 的 Compose 撞 5 连败停投）与更晚成功收口单（B）
+/// 并存时，修复前水位 = B.updated_at-1 ≥ A.updated_at，SQL 严格 `>` 下轮
+/// 不再命中 A →「重启恢复后仍要重投」落空（done 回帖静默丢失）；修复后
+/// 水位 cap 在 A-1，A 留在窗口内，熔断解除后即可重投；B 照常收口（游标
+/// 落盘 → 下轮 Noop 幂等去重），「不挡同批后续单」不变量同保。
+#[tokio::test]
+async fn writeback_watermark_never_passes_unsettled_issue() {
+    let fx = make_engine("wb-watermark-038", true);
+    let _calls = nov13_wire_pages(&fx, vec![]); // connector 恒成功（空页 "[]"）
+    let def = wb_def(
+        "issue_comment",
+        BTreeMap::new(),
+        BTreeMap::new(),
+        Some("jira"),
+    );
+    let a = wb_issue(
+        &fx.store,
+        "a",
+        BTreeMap::from([("owner".into(), "acme".into())]),
+    );
+    to_review(&fx.store, &a);
+    // R5 孤儿闸：A 先物化并首轮 Adopt 收编游标（in_review）——后续 done
+    // 转移才走 Compose（熔断闸只挂在 Compose 臂）。
+    materialize_instances(&fx.flows, &def, &[json!({"key": "a"})]).unwrap();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/a").as_deref(),
+        Some("in_review")
+    );
+    // A 转 done（秒口径时钟：跨秒推进，a.updated_at 刷新为转态时刻）。
+    wait_next_second();
+    fx.store
+        .transition_issue(
+            a.id,
+            nemesis_board::IssueStatus::Done,
+            &nemesis_board::Actor::system("tests"),
+        )
+        .unwrap();
+    let a = fx.store.get_issue(a.id).unwrap();
+    // B 更晚转 in_review（保证 b.updated_at > a.updated_at——BUG 触发前置，
+    // 同秒兄弟单靠水位 -1 恰好兜住，测不出本缺陷）。
+    wait_next_second();
+    let b = wb_issue(
+        &fx.store,
+        "b",
+        BTreeMap::from([("owner".into(), "acme".into())]),
+    );
+    to_review(&fx.store, &b);
+    materialize_instances(&fx.flows, &def, &[json!({"key": "a"}), json!({"key": "b"})]).unwrap();
+    assert!(b.updated_at > a.updated_at, "前置：B 晚于 A（秒口径时钟）");
+    // A 预置熔断满额（对端宕机 5 连败后的停投态）。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/a".into(), WRITEBACK_MAX_RETRIES);
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    // 修复核心断言：水位 < a.updated_at——A 未被同批 B 的收口越过。
+    let wm = fx.flows.load_writeback_watermark("wb");
+    println!(
+        "NOV15 038 watermark={wm}; a_at={}; b_at={}",
+        a.updated_at, b.updated_at
+    );
+    assert!(
+        wm < a.updated_at,
+        "水位不得越过熔断单 A（修复前 = b.updated_at-1 ≥ a.updated_at，A 沉底丢失）"
+    );
+    // 「不挡后续单」不变量：B 照常收口。
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/b").as_deref(),
+        Some("in_review")
+    );
+    // 对端修复（清熔断 = 进程内预算刷新，重启 gateway 等价）：A 恢复投递。
+    fx.engine.writeback_failures.lock().unwrap().clear();
+    fx.engine.poll_writebacks(&def).await.unwrap();
+    assert_eq!(
+        fx.flows.load_transition_state("wb", "fe/a").as_deref(),
+        Some("done"),
+        "A 留在窗口内——熔断解除后 Compose 重投成功（修复前已沉入水位之下永不可达）"
+    );
+}
+
+/// 秒口径时钟跨秒等待（最多 ~1s）：保证两次转态落不同秒。
+fn wait_next_second() {
+    let base = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("epoch")
+        .as_secs();
+    loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("epoch")
+            .as_secs();
+        if now > base {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 夹具
 // ---------------------------------------------------------------------------
@@ -313,6 +700,102 @@ fn pick_latest_by_updated() {
     // 显式点名优先。
     assert_eq!(flows.pick("tpl", Some("A")).unwrap().instance, "A");
     assert!(flows.pick("tpl", Some("GHOST")).is_err());
+}
+
+// BUG-20261117-069 回归锁：WSAPI `flow://` 代答面把面板 args 的 instance
+// 原样送进 pick → load → instance_path 裸 join——不校验则 `../`/`..\`
+// 穿越载荷可读 flows 根之外任意 `*.json`（可解析成 FlowInstance 的内容
+// 回传 dashboard；不可解析的借 serde 报错泄漏结构信息）。
+
+#[test]
+fn flow_instance_name_is_safe_accepts_creation_output_forms() {
+    // 创建期全部产物形态逐字节满足——校验不得误伤存量名（含 sanitize
+    // 白名单输出、`_` 保留名中和形态、hash 形态、`-fnv8hex` 碰撞后缀）。
+    assert!(flow_instance_name_is_safe("A"));
+    assert!(flow_instance_name_is_safe("I-1"));
+    assert!(flow_instance_name_is_safe("a_b-C"));
+    assert!(flow_instance_name_is_safe("v1.2")); // 点后随字母数字
+    assert!(flow_instance_name_is_safe("a._b")); // 点后随字母数字再接下划线
+    assert!(flow_instance_name_is_safe("_con")); // 保留名中和形态
+    assert!(flow_instance_name_is_safe("KEY-1a2b3c4d")); // 碰撞摘要后缀形态
+    // hash 形态（78 字符 head60__hex16）：二次 sanitize 会换名的形态，
+    // 这里必须结构直通（这正是不能改走「消毒再 join」的原因）。
+    assert!(flow_instance_name_is_safe(&format!(
+        "{}__0123456789abcdef",
+        "h".repeat(60)
+    )));
+    // 穿越与非常规形态全拒。
+    assert!(!flow_instance_name_is_safe("../x"));
+    assert!(!flow_instance_name_is_safe("..\\x"));
+    assert!(!flow_instance_name_is_safe(".."));
+    assert!(!flow_instance_name_is_safe("."));
+    assert!(!flow_instance_name_is_safe(".hidden"));
+    assert!(!flow_instance_name_is_safe("a/../../b"));
+    assert!(!flow_instance_name_is_safe("a..")); // 尾点形（Windows 剥尾点撞名）
+    assert!(!flow_instance_name_is_safe("a b")); // 空格
+    assert!(!flow_instance_name_is_safe("a:b")); // 盘符/ADS 分隔符
+    assert!(!flow_instance_name_is_safe(""));
+}
+
+#[test]
+fn pick_rejects_traversal_instance_names_before_path_join() {
+    let ws = temp_ws("traversal");
+    let flows = FlowStore::new(&ws);
+    let mut a = inst_with_steps("tpl", &[("s", KIND_LAND, "", "")]);
+    a.instance = "A".to_string();
+    flows.save(&a).unwrap();
+
+    // 在 flows 根外预置一个可解析成 FlowInstance 的目标
+    // （flows/tpl/../../../config/config.json == ws/config/config.json，
+    // 三层上跳 tpl→flows→logs→workspace 根——越出 flows 根与 workspace
+    // logs 子树）。修复前 pick 会把它读回来；修复后在 join 之前被结构
+    // 校验拒绝。
+    let outside_dir = ws.join("config");
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    let mut outside_inst = inst_with_steps("tpl", &[("s", KIND_LAND, "", "")]);
+    outside_inst.instance = "LEAKED".to_string();
+    std::fs::write(
+        outside_dir.join("config.json"),
+        serde_json::to_string_pretty(&outside_inst).unwrap(),
+    )
+    .unwrap();
+
+    for hostile in [
+        "../../../config/config",
+        "..\\..\\..\\config\\config",
+        "..",
+        ".hidden",
+        "a/../../b",
+    ] {
+        let err = flows.pick("tpl", Some(hostile)).unwrap_err();
+        // 拒绝发生在路径 join 之前——报错独立于「不存在」（诊断可辨）。
+        assert!(err.contains("不合法"), "hostile={hostile} err={err}");
+        assert!(!err.contains("不存在"), "hostile={hostile} err={err}");
+        assert!(!err.contains("LEAKED"), "hostile={hostile} err={err}");
+    }
+
+    // 合法名照常可达（校验不误伤）。
+    assert_eq!(flows.pick("tpl", Some("A")).unwrap().instance, "A");
+}
+
+#[test]
+fn save_and_exists_reject_unsafe_instance_names() {
+    let ws = temp_ws("save-guard");
+    let flows = FlowStore::new(&ws);
+    let mut evil = inst_with_steps("tpl", &[("s", KIND_LAND, "", "")]);
+    // 写侧对称闸：穿越形态实例名拒绝落盘。
+    evil.instance = "../../evil".to_string();
+    let err = flows.save(&evil).unwrap_err();
+    assert!(err.contains("不合法"), "err={err}");
+    assert!(!flows.exists("tpl", "../../evil"));
+    // exists 探测闸：穿越形态恒 false（不作为 flows 根外的存在性 oracle）。
+    assert!(!flows.exists("tpl", "../x"));
+    assert!(!flows.exists("tpl", "..\\x"));
+    // 合法名不受影响。
+    evil.instance = "ok-1".to_string();
+    flows.save(&evil).unwrap();
+    assert!(flows.exists("tpl", "ok-1"));
+    assert_eq!(flows.load("tpl", "ok-1").unwrap().instance, "ok-1");
 }
 
 #[test]
@@ -1345,7 +1828,7 @@ fn render_config_tokens_renders_when_config_but_keeps_step_tokens() {
 
 #[test]
 fn render_config_tokens_declared_unset_renders_empty() {
-    // 可选键契约（SC 套件 proxy / gerrit_base_url 二选一形态）：键已声明
+    // 可选键契约（SC 套件 proxy 形态）：键已声明
     // 但未配置（无缺省无覆盖）= 空串，不再整模板拒绝；未声明 = 仍 Err。
     let mut t = tpl("t", &[KIND_FETCH]);
     t.steps[0]
@@ -3396,6 +3879,17 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         BTreeMap::new(),
         Some("jira"),
     );
+    // R5 孤儿闸前置：订阅面单必须有模板实例（A/C/D；B 靠 todo 状态天然跳过）。
+    materialize_instances(
+        &fx.flows,
+        &def,
+        &[
+            json!({"key": "A"}),
+            json!({"key": "C"}),
+            json!({"key": "D"}),
+        ],
+    )
+    .unwrap();
     // A：meta 在场 → adopt（静默收编）→ noop → done 后 compose。
     let a = wb_issue(
         &fx.store,
@@ -3408,7 +3902,8 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         fx.flows.load_transition_state("wb", "fe/A"),
         Some("in_review".to_string())
     );
-    // 块作用域持锁：rustc await_holding_lock 不认显式 drop()，块结束才算释放。
+    // 块作用域持锁（clippy await_holding_lock 不识别显式 drop——守卫视为
+    // 活到作用域末；块收口语义等价且 lint 干净）。
     {
         let map = fx.engine.writeback_failures.lock().unwrap();
         assert!(map.is_empty(), "adopt 不计失败: {map:?}");
@@ -3426,6 +3921,13 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
         let map = fx.engine.writeback_failures.lock().unwrap();
         assert_eq!(map.get("wb/fe/A"), Some(&1), "map: {map:?}");
     }
+    // R4 契约（ASC 批序 + Retried break）：持续失败的老单恒居批首，后续单
+    // 要等它熔断让路（有界 5 tick）才可达——预熔断 A 给 C/D 段让位。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/A".to_string(), WRITEBACK_MAX_RETRIES);
 
     // B：todo 状态不订阅三态 → 零动作；无 origin 单同样跳过。
     let _b = wb_issue(&fx.store, "B", BTreeMap::new());
@@ -3496,6 +3998,17 @@ async fn poll_writebacks_adopt_noop_and_compose_bookkeeping() {
 async fn poll_writebacks_permanent_skip_parse_retry_render_fail() {
     let fx = make_engine("wb2", true);
     let def_np = wb_def("issue_comment", BTreeMap::new(), BTreeMap::new(), None);
+    // R5 孤儿闸前置：订阅面单必须有模板实例（P/R/F）。
+    materialize_instances(
+        &fx.flows,
+        &def_np,
+        &[
+            json!({"key": "P"}),
+            json!({"key": "R"}),
+            json!({"key": "F"}),
+        ],
+    )
+    .unwrap();
     // 永久跳过：先 adopt（in_review），转 done 触发 compose——无 origin_meta
     // 无 parse 声明 → 游标落盘收口（Advanced，不计失败）。
     let p = wb_issue(&fx.store, "P", BTreeMap::new());
@@ -3530,6 +4043,13 @@ async fn poll_writebacks_permanent_skip_parse_retry_render_fail() {
         Some("in_review".to_string()),
         "compose 失败游标不推进"
     );
+    // R4 契约（ASC 批序 + Retried break）：R 的解析失败恒居批首挡住 F 段
+    // ——预熔断 R 给 F 段让位（同 wb1 A 段注记）。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/R".to_string(), WRITEBACK_MAX_RETRIES);
 
     // 渲染失败：meta 在场但 args 引用未知 token → Retry。
     let f = wb_issue(
@@ -3563,6 +4083,8 @@ async fn poll_writebacks_plugin_route_faces() {
         BTreeMap::new(),
         None,
     );
+    // R5 孤儿闸前置：订阅面单必须有模板实例（A/B）。
+    materialize_instances(&fx.flows, &def, &[json!({"key": "A"}), json!({"key": "B"})]).unwrap();
     // 合法 plugin 引用 + 子系统未装配 → Retried。
     let a = wb_issue(
         &fx.store,
@@ -3581,6 +4103,13 @@ async fn poll_writebacks_plugin_route_faces() {
         fx.flows.load_transition_state("wb", "fe/A"),
         Some("in_review".to_string())
     );
+    // R4 契约（ASC 批序 + Retried break）：A 的子系统缺席失败恒居批首挡住
+    // B 段——预熔断 A 给 B 段让位（同 wb1 A 段注记）。
+    fx.engine
+        .writeback_failures
+        .lock()
+        .unwrap()
+        .insert("wb/fe/A".to_string(), WRITEBACK_MAX_RETRIES);
 
     // 引用形态非法 → Retried（装载期校验是声明面闸，运行期诚实保底）。
     let b = wb_issue(
@@ -3792,31 +4321,6 @@ fn poll_outcome_maps_three_states() {
         poll_outcome(PollOutcome::StillRunning).unwrap_err(),
         FLOW_STILL_RUNNING
     );
-}
-
-#[test]
-fn json_scalar_and_json_path_faces() {
-    assert_eq!(json_scalar(Some(&json!(true))), "true");
-    assert_eq!(json_scalar(Some(&json!([1, 2]))), "array");
-    assert_eq!(json_scalar(Some(&json!({"a": 1}))), "object");
-    assert_eq!(json_scalar(Some(&json!(null))), "null");
-    assert_eq!(json_scalar(None), "null");
-    assert_eq!(json_scalar(Some(&json!(3.5))), "3.5");
-
-    // 词法：通配段与畸形路径。
-    assert_eq!(json_path_segments("$.a[*].b").unwrap(), vec!["a", "*", "b"]);
-    assert!(json_path_segments("$.").is_none(), "尾随空段");
-    assert!(json_path_segments("$.a..b").is_none(), "连续点空段");
-    assert!(json_path_segments("$[0]").is_none(), "索引语法不支持");
-    assert!(json_path_segments("a.b").is_none(), "缺 $ 前缀");
-
-    // 求值：通配展开、字段缺席、畸形路径。
-    let v = json!({"items": [{"name": "x"}, {"name": "y"}]});
-    let hits = json_path_eval(&v, "$.items[*].name");
-    assert_eq!(hits.len(), 2);
-    assert_eq!(hits[0], &json!("x"));
-    assert!(json_path_eval(&v, "$.nope[*]").is_empty(), "中途落空 = 空");
-    assert!(json_path_eval(&v, "$bad").is_empty(), "畸形路径 = 空");
 }
 
 #[test]
@@ -4071,26 +4575,6 @@ async fn flow_engine_new_assembles_with_global_plugin_dir() {
         .await
         .unwrap_err();
     assert!(err.contains("不存在"), "{err}");
-}
-
-#[test]
-fn safe_external_url_scheme_gate() {
-    // http(s) 放行且保原形；大小写不敏感；其余 scheme / 空 = None。
-    assert_eq!(
-        safe_external_url("https://example.com/p/1").as_deref(),
-        Some("https://example.com/p/1")
-    );
-    assert_eq!(
-        safe_external_url("HTTP://Example.com").as_deref(),
-        Some("HTTP://Example.com")
-    );
-    assert_eq!(
-        safe_external_url("  https://x.y  ").as_deref(),
-        Some("https://x.y")
-    );
-    assert_eq!(safe_external_url("javascript:alert(1)"), None);
-    assert_eq!(safe_external_url("ftp://x"), None);
-    assert_eq!(safe_external_url(""), None);
 }
 
 #[test]

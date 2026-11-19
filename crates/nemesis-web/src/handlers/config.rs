@@ -108,10 +108,31 @@ pub(crate) fn update_config<T>(
     home: &str,
     f: impl FnOnce(&mut nemesis_config::Config) -> Result<T, String>,
 ) -> Result<T, String> {
+    update_config_with_store(home, nemesis_config::global().as_deref(), f)
+}
+
+/// [`update_config`] 的 store 注入形态（测试接缝；生产恒传
+/// `nemesis_config::global().as_deref()`——`global()` 在测试/CLI 进程为
+/// `None`，语义与磁盘 fallback 一致）。store 参数只进**写半边**
+/// （persist 对账）；读侧恒磁盘直读（BUG-20261116-021）。
+pub(crate) fn update_config_with_store<T>(
+    home: &str,
+    store: Option<&nemesis_config::ConfigStore>,
+    f: impl FnOnce(&mut nemesis_config::Config) -> Result<T, String>,
+) -> Result<T, String> {
     let _serial = nemesis_config::config_write_lock();
-    let mut cfg = load_config(home)?;
+    // 读侧恒磁盘直读（BUG-20261116-021）：live 优先读在全局 store 在位时
+    // 供的是启动时快照——跨进程写者（CLI `model set-tier` 等免重启工作流
+    // 直接改盘）之后 store 内存无回读触发点（reload 只在自家写后调用），
+    // typed 写会拿陈旧快照整档落盘，静默回退外部改动（无需窗口重叠）。
+    // 磁盘直读的安全性：ConfigStore::update 持久化失败回滚内存
+    // （BUG-20261114-041 不变量），进程内 memory==disk 恒成立——磁盘直读
+    // 进程内等价、跨进程严格更安全；写半边 save_config_with_store 的
+    // store 臂再把结果对账回内存（typed readers 继续鲜活）。
+    let mut cfg = nemesis_config::load_config(&config_path(home))
+        .map_err(|e| format!("failed to load config: {}", e))?;
     let out = f(&mut cfg)?;
-    save_config_to_disk(home, &mut cfg, &_serial)?;
+    save_config_with_store(home, &mut cfg, store)?;
     Ok(out)
 }
 
@@ -207,17 +228,22 @@ pub(crate) fn update_json_file<T>(
     Ok(out)
 }
 
-/// config.json 落盘原语。**要求调用方已持有写串行锁**（proof-of-lock：
-/// guard 作参数，裸调用编译不过）——update_config 是 blessed 入口；多文件/
-/// 长跨度等不适合闭包事务的逃逸臂（memory config_set 双文件、cluster 身份
-/// 双写）经本原语落盘，锁的在场由类型系统强制。
-pub(crate) fn save_config_to_disk(
+/// config.json typed 落盘原语（事务内写半边，BUG-20261116-021）：
+/// **要求调用方已持有写串行锁**——唯一调用方 [`update_config_with_store`]
+/// 在事务入口内取锁。`Some(store)` = `ConfigStore::update`（内存+盘一起
+/// 落，save_live 同语义——磁盘直读的结果对账回 store，typed readers 继续
+/// 鲜活）；`None`（测试/CLI 进程，无全局 store）= 磁盘直写。
+/// （旧 guard 作参数的 `save_config_to_disk` proof-of-lock 形态随逃逸臂
+/// 收口成事务后零调用方，已删——blessed 入口收敛为 update_* 事务。）
+pub(crate) fn save_config_with_store(
     home: &str,
     config: &mut nemesis_config::Config,
-    _write_guard: &parking_lot::MutexGuard<'static, ()>,
+    store: Option<&nemesis_config::ConfigStore>,
 ) -> Result<(), String> {
-    if let Some(r) = nemesis_config::save_live(config.clone()) {
-        return r.map_err(|e| format!("failed to save config: {}", e));
+    if let Some(store) = store {
+        return store
+            .update(|c| *c = config.clone())
+            .map_err(|e| format!("failed to save config: {}", e));
     }
     nemesis_config::save_config(&config_path(home), config)
         .map_err(|e| format!("failed to save config: {}", e))
@@ -573,7 +599,12 @@ fn walk_dropped(
             if is_empty_leaf(inc) {
                 return;
             }
-            if re != inc {
+            // 整数→浮点收敛（f64 字段收 JSON 整数，重序列化 1.0）不算丢键——
+            // 与 set_field 的 numeric_normalized_equal 同款语义（BUG-20261114-006：
+            // 此前只比 `re != inc`，PosInt(1) != Float(1.0) 把合法归一误判成
+            // 丢失，整档保存被 loud 拒绝且报因误导）。真值变化（0.7→0.5）
+            // 两侧都是 Float，归一不等，照旧收集。
+            if re != inc && !numeric_normalized_equal(re, inc) {
                 out.push(path.to_string());
             }
         }

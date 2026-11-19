@@ -154,8 +154,8 @@ pub trait ClusterCallbacks: Send + Sync {
             runtime_backend,
             mandate_pubkey,
             source_addr,
+            build,
         );
-        let _ = (professions, tier, agents, iroh_id, source_addr, build);
         self.handle_discovered_node(
             node_id,
             name,
@@ -738,14 +738,19 @@ impl DiscoveryService {
 
         // We need a second UdpSocket for the broadcast loop since the listener
         // already holds the bound socket. We create a separate broadcast sender.
-        let broadcast_socket = Arc::new(
-            std::net::UdpSocket::bind("0.0.0.0:0").expect("failed to bind broadcast socket"),
-        );
-        broadcast_socket
-            .set_broadcast(true)
-            .expect("failed to set broadcast");
+        // bind/set_broadcast 失败走诚实 Err（abort_partial_start 复位状态 +
+        // join 接收线程），与上方 listener bind 失败同语义——此前三处
+        // expect panic：gateway 同步装配路径直接崩，且 running=true 残留、
+        // 接收线程成孤儿。
+        let broadcast_socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+            Ok(s) => Arc::new(s),
+            Err(e) => return Err(self.abort_partial_start(e)),
+        };
+        if let Err(e) = broadcast_socket.set_broadcast(true) {
+            return Err(self.abort_partial_start(e));
+        }
 
-        let bcast_handle = std::thread::Builder::new()
+        let bcast_handle = match std::thread::Builder::new()
             .name("discovery-broadcast".into())
             .spawn(move || {
                 // Initial announce with jitter
@@ -765,8 +770,10 @@ impl DiscoveryService {
                         send_announce_with(&broadcast_socket, listener_port, enc_key, &*cluster);
                     }
                 }
-            })
-            .expect("failed to spawn broadcast thread");
+            }) {
+            Ok(handle) => handle,
+            Err(e) => return Err(self.abort_partial_start(e)),
+        };
 
         *self.broadcast_thread.lock().unwrap() = Some(bcast_handle);
 
@@ -809,6 +816,17 @@ impl DiscoveryService {
     /// Check whether the service is running.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    /// start() 半途失败（广播 socket bind / set_broadcast / 广播线程 spawn）
+    /// 的一致性清理：running 幕帘复位 + 已启动的接收线程 join 停机。
+    /// 与前置失败（`UdpListener::new` / `listener.start()`，零副作用直接
+    /// `?`）同语义——调用方（`Cluster::start_discovery`）Err 臂只打日志、
+    /// 不置 discovery_running；无孤儿线程、无假 running 状态。
+    fn abort_partial_start(&self, e: std::io::Error) -> DiscoveryError {
+        self.running.store(false, Ordering::SeqCst);
+        let _ = self.listener.stop();
+        DiscoveryError::Io(e)
     }
 
     /// Dynamically change the broadcast interval.

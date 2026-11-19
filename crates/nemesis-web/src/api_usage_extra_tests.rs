@@ -21,6 +21,7 @@ use std::time::Instant;
 fn make_state_no_data_store() -> Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -43,6 +44,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -52,6 +54,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -64,6 +67,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
 fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
     let s = AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -86,6 +90,7 @@ fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -95,6 +100,7 @@ fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -731,7 +737,11 @@ async fn pricing_import_parses_litellm_body() {
     let (_dir, ds) = open_store();
     let state = make_state_with_store(ds.clone());
 
-    let body = r#"{
+    // BUG-20261118-157 条目数闸（<100 = 疑似劫持页/截断 payload，拒收）：
+    // 导入体须达真表量级——合成 100 条 chat + 1 条 embedding（后者应被滤），
+    // gpt-4o 保留真实价供 ×1e6 换算断言。
+    let mut body = String::from(
+        r#"{
       "gpt-4o": {
         "input_cost_per_token": 2.5e-06,
         "output_cost_per_token": 1e-05,
@@ -742,20 +752,35 @@ async fn pricing_import_parses_litellm_body() {
         "input_cost_per_token": 2e-08,
         "output_cost_per_token": 0.0,
         "mode": "embedding"
-      }
-    }"#;
-    let Json(v) = handle_api_usage_pricing_import(State(state.clone()), body.to_string()).await;
+      }"#,
+    );
+    for i in 0..99 {
+        body.push_str(&format!(
+            ",\n  \"bulk-model-{i}\": {{\n    \"input_cost_per_token\": {},\n    \"output_cost_per_token\": {},\n    \"mode\": \"chat\"\n  }}",
+            1e-6 + i as f64 * 1e-7,
+            2e-6 + i as f64 * 1e-7,
+        ));
+    }
+    body.push_str("\n}");
+    let Json(v) = handle_api_usage_pricing_import(State(state.clone()), body).await;
     assert_eq!(v["status"], "success");
-    assert_eq!(v["data"]["entryCount"], 1, "embedding entry filtered out");
+    assert_eq!(v["data"]["entryCount"], 100, "embedding entry filtered out");
     let dl = ds.pricing().list_downloaded().unwrap();
-    assert_eq!(dl.len(), 1);
-    assert_eq!(dl[0].model_id, "gpt-4o");
-    assert!((dl[0].input_cost_per_million - 2.5).abs() < 1e-9);
+    assert_eq!(dl.len(), 100);
+    assert!(
+        dl.iter().all(|e| e.model_id != "text-embedding-3-small"),
+        "embedding entry filtered out"
+    );
+    let gpt4o = dl
+        .iter()
+        .find(|e| e.model_id == "gpt-4o")
+        .expect("gpt-4o present");
+    assert!((gpt4o.input_cost_per_million - 2.5).abs() < 1e-9);
 
     // 坏 body → error，下载层保留。
     let Json(v) = handle_api_usage_pricing_import(State(state), "{broken".to_string()).await;
     assert!(v["error"].is_string());
-    assert_eq!(ds.pricing().list_downloaded().unwrap().len(), 1);
+    assert_eq!(ds.pricing().list_downloaded().unwrap().len(), 100);
 }
 
 #[tokio::test]

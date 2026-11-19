@@ -23,7 +23,8 @@ pub enum ProviderType {
 }
 
 /// Resolved provider selection from config.
-#[derive(Debug, Clone)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key 脱敏。
+#[derive(Clone)]
 pub struct ProviderSelection {
     pub provider_type: ProviderType,
     pub api_key: String,
@@ -36,8 +37,25 @@ pub struct ProviderSelection {
     pub timeout_secs: u64,
 }
 
+crate::debug_redact::impl_redacted_debug!(ProviderSelection {
+    plain {
+        provider_type,
+        api_base,
+        model,
+        workspace,
+        connect_mode,
+        account_id,
+        timeout_secs,
+    }
+    secret {
+        api_key,
+    }
+});
+
 /// Factory configuration for resolving providers.
-#[derive(Debug, Clone, Default)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy
+/// （可带 userinfo 凭据）/ headers map 脱敏。
+#[derive(Clone, Default)]
 pub struct FactoryConfig {
     /// The LLM reference string (e.g. "anthropic/claude-sonnet", "claude-cli/claude-code").
     pub llm_ref: String,
@@ -88,6 +106,28 @@ pub struct FactoryConfig {
     /// 翻译）；其他 lane 忽略 + 构造期一次 WARN。缺省 Null = 零合并。
     pub extra_body: serde_json::Value,
 }
+
+crate::debug_redact::impl_redacted_debug!(FactoryConfig {
+    plain {
+        llm_ref,
+        api_base,
+        workspace,
+        connect_mode,
+        account_id,
+        protocol,
+        timeout_secs,
+        stream_mode,
+        cache_breakpoints,
+        extra_body,
+    }
+    secret {
+        api_key,
+        proxy,
+    }
+    secret_map {
+        headers,
+    }
+});
 
 /// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
 /// `pub`：nemesis-agent recovery 外层包裹超时缺省跟随本值 + 余量

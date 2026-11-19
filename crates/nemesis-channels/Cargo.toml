@@ -53,6 +53,8 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
+# 邮件协议层单一真相源（email 通道消费；协议函数搬移自本 crate email.rs，B1 下沉）。
+nemesis-mail-protocol = { workspace = true }
 
 # Additional deps needed by channel implementations
 reqwest = { workspace = true }

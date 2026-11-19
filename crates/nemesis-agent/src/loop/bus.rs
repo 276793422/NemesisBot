@@ -25,6 +25,14 @@ pub const BUSY_MESSAGE: &str =
 pub const DRAINING_RECEIPT: &str =
     "\u{23f4} 正在停机：新消息已停止受理（在途任务正常收尾），请稍后重试";
 
+/// drain 等待 timeout 的可表示域上限（BUG-20261116-014）：30 年 ≈ 9.47e8 秒
+/// ——ns ≈ 9.47e17，加任意现实运行时长稳落 std Instant 表示域（i64 ns，
+/// ≈292 年）内。timeout（config `agents.shutdown_drain_secs` 等）超出时
+/// clamp 到本值：语义 = 「等待至可表示大值」，与可表示大值行为一致，
+/// 不再在停机路径 panic。
+const DRAIN_TIMEOUT_REPRESENTABLE_CAP: std::time::Duration =
+    std::time::Duration::from_secs(30 * 365 * 86400);
+
 /// W6：在途 turn gauge 守卫——构造即 +1，Drop 即 -1（panic/abort 展开
 /// 路径也减账，gauge 不会单调漂移）。spawn 臂与 inline continuation 臂
 /// 共用（[`AgentLoop::spawn_turn_task`] / pump_dispatch Continuation 分支）。
@@ -53,6 +61,17 @@ pub fn parse_concurrent_mode(s: &str) -> ConcurrentMode {
         "queue" => ConcurrentMode::Queue,
         "steer" => ConcurrentMode::Steer,
         _ => ConcurrentMode::Reject,
+    }
+}
+
+/// 回调 metadata → D5 台账终态（status=error → Failed，否则 Done）。
+fn registry_status_of(
+    msg: &nemesis_types::channel::InboundMessage,
+) -> crate::subagent_registry::SubagentStatus {
+    if msg.metadata.get("status").is_some_and(|s| s == "error") {
+        crate::subagent_registry::SubagentStatus::Failed
+    } else {
+        crate::subagent_registry::SubagentStatus::Done
     }
 }
 
@@ -143,6 +162,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
+            response_degradation: parking_lot::Mutex::new(None),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: Some(outbound_tx),
@@ -218,11 +238,12 @@ impl AgentLoop {
             mandate_guard: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             in_flight_turns: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            work_timeline: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             draining: std::sync::atomic::AtomicBool::new(false),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             turn_deliverables: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
-            gc_inflight_trees: parking_lot::Mutex::new(std::collections::HashSet::new()),
+            gc_inflight_trees: parking_lot::Mutex::new(std::collections::HashMap::new()),
             hooks: HooksState {
                 tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
                 llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
@@ -260,6 +281,7 @@ impl AgentLoop {
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
             vault_domain_config_path: parking_lot::RwLock::new(None),
+            session_home_root: parking_lot::RwLock::new(None),
             exec_env_resolver: parking_lot::RwLock::new(None),
             instruction_trust: parking_lot::RwLock::new(
                 crate::workspace_instructions::InstructionTrust::Trusted,
@@ -296,15 +318,107 @@ impl AgentLoop {
     // Continuation dispatch
     // -----------------------------------------------------------------------
 
+    /// 续行回主路（2026-11-12）的续行轮预算：异步回灌交接主循环后的工具
+    /// 轮数上限（对齐旧迷你循环 `max_iterations = 20`，经
+    /// [`Self::resume_execution_with_token`] 的 `turn_budget` 注入
+    /// run_llm_loop 的 per-turn 覆盖闸；耗尽走 grace round 语义）。
+    const CONTINUATION_TURN_BUDGET: u32 = 20;
+
     /// Dispatch a cluster continuation: inline (permits=0) or spawned (permits>0).
     /// Called from both `run_bus_owned` (test) and `run_bus_arc` (production).
     /// `pub(crate)`：delegate 台账终态回写测试直驱（D5，2026-11-03）。
+    ///
+    /// 续行回主路（2026-11-12）：执行体从 `handle_cluster_continuation`
+    /// 迷你循环（LLM 硬编码 tools=0 + 裸 execute 绕 dispatch 瀑布）换成
+    /// [`Self::run_continuation_turn`]（session busy 闸 + run_llm_loop
+    /// 全管线）。本函数瘦身为纯编排，旧迷你循环的取参全部退役——
+    /// provider/model/tools 由主循环每轮自持解析（回主路的核心收益），
+    /// estop 由交接函数早期闸消费，max_tokens/阶梯封顶/vision 投影由
+    /// run_llm_loop 的 chat_opts 同源解析。`self: &Arc<Self>`：spawn 臂
+    /// 闭包要求 'static。
     pub(crate) async fn dispatch_continuation(
-        &self,
+        self: &Arc<Self>,
         task_id: String,
         msg: &nemesis_types::channel::InboundMessage,
     ) {
-        let task_response = msg.content.clone();
+        if self.max_continuation_permits == 0 {
+            // Inline: process directly in the main loop (no spawn).
+            // The main loop is blocked until continuation completes,
+            // ensuring serialized execution with no resource contention.
+            self.run_continuation_turn(&task_id, msg).await;
+        } else {
+            // Spawn with semaphore-controlled concurrency.
+            let semaphore = self.continuation_semaphore.clone().unwrap();
+            let this = self.clone();
+            let m = msg.clone();
+            tokio::spawn(async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                this.run_continuation_turn(&task_id, &m).await;
+            });
+        }
+    }
+
+    /// 续行回主路（2026-11-12）B1：异步任务结果（集群
+    /// `cluster_continuation` / 后台子代理 `subagent_continuation`，gate
+    /// 同一出口）交接给**主循环**执行的交接函数。
+    ///
+    /// 旧路径 [`crate::loop_continuation::handle_cluster_continuation`] 是
+    /// 平行迷你循环：LLM 请求硬编码 tools=0、工具执行裸 `tool.execute`
+    /// 绕过 dispatch 瀑布（安全 8 层/审批/estop/turn_guard 全部缺席）。
+    /// 本函数保留旧路径的恢复/台账语义（快照相位机、D5 台账、
+    /// final_persisted 幂等闸、inflight 历史闸、崩溃安全网写回），执行面
+    /// 换主循环：
+    /// - 活体历史装配：[`crate::loop_continuation::apply_real_result_to_history`]
+    ///   把真实结果种入 store 水合出的会话历史（marker 原位替换 / user
+    ///   turn 兜底），`set_history` 后走 [`Self::resume_execution_with_token`]
+    ///   （工具全量供给、dispatch 瀑布全开）；
+    /// - 收尾走 [`Self::finalize_turn_shared`]（chat_log assistant 行带
+    ///   节点徽章 + work 时间线 + store 全量持久化 + ConversationEnd）；
+    /// - 会话串行：`try_acquire_session` 失败 = 该会话回合在跑——Queue/
+    ///   Steer 模式重投递消息入 inbox（回合尾巴 drain 自然排空），Reject
+    ///   模式（drain 不认领队列，排队即永久滞留）诚实终局注记。
+    ///
+    /// 闸序：load（只读学信封）→ estop 早期闸 → 空键 legacy 分支 →
+    /// try_acquire ★（先于一切闸状态变更）→ busy 分臂 → 持 busy guard：
+    /// D5 台账 → claim 单飞 → final_persisted 幂等闸 → 相位机 confirm →
+    /// inflight 标记 → merge 写回（崩溃安全网）→ 活体装配 → resume →
+    /// finalize → 摘双 guard → drain → 出站直发 → final_persisted 打标 →
+    /// finish_handling。
+    async fn run_continuation_turn(
+        self: &Arc<Self>,
+        task_id: &str,
+        msg: &nemesis_types::channel::InboundMessage,
+    ) {
+        let start_time = std::time::Instant::now();
+        // trace_id 与旧迷你循环同形（observer 事件关联锚）。
+        let trace_id = format!(
+            "continuation-{}-{}",
+            task_id,
+            chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+
+        let Some(mgr) = self.continuation_manager.clone() else {
+            // 无续行管理器（极简装配）：D5 台账照常回写终态（旧行为
+            // registry.finish 无条件先跑），其余无物可做。
+            crate::subagent_registry::global().finish(
+                task_id,
+                registry_status_of(msg),
+                None,
+                (!msg.content.is_empty()).then(|| msg.content.clone()),
+                msg.metadata.get("error").cloned(),
+            );
+            return;
+        };
+
+        // 回调元数据解析（全部终端臂共用；owned——spawn 场景外的本函数
+        // 无闭包，仅避免借用跨 await）。
+        let task_failed = msg.metadata.get("status").is_some_and(|s| s == "error");
+        let task_error = msg.metadata.get("error").cloned();
+        // 集群续行归属（2026-09-23）：实际干活的 worker 节点名（gateway
+        // Route 2 与 G5 恢复发布的 metadata 同款键）。缺席 = 旧快照/老发布方，
+        // 出站不带节点徽章，行为与历史一致。
+        let task_source_node = msg.metadata.get("source_node").cloned();
+
         // L5（2026-10-12 内部专项 T0）：续行回灌的输出凭据/DLP 复扫。工具
         // 输出回灌有三条路——直接回灌（tool_dispatch 主线，已有复扫）、
         // cluster 续行追加、子代理后台返回（`subagent_continuation:{task_id}`
@@ -315,130 +429,637 @@ impl AgentLoop {
         let task_response = output_rescan::rescan_tool_output(
             self.security.security_plugin.as_deref(),
             "cluster_continuation",
-            task_response,
+            msg.content.clone(),
         );
-        let task_metadata = msg.metadata.clone();
-        let task_failed = task_metadata
-            .get("status")
-            .map(|s| s == "error")
-            .unwrap_or(false);
-        // 集群续行归属（2026-09-23）：实际干活的 worker 节点名（gateway
-        // Route 2 与 G5 恢复发布的 metadata 同款键）。缺席 = 旧快照/老发布方，
-        // 出站不带节点徽章，行为与历史一致。owned String——spawn 分支闭包
-        // 要求 'static（与 task_error 同款）。
-        let task_source_node = task_metadata.get("source_node").cloned();
+        #[cfg(not(feature = "security"))]
+        let task_response = msg.content.clone();
+
+        // D5 台账三元组（一次计算，全部终局臂共用）。旧路径 registry.finish
+        // 无条件先跑——estop/排队满等臂中止续行也必须带真实终态回写；
+        // 唯一不回写的臂 = Queue/Steer 忙重投递（非终态，结局未定）。
+        let reg_status = registry_status_of(msg);
+        let reg_summary = (!task_response.is_empty()).then(|| task_response.clone());
+        let reg_error = task_error.clone();
+
+        // park 投递检查（2026-11-19 spawn park 化）：本任务可能正被
+        // live turn 内联 park 等待（bg_park 注册表）。该 turn 持 session
+        // busy guard——走到底下 try_acquire 必死锁（投递入队→parked
+        // 回合不结束→队列永不 drain），故必须先于 load/busy 判定。三臂：
+        // - Delivered：parcel 已交等待者（其经守卫链 replace 分支原地
+        //   覆写 marker 结果回灌 LLM 续跑）。快照回收（结果已由等待者
+        //   落 live 历史）+ 到达行落盘/发事件（A2 过程语言：✅/❌ +
+        //   摘录，emit_round_output 双路=work block 落盘 + RoundText）
+        //   即返。
+        // - CancelledNoResume：等待 turn 已被用户取消（子代理执行体已
+        //   终止、结果无主）——快照回收，绝不续行复活已取消的任务。
+        // - WaiterGone / NotParked：无在等 turn（estop 打断的 park /
+        //   重启丢失注入 / dashboard 直派 peer_chat / 集群 peer_chat）
+        //   → 落回下方既有快照续行语义（estop 释放恢复=旧世界）。
+        match crate::bg_park::global().deliver(
+            task_id,
+            crate::bg_park::ParkParcel {
+                content: task_response.clone(),
+                failed: task_failed,
+                error: task_error.clone(),
+            },
+        ) {
+            crate::bg_park::DeliverOutcome::Delivered {
+                session_key,
+                chat_id,
+            } => {
+                mgr.remove_continuation(task_id).await;
+                let line = crate::bg_park::arrival_line(
+                    task_failed,
+                    &task_response,
+                    task_error.as_deref(),
+                );
+                info!(
+                    "[Continuation] park delivered for task_id={} (arrival line fed to session {})",
+                    task_id, session_key
+                );
+                self.emit_round_output(&session_key, &chat_id, &line, None);
+                return;
+            }
+            crate::bg_park::DeliverOutcome::CancelledNoResume => {
+                mgr.remove_continuation(task_id).await;
+                info!(
+                    "[Continuation] park cancelled for task_id={} — result discarded, no resume.",
+                    task_id
+                );
+                return;
+            }
+            crate::bg_park::DeliverOutcome::WaiterGone
+            | crate::bg_park::DeliverOutcome::NotParked => {}
+        }
+
+        // 1. Load continuation snapshot（只读学信封：session_key/channel/
+        //    chat_id 全部来自快照——回调 inbound 是 system 通道幻影帧，不
+        //    携带落点）。barrier 等待窗口 = 快照尚未落地的回调竞态（既有
+        //    语义原样保留）。未命中 = dashboard 直派 peer_chat（web handler
+        //    tasks_submit 不经 cluster_rpc 工具，从不存快照），结果走
+        //    TaskManager 路径（gateway Route 3）投递——静默跳过。
+        let Some(cont) = mgr.load_continuation(task_id).await else {
+            debug!(
+                "[Continuation] No continuation for task_id={} (likely dashboard-initiated peer_chat, skipping)",
+                task_id
+            );
+            crate::subagent_registry::global().finish(
+                task_id,
+                reg_status,
+                None,
+                reg_summary,
+                reg_error,
+            );
+            return;
+        };
+
+        // estop 早期闸（BUG-20261106-041 延续）：急停期间不开新 LLM 轮。
+        // 注记落库（store append + chat_log assistant 行带节点徽章）→
+        // final_persisted 打标（崩溃窗口重投递幂等）→ 出站 ⛔ 注记（与旧
+        // 迷你循环 estop 文案逐字节一致）→ finish_handling（单飞放行 +
+        // 快照回收）。任务结果文本不随注记出站（旧语义：急停只回执）。
+        if self.security.is_engaged() {
+            tracing::warn!(
+                "[Continuation] E-stop engaged at callback arrival, aborting continuation handoff for task {task_id}"
+            );
+            let note = "⛔ 已急停 (E-STOP) — 续行已中止。发送 `nemesisbot estop --release` 恢复。";
+            self.finish_continuation_as_note(
+                &mgr,
+                task_id,
+                &cont,
+                note,
+                task_source_node.as_deref(),
+                reg_status,
+                reg_summary,
+                reg_error,
+            )
+            .await;
+            return;
+        }
+
+        // 2. Build tool result content from task response（task_failed →
+        //    "Error: ..." 文本，与旧语义同文）。
+        let tool_result_content = if task_failed {
+            format!(
+                "Error: {}",
+                task_error
+                    .as_deref()
+                    .unwrap_or("Task failed with unknown error")
+            )
+        } else {
+            task_response.clone()
+        };
+
+        // 空键 legacy 分支：旧磁盘形态快照（session_key 字段诞生前落盘）
+        // 无会话身份可闸/可装配——回主路装配没有主体（历史无从水合），
+        // 整支**原样委托旧迷你循环**（B2 保留的回滚面，参数未收窄）：
+        // 行为与改前逐字节一致（含丢失回执「以 error 结果续行 LLM 让
+        // 模型自行向用户说明/重派」契约，adapters 丢失回执注入的回归锁
+        // stale_bg_spawn_snapshot_* 钉的就是这段）。本分支之前仅只读
+        // load + estop 检查，无闸状态变更，委托无双跑风险。
+        if cont.session_key.is_empty() {
+            info!(
+                "[Continuation] legacy empty-session snapshot → old mini-loop path: task_id={}",
+                task_id
+            );
+            self.handle_cluster_continuation(task_id, msg).await;
+            return;
+        }
+
+        // 3. 会话串行闸：try_acquire 失败 = 该会话回合在跑。★ 在主路闸
+        //    状态变更（claim/confirm/打标）之前——入队臂无副作用返回，重投
+        //    递由回合尾巴 drain 自然排空；排队满/Reject 终局注记臂带终局副
+        //    作用（落库+出站+收口），防重复回调双份注记由
+        //    finish_continuation_as_note 内部的单飞闸承担（BUG-20261113-145）。
+        if !self.try_acquire_session(&cont.session_key) {
+            match self.concurrent_mode {
+                // Queue/Steer：重投递消息入队（恒 next-turn——续行结果不
+                // 做 steer 插话），入队后复查 busy 竞态孤儿（kick）。重投递
+                // 重走 gate → Continuation → 本函数，届时会话已空闲。
+                ConcurrentMode::Queue | ConcurrentMode::Steer => {
+                    let mut redelivery = msg.clone();
+                    redelivery.session_key = cont.session_key.clone();
+                    let queued = crate::inbox::QueuedMessage {
+                        msg: redelivery,
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        priority: crate::inbox::priority_of(msg),
+                    };
+                    match self
+                        .inbox
+                        .enqueue_for_mode(&cont.session_key, queued, false)
+                    {
+                        crate::inbox::EnqueueOutcome::QueuedForNextTurn
+                        | crate::inbox::EnqueueOutcome::QueuedForNextStep => {
+                            self.kick_orphaned_queue_if_idle(&cont.session_key);
+                            info!(
+                                "[Continuation] session busy — continuation re-delivery queued for next turn: task_id={}, session_key={}",
+                                task_id, cont.session_key
+                            );
+                            return;
+                        }
+                        // 排队已满/软满：诚实终局——注记（含结果文本，脱敏后）
+                        // 落库 + 出站（receipt=false + task_id 记账）+ 快照收口。
+                        // 任务结果不静默丢弃（worker 已产出，用户必须可见）。
+                        crate::inbox::EnqueueOutcome::Rejected
+                        | crate::inbox::EnqueueOutcome::RejectedSoft => {
+                            warn!(
+                                "[Continuation] session busy and inbox full — delivering result as terminal note: task_id={}",
+                                task_id
+                            );
+                            let note = format!(
+                                "⏳ 会话排队已满，后台任务 {task_id} 的结果未能注入对话。任务结果：\n\n{tool_result_content}"
+                            );
+                            self.finish_continuation_as_note(
+                                &mgr,
+                                task_id,
+                                &cont,
+                                &note,
+                                task_source_node.as_deref(),
+                                reg_status,
+                                reg_summary,
+                                reg_error,
+                            )
+                            .await;
+                            return;
+                        }
+                    }
+                }
+                // Reject：drain 只在 Queue/Steer 认领队列——排队即永久滞留。
+                // 诚实终局同上（注记含结果文本）。
+                ConcurrentMode::Reject => {
+                    warn!(
+                        "[Continuation] session busy in reject mode — delivering result as terminal note: task_id={}",
+                        task_id
+                    );
+                    let note = format!(
+                        "⏳ 会话正忙（并发模式拒绝新请求），后台任务 {task_id} 的结果未能注入对话。任务结果：\n\n{tool_result_content}"
+                    );
+                    self.finish_continuation_as_note(
+                        &mgr,
+                        task_id,
+                        &cont,
+                        &note,
+                        task_source_node.as_deref(),
+                        reg_status,
+                        reg_summary,
+                        reg_error,
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+
+        // 持守卫窗口：busy guard 覆盖整个续行回合（panic 展开兜底释放）；
+        // drain 前显式 drop（重注入队首要能过 gate 的 busy 判定）。
+        let _busy_guard = super::admission::SessionBusyGuard::new(self, &cont.session_key);
 
         // 子代理可见性（D5，2026-11-03）：delegate 任务终态回写（begin 在
         // `__ASYNC__` marker 落地侧 save_async_continuation）。后台子代理
         // 续行（`subagent_continuation`）的 task_id 不在注册表（行 id 是
         // `subagent:{uuid}`）→ finish 静默 miss，语义正是「不在册不回写」。
         // 用户侧 cancel 的本地视图会被真实结局覆盖——B 端结果才是任务真相，
-        // cancel 只代表「不再等待显示」。
+        // cancel 只代表「不再等待显示」。位置：busy 裁决之后（重投递臂不是
+        // 终态，不回写），终端臂各自先回写（estop/空键/排队满）。
         crate::subagent_registry::global().finish(
-            &task_id,
-            if task_failed {
-                crate::subagent_registry::SubagentStatus::Failed
-            } else {
-                crate::subagent_registry::SubagentStatus::Done
-            },
+            task_id,
+            registry_status_of(msg),
             None,
             (!task_response.is_empty()).then(|| task_response.clone()),
-            task_metadata.get("error").map(|v| v.to_string()),
+            task_error.clone(),
         );
 
-        if self.max_continuation_permits == 0 {
-            // Inline: process directly in the main loop (no spawn).
-            // The main loop is blocked until continuation completes,
-            // ensuring serialized execution with no resource contention.
-            let task_error = task_metadata.get("error").map(|s| s.as_str());
-            if let Some(ref mgr) = self.continuation_manager
-                && let Some(ref tx) = self.outbound_tx
-            {
-                // Clone data from RwLock guards before .await — guards are !Send
-                // and cannot be held across yield points in an async fn.
-                let provider = self.provider.read().clone();
-                let model = self.active_model.read().clone();
-                let tools = self.tools.read().clone();
-                // L28：续行 cap 与主循环 chat_opts 同源（per-model
-                // max_output_tokens > agents.defaults > DEFAULT_MAX_TOKENS）。
-                let max_tokens_cap = self
-                    .current_max_tokens_override(Some(&model))
-                    .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
-                // L28+：阶梯封顶与主循环同源（agents.defaults.max_output_ceiling）。
-                let max_tokens_ceiling = self.current_max_output_ceiling();
-                // BUG-20261106-041：estop 句柄（Arc clone 后放锁——guard 不跨 .await）。
-                let cont_estop = self.security.estop.read().clone();
+        // 0. 单飞闸（发现 F 根修）：认领处理权防重复回调双路处理。必须在
+        //    final_persisted/confirm 之前认领——磁盘快照保留到收口，重复
+        //    回调会经盘上回退命中。
+        if !mgr.claim_handling(task_id).await {
+            debug!("[Continuation] task {task_id} 已有在途处理（重复回调诚实跳过）");
+            return;
+        }
+        // BUG-20261115-022：认领 RAII guard——本任务跑在无人 watch 的
+        // tokio::spawn 里，认领到收口横跨整个 LLM 续行，panic 展开由
+        // guard Drop 兜底释放（与 busy/inflight guard 同一防御姿态）。
+        // 正常路径由 finish_handling 先行释放，guard drop 幂等 no-op。
+        let _claim_guard = crate::loop_continuation::ContinuationClaimGuard::new(&mgr, task_id);
 
-                crate::loop_continuation::handle_cluster_continuation(
-                    mgr.as_ref(),
-                    &task_id,
-                    &task_response,
-                    task_failed,
-                    task_error,
-                    provider.as_ref(),
-                    &model,
-                    max_tokens_cap,
-                    max_tokens_ceiling,
-                    &tools,
-                    tx,
-                    self.observer_manager.clone(),
-                    self.session_store.as_ref().map(|v| v.as_ref()),
-                    // F-F：active 模型 vision 解析（config.json 唯一真相源）。
-                    self.current_vision().supported,
-                    task_source_node.as_deref(),
-                    cont_estop.as_deref(),
-                )
-                .await;
+        // 0b. HD：续行重投递幂等闸——上一轮执行已把最终回复落库并在磁盘
+        //     快照打标（final_persisted），但进程在「落库 ↔ 快照回收」窗口
+        //     内崩溃时 master 重启重查询会重新投递。再跑一遍 = LLM 重跑 +
+        //     回复重复 append。见标直接诚实收尾：不再续行，只回收快照。
+        if let Some(store) = &mgr.disk_store
+            && let Ok(snapshot) = store.load(task_id)
+            && snapshot.final_persisted
+        {
+            warn!(
+                task_id = %task_id,
+                "[Continuation] 快照已标记 final_persisted（崩溃前已落库），重投递跳过重复续行"
+            );
+            mgr.finish_handling(task_id).await;
+            return;
+        }
+
+        // 1b. 相位严格校验——快照恢复状态机 checkpoint→restored→confirmed。
+        //     键缺省 = Checkpoint（存活快照直达续行合法）；已 Confirmed 的
+        //     重复续行（claim + final_persisted 双闸之后）在此第三道 loud
+        //     拒绝，绝不静默续行。
+        //     BUG-20261115-022：claim RAII 后，带 Confirmed 相位抵达此处的
+        //     重投递 = 前任处理者在 confirm→finish 窗口 panic 死亡（活体
+        //     处理者持 claim，本轮 claim 不可能成功）——按进程崩溃恢复同
+        //     语义回退相位重放，否则快照永不回收、has_inflight_work 快照
+        //     在册臂恒 true（该会话 rewind/undo/redo/fork 永久拒绝）。
+        if mgr.rollback_confirmed_phase(task_id) {
+            warn!(
+                task_id = %task_id,
+                "[Continuation] 相位滞留 Confirmed（前任处理者 panic 死亡），回退 Checkpoint 重放"
+            );
+        }
+        if let Err(e) = mgr.confirm_continuation(task_id) {
+            warn!(task_id = %task_id, "[Continuation] 相位机拒绝续行: {e}");
+            mgr.release_handling(task_id).await;
+            return;
+        }
+
+        // 续行执行期盖会话级在途标记——history gate
+        // （rewind/undo/redo/fork）acquire 前查 [`ContinuationManager::has_inflight_work`]
+        // 诚实拒绝，防续行最终落库与截断/回退竞争。guard RAII 覆盖全部
+        // return 路径（含错误早退），drop 即清。
+        let _continuation_inflight = mgr.mark_inflight_session(&cont.session_key);
+
+        // ConversationStart 观察面：真实 session_key（旧迷你循环用幻影键
+        // continuation-{task_id}）、sender_id=continuation、content 带任务
+        // 号。所有闸放行后才发（早退臂不发——旧迷你循环对 load-miss 等臂
+        // 也发 start 是观测噪声）。record_last_channel 跳过——续行不改
+        // 「最近通道」语义（回复走快照记录的原通道）。
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: cont.session_key.clone(),
+            channel: cont.channel.clone(),
+            chat_id: cont.chat_id.clone(),
+            sender_id: "continuation".to_string(),
+            content: format!("cluster_continuation:{task_id}"),
+        })
+        .await;
+
+        // 4. merge 写回（发现 G 真机根修）：快照表征（LlmMessage）合入真实
+        //    结果后**立即写回**（内存+磁盘）——「回调已到、续行未完」窗口内
+        //    崩溃，恢复轮询 query_task_result 又落在 B 端存档清理之后时，
+        //    盘上快照必须已带结果。写回后快照即恢复权威定义：重启 →
+        //    recover_to_manager → merge 因真实结果在案不被 not-found 覆盖
+        //    （[`crate::loop_continuation::merge_real_tool_result`]）。元数据
+        //    不变，image 字节不落盘（既有剥字节水合语义）。
+        let merged = crate::loop_continuation::merge_real_tool_result(
+            cont.messages.clone(),
+            &cont.tool_call_id,
+            tool_result_content.clone(),
+        );
+        mgr.save_continuation_with_images(
+            task_id,
+            merged,
+            &cont.tool_call_id,
+            &cont.channel,
+            &cont.chat_id,
+            &cont.session_key,
+            &cont.peer_id,
+            &cont
+                .image_refs_by_user_turn
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<String>>(),
+        )
+        .await;
+        debug!("[Continuation] task {task_id} 合入回调结果后快照已写回（崩溃安全网更新，发现 G）");
+
+        // 5. 活体历史装配（B1#2）：instance 从 store 水合（空则快照回填）
+        //    → 真实结果种入（marker 原位替换 / assistant 后补 tool 轮 /
+        //    user turn 兜底）→ set_history 回写。
+        //    get_or_create 先于结果种入是硬契约（物化先行——防
+        //    rebuild_from_chat_log 把 chat_log 行回放进上下文后再加一次，
+        //    agent-bench context_integrity 实证）。装载摘要快照（finalize
+        //    「cache 相对装载是否变化」判定的基线）紧跟其后。
+        //    本 turn 文件变更/交付物缓冲从空开始（兜底上轮异常短路残留，
+        //    与 run_agent_loop_internal 同点同规则）。
+        self.turn_file_changes.lock().remove(&cont.session_key);
+        self.turn_deliverables.lock().remove(&cont.session_key);
+        let instance = self.get_or_create_instance(&cont.session_key);
+        let summary_at_load = instance.get_summary_cache();
+        let mut live_history = instance.get_history();
+        // 实质轮判定：system 预置轮不算（instance 构造可能自带 system
+        // seed，fresh instance 的 get_history() 并非恒空）。
+        let has_substantive = live_history.iter().any(|t| t.role != "system");
+        if !has_substantive && !cont.messages.is_empty() {
+            // 快照回填（恢复语义保留——旧路径以快照为上下文装配体）：
+            // store 无主体历史时以快照消息为底座（结果注入、收尾落库照
+            // 常，恢复边沿自愈进正常形态）。生产主形态 store 物化先行不
+            // 进此臂。system 消息不入历史（system 每轮由
+            // config/build_messages 自持供给）；快照内存侧带水合图片字节
+            // 的 images 不转（图片引用走 fallback_images 路径引用）。
+            live_history = cont
+                .messages
+                .iter()
+                .filter(|m| m.role != "system")
+                .map(|m| crate::types::ConversationTurn {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                    tool_calls: m.tool_calls.clone().unwrap_or_default(),
+                    tool_call_id: m.tool_call_id.clone(),
+                    timestamp: chrono::Local::now().to_rfc3339(),
+                    reasoning_content: m.reasoning_content.clone(),
+                    tool_name: None,
+                    tool_result_projection: None,
+                    image_refs: Vec::new(),
+                })
+                .collect();
+        }
+        // 兜底臂图片引用：快照最后一条 user 轮的引用（新形态）；旧单层
+        // 形态回退 image_refs 全集。
+        let fallback_images = cont
+            .image_refs_by_user_turn
+            .last()
+            .cloned()
+            .unwrap_or_else(|| cont.image_refs.clone());
+        let _applied = crate::loop_continuation::apply_real_result_to_history(
+            &mut live_history,
+            &cont.tool_call_id,
+            task_id,
+            &tool_result_content,
+            &fallback_images,
+        );
+        instance.set_history(live_history);
+
+        // 6. 主循环续行：run_llm_loop 全管线（工具全量供给 + dispatch
+        //    瀑布：estop/hidden/Plan/安全 8 层/hooks/args_validator/
+        //    turn_guard）。context.user = "continuation" 是 log_boundaries
+        //    豁免标记（边界 sidecar 随每次异步回灌无界增长的同一失败形态，
+        //    与 heartbeat/cron 豁免同族）。per-task cancel token 与主路
+        //    gate 同生命周期（mint → run → remove）。
+        let mut context = RequestContext::new(
+            &cont.channel,
+            &cont.chat_id,
+            "continuation",
+            &cont.session_key,
+        );
+        context.user = "continuation".to_string();
+        let cancel_token = self.create_cancel_token(&cont.session_key);
+        let events = self
+            .resume_execution_with_token(
+                &instance,
+                &context,
+                &trace_id,
+                &cancel_token,
+                Some(Self::CONTINUATION_TURN_BUDGET),
+            )
+            .await;
+        self.remove_cancel_token(&cont.session_key);
+
+        // 7. 收尾 = 共享 finalize（chat_log assistant 行带节点徽章 + work
+        //    时间线 + store 全量 set_history + ConversationEnd + 标题任务）。
+        //    Err（回合错误收尾）时错误文本已作为 assistant 行落盘（finalize
+        //    内部），出站携带同一文本——旧迷你循环 LLM 失败出站
+        //    `[LLM error: ...]` 的对应物，错误不静默。
+        let final_reply = match self
+            .finalize_turn_shared(
+                &instance,
+                &cont.session_key,
+                &cont.channel,
+                &cont.chat_id,
+                &trace_id,
+                start_time,
+                // cron 字段不适用续行（None；prepare_round 的 cron 预算
+                // 文案同样不适用——turn_budget 已单独传 20）。
+                None,
+                None,
+                summary_at_load,
+                // 集群续行归属：worker 节点名随 assistant 行落盘。
+                task_source_node.as_deref(),
+                &events,
+            )
+            .await
+        {
+            Ok(text) => text,
+            Err(e) => e,
+        };
+
+        // 摘双 guard 后再 drain：busy 先于 drain（重注入队首要能过 gate
+        // 的 busy 判定，守卫跨 drain 存活会误释放新 turn 的会话）；inflight
+        // 同点清（续行已收尾，不再挡 history 闸）。
+        drop(_busy_guard);
+        drop(_continuation_inflight);
+        self.drain_next_turn_queue(&cont.session_key).await;
+
+        // 8. 出站直发（不经 finish_message——其 source_node/task_id 硬编码
+        //    None，会丢续行归属与 deliveries 记账）。finalize 已落盘 →
+        //    receipt=false + occupies=None（assistant 占行）。
+        self.send_continuation_final(
+            &cont.channel,
+            &cont.chat_id,
+            &cont.session_key,
+            &final_reply,
+            task_source_node.as_deref(),
+            task_id,
+        )
+        .await;
+
+        // 9. HD：落库即打标（磁盘快照回写）——此后到 finish_handling 之间
+        //    崩溃的重投递由 0b 幂等闸拦下。
+        self.mark_snapshot_final_persisted(&mgr, task_id);
+
+        // 10. 收口（发现 F 根修）：最终回复已持久化/投递，此刻才回收内存
+        //     条目 + 磁盘快照。进程崩溃时 recover_to_manager 仍能从盘上
+        //     捞回本窗口内的快照。
+        mgr.finish_handling(task_id).await;
+
+        info!(
+            "[Continuation] continuation turn finalized: task_id={}, content_len={}, target_channel={}",
+            task_id,
+            final_reply.len(),
+            cont.channel
+        );
+    }
+
+    /// 续行终局注记落库（store append 与 chat_log assistant 行带节点徽章、
+    /// 磁盘快照 final_persisted 打标）。空键跳过（旧行为：无会话身份不落
+    /// 库）。estop 臂 / 排队满臂 / Reject 忙臂共用。
+    async fn persist_continuation_terminal(
+        &self,
+        mgr: &crate::loop_continuation::ContinuationManager,
+        task_id: &str,
+        session_key: &str,
+        content: &str,
+        source_node: Option<&str>,
+    ) {
+        if session_key.is_empty() {
+            return;
+        }
+        crate::loop_continuation::persist_final_reply(
+            self.session_store.as_ref().map(|v| v.as_ref()),
+            session_key,
+            &self.active_model.read().clone(),
+            content,
+            source_node,
+        );
+        self.mark_snapshot_final_persisted(mgr, task_id);
+    }
+
+    /// 终局注记臂汇总：单飞闸 + D5 台账回写（真实终态三元组）+ 注记落库
+    /// （store append + chat_log assistant 行带节点徽章）+ 出站 + 快照收口
+    /// （finish_handling）。estop 臂 / 排队满臂 / Reject 忙臂共用——三者
+    /// 都是「不再续行」的终局，都必须在返回前完成台账终态与快照生命周期
+    /// 收口。
+    ///
+    /// 单飞闸（BUG-20261113-145）：三个注记臂在主路认领点（run_continuation_turn
+    /// 的 claim_handling）**之前**执行，旧实现无认领保护——重复回调（发现 F
+    /// 同源威胁模型：B 端传输重试/恢复重投递可与首份并发到达，或落在首份
+    /// 「落库 ↔ 快照回收」窗口内）会双份注记出站 + 双行 chat_log append。
+    /// 旧迷你循环 claim-first（先认领后进一切臂）estop 臂同样受保护；续行
+    /// 回主路重排闸序后该保护出现缺口。认领失败 = 已有在途处理（主路认领
+    /// 后正走 finalize，或另一注记臂已收口），本臂诚实跳过、不收口快照
+    /// （结局归在途那份）；成功路径由尾部 finish_handling 统一放行 + 回收。
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_continuation_as_note(
+        self: &Arc<Self>,
+        mgr: &crate::loop_continuation::ContinuationManager,
+        task_id: &str,
+        cont: &crate::loop_continuation::ContinuationData,
+        note: &str,
+        source_node: Option<&str>,
+        reg_status: crate::subagent_registry::SubagentStatus,
+        reg_summary: Option<String>,
+        reg_error: Option<String>,
+    ) {
+        if !mgr.claim_handling(task_id).await {
+            debug!("[Continuation] task {task_id} 终局注记臂认领失败（重复回调诚实跳过）");
+            return;
+        }
+        // BUG-20261115-022：认领 RAII guard（panic 展开兜底释放；正常
+        // 路径由尾部 finish_handling 先行释放，guard drop 幂等 no-op）。
+        let _claim_guard = crate::loop_continuation::ContinuationClaimGuard::new(mgr, task_id);
+        crate::subagent_registry::global().finish(
+            task_id,
+            reg_status,
+            None,
+            reg_summary,
+            reg_error,
+        );
+        self.persist_continuation_terminal(mgr, task_id, &cont.session_key, note, source_node)
+            .await;
+        self.send_continuation_final(
+            &cont.channel,
+            &cont.chat_id,
+            &cont.session_key,
+            note,
+            source_node,
+            task_id,
+        )
+        .await;
+        mgr.finish_handling(task_id).await;
+    }
+
+    /// 磁盘快照 final_persisted 打标（HD：落库即打标——此后到
+    /// finish_handling 之间崩溃的重投递由 0b 幂等闸拦下）。打标失败仅
+    /// warn（重投递时可能重复 append，毫秒级窗口，后果与旧行为同）。
+    fn mark_snapshot_final_persisted(
+        &self,
+        mgr: &crate::loop_continuation::ContinuationManager,
+        task_id: &str,
+    ) {
+        if let Some(store) = &mgr.disk_store
+            && let Ok(mut snapshot) = store.load(task_id)
+        {
+            snapshot.final_persisted = true;
+            if let Err(e) = store.save(&snapshot) {
+                warn!(
+                    task_id = %task_id,
+                    error = %e,
+                    "[Continuation] final_persisted 打标落盘失败（重投递时可能重复 append）"
+                );
             }
-        } else {
-            // Spawn with semaphore-controlled concurrency.
-            let task_error = task_metadata.get("error").cloned();
-            let provider = self.provider.read().clone();
-            let model = self.active_model.read().clone();
-            let tools = self.tools.read().clone();
-            let outbound_tx = self.outbound_tx.clone();
-            let continuation_manager = self.continuation_manager.clone();
-            let observer_manager = self.observer_manager.clone();
-            let session_store = self.session_store.clone();
-            let semaphore = self.continuation_semaphore.clone().unwrap();
-            // F-F：vision 解析在 spawn 前取值（闭包外，self 不可 move 进去）。
-            let vision_supported = self.current_vision().supported;
-            // L28：cap 同样在 spawn 前解析（与主循环 chat_opts 同源）。
-            let max_tokens_cap = self
-                .current_max_tokens_override(Some(&model))
-                .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
-            // L28+：阶梯封顶同样 spawn 前解析（闭包要求 'static）。
-            let max_tokens_ceiling = self.current_max_output_ceiling();
-            // BUG-20261106-041：estop 句柄同样 spawn 前取值（'static 闭包要求
-            // owned Arc；guard 不进闭包）。
-            let spawned_estop = self.security.estop.read().clone();
+        }
+    }
 
-            tokio::spawn(async move {
-                let _permit = semaphore.acquire().await.unwrap();
-                if let Some(ref mgr) = continuation_manager
-                    && let Some(ref tx) = outbound_tx
-                {
-                    crate::loop_continuation::handle_cluster_continuation(
-                        mgr.as_ref(),
-                        &task_id,
-                        &task_response,
-                        task_failed,
-                        task_error.as_deref(),
-                        provider.as_ref(),
-                        &model,
-                        max_tokens_cap,
-                        max_tokens_ceiling,
-                        &tools,
-                        tx,
-                        observer_manager,
-                        session_store.as_ref().map(|v| v.as_ref()),
-                        vision_supported,
-                        task_source_node.as_deref(),
-                        spawned_estop.as_deref(),
-                    )
-                    .await;
-                }
-            });
+    /// 续行终局回复出站（直发，不经 [`Self::finish_message`]——其
+    /// source_node/task_id 硬编码 None，会丢续行归属与 deliveries 记账）。
+    /// meta 形态与旧迷你循环 step 6 逐字段一致：model=display、
+    /// session_key 随行、receipt=false（回合产物，已落盘）、occupies=None
+    /// （assistant 占行）。
+    async fn send_continuation_final(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        session_key: &str,
+        content: &str,
+        source_node: Option<&str>,
+        task_id: &str,
+    ) {
+        let Some(ref tx) = self.outbound_tx else {
+            return;
+        };
+        let outbound = nemesis_types::channel::OutboundMessage {
+            channel: channel.to_string(),
+            chat_id: chat_id.to_string(),
+            content: content.to_string(),
+            message_type: String::new(),
+            meta: nemesis_types::channel::OutboundMeta {
+                model: Some(self.current_display_model()),
+                // 会话键随行——跨进程续行的最终回复同样要能被 chat.sync 补拉。
+                session_key: (!session_key.is_empty()).then(|| session_key.to_string()),
+                // 集群续行归属：干活的是远端节点，web 通道据此渲染「节点 X」
+                // 徽章。None = 不写键，出站帧与历史行为一致。
+                source_node: source_node.map(|s| s.to_string()),
+                // 项 C：最终回复携带任务 id，通道投递结果据此记账到
+                // deliveries（notify_state 三段：pending→accepted→confirmed）。
+                task_id: Some(task_id.to_string()),
+                sync_via: None,
+                note_kind: None,
+                receipt: false,
+                occupies: None,
+            },
+        };
+        if let Err(e) = tx.send(outbound).await {
+            warn!(
+                "[Continuation] Failed to send continuation final response: {}",
+                e
+            );
         }
     }
 
@@ -480,7 +1101,7 @@ impl AgentLoop {
         occupies: Option<bool>,
     ) {
         let response = match err {
-            Some(e) => {
+            Some(ref e) => {
                 // [capture] Agent error funnel: the full error
                 // becomes the user-visible response. Flush the
                 // session's captured evidence + the complete error
@@ -497,6 +1118,20 @@ impl AgentLoop {
         if response.is_empty() {
             return;
         }
+
+        // 降级用户面标注（fallback 链末跳）：仅终局回复（非回执、非错误
+        // 文案）消费注记——排队回执/slash 确认（receipt=true）与错误文案
+        // （err=Some）既不背标注也不消费槽。取件即清，只改展示面：对话
+        // 历史已在 run_loop 按原文落盘；RPC correlation 前缀在本注记之前
+        // 组装，寻址语义不受影响。
+        let response = if err.is_none()
+            && !receipt
+            && let Some(note) = self.response_degradation.lock().take()
+        {
+            format!("{response}\n\n---\n> ⚠️ 主模型不可用，本次回复由备选应答（{note}）")
+        } else {
+            response
+        };
 
         if check_sent_in_round {
             // Check if a tool (e.g., MessageTool) already sent a response for this
@@ -650,8 +1285,14 @@ impl AgentLoop {
 
     /// W6：有界等在途 turn 归零（100ms 轮询）。返回 true=已归零 /
     /// false=超时（调用方明示在途数后走强制 teardown）。
+    ///
+    /// deadline 饱和（BUG-20261116-014）：timeout 可来自 config 超大值，
+    /// 裸 `Instant + Duration` 在超出 std 表示域（≈292 年）时 checked_add
+    /// expect panic。先 clamp 到可表示大值（30 年，任意现实运行时长下
+    /// 相加稳落表示域内）——超出表示域的 timeout 语义收敛为「等 30 年」，
+    /// 与可表示大值一致，不再 panic。
     pub async fn wait_turns_drained(&self, timeout: std::time::Duration) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + timeout.min(DRAIN_TIMEOUT_REPRESENTABLE_CAP);
         loop {
             if self.in_flight_turns() == 0 {
                 return true;
@@ -667,11 +1308,15 @@ impl AgentLoop {
     /// drain 面不止主 loop（L6++ 项目 loop 与 G1 自建 agent loop 同为常驻
     /// AgentLoop，在途 turn 同样不该被停机 abort），全部 loop 共享同一有界
     /// 窗口轮询，任一在途即未排干。空列表视为已排干。
+    ///
+    /// 生产消费点 timeout 直接来自 `agents.defaults.shutdown_drain_secs`
+    /// （u64 无 clamp，极端值在停机路径 panic）——deadline 饱和同
+    /// [`Self::wait_turns_drained`]（BUG-20261116-014）。
     pub async fn wait_loops_drained(
         loops: &[std::sync::Arc<AgentLoop>],
         timeout: std::time::Duration,
     ) -> bool {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = tokio::time::Instant::now() + timeout.min(DRAIN_TIMEOUT_REPRESENTABLE_CAP);
         loop {
             if loops.iter().all(|l| l.in_flight_turns() == 0) {
                 return true;
@@ -683,12 +1328,14 @@ impl AgentLoop {
         }
     }
 
-    pub(crate) fn spawn_turn_task<F>(&self, fut: F)
+    pub(crate) fn spawn_turn_task<F>(&self, fut: F, session_key: &str)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
         let permits = self.turn_permits.clone();
         let gauge = Arc::clone(&self.in_flight_turns);
+        let timeline = Arc::clone(&self.work_timeline);
+        let timeline_key = session_key.to_string();
         let handle = tokio::spawn(async move {
             // acquire_owned 把许可与 Arc 绑定，async 块结束时（含 abort 展开丢弃）释放。
             let _permit = match permits {
@@ -698,6 +1345,14 @@ impl AgentLoop {
             // W6：任务体全程持 in-flight gauge（guard Drop 保证 panic/abort
             // 展开路径也减账）。许可等待段不计——那不是在执行 turn。
             let _gauge = InFlightTurnGuard::acquire(&gauge);
+            // 资源看板 execution 类目（2026-11-17）：turn 任务体全程持
+            // 运行态条目（Drop 清理，panic/abort 展开同样减账）。空键不插
+            // （无会话身份的内部 turn 无盘点意义）。
+            let _timeline = if timeline_key.is_empty() {
+                None
+            } else {
+                Some(TurnTimelineGuard::acquire(&timeline, &timeline_key))
+            };
             fut.await;
         });
         let mut handles = self.turn_task_handles.lock();
@@ -801,6 +1456,16 @@ impl AgentLoop {
                 );
                 // W6：inline continuation 也是在途 turn——gauge 与 spawn 臂同源。
                 let _gauge = InFlightTurnGuard::acquire(&self.in_flight_turns);
+                // 资源看板 execution 类目（2026-11-17）：continuation 轮次
+                // 同样进运行态快照（spawn 臂同语义；空键不插）。
+                let _timeline = if msg.session_key.is_empty() {
+                    None
+                } else {
+                    Some(TurnTimelineGuard::acquire(
+                        &self.work_timeline,
+                        &msg.session_key,
+                    ))
+                };
                 self.dispatch_continuation(task_id, msg).await;
             }
             GateOutcome::Immediate {
@@ -840,30 +1505,35 @@ impl AgentLoop {
                 // 后发，均不碰 sent_in_round。
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    // R294（BUG-20261031-235）：panic 兜底守卫——
-                    // handle_maintenance（LLM 摘要，分钟级）panic 展开时
-                    // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
-                    // 显式 drop（= 原 release_session）。
-                    let _busy_guard = super::admission::SessionBusyGuard::new(&this, &session_key);
-                    // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
-                    // （可能是 LLM 摘要）= 终局（receipt=false）。两帧都
-                    // 是瞬态回执（落盘只有 user 行）→ Some(false) 不占
-                    // 行号锚（行号锚漂移根修）。
-                    this.finish_message(&m, receipt, None, false, true, Some(false))
-                        .await;
-                    let response = this
-                        .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
-                        .await;
-                    drop(_busy_guard);
-                    // 排队消息排空（2026-09-28 真模型验证发现）：
-                    // 分钟级维护期间排队的消息此前在维护尾巴
-                    // 永久滞留 next_turn——与 admitted 尾部共用
-                    // drain_next_turn_queue 对称排空。
-                    this.drain_next_turn_queue(&session_key).await;
-                    this.finish_message(&m, response, None, false, false, Some(false))
-                        .await;
-                });
+                let sk = session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        // R294（BUG-20261031-235）：panic 兜底守卫——
+                        // handle_maintenance（LLM 摘要，分钟级）panic 展开时
+                        // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
+                        // 显式 drop（= 原 release_session）。
+                        let _busy_guard =
+                            super::admission::SessionBusyGuard::new(&this, &session_key);
+                        // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
+                        // （可能是 LLM 摘要）= 终局（receipt=false）。两帧都
+                        // 是瞬态回执（落盘只有 user 行）→ Some(false) 不占
+                        // 行号锚（行号锚漂移根修）。
+                        this.finish_message(&m, receipt, None, false, true, Some(false))
+                            .await;
+                        let response = this
+                            .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
+                            .await;
+                        drop(_busy_guard);
+                        // 排队消息排空（2026-09-28 真模型验证发现）：
+                        // 分钟级维护期间排队的消息此前在维护尾巴
+                        // 永久滞留 next_turn——与 admitted 尾部共用
+                        // drain_next_turn_queue 对称排空。
+                        this.drain_next_turn_queue(&session_key).await;
+                        this.finish_message(&m, response, None, false, false, Some(false))
+                            .await;
+                    },
+                    &sk,
+                );
             }
             GateOutcome::UserDispatch {
                 task_text,
@@ -876,30 +1546,42 @@ impl AgentLoop {
                 // （process_user_dispatch 内部负责）。
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
-                        .await;
-                });
+                let sk = session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
+                            .await;
+                    },
+                    &sk,
+                );
             }
             GateOutcome::Ungated => {
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    let (_, response, err) = this.process_ungated(&m).await;
-                    // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
-                    this.finish_message(&m, response, err, true, false, None)
-                        .await;
-                });
+                let sk = m.session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        let (_, response, err) = this.process_ungated(&m).await;
+                        // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
+                        this.finish_message(&m, response, err, true, false, None)
+                            .await;
+                    },
+                    &sk,
+                );
             }
             GateOutcome::Admitted(admission) => {
                 let this = self.clone();
                 let m = msg.clone();
-                self.spawn_turn_task(async move {
-                    let (_, response, err) = this.process_admitted(&m, admission).await;
-                    // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
-                    this.finish_message(&m, response, err, true, false, None)
-                        .await;
-                });
+                let sk = m.session_key.clone();
+                self.spawn_turn_task(
+                    async move {
+                        let (_, response, err) = this.process_admitted(&m, admission).await;
+                        // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
+                        this.finish_message(&m, response, err, true, false, None)
+                            .await;
+                    },
+                    &sk,
+                );
             }
         }
     }
@@ -915,7 +1597,12 @@ impl AgentLoop {
         let Some(wal) = self.turn_wal() else {
             return;
         };
-        let candidates = wal.recover_and_finalize();
+        // BUG-20261118-172：recover_and_finalize 内部含 fsutil 韧性删除
+        // （thread::sleep 退避最坏 ~4.4s），不占 tokio worker——
+        // spawn_blocking 移出（fsutil.rs LOW-5 家族纪律）。
+        let candidates = tokio::task::spawn_blocking(move || wal.recover_and_finalize())
+            .await
+            .unwrap_or_default();
         if candidates.is_empty() {
             return;
         }
@@ -928,6 +1615,17 @@ impl AgentLoop {
             if !crate::r#loop::is_preset_session_key(&rec.session_key) {
                 info!(
                     "[AgentLoop] Turn WAL：会话 {} 非预置键，跳过自动续轮（interrupted 已留痕）",
+                    rec.session_key
+                );
+                continue;
+            }
+            // 删除残留修复（2026-11-19）：会话在断电前已被用户删除（jsonl
+            // 缺席 = 会话死）则不合成续轮——合成消息会经 self-heal 复活一个
+            // 空壳会话（已删会话借尸还魂，I1 重开干净破约）。interrupted
+            // 留痕照写（finalize 已完成），诚实放弃与「非预置键」同款。
+            if !crate::chat_log::chat_log_exists(&rec.session_key) {
+                info!(
+                    "[AgentLoop] Turn WAL：会话 {} 的 chat_log 已不存在（断电前被删除），跳过自动续轮",
                     rec.session_key
                 );
                 continue;
@@ -1034,9 +1732,13 @@ impl AgentLoop {
     /// Handle a cluster continuation by loading the snapshot, resuming the LLM
     /// loop, and sending the final response.
     ///
-    /// NOTE: The main run_bus_owned loop calls the free function
-    /// `crate::loop_continuation::handle_cluster_continuation` directly instead
-    /// of this method. Similarly, maybe_summarize calls the standalone
+    /// TODO: DEL（续行回主路 2026-11-12）：本直通包装随旧迷你循环退役——
+    /// 生产主路径（`dispatch_continuation`）已切到 `run_continuation_turn`；
+    /// 仍在生产的唯一调用点 = 空键 legacy 分支（旧磁盘形态快照无会话主体，
+    /// 整支委托本路径保持改前行为，见 `run_continuation_turn`）。物理删除
+    /// 需先裁决空键 legacy 形态的终局去向。保留亦为 s9_tests 等套件直驱
+    /// 旧路径行为面。
+    /// Similarly, maybe_summarize calls the standalone
     /// `summarize_history_owned` / `summarize_multipart_owned` / `summarize_batch_owned`
     /// free functions. These self methods are kept as reference implementations
     /// matching the Go AgentLoop method signatures.

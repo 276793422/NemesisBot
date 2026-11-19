@@ -34,7 +34,8 @@ fn cache_ttl_gap_warn(prev_ts: i64, now_ts: i64) -> Option<i64> {
 }
 
 /// Anthropic provider configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// SEC-002（BUG-20261111-068 家族 providers 侧补漏）：api_key / proxy 脱敏。
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
     pub api_key: String,
     #[serde(default)]
@@ -65,6 +66,22 @@ pub struct AnthropicConfig {
     #[serde(default)]
     pub cache_breakpoints: bool,
 }
+
+crate::debug_redact::impl_redacted_debug!(AnthropicConfig {
+    plain {
+        base_url,
+        default_model,
+        timeout_secs,
+        stream_mode,
+        cache_breakpoints,
+    }
+    secret {
+        api_key,
+    }
+    opt_secret {
+        proxy,
+    }
+});
 
 // P3A 超时对齐：120s 曾与 openai 兼容 lane 的 600s 口径分裂
 // （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 评审
@@ -201,6 +218,14 @@ impl AnthropicProvider {
     ) -> serde_json::Value {
         let mut system_parts = Vec::new();
         let mut api_messages = Vec::new();
+        // 上一条 api message 是否为「纯 tool_result user 消息」（可并块）。
+        // 官方并行工具合同（BUG-20261114-003）：一个 assistant 轮的 N 个
+        // tool_use 的全部 tool_result 必须收回**同一条** user 消息——拆成
+        // 多条连续 user 消息请求本身被接受，但官方文档明示会「silently
+        // train Claude to stop making parallel calls」（行为劣化反模式）。
+        // 历史流里 N 个工具结果是 N 条连续 role="tool"（或 user 携
+        // tool_call_id）消息，此处并块归一为单条 user 多 tool_result。
+        let mut last_is_toolresult_user = false;
 
         for msg in messages {
             match msg.role.as_str() {
@@ -212,20 +237,23 @@ impl AnthropicProvider {
                         "type": "text",
                         "text": msg.content.to_text()
                     }));
+                    last_is_toolresult_user = false;
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // Tool result。 同族降级（回归）：tool_result 在本实现
-                        // 只承载文本（图像进 tool_result 属），Parts 走
-                        // 文本视图 + 诚实注记，防 raw 序列化产出非法 wire 块。
-                        api_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": [{
+                        // Tool result。Phase 5 E1：含图 Parts 走 blocks 数组
+                        // （图像随 tool_result 直通 vision 通路），纯文本保持
+                        // JSON 字符串（历史 wire 字节不变）。并块语义见函数头
+                        // 注释（BUG-20261114-003）。
+                        push_tool_result_block(
+                            &mut api_messages,
+                            &mut last_is_toolresult_user,
+                            serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content.to_prompt_text_with_image_note()
-                            }]
-                        }));
+                                "content": tool_result_content_value(&msg.content)
+                            }),
+                        );
                     } else {
                         // anthropic_content_value：纯文本保持字符串（字节不变）；
                         // Parts 转 blocks（text / image base64|url）。
@@ -233,6 +261,7 @@ impl AnthropicProvider {
                             "role": "user",
                             "content": anthropic_content_value(&msg.content)
                         }));
+                        last_is_toolresult_user = false;
                     }
                 }
                 "assistant" => {
@@ -298,19 +327,24 @@ impl AnthropicProvider {
                             "content": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
+                    // assistant 轮打破 tool_result 连续段（并块只针对紧邻
+                    // 的连续工具结果，见函数头注释）。
+                    last_is_toolresult_user = false;
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // 同族降级（回归）：同 user tool_result，Parts 走
-                        // 文本视图 + 诚实注记（图像进 tool_result 属）。
-                        api_messages.push(serde_json::json!({
-                            "role": "user",
-                            "content": [{
+                        // Phase 5 E1：同 user tool_result，含图 Parts 走
+                        // blocks 数组直通 vision 通路，纯文本字节不变。
+                        // 并块语义见函数头注释（BUG-20261114-003）。
+                        push_tool_result_block(
+                            &mut api_messages,
+                            &mut last_is_toolresult_user,
+                            serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content.to_prompt_text_with_image_note()
-                            }]
-                        }));
+                                "content": tool_result_content_value(&msg.content)
+                            }),
+                        );
                     }
                 }
                 _ => {}
@@ -538,7 +572,7 @@ impl AnthropicProvider {
             if status >= 400 {
                 // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
                 let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-                let text = resp.text().await.unwrap_or_default();
+                let text = nemesis_utils::http_cap::read_error_body(resp).await;
                 let _ = tx
                     .send(Err(FailoverError::from_status(
                         "anthropic",
@@ -564,10 +598,18 @@ impl AnthropicProvider {
                 // body 读传输失败诚实上抛（同族）：空串会让
                 // 下方 from_str 落 Format 伪装应用层错误，fallback 链不轮转。
                 // unwrap_or_default 只留给 4xx 路径（状态码本身已定类）。
-                let raw = match resp.text().await {
+                // 成功体走有帽读取（BUG-20261115-024）：超限在读入中途断开，
+                // Unknown + "response body exceeds limit" 前缀（可重试换下一家）。
+                let raw = match crate::body_cap::read_success_body(resp).await {
                     Ok(b) => b,
                     Err(e) => {
-                        let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
+                        let _ = tx
+                            .send(Err(crate::body_cap::to_failover_error(
+                                "anthropic",
+                                &model,
+                                e,
+                            )))
+                            .await;
                         return;
                     }
                 };
@@ -650,7 +692,13 @@ impl AnthropicProvider {
             // reqwest client 级 `.timeout()` 在 `bytes_stream()` 读路径不兜底
             // ——上游静默停流时整个任务在 `stream.next()` 挂死。以「请求起点
             // + timeout_secs」为绝对墙钟线，到线即 Timeout（可重试/可故障
-            // 转移）。timeout_secs == 0 = 不限（显式逃生口）。
+            // 转移）。BUG-20261119-178：timeout_secs == 0 的「不限」语义
+            // **不存在**——生产构造链 0 恒被 factory `effective_timeout`
+            // 归一为 lane 默认 600（config「0/缺省 = lane 默认」权威口径）；
+            // 直接构造本 config 传 0 时，client 级挂 `.timeout(ZERO)`（reqwest
+            // 0.12.28 `total_timeout.map(tokio::time::sleep)` 无 ZERO 特判）
+            // = 连接阶段立即超时，与「不限」相反。下方 deadline 分支仅为
+            // 防御保留，勿按旧注释当逃生口使用。
             let deadline = if stream_timeout_secs == 0 {
                 None
             } else {
@@ -681,12 +729,21 @@ impl AnthropicProvider {
                     },
                     None => stream.next().await,
                 };
-                let Some(chunk_result) = next else {
-                    break;
-                };
-                let bytes = match chunk_result {
-                    Ok(b) => b,
-                    Err(e) => {
+                // BUG-20261113-163：EOF（next=None）不再直接 break——服务端在
+                // 末事件文本与终结空行之间断流（半截响应）时，缓冲里的
+                // pending 事件此前被静默丢弃（末段 text/thinking 增量 / 末
+                // message_delta 的真实 stop_reason 与 usage / 收尾
+                // input_json_delta 帧全丢）。SSE 规范：EOF 时 pending 事件必须
+                // 派发。EOF drain 在 push 之后补虚拟终结空行，残余尾经下方
+                // 同一事件分派体走完全部既有闸（message_stop 即真终态照常
+                // return、error 事件照常映射）——零新增分派逻辑；EOF 无
+                // message_stop 的合成 chunk 仍在 drain 之后（唯一终态不双发）。
+                // 截断残尾里的不完整 UTF-8 半字符仍按既有纪律滞留
+                // utf8_pending 不入缓冲。
+                let eof = next.is_none();
+                let bytes = match next {
+                    Some(Ok(b)) => b,
+                    Some(Err(e)) => {
                         tracing::error!(
                             provider = "anthropic",
                             error = %e,
@@ -697,10 +754,17 @@ impl AnthropicProvider {
                         let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
                         return;
                     }
+                    // EOF：bytes 留空（push 为 no-op），drain 见下方 push 后。
+                    None => Default::default(),
                 };
                 // 增量解码：劈在 chunk 边界上的多字节字符先 holdback，
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
+
+                // EOF drain（BUG-20261113-163）：pending 事件补终结空行派发。
+                if eof && !buffer.is_empty() {
+                    buffer.push_str("\n\n");
+                }
 
                 // 事件边界全形态（规范行终止 LF/CR/CRLF 三态逐行独立；
                 // 单一真相源 stream_util::next_event_boundary）。
@@ -869,6 +933,24 @@ impl AnthropicProvider {
                             return;
                         }
                         "error" => {
+                            // `classify_stream_error_payload` 统一入口（码探测
+                            // → anthropic type 枚举 → 文案兜底）：原 lane 私有
+                            // 映射表并入 failover.rs 单点（2026-11-17 治本批，
+                            // openai 兼容 / codex lane 同源）。此前除
+                            // overloaded_error 外全砸 Format（不可重试，fallback
+                            // 放弃轮转），rate_limit_error / api_error 等瞬态
+                            // 故障的流内处置与同类 HTTP 状态码（429→RateLimit /
+                            // 500→Overloaded / 401→Auth）分裂：流内限流放弃
+                            // 轮转、流外限流照常轮转。未收录 type 不判 Format，
+                            // 语义交文案探测定夺（探测序与 openai 家族共用）。
+                            let err = crate::failover::classify_stream_error_payload(
+                                &parsed,
+                                "anthropic",
+                                &model,
+                                "upstream Anthropic SSE error event".to_string(),
+                            );
+                            // 根因文案随日志保留（RateLimit/Auth 等变体槽位无
+                            // message，Display 不含上游原文）。
                             let etype = parsed
                                 .pointer("/error/type")
                                 .and_then(|v| v.as_str())
@@ -877,53 +959,12 @@ impl AnthropicProvider {
                                 .pointer("/error/message")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("stream error");
-                            // 流内 error 事件与真相源同判
-                            //（llm_error_class / from_status 同门语义）——此前除
-                            // overloaded_error 外全砸 Format（不可重试，fallback
-                            // 放弃轮转），rate_limit_error / api_error 等瞬态故障
-                            // 的流内处置与同类 HTTP 状态码（429→RateLimit /
-                            // 500→Overloaded / 401→Auth）分裂：流内限流放弃轮转、
-                            // 流外限流照常轮转。按官方错误 type 全集映射；未收录
-                            // type 维持 Format 兜底（invalid_request_error 语义
-                            // 正确——换 provider 大概率同错）。
-                            let err = match etype {
-                                "overloaded_error" | "api_error" => FailoverError::Overloaded {
-                                    provider: "anthropic".to_string(),
-                                    // SSE error 事件无 HTTP 状态码（流已在 200
-                                    // 里）→ 0（未携带），与 Auth 纯文案形态同约定。
-                                    status: 0,
-                                },
-                                "rate_limit_error" => FailoverError::RateLimit {
-                                    provider: "anthropic".to_string(),
-                                    model: model.clone(),
-                                    retry_after: None,
-                                },
-                                "authentication_error" | "permission_error" => {
-                                    FailoverError::Auth {
-                                        provider: "anthropic".to_string(),
-                                        model: model.clone(),
-                                        status: 0,
-                                    }
-                                }
-                                "billing_error" => FailoverError::Billing {
-                                    provider: "anthropic".to_string(),
-                                },
-                                "timeout_error" => FailoverError::Timeout {
-                                    provider: "anthropic".to_string(),
-                                    model: model.clone(),
-                                },
-                                _ => FailoverError::Format {
-                                    provider: "anthropic".to_string(),
-                                    message: format!("{}: {}", etype, msg),
-                                },
-                            };
-                            // 根因文案随日志保留（RateLimit/Auth 等变体槽位无
-                            // message，Display 不含上游原文）。
                             tracing::warn!(
                                 provider = "anthropic",
                                 model = %model,
                                 error_type = etype,
                                 error_message = msg,
+                                classified = %err,
                                 "[Provider] Anthropic SSE error event"
                             );
                             let _ = tx.send(Err(err)).await;
@@ -932,6 +973,11 @@ impl AnthropicProvider {
                         // ping / content_block_stop / 未知事件：不产 chunk。
                         _ => {}
                     }
+                }
+
+                // EOF（BUG-20261113-163）：drain 已跑完一轮分派，退出循环。
+                if eof {
+                    break;
                 }
             }
 
@@ -1014,7 +1060,10 @@ fn anthropic_final_chunk(
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt + completion,
+            // 饱和加：usage 数字是服务器可控 i64，敌意/故障端点报 i64::MAX
+            // 级数值时裸加 debug panic / release 回绕成负 total 流入计价
+            // （BUG-20261119-175）。
+            total_tokens: prompt.saturating_add(completion),
             cached_tokens: None,
             cache_creation_tokens: cache_creation,
             cache_read_tokens: cache_read,
@@ -1029,6 +1078,72 @@ fn anthropic_final_chunk(
         finish_reason: Some(finish_reason),
         usage,
         reasoning_content: reasoning,
+    }
+}
+
+/// 并块语义见 `build_request_body` 函数头注释（BUG-20261114-003）：紧邻
+/// 的连续工具结果收回同一条 user 消息（官方并行工具合同），打破段（system/
+/// 真 user 文本/assistant）后重新开条。
+fn push_tool_result_block(
+    api_messages: &mut Vec<serde_json::Value>,
+    last_is_toolresult_user: &mut bool,
+    block: serde_json::Value,
+) {
+    if *last_is_toolresult_user
+        && let Some(last) = api_messages.last_mut()
+        && let Some(arr) = last["content"].as_array_mut()
+    {
+        arr.push(block);
+    } else {
+        api_messages.push(serde_json::json!({
+            "role": "user",
+            "content": [block]
+        }));
+        *last_is_toolresult_user = true;
+    }
+}
+
+/// tool_result content 值（Phase 5 E1）：纯文本 → JSON 字符串（与历史
+/// wire 字节一致）；含图 Parts → blocks 数组（text 块 + image 块——
+/// Anthropic tool_result content 原生支持 block 数组形态，图像随工具
+/// 结果直通 vision 通路）。块形态与 [`anthropic_content_value`] 同构。
+/// 旧「图像进 tool_result 属 → 文本注记降级」已废除：read_image/
+/// screen_capture/MCP 产图工具的结果图像自此真实上行。
+fn tool_result_content_value(content: &crate::types::MessageContent) -> serde_json::Value {
+    if !content.has_image() {
+        return serde_json::Value::String(content.to_text());
+    }
+    if let crate::types::MessageContent::Parts(parts) = content {
+        serde_json::Value::Array(
+            parts
+                .iter()
+                .map(|p| match p {
+                    crate::types::ContentPart::Text { text } => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
+                    crate::types::ContentPart::Image { image, .. } => match image {
+                        crate::types::ImageSource::Base64 { media_type, data } => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data
+                                }
+                            })
+                        }
+                        crate::types::ImageSource::Url(url) => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": { "type": "url", "url": url }
+                            })
+                        }
+                    },
+                })
+                .collect(),
+        )
+    } else {
+        serde_json::Value::String(content.to_text())
     }
 }
 
@@ -1193,7 +1308,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         Some(UsageInfo {
             prompt_tokens: prompt,
             completion_tokens: completion,
-            total_tokens: prompt + completion,
+            total_tokens: prompt.saturating_add(completion),
             // cached_tokens is intentionally None here; Anthropic uses cache_read_tokens
             // instead. The fallback chain in loop_executor.rs uses.or(cached_tokens).
             cached_tokens: None,
@@ -1288,7 +1403,7 @@ impl LLMProvider for AnthropicProvider {
         if status >= 400 {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             // thinking 块 wire 兼容回退（复查二轮发现）：adaptive-only
             // 模型（新 Claude 系）拒绝**一切**显式 thinking 块（400，enabled 与
             // disabled 皆然）——aux 杂务的 `thinking:{type:"disabled"}` 在这类
@@ -1311,7 +1426,7 @@ impl LLMProvider for AnthropicProvider {
                 let retry_status = resp.status().as_u16();
                 if retry_status >= 400 {
                     let retry_after = crate::failover::retry_after_from_headers(resp.headers());
-                    let retry_text = resp.text().await.unwrap_or_default();
+                    let retry_text = nemesis_utils::http_cap::read_error_body(resp).await;
                     return Err(FailoverError::from_status(
                         "anthropic",
                         model,
@@ -1335,11 +1450,11 @@ impl LLMProvider for AnthropicProvider {
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send/SSE 读路径同判）；解析失败→Format 带 body 摘要
-        //（应用层，不可重试）。
-        let raw = resp
-            .text()
+        //（应用层，不可重试）。成功体有帽（BUG-20261115-024）：超限中途断开
+        // →Unknown + "response body exceeds limit" 前缀（可重试）。
+        let raw = crate::body_cap::read_success_body(resp)
             .await
-            .map_err(|e| transport_error("anthropic", model, &e))?;
+            .map_err(|e| crate::body_cap::to_failover_error("anthropic", model, e))?;
         let data: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| FailoverError::Format {
                 provider: "anthropic".to_string(),

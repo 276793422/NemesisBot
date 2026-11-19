@@ -31,12 +31,28 @@ impl AuthStore {
     }
 
     /// Save a credential.
+    ///
+    /// BUG-20261114-058（BUG-20261114-041 同族）：持久化失败必须与 Err
+    /// 同路径回滚内存态。旧实现「先 insert、再 persist」失败不回滚——
+    /// 内存与盘上真相分叉：save 侧 = 进程重启丢 token（盘上是旧值）；
+    /// remove 侧更糟 = **登出僵尸**（内存已清视为已登出，盘上 token 残留，
+    /// 重启 load 复活已登出的凭据）。回滚选不可能失败的操作（纯内存
+    /// 快照恢复），BUG-041 教训原文。
     pub fn save(&self, provider: &str, cred: AuthCredential) -> Result<(), String> {
-        self.creds
-            .write()
-            .unwrap()
-            .insert(provider.to_string(), cred);
-        self.persist()
+        let mut creds = self.creds.write().unwrap();
+        let prev = creds.insert(provider.to_string(), cred);
+        if let Err(e) = self.persist_guarded(&creds) {
+            match prev {
+                Some(old) => {
+                    creds.insert(provider.to_string(), old);
+                }
+                None => {
+                    creds.remove(provider);
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// Get a credential.
@@ -44,10 +60,17 @@ impl AuthStore {
         self.creds.read().unwrap().get(provider).cloned()
     }
 
-    /// Remove a credential.
+    /// Remove a credential.（失败回滚同 [`Self::save`]，登出僵尸面。）
     pub fn remove(&self, provider: &str) -> Result<(), String> {
-        self.creds.write().unwrap().remove(provider);
-        self.persist()
+        let mut creds = self.creds.write().unwrap();
+        let prev = creds.remove(provider);
+        if let Err(e) = self.persist_guarded(&creds) {
+            if let Some(old) = prev {
+                creds.insert(provider.to_string(), old);
+            }
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// List all providers (sorted — user-visible listings must be
@@ -81,9 +104,14 @@ impl AuthStore {
         Ok(())
     }
 
-    fn persist(&self) -> Result<(), String> {
-        let data = serde_json::to_string_pretty(&*self.creds.read().unwrap())
-            .map_err(|e| format!("serialize: {}", e))?;
+    /// 序列化 + 原子落盘。调用方必须已持 write guard 并传入 map 引用——
+    /// 旧 `persist()` 自取 read lock，在 save/remove 持 write guard 期间
+    /// 调用会同线程锁升级死锁；改为显式传参后，序列化在写锁内完成
+    /// （快照一致性：并发 save 不可能把互相交叠的中间态写进盘文件），
+    /// 也使失败回滚能在同一 guard 下恢复 prev。写文件期间持写锁 =
+    /// 写者串行化，token 存储写频极低，可接受。
+    fn persist_guarded(&self, creds: &HashMap<String, AuthCredential>) -> Result<(), String> {
+        let data = serde_json::to_string_pretty(creds).map_err(|e| format!("serialize: {}", e))?;
         // auth.json 存 OAuth access/refresh token（bearer
         // 凭据），落盘必须原子写 + 0o600（对齐 TrustStore 的 纪律）。
         // 此前裸 std::fs:write 非原子：进程中断撕裂 = 半截 JSON，构造期

@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// 一条调用方 key。`name` 唯一（trim 后非空）；`key` 唯一（trim 后非空，
 /// 自动生成形态 `nbk_` + 32 hex，手填不限制格式）；`enabled`=false 时鉴权
 /// 匹配跳过该条；`created_at` = Unix 秒（add 时补戳，0 = 未戳）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyKeyEntry {
     pub name: String,
     pub key: String,
@@ -32,6 +32,23 @@ pub struct ProxyKeyEntry {
     pub created_at: i64,
     #[serde(default)]
     pub note: String,
+}
+
+// SEC-002 Debug 脱敏（BUG-20261114-063）：key = 调用方鉴权明文密钥
+//（`nbk_` + 32 hex 或手填），derive(Debug) 会把明文带进
+// Debug/panic/错误上下文日志（ProxyKeysFile derive(Debug) 经 Vec 递归
+// 同面）。脱敏形态与 [`crate::debug_secret_value`] 逐字一致（ModelConfig
+// 手写 Debug 同款）；name/note/enabled/created_at 非秘密原样输出。
+impl std::fmt::Debug for ProxyKeyEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyKeyEntry")
+            .field("name", &self.name)
+            .field("enabled", &self.enabled)
+            .field("created_at", &self.created_at)
+            .field("note", &self.note)
+            .field("key", &crate::debug_secret_value(&self.key))
+            .finish()
+    }
 }
 
 fn default_enabled() -> bool {

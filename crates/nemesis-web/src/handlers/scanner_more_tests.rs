@@ -39,6 +39,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -61,6 +62,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -76,6 +78,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -534,10 +537,12 @@ async fn test_engine_update_config_wrong_types_are_ignored() {
         .unwrap()
         .unwrap();
     let engines = result["engines"].as_array().unwrap();
-    // Wrong types — original values preserved.
+    // Wrong types — original values preserved (url 显式值原样；未显式设置的
+    // 字段保留 BUG-20261118-089 后的健值缺省——与出厂模板/CLI 同款，
+    // 不再是旧零值形态）。
     assert_eq!(engines[0]["url"], "https://orig.example.com/c.zip");
-    assert_eq!(engines[0]["max_file_size"], 0);
-    assert!(!engines[0]["scan_on_write"].as_bool().unwrap());
+    assert_eq!(engines[0]["max_file_size"], 52_428_800);
+    assert!(engines[0]["scan_on_write"].as_bool().unwrap());
 }
 
 #[tokio::test]

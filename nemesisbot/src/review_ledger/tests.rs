@@ -56,6 +56,11 @@ fn open_db(dir_name: &str) -> Arc<nemesis_taskstore::TaskDb> {
         "nemesis-review-ledger-db-{}-{dir_name}",
         std::process::id()
     ));
+    // 先清残留再建：Windows PID 回收会让下一轮测试进程拿到同 PID，旧行
+    // 存活会让 deliveries_by_run/待审批等计数精确翻倍（假红实录：上一轮
+    // 同 PID 成功运行留下的 tasks.db → 本轮 1+1=2）。与 deps_with_issue
+    // 同款纪律；残留目录属死进程（PID 归属我们即前任已死），删除安全。
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp dir");
     // TaskDb::open 本身回 Arc<TaskDb>（内部连接池句柄形态）。
     nemesis_taskstore::TaskDb::open(&dir.join("tasks.db")).expect("open taskdb")

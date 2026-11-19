@@ -313,6 +313,9 @@ mod layer0_and_live_probe {
                     persistent: Default::default(),
                     // 新段；本用例与 VM 后端无关，取缺省（默认关）。
                     vm: Default::default(),
+                    // 新段（2026-11-14 MXC 护栏后端）；本用例与 mxc 无关，
+                    // 取缺省（network=open / egress 空）。
+                    mxc: Default::default(),
                 })
             })
             .expect("update store");

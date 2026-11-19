@@ -55,7 +55,9 @@ pub fn cache_dir(workspace: &Path, name: &str) -> PathBuf {
 }
 
 fn load_sources(workspace: &Path) -> Vec<ConnectorSource> {
-    let Ok(text) = std::fs::read_to_string(sources_path(workspace)) else {
+    // read_config_string 剥 BOM（workspace/config 下的用户源表，裸读时
+    // 记事本 BOM → 解析失败 → 用户源表静默清空，BUG-20261103-334 同族）。
+    let Ok(text) = nemesis_utils::fsutil::read_config_string(sources_path(workspace)) else {
         return Vec::new(); // 缺文件 = 空源表（常态）
     };
     // 显式标注 SourcesFile——裸 unwrap_or_default 会被返回类型推断成
@@ -80,7 +82,12 @@ fn save_sources(workspace: &Path, sources: &[ConnectorSource]) -> Result<()> {
     let json = serde_json::to_string_pretty(&SourcesFile {
         sources: sources.to_vec(),
     })?;
-    std::fs::write(&path, json)?;
+    // 原子写（BUG-20261117-046）：源注册表是覆盖写状态（add/remove 反复
+    // 整体重写同一路径）——裸 fs::write 写中段进程死亡 = 半截 JSON 顶掉
+    // 旧列表（读侧 lenient 落空表，用户源清单静默清零）。委托统一 helper，
+    // 与 projects registry / approval_rules 同纪律。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

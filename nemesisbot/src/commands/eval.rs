@@ -123,6 +123,14 @@ pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
                 ("prompt".to_string(), subject, prompt_text, common)
             }
             EvalAction::Skill { name, common } => {
+                // skill 名围栏：name 经 loader.load_skill 与 copy_skill_dir
+                // 两处 join 进真实 home 的 skills 根——穿越名（`../x` /
+                // `C:evil` 盘符相对形态，is_absolute()==false 但 join 整段
+                // 换基座）会让评估装配把 real_home 任意目录读/拷进沙盒
+                // （评估报告成 exfil 通道）。与 skill_manage / forge test /
+                // web skills 同族纪律，单一真相源 validate_skill_identifier。
+                nemesis_skills::types::validate_skill_identifier(&name)
+                    .map_err(|e| anyhow::anyhow!("invalid skill name '{name}': {e}"))?;
                 let loader = skills_loader_for_current_home(cli_local || common.local)?;
                 let body = loader.load_skill(&name).with_context(|| {
                     format!("skill '{name}' not found (workspace/global/builtin)")
@@ -449,7 +457,7 @@ async fn run_eval(
         std::fs::write(&tmp_path, &ini_backup)
             .with_context(|| format!("write ini tmp {}", tmp_path.display()))?;
         std::fs::rename(&tmp_path, &ini_path).with_context(|| {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp_path);
             format!("atomic-replace {}", ini_path.display())
         })
     })()
@@ -495,7 +503,7 @@ struct EvalLock {
 #[cfg(target_os = "windows")]
 impl Drop for EvalLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.path);
     }
 }
 
@@ -541,7 +549,7 @@ fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
                     eprintln!(
                         "[eval] WARN: 发现陈旧 eval 锁（pid {p} 已退出）——上次 eval 异常终止，抢占锁继续"
                     );
-                    let _ = std::fs::remove_file(&path);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&path);
                     let mut f = std::fs::OpenOptions::new()
                         .write(true)
                         .create_new(true)
@@ -1290,6 +1298,12 @@ fn copy_skill_dir(real_home: &Path, workspace: &Path, subject: &str) -> Result<(
         .find(|l| l.starts_with("# Skill: "))
         .and_then(|l| l.strip_prefix("# Skill: "))
         .context("skill subject missing name header")?;
+    // 纵深闸：subject 头部由入口围栏（EvalAction::Skill arm）校验过的
+    // name 生成，但本函数是唯一直接对真实 home 做 IO 的位点——自防御
+    // 不依赖上游纪律（同 validate_skill_identifier 单一真相源）。穿越名
+    // 在此被拒，绝不落到下面的 join。
+    nemesis_skills::types::validate_skill_identifier(name)
+        .map_err(|e| anyhow::anyhow!("skill subject name failed validation: {e}"))?;
     for base in [
         real_home.join("workspace").join("skills"),
         real_home.join("skills"),

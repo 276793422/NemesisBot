@@ -255,7 +255,12 @@ pub fn build_cluster_agent_loop(
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
-            nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
+            // BUG-20261118-090：预览走出侧复扫同源净化（同主 loop）。
+            nemesis_agent::tool_event_hook::ToolEventHook::new_with_sanitizer(
+                tx,
+                agent_loop.work_recorder(),
+                agent_loop.output_preview_sanitizer(),
+            ),
         ));
     }
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
@@ -470,9 +475,10 @@ pub fn build_cluster_agent_loop(
     // spawn 槽此处**不注入**闭包——build_cluster_agent_loop 返回非 Arc
     // 的 AgentLoop（Arc 由 Cluster 调用方创建），Weak 注入点不在此；槽留空
     // 时 SpawnTool 诚实报 "not available"。v1 边界：sub-agent 只在主
-    // gateway loop 开放（cluster B 端 spawn 见 后续）。
-    let (mut tool_config, _unused_cluster_spawn_slot) =
-        build_shared_tool_config(shared, &cfg, &model_name, None);
+    // gateway loop 开放（cluster B 端 spawn 见 后续）。steer 槽（项3）同款
+    // 不注入——无 spawn 面 = 无子代理可驾驶，工具诚实报 not available。
+    let (mut tool_config, _unused_cluster_spawn_slot, _unused_cluster_steer_slot) =
+        build_shared_tool_config(shared, &cfg, &model_name);
     // ASM-04（横扫存量加固）：集群 loop 工作区围栏强制 restrict=true。
     // 方向性事实：项目 loop（本地可信会话）强制 restrict=true，集群 loop
     // （执行远端半可信任务）此前跟随全局开关（默认 false）——B 端 file 工具
@@ -495,6 +501,9 @@ pub fn build_cluster_agent_loop(
         restrict: true,
         extra_roots: Vec::new(),
         editor_gate,
+        // 目标系统文件保护（D-Q3；worker 同主 agent 装守卫——人配目标在
+        // 集群执行语境同样只读）。
+        goals_guard: crate::goals_engine::workspace_goals_guard(&shared.workspace_dir()),
     }));
     // 集群 loop 同挂钩子边界（同一 Arc 实例）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
@@ -666,19 +675,22 @@ pub(super) fn load_cluster_system_prompt(
     let cluster_dir = home.join("workspace").join("cluster");
     let mut parts = Vec::new();
 
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("IDENTITY.md"))
+    // BUG-20261119-179：三处人格文件读取走 read_config_string 剥前导
+    // UTF-8 BOM（记事本保存形态）——BOM 前缀会原样进 system prompt 稳定
+    // 前缀；无 BOM 文件字节不变。
+    if let Ok(content) = nemesis_utils::fsutil::read_config_string(cluster_dir.join("IDENTITY.md"))
         && !content.trim().is_empty()
     {
         parts.push(content);
     }
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("SOUL.md"))
+    if let Ok(content) = nemesis_utils::fsutil::read_config_string(cluster_dir.join("SOUL.md"))
         && !content.trim().is_empty()
     {
         parts.push(content);
     }
     // （集群专业职能框架）：EXPERTISE.md 断线修复——档案曾经存在但装配
     // 从不读取。有则注入，无开关（职能方法论载体，稳定前缀组成部分）。
-    if let Ok(content) = std::fs::read_to_string(cluster_dir.join("EXPERTISE.md"))
+    if let Ok(content) = nemesis_utils::fsutil::read_config_string(cluster_dir.join("EXPERTISE.md"))
         && !content.trim().is_empty()
     {
         parts.push(content);

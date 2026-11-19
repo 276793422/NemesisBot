@@ -3475,6 +3475,71 @@ fn l01_f3_memory_rule_flag_gate_e2e() {
     assert_eq!(auditor.pending_count(), 1, "fall through 后必须入 pending");
 }
 
+/// 回归锁（BUG-20261118-094）：flag 闸必须豁免「pattern 显式含该 flag」
+/// 的匹配规则——B26 写侧细化（批准 `git push --force origin main` +
+/// 总是允许 → `git push --force *`）产出的显式批准规则不得被打成死信
+/// （修复前 flag 闸无条件拦：每次 --force push 重新弹卡，「总是允许」
+/// 自相矛盾）。同测试钉住边界：matcher 词表比 SENSITIVE_FLAGS 宽，
+/// 未进 pattern 的 flag（docker -f 等）对粗规则照拦。
+#[test]
+fn l01_f3_memory_rule_explicit_flag_pattern_auto_allows() {
+    let auditor = ask_auditor();
+
+    // 臂 1：显式 flag 规则 → flag 请求自动放行（B26 细化的存在意义）。
+    let dir = tempfile::tempdir().unwrap();
+    let force_rule = crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "git push --force *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir, &[force_rule]));
+
+    let (allowed, _, request_id) = auditor
+        .request_permission_tracked(&exec_request("l01e", "git push --force origin main"), None);
+    assert!(
+        allowed,
+        "显式 flag 规则必须自动放行 flag 请求（用户对该破坏力维度点过头）"
+    );
+    assert!(request_id.is_none(), "自动放行不得产生审批卡");
+
+    // 臂 2：显式 --hard 同理（matcher 词表另一 B26 交集成员）。
+    let dir_h = tempfile::tempdir().unwrap();
+    let hard_rule = crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "git reset --hard *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir_h, &[hard_rule]));
+    let (allowed_h, _, _) =
+        auditor.request_permission_tracked(&exec_request("l01g", "git reset --hard HEAD~1"), None);
+    assert!(allowed_h, "显式 --hard 规则必须自动放行（同 B26 细化构造）");
+
+    // 臂 3（边界）：matcher 词表 flag 不在粗规则 pattern → 照拦不豁免
+    // （docker -f：matcher 命中、SENSITIVE_FLAGS 无此 token → B26 细化
+    // 不会把它写进 pattern，粗规则对 -f 变体必须继续 fall through）。
+    let dir_d = tempfile::tempdir().unwrap();
+    let docker_rule = crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "docker rm *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir_d, &[docker_rule]));
+    let (allowed_d, _, _) =
+        auditor.request_permission_tracked(&exec_request("l01h", "docker rm -f mycontainer"), None);
+    assert!(
+        !allowed_d,
+        "matcher 词表 flag 未进 pattern → 粗规则照拦（防线不回归）"
+    );
+    assert_eq!(
+        auditor.pending_count(),
+        1,
+        "臂 3 fall through 后必须入 pending"
+    );
+}
+
 // audit.jsonl 追加的行原子性——`writeln!` 是正文与
 // "\n" 两次 write，append 模式下每片段独立定位 EOF，多线程安全判定并发
 // 落审计可把别人的行插进本行中间粘成一行；读端 `get_audit_log` 对 parse

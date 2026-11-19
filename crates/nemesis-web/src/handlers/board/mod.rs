@@ -429,8 +429,14 @@ impl ModuleHandler for BoardHandler {
                                         .map(String::from)
                                 }),
                             });
-                        } else if cluster.continuation_store().contains(&d.task_id) {
-                            // 在途：续行快照在场（任务未终结）。
+                        } else if cluster
+                            .continuation_store()
+                            .exists_on_disk(&d.task_id)
+                            .await
+                        {
+                            // 在途：续行快照在场（任务未终结）。盘上判定
+                            // （BUG-20261113-165）——快照由 agent 侧 store
+                            // 落盘，cluster 侧内存 contains 恒空（分支永假）。
                             extra.push(nemesis_board::timeline::TimelineEvent {
                                 ts: d.dispatched_at,
                                 source: "continuation",
@@ -1154,8 +1160,8 @@ impl ModuleHandler for BoardHandler {
             }
             // 看板项目档案：打开档案目录。只放行 board 项目注册表
             // （board.db Project.directory——绑定不可变、无修改入口）已知路径，
-            // 前端不可传任意路径；系统文件管理器打开（复用 projects 模块的
-            // open_in_file_manager：CREATE_NO_WINDOW spawn 不等待）。
+            // 前端不可传任意路径；系统文件管理器打开（shell_open 单一归宿：
+            // Windows=explorer spawn + 前台看门，spawn 不等待）。
             "project.open_dir" => {
                 let data = data.ok_or("missing data")?;
                 let project_id = data
@@ -1168,7 +1174,7 @@ impl ModuleHandler for BoardHandler {
                 if !path.is_dir() {
                     return Err(format!("档案目录不存在: {}", path.display()));
                 }
-                crate::handlers::projects::open_in_file_manager(&path)?;
+                crate::handlers::shell_open::open_dir(&path)?;
                 Ok(Some(
                     serde_json::json!({ "opened": true, "directory": dir }),
                 ))
@@ -1437,14 +1443,19 @@ impl ModuleHandler for BoardHandler {
                     // 留痕：项目无 comment 载体（惯例），系统注记落全部
                     // 顶层父单；消费掉的停车档案照常归档。
                     for p in &tops {
-                        let _ = store.add_comment(NewComment {
+                        if let Err(ce) = store.add_comment(NewComment {
                             issue_id: p.id,
                             author: actor.clone(),
                             content: "🔁 人工触发项目收口复评（review.retrigger project_id）"
                                 .to_string(),
                             parent_id: None,
                             ctype: CommentType::System,
-                        });
+                        }) {
+                            tracing::warn!(
+                                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                                p.id
+                            );
+                        }
                         archive_handoff_best_effort(&p.number);
                     }
                     hook(project_id);
@@ -1505,13 +1516,18 @@ impl ModuleHandler for BoardHandler {
                 } else {
                     "🔁 人工触发重新验收评审（review.retrigger）".to_string()
                 };
-                let _ = store.add_comment(NewComment {
+                if let Err(ce) = store.add_comment(NewComment {
                     issue_id: issue.id,
                     author: actor,
                     content: note,
                     parent_id: None,
                     ctype: CommentType::System,
-                });
+                }) {
+                    tracing::warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        issue.id
+                    );
+                }
                 hook(issue.id);
                 // 复评启动 = 「等裁决」现场已被消费：归档停车档案。
                 archive_handoff_best_effort(&issue.number);
@@ -1819,7 +1835,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("budget.max_subissues_per_parent 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "budget.max_subissues_per_parent 超出 u32 范围")?;
             }
             "budget.max_total_redispatch" => {
                 board.budget.max_total_redispatch = u32::try_from(
@@ -1827,7 +1843,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("budget.max_total_redispatch 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "budget.max_total_redispatch 超出 u32 范围")?;
             }
             // 送达失败自动重试熔断上限（0=关=无限重试；
             // unlimited_mode 视为 0；按本单 ⛔ 标记评论终身累计计数）。
@@ -1837,7 +1853,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("budget.max_send_retries 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "budget.max_send_retries 超出 u32 范围")?;
             }
             "budget.wall_clock_budget_secs" => {
                 board.budget.wall_clock_budget_secs = value
@@ -1863,7 +1879,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.max_agent_turns_per_thread 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.max_agent_turns_per_thread 超出 u32 范围")?;
             }
             "discussion.hourly_budget_per_node" => {
                 board.discussion.hourly_budget_per_node = u32::try_from(
@@ -1871,7 +1887,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.hourly_budget_per_node 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.hourly_budget_per_node 超出 u32 范围")?;
             }
             "discussion.rate_limit_per_min" => {
                 board.discussion.rate_limit_per_min = u32::try_from(
@@ -1879,7 +1895,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.rate_limit_per_min 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.rate_limit_per_min 超出 u32 范围")?;
             }
             "discussion.review_wait_secs" => {
                 board.discussion.review_wait_secs = u32::try_from(
@@ -1887,7 +1903,7 @@ fn board_config_set(
                         .as_u64()
                         .ok_or("discussion.review_wait_secs 需要非负整数")?,
                 )
-                .map_err(|_| "超出 u32 范围")?;
+                .map_err(|_| "discussion.review_wait_secs 超出 u32 范围")?;
             }
             // （职能→评审预设查表）：review.professions.<slug>.<field>
             // （slug 大小写归一后写入 map，与查表侧 to_ascii_lowercase 对齐；
@@ -1914,7 +1930,9 @@ fn board_config_set(
                                     u32::try_from(value.as_u64().ok_or(
                                         "review.professions.<slug>.max_turns 需要非负整数",
                                     )?)
-                                    .map_err(|_| "超出 u32 范围")?,
+                                    .map_err(|_| {
+                                        format!("review.professions.{slug}.max_turns 超出 u32 范围")
+                                    })?,
                                 );
                         }
                     }
@@ -1928,7 +1946,9 @@ fn board_config_set(
                                     .as_u64()
                                     .ok_or("review.professions.<slug>.checkers 需要非负整数")?,
                             )
-                            .map_err(|_| "超出 u32 范围")?;
+                            .map_err(|_| {
+                                format!("review.professions.{slug}.checkers 超出 u32 范围")
+                            })?;
                             // 消费侧（run_review_panel）同样收敛，这里前置拒绝给出明确文案。
                             if !(1..=5).contains(&v) {
                                 return Err(

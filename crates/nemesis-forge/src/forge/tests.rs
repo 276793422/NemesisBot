@@ -670,6 +670,29 @@ fn make_collected_experience(
     }
 }
 
+/// Session-parameterized variant（B1 缺陷整改批次：检测器改会话级——
+/// pattern 检测测试需要跨会话重复同形链才能过 min_freq 闸）。
+fn make_session_experience(
+    session: &str,
+    tool: &str,
+    success: bool,
+    dur: u64,
+) -> crate::types::CollectedExperience {
+    crate::types::CollectedExperience {
+        dedup_hash: format!("test-{}-{}-{}", session, tool, success),
+        experience: nemesis_types::forge::Experience {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: tool.to_string(),
+            input_summary: "test input".into(),
+            output_summary: if success { "ok" } else { "error" }.into(),
+            success,
+            duration_ms: dur,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            session_key: session.to_string(),
+        },
+    }
+}
+
 /// Write experiences directly to the ExperienceStore for a forge directory.
 async fn write_test_experiences(forge_dir: &std::path::Path, count: usize) {
     let store = crate::experience_store::ExperienceStore::from_forge_dir(forge_dir);
@@ -785,6 +808,45 @@ async fn test_reflection_cycle_writes_llm_deep_analysis_section() {
     assert!(
         content.contains("mock"),
         "insights body must be rendered into the report"
+    );
+}
+
+/// A4+A5：报告 Period 行反映真实数据窗口（不再硬编码 "today"），
+/// 头部带学习闭环开关状态行（审计教训：关着的闭环在报告里不可见，
+/// 读者会误以为循环在跑）。
+#[tokio::test]
+async fn test_reflection_cycle_period_and_learning_state_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = create_integration_forge(dir.path());
+    forge.set_learning_enabled(true);
+
+    write_test_experiences(forge.forge_dir(), 5).await;
+    forge.run_reflection_cycle().await;
+
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    // read_dir 顺序是平台实现细节；单报告场景取排序首个即稳定。
+    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&reflections_dir)
+        .expect("reflections dir must exist after cycle")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    reports.sort();
+    assert!(!reports.is_empty(), "expected at least one report file");
+    let content = std::fs::read_to_string(&reports[0]).unwrap();
+    // A4：Period 行 = 真实条数 + 首末时间戳（RFC3339 前 19 字符）。
+    assert!(
+        content.contains("**Period:** 最近 5 条"),
+        "Period 行应反映真实数据窗口; got:\n{content}"
+    );
+    assert!(
+        !content.contains("Period: today") && !content.contains("**Period:** today"),
+        "旧硬编码 period 不得再出现"
+    );
+    // A5：头部学习闭环状态行（显式开启 → enabled）。
+    assert!(
+        content.contains("**学习闭环:** enabled"),
+        "报告头部应有学习闭环状态行且为 enabled; got:\n{content}"
     );
 }
 
@@ -993,10 +1055,23 @@ async fn test_pattern_tool_chain_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // 6 experiences with the same tool (≥5 triggers tool_chain, default min_pattern_frequency=5)
-    let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
-        .collect();
+    // B1 会话级语义：5 个会话重复同形 2 步链（min_pattern_frequency=5）。
+    // 链频按跨会话聚合，单会话只数 1。
+    let mut experiences = vec![];
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_read",
+            true,
+            100,
+        ));
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_write",
+            true,
+            100,
+        ));
+    }
 
     let patterns = engine.extract_patterns(&experiences);
     assert!(!patterns.is_empty(), "expected at least one pattern");
@@ -1015,13 +1090,22 @@ async fn test_pattern_error_recovery_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // Same tool: 5 failures + 5 successes (frequency = error_count, must be ≥5)
+    // B1 会话级语义：恢复链 = 失败工具 → （同会话内）不同工具成功。
+    // 5 个会话重复 web_fetch 失败 → web_search 成功（freq 5 = min_freq）。
     let mut experiences = vec![];
-    for _ in 0..5 {
-        experiences.push(make_collected_experience("web_fetch", false, 500));
-    }
-    for _ in 0..5 {
-        experiences.push(make_collected_experience("web_fetch", true, 200));
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "web_fetch",
+            false,
+            500,
+        ));
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "web_search",
+            true,
+            200,
+        ));
     }
 
     let patterns = engine.extract_patterns(&experiences);
@@ -1040,13 +1124,38 @@ async fn test_pattern_efficiency_issue_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // Most tools fast, one tool very slow — need enough fast tools to keep overall avg low
+    // B1 会话级语义：慢会话（avg_dur > 2× 全局均值）× min_freq 重复。
+    // 9 个快会话（2 步 @100ms）压低全局均值；5 个慢会话（同形 2 步链
+    // @100000ms）聚合到 count=5 过 min_freq=5 闸。慢/全局 = 100000/35779
+    // ≈ 2.8× > 2× ✓（快会话过半时慢会话会拉爆全局均值，必须保持快多慢少）。
     let mut experiences = vec![];
-    for _ in 0..10 {
-        experiences.push(make_collected_experience("file_read", true, 100));
+    for s in 0..9 {
+        experiences.push(make_session_experience(
+            &format!("fast-{}", s),
+            "file_read",
+            true,
+            100,
+        ));
+        experiences.push(make_session_experience(
+            &format!("fast-{}", s),
+            "file_write",
+            true,
+            100,
+        ));
     }
-    for _ in 0..5 {
-        experiences.push(make_collected_experience("shell_exec", true, 50000));
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("slow-{}", s),
+            "shell_exec",
+            true,
+            100000,
+        ));
+        experiences.push(make_session_experience(
+            &format!("slow-{}", s),
+            "git",
+            true,
+            100000,
+        ));
     }
 
     let patterns = engine.extract_patterns(&experiences);
@@ -1067,10 +1176,22 @@ async fn test_pattern_success_template_detection() {
     let cycle_store = crate::cycle_store::CycleStore::new(dir.path());
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
-    // 6 experiences all successful with the same tool (≥5 for min_pattern_frequency)
-    let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
-        .collect();
+    // B1 会话级语义：全成功会话的同形链跨会话重复 ≥ min_freq。
+    let mut experiences = vec![];
+    for s in 0..5 {
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_read",
+            true,
+            100,
+        ));
+        experiences.push(make_session_experience(
+            &format!("sess-{}", s),
+            "file_write",
+            true,
+            100,
+        ));
+    }
 
     let patterns = engine.extract_patterns(&experiences);
     assert!(
@@ -1109,8 +1230,14 @@ async fn test_run_cycle_full_with_patterns() {
     let engine = crate::learning_engine::LearningEngine::new(config, registry, cycle_store);
 
     // No LLM provider — execute_create_skill will skip but pattern detection still works
+    // （会话级语义：6 个会话各跑同形两步全成功链 → freq 6 ≥ 5）
     let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
+        .flat_map(|i| {
+            vec![
+                make_session_experience(&format!("s{i}"), "file_read", true, 100),
+                make_session_experience(&format!("s{i}"), "file_write", true, 100),
+            ]
+        })
         .collect();
 
     let cycle = engine.run_cycle(&experiences).await;
@@ -1178,7 +1305,7 @@ fn test_reflector_with_llm_failure() {
         make_collected_experience("file_read", true, 100),
         make_collected_experience("shell_exec", false, 200),
     ];
-    let report = reflector.reflect(&experiences, None, "today", "all");
+    let report = reflector.reflect(&experiences, &[], None, "today", "all");
     // Should have stats even without LLM
     assert!(!report.date.is_empty());
     assert!(report.stats.total_records > 0);
@@ -1199,8 +1326,14 @@ async fn test_learning_engine_with_llm_failure() {
     // Set error provider
     engine.set_provider(Arc::new(ErrorSyncProvider));
 
+    // （会话级语义：6 个会话各跑同形两步全成功链 → freq 6 ≥ 5）
     let experiences: Vec<_> = (0..6)
-        .map(|_| make_collected_experience("file_read", true, 100))
+        .flat_map(|i| {
+            vec![
+                make_session_experience(&format!("s{i}"), "file_read", true, 100),
+                make_session_experience(&format!("s{i}"), "file_write", true, 100),
+            ]
+        })
         .collect();
 
     // Should not panic
@@ -1698,6 +1831,204 @@ fn test_store_distilled_draft_skips_when_active_exists() {
     );
 }
 
+/// 跨注册表同名防线（BUG 批次 2026-11-14）：闭环引擎的
+/// learning_registry.json 里有同名活跃技能时，蒸馏侧必须跳过——两侧都写
+/// `forge/skills/{slug}/SKILL.md`，放行 = 静默覆盖对方磁盘文件。本钉同时
+/// 锁「守护先于落盘」：跳过时本库无新产物、对方文件未被触碰。
+#[test]
+fn test_store_distilled_draft_skips_cross_registry_active() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let now = chrono::Local::now().to_rfc3339();
+    let learning_artifact = nemesis_types::forge::Artifact {
+        id: "skill-cross-name".to_string(),
+        name: "cross-name".to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Active,
+        content: "learning side".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now,
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    let learning_path = dir.path().join("forge").join(crate::LEARNING_REGISTRY_FILE);
+    std::fs::write(
+        &learning_path,
+        serde_json::to_string(&vec![learning_artifact]).unwrap(),
+    )
+    .unwrap();
+
+    let distilled = crate::reflector_llm::DistilledSkill {
+        name: "cross-name".to_string(),
+        skill_md: "---\nname: cross-name\n---\n\n## Overview\nwould clobber".to_string(),
+        rationale: "cross-registry collision".to_string(),
+    };
+    assert!(
+        forge.store_distilled_draft(&distilled).is_none(),
+        "闭环侧同名活跃技能必须挡住蒸馏（跨库防线）"
+    );
+    assert!(
+        !dir.path()
+            .join("forge")
+            .join("skills")
+            .join("cross-name")
+            .join("SKILL.md")
+            .exists(),
+        "跨库跳过时不得写 SKILL.md（否则覆盖闭环侧文件）"
+    );
+    assert!(
+        forge
+            .registry()
+            .find_by_name("cross-name", nemesis_types::forge::ArtifactKind::Skill)
+            .is_none(),
+        "跨库跳过时本库不得登记同名产物"
+    );
+}
+
+/// 跨库防线放行臂：闭环侧同名产物已 Degraded 时不挡（替代品顶替语义，
+/// 与库内 dedup 的 Degraded/Archived 放行口径一致）。
+#[test]
+fn test_store_distilled_draft_allows_cross_registry_degraded() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let now = chrono::Local::now().to_rfc3339();
+    let learning_artifact = nemesis_types::forge::Artifact {
+        id: "skill-cross-old".to_string(),
+        name: "cross-old".to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Degraded,
+        content: "learning side (degraded)".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now,
+        usage_count: 5,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 3,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+    let learning_path = dir.path().join("forge").join(crate::LEARNING_REGISTRY_FILE);
+    std::fs::write(
+        &learning_path,
+        serde_json::to_string(&vec![learning_artifact]).unwrap(),
+    )
+    .unwrap();
+
+    let distilled = crate::reflector_llm::DistilledSkill {
+        name: "cross-old".to_string(),
+        skill_md: "---\nname: cross-old\n---\n\n## Overview\nreplacement draft".to_string(),
+        rationale: "replace degraded".to_string(),
+    };
+    assert!(
+        forge.store_distilled_draft(&distilled).is_some(),
+        "闭环侧 Degraded 同名产物不得阻塞重蒸馏（跨库放行臂）"
+    );
+}
+
+/// 反思输入并集（BUG 批次 2026-11-14）：merged_artifacts_for_reflection
+/// = 本库 ∪ 闭环库，按 id 去重——闭环侧产物对反思/蒸馏 LLM 可见（此前
+/// 互盲，重复提名风险），同 id 双库在场时只计一次。
+#[test]
+fn test_merged_artifacts_for_reflection_unions_learning_registry() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
+
+    let now = chrono::Local::now().to_rfc3339();
+    let make_artifact = |id: &str, name: &str| nemesis_types::forge::Artifact {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Active,
+        content: "c".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+
+    // 本库：manual-a；闭环库：learning-b + 与本库同 id 的 dup-id。
+    forge
+        .registry()
+        .add(make_artifact("skill-manual-a", "manual-a"));
+    let learning = vec![
+        make_artifact("skill-learning-b", "learning-b"),
+        make_artifact("skill-manual-a", "dup-id"),
+    ];
+    let learning_path = dir.path().join("forge").join(crate::LEARNING_REGISTRY_FILE);
+    std::fs::write(&learning_path, serde_json::to_string(&learning).unwrap()).unwrap();
+
+    let merged = forge.merged_artifacts_for_reflection();
+    let ids: Vec<&str> = merged.iter().map(|a| a.id.as_str()).collect();
+    assert!(
+        ids.contains(&"skill-manual-a") && ids.contains(&"skill-learning-b"),
+        "并集必须同时含本库与闭环库产物，got {:?}",
+        ids
+    );
+    assert_eq!(merged.len(), 2, "同 id 双库在场只计一次（去重）");
+}
+
+/// `merge_artifacts_by_id` 自由函数契约（BUG 批次 2026-11-15）：并集 +
+/// id 去重 primary 优先 + 空 secondary 恒等。web 手动反思 handler 无
+/// Forge 实例，直接消费本函数——契约在此钉死，两入口不再分叉。
+#[test]
+fn test_merge_artifacts_by_id_union_dedup_primary_wins() {
+    let now = chrono::Local::now().to_rfc3339();
+    let make_artifact = |id: &str, name: &str| nemesis_types::forge::Artifact {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: nemesis_types::forge::ArtifactKind::Skill,
+        version: "1.0".to_string(),
+        status: nemesis_types::forge::ArtifactStatus::Active,
+        content: "c".to_string(),
+        tool_signature: vec![],
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        usage_count: 0,
+        last_degraded_at: None,
+        success_rate: 0.0,
+        consecutive_observing_rounds: 0,
+        deployed_at: None,
+        last_efficacy: None,
+    };
+
+    // 并集：primary 2 条 + secondary 独有 1 条 → 3 条。
+    let primary = vec![make_artifact("a", "a"), make_artifact("b", "b")];
+    let secondary = vec![make_artifact("c", "c")];
+    let merged = crate::forge::merge_artifacts_by_id(primary, secondary);
+    assert_eq!(merged.len(), 3);
+    let ids: Vec<&str> = merged.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"a") && ids.contains(&"b") && ids.contains(&"c"));
+
+    // id 冲突：primary 侧条目保留（name 不被 secondary 覆盖）。
+    let primary = vec![make_artifact("dup", "manual-name")];
+    let secondary = vec![make_artifact("dup", "learning-name")];
+    let merged = crate::forge::merge_artifacts_by_id(primary, secondary);
+    assert_eq!(merged.len(), 1, "同 id 只计一次");
+    assert_eq!(merged[0].name, "manual-name", "primary 优先");
+
+    // 空 secondary：恒等于 primary（无扩容无重排）。
+    let primary = vec![make_artifact("a", "a")];
+    let merged = crate::forge::merge_artifacts_by_id(primary, Vec::new());
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].id, "a");
+}
+
 /// Background loops with interval = 2s: the first 1s tick must take the
 /// "elapsed < interval" branch of each loop (the else-arms of the
 /// `elapsed >= interval` checks) before the second tick fires the action.
@@ -1792,6 +2123,39 @@ fn test_slugify_skill_name_normalization() {
     assert_eq!(slugify_skill_name(""), "");
     // 48 字符截断
     assert_eq!(slugify_skill_name(&"a".repeat(60)).len(), 48);
+}
+
+#[test]
+fn test_slugify_skill_name_traversal_forms() {
+    // 毒名形态钉（resolve_artifact_path / exporter 两族修复的共同地基）：
+    // 穿越序列经 slug 全部塌缩为安全单段或空串（空串由调用方回落
+    // `_unnamed_` 占位，不得把穿越序列交还给 join）
+    assert_eq!(slugify_skill_name("../../evil"), "evil");
+    assert_eq!(slugify_skill_name("../escape"), "escape");
+    assert_eq!(slugify_skill_name("../.."), "");
+    assert_eq!(slugify_skill_name(".."), "");
+    assert_eq!(slugify_skill_name("a/../../b"), "a-b");
+    // 幂等：slug 产物再 slug 恒等（exporter/export_artifact 链的二次
+    // 解析依赖该性质）
+    let once = slugify_skill_name("Install MCP Server (HTTP)");
+    assert_eq!(slugify_skill_name(&once), once);
+}
+
+#[test]
+fn test_slug_or_placeholder_rule() {
+    use super::slug_or_placeholder;
+    // 单一真相源钉（exporter 写面 / forge_tools resolve_artifact_path /
+    // learning_engine disable 面三族共用）：合法名 slug 恒等直通；空 slug
+    // （全非法/纯符号毒名）回落受控占位段——调用方拿到的永远是安全单段。
+    assert_eq!(slug_or_placeholder("my-skill"), "my-skill");
+    assert_eq!(
+        slug_or_placeholder("Install MCP Server (HTTP)"),
+        "install-mcp-server-http"
+    );
+    assert_eq!(slug_or_placeholder("../../evil"), "evil");
+    assert_eq!(slug_or_placeholder(""), "_unnamed_");
+    assert_eq!(slug_or_placeholder(".."), "_unnamed_");
+    assert_eq!(slug_or_placeholder("../.."), "_unnamed_");
 }
 
 #[test]

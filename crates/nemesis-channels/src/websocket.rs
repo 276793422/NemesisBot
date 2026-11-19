@@ -25,6 +25,10 @@ use crate::base::{BaseChannel, Channel};
 /// WS 升级单连接墙钟上限：TCP 连上不发 HTTP 升级请求
 /// 的静默连接（本地扫描/挂死客户端）按超时淘汰，不得永久冻结 accept 循环。
 const WS_UPGRADE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+/// 单帧写超时上限（秒）。BUG-20261115-016：半死客户端上无界写 await 会把
+/// per-client writer 任务永久冻结（任务泄漏 + unbounded 队列积压），有界
+/// 超时让 break/close 语义可达。家族值对齐 IRC WRITE_TIMEOUT_SECS。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 
 // ---------------------------------------------------------------------------
 // Protocol types
@@ -251,6 +255,29 @@ impl Channel for WebSocketChannel {
                     Ok((stream, remote_addr)) => {
                         debug!(addr = %remote_addr, "[WebSocketChannel] new TCP connection");
 
+                        // 对端 IP 准入闸（BUG-20261118-155）：allow_from 旧语义
+                        // 在 handle_text_message 按 `websocket:client_<纳秒>_<序号>`
+                        // chat_id 精确匹配——client_id 是进程内生成的不可预知值，
+                        // 配置永远无法命中，效果=配了 allow_from 就全禁（且出站
+                        // 路径零 allow_from 消费，「面向出站过滤」的旧定性无代码
+                        // 支撑）。改对端 IP 准入（maixcam BUG-20261110-054 同款
+                        // 家族方案，单一真相源 base::peer_allowed）：空 = 放行所有
+                        // （旧行为保底）；非空 = 对端 IP 必须命中（精确 IP 或 IPv4
+                        // 前缀通配 `192.168.1.*`）。闸放 accept 层（upgrade 成本
+                        // 之前淘汰，maixcam 同款）。
+                        if !base_allow_list.is_empty()
+                            && !crate::base::peer_allowed(
+                                &base_allow_list,
+                                &remote_addr.ip().to_string(),
+                            )
+                        {
+                            warn!(
+                                addr = %remote_addr,
+                                "[WebSocketChannel] connection rejected: peer not in allow_from"
+                            );
+                            continue;
+                        }
+
                         // Single-client check
                         {
                             let guard = active_conn.lock();
@@ -374,11 +401,23 @@ impl Channel for WebSocketChannel {
                         tokio::spawn(async move {
                             let mut sink = sink;
                             while let Some(data) = send_rx.recv().await {
-                                if sink.send(Message::Text(data.into())).await.is_err() {
+                                // BUG-20261115-016：有界写，超时与发送失败同走 break
+                                if tokio::time::timeout(
+                                    std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                    sink.send(Message::Text(data.into())),
+                                )
+                                .await
+                                .is_err()
+                                {
                                     break;
                                 }
                             }
-                            let _ = sink.close().await;
+                            // close 也有界（同一挂死连接上 close 同样可永远 pending）
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                sink.close(),
+                            )
+                            .await;
                         });
 
                         // Spawn reader task
@@ -387,7 +426,6 @@ impl Channel for WebSocketChannel {
                         let read_send_tx = send_tx.clone();
                         let read_client_id = client_id.clone();
                         let read_base_name = base_name.clone();
-                        let read_allow_list = base_allow_list.clone();
                         let read_base = Arc::clone(&base_for_reader);
 
                         let read_task = tokio::spawn(async move {
@@ -401,7 +439,6 @@ impl Channel for WebSocketChannel {
                                             &read_bus,
                                             &read_send_tx,
                                             &read_base_name,
-                                            &read_allow_list,
                                         );
                                         // Matches Go's HandleMessage() which calls record_received()
                                         if sync_content.is_some() {
@@ -553,10 +590,6 @@ impl Channel for WebSocketChannel {
         };
         let _ = json;
 
-        // Outbound sync: forward to other channels (e.g., web dashboard).
-        // sync 镜像来的消息不再二次扩散（回环防护）。
-        self.base.sync_outbound(&msg).await;
-
         Ok(())
     }
 
@@ -585,13 +618,16 @@ impl Channel for WebSocketChannel {
 ///
 /// Returns `Some(content)` if the message was a valid "message" type that was
 /// published to the bus (used for inbound sync_to_targets). Returns `None` otherwise.
+///
+/// allow_from 准入不在本函数（BUG-20261118-155 起迁 accept 层对端 IP 闸）：
+/// 旧实现按 `websocket:{client_id}` chat_id 精确匹配——client_id 进程内生成
+/// 不可预知，配置永远无法命中。
 fn handle_text_message(
     text: &str,
     client_id: &str,
     bus_sender: &tokio::sync::broadcast::Sender<InboundMessage>,
     send_tx: &tokio::sync::mpsc::UnboundedSender<String>,
     base_name: &str,
-    allow_list: &[String],
 ) -> Option<String> {
     let client_msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
@@ -611,12 +647,6 @@ fn handle_text_message(
 
             let chat_id = format!("websocket:{client_id}");
             info!(content = %client_msg.content, chat_id = %chat_id, "[WebSocketChannel] received message");
-
-            // Allow-list check (matches Go's HandleMessage → IsAllowed)
-            if !allow_list.is_empty() && !allow_list.iter().any(|a| a == &chat_id) {
-                warn!(chat_id = %chat_id, "[WebSocketChannel] message blocked by allow-list");
-                return None;
-            }
 
             let inbound = InboundMessage {
                 channel: base_name.to_string(),

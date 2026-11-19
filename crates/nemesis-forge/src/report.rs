@@ -263,14 +263,24 @@ pub fn format_trace_insights(stats: &TraceStats) -> String {
     let mut sb = String::new();
     sb.push_str("## Trace Insights\n\n");
     sb.push_str(&format!("- Total traces: {}\n", stats.total_traces));
-    sb.push_str(&format!("- Average rounds: {:.1}\n", stats.avg_rounds));
+    if stats.traces_with_rounds < stats.total_traces {
+        sb.push_str(&format!(
+            "- Traces with round data: {}/{}（其余为旧轨迹，未发 llm_turn 事件）\n",
+            stats.traces_with_rounds, stats.total_traces
+        ));
+    }
+    if stats.traces_with_rounds > 0 {
+        sb.push_str(&format!("- Average rounds: {:.1}\n", stats.avg_rounds));
+        sb.push_str(&format!(
+            "- Average tool calls per round: {:.2}\n\n",
+            stats.avg_tool_calls_per_round
+        ));
+    } else {
+        sb.push_str("- Round data insufficient (no llm_turn events in window)\n\n");
+    }
     sb.push_str(&format!(
         "- Average duration: {}ms\n",
         stats.avg_duration_ms
-    ));
-    sb.push_str(&format!(
-        "- Efficiency score: {:.2}\n\n",
-        stats.efficiency_score
     ));
 
     // High-frequency tool chains
@@ -290,16 +300,16 @@ pub fn format_trace_insights(stats: &TraceStats) -> String {
         sb.push('\n');
     }
 
-    // Retry patterns
+    // Failure patterns（A3 改名：Retry Count → Failed Steps）
     if !stats.retry_patterns.is_empty() {
-        sb.push_str("### Retry Patterns\n\n");
-        sb.push_str("| Tool | Retry Count | Success Rate |\n");
-        sb.push_str("|------|------------|-------------|\n");
+        sb.push_str("### Frequent Failures\n\n");
+        sb.push_str("| Tool | Failed Steps | Success Rate |\n");
+        sb.push_str("|------|-------------|-------------|\n");
         for retry in &stats.retry_patterns {
             sb.push_str(&format!(
                 "| {} | {} | {:.1}% |\n",
                 truncate(&retry.tool_name, 20),
-                retry.retry_count,
+                retry.error_count,
                 retry.success_rate * 100.0
             ));
         }

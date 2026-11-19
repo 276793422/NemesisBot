@@ -259,9 +259,26 @@ impl DingTalkChannel {
             })?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "dingtalk reply error: {body}"
+            )));
+        }
+
+        // errcode 闸（BUG-20261119-181）：钉钉 webhook 协议业务错误走
+        // 200+errcode!=0 信封（关键词过滤/过期 sessionWebhook 均回 HTTP 200）
+        // ——wecom 同族协议（其头注释钦定同族并实现同款检查）。仅查 HTTP
+        // status 会把业务失败静默吞成成功：消息丢失而 bot 自认已送达。
+        let payload: serde_json::Value = resp.json().await.map_err(|e| {
+            NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                "dingtalk reply 响应解析失败: {e}"
+            )))
+        })?;
+        let errcode = payload.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
+        if errcode != 0 {
+            let errmsg = payload.get("errmsg").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(NemesisError::Channel(format!(
+                "dingtalk reply errcode={errcode}: {errmsg}"
             )));
         }
 
@@ -291,9 +308,23 @@ impl DingTalkChannel {
             })?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "dingtalk text reply error: {body}"
+            )));
+        }
+
+        // errcode 闸（BUG-20261119-181）：与 send_direct_reply 同面同口径。
+        let payload: serde_json::Value = resp.json().await.map_err(|e| {
+            NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                "dingtalk text reply 响应解析失败: {e}"
+            )))
+        })?;
+        let errcode = payload.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
+        if errcode != 0 {
+            let errmsg = payload.get("errmsg").and_then(|v| v.as_str()).unwrap_or("");
+            return Err(NemesisError::Channel(format!(
+                "dingtalk text reply errcode={errcode}: {errmsg}"
             )));
         }
 
@@ -526,7 +557,9 @@ impl DingTalkChannel {
                                     .and_then(|d| d.get("endpoint"))
                                     .and_then(|e| e.as_str())
                                 {
-                                    info!(endpoint = %endpoint, "[DingTalkChannel] stream connection opened");
+                                    // endpoint 带 ?ticket=<连接凭据>——裸打即凭据
+                                    // 进日志（BUG-20261119-182）。
+                                    info!(endpoint = %crate::base::redact_url_secrets(endpoint), "[DingTalkChannel] stream connection opened");
                                     backoff = INITIAL_BACKOFF;
 
                                     // Poll the stream endpoint for events
@@ -629,16 +662,18 @@ impl DingTalkChannel {
                                         }
                                     }
                                 } else {
+                                    // 整个响应体含 data.endpoint（ticket 凭据）——
+                                    // Debug 原样打日志同样泄露（BUG-20261119-182）。
                                     debug!(
-                                        "[DingTalkChannel] stream connection response: {:?}",
-                                        body
+                                        "[DingTalkChannel] stream connection response: {}",
+                                        crate::base::redact_url_secrets(body.to_string())
                                     );
                                     backoff = INITIAL_BACKOFF;
                                 }
                             }
                         } else {
                             let status = resp.status();
-                            let body = resp.text().await.unwrap_or_default();
+                            let body = nemesis_utils::http_cap::read_error_body(resp).await;
                             warn!(status = %status, body = %body, "[DingTalkChannel] stream open failed");
                         }
                     }

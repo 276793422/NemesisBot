@@ -83,6 +83,10 @@ export interface ProjectInfo {
   path: string
   created_at: string
   running: boolean
+  /** 附加放行目录（围栏多根，2026-11-19 D 批；canonical 绝对路径）。
+   *  老后端不回该键 → undefined（optional，消费方 ?? []）。对在跑 loop
+   *  不热生效——重启网关或重建项目后生效（后端 note 同步声明）。 */
+  extra_dirs?: string[]
 }
 
 /** P3-1 (2026-08-24 UI entry gap): fork-dialog turn row (GET /api/chat/sessions/:id/turns).
@@ -330,5 +334,14 @@ export function useChatApi() {
     /** 在系统文件管理器中打开项目目录（后端只放行注册表已知路径）。 */
     openProjectDir: (project_id: string): Promise<{ opened: string }> =>
       request('projects', 'open_dir', { project_id }),
+
+    /** 添加附加放行目录（围栏多根，2026-11-19 D 批）。校验链在后端
+     *  （绝对路径/存在/重叠/上限）；响应 note 声明「不热生效——重启网关
+     *  或重建项目后生效」。移除用 removeProjectDir（摘列表不动磁盘）。 */
+    addProjectDir: (project_id: string, dir: string): Promise<{ project: ProjectInfo; note: string }> =>
+      request('projects', 'add_dir', { project_id, dir }),
+
+    removeProjectDir: (project_id: string, dir: string): Promise<{ project: ProjectInfo; note: string }> =>
+      request('projects', 'remove_dir', { project_id, dir }),
   }
 }

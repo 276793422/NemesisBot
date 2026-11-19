@@ -180,6 +180,7 @@ fn make_build_context_task(task_id: &str) -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -562,6 +563,7 @@ mod loop_e2e {
             async_usage_stash: None,
             mandate: None,
             dispatch_generation: None,
+            created_at: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -598,6 +600,7 @@ mod loop_e2e {
             None, // 无 result_persister（收口语义走专属用例）
             None, // 无讨论通道（专属用例自行传入）
             "test-node".to_string(),
+            None, // 无回帖失败注记（B.3 失败可见专属用例自行传入）
             shutdown_rx,
         ));
         LoopRig {
@@ -628,6 +631,7 @@ mod loop_e2e {
             Some(persister),
             None, // 无讨论通道（专属用例自行传入）
             "test-node".to_string(),
+            None, // 无回帖失败注记（B.3 失败可见专属用例自行传入）
             shutdown_rx,
         ));
         LoopRig {
@@ -1257,6 +1261,7 @@ mod wave_b {
             async_usage_stash: None,
             mandate: None,
             dispatch_generation: None,
+            created_at: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -1305,6 +1310,7 @@ mod wave_b {
             None, // 无 result_persister（收口语义走专属用例）
             None, // 无讨论通道（专属用例自行传入）
             "test-node".to_string(),
+            None, // 无回帖失败注记（B.3 失败可见专属用例自行传入）
             shutdown_rx,
         ));
         WbRig {
@@ -1738,6 +1744,7 @@ mod swarm_g4 {
             None,
             Some(rx),
             "node-a".to_string(),
+            None, // 无回帖失败注记（B.3 失败可见专属用例自行传入）
             shutdown_rx,
         ));
 
@@ -1815,6 +1822,7 @@ mod swarm_g4 {
             None,
             Some(rx),
             "node-a".to_string(),
+            None, // 无回帖失败注记（B.3 失败可见专属用例自行传入）
             shutdown_rx,
         ));
 
@@ -2311,6 +2319,7 @@ mod wave_d {
             async_usage_stash: None,
             mandate: None,
             dispatch_generation: None,
+            created_at: chrono::Local::now().to_rfc3339(),
         }
     }
 
@@ -2497,6 +2506,7 @@ mod wave_d {
             persister,
             discussion_rx,
             "test-node".to_string(),
+            None, // 无回帖失败注记（B.3 失败可见专属用例自行传入）
             shutdown_rx,
         ));
         DRig {
@@ -3055,7 +3065,7 @@ mod wave_d {
         let (_guard, buf) = capture_logs_to_buf();
         let agent_loop = AgentLoop::new(Box::new(AlwaysErrProvider), d_config());
         let event = d_make_event(1);
-        handle_discussion(&agent_loop, &d_config(), None, None, "node-a", &event).await;
+        handle_discussion(&agent_loop, &d_config(), None, None, "node-a", None, &event).await;
         // 名字承诺 dropped_before_post——丢弃闸或日志臂回归时此处红。
         let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
         assert!(
@@ -3078,6 +3088,7 @@ mod wave_d {
             Some(rpc.as_ref()),
             None,
             "node-a",
+            None,
             &event,
         )
         .await;
@@ -3128,6 +3139,7 @@ fn prof_task(slug: Option<&str>) -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 

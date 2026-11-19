@@ -23,6 +23,7 @@ fn agt_ctx(
         home: Some(ws.to_string()),
         state: std::sync::Arc::new(AppState {
             cors_manager: None,
+            events_snapshot: None,
             auth_token: String::new(),
             session_count: std::sync::Arc::new(AtomicUsize::new(0)),
             workspace: Some(ws.to_string()),
@@ -47,6 +48,7 @@ fn agt_ctx(
             agent_loop: std::sync::Arc::new(parking_lot::RwLock::new(None)),
             cluster: None,
             quic_relay: None,
+            mail_plugin: None,
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
@@ -64,6 +66,7 @@ fn agt_ctx(
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            estop_audit: None,
             background_registry: None,
             signature_verify: sig,
             skills_install_gate: None,

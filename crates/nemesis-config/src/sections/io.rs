@@ -288,8 +288,18 @@ pub fn is_local_mode(config_path: &Path) -> bool {
 /// 严禁旧形态的 `parse.unwrap_or(硬编码默认)`（设 `=1` 想开安全会被
 /// 静默关掉、设 `=0` 想关 web 会被静默打开——intent 反转 + fail-open）。
 pub fn apply_env_overrides(config: &mut Config) {
+    // 字符串值键的 set-but-empty 政策（BUG-20261117-047）：docker `-e VAR=` /
+    // systemd `Environment=VAR=` / shell `export VAR=` 会留下**已设但空**——
+    // Go 蓝本惯用法 `if v := os.Getenv(x); v != ""` 对空值跳过覆盖，这里对齐：
+    // 空串不覆盖 config 文件值。否则 workspace 变 cwd 相对路径、host 变 ""
+    // （bind(("", port)) = 绑全网卡，默认 127.0.0.1 被静默放大成 0.0.0.0）。
+    // 数值/布尔键不需要该守卫：`"".parse()` 失败 / parse_env_bool None →
+    // 保留 config 值（bool 臂还有 warn 留痕）。
+
     // Agent defaults
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE") {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_WORKSPACE")
+        && !v.is_empty()
+    {
         config.agents.defaults.workspace = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_RESTRICT_TO_WORKSPACE") {
@@ -301,11 +311,10 @@ pub fn apply_env_overrides(config: &mut Config) {
             ),
         }
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_LLM") {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_LLM")
+        && !v.is_empty()
+    {
         config.agents.defaults.llm = v;
-    }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_IMAGE_MODEL") {
-        config.agents.defaults.image_model = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS")
         && let Ok(n) = v.parse()
@@ -322,7 +331,9 @@ pub fn apply_env_overrides(config: &mut Config) {
     {
         config.agents.defaults.max_tool_iterations = n;
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE") {
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE")
+        && !v.is_empty()
+    {
         config.agents.defaults.concurrent_request_mode = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE")
@@ -346,7 +357,9 @@ pub fn apply_env_overrides(config: &mut Config) {
             ),
         }
     }
-    if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_HOST") {
+    if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_HOST")
+        && !v.is_empty()
+    {
         config.channels.web.host = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_PORT")
@@ -356,7 +369,9 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 
     // Gateway
-    if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_HOST") {
+    if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_HOST")
+        && !v.is_empty()
+    {
         config.gateway.host = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_PORT")
@@ -404,7 +419,9 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 
     // Session
-    if let Ok(v) = std::env::var("NEMESISBOT_SESSION_DM_SCOPE") {
+    if let Ok(v) = std::env::var("NEMESISBOT_SESSION_DM_SCOPE")
+        && !v.is_empty()
+    {
         config.session.dm_scope = v;
     }
 }
@@ -494,6 +511,7 @@ pub fn default_config() -> Config {
                 ..Default::default()
             },
             list: vec![],
+            experts: ExpertsModeConfig::default(),
         },
         bindings: vec![],
         session: SessionConfig::default(),
@@ -603,6 +621,8 @@ pub fn default_config() -> Config {
         logs: None,
         checkpoint: None,
         plugins: None,
+        browser: None,
+        goals: None,
     }
 }
 /// Load MCP configuration from a separate config.mcp.json file.
@@ -858,7 +878,12 @@ impl WorkspaceResolver {
             return PathBuf::from("./.nemesisbot");
         }
 
-        if let Ok(home) = std::env::var("NEMESISBOT_HOME") {
+        // set-but-empty 视同 unset（BUG-20261117-047）：Go 蓝本 os.Getenv 对
+        // unset 与 empty 同返回 ""（跳过走检测链），docker `-e VAR=` /
+        // systemd `Environment=VAR=` 留下的空值不该把 home 变成 cwd 相对路径。
+        if let Ok(home) = std::env::var("NEMESISBOT_HOME")
+            && !home.is_empty()
+        {
             // Expand ~ to user home, then append.nemesisbot (matching Go behavior)
             let expanded = expand_tilde(&home);
             return expanded.join(".nemesisbot");

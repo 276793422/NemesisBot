@@ -32,6 +32,7 @@ pub mod chat;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
+pub mod prompt_ticket;
 // 统一工作台 WSAPI（workbench.get / workbench.respond）：触点文档级重页
 // 的取数与动作漏斗路由壳。随 `board` feature 进出（依赖 board store 与
 // board::touchpoints 漏斗）。
@@ -63,7 +64,30 @@ pub mod connectors;
 pub mod editor;
 // canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
+// 浏览器接管管理面（browser.* WSAPI；browser feature 门控，manager 槽
+// 未装配时 handler 诚实报「未装配」）。
+#[cfg(feature = "browser")]
+pub mod browser;
 pub mod estop;
+// 事件驱动唤醒管理面（events.status/rules.get/rules.save；`events` feature
+// 门控——读泵观测快照 + events.json 规则 CRUD；项1 P2）。
+#[cfg(feature = "events")]
+pub mod events;
+// webhook 事件源 HTTP 入口（POST /api/events/webhook/{token}；`events`
+// feature 门控——token 即凭据公开端点 + 泵 submitter 静态槽；2026-11-16
+// 事件源扩展 P1）。
+#[cfg(feature = "events")]
+pub mod events_webhook;
+// 自配速 durable loop 管理面（loops.* 七命令；`loop` feature 门控——
+// <workspace>/loops/*.json 人控面；项5）。
+#[cfg(feature = "loop")]
+pub mod loops;
+// 目标（goals）管理面（goals.* 八命令；`goals` feature 门控——
+// <workspace>/goals/*.goal.md + config/goals.json 人控面）。
+#[cfg(feature = "goals")]
+pub mod goals;
+// 专家子代理管理面（experts.*）——bot 侧资源层经静态槽桥注入。
+pub mod experts;
 // 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
 // 运行闸默认关）。
 #[cfg(feature = "forge")]
@@ -72,6 +96,8 @@ pub mod fs;
 pub mod hooks;
 pub mod identity;
 pub mod logs;
+#[cfg(feature = "mail")]
+pub mod mail;
 pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
@@ -93,6 +119,10 @@ pub mod plugins_wasm;
 // rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
 // 未装配时 handler 诚实报「未装配」。
 pub mod projects;
+// 会话资源盘点聚合命令（session.resources；计划 2026-11-17 B2）。无
+// feature 闸——registry 槽未装配时 handler 诚实报「未装配」；feature 裁剪
+// 的类目在 provider 装配侧缺席（响应无该键）。
+pub mod resources;
 // （凭据 vault）：凭据索要卡 WSAPI（credential.respond /
 // credential.pending）。无 feature 闸——responder trait 在 nemesis-types，
 // broker 槽（静态注入）未装配时 handler 诚实报「not wired」。
@@ -110,6 +140,11 @@ pub mod release_fetch;
 // manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
+// 系统文件管理器动作单一归宿（打开目录 / 定位选中文件 / 默认应用打开）
+// ——此前 projects/skills/sandbox 各一份 + fs 侧两份私有的收编点；Windows
+// 臂 = explorer spawn + AttachThreadInput 激活阶梯前台看门（设计演进与
+// COM 弃用实证见 shell_open 模块头注）。
+pub mod shell_open;
 // 第 4 步：桌面级 VM 管理面（`vm` feature——命令族全走 VmBridge，
 // feature 本体零依赖，见 handlers/vm.rs 头注）。
 pub mod selfupdate;
@@ -145,6 +180,10 @@ mod subagents_handler_tests;
 pub mod background;
 #[cfg(test)]
 mod background_handler_tests;
+// 会话资源盘点聚合命令：session.resources（2026-11-17 会话资源盘点看板
+// B2）——registry 静态槽注入 + meta 投影 + 三态诚实 + PerLoop 路由。
+#[cfg(test)]
+mod resources_tests;
 // 独立代理配置 WSAPI（代理设置三项改造）：proxy.get/save——
 // `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
 // （独立文件不依赖任何子系统）。
@@ -201,6 +240,11 @@ mod sessions_trash_tests;
 #[cfg(test)]
 mod sessions_l22_tests;
 
+// BUG-20261118-168 回归：sessions.list 后端收尾排序（最近活跃优先，
+// pinned 组前端继承列表原序——枚举序直传跨平台不一致）。
+#[cfg(test)]
+mod sessions_list_order_tests;
+
 // projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]
@@ -229,6 +273,11 @@ mod models_health_tests;
 // 反斜杠/空段 loud 拒，且先于 config 触达）。
 #[cfg(test)]
 mod models_add_validation_tests;
+
+// BUG-20261118-169 回归: effort_probe 非 object 时
+// apply_effort_autofix 注记臂跳过（嵌套可变索引对非容器 panic）。
+#[cfg(test)]
+mod models_effort_autofix_tests;
 
 // (, devtool-upgrade): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + wsapi-commands 文档生成 +
@@ -266,6 +315,21 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // 事件驱动唤醒管理面（`events` feature 门控；泵快照槽未装配诚实报）。
+    #[cfg(feature = "events")]
+    {
+        router.register(Arc::new(events::EventsHandler));
+    }
+    // 自配速 durable loop 管理面（`loop` feature 门控；项5）。
+    #[cfg(feature = "loop")]
+    {
+        router.register(Arc::new(loops::LoopsHandler));
+    }
+    // 目标（goals）管理面（`goals` feature 门控）。
+    #[cfg(feature = "goals")]
+    {
+        router.register(Arc::new(goals::GoalsHandler));
+    }
     // 紫微系统（.5）：ziwei.* 全量命令清单随 feature 进出。
     #[cfg(feature = "ziwei")]
     {
@@ -279,6 +343,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(approval::ApprovalHandler));
     // 提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
     router.register(Arc::new(question::QuestionHandler));
+    // 会话资源盘点聚合命令（session.resources；registry 槽 gateway 注入）。
+    router.register(Arc::new(resources::ResourcesHandler));
     // 凭据索要卡响应端点（dashboard 凭据卡 → WebCredentialBroker）。
     router.register(Arc::new(credential::CredentialHandler));
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
@@ -323,6 +389,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     {
         router.register(Arc::new(vm::VmHandler));
     }
+    // 浏览器接管管理面（browser.* WSAPI；manager 槽未装配诚实报）。
+    #[cfg(feature = "browser")]
+    {
+        router.register(Arc::new(browser::BrowserHandler));
+    }
     #[cfg(feature = "forge")]
     {
         router.register(Arc::new(forge::ForgeHandler::new()));
@@ -362,6 +433,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     // QUIC 中继独立 WSAPI（解耦；零 Cluster 类型依赖，恒注册）。
     router.register(Arc::new(quic::QuicHandler::new()));
+    // 邮件基础设施 WSAPI（plugin_mail 宿主面；`mail` feature 门控——
+    // 槽空=诚实报「插件未装载」，注册面本身随 feature 裁剪）。
+    #[cfg(feature = "mail")]
+    router.register(Arc::new(mail::MailHandler));
     // 独立代理配置（config.proxy.json；恒注册，无 feature 闸）。
     router.register(Arc::new(proxy::ProxyHandler));
     router.register(Arc::new(logs::LogsHandler));
@@ -390,6 +465,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(deliveries::DeliveriesHandler));
     // 角色目录（角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
+    // 专家子代理管理面（experts.list/get/create/update/remove/set_enabled；
+    // bot 侧 store 经静态槽桥注入——槽空诚实报错，headless/独立 web 测试态）。
+    router.register(Arc::new(experts::ExpertsHandler));
     // 子代理可见性：subagents.list/detail/cancel。
     router.register(Arc::new(subagents::SubagentsHandler));
     // 后台进程实时输出（2026-11-06 P1）：background.list/output/kill/steer。
@@ -545,6 +623,52 @@ pub(crate) fn restore_masked_entries(
     Ok(())
 }
 
+/// 数组元素身份指纹：剥掉敏感名字段后的深拷贝——掩码还原的元素配对不能
+/// 看凭据值本身（那正是要还原的东西），看其余全部字段。
+fn strip_sensitive_named_fields(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, val) in map {
+                if is_sensitive_field(k) {
+                    continue;
+                }
+                out.insert(k.clone(), strip_sensitive_named_fields(val));
+            }
+            serde_json::Value::Object(out)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(strip_sensitive_named_fields).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+/// 在 `existing`（数组）里找与 `elem` 指纹（剥敏感字段后深相等）唯一相同
+/// 的对象元素：唯一命中返回该元素（按身份配对）；零命中（元素同轮被编辑
+/// 过）/歧义（重复指纹，如两条仅 api_key 不同的条目）返回 None（调用方
+/// 回落按下标）。非对象元素（headers/env 等纯标量条目）恒 None。
+fn unique_fingerprint_match<'a>(
+    existing: &'a serde_json::Value,
+    elem: &serde_json::Value,
+) -> Option<&'a serde_json::Value> {
+    let arr = existing.as_array()?;
+    let fp = strip_sensitive_named_fields(elem);
+    if !fp.is_object() {
+        return None;
+    }
+    let mut hit: Option<&'a serde_json::Value> = None;
+    for e in arr {
+        if e.is_object() && strip_sensitive_named_fields(e) == fp {
+            if hit.is_some() {
+                return None; // 歧义：两个候选不可裁决，回落下标
+            }
+            hit = Some(e);
+        }
+    }
+    hit
+}
+
 /// Restore masked values in sensitive-named fields of `incoming` from the
 /// matching field in `existing` (recursive over objects/arrays). A masked
 /// value with no unmasked counterpart is a loud error — never persist a mask.
@@ -577,8 +701,16 @@ pub(crate) fn restore_masked_named_fields(
             Ok(())
         }
         serde_json::Value::Array(arr) => {
+            // 对象元素数组（model_list 等）按身份指纹配对而非下标
+            //（BUG-20261114-007）：整档编辑器里插入/重排/删除条目会让下标
+            // 错位，把 A 条目的掩码 api_key 从 B 条目的原值还原——跨条目
+            // 凭据串换且静默落盘。指纹唯一命中 → 用命中元素做 existing；
+            // 零命中/歧义 → 回落按下标（无重排的普通编辑保持原行为）。
             for (i, v) in arr.iter_mut().enumerate() {
-                let ex = existing.get(i).unwrap_or(&NULL);
+                let ex: &serde_json::Value = match unique_fingerprint_match(existing, v) {
+                    Some(e) => e,
+                    None => existing.get(i).unwrap_or(&NULL),
+                };
                 restore_masked_named_fields(v, ex)?;
             }
             Ok(())
@@ -678,9 +810,15 @@ pub fn get_opt_str_loud(data: &serde_json::Value, field: &str) -> Result<Option<
 }
 
 /// Read a text file from the workspace.
+///
+/// BUG-20261119-179：走 `read_config_string` 剥前导 UTF-8 BOM——消费方
+/// （identity/skills detail/tasks/tools/memory/cluster 预览）全部是用户
+/// 可手工编辑文件，记事本「带 BOM 的 UTF-8」保存形态下裸读会把零宽
+/// BOM 带进前端编辑器内容与回写（BOM 永不清洗）。无 BOM 文件字节不变。
 pub fn read_workspace_file(workspace: &str, relative: &str) -> Result<String, String> {
     let path = resolve_path(workspace, relative)?;
-    std::fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {}", relative, e))
+    nemesis_utils::fsutil::read_config_string(&path)
+        .map_err(|e| format!("failed to read {}: {}", relative, e))
 }
 
 /// Write a text file to the workspace (atomic write via tmp + rename).
@@ -764,6 +902,7 @@ mod agt_tests;
 
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_deep_tests;
+// BUG-20261113-156：workbench 命令名形态契约（裸名 vs 全名）回归锁。
 #[cfg(all(test, feature = "forge"))]
 mod forge_extra_tests;
 #[cfg(all(test, feature = "memory"))]
@@ -780,6 +919,8 @@ mod scanner_more_tests;
 mod skills_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_more_tests;
+#[cfg(all(test, feature = "board"))]
+mod workbench_tests;
 // 供应链工作流：skills.install 漏斗记账/gate 拒绝/
 // uninstall 联动/verify 漂移检测的 WSAPI 面。
 #[cfg(all(test, feature = "workflow"))]

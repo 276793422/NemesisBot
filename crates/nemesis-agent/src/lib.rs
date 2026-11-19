@@ -21,6 +21,10 @@
 
 pub mod args_validator;
 pub mod background_registry;
+/// spawn park 注册表（2026-11-19 会话流过程语言整改）：后台子代理
+/// 完成投递信箱——主 turn park 在 spawn 工具调用上等真实完成，不再
+/// 伪造 Done 收口（详见模块头）。
+pub mod bg_park;
 pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
@@ -95,6 +99,9 @@ pub mod remote_executor_tool;
 pub mod replay;
 pub mod request_logger;
 pub mod request_logger_observer;
+pub mod resource_providers;
+#[cfg(test)]
+mod resource_providers_tests;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;
@@ -146,6 +153,11 @@ mod workspace_lease_tests;
 #[cfg(test)]
 mod test_support;
 
+// 测试专用：进程级 home 重定向（chat_log 单例寻址防泄漏真实 home），
+// 由 chat_log::singleton() 在测试构建下首访触发，详见模块文档。
+#[cfg(test)]
+mod test_home;
+
 pub use background_registry::BackgroundProcessRegistry;
 pub use background_registry::{CompletionEvent, JobOrigin};
 pub use capture_sink::{CaptureSink, SessionWriteCapture, ToolCapture};
@@ -171,8 +183,8 @@ pub use memory::ConversationMemory;
 pub use registry::AgentRegistry;
 pub use remote_executor_tool::{
     DaclSpawnFn, DaclSpawnHook, DaclSpawnOutcome, DaclSpawnRequest, ExecutorChannel, MOVE_TOOLS,
-    PersistentCallError, PersistentExecutor, PersistentRoute, RemoteExecutorTool, StrictGate,
-    UserlandFallback,
+    MxcSpawnFn, MxcSpawnHook, MxcSpawnOutcome, MxcSpawnRequest, PersistentCallError,
+    PersistentExecutor, PersistentRoute, RemoteExecutorTool, StrictGate, UserlandFallback,
 };
 pub use request_logger::RequestLogger;
 pub use request_logger_observer::RequestLoggerObserver;

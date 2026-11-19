@@ -16,6 +16,7 @@
 // 挂载点在 composer strip lane（宿主 ChatPanel 负责），非 turn 级瞬态块。
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
+import { useToast } from '../../composables/useToast'
 import { addMessageHandler, removeMessageHandler } from '../../composables/useWebSocket'
 
 const props = defineProps<{ sessionSid: string }>()
@@ -105,6 +106,43 @@ async function stop(r: SubagentRow) {
   } catch { /* WS 未就绪——行仍在，可重试 */ }
 }
 
+// --- steer（飞行中驾驶，2026-11-16）：对运行中子代理中途注入指令。
+// 单开互斥（一次只有一个胶囊展开输入行）；成功即收起 + toast 确认，
+// 失败 toast 错误原文（终态/急停/容量满各拒绝文案后端诚实回传）。 ---
+const toast = useToast()
+const steerOpenId = ref<string | null>(null)
+const steerText = ref('')
+const steerBusy = ref(false)
+
+// 展开时自动聚焦（局部指令，v-focus 只挂输入行）。
+const vFocus = { mounted: (el: HTMLInputElement) => el.focus() }
+
+function toggleSteer(r: SubagentRow) {
+  if (steerOpenId.value === r.id) {
+    steerOpenId.value = null
+    steerText.value = ''
+    return
+  }
+  steerOpenId.value = r.id
+  steerText.value = ''
+}
+
+async function sendSteer(r: SubagentRow) {
+  const instruction = steerText.value.trim()
+  if (!instruction || steerBusy.value) return
+  steerBusy.value = true
+  try {
+    await request('subagents', 'steer', { id: r.id, instruction })
+    toast.success(`指令已注入（子代理下一轮生效）：${instruction.slice(0, 40)}`)
+    steerOpenId.value = null
+    steerText.value = ''
+  } catch (e) {
+    toast.error(`steer 失败：${String(e)}`)
+  } finally {
+    steerBusy.value = false
+  }
+}
+
 function handleWSMessage(frame: any) {
   // 子代理 push 帧（outer data.subagent_id）到达 = 新活动，即时刷新列表。
   if (frame?.type === 'push' && frame?.data?.subagent_id) {
@@ -131,17 +169,44 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="mine.length" class="subagent-capsules" role="status">
-    <div
-      v-for="r in mine"
-      :key="r.id"
-      class="subagent-capsule"
-      :class="{ 'sc-anim': animIds.has(r.id) }"
-    >
-      <span class="sc-spinner"></span>
-      <span class="sc-task" :title="r.task">{{ r.task || '（无任务文本）' }}</span>
-      <span class="sc-elapsed">{{ elapsed(r.started_at_ms) }}</span>
-      <button class="sc-stop" type="button" title="终止此子代理" @click="stop(r)">✕</button>
-    </div>
+    <template v-for="r in mine" :key="r.id">
+      <div
+        class="subagent-capsule"
+        :class="{ 'sc-anim': animIds.has(r.id) }"
+      >
+        <span class="sc-spinner"></span>
+        <span class="sc-task" :title="r.task">{{ r.task || '（无任务文本）' }}</span>
+        <span class="sc-elapsed">{{ elapsed(r.started_at_ms) }}</span>
+        <button
+          class="sc-steer"
+          type="button"
+          title="飞行中驾驶（指令在子代理下一轮开始前生效）"
+          :aria-expanded="steerOpenId === r.id"
+          @click="toggleSteer(r)"
+        >↩</button>
+        <button class="sc-stop" type="button" title="终止此子代理" @click="stop(r)">✕</button>
+      </div>
+      <div v-if="steerOpenId === r.id" class="sc-steer-row">
+        <input
+          v-focus
+          v-model="steerText"
+          class="sc-steer-input"
+          type="text"
+          placeholder="中途指令（下一轮生效），Enter 发送 / Esc 收起"
+          :disabled="steerBusy"
+          @keydown.enter="sendSteer(r)"
+          @keydown.esc="steerOpenId = null"
+        />
+        <button
+          class="sc-steer-send"
+          type="button"
+          :disabled="steerBusy || !steerText.trim()"
+          @click="sendSteer(r)"
+        >
+          {{ steerBusy ? '注入中…' : '注入' }}
+        </button>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -205,8 +270,62 @@ onBeforeUnmount(() => {
   opacity: 0;
   transition: opacity 150ms ease;
 }
-.subagent-capsule:hover .sc-stop {
+.subagent-capsule:hover .sc-stop,
+.subagent-capsule:hover .sc-steer,
+.sc-steer[aria-expanded='true'] {
   opacity: 1;
+}
+.sc-steer {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.sc-steer:hover {
+  color: var(--accent, #3b82f6);
+  background: rgba(59, 130, 246, 0.12);
+}
+/* steer 输入行：胶囊下方展开，与胶囊同宽。 */
+.sc-steer-row {
+  display: flex;
+  gap: 6px;
+  margin: 2px 0 0 0;
+  padding: 0 12px;
+}
+.sc-steer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 0.5px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.sc-steer-input:focus {
+  outline: none;
+  border-color: var(--accent, #3b82f6);
+}
+.sc-steer-send {
+  flex: none;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 0.5px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.sc-steer-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .sc-stop:hover {
   color: #e05252;

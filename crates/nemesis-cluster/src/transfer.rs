@@ -494,7 +494,7 @@ pub struct TransferSink {
 impl TransferSink {
     /// 创建 sink（构造期同步建目录 + 加载持久化去重索引）。
     pub fn new(workspace: &Path, max_bytes: u64) -> Self {
-        let inbox_root = nemesis_path::cluster_dir_in_workspace(workspace).join("inbox");
+        let inbox_root = nemesis_path::resolve_cluster_inbox_dir_in_workspace(workspace);
         let staging_root = inbox_root.join(".staging");
         let _ = std::fs::create_dir_all(&staging_root);
         let dedup = load_dedup(&inbox_root);
@@ -1152,6 +1152,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| format!("readdir entry: {e}"))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
+        // 目录链接环守卫（与 nemesis-migrate workspace.rs 同源形态）：
+        // entry.file_type() 不穿越 symlink，目录链接不递归——is_dir()
+        // 跟随链接遇环 = 病态嵌套复制直到 OS 路径上限再 Err。跳过目录
+        // 链接；普通 symlink 文件仍按内容照常拷贝。
+        let ft = entry
+            .file_type()
+            .map_err(|e| format!("entry type {}: {e}", from.display()))?;
+        if ft.is_symlink() && from.is_dir() {
+            continue;
+        }
         if from.is_dir() {
             copy_dir_recursive(&from, &to)?;
         } else {

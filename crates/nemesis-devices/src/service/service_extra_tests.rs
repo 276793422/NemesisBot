@@ -9,12 +9,14 @@
 use super::*;
 use crate::source::{Action, EventSource, Kind, UsbEventSource};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
-// handle_events_task 签名从 bool 探测值改为真实依赖
-// （bus/state Arc 克隆）。既有 smoke 测试统一经空依赖 helper 构造。
+// handle_events_task 停机参数演进史：bool 探测值 → 真实依赖（bus/state Arc
+// 克隆，BUG-20261028-126）→ CancellationToken（BUG-20261114-015，heartbeat
+// r9 停机 panic 根修同款）。既有 smoke 测试统一经空依赖 helper 构造。
 // ---------------------------------------------------------------------------
 
 fn empty_bus_deps() -> Arc<Mutex<Option<OutboundSender>>> {
@@ -228,9 +230,14 @@ async fn test_stop_idempotent_multiple_times() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_handle_events_task_stops_on_stop_flag() {
+async fn test_handle_events_task_cancel_token_exits_immediately() {
+    // BUG-20261114-015 回归锁（快速退出契约）：任务停在空 channel 上，cancel
+    // 后必须在 200ms 内退出。旧形态（sleep(1s) 轮询 AtomicBool）退出下限
+    // = 1s（sleep 臂必须先到期），此断言确定性失败；新形态 cancelled() 走
+    // watch 通道即刻唤醒，200ms 预算富余。兼锁 timer 注册面：cancelled()
+    // 零 timer 注册（heartbeat r9 停机 panic 家族根修同款）。
     let (_tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -238,17 +245,21 @@ async fn test_handle_events_task_stops_on_stop_flag() {
             .await;
     });
 
-    // Set the stop flag — task should break out of the loop
-    stop.store(true, Ordering::SeqCst);
+    // 给任务一个 poll 周期进入 select 挂起
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    stop.cancel();
 
-    // Wait for the task to complete
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+    let exited = tokio::time::timeout(std::time::Duration::from_millis(200), handle).await;
+    assert!(
+        exited.is_ok(),
+        "cancel 后任务 200ms 内未退出（退回了 sleep 轮询停机形态？）"
+    );
 }
 
 #[tokio::test]
 async fn test_handle_events_task_processes_event_and_continues() {
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -273,14 +284,14 @@ async fn test_handle_events_task_processes_event_and_continues() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Stop the task
-    stop.store(true, Ordering::SeqCst);
+    stop.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
 }
 
 #[tokio::test]
 async fn test_handle_events_task_stops_on_channel_close() {
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
 
     let handle = tokio::spawn(async move {
         DeviceService::handle_events_task(rx, stop, empty_bus_deps(), empty_state_deps()).await;
@@ -295,7 +306,7 @@ async fn test_handle_events_task_stops_on_channel_close() {
 #[tokio::test]
 async fn test_handle_events_task_multiple_events() {
     let (tx, rx) = mpsc::channel::<DeviceEvent>(16);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -321,14 +332,14 @@ async fn test_handle_events_task_multiple_events() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Verify the channel is drained (all events processed without panic)
-    stop.store(true, Ordering::SeqCst);
+    stop.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
 }
 
 #[tokio::test]
 async fn test_handle_events_task_remove_event() {
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -349,14 +360,14 @@ async fn test_handle_events_task_remove_event() {
     tx.send(ev).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    stop.store(true, Ordering::SeqCst);
+    stop.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
 }
 
 #[tokio::test]
 async fn test_handle_events_task_change_event() {
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -377,7 +388,7 @@ async fn test_handle_events_task_change_event() {
     tx.send(ev).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    stop.store(true, Ordering::SeqCst);
+    stop.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
 }
 
@@ -385,7 +396,7 @@ async fn test_handle_events_task_change_event() {
 async fn test_handle_events_task_with_bus_and_state_true() {
     // 空依赖形态：bus/state 均未接线，事件只 debug log 不通知（route_notification 短路）。
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -406,7 +417,7 @@ async fn test_handle_events_task_with_bus_and_state_true() {
     tx.send(ev).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    stop.store(true, Ordering::SeqCst);
+    stop.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
 }
 
@@ -414,7 +425,7 @@ async fn test_handle_events_task_with_bus_and_state_true() {
 async fn test_handle_events_task_with_bus_and_state_false() {
     // 同上（后 bool 探测参数已退役，两用例保留 smoke 覆盖）。
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
-    let stop = Arc::new(AtomicBool::new(false));
+    let stop = CancellationToken::new();
     let stop_clone = stop.clone();
 
     let handle = tokio::spawn(async move {
@@ -435,7 +446,7 @@ async fn test_handle_events_task_with_bus_and_state_false() {
     tx.send(ev).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    stop.store(true, Ordering::SeqCst);
+    stop.cancel();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
 }
 
@@ -1624,4 +1635,156 @@ async fn test_device_event_notification_skips_internal_channel() {
     assert!(got.is_err(), "内部通道 cli 不应收到设备通知");
 
     svc.stop();
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-015 回归锁：token 复位契约（stop→start 周期后第二代任务存活）
+// ---------------------------------------------------------------------------
+
+/// tx 保留型源：start() 建通道并把 tx 存进共享槽，测试在任意时刻 emit。
+/// 事件发射与 start 解耦——排除 PushingSource 那种「事件与取消同 ready、
+/// select 随机挑臂」的非确定性窗口：stale cancelled token 杀死第二代任务
+/// 后，后发的事件永远无人消费，超时判定完全确定。
+struct RetainedTxSource {
+    started: Arc<AtomicUsize>,
+    tx: Arc<Mutex<Option<mpsc::Sender<DeviceEvent>>>>,
+}
+
+impl EventSource for RetainedTxSource {
+    fn kind(&self) -> Kind {
+        Kind::Usb
+    }
+
+    fn start(&self) -> Result<mpsc::Receiver<DeviceEvent>, String> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel::<DeviceEvent>(4);
+        *self.tx.lock() = Some(tx);
+        Ok(rx)
+    }
+
+    fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn make_route_event(id: &str) -> DeviceEvent {
+    DeviceEvent {
+        action: Action::Add,
+        kind: Kind::Usb,
+        device_id: id.to_string(),
+        vendor: "VendorX".to_string(),
+        product: "ProductY".to_string(),
+        serial: String::new(),
+        capabilities: String::new(),
+        raw: HashMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn test_service_token_reset_survives_start_stop_start_cycle() {
+    // 若 start() 未重置新 token（复用已 cancelled 的 token），第二代任务首
+    // poll 即从 cancelled() 臂退出——第二代 emit 的事件永不触达 bus_sender，
+    // 第二次通知超时失败（诚实红证）。修复形态：每轮 start 换新 token
+    // （cancelled 的 token 无法复用——heartbeat 同款 Mutex 包装纪律）。
+    let started = Arc::new(AtomicUsize::new(0));
+    let tx_slot: Arc<Mutex<Option<mpsc::Sender<DeviceEvent>>>> = Arc::new(Mutex::new(None));
+    let svc = DeviceService::with_sources_for_test(
+        DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 1,
+            monitor_usb: false,
+        },
+        vec![Box::new(RetainedTxSource {
+            started: started.clone(),
+            tx: tx_slot.clone(),
+        })],
+    );
+
+    let (tx_capture, mut rx_capture) = mpsc::channel::<(String, String, String)>(8);
+    svc.set_bus_sender(Box::new(
+        move |channel: &str, chat_id: &str, content: &str| {
+            let _ = tx_capture.try_send((
+                channel.to_string(),
+                chat_id.to_string(),
+                content.to_string(),
+            ));
+        },
+    ));
+    svc.set_state_manager(Arc::new(StaticLastChannel {
+        channel: "web:user1",
+    }));
+
+    // 第一代：start → emit → 通知到达
+    svc.start().await.unwrap();
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tx_slot
+        .lock()
+        .as_ref()
+        .expect("第一代 tx 未就绪")
+        .try_send(make_route_event("cycle-1"))
+        .expect("第一代 emit 失败");
+    let got1 = tokio::time::timeout(std::time::Duration::from_secs(3), rx_capture.recv())
+        .await
+        .expect("第一代事件未路由到 bus_sender")
+        .expect("capture channel closed");
+    assert_eq!(got1.0, "web");
+
+    // stop → start 周期（token 应在此重置）
+    svc.stop();
+    svc.start().await.unwrap();
+    assert_eq!(started.load(Ordering::SeqCst), 2);
+
+    // 第二代：任务必须存活并继续路由（stale token 场景此处超时失败）
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tx_slot
+        .lock()
+        .as_ref()
+        .expect("第二代 tx 未就绪")
+        .try_send(make_route_event("cycle-2"))
+        .expect("第二代 emit 失败");
+    let got2 = tokio::time::timeout(std::time::Duration::from_secs(3), rx_capture.recv())
+        .await
+        .expect("第二代事件未路由到 bus_sender（stop→start 后 token 未复位，任务秒退？）")
+        .expect("capture channel closed");
+    assert_eq!(got2.0, "web");
+
+    svc.stop();
+}
+
+#[tokio::test]
+async fn test_service_stop_exits_event_task_immediately() {
+    // BUG-20261114-015 回归锁（服务层 stop 接线契约）：svc.stop() 必须
+    // 真正 cancel token 使事件任务即刻退出（观察面 = rx drop → tx.closed()
+    // 完成）。stop() 若忘了 cancel（或退回 sleep 轮询形态），RetainedTxSource
+    // 的 tx 由测试侧保留、rx 永不关闭 → closed() 悬挂 → 200ms 超时红；
+    // 旧 sleep 轮询形态退出下限 1s，同样确定性红。与任务层锁
+    // （cancel_token_exits_immediately，测 select 臂本体）分层互补。
+    let started = Arc::new(AtomicUsize::new(0));
+    let tx_slot: Arc<Mutex<Option<mpsc::Sender<DeviceEvent>>>> = Arc::new(Mutex::new(None));
+    let svc = DeviceService::with_sources_for_test(
+        DeviceServiceConfig {
+            enabled: true,
+            poll_interval_secs: 1,
+            monitor_usb: false,
+        },
+        vec![Box::new(RetainedTxSource {
+            started: started.clone(),
+            tx: tx_slot.clone(),
+        })],
+    );
+
+    svc.start().await.unwrap();
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+
+    // 任务挂起在 select 上后，从共享槽取出 tx 副本（观察 rx 何时 drop）
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let tx = tx_slot.lock().clone().expect("tx 未就绪");
+
+    svc.stop();
+    let exited = tokio::time::timeout(std::time::Duration::from_millis(200), tx.closed()).await;
+    assert!(
+        exited.is_ok(),
+        "stop() 后事件任务 200ms 内未退出（stop 未真正 cancel token？）"
+    );
 }

@@ -143,7 +143,32 @@ impl nemesis_tools::registry::Tool for AgentToolAdapter {
                     source: "workflow".to_string(),
                     metadata: HashMap::new(),
                 };
-                let (allowed, deny) = security.execute(&invocation);
+                // BUG-20261119-199：审批等待在 auditor 内同步阻塞（最长
+                // 300s，模块文档自证 ask 臂「block until a verdict」是既定
+                // 语义）——裸调占死 tokio worker（dispatch 主路径
+                // tool_dispatch.rs 修过的同一问题：并行批 N 张卡 = N 个
+                // worker 饿死；current_thread runtime 上 WebApprovalManager
+                // 的 block_in_place 还会 panic）。包 spawn_blocking 出
+                // worker 线程，阻塞语义不变。
+                let (allowed, deny) = {
+                    let tracked_security = std::sync::Arc::clone(security);
+                    let tracked_invocation = invocation.clone();
+                    tokio::task::spawn_blocking(move || {
+                        tracked_security.execute(&tracked_invocation)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            false,
+                            Some(nemesis_security::types::DenyInfo {
+                                layer: "runtime",
+                                policy: "spawn_blocking".to_string(),
+                                summary: format!("security check aborted: {e}"),
+                                suggestion: None,
+                            }),
+                        )
+                    })
+                };
                 if !allowed {
                     // (devtool-upgrade): structured DenyInfo —
                     // layer/policy 落日志，summary 原文 + suggestion 进结果。

@@ -17,7 +17,8 @@
 //! records the latest binding `session_key → chat_id` so the cron fire handler
 //! can populate `InboundMessage.chat_id` and get a real-time push when the tab
 //! is open. If the tab is closed/dead, `send_to_session` fails soft and the
-//! reply still lands in history. Latest-wins keeps the table bounded (no
+//! reply still lands in history. Latest-wins keeps per-conversation entries at
+//! one; the table itself is bounded by [`ConvRouter::MAX_BINDINGS`] (no
 //! disconnect hook required).
 //!
 //! ## v1 limitation
@@ -38,6 +39,14 @@ pub struct ConvRouter {
 /// Shared handle to a [`ConvRouter`].
 pub type SharedConvRouter = Arc<ConvRouter>;
 
+/// 绑定表条目上限（BUG-20261116-020）：key 空间 = session_key 全史（每条
+/// web 入站都会 `bind` 一次），latest-wins 只限 per-key 条目数、不限 key
+/// 数——24/7 网关下按会话数无界累积（BUG-20261113-170 同族；条目是死
+/// 绑定，指向早已关闭的 ws conn id）。超限整体清空（与 effort_overrides /
+/// `SESSION_STATE_MAX_ENTRIES` 同纪律）：bind 每次入站即重绑，活跃会话的
+/// 下一条消息自愈；清空窗口内 cron 实时推送回落历史投递（软失败语义既有）。
+pub const MAX_BINDINGS: usize = 4096;
+
 impl ConvRouter {
     /// Create an empty router.
     pub fn new() -> Self {
@@ -49,9 +58,17 @@ impl ConvRouter {
     /// Record that conversation `session_key` is currently reachable via
     /// `chat_id` (a `web:<ws_conn_id>` value). Latest-wins: a later bind for
     /// the same conversation overwrites. Called on every web inbound.
+    ///
+    /// 有界纪律（BUG-20261116-020）：新 key 且表已满 [`MAX_BINDINGS`] 时
+    /// 整体清空再插入——丢失的绑定在各自下一条入站消息重绑自愈；窗口内
+    /// cron 推送回落历史投递。同 key 重绑走 `contains_key` 短路，永不触发
+    /// 清空（活跃会话互不驱逐）。
     pub fn bind(&self, session_key: &str, chat_id: &str) {
         if session_key.is_empty() || chat_id.is_empty() {
             return;
+        }
+        if !self.conv_to_chat.contains_key(session_key) && self.conv_to_chat.len() >= MAX_BINDINGS {
+            self.conv_to_chat.clear();
         }
         self.conv_to_chat
             .insert(session_key.to_string(), chat_id.to_string());

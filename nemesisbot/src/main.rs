@@ -152,6 +152,16 @@ mod exec_worker;
 /// 统一执行世界：executor 通道装配统一定义 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// 专家管理面 WSAPI 桥——ExpertsStore 到 nemesis-web ExpertsBridge trait
+/// 的适配（ExpertFull → JSON 投影）；gateway 启动注入静态槽。
+mod experts_bridge;
+#[cfg(test)]
+mod experts_bridge_tests;
+/// 专家子代理资源层（experts）——workspace/experts/ 目录即注册表：
+/// 每专家一个目录（EXPERT.md = TOML frontmatter + 系统提示词全文）+
+/// 默认子代理改名元数据。scan-on-read 单一真相源；spawn 工具与
+/// spawn 闭包经同一 ExpertsHandle 注入消费。
+mod experts_store;
 /// 插件流程扩展：宿主侧 flow 引擎——面板插件 `[[flow.template]]` 剧本
 /// 的推进者（六类 step 原语绑定既有件：connector 取数 / board 落单 /
 /// agent_fixloop / 回归验收 / publish 发布 / dossier 报告；磁盘实例账本 +
@@ -161,9 +171,38 @@ mod exec_world;
 /// 通路）——与 publish 消费点同闸。
 #[cfg(all(feature = "plugins-wasm", feature = "board", feature = "connectors"))]
 mod flow_engine;
+/// flow 原语层（R8 复评整改）：flow 引擎与 publish 骨架共同消费的纯原语
+/// （token 渲染 / 外链闸 / 比较式 / JSON path / plugin 出参四态）——零
+/// WASM 依赖，门控取两消费方公共交集（board+connectors），publish 在无
+/// WASM 裁剪组合下可编译。见 [`crate::flow_proto`] 模块文档。
+#[cfg(all(feature = "board", feature = "connectors"))]
+mod flow_proto;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
+/// 目标系统 agent 工具面（feature=`goals`）：`goal` 单工具三 action
+/// （add/delete/disable）——防自锁（无 enable/done，完成只归评估闸），
+/// 人建目标 delete 恒拒、disable 受 `goals.allow_agent_disable` 开关。
+#[cfg(feature = "goals")]
+mod goal_tool;
+/// 目标系统评估闸驱动器（feature=`goals`）：bus outbound 订阅触发 turn
+/// 末评估（LLM 独立评审 goal.md → DONE 落状态 / CONTINUE 注入 goal 轮）
+/// + 文件保护闭包供给面（workspace_goals_guard）。裁决逻辑单一真相源在
+/// nemesis-goals crate；本模块只管 IO/LLM/注入。`workspace_goals_guard`
+/// 非 goals feature 构建恒 None（文件保护不设防——feature 裁剪形态）。
+mod goals_engine;
+/// 会话钩子自管面（HOOK 会话圈定批次三；统一存储重构后写 hooks.json 的
+/// scope 圈定组）：`hooks` 工具——单工具多 action（add/delete/list），只能
+/// 给自己（当前会话）设，schema 无 session 参数；RMW API 原子落盘，桥内容
+/// 比对热更。仅主 gateway loop 注册（集群/headless 不装）。
+mod hooks_tool;
+/// 浏览器接管框架（2026-11-15）：host_browser 工具——bot 在用户机器
+/// 浏览器（真 Edge/Chrome 窗口）里看页面 + 操作页面的 agent 消费点。
+/// 九动作 + run_script 编排；凭据守卫三条件（域名绑定/密码框校验/
+/// 防伪造）；run_script 每步过安全闸 + estop 步边界。注册闸 =
+/// browser feature × BrowserManager 在场（诚实缺省）。
+#[cfg(feature = "browser")]
+mod host_browser_tool;
 /// 集群专业职能框架：generate_image 工具（images-openai lane 唯一消费
 /// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
 mod image_gen_tool;
@@ -175,6 +214,10 @@ mod local_dispatch;
 /// / boundary / request_logs / terminal / event_ledger 按 `config.logs.ttl`
 /// 逐族保留天数清扫（0=族关），启动扫一次 + 每 6h 一拍，每族每拍限量。
 mod logs_sweeper;
+/// 自配速 durable loop（项5）：loop_wakeup/loop_status/loop_finish 三工具
+/// （绑定活跃 loop 的会话专属；按 session_key 反查绑定，未绑定诚实报）。
+#[cfg(feature = "loop")]
+mod loop_state_tool;
 /// stdio MCP server——NemesisBot 能力经 MCP 协议
 /// 暴露给 Claude Code / Cursor 等客户端； 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。
@@ -188,6 +231,14 @@ mod native_plugins;
 /// 项 C：出站通知记账 + 失败重试 sweeper——notify_state
 /// 三段推进（pending→channel_accepted→confirmed）与 notify_outbox 重投。
 mod notify;
+/// agent 自举插件（项6）：plugin_search / plugin_propose 两工具 +
+/// SelfBootstrapApprover（auto_approve 资格裁决）+ 源清单/策略/配额。
+/// 依赖 plugin_bridge 的 LateInstallApprover 与 web 侧 enable_with_face_sync
+///（热装 ToolSync），随 `plugins-wasm` 同闸。
+#[cfg(feature = "plugins-wasm")]
+mod plugin_bootstrap;
+#[cfg(all(test, feature = "plugins-wasm"))]
+mod plugin_bootstrap_tests;
 /// WASM 插件框架 ↔ gateway 桥：agent 工具桥 / 宿主调用面 / vault
 /// 凭据解析 / 安装审批晚绑 / estop 联动。随 `plugins-wasm` feature 门控
 /// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。
@@ -213,6 +264,13 @@ mod publish;
 /// （devtool-upgrade）：Dashboard 结构化提问 broker——question
 /// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
 mod question_broker;
+/// 项2 P2 召回质量闸 gateway 侧装配（memory.recall_gate → 小模型判定
+/// 通道 → RecallGate）。消费点 = agent_factory set_memory_inject 块；
+/// 无 memory feature 时模块空置（装配块不编译）。
+#[cfg(feature = "memory")]
+mod recall_gate;
+#[cfg(all(test, feature = "memory"))]
+mod recall_gate_tests;
 /// d：评审结论 → 交付账本闭环——record_auto_decide 漏斗
 /// 尾同步落 deliveries `review` 行 + auto_accept/redispatch 分支裁决 +
 /// 项目档案自动导出 `dossier` 行。
@@ -237,6 +295,13 @@ mod selfupdate_tool;
 mod session_group_sweeper;
 /// 会话执行统计聚合器（事件泵 + loop sink + 读侧）。
 mod session_stats;
+/// （devtool-upgrade）：Dashboard 审批管理器——auditor 的
+/// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
+/// 太微子系统 FFI 桥接层（2026-11-13 静态直链形态）：nemesis-taiwei 不再
+/// 是 cargo 依赖——build.rs 探测 slots/taiwei/impl 静态库在场才链接并点亮
+/// nb_taiwei。库缺席（开源构建）= 本模块不编译，taiwei 子命令不存在。
+#[cfg(nb_taiwei)]
+mod taiwei_bridge;
 /// vault（计划）：进程级 `vault:<alias>` 解析器注入。
 /// 门控随 nemesis-security（security feature off 时 `vault:` 引用诚实报
 /// "解析器未安装"，明文/env/yaml 链路不受影响）。
@@ -246,8 +311,6 @@ mod vault_runtime;
 /// + 启动自验单一入口（Cli::parse 后调，enforce 失败 exit 86）+ StartCheck
 /// 快照（gateway 审计链 / WSAPI status / 前端徽标数据源）。
 mod verify_policy;
-/// （devtool-upgrade）：Dashboard 审批管理器——auditor 的
-/// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
 /// 门控随消费方：唯一生产调用点在 gateway 的 security cfg 装配块内，
 /// feature off 时整块消失，本模块必须同门（no-default-features 编译）。
 #[cfg(feature = "security")]
@@ -302,6 +365,26 @@ mod plugin_lib;
 /// 装载/调用/停机三面：QUIC 中继服务端面自 起经本装载器
 /// 走插件（iroh 家族重依赖随迁出主二进制）。
 mod roaming_plugin_loader;
+
+/// plugin_mail 宿主装载器（C-ABI 解冻第四例：邮件基础设施——SMTP/POP3
+/// 服务端 + 客户端发信；roaming 同款装载纪律，恒编译）。双闸：总闸
+/// `config.mail.json` enabled（缺省 false）+ 名册开关（config.plugin.native.json）；
+/// password_ref 宿主解析注入（插件不见 vault）；notify/audit 经静态槽分发。
+mod mail_plugin_loader;
+
+/// 邮件通知钩子（B3 消费点静态槽：estop 急停通知 + board 预算熔断通知；
+/// config.mail.json notify 段白名单驱动，缺省静默）。
+mod mail_notify;
+
+/// `mail` agent 工具（B4：单工具三 action send/list/read——无 delete，
+/// schema 层面不存在；min_tier=normal 双闸；handle 缺席 = 不注册）。
+#[cfg(feature = "mail")]
+mod mail_tool;
+
+/// plugin_resources 宿主装载器（C-ABI 解冻第三例：纯数据资源载体——无
+/// init/vtable/停机语义，装载即静止）。附加资源统一载体（首例 persona-catalog
+/// 快照），缺席 = 消费方诚实降级纯在线。
+mod resources_plugin_loader;
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -545,6 +628,12 @@ enum Commands {
         #[command(subcommand)]
         action: commands::issue::IssueAction,
     },
+    /// Mail infrastructure (status / list / send / addr registry)
+    #[cfg(feature = "mail")]
+    Mail {
+        #[command(subcommand)]
+        action: commands::mail::MailAction,
+    },
     /// Manage board autopilot rules (cron-triggered issue creation)
     #[cfg(feature = "board")]
     Autopilot {
@@ -624,6 +713,12 @@ enum Commands {
         #[command(subcommand)]
         action: commands::memory::MemoryAction,
     },
+    /// Manage durable self-paced loops (create/list/show/pause/resume/remove)
+    #[cfg(feature = "loop")]
+    Loops {
+        #[command(subcommand)]
+        action: commands::loops::LoopAction,
+    },
     /// Manage AI personas
     Persona {
         #[command(subcommand)]
@@ -657,6 +752,14 @@ enum Commands {
         /// Query e-stop status without changing it.
         #[arg(long)]
         status: bool,
+    },
+    /// Taiwei subsystem actions (static-link slot; installer spawn channel +
+    /// transparency status; absent entirely when the TaiWei static lib is
+    /// not built — plain open-source builds never expose this subcommand).
+    #[cfg(nb_taiwei)]
+    Taiwei {
+        #[command(subcommand)]
+        action: crate::taiwei_bridge::TaiweiAction,
     },
     /// Internal test commands (hidden)
     #[cfg(feature = "desktop")]
@@ -722,7 +825,11 @@ async fn async_main() -> Result<()> {
     {
         if executor_role_short_circuit("eval-agent") {
             common::ensure_default_logger();
-            return eval_worker::run().await;
+            // BUG-20261115-023：eval 装配走 build_agent_loop（可能 spawn
+            // profile sweep 常驻循环），退出前收口终态令牌防 re-park timer。
+            let result = eval_worker::run().await;
+            crate::commands::gateway::shutdown::cancel_terminal_tasks();
+            return result;
         }
     }
 
@@ -802,7 +909,13 @@ async fn async_main() -> Result<()> {
     // Instead, we use a helper function that inits a default subscriber only once
     // and is called by commands that don't have their own config-based init.
 
-    run_command(cli).await
+    // BUG-20261115-023：命令收尾统一收口常驻循环终态令牌——gateway 路径
+    // 已在 Step 24 提前 cancel（幂等无害）；run/acp 等 headless 命令经
+    // build_agent_loop 也可能 spawn profile sweep 常驻循环，退出前 cancel
+    // 防裸 Drop 语义 runtime 的 shutdown 最后 poll re-park timer 撞 panic。
+    let result = run_command(cli).await;
+    crate::commands::gateway::shutdown::cancel_terminal_tasks();
+    result
 }
 
 /// CLI 解析单点（非 mac / mac 双入口同源）：动态隐藏后 parse。
@@ -872,6 +985,9 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()?;
             let result = rt.block_on(eval_worker::run());
+            // BUG-20261115-023：eval 装配走 build_agent_loop（可能 spawn
+            // profile sweep 常驻循环），退出前收口终态令牌防 re-park timer。
+            crate::commands::gateway::shutdown::cancel_terminal_tasks();
             rt.shutdown_timeout(std::time::Duration::from_secs(5));
             return result;
         }
@@ -1170,6 +1286,11 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::issue::run(action, cli.local)?;
         }
+        #[cfg(feature = "mail")]
+        Commands::Mail { action } => {
+            common::ensure_default_logger();
+            commands::mail::run(action, cli.local).await?;
+        }
         #[cfg(feature = "board")]
         Commands::Autopilot { action } => {
             common::ensure_default_logger();
@@ -1239,6 +1360,11 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::memory::run(action, cli.local).await?;
         }
+        #[cfg(feature = "loop")]
+        Commands::Loops { action } => {
+            common::ensure_default_logger();
+            commands::loops::run(action, cli.local).await?;
+        }
         Commands::Persona { action } => {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
@@ -1279,6 +1405,20 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
             if let Err(e) = commands::estop::run(&home, release, status).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        #[cfg(nb_taiwei)]
+        Commands::Taiwei { action } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            let default_ws = common::workspace_path(&home);
+            // 动作派发收敛为 FFI 单入口（2026-11-13 静态直链形态）：clap
+            // 解析 → action JSON → taiwei 侧值集校验与执行。Err 文本原样
+            // 打印 + 退码 1；emit 静默语义由 taiwei 侧内部消化（禁用/离线
+            // 不是错误）。
+            if let Err(e) = crate::taiwei_bridge::run_cli_action(action, &home, &default_ws) {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
@@ -1398,6 +1538,8 @@ pub(crate) static VAULT_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 
 #[cfg(test)]
 mod bridge_client_tests;
+#[cfg(test)]
+mod experts_store_tests;
 #[cfg(test)]
 mod native_plugins_tests;
 #[cfg(test)]

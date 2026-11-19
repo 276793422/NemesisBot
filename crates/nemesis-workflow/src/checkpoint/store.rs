@@ -96,9 +96,13 @@ impl CheckpointStore for InMemoryCheckpointStore {
         let mut guard = entry.lock();
         // Insert keeping the vector sorted by saved_at so latest() / list()
         // are O(1) / O(n) reads with no re-sort.
-        let pos = guard
-            .binary_search_by(|c| c.saved_at.cmp(&checkpoint.saved_at))
-            .unwrap_or_else(|p| p);
+        // partition_point（非 binary_search）是刻意的：等值时 binary_search
+        // 只保证返回等值区间内任意位置，插在其前会让同 saved_at 批次里
+        // 最后保存的 checkpoint 不在尾部——latest() 取 last() 就拿到旧的。
+        // Windows 计时器粒度粗（~15.6ms），同毫秒连续两次 save 完全现实。
+        // partition_point 恒返回第一个大于目标的位置 = 等值区间末尾，
+        // 「同时间戳后保存者视为更新」语义确定（BUG-20261113-157）。
+        let pos = guard.partition_point(|c| c.saved_at <= checkpoint.saved_at);
         guard.insert(pos, checkpoint);
         Ok(id)
     }

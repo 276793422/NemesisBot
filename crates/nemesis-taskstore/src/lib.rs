@@ -24,6 +24,13 @@
 //! `BEGIN IMMEDIATE` 事务内（双连接并发 open 竞态安全）；/ 增表
 //! 走同一框架（追加迁移步 + 抬 LATEST_SCHEMA_VERSION），不改历史步。
 
+/// sqlite 是否编译进本构建（workspace 依赖 `default-features = false`，
+/// 消费方 `taskstore-sqlite` 显式 opt-in）。装配层探测用：false 时本
+/// crate 全部 store 是空 stub（写入 no-op、查询恒空）——**store 真相源
+/// 型消费者（如 cluster TaskManager）不得挂 stub store**（写入后读不到，
+/// 生命周期黑洞），应回落自身内存实现，只牺牲跨重启持久性。
+pub const SQLITE_COMPILED: bool = cfg!(feature = "sqlite");
+
 pub mod agents;
 pub mod approvals;
 pub mod db;

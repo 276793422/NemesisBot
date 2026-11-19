@@ -268,7 +268,7 @@ fn test_cleanup_completed_removes_old_tasks() {
     // the store interface, so we test the logic indirectly)
     // The cleanup function checks completed_at. Since we just created it,
     // it won't be cleaned up.
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
 
     // Task should still exist (completed_at is recent)
     assert!(store.get("old-completed").is_ok());
@@ -316,7 +316,7 @@ fn test_cleanup_pending_timeout() {
     };
     store.create(recent_task).unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None, &None);
 
     // Old pending should be failed
     let old = store.get("old-pending").unwrap();
@@ -360,7 +360,7 @@ fn test_cleanup_h4_timeout_records_route_failure() {
         })
         .unwrap();
 
-    cleanup_completed(&store, &None, &test_pending_timeout(), &route_record);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &route_record, &None);
 
     let stuck = store.get("h4-running-stuck").unwrap();
     assert_eq!(stuck.status, TaskStatus::Failed);
@@ -370,7 +370,7 @@ fn test_cleanup_h4_timeout_records_route_failure() {
     drop(got);
 
     // 二次清理：已终态任务不再判死、不重复记账
-    cleanup_completed(&store, &None, &test_pending_timeout(), &route_record);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &route_record, &None);
     assert_eq!(captured.lock().len(), 1);
 }
 
@@ -574,6 +574,72 @@ fn test_in_memory_store_delete_nonexistent_fails() {
     assert!(result.is_err());
 }
 
+/// 列表出口稳定序（BUG-20261116-029）：`list_all`/`list_by_status` 底层
+/// 是 DashMap 无序迭代（SQLite 实现也无 ORDER BY）——Dashboard
+/// `tasks.list` 直接对出口 `skip/take` 分页，无序源分页 = 跨页重复/漏项/
+/// 重启漂移。出口必须按 `created_at` 给稳定序（新任务在前，Dashboard
+/// 首页展示最新）；解析失败/空串排最后。经真实 store 路径注入受控
+/// created_at（trait 无 update 面，delete+create 重插；重插序与
+/// created_at 序相反，暴露无序迭代）。
+#[test]
+fn test_list_tasks_sorted_by_created_at_newest_first() {
+    let tm = TaskManager::new();
+    let base = tm.create_task("a", serde_json::json!({}), "rpc", "ch");
+    tm.delete_task(&base.id);
+
+    let specs = [
+        ("t-new", "2026-11-16T12:00:00+08:00"),
+        ("t-mid", "2026-11-16T11:00:00+08:00"),
+        ("t-old", "2026-11-16T10:00:00+08:00"),
+        ("t-broken", ""), // 解析失败/空串 → 排最后
+    ];
+    for (id, created_at) in specs {
+        let mut t = base.clone();
+        t.id = id.to_string();
+        t.created_at = created_at.to_string();
+        tm.store.create(t).expect("store create");
+    }
+
+    let ids: Vec<String> = tm.list_tasks().into_iter().map(|t| t.id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "t-new".to_string(),
+            "t-mid".to_string(),
+            "t-old".to_string(),
+            "t-broken".to_string(),
+        ],
+        "list_tasks 必须按 created_at 新→旧稳定排序，解析失败排最后: {ids:?}"
+    );
+}
+
+/// 同上（BUG-20261116-029）的 `list_by_status` 臂：状态过滤后的列表同样
+/// 走出口排序（Dashboard 按状态筛选页共用同一条分页语义）。
+#[test]
+fn test_list_pending_tasks_sorted_by_created_at_newest_first() {
+    let tm = TaskManager::new();
+    let base = tm.create_task("a", serde_json::json!({}), "rpc", "ch");
+    tm.delete_task(&base.id);
+
+    let specs = [
+        ("p-new", "2026-11-16T12:00:00+08:00"),
+        ("p-old", "2026-11-16T10:00:00+08:00"),
+    ];
+    for (id, created_at) in specs {
+        let mut t = base.clone();
+        t.id = id.to_string();
+        t.created_at = created_at.to_string();
+        tm.store.create(t).expect("store create");
+    }
+
+    let ids: Vec<String> = tm.list_pending_tasks().into_iter().map(|t| t.id).collect();
+    assert_eq!(
+        ids,
+        vec!["p-new".to_string(), "p-old".to_string()],
+        "list_pending_tasks 必须按 created_at 新→旧稳定排序: {ids:?}"
+    );
+}
+
 #[test]
 fn test_in_memory_store_list_all() {
     let store = InMemoryTaskStore::new();
@@ -703,7 +769,7 @@ fn test_cleanup_completed_removes_cancelled_tasks() {
         .unwrap();
 
     // Since just created, should not be cleaned up
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
     assert!(store.get("cancelled-task").is_ok());
 }
 
@@ -727,7 +793,7 @@ fn test_cleanup_completed_with_invalid_created_at() {
     store.create(task).unwrap();
 
     // Should not panic with invalid date
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
     assert!(store.get("bad-date").is_ok());
 }
 
@@ -757,7 +823,7 @@ fn test_cleanup_completed_with_invalid_completed_at() {
         .unwrap();
 
     // Should not panic
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
 }
 
 #[test]
@@ -854,7 +920,7 @@ fn test_cleanup_completed_removes_old_completed_tasks() {
     assert!(store.get("old-completed-v2").is_ok());
     assert!(store.get("old-failed-v2").is_ok());
 
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
 
     // Both should be deleted (older than 2 hours)
     assert!(store.get("old-completed-v2").is_err());
@@ -881,7 +947,7 @@ fn test_cleanup_completed_keeps_recent_completed_tasks() {
     };
     store.create(recent_task).unwrap();
 
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
 
     // Should still exist (completed only 5 min ago)
     let t = store.get("recent-completed").unwrap();
@@ -929,7 +995,7 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
     };
     store.create(recent_pending).unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None, &None);
 
     // Old pending task should now be Failed
     let timed_out = store.get("timed-out-task").unwrap();
@@ -1010,6 +1076,12 @@ fn test_cleanup_timeout_does_not_fire_callback_on_lost_race() {
         Some(Arc::new(Box::new(move |_task: &Task| {
             callback_count_clone.fetch_add(1, Ordering::SeqCst);
         })));
+    let stale_kill_count = Arc::new(AtomicUsize::new(0));
+    let stale_kill_count_clone = stale_kill_count.clone();
+    let on_stale_kill: Option<Arc<OnCompleteCallback>> =
+        Some(Arc::new(Box::new(move |_task: &Task| {
+            stale_kill_count_clone.fetch_add(1, Ordering::SeqCst);
+        })));
 
     let old_created = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
     store
@@ -1027,7 +1099,13 @@ fn test_cleanup_timeout_does_not_fire_callback_on_lost_race() {
         })
         .unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
+    cleanup_completed(
+        &store,
+        &on_complete,
+        &test_pending_timeout(),
+        &None,
+        &on_stale_kill,
+    );
 
     // 并发 settle 的终态保持原样：status=Completed、result 是竞态胜者的
     // 结果——不得被 timeout 分支改写成 Failed，也不得重复 fire callback。
@@ -1042,6 +1120,150 @@ fn test_cleanup_timeout_does_not_fire_callback_on_lost_race() {
         callback_count.load(Ordering::SeqCst),
         0,
         "条件转移输掉竞态（Ok(false)）时不得 fire callback"
+    );
+    assert_eq!(
+        stale_kill_count.load(Ordering::SeqCst),
+        0,
+        "条件转移输掉竞态（Ok(false)）时不得 fire stale-kill 唤醒钩子——\
+         唤醒义务归竞态胜方的 settle 路径"
+    );
+}
+
+/// 回归（BUG-20261115-031）：清理 tick 判死臂必须触发 stale-kill 唤醒
+/// 钩子（恰好一次）。清理循环（30s tick）与恢复 sweep（120s tick）对
+/// 同一 pending_timeout 阈值竞速，清理赢时任务即 Failed，sweep 只扫
+/// Pending 从此永远看不到——判死若只落状态不发布唤醒帧 = 续行快照
+/// 孤儿 + 等待方对话挂死。走 `run_cleanup_once`（生产循环同参装配）
+/// 验证 setter + 触发 + 幂等（二次清理任务已 Failed 不再入列）全链。
+#[test]
+fn test_cleanup_timeout_fires_stale_kill_hook_once() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let tm =
+        TaskManager::with_store_and_interval(store.clone(), std::time::Duration::from_secs(3600));
+
+    let hook_count = Arc::new(AtomicUsize::new(0));
+    let hook_id = Arc::new(Mutex::new(None::<String>));
+    let hook_count_clone = hook_count.clone();
+    let hook_id_clone = hook_id.clone();
+    tm.set_on_stale_kill(Box::new(move |t: &Task| {
+        hook_count_clone.fetch_add(1, Ordering::SeqCst);
+        *hook_id_clone.lock() = Some(t.id.clone());
+    }));
+
+    // 超阈 stale Pending（25h > 24h 安全网）+ 新鲜 Pending 对照组。
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    store
+        .create(Task {
+            id: "stale-kill-task".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "remote-1".to_string(),
+            payload: serde_json::json!({"msg": "hello"}),
+            result: None,
+            original_channel: "web".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_created,
+            completed_at: None,
+        })
+        .unwrap();
+    store
+        .create(Task {
+            id: "recent-pending".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "remote-1".to_string(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: "web".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    tm.run_cleanup_once();
+
+    // 判死落地 + 钩子恰一次、任务 id 对、error 文案与 sweep 同纪律。
+    assert_eq!(
+        hook_count.load(Ordering::SeqCst),
+        1,
+        "清理判死臂必须恰触发一次 stale-kill 唤醒钩子"
+    );
+    assert_eq!(hook_id.lock().take(), Some("stale-kill-task".to_string()));
+    let task = store.get("stale-kill-task").unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    let error = task
+        .result
+        .unwrap()
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+    assert!(error.contains("timed out"), "判死 error 文案: {error}");
+
+    // 幂等：二次清理时任务已 Failed 不再入列，钩子不再触发。
+    tm.run_cleanup_once();
+    assert_eq!(
+        hook_count.load(Ordering::SeqCst),
+        1,
+        "二次清理不得重复触发（任务已 settle）"
+    );
+
+    // 新鲜 Pending 对照组不动。
+    assert_eq!(
+        store.get("recent-pending").unwrap().status,
+        TaskStatus::Pending
+    );
+}
+
+/// run_cleanup_once 钩子重入回归：on_complete 钩子体内重入
+/// fire_route_record（= route_record_fn 注册表锁）。历史形态把
+/// `.lock().clone()` 放在 cleanup_completed 的实参表达式里——临时
+/// MutexGuard 活到整条语句结束，三把注册表锁持穿整个清扫（含钩子
+/// 回调体），回调体重入即 parking_lot 同线程自锁死（测试挂死）。
+/// 修复 = 与 start() 后台循环同款（先克隆出锁再调用）。
+#[test]
+fn run_cleanup_once_hook_reentry_does_not_deadlock() {
+    let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
+    let tm = Arc::new(TaskManager::with_store_and_interval(
+        store.clone(),
+        std::time::Duration::from_secs(3600),
+    ));
+
+    // route_record 钩子本体 no-op（重入链由 on_complete 臂发起，防递归）。
+    tm.set_route_record_fn(Arc::new(|_: &str, _: bool| {}));
+
+    // on_complete 钩子体重入 fire_route_record（route_record_fn.lock()）。
+    let tm_for_hook = Arc::clone(&tm);
+    tm.set_callback(Box::new(move |_task: &Task| {
+        tm_for_hook.fire_route_record("reentry-probe", true);
+    }));
+
+    // 超阈 stale Pending（25h > 24h 安全网）→ 清扫判死臂依次触发
+    // route_record 钩子（no-op）与 on_complete 钩子（重入注册表锁）。
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
+    store
+        .create(Task {
+            id: "reentry-stale".to_string(),
+            status: TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "remote-1".to_string(),
+            payload: serde_json::json!({"msg": "hello"}),
+            result: None,
+            original_channel: "web".to_string(),
+            original_chat_id: "ch".to_string(),
+            created_at: old_created,
+            completed_at: None,
+        })
+        .unwrap();
+
+    // 修复后必须正常返回并完成判死（历史形态在此自锁死挂死）。
+    tm.run_cleanup_once();
+
+    assert_eq!(
+        store.get("reentry-stale").unwrap().status,
+        TaskStatus::Failed,
+        "判死臂必须落地（on_complete 钩子重入注册表锁不阻塞清扫）"
     );
 }
 
@@ -1257,7 +1479,7 @@ fn test_s4_cleanup_completed_deletes_old_completed_task() {
     };
     store.create(fresh_done).unwrap();
 
-    cleanup_completed(&store, &None, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &None, &test_pending_timeout(), &None, &None);
 
     assert!(store.get("s4-old-done").is_err(), "3h-old task deleted");
     assert!(store.get("s4-fresh-done").is_ok(), "fresh task kept");
@@ -1426,7 +1648,7 @@ fn test_cleanup_running_timeout() {
         ))
         .unwrap();
 
-    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None);
+    cleanup_completed(&store, &on_complete, &test_pending_timeout(), &None, &None);
 
     let old = store.get("old-running").unwrap();
     assert_eq!(old.status, TaskStatus::Failed);

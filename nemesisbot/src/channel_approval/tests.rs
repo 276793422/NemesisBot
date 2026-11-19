@@ -926,3 +926,48 @@ mod journal {
         assert_eq!(e.status, nemesis_types::approval_journal::status::PENDING);
     }
 }
+
+// ---------------------------------------------------------------------------
+// 短号推导字符边界硬化（横向同族：web 侧 RemoteAskRegistry::register
+// 对 worker 上行输入实锤 panic；本管理器 request_id 现为自生成
+// prefix-{uuid} 不可达，防御性对齐同款公式）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn request_approval_sync_ctx_rejects_empty_request_id() {
+    // 修复前：`8usize.min(0).max(1)` = 1 → `&""[..1]` panic。现空 id 在
+    // 短号推导前诚实拒绝（与 empty chat_id guard 同风格）。
+    let mgr = ChannelApprovalManager::new(Arc::new(MessageBus::new()));
+    let ctx = ApprovalContext {
+        chat_id: "chat-1".into(),
+        ..Default::default()
+    };
+    let err = mgr
+        .request_approval_sync_ctx("", "process_exec", "target", "HIGH", "reason", 1, &ctx)
+        .unwrap_err();
+    assert!(err.contains("empty request_id"), "got: {err}");
+}
+
+#[test]
+fn request_approval_sync_ctx_short_id_survives_multibyte_request_id() {
+    // 纵深防御：非 ASCII request_id（未来对端形态）不得在短号推导 panic。
+    // 卡发送无通道消费方——用短超时走超时拒绝臂，验证只盯「不 panic 且
+    // 返回 denied」。
+    let mgr = ChannelApprovalManager::new(Arc::new(MessageBus::new()));
+    let ctx = ApprovalContext {
+        chat_id: "chat-1".into(),
+        ..Default::default()
+    };
+    let verdict = mgr
+        .request_approval_sync_ctx(
+            "审批请求甲乙丙丁戊己很长的一串多字节标识",
+            "process_exec",
+            "target",
+            "HIGH",
+            "reason",
+            1,
+            &ctx,
+        )
+        .expect("多字节 id 不得 panic");
+    assert!(!verdict.approved, "无回执超时 = 拒绝");
+}

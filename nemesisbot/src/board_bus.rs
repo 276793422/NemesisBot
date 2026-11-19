@@ -1,18 +1,32 @@
-//! Swarm：master 侧 `nb_bus` 装配（board 信封协议的 gateway 侧 glue）。
+//! Swarm：`nb_bus` 装配（board 信封协议的 gateway 侧 glue）。
 //!
 //! 职责（impl-plan）：RPC 层只注册一个 [`nemesis_cluster::envelope:NB_BUS_ACTION`]
 //! action，信封内 `ns/op` 路由——加功能不加 action。
+//!
+//! **统一 handler（BUG-20261118 看板讨论半残根治）**：nb_bus 是同名
+//! 单注册槽，历史上 master/worker handler 按集群角色二选一——worker 上
+//! 只装 `wake.post`，远端回帖 `comment.post` 一律打回 UNKNOWN_OP（发得
+//! 出去收不回来）。现改 [`UnifiedBusDeps`] + [`build_nb_bus_handler`]：
+//! 全员装配同一 handler，路由表取并集——
+//!
+//! - `ns=board op=wake.post` → worker 臂（唤醒下行投递）；
+//! - `ns=board` 其余 op（`comment.post` / `comment.list` / `sync` /
+//!   `claimable.list` / `claim`）→ master 臂（落库按 `_rpc.from` 寻址
+//!   发帖节点本地 board.db——谁发帖谁收帖，无中心依赖）；
+//! - `ns=task` / `ns=approval` → master 臂照留。
 //!
 //! - `board.comment.post`（worker 上行发言）：幂等预检 → 额度三闸 → 落库
 //!   （幂等 + seq 台账）→ 立即返回首响，裁决器 + wake 下行在 tokio
 //!   任务里异步跑（handler 不等投递）。
 //! - `board.sync`（worker 上线补拉）：`since_seq` → 台账增量。
-//! - wake 下行（master → worker）：裁决器产出目标 → 组装 ② 唤醒包
+//! - wake 下行（→ 目标节点）：裁决器产出目标 → 组装 ② 唤醒包
 //!   （线程上下文 20 条 + reply_hint.max_turns_left + seq）→ 逐个 RPC 投递；
 //!   离线/额度耗尽跳过（board.sync 兜底 / 推人）。
-//! - 规则③（频道无 @ → 主持人）：master 本地 agent 直调裁决（[SILENT] 或
+//! - 规则③（频道无 @ → 主持人）：本地 agent 直调裁决（[SILENT] 或
 //!   @某人，回复照常落库 + 再走裁决器定点唤醒）。额度是死循环熔断闸：
 //!   线程额度耗尽后 worker 发言被拒、主持人不再投递——链路自然收敛。
+//!   主持人只在 coordinator 节点装配（非 host 节点传空槽，run_moderator
+//!   诚实跳过）——主动裁决任务维持角色判据，与讨论闭环无关。
 //!
 //! estop：主持人裁决走主 AgentLoop（`process_direct`），estop 冻结即停。
 #![cfg(all(feature = "board", feature = "cluster"))]
@@ -28,6 +42,8 @@ use nemesis_board::models::PostedMessage;
 use nemesis_board::models::thread_kind;
 use nemesis_board::quota::{QuotaDenied, QuotaLedger};
 use nemesis_cluster::envelope::{self, Envelope, EnvelopeError, EnvelopeResponse};
+
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 use nemesis_cluster::rpc_types::{ActionType, RPCRequest};
 use nemesis_types::cluster::{DiscussionCtxMessage, DiscussionEvent};
 
@@ -58,11 +74,37 @@ pub struct MasterBusDeps {
 /// 线程上下文随 wake 包下发的条数（impl-plan ②：默认 20）。
 const WAKE_CONTEXT_MESSAGES: usize = 20;
 
-/// 注册 master 侧 `nb_bus` handler（gateway 在 cluster Arc 化之后调用）。
-pub fn build_master_nb_bus_handler(
-    deps: MasterBusDeps,
-) -> nemesis_cluster::rpc::server::RpcHandlerFn {
-    Box::new(move |payload| handle_nb_bus(&deps, payload))
+/// 统一 nb_bus 装配依赖（BUG-20261118 根治）：master ∪ worker 两套依赖
+/// 合体注册——同名 action 单注册槽下，路由表取并集而非按角色二选一
+/// （二选一的副作用 = worker 发帖后远端回帖被自己的 worker handler 打回，
+/// 讨论闭环半残）。
+pub struct UnifiedBusDeps {
+    /// master 臂：board 五 op + task/approval ns 的落库与路由依赖。
+    pub master: MasterBusDeps,
+    /// worker 臂：wake.post 唤醒通道依赖。
+    pub worker: WorkerBusDeps,
+}
+
+/// 注册统一 `nb_bus` handler（全员装配，gateway 在 cluster Arc 化后调用）。
+pub fn build_nb_bus_handler(deps: UnifiedBusDeps) -> nemesis_cluster::rpc::server::RpcHandlerFn {
+    Box::new(move |payload| handle_nb_bus_union(&deps, payload))
+}
+
+/// 统一路由：`ns=board op=wake.post` 走 worker 臂，其余走 master 臂。
+/// 信封解析失败（op 不可知）落 master 臂——两臂的 bad_envelope 错误响应
+/// 形态同构（corr_id 透传礼貌一致），落哪臂都正确。
+fn handle_nb_bus_union(
+    deps: &UnifiedBusDeps,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let want_wake = envelope::parse_envelope(&payload)
+        .map(|e| e.ns == "board" && e.op == "wake.post")
+        .unwrap_or(false);
+    if want_wake {
+        handle_worker_nb_bus(&deps.worker, payload)
+    } else {
+        handle_nb_bus(&deps.master, payload)
+    }
 }
 
 /// 信封路由 + 三 op 处理（同步部分；异步投递 spawn）。
@@ -479,7 +521,8 @@ fn handle_delivery_files(
     }
 
     // 留痕：系统评论（附件区可见 + 决策/活动可追溯）。
-    let _ = deps.store.add_comment(nemesis_board::NewComment {
+    // BUG-20261118-173：留痕写失败不再静默（惯例对齐）。
+    if let Err(e) = deps.store.add_comment(nemesis_board::NewComment {
         issue_id,
         author: Actor::system("board"),
         content: format!(
@@ -489,7 +532,10 @@ fn handle_delivery_files(
         ),
         parent_id: None,
         ctype: nemesis_board::CommentType::System,
-    });
+    }) {
+        tracing::warn!(target: "board_bus", issue = %issue_id,
+            "[nb_bus] 交付回传留痕评论落库失败: {e}（文件已存储，仅留痕缺失）");
+    }
 
     EnvelopeResponse::success(
         env,
@@ -848,7 +894,9 @@ fn post_discussion_core(
                 let short: String = msg.chars().take(300).collect();
                 tracing::error!("[BoardBus] wake 投递/裁决链 panic thread={thread_id}: {short}");
                 if is_issue_thread {
-                    let _ = watch_store.add_comment(nemesis_board::NewComment {
+                    // BUG-20261118-173：panic 告知评论写失败不再静默——
+                    // 评论是人类感知投递链 panic 的唯一看板面，双失败必须 loud。
+                    if let Err(e) = watch_store.add_comment(nemesis_board::NewComment {
                         issue_id: thread_id,
                         author: Actor::system("board"),
                         content: format!(
@@ -856,7 +904,10 @@ fn post_discussion_core(
                         ),
                         parent_id: None,
                         ctype: nemesis_board::CommentType::System,
-                    });
+                    }) {
+                        tracing::error!(target: "board_bus", thread_id = %thread_id,
+                            "[nb_bus] 投递链 panic 告知评论落库失败: {e}（panic 本身已有 error 日志，人工请搜日志）");
+                    }
                 }
             }
         });
@@ -919,6 +970,85 @@ pub fn post_discussion_locally(
             Err(format!("[{}] {}", denied.error_code(), denied.message()))
         }
         Err(PostError::Store(e)) | Err(PostError::DedupCheck(e)) => Err(e),
+    }
+}
+
+/// 回帖投递失败 → 本地系统注记（BUG-20261118 B.3 失败可见）：尽力在
+/// **本节点** board.db 的同一线程落一条系统消息，让「远端回了但没送到」
+/// 在讨论界面可见，不再只有投递点一条 WARN。
+///
+/// 线程寻址是启发式——`thread_id` 是发帖节点的本地 id，本节点库不一定
+/// 同物：channel 按标题（`#name`）精确匹配、issue 按 id + 标题双匹配；
+/// 匹配失败 = 本节点没有对应线程可挂，诚实跳过（写日志留痕），不污染
+/// 不相干线程。落库失败同样只 warn（注记是尽力而为的可见性通道，不
+/// 产生新的失败路径）。
+pub(crate) fn note_discussion_reply_failure(
+    store: &nemesis_board::BoardStore,
+    event: &DiscussionEvent,
+    detail: &str,
+    reply: &str,
+) {
+    let body = format!(
+        "⚠️ 回复投递失败（{detail}）：本节点对 {} 线程的回复未能送达发帖节点 {}，原文如下：\n{}",
+        if event.thread_title.is_empty() {
+            format!("{}:{}", event.thread_kind, event.thread_id)
+        } else {
+            event.thread_title.clone()
+        },
+        event.from_node,
+        reply,
+    );
+    let result = if event.thread_kind == thread_kind::ISSUE {
+        match store.get_issue(event.thread_id) {
+            Ok(issue) if event.thread_title.is_empty() || issue.title == event.thread_title => {
+                store
+                    .add_comment(nemesis_board::NewComment {
+                        issue_id: event.thread_id,
+                        author: Actor::system("board"),
+                        content: body,
+                        parent_id: None,
+                        ctype: nemesis_board::CommentType::System,
+                    })
+                    .map(|_| ())
+            }
+            _ => Err("本节点库无同 id 同题 issue，注记无处可落".to_string()),
+        }
+    } else {
+        // 库内频道名规范形态自带 `#` 前缀（ensure_default_channels /
+        // create_channel 双路径都落 `#name`）。BUG-20261118-159 根修后
+        // 生产 stamp 透传的 title 就是规范形态（单 `#`）；这里的
+        // trim_start_matches('#') + 补回一个 `#` 降为纵深防御——仍兼容
+        // 旧 master（159 根修前 wake 包 `##dev`）/ 手工构造的 `#dev` /
+        // `dev` 三种在途形态，形态归一后精确匹配。
+        let name = format!("#{}", event.thread_title.trim_start_matches('#'));
+        let channel_id = store
+            .list_channels()
+            .ok()
+            .and_then(|cs| cs.iter().find(|c| c.name == name).map(|c| c.id));
+        match channel_id {
+            Some(id) => store
+                .append_channel_message(nemesis_board::models::NewChannelMessage {
+                    channel_id: id,
+                    sender: Actor::system("board"),
+                    content: body,
+                    parent_id: None,
+                    mtype: String::new(),
+                })
+                .map(|_| ()),
+            None => Err("本节点库无同名频道，注记无处可落".to_string()),
+        }
+    };
+    match result {
+        Ok(()) => tracing::info!(
+            target: "board_bus",
+            thread = %format!("{}:{}", event.thread_kind, event.thread_id),
+            "[BoardBus] 回帖投递失败已落本地系统注记（失败可见）"
+        ),
+        Err(e) => tracing::warn!(
+            target: "board_bus",
+            thread = %format!("{}:{}", event.thread_kind, event.thread_id),
+            "[BoardBus] 回帖投递失败注记未落库（本节点无线程可挂）: {e}"
+        ),
     }
 }
 
@@ -1419,6 +1549,11 @@ fn build_wake_envelope(
     let messages = thread_context_json(store, ctx)?;
     // （goal）：频道名透传——channel 线程此前 title 恒空，worker 只见
     // 不透明的 "channel:N"，不知道自己在 #dev 还是 #general。
+    // BUG-20261118-159：库内频道名是规范形态（normalize_channel_name 恒带
+    // `#` 前缀），直接透传 `c.name` 即是 `#dev`——此前这里再叠一层
+    // `format!("#{}", …)` 拼出 `##dev`（wake 包 title 双井号，worker agent
+    // prompt 头显示失真；863fe440 曾在注记侧 trim 补偿但 stamp 根因未修，
+    // 本处是根修收口）。注记侧的三形态兼容 trim 保留作纵深防御。
     let (title, prd_summary) = if ctx.thread_kind == thread_kind::ISSUE {
         match store.get_issue(ctx.thread_id) {
             Ok(issue) => (issue.title.clone(), truncate_chars(&issue.description, 500)),
@@ -1431,7 +1566,7 @@ fn build_wake_envelope(
             .and_then(|cs| {
                 cs.iter()
                     .find(|c| c.id == ctx.thread_id)
-                    .map(|c| format!("#{}", c.name))
+                    .map(|c| c.name.clone())
             })
             .unwrap_or_default();
         (channel_name, String::new())
@@ -1718,9 +1853,8 @@ pub struct WorkerBusDeps {
     pub wake_state: Arc<WorkerWakeState>,
 }
 
-/// 注册 worker 侧 `nb_bus` handler（gateway 在 cluster Arc 化之后调用；
-/// master 形态注册的是 [`build_master_nb_bus_handler`]，同名 action 并存
-/// 于不同节点）。
+/// 注册 worker-only `nb_bus` handler（统一 handler 的降级形态：board
+/// 库缺席等装配失败时保唤醒通道可用；正常装配走 [`build_nb_bus_handler`]）。
 pub fn build_worker_nb_bus_handler(
     deps: WorkerBusDeps,
 ) -> nemesis_cluster::rpc::server::RpcHandlerFn {
@@ -1907,7 +2041,11 @@ pub fn spawn_worker_sync_loop(
             tokio::time::interval(std::time::Duration::from_secs(BOARD_SYNC_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            ticker.tick().await;
+            // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+            // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+            if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                break;
+            }
             match worker_sync_once(&deps, &cluster).await {
                 Ok(n) if n > 0 => {
                     tracing::info!(target: "board_bus", enqueued = n,

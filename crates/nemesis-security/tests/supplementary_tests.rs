@@ -115,6 +115,18 @@ mod types_extra {
     }
 
     #[test]
+    fn test_extract_target_web_search_uses_query_arg() {
+        // BUG-20261116-037 横扫：web_search 实参是 query 不是 url——
+        // 旧实现读 url 键恒空 target（审计链空白 + 网络规则失明）。
+        let args = serde_json::json!({"query": "rust async book"});
+        assert_eq!(extract_target("web_search", &args), "rust async book");
+        // 其余 web 族仍取 url
+        let args = serde_json::json!({"url": "https://example.com"});
+        assert_eq!(extract_target("web_fetch", &args), "https://example.com");
+        assert_eq!(extract_target("download", &args), "https://example.com");
+    }
+
+    #[test]
     fn test_extract_url_unknown_tool() {
         let args = serde_json::json!({"url": "https://example.com"});
         assert_eq!(extract_url("unknown", &args), "");
@@ -867,7 +879,6 @@ mod injection_extra {
         let config = InjectionConfig::default();
         assert!(config.enabled);
         assert!(config.threshold > 0.0);
-        assert!(config.max_input_length > 0);
         assert!(!config.strict_mode);
     }
 

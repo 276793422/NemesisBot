@@ -187,27 +187,16 @@ struct RepoRawData {
 }
 
 /// Percent-encode a URL path segment (RFC 3986 unreserved set).
-/// Dependency-free; mirrors the encoding in `clawhub_registry`.
+/// BUG-20261113-162：实现收敛到共享单点 [`crate::url_enc`]，
+/// 此处保留旧名 delegate（既有调用面/测试面不变）。
 fn url_encode_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
+    crate::url_enc::percent_encode_component(s)
 }
 
 /// Percent-encode a multi-segment file path, preserving `/` separators.
 /// Used for `FilePath` query values and repo sub-paths.
 fn url_encode_filepath(p: &str) -> String {
-    p.split('/')
-        .map(url_encode_component)
-        .collect::<Vec<_>>()
-        .join("/")
+    crate::url_enc::percent_encode_path(p)
 }
 
 /// Parse a GitHub `tree` URL into `(owner, repo, branch, path)`.
@@ -284,9 +273,14 @@ impl ModelScopeRegistry {
                 resp.status()
             )));
         }
-        let api: ApiResponse = resp
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽（错误臂已帽的不对称面收口）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let api: ApiResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("ModelScope parse error: {}", e)))?;
         if api.code != 200 {
             return Err(NemesisError::Other(format!(
@@ -345,9 +339,15 @@ impl ModelScopeRegistry {
                 name
             )));
         }
-        let body: SkillDetailResponse = resp
-            .json()
-            .await
+        // BUG-20261114-046：信封响应体 1MB 帽（read_me_content 即
+        // SKILL.md，与 clawhub/github 同内容同帽）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            crate::registry::MAX_SKILL_CONTENT_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let body: SkillDetailResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("ModelScope detail parse error: {}", e)))?;
         if body.code != 200 {
             return Err(NemesisError::Other(format!(
@@ -405,9 +405,14 @@ impl ModelScopeRegistry {
                 name
             )));
         }
-        let body: RepoFilesResponse = resp
-            .json()
-            .await
+        // BUG-20261114-046：成功响应体 16MB 帽。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let body: RepoFilesResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("ModelScope file-list parse error: {}", e)))?;
         if body.code != 200 {
             return Err(NemesisError::Other(format!(
@@ -437,9 +442,15 @@ impl ModelScopeRegistry {
                 file_path
             )));
         }
-        let body: RepoRawResponse = resp
-            .json()
-            .await
+        // BUG-20261114-046：单文件信封响应体 16MB 帽（companion 文件
+        // 信封内嵌 content 字符串，16MB 与 github_tree 单文件帽同量级）。
+        let body_bytes = nemesis_utils::http_cap::read_body_capped(
+            resp,
+            crate::registry::MAX_API_JSON_BODY_BYTES,
+        )
+        .await
+        .map_err(NemesisError::Other)?;
+        let body: RepoRawResponse = serde_json::from_slice(&body_bytes)
             .map_err(|e| NemesisError::Other(format!("ModelScope file parse error: {}", e)))?;
         if body.code != 200 {
             return Err(NemesisError::Other(format!(
@@ -459,6 +470,10 @@ impl ModelScopeRegistry {
     /// Returns `(relative_path, content)` pairs.
     async fn fetch_full_skill(&self, path: &str, name: &str) -> Result<Vec<(String, String)>> {
         let mut files = Vec::new();
+        // 聚合双闸（BUG-20261114-059）：镜像清单是服务器可控输入，每文件
+        // 仅受 16MB 信封帽约束时 N 文件无界——文件数闸帽住小文件海啸
+        // （inode/目录项耗尽），聚合体量闸帽住总字节（内存与后续落盘双面）。
+        let mut total_bytes: u64 = 0;
         let mut roots: Vec<String> = vec![String::new()];
         while let Some(root) = roots.pop() {
             let entries = self.list_repo_files(path, name, &root).await?;
@@ -466,7 +481,21 @@ impl ModelScopeRegistry {
                 if e.entry_type == "tree" {
                     roots.push(e.path);
                 } else {
+                    if files.len() >= crate::registry::MAX_SKILL_FILE_COUNT {
+                        return Err(NemesisError::Security(format!(
+                            "skill file count exceeds limit ({} > {})",
+                            files.len() + 1,
+                            crate::registry::MAX_SKILL_FILE_COUNT
+                        )));
+                    }
                     let content = self.fetch_repo_raw(path, name, &e.path).await?;
+                    total_bytes += content.len() as u64;
+                    if total_bytes > crate::registry::MAX_SKILL_TOTAL_BYTES {
+                        return Err(NemesisError::Security(format!(
+                            "aggregate skill size exceeds limit (>{} bytes)",
+                            crate::registry::MAX_SKILL_TOTAL_BYTES
+                        )));
+                    }
                     files.push((e.path, content));
                 }
             }
@@ -568,6 +597,7 @@ impl ModelScopeRegistry {
                 branch,
                 gh_path,
                 target_dir,
+                0,
                 0,
             )
             .await

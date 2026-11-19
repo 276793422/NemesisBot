@@ -82,6 +82,9 @@ async fn unfinished_list_blocks_stop_with_reminder() {
             );
         }
         TurnEndDecision::Stop => panic!("unfinished list must block stopping"),
+        TurnEndDecision::Inject { .. } => {
+            panic!("todo closeout reminder must Continue, never Inject")
+        }
     }
 }
 
@@ -175,6 +178,9 @@ async fn writer_reader_parity_different_session_keys() {
                 assert!(feedback.contains("跨节点任务"), "key {key} round-trips");
             }
             TurnEndDecision::Stop => panic!("key {key} must round-trip to the hook"),
+            TurnEndDecision::Inject { .. } => {
+                panic!("todo closeout reminder must Continue, never Inject")
+            }
         }
     }
 }

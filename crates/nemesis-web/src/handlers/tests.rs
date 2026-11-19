@@ -15,6 +15,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -37,6 +38,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -46,6 +48,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -69,6 +72,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -91,6 +95,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -100,6 +105,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -2248,6 +2254,18 @@ async fn test_channels_test_stub() {
 async fn test_skills_search_stub() {
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
+    // BUG-20261114-034：ModelScope 缺省已启用（与 Dashboard 面收敛）——本测试
+    // 验证空结果管道行为，显式关掉 ModelScope 保持密闭（不打真实 modelscope.cn）。
+    // 出厂源（config.skills.json 缺省无 sources 条目 → from_config 合流注入）
+    // 走真实 api.github.com——tempdir 无网闸，此处用 disabled 同名占位条目
+    // 压制合流（append-if-absent 见名跳过且 disabled 不构造 registry）。
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config/config.skills.json"),
+        // name/repo 无 serde default——缺 repo 整份解析失败回落 default（出厂源复活）。
+        r#"{"modelscope":{"enabled":false},"github_sources":[{"name":"nemesisbot","repo":"276793422/NemesisBot","enabled":false}]}"#,
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
     let data = serde_json::json!({ "query": "automation" });
     let result = handler

@@ -121,8 +121,18 @@ pub struct DeviceService {
     state: Arc<Mutex<Option<Arc<dyn LastChannelProvider>>>>,
     /// Event sources (e.g. USB monitor).
     sources: Vec<Box<dyn EventSource>>,
-    /// Stop flag for event processing tasks.
-    stop_flag: Arc<AtomicBool>,
+    /// Stop token for event processing tasks (BUG-20261114-015）。
+    ///
+    /// 停机取消单一真相源（heartbeat r9 停机 panic 根修同款）：旧形态
+    /// `Arc<AtomicBool>` + `sleep(1s)` 轮询有两个问题——①每轮 select 注册新
+    /// timer，gateway 停机流程完成后 runtime shutdown 唤醒存活任务做最后
+    /// poll，注册新 timer 撞 "A Tokio 1.x context was found, but it is being
+    /// shutdown" panic（heartbeat r9 gateway boot 测试实测过的同族机制）；
+    /// ②stop() 不 join 任务，标志置位后任务最长 1s 才退出。
+    /// `CancellationToken::cancelled()` 走 watch 通道，零 timer 注册，cancel
+    /// 即刻唤醒退出。Mutex 包装：start/stop 周期需要在 start 时重置为新
+    /// token（cancelled 的 token 无法复用——第二次 start 的任务会秒退）。
+    stop_token: Mutex<tokio_util::sync::CancellationToken>,
 }
 
 impl DeviceService {
@@ -136,7 +146,7 @@ impl DeviceService {
             bus_sender: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(None)),
             sources: Vec::new(),
-            stop_flag: Arc::new(AtomicBool::new(false)),
+            stop_token: Mutex::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
@@ -155,7 +165,7 @@ impl DeviceService {
             bus_sender: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(None)),
             sources,
-            stop_flag: Arc::new(AtomicBool::new(false)),
+            stop_token: Mutex::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
@@ -175,7 +185,7 @@ impl DeviceService {
             bus_sender: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(None)),
             sources,
-            stop_flag: Arc::new(AtomicBool::new(false)),
+            stop_token: Mutex::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
@@ -241,13 +251,16 @@ impl DeviceService {
             return Ok(());
         }
 
-        self.stop_flag.store(false, Ordering::SeqCst);
+        // BUG-20261114-015：每轮 start 重置新 token（cancelled 的 token 无法复用，
+        // 否则 stop→start 周期后新任务读到已取消 token 秒退——heartbeat 同款纪律）。
+        let token = tokio_util::sync::CancellationToken::new();
+        *self.stop_token.lock() = token.clone();
 
         for source in &self.sources {
             match source.start() {
                 Ok(rx) => {
                     let kind = format!("{:?}", source.kind());
-                    let stop = self.stop_flag.clone();
+                    let stop = token.clone();
                     // Layer A：把 bus/state 依赖的真实克隆
                     // 传入事件任务（此前只传 bool 探测值，任务无法通知）。
                     let bus_sender = self.bus_sender.clone();
@@ -273,7 +286,9 @@ impl DeviceService {
     /// Stop the device monitoring service.
     /// Mirrors Go `Service.Stop()`.
     pub fn stop(&self) {
-        self.stop_flag.store(true, Ordering::SeqCst);
+        // BUG-20261114-015：cancel 即刻唤醒事件任务的 cancelled() 臂退出，
+        // 不再依赖 sleep(1s) 轮询标志（退出延迟 1s → 立即，且零 timer 注册）。
+        self.stop_token.lock().cancel();
         for source in &self.sources {
             if let Err(e) = source.stop() {
                 tracing::warn!("Error stopping source {:?}: {}", source.kind(), e);
@@ -370,16 +385,18 @@ impl DeviceService {
     /// Layer A：此前收两个 bool 探测值（`_bus_available`/
     /// `_state_available`，下划线弃用），收到事件只打 debug log，通知永不
     /// 发出。现收 bus/state 依赖的 Arc 克隆，逐事件路由通知。
+    ///
+    /// BUG-20261114-015：停机臂从 `sleep(1s)` 轮询 `Arc<AtomicBool>` 换为
+    /// `CancellationToken::cancelled()`——watch 通道事件驱动，零 timer 注册
+    /// （runtime shutdown 最后 poll 不再注册新 timer，heartbeat r9 停机
+    /// panic 家族根修同款），且 stop 后退出不再有最长 1s 的轮询延迟。
     async fn handle_events_task(
         mut rx: tokio::sync::mpsc::Receiver<DeviceEvent>,
-        stop: Arc<AtomicBool>,
+        stop: tokio_util::sync::CancellationToken,
         bus_sender: Arc<Mutex<Option<OutboundSender>>>,
         state: Arc<Mutex<Option<Arc<dyn LastChannelProvider>>>>,
     ) {
         loop {
-            if stop.load(Ordering::SeqCst) {
-                break;
-            }
             tokio::select! {
                 ev = rx.recv() => {
                     match ev {
@@ -393,11 +410,7 @@ impl DeviceService {
                         None => break,
                     }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                    if stop.load(Ordering::SeqCst) {
-                        break;
-                    }
-                }
+                _ = stop.cancelled() => break,
             }
         }
     }

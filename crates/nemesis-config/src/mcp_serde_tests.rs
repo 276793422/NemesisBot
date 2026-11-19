@@ -143,6 +143,33 @@ fn mcpservers_array_shape_accepted() {
     assert_eq!(cfg.servers[0].name, "a");
 }
 
+#[test]
+fn mcpservers_scalar_entry_is_loud_err_not_panic() {
+    // BUG-20261117-055：map 形态的标量条目旧形态 `entry["name"] = ...`
+    // 下标赋值——serde_json 的 IndexMut 对非 object/Null 容器是 panic，
+    // 一条写错的条目（LLM 代写 config 的现实风险，本文件头部先例同族）
+    // 把整个 config 解析打崩。修复后必须 Err（文案点名 key 与实际类型），
+    // 与本函数其余畸形形态的诚实错误纪律一致。
+    let err = serde_json::from_str::<McpConfig>(
+        r#"{"mcpServers":{"bad":"npx -y thing","good":{"command":"x"}}}"#,
+    )
+    .expect_err("标量条目必须 Err，绝不 panic")
+    .to_string();
+    assert!(err.contains("bad"), "错误文案必须点名 key: {err}");
+    assert!(err.contains("string"), "错误文案必须带实际类型: {err}");
+    // null 条目同纪律（旧形态恰好不 panic 但静默变空对象再被
+    // from_value 间接拒绝；新守卫直 Err，文案点名）。
+    let null_err = serde_json::from_str::<McpConfig>(r#"{"mcpServers":{"n":null}}"#)
+        .expect_err("null 条目必须 Err")
+        .to_string();
+    assert!(null_err.contains("n"), "null 条目文案点名 key: {null_err}");
+    // 数组形态的标量条目走 from_value 既有诚实 Err（对照，防同族漂移）。
+    assert!(
+        serde_json::from_str::<McpConfig>(r#"{"mcpServers":["oops"]}"#).is_err(),
+        "数组形态标量条目必须 Err"
+    );
+}
+
 // 空/残缺配置容忍
 
 #[test]

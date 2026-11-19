@@ -98,6 +98,9 @@ fn signature_gate_mode(config_dir: &Path) -> SignatureGateMode {
 ///   → exe 同目录回落）——roaming 装载器（`roaming_plugin_loader`）的
 ///   dlopen 就走这条链，无连字符变体层；与 `find_plugin_library` 语义
 ///   不同，必须特判保持「清单/验签对象 = 实际装载对象」同文件。
+/// - `PluginResources` → [`PluginLibSpec::RESOURCES`] 查找链——同 roaming
+///   理由：resources 装载器（`resources_plugin_loader`）的 dlopen 走这条
+///   链，特判保同文件。
 /// - 其余（plugin_ui / plugin_onnx / eval_monitor_dll 部署形态）→ exe 旁
 ///   `plugins/`。eval_monitor 的开发形态仓库路径由 eval.rs 自行解析后走
 ///   [`gate_load_path`]（查找规则留在消费点，闸不掺业务搜索）。
@@ -111,6 +114,7 @@ pub fn resolve_load_path(id: NativePluginId) -> Option<PathBuf> {
             find_plugin_library(id.id())
         }
         NativePluginId::PluginRoaming => crate::plugin_lib::PluginLibSpec::ROAMING.find_path(),
+        NativePluginId::PluginResources => crate::plugin_lib::PluginLibSpec::RESOURCES.find_path(),
         _ => find_plugin_library(id.id()),
     }
 }

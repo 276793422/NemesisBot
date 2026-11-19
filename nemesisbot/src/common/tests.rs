@@ -155,6 +155,43 @@ fn test_copy_directory_nonexistent() {
     assert!(result.is_err());
 }
 
+/// BUG-20261116-024 回归锁（copy 面）：目录链接（junction/symlink）环下
+/// copy_directory 不沿链接环以 loop/loop/... 假路径重复拷贝（修复前 =
+/// 深路径 fs::copy Err 炸整树），真实文件照常拷出。
+#[test]
+fn test_copy_directory_dir_link_loop_no_recurse() {
+    fn create_dir_link(target: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .status()?;
+            if !status.success() {
+                return Err(std::io::Error::other(format!("mklink /J failed: {status}")));
+            }
+            Ok(())
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("dst");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("a.txt"), "hello").unwrap();
+    create_dir_link(&src, &src.join("loop")).expect("建目录链接");
+
+    copy_directory(&src, &dst).unwrap();
+
+    assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+    assert!(!dst.join("loop").exists(), "目录链接不得被递归进/拷出");
+}
+
 #[test]
 fn test_should_skip_heartbeat() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1483,4 +1520,32 @@ fn init_logger_config_disabled_returns_without_layers() {
     fs::write(&cfg, data.to_string()).unwrap();
     let flags = init_logger_from_config(&cfg, &[]);
     assert_eq!(flags, 0);
+}
+
+#[test]
+fn bounded_tick_interval_floor_and_cap() {
+    // BUG-20261116-001：ticker 间隔收敛（下限 floor / 上界 MAX）。
+    assert_eq!(bounded_tick_interval_secs(0, 20), 20);
+    assert_eq!(bounded_tick_interval_secs(5, 20), 20);
+    assert_eq!(bounded_tick_interval_secs(42, 20), 42);
+    assert_eq!(bounded_tick_interval_secs(1, 1), 1);
+    assert_eq!(
+        bounded_tick_interval_secs(u64::MAX, 1),
+        MAX_TICK_INTERVAL_SECS
+    );
+    // floor 自身超过上界时上界赢（interval() 的下限语义由调用方保证非零）。
+    assert_eq!(
+        bounded_tick_interval_secs(u64::MAX, MAX_TICK_INTERVAL_SECS + 7),
+        MAX_TICK_INTERVAL_SECS
+    );
+}
+
+#[test]
+fn max_tick_interval_sits_well_below_instant_arithmetic_bound() {
+    // tokio Instant 算术界 ≈ 584 年（u64 ns 可表示范围）；上界必须远低于
+    // 它，保证 missed-tick Delay 路径 `Instant + Duration` 永不溢出 panic。
+    let instant_bound_secs: u64 = 584 * 365 * 24 * 3600;
+    assert!(MAX_TICK_INTERVAL_SECS < instant_bound_secs);
+    // 与 heartbeat 先例常量对齐（30 天，分钟数 ×60）。
+    assert_eq!(MAX_TICK_INTERVAL_SECS, 30 * 24 * 3600);
 }

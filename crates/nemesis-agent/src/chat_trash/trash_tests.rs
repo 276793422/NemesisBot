@@ -204,11 +204,15 @@ impl TempTrash {
         let boundary = root.join("boundary");
         let trash = root.join("trash");
         let sessions = root.join("sessions"); // todo 文件挂这里（真相源同构）
+        let ledger = root.join("event_ledger"); // 软删级联摘除面（真相源同构）
+        let capture = root.join("capture"); // capture 根（跟随删面，真相源同构）
         std::fs::create_dir_all(&logs).unwrap();
         std::fs::create_dir_all(&boundary).unwrap();
         std::fs::create_dir_all(&trash).unwrap();
         std::fs::create_dir_all(&sessions).unwrap();
-        let loc = TrashLocations::with_dirs(trash, logs, boundary, sessions);
+        std::fs::create_dir_all(&ledger).unwrap();
+        std::fs::create_dir_all(&capture).unwrap();
+        let loc = TrashLocations::with_dirs(trash, logs, boundary, sessions, ledger, capture);
         Self { root, loc }
     }
 
@@ -340,6 +344,64 @@ fn trash_moves_three_files_and_writes_manifest() {
 
     trash_purge_in(&t.loc, &entry).expect("purge 须成功");
     assert!(!dir.exists());
+}
+
+/// 写一条 ledger 行（event_ledger 追加形态；软删级联摘除面）。
+fn put_ledger(t: &TempTrash, key: &str) {
+    let p = t.loc.ledger_path(key);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, serde_json::json!({"op": "append"}).to_string()).unwrap();
+}
+
+/// 预置 capture 目录（带一条证据文件；软删级联跟随删面）。
+fn put_capture(t: &TempTrash, key: &str) {
+    let dir = crate::capture_sink::capture_dir_at(t.loc.capture_root(), key);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("00.summary.json"), "{}").unwrap();
+}
+
+/// 软删级联（2026-11-19 删除残留修复）：ledger 摘除 + capture 跟随删。
+/// 回收站收走对话本体后，审计账本不得以孤儿滞留原地（同键重建不得继承
+/// 前任审计事件——delete_chat_log 同族语义）；capture 是会话内容副本
+/// （隐私面），软删必须同步清且不进回收站（恢复承诺只覆盖四件套）。
+#[test]
+fn trash_cascades_ledger_and_capture_removal() {
+    let t = TempTrash::new("cascade");
+    let key = make_session(&t, "cascade", "级联", &["一问"]);
+    put_ledger(&t, &key);
+    put_capture(&t, &key);
+
+    let entry = trash_chat_log_in(&t.loc, &key, "single")
+        .expect("移入须成功")
+        .expect("三件套在场即有条目");
+
+    assert!(!t.loc.ledger_path(&key).exists(), "ledger 随软删摘除");
+    let cap = crate::capture_sink::capture_dir_at(t.loc.capture_root(), &key);
+    assert!(!cap.exists(), "capture 目录跟随删（隐私面）");
+    // 回收站条目内不含 ledger/capture（恢复承诺只覆盖 chat/boundary/meta/todo）。
+    let dir = t.entry_dir(&entry);
+    let carried: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        carried
+            .iter()
+            .all(|n| n != "ledger.jsonl" && n != "capture"),
+        "条目只carry四件套+清单，实得 {carried:?}"
+    );
+}
+
+/// ledger/capture 缺席（capture 关闭态、无审计写入的会话）：软删照常成功
+/// ——级联是 best-effort 跟随，缺席面不阻塞主链。
+#[test]
+fn trash_succeeds_without_ledger_and_capture() {
+    let t = TempTrash::new("noleg");
+    let key = make_session(&t, "noleg", "无账本", &["一问"]);
+    let entry = trash_chat_log_in(&t.loc, &key, "single").expect("移入须成功");
+    assert!(entry.is_some(), "ledger/capture 缺席不阻塞软删");
+    assert!(!t.loc.capture_root().join("anything").exists());
 }
 
 #[test]

@@ -74,9 +74,10 @@ let disposed = false
 
 function ptyUrl(): string {
   // token 真相源 = auth store 的内存 token（本会话主 WS 正是用它通过认证）。
-  // plugin-ui WebView 经 __DASHBOARD_TOKEN__ 注入认证，从不写 localStorage
-  // ——只读 localStorage 会拿到空/过期值，/ws/pty 401 →「连接已断开」。
-  // localStorage 仅为兜底（与 App.vue 自动登录的普通浏览器路径对齐）。
+  // localStorage 仅为兜底。历史坑（2026-10-18）：plugin-ui __DASHBOARD_TOKEN__
+  // 注入会话曾从不写 localStorage，只读兜底会拿到空/过期值 → /ws/pty 401；
+  // 2026-11-13 起 autoLogin 成功也落盘（见 stores/auth.ts），空值窗口已闭，
+  // 内存优先仍保留（取最新认证态，防 token 轮换后的旧值）。
   const auth = useAuthStore()
   const token = auth.token || localStorage.getItem('nemesisbot_auth_token') || ''
   const backend = (window as any).__DASHBOARD_BACKEND__

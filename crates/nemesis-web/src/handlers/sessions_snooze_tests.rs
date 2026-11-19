@@ -40,6 +40,7 @@ fn make_ctx(home: &Path) -> RequestContext {
     let ws = home.join("workspace").to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -62,6 +63,7 @@ fn make_ctx(home: &Path) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -75,6 +77,7 @@ fn make_ctx(home: &Path) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -405,4 +408,48 @@ fn b11_parse_snooze_until_astronomical_secs_no_panic() {
     // 边界可表示侧：8e12s ≈ 25.4 万年，年份 ≈ 255,704 仍在年域（262143）内
     // → 荒谬但可表示，诚实放行（不猜用户意图）。
     parse_snooze_until("8000000000000").unwrap();
+}
+
+// --- BUG-20261119-208：snooze sweeper 终态令牌换装（BUG-20261115-023 家族
+// --- nemesis-web 成员）回归锁。局部令牌——全局令牌在测试里绝不可 cancel
+// --- （shutdown_tests 纪律：CancellationToken 无复位，libtest 并行下会毒化
+// --- 同进程其他测试）。
+
+use super::sessions::spawn_snooze_sweeper;
+
+/// 预取消形态：sweeper 收到已取消的令牌 → 前置 is_cancelled 检查立即退出，
+/// wake/drain 零执行（收口语义优先于最后一拍）。墙钟 <2s 断言锁 select
+/// 接线：无 select 的裸 `interval.tick().await` park 满 10s 必超时红。
+#[tokio::test]
+async fn b11_snooze_sweeper_pre_cancelled_exits_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    std::fs::create_dir_all(home.join("workspace")).unwrap();
+    let _guard = isolate(&home);
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel(); // 预取消：spawn 前已终态
+    let handle = spawn_snooze_sweeper(token);
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("预取消形态必须在 2s 内退出（裸 park 形态 park 满 10s 超时红）")
+        .expect("sweeper 任务不得 panic（JoinError）");
+}
+
+/// park 期间取消抢占：活令牌 spawn → 首轮工作在第一个 10s tick 之后，
+/// 100ms 时 cancel → cancelled 臂胜出，退出发生在任何一轮 wake/drain
+/// 工作之前。墙钟 <2s：裸 park 形态要等满 10s 超时红。
+#[tokio::test]
+async fn b11_snooze_sweeper_cancel_during_park_exits_promptly() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("nb-home");
+    std::fs::create_dir_all(home.join("workspace")).unwrap();
+    let _guard = isolate(&home);
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = spawn_snooze_sweeper(token.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("park 期间取消必须抢占退出（裸 park 形态要等满 10s 超时红）")
+        .expect("sweeper 任务不得 panic（JoinError）");
 }

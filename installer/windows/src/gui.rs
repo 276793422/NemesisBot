@@ -54,6 +54,9 @@ struct InstallerApp {
     autostart: bool,
     accept_risk: bool,
     launch_after: bool,
+    taiwei_opt_in: bool,
+    /// 精确定位 opt-in（M6 单独同意：默认 false，仅总闸勾选时显示）。
+    precise_opt_in: bool,
     shared: Arc<Mutex<Shared>>,
     exit_code: ExitCode,
 }
@@ -162,6 +165,17 @@ impl InstallerApp {
             ));
             ui.add(Checkbox::new(&mut self.autostart, "开机自启动"));
             ui.add(Checkbox::new(
+                &mut self.taiwei_opt_in,
+                "匿名使用统计（不含对话内容，可随时关闭）",
+            ));
+            if self.taiwei_opt_in {
+                // M6 单独同意：仅总闸勾选时出现，默认不勾。
+                ui.add(Checkbox::new(
+                    &mut self.precise_opt_in,
+                    "精确定位（启动时一次 OS 级定位，默认不开启）",
+                ));
+            }
+            ui.add(Checkbox::new(
                 &mut self.launch_after,
                 "安装完成后启动 NemesisBot",
             ));
@@ -199,6 +213,8 @@ impl InstallerApp {
             no_shortcuts: false,
             autostart: self.autostart,
             launch: self.launch_after,
+            taiwei_opt_in: self.taiwei_opt_in,
+            precise_opt_in: self.taiwei_opt_in && self.precise_opt_in,
         };
         std::thread::spawn(move || {
             let cb_shared = shared.clone();
@@ -364,6 +380,8 @@ pub fn run_install_wizard(package: std::path::PathBuf, default_dir: std::path::P
         autostart: false,
         accept_risk: false,
         launch_after: true,
+        taiwei_opt_in: true,
+        precise_opt_in: false,
         shell_sig: setup_core::sig::shell_self_check(),
         package,
         info,
@@ -405,7 +423,10 @@ pub fn run_uninstall_wizard(install_dir: &std::path::Path) -> i32 {
     if confirmed != rfd::MessageDialogResult::Yes {
         return 3;
     }
-    match ops::run_uninstall_confirmed(install_dir) {
+    // D1 卸载原因问卷：确认后、卸载链前问（emit 后 bot 很快被删，时序契约）。
+    // 跳过/关窗/GUI 失败 = None，绝不阻断卸载。
+    let reason = run_reason_prompt();
+    match ops::run_uninstall_confirmed(install_dir, reason) {
         Ok(outcome) => {
             let mut msg = format!("卸载完成：删除 {} 个文件。", outcome.deleted);
             if outcome.bots_stopped > 0 {
@@ -440,6 +461,81 @@ pub fn run_uninstall_wizard(install_dir: &std::path::Path) -> i32 {
             ops::exit_code_of(&e)
         }
     }
+}
+
+/// D1 卸载原因问卷（egui 单选小窗；返回 None = 跳过 / 关窗 / GUI 失败）。
+/// 选项值与 CLI `taiwei emit uninstall --reason` 白名单逐字节一致。
+const UNINSTALL_REASONS: &[(&str, &str)] = &[
+    ("not_useful", "没什么用"),
+    ("issue", "有问题 / 故障"),
+    ("reinstall", "重装（换机器 / 换系统）"),
+    ("other", "其他"),
+];
+
+/// 问卷结果槽（UI 线程写，主线程关闭后读；None = 跳过语义）。
+type ReasonSlot = Arc<Mutex<Option<&'static str>>>;
+
+struct ReasonPromptApp {
+    selected: Option<&'static str>,
+    slot: ReasonSlot,
+}
+
+impl eframe::App for ReasonPromptApp {
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        CentralPanel::default().show(ctx, |ui| {
+            ui.heading("方便告诉我们卸载原因吗？");
+            ui.add_space(6.0);
+            ui.label(RichText::new("仅一条匿名统计，帮助改进产品").small().weak());
+            ui.add_space(10.0);
+            for (value, label) in UNINSTALL_REASONS {
+                ui.radio_value(&mut self.selected, Some(*value), *label);
+            }
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("提交").clicked()
+                    && let Some(r) = self.selected
+                {
+                    *self.slot.lock().unwrap() = Some(r);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui.button("跳过").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+    }
+}
+
+/// 弹出问卷小窗并等待用户选择。问卷窗起不来 = 按跳过处理（warn 不阻断）。
+fn run_reason_prompt() -> Option<&'static str> {
+    let slot: ReasonSlot = Arc::new(Mutex::new(None));
+    let slot_in_app = slot.clone();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 300.0])
+            .with_title("卸载原因")
+            .with_resizable(false),
+        ..Default::default()
+    };
+    let run_result = eframe::run_native(
+        "卸载原因",
+        options,
+        Box::new(move |cc| {
+            install_cjk_font(&cc.egui_ctx);
+            Box::new(ReasonPromptApp {
+                selected: None,
+                slot: slot_in_app,
+            })
+        }),
+    );
+    if let Err(e) = run_result {
+        eprintln!("问卷窗运行失败（按跳过处理）: {e}");
+    }
+    let out = *slot.lock().unwrap();
+    if let Some(r) = out {
+        eprintln!("卸载原因: {r}");
+    }
+    out
 }
 
 /// 安装包体积人读（供单元测试锚定）。

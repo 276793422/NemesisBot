@@ -28,9 +28,11 @@ pub enum FileChangeKind {
 
 /// MCP 工具快照条目（`refresh_mcp_snapshot` 产出）。
 ///
-/// 消费方：`McpListTool`（name + description 列表展示）； 独占接管
-/// （name 供给闸/隐藏表比对，parameters 供镜像 op 的 args_schema 预检与
-/// connector_find 展示）。快照在 MCP 注册/reload 时整表重建。
+/// 消费方：connectors 运营面（独占接管 name 供给闸/隐藏表比对，
+/// parameters 供镜像 op 的 args_schema 预检与 connector_find 展示；
+/// Dashboard 镜像行）。**模型面 mcp_list 不消费**——dispatch 拦截 +
+/// registry 真值过滤渲染（BUG-20261118-095；渲染复用本类型作 DTO）。
+/// 快照在 MCP 注册/reload 时整表重建。
 #[derive(Debug, Clone)]
 pub struct McpToolSnapshotEntry {
     pub name: String,
@@ -314,9 +316,13 @@ impl AgentLoop {
         self.tools.read().len()
     }
 
-    /// Return the names of all registered tools.
+    /// Return the names of all registered tools (sorted deterministically —
+    /// HashMap 迭代序是实现细节，消费方含用户可见 join 输出，见
+    /// BUG-20261117-052）。
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.read().keys().cloned().collect()
+        let mut names: Vec<String> = self.tools.read().keys().cloned().collect();
+        names.sort();
+        names
     }
 
     /// 按名取注册工具的 `parameters()` JSON。项目 loop
@@ -350,6 +356,18 @@ impl AgentLoop {
         // 启动全量挂载与后续热重载补挂都经 mgr.discover_tools 单点消费
         // （注入与否的 opt-in 闸在 transport 侧按 server 配置执行）。
         mgr.set_browser_profile(self.browser_profile.clone());
+        // MCP 图像落盘槽（Phase 5 F1）：workspace 边界在场时把 MCP server
+        // 返回的 image content 落 `{root}/temp/mcp/`（内容寻址命名），文本
+        // 注记 `[Image saved: <path>]` 由 McpToolBridge 解析推图槽。边界
+        // 缺席（standalone/测试构造时序）= None = 旧占位行为（零回归）。
+        // 工厂时序：set_workspace_boundary 恒先于 register_tools_and_mcp
+        // （main.rs/spec.rs 同序），生产路径边界恒在场。
+        mgr.set_image_sink(mcp_image_sink_for_root(
+            self.workspace_boundary
+                .read()
+                .as_ref()
+                .map(|b| b.root.clone()),
+        ));
         if mgr.is_enabled() {
             for server in mgr.list_servers().to_vec() {
                 let server_name = server.name.clone();
@@ -461,8 +479,10 @@ impl AgentLoop {
     }
 
     /// Refresh the MCP tool snapshot from the tool registry.
-    fn refresh_mcp_snapshot(&self) {
-        let snapshot: Vec<McpToolSnapshotEntry> = self
+    /// pub(crate)：回归锁直触发（乱序注册后断言 snapshot 有序，
+    /// BUG-20261117-052）。
+    pub(crate) fn refresh_mcp_snapshot(&self) {
+        let mut snapshot: Vec<McpToolSnapshotEntry> = self
             .tools
             .read()
             .iter()
@@ -475,11 +495,19 @@ impl AgentLoop {
                 destructive_hint: tool.destructive_hint(),
             })
             .collect();
+        // 确定性顺序（BUG-20261117-052）：HashMap 迭代序是实现细节
+        //（RandomState 跨进程不同 + MCP 热装 rehash 漂移），而快照按序
+        // 投影给 connectors 运营面（清单 UI 不跳序）；模型侧 mcp_list
+        // 自行对 registry 键排序（BUG-20261118-095 后不读快照）。
+        // 与 list_dir / grep_recursive 的平台序排序纪律同族。
+        snapshot.sort_by(|a, b| a.name.cmp(&b.name));
         *self.mcp_tool_snapshot.write() = snapshot;
     }
 
     /// Return a shared reference to the MCP tool snapshot.
-    /// Used to wire up McpListTool.
+    /// 运营面投影 getter：connectors Dashboard / connector_tools 消费
+    /// （模型侧 mcp_list 不读快照——BUG-20261118-095 后走 registry
+    /// 真值 + 可见性过滤，快照仅运营视图）。
     pub fn mcp_tool_snapshot(&self) -> Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>> {
         self.mcp_tool_snapshot.clone()
     }
@@ -494,6 +522,19 @@ impl AgentLoop {
             if let Err(e) = ds.record_tool_validation(&model, failed) {
                 tracing::warn!("[AgentLoop] record_tool_validation failed: {e}");
             }
+        }
+    }
+
+    /// 工具使用率落账（`tools.list` 的 `usage_count` 面数据源——工作流
+    /// 工具选择器按使用率排序）。调用方只在**真实执行**后调用
+    /// （`checks_capture::classify_result` None 臂 = 拒绝，不入账）。
+    /// 无 data_store 静默跳过；写失败只 warn——账本是增值动作，不反压轮次
+    /// （与 [`Self::record_tool_validation_stats`] 同纪律）。
+    pub(crate) fn record_tool_usage_stats(&self, tool: &str) {
+        if let Some(ref ds) = self.data_store
+            && let Err(e) = ds.record_tool_usage(tool)
+        {
+            tracing::warn!("[AgentLoop] record_tool_usage failed: {e}");
         }
     }
 
@@ -581,4 +622,60 @@ pub(crate) fn registered_server_prefixes(
         .map(|s| format!("mcp_{}_", nemesis_mcp::adapter::sanitize_name(s)))
         .filter(|prefix| tool_keys.iter().any(|k| k.starts_with(prefix.as_str())))
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// MCP 图像落盘槽（Phase 5 F1）
+// ---------------------------------------------------------------------------
+
+/// MCP 图像落盘槽构造：root 在场 → 返回槽闭包（[`nemesis_mcp::adapter::McpImageSink`]）
+/// ——字节超 25MB 帽 / magic 非图片 / mime 未知 / 落盘失败 → None（adapter
+/// 回落旧占位注记）；成功 → 内容寻址命名 `mcp_{sha8}_{millis}.{ext}` 落
+/// `{root}/temp/mcp/`，返回绝对路径文本（adapter 产 `[Image saved: <path>]`
+/// 注记，由 [`crate::mcp_bridge::McpToolBridge`] 解析推 `tool_images` 槽）。
+/// root 缺席（standalone/测试构造时序）→ None = 旧占位行为（零回归）。
+pub(crate) fn mcp_image_sink_for_root(
+    root: Option<std::path::PathBuf>,
+) -> Option<nemesis_mcp::adapter::McpImageSink> {
+    let root = root?;
+    Some(std::sync::Arc::new(move |mime: &str, bytes: &[u8]| {
+        if bytes.len() as u64 > crate::image_path_detector::MAX_IMAGE_BYTES {
+            return None;
+        }
+        // 扩展名：magic byte 嗅探权威（server 自报 mime 可能缺失/不准），
+        // 嗅探失手回落 mime 映射表；两路都未知 = 拒收（None → 旧占位）。
+        let ext =
+            crate::image_path_detector::ext_from_magic(bytes).or_else(|| ext_from_mime(mime))?;
+        let dir = root.join("temp").join("mcp");
+        std::fs::create_dir_all(&dir).ok()?;
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = dir.join(format!(
+            "mcp_{}_{}.{ext}",
+            crate::image_downscale::content_sha8(bytes),
+            millis
+        ));
+        std::fs::write(&path, bytes).ok()?;
+        Some(path.to_string_lossy().to_string())
+    }))
+}
+
+/// mime → 图片扩展名映射（`mcp_image_sink_for_root` 的 magic 嗅探回落）。
+pub(crate) fn ext_from_mime(mime: &str) -> Option<&'static str> {
+    let m = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match m.as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        "image/bmp" => Some("bmp"),
+        _ => None,
+    }
 }

@@ -121,3 +121,62 @@ fn test_bridge_hints_passthrough_from_annotations() {
     assert_eq!(Tool::read_only_hint(&bridge), None);
     assert_eq!(Tool::destructive_hint(&bridge), None);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 F1：`[Image saved: <path>]` 标记 → tool_images 槽
+// ---------------------------------------------------------------------------
+
+const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+fn write_png(dir: &std::path::Path, name: &str) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, PNG_MAGIC).unwrap();
+    p.to_string_lossy().to_string()
+}
+
+/// 标记解析：真实 PNG 路径提取成功；缺失文件 / 非图片字节 / 无 `]` 闭合 /
+/// 无标记 四类防御臂全部跳过。
+#[test]
+fn test_extract_saved_image_paths_matrix() {
+    let tmp = std::env::temp_dir().join(format!("mcpb_{}", std::process::id()));
+    let good = write_png(&tmp, "good.png");
+    // 缺失文件路径 + 非图片内容路径。
+    let fake = tmp.join("fake.png");
+    std::fs::write(&fake, b"not an image").unwrap();
+
+    let fake_str = fake.to_string_lossy().to_string();
+    let content = format!(
+        "text before\n[Image saved: {good}]\n[Image saved: {}]\n[Image saved: {fake_str}]\n[Image saved: unterminated\nafter",
+        tmp.join("missing.png").display()
+    );
+    let got = extract_saved_image_paths(&content);
+    assert_eq!(got, vec![good]);
+
+    // 无标记 = 空。
+    assert!(extract_saved_image_paths("plain text").is_empty());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// e2e：MockAdapterTool 回带标记文本 → bridge execute → tool_images 槽
+/// 收到路径；错误路径不推槽。
+#[tokio::test]
+async fn test_bridge_pushes_marker_paths_into_tool_images() {
+    let tmp = std::env::temp_dir().join(format!("mcpb2_{}", std::process::id()));
+    let good = write_png(&tmp, "hit.png");
+    let mock = MockAdapterTool {
+        definition: ToolDefinition {
+            name: "img_tool".to_string(),
+            description: "returns image marker".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+            ..Default::default()
+        },
+        result: ToolResult::ok(format!("done\n[Image saved: {good}]")),
+    };
+    let bridge = McpToolBridge::new(Box::new(mock));
+    let ctx = make_context();
+    let out = bridge.execute("{}", &ctx).await.unwrap();
+    assert!(out.contains("[Image saved:"));
+    assert_eq!(ctx.take_tool_images(), vec![good]);
+    let _ = std::fs::remove_dir_all(&tmp);
+}

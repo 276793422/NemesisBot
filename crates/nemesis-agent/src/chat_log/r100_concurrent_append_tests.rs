@@ -49,6 +49,9 @@ fn concurrent_appends_never_tear_lines() {
                     checkpoint_turn: Some(i),
                     steer: false,
                     work: None,
+
+                    source_node: None,
+                    system_notice: None,
                 };
                 append_chat_log_meta(&k, "assistant", &format!("t{}-line{}", t, i), &meta);
             }

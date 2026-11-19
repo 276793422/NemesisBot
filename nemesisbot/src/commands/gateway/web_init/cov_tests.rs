@@ -476,6 +476,21 @@ async fn w5_init_web_bridge_hub_rpc_hub_assembly_with_enabled_cluster() {
     assert!(w.bridge_client_launch.is_none(), "client 关 → launch None");
 }
 
+/// 测试局部 writer：把 fmt 事件字节收进共享缓冲（BUG-20261113-138 断桥
+/// 留痕断言用）。`with_writer(move || CaptureWriter(arc))` 走闭包
+/// MakeWriter 毯实现，不碰全局 subscriber（测试并行安全）。
+#[derive(Clone)]
+struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// 回归锁：出站桥**先订阅再 spawn**——wiring 返回后立即
 /// 发布的消息（桥任务首 poll 之前）不得丢失。旧形态（任务体内订阅）下发布
 /// 时桥尚未订阅（receiver_count=0 → 发布侧 no-receiver 丢弃），首收在 5s
@@ -484,32 +499,51 @@ async fn w5_init_web_bridge_hub_rpc_hub_assembly_with_enabled_cluster() {
 /// 终止路径：桥转发完停在 broadcast recv 上（任务持 Arc<MessageBus>，广播
 /// Closed 臂测试里不可达，与生产一致）→ drop mpsc receiver + 再发布一条
 /// 唤醒桥 → send 失败 break（生产停机同路径的 send-err）。
+///
+/// BUG-20261113-138：send 失败断桥前必须留痕——旧形态静默 break，迟到
+/// 回复零痕迹蒸发。局部 dispatcher（with_default 覆盖 block_on 整段，
+/// 当前线程 runtime 的任务 poll 都发生在其中）捕获桥任务事件，断言
+/// warn 含 marker 与被丢消息的 chat_id。
 #[test]
 fn test_cm_bridge_delivers_message_published_right_after_wiring() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(async {
-        let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        let handle = super::spawn_bus_outbound_bridge(bus.clone(), tx);
-        // 订阅已在 spawn 前同步完成 → 此消息必进桥的 broadcast 缓冲。
-        bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
-            "telegram", "chat-1", "hi",
-        ));
-        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-            .await
-            .expect("5s 内未收到 wiring 后立即发布的消息——先订阅再 spawn 失效")
-            .expect("消息不得为 None");
-        assert_eq!(forwarded.chat_id, "chat-1");
-        drop(rx); // 断 mpsc（生产停机形态）
-        // 桥此刻停在 broadcast recv 上：再发布一条唤醒它 → send 失败 → break。
-        bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
-            "telegram", "chat-2", "bye",
-        ));
-        handle.await.unwrap(); // 桥已退出，不挂
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || CaptureWriter(writer.clone()))
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        rt.block_on(async {
+            let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
+            let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+            let handle = super::spawn_bus_outbound_bridge(bus.clone(), tx);
+            // 订阅已在 spawn 前同步完成 → 此消息必进桥的 broadcast 缓冲。
+            bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+                "telegram", "chat-1", "hi",
+            ));
+            let forwarded = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("5s 内未收到 wiring 后立即发布的消息——先订阅再 spawn 失效")
+                .expect("消息不得为 None");
+            assert_eq!(forwarded.chat_id, "chat-1");
+            drop(rx); // 断 mpsc（生产停机形态）
+            // 桥此刻停在 broadcast recv 上：再发布一条唤醒它 → send 失败 →
+            // 留痕（BUG-20261113-138）→ break。
+            bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+                "telegram", "chat-2", "bye",
+            ));
+            handle.await.unwrap(); // 桥已退出，不挂
+        });
     });
+    let buf = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+    assert!(
+        buf.contains("receiver gone") && buf.contains("chat-2"),
+        "断桥必须留痕（BUG-20261113-138）：warn 缺 marker 或被丢消息 chat_id；实际捕获 = {buf}"
+    );
 }
 
 /// 负值时间配置装配冒烟（feature 门控三通道齐才编译）：irc 负退避/负上限
@@ -546,4 +580,72 @@ async fn init_web_negative_time_configs_smoke() {
         "负值配置下 irc 仍必须启用: {:?}",
         w.enabled_channels
     );
+}
+
+/// Wave 3（集成面）通道 push 矩阵：matrix..email 11 条 feature-gated push
+/// 线成员断言。banner 通道计数已改为直接消费本列表（BUG-20261114-049：
+/// 旧 count_enabled_channels 陈旧 13 通道清单对 Wave 3 装配臂全盲——
+/// email-only 配置误报「WARNING: No channels enabled」；双轨记账已消除，
+/// 本列表是唯一真相源），列表成员正确性在此钉住。
+#[cfg(all(
+    feature = "channels-matrix",
+    feature = "channels-irc",
+    feature = "channels-signal",
+    feature = "channels-mastodon",
+    feature = "channels-bluesky",
+    feature = "channels-wecom",
+    feature = "channels-mattermost",
+    feature = "channels-nostr",
+    feature = "channels-mqtt",
+    feature = "channels-wechat",
+    feature = "channels-email"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn w5_init_web_wave3_channel_push_matrix() {
+    let th = ctx_env();
+    write_bare_config(&th.home);
+    let mut ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
+        .await
+        .expect("assemble ok")
+        .expect("非 relay 必返 Some");
+    let cluster: ClusterWiring = init_cluster(&ctx).await.expect("cluster disabled 廉价路径");
+
+    // Wave 3 全开。push 线只看 enabled 位；构造臂对空/越界配置自降级
+    // None + loud error（如 mqtt/email 端口缺省越界）——成员断言不受
+    // 构造结果影响。全部为出站客户端形态，无监听端口。
+    ctx.cfg.channels.matrix.enabled = true;
+    ctx.cfg.channels.irc.enabled = true;
+    ctx.cfg.channels.signal.enabled = true;
+    ctx.cfg.channels.mastodon.enabled = true;
+    ctx.cfg.channels.bluesky.enabled = true;
+    ctx.cfg.channels.wecom.enabled = true;
+    ctx.cfg.channels.mattermost.enabled = true;
+    ctx.cfg.channels.nostr.enabled = true;
+    ctx.cfg.channels.mqtt.enabled = true;
+    ctx.cfg.channels.wechat.enabled = true;
+    ctx.cfg.channels.email.enabled = true;
+
+    let w = init_web(&ctx, &cluster)
+        .await
+        .expect("Wave 3 全通道形态不炸");
+    for name in [
+        "matrix",
+        "irc",
+        "signal",
+        "mastodon",
+        "bluesky",
+        "wecom",
+        "mattermost",
+        "nostr",
+        "mqtt",
+        "wechat",
+        "email",
+    ] {
+        assert!(
+            w.enabled_channels.iter().any(|c| c == name),
+            "enabled 列表缺 {name}: {:?}",
+            w.enabled_channels
+        );
+    }
+    drop(w);
 }

@@ -39,15 +39,23 @@ pub struct ExecutorSeparationConfig {
     /// 沙盒后端选择（`executor.backend`，
     /// 缺省 `"auto"`）。值域：`auto`（默认——Windows 上 Sandboxie 就绪则
     /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
-    /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回
-    /// None + warn，不静默改道）。非 Windows 平台无消费方（landlock/bwrap/
-    /// Seatbelt 选型不读此键）。
+    /// Sandboxie）/ `acl`（显式钉 ACL 档）/ `mxc`（显式钉 MXC 护栏后端，
+    /// 2026-11-14——跨平台统一，Windows=ProcessContainer / Linux=bubblewrap /
+    /// macOS=seatbelt）。未知值诚实拒绝（选型返回
+    /// None + warn，不静默改道）。非 Windows 平台 `auto`/`sandboxie`/`acl`
+    /// 无消费方（landlock/bwrap/Seatbelt 选型不读此键）；`mxc` 全平台消费。
     ///
     /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up
     /// 围栏 + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
     /// `crates/nemesis-sandbox/src/backend.rs` 的 模块文档与诚实边界。
     /// 兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
     /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
+    ///
+    /// ⚠ `mxc` 值语义（2026-11-14 用户拍板）：**护栏非沙盒**——ACL 授权
+    /// 模型，授权路径内直接写真盘，无 Sandboxie 写虚拟化盒、无 pending/
+    /// commit 事后反悔。选 mxc 必须 UI 警告（`nemesis_sandbox::
+    /// mxc_backend::MXC_WARNING` 单一真相源）+ 重启生效（构造期消费）。
+    /// mxc 探测不可用 = 诚实拒绝执行（fail-closed），不静默降级 native。
     #[serde(default = "default_executor_backend")]
     pub backend: String,
     /// DACL 定向档开关组（`executor.acl` 段，缺省全关
@@ -64,6 +72,10 @@ pub struct ExecutorSeparationConfig {
     /// 见 [`ExecutorVmConfig`]。
     #[serde(default)]
     pub vm: ExecutorVmConfig,
+    /// MXC 护栏后端策略组（`executor.mxc` 段，仅 backend="mxc" 时消费；
+    /// 缺省 = 网络全放行（与 native 现状一致，零破坏））。见 [`ExecutorMxcConfig`]。
+    #[serde(default)]
+    pub mxc: ExecutorMxcConfig,
 }
 
 /// `executor.persistent` 段：常驻执行体（per-agent 长驻子进程）的
@@ -154,6 +166,37 @@ fn default_executor_backend() -> String {
     "auto".to_string()
 }
 
+/// `executor.mxc` 段：MXC 护栏后端的网络策略（仅 backend="mxc" 时消费）。
+/// 缺省 = 网络全放行（`network="open"`）——与 native 现状零差异；`locked`
+/// 是 opt-in 的 egress 白名单档。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutorMxcConfig {
+    /// 网络策略预设：`open`（默认——egress 全放行，与现状字节一致）|
+    /// `locked`（egress deny-default + [`Self::egress_allow`] 白名单）。
+    /// 未知值装配期 loud 拒绝（对齐 executor.backend 先例）。
+    #[serde(default = "default_mxc_network")]
+    pub network: String,
+    /// locked 模式 egress 白名单（每条 `"cidr"` 或 `"cidr:port"`——缺协议
+    /// = tcp；例 `"140.82.112.0/20:443"`）。open 模式不读。
+    #[serde(default)]
+    pub egress_allow: Vec<String>,
+}
+
+fn default_mxc_network() -> String {
+    "open".to_string()
+}
+
+impl Default for ExecutorMxcConfig {
+    /// 手写（与 ExecutorAclConfig 同款 serde 双路径陷阱——结构体级 Default
+    /// 不走字段级 serde 缺省，derive 的 String 默认是空串 = 非法档位）。
+    fn default() -> Self {
+        Self {
+            network: default_mxc_network(),
+            egress_allow: Vec::new(),
+        }
+    }
+}
+
 impl Default for ExecutorSeparationConfig {
     /// 手写而非 derive（与 [`ExecutorAclConfig`] 同款 serde 双路径陷阱）：
     /// `backend` 的 derive 默认是空串，而空串不是合法选型值（诚实拒绝）——
@@ -169,6 +212,7 @@ impl Default for ExecutorSeparationConfig {
             acl: ExecutorAclConfig::default(),
             persistent: ExecutorPersistentConfig::default(),
             vm: ExecutorVmConfig::default(),
+            mxc: ExecutorMxcConfig::default(),
         }
     }
 }

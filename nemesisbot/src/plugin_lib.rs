@@ -38,6 +38,21 @@ impl PluginLibSpec {
         file_unix: "libplugin_roaming.so",
     };
 
+    /// plugin-resources（附加资源载体——首例 persona-catalog 快照）。
+    pub const RESOURCES: Self = Self {
+        file_windows: "plugin_resources.dll",
+        file_macos: "libplugin_resources.dylib",
+        file_unix: "libplugin_resources.so",
+    };
+
+    /// plugin-mail（邮件基础设施：SMTP/POP3 服务端 + 客户端发信 + maildir
+    /// 分库存储；C-ABI 解冻第四例，新式交互插件）。
+    pub const MAIL: Self = Self {
+        file_windows: "plugin_mail.dll",
+        file_macos: "libplugin_mail.dylib",
+        file_unix: "libplugin_mail.so",
+    };
+
     /// 当前平台的库文件名。
     pub fn filename(&self) -> &'static str {
         if cfg!(windows) {

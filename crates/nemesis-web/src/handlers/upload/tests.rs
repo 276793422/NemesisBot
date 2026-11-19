@@ -46,6 +46,7 @@ impl Drop for RedirectHomeGuard {
 fn make_state(auth_token: &str) -> std::sync::Arc<AppState> {
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -68,6 +69,7 @@ fn make_state(auth_token: &str) -> std::sync::Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -81,6 +83,7 @@ fn make_state(auth_token: &str) -> std::sync::Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -493,85 +496,36 @@ async fn upload_with_unknown_session_id_falls_back_to_global() {
     );
 }
 
-// --- BUG-20261112-117：项目会话上传/media 解析走项目树 home（两树分裂回归） ---
-// 项目会话的资产区根 = 项目目录（sessions.create/admission/fork 同源拍板）。
-// 上传端点与 resolve_media_ref 此前恒用主 workspace，把项目会话的上传文件
-// 落进主树同 id 幽灵 home——fork copy-on-fork 只复制项目树（上传资产不随
-// 分支带走），resolve 在项目树 miss。修复后两处均经 project_root_for_session
-// （L6++ 归属裁决单点）取根。
-
-use crate::handlers::projects::{BRIDGE_TEST_LOCK, ProjectsBridge, set_projects_bridge_for_test};
-
-struct ProjHomeStubBridge {
-    session_key: String,
-    project_id: String,
-    project_dir: std::path::PathBuf,
-}
-impl ProjectsBridge for ProjHomeStubBridge {
-    fn list(&self) -> Vec<crate::handlers::projects::ProjectInfo> {
-        vec![]
-    }
-    fn create(
-        &self,
-        _name: &str,
-        _path: &str,
-    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
-        Err("stub".to_string())
-    }
-    fn remove(&self, _project_id: &str) -> Result<crate::handlers::projects::ProjectInfo, String> {
-        Err("stub".to_string())
-    }
-    fn rename(
-        &self,
-        _project_id: &str,
-        _new_name: &str,
-    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
-        Err("stub".to_string())
-    }
-    fn set_trust(
-        &self,
-        _project_id: &str,
-        _trusted: bool,
-    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
-        Err("stub".to_string())
-    }
-    fn owner_of(&self, key: &str) -> Option<String> {
-        (key == self.session_key).then(|| self.project_id.clone())
-    }
-    fn loop_for_session(&self, _project_id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
-        None
-    }
-    fn project_path(&self, project_id: &str) -> Option<std::path::PathBuf> {
-        (project_id == self.project_id).then(|| self.project_dir.clone())
-    }
-    fn bind_session(&self, _session_key: &str, _project_id: &str) -> Result<(), String> {
-        Err("stub".to_string())
-    }
-    fn forget_session(&self, _session_key: &str) {}
-}
+// --- 2026-11-16 污染修复回归：项目会话上传/media/fork 恒主 workspace ---
+// 前史（BUG-20261112-117）：项目会话资产区根一度拍板为项目目录，上传端点
+// 与 resolve_media_ref 曾随 project_root_for_session 取根。2026-11-16 反转
+// 拍板：`agents/<id>/home` 树落用户真实工作树是污染（checkpoint 影子库
+// 「项目目录零污染」同族先例），根恒主 workspace——sessions.create /
+// upload / resolve_media_ref / fork / admission / hydrate 全链同源。
 
 #[tokio::test]
-async fn project_session_upload_and_media_ref_use_project_tree() {
+async fn project_session_upload_and_media_ref_use_main_workspace() {
     let _home_lock = uploads_state_lock();
-    let _bridge_lock = BRIDGE_TEST_LOCK.lock();
     let dir = tempfile::tempdir().unwrap();
     let _guard = RedirectHomeGuard::to(dir.path());
+    let workspace = nemesis_path::default_path_manager().workspace();
     let project_dir = dir.path().join("proj");
     std::fs::create_dir_all(&project_dir).unwrap();
 
     let session_id = format!("projhome-{}", uuid::Uuid::new_v4().simple());
     let session_key = format!("agent:main:session:{}", session_id);
-    // 项目会话资产区物化在项目树（sessions.create 同款：根 = 项目目录）。
-    nemesis_agent::session_home::assign_session_home(&project_dir, &session_key)
-        .expect("assign project session home");
+    // 项目会话形态：资产区绑定 + 项目归属烧入 meta（2026-11-12 前分配点
+    // 同款状态），但树恒物化在主 workspace（修复后唯一合法位置）。
+    let bound_id = nemesis_agent::session_home::assign_session_home(&workspace, &session_key)
+        .expect("assign main-workspace session home");
+    nemesis_agent::chat_log::write_session_project(
+        &session_key,
+        "proj-1",
+        &project_dir.to_string_lossy(),
+    );
 
-    set_projects_bridge_for_test(Some(Arc::new(ProjHomeStubBridge {
-        session_key: session_key.clone(),
-        project_id: "proj-1".to_string(),
-        project_dir: project_dir.clone(),
-    })));
-
-    // 上传带 session_id → 必须落项目树 home/uploads（非主树、非全局）。
+    // 上传带 session_id → 必须落主 workspace home/uploads（非项目目录、
+    // 非全局）。
     let resp = post_upload_with_session(
         test_router(make_state("")),
         Some("ignored"),
@@ -586,20 +540,28 @@ async fn project_session_upload_and_media_ref_use_project_tree() {
     let id = json["id"].as_str().unwrap().to_string();
     let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
 
-    let proj_home = nemesis_agent::session_home::resolve_session_home(&project_dir, &session_key)
-        .expect("project session bound");
-    assert!(
-        stored.starts_with(proj_home.join("uploads")),
-        "项目会话上传必须落项目树 home/uploads: {stored:?}"
+    let main_home = nemesis_agent::session_home::resolve_session_home(&workspace, &session_key)
+        .expect("session bound in main workspace");
+    assert_eq!(
+        nemesis_path::resolve_agent_home_in_workspace(&workspace, &bound_id),
+        main_home,
+        "绑定解析锚主 workspace"
     );
-    let workspace = nemesis_path::default_path_manager().workspace();
+    assert!(
+        stored.starts_with(main_home.join("uploads")),
+        "项目会话上传必须落主 workspace home/uploads: {stored:?}"
+    );
+    assert!(
+        !stored.starts_with(&project_dir),
+        "上传不得落项目目录（污染回归锁）: {stored:?}"
+    );
     assert!(
         !stored.starts_with(nemesis_path::resolve_uploads_dir_in_workspace(&workspace)),
-        "项目会话上传不得落全局 uploads: {stored:?}"
+        "绑定会话上传不得落全局 uploads: {stored:?}"
     );
 
-    // media 解析（带会话键）→ 项目树命中（修复前在主树 miss → 诚实注记
-    // 但图片丢失）；不带会话键 → 全局兜底 miss（None）。
+    // media 解析（带会话键）→ 主 workspace 命中；不带会话键 → 全局兜底
+    // miss（None）。
     assert_eq!(
         resolve_media_ref(&serde_json::json!({ "id": id }), Some(session_key.as_str())).as_deref(),
         Some(stored.to_string_lossy().as_ref())
@@ -609,19 +571,80 @@ async fn project_session_upload_and_media_ref_use_project_tree() {
         None
     );
 
-    // fork copy-on-fork 语义修复面：上传文件随项目树 home 整体可复制
-    // （fork_copy_session_home 以项目目录为根时能带到上传资产）。
+    // fork copy-on-fork 同根：源/新 home 都在主 workspace 树下。
     let new_key = format!(
         "agent:main:session:projhome-fork-{}",
         uuid::Uuid::new_v4().simple()
     );
     let forked =
-        nemesis_agent::session_home::fork_copy_session_home(&project_dir, &session_key, &new_key)
+        nemesis_agent::session_home::fork_copy_session_home(&workspace, &session_key, &new_key)
             .expect("fork copy should succeed")
-            .expect("project session fork copies home");
-    let new_home = nemesis_path::resolve_agent_home_in_workspace(&project_dir, &forked);
+            .expect("fork copies home");
+    let new_home = nemesis_path::resolve_agent_home_in_workspace(&workspace, &forked);
     let copied = new_home.join("uploads").join(&id);
     assert!(copied.is_file(), "fork 复制必须带走上传资产: {copied:?}");
+    assert!(
+        !new_home.starts_with(&project_dir),
+        "fork 产物不得落项目目录: {new_home:?}"
+    );
+}
 
-    set_projects_bridge_for_test(None);
+// --- BUG-20261119-208：uploads sweeper 终态令牌换装（BUG-20261115-023 家族
+// --- nemesis-web 成员）回归锁。局部令牌——全局令牌在测试里绝不可 cancel
+// --- （shutdown_tests 纪律）。
+
+/// 预取消形态：令牌先取消再 spawn → 前置 is_cancelled 检查零工作退出
+/// （连目录枚举都不做）。墙钟 <2s：无 select 的裸 6h park 必超时红。
+#[tokio::test]
+async fn uploads_sweeper_pre_cancelled_exits_immediately() {
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel(); // 预取消：spawn 前已终态
+    let handle = spawn_uploads_sweeper(token);
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("预取消形态必须在 2s 内退出（裸 park 形态 park 满 6h 超时红）")
+        .expect("sweeper 任务不得 panic（JoinError）");
+}
+
+/// 启动清扫后 park 期间取消抢占：活令牌 spawn → 启动首轮清扫在 tempdir
+/// 内真实执行（过期文件被删 = 清扫真实发生的正面证据）→ cancel → 6h park
+/// 被抢占退出。裸 park 形态要等满 6h（超时红）。
+#[tokio::test]
+async fn uploads_sweeper_cancel_during_park_exits_after_startup_sweep() {
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    // 播一个 8 天前的过期文件进 uploads 目录（TTL 7 天 → 启动清扫应删）。
+    let uploads = nemesis_path::resolve_uploads_dir_in_workspace(
+        &nemesis_path::default_path_manager().workspace(),
+    );
+    std::fs::create_dir_all(&uploads).unwrap();
+    let expired = uploads.join("expired.png");
+    std::fs::write(&expired, b"x").unwrap();
+    let old_mtime = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&expired)
+        .unwrap()
+        .set_modified(old_mtime)
+        .unwrap();
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = spawn_uploads_sweeper(token.clone());
+    // 启动首轮清扫（spawn 后同步开跑的第一拍）：过期文件应被删。
+    for _ in 0..50 {
+        if !expired.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!expired.exists(), "启动清扫应删除过期文件");
+    token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("park 期间取消必须抢占退出（裸 park 形态 park 满 6h 超时红）")
+        .expect("sweeper 任务不得 panic（JoinError）");
 }

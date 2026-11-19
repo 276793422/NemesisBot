@@ -80,6 +80,24 @@ fn init_db_root_drive_path_parent_none() {
 
 // -------------------------------------------------- （存储韧性）
 
+// BUG-20261115-029 回归锁：data.db 与常驻 gateway 的多进程并开是常规拓扑
+// （dossier export / model prices / model probe 等 CLI 直开同一库），open
+// 面必须带 busy_timeout=5000（与 board.db / taskstore / watcher 连接同值）
+// ——无退避的撞锁 = CLI 立即 SQLITE_BUSY（dossier usage 闭包静默缺行）。
+#[test]
+fn init_db_sets_busy_timeout_for_cross_process_contention() {
+    let base = temp_base("busy_timeout");
+    let db_path = base.join("usage.db");
+
+    let conn = init_db(&db_path).expect("init_db ok");
+    let ms: i32 = conn
+        .pragma_query_value(None, "busy_timeout", |r| r.get(0))
+        .expect("busy_timeout pragma readable");
+    assert_eq!(ms, 5000, "cross-process contention backoff must be armed");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[test]
 fn init_db_rejects_foreign_file_loudly() {
     // 手法①：非 SQLite 内容（被覆盖/截断）→ loud Err 带 hex 摘要，
@@ -112,12 +130,12 @@ fn init_db_rejects_newer_schema_version() {
     let db_path = base.join("usage.db");
     {
         let conn = init_db(&db_path).unwrap();
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(SCHEMA_VERSION, 4);
         conn.pragma_update(None, "user_version", 99).unwrap();
     }
     let err = init_db(&db_path).unwrap_err();
     assert!(
-        err.contains("高于本程序支持的 3"),
+        err.contains("高于本程序支持的 4"),
         "高版本库应 loud 拒绝: {err}"
     );
 

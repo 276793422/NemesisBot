@@ -1,0 +1,33 @@
+[package]
+name = "nemesis-browser"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+which = { workspace = true }
+# 凭据别名解析（vault: 全局 resolver 单一真相源）
+nemesis-config = { workspace = true }
+# 文件删除韧性包装（BUG-20261116-036：裸 remove_file 撞 Windows 瞬时句柄）
+nemesis-utils = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Windows 浏览器枚举：注册表 App Paths（HKLM/HKCU）。
+winreg = "0.55"
+
+[dev-dependencies]
+tempfile = "3"
+# 集成测试本地站点（表单/点击/滚动/文本页）
+axum = { workspace = true }
+
+[lints]
+workspace = true

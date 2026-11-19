@@ -132,8 +132,6 @@ pub struct TurnGuard {
     empty_final_count: u32,
     /// ⑧ Last non-empty response content, for cross-round prose repetition.
     last_content: Option<String>,
-    /// ⑧ Consecutive similar-content rounds this turn.
-    repeat_text_count: u32,
     /// （扩展计划）：本轮真实执行收据环（cap 32，FIFO 驱逐）——
     /// `(receipt, ts_ms)`。由 [`Self::record_tool_outcome_verified`] 对每个
     /// 真实执行的 registry 结果入账；结果文本自称成功但无收据 → 合成
@@ -380,20 +378,17 @@ impl TurnGuard {
             .map(|prev| similarity(prev, content) >= TEXT_REPETITION_SIM_THRESHOLD)
             .unwrap_or(false);
         if similar {
-            self.repeat_text_count += 1;
-            // First similar round sets count to 1 and just records the baseline;
-            // the SECOND consecutive similar round (count ≥ 1 here means we've
-            // now seen two in a row) nudges.
+            // 第一对相似即 nudge——不是「第二次连续相似才提示」：历史计数
+            // 阶梯从未接线，`>= 1` 恒真死条件与计数字段已除（行为与清理前
+            // 逐字节一致，tests::text_repetition_third_consecutive_still_nudges
+            // 钉死）。
             self.last_content = Some(content.to_string());
-            if self.repeat_text_count >= 1 {
-                self.guard_events += 1;
-                return Some(format!(
-                    "\n[loop guard] 你连续两轮给出了几乎相同的内容（相似度 ≥{:.0}%）。请给出新信息、新角度，或直接收尾。",
-                    TEXT_REPETITION_SIM_THRESHOLD * 100.0
-                ));
-            }
+            self.guard_events += 1;
+            return Some(format!(
+                "\n[loop guard] 你连续两轮给出了几乎相同的内容（相似度 ≥{:.0}%）。请给出新信息、新角度，或直接收尾。",
+                TEXT_REPETITION_SIM_THRESHOLD * 100.0
+            ));
         } else {
-            self.repeat_text_count = 0;
             self.last_content = Some(content.to_string());
         }
         None
@@ -422,9 +417,10 @@ impl TurnGuard {
 
 /// ⑥ 循环干预阶梯：`alt_count` 计次分级 nudge 文案——级别是
 /// 计数的纯函数（无独立干预计数、无清零窗口）。每次失败都返回当级文案
-/// （nudge 通道逐次重现，模型不会「忘」上一轮的指导）；≥
-/// [`ALTERNATING_LOOP_HARD_STOP`] 不再进本函数（escalation 终级接手）。
-/// 文案与阶梯化前逐字节一致（既有测试/账本兼容）。
+/// （nudge 通道逐次重现，模型不会「忘」上一轮的指导）；计数到
+/// [`ALTERNATING_LOOP_HARD_STOP`] 后 escalation 终级接手——并行批窗口
+/// 期内 escalation 在批收口才判定，短暂越线的调用仍进本函数落最高级
+/// 文案（行为无碍）。文案与阶梯化前逐字节一致（既有测试/账本兼容）。
 fn alternating_nudge(tool: &str, count: u32) -> String {
     let level = if count < LADDER_LEVEL_BOUNDS[0] {
         0

@@ -1,5 +1,73 @@
 use super::*;
+use std::sync::{Arc, Mutex, OnceLock};
 use tempfile::TempDir;
+
+// ----- BUG-20261114-026 日志捕获 harness（BUG-20261115-027 全局化改版）-----
+
+/// (BUG-20261115-027) 全局捕获靶：当前测试的 buf 槽位。None = 未装备，
+/// 事件静默丢弃（无并发捕获测试在窗口内，见下方互斥闸注释）。
+static CAPTURE_TARGET_W26: OnceLock<Arc<Mutex<Option<Arc<Mutex<String>>>>>> = OnceLock::new();
+
+struct GlobalSinkW26(Arc<Mutex<Option<Arc<Mutex<String>>>>>);
+impl std::io::Write for GlobalSinkW26 {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        // 槽位取靶后单独上锁写靶：两锁无嵌套（先放槽锁再持靶锁），
+        // 靶 String 由写侧独占追加、断言侧只在 emit 完成后读取。
+        let target = self.0.lock().unwrap().clone();
+        if let Some(buf) = target {
+            buf.lock().unwrap().push_str(&String::from_utf8_lossy(b));
+        }
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// warn 捕获 subscriber（BUG-20261115-027 全局化改版）。
+///
+/// 原形态为 thread-local `set_default`（镜像 auth store 先例），在 CI
+/// coverage 二进制内假红频发（断言全过、buf 空）。根因链（tracing-core
+/// 0.1.36 源码级）：interest 缓存进程级单值；`set_default` 不重建缓存、
+/// `DefaultGuard::drop` 也不重建；任何线程在无 subscriber 态首评任一
+/// callsite（含本 crate 迁移 info 臂这类非捕获路径）都会把全表（或新表
+/// 项）按 `unwrap_or_else(Interest::never)` 缓存成 NEVER，后续
+/// `set_default` 无法翻案，lib 侧 warn 的 emit 被宏层短路——探针实测：
+/// 测试内同线程后发的探针事件进 buf、紧随的 `new()` warn 不进。
+///
+/// 改版：进程首装 `set_global_default`（全局 dispatch 参与所有后续
+/// callsite 首评的 interest 评估 → ALWAYS 定格，无回落路径），buf 以
+/// 「可换靶」模式挂在全局槽位上，每个捕获测试串行换靶（互斥闸）。
+/// 返回 () 占位保持调用点 `let (buf, _guard)` 形态不变。
+fn warn_capture_setup_w26() -> (Arc<Mutex<String>>, ()) {
+    let slot = CAPTURE_TARGET_W26.get_or_init(|| Arc::new(Mutex::new(None)));
+    let buf = Arc::new(Mutex::new(String::new()));
+    let mut target = slot.lock().unwrap();
+    if target.is_none() {
+        let slot_for_writer = slot.clone();
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .with_ansi(false)
+                .with_writer(move || GlobalSinkW26(slot_for_writer.clone()))
+                .finish(),
+        );
+    }
+    *target = Some(buf.clone());
+    drop(target);
+    (buf, ())
+}
+
+/// 捕获测试互斥闸（BUG-20261115-027）：interest 缓存进程级单值，任一
+/// 捕获测试的 guard drop 触发全 callsite 重建——此刻该线程栈已无
+/// subscriber，重建可把二进制内全部 callsite（含他测正在 emit 的那条）
+/// 打成 NEVER，与对方「set_default→emit」窗口重叠即假红（CI coverage
+/// 实证：断言全过、buf 全空）。auth store 先例只封了「无 subscriber
+/// 抢先注册」一类，未封 drop 重建重叠类（workspace_state 照抄先例仍
+/// 在 CI 翻车）。全部捕获测试持本闸串行、guard 锁内 drop（_serial
+/// 声明在前 = 最后 drop），二进制内不再有并发 set/drop；非捕获测试
+/// 不触 tracing 调度，不受此闸影响。
+static CAPTURE_SERIAL_W26: Mutex<()> = Mutex::new(());
 
 #[test]
 fn test_new_manager_creates_state_dir() {
@@ -45,6 +113,13 @@ fn test_persistence_across_managers() {
 
 #[test]
 fn test_migration_from_old_location() {
+    // (BUG-20261115-027) 本测试走迁移成功臂 emit info!（workspace_state.rs
+    // 迁移 info callsite 首评触发全表重建，无 subscriber 线程上评估 =
+    // 全表缓存 NEVER，砸中并发捕获测试的 emit 窗口）——凡会 emit 事件
+    // 的测试一律持捕获互斥闸。
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
 
@@ -159,6 +234,15 @@ fn test_workspace_state_deserialization_partial_fields() {
 
 #[test]
 fn test_new_manager_with_corrupted_state_file() {
+    // 必须持有捕获 guard（BUG-20261114-026 后本测试与
+    // test_corrupted_state_file_load_warns_loudly 共享 new() 同一条 warn!
+    // callsite——tracing callsite interest 缓存进程级单值，无 subscriber
+    // 的执行可能把 callsite 缓存成 NEVER 短路对方的 emit（假红）。
+    // 先例：auth store/tests.rs test_new_with_corrupted_json 同注释）。
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, _guard) = warn_capture_setup_w26();
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
     let state_dir = workspace.join("state");
@@ -175,6 +259,12 @@ fn test_new_manager_with_corrupted_state_file() {
 
 #[test]
 fn test_new_manager_with_empty_state_file() {
+    // 空 JSON 同样是损坏面（半截写残留），会触发 BUG-20261114-026 的
+    // warn 臂——同理必须持 guard 防 callsite interest 缓存互踩。
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_, _guard) = warn_capture_setup_w26();
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
     let state_dir = workspace.join("state");
@@ -186,6 +276,68 @@ fn test_new_manager_with_empty_state_file() {
     let mgr = WorkspaceStateManager::new(workspace);
     assert_eq!(mgr.get_last_channel(), "");
     assert_eq!(mgr.get_last_chat_id(), "");
+}
+
+/// (BUG-20261114-026 回归锁) 构造期加载失败必须 loud 警告——此前
+/// `let _ = mgr.load()` 静默：盘上 state.json 损坏时按空状态继续，下次
+/// set_last_channel/set_last_chat_id 覆盖盘上残留，last_channel 无声丢失
+/// （heartbeat 结果路由静默降级）。行为面（空态继续）由上方
+/// test_new_manager_with_corrupted_state_file 钉住，本测试钉留痕面。
+#[test]
+fn test_corrupted_state_file_load_warns_loudly() {
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path();
+    fs::create_dir_all(workspace.join("state")).unwrap();
+    fs::write(
+        workspace.join("state/state.json"),
+        "{torn json from a crashed write}",
+    )
+    .unwrap();
+
+    let (buf, _guard) = warn_capture_setup_w26();
+    let mgr = WorkspaceStateManager::new(workspace);
+    assert_eq!(mgr.get_last_channel(), "");
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("state.json 加载失败"),
+        "必须 loud 警告加载失败，实际日志：{log}"
+    );
+    assert!(
+        log.contains("按默认空状态继续"),
+        "警告必须说明按空状态继续（覆盖风险），实际日志：{log}"
+    );
+}
+
+/// (BUG-20261114-026 回归锁) 迁移臂：旧位置 state.json **存在但损坏**
+/// 必须 loud（此前 `if let Ok(...)` 双重静默跳过 = 迁移永不重试且零痕迹）。
+/// 旧文件不存在（全新工作区）是常态，不告警——由
+/// test_new_manager_creates_state_dir 隐式钉住（其无旧文件亦无 warn 断言）。
+#[test]
+fn test_migration_corrupt_old_file_warns_loudly() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path();
+    // 旧位置损坏文件；新位置无 state.json（触发迁移臂）。
+    fs::write(workspace.join("state.json"), "not-json-at-all {{{").unwrap();
+
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (buf, _guard) = warn_capture_setup_w26();
+    let mgr = WorkspaceStateManager::new(workspace);
+    assert_eq!(mgr.get_last_channel(), "");
+    let log = buf.lock().unwrap();
+    assert!(
+        log.contains("旧位置 state.json 存在但迁移失败"),
+        "迁移臂必须 loud 警告，实际日志：{log}"
+    );
+    // 损坏旧文件必须保留现场（不被迁移覆盖也不被删除）。
+    assert!(
+        workspace.join("state.json").exists(),
+        "损坏的旧位置文件必须保留现场"
+    );
 }
 
 #[test]
@@ -440,6 +592,11 @@ fn test_set_last_chat_id_with_special_chars() {
 
 #[test]
 fn test_migration_from_old_location_with_invalid_json() {
+    // (BUG-20261115-027) 走迁移失败臂 emit warn!（旧位置损坏 callsite）
+    // ——同 test_migration_from_old_location，凡 emit 事件必持互斥闸。
+    let _capture_serial = CAPTURE_SERIAL_W26
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path();
 
@@ -734,5 +891,26 @@ fn concurrent_set_last_channel_last_snapshot_wins_on_disk() {
         mgr2.get_last_channel(),
         "web:b",
         "BUG-20261103-335: 并发保存不得让旧快照的 rename 晚落覆盖新值（重启后 last_channel 回退）"
+    );
+}
+
+// ----- BUG-20261119-190：load() 对「文件不存在」的契约兑现 -----
+
+/// 契约（new() 的 BUG-20261114-026 注释所依赖）："load() 对『文件不存在』
+/// 返回 Ok（空串约定），Err 必为真损坏"。旧实现 map_err 把「不存在」
+/// 映射成空 String 错误值后 `?` 照常传播 Err("")——文件不存在（正常
+/// 空态）被当错误上报，契约从未成立；唯一调用方靠前置 exists 检查兜住，
+/// 未来任何直接调用方都会把全新工作区当损坏。修复 = 显式 match：
+/// 不存在 → Ok(())；存在但读失败 → 真错误。
+#[test]
+fn test_bug_20261119_190_load_missing_file_is_ok_not_empty_error() {
+    let tmp = TempDir::new().unwrap();
+    // new() 构造后 state 文件不存在（默认空状态，未 save）。
+    let mgr = WorkspaceStateManager::new(tmp.path());
+    // 私有 load() 直调（tests 子模块可见）：必须 Ok(())，不得 Err("")。
+    assert_eq!(
+        mgr.load(),
+        Ok(()),
+        "BUG-20261119-190: load() 对文件不存在必须返回 Ok（空态），不得 Err(\"\")（假损坏）"
     );
 }

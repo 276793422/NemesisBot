@@ -46,6 +46,11 @@ const MAX_SMTP_LINE_BYTES: usize = 64 * 1024;
 /// 截断版 + warn，对端失控输出不再无界入内存。
 const MAX_IMAP_LINE_BYTES: usize = 8 * 1024 * 1024;
 
+/// IMAP literal 单块字节帽（BUG-20261113-126）：literal 按字节数精确消费
+/// （协议对齐前提），超大 literal（>64MB）诚实报错断连走下轮重连——
+/// 聊天中继场景无合法用例，拒绝优于无界入内存。
+const MAX_IMAP_LITERAL_BYTES: usize = 64 * 1024 * 1024;
+
 /// 包一层超时：超时映射 `io::ErrorKind:TimedOut`，调用方既有 `.map_err`
 /// 照常拿到带上下文的错误（错误面文案 = `{what} timed out after Ns`）。
 async fn io_timeout<T>(
@@ -215,7 +220,10 @@ impl EmailChannel {
         Ok(Self {
             base: Arc::new(BaseChannel::with_allow_list(
                 "email",
-                config.allow_from.clone(),
+                // allow_from 条目侧同步归一小写（BUG-20261115-015）：身份键
+                // 已归一（identity_chat_id），BaseChannel 固有 is_allowed 是
+                // 精确 == 比较，原大小写条目会错杀归一化后的合法身份。
+                config.allow_from.iter().map(|s| s.to_lowercase()).collect(),
             )),
             config,
             running: Arc::new(parking_lot::RwLock::new(false)),
@@ -245,32 +253,25 @@ impl EmailChannel {
     /// Extracts an email address from a From header.
     /// Examples: "John Doe <john@example.com>" -> "john@example.com"
     ///           "john@example.com" -> "john@example.com"
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源，B1 搬移）——
+    /// 本关联函数是薄委托（插件 DLL 消费同一实现）。
     pub fn extract_email_address(from: &str) -> &str {
-        let from = from.trim();
-
-        // Try angle brackets
-        if let Some(start) = from.rfind('<')
-            && let Some(end) = from.rfind('>')
-            && end > start
-        {
-            return from[start + 1..end].trim();
-        }
-
-        // No angle brackets, check if it looks like an email
-        if from.contains('@') { from } else { "" }
+        nemesis_mail_protocol::extract_email_address(from)
     }
 
-    /// Parses IMAP SEARCH results into sequence numbers.
+    /// Parses IMAP SEARCH results into UIDs（`UID SEARCH` 与 `SEARCH` 的
+    /// untagged 响应同形态 `* SEARCH n...`，解析器同源复用）。
     pub fn parse_search_results(responses: &[String]) -> Vec<String> {
         let mut seq_nums = Vec::new();
         for resp in responses {
             if let Some(rest) = resp.strip_prefix("* SEARCH ") {
                 for part in rest.split_whitespace() {
                     let p = part.trim();
-                    // 纯数字闸（R737 协议注入面）：seq 原样拼进
-                    // `STORE {seq} +FLAGS` / `FETCH {seq}` 命令流，IMAP 服务器
-                    // 返回畸形 token 即可注入任意后续命令。合法 SEARCH 响应的
-                    // token 恒为数字，非数字 token 丢弃。
+                    // 纯数字闸（R737 协议注入面）：uid 原样拼进
+                    // `UID STORE {uid} +FLAGS` / `UID FETCH {uid}` 命令流，
+                    // IMAP 服务器返回畸形 token 即可注入任意后续命令。
+                    // 合法 SEARCH 响应的 token 恒为数字，非数字 token 丢弃。
                     if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) {
                         seq_nums.push(p.to_string());
                     }
@@ -290,6 +291,33 @@ impl EmailChannel {
             original_subject.to_string()
         } else {
             format!("Re: {original_subject}")
+        }
+    }
+
+    /// 入站身份键：发件人地址 → 会话身份（BUG-20261115-015）。邮箱地址的
+    /// 投递语义不区分大小写（域名部分 RFC 5321 恒不敏感；本地部分实践上
+    /// 所有 MTA/MDA 均不敏感），同一地址的大小写变体必须是同一身份键：
+    /// 原大小写入键会让 "User@X.com"/"user@x.com" 在内存里分裂成两个会话
+    /// （chat_id/session_key/sender_map 键各一份），而 NTFS/APFS 文件名
+    /// 大小写不敏感 → 两个 session_key 落同一个磁盘 jsonl 交错互串。
+    /// 原文地址由 sender_map 另存（reply_target_and_subject 回信用原文）。
+    fn identity_chat_id(sender_email: &str) -> String {
+        if sender_email.is_empty() {
+            "email:unknown".to_string()
+        } else {
+            sender_email.to_lowercase()
+        }
+    }
+
+    /// 回信 (To 地址, Subject) 二元组：地址优先取 sender_map 存的原文
+    /// （身份键已归一小写，直接拿 chat_id 当 To: 会改写对方地址的大小写
+    /// ——本地部分 RFC 5321 名义上区分大小写，投递实践中虽不敏感，取
+    /// 原文最稳）；未命中（进程重启 sender_map 清空 / bot 主动发起）回落
+    /// chat_id + 默认主题。
+    fn reply_target_and_subject(&self, chat_id: &str) -> (String, String) {
+        match self.sender_map.get(chat_id) {
+            Some(info) => (info.sender_email.clone(), info.subject.clone()),
+            None => (chat_id.to_string(), "Re: NemesisBot Response".to_string()),
         }
     }
 
@@ -322,6 +350,29 @@ impl EmailChannel {
         if configured == 0 { 30 } else { configured }
     }
 
+    /// sender_map（回复线索表）容量帽（BUG-20261113-127）：键为发件人
+    /// 地址（每封来件的唯一地址一条目），插入点在 allow-list 检查**之前**
+    /// ——公开邮箱收垃圾邮件即可灌入无限唯一地址、条目永不回收 = 长驻
+    /// 进程内存慢漏（与 seen_uids 同族，家族纪律同款 10000→5000 修剪；
+    /// 线索语义只需覆盖近期通信窗口，修剪后旧联系人回信主题回落默认值，
+    /// 回复投递不受影响——地址仍在 chat_id）。
+    const SENDER_MAP_MAX_ENTRIES: usize = 10_000;
+    const SENDER_MAP_PRUNE_COUNT: usize = 5_000;
+
+    /// 超帽修剪（插入点共用）。
+    fn prune_sender_map(map: &dashmap::DashMap<String, EmailMessageInfo>) {
+        if map.len() > Self::SENDER_MAP_MAX_ENTRIES {
+            let keys: Vec<String> = map
+                .iter()
+                .take(Self::SENDER_MAP_PRUNE_COUNT)
+                .map(|e| e.key().clone())
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        }
+    }
+
     /// Marks a message ID as seen.
     pub fn mark_seen(&self, message_id: &str) {
         let mut map = self.seen_uids.write();
@@ -335,107 +386,39 @@ impl EmailChannel {
     }
 
     /// Builds IMAP LOGIN command arguments.
+    ///
+    /// R737 同族收敛（BUG-20261113-128）：用户名/密码经 `imap_quoted`
+    /// 转义（`"`/`\` 反斜杠转义 + CR/LF 剥除）——裸 quoted 拼接下凭据含
+    /// `"` 即破坏 quoted 边界构成注入面（连接路径 imap_connect /
+    /// imap_connect_static 均已走 imap_quoted，本编码入口同源对齐）。
     pub fn build_imap_login(&self) -> String {
-        let user = &self.config.imap_username;
-        let pass = &self.config.imap_password;
-        format!("LOGIN \"{user}\" \"{pass}\"")
+        format!(
+            "LOGIN {} {}",
+            imap_quoted(&self.config.imap_username),
+            imap_quoted(&self.config.imap_password)
+        )
     }
 
     /// Builds a full email message for SMTP.
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
     pub fn build_smtp_message(from: &str, to: &str, subject: &str, body: &str) -> String {
-        let date = chrono::Utc::now().to_rfc2822();
-        // 加固臂：RFC 5322 头部值是单行的——from/to/subject
-        // 一旦混入 CR/LF 即构成头部注入（当前数据流经 IMAP 行解析不可达，
-        // 但本函数是 pub 编码单一入口，纵深防御在编码点收敛；body 区由
-        // SMTP dot-stuffing 负责，不受此影响）。CR/LF 直接剥除。
-        let header_safe = |v: &str| {
-            v.chars()
-                .filter(|&c| c != '\r' && c != '\n')
-                .collect::<String>()
-        };
-        format!(
-            "From: {}\r\n\
-             To: {}\r\n\
-             Subject: {}\r\n\
-             Date: {date}\r\n\
-             MIME-Version: 1.0\r\n\
-             Content-Type: text/plain; charset=UTF-8\r\n\
-             \r\n\
-             {body}",
-            header_safe(from),
-            header_safe(to),
-            header_safe(subject)
-        )
+        nemesis_mail_protocol::build_smtp_message(from, to, subject, body)
     }
 
     /// Parses email headers from IMAP FETCH response lines.
     /// Returns (from, subject, message_id).
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
     pub fn parse_email_headers(responses: &[String]) -> (String, String, String) {
-        let mut from = String::new();
-        let mut subject = String::new();
-        let mut message_id = String::new();
-        let mut in_literal = false;
-        let mut header_data = String::new();
-
-        for line in responses {
-            // Detect literal string marker {N}
-            if line.contains('{')
-                && line.contains('}')
-                && let Some(start) = line.find('{')
-                && let Some(end) = line.find('}')
-                && end > start
-            {
-                in_literal = true;
-                continue;
-            }
-
-            if in_literal {
-                header_data.push_str(line);
-                header_data.push_str("\r\n");
-                continue;
-            }
-
-            apply_header_field(
-                line,
-                &mut from,
-                &mut subject,
-                &mut message_id,
-                FieldWriteMode::Overwrite,
-            );
-        }
-
-        // Also parse from the header literal data if present
-        for hdr_line in header_data.split("\r\n") {
-            apply_header_field(
-                hdr_line,
-                &mut from,
-                &mut subject,
-                &mut message_id,
-                FieldWriteMode::KeepExisting,
-            );
-        }
-
-        (from, subject, message_id)
+        nemesis_mail_protocol::parse_email_headers(responses)
     }
 
     /// Parses email body from IMAP FETCH BODY[TEXT] response lines.
+    ///
+    /// 实现已下沉协议层（`nemesis-mail-protocol` 单一真相源）——薄委托。
     pub fn parse_email_body(responses: &[String]) -> String {
-        if responses.is_empty() {
-            return String::new();
-        }
-
-        let mut body_parts = Vec::new();
-        for line in responses {
-            if line.starts_with("* ") && line.contains("FETCH") {
-                continue;
-            }
-            if line == ")" {
-                continue;
-            }
-            body_parts.push(line.clone());
-        }
-
-        body_parts.join("\n").trim().to_string()
+        nemesis_mail_protocol::parse_email_body(responses)
     }
 
     // -----------------------------------------------------------------------
@@ -731,17 +714,22 @@ impl EmailChannel {
                         }
                         // Attempt to poll
                         if let Ok(mut conn) = imap_connect_static(&config).await {
-                            // SEARCH UNSEEN
-                            match conn.send_command_multi("SEARCH UNSEEN").await {
+                            // UID SEARCH UNSEEN（BUG-20261117-078：改用 UID 命令族
+                            // ——MSN 序号在并发 EXPUNGE（其他会话清理邮箱）下会被
+                            // 重编号，批内后续 FETCH/STORE 打错消息 = 错标已读/
+                            // 内容丢失。UID 稳定唯一（RFC 3501 §2.3.1.2），免疫
+                            // 重编号。响应形态不变（* SEARCH 裸数字），解析器
+                            // 同源复用。
+                            match conn.send_command_multi("UID SEARCH UNSEEN").await {
                                 Ok(responses) => {
-                                    let seq_nums = parse_search_results_static(&responses);
-                                    for seq in seq_nums {
-                                        // FETCH envelope
-                                        let fetch_cmd = format!(
-                                            "{} (ENVELOPE BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)])",
-                                            seq
-                                        );
-                                        if let Ok(headers) = conn.send_command_multi(&format!("FETCH {}", fetch_cmd)).await {
+                                    let uids = parse_search_results_static(&responses);
+                                    for uid in uids {
+                                        // UID FETCH envelope
+                                        let fetch_cmd = uid_fetch_envelope_cmd(&uid);
+                                        if let Ok(headers) = conn
+                                            .send_command_multi(&fetch_cmd)
+                                            .await
+                                        {
                                             let (from, subject, message_id) =
                                                 parse_email_headers_static(&headers);
 
@@ -757,18 +745,18 @@ impl EmailChannel {
                                                 }
                                             }
 
-                                            // FETCH body（失败必须
+                                            // UID FETCH body（失败必须
                                             // 告警——此前.ok() 吞错，正文丢失无任何
                                             // 痕迹；取不到就不发布，避免造出空内容
                                             // 幻影会话。已入 seen_uids，下轮不会重处理）
-                                            let body_cmd = format!("{} (BODY[TEXT])", seq);
+                                            let body_cmd = uid_fetch_body_cmd(&uid);
                                             let body = match conn
-                                                .send_command_multi(&format!("FETCH {}", body_cmd))
+                                                .send_command_multi(&body_cmd)
                                                 .await
                                             {
                                                 Ok(r) => parse_email_body_static(&r),
                                                 Err(e) => {
-                                                    warn!(error = %e, seq = %seq,
+                                                    warn!(error = %e, uid = %uid,
                                                         "[EmailChannel] failed to fetch email body");
                                                     continue;
                                                 }
@@ -777,11 +765,11 @@ impl EmailChannel {
                                             // Extract email address
                                             let sender_email =
                                                 extract_email_address_static(&from);
-                                            let chat_id = if sender_email.is_empty() {
-                                                "email:unknown".to_string()
-                                            } else {
-                                                sender_email.clone()
-                                            };
+                                            // BUG-20261115-015：身份键小写归一（同一
+                                            // 地址大小写变体收敛为同一会话），原文另存
+                                            // sender_map 供回信。
+                                            let chat_id =
+                                                Self::identity_chat_id(&sender_email);
 
                                             // Store for replies
                                             if !sender_email.is_empty() {
@@ -794,14 +782,15 @@ impl EmailChannel {
                                                         subject: reply_subject,
                                                     },
                                                 );
+                                                // BUG-20261113-127：插入点容量帽
+                                                //（allow-list 前插入，垃圾邮件可灌唯一地址）。
+                                                Self::prune_sender_map(&sender_map);
                                             }
 
-                                            // Mark as seen
+                                            // Mark as seen（UID STORE：与上同源，
+                                            // 免疫 MSN 重编号）
                                             let _ = conn
-                                                .send_command(&format!(
-                                                    "STORE {} +FLAGS (\\Seen)",
-                                                    seq
-                                                ))
+                                                .send_command(&uid_store_seen_cmd(&uid))
                                                 .await;
 
                                             // 收件必须发布到总线进
@@ -876,6 +865,11 @@ impl EmailChannel {
 enum EmailStream {
     Plain(tokio::net::TcpStream),
     Tls(tokio_rustls::client::TlsStream<tokio::net::TcpStream>),
+    /// 测试专用：内存 duplex 直构 ImapConnection（不走 TCP/TLS，驱动
+    /// literal 毒丸/超帽等协议层回归锁）。随 enum 手工 AsyncRead/AsyncWrite
+    /// 分派三臂补齐，测试与生产走同一 split 路径。
+    #[cfg(test)]
+    Test(tokio::io::DuplexStream),
 }
 
 impl tokio::io::AsyncRead for EmailStream {
@@ -887,6 +881,8 @@ impl tokio::io::AsyncRead for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
             Self::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -900,6 +896,8 @@ impl tokio::io::AsyncWrite for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
             Self::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -910,6 +908,8 @@ impl tokio::io::AsyncWrite for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
             Self::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -920,38 +920,17 @@ impl tokio::io::AsyncWrite for EmailStream {
         match self.get_mut() {
             Self::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
             Self::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            #[cfg(test)]
+            Self::Test(s) => std::pin::Pin::new(s).poll_shutdown(cx),
         }
     }
 }
 
-/// rustls ClientConfig 装配（ring provider；显式 CA 信任根，mqtt 同模板
-/// ——CA PEM 解析失败/空文件响亮拒绝，不静默降级为无信任根）。
+/// rustls ClientConfig 装配——实现下沉协议层（`tls_client_config` 单一真相
+/// 源，email 通道与 plugin-mail 共用）；错误 String → `NemesisError::Channel`
+/// 包装（crate 级错误约定）。
 fn tls_client_config(ca_pem: &[u8]) -> Result<rustls::ClientConfig> {
-    use rustls::RootCertStore;
-    use rustls::pki_types::CertificateDer;
-    use rustls::pki_types::pem::PemObject;
-
-    let mut roots = RootCertStore::empty();
-    let ca_certs: Vec<CertificateDer> = CertificateDer::pem_slice_iter(ca_pem)
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|e| NemesisError::Channel(format!("email CA 证书 PEM 解析失败: {e}")))?;
-    if ca_certs.is_empty() {
-        return Err(NemesisError::Channel(
-            "email CA 证书文件不含有效 PEM 证书".to_string(),
-        ));
-    }
-    for cert in ca_certs {
-        roots
-            .add(cert)
-            .map_err(|e| NemesisError::Channel(format!("email CA 证书加入信任库失败: {e}")))?;
-    }
-
-    let provider = rustls::crypto::ring::default_provider();
-    Ok(rustls::ClientConfig::builder_with_provider(provider.into())
-        .with_safe_default_protocol_versions()
-        .map_err(|e| NemesisError::Channel(format!("email TLS 协议版本装配失败: {e}")))?
-        .with_root_certificates(roots)
-        .with_no_client_auth())
+    nemesis_mail_protocol::tls_client_config(ca_pem).map_err(NemesisError::Channel)
 }
 
 /// implicit TLS 包装：TcpStream → rustls 握手 → EmailStream::Tls。握手
@@ -1031,6 +1010,65 @@ impl ImapConnection {
         format!("NB{:03}", self.tag_counter)
     }
 
+    /// 按 literal 声明字节数精确消费 literal 块（BUG-20261113-126）：
+    /// fill_buf 字节级读满 N 字节（一个 IO_TIMEOUT 预算内），切行后返回
+    /// ——literal 内容与协议行分流，tagged 完成行判定不再误吃 literal
+    /// 内的 `{tag} OK` 毒丸行（协议游标保持字节对齐）。行切分形态与既有
+    /// read_line 输出同构（CRLF/LF 剥除、UTF-8 lossy），消费方契约不变；
+    /// literal 末尾无换行时尾段独立成行，其后线上的 CRLF 由下一次
+    /// read_line 收成一条空串行——消费方（parse_email_headers /
+    /// parse_email_body）对空串行均无感（无冒号跳过 / join+trim 吸收）。
+    /// 超帽（>MAX_IMAP_LITERAL_BYTES）诚实 Err——协议对齐前提是全量消费，
+    /// 截断续收会失步，断连走下轮重连是唯一诚实形态。
+    async fn read_literal_lines(&mut self, n: usize) -> Result<Vec<String>> {
+        use tokio::io::AsyncBufReadExt; // fill_buf/consume 需 trait 在作用域
+        if n > MAX_IMAP_LITERAL_BYTES {
+            return Err(NemesisError::Channel(format!(
+                "IMAP literal size {n} exceeds cap {MAX_IMAP_LITERAL_BYTES}"
+            )));
+        }
+        let mut bytes: Vec<u8> = Vec::with_capacity(n.min(64 * 1024));
+        io_timeout(
+            "IMAP literal read",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            async {
+                let mut remaining = n;
+                while remaining > 0 {
+                    let buf = self.reader.fill_buf().await?;
+                    if buf.is_empty() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "literal truncated by connection close",
+                        ));
+                    }
+                    let take = remaining.min(buf.len());
+                    bytes.extend_from_slice(&buf[..take]);
+                    self.reader.consume(take);
+                    remaining -= take;
+                }
+                Ok::<(), std::io::Error>(())
+            },
+        )
+        .await?;
+
+        let mut lines = Vec::new();
+        let mut start = 0usize;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\n' {
+                let mut end = i;
+                if end > start && bytes[end - 1] == b'\r' {
+                    end -= 1;
+                }
+                lines.push(String::from_utf8_lossy(&bytes[start..end]).into_owned());
+                start = i + 1;
+            }
+        }
+        if start < bytes.len() {
+            lines.push(String::from_utf8_lossy(&bytes[start..]).into_owned());
+        }
+        Ok(lines)
+    }
+
     /// Sends a tagged IMAP command and reads until the tagged response.
     pub async fn send_command(&mut self, command: &str) -> Result<()> {
         let tag = self.next_tag();
@@ -1055,6 +1093,12 @@ impl ImapConnection {
                 Some(true) => return Ok(()),
                 Some(false) => return Err(NemesisError::Channel(format!("IMAP error: {line}"))),
                 None => {}
+            }
+            // BUG-20261113-126：untagged 行带 literal 尾标 → 按声明字节
+            // 数精确消费（内容丢弃——本路径只等完成行），literal 内容不
+            // 参与完成行判定。
+            if let Some(n) = trailing_literal_size(&line) {
+                self.read_literal_lines(n).await?;
             }
         }
     }
@@ -1084,7 +1128,14 @@ impl ImapConnection {
                 Some(false) => return Err(NemesisError::Channel(format!("IMAP error: {line}"))),
                 None => {}
             }
-            responses.push(line);
+            responses.push(line.clone());
+            // BUG-20261113-126：literal 标记行照旧入 responses（消费方
+            // in_literal 启发式锚定），literal 内容按声明字节数精确消费
+            // 后切行追加——内容不再流经 tagged 完成行判定（毒丸行失步根因）。
+            if let Some(n) = trailing_literal_size(&line) {
+                let literal_lines = self.read_literal_lines(n).await?;
+                responses.extend(literal_lines);
+            }
         }
     }
 }
@@ -1153,23 +1204,28 @@ fn imap_quoted(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// SMTP envelope 命令值安全化（R737 协议注入面）：CR/LF 直接剥除——
-/// envelope 值混入 CR/LF 即构成命令注入（DATA 前引入额外命令行）；
-/// 对齐 `build_smtp_message` 的 header_safe 既有形态。
+/// SMTP envelope 命令值安全化——实现下沉协议层（薄委托，tests `super::` 引用兼容）。
 fn smtp_envelope_safe(v: &str) -> String {
-    v.chars().filter(|&c| c != '\r' && c != '\n').collect()
+    nemesis_mail_protocol::smtp_envelope_safe(v)
 }
 
-/// DATA 载荷装配（BUG-20261112-111③）：先裸 LF/CR 归一为 CRLF，再点填充。
-/// RFC 5321 会话行终止恒为 CRLF，点填充只覆盖 CRLF-dot——正文中的裸 LF
-/// 行首点不被填充，宽容解析裸 LF 的中继（SMTP smuggling 类）可把它当数据
-/// 终止、后续字节当新命令（冒认证身份发信）。归一后点填充覆盖全部行首。
+/// RFC 2047 B-encoding（BUG-20261118-130，出站非 ASCII Subject）——实现下沉
+/// 协议层（薄委托）。原文档：RFC 5322 头部值是 ASCII 域——裸 8-bit 头在
+/// 未协商 SMTPUTF8 的会话可被严格 MTA 拒收（554）。
+fn encode_rfc2047_subject(v: &str) -> String {
+    nemesis_mail_protocol::encode_rfc2047_subject(v)
+}
+
+/// 正文 MIME CTE 面——实现下沉协议层（薄委托）。返回 (CTE 头行含自身
+/// CRLF——空串=不加头, 编码后正文)。
+fn encode_body_mime(body: &str) -> (String, String) {
+    nemesis_mail_protocol::encode_body_mime(body)
+}
+
+/// DATA 载荷装配（BUG-20261112-111③：CRLF 归一 + 点填充）——实现下沉
+/// 协议层（薄委托，tests `super::` 引用兼容）。
 fn prepare_smtp_payload(message: &str) -> String {
-    let normalized = message
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', "\r\n");
-    normalized.replace("\r\n.", "\r\n..")
+    nemesis_mail_protocol::prepare_smtp_payload(message)
 }
 
 /// IMAP tagged 完成行状态判定（BUG-20261112-111①）：完成行形态恒为
@@ -1183,54 +1239,26 @@ fn tagged_line_status(line: &str, tag: &str) -> Option<bool> {
     Some(rest.split(' ').next().is_some_and(|s| s == "OK"))
 }
 
-/// 按「首个冒号」切出 RFC 5322 头字段 (小写字段名, 值)（BUG-20261112-111②）：
-/// 字段名大小写不敏感（RFC 5322 §2.2），判定与截取必须同源——此前判定用
-/// 小写 starts_with、截取用精确大小写 `trim_start_matches("Message-ID:")`，
-/// 「Message-Id:」（实务同义拼写）命中判定后截取失败 → 值整行污染（字段
-/// 名混入去重键）；小写「from:」无尖括号形态则 chat_id 被污染 →
-/// allow-list 误拦 / 回信投递地址错误。
-fn split_header_field(line: &str) -> Option<(String, String)> {
-    let (name, value) = line.split_once(':')?;
-    Some((name.trim().to_lowercase(), value.trim().to_string()))
-}
-
-/// 头字段写入模式（BUG-20261112-111② 语义保真）：直接 untagged 行 =
-/// 后写覆盖（原语义）；literal 头数据 = 首个命中保留（原语义）。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FieldWriteMode {
-    Overwrite,
-    KeepExisting,
-}
-
-/// 解析一行头字段并按模式写入目标槽（字段名/值同源切分，message-id 额外
-/// 剥尖括号与空白）。
-fn apply_header_field(
-    line: &str,
-    from: &mut String,
-    subject: &mut String,
-    message_id: &mut String,
-    mode: FieldWriteMode,
-) {
-    let Some((name, value)) = split_header_field(line) else {
-        return;
-    };
-    let write = |slot: &mut String, v: &str| match mode {
-        FieldWriteMode::Overwrite => *slot = v.to_string(),
-        FieldWriteMode::KeepExisting => {
-            if slot.is_empty() {
-                *slot = v.to_string();
-            }
-        }
-    };
-    match name.as_str() {
-        "from" => write(from, &value),
-        "subject" => write(subject, &value),
-        "message-id" => write(
-            message_id,
-            value.trim_matches(|c| c == '<' || c == '>' || c == ' '),
-        ),
-        _ => {}
+/// 行尾 literal 尺寸标记解析（BUG-20261113-126）：IMAP literal 形态恒为
+/// 行尾 `{N}`（N 全数字，RFC 3501 literal 语法），N 声明紧随 CRLF 之后
+/// 的字节数。仅接受 ≤10 位纯数字（usize 解析安全）；其余形态（含 `{}`
+/// 空体、超长数字、行中 `{`）= None 非 literal。此前完全不核算 literal
+/// 字节数——literal 内容按行流经同一 read_line 与协议行无差别参与
+/// tagged 完成行判定：攻击者邮件头/正文里一行恰为 `{tag} OK ...`
+///（tag 序列 NB001-999 可预测）即被误判为本命令完成行——响应收集提前
+/// 截断 + 后续 literal 残字被当协议行连锁失步（FETCH 头/正文错乱、
+/// STORE 永不执行、该邮件每轮询周期重处理——单封恶意邮件可持续打毒
+/// 轮询连接）。
+fn trailing_literal_size(line: &str) -> Option<usize> {
+    if !line.ends_with('}') {
+        return None;
     }
+    let open = line.rfind('{')?;
+    let digits = &line[open + 1..line.len() - 1];
+    if digits.is_empty() || digits.len() > 10 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 fn parse_search_results_static(responses: &[String]) -> Vec<String> {
@@ -1251,6 +1279,25 @@ fn extract_email_address_static(from: &str) -> String {
 
 fn build_reply_subject_static(subject: &str) -> String {
     EmailChannel::build_reply_subject(subject)
+}
+
+/// UID FETCH envelope 命令（BUG-20261117-078 回归锚：UID 命令族免疫
+/// 并发 EXPUNGE 下的 MSN 重编号；助手化以便单测钉死前缀）。
+fn uid_fetch_envelope_cmd(uid: &str) -> String {
+    format!(
+        "UID FETCH {} (ENVELOPE BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)])",
+        uid
+    )
+}
+
+/// UID FETCH body 命令。
+fn uid_fetch_body_cmd(uid: &str) -> String {
+    format!("UID FETCH {} (BODY[TEXT])", uid)
+}
+
+/// UID STORE 标已读命令。
+fn uid_store_seen_cmd(uid: &str) -> String {
+    format!("UID STORE {} +FLAGS (\\Seen)", uid)
 }
 
 #[async_trait]
@@ -1310,20 +1357,17 @@ impl Channel for EmailChannel {
 
         self.base.record_sent();
 
-        // Look up subject for reply threading
-        let subject = self
-            .sender_map
-            .get(&msg.chat_id)
-            .map(|info| info.subject.clone())
-            .unwrap_or_else(|| "Re: NemesisBot Response".to_string());
+        // 回信地址（原文优先）+ 线索化主题（BUG-20261115-015：chat_id 是
+        // 归一化身份键，不能直接当 To: 用——原文在 sender_map）。
+        let (to, subject) = self.reply_target_and_subject(&msg.chat_id);
 
         debug!(
-            to = %msg.chat_id,
+            to = %to,
             subject = %subject,
             "[EmailChannel] sending message"
         );
 
-        self.smtp_send(&msg.chat_id, &subject, &msg.content).await
+        self.smtp_send(&to, &subject, &msg.content).await
     }
 }
 

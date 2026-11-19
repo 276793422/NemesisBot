@@ -49,6 +49,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -71,6 +72,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -84,6 +86,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -555,13 +558,13 @@ async fn engine_status_dialogue_active_projection() {
         cancel: CancellationToken::new(),
         dialogue_output: Some(out),
     });
-    let st = h.cmd_engine_status(&tmp.path()).await.unwrap().unwrap();
+    let st = h.cmd_engine_status(tmp.path()).await.unwrap().unwrap();
     assert_eq!(st["stt_ready"], false, "真引擎未装载");
     assert_eq!(st["tts_ready"], false);
     assert_eq!(st["speaker_ready"], false);
     assert_eq!(st["stt_dialogue_active"], true, "{st}");
     *stt_state().lock().await = None;
-    let st2 = h.cmd_engine_status(&tmp.path()).await.unwrap().unwrap();
+    let st2 = h.cmd_engine_status(tmp.path()).await.unwrap().unwrap();
     assert_eq!(st2["stt_dialogue_active"], false);
 }
 
@@ -627,7 +630,7 @@ async fn dispatch_error_arms_offline() {
         .unwrap_err();
     assert!(err.contains("正在安装中"), "{err}");
     assert!(
-        !install_locks().lock().unwrap().contains("tts/kokoro") == false,
+        install_locks().lock().unwrap().contains("tts/kokoro"),
         "占用臂不摘锁"
     );
     install_locks().lock().unwrap().remove("tts/kokoro");

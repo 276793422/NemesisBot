@@ -139,6 +139,13 @@ pub fn quic_config_path(home: &Path) -> PathBuf {
     nemesis_path::resolve_quic_config_path_in_workspace(&workspace_path(home))
 }
 
+/// Get the mail infrastructure config file path（config.mail.json——enabled
+/// 总闸 + smtp/pop3/client 各段；forge 分文件先例）。
+pub fn mail_config_path(home: &Path) -> PathBuf {
+    // 委托 nemesis-path 唯一拼接点（与 quic_config_path 同款纪律）。
+    nemesis_path::resolve_mail_config_path_in_workspace(&workspace_path(home))
+}
+
 /// Get the enhanced memory config file path.
 pub fn enhanced_memory_config_path(home: &Path) -> PathBuf {
     // 委托 nemesis-path 唯一拼接点。
@@ -682,6 +689,14 @@ pub fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
+        // 目录链接环守卫（BUG-20261110-059 同源家族，BUG-20261116-024
+        // 横扫补漏）：DirEntry::file_type() 不穿越链接，Path::is_dir()
+        // 跟随链接——环下同子树以 loop/loop/... 假路径重复拷贝直到
+        // OS 路径上限（届时 copy Err 炸整树）。跳过目录链接；普通
+        // symlink 文件照常按内容拷贝。
+        if entry.file_type()?.is_symlink() && src_path.is_dir() {
+            continue;
+        }
 
         if src_path.is_dir() {
             copy_directory(&src_path, &dst_path)?;
@@ -697,6 +712,22 @@ pub fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[allow(dead_code)]
 pub fn should_skip_heartbeat_for_bootstrap(workspace: &Path) -> bool {
     workspace.join("BOOTSTRAP.md").exists()
+}
+
+/// ticker/interval 间隔上界（BUG-20261116-001）：config u64/i64 巨值直喂
+/// tokio `interval()` 的 Instant 算术防护——missed-tick Delay 路径
+/// `Instant + Duration` 对 ≥584 年量级秒数 panic（std time.rs「overflow
+/// when adding duration to instant」，tick 线程死 = 兜底循环永久停摆），
+/// 准点路径则落 far_future 静默永不 tick（fail-silent）。上界 30 天远低于
+/// 算术界，语义 = 荒谬配置诚实退化；与 heartbeat `MAX_INTERVAL_MINUTES`
+/// （BUG-20261114-057 同面先例，30 天）对齐。
+pub(crate) const MAX_TICK_INTERVAL_SECS: u64 = 30 * 24 * 3600;
+
+/// ticker 间隔收敛：下限 `floor`（防 tokio `interval(0)` panic，保留各位点
+/// 既有语义）+ 上界 [`MAX_TICK_INTERVAL_SECS`]。消费点：gateway board 派发
+/// sweep / 磁盘水位 watchdog / 广播间隔双臂 / ws ping 间隔。
+pub(crate) fn bounded_tick_interval_secs(raw: u64, floor: u64) -> u64 {
+    raw.max(floor).min(MAX_TICK_INTERVAL_SECS)
 }
 
 #[cfg(test)]

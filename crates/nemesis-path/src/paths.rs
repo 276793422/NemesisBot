@@ -80,7 +80,10 @@ impl PathManager {
         if let Some(ref p) = *self.config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.home_dir.read().join("config.json")
@@ -102,7 +105,10 @@ impl PathManager {
         if let Some(ref p) = *self.mcp_config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.workspace().join("config").join("config.mcp.json")
@@ -119,7 +125,10 @@ impl PathManager {
         if let Some(ref p) = *self.security_config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.workspace().join("config").join("config.security.json")
@@ -136,7 +145,10 @@ impl PathManager {
         if let Some(ref p) = *self.skills_config_path.read() {
             return p.clone();
         }
-        if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG) {
+        // set-but-empty 视同 unset（BUG-20261117-047，同 resolve_home_dir）。
+        if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG)
+            && !env_path.is_empty()
+        {
             return PathBuf::from(env_path);
         }
         self.workspace().join("config").join("config.skills.json")
@@ -224,7 +236,13 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
     }
 
     // Priority 2: NEMESISBOT_HOME env var
-    if let Ok(env_home) = std::env::var(ENV_HOME) {
+    // set-but-empty 视同 unset（BUG-20261117-047）：docker `-e VAR=` /
+    // systemd `Environment=VAR=` / shell `export VAR=` 都会留下**已设但空**
+    // ——Go 蓝本 os.Getenv 对 unset 与 empty 同返回 ""（空值跳过走默认链），
+    // 裸 `if let Ok(v)` 会让空串走通 → home 落 cwd 相对路径。
+    if let Ok(env_home) = std::env::var(ENV_HOME)
+        && !env_home.is_empty()
+    {
         let expanded = expand_home(&env_home);
         return Ok(expanded.join(DEFAULT_HOME_DIR));
     }
@@ -309,6 +327,23 @@ pub fn resolve_approval_rules_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("approval_rules.json")
 }
 
+/// `<workspace>/config/skill_trust.json` —— skills / connectors 共用
+/// Ed25519 信任库（同一把公钥 trust 一次，装 skills 与 connectors 双侧
+/// 生效；三消费方：nemesis-skills installer 验签 / nemesis-connectors
+/// signing workspace_trust_store / CLI connector trust-*。布局唯一
+/// 拼接点，消费方禁止各自 join——信任库分叉 = 双侧验签结论不一致）。
+pub fn resolve_skill_trust_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("skill_trust.json")
+}
+
+/// `<workspace>/config/plugin_trust.json` —— WASM 插件 Ed25519 信任库
+/// （跨 crate 读/写对：nemesis-plugins-wasm install 装配期验签读 /
+/// CLI `plugin trust*` 管理读写。布局唯一拼接点，消费方禁止各自
+/// join——分叉 = CLI 吊销/追加对 gateway 运行时验签失效）。
+pub fn resolve_plugin_trust_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("plugin_trust.json")
+}
+
 /// `<workspace>/config/eval_rules.json` —— eval 评估规则表（CLI
 /// `eval rules *` 与 WSAPI `security.eval_rules.*` 统一管理；nemesisbot
 /// `rules_file_path(home)` 经本函数委托同一拼接点）。
@@ -368,6 +403,22 @@ pub fn resolve_cluster_config_path_in_workspace(workspace: &Path) -> PathBuf {
 /// 客户端 client 段；QUIC 的配置不丢在集群里， 解耦；统一定义）。
 pub fn resolve_quic_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.quic.json")
+}
+
+/// `<workspace>/config/config.mail.json` —— 邮件基础设施子系统配置
+/// （enabled 总闸 + smtp/pop3/client 各段 + notify.on；forge 分文件先例；
+/// 统一定义）。
+pub fn resolve_mail_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.mail.json")
+}
+
+/// `<home>/mail/` —— 邮件库根（邮件基础设施单一拼接点）。
+///
+/// 刻意 **home 平级**（非 workspace 内）：agent 文件工具（restrict_to_workspace
+/// 围栏）结构性够不着，防 LLM 删信掩盖（能力矩阵「不可删」的路径半边）；
+/// 也不在任何清理射程内（logs TTL / checkpoint gc / uploads 清扫）。
+pub fn mail_dir(home: &Path) -> PathBuf {
+    home.join("mail")
 }
 
 /// `<workspace>/config/vault.enc` —— 凭据 vault 加密存储（安全升级，
@@ -487,6 +538,14 @@ pub fn resolve_cluster_rpc_cache_dir_in_workspace(workspace: &Path) -> PathBuf {
 /// 避免快照清理误删结果文件）。
 pub fn resolve_cluster_results_dir_in_workspace(workspace: &Path) -> PathBuf {
     resolve_cluster_rpc_cache_dir_in_workspace(workspace).join("results")
+}
+
+/// `<workspace>/cluster/inbox` —— 集群传输收件箱（跨 crate 读/写对：
+/// nemesis-cluster `TransferSink` 落地写 / exec_workspace 应用读 /
+/// nemesis-board dossier 档案补收读 / nemesisbot archive_ingest 摄取读 /
+/// agent 迁移 landing 读。布局唯一拼接点，消费方禁止各自 join）。
+pub fn resolve_cluster_inbox_dir_in_workspace(workspace: &Path) -> PathBuf {
+    cluster_dir_in_workspace(workspace).join("inbox")
 }
 
 // --- 统一任务层（tasks.db；写方 nemesis-taskstore / nemesis-cluster / gateway 审批台账） ---
@@ -732,6 +791,14 @@ impl MinimalConfig {
         // `~\` 反斜杠形态与 `~/` 同判（展开）——本函数
         // 是 MCP/security/skills/scanner 四个 resolve_*_config_path 的
         // workspace 来源，字面量穿透会把配置路径落到 cwd 下 `~` 目录。
+        // 裸 `~`（BUG-20261114-014）：家族纪律（expand_home /
+        // config::expand_tilde 同口径「裸 ~ = home」）在此变体上漏了裸形态
+        // ——`workspace: "~"` 落到字面 `~` 目录，四个 side-config 与主
+        // workspace（走 expand_tilde，正确落 home）分叉。home 不可判定时
+        // 返回 None 落默认布局（诚实降级），不回字面量。
+        if ws == "~" {
+            return dirs::home_dir();
+        }
         if (ws.starts_with("~/") || ws.starts_with("~\\"))
             && let Some(home) = dirs::home_dir()
         {
@@ -750,7 +817,10 @@ fn load_config_for_workspace(config_path: &Path) -> Option<MinimalConfig> {
 /// Resolve the main configuration file path.
 /// Priority: NEMESISBOT_CONFIG env > LocalMode/auto-detect > Default.
 pub fn resolve_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::config_path）。
+    if let Ok(env_path) = std::env::var(ENV_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -771,7 +841,10 @@ pub fn fallback_home_dir(_: String) -> PathBuf {
 /// Resolve the MCP configuration file path.
 /// Priority: NEMESISBOT_MCP_CONFIG env > workspace/config/config.mcp.json > default.
 pub fn resolve_mcp_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::mcp_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_MCP_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -790,7 +863,10 @@ pub fn resolve_mcp_config_path() -> PathBuf {
 /// Resolve the security configuration file path.
 /// Priority: NEMESISBOT_SECURITY_CONFIG env > workspace/config/config.security.json > default.
 pub fn resolve_security_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::security_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_SECURITY_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -809,7 +885,10 @@ pub fn resolve_security_config_path() -> PathBuf {
 /// Resolve the skills configuration file path.
 /// Priority: NEMESISBOT_SKILLS_CONFIG env > workspace/config/config.skills.json > default.
 pub fn resolve_skills_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同 PathManager::skills_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_SKILLS_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 
@@ -828,7 +907,10 @@ pub fn resolve_skills_config_path() -> PathBuf {
 /// Resolve the scanner configuration file path.
 /// Priority: NEMESISBOT_SCANNER_CONFIG env > workspace/config/config.scanner.json > default.
 pub fn resolve_scanner_config_path() -> PathBuf {
-    if let Ok(env_path) = std::env::var(ENV_SCANNER_CONFIG) {
+    // set-but-empty 视同 unset（BUG-20261117-047，同族其余 resolve_*_config_path）。
+    if let Ok(env_path) = std::env::var(ENV_SCANNER_CONFIG)
+        && !env_path.is_empty()
+    {
         return PathBuf::from(env_path);
     }
 

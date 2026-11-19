@@ -64,10 +64,11 @@ test('后台进程五态截图：空态/聊天tail/深链详情steer/列表运�
   // 点击 + toHaveURL 包 toPass 重试环：nav-item 点击偶发被吞（hit-test 与
   // 事件派发之间 Vue 重渲染替换节点，2026-11-07 WK 全量实录：URL 24 次采样
   // 稳定不变、无导航）——内层 5s 短窗给外层重试机会重发点击，外层 20s 总闸。
-  // 9ae5fee1 导航分组默认收起（管理/配置/其他）：执行单元在「管理」组内，
-  // 全新 localStorage 首态收起 → 真实用户先点组标题展开再点条目。幂等展开
-  // （is-collapsed 才点）放环外：toPass 重试重入不会二次点击把组收回。
-  const mgmtToggle = page.locator('.nav-section-toggle', { hasText: '管理' })
+  // 9ae5fee1 导航分组默认收起（2026-11-17 分组重组后默认收起组：能力/自动化/
+  // 开发/配置/安全/其他）：执行单元在「自动化」组内，全新 localStorage 首态
+  // 收起 → 真实用户先点组标题展开再点条目。幂等展开（is-collapsed 才点）放
+  // 环外：toPass 重试重入不会二次点击把组收回。
+  const mgmtToggle = page.locator('.nav-section-toggle', { hasText: '自动化' })
   if (await mgmtToggle.evaluate((el) => el.classList.contains('is-collapsed'))) {
     await mgmtToggle.click()
   }
@@ -79,7 +80,8 @@ test('后台进程五态截图：空态/聊天tail/深链详情steer/列表运�
   // hash 导航的 navigation 事件间歇不可见（2026-11-07 全量实录：点击成功、
   // URL 已变、waitForURL 仍 15s 超时）；SPA 断言 URL 用轮询语义才确定。
   await expect(page).toHaveURL(/\/executors/, { timeout: 15_000 })
-  await page.locator('.exec-tab', { hasText: '后台任务' }).click()
+  // 2026-11-17 修观察期红：2026-11-07 复合页布局重构 .exec-tab → .tabs .tab
+  await page.locator('.tabs .tab', { hasText: '后台任务' }).click()
   await expect(page).toHaveURL(/tab=processes/, { timeout: 15_000 })
   await expect(page.locator('.page-processes .empty-state')).toBeVisible({ timeout: 15_000 })
   await shot(page, 'state0-empty.png')

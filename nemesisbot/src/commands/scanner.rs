@@ -114,7 +114,8 @@ pub struct EngineState {
 /// Load scanner config from file.
 fn load_scanner_config(path: &std::path::Path) -> Result<ScannerFullConfig> {
     if path.exists() {
-        let data = std::fs::read_to_string(path)?;
+        // read_config_string 剥 BOM（记事本保存的 scanner 配置，BUG-20261103-334 同族）。
+        let data = nemesis_utils::fsutil::read_config_string(path)?;
         let cfg: ScannerFullConfig = serde_json::from_str(&data)?;
         Ok(cfg)
     } else {
@@ -747,7 +748,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
 
         match output {
             Ok(out) if out.status.success() => {
-                let _ = std::fs::remove_file(&archive_path);
+                let _ = nemesis_utils::fsutil::remove_file_resilient(&archive_path);
                 target_dir.to_string_lossy().to_string()
             }
             _ => {
@@ -776,7 +777,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
                         _ => false,
                     };
                     if ps_extracted {
-                        let _ = std::fs::remove_file(&archive_path);
+                        let _ = nemesis_utils::fsutil::remove_file_resilient(&archive_path);
                     } else {
                         // Leave as-is, user can extract manually
                         println!(
@@ -806,7 +807,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
             ])
             .output();
         if output.is_ok_and(|o| o.status.success()) {
-            let _ = std::fs::remove_file(&archive_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&archive_path);
         }
         target_dir.to_string_lossy().to_string()
     } else {

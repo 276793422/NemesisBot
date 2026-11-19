@@ -1,0 +1,17 @@
+[package]
+name = "nemesis-loop"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+croner = "3"
+chrono = "0.4"
+tracing = "0.1"
+nemesis-types = { workspace = true }
+nemesis-utils = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

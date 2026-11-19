@@ -17,6 +17,7 @@ mod voice_extra_tests {
         let ws = dir.path().to_string_lossy().to_string();
         let state = Arc::new(AppState {
             cors_manager: None,
+            events_snapshot: None,
             auth_token: String::new(),
             session_count: Arc::new(AtomicUsize::new(0)),
             workspace: Some(ws.clone()),
@@ -39,6 +40,7 @@ mod voice_extra_tests {
             agent_loop: Arc::new(parking_lot::RwLock::new(None)),
             cluster: None,
             quic_relay: None,
+            mail_plugin: None,
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
@@ -54,6 +56,7 @@ mod voice_extra_tests {
             webhook_rate_limiter: Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            estop_audit: None,
             background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
@@ -293,6 +296,46 @@ mod voice_extra_tests {
             .await
             .unwrap_err();
         assert!(err.contains("missing field: model"));
+    }
+
+    /// BUG-20261115-008 回归锁：install_model 失败路径必须释放 per-key 安装闸。
+    /// 修复核心是 JoinError（spawn_blocking panic）早退路径的先释放后 `?`
+    /// 排序——panic 进程内不可注入（闭包体固定无 hook，BUG-43/44 同族诚实
+    /// 边界），本测试钉可观察不变量：失败 install 之后同键再发起不得报
+    /// 「正在安装中」。闸是进程级 HashSet 全局态，释放缺失会跨请求存活到
+    /// 重启；若回归把释放挪到内部 Err 的 `?` 之后（比 panic 更宽的早退面），
+    /// 本测试第二段也会红。
+    #[tokio::test]
+    async fn install_model_failure_releases_lock() {
+        let h = VoiceHandler::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        // 无 config.toml → 闭包内诚实失败（Err 路径）
+        let err1 = h
+            .handle_cmd(
+                "install_model",
+                Some(serde_json::json!({"model": "stt"})),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err1.contains("config.toml not found"),
+            "前置：首次 install 应走原路径报错: {err1}"
+        );
+        // 同键二次发起：闸已释放 → 再次走原路径报同一错误，而非「正在安装中」
+        let err2 = h
+            .handle_cmd(
+                "install_model",
+                Some(serde_json::json!({"model": "stt"})),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err2.contains("config.toml not found"),
+            "BUG-20261115-008：install 失败后闸必须已释放（实际: {err2}）"
+        );
     }
 
     #[tokio::test]

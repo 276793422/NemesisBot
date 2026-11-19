@@ -138,6 +138,30 @@ pub fn resolve_embedded_static_dir() -> Option<String> {
     None
 }
 
+/// 提取排除清单（2026-11-16 人格预装语义重构）——EMBEDDED_WORKSPACE 提取
+/// 时跳过的顶层条目（按相对路径**首组件**判定，两函数共用）：
+/// - `personas`：人格槽不再预装落盘（用户拍板 B 项——内置人格必须手动
+///   下载才落地；内置页兜底走 nemesis-web 独立 BUILTIN_PERSONAS_DIR
+///   嵌入，不受本排除影响）；onboard Step 9.5 只物化 default/custom 两槽。
+/// - `IDENTITY.md` / `SOUL.md` / `USER.md`：身份三件归 Step 9 从
+///   `default/` 权威源安装（消除「Step 8 先提取空白模板占位 → Step 9
+///   Seed 存在即跳过静默截胡老贾」的双真相源分裂）。
+///
+/// 白名单式最小排除：未来新增的顶层模板默认照常提取。
+const EXTRACT_EXCLUDED_ENTRIES: &[&str] = &["personas", "IDENTITY.md", "SOUL.md", "USER.md"];
+
+/// 嵌入相对路径的首组件是否在 [`EXTRACT_EXCLUDED_ENTRIES`] 内。
+/// include_dir 的 `File::path()` 恒相对嵌入根，顶层排除判定对任意
+/// 嵌套层级成立（`personas/bug-analyst/…` 首组件 = `personas`）。
+fn is_extract_excluded(rel_path: &std::path::Path) -> bool {
+    match rel_path.components().next() {
+        Some(std::path::Component::Normal(name)) => EXTRACT_EXCLUDED_ENTRIES
+            .iter()
+            .any(|e| name == std::ffi::OsStr::new(e)),
+        _ => false,
+    }
+}
+
 /// Recursively extract an embedded directory to disk.
 ///
 /// Note: `include_dir`'s `File::path()` returns paths relative to the
@@ -147,6 +171,9 @@ pub fn resolve_embedded_static_dir() -> Option<String> {
 /// duplicate path nesting (e.g. `css/css/theme.css`).
 fn extract_dir(dir: &Dir, base: &std::path::Path) -> std::io::Result<()> {
     for file in dir.files() {
+        if is_extract_excluded(file.path()) {
+            continue;
+        }
         let file_path = base.join(file.path());
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -192,6 +219,9 @@ pub fn extract_workspace_templates_overwrite(target_dir: &std::path::Path) -> st
 #[allow(dead_code)]
 fn extract_dir_skip_existing(dir: &Dir, base: &std::path::Path) -> std::io::Result<()> {
     for file in dir.files() {
+        if is_extract_excluded(file.path()) {
+            continue;
+        }
         let file_path = base.join(file.path());
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent)?;

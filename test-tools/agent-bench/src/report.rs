@@ -247,6 +247,26 @@ pub(crate) fn scenario_model(name: &str) -> &'static str {
         // 双臂臂间自切（norepeat 臂先行）。
         "honest_completion" => "testai-liar-1.0",
         "no_irreversible_repeat" => "testai-norepeat-1.0",
+        // subagent_steer：master 与子代理共用同一脚本模型（spawn schema 无
+        // 模型选择参数，角色按消息面 <STEER_E2E> 区分）。
+        "subagent_steer" => "testai-steer-1.0",
+        // event_wakeup：注入消息与种子轮共用 testai-9.3（Z1_USERS 计数 oracle）。
+        "event_wakeup" => "testai-9.3",
+        // durable_loop：三流共用 testai-loop-1.0（marker 分叉对话机，项5）。
+        "durable_loop" => "testai-loop-1.0",
+        // plugin_bootstrap：三流共用 testai-bootstrap-1.0（marker 分叉对话机，项6）。
+        "plugin_bootstrap" => "testai-bootstrap-1.0",
+        // 记忆四场景共用 testai-mem-1.0（确定性搬运工，项2——记忆存取在
+        // gateway 侧真实发生，模型只做 marker 翻译）。
+        "memory_persistence" | "memory_relevance" | "memory_forget" | "memory_capacity_recall" => {
+            "testai-mem-1.0"
+        }
+        // goal_gate：执行 agent 与评估闸共用 testai-goals-1.0（双角色
+        // 对话机，goals——评估无 eval_model 配置时走主模型）。
+        "goal_gate" => "testai-goals-1.0",
+        // mail_roundtrip：send/read 双腿共用 testai-mail-1.0（marker
+        // 对话机——外发 <MAIL_SEND>、读信 <MAIL_READ>，工具结果驱动）。
+        "mail_roundtrip" => "testai-mail-1.0",
         _ => "testai-1.1",
     }
 }

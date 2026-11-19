@@ -82,8 +82,15 @@ impl ModuleHandler for ForgeHandler {
                 self.config_save(home, &data, ctx)
             }
             // S8：评审/反思走 aux 账本——data_store 穿线（None = 不落账）。
+            // A5：学习闭环状态权威源 = Forge 运行时旗标（热切后 config
+            // 快照会说谎）；实例缺席 = None，reflect 内回落 config 值。
             "reflect" => {
-                self.reflect(home, workspace, ctx.state.data_store.clone())
+                let learning_flag = ctx
+                    .state
+                    .forge
+                    .as_ref()
+                    .map(|forge| forge.is_learning_enabled());
+                self.reflect(home, workspace, learning_flag, ctx.state.data_store.clone())
                     .await
             }
             "test" => {
@@ -205,7 +212,7 @@ impl ForgeHandler {
         let reflection_count = count_files_with_ext(&reflections_dir, "md");
 
         // Count registry artifacts
-        let registry_file = fd.join("registry.json");
+        let registry_file = fd.join(nemesis_forge::MANUAL_REGISTRY_FILE);
         let artifact_count = if registry_file.exists() {
             read_registry_artifacts(&registry_file).len()
         } else {
@@ -257,7 +264,7 @@ impl ForgeHandler {
         let latest_report = find_latest_file(&reflections_dir, "md");
 
         // Registry stats
-        let registry_file = fd.join("registry.json");
+        let registry_file = fd.join(nemesis_forge::MANUAL_REGISTRY_FILE);
         let artifacts = read_registry_artifacts(&registry_file);
         let active_count = artifacts
             .iter()
@@ -438,7 +445,7 @@ impl ForgeHandler {
 
 impl ForgeHandler {
     fn registry_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let registry_file = forge_dir(workspace).join("registry.json");
+        let registry_file = forge_dir(workspace).join(nemesis_forge::MANUAL_REGISTRY_FILE);
         let artifacts = read_registry_artifacts(&registry_file);
 
         // Also scan forge/skills/ directory for skill files
@@ -510,7 +517,7 @@ impl ForgeHandler {
         // registry.json 是 load→改→写 RMW（并发 registry_update 后写覆盖先写
         // 丢状态翻转），与 config 同族文件共用写串行锁。
         // 锁在 update_json_file 内；顶层是数组，Value 事务天然兼容。
-        let registry_file = forge_dir(workspace).join("registry.json");
+        let registry_file = forge_dir(workspace).join(nemesis_forge::MANUAL_REGISTRY_FILE);
         super::config::update_json_file(&registry_file, |v| {
             if !registry_file.exists() {
                 return Err("registry not found".to_string());
@@ -586,6 +593,7 @@ impl ForgeHandler {
         &self,
         home: &str,
         workspace: &str,
+        learning_flag: Option<bool>,
         data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
     ) -> Result<Option<serde_json::Value>, String> {
         let fd = forge_dir(workspace);
@@ -640,25 +648,74 @@ impl ForgeHandler {
 
         let registry =
             nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
-                index_path: fd.join("registry.json").to_string_lossy().to_string(),
+                index_path: fd
+                    .join(nemesis_forge::MANUAL_REGISTRY_FILE)
+                    .to_string_lossy()
+                    .to_string(),
             });
-        let _ = registry.load().await;
-        let artifacts = registry.list(None, None);
+        // (BUG-20261114-026) 加载失败 loud——静默吞掉 = registry.json 损坏时
+        // 按空注册表继续，既有 artifacts 不可见，下次保存覆盖盘上残留零痕迹
+        //（与 AuthStore::new / WorkspaceStateManager 同族纪律）。
+        if let Err(e) = registry.load().await {
+            tracing::warn!(
+                error = %e,
+                "[forge] 手动反思前 registry.json 加载失败，按空注册表继续（既有 artifacts 不可见）"
+            );
+        }
+        // 反思输入并集（BUG 批次 2026-11-15）：手动库 ∪ 学习闭环库按 id
+        // 去重——上方意图注释的「全量 artifacts」至此成立，LLM 不再对闭环
+        // 引擎（learning_registry.json）已创建的技能重复提名。本 handler 无
+        // Forge 实例，跨库读走 peek_sync（缺失=空、损坏=WARN 留痕不阻塞），
+        // 合并语义与 Forge::merged_artifacts_for_reflection 同源（单一真相
+        // 源 merge_artifacts_by_id）。
+        let learning_registry = nemesis_forge::registry::Registry::peek_sync(
+            &fd.join(nemesis_forge::LEARNING_REGISTRY_FILE),
+        );
+        let artifacts = nemesis_forge::forge::merge_artifacts_by_id(
+            registry.list(None, None),
+            learning_registry.list(None, None),
+        );
+
+        // A1（缺陷整改批次 2026-11-14）：手动反思同样喂 TraceStore 真轨迹
+        //（与 run_reflection_cycle 同源）——Dashboard 手动反思报告的
+        // Trace Analysis 段不再拿 experiences 冒充或缺席。读失败 = 诚实
+        // 降级为空轨迹（报告无 Trace 段），不阻塞反思。
+        let traces = match nemesis_forge::trace_store::TraceStore::new(fd.join("traces"))
+            .read_all()
+            .await
+        {
+            Ok(events) => nemesis_forge::monitor::build_conversation_traces(&events),
+            Err(e) => {
+                tracing::warn!(error = %e, "[Forge] Failed to read traces for manual reflection");
+                Vec::new()
+            }
+        };
+
+        // A4（缺陷整改批次 2026-11-14）：period 标签与 run_reflection_cycle
+        // 同源（单一真相源 compute_reflection_period）——手动反思报告的
+        // Period 行反映实际数据窗口，不再硬编码 "today"。
+        let period = nemesis_forge::reflector::Reflector::compute_reflection_period(&experiences);
 
         let report = if llm_requested {
             reflector
                 .reflect_with_llm(
                     &experiences,
+                    &traces,
                     &artifacts,
                     None,
-                    "today",
+                    &period,
                     "all",
                     Some(nemesis_forge::reflector_llm::AUX_FORGE_MAX_TOKENS),
                 )
                 .await
         } else {
-            reflector.reflect(&experiences, None, "today", "all")
+            reflector.reflect(&experiences, &traces, None, &period, "all")
         };
+        let mut report = report;
+        // 学习闭环状态入报告（与 run_reflection_cycle 同源）。权威源 =
+        // 运行时旗标（A5：热切后 config 快照会说谎）；Forge 实例缺席
+        //（子系统未装配）回落 config 值。
+        report.learning_enabled = Some(learning_flag.unwrap_or(forge_cfg.learning.enabled));
         let llm_insights = report.llm_insights.is_some();
 
         // Write report to disk
@@ -1070,9 +1127,28 @@ fn read_registry_artifacts(path: &PathBuf) -> Vec<serde_json::Value> {
     }
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            // peek 类防御读：WARN 留痕 + 空（BUG-20261114-026 同族纪律）——
+            // 静默归零会让 Dashboard status/stats/registry.list 把损坏误显为「无制品」
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[forge] registry.json 读取失败，统计按空注册表展示"
+            );
+            return Vec::new();
+        }
     };
-    serde_json::from_str::<Vec<serde_json::Value>>(&content).unwrap_or_default()
+    match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[forge] registry.json 解析失败（文件损坏），统计按空注册表展示"
+            );
+            Vec::new()
+        }
+    }
 }
 
 fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {

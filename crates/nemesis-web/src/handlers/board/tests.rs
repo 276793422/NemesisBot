@@ -30,6 +30,7 @@ fn make_ctx_with_service(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(dir.to_string_lossy().to_string()),
@@ -52,6 +53,7 @@ fn make_ctx_with_service(
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -67,6 +69,7 @@ fn make_ctx_with_service(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -3019,6 +3022,53 @@ async fn test_board_config_set_wrong_type_rejects() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// 范围错误必须带字段名（BUG-20261117-083）：u32 溢出报错裸写「超出 u32 范
+// 围」没有现场——多字段连设时用户无法定位是哪个键。budget/discussion 两族
+// 与 review.professions.<slug> 动态键三臂全覆盖。
+#[tokio::test]
+async fn test_board_config_set_range_error_names_field() {
+    let dir = unique_dir("config-range-error-field");
+    let ctx = make_ctx_with_board(&dir);
+
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "budget.max_send_retries", "value": 4294967296u64 }),
+    )
+    .await
+    .expect_err("u32 溢出必须拒绝");
+    assert!(
+        err.contains("budget.max_send_retries"),
+        "范围错误必须带字段名: {err}"
+    );
+
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "discussion.rate_limit_per_min", "value": 4294967296u64 }),
+    )
+    .await
+    .expect_err("u32 溢出必须拒绝");
+    assert!(
+        err.contains("discussion.rate_limit_per_min"),
+        "范围错误必须带字段名: {err}"
+    );
+
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "review.professions.dev.max_turns", "value": 4294967296u64 }),
+    )
+    .await
+    .expect_err("u32 溢出必须拒绝");
+    assert!(
+        err.contains("review.professions.dev.max_turns"),
+        "动态键范围错误必须带真实 slug 与维度: {err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // （职能→评审预设查表）：review.professions.<slug>.<field> 白名单键。
 // 写入 → get 回读 + 盘上真实落盘；非法 slug/未知维度 loud 拒绝。
 #[tokio::test]
@@ -5567,6 +5617,51 @@ fn match_detail_reports_role_and_tag_gaps_per_candidate() {
     );
 }
 
+/// BUG-20261115-001 回归锁：明细必须镜像 rank_peers 硬条件 6（backend
+/// 闸 fail-closed）。真机 NB-3 事故形态 = planner 填 required_backend
+/// 而节点未宣告 → 决策面全排除、旧明细五项全 ✓ 的矛盾停车评论。
+#[cfg(feature = "cluster")]
+#[test]
+fn match_detail_mirrors_backend_gate() {
+    // ① 未宣告（None）= fail-closed：报缺口并点名闸语义（不是 ✓）。
+    let mut issue = bare_issue(Some("worker"), &[]);
+    issue.required_backend = Some("process".into());
+    let d = super::match_failure_detail(&issue, &[cand("n1", "worker", &[])]);
+    assert!(d.contains("✗"), "未宣告必须报缺口：{d}");
+    assert!(
+        d.contains("未宣告 backend（需求 process"),
+        "缺口要写明需求值与闸语义：{d}"
+    );
+
+    // ② 宣告不同值：报「宣告 ≠ 需求」。
+    let mut c = cand("n1", "worker", &[]);
+    c.runtime_backend = Some("vm".into());
+    let d = super::match_failure_detail(&issue, &[c]);
+    assert!(d.contains("backend vm≠process"), "got: {d}");
+
+    // ③ 宣告命中（大小写不敏感，与 rank_peers 同源小写比对）：✓ 无缺。
+    let mut c = cand("n1", "worker", &[]);
+    c.runtime_backend = Some("Process".into());
+    let mut issue_hi = bare_issue(Some("worker"), &[]);
+    issue_hi.required_backend = Some("PROCESS".into());
+    let d = super::match_failure_detail(&issue_hi, &[c]);
+    assert!(d.contains("✓") && !d.contains("缺:"), "命中必须 ✓：{d}");
+}
+
+/// BUG-20261115-001 横扫：file: 锚点单的明细不得伪装成「无在线候选
+/// 节点」（决策面拓扑闸把候选清空是刻意的，明细要如实说明拓扑约束）。
+#[cfg(feature = "cluster")]
+#[test]
+fn match_detail_file_anchor_reports_topology_not_no_candidates() {
+    let mut issue = bare_issue(Some("worker"), &[]);
+    issue.acceptance_criteria = Some("[CHECK]file:report.txt exists\n".into());
+    // 空候选（决策面拓扑闸清空后的形态）：报拓扑说明而非「无在线候选」。
+    let d = super::match_failure_detail(&issue, &[]);
+    assert!(d.contains("file: 类锚点"), "必须点名拓扑约束：{d}");
+    assert!(d.contains("只能本节点执行"), "要写明只能本节点执行：{d}");
+    assert_ne!(d, "无在线候选节点", "不得伪装成无在线节点：{d}");
+}
+
 /// ×D 接线：project_resume 无匹配候选在 dry_run 预览行与执行失败行附
 /// `match_detail`；匹配成功行不附。
 #[cfg(feature = "cluster")]
@@ -6257,6 +6352,7 @@ fn agt_make_ctx_ex(
 ) -> RequestContext {
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(dir.to_string_lossy().to_string()),
@@ -6279,6 +6375,7 @@ fn agt_make_ctx_ex(
         agent_loop: Arc::new(parking_lot::RwLock::new(agent_loop)),
         cluster,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -6294,6 +6391,7 @@ fn agt_make_ctx_ex(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,

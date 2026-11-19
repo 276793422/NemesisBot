@@ -348,13 +348,13 @@ pub(crate) fn save_record(
         REGISTRY_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&tmp, json).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         format!("registry 临时文件写入失败 {}: {e}", tmp.display())
     })?;
     // 同目录 rename（NTFS/ext4 都原子；跨盘 rename 才有拷贝窗——tmp 与
     // target 同目录，不存在跨盘）。
     std::fs::rename(&tmp, &target).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         format!("registry 原子替换失败 {}: {e}", target.display())
     })?;
     Ok(())
@@ -570,7 +570,7 @@ impl StartingMarkerGuard {
 
 impl Drop for StartingMarkerGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = nemesis_utils::fsutil::remove_file_resilient(&self.path);
     }
 }
 
@@ -802,9 +802,11 @@ struct StartGateGuard<'a> {
 
 impl Drop for StartGateGuard<'_> {
     fn drop(&mut self) {
+        // unwind 路径中 Drop，毒化锁 expect 的持毒 panic 会升级成
+        // double-panic abort（tts.rs 同款纪律）——into_inner 容毒恢复，照常摘除。
         self.set
             .lock()
-            .expect("vm supervisor starting lock poisoned")
+            .unwrap_or_else(|p| p.into_inner())
             .remove(&self.id);
     }
 }

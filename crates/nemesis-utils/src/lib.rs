@@ -4,6 +4,9 @@
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
 pub mod env_sanitize;
+// 子进程文本输出解码单一真相源（BUG-20261115-034）——exec 家族 stdout/
+// stderr 严格 UTF-8 优先 + Windows OEM 码页（CJK 族）回落。
+pub mod child_decode;
 // 关键持久化写失败的进程级信号注册表——
 // 生产者 nemesis-agent（chat_log/checkpoint/turn_wal），消费者 gateway
 // 水泵（EventHub system-alert + /ready 面）。
@@ -38,6 +41,10 @@ pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
+// fire-and-forget spawn 收尸单一真相源（BUG-20261117-087：std Child drop
+// 不收尸，Unix 长命 gateway 下僵尸堆积；oauth 浏览器唤起 + shell_open 打开
+// 动作两消费方收敛至此）。
+pub mod spawn_reap;
 // SSE 事件边界定位单一真相源（原 nemesis-providers/nemesis-mcp
 // 各自内联双形态扫描；规范行终止三态逐行独立，CR-only/混合行尾
 // 此前零事件解析）。
@@ -69,6 +76,7 @@ pub mod zip_util;
 // Re-export the most commonly used functions
 pub use file::{
     ATOMIC_TMP_ORPHAN_GRACE, ATOMIC_TMP_PREFIX, ensure_dir, read_file_string, write_file_atomic,
+    write_file_atomic_async,
 };
 #[cfg(feature = "http")]
 pub use http_retry::do_request_with_retry_reqwest;

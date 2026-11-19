@@ -189,6 +189,7 @@ async fn manager_spawn_stop_lifecycle() {
         path: home.join("no_such_dir"),
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     };
     assert!(mgr.spawn_project(&ghost).is_err());
     assert!(mgr.running_pids().is_empty());
@@ -200,6 +201,7 @@ async fn manager_spawn_stop_lifecycle() {
         path: project_dir.clone(),
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     assert_eq!(mgr.running_pids(), vec!["p_life0001".to_string()]);
@@ -234,6 +236,7 @@ async fn drain_snapshot_covers_running_loops_and_gates_entry() {
         path: project_dir.clone(),
         created_at: "2026-10-25T00:00:00Z".to_string(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     let snap = mgr.drain_snapshot();
@@ -585,6 +588,7 @@ async fn reload_providers_swaps_running_project_loop_model() {
         path: project_dir.clone(),
         created_at: "2026-09-21T00:00:00Z".to_string(),
         instructions_trusted: true,
+        extra_dirs: Vec::new(),
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     let pid = entry.id.clone();

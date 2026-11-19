@@ -114,12 +114,10 @@ pub async fn handle_upload_image(
     // 会话资产区（2026-11-12）：可选 `?session_id=` —— 绑定会话落
     // `<workspace>/agents/<id>/home/uploads/`（fork 随分支带走）；缺省落
     // 全局 workspace/uploads（存量行为零变化）。
-    // BUG-20261112-117：根取会话所属 workspace（项目会话 = 项目目录，
-    // `project_root_for_session` 是 L6++ 归属裁决单点）——此前恒主
-    // workspace，项目会话的上传文件落进主树同 id 幽灵 home，与
-    // sessions.create/admission/fork 的资产区根（项目目录）两树分裂：
-    // fork copy-on-fork 只复制项目树（上传文件不随分支带走），主树
-    // 半截 home 靠 7 天 TTL 兜底后悬空。
+    // 2026-11-16 污染修复：根恒主 workspace。项目会话的资产区不再锚
+    // 项目目录（`agents/` 树落用户真实工作树是污染），上传落点与
+    // 分配/消费五处同源——session_homes_root 单点裁决在 agent 侧，
+    // web 侧等价物 = default_path_manager().workspace()。
     let workspace = nemesis_path::default_path_manager().workspace();
     let uploads_dir = params
         .get("session_id")
@@ -130,10 +128,7 @@ pub async fn handle_upload_image(
                 "agent:main:session:{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
-            let root = crate::handlers::projects::project_root_for_session(&session_key)
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| workspace.clone());
-            nemesis_agent::session_home::resolve_session_home(&root, &session_key)
+            nemesis_agent::session_home::resolve_session_home(&workspace, &session_key)
                 .map(|h| h.join("uploads"))
         })
         .unwrap_or_else(|| nemesis_path::resolve_uploads_dir_in_workspace(&workspace));
@@ -189,10 +184,9 @@ pub async fn handle_upload_image(
 /// 会话资产区（2026-11-12）：`{id}` 解析 = 会话 home/uploads 优先（新链路
 /// 上传端点带 `?session_id=` 落会话资产区）→ 全局 uploads 兜底（存量上传
 /// / 未绑定会话）。双向兼容：落哪层都能解析回来。
-/// BUG-20261112-117：home 解析根 = 会话所属 workspace（项目会话 = 项目
-/// 目录，与上传落点同源）——恒主 workspace 会在项目会话上 miss 自家
-/// home/uploads（真身在项目树），回落全局也 miss → media 引用诚实注记
-/// 但图片凭空丢失。
+/// 2026-11-16 污染修复：home 解析根恒主 workspace——项目会话资产区不再
+/// 锚项目目录，上传落点/解析点同根（sessions.create / upload 端点 /
+/// admission / hydrate / fork 同源）。
 pub fn resolve_media_ref(item: &serde_json::Value, session_key: Option<&str>) -> Option<String> {
     if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
         let id = id.trim();
@@ -208,9 +202,7 @@ pub fn resolve_media_ref(item: &serde_json::Value, session_key: Option<&str>) ->
             return None;
         }
         if let Some(key) = session_key {
-            let root = crate::handlers::projects::project_root_for_session(key)
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
+            let root = nemesis_path::default_path_manager().workspace();
             if let Some(home) = nemesis_agent::session_home::resolve_session_home(&root, key) {
                 let dest = home.join("uploads").join(id);
                 if dest.is_file() {
@@ -272,10 +264,28 @@ pub fn sweep_uploads_older_than(uploads_dir: &std::path::Path, max_age: Duration
 /// 项目目录两棵树都扫——项目会话的资产区根 = 项目目录）——同一 TTL 语义。
 /// 目录列表每轮重枚举（运行期新建的会话 home 也要进清扫；每 6h 一次的
 /// 枚举成本可忽略）。
-pub fn spawn_uploads_sweeper() {
+///
+/// `shutdown` = gateway 终态令牌（runtime.rs 传
+/// `shutdown::terminal_cancel_token().clone()`）。BUG-20261119-208：本循环
+/// 是 BUG-20261115-023 停机家族的 nemesis-web 侧漏网成员（023 横扫只扫了
+/// nemesisbot crate）——裸 timer park 无停机臂，gateway Step 24
+/// `cancel_terminal_tasks()` 后五个已收口循环退出了，本循环还会在 6h park
+/// 上继续活着并在排空窗内做 FS 清扫。等待点换装同族契约：前置
+/// `is_cancelled` 检查（预取消零工作）+ select 令牌优先于 tick（取消后
+/// 确定性退出，不 re-park）。
+/// 返回任务 JoinHandle（生产调用点丢弃 = detach，令牌承担停机收口；
+/// 测试用 join 断言退出时序）。
+pub fn spawn_uploads_sweeper(
+    shutdown: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let workspace = nemesis_path::default_path_manager().workspace();
         loop {
+            // 前置取消检查：收口语义优先于最后一拍工作量（预取消形态连
+            // 目录枚举都不做）。
+            if shutdown.is_cancelled() {
+                break;
+            }
             let mut dirs: Vec<PathBuf> =
                 vec![nemesis_path::resolve_uploads_dir_in_workspace(&workspace)];
             // 主 workspace 的会话 home 树 + 各注册项目目录的会话 home 树
@@ -308,9 +318,14 @@ pub fn spawn_uploads_sweeper() {
             }
             let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
             interval.tick().await; // 首 tick 立即返回，跳过（启动已扫过）
-            interval.tick().await;
+            // BUG-20261119-208：等待点换装——令牌取消优先于 6h park，取消后
+            // 确定性退出（裸 park 跨停机排空窗 = BUG-20261115-023 家族形态）。
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {}
+            }
         }
-    });
+    })
 }
 
 #[cfg(test)]

@@ -32,6 +32,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         .unwrap_or_default();
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -54,6 +55,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -75,6 +77,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -257,6 +260,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
     // home = None → the SERVICE_UNAVAILABLE arm.
     let state_none = crate::api_handlers::AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -279,6 +283,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -300,6 +305,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,

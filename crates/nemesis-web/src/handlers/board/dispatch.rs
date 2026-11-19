@@ -724,13 +724,18 @@ pub fn dispatch_issue_core(
                 "failed",
                 Some(&e),
             );
-            let _ = store.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!("⛔ 派发中止：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             return Err(format!("派发中止：{e}"));
         }
     };
@@ -928,7 +933,7 @@ pub fn dispatch_issue_core(
                 Ok(false) => {}
                 Err(re) => tracing::warn!("[Board] 送达失败回退未执行（让位或异常）：{re}"),
             }
-            let _ = store_for_rpc.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store_for_rpc.add_comment(nemesis_board::models::NewComment {
                 issue_id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
@@ -940,7 +945,9 @@ pub fn dispatch_issue_core(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!("[Board] 系统评论落库失败：{ce}（流程照常，人工可见性受损）");
+            }
         }
     });
 
@@ -1130,7 +1137,9 @@ pub fn dispatch_subissue_auto_with_config(
                 None => {
                     // （goal）：匹配失败明细——要求 vs 每个在线候选差什么
                     // （与 rank_peers 同语义：role 精确、tags 交集非空）。
-                    let candidates = project_dispatch_candidates(cluster);
+                    // 候选取 matcher_candidates 单一入口（BUG-20261115-001：
+                    // 明细与决策面同源，含授予标签合并）。
+                    let candidates = matcher_candidates(store, cluster);
                     let detail = match_failure_detail(&issue, &candidates); // 兜底开关（集群完备性）：无人匹配但任务必须
                     // 做下去——按配置兜底派给在线节点（派发前 ⚠ 评论留痕；
                     // 与 ⏸ 停车评论是不同语义，不受 去重约束）。
@@ -1148,7 +1157,7 @@ pub fn dispatch_subissue_auto_with_config(
                         } else {
                             format!("；已授予标签 [{}]", granted_new.join(","))
                         };
-                        let _ = store.add_comment(nemesis_board::NewComment {
+                        if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                             issue_id: issue.id,
                             author: nemesis_board::Actor::system("board"),
                             content: format!(
@@ -1156,7 +1165,9 @@ pub fn dispatch_subissue_auto_with_config(
                             ),
                             parent_id: None,
                             ctype: nemesis_board::CommentType::System,
-                        });
+                        }) {
+                            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
+                        }
                         fb_target
                     } else {
                         // 诚实留痕：不悄悄留 backlog。sweep 静默路径（!notify_park）
@@ -1231,8 +1242,9 @@ pub fn dispatch_subissue_auto_with_config(
             .flatten()
             .map(|c| c.contains(INFLIGHT_NOTICE_MARK))
             .unwrap_or(false);
-        if notify_park && !already_noted {
-            let _ = store.add_comment(nemesis_board::NewComment {
+        if notify_park
+            && !already_noted
+            && let Err(ce) = store.add_comment(nemesis_board::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
@@ -1242,7 +1254,9 @@ pub fn dispatch_subissue_auto_with_config(
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            })
+        {
+            tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", issue.id);
         }
         mark_parent_blocked_if_stalled(store, &issue, actor);
         return Ok(None);
@@ -1307,14 +1321,15 @@ pub(super) fn mark_parent_blocked_if_stalled(
     if store
         .transition_issue(pid, IssueStatus::Blocked, actor)
         .is_ok()
-    {
-        let _ = store.add_comment(nemesis_board::NewComment {
+        && let Err(ce) = store.add_comment(nemesis_board::NewComment {
             issue_id: pid,
             author: nemesis_board::Actor::system("board"),
             content: "⏸ 子任务自动派发暂缓（当前在线节点无可匹配），父任务转受阻；节点上线或要求调整后自动重试".to_string(),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        })
+    {
+        tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", pid);
     }
 }
 
@@ -1742,8 +1757,9 @@ pub async fn rebalance_queued_to_worker(
     if queued.is_empty() {
         return 0;
     }
-    // 可执行性校验：新 worker 需满足该单角色/标签要求（同匹配器语义）。
-    let candidates: Vec<nemesis_board::PeerCandidate> = project_dispatch_candidates(cluster)
+    // 可执行性校验：新 worker 需满足该单角色/标签要求（同匹配器语义，
+    // 候选走 matcher_candidates 单一入口——授予标签参与判定）。
+    let candidates: Vec<nemesis_board::PeerCandidate> = matcher_candidates(store, cluster)
         .into_iter()
         .filter(|c| c.id == target_worker_id)
         .collect();
@@ -1819,7 +1835,7 @@ pub async fn rebalance_queued_to_worker(
         ) {
             Ok(_) => {
                 moved += 1;
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: d.issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!(
@@ -1830,7 +1846,9 @@ pub async fn rebalance_queued_to_worker(
                     ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", d.issue_id);
+                }
             }
             Err(e) => {
                 tracing::warn!("[Board] D0b 重平衡重派 issue {} 失败：{e}", d.issue_id);
@@ -1840,7 +1858,7 @@ pub async fn rebalance_queued_to_worker(
                 // 回退）；issue 保留 in_progress 可被 dispatch_issue_core
                 // 直接重派（人工/autopilot 一发即活）。评论失败不影响主流程
                 // （数据已破坏，能留多少痕留多少痕）。
-                let _ = store.add_comment(nemesis_board::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::NewComment {
                     issue_id: d.issue_id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!(
@@ -1850,7 +1868,9 @@ pub async fn rebalance_queued_to_worker(
                     ),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!("[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）", d.issue_id);
+                }
             }
         }
     }
@@ -1958,7 +1978,7 @@ pub fn rank_dispatch_candidates(
         description: &issue.description,
     };
     // E（goal）：候选 tags 合并 master 授予标签（granted_tags 台账）。
-    let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
+    let candidates = matcher_candidates(store, cluster);
     nemesis_board::rank_peers(&input, &candidates, &load)
         .into_iter()
         .map(|(id, _)| id)
@@ -2067,7 +2087,7 @@ pub(super) fn pick_fallback_target(
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
     //    角色丢标签」，行为不变）。角色归一沿用严格匹配（词表外角色词
     //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
-    let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
+    let candidates = matcher_candidates(store, cluster);
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
@@ -2109,15 +2129,38 @@ fn merge_granted_tags(
     candidates
 }
 
+/// 匹配器候选投影的单一入口（BUG-20261115-001 横扫收敛）：在线节点投影
+/// ∪ master 授予标签合并。此前 rank 侧带标签合并、停车明细/兜底取候选侧
+/// 用裸投影——明细会把已授予标签误报成缺口（反向撒谎）。决策面
+/// （[`rank_dispatch_candidates`]）与观测面（明细）从此吃同一份候选。
+#[cfg(feature = "cluster")]
+pub(super) fn matcher_candidates(
+    store: &BoardStore,
+    cluster: &nemesis_cluster::cluster::Cluster,
+) -> Vec<nemesis_board::PeerCandidate> {
+    merge_granted_tags(store, project_dispatch_candidates(cluster))
+}
+
 /// （goal）匹配失败明细（纯函数，单测直测）：要求 vs 每个在线候选
 /// 差什么（与 rank_peers 同语义：required_role 精确、required_tags 交集
 /// 非空；词表外角色词已在 rank_dispatch_candidates 归一进 tags）。
 /// 输出人读行集，直接拼进停车评论——「差什么」一眼可见。
+///
+/// 判定面必须与决策面同构（BUG-20261115-001）：rank_peers 的 6 个硬条件
+/// （role/tags/prof/tier/caps/backend）逐项在此有镜像——backend 闸是
+/// fail-closed（节点未宣告 = 排除且不参与松弛），明细不查就会产出
+/// 「全 ✓ 却无可匹配」的矛盾停车评论（真机 NB-3 实证）。
 #[cfg(feature = "cluster")]
 pub(super) fn match_failure_detail(
     issue: &nemesis_board::Issue,
     candidates: &[nemesis_board::PeerCandidate],
 ) -> String {
+    // 拓扑闸镜像（与 rank_dispatch_candidates 同源谓词 has_file_anchor）：
+    // file: 锚点单的候选投影被决策面整体清空（锚点在派发端 workspace 实核，
+    // 只能本节点执行），明细不得伪装成「无在线候选节点」误导诊断。
+    if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
+        return "单子含 file: 类锚点（拓扑约束：锚点在派发端 workspace 实核，只能本节点执行），不参与远端节点匹配".to_string();
+    }
     // 角色归一（统一定义 normalize_dispatch_role）：词表外角色词转标签。
     let (required_role, required_tags) =
         normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
@@ -2135,6 +2178,13 @@ pub(super) fn match_failure_detail(
         .as_deref()
         .and_then(nemesis_prompts::professions::meta::find_builtin)
         .map(|m| m.min_tier);
+    // backend 需求归一（与 rank_peers 硬条件 6 同源：trim + 小写；空 = 不过闸）。
+    let backend_need = issue
+        .required_backend
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
     let mut lines = Vec::new();
     for c in candidates {
         let mut missing = Vec::new();
@@ -2176,6 +2226,24 @@ pub(super) fn match_failure_detail(
                 missing.push(format!("缺能力 {need}"));
             }
         }
+        // backend 硬条件 6 镜像（fail-closed：节点未宣告 = 排除，与
+        // rank_peers 同构；宣告值大小写不敏感精确比对）。
+        if let Some(need) = &backend_need {
+            let declared = c
+                .runtime_backend
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let hit = declared.is_some_and(|b| b.to_lowercase() == *need);
+            if !hit {
+                match declared {
+                    Some(b) => missing.push(format!("backend {b}≠{need}")),
+                    None => missing.push(format!(
+                        "未宣告 backend（需求 {need}；闸 fail-closed，需节点宣告同值 backend）"
+                    )),
+                }
+            }
+        }
         let tag_str = if c.tags.is_empty() {
             "—".to_string()
         } else {
@@ -2191,14 +2259,21 @@ pub(super) fn match_failure_detail(
         } else {
             c.capabilities.join("/")
         };
+        let backend_str = c
+            .runtime_backend
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("—");
         lines.push(format!(
-            "{} {}[role={},tags={},prof={},caps={}]{}",
+            "{} {}[role={},tags={},prof={},caps={},backend={}]{}",
             if missing.is_empty() { "✓" } else { "✗" },
             c.name,
             c.role,
             tag_str,
             prof_str,
             cap_str,
+            backend_str,
             if missing.is_empty() {
                 String::new()
             } else {
@@ -2267,13 +2342,18 @@ pub(super) fn auto_dispatch_with_config(
                 "[Board] auto-dispatch failed for issue #{}: {e}",
                 issue.number
             );
-            let _ = store.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!("⛔ 自动派发失败：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             false
         }
     }
@@ -2338,13 +2418,18 @@ pub fn dispatch_issue_for_flow(
                     "[Board] flow auto-dispatch failed for issue #{}: {e}",
                     issue.number
                 );
-                let _ = store.add_comment(nemesis_board::models::NewComment {
+                if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                     issue_id: issue.id,
                     author: nemesis_board::Actor::system("board"),
                     content: format!("⛔ flow 导入自动派发失败：{e}"),
                     parent_id: None,
                     ctype: nemesis_board::CommentType::System,
-                });
+                }) {
+                    tracing::warn!(
+                        "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                        issue.id
+                    );
+                }
                 false
             }
         };
@@ -2366,13 +2451,18 @@ pub fn dispatch_issue_for_flow(
         let msg =
             "⏸ flow 导入暂缓派发：无匹配节点（职能/能力/兜底均未命中），等待节点上线由 sweep 承接";
         tracing::info!("[Board] flow issue #{}: {msg}", issue.number);
-        let _ = store.add_comment(nemesis_board::models::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
             issue_id: issue.id,
             author: nemesis_board::Actor::system("board"),
             content: msg.to_string(),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                issue.id
+            );
+        }
         return false;
     };
     match dispatch_issue_core(store, Some(cluster), issue.id, &target, actor, None) {
@@ -2388,24 +2478,32 @@ pub fn dispatch_issue_for_flow(
                 "[Board] flow auto-dispatch failed for issue #{}: {e}",
                 issue.number
             );
-            let _ = store.add_comment(nemesis_board::models::NewComment {
+            if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!("⛔ flow 导入自动派发失败：{e}"),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
-            });
+            }) {
+                tracing::warn!(
+                    "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                    issue.id
+                );
+            }
             false
         }
     }
 }
 
 /// 非 cluster 编译形态：诚实零操作 + warn（与 auto_dispatch_after_assign
-/// 非 cluster 臂同款纪律）。签名与 cluster 臂一致（cluster 槽位收下不用）。
+/// 非 cluster 臂同款纪律）。无调用方（flow_engine 的 dispatch_issue 恒在
+/// cluster 形态）——桩仅为跨形态可装配而存在；cluster 槽位类型是
+/// `Option<&()>`（AppState.cluster 的 not(cluster) 镜像，收下不用），
+/// 不得引用 nemesis_cluster 类型（该形态下 crate 不编译）。
 #[cfg(not(feature = "cluster"))]
 pub fn dispatch_issue_for_flow(
     _store: &Arc<BoardStore>,
-    _cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    _cluster: Option<&()>,
     _issue: &nemesis_board::Issue,
     _explicit_target: Option<&str>,
     _actor: &Actor,
@@ -2651,7 +2749,7 @@ pub fn dispatch_issue_local(
             Ok(false) => {}
             Err(re) => tracing::warn!("[Board] 本地发车失败回退未执行（让位或异常）：{re}"),
         }
-        let _ = store.add_comment(nemesis_board::models::NewComment {
+        if let Err(ce) = store.add_comment(nemesis_board::models::NewComment {
             issue_id: issue.id,
             author: nemesis_board::Actor::system("board"),
             content: format!(
@@ -2660,7 +2758,12 @@ pub fn dispatch_issue_local(
             ),
             parent_id: None,
             ctype: nemesis_board::CommentType::System,
-        });
+        }) {
+            tracing::warn!(
+                "[Board] 系统评论落库失败 issue={}：{ce}（流程照常，人工可见性受损）",
+                issue.id
+            );
+        }
         return Err(format!("本地发车失败：{e}"));
     }
 

@@ -170,10 +170,14 @@ impl OpenAiMessage {
 /// BUG-20261106-036，同族先例 = image_attach 的 `url_has_scheme`）。
 fn strip_data_scheme(url: &str) -> Option<&str> {
     const P: &str = "data:";
-    if url.len() >= P.len() && url[..P.len()].eq_ignore_ascii_case(P) {
-        Some(&url[P.len()..])
-    } else {
-        None
+    // 前缀比较必须走 str::get（BUG-20261113-132 横向同族，image_attach
+    // BUG-20261110-046 同形）：裸 `url[..P.len()]` 在 url 以多字节字符开头
+    // 时切在 char 中间直接 panic——url 来自 LLM 生成的 image_url 字段
+    // （不可信输入，模型幻觉输出非 ASCII 开头即触发）。get 对越界与
+    // 非 char 边界统一回 None；命中分支的 `url[P.len()..]` 因此恒安全。
+    match url.get(..P.len()) {
+        Some(head) if head.eq_ignore_ascii_case(P) => Some(&url[P.len()..]),
+        _ => None,
     }
 }
 

@@ -1032,3 +1032,63 @@ fn test_w1b_mutator_save_window_cannot_clobber_concurrent_ok_effect() {
         "T1 失败的 update 不得生效（回滚语义）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261113-132: execute_job_detached 线程名截断必须走 char 边界
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bug_cjk_job_id_detached_execute_no_panic() {
+    let (_dir, path) = tmp_store_path("cron.json");
+
+    // 手工落一个含多字节 UTF-8 id 的 store：生产 id 恒为 generate_id() 的
+    // hex（ASCII），但 store 是用户可编辑持久化面（legacy 迁移机制的存在即
+    // 证明手编/外部写入的 store 在野外存在），合法 UTF-8 id 不得 panic。
+    // 「abc任务xyz」共 12 字节：任=bytes 3-5、务=bytes 6-8 —— 字节偏移 8
+    // 不是 char 边界，旧实现 `&id[..len.min(8)]` 在此 panic（calling thread
+    // 崩，web tasks.cron.run handler 直接失败）。
+    let cjk_id = "abc任务xyz".to_string();
+    let job = CronJob {
+        id: cjk_id.clone(),
+        name: "cjk-id".to_string(),
+        enabled: true,
+        schedule: every_schedule(3_600_000),
+        payload: CronPayload {
+            kind: "agent_turn".to_string(),
+            message: "m".to_string(),
+            command: None,
+            deliver: false,
+            channel: None,
+            to: None,
+            session_key: None,
+            max_rounds: None,
+        },
+        state: CronJobState {
+            next_run_at_ms: Some(i64::MAX / 2), // 永不到期，排除 fire 干扰
+            last_run_at_ms: None,
+            last_status: None,
+            last_error: None,
+            history: vec![],
+        },
+        created_at_ms: 0,
+        updated_at_ms: 0,
+        delete_after_run: false,
+    };
+    crate::store::save(
+        std::path::Path::new(&path),
+        &CronStoreData {
+            version: 1,
+            jobs: vec![job],
+        },
+    )
+    .unwrap();
+
+    let svc = CronService::new(&path);
+    // 旧实现在线程名构造处 panic → 本测试进程直接崩；修复后恒 Ok。
+    svc.execute_job_detached(&cjk_id)
+        .expect("多字节 UTF-8 id 的 detached 执行必须被接受（无 handler=executed 记账）");
+
+    // detached 线程异步做 mutate+save；给一个短暂窗口让其收尾再清 tempdir，
+    // 避免 Windows 上 TempDir 清理撞进行中的落盘句柄（断言不依赖该写回）。
+    std::thread::sleep(Duration::from_millis(200));
+}

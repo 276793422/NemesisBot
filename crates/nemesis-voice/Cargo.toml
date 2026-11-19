@@ -22,7 +22,7 @@ anyhow = { workspace = true }
 toml = { workspace = true }
 futures = { workspace = true }
 nemesis-channels = { workspace = true }
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 libc = "0.2"

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::{info, warn};
 
+use crate::commands::gateway::shutdown::{terminal_cancel_token, terminal_loop_tick};
 use crate::common;
 
 #[cfg(feature = "board")]
@@ -74,7 +75,7 @@ fn apply_outbound_dlp(
         return;
     }
     if let Some(chain) = plugin.audit_chain() {
-        let _ = chain.append(
+        chain.append_observed(
             "dlp_outbound_redact",
             "",
             "agent",
@@ -115,6 +116,14 @@ pub(crate) struct GatewayCtx {
     pub conv_router: nemesis_web::SharedConvRouter,
     /// estop 单例（集群装配前创建，四方共享同一 Arc）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
+    /// 进程终态令牌测试注入口（BUG-20261115-046）：Some = post_agent
+    /// 常驻循环（board watcher）改挂此局部令牌。背景：run_runtime 全链
+    /// 测试经生产停机路径（Step 24 cancel_terminal_tasks）不可逆 cancel
+    /// 进程全局令牌——并行测试进程里全局令牌随时可能已毒化，断言常驻
+    /// 循环活性的测试挂全局令牌会 born-dead（watcher 首 poll 拍完基线
+    /// 即被前置 is_cancelled 短路收线，SSE 永不发布）。生产恒 None
+    /// （= 全局 terminal_cancel_token()，语义不变）。
+    pub terminal_cancel_override: Option<tokio_util::sync::CancellationToken>,
     // QUIC 中继（quic-relay）自 QUIC 插件化 起无 ctx 字段：
     // 运行面在 plugin_roaming C-ABI 插件，句柄住 loader 静态槽
     //（[`crate::roaming_plugin_loader:plugin_handle`]，进程级单例）——
@@ -289,8 +298,39 @@ impl GatewayCtx {
         // 未配置走。CLI 型 lane 的子进程（读小写）与本进程（读大写）双对覆盖。
         match nemesis_config::proxy_file::load(&common::workspace_path(&home).join("config")) {
             Ok(Some(c)) => {
+                // BUG-20261114-064：scheme 不受 reqwest/hyper-util 支持的
+                // 值（如历史 socks://——reqwest 只认 http/https/socks4/
+                // socks4a/socks5/socks5h）在本进程会被 hyper-util
+                // parse_env_uri 静默忽略（客户端静默直连零诊断）——注入前
+                // WARN 照告。值仍照常注入（env_vars_to_apply 单一真相源
+                // 不动）：CLI 子进程（curl 等）可能支持该 scheme，env 注入
+                // 语义 = 原样转发。WARN 只报 key 不落 value（代理 URL 可带
+                // userinfo 凭据，SEC-002 口径）。no_proxy 是豁免列表非代理
+                // 值，不检查。
+                for (key, value) in [
+                    ("HTTP_PROXY", &c.env.http_proxy),
+                    ("HTTPS_PROXY", &c.env.https_proxy),
+                    ("ALL_PROXY", &c.env.all_proxy),
+                ] {
+                    let v = value.trim();
+                    if !v.is_empty() && !nemesis_config::proxy_file::scheme_supported(v) {
+                        tracing::warn!(
+                            "[Gateway] 环境变量代理 {key} scheme 不受 reqwest 支持（BUG-20261114-064），本进程客户端将静默直连；值仍注入子进程环境。scheme 支持面：{}",
+                            nemesis_config::proxy_file::PROXY_PREFIXES.join(" ")
+                        );
+                    }
+                }
                 for (key, value) in nemesis_config::proxy_file::env_vars_to_apply(&c.env) {
-                    tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    // SEC-002（BUG-20261115-005）：代理 URL 可携带 userinfo
+                    // 凭据（http://user:pass@host:port），日志只落 key + 脱敏
+                    // 占位——与 EnvProxyConfig Debug 脱敏同口径
+                    //（BUG-20261114-063）；no_proxy 是豁免主机列表非凭据
+                    //（063 Debug 原样输出同判），值照落。
+                    if key.eq_ignore_ascii_case("no_proxy") {
+                        tracing::info!("[Gateway] 环境变量代理已注入：{key}={value}");
+                    } else {
+                        tracing::info!("[Gateway] 环境变量代理已注入：{key}=<redacted>");
+                    }
                     // set_var 在 Rust 2024 为 unsafe（并发读写下 UB 面）；
                     // 此处是启动装配窗口（先例 common.rs PATH 注入），注入
                     // 先于一切并发 client 构建。
@@ -334,7 +374,14 @@ impl GatewayCtx {
                 "web_host": "",
                 "web_port": 0,
             });
-            if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
+            // BUG-20261119-180：gateway.json 是 estop/estop_follower/dashboard/
+            // selfupdate/cron/run 六消费方的跨进程发现链真相源，裸写撕裂 =
+            // gateway 在跑被当不在（急停投递持久失效到下次重启）。改走原子写。
+            if let Err(e) = nemesis_utils::write_file_atomic(
+                &state_path.to_string_lossy(),
+                state_json.to_string().as_bytes(),
+                0o644,
+            ) {
                 warn!("[Gateway] Failed to write gateway state: {}", e);
             } else {
                 info!(
@@ -472,7 +519,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即扫
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let exec_removed = nemesis_workflow::persistence::sweep_stale_execution_files(
                         &sweep_exec_dir,
                         WORKFLOW_SWEEP_TTL,
@@ -718,7 +769,11 @@ impl GatewayCtx {
                 let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
-                    ticker.tick().await; // 首 tick 立即返回 = 启动即维护
+                    // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                    // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                    if !terminal_loop_tick(terminal_cancel_token(), ticker.tick()).await {
+                        break;
+                    }
                     let Some(store) = store_for_maint.as_ref() else {
                         continue;
                     };
@@ -832,7 +887,11 @@ impl GatewayCtx {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(600));
                     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
-                        tick.tick().await;
+                        // BUG-20261115-023：终态令牌等待点——cancel 后 break 不再
+                        // re-park timer（家族纪律见 shutdown.rs 模块文档）。
+                        if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                            break;
+                        }
                         let report =
                             cap.sweep(zw_ttl, nemesis_ziwei::capture::MAX_BYTES_PER_PROFILE);
                         if report.expired_profiles > 0 || report.size_truncated > 0 {
@@ -1066,13 +1125,12 @@ impl GatewayCtx {
                             // run history、账本 settle failed——「本次未投递」属实。
                             return Err(msg);
                         }
-                        let chat_id = if !session_key.is_empty() {
-                            router_for_cron
-                                .target(&session_key)
-                                .unwrap_or_else(|| job.payload.to.clone().unwrap_or_default())
-                        } else {
-                            job.payload.to.clone().unwrap_or_default()
-                        };
+                        let chat_id = cron_fire_chat_id(
+                            &channel,
+                            &session_key,
+                            router_for_cron.target(&session_key),
+                            job.payload.to.as_deref(),
+                        );
                         let inbound = nemesis_types::channel::InboundMessage {
                             channel,
                             sender_id: format!("cron:{}", job.id),
@@ -1151,16 +1209,26 @@ impl GatewayCtx {
             // relative index_path), so deploy/monitor/feedback operated on disjoint
             // stores. (F-) Dedicated path so it persists + reloads; separate from
             // Forge's manual-create registry.json to avoid a two-instance collision.
+            // 文件名走 crate 常量（BUG 批次 2026-11-14）：蒸馏/闭环两侧的跨库
+            // 互查防线按同一常量拼路径，字面量分叉会让防线指向空文件。
             let forge_shared_registry = std::sync::Arc::new(
                 nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
                     index_path: forge_dir
-                        .join("learning_registry.json")
+                        .join(nemesis_forge::LEARNING_REGISTRY_FILE)
                         .to_string_lossy()
                         .to_string(),
                 }),
             );
             // F-: reload prior learned artifacts so they survive restart.
-            let _ = forge_shared_registry.load().await;
+            // (BUG-20261114-026) 加载失败 loud——learning_registry.json 损坏
+            // 静默吞掉 = 按空注册表继续，既有 artifacts 不可见，下次保存
+            // 覆盖盘上残留零痕迹（与 AuthStore::new 同族纪律）。
+            if let Err(e) = forge_shared_registry.load().await {
+                tracing::warn!(
+                    error = %e,
+                    "[forge] learning_registry.json 加载失败，按空注册表继续（既有 artifacts 不可见，下次保存会覆盖残留）"
+                );
+            }
 
             // Initialize Pipeline (3-stage validation). Built as Arc + sharing the
             // closed-loop registry so it can be injected into the LearningEngine (F-).
@@ -1213,7 +1281,13 @@ impl GatewayCtx {
             let forge = std::sync::Arc::new(forge);
 
             // F-: reload Forge's manual-create registry so prior artifacts survive restart.
-            let _ = forge.registry().load().await;
+            // (BUG-20261114-026) 加载失败 loud（同族纪律，见上方 learning_registry 臂）。
+            if let Err(e) = forge.registry().load().await {
+                tracing::warn!(
+                    error = %e,
+                    "[forge] registry.json 加载失败，按空注册表继续（既有 artifacts 不可见，下次保存会覆盖残留）"
+                );
+            }
             // 复查：原 skill_creator 注入已随死接线删除——
             // `set_skill_creator` 有注入无读取（write-only）。生产技能创建
             // 走 run_cycle → execute_create_skill（pipeline 臂直写
@@ -1455,6 +1529,36 @@ impl GatewayCtx {
             }
         }
 
+        // plugin_mail 装载（邮件基础设施）：**总闸前置**——`config.mail.json`
+        // enabled 缺省 false，装了 DLL 也不自动起（显式开启形态；与 roaming
+        // 的「文件在场即加载」刻意不同：邮件面带对外监听 + 认证语义，默认
+        // 静默）。总闸开 → 名册开关闸（loader 内）→ 签名 → init（password_ref
+        // 宿主解析注入）→ server_start（按 smtp/pop3 各自 enabled 起面）。
+        // 缺席/拒载 = 服务端面诚实降级（warn 留痕，不炸装配）。
+        if crate::mail_plugin_loader::mail_enabled(&home) {
+            let native_config_dir =
+                nemesis_path::workspace_config_dir(&common::workspace_path(&home));
+            match crate::mail_plugin_loader::load_mail_plugin(&home, &native_config_dir) {
+                crate::mail_plugin_loader::MailLoadOutcome::Absent => {
+                    warn!("[Gateway] mail 总闸开启但 plugin_mail 缺席（服务端面诚实降级）");
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::Loaded => {
+                    match crate::mail_plugin_loader::mail_server_start().await {
+                        Ok(v) => info!("[Gateway] plugin_mail server_start: {v}"),
+                        Err(e) => warn!("[Gateway] plugin_mail server_start 失败（诚实降级）: {e}"),
+                    }
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::DisabledBySwitch => {
+                    info!(
+                        "[Gateway] plugin_mail 已停用（本地插件库开关）——邮件面不装配（重启后生效）"
+                    );
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::Rejected(reason) => {
+                    warn!("[Gateway] plugin_mail 拒载（服务端面诚实降级）: {reason}");
+                }
+            }
+        }
+
         Ok(Some(GatewayCtx {
             // 身份与配置
             home,
@@ -1463,6 +1567,8 @@ impl GatewayCtx {
             cfg,
             resolution,
             model_name,
+            // 测试注入口：生产恒 None（全局终态令牌，语义不变）。
+            terminal_cancel_override: None,
             // 消息主干
             bus,
             cron_service,
@@ -1582,6 +1688,32 @@ pub(crate) fn cron_parent_session_exists(home: &std::path::Path, session_key: &s
         .exists()
 }
 
+/// cron 触发消息的 chat_id 决策（单一真相源，供 on_job handler 与回归锁
+/// 共用）。Opt2 实时推送只对 web 通道成立——`ConvRouter::target` 恒返回
+/// `web:<ws_conn_id>` 形态（conv_router.rs 模块文档：web 通道按
+/// `chat_id = web:<ws_conn_id>` 严格路由），非 web 通道（telegram/discord/
+/// …）拿到这个值必然投递失败：channel/chat_id 形态错配，本应送达 `to`
+/// 目标的消息丢失（通道侧 fail-soft，用户零回执）。此前本决策内联在
+/// on_job 闭包里且无通道闸——payload.channel 显式非 web 且该会话恰好有
+/// live tab 绑定（Dashboard 开着对应会话）时触发。session_key 本身照旧
+/// 随 InboundMessage 下发（历史持久化与会话归属，与投递通道无关）。
+pub(crate) fn cron_fire_chat_id(
+    channel: &str,
+    session_key: &str,
+    router_target: Option<String>,
+    to: Option<&str>,
+) -> String {
+    let fallback = to.unwrap_or_default().to_string();
+    // 通道闸（BUG-20261119-197）：Opt2 的 router_target 是 web 专属语义
+    // （`web:<ws_conn_id>`），非 web 通道必须恒走 `to`——否则 channel=
+    // telegram + chat_id=web:xxx 形态错配，投递必败（fail-soft 零回执）。
+    if channel == "web" && !session_key.is_empty() {
+        router_target.unwrap_or(fallback)
+    } else {
+        fallback
+    }
+}
+
 /// （扩展计划）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +
 /// 装配前后槽语义）。security feature 门内——与被测函数同门。
 #[cfg(all(test, feature = "security"))]
@@ -1591,3 +1723,7 @@ mod dlp_gate_tests;
 /// 消毒对齐）。独立测试文件（仓库纪律：生产文件只留声明行）。
 #[cfg(test)]
 mod w3_session_gate_tests;
+
+/// （BUG-20261119-197）：cron chat_id 决策单测（Opt2 通道闸）。
+#[cfg(test)]
+mod w4_cron_chat_id_tests;

@@ -65,7 +65,14 @@ impl VaultDomainConfig {
         if !path.exists() {
             return Ok(None);
         }
-        let raw = std::fs::read_to_string(path)
+        // read_config_string 剥 BOM（BUG-20261120-005）：文件是用户可手编
+        // 资产（本模块文档明言），Windows 记事本 utf8BOM 保存形态曾让
+        // serde_json 解析失败 → Err → 调用方按无绑定兜底 → 用户配置的域
+        // 绑定全部失效（免卡直过退化 v1 审批卡 + 持续 WARN）。同 crate
+        // 同款 BUG 已修过两处（plugin_wasm runtime_enabled、eval_rules
+        // load_rules BUG-20261109-036），本位点是漏网—— Crate 内配置
+        // 读取统一走 BOM 剥离 helper。
+        let raw = nemesis_utils::fsutil::read_config_string(path)
             .map_err(|e| format!("绑定配置读取失败（{}）: {e}", path.display()))?;
         let cfg: VaultDomainConfig = serde_json::from_str(&raw)
             .map_err(|e| format!("绑定配置解析失败（{}）: {e}", path.display()))?;

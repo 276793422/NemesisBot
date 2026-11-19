@@ -1888,6 +1888,31 @@ async fn test_s11b_run_setsize_matrix() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("Invalid size"));
+    // BUG-20261114-055：0 / 0B 非法（与 Dashboard 同字段写入面同规则
+    // "must be > 0"）——旧代码 Some(0) 直写 model_size_b=0，auto 检测
+    // 钉死 Mini（0..=39 桶）。
+    for bad in ["0", "0B"] {
+        let err = super::run(
+            super::ModelAction::SetSize {
+                name: "lite".into(),
+                size: bad.into(),
+            },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("must be > 0"),
+            "size={bad} 须拒绝: {err}"
+        );
+    }
+    // 拒绝后 config 未动（不落 model_size_b 键）。
+    assert!(
+        s11b_read_cfg(&th.home)["model_list"][0]
+            .get("model_size_b")
+            .is_none(),
+        "被拒写入不得落盘"
+    );
     // 30B
     super::run(
         super::ModelAction::SetSize {
@@ -2953,6 +2978,89 @@ mod wave_a {
         );
     }
 
+    // 回归（BUG-20261115-020）：负价必须 loud 拒绝且不落条目——is_finite
+    // 只拒 NaN/±inf，`-5.0` 畅通落账 → usage 面板负美元、月度账偏移。
+    // 负价无合法计费语义（成本是可观测性数据，不存在返佣结算）；
+    // 计价层另有防御钳兜非 CLI 写路径（下载表/import/手改 JSON）。
+    #[tokio::test]
+    async fn prices_add_rejects_negative_base_prices() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        for (label, input, output) in [
+            ("negative input", -1.0, 2.0),
+            ("negative output", 1.0, -2.0),
+        ] {
+            let err = super::super::run_prices(
+                PricesAction::Add {
+                    model: "acme/neg".into(),
+                    input,
+                    output,
+                    cache_read: 0.0,
+                    cache_creation: 0.0,
+                    display: None,
+                    price_tiers: Vec::new(),
+                },
+                &th.home,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("不能为负"),
+                "{label} 必须 loud 拒绝：{err}"
+            );
+        }
+        // cache 价维度同样受校验（好 in/out + 负 cache_read）
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/neg2".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: -0.1,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: Vec::new(),
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("不能为负"), "负 cache_read：{err}");
+        assert!(
+            reopen_custom(&th.home).is_empty(),
+            "全部失败路径不得落任何条目"
+        );
+    }
+
+    // 同 BUG 阶梯面：阶梯价负值独立校验（parse_price_tiers 闸）。
+    #[tokio::test]
+    async fn prices_add_rejects_negative_tier_prices() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/neg-tier".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_creation: 0.0,
+                display: None,
+                price_tiers: vec!["200000:-3.0:9.0".into()],
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("阶梯价不能为负"),
+            "负阶梯价必须 loud 拒绝：{err}"
+        );
+        assert!(reopen_custom(&th.home).is_empty(), "失败路径不得落条目");
+    }
+
     #[tokio::test]
     async fn prices_add_with_tiers_persists_bad_spec_bails() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -3056,7 +3164,10 @@ mod wave_a {
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         // 1 条 chat（收）+ 1 条 embedding（跳）+ 1 条缺 output 价（跳）。
-        let raw = serde_json::json!({
+        // BUG-20261118-157 起 validate_downloaded_entries 卡条目数下限
+        // （MIN_FILTERED_ENTRIES=100，<100 拒收整表防劫持页/截断 payload）
+        // ——再垫 99 条 chat 凑满 100，语义断言不变。
+        let mut raw = serde_json::json!({
             "import/chat-model": {
                 "mode": "chat",
                 "input_cost_per_token": 0.000001,
@@ -3067,6 +3178,17 @@ mod wave_a {
             "import/embed": {"mode": "embedding", "input_cost_per_token": 0.000001},
             "import/nocost": {"mode": "chat", "input_cost_per_token": 0.000001}
         });
+        let obj = raw.as_object_mut().unwrap();
+        for i in 0..99 {
+            obj.insert(
+                format!("import/bulk-{i:03}"),
+                serde_json::json!({
+                    "mode": "chat",
+                    "input_cost_per_token": 0.000001 + i as f64 * 1e-9,
+                    "output_cost_per_token": 0.000002
+                }),
+            );
+        }
         let file = th.home.join("litellm.json");
         std::fs::write(&file, raw.to_string()).unwrap();
         super::super::run_prices(
@@ -3077,13 +3199,17 @@ mod wave_a {
         )
         .await
         .expect("合法 LiteLLM 导入必须成功");
-        // 下载层状态：恰 1 条（embedding/缺价跳过），per-token → per-million ×1e6。
+        // 下载层状态：恰 100 条（1 语义 + 99 垫数；embedding/缺价跳过），
+        // per-token → per-million ×1e6。垫数按 model_id 排序在前，用 find。
         let ds = nemesis_data::DataStore::open(&db_path(&th.home)).unwrap();
         let downloaded = ds.pricing().list_downloaded().expect("导入必须建下载层");
-        assert_eq!(downloaded.len(), 1, "只收 chat 且双价齐全的条目");
-        assert_eq!(downloaded[0].model_id, "import/chat-model");
-        assert!((downloaded[0].input_cost_per_million - 1.0).abs() < 1e-9);
-        assert!((downloaded[0].output_cost_per_million - 2.0).abs() < 1e-9);
+        assert_eq!(downloaded.len(), 100, "只收 chat 且双价齐全的条目");
+        let chat = downloaded
+            .iter()
+            .find(|e| e.model_id == "import/chat-model")
+            .expect("import/chat-model 必须在下载层");
+        assert!((chat.input_cost_per_million - 1.0).abs() < 1e-9);
+        assert!((chat.output_cost_per_million - 2.0).abs() < 1e-9);
         let meta = ds.pricing().meta();
         assert_eq!(
             meta.source_url.as_deref(),
@@ -3447,13 +3573,26 @@ mod w5b2 {
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
 
-        let raw = serde_json::json!({
+        // 1 条语义条目 + 99 条垫数：下载层条目数闸 MIN_FILTERED_ENTRIES=100
+        // （BUG-20261118-157）下 1 条夹具会被整表拒收，Import 必须 ≥100。
+        let mut raw = serde_json::json!({
             "w5b2/chat": {
                 "mode": "chat",
                 "input_cost_per_token": 0.000001,
                 "output_cost_per_token": 0.000002
             }
         });
+        let obj = raw.as_object_mut().unwrap();
+        for i in 0..99 {
+            obj.insert(
+                format!("w5b2/bulk-{i:03}"),
+                serde_json::json!({
+                    "mode": "chat",
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002
+                }),
+            );
+        }
         let file = th.home.join("w5b2-litellm.json");
         std::fs::write(&file, raw.to_string()).unwrap();
         super::super::run(
@@ -3989,6 +4128,160 @@ mod n6_role {
             err.to_string().contains("images-openai"),
             "图像协议旧条目重复 --default 必须拦: {err}"
         );
+    }
+
+    // 守卫①c（merge 面，2026-11-15）：不带 --default 的重复 add 也会
+    // merge 覆写旧条目——旧条目是当前默认时，新 --role/--protocol 使其
+    // 原地变成守卫①禁止的形态（agents.defaults.llm 仍指向它，重启
+    // NullProvider 降级）。三个面（显式 --default / 合并生效值 / 原地
+    // 转换）共用同一组资格检查。
+
+    #[tokio::test]
+    async fn run_readd_without_default_converts_default_role_in_place_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 当前默认 = flash（model_name 形态引用，set_default/rename 写法）。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "flash"}},
+                "model_list": [
+                    {"model": "zhipu/flash-8b", "model_name": "flash", "api_key": "old"}
+                ]
+            }),
+        );
+
+        // 不带 --default + --role utility：守卫①只看显式 --default 拦不住
+        // 这条原地转换路径 → 必须由守卫①c 拦（写盘前，config 未动）。
+        let err = super::super::run(
+            add_action("zhipu/flash-8b", Some("utility".into()), false),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("utility") && err.to_string().contains("默认"),
+            "默认条目原地转 utility 必须拦: {err}"
+        );
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["model_list"][0].get("role").is_none(),
+            "写盘前拒绝：role 键不得落盘"
+        );
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "flash");
+    }
+
+    #[tokio::test]
+    async fn run_readd_without_default_converts_default_protocol_in_place_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 当前默认 = dall-e（alias 形态引用，`model add --default` 写法：
+        // agents.defaults.llm 存 model 串最后一段）。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "dall-e"}},
+                "model_list": [
+                    {"model": "vendor/dall-e", "model_name": "dall", "api_key": "old"}
+                ]
+            }),
+        );
+
+        let action = super::super::ModelAction::Add {
+            model: Some("vendor/dall-e".into()),
+            provider: None,
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: Some("images-openai".into()),
+            role: None,
+            stream: None,
+            default: false,
+        };
+        let err = super::super::run(action, false).await.unwrap_err();
+        assert!(
+            err.to_string().contains("images-openai"),
+            "默认条目原地转图像协议必须拦: {err}"
+        );
+        let cfg = s11b_read_cfg(&th.home);
+        assert!(
+            cfg["model_list"][0].get("protocol").is_none(),
+            "写盘前拒绝：protocol 键不得落盘"
+        );
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "dall-e");
+    }
+
+    #[tokio::test]
+    async fn run_readd_default_entry_with_legal_role_still_succeeds() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "flash"}},
+                "model_list": [
+                    {"model": "zhipu/flash-8b", "model_name": "flash", "api_key": "old"}
+                ]
+            }),
+        );
+
+        // 合法形态（显式 conversation）不受守卫①c 波及——只拦非法转换，
+        // 不拦正常重复 add。
+        super::super::run(
+            add_action("zhipu/flash-8b", Some("conversation".into()), false),
+            false,
+        )
+        .await
+        .expect("合法 role 的重复 add 必须照常成功");
+        let cfg = s11b_read_cfg(&th.home);
+        assert_eq!(cfg["model_list"][0]["role"], "conversation");
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "flash", "默认引用不动");
+    }
+
+    #[tokio::test]
+    async fn run_readd_non_default_entry_with_image_protocol_succeeds() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 默认在别的条目上——给非默认条目原地转图像协议照常放行
+        //（图像条目的正常创建路径），守卫①c 不得过拦。
+        s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "agents": {"defaults": {"llm": "main"}},
+                "model_list": [
+                    {"model": "zhipu/glm-4.7", "model_name": "main", "api_key": "old"},
+                    {"model": "vendor/dall-e", "model_name": "dall", "api_key": "old"}
+                ]
+            }),
+        );
+
+        let action = super::super::ModelAction::Add {
+            model: Some("vendor/dall-e".into()),
+            provider: None,
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: Some("images-openai".into()),
+            role: None,
+            stream: None,
+            default: false,
+        };
+        super::super::run(action, false)
+            .await
+            .expect("非默认条目转图像协议必须放行");
+        let cfg = s11b_read_cfg(&th.home);
+        assert_eq!(cfg["model_list"][1]["protocol"], "images-openai");
+        assert_eq!(cfg["agents"]["defaults"]["llm"], "main");
     }
 
     #[test]

@@ -1712,6 +1712,63 @@ async fn estop_parks_issue_review_with_kind() {
     );
 }
 
+// BUG-20261113-125 回归锁：发车前检查点③停车（评审 LLM 在飞窗口急停）
+// 不得落「redispatch」决策审计——审计只在实际派发成功后落。此前发车前
+// 已落记录，master 重启后 estop_parked 内存队列丢失 → replay_stuck_reviews
+// → review_already_concluded 把这条记录当「已定案」跳过重放，单据永卡
+// in_review 无自愈。
+#[tokio::test]
+async fn estop_park_at_redispatch_checkpoint_records_no_redispatch_audit() {
+    let (deps, _ws) = review_deps("estop-redispatch-checkpoint3");
+    let issue = delivered_issue(&deps.store, "检查点③停车", "t-estop-c3");
+    let estop = deps.estop.clone();
+    attach_loop(
+        &deps,
+        Arc::new(ScriptedLlm {
+            script: std::sync::Mutex::new(std::collections::VecDeque::from([Ok(review_json(
+                "FAIL",
+                "输出缺运行证明",
+            ))])),
+            fallback: String::new(),
+            // 评审 LLM 调用瞬间拉闸——模拟「评审在飞窗口触发急停」，在途
+            // 轮次走到 FAIL 重派臂的发车前检查点③停车。
+            on_call: Some(Box::new(move || estop.trigger())),
+        }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .unwrap();
+    assert!(!reviewed, "检查点③停车轮次不得继续发车");
+    let parked = deps.estop_parked.lock().unwrap().clone();
+    assert_eq!(
+        parked,
+        vec![(ParkedKind::Issue, issue.id)],
+        "必须停在检查点③（Issue 维度入队）: {parked:?}"
+    );
+    // ❌ 差距评论照常落（决策已出、评论在发车前）。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("❌ agent 验收未通过")),
+        "FAIL 差距评论必须已落"
+    );
+    // 核心断言：本单不得有任何 auto_decide 审计行——检查点③停车是
+    // 瞬时态不是终局决策，重启后必须可重放。
+    let decides: Vec<_> = deps
+        .store
+        .list_activity(issue.id)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "auto_decide")
+        .collect();
+    assert!(
+        decides.is_empty(),
+        "检查点③停车不得落任何决策审计行（发车前记录=重放守卫误判已定案的根因）: {decides:?}"
+    );
+}
+
 #[tokio::test]
 async fn estop_parks_project_review_with_kind() {
     let (deps, _ws) = review_deps("estop-project");
@@ -5741,6 +5798,41 @@ async fn llm_fail_within_budget_redispatches_and_records() {
     assert_eq!(
         decided_word(&deps.store, issue.id).as_deref(),
         Some("redispatch")
+    );
+    // BUG-20261113-125 回归锁：成功路径「redispatch」审计恰一条（发车前
+    // 不得有第两条），且带 target 字段（记录在派发成功后落）。
+    let redispatch_rows: Vec<_> = deps
+        .store
+        .list_activity(issue.id)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == "auto_decide")
+        .filter(|a| {
+            a.details
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|v| {
+                    v.get("decision")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
+                .as_deref()
+                == Some("redispatch")
+        })
+        .collect();
+    assert_eq!(
+        redispatch_rows.len(),
+        1,
+        "成功重派路径 redispatch 审计必须恰一条（发车前预记=审计假象回归）: {redispatch_rows:?}"
+    );
+    assert!(
+        redispatch_rows[0]
+            .details
+            .as_deref()
+            .map(|d| d.contains("target"))
+            .unwrap_or(false),
+        "redispatch 审计必须带 target（派发成功后落）: {:?}",
+        redispatch_rows[0].details
     );
     let comments = deps.store.list_comments(issue.id).unwrap();
     let gap = comments
@@ -10707,4 +10799,367 @@ async fn selfcheck_sweep_keeps_young_unrouted_row() {
             .all(|c| !c.content.contains("自检取证回调丢失")),
         "宽限内不得发转人工评论"
     );
+}
+
+// ---------- 批二：瞬态失败退避重试（无人值守加固 2026-11-18） ----------
+//
+// 全程锚点 `re:` 短路提供确定性 FAIL（无 LLM）；⛔ 评论尾部
+// `fail_class: <class>` 标记行驱动瞬态臂。连发序列模拟真实节奏：每次退避
+// 重派后 worker 再失败（finish + ⛔ 评论 + 状态回 in_review）再触发复评。
+//
+// 计数隔离：TRANSIENT_RETRY_COUNTS 是进程级全局表，键 = home + issue_id
+// （transient_key_for 单一来源）——各测试独立 temp home 天然互不相扰，
+// 无需测试锁（裸 issue_id 键的串台实录见 mod.rs 键注释）。
+
+/// 模拟一轮 worker 瞬态终态：完结在途派发 + ⛔ 失败评论（尾部
+/// fail_class 标记行）+ 状态回 in_review（下次复评的状态闸前提）。状态
+/// 已在 in_review（fixture 初始形态）时跳过转移（状态机拒绝原地转移）。
+fn worker_transient_round(
+    store: &nemesis_board::BoardStore,
+    issue_id: i64,
+    task_id: &str,
+    worker: &str,
+    fail_class: &str,
+) {
+    store
+        .finish_dispatch(task_id, nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id,
+            author: nemesis_board::Actor::agent(worker),
+            content: format!(
+                "⛔ 任务失败\n上游 LLM 拥塞（重试已耗尽）：本轮未能产出交付。\nfail_class: {fail_class}"
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Comment,
+        })
+        .unwrap();
+    if store.get_issue(issue_id).unwrap().status == nemesis_board::IssueStatus::InProgress {
+        store
+            .transition_issue(
+                issue_id,
+                nemesis_board::IssueStatus::InReview,
+                &nemesis_board::Actor::agent(worker),
+            )
+            .unwrap();
+    }
+}
+
+/// 瞬态类（cap 内）：⏳ 退避评论 + 同目标重派 +1 + 审计 transient_retry，
+/// 不落 ❌ 重派意见、不走熔断记账（决策表未进入）。
+#[tokio::test]
+async fn transient_fail_backs_off_and_redispatches_same_target_within_cap() {
+    let (deps, _ws) = review_deps("p8-transient-retry");
+    write_board_config(
+        &deps.home,
+        r#"{"review": {"transient_retry_max": 2, "transient_retry_delay_secs": 0}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "瞬态退避重试",
+        "[CHECK] re:验收完成标志XYZ",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "task-tr-1", issue.id, "node-b");
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "⛔ 任务失败\n上游 LLM 限流（429），重试已耗尽。\nfail_class: llm_rate_limit"
+                .to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Comment,
+        })
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("瞬态退避路径必须闭环不报错");
+    assert!(reviewed);
+
+    // 同目标重派 +1（派发行照落审计；重派轮次预算不消耗）。
+    let dispatches = deps.store.list_dispatches(issue.id).unwrap();
+    assert_eq!(dispatches.len(), 2, "瞬态退避必须发车一次");
+    assert_eq!(dispatches[1].worker_id, "node-b", "退避重试同目标");
+    // 派发即转 in_progress（dispatch_issue_core 状态闸语义）。
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        nemesis_board::IssueStatus::InProgress
+    );
+    // ⏳ 退避评论在场（含 fail_class 与 attempt/cap 明细）；无 ❌ 重派意见。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    let backoff = comments
+        .iter()
+        .find(|c| c.content.contains("⏳"))
+        .expect("必须有退避重试评论");
+    assert!(
+        backoff.content.contains("llm_rate_limit") && backoff.content.contains("1/2"),
+        "{}",
+        backoff.content
+    );
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("❌ agent 验收未通过")),
+        "瞬态臂在决策表之前分流，不得落 ❌ 重派意见"
+    );
+    // 审计留痕：decision=transient_retry + attempt/cap/target/fail_class。
+    let audit = deps.store.list_activity(issue.id).unwrap();
+    let decide = audit
+        .iter()
+        .find(|a| a.action == "auto_decide")
+        .expect("必须有 auto_decide 审计");
+    let details = decide.details.as_deref().unwrap_or("");
+    assert!(details.contains("transient_retry"), "{details}");
+    assert!(details.contains("llm_rate_limit"), "{details}");
+    assert!(details.contains("\"attempt\":1"), "{details}");
+    assert!(details.contains("\"cap\":2"), "{details}");
+    // 内存计数 = 1（单回合内累计；重启清零语义见批二计划）。
+    assert_eq!(
+        transient_retry_count_for_tests(&transient_key_for(&deps.home, issue.id)),
+        Some(1),
+        "首回合退避后计数应为 1"
+    );
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+/// 连发到超限（cap=2，第三次 FAIL）：落回决策表——round 已被瞬态回合
+/// 推到 2（派发行 3 行）≥ max_redispatch=2 → EscalateHuman 转人工；
+/// 计数超限清零。全程有界（瞬态回合 2 + 表内终态 1）。
+#[tokio::test]
+async fn transient_retry_cap_exhaustion_falls_back_to_table_and_escalates() {
+    let (deps, _ws) = review_deps("p8-transient-cap");
+    write_board_config(
+        &deps.home,
+        r#"{"review": {"transient_retry_max": 2, "transient_retry_delay_secs": 0}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "瞬态退避超限",
+        "[CHECK] re:验收完成标志XYZ",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "task-tc-1", issue.id, "node-b");
+    worker_transient_round(&deps.store, issue.id, "task-tc-1", "node-b", "llm_timeout");
+
+    // 第 1、2 次 FAIL：瞬态退避（attempt 1/2、2/2）。
+    for round in 1..=2 {
+        let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+            .await
+            .unwrap_or_else(|e| panic!("第 {round} 次退避必须闭环：{e}"));
+        assert!(reviewed);
+        let dispatches = deps.store.list_dispatches(issue.id).unwrap();
+        assert_eq!(
+            dispatches.len(),
+            round + 1,
+            "第 {round} 次退避后派发行 = {round}+1"
+        );
+        // worker 再失败 + 状态回 in_review（下一轮复评前提）。
+        let task_id = dispatches[dispatches.len() - 1].task_id.clone();
+        worker_transient_round(&deps.store, issue.id, &task_id, "node-b", "llm_timeout");
+    }
+
+    // 第 3 次 FAIL：attempt=3 > cap=2 → 清零落决策表 →
+    // round=2 ≥ max_redispatch=2 → EscalateHuman（不再发车）。
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("超限回合必须闭环不报错");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        3,
+        "超限回合不得再退避发车"
+    );
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        nemesis_board::IssueStatus::InReview,
+        "转人工保持 in_review"
+    );
+    // 🤷 转人工评论 + 停车档案在场。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("🤷 验收 agent 无法定案")),
+        "必须有转人工评论"
+    );
+    assert!(
+        deps.workspace
+            .join("board/handoffs")
+            .join(format!("{}.json", issue.number))
+            .exists(),
+        "EscalateHuman 走 park_with_handoff 单一收口，档案必须落盘"
+    );
+    // 审计序列：transient_retry ×2 → escalate_human。
+    let decisions: Vec<String> = deps
+        .store
+        .list_activity(issue.id)
+        .unwrap()
+        .iter()
+        .filter(|a| a.action == "auto_decide")
+        .map(|a| {
+            a.details
+                .as_deref()
+                .unwrap_or("")
+                .split('"')
+                .skip_while(|s| *s != "decision")
+                .nth(2)
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        decisions,
+        vec!["transient_retry", "transient_retry", "escalate_human"],
+        "决策审计序列必须完整：两轮退避 + 超限转人工"
+    );
+    // 超限清零（落回决策表 = 回合作废）。
+    assert_eq!(
+        transient_retry_count_for_tests(&transient_key_for(&deps.home, issue.id)),
+        None,
+        "超限回合必须清零计数"
+    );
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+/// 非瞬态 FAIL（无 fail_class 标记 = 决策表预算逻辑）：不进退避臂，
+/// 正常 ❌ 重派路径；上一回合遗留计数被清零（单次连续回合不变量）。
+#[tokio::test]
+async fn non_transient_fail_bypasses_backoff_and_clears_counter() {
+    let (deps, _ws) = review_deps("p8-transient-clear");
+    write_board_config(
+        &deps.home,
+        r#"{"review": {"transient_retry_max": 2, "transient_retry_delay_secs": 0}}"#,
+    );
+    let issue = issue_in_review(
+        &deps.store,
+        "非瞬态不退避",
+        "[CHECK] re:验收完成标志XYZ",
+        "## 结论\n交付完成",
+    );
+    seed_dispatch(&deps.store, "task-nt-1", issue.id, "node-b");
+    // 预置上一回合遗留计数（模拟此前瞬态回合中断）。
+    transient_retry_bump(&transient_key_for(&deps.home, issue.id));
+    // ⛔ 失败评论无 fail_class 标记行（旧 worker / 分类缺失形态）。
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "⛔ 任务失败\n交付缺失：要求的文件不存在。".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Comment,
+        })
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("非瞬态路径必须闭环不报错");
+    assert!(reviewed);
+
+    // 正常 ❌ 重派（决策表 round=0 < max_redispatch=2）。
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        2,
+        "非瞬态 FAIL 走正常重派"
+    );
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("❌ agent 验收未通过")),
+        "必须有 ❌ 重派意见"
+    );
+    assert!(
+        !comments.iter().any(|c| c.content.contains("⏳")),
+        "非瞬态不得落退避评论"
+    );
+    let audit = deps.store.list_activity(issue.id).unwrap();
+    let decide = audit
+        .iter()
+        .find(|a| a.action == "auto_decide")
+        .expect("必须有 auto_decide 审计");
+    assert!(
+        decide
+            .details
+            .as_deref()
+            .unwrap_or("")
+            .contains("\"decision\":\"redispatch\""),
+        "{}",
+        decide.details.as_deref().unwrap_or("")
+    );
+    // 遗留计数被清零。
+    assert_eq!(
+        transient_retry_count_for_tests(&transient_key_for(&deps.home, issue.id)),
+        None,
+        "非瞬态回合必须清零上一回合遗留计数"
+    );
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+// ---------- 批三：停车推送（park_with_handoff → notify hook 集成） ----------
+//
+// 发射面门控单测在 notify/tests.rs（enabled/disabled/目标空/hook 缺席）；
+// 本测试证明 park_with_handoff 单一收口 → emit → hook 的真实接线
+// （token_budget 闸 → EscalateHuman → 停车 → 推送回调载荷正确）。
+
+#[tokio::test]
+async fn park_handoff_fires_notify_hook_when_configured() {
+    use super::{HOOK_TEST_LOCK, ParkNotice, set_park_notify_hook};
+    use std::sync::{Arc, Mutex};
+
+    // notify hook 槽是全局（装/拆互扰）——持锁串行；瞬态计数表键含
+    // home，本测试与其余测试天然隔离，无需计数锁。
+    let _hook_guard = HOOK_TEST_LOCK.lock().await;
+    let (deps, _ws) = review_deps("p8-notify-park");
+    // 停车推送开启（telegram/42）+ token_budget 闸（确定性停车）。
+    write_board_config(
+        &deps.home,
+        r#"{"notify": {"enabled": true, "channel": "telegram", "chat_id": "42"}}"#,
+    );
+    let collected: Arc<Mutex<Vec<(String, String, String, String)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let sink = collected.clone();
+    set_park_notify_hook(Some(Arc::new(
+        move |n: &ParkNotice, channel: &str, chat_id: &str| {
+            sink.lock().unwrap().push((
+                n.issue_number.clone(),
+                n.stop_kind.to_string(),
+                channel.to_string(),
+                chat_id.to_string(),
+            ));
+        },
+    )));
+
+    let issue = issue_in_review(
+        &deps.store,
+        "停车推送",
+        "[CHECK] re:验收完成标志XYZ",
+        "## 结论\n预算耗尽",
+    );
+    seed_dispatch(&deps.store, "task-np-1", issue.id, "node-b");
+    deps.store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: "⛔ 任务失败\n💰 会话 token 预算耗尽（1500/1000）。\nfail_class: token_budget"
+                .to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Comment,
+        })
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("token 预算停车路径必须闭环");
+    assert!(reviewed);
+
+    let got = collected.lock().unwrap();
+    assert_eq!(got.len(), 1, "停车必须触发一次推送");
+    assert_eq!(got[0].0, issue.number, "载荷 issue_number");
+    assert_eq!(got[0].1, "budget", "载荷 stop_kind（token 预算闸分型）");
+    assert_eq!(got[0].2, "telegram", "channel 由发射面从 config 传入");
+    assert_eq!(got[0].3, "42", "chat_id 由发射面从 config 传入");
+    set_park_notify_hook(None);
+    let _ = std::fs::remove_dir_all(&deps.home);
 }

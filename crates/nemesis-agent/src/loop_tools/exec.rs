@@ -4,6 +4,8 @@
 
 use super::*;
 
+use crate::background_registry::{BackgroundProcessRegistry, JobOrigin};
+use nemesis_utils::child_decode::decode_child_output;
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -100,7 +102,7 @@ impl StreamTeeState {
 
     fn emit(&self) {
         let bytes: Vec<u8> = self.window.iter().copied().collect();
-        let tail = tail_chars(&String::from_utf8_lossy(&bytes), EXEC_TAIL_CHARS);
+        let tail = tail_chars(&decode_child_output(&bytes), EXEC_TAIL_CHARS);
         (self.hook)(&self.context, &tail, self.produced);
     }
 }
@@ -133,6 +135,14 @@ pub struct ExecTool {
     /// [`cwd_gate_allows`]）。None = 旧行为（默认构造——基线注册、
     /// executor 分离路径、全部既有测试逐字节不变）。
     editor_gate: Option<EditorGate>,
+    /// exec 超时收编目标（2026-11-16 B43：exec 超时自动后台化）：gateway
+    /// 生产装配注入（`SharedToolConfig.background_registry` 同源单例）。
+    /// 超时不再树杀——仍在跑的子进程收编进后台注册表继续跑，模型收到
+    /// job_id + background_output/background_kill 指引，完成时经完成唤醒
+    /// 回灌会话。None = 旧行为（超时树杀——默认构造、executor 分离子
+    /// 进程〔exec_worker 不注入注册表〕、受限文件捕获形态、全部既有测试
+    /// 逐字节不变）。
+    background_registry: Option<Arc<BackgroundProcessRegistry>>,
 }
 
 /// 编译 deny 词表：`custom` 非空 = 自定义词表（无效 regex 跳过 + warn）；
@@ -216,6 +226,13 @@ pub(crate) fn parse_env_slot(
                 "Invalid 'env' argument: value of '{k}' must be a string"
             ));
         };
+        // 环境块硬校验（BUG-20261116-025）：std::process::Command::env
+        // 对病态键值的处理不可依赖（Unix 即时 panic / Windows spawn 期
+        // 通用错误），绕过本函数「形态错误 → Err fail loud」契约。
+        // 校验器单一真相源在 nemesis-utils::env_sanitize::
+        // check_env_slot_pair（guest exec 同源消费）；本单点覆盖
+        // exec / run_checks / run_script / background_start 四消费方。
+        nemesis_utils::env_sanitize::check_env_slot_pair(k, s)?;
         pairs.push((k.clone(), s.to_string()));
     }
     Ok(Some(pairs))
@@ -231,6 +248,7 @@ impl ExecTool {
             hook: None,
             max_timeout_secs: 600,
             editor_gate: None,
+            background_registry: None,
         }
     }
 
@@ -251,6 +269,7 @@ impl ExecTool {
             hook: None,
             max_timeout_secs: 600,
             editor_gate: None,
+            background_registry: None,
         }
     }
 
@@ -266,6 +285,7 @@ impl ExecTool {
             hook: Some(hook),
             max_timeout_secs: 600,
             editor_gate: None,
+            background_registry: None,
         }
     }
 
@@ -289,6 +309,18 @@ impl ExecTool {
     /// None = 旧行为。
     pub fn with_editor_gate(mut self, gate: Option<EditorGate>) -> Self {
         self.editor_gate = gate;
+        self
+    }
+
+    /// exec 超时收编目标链式注入（2026-11-16 B43；registry 从
+    /// `SharedToolConfig.background_registry` 提取分发）。None = 旧行为
+    /// （超时树杀——收编是 gateway 生产装配的增益面，默认构造全部保持
+    /// 原语义）。
+    pub fn with_background_registry(
+        mut self,
+        registry: Option<Arc<BackgroundProcessRegistry>>,
+    ) -> Self {
+        self.background_registry = registry;
         self
     }
 
@@ -409,11 +441,18 @@ impl Tool for ExecTool {
         // spawn 即挂子进程树守卫（Windows Job Object / Unix
         // 进程组）+ 会话注册——estop sweep 与守卫 Drop 都能收整棵树；正常
         // 完成路径 mark_complete 后 Drop 无操作（零行为变化）。
-        let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
+        let (guard, child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
             cmd.current_dir(cwd),
             Some(context.session_key.as_str()),
         )
         .map_err(|e| format!("Failed to execute command: {}", e))?;
+        // Option 化（2026-11-16 B43）：超时收编按值移交 child 给注册表；
+        // 不收编路径 take 回原 Child，语义不变（kill_on_drop 兜底随
+        // Child 走——收编路径注册表持 Child，淘汰/注册表 Drop 照旧收杀）。
+        let mut child = Some(child);
+        // pid spawn 后即捕获：超时收编时 `child.id()` 可能已 None（进程已
+        // 退未收尸的窗口）——收编失败回落树杀旧路径，不空转。
+        let pid = child.as_ref().and_then(|c| c.id());
 
         // 管道读取必须**独立任务并发**进行——
         // ① 不能只 `child.wait()`：子进程写满 ~64KB 管道缓冲会阻塞在 write
@@ -425,23 +464,36 @@ impl Tool for ExecTool {
         // [SEALED 2026-11-08] 旧模式（执行中不可见）：排水任务裸排干，exec
         // 运行期间 Chat 页看不到任何中间输出（2026-11-08 用户实测 ping 场景
         // ——行业对照 openclaw/gemini-cli/codex 三家执行中输出全部实时可见）。
-        // 保留备查；恢复 = 把下面 spawn_drain_pipe_tee 两行换回这两行。
+        // 保留备查；恢复 = 把下面 spawn_drain_pipe_forwardable 两行换回这两行。
         // let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
         // let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
-        // ── 新模式：hook 在场 → 排水任务旁挂节流 tee（300ms 窗），执行中
-        // 输出以 ToolOutput 事件流出（返回值路径字节不变）；hook=None →
-        // 走旧 drain_pipe，与旧实现逐字节一致。
+        // ── 演进：2026-11-08 旁挂节流 tee（300ms 窗，执行中输出以
+        // ToolOutput 事件流出）；2026-11-16 B43 起每 chunk 另进
+        // [`ForwardAcc`] 共享格（超时收编的快照/接管源）。返回值路径
+        // 逐字节不变（同一 drain_capped 尾窗累积）。
         let stream = self.hook.as_ref().map(|hook| {
             Arc::new(std::sync::Mutex::new(StreamTeeState::new(
                 hook.clone(),
                 context.clone(),
             )))
         });
-        let out_task = spawn_drain_pipe_tee(child.stdout.take(), stream.clone());
-        let err_task = spawn_drain_pipe_tee(child.stderr.take(), stream);
+        // [B43] 收编式排水：每 chunk 进共享累积格（超时收编的快照/接管
+        // 源）+ 旁挂 tee（tee 语义不变）。收编时两格做原子「快照+换转发
+        // 端」，输出流无缝移交注册表；正常路径 acc 只是多一份 1 MiB 上限
+        // 的环形副本，随作用域丢弃。
+        let out_acc = Arc::new(std::sync::Mutex::new(ForwardAcc::new()));
+        let err_acc = Arc::new(std::sync::Mutex::new(ForwardAcc::new()));
+        let child_ref = child.as_mut().expect("freshly attached child");
+        let out_task =
+            spawn_drain_pipe_forwardable(child_ref.stdout.take(), stream.clone(), out_acc.clone());
+        let err_task =
+            spawn_drain_pipe_forwardable(child_ref.stderr.take(), stream, err_acc.clone());
 
-        let output =
-            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await;
+        let output = tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+            let c = child.as_mut().expect("child alive until wait completes");
+            c.wait().await
+        })
+        .await;
 
         match output {
             Ok(Ok(status)) => {
@@ -474,7 +526,122 @@ impl Tool for ExecTool {
                 Err(format!("Failed to execute command: {}", e))
             }
             Err(_) => {
-                // 超时改 Ok 回灌（模型可自纠），先收尸再读残余输出。
+                // ── 超时收编（2026-11-16 B43 exec 超时自动后台化）──
+                // 注册表在场（gateway 生产装配）且 piped 形态且 pid 可用
+                // → **不杀**：把仍在跑的子进程收编进后台注册表继续跑（输
+                // 出流经共享格原子移交：快照 seed + 实时转发），模型收到
+                // job_id + background_output/background_kill 指引，完成时
+                // 经完成唤醒自动回灌本会话。收编是尽力而为——注册表缺席
+                // （executor 分离子进程 exec_worker 不注入）/受限文件捕获
+                // 形态（输出在文件里，注册表吃不到流）/满员全在跑 → 回落
+                // 树杀旧路径，消息带收编失败原因。
+                if capture.is_none()
+                    && let Some(reg) = self.background_registry.as_ref()
+                    && let Some(adopt_pid) = pid
+                {
+                    let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (err_tx, err_rx) = tokio::sync::mpsc::unbounded_channel();
+                    // 两格锁内原子「快照 + 换转发端」；seed 合流顺序
+                    // stdout 段在前 stderr 段在后（start 路径的双 pump
+                    // 合流同为尽力语义，逐字节保序不是本契约）。
+                    let mut seed = out_acc
+                        .lock()
+                        .map(|mut a| a.snapshot_and_forward(out_tx))
+                        .unwrap_or_default();
+                    seed.extend_from_slice(
+                        &err_acc
+                            .lock()
+                            .map(|mut a| a.snapshot_and_forward(err_tx))
+                            .unwrap_or_default(),
+                    );
+                    let origin = Some(JobOrigin {
+                        channel: context.channel.clone(),
+                        chat_id: context.chat_id.clone(),
+                        session_key: context.session_key.clone(),
+                    });
+                    let child = child.take().expect("child present on timeout path");
+                    match reg
+                        .adopt_exec(
+                            command,
+                            cwd,
+                            child,
+                            Some(adopt_pid),
+                            seed,
+                            out_rx,
+                            err_rx,
+                            origin,
+                            Arc::clone(&context.secrets),
+                        )
+                        .await
+                    {
+                        Ok(payload) => {
+                            // 守卫退场：completed 置位 → Drop 无操作；
+                            // 会话树注册随守卫 drop 失效（Weak 消亡）——
+                            // estop 不再触达收编任务（后台任务生命周期，
+                            // 与 background_start 同轨道，background_kill
+                            // 管理）。进程树已挂在 Windows Job Object 上
+                            // （无 KILL_ON_JOB_CLOSE），句柄关闭不杀。
+                            guard.mark_complete();
+                            let job_id = payload["job_id"].as_u64().unwrap_or(0);
+                            let mut text = format!(
+                                "Command timed out after {} seconds — it has been moved to \
+                                 the background (job_id {}) and is still running.\n\
+                                 - Read output: background_output (job_id {})\n\
+                                 - Stop it: background_kill (job_id {})\n\
+                                 You will get a completion notice here automatically when it \
+                                 exits — no polling needed.\n\
+                                 Tip: the command may be waiting for interactive input — on \
+                                 Windows `date`/`time` are interactive (use `date /t`/`time /t` \
+                                 or PowerShell Get-Date).\n\
+                                 Command was: {}",
+                                timeout_secs, job_id, job_id, job_id, command
+                            );
+                            // estop sweep 先收树、超时后到的窄竞态：诚实标注
+                            // （追加不换前缀——exec_output_passed 判定依赖）。
+                            if guard.reason() == Some(crate::exec_tree::TerminationReason::Estop) {
+                                text.push_str("\n（进程树已被 estop 终止）");
+                            }
+                            return Ok(text);
+                        }
+                        Err(e) => {
+                            // 收编失败（满员全在跑 / pid 缺席）——child 已
+                            // 随失败路径 drop（kill_on_drop 收杀兜底）；
+                            // 残余输出仍从排水任务收（进程死 = EOF）。
+                            // 诚实带失败原因，保持失败形态前缀。
+                            tracing::warn!(
+                                "[Tools] exec timeout adoption failed ({}): {}",
+                                adopt_pid,
+                                e
+                            );
+                            guard.mark_complete();
+                            let (stdout, stderr) =
+                                read_shell_output(capture, out_task, err_task).await;
+                            let mut partial = String::new();
+                            if !stdout.trim().is_empty() {
+                                partial.push_str("stdout (tail):\n");
+                                partial.push_str(&tail_chars(&stdout, 2048));
+                            }
+                            if !stderr.trim().is_empty() {
+                                if !partial.is_empty() {
+                                    partial.push('\n');
+                                }
+                                partial.push_str("stderr (tail):\n");
+                                partial.push_str(&tail_chars(&stderr, 2048));
+                            }
+                            if partial.is_empty() {
+                                partial.push_str("(no output before timeout)");
+                            }
+                            return Ok(format!(
+                                "Command timed out after {} seconds — attempted to move it to \
+                                 the background but failed ({}); the process was killed. \
+                                 Partial output:\n{}\nTip: raise the timeout for genuinely \
+                                 long commands or narrow the command. Command was: {}",
+                                timeout_secs, e, partial, command
+                            ));
+                        }
+                    }
+                }
+                // （旧行为）超时 = 终止整棵进程树并收尸后再报错，不留孤儿。
                 // 管道任务持有所有权不受本次取消影响；kill + reap 后管道
                 // EOF，任务收尾。任务 await 兜 5s 上限：若命令 fork 了继承
                 // 管道的后台孙进程，EOF 要等孙进程死——此时如实返回已读不到
@@ -482,9 +649,10 @@ impl Tool for ExecTool {
                 // 收尸升级为树杀（背景见 `tree_kill` 注记）——
                 // start_kill 只杀 cmd.exe/sh 本体，cargo/rustc 等真实工作
                 // 进程整棵存活，超时后继续烧 CPU/占 target 锁。树杀后仍
-                // start_kill + wait 兜底直杀 shell 本体并收尸。：守卫先
+                // start_kill + wait 兜底直杀 shell 本体并收尸。守卫先
                 // 记超时原因（estop sweep 后到来的超时不得降级其标注）。
                 guard.terminate(crate::exec_tree::TerminationReason::Timeout);
+                let mut child = child.take().expect("child present on timeout path");
                 if let Some(pid) = child.id() {
                     crate::background_registry::tree_kill(pid).await;
                 }
@@ -647,11 +815,11 @@ impl ShellOutputCapture {
         let out = std::fs::read(&self.out_path);
         let err = std::fs::read(&self.err_path);
         let mut stdout = match &out {
-            Ok(b) => String::from_utf8_lossy(b).to_string(),
+            Ok(b) => decode_child_output(b),
             Err(_) => String::new(),
         };
         let stderr = match &err {
-            Ok(b) => String::from_utf8_lossy(b).to_string(),
+            Ok(b) => decode_child_output(b),
             Err(_) => String::new(),
         };
         if out.is_err() {
@@ -718,8 +886,8 @@ async fn read_shell_output(
     match capture {
         Some(c) => c.read_back(),
         None => {
-            let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-            let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+            let stdout = decode_child_output(&join_pipe_task(out_task).await);
+            let stderr = decode_child_output(&join_pipe_task(err_task).await);
             (stdout, stderr)
         }
     }
@@ -792,33 +960,85 @@ pub(super) async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) 
     }
 }
 
-/// 排水任务统一入口（2026-11-08）：tee 在场 → `drain_capped_async_tee`
-/// 旁挂观测（每次原始 chunk 进 [`StreamTeeState`]，EOF 后兜底 flush——
-/// 节流窗内最后一段不丢）；tee 缺失 → 与旧 `tokio::spawn(drain_pipe(..))`
-/// 逐字节一致。返回值路径两种形态完全相同（同一 TailBuf 累积）。
-pub(super) fn spawn_drain_pipe_tee(
+/// 收编式排水的共享累积格（2026-11-16 B43 exec 超时自动后台化）：排水
+/// 任务每 chunk 先进格（1 MiB 丢头保尾，`drain_capped` 同语义），超时
+/// 收编时锁内原子做「快照 + 换转发端」——超时前的输出随 seed 一次性进
+/// 注册表缓冲，超时后的输出经通道实时转发进注册表，不丢不重。字段只被
+/// 排水任务与超时臂触碰（std Mutex，无跨 await 持锁；unbounded send 不
+/// 阻塞排水任务——收编失败路径接收端提前关闭也只丢转发，返回值路径不
+/// 依赖本格）。
+pub(super) struct ForwardAcc {
+    buf: VecDeque<u8>,
+    forward: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+}
+
+impl ForwardAcc {
+    pub(super) fn new() -> Self {
+        Self {
+            buf: VecDeque::new(),
+            forward: None,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.buf.extend(chunk.iter().copied());
+        while self.buf.len() > nemesis_utils::pipe_cap::PIPE_CAPTURE_CAP_BYTES {
+            self.buf.pop_front();
+        }
+        // 收编后（转发端在场）逐 chunk 实时转发；send Err = 接收端已关
+        // （收编失败路径注册表已弃 child）——静默丢转发，无害。
+        if let Some(tx) = &self.forward {
+            let _ = tx.send(chunk.to_vec());
+        }
+    }
+
+    /// 收编切换（原子快照 + 换转发端）：同一把锁内完成——快照含切换前
+    /// 全部字节，切换后的 chunk 只进通道，不丢不重。
+    fn snapshot_and_forward(&mut self, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) -> Vec<u8> {
+        let seed = self.buf.iter().copied().collect();
+        self.forward = Some(tx);
+        seed
+    }
+}
+
+/// 排水任务统一入口（2026-11-16 B43 起，取代 `spawn_drain_pipe_tee`）：
+/// 每 chunk 先进 [`ForwardAcc`] 共享格（超时收编的快照/接管源——exec
+/// 不持管道所有权，收编全靠这一格移交），tee 在场再旁挂观测（feed/finish
+/// 语义与旧形态一致，捕毒守卫同款）。返回值路径与旧形态完全相同（同一
+/// `drain_capped_async_tee` 尾窗累积，EOF 后原样返回——正常路径字节
+/// 不变，收编路径不消费返回值而是消费共享格快照 + 实时转发）。
+pub(super) fn spawn_drain_pipe_forwardable(
     pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
     tee: Option<Arc<std::sync::Mutex<StreamTeeState>>>,
+    acc: Arc<std::sync::Mutex<ForwardAcc>>,
 ) -> tokio::task::JoinHandle<Vec<u8>> {
     tokio::spawn(async move {
-        match (pipe, tee) {
-            (Some(p), Some(state)) => {
-                let out = nemesis_utils::pipe_cap::drain_capped_async_tee(p, |chunk| {
-                    // std Mutex 捕毒守卫：hook 面板闭包 panic 不炸排水任务
-                    // （观测面故障降级为「不再流式」，返回值路径不受影响）。
-                    if let Ok(mut st) = state.lock() {
-                        st.feed(chunk);
-                    }
-                })
-                .await;
-                if let Ok(mut st) = state.lock() {
-                    st.finish();
-                }
-                out
+        let Some(p) = pipe else {
+            return Vec::new();
+        };
+        let tee_feed = tee.clone();
+        let out = nemesis_utils::pipe_cap::drain_capped_async_tee(p, move |chunk| {
+            // std Mutex 捕毒守卫（与旧 tee 路径同款）：任何一侧故障降级
+            // 为「不再累计/不再流式」，排水任务不炸。
+            if let Ok(mut a) = acc.lock() {
+                a.push(chunk);
             }
-            (Some(p), None) => nemesis_utils::pipe_cap::drain_capped_async(p).await,
-            (None, _) => Vec::new(),
+            if let Some(st) = &tee_feed
+                && let Ok(mut st) = st.lock()
+            {
+                st.feed(chunk);
+            }
+        })
+        .await;
+        if let Some(st) = &tee
+            && let Ok(mut st) = st.lock()
+        {
+            st.finish();
         }
+        out
     })
 }
 
@@ -1631,8 +1851,8 @@ impl Tool for RunScriptTool {
         match waited {
             Ok(Ok(status)) => {
                 guard.mark_complete();
-                let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-                let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+                let stdout = decode_child_output(&join_pipe_task(out_task).await);
+                let stderr = decode_child_output(&join_pipe_task(err_task).await);
                 let exit_code = status.code().unwrap_or(-1);
                 // Always Ok: encode success/failure in exit_code so the caller
                 // (workflow script node) keeps its structured contract. Only
@@ -1719,6 +1939,34 @@ impl AsyncExecTool {
             .iter()
             .find(|re| re.is_match(&lowered))
             .map(|re| re.as_str().to_string())
+    }
+}
+
+/// 启动确认裁决（BUG-20261117-056 修复形态——纯逻辑，跨平台可单测）。
+///
+/// `child.wait()` Ok 返回后进程必然已退出，三种结局：
+/// - `Running`：wait_seconds 内退出 0——fire-and-forget 合法完成；
+/// - `SignalDeath`：`code()` None = 被信号终止（Unix SIGSEGV/SIGKILL
+///   启动即崩的常见失败形态）。旧形态 `success() || code().is_none()`
+///   把它并进成功臂谎报「确认运行中」——全仓唯一错误方向位点；
+/// - `Failed(code)`：带退出码早退。
+///
+/// 「still running」只属于 timeout Err 臂（[`AsyncExecTool::execute`]
+/// 的 `Err(_)` 臂），本裁决不涉及。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StartupVerdict {
+    Running,
+    SignalDeath,
+    Failed(i32),
+}
+
+pub(super) fn startup_confirm_verdict(success: bool, code: Option<i32>) -> StartupVerdict {
+    if success {
+        StartupVerdict::Running
+    } else if code.is_none() {
+        StartupVerdict::SignalDeath
+    } else {
+        StartupVerdict::Failed(code.expect("Failed 臂 code 恒 Some（上方 is_none 已分流）"))
     }
 }
 
@@ -1837,20 +2085,23 @@ impl Tool for AsyncExecTool {
             tokio::time::timeout(std::time::Duration::from_secs(wait_secs), child.wait()).await;
 
         match result {
-            Ok(Ok(status)) => {
-                if status.success() || status.code().is_none() {
-                    // Still running (no exit code) or exited cleanly
+            Ok(Ok(status)) => match startup_confirm_verdict(status.success(), status.code()) {
+                StartupVerdict::Running => {
+                    // 快退（wait_seconds 内退出 0）：fire-and-forget 合法完成。
                     Ok(format!(
                         "Command '{}' started and confirmed running",
                         command
                     ))
-                } else {
-                    Err(format!(
-                        "Command '{}' exited prematurely with status: {}",
-                        command, status
-                    ))
                 }
-            }
+                StartupVerdict::SignalDeath => Err(format!(
+                    "Command '{}' exited prematurely (terminated by signal)",
+                    command
+                )),
+                StartupVerdict::Failed(code) => Err(format!(
+                    "Command '{}' exited prematurely with status: exit code: {}",
+                    command, code
+                )),
+            },
             Ok(Err(e)) => Err(format!("Failed to wait for command: {}", e)),
             Err(_) => {
                 // Timeout — process still running, which is the expected async case

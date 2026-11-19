@@ -143,7 +143,8 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
         web.web_port,
         web.bridge_client_launch.clone(),
         post.agent_adapter.clone(),
-        10, // initial_tool_count 展示用
+        web.channel_manager.clone(), // BUG-20261119-194：Step 14c 延迟 start_all
+        10,                          // initial_tool_count 展示用
         cluster_handoff,
     )
     .await
@@ -298,6 +299,7 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
             access_token: String::new(),
         }),
         post.agent_adapter.clone(),
+        web.channel_manager.clone(), // BUG-20261119-194：Step 14c 延迟 start_all
         10,
         ClusterHandoff {
             bridge_cluster_slot: ctx.autopilot_cluster_slot.clone(),
@@ -800,6 +802,7 @@ async fn w6_boot_master_cluster_arms_board_review_hooks() {
         web.web_port,
         web.bridge_client_launch.clone(),
         post.agent_adapter.clone(),
+        web.channel_manager.clone(), // BUG-20261119-194：Step 14c 延迟 start_all
         10,
         ClusterHandoff {
             bridge_cluster_slot: ctx.autopilot_cluster_slot.clone(),
@@ -901,4 +904,129 @@ variables: {}
         .expect("assemble ok（模型解析失败必须降级不硬退）")
         .expect("非 relay 必返 Some");
     assert!(!ctx.estop.is_engaged(), "急停默认释放");
+}
+
+// ===========================================================================
+// BUG-20261119-194 回归锁：通道 start_all 必须晚于 agent 的 bus inbound 订阅
+// ===========================================================================
+// 顺序不变量（services.rs Step 14b/14c 注释同源）：tokio broadcast 对零
+// 订阅者 publish 即丢——通道 polling（telegram getUpdates 等）是 inbound
+// 生产者，先于 agent 订阅上线会让启动期拉到的消息永久丢失（telegram
+// offset 先推进使丢失不可重拉）。本锁双窗口断言：
+// - 窗口① init_web 返回时：任何通道都未启动（旧形态 init_web 内即时
+//   start_all → web 通道已 running → 断言红；回归锁主承重面）；
+// - 窗口② init_services 返回时：通道已启动 + bus inbound 接收者 ≥1
+//   （agent Step 14b 订阅先行——终态正确性）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn channel_start_all_deferred_until_agent_inbound_subscribed() {
+    let guard_env = {
+        let g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+        SvcEnv {
+            _guard: g,
+            _tmp: tmp,
+            home,
+        }
+    };
+
+    // 配置：网络面归零 + 死端点模型 + 集群关（同姊妹测试廉价夹具）。
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+    cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["channels"]["web"]["port"] = serde_json::json!(0);
+    cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
+    cfg["gateway"]["port"] = serde_json::json!(0);
+    cfg["heartbeat"]["enabled"] = serde_json::json!(false);
+    cfg["agents"]["defaults"]["llm"] = serde_json::json!("mini-model");
+    cfg["agents"]["defaults"]["workspace"] = serde_json::json!(
+        guard_env
+            .home
+            .join("workspace")
+            .to_string_lossy()
+            .to_string()
+    );
+    cfg["model_list"] = serde_json::json!([{
+        "model_name": "mini-model",
+        "model": "openai/gpt-fake",
+        "api_key": "k",
+        "api_base": "http://127.0.0.1:9",
+        "model_tier": "mini"
+    }]);
+    std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
+
+    let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
+        .await
+        .expect("assemble ok")
+        .expect("非 relay 必返 Some");
+    let cluster: ClusterWiring = init_cluster(&ctx).await.expect("cluster 关 = 廉价路径");
+    let web: WebWiring = init_web(&ctx, &cluster).await.expect("init_web");
+    assert_eq!(web.enabled_channels, vec!["web".to_string()]);
+
+    // 窗口①：init_web 完成时刻通道必须全部未启动。
+    assert!(
+        !web.channel_manager.any_channel_running().await,
+        "BUG-20261119-194：init_web 不得启动通道（start_all 推迟到 \
+         init_services Step 14c——agent bus inbound 订阅之后）"
+    );
+    // 此刻 agent 未装配，bus inbound 零订阅者——若有通道此刻已启动，
+    // 它拉到的第一批消息必然丢失（佐证窗口①断言的语义）。
+    assert_eq!(
+        ctx.bus.inbound_receiver_count(),
+        0,
+        "init_web 时刻 agent 未订阅：通道此刻启动 = 消息必然丢失窗口"
+    );
+
+    let agent = init_agent(&ctx, &web, &cluster)
+        .await
+        .expect("agent 装配（死端点模型，无 LLM 调用）");
+    let mut web_server = web.web_server;
+    let post = init_post_agent(
+        &ctx,
+        &mut web_server,
+        web.web_bind_host.clone(),
+        web.web_port,
+        agent,
+        cluster,
+    )
+    .await
+    .expect("post_agent 装配");
+
+    let cluster_handoff = ClusterHandoff {
+        bridge_cluster_slot: ctx.autopilot_cluster_slot.clone(),
+        cluster_adapter: post.cluster_adapter.clone(),
+        cluster_arc_ref: post.cluster_arc_ref.clone(),
+    };
+    let services = init_services(
+        &ctx,
+        web_server,
+        web.web_bind_host.clone(),
+        web.web_display_host.clone(),
+        web.web_port,
+        web.bridge_client_launch.clone(),
+        post.agent_adapter.clone(),
+        web.channel_manager.clone(),
+        10,
+        cluster_handoff,
+    )
+    .await
+    .expect("init_services");
+
+    // 窗口②：终态正确——通道已启动且 agent 订阅在位（生产者晚于订阅）。
+    assert!(
+        web.channel_manager.any_channel_running().await,
+        "init_services Step 14c 必须已启动通道"
+    );
+    assert!(
+        ctx.bus.inbound_receiver_count() >= 1,
+        "agent Step 14b 订阅必须先于通道启动在位"
+    );
+
+    // 优雅收尾（同姊妹测试）。
+    services.svc_mgr.shutdown();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(15), services.web_handle).await;
 }

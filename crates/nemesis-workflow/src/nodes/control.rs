@@ -107,8 +107,13 @@ impl NodeExecutor for ParallelNodeExecutor {
             });
         }
 
-        // Spawn a task for each child node
-        let mut handles = Vec::new();
+        // Spawn a task for each child node. JoinSet（而非 Vec<JoinHandle>）：
+        // scheduler 的 node timeout/cancel 是靠丢弃本 executor future 停节点
+        // 的——JoinHandle drop = detach（子分支带副作用继续跑完；timeout+
+        // retry 组合下重试再 spawn 同一节点 = 子分支并发双跑），JoinSet
+        // drop = abort 全部子分支（BUG-20261113-169），父死子亡与 DAG 层
+        // future-drop 取消语义一致。
+        let mut children_set = tokio::task::JoinSet::new();
         // BUG-20261112-115 同族：子分支 local_wf_ctx 必须继承父 identity——
         // 旧实现 `WorkflowContext::new` 落全空默认值，parallel 块里的 tool
         // 子节点经 SecureExecutor 透传的 RequestContext 三键全空（审批卡
@@ -121,7 +126,7 @@ impl NodeExecutor for ParallelNodeExecutor {
             let branch_key = format!("branch_{}", idx);
             let identity = identity.clone();
 
-            handles.push(tokio::spawn(async move {
+            children_set.spawn(async move {
                 let executor = match registry.get(&child_def.node_type) {
                     Some(e) => e,
                     None => {
@@ -141,15 +146,15 @@ impl NodeExecutor for ParallelNodeExecutor {
                     WorkflowContext::new_with_identity(identity.clone(), ctx.clone());
                 let result = executor.execute(&child_def, &ctx, &local_wf_ctx).await;
                 (branch_key, result)
-            }));
+            });
         }
 
         // Collect results
         let mut merged = serde_json::Map::new();
         let mut first_error: Option<String> = None;
 
-        for handle in handles {
-            match handle.await {
+        while let Some(joined) = children_set.join_next().await {
+            match joined {
                 Ok((key, Ok(result))) => {
                     if result.state == ExecutionState::Failed {
                         if first_error.is_none() {
@@ -602,16 +607,61 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // 注意：条件边是表达式不是数据通道，不走 `resolve_runtime_string` 的
     // 凭据引用识别（`env:` 开头的条件表达式无意义；且本函数无节点语境，
     // 解析失败无处落 Failed—— 计划类 B 范围裁定）。
-    let resolved = resolve_prompt_template(condition, context);
-    let resolved = resolved.trim();
+    //
+    // BUG-20261119-195：带区间解析——替换值（节点输出/触发器载荷，LLM
+    // 生成）可携带运算符字符且替换无转义，Step 3 的运算符切分必须知道
+    // 哪些字节来自数据（跳过），否则切进数据内部、两文档形态路由反转。
+    let (resolved_full, template_ranges) = resolve_prompt_template_with_ranges(condition, context);
+    let mut rest = resolved_full.trim();
+    // trim 推进文本起点：区间坐标同步平移（只平移前导量；尾随 trim 不
+    // 影响剩余文本内的坐标）。
+    let mut ranges = shift_ranges(
+        &template_ranges,
+        resolved_full.len() - resolved_full.trim_start().len(),
+    );
 
     // Step 1.5: Negation prefix（缺陷 14 修复）。`!{{flag}}` 是
     // LLM 生成器表达否定分支的自然写法（能力表已同步收录该语法）；模板解析
     // 后字面以 `!` 开头 → 对剩余表达式取反。旧实现四步全不匹配落到 Step 4
     // 「非空即真」，"!true" 恒为真——否定分支无条件放行（静默错，违反诚实
     // 失败契约）。`!=` 是中缀运算符不会出现在表达式开头，无歧义。
-    if let Some(rest) = resolved.strip_prefix('!') {
-        return !evaluate_condition(rest, context);
+    //
+    // BUG-20261117-062：**迭代剥前缀**（计数 + 按奇偶取反，核心只求值一次）
+    // 取代旧的自递归形态——旧代码 `!×N` 每层一帧且无深度帽，模板解析后的
+    // 数据值（节点输出，LLM 生成）可携带上万 `!`，tokio worker 2MB 栈下
+    // 直接栈溢出 abort 全进程（栈溢出不走 unwind，catch_unwind 救不了）。
+    // 迭代形态语义与旧递归逐字节一致（旧递归入口会 trim，此处 `trim`
+    // 保持同口径）。
+    //
+    // BUG-20261119-195：每次剥除推进文本起点 1 字节（`!`）+ 前导空白，
+    // 区间同步平移保持对齐（数据值以 `!` 开头时剩余部分仍是数据）。
+    let mut negations = 0usize;
+    while let Some(inner) = rest.strip_prefix('!') {
+        negations += 1;
+        let stripped_ws = inner.len() - inner.trim_start().len();
+        rest = inner.trim();
+        ranges = shift_ranges(&ranges, 1 + stripped_ws);
+    }
+    let core = eval_condition_core(rest, &ranges, context);
+    if negations % 2 == 1 { !core } else { core }
+}
+
+/// Step 2-4 主体（`evaluate_condition` 剥完否定前缀后的核心求值）。
+///
+/// 从 `evaluate_condition` 原样抽出（BUG-20261117-062 迭代化重构），
+/// 语义锚点逐条保留。`resolved` 必须已 trim（调用方保证）；`data_ranges`
+/// 是模板替换值在 `resolved` 坐标的字节区间（BUG-20261119-195，调用方
+/// 随 trim / `!` 前缀剥除平移对齐）——Step 3 切分跳过区间内与引号段内
+/// 的运算符。
+fn eval_condition_core(
+    resolved: &str,
+    data_ranges: &[(usize, usize)],
+    context: &HashMap<String, serde_json::Value>,
+) -> bool {
+    if resolved.is_empty() {
+        // 旧递归形态 `!!` 剥空后走 evaluate_condition 入口空串臂 → false；
+        // 迭代化后由本臂保持同值。
+        return false;
     }
 
     // Step 2: Literal booleans (also covers cases where {{var}} resolved to
@@ -624,10 +674,23 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
         _ => {}
     }
 
-    // Step 3: Comparison operators. Try longest-match first so `>=` doesn't
-    // accidentally match the `>` inside `a >= b`.
+    // Step 3: Comparison operators（BUG-20261119-195 切分升级）。
+    //
+    // 旧实现 `split_once(op)` 取该运算符在全文的**第一个出现**——模板
+    // 替换是裸字符串拼接（无转义），数据值内运算符字符会劫持切分位置：
+    // `{{msg}} >= 5` 遇 msg="3>=1" → resolved="3>=1 >= 5"，`>=` 命中数据
+    // 内位置 1 → left="3" right="1 >= 5" 字典序 → true；同条件的裸名形态
+    // `msg >= 5` 走 context 查询得 "3>=1" 字典序 → false——两种文档形态
+    // 给相反路由（BUG-20261112-105 注释自述的未修半边）。修复：候选出现
+    // 位置必须落在数据值区间与引号字面量段之外（引号段与 resolve_operand
+    // 首尾配对剥引号同口径：无闭合不成段）。运算符优先级序与「第一个
+    // 出现」口径原样保留——纯字面量表达式（无数据/引号干扰）切分位置
+    // 逐字节不变，行为只收窄缺陷形态。
+    let quotes = quote_spans(resolved);
     for op in [">=", "<=", "==", "!=", ">", "<"] {
-        if let Some((left, right)) = resolved.split_once(op) {
+        if let Some(pos) = find_operator_outside(resolved, op, data_ranges, &quotes) {
+            let left = &resolved[..pos];
+            let right = &resolved[pos + op.len()..];
             return compare_values(left.trim(), right.trim(), op, context);
         }
     }
@@ -639,6 +702,72 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
         return is_truthy(val);
     }
     is_truthy_str(resolved)
+}
+
+/// 区间坐标平移（BUG-20261119-195）：文本剥除前 `delta` 字节后的新坐标。
+/// 起点 < `delta` 的区间裁剪到 0（数据值与 trim / `!` 前缀重叠时保住
+/// 剩余部分），终点 ≤ `delta` 的区间消亡。
+fn shift_ranges(ranges: &[(usize, usize)], delta: usize) -> Vec<(usize, usize)> {
+    ranges
+        .iter()
+        .filter_map(|(s, e)| {
+            let s = (*s).max(delta);
+            if s >= *e {
+                None
+            } else {
+                Some((s - delta, e - delta))
+            }
+        })
+        .collect()
+}
+
+/// 引号字面量段（BUG-20261119-195）：首尾配对 `"` / `'`，段含两侧引号
+/// 字节。无闭合不成段（该字符按普通文本参与后续扫描）——与
+/// `resolve_operand` 的首尾配对剥引号同口径。段内运算符不参与 Step 3
+/// 切分（`{{x}} == "a>=b"` 的引号内 `>=` 是数据不是运算符）。
+fn quote_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // 引号字节是 ASCII；i 落在多字节字符内部时 bytes[i] ≥ 0x80，
+        // 恒不进本分支——`text[i + 1..]` 切片只在 i 为字符边界时发生。
+        if (b == b'"' || b == b'\'')
+            && let Some(rel) = text[i + 1..].find(b as char)
+        {
+            let close = i + 1 + rel;
+            spans.push((i, close + 1));
+            i = close + 1;
+            continue;
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// 运算符切点查找（BUG-20261119-195）：`op` 在 `text` 中第一个**不落在
+/// 数据值区间与引号段内**的出现位置。运算符首字节是 ASCII，`pos + 1`
+/// 恒为字符边界，逐候选推进安全。
+fn find_operator_outside(
+    text: &str,
+    op: &str,
+    data_ranges: &[(usize, usize)],
+    quotes: &[(usize, usize)],
+) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(op) {
+        let pos = from + rel;
+        let excluded = quotes
+            .iter()
+            .chain(data_ranges.iter())
+            .any(|(s, e)| pos >= *s && pos < *e);
+        if !excluded {
+            return Some(pos);
+        }
+        from = pos + 1;
+    }
+    None
 }
 
 fn compare_values(

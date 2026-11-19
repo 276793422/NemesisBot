@@ -85,5 +85,69 @@ fn total_would_exceed(current: usize, incoming: usize, cap: usize) -> bool {
     current.saturating_add(incoming) > cap
 }
 
+/// [`read_line_capped`] 的同步孪生（`std::io::BufRead`；sync/async 双形态
+/// 先例同 `crate::pipe_cap` 的 `drain_capped_sync`/`drain_capped_async`）。
+/// 语义逐条对齐 async 版：
+/// - 帽内完整行（含尾部 `\n`）；超帽截断 = 前 `cap` 字节 + 截断标记，
+///   剩余静默丢弃至行尾，游标对齐下一行行首；
+/// - EOF 且无字节 = `None`；EOF 收尾的部分行仍返回；
+/// - **不做 UTF-8 转换**——行字节原样返回，由调用方整行收齐后一次性
+///   lossy（非 UTF-8 字节不构成错误——外部对端 locale 输出不应一行
+///   杀死消费循环，BUG-20261113-135）。
+pub fn read_line_capped_sync<R>(
+    reader: &mut R,
+    cap: usize,
+) -> std::io::Result<Option<(Vec<u8>, bool)>>
+where
+    R: std::io::BufRead,
+{
+    let mut raw: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            // EOF：积累过字节 = 无换行尾行；全空 = 纯 EOF。
+            return if raw.is_empty() && !truncated {
+                Ok(None)
+            } else {
+                Ok(Some((raw, truncated)))
+            };
+        }
+        match available.iter().position(|&b| b == b'\n') {
+            Some(pos) => {
+                if !truncated && total_would_exceed(raw.len(), pos + 1, cap) {
+                    truncated = true;
+                }
+                if truncated {
+                    let keep = cap.saturating_sub(raw.len());
+                    raw.extend_from_slice(&available[..keep.min(pos + 1)]);
+                    // 丢弃剩余字节直到行尾，游标落在下一行行首。
+                    reader.consume(pos + 1);
+                    return Ok(Some((raw, true)));
+                }
+                raw.extend_from_slice(&available[..pos + 1]);
+                reader.consume(pos + 1);
+                return Ok(Some((raw, false)));
+            }
+            None => {
+                if !truncated && total_would_exceed(raw.len(), available.len(), cap) {
+                    truncated = true;
+                }
+                if truncated {
+                    let keep = cap.saturating_sub(raw.len());
+                    raw.extend_from_slice(&available[..keep]);
+                    let n = available.len();
+                    reader.consume(n);
+                    // 丢弃模式：消费到行尾/EOF 为止。
+                    continue;
+                }
+                let n = available.len();
+                raw.extend_from_slice(available);
+                reader.consume(n);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

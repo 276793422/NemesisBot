@@ -59,7 +59,9 @@ jobs:
       fail-fast: false            # 一个平台挂了不影响另一个
       matrix:
         include:
-          - os: ubuntu-latest
+          # linux 腿装 GTK/webkit2gtk dev 包（apt），ubuntu-latest 已迁 26.04
+          # 包找不到——钉回 24.04（迁移前原镜像，产物基线不变）。
+          - os: ubuntu-24.04
             platform: linux
             binary: nemesisbot          # Linux 产物无后缀
             archive: nightly-linux.tar.gz
@@ -81,6 +83,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，commit id 可用
+
       # 只显式拉 skins（.nbskin 皮肤构建）。不能用 submodules: recursive——
       # 会连 docs 私有仓库一起拉，runner 的 GITHUB_TOKEN 无权限 → Repository
       # not found → checkout 直接炸（2026-09-27 首跑实证）。
@@ -236,6 +239,17 @@ jobs:
           # M1：iroh-relay/rcgen/rustls/axum 栈整体住进这个库，宿主零增量）。
           # 缺席 = QUIC 漫游诚实降级——全量 nightly 必须带，non-fatal 同上。
           (cd plugins/plugin-roaming && cargo build --release)
+          # plugin-resources 是附加资源载体 C-ABI 插件（人格超市上游快照
+          # 编译期内嵌：仓库基线在库，CI 无需预下载缓存；build.rs fail-open
+          # 兜底与本地 build-windows.bat / build-linux.sh 同源）。缺席 =
+          # 人格超市纯在线——全量 nightly 必须带，non-fatal 同上。
+          (cd plugins/plugin-resources && cargo build --release)
+          # plugin-mail 是邮件基础设施 C-ABI 插件第四例（SMTP/POP3 服务端 +
+          # SMTP 客户端发信 + maildir 按地址分库；纯 Rust 依赖零系统包，
+          # 两平台直编）。缺席 = 邮件子系统诚实关闭（config.mail.json
+          # enabled 总闸缺省 false，装了也不自动起）——全量 nightly 必须带，
+          # non-fatal 同上。
+          (cd plugins/plugin-mail && cargo build --release)
           # eval-monitor 是 Windows-only 注入 DLL（注入签名的 SbieCtrl.exe
           # 采集 Sandboxie 事件），只在 Windows 编
           if [ "${{ matrix.platform }}" = "windows" ]; then
@@ -294,6 +308,16 @@ jobs:
           # 漫游诚实降级，non-fatal 同上——拷贝跳过不拦主包
           cp plugins/plugin-roaming/target/release/libplugin_roaming.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-roaming/target/release/plugin_roaming.dll   staging/plugins/ 2>/dev/null || true
+          # plugin-resources（附加资源载体，人格超市上游快照编译期内嵌）：
+          # 缺件 = 人格超市纯在线（诚实降级），non-fatal 同上。签名无需单独
+          # 接线——ci-sign-artifacts.sh 对 staging/plugins/ 全目录签。
+          cp plugins/plugin-resources/target/release/libplugin_resources.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-resources/target/release/plugin_resources.dll   staging/plugins/ 2>/dev/null || true
+          # plugin-mail（邮件基础设施 C-ABI 插件第四例）：缺件 = 邮件子系统
+          # 诚实关闭，non-fatal 同上。签名无需单独接线——ci-sign-artifacts.sh
+          # 对 staging/plugins/ 全目录签。
+          cp plugins/plugin-mail/target/release/libplugin_mail.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-mail/target/release/plugin_mail.dll   staging/plugins/ 2>/dev/null || true
           # plugin-vm 单文件部署（2026-10-22 资源内嵌拍板）：与其他插件同住
           # plugins/ 子目录（装载器 plugins/ 优先 + exe 同目录回落）；镜像
           # 脚本 + guest 双架构 musl ELF 已编译期内嵌进库文件（上方构建步
@@ -610,6 +634,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，git describe 版本提取可用
+
       # 同上：只显式拉 skins，docs 私有仓库 recursive 拉不动（首跑实证）
       - name: Checkout skins submodule
         run: git submodule update --init --depth 1 skins

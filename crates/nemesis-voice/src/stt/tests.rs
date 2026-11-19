@@ -64,6 +64,25 @@ fn stt_new_model_sherpa_without_tokens_bails_tokens() {
     assert!(err.contains("STT tokens not found"), "{err}");
 }
 
+/// BUG-20261115-014 回归锁：config 来源 language 含内嵌 NUL 必须走 Err
+/// 错误臂而非 panic（旧行为 `CString::new(language).unwrap()` 在此 panic，
+/// 破坏构造路径的 Result 设计）。哑 model.onnx + tokens.txt 越过存在性闸
+/// 后，NUL 恰落在 lang_c 转换点——该点先于一切 FFI 调用，确定性、不依赖
+/// sherpa 运行时。
+#[test]
+fn stt_new_language_with_embedded_nul_returns_err_not_panic() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("model.onnx"), b"m").unwrap();
+    std::fs::write(tmp.path().join("tokens.txt"), b"t").unwrap();
+    let err = format!(
+        "{:#}",
+        SttEngine::new(tmp.path(), "m", "a\u{0}b", false, false, 1)
+            .err()
+            .expect("language 含内嵌 NUL 必须返回 Err")
+    );
+    assert!(err.contains("NUL"), "错误信息应点名 NUL: {err}");
+}
+
 #[test]
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn stt_new_use_itn_false_and_remedy_off_builds_structs_until_ffi() {

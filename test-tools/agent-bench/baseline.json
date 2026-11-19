@@ -1,16 +1,16 @@
 {
-  "bench_build_unix": 1794138272,
-  "bench_wall_secs": 132,
+  "bench_build_unix": 1794854372,
+  "bench_wall_secs": 273,
   "gateway_version": "C:\\AI\\NemesisBot_Rust_2\\target/release/nemesisbot.exe",
-  "host": "LAPTOP-FQSHLE55",
+  "host": "LAPTOP-MBRQ578Q",
   "scenarios": [
     {
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 84,
-        "p50": 46,
-        "p95": 84
+        "max": 69,
+        "p50": 41,
+        "p95": 69
       },
       "model": "testai-1.1",
       "name": "basic_chat",
@@ -22,9 +22,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 140,
-        "p50": 125,
-        "p95": 140
+        "max": 93,
+        "p50": 91,
+        "p95": 93
       },
       "model": "testai-9.3",
       "name": "context_integrity",
@@ -36,9 +36,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 140,
-        "p50": 140,
-        "p95": 140
+        "max": 98,
+        "p50": 98,
+        "p95": 98
       },
       "model": "testai-sum-1.0",
       "name": "identifier_survival",
@@ -50,9 +50,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6106,
-        "p50": 6106,
-        "p95": 6106
+        "max": 6096,
+        "p50": 6096,
+        "p95": 6096
       },
       "model": "testai-2.1",
       "name": "tool_parallel_batch",
@@ -64,9 +64,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 101,
-        "p50": 99,
-        "p95": 101
+        "max": 72,
+        "p50": 72,
+        "p95": 72
       },
       "model": "testai-5.0",
       "name": "security_boundary_block",
@@ -78,9 +78,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 108,
-        "p50": 108,
-        "p95": 108
+        "max": 71,
+        "p50": 71,
+        "p95": 71
       },
       "model": "testai-1.1",
       "name": "concurrent_sessions",
@@ -92,9 +92,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 2566,
-        "p50": 2566,
-        "p95": 2566
+        "max": 2580,
+        "p50": 2580,
+        "p95": 2580
       },
       "model": "testai-9.2",
       "name": "saturating_human_priority",
@@ -106,9 +106,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 61,
-        "p50": 61,
-        "p95": 61
+        "max": 62,
+        "p50": 62,
+        "p95": 62
       },
       "model": "testai-vision-1.0",
       "name": "vision_roundtrip",
@@ -120,9 +120,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 111,
-        "p50": 111,
-        "p95": 111
+        "max": 91,
+        "p50": 91,
+        "p95": 91
       },
       "model": "testai-codemode-1.0",
       "name": "codemode_orchestration",
@@ -134,9 +134,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 103,
-        "p50": 103,
-        "p95": 103
+        "max": 91,
+        "p50": 91,
+        "p95": 91
       },
       "model": "testai-docslift-1.0",
       "name": "docs_lift",
@@ -148,9 +148,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6644,
-        "p50": 6166,
-        "p95": 6192
+        "max": 6206,
+        "p50": 6174,
+        "p95": 6197
       },
       "model": "testai-2.1",
       "name": "disconnect_resume",
@@ -162,9 +162,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 1332,
-        "p50": 1332,
-        "p95": 1332
+        "max": 1295,
+        "p50": 1295,
+        "p95": 1295
       },
       "model": "testai-break-1.0",
       "name": "stream_break",
@@ -176,9 +176,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 2917,
-        "p50": 2917,
-        "p95": 2917
+        "max": 2909,
+        "p50": 2909,
+        "p95": 2909
       },
       "model": "testai-9.3",
       "name": "gateway_restart",
@@ -190,9 +190,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 69,
-        "p50": 69,
-        "p95": 69
+        "max": 67,
+        "p50": 67,
+        "p95": 67
       },
       "model": "testai-lenbreak-1.0",
       "name": "length_continuation",
@@ -204,9 +204,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 307,
-        "p50": 307,
-        "p95": 307
+        "max": 297,
+        "p50": 297,
+        "p95": 297
       },
       "model": "testai-chain-step-1.0",
       "name": "codemode_chain",
@@ -218,9 +218,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 223,
-        "p50": 223,
-        "p95": 223
+        "max": 176,
+        "p50": 176,
+        "p95": 176
       },
       "model": "testai-liar-1.0",
       "name": "honest_completion",
@@ -232,26 +232,152 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 230,
-        "p50": 230,
-        "p95": 230
+        "max": 240,
+        "p50": 240,
+        "p95": 240
       },
       "model": "testai-norepeat-1.0",
       "name": "no_irreversible_repeat",
       "pass_rate": 1.0,
       "passed": 2,
       "runs": 2
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 4148,
+        "p50": 4148,
+        "p95": 4148
+      },
+      "model": "testai-steer-1.0",
+      "name": "subagent_steer",
+      "pass_rate": 1.0,
+      "passed": 2,
+      "runs": 2
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 47026,
+        "p50": 47026,
+        "p95": 47026
+      },
+      "model": "testai-9.3",
+      "name": "event_wakeup",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 71031,
+        "p50": 71031,
+        "p95": 71031
+      },
+      "model": "testai-loop-1.0",
+      "name": "durable_loop",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 611,
+        "p50": 611,
+        "p95": 611
+      },
+      "model": "testai-bootstrap-1.0",
+      "name": "plugin_bootstrap",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 1022,
+        "p50": 1022,
+        "p95": 1022
+      },
+      "model": "testai-mem-1.0",
+      "name": "memory_persistence",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 3185,
+        "p50": 3185,
+        "p95": 3185
+      },
+      "model": "testai-mem-1.0",
+      "name": "memory_relevance",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 998,
+        "p50": 998,
+        "p95": 998
+      },
+      "model": "testai-mem-1.0",
+      "name": "memory_forget",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 6589,
+        "p50": 6589,
+        "p95": 6589
+      },
+      "model": "testai-mem-1.0",
+      "name": "memory_capacity_recall",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 2477,
+        "p50": 2477,
+        "p95": 2477
+      },
+      "model": "testai-goals-1.0",
+      "name": "goal_gate",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
     }
   ],
   "schema": "agent-bench/v1",
-  "started_at": "2026-11-08T20:58:41.071175800+08:00",
+  "started_at": "2026-11-17T03:44:08.858170700+08:00",
   "tool_defs": {
-    "bytes": 68757,
-    "tools": 50
+    "bytes": 83083,
+    "tools": 60
   },
   "totals": {
     "pass_rate": 1.0,
-    "passed": 49,
-    "runs": 49
+    "passed": 59,
+    "runs": 59
   }
 }

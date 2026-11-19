@@ -352,14 +352,49 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         .find(|m| m.get("model").and_then(|v| v.as_str()) == Some(model.as_str()))
                 })
                 .cloned();
+            // 守卫①c（merge 面，2026-11-15）：重复 add 不带 --default 也会
+            // merge 覆写旧条目——若旧条目正是当前默认，新协议/role 使其
+            // 原地变成守卫①禁止的形态（图像协议 / utility·classifier），
+            // agents.defaults.llm 仍指向它 → 重启装配守卫④ NullProvider
+            // 降级（ensure_conversation_role 文档断言「手改 config 是唯一
+            // 路径」被这条产品路径打破）。显式 --default 与原地转换两个面
+            // 共用同一组资格检查。默认引用判定：agents.defaults.llm 存
+            // alias（add 写）或 model_name（set_default/rename 同步写），
+            // 命中旧条目任一键即视为当前默认。
+            let current_default_llm = cfg
+                .get("agents")
+                .and_then(|a| a.get("defaults"))
+                .and_then(|d| d.get("llm"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let replaces_current_default = existing_entry
+                .as_ref()
+                .map(|old| {
+                    if current_default_llm.is_empty() {
+                        return false;
+                    }
+                    let name = old.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                    let old_model = old.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                    let alias = old_model.split('/').next_back().unwrap_or(old_model);
+                    current_default_llm == name
+                        || current_default_llm == old_model
+                        || current_default_llm == alias
+                })
+                .unwrap_or(false);
             // 生效键 = 新 entry 显式键优先，重复 add 时回退旧条目（与下方
             // merge 的 or_insert 语义一致）。
             let entry_protocol = effective_entry_key(&entry, existing_entry.as_ref(), "protocol");
             let is_image_entry = nemesis_types::capability::is_image_protocol(&entry_protocol);
-            if default && is_image_entry {
+            if (default || replaces_current_default) && is_image_entry {
                 anyhow::bail!(
-                    "protocol 'images-openai' 是图像生成协议，不能设为默认对话模型；\
-                     请去掉 --default 重新添加（generate_image 工具会自动解析该条目）"
+                    "protocol 'images-openai' 是图像生成协议，不能坐上默认对话模型槽\
+                     （仅供 generate_image 工具消费）；{}",
+                    if default {
+                        "请去掉 --default 重新添加"
+                    } else {
+                        "该条目是当前默认模型，请先把默认切到其他条目再改协议"
+                    }
                 );
             }
             // 声明式模型角色：显式 --role 写盘；校验/归一走
@@ -372,11 +407,18 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 entry["role"] = serde_json::Value::String(normalized);
             }
             let entry_role = effective_entry_key(&entry, existing_entry.as_ref(), "role");
-            if default && !nemesis_types::capability::is_conversation_role(&entry_role) {
+            if (default || replaces_current_default)
+                && !nemesis_types::capability::is_conversation_role(&entry_role)
+            {
                 anyhow::bail!(
-                    "role '{}' 不是默认对话模型槽的合法形态（只有 conversation 可以）；\
-                     请去掉 --default 重新添加（杂务消费走 agents.small_model 指向该条目）",
-                    entry_role
+                    "role '{}' 不是默认对话模型槽的合法形态（只有 conversation 可以）；{}\
+                     （杂务消费走 agents.small_model 指向该条目）",
+                    entry_role,
+                    if default {
+                        "请去掉 --default 重新添加"
+                    } else {
+                        "该条目是当前默认模型，请先把默认切到其他条目再改 role"
+                    }
                 );
             }
 
@@ -908,7 +950,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
-            let e = effort.to_lowercase();
+            let e = effort.trim().to_lowercase(); // trim 落盘 canonical（BUG-20261113-151，与读侧容忍语义对齐）
             if !nemesis_types::capability::valid_effort(&e) {
                 anyhow::bail!(
                     "Invalid effort '{}'. Use one of: {}",
@@ -950,6 +992,13 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 .ok_or_else(|| {
                     anyhow::anyhow!("Invalid size '{}'. Examples: 30B, 9b, 70, 120B", size)
                 })?;
+            // BUG-20261114-055：0 非法（与 Dashboard 同字段写入面
+            // models.rs attribute 编辑器 "must be > 0" 同规则）——写 0 会被
+            // auto 检测钉死 Mini（0..=39 桶，13 工具）。清除尺寸语义走
+            // 显式 `model set-tier`，不借 0。
+            if size_b == 0 {
+                anyhow::bail!("Invalid size '0': model_size_b must be > 0.");
+            }
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
             let resolved = nemesis_types::capability::tier_from_size_b(size_b);
@@ -1267,6 +1316,13 @@ fn parse_price_tiers(specs: &[String]) -> Result<Option<Vec<nemesis_data::PriceT
         if !(input_cost_per_million.is_finite() && output_cost_per_million.is_finite()) {
             anyhow::bail!("第 {} 条阶梯价须为有限数值", i + 1);
         }
+        // 负价 loud 拒（BUG-20261115-020）：负价无合法计费语义（成本是
+        // 可观测性数据，不存在返佣结算），落账即错账（usage 面板负美元、
+        // 月度账偏移）。与下方基础价负值校验同口径；计价层另有防御钳兜
+        // 非 CLI 写路径（下载/手改文件）。
+        if input_cost_per_million < 0.0 || output_cost_per_million < 0.0 {
+            anyhow::bail!("第 {} 条阶梯价不能为负", i + 1);
+        }
         tiers.push(nemesis_data::PriceTier {
             min_prompt_tokens,
             input_cost_per_million: Some(input_cost_per_million),
@@ -1375,7 +1431,10 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("读取 {} 失败：{e}", file))?;
             let entries = nemesis_data::parse_litellm_json(&raw)
                 .map_err(|e| anyhow::anyhow!("解析失败：{e}"))?;
-            let n = entries.len();
+            // 条目数闸（BUG-20261118-157）：与下载路径同源——传错文件
+            // （1~99 条合法条目）不再静默替换下载层。
+            let n = nemesis_data::validate_downloaded_entries(&entries)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             pricing
                 .replace_downloaded(
                     entries,
@@ -1402,15 +1461,23 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             if name.is_empty() {
                 anyhow::bail!("模型名不能为空");
             }
-            // 基础价四字段有限性校验——clap f64 解析接受
-            // "NaN"/"inf" 字面量，无校验时坏值直接落自定义层污染计价输出
+            // 基础价四字段有限性 + 非负校验——clap f64 解析接受
+            // "NaN"/"inf"/负数字面量，无校验时坏值直接落自定义层污染计价输出
             // （与下方 parse_price_tiers 的 is_finite 校验同函数族，此处对齐）。
-            if !(input.is_finite()
+            // 负价无合法计费语义（BUG-20261115-020）：落账即错账（usage
+            // 面板负美元、月度账偏移），loud 拒绝而非静默钳——显式输入的
+            // 意志错误必须响亮（stream CLI 非法值先例）。
+            let finite = input.is_finite()
                 && output.is_finite()
                 && cache_read.is_finite()
-                && cache_creation.is_finite())
-            {
+                && cache_creation.is_finite();
+            let non_negative =
+                input >= 0.0 && output >= 0.0 && cache_read >= 0.0 && cache_creation >= 0.0;
+            if !finite {
                 anyhow::bail!("价格须为有限数值（拒绝 NaN/±inf）");
+            }
+            if !non_negative {
+                anyhow::bail!("价格不能为负（计费域无负单价语义）");
             }
             let tiers = parse_price_tiers(&price_tiers)?;
             let tier_note = if tiers.is_some() {

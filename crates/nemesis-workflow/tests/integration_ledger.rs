@@ -1,5 +1,6 @@
 //! 运行账本接线（workflow_run）：run_async 开账/终态收口 + Waiting
-//! 保持开账、resume 凭确定性 id 收口。全局槽由本文件唯一测试安装（进程
+//! 保持开账、resume 凭确定性 id 收口、Waiting 取消收账
+//! （BUG-20261114-036 回归锁）。全局槽由本文件唯一测试安装（进程
 //! 内其他并行测试的 run 也会写进该账，但断言按 execution id 圈定，互不
 //! 干扰）；漏斗核心语义的详测在 nemesis-taskstore/tests/store_tests.rs。
 
@@ -170,5 +171,71 @@ async fn ledger_records_workflow_lifecycle_end_to_end() {
             .expect("resume 收口后仍在账");
         assert_eq!(run.status, "succeeded", "resume 凭确定性 id 收口同一行");
         assert!(run.completed_at.is_some());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-036 回归锁：取消 Waiting 执行必须收账。此前 cancel_execution
+// 不 settle——重启 sweep 只圈 cron_job（ledger.rs sweep_restart_orphans_on），
+// resume 又因 state != Waiting 被拒，workflow_run:{id} 行 + attempt 永久停在
+// running（cancel_all_running / estop 批量取消放大泄漏面）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cancel_waiting_execution_settles_ledger_row() {
+    // 进程级 install 与同文件首测共享（先到先得，重复安装诚实拒绝）。
+    let ledger_dir = tempfile::tempdir().unwrap();
+    let db = nemesis_taskstore::TaskDb::open(&ledger_dir.path().join("ledger.db"))
+        .expect("open ledger db");
+    let _ = nemesis_taskstore::ledger::install(db);
+
+    let engine = {
+        let provider = Arc::new(StubProvider) as Arc<dyn LLMProvider>;
+        let tools = Arc::new(nemesis_tools::registry::ToolRegistry::new());
+        WorkflowEngine::new_integrated(provider, tools, None)
+    };
+
+    let mut hr_config = HashMap::new();
+    hr_config.insert("message".to_string(), serde_json::json!("cancel me"));
+    let mut hr_node = node("gate", "human_review", &[]);
+    hr_node.config = hr_config;
+    engine
+        .register_workflow(wf(
+            "hr_cancel_wf",
+            vec![hr_node, node("n2", "delay", &["gate"])],
+        ))
+        .unwrap();
+    let exec = engine
+        .run("hr_cancel_wf", HashMap::new(), Some(TriggerSource::Cli))
+        .await
+        .unwrap();
+    assert_eq!(exec.state, ExecutionState::Waiting);
+
+    let run_id = nemesis_taskstore::ledger::workflow_run_id(&exec.id);
+    {
+        let db = nemesis_taskstore::ledger::installed().unwrap();
+        let run = db.get_run(&run_id).expect("挂起 run 在账");
+        assert_eq!(
+            run.status, "running",
+            "Waiting 保持开账（取消前的账面基线）"
+        );
+        assert!(run.completed_at.is_none());
+    }
+
+    let cancelled = engine.cancel_execution(&exec.id).await.unwrap();
+    assert_eq!(cancelled.state, ExecutionState::Cancelled);
+    {
+        let db = nemesis_taskstore::ledger::installed().unwrap();
+        let run = db.get_run(&run_id).expect("取消后仍在账");
+        assert_eq!(
+            run.status, "cancelled",
+            "Waiting 取消必须收账（旧实现永久 running，无任何后续路径可收口）"
+        );
+        assert!(run.completed_at.is_some());
+        let attempts = db.attempts_of(&run_id).expect("attempts");
+        assert_eq!(
+            attempts[0].status, "cancelled",
+            "在跑 attempt 随 run 一并终结"
+        );
     }
 }

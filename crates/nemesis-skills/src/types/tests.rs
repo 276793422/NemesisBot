@@ -38,7 +38,10 @@ fn test_skill_search_result_defaults() {
 #[test]
 fn test_registry_config_default() {
     let config = RegistryConfig::default();
-    assert!(!config.search_cache.enabled);
+    // BUG-20261114-034：search_cache/modelscope 缺省启用（与 Dashboard 面
+    // SkillsFullConfig 及出厂模板显式值收敛——旧缺省 false 使双解析面答案分裂）。
+    assert!(config.search_cache.enabled);
+    assert!(config.modelscope.enabled);
     assert!(config.github_sources.is_empty());
     assert_eq!(config.max_concurrent_searches, 2);
 }
@@ -306,7 +309,8 @@ fn test_available_skill_serialization() {
 #[test]
 fn test_search_cache_config_default() {
     let config = SearchCacheConfig::default();
-    assert!(!config.enabled);
+    // BUG-20261114-034：缺省启用（与 Dashboard 面收敛，出厂模板显式 true）。
+    assert!(config.enabled);
     assert_eq!(config.max_size, 50);
     assert_eq!(config.ttl_secs, 300);
 }

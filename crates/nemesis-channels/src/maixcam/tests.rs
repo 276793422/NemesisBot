@@ -114,7 +114,9 @@ async fn test_send_no_clients() {
 }
 
 #[tokio::test]
-async fn test_send_with_clients() {
+async fn test_send_with_count_but_no_writer_reports_error() {
+    // BUG-20261114-053 回归锁：connect_client 只加计数不注册 writer，
+    // count>0 且 writers 空 = 诚实 Err（不再入队假成功）。
     let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -127,10 +129,11 @@ async fn test_send_with_clients() {
         message_type: String::new(),
         meta: Default::default(),
     };
-    ch.send(msg).await.unwrap();
-
-    let outbound = ch.drain_outbound();
-    assert_eq!(outbound.len(), 1);
+    let err = ch.send(msg).await.unwrap_err();
+    assert!(
+        err.to_string().contains("write half not registered yet"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -341,14 +344,6 @@ fn test_deserialize_message_with_tips() {
     assert_eq!(msg.tips.as_deref(), Some("system ok"));
 }
 
-#[test]
-fn test_drain_outbound_empty() {
-    let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
-    let outbound = ch.drain_outbound();
-    assert!(outbound.is_empty());
-}
-
 // ---- Additional coverage tests ----
 
 #[tokio::test]
@@ -378,7 +373,6 @@ async fn test_stop_clears_state() {
 
     ch.stop().await.unwrap();
     assert_eq!(ch.client_count(), 0);
-    assert!(ch.drain_outbound().is_empty());
 }
 
 #[test]
@@ -467,7 +461,10 @@ fn test_deserialize_status_with_data() {
 }
 
 #[tokio::test]
-async fn test_send_queues_when_no_writers_but_has_count() {
+async fn test_send_reports_error_when_no_writers_but_has_count() {
+    // BUG-20261114-053 回归锁：设备在册但 write half 未注册（accept 计数与
+    // reader 注册间的调度微窗）= 诚实 Err，不再入队假成功（outbound_queue
+    // 生产零消费者）。
     let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -481,10 +478,11 @@ async fn test_send_queues_when_no_writers_but_has_count() {
         message_type: String::new(),
         meta: Default::default(),
     };
-    // Should queue message since no writers match but count > 0
-    ch.send(msg).await.unwrap();
-    let outbound = ch.drain_outbound();
-    assert_eq!(outbound.len(), 1);
+    let err = ch.send(msg).await.unwrap_err();
+    assert!(
+        err.to_string().contains("write half not registered yet"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -536,38 +534,6 @@ fn test_disconnect_client_never_goes_negative() {
     // Disconnect without connect
     ch.disconnect_client();
     assert_eq!(ch.client_count(), 0);
-}
-
-#[test]
-fn test_drain_outbound_when_empty() {
-    let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
-    let drained = ch.drain_outbound();
-    assert!(drained.is_empty());
-}
-
-#[test]
-fn test_drain_outbound_multiple() {
-    let config = MaixCamConfig::default();
-    let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
-    ch.outbound_queue.write().push(OutboundMessage {
-        channel: "maixcam".to_string(),
-        chat_id: "c1".to_string(),
-        content: "msg1".to_string(),
-        message_type: String::new(),
-        meta: Default::default(),
-    });
-    ch.outbound_queue.write().push(OutboundMessage {
-        channel: "maixcam".to_string(),
-        chat_id: "c2".to_string(),
-        content: "msg2".to_string(),
-        message_type: String::new(),
-        meta: Default::default(),
-    });
-    let drained = ch.drain_outbound();
-    assert_eq!(drained.len(), 2);
-    // Queue should be empty after drain
-    assert!(ch.drain_outbound().is_empty());
 }
 
 #[test]
@@ -795,24 +761,15 @@ fn test_maixcam_command_serialize() {
 }
 
 #[tokio::test]
-async fn test_start_stop_clears_writers_and_queue() {
+async fn test_start_stop_clears_writers() {
     let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
-    ch.outbound_queue.write().push(OutboundMessage {
-        channel: "maixcam".to_string(),
-        chat_id: "c1".to_string(),
-        content: "msg".to_string(),
-        message_type: String::new(),
-        meta: Default::default(),
-    });
     assert_eq!(ch.client_count(), 1);
-    assert_eq!(ch.outbound_queue.read().len(), 1);
 
     ch.stop().await.unwrap();
     assert_eq!(ch.client_count(), 0);
-    assert!(ch.outbound_queue.read().is_empty());
     assert!(ch.client_writers.is_empty());
 }
 
@@ -928,7 +885,8 @@ fn test_status_with_no_data() {
 }
 
 #[tokio::test]
-async fn test_send_with_queued_messages_and_no_writers() {
+async fn test_send_with_no_writers_and_count_reports_error() {
+    // BUG-20261114-053 回归锁：count>0 且无 writer = 诚实 Err（不再入队）。
     let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
@@ -942,12 +900,11 @@ async fn test_send_with_queued_messages_and_no_writers() {
         message_type: String::new(),
         meta: Default::default(),
     };
-    ch.send(msg).await.unwrap();
-
-    let drained = ch.drain_outbound();
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].chat_id, "device-1");
-    assert_eq!(drained[0].content, "command");
+    let err = ch.send(msg).await.unwrap_err();
+    assert!(
+        err.to_string().contains("write half not registered yet"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1688,6 +1645,12 @@ async fn test_bug300_targeted_write_times_out_on_stalled_device() {
         elapsed < std::time::Duration::from_secs(10),
         "timeout must bound the write, took {elapsed:?}"
     );
+    // BUG-20261116-040：超时 = 连接判死，死链 writer 必须按身份逐出——
+    // 否则条目永驻，串行派发环对同一死链每条消息再吃满超时窗。
+    assert!(
+        ch.client_writers.get("dev1").is_none(),
+        "timed-out writer must be evicted from client_writers"
+    );
     ch.stop().await.unwrap();
 }
 
@@ -1718,7 +1681,60 @@ async fn test_bug300_broadcast_write_bounded_on_stalled_device() {
         elapsed < std::time::Duration::from_secs(10),
         "broadcast must be bounded per device, took {elapsed:?}"
     );
+    // BUG-20261116-040：广播臂同样逐出死链（best-effort 不拦整体，但不留
+    // 永驻条目反复吃满超时窗）。
+    assert!(
+        ch.client_writers.get("dev1").is_none(),
+        "timed-out broadcast writer must be evicted from client_writers"
+    );
     ch.stop().await.unwrap();
+}
+
+/// BUG-20261116-040 回归锁（全平台确定性）：按身份逐出只移除「同一个 Arc」
+/// ——写挂起窗内设备重连已覆盖注册的新 writer 不被误删（对齐注册点
+/// 「断开不 remove 避免误删重连新注册」的既有竞态纪律）；命中时移除并
+/// 返回 true。仅构造 loopback 写半部实例，不依赖内核缓冲行为。
+#[tokio::test]
+async fn test_bug20261116_040_evict_removes_only_matching_arc() {
+    async fn loopback_write_half() -> tokio::net::tcp::OwnedWriteHalf {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (_server, _) = listener.accept().await.unwrap();
+        let (_rd, writer) = client.into_split();
+        writer
+    }
+
+    let map: dashmap::DashMap<
+        String,
+        std::sync::Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    > = dashmap::DashMap::new();
+    let stale = std::sync::Arc::new(tokio::sync::Mutex::new(loopback_write_half().await));
+    let fresh = std::sync::Arc::new(tokio::sync::Mutex::new(loopback_write_half().await));
+    map.insert("default".to_string(), std::sync::Arc::clone(&stale));
+    // 「重连」：新连接覆盖注册同一 key
+    map.insert("default".to_string(), std::sync::Arc::clone(&fresh));
+
+    // 旧连接的超时逐出不得误删新注册（守卫不命中，false + fresh 仍在）
+    assert!(
+        !MaixCamChannel::evict_writer_if_current(&map, "default", &stale),
+        "evict must not remove a successor's re-registration"
+    );
+    assert!(
+        map.get("default")
+            .map(|v| std::sync::Arc::ptr_eq(v.value(), &fresh))
+            .unwrap_or(false),
+        "fresh writer must remain registered"
+    );
+
+    // 新 writer 自身可按身份逐出（命中，true + 表空）
+    assert!(MaixCamChannel::evict_writer_if_current(
+        &map, "default", &fresh
+    ));
+    assert!(
+        map.get("default").is_none(),
+        "map must be empty after evict"
+    );
 }
 
 // ===========================================================================

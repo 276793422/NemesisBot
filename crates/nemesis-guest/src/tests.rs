@@ -88,6 +88,26 @@ async fn exec_nonzero_exit_is_ok_with_exit_code_text() {
     assert!(parsed.result.contains("Exit code: 3"), "{resp}");
 }
 
+// BUG-20261114-002 回归锁：Windows cmd /C 必须 raw_arg 逐字传命令串。
+// `.arg()` 的 MSVCRT 转义把内嵌引号变 `\"`，cmd 不认 `\"`——带引号命令
+// 被打挂（宿主 cc_hooks 实测先例；raw_arg 后 echo 原样输出带引号串）。
+// Unix sh -c 无引号层，`.arg()` 本就逐字（测试挂 cfg(windows) 按
+// Windows 形态测试标记约定，Linux 编译期消失）。
+#[cfg(windows)]
+#[tokio::test]
+async fn exec_windows_cmd_preserves_embedded_quotes() {
+    let (agent, _dir) = agent_with_tmp();
+    let resp = agent
+        .serve_line(&v2_line("exec", r#"{"command":"echo \"a b\""}"#))
+        .await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(parsed.ok, "{resp}");
+    assert!(
+        parsed.result.contains("\"a b\""),
+        "引号必须原样保留（raw_arg 逐字语义）: {resp}"
+    );
+}
+
 #[tokio::test]
 async fn write_read_delete_file_roundtrip() {
     let (agent, dir) = agent_with_tmp();
@@ -160,6 +180,21 @@ async fn write_read_delete_file_roundtrip() {
     let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();
     assert!(p.ok && p.result.contains("deleted file"), "{resp}");
     assert!(!dir.path().join("a/b.txt").exists());
+}
+
+#[tokio::test]
+async fn delete_file_missing_path_errors_not_found() {
+    // BUG-20261118-156 前置存在性检查回归锁：delete_file 进韧性重试内核
+    // （remove_file_retry_async 把 NotFound 吞成成功）后，「删不存在文件
+    // 要报错」的语义必须由前置检查保留——缺席路径诚实报错而非谎报删除
+    // 成功（宿主 DeleteFileTool 同款语义；若无此检查，重试内核会把缺席
+    // 静默吞成 "deleted file"）。
+    let (agent, _dir) = agent_with_tmp();
+    let line = v2_line("delete_file", r#"{"path":"never-existed.txt"}"#);
+    let resp = agent.serve_line(&line).await;
+    let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();
+    assert!(!p.ok, "{resp}");
+    assert!(p.error.contains("File not found"), "{resp}");
 }
 
 #[tokio::test]
@@ -469,6 +504,38 @@ async fn exec_explicit_env_is_passed_through() {
     let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
     assert!(parsed.ok, "{resp}");
     assert!(parsed.result.contains("val-42"), "env 未透传: {resp}");
+}
+
+// env 槽硬校验（BUG-20261116-025 横向同族）：含 NUL 键 → 诚实 Err 且
+// 错误带 env 槽位指向（修复前 Windows 报 spawn 期通用错误
+// "nul byte found in provided data"、Unix Command::env 即时 panic）。
+#[tokio::test]
+async fn exec_nul_env_key_is_honest_err() {
+    let (agent, _dir) = agent_with_tmp();
+    let args = r#"{"command":"echo hi","env":{"BAD\u0000KEY":"v"}}"#;
+    let resp = agent.serve_line(&v2_line("exec", args)).await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(!parsed.ok);
+    assert!(
+        parsed.error.contains("Invalid 'env' argument"),
+        "错误须带 env 槽位指向: {resp}"
+    );
+    assert!(parsed.error.contains("NUL"), "错误须含 NUL 原因: {resp}");
+}
+
+// 同族：含 `=` 键 → 诚实 Err（Unix Command::env 即时 panic 面；
+// Windows 环境块对该形态同样病态，全平台统一拒）。
+#[tokio::test]
+async fn exec_eq_in_env_key_is_honest_err() {
+    let (agent, _dir) = agent_with_tmp();
+    let args = r#"{"command":"echo hi","env":{"A=B":"v"}}"#;
+    let resp = agent.serve_line(&v2_line("exec", args)).await;
+    let parsed: ExecutorResponseWire = serde_json::from_str(resp.trim()).expect("parse resp");
+    assert!(!parsed.ok);
+    assert!(
+        parsed.error.contains("must not contain '='"),
+        "错误形态: {resp}"
+    );
 }
 
 // accept 瞬态错误分类：连接级抖动与资源耗尽族重试，其余传播退出。

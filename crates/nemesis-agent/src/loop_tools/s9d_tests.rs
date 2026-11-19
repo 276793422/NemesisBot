@@ -42,6 +42,7 @@ fn ctx() -> RequestContext {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -56,6 +57,7 @@ fn empty_ctx() -> RequestContext {
         tool_path_base: None,
         approval_ref: None,
         secrets: std::sync::Arc::new(Vec::new()),
+        tool_images: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -98,6 +100,35 @@ fn readonly_enforced(dir: &std::path::Path, want_block: bool) -> bool {
             let _ = std::fs::set_permissions(&probe, p);
         }
         let _ = std::fs::remove_file(&probe);
+    }
+    blocked
+}
+
+/// rename 覆盖只读目标是否被 OS 拦（EditFileTool 原子写 tmp+rename 的语义）。
+/// Windows MoveFileEx-REPLACE_EXISTING 对只读目标 ACCESS_DENIED；Unix
+/// rename(2) 只校验目录写权限、无视目标文件只读位 → 不拦。探针操作必须与
+/// 被测工具的实际落盘方式同构，否则探针说「强制」、工具却成功（BUG-20261116-010
+/// 原子写改造后 Linux 非 root 首次暴露此劈叉）。
+fn rename_over_readonly_enforced(dir: &std::path::Path) -> bool {
+    let probe = dir.join(format!("s9rn_{}.probe", std::process::id()));
+    let alt = dir.join(format!("s9rn_{}.alt", std::process::id()));
+    std::fs::write(&probe, "x").unwrap();
+    std::fs::write(&alt, "y").unwrap();
+    let meta = std::fs::metadata(&probe).unwrap();
+    let mut perm = meta.permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&probe, perm).unwrap();
+    let blocked = std::fs::rename(&alt, &probe).is_err();
+    // 探针清理：宽松 fs 下 probe 可能已被 rename 替换，逐个恢复后删。
+    for p in [&probe, &alt] {
+        if p.exists() {
+            if let Ok(m) = std::fs::metadata(p) {
+                let mut pp = m.permissions();
+                pp.set_readonly(false);
+                let _ = std::fs::set_permissions(p, pp);
+            }
+            let _ = std::fs::remove_file(p);
+        }
     }
     blocked
 }
@@ -201,10 +232,11 @@ async fn edit_file_tool_read_error_write_error_and_preview() {
     let out = super::EditFileTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to read file"));
 
-    // 514：readonly 文件 → 写失败（探针门控）。
+    // 514：readonly 文件 → 写失败（探针门控；探针取 rename 语义——与工具
+    // tmp+rename 落盘方式同构，Unix 上 rename 不受目标只读位约束）。
     let ro = ws.join("readonly_target.md");
     std::fs::write(&ro, "alpha beta").unwrap();
-    let enforced = readonly_enforced(&ws, false);
+    let enforced = rename_over_readonly_enforced(&ws);
     let meta = std::fs::metadata(&ro).unwrap();
     let mut perm = meta.permissions();
     perm.set_readonly(true);

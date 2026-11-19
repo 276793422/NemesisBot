@@ -128,9 +128,9 @@ pub enum ClusterAction {
         /// Node name (overrides config)
         #[arg(short = 'n', long)]
         name: Option<String>,
-        /// Broadcast interval in seconds
-        #[arg(short, long, default_value = "10")]
-        broadcast_interval: u64,
+        /// Broadcast interval in seconds (overrides config; 0 clamps to 1)
+        #[arg(short, long)]
+        broadcast_interval: Option<u64>,
     },
     /// Manage iroh cross-network roaming (A1 overlay layer; identity keygen
     /// 2026-10-23 起归 `quic keygen`——身份是 QUIC 层资产)
@@ -317,6 +317,14 @@ fn default_node_display_name(node_id: &str) -> String {
     )
 }
 
+/// 存量配置值（u64 读回，不截断）与 CLI 新值是否有差异（`cluster config`
+/// 写闸）。比较必须升域到 u64：裸 `as u16` 读回越域配置会回绕
+/// （66000→464），与合法请求 464 撞相等 → 用户写请求被静默跳过
+/// （BUG-20261116-043）。u16→u64 升域无损，越域存量照常判差异。
+fn cluster_config_differs(stored: (u64, u64, u64), new: (u16, u16, u64)) -> bool {
+    stored.0 != new.0 as u64 || stored.1 != new.1 as u64 || stored.2 != new.2
+}
+
 pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
 
@@ -404,12 +412,14 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if let Ok(data) = nemesis_utils::fsutil::read_config_string(&cfg_path)
                     && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data)
                 {
-                    // Read current values for display
-                    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
+                    // 读回值保持 u64 域（不截断）：裸 `as u16` 会把越域配置
+                    // 回绕（66000→464）——显示谎报 + 写闸比较与合法新值撞
+                    // 相等致用户写请求静默跳过（BUG-20261116-043）。
+                    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949);
                     let cur_rpc = cfg
                         .get("rpc_port")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(21949) as u16;
+                        .unwrap_or(21949);
                     let cur_interval = cfg
                         .get("broadcast_interval")
                         .and_then(|v| v.as_u64())
@@ -421,10 +431,10 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     println!("  Broadcast Interval: {}s", cur_interval);
 
                     // Only update and save if values differ from what's currently stored
-                    if (udp_port != cur_udp
-                        || rpc_port != cur_rpc
-                        || broadcast_interval != cur_interval)
-                        && let Some(obj) = cfg.as_object_mut()
+                    if cluster_config_differs(
+                        (cur_udp, cur_rpc, cur_interval),
+                        (udp_port, rpc_port, broadcast_interval),
+                    ) && let Some(obj) = cfg.as_object_mut()
                     {
                         obj.insert(
                             "port".to_string(),
@@ -775,7 +785,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if !(16..=128).contains(&length) {
                     anyhow::bail!("Token length must be between 16 and 128 bytes");
                 }
-                let token = generate_token(length);
+                let token = generate_token(length).map_err(|e| anyhow::anyhow!(e))?;
                 println!("Generated token: {}", token);
                 if save {
                     let cfg_path = common::cluster_config_path(&home);
@@ -847,7 +857,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if !(16..=128).contains(&length) {
                         anyhow::bail!("Token length must be between 16 and 128 bytes");
                     }
-                    generate_token(length)
+                    generate_token(length).map_err(|e| anyhow::anyhow!(e))?
                 } else {
                     println!("Error: provide a token value or use --generate.");
                     return Ok(());
@@ -964,7 +974,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             // config.cluster.json 不再含身份字段，只含系统参数 + token。
             // token 用 generate_token（32 字节 CSPRNG，与 `cluster token generate`
             // 同源）：空 token = RPC/UDP 发现层双双无鉴权裸奔（审计 F4），init 即生成。
-            let init_token = generate_token(32);
+            let init_token = generate_token(32).map_err(|e| anyhow::anyhow!(e))?;
             let mut cluster_cfg =
                 serde_json::from_str::<serde_json::Value>(crate::CONFIG_CLUSTER_DEFAULT)
                     .unwrap_or_else(|_| serde_json::json!({}));
@@ -1182,7 +1192,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("Soft reset: clearing discovered nodes...");
                 let state_path = common::cluster_dir(&home).join("state.toml");
                 if state_path.exists() {
-                    let _ = std::fs::remove_file(&state_path);
+                    let _ = nemesis_utils::fsutil::remove_file_resilient(&state_path);
                     println!("  Discovered nodes cleared.");
                 } else {
                     println!("  No state file found (nothing to clear).");
@@ -1204,11 +1214,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 return Ok(());
             }
             let cfg_path = common::cluster_config_path(&home);
-            let _ = std::fs::remove_file(&cfg_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&cfg_path);
             let peers_path = common::cluster_dir(&home).join("peers.toml");
-            let _ = std::fs::remove_file(&peers_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&peers_path);
             let state_path = common::cluster_dir(&home).join("state.toml");
-            let _ = std::fs::remove_file(&state_path);
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&state_path);
             println!("Cluster configuration reset (hard).");
         }
         ClusterAction::Identity { action } => {
@@ -1647,7 +1657,10 @@ fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
     let _cfg_serial = nemesis_config::config_write_lock();
     let path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     let mut cfg: serde_json::Value = if path.exists() {
-        let content = std::fs::read_to_string(&path)
+        // read_config_string 剥 BOM——运行期 cluster 配置装载已走 helper
+        // （BUG-334 记录：cluster_config.rs canonical 读写全走），BOM 文件
+        // 运行期正常而本 RMW 拒绝写 = 同文件读面分裂（BUG-20261103-334 同族）。
+        let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| anyhow::anyhow!("读取 cluster 配置失败: {e}"))?;
         // 横扫族 C 六轮（2026-11-06）：文件在但解析失败（损坏/半截写）不许
         // 静默当 `{}`——本函数是读改写环，回写会把既有系统参数层
@@ -1680,6 +1693,13 @@ fn set_roaming_config_enabled(workspace: &Path, enabled: bool) -> Result<()> {
 fn run_firewall(action: FirewallAction) -> Result<()> {
     match action {
         FirewallAction::Add { udp_port, tcp_port } => {
+            // 端口 0 在命令层显式拒绝：此前「非法端口 fail-fast」仰赖
+            // netsh/ufw 的参数校验，2026-11 runner 镜像更新后 netsh 放行
+            // localport=0（真写进 allow 规则并返回成功）——fail-fast
+            // 契约不能依赖外部工具版本 whim，命令层先校验，全平台一致。
+            if udp_port == 0 || tcp_port == 0 {
+                anyhow::bail!("无效端口（0）：firewall add 需要具体端口号");
+            }
             println!("Adding firewall rules for cluster...");
             println!("  UDP port: {}", udp_port);
             println!("  TCP port: {}", tcp_port);
@@ -1865,16 +1885,33 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
         .unwrap_or(false);
 
     if ufw_exists {
-        let _ = std::process::Command::new("ufw")
+        let udp_result = std::process::Command::new("ufw")
             .args(["delete", "allow", &format!("{}/udp", udp_port)])
-            .output();
-        println!("  UFW UDP rule removed: port {}", udp_port);
-        let _ = std::process::Command::new("ufw")
+            .output()?;
+        if udp_result.status.success() {
+            println!("  UFW UDP rule removed: port {}", udp_port);
+        } else {
+            // 删除失败不谎报 removed（BUG-20261116-031：原实现 `let _ =`
+            // 吞结果后无条件打印 removed——非 root 跑 disable 时规则残留
+            // 却报成功）。非零含幂等场景（规则本不存在），stderr 带现场。
+            println!(
+                "  UFW UDP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&udp_result.stderr).trim()
+            );
+        }
+        let tcp_result = std::process::Command::new("ufw")
             .args(["delete", "allow", &format!("{}/tcp", tcp_port)])
-            .output();
-        println!("  UFW TCP rule removed: port {}", tcp_port);
+            .output()?;
+        if tcp_result.status.success() {
+            println!("  UFW TCP rule removed: port {}", tcp_port);
+        } else {
+            println!(
+                "  UFW TCP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&tcp_result.stderr).trim()
+            );
+        }
     } else {
-        let _ = std::process::Command::new("iptables")
+        let udp_result = std::process::Command::new("iptables")
             .args([
                 "-D",
                 "INPUT",
@@ -1885,9 +1922,16 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
                 "-j",
                 "ACCEPT",
             ])
-            .output();
-        println!("  iptables UDP rule removed: port {}", udp_port);
-        let _ = std::process::Command::new("iptables")
+            .output()?;
+        if udp_result.status.success() {
+            println!("  iptables UDP rule removed: port {}", udp_port);
+        } else {
+            println!(
+                "  iptables UDP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&udp_result.stderr).trim()
+            );
+        }
+        let tcp_result = std::process::Command::new("iptables")
             .args([
                 "-D",
                 "INPUT",
@@ -1898,8 +1942,15 @@ fn firewall_remove_rules(udp_port: u16, tcp_port: u16) -> Result<()> {
                 "-j",
                 "ACCEPT",
             ])
-            .output();
-        println!("  iptables TCP rule removed: port {}", tcp_port);
+            .output()?;
+        if tcp_result.status.success() {
+            println!("  iptables TCP rule removed: port {}", tcp_port);
+        } else {
+            println!(
+                "  iptables TCP rule not removed (rule may not exist, or root required): {}",
+                String::from_utf8_lossy(&tcp_result.stderr).trim()
+            );
+        }
     }
     Ok(())
 }
@@ -1927,13 +1978,23 @@ fn firewall_remove_rules(_udp_port: u16, _tcp_port: u16) -> Result<()> {
     anyhow::bail!("当前平台不支持防火墙规则管理");
 }
 
+/// run_node 的有效广播间隔决策表（BUG-20261114-021 单一裁决点）：
+/// 显式 flag 优先，缺省回落 config.cluster.json 的 broadcast_interval；
+/// 0 一律钳到 1（tokio `interval(Duration::ZERO)` 构造期 panic——gateway
+/// 装载臂 `cluster_init.rs` 同款 `.max(1)` 钳制，两臂语义对齐）。
+fn effective_broadcast_interval(flag: Option<u64>, config_value: u64) -> u64 {
+    // 上界钳制（BUG-20261116-001）：sync loop interval() 巨值防护
+    // （CLI flag 与 config 双入口同闸）。
+    crate::common::bounded_tick_interval_secs(flag.unwrap_or(config_value), 1)
+}
+
 /// Start a lightweight cluster node with UDP discovery and RPC server, no LLM.
 async fn run_node(
     home: &Path,
     udp_port_override: Option<u16>,
     rpc_port_override: Option<u16>,
     name_override: Option<String>,
-    broadcast_interval: u64,
+    broadcast_interval_override: Option<u64>,
 ) -> Result<()> {
     // 检查 config.cluster.json 是否存在（确保已 onboard）
     let cluster_cfg_path = common::cluster_config_path(home);
@@ -1947,6 +2008,14 @@ async fn run_node(
     let cluster_app_cfg = nemesis_cluster::config_loader::load_app_config(&home.join("workspace"));
     let udp_port = udp_port_override.unwrap_or(cluster_app_cfg.port);
     let rpc_port = rpc_port_override.unwrap_or(cluster_app_cfg.rpc_port);
+    // 有效广播间隔（BUG-20261114-021）：显式 flag 优先，缺省回落 config——
+    // 旧实现 flag 只进 println、config 完全不读，cluster 实际跑
+    // DEFAULT_BROADCAST_INTERVAL(30s)，打印/默认/实际三方矛盾；0 钳 1
+    // （tokio interval 构造 0 时长 panic，gateway 装载臂同款钳制）。
+    let broadcast_interval_secs = effective_broadcast_interval(
+        broadcast_interval_override,
+        cluster_app_cfg.broadcast_interval,
+    );
 
     // Init logger
     let cfg_path = common::config_path(home);
@@ -1956,7 +2025,7 @@ async fn run_node(
     println!("==========================");
     println!("  UDP Port:   {}", udp_port);
     println!("  RPC Port:   {}", rpc_port);
-    println!("  Broadcast:  every {}s", broadcast_interval);
+    println!("  Broadcast:  every {}s", broadcast_interval_secs);
     println!();
 
     // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml 加载真实身份；
@@ -1976,6 +2045,9 @@ async fn run_node(
     cluster.set_node_type("node");
     // A1 运行时硬化批：announce 携带本节点构建号（与 gateway 装载同源）。
     cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
+    // BUG-20261114-021：广播间隔实际应用——旧实现从未调用本 setter，
+    // node 恒跑 30s 常量而打印用户值（UAT/config 的 3s 期望被静默落空）。
+    cluster.set_broadcast_interval(std::time::Duration::from_secs(broadcast_interval_secs));
 
     // Load static peers from peers.toml
     let peers_path = common::cluster_dir(home).join("peers.toml");
@@ -2211,7 +2283,7 @@ fn read_cluster_token(home: &std::path::Path) -> String {
 /// `update_cluster_config` 的 "not initialized" 错误照常上抛。
 fn ensure_cluster_token(home: &std::path::Path) -> Result<Option<String>> {
     if read_cluster_token(home).is_empty() {
-        let token = generate_token(32);
+        let token = generate_token(32).map_err(|e| anyhow::anyhow!(e))?;
         update_cluster_config(home, "token", token.clone())?;
         Ok(Some(token))
     } else {
@@ -2230,20 +2302,17 @@ fn main_cluster_flag(home: &std::path::Path) -> Option<bool> {
 }
 
 /// Generate a cryptographically secure random standard base64 token of the given byte length.
-fn generate_token(byte_len: usize) -> String {
+///
+/// RNG 失败 = **hard-fail 上抛**（无兜底）：旧版回落 uuid 有两重坏——uuid v4
+/// 拉的是同一 OS 随机源（getrandom 刚失败它也会炸）且 16 字节填充对
+/// 32 字节 token 留 16 字节零段（可预测半截密钥）。随机源不可用时诚实地
+/// 拒绝生成弱凭据，由调用方上抛为命令错误。
+fn generate_token(byte_len: usize) -> Result<String, String> {
     let mut bytes = vec![0u8; byte_len];
     // Use getrandom for cryptographically secure randomness
-    if let Err(e) = getrandom::getrandom(&mut bytes) {
-        // Fallback: if system RNG fails, log warning and use uuid-based entropy
-        eprintln!("Warning: crypto RNG failed ({}), using fallback", e);
-        let uuid = uuid::Uuid::new_v4();
-        for (i, b) in uuid.as_bytes().iter().enumerate() {
-            if i < bytes.len() {
-                bytes[i] = *b;
-            }
-        }
-    }
-    base64_encode(&bytes)
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| format!("系统随机源不可用（getrandom 失败: {e}），拒绝生成弱 token"))?;
+    Ok(base64_encode(&bytes))
 }
 
 /// Simple standard base64 encoding with padding (to match Go's base64.StdEncoding).

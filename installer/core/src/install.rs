@@ -271,7 +271,7 @@ fn perform_inner(
     // ⑥ 流式解压：zstd 帧 → tar 条目 → staging（逐文件 sha256 校验）。
     let mut file = std::fs::File::open(package_path)?;
     let region = pkgfile::take_region(&mut file, manifest.payload_offset, manifest.payload_len)?;
-    let decoder = ruzstd::StreamingDecoder::new(region)
+    let decoder = ruzstd::decoding::StreamingDecoder::new(region)
         .map_err(|e| anyhow::Error::new(TypedFail::Integrity(format!("zstd 流解码失败: {e}"))))?;
     let mut archive = tar::Archive::new(decoder);
 

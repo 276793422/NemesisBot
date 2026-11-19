@@ -616,3 +616,193 @@ SUBSYSTEM=usb
     let events = feed_sample(&mut parser, sample);
     assert!(events.is_empty());
 }
+
+// ---------- BUG-20261113-135：udevadm stdout 行读带帽 + 非 UTF-8 不杀监控 ----------
+
+/// 经 pump_monitor_lines 把字节流泵进 parser，收集事件与全部投递行。
+fn pump_bytes(input: &[u8]) -> (Vec<DeviceEvent>, Vec<String>) {
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(input));
+    let mut parser = MonitorParser::default();
+    let mut events = Vec::new();
+    let mut lines = Vec::new();
+    let outcome = pump_monitor_lines(&mut reader, &mut |line: &str| {
+        lines.push(line.to_string());
+        if let Some(event) = parser.feed_line(line) {
+            events.push(event);
+        }
+        true
+    });
+    assert!(
+        outcome.is_ok(),
+        "pump must not die on poison lines: {outcome:?}"
+    );
+    (events, lines)
+}
+
+#[test]
+fn bug135_non_utf8_line_does_not_kill_monitor() {
+    // 旧形态：非 UTF-8 一行 → lines() Err → Err(_) => break → 监控静默
+    // 永久停摆（零日志）。新形态：整行收齐一次 lossy 收敛，监控存活，
+    // 后续块照常解析出事件。
+    let mut input = b"UDEV  [100.0] add      /devices/usb1/1-1 (usb)\n".to_vec();
+    input.extend_from_slice(b"ACTION=add\n");
+    input.extend_from_slice(b"ID_VENDOR=\xff\xfeBad\xfdName\n"); // 非 UTF-8 字节
+    input.extend_from_slice(b"\n"); // 块结束 → add 事件
+    input.extend_from_slice(b"UDEV  [200.0] remove   /devices/usb1/1-1 (usb)\n");
+    input.extend_from_slice(b"ACTION=remove\n");
+    input.extend_from_slice(b"\n");
+    let (events, lines) = pump_bytes(&input);
+    assert_eq!(events.len(), 2, "both blocks must surface: {events:?}");
+    assert_eq!(events[0].action, Action::Add);
+    assert_eq!(events[1].action, Action::Remove);
+    // mojibake 行 lossy 投递（替换符），vendor 值降级但事件仍在。
+    let poisoned = lines
+        .iter()
+        .find(|l| l.starts_with("ID_VENDOR="))
+        .expect("poisoned property line must be delivered");
+    assert!(
+        poisoned.contains('\u{FFFD}'),
+        "non-UTF-8 bytes must become replacement chars: {poisoned:?}"
+    );
+    assert!(events[0].vendor.contains('\u{FFFD}'));
+}
+
+#[test]
+fn bug135_oversized_line_truncated_and_monitor_survives() {
+    // 超 64KB 帽的毒丸行：截断丢弃至行尾，游标对齐下一行行首，
+    // 监控存活、后续块照常出事件。
+    let mut input = b"UDEV  [300.0] add      /devices/usb1/1-2 (usb)\n".to_vec();
+    input.extend(vec![b'A'; MAX_MONITOR_LINE_BYTES + 16]);
+    input.push(b'\n');
+    input.extend_from_slice(b"ACTION=add\nID_MODEL=GoodDevice\n\n");
+    let (events, lines) = pump_bytes(&input);
+    assert_eq!(
+        events.len(),
+        1,
+        "poison oversized line must not kill the monitor: {events:?}"
+    );
+    assert_eq!(events[0].action, Action::Add);
+    assert_eq!(events[0].product, "GoodDevice");
+    assert_eq!(
+        lines[1].len(),
+        MAX_MONITOR_LINE_BYTES,
+        "truncated line delivers exactly cap bytes"
+    );
+}
+
+#[test]
+fn bug135_emit_false_stops_pump_early() {
+    // 下游关闭（receiver drop）：emit 返回 false → 泵诚实提前收尾，
+    // 不再消费后续字节。
+    let input = b"line1\nline2\nline3\n";
+    let mut reader = std::io::BufReader::new(std::io::Cursor::new(input));
+    let mut count = 0;
+    let outcome = pump_monitor_lines(&mut reader, &mut |_line| {
+        count += 1;
+        false
+    });
+    assert!(outcome.is_ok());
+    assert_eq!(count, 1, "pump must stop at first false emit");
+}
+
+/// BUG-20261118-150 回归锁辅助：派生一个存活 30s 的子进程（平台分派，
+/// kill 直杀本体无孤儿链）。仅用于槽位代际隔离的真实进程活性断言。
+fn spawn_lingering_child() -> std::process::Child {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lingering test child (ping)")
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn lingering test child (sleep)")
+    }
+}
+
+/// BUG-20261118-150 回归锁：UsbEventSource 子进程槽位按代隔离——旧代
+/// reader 线程的退出收割只触达自己那一代，绝不 kill 新代子进程。
+///
+/// 旧形态单一共享槽下，stop→start 重启周期（BUG-20261114-015 支持的
+/// 语义）里旧线程退出收割与新代装槽竞争同一 `Arc`：旧线程
+/// `kill_child(&child_slot)` 会 take 并杀死新代 udevadm，重启后监控
+/// 静默死亡。本测以真实子进程钉死「跨代收割结构性不可能」：gen1 收割
+/// 后 gen2 槽位仍在、进程仍活（try_wait=None）。
+#[test]
+fn bug150_stale_generation_reap_cannot_kill_new_generation_child() {
+    // gen1：旧代槽位（stale reader 线程持有的那份克隆）
+    let gen1: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(spawn_lingering_child())));
+    // gen2：重启周期里 start() 刚装入的当前代
+    let gen2: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(spawn_lingering_child())));
+
+    // 旧代 reader 线程退出收割路径：只收割自己那一代
+    UsbEventSource::kill_child(&gen1);
+    assert!(
+        gen1.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+        "gen1 slot must be reaped by its own exit path"
+    );
+
+    // 当前代必须完好：槽位仍持有子进程，且进程仍存活
+    {
+        let mut g2 = gen2.lock().unwrap_or_else(|p| p.into_inner());
+        let c = g2
+            .as_mut()
+            .expect("gen2 slot must still hold its child after stale-gen reap");
+        assert!(
+            c.try_wait().expect("try_wait gen2 child").is_none(),
+            "gen2 child must still be running (stale-gen reap must not touch it)"
+        );
+        // 测试清理：不留 30s 孤儿
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// BUG-20261118-150 回归锁：stop() 取走并收割**当前代**槽位（结构性
+/// 契约：stop 后 struct 槽位为空 ⇒ 后续 start() 装入的新代与任何
+/// stale reader 持有的旧代槽位互不相交），且幂等。
+#[test]
+fn bug150_stop_reaps_current_generation_slot() {
+    let source = UsbEventSource::new();
+    let slot: ChildSlot = std::sync::Arc::new(std::sync::Mutex::new(Some(spawn_lingering_child())));
+    *source.child.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::sync::Arc::clone(&slot));
+    source.stop().expect("stop must succeed");
+    assert!(
+        source
+            .child
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_none(),
+        "stop must take the current generation slot"
+    );
+    source
+        .stop()
+        .expect("second stop must succeed (idempotent)");
+}
+
+/// BUG-20261116-008 回归锁：kill_child（Drop/stop 共用收割路径）毒化锁
+/// 容毒恢复。持锁 panic 毒化后调用：修复前 `lock().unwrap()` 必 panic，
+/// 修复后 `into_inner` 恢复照常收割（空槽 no-op + 锁保持健康）。
+#[test]
+fn kill_child_with_poisoned_lock_does_not_panic() {
+    let child: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = child.lock().unwrap();
+        panic!("毒化注入");
+    }))
+    .is_err();
+    assert!(poisoned, "毒化注入必须真实发生（否则测试空转）");
+    UsbEventSource::kill_child(&child); // 修复前此处 unwrap 中毒必 panic
+    assert!(
+        child.lock().unwrap_or_else(|p| p.into_inner()).is_none(),
+        "收割后槽位应为空"
+    );
+}

@@ -313,7 +313,10 @@ fn cmd_approvals_list(home: &std::path::Path) -> Result<()> {
         println!("(none — no always-allow rules saved)");
         return Ok(());
     }
-    let raw = std::fs::read_to_string(&path)?;
+    // read_config_string 剥 BOM——与运行期 loader（approval_rules.rs 同文件
+    // 已走 helper）同口径：BOM 文件运行期规则生效而 CLI 列表报 parse 错 =
+    // 同文件读面分裂（BUG-20261103-334 同族）。
+    let raw = nemesis_utils::fsutil::read_config_string(&path)?;
     let rules: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
     if rules.is_empty() {
         println!("(empty)");
@@ -348,7 +351,8 @@ fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
     let path =
         nemesis_path::resolve_approval_rules_path_in_workspace(&common::workspace_path(home));
     let removed = if path.exists() {
-        let raw = std::fs::read_to_string(&path)?;
+        // read_config_string 剥 BOM（同 list 臂口径：BOM 文件计数不失真）。
+        let raw = nemesis_utils::fsutil::read_config_string(&path)?;
         serde_json::from_str::<Vec<serde_json::Value>>(&raw)
             .map(|v| v.len())
             .unwrap_or(0)
@@ -603,6 +607,11 @@ fn cmd_rules_test(
     // `python -c "os.system('rm -rf /')"` 可能显示无命中，运行时仍会被
     // 内层扫描拦下；预览偏松方向，结论以运行时审计为准。
     let is_command_op = rule_type == "process";
+    // BUG-20261116-037：network 族与运行时 auditor 同源消费
+    // `matcher::match_network_rule`（URL host 归位 + 整串兜底）——此前
+    // 预览走路径通配语义（`preview_path_match`），同一批网络规则在预览
+    // 与运行时是两种语义（闭环-13 单一真相源缺口）。
+    let is_network_op = rule_type == "network";
     let pattern_matches = |bucket: &str, pattern: &str| -> bool {
         if is_command_op {
             let segs = nemesis_security::matcher::exec_rule_segments(target);
@@ -612,6 +621,8 @@ fn cmd_rules_test(
                 &nemesis_security::matcher::normalize_exec_command(target),
                 &segs,
             )
+        } else if is_network_op {
+            nemesis_security::matcher::match_network_rule(pattern, target)
         } else {
             preview_path_match(pattern, target)
         }

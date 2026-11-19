@@ -6,9 +6,10 @@
 //!   调用在 bridge 覆写形态下走实现方，默认体同样从未执行）
 //!
 //! 结构性豁免（见报告）：
-//! - open_in_file_manager（190-215）：spawn 的是 explorer/open/xdg-open
-//!   在宿主桌面真实弹窗口（违反 AGENTS.md 后台纪律：绝不弹窗）；错误
-//!   臂要求系统常驻二进制 spawn 失败，无平台无关触发手段。测试不碰。
+//! - 打开目录动作（open_dir）：spawn explorer/open/xdg-open 在宿主桌面
+//!   真实弹窗口（违反 AGENTS.md 后台纪律：绝不弹窗）。2026-11-14 该动作
+//!   已收编到 crate::handlers::shell_open（单一归宿，自带 resolve_open_target
+//!   闸门纯函数单测覆盖）；本测试模块不碰 spawn 臂。
 
 use super::*;
 
@@ -29,6 +30,12 @@ impl ProjectsBridge for AgtNoopBridge {
         Err("noop".to_string())
     }
     fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
+        Err("noop".to_string())
+    }
+    fn add_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("noop".to_string())
+    }
+    fn remove_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
         Err("noop".to_string())
     }
     fn owner_of(&self, _session_key: &str) -> Option<String> {

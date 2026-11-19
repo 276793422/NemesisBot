@@ -25,9 +25,10 @@ fn test_register_cron_trigger() {
 #[test]
 fn test_register_cron_trigger_legacy_expression_field_still_tracked() {
     // Old YAML files may have written `expression:` instead of `schedule:`.
-    // register_trigger accepts both so the cron cache stays populated even
-    // when the wrong field name was used. The actual scheduler (engine.rs)
-    // only honours `schedule`; this cache entry is informational.
+    // Alias resolution goes through `cron_schedule_from_config`（单一真相源，
+    // BUG-20261114-042）——schedule 优先、expression 回落，engine 的两个
+    // 消费点（cron_next_fire_at_from_trigger / list_cron_workflows）读同一
+    // helper，所以 `expression:` 的旧文件真正排程，不再只是 informational。
     let mgr = TriggerManager::new();
     let trigger = make_trigger("cron", HashMap::from([("expression", "0 * * * *")]));
     mgr.register_trigger("test_wf", trigger).unwrap();

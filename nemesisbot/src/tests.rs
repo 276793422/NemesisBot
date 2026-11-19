@@ -629,6 +629,25 @@ fn test_config_default_has_expected_sections() {
 }
 
 #[test]
+fn test_config_default_max_tool_iterations_matches_typed_default() {
+    // BUG-20261116-018 回归锁：onboard 模板 agents.defaults.max_tool_iterations
+    // 与 typed 缺省漂移（2026-10-11 模板翻 0 后 typed 默认 100 从未跟随——
+    // serde default fn / Default impl / default_config() / 两处单测 / CLAUDE.md
+    // 口径全部 100，唯独模板 0；onboard 用户 config.json 被显式写 0 =
+    // 轮次治理「不限」，文档口径「默认 100（0=不限）」对其失效）。
+    // 断言模板显式值 == typed 缺省（同源对齐：任一侧单独改都会红，逼同步）。
+    let cfg: serde_json::Value = serde_json::from_str(CONFIG_DEFAULT).unwrap();
+    let template = cfg["agents"]["defaults"]["max_tool_iterations"]
+        .as_i64()
+        .expect("template agents.defaults.max_tool_iterations must be a number");
+    assert_eq!(
+        template,
+        nemesis_config::AgentDefaults::default().max_tool_iterations,
+        "config.default.json 模板与 typed 默认漂移：onboard 用户拿到的轮次治理上限与文档/typed 口径不一致"
+    );
+}
+
+#[test]
 fn test_config_cluster_default_has_ports() {
     let cfg: serde_json::Value = serde_json::from_str(CONFIG_CLUSTER_DEFAULT).unwrap();
     assert!(
@@ -946,6 +965,12 @@ pub(crate) fn singleton_test_home() -> std::path::PathBuf {
     HOME.get_or_init(|| {
         let base =
             std::env::temp_dir().join(format!("nemesisbot_r7_sandbox_{}", std::process::id()));
+        // 先清残留再建：Windows PID 回收会让下一轮测试进程拿到同 PID，
+        // 上一轮成功运行留下的沙箱（projects.json 注册表条目、评审账本行
+        // 等）会让本轮测试自碰撞/计数翻倍（假红实录：残留「绑定全路径」
+        // 条目 → create_project 重复路径拒绝）。残留目录属死进程（PID
+        // 归属我们即前任已死），删除安全。
+        let _ = std::fs::remove_dir_all(&base);
         let home = base.join(".nemesisbot");
         std::fs::create_dir_all(&home).expect("create singleton test home");
         nemesis_path::default_path_manager().set_home_dir(home.clone());

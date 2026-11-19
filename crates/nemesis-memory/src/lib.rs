@@ -13,6 +13,7 @@ pub mod graph;
 pub mod local_store;
 pub mod manager;
 pub mod memory_tools;
+pub mod recall_gate;
 pub mod retrieval;
 pub mod store;
 pub mod types;
@@ -31,6 +32,10 @@ mod w4_cascade_tests;
 // （加固）：dreaming 近期召回硬保护（expire 排除）测试。
 #[cfg(test)]
 mod w5_recency_protect_tests;
+
+// 项2 P2 召回质量闸（RecallGate mock 语义 + manager 挂载面）测试。
+#[cfg(test)]
+mod recall_gate_tests;
 
 // re-export 壳放独立文件（BUG-20261106-014：inline mod { body } 形态违反
 // 「测试代码放独立文件」纪律，check-inline-tests.sh 形态 E 补齐后必拦）。

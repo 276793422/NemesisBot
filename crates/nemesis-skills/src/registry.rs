@@ -24,6 +24,89 @@ use crate::types::{
 /// Default maximum concurrent registry searches.
 const DEFAULT_MAX_CONCURRENT: usize = 2;
 
+/// 出厂第三源描述（值单一真相源，2026-11-16 拍板）：registry 面
+/// （[`RegistryManager::from_config`]）与 nemesis-web SkillsFullConfig
+/// 显示/RMW 面共用。repo 与 nemesis-web persona `BUILTIN_REPO` 同仓库；
+/// `Skills/` 在仓库根，live 臂加技能 = 往仓库 `Skills/` 提交一个技能目录
+/// （部署实例不重编可见可装）。
+pub struct FactorySourceDesc {
+    /// 源名（marketplace 展示与安装路由键）。
+    pub name: &'static str,
+    /// GitHub `owner/repo`。
+    pub repo: &'static str,
+    pub branch: &'static str,
+    pub index_type: &'static str,
+    /// 仓库根形态 pattern——listing/下载两侧均由它推导（github_registry
+    /// `listing_dir`）。
+    pub pattern: &'static str,
+}
+
+/// 出厂 GitHub 源值（单一真相源）。
+pub const FACTORY_SOURCE: FactorySourceDesc = FactorySourceDesc {
+    name: "nemesisbot",
+    repo: "276793422/NemesisBot",
+    branch: "main",
+    index_type: "github_api",
+    pattern: "Skills/{slug}/SKILL.md",
+};
+
+/// 出厂源合流（append-if-absent，语义单一真相源）：名字已存在则跳过
+/// （含用户显式停用的条目——用户可关不可丢），否则追加 enabled 条目。
+/// 老工作区 config 无此源也能零操作拿到（persona 出厂源同款收敛语义）。
+pub fn apply_factory_sources(config: &mut RegistryConfig) {
+    if config
+        .github_sources
+        .iter()
+        .any(|s| s.name == FACTORY_SOURCE.name)
+    {
+        return;
+    }
+    config
+        .github_sources
+        .push(crate::types::GitHubSourceConfig {
+            name: FACTORY_SOURCE.name.to_string(),
+            repo: FACTORY_SOURCE.repo.to_string(),
+            enabled: true,
+            branch: FACTORY_SOURCE.branch.to_string(),
+            index_type: FACTORY_SOURCE.index_type.to_string(),
+            index_path: String::new(),
+            skill_path_pattern: FACTORY_SOURCE.pattern.to_string(),
+            timeout_secs: 0,
+            max_size: 0,
+        });
+}
+
+/// API 元数据 JSON 成功响应体帽（BUG-20261114-046 横向收口）。skill
+/// registry 各 HTTP 端点的成功响应此前无字节上限——reqwest 无默认体上限，
+/// 请求超时只约束时间不约束体积（快管道超时窗口内可灌 GB 级）；错误臂
+/// 早已走 `read_error_body` 有帽，成功臂是同款不对称面。用户可配第三方
+/// 源与 nemesis-mcp 服务器同信任层，按同款口径收口：搜索/树/列表/commit
+/// 等元数据 JSON 16MB（与 nemesis-mcp `MAX_RESPONSE_BODY_BYTES` 对齐，
+/// 正常载荷 KB~MB 量级，16MB 为数十倍裕量）。
+/// 2026-11-15 升 pub：nemesis-web persona shop 抓取面（handlers/persona.rs
+/// tree/contents JSON）与 skills 源结构探测（handlers/skills.rs）横向接入
+/// ——同一信任域同一帽值，跨 crate 单一真相源。
+pub const MAX_API_JSON_BODY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// SKILL.md 文本成功响应体帽（BUG-20261114-046 横向收口）。markdown
+/// 内容 KB 量级，1MB 与 github registry `DEFAULT_MAX_SIZE` 对齐。
+/// 2026-11-15 升 pub：nemesis-web persona shop 原文抓取（handlers/persona.rs
+/// raw 内容）横向接入同一帽值——markdown 内容面单一真相源。
+pub const MAX_SKILL_CONTENT_BODY_BYTES: u64 = 1024 * 1024;
+
+/// 技能包**聚合落盘体量**上限（单次安装实际解压/下载字节，BUG-20261114-059
+/// 收编为单一真相源）。clawhub zip 解压（原私有
+/// `MAX_TOTAL_UNCOMPRESSED_BYTES` 同值）、github_tree 树下载、modelscope
+/// 镜像拉取三面共用：三方注册表内容是同一信任域（发布者可控 → staging），
+/// 聚合上限必须同值同源，防「一个面收口、另一个面漏网」的横向分叉。
+pub(crate) const MAX_SKILL_TOTAL_BYTES: u64 = 200 * 1024 * 1024;
+
+/// 技能包**聚合文件数**上限（单次安装，BUG-20261114-059）。正常技能
+/// <100 文件，2000 = 20 倍裕量。帽住小文件海啸（树 JSON 16MB 可编码
+/// ~160K 条目，每条目几个字节即可耗尽 inode/目录项）——体量闸管不住
+/// 条目数，两闸互补。
+pub(crate) const MAX_SKILL_FILE_COUNT: usize = 2000;
+
 /// Trait for registry operations (allows mocking in tests).
 #[async_trait]
 pub trait SkillRegistry: Send + Sync {
@@ -104,7 +187,11 @@ impl RegistryManager {
     }
 
     /// Build a RegistryManager from config, instantiating enabled registries.
-    pub fn from_config(config: RegistryConfig) -> Self {
+    ///
+    /// `config` 按值进来后先做出厂源合流（append-if-absent，见下方注释），
+    /// 再由合流后的副本构造 registries 并存回 [`Self::config`]——消费方
+    /// 拿到的 config 面与 registry 面同源。
+    pub fn from_config(mut config: RegistryConfig) -> Self {
         let max_concurrent = if config.max_concurrent_searches > 0 {
             config.max_concurrent_searches
         } else {
@@ -121,6 +208,20 @@ impl RegistryManager {
         };
 
         let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
+
+        // Legacy 单源形态资格**先于**出厂源合流捕获：合流后 github_sources
+        // 恒非空（出厂源 append-if-absent），若让 legacy 分支事后判断会永久
+        // 假死——老工作区 `github.enabled` 单源形态（无 sources 数组）必须
+        // 保持可注册，与出厂源叠加并存。
+        let legacy_github_eligible = config.github_sources.is_empty() && config.github.enabled;
+
+        // 出厂第三源 append-if-absent（2026-11-16 拍板；persona 先例同款）：
+        // 在 github_sources 循环**之前**合流，出厂源的 GitHub registry 走
+        // 既有循环构造，config 面读取方（源列表/面板/落盘）看到合流后的
+        // 真相。老工作区 config 无此源也能零操作拿到。值与语义单一真相源
+        // = [`FACTORY_SOURCE`] / [`apply_factory_sources`]（nemesis-web
+        // SkillsFullConfig 显示/RMW 面同源消费）。
+        apply_factory_sources(&mut config);
 
         // Create GitHub registries from multi-source config.
         for source in &config.github_sources {
@@ -141,7 +242,8 @@ impl RegistryManager {
         }
 
         // Legacy: if no multi-source GitHub registries, use single-source.
-        if config.github_sources.is_empty() && config.github.enabled {
+        //（资格在出厂源合流前捕获，见上方注释）
+        if legacy_github_eligible {
             let gh = GitHubRegistry::new(
                 &config.github.base_url,
                 config.github.timeout_secs,

@@ -184,6 +184,50 @@ fn test_identity_links_resolution() {
     assert_eq!(key, "agent:main:discord:direct:alice");
 }
 
+/// 确定性纪律（回归锁）：同一平台 ID 误配在两个 canonical 名下时，
+/// 命中必须是**字典序最小 canonical**（HashMap 迭代顺序跨进程随机，
+/// 无序 first-match 会让 DM 会话键随重启翻转）。
+#[test]
+fn test_identity_links_duplicate_id_deterministic() {
+    let key_for = |links: HashMap<String, Vec<String>>| {
+        build_agent_peer_session_key(SessionKeyParams {
+            agent_id: "main".into(),
+            channel: "discord".into(),
+            account_id: "default".into(),
+            peer: Some(RoutePeer {
+                kind: "direct".into(),
+                id: "alice_d".into(),
+            }),
+            dm_scope: DMScope::PerPeer,
+            identity_links: links,
+        })
+    };
+
+    // 两个 canonical 都含 discord:alice_d → 字典序最小的 "alice" 恒命中。
+    // 100 次迭代 × 每实例独立 RandomState：无序迭代实现下命中必然翻转
+    // （变异可杀死），排序实现下恒 "alice"。
+    for _ in 0..100 {
+        let mut links = HashMap::new();
+        links.insert(
+            "zeta-alias".to_string(),
+            vec!["discord:alice_d".to_string()],
+        );
+        links.insert(
+            "alice".to_string(),
+            vec!["discord:alice_d".to_string(), "slack:alice_s".to_string()],
+        );
+        assert_eq!(key_for(links), "agent:main:direct:alice");
+    }
+
+    // 只有一个 canonical 含该 ID 时行为不变（既有语义）。
+    let mut single = HashMap::new();
+    single.insert(
+        "zeta-alias".to_string(),
+        vec!["discord:alice_d".to_string()],
+    );
+    assert_eq!(key_for(single), "agent:main:direct:zeta-alias");
+}
+
 #[test]
 fn test_dm_scope_from_str() {
     assert_eq!(DMScope::from_str("main"), DMScope::Main);

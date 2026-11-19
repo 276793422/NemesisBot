@@ -115,27 +115,11 @@ pub fn deref_str(opt: Option<&String>, default: &str) -> String {
     opt.cloned().unwrap_or_else(|| default.to_string())
 }
 
-/// Validate a skill identifier (slug or registry name).
-/// Mirrors Go ValidateSkillIdentifier.
-/// Must be non-empty, no backslashes, no "..", at most one "/".
-pub fn validate_skill_identifier(identifier: &str) -> Result<(), String> {
-    let trimmed = identifier.trim();
-    if trimmed.is_empty() {
-        return Err("identifier is required and must be a non-empty string".to_string());
-    }
-    if trimmed.contains('\\') {
-        return Err(
-            "identifier must not contain backslashes to prevent directory traversal".to_string(),
-        );
-    }
-    if trimmed.contains("..") {
-        return Err("identifier must not contain '..' to prevent directory traversal".to_string());
-    }
-    if trimmed.matches('/').count() > 1 {
-        return Err("identifier must not contain multiple slashes".to_string());
-    }
-    Ok(())
-}
+// 历史注记：本模块曾有一份 `validate_skill_identifier`（镜像 Go 版，允许单
+// `/`、无冒号/长度/Windows 保留名/尾点检查）。生产真相源是
+// `nemesis_skills::types::validate_skill_identifier`（带全部卫生检查，R163
+// BUG-90 修复族），本副本自始零生产调用方——语义弱化的同名死副本是误用
+// 脚枪，已于 2026-11-18 R1772 按 R163 挂账建议删除。勿在本模块重建弱化版。
 
 #[cfg(test)]
 mod tests;

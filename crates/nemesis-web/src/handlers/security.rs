@@ -93,7 +93,10 @@ pub(crate) static SESSION_ALLOW_ALL_TEST_LOCK: tokio::sync::Mutex<()> =
 /// 无 await 点。
 static SESSION_ALLOW_PERSIST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-fn session_allow_all_state()
+/// 槽读取口。pub：资源盘点装配点（nemesisbot post_agent）取同一 Arc 构造
+/// SessionAllowProvider——盘点与 auditor / security handler 三方共享同一
+/// 运行时态（approval_auto() getter 同款先例）。
+pub fn session_allow_all_state()
 -> Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>> {
     SESSION_ALLOW_ALL
         .read()
@@ -622,7 +625,10 @@ impl SecurityHandler {
     fn approvals_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let path = approval_rules_path(workspace);
         let rules: Vec<serde_json::Value> = if path.exists() {
-            let raw = std::fs::read_to_string(&path)
+            // read_config_string 剥 BOM——与运行期 loader（approval_rules.rs
+            // 已走 helper）同口径：BOM 文件运行期生效而面板列表报 parse 错 =
+            // 同文件读面分裂（BUG-20261103-334 同族）。
+            let raw = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read approval rules: {}", e))?;
             serde_json::from_str(&raw)
                 .map_err(|e| format!("failed to parse approval rules: {}", e))?
@@ -642,7 +648,8 @@ impl SecurityHandler {
         let _cfg_serial = nemesis_config::config_write_lock();
         let path = approval_rules_path(workspace);
         let removed = if path.exists() {
-            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            // read_config_string 剥 BOM（同 approvals_list 臂口径）。
+            let raw = nemesis_utils::fsutil::read_config_string(&path).unwrap_or_default();
             serde_json::from_str::<Vec<serde_json::Value>>(&raw)
                 .map(|v| v.len())
                 .unwrap_or(0)
@@ -805,6 +812,8 @@ impl SecurityHandler {
             "plan_mode": Self::plan_mode_snapshot(ctx),
             "editor": Self::editor_snapshot(),
             "approvals": Self::approvals_status(),
+            "guardian": Self::guardian_snapshot(workspace),
+            "vault": Self::vault_snapshot(workspace),
             "signature": self.signature_verify_status(ctx),
             "scanner": Self::scanner_snapshot(workspace),
             "global": Self::global_switch_snapshot(ctx),
@@ -1011,6 +1020,37 @@ impl SecurityHandler {
             }
             None => serde_json::json!({ "injected": false }),
         }
+    }
+
+    /// ⑪ Guardian 二审快照（总览页行状态）：guardian_mode /
+    /// guardian_failure_policy 是构造期键（装配读定、保存需重启生效），
+    /// 配置文件即真相源——与 [`Self::layers_projection`] 同款 raw 直读
+    /// （缺席 = runtime 默认：mode=off / policy=ask）。
+    fn guardian_snapshot(workspace: &str) -> serde_json::Value {
+        let raw = match nemesis_utils::fsutil::read_config_string(security_config_path(workspace)) {
+            Ok(s) => serde_json::from_str::<serde_json::Value>(&s).unwrap_or(serde_json::json!({})),
+            Err(_) => serde_json::json!({}),
+        };
+        let get = |k: &str| {
+            raw.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        serde_json::json!({
+            "mode": get("guardian_mode"),
+            "failure_policy": get("guardian_failure_policy"),
+        })
+    }
+
+    /// ⑬ 凭据 Vault 快照（总览页行状态）：加密存储文件在场态
+    /// （`<workspace>/config/vault.enc`）。vault 无「装配」半边（子系统
+    /// 恒在），初始化与否由存储文件存在性表达。
+    fn vault_snapshot(workspace: &str) -> serde_json::Value {
+        let path = nemesis_path::resolve_vault_path_in_workspace(Path::new(workspace));
+        serde_json::json!({
+            "exists": path.exists(),
+        })
     }
 
     /// ⑦ 病毒扫描层快照（`load_scanner_status` 单一真相源投影 + 计数；

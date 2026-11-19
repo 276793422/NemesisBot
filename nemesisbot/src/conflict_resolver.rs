@@ -354,7 +354,8 @@ async fn redispatch_after_failed_resolve(
                 "failure": failure,
             }),
         );
-        let _ = store.add_comment(NewComment {
+        // BUG-20261118-173：重派通知评论写失败不再静默（惯例对齐）。
+        if let Err(e) = store.add_comment(NewComment {
             issue_id: issue.id,
             author: Actor::system("conflict-resolver"),
             content: format!(
@@ -362,7 +363,10 @@ async fn redispatch_after_failed_resolve(
             ),
             parent_id: None,
             ctype: CommentType::System,
-        });
+        }) {
+            warn!(issue = %issue.number, task = %task_id,
+                "[ConflictResolver] 重派通知评论落库失败：{e}（重派流程照常）");
+        }
         worker_id.clone()
     } else {
         // 三轮全无 → 换人：探针已证原 worker 不可达，直接选历史未用在线
@@ -407,7 +411,8 @@ async fn redispatch_after_failed_resolve(
                     "failure": failure,
                 }),
             );
-            let _ = store.add_comment(NewComment {
+            // BUG-20261118-173：换节点通知评论写失败不再静默（惯例对齐）。
+            if let Err(e) = store.add_comment(NewComment {
                 issue_id: issue.id,
                 author: Actor::system("conflict-resolver"),
                 content: format!(
@@ -415,7 +420,10 @@ async fn redispatch_after_failed_resolve(
                 ),
                 parent_id: None,
                 ctype: CommentType::System,
-            });
+            }) {
+                warn!(issue = %issue.number, task = %task_id,
+                    "[ConflictResolver] 换节点通知评论落库失败：{e}（换节点流程照常）");
+            }
         } else {
             crate::board_review::record_auto_decide(
                 &deps,

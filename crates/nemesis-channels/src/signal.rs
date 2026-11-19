@@ -194,7 +194,7 @@ impl SignalChannel {
             .map_err(|e| NemesisError::Channel(format!("signal send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("signal send error: {body}")));
         }
 
@@ -310,7 +310,9 @@ impl Channel for SignalChannel {
                         voice_playback: None,
                     };
 
-                    let _ = bus.send(inbound);
+                    if let Err(e) = bus.send(inbound) {
+                        warn!("[SignalChannel] failed to publish inbound message to bus: {e}");
+                    }
                 }
             }
 

@@ -19,6 +19,11 @@ export interface ToolSchema {
   description: string
   /** JSON Schema object: { type:'object', properties, required }. */
   parameters: Record<string, unknown>
+  /**
+   * 近 30 天真实执行次数（工具使用率账；拒绝不计）。无账本/无记录 = 0。
+   * 行序保持注册表序——排序归消费侧。
+   */
+  usage_count?: number
 }
 
 export interface ToolsListResponse {

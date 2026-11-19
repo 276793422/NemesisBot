@@ -287,7 +287,15 @@ impl AgentLoop {
             if kept.is_empty() {
                 return None;
             }
-            Some(kept.into_iter().map(|(_, c)| c).collect())
+            // 项2 P2 召回质量闸：一次批量小模型判相关后过滤。闸缺席 =
+            // 原样返回（默认关，字节不变）；判定失败 fail-open 全保留；
+            // 全部判为不相关 = 合法空集（无注入段）。
+            let hits: Vec<String> = kept.into_iter().map(|(_, c)| c).collect();
+            let hits = mgr.filter_recall_hits(&query, hits).await;
+            if hits.is_empty() {
+                return None;
+            }
+            Some(hits)
         }
         #[cfg(not(feature = "memory"))]
         {
@@ -582,16 +590,27 @@ impl AgentLoop {
                 snapshot_section.push_str(&format!("\n{note}"));
             }
         }
+        // 文件引用规范（2026-11-14 BUG 提示词半边）：LLM 列界外目录时
+        // 习惯转述裸文件名，前端链接按工作区相对解析必败 → 祖先回退误导。
+        // 规则钉进每轮快照（常量文本跨轮稳定，字节纪律成立不触发重注入；
+        // 注入点在对话历史后 = prompt cache 前缀不受损）。
+        snapshot_section.push_str(
+            "\n# File References\n\
+             - 工作区内文件：用相对路径引用。\n\
+             - 工作区外文件：必须用完整绝对路径（如 C:/path/file.md），相对路径或裸文件名无法被前端链接解析。\n\
+             - 罗列文件清单（列目录/表格式回复）时：逐条带完整路径，不要只写文件名。",
+        );
         snapshot_section.push_str("\n(本快照取代之前的时间/环境快照)");
 
         // /（多模态）：turn → 请求消息统一走 `turn_to_request_message`
         // （与 replay 重建共用；image_refs 每轮水合重读，失效 → 占位文本）。
         // ⑥ hydrate 回退查找：fallback 根 = 自会话 home（fork copy-on-fork
         // 语义——源路径失效时自 home 副本命中）。未绑定/根缺席 = None，
-        // 行为零变化；根一致性同 plans/uploads/images——用本 loop 的
-        // workspace_root（项目会话 home 在项目目录下）。
+        // 行为零变化；根一致性同 plans/uploads/images——会话资产区根统一
+        // 走 session_homes_root（2026-11-16 污染修复：项目会话 home 在主
+        // workspace，不再随项目 loop 落项目目录）。
         let hydrate_home = session_key.and_then(|sk| {
-            let root = self.workspace_root.read().clone()?;
+            let root = self.session_homes_root();
             crate::session_home::resolve_session_home(&root, sk)
         });
         let turn_to_msg = |turn: &crate::types::ConversationTurn| {

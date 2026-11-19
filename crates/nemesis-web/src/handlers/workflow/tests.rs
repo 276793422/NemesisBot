@@ -181,6 +181,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
 
     Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -203,6 +204,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -212,6 +214,7 @@ fn make_test_state(auth_token: &str) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -293,6 +296,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
     use std::time::Instant;
     let state = Arc::new(AppState {
         cors_manager: None,
+        events_snapshot: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -315,6 +319,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: Some(engine),
@@ -324,6 +329,7 @@ fn make_ctx_with_engine(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -
         webhook_rate_limiter: Arc::new(WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        estop_audit: None,
         background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
@@ -988,6 +994,74 @@ async fn wsapi_resolve_chat_target_human_review_ineligible() {
         .unwrap();
     assert_eq!(r["found"], true);
     assert_eq!(r["chat_eligible"], false);
+    assert!(r["reason"].as_str().unwrap().contains("human_review"));
+}
+
+#[tokio::test]
+async fn wsapi_resolve_chat_target_indirect_human_review_ineligible() {
+    // BUG-20261114-035 横向锁：human_review 经 sub_workflow 复合可达时，
+    // 预检也必须报 ineligible——否则列表说可聊、聊天页前门拒绝，两层
+    // 口径分裂（旧实现只查顶层节点）。
+    let engine = build_test_engine();
+    engine
+        .register_workflow(nemesis_workflow::types::Workflow {
+            name: "indirect_child".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            triggers: vec![],
+            nodes: vec![nemesis_workflow::types::NodeDef {
+                id: "n1".to_string(),
+                node_type: "human_review".to_string(),
+                config: HashMap::new(),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        })
+        .unwrap();
+    engine
+        .register_workflow(nemesis_workflow::types::Workflow {
+            name: "indirect_parent".to_string(),
+            description: String::new(),
+            version: "1.0.0".to_string(),
+            triggers: vec![],
+            nodes: vec![nemesis_workflow::types::NodeDef {
+                id: "s1".to_string(),
+                node_type: "sub_workflow".to_string(),
+                config: HashMap::from([(
+                    "workflow".to_string(),
+                    serde_json::json!("indirect_child"),
+                )]),
+                depends_on: vec![],
+                retry_count: 0,
+                timeout: None,
+                is_terminal: false,
+            }],
+            edges: vec![],
+            variables: HashMap::new(),
+            metadata: HashMap::new(),
+        })
+        .unwrap();
+    let index = nemesis_workflow::engine::WorkflowEngine::chat_index("indirect_parent");
+    let ctx = make_ctx_with_engine(engine);
+    let r = WorkflowHandler
+        .handle_cmd(
+            "resolve_chat_target",
+            Some(serde_json::json!({"index": index})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(r["found"], true);
+    assert_eq!(
+        r["chat_eligible"], false,
+        "复合路径可达 human_review 必须报 ineligible"
+    );
     assert!(r["reason"].as_str().unwrap().contains("human_review"));
 }
 

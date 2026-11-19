@@ -28,6 +28,21 @@ const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 /// 均在百字节级）。
 const MAX_LSP_HEADER_LINE_BYTES: usize = 64 * 1024;
 
+/// 文档同步出站体积闸（BUG-20261114-047）：didOpen/didChange 把整个文件
+/// 文本装进一帧下发——`read_to_string`(N) → json! Value(N) →
+/// serde_json::to_vec(N) → encode 再拼一次，约 3-4× 文件体积的瞬时 RSS。
+/// 诊断闭环/编辑路径可把 LSP 指向意外巨型文件（误配 dist bundle / 生成物
+/// / 带源码扩展名的数据文件），无闸即 gateway OOM 面——与入站侧
+/// MAX_LSP_MESSAGE_BYTES（64 MiB，防服务器灌入）同族，本闸防客户端灌出。
+/// 帽值对齐 agent 工具面读侧内存闸家族（loop_tools `READ_FILE_MAX_BYTES`
+/// = 20_000_000，BUG-20261110-041 先修：read_file/edit_file/multiedit/
+/// grep 同语义全用此值）——本位点是该家族的漏网站点（工具面已全帽，
+/// LSP 出站面漏帽）。20MB 锚定合法源文件量级的数十倍裕量，且低于入站
+/// 64 MiB（方向自洽）。超限按各调用面既有语义诚实降级：sync_doc = Err
+/// （诊断循环 best-effort 剔除该文件，编辑路径不受阻）；rename = 逐文件
+/// errors 列表（其余文件照常）。
+const MAX_LSP_DOC_SYNC_BYTES: u64 = 20_000_000;
+
 /// The operations this crate exposes. Four are read-only queries; adds
 /// the write-capable pair — `Rename` produces file edits that the CALLER
 /// (the agent tool) must push through the security pipeline before any
@@ -91,6 +106,19 @@ struct Inner {
     /// reap 时随 Inner 一起消失——新会话对空集合，下一个 touch 自然重发
     /// didOpen（服务器状态与新会话一致）。
     open_docs: HashMap<String, i64>,
+}
+
+/// [`Session::drain_pushes`] 的结束原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrainEnd {
+    /// quiet 窗静默收敛 / max 兜底——流边界完好，诊断快照照常可用。
+    Converged,
+    /// 读流出错（EOF=服务器死了 / 帧解析失败=流形态破坏，含读 future
+    /// 被窗口超时取消留下的半消费字节族）——帧边界不可信。调用方必须
+    /// 驱逐会话：与 request 路径的 [`is_session_poisoning`] 驱逐纪律同源
+    /// （drain 路径此前漏了这一臂——毒化会话滞留表里，下一次查询撞上
+    /// 流垃圾按 poisoning 响亮失败一次后才被那道臂自愈）。
+    StreamUnusable,
 }
 
 impl Session {
@@ -196,7 +224,8 @@ impl Session {
     /// 连推多轮增量收敛），这里读到一条消息就把 quiet 窗口重新计时，连续
     /// `quiet` 无消息（≈ 编辑器的 debounce 收敛）或总时长到 `max` 兜底即
     /// 返回。途中的 server→client 请求照 never-ignore 政策回应（有的服务
-    /// 器会阻塞等回复）；读流出错（服务器死了）同样终止——不会再有推送。
+    /// 器会阻塞等回复）；读流出错（服务器死了）同样终止——不会再有推送，
+    /// 且以 [`DrainEnd::StreamUnusable`] 上抛由调用方驱逐会话。
     ///
     /// 实机验证修出的冷启动缺口：**首条非空
     /// publishDiagnostics 到达前** quiet 收敛不生效——（a）冷启动服务器
@@ -209,12 +238,12 @@ impl Session {
     /// 清屏推送等满 `max` 兜底返回空——等价结果（无错可报），代价是
     /// `max` 时长的等待税（默认 2000ms，可配）。LSP 规范要求服务器
     /// 分析完推送（哪怕空数组），等待始终有界。
-    async fn drain_pushes(&self, quiet: Duration, max: Duration) {
+    async fn drain_pushes(&self, quiet: Duration, max: Duration) -> DrainEnd {
         let start = Instant::now();
         let mut saw_nonempty_push = false;
         loop {
             if start.elapsed() >= max {
-                return;
+                return DrainEnd::Converged;
             }
             let remaining = max.saturating_sub(start.elapsed());
             let window = quiet.min(remaining);
@@ -249,11 +278,15 @@ impl Session {
                     // 别的（陈旧 id 的响应）——忽略。
                     proto::Incoming::Response(_) => {}
                 },
+                // 读流出错（EOF / 帧解析失败，含半消费字节族）——帧边界
+                // 不可信，按 [`DrainEnd::StreamUnusable`] 上抛由调用方
+                // 驱逐（与 request 路径 poisoning 臂同纪律）。
+                Ok(Err(_)) => return DrainEnd::StreamUnusable,
                 // 非空推送未到 → 继续等（冷启动/清屏后待真诊断，max 兜底；
                 // timeout 已耗掉整窗，continue 无自旋）。
                 Err(_) if !saw_nonempty_push => {}
-                // quiet 窗口内没有消息（已收敛）/ 读流出错（服务器死了）。
-                _ => return,
+                // quiet 窗口内没有消息（已收敛）。
+                Err(_) => return DrainEnd::Converged,
             }
         }
     }
@@ -531,6 +564,16 @@ impl LspManager {
         let mut files = Vec::new();
         let mut errors = Vec::new();
         for fe in file_edits {
+            // BUG-20261114-047：读盘前体积闸——超限文件诚实进 errors（不读
+            // 入，防内存倍增），其余文件照常（既有逐文件降级语义）。
+            // metadata 失败 → 0 → 落到下方 read_to_string 原样诚实报错。
+            if std::fs::metadata(&fe.path).map(|m| m.len()).unwrap_or(0) > MAX_LSP_DOC_SYNC_BYTES {
+                errors.push(format!(
+                    "{}: exceeds LSP doc sync cap {MAX_LSP_DOC_SYNC_BYTES} — skipped",
+                    fe.path
+                ));
+                continue;
+            }
             // read_to_string：非 UTF-8 文件诚实进 errors（不静默跳过）。
             let content = match std::fs::read_to_string(&fe.path) {
                 Ok(c) => c,
@@ -812,9 +855,32 @@ impl LspManager {
             return Ok(());
         };
         let text = match text_override {
-            Some(t) => t.to_string(),
-            None => std::fs::read_to_string(path)
-                .map_err(|e| format!("read for LSP sync failed: {e}"))?,
+            Some(t) => {
+                // BUG-20261114-047：直传文本同受闸（rename→notify 链上游已
+                // 逐文件闸过，此处兜底防新增调用方绕行）。
+                if t.len() as u64 > MAX_LSP_DOC_SYNC_BYTES {
+                    return Err(format!(
+                        "text ({} bytes) exceeds LSP doc sync cap {MAX_LSP_DOC_SYNC_BYTES} — skipped",
+                        t.len()
+                    ));
+                }
+                t.to_string()
+            }
+            None => {
+                // BUG-20261114-047：读盘前 metadata 体积闸——超限文件不读入
+                // （防 didOpen 帧 3-4× 文件体积的瞬时 RSS 倍增）。
+                let meta = std::fs::metadata(path)
+                    .map_err(|e| format!("stat for LSP sync failed: {e}"))?;
+                if meta.len() > MAX_LSP_DOC_SYNC_BYTES {
+                    return Err(format!(
+                        "file {} ({} bytes) exceeds LSP doc sync cap {MAX_LSP_DOC_SYNC_BYTES} — skipped",
+                        path.display(),
+                        meta.len()
+                    ));
+                }
+                std::fs::read_to_string(path)
+                    .map_err(|e| format!("read for LSP sync failed: {e}"))?
+            }
         };
         let root = find_root(path);
         self.reap_idle().await;
@@ -911,18 +977,32 @@ impl LspManager {
         let root = find_root(path);
         let session = {
             let sessions = self.sessions.lock().await;
-            sessions.get(&(lang, root)).cloned()
+            sessions.get(&(lang, root.clone())).cloned()
         };
         let Some(session) = session else {
             return vec![];
         };
         *session.last_used.lock().unwrap() = Instant::now();
-        session
+        let outcome = session
             .drain_pushes(
                 Duration::from_millis(quiet_ms),
                 Duration::from_millis(max_ms),
             )
             .await;
+        if outcome == DrainEnd::StreamUnusable {
+            // drain 撞上破坏流（EOF 或帧垃圾）：会话不可信，立即驱逐
+            // （树杀 + 出表）——与 request 路径的 poisoning 臂同纪律。
+            // 不驱逐的话毒化会话滞留表里，下一次查询读到流垃圾按
+            // poisoning 响亮失败一次后才自愈。
+            tracing::warn!(
+                "[LSP] diagnostics drain for {} hit a broken stream (server died or frame desync); evicting the session so the next query respawns",
+                root.display()
+            );
+            self.sessions.lock().await.remove(&(lang, root.clone()));
+            if let Ok(mut inner) = session.inner.try_lock() {
+                kill_tree(&mut inner.child).await;
+            }
+        }
         session.diagnostics_for_uri(&proto::path_to_uri(path))
     }
 }

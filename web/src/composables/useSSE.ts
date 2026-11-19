@@ -29,7 +29,13 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 帧（订阅存在 + 后端发布存在 + 白名单缺席 = 实时进度静默失效）。
 // M2（2026-10-27）：'system-alert' = 系统级降级告警（磁盘水位升档
 // disk_watermark + 关键写失败聚合 degraded_write），AppLayout 告警条消费。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert']
+// 2026-11-13：'expert-degraded' = 专家无匹配自动降级（spawn 点名不存在/
+// 停用 + degrade 策略 + notify 开），AppLayout toast 消费（voice-setup
+// 同款白名单坑——后端发布 + composable 订阅都在，白名单缺席 = 静默失效）。
+// 2026-11-15：'browser_event' = 浏览器接管编排操作事件（spawn/attach/
+// release/close/detect，agent_build.rs sink → EventHub），执行单元【浏览器】
+// TAB 日志子页签实时并入 + 列表卡即时刷新（AI 动作路走 tool_event 不在此）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []
@@ -53,12 +59,14 @@ export function connectEvents() {
     // 服务端 token 载体优先级补 `?token=` 查询参数；未配置鉴权（空 token）
     // 时参数缺省，行为与此前一致。
     // F1 跟进修复（2026-10-18）：autoLogin 认证链（插件窗口 __DASHBOARD_TOKEN__
-    // 注入 / URL hash token / 桌面 runtime 事件）从不写 localStorage，而下方
+    // 注入 / URL hash token / 桌面 runtime 事件）当时从不写 localStorage，而下方
     // URL 之前只读 localStorage——注入会话生成不带 ?token= 的请求，REST 统一
     // 鉴权（2026-09-22）下 SSE 恒 401（EventSource 对非 200 fail-fast 关闭且
     // 不自动重试），Logs 页「正在连接 SSE…」永挂；同刻 WS 携内存 token 正常，
     // 恰成「WS 连上、SSE 401」的现场指纹。改与 httpGet 同源（useWebSocket
     // 模块级 token，connect() 注入），localStorage 兜底浏览器手动登录路径。
+    // （2026-11-13 起 autoLogin 成功也落盘，见 stores/auth.ts——内存优先保留，
+    // 取最新认证态防 token 轮换后的旧值。）
     const stored = currentAuthToken() || localStorage.getItem('nemesisbot_auth_token')
     const sseUrl = stored ? `${apiUrl('/api/events/stream')}?token=${encodeURIComponent(stored)}` : apiUrl('/api/events/stream')
     eventSource = new EventSource(sseUrl)

@@ -214,6 +214,27 @@ fn test_encrypt_decrypt_roundtrip() {
     assert_eq!(r2, "");
 }
 
+// BUG-20261117-049 回归锁：协议头 16 字节 random 必须随机——同 key 同明文
+// 两次加密密文必不同（random 常量化 = 密文字典可预计算）。
+#[test]
+fn test_encrypt_message_random_prefix_distinct_ciphertexts() {
+    let (_, key) = make_aes_key();
+    let msg = r#"{"msgtype":"text","text":{"content":"same"}}"#;
+    let e1 = crypto::encrypt_message(&key, msg, "corp").unwrap();
+    let e2 = crypto::encrypt_message(&key, msg, "corp").unwrap();
+    assert_ne!(
+        e1, e2,
+        "同 key 同明文两次 encrypt_message 密文必须不同（随机前缀）"
+    );
+    // 随机前缀不得破坏正确性：两条都能解回。
+    let (m1, r1) = crypto::decrypt_message(&key, &e1).unwrap();
+    let (m2, r2) = crypto::decrypt_message(&key, &e2).unwrap();
+    assert_eq!(m1, msg);
+    assert_eq!(m2, msg);
+    assert_eq!(r1, "corp");
+    assert_eq!(r2, "corp");
+}
+
 #[test]
 fn test_pad32_boundary_roundtrip() {
     // 构造 raw_len ≡ 0 (mod 32) 的载荷 → 填充值 = 32（企业微信 32 字节块

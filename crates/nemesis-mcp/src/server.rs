@@ -174,12 +174,13 @@ impl McpServer {
         let handler = match self.handlers.get(&tool_name) {
             Some(h) => h,
             None => {
+                // MCP spec tools/call 错误面：未知工具 = -32602 Invalid
+                // params（BUG-20261118-164 错误码规范化——此前 -32603
+                // Internal，外部 MCP 客户端按错误码分类会把协议层「参数
+                // 指向不存在」误当服务器内部故障）。
                 return JSONRPCResponse::error(
                     id,
-                    JSONRPCError::new(
-                        JSONRPCError::INTERNAL_ERROR,
-                        format!("Tool not found: {tool_name}"),
-                    ),
+                    JSONRPCError::invalid_params(format!("Tool not found: {tool_name}")),
                 );
             }
         };
@@ -218,13 +219,18 @@ impl McpServer {
                 Some(content) => {
                     JSONRPCResponse::success(id, serde_json::json!({ "contents": [content] }))
                 }
-                None => JSONRPCResponse::error(
-                    id,
-                    JSONRPCError::new(
-                        JSONRPCError::INTERNAL_ERROR,
-                        format!("Resource not found: {uri}"),
-                    ),
-                ),
+                None => {
+                    // MCP spec 保留错误码：资源不存在 = -32002（BUG-20261118-164
+                    // 错误码规范化——此前 -32603 Internal，客户端无法按协议
+                    // 语义区分「资源不存在」与「服务器故障」）。
+                    JSONRPCResponse::error(
+                        id,
+                        JSONRPCError::new(
+                            JSONRPCError::RESOURCE_NOT_FOUND,
+                            format!("Resource not found: {uri}"),
+                        ),
+                    )
+                }
             },
             None => {
                 JSONRPCResponse::error(id, JSONRPCError::invalid_params("Missing uri parameter"))

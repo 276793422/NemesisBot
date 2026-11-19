@@ -81,6 +81,86 @@ pub fn unregister_call(exe: &Path, dir: &Path) -> SystemCall {
     }
 }
 
+/// 构造 `taiwei emit install` 调用（遥测 M3：原子提交完成后 spawn；
+/// install_id 安装器生成透传）。遥测失败绝不影响安装结果（调用方按警告降级）。
+pub fn taiwei_install_call(exe: &Path, install_id: &str) -> SystemCall {
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args: vec![
+            "taiwei".to_string(),
+            "emit".to_string(),
+            "install".to_string(),
+            "--install-id".to_string(),
+            install_id.to_string(),
+        ],
+    }
+}
+
+/// 构造 `taiwei emit uninstall` 调用（卸载链同窗口：bot 还在盘上）。
+/// `reason` = 卸载原因问卷选择（D1：None = 静默卸载/用户跳过，不带旗标）。
+pub fn taiwei_uninstall_call(exe: &Path, reason: Option<&str>) -> SystemCall {
+    let mut args = vec![
+        "taiwei".to_string(),
+        "emit".to_string(),
+        "uninstall".to_string(),
+    ];
+    if let Some(r) = reason {
+        args.push("--reason".to_string());
+        args.push(r.to_string());
+    }
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args,
+    }
+}
+
+/// 构造 `taiwei disable` 调用（遥测 M4 合规：用户取消勾选 = 安装完成前
+/// 持久写 opt-out 权威位 `<home>/config/config.taiwei.json`；之后 emit
+/// 读开关链诚实短路零网络——双重检查闸）。
+pub fn taiwei_disable_call(exe: &Path) -> SystemCall {
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args: vec!["taiwei".to_string(), "disable".to_string()],
+    }
+}
+
+/// 构造 `taiwei enable-precise` 调用（遥测 M6 opt-in 单独同意：用户勾选
+/// 精确定位 = 持久写 opt-out 权威位 `precise_location` 键；默认不勾不 spawn）。
+pub fn taiwei_precise_enable_call(exe: &Path) -> SystemCall {
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args: vec!["taiwei".to_string(), "enable-precise".to_string()],
+    }
+}
+
+/// 构造 `taiwei machine-id ensure` 调用（设备标识播种：随机 128-bit
+/// 持久 ID 的机器级存储幂等写入；install 流程在 emit install 之前 spawn
+/// ——emit 读链随后命中机器存储。失败降为警告，身份走 workspace 兜底链）。
+pub fn taiwei_machine_id_ensure_call(exe: &Path) -> SystemCall {
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args: vec![
+            "taiwei".to_string(),
+            "machine-id".to_string(),
+            "ensure".to_string(),
+        ],
+    }
+}
+
+/// 构造 `taiwei machine-id remove` 调用（卸载链收尾：删机器级设备标识
+/// ——用户拍板「卸载不留任何机器标识」；时序在 emit uninstall 之后——emit
+/// 还要读 ID，spawn 语境 bot 还在盘上；幂等，不存在 = Ok。失败降为警告）。
+pub fn taiwei_machine_id_remove_call(exe: &Path) -> SystemCall {
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args: vec![
+            "taiwei".to_string(),
+            "machine-id".to_string(),
+            "remove".to_string(),
+        ],
+    }
+}
+
 /// 执行系统集成调用（普通 spawn；bot 自身已带控制台纪律）。
 pub fn run_system_call(call: &SystemCall) -> Result<std::process::Output> {
     std::process::Command::new(&call.exe)
@@ -291,6 +371,13 @@ pub struct InstallOptions {
     pub no_shortcuts: bool,
     pub autostart: bool,
     pub launch: bool,
+    /// 匿名使用统计 opt-in（遥测 M4 合规：默认 true；向导勾选 / 静默缺省开，
+    /// `--no-taiwei` 或取消勾选 = 安装完成前持久写 opt-out 权威位）。
+    pub taiwei_opt_in: bool,
+    /// 精确定位 opt-in（遥测 M6 合规：默认 **false**——单独同意，不随总闸
+    /// 走；仅 taiwei_opt_in 也为 true 时安装完成前 spawn enable-precise；
+    /// Linux 定位后端缺席 = 运行期诚实降级 IP 城市，勾选无害）。
+    pub precise_opt_in: bool,
 }
 
 /// 安装结果。
@@ -397,6 +484,43 @@ pub fn run_install_with(
         Err(e) => notes.push(format!("系统集成注册（system register）: {e:#}")),
     }
 
+    // ⑥b 产品使用遥测（M3/M4）：install 事件——原子提交（⑤）已完成，bot
+    // 已落位。install_id 本地生成透传；用户取消勾选（taiwei_opt_in=false）
+    // = 先 spawn `taiwei disable` 持久写 opt-out 权威位，再照常 spawn
+    // emit（emit 读开关链诚实短路零网络——服务端零 install 行）。非致命：
+    // 失败降为 notes（遥测绝不影响安装结果）。
+    let install_id = uuid::Uuid::new_v4().to_string();
+    if !opts.taiwei_opt_in {
+        let dcall = taiwei_disable_call(&opts.target_dir.join("nemesisbot"));
+        match run_system_cmd(&dcall, system) {
+            Ok(None) => {}
+            Ok(Some(w)) => notes.push(format!("使用统计关闭（taiwei disable）: {w}")),
+            Err(e) => notes.push(format!("使用统计关闭（taiwei disable）: {e:#}")),
+        }
+    }
+    if opts.taiwei_opt_in && opts.precise_opt_in {
+        let pcall = taiwei_precise_enable_call(&opts.target_dir.join("nemesisbot"));
+        match run_system_cmd(&pcall, system) {
+            Ok(None) => {}
+            Ok(Some(w)) => notes.push(format!("精确定位开启（taiwei enable-precise）: {w}")),
+            Err(e) => notes.push(format!("精确定位开启（taiwei enable-precise）: {e:#}")),
+        }
+    }
+    // 设备标识播种（随机持久 ID）：机器级存储幂等写入，先于 emit install
+    // （emit 读链随后命中）；失败降为警告（身份走 workspace 兜底链）。
+    let ecall = taiwei_machine_id_ensure_call(&opts.target_dir.join("nemesisbot"));
+    match run_system_cmd(&ecall, system) {
+        Ok(None) => {}
+        Ok(Some(w)) => notes.push(format!("设备标识播种（taiwei machine-id ensure）: {w}")),
+        Err(e) => notes.push(format!("设备标识播种（taiwei machine-id ensure）: {e:#}")),
+    }
+    let tcall = taiwei_install_call(&opts.target_dir.join("nemesisbot"), &install_id);
+    match run_system_cmd(&tcall, system) {
+        Ok(None) => {}
+        Ok(Some(w)) => notes.push(format!("使用统计上报（taiwei emit install）: {w}")),
+        Err(e) => notes.push(format!("使用统计上报（taiwei emit install）: {e:#}")),
+    }
+
     // ⑦ 启动。
     let launched = if opts.launch {
         launch_dashboard(&opts.target_dir).unwrap_or(false)
@@ -457,7 +581,8 @@ pub fn run_uninstall_with(
     if !running.is_empty() {
         return Err(anyhow::Error::new(OpsFail::Running(running)));
     }
-    uninstall_body(install_dir, system)
+    // 静默卸载无问卷（D1 时序契约：问卷只在交互向导确认后问）→ None。
+    uninstall_body(install_dir, system, None)
 }
 
 // ---------- 路径级强停（确认卸载链，2026-11-10 用户拍板） ----------
@@ -524,10 +649,19 @@ pub fn stop_install_bots(install_dir: &Path) -> Result<Vec<setup_core::procs::Bo
 /// 确认卸载链（向导确认后）：**路径级强制停止**本目录运行实例 →
 /// unregister → 引擎卸载 → 副本摘除。与静默闸的差异：无全局实例闸——
 /// 路径级判定已含在强停步骤内（他处实例不锁本目录文件）。
+/// `reason` = 卸载原因问卷选择（D1；None = 静默/跳过，不带 --reason）。
 #[cfg(target_os = "linux")]
-pub fn run_uninstall_confirmed(install_dir: &Path) -> Result<UninstallOutcome> {
+pub fn run_uninstall_confirmed(
+    install_dir: &Path,
+    reason: Option<&str>,
+) -> Result<UninstallOutcome> {
     let dir = install_dir.to_path_buf();
-    run_uninstall_confirmed_with(install_dir, &|| stop_install_bots(&dir), &run_system_call)
+    run_uninstall_confirmed_with(
+        install_dir,
+        &|| stop_install_bots(&dir),
+        &run_system_call,
+        reason,
+    )
 }
 
 /// 确认卸载注入形态（测试专用）：假强停 + 假执行器。
@@ -539,18 +673,27 @@ pub fn run_uninstall_confirmed_with(
     install_dir: &Path,
     stop: StopBots<'_>,
     system: SystemRunner<'_>,
+    reason: Option<&str>,
 ) -> Result<UninstallOutcome> {
     // 强停必须先于一切删除动作（运行中的 bot 持有自身镜像）。
     let stopped = stop()?;
-    let mut out = uninstall_body(install_dir, system)?;
+    let mut out = uninstall_body(install_dir, system, reason)?;
     out.bots_stopped = stopped.len();
     Ok(out)
 }
 
-/// 卸载公共体（静默闸与确认链共用）：unregister → 引擎卸载 → 副本摘除
-/// → 剪壳。顺序即契约：注销先于引擎删除（删完再调 = 给死二进制发指令）。
+/// 卸载公共体（静默闸与确认链共用）：unregister → 遥测 uninstall（同窗口：
+/// bot 还在盘上）→ machine-id remove（设备标识删除）→ 引擎卸载 → 副本摘除 →
+/// 剪壳。顺序即契约：注销先于引擎删除（删完再调 = 给死二进制发指令），遥测
+/// 随注销同窗，设备标识删除在 emit 之后（emit 还要读 ID）、引擎删除之前。
+/// `reason` = 问卷结果透传给 emit 调用（D1 时序契约：问卷必须在卸载链
+/// **之前**问——emit 后 bot 很快被删；静默卸载传 None）。
 #[cfg(target_os = "linux")]
-fn uninstall_body(install_dir: &Path, system: SystemRunner<'_>) -> Result<UninstallOutcome> {
+fn uninstall_body(
+    install_dir: &Path,
+    system: SystemRunner<'_>,
+    reason: Option<&str>,
+) -> Result<UninstallOutcome> {
     use setup_core::install;
 
     // 系统集成注销必须先于引擎删除——bot 已落位才能执行注销；删完再调
@@ -561,6 +704,21 @@ fn uninstall_body(install_dir: &Path, system: SystemRunner<'_>) -> Result<Uninst
         Ok(None) => {}
         Ok(Some(w)) => notes.push(format!("系统集成注销（system unregister）: {w}")),
         Err(e) => notes.push(format!("系统集成注销（system unregister）: {e:#}")),
+    }
+    let tcall = taiwei_uninstall_call(&install_dir.join("nemesisbot"), reason);
+    match run_system_cmd(&tcall, system) {
+        Ok(None) => {}
+        Ok(Some(w)) => notes.push(format!("使用统计上报（taiwei emit uninstall）: {w}")),
+        Err(e) => notes.push(format!("使用统计上报（taiwei emit uninstall）: {e:#}")),
+    }
+    // 设备标识删除（随机持久 ID 机器存储；用户拍板卸载不留机器标识）。
+    // 时序契约：必须在 emit uninstall 之后（emit 还要读 ID）、引擎删除之前
+    // （spawn 语境 bot 还在盘上）。失败降为警告，绝不阻断卸载。
+    let rcall = taiwei_machine_id_remove_call(&install_dir.join("nemesisbot"));
+    match run_system_cmd(&rcall, system) {
+        Ok(None) => {}
+        Ok(Some(w)) => notes.push(format!("设备标识删除（taiwei machine-id remove）: {w}")),
+        Err(e) => notes.push(format!("设备标识删除（taiwei machine-id remove）: {e:#}")),
     }
     let (deleted, failures) = install::uninstall(install_dir)?;
     // 卸载副本（引擎只删 record.files 清单——副本不在清单，显式摘）。

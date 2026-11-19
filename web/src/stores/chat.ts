@@ -49,6 +49,23 @@ export interface ChatMessage {
    *  不落盘，不占行号锚）；`undefined` = 旧规则（user/assistant 占行）。
    *  缺失该键的帧（旧网关/本地回显）按旧规则算，行为逐字节兼容。 */
   occupies?: boolean
+  /** 系统通知标记（2026-11-16 系统注入消息渲染成用户气泡 BUG）：后端
+   *  jsonl 历史行的 `system_notice` 透传。role=user 的系统注入行（后台
+   *  任务完成唤醒/审批裁决回灌/Turn WAL 续轮，sender_id=="system" 推导）
+   *  ——渲染为折叠系统通知条而非用户气泡。缺省 = 真人消息/旧条目，用户
+   *  气泡旧行为。 */
+  systemNotice?: string
+  /** 定时任务来源标记（同 BUG 同族收编）：后端 jsonl 历史行的
+   *  `cron_job_id` 透传（后端早已有此键，前端此前从不消费）。cron tick
+   *  行与 systemNotice 行共用同一通知条渲染分支。缺省 = 非 cron 行。 */
+  cronJobId?: string
+  /** ②（2026-11-16 用户消息重复渲染修复）：发送链本地回显标记——此行
+   *  是前端 sendValidated 先于后端落盘回执创建的乐观行，环里对应的
+   *  user 行尚未认领（回声帧/补拉消费盖章 seq 后标记失活但不摘除，
+   *  consumability 由 seq 缺席裁决）。历史批次行永不带此标记——sync
+   *  回放消费面据此把「乐观回显」与「历史行」区分开，杜绝把历史区
+   *  同文行误当消费候选。缺省 = 非乐观行。 */
+  optimistic?: boolean
 }
 
 /** N5：单条交付物（与后端 chat_log PresentedFile serde 字段对齐）。 */
@@ -194,6 +211,14 @@ export const useChatStore = defineStore('chat', () => {
   // 未覆盖的极早切回）或尾部不是悬空 user，detectPendingTurn 也能凭此
   // 启动占位 + 轮询，消除「纯空视图无任何反馈」的空窗。
   const inflightTurns = ref<Record<string, { sentAt: number; content: string }>>({})
+
+  // B2（2026-11-19 切换恢复整改）：切回会话恢复在途轮的「过程视图恢复中」
+  // 旗标——detectPendingTurn 起轮分支置位（占位行立即可见，不等首个中间
+  // 事件），refreshWorkCurrent 快照采纳后复位；null 盲区（回包无快照）不
+  // 复位——骨架继续显示，等下一拍（轮询会再拉）；死轮清算 / 尾部 assistant
+  // 臂（回复已到场）复位。与 pendingWork 分离：骨架只在 `workRestoring &&
+  // !pendingWork` 时渲染（快照一旦采纳即让位给真时间线）。
+  const workRestoring = ref(false)
 
   function markInflightTurn(sessionId: string | null, content: string) {
     if (!sessionId) return
@@ -387,8 +412,13 @@ export const useChatStore = defineStore('chat', () => {
   /** A1：剔除「先于历史快照渲染的 assistant 实时帧」——seq ≤ maxSeq 的
    *  assistant 行必已含于快照（assistant 入环点在 chat_log 落盘**之后**，
    *  历史读取又晚于落盘）。返回剔除条数。user 行入环早于落盘，「seq ≤
-   *  last_seq ⟹ 已落盘」不成立，不在此剔除（由 dropTailIfSame 同文兜底
-   *  + sync 通道既有尾行比对覆盖）。 */
+   *  last_seq ⟹ 已落盘」不成立，不在此剔除（由 mergeHistoryTail 尾段
+   *  对齐合并 + consumeReplayRow 乐观行认领覆盖）。
+   *
+   *  ⚠ 调用序：必须在 mergeHistoryTail **之后**跑——先 A1 会把视图里
+   *  与批次重复的 assistant 行删掉，合并行走撞到缺口提前停，夹在中间的
+   *  user 乐观行就不再被认领段覆盖（重复残留）；先合并则 assistant 行
+   *  参与对齐、由批次副本替换，A1 随后只清真正多渲染的残行。 */
   function dropAssistantBelowSeq(maxSeq: number): number {
     if (maxSeq <= 0) return 0
     const before = messages.value.length
@@ -399,15 +429,131 @@ export const useChatStore = defineStore('chat', () => {
     return before - messages.value.length
   }
 
-  /** A2：尾行同文兜底——列表尾部消息与历史批次尾部同 role 且同文则丢弃
-   *  尾部（last_seq 缺失的旧网关路径 / seq 采样与落盘的极窄缝隙）。与
-   *  receive 分支 isDuplicateRecovery 同语义同取舍（用户真发两条同文会
-   *  误伤一条——既有代码已接受该取舍）。 */
-  function dropTailIfSame(role: string, content: string): boolean {
-    const last = messages.value[messages.value.length - 1]
-    if (last && last.role === role && last.content === content) {
-      messages.value.pop()
+  /** A2→②（2026-11-16 用户消息重复渲染修复）：历史批次前置前的**尾段
+   *  对齐合并**——旧 A2 只比对一行，历史批量 ≥2 行与视图尾巴重复时必然
+   *  漏（路径 β：historyLoaded=false 会话重连全量重拉 + 无 reset 全量
+   *  前置 → 已渲染的乐观/live 行整段重复）。
+   *
+   *  算法：两列表从尾部同步向头走，role+content 逐行比对——连续一致的
+   *  段 = 同一批 jsonl 行的两份渲染（乐观回显/live 帧 vs 历史快照）。
+   *  视图侧被认领的尾段由**批次副本替换**（时间戳/work 时间线/交付物
+   *  取服务端真相），批次里视图没有的更旧前缀照常插入（与 prependHistory
+   *  同语义），批次整体被认领（全量重载形态）= 视图由批次副本重建。
+   *  **首个失配即停**（保守取舍：失配说明两列表在此分叉——典型是快照
+   *  读取晚于视图尾部新行落盘，剩余部分各自保留，宁可不删、不错删，
+   *  不产生新重复也不丢行）。
+   *
+   *  比对侧规则（三个，全部可逆验证、失配即停）：
+   *  - 视图侧跳过：瞬态回执（occupies=false）/纯前端 error 行不在历史
+   *    批次里——不消费批次行，重建时原样保留（不被副本替换冲掉）。
+   *  - 批次侧跳过（断线窗口形态）：失配时向批次更下方找**校验行**——
+   *    存在与当前视图行同文的批次行 = 视图尾是批次尾的前缀，中间的
+   *    批次行是断线窗口里视图没渲染过的真行，跳过入重建缓冲（照常
+   *    渲染，落位按批次原序），由紧随的重合回溯验证。校验找不到 =
+   *    真分叉，保守停。扫描深度限 64 行防失控。
+   *  - 比对只用 role+content（时间戳跨客户端/服务端时钟不可比，与
+   *    isDuplicateRecovery 同取舍——两连发同文由段内 assistant 夹层与
+   *    「首个失配即停」共同化解，比旧 A2 更准）。行号编号沿用
+   *    prependHistory 规则（oldestIdx 为批首行号，批内第 k 条 =
+   *    oldestIdx + k，前缀段与认领段各自续接）。
+   *
+   *  返回认领跨度（匹配+批次侧跳过行数，诊断用）。翻页批次不调用
+   * （ChatPanel inflight.paginated 钉子——翻页批次严格更旧，与视图尾部
+   *  零交集，W1 同纪律）。 */
+  function mergeHistoryTail(
+    history: ChatMessage[],
+    oldestIdx: number | null,
+  ): number {
+    const view = messages.value
+    const num = (m: ChatMessage, row: number): ChatMessage =>
+      typeof oldestIdx === 'number' ? { ...m, rowIndex: oldestIdx + row } : m
+    const sameText = (a: ChatMessage, b: ChatMessage) =>
+      a.role === b.role && String(a.content ?? '') === String(b.content ?? '')
+    let i = history.length - 1
+    let j = view.length - 1
+    // 认领段重建缓冲：行走时从尾向前收集（unshift 头插恢复原序）——
+    // 匹配行换批次副本，批次侧跳过行照常渲染（断线窗口真行），视图侧
+    // 跳过的瞬态行原样保留。
+    const rebuilt: ChatMessage[] = []
+    while (i >= 0 && j >= 0) {
+      const v = view[j]
+      // 视图侧跳过：瞬态回执/纯前端 error 行不在历史批次里。
+      if (v.occupies === false || v.role === 'error') {
+        rebuilt.unshift(v)
+        j--
+        continue
+      }
+      const h = history[i]
+      if (sameText(h, v)) {
+        rebuilt.unshift(num(h, i))
+        i--
+        j--
+        continue
+      }
+      // 批次侧跳过：向前找校验行（与当前视图行同文的批次行）——找到
+      // = 视图缺的是中间这些批次行（断线窗口形态），跳过并渲染；找不到
+      // = 真分叉，保守停（跳过面由紧随的重合回溯验证，无重合不跳）。
+      const limit = Math.max(0, i - 64)
+      let k = i - 1
+      while (k >= limit && !sameText(history[k], v)) k--
+      if (k < limit) break
+      while (i > k) {
+        rebuilt.unshift(num(history[i], i))
+        i--
+      }
+      // 不拨 j：下一轮 history[k] ↔ view[j] 必然命中（回溯验证）。
+    }
+    const claimedCount = history.length - 1 - i
+    if (claimedCount <= 0) {
+      // 零认领（第一对可比利比较即失配且无校验行）：批次整体比视图尾
+      // 更旧（快照读取早于视图尾部行落盘的赛窗形态）——按 prependHistory
+      // 语义前置（旧行为排序），不做副本替换、不重排视图（行走中跳过
+      // 的瞬态行仍在视图里，无需重建）。
+      messages.value = [...history.map((m, k) => num(m, k)), ...view]
       recomputeNextRowIndex()
+      return 0
+    }
+    // 批次里视图没有的更旧前缀按 prependHistory 语义插入认领段之前
+    //（即视图自身那些行的原位——视图尾与批次尾对齐后，两前缀同源）。
+    const prefix = history.slice(0, i + 1).map((m, k) => num(m, k))
+    messages.value = [...view.slice(0, j + 1), ...prefix, ...rebuilt]
+    recomputeNextRowIndex()
+    return claimedCount
+  }
+
+  /** ③（2026-11-16 用户消息重复渲染修复）：sync 补拉的环事件在视图里
+   *  认领「同一行的本地未确认形态」——认领成功 = 该行已由环事件盖章
+   *  （seq 落行），调用方跳过渲染（不重复成轮）。
+   *
+   *  候选规则（从尾向前扫，首个命中即认领）：
+   *  - user 事件：只认领发送链乐观行（optimistic 标记 + seq 缺席）——
+   *    历史区同文行不带标记、已盖章行已确认，都不是候选。**不设确认
+   *    边界截停**：补拉批次里夹着视图没有的行（断线窗口真丢的回复）
+   *    会隔在尾巴与乐观行之间，截停会漏认领（路径 α 级联重复的根因
+   *    形态）；乐观标记本身已把误吞面钉死在发送链回显上。
+   *  - assistant 事件：认领 seq 缺席的 assistant 行（现行网关 assistant
+   *    帧恒带 seq，缺席 = legacy 帧）；**撞到首个已盖章行即截停**——
+   *    无乐观标记兜底，越界扫描会误吞历史区同文行（历史行不带 seq，
+    *    误认领会把 A1 的淘汰面错误扩大到已落盘行）。 */
+  function consumeReplayRow(
+    role: 'user' | 'assistant',
+    content: string,
+    seq: number | undefined,
+  ): boolean {
+    const view = messages.value
+    for (let j = view.length - 1; j >= 0; j--) {
+      const v = view[j]
+      if (v.role !== role) continue
+      if (String(v.content ?? '') !== content) continue
+      if (role === 'user') {
+        if (!v.optimistic || v.seq !== undefined) continue
+        if (typeof seq === 'number') v.seq = seq
+        return true
+      }
+      // assistant：确认边界——已盖章行 = 已确认（环有此行），其下（更旧）
+      // 是历史区/已认领区，不再向深处匹配。
+      if (v.seq !== undefined) return false
+      if (typeof seq === 'number') v.seq = seq
       return true
     }
     return false
@@ -426,10 +572,23 @@ export const useChatStore = defineStore('chat', () => {
   // --- 2026-10-30 Work 时间线摄取（三路共用：实时 push / chat.sync 补拉 /
   // chat.work_current 活查询）---
 
-  /** 确保缓冲存在（惰性初始化——直答零开销，首个中间事件才建槽）。 */
+  /** 确保缓冲存在（惰性初始化——直答零开销，首个中间事件才建槽）。
+   *  B1（2026-11-19 切换恢复整改）：started_at_ms 锚定本会话**最后一条
+   *  消息时间戳**（turn 最早在那之后开始），杜绝真空窗（切回恢复期早到
+   *  事件先于 work_current 回包建槽）用 Date.now() 从零造桶——执行用时
+   *  撒谎。锚缺席（空视图/时间戳不可解析）回落 Date.now()（新 turn 首个
+   *  事件本就没有更早锚）。 */
   function ensurePendingWork(): WorkTimeline {
     if (!pendingWork.value) {
-      pendingWork.value = { started_at_ms: Date.now(), ended_at_ms: Date.now(), rounds: [] }
+      let anchor = Date.now()
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        const t = Date.parse(messages.value[i].timestamp)
+        if (!Number.isNaN(t)) {
+          anchor = t
+          break
+        }
+      }
+      pendingWork.value = { started_at_ms: anchor, ended_at_ms: Date.now(), rounds: [] }
     }
     return pendingWork.value
   }
@@ -590,6 +749,8 @@ export const useChatStore = defineStore('chat', () => {
     // B3：会话切换丢掉上一会话的 live 思考（与 pendingWork 同生命周期）。
     clearLiveThinking()
     pendingDeliverables.value = []
+    // B2：切会话丢掉上一会话的恢复中旗标（骨架不得跨会话泄漏）。
+    workRestoring.value = false
     agentMode.value = 'build'
     historyLoading.value = false
     hasMoreHistory.value = true
@@ -614,6 +775,7 @@ export const useChatStore = defineStore('chat', () => {
     pendingWork,
     pendingDeliverables,
     liveThinking,
+    workRestoring,
     agentMode,
     commandDraft,
     inflightTurns,
@@ -623,7 +785,8 @@ export const useChatStore = defineStore('chat', () => {
     stageDraft,
     replaceMessages,
     dropAssistantBelowSeq,
-    dropTailIfSame,
+    mergeHistoryTail,
+    consumeReplayRow,
     removeCompactRunningNotes,
     markInflightTurn,
     clearInflightTurn,

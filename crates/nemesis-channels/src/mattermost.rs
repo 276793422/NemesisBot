@@ -32,6 +32,10 @@ use crate::base::{BaseChannel, Channel};
 
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+/// 单帧写超时上限（秒）。BUG-20261115-016：半死连接上无界鉴权帧写 await
+/// 会把 ws_session（进而整个重连循环）冻结在第一帧，有界超时让既有
+/// 「return true 重连」语义可达。家族值对齐 IRC WRITE_TIMEOUT_SECS。
+const WS_WRITE_TIMEOUT_SECS: u64 = 30;
 /// WS 鉴权 challenge 的序号（Mattermost 协议要求请求带递增 seq）。
 const AUTH_SEQ: u64 = 1;
 
@@ -279,7 +283,7 @@ impl MattermostChannel {
 
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!(
                 "mattermost posts API error: HTTP {status}: {text}"
             )));
@@ -313,7 +317,7 @@ impl MattermostChannel {
                 let ws_url = MattermostChannel::ws_url_from_base(&base_url);
                 info!("[MattermostChannel] 连接 WebSocket 网关: {ws_url}");
 
-                let ws_stream = match tokio_tungstenite::connect_async(&ws_url).await {
+                let ws_stream = match crate::base::ws_connect_bounded(&ws_url).await {
                     Ok((stream, _)) => stream,
                     Err(e) => {
                         warn!("[MattermostChannel] WebSocket 连接失败: {e}，{backoff:?} 后重试");
@@ -362,10 +366,23 @@ impl MattermostChannel {
         let (mut ws_tx, mut ws_rx) = ws.split();
 
         // —— 鉴权 challenge：连接后首帧必须认证（bot token 模式）
+        // BUG-20261115-016：有界写，超时与发送失败同走重连臂
         let auth = MattermostChannel::build_auth_message(&ctx.bot_token);
-        if let Err(e) = ws_tx.send(Message::Text(auth.into())).await {
-            warn!("[MattermostChannel] 鉴权帧发送失败: {e}");
-            return true;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+            ws_tx.send(Message::Text(auth.into())),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!("[MattermostChannel] 鉴权帧发送失败: {e}");
+                return true;
+            }
+            Err(_) => {
+                warn!("[MattermostChannel] 鉴权帧发送超时（连接疑似挂起）");
+                return true;
+            }
         }
 
         // —— 等鉴权应答：status=OK 才进入事件流；FAIL 通常是 token 失效
@@ -698,9 +715,6 @@ impl Channel for MattermostChannel {
         // 出站格式映射：bot 内部 markdown → Mattermost markdown
         let content = Self::to_mattermost_markdown(&msg.content);
         self.post_message(channel_id, &content, root_id).await?;
-        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（回环防护）。
-        self.base.sync_outbound(&msg).await;
         Ok(())
     }
 

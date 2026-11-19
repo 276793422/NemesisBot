@@ -489,7 +489,7 @@ impl LLMProvider for FallbackProvider {
 
         let mut last_error: Option<FailoverError> = None;
 
-        for entry in &self.chain {
+        for (chain_idx, entry) in self.chain.iter().enumerate() {
             let provider_name = entry.provider.name();
 
             // 根修：每级恒用**本级装配模型名**（entry.model），
@@ -523,8 +523,26 @@ impl LLMProvider for FallbackProvider {
                 .chat(messages, tools, effective_model, options)
                 .await
             {
-                Ok(resp) => {
+                Ok(mut resp) => {
                     self.cooldown.mark_success(&cooldown_k);
+                    // 降级事实章（fallback 用户面标注第一跳）：应答来自
+                    // 非首级（主级本次失败或冷却中被跳过）= 用户应知道的
+                    // 降级——在 extra 内部键盖章随响应上行，llm_bridge
+                    // ProviderAdapter 取件后从 extra 移除（内部键不进
+                    // raw 日志/序列化面）。首级成功零开销直通。
+                    if chain_idx > 0 {
+                        let primary = if self.chain[0].model.is_empty() {
+                            model.to_string()
+                        } else {
+                            self.chain[0].model.clone()
+                        };
+                        resp.extra.insert(
+                            "_served_by_fallback".to_string(),
+                            serde_json::json!(format!(
+                                "{primary} → {provider_name}/{effective_model}"
+                            )),
+                        );
+                    }
                     return Ok(resp);
                 }
                 Err(err) => {

@@ -29,6 +29,13 @@ nemesis-cron = { workspace = true }
 # 看板存储（board.* WSAPI / team.* / 看板资产端点；`board` feature 门控——
 # rusqlite bundled 随它进出，iotsmall 里最后一个 SQLite 来源）。
 nemesis-board = { workspace = true, optional = true }
+# 事件驱动唤醒管理面（handlers/events.rs：events.status/rules.get/rules.save；
+# `events` feature 门控——泵观测快照句柄 + events.json 规则文件 CRUD）。
+nemesis-events = { workspace = true, optional = true }
+# 自配速 durable loop 管理面（handlers/loops.rs：loops.* 七命令；`loop`
+# feature 门控——状态真相源 <workspace>/loops/*.json，人控面 pause/resume）。
+nemesis-goals = { workspace = true, optional = true }
+nemesis-loop = { workspace = true, optional = true }
 nemesis-services = { workspace = true }
 nemesis-voice = { workspace = true, optional = true }
 nemesis-memory = { workspace = true, optional = true }
@@ -54,10 +61,16 @@ nemesis-utils = { workspace = true, features = ["http"] }
 # 提示词资产单一真相源（M7）：cluster_persona_gen（人格生成三阶段）消费；
 # 零依赖纯静态文本，直接非 optional。
 nemesis-prompts = { workspace = true }
+# 人格超市 builtin 伪源（2026-11-15）：编译期内嵌工作区人格模板
+# （nemesisbot/workspace/personas/），browse 陈列 + 安装/雇佣按需释放（B2）。
+include_dir = "0.7"
 # P2-1 (2026-08-24 UI entry gap): coding.lsp_status probes the language-server
 # registry table (SERVERS / server_available). Unconditional, mirroring
 # nemesis-agent's own non-optional dependency on nemesis-lsp.
 nemesis-lsp = { workspace = true, optional = true }
+# 浏览器接管管理面（handlers/browser.rs；`browser` feature 门控，nemesisbot
+# feature 转发——BrowserManager 是 exe 侧单例，web 只持 Arc 引用）。
+nemesis-browser = { workspace = true, optional = true }
 # L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控）
 portable-pty = { workspace = true, optional = true }
 serde = { workspace = true }
@@ -116,6 +129,10 @@ security = ["dep:nemesis-security", "nemesis-security/security"]
 # implies security（第 7 层在 pipeline 内），并穿透 nemesis-security/scanner。
 scanner = ["security", "nemesis-security/scanner"]
 sandbox = ["dep:nemesis-sandbox"]
+# MXC 护栏后端管理面（2026-11-14）：穿透 nemesis-sandbox/mxc——sandbox.*
+# WSAPI 的 mxc 段（overview 内嵌探测 + mxc_probe 强刷）随本 feature 编译。
+# 关 = mxc 段回 "compiled": false（前端据型渲染置灰「未编译」卡，D12）。
+sandbox-mxc = ["sandbox", "nemesis-sandbox?/mxc"]
 # P5 桌面级 VM 管理面（vm.* WSAPI + Dashboard VM 页）。当前 handler 随
 # 步骤 4 落地；feature 先在位（编译开关三线同步原则），关 = 空闸。
 vm = []
@@ -147,6 +164,18 @@ history-search = ["nemesis-agent/history-search"]
 # 注入槽）。由 nemesisbot 的 board feature 穿透；关 =nemesis-board 整包退出
 # 依赖图（rusqlite bundled 随之消失），board 命令从注册表面消失。
 board = ["dep:nemesis-board"]
+# 事件驱动唤醒管理面（events.* WSAPI；由 nemesisbot 的 events feature 穿透）。
+# 关 = handler 整体退出注册表面（events.status 形态=unknown command）。
+events = ["dep:nemesis-events"]
+# 自配速 durable loop 管理面（loops.* 七命令 WSAPI；由 nemesisbot 的 loop
+# feature 穿透）。关 = handler 整体退出注册表面；agent 工具面（loop_wakeup/
+# loop_status/loop_finish）在 nemesisbot 侧独立门控，两侧同 feature 名同开。
+loop = ["dep:nemesis-loop"]
+# 邮件基础设施管理面（mailbox.* WSAPI；由 nemesisbot 的 mail feature 穿透）。
+# 关 = handler 整体退出注册表面；plugin_mail 装载臂在 nemesisbot 侧恒编译
+# （总闸+名册开关双闸运行期判），两侧职责分离。
+mail = []
+goals = ["dep:nemesis-goals"]
 # 行动代理连接器管理面（connectors.* / paperbroker.* WSAPI；由 nemesisbot
 # 的 connectors feature 穿透）。关 = handler 整体退出注册表面。
 connectors = ["dep:nemesis-connectors"]
@@ -154,6 +183,10 @@ connectors = ["dep:nemesis-connectors"]
 # ziwei feature 穿透，窄门面依赖 nemesis-ziwei）。关 = handler 整体退出
 # 注册表面（端点 404 形态=unknown command）。
 ziwei = ["dep:nemesis-ziwei"]
+# 浏览器接管管理面（browser.* WSAPI + AppState 浏览器槽 + Dashboard 执行
+# 单元浏览器面板后端；由 nemesisbot 的 browser feature 穿透，依赖
+# nemesis-browser）。关 = handler 整体退出注册表面（unknown command）。
+browser = ["dep:nemesis-browser"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -199,3 +232,18 @@ tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
+
+# shell_open.rs（系统文件管理器动作单一归宿）：Windows 臂 = explorer
+# spawn（窗口创建的确定性路径；COM SHOpenFolderAndSelectItems 生产实测
+# S_OK 但窗口不落地，弃用）+ AttachThreadInput/SetForegroundWindow 组合
+# 拳前台看门（后台进程无前台权，裸 SwitchToThisWindow 被激活锁静默拒绝）。
+# windows-sys 0.59 与 workspace 既定模式对齐（nemesis-sandbox /
+# nemesis-injector 同款），只用 needed features（AttachThreadInput/
+# GetCurrentThreadId 在 System_Threading 子 feature）。
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }

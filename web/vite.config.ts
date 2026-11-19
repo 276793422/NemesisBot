@@ -38,6 +38,9 @@ export default defineConfig({
         workflowChat: resolve(__dirname, 'workflow-chat/index.html'),
         // L4 会话分享：独立只读页（token 即凭据，无登录态依赖）。
         share: resolve(__dirname, 'share/index.html'),
+        // 提示词内容可视化（2026-11-13）：段全文只读查看器（新标签页打开，
+        // 同源共享登录态；session+segment 查询参数驱动）。
+        promptViewer: resolve(__dirname, 'prompt-viewer/index.html'),
       },
       output: {
         manualChunks: {

@@ -30,5 +30,5 @@ pub use pricing_filter::{
     PRICE_MIRROR_URLS, filter_litellm_table, merge_extras, validate_filtered_table,
 };
 pub use pricing_lite::{LITELLM_PRICE_URL, parse_litellm_json};
-pub use pricing_store::{PricingMeta, PricingStore};
+pub use pricing_store::{PricingMeta, PricingStore, validate_downloaded_entries};
 pub use usage_store::DataStore;

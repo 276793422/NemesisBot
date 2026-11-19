@@ -26,6 +26,85 @@ impl AgentLoop {
         *self.loop_origin.write() = origin.to_string();
     }
 
+    /// 子代理飞行中驾驶（项3）：把一条中途指令推入目标子代理会话键的
+    /// steer 槽（inbox next_step，[`crate::inbox::Inbox::enqueue_steer`]）。
+    /// 子代理 `run_llm_loop` 每轮开头的 `claim_steer_messages`（器官 2，
+    /// 对 `channel == "subagent"` 上下文同样运行）在下一轮 LLM 前消费——
+    /// @文件展开 / 媒体附加 / chat_log `[steer]` 行（steer:true meta，
+    /// rewind/fork 跳过）全部复用主 loop steer 同源管线，审计不断。
+    ///
+    /// 校验链（单一裁决点，WSAPI `subagents.steer` 与模型工具
+    /// `subagent_steer` 双入口共用）：
+    /// ① estop 生效中 = 诚实拒绝（WSAPI 侧 handler 另有前置闸，此处是
+    ///    工具路径的兜底——两层闸不互斥）；
+    /// ② 注册表在册（id 即子代理会话键）；
+    /// ③ 非终态（飞行中驾驶只对运行中任务生效）；
+    /// ④ `loop_origin` 与本 loop 一致——跨引擎 steer 会推进永远不会被
+    ///    消费的 inbox（子代理跑在别的 loop 上），诚实拒绝而非静默丢失。
+    ///
+    /// 指令内容加 `[父代理指令] ` 前缀（子代理可辨来源：这是编排方的
+    /// 中途修正，不是任务原文）。终局竞态诚实边界：指令入队后子代理可能
+    /// 恰在收尾——run_detached_events 终点 `inbox.clear` 会丢弃未消费
+    /// 的 steer（注入是瞬态指令，错过即逝；ack 先行属乐观确认）。
+    pub fn steer_subagent(&self, id: &str, instruction: &str) -> Result<String, String> {
+        let instruction = instruction.trim();
+        if instruction.is_empty() {
+            return Err("steer instruction is empty".to_string());
+        }
+        if self.security.is_engaged() {
+            return Err("⛔ 急停（estop）生效中，子代理驾驶已冻结：release 后恢复".to_string());
+        }
+        let t = crate::subagent_registry::global()
+            .get(id)
+            .ok_or_else(|| format!("task not found: {id}"))?;
+        if t.status.is_terminal() {
+            let status_str = serde_json::to_value(t.status)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| "unknown".to_string());
+            return Err(format!(
+                "子代理已终态（{status_str}），steer 拒绝——飞行中驾驶只对运行中任务生效"
+            ));
+        }
+        let origin = self.loop_origin();
+        if t.loop_origin != origin {
+            return Err(format!(
+                "子代理归属另一执行引擎（{}，本引擎 {origin}），不能跨引擎 steer",
+                t.loop_origin
+            ));
+        }
+        let queued = crate::inbox::QueuedMessage {
+            msg: nemesis_types::channel::InboundMessage {
+                channel: "subagent".to_string(),
+                sender_id: "steer".to_string(),
+                chat_id: id.to_string(),
+                content: format!("[父代理指令] {instruction}"),
+                media: Vec::new(),
+                session_key: id.to_string(),
+                correlation_id: String::new(),
+                metadata: std::collections::HashMap::new(),
+                voice_playback: None,
+            },
+            timestamp: chrono::Local::now().to_rfc3339(),
+            priority: crate::inbox::MessagePriority::Normal,
+        };
+        match self.inbox.enqueue_steer(id, queued) {
+            crate::inbox::EnqueueOutcome::QueuedForNextStep => {
+                tracing::info!(
+                    "[Steer] subagent steer queued: id={id}, pending={}",
+                    self.inbox.pending(id).1
+                );
+                Ok(format!(
+                    "steer 已注入子代理（将在其下一轮开始前生效）：{instruction}"
+                ))
+            }
+            _ => Err(format!(
+                "目标子代理会话队列已满（容量 {}），steer 拒绝——稍后重试或先取消子代理",
+                self.inbox.capacity()
+            )),
+        }
+    }
+
     /// 当前宿主形态标识（getter 返回 owned——注册表 begin 持有）。
     pub fn loop_origin(&self) -> String {
         self.loop_origin.read().clone()
@@ -168,6 +247,9 @@ impl AgentLoop {
                     checkpoint_turn: None, // 委派非 loop turn，无 checkpoint 锚
                     steer: false,
                     work: None,
+
+                    source_node: None,
+                    system_notice: None, // LLM 发起的委派任务原文，正常用户气泡
                 },
             );
             if !log_existed {
@@ -196,6 +278,8 @@ impl AgentLoop {
             false,
             role,
             parent_session_key,
+            "", // expert：UI 手动派发无专家语义（专家走模型自主 spawn 面板）
+            "", // prompt：UI 手动派发无自拟提示词语义（ad-hoc 降级二跳走模型自主面）
         )
         .await;
         // 子代理注册表 id（回执事件的台账锚）：按父会话键过滤取最新一条
@@ -256,6 +340,9 @@ impl AgentLoop {
                             checkpoint_turn: None,
                             steer: false,
                             work: None,
+
+                            source_node: None,
+                            system_notice: None,
                         },
                     );
                     if let Some(ref store) = self.session_store {

@@ -791,7 +791,7 @@ impl WeChatChannel {
             .map_err(|e| NemesisError::Channel(format!("wechat send failed: {e}")))?;
 
         if !resp.status().is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = nemesis_utils::http_cap::read_error_body(resp).await;
             return Err(NemesisError::Channel(format!("wechat send error: {body}")));
         }
 
@@ -857,9 +857,6 @@ impl Channel for WeChatChannel {
         self.base.record_sent();
         debug!(chat_id = %msg.chat_id, "[WeChatChannel] sending message");
         self.send_text(&msg.chat_id, &msg.content).await?;
-        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（回环防护）。
-        self.base.sync_outbound(&msg).await;
         Ok(())
     }
 

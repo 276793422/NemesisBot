@@ -73,6 +73,45 @@ fn detect_unknown_defaults_big() {
     assert_eq!(detect_tier(&h), ModelTier::Big);
 }
 
+// BUG-20261113-131 回归锁：Qwen 云端 API 档位名（qwen*-max/plus/turbo/long，
+// DashScope/百炼 API 专属 tier 词，无尺寸标记）修复前不含任何 big marker、
+// 命中 small 裸前缀 "qwen-"/"qwen2.5-"/"qwen3-" → 旗舰被砍到 Mini（13 工具
+// + 重试预算 3）；dashscope preset 的 default_model 就是 qwen-max，一键接入
+// 首选路径自产自相矛盾。开源权重名带尺寸标记走 parse_size_marker 路径，
+// 行为不受影响。
+#[test]
+fn detect_qwen_cloud_api_tier_names_not_mini() {
+    let tier_of = |full_model: &str| {
+        detect_tier(&TierHint {
+            full_model: Some(full_model.into()),
+            real_name: None,
+            size_b: None,
+        })
+    };
+    for name in [
+        "qwen-max",
+        "dashscope/qwen-max",
+        "qwen-max-latest",
+        "qwen-plus",
+        "qwen-turbo",
+        "qwen-long",
+        "qwen2.5-max",
+        "qwen3-max",
+        "qwen3-max-preview",
+        "qwen-vl-max",
+        "qwen-vl-plus",
+        "qwen3-coder-plus",
+        "qwen-omni-turbo",
+        "DashScope/Qwen-Max", // 大小写漂移同族
+    ] {
+        assert_eq!(tier_of(name), ModelTier::Big, "{name} 须判 Big");
+    }
+    // 开源权重名（尺寸标记路径）行为不变。
+    assert_eq!(tier_of("qwen/qwen3-30b-a3b"), ModelTier::Mini);
+    assert_eq!(tier_of("qwen2.5-7b-instruct"), ModelTier::Mini);
+    assert_eq!(tier_of("qwen2.5-72b-instruct"), ModelTier::Normal);
+}
+
 #[test]
 fn resolve_passes_through_explicit() {
     let h = TierHint {
@@ -128,6 +167,46 @@ fn resolve_active_tier_from_config() {
     assert_eq!(resolve_active_tier(&cfg, "claude-sonnet-4"), ModelTier::Big);
     // Unknown alias → Big (safest default).
     assert_eq!(resolve_active_tier(&cfg, "nonexistent"), ModelTier::Big);
+}
+
+/// BUG-20261114-055 回归锁：`model_size_b` 越域值按「未设」处理。
+/// 0 = resolver 家族缺席惯例（修复前 Some(0)→tier_from_size_b 0..=39 桶
+/// →Mini 钉死）；>u32::MAX 修复前裸 `as u32` 静默回绕（4_294_967_296→0
+/// →Mini——误判强模型为小 = 模块设计原则点名的不可恢复方向）。修复后
+/// 越域 → None → opaque 别名落默认 Big；正常值行为不变。
+#[test]
+fn resolve_active_tier_model_size_b_out_of_domain_treated_as_unset() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "zero", "model": "x/zero", "model_size_b": 0},
+            {"model_name": "wrap", "model": "x/wrap",
+             "model_size_b": 4294967296u64},
+            {"model_name": "huge", "model": "x/huge",
+             "model_size_b": 18446744073709551615u64},
+            {"model_name": "valid", "model": "x/valid", "model_size_b": 30}
+        ]
+    });
+    // opaque 别名无名字标记可依，model_size_b 是唯一 tier 信号。
+    assert_eq!(
+        resolve_active_tier(&cfg, "zero"),
+        ModelTier::Big,
+        "0 = 未设（缺席惯例），不钉 Mini"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "wrap"),
+        ModelTier::Big,
+        "u32::MAX+1 回绕值不吞（修复前 as u32 → 0 → Mini）"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "huge"),
+        ModelTier::Big,
+        "u64::MAX 同口径"
+    );
+    assert_eq!(
+        resolve_active_tier(&cfg, "valid"),
+        ModelTier::Mini,
+        "正常值行为不变（30 → Mini 桶）"
+    );
 }
 
 #[test]
@@ -368,6 +447,87 @@ fn find_model_entry_exact_beats_bare_suffix() {
     );
 }
 
+// BUG-20261119-192 回归锁：find_model_entry 的 CI 兜底层（BUG-20261117-077
+// 修复 nemesis-config 查找族四站点时漏扫本函数——CI 变体别名解析面命中而
+// tier/vision/timeout 等九键全 miss，显式 per-model 配置静默失效）。
+#[test]
+fn find_model_entry_case_variant_hits_entry() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "zhipu/glm-4.7", "model": "zhipu/glm-4.7",
+             "model_tier": "mini", "max_output_tokens": 30000}
+        ]
+    });
+    // 变体 model_name 命中（CI 层）。
+    let entry =
+        find_model_entry(&cfg, "Zhipu/GLM-4.7").expect("CI variant of model_name must resolve");
+    assert_eq!(
+        entry.get("max_output_tokens").and_then(|v| v.as_i64()),
+        Some(30000),
+        "per-model key reachable via case variant"
+    );
+    // 变体 model 字段命中（自定义别名 + 变体全名查询形态）。
+    let cfg2 = serde_json::json!({
+        "model_list": [
+            {"model_name": "aliased", "model": "vendor/Qwen3-30B", "context_window": 65536}
+        ]
+    });
+    assert!(
+        find_model_entry(&cfg2, "vendor/qwen3-30b").is_some(),
+        "CI variant of model field"
+    );
+    // bare-suffix CI：裸变体尾段命中带前缀条目。
+    let cfg3 = serde_json::json!({
+        "model_list": [
+            {"model_name": "aliased", "model": "zhipu/glm-4.7", "compact_context_tokens": 50000}
+        ]
+    });
+    assert!(
+        find_model_entry(&cfg3, "GLM-4.7").is_some(),
+        "bare-suffix CI variant"
+    );
+    // 行为面：变体别名下显式 tier 采信（修复前 miss → Big，用户显式 mini
+    // 被无视、小模型被喂全量工具）。
+    assert_eq!(
+        resolve_active_tier(&cfg, "Zhipu/GLM-4.7"),
+        ModelTier::Mini,
+        "explicit model_tier honored via case variant"
+    );
+}
+
+#[test]
+fn find_model_entry_exact_wins_over_ci_variant_entries() {
+    // 精确层先行保住区分能力：两个仅大小写不同的条目（合法配置形态），
+    // 精确查询各归各条；纯变体查询进 CI 层按数组序取首个命中（确定性）。
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "zhipu/glm-4.7", "max_output_tokens": 100},
+            {"model_name": "Zhipu/GLM-4.7", "max_output_tokens": 200}
+        ]
+    });
+    assert_eq!(
+        find_model_entry(&cfg, "zhipu/glm-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(100),
+        "exact query hits exact entry"
+    );
+    assert_eq!(
+        find_model_entry(&cfg, "Zhipu/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(200),
+        "exact query hits exact entry (other case)"
+    );
+    // 混合变体（精确层全 miss）→ CI 层数组序先到先得。
+    assert_eq!(
+        find_model_entry(&cfg, "ZHIPU/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(100),
+        "mixed variant falls to CI layer in array order"
+    );
+    // 无关名字不制造假命中。
+    assert!(find_model_entry(&cfg, "unrelated").is_none(), "no match");
+}
+
 #[test]
 fn resolve_context_window_bare_name_reaches_custom_alias_entry() {
     // 活 gateway 场景端到端：alias=裸名 "glm-4.7" 必须读到自定义别名条目的
@@ -386,6 +546,46 @@ fn resolve_context_window_bare_name_reaches_custom_alias_entry() {
         resolve_compact_context_tokens(&cfg, "glm-4.7"),
         None,
         "unset compact key stays None (= 75% chain)"
+    );
+}
+
+// BUG-20261119-210 回归锁：层内顺序 name-first-across-entries（与
+// nemesis-config 装配族四站点恒等）。交叉别名形态：条目 0 的 model 字段
+// 与条目 1 的 model_name 交叉——装配族（resolve_model_config）按 name 层
+// 先扫全部条目命中条目 1；本函数旧实现（条目优先，name/model 任一命中
+// 即返回该条目）命中条目 0 → per-model 九键族与装配面读不同条目，
+// 显式 per-model 配置静默错位（tier/vision/timeout 走条目 0、provider
+// 构造走条目 1）。
+#[test]
+fn find_model_entry_name_layer_precedes_model_layer_across_entries() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "fast-alias", "model": "glm-4.7", "max_output_tokens": 111},
+            {"model_name": "glm-4.7", "model": "zhipu/glm-4.7", "max_output_tokens": 222}
+        ]
+    });
+    // 精确层：name 字段全数组先行——条目 1 的 model_name 命中压过条目 0 的
+    // model 字段交叉命中（旧条目优先实现会返回条目 0 = 111）。
+    assert_eq!(
+        find_model_entry(&cfg, "glm-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(222),
+        "model_name layer spans all entries before model field layer (config family parity)"
+    );
+
+    // CI 层同序：精确层全 miss 时，CI name 先于 CI model（旧实现条目 0 的
+    // model 字段 CI 命中会返回条目 0 = 333）。
+    let cfg_ci = serde_json::json!({
+        "model_list": [
+            {"model_name": "other-alias", "model": "zhipu/GLM-4.7", "max_output_tokens": 333},
+            {"model_name": "Zhipu/glm-4.7", "model": "vendor/other", "max_output_tokens": 444}
+        ]
+    });
+    assert_eq!(
+        find_model_entry(&cfg_ci, "ZHIPU/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(444),
+        "CI name layer also spans all entries before CI model layer"
     );
 }
 
@@ -466,6 +666,29 @@ fn tier_lists_do_not_contain_sealed_exec_async() {
     );
 }
 
+// Phase 5 图像工具层：read_image 是 Normal+（Mini 不给——小模型视觉质量
+// 不可控、附图 token 成本高；big 全量天然含）。screen_capture /
+// desktop_automation 刻意**不入**任何白名单（高敏感操作面最小暴露——仅
+// big/Auto 全量可见），双断言钉住防将来误加。
+#[test]
+fn tier_lists_read_image_and_screen_family() {
+    let normal = tier_allowed_tools(ModelTier::Normal);
+    assert!(normal.contains(&"read_image"), "read_image in Normal");
+    let mini = tier_allowed_tools(ModelTier::Mini);
+    assert!(!mini.contains(&"read_image"), "Mini excluded by design");
+    for tier in [ModelTier::Mini, ModelTier::Normal] {
+        let list = tier_allowed_tools(tier);
+        assert!(
+            !list.contains(&"screen_capture"),
+            "screen_capture must stay out of {tier:?} whitelist (big-only by design)"
+        );
+        assert!(
+            !list.contains(&"desktop_automation"),
+            "desktop_automation must stay out of {tier:?} whitelist (big-only by design)"
+        );
+    }
+}
+
 #[test]
 fn test_resolve_reasoning_effort_tiers() {
     let cfg = serde_json::json!({
@@ -489,8 +712,9 @@ fn test_resolve_reasoning_effort_tiers() {
 fn effort_truth_source_contract_and_extended_tiers() {
     // 值域单一真相源（2026-11-09 扩档 7 档）：off 居首、无重复；
     // valid_effort 大小写不敏感 + trim；新档（minimal/xhigh/max）resolve
-    // 原样透传；大写形态不在 resolve 层归一（保存入口已归一）——防御臂
-    // None，垃圾不上 wire。
+    // 原样透传；resolve 与 valid_effort 同一容忍语义（BUG-20261113-151：
+    // trim + 大小写归一——保存入口只 lowercase 不 trim，手改 config 无
+    // 归一层，合法变体不能在读端被当垃圾静默丢档）。
     assert_eq!(EFFORT_TIERS.len(), 7);
     assert_eq!(EFFORT_TIERS.first(), Some(&"off"));
     let mut dedup = EFFORT_TIERS.to_vec();
@@ -523,8 +747,51 @@ fn effort_truth_source_contract_and_extended_tiers() {
         Some("xhigh")
     );
     assert_eq!(resolve_reasoning_effort(&cfg, "m3").as_deref(), Some("max"));
-    // 大写 = 保存入口不应产生的形态 → 防御臂 None。
-    assert_eq!(resolve_reasoning_effort(&cfg, "m4"), None);
+    // 大写变体与 canonical 等价（valid_effort 认可 → resolve 不丢档）。
+    assert_eq!(resolve_reasoning_effort(&cfg, "m4").as_deref(), Some("max"));
+}
+
+/// BUG-20261113-151：resolve_reasoning_effort 读侧容忍语义回归——
+/// 写侧 lowercase-未-trim 存储值（" high "）与手改 config 大写变体
+/// （"High"）不再被当 garbage 静默丢档；unknown 值仍 None（垃圾不上
+/// wire）；"off"/空白变体仍 None。
+#[test]
+fn test_bug151_resolve_reasoning_effort_normalizes_case_and_trim() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "upper", "model": "x/m", "reasoning_effort": "High"},
+            {"model_name": "padded", "model": "x/m", "reasoning_effort": "  high  "},
+            {"model_name": "padded_upper", "model": "x/m", "reasoning_effort": " XHIGH "},
+            {"model_name": "off_plain", "model": "x/m", "reasoning_effort": "off"},
+            {"model_name": "off_padded", "model": "x/m", "reasoning_effort": " OFF "},
+            {"model_name": "off_upper", "model": "x/m", "reasoning_effort": "OFF"},
+            {"model_name": "empty", "model": "x/m", "reasoning_effort": ""},
+            {"model_name": "whitespace", "model": "x/m", "reasoning_effort": "   "},
+            {"model_name": "unknown", "model": "x/m", "reasoning_effort": "turbo"},
+            {"model_name": "absent", "model": "x/m"}
+        ]
+    });
+    // 合法变体归一到 canonical 小写。
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "upper").as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "padded").as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "padded_upper").as_deref(),
+        Some("xhigh")
+    );
+    // off / 空白 / 未知 / 缺席 → None（不发键）。
+    assert_eq!(resolve_reasoning_effort(&cfg, "off_plain"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "off_padded"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "off_upper"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "empty"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "whitespace"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "unknown"), None);
+    assert_eq!(resolve_reasoning_effort(&cfg, "absent"), None);
 }
 
 // ============================================================================
@@ -824,6 +1091,38 @@ fn resolve_max_tool_iterations_tri_state() {
         "agents": {"defaults": {"max_tool_iterations": -1}}
     });
     assert_eq!(resolve_max_tool_iterations(&negative), Some(-1));
+}
+
+/// BUG-20261117-085：>u32::MAX 越域值按「未设」（None）回落启动值——
+/// 消费侧 `n as u32` 裸截断会把 2^32 变 0 = 「不限」（用户设上限反而
+/// 无限轮次的语义反转）。边界值 u32::MAX 本身必须照常透传。
+#[test]
+fn resolve_max_tool_iterations_rejects_above_u32_max() {
+    // 恰好 2^32：旧代码裸截断成 0 → 消费侧判不限，语义反转。
+    let overflow: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 4_294_967_296i64}}
+    });
+    assert_eq!(
+        resolve_max_tool_iterations(&overflow),
+        None,
+        ">u32::MAX 必须按未设回落启动值，不得截断"
+    );
+
+    // 更大的越域值同样拒绝（截断落点任意小 → 提前停轮）。
+    let far_overflow: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 9_000_000_000i64}}
+    });
+    assert_eq!(resolve_max_tool_iterations(&far_overflow), None);
+
+    // 边界内最大合法值照常透传。
+    let at_max: serde_json::Value = serde_json::json!({
+        "agents": {"defaults": {"max_tool_iterations": 4_294_967_295i64}}
+    });
+    assert_eq!(
+        resolve_max_tool_iterations(&at_max),
+        Some(4_294_967_295),
+        "u32::MAX 边界值必须透传"
+    );
 }
 
 /// （无人值守）：`agents.defaults.max_output_ceiling` 翻倍

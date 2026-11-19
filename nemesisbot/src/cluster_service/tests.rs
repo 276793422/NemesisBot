@@ -36,6 +36,8 @@ async fn new_adapter_reports_not_running() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     // 固有方法 + trait 实现都报未运行。
@@ -65,6 +67,8 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     // 未运行时 stop() 必须短路 Ok（幂等停机），不触碰 cluster 内部。
@@ -142,6 +146,7 @@ fn make_pending_task(task_id: &str) -> ClusterTask {
         async_usage_stash: None,
         mandate: None,
         dispatch_generation: None,
+        created_at: chrono::Local::now().to_rfc3339(),
     }
 }
 
@@ -203,6 +208,8 @@ fn make_adapter(
         work_queue.clone(),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
     (adapter, cluster, shared, task_list, work_queue, flag)
 }
@@ -364,11 +371,13 @@ async fn wave_c_first_start_lenient_when_tasks_index_is_corrupt() {
     assert!(LifecycleService::is_running(&adapter));
 }
 
-/// 恢复重提撞满队列容量：容量 8、磁盘上 10 个 Pending 任务、无消费者
-/// （坏 config → agent 构建失败）→ 前 8 个入队成功、其余 submit Err
-/// （内部只 warn）。可观察结果：队列里恰好能抽到 8 个 id。
+/// 恢复重提背压（2026-11-14 审查发现 A 修复）：容量 8、磁盘上 10 个
+/// Pending 任务、无消费者（坏 config → agent 构建失败）→ 前 8 个填满
+/// 缓冲，其余在背压 send 上等待（不丢弃）。消费者持续抽水 → 全部 10
+/// 个最终入队，零丢失、无重复。旧契约「超出容量即截断丢弃（悬空到
+/// 下次重启）」已被背压语义有意取代。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
+async fn wave_c_first_start_resubmit_overflow_backpressure_delivers_all() {
     const CAPACITY: usize = 8;
     let tmp = tempfile::tempdir().unwrap();
     let task_dir = tmp.path().join("tasks");
@@ -377,9 +386,8 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
     let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     seed_pending_tasks(&task_dir, &id_refs);
 
-    // 损坏 config → agent 构建失败（降级语义下唯一确定性构造，无消费者）→
-    // 前 8 个入队成功、其余 submit Err（内部只 warn）。可观察结果：队列里
-    // 恰好能抽到 8 个 id。
+    // 损坏 config → agent 构建失败（降级语义下唯一确定性构造，无消费者）。
+    // first_start 的重提走背压 spawn：容量满后阻塞等待腾位。
     let home = tmp.path().join("home");
     write_corrupt_config(&home);
     let (adapter, _cluster, _shared, task_list, work_queue, _flag) = make_adapter(&home, &task_dir);
@@ -390,9 +398,9 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
         let t = task_list.get_task(id).expect("restored task present");
         assert_eq!(t.status, TaskStatus::Pending);
     }
-    // 队列有界：恰好 CAPACITY 个被接受，多出的两个被 try_send 拒绝（warn 内吞）。
-    // 注意：ClusterWorkQueue 自持 sender，next() 永不返回 None（见 注），
-    // 排空判定必须用超时而非等 None。
+    // 背压契约：持续抽水，全部 CAPACITY+2 个最终可抽到（每次 next() 腾出
+    // 一格，唤醒一个等待中的 sender）。注意：ClusterWorkQueue 自持 sender，
+    // next() 永不返回 None，排空判定必须用超时而非等 None。
     let mut drained = Vec::new();
     for _ in 0..ids.len() + 4 {
         match tokio::time::timeout(std::time::Duration::from_millis(500), work_queue.next()).await {
@@ -402,13 +410,16 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
     }
     assert_eq!(
         drained.len(),
-        CAPACITY,
-        "queue must accept exactly capacity items"
+        ids.len(),
+        "backpressure must deliver all recovered tasks"
     );
     // 抽到的都是合法任务 id 且无重复。
     drained.sort();
     drained.dedup();
-    assert_eq!(drained.len(), CAPACITY);
+    assert_eq!(drained.len(), ids.len());
+    for id in &drained {
+        assert!(ids.contains(id), "unexpected id drained: {id}");
+    }
 
     // 清理：停掉可能存在的 agent 任务（本例 agent 未构建，但保持对称）。
     LifecycleService::stop(&adapter).ok();
@@ -452,6 +463,8 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         work_queue,
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     let err = adapter.start().expect_err("busy rpc port must fail start");
@@ -491,6 +504,8 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None, // 无讨论通道（专属用例自行传入）
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019 停机收口仅在 gateway terminal 链）
     );
 
     // agent 构建 lenient-Ok(None) → running=true 但 handle 缺席。
@@ -773,6 +788,8 @@ async fn g5_first_start_reregisters_pending_continuations_from_disk() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         None,
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019）
     );
     adapter.first_start().expect("first_start");
 
@@ -820,6 +837,8 @@ async fn first_start_with_discussion_inbox_wires_sender() {
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
         Some(inbox.clone()),
+        None, // 无回帖失败注记（B.3 失败可见）
+        None, // 无发件箱（BUG-20261114-019）
     );
 
     // start 前：sender 未设 → 诚实 Err。

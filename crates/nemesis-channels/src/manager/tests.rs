@@ -5,6 +5,8 @@ use async_trait::async_trait;
 struct StubChannel {
     name: String,
     sent: Arc<parking_lot::RwLock<Vec<String>>>,
+    /// 全消息记录（content + meta），sync 镜像断言用（BUG-20261112-118）。
+    sent_full: Arc<parking_lot::RwLock<Vec<OutboundMessage>>>,
     started: Arc<parking_lot::RwLock<bool>>,
     start_count: Arc<parking_lot::RwLock<u32>>,
 }
@@ -14,6 +16,7 @@ impl StubChannel {
         Self {
             name: name.to_string(),
             sent: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            sent_full: Arc::new(parking_lot::RwLock::new(Vec::new())),
             started: Arc::new(parking_lot::RwLock::new(false)),
             start_count: Arc::new(parking_lot::RwLock::new(0)),
         }
@@ -21,6 +24,10 @@ impl StubChannel {
 
     fn sent_messages(&self) -> Vec<String> {
         self.sent.read().clone()
+    }
+
+    fn sent_full_messages(&self) -> Vec<OutboundMessage> {
+        self.sent_full.read().clone()
     }
 
     fn is_started(&self) -> bool {
@@ -55,6 +62,7 @@ impl Channel for StubChannel {
 
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         self.sent.write().push(msg.content.clone());
+        self.sent_full.write().push(msg);
         Ok(())
     }
 }
@@ -1305,14 +1313,22 @@ impl Channel for FailStartChannel {
 #[allow(dead_code)]
 struct SlowChannel {
     name: String,
+    /// 每条 send 的固定耗时（timeout/deadline 类测试的时钟预算锚；
+    /// `new()` 保持历史 100ms 语义，更长预算走 `with_per_send`）。
+    per_send: std::time::Duration,
     sent: Arc<parking_lot::RwLock<Vec<String>>>,
 }
 
 #[allow(dead_code)]
 impl SlowChannel {
     fn new(name: &str) -> Self {
+        Self::with_per_send(name, std::time::Duration::from_millis(100))
+    }
+
+    fn with_per_send(name: &str, per_send: std::time::Duration) -> Self {
         Self {
             name: name.to_string(),
+            per_send,
             sent: Arc::new(parking_lot::RwLock::new(Vec::new())),
         }
     }
@@ -1334,7 +1350,7 @@ impl Channel for SlowChannel {
         Ok(())
     }
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(self.per_send).await;
         self.sent.write().push(msg.content);
         Ok(())
     }
@@ -2288,6 +2304,84 @@ async fn test_w4c_dispatch_loop_breaks_after_shutdown_flag() {
     );
 }
 
+/// BUG-20261119-209 契约钉：SHUTDOWN_FLUSH_SECS 必须 < gateway 残余任务
+/// shielding（main.rs `shutdown_timeout(5s)`，真相源
+/// nemesisbot/src/main.rs——nemesis-channels 不反向依赖 nemesisbot，
+/// 5s 以字面量 + 注释锚定）。旧值 10s 的实际可用窗口由 teardown 尾巴
+/// （快机 ≈0s）+ 5s shielding 隐式拼出 ≈5-6s：deadline 分支不可达 →
+/// runtime 硬砍时任务被 drop（不是再 poll）→ 队列余额无声蒸发零痕迹，
+/// 恰好复现 flush 注释宣称消灭的「无声蒸发」。改回 ≥5s 必须同时改
+/// gateway shielding，两处一起动并重审本契约。
+/// 断言放编译期（`const _: () = assert!`）：契约违反 = 编译失败，
+/// 先于任何测试执行；保留测试壳让契约在测试清单可见。
+#[test]
+fn test_shutdown_flush_secs_below_gateway_shielding() {
+    const _: () = assert!(
+        SHUTDOWN_FLUSH_SECS < 5,
+        "SHUTDOWN_FLUSH_SECS 必须 < gateway shielding 5s（main.rs \
+         shutdown_timeout）——否则 deadline 分支在 runtime 硬砍前不可达，\
+         停机 flush 余额蒸发零痕迹（BUG-20261119-209 契约）"
+    );
+}
+
+/// send 每条睡固定时长的 stub（复用 SlowChannel + per_send）：确定性制造
+/// 「冲刷需求总时长 > deadline」的截断形态（BUG-20261119-209 回归钉）。
+/// BUG-20261119-209 回归钉：冲刷撞 deadline 必须有界退出 + 余额诚实计数。
+/// 6 条消息 × 1.2s/条 = 7.2s 冲刷需求 > 4s deadline：flush 截断后循环
+/// 退出（rx drop → send 拒绝），已投数 < 6，余额精确进
+/// dropped_flush_deadline（metrics 可编程面，不再 trace-only）。
+/// 时钟预算：截断路径退出上界 ≈ 4×per_send（主循环 1 条 + 冲刷 ≤3 条），
+/// 裸「冲完再退」形态 = 6×per_send——等待窗口 8s ∈ (4.8s, 7.2s)×膨胀余量，
+/// 对 CI 时钟抖动（<33%）鲁棒：截断形态必已退出，裸冲形态必仍在冲（红）。
+#[tokio::test]
+async fn test_shutdown_flush_deadline_truncates_and_counts() {
+    let mgr = Arc::new(ChannelManager::new());
+    let ch = Arc::new(SlowChannel::with_per_send(
+        "slow",
+        std::time::Duration::from_millis(1200),
+    ));
+    mgr.register(ch.clone()).await.unwrap();
+    mgr.start_dispatch_loop().unwrap();
+
+    let tx = mgr.outbound_sender();
+    for i in 0..6 {
+        tx.send(OutboundMessage::new("slow", "c1", &format!("m{i}")))
+            .await
+            .unwrap();
+    }
+
+    // 置旗标：loop 在当前（或下一）send 完成后见旗标 → 冲刷撞 deadline。
+    mgr.stop_all().await.unwrap();
+
+    // 有界等待退出（窗口推导见测试头注释）。
+    tokio::time::sleep(std::time::Duration::from_secs(SHUTDOWN_FLUSH_SECS + 4)).await;
+
+    // deadline 截断形态：loop 必已退出（rx drop → send 拒）；
+    // 裸「冲完队列再退」形态此刻仍在冲（7.2s > 8s 窗口边缘为膨胀域）→ 红。
+    let probe = OutboundMessage::new("slow", "probe", "probe");
+    assert!(
+        tx.send(probe).await.is_err(),
+        "冲刷必须在 deadline 处截断退出（裸冲完形态 = 常量未生效/契约破）"
+    );
+
+    // 截断事实 + 精确恒等式：已投数 < 6；余额清点全部进
+    // dropped_flush_deadline 且 == 6 - 已投（probe 在退出后才发，不入计数）。
+    let sent = ch.sent_messages().len();
+    assert!(
+        (1..6).contains(&sent),
+        "deadline 截断形态：已投数必须有界（实测 {sent}）"
+    );
+    let dropped = mgr
+        .metrics()
+        .dropped_flush_deadline
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        dropped as usize,
+        6 - sent,
+        "deadline 余额必须精确进 dropped_flush_deadline 计数器（dropped={dropped}, sent={sent}）"
+    );
+}
+
 /// stop() 返回 Err 的通道：stop_all 记 error 日志后继续停其余通道。
 struct W4cErrorStopChannel {
     base: crate::base::BaseChannel,
@@ -2489,4 +2583,234 @@ async fn s2_init_channels_web_with_server_ops_sets_server() {
         mgr.get("web").await.is_some(),
         "web channel must be registered"
     );
+}
+
+// ===========================================================================
+// sync_to 出站镜像集中触发（BUG-20261112-118）
+//
+// 此前出站镜像依赖各通道 send() 末尾自行调 sync_outbound——但 Channel
+// trait 的 add_sync_target 默认是 Ok(()) 静默存根（24 通道仅 6 个
+// override），setup_sync_targets 经 trait 调用在惰性通道上无效：
+// manager 层 sync_targets 表即使登记成功，通道级 map 恒空 → send 侧
+// 无扩散 → sync_to 配置（含模板默认 external.sync_to=["web"]）静默
+// 断线。修复后出站镜像由 manager 在 dispatch_outbound 投递成功后按
+// manager 层表集中扇出，不依赖通道 override。
+// ===========================================================================
+
+/// 惰性通道（不 override add_sync_target，trait 默认 Ok(()) 存根——
+/// telegram/external 等真实形态）上，配置的 sync_to 必须经 manager
+/// 集中触发完成出站镜像；镜像带发起方盖章 + web:broadcast 特例。
+#[tokio::test]
+async fn sync_to_config_fires_mirror_from_manager_despite_channel_stub() {
+    let mgr = ChannelManager::new();
+    let source = Arc::new(StubChannel::new("telegram"));
+    let web = Arc::new(StubChannel::new("web"));
+    mgr.register(Arc::clone(&source) as Arc<dyn Channel>)
+        .await
+        .unwrap();
+    mgr.register(Arc::clone(&web) as Arc<dyn Channel>)
+        .await
+        .unwrap();
+
+    // StubChannel 不 override add_sync_target → 通道级 wiring 落在默认
+    // 存根上（无效）；manager 层表照常登记。
+    let mut targets = HashMap::new();
+    targets.insert("telegram".to_string(), vec!["web".to_string()]);
+    mgr.setup_sync_targets(&ChannelSyncConfig { targets }).await;
+    assert_eq!(
+        mgr.get_sync_targets("telegram").await,
+        vec!["web".to_string()],
+        "manager-level sync table must register despite channel-level stub"
+    );
+
+    // 原始消息（无盖章）投递成功 → manager 集中扇出镜像。
+    mgr.dispatch_outbound(OutboundMessage::new("telegram", "chat-1", "hello mirror"))
+        .await
+        .unwrap();
+
+    let msgs = web.sent_full_messages();
+    assert_eq!(
+        msgs.len(),
+        1,
+        "mirror must fire from manager despite channel-level add_sync_target stub"
+    );
+    assert_eq!(msgs[0].content, "hello mirror");
+    assert_eq!(msgs[0].chat_id, "web:broadcast");
+    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("telegram"));
+    // source 自身只收到原消息（不收自己发出的镜像）。
+    assert_eq!(source.sent_messages().len(), 1);
+    assert_eq!(source.sent_messages()[0], "hello mirror");
+}
+
+/// 镜像消息（sync_via 已盖章）经 manager 投递不再二次扩散——BUG-57
+/// 回环防护语义随触发点迁移保持；无盖章消息照常镜像（守卫不误伤）。
+#[tokio::test]
+async fn sync_mirror_stamped_message_does_not_repropagate_via_manager() {
+    let mgr = ChannelManager::new();
+    let a = Arc::new(StubChannel::new("chan-a"));
+    let b = Arc::new(StubChannel::new("chan-b"));
+    mgr.register(Arc::clone(&a) as Arc<dyn Channel>)
+        .await
+        .unwrap();
+    mgr.register(Arc::clone(&b) as Arc<dyn Channel>)
+        .await
+        .unwrap();
+
+    let mut targets = HashMap::new();
+    targets.insert("chan-a".to_string(), vec!["chan-b".to_string()]);
+    mgr.setup_sync_targets(&ChannelSyncConfig { targets }).await;
+
+    // 带 sync_via 标记的消息（来自别处的镜像）→ 守卫拦截二次扩散。
+    let mut marked = OutboundMessage::new("chan-a", "c1", "from mirror");
+    marked.meta.sync_via = Some("chan-z".to_string());
+    mgr.dispatch_outbound(marked).await.unwrap();
+    assert!(
+        b.sent_messages().is_empty(),
+        "marked message must not re-propagate through sync targets"
+    );
+
+    // 无标记消息照常镜像。
+    mgr.dispatch_outbound(OutboundMessage::new("chan-a", "c1", "fresh outbound"))
+        .await
+        .unwrap();
+    let msgs = b.sent_full_messages();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].content, "fresh outbound");
+    assert_eq!(msgs[0].meta.sync_via.as_deref(), Some("chan-a"));
+}
+
+/// 互配 sync_to（A→B 且 B→A）经 manager 集中触发：镜像直投
+/// target_ch.send 不回 manager，结构上无乒乓（每通道恰收一次）。
+/// 原 BUG-57 回归锁复刻的通道内 in-send 形态已随修复删除，此处迁移到
+/// 生产真实链路；驱动带 2s 超时——乒乓回归时此处超时红（不挂死进程）。
+#[tokio::test]
+async fn bug57_mutual_sync_via_manager_does_not_ping_pong() {
+    let mgr = ChannelManager::new();
+    let a = Arc::new(StubChannel::new("chan-a"));
+    let b = Arc::new(StubChannel::new("chan-b"));
+    mgr.register(Arc::clone(&a) as Arc<dyn Channel>)
+        .await
+        .unwrap();
+    mgr.register(Arc::clone(&b) as Arc<dyn Channel>)
+        .await
+        .unwrap();
+
+    let mut targets = HashMap::new();
+    targets.insert("chan-a".to_string(), vec!["chan-b".to_string()]);
+    targets.insert("chan-b".to_string(), vec!["chan-a".to_string()]);
+    mgr.setup_sync_targets(&ChannelSyncConfig { targets }).await;
+
+    let drive = mgr.dispatch_outbound(OutboundMessage::new("chan-a", "c1", "loop probe"));
+    tokio::time::timeout(std::time::Duration::from_secs(2), drive)
+        .await
+        .expect("mutual sync must terminate (loop guard missing?)")
+        .unwrap();
+
+    // 各收一次即止：A 收原消息，B 收 A 盖章的镜像；B 的再镜像被守卫拦截
+    //（镜像直投 send 不回 manager，结构上终止）。
+    assert_eq!(a.sent_messages().len(), 1);
+    assert_eq!(b.sent_messages().len(), 1);
+    assert_eq!(
+        b.sent_full_messages()[0].meta.sync_via.as_deref(),
+        Some("chan-a")
+    );
+}
+
+// —— 通道 send panic 隔离（BUG-20261116-039 回归钉）——
+
+/// send 即 panic 的通道桩：模拟三方通道实现内的任意 panic
+/// （毒化锁 unwrap / 越界 / 三方库解析炸），dispatch 环不得被炸掉。
+struct PanickingChannel {
+    name: String,
+    started: Arc<parking_lot::RwLock<bool>>,
+}
+
+impl PanickingChannel {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            started: Arc::new(parking_lot::RwLock::new(false)),
+        }
+    }
+}
+
+#[async_trait]
+impl Channel for PanickingChannel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_running(&self) -> bool {
+        *self.started.read()
+    }
+
+    async fn start(&self) -> Result<()> {
+        *self.started.write() = true;
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<()> {
+        *self.started.write() = false;
+        Ok(())
+    }
+
+    async fn send(&self, _msg: OutboundMessage) -> Result<()> {
+        panic!("boom: simulated third-party channel panic");
+    }
+}
+
+/// 单元钉：dispatch_outbound 对 panic 通道返回 Err（含 panicked 字样）
+/// 而非 panic 穿透——错误进既有 send_errors 记账臂。
+#[tokio::test]
+async fn test_dispatch_outbound_survives_channel_panic() {
+    let mgr = ChannelManager::new();
+    mgr.register(Arc::new(PanickingChannel::new("boom")))
+        .await
+        .unwrap();
+
+    let result = mgr
+        .dispatch_outbound(OutboundMessage::new("boom", "chat-1", "trigger"))
+        .await;
+    let err = result.expect_err("panic 隔离必须映射为 Err");
+    assert!(
+        err.to_string().contains("panicked"),
+        "错误串必须带 panicked 标记: {err}"
+    );
+    assert_eq!(
+        mgr.metrics()
+            .send_errors
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+/// 环存活钉：panic 通道之后同环继续投递——后续消息必须送达
+/// 健康通道。旧形态（无隔离）dispatch loop task 随首个 panic 死亡，
+/// mpsc 无接收者堆积，本测试在 good 通道断言处超时红。
+#[tokio::test]
+async fn test_dispatch_loop_survives_panic_and_delivers_next() {
+    let mgr = Arc::new(ChannelManager::new());
+    let boom = Arc::new(PanickingChannel::new("boom"));
+    let good = Arc::new(StubChannel::new("good"));
+    mgr.register(boom).await.unwrap();
+    mgr.register(good.clone()).await.unwrap();
+    mgr.start_dispatch_loop().unwrap();
+    let tx = mgr.outbound_sender();
+
+    tx.send(OutboundMessage::new("boom", "chat-1", "first (panics)"))
+        .await
+        .unwrap();
+    tx.send(OutboundMessage::new("good", "chat-1", "second (must land)"))
+        .await
+        .unwrap();
+
+    let wait_delivered = async {
+        while good.sent_messages().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), wait_delivered)
+        .await
+        .expect("panic 后环必须存活并继续派发（good 通道未收到 = 环已死）");
+    assert_eq!(good.sent_messages(), vec!["second (must land)"]);
 }

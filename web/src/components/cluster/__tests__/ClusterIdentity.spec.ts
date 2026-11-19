@@ -24,13 +24,13 @@ const LOCAL_NODE = {
   tier: 'normal',
 }
 
-function mockBackend() {
+function mockBackend(role = 'worker') {
   requestMock.mockImplementation(async (_m: string, cmd: string) => {
     if (cmd === 'config.get')
       return {
         node_id: 'node-self',
         name: 'Self',
-        role: 'worker',
+        role,
         category: 'development',
         tags: [],
         capabilities: [],
@@ -40,8 +40,8 @@ function mockBackend() {
   })
 }
 
-async function mountEditor() {
-  mockBackend()
+async function mountEditor(role = 'worker') {
+  mockBackend(role)
   const w = mount(ClusterIdentity)
   await flushPromises()
   return w
@@ -105,6 +105,21 @@ describe('ClusterIdentity 职能/档位编辑（M6）', () => {
 
     const call = requestMock.mock.calls.find((c) => c[1] === 'node.update_identity')!
     expect(call[2].tier).toBeNull()
+    w.unmount()
+  })
+})
+
+describe('ClusterIdentity 主持人信息提示（BUG-20261118 B.4）', () => {
+  it('worker 节点显示非 coordinator 提示（主持人/哨兵缺席，@ 讨论不受影响）', async () => {
+    const w = await mountEditor('worker')
+    expect(w.text()).toContain('本节点非 coordinator')
+    expect(w.text()).toContain('@ 点名讨论不受影响')
+    w.unmount()
+  })
+
+  it('coordinator 节点不显示提示', async () => {
+    const w = await mountEditor('coordinator')
+    expect(w.text()).not.toContain('本节点非 coordinator')
     w.unmount()
   })
 })

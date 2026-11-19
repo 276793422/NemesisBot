@@ -99,9 +99,10 @@ fn make_reflection_stats() -> ReflectionStats {
 fn make_trace_stats() -> TraceStats {
     TraceStats {
         total_traces: 50,
+        traces_with_rounds: 50,
         avg_rounds: 3.5,
+        avg_tool_calls_per_round: 4.2,
         avg_duration_ms: 2500,
-        efficiency_score: 0.75,
         tool_chain_patterns: vec![ToolChainPattern {
             chain: "read->edit->exec".to_string(),
             count: 15,
@@ -110,7 +111,7 @@ fn make_trace_stats() -> TraceStats {
         }],
         retry_patterns: vec![RetryPattern {
             tool_name: "exec".to_string(),
-            retry_count: 5,
+            error_count: 5,
             success_rate: 0.6,
         }],
         signal_summary: {
@@ -178,9 +179,29 @@ fn test_build_full_analysis_prompt_with_trace_stats() {
     assert!(prompt.contains("50"));
     assert!(prompt.contains("3.5"));
     assert!(prompt.contains("read->edit->exec"));
-    assert!(prompt.contains("重试模式"));
+    // A3 改名：重试模式 → 高频失败（口径 = 失败步计数，非重试计数）
+    assert!(prompt.contains("高频失败"));
+    assert!(!prompt.contains("重试模式"));
     assert!(prompt.contains("会话信号"));
     assert!(prompt.contains("retry"));
+}
+
+// 轮数数据不足分支（traces_with_rounds == 0，2026-11-14 缺陷整改批次）：
+// LLM 提示词诚实注记替代 avg 行——旧轨迹（未发 llm_turn）不产伪造轮数。
+#[test]
+fn test_build_full_analysis_prompt_insufficient_round_data() {
+    let stats = make_reflection_stats();
+    let mut trace = make_trace_stats();
+    trace.total_traces = 3;
+    trace.traces_with_rounds = 0;
+    trace.avg_rounds = 0.0;
+    trace.avg_tool_calls_per_round = 0.0;
+    let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None);
+    assert!(prompt.contains("轮数数据不足"));
+    // 差值注记：3 条轨迹全部无轮次数据
+    assert!(prompt.contains("0/3"));
+    assert!(!prompt.contains("平均每会话 LLM 轮数"));
+    assert!(!prompt.contains("平均每轮工具调用数"));
 }
 
 #[test]

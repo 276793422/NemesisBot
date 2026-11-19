@@ -74,14 +74,31 @@ pub(crate) struct CompactionInFlight {
 }
 
 /// [`CompactionInFlight`] 的 RAII guard：Drop 摘除登记——成功/失败/弃用/
-/// panic 各出口一致，无僵尸态（panic 路径 summarizing 槽会滞留是既有
-/// 行为，本表不跟随）。
+/// panic 各出口一致，无僵尸态。
 struct CompactionInFlightGuard {
     registry: Arc<parking_lot::Mutex<HashMap<String, CompactionInFlight>>>,
     session_key: String,
 }
 
 impl Drop for CompactionInFlightGuard {
+    fn drop(&mut self) {
+        self.registry.lock().remove(&self.session_key);
+    }
+}
+
+/// [`AgentLoop.summarizing`] 槽位的 RAII guard（BUG-20261113-170）：
+/// Drop 摘除旗标——成功/失败/早退/panic 各出口一致。此前是函数尾显式
+/// remove，panic/任务取消路径跳过 → 旗标永久滞留，该会话自动压缩从此
+/// 静默失效直到重启（`contains_key` 早退）——与 `SessionBusyGuard`
+/// 根治过的「永久 busy 死会话」同事故形态。函数体无 spawn（全 inline
+/// await），guard 活到函数作用域结束即等价于原尾部 remove，panic 面
+/// 额外兜住。
+struct SummarizingSlotGuard {
+    registry: Arc<parking_lot::Mutex<HashMap<String, bool>>>,
+    session_key: String,
+}
+
+impl Drop for SummarizingSlotGuard {
     fn drop(&mut self) {
         self.registry.lock().remove(&self.session_key);
     }
@@ -518,8 +535,10 @@ pub(crate) const SESSION_STATE_MAX_ENTRIES: usize = 512;
 /// AND the current prompt is still at least [`COMPACT_STUCK_PLATEAU_RATIO`]% of
 /// the pre-summarization size. Extracted so the threshold logic is unit-testable.
 pub(crate) fn summarize_was_ineffective(last_summary_tokens: usize, current_tokens: usize) -> bool {
+    // saturating_mul：last_summary_tokens 记账自压缩信号（provider 实报钳负
+    // 饱和后可达 u64 大量级），usize 裸乘 90 debug panic（BUG-20261119-175）。
     last_summary_tokens > 0
-        && current_tokens >= last_summary_tokens * COMPACT_STUCK_PLATEAU_RATIO / 100
+        && current_tokens >= last_summary_tokens.saturating_mul(COMPACT_STUCK_PLATEAU_RATIO) / 100
 }
 
 /// Voice-playback suffix appended to the last user message when voice mode is
@@ -812,7 +831,9 @@ impl AgentLoop {
                 soft_note_fired = true;
                 info!(
                     "[AgentLoop] context pressure at ~{}% of compaction point ({} / {}, source: {}); summarization will trigger at {}",
-                    signal * 100 / trig.trigger.max(1),
+                    // saturating_mul：signal 可达 provider 实报钳负饱和后的
+                    // u64 大量级，裸乘 100 debug panic（BUG-20261119-175）。
+                    signal.saturating_mul(100) / trig.trigger.max(1),
                     signal,
                     trig.trigger,
                     trig.source,
@@ -889,6 +910,13 @@ impl AgentLoop {
             }
             map.insert(summarize_key.clone(), true);
         }
+        // RAII 摘除（BUG-20261113-170）：替代原函数尾显式 remove——panic/
+        // 取消路径不再滞留旗标。guard 活到函数尾，成功/失败路径时序与
+        // 旧实现逐点等价（PostCompact hook 之后摘除）。
+        let _summarizing_slot = SummarizingSlotGuard {
+            registry: self.summarizing.clone(),
+            session_key: summarize_key.clone(),
+        };
 
         // 压缩进行中徽标（2026-11-09 压缩提示徽标化）：拿到 summarizing 槽后
         // 每次尝试必发、**不落盘**（note_kind="compaction_start" → 前端渲染
@@ -922,16 +950,14 @@ impl AgentLoop {
 
         let provider = self.provider.read().clone();
         let model = self.active_model.read().clone();
-        let summarizing_flag = self.summarizing.clone();
         let observer_mgr = self.observer_manager.clone();
-        let clear_key = summarize_key.clone();
 
         // 方言 PreCompact（观察型， 三段化扩展）：exit 2 不阻止压缩
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
             bridge
-                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "pre")
+                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "pre", session_key)
                 .await;
         }
 
@@ -1109,14 +1135,15 @@ impl AgentLoop {
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
             bridge
-                .run_compact_hooks(CompactReason::AutoSummarize.hook_kind(), "post")
+                .run_compact_hooks(
+                    CompactReason::AutoSummarize.hook_kind(),
+                    "post",
+                    session_key,
+                )
                 .await;
         }
-
-        {
-            let mut map = summarizing_flag.lock();
-            map.remove(&clear_key);
-        }
+        // summarizing 旗标摘除由 `_summarizing_slot` guard Drop 承担
+        // （BUG-20261113-170；原显式 remove 块已删）。
     }
 
     /// （口径补全 + B2 实报锚定）：记录最近一次
@@ -1275,11 +1302,13 @@ impl AgentLoop {
     /// `nemesis_config::resolve_compact_keep_recent_tokens`（typed
     /// `AgentDefaults` 字段同源）。
     pub(crate) fn current_compact_keep_recent_tokens(&self) -> usize {
+        // read_config_string 剥 BOM（裸读时记事本 BOM → parse 失败 → 静默
+        // 落缺省值，BUG-20261103-334 同族）。
         let cfg = self
             .config_path
             .read()
             .clone()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| nemesis_utils::fsutil::read_config_string(&p).ok())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         nemesis_config::resolve_compact_keep_recent_tokens(cfg.as_ref())
     }
@@ -1294,7 +1323,7 @@ impl AgentLoop {
             .config_path
             .read()
             .clone()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|p| nemesis_utils::fsutil::read_config_string(&p).ok())
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         nemesis_config::resolve_compact_boundary(cfg.as_ref())
     }
@@ -1497,7 +1526,7 @@ impl AgentLoop {
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
             bridge
-                .run_compact_hooks(CompactReason::Manual.hook_kind(), "pre")
+                .run_compact_hooks(CompactReason::Manual.hook_kind(), "pre", session_key)
                 .await;
         }
 
@@ -1511,7 +1540,7 @@ impl AgentLoop {
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
             bridge
-                .run_compact_hooks(CompactReason::Manual.hook_kind(), "post")
+                .run_compact_hooks(CompactReason::Manual.hook_kind(), "post", session_key)
                 .await;
         }
 
@@ -1622,7 +1651,10 @@ impl AgentLoop {
         // 「距压缩还有多远」按提前后的触发点算（off 时二者相同，值零变化；
         // trigger_source 继续描述触发点推导来源，语义不变）。
         let effective = turn_end_effective_trigger(self.current_compact_boundary(), trig.trigger);
-        let pct_trigger = (used * 100).checked_div(effective).unwrap_or(0).min(100);
+        let pct_trigger = (used.saturating_mul(100))
+            .checked_div(effective)
+            .unwrap_or(0)
+            .min(100);
         // （B4.5 构成分解 7 段化，2026-11-09 用户拍板：严格按注入机制拆分。
         // SKILL = 启动冻结 skills 段 + 每轮 merged snapshot 的技能目录 digest
         // （都是注入面；对话中按需读取的 SKILL.md 全文是普通历史消息，归
@@ -1724,7 +1756,11 @@ impl AgentLoop {
                     + est_history;
                 if est_sum > 0 {
                     // est_sum > 0 已守卫（闭包捕获，规避 manual_checked_ops 误报）。
-                    let ratio = |part: usize| used * part / est_sum;
+                    // saturating_mul：used 可达 provider 实报钳负饱和后的 u64
+                    // 大量级，裸乘 debug panic（BUG-20261119-175）；饱和只把
+                    // 比例压到理想值以下（钳制分子 ≤ 理想），七段合计仍 ≤ used，
+                    // 尾段 used - Σratio 不会下溢。
+                    let ratio = |part: usize| used.saturating_mul(part) / est_sum;
                     let sys = ratio(est_system);
                     let skl = ratio(est_skill_total);
                     let mem = ratio(est_memory);
@@ -1751,7 +1787,13 @@ impl AgentLoop {
                     est_tools,
                     est_mcp,
                     est_summary,
-                    estimated.saturating_sub(est_system_full),
+                    // （BUG 修 2026-11-13，prompt_segment 同源锁暴露）：此处
+                    // 必须用 est_history——内联 `estimated - est_system_full`
+                    // 在 covers≥1 时对本就不含 system turn 的切片二次扣减
+                    // system（摘要在场 + 无锚点形态下 history 段值少算一个
+                    // system prompt 的量）。est_history 已按 covers 分臂正确
+                    // 处理（锚点臂同款消费）。
+                    est_history,
                 )
             };
         // （2026-11-09 展示口径统一）absent 态的 used（信号口径）= 纯历史尾部
@@ -1769,7 +1811,7 @@ impl AgentLoop {
         let pct = if display_used == 0 {
             0
         } else {
-            (display_used * 100).div_ceil(window).min(100)
+            (display_used.saturating_mul(100)).div_ceil(window).min(100)
         };
         let free_seg = window.saturating_sub(display_used);
         // 压缩进行中登记投影（2026-11-09 刷新恢复方案 A）：前端 refreshUsage
@@ -1829,6 +1871,214 @@ impl AgentLoop {
             "compaction_label": in_flight.map(|e| e.label),
         });
         json
+    }
+
+    // （提示词内容可视化 2026-11-13）：七段之一的**全文分解**。与
+    // session_context_status 共享同一底层取数/渲染路径（单一真相源）——
+    // 本函数只是那些渲染函数返回值的原文回传，不复刻渲染逻辑。段
+    // tokens 为估算口径，公式与 meter 估算分量逐段一致（tools/mcp 取
+    // 紧凑序列化、history 取 model_facing 投影、其余取原文估算）——
+    // 唯 system 段有意口径分离：meter 的 system 值 = 全文 − 冻结
+    // SKILL/MEMORY（两段单列计量），查看器回传全文并注记归属。
+    // parts 是通用分解槽：skill/memory 天然两截（冻结+动态）、history
+    // 每轮一条（模型实际看到的 model_facing 原文 + tool_calls/图片
+    // 引用旁注）、tools/mcp 恒一条（空表也回传 "[]"——tokens 与 meter
+    // 的空注册基线对齐）、其余单条。
+    pub fn session_prompt_segment(
+        &self,
+        session_key: &str,
+        segment_key: &str,
+    ) -> Result<serde_json::Value, String> {
+        const SEGMENTS: [&str; 7] = [
+            "system", "skill", "memory", "tools", "mcp", "summary", "history",
+        ];
+        if !SEGMENTS.contains(&segment_key) {
+            return Err(format!(
+                "unknown segment {segment_key:?} (expected one of: {})",
+                SEGMENTS.join("/")
+            ));
+        }
+        let est = |s: &str| crate::session::estimate_tokens(s);
+        let seg_part =
+            |label: &str, kind: &str, content: &str, tokens: usize| -> serde_json::Value {
+                serde_json::json!({
+                    "label": label,
+                    "kind": kind,
+                    "tokens": tokens,
+                    "content": content,
+                })
+            };
+        let instance = self.get_or_create_instance(session_key);
+        let history = instance.get_history();
+        let cache = instance.get_summary_cache();
+        let split = self.config.system_prompt_split.as_ref();
+        let (title, parts) = match segment_key {
+            "system" => {
+                // system turn 全文（meter 单列计量的冻结 SKILL/MEMORY 注入面
+                // 仍在其内——label 注记口径，配比归属看另外两段）。
+                let content = history
+                    .first()
+                    .filter(|t| t.role == "system")
+                    .map(|t| t.content.clone())
+                    .unwrap_or_default();
+                let parts = if content.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![seg_part(
+                        "全文（meter 单列的 SKILL/MEMORY 冻结注入面包含在内）",
+                        "markdown",
+                        &content,
+                        est(&content),
+                    )]
+                };
+                ("系统提示词", parts)
+            }
+            "skill" => {
+                let mut parts = Vec::new();
+                if let Some(s) = split.filter(|s| !s.skills.is_empty()) {
+                    parts.push(seg_part(
+                        "启动冻结 skills 段",
+                        "markdown",
+                        &s.skills,
+                        est(&s.skills),
+                    ));
+                }
+                let loader = self.skills_loader.read().clone();
+                if let Some(l) = loader {
+                    let infos = l.list_skills();
+                    if !infos.is_empty() {
+                        let catalog = crate::skills_digest::catalog_from_skills_infos(&infos);
+                        let text = crate::skills_digest::digest_message(
+                            &crate::skills_digest::render_skills_digest(&catalog),
+                        );
+                        parts.push(seg_part(
+                            "技能目录 digest（每轮注入）",
+                            "markdown",
+                            &text,
+                            est(&text),
+                        ));
+                    }
+                }
+                ("SKILL", parts)
+            }
+            "memory" => {
+                let mut parts = Vec::new();
+                if let Some(s) = split.filter(|s| !s.memory.is_empty()) {
+                    parts.push(seg_part(
+                        "启动冻结 memory 段",
+                        "markdown",
+                        &s.memory,
+                        est(&s.memory),
+                    ));
+                }
+                let profile = self.user_profile_section_now();
+                if !profile.is_empty() {
+                    parts.push(seg_part(
+                        "用户画像（每轮渲染）",
+                        "markdown",
+                        &profile,
+                        est(&profile),
+                    ));
+                }
+                ("MEMORY", parts)
+            }
+            "tools" | "mcp" => {
+                let want_mcp = segment_key == "mcp";
+                let title = if want_mcp {
+                    "MCP 工具定义"
+                } else {
+                    "工具定义"
+                };
+                let defs: Vec<_> = self
+                    .build_tool_defs()
+                    .into_iter()
+                    .filter(|d| d.function.name.starts_with("mcp_") == want_mcp)
+                    .collect();
+                // tokens 与 meter 同公式（紧凑序列化估算）；content 用
+                // pretty 形态便于阅读。空表也回传（"[]"）——与 meter 的
+                // 空注册基线（2 tok）对齐，不造「meter 有值查看器为空」。
+                let tokens = est(&serde_json::to_string(&defs).unwrap_or_default());
+                let content = serde_json::to_string_pretty(&defs).unwrap_or_default();
+                (
+                    title,
+                    vec![seg_part(
+                        "工具 defs JSON（openai wire 形态，每请求注入）",
+                        "json",
+                        &content,
+                        tokens,
+                    )],
+                )
+            }
+            "summary" => {
+                let parts = cache
+                    .as_ref()
+                    .filter(|c| !c.text.is_empty())
+                    .map(|c| vec![seg_part("压缩摘要全文", "markdown", &c.text, est(&c.text))])
+                    .unwrap_or_default();
+                ("历史摘要", parts)
+            }
+            _ => {
+                // history：模型实际看到的逐字尾部（covers 之后；covers==0
+                // 时剔除首部 system turn——meter 的 history 段值同样做了
+                // est_system_full 剔除）。content = model_facing 原文
+                // （tool 轮为投影后的模型视角，与计量字节一致）；
+                // tool_calls/图片引用走旁注字段，不混入被估算的文本。
+                let covers = cache
+                    .as_ref()
+                    .map(|c| c.covers_up_to)
+                    .filter(|&c| c >= 1)
+                    .unwrap_or(0)
+                    .min(history.len());
+                let start = if covers == 0
+                    && history.first().map(|t| t.role == "system").unwrap_or(false)
+                {
+                    1
+                } else {
+                    covers
+                };
+                let parts: Vec<serde_json::Value> = history[start..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let facing = t.model_facing_content();
+                        let role_label = t
+                            .tool_name
+                            .as_deref()
+                            .map(|n| format!("tool({n})"))
+                            .unwrap_or_else(|| t.role.clone());
+                        let mut p = seg_part(
+                            &format!("{role_label} #{}", start + i + 1),
+                            "markdown",
+                            facing.as_ref(),
+                            est(facing.as_ref()),
+                        );
+                        if !t.tool_calls.is_empty() {
+                            let calls: Vec<serde_json::Value> = t
+                                .tool_calls
+                                .iter()
+                                .map(|c| {
+                                    serde_json::json!({"name": c.name, "arguments": c.arguments})
+                                })
+                                .collect();
+                            p["tool_calls"] = serde_json::Value::Array(calls);
+                        }
+                        if !t.image_refs.is_empty() {
+                            p["image_refs_count"] = serde_json::json!(t.image_refs.len());
+                        }
+                        p
+                    })
+                    .collect();
+                ("会话历史", parts)
+            }
+        };
+        let total: u64 = parts.iter().filter_map(|p| p["tokens"].as_u64()).sum();
+        Ok(serde_json::json!({
+            "segment": segment_key,
+            "title": title,
+            "parts": parts,
+            "total_tokens": total,
+            "generated_at": chrono::Local::now().to_rfc3339(),
+        }))
     }
 
     // -----------------------------------------------------------------------

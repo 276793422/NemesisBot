@@ -114,6 +114,23 @@ impl SessionManager {
         Self::new(Duration::from_secs(3600))
     }
 
+    /// `channels.web.session_timeout`（i64 秒）→ 逐出超时翻译
+    /// （BUG-20261116-035 接线；此前该键声明后零消费，WebServer 恒
+    /// `with_default_timeout()` 3600s 硬编码）。
+    ///
+    /// 语义：`<=0` = 不限（仓库惯例「0=不限」）。不限用 `i64::MAX` 秒
+    /// 表达而**不是** `Duration::MAX`：`evict_inactive` 的比较是
+    /// `inactive_secs > timeout.as_secs() as i64`，`u64::MAX as i64`
+    /// 回绕成 `-1`，比较恒真 = **全量逐出**，与「不限」恰好相反；
+    /// `i64::MAX` 秒（≈292 亿年）则恒不触发。正值原样透传。
+    pub fn timeout_from_config_secs(secs: i64) -> Duration {
+        if secs <= 0 {
+            Duration::from_secs(i64::MAX as u64)
+        } else {
+            Duration::from_secs(secs as u64)
+        }
+    }
+
     /// Create a new session and return it.
     pub fn create_session(&self) -> Session {
         self.create_session_with_method(AuthMethod::default())

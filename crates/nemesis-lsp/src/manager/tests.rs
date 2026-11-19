@@ -716,6 +716,19 @@ def handle(msg):
         }]})
         return
     if method == "textDocument/rename":
+        if MODE == "rename-bigfile":
+            # BUG-20261114-047：canned WorkspaceEdit——主文档一处（磁盘
+            # 真实可应用）+ 一处指向主文档旁的 <uri>.big（测试在磁盘放置
+            # 21MiB 同名文件，验证超帽文件逐文件进 errors、不读入）。
+            uri = msg.get("params", {}).get("textDocument", {}).get("uri")
+            edit = {"range": {"start": {"line": 0, "character": 0},
+                              "end": {"line": 0, "character": 2}},
+                    "newText": "zz"}
+            send({"jsonrpc": "2.0", "id": mid, "result": {"changes": {
+                uri: [edit],
+                uri + ".big": [dict(edit)],
+            }}})
+            return
         # C7：canned WorkspaceEdit——主文档两处（磁盘文件真实可应用）+ 一处
         # 指向不存在的 other.go（供 errors 路径断言）。键用服务器记住的
         # uri（测试先 didOpen）。
@@ -769,6 +782,18 @@ def handle(msg):
             # R337：记录后**活着但停止消费 stdin**（长 sleep，不退出也不
             # 继续读）——模拟语言服务器僵死。后续超管道缓冲的大 didChange
             # 写会塞满管道缓冲、永久阻塞写方（无超时包裹时测试进程挂死）。
+            time.sleep(60)
+            return
+        if MODE == "drain-garbage":
+            # drain 驱逐纪律回归（request 路径 BUG-20261027-93 同族）：
+            # didOpen 后立刻向 stdout 写**坏头块**（Content-Length 值非
+            # 数字）——drain_pushes 的读必须失败并以 StreamUnusable 上抛、
+            # wait_for_diagnostics 驱逐会话（下次查询透明重生），而非吞错
+            # 把毒化会话留在表里（下一次查询响亮失败一次后才自愈）。
+            # 发完即睡保活（杀不净会挂测试进程，同 hang 模式考量）。
+            with send_lock:
+                sys.stdout.buffer.write(b"Content-Length: abc\r\n\r\n")
+                sys.stdout.buffer.flush()
             time.sleep(60)
             return
         if MODE == "uri-normalize":
@@ -1320,6 +1345,36 @@ async fn c3_empty_clear_push_does_not_converge_early() {
     let _ = mgr.shutdown_all().await;
 }
 
+/// red→green（drain 驱逐纪律，request 路径 BUG-20261027-93 同族）：
+/// drain_pushes 读到破坏流（坏 Content-Length 头块）——读错误必须以
+/// StreamUnusable 上抛并由 wait_for_diagnostics 驱逐会话（树杀 + 出表，
+/// 下次查询透明重生）。旧实现吞错直接返回，毒化会话滞留表里——下一
+/// 次查询撞同一流垃圾按 poisoning 响亮失败一次后才自愈。
+#[tokio::test]
+async fn c4_drain_broken_stream_evicts_session() {
+    let (dir, _path) = plant_fake_gopls("drain-garbage");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    assert_eq!(mgr.session_count().await, 1);
+    // drain 首读即撞垃圾 → 读错误 → 驱逐。等待本身立即返回（不等满
+    // max 兜底）。
+    let t0 = std::time::Instant::now();
+    let _ = mgr.wait_for_diagnostics(&go, 100, 5_000).await;
+    assert!(
+        t0.elapsed() < Duration::from_millis(2_000),
+        "读错误必须立即返回而非等满 max，实际 {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "drain 撞破坏流必须驱逐会话（request 路径 poisoning 同纪律）"
+    );
+    let _ = mgr.shutdown_all().await;
+}
+
 /// 回归（实机根修）：服务器按 WHATWG 规范化回显 URI
 /// （rust-analyzer 真机：Windows 盘符 `C:` → `c:`；fake 这里模拟编码
 /// 归一 `.` → `%2E`）——诊断 record/lookup 必须按规范化键匹配。旧实现
@@ -1587,5 +1642,85 @@ async fn rust_analyzer_rename_computes_new_text_without_writing() {
         before,
         "manager::rename must not write to disk"
     );
+    let _ = mgr.shutdown_all().await;
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261114-047：文档同步出站体积闸（didOpen/didChange/rename 防巨型
+// 文件灌出——读入 + JSON Value + encode 约 3-4× 文件体积的瞬时 RSS 倍增，
+// 与入站 MAX_LSP_MESSAGE_BYTES 同族的不对称面）。
+// ---------------------------------------------------------------------------
+
+/// touch_file 指向超帽文件（21MiB > 20MB 帽）：读盘前 metadata 闸诚实 Err，
+/// 绝不 spawn 会话。旧码会把 21MiB 读入并下发 didOpen（红证）。
+#[tokio::test]
+async fn bug_20261114_047_touch_file_over_cap_skips_without_spawn() {
+    let (dir, _path) = plant_fake_gopls("default");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let big = dir.path().join("big.go");
+    std::fs::write(&big, vec![b'a'; 21 * 1024 * 1024]).unwrap();
+
+    let err = mgr.touch_file(&big).await.unwrap_err();
+    assert!(err.contains("exceeds LSP doc sync cap"), "{err}");
+    assert_eq!(
+        mgr.session_count().await,
+        0,
+        "超帽文件必须在 spawn 之前被拒绝"
+    );
+    assert!(read_docs_seen(dir.path()).is_empty(), "无 didOpen 下发");
+    let _ = mgr.shutdown_all().await;
+}
+
+/// notify_change 直传超帽文本：诚实 Err、不 spawn、不下发（text_override
+/// 路径兜底闸——rename 链上游已逐文件闸过，此处防未来调用方绕行）。
+#[tokio::test]
+async fn bug_20261114_047_notify_change_over_cap_honest_error() {
+    let (dir, _path) = plant_fake_gopls("default");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    let huge = "a".repeat(21 * 1024 * 1024);
+    let err = mgr.notify_change(&go, &huge).await.unwrap_err();
+    assert!(err.contains("exceeds LSP doc sync cap"), "{err}");
+    assert_eq!(mgr.session_count().await, 0);
+    assert!(read_docs_seen(dir.path()).is_empty());
+    let _ = mgr.shutdown_all().await;
+}
+
+/// rename 返回的 WorkspaceEdit 含超帽文件：该文件诚实进 errors（不读入），
+/// 其余文件照常应用。旧码会把 21MiB 全量读入内存（红证）。
+#[tokio::test]
+async fn bug_20261114_047_rename_over_cap_file_goes_to_errors() {
+    let (dir, _path) = plant_fake_gopls("rename-bigfile");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+    std::fs::write(&go, "ab main\n\nfunc main() {}\n").unwrap();
+    let big = dir.path().join("main.go.big");
+    std::fs::write(&big, vec![b'a'; 21 * 1024 * 1024]).unwrap();
+
+    let outcome = mgr.rename(&go, 0, 0, "zz").await.unwrap();
+    assert_eq!(outcome.errors.len(), 1, "{:?}", outcome.errors);
+    assert!(
+        outcome.errors[0].contains("exceeds LSP doc sync cap"),
+        "{:?}",
+        outcome.errors
+    );
+    assert!(
+        outcome.errors[0].contains("main.go.big"),
+        "{:?}",
+        outcome.errors
+    );
+    assert_eq!(
+        outcome.files.len(),
+        1,
+        "小文件照常应用: {:?}",
+        outcome.files
+    );
+    assert!(
+        outcome.files[0].path.ends_with("main.go"),
+        "{}",
+        outcome.files[0].path
+    );
+    assert_eq!(outcome.files[0].new_text, "zz main\n\nfunc main() {}\n");
     let _ = mgr.shutdown_all().await;
 }

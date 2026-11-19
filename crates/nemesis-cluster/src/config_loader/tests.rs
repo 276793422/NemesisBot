@@ -67,6 +67,9 @@ fn test_app_config_roundtrip() {
         token: "cfg09-secret".to_string(),
         node_name: "batch4-name".to_string(),
         worker_discipline: true,
+        outbox_push_concurrency: 8,
+        outbox_per_target_concurrency: 2,
+        roaming_heartbeat_interval_secs: 30,
         mandate: Default::default(),
     };
 
@@ -83,6 +86,8 @@ fn test_app_config_roundtrip() {
     assert_eq!(loaded.token, "cfg09-secret");
     // node_name 同族防删键——typed round-trip 保真。
     assert_eq!(loaded.node_name, "batch4-name");
+    // 漫游会话心跳间隔 round-trip（outbox 并发键同批加入的 typed 面）。
+    assert_eq!(loaded.roaming_heartbeat_interval_secs, 30);
 }
 
 // ============================================================
@@ -158,6 +163,9 @@ fn test_app_config_serialization_roundtrip() {
         token: "tok-xyz".to_string(),
         node_name: String::new(),
         worker_discipline: true,
+        outbox_push_concurrency: 8,
+        outbox_per_target_concurrency: 2,
+        roaming_heartbeat_interval_secs: 30,
         mandate: Default::default(),
     };
     let json = serde_json::to_string_pretty(&config).unwrap();

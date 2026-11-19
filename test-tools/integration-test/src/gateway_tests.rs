@@ -314,7 +314,7 @@ pub async fn test_gateway_concurrent_sessions() -> Vec<TestResult> {
     // 生成新会话）。此前 5 个连接全发同一默认 session——busy 检查按
     // session_key 判定，后到的 3 个被「⏳ AI is processing」确定性弹回
     // （reject 模式如实工作，是测试设计错位，2026-09-25 triage 根修）。
-    // 配置侧 concurrent_request_mode 已对齐生产默认 queue。
+    // 配置侧显式钉 queue（IT 自身选择；生产默认 2026-11-03 起为 steer）。
     let num_sessions = 5;
     let mut handles = Vec::new();
 
