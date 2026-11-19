@@ -75,7 +75,11 @@ fn load_from_dir_valid_logs_info_fields() {
     let proj = tempdir();
     std::fs::write(cfg.join("hooks.json"), hooks_doc("PreToolUse", "exit 0")).unwrap();
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
-    assert!(bridge.is_some(), "valid hooks.json loads");
+    assert_eq!(
+        bridge.current_events().total_scripts(),
+        1,
+        "valid hooks.json loads"
+    );
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
 }
@@ -87,16 +91,29 @@ fn load_from_dir_parse_failure_warns_and_fails_open() {
     let proj = tempdir();
     std::fs::write(cfg.join("hooks.json"), "!!! not json !!!").unwrap();
     let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
-    assert!(bridge.is_none(), "fail-open: parse error disables hooks");
+    // fail-open：空快照待命（warn 一次），坏文记账（同版只 warn 一次）。
+    assert_eq!(
+        bridge.current_events().total_scripts(),
+        0,
+        "fail-open: parse error arms empty standby bridge"
+    );
+    assert!(bridge.seen_raw.lock().unwrap().is_some(), "坏文记账");
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
 }
 
 #[test]
-fn load_from_dir_missing_file_is_silent_none() {
+fn load_from_dir_missing_file_arms_silent_standby_bridge() {
     let cfg = tempdir();
     let proj = tempdir();
-    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(
+        bridge.current_events().total_scripts(),
+        0,
+        "缺文件 = 空快照待命桥"
+    );
+    assert!(bridge.hooks_path.is_some(), "热更闸在场");
+    assert!(bridge.seen_raw.lock().unwrap().is_none());
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
 }

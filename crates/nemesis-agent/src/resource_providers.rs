@@ -371,7 +371,7 @@ impl GlobalResourceProvider for HooksGlobalProvider {
         };
         let bridge = slot.read().as_ref().and_then(|l| l.cc_hook_bridge());
         let Some(bridge) = bridge else {
-            // 桥缺席 = load_from_dir 判定 hooks.json 无内容——全局钩子合法无。
+            // 槽内 loop 缺席（headless/重建窗口）——全局钩子查不了，Empty。
             return CategoryView::empty();
         };
         let counts = bridge.global_hook_counts();

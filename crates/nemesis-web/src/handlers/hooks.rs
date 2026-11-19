@@ -16,10 +16,12 @@
 //!   **校验失败不落盘**；通过则原文照写（不 pretty 重排 —— 保用户键序）。
 //! - `summary`：每事件脚本数（get/set 都带，UI 显示「当前 N 个脚本」）。
 //!
-//! 生效机制（2026-09-24 热更收口件1）：桥内分发入口惰性检查 hooks.json 的
-//! mtime，变化即重新解析换装（解析失败保旧 / 清空或删除=注销）——保存后
-//! 下条消息生效，无需重启 Agent。AgentLoop 构建时的
-//! `CcHookBridge::load_from_dir`（agent_factory）不变，仍决定「有没有桥」。
+//! 生效机制（2026-09-24 热更收口件1；2026-11-20 即刻生效语义）：桥内分发
+//! 入口惰性检查 hooks.json 的内容（内容比对不赌 mtime），变化即重新解析
+//! 换装（解析失败保旧 / 清空或删除=注销）——保存后下条消息生效，无需重启
+//! Agent。`CcHookBridge::load_from_dir`（agent_factory）**恒建桥**（缺失/
+//! 空文件/解析失败也建桥待命）——首次保存同样即刻生效，无「重启建桥」
+//! 中间态。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::cc_hooks::{self, CcEvents};

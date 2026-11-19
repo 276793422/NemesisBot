@@ -1225,15 +1225,14 @@ pub(crate) fn register_connector_governance(
 /// 会话钩子自管面：`hooks` 工具（HOOK 会话圈定批次三）——单工具多
 /// action（add/delete/list），sid 取 `context.session_key`（结构上只能给
 /// 自己设），写 `hooks.json` 的 scope 圈定工具专属组（统一存储 RMW API
-/// 原子落盘）。`cc_bridge` 在场 = 桥内容比对热更即时生效；None = 冷启动
-/// 无桥，工具响应诚实提示「重启 Agent 后生效」。add/delete 静态 FileWrite
+/// 原子落盘）。落盘即热更（2026-11-20 即刻生效语义：桥恒在，见
+/// `cc_hooks::load_from_dir`）。add/delete 静态 FileWrite
 /// （HIGH → 审批卡）；list 投影 internal 只读直通。仅主 gateway loop /
 /// 项目 loop 调用（集群走 `register_tools_and_mcp` 公共路径天然排除；
 /// run/acp headless 不装）。
 pub(crate) fn register_hooks_tool(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     shared: &Arc<SharedResources>,
-    cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 ) {
     #[cfg(feature = "security")]
     nemesis_security::types::declare_tool_operation(
@@ -1243,7 +1242,7 @@ pub(crate) fn register_hooks_tool(
     let config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
     agent_loop.register_plugin_tool(
         crate::hooks_tool::TOOL_NAME.to_string(),
-        Arc::new(crate::hooks_tool::HooksTool::new(config_dir, cc_bridge)),
+        Arc::new(crate::hooks_tool::HooksTool::new(config_dir)),
     );
     info!("[AgentFactory] hooks tool registered (session-scoped hooks self-management)");
 }
