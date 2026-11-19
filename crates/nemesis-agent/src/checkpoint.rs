@@ -313,7 +313,14 @@ struct Inner {
 /// checkpoint 每 turn 一次，开销可忽略。
 ///
 /// `op_lock` 保留旧 `Mutex<Repository>` 的操作串行语义（并发 open 会撞
-/// git lock 文件 / rename 窗口）。锁纪律：op_lock 与 inner 锁绝不互相
+/// git lock 文件 / rename 窗口）。**契约：一切影子库 git 操作（begin 的
+/// turn 树写入 / restore_code / current_tree_hex / 冲突预检全树补充 /
+/// 交付族 / restore_to_tree / read_file_from_tree / 冲突扫描 / gc 重建
+/// 全程）必须先持 op_lock 再 `open()`**——旧形态 `Mutex<Repository>` 结构
+/// 性串行化全部操作，非驻留化重构只给部分调用点补锁 = 串行语义静默丢失
+/// （BUG-20261119-205：四处漏接致并发会话 index.lock 竞态 / begin×restore
+/// 撕裂树 / gc 走查段与并发对象写竞态）。
+/// 锁纪律：op_lock 与 inner 锁绝不互相
 /// 嵌套持有（先 git 操作、放锁、再 inner，反之亦然），杜绝双锁排序死锁。
 #[cfg(feature = "checkpoint-git")]
 struct GitBackend {
@@ -1289,9 +1296,14 @@ impl CheckpointStore {
         let prompt = prompt.into();
 
         // git track 先行（git 操作锁独立短区间，不与 inner 锁嵌套）。
+        // （BUG-20261119-205）：op_lock 必须持——旧 Mutex<Repository> 形态
+        // 结构性串行化全部 git 操作，非驻留化重构漏接本点后并发会话 begin
+        // 直接撞影子库 index.lock，败者 turn tree=None → rewind 落到更早
+        // tree 过度回退。
         #[cfg(feature = "checkpoint-git")]
         let tree_hex = match self.git.as_ref() {
             Some(gb) => {
+                let _op = gb.op_lock.lock();
                 match gb
                     .open()
                     .and_then(|mut repo| Self::write_current_tree(&mut repo))
@@ -1649,7 +1661,13 @@ impl CheckpointStore {
                     excluded.insert(r);
                 }
             }
-            let (extra, extra_new) = match gb.open() {
+            // （BUG-20261119-205）：全树补充同样经 op_lock 串行——
+            // tree_diff_unchecked 内部有 write_current_tree（index 写入）。
+            let opened = {
+                let _op = gb.op_lock.lock();
+                gb.open()
+            };
+            let (extra, extra_new) = match opened {
                 // open 失败 = 全树 diff 预检不可用，按既有降级语义取空集
                 // （预检不误报，与 tree_diff_unchecked 内部失败同路）。
                 Ok(mut repo) => {
@@ -1850,17 +1868,24 @@ impl CheckpointStore {
         // ----：repo 锁内做 tree diff + checkout，随即放锁 ----
         #[cfg(feature = "checkpoint-git")]
         let mut result = match self.git.as_ref() {
-            Some(gb) => match gb.open() {
-                Ok(mut repo) => Self::git_restore(&self.root, &mut repo, &target_hex),
-                Err(e) => {
-                    // 跨模式（会话曾以 git 模式记录，现.git 消失回落 JSON）：tree
-                    // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
-                    warn!(
-                        "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复: {e}"
-                    );
-                    RestoreReport::default()
+            Some(gb) => {
+                // （BUG-20261119-205）：持 op_lock——git_restore 内部
+                // write_current_tree + checkout_tree 与并发会话 begin 的
+                // index 写入/文件哈希必须互斥，否则撕裂 begin 树 / index
+                // lock 竞态。
+                let _op = gb.op_lock.lock();
+                match gb.open() {
+                    Ok(mut repo) => Self::git_restore(&self.root, &mut repo, &target_hex),
+                    Err(e) => {
+                        // 跨模式（会话曾以 git 模式记录，现.git 消失回落 JSON）：tree
+                        // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
+                        warn!(
+                            "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复: {e}"
+                        );
+                        RestoreReport::default()
+                    }
                 }
-            },
+            }
             None => {
                 warn!(
                     "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用（JSON 形态），跳过工作区内恢复"
@@ -2045,6 +2070,9 @@ impl CheckpointStore {
     #[cfg(feature = "checkpoint-git")]
     pub fn current_tree_hex(&self) -> Option<String> {
         let gb = self.git.as_ref()?;
+        // （BUG-20261119-205）：持 op_lock——与 begin/restore 的 index 写入
+        // 互斥（redo 采集实时树与并发 turn begin 同窗并发是常态序列）。
+        let _op = gb.op_lock.lock();
         match gb
             .open()
             .and_then(|mut repo| Self::write_current_tree(&mut repo))
@@ -2426,3 +2454,9 @@ mod gc_tests;
 // 文件内自挂 cfg(windows)）。
 #[cfg(all(test, windows, feature = "checkpoint-git"))]
 mod pack_lock_tests;
+
+// BUG-20261119-205 回归锁：影子库 git 操作 op_lock 串行契约——四处漏接
+// （begin/restore_code/current_tree_hex/conflict_scan_scoped 全树补充）
+// 阻塞探测 + gc 重建全程持锁 + 并发 begin 无 index.lock 竞态败者。
+#[cfg(all(test, feature = "checkpoint-git"))]
+mod op_lock_tests;
