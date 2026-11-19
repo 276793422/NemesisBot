@@ -458,30 +458,34 @@ impl LlmProvider for DegradingNoteProvider {
     }
 }
 
-/// 主路径成功调用后统一取件入槽；干净调用（None）覆盖清槽——
-/// 多会话共享 loop 不串台陈旧标注。
+/// 主路径成功调用后统一取件按会话键入表；干净调用（None）覆盖清本键——
+/// 注记按会话键隔离（BUG-20261120-013），跨会话并行 turn 各写各键。
 #[tokio::test]
 async fn degradation_note_taken_on_success_and_cleared_by_clean_call() {
+    let key = "agent:main:session:covdegr-set";
     let al = AgentLoop::new(Box::new(QuietProvider), cov_config());
     let degrading: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(DegradingNoteProvider {
         note: Some("主模型x → http-compat/备选y".to_string()),
     });
 
-    al.chat_call_escalating(0, &degrading, "m", Vec::new(), None, Vec::new())
+    al.chat_call_escalating(0, &degrading, "m", Vec::new(), None, Vec::new(), key)
         .await
         .unwrap();
     assert_eq!(
-        al.response_degradation.lock().as_deref(),
+        al.response_degradation.lock().get(key).map(|s| s.as_str()),
         Some("主模型x → http-compat/备选y"),
-        "成功调用后必须取件入槽"
+        "成功调用后必须取件入本会话键"
     );
 
-    // 干净调用 → last-call 覆盖清槽。
+    // 干净调用 → last-call 覆盖清本键。
     let clean: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(QuietProvider);
-    al.chat_call_escalating(0, &clean, "m", Vec::new(), None, Vec::new())
+    al.chat_call_escalating(0, &clean, "m", Vec::new(), None, Vec::new(), key)
         .await
         .unwrap();
-    assert!(al.response_degradation.lock().is_none(), "干净调用清槽");
+    assert!(
+        !al.response_degradation.lock().contains_key(key),
+        "干净调用清本会话键"
+    );
 }
 
 /// finish_message 终局回复：附加展示注记 + 取件即清（下一帧无注记）。
@@ -490,9 +494,12 @@ async fn finish_message_appends_degradation_note_and_consumes_slot() {
     let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
     let (otx, mut orx) = tokio::sync::mpsc::channel(4);
     al.outbound_tx = Some(otx);
-    *al.response_degradation.lock() = Some("glm-4.7 → http-compat/glm-5.3-flash".to_string());
-
     let msg = inbound("hello", "web", "covuser", "agent:main:session:covdegrade");
+    al.response_degradation.lock().insert(
+        msg.session_key.clone(),
+        "glm-4.7 → http-compat/glm-5.3-flash".to_string(),
+    );
+
     al.finish_message(&msg, "最终回复".to_string(), None, false, false, None)
         .await;
     let got = orx.recv().await.unwrap();
@@ -506,9 +513,14 @@ async fn finish_message_appends_degradation_note_and_consumes_slot() {
         "注记必须随回复: {}",
         got.content
     );
-    assert!(al.response_degradation.lock().is_none(), "取件即清");
+    assert!(
+        !al.response_degradation
+            .lock()
+            .contains_key(&msg.session_key),
+        "取件即清"
+    );
 
-    // 槽已清：下一帧不带注记。
+    // 表已清：下一帧不带注记。
     al.finish_message(&msg, "第二条".to_string(), None, false, false, None)
         .await;
     let got2 = orx.recv().await.unwrap();
@@ -522,8 +534,10 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
     let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
     let (otx, mut orx) = tokio::sync::mpsc::channel(4);
     al.outbound_tx = Some(otx);
-    *al.response_degradation.lock() = Some("a → b".to_string());
     let msg = inbound("hello", "web", "covuser", "agent:main:session:covdegrade2");
+    al.response_degradation
+        .lock()
+        .insert(msg.session_key.clone(), "a → b".to_string());
 
     // 回执帧：不背注记、不消费槽。
     al.finish_message(
@@ -537,7 +551,12 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
     .await;
     let got = orx.recv().await.unwrap();
     assert_eq!(got.content, "⏳ 排队中");
-    assert!(al.response_degradation.lock().is_some(), "回执不消费槽");
+    assert!(
+        al.response_degradation
+            .lock()
+            .contains_key(&msg.session_key),
+        "回执不消费槽"
+    );
 
     // 错误文案：不背注记、不消费槽。
     al.finish_message(
@@ -555,7 +574,12 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
         "错误文案形态: {}",
         got.content
     );
-    assert!(al.response_degradation.lock().is_some(), "错误不消费槽");
+    assert!(
+        al.response_degradation
+            .lock()
+            .contains_key(&msg.session_key),
+        "错误不消费槽"
+    );
 
     // 随后终局回复正常消费。
     al.finish_message(&msg, "终局".to_string(), None, true, false, None)
@@ -566,5 +590,51 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
         "终局注记: {}",
         got.content
     );
-    assert!(al.response_degradation.lock().is_none());
+    assert!(
+        !al.response_degradation
+            .lock()
+            .contains_key(&msg.session_key)
+    );
+}
+
+/// BUG-20261120-013 红证：降级注记槽 loop 级单槽跨会话串台——A 会话的
+/// 降级事实在槽（A 末次 LLM 调用降级后、尚未走到 finish_message 的窗口
+/// 态），B 会话（从未降级）的终局先到把注记偷走（B 的回复谎称由备选
+/// 应答），A 自己的终局反而裸奔。V5 统一泵跨会话并发是结构不变量
+/// （spawn_turn_task 无条件派生，并发模式只管同会话忙处置），两会话
+/// turn 重叠在默认配置即成立；finish_message 消费窗口（finalize 落盘
+/// IO）内另一会话终局到达即可触发。注记必须按会话键隔离。
+#[tokio::test]
+async fn finish_message_degradation_note_is_session_keyed_not_global() {
+    let mut al = AgentLoop::new(Box::new(QuietProvider), cov_config());
+    let (otx, mut orx) = tokio::sync::mpsc::channel(4);
+    al.outbound_tx = Some(otx);
+    // A 会话的降级事实在表（等价于 A 的末次 LLM 调用降级后、A 尚未走到
+    // finish_message 的窗口态）。
+    al.response_degradation.lock().insert(
+        "agent:main:session:covsteal-a".to_string(),
+        "a → b".to_string(),
+    );
+
+    // B 会话终局先到：从未降级，不得背注记。
+    let msg_b = inbound("hello", "web", "covuser", "agent:main:session:covsteal-b");
+    al.finish_message(&msg_b, "B的回复".to_string(), None, false, false, None)
+        .await;
+    let got_b = orx.recv().await.unwrap();
+    assert!(
+        !got_b.content.contains("备选应答"),
+        "B 从未降级，注记不得串台到 B: {}",
+        got_b.content
+    );
+
+    // A 会话终局后到：注记必须落在真实降级方 A，披露不得丢失。
+    let msg_a = inbound("hello", "web", "covuser", "agent:main:session:covsteal-a");
+    al.finish_message(&msg_a, "A的回复".to_string(), None, false, false, None)
+        .await;
+    let got_a = orx.recv().await.unwrap();
+    assert!(
+        got_a.content.contains("备选应答") && got_a.content.contains("a → b"),
+        "A 的降级披露不得丢失: {}",
+        got_a.content
+    );
 }

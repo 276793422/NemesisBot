@@ -165,6 +165,7 @@ impl AgentLoop {
                 messages,
                 Some(chat_opts.clone()),
                 tool_defs,
+                &context.session_key,
             ) => result,
             _ = cancel_token.cancelled() => {
                 info!("[AgentLoop] LLM call cancelled while waiting for response, turns_used={}", turns_used);
@@ -725,6 +726,7 @@ impl AgentLoop {
                     compressed_messages,
                     Some(chat_opts.clone()),
                     retry_tool_defs,
+                    &context.session_key,
                 ) => result,
                 _ = cancel_token.cancelled() => {
                     info!(
@@ -896,6 +898,7 @@ impl AgentLoop {
                 r_msgs,
                 Some(st.chat_opts.clone()),
                 r_tools,
+                &context.session_key,
             ) => result,
             _ = cancel_token.cancelled() => {
                 info!("[AgentLoop] LLM retry (credential card) cancelled, turns_used={}", st.turns_used);
@@ -1158,6 +1161,7 @@ impl AgentLoop {
                     r_msgs,
                     Some(chat_opts.clone()),
                     r_tools,
+                    &context.session_key,
                 ) => result,
                 // BUG-20261107-026：调用包 cancel/estop 臂（与首呼同构）；
                 // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
@@ -1261,6 +1265,7 @@ impl AgentLoop {
                 r_msgs,
                 Some(stripped),
                 r_tools,
+                &context.session_key,
             ) => result,
             // 调用包 cancel/estop 臂（与首呼/重试环同构）；chat future
             // 被 drop 时包装器 Err 臂没机会跑，sink 显式补 error 帧让
@@ -1471,6 +1476,7 @@ impl AgentLoop {
                     r_msgs,
                     Some(chat_opts.clone()),
                     r_tools,
+                    &context.session_key,
                 ) => result,
                 // BUG-20261107-026：调用包 cancel/estop 臂（与首呼同构）；
                 // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
@@ -1656,6 +1662,7 @@ impl AgentLoop {
                                 r_msgs,
                                 Some(chat_opts.clone()),
                                 r_tools,
+                                &context.session_key,
                             ) => res,
                             _ = cancel_token.cancelled() => {
                                 info!("[AgentLoop] Hook retry call cancelled, turns_used={}", turns_used);

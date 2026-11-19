@@ -162,7 +162,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            response_degradation: parking_lot::Mutex::new(None),
+            response_degradation: parking_lot::Mutex::new(HashMap::new()),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: Some(outbound_tx),
@@ -1119,14 +1119,14 @@ impl AgentLoop {
             return;
         }
 
-        // 降级用户面标注（fallback 链末跳）：仅终局回复（非回执、非错误
-        // 文案）消费注记——排队回执/slash 确认（receipt=true）与错误文案
-        // （err=Some）既不背标注也不消费槽。取件即清，只改展示面：对话
-        // 历史已在 run_loop 按原文落盘；RPC correlation 前缀在本注记之前
-        // 组装，寻址语义不受影响。
+        // 降级用户面标注（fallback 链末跳，按会话键取件——BUG-20261120-013）：
+        // 仅终局回复（非回执、非错误文案）消费**本会话键**的注记——排队
+        // 回执/slash 确认（receipt=true）与错误文案（err=Some）既不背标注
+        // 也不消费槽。取件即清，只改展示面：对话历史已在 run_loop 按原文
+        // 落盘；RPC correlation 前缀在本注记之前组装，寻址语义不受影响。
         let response = if err.is_none()
             && !receipt
-            && let Some(note) = self.response_degradation.lock().take()
+            && let Some(note) = self.response_degradation.lock().remove(&msg.session_key)
         {
             format!("{response}\n\n---\n> ⚠️ 主模型不可用，本次回复由备选应答（{note}）")
         } else {

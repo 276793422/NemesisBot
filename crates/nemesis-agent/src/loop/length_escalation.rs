@@ -76,7 +76,8 @@ pub(crate) const ESCALATION_FLOOR: u64 = 32_768;
 impl AgentLoop {
     /// 主入口：recovery.rs 五个 LLM 调用点（首捕/压缩重试环/429 环/
     /// transient 环/hook 重呼）统一走这里——在 [`AgentLoop::chat_call_bounded`]
-    /// 超时包装之上叠加翻倍阶梯。签名与 chat_call_bounded 完全一致（调用点
+    /// 超时包装之上叠加翻倍阶梯。除末位 `session_key`（降级注记按会话键
+    /// 隔离，BUG-20261120-013）外签名与 chat_call_bounded 一致（调用点
     /// 机械替换）。
     pub(crate) async fn chat_call_escalating(
         &self,
@@ -86,6 +87,7 @@ impl AgentLoop {
         messages: Vec<LlmMessage>,
         options: Option<crate::types::ChatOptions>,
         tools: Vec<crate::types::ToolDefinition>,
+        session_key: &str,
     ) -> Result<LlmResponse, String> {
         // learned floor 叠加：同模型已知需要更大输出时，本次请求直接从
         // floor 起步（config 值更大则尊重 config）。floor 来自上一轮撞顶
@@ -169,11 +171,18 @@ impl AgentLoop {
             resp.escalated_to = current;
         }
         // 降级事实取件（fallback 用户面标注第三跳）：主路径每次成功 LLM
-        // 调用后统一取件覆盖 loop 槽（last-call wins，None=清除）——多
-        // 会话共享同一 loop 时上一会话的标注不会串台；cache_warmer 辅道
-        // 走 chat_call_bounded 不经过这里，辅道陈旧章由下一次主路径取件
-        // 覆盖。取件即清由 provider 实现（adapter 槽 take）保证。
-        *self.response_degradation.lock() = provider.take_response_degradation();
+        // 调用后统一取件，按本调用所属会话键覆盖注记表（last-call wins，
+        // None=清除该会话条目）——注记按会话键隔离（BUG-20261120-013），
+        // 跨会话并行 turn 各写各键、取件只认本键，不串台；cache_warmer
+        // 辅道走 chat_call_bounded 不经过这里，也不触碰注记表。取件即清
+        // 由 provider 实现（adapter 槽 take）保证。
+        let note = provider.take_response_degradation();
+        let mut slot = self.response_degradation.lock();
+        if let Some(n) = note {
+            slot.insert(session_key.to_string(), n);
+        } else {
+            slot.remove(session_key);
+        }
         Ok(resp)
     }
     /// per-model learned floor 读取（无记录 = 0，不叠加）。
