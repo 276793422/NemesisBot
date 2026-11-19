@@ -20,6 +20,9 @@ sysinfo = "0.33"
 reqwest = { workspace = true }
 # probe command 源的 env 窄版闸（nemesis_utils::env_sanitize，BUG-20261117-048）
 nemesis-utils = { workspace = true }
+# 泵常驻循环的进程终态令牌（BUG-20261115-023 家族纪律；BUG-20261119-208 同款
+# DI 形态——gateway 装配传 terminal_cancel_token().clone()）
+tokio-util = "0.7"
 
 [dev-dependencies]
 tempfile = "3"

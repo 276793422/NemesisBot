@@ -97,7 +97,11 @@ fn resolve_issue_id_unknown_number_errs() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_temp_store(&dir);
     let err = resolve_issue_id(&store, "NB-999").unwrap_err();
-    assert!(err.to_string().contains("找不到 issue"), "{err}");
+    // store 自述透传（BUG-20261119-196 横向）：不再捏造「找不到」断言。
+    let msg = err.to_string();
+    assert!(msg.contains("issue NB-999 not found"), "{msg}");
+    assert!(msg.contains("读取 issue NB-999 失败"), "{msg}");
+    assert!(!msg.contains("找不到 issue"), "{msg}");
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +320,7 @@ fn w_run_get_by_number_and_unknown_id_errs() {
         false,
     )
     .unwrap_err();
-    assert!(err.to_string().contains("找不到 issue"), "{err}");
+    assert!(err.to_string().contains("issue NB-9 not found"), "{err}");
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)

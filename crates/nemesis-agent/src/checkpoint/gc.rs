@@ -21,8 +21,11 @@
 //! - **触发**：`truncate_from_scoped` 后 + gateway 周期拍（runtime 装配，
 //!   6h 与 uploads/logs 同拍）；每轮打 INFO。
 //!
-//! 锁纪律：inner 快照（短锁）→ 释放 → git 操作（op_lock 只在换名窗口
-//! 短持）→ inner 清账（短锁）。绝不嵌套。
+//! 锁纪律：inner 快照（短锁）→ 释放 → git 重建**全程持 op_lock**
+//! （BUG-20261119-205：走查/拷贝/自检/换名/清账决策全在锁内——旧形态
+//! 只在换名窗口短持，walk→rename 窗口内并发 begin/restore 写入旧
+//! objects 的影子对象会随换名进 `.gc-old` 被 cleanup 销毁）→ inner
+//! 清账（短锁）。绝不嵌套（parking_lot 不可重入）。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -358,7 +361,14 @@ impl CheckpointStore {
             .git
             .as_ref()
             .ok_or_else(|| "影子库未启用".to_string())?;
+        // （BUG-20261119-205）：重建**全程**持 op_lock（走查/拷贝/自检/换名
+        // /清账决策）——旧形态只在换名窗口持锁，walk→rename 窗口内并发
+        // begin/restore 写入旧 objects 子树的影子对象会随换名进 `.gc-old`
+        // 被 cleanup 销毁（dangling tree：turn 条目还在索引、对象已没了，
+        // 该 turn 的回滚能力静默丢失）。全程持锁后并发 git 操作（同样持
+        // op_lock，见 GitBackend 契约注记）在重建期间排队等待。
         // 影子库路径直接读字段（非驻留化后无常驻句柄可查）。
+        let _op = gb.op_lock.lock();
         let shadow = gb.shadow.clone();
         let root = self.root.clone();
         let open_flags = git2::RepositoryOpenFlags::NO_SEARCH;
@@ -390,7 +400,8 @@ impl CheckpointStore {
                     );
                 }
             } else {
-                let _heal_guard = gb.op_lock.lock();
+                // op_lock 已在函数顶全程持有（BUG-20261119-205），此处
+                // 不再重复取锁（parking_lot 不可重入，重入即死锁）。
                 std::fs::rename(&objects_old, shadow.join("objects"))
                     .map_err(|e| format!("破损态自愈失败（.gc-old 搬回 objects）: {e}"))?;
                 tracing::warn!(
@@ -572,10 +583,10 @@ impl CheckpointStore {
         // 原子换名 objects/ 子树：影子库路径不变 → 各路临时句柄（含集群
         // 共享 store 的 open）/ refs / index 全部继续有效（loose 对象按路
         // 径按需读，无持久句柄钉住）。objects_old 已在函数头构造（BUG-96
-        // 残留处置）。换名窗口经 op_lock 串行本 store 的并发 git 操作
-        // （集群共享影子库的另一个 store 实例有自己的 op_lock，跨实例
-        // 不互斥——BUG-95 集群闸在装配点兜住，此处语义不变）。
-        let _repo_guard = gb.op_lock.lock();
+        // 残留处置）。换名窗口已处于函数顶的全程 op_lock 内
+        // （BUG-20261119-205），不再单独取锁；跨实例（集群共享影子库的另
+        // 一个 store 实例有自己的 op_lock）不互斥——BUG-95 集群闸在装配点
+        // 兜住，此处语义不变。
         std::fs::rename(shadow.join("objects"), &objects_old)
             .map_err(|e| format!("旧 objects 换名失败（瞬时句柄占用，下轮重试）: {e}"))?;
         if let Err(e) = std::fs::rename(tmp.join("objects"), shadow.join("objects")) {
@@ -590,7 +601,6 @@ impl CheckpointStore {
                 }
             ));
         }
-        drop(_repo_guard);
 
         // 收尾（best-effort）：旧 objects 子树删除（体积计入释放；瞬时句
         // 柄耗尽重试也耗尽 → 残留下轮 gc 重试）。

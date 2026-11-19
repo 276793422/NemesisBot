@@ -213,6 +213,7 @@ fn make_ctx_at(workspace: &std::path::Path, home: &std::path::Path) -> RequestCo
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -329,6 +330,52 @@ async fn set_roundtrips_scope_and_all_twelve_events() {
         doc["hooks"]["PreToolUse"][0]["scope"],
         serde_json::json!({ "sessions": ["sid-a", "sid-b"] }),
         "scope.sessions survives the handler round-trip"
+    );
+}
+
+// Prompt-type entries (unified storage, 2026-11-19): same file, type=prompt.
+
+#[tokio::test]
+async fn set_roundtrips_prompt_type_and_rejects_prompt_off_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = HooksHandler;
+
+    // prompt 型（Stop）+ command 型同文件并存，原样落盘回读。
+    let mixed = r#"{
+      "hooks": {
+        "Stop": [
+          { "hooks": [
+            { "type": "command", "command": "echo shell" },
+            { "type": "prompt", "prompt": "继续检查代码是否正确，确认是否有问题" }
+          ] }
+        ]
+      }
+    }"#;
+    let r = h.set(&home_str(&dir), mixed).unwrap().unwrap();
+    assert_eq!(r["written"], true);
+    assert_eq!(
+        r["summary"]["total"], 2,
+        "prompt 条目与 command 条目同账计数"
+    );
+
+    let g = h.get(&home_str(&dir)).unwrap().unwrap();
+    assert_eq!(g["valid"], true);
+    assert_eq!(g["content"].as_str().unwrap(), mixed, "prompt 条目原样回读");
+    let doc: serde_json::Value = serde_json::from_str(g["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        doc["hooks"]["Stop"][0]["hooks"][1],
+        serde_json::json!({ "type": "prompt", "prompt": "继续检查代码是否正确，确认是否有问题" }),
+        "prompt entry survives verbatim"
+    );
+
+    // prompt 型落非 Stop 事件 = 语义校验拒绝，文件未动（fail-closed 不落盘）。
+    let bad = r#"{ "hooks": { "PreToolUse": [ { "hooks": [ { "type": "prompt", "prompt": "x" } ] } ] } }"#;
+    let err = h.set(&home_str(&dir), bad).unwrap_err();
+    assert!(err.contains("only valid on Stop"), "got: {err}");
+    assert_eq!(
+        std::fs::read_to_string(hooks_path(dir.path())).unwrap(),
+        mixed,
+        "rejected write must not touch the file"
     );
 }
 

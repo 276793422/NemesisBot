@@ -631,6 +631,15 @@ $results | ConvertTo-Json -Compress
             timeout,
             tokio::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", &utf8_script])
+                // BUG-20261119-203（kill_on_drop 家族纪律对齐）：tokio Child
+                // 默认 kill_on_drop=false——超时分支 drop 的只是 output()
+                // future（连同其中的 Child），powershell 泄漏为孤儿进程；
+                // SendWait 挂死场景下孤儿还会在挂起解除后把积压键序注入
+                // 失焦窗口。kill_on_drop(true) 让 drop = 收杀（exec /
+                // cc_hooks / events::command_probe / lsp::install 同款纪
+                // 律）；正常完成路径 Child 被 output() 消费，Drop-kill 永
+                // 不触发。
+                .kill_on_drop(true)
                 .output(),
         )
         .await

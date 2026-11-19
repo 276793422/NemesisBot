@@ -273,12 +273,11 @@ impl LspTool {
 
         // + 2: gate ALL files, then write ALL files (atomic enough:
         // a mid-write failure is reported honestly with which files landed).
-        // cfg 分支取引用（`` 占位不 impl Deref，as_deref 在 no-security
-        // 编译下不存在——单 crate 无 feature 构建曾在此炸，25 号
-        // 雷区家族：workspace 全量 feature 统一会掩盖这个分支）。
-        #[cfg(feature = "security")]
-        let security = self.security.as_deref();
-        #[cfg(not(feature = "security"))]
+        // `as_ref()` 对两个 cfg 形态都可用（security 形态字段是
+        // Option<Arc<SecurityPlugin>> → Option<&Arc<...>>；占位形态是
+        // Option<()> → Option<&()>），调用方 cfg-free——BUG-20261119-199
+        // 起 security 形态签名收 &Arc（spawn_blocking 需 'static），
+        // 旧 as_deref 分支不再适用。
         let security = self.security.as_ref();
         let (written, rejected) =
             gate_and_write(&outcome.files, security, self.boundary.as_deref(), context).await?;
@@ -425,7 +424,7 @@ pub(crate) fn approval_routing_metadata(
 #[cfg(feature = "security")]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
-    security: Option<&nemesis_security::pipeline::SecurityPlugin>,
+    security: Option<&std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>,
     boundary: Option<&WorkspaceBoundary>,
     context: &RequestContext,
 ) -> Result<(Vec<String>, Vec<(String, String)>), String> {
@@ -468,7 +467,37 @@ async fn gate_and_write(
                 // approval_routing_metadata 的 doc）。
                 metadata: approval_routing_metadata(context),
             };
-            let (allowed, deny) = security.execute(&invocation);
+            // BUG-20261119-199：execute 含审批等待——auditor RequireApproval
+            // 时 request_approval_sync_ctx 在 auditor 内同步阻塞（最长 300s），
+            // 裸调占死 tokio worker（dispatch 主路径 tool_dispatch.rs 修过的
+            // 同一问题：并行批 N 张审批卡 = N 个 worker 饿死；current_thread
+            // runtime 上 WebApprovalManager 的 block_in_place 还会 panic）。
+            // 包 spawn_blocking 出 worker 线程，阻塞语义不变（仍等裁决/超时）。
+            // estop 打断不在本层（AgentLoop 订阅句柄不可达，dispatch 专有）。
+            // BUG-20261119-199：execute 含审批等待——auditor RequireApproval
+            // 时 request_approval_sync_ctx 在 auditor 内同步阻塞（最长 300s），
+            // 裸调占死 tokio worker（dispatch 主路径 tool_dispatch.rs 修过的
+            // 同一问题：并行批 N 张审批卡 = N 个 worker 饿死；current_thread
+            // runtime 上 WebApprovalManager 的 block_in_place 还会 panic）。
+            // 包 spawn_blocking 出 worker 线程，阻塞语义不变（仍等裁决/超时）。
+            // estop 打断不在本层（AgentLoop 订阅句柄不可达，dispatch 专有）。
+            let (allowed, deny) = {
+                let tracked_security = std::sync::Arc::clone(security);
+                let tracked_invocation = invocation.clone();
+                tokio::task::spawn_blocking(move || tracked_security.execute(&tracked_invocation))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            false,
+                            Some(nemesis_security::types::DenyInfo {
+                                layer: "runtime",
+                                policy: "spawn_blocking".to_string(),
+                                summary: format!("security check aborted: {e}"),
+                                suggestion: None,
+                            }),
+                        )
+                    })
+            };
             if !allowed {
                 let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
                     layer: "unknown",

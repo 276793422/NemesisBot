@@ -352,6 +352,14 @@ pub(super) fn inject_project_spawn_fn(
                     &bg_registry_id,
                     bg_cancel_token.clone(),
                 );
+                // park 信箱注册（2026-11-19 spawn park 化）：先于
+                // tokio::spawn——完成回灌（deliver）只可能晚于本行，杜绝
+                // 「完成先到、park 未挂」竞态（与主 spawn 同契约）。
+                nemesis_agent::bg_park::global().register(
+                    &bg_task_id,
+                    &parent_session_key,
+                    &chat_id,
+                );
                 let bg_parent_session_key = parent_session_key.clone();
                 tokio::spawn(async move {
                     let result = match weak.upgrade() {

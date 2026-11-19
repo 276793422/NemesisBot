@@ -853,16 +853,26 @@ impl CronService {
     /// Get status. Matches Go's `Status()` return:
     /// `{"enabled": bool, "jobs": int, "nextWakeAtMS": Option<i64>}`
     pub fn status(&self) -> serde_json::Value {
-        let store = self.store.lock();
-        let next_wake = store
-            .jobs
-            .iter()
-            .filter(|j| j.enabled)
-            .filter_map(|j| j.state.next_run_at_ms)
-            .min();
+        // 锁序纪律（BUG-20261119-189）：store 锁内只读数据、出临界区后再
+        // 单独取 running——start() 全程持有 running guard 期间请求 store
+        // （recompute_next_runs + save_store 写盘窗口），旧形态 status 持
+        // store 嵌套取 running 与之构成 ABBA（两侧各持一锁互等 = 死锁；
+        // parking_lot 无死锁检测，start 与并发 status 调用即互相挂死）。
+        // running→store 是 start / fire loop 的既有单向序，status 收敛到
+        // 「store 临界区不嵌套 running」即无环。
+        let (jobs, next_wake) = {
+            let store = self.store.lock();
+            let next_wake = store
+                .jobs
+                .iter()
+                .filter(|j| j.enabled)
+                .filter_map(|j| j.state.next_run_at_ms)
+                .min();
+            (store.jobs.len(), next_wake)
+        };
         serde_json::json!({
             "enabled": *self.running.lock(),
-            "jobs": store.jobs.len(),
+            "jobs": jobs,
             "nextWakeAtMS": next_wake,
         })
     }

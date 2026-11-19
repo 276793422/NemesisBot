@@ -72,6 +72,31 @@ fn load_at_empty_object_yields_empty_bindings() {
     );
 }
 
+// BUG-20261120-005：Windows 记事本 utf8BOM 保存形态（用户可手编资产 +
+// 记事本是 Windows 现实编辑器）。裸 read_to_string 不剥 BOM → serde_json
+// 解析失败 → Err → dispatch 闸调用方按无绑定兜底 → 用户配置的域绑定全部
+// 失效（免卡直过退化 v1 审批卡 + 持续 WARN）。同 crate 同款 BUG 已修过
+// 两处（plugin_wasm runtime_enabled、eval_rules load_rules
+// BUG-20261109-036），本位点漏网。回归锁：BOM 前缀文件照常解析。
+#[test]
+fn load_at_tolerates_utf8_bom() {
+    let dir = tempdir();
+    let path = dir.join("config.vault.json");
+    let body = r#"{"bindings":{"corp-key":[{"tool":"web_fetch","slot":"headers"}]}}"#;
+    let mut with_bom = vec![0xEF, 0xBB, 0xBF];
+    with_bom.extend_from_slice(body.as_bytes());
+    std::fs::write(&path, &with_bom).unwrap();
+    let cfg = VaultDomainConfig::load_at(&path)
+        .expect("utf8BOM 保存形态必须照常解析（记事本手编兼容），不得 Err 使绑定全部失效")
+        .expect("配置应在场");
+    assert_eq!(cfg.bindings["corp-key"][0].tool, "web_fetch");
+    assert_eq!(
+        cfg.evaluate("web_fetch", &[r("headers", "corp-key")]),
+        DomainVerdict::AllInDomain,
+        "BOM 文件的绑定必须真实生效"
+    );
+}
+
 #[test]
 fn path_helper_joins_config_dir() {
     let p = vault_domain_config_path_in(Path::new("/ws/config"));

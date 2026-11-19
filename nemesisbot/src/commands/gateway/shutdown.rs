@@ -40,6 +40,18 @@ pub(crate) fn is_shutdown_requested() -> bool {
 /// shutdown"` panic。家族第四~八成员 = logs_sweeper / session_group_
 /// sweeper / notify / board_bus / profile_service 五个 timer-park 循环。
 ///
+/// 跨 crate 成员（BUG-20261119-208，023 横扫只扫 nemesisbot crate 的盲区
+/// 整改）：nemesis-web 侧 uploads TTL sweeper（6h）与 sessions 到期唤醒
+/// sweeper（10s）经 DI token 参数消费本令牌（gateway 装配传
+/// `terminal_cancel_token().clone()`），换装形态与本模块 `terminal_loop_tick`
+/// 契约一致（前置 is_cancelled + select 令牌优先）。023 家族的裸 Drop
+/// panic 形态对这两个成员**实证不复现**（R1953 探针：纯 timer-park 且无
+/// 外部唤醒源的循环，current_thread / multi_thread 两种 flavor 裸 drop
+/// 都零 panic——最后 poll 重 poll 已注册 timer 不重新注册；r9 的 panic
+/// 观察伴随 abort 停机互相作用），立案形态是 drain 窗口静默性破坏：
+/// Step 24 cancel 后排空窗内这两循环继续工作（snooze 每 10s 唤醒会话
+/// 注入新 turn 对抗 drain 收敛、uploads 继续做 FS 删除）。
+///
 /// 一次性语义：只在进程终态链 cancel，无动态 start/stop（区别于 outbox
 /// push loop 的 per-component stop_token——那类动态生命周期组件各自持
 /// token，不走本令牌）。

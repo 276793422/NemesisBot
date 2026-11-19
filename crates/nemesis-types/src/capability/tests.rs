@@ -447,6 +447,87 @@ fn find_model_entry_exact_beats_bare_suffix() {
     );
 }
 
+// BUG-20261119-192 回归锁：find_model_entry 的 CI 兜底层（BUG-20261117-077
+// 修复 nemesis-config 查找族四站点时漏扫本函数——CI 变体别名解析面命中而
+// tier/vision/timeout 等九键全 miss，显式 per-model 配置静默失效）。
+#[test]
+fn find_model_entry_case_variant_hits_entry() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "zhipu/glm-4.7", "model": "zhipu/glm-4.7",
+             "model_tier": "mini", "max_output_tokens": 30000}
+        ]
+    });
+    // 变体 model_name 命中（CI 层）。
+    let entry =
+        find_model_entry(&cfg, "Zhipu/GLM-4.7").expect("CI variant of model_name must resolve");
+    assert_eq!(
+        entry.get("max_output_tokens").and_then(|v| v.as_i64()),
+        Some(30000),
+        "per-model key reachable via case variant"
+    );
+    // 变体 model 字段命中（自定义别名 + 变体全名查询形态）。
+    let cfg2 = serde_json::json!({
+        "model_list": [
+            {"model_name": "aliased", "model": "vendor/Qwen3-30B", "context_window": 65536}
+        ]
+    });
+    assert!(
+        find_model_entry(&cfg2, "vendor/qwen3-30b").is_some(),
+        "CI variant of model field"
+    );
+    // bare-suffix CI：裸变体尾段命中带前缀条目。
+    let cfg3 = serde_json::json!({
+        "model_list": [
+            {"model_name": "aliased", "model": "zhipu/glm-4.7", "compact_context_tokens": 50000}
+        ]
+    });
+    assert!(
+        find_model_entry(&cfg3, "GLM-4.7").is_some(),
+        "bare-suffix CI variant"
+    );
+    // 行为面：变体别名下显式 tier 采信（修复前 miss → Big，用户显式 mini
+    // 被无视、小模型被喂全量工具）。
+    assert_eq!(
+        resolve_active_tier(&cfg, "Zhipu/GLM-4.7"),
+        ModelTier::Mini,
+        "explicit model_tier honored via case variant"
+    );
+}
+
+#[test]
+fn find_model_entry_exact_wins_over_ci_variant_entries() {
+    // 精确层先行保住区分能力：两个仅大小写不同的条目（合法配置形态），
+    // 精确查询各归各条；纯变体查询进 CI 层按数组序取首个命中（确定性）。
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "zhipu/glm-4.7", "max_output_tokens": 100},
+            {"model_name": "Zhipu/GLM-4.7", "max_output_tokens": 200}
+        ]
+    });
+    assert_eq!(
+        find_model_entry(&cfg, "zhipu/glm-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(100),
+        "exact query hits exact entry"
+    );
+    assert_eq!(
+        find_model_entry(&cfg, "Zhipu/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(200),
+        "exact query hits exact entry (other case)"
+    );
+    // 混合变体（精确层全 miss）→ CI 层数组序先到先得。
+    assert_eq!(
+        find_model_entry(&cfg, "ZHIPU/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(100),
+        "mixed variant falls to CI layer in array order"
+    );
+    // 无关名字不制造假命中。
+    assert!(find_model_entry(&cfg, "unrelated").is_none(), "no match");
+}
+
 #[test]
 fn resolve_context_window_bare_name_reaches_custom_alias_entry() {
     // 活 gateway 场景端到端：alias=裸名 "glm-4.7" 必须读到自定义别名条目的
@@ -465,6 +546,46 @@ fn resolve_context_window_bare_name_reaches_custom_alias_entry() {
         resolve_compact_context_tokens(&cfg, "glm-4.7"),
         None,
         "unset compact key stays None (= 75% chain)"
+    );
+}
+
+// BUG-20261119-210 回归锁：层内顺序 name-first-across-entries（与
+// nemesis-config 装配族四站点恒等）。交叉别名形态：条目 0 的 model 字段
+// 与条目 1 的 model_name 交叉——装配族（resolve_model_config）按 name 层
+// 先扫全部条目命中条目 1；本函数旧实现（条目优先，name/model 任一命中
+// 即返回该条目）命中条目 0 → per-model 九键族与装配面读不同条目，
+// 显式 per-model 配置静默错位（tier/vision/timeout 走条目 0、provider
+// 构造走条目 1）。
+#[test]
+fn find_model_entry_name_layer_precedes_model_layer_across_entries() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "fast-alias", "model": "glm-4.7", "max_output_tokens": 111},
+            {"model_name": "glm-4.7", "model": "zhipu/glm-4.7", "max_output_tokens": 222}
+        ]
+    });
+    // 精确层：name 字段全数组先行——条目 1 的 model_name 命中压过条目 0 的
+    // model 字段交叉命中（旧条目优先实现会返回条目 0 = 111）。
+    assert_eq!(
+        find_model_entry(&cfg, "glm-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(222),
+        "model_name layer spans all entries before model field layer (config family parity)"
+    );
+
+    // CI 层同序：精确层全 miss 时，CI name 先于 CI model（旧实现条目 0 的
+    // model 字段 CI 命中会返回条目 0 = 333）。
+    let cfg_ci = serde_json::json!({
+        "model_list": [
+            {"model_name": "other-alias", "model": "zhipu/GLM-4.7", "max_output_tokens": 333},
+            {"model_name": "Zhipu/glm-4.7", "model": "vendor/other", "max_output_tokens": 444}
+        ]
+    });
+    assert_eq!(
+        find_model_entry(&cfg_ci, "ZHIPU/GLM-4.7")
+            .and_then(|m| m.get("max_output_tokens").and_then(|v| v.as_i64())),
+        Some(444),
+        "CI name layer also spans all entries before CI model layer"
     );
 }
 

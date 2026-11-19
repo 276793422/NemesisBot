@@ -1114,6 +1114,10 @@ pub struct EventWatchManager {
     probe_tx: tokio::sync::mpsc::Sender<ProbeOutcome>,
     probe_rx: Option<tokio::sync::mpsc::Receiver<ProbeOutcome>>,
     proc_reader: Option<ProcReaderFn>,
+    /// 进程终态令牌（BUG-20261115-023 家族纪律；BUG-20261119-208 同款 DI
+    /// 形态）。None（缺省/测试装配）= never-cancelled 默认令牌，泵 select
+    /// 令牌臂恒 pending，行为与旧版逐字节一致。
+    terminal: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl EventWatchManager {
@@ -1131,6 +1135,7 @@ impl EventWatchManager {
             probe_tx,
             probe_rx: Some(probe_rx),
             proc_reader: None,
+            terminal: None,
         }
     }
 
@@ -1144,6 +1149,16 @@ impl EventWatchManager {
     /// 缺省 = proc 规则采样跳过（一次性 warn，headless/测试常态）。
     pub fn with_proc_reader(mut self, reader: ProcReaderFn) -> Self {
         self.proc_reader = Some(reader);
+        self
+    }
+
+    /// 进程终态令牌（gateway 装配传 `terminal_cancel_token().clone()`）：
+    /// 泵 select 令牌臂优先于 tick——cancel 后不再 re-park timer，排空窗内
+    /// 不采样不注入（家族纪律 BUG-20261115-023；DI 形态同 nemesis-web
+    /// uploads/snooze sweeper，BUG-20261119-208）。缺省 = never-cancelled，
+    /// 行为与旧版一致。
+    pub fn with_terminal_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
+        self.terminal = Some(token);
         self
     }
 
@@ -1211,11 +1226,19 @@ impl EventWatchManager {
                 self.global_hourly_cap
             );
             let mut tick = tokio::time::interval(std::time::Duration::from_millis(PUMP_TICK_MS));
+            // 家族纪律等待点（BUG-20261115-023）：None 装配（测试常态）回落
+            // never-cancelled 默认令牌——令牌臂恒 pending，select 形态与旧版
+            // 一致；gateway 装配传真令牌，cancel 后排空窗内不再采样不注入。
+            let terminal = self.terminal.take().unwrap_or_default();
             let mut proc_tick: u32 = 0;
             let mut sys_tick: u32 = 0;
             let mut disk_tick: u32 = 0;
             let mut probe_tick: u32 = 0;
             loop {
+                // 前置 is_cancelled：预取消零工作，确定性退出不与停机竞速。
+                if terminal.is_cancelled() {
+                    break;
+                }
                 tokio::select! {
                     _ = tick.tick() => {}
                     maybe = rx.recv() => match maybe {
@@ -1234,6 +1257,9 @@ impl EventWatchManager {
                             webhook_alive = false;
                         }
                     },
+                    // 令牌臂优先于 tick：cancel 即退出走下方 watcher.shutdown
+                    // 收尾（与 rx 臂 None 同一优雅路径）。
+                    _ = terminal.cancelled() => break,
                     maybe_p = probe_rx.recv(), if probe_alive => match maybe_p {
                         Some(out) => st.apply_probe(out, now_ms()),
                         None => {

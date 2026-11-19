@@ -212,6 +212,14 @@ export const useChatStore = defineStore('chat', () => {
   // 启动占位 + 轮询，消除「纯空视图无任何反馈」的空窗。
   const inflightTurns = ref<Record<string, { sentAt: number; content: string }>>({})
 
+  // B2（2026-11-19 切换恢复整改）：切回会话恢复在途轮的「过程视图恢复中」
+  // 旗标——detectPendingTurn 起轮分支置位（占位行立即可见，不等首个中间
+  // 事件），refreshWorkCurrent 快照采纳后复位；null 盲区（回包无快照）不
+  // 复位——骨架继续显示，等下一拍（轮询会再拉）；死轮清算 / 尾部 assistant
+  // 臂（回复已到场）复位。与 pendingWork 分离：骨架只在 `workRestoring &&
+  // !pendingWork` 时渲染（快照一旦采纳即让位给真时间线）。
+  const workRestoring = ref(false)
+
   function markInflightTurn(sessionId: string | null, content: string) {
     if (!sessionId) return
     inflightTurns.value = {
@@ -564,10 +572,23 @@ export const useChatStore = defineStore('chat', () => {
   // --- 2026-10-30 Work 时间线摄取（三路共用：实时 push / chat.sync 补拉 /
   // chat.work_current 活查询）---
 
-  /** 确保缓冲存在（惰性初始化——直答零开销，首个中间事件才建槽）。 */
+  /** 确保缓冲存在（惰性初始化——直答零开销，首个中间事件才建槽）。
+   *  B1（2026-11-19 切换恢复整改）：started_at_ms 锚定本会话**最后一条
+   *  消息时间戳**（turn 最早在那之后开始），杜绝真空窗（切回恢复期早到
+   *  事件先于 work_current 回包建槽）用 Date.now() 从零造桶——执行用时
+   *  撒谎。锚缺席（空视图/时间戳不可解析）回落 Date.now()（新 turn 首个
+   *  事件本就没有更早锚）。 */
   function ensurePendingWork(): WorkTimeline {
     if (!pendingWork.value) {
-      pendingWork.value = { started_at_ms: Date.now(), ended_at_ms: Date.now(), rounds: [] }
+      let anchor = Date.now()
+      for (let i = messages.value.length - 1; i >= 0; i--) {
+        const t = Date.parse(messages.value[i].timestamp)
+        if (!Number.isNaN(t)) {
+          anchor = t
+          break
+        }
+      }
+      pendingWork.value = { started_at_ms: anchor, ended_at_ms: Date.now(), rounds: [] }
     }
     return pendingWork.value
   }
@@ -728,6 +749,8 @@ export const useChatStore = defineStore('chat', () => {
     // B3：会话切换丢掉上一会话的 live 思考（与 pendingWork 同生命周期）。
     clearLiveThinking()
     pendingDeliverables.value = []
+    // B2：切会话丢掉上一会话的恢复中旗标（骨架不得跨会话泄漏）。
+    workRestoring.value = false
     agentMode.value = 'build'
     historyLoading.value = false
     hasMoreHistory.value = true
@@ -752,6 +775,7 @@ export const useChatStore = defineStore('chat', () => {
     pendingWork,
     pendingDeliverables,
     liveThinking,
+    workRestoring,
     agentMode,
     commandDraft,
     inflightTurns,

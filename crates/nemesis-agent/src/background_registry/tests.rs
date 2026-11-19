@@ -1006,6 +1006,66 @@ async fn start_with_origin_note_matrix() {
     wait_done(&reg, without_o["job_id"].as_u64().unwrap(), 15).await;
 }
 
+/// 会话资源看板回归锁（2026-11-19 G1 定性修复）：start_with_origin 的
+/// origin 必须落条目——`list_by_session_snapshot(origin.session_key)`
+/// 能盘到该任务、其他会话键盘不到；基线 `start()`（origin=None）不进
+/// 任何会话的盘点。此前 start_with_origin 只把 origin 传给完成唤醒
+/// watcher，条目恒 origin: None，面板 background 类目对任何会话恒
+/// total=0（实录 probe-g9：任务在跑、面板双零）。
+#[tokio::test]
+async fn start_with_origin_lands_on_entry_for_session_snapshot() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat-snap".to_string(),
+        session_key: "agent:main:session:snap-origin".to_string(),
+    };
+    // notify=false：本测试只看盘点面，不需要完成唤醒 watcher。
+    let started = reg
+        .start_with_origin(
+            "echo snap_origin_b4",
+            "/",
+            false,
+            Some(origin),
+            false,
+            None,
+            Arc::new(Vec::new()),
+        )
+        .await
+        .unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+
+    // 发起会话视角 → 1 行（行形状同 list：job_id/cmd 在场）。
+    let rows = reg
+        .list_by_session_snapshot("agent:main:session:snap-origin")
+        .expect("snapshot ok");
+    assert_eq!(rows.len(), 1, "发起会话必须盘到任务: {rows:?}");
+    assert_eq!(rows[0]["id"], serde_json::json!(id));
+    assert_eq!(rows[0]["command"], serde_json::json!("echo snap_origin_b4"));
+
+    // 其他会话视角 → 0 行（精确匹配，无跨会话泄漏）。
+    let other = reg
+        .list_by_session_snapshot("agent:main:session:someone-else")
+        .expect("snapshot ok");
+    assert!(other.is_empty(), "他会话不得盘到: {other:?}");
+
+    // 基线 start()（origin=None）→ 不进任何会话的盘点。
+    let baseline = reg
+        .start("echo snap_baseline_b4", "/", false)
+        .await
+        .unwrap();
+    let bid = baseline["job_id"].as_u64().unwrap();
+    let rows = reg
+        .list_by_session_snapshot("agent:main:session:snap-origin")
+        .expect("snapshot ok");
+    assert_eq!(rows.len(), 1, "基线任务不得进任何会话盘点: {rows:?}");
+    assert_ne!(rows[0]["id"], serde_json::json!(bid));
+
+    reg.kill(id).await.unwrap();
+    reg.kill(bid).await.unwrap();
+}
+
 /// 工具层 e2e：background_start 工具从 RequestContext 捕获 origin →
 /// 完成事件带真实会话锚；返回 note 是反轮询指引。
 #[tokio::test]

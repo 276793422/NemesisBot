@@ -370,6 +370,56 @@ impl AgentInstance {
         self.push_turn(turn);
     }
 
+    /// (spawn park 化 2026-11-19) [`Self::replace_tool_result`] 的投影
+    /// 变体：原地覆写内容 + 工具名/投影/图片随行更新。park 落地专用
+    /// ——marker 已在史（park 前落账），真实结果必须原地覆写；走
+    /// APPEND 变体会同 call_id 双 tool message，LLM API 400。
+    /// 语义与 [`Self::replace_tool_result`] 对齐：单条命中=原地覆写；
+    /// 多条（异常）=覆写末条 + 摘除更早重复；零命中=回退 push。
+    pub fn replace_tool_result_projected(
+        &self,
+        tool_call_id: &str,
+        original: &str,
+        tool_name: &str,
+        projection: Option<String>,
+        image_refs: Vec<String>,
+    ) {
+        let mut history = self.history.lock().unwrap();
+        let matching: Vec<usize> = history
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.role == "tool" && t.tool_call_id.as_deref() == Some(tool_call_id))
+            .map(|(i, _)| i)
+            .collect();
+
+        if matching.is_empty() {
+            let turn = ConversationTurn {
+                role: "tool".to_string(),
+                content: original.to_string(),
+                tool_calls: Vec::new(),
+                tool_call_id: Some(tool_call_id.to_string()),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                reasoning_content: None,
+                tool_name: Some(tool_name.to_string()),
+                tool_result_projection: projection,
+                image_refs,
+            };
+            history.push(turn);
+            return;
+        }
+
+        let last_idx = *matching.last().unwrap();
+        history[last_idx].content = original.to_string();
+        history[last_idx].timestamp = chrono::Local::now().to_rfc3339();
+        history[last_idx].tool_name = Some(tool_name.to_string());
+        history[last_idx].tool_result_projection = projection;
+        history[last_idx].image_refs = image_refs;
+
+        for &idx in matching.iter().rev().skip(1) {
+            history.remove(idx);
+        }
+    }
+
     /// Replace the content of an existing tool result with matching tool_call_id.
     ///
     /// Semantics:

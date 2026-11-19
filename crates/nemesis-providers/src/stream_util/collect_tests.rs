@@ -327,3 +327,49 @@ async fn err_arm_auth_and_billing_pass_through_unwrapped() {
         );
     }
 }
+
+// ==========================================================================
+// BUG-20261120-003（终态唯一性契约）：finish_reason 已聚合后再到的 Err
+// 是终态后传输噪音（http lane SSE 读错误臂 / 墙钟 deadline 臂在
+// finish_emitted 后仍可发射——RST-after-FIN keep-alive 竞态、挂死代理不发
+// [DONE] 撞墙钟）。不闸会把已完成响应改写成 StreamInterrupted → 拼接续写
+// 把完整回复当半截去续写（缝合怪终答）+ 白烧一轮重试。终态后的 Err 一律
+// 忽略、按正常完成收尾。
+// ==========================================================================
+
+#[tokio::test]
+async fn err_after_finish_reason_is_ignored_stream_completes() {
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(Ok(chunk("完整回复"))).await.unwrap();
+    tx.send(Ok(StreamChunk {
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    // 终态后噪音：连接 RST / deadline 到线等。
+    tx.send(Err(unknown_err())).await.unwrap();
+    drop(tx);
+    let resp = collect_stream_response("p", "m", rx).await.unwrap();
+    assert_eq!(resp.content, "完整回复", "终态后 Err 不得丢弃已完成响应");
+    assert_eq!(resp.finish_reason, "stop");
+}
+
+#[tokio::test]
+async fn err_after_finish_with_empty_content_still_completes() {
+    // 闸位在空判定之前：终态后内容为空（合法空补全）+ 终态后 Err 仍按
+    // 完成收尾，不走「空 → 原错误上抛」臂（对照 err_arm_empty_content_
+    // passes_original_error：彼时 finish_reason 尚未聚合，两臂语义不同）。
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(Ok(StreamChunk {
+        finish_reason: Some("stop".into()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    tx.send(Err(unknown_err())).await.unwrap();
+    drop(tx);
+    let resp = collect_stream_response("p", "m", rx).await.unwrap();
+    assert_eq!(resp.content, "");
+    assert_eq!(resp.finish_reason, "stop");
+}

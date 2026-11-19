@@ -320,7 +320,29 @@ pub(crate) fn resolve_prompt_template(
     template: &str,
     context: &HashMap<String, serde_json::Value>,
 ) -> String {
+    // BUG-20261119-195：实现收敛到带区间变体（单一真相源）——条件求值
+    // 需要替换值的输出坐标区间（control.rs Step 3 切分跳过数据值），
+    // 展开结果本身零变化。
+    resolve_prompt_template_with_ranges(template, context).0
+}
+
+/// [`resolve_prompt_template`] 的带区间变体（BUG-20261119-195）：除展开
+/// 结果外返回每个替换值在**输出坐标**的字节区间 `(start, end)`（半开）。
+/// 区间供条件求值（control.rs）做运算符切分时跳过数据值——节点输出/
+/// 触发器载荷（LLM 生成）可携带 `>=`、`==` 等运算符字符，而模板替换是
+/// 裸字符串拼接、无任何转义；不知道哪些字节来自数据，切分就会落进数据
+/// 内部（缺陷形态与反例见 control.rs Step 3 注释）。
+///
+/// 区间语义：命中键的替换值记区间；缺失键占位符原样保留（含花括号）
+/// **不记区间**——原文不是数据，残留 `{{…}}` 另有可证伪性判定拦截
+/// （`eval_condition_with_falsifiability`）。区间边界恒为字符边界
+/// （`push_str` 只推进完整合法片段）。
+pub(crate) fn resolve_prompt_template_with_ranges(
+    template: &str,
+    context: &HashMap<String, serde_json::Value>,
+) -> (String, Vec<(usize, usize)>) {
     let mut out = String::with_capacity(template.len());
+    let mut ranges = Vec::new();
     let mut rest = template;
     while let Some(start) = rest.find("{{") {
         out.push_str(&rest[..start]);
@@ -334,15 +356,21 @@ pub(crate) fn resolve_prompt_template(
         };
         let key = &after[..end];
         match context.get(key) {
-            Some(serde_json::Value::String(s)) => out.push_str(s),
-            Some(other) => out.push_str(&other.to_string()),
-            // 缺失键：占位符原样保留（含两侧花括号）。
+            Some(value) => {
+                let value_start = out.len();
+                match value {
+                    serde_json::Value::String(s) => out.push_str(s),
+                    other => out.push_str(&other.to_string()),
+                }
+                ranges.push((value_start, out.len()));
+            }
+            // 缺失键：占位符原样保留（含两侧花括号），不记区间。
             None => out.push_str(&rest[start..start + end + 4]),
         }
         rest = &after[end + 2..];
     }
     out.push_str(rest);
-    out
+    (out, ranges)
 }
 
 /// 提取表达式里的全部 `{{…}}` 占位符，拆成（首段, 可选字段名）。

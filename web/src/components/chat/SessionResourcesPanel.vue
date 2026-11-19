@@ -6,6 +6,14 @@
  * 注册制聚合；协议见 crates/nemesis-web/src/handlers/resources.rs）：
  * - 头部：会话标题 / 项目 / 工作目录（identity.summary + system.status）
  *   +「+ 添加项目目录」（ProjectCreateModal）；
+ * - 会话工具分节（2026-11-19 拆分迁移 → 九键全迁）：构建/计划 + 插队 +
+ *   分享 / 委派 / 思考强度；放行开关分节（Full Access / 外部写删 / 全部
+ *   放行）；语音分节（听写 / 语音对话 / 语音播放 / 实时语音）——原
+ *   ChatPanel 输入框工具栏九键在有资源窗注入面时不再渲染（standalone/
+ *   workflow 挂载面保留原工具栏）；状态真值走各单例（useComposerTools /
+ *   useEditorMode / useSessionAllowAll / useVoiceControls / session
+ *   store），弹窗（ShareModal/DelegateDialog）渲染仍在 ChatPanel；
+ *   头部 ✕ 恒渲染（两形态的收起出口）；
  * - 执行态置顶大卡（仅 status==='ok' 渲染；空闲 = Empty 整卡隐藏）；
  * - 在途区：待审批 / 待提问（只展示清单——审批交互走既有弹窗链路，
  *   看板红线：绝不内联审批按钮）；
@@ -34,17 +42,114 @@ import { addMessageHandler, removeMessageHandler, wsStatus } from '../../composa
 import { useWSAPI } from '../../composables/useWSAPI'
 import { on as sseOn, off as sseOff } from '../../composables/useSSE'
 import { useSessionAllowAll } from '../../composables/useSessionAllowAll'
+// 会话工具分节（2026-11-19 拆分迁移）：分享/委派/思考强度状态真值单例
+// （原 ChatPanel 输入框工具栏三键迁入；弹窗渲染仍在 ChatPanel）。
+import { useComposerTools } from '../../composables/useComposerTools'
+// 九键全迁（2026-11-19）：放行两开关（useEditorMode）/语音四键
+// （useVoiceControls）/模式与输入（chat store）/插队显隐（inbox 快照）。
+import { useEditorMode } from '../../composables/useEditorMode'
+import { useVoiceControls } from '../../composables/useVoiceControls'
+import { useInboxStatus } from '../../composables/useInboxStatus'
+import { useChatStore } from '../../stores/chat'
+import { useToast } from '../../composables/useToast'
 import ProjectCreateModal from '../ProjectCreateModal.vue'
 
 const props = defineProps<{
   /** 壳层钉死的会话 id（ChatView → ChatPanel.effectiveSid 同域）；null =
    * 尚未就绪，不拉取不监听渲染。本组件全部取数的唯一会话域。 */
   sessionId?: string | null
+  /** overlay 抽屉形态（窄窗口悬浮覆盖右侧）：壳层据此决定是否挂遮罩；
+   * 关闭钮恒渲染（两形态都需要收起出路），关闭事件一律上抛壳层。 */
+  overlay?: boolean
 }>()
+
+const emit = defineEmits<{ (e: 'close'): void }>()
 
 const router = useRouter()
 const { request } = useWSAPI()
-const { setSessionAllow } = useSessionAllowAll()
+const { allowAllBySession, sessionAllowAvailable, refreshSessionAllow, setSessionAllow } =
+  useSessionAllowAll()
+const { sessionEffort, effortMarkFor, effortNoteFor, showShare, showDelegate, setSessionEffort } =
+  useComposerTools()
+
+/** 思考强度下拉切换（接值解包；无会话 id 时 select 已禁用不会触发）。 */
+function onEffortChange(e: Event) {
+  void setSessionEffort(props.sessionId || '', (e.target as HTMLSelectElement).value)
+}
+
+// ---- 九键全迁（2026-11-19）：构建/计划 + 插队 + 放行三开关 + 语音四键 ----
+// ChatPanel 输入框上方工具栏在有资源窗注入面（ChatView provide）时不再
+// 渲染——这些控件的家在本面板。状态真值：agentMode/input 在 chat store
+//（与 ChatPanel 同一份 Pinia store——模式徽标/插队前缀两边即时互见），
+// 放行两开关在 useEditorMode 单例，全部放行在 useSessionAllowAll 单例，
+// 语音在 useVoiceControls 单例（ChatPanel 的 voice strip 同源亮）。
+
+const chatStore = useChatStore()
+const toast = useToast()
+const { fullAccess, externalWrite, editorAvailable, setEditorAccess } = useEditorMode()
+const {
+  sttReady,
+  ttsReady,
+  voiceDictation,
+  voiceDialogue,
+  voicePlayback,
+  voiceRealtime,
+  initVoiceState,
+  toggleDictation,
+  toggleDialogue,
+  togglePlayback,
+  toggleRealtime,
+} = useVoiceControls()
+
+// steer 可用性（插队键显隐）：面板侧独立 useInboxStatus 实例但只刷不轮询
+//（模式快照非低延迟关键；挂载/会话切换各刷一次。ChatPanel 自己的实例
+// 照常轮询，两边只读同一后端真相，无状态同步问题）。
+const { steerEnabled: panelSteerEnabled, refresh: refreshInboxMode } = useInboxStatus()
+
+/** 构建/计划模式切换（ChatPanel toggleAgentMode 同款：await 回包后更新，
+ *  失败 toast 不翻转）。 */
+async function toggleAgentMode() {
+  const target = chatStore.agentMode === 'plan' ? 'build' : 'plan'
+  try {
+    const data = await request('chat', 'set_mode', {
+      session_id: props.sessionId || '',
+      mode: target,
+    })
+    if (data?.mode === 'plan' || data?.mode === 'build') chatStore.setAgentMode(data.mode)
+  } catch (e) {
+    toast.error(String((e as Error)?.message ?? e))
+  }
+}
+
+/** 一键插队：给输入加 `!` 前缀（已有前缀则不动）。输入框本体在 ChatPanel
+ *  ——面板只改共享 store；不抢焦点（用户下一步本来要回输入框）。 */
+function prefixSteer() {
+  if (!/^[!！]/.test(chatStore.input.trimStart())) {
+    chatStore.input = '! ' + chatStore.input
+  }
+}
+
+// Full Access 点击语义（ChatPanel 同款）：关 FA 必须随关 ext（服务端联动
+// 会把 (false,true) 折回 full=true，前端显式双关才能真关掉）；开 ext 确保 full 开。
+async function toggleFullAccess() {
+  if (fullAccess.value) {
+    await setEditorAccess(false, false)
+  } else {
+    await setEditorAccess(true, externalWrite.value)
+  }
+}
+async function toggleExternalWrite() {
+  // ext 依赖 full：按钮仅在 fullAccess 时可点（disabled），此处仍显式带 full。
+  await setEditorAccess(true, !externalWrite.value)
+}
+
+/** 当前会话的全部放行态（未查询过 = false）。 */
+const sessionAllowActive = computed(
+  () => !!props.sessionId && (allowAllBySession.value[props.sessionId]?.enabled ?? false),
+)
+async function toggleSessionAllow() {
+  await setSessionAllow(props.sessionId, !sessionAllowActive.value)
+}
 
 // ---- 类型（对应后端 resources.rs 投影）----
 
@@ -221,19 +326,37 @@ function goTasks(): void { void router.push('/tasks') }
 
 // ---- 拉取（B4 乱序丢弃 + 回包会话校验）----
 
+// 竞态修复（2026-11-19）：面板可能在 WS 就绪前挂载——request() 把消息发进
+// 未开的 socket 会丢（30s 超时才 reject），面板「加载中…」挂半分钟。修法
+// 三件套：① ws 未连上时不发（门），连接建立后由 wsStatus watch 触发首拉；
+// ② 空应答/失败走温和重试（400ms 步进、上限 5 次、成功归零——裁剪构建下
+// session.resources 恒错也不空转，停在诚实错误行）。
+let fetchRetries = 0
+const FETCH_RETRY_MAX = 5
+
+function scheduleFetchRetry(): void {
+  if (fetchRetries >= FETCH_RETRY_MAX) return
+  fetchRetries++
+  scheduleRefresh()
+}
+
 async function fetchResources(): Promise<void> {
   const sid = props.sessionId
   if (!sid) return
+  if (wsStatus.value !== 'connected') return
   try {
     const data = await request('session', 'resources', { session_id: sid })
-    if (!data || props.sessionId !== sid) return
+    if (!data) { scheduleFetchRetry(); return }
+    if (props.sessionId !== sid) return
     if (typeof data.revision === 'number' && data.revision < lastRevision.value) return
     if (typeof data.revision === 'number') lastRevision.value = data.revision
     resp.value = data as ResourcesResponse
     loadError.value = ''
+    fetchRetries = 0
   } catch (e) {
-    // 资源盘点未装配（裁剪构建）/网络断 = 诚实错误行，不静默白板。
+    // 资源盘点未装配（裁剪构建）/网络断 = 诚实错误行 + 上限内温和重试。
     loadError.value = String(e)
+    scheduleFetchRetry()
   }
 }
 
@@ -283,12 +406,34 @@ sseOn('approval-resolved', onApprovalRes)
 sseOn('question-asked', onQuestionAsk)
 sseOn('question-resolved', onQuestionRes)
 
+/** revision 乱序丢弃的代际语义（2026-11-19 修「钩子设了面板永远不显示」）：
+ *  revision = EventHub 全局 seq，**每个 gateway 进程从 0 重新计数**。
+ *  面板开着跨了一次 gateway 重启 → lastRevision 残留旧进程高位 → 重启后
+ *  所有新回包 revision 更小 → 被当乱序旧包永久丢弃 → 面板冻结在重启前
+ *  的数据（钩子/待审批等一切变化都不可见，直到切会话或刷新页面）。
+ *  重连（WS connected）与 SSE resync（L2 缺口提示）都是「可能换了进程
+ *  代」的信号——归零高水位再拉，让下一包无条件生效。 */
+function resetRevisionGuard(): void {
+  lastRevision.value = -1
+}
+function onSseResync(): void {
+  resetRevisionGuard()
+  void fetchResources()
+}
+sseOn('resync', onSseResync)
+
 /** 30s 兜底轮询（组件挂载期生效；壳层收起态 v-if 卸载本组件 = 自动停）。 */
 let pollTimer: ReturnType<typeof setInterval> | null = null
 pollTimer = setInterval(() => { void fetchResources() }, 30000)
 
+/** C1：running 子代理「实时用时」驱动钟（1s 粒度；卸载即停）。 */
+const nowTick = ref(Date.now())
+const tickTimer: ReturnType<typeof setInterval> = setInterval(() => { nowTick.value = Date.now() }, 1000)
+
 /** 会话切换：清态 + revision 归零 + 重拉（watch immediate 首拉；工作目录
- *  同拍刷新——跨实例切换后 workspace 可能不同）。 */
+ *  同拍刷新——跨实例切换后 workspace 可能不同）。九键迁入的对齐项也挂这
+ *  里：语音引擎位（单例幂等，ChatPanel WS ready 时也会调）、插队模式
+ *  快照、会话全部放行态（容错静默）。 */
 watch(() => props.sessionId, (sid) => {
   resp.value = null
   lastRevision.value = -1
@@ -298,11 +443,20 @@ watch(() => props.sessionId, (sid) => {
   if (sid) {
     void fetchResources()
     void fetchWorkdir()
+    void initVoiceState()
+    void refreshInboxMode(sid)
+    void refreshSessionAllow(sid)
   }
 }, { immediate: true })
 
+// 连接建立（从非 connected → connected 的转移）→ 首拉/重拉。挂载时已连接
+// 的场景由 sessionId watch（immediate）覆盖，这里不重复 immediate（避免
+// 挂载双发）；门在 fetch 里，这里只管触发时机。
 watch(wsStatus, (val) => {
-  if (val === 'connected') void fetchResources()
+  if (val === 'connected') {
+    resetRevisionGuard()
+    void fetchResources()
+  }
 })
 
 onUnmounted(() => {
@@ -311,8 +465,10 @@ onUnmounted(() => {
   sseOff('approval-resolved', onApprovalRes)
   sseOff('question-asked', onQuestionAsk)
   sseOff('question-resolved', onQuestionRes)
+  sseOff('resync', onSseResync)
   if (refreshTimer) clearTimeout(refreshTimer)
   if (pollTimer) clearInterval(pollTimer)
+  clearInterval(tickTimer)
 })
 
 // ---- 渲染辅助 ----
@@ -355,6 +511,30 @@ function genericRows(entry: CategoryEntry): Record<string, unknown>[] {
   return Array.isArray(v) ? (v as Record<string, unknown>[]) : []
 }
 
+/** 会话钩子明细行（summary.rows：event/kind/content/matcher/timeout）。 */
+function hookRows(summary: Record<string, unknown>): Record<string, unknown>[] {
+  return genericRows({ summary } as CategoryEntry)
+}
+
+/** 钩子类型中文标（command=命令 / prompt=提示词）。 */
+function hookKindLabel(row: Record<string, unknown>): string {
+  return row.kind === 'prompt' ? '提示词' : '命令'
+}
+
+/** 钩子行悬浮详情（matcher/timeout 后端给了才显示）。 */
+function hookRowTitle(row: Record<string, unknown>): string {
+  const parts = [`${String(row.event ?? '')}·${hookKindLabel(row)}`]
+  if (typeof row.matcher === 'string' && row.matcher) parts.push(`matcher=${row.matcher}`)
+  if (typeof row.timeout === 'number') parts.push(`timeout=${row.timeout}s`)
+  return parts.join(' / ')
+}
+
+/** 头部截断（truncPath 是尾截、留给路径；钩子内容是自然语句用头截）。 */
+function truncHead(s: unknown, n: number): string {
+  const v = typeof s === 'string' ? s : ''
+  return v.length > n ? `${v.slice(0, n)}…` : v
+}
+
 /** 审批/提问行的展示文本（pending() 行字段开放集——优先 name/description/
  *  pattern，回退紧凑 JSON）。 */
 function pendingRowText(row: Record<string, unknown>): string {
@@ -365,18 +545,180 @@ function pendingRowText(row: Record<string, unknown>): string {
   const keys = Object.keys(row).filter(k => k !== 'session_key')
   return keys.map(k => `${k}=${String(row[k]).slice(0, 40)}`).join(' ').slice(0, 160)
 }
+
+// ---- C1：subagents 专用渲染（严禁 raw 字段 dump——不走 pendingRowText）----
+
+/** 后端 SubagentStatus 是 snake_case（running/done/failed/cancelled/interrupted）。 */
+function subagentIsRunning(row: Record<string, unknown>): boolean {
+  return row.status === 'running'
+}
+
+function subagentIcon(row: Record<string, unknown>): string {
+  if (subagentIsRunning(row)) return '⏳'
+  return row.status === 'done' ? '✅' : '❌'
+}
+
+function subagentTaskText(row: Record<string, unknown>): string {
+  const t = typeof row.task === 'string' ? row.task.trim() : ''
+  if (!t) return '（无任务描述）'
+  return t.length > 80 ? `${t.slice(0, 80)}…` : t
+}
+
+/** running 行实时用时（锚 started_at_ms，nowTick 驱动）。终态行不走这。 */
+function subagentElapsed(row: Record<string, unknown>): string {
+  const start = typeof row.started_at_ms === 'number' ? row.started_at_ms : Number.NaN
+  if (!Number.isFinite(start) || start <= 0) return ''
+  const secs = Math.max(0, Math.floor((nowTick.value - start) / 1000))
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return m > 0 ? `${m}m${String(s).padStart(2, '0')}s` : `${s}s`
+}
 </script>
 
 <template>
   <div class="srp-root">
-    <!-- 头部：identity 常驻区 -->
+    <!-- 头部：identity 常驻区（#7 面板级 ✕ 住 header 行，2026-11-19——
+         关闭是面板级动作，不属于任何业务卡；与 ＋项目 同排最右）。 -->
     <div class="srp-header">
       <div class="srp-header-row">
         <span class="srp-title" :title="sessionTitle">{{ sessionTitle }}</span>
-        <button class="srp-add-project" type="button" title="添加项目目录" @click="showProjectModal = true">＋项目</button>
+        <span class="srp-header-actions">
+          <button class="srp-add-project" type="button" title="添加项目目录" @click="showProjectModal = true">＋项目</button>
+          <button
+            class="srp-tools-close"
+            type="button"
+            title="收起资源窗"
+            @click="emit('close')"
+          >✕</button>
+        </span>
       </div>
       <div v-if="projectPath" class="srp-sub" :title="projectPath">项目：{{ truncPath(projectPath, 32) }}</div>
       <div v-if="workdir" class="srp-sub" :title="workdir">目录：{{ truncPath(workdir, 36) }}</div>
+    </div>
+
+    <!-- 会话工具分节（2026-11-19 拆分迁移）：分享/委派/思考强度三键从
+         ChatPanel 输入框工具栏迁入（低频配置键不再占输入近邻）。状态真值
+         走 useComposerTools 单例；弹窗（ShareModal/DelegateDialog）渲染仍
+         在 ChatPanel——此处只置触发器 ref。思考强度 select 与原 G3 下拉
+         同语义（会话级 override，乐观更新失败回滚在单例内）。 -->
+    <div class="srp-card srp-tools">
+      <div class="srp-card-head">
+        <span class="srp-card-title">会话工具</span>
+      </div>
+      <div class="srp-tools-row">
+        <button
+          class="srp-tool-btn"
+          :class="{ active: chatStore.agentMode === 'plan' }"
+          :title="chatStore.agentMode === 'plan'
+            ? '计划模式：文件修改类工具已停用（plans/ 目录写入放行）。点击切回构建模式（/build）'
+            : '构建模式：全量工具。点击切换到计划模式（/plan），AI 只读代码出计划'"
+          @click="toggleAgentMode"
+        >{{ chatStore.agentMode === 'plan' ? '📋 计划' : '🛠 构建' }}</button>
+        <button
+          v-if="panelSteerEnabled"
+          class="srp-tool-btn"
+          title="一键插队：给输入加 ! 前缀，agent 忙碌时立即送达当前轮"
+          @click="prefixSteer"
+        >⚡ 插队</button>
+        <button
+          class="srp-tool-btn"
+          title="分享本会话（只读链接，token 即凭据，可随时撤销）"
+          :disabled="!props.sessionId"
+          @click="showShare = true"
+        >🔗 分享</button>
+        <button
+          class="srp-tool-btn"
+          title="委派任务给子代理（选角色 + 工具档位，完成后回复交回本会话）"
+          :disabled="!props.sessionId"
+          @click="showDelegate = true"
+        >🤝 委派</button>
+        <select
+          class="srp-tool-btn srp-effort-select"
+          :value="sessionEffort"
+          :disabled="!props.sessionId"
+          title="思考强度（会话级，仅本会话生效）：默认=跟随模型配置；off=关闭思考（省 token）；极简/低/中/高/极高/最大=思考预算档位。✓=端点已验证接受，✗=端点拒绝（悬停看原文），?=未探测。重启后回落默认"
+          @change="onEffortChange"
+        >
+          <option value="">思考·默认</option>
+          <option value="off">思考·关</option>
+          <option :title="effortNoteFor('minimal') || undefined" value="minimal">思考·极简{{ effortMarkFor('minimal') }}</option>
+          <option :title="effortNoteFor('low') || undefined" value="low">思考·低{{ effortMarkFor('low') }}</option>
+          <option :title="effortNoteFor('medium') || undefined" value="medium">思考·中{{ effortMarkFor('medium') }}</option>
+          <option :title="effortNoteFor('high') || undefined" value="high">思考·高{{ effortMarkFor('high') }}</option>
+          <option :title="effortNoteFor('xhigh') || undefined" value="xhigh">思考·极高{{ effortMarkFor('xhigh') }}</option>
+          <option :title="effortNoteFor('max') || undefined" value="max">思考·最大{{ effortMarkFor('max') }}</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 放行开关分节（2026-11-19 九键全迁）：Full Access / 外部写删 / 全部
+         放行三键从 ChatPanel 工具栏迁入。激活态输入框下方常驻条照常显示
+         （editor-strip / session-allow-strip）——安全状态可见性不依赖工具栏。 -->
+    <div class="srp-card srp-tools">
+      <div class="srp-card-head">
+        <span class="srp-card-title">放行开关</span>
+      </div>
+      <div class="srp-tools-row">
+        <button
+          class="srp-tool-btn"
+          :class="{ active: fullAccess }"
+          :disabled="!editorAvailable"
+          title="Full Access（运行时开关，重启失效）：项目目录内文件操作全放行；项目目录外读/执行/网络/系统放行；项目外写删仍需审批；自毁硬拦不被绕过"
+          @click="toggleFullAccess"
+        >⚡ Full Access</button>
+        <button
+          class="srp-tool-btn"
+          :class="{ active: externalWrite }"
+          :disabled="!fullAccess"
+          title="外部写删放行（依赖 Full Access）：项目目录外的写入/删除也放行。两开关全开 = 真·全放（真沙盒仍兜底）"
+          @click="toggleExternalWrite"
+        >外部写删</button>
+        <button
+          class="srp-tool-btn"
+          :class="{ active: sessionAllowActive }"
+          :disabled="!sessionAllowAvailable || !props.sessionId"
+          title="会话全部放行（本会话持久）：本会话所有安全审批自动放行（含高危）；硬拒绝与急停不受影响；长任务无人值守用，用完记得关"
+          @click="toggleSessionAllow"
+        >🔓 全部放行</button>
+      </div>
+    </div>
+
+    <!-- 语音分节（2026-11-19 九键全迁）：听写/语音对话/语音播放/实时语音
+         四键从 ChatPanel 工具栏迁入；状态真值 useVoiceControls 单例（与
+         ChatPanel 共享——激活时输入框下方 voice strip 同步亮）。 -->
+    <div class="srp-card srp-tools">
+      <div class="srp-card-head">
+        <span class="srp-card-title">语音</span>
+      </div>
+      <div class="srp-tools-row">
+        <button
+          class="srp-tool-btn"
+          :class="{ active: voiceDictation }"
+          :disabled="!sttReady"
+          :title="sttReady ? '听写：说话内容追加到输入框' : '请先在语音通道页启用 STT 引擎'"
+          @click="toggleDictation"
+        >🎙 听写</button>
+        <button
+          class="srp-tool-btn"
+          :class="{ active: voiceDialogue }"
+          :disabled="!sttReady"
+          :title="sttReady ? '语音对话：说话后自动发送给 AI' : '请先在语音通道页启用 STT 引擎'"
+          @click="toggleDialogue(props.sessionId || undefined)"
+        >🗣 语音对话</button>
+        <button
+          class="srp-tool-btn"
+          :class="{ active: voicePlayback }"
+          :disabled="!ttsReady"
+          :title="ttsReady ? '语音播放：AI 回复自动朗读' : '请先在语音通道页启用 TTS 引擎'"
+          @click="togglePlayback"
+        >🔊 语音播放</button>
+        <button
+          class="srp-tool-btn"
+          :class="{ active: voiceRealtime }"
+          title="实时语音：语音对话中后端接力播放回复（TTS）、说话即打断（需 AEC）。流式识别/口播清洗等子开关见语音通道页「实时语音」小节，热生效无需重启"
+          @click="toggleRealtime"
+        >⚡ 实时语音</button>
+      </div>
     </div>
 
     <div v-if="loadError" class="srp-error">{{ loadError }}</div>
@@ -423,7 +765,8 @@ function pendingRowText(row: Record<string, unknown>): string {
       >
         <button class="srp-card-head clickable" type="button" @click="toggleCard(id)">
           <span class="srp-card-title">{{ c.label }}</span>
-          <span class="srp-badge">{{ c.total }}</span>
+          <span v-if="id === 'subagents'" class="srp-badge">运行中 {{ fmtNum((c.summary ?? {}).running) }} / 历史 {{ fmtNum((c.summary ?? {}).finished_total) }}</span>
+          <span v-else class="srp-badge">{{ c.total }}</span>
           <span class="srp-caret">{{ collapsedCards.has(id) ? '▸' : '▾' }}</span>
         </button>
         <div v-if="!collapsedCards.has(id)" class="srp-card-body">
@@ -490,9 +833,16 @@ function pendingRowText(row: Record<string, unknown>): string {
             </div>
           </template>
 
-          <!-- hooks_session / context：键值行 -->
+          <!-- hooks_session：计数 + 明细行（2026-11-19「只有个数不知道是啥」
+               补齐：每行 事件·类型 + 内容预览，悬浮看全文/matcher/timeout） -->
           <template v-else-if="id === 'hooks_session'">
             <div class="srp-metrics"><span>本会话钩子 {{ c.total }} 个</span></div>
+            <ul v-if="hookRows(c.summary ?? {}).length" class="srp-rows">
+              <li v-for="(hk, i) in hookRows(c.summary ?? {})" :key="i" class="srp-row">
+                <span class="srp-key">{{ String(hk.event ?? '') }}·{{ hookKindLabel(hk) }}</span>
+                <span :title="hookRowTitle(hk)">{{ truncHead(hk.content, 48) }}</span>
+              </li>
+            </ul>
           </template>
           <template v-else-if="id === 'context'">
             <pre class="srp-pre">{{ JSON.stringify(c.summary, null, 1) }}</pre>
@@ -513,7 +863,26 @@ function pendingRowText(row: Record<string, unknown>): string {
             </ul>
           </template>
 
-          <!-- 通用：rows 行渲染（subagents/file_changes/checkpoint/background…） -->
+          <!-- subagents：专用渲染（C1：状态点 + ✅/❌ + summary/error + running
+               实时用时；脱离 pendingRowText stringify——raw dump 禁令） -->
+          <template v-else-if="id === 'subagents'">
+            <ul v-if="genericRows(c).length" class="srp-rows">
+              <li v-for="(row, i) in genericRows(c)" :key="i" class="srp-row subagent-row">
+                <span class="srp-dot" :class="{ running: subagentIsRunning(row) }" />
+                <span class="subagent-icon">{{ subagentIcon(row) }}</span>
+                <span class="subagent-main">
+                  <span class="subagent-task">{{ subagentTaskText(row) }}</span>
+                  <span v-if="subagentIsRunning(row)" class="subagent-meta live">运行中 {{ subagentElapsed(row) }}</span>
+                  <span v-else-if="typeof row.summary === 'string' && row.summary" class="subagent-meta ok">{{ row.summary }}</span>
+                  <span v-else-if="typeof row.error === 'string' && row.error" class="subagent-meta err">{{ row.error }}</span>
+                </span>
+              </li>
+              <li v-if="c.summary?.omitted" class="srp-row muted">…还有 {{ c.summary.omitted }} 条历史</li>
+            </ul>
+            <div v-else class="srp-metrics"><span>暂无子代理</span></div>
+          </template>
+
+          <!-- 通用：rows 行渲染（file_changes/checkpoint/background…） -->
           <template v-else>
             <ul v-if="genericRows(c).length" class="srp-rows">
               <li v-for="(row, i) in genericRows(c)" :key="i" class="srp-row">
@@ -584,6 +953,13 @@ function pendingRowText(row: Record<string, unknown>): string {
   color: var(--text);
 }
 
+/* #8 滚动条修复（2026-11-19）：子卡默认 flex-shrink:1 会被压扁到
+   scrollHeight==clientHeight，overflow-y:auto 永不触发。全部直接子元素
+   禁收缩 → 内容自然溢出 → 滚动条出现。 */
+.srp-root > * {
+  flex-shrink: 0;
+}
+
 /* 头部 */
 .srp-header {
   border-bottom: 1px solid var(--border);
@@ -601,6 +977,12 @@ function pendingRowText(row: Record<string, unknown>): string {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.srp-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .srp-add-project {
   flex-shrink: 0;
@@ -669,6 +1051,50 @@ function pendingRowText(row: Record<string, unknown>): string {
   color: var(--text-muted);
   background: var(--bg-secondary);
 }
+/* 会话工具分节（2026-11-19 拆分迁移）：分享/委派/思考强度三键 */
+.srp-tools-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.srp-tools-close:hover { color: var(--text); background: var(--bg-secondary); }
+.srp-tools-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.srp-tool-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.srp-tool-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.srp-tool-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 激活态（构建/计划=plan、放行/语音开关=on）：描边+底色同 accent 系，
+   与 ChatPanel 工具栏 .voice-btn.active 同语义。 */
+.srp-tool-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+}
+.srp-effort-select {
+  appearance: auto;
+}
+.srp-effort-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .srp-badge.warn { color: var(--accent); border-color: var(--accent); }
 
 /* 行 */
@@ -684,6 +1110,26 @@ function pendingRowText(row: Record<string, unknown>): string {
 }
 .srp-row.muted { color: var(--text-muted); }
 .srp-key { color: var(--text-muted); flex-shrink: 0; }
+
+/* C1：subagents 子代理行（状态点 + 图标 + 任务/摘要两行主体） */
+.subagent-row { align-items: flex-start; }
+.subagent-icon { flex-shrink: 0; line-height: 1.4; }
+.subagent-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.subagent-task {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-meta.live { color: var(--accent); }
+.subagent-meta.err { color: var(--danger); }
 
 /* CTA / 表单 */
 .srp-cta {

@@ -57,6 +57,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -401,6 +402,7 @@ fn docs_generation_writes_wsapi_commands_md() {
         "events",
         "loops",
         "goals",
+        "mail",
         "browser", // 浏览器接管管理面（不带 browser 重跑会把 browser.* 八命令整模块冲没）
     ];
     let missing_module = GATED_DOC_MODULES
@@ -425,7 +427,7 @@ fn docs_generation_writes_wsapi_commands_md() {
              docs/INFO/wsapi-commands.md 冲成残表。带全 feature 重跑：cargo test -p \
              nemesis-web --features \"board,connectors,cluster,workflow,memory,security,scanner,\
              forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,events,loop,\
-             goals,browser\" docs_generation"
+             goals,mail,browser\" docs_generation"
         );
         return;
     }
@@ -438,7 +440,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
 静态清单生成——**勿手改**。改任何 handler 的命令臂后**带全 feature** 重跑 \
 `cargo test -p nemesis-web --features \"board,connectors,cluster,workflow,memory,\
 security,scanner,forge,voice,voice-capture,sandbox,skins,plugins-wasm,lsp,vm,ziwei,\
-events,loop,goals,browser\" docs_generation` 刷新本文件\
+events,loop,goals,mail,browser\" docs_generation` 刷新本文件\
 （feature 不全时本测试诚实 SKIP 不写盘，防止把完整文档冲成残表）。\n\n",
     );
     md.push_str(&format!("共 {} 个模块 / {} 条命令。\n\n", reg.len(), total));

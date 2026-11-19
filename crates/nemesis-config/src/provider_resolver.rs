@@ -138,9 +138,13 @@ impl Default for ProviderResolution {
 /// ——模型别名是 ASCII 标识符域）。
 ///
 /// 各消费站点的匹配层序恒为：**精确 model_name → 精确 model 字段 → CI
-/// model_name → CI model 字段**（精确层全空才进 CI 层；同层内按列表序）。
-/// 家族口径史：'/' 门控分裂曾致无前缀条目漏匹配落裸推断（gpt-5.6-sol
-/// 风暴假超时的第二层）——改层序或改谓词必须四处站点同步。
+/// model_name → CI model 字段 → bare-suffix → bare-suffix CI**（每层全空
+/// 才进下层；同层内按列表序）。家族口径史：'/' 门控分裂曾致无前缀条目漏
+/// 匹配落裸推断（gpt-5.6-sol 风暴假超时的第二层）；CI 兜底层 =
+/// BUG-20261117-077；bare-suffix 兜底层 = BUG-20261119-207（此前
+/// `nemesis_types::capability::find_model_entry`——tier/vision/timeout
+/// 九键族——有 bare 回落而装配族没有，同一 ref「tier 命中条目、装配面落
+/// 裸推断」的家族口径第三形态残余）。改层序或改谓词必须四处站点同步。
 ///
 /// CI 兜底的动机（BUG-20261117-077）：模型引用是用户手打别名
 /// （`/model Zhipu/GLM-4.7`、config 手改 `agents.defaults.llm`、`run
@@ -154,6 +158,23 @@ pub(crate) fn model_ref_eq(candidate: &str, model_ref: &str, ci: bool) -> bool {
         candidate.eq_ignore_ascii_case(model_ref)
     } else {
         candidate == model_ref
+    }
+}
+
+/// bare-suffix 相等谓词——查找族 bare 兜底层的单一匹配真相源：条目 `model`
+/// 字段尾段（`rsplit('/')` 最后一段，无 `/` 即全值）与 model_ref 尾段全等
+/// /CI 全等。与 `nemesis_types::capability::find_model_entry` 的 bare-suffix
+/// 层同语义同层位（CI 层之后、bare-CI 收尾）。
+pub(crate) fn model_ref_bare_eq(candidate_model: &str, model_ref: &str, ci: bool) -> bool {
+    let cand_bare = candidate_model
+        .rsplit('/')
+        .next()
+        .unwrap_or(candidate_model);
+    let ref_bare = model_ref.rsplit('/').next().unwrap_or(model_ref);
+    if ci {
+        cand_bare.eq_ignore_ascii_case(ref_bare)
+    } else {
+        cand_bare == ref_bare
     }
 }
 
@@ -186,6 +207,20 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
 
         for mc in &cfg.model_list {
             if model_ref_eq(&mc.model, model_ref, ci) {
+                return resolve_from_model_config(mc);
+            }
+        }
+    }
+
+    // bare-suffix 兜底层（BUG-20261119-207）：ref 尾段 == 条目 model 尾段，
+    // 层序 CI 之后（与 nemesis_types::capability::find_model_entry 同语义
+    // 同层位）。修复前 types 侧（tier/timeout 九键族）认 bare、装配族不认
+    // ——同一 bare 短名 ref「tier 命中条目、装配面落裸推断」（默认 base +
+    // 空 key = 风暴同款失败形态，crate 内 resolve_active_timeout_secs 与
+    // 本函数对同一 ref 判定分裂）。
+    for ci in [false, true] {
+        for mc in &cfg.model_list {
+            if model_ref_bare_eq(&mc.model, model_ref, ci) {
                 return resolve_from_model_config(mc);
             }
         }
@@ -403,7 +438,8 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
 /// For round-robin load balancing, use `get_model_by_name` instead.
 pub fn find_model_by_name<'a>(cfg: &'a Config, model_ref: &str) -> Result<&'a ModelConfig> {
     // 层序与 [`model_ref_eq`] doc 恒等：精确 model_name → 精确 model 字段 →
-    // CI model_name → CI model 字段（CI 兜底层 = BUG-20261117-077）。
+    // CI model_name → CI model 字段 → bare-suffix → bare-CI（bare 层 =
+    // BUG-20261119-207）。
     for ci in [false, true] {
         // Search by model_name
         for mc in &cfg.model_list {
@@ -415,6 +451,15 @@ pub fn find_model_by_name<'a>(cfg: &'a Config, model_ref: &str) -> Result<&'a Mo
         // Search by model field
         for mc in &cfg.model_list {
             if model_ref_eq(&mc.model, model_ref, ci) {
+                return Ok(mc);
+            }
+        }
+    }
+
+    // bare-suffix 兜底层（BUG-20261119-207）：同 [`resolve_model_config`]。
+    for ci in [false, true] {
+        for mc in &cfg.model_list {
+            if model_ref_bare_eq(&mc.model, model_ref, ci) {
                 return Ok(mc);
             }
         }
@@ -1154,21 +1199,40 @@ pub fn infer_default_model(provider: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 同层多条目 RR 轮询取一（[`get_model_by_name`] 的负载分摊原语；全局
+/// 计数器跨层共用，分布语义不变）。
+fn pick_round_robin(matches: Vec<&ModelConfig>) -> ModelConfig {
+    if matches.len() == 1 {
+        return matches[0].clone();
+    }
+    static RR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let idx =
+        RR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % (matches.len() as u64);
+    matches[idx as usize].clone()
+}
+
 /// Find a model configuration by name with round-robin load balancing.
 ///
 /// When multiple models match, uses an atomic counter to distribute load.
 /// Mirrors Go `GetModelByName`.
 pub fn get_model_by_name(cfg: &Config, model_ref: &str) -> Result<ModelConfig> {
     // 层序与 [`model_ref_eq`] doc 恒等；同层全收集（RR 轮询语义保留——
-    // 同名多条目负载分摊），精确层非空绝不混入 CI 层条目（ci 外层先行）。
-    for ci in [false, true] {
+    // 同名多条目负载分摊），上层非空绝不混入下层条目（ci/bare 外层先行）。
+    // bare-suffix 兜底层 = BUG-20261119-207。
+    for (ci, bare) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut matches: Vec<&ModelConfig> = cfg
             .model_list
             .iter()
-            .filter(|mc| model_ref_eq(&mc.model_name, model_ref, ci))
+            .filter(|mc| {
+                if bare {
+                    model_ref_bare_eq(&mc.model, model_ref, ci)
+                } else {
+                    model_ref_eq(&mc.model_name, model_ref, ci)
+                }
+            })
             .collect();
 
-        if matches.is_empty() {
+        if matches.is_empty() && !bare {
             matches = cfg
                 .model_list
                 .iter()
@@ -1177,14 +1241,7 @@ pub fn get_model_by_name(cfg: &Config, model_ref: &str) -> Result<ModelConfig> {
         }
 
         if !matches.is_empty() {
-            if matches.len() == 1 {
-                return Ok(matches[0].clone());
-            }
-
-            static RR_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let idx = RR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                % (matches.len() as u64);
-            return Ok(matches[idx as usize].clone());
+            return Ok(pick_round_robin(matches));
         }
     }
 

@@ -1183,7 +1183,12 @@ pub(crate) async fn run_runtime(
         // headless（run/acp）形态不进 gateway runtime，天然无此卡。
         {
             let default_model = nemesis_config::get_effective_llm(Some(&cfg));
-            let entry_present = cfg.model_list.iter().any(|m| m.model_name == default_model);
+            // 「条目在场」判定与 resolved_no_key 同族谓词（find_model_by_name
+            // 四层家族：精确 name/model → CI → bare-suffix，BUG-20261119-207
+            // 层序）。旧裸 `==` 单层判定：CI 变体 / model 字段 / bare 短名
+            // 形态的默认引用（077 实证的手打路径）解析命中条目但 entry_present
+            // = false → 缺 key 交互卡静默跳过，只剩启动 warn。
+            let entry_present = nemesis_config::find_model_by_name(&cfg, &default_model).is_ok();
             let resolved_no_key = nemesis_config::resolve_model_config(&cfg, &default_model)
                 .map(|r| r.api_key.is_empty())
                 .unwrap_or(false);
@@ -1440,7 +1445,9 @@ pub(crate) async fn run_runtime(
     // 每 6 小时一次，7 天 TTL）。uploads 是 temp 语义；被清扫文件的历史引用
     // 由 T6 水合层诚实降级 `[图片已失效]`，不依赖此处。路径唯一真相源
     // nemesis-path resolve_uploads_dir_in_workspace。
-    nemesis_web::handlers::upload::spawn_uploads_sweeper();
+    nemesis_web::handlers::upload::spawn_uploads_sweeper(
+        crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
+    );
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
     // M7/M8（2026-10-27 整改批次三）：logs 十六族统一 TTL 清扫（session_logs /
@@ -1538,7 +1545,9 @@ pub(crate) async fn run_runtime(
                 delivered
             },
         )));
-        nemesis_web::handlers::sessions::spawn_snooze_sweeper();
+        nemesis_web::handlers::sessions::spawn_snooze_sweeper(
+            crate::commands::gateway::shutdown::terminal_cancel_token().clone(),
+        );
         info!("[Gateway] snooze sweeper started (10s interval, replay hook armed)");
     }
 
@@ -2015,6 +2024,18 @@ pub(crate) async fn run_runtime(
             Err(e) => tracing::debug!("[Gateway] QUIC relay stop skipped: {e}"),
         }
         crate::roaming_plugin_loader::shutdown_plugin_roaming();
+    }
+
+    // 邮件基础设施停机（estop 不触达传输面——挂 gateway 进程停机链）：
+    // 停 SMTP/POP3 面（插件内优雅收监听）+ shutdown_plugin_mail 终态收尾
+    // （幂等；不 unload 库，活线程 UB——同库 OS 引用计数新句柄）。插件
+    // 缺席（未装载）= Err/无操作诚实吞掉，不炸停机链。
+    {
+        match crate::mail_plugin_loader::mail_server_stop().await {
+            Ok(_) => info!("[Gateway] mail servers stopped (plugin_mail)"),
+            Err(e) => tracing::debug!("[Gateway] mail server stop skipped: {e}"),
+        }
+        crate::mail_plugin_loader::shutdown_plugin_mail();
     }
 
     // Clean up gateway state file

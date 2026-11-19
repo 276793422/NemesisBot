@@ -493,7 +493,7 @@ impl BackgroundProcessRegistry {
         cwd: &str,
         steerable: bool,
     ) -> Result<serde_json::Value, String> {
-        self.start_inner(command, cwd, steerable, None, Arc::new(Vec::new()))
+        self.start_inner(command, cwd, steerable, None, Arc::new(Vec::new()), None)
             .await
     }
 
@@ -504,6 +504,14 @@ impl BackgroundProcessRegistry {
     /// `secrets`（vault 计划 P2++，2026-11-11）：本调用 dispatch 注入池
     /// （`ctx.secrets` 原样捕获）——存进 JobEntry，供 output()/完成通告
     /// 两个读出面遮蔽任务回显的真值；空池 = 零成本直通。
+    ///
+    /// `origin`（2026-11-19 会话资源看板 G1 定性修复）：发起会话锚随
+    /// 条目落库——此前 `start_with_origin` 只把 origin 传给完成唤醒
+    /// watcher，条目上恒 `origin: None`，`list_by_session_snapshot` 按
+    /// 会话盘点永远空（资源看板 background 类目对任何会话都 total=0，
+    /// 直起的后台进程在面板不可见；实录 probe-g9：job_id=1/2 在跑、
+    /// 面板双零）。修 = origin 下穿进 start_inner，条目出生即带锚；
+    /// None（基线 `start()` 路径）行为不变。
     async fn start_inner(
         &self,
         command: &str,
@@ -511,6 +519,7 @@ impl BackgroundProcessRegistry {
         steerable: bool,
         env: Option<&[(String, String)]>,
         secrets: Arc<Vec<String>>,
+        origin: Option<JobOrigin>,
     ) -> Result<serde_json::Value, String> {
         // 满员处理：先淘汰最旧的已完成任务；全在跑才拒绝。
         {
@@ -604,7 +613,7 @@ impl BackgroundProcessRegistry {
                 stdin,
                 steerable,
                 secrets,
-                origin: None,
+                origin,
             },
         );
         debug!(
@@ -757,7 +766,14 @@ impl BackgroundProcessRegistry {
         secrets: Arc<Vec<String>>,
     ) -> Result<serde_json::Value, String> {
         let mut payload = self
-            .start_inner(command, cwd, steerable, env, Arc::clone(&secrets))
+            .start_inner(
+                command,
+                cwd,
+                steerable,
+                env,
+                Arc::clone(&secrets),
+                origin.clone(),
+            )
             .await?;
         let Some(origin) = origin else {
             return Ok(payload);

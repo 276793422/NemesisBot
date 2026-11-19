@@ -377,7 +377,7 @@ async fn gate_and_write_routes_approval_context_end_to_end() {
         }
     }
 
-    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+    let plugin = std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         command_guard_enabled: false,
         injection_enabled: false,
@@ -386,7 +386,7 @@ async fn gate_and_write_routes_approval_context_end_to_end() {
         ssrf_enabled: false,
         default_action: "ask".to_string(),
         ..Default::default()
-    });
+    }));
     let recording = std::sync::Arc::new(RecordingManager::default());
     plugin.auditor().set_approval_manager(recording.clone());
 
@@ -425,6 +425,105 @@ async fn gate_and_write_routes_approval_context_end_to_end() {
     assert_eq!(
         ctx.session_key, "agent:main:session:covlsp",
         "重启补裁回灌键必须随行: {ctx:?}"
+    );
+}
+
+/// BUG-20261119-199 回归锁：rename 写闸的审批等待必须发生在 blocking 线程
+/// （spawn_blocking），不得占 tokio worker——auditor RequireApproval 的
+/// request_approval_sync_ctx 同步阻塞最长 300s，裸调占死 worker = 并行批
+/// N 张卡 N 个 worker 饿死（dispatch 主路径 tool_dispatch.rs 修过的同一
+/// 问题，本位点漏修）；current_thread runtime（executor/eval-agent）上
+/// WebApprovalManager 的 block_in_place 还会直接 panic。红证：裸调形态下
+/// 管理器在 worker 线程被调（tokio 默认 worker 名 tokio-rt-worker，本仓库 tokio 版本实测），
+/// spawn_blocking 池线程无名 → 断言通过。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_and_write_approval_wait_runs_off_worker_thread() {
+    use nemesis_security::auditor::{ApprovalContext, ApprovalManager, ApprovalVerdict};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct ThreadRecordingManager {
+        called_task_id: Mutex<Option<tokio::task::Id>>,
+    }
+    impl ApprovalManager for ThreadRecordingManager {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Err("ctx-less path must not be taken".to_string())
+        }
+        fn request_approval_sync_ctx(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+            _ctx: &ApprovalContext,
+        ) -> Result<ApprovalVerdict, String> {
+            // 判别 = 任务 id 对比：裸调在调用方（gate_and_write / adapter /
+            // hook 任务）上下文里同步执行 → mock 的 try_id == 调用方任务 id；
+            // spawn_blocking 在独立 blocking 任务里跑（try_id 虽也 Some——
+            // blocking 任务同样有 TaskId，线程名亦同名 tokio-rt-worker，
+            // 均区分不了）→ id 必不相同。
+            *self.called_task_id.lock().unwrap() = tokio::task::try_id();
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+
+    let plugin = std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    }));
+    let recording = std::sync::Arc::new(ThreadRecordingManager::default());
+    plugin.auditor().set_approval_manager(recording.clone());
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.rs");
+    let files = vec![AppliedFileEdit {
+        path: target.to_string_lossy().into_owned(),
+        new_text: "fn renamed() {}\n".to_string(),
+        edit_count: 1,
+    }];
+
+    // 必须经 tokio::spawn 进 worker 上下文：#[tokio::test] 测试体由
+    // block_on 在测试主线程驱动（非 worker），裸调在主线程发生时断言
+    // 天然通过（红证力为零）。spawn 后任务在 worker 上轮询——生产
+    // gateway 里工具调度正是 worker 上下文，裸调 security.execute 的
+    // 审批等待才会占死 worker。
+    let recording_for_assert = recording.clone();
+    let gaw_handle = tokio::spawn(async move {
+        gate_and_write(&files, Some(&plugin), None, &cov_ctx())
+            .await
+            .expect("recorded approval must allow the write")
+    });
+    let gaw_id = gaw_handle.id();
+    let (written, rejected) = gaw_handle.await.expect("spawned task must not panic");
+    assert!(rejected.is_empty());
+    assert_eq!(written.len(), 1);
+
+    let called_id = (*recording_for_assert.called_task_id.lock().unwrap())
+        .expect("ask policy must reach the approval manager");
+    assert_ne!(
+        gaw_id, called_id,
+        "BUG-20261119-199: 审批等待在调用方任务上下文内同步执行（裸调 security.execute 占死 tokio worker）— 必须走 spawn_blocking 与 dispatch 主路径对齐"
     );
 }
 
@@ -504,7 +603,7 @@ impl nemesis_security::guardian::LlmJudge for NeverJudge {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+    let plugin = std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         command_guard_enabled: false,
         injection_enabled: false,
@@ -513,7 +612,7 @@ async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
         ssrf_enabled: false,
         default_action: "allow".to_string(),
         ..Default::default()
-    });
+    }));
     plugin.set_guardian_mode("high");
     plugin.set_judge(std::sync::Arc::new(DenyJudge));
 
@@ -547,7 +646,7 @@ async fn gate_and_write_guardian_flag_no_channel_blocks_all_files() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_and_write_guardian_high_allow_writes_files() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+    let plugin = std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         command_guard_enabled: false,
         injection_enabled: false,
@@ -556,7 +655,7 @@ async fn gate_and_write_guardian_high_allow_writes_files() {
         ssrf_enabled: false,
         default_action: "allow".to_string(),
         ..Default::default()
-    });
+    }));
     plugin.set_guardian_mode("high");
     plugin.set_judge(std::sync::Arc::new(AllowJudge));
 
@@ -586,7 +685,7 @@ async fn gate_and_write_guardian_high_allow_writes_files() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gate_and_write_guardian_default_off_never_calls_judge() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+    let plugin = std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
         command_guard_enabled: false,
         injection_enabled: false,
@@ -595,7 +694,7 @@ async fn gate_and_write_guardian_default_off_never_calls_judge() {
         ssrf_enabled: false,
         default_action: "allow".to_string(),
         ..Default::default()
-    });
+    }));
     let judge = std::sync::Arc::new(NeverJudge(std::sync::atomic::AtomicUsize::new(0)));
     plugin.set_judge(judge.clone());
 

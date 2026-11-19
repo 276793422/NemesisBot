@@ -1346,19 +1346,41 @@ pub(crate) fn parse_snooze_until(raw: &str) -> Result<String, String> {
 
 /// 到期唤醒 sweeper（gateway 常驻；upload sweeper 同款装配形态）。每 10s
 /// 扫一遍 meta sidecar——量级 = 会话数（每个一个小 JSON 读），可忽略。
-pub fn spawn_snooze_sweeper() {
+///
+/// `shutdown` = gateway 终态令牌（runtime.rs 传
+/// `shutdown::terminal_cancel_token().clone()`）。BUG-20261119-208：本循环
+/// 是 BUG-20261115-023 停机家族的 nemesis-web 侧漏网成员（023 横扫只扫了
+/// nemesisbot crate）——裸 timer park 无停机臂，gateway Step 24
+/// `cancel_terminal_tasks()` 后本循环还在 10s park 上活着，排空窗内每
+/// 10s 继续唤醒到期会话注入新 turn（对抗 drain「在途 turn 归零」不变量）
+/// 并补投滞留 pending。等待点换装同族契约：前置 `is_cancelled` 检查
+/// （预取消零工作）+ select 令牌优先于 tick（取消后确定性退出，不
+/// re-park）。工作在等待点之后——取消抢占发生在任何一轮工作之前。
+/// 返回任务 JoinHandle（生产调用点丢弃 = detach，令牌承担停机收口；
+/// 测试用 join 断言退出时序）。
+pub fn spawn_snooze_sweeper(
+    shutdown: tokio_util::sync::CancellationToken,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         interval.tick().await; // 首 tick 立即返回（启动期无需抢跑，10s 内兜住）
         loop {
-            interval.tick().await;
+            // 前置取消检查：收口语义优先于最后一拍工作量（预取消形态
+            // wake/drain 都不跑）。
+            if shutdown.is_cancelled() {
+                break;
+            }
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             let woken = wake_due_sessions();
             if woken > 0 {
                 tracing::info!("[sessions] snooze sweeper 唤醒 {woken} 个会话");
             }
             drain_orphan_pending();
         }
-    });
+    })
 }
 
 // —— L22（2026-11-03 snooze 排队）：暂停期消息重放 hook ——

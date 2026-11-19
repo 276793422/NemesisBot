@@ -8,9 +8,12 @@ import { useToast } from '../../composables/useToast'
 // 结构化扁平条目序列化（每条各自成组）、切 TAB 从磁盘刷新（最后写入者胜）。
 // （2026-09-24 热更：桥内 mtime 惰性重载，保存后下条消息生效——原「一键重启
 // 」按钮与对应测试随死 UI 移除。）后端 hooks handler 行为由
-// handlers/hooks/tests.rs（7 测试）钉住。
+// handlers/hooks/tests.rs（10 测试）钉住。
 // 2026-11-16 会话圈定（scope.sessions）：带 scope 条目读回/写回往返、
 // 作用会话选择器（sessions.list 按标题搜、落盘存 sid）、总览作用域徽标。
+// 2026-11-19 统一存储（二型）：Stop 事件二型切换下拉（command/prompt），
+// 提示词型条目序列化 type=prompt 无 command/timeout；统计/成功 toast 文案
+// 「条/个钩子」（不再叫「脚本」——prompt 条目不是脚本）。
 
 const requestMock = vi.fn()
 // initWSAPI：批次二起 HookView import 链经 session store 拉进 useWebSocket
@@ -91,7 +94,7 @@ describe('HookView 总览', () => {
   it('统计徽标 + 只读明细 + 可编辑原文', async () => {
     const w = await mountView()
     expect(requestMock).toHaveBeenCalledWith('hooks', 'get')
-    expect(w.text()).toContain('共 2 个脚本')
+    expect(w.text()).toContain('共 2 条')
     expect(w.text()).toContain('python lint.py')
     expect(w.text()).toContain('全部工具')
     const ta = w.find('textarea')
@@ -122,7 +125,7 @@ describe('HookView 总览', () => {
     await w.findAll('button').find(b => b.text() === '保存原文')!.trigger('click')
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('hooks', 'set', { content: VALID_HOOKS })
-    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('2 个脚本'))).toBe(true)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('2 个钩子'))).toBe(true)
   })
 
   it('冷启动首次保存：无桥形态 → toast 提示需重启一次（复核三修回归）', async () => {
@@ -141,7 +144,7 @@ describe('HookView 总览', () => {
     await ta.setValue(VALID_HOOKS)
     await w.findAll('button').find(b => b.text() === '保存原文')!.trigger('click')
     await flushPromises()
-    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('重启 Agent') && t.message.includes('2 个脚本'))).toBe(true)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('重启 Agent') && t.message.includes('2 个钩子'))).toBe(true)
 
     // 暖启动对照：桥在 → 下条消息生效（恢复默认 mock）。
     useToast().toasts.splice(0)
@@ -243,6 +246,35 @@ describe('HookView 结构化设置页（方案 B 扁平条目）', () => {
     const written = JSON.parse(requestMock.mock.calls.find(c => c[1] === 'set')![2].content)
     expect(written.hooks.PreToolUse).toBeUndefined()
     expect(written.hooks.Stop).toBeTruthy()
+  })
+
+  it('Stop 事件二型切换：命令型 ↔ 提示词型（统一存储，2026-11-19）', async () => {
+    const w = await mountView('设置')
+    const stopBlock = w.findAll('.card').find(c => c.text().includes('Stop'))!
+    // 既有 command 条目（echo done）：行首二型下拉存在且当前为命令型。
+    const typeSel = stopBlock.find('select')
+    expect(typeSel.exists()).toBe(true)
+    expect((typeSel.element as HTMLSelectElement).value).toBe('command')
+
+    // 切提示词型：命令输入 + 超时输入消失，换成提示词 textarea。
+    await typeSel.setValue('prompt')
+    expect(stopBlock.find('textarea').exists()).toBe(true)
+    expect(stopBlock.findAll('input[placeholder^="命令"]').length).toBe(0)
+    expect(stopBlock.findAll('input[placeholder="60"]').length).toBe(0)
+    await stopBlock.find('textarea').setValue('继续检查代码是否正确，确认是否有问题')
+
+    // 保存：prompt 条目序列化 {type:'prompt', prompt}——无 command/timeout 键。
+    requestMock.mockClear()
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'set') return Promise.resolve({ summary: { total: 2 } })
+      return Promise.resolve({})
+    })
+    await w.findAll('button').find(b => b.text() === '保存全部钩子')!.trigger('click')
+    await flushPromises()
+    const written = JSON.parse(requestMock.mock.calls.find(c => c[1] === 'set')![2].content)
+    expect(written.hooks.Stop).toEqual([
+      { hooks: [{ type: 'prompt', prompt: '继续检查代码是否正确，确认是否有问题' }] },
+    ])
   })
 
   it('切换 TAB 从磁盘刷新：未保存的原文修改被丢弃（最后写入者胜）', async () => {

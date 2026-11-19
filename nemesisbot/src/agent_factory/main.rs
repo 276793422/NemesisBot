@@ -500,13 +500,17 @@ pub fn build_agent_loop(
         );
     }
 
-    // 会话钩子孤儿对账（HOOK 会话圈定批次三，启动一次）：hooks.session.json
-    // 里 sid 不在存活会话集的条目直删。正常删除路径（dashboard 删会话 /
-    // TTL 清理）已有 SessionEnd → purge 兜底；这里兜手动删日志文件等旁路。
-    // live 集来自 session_logs 扫描（与 Dashboard 会话列表同一真相）；
+    // 会话钩子孤儿对账（HOOK 会话圈定批次三，启动一次；统一存储 2026-11-19
+    // 起对账对象 = hooks.json 的 scope 圈定组）：scope 圈定了不存在活会话的
+    // 组，把该会话从 scope 摘除（摘空整组删）。正常删除路径（dashboard 删
+    // 会话 / TTL 清理）已有 SessionEnd → purge 兜底；这里兜手动删日志文件等
+    // 旁路。live 集来自 session_logs 扫描（与 Dashboard 会话列表同一真相）；
     // 集群/RPC 等非 web 键不在扫描面——它们的会话钩子按原样保留（工具只在
     // 主/项目 loop 注册，生产写入面只有 web 键）。
+    // 先行一步退役清理：旧 hooks.session.json（分离存储时代）在场即删 +
+    // warn（零数据迁移——统一存储重构的诚实降级，见 retire_session_store）。
     {
+        nemesis_agent::cc_hooks::retire_session_store(&ws_config_dir);
         let rows = nemesis_web::handlers::logs::scan_session_logs(
             &shared.workspace_dir().to_string_lossy(),
         );
@@ -772,6 +776,22 @@ pub fn build_agent_loop(
             )),
         );
         info!("[AgentFactory] goal tool registered (goal add/delete/disable)");
+    }
+
+    // 8h. 邮件 agent 工具（B4，2026-11-18）：`mail` 单工具三 action
+    //（send/list/read——**无 delete**，schema 层面不存在，删信/地址注册
+    // 只经宿主治理面；min_tier=normal 双闸防 mini 误用外传面；send 投影
+    // network_request 过 8 层、list/read 投影 internal）。handle 缺席
+    //（总闸关 / 名册关 / DLL 缺席 / 装载失败）= 不注册，零影响。gateway
+    // 装载链（GatewayCtx 构造期 load_mail_plugin）先于本函数——注册判定
+    // 无时序缺口；run/acp headless 不 load 插件 = 自然不注册。
+    #[cfg(feature = "mail")]
+    if crate::mail_plugin_loader::plugin_handle().is_some() {
+        agent_loop.register_tool(
+            crate::mail_tool::TOOL_NAME.to_string(),
+            Box::new(crate::mail_tool::MailTool::new()),
+        );
+        info!("[AgentFactory] mail tool registered (mail send/list/read)");
     }
 
     // 9. Continuation manager (disk-persisted — new instance).

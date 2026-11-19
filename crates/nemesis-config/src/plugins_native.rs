@@ -41,6 +41,9 @@ pub enum NativePluginId {
     /// 附加资源载体（人格超市上游快照编译期内嵌；C-ABI 解冻第三例，
     /// 纯数据资源查询面——无 init/vtable/停机语义）。
     PluginResources,
+    /// 邮件基础设施（SMTP/POP3 服务端 + 客户端发信；C-ABI 解冻第四例，
+    /// 新式交互插件——maildir 分库存储按地址注册制）。
+    PluginMail,
 }
 
 impl NativePluginId {
@@ -53,6 +56,7 @@ impl NativePluginId {
         NativePluginId::PluginVm,
         NativePluginId::PluginRoaming,
         NativePluginId::PluginResources,
+        NativePluginId::PluginMail,
     ];
 
     /// 库探测名（find_plugin_library base_name）。
@@ -65,6 +69,7 @@ impl NativePluginId {
             NativePluginId::PluginVm => "plugin_vm",
             NativePluginId::PluginRoaming => "plugin_roaming",
             NativePluginId::PluginResources => "plugin_resources",
+            NativePluginId::PluginMail => "plugin_mail",
         }
     }
 

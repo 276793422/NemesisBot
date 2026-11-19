@@ -805,6 +805,15 @@ pub(super) fn inject_spawn_fn(
                 );
                 nemesis_agent::subagent_registry::global()
                     .attach_token(&bg_registry_id, bg_cancel_token.clone());
+                // park 信箱注册（2026-11-19 spawn park 化）：先于
+                // tokio::spawn——完成回灌（deliver）只可能晚于本行，杜绝
+                // 「完成先到、park 未挂」竞态（该竞态会双丢：快照未存 +
+                // slot 未挂，完成帧无处落地）。
+                nemesis_agent::bg_park::global().register(
+                    &bg_task_id,
+                    &parent_session_key,
+                    &chat_id,
+                );
                 let bg_parent_session_key = parent_session_key.clone();
                 tokio::spawn(async move {
                     let result = match weak.upgrade() {
@@ -1215,11 +1224,12 @@ pub(crate) fn register_connector_governance(
 
 /// 会话钩子自管面：`hooks` 工具（HOOK 会话圈定批次三）——单工具多
 /// action（add/delete/list），sid 取 `context.session_key`（结构上只能给
-/// 自己设），写 `hooks.session.json`（原子落盘）。`cc_bridge` 在场 = 桥
-/// 内容比对热更即时生效；None = 冷启动双缺，工具响应诚实提示「重启
-/// Agent 后生效」。add/delete 静态 FileWrite（HIGH → 审批卡）；list 投影
-/// internal 只读直通。仅主 gateway loop / 项目 loop 调用（集群走
-/// `register_tools_and_mcp` 公共路径天然排除；run/acp headless 不装）。
+/// 自己设），写 `hooks.json` 的 scope 圈定工具专属组（统一存储 RMW API
+/// 原子落盘）。`cc_bridge` 在场 = 桥内容比对热更即时生效；None = 冷启动
+/// 无桥，工具响应诚实提示「重启 Agent 后生效」。add/delete 静态 FileWrite
+/// （HIGH → 审批卡）；list 投影 internal 只读直通。仅主 gateway loop /
+/// 项目 loop 调用（集群走 `register_tools_and_mcp` 公共路径天然排除；
+/// run/acp headless 不装）。
 pub(crate) fn register_hooks_tool(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     shared: &Arc<SharedResources>,

@@ -289,3 +289,73 @@ async fn concurrent_requests_share_one_dial() {
     );
     assert_eq!(pool.session_count().await, 1);
 }
+
+// ---------------------------------------------------------------------------
+// 进程终态令牌家族回归锁（BUG-20261120-009 / 023 家族 + 208 DI 形态）
+//
+// 观测协议：心跳循环无暴露的 JoinHandle，用 TTL 清扫做工作信号——循环
+// 活着 → 闲置超 TTL 的会话被逐出；循环死（令牌消费）→ 会话原样留存。
+// timeout(30s) 是活锁兜底。令牌一律局部（nemesis-cluster 测试拿不到
+// nemesisbot 全局令牌，且全局令牌纪律是测试绝不 cancel）。
+// ---------------------------------------------------------------------------
+
+/// 预取消：spawn 前已终态 → 心跳循环立即退出，TTL 清扫零执行。
+/// 正面证据：闲置超 TTL 的会话**未被逐出**（旧实现循环照跑 → 2s TTL
+/// 必逐出 = 红证形态）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeat_pre_cancelled_no_sweep_zero_work() {
+    let sim = PeerSim::new();
+    let pool = Arc::new(RoamingSessionPool::new());
+    pool.set_heartbeat_interval(0); // 心跳关：循环只做 TTL 清扫
+    pool.set_idle_ttl_for_tests(2);
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel(); // 预取消：spawn 前已终态
+    pool.set_terminal_token(token);
+    pool.set_token(TEST_TOKEN);
+    pool.set_dialer(Arc::clone(&sim) as Arc<dyn RoamingDialer>); // 拉起（应立即死）
+
+    assert!(ping_once(&pool, &sim).await.unwrap());
+    // 心跳循环启动即 snapshot 令牌 → 立即退出；会话闲置超 TTL 也无人清扫。
+    // 旧实现（不消费令牌）：TTL 2s 后 sweep 必逐出 → count 0 = 红证。
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(
+        pool.session_count().await,
+        1,
+        "预取消后心跳循环必须零工作（TTL 清扫不得执行，会话原样留存）"
+    );
+    pool.close_all();
+}
+
+/// park 中取消：循环活着正常清扫（正工作证据）→ cancel → 下一拍 1s
+/// select 令牌臂胜出退出 → 后续 TTL 到期不再清扫（会话留存）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeat_cancel_during_park_stops_sweeping() {
+    let sim = PeerSim::new();
+    let pool = Arc::new(RoamingSessionPool::new());
+    pool.set_heartbeat_interval(0);
+    pool.set_idle_ttl_for_tests(1);
+    let token = tokio_util::sync::CancellationToken::new();
+    pool.set_terminal_token(token.clone());
+    pool.set_token(TEST_TOKEN);
+    pool.set_dialer(Arc::clone(&sim) as Arc<dyn RoamingDialer>);
+
+    // 正工作证据：循环活着，闲置超 TTL(1s) 的会话在 ~2.5s 内被逐出。
+    assert!(ping_once(&pool, &sim).await.unwrap());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        pool.session_count().await,
+        0,
+        "前置：活循环必须执行 TTL 清扫（工作信号）"
+    );
+
+    // cancel：下一拍（≤1s sleep 窗）令牌臂胜出退出。
+    assert!(ping_once(&pool, &sim).await.unwrap()); // 新会话入池
+    token.cancel();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        pool.session_count().await,
+        1,
+        "cancel 后循环必须退出（会话超 TTL 也无人清扫 = 循环已死）"
+    );
+    pool.close_all();
+}

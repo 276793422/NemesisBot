@@ -545,6 +545,11 @@ impl DisciplineFalsificationHook {
         command: &str,
     ) -> FalsificationOutcome {
         // 规则层安全管线（拦截面与主循环 dispatch 前置检查同源）。
+        // BUG-20261119-199：execute 撞 RequireApproval 时审批等待在 auditor
+        // 内同步阻塞（最长 300s）——「不含弹窗类」的既有拍板管不住 auditor
+        // 的事实语义（管理器在场即阻塞等裁决），裸调占死 tokio worker
+        // （dispatch 主路径 tool_dispatch.rs 修过的同一问题）。包
+        // spawn_blocking 出 worker 线程，阻塞语义不变。
         #[cfg(feature = "security")]
         if let Some(ref security) = self.security {
             let invocation = nemesis_security::types::ToolInvocation {
@@ -557,7 +562,23 @@ impl DisciplineFalsificationHook {
                 source: "discipline".to_string(),
                 metadata: std::collections::HashMap::new(),
             };
-            let (allowed, deny) = security.execute(&invocation);
+            let (allowed, deny) = {
+                let tracked_security = std::sync::Arc::clone(security);
+                let tracked_invocation = invocation.clone();
+                tokio::task::spawn_blocking(move || tracked_security.execute(&tracked_invocation))
+                    .await
+                    .unwrap_or_else(|e| {
+                        (
+                            false,
+                            Some(nemesis_security::types::DenyInfo {
+                                layer: "runtime",
+                                policy: "spawn_blocking".to_string(),
+                                summary: format!("security check aborted: {e}"),
+                                suggestion: None,
+                            }),
+                        )
+                    })
+            };
             if !allowed {
                 let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
                     layer: "unknown",

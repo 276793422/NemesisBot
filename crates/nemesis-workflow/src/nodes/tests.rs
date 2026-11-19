@@ -5799,6 +5799,62 @@ fn bug_105_numeric_string_context_compare() {
     assert!(!evaluate_condition("n > 7", &ctx));
 }
 
+/// BUG-20261119-195 回归锁：模板替换值内的运算符字符不得劫持条件切分。
+/// 修复前 `{{msg}} >= 5` 遇 msg="3>=1" → resolved="3>=1 >= 5"，`>=`
+/// 切在数据内位置 1 → left="3" right="1 >= 5" 字典序 → true；裸名形态
+/// `msg >= 5` 同数据走 context 查询得 "3>=1" 字典序 → false——两种文档
+/// 形态给相反路由。修后切分跳过数据值区间，模板形与裸名形同结论。
+#[test]
+fn bug_195_template_value_operator_not_split() {
+    let mut ctx = HashMap::new();
+    ctx.insert("msg".to_string(), serde_json::json!("3>=1"));
+
+    // 模板形：整个 "3>=1" 作左操作数，字典序 "3>=1" < "5" → false
+    //（修复前 true）。
+    assert!(!evaluate_condition("{{msg}} >= 5", &ctx));
+    // 裸名形（既有行为锚，两形一致性钉死）。
+    assert!(!evaluate_condition("msg >= 5", &ctx));
+    // 数据值含 `==` 同族劫持面。
+    ctx.insert("eq".to_string(), serde_json::json!("x==y"));
+    assert!(!evaluate_condition("{{eq}} == 5", &ctx));
+    // 数据干净时模板形照常数值比较（既有行为回归面）。
+    ctx.insert("count".to_string(), serde_json::json!("10"));
+    assert!(evaluate_condition("{{count}} >= 5", &ctx));
+    // 邻接无空格形态（切点落在数据区间终点上，边界外合法）。
+    ctx.insert("n".to_string(), serde_json::json!("3"));
+    assert!(evaluate_condition("{{n}}>=2", &ctx));
+}
+
+/// BUG-20261119-195 引号臂：引号字面量内的运算符不是切点（与
+/// resolve_operand 首尾配对剥引号同口径）。修复前 `{{x}} == "a>=b"`
+/// 遇 x="a>=b"：`>=` 先命中数据内位置 1（split_once 取第一个出现）→
+/// 切分错位 → false；修后数据区间与引号段双双跳过，切在真正的 `==`
+/// → 引号剥离后两侧相等 → true。
+#[test]
+fn bug_195_quoted_operand_operator() {
+    let mut ctx = HashMap::new();
+    ctx.insert("x".to_string(), serde_json::json!("a>=b"));
+    // 修复前 false（数据内 >= 劫持切分），修后 true。
+    assert!(evaluate_condition("{{x}} == \"a>=b\"", &ctx));
+    // 纯字面量引号臂（无占位符）：引号内运算符不参与切分。
+    assert!(evaluate_condition("'a>b' == 'a>b'", &ctx));
+    assert!(!evaluate_condition("'a>b' == 'b>a'", &ctx));
+}
+
+/// BUG-20261119-195 整占位符形态锚：`{{expr}}`（值本身是表达式文本）
+/// 的运算符在数据区间内被跳过 → 无切点 → Step 4 truthy（非空即真）。
+/// 「数据不参与运算符语法」的定向推论：整值占位符按 truthy 处理，
+/// 不被二次解析成表达式（与劫持形态同一根因的另一半）。
+#[test]
+fn bug_195_whole_placeholder_truthy_fallback() {
+    let mut ctx = HashMap::new();
+    ctx.insert("expr".to_string(), serde_json::json!("count > 5"));
+    assert!(evaluate_condition("{{expr}}", &ctx));
+    // 空串数据仍 false（truthy 空值臂）。
+    ctx.insert("empty".to_string(), serde_json::json!(""));
+    assert!(!evaluate_condition("{{empty}}", &ctx));
+}
+
 #[test]
 fn w4a_resolve_operand_literal_kinds() {
     let mut ctx = HashMap::new();

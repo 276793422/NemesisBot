@@ -43,6 +43,12 @@ impl ProjectsBridge for AgtOneProjectBridge {
     fn set_trust(&self, _project_id: &str, _trusted: bool) -> Result<ProjectInfo, String> {
         Err("agt: not implemented".to_string())
     }
+    fn add_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("agt: not implemented".to_string())
+    }
+    fn remove_dir(&self, _project_id: &str, _dir: &str) -> Result<ProjectInfo, String> {
+        Err("agt: not implemented".to_string())
+    }
     fn owner_of(&self, _session_key: &str) -> Option<String> {
         None
     }
@@ -84,6 +90,7 @@ fn agt_ctx(workspace: Option<String>) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -133,6 +140,7 @@ async fn agt_get_refreshes_roots_from_bridge_and_abac_sees_project_root() {
             created_at: "2026-09-25T00:00:00Z".to_string(),
             running: false,
             instructions_trusted: true,
+            extra_dirs: Vec::new(),
         },
     });
     install_projects_bridge(bridge);

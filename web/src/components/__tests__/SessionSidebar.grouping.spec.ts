@@ -41,6 +41,7 @@ vi.mock('../../composables/useChatApi', () => ({
 }))
 
 import SessionSidebar from '../SessionSidebar.vue'
+import { reloadSessionGroupingFromStorage } from '../../utils/sessionGrouping'
 
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -58,6 +59,8 @@ beforeEach(() => {
 })
 
 async function mountWith(sessions: any[], projects: any[]) {
+  // pin/排序状态是模块级单例（import 时读 localStorage）——种子须挂载前重载。
+  reloadSessionGroupingFromStorage()
   listMock.mockResolvedValue({ sessions })
   listProjectsMock.mockResolvedValue({ projects, count: projects.length })
   const w = mount(SessionSidebar)

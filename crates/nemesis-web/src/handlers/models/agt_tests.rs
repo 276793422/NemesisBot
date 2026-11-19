@@ -60,6 +60,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -318,6 +319,20 @@ impl crate::handlers::projects::ProjectsBridge for AgtRecordingBridge {
         &self,
         _project_id: &str,
         _trusted: bool,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn add_dir(
+        &self,
+        _project_id: &str,
+        _dir: &str,
+    ) -> Result<crate::handlers::projects::ProjectInfo, String> {
+        Err("not wired".to_string())
+    }
+    fn remove_dir(
+        &self,
+        _project_id: &str,
+        _dir: &str,
     ) -> Result<crate::handlers::projects::ProjectInfo, String> {
         Err("not wired".to_string())
     }

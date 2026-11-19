@@ -96,9 +96,13 @@ describe('ChatPanel 系统通知条', () => {
     expect(notices[0].classes()).not.toContain('expanded')
     // 不误入压缩注记家族（role=user 的通知条 ≠ compact-note）。
     expect(w.findAll('.compact-note')).toHaveLength(0)
-    // avatar 非 'U'（通知行 avatar 换 ⚙，明确非真人）。
+    // A4（2026-11-19 头像语义）：通知条是过程行——不渲染头像（头像只属于
+    // 答案：头像没出现 = 还在跑；头像出现 = 答案到了）。
     const rows = w.findAll('.message')
-    expect(rows[1].find('.message-avatar').text()).toBe('⚙')
+    expect(rows[1].find('.message-avatar').exists()).toBe(false)
+    // 真人行头像照常。
+    expect(rows[0].find('.message-avatar').text()).toBe('U')
+    expect(rows[2].find('.message-avatar').text()).toBe('NB')
     w.unmount()
   })
 

@@ -327,7 +327,7 @@ pub async fn sweep_missing_archives(
     transport: &dyn TransferTransport,
     no_archive_seen: &tokio::sync::Mutex<std::collections::HashSet<String>>,
 ) {
-    let inbox_root = nemesis_path::cluster_dir_in_workspace(workspace).join("inbox");
+    let inbox_root = nemesis_path::resolve_cluster_inbox_dir_in_workspace(workspace);
 
     // -- 腿 1：收件箱滞留重灌 ---------------------------------------------
     if let Ok(entries) = std::fs::read_dir(&inbox_root) {

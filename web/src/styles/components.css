@@ -967,6 +967,28 @@
   40% { transform: scale(1); }
 }
 
+/* ===== Work 恢复中骨架（2026-11-19 切换恢复整改 B2）=====
+   切回会话后 work_current 快照落地前的空白窗——「恢复中」细条（无头像，
+   与过程行同一语义：头像出现 = 答案到了）。快照采纳后让位给真时间线。 */
+.work-restoring {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: var(--space-2) var(--space-3);
+}
+.work-restoring .typing-indicator { padding: 0; }
+.work-restoring-text {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* 过程 live 行（A4 2026-11-19）：无头像的过程占位行——内容从行首开始
+   （.message 的 flex gap 在无 avatar 子元素时自然塌缩，无需额外补偿）。 */
+.message.process-live .message-content {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ===== Agent Cards (Future) ===== */
 .agent-card {
   background: var(--surface);

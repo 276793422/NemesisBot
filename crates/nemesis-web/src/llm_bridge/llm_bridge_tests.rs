@@ -227,3 +227,87 @@ async fn streamed_unknown_still_wraps_stream_interrupted() {
         "partial 随错误保留（既有语义）: {err}"
     );
 }
+
+// ==========================================================================
+// BUG-20261120-003（终态唯一性契约，与 collect_stream_response Err 臂同款）：
+// finish chunk 已聚合后再到的 Err 是终态后传输噪音——不得把已完成响应
+// 改写成 StreamInterrupted（拼接续写会把完整回复当半截去续写，缝合怪终答）。
+// ==========================================================================
+
+/// 终态后错误 mock：delta → finish("stop") → Err。chat() 返回哨兵内容——
+/// 若被误走到（应走真流式聚合），断言当即暴露。
+struct StreamFinishThenErrProvider;
+
+#[async_trait::async_trait]
+impl nemesis_providers::router::LLMProvider for StreamFinishThenErrProvider {
+    async fn chat(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _model: &str,
+        _options: &ChatOptions,
+    ) -> Result<LLMResponse, FailoverError> {
+        Ok(LLMResponse {
+            content: "SHOULD_NOT_FALLBACK".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            usage: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+
+    fn chat_stream(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _model: &str,
+        _options: &ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<
+        Result<nemesis_providers::http_provider::StreamChunk, FailoverError>,
+    > {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let _ = tx.try_send(Ok(nemesis_providers::http_provider::StreamChunk {
+            delta: "完整回复".to_string(),
+            ..Default::default()
+        }));
+        let _ = tx.try_send(Ok(nemesis_providers::http_provider::StreamChunk {
+            finish_reason: Some("stop".to_string()),
+            ..Default::default()
+        }));
+        let _ = tx.try_send(Err(FailoverError::Unknown {
+            provider: "fte-inner".to_string(),
+            message: "connection reset after finish".to_string(),
+        }));
+        rx
+    }
+
+    fn stream_preferred(&self, _model: &str) -> bool {
+        true
+    }
+
+    fn default_model(&self) -> &str {
+        "fte-model"
+    }
+
+    fn name(&self) -> &str {
+        "fte-inner"
+    }
+}
+
+#[tokio::test]
+async fn streamed_err_after_finish_reason_completes_normally() {
+    let adapter = ProviderAdapter::new(
+        Arc::new(StreamFinishThenErrProvider),
+        "fte-model".to_string(),
+    );
+    let resp = adapter
+        .chat_streamed("fte-model", Vec::new(), None, Vec::new(), &|_| {})
+        .await
+        .unwrap();
+    assert_eq!(resp.content, "完整回复", "终态后 Err 不得丢弃已完成响应");
+    assert_eq!(resp.finish_reason.as_deref(), Some("stop"));
+    assert!(resp.finished, "无工具调用 = 已终答");
+}

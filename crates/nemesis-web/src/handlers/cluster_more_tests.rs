@@ -50,6 +50,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -112,6 +113,7 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: Some(log_dir.to_string_lossy().to_string()),
         workflow_engine: None,
@@ -171,6 +173,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -231,6 +234,7 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -1625,11 +1629,26 @@ use nemesis_cluster::types::{ClusterConfig, ExtendedNodeInfo, NodeStatus};
 use nemesis_types::cluster::{NodeInfo, NodeRole};
 
 fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
+    // 生产形态（with_workspace）：tasks.db 换装——身份/持久化类测试用。
+    make_ctx_with_cluster_in(
+        dir,
+        Arc::new(Cluster::with_workspace(
+            ClusterConfig::default(),
+            dir.path().to_path_buf(),
+        )),
+    )
+}
+
+/// 内存态 TaskManager 姊妹 fixture（任务面测试专用）——tasks.db 换装是
+/// with_workspace（生产路径）专属；stub 编译态（nemesis-taskstore sqlite
+/// feature 关，`-p nemesis-web` 单包测试即此形态）下 tasks.db 写入 no-op、
+/// 查询恒空，任务面测试必须与持久化后端解耦（2026-11-18 裁剪门控暴露）。
+fn make_ctx_with_cluster_mem(dir: &tempfile::TempDir) -> RequestContext {
+    make_ctx_with_cluster_in(dir, Arc::new(Cluster::new(ClusterConfig::default())))
+}
+
+fn make_ctx_with_cluster_in(dir: &tempfile::TempDir, cluster: Arc<Cluster>) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
-    let cluster = Arc::new(Cluster::with_workspace(
-        ClusterConfig::default(),
-        dir.path().to_path_buf(),
-    ));
     let state = Arc::new(AppState {
         cors_manager: None,
         events_snapshot: None,
@@ -1655,6 +1674,7 @@ fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: Some(cluster),
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -1721,6 +1741,7 @@ fn make_ctx_with_cluster_and_log_dir(dir: &tempfile::TempDir) -> RequestContext 
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: Some(cluster),
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: Some(log_dir.to_string_lossy().to_string()),
         workflow_engine: None,
@@ -1999,7 +2020,7 @@ async fn test_tasks_list_empty_cluster() {
 async fn test_tasks_list_with_submitted_task() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx_with_cluster(&dir);
+    let ctx = make_ctx_with_cluster_mem(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     let _ = c.submit_task(
         "dashboard_test",
@@ -2023,7 +2044,7 @@ async fn test_tasks_list_with_submitted_task() {
 async fn test_tasks_list_pagination() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx_with_cluster(&dir);
+    let ctx = make_ctx_with_cluster_mem(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     for i in 0..5 {
         c.submit_task("t", serde_json::json!({"i":i}), "dashboard", "s");
@@ -2086,7 +2107,7 @@ async fn test_tasks_detail_unknown_task_errors() {
 async fn test_tasks_detail_known_task_returns_payload() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx_with_cluster(&dir);
+    let ctx = make_ctx_with_cluster_mem(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     let task_id = c.submit_task(
         "dashboard_test",
@@ -2131,7 +2152,7 @@ async fn test_tasks_cancel_unknown_returns_false() {
 async fn test_tasks_cancel_known_returns_true() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx_with_cluster(&dir);
+    let ctx = make_ctx_with_cluster_mem(&dir);
     let c = ctx.state.cluster.as_ref().unwrap();
     let task_id = c.submit_task("t", serde_json::json!({}), "dashboard", "s");
 

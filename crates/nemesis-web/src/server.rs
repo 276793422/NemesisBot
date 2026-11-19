@@ -266,6 +266,10 @@ pub struct WebServer {
     /// Copy 直接持值；nemesisbot gateway 装载插件后经 set_roaming_plugin 注入）。
     /// M4 起恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
     quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
+    /// plugin_mail 运行面句柄（邮件基础设施：SMTP/POP3/客户端/存储在插件内；
+    /// nemesisbot gateway 装载后经 set_mail_plugin 注入。fn 指针 Copy 持值）。
+    /// None = 插件未装载（mail.* 命令诚实报「插件未装载」）。恒编译。
+    mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
@@ -418,6 +422,7 @@ impl WebServer {
             agent_loop: None,
             cluster: None,
             quic_relay: None,
+            mail_plugin: None,
             cluster_service: None,
             cluster_log_dir: None,
             workflow_engine: None,
@@ -568,6 +573,13 @@ impl WebServer {
     /// 装载 plugin_roaming 后注入；与 cluster 装配独立）。
     pub fn set_roaming_plugin(&mut self, handle: nemesis_plugin::roaming::RoamingPluginHandle) {
         self.quic_relay = Some(handle);
+    }
+
+    /// Set the mail plugin handle（邮件基础设施 B3：nemesisbot gateway 装载
+    /// plugin_mail 后注入；`mail` feature 关时本方法无人调用，槽恒 None——
+    /// 恒编译与 quic_relay 同款）。
+    pub fn set_mail_plugin(&mut self, handle: nemesis_plugin::mail::MailPluginHandle) {
+        self.mail_plugin = Some(handle);
     }
 
     /// Set the cluster lifecycle service for start/stop control.
@@ -777,6 +789,7 @@ impl WebServer {
         let cluster = self.cluster;
         // RoamingPluginHandle 是 fn 指针 Copy——Option 也 Copy，clone 塌缩单行。
         let quic_relay = self.quic_relay;
+        let mail_plugin = self.mail_plugin;
         #[cfg(feature = "workflow")]
         let workflow_engine = self.workflow_engine.clone();
         #[cfg(not(feature = "workflow"))]
@@ -812,6 +825,7 @@ impl WebServer {
                 .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
             cluster,
             quic_relay,
+            mail_plugin,
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
             workflow_engine,
@@ -2573,6 +2587,56 @@ pub async fn pump_agent_events(
                     nemesis_types::agent::AgentEvent::ExpertDegraded { .. }
                 ) {
                     event_hub.publish("expert-degraded", data.get("data").cloned().unwrap_or(data));
+                    continue;
+                }
+                // 系统注入行实时推送（2026-11-19）：hook 提示词注入 / cron
+                // tick / 后台唤醒的 user 行不走 WS chat.send 入站臂回声
+                // （loop 内部队列回灌）——这里转 `chat.receive` 帧（role=
+                // user + system_notice + cron_job_id + session_id，seq 入
+                // chat_event_log 环）。入环 = 断线 chat.sync 重放同覆盖；
+                // 广播走可丢通道同用户回声（环已记录，慢客户端 sync 补拉
+                // 自愈）。前端按既有通知条分支渲染（历史行 system_notice
+                // 同一标记，2026-11-16）。
+                if let nemesis_types::agent::AgentEvent::SystemNotice {
+                    session_key,
+                    chat_id,
+                    content,
+                    kind,
+                    cron_job_id,
+                } = &event
+                {
+                    let mut payload = serde_json::json!({
+                        "role": "user",
+                        "content": content,
+                        "system_notice": kind,
+                    });
+                    if let Some(cid) = cron_job_id {
+                        payload["cron_job_id"] = serde_json::Value::String(cid.clone());
+                    }
+                    if let Some(sid) = dashboard_session_id(session_key) {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    let seq = crate::chat_event_log::record(
+                        session_key,
+                        "user",
+                        content,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                    payload["seq"] = serde_json::json!(seq);
+                    let frame = crate::protocol::ProtocolMessage::new(
+                        "message",
+                        "chat",
+                        "receive",
+                        Some(payload),
+                    );
+                    if let Ok(bytes) = frame.to_json()
+                        && let Some(session_id) = chat_id.strip_prefix("web:")
+                    {
+                        let _ = session_manager.broadcast_droppable(session_id, &bytes);
+                    }
                     continue;
                 }
                 // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播

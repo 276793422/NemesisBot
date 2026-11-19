@@ -206,17 +206,21 @@ impl WorkspaceStateManager {
     }
 
     /// Load state from disk.
+    ///
+    /// 契约（new() 的 BUG-20261114-026 注释所依赖，BUG-20261119-190 兑现）：
+    /// 文件不存在 = 空态，返回 `Ok(())`；`Err` 必为真损坏（读失败/解析失败）。
+    /// 旧实现 map_err 把「不存在」映射成空 String 错误值后 `?` 照常传播
+    /// `Err("")`——契约宣称的 Ok 从未成立（唯一调用方靠前置 exists 检查
+    /// 兜住不可达；未来任何直接调用方都会把全新工作区当损坏）。
     fn load(&self) -> Result<(), String> {
-        let data = fs::read_to_string(&self.state_file).map_err(|e| {
-            if self.state_file.exists() {
-                format!("read state file: {}", e)
-            } else {
-                // File doesn't exist yet, that's OK
-                String::new()
-            }
-        })?;
+        let data = match fs::read_to_string(&self.state_file) {
+            Ok(data) => data,
+            // File doesn't exist yet, that's OK（空态非错误）。
+            Err(_) if !self.state_file.exists() => return Ok(()),
+            Err(e) => return Err(format!("read state file: {}", e)),
+        };
 
-        // Empty error means file simply doesn't exist
+        // Empty file = empty state
         if data.is_empty() {
             return Ok(());
         }

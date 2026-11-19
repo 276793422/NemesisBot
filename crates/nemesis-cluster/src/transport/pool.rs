@@ -261,7 +261,16 @@ impl Pool {
             let mut conns = self.conns.lock();
             if let Some(entry) = conns.remove(&key) {
                 if entry.conn.is_active() {
-                    self.dec_node_count(node_id);
+                    // BUG-20261119-204：取出活连接（池内→借出）是占用态转移，
+                    // 三账（node_count / active_count / permit）均不得变——
+                    // node_count 语义 = 该 node 占用连接数（借出 + 池内，镜像
+                    // dial 的消耗，见下方 T5 注释）。旧实现在此 dec_node_count
+                    // 而 return_connection 的 insert 回池分支不补 inc：「池内
+                    // ↔借出」循环一轮计数虚低 1，per-node limit 渐进失效
+                    //（假限流失效方向：同 node 可并发超出 max_conns_per_node，
+                    // 仅剩 max_conns 总闸兜底），且池里来的借出连接在
+                    // dup/dead/remove 终止路径双 dec（saturating 兜住不 panic
+                    // 但账面漂移，get_stats 的 node_conns 同步失真）。
                     return Ok((key, entry.conn));
                 }
                 // Connection is dead, remove it（T5，2026-10-17）：拨号时
@@ -364,7 +373,23 @@ impl Pool {
         }
         if removed > 0 {
             let mut counts = self.node_counts.lock();
-            counts.remove(node_id);
+            // BUG-20261120-008：本方法只移除池内条目，**借出连接**的计数
+            // 贡献必须保留（BUG-20261119-204 钉死的语义：node_count =
+            // 借出 + 池内）。旧实现 `counts.remove(node_id)` 整键清除会把
+            // 在途借出的份额一并抹掉——该 node 的 per-node limit 从真实
+            // 占用回卷到 0，后续可超卖 max_conns_per_node。与 dec_node_count
+            // 同语义：saturating 减 removed，归零才删键。记账全程持锁
+            // （锁序 conns → node_counts，与 remove/cleanup_dead 一致）。
+            let remaining = counts
+                .get(node_id)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(removed);
+            if remaining == 0 {
+                counts.remove(node_id);
+            } else {
+                counts.insert(node_id.to_string(), remaining);
+            }
             self.active_count.fetch_sub(removed, Ordering::SeqCst);
             self.semaphore.add_permits(removed);
         }

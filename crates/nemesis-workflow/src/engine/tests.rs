@@ -2877,6 +2877,40 @@ async fn workflow_by_chat_index_legacy_prefix_ambiguous_refuses() {
 }
 
 #[tokio::test]
+async fn workflow_by_chat_index_case_variant_collision_refuses() {
+    // BUG-20261120-004：chat_index 的输入是 name.to_lowercase()——两个仅
+    // 大小写不同的 workflow 名共享**完全相同**的 16-hex index（确定性归一
+    // 碰撞，64-bit 化只压概率碰撞压不了这类）。注册面三层都放行（validate
+    // 只查非空、DashMap 键区分大小写、register/persist 无 case-insensitive
+    // 守卫），此时 16-hex 精确臂不得随 registry 迭代序随机选边——错误选择
+    // 会把聊天消息和密码投给错误的 workflow（与 8-hex legacy 臂的歧义拒绝
+    // 同一标准，同函数内标准必须一致）。
+    let engine = WorkflowEngine::new_arc();
+    engine
+        .register_workflow(make_workflow(
+            "MyWorkflow",
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+    engine
+        .register_workflow(make_workflow(
+            "myworkflow",
+            vec![make_node("n1", "start", vec![])],
+        ))
+        .unwrap();
+
+    let shared = WorkflowEngine::chat_index("MyWorkflow");
+    assert_eq!(shared, WorkflowEngine::chat_index("myworkflow"));
+
+    // 16-hex canonical form: ambiguous → refuse, never silently pick one.
+    assert_eq!(engine.workflow_by_chat_index(&shared), None);
+    assert_eq!(engine.workflow_by_chat_index(&shared.to_uppercase()), None);
+
+    // Legacy 8-hex prefix of the same shared index is equally ambiguous.
+    assert_eq!(engine.workflow_by_chat_index(&shared[..8]), None);
+}
+
+#[tokio::test]
 async fn workflow_summary_includes_chat_index() {
     let engine = WorkflowEngine::new_arc();
     let wf = make_workflow("summary-test", vec![make_node("n1", "start", vec![])]);

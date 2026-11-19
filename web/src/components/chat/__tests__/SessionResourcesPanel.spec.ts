@@ -55,14 +55,22 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
 }))
 
-vi.mock('../../../composables/useSessionAllowAll', () => ({
-  useSessionAllowAll: () => ({
-    setSessionAllow: setAllowMock,
-    refreshSessionAllow: vi.fn(),
-  }),
-}))
+// 九键全迁（2026-11-19）后面板新增消费 allowAllBySession/sessionAllowAvailable
+//（会话工具行「全部放行」键的激活态）——mock 必须补齐两个 ref，缺键 =
+// sessionAllowActive computed 解引用 undefined 崩渲染。
+vi.mock('../../../composables/useSessionAllowAll', async () => {
+  const { ref } = await import('vue')
+  return {
+    useSessionAllowAll: () => ({
+      allowAllBySession: ref<Record<string, unknown>>({}),
+      sessionAllowAvailable: ref(true),
+      setSessionAllow: setAllowMock,
+      refreshSessionAllow: vi.fn(),
+    }),
+  }
+})
 
-import { addMessageHandler } from '../../../composables/useWebSocket'
+import { addMessageHandler, wsStatus } from '../../../composables/useWebSocket'
 import SessionResourcesPanel from '../SessionResourcesPanel.vue'
 
 function wsHandler(): (frame: any) => void {
@@ -131,6 +139,23 @@ describe('渲染分区', () => {
     w.unmount()
   })
 
+  it('#7 面板级 ✕ 住 header 行（与 ＋项目 同排），会话工具卡头无 ✕', async () => {
+    const w = await mountPanel('s1')
+    // ✕ 是面板级动作：必须在 .srp-header 内、与 ＋项目 同排。
+    const header = w.find('.srp-header')
+    expect(header.exists()).toBe(true)
+    const closeInHeader = header.findAll('.srp-tools-close')
+    expect(closeInHeader.length, 'header 行必须恰好一个 ✕').toBe(1)
+    expect(header.text()).toContain('＋项目')
+    // 卡头（.srp-card-head）不再是关闭按钮宿主。
+    const closeInCards = w.findAll('.srp-card-head .srp-tools-close')
+    expect(closeInCards.length, '业务卡头不得再有面板级 ✕').toBe(0)
+    closeInHeader[0].trigger('click')
+    await flushPromises()
+    expect(w.emitted('close')).toHaveLength(1)
+    w.unmount()
+  })
+
   it('执行态大卡：running 点 + 当前工具名 + 插队徽标', async () => {
     const w = await mountPanel('s1')
     expect(w.find('.srp-exec').exists()).toBe(true)
@@ -152,9 +177,10 @@ describe('渲染分区', () => {
 
   it('资源卡流按 order 排 + file_changes/usage/session_allow 内容渲染', async () => {
     const w = await mountPanel('s1')
-    // 卡流 = 排除执行态大卡 / 在途区 / CTA 空态小卡后的正文卡。
+    // 卡流 = 排除会话工具卡 / 执行态大卡 / 在途区 / CTA 空态小卡后的正文卡。
     const cards = w.findAll('.srp-card').filter(c =>
-      !c.classes().includes('srp-exec')
+      !c.classes().includes('srp-tools')
+      && !c.classes().includes('srp-exec')
       && !c.classes().includes('srp-pending')
       && !c.text().includes('前往'))
     const titles = cards.map(c => c.find('.srp-card-title').text())
@@ -190,6 +216,35 @@ describe('渲染分区', () => {
     w.unmount()
   })
 
+  // 明细行（2026-11-19「只有个数不知道是啥」补齐）：事件·类型 + 内容
+  // 预览，长内容头截断，悬浮 title 带 matcher/timeout。
+  it('hooks_session 明细行：事件·类型 + 内容（prompt/command 两形态 + 头截断）', async () => {
+    const p = resourcesPayload(1)
+    p.categories.hooks_session = {
+      label: '会话钩子', order: 30, transient: false, status: 'ok', total: 2,
+      summary: {
+        count: 2,
+        rows: [
+          { event: 'Stop', kind: 'prompt', content: '现在几点了', matcher: '', timeout: null },
+          { event: 'PreToolUse', kind: 'command', content: 'echo ' + 'x'.repeat(60), matcher: 'Bash', timeout: 30 },
+        ],
+      },
+    }
+    const w = await mountPanel('s1', p)
+    expect(w.text()).toContain('本会话钩子 2 个')
+    expect(w.text()).toContain('Stop·提示词')
+    expect(w.text()).toContain('现在几点了')
+    expect(w.text()).toContain('PreToolUse·命令')
+    // 60 字符命令被头截到 48 + 省略号（全文在 title 悬浮可见）。
+    const truncated = w.findAll('.srp-row').map(r => r.text()).join('\n')
+    expect(truncated).toContain('…')
+    const longRow = w.findAll('.srp-row').find(r => r.text().includes('PreToolUse'))
+    const title = longRow?.find('span[title]')?.attributes('title')
+    expect(title).toContain('matcher=Bash')
+    expect(title).toContain('timeout=30s')
+    w.unmount()
+  })
+
   // 回归锁（2026-11-17 自查修复）：session_allow 是状态开关不是资源清单
   // ——empty（未开启=常态）也必须渲染开关卡，只 ok 可见 = 面板上没有
   // 开启入口（死锁）；且不进「无资源」徽标流。
@@ -205,6 +260,86 @@ describe('渲染分区', () => {
     await cb.setValue(true)
     await flushPromises()
     expect(setAllowMock).toHaveBeenCalledWith('s1', true)
+    w.unmount()
+  })
+})
+
+describe('C1 subagents 专用渲染', () => {
+  function subagentsPayload(): any {
+    const p = resourcesPayload(1)
+    p.categories.subagents = {
+      label: '子代理', order: 70, transient: false, status: 'ok', total: 3,
+      summary: {
+        running: 1,
+        finished_total: 2,
+        rows: [
+          { id: 't1', task: '跑长任务 A', role: 'dev', status: 'running', background: true, bg_task_id: 'bg-9', started_at_ms: Date.now() - 5000, finished_at_ms: null, summary: null, error: null },
+          { id: 't2', task: '分析模块 B', role: 'dev', status: 'done', background: false, bg_task_id: null, started_at_ms: Date.now() - 60000, finished_at_ms: Date.now() - 30000, summary: '模块 B 分析完成：3 处疑点', error: null },
+          { id: 't3', task: '重构 C', role: 'dev', status: 'failed', background: false, bg_task_id: null, started_at_ms: Date.now() - 90000, finished_at_ms: Date.now() - 60000, summary: null, error: '编译错误：E0382' },
+        ],
+        omitted: 5,
+      },
+    }
+    return p
+  }
+
+  function subagentsCard(w: ReturnType<typeof mount>): any {
+    const card = w.findAll('.srp-card').find(c => c.find('.srp-card-title').text() === '子代理')
+    expect(card, 'subagents 卡必须在资源卡流中').toBeTruthy()
+    return card!
+  }
+
+  it('卡头徽标 = 运行中 N / 历史 M；行渲染 ⏳/✅/❌ + summary/error，无 raw dump', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', subagentsPayload())
+    const card = subagentsCard(w)
+    // 卡头计数（新 summary 契约：running + finished_total）。
+    expect(card.find('.srp-badge').text()).toBe('运行中 1 / 历史 2')
+    const rows = card.findAll('.subagent-row')
+    expect(rows).toHaveLength(3)
+    // running 行：⏳ + running 状态点 + live 用时。
+    expect(rows[0].find('.subagent-icon').text()).toBe('⏳')
+    expect(rows[0].find('.srp-dot').classes()).toContain('running')
+    expect(rows[0].find('.subagent-meta.live').text()).toContain('运行中')
+    expect(rows[0].find('.subagent-meta.live').text()).toContain('5s')
+    // done 行：✅ + summary 摘录。
+    expect(rows[1].find('.subagent-icon').text()).toBe('✅')
+    expect(rows[1].find('.subagent-meta.ok').text()).toBe('模块 B 分析完成：3 处疑点')
+    // failed 行：❌ + error 原文。
+    expect(rows[2].find('.subagent-icon').text()).toBe('❌')
+    expect(rows[2].find('.subagent-meta.err').text()).toBe('编译错误：E0382')
+    // 红线（计划 C 批）：raw 字段 dump 禁令——行文本不得出现字段名=值形态。
+    expect(card.text()).not.toContain('bg_task_id=')
+    expect(card.text()).not.toContain('background=')
+    expect(card.text()).not.toContain('started_at_ms=')
+    // omitted 提示。
+    expect(card.text()).toContain('…还有 5 条历史')
+    w.unmount()
+  })
+
+  it('running 实时用时随时间走表（nowTick 驱动）', async () => {
+    vi.useFakeTimers()
+    const w = await mountPanel('s1', subagentsPayload())
+    expect(w.find('.subagent-meta.live').text()).toContain('5s')
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(w.find('.subagent-meta.live').text()).toContain('1m05s')
+    w.unmount()
+  })
+
+  it('ok 态 rows 空 → 「暂无子代理」兜底（徽标 0/0）', async () => {
+    const p = resourcesPayload(1)
+    p.categories.subagents = { label: '子代理', order: 70, transient: false, status: 'ok', total: 0, summary: { running: 0, finished_total: 0, rows: [], omitted: 0 } }
+    const w = await mountPanel('s1', p)
+    const card = subagentsCard(w)
+    expect(card.text()).toContain('暂无子代理')
+    expect(card.find('.srp-badge').text()).toBe('运行中 0 / 历史 0')
+    w.unmount()
+  })
+
+  // 回归钉：C1 不改空态分类——subagents empty 仍进「无资源」徽标流。
+  it('empty 态不破空徽标计数（仍是 6 项）', async () => {
+    const w = await mountPanel('s1')
+    expect(w.find('.srp-empty-row').text()).toContain('无资源 6 项')
     w.unmount()
   })
 })
@@ -355,6 +490,45 @@ describe('B4 活态刷新', () => {
     await vi.advanceTimersByTimeAsync(500)
     await flushPromises()
     expect(w.text()).toContain('新标题')
+    w.unmount()
+  })
+
+  it('WS 重连归零 revision 高水位：跨 gateway 重启不冻结（2026-11-19 修「钩子设了面板不显示」）', async () => {
+    // 旧进程代拿到高水位 revision=500；gateway 重启后新进程 seq 归零，
+    // 回包 revision=3（带会话钩子变化）。无归零修复时 3 < 500 恒被当
+    // 乱序旧包丢弃 = 面板永久冻结在重启前数据。
+    const w = await mountPanel('s1', resourcesPayload(500))
+    expect(w.text()).toContain('修 bug 会话')
+    const p3 = resourcesPayload(3)
+    p3.categories.hooks_session = { label: '会话钩子', order: 30, transient: false, status: 'ok', total: 1, summary: { count: 1 } }
+    requestMock.mockImplementation(async (mod: string, cmd: string) => {
+      if (mod === 'session' && cmd === 'resources') return p3
+      if (mod === 'system' && cmd === 'status') return { workspace: 'C:/ws' }
+      return {}
+    })
+    wsStatus.value = 'disconnected'
+    await vi.advanceTimersByTimeAsync(10)
+    wsStatus.value = 'connected'
+    await vi.advanceTimersByTimeAsync(10)
+    await flushPromises()
+    expect(w.text()).toContain('本会话钩子 1 个')
+    w.unmount()
+  })
+
+  it('SSE resync 归零 revision 高水位：缺口提示后旧代回包照常应用', async () => {
+    const w = await mountPanel('s1', resourcesPayload(500))
+    expect(w.text()).toContain('修 bug 会话')
+    const p3 = resourcesPayload(3)
+    p3.categories.hooks_session = { label: '会话钩子', order: 30, transient: false, status: 'ok', total: 1, summary: { count: 1 } }
+    requestMock.mockImplementation(async (mod: string, cmd: string) => {
+      if (mod === 'session' && cmd === 'resources') return p3
+      if (mod === 'system' && cmd === 'status') return { workspace: 'C:/ws' }
+      return {}
+    })
+    expect(sseHandlers['resync']?.length, 'SSE resync 应有订阅').toBeGreaterThan(0)
+    sseHandlers['resync'][0](undefined)
+    await flushPromises()
+    expect(w.text()).toContain('本会话钩子 1 个')
     w.unmount()
   })
 

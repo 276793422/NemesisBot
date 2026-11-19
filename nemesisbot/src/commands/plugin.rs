@@ -108,9 +108,7 @@ fn err_msg(e: nemesis_plugins_wasm::PluginError) -> anyhow::Error {
 }
 
 fn trust_path(home: &std::path::Path) -> std::path::PathBuf {
-    common::workspace_path(home)
-        .join("config")
-        .join("plugin_trust.json")
+    nemesis_path::resolve_plugin_trust_path_in_workspace(&common::workspace_path(home))
 }
 
 /// 信任吊销面（插件体系复查 #10）：--key/--name 解析为库内条目。

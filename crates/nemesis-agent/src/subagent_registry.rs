@@ -231,6 +231,26 @@ impl SubagentRegistry {
         hit
     }
 
+    /// 按 bg_task_id 取消（spawn park cancel 臂专用：park 等待者手里
+    /// 只有后台任务 id，注册表行 id 是 `subagent:{uuid}`——两者不同源，
+    /// 行经 `bg_task_id` 字段关联）。命中首条关联行后走 [`Self::cancel`]
+    /// 同语义（取消令牌直达执行链 + 状态置 Cancelled）。未命中 =
+    /// false（行已被 finish/摘除等）。
+    pub fn cancel_by_bg_task_id(&self, bg_task_id: &str) -> bool {
+        let id = {
+            let inner = self.inner.lock();
+            inner
+                .tasks
+                .iter()
+                .find(|(_, t)| t.bg_task_id.as_deref() == Some(bg_task_id))
+                .map(|(id, _)| id.clone())
+        };
+        match id {
+            Some(id) => self.cancel(&id),
+            None => false,
+        }
+    }
+
     /// 归档：仅终态行生效（运行中跳过不计数），写 `archived_at = now`。
     /// 不动 order（列表序保持插入序；归档只改可见性过滤面）。返回实际
     /// 归档数。

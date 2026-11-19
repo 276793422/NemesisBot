@@ -470,6 +470,13 @@ impl RpcClient {
         self.roaming_pool.set_heartbeat_interval(secs);
     }
 
+    /// 注入进程终态令牌（BUG-20261120-009 家族纪律；gateway 经 Cluster
+    /// 转发）。必须在 `set_roaming_dialer`（心跳循环 spawn 触发点）之前
+    /// 到达。未注入 = never-cancelled 回落，行为不变。
+    pub fn set_roaming_terminal_token(&self, token: tokio_util::sync::CancellationToken) {
+        self.roaming_pool.set_terminal_token(token);
+    }
+
     /// b：注入 mandate 签名器（gateway 装配期；重复调用 = 覆盖）。
     pub fn set_mandate_signer(&self, signer: Arc<crate::roaming::mandate::MandateSigner>) {
         *self.mandate_signer.write() = Some(signer);

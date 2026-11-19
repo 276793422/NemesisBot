@@ -63,6 +63,12 @@ fn cap_rows(rows: Vec<Value>) -> (Vec<Value>, usize) {
 /// 子代理工作面（`subagents` / 子代理）。数据源 =
 /// [`crate::subagent_registry`] 全局单例，按 `parent_session_key` 归会话；
 /// 已归档条目（`archived_at` 在场）不在工作面，不计入。
+///
+/// C 批选择规则（2026-11-19 用户拍板）：**running 全列**（超过 4 个也不
+/// 砍——「以子 agent 数量为主」）；**最近终态补齐至 max(4, running 数)**
+/// （少于 4 个 running 时，列出已完成至多 max(4, running) 条）。卡头计数
+/// =「运行中 N / 历史 M」：`running` = 运行中数，`finished_total` = 本会话
+/// 全部非归档终态数（不受展示预算影响——历史是历史，不因没展示而消失）。
 pub struct SubagentsProvider;
 
 impl GlobalResourceProvider for SubagentsProvider {
@@ -71,6 +77,7 @@ impl GlobalResourceProvider for SubagentsProvider {
     }
 
     fn collect(&self, ctx: &ResourceCtx) -> CategoryView {
+        // list() 契约：新的在前。running / finished 两个切片保持该序。
         let mine: Vec<_> = crate::subagent_registry::global()
             .list()
             .into_iter()
@@ -79,12 +86,22 @@ impl GlobalResourceProvider for SubagentsProvider {
         if mine.is_empty() {
             return CategoryView::empty();
         }
-        let active = mine
+        let running: Vec<&crate::subagent_registry::SubagentTask> = mine
             .iter()
             .filter(|t| t.status == crate::subagent_registry::SubagentStatus::Running)
-            .count();
-        let rows: Vec<Value> = mine
+            .collect();
+        let finished: Vec<&crate::subagent_registry::SubagentTask> = mine
             .iter()
+            .filter(|t| t.status != crate::subagent_registry::SubagentStatus::Running)
+            .collect();
+        let finished_budget = running.len().max(4);
+        // 「最近完成」按 finished_at_ms 降序（registry list() 是插入序——
+        // 老任务后完成时插入序会把它们排在最后，不是「最近」）。
+        let mut finished: Vec<&crate::subagent_registry::SubagentTask> = finished;
+        finished.sort_by_key(|t| std::cmp::Reverse(t.finished_at_ms));
+        let rows: Vec<Value> = running
+            .iter()
+            .chain(finished.iter().take(finished_budget))
             .map(|t| {
                 json!({
                     "id": t.id,
@@ -100,10 +117,15 @@ impl GlobalResourceProvider for SubagentsProvider {
                 })
             })
             .collect();
-        let (rows, omitted) = cap_rows(rows);
+        let omitted = finished.len().saturating_sub(finished_budget);
         CategoryView::ok(
             mine.len(),
-            json!({"active": active, "rows": rows, "omitted": omitted}),
+            json!({
+                "running": running.len(),
+                "finished_total": finished.len(),
+                "rows": rows,
+                "omitted": omitted,
+            }),
         )
     }
 }
@@ -284,10 +306,13 @@ impl GlobalResourceProvider for BackgroundProvider {
     }
 }
 
-/// 会话级钩子（`hooks_session` / 会话钩子）。口径（计划 §4 地雷 3）：
-/// 直读 `<workspace>/config/hooks.session.json`（agent `hooks` 工具存储，
-/// 键 = **裸 sid**），与盘上真相一致；桥内存态是同一文件的懒重载镜像，
-/// 两读等价、盘读更直接。0 条 = Empty（会话没装钩子是常态）。
+/// 会话级钩子（`hooks_session` / 会话钩子）。口径（计划 §4 地雷 3，统一
+/// 存储 2026-11-19 起直读 hooks.json）：[`crate::cc_hooks::
+/// list_session_hooks_scoped`] 列 **scope 圈定命中本会话**的条目（工具
+/// 专属组 + 用户手写圈定组同账；未圈定组归 hooks_global 不双计）——与
+/// count 同谓词，total = 行数永不分裂。行带明细（event/kind/content，
+/// 2026-11-19「只有个数不知道是啥」补齐）。0 条 = Empty（会话没装钩子
+/// 是常态）。
 pub struct HooksSessionProvider;
 
 impl GlobalResourceProvider for HooksSessionProvider {
@@ -297,20 +322,34 @@ impl GlobalResourceProvider for HooksSessionProvider {
 
     fn collect(&self, ctx: &ResourceCtx) -> CategoryView {
         let dir = nemesis_path::workspace_config_dir(ctx.workspace_root);
-        let store = crate::cc_hooks::read_session_hook_store(&dir);
-        let count = store.session_len(ctx.bare_sid);
-        if count == 0 {
-            return CategoryView::empty();
+        match crate::cc_hooks::list_session_hooks_scoped(&dir, ctx.session_key) {
+            Ok(rows) if rows.is_empty() => CategoryView::empty(),
+            Ok(rows) => {
+                let total = rows.len();
+                let view_rows: Vec<Value> = rows
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "event": h.event,
+                            "kind": if h.prompt.is_empty() { "command" } else { "prompt" },
+                            "content": if h.prompt.is_empty() { &h.command } else { &h.prompt },
+                            "matcher": h.matcher,
+                            "timeout": h.timeout,
+                        })
+                    })
+                    .collect();
+                CategoryView::ok(total, json!({"count": total, "rows": view_rows}))
+            }
+            Err(reason) => CategoryView::unavailable(reason),
         }
-        CategoryView::ok(count, json!({"count": count}))
     }
 }
 
 /// 全局钩子（`hooks_global` / 全局钩子）。构造收主 loop 槽（[`LoopSlot`]），
 /// collect 时解析**当前** loop 的 hooks 桥（跨重建存活）；槽空 / 桥缺席
-/// （workspace 无任何钩子配置）= Empty（合法无）；有桥无匹配 = Empty；
-/// 有匹配 = 按事件名计数。匹配口径复用桥侧 `matches_session` 双串匹配
-/// （完整 session_key）。
+/// （workspace 无任何钩子配置）= Empty（合法无）；有桥无未圈定钩子 =
+/// Empty；有 = 按事件名计数（**只数未圈定组**——圈定组归 hooks_session
+/// 类目，统一存储一张表两处分账不双计）。
 pub struct HooksGlobalProvider {
     loop_slot: Option<LoopSlot>,
 }
@@ -326,17 +365,16 @@ impl GlobalResourceProvider for HooksGlobalProvider {
         ProviderMeta::new("hooks_global", "全局钩子", 40, false)
     }
 
-    fn collect(&self, ctx: &ResourceCtx) -> CategoryView {
+    fn collect(&self, _ctx: &ResourceCtx) -> CategoryView {
         let Some(slot) = &self.loop_slot else {
             return CategoryView::empty();
         };
         let bridge = slot.read().as_ref().and_then(|l| l.cc_hook_bridge());
         let Some(bridge) = bridge else {
-            // 桥缺席 = load_from_dir 判定两侧（hooks.json / hooks.session.json）
-            // 均无内容——全局钩子合法无。
+            // 桥缺席 = load_from_dir 判定 hooks.json 无内容——全局钩子合法无。
             return CategoryView::empty();
         };
-        let counts = bridge.global_session_match_counts(ctx.session_key);
+        let counts = bridge.global_hook_counts();
         if counts.is_empty() {
             return CategoryView::empty();
         }

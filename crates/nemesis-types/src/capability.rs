@@ -135,8 +135,34 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
 }
 
 /// `model_list` 条目定位（统一定义）：active 别名对 `model_name`
-/// / `model` 字段的**精确**匹配优先；未命中回落 **bare-suffix**——`model`
-/// 字段末段与 active 别名末段相等（`"glm-4.7"` ↔ `"zhipu/glm-4.7"`）。
+/// / `model` 字段的匹配。层序（与 nemesis-config `model_ref_eq` doc 家族
+/// 口径恒等，改层序必须两端同步）：**精确 name → 精确 model → CI name →
+/// CI model → bare-suffix → bare-CI**（每层全数组扫完才进下一层；同层内
+/// 按数组序先到先得——两个仅大小写不同的条目是合法配置形态，精确层先行
+/// 保住区分能力；同层内 name 字段全数组先于 model 字段，BUG-20261119-210）。
+///
+/// BUG-20261119-210（层内顺序分叉）：旧实现是**条目优先**——
+/// `matches_exact = name==alias || full==alias` 整条数组扫完才进 CI 层，
+/// 条目内 name/model 任一命中即返回该条目。nemesis-config 装配族四站点
+/// （`resolve_model_config`/`get_model_by_model_name`/`find_model_by_name`/
+/// `get_model_by_name`）则全部是 **name-first-across-entries**——model_name
+/// 字段在全部条目上先扫完，才轮到 model 字段。交叉别名配置形态（合法：
+/// Dashboard 允许 model_name ≠ 裸名）下两面命中**不同条目**：
+/// `[{model_name:"fast-alias", model:"glm-4.7"}, {model_name:"glm-4.7",
+/// model:"zhipu/glm-4.7"}]` 查 "glm-4.7"——本函数命中条目 0（model 字段
+/// 交叉命中）、装配族命中条目 1（name 层精确）→ per-model 九键族
+/// （tier/vision/timeout/…）读条目 0、provider 构造读条目 1，用户在
+/// "glm-4.7" 条目上的显式配置（model_tier/vision/…）静默错位——
+/// BUG-20261119-207 消灭的「同 ref 两族判定分裂」家族的层内顺序残余
+/// （207 只同步了 bare-suffix 层的存在性，未同步层内顺序）。
+///
+/// CI 兜底层（BUG-20261119-192：BUG-20261117-077 修复了 nemesis-config 查找族四站点，漏扫本函数——
+/// 活跃别名手打大小写变体（`Zhipu/GLM-4.7`）时解析面
+/// （`resolve_model_config`）CI 命中条目全通，而 tier / vision /
+/// timeout / max_output_tokens / context_window / compact_context_tokens /
+/// reasoning_effort / summarizer_prefix_reuse / display_model 九键全走本
+/// 函数 miss → 用户显式 per-model 配置（model_tier=mini、vision=no 等）
+/// 静默失效落默认）。
 ///
 /// 为什么需要 bare-suffix：活 gateway 的 active_model 是剥前缀裸名
 /// （provider_resolver `resolve_from_model_config` 对含 '/' 的 model 切尾段；
@@ -156,18 +182,43 @@ pub fn find_model_entry<'a>(
 ) -> Option<&'a serde_json::Value> {
     let arr = cfg.get("model_list")?.as_array()?;
     let bare = active_alias.rsplit('/').next().unwrap_or(active_alias);
-    let matches_exact = |m: &serde_json::Value| {
+    let matches_name = |m: &serde_json::Value, ci: bool| {
         let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
-        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-        name == active_alias || full == active_alias
+        if ci {
+            name.eq_ignore_ascii_case(active_alias)
+        } else {
+            name == active_alias
+        }
     };
+    let matches_full = |m: &serde_json::Value, ci: bool| {
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        if ci {
+            full.eq_ignore_ascii_case(active_alias)
+        } else {
+            full == active_alias
+        }
+    };
+    // BUG-20261119-192：CI 兜底层（BUG-20261117-077 家族口径对齐）。
     let matches_bare = |m: &serde_json::Value| {
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         full.rsplit('/').next().unwrap_or(full) == bare
     };
+    let matches_bare_ci = |m: &serde_json::Value| {
+        let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+        full.rsplit('/')
+            .next()
+            .unwrap_or(full)
+            .eq_ignore_ascii_case(bare)
+    };
+    // 六层顺序 = nemesis-config 装配族四站点的恒等形态（每层全数组扫完
+    // 才进下层；同层内条目序先到先得）。
     arr.iter()
-        .find(|m| matches_exact(m))
+        .find(|m| matches_name(m, false))
+        .or_else(|| arr.iter().find(|m| matches_full(m, false)))
+        .or_else(|| arr.iter().find(|m| matches_name(m, true)))
+        .or_else(|| arr.iter().find(|m| matches_full(m, true)))
         .or_else(|| arr.iter().find(|m| matches_bare(m)))
+        .or_else(|| arr.iter().find(|m| matches_bare_ci(m)))
 }
 
 /// Resolve the capability tier for the active model in a `config.json` Value.

@@ -17,8 +17,8 @@ import (
 // master 对话机：
 //
 //	轮1 user 带 <STEER_E2E> → spawn 工具调用 {task: STEER_CHILD_TASK…, background: true}
-//	    （首回合在 __BG_SPAWN__ marker 处被 loop 固定中间消息「已派后台子代理任务…」
-//	    收尾，模型不说话——bench 以该中间消息为 spawn 受理信号）
+//	    （2026-11-19 park 化：master 回合停在 park 等待、无中间回复——bench
+//	    以 subagents.list 出现本会话 running 行为 spawn 受理信号）
 //	续行 tool（子代理完成回灌，真实工具结果含 STEER_OK…）→ MASTER_ACK_CHILD_DONE
 //	续行 tool（无 STEER_OK，理论上不达）       → SPAWNED_OK
 //

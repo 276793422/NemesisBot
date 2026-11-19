@@ -99,6 +99,8 @@ pub mod fs;
 pub mod hooks;
 pub mod identity;
 pub mod logs;
+#[cfg(feature = "mail")]
+pub mod mail;
 pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
@@ -439,6 +441,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     // QUIC 中继独立 WSAPI（解耦；零 Cluster 类型依赖，恒注册）。
     router.register(Arc::new(quic::QuicHandler::new()));
+    // 邮件基础设施 WSAPI（plugin_mail 宿主面；`mail` feature 门控——
+    // 槽空=诚实报「插件未装载」，注册面本身随 feature 裁剪）。
+    #[cfg(feature = "mail")]
+    router.register(Arc::new(mail::MailHandler));
     // 独立代理配置（config.proxy.json；恒注册，无 feature 闸）。
     router.register(Arc::new(proxy::ProxyHandler));
     router.register(Arc::new(logs::LogsHandler));

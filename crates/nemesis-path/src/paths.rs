@@ -327,6 +327,23 @@ pub fn resolve_approval_rules_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("approval_rules.json")
 }
 
+/// `<workspace>/config/skill_trust.json` —— skills / connectors 共用
+/// Ed25519 信任库（同一把公钥 trust 一次，装 skills 与 connectors 双侧
+/// 生效；三消费方：nemesis-skills installer 验签 / nemesis-connectors
+/// signing workspace_trust_store / CLI connector trust-*。布局唯一
+/// 拼接点，消费方禁止各自 join——信任库分叉 = 双侧验签结论不一致）。
+pub fn resolve_skill_trust_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("skill_trust.json")
+}
+
+/// `<workspace>/config/plugin_trust.json` —— WASM 插件 Ed25519 信任库
+/// （跨 crate 读/写对：nemesis-plugins-wasm install 装配期验签读 /
+/// CLI `plugin trust*` 管理读写。布局唯一拼接点，消费方禁止各自
+/// join——分叉 = CLI 吊销/追加对 gateway 运行时验签失效）。
+pub fn resolve_plugin_trust_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("plugin_trust.json")
+}
+
 /// `<workspace>/config/eval_rules.json` —— eval 评估规则表（CLI
 /// `eval rules *` 与 WSAPI `security.eval_rules.*` 统一管理；nemesisbot
 /// `rules_file_path(home)` 经本函数委托同一拼接点）。
@@ -386,6 +403,22 @@ pub fn resolve_cluster_config_path_in_workspace(workspace: &Path) -> PathBuf {
 /// 客户端 client 段；QUIC 的配置不丢在集群里， 解耦；统一定义）。
 pub fn resolve_quic_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.quic.json")
+}
+
+/// `<workspace>/config/config.mail.json` —— 邮件基础设施子系统配置
+/// （enabled 总闸 + smtp/pop3/client 各段 + notify.on；forge 分文件先例；
+/// 统一定义）。
+pub fn resolve_mail_config_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("config.mail.json")
+}
+
+/// `<home>/mail/` —— 邮件库根（邮件基础设施单一拼接点）。
+///
+/// 刻意 **home 平级**（非 workspace 内）：agent 文件工具（restrict_to_workspace
+/// 围栏）结构性够不着，防 LLM 删信掩盖（能力矩阵「不可删」的路径半边）；
+/// 也不在任何清理射程内（logs TTL / checkpoint gc / uploads 清扫）。
+pub fn mail_dir(home: &Path) -> PathBuf {
+    home.join("mail")
 }
 
 /// `<workspace>/config/vault.enc` —— 凭据 vault 加密存储（安全升级，
@@ -505,6 +538,14 @@ pub fn resolve_cluster_rpc_cache_dir_in_workspace(workspace: &Path) -> PathBuf {
 /// 避免快照清理误删结果文件）。
 pub fn resolve_cluster_results_dir_in_workspace(workspace: &Path) -> PathBuf {
     resolve_cluster_rpc_cache_dir_in_workspace(workspace).join("results")
+}
+
+/// `<workspace>/cluster/inbox` —— 集群传输收件箱（跨 crate 读/写对：
+/// nemesis-cluster `TransferSink` 落地写 / exec_workspace 应用读 /
+/// nemesis-board dossier 档案补收读 / nemesisbot archive_ingest 摄取读 /
+/// agent 迁移 landing 读。布局唯一拼接点，消费方禁止各自 join）。
+pub fn resolve_cluster_inbox_dir_in_workspace(workspace: &Path) -> PathBuf {
+    cluster_dir_in_workspace(workspace).join("inbox")
 }
 
 // --- 统一任务层（tasks.db；写方 nemesis-taskstore / nemesis-cluster / gateway 审批台账） ---

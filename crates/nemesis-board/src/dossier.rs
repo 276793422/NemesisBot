@@ -140,7 +140,7 @@ fn export_core(
     }
 
     // ---- per-issue 原始记录 + records 拷贝 + 收件箱补收 ----
-    let inbox_root = workspace.join("cluster").join("inbox");
+    let inbox_root = nemesis_path::resolve_cluster_inbox_dir_in_workspace(workspace);
     let mut all_dispatches: Vec<(String, DispatchRecord)> = Vec::new(); // (number, dispatch)
     let mut activities: Vec<(String, ActivityLog)> = Vec::new();
     let mut comments: Vec<(String, Comment)> = Vec::new();

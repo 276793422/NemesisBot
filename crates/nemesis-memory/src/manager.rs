@@ -1220,12 +1220,14 @@ impl MemoryManager {
         let count = self.episodic.delete_session(session_key).await?;
 
         // Remove from vector store.
-        if !ids.is_empty() {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
-                for id in &ids {
-                    vs.delete_entry(id);
-                }
+        // 守卫纪律（BUG-20261119-201，BUG-20261114-032 家族）：delete_entry
+        // 命中时做全量重写持久化文件的同步 IO，不在 manager 读守卫内跑——
+        // 外提 Arc（同 forget / patch_vector_entry 形态）。
+        if !ids.is_empty()
+            && let Some(vs) = self.vector_store_cloned()
+        {
+            for id in &ids {
+                vs.delete_entry(id);
             }
         }
 
@@ -1257,12 +1259,13 @@ impl MemoryManager {
         let count = self.episodic.cleanup(older_than_days).await?;
 
         // Remove from vector store.
-        if !ids_to_remove.is_empty() {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard {
-                for id in &ids_to_remove {
-                    vs.delete_entry(id);
-                }
+        // 守卫纪律（BUG-20261119-201，BUG-20261114-032 家族）：同
+        // delete_episode_session——外提 Arc，同步重写 IO 不在读守卫内跑。
+        if !ids_to_remove.is_empty()
+            && let Some(vs) = self.vector_store_cloned()
+        {
+            for id in &ids_to_remove {
+                vs.delete_entry(id);
             }
         }
 
@@ -1276,14 +1279,13 @@ impl MemoryManager {
         if self.episodic.delete_by_id(id).await? {
             found = true;
         }
-        // Delete from vector store
+        // Delete from vector store.
+        // 守卫纪律（BUG-20261119-201，BUG-20261114-032 家族）：外提 Arc——
+        // delete_entry 命中时做全量重写持久化文件的同步 IO，不在读守卫内跑。
+        if let Some(vs) = self.vector_store_cloned()
+            && vs.delete_entry(id)
         {
-            let vs_guard = self.vector_store.read();
-            if let Some(ref vs) = *vs_guard
-                && vs.delete_entry(id)
-            {
-                found = true;
-            }
+            found = true;
         }
         Ok(found)
     }

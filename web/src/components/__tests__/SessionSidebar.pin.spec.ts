@@ -26,6 +26,7 @@ vi.mock('../../composables/useChatApi', () => ({
 }))
 
 import SessionSidebar from '../SessionSidebar.vue'
+import { reloadSessionGroupingFromStorage } from '../../utils/sessionGrouping'
 
 const PIN_KEY = 'nb_pinned_sessions'
 const listMock = vi.fn()
@@ -38,6 +39,8 @@ beforeEach(() => {
 })
 
 async function mountWith(sessions: any[]) {
+  // pin/排序状态是模块级单例（import 时读 localStorage）——种子须挂载前重载。
+  reloadSessionGroupingFromStorage()
   listMock.mockResolvedValue({ sessions })
   const w = mount(SessionSidebar)
   await flushPromises()

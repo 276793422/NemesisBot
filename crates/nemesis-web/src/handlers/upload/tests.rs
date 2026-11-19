@@ -69,6 +69,7 @@ fn make_state(auth_token: &str) -> std::sync::Arc<AppState> {
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
@@ -586,4 +587,64 @@ async fn project_session_upload_and_media_ref_use_main_workspace() {
         !new_home.starts_with(&project_dir),
         "fork 产物不得落项目目录: {new_home:?}"
     );
+}
+
+// --- BUG-20261119-208：uploads sweeper 终态令牌换装（BUG-20261115-023 家族
+// --- nemesis-web 成员）回归锁。局部令牌——全局令牌在测试里绝不可 cancel
+// --- （shutdown_tests 纪律）。
+
+/// 预取消形态：令牌先取消再 spawn → 前置 is_cancelled 检查零工作退出
+/// （连目录枚举都不做）。墙钟 <2s：无 select 的裸 6h park 必超时红。
+#[tokio::test]
+async fn uploads_sweeper_pre_cancelled_exits_immediately() {
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    let token = tokio_util::sync::CancellationToken::new();
+    token.cancel(); // 预取消：spawn 前已终态
+    let handle = spawn_uploads_sweeper(token);
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("预取消形态必须在 2s 内退出（裸 park 形态 park 满 6h 超时红）")
+        .expect("sweeper 任务不得 panic（JoinError）");
+}
+
+/// 启动清扫后 park 期间取消抢占：活令牌 spawn → 启动首轮清扫在 tempdir
+/// 内真实执行（过期文件被删 = 清扫真实发生的正面证据）→ cancel → 6h park
+/// 被抢占退出。裸 park 形态要等满 6h（超时红）。
+#[tokio::test]
+async fn uploads_sweeper_cancel_during_park_exits_after_startup_sweep() {
+    let _lock = uploads_state_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = RedirectHomeGuard::to(dir.path());
+    // 播一个 8 天前的过期文件进 uploads 目录（TTL 7 天 → 启动清扫应删）。
+    let uploads = nemesis_path::resolve_uploads_dir_in_workspace(
+        &nemesis_path::default_path_manager().workspace(),
+    );
+    std::fs::create_dir_all(&uploads).unwrap();
+    let expired = uploads.join("expired.png");
+    std::fs::write(&expired, b"x").unwrap();
+    let old_mtime = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&expired)
+        .unwrap()
+        .set_modified(old_mtime)
+        .unwrap();
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let handle = spawn_uploads_sweeper(token.clone());
+    // 启动首轮清扫（spawn 后同步开跑的第一拍）：过期文件应被删。
+    for _ in 0..50 {
+        if !expired.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!expired.exists(), "启动清扫应删除过期文件");
+    token.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("park 期间取消必须抢占退出（裸 park 形态 park 满 6h 超时红）")
+        .expect("sweeper 任务不得 panic（JoinError）");
 }

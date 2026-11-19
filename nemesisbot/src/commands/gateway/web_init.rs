@@ -17,8 +17,13 @@
 // 无消费者——fn 级 cfg_attr allow(unused_variables)（Phase A
 // advertise_host_for 同款形态），参数本体保持无门使调用点单行。
 //
-// 块内不变量随块内聚： mem::forget(channel_manager) 挂账原样随块；
-// relay 模式不经此路径（run_relay 独立轻量启动）的语义注释随块保留。
+// 块内不变量随块内聚：channel_manager 以 Arc 存入 WebWiring.channel_manager
+// 交 init_services 延迟启动（BUG-20261119-194：start_all 必须晚于 agent 的
+// bus inbound 订阅——Step 14b 之后；init_web 内启动会打开「通道 polling
+// 先拉积压 → publish 时零订阅者 = 永久丢失」窗口，telegram offset 先推进
+// 使丢失不可重拉）。dispatch loop / sweeper / 通道任务各自持 Arc，wiring
+// 生命周期结束后 manager 仍存活；relay 模式不经此路径（run_relay 独立轻量
+// 启动）的语义注释随块保留。
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -39,11 +44,19 @@ pub(crate) struct WebWiring {
     pub web_display_host: String,
     pub web_port: i64,
     pub bridge_client_launch: Option<nemesis_config::BridgeClientConfig>,
+    /// BUG-20261119-194：manager 句柄交 init_services——`start_all` 推迟
+    /// 到 Step 14b（agent 订阅 bus inbound）之后调用。此前 init_web 内
+    /// 即时 start_all + `mem::forget`，通道 polling（telegram 等）在 agent
+    /// 订阅存在前就开始拉停机积压，publish 进零订阅者的 broadcast = 静默
+    /// 永久丢失。此后存活链：run() 内 wiring 存活至 init_services；其后
+    /// dispatch loop / sweeper / 各通道任务持有 Arc 克隆保活。
+    pub channel_manager: Arc<nemesis_channels::manager::ChannelManager>,
 }
 
 /// WebServer + ChannelManager 装配（计划）。WebServer 早建以向
-/// WebChannel 注入 SessionManager；ChannelManager init/start/mem::forget 均
-/// 在本函数内完成。
+/// WebChannel 注入 SessionManager；ChannelManager init / dispatch loop /
+/// 通道**注册**在本函数内完成——通道**启动**（start_all）推迟到
+/// init_services Step 14b 之后（见 WebWiring.channel_manager 字段注释）。
 #[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Result<WebWiring> {
     // ctx 影子重绑（同款）：块内原文引用局部名不变，所有权拓扑不变。
@@ -480,6 +493,10 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         enabled_channels.push("email".to_string());
     }
 
+    // BUG-20261119-194：manager Arc 出块载体——块内装配完成后 move 进
+    // WebWiring.channel_manager（start_all 推迟到 init_services Step 14b
+    // 之后；曾以 mem::forget 挂账，现走显式所有权链）。
+    let channel_manager_for_wiring;
     {
         let channel_manager = Arc::new(
             nemesis_channels::manager::ChannelManager::with_allowed_channels(
@@ -1190,18 +1207,27 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         channel_manager.set_notify_hook(std::sync::Arc::new(crate::notify::notify_accounting));
         crate::notify::spawn_sweeper(std::sync::Arc::clone(&channel_manager));
 
-        // Start all registered channels.
-        if let Err(e) = channel_manager.start_all().await {
-            warn!("[Gateway] ChannelManager start_all note: {} (non-fatal)", e);
-        }
+        // Start all registered channels — DEFERRED（BUG-20261119-194）：
+        // 此处启动会让通道 polling 在 agent 订阅 bus inbound（Step 14b，
+        // init_services）之前就开拉：broadcast publish 对零订阅者静默丢弃，
+        // telegram 首轮 getUpdates（offset=0）拉停机积压后 offset 先推进
+        // 再 publish（telegram.rs:609 在 handle 之前），publish 失败仅
+        // warn——积压消息**永久丢失且重启可复现**。同族隐患 cron arm 已
+        // 按「订阅 → 生产者上线」不变量下移（services.rs Step 14b 注释），
+        // 通道是这个不变量在启动装配里的最后一个漏网生产者。start_all
+        // 调用点移至 services.rs Step 14b 之后（agent_adapter.start() 成功
+        // 之后），经 WebWiring.channel_manager 传递。
 
-        // Keep the ChannelManager alive.
-        std::mem::forget(channel_manager);
+        // Keep the ChannelManager alive: Arc moves into WebWiring (returns
+        // to run(), which hands it to init_services for the deferred
+        // start_all). Downstream tasks (dispatch loop / sweeper / channels)
+        // hold their own clones, so the manager outlives the wiring.
         info!(
             "[Gateway] ChannelManager created with {} enabled channel(s)",
             enabled_channels.len()
         );
         // Channel manager injection into agent_loop is now handled by the factory function.
+        channel_manager_for_wiring = channel_manager;
     }
 
     Ok(WebWiring {
@@ -1211,6 +1237,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         web_display_host,
         web_port,
         bridge_client_launch,
+        channel_manager: channel_manager_for_wiring,
     })
 }
 

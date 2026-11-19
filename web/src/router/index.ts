@@ -110,6 +110,10 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/vault', name: 'vault', component: () => import('../views/VaultView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SCANNER !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),
+  // 邮箱页（邮件基础设施 B3，mail feature / VITE_FEATURE_MAIL 门控）：
+  // mail.* 命令管理面（列表/读信/写信/地址注册制）。插件未装载时页面
+  // 顶部横幅诚实提示（mail.* 命令后端报「插件未装载」）。
+  ...(import.meta.env.VITE_FEATURE_MAIL !== 'false' ? [{ path: '/mailbox', name: 'mailbox', component: () => import('../views/MailboxView.vue') }] : []),
   // P5 第 4 步 ②：桌面级 VM 管理页（vm feature / VITE_FEATURE_VM 门控）。
   ...(import.meta.env.VITE_FEATURE_VM !== 'false' ? [{ path: '/vm', name: 'vm', component: () => import('../views/VmView.vue') }] : []),
   // 紫微系统（2026-10-22）：三方程序受控接管（【万物皆工具】）。

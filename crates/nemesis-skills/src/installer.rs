@@ -513,10 +513,9 @@ impl SkillInstaller {
         if !dir.join(".signature").exists() {
             return VerificationOutcome::default();
         }
-        let config_path = self
-            .trust_store_path
-            .clone()
-            .unwrap_or_else(|| self.workspace.join("config").join("skill_trust.json"));
+        let config_path = self.trust_store_path.clone().unwrap_or_else(|| {
+            nemesis_path::resolve_skill_trust_path_in_workspace(&self.workspace)
+        });
         let signer = crate::signer::SkillSigner::with_persistence(&config_path.to_string_lossy());
         match signer.verify_skill(&dir.to_string_lossy()) {
             Ok(v) => VerificationOutcome {

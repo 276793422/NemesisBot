@@ -910,16 +910,12 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
 /// 事件 hash 单一真相源委托（BUG-20261102-305：此处原是
 /// `AuditChain::append_with_sign` 七字段公式的手抄拷贝——v1 公式追加
 /// source+reason 后拷贝版对追加事件恒算出「hash mismatch」假阳性）。
-/// cap 走仓内共享常量 [`MAX_SUPPORTED_HASH_VERSION`]（超限返回空串 →
-/// 与任何存 hash 不等 → 上层诊断自然报 hash mismatch，与 verify_chain
-/// fail-closed 同语义）。漂移实录：#31 加 v2 时本 wrapper 恒 cap >1
-/// 未同步，v2 事件在 Dashboard 链诊断恒报假 mismatch——本次随 v3 批
-/// 根修为常量同源，未来版本升级只改常量一处。
+/// 版本守卫已收进 `compute_event_hash` 单点（BUG-20261120-002；#31 v2 /
+/// 审计 hash v3 的 cap 漂移教训同源）：未知版本返回空串 → 与任何存 hash
+/// 不等 → 上层诊断自然报 hash mismatch（与 verify_chain fail-closed 同
+/// 语义）——本处不再重复实现版本闸（双闸漂移会重演 305 假阳性事故）。
 #[cfg(feature = "security")]
 fn compute_audit_hash(ev: &AuditEvent) -> String {
-    if ev.hash_version > nemesis_security::integrity::MAX_SUPPORTED_HASH_VERSION {
-        return String::new();
-    }
     nemesis_security::integrity::AuditChain::compute_event_hash(ev)
 }
 

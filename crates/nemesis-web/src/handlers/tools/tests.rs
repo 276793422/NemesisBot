@@ -87,6 +87,7 @@ fn make_ctx(al: AgentLoop, dir: &tempfile::TempDir) -> RequestContext {
         agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
         cluster: None,
         quic_relay: None,
+        mail_plugin: None,
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,

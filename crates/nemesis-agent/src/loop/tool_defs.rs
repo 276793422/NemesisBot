@@ -88,8 +88,10 @@ impl AgentLoop {
     /// audit chain ordered = model source order (roadmap risk 3 hard
     /// constraint). cluster_rpc/exec/writers are never here (not
     /// parallel-safe) → the `__ASYNC__` continuation and executor paths are
-    /// structurally excluded; spawn's own `__BG_SPAWN__` marker is handled
-    /// by the unchanged inline-await replay in the for-loop.
+    /// structurally excluded; spawn's own `__BG_SPAWN__` marker parks the
+    /// replay loop at that call (inline `park_bg_spawn` await — the batch
+    /// barrier IS the wait-all semantic) until the sub-agent's completion
+    /// parcel arrives.
     ///
     /// 手法3：批级预检（调用数 / 累计 args 字节超 [`PARALLEL_BATCH_MAX_CALLS`]
     /// / [`PARALLEL_BATCH_MAX_INPUT_BYTES`]）→ 全批类型化拒绝（零执行零挂起，

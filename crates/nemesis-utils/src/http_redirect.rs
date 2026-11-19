@@ -18,14 +18,18 @@
 
 use reqwest::redirect::{Attempt, Policy};
 
-/// 跳数上限（与 reqwest 默认 `Policy::limited(10)` 同值——同源跳链行为
-/// 不变，只新增跨源终止这一道）。
+/// 跳数上限（与 reqwest 默认 `Policy::limited(10)` 同值同语义——reqwest
+/// limited 的判定是 `previous().len() > max`，len 第 N 次判定 = N（含初始
+/// URL），10 跳内放行、第 11 次判定终停；本裁决函数同一口径）。
 pub const MAX_REDIRECT_HOPS: usize = 10;
 
 /// 重定向裁决纯函数（测试面）：`true` = 跟随，`false` = 终止。
-/// 终止条件：跳数耗尽（`hops >= MAX_REDIRECT_HOPS`，与 reqwest 默认
-/// 上限同语义）或目标 origin 与首跳 origin 不同；origin 键缺席（URL
-/// 解析失败）fail-closed 终止。
+/// 终止条件：跳数耗尽（`hops > MAX_REDIRECT_HOPS`，与 reqwest 默认
+/// `Policy::limited(10)` 的 `len() > max` 同语义——`hops` = reqwest
+/// `attempt.previous().len()`，第 N 次重定向判定时 = N：tower-http 逐跳
+/// 把「发起本次 3xx 的请求 URI」交给 reqwest 适配器，适配器在调 custom
+/// 闭包**前**先 push 进链，首次判定 len=1 即含初始 URL）或目标 origin 与
+/// 首跳 origin 不同；origin 键缺席（URL 解析失败）fail-closed 终止。
 ///
 /// origin 键 = `scheme://host:port`（[`origin_key`]）——同主机不同端口
 /// 的服务是不同凭据接收面，一并拦（从紧方向，同源网关场景无端口漂移
@@ -35,7 +39,10 @@ pub fn cross_host_redirect_decision(
     target_origin: Option<&str>,
     hops: usize,
 ) -> bool {
-    if hops >= MAX_REDIRECT_HOPS {
+    // BUG-20261119-191：旧形态 `hops >= MAX_REDIRECT_HOPS` 把第 10 跳判定
+    // （len=10）也终停——实际只放行 9 跳，与 reqwest `limited(10)` 的
+    // `len() > max`（第 10 跳放行）差一跳。`>` 精确对齐。
+    if hops > MAX_REDIRECT_HOPS {
         return false;
     }
     match (first_origin, target_origin) {

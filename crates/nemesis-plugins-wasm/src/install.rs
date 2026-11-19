@@ -197,10 +197,8 @@ impl PluginInstaller {
         approver: Arc<dyn InstallApprover>,
         scanner: Option<Arc<tokio::sync::RwLock<nemesis_security::scanner::ScanChain>>>,
     ) -> Self {
-        let trust_path = manager
-            .workspace_root()
-            .join("config")
-            .join("plugin_trust.json");
+        let trust_path =
+            nemesis_path::resolve_plugin_trust_path_in_workspace(manager.workspace_root());
         Self {
             manager,
             verifier: nemesis_security::signature::SignatureVerifier::with_persistence(trust_path),

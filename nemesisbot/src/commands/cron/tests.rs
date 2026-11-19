@@ -132,8 +132,11 @@ fn add_cron_job_deliver_fields_and_validation() {
         assert!(err.to_string().contains("cron 表达式无效"), "{err}");
         assert_eq!(read_store(&home).jobs.len(), 1, "失败的 add 不落盘");
 
-        // 两个调度参数都不给 → 错误提示后 Ok（不写文件）。
-        run(add_args("j3", None, None), false).expect("缺调度参数 → 打印错误 + Ok");
+        // 两个调度参数都不给 → Err 非零退码（BUG-20261119-198：usage
+        // 错误不再打印后 Ok 假成功），且不写文件。
+        let err = run(add_args("j3", None, None), false)
+            .expect_err("缺调度参数 = usage 错误，必须 Err（非零退码）");
+        assert!(err.to_string().contains("--every"), "{err}");
         assert_eq!(read_store(&home).jobs.len(), 1);
     });
 }

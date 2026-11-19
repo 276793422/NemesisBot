@@ -681,3 +681,86 @@ fn declaration_accepts_utf8_bom_file() {
     let d = Declaration::from_workspace(&ws).expect("BOM 前缀完好声明必须 Ok");
     assert_eq!(d.falsification_cmd, pass_cmd());
 }
+
+/// BUG-20261119-199 回归锁：证伪命令的规则层过闸撞 RequireApproval（auditor
+/// ask 策略 + 审批管理器在场）时，审批等待必须发生在 blocking 线程——
+/// 「不含弹窗类」的既有拍板管不住 auditor 的事实语义（管理器在场即阻塞等
+/// 裁决），占 worker 阻塞是 dispatch 主路径（tool_dispatch.rs）修过的缺陷
+/// 形态，本 hook 与之对齐。红证：裸调形态下管理器在 worker 线程被调
+/// （tokio 默认 worker 名 tokio-rt-worker，本仓库 tokio 版本实测），spawn_blocking 池线程
+/// 无名 → 断言通过。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn falsification_security_approval_wait_runs_off_worker_thread() {
+    use nemesis_security::auditor::{ApprovalContext, ApprovalManager, ApprovalVerdict};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct ThreadRecordingManager {
+        called_task_id: Mutex<Option<tokio::task::Id>>,
+    }
+    impl ApprovalManager for ThreadRecordingManager {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Err("ctx-less path must not be taken".to_string())
+        }
+        fn request_approval_sync_ctx(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+            _ctx: &ApprovalContext,
+        ) -> Result<ApprovalVerdict, String> {
+            // 判别 = 任务 id 对比：裸调在调用方（gate_and_write / adapter /
+            // hook 任务）上下文里同步执行 → mock 的 try_id == 调用方任务 id；
+            // spawn_blocking 在独立 blocking 任务里跑（try_id 虽也 Some——
+            // blocking 任务同样有 TaskId，线程名亦同名 tokio-rt-worker，
+            // 均区分不了）→ id 必不相同。
+            *self.called_task_id.lock().unwrap() = tokio::task::try_id();
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+
+    let ws = tempdir();
+    write_declaration(&ws, pass_cmd());
+    let mut scfg = SecurityPluginConfig::default();
+    scfg.default_action = "ask".to_string();
+    let plugin = Arc::new(SecurityPlugin::new(scfg));
+    let recording = Arc::new(ThreadRecordingManager::default());
+    plugin.auditor().set_approval_manager(recording.clone());
+    let f = DisciplineFalsificationHook::new_with_security(state(&ws), Some(plugin));
+    // 必须经 tokio::spawn 进 worker 上下文：#[tokio::test] 测试体由
+    // block_on 在测试主线程驱动（非 worker），裸调断言天然通过（红证力
+    // 为零）。生产 gateway 里 hook 回调正是 worker 上下文。
+    let gaw_handle = tokio::spawn(async move { f.on_turn_end(&turn_end()).await });
+    let gaw_id = gaw_handle.id();
+    let verdict = gaw_handle.await.expect("spawned task must not panic");
+    match verdict {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "feedback={feedback}");
+        }
+        other => panic!("expected continue, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 1)["passed"], true);
+
+    let called_id = (*recording.called_task_id.lock().unwrap())
+        .expect("ask policy must reach the approval manager");
+    assert_ne!(
+        gaw_id, called_id,
+        "BUG-20261119-199: 审批等待在调用方任务上下文内同步执行（裸调 security.execute 占死 tokio worker）— 必须走 spawn_blocking 与 dispatch 主路径对齐"
+    );
+}

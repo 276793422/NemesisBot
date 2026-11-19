@@ -607,8 +607,18 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // 注意：条件边是表达式不是数据通道，不走 `resolve_runtime_string` 的
     // 凭据引用识别（`env:` 开头的条件表达式无意义；且本函数无节点语境，
     // 解析失败无处落 Failed—— 计划类 B 范围裁定）。
-    let resolved = resolve_prompt_template(condition, context);
-    let resolved = resolved.trim();
+    //
+    // BUG-20261119-195：带区间解析——替换值（节点输出/触发器载荷，LLM
+    // 生成）可携带运算符字符且替换无转义，Step 3 的运算符切分必须知道
+    // 哪些字节来自数据（跳过），否则切进数据内部、两文档形态路由反转。
+    let (resolved_full, template_ranges) = resolve_prompt_template_with_ranges(condition, context);
+    let mut rest = resolved_full.trim();
+    // trim 推进文本起点：区间坐标同步平移（只平移前导量；尾随 trim 不
+    // 影响剩余文本内的坐标）。
+    let mut ranges = shift_ranges(
+        &template_ranges,
+        resolved_full.len() - resolved_full.trim_start().len(),
+    );
 
     // Step 1.5: Negation prefix（缺陷 14 修复）。`!{{flag}}` 是
     // LLM 生成器表达否定分支的自然写法（能力表已同步收录该语法）；模板解析
@@ -622,21 +632,32 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // 直接栈溢出 abort 全进程（栈溢出不走 unwind，catch_unwind 救不了）。
     // 迭代形态语义与旧递归逐字节一致（旧递归入口会 trim，此处 `trim`
     // 保持同口径）。
+    //
+    // BUG-20261119-195：每次剥除推进文本起点 1 字节（`!`）+ 前导空白，
+    // 区间同步平移保持对齐（数据值以 `!` 开头时剩余部分仍是数据）。
     let mut negations = 0usize;
-    let mut rest = resolved;
     while let Some(inner) = rest.strip_prefix('!') {
         negations += 1;
+        let stripped_ws = inner.len() - inner.trim_start().len();
         rest = inner.trim();
+        ranges = shift_ranges(&ranges, 1 + stripped_ws);
     }
-    let core = eval_condition_core(rest, context);
+    let core = eval_condition_core(rest, &ranges, context);
     if negations % 2 == 1 { !core } else { core }
 }
 
 /// Step 2-4 主体（`evaluate_condition` 剥完否定前缀后的核心求值）。
 ///
 /// 从 `evaluate_condition` 原样抽出（BUG-20261117-062 迭代化重构），
-/// 语义锚点逐条保留。`resolved` 必须已 trim（调用方保证）。
-fn eval_condition_core(resolved: &str, context: &HashMap<String, serde_json::Value>) -> bool {
+/// 语义锚点逐条保留。`resolved` 必须已 trim（调用方保证）；`data_ranges`
+/// 是模板替换值在 `resolved` 坐标的字节区间（BUG-20261119-195，调用方
+/// 随 trim / `!` 前缀剥除平移对齐）——Step 3 切分跳过区间内与引号段内
+/// 的运算符。
+fn eval_condition_core(
+    resolved: &str,
+    data_ranges: &[(usize, usize)],
+    context: &HashMap<String, serde_json::Value>,
+) -> bool {
     if resolved.is_empty() {
         // 旧递归形态 `!!` 剥空后走 evaluate_condition 入口空串臂 → false；
         // 迭代化后由本臂保持同值。
@@ -653,10 +674,23 @@ fn eval_condition_core(resolved: &str, context: &HashMap<String, serde_json::Val
         _ => {}
     }
 
-    // Step 3: Comparison operators. Try longest-match first so `>=` doesn't
-    // accidentally match the `>` inside `a >= b`.
+    // Step 3: Comparison operators（BUG-20261119-195 切分升级）。
+    //
+    // 旧实现 `split_once(op)` 取该运算符在全文的**第一个出现**——模板
+    // 替换是裸字符串拼接（无转义），数据值内运算符字符会劫持切分位置：
+    // `{{msg}} >= 5` 遇 msg="3>=1" → resolved="3>=1 >= 5"，`>=` 命中数据
+    // 内位置 1 → left="3" right="1 >= 5" 字典序 → true；同条件的裸名形态
+    // `msg >= 5` 走 context 查询得 "3>=1" 字典序 → false——两种文档形态
+    // 给相反路由（BUG-20261112-105 注释自述的未修半边）。修复：候选出现
+    // 位置必须落在数据值区间与引号字面量段之外（引号段与 resolve_operand
+    // 首尾配对剥引号同口径：无闭合不成段）。运算符优先级序与「第一个
+    // 出现」口径原样保留——纯字面量表达式（无数据/引号干扰）切分位置
+    // 逐字节不变，行为只收窄缺陷形态。
+    let quotes = quote_spans(resolved);
     for op in [">=", "<=", "==", "!=", ">", "<"] {
-        if let Some((left, right)) = resolved.split_once(op) {
+        if let Some(pos) = find_operator_outside(resolved, op, data_ranges, &quotes) {
+            let left = &resolved[..pos];
+            let right = &resolved[pos + op.len()..];
             return compare_values(left.trim(), right.trim(), op, context);
         }
     }
@@ -668,6 +702,72 @@ fn eval_condition_core(resolved: &str, context: &HashMap<String, serde_json::Val
         return is_truthy(val);
     }
     is_truthy_str(resolved)
+}
+
+/// 区间坐标平移（BUG-20261119-195）：文本剥除前 `delta` 字节后的新坐标。
+/// 起点 < `delta` 的区间裁剪到 0（数据值与 trim / `!` 前缀重叠时保住
+/// 剩余部分），终点 ≤ `delta` 的区间消亡。
+fn shift_ranges(ranges: &[(usize, usize)], delta: usize) -> Vec<(usize, usize)> {
+    ranges
+        .iter()
+        .filter_map(|(s, e)| {
+            let s = (*s).max(delta);
+            if s >= *e {
+                None
+            } else {
+                Some((s - delta, e - delta))
+            }
+        })
+        .collect()
+}
+
+/// 引号字面量段（BUG-20261119-195）：首尾配对 `"` / `'`，段含两侧引号
+/// 字节。无闭合不成段（该字符按普通文本参与后续扫描）——与
+/// `resolve_operand` 的首尾配对剥引号同口径。段内运算符不参与 Step 3
+/// 切分（`{{x}} == "a>=b"` 的引号内 `>=` 是数据不是运算符）。
+fn quote_spans(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // 引号字节是 ASCII；i 落在多字节字符内部时 bytes[i] ≥ 0x80，
+        // 恒不进本分支——`text[i + 1..]` 切片只在 i 为字符边界时发生。
+        if (b == b'"' || b == b'\'')
+            && let Some(rel) = text[i + 1..].find(b as char)
+        {
+            let close = i + 1 + rel;
+            spans.push((i, close + 1));
+            i = close + 1;
+            continue;
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// 运算符切点查找（BUG-20261119-195）：`op` 在 `text` 中第一个**不落在
+/// 数据值区间与引号段内**的出现位置。运算符首字节是 ASCII，`pos + 1`
+/// 恒为字符边界，逐候选推进安全。
+fn find_operator_outside(
+    text: &str,
+    op: &str,
+    data_ranges: &[(usize, usize)],
+    quotes: &[(usize, usize)],
+) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(op) {
+        let pos = from + rel;
+        let excluded = quotes
+            .iter()
+            .chain(data_ranges.iter())
+            .any(|(s, e)| pos >= *s && pos < *e);
+        if !excluded {
+            return Some(pos);
+        }
+        from = pos + 1;
+    }
+    None
 }
 
 fn compare_values(

@@ -244,6 +244,12 @@ jobs:
           # 兜底与本地 build-windows.bat / build-linux.sh 同源）。缺席 =
           # 人格超市纯在线——全量 nightly 必须带，non-fatal 同上。
           (cd plugins/plugin-resources && cargo build --release)
+          # plugin-mail 是邮件基础设施 C-ABI 插件第四例（SMTP/POP3 服务端 +
+          # SMTP 客户端发信 + maildir 按地址分库；纯 Rust 依赖零系统包，
+          # 两平台直编）。缺席 = 邮件子系统诚实关闭（config.mail.json
+          # enabled 总闸缺省 false，装了也不自动起）——全量 nightly 必须带，
+          # non-fatal 同上。
+          (cd plugins/plugin-mail && cargo build --release)
           # eval-monitor 是 Windows-only 注入 DLL（注入签名的 SbieCtrl.exe
           # 采集 Sandboxie 事件），只在 Windows 编
           if [ "${{ matrix.platform }}" = "windows" ]; then
@@ -307,6 +313,11 @@ jobs:
           # 接线——ci-sign-artifacts.sh 对 staging/plugins/ 全目录签。
           cp plugins/plugin-resources/target/release/libplugin_resources.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-resources/target/release/plugin_resources.dll   staging/plugins/ 2>/dev/null || true
+          # plugin-mail（邮件基础设施 C-ABI 插件第四例）：缺件 = 邮件子系统
+          # 诚实关闭，non-fatal 同上。签名无需单独接线——ci-sign-artifacts.sh
+          # 对 staging/plugins/ 全目录签。
+          cp plugins/plugin-mail/target/release/libplugin_mail.so staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-mail/target/release/plugin_mail.dll   staging/plugins/ 2>/dev/null || true
           # plugin-vm 单文件部署（2026-10-22 资源内嵌拍板）：与其他插件同住
           # plugins/ 子目录（装载器 plugins/ 优先 + exe 同目录回落）；镜像
           # 脚本 + guest 双架构 musl ELF 已编译期内嵌进库文件（上方构建步

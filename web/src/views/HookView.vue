@@ -6,10 +6,12 @@ import { useSessionStore } from '../stores/session'
 
 // Hooks 钩子页（2026-08-29 自设置页迁移 + 双 TAB 重构）：
 // - 总览：统计徽标 + 每事件只读明细 + 可编辑原文 + 方言事件文档表
-// - 设置：扁平结构化编辑（每条钩子 = 触发工具[可空] + 命令 + 超时 +
-//   作用会话[可选，2026-11-16 会话圈定]），保存时每条各自成组写入
+// - 设置：扁平结构化编辑（每条钩子 = 执行体类型[command/prompt，仅 Stop
+//   可选提示词型，2026-11-19 统一存储] + 触发工具[可空] + 命令/提示词 +
+//   超时 + 作用会话[可选，2026-11-16 会话圈定]），保存时每条各自成组写入
 //   hooks.json（方案 B，语义与分组版等价）。
-// 单一真相源 = hooks.json；两处编辑都走 hooks.set（后端语义校验兜底），
+// 单一真相源 = hooks.json（command/prompt 两型统一存储；agent hooks 工具
+// 写的会话圈定组也在此文件）；两处编辑都走 hooks.set（后端语义校验兜底），
 // 切换 TAB 即从磁盘刷新（最后写入者胜，用户已接受覆盖冲突）。
 
 const { request } = useWSAPI()
@@ -34,9 +36,14 @@ const EVENTS = [
 ] as const
 
 interface HookEntry {
+  /** 执行体类型（2026-11-19 统一存储二型）：command=子进程脚本；
+   * prompt=提示词注入（仅 Stop 事件合法）。 */
+  type: 'command' | 'prompt'
   /** 触发工具的 matcher（工具名正则/子串；空 = 全部工具）。 */
   matcher: string
   command: string
+  /** prompt 型执行体文本（type='prompt' 时非空）。 */
+  prompt: string
   /** 秒；空串 = 后端默认 60。输入框绑定用字符串。 */
   timeout: string
   /** 会话圈定（2026-11-16）：裸 sid 列表；空 = 全部会话（缺省兼容）。 */
@@ -83,8 +90,12 @@ function parseEntries(content: string): Record<string, HookEntry[]> {
     const groups = Array.isArray(hooks[ev.id]) ? hooks[ev.id] : []
     out[ev.id] = groups.flatMap((g: any) =>
       (Array.isArray(g?.hooks) ? g.hooks : []).map((c: any) => ({
+        // 二型（统一存储）：type 缺省/未知按内容兜底回 command（后端
+        // parse_cc_hooks 是 loud 拒绝，这里宽容展示由保存时后端把关）。
+        type: c?.type === 'prompt' ? 'prompt' : 'command',
         matcher: typeof g?.matcher === 'string' ? g.matcher : '',
         command: typeof c?.command === 'string' ? c.command : '',
+        prompt: typeof c?.prompt === 'string' ? c.prompt : '',
         timeout: c?.timeout != null ? String(c.timeout) : '',
         sessions: Array.isArray(g?.scope?.sessions)
           ? g.scope.sessions.filter((s: any) => typeof s === 'string' && s.trim())
@@ -95,16 +106,22 @@ function parseEntries(content: string): Record<string, HookEntry[]> {
   return out
 }
 
-/** 扁平条目 → hooks.json（方案 B：每条钩子各自成组；空事件不输出）。 */
+/** 扁平条目 → hooks.json（方案 B：每条钩子各自成组；空事件不输出）。
+ * 二型统一存储：type 恒输出；prompt 型不带 command/timeout。 */
 function serializeEntries(): string {
   const hooks: Record<string, any> = {}
   for (const ev of EVENTS) {
-    const list = entries.value[ev.id].filter(e => e.command.trim())
+    const list = entries.value[ev.id].filter(e =>
+      e.type === 'prompt' ? e.prompt.trim() : e.command.trim(),
+    )
     if (!list.length) continue
     hooks[ev.id] = list.map(e => {
-      const cmd: any = { type: 'command', command: e.command.trim() }
+      const cmd: any =
+        e.type === 'prompt'
+          ? { type: 'prompt', prompt: e.prompt.trim() }
+          : { type: 'command', command: e.command.trim() }
       const t = Number(e.timeout)
-      if (e.timeout.trim() && Number.isFinite(t) && t > 0) cmd.timeout = t
+      if (e.type === 'command' && e.timeout.trim() && Number.isFinite(t) && t > 0) cmd.timeout = t
       const group: any = { hooks: [cmd] }
       if (e.matcher.trim()) group.matcher = e.matcher.trim()
       const ss = e.sessions.map(s => s.trim()).filter(Boolean)
@@ -148,8 +165,8 @@ async function saveContent(content: string, label: string) {
     // 一次；之后（桥已存在）保存即下条消息生效。
     toast.success(
       coldStart.value
-        ? `已保存（${data?.summary?.total ?? 0} 个脚本）。首次添加：重启 Agent 后生效，之后保存即下条消息生效`
-        : `已保存（${data?.summary?.total ?? 0} 个脚本）。保存后下条消息生效`,
+        ? `已保存（${data?.summary?.total ?? 0} 个钩子）。首次添加：重启 Agent 后生效，之后保存即下条消息生效`
+        : `已保存（${data?.summary?.total ?? 0} 个钩子）。保存后下条消息生效`,
     )
     return true
   } catch (e: any) {
@@ -314,7 +331,7 @@ onMounted(() => {
       <!-- ===================== 总览 ===================== -->
       <div v-if="activeTab === 'overview'">
         <div class="card" style="margin-bottom: var(--space-4);">
-          <div class="card-header"><h3>已配置钩子<span v-if="totalCount" style="font-weight: 400; font-size: var(--text-sm); color: var(--text-muted);">　共 {{ totalCount }} 个脚本</span></h3></div>
+          <div class="card-header"><h3>已配置钩子<span v-if="totalCount" style="font-weight: 400; font-size: var(--text-sm); color: var(--text-muted);">　共 {{ totalCount }} 条</span></h3></div>
           <div class="card-body">
             <div class="hooks-stats">
               <div v-for="ev in EVENTS" :key="ev.id" class="hooks-stat" :class="{ 'hooks-stat--empty': !entries[ev.id].length }">
@@ -328,8 +345,9 @@ onMounted(() => {
                 <div v-for="(e, i) in entries[ev.id]" :key="i" class="hooks-detail-row">
                   <span class="hooks-detail-matcher">{{ e.matcher || '全部工具' }}</span>
                   <span class="hooks-detail-scope" :title="e.sessions.length ? e.sessions.join('、') : ''">{{ scopeBadge(e) }}</span>
-                  <span style="flex: 1; font-family: var(--font-mono); font-size: var(--text-xs); word-break: break-all;">{{ e.command }}</span>
-                  <span style="color: var(--text-muted); font-size: var(--text-xs);">超时 {{ e.timeout || 60 }}s</span>
+                  <span v-if="e.type === 'prompt'" class="hooks-detail-type">提示词</span>
+                  <span style="flex: 1; font-family: var(--font-mono); font-size: var(--text-xs); word-break: break-all;">{{ e.type === 'prompt' ? e.prompt : e.command }}</span>
+                  <span v-if="e.type === 'command'" style="color: var(--text-muted); font-size: var(--text-xs);">超时 {{ e.timeout || 60 }}s</span>
                 </div>
               </div>
             </template>
@@ -361,8 +379,10 @@ onMounted(() => {
           <div class="card-header"><h3>Hooks 钩子说明</h3></div>
           <div class="card-body">
             <p style="font-size: var(--text-sm); margin: 0 0 var(--space-3);">
-              hooks.json 方言：每个 hook 是一条子进程脚本（stdin 收单行 JSON 事件、
-              env <code>CLAUDE_PROJECT_DIR</code>、cwd 为 workspace），九个事件映射到 Agent 内核钩点：
+              hooks.json 方言：每个 hook 有两种执行体（<code>type</code> 字段）——
+              <strong>command 型</strong> = 子进程脚本（stdin 收单行 JSON 事件、
+              env <code>CLAUDE_PROJECT_DIR</code>、cwd 为 workspace）；<strong>prompt 型</strong> =
+              提示词注入（仅 Stop 事件）。十二个事件映射到 Agent 内核钩点：
             </p>
             <table class="hooks-table">
               <thead><tr><th>事件</th><th>触发时机</th><th>阻断语义（exit 2）</th></tr></thead>
@@ -376,24 +396,27 @@ onMounted(() => {
                 <tr><td>SessionEnd</td><td>会话被清理/删除时</td><td>观察型（无阻断语义）</td></tr>
                 <tr><td>PreCompact</td><td>上下文压缩前</td><td>观察型（不阻止压缩）</td></tr>
                 <tr><td>PostCompact</td><td>上下文压缩后</td><td>观察型</td></tr>
+                <tr><td>SubagentStart</td><td>子代理启动前（本地 spawn）</td><td>拒绝 spawn，stderr 作理由</td></tr>
+                <tr><td>SubagentStop</td><td>子代理任务完成后</td><td>观察型（任务已跑完，无阻断语义）</td></tr>
+                <tr><td>Notification</td><td>审批/提问边界通知</td><td>观察型</td></tr>
               </tbody>
             </table>
             <p style="font-size: var(--text-sm); margin: var(--space-3) 0 0; color: var(--text-muted);">
               脚本协议：退出码 0 = 放行（PreToolUse/Stop 还认 stdout JSON <code>{"decision":"block","reason":…}</code>）；
               2 = 阻断；其他/超时/启动失败 = 非阻断错误（fail-open）。触发工具（matcher）用工具名
-              （Bash/Edit/Write/Read/Grep，本系统工具名自动映射别名），留空 = 全命中。每条钩子可设
-              <code>timeout</code> 秒（默认 60）；可加
+              （Bash/Edit/Write/Read/Grep，本系统工具名自动映射别名），留空 = 全命中。command 型可设
+              <code>timeout</code> 秒（默认 60）；任何钩子可加
               <code>scope: {"sessions": ["<会话id>"]}</code> 圈定作用会话（「设置」TAB 按标题勾选、
               落盘存会话 id；不设 = 全部会话生效）。LLM 调用级钩子（K1b）无对应事件，不在此文件配置。
             </p>
             <p style="font-size: var(--text-sm); margin: var(--space-3) 0 0; color: var(--text-muted);">
-              提示词型钩子（LLM 执行体，仅 Stop 事件）：除子进程脚本外，钩子还可以是一段
-              <em>提示词</em>——每轮对话收尾后，该提示词作为新的用户消息注入，开启下一轮对话，
+              提示词型钩子（<code>type: "prompt"</code>，LLM 执行体，仅 Stop 事件）：钩子可以不是脚本而是
+              一段<em>提示词</em>——每轮对话收尾后，该提示词作为新的用户消息注入，开启下一轮对话，
               <strong>没有轮数上限</strong>（例如「继续检查代码是否正确，确认是否有问题」即可让模型
-              长期持续自查）。它不落在本文件（hooks.json 是 shell 方言），而是按会话存于
-              <code>hooks.session.json</code>，由 Agent 在对话内用 <code>hooks</code> 工具设置
-              （只能给当前会话设）——对 Agent 说「每轮结束后继续检查代码」即可；停止方式：让 Agent
-              删除该钩子（<code>hooks delete</code>）、急停开关，或删除对应会话。
+              长期持续自查）。两型统一存放在本文件（hooks.json，2026-11-19 统一存储）：「设置」TAB
+              对 Stop 事件可切换命令型/提示词型；Agent 也可在对话内用 <code>hooks</code> 工具给当前
+              会话设置（只能给自己设，落盘为会话圈定组）——对 Agent 说「每轮结束后继续检查代码」即可。
+              停止方式：删除该钩子、急停开关，或删除对应会话。
             </p>
           </div>
         </div>
@@ -402,9 +425,10 @@ onMounted(() => {
       <!-- ===================== 设置（结构化编辑） ===================== -->
       <div v-else>
         <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-3);">
-          每条钩子 = 触发工具（可选，留空对全部工具生效）+ 命令 + 超时 + 作用会话（可选，
-          不选 = 全部会话生效）。保存时后端做方言语义校验，校验失败不落盘；保存后下条消息
-          自动生效（桥内热更；Agent 启动时无钩子配置的首次保存需重启一次）。
+          每条钩子 = 执行体类型（仅 Stop 事件可选提示词型）+ 触发工具（可选，留空对全部工具生效）+
+          命令/提示词 + 超时（命令型）+ 作用会话（可选，不选 = 全部会话生效）。保存时后端做方言
+          语义校验，校验失败不落盘；保存后下条消息自动生效（桥内热更；Agent 启动时无钩子配置的
+          首次保存需重启一次）。
         </p>
         <div v-for="ev in EVENTS" :key="ev.id" class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header" style="justify-content: space-between;">
@@ -412,17 +436,38 @@ onMounted(() => {
               {{ ev.label }}
               <span v-if="entries[ev.id].length" style="font-weight: 400; font-size: var(--text-sm); color: var(--text-muted);">（{{ entries[ev.id].length }} 条）</span>
             </h3>
-            <button class="btn btn-sm" @click="entries[ev.id].push({ matcher: '', command: '', timeout: '', sessions: [] })">+ 添加钩子</button>
+            <button class="btn btn-sm" @click="entries[ev.id].push({ type: 'command', matcher: '', command: '', prompt: '', timeout: '', sessions: [] })">+ 添加钩子</button>
           </div>
           <div class="card-body">
             <p style="font-size: var(--text-xs); color: var(--text-muted); margin: 0 0 var(--space-2);">{{ ev.hint }}</p>
             <div v-if="!entries[ev.id].length" style="color: var(--text-muted); font-size: var(--text-sm);">该事件暂无钩子</div>
             <div v-for="(e, i) in entries[ev.id]" :key="i" style="margin-bottom: var(--space-2);">
               <div style="display: flex; gap: var(--space-2); align-items: center;">
+                <!-- 二型切换（统一存储，仅 Stop 事件开放提示词型——唯一有
+                     「turn 结束注入」时机的钩点）。 -->
+                <select v-if="ev.id === 'Stop'" class="form-input" style="width: 96px; flex-shrink: 0;" v-model="e.type">
+                  <option value="command">命令型</option>
+                  <option value="prompt">提示词型</option>
+                </select>
                 <input class="form-input" style="width: 170px; flex-shrink: 0;" v-model="e.matcher" placeholder="触发工具（空=全部）" />
-                <input class="form-input" style="flex: 1; font-family: var(--font-mono);" v-model="e.command" placeholder="命令（如 python lint.py）" />
-                <input class="form-input" style="width: 76px; flex-shrink: 0;" v-model="e.timeout" placeholder="60" />
-                <span style="color: var(--text-muted); font-size: var(--text-xs); flex-shrink: 0;">秒</span>
+                <textarea
+                  v-if="e.type === 'prompt'"
+                  class="form-textarea"
+                  style="flex: 1; min-height: 52px; font-family: var(--font-mono);"
+                  v-model="e.prompt"
+                  placeholder="提示词（每轮结束后注入开新轮，如：继续检查代码是否正确，确认是否有问题）"
+                />
+                <input
+                  v-else
+                  class="form-input"
+                  style="flex: 1; font-family: var(--font-mono);"
+                  v-model="e.command"
+                  placeholder="命令（如 python lint.py）"
+                />
+                <template v-if="e.type === 'command'">
+                  <input class="form-input" style="width: 76px; flex-shrink: 0;" v-model="e.timeout" placeholder="60" />
+                  <span style="color: var(--text-muted); font-size: var(--text-xs); flex-shrink: 0;">秒</span>
+                </template>
                 <button class="btn btn-sm" style="color: var(--danger); flex-shrink: 0;" @click="entries[ev.id].splice(i, 1)">✕</button>
               </div>
               <div style="display: flex; gap: var(--space-2); align-items: center; margin-top: var(--space-1); position: relative;">
@@ -537,6 +582,16 @@ onMounted(() => {
   background: var(--bg-secondary);
   white-space: nowrap;
 }
+/* 类型徽标（提示词型，统一存储二型 2026-11-19）——实线框与 matcher 区分。 */
+.hooks-detail-type {
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
 /* 作用会话徽标（scope，2026-11-16）——虚线框与 matcher 实线框区分。 */
 .hooks-detail-scope {
   font-size: var(--text-xs);

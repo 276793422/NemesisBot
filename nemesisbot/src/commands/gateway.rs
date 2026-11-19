@@ -373,8 +373,9 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     let cluster_wiring = init_cluster(&ctx).await?;
     // Phase （计划）：PB-3 Web/Channel 装配提取为 init_web
     //（gateway/web_init.rs）——依赖 ctx 三件（home/cfg/bus）+ cluster wiring
-    // 二件（均在 cfg(cluster) 门内消费）。产物 WebWiring 六项供 PB-4–PB-7
-    // 消费； mem::forget 挂账随块原样保留。
+    // 二件（均在 cfg(cluster) 门内消费）。产物 WebWiring 七项供 PB-4–PB-7
+    // 消费；channel_manager 以 Arc 随产物携出（BUG-20261119-194：
+    // start_all 推迟到 init_services Step 14c——agent 订阅之后）。
     let web_wiring = init_web(&ctx, &cluster_wiring).await?;
     // wiring 影子重绑：web_server 移动推迟到 init_agent 之后（其以
     // &WebWiring 借读整体），其余 clone 保结构完整（起不再借 web）。
@@ -494,6 +495,7 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
     // 仅持 web_handle 句柄）+ web_bind_host/web_port/bridge_client_launch/
     // initial_tool_count 按值（下游零消费）+ agent_adapter/web_display_host
     // 克隆（Step 18/19/24 仍消费原对象；agent_loop 非本块消费不入参）
+    // + channel_manager 克隆（BUG-20261119-194：Step 14c 延迟 start_all）
     // + cluster 三件经 ClusterHandoff（无门结构体+@cluster
     // 门控字段——调用点不支持逐参 cfg 属性，ClusterWiring 同款先例）；
     // 产物 ServicesWiring 五项（health_server @health，其余无门）——
@@ -515,6 +517,9 @@ pub async fn run(local: bool, relay: bool, quic_relay: bool, extra_args: &[Strin
         web_port,
         bridge_client_launch,
         agent_adapter.clone(),
+        // BUG-20261119-194：通道管理器句柄——start_all 在 Step 14c
+        // （agent 订阅之后）执行，不再于 init_web 内即时启动。
+        web_wiring.channel_manager.clone(),
         initial_tool_count,
         cluster_handoff,
     )

@@ -441,6 +441,57 @@ impl AgentLoop {
         let reg_summary = (!task_response.is_empty()).then(|| task_response.clone());
         let reg_error = task_error.clone();
 
+        // park 投递检查（2026-11-19 spawn park 化）：本任务可能正被
+        // live turn 内联 park 等待（bg_park 注册表）。该 turn 持 session
+        // busy guard——走到底下 try_acquire 必死锁（投递入队→parked
+        // 回合不结束→队列永不 drain），故必须先于 load/busy 判定。三臂：
+        // - Delivered：parcel 已交等待者（其经守卫链 replace 分支原地
+        //   覆写 marker 结果回灌 LLM 续跑）。快照回收（结果已由等待者
+        //   落 live 历史）+ 到达行落盘/发事件（A2 过程语言：✅/❌ +
+        //   摘录，emit_round_output 双路=work block 落盘 + RoundText）
+        //   即返。
+        // - CancelledNoResume：等待 turn 已被用户取消（子代理执行体已
+        //   终止、结果无主）——快照回收，绝不续行复活已取消的任务。
+        // - WaiterGone / NotParked：无在等 turn（estop 打断的 park /
+        //   重启丢失注入 / dashboard 直派 peer_chat / 集群 peer_chat）
+        //   → 落回下方既有快照续行语义（estop 释放恢复=旧世界）。
+        match crate::bg_park::global().deliver(
+            task_id,
+            crate::bg_park::ParkParcel {
+                content: task_response.clone(),
+                failed: task_failed,
+                error: task_error.clone(),
+            },
+        ) {
+            crate::bg_park::DeliverOutcome::Delivered {
+                session_key,
+                chat_id,
+            } => {
+                mgr.remove_continuation(task_id).await;
+                let line = crate::bg_park::arrival_line(
+                    task_failed,
+                    &task_response,
+                    task_error.as_deref(),
+                );
+                info!(
+                    "[Continuation] park delivered for task_id={} (arrival line fed to session {})",
+                    task_id, session_key
+                );
+                self.emit_round_output(&session_key, &chat_id, &line, None);
+                return;
+            }
+            crate::bg_park::DeliverOutcome::CancelledNoResume => {
+                mgr.remove_continuation(task_id).await;
+                info!(
+                    "[Continuation] park cancelled for task_id={} — result discarded, no resume.",
+                    task_id
+                );
+                return;
+            }
+            crate::bg_park::DeliverOutcome::WaiterGone
+            | crate::bg_park::DeliverOutcome::NotParked => {}
+        }
+
         // 1. Load continuation snapshot（只读学信封：session_key/channel/
         //    chat_id 全部来自快照——回调 inbound 是 system 通道幻影帧，不
         //    携带落点）。barrier 等待窗口 = 快照尚未落地的回调竞态（既有
