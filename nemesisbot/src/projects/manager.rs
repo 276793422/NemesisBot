@@ -164,6 +164,43 @@ impl ProjectLoopManager {
     /// lenient 读（空表），目录消失的项目 warn + skip 不炸启动。同时从
     /// meta sidecar 扫出归属索引。
     pub fn start_all(&self) {
+        // B38（P1-2）孤儿组老化：先 sweep 再 spawn——超 TTL
+        // （默认 7 天，projects.orphan_ttl_secs；0=关）的缺失目录条目自动
+        // 解除分组，不再为死项目建 loop。与手动移除同语义：会话数据与项目
+        // 目录内文件零删除（会话落「已移除」灰组），重新注册同名项目自动
+        // 重新收编。老化条目此刻必然未 spawn（sweep 在全部 spawn 之前），
+        // 无 loop 可停，只清 agents 镜像（与 bridge remove 同款防幽灵）。
+        match registry::sweep_missing_projects(&self.registry_path, self.orphan_ttl_secs()) {
+            Ok((marked, aged)) => {
+                for e in &marked {
+                    info!(
+                        id = %e.id,
+                        name = %e.name,
+                        path = %e.path.display(),
+                        "[ProjectLoops] 首次观测到项目目录缺失（已记时；超 TTL 前恢复目录即自动归零）"
+                    );
+                }
+                for e in &aged {
+                    warn!(
+                        id = %e.id,
+                        name = %e.name,
+                        path = %e.path.display(),
+                        "[ProjectLoops] 项目目录持续缺失超 TTL，已自动解除分组（会话数据未删除；重新注册同名项目可重新收编）"
+                    );
+                    if let Some(mgr) = crate::agents::manager()
+                        && let Err(err) = mgr.remove_project_mirror(&e.id)
+                    {
+                        warn!(
+                            id = %e.id,
+                            "[ProjectLoops] 老化条目 agents 镜像清理失败（孤儿镜像残留）: {err}"
+                        );
+                    }
+                }
+            }
+            // 注册表损坏 = loud warn 跳过（sweep 绝不拿空表覆盖损坏文件）；
+            // 启动照常走 lenient list（既有语义）。
+            Err(e) => warn!("[ProjectLoops] 孤儿组老化 sweep 跳过（注册表读取失败）: {e:#}"),
+        }
         self.reload_owner_index();
         let entries = registry::list_projects(&self.registry_path);
         if entries.is_empty() {
@@ -351,6 +388,25 @@ impl ProjectLoopManager {
             Err(e) => {
                 warn!("[ProjectLoops] 读取 config projects.max 失败，回退默认 4: {e}");
                 nemesis_config::ProjectsConfig::default().max
+            }
+        }
+    }
+
+    /// 孤儿组老化 TTL（`config.json` 的 `projects.orphan_ttl_secs`，B38）。
+    /// 读取失败回退默认 7 天 + warn（sweep 侧 warn 不阻塞启动）。0 = 关
+    /// （registry::sweep_missing_projects 直通零改动）。
+    fn orphan_ttl_secs(&self) -> u64 {
+        let path = self.shared.home.join("config.json");
+        match nemesis_config::load_config(&path) {
+            Ok(cfg) => cfg
+                .projects
+                .map(|p| p.orphan_ttl_secs)
+                .unwrap_or_else(|| nemesis_config::ProjectsConfig::default().orphan_ttl_secs),
+            Err(e) => {
+                warn!(
+                    "[ProjectLoops] 读取 config projects.orphan_ttl_secs 失败，回退默认 7 天: {e}"
+                );
+                nemesis_config::ProjectsConfig::default().orphan_ttl_secs
             }
         }
     }

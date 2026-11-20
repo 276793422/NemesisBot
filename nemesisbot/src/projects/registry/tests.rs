@@ -446,6 +446,51 @@ fn test_add_remove_project_dir_happy_path_and_canonical_form() {
     );
 }
 
+// ===== B38 孤儿组老化（2026-11-19）=====
+
+/// 落一条指定 missing_since 的条目（直写 jsonl——走 save_projects 同一
+/// 序列化面；项目目录可选创建）。
+fn seed_entry(reg: &Path, dir: Option<&Path>, missing_since: Option<&str>) -> ProjectEntry {
+    let ws_tmp = tempfile::tempdir().unwrap();
+    let proj = match dir {
+        Some(d) => d.to_path_buf(),
+        None => ws_tmp.path().join("gone-project"),
+    };
+    if let Some(d) = dir {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let entry = ProjectEntry {
+        id: new_project_id(),
+        name: "seed".into(),
+        path: canonicalize_for_compare(&proj),
+        created_at: chrono::Local::now().to_rfc3339(),
+        instructions_trusted: true,
+        extra_dirs: Vec::new(),
+        missing_since: missing_since.map(str::to_string),
+    };
+    let mut file = try_load_projects(reg).unwrap().unwrap_or_default();
+    file.projects.push(entry.clone());
+    save_projects(reg, &file).unwrap();
+    entry
+}
+
+#[test]
+fn test_sweep_marks_first_observation_and_persists() {
+    // 目录缺失 + 无戳 → 首次观测只记时（条目保留、不解除分组）。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    let e = seed_entry(&reg, None, None);
+
+    let (marked, aged) = sweep_missing_projects(&reg, 7 * 24 * 3600).unwrap();
+    assert_eq!(marked.len(), 1, "无戳缺失条目必须进 marked：{marked:?}");
+    assert!(aged.is_empty(), "首次观测绝不老化：{aged:?}");
+    let stored = find_project(&reg, &e.id).unwrap();
+    assert!(
+        stored.missing_since.is_some(),
+        "missing_since 必须落盘（下次启动才可判超期）"
+    );
+}
+
 #[test]
 fn test_add_dir_validation_and_overlap_matrix() {
     let root = tempfile::tempdir().unwrap();
@@ -575,4 +620,137 @@ fn test_add_dir_cap_and_unknown_project_and_corrupt() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("损坏"), "unexpected: {err}");
+}
+
+#[test]
+fn test_sweep_revival_clears_missing_since() {
+    // TTL 内目录恢复 = 复活（判定基于目录存在性，非一次性快照）。
+    let ws = tempfile::tempdir().unwrap();
+    let proj = ws.path().join("revived");
+    std::fs::create_dir_all(&proj).unwrap();
+    let reg = registry_path(ws.path());
+    let e = seed_entry(&reg, Some(&proj), Some("2020-01-01T00:00:00+08:00"));
+
+    let (marked, aged) = sweep_missing_projects(&reg, 7 * 24 * 3600).unwrap();
+    assert!(marked.is_empty() && aged.is_empty());
+    let stored = find_project(&reg, &e.id).unwrap();
+    assert!(
+        stored.missing_since.is_none(),
+        "目录存在必须清戳（超期戳也不例外——存在性是唯一判据）"
+    );
+}
+
+#[test]
+fn test_sweep_ages_out_after_ttl_and_zero_disables() {
+    // 缺失 + 戳超 TTL → 条目移除（解除分组）；ttl=0 全程直通零改动。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    let old = (chrono::Local::now() - chrono::Duration::days(8)).to_rfc3339();
+    let e = seed_entry(&reg, None, Some(&old));
+
+    // 对照臂：0 = 关，什么都不动。
+    let (marked, aged) = sweep_missing_projects(&reg, 0).unwrap();
+    assert!(marked.is_empty() && aged.is_empty(), "ttl=0 必须直通");
+    assert!(find_project(&reg, &e.id).is_some(), "关闸时条目必须还在");
+
+    // 7 天 TTL：8 天前的戳 → 老化移除。
+    let (marked, aged) = sweep_missing_projects(&reg, 7 * 24 * 3600).unwrap();
+    assert!(marked.is_empty());
+    assert_eq!(aged.len(), 1);
+    assert_eq!(aged[0].id, e.id);
+    assert!(
+        find_project(&reg, &e.id).is_none(),
+        "老化条目必须从注册表移除（解除分组）"
+    );
+    // 零删除纪律：会话/项目文件不在 sweep 触达面（本测试无任何文件删除
+    // 调用；sweep 只写 projects.json）。
+}
+
+#[test]
+fn test_sweep_within_ttl_keeps_entry() {
+    // 缺失 + 戳在 TTL 内 → 保持现状（条目在、戳不变、无新标记）。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    let recent = (chrono::Local::now() - chrono::Duration::days(1)).to_rfc3339();
+    let e = seed_entry(&reg, None, Some(&recent));
+
+    let (marked, aged) = sweep_missing_projects(&reg, 7 * 24 * 3600).unwrap();
+    assert!(marked.is_empty() && aged.is_empty());
+    let stored = find_project(&reg, &e.id).unwrap();
+    assert_eq!(
+        stored.missing_since.as_deref(),
+        Some(recent.as_str()),
+        "TTL 内戳必须原样保留（不重置计时）"
+    );
+}
+
+#[test]
+fn test_sweep_corrupt_stamp_reanchors_not_ages() {
+    // 戳损坏：re-anchor 到现在（从零重数）——绝不因坏戳直接老化（从严）。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    let e = seed_entry(&reg, None, Some("not-a-timestamp"));
+
+    let (marked, aged) = sweep_missing_projects(&reg, 7 * 24 * 3600).unwrap();
+    assert!(aged.is_empty(), "坏戳不得触发老化：{aged:?}");
+    assert_eq!(marked.len(), 1, "坏戳条目按首次观测重记");
+    let stored = find_project(&reg, &e.id).unwrap();
+    let ts = stored.missing_since.expect("re-anchor 必须落新戳");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&ts).is_ok(),
+        "新戳必须是合法 RFC3339: {ts}"
+    );
+}
+
+#[test]
+fn test_sweep_corrupt_registry_loud_rejects() {
+    // 注册表损坏 = Err loud 拒绝（绝不拿 sweep 覆盖损坏文件——同写路径
+    // 纪律），文件原样保留。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    seed_entry(&reg, None, None);
+    std::fs::write(&reg, "{broken").unwrap();
+    let before = std::fs::read_to_string(&reg).unwrap();
+
+    assert!(sweep_missing_projects(&reg, 7 * 24 * 3600).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&reg).unwrap(),
+        before,
+        "损坏文件必须原样保留（防静默清空）"
+    );
+}
+
+#[test]
+fn test_old_shape_entry_without_missing_since_is_none() {
+    // 老形态兼容：手写 JSON 缺 missing_since 键 → None（serde default）；
+    // roundtrip 保真（有戳条目保存后再读不丢）。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    let proj = ws.path().join("legacy");
+    std::fs::create_dir_all(&proj).unwrap();
+    let body = serde_json::json!({
+        "projects": [{
+            "id": "p-deadbeef",
+            "name": "legacy",
+            "path": proj.to_string_lossy(),
+            "created_at": "2026-01-01T00:00:00+08:00",
+            "instructions_trusted": true
+        }]
+    });
+    std::fs::create_dir_all(reg.parent().unwrap()).unwrap();
+    std::fs::write(&reg, body.to_string()).unwrap();
+
+    let stored = find_project(&reg, "p-deadbeef").expect("老形态条目必须可读");
+    assert!(stored.missing_since.is_none(), "缺键必须落 None");
+
+    // roundtrip：带戳条目保存后重读保真。
+    let mut file = try_load_projects(&reg).unwrap().unwrap();
+    file.projects[0].missing_since = Some("2026-01-02T00:00:00+08:00".into());
+    save_projects(&reg, &file).unwrap();
+    let reloaded = find_project(&reg, "p-deadbeef").unwrap();
+    assert_eq!(
+        reloaded.missing_since.as_deref(),
+        Some("2026-01-02T00:00:00+08:00"),
+        "带戳 roundtrip 必须保真"
+    );
 }

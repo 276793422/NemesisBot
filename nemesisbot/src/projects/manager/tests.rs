@@ -190,6 +190,7 @@ async fn manager_spawn_stop_lifecycle() {
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     };
     assert!(mgr.spawn_project(&ghost).is_err());
     assert!(mgr.running_pids().is_empty());
@@ -202,6 +203,7 @@ async fn manager_spawn_stop_lifecycle() {
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     assert_eq!(mgr.running_pids(), vec!["p_life0001".to_string()]);
@@ -237,6 +239,7 @@ async fn drain_snapshot_covers_running_loops_and_gates_entry() {
         created_at: "2026-10-25T00:00:00Z".to_string(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     let snap = mgr.drain_snapshot();
@@ -365,11 +368,157 @@ async fn manager_start_all_and_owner_index() {
 }
 
 // ---------------------------------------------------------------------------
+// B38 接线面：start_all 起手 sweep（P1-2）——超 TTL 缺失
+// 条目在 spawn 循环前老化移除，TTL 内缺失条目保留；orphan_ttl_secs=0
+// 关闭老化（外置盘长期离线场景）。
+// ---------------------------------------------------------------------------
+
+/// 直改注册表条目的 missing_since（走 save_projects 同一序列化面）。
+fn set_missing_since(reg: &std::path::Path, id: &str, ts: Option<chrono::DateTime<chrono::Local>>) {
+    let mut file = registry::try_load_projects(reg)
+        .expect("registry load")
+        .unwrap_or_default();
+    for e in file.projects.iter_mut() {
+        if e.id == id {
+            e.missing_since = ts.map(|t| t.to_rfc3339());
+        }
+    }
+    registry::save_projects(reg, &file).expect("registry save");
+}
+
+/// 最小模型 config（含 projects 段；orphan_ttl_secs 按用例给定）。
+fn write_config_with_orphan_ttl(home: &std::path::Path, orphan_ttl_secs: u64) {
+    let cfg = serde_json::json!({
+        "agents": { "defaults": { "llm": "mini-model", "max_tool_iterations": 5 } },
+        "model_list": [ {
+            "model_name": "mini-model",
+            "model": "testai/mini-model",
+            "api_key": "test-key",
+            "api_base": "http://127.0.0.1:9",
+            "model_tier": "mini"
+        } ],
+        "projects": { "max": 4, "orphan_ttl_secs": orphan_ttl_secs }
+    });
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+}
+
+fn manager_for_home(home: &std::path::Path) -> ProjectLoopManager {
+    let shared = Arc::new(SharedResources {
+        home: home.to_path_buf(),
+        ..Default::default()
+    });
+    let sess_dir = home.join("sessions");
+    std::fs::create_dir_all(&sess_dir).unwrap();
+    let store = Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
+        &sess_dir,
+    ));
+    ProjectLoopManager::new(shared, store, Arc::new(nemesis_bus::MessageBus::new()))
+}
+
+#[tokio::test]
+async fn manager_start_all_sweeps_aged_orphans_before_spawn() {
+    let home = unique_home("sweepwire");
+    write_config_with_orphan_ttl(&home, 60);
+    let main_ws = home.join("workspace");
+    std::fs::create_dir_all(&main_ws).unwrap();
+    let mgr = manager_for_home(&home);
+
+    // ① 超期孤儿：注册后删目录，直写旧戳（now-1h >> TTL 60s）。
+    let gone1 = home.join("proj_aged");
+    std::fs::create_dir_all(&gone1).unwrap();
+    let aged = registry::create_project(
+        mgr.registry_path(),
+        &main_ws,
+        "超期孤儿",
+        gone1.to_str().unwrap(),
+        4,
+    )
+    .expect("create aged project");
+    std::fs::remove_dir_all(&gone1).unwrap();
+    set_missing_since(
+        mgr.registry_path(),
+        &aged.id,
+        Some(chrono::Local::now() - chrono::Duration::hours(1)),
+    );
+    // ② TTL 内孤儿：旧戳 now-10s（< TTL 60s）——保留已记时形态。
+    let gone2 = home.join("proj_young");
+    std::fs::create_dir_all(&gone2).unwrap();
+    let young = registry::create_project(
+        mgr.registry_path(),
+        &main_ws,
+        "TTL内孤儿",
+        gone2.to_str().unwrap(),
+        4,
+    )
+    .expect("create young project");
+    std::fs::remove_dir_all(&gone2).unwrap();
+    set_missing_since(
+        mgr.registry_path(),
+        &young.id,
+        Some(chrono::Local::now() - chrono::Duration::seconds(10)),
+    );
+
+    // start_all：①在 spawn 循环前被 sweep 老化（不拉起、注册表移除）；
+    // ②保留。两条目目录都缺失 → 均不 spawn（缺失目录既有跳过语义）。
+    mgr.start_all();
+    let after = registry::list_projects(mgr.registry_path());
+    assert!(
+        !after.iter().any(|e| e.id == aged.id),
+        "超 TTL 条目必须在 start_all 起手被老化移除"
+    );
+    assert!(after.iter().any(|e| e.id == young.id), "TTL 内条目必须保留");
+    assert!(
+        mgr.project_loop(&aged.id).is_none(),
+        "老化条目不得 spawn loop"
+    );
+    assert!(
+        mgr.project_loop(&young.id).is_none(),
+        "缺失目录条目不得 spawn loop"
+    );
+    mgr.stop_all();
+
+    // 0=关闭老化：config 改 0 后再 seed 一条超期戳，新 manager 起手不老化。
+    write_config_with_orphan_ttl(&home, 0);
+    let gone3 = home.join("proj_kept_off");
+    std::fs::create_dir_all(&gone3).unwrap();
+    let kept = registry::create_project(
+        mgr.registry_path(),
+        &main_ws,
+        "关闭老化",
+        gone3.to_str().unwrap(),
+        4,
+    )
+    .expect("create kept project");
+    std::fs::remove_dir_all(&gone3).unwrap();
+    set_missing_since(
+        mgr.registry_path(),
+        &kept.id,
+        Some(chrono::Local::now() - chrono::Duration::hours(1)),
+    );
+    let mgr2 = manager_for_home(&home);
+    mgr2.start_all();
+    let after2 = registry::list_projects(mgr2.registry_path());
+    assert!(
+        after2.iter().any(|e| e.id == kept.id),
+        "orphan_ttl_secs=0 必须关闭老化（外置盘长期离线场景）"
+    );
+    assert!(
+        mgr2.project_loop(&kept.id).is_none(),
+        "关闭老化 ≠ 拉起：缺失目录条目照常跳过"
+    );
+    mgr2.stop_all();
+    assert!(mgr.running_pids().is_empty());
+    assert!(mgr2.running_pids().is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // bind / forget 全路径：sidecar 经 chat_log 全局单例写读——必须先
 // 拿 GLOBAL_STATE_LOCK 并把单例 home 重定向到沙箱（crate::tests 纪律；
 // Windows-form helper，Linux nightly 不编译此用例）。
-// ---------------------------------------------------------------------------
-
 #[cfg(windows)] // Windows-form（进程级单例重定向依赖 crate::tests 沙箱 home）
 #[tokio::test]
 async fn bind_and_forget_session_roundtrip_with_sidecar() {
@@ -589,6 +738,7 @@ async fn reload_providers_swaps_running_project_loop_model() {
         created_at: "2026-09-21T00:00:00Z".to_string(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     };
     mgr.spawn_project(&entry).expect("spawn succeeds");
     let pid = entry.id.clone();

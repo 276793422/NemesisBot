@@ -221,6 +221,16 @@ fn list_reports_switch_and_payload_without_registry() {
         serde_json::json!(["web_fetch"]),
         "manifest 接管声明进投影"
     );
+    // P0-5 来源标记：手工拷入（无 lockfile 记录）= origin null（前端
+    // v-if 不渲染来源徽标）。断言「键在场且为 null」——serde_json 对
+    // 缺失键索引也返回 Null，只查 is_null 会在键被删掉时假绿。
+    let origin_val = rows[0]
+        .get("origin")
+        .expect("origin 键必须在投影行上（null 也是显式在场）");
+    assert!(
+        origin_val.is_null(),
+        "手工拷入 origin 必须为 null: {rows:?}"
+    );
 }
 
 #[test]
@@ -231,7 +241,7 @@ fn list_lockfile_only_row_for_missing_payload() {
     let lock_path = dir.path().join("plugins_wasm").join("lockfile.json");
     std::fs::write(
         &lock_path,
-        r#"{"version":1,"plugins":{"gone":{"version":"0.1.0","wasm_sha256":"ab","trust":"review-required","installed_at_ms":0,"signed_by":""}}}"#,
+        r#"{"version":1,"plugins":{"gone":{"version":"0.1.0","wasm_sha256":"ab","trust":"review-required","installed_at_ms":0,"signed_by":"","origin":"bootstrap:test-registry"}}}"#,
     )
     .expect("lockfile");
     let out = list_impl(&inst).expect("list ok");
@@ -240,6 +250,11 @@ fn list_lockfile_only_row_for_missing_payload() {
     assert_eq!(rows[0]["slug"], "gone");
     assert_eq!(rows[0]["trust"], "review-required");
     assert_eq!(rows[0]["loaded"], false);
+    // P0-5 来源标记：兜底行同带 origin（来源可见性不因载荷缺席而丢）。
+    assert_eq!(
+        rows[0]["origin"], "bootstrap:test-registry",
+        "兜底行 origin 照读 lockfile: {rows:?}"
+    );
     assert!(
         rows[0]["error"]
             .as_str()

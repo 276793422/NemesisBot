@@ -390,6 +390,35 @@ pub fn scan_dangerous_flags(segs: &[String]) -> Vec<&'static str> {
     hits
 }
 
+/// P1-4（2026-11-19）：命令替换存在性探测——段内出现
+/// `$(…)（POSIX/PowerShell 命令替换/子表达式）` 或反引号（POSIX 旧式
+/// 替换）= 动态构造命令，**静态规则匹配的是替换前的字面文本，实际执行
+/// 内容对模式匹配不可见**（`echo $(echo Y2F0|base64 -d)` 归一化后整段
+/// 不含 `cat`，allow 规则静默放行 = 洞）。
+///
+/// 在**原文顶层段**上探测（[`command_arity::command_segments`]，引号感知
+/// 切段但**不做**引号内容豁免）：单/双引号包裹的替换同样命中（`echo
+/// "$(cat x)"` 的双引号在 POSIX 语义里恰恰允许替换展开；引号内豁免是
+/// fail-open 方向，宁可多弹一次卡）。env 前缀也不剥——`FOO=$(curl evil)
+/// cargo build` 的替换发生在赋值展开时，剥掉 env 头会漏检。
+///
+/// 边界（诚实注记）：bash 进程替换 `<(…)`/`>(…)` 同为动态执行，不在本
+/// 探测面（词表从紧原则，与 SENSITIVE_FLAGS 同纪律）；`$VAR`/`${VAR}`
+/// 参数展开是环境静态值，不探测。cmd.exe 不展开 `$(`——Windows 主执行
+/// 路径下命中多为 bash/git-bash/powershell 包装场景，误报成本只是一次
+/// 人工卡（fail-closed）。
+///
+/// 消费点：auditor 两个自动放行臂（规则表 allow 遍 / 审批记忆
+/// auto_by_rule）——命中即不放行降级弹卡（与 [`scan_dangerous_flags`]
+/// 同构的二次校验）；规则 pattern 本身含替换形态 = 显式放行动态构造，
+/// 消费侧豁免。deny/ask 桶与会话 allow-all / 免打扰开关不受本闸约束
+/// （前者无需，后者是显式无人值守意志，B26 同款裁决）。
+pub fn has_command_substitution(target: &str) -> bool {
+    crate::command_arity::command_segments(target)
+        .iter()
+        .any(|seg| seg.contains("$(") || seg.contains('`'))
+}
+
 /// Check if a domain matches a pattern.
 ///
 /// # Examples
@@ -489,5 +518,7 @@ pub fn match_network_rule(pattern: &str, target: &str) -> bool {
 mod cov_tests;
 #[cfg(test)]
 mod dangerous_flag_tests;
+#[cfg(test)]
+mod substitution_tests;
 #[cfg(test)]
 mod tests;

@@ -64,6 +64,8 @@ interface WasmPluginRow {
   x_llm?: boolean
   tool?: { name: string; description: string; operation_type: string; min_tier: string } | null
   signed_by?: string
+  /** 安装来源标记（lockfile origin）：`bootstrap:<源名>` = agent 自举装；null = 手动/手拷（不显示徽标）。 */
+  origin?: string | null
   /** 未装载原因注记（manifest 解析失败 / 载荷目录缺失）。 */
   error?: string
 }
@@ -485,6 +487,11 @@ onMounted(() => {
                     <span class="plugin-badge">v{{ p.version }}</span>
                     <span v-if="p.kind" class="plugin-badge">{{ p.kind }}</span>
                     <span class="plugin-badge" :class="wasmTrustClass(p.trust)">{{ p.trust }}</span>
+                    <span
+                      v-if="p.origin"
+                      class="plugin-badge plugin-badge--info"
+                      :title="`安装来源：${p.origin}——bootstrap: 前缀 = agent 自举提案安装（含审批链）；手动安装无来源标记`"
+                    >来源: {{ p.origin }}</span>
                     <span class="plugin-badge" :class="wasmLoadBadge(p).badge">{{ wasmLoadBadge(p).text }}</span>
                     <span
                       v-for="t in p.takes_over || []"

@@ -22,6 +22,48 @@ fn bm25_ranks_relevant_doc_higher() {
     assert!(s2 == 0.0, "doc without terms should score 0, got {s2}");
 }
 
+/// S22 计分可复现回归锁（2026-11-19；同日修正断言前提）：
+/// **确定性 = 同输入恒同产出**，而非「跨输入序同产出」——query_terms 保
+/// 首现序（HashSet 只去重不改序），同集合不同词序产出的序列本就不同
+/// （首版断言 q1==q2 与该设计直接矛盾、恒假，属测试前提错误非实现缺陷；
+/// 首版「已跑绿」记录作废）。真实不变量三层：
+/// ① 同输入两次调用 → 同去重序列 → bm25 分值逐位相等；
+/// ② 不同输入序 → 序列不同（首现序由输入完全决定）但去重后**词集相同**
+///    （filter-only 消费语义只依赖词集：词命中与否与序无关）；
+/// ③ 跨输入序的分值**不承诺逐位相等**（bm25_score 沿词序累加，序不同
+///    f64 尾数可差）——消费面（logs.rs）BM25 是 filter-only + recency
+///    重排覆盖（BUG-20261116-011），分值不进最终排序，词序差异零可见
+///    影响。avg/len 均为整数和（HashMap 迭代序不影响精确和）。
+#[test]
+fn bm25_scoring_is_bit_deterministic() {
+    let d1 = term_counts(&tokens("rust async runtime tokio runtime"));
+    let d2 = term_counts(&tokens("python web framework django"));
+    let docs = vec![d1.clone(), d2.clone()];
+    let df = document_frequency(&docs);
+    // ① 同输入：重跑序列与分值逐位稳定。
+    let q1 = query_terms("tokio rust runtime async");
+    let q1b = query_terms("tokio rust runtime async");
+    assert_eq!(q1, q1b, "same input must yield identical dedup sequence");
+    let s1 = bm25_score(&d1, 5, &q1, &df, 2, 5.0);
+    let s1_again = bm25_score(&d1, 5, &q1, &df, 2, 5.0);
+    assert_eq!(s1, s1_again, "repeated scoring must be bit-stable");
+    assert!(s1 > 0.0, "all query terms hit d1, score must be positive");
+    // ② 不同输入序：首现序不同（由输入完全决定），去重后词集相同。
+    let q2 = query_terms("async tokio runtime rust");
+    assert_ne!(
+        q1, q2,
+        "first-occurrence order must follow input order (by design)"
+    );
+    let mut set1 = q1.clone();
+    set1.sort();
+    let mut set2 = q2.clone();
+    set2.sort();
+    assert_eq!(set1, set2, "same term set regardless of input order");
+    let s2 = bm25_score(&d1, 5, &q2, &df, 2, 5.0);
+    let s2_again = bm25_score(&d1, 5, &q2, &df, 2, 5.0);
+    assert_eq!(s2, s2_again, "q2 repeated scoring must be bit-stable too");
+}
+
 #[test]
 fn keep_top_trims_weak() {
     let items = vec![1.0_f64, 0.9, 0.1];
