@@ -154,6 +154,10 @@ describe('W7：被取代的旧 socket 迟到回调不得误杀新连接', () => 
     await vi.advanceTimersByTimeAsync(30_000)
     expect(fresh.sent, '新连接心跳必须存活（旧 bug 的迟到 onclose 会误停心跳）').toHaveLength(1)
     expect(fresh.sent[0]).toContain('heartbeat')
+    // BUG-20261121-005 起心跳带 pong 半开检测：不回 pong 的话下个周期会
+    // 判半开走重连（合法新行为，与本测试「迟到回调不得误杀」无关）——
+    // 回 pong 保持连接存活，验证窗口才纯粹。
+    fresh.onmessage?.({ data: JSON.stringify({ type: 'system', module: 'heartbeat', cmd: 'pong', data: {} }) })
     await vi.advanceTimersByTimeAsync(30_000) // 覆盖最大退避窗口（delay≤30s）
     expect(FakeWebSocket.instances, '不得出现第 3 个 socket（幽灵重连）').toHaveLength(2)
   })
