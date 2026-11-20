@@ -195,3 +195,22 @@ fn undone_marker_roundtrip_and_shape_guard() {
         .collect();
     assert_eq!(entries.len(), 1, "只落了合法标记");
 }
+
+// BUG-20261120-025 横向同族回归锁：记事本「带 BOM 的 UTF-8」保存的
+// sidecar——旧形态裸 read_to_string 的前导 \u{FEFF} 会让 parse 失败走空表
+// 降级臂 = 停用位意志静默丢失（本函数注释点名的「意志丢失风险」被 BOM
+// 直接触发）。read_config_string 剥 BOM 后停用位必须照常生效。
+#[test]
+fn bom_prefixed_sidecar_still_applies_policy() {
+    let ws = tmpws();
+    set_tool_policy(ws.path(), "conn-a", "mcp_s__t1", ToolPolicy::Blocked).expect("set");
+    let path = state_dir(ws.path()).join("conn-a.json");
+    let plain = std::fs::read_to_string(&path).expect("read sidecar");
+    std::fs::write(&path, format!("\u{feff}{plain}")).expect("rewrite with BOM");
+    let state = load_tool_state(ws.path(), "conn-a");
+    assert_eq!(
+        tool_policy(&state, "mcp_s__t1"),
+        ToolPolicy::Blocked,
+        "BOM 前缀 sidecar 的停用位不得静默回落基线"
+    );
+}

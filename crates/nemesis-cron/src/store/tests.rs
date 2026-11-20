@@ -171,3 +171,69 @@ fn migrated_file_resaves_as_canonical_envelope() {
     assert_eq!(reloaded.jobs.len(), 1);
     assert_eq!(reloaded.jobs[0].id, "abc12345");
 }
+
+// BUG-20261120-025 回归锁：记事本「带 BOM 的 UTF-8」保存的 jobs.json——
+// 旧形态裸 read_to_string → 前导 \u{FEFF} → parse 的 starts_with('[') 判定
+// 走偏（BOM 非空白，trim_start 不剥）+ serde_json expected value 报错 →
+// load 失败置毒 → start()/save 全拒 = 全部定时任务停摆。走 read_config_string
+// 剥 BOM 后 envelope 与 legacy 裸数组两形态都必须照常加载（对齐
+// BUG-20261115-036 同族修复纪律）。
+#[test]
+fn bom_prefixed_envelope_store_loads() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("jobs.json");
+    let now = Local::now().timestamp_millis();
+    let store = CronStoreData {
+        version: 1,
+        jobs: vec![CronJob {
+            id: "bomjob01".to_string(),
+            name: "bom-envelope".to_string(),
+            enabled: true,
+            schedule: CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(5000),
+                expr: None,
+                tz: None,
+            },
+            payload: CronPayload {
+                kind: "agent_turn".to_string(),
+                message: "m".to_string(),
+                command: None,
+                deliver: false,
+                channel: None,
+                to: None,
+                session_key: None,
+                max_rounds: None,
+            },
+            state: CronJobState {
+                next_run_at_ms: Some(now + 5000),
+                last_run_at_ms: None,
+                last_status: None,
+                last_error: None,
+                history: vec![],
+            },
+            created_at_ms: now,
+            updated_at_ms: now,
+            delete_after_run: false,
+        }],
+    };
+    save(&path, &store).unwrap();
+    let plain = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("\u{feff}{plain}")).unwrap();
+    let loaded = load(&path).expect("BOM 前缀 envelope 必须照常加载");
+    assert_eq!(loaded.jobs.len(), 1);
+    assert_eq!(loaded.jobs[0].id, "bomjob01");
+}
+
+#[test]
+fn bom_prefixed_legacy_array_migrates() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("jobs.json");
+    std::fs::write(&path, format!("\u{feff}{}", legacy_interval_json())).unwrap();
+    let loaded = load(&path).expect("BOM 前缀 legacy 裸数组必须照常迁移");
+    assert_eq!(loaded.version, 1);
+    assert_eq!(loaded.jobs.len(), 1);
+    assert_eq!(loaded.jobs[0].id, "abc12345");
+    assert_eq!(loaded.jobs[0].schedule.kind, "every");
+}
