@@ -206,7 +206,11 @@ async fn gateway_internal(
     // 双用拆分（BUG-20261113-164）：成功体是内部 API 小 JSON，全量读合法；
     // 错误体只喂 bail 文案——有帽读取。
     let text = if status.is_success() {
-        resp.text().await.unwrap_or_default()
+        // BUG-20261120-037：2xx body 读断连不得吞成空串假成功（空串经
+        // from_str("") 落 json!({})——查询命令拿空对象当成功）。
+        resp.text()
+            .await
+            .map_err(|e| anyhow::anyhow!("读取 Gateway 响应体失败: {e}"))?
     } else {
         nemesis_utils::http_cap::read_error_body(resp).await
     };

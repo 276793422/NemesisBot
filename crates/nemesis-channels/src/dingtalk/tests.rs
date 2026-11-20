@@ -317,6 +317,9 @@ async fn test_direct_reply_transport_error_redacts_access_token() {
 // ---------------------------------------------------------------------------
 
 /// 拉起恒回指定 errcode 信封的 webhook 替身（HTTP 恒 200）。
+// axum 是 wecom feature 的 optional 依赖（BUG-20261119-181 测试镜像 wecom
+// 同族协议检查时借用）——单独 `--features dingtalk` 编译红，挂 wecom 守卫。
+#[cfg(feature = "wecom")]
 async fn spawn_dingtalk_errcode_server(errcode: i64) -> std::net::SocketAddr {
     let app = axum::Router::new().route(
         "/robot/send",
@@ -332,6 +335,7 @@ async fn spawn_dingtalk_errcode_server(errcode: i64) -> std::net::SocketAddr {
     addr
 }
 
+#[cfg(feature = "wecom")]
 #[tokio::test]
 async fn test_direct_reply_errcode_nonzero_is_loud_error() {
     let addr = spawn_dingtalk_errcode_server(310_000).await;
@@ -356,6 +360,7 @@ async fn test_direct_reply_errcode_nonzero_is_loud_error() {
     );
 }
 
+#[cfg(feature = "wecom")]
 #[tokio::test]
 async fn test_text_reply_errcode_nonzero_is_loud_error() {
     let addr = spawn_dingtalk_errcode_server(310_000).await;
@@ -375,6 +380,7 @@ async fn test_text_reply_errcode_nonzero_is_loud_error() {
     assert!(err.to_string().contains("errcode=310000"));
 }
 
+#[cfg(feature = "wecom")]
 #[tokio::test]
 async fn test_direct_reply_errcode_zero_ok() {
     let addr = spawn_dingtalk_errcode_server(0).await;

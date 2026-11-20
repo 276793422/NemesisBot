@@ -300,7 +300,11 @@ async fn sync_via_gateway(home: &std::path::Path, cmd: &str, project: &str) -> R
     // 双用拆分（BUG-20261113-164）：错误体要打进 bail 文案——有帽读取；
     // 成功体是内部 API JSON（result 可能较大），全量读合法。
     let raw = if status.is_success() {
-        resp.text().await.unwrap_or_default()
+        // BUG-20261120-037：2xx body 读断连不得吞成空串——空串伪装
+        // 「未知错误（响应缺 error 字段）」，诊断指向不存在的字段缺失误导排障。
+        resp.text()
+            .await
+            .map_err(|e| anyhow::anyhow!("读取 Gateway 响应体失败: {e}"))?
     } else {
         nemesis_utils::http_cap::read_error_body(resp).await
     };

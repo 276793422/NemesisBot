@@ -597,8 +597,19 @@ impl DingTalkChannel {
                                                 {
                                                     Ok(resp) if resp.status().is_success() => {
                                                         let status = resp.status();
-                                                        let body_text =
-                                                            resp.text().await.unwrap_or_default();
+                                                        // BUG-20261120-037：body 读取中断不得
+                                                        // 吞成空串当「无事发生」——旧
+                                                        // unwrap_or_default 经
+                                                        // poll_response_is_empty(200, "") 判
+                                                        // 空 continue 静默，丢事件零痕迹。WARN
+                                                        // 留痕后跳过本轮，下一轮 poll 继续。
+                                                        let body_text = match resp.text().await {
+                                                            Ok(t) => t,
+                                                            Err(e) => {
+                                                                warn!("[DingTalkChannel] poll 响应体读取失败（连接中断），本轮跳过: {e}");
+                                                                continue;
+                                                            }
+                                                        };
                                                         // 204 No Content / 空 body = 网关无事
                                                         // 件正常态，安静跳过——此前 204 落进
                                                         // 解析臂，空 body 双重解析失败 = 每秒

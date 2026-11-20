@@ -1824,7 +1824,24 @@ impl ConnectorInvokeTool {
         // 成功体是 connector 回执（可能带数据），全量读后仍走 HTTP_BODY_CAP
         // 显示帽与回提炼。
         let text = if status.is_success() {
-            resp.text().await.unwrap_or_default()
+            // BUG-20261120-037：2xx 头已到达 = 对端已受理（write 类大概率已
+            // 生效，预算不得回吐——Failed 臂会 release）；body 传输中断 =
+            // 返回数据不完整，不得伪装「成功返回 0 字节」（旧
+            // unwrap_or_default 静默吞错，模型把残缺响应当真、凭条把传输
+            // 异常记成正常 executed——与 read_error_body「不伪装完整错误
+            // 体」纪律同族不对称）→ UnknownOutcome 保留账目（决策表第四臂）。
+            match resp.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    return Ok(InvocationOutcome::UnknownOutcome {
+                        summary: "HTTP 响应体读取中断（结果不完整）".to_string(),
+                        result_text: format!(
+                            "HTTP {status} 响应已受理，但响应体读取中断——返回数据不完整\
+                             （可能被截断）；预算占用保留。错误: {e}"
+                        ),
+                    });
+                }
+            }
         } else {
             nemesis_utils::http_cap::read_error_body(resp).await
         };

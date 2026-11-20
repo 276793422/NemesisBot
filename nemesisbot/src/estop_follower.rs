@@ -115,7 +115,11 @@ async fn poll_with(
     // 双用拆分（BUG-20261113-164）：成功体是内部 API 小 JSON，全量读合法；
     // 错误体只喂错误消息——有帽读取。
     let body = if status.is_success() {
-        resp.text().await.unwrap_or_default()
+        // BUG-20261120-037：2xx body 读断连不得吞成空串——空串伪装
+        // 「parse failed」误导诊断（真实原因是传输中断）。
+        resp.text()
+            .await
+            .map_err(|e| format!("estop_status body read failed: {e}"))?
     } else {
         nemesis_utils::http_cap::read_error_body(resp).await
     };
