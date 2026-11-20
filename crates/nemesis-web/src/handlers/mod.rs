@@ -728,26 +728,11 @@ pub(crate) fn restore_masked_named_fields(
 /// `config.save []` 实测清空 model_list/API key/端口）。字符串形态
 /// `"{ }"` 走不了 visit_seq（诚实报错），唯独数组形态有洞——在 save 入口
 /// 统一 object 闸封死。
+///
+/// 语义单一真相源 = [`nemesis_utils::json_shape`]（030 家族收口：
+/// nemesis-config 读侧 / nemesis-agent cc_hooks 同一洞同一闸）。
 pub(crate) fn require_object(data: &serde_json::Value, what: &str) -> Result<(), String> {
-    if data.is_object() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{what} must be a JSON object, got {}",
-            json_type_name(data)
-        ))
-    }
-}
-
-fn json_type_name(v: &serde_json::Value) -> &'static str {
-    match v {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
-    }
+    nemesis_utils::json_shape::ensure_object(data, what)
 }
 
 /// Resolve a path relative to the workspace, preventing path traversal.

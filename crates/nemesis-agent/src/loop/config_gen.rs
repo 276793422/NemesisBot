@@ -138,6 +138,14 @@ impl AgentLoop {
     pub(crate) fn prepare_config_generation(&self, raw: Vec<u8>) -> Result<PreparedConfig, String> {
         let value: serde_json::Value =
             serde_json::from_slice(&raw).map_err(|e| format!("config 解析失败: {e}"))?;
+        // 形状闸（BUG-20261120-030 热载面）：世代 Value 只做语法校验的话，
+        // `[]` 文档会作为「合法空配置」发布——所有 section 访问器 `.get()`
+        // 落 None 全默认降级，零诊断。与启动面（nemesis-config load_config
+        // object 闸）同源同语义：非 object = 校验失败，走既有 last-known-good
+        // 保留臂 + warn。语义单一真相源 = nemesis_utils::json_shape。
+        if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "config") {
+            return Err(format!("config 校验失败: {e}"));
+        }
         let base_generation = self
             .config_gen
             .read()

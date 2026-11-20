@@ -138,7 +138,20 @@ pub fn load_config(config_path: &Path) -> Result<Config> {
             );
             e
         })?;
-        let mut config: Config = serde_json::from_str(&content).map_err(|e| {
+        let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+            error!("[Config] Failed to parse config JSON: {}", e);
+            e
+        })?;
+        // 形状闸（BUG-20261120-030）：Config 全字段带 default，`[]` 文档走
+        // serde visit_seq 零元素臂 = 「全默认 Config」合法值——整档用户配置
+        // （model_list/API key/channels）被静默无视、出厂默认启动，零诊断。
+        // 配置文档唯一合法形状是 object，typed 解析前 loud 拒绝（启动即失败
+        // 优于带错静跑）。语义单一真相源 = nemesis_utils::json_shape。
+        if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "config file") {
+            error!("[Config] {}", e);
+            return Err(ConfigError::Validation(e));
+        }
+        let mut config: Config = serde_json::from_value(value).map_err(|e| {
             error!("[Config] Failed to parse config JSON: {}", e);
             e
         })?;

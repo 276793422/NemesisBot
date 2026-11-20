@@ -464,6 +464,15 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
         Some(inner) => inner.clone(),
         None => root,
     };
+    // 形状闸（BUG-20261120-029）：CcEvents 全字段带 default，`[]` 走 serde
+    // visit_seq 零元素臂 = 「全空 hooks」的合法值——整份 hooks 配置被静默
+    // 清空还 Ok，违背本模块「手写坏配置 loud 拒绝（fail-closed）」纪律。
+    // 两种合法形态（标准 `{"hooks":{...}}` 与裸顶层方言）的事件体都是
+    // object，反序列化前 loud 拒绝非 object。语义单一真相源
+    // = nemesis_utils::json_shape（BUG-20261120-030 家族收口）。
+    if let Err(e) = nemesis_utils::json_shape::ensure_object(&events_value, "hooks") {
+        return Err(format!("unsupported hooks.json format: {e}"));
+    }
     let mut events: CcEvents = serde_json::from_value(events_value)
         .map_err(|e| format!("unsupported hooks.json format: {e}"))?;
     for (event, groups) in events.groups_mut() {

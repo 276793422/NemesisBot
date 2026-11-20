@@ -28,6 +28,7 @@ pub mod http_redirect;
 // 带帽单行读（横扫角度 B 续——行帧形态）：外部流行读统一实现，
 // 裸 read_line 无界积累防 OOM；nemesis-mcp stdio 与 nemesis-channels
 // 四通道同源消费，帽值调用方按协议传入。
+pub mod json_shape;
 pub mod line_cap;
 pub mod llm_error_class;
 // http 门控：media 模块核心是 reqwest 下载——未启用 `http`
@@ -88,6 +89,7 @@ pub use http_retry::do_request_with_retry_reqwest;
 pub use http_retry::{
     RetryConfig, RetryableResponse, do_request_with_retry_simple, should_retry, sleep_with_cancel,
 };
+pub use json_shape::{ensure_object, json_type_name};
 #[cfg(feature = "http")]
 pub use media::{
     DownloadOptions, detect_media_type, download_file, download_file_simple,
