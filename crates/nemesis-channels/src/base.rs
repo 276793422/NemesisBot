@@ -523,7 +523,19 @@ pub(crate) fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
             continue;
         }
         if let Some(prefix) = entry.strip_suffix('*') {
-            if peer_ip.starts_with(prefix) {
+            // BUG-20261121-022 段边界闸：无分隔符尾的手滑写法（`192.168.1*`
+            // 漏尾点）用字符 starts_with 会把 `192.168.11.x` / `192.168.100.x`
+            // 误放进白名单——`1` 是 `11`/`100` 的字符串前缀，段边界撞名，
+            // 对端网络准入假放行。要求 prefix 以分隔符结尾（契约形态
+            // `192.168.1.*` / IPv6 hextet `fd00::*`）或 peer_ip 在边界处
+            // 恰是 `.`/`:`（`192.168.1*` 照常放行 `192.168.1.50`、拒绝
+            // `192.168.11.5`；IPv6 `fd00:a*` 放行 `fd00:a::1`、拒绝
+            // `fd00:aa::1`）。收紧方向：契约形态行为不变，只可能更严。
+            let boundary_ok = prefix.ends_with('.')
+                || prefix.ends_with(':')
+                || peer_ip.as_bytes().get(prefix.len()) == Some(&b'.')
+                || peer_ip.as_bytes().get(prefix.len()) == Some(&b':');
+            if peer_ip.starts_with(prefix) && boundary_ok {
                 return true;
             }
         } else if peer_ip == entry {
