@@ -23,6 +23,7 @@
 
 use crate::api_handlers::AppState;
 use crate::protocol::ProtocolMessage;
+use crate::server::WS_BROADCAST_TIMEOUT;
 use nemesis_workflow::engine::WorkflowEngine;
 use nemesis_workflow::types::{TriggerSource, Workflow};
 use std::collections::HashMap;
@@ -306,9 +307,11 @@ async fn handle_history_request(
     let bytes = response
         .to_json()
         .map_err(|e| format!("failed to encode history response: {}", e))?;
+    // 必达帧带上限等待（BUG-20261120-022）：宿主（读循环 / fire-and-forget
+    // 任务）不被慢客户端满队列无界挂住。
     state
         .session_manager
-        .broadcast(&session_id, &bytes)
+        .broadcast_bounded(&session_id, &bytes, WS_BROADCAST_TIMEOUT)
         .await
         .map_err(|e| format!("failed to broadcast history response: {}", e))?;
 
@@ -340,9 +343,11 @@ async fn send_error(state: &AppState, session_id: &str, error: &str) -> Result<(
     let bytes = msg
         .to_json()
         .map_err(|e| format!("failed to encode error: {}", e))?;
+    // 同 history_response 臂：带上限等待（BUG-20261120-022），错误帧
+    // 属尽力而为诊断面，超时丢弃可接受（客户端重连后走 history 自愈）。
     state
         .session_manager
-        .broadcast(session_id, &bytes)
+        .broadcast_bounded(session_id, &bytes, WS_BROADCAST_TIMEOUT)
         .await
         .map_err(|e| format!("failed to broadcast error: {}", e))
 }

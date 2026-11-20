@@ -19,6 +19,7 @@
 //! - Cancelled: `"[工作流已取消]"`
 
 use crate::protocol::ProtocolMessage;
+use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::session::SessionManager;
 use async_trait::async_trait;
 use nemesis_workflow::engine::WorkflowEngine;
@@ -129,7 +130,15 @@ impl WorkflowObserver for WorkflowChatReplyObserver {
                 return;
             }
         };
-        if let Err(e) = self.session_manager.broadcast(&ts.0, &bytes).await {
+        // 必达帧带上限等待（BUG-20261120-022）：本 observer 任务每次
+        // emit 独立 spawn（非连坐），但无界等待仍会让该任务 + 已 touch
+        // 的 session 永不逐出地挂住——回复正文已落 chat_log（上方 append），
+        // 超时丢弃由客户端 history_request 重拉自愈。
+        if let Err(e) = self
+            .session_manager
+            .broadcast_bounded(&ts.0, &bytes, WS_BROADCAST_TIMEOUT)
+            .await
+        {
             tracing::warn!(
                 error = %e,
                 session_id = %ts.0,

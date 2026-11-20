@@ -56,6 +56,7 @@ impl futures::Sink<Message> for AgtVecSink {
 async fn agt_writer_lo_closed_breaks_writer() {
     let (hi_tx, hi_rx) = mpsc::channel(8);
     let (lo_tx, lo_rx) = mpsc::channel(8);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
@@ -69,6 +70,7 @@ async fn agt_writer_lo_closed_breaks_writer() {
         AgtVecSink(seen.clone()),
         hi_rx,
         lo_rx,
+        ping_rx,
         close_rx,
         done_tx,
         "agt-lo".to_string(),
@@ -84,6 +86,7 @@ async fn agt_writer_lo_closed_breaks_writer() {
 async fn agt_writer_hi_piggyback_takes_frames_beyond_batch() {
     let (hi_tx, hi_rx) = mpsc::channel(256);
     let (lo_tx, lo_rx) = mpsc::channel(256);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
     let (done_tx, _done_rx) = tokio::sync::watch::channel(false);
     let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
@@ -102,6 +105,7 @@ async fn agt_writer_hi_piggyback_takes_frames_beyond_batch() {
         AgtVecSink(seen.clone()),
         hi_rx,
         lo_rx,
+        ping_rx,
         close_rx,
         done_tx,
         "agt-hi".to_string(),

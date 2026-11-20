@@ -261,6 +261,54 @@ impl SessionManager {
         ))
     }
 
+    /// 必达帧广播带上限等待（慢客户端隔离墙，BUG-20261120-022）。
+    ///
+    /// 与 [`Self::broadcast`] 同查找/触摸/守卫纪律（先 clone Arc 归还
+    /// DashMap 分片读守卫再 await），差别仅在 hi 通道 send 外加一层
+    /// `timeout` 包装：满通道最长等 `timeout`，超时返回 Err——调用方
+    /// （全局 agent 事件泵等单任务宿主）不再被单个慢客户端连坐卡死。
+    /// timeout 由调用方显式传参而非内置常量：`Duration::MAX` 会溢出
+    /// tokio `Instant` 算术（BUG-20261116-001 教训），语义上也不该有
+    /// 「无限等」形态的本 API。
+    ///
+    /// 丢失语义：必达通道满 = 客户端严重落后，超时丢弃整帧。带 seq 的
+    /// 帧已入 `chat_event_log` 环可 `chat.sync` 补拉自愈；无 seq 帧
+    /// （诊断面）为尽力而为。无队列臂与 `broadcast_droppable` 同级
+    /// debug（单客户端断连不该刷 warn）。
+    pub async fn broadcast_bounded(
+        &self,
+        session_id: &str,
+        message: &[u8],
+        timeout: Duration,
+    ) -> Result<(), String> {
+        // 先 clone Arc 归还分片读守卫，再进入背压 await（同 broadcast 注释纪律）。
+        let queue = self
+            .send_queues
+            .get(session_id)
+            .map(|q| Arc::clone(q.value()));
+        match queue {
+            Some(queue) => {
+                self.touch_session(session_id);
+                match tokio::time::timeout(timeout, queue.send(message.to_vec())).await {
+                    Ok(r) => r,
+                    Err(_) => Err(format!(
+                        "send queue backlog timeout after {timeout:?} (slow/dead client isolation)"
+                    )),
+                }
+            }
+            None => {
+                tracing::debug!(
+                    session_id = %session_id,
+                    "[WebSocket] bounded: session not found or no send queue"
+                );
+                Err(format!(
+                    "session not found or no send queue: {}",
+                    session_id
+                ))
+            }
+        }
+    }
+
     /// Get active session count.
     pub fn active_count(&self) -> usize {
         self.sessions.len()

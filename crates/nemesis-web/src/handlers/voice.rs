@@ -7,6 +7,7 @@
 
 #[cfg(target_os = "windows")]
 use crate::handlers::require_workspace;
+use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::ws_router::{ModuleHandler, RequestContext};
 #[cfg(target_os = "windows")]
 use nemesis_voice::EchoCanceller; // trait needed to call SpeexAec::process
@@ -858,7 +859,11 @@ fn push_speaker_rejected(session_id: &str, session_mgr: Arc<crate::session::Sess
         let rt = tokio::runtime::Handle::current();
         let sid = session_id.to_string();
         rt.spawn(async move {
-            let _ = session_mgr.broadcast(&sid, &bytes).await;
+            // 带上限等待（BUG-20261120-022）：fire-and-forget 任务无界挂住
+            // 会堆积 + 已 touch 的 session 永不逐出；通知帧尽力而为。
+            let _ = session_mgr
+                .broadcast_bounded(&sid, &bytes, WS_BROADCAST_TIMEOUT)
+                .await;
         });
     }
 }
@@ -2718,7 +2723,14 @@ impl VoiceHandler {
                                         let sid = session_id.clone();
                                         let smgr = session_mgr.clone();
                                         tokio::runtime::Handle::current().spawn(async move {
-                                            let _ = smgr.broadcast(&sid, &bytes).await;
+                                            // 带上限等待（BUG-20261120-022，同 push_speaker_rejected）。
+                                            let _ = smgr
+                                                .broadcast_bounded(
+                                                    &sid,
+                                                    &bytes,
+                                                    WS_BROADCAST_TIMEOUT,
+                                                )
+                                                .await;
                                         });
                                     }
                                 }
@@ -2772,7 +2784,10 @@ impl VoiceHandler {
                             let sid = session_id.clone();
                             let smgr = session_mgr.clone();
                             tokio::runtime::Handle::current().spawn(async move {
-                                let _ = smgr.broadcast(&sid, &bytes).await;
+                                // 带上限等待（BUG-20261120-022，同 push_speaker_rejected）。
+                                let _ = smgr
+                                    .broadcast_bounded(&sid, &bytes, WS_BROADCAST_TIMEOUT)
+                                    .await;
                             });
                         }
                     }
@@ -4067,7 +4082,10 @@ fn push_stt_result(session_id: &str, session_mgr: Arc<crate::session::SessionMan
         let rt = tokio::runtime::Handle::current();
         let sid = session_id.to_string();
         rt.spawn(async move {
-            if let Err(e) = session_mgr.broadcast(&sid, &bytes).await {
+            if let Err(e) = session_mgr
+                .broadcast_bounded(&sid, &bytes, WS_BROADCAST_TIMEOUT)
+                .await
+            {
                 tracing::warn!("[STT] Failed to push result: {}", e);
             }
         });
@@ -4089,7 +4107,10 @@ fn push_stt_to_input(
         let rt = tokio::runtime::Handle::current();
         let sid = session_id.to_string();
         rt.spawn(async move {
-            if let Err(e) = session_mgr.broadcast(&sid, &bytes).await {
+            if let Err(e) = session_mgr
+                .broadcast_bounded(&sid, &bytes, WS_BROADCAST_TIMEOUT)
+                .await
+            {
                 tracing::warn!("[STT InputBox] Failed to push result: {}", e);
             }
         });
@@ -4112,7 +4133,10 @@ fn push_stt_dialogue(
         let rt = tokio::runtime::Handle::current();
         let sid = session_id.to_string();
         rt.spawn(async move {
-            if let Err(e) = session_mgr.broadcast(&sid, &bytes).await {
+            if let Err(e) = session_mgr
+                .broadcast_bounded(&sid, &bytes, WS_BROADCAST_TIMEOUT)
+                .await
+            {
                 tracing::warn!("[STT Dialogue] Failed to push result: {}", e);
             }
         });

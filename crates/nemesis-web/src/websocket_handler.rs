@@ -11,7 +11,9 @@
 //! - Reconnect logic via session tracking
 
 use crate::protocol::ProtocolMessage;
+use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::session::SessionManager;
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
@@ -81,6 +83,10 @@ pub struct IncomingMessage {
 pub struct SendQueue {
     hi_tx: mpsc::Sender<Vec<u8>>,
     lo_tx: mpsc::Sender<Vec<u8>>,
+    /// 协议级保活 ping 信号线（容量 1，槽满即弃——ping 幂等，积压无意义）。
+    /// writer 消费后发 `Message::Ping`（BUG-20261120-021：此前 tick 臂
+    /// 空操作，`channels.web.heartbeat_interval` 配置零语义）。
+    ping_tx: mpsc::Sender<()>,
     done: tokio::sync::watch::Receiver<bool>,
     /// 外部关闭请求（SessionManager 逐出非活跃会话时对仍存活的连接发起
     /// 礼貌断连）。writer 收到后发 Close 帧收尾；此后 `send`/`send_droppable`
@@ -109,18 +115,20 @@ impl SendQueue {
     pub fn new(sink: SplitSink<WebSocket, Message>, session_id: String) -> Self {
         let (hi_tx, hi_rx) = mpsc::channel(SEND_QUEUE_HI_CAP);
         let (lo_tx, lo_rx) = mpsc::channel(SEND_QUEUE_LO_CAP);
+        let (ping_tx, ping_rx) = mpsc::channel(1);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
         let (close_tx, close_rx) = tokio::sync::watch::channel(false);
         let _close_rx_keepalive = close_rx.clone();
         let dropped = Arc::new(AtomicU64::new(0));
 
         tokio::spawn(run_send_writer(
-            sink, hi_rx, lo_rx, close_rx, done_tx, session_id,
+            sink, hi_rx, lo_rx, ping_rx, close_rx, done_tx, session_id,
         ));
 
         Self {
             hi_tx,
             lo_tx,
+            ping_tx,
             done: done_rx,
             close_tx,
             _close_rx_keepalive,
@@ -135,6 +143,23 @@ impl SendQueue {
             .send(data)
             .await
             .map_err(|_| "send queue stopped".to_string())
+    }
+
+    /// 必达帧入队（hi 通道）带上限等待（慢客户端隔离墙，BUG-20261120-022）。
+    /// [`Self::send`] 的无限背压等待只保留给外部已包超时的调用方
+    /// （send_to_session / send_history_to_session，BUG-20261113-139 修复）；
+    /// 其余 hi 通道消费点一律走本方法——慢/死客户端塞满 hi（64 槽）后，
+    /// 无界等待会冻结读循环（pong/错误帧内联发送）、永久挂起 WSAPI dispatch
+    /// 任务（响应堆积且会话被 touch 永不逐出）、卡死全局 agent 事件泵
+    /// （139 修复面外的残留分支）。超时放弃安全：带 seq 帧已入环
+    /// `chat.sync` 补拉；无 seq 帧（pong/错误/deny）本就是尽力而为诊断面。
+    pub async fn send_bounded(&self, data: Vec<u8>, timeout: Duration) -> Result<(), String> {
+        match tokio::time::timeout(timeout, self.hi_tx.send(data)).await {
+            Ok(r) => r.map_err(|_| "send queue stopped".to_string()),
+            Err(_) => Err(format!(
+                "send queue backlog timeout after {timeout:?} (slow/dead client isolation)"
+            )),
+        }
     }
 
     /// 可丢帧入队（lo 通道，非阻塞）：**满即丢**（返回 Err），绝不等待
@@ -172,6 +197,14 @@ impl SendQueue {
         let _ = self.close_tx.send(true);
     }
 
+    /// 协议级保活 ping 信号（非阻塞，槽满即弃——ping 幂等，积压无意义）。
+    /// 消费点 = writer 的 ping 臂（发 `Message::Ping`，对端协议栈自动回
+    /// pong）。读循环 tick 臂调用；写侧失败即连接死暴露（writer 退出 →
+    /// 后续 send 诚实报错），不再依赖 1h 会话逐出兜底死连接。
+    pub fn ping(&self) {
+        let _ = self.ping_tx.try_send(());
+    }
+
     /// Check if the send queue is still active.
     pub fn is_done(&self) -> bool {
         *self.done.borrow()
@@ -193,9 +226,13 @@ impl SendQueue {
         dropped: Arc<AtomicU64>,
     ) -> Self {
         let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+        // 无 writer 的测试队列：ping_rx 直接 drop——ping() 静默丢（Err 忽略），
+        // 与 send 的 rx-已丢语义同形。
+        let (ping_tx, _ping_rx) = mpsc::channel(1);
         Self {
             hi_tx,
             lo_tx,
+            ping_tx,
             done: done_rx,
             close_tx,
             // 无 writer 的测试队列：保活 receiver 由本字段独持，否则
@@ -233,13 +270,17 @@ impl SendQueue {
 /// `SplitSink<WebSocket, Message>`，测试用假 sink 验证优先级/合批语义。
 /// `close_rx` 置位（SessionManager 逐出非活跃会话）= 礼貌收尾：等 hi/lo
 /// 就绪帧排空（biased 序 close 臂最后，不抢在途必达帧），发 Close 帧
-/// 让对端走正常关闭握手后退出。两条通道的发送端同生命周期（都持在
-/// `SendQueue` 手里），任一关闭即
-/// 结构已弃用，直接收尾（对端 socket 已死，余帧无意义）。
+/// 让对端走正常关闭握手后退出。ping 信号线（BUG-20261120-021）优先级
+/// 最低（biased 序 ping 臂最后）——数据帧与收尾优先于保活；Ping 帧经
+/// 同一 sink 单写者纪律出站，写失败 = 连接死 → 收尾。两条数据通道的
+/// 发送端同生命周期（都持在 `SendQueue` 手里），任一 `recv_many` 返回
+/// 0（全部发送端已弃）即队列结构已弃用，直接收尾（对端 socket 已死，
+/// 余帧无意义）。
 async fn run_send_writer<S>(
     mut sink: S,
     mut hi_rx: mpsc::Receiver<Vec<u8>>,
     mut lo_rx: mpsc::Receiver<Vec<u8>>,
+    mut ping_rx: mpsc::Receiver<()>,
     mut close_rx: tokio::sync::watch::Receiver<bool>,
     done_tx: tokio::sync::watch::Sender<bool>,
     session_id: String,
@@ -264,6 +305,11 @@ async fn run_send_writer<S>(
             _ = close_rx.changed() => {
                 let _ = sink.send(Message::Close(None)).await;
                 break 'writer;
+            }
+            Some(_) = ping_rx.recv() => {
+                if sink.send(Message::Ping(Bytes::new())).await.is_err() {
+                    break 'writer;
+                }
             }
         }
         // 非阻塞捎带：hi 排前、lo 跟后（各自有界，单轮有限）。
@@ -526,7 +572,9 @@ pub async fn handle_websocket(
                                         &pm.module, &pm.cmd, req_id, "ws router not configured",
                                     );
                                     if let Ok(bytes) = err.to_json() {
-                                        let _ = send_queue.send(bytes).await;
+                                        let _ = send_queue
+                                            .send_bounded(bytes, WS_BROADCAST_TIMEOUT)
+                                            .await;
                                     }
                                 }
                                 // Request handled, skip legacy dispatch
@@ -585,7 +633,9 @@ pub async fn handle_websocket(
                                         "permission_denied: workflow-chat sessions are limited to the workflow_chat module",
                                     );
                                     if let Ok(bytes) = err.to_json() {
-                                        let _ = send_queue.send(bytes).await;
+                                        let _ = send_queue
+                                            .send_bounded(bytes, WS_BROADCAST_TIMEOUT)
+                                            .await;
                                     }
                                     tracing::warn!(
                                         session_id = %session_id,
@@ -609,7 +659,9 @@ pub async fn handle_websocket(
                                 let err =
                                     ProtocolMessage::response_err("chat", "send", "", "permission_denied: workflow-chat sessions are limited to the workflow_chat module");
                                 if let Ok(bytes) = err.to_json() {
-                                    let _ = send_queue.send(bytes).await;
+                                    let _ = send_queue
+                                        .send_bounded(bytes, WS_BROADCAST_TIMEOUT)
+                                        .await;
                                 }
                                 continue;
                             }
@@ -641,7 +693,9 @@ pub async fn handle_websocket(
                             Ok(None) => {
                                 // System message handled (e.g., ping -> pong)
                                 let pong = build_pong().unwrap();
-                                let _ = send_queue.send(pong).await;
+                                let _ = send_queue
+                                    .send_bounded(pong, WS_BROADCAST_TIMEOUT)
+                                    .await;
                             }
                             Err(e) => {
                                 tracing::error!(
@@ -650,14 +704,18 @@ pub async fn handle_websocket(
                                     "[WebSocket] Protocol message error"
                                 );
                                 let error_msg = build_error_message(&e);
-                                let _ = send_queue.send(error_msg).await;
+                                let _ = send_queue
+                                    .send_bounded(error_msg, WS_BROADCAST_TIMEOUT)
+                                    .await;
                             }
                         }
                     }
                     Some(Ok(Message::Ping(_data))) => {
                         // Respond with pong (axum handles this automatically, but just in case)
                         state.session_manager_ref().touch_session(&session_id);
-                        let _ = send_queue.send(build_pong().unwrap()).await;
+                        let _ = send_queue
+                            .send_bounded(build_pong().unwrap(), WS_BROADCAST_TIMEOUT)
+                            .await;
                     }
                     Some(Ok(Message::Close(_))) => {
                         tracing::info!(
@@ -691,9 +749,14 @@ pub async fn handle_websocket(
                 }
             }
             _ = ping_interval.tick() => {
-                // Send periodic ping to keep connection alive
-                // SendQueue only handles text, so we skip this for now
-                // (axum/autobahn handles ping/pong at protocol level)
+                // 协议级保活 ping（BUG-20261120-021）：此前本臂为空操作
+                // （旧注释声称「axum/autobahn handles ping/pong at protocol
+                // level」——axum 只自动**应答**客户端 ping、从不主动发起），
+                // config `channels.web.heartbeat_interval` 实际零语义。
+                // ping 经 writer 单写者信号线出站；死连接在写侧失败暴露
+                // （writer 退出 → 后续 send 诚实报错），不再只依赖 1h 逐出
+                // 兜底。
+                send_queue.ping();
             }
         }
     }
@@ -1052,8 +1115,11 @@ pub async fn broadcast_to_session(
         })),
     );
     let data = msg.to_json().map_err(|e| e.to_string())?;
+    // 必达帧带上限等待（BUG-20261120-022 横向扫收口）：生产零调用点
+    // （仅测试/legacy 合成路径），迁移只为「hi 通道无界等待」全族清零
+    // 的语义一致性。
     session_manager
-        .broadcast(session_id, &data)
+        .broadcast_bounded(session_id, &data, WS_BROADCAST_TIMEOUT)
         .await
         .map_err(|e| format!("failed to broadcast: {}", e))?;
 

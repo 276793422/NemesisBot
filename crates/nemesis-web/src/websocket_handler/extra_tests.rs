@@ -572,19 +572,50 @@ async fn test_send_queue_integrates_with_websocket() {
     ws.send(WsMessage::Text(raw.into())).await.unwrap();
 
     for _ in 0..2 {
-        let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
-            .await
-            .expect("timeout")
-            .expect("closed")
-            .expect("err");
-        match msg {
-            WsMessage::Text(t) => {
-                let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-                assert_eq!(parsed["cmd"], "pong");
+        // 读循环 tick 臂（BUG-20261120-021 ping 信号线）经 tokio interval
+        // 首 tick 立即触发——每条连接建立后服务器会主动发一个协议级
+        // Ping 帧（排在排队客户端帧之后）。跳过非 Text 帧，只数 pong。
+        let mut text = None;
+        while text.is_none() {
+            let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
+                .await
+                .expect("timeout")
+                .expect("closed")
+                .expect("err");
+            if let WsMessage::Text(t) = msg {
+                text = Some(t);
             }
-            other => panic!("expected text, got {:?}", other),
         }
+        let parsed: serde_json::Value = serde_json::from_str(&text.unwrap()).unwrap();
+        assert_eq!(parsed["cmd"], "pong");
     }
+}
+
+#[tokio::test]
+async fn test_websocket_server_sends_protocol_ping_on_connect() {
+    // BUG-20261120-021：读循环 tick 臂经 tokio interval 首 tick 立即触发，
+    // 连接建立后服务器应主动发协议级 Ping 帧（此前本臂空操作、
+    // `channels.web.heartbeat_interval` 配置零语义）。客户端协议栈自动
+    // 回 pong，业务层无感。
+    let state = make_state("", None, None);
+    let (addr, listener) = bind_ephemeral().await;
+    let _server = start_test_server(listener, state).await;
+
+    let mut ws = ws_connect(&addr, None).await;
+
+    let got_ping = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let msg = ws.next().await.expect("closed").expect("err");
+            if let WsMessage::Ping(_) = msg {
+                return true;
+            }
+        }
+    })
+    .await;
+    assert!(
+        got_ping.is_ok(),
+        "server must send a protocol-level ping right after connect"
+    );
 }
 
 #[tokio::test]

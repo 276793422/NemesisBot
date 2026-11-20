@@ -6,6 +6,7 @@
 
 use crate::api_handlers::AppState;
 use crate::protocol::ProtocolMessage;
+use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::session::AuthMethod;
 use crate::websocket_handler::SendQueue;
 use std::collections::HashMap;
@@ -135,7 +136,7 @@ impl WsRouter {
                 "permission_denied: workflow-chat sessions cannot use dashboard WSAPI modules",
             );
             if let Ok(bytes) = response.to_json()
-                && let Err(e) = send_queue.send(bytes).await
+                && let Err(e) = send_queue.send_bounded(bytes, WS_BROADCAST_TIMEOUT).await
             {
                 tracing::warn!(
                     req_id = %req_id,
@@ -172,7 +173,7 @@ impl WsRouter {
         };
 
         if let Ok(bytes) = response.to_json()
-            && let Err(e) = send_queue.send(bytes).await
+            && let Err(e) = send_queue.send_bounded(bytes, WS_BROADCAST_TIMEOUT).await
         {
             tracing::warn!(
                 req_id = %req_id,
