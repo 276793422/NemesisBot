@@ -1778,6 +1778,111 @@ pub(crate) async fn init_post_agent(
         web_server.set_mail_plugin(*handle);
         info!("[Gateway] plugin_mail handle injected into web server");
     }
+    // 热装载闭包 + 未装载探针（2026-11-20 热装载通路；quic relay
+    // `set_relay_config_refresh` 同款注入反转先例——loader 在宿主 crate，
+    // nemesis-web 依赖方向够不到）。config_set 保存 enabled=true 且未装载时
+    // handler 经 spawn_blocking 调闭包完成 load → server_start → web 热槽
+    // 写入全链（勾选即用，不等重启）。闭包同步形态：spawn_blocking 线程内
+    // 不能进 tokio async——server_start 直调同步 FFI（插件内 block_on 自有
+    // runtime，与装配点 async 版 `mail_server_start` 同一插件导出）。
+    // cfg 门控：注入目标 nemesis_web::handlers::mail 是 feature 门控模块
+    // （裁 mail feature 的定制构建本段整体消失，loader 恒编译不受影响）。
+    #[cfg(feature = "mail")]
+    {
+        let mail_home = home.clone();
+        let mail_cfg_dir =
+            nemesis_path::workspace_config_dir(&crate::common::workspace_path(&home));
+        nemesis_web::handlers::mail::set_mail_hot_loader(std::sync::Arc::new(move || {
+            match crate::mail_plugin_loader::load_mail_plugin(&mail_home, &mail_cfg_dir) {
+                crate::mail_plugin_loader::MailLoadOutcome::Loaded => {
+                    let Some(h) = crate::mail_plugin_loader::plugin_handle() else {
+                        return Err("装载后句柄缺席（内部竞态）".to_string());
+                    };
+                    let raw = h
+                        .server_start("{}")
+                        .map_err(|e| format!("mail 服务端启动失败（SMTP/POP3 面）: {e}"))?;
+                    let v: serde_json::Value = serde_json::from_str(&raw)
+                        .map_err(|e| format!("server_start 返回非 JSON: {e}（raw={raw}）"))?;
+                    if v.get("ok").and_then(|b| b.as_bool()) == Some(false) {
+                        let code = v
+                            .get("err_code")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("unknown");
+                        let msg = v.get("err_msg").and_then(|m| m.as_str()).unwrap_or("");
+                        return Err(format!("mail 服务端启动失败：[{code}] {msg}"));
+                    }
+                    // 落 web 热槽（handlers::mail 读两槽合流）——mail.* 即刻可用。
+                    nemesis_web::handlers::mail::set_mail_plugin_slot(*h);
+                    // agent 工具面热同步（2026-11-20 第二批）：loop 构造期
+                    // handle 缺席未注册 mail 工具时补注册（hook 未注入 =
+                    // 非 gateway 形态，静默略过）。句柄已落 loader 槽是本臂
+                    // 前置事实（上面 Some 检查过），注册判定无需重查。
+                    crate::mail_tool::notify_tool_sync();
+                    info!(
+                        "[Gateway] plugin_mail 热装载完成（server_start + 热槽写入 + 工具面同步）"
+                    );
+                    Ok(())
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::Absent => {
+                    Err("plugin_mail DLL 缺席（exe 旁 plugins/ 目录无 plugin_mail 库）".to_string())
+                }
+                crate::mail_plugin_loader::MailLoadOutcome::DisabledBySwitch => Err(
+                    "本地插件库开关停用（config.plugin.native.json 的 plugin_mail 键已关闭）"
+                        .to_string(),
+                ),
+                crate::mail_plugin_loader::MailLoadOutcome::Rejected(reason) => {
+                    Err(format!("装载被拒：{reason}"))
+                }
+            }
+        }));
+        // 未装载精确原因探针（status hint 数据源；四态与装配点 log 同口径，
+        // 恒含「mail 插件未装载」前缀——IT mail_ws 契约断言该子串）。已装载
+        // = None（status 走句柄面，不产生 hint）。
+        let probe_home = home.clone();
+        let probe_cfg_dir =
+            nemesis_path::workspace_config_dir(&crate::common::workspace_path(&home));
+        nemesis_web::handlers::mail::set_mail_unloaded_probe(std::sync::Arc::new(move || {
+            if crate::mail_plugin_loader::plugin_handle().is_some() {
+                return None;
+            }
+            if !crate::mail_plugin_loader::mail_enabled(&probe_home) {
+                return Some(
+                    "mail 插件未装载：总闸未开（邮箱页 ⚙ 配置勾选启用，或 config.mail.json 设 enabled=true）"
+                        .to_string(),
+                );
+            }
+            if !nemesis_config::plugins_native::load_enabled(
+                &probe_cfg_dir,
+                nemesis_config::plugins_native::NativePluginId::PluginMail,
+            ) {
+                return Some(
+                    "mail 插件未装载：本地插件库开关停用（config.plugin.native.json 的 plugin_mail 键已关闭）"
+                        .to_string(),
+                );
+            }
+            if !crate::mail_plugin_loader::mail_plugin_present() {
+                return Some(
+                    "mail 插件未装载：plugin_mail DLL 缺席（exe 旁 plugins/ 目录）".to_string(),
+                );
+            }
+            Some("mail 插件未装载：装载失败（启动或热装载时被拒，详见网关日志）".to_string())
+        }));
+        // agent 工具面热同步 hook（2026-11-20 第二批；wasm ToolSync hook
+        // 同款形态）：热装载闭包 Loaded 臂经 `notify_tool_sync` 触发——把
+        // mail 工具补注册进当前 AgentLoop 注册表（loop 构造期 handle 缺席
+        // 未注册的补偿）。捕获 adapter（与 AppState 同一 Arc），`current()`
+        // 每次解析最新 loop——agent 重启自动跟进；None = 停机窗口，重启
+        // 路径 agent_factory 注册段按装载态拉起，通知丢弃是诚实降级。
+        let adapter_for_mail = agent_adapter.clone();
+        crate::mail_tool::set_tool_sync_hook(std::sync::Arc::new(move || {
+            let Some(loop_arc) = adapter_for_mail.current() else {
+                tracing::warn!("[Mail] tool sync skipped (loop stopped)");
+                return;
+            };
+            crate::mail_tool::sync_mail_tool_into_loop(&loop_arc);
+        }));
+        info!("[Gateway] mail hot-loader + unloaded-probe closures injected");
+    }
     // notify 槽：SMTP 落信 → SSE `mailbox.updated`（邮件页实时刷新）；发信
     // 回执 → `mail.sent`。publish_global_event 跨 crate 全局口——EventHub
     // 未装配（relay 纯中继形态）时静默跳过，闸内消费面零感知。

@@ -19,6 +19,13 @@
 //! post_agent 后段建 loop），注册时判定无时序缺口；run/acp headless 不
 //! load 插件 = 自然不注册。
 //!
+//! **工具面热同步**（2026-11-20 第二批；wasm ToolSync hook 同款先例）：
+//! loop 构造期 handle 缺席未注册 + 运行期热装载成功 = 经
+//! [`set_tool_sync_hook`] 静态槽通知 post_agent 注入的闭包，把本工具补
+//! 注册进当前 AgentLoop（[`sync_mail_tool_into_loop`] 幂等——已注册 =
+//! 无操作）。停机窗口（current() None）= 通知丢弃诚实降级：agent 重启
+//! 路径 agent_factory 注册段按装载态拉起。
+//!
 //! tier：`min_tier("normal")` 双闸（供给 + dispatch 秩比较，插件复查 #2
 //! 同款机制）——防 mini 误用外传面。
 //!
@@ -31,10 +38,52 @@
 //! 必须 spawn_blocking，不卡 async executor 线程」）→ `MailPluginHandle`
 //! fn 指针 → 插件内 block_on 自持 runtime。
 
+use std::sync::Arc;
+
 use nemesis_agent::context::RequestContext;
 
 /// 工具注册名。
 pub const TOOL_NAME: &str = "mail";
+
+// ---------------------------------------------------------------------------
+// 工具面热同步槽（2026-11-20 第二批；plugins_wasm `set_tool_sync_hook`
+// 同款静态槽形态——OnceLock 首个胜出，gateway 生命周期内注入一次）
+// ---------------------------------------------------------------------------
+
+type ToolSyncFn = Arc<dyn Fn() + Send + Sync>;
+static TOOL_SYNC: std::sync::OnceLock<ToolSyncFn> = std::sync::OnceLock::new();
+
+/// 注入工具面热同步闭包（gateway post_agent 装配期；幂等失败 = 重复注入，
+/// 首个胜出——闭包捕获 adapter Arc，`current()` 每次解析最新 loop，agent
+/// 重启自动跟进）。
+pub fn set_tool_sync_hook(f: ToolSyncFn) {
+    let _ = TOOL_SYNC.set(f);
+}
+
+/// 触发工具面热同步（热装载闭包 Loaded 臂调用；hook 未注入 = 无 loop 可
+/// 同步（CLI/测试形态），静默略过）。
+pub fn notify_tool_sync() {
+    if let Some(h) = TOOL_SYNC.get() {
+        h();
+    }
+}
+
+/// 热同步体（幂等）：注册表已有 mail 工具 = `false` 无操作（重触发 /
+/// 装配期已注册）；未注册 = 注册 [`MailTool`] 并回 `true`。
+///
+/// 安全分档无需 `declare_tool_operation`——`mail` 在
+/// `nemesis_security::tool_to_operation` 静态表（NetworkRequest 兜底）+
+/// [`MailTool::operation_override`] 按 action 精确投影，dispatch 动态
+/// 消费（tool_dispatch 嗅探臂）；tier 闸同样动态（build_tool_defs 供给
+/// 过滤 + dispatch 秩比较，注册时机无关）。
+pub(crate) fn sync_mail_tool_into_loop(loop_arc: &nemesis_agent::r#loop::AgentLoop) -> bool {
+    if loop_arc.tool_names().iter().any(|n| n == TOOL_NAME) {
+        return false;
+    }
+    let actual = loop_arc.register_plugin_tool(TOOL_NAME.to_string(), Arc::new(MailTool::new()));
+    tracing::info!("[Mail] tool hot-registered: {actual}");
+    true
+}
 
 /// 解析后的子命令（execute 内部；独立成纯函数便于单测——插件链路归 UAT U12）。
 #[derive(Debug)]

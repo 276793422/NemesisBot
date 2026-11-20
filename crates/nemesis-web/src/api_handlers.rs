@@ -103,6 +103,8 @@ pub struct AppState {
     ///
     /// None = 插件未装载（诚实降级：mail.* 命令报「插件未装载」）。
     /// 恒编译（契约 crate 非 optional；`mail` feature 只门 handler 注册面）。
+    /// **装配期槽**：gateway 启动时序内注入。运行期热写走 handlers::mail 的
+    /// 进程级热槽（2026-11-20 热装载通路）——handler 读两槽合流（热槽优先）。
     pub mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
