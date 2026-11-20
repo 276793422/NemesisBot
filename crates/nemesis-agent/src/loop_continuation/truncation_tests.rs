@@ -451,3 +451,22 @@ async fn continuation_escalation_respects_ceiling() {
     let out = outbound_rx.try_recv().expect("final response sent");
     assert_eq!(out.content, "done within old cap");
 }
+
+/// BUG-20261121-023：u64 域 cap → u32 域饱和（裸 `as` 回绕回归锁）。
+/// ceiling（u64 配置）可配超 u32::MAX 巨值，翻倍升档放行 effective_cap 超
+/// u32 域——裸 `as u32` 回绕（2^33 → 0），`completion_tokens >= 0` 恒真
+/// → 恒判截断空转烧完续写预算。请求构造与截断判定必须经同一饱和函数。
+#[test]
+fn test_bug20261121023_saturate_cap_u32_no_wraparound() {
+    // 域内值无损。
+    assert_eq!(saturate_cap_u32(0), 0);
+    assert_eq!(saturate_cap_u32(8192), 8192);
+    assert_eq!(saturate_cap_u32(262_144), 262_144);
+    // u32::MAX 边界原样。
+    assert_eq!(saturate_cap_u32(u32::MAX as u64), u32::MAX);
+    // 超 u32 域：饱和为 u32::MAX 而非回绕（裸 as 会把 1<<33 截成 0）。
+    assert_eq!(saturate_cap_u32(1 << 33), u32::MAX);
+    assert_eq!(saturate_cap_u32(u32::MAX as u64 + 1), u32::MAX);
+    // 回归锚点：裸 as 的回绕形态与饱和形态必须可区分。
+    assert_ne!((1u64 << 33) as u32, saturate_cap_u32(1 << 33));
+}

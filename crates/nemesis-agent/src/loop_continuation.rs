@@ -1501,6 +1501,16 @@ pub(crate) fn apply_real_result_to_history(
     Applied::AppendedUserTurn
 }
 
+/// u64 域 cap → u32 域饱和转换（请求构造与截断判定必须锚同一值）。
+/// BUG-20261121-023：`max_tokens_ceiling`（u64 配置）可配超 u32::MAX 巨值，
+/// 翻倍升档 gate `next <= ceiling` 会放行 effective_cap 超 u32 域——裸
+/// `as u32` 回绕（2^33 → 0），截断判定 `completion_tokens >= 0` 恒真 →
+/// 恒判截断空转烧完续写预算。与主循环 length_escalation 的写回钳制同源
+/// （注释：「ceiling 被配成超 u32 巨值时裸 as 回绕成 0/小值反而砍上限」）。
+fn saturate_cap_u32(cap: u64) -> u32 {
+    cap.min(u32::MAX as u64) as u32
+}
+
 /// max_tokens 长度截断判定（纯函数，双路径对齐主循环器官 6）。
 ///
 /// - 有 usage：数值判定 `completion_tokens >= cap`（精确）。`escalated_to`
@@ -1801,7 +1811,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // options 显式带 cap（此前 None = lane 默认，截断不可知）。
         // +：cap 用当前阶梯档位（续写再撞顶时翻倍升档）。
         let chat_options = crate::types::ChatOptions {
-            max_tokens: Some(effective_cap.min(u32::MAX as u64) as u32),
+            max_tokens: Some(saturate_cap_u32(effective_cap)),
             ..Default::default()
         };
         let mut response = match provider
@@ -1853,7 +1863,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // 一律丢弃（执行半截 args 是写坏文件事故），只保留正文；②空内容撞
         // cap 不烧预算（B 同款 2 连守卫）；③续写轮消耗同一 1..=20 迭代
         // 预算，耗尽仍截断 → 半截正文 + 诚实注记终局（不再无声冒充完整）。
-        if is_length_truncated(&response, effective_cap as u32) {
+        if is_length_truncated(&response, saturate_cap_u32(effective_cap)) {
             let token_cap = response.escalated_to.unwrap_or(effective_cap);
             if response.content.trim().is_empty() {
                 empty_length_streak += 1;
