@@ -132,17 +132,17 @@ pub async fn test_mail_wsapi_surface(ws: &TestWorkspace, _bin: &Path) -> Vec<Tes
         .call("mail", "config_set", Some(json!({"config": probe})))
         .await;
     let wrote_ok = matches!(&dat, Some(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true)
-        && v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("已保存")
-        && match v.get("loaded").and_then(|x| x.as_bool()) {
-            Some(true) => {
-                v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("即时装载")
-            }
-            Some(false) => v
-                .get("load_error")
-                .and_then(|x| x.as_str())
-                .is_some_and(|e| !e.is_empty()),
-            None => false, // 热装载契约恒带 loaded 键——缺席即契约漂移哨兵
-        });
+    && v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("已保存")
+    && match v.get("loaded").and_then(|x| x.as_bool()) {
+        Some(true) => {
+            v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("即时装载")
+        }
+        Some(false) => v
+            .get("load_error")
+            .and_then(|x| x.as_str())
+            .is_some_and(|e| !e.is_empty()),
+        None => false, // 热装载契约恒带 loaded 键——缺席即契约漂移哨兵
+    });
     if wrote_ok {
         results.push(pass(
             &format!("{suite}/config_set_write"),
