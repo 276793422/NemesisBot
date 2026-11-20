@@ -38,10 +38,18 @@ pub fn extract_email_address(from: &str) -> &str {
 /// client）都必须经此函数——两处 id 一致靠「先构造后从消息里提取」达成
 /// （[`extract_message_id`]），不是两次调用（两次调用值不同 = 回执造假）。
 pub fn generate_message_id(from: &str) -> String {
-    let domain = from
+    // 域名净化（BUG-20261120-039）：先剥显示名形态（"Name <a@b.com>" 直接
+    // rsplit_once('@') 会取到 "com>" 畸形域），再剥 CR/LF（纵深防御对齐
+    // `build_smtp_message` 的 header_safe 同族——Message-ID 是第四条 from
+    // 衍生头输出，此前仅 From/To/Subject 三处加固，本行漏网即头断行注入
+    // 面）。裸地址两步恒等（extract_email_address 原样返回；无 CR/LF 时
+    // 剥除零变化）——既有裸地址测试零漂移。
+    let addr = extract_email_address(from);
+    let domain = addr
         .rsplit_once('@')
         .map(|(_, d)| d)
         .unwrap_or("mailbot.local");
+    let domain: String = domain.chars().filter(|&c| c != '\r' && c != '\n').collect();
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -167,10 +175,20 @@ pub fn parse_email_body(responses: &[String]) -> String {
         if line.starts_with("* ") && line.contains("FETCH") {
             continue;
         }
-        if line == ")" {
-            continue;
-        }
         body_parts.push(line.clone());
+    }
+
+    // 信封终结符只剥末行（BUG-20261120-040）：literal 按声明字节精确消费
+    // 后切行追加（email.rs `read_literal_lines`），正文含 ")" 独立行与
+    // FETCH 响应信封 ")" 同形——anywhere 剥除会把正文行静默吞掉。终结符
+    // 在响应形态中恒为末行（single UID FETCH 单 untagged 响应，literal 后
+    // 独立成行），位置收紧后正文 ")" 保留、信封 ")" 照剥。
+    if body_parts
+        .last()
+        .map(|l| l.as_str() == ")")
+        .unwrap_or(false)
+    {
+        body_parts.pop();
     }
 
     body_parts.join("\n").trim().to_string()

@@ -456,9 +456,22 @@ impl MailStore {
         } else {
             format!("<{message_id}>")
         };
+        // 头区 CR/LF 剥除（BUG-20261120-039 横向同族）：meta 经 C-ABI
+        // mail_record 直达，from/to/subject/date/message_id 任一混入
+        // CR/LF 即在本地 .eml 档案内断行注入头。对齐 mail-protocol
+        // build_smtp_message 的 header_safe 既有形态（smtp_envelope_safe
+        // 同语义）——mid_line 结构化 `<...>` 内层同样剥（normalize 只
+        // trim+剥尖括号，不剥内层 CRLF）。body 区不受影响（归 dot 语义外
+        // 的本地档案正文）。无 CR/LF 输入字节不变。
+        let safe = |v: &str| nemesis_mail_protocol::smtp_envelope_safe(v);
         let eml = format!(
-            "From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\nDate: {date_line}\r\n\
-             Message-ID: {mid_line}\r\n\r\n{body}"
+            "From: {}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\n\
+             Message-ID: {}\r\n\r\n{body}",
+            safe(from),
+            safe(to),
+            safe(subject),
+            safe(&date_line),
+            safe(&mid_line),
         );
         let id = self.deliver(&mailbox, &eml)?;
         Ok(serde_json::json!({"ok": true, "id": id, "mailbox": mailbox, "deduped": false}))

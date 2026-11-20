@@ -201,6 +201,43 @@ fn record_dedup_by_message_id() {
     assert_eq!(store.list(&q).unwrap().len(), 1, "去重后不产生第二封");
 }
 
+#[test]
+fn record_strips_crlf_header_injection() {
+    // BUG-20261120-039 横向同族回归锁：meta 经 C-ABI mail_record 直达，
+    // from/subject/message_id 混入 CR/LF 不得在本地 .eml 头区断行注入头
+    //（头区每行必须是已知字段；正文区不受影响）。
+    let (_dir, store) = temp_store();
+    store.addr_add("zoo@corp.example", &domains()).unwrap();
+    let meta = serde_json::json!({
+        "mailbox": "zoo@corp.example",
+        "from": "ext@other.com\r\nX-Inject: pwned-from",
+        "to": "zoo@corp.example",
+        "subject": "注入\r\nX-Inject: pwned-subject",
+        "message_id": "<mid-x@other.com\r\nX-Inject: pwned-mid>",
+        "body": "plain body",
+    });
+    let out = store.record(&meta).unwrap();
+    assert_eq!(out.get("ok"), Some(&serde_json::json!(true)));
+    let id = out.get("id").and_then(|v| v.as_str()).expect("id");
+    // 直读原始 .eml（read() 返回的是 body 侧，头区断言需原始文件）：
+    // <root>/<mailbox>/new/<id>.eml
+    let eml_path = _dir
+        .path()
+        .join("zoo@corp.example")
+        .join("new")
+        .join(format!("{id}.eml"));
+    let eml = std::fs::read_to_string(&eml_path).expect("eml file");
+    let header_zone = eml.split("\r\n\r\n").next().unwrap_or("");
+    let known = ["From: ", "To: ", "Subject: ", "Date: ", "Message-ID: "];
+    for line in header_zone.split("\r\n") {
+        assert!(
+            known.iter().any(|p| line.starts_with(p)),
+            "unexpected header line (injection?): {line:?}"
+        );
+    }
+    assert!(eml.contains("plain body"), "body intact");
+}
+
 // ---------------------------------------------------------------------------
 // SMTP e2e
 // ---------------------------------------------------------------------------
