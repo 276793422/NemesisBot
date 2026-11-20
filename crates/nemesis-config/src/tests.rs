@@ -1432,9 +1432,12 @@ fn test_discord_config_default() {
 fn test_tools_config_default() {
     let cfg = ToolsConfig::default();
     // brave.max_results 已收敛字段级缺省 5；
-    // duckduckgo 保持刻意不收敛（见 lib.rs DuckDuckGoConfig 注记）。
+    // duckduckgo.enabled 保持刻意不收敛（见 models.rs 注记），
+    // duckduckgo.max_results 已收敛 5（BUG-20261121-003——段缺席走
+    // Default::default()，收敛前 derive 给 0 → 消费侧钳 1 条结果）。
     assert_eq!(cfg.web.brave.max_results, 5);
     assert!(!cfg.web.duckduckgo.enabled);
+    assert_eq!(cfg.web.duckduckgo.max_results, 5);
 }
 
 #[test]
@@ -1789,11 +1792,14 @@ fn test_brave_config_default() {
 
 #[test]
 fn test_duckduckgo_config_default() {
-    // DuckDuckGo 刻意保持双路径现状（排除项）：
-    // 键缺席=false 与模板显式 false 一致，不收敛。
+    // enabled 双路径刻意不收敛（键缺席=false 与模板显式 false 一致，
+    // 见 models.rs DuckDuckGoConfig 注记）；
+    // max_results 已收敛字段级缺省/模板语义 5（BUG-20261121-003，
+    // 同 BraveConfig/PerplexityConfig 先例——derive 0 会被消费侧
+    // .max(1) 钳成 1 条结果）。
     let cfg = DuckDuckGoConfig::default();
     assert!(!cfg.enabled);
-    assert_eq!(cfg.max_results, 0);
+    assert_eq!(cfg.max_results, 5);
 }
 
 #[test]

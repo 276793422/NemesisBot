@@ -241,15 +241,33 @@ impl_redacted_debug!(BraveConfig {
 });
 
 // 注意：DuckDuckGoConfig 刻意**不**收敛双路径（排除项）——
-// 键缺席（derive false）与出厂模板的显式 `{enabled: false}` 一致；键在场但
+// 键缺席（Default false）与出厂模板的显式 `{enabled: false}` 一致；键在场但
 // enabled 缺席（字段级 true）表示用户主动配置该段=想启用。两路各服务各自
 // 人群，任何收敛方向都会翻转其中一路的产品默认行为。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+// （BUG-20261121-003）enabled 双路径刻意保留，max_results **不属**双路径
+// 范畴——derive(Default) 给 0 曾与字段级缺省 5（extra_serde_default_
+// max_results_for_duckduckgo）分裂：段缺席（`#[serde(default)]` 段级缺省走
+// Default::default()）或 Dashboard 启用后 round-trip 落盘 0，被
+// agent_factory `.max(1)` 钳成 1 条结果（模板/hardcoded fallback/字段级
+// 语义全仓一致 = 5）。手写 Default 收敛对齐 BraveConfig/PerplexityConfig
+// 同批先例。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuckDuckGoConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_max_results")]
     pub max_results: i64,
+}
+
+impl Default for DuckDuckGoConfig {
+    /// 手写收敛 max_results = 5（同批 BraveConfig/PerplexityConfig 先例，
+    /// BUG-20261121-003）；enabled 保持 false（双路径刻意不收敛，上方注记）。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_results: default_max_results(),
+        }
+    }
 }
 
 // SEC-002 Debug 脱敏（BUG-20261114-063）：同 BraveConfig。
