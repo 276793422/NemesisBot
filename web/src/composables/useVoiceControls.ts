@@ -144,8 +144,12 @@ export function useVoiceControls() {
   }
 
   /** 实时语音：read-merge-write realtime 块，后端写盘成功即 apply 热态；
-   *  读不到全文/失败回滚本地态（原 ChatPanel 语义照搬）。 */
+   *  读不到全文/失败回滚本地态（原 ChatPanel 语义照搬）。
+   *  双引擎就绪闸（2026-11-20 BUG 门控补齐，与其余三 toggle 同款）：
+   *  实时语音依赖 STT（识别腿）+ TTS（接力播报腿）双引擎，任一未就绪
+   *  不翻转不写盘（防假激活 + 配置脏写）。关臂不受闸（关一直合法）。 */
   async function toggleRealtime() {
+    if (!voiceRealtime.value && (!sttReady.value || !ttsReady.value)) return
     voiceRealtime.value = !voiceRealtime.value
     try {
       const cur = await request('voice', 'chat_config_get').catch(() => null)

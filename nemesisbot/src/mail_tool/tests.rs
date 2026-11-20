@@ -1,6 +1,6 @@
-//! `mail` 工具单测（纯函数层：schema 漂移 / parse / tier / 分档投影）。
-//! 插件调用链路（send 真发 / list / read 实调）归 UAT U12 矩阵——
-//! DLL 缺席的测试进程无法覆盖。
+//! `mail` 工具单测（纯函数层：schema 漂移 / parse / tier / 分档投影 +
+//! 工具面热同步注册表语义）。插件调用链路（send 真发 / list / read 实调）
+//! 归 UAT U12 矩阵——DLL 缺席的测试进程无法覆盖。
 
 use super::*;
 use nemesis_agent::r#loop::Tool;
@@ -186,3 +186,68 @@ fn operation_override_per_action() {
     assert!(t.operation_override("not json").is_none());
     assert!(t.operation_override(r#"{"to":"a@b.c"}"#).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// 工具面热同步（2026-11-20 第二批）
+// ---------------------------------------------------------------------------
+
+/// 测试用最小 loop（adapters/tests 同款 MockLlmProvider 形态——本模块
+/// 只碰工具注册表，provider 永不被调）。
+struct SyncMockProvider;
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for SyncMockProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        unreachable!("sync_mail_tool_into_loop tests never run the loop")
+    }
+}
+
+fn make_sync_test_loop() -> nemesis_agent::r#loop::AgentLoop {
+    let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
+    nemesis_agent::r#loop::AgentLoop::new_bus(
+        Box::new(SyncMockProvider),
+        nemesis_agent::types::AgentConfig {
+            model: "test-model".to_string(),
+            system_prompt: Some("test".to_string()),
+            system_prompt_split: None,
+            max_turns: 1,
+            tools: vec![],
+            ..Default::default()
+        },
+        outbound_tx,
+        nemesis_agent::r#loop::ConcurrentMode::Reject,
+        16,
+        0,
+    )
+}
+
+#[test]
+fn sync_registers_when_absent_and_is_idempotent() {
+    let al = make_sync_test_loop();
+    assert!(!al.tool_names().iter().any(|n| n == TOOL_NAME));
+    // 首次：注册成功。
+    assert!(sync_mail_tool_into_loop(&al));
+    assert!(al.tool_names().iter().any(|n| n == TOOL_NAME));
+    // 重触发（幂等）：已注册 = false，不产生 `mail_2` 撞名僵尸。
+    assert!(!sync_mail_tool_into_loop(&al));
+    let mail_names: Vec<_> = al
+        .tool_names()
+        .into_iter()
+        .filter(|n| n.starts_with(TOOL_NAME))
+        .collect();
+    assert_eq!(mail_names, vec![TOOL_NAME], "{mail_names:?}");
+}
+
+// 槽机制（set_tool_sync_hook / notify_tool_sync）**刻意无专测**：OnceLock
+// 首个胜出 + 进程级全局——同 bin 测试进程里 cov_tests / gateway tests 的
+// init_post_agent 全装配会合法抢注生产 hook，任何专测槽的用例都与测试
+// 顺序竞态（2026-11-20 实录：单跑绿、全量红，notify 转交到生产闭包计数
+// 0）。槽本体 5 行 wasm `set_tool_sync_hook` 先例复制品；生产注入行由
+// cov_tests 的 init_post_agent 全装配覆盖；真实行为保证 =
+// `sync_registers_when_absent_and_is_idempotent`。

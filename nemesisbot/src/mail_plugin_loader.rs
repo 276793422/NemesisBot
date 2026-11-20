@@ -63,6 +63,14 @@ pub enum MailLoadOutcome {
 static HOME_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static HANDLE: OnceLock<MailPluginHandle> = OnceLock::new();
 
+/// 装载互斥闸（2026-11-20 热装载通路补齐）：装配点（gateway 启动，单线程）
+/// 与热装载入口（WSAPI config_set，用户可并发点）都会进 [`load_mail_plugin`]
+/// ——`HANDLE` 幂等检查只防重复 dlopen，防不了两个并发首装同时过检查后
+/// 双跑 init/server_start（SMTP/POP3 端口双 bind 必炸一面）。锁罩全链
+/// （名册→签名→dlopen→init→落槽），临界区含 FFI（毫秒级，正确性优先）。
+/// 锁内无重入路径（mail_init_json / server_start 均不再进 load）。
+static LOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 /// 通知分发槽（B3 注入；None = tracing 留痕）。
 type NotifySink = Arc<dyn Fn(&str) + Send + Sync>;
 static NOTIFY_IN_SINK: RwLock<Option<NotifySink>> = RwLock::new(None);
@@ -269,8 +277,10 @@ pub fn mail_plugin_present() -> bool {
 /// `home`：插件侧邮件库路径根（契约 get_home_dir 回 home 根，插件拼
 /// `mail/` 子目录——结构性隔离）。`config_dir`：名册开关闸
 /// （`config.plugin.native.json`）读取根。幂等：已装载直接回 `Loaded`
-/// （重复 load 不重复 dlopen；配置刷新走 init 幂等重入面）。
+/// （重复 load 不重复 dlopen；配置刷新走 init 幂等重入面）。并发安全：
+/// 全链罩 [`LOAD_LOCK`]（装配点与热装载入口共用，2026-11-20）。
 pub fn load_mail_plugin(home: &Path, config_dir: &Path) -> MailLoadOutcome {
+    let _serial = LOAD_LOCK.lock();
     // ---- 名册开关闸（vm/onnx/ui/roaming 同款义务；文件探测之前） ----
     if !nemesis_config::plugins_native::load_enabled(
         config_dir,

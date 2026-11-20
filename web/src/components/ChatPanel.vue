@@ -4214,7 +4214,8 @@ onUnmounted(() => {
         v-if="isDefaultChat"
         class="voice-btn"
         :class="{ active: voiceRealtime }"
-        title="实时语音：语音对话中后端接力播放回复（TTS）、说话即打断（需 AEC）。流式识别/口播清洗等子开关见语音通道页「实时语音」小节，热生效无需重启"
+        :disabled="!sttReady || !ttsReady"
+        :title="sttReady && ttsReady ? '实时语音：语音对话中后端接力播放回复（TTS）、说话即打断（需 AEC）。流式识别/口播清洗等子开关见语音通道页「实时语音」小节，热生效无需重启' : '请先在语音通道页启用语音识别与语音合成引擎（实时语音依赖 STT + TTS 双引擎）'"
         @click="toggleRealtime"
       >
         <svg class="voice-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

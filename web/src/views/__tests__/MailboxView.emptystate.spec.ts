@@ -58,8 +58,9 @@ describe('MailboxView 插件缺席空态卡', () => {
     expect(w.find('.addr-chips').exists()).toBe(false)
     expect(w.find('.mail-main').exists()).toBe(false)
     expect(w.find('.srv-strip').exists()).toBe(false)
-    // 缺席短路：loadAll 只发 status，不发注定失败的 stats/addr_list/list
-    expect(calls).toEqual(['status'])
+    // 缺席短路：loadAll 只发 status + 空态卡开关态预取（config_get），
+    // 不发注定失败的 stats/addr_list/list
+    expect(calls).toEqual(['status', 'config_get'])
     w.unmount()
   })
 
@@ -165,6 +166,86 @@ describe('MailboxView 插件缺席空态卡', () => {
     expect(setArgs?.config?.client?.smtp_host).toBe('smtp.qq.com')
     // 保存成功模态关闭
     expect(w.find('.cfg-modal').exists()).toBe(false)
+    w.unmount()
+  })
+})
+
+describe('MailboxView 空态卡总闸直置开关（2026-11-20 热装载通路）', () => {
+  function baseMock(setResult: any) {
+    return (_m: string, cmd: string, data?: any) => {
+      if (cmd === 'status') return Promise.resolve({ loaded: false, hint: 'mail 插件未装载：总闸未开' })
+      if (cmd === 'config_get') return Promise.resolve({ config: { enabled: false, notify: { on: ['estop'] } }, path: 'C:/ws/config/config.mail.json' })
+      if (cmd === 'config_set') return Promise.resolve(setResult)
+      return Promise.reject(new Error('unexpected: ' + cmd))
+    }
+  }
+
+  it('开关态预取自盘上 config_get（enabled 真值）', async () => {
+    requestMock.mockImplementation(baseMock({ ok: true, loaded: false }))
+    const w = await mountView()
+    const box = w.find('.empty-switch-row input')
+    expect(box.exists()).toBe(true)
+    expect((box.element as HTMLInputElement).checked).toBe(false)
+    w.unmount()
+  })
+
+  it('勾选 → config_set 以盘上 config 为底只覆写 enabled:true → loaded:true → 整页即时活', async () => {
+    let setArgs: any = null
+    let hotLoaded = false // config_set 之后 status 才恢复 loaded:true
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'status') {
+        return hotLoaded
+          ? Promise.resolve({ loaded: true, smtp: { running: true, bind: '127.0.0.1', port: 2525 }, pop3: { running: false } })
+          : Promise.resolve({ loaded: false, hint: 'mail 插件未装载：总闸未开' })
+      }
+      if (cmd === 'config_get') return Promise.resolve({ config: { enabled: false, notify: { on: ['estop'], to: 'ops@x' } } })
+      if (cmd === 'config_set') { setArgs = data; hotLoaded = true; return Promise.resolve({ ok: true, loaded: true, note: '已保存并即时装载（热生效，无需重启网关）' }) }
+      if (cmd === 'stats') return Promise.resolve({ mailboxes: [] })
+      if (cmd === 'addr_list') return Promise.resolve({ addresses: [], default: '' })
+      if (cmd === 'list') return Promise.resolve({ items: [] })
+      return Promise.reject(new Error('unexpected: ' + cmd))
+    })
+    const w = await mountView()
+    expect(w.find('.mail-empty').exists()).toBe(true)
+    await w.find('.empty-switch-row input').setValue(true)
+    await flushPromises()
+    // 载荷：enabled 翻 true + 表单外键（notify 段）原样保留
+    expect(setArgs?.config?.enabled).toBe(true)
+    expect(setArgs?.config?.notify).toEqual({ on: ['estop'], to: 'ops@x' })
+    // 整页活：空态卡消失、操作面回归（勾选即用，不等重启）
+    expect(w.find('.mail-empty').exists()).toBe(false)
+    expect(w.find('.header-actions').exists()).toBe(true)
+    expect(w.find('.mail-main').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('勾选但装载失败：load_error 透传、空态卡保留、开关保持勾选（盘已保存，原因不在总闸）', async () => {
+    requestMock.mockImplementation(baseMock({ ok: true, loaded: false, load_error: 'plugin_mail DLL 缺席（exe 旁 plugins/ 目录无 plugin_mail 库）', note: '已保存；即时装载失败：plugin_mail DLL 缺席（修正后重新保存即可重试）' }))
+    const w = await mountView()
+    await w.find('.empty-switch-row input').setValue(true)
+    await flushPromises()
+    // 装载失败 = 空态卡保留（盘已保存，原因不在总闸）
+    expect(w.find('.mail-empty').exists()).toBe(true)
+    expect((w.find('.empty-switch-row input').element as HTMLInputElement).checked).toBe(true)
+    w.unmount()
+  })
+
+  it('取消勾选 → config_set enabled:false 落盘（未装载态无运行面可停，纯盘面写）', async () => {
+    let setArgs: any = null
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'status') return Promise.resolve({ loaded: false })
+      if (cmd === 'config_get') return Promise.resolve({ config: { enabled: true } })
+      if (cmd === 'config_set') { setArgs = data; return Promise.resolve({ ok: true, loaded: false, note: '已保存；重启网关后生效' }) }
+      return Promise.reject(new Error('unexpected: ' + cmd))
+    })
+    const w = await mountView()
+    // 盘上 enabled:true 预取为勾选态
+    expect((w.find('.empty-switch-row input').element as HTMLInputElement).checked).toBe(true)
+    await w.find('.empty-switch-row input').setValue(false)
+    await flushPromises()
+    expect(setArgs?.config?.enabled).toBe(false)
+    // 未装载态不变：空态卡仍在
+    expect(w.find('.mail-empty').exists()).toBe(true)
     w.unmount()
   })
 })

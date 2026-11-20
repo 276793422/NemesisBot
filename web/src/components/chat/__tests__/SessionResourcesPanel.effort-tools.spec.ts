@@ -145,16 +145,16 @@ describe('会话工具分节 · 思考强度下拉', () => {
     const byText = (t: string) =>
       w.findAll('.srp-tool-btn').filter((b) => b.text().includes(t))
     // 会话域键禁用：分享/委派/思考强度 + 外部写删（FA 关连锁）+ 全部放行 +
-    // 语音三键（引擎未就绪缺省禁用同形态）。
-    for (const t of ['分享', '委派', '外部写删', '全部放行', '听写', '语音对话', '语音播放']) {
+    // 语音四键（引擎未就绪缺省禁用同形态——实时语音双引擎闸，2026-11-20）。
+    for (const t of ['分享', '委派', '外部写删', '全部放行', '听写', '语音对话', '语音播放', '实时语音']) {
       const btns = byText(t)
       expect(btns.length).toBeGreaterThan(0)
       expect((btns[0].element as HTMLButtonElement).disabled).toBe(true)
     }
     expect((effortSelect(w).element as HTMLSelectElement).disabled).toBe(true)
-    // 非会话域键可用：构建/插队/Full Access/实时语音（引擎位与模式是
-    // 全局态，不依赖具体会话）。
-    for (const t of ['构建', '插队', 'Full Access', '实时语音']) {
+    // 非会话域键可用：构建/插队/Full Access（引擎位与模式是全局态，不依赖
+    // 具体会话；实时语音已并入引擎闸，不再在此列）。
+    for (const t of ['构建', '插队', 'Full Access']) {
       const btns = byText(t)
       expect(btns.length).toBeGreaterThan(0)
       expect((btns[0].element as HTMLButtonElement).disabled).toBe(false)
@@ -388,7 +388,7 @@ describe('九键全迁 · 语音分节', () => {
     return w.findAll('.srp-tool-btn').filter((b) => b.text().includes(t))[0]
   }
 
-  it('引擎未就绪 → 听写/语音对话/语音播放禁用且 title 指路语音通道页；实时语音不受引擎位约束', async () => {
+  it('引擎未就绪 → 听写/语音对话/语音播放/实时语音全禁用且 title 指路（2026-11-20 双引擎闸）', async () => {
     const w = mountPanel('s1')
     await flushPromises()
     for (const t of ['听写', '语音对话', '语音播放']) {
@@ -396,6 +396,36 @@ describe('九键全迁 · 语音分节', () => {
       expect((btn.element as HTMLButtonElement).disabled).toBe(true)
       expect(btn.attributes('title')).toContain('语音通道页')
     }
+    // 实时语音依赖 STT+TTS 双引擎——任一未就绪即禁用，title 指路双引擎。
+    const rt = byText(w, '实时语音')
+    expect((rt.element as HTMLButtonElement).disabled).toBe(true)
+    expect(rt.attributes('title')).toContain('语音通道页')
+    expect(rt.attributes('title')).toContain('双引擎')
+    w.unmount()
+  })
+
+  /** 挂载后 initVoiceState 会拉 engine_status 覆盖引擎位——引擎真值必须
+   *  走 mock（直接 seed ref 会被覆盖回 false）。 */
+  function mountWithEngines2(stt: boolean, tts: boolean) {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'engine_status') return Promise.resolve({ stt_ready: stt, tts_ready: tts })
+      if (cmd === 'voice_config_get') return Promise.resolve({ silence_timeout: 3 })
+      return Promise.resolve({})
+    })
+    return mountPanel('s1')
+  }
+
+  it('仅单引擎就绪（只 STT 或只 TTS）→ 实时语音仍禁用（双引擎缺一不可）；双就绪 → 放行', async () => {
+    let w = mountWithEngines2(true, false)
+    await flushPromises()
+    expect((byText(w, '实时语音').element as HTMLButtonElement).disabled).toBe(true)
+    w.unmount()
+    w = mountWithEngines2(false, true)
+    await flushPromises()
+    expect((byText(w, '实时语音').element as HTMLButtonElement).disabled).toBe(true)
+    w.unmount()
+    w = mountWithEngines2(true, true)
+    await flushPromises()
     expect((byText(w, '实时语音').element as HTMLButtonElement).disabled).toBe(false)
     w.unmount()
   })
@@ -456,6 +486,8 @@ describe('九键全迁 · 语音分节', () => {
 
   it('点实时语音 → chat_config_set read-merge-write（realtime.enabled 翻转，其余键保留）', async () => {
     requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'engine_status') return Promise.resolve({ stt_ready: true, tts_ready: true })
+      if (cmd === 'voice_config_get') return Promise.resolve({ silence_timeout: 3 })
       if (cmd === 'chat_config_get')
         return Promise.resolve({ keep: 1, realtime: { enabled: false, stream_asi: true } })
       return Promise.resolve({})
@@ -477,6 +509,8 @@ describe('九键全迁 · 语音分节', () => {
 
   it('chat_config_get 读不到 → toggleRealtime 回滚本地态（不盲写空 base）', async () => {
     requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'engine_status') return Promise.resolve({ stt_ready: true, tts_ready: true })
+      if (cmd === 'voice_config_get') return Promise.resolve({ silence_timeout: 3 })
       if (cmd === 'chat_config_get') return Promise.resolve(null)
       return Promise.resolve({})
     })
@@ -487,6 +521,34 @@ describe('九键全迁 · 语音分节', () => {
     expect(voiceRealtime.value).toBe(false) // 翻转后回滚
     expect(requestMock.mock.calls.some((c) => c[1] === 'chat_config_set')).toBe(false)
     w.unmount()
+  })
+
+  it('toggleRealtime 运行时闸：引擎未就绪 → 不翻转不写盘（按钮 disabled 双保险，2026-11-20）', async () => {
+    // 直接压 composable 层闸（按钮 disabled 时 jsdom 不派发 click，闸是
+    // 第二道防线：存量恢复态/引擎中途掉线的 engine_fault 场景）。
+    const { useVoiceControls } = await import('../../../composables/useVoiceControls')
+    const { toggleRealtime } = useVoiceControls()
+    await toggleRealtime()
+    expect(voiceRealtime.value).toBe(false)
+    expect(requestMock.mock.calls.some((c) => c[1] === 'chat_config_get')).toBe(false)
+    expect(requestMock.mock.calls.some((c) => c[1] === 'chat_config_set')).toBe(false)
+  })
+
+  it('toggleRealtime 关臂不受引擎闸：引擎中途掉线（engine_fault）仍可关（开臂独占闸）', async () => {
+    voiceRealtime.value = true // 存量开着，引擎掉了
+    sttReady.value = false
+    ttsReady.value = false
+    const { useVoiceControls } = await import('../../../composables/useVoiceControls')
+    const { toggleRealtime } = useVoiceControls()
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'chat_config_get')
+        return Promise.resolve({ keep: 1, realtime: { enabled: true } })
+      return Promise.resolve({})
+    })
+    await toggleRealtime()
+    expect(voiceRealtime.value).toBe(false)
+    const setCall = requestMock.mock.calls.find((c) => c[0] === 'voice' && c[1] === 'chat_config_set')
+    expect((setCall![2] as Record<string, any>).realtime.enabled).toBe(false)
   })
 })
 
@@ -567,6 +629,25 @@ describe('ChatPanel 侧（迁移回归锁）', () => {
     expect(strip.text()).not.toContain('语音对话')
     // 无注入面（裸挂载）→ 开关位置指向「上方工具栏」；有注入面指向资源窗。
     expect(strip.text()).toContain('上方工具栏')
+    w.unmount()
+  })
+
+  it('工具栏实时语音键双引擎闸（2026-11-20）：引擎未就绪禁用 + title 指路；双就绪放行', async () => {
+    useSessionStore().currentId = 's1'
+    const rt = (w: ReturnType<typeof mount>) =>
+      w.findAll('.voice-toolbar button').filter((b) => b.text().includes('实时语音'))[0]
+    let w = await mount(ChatPanel)
+    await flushPromises()
+    expect((rt(w).element as HTMLButtonElement).disabled).toBe(true)
+    expect(rt(w).attributes('title')).toContain('双引擎')
+    w.unmount()
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'engine_status') return Promise.resolve({ stt_ready: true, tts_ready: true })
+      return Promise.resolve({})
+    })
+    w = await mount(ChatPanel)
+    await flushPromises()
+    expect((rt(w).element as HTMLButtonElement).disabled).toBe(false)
     w.unmount()
   })
 })
