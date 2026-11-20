@@ -618,11 +618,33 @@ async fn test_skills_config_save_invalid() {
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    // Pass an array, not an object — should fail to deserialize.
+    // Pass an array, not an object — the object shape gate (BUG-20261120-027)
+    // rejects it before deserialization (an array used to hit serde's
+    // visit_seq arm = all-defaults valid value = silent reset).
     let data = serde_json::json!([1, 2, 3]);
     let result = handler.handle_cmd("config.save", Some(data), &ctx).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("invalid skills config"));
+    let err = result.unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+}
+
+/// BUG-20261120-027 回归锁：空数组（visit_seq 零元素 = 全字段 default 的
+/// 合法值）必须被形状闸拦下，不得静默重置整份 skills 配置。
+#[tokio::test]
+async fn test_skills_config_save_empty_array_loud_rejected() {
+    let handler = skills::SkillsHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let result = handler
+        .handle_cmd("config.save", Some(serde_json::json!([])), &ctx)
+        .await;
+    let err = result.unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+    assert!(
+        !dir.path().join("config/config.skills.json").exists(),
+        "rejected save must not create the skills config file"
+    );
 }
 
 #[tokio::test]

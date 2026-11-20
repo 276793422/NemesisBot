@@ -187,5 +187,35 @@ async fn security_config_malformed_file_and_invalid_save_error() {
         .handle_cmd("config.save", Some(serde_json::Value::Null), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("invalid security config"), "{err}");
+    // BUG-20261120-027：非 object 文档在形状闸 loud 拒绝（此前 null 落
+    // from_value 报 invalid security config，数组形态则静默重置）。
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("null"), "{err}");
+}
+
+/// BUG-20261120-027 回归锁：`config.save` 收 `[]` 曾走 serde visit_seq 零
+/// 元素臂 = 全默认 SecurityConfig——安全策略被静默重置落盘 + 审批免打扰
+/// 热翻到默认值，还回 saved:true。形状闸必须在反序列化前拦下。
+#[tokio::test]
+async fn security_config_save_array_payload_loud_rejected_and_disk_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let handler = SecurityHandler::new();
+    let ctx = make_ctx(&ws);
+
+    let err = handler
+        .handle_cmd("config.save", Some(serde_json::json!([])), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+
+    // 拒绝路径不落盘：安全配置文件不得被创建（旧形态会写全默认档）。
+    assert!(
+        !dir.path()
+            .join("config")
+            .join("config.security.json")
+            .exists(),
+        "rejected save must not create the security config file"
+    );
 }

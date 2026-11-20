@@ -468,3 +468,48 @@ async fn config_set_field_null_on_skip_option_field_passes() {
         "清空后键应消失（未表态 = 交给 tier 裁决矩阵）"
     );
 }
+
+/// BUG-20261120-027 回归锁：config.save 收 `[]` 曾走 serde visit_seq 零元素
+/// 臂 = 「全字段落 default」的合法 Config，整档配置被静默重置为出厂默认还回
+/// `saved:true`（真机 fuzz 实测 model_list/API key/端口全丢；`"{ }"` 字符串
+/// 形态倒是诚实拒绝——唯独数组形态有洞）。形状闸必须在 from_value 之前
+/// loud 拒绝非 object 文档。
+#[tokio::test]
+async fn config_save_array_payload_loud_rejected_and_disk_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    // 先落一份带判别标记的非默认配置（make_ctx 写的默认档被它覆盖）。
+    let seeded = serde_json::json!({
+        "model_list": [
+            { "model": "vendor/alpha", "api_key": "sk-real-key", "api_base": "http://127.0.0.1:1" }
+        ],
+        "gateway": { "port": 49399 }
+    });
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string_pretty(&seeded).unwrap(),
+    )
+    .unwrap();
+
+    let err = handler
+        .handle_cmd("save", Some(serde_json::json!([])), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+
+    // 盘上判别字段原样保留——不是出厂默认形态。
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        on_disk["gateway"]["port"], 49399,
+        "seeded port must survive the rejected save"
+    );
+    assert_eq!(
+        on_disk["model_list"][0]["api_key"], "sk-real-key",
+        "seeded api_key must survive the rejected save"
+    );
+}

@@ -102,6 +102,9 @@ impl ChannelsHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let mut channel_config = data.get("config").ok_or("missing config field")?.clone();
+        // 形状闸：单通道配置 `[]` 会在外层 object 的字段级 visit_seq 臂
+        // 变成「全默认」合法值——该通道配置静默重置（BUG-20261120-027）。
+        crate::handlers::require_object(&channel_config, "channel config")?;
         // 锁在 update_config 内——掩码还原 + 命中校验 + 回写全程串行，
         // 不可能出现并发丢更新。
         super::config::update_config(home, |config| {

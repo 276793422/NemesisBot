@@ -458,6 +458,8 @@ impl McpHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 形状闸：`[]` 走 visit_seq = 全默认 McpConfig 静默重置（BUG-20261120-027）。
+        crate::handlers::require_object(data, "MCP config")?;
         let mut new_cfg: nemesis_config::McpConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid MCP config: {}", e))?;
         // 锁在 update_mcp_config 内：掩码还原要读存量（读→合并→整写 = RMW）。

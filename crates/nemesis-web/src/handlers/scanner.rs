@@ -251,6 +251,9 @@ impl ScannerHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 形状闸：`[]` 走 visit_seq = 全默认 ScannerFullConfig 静默重置
+        //（BUG-20261120-027）。
+        crate::handlers::require_object(data, "scanner config")?;
         let config: ScannerFullConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid scanner config: {}", e))?;
         // 锁在 update_scanner_config 内。

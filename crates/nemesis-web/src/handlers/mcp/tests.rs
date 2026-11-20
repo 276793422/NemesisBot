@@ -90,6 +90,33 @@ fn seed_mcp_config(dir: &tempfile::TempDir, servers: serde_json::Value) {
     .unwrap();
 }
 
+/// BUG-20261120-027 回归锁：`config.save` 收 `[]` 曾走 serde visit_seq 零
+/// 元素臂 = 全默认 McpConfig，整份 MCP 配置被静默重置还回 saved:true。
+#[tokio::test]
+async fn mcp_config_save_array_payload_loud_rejected_and_disk_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{ "name": "keep-me", "command": "svc" }]),
+    );
+    let h = McpHandler::new();
+
+    let err = h
+        .handle_cmd("config.save", Some(serde_json::json!([])), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+
+    // 盘上存量 server 原样保留。
+    let on_disk: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(on_disk["servers"][0]["name"], "keep-me");
+}
+
 #[tokio::test]
 async fn servers_display_normalizes_legacy_entries() {
     let dir = tempfile::tempdir().unwrap();

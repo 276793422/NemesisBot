@@ -220,21 +220,22 @@ async fn test_websocket_heartbeat_ping_receives_pong() {
     ws.send(WsMessage::Text(raw.into())).await.unwrap();
 
     // Server should respond with a pong message
-    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
-        .await
-        .expect("timeout waiting for pong")
-        .expect("stream closed")
-        .expect("ws error");
-
-    match msg {
-        WsMessage::Text(t) => {
-            let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-            assert_eq!(parsed["type"], "system");
-            assert_eq!(parsed["module"], "heartbeat");
-            assert_eq!(parsed["cmd"], "pong");
+    // 协议级 Ping（021 首 tick 立即）可先于 pong 到达——跳过非 Text 帧。
+    let msg = loop {
+        let m = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout waiting for pong")
+            .expect("stream closed")
+            .expect("ws error");
+        if let WsMessage::Text(t) = m {
+            break t;
         }
-        other => panic!("expected text pong, got {:?}", other),
-    }
+    };
+
+    let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+    assert_eq!(parsed["type"], "system");
+    assert_eq!(parsed["module"], "heartbeat");
+    assert_eq!(parsed["cmd"], "pong");
 }
 
 #[tokio::test]
@@ -249,27 +250,30 @@ async fn test_websocket_invalid_json_sends_error_message() {
         .await
         .unwrap();
 
-    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
-        .await
-        .expect("timeout")
-        .expect("closed")
-        .expect("ws err");
-
-    match msg {
-        WsMessage::Text(t) => {
-            let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-            assert_eq!(parsed["type"], "system");
-            assert_eq!(parsed["module"], "error");
-            assert_eq!(parsed["cmd"], "notify");
-            assert!(
-                parsed["data"]["content"]
-                    .as_str()
-                    .unwrap()
-                    .contains("invalid")
-            );
+    // BUG-20261120-021 tick 臂经 tokio interval 首 tick 立即触发——连接
+    // 建立后服务器主动发协议级 Ping，可与错误响应竞速先到。跳过非 Text
+    // 帧，只认 Text 错误帧（此前裸收首帧在全量负载下被 Ping 抢跑 panic）。
+    let msg = loop {
+        let m = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("closed")
+            .expect("ws err");
+        if let WsMessage::Text(t) = m {
+            break t;
         }
-        other => panic!("expected text error, got {:?}", other),
-    }
+    };
+
+    let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+    assert_eq!(parsed["type"], "system");
+    assert_eq!(parsed["module"], "error");
+    assert_eq!(parsed["cmd"], "notify");
+    assert!(
+        parsed["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("invalid")
+    );
 }
 
 #[tokio::test]
@@ -283,23 +287,24 @@ async fn test_websocket_unknown_protocol_type_sends_error() {
     let raw = r#"{"type":"unknown_type","module":"test","cmd":"test"}"#;
     ws.send(WsMessage::Text(raw.into())).await.unwrap();
 
-    let msg = tokio::time::timeout(Duration::from_secs(2), ws.next())
-        .await
-        .expect("timeout")
-        .expect("closed")
-        .expect("err");
-    match msg {
-        WsMessage::Text(t) => {
-            let parsed: serde_json::Value = serde_json::from_str(&t).unwrap();
-            assert!(
-                parsed["data"]["content"]
-                    .as_str()
-                    .unwrap()
-                    .contains("unknown")
-            );
+    // 同上：跳过协议级 Ping（首 tick 立即），只认 Text 错误帧。
+    let msg = loop {
+        let m = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("timeout")
+            .expect("closed")
+            .expect("err");
+        if let WsMessage::Text(t) = m {
+            break t;
         }
-        other => panic!("got {:?}", other),
-    }
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+    assert!(
+        parsed["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("unknown")
+    );
 }
 
 #[tokio::test]

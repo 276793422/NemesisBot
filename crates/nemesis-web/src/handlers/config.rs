@@ -264,6 +264,10 @@ impl ConfigHandler {
         home: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 形状闸：`[]` 走 visit_seq 零元素臂 = 全默认合法值，round-trip 闸
+        // （空数组零叶子无丢失）也拦不住——先 loud 拒绝非 object 文档
+        //（BUG-20261120-027：不拦则整档配置静默重置为出厂默认）。
+        crate::handlers::require_object(data, "config")?;
         // 编辑器整档保存语义：闭包整体替换（锁在 update_config 内）。
         // get 响应是脱敏形态（api_key/token 等掩码为 `****` 串）：UI 回存
         // 时掩码值必须还原为存量原值，绝不落盘掩码——channels.save 同款

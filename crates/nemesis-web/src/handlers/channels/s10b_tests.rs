@@ -122,6 +122,36 @@ async fn channels_update_missing_config_field_and_bad_reparse_error() {
     assert!(err.contains("failed to parse updated channels"), "{err}");
 }
 
+/// BUG-20261120-027 回归锁：单通道 `config: []` 曾在外层 object 的字段级
+/// visit_seq 臂变成「全默认」合法值——该通道配置被静默重置还回
+/// updated:true。形状闸在字段赋值前拦下。
+#[tokio::test]
+async fn channels_update_array_config_loud_rejected_and_disk_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir, true);
+    let handler = ChannelsHandler::new();
+
+    let err = handler
+        .handle_cmd(
+            "update",
+            Some(serde_json::json!({ "name": "web", "config": [] })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+
+    // 盘上 web 通道配置原样（仍是 object，未被重置）。
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert!(
+        on_disk["channels"]["web"].is_object(),
+        "web channel config must remain an object on disk"
+    );
+}
+
 #[test]
 fn mask_sensitive_fields_masks_sensitive_and_recurses() {
     let v = serde_json::json!({
