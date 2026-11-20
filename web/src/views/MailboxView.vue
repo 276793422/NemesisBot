@@ -172,13 +172,73 @@ function formToConfig(): any {
 async function saveConfig() {
   cfgSaving.value = true
   try {
-    await request('mail', 'config_set', { config: formToConfig() })
-    toast.success('配置已保存；重启网关后生效')
+    // 响应驱动 note（2026-11-20 热装载通路）：enabled:true 且未装载 = 后端
+    // 当场热装载（note「已保存并即时装载」/ load_error 引导重试）；已装载
+    // 或停用 = 重启语义 note。保存成功且装载活 = 整页即时拉齐（空态卡
+    // 消失、邮箱可用，无需重启网关）。
+    const v: any = await request('mail', 'config_set', { config: formToConfig() })
+    if (v?.load_error) {
+      toast.error(`已保存；即时装载失败：${v.load_error}`)
+    } else {
+      toast.success(v?.note ?? '配置已保存')
+    }
     cfgOpen.value = false
+    await loadAll()
   } catch (e: any) {
     toast.error(`保存失败：${e?.message ?? e}`)
   } finally {
     cfgSaving.value = false
+  }
+}
+
+// ---- 空态卡总闸直置开关（2026-11-20 热装载通路）----
+// 未装载态最常见真因 = 总闸未开（enabled 缺省 false）。开关勾选 = 以盘上
+// config 为底只覆写 enabled:true → 后端热装载（勾选即用，不等重启）；
+// 取消勾选 = 只落盘（未装载态无运行面可停）。开关态来自盘上 config_get
+// （空态卡出现时预取；配置模态保存后同步）。
+const emptySwitch = ref(false)
+const emptySwitchBusy = ref(false)
+
+async function prefetchEmptySwitch() {
+  try {
+    const v: any = await request('mail', 'config_get')
+    cfgRaw.value = v?.config ?? {} // 开关保存以盘上 config 为底（未知键保留）
+    emptySwitch.value = !!cfgRaw.value?.enabled
+  } catch {
+    emptySwitch.value = false
+  }
+}
+
+async function toggleEmptySwitch(on: boolean) {
+  if (emptySwitchBusy.value) return
+  emptySwitchBusy.value = true
+  try {
+    const raw = JSON.parse(JSON.stringify(cfgRaw.value ?? {}))
+    raw.enabled = on
+    const v: any = await request('mail', 'config_set', { config: raw })
+    if (on && v?.loaded) {
+      toast.success('已启用并即时装载（热生效）')
+      await loadAll() // 整页活：空态卡消失、邮箱可用
+      return
+    }
+    if (on && v?.load_error) {
+      // 装载失败（DLL 缺席/签名拒载等）——盘已保存，开关留在勾选态
+      // （配置正确性已成立，原因不在总闸），错误弹 toast 引导。
+      toast.error(`已保存；即时装载失败：${v.load_error}`)
+      return
+    }
+    if (!on) {
+      toast.success(v?.note ?? '已保存')
+    } else {
+      // on 且无 load_error 且未 loaded：闭包未注入形态（非 gateway 装配）
+      // ——落盘已成立，重启生效。
+      toast.success(v?.note ?? '已保存；重启网关后生效')
+    }
+  } catch (e: any) {
+    toast.error(`保存失败：${e?.message ?? e}`)
+    emptySwitch.value = !on // 失败回退开关视觉态
+  } finally {
+    emptySwitchBusy.value = false
   }
 }
 
@@ -206,7 +266,10 @@ function selectMailbox(m: string) {
 // 后继续全量拉齐。
 async function loadAll() {
   await loadStatus()
-  if (notLoaded.value) return
+  if (notLoaded.value) {
+    await prefetchEmptySwitch() // 空态卡总闸开关态（盘上 enabled 真值）
+    return
+  }
   await Promise.all([loadStats(), loadAddr(), loadList()])
 }
 
@@ -407,22 +470,32 @@ onUnmounted(() => {
     </div>
 
     <!-- 插件缺席空态卡（三层语义的中间层）：编译态（mail feature 裁掉）整页
-         不存在；运行时缺席（DLL 缺席/总闸关/名册关）= 此卡引导，重试 = 重拉
-         mail.status（装载后页面即活，无需刷新整页）；在场 = 完整邮箱。 -->
+         不存在；运行时缺席（DLL 缺席/总闸关/名册关）= 此卡引导；总闸开关
+         勾选 = 后端热装载（勾选即用，不等重启——2026-11-20 热装载通路）；
+         在场 = 完整邮箱。 -->
     <div v-if="notLoaded" class="mail-empty">
       <div class="empty-icon">✉</div>
       <h2>邮箱插件未装载</h2>
       <p class="empty-hint">{{ status?.hint || 'plugin_mail DLL 缺席、config.mail.json 总闸未开或插件名册未启用。' }}</p>
+      <label class="empty-switch-row" :class="{ busy: emptySwitchBusy }">
+        <input
+          type="checkbox"
+          :checked="emptySwitch"
+          :disabled="emptySwitchBusy"
+          @change="toggleEmptySwitch(($event.target as HTMLInputElement).checked)"
+        />
+        <span>启用邮箱插件（勾选即时装载，无需重启网关）</span>
+      </label>
       <ul class="empty-checklist">
         <li>确认 <code>plugins/plugin_mail.dll</code>（exe 旁 plugins/ 目录）存在</li>
-        <li>确认 <code>workspace/config/config.mail.json</code> 已写 <code>{"enabled": true}</code></li>
-        <li>确认插件名册 <code>config.plugin.native.json</code> 未将 plugin_mail 关闭（缺文件 = 默认启用）</li>
-        <li>以上任一修改后需重启网关生效</li>
+        <li>总闸 <code>config.mail.json</code> <code>{"enabled": true}</code>——上方开关勾选即自动写入并热装载</li>
+        <li>插件名册 <code>config.plugin.native.json</code> 未将 plugin_mail 关闭（缺文件 = 默认启用）</li>
+        <li>DLL / 名册修改需重启网关生效；总闸开关勾选即时生效</li>
       </ul>
       <div class="empty-actions">
         <button class="btn primary" @click="loadAll">↻ 重试</button>
-        <!-- 配置双入口之一（先于句柄闸：插件缺席也要能配——总闸/DLL 装好
-             重启即用，无需手改 JSON） -->
+        <!-- 配置双入口之一（先于句柄闸：插件缺席也要能配——SMTP/POP3/客户端
+             全量配置，保存时总闸开 = 即时热装载） -->
         <button class="btn" @click="openConfig">⚙ 邮箱配置</button>
       </div>
     </div>
@@ -736,4 +809,7 @@ onUnmounted(() => {
 .mail-empty .empty-hint { margin: 0; font-size: var(--text-sm); color: var(--text-muted); max-width: 560px; }
 .mail-empty .empty-checklist { margin: 6px 0 2px; padding: 0; list-style: none; text-align: left; font-size: var(--text-sm); color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; max-width: 560px; }
 .mail-empty .empty-checklist code { font-size: var(--text-xs); color: var(--accent); word-break: break-all; }
+.mail-empty .empty-switch-row { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm); color: var(--text-secondary); cursor: pointer; user-select: none; margin: 4px 0 2px; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-secondary); }
+.mail-empty .empty-switch-row input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.mail-empty .empty-switch-row.busy { opacity: .6; pointer-events: none; }
 </style>

@@ -268,7 +268,8 @@ pub struct WebServer {
     quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
     /// plugin_mail 运行面句柄（邮件基础设施：SMTP/POP3/客户端/存储在插件内；
     /// nemesisbot gateway 装载后经 set_mail_plugin 注入。fn 指针 Copy 持值）。
-    /// None = 插件未装载（mail.* 命令诚实报「插件未装载」）。恒编译。
+    /// **装配期槽**（启动时序内注入）；运行期热写走 handlers::mail 进程级
+    /// 热槽（2026-11-20 热装载通路），mail.* handler 读两槽合流（热槽优先）。
     mail_plugin: Option<nemesis_plugin::mail::MailPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
