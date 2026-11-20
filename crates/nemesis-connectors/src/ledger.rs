@@ -78,6 +78,25 @@ pub fn ledger_path(workspace: &Path) -> std::path::PathBuf {
     workspace.join(LEDGER_REL)
 }
 
+// 账本写互斥（进程级）：下单是调用方组装的 load→mutate→save RMW，单文件
+// JSON 无内存缓存——两个写者交错 = 后 save 者整文件覆盖（前者的订单与
+// 资金变动静默丢失，纸面资金凭空重复）。写者不止一个 ConnectorInvokeTool
+// 实例：主 loop 与每个项目 loop 各持一份工具实例（治理资产锚同一主
+// workspace，见 register_connector_governance）——per-instance 锁罩不住
+// 跨实例交错（BUG-20261120-035），必须进程级单例。镜像
+// nemesis-config::config_write_lock 的取锁纪律：**只在命令臂最外层取
+// 一次**，guard 存活覆盖整段 RMW（从 load 到 save 落盘）；Mutex 非重入，
+// 勿嵌套；读路径不入锁（rename 原子性保证读到完整旧值或完整新值）。
+// 跨进程（CLI connector invoke 单发）仍是既有边界，不在本锁射程。
+static LEDGER_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 取账本写串行锁。用法：写臂首行 `let _serial =
+/// nemesis_connectors::ledger::ledger_write_lock();`，guard 存活到 save
+/// 落盘为止。见上方锁注释的取锁纪律（只在写臂取、勿嵌套）。
+pub fn ledger_write_lock() -> parking_lot::MutexGuard<'static, ()> {
+    LEDGER_WRITE_LOCK.lock()
+}
+
 /// 载入账本：缺文件 = 全新模拟账本（零账号 demo 常态）；损坏 = 诚实 Err
 /// （损坏静默当空会让后续 save 销毁真账本——与全仓数据纪律一致）。
 pub fn load_ledger(workspace: &Path) -> Result<BrokerLedger, String> {

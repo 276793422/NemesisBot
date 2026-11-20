@@ -654,8 +654,6 @@ pub struct ConnectorInvokeTool {
     budget: Arc<BudgetGuard>,
     /// tool 绑定回灌句柄（Arc 定型后注入，同 code_run）。
     loop_ref: parking_lot::RwLock<Option<Weak<AgentLoop>>>,
-    /// action 账本互斥（load→mutate→save 串行化；磁盘为权威依据，无内存缓存）。
-    order_lock: parking_lot::Mutex<()>,
     /// 集群 RPC 通道（agent_factory 注入，与 cluster_rpc 工具同源闭包；
     /// 缺省 None = target_node 诚实报错）。
     remote_call_fn: parking_lot::RwLock<Option<RemoteCallFn>>,
@@ -685,7 +683,6 @@ impl ConnectorInvokeTool {
             security,
             budget,
             loop_ref: parking_lot::RwLock::new(None),
-            order_lock: parking_lot::Mutex::new(()),
             remote_call_fn: parking_lot::RwLock::new(None),
             invocation_depth: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -2170,7 +2167,10 @@ impl ConnectorInvokeTool {
             })?;
         let ts = chrono::Utc::now().to_rfc3339();
         // 账本互斥：load→mutate→save 串行（磁盘真相源，无内存缓存）。
-        let _guard = self.order_lock.lock();
+        // BUG-20261120-035：锁必须是进程级单例（ledger::ledger_write_lock）
+        // ——主 loop 与项目 loop 各持一份工具实例，per-instance 锁罩不住
+        // 跨实例交错 RMW（后 save 整文件覆盖 = 丢单/资金凭空重复）。
+        let _guard = nemesis_connectors::ledger::ledger_write_lock();
         let mut ledger = nemesis_connectors::ledger::load_ledger(&self.workspace)?;
         let order = match side {
             "buy" => ledger.buy(&symbol, qty, price, &ts),

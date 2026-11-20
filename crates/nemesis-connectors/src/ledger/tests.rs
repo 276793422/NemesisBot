@@ -150,3 +150,58 @@ fn sell_rejects_invalid_input() {
     assert_eq!(l.cash, cash_before, "非法单不得动账");
     assert!(l.positions.contains_key("A"), "非法单不得动持仓");
 }
+
+// BUG-20261120-035：账本写锁必须是进程级单例——写者不止一个工具实例
+// （主 loop 与项目 loop 各持一份 ConnectorInvokeTool，治理资产锚同一主
+// workspace），锁若退化为 per-instance 实例字段，跨实例交错 RMW = 后
+// save 者整文件覆盖（丢单/资金凭空重复）。两次独立获取的数据地址必须
+// 同一（静态 Mutex 内联存储数据，地址恒定）。guard 收在具名局部变量里
+// 函数尾释放——勿写 `let p = &*ledger_write_lock();` 形态：let 初始化式
+// 借用触发临时 lifetime extension，guard 活到测试体结束，同线程二次取
+// 锁即死锁（parking_lot 非重入，首轮实录挂死）。
+#[test]
+fn ledger_write_lock_is_single_process_global() {
+    fn held_addr() -> *const () {
+        let guard = ledger_write_lock();
+        std::ptr::from_ref::<()>(&*guard)
+    }
+    let p1 = held_addr();
+    let p2 = held_addr();
+    assert!(
+        std::ptr::eq(p1, p2),
+        "写锁必须钉在进程级静态单例上，不得随调用方实例化"
+    );
+}
+
+// 同锁并发 RMW 守恒：两「实例」（线程）各 25 笔 buy 全程走
+// ledger_write_lock 串行化——订单数与资金必须精确守恒。无锁（或
+// per-instance 锁）时交错 load→save 后 save 整文件覆盖，必然丢单。
+#[test]
+fn concurrent_rmw_through_write_lock_loses_no_orders() {
+    let ws = tmpws();
+    let root = ws.path().to_path_buf();
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                for _ in 0..25 {
+                    let _serial = ledger_write_lock();
+                    let mut l = load_ledger(&root).expect("load");
+                    l.buy("AAPL", 10.0, 150.0, TS).expect("buy");
+                    save_ledger(&root, &l).expect("save");
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("thread");
+    }
+    let l = load_ledger(&root).expect("reload");
+    assert_eq!(l.orders.len(), 50, "50 笔订单一笔不丢");
+    assert_eq!(l.cash, r2(DEFAULT_CASH - 1500.0 * 50.0), "资金精确守恒");
+    // 订单号全唯一（next_order_id 按现存最大序号 +1，锁内无竞争重号）
+    let mut ids: Vec<_> = l.orders.iter().map(|o| o.order_id.clone()).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 50, "订单号不得重号");
+}
