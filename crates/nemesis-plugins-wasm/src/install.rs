@@ -68,6 +68,13 @@ pub struct LockfileEntry {
     /// 旧形态 lockfile 零迁移）。
     #[serde(default)]
     pub connectors: Vec<String>,
+    /// 安装来源标记（P0-5 来源可见面）：agent 自举装 =
+    /// `bootstrap:<源名>`（plugin_bootstrap 传入）；手动安装 / 手工拷入
+    /// 补漏斗 = None（本地形态，无远程来源可记）。升级重装以**当前这次**
+    /// 安装的来源覆盖旧值（自举装的插件被手动升级 → 回落 None，诚实）。
+    /// `#[serde(default)]` 旧条目零迁移。
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 /// 审批卡内容（装配漏斗第⑤步入参；Dashboard/CLI 渲染面）。
@@ -217,21 +224,29 @@ impl PluginInstaller {
         source_dir: &Path,
         allow_unsigned: bool,
     ) -> Result<InstallOutcome, PluginError> {
-        self.install_with(source_dir, allow_unsigned, self.approver.clone(), None)
-            .await
+        self.install_with(
+            source_dir,
+            allow_unsigned,
+            self.approver.clone(),
+            None,
+            None,
+        )
+        .await
     }
 
     /// [`Self::install`] 的可覆盖变体（agent 自举提案专用，项6）：审批面
     /// 替换 + 提案论证注入审批卡。九步漏斗一概不变（红线：自举 ≠ 免审
     /// ——auto_approve 的资格裁决发生在审批面**内部**，漏斗对「谁批的」
     /// 无感知；资格不足照样回落人工卡）。常规 WSAPI/CLI 安装恒走
-    /// [`Self::install`]（自带审批面，卡永不静默跳过）。
+    /// [`Self::install`]（自带审批面，卡永不静默跳过）。`origin` 进
+    /// lockfile 来源标记（P0-5：自举装传 `bootstrap:<源名>`，手动 None）。
     pub async fn install_with(
         &self,
         source_dir: &Path,
         allow_unsigned: bool,
         approver: Arc<dyn InstallApprover>,
         proposer_reason: Option<String>,
+        origin: Option<String>,
     ) -> Result<InstallOutcome, PluginError> {
         let _funnel = FUNNEL_LOCK.lock().await;
         let source_dir = source_dir
@@ -243,6 +258,7 @@ impl PluginInstaller {
                 allow_unsigned,
                 approver.as_ref(),
                 proposer_reason,
+                origin,
             )
             .await?;
         self.record_switch_and_load(approved).await
@@ -316,13 +332,15 @@ impl PluginInstaller {
     /// 装配漏斗 ①-⑧（无第⑨步；`install` 与 `set_enabled` 的手工拷入路径
     /// 共用）。`approver`/`proposer_reason` 由 [`Self::install_with`] 传入
     /// （自举提案的审批面覆盖与论证注入）；`set_enabled` 补漏斗路径传
-    /// `(&self.approver, None)`——开关路径与提案无关。
+    /// `(&self.approver, None, None)`——开关路径与提案/来源标记无关
+    /// （手工拷入 = 本地形态）。`origin` 直通 lockfile（步骤⑦记账）。
     async fn install_core(
         &self,
         source_dir: &Path,
         allow_unsigned: bool,
         approver: &dyn InstallApprover,
         proposer_reason: Option<String>,
+        origin: Option<String>,
     ) -> Result<ApprovedInstall, PluginError> {
         // ① manifest 结构校验 + ② 验签四态
         let raw = std::fs::read_to_string(source_dir.join("plugin.toml"))
@@ -450,7 +468,13 @@ impl PluginInstaller {
         // 优于「报失败但新载荷已生效」的谎报；与 uninstall 的 remove-lockfile
         // 先行对称。load_one 不读 lockfile（sha 自洽比对），此处失败留下的
         // 元数据超前不破本进程装载，重装自愈。 复查 #5）
-        self.update_lockfile(&manifest, trust_state, &outcome, &registered_connectors)?;
+        self.update_lockfile(
+            &manifest,
+            trust_state,
+            &outcome,
+            &registered_connectors,
+            origin.as_deref(),
+        )?;
 
         // ⑧ 落位（升级路径：先清旧载荷；数据目录保留不动）。删除重试耗尽
         // 必须中止——继续落位会新旧载荷文件混布（交付审查）。
@@ -726,6 +750,7 @@ impl PluginInstaller {
         trust_state: PluginTrustState,
         outcome: &VerificationOutcome,
         connectors: &[String],
+        origin: Option<&str>,
     ) -> Result<(), PluginError> {
         let path = self.manager.plugins_dir().join("lockfile.json");
         // 文件缺失 = 全新 lockfile；损坏 = 诚实报错（静默重置会丢全部安装
@@ -749,6 +774,7 @@ impl PluginInstaller {
                 installed_at_ms: unix_millis(),
                 signed_by: outcome.public_key.chars().take(16).collect(),
                 connectors: connectors.to_vec(),
+                origin: origin.map(str::to_string),
             },
         );
         let body = serde_json::to_string_pretty(&lockfile)
@@ -865,7 +891,7 @@ impl PluginInstaller {
             // 或无卡面（CLI --yes / headless）维持从紧——卡面救不了失效签名，
             // CLI 走 `install --allow-unsigned` 显式旗标或 `plugin sign`。
             let tolerate_unsigned = self.hand_copied_unsigned_tolerable(&pdir);
-            self.install_core(&pdir, tolerate_unsigned, self.approver.as_ref(), None)
+            self.install_core(&pdir, tolerate_unsigned, self.approver.as_ref(), None, None)
                 .await?;
         }
         let reg = self

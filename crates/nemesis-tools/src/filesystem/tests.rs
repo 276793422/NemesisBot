@@ -1460,3 +1460,54 @@ async fn delete_file_survives_transient_handle_hold() {
     );
     assert!(!data.exists(), "file should be gone after retry");
 }
+
+/// S24 TOCTOU 收窄回归锁（2026-11-19 自查）：restrict 下
+/// `resolve_workspace_path` 返回**已解析形态**——`..` 段在校验时被
+/// canonicalize 消解，后续 IO 打开的就是校验通过的那条路径。判别点：
+/// 写入落点是消解后的 `out_s24.txt`；若实现回落到未解析 join 形态，
+/// 文件会落进 `sub/`（或写不出来），本测试即红。
+#[tokio::test]
+async fn test_write_file_restrict_returns_resolved_form() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = WriteFileTool::new(&ws, true);
+
+    let result = tool
+        .execute(&serde_json::json!({
+            "path": "sub/../out_s24.txt",
+            "content": "s24 resolved"
+        }))
+        .await;
+    assert!(
+        !result.is_error,
+        "restrict path inside workspace must pass, got: {}",
+        result.for_llm
+    );
+
+    let expected = dir.path().join("out_s24.txt");
+    assert!(
+        expected.exists(),
+        "resolved-form write must land at workspace root, not under sub/"
+    );
+    let content = tokio::fs::read_to_string(&expected).await.unwrap();
+    assert_eq!(content, "s24 resolved");
+}
+
+/// S24 配套：restrict 下 `..` 逃逸仍被拒（既有语义不回归）。
+#[tokio::test]
+async fn test_write_file_restrict_rejects_traversal_escape() {
+    let dir = TempDir::new().unwrap();
+    let ws = dir.path().to_string_lossy().to_string();
+    let tool = WriteFileTool::new(&ws, true);
+
+    let result = tool
+        .execute(&serde_json::json!({
+            "path": "../../escaped_s24.txt",
+            "content": "escape"
+        }))
+        .await;
+    assert!(
+        result.is_error,
+        "traversal escape must be rejected under restrict"
+    );
+}

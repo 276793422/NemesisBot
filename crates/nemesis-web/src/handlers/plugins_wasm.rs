@@ -240,11 +240,12 @@ fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
             .unwrap_or_default();
         seen.insert(slug.clone());
         let reg = mgr.get(&slug);
-        let trust = lockfile
-            .as_ref()
-            .and_then(|lf| lf.plugins.get(&slug))
+        let lock_entry = lockfile.as_ref().and_then(|lf| lf.plugins.get(&slug));
+        let trust = lock_entry
             .map(|e| e.trust.clone())
             .unwrap_or_else(|| "unknown".to_string());
+        // P0-5 来源标记：bootstrap:<源名> = agent 自举装；null = 手动/手拷。
+        let origin = lock_entry.and_then(|e| e.origin.clone());
         let mut row = match nemesis_plugins_wasm::manifest::PluginManifest::load_from_dir(&pdir) {
             Ok((m, _)) => serde_json::json!({
                 "slug": slug,
@@ -260,6 +261,7 @@ fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
                 "egress": m.permissions.egress,
                 "x_secret": m.permissions.x_secret,
                 "x_llm": m.permissions.x_llm,
+                "origin": origin,
                 "data_dir": mgr.plugin_data_dir(&slug).display().to_string(),
             }),
             Err(e) => pending_row(
@@ -314,6 +316,7 @@ fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
                     serde_json::json!({
                         "wasm_sha256": e.wasm_sha256,
                         "signed_by": e.signed_by,
+                        "origin": e.origin,
                         "error": "载荷目录缺失（lockfile 记录仍在；重装或卸载）",
                     }),
                 ));

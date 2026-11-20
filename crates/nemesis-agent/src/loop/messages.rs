@@ -645,6 +645,20 @@ impl AgentLoop {
                     let rendered = crate::skills_digest::render_skills_digest(&catalog);
                     sections.push(crate::skills_digest::digest_message(&rendered));
                 }
+                // P2-1（2026-11-19）：技能集变更提醒——会话
+                // 首启=落基线零提醒；装/卸后下一轮一行「+x/-y」；无变化
+                // None 零字节（cache 纪律：提醒只在变化轮出现，而那轮目
+                // 录字节本来就变，零额外失效）。空目录也过闸：0→N 装 /
+                // N→0 卸两臂都值得提醒（卸空时目录节本身消失，提醒行是
+                // 唯一信号）。session_key None（旧签名/兼容路径）落 ""
+                // 键自成一基线，与会话互不串扰。
+                let names: Vec<String> = infos.iter().map(|s| s.name.clone()).collect();
+                if let Some(reminder) = self
+                    .skills_digest_state
+                    .change_reminder(session_key.unwrap_or(""), &names)
+                {
+                    sections.push(reminder);
+                }
             }
             if let Some(ref root) = ws_root {
                 // 信任档三分——isolated 整段跳过（指令链

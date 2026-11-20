@@ -17,7 +17,18 @@
 //! documented passthrough kept for the loop.rs call shape. If true
 //! change-gating returns (e.g. per-field supersedes headers per 's full
 //! design), rebuild it as a SnapshotProjection, not by resurrecting this.
+//!
+//! P2-1（2026-11-19）：`change_reminder` 把 per-session
+//! 状态请了回来——但只记**技能名集**（不是渲染内容 hash），产出一行
+//! `+x/-y` 提醒。cache 纪律成立：提醒行只在集变化轮出现，而那一轮目录
+//! 字节本来就变了（零额外失效）；下一轮快照已更新，提醒消失，merged
+//! 字节回到稳定形态。重放面安全：提醒随 merged snapshot 逐 build 重渲
+//! 染、不进历史，与 time 节同一「per-build 态」语义（台账回放不重跑
+//! build_messages 比字节——time 每轮都变，先例已定）。
 
+use std::collections::HashMap;
+
+use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 
 /// Max characters of each skill's description kept in the digest.
@@ -65,16 +76,42 @@ pub fn digest_message(rendered: &str) -> String {
     )
 }
 
-/// Digest emission state handle (round-5: stateless).
+/// P2-1 变更提醒行渲染（纯函数，便于单测）。`added`/`removed` 不会同时
+/// 为空（调用方只在集合变化时构造）；全部卸载时 removed 覆盖整个旧集，
+/// 此时 Available Skills 节本身也会消失（infos 空 → 不推目录节），文案
+/// 不依赖该节在场。
+pub fn render_change_reminder(added: &[&str], removed: &[&str]) -> String {
+    let mut parts = Vec::new();
+    if !added.is_empty() {
+        parts.push(format!("+{}", added.join("、+")));
+    }
+    if !removed.is_empty() {
+        parts.push(format!("-{}", removed.join("、-")));
+    }
+    format!(
+        "# Skills Changed\n技能集已变化：{}（用 skills_list 查看当前完整目录）",
+        parts.join(" ")
+    )
+}
+
+/// Digest emission state handle.
 ///
-/// The original change-detection map was dead under merged-snapshot
-/// semantics (see module doc). Kept as a type so the AgentLoop field and
-/// the touch-invalidation call chain (`invalidate_context_digests`)
-/// stay intact — the RE-READ of instruction files already happens every
-/// build (sections are re-rendered from disk each time), so touch
-/// invalidation is structurally covered. If change-gating returns, this is
-/// the place to hang per-session state again.
-pub struct DigestState;
+/// P2-1（2026-11-19）：持有 **per-session 技能名集快照**，
+/// 供 [`DigestState::change_reminder`] 产出「技能集已变化：+x/-y」一行
+/// 提醒。目录渲染本体不变——merged snapshot 每 build 重渲（见模块文档），
+/// 快照只服务提醒行：
+/// - 会话首见 = 落基线，None（首启不提醒，目录节首次出现已是足量信号）；
+/// - 集相同 = None（零注入字节——cache 纪律的核心不变量）；
+/// - 集变化 = Some(提醒行) + 更新快照。提醒只在变化轮出现，而那一轮目录
+///   字节本来就变（零额外 cache 失效）；下一轮快照已更新，提醒消失，
+///   merged 字节回到稳定形态。
+///
+/// `clear_all()` 清空快照 = 基线重锚（touch-driven 稀有事件；重锚窗口内
+/// 的技能变更少一次提醒，可接受——指令链变更远比技能装卸频繁，不能为
+/// 提醒保真反过来放大失效面）。
+pub struct DigestState {
+    seen: RwLock<HashMap<String, Vec<String>>>,
+}
 
 impl Default for DigestState {
     fn default() -> Self {
@@ -84,24 +121,61 @@ impl Default for DigestState {
 
 impl DigestState {
     pub fn new() -> Self {
-        Self
+        Self {
+            seen: RwLock::new(HashMap::new()),
+        }
     }
 
     /// Decide the context-digest message for this build. Under
     /// merged-snapshot semantics this ALWAYS re-emits (the injection is not
     /// persisted in history; every build must carry it, byte-identically
     /// when nothing changed — deterministic rendering preserves the provider
-    /// prefix). `session_key`/hash bookkeeping was removed with the dead
-    /// change-detection state (round-5).
+    /// prefix). Change REMINDERS live in [`DigestState::change_reminder`]
+    /// (P2-1) — this method itself stays a passthrough.
     pub fn should_inject(&self, _session_key: &str, rendered: &str) -> Option<String> {
         Some(rendered.to_string())
     }
 
-    /// touch-driven invalidation. Structurally a no-op since
-    /// round-5 (sections re-read from disk on every build — there is no
-    /// cached rendering to invalidate); kept for the call-chain shape and
-    /// as the anchor if change-gating returns.
-    pub fn clear_all(&self) {}
+    /// P2-1 变更提醒判定（详见类型文档）。`names` 无需预排序——内部
+    /// sort+dedup，调用方直接传 `list_skills()` 的名字序列即可。
+    pub fn change_reminder(&self, session_key: &str, names: &[String]) -> Option<String> {
+        let mut current = names.to_vec();
+        current.sort();
+        current.dedup();
+        let mut seen = self.seen.write();
+        match seen.get(session_key) {
+            None => {
+                // 首见：落基线，不提醒。
+                seen.insert(session_key.to_string(), current);
+                None
+            }
+            Some(prev) if prev == &current => None,
+            Some(prev) => {
+                let added: Vec<&str> = current
+                    .iter()
+                    .filter(|n| !prev.contains(*n))
+                    .map(String::as_str)
+                    .collect();
+                let removed: Vec<&str> = prev
+                    .iter()
+                    .filter(|n| !current.contains(*n))
+                    .map(String::as_str)
+                    .collect();
+                let msg = render_change_reminder(&added, &removed);
+                seen.insert(session_key.to_string(), current);
+                Some(msg)
+            }
+        }
+    }
+
+    /// touch-driven invalidation. The per-build re-render of section content
+    /// needs no invalidation; this clears the P2-1 name-set snapshots
+    /// (= baseline re-anchor — the next build after an instruction-chain
+    /// touch re-baselines instead of diffing, see type doc). Kept for the
+    /// `invalidate_context_digests` call-chain shape.
+    pub fn clear_all(&self) {
+        self.seen.write().clear();
+    }
 }
 
 /// Convenience: collect the catalog from a SkillsLoader scan result

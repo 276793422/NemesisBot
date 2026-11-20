@@ -3540,6 +3540,178 @@ fn l01_f3_memory_rule_explicit_flag_pattern_auto_allows() {
     );
 }
 
+// ===== P1-4 命令替换放行臂二次校验 =====
+// `$(…)`/反引号体的静态不可解析：allow 规则匹配的是替换前的字面文本，
+// 实际执行内容对模式匹配不可见——两个自动放行臂（规则表 allow 遍 /
+// 审批记忆 auto_by_rule）命中替换即不放行降级弹卡（与 sensitive flag
+// 同构）；pattern 显式含替换形态 = 用户显式意志豁免
+// （BUG-20261118-094 同款逻辑）。
+
+/// 探针审计器：默认 deny + allow `echo *` 规则（最宽的良性面——替换
+/// 载荷藏在 echo 之后正是洞形态）。
+fn subst_auditor() -> SecurityAuditor {
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "deny".to_string(),
+        ..Default::default()
+    });
+    auditor.set_rules(
+        OperationType::ProcessExec,
+        vec![SecurityRule {
+            pattern: "echo *".to_string(),
+            action: "allow".to_string(),
+            comment: "allow echo".to_string(),
+        }],
+    );
+    auditor
+}
+
+#[test]
+fn l02_allow_rule_with_command_substitution_requires_approval() {
+    let auditor = subst_auditor();
+
+    // 无替换 → allow 规则照常放行（零回归基线）。
+    let (allowed, _, _) = auditor.request_permission(&exec_request("l02a", "echo hello"));
+    assert!(allowed, "无替换的 echo 必须照常放行");
+
+    // 计划探针①：base64 动态解码载荷（含 `|` → 顶层切段把替换体劈开，
+    // 第二段 `base64 -d) x` 不命中 allow（allow=全段命中）→ 落 default
+    // deny——同样不静默放行，只是路径不同（段切面而非替换闸面）。
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("l02b", "echo $(echo Y2F0|base64 -d) x"));
+    assert!(!allowed, "替换载荷不得被 allow 规则静默放行（段切面兜底）");
+
+    // 替换闸面探针：无操作符替换体 → 单段命中 allow → 替换闸降级弹卡。
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("l02b2", "echo $(cat secret.txt)"));
+    assert!(!allowed, "替换不得被 allow 规则静默放行");
+    assert!(
+        err.as_ref()
+            .is_some_and(|e| e.contains("command substitution")),
+        "reason 必须点明替换拦截: {err:?}"
+    );
+
+    // 计划探针②：反引号。
+    let (allowed, _, _) = auditor.request_permission(&exec_request("l02c", "echo `cat x`"));
+    assert!(!allowed, "反引号替换不得被 allow 规则静默放行");
+
+    // 计划探针③：嵌套双引号包裹替换（POSIX 双引号内恰恰允许展开）。
+    let (allowed, _, _) = auditor.request_permission(&exec_request("l02d", "echo \"$(cat x)\""));
+    assert!(!allowed, "引号包裹替换不得被 allow 规则静默放行");
+    assert_eq!(
+        auditor.pending_count(),
+        3,
+        "替换闸面三探针（b2/c/d）全部入 pending 弹卡"
+    );
+}
+
+#[test]
+fn l02_allow_rule_explicit_substitution_pattern_exempt() {
+    // 规则 pattern 显式含替换形态 = 用户显式放行动态构造，豁免
+    // （BUG-20261118-094 同款；手写规则形态）。
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "deny".to_string(),
+        ..Default::default()
+    });
+    auditor.set_rules(
+        OperationType::ProcessExec,
+        vec![SecurityRule {
+            pattern: "echo $(date) *".to_string(),
+            action: "allow".to_string(),
+            comment: "explicit dynamic allow".to_string(),
+        }],
+    );
+    let (allowed, err, _) = auditor.request_permission(&exec_request("l02e", "echo $(date) +%s"));
+    assert!(allowed, "显式替换规则必须放行（显式意志优先）: {err:?}");
+}
+
+#[test]
+fn l02_substitution_behind_non_allow_op_still_flows() {
+    // deny 桶先行不受本闸影响（deny 命中直接 Denied，替换闸只在 allow
+    // 放行前加一道）。
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    });
+    auditor.set_rules(
+        OperationType::ProcessExec,
+        vec![
+            SecurityRule {
+                pattern: "echo $(rm *".to_string(),
+                action: "deny".to_string(),
+                comment: "deny shell".to_string(),
+            },
+            SecurityRule {
+                pattern: "echo *".to_string(),
+                action: "allow".to_string(),
+                comment: "allow echo".to_string(),
+            },
+        ],
+    );
+    // deny 命中（段级任一命中即拦——替换体里的 rm 段进不了 allow），
+    // reason 是 deny 规则命中而非替换拦截。
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("l02f", "echo x; echo $(rm -rf y)"));
+    assert!(!allowed);
+    assert!(
+        err.as_ref()
+            .is_some_and(|e| e.contains("rule matched: pattern=echo $(rm *")),
+        "deny 桶先行（reason=deny 规则命中）: {err:?}"
+    );
+}
+
+#[test]
+fn l02_memory_rule_substitution_gate_e2e() {
+    // 记忆规则臂（auto_by_rule）：替换命令必须拦下自动放行 fall through
+    // 到人工卡；无替换命令照常自动放行。
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    let echo_rule = crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "echo *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir, &[echo_rule]));
+
+    // 无替换 → 记忆规则自动放行（无卡）。
+    let (allowed, _, request_id) =
+        auditor.request_permission_tracked(&exec_request("l02g", "echo plain"), None);
+    assert!(allowed, "无替换由记忆规则自动放行");
+    assert!(request_id.is_none(), "自动放行不得产生审批卡");
+
+    // 替换 → 记忆规则被阻断 → fall through 到人工卡（pending）。
+    let (allowed, err, _) =
+        auditor.request_permission_tracked(&exec_request("l02h", "echo $(reboot)"), None);
+    assert!(!allowed, "替换必须拦下记忆规则自动放行");
+    assert!(
+        err.as_ref()
+            .is_some_and(|e| e.contains("approval required")),
+        "阻断后必须落到人工卡而不是静默放行: {err:?}"
+    );
+    assert_eq!(auditor.pending_count(), 1, "fall through 后必须入 pending");
+}
+
+#[test]
+fn l02_memory_rule_explicit_substitution_pattern_auto_allows() {
+    // 记忆规则臂豁免镜像：pattern 显式含 `$(` → 替换请求照常自动放行。
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    let date_rule = crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "echo $(date) *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir, &[date_rule]));
+    let (allowed, _, request_id) =
+        auditor.request_permission_tracked(&exec_request("l02i", "echo $(date) +%s"), None);
+    assert!(allowed, "显式替换 pattern 必须自动放行");
+    assert!(request_id.is_none(), "豁免臂不得产生审批卡");
+}
+
 // audit.jsonl 追加的行原子性——`writeln!` 是正文与
 // "\n" 两次 write，append 模式下每片段独立定位 EOF，多线程安全判定并发
 // 落审计可把别人的行插进本行中间粘成一行；读端 `get_audit_log` 对 parse

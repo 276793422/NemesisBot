@@ -292,6 +292,7 @@ fn seed_lockfile(mgr: &PluginManager, slug: &str) {
                 installed_at_ms: 0,
                 signed_by: String::new(),
                 connectors: Vec::new(),
+                origin: None,
             },
         )]
         .into_iter()
@@ -1525,6 +1526,10 @@ fn lockfile_connectors_field_backward_compat() {
         lf.plugins["demo"].connectors.is_empty(),
         "缺 connectors 键必须落空表（#[serde(default)]）"
     );
+    assert!(
+        lf.plugins["demo"].origin.is_none(),
+        "缺 origin 键必须落 None（P0-5 来源标记旧条目零迁移）"
+    );
 
     // 新形态 roundtrip 保留记账。
     let lf = PluginLockfile {
@@ -1538,6 +1543,7 @@ fn lockfile_connectors_field_backward_compat() {
                 installed_at_ms: 1,
                 signed_by: String::new(),
                 connectors: vec!["gitea".to_string()],
+                origin: Some("bootstrap:test-registry".to_string()),
             },
         )]
         .into_iter()
@@ -1546,6 +1552,11 @@ fn lockfile_connectors_field_backward_compat() {
     let s = serde_json::to_string(&lf).expect("serialize");
     let back: PluginLockfile = serde_json::from_str(&s).expect("roundtrip");
     assert_eq!(back.plugins["demo"].connectors, vec!["gitea".to_string()]);
+    assert_eq!(
+        back.plugins["demo"].origin.as_deref(),
+        Some("bootstrap:test-registry"),
+        "origin roundtrip 保真（P0-5）"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -17,6 +17,13 @@
 //! `scan_tool_output` 自带 WARN 记账）；DLP 逐匹配看 `effective_action`，
 //! 全部命中都属观测档（warn/log）时不改写。
 //!
+//! 审计链记账（P1-1 补齐）：命中即经
+//! `SecurityPlugin::append_direct_audit_event` 落 Merkle append-only 台账
+//! （rewind force 同款口径——tracing 日志轮转即失，不算「留痕」）。只记
+//! 元数据（规则名 + 计数 + 处置档位），零内容：命中片段与原文均不进台账
+//! （redact 档原文已遮蔽，observe 档原文进上下文但不进台账）。链未启用
+//! （默认）= `None`，扫描器自带 WARN 兜底可见性。
+//!
 //! 已知边界：DLP 检测面按引擎自身语义截前 5KB（`scan_tool_output` 内部
 //! 截断）；命中后 `redact_content` 对全文遮蔽（超集）。凭据扫描无截断，
 //! 全文进出。
@@ -25,7 +32,18 @@ use nemesis_security::credential::Scanner as CredentialScanner;
 use nemesis_security::dlp::DlpEngine;
 use nemesis_security::pipeline::SecurityPlugin;
 
+/// 单结果复扫命中摘要：审计链记账的元数据载荷。`kind` 直接携带
+/// operation 名（审计链里的 operation 字段值），消费方无需再映射。
+#[derive(Debug)]
+pub(crate) struct RescanHit {
+    pub kind: &'static str,
+    pub count: usize,
+    pub redacted: bool,
+    pub rules: Vec<String>,
+}
+
 /// 输出侧复扫入口：`None`（安全模块未装配/未启用）= 原样返回。
+/// 命中时在返回脱敏文本之外落审计链台账（`plugin` 在场 + 链启用）。
 pub(crate) fn rescan_tool_output(
     plugin: Option<&SecurityPlugin>,
     tool_name: &str,
@@ -34,37 +52,67 @@ pub(crate) fn rescan_tool_output(
     let Some(plugin) = plugin else {
         return result;
     };
-    rescan_pair(
+    let (result, hits) = rescan_pair(
         plugin.credential_scanner(),
         plugin.dlp_engine(),
         tool_name,
         result,
-    )
+    );
+    for hit in &hits {
+        let decision = if hit.redacted { "redacted" } else { "observed" };
+        let recorded = plugin.append_direct_audit_event(
+            hit.kind,
+            tool_name,
+            "agent",
+            "agent_loop",
+            tool_name,
+            decision,
+            &format!(
+                "output rescan: {} match(es), rules=[{}]; {}",
+                hit.count,
+                hit.rules.join(","),
+                if hit.redacted {
+                    "content redacted"
+                } else {
+                    "observe-only (action != block/redact), content untouched"
+                }
+            ),
+        );
+        if recorded.is_none() {
+            tracing::debug!(
+                tool = tool_name,
+                kind = hit.kind,
+                "[AgentLoop] output rescan hit: audit chain not enabled; scanner WARN is the visibility face"
+            );
+        }
+    }
+    result
 }
 
 /// 组装核：独立成函数让测试直扫双扫描器组合，不必构造整个 SecurityPlugin。
+/// 返回 `(脱敏后文本, 命中摘要)`——摘要供入口层落审计链，测试直接断言。
 pub(crate) fn rescan_pair(
     credential: Option<&CredentialScanner>,
     dlp: Option<&DlpEngine>,
     tool_name: &str,
     mut result: String,
-) -> String {
+) -> (String, Vec<RescanHit>) {
+    let mut hits: Vec<RescanHit> = Vec::new();
     if result.is_empty() {
-        return result;
+        return (result, hits);
     }
     let mut notes: Vec<String> = Vec::new();
     if let Some(scanner) = credential {
-        rescan_credential(scanner, tool_name, &mut result, &mut notes);
+        rescan_credential(scanner, tool_name, &mut result, &mut notes, &mut hits);
     }
     if let Some(engine) = dlp {
-        rescan_dlp(engine, tool_name, &mut result, &mut notes);
+        rescan_dlp(engine, tool_name, &mut result, &mut notes, &mut hits);
     }
-    if notes.is_empty() {
-        return result;
+    if !notes.is_empty() {
+        result.push('\n');
+        result.push_str(&notes.join("\n"));
     }
-    result.push('\n');
-    result.push_str(&notes.join("\n"));
-    result
+    (result, hits)
 }
 
 /// 该 action 是否授权出侧改写（block = 入参侧拦停的出侧对应物；redact =
@@ -79,9 +127,20 @@ fn rescan_credential(
     tool_name: &str,
     result: &mut String,
     notes: &mut Vec<String>,
+    hits: &mut Vec<RescanHit>,
 ) {
     let r = scanner.scan_tool_output(tool_name, result);
-    if !r.has_matches || !is_enforcing(scanner.get_action()) {
+    if !r.has_matches {
+        return;
+    }
+    let redacted = is_enforcing(scanner.get_action());
+    hits.push(RescanHit {
+        kind: "tool.output.credential_rescan",
+        count: r.matches.len(),
+        redacted,
+        rules: r.matches.iter().map(|m| m.pattern_name.clone()).collect(),
+    });
+    if !redacted {
         return;
     }
     *result = scanner.redact_content(result);
@@ -91,12 +150,25 @@ fn rescan_credential(
     ));
 }
 
-fn rescan_dlp(engine: &DlpEngine, tool_name: &str, result: &mut String, notes: &mut Vec<String>) {
+fn rescan_dlp(
+    engine: &DlpEngine,
+    tool_name: &str,
+    result: &mut String,
+    notes: &mut Vec<String>,
+    hits: &mut Vec<RescanHit>,
+) {
     let r = engine.scan_tool_output(tool_name, result);
     if !r.has_matches {
         return;
     }
-    if !r.matches.iter().any(|m| is_enforcing(&m.effective_action)) {
+    let redacted = r.matches.iter().any(|m| is_enforcing(&m.effective_action));
+    hits.push(RescanHit {
+        kind: "tool.output.dlp_rescan",
+        count: r.matches.len(),
+        redacted,
+        rules: r.matches.iter().map(|m| m.rule_name.clone()).collect(),
+    });
+    if !redacted {
         tracing::debug!(
             tool = tool_name,
             count = r.matches.len(),
