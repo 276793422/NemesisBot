@@ -143,6 +143,29 @@ pub struct ExecTool {
     /// 进程〔exec_worker 不注入注册表〕、受限文件捕获形态、全部既有测试
     /// 逐字节不变）。
     background_registry: Option<Arc<BackgroundProcessRegistry>>,
+    /// 热读源（2026-11-20 C4 热生效语义）：Some(config.json) = 消费点
+    /// （execute/parameters）前 mtime 检测现读 `tools.exec` 段——deny 词表
+    /// 重编 + max_timeout 更新，改键**下次执行即生效**（无需重启）。
+    /// None = 构造期字段旧行为字节不变（基线注册 / executor 分离 /
+    /// 测试构造）。语义与 registry 装配臂同源：开+非空=自定义词表、
+    /// 其余=内置默认（无全放行形态）；max 0/缺省=600。
+    exec_config_path: Option<std::path::PathBuf>,
+    /// mtime 缓存：上次热读 (mtime, 生效值)。None = 尚未热读过（首次
+    /// 消费即触发现读——装配期注入值与磁盘现值的窗口期差异一并覆盖）。
+    /// std Mutex：热读是同步 fs stat + 小 JSON 解析，无跨 await 持锁。
+    runtime_cache: std::sync::Mutex<Option<(std::time::SystemTime, ExecRuntimeCfg)>>,
+    /// 热读失败 warn 一次性闸：mtime/config 读失败每次消费都会走到——
+    /// 首次 warn 留痕，后续 debug 防刷屏；读成功后复位重上膛。
+    hot_read_warned: std::sync::atomic::AtomicBool,
+}
+
+/// exec 生效运行时值（2026-11-20 C4 热读载体）：deny 词表 + timeout
+/// 上限。path 缺席时消费点直读构造期字段，不经过本结构；regex 内部
+/// Arc，整表克隆是引用计数开销，execute/parameters 频率下可忽略。
+/// pub(super)：热读语义测试（`exec_hot_read_tests`）直接消费字段。
+pub(super) struct ExecRuntimeCfg {
+    pub(super) max_timeout_secs: u64,
+    pub(super) deny_patterns: Vec<regex::Regex>,
 }
 
 /// 编译 deny 词表：`custom` 非空 = 自定义词表（无效 regex 跳过 + warn）；
@@ -249,6 +272,9 @@ impl ExecTool {
             max_timeout_secs: 600,
             editor_gate: None,
             background_registry: None,
+            exec_config_path: None,
+            runtime_cache: std::sync::Mutex::new(None),
+            hot_read_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -270,6 +296,9 @@ impl ExecTool {
             max_timeout_secs: 600,
             editor_gate: None,
             background_registry: None,
+            exec_config_path: None,
+            runtime_cache: std::sync::Mutex::new(None),
+            hot_read_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -286,6 +315,9 @@ impl ExecTool {
             max_timeout_secs: 600,
             editor_gate: None,
             background_registry: None,
+            exec_config_path: None,
+            runtime_cache: std::sync::Mutex::new(None),
+            hot_read_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -324,16 +356,133 @@ impl ExecTool {
         self
     }
 
-    /// deny 词表命中检查（大小写不敏感——命令统一小写后比对，regex 词表
-    /// 自带 `\b` 词边界与 `(?i)` 内联开关）。命中 = Some(首个命中的
-    /// pattern 原文)，供拒绝消息引用。
-    pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
-        let lowered = command.to_lowercase();
-        self.deny_patterns
-            .iter()
-            .find(|re| re.is_match(&lowered))
-            .map(|re| re.as_str().to_string())
+    /// 热读源注入（2026-11-20 C4 热生效语义）：registry 从
+    /// `SharedToolConfig.exec_config_path` 提取分发。Some = 消费点现读
+    /// 语义（见字段注）；None（缺省）= 构造期字段旧行为。
+    pub fn with_exec_config_path(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.exec_config_path = path;
+        self
     }
+
+    /// 生效运行时值快照（2026-11-20 C4 热读）：path 在场 → 每次消费前
+    /// mtime 检测，首读或 mtime 变化才 load_config 重读 `tools.exec` 段
+    /// 重编词表；读失败诚实降级保持上次生效值（缓存空 = 构造期值）+
+    /// 首次 warn 后续 debug；path 缺席 → 构造期字段（旧行为字节不变，
+    /// 零额外开销）。
+    pub(super) fn runtime_snapshot(&self) -> ExecRuntimeCfg {
+        let Some(path) = self.exec_config_path.as_ref() else {
+            return ExecRuntimeCfg {
+                max_timeout_secs: self.max_timeout_secs,
+                deny_patterns: self.deny_patterns.clone(),
+            };
+        };
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let mut cache = self
+            .runtime_cache
+            .lock()
+            .expect("exec runtime cache mutex poisoned");
+        // 缓存命中（mtime 一致）→ 免读免编。
+        if let (Some(m), Some((last, cfg))) = (mtime, cache.as_ref())
+            && m == *last
+        {
+            return ExecRuntimeCfg {
+                max_timeout_secs: cfg.max_timeout_secs,
+                deny_patterns: cfg.deny_patterns.clone(),
+            };
+        }
+        // 首读 / mtime 变化 / mtime 丢失 → 现读。
+        match mtime.zip(Self::read_exec_runtime(path)) {
+            Some((m, fresh)) => {
+                *cache = Some((
+                    m,
+                    ExecRuntimeCfg {
+                        max_timeout_secs: fresh.max_timeout_secs,
+                        deny_patterns: fresh.deny_patterns.clone(),
+                    },
+                ));
+                self.hot_read_warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                fresh
+            }
+            None => {
+                // 读失败：诚实降级——保持上次生效值，缓存空 = 构造期值。
+                Self::warn_read_failure(&self.hot_read_warned, path);
+                if let Some((_, cfg)) = cache.as_ref() {
+                    ExecRuntimeCfg {
+                        max_timeout_secs: cfg.max_timeout_secs,
+                        deny_patterns: cfg.deny_patterns.clone(),
+                    }
+                } else {
+                    ExecRuntimeCfg {
+                        max_timeout_secs: self.max_timeout_secs,
+                        deny_patterns: self.deny_patterns.clone(),
+                    }
+                }
+            }
+        }
+    }
+
+    /// 现读 config.json `tools.exec` 段 → 生效值。语义与 registry 装配
+    /// 臂同源：`enable_deny_patterns` 开 + 词表非空 = 自定义词表，其余
+    /// = 内置默认词表（无全放行形态）；`max_timeout_secs` 0/缺省 = 600。
+    /// 读失败 = None（调用方降级，不炸工具）。
+    pub(super) fn read_exec_runtime(path: &std::path::Path) -> Option<ExecRuntimeCfg> {
+        let cfg = nemesis_config::load_config(path).ok()?;
+        let exec = &cfg.tools.exec;
+        let deny_patterns = if exec.enable_deny_patterns && !exec.custom_deny_patterns.is_empty() {
+            let patterns: Vec<&str> = exec
+                .custom_deny_patterns
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            compile_deny_patterns(Some(&patterns))
+        } else {
+            compile_deny_patterns(None)
+        };
+        let max_timeout_secs = if exec.max_timeout_secs > 0 {
+            exec.max_timeout_secs
+        } else {
+            600
+        };
+        Some(ExecRuntimeCfg {
+            max_timeout_secs,
+            deny_patterns,
+        })
+    }
+
+    /// 热读失败留痕：首次 warn，后续 debug（防每次消费刷屏）；读成功
+    /// 复位重上膛（见 `hot_read_warned` 字段注）。
+    fn warn_read_failure(flag: &std::sync::atomic::AtomicBool, path: &std::path::Path) {
+        if !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "[Tools] exec hot-read: config 读失败（{}）——保持上次生效值（下次读成功自动恢复）",
+                path.display()
+            );
+        } else {
+            tracing::debug!("[Tools] exec hot-read: config 读失败（续）——保持上次生效值");
+        }
+    }
+
+    /// deny 词表命中检查（构造期字段路径——热读路径见 `execute` 内
+    /// `runtime_snapshot` + [`deny_hit_in`]）。生产路径已改走快照词表，
+    /// 本方法保留给 deny 语义测试（`exec_deny_tests` 等经 pub(super)
+    /// 访问基线词表行为——比对语义与 deny_hit_in 同源）。
+    #[cfg(test)]
+    pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
+        deny_hit_in(&self.deny_patterns, command)
+    }
+}
+
+/// deny 词表命中检查（大小写不敏感——命令统一小写后比对，regex 词表
+/// 自带 `\b` 词边界与 `(?i)` 内联开关）。命中 = Some(首个命中的
+/// pattern 原文)，供拒绝消息引用。[`ExecTool`] 热读路径（快照词表）
+/// 与 [`AsyncExecTool`] 构造期路径共用同一比对语义。
+pub(super) fn deny_hit_in(patterns: &[regex::Regex], command: &str) -> Option<String> {
+    let lowered = command.to_lowercase();
+    patterns
+        .iter()
+        .find(|re| re.is_match(&lowered))
+        .map(|re| re.as_str().to_string())
 }
 
 #[async_trait]
@@ -352,7 +501,11 @@ impl Tool for ExecTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":format!("Timeout in seconds (default 30, max {})", self.max_timeout_secs)},"cwd":{"type":"string","description":"Working directory"},"env":env_slot_schema()},"required":["command"]})
+        // timeout 上限走热读快照（2026-11-20 C4）：改 `tools.exec.
+        // max_timeout_secs` 后下一轮 tool defs 描述即新值（诚实 schema；
+        // 词表热读见 execute）。path 缺席 = 构造期字段。
+        let max = self.runtime_snapshot().max_timeout_secs;
+        serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":format!("Timeout in seconds (default 30, max {})", max)},"cwd":{"type":"string","description":"Working directory"},"env":env_slot_schema()},"required":["command"]})
     }
 
     // vault 计划方案 A（2026-11-11）：env 槽承载凭据别名（模型传
@@ -371,10 +524,15 @@ impl Tool for ExecTool {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'command' argument")?;
 
+        // 生效运行时值（2026-11-20 C4 热读）：path 在场 → mtime 变化
+        // 才重读 config `tools.exec` 段（deny 词表 + max_timeout，改键
+        // 下次执行即生效）；path 缺席 = 构造期字段旧行为。
+        let runtime = self.runtime_snapshot();
+
         // deny 词表检查（2026-11-08 接线激活）——spawn 前第一道 shell 级
         // 词表闸（安全 8 层 pipeline 仍在 dispatch 前跑过，这里是工具层
         // 纵深）。命中即拒，拒绝消息带 pattern 原文（模型可换方法）。
-        if let Some(hit) = self.deny_hit(command) {
+        if let Some(hit) = deny_hit_in(&runtime.deny_patterns, command) {
             return Err(format!(
                 "Command blocked by deny pattern: {}（命中危险命令词表，已拒绝执行）",
                 hit
@@ -383,7 +541,7 @@ impl Tool for ExecTool {
 
         let timeout_secs = exec_timeout_secs_capped(
             val.get("timeout").and_then(|v| v.as_u64()),
-            self.max_timeout_secs,
+            runtime.max_timeout_secs,
         );
 
         let cwd = val
@@ -1934,11 +2092,7 @@ impl AsyncExecTool {
     }
 
     pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
-        let lowered = command.to_lowercase();
-        self.deny_patterns
-            .iter()
-            .find(|re| re.is_match(&lowered))
-            .map(|re| re.as_str().to_string())
+        deny_hit_in(&self.deny_patterns, command)
     }
 }
 

@@ -1196,7 +1196,12 @@ impl GatewayCtx {
             forge_config.enabled = forge_enabled;
             let forge_workspace = home.join("workspace");
             let forge_dir = forge_workspace.join("forge");
-            let mut forge = nemesis_forge::forge::Forge::new(forge_config.clone(), forge_workspace);
+            let mut forge = nemesis_forge::forge::Forge::new(forge_config.clone(), forge_workspace)
+                // 总闸热读源（2026-11-20 C3 热生效语义）：is_enabled()（recording
+                // 闸 + 后台循环看闸）mtime 检测现读 config.json 的 forge.enabled
+                // ——改键即刻生效，无需重启。上面 forge_config.enabled mirror
+                // 退化为热读失败时的快照兜底。
+                .with_master_switch_path(common::config_path(&home));
 
             // Initialize Reflector (statistical analysis + report writing).
             forge.init_reflector(nemesis_forge::reflector::Reflector::with_reflections_dir(
@@ -1303,16 +1308,18 @@ impl GatewayCtx {
 
             // Forge injection into agent_loop is now handled by the factory function.
 
-            // Start background tasks only if enabled in config.
-            if forge_enabled {
-                let forge_for_start = forge.clone();
-                tokio::spawn(async move {
-                    forge_for_start.start().await;
-                });
-                info!("[Gateway] Forge started (background tasks running)");
-            } else {
-                info!("[Gateway] Forge created but not started (enabled=false in config)");
-            }
+            // 恒启动后台循环（2026-11-20 C3 热生效语义）：循环内部每 cycle
+            // 前看 is_enabled() 总闸（热读 config）——关 = 跳过 cycle，改
+            // forge.enabled 即刻生效（无需重启）。interval=0 的循环仍不
+            // spawn（0=关 惯例不变）；forge_enabled=false 时循环空转待命
+            // （每秒一次 flag/elapsed 检查，成本可忽略）。
+            let forge_for_start = forge.clone();
+            tokio::spawn(async move {
+                forge_for_start.start().await;
+            });
+            info!(
+                "[Gateway] Forge background loops started (master switch hot-read, enabled={forge_enabled})"
+            );
 
             // Store for web server injection.
             forge_for_web = Some(forge);

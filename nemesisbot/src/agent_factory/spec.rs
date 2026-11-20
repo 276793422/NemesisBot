@@ -518,48 +518,27 @@ pub fn build_agent_loop_from_spec(
             agent_loop.set_approval_auto_approve(state);
         }
     }
-    // small_model 杂务通道与主 loop 同配置。
+    // small_model 杂务通道与主 loop 同配置。（2026-11-20 C2 热生效语义：
+    // 单一真相源 resolve_small_model_slot + 热换 resolver 注入——项目
+    // loop 的 config 新代发布同样热换，与主 loop 同源生效。）
     if let Some(small_ref) = cfg
         .agents
         .small_model
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        && let Some((provider, name)) = resolve_small_model_slot(&cfg, small_ref, &project_dir)
     {
-        match nemesis_config::resolve_model_config(&cfg, small_ref) {
-            Ok(resolution) => {
-                let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
-                    proxy: resolution.proxy.clone(),
-                    stream_mode: resolution.stream_mode.clone(),
-                    cache_breakpoints: resolution.cache_breakpoints,
-                    extra_body: resolution.extra_body.clone(),
-                    llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
-                    api_key: resolution.api_key.clone(),
-                    api_base: resolution.api_base.clone(),
-                    workspace: project_dir.to_string_lossy().to_string(),
-                    connect_mode: resolution.connect_mode.clone(),
-                    protocol: resolution.protocol.clone(),
-                    timeout_secs: resolution.timeout_secs,
-                    account_id: String::new(),
-                    headers: HashMap::new(),
-                };
-                match nemesis_providers::factory::create_provider(&small_factory_cfg) {
-                    Ok(provider) => {
-                        let adapter = ProviderAdapter::new(provider, resolution.model_name.clone());
-                        agent_loop
-                            .set_small_model(Some((Arc::new(adapter), resolution.model_name)));
-                    }
-                    Err(e) => warn!(
-                        "[AgentFactory] project small model '{}': provider create failed ({})",
-                        small_ref, e
-                    ),
-                }
-            }
-            Err(e) => warn!(
-                "[AgentFactory] project small model '{}' not resolvable ({})",
-                small_ref, e
-            ),
-        }
+        agent_loop.set_small_model_with_ref(Some((provider, name)), small_ref);
+        // warn（解析/构造失败）已在 resolve_small_model_slot 内打出。
+    }
+    {
+        let ws = project_dir.to_string_lossy().to_string();
+        agent_loop.set_small_model_resolver(std::sync::Arc::new(
+            move |cfg: &nemesis_config::Config, small_ref: &str| {
+                resolve_small_model_slot(cfg, small_ref, std::path::Path::new(&ws))
+            },
+        ));
     }
     // cc_hooks 与主 loop 同一份 workspace config 目录（用户级 hook 方言
     // 跨项目一致）；相对路径锚项目目录。恒建桥（即刻生效语义，同主 loop）。

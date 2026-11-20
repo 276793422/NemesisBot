@@ -4123,6 +4123,7 @@ async fn test_handle_tool_call_with_security_block() {
         approval_timeout_secs: 300,
         log_all_operations: true,
         preexec_scan_enabled: false,
+        sensitive_read_names: Vec::new(),
         file_rules: vec![SecurityRule {
             pattern: ".*".to_string(),
             action: "deny".to_string(),
@@ -4187,6 +4188,7 @@ fn output_preview_sanitizer_masks_real_credential_when_plugin_present() {
         approval_timeout_secs: 300,
         log_all_operations: true,
         preexec_scan_enabled: false,
+        sensitive_read_names: Vec::new(),
         file_rules: vec![],
         dir_rules: vec![],
         process_rules: vec![],

@@ -251,6 +251,52 @@ fn test_extract_target_mcp_discover_command_and_url() {
     assert_eq!(extract_target("mcp_discover", &serde_json::json!({})), "");
 }
 
+// 读族补臂（2026-11-20 第二轮横扫，批 4 漏网）：grep/read_image/
+// file_exists/lsp 均 FileRead 档——无臂时 target 恒空，敏感读臂对它们
+// 整体失效。补臂后 target 取 path 键；git 读动作取 args（自由文本，文件
+// 路径内嵌）、写动作回退 paths。
+#[test]
+fn test_extract_target_read_family_arms() {
+    let path_args = serde_json::json!({"path": "/ws/AGENTS.md"});
+    for tool in ["grep", "read_image", "file_exists", "lsp"] {
+        assert_eq!(
+            extract_target(tool, &path_args),
+            "/ws/AGENTS.md",
+            "{tool} must read the path key"
+        );
+        assert_eq!(extract_target(tool, &serde_json::json!({})), "");
+    }
+    // git 读动作：args 键（自由文本，schema 注记文件路径）。
+    assert_eq!(
+        extract_target(
+            "git",
+            &serde_json::json!({"action": "show", "args": "AGENTS.md"})
+        ),
+        "AGENTS.md"
+    );
+    // git 多 token 形态 target = args 原文（basename 匹配 miss 由管线
+    // hit_in_args 深扫兜底，见 sensitive_read/tests.rs）。
+    assert_eq!(
+        extract_target(
+            "git",
+            &serde_json::json!({"action": "log", "args": "-p -- AGENTS.md"})
+        ),
+        "-p -- AGENTS.md"
+    );
+    // git 写动作：args 缺失回退 paths。
+    assert_eq!(
+        extract_target(
+            "git",
+            &serde_json::json!({"action": "add", "paths": "src/main.rs"})
+        ),
+        "src/main.rs"
+    );
+    assert_eq!(
+        extract_target("git", &serde_json::json!({"action": "status"})),
+        ""
+    );
+}
+
 // mcp_discover 的 url 进 Layer 6 SSRF（与 web_fetch 同
 // 语义同闸）。
 #[test]

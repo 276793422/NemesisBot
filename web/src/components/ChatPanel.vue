@@ -757,6 +757,83 @@ function isCompactNoteRunning(msg: ChatMessage): boolean {
   return msg.noteKind === 'compaction_start'
 }
 
+// --- 限流进度徽标（2026-11-20）-----------------------------------------
+// 429 重试进度帧（后端 note_kind=rate_limit，role=system 投影，瞬态不落盘）
+// 渲染为压缩徽标同款折叠小徽标 + 倒计时。此前 role=assistant 走正常回复
+// 语义：flushPendingWork 把进行中时间线挂到回执上（打断中间流程）+
+// setBusy(false)（停止按钮消失）+ 永久留屏——三现象同根因，徽标化后
+// 完成语义分支天然不触发，全部消失。
+
+/** 限流进度徽标谓词。 */
+function isRateLimitNote(msg: ChatMessage): boolean {
+  return msg.noteKind === 'rate_limit'
+}
+// 单例摘除在 chatStore.removeRateLimitNotes（新进度帧到达 / 终局回复到场）。
+
+/** 帧内容解析（后端文案单一真相源 recovery.rs：「⏳ {label}（{model}），第
+ *  N/M 次重试，等待 S 秒…」）——retry/max/wait 三元组；不匹配 = null
+ *  （渲染退化为静态徽标，不猜）。 */
+function parseRateLimitFrame(content: string): { retry: number; max: number; wait: number } | null {
+  const m = /第\s*(\d+)\s*\/\s*(\d+)\s*次重试，等待\s*(\d+)\s*秒/.exec(content)
+  if (!m) return null
+  return { retry: Number(m[1]), max: Number(m[2]), wait: Number(m[3]) }
+}
+
+/** 倒计时态：剩余秒。基准在消费端本地锚定——后端 receive 帧不带 timestamp
+ *  键（server.rs send_to_session 只盖 role/content/model/session_id/note_kind/
+ *  occupies/seq；时间戳只在落盘历史行里有，瞬态徽标不落盘），消息时间戳恒
+ *  undefined，不可用。改为「首见内容 = 基准时刻」：进度帧内容与上次见到的
+ *  不同（首帧 / 单例替换递进帧 / sync 补拉恢复重灌）= 新等待窗口，基准重置；
+ *  内容不变 = 同窗口，elapsed 累加递减。1s tick；归零 = 「重试中…」（下一
+ *  进度帧到达重置，限流恢复终局回复扫除）。 */
+const rateLimitRemaining = ref<number | null>(null)
+let rateLimitTickTimer: ReturnType<typeof setInterval> | null = null
+let rateLimitSeenContent: string | null = null
+let rateLimitBaseMs = 0
+function rateLimitTick(): void {
+  const m = chatStore.messages.find(isRateLimitNote)
+  if (!m) return
+  const now = Date.now()
+  if (m.content !== rateLimitSeenContent) {
+    rateLimitSeenContent = m.content
+    rateLimitBaseMs = now
+  }
+  const parsed = parseRateLimitFrame(m.content)
+  if (!parsed) return
+  const elapsed = Math.max(0, Math.round((now - rateLimitBaseMs) / 1000))
+  rateLimitRemaining.value = Math.max(0, parsed.wait - elapsed)
+}
+const rateLimitRunning = computed(() => chatStore.messages.some(isRateLimitNote))
+watch(
+  rateLimitRunning,
+  (on) => {
+    if (on && rateLimitTickTimer === null) {
+      rateLimitTick() // 到场即建基准，不等第一拍
+      rateLimitTickTimer = setInterval(rateLimitTick, 1000)
+    } else if (!on && rateLimitTickTimer !== null) {
+      clearInterval(rateLimitTickTimer)
+      rateLimitTickTimer = null
+      rateLimitRemaining.value = null
+      rateLimitSeenContent = null
+    }
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  if (rateLimitTickTimer !== null) {
+    clearInterval(rateLimitTickTimer)
+    rateLimitTickTimer = null
+  }
+})
+/** 徽标尾部倒计时投影：解析失败/已过 wait = 「重试中…」。 */
+function rateLimitTailLabel(msg: ChatMessage): string {
+  const parsed = parseRateLimitFrame(msg.content)
+  if (!parsed) return ''
+  const remaining = rateLimitRemaining.value
+  if (remaining === null) return `等待 ${parsed.wait} 秒`
+  return remaining > 0 ? `等待 ${remaining} 秒` : '重试中…'
+}
+
 // --- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）-------------
 // role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮，
 // 后端按 sender_id=="system" 推导落 `system_notice` 键；cron tick 行带既有
@@ -774,7 +851,7 @@ function isSystemNotice(msg: ChatMessage): boolean {
  *  细条（头像没出现 = 还在跑；头像出现 = 答案到了），与 live 占位行（无
  *  头像）同一语义。 */
 function isProcessRow(msg: ChatMessage): boolean {
-  return isCompactNote(msg) || isSystemNotice(msg)
+  return isCompactNote(msg) || isRateLimitNote(msg) || isSystemNotice(msg)
 }
 
 /** 通知条图标：cron tick ⏰ / 其他系统注入 ⚙。 */
@@ -1190,6 +1267,12 @@ function handleWSMessage(data: any) {
         ) {
           chatStore.removeCompactRunningNotes()
         }
+        // 限流进度帧（2026-11-20）：单例——新进度帧到达先摘旧徽标，下方
+        // addMessage 落新徽标（N 次重试恒一条动态徽标，倒计时随新帧 wait
+        // 重置）；终局回复到场由完成语义分支扫除（下方 assistant/error）。
+        if (data.data.note_kind === 'rate_limit') {
+          chatStore.removeRateLimitNotes()
+        }
         // Skip addMessage if the watchdog already recovered this exact
         // response from session_log (late-arriving live frame, same tail).
         const isDuplicateRecovery =
@@ -1249,6 +1332,18 @@ function handleWSMessage(data: any) {
             last.seq = data.data.seq
           }
         }
+        // HOOK 注入轮停止按钮（2026-11-20）：system_notice 帧（hook 提示词
+        // 注入 / cron tick）是 user 帧——P8 语义不置 busy，但注入后的后端轮
+        // 此刻真实在跑（几十秒到分钟级），此前除 estop 无停止手段。帧到达即
+        // 置 busy（停止按钮亮）+ 在飞登记（切走切回 detectPendingTurn 与
+        // watchdog 活跃判定沿用既有 inflight 通道）；回复到场走下方 assistant
+        // 完成分支正常收尾。停止按钮 stopGeneration → agent.cancel 按
+        // session_id 路由，注入轮可在轮边界/工具 chokepoint 被断。
+        if (data.data.system_notice || data.data.cron_job_id) {
+          chatStore.setBusy(effectiveSid.value, true)
+          chatStore.markInflightTurn(effectiveSid.value, String(incomingContent ?? '').slice(0, 80))
+          clearWatchdog()
+        }
         // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
         // 完成信号——不关 streaming、不清 watchdog（本地发送态保持到
         // assistant 回复到场）；完成语义只属于 assistant 帧。
@@ -1256,6 +1351,13 @@ function handleWSMessage(data: any) {
           chatStore.setBusy(effectiveSid.value, false)
           // B2：本会话回复到场——在飞登记完成使命。
           chatStore.clearInflightTurn(effectiveSid.value)
+          // 限流进度徽标（2026-11-20）：终局回复到场 = 限流已恢复——进度
+          // 徽标扫除（sync 补拉恢复的过期徽标同样被此处收走）。⏳ 前缀
+          // 排队收据例外（与上方压缩扫除同款豁免）：收据到场 ≠ 上一条
+          // 消息的限流结束，扫掉会丢失进行中反馈。
+          if (!String(incomingContent ?? '').startsWith('⏳')) {
+            chatStore.removeRateLimitNotes()
+          }
           clearWatchdog()
           // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
           refreshUsage()
@@ -1302,6 +1404,8 @@ function handleWSMessage(data: any) {
         chatStore.clearInflightTurn(effectiveSid.value)
         // 压缩注记徽标（2026-11-09）：错误帧终结 turn——进行中动画徽标兜底扫除。
         chatStore.removeCompactRunningNotes()
+        // 限流进度徽标（2026-11-20）：错误帧同样终结 turn——进度徽标扫除。
+        chatStore.removeRateLimitNotes()
         clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
@@ -1311,6 +1415,12 @@ function handleWSMessage(data: any) {
         timestamp: data.timestamp,
       })
       chatStore.setBusy(effectiveSid.value, false)
+      // WS 协议层错误兜底（2026-11-20 四问题横扫补齐）：busy 已关——进行中
+      // 徽标与在飞登记没理由独留（与 cmd=error 分支同构的终局扫除；主链路
+      // turn 错误不走此帧——这是 WS 坏帧兜底通道，罕见但对称补齐成本为零）。
+      chatStore.removeCompactRunningNotes()
+      chatStore.removeRateLimitNotes()
+      chatStore.clearInflightTurn(effectiveSid.value)
     }
   }
 
@@ -1557,6 +1667,13 @@ async function syncMissedChat() {
       ) {
         chatStore.removeCompactRunningNotes()
       }
+      // 限流进度徽标（2026-11-20）：单例同 receive 分支——重放窗口多条
+      // 进度帧只留最新一条；重放里 assistant 行到场同样扫除（限流已恢复，
+      // 过期进度徽标必须让位于终局回复；⏳ 排队收据例外不适用——那是
+      // assistant 前缀豁免，进度徽标谓词只认 note_kind）。
+      if (ev.note_kind === 'rate_limit' || ev.role === 'assistant') {
+        chatStore.removeRateLimitNotes()
+      }
       chatStore.addMessage({
         role: ev.role,
         content: ev.content,
@@ -1750,6 +1867,11 @@ function onWatchdog() {
   // 轮次活跃迹象 → 续期不重灌:审批挂起(全局单例 pendingApprovals,含
   // 其他会话的挂起——多等一个周期无害)或本轮工具事件未 flush(回复未到
   // 即未收尾,含 running/finished 残留——它们都要等回复到场才挂载清空)。
+  // 刻意**不加** inflight 臂(2026-11-20 批 3 实测推翻 PLAN 原案):inflight
+  // 登记在 watchdog 本职场景(回复已落盘但 live 帧丢失)恒在场——发送时
+  // 登记、回复帧丢了没机会清;加它会把恢复路径延迟到 12×45s 续期上限
+  // (≈9 分钟),比 45s 重灌更糟。切回丢中间流程的修法是快照恢复通道
+  // (detectPendingTurn streaming 分支拉 work_current),不是延迟重灌。
   if (pendingApprovals.length > 0 || chatStore.pendingWork !== null) {
     watchdogActiveExtends++
     if (watchdogActiveExtends <= MAX_WATCHDOG_ACTIVE_EXTENDS) {
@@ -2678,9 +2800,14 @@ function detectPendingTurn() {
     stopPendingTurnPolling()
     return
   }
-  // 本地发送态（streaming）不接管——占位已由 streaming 渲染。
+  // 本地发送态（streaming）不接管——占位已由 streaming 渲染。但切走再切回
+  // （重挂载 reset 清了前端缓冲，busy 表不清 → streaming=true）时过程视图
+  // 是空的——后端 work_current 快照（per-session 桶）是唯一数据源（2026-11-20
+  // 批 3：此前的直接 return 让快照恢复通道在 busy 态死掉，中间流程概率消失
+  // 的主洞）。采纳闸放行 streaming 态（refreshWorkCurrent 内部），此处补调。
   if (streaming.value) {
     stopPendingTurnPolling()
+    void refreshWorkCurrent(sid)
     return
   }
   if (pendingTurnTimer === null) {
@@ -2705,8 +2832,10 @@ function detectPendingTurn() {
  *  数据源（后端活累加器无环 200 条滑窗限制），切走再切回/刷新页面的恢复
  *  通道。四道闸：会话围栏（响应期间切走丢弃）、turn 仍悬置（回复已落地则
  *  快照作废——迟到快照不得复活成 live 块盖在最终回复下面）、busy 中 null
- *  快照反向闸（2026-11-03 BUG ②：后端 loop 级单槽三窗口——槽空/异会话覆盖/
- *  帧晚到——返回 work:null 是查询盲区不是「没有在跑的工作」，照单全收会把
+ *  快照反向闸（2026-11-03 BUG ②：后端槽空/帧晚到窗口——历史注记：后端
+ *  曾是 loop 级单槽（三窗口含异会话覆盖），BUG-20261106-039 起改 per-session
+ *  分桶，异会话覆盖窗口不复存在；本闸保留——返回 work:null 是查询盲区不是
+ *  「没有在跑的工作」，照单全收会把
  *  正在展示的 live 块清空收起；真正清空走 pollPendingTurn 死轮清算路径）、
  *  后端不可用/旧版无命令静默（回落环回放兜底）。 */
 async function refreshWorkCurrent(sid: string | null) {
@@ -3767,6 +3896,19 @@ onUnmounted(() => {
               <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
             </template>
           </div>
+          <!-- 限流进度徽标（2026-11-20）：429 重试进度（后端 note_kind=
+               rate_limit，role=system 投影，瞬态不落盘）渲染为压缩徽标同族
+               折叠小徽标 + 倒计时（帧 wait 秒起本地递减，归零「重试中…」，
+               新进度帧重置）。终局回复到场扫除。 -->
+          <div
+            v-else-if="isRateLimitNote(msg)"
+            class="compact-note rate-limit-note"
+            :title="msg.content"
+          >
+            <span class="compact-note-glyph" aria-hidden="true">⏳</span>
+            <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
+            <span class="compact-note-timer">{{ rateLimitTailLabel(msg) }}</span>
+          </div>
           <!-- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
                role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL
                续轮 system_notice + cron tick cron_job_id）渲染折叠单行
@@ -4319,7 +4461,16 @@ onUnmounted(() => {
           @click="sendMode = 'queue'"
         >⏭排队</button>
       </div>
-      <button v-if="streaming && showStopButton" class="btn btn-stop" :disabled="stoppingForCurrent" @click="stopGeneration" :title="stoppingForCurrent ? '停止中…（等待当前步骤到检查点）' : '停止生成'">
+      <!-- 批 2 第二轮横扫补齐（2026-11-20）：刷新/切走切回的恢复态（悬空
+           user 行占位轮询）此前不亮停止按钮——注入轮在该形态下同样只能干等。
+           pendingTurn 态并入亮起条件即可：stopGeneration 按 session_id 路由
+           agent.cancel 本就与 busy 无关；取消受理/完成/estop 三收口走既有
+           帧链（Done assistant 帧 → receive 分支 detectPendingTurn 即停轮）。
+           不置 busy 的原因：恢复态置位后 detectPendingTurn 幂等重入会落
+           streaming 分支撤掉恢复轮询，busy 状态机三处清算都得跟着补——
+           v-if 扩条件是零纠缠等价解。watchdog 本职场景（回复已落盘帧丢失）
+           尾部是 assistant，不进 pendingTurn，不受影响。 -->
+      <button v-if="(streaming || pendingTurn) && showStopButton" class="btn btn-stop" :disabled="stoppingForCurrent" @click="stopGeneration" :title="stoppingForCurrent ? '停止中…（等待当前步骤到检查点）' : '停止生成'">
         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
           <rect x="6" y="6" width="12" height="12" rx="2"/>
         </svg>
@@ -5069,6 +5220,18 @@ onUnmounted(() => {
   opacity: 0.4;
   transform-origin: bottom;
   animation: compact-bar-flow 1.2s ease-in-out infinite;
+}
+
+/* 限流进度徽标（2026-11-20）：压缩徽标同族形态，警示黄系（上游限流是
+   需要等待的异常态，区别于压缩的 --info 蓝系）。默认不可点（无展开态，
+   title 已带全文）。 */
+.compact-note.rate-limit-note {
+  background: var(--warning-bg, rgba(234, 179, 8, 0.15));
+  color: var(--warning, #eab308);
+  cursor: default;
+}
+.compact-note.rate-limit-note:hover {
+  filter: none;
 }
 
 /* ===== 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）=====

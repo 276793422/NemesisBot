@@ -245,9 +245,11 @@ pub fn build_executor_channel_with_extra_roots(
     // live 探针——那两个是运行期可翻的开关，restrict 不是）。
     let restrict_child = config_handle.read().agents.defaults.restrict_to_workspace;
 
-    // exec deny 自定义词表镜像（2026-11-08 接线激活）——装配期一次读
-    // （与 restrict_child 同点同源：SharedToolConfig 的 exec_deny_* 也是
-    // 装配期值，重启才变，两侧不会漂移）。只在「开关开+词表非空」注入
+    // exec deny 自定义词表镜像（2026-11-08 接线激活）——装配期一次读。
+    // 2026-11-20 C4 热生效语义后本值降级为**快照兜底**：子进程经
+    // `NEMESISBOT_EXECUTOR_HOME` 下的 config.json 热读 `tools.exec` 段
+    // （exec_worker exec_config_path），每次执行现读新值；env 透传只在
+    // 子进程热读失败时生效（快照兜底）。仍只在「开关开+词表非空」注入
     // （with_deny_patterns 内部把空表折回 None = 子进程默认词表，与主
     // 进程同语义）；executor 分离不透传 = Layer 1 成为词表旁路。
     let deny_patterns_child = {

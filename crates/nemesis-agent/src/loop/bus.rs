@@ -302,6 +302,7 @@ impl AgentLoop {
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
+            small_model_resolver: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             loop_origin: parking_lot::RwLock::new("main".to_string()),
             voice_prompt: parking_lot::RwLock::new(None),

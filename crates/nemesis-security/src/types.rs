@@ -699,6 +699,29 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
+        // 读族补臂（2026-11-20 第二轮横扫，批 4 漏网）：grep / read_image /
+        // file_exists / lsp 均 FileRead 档（tool_to_operation），此前无臂 →
+        // target 恒空 → 敏感读臂 `!target.is_empty()` 永假——命中名单也不升
+        // 格审批（`grep path=AGENTS.md` / `lsp hover AGENTS.md` 零审核直读
+        // 指令文件）。target 统一取 path 键（grep 的 path = 目录或单文件、
+        // lsp/file_exists/read_image 的 path 均为路径语义）。
+        "grep" | "read_image" | "file_exists" | "lsp" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // git 读动作（status/diff/log/show）的文件路径在自由文本 `args`
+        // 键里（schema 注记 "a file path for diff/show"，原样进 git 命令行
+        // → 输出含文件内容——`git show AGENTS.md` 即全文件读取）；写动作
+        // （add/restore）路径在 `paths` 键。target 取 args（缺失回 paths）；
+        // 多 token 自由文本形态（`-p -- AGENTS.md`）basename 匹配覆盖不到，
+        // 由敏感读臂的 hit_in_args 深扫兜底（见 sensitive_read 模块）。
+        "git" => args
+            .get("args")
+            .or_else(|| args.get("paths"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         "install_skill" => args
             .get("url")
             .or_else(|| args.get("source"))

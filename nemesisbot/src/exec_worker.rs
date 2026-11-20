@@ -269,6 +269,13 @@ async fn run_loop(workspace: &str) -> Result<()> {
         } else {
             None
         },
+        // exec 热读源（2026-11-20 C4 热生效语义）：父进程透传的
+        // `NEMESISBOT_EXECUTOR_HOME` 下 config.json——子进程 ExecTool
+        // 消费点现读 `tools.exec` 段（deny 词表 + max_timeout，与主进程
+        // 同源同语义；env 词表透传降级为热读失败时的快照兜底）。home
+        // 缺席（老网关 spawn / 测试直构）= None = 构造期值旧行为。
+        exec_config_path: std::env::var_os("NEMESISBOT_EXECUTOR_HOME")
+            .map(|h| std::path::PathBuf::from(h).join("config.json")),
         ..Default::default() // （..Default 含 exec_output_tx=None，2026-11-08）：executor 分离
                              // 路径 exec 不流式——子进程无 gateway 事件通道（哑执行，观测面在
                              // gateway 侧）；ToolOutput 流式只在主进程装配形态生效。

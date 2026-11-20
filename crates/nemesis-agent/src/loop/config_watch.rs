@@ -12,10 +12,13 @@ use super::prelude::*;
 use super::*;
 
 /// 小模型槽位——provider 与其模型名绑在一起换，避免两者失配。
+/// `source_ref` = config `agents.small_model` 键原文（trim 后）——热换
+/// 比对基准（别名解析后的 `name` 与键原文不同形，比对必须用原文）。
 #[derive(Clone)]
 pub(crate) struct SmallModelSlot {
     provider: Arc<dyn LlmProvider>,
     name: String,
+    source_ref: String,
 }
 
 /// 自动标题的输入上限（首条 user 消息截断，计划原文 ≤500 字）。
@@ -243,8 +246,121 @@ impl AgentLoop {
     }
     /// 装配小模型杂务通道（工厂从 `agents.small_model` 解析后调用；
     /// 重复调用覆盖前值）。传 `None` 显式清除（= 回退主模型）。
+    /// 本形态的比对基准（source_ref）回落 = 解析名 `name`——测试与
+    /// 简单场景（无别名，name 即引用名）自洽；生产装配走
+    /// [`Self::set_small_model_with_ref`] 携带键原文。
     pub fn set_small_model(&self, provider: Option<(Arc<dyn LlmProvider>, String)>) {
-        *self.small_model.write() = provider.map(|(p, name)| SmallModelSlot { provider: p, name });
+        *self.small_model.write() = provider.map(|(p, name)| SmallModelSlot {
+            provider: p,
+            source_ref: name.clone(),
+            name,
+        });
+    }
+
+    /// [`Self::set_small_model`] 的带比对基准形态（生产装配点用）：
+    /// `source_ref` = config `agents.small_model` 键原文（trim 后），
+    /// 供 [`Self::sync_small_model_slot`] 热换比对（别名场景 name ≠ ref）。
+    pub fn set_small_model_with_ref(
+        &self,
+        provider: Option<(Arc<dyn LlmProvider>, String)>,
+        source_ref: &str,
+    ) {
+        *self.small_model.write() = provider.map(|(p, name)| SmallModelSlot {
+            provider: p,
+            source_ref: source_ref.to_string(),
+            name,
+        });
+    }
+
+    /// （2026-11-20 C2 热生效语义）：小模型槽热换 resolver 注入。
+    /// bot 层装配期在 `Arc<AgentLoop>` 定型后调用（捕获 workspace；
+    /// provider 构造细节——`resolve_model_config` → `create_provider` →
+    /// `ProviderAdapter`——不过 crate 边界）。注入后每次 config 新代发布
+    /// （`check_config_reload` 内容闸）由 [`Self::sync_small_model_slot`]
+    /// 比对热换；不注入 = 装配期形态冻结（旧语义，测试/headless 自洽）。
+    pub fn set_small_model_resolver(
+        &self,
+        f: std::sync::Arc<
+            dyn Fn(&nemesis_config::Config, &str) -> Option<(Arc<dyn LlmProvider>, String)>
+                + Send
+                + Sync,
+        >,
+    ) {
+        *self.small_model_resolver.write() = Some(f);
+    }
+
+    /// codemode sync 同款热生效联动（C2）：config 新代发布时比对
+    /// `agents.small_model` 键现值与槽 `source_ref`——变化才动槽：
+    /// - 键删除/清空 → 清槽（杂务回落主模型）；
+    /// - 键变化 → resolver 现构造换槽（provider+name 绑定换，杜绝失配）；
+    /// - resolver 返回 None（解析/构造失败）→ **保留旧槽** + warn（可用性
+    ///   优先：坏配置不把好槽打掉，下轮新代发布重试）。
+    ///
+    /// 未注入 resolver / 无代 / 键未变 = 原样返回（零成本）。
+    ///
+    /// 诚实边界：键原文相同但 model_list 条目内容改了（改 api_base/key）
+    /// 不触发重建——比对基准是键原文非条目内容；改条目内容需重启（或换
+    /// 键值触发）。与 codemode sync（只比开关）同一粒度立场。
+    fn sync_small_model_slot(&self) {
+        let resolver = self.small_model_resolver.read().clone();
+        let Some(resolver) = resolver else {
+            return; // 未注入（headless/测试）——装配期形态冻结
+        };
+        let Some(v) = self.config_generation() else {
+            return; // 无代（standalone / 绑定后发布失败）
+        };
+        let fresh_ref = v
+            .get("agents")
+            .and_then(|a| a.get("small_model"))
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let current_ref = self
+            .small_model
+            .read()
+            .as_ref()
+            .map(|s| s.source_ref.clone());
+        if fresh_ref == current_ref {
+            return; // 未变（含双 None：未配置且槽空）
+        }
+        match fresh_ref {
+            None => {
+                // 键删除/清空 + 槽在场 → 清槽（键刚清而槽空的情况已被上面
+                // 双 None 等值拦截，此处必然有旧槽可清）。
+                self.set_small_model(None);
+                info!(
+                    "[AgentLoop] agents.small_model cleared via config reload; chores fall back to the main model"
+                );
+            }
+            Some(new_ref) => {
+                // typed Config 现构造（世代 Value 是宽松 parse 的 raw JSON，
+                // 可能带类型坏值——失败 = 诚实保留旧槽，下轮重试）。
+                let Ok(cfg) = serde_json::from_value::<nemesis_config::Config>(v.as_ref().clone())
+                else {
+                    tracing::warn!(
+                        "[AgentLoop] agents.small_model '{}' hot-swap skipped: config not typable; keep previous slot",
+                        new_ref
+                    );
+                    return;
+                };
+                match resolver(&cfg, &new_ref) {
+                    Some((provider, name)) => {
+                        info!(
+                            "[AgentLoop] agents.small_model hot-swapped to '{}' (model '{}') via config reload",
+                            new_ref, name
+                        );
+                        self.set_small_model_with_ref(Some((provider, name)), &new_ref);
+                    }
+                    None => {
+                        tracing::warn!(
+                            "[AgentLoop] agents.small_model '{}' hot-swap failed (resolve/create); keep previous slot",
+                            new_ref
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// 小模型槽位只读访问（自动标题消费；未配置 = `None`，诚实跳过
@@ -1335,6 +1451,9 @@ impl AgentLoop {
         // 用户显式改 config = 重置翻倍阶梯学习（下次撞顶重新起步，
         // 不让陈旧学习覆盖用户刚改的 max_output_tokens）。
         self.clear_escalated_floors();
+        // C2 热生效（2026-11-20）：小模型杂务槽热换（codemode sync 同款
+        // ——新代发布时比对键现值，变化才动槽；未注入 resolver = 零成本）。
+        self.sync_small_model_slot();
         // codemode 热生效：新代发布时顺带比对开关与注册
         // 状态（起从现行代消费，不再二次直读盘）。`agents.codemode` 缺
         // 键落 serde 默认（enabled=true）——与 Config 结构体的缺键语义同源。

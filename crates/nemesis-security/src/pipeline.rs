@@ -145,6 +145,13 @@ pub struct SecurityPluginConfig {
     /// 同时受 `enabled` 主闸约束（主闸关 = 全管线短路）。关 = 扫描器不
     /// 装配（构造期唯一生效路径，与 injection/command_guard 同款）。
     pub preexec_scan_enabled: bool,
+    /// 敏感读名单扩展项（2026-11-20 批 4）。接线自
+    /// `config.security.json` 顶层键 `sensitive_read_names`（构造期，与
+    /// ssrf_allowed_hosts 同款；reload 不重建——热语义跟随 C5 立场）。
+    /// 与内置指令文件族（AGENT.md/CLAUDE.md 等，见
+    /// [`crate::sensitive_read`]）合并去重；命中 FileRead → force_approval
+    /// 强制人工审批。
+    pub sensitive_read_names: Vec<String>,
     /// File rules: operation type -> list of (pattern, action) pairs.
     pub file_rules: Vec<SecurityRule>,
     pub dir_rules: Vec<SecurityRule>,
@@ -177,6 +184,7 @@ impl Default for SecurityPluginConfig {
             approval_timeout_secs: 300,
             log_all_operations: true,
             preexec_scan_enabled: true,
+            sensitive_read_names: Vec::new(),
             file_rules: Vec::new(),
             dir_rules: Vec::new(),
             process_rules: Vec::new(),
@@ -220,6 +228,11 @@ pub struct SecurityPlugin {
     /// pre-exec 脚本内容扫描器。`preexec_scan_enabled`
     /// 关 = 不装配 = 扫描短路（None）。
     preexec: Option<crate::preexec::PreExecScanner>,
+    /// 敏感读名单匹配器（2026-11-20 批 4）。内置指令文件族 ∪ config
+    /// 扩展名单，构造期建（热语义跟随 C5：名单=安全规则，reload 不重建，
+    /// 与 ssrf_allowed_hosts 同款）。无开关——内置名单恒生效（功能本身
+    /// 即用户诉求）。
+    sensitive_read: crate::sensitive_read::SensitiveReadMatcher,
 }
 
 impl SecurityPlugin {
@@ -364,6 +377,10 @@ impl SecurityPlugin {
             None
         };
 
+        // 敏感读名单匹配器（内置 ∪ config 扩展，构造期唯一生效）。
+        let sensitive_read =
+            crate::sensitive_read::SensitiveReadMatcher::new(&config.sensitive_read_names);
+
         let plugin = Self {
             config,
             auditor,
@@ -382,6 +399,7 @@ impl SecurityPlugin {
             guardian_failure_policy: RwLock::new(String::new()),
             guardian_mode: RwLock::new(String::new()),
             preexec,
+            sensitive_read,
         };
 
         // Register rules from config
@@ -841,19 +859,58 @@ impl SecurityPlugin {
             preexec_force = Some(reason);
         }
 
+        // 敏感读名单（2026-11-20 批 4）：读族工具（FileRead）命中指令
+        // 文件名单（AGENT.md/CLAUDE.md 等人格/行为定义，basename 精确
+        // 匹配）→ 钉 force_approval——ABAC 升格 RequireApproval + 跳过
+        // 「总是允许」规则表（审批卡必到人）。审批放行 = 误报出路（非
+        // 硬拦）。exec 族脚本读（`cat AGENT.md`）天然不进本管线（用户
+        // 明示豁免）；名单构造期唯一生效（热语义跟随 C5：安全规则不热载）。
+        // 第二轮横扫补兜底（2026-11-20）：`hit(target)` ∪ `hit_in_args`
+        // 恒双跑——target 通道覆盖 extract_target 有臂的静态工具；args 深
+        // 扫通道覆盖动态注册 FileRead 工具（MCP 桥/WASM/connector，名字
+        // 任意 → target 恒空）与自由文本多 token 形态（git
+        // `-p -- AGENTS.md`）。
+        let mut sensitive_force: Option<String> = None;
+        if matches!(op_type, OperationType::FileRead) {
+            let sensitive_hit = self
+                .sensitive_read
+                .hit(&target)
+                .or_else(|| self.sensitive_read.hit_in_args(&invocation.args));
+            if let Some(name) = sensitive_hit {
+                let reason = format!(
+                    "sensitive read: `{name}` matched the sensitive read list (`{target}`); human review required"
+                );
+                self.log_audit_event(
+                    "warn",
+                    &op_type.to_string(),
+                    &invocation.user,
+                    &invocation.source,
+                    &target,
+                    "HIGH",
+                    &reason,
+                    "sensitive_read",
+                );
+                sensitive_force = Some(reason);
+            }
+        }
+
         // Layer 3: ABAC (Auditor)
         // 强审批合并：override_force_approval（connector op `confirm =
-        // "required"` 声明）与 preexec 命中理由并存时都保留（审批卡多因
-        // 展示）；两者皆缺 = None。
+        // "required"` 声明）、preexec 命中理由、敏感读命中理由并存时都
+        // 保留（审批卡多因展示）；三者皆缺 = None。
         let override_force = invocation
             .metadata
             .get("override_force_approval")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let force_approval = match (preexec_force, override_force) {
-            (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-            (a, b) => a.or(b),
-        };
+        let mut force_parts: Vec<String> = Vec::new();
+        for f in [preexec_force, override_force, sensitive_force]
+            .into_iter()
+            .flatten()
+        {
+            force_parts.push(f);
+        }
+        let force_approval = (!force_parts.is_empty()).then(|| force_parts.join("; "));
         let req = OperationRequest {
             id: uuid::Uuid::new_v4().to_string(),
             op_type,

@@ -223,6 +223,12 @@ pub struct SharedToolConfig {
     /// regex；仅 `exec_deny_custom_enabled = true` 时消费，非空 = 替换
     /// 内置默认词表，空 = 回落内置默认）。
     pub exec_deny_custom_patterns: Vec<String>,
+    /// exec 热读源（2026-11-20 C4 热生效语义）：Some(config.json 路径)
+    /// = ExecTool 消费点现读 `tools.exec` 段（deny 词表 + max_timeout，
+    /// 改键下次执行即生效，无需重启——上方两字段的装配期值退化为首次
+    /// 快照前的兜底）；None = 构造期值旧行为（基线/测试/executor 分离
+    /// ——per-call 子进程每次装配本就读新 config，无热读必要）。
+    pub exec_config_path: Option<std::path::PathBuf>,
     /// ：workspace 级写租约（`agents.lease_enabled` 默认开，
     /// agent_factory 构造）。Some 时 register_shared_tools 尾部把
     /// LEASE_WRITE_TOOLS 换成 LeaseGuardTool 委派包装（acquire → 执行 →
@@ -290,6 +296,13 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "exec_deny_custom_patterns",
                 &self.exec_deny_custom_patterns.len(),
+            )
+            .field(
+                "exec_config_path",
+                &self
+                    .exec_config_path
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
             )
             .field(
                 "workspace_lease",
@@ -728,9 +741,12 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         // exec 超时收编（2026-11-16 B43）：gateway 注册表单例注入——超时
         // 不杀，收编后台继续跑 + 完成唤醒回灌；executor 分离/测试构造
         // （注册表缺席）= 树杀旧行为字节不变。
+        // 热读源（2026-11-20 C4）：Some = 消费点现读 `tools.exec` 段
+        // （改键下次执行即生效）；None = 上方构造期值旧行为。
         .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600))
         .with_editor_gate(editor_gate.clone())
-        .with_background_registry(config.background_registry.clone());
+        .with_background_registry(config.background_registry.clone())
+        .with_exec_config_path(config.exec_config_path.clone());
         tools.insert("exec".to_string(), Box::new(exec_tool));
         // [SEALED 2026-11-08] exec_async 封存（用户拍板，实现保留不删除）。
         // 根因：fire-and-forget（管道只接不排，64KB 写满即死锁）+ 无
@@ -1068,6 +1084,7 @@ pub fn register_extended_tools(
         hardware_policy: None,
         exec_deny_custom_enabled: false,
         exec_deny_custom_patterns: Vec::new(),
+        exec_config_path: None,
         workspace_lease: None,
         plan_present: None,
         turn_deliverables: None,

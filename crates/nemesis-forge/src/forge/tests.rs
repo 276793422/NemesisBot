@@ -1469,6 +1469,7 @@ async fn test_s8_background_loops_fire_intervals() {
     let _g = crate::test_support::quiet_trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let mut config = ForgeConfig::default();
+    config.enabled = true; // 总闸开（C3 热生效语义后 cycle 前看闸，关=空转待命）
     config.reflection.interval_secs = 1;
     config.storage.cleanup_interval_secs = 1;
     let mut forge = Forge::new(config, dir.path().to_path_buf());
@@ -2039,6 +2040,7 @@ async fn test_s8_background_loops_interval_ladder() {
     let _g = crate::test_support::quiet_trace_guard();
     let dir = tempfile::tempdir().unwrap();
     let mut config = ForgeConfig::default();
+    config.enabled = true; // 总闸开（C3 热生效语义后 cycle 前看闸，关=空转待命）
     config.reflection.interval_secs = 2;
     config.storage.cleanup_interval_secs = 2;
     let mut forge = Forge::new(config, dir.path().to_path_buf());
@@ -2487,4 +2489,130 @@ async fn test_start_reflect_interval_zero_disables_reflection_loop() {
         reports, 0,
         "interval_secs=0 必须关闭反思循环（0=关），实际产出 {reports} 份报告"
     );
+}
+
+// ── 总闸热读（2026-11-20 C3 热生效语义）──
+
+/// path 缺席 = 构造期值（旧行为）：config.enabled 镜像直读，零文件 IO。
+#[test]
+fn master_switch_none_uses_construction_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = ForgeConfig::default();
+    cfg.enabled = false;
+    let forge = Forge::new(cfg, dir.path().to_path_buf());
+    assert!(!forge.is_enabled());
+
+    let mut cfg2 = ForgeConfig::default();
+    cfg2.enabled = true;
+    let forge2 = Forge::new(cfg2, dir.path().to_path_buf());
+    assert!(forge2.is_enabled());
+}
+
+/// path 在场 = mtime 现读：首读磁盘值胜过构造期 mirror；改 config.json
+/// 后下次 is_enabled() 即新值（热翻，无需重建 Forge）。
+#[test]
+fn master_switch_hot_read_flips() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"forge":{"enabled":true}}"#).unwrap();
+
+    let mut cfg = ForgeConfig::default();
+    cfg.enabled = false; // 构造期 mirror 与磁盘不一致：热读首读即磁盘值
+    let forge = Forge::new(cfg, dir.path().to_path_buf()).with_master_switch_path(cfg_path.clone());
+    assert!(forge.is_enabled(), "首读 = 磁盘 forge.enabled=true");
+
+    // 热翻关：写 enabled=false → 下次调用即 false。
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(&cfg_path, r#"{"forge":{"enabled":false}}"#).unwrap();
+    assert!(!forge.is_enabled(), "mtime 变化 → 热翻 false");
+    // 缓存命中（mtime 未变）→ 同值。
+    assert!(!forge.is_enabled());
+
+    // 再热翻开。
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(&cfg_path, r#"{"forge":{"enabled":true}}"#).unwrap();
+    assert!(forge.is_enabled(), "热翻 true");
+}
+
+/// config 读坏 = 诚实降级：保持上次生效值；首读就坏 = 构造期值。
+#[test]
+fn master_switch_broken_config_keeps_last_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"forge":{"enabled":true}}"#).unwrap();
+
+    let mut cfg = ForgeConfig::default();
+    cfg.enabled = false;
+    let forge = Forge::new(cfg, dir.path().to_path_buf()).with_master_switch_path(cfg_path.clone());
+    assert!(forge.is_enabled(), "首读磁盘 true");
+
+    // 写坏 → 保持上次热读值 true，不 panic 不翻 false。
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(&cfg_path, "{broken json").unwrap();
+    assert!(forge.is_enabled(), "读坏 → 保持上次生效值 true");
+
+    // 全新 Forge 首读就坏 = 构造期值 false。
+    let mut cfg2 = ForgeConfig::default();
+    cfg2.enabled = false;
+    let forge2 =
+        Forge::new(cfg2, dir.path().to_path_buf()).with_master_switch_path(cfg_path.clone());
+    assert!(!forge2.is_enabled(), "首读失败 = 构造期值");
+}
+
+/// 缺 forge 段的 config = enabled=false（与 gateway 装配臂
+/// `cfg.forge.as_ref().map(|f| f.enabled).unwrap_or(false)` 同源）。
+#[test]
+fn master_switch_missing_forge_section_is_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"agents":{"defaults":{}}}"#).unwrap();
+
+    let mut cfg = ForgeConfig::default();
+    cfg.enabled = true; // 构造期 true，磁盘缺段 = false：热读胜出
+    let forge = Forge::new(cfg, dir.path().to_path_buf()).with_master_switch_path(cfg_path);
+    assert!(!forge.is_enabled(), "缺 forge 段 = disabled（同源装配臂）");
+}
+
+/// 总闸关（C3 热生效语义）：start() 循环照常 spawn 但每 cycle 前看闸空转
+/// ——同窗口不写 report；config.json 热翻开后到点即恢复产出，无需重启
+/// （带 master_switch_path 的真实接线形态）。
+#[tokio::test]
+async fn test_master_switch_off_loops_idle_then_hot_on_resumes() {
+    let _g = crate::test_support::quiet_trace_guard();
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, r#"{"forge":{"enabled":false}}"#).unwrap();
+    let mut config = ForgeConfig::default();
+    config.enabled = false;
+    config.reflection.interval_secs = 1;
+    let mut forge =
+        Forge::new(config, dir.path().to_path_buf()).with_master_switch_path(cfg_path.clone());
+    let reflections_dir = dir.path().join("forge").join("reflections");
+    std::fs::create_dir_all(&reflections_dir).unwrap();
+    forge.init_reflector(Reflector::with_reflections_dir(reflections_dir.clone()));
+    let forge = Arc::new(forge);
+    write_test_experiences(forge.forge_dir(), 5).await;
+
+    Arc::clone(&forge).start().await;
+    assert!(forge.is_running(), "总闸关也照常 spawn 循环（待命形态）");
+    let report_count = || -> usize {
+        std::fs::read_dir(&reflections_dir)
+            .map(|d| d.count())
+            .unwrap_or(0)
+    };
+    // 总闸关窗口：cycle 到点被闸掉，不写 report。
+    tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+    assert_eq!(report_count(), 0, "总闸关 = cycle 看闸空转，不写 report");
+
+    // 热翻开：改盘 → is_enabled() 现读 true → 下一到点 tick 恢复产出。
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(&cfg_path, r#"{"forge":{"enabled":true}}"#).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert!(
+        report_count() > 0,
+        "热翻开后 reflection tick 应恢复写 report（无需重启）"
+    );
+
+    forge.stop().await;
+    assert!(!forge.is_running());
 }

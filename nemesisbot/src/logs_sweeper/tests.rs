@@ -7,7 +7,9 @@
 
 use std::time::{Duration, SystemTime};
 
-use super::{LogsTtl, dir_size, is_expired, ledger_tail_is_append, sweep_workspace_logs};
+use super::{
+    LogsTtl, dir_size, is_expired, ledger_tail_is_append, read_logs_ttl, sweep_workspace_logs,
+};
 
 fn now() -> SystemTime {
     SystemTime::now()
@@ -932,4 +934,38 @@ impl LogsTtl {
             exec_checkpoints: 0,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// read_logs_ttl（2026-11-20 热生效语义读侧）：现读解析 / 缺失与坏文件兜底
+// ---------------------------------------------------------------------------
+
+#[test]
+fn read_logs_ttl_parses_config_values() {
+    // 现读 config logs 段 → 十六族 TTL 解析值（热生效语义的数据面）。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"logs": {"session_logs": 9, "terminal": 3, "exec_checkpoints": 2}}"#,
+    )
+    .unwrap();
+    let ttl = read_logs_ttl(&cfg_path);
+    assert_eq!(ttl.session_logs, 9);
+    assert_eq!(ttl.terminal, 3);
+    assert_eq!(ttl.exec_checkpoints, 2);
+    // 未点名族 = 默认值（部分覆盖不抹掉其余族保留策略）。
+    assert_eq!(ttl.trash, LogsTtl::default().trash);
+}
+
+#[test]
+fn read_logs_ttl_defaults_on_missing_and_broken_config() {
+    // 缺文件：load_config 对缺失路径回默认 Config → logs 段缺键 = 全默认。
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("absent.json");
+    assert_eq!(read_logs_ttl(&missing), LogsTtl::default());
+    // 坏 JSON：读失败 → Default 兜底 + warn（诚实降级，不 panic 不中断清扫）。
+    let broken = dir.path().join("broken.json");
+    std::fs::write(&broken, "{ not json").unwrap();
+    assert_eq!(read_logs_ttl(&broken), LogsTtl::default());
 }

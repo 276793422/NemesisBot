@@ -362,6 +362,9 @@ pub fn build_agent_loop(
     // 模型缺失/解析失败 = warn + 跳过（loop 侧诚实回退主模型），绝不阻断
     // gateway 启动。集群 loop（build_cluster_agent_loop）刻意不装配：
     // /compact 只存在于主 gateway 入口。
+    // 2026-11-20 C2 热生效语义：装配走单一真相源 resolve_small_model_slot；
+    // 同时注入热换 resolver——config 新代发布时键值比对，变化即重建换槽
+    // （dashboard/CLI 改 agents.small_model 无需重启）。
     if let Some(small_ref) = cfg
         .agents
         .small_model
@@ -369,44 +372,27 @@ pub fn build_agent_loop(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        match nemesis_config::resolve_model_config(&cfg, small_ref) {
-            Ok(resolution) => {
-                let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
-                    proxy: resolution.proxy.clone(),
-                    stream_mode: resolution.stream_mode.clone(),
-                    cache_breakpoints: resolution.cache_breakpoints,
-                    extra_body: resolution.extra_body.clone(),
-                    llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
-                    api_key: resolution.api_key.clone(),
-                    api_base: resolution.api_base.clone(),
-                    workspace: shared.workspace_dir().to_string_lossy().to_string(),
-                    connect_mode: resolution.connect_mode.clone(),
-                    protocol: resolution.protocol.clone(),
-                    timeout_secs: resolution.timeout_secs,
-                    account_id: String::new(),
-                    headers: HashMap::new(),
-                };
-                match nemesis_providers::factory::create_provider(&small_factory_cfg) {
-                    Ok(provider) => {
-                        let adapter = ProviderAdapter::new(provider, resolution.model_name.clone());
-                        agent_loop
-                            .set_small_model(Some((Arc::new(adapter), resolution.model_name)));
-                        info!(
-                            "[AgentFactory] Small model '{}' wired for manual compact summarization",
-                            small_ref
-                        );
-                    }
-                    Err(e) => warn!(
-                        "[AgentFactory] agents.small_model '{}': provider create failed ({}); manual compact falls back to the main model",
-                        small_ref, e
-                    ),
-                }
+        match resolve_small_model_slot(&cfg, small_ref, &shared.workspace_dir()) {
+            Some((provider, name)) => {
+                agent_loop.set_small_model_with_ref(Some((provider, name)), small_ref);
+                info!(
+                    "[AgentFactory] Small model '{}' wired for manual compact summarization",
+                    small_ref
+                );
             }
-            Err(e) => warn!(
-                "[AgentFactory] agents.small_model '{}' not resolvable ({}); manual compact falls back to the main model",
-                small_ref, e
-            ),
+            None => {
+                // warn 已在 resolve_small_model_slot 内打出（诚实降级：
+                // 手动 compact 回落主模型）。
+            }
         }
+    }
+    {
+        let ws = shared.workspace_dir().to_string_lossy().to_string();
+        agent_loop.set_small_model_resolver(std::sync::Arc::new(
+            move |cfg: &nemesis_config::Config, small_ref: &str| {
+                resolve_small_model_slot(cfg, small_ref, std::path::Path::new(&ws))
+            },
+        ));
     }
     // hooks.json 方言层——恒建桥挂上（工具钩子 + 生命周期钩子；2026-11-20
     // 即刻生效语义：缺失/坏文件也建桥待命，首个钩子落盘下次分发即生效，

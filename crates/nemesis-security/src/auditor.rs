@@ -1699,7 +1699,11 @@ impl SecurityAuditor {
             return (
                 SecurityDecision::RequireApproval,
                 reason.to_string(),
-                "preexec_scan".to_string(),
+                // 中性通道名（2026-11-20）：force_approval 旗标现有多来源
+                //（preexec 脚本扫描 / 敏感读名单 / connector override），
+                // 具体来源在 reason 文本内（"pre-exec script scan: ..." /
+                // "sensitive read: ..."）。
+                "force_approval".to_string(),
             );
         }
         inner

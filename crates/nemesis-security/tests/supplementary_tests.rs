@@ -1351,6 +1351,7 @@ mod pipeline_extra {
             registry_rules: vec![],
             process_rules: vec![],
             preexec_scan_enabled: true,
+            sensitive_read_names: Vec::new(),
         };
         assert!(!config.enabled);
         assert_eq!(config.dlp_action, "warn");

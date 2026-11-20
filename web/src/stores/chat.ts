@@ -569,6 +569,14 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = messages.value.filter(m => m.noteKind !== 'compaction_start')
   }
 
+  /** 限流进度徽标移除（2026-11-20）：noteKind="rate_limit"（后端瞬态帧，
+   *  不落盘）。新进度帧到达（单例重置）/ 终局回复到场时调用——不占 jsonl
+   *  行（纯前端渲染），行号锚不受影响，无需重推。 */
+  function removeRateLimitNotes() {
+    if (!messages.value.some(m => m.noteKind === 'rate_limit')) return
+    messages.value = messages.value.filter(m => m.noteKind !== 'rate_limit')
+  }
+
   // --- 2026-10-30 Work 时间线摄取（三路共用：实时 push / chat.sync 补拉 /
   // chat.work_current 活查询）---
 
@@ -788,6 +796,7 @@ export const useChatStore = defineStore('chat', () => {
     mergeHistoryTail,
     consumeReplayRow,
     removeCompactRunningNotes,
+    removeRateLimitNotes,
     markInflightTurn,
     clearInflightTurn,
     inflightTurnOf,

@@ -2491,6 +2491,193 @@ async fn preexec_inline_bash_c_passes_pipeline() {
     assert!(allowed, "inline form must pass, got: {err:?}");
 }
 
+// ===== 敏感读名单（2026-11-20 批 4）=====
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_hit_escalates_to_approval() {
+    // read_file 读 AGENTS.md（工作区外绝对路径同样命中——basename 匹配）
+    // → force_approval → ABAC RequireApproval → 无审批 manager = pending
+    //（"approval required"），理由含 sensitive 标记。「总是允许」规则表
+    // 被跳过（force_approval 通道在规则表判定之外）。
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/some/other/root/AGENTS.md"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "sensitive read must escalate (pending approval)");
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(
+        msg.summary.contains("sensitive"),
+        "escalation reason must mention sensitive read, got: {}",
+        msg.summary
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_normal_file_passes() {
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/some/other/root/src/main.rs"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(allowed, "non-sensitive read must pass, got: {err:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_does_not_touch_exec_family() {
+    // exec 族不进 FileRead 臂（用户明示豁免——「管不了脚本，但至少管
+    // 自家工具」）。exec cat AGENT.md 照常放行（make_plugin 默认放行态），
+    // 不受敏感读名单升格影响；command guard 等其他层独立照常工作。
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "exec".to_string(),
+        args: serde_json::json!({"command": "cat AGENT.md"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(
+        allowed,
+        "exec-family reads stay outside the sensitive-read arm, got: {err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_extra_names_config_merged() {
+    // config 扩展名单命中：sensitive_read_names 注入条目（如
+    // secrets.yaml）→ 同样升格审批。
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        sensitive_read_names: vec!["secrets.yaml".to_string()],
+        ..Default::default()
+    });
+    plugin.auditor().set_default_action("allow");
+    let inv = ToolInvocation {
+        tool_name: "read_file".to_string(),
+        args: serde_json::json!({"path": "/ws/config/secrets.yaml"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "config-extended name must escalate");
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(
+        msg.summary.contains("SECRETS") || msg.summary.contains("secrets"),
+        "reason must carry matched name, got: {}",
+        msg.summary
+    );
+}
+
+// ===== 敏感读名单第二轮横扫补兜底（2026-11-20）：读族 extract_target
+// 补臂 + 动态注册工具 args 深扫 =====
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_grep_path_arm_escalates() {
+    // grep 读 AGENTS.md（extract_target 新臂：path 键）→ 升格审批。
+    // 修复前 grep 无臂 target 恒空 → 命中名单也不升格（真漏网）。
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "grep".to_string(),
+        args: serde_json::json!({"pattern": "system prompt", "path": "AGENTS.md"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "grep on sensitive file must escalate");
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(msg.summary.contains("sensitive"), "got: {}", msg.summary);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_grep_normal_file_passes() {
+    // 对照组：普通文件 grep 照常放行（不因补臂产生新摩擦）。
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "grep".to_string(),
+        args: serde_json::json!({"pattern": "fn main", "path": "src/main.rs"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(allowed, "normal grep must pass, got: {err:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_git_show_args_escalates() {
+    // git 读动作读 AGENTS.md：单 token 形态（target=args 通道）。
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "git".to_string(),
+        args: serde_json::json!({"action": "show", "args": "AGENTS.md"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed, "git show on sensitive file must escalate");
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(msg.summary.contains("sensitive"), "got: {}", msg.summary);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_freeform_git_args_escalates_via_deep_scan() {
+    // 多 token 自由文本形态（target basename 匹配 miss）→ hit_in_args
+    // 深扫兜底命中——绕过者改写 `git log -p -- AGENTS.md` 不比单 token
+    // 形态更隐蔽。
+    let plugin = make_plugin();
+    let inv = ToolInvocation {
+        tool_name: "git".to_string(),
+        args: serde_json::json!({"action": "log", "args": "-p -- AGENTS.md"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(
+        !allowed,
+        "freeform git args on sensitive file must escalate"
+    );
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(msg.summary.contains("sensitive"), "got: {}", msg.summary);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_read_dynamic_declared_file_read_escalates_via_deep_scan() {
+    // 动态注册 FileRead 工具（MCP 桥形态：任意名 + declare 表 FileRead
+    // 基线，tools_trait.rs 注册期声明同款）——extract_target 无臂 target
+    // 恒空，深扫兜底对 args 内路径字符串命中。修复前整个动态面零审核
+    // （§9.4 旧表该行「✓」是未核实误判）。
+    let plugin = make_plugin();
+    let probe = "zz_mcp_sr_deep_scan_probe";
+    crate::types::declare_tool_operation(probe, OperationType::FileRead);
+    let inv = ToolInvocation {
+        tool_name: probe.to_string(),
+        args: serde_json::json!({"path": "/ws/AGENTS.md", "encoding": "utf-8"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    crate::types::undeclare_tool_operation(probe);
+    assert!(
+        !allowed,
+        "dynamic FileRead tool on sensitive file must escalate"
+    );
+    let msg = err.expect("escalation must carry approval-required info");
+    assert!(msg.summary.contains("sensitive"), "got: {}", msg.summary);
+}
+
 // ===== connector 动态工具 metadata 投影（行动代理）=====
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
