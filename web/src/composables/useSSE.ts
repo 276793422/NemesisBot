@@ -35,7 +35,12 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 2026-11-15：'browser_event' = 浏览器接管编排操作事件（spawn/attach/
 // release/close/detect，agent_build.rs sink → EventHub），执行单元【浏览器】
 // TAB 日志子页签实时并入 + 列表卡即时刷新（AI 动作路走 tool_event 不在此）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event']
+// 2026-11-21：'mailbox.updated' / 'mail.sent' = 邮箱事件族（SMTP 落信 →
+// 插件 notify_mail_in → post_agent.rs publish_global_event 广播；发信回执
+// 走 mail.sent toast）。MailboxView 订阅 + 后端发布都在而白名单缺席 = 落信
+// 不实时刷新 + 回执 toast 永不出现（voice-setup/expert-degraded 后第三例
+// 白名单坑；SSE 是 mailbox 唯一实时传输，无 WS push 兜底）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event', 'mailbox.updated', 'mail.sent']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []
