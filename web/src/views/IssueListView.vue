@@ -146,7 +146,14 @@ const createForm = ref({
 })
 
 // --- 数据加载 ---
+// 列表请求代际计数（BUG-20261120-032）：过滤输入框 Enter 直调 loadIssues，
+// 与 board-changed 推送驱动的 silentRefresh 并发时无任何闸——慢的旧回包
+// 后到会把新列表覆盖成旧过滤条件的结果（本地 SQLite 窗口窄但后端繁忙时
+// 真实存在）。每次请求取自增代际，回包只在自己仍是最新代际时落盘。
+let loadIssuesSeq = 0
+
 async function loadIssues(silent = false) {
+  const seq = ++loadIssuesSeq
   const data: any = {}
   if (filterStatus.value) data.status = filterStatus.value
   if (filterQuery.value.trim()) data.query = filterQuery.value.trim()
@@ -164,11 +171,13 @@ async function loadIssues(silent = false) {
   }
   try {
     const r = await request('board', 'issue.list', data)
+    if (seq !== loadIssuesSeq) return
     issues.value = r?.issues || []
     total.value = r?.total || 0
     // 拆解在途表校正（回填/撤下兜底；只触碰本页出现的行——过滤视图安全）。
     reconcile(issues.value)
   } catch (e: any) {
+    if (seq !== loadIssuesSeq) return
     if (silent) console.warn('[IssueList] silent refresh failed:', e)
     else toast.error('加载 issue 失败: ' + e)
   }

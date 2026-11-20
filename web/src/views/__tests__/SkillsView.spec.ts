@@ -288,6 +288,52 @@ describe('SkillsView 商店页签：搜索与安装', () => {
     expect((w.vm as any).isBrowseMode).toBe(true)
   })
 
+  it('并发搜索：慢的旧回包不覆盖新结果（BUG-20261120-032）', async () => {
+    const w = await mountView()
+    await gotoShop(w)
+    const vm = w.vm as any
+    const resolvers: ((v: any) => void)[] = []
+    requestMock.mockImplementation((_m, cmd) => cmd === 'search'
+      ? new Promise(resolve => { resolvers.push(resolve) })
+      : Promise.resolve({}))
+    // Enter 与分类芯片不受 :disabled 闸——在飞期间再次触发是真实可达路径
+    vm.searchQuery = 'foo'
+    const p1 = vm.searchSkills()
+    await flushPromises()
+    vm.searchQuery = 'bar'
+    const p2 = vm.searchSkills()
+    await flushPromises()
+    expect(resolvers.length).toBe(2)
+    // 乱序回包：bar（第 2 发）先回、foo（第 1 发）后回
+    resolvers[1]({ results: [{ name: 'bar-skill', slug: 'bar-skill', source: 'clawhub' }] })
+    await flushPromises()
+    resolvers[0]({ results: [{ name: 'foo-skill', slug: 'foo-skill', source: 'clawhub' }] })
+    await flushPromises()
+    await Promise.all([p1, p2])
+    expect(vm.searchResults.map((r: any) => r.name)).toEqual(['bar-skill'])
+    expect(vm.searching).toBe(false)
+  })
+
+  it('返回浏览作废在飞搜索：慢回包不回填结果（BUG-20261120-032）', async () => {
+    const w = await mountView()
+    await gotoShop(w)
+    const vm = w.vm as any
+    let resolveSearch!: (v: any) => void
+    requestMock.mockImplementation((_m, cmd) => cmd === 'search'
+      ? new Promise(resolve => { resolveSearch = resolve })
+      : Promise.resolve({ items: BROWSE_ITEMS, next_cursor: null }))
+    vm.searchQuery = 'foo'
+    const p = vm.searchSkills()
+    await flushPromises()
+    await vm.clearSearch()
+    await flushPromises()
+    resolveSearch({ results: [{ name: 'late-skill', slug: 'late-skill', source: 'clawhub' }] })
+    await flushPromises()
+    await p
+    expect(vm.searchResults).toEqual([])
+    expect(vm.isBrowseMode).toBe(true)
+  })
+
   it('分类搜索：填充关键词并搜索', async () => {
     const w = await mountView()
     await gotoShop(w)

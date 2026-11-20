@@ -225,6 +225,55 @@ describe('PersonaShopView 全部人格页', () => {
     expect((w.vm as any).items.find((x: any) => x.id === 'p2').installed).toBe(true)
   })
 
+  it('并发搜索：慢的旧回包不覆盖新列表（BUG-20261120-032）', async () => {
+    const w = await mountAllView()
+    const vm = w.vm as any
+    const resolvers: ((v: any) => void)[] = []
+    requestMock.mockImplementation((_m, cmd, p) => cmd === 'shop.search'
+      ? new Promise(resolve => { resolvers.push(resolve) })
+      : defaultImpl(_m, cmd, p))
+    // 搜索按钮无 disabled 闸、Enter 亦无——在飞期间再次触发真实可达
+    vm.searchQuery = 'old'
+    const p1 = vm.search()
+    await flushPromises()
+    vm.searchQuery = 'new'
+    const p2 = vm.search()
+    await flushPromises()
+    expect(resolvers.length).toBe(2)
+    // 乱序回包：new（第 2 发）先回、old（第 1 发）后回
+    resolvers[1]({ items: [P1], source: 'live' })
+    await flushPromises()
+    resolvers[0]({ items: [P2], source: 'live' })
+    await flushPromises()
+    await Promise.all([p1, p2])
+    expect(vm.items.map((x: any) => x.id)).toEqual(['p1'])
+    expect(vm.loading).toBe(false)
+  })
+
+  it('并发搜索：旧请求失败不弹错误提示、loading 归位正确（BUG-20261120-032）', async () => {
+    const w = await mountAllView()
+    const vm = w.vm as any
+    const gates: ((ok: boolean, v?: any) => void)[] = []
+    requestMock.mockImplementation((_m, cmd, p) => cmd === 'shop.search'
+      ? new Promise((resolve, reject) => gates.push((ok, v) => (ok ? resolve(v) : reject(v))))
+      : defaultImpl(_m, cmd, p))
+    vm.searchQuery = 'x'
+    const p1 = vm.search()
+    await flushPromises()
+    vm.searchQuery = 'y'
+    const p2 = vm.search()
+    await flushPromises()
+    // 新请求成功落地后旧请求才失败——旧失败提示与 loading 复位都不得越权
+    gates[1](true, { items: [P1], source: 'live' })
+    await flushPromises()
+    gates[0](false, new Error('stale net'))
+    await flushPromises()
+    await Promise.all([p1, p2])
+    expect(vm.items.map((x: any) => x.id)).toEqual(['p1'])
+    expect(vm.loading).toBe(false)
+    expect(useToast().toasts.some(t => t.message.includes('搜索失败'))).toBe(false)
+  })
+
   it('来源徽标：live = · 在线；快照响应 = 内置快照（label）+ 警示色类', async () => {
     const w = await mountView()
     const liveBadge = w.find('.shop-source-badge')
