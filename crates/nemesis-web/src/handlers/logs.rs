@@ -1487,9 +1487,12 @@ impl LogsHandler {
             }
         }
 
-        // Optional BM25 keyword filter/rank over session summaries (lexical,
-        // independent of the memory manager). Drops non-matching sessions and
-        // ranks the rest by relevance when `query` is supplied.
+        // Optional BM25 keyword **filter** over session summaries (lexical,
+        // independent of the memory manager). Drops non-matching sessions
+        // (score <= 0) when `query` is supplied. NOTE: the inner relevance
+        // sort here is immediately overridden by the recency re-sort below
+        // (`session_recency_cmp`) — ordering is recency-first **by design**
+        // (BUG-20261116-011); BM25 contributes matching only, not rank.
         #[cfg(feature = "memory")]
         {
             if let Some(q) = query.as_deref() {

@@ -2497,6 +2497,164 @@ async fn cancel_during_llm_call_breaks_turn() {
     let _ = runner.await;
 }
 
+/// P0-4 行为契约（2026-11-19 自查）：打断保留排队消息——
+/// queue 模式下 turn 进行中排队的消息，在 turn 被 cancel_session 打断后
+/// **不得静默消失**。契约链：取消只触发 token（打断在检查点收口，LLM
+/// future 被弃但 calls 计数已落）→ process_admitted 收尾是直线链（token
+/// 清理 → 守卫释放 → drain_next_turn_queue）→ drain 把队首经 reinject_tx
+/// 重注入本 loop mpsc → 作为独立 turn 正常处理并出站。回归形态：打断
+/// 收尾若跳过 drain，排队消息滞留 inbox 永不处理——出站止于「已取消」，
+/// 排队消息的回复帧 timeout 红。
+#[tokio::test]
+async fn cancel_preserves_queued_next_turn_message() {
+    let _logs = capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    // 调用 #1 闩死（被取消轮停在 LLM 闸内）；调用 #2（排队消息的新
+    // turn）跳过闸正常应答——GateProvider 按调用序计数。
+    let (provider, started, _release) = GateProvider::new(vec![resp("queued message processed")]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Queue,
+        8,
+        0,
+    );
+    let handle = std::sync::Arc::new(agent_loop);
+    let runner = tokio::spawn(handle.clone().run_bus_arc(in_rx));
+
+    in_tx.send(plain_msg("turn to be cancelled")).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+        .await
+        .expect("first chat started");
+    // busy 期间第二条消息 → Queue 模式由泵侧 gate 即时入 next_turn。
+    in_tx
+        .send(plain_msg("must survive the interrupt"))
+        .await
+        .unwrap();
+    // 确定性等排队落位（不猜时序）。
+    for _ in 0..100 {
+        if handle.inbox_status("agent:main:main").next_turn == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        handle.inbox_status("agent:main:main").next_turn,
+        1,
+        "second message must be queued while busy"
+    );
+    assert!(
+        handle.cancel_session("agent:main:main"),
+        "cancel token existed and was cancelled"
+    );
+    drop(in_tx);
+
+    // 期望出站全集：⏳ 排队回执（瞬态）+ 被取消轮「已取消」+ 排队消息
+    // 新 turn 的正常回复。三帧不必比序（回执与取消存在微竞态），各自
+    // 必须在场且不得有多余帧。
+    let mut got_cancelled = false;
+    let mut got_queued_reply = false;
+    let mut frames = 0;
+    while let Ok(Some(m)) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv()).await
+    {
+        frames += 1;
+        if m.content.contains("已取消") {
+            got_cancelled = true;
+        }
+        if m.content.contains("queued message processed") {
+            got_queued_reply = true;
+        }
+        if got_cancelled && got_queued_reply {
+            break;
+        }
+    }
+    assert!(got_cancelled, "cancelled turn must publish 已取消");
+    assert!(
+        got_queued_reply,
+        "queued message must still be processed after the interrupt (no silent loss)"
+    );
+    assert!(frames <= 3, "unexpected extra frames: {frames}");
+    let _ = runner.await;
+}
+
+/// P0-4 行为契约（steer 臂）：steer 模式下 turn 进行中发入的 `!` 插话
+/// 落 next_step；宿主 turn 被 cancel 打断、来不及在轮边界消费时，收尾
+/// drain_next_turn_queue 的 transfer_next_step_to_next_turn 把插话转正为
+/// next_turn 输入并重注入处理——「打断不丢插话」。回归形态：打断后
+/// next_step 滞留（steer 窗口永久错过）——插话的回复帧 timeout 红。
+#[tokio::test]
+async fn cancel_preserves_pending_steer_message() {
+    let _logs = capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let (provider, started, _release) = GateProvider::new(vec![resp("steer message processed")]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+    let handle = std::sync::Arc::new(agent_loop);
+    let runner = tokio::spawn(handle.clone().run_bus_arc(in_rx));
+
+    in_tx.send(plain_msg("turn to be cancelled")).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+        .await
+        .expect("first chat started");
+    // 宿主轮停在 LLM 闸内（不到轮边界）→ `!` 插话落 next_step 等注入。
+    in_tx
+        .send(plain_msg("!must survive the interrupt"))
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if handle.inbox_status("agent:main:main").next_step == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        handle.inbox_status("agent:main:main").next_step,
+        1,
+        "steer interjection must sit in next_step while the host turn is parked"
+    );
+    assert!(
+        handle.cancel_session("agent:main:main"),
+        "cancel token existed and was cancelled"
+    );
+    drop(in_tx);
+
+    // 期望出站全集：⚡ 插话回执（瞬态）+「已取消」+ 转正后的插话回复。
+    let mut got_cancelled = false;
+    let mut got_steer_reply = false;
+    let mut frames = 0;
+    while let Ok(Some(m)) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv()).await
+    {
+        frames += 1;
+        if m.content.contains("已取消") {
+            got_cancelled = true;
+        }
+        if m.content.contains("steer message processed") {
+            got_steer_reply = true;
+        }
+        if got_cancelled && got_steer_reply {
+            break;
+        }
+    }
+    assert!(got_cancelled, "cancelled turn must publish 已取消");
+    assert!(
+        got_steer_reply,
+        "pending steer message must be transferred and processed after the interrupt (no silent loss)"
+    );
+    assert!(frames <= 3, "unexpected extra frames: {frames}");
+    let _ = runner.await;
+}
+
 /// 工具执行进行中 cancel_session → chokepoint cancel 臂**立即中断**在飞
 /// 工具（Phase 5 A1 回归锁——用户痛点「点击停止立刻就能停止」）：工具停在
 /// GatedTool 等待内（**永不放行**），取消后 turn 必须在超时内以「已取消」

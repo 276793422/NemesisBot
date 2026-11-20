@@ -69,6 +69,13 @@ pub struct ProjectEntry {
     /// undo 对 extra_dirs 的变更无回退网，文件树可见性不在多根范围。
     #[serde(default)]
     pub extra_dirs: Vec<String>,
+    /// B38 孤儿组老化：**首次观测到目录缺失**的时间戳（RFC3339，本地时区
+    /// 同 created_at）。`#[serde(default)]` 老条目/存活条目零迁移（None）。
+    /// 语义：sweep 只在启动装配跑——目录存在 = 清除（复活面是目录存在性
+    /// 检查，非一次性快照：TTL 内恢复自动归零）；目录缺失 + None = 记现在；
+    /// 缺失 + 超 TTL = 条目老化解除分组（与手动 remove 同语义）。
+    #[serde(default)]
+    pub missing_since: Option<String>,
 }
 
 /// projects.json 根结构。
@@ -220,6 +227,7 @@ pub fn build_new_entry(
         created_at: chrono::Local::now().to_rfc3339(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     })
 }
 
@@ -415,6 +423,76 @@ pub fn list_projects(path: &Path) -> Vec<ProjectEntry> {
 /// 按 id 查单条（lenient 语义）。
 pub fn find_project(path: &Path, id: &str) -> Option<ProjectEntry> {
     list_projects(path).into_iter().find(|p| p.id == id)
+}
+
+/// sweep 结果：`(本轮新标记 missing_since 的条目, 老化解除分组的条目)`。
+pub type MissingSweep = (Vec<ProjectEntry>, Vec<ProjectEntry>);
+
+/// B38 孤儿组老化 sweep（启动装配期一次）：按**目录存在性**逐条判定——
+/// 存在 = 清除 `missing_since`（复活）；缺失 + 无戳 = 记现在（首次观测）；
+/// 缺失 + 超 `ttl_secs` = 条目从注册表移除（与手动 remove 同语义：只解除
+/// 分组，会话/项目目录内文件零删除；重新注册同名项目自动重新收编）。
+/// `ttl_secs == 0` = 关闭（外置盘长期离线场景），直通零改动。
+///
+/// `Err` = 注册表缺席之外读取失败（损坏）——**loud 拒绝**（同写路径纪律，
+/// 绝不拿 sweep 覆盖损坏文件）；调用方 warn 跳过即可。
+///
+/// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]；无任何状态变化时不重写盘
+/// （字节零变化，日常启动零成本）。
+pub fn sweep_missing_projects(path: &Path, ttl_secs: u64) -> Result<MissingSweep> {
+    if ttl_secs == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let _serial = REGISTRY_WRITE_LOCK.lock();
+    let mut file = try_load_projects(path)?.unwrap_or_default();
+    let mut marked = Vec::new();
+    let mut aged_out = Vec::new();
+    let mut dirty = false;
+    let now = chrono::Local::now();
+    let ttl = chrono::Duration::seconds(ttl_secs as i64);
+    for entry in &mut file.projects {
+        if entry.path.is_dir() {
+            // 复活臂：目录回来了，清戳（dirty 仅在真有戳可清时置）。
+            if entry.missing_since.take().is_some() {
+                dirty = true;
+            }
+            continue;
+        }
+        match &entry.missing_since {
+            None => {
+                // 首次观测：只记时间戳，不解除分组。
+                entry.missing_since = Some(now.to_rfc3339());
+                marked.push(entry.clone());
+                dirty = true;
+            }
+            Some(ts) => {
+                // parse 先产自有值（结束对 entry 的借用），match 再分派——
+                // Err 臂要写回 entry。
+                match chrono::DateTime::parse_from_rfc3339(ts) {
+                    Ok(t) if now.signed_duration_since(t.with_timezone(&chrono::Local)) >= ttl => {
+                        aged_out.push(entry.clone());
+                    }
+                    Ok(_) => {} // TTL 内：保持现状（不重置计时）
+                    Err(_) => {
+                        // 戳损坏（手编/异源写入）：re-anchor 到现在——从零
+                        // 重数，绝不因坏戳直接老化（从严）。
+                        entry.missing_since = Some(now.to_rfc3339());
+                        marked.push(entry.clone());
+                        dirty = true;
+                    }
+                }
+            }
+        }
+    }
+    if !aged_out.is_empty() {
+        file.projects
+            .retain(|e| !aged_out.iter().any(|a| a.id == e.id));
+        dirty = true;
+    }
+    if dirty {
+        save_projects(path, &file)?;
+    }
+    Ok((marked, aged_out))
 }
 
 #[cfg(test)]

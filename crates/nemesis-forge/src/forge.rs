@@ -54,6 +54,18 @@ pub struct Forge {
     started_at: Mutex<Option<String>>,
     /// Runtime toggle for learning (mirrors config.learning.enabled, mutable at runtime).
     learning_enabled: std::sync::atomic::AtomicBool,
+    /// 总闸热读源（2026-11-20 C3 热生效语义）：Some(config.json) =
+    /// `is_enabled()` mtime 检测现读 `forge.enabled`（改键即刻生效——
+    /// recording 闸下次调用、后台循环下个 cycle 即新值，无需重启）；
+    /// None = 构造期值（`config.enabled`，CLI/agent 最小装配旧行为）。
+    master_switch_path: Option<PathBuf>,
+    /// 总闸 mirror 缓存：上次热读 (mtime, enabled)。None = 尚未热读过
+    /// （首次 `is_enabled()` 即触发现读——构造期注入与磁盘现值的窗口期
+    /// 差异一并覆盖）。std Mutex：热读是同步 stat + 小 JSON 解析。
+    master_switch_cache: std::sync::Mutex<Option<(std::time::SystemTime, bool)>>,
+    /// 热读失败 warn 一次性闸（同 exec 工具热读模式）：读失败每次调用
+    /// 都会走到——首次 warn 留痕，后续防刷屏；读成功复位重上膛。
+    master_switch_warned: std::sync::atomic::AtomicBool,
 }
 
 impl Forge {
@@ -110,7 +122,17 @@ impl Forge {
             bg_running: Arc::new(Mutex::new(false)),
             started_at: Mutex::new(None),
             learning_enabled: std::sync::atomic::AtomicBool::new(learning_enabled),
+            master_switch_path: None,
+            master_switch_cache: std::sync::Mutex::new(None),
+            master_switch_warned: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// 总闸热读源注入（2026-11-20 C3）：gateway 装配传入 config.json
+    /// 路径。Some = `is_enabled()` 现读语义（见字段注）。
+    pub fn with_master_switch_path(mut self, path: PathBuf) -> Self {
+        self.master_switch_path = Some(path);
+        self
     }
 
     /// Whether the forge system is enabled (the master switch from config).
@@ -118,8 +140,67 @@ impl Forge {
     /// learning" — the per-tool-call recording path gates on it so that
     /// `forge.enabled = false` actually stops collection (not just the
     /// background loops).
+    ///
+    /// 2026-11-20 C3 热生效语义：`master_switch_path` 在场 → mtime 检测
+    /// 现读 config.json 的 `forge.enabled`（首读也触发；mtime 变化才重读
+    /// 文件）。翻转时 info 留痕；读失败诚实降级保持上次值 + 首次 warn。
+    /// path 缺席 = 构造期值（旧行为字节不变）。
     pub fn is_enabled(&self) -> bool {
-        self.config.enabled
+        let Some(path) = &self.master_switch_path else {
+            return self.config.enabled;
+        };
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let mut cache = self
+            .master_switch_cache
+            .lock()
+            .expect("forge master switch cache mutex poisoned");
+        // 缓存命中（mtime 一致）→ 免读。
+        if let (Some(m), Some((last, v))) = (mtime, cache.as_ref())
+            && m == *last
+        {
+            return *v;
+        }
+        // 首读 / mtime 变化 / mtime 丢失 → 现读 `forge.enabled`。
+        match mtime.zip(
+            nemesis_config::load_config(path)
+                .ok()
+                .map(|c| c.forge.as_ref().map(|f| f.enabled).unwrap_or(false)),
+        ) {
+            Some((m, fresh)) => {
+                // 翻转留痕（含首次热读即与构造期值不同的形态）。
+                let prev = cache
+                    .as_ref()
+                    .map(|(_, v)| *v)
+                    .unwrap_or(self.config.enabled);
+                if prev != fresh {
+                    tracing::info!(
+                        "[Forge] master switch flipped: {} -> {}（config.json forge.enabled，即刻生效）",
+                        prev,
+                        fresh
+                    );
+                }
+                *cache = Some((m, fresh));
+                self.master_switch_warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                fresh
+            }
+            None => {
+                // 读失败：诚实降级——保持上次生效值（缓存空 = 构造期值）。
+                if !self
+                    .master_switch_warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        "[Forge] master switch hot-read: config 读失败（{}）——保持上次生效值",
+                        path.display()
+                    );
+                }
+                cache
+                    .as_ref()
+                    .map(|(_, v)| *v)
+                    .unwrap_or(self.config.enabled)
+            }
+        }
     }
 
     /// Start the forge subsystems.
@@ -175,6 +256,12 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= reflect_interval {
                         elapsed = 0;
+                        // 总闸看闸（2026-11-20 C3 热生效语义）：关 = 跳过
+                        // 本 cycle（含 LLM 调用的反思成本归零）；重开后到
+                        // 点即恢复。is_enabled() 本身热读 config 总闸。
+                        if !forge.is_enabled() {
+                            continue;
+                        }
                         forge.run_reflection_cycle().await;
                     }
                 }
@@ -198,6 +285,10 @@ impl Forge {
                     elapsed += 1;
                     if elapsed >= cleanup_interval {
                         elapsed = 0;
+                        // 总闸看闸（2026-11-20 C3）：同 reflector_loop。
+                        if !forge.is_enabled() {
+                            continue;
+                        }
                         forge.run_cleanup_cycle().await;
                     }
                 }
@@ -205,7 +296,7 @@ impl Forge {
             self.bg_tasks.lock().push(handle);
         }
 
-        tracing::info!("[Forge] Started with background tasks");
+        tracing::info!("[Forge] Started with background tasks (master switch hot-read per cycle)");
     }
 
     /// Run a single reflection cycle: read experiences → reflect → learn → write report → share.

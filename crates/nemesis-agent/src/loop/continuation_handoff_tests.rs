@@ -33,6 +33,10 @@ use super::*;
 struct HandoffProvider {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
     calls: std::sync::Arc<std::sync::Mutex<Vec<HandoffCall>>>,
+    /// 降级注记桩（⑫ 哨兵）：Some → take_response_degradation 恒返回该值
+    /// （写侧 chat_call_escalating 成功末尾据此按会话键落注记）；None（
+    /// 默认构造）→ 无注记，行为与未覆写的 provider 一致。
+    degradation_note: Option<String>,
 }
 
 #[derive(Clone)]
@@ -49,6 +53,20 @@ impl HandoffProvider {
         Self {
             responses: std::sync::Mutex::new(responses),
             calls,
+            degradation_note: None,
+        }
+    }
+
+    /// 带降级注记的构造（⑫ 降级注记消费哨兵专用）。
+    fn new_degraded(
+        responses: Vec<LlmResponse>,
+        calls: std::sync::Arc<std::sync::Mutex<Vec<HandoffCall>>>,
+        note: Option<String>,
+    ) -> Self {
+        Self {
+            responses: std::sync::Mutex::new(responses),
+            calls,
+            degradation_note: note,
         }
     }
 }
@@ -82,6 +100,9 @@ impl LlmProvider for HandoffProvider {
         } else {
             Ok(responses.remove(0))
         }
+    }
+    fn take_response_degradation(&self) -> Option<String> {
+        self.degradation_note.clone()
     }
 }
 
@@ -1067,4 +1088,73 @@ async fn busy_reject_note_arm_single_flight_suppresses_duplicate_callback() {
     assert_no_outbound(&mut out_rx).await;
     assert!(!mgr.has_continuation("hsbusy2").await);
     agent_loop.release_session("hsess");
+}
+
+// ---------------------------------------------------------------------------
+// ⑫ 降级注记消费（BUG-20261120-020）：续行终局直发前取件本会话键注记
+// ---------------------------------------------------------------------------
+
+/// 续行回合的终局回复由 fallback 备选产出（写侧 chat_call_escalating 成功
+/// 末尾按会话键落注记——provider 桩 take_response_degradation 恒返注记）
+/// 时，终局直发（send_continuation_final，不经 finish_message）必须先取件
+/// 拼接降级标注。修复前注记无人消费：降级续行回复裸奔 + 注记残留槽里
+/// 直到下轮写侧成功调用才清。取件即清 + 标注格式与普通轮
+/// （finish_message，BUG-20261120-013）同源。
+#[tokio::test]
+async fn continuation_final_appends_degradation_note_and_consumes_slot() {
+    let _logs = crate::test_support::capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    // 先 owned 装配（set_continuation_manager 要 &mut），再 Arc 包装
+    // （泵后断言注记槽需要活句柄）。
+    let mut loop_inner = AgentLoop::new_bus(
+        Box::new(HandoffProvider::new_degraded(
+            vec![hs_resp("degraded continuation reply")],
+            calls.clone(),
+            Some("主模型x → http-compat/备选y".to_string()),
+        )),
+        hs_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    seed_continuation(&mgr, "hsdegr").await;
+    loop_inner.set_continuation_manager(mgr);
+    let agent_loop = std::sync::Arc::new(loop_inner);
+
+    let msg = hs_msg(
+        &format!(
+            "{}hsdegr",
+            nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX
+        ),
+        "task result text",
+        std::collections::HashMap::new(),
+    );
+    in_tx.send(msg).await.unwrap();
+    drop(in_tx);
+    agent_loop.clone().run_bus_arc(in_rx).await;
+
+    let out = out_rx.recv().await.expect("continuation final published");
+    assert!(
+        out.content.contains("degraded continuation reply"),
+        "原文保留: {}",
+        out.content
+    );
+    assert!(
+        out.content.contains("备选应答") && out.content.contains("备选y"),
+        "降级续行终局必须带标注（BUG-20261120-020）: {}",
+        out.content
+    );
+    // 取件即清：本会话键无残留（残留会污染同会话后续轮次的注记判定）。
+    assert!(
+        !agent_loop.response_degradation.lock().contains_key("hsess"),
+        "注记槽必须随续行终局消费清空"
+    );
+    assert!(
+        agent_loop.response_degradation.lock().is_empty(),
+        "整槽无残留（本测试单会话）"
+    );
 }

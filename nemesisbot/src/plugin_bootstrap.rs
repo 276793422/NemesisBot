@@ -787,7 +787,15 @@ impl nemesis_agent::r#loop::Tool for PluginProposeTool {
         let allow_unsigned = self.gate.can_approve_unsigned();
         let outcome = self
             .installer
-            .install_with(&pdir, allow_unsigned, approver, Some(reason.clone()))
+            .install_with(
+                &pdir,
+                allow_unsigned,
+                approver,
+                Some(reason.clone()),
+                // P0-5 来源标记：自举装 = bootstrap:<源名>——lockfile /
+                // CLI / Dashboard 来源展示面同源（手动安装恒 None）。
+                Some(format!("bootstrap:{source_name}")),
+            )
             .await;
 
         let outcome = match outcome {

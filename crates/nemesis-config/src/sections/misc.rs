@@ -462,6 +462,17 @@ pub struct ProjectsConfig {
     /// （`skip_serializing_if`）——缺省态 typed 保存字节零变化（role 先例）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instruction_trust: String,
+    /// B38（2026-11-19）：目录消失的孤儿项目组老化 TTL 秒数。
+    /// 启动装配 sweep：目录缺失超 TTL 的注册表条目自动解除分组（与手动
+    /// 移除同语义——会话数据零删除，重新注册可重新收编）；目录恢复 =
+    /// missing_since 清除（判定基于目录存在性，非一次性快照）。默认
+    /// 604800（7 天）；**0 = 关闭老化**（外置盘长期离线等场景）。
+    #[serde(default = "default_projects_orphan_ttl_secs")]
+    pub orphan_ttl_secs: u64,
+}
+
+fn default_projects_orphan_ttl_secs() -> u64 {
+    7 * 24 * 3600
 }
 
 impl Default for ProjectsConfig {
@@ -469,6 +480,7 @@ impl Default for ProjectsConfig {
         Self {
             max: 4,
             instruction_trust: String::new(),
+            orphan_ttl_secs: default_projects_orphan_ttl_secs(),
         }
     }
 }

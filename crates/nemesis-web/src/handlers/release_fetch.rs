@@ -67,8 +67,16 @@ fn fetch_client(
         .connect_timeout(FETCH_CONNECT_TIMEOUT)
         .user_agent(FETCH_UA);
     if let Some(p) = proxy {
-        let proxied =
-            reqwest::Proxy::all(p).map_err(|e| format!("下载代理地址无效（{p}）：{e}"))?;
+        // proxy 是 userinfo 凭据面（SEC-002 口径）——错误串不得嵌原值
+        //（005 教训原文点名的最易漏形态：凭据埋进错误值本身，任何上游
+        // `warn!("{e}")`/WSAPI 回显都是二次泄露点；BUG-20261120-018，
+        // 单一真相源 nemesis_utils::proxy_redact）。
+        let proxied = reqwest::Proxy::all(p).map_err(|e| {
+            format!(
+                "下载代理地址无效（{}）：{e}",
+                nemesis_utils::proxy_redact::redact_proxy_for_log(p)
+            )
+        })?;
         // builder.proxy() 自带 auto_sys_proxy=false（reqwest client.rs:1414）
         // 显式代理 = 「就这个代理」，环境变量/系统代理探测一并关掉。
         builder = builder.proxy(proxied);

@@ -2458,3 +2458,89 @@ mod cov_m {
         );
     }
 }
+
+// ===========================================================================
+// R1991（BUG-20261120-011）：CLI 诊断/查重面宽容真相源收敛。
+// mcpServers 形状文件（宽容解析明示接纳的外部生态形态，"LLM 抄外部配置
+// 进盘也能吃"）此前对 CLI 整体隐形：find_server/list 只认 servers 数组，
+// `mcp add` 查重盲区假成功写出重复名条目，`mcp remove` 假报 not found。
+// ===========================================================================
+
+fn make_mcpservers_shape_config(tmp: &TempDir) -> std::path::PathBuf {
+    let dir = tmp.path().join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg_path = dir.join("config.mcp.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"mcpServers":{"fs":{"command":"npx","args":["-y","fs-server"]}}}"#,
+    )
+    .unwrap();
+    cfg_path
+}
+
+/// find_server 必须看见 mcpServers 形状条目（诊断面与运行期挂载面同源）。
+#[test]
+fn r1991_find_server_sees_mcpservers_shape() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_mcpservers_shape_config(&tmp);
+    let server = find_server(&cfg, "fs").unwrap();
+    assert!(
+        server.is_some(),
+        "mcpServers 形状条目对 find_server 必须可见"
+    );
+    assert_eq!(server.unwrap()["command"], "npx");
+}
+
+/// `mcp add` 查重必须覆盖 mcpServers 形状条目：重名响亮拒绝且不污染文件
+/// （修复前 servers 数组盲区 → 假成功写出重复名条目）。
+#[test]
+fn r1991_add_duplicate_name_from_mcpservers_shape_is_loud_error() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_mcpservers_shape_config(&tmp);
+    let req = AddRequest::build("fs", Some("other"), None, None, &[], None, &[], 30)
+        .expect("stdio request builds");
+    let err = cmd_add(&cfg, &main_cfg_of(&tmp), &workspace_of(&tmp), &req, false).unwrap_err();
+    assert!(err.to_string().contains("already exists"), "实际: {err}");
+    // 拒绝路径不写盘：mcpServers 块保持原样、无 servers 数组被补建。
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert!(
+        data.get("servers").is_none(),
+        "拒绝路径不得写出 servers 数组"
+    );
+}
+
+/// `mcp remove` 必须能移除 mcpServers 形状条目，并把文件收敛为标准形状
+/// （修复前对 servers 数组盲区 → 假报 not found）。
+#[test]
+fn r1991_remove_sees_mcpservers_entry_and_converges_shape() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = make_mcpservers_shape_config(&tmp);
+    cmd_remove(&cfg, "fs").unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    let servers = data["servers"]
+        .as_array()
+        .expect("卸载后文件收敛为标准 servers 数组形状");
+    assert!(servers.is_empty(), "唯一条目被移除后数组为空");
+    assert!(
+        data.get("mcpServers").is_none(),
+        "卸载路径收敛文件形状：mcpServers 块不得残留"
+    );
+}
+
+/// cmd_list 对混合形状（servers + mcpServers 并存）不炸且计数完整
+/// （渲染面吃宽容真相源视图；修复前只见 servers 数组条目）。
+#[test]
+fn r1991_list_mixed_shape_renders_all_entries() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("config");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg_path = dir.join("config.mcp.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"enabled":true,"servers":[{"name":"cli","command":"node"}],"mcpServers":{"fs":{"command":"npx"}}}"#,
+    )
+    .unwrap();
+    cmd_list(&cfg_path).expect("混合形状 list 必须成功");
+}

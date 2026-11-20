@@ -391,8 +391,12 @@ impl TelegramChannel {
                     // proxy 是 opt_secret（userinfo 凭据面，SEC-002 口径，
                     // 与 Debug 脱敏同判）——日志只落 scheme 不落完整 URL
                     //（proxy_file 读侧 WARN 同口径，BUG-20261115-005）。
-                    let scheme = proxy_url.split("://").next().unwrap_or("");
-                    warn!("[TelegramChannel] invalid proxy URL (scheme=\"{scheme}\"): {e}");
+                    // 005 期就地 inline split，BUG-20261120-018 收口为
+                    // nemesis_utils::proxy_redact 单一真相源。
+                    warn!(
+                        "[TelegramChannel] invalid proxy URL ({}): {e}",
+                        nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url)
+                    );
                 }
             }
         }

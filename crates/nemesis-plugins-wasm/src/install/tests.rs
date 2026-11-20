@@ -758,6 +758,7 @@ async fn recorded_allow_unsigned_follows_lockfile_trust() {
                 installed_at_ms: 0,
                 signed_by: String::new(),
                 connectors: vec![],
+                origin: None,
             },
         )]
         .into_iter()
@@ -907,6 +908,7 @@ async fn install_with_overrides_approver_and_injects_reason() {
             true,
             deny.clone() as Arc<dyn InstallApprover>,
             Some("撞到文本统计缺口，textstat 补上".into()),
+            Some("bootstrap:test-registry".into()),
         )
         .await
         .expect_err("override gate rejects");
@@ -934,6 +936,7 @@ async fn install_with_overrides_approver_and_injects_reason() {
             true,
             allow.clone() as Arc<dyn InstallApprover>,
             Some("第二次提案".into()),
+            Some("bootstrap:test-registry".into()),
         )
         .await
         .expect("install with approving override");
@@ -943,5 +946,28 @@ async fn install_with_overrides_approver_and_injects_reason() {
         Some("第二次提案")
     );
     assert!(inst.is_installed("textstat"));
+
+    // P0-5 来源标记回归锁：自举装（origin=bootstrap:<源名>）落 lockfile；
+    // 手动升级（install()，origin=None）以当前安装来源覆盖旧值（诚实回落）。
+    {
+        let raw = std::fs::read_to_string(mgr.plugins_dir().join("lockfile.json"))
+            .expect("lockfile exists");
+        let lockfile: PluginLockfile = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(
+            lockfile.plugins["textstat"].origin.as_deref(),
+            Some("bootstrap:test-registry"),
+            "bootstrap install must record its source origin"
+        );
+    }
+    let _ = inst.install(&src, true).await.expect("manual upgrade");
+    {
+        let raw = std::fs::read_to_string(mgr.plugins_dir().join("lockfile.json"))
+            .expect("lockfile exists");
+        let lockfile: PluginLockfile = serde_json::from_str(&raw).expect("parse");
+        assert_eq!(
+            lockfile.plugins["textstat"].origin, None,
+            "manual upgrade must overwrite bootstrap origin to None (honest current-source)"
+        );
+    }
     let _ = ws;
 }

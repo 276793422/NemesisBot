@@ -28,9 +28,16 @@ fn resolve_workspace_path(workspace: &Path, restrict: bool, path: &str) -> Resul
         if !resolved.starts_with(&ws) {
             return Err(format!("path '{}' is outside workspace", path));
         }
+        // S24 TOCTOU 收窄（2026-11-19 自查）：restrict 下返回
+        // **已解析形态**——围栏校验通过的就是后续 IO 打开的那条路径，
+        // 消除「校验形态 ≠ 打开形态」的表示漂移（symlink / 8.3 短名 /
+        // 大小写差异在 open 时被 OS 二次解析的窗口）。诚实边界：校验→
+        // 打开间隙的并发组件替换仍属理论窗口，但那是本机并发写者才能
+        // 构造的形态（顺序的模型侧构不成 race），已在既有威胁模型外。
+        Ok(resolved)
+    } else {
+        Ok(canonical)
     }
-
-    Ok(canonical)
 }
 
 /// File read tool.

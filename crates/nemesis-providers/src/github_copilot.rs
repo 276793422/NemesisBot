@@ -22,7 +22,11 @@ pub struct GitHubCopilotConfig {
 }
 
 fn default_timeout() -> u64 {
-    120
+    // P3A 超时对齐（BUG-20261120-014 横向收口）：全 lane 统一默认 600s。
+    // 旧值 120 与 anthropic/codex/http-compat 三 lane 的分裂同款（P3A 修复
+    // 当时只收了那三条），serde 默认对齐防未来直接反序列化路径绕过工厂时
+    // 与阶梯契约再分叉。
+    600
 }
 
 impl Default for GitHubCopilotConfig {
@@ -31,7 +35,7 @@ impl Default for GitHubCopilotConfig {
             uri: String::new(),
             connect_mode: "grpc".to_string(),
             default_model: DEFAULT_COPILOT_MODEL.to_string(),
-            timeout_secs: 120,
+            timeout_secs: 600,
         }
     }
 }

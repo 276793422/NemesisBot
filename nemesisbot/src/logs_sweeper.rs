@@ -98,7 +98,8 @@ const SWEEP_INTERVAL_SECS: u64 = 6 * 3600;
 /// 一天的秒数。
 const DAY_SECS: u64 = 86400;
 
-/// 十六族 TTL 快照（gateway 装配期从 config 读一次；改 config 重启生效）。
+/// 十六族 TTL 值集（清扫循环每拍从 config 现读——2026-11-20 热生效语义，
+/// 改键下拍生效无需重启；struct 本身仍是值快照，热度在读侧 `read_logs_ttl`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogsTtl {
     /// `logs/session_logs/` 保留天数（0=族关）。
@@ -840,32 +841,36 @@ fn run_sweep_once(ttl: &LogsTtl) {
     }
 }
 
-/// 装配清扫任务：启动扫一次 + 每 6h 一拍。全 0 = 不装配（info 一句收场）。
-pub fn spawn_logs_sweeper(ttl: LogsTtl) {
-    if ttl.all_disabled() {
-        info!("[LogsSweeper] logs.ttl 十六族全 0 —— 清扫不装配");
-        return;
+/// 装配清扫任务：启动扫一次 + 每 6h 一拍。**每拍现读 config `logs` 段**
+/// （2026-11-20 热生效语义：改 TTL 下拍生效，无需重启——此前装配期快照
+/// 传入，改 config 永不生效且 UI 无提示）。恒装配（全 0 只空转待命，
+/// 否则全 0 启动后改键永不生效）；全 0 = 该拍跳过。
+pub fn spawn_logs_sweeper(config_path: std::path::PathBuf) {
+    let initial = read_logs_ttl(&config_path);
+    if initial.all_disabled() {
+        info!("[LogsSweeper] logs 十六族 TTL 全 0 —— 清扫待命（每拍现读 config，改键下拍生效）");
+    } else {
+        info!(
+            session_logs_days = initial.session_logs,
+            boundary_days = initial.boundary,
+            request_logs_days = initial.request_logs,
+            terminal_days = initial.terminal,
+            event_ledger_days = initial.event_ledger,
+            trash_days = initial.trash,
+            gateway_days = initial.gateway,
+            cluster_logs_days = initial.cluster_logs,
+            eval_days = initial.eval,
+            capture_days = initial.capture,
+            dreaming_days = initial.dreaming,
+            calibration_days = initial.calibration,
+            deliveries_days = initial.deliveries,
+            heartbeat_days = initial.heartbeat,
+            ziwei_days = initial.ziwei,
+            exec_checkpoints_days = initial.exec_checkpoints,
+            interval_secs = SWEEP_INTERVAL_SECS,
+            "[LogsSweeper] logs 十六族 TTL 清扫装配（每拍现读 config，改键下拍生效）"
+        );
     }
-    info!(
-        session_logs_days = ttl.session_logs,
-        boundary_days = ttl.boundary,
-        request_logs_days = ttl.request_logs,
-        terminal_days = ttl.terminal,
-        event_ledger_days = ttl.event_ledger,
-        trash_days = ttl.trash,
-        gateway_days = ttl.gateway,
-        cluster_logs_days = ttl.cluster_logs,
-        eval_days = ttl.eval,
-        capture_days = ttl.capture,
-        dreaming_days = ttl.dreaming,
-        calibration_days = ttl.calibration,
-        deliveries_days = ttl.deliveries,
-        heartbeat_days = ttl.heartbeat,
-        ziwei_days = ttl.ziwei,
-        exec_checkpoints_days = ttl.exec_checkpoints,
-        interval_secs = SWEEP_INTERVAL_SECS,
-        "[LogsSweeper] logs 十六族 TTL 清扫装配"
-    );
     tokio::spawn(async move {
         // BUG-20261118-172：run_sweep_once 是重阻塞 sync 清扫（十六族遍历，
         // Trash 族经 trash_purge_in → fsutil::remove_file_retry /
@@ -873,7 +878,11 @@ pub fn spawn_logs_sweeper(ttl: LogsTtl) {
         // 直跑 tokio worker 会阻塞 executor。fsutil.rs LOW-5 家族纪律：
         // spawn_blocking 移出（同族先例 anchors.rs、sessions.rs
         // BUG-20261031-248、outbox.rs BUG-20261114-013）。
-        if let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&ttl)).await {
+        // 启动扫一次：全 0 = 跳过（待命态，下拍现读再判）。
+        let startup_ttl = read_logs_ttl(&config_path);
+        if !startup_ttl.all_disabled()
+            && let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&startup_ttl)).await
+        {
             warn!("[LogsSweeper] 启动清扫任务 join 失败: {e}");
         }
         let mut interval = tokio::time::interval(Duration::from_secs(SWEEP_INTERVAL_SECS));
@@ -884,11 +893,29 @@ pub fn spawn_logs_sweeper(ttl: LogsTtl) {
             if !terminal_loop_tick(terminal_cancel_token(), interval.tick()).await {
                 break;
             }
+            // 每拍现读 config（热生效语义）；全 0 = 该拍跳过空转。
+            let ttl = read_logs_ttl(&config_path);
+            if ttl.all_disabled() {
+                continue;
+            }
             if let Err(e) = tokio::task::spawn_blocking(move || run_sweep_once(&ttl)).await {
                 warn!("[LogsSweeper] 周期清扫任务 join 失败: {e}");
             }
         }
     });
+}
+
+/// 现读 config `logs` 段解析十六族 TTL（热生效语义的读侧）。读失败 /
+/// 缺文件 = 默认值兜底 + warn——诚实降级不中断清扫（与缺键=全默认的
+/// 解析语义同源；坏 config 不清空既有保留策略）。
+fn read_logs_ttl(config_path: &std::path::Path) -> LogsTtl {
+    match nemesis_config::load_config(config_path) {
+        Ok(cfg) => LogsTtl::from_config(cfg.logs.as_ref()),
+        Err(e) => {
+            warn!("[LogsSweeper] config 读失败（{e}）——本拍用默认 TTL");
+            LogsTtl::default()
+        }
+    }
 }
 
 #[cfg(test)]

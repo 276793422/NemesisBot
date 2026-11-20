@@ -1161,6 +1161,50 @@ fn agent_upsert_keeps_created_at_and_updates_metadata() {
 }
 
 #[test]
+fn agent_upsert_conflict_does_not_overwrite_status() {
+    // BUG-20261120-015：upsert 冲突分支此前把快照里的 status 原样写回——
+    // 「状态转移必须走 transition_status」的文档契约没有实现兜底。并发
+    // 场景（nemesisbot update_backend 的 get→改元数据→upsert 全量写回）：
+    // 快照陈旧时会把 sweep 刚推进的 active 打回 provisioning（resolve_or_build
+    // 的 status 闸拒消息直到下次 sweep），或把迁移编排刚置入的 migrating
+    // 冻结改写回 active（冻结闸失守）。修复后：冲突分支是元数据级更新，
+    // 既有行 status 只经 transition_status 条件转移变更。
+    let (_dir, path) = temp_db("agents_upsert_status");
+    let db = TaskDb::open(&path).expect("open");
+    let store = SqliteAgentsStore::from_db(db);
+    // 两阶段创建：provisioning 落库 →（模拟 sweep 物化收敛）→ active。
+    let mut rec = sample_agent("a-15", "svc", agent_kind::SELFBUILT);
+    store.upsert(&rec).expect("upsert");
+    store
+        .transition_status("a-15", agent_status::PROVISIONING, agent_status::ACTIVE)
+        .expect("activate");
+    // 调用方手持陈旧 provisioning 快照（get 早于转移）改元数据后全量写回
+    // ——status 不得被快照回滚。
+    rec.status = agent_status::PROVISIONING.to_string();
+    rec.name = "svc-2".to_string();
+    store.upsert(&rec).expect("upsert stale snapshot");
+    let got = store.get("a-15").expect("get").expect("exists");
+    assert_eq!(
+        got.status,
+        agent_status::ACTIVE,
+        "upsert 冲突分支不得回写 status"
+    );
+    assert_eq!(got.name, "svc-2", "元数据级全量写语义保留");
+    // 反向镜像：快照带 active、真身已进终态——同样不得覆盖。
+    rec.status = agent_status::ACTIVE.to_string();
+    store
+        .transition_status("a-15", agent_status::ACTIVE, agent_status::FAILED)
+        .expect("fail");
+    store.upsert(&rec).expect("upsert stale active");
+    let got = store.get("a-15").expect("get").expect("exists");
+    assert_eq!(
+        got.status,
+        agent_status::FAILED,
+        "快照 active 不得盖掉真身终态"
+    );
+}
+
+#[test]
 fn agent_remove_and_list_order_stable() {
     let (_dir, path) = temp_db("agents_remove");
     let db = TaskDb::open(&path).expect("open");

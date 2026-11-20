@@ -88,10 +88,22 @@ impl OpenAICompatProvider {
             // 真相源——同源跟随/跨源终停）。
             .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy());
 
-        if let Some(ref proxy_url) = config.proxy
-            && let Ok(proxy) = reqwest::Proxy::all(proxy_url)
-        {
-            builder = builder.proxy(proxy);
+        // BUG-20261120-019：非法代理不得静默丢弃——同族三 lane（anthropic/
+        // codex/http_provider）全部 loud warn 后回落直连，唯独本 lane 用
+        // `let Ok` 把 Err 整臂吞掉，坏代理配置与「未配置代理」不可分辨，
+        // 流量静默直连零诊断（proxy_file 模块文档点名的诊断面）。日志走
+        // nemesis_utils::proxy_redact 单一真相源（userinfo 凭据面 SEC-002，
+        // BUG-20261120-018 同批收口）。
+        if let Some(ref proxy_url) = config.proxy {
+            match reqwest::Proxy::all(proxy_url) {
+                Ok(proxy) => builder = builder.proxy(proxy),
+                Err(e) => tracing::warn!(
+                    provider = %config.name,
+                    proxy = %nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url),
+                    error = %e,
+                    "OpenAI-compat provider: invalid proxy URL, using direct connection"
+                ),
+            }
         }
 
         let client = builder.build().expect("failed to build HTTP client");

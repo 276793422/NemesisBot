@@ -2,6 +2,26 @@ use super::*;
 use tempfile::TempDir;
 
 #[test]
+fn test_resolve_nemesis_home_empty_override_falls_back() {
+    // BUG-20261120-017：set-but-empty 参数视同 unset（047 纪律的
+    // CLI 参数面补口）——空串不得落 cwd 相对路径。
+    assert_eq!(
+        resolve_nemesis_home(&Some(String::new()), true),
+        common::resolve_home(true),
+        "空串 override 必须回落 resolve_home"
+    );
+    assert_eq!(
+        resolve_nemesis_home(&None, true),
+        common::resolve_home(true)
+    );
+    assert_eq!(
+        resolve_nemesis_home(&Some("x".to_string()), true),
+        PathBuf::from("x"),
+        "非空 override 照常生效"
+    );
+}
+
+#[test]
 fn test_detect_openclaw_home_override_exists() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
@@ -261,7 +281,10 @@ fn test_convert_config_fallback_no_files() {
 
     assert_eq!(config["version"], "1.0");
     assert!(config["model_list"].is_array());
-    assert_eq!(config["security"]["enabled"], true);
+    // BUG-20261120-016：fallback 骨架安全姿态收敛出厂值（false）——
+    // INIT 时代的 true 是 8 层管线定稿前残值，迁移装机不得独享安全开。
+    assert_eq!(config["security"]["enabled"], false);
+    assert_eq!(config["mcp"]["enabled"], true);
     assert_eq!(config["forge"]["enabled"], false);
     assert!(!warnings.is_empty());
 }
@@ -714,7 +737,8 @@ fn test_convert_config_fallback_default_structure() {
     assert_eq!(config["channels"]["web"]["host"], "127.0.0.1");
     assert_eq!(config["channels"]["web"]["port"], 8080);
     assert_eq!(config["channels"]["websocket"]["enabled"], false);
-    assert_eq!(config["security"]["enabled"], true);
+    assert_eq!(config["security"]["enabled"], false);
+    assert_eq!(config["mcp"]["enabled"], true);
     assert_eq!(config["forge"]["enabled"], false);
     assert!(!warnings.is_empty());
 }

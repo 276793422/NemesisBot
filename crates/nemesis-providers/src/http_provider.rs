@@ -215,14 +215,17 @@ impl HttpProvider {
                     builder = builder.proxy(proxy);
                     tracing::info!(
                         provider = %config.name,
-                        proxy = %proxy_url,
+                        // proxy 是 userinfo 凭据面（SEC-002 口径）——Ok 臂
+                        // 同样只落脱敏形态（BUG-20261120-018：005 横扫漏网
+                        // 位点；单一真相源 nemesis_utils::proxy_redact）。
+                        proxy = %nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url),
                         "HTTP provider using proxy"
                     );
                 }
                 Err(e) => {
                     tracing::warn!(
                         provider = %config.name,
-                        proxy = %proxy_url,
+                        proxy = %nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url),
                         error = %e,
                         "Failed to configure proxy, using direct connection"
                     );

@@ -645,3 +645,51 @@ fn test_effective_timeout_lane_default_and_override() {
     assert_eq!(super::effective_timeout(300), 300);
     assert_eq!(super::effective_timeout(1), 1);
 }
+
+// --- BUG-20261120-014：copilot lane per-model timeout 透传链 ---
+//
+// 此前 copilot 分支 `..Default::default()` 落 serde 默认 120s、工厂不透传
+// `sel.timeout_secs`——六分支中唯一没接超时链的 HTTP 型 lane（其余三分支
+// 全走 effective_timeout）。死配置面：模型条目 timeout_secs 在 Dashboard
+// 可见但不生效；阶梯面：lane 默认 120s 违反 P3A「全 lane 统一默认 600s」。
+
+#[test]
+fn copilot_lane_timeout_unset_falls_to_lane_default_600() {
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "copilot/gpt-4.1".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(
+        super::copilot_config(&sel).timeout_secs,
+        600,
+        "未设置（0）必须落 lane 默认 600s，不得落 serde 旧默认 120s"
+    );
+}
+
+#[test]
+fn copilot_lane_timeout_explicit_value_threads_through() {
+    let cfg = FactoryConfig {
+        proxy: String::new(),
+        llm_ref: "copilot/gpt-4.1".to_string(),
+        timeout_secs: 123,
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(
+        super::copilot_config(&sel).timeout_secs,
+        123,
+        "显式 per-model timeout_secs 必须透传（修复前被 ..Default::default() 丢弃）"
+    );
+}
+
+#[test]
+fn copilot_config_lane_default_matches_unified_contract() {
+    // serde/Default 形态的 lane 默认本身也要是 600（防未来直接反序列化
+    // 路径绕过工厂时与阶梯契约再分叉）。
+    assert_eq!(
+        crate::github_copilot::GitHubCopilotConfig::default().timeout_secs,
+        600
+    );
+}

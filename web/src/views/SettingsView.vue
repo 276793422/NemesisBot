@@ -259,7 +259,8 @@ function saveHiddenTools(e: any) {
   saveField('agents.hidden_tools', arr)
 }
 
-// exec deny patterns（tools.exec；装配期一次读——重启生效标注见模板）。
+// exec deny patterns（tools.exec；2026-11-20 热生效语义——消费点现读，
+// 保存后下次 exec 执行即生效）。
 const execDenyPatternsText = computed(() =>
   ((config.value.tools?.exec?.custom_deny_patterns as string[] | undefined) ?? []).join('\n'),
 )
@@ -404,7 +405,7 @@ async function applyTtlPreset(days: number) {
     for (const f of LOG_TTL_FAMILIES) {
       await request('config', 'set_field', { path: `logs.${f.key}`, value: days })
     }
-    toast.success(`已将全部 ${LOG_TTL_FAMILIES.length} 族日志保留期设为 ${days} 天`)
+    toast.success(`已将全部 ${LOG_TTL_FAMILIES.length} 族日志保留期设为 ${days} 天（保存即落盘，下一拍生效，无需重启）`)
   } catch (e: any) {
     toast.error('预设失败: ' + e)
   }
@@ -767,9 +768,10 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
-            <!-- exec deny patterns（批次 4 接线激活的死键）：开关 + 自定义词表
-                 （替换语义）。装配期一次读——重启 gateway（Agent 重建）生效；
-                 executor 分离形态下经 env 透传进子进程同源生效。 -->
+            <!-- exec deny patterns：开关 + 自定义词表（替换语义）。
+                 2026-11-20 热生效语义：ExecTool 消费点现读——改键下次执行
+                 即生效（无需重启）；executor 分离形态 per-call 子进程每次
+                 装配本就读新 config，同源生效。 -->
             <div class="form-group" style="border-top: 1px dashed var(--border-light); padding-top: var(--space-3);">
               <label class="form-label">Exec 危险命令词表（tools.exec）</label>
               <div class="toggle" :class="{ active: config.tools?.exec?.enable_deny_patterns === true }"
@@ -786,7 +788,7 @@ onMounted(async () => {
                   placeholder="每行一条正则（RE2 语法，小写匹配）。注意：启用自定义词表 = 整体替换内置默认（非叠加）；全部条目无效时自动回落内置默认词表，永不全放行。&#10;示例：&#10;forbidden_tool\.exe&#10;drop\s+database"
                   :value="execDenyPatternsText" @change="saveExecDenyPatterns"></textarea>
                 <div class="form-hint">
-                  ⚠ <strong>重启 gateway（Agent 重建）后生效</strong>——词表在工具装配期编译一次；执行体分离模式下经环境变量透传进子进程，同源生效。命中词表的命令直接拒绝执行（审计照常）。
+                  ✓ <strong>保存即落盘，下次 exec 执行即生效（无需重启）</strong>——词表在每次执行前现读（mtime 变化才重编译）。执行体分离模式下子进程每次装配读新 config，同源生效。命中词表的命令直接拒绝执行（审计照常）。
                 </div>
               </div>
             </div>
@@ -923,14 +925,14 @@ onMounted(async () => {
         </div>
 
         <!-- 数据治理（2026-11-08 批次 2）：日志 16 族 TTL / checkpoint gc /
-             磁盘水位 / 失败诊断捕获。清扫器启动扫一次 + 每 6h 一拍 →
-             TTL 改动最迟 6h 生效（重启 gateway 立即触发一次清扫）。 -->
+             磁盘水位 / 失败诊断捕获。2026-11-20 热生效语义：清扫器每拍现读
+             config logs 段——TTL 改动保存即落盘、下一拍生效（无需重启）。 -->
         <div v-if="activeTab === 'data'">
           <div class="card" style="margin-bottom: var(--space-4);">
             <div class="card-header"><h3>日志保留期（16 族 TTL）</h3></div>
             <div class="card-body">
               <div style="padding: var(--space-3); margin-bottom: var(--space-4); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
-                清扫器 gateway 启动扫一次、之后每 6 小时一拍（每族每拍限量 200 件防 IO 尖峰）——<strong>改动最迟 6 小时后生效</strong>，重启 gateway 立即触发一次清扫。0 = 该族关闭清扫。清理按日志目录内条目的最后修改时间判定。
+                清扫器 gateway 启动扫一次、之后每 6 小时一拍（每族每拍限量 200 件防 IO 尖峰）——<strong>改动保存即落盘，无需重启，下一拍生效</strong>（最迟 6 小时）。0 = 该族关闭清扫。清理按日志目录内条目的最后修改时间判定。
               </div>
               <div class="form-group">
                 <label class="form-label">预设档（一次设全 16 族）</label>

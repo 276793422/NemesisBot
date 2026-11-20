@@ -269,7 +269,7 @@ async fn session_scoped_pre_tool_use_zero_spawn_for_other_sessions() {
         hooks_doc_scoped("PreToolUse", &["s-a"], &append_cmd(&marker, "hit")),
     )
     .unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     // s-a 完整键输入：剥前缀候选命中（真子进程跑一次）。
     let _ = bridge
@@ -313,7 +313,7 @@ async fn hot_reload_preserves_session_scope() {
         hooks_doc_scoped("PreToolUse", &["s-a"], &append_cmd(&marker, "v1")),
     )
     .unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
     let _ = bridge
         .pre_tool_use(&call_in_session("agent:main:session:s-a"))
         .await;
@@ -360,7 +360,7 @@ async fn compact_hooks_carry_session_and_respect_scope() {
         hooks_doc_scoped("PreCompact", &["s-x"], &capture_cmd),
     )
     .unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     // 非命中会话：零 spawn，无捕获文件。
     bridge
@@ -1066,7 +1066,7 @@ async fn loop_integration_prompt_hook_loops_until_hook_removed() {
         config_dir: cfg.clone(),
     };
 
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj);
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(8);
     let agent_loop = std::sync::Arc::new(AgentLoop::new_bus(
@@ -1222,7 +1222,7 @@ async fn brake_fixture(
         calls: calls.clone(),
     };
 
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj);
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(8);
     let agent_loop = Arc::new(AgentLoop::new_bus(
@@ -1533,27 +1533,35 @@ fn block_text_fallback_to_stdout_then_placeholder() {
     assert_eq!(whitespace.block_text(), "blocked by hook (no output)");
 }
 
-/// load_from_dir 四形态：缺文件 None；空 events None；有效 Some；解析失败
-/// None（fail-open）。
+/// load_from_dir 四形态（2026-11-20 即刻生效语义——**恒建桥**）：缺文件
+/// = 待命桥（空快照）；空 events = 空快照桥；有效 = 装载；解析失败 =
+/// 待命桥（fail-open，坏文记账）。
 #[test]
 fn load_from_dir_branches() {
     let cfg = tempdir();
     let proj = tempdir();
 
-    // (a) config 目录无 hooks.json。
-    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+    // (a) config 目录无 hooks.json → 待命桥（空快照 + 热更闸在场）。
+    let a = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(a.current_events().total_scripts(), 0, "缺文件 = 空快照");
+    assert!(a.hooks_path.is_some(), "热更闸在场（hooks_path 记账）");
+    assert!(
+        a.seen_raw.lock().unwrap().is_none(),
+        "缺文件 seen_raw=None（文件首次落盘即被内容比对捡到）"
+    );
 
-    // (b) 有文件但零脚本。
+    // (b) 有文件但零脚本 → 空快照桥（info，非 None）。
     std::fs::write(cfg.join("hooks.json"), "{\"hooks\":{}}").unwrap();
-    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+    let b0 = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(b0.current_events().total_scripts(), 0);
 
-    // (c) 有效文档 → Some。
+    // (c) 有效文档 → 装载 1 脚本。
     std::fs::write(
         cfg.join("hooks.json"),
         hooks_doc("PreToolUse", Some("Edit"), "exit 0", None),
     )
     .unwrap();
-    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone());
     assert_eq!(
         b.events.read().unwrap().script_counts(),
         [
@@ -1572,9 +1580,14 @@ fn load_from_dir_branches() {
         ]
     );
 
-    // (d) 垃圾 JSON → None。
+    // (d) 垃圾 JSON → 待命桥（fail-open：空快照 + 坏文记账）。
     std::fs::write(cfg.join("hooks.json"), "{not json").unwrap();
-    assert!(CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none());
+    let d = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(d.current_events().total_scripts(), 0, "坏文件 = 空快照");
+    assert!(
+        d.seen_raw.lock().unwrap().is_some(),
+        "坏文记账（同版只 warn 一次）"
+    );
 
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
@@ -1636,7 +1649,7 @@ async fn session_end_hook_runs_script_and_is_observational() {
         hooks_doc("SessionEnd", None, script, None),
     )
     .unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     bridge.on_session_end("sess-1", "expired").await;
 
@@ -1675,14 +1688,14 @@ async fn pre_compact_and_post_compact_hooks_both_fire() {
         .to_string(),
     )
     .unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     bridge
         .run_compact_hooks("auto", "pre", "agent:main:session:s1")
         .await;
     assert!(pre_marker.exists(), "PreCompact 脚本应已执行");
     // exit 2 的 PreCompact 不阻断（继续 post 也能触发）。
-    let bridge2 = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge2 = CcHookBridge::load_from_dir(&cfg, proj.clone());
     bridge2
         .run_compact_hooks("auto", "post", "agent:main:session:s1")
         .await;
@@ -1704,7 +1717,7 @@ async fn post_tool_use_failure_hook_runs_script() {
         hooks_doc("PostToolUseFailure", None, script, None),
     )
     .unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     let call = HookToolCall {
         name: "read_file".into(),
@@ -1802,7 +1815,7 @@ async fn hot_reload_five_states() {
         &cfg,
         &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v1"), None),
     );
-    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone());
     let seen = || b.seen_raw.lock().unwrap().clone();
     let file_text = || std::fs::read_to_string(cfg.join("hooks.json")).ok();
 
@@ -1868,7 +1881,7 @@ async fn hot_reload_same_tick_content_change_reloads() {
         f.metadata().unwrap().modified().unwrap()
     };
 
-    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone());
     assert!(
         block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v1"),
         "sanity: v1 active"
@@ -1925,7 +1938,7 @@ async fn hot_reload_preserves_companion_state() {
         .to_string()
     };
     rewrite_hooks(&cfg, &doc("keep working"));
-    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     let mk_prompt = || HookPrompt {
         session_key: "sess-hot".to_string(),
@@ -2457,28 +2470,30 @@ fn stop_hits_for(events: &super::CcEvents, session_key: &str) -> usize {
         .sum()
 }
 
-/// 冷启动矩阵（统一存储后回归单文件）：
-/// - 缺文件 → None（旧语义）
-/// - 只有会话圈定组且有内容 → Some（会话钩子有桥）
-/// - 坏文件 → None（fail-open；单文件世界里不再有第二文件兜底）
-/// - 空脚本 → None（旧「declares no scripts」）
+/// 冷启动矩阵（2026-11-20 即刻生效语义——**恒建桥**）：
+/// - 缺文件 → 待命桥（空快照 + 热更闸在场）
+/// - 只有会话圈定组且有内容 → 装载（会话钩子有桥）
+/// - 坏文件 → 待命桥（fail-open：空快照 + 坏文记账）
+/// - 空脚本 → 空快照桥
 #[test]
 fn load_from_dir_cold_start_matrix() {
-    // ① 缺文件 → None。
+    // ① 缺文件 → 待命桥（空快照；即刻生效语义，旧 None 语义退役）。
     let dir = tempdir();
     let cfg = dir.join("config");
     let proj = dir.join("ws");
     std::fs::create_dir_all(&cfg).unwrap();
     std::fs::create_dir_all(&proj).unwrap();
-    assert!(
-        CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none(),
-        "缺文件 = 无桥（旧语义）"
+    let cold = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(
+        cold.current_events().total_scripts(),
+        0,
+        "缺文件 = 空快照待命桥"
     );
+    assert!(cold.hooks_path.is_some(), "热更闸在场");
 
-    // ② 只有会话圈定组 → Some。
+    // ② 只有会话圈定组 → 装载。
     seed_scoped_hook(&cfg, "s-only", "Stop", "echo session-only");
-    let bridge =
-        CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("scoped group alone builds bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
     // 圈定组在快照里按 matches_session 过滤可见。
     assert_eq!(
         stop_hits_for(&bridge.current_events(), "agent:main:session:s-only"),
@@ -2490,19 +2505,88 @@ fn load_from_dir_cold_start_matrix() {
         0
     );
 
-    // ③ 坏文件 → None（fail-open，旧语义不变）。
+    // ③ 坏文件 → 待命桥（fail-open：空快照 + 坏文记账）。
     std::fs::write(cfg.join("hooks.json"), "{broken").unwrap();
-    assert!(
-        CcHookBridge::load_from_dir(&cfg, proj.clone()).is_none(),
-        "坏文件 = None（fail-open）"
+    let bad = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(
+        bad.current_events().total_scripts(),
+        0,
+        "坏文件 = 空快照（fail-open）"
+    );
+    assert!(bad.seen_raw.lock().unwrap().is_some(), "坏文记账");
+
+    // ④ 空脚本 → 空快照桥。
+    std::fs::write(cfg.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
+    let empty = CcHookBridge::load_from_dir(&cfg, proj);
+    assert_eq!(empty.current_events().total_scripts(), 0, "空脚本 = 空快照");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 即刻生效回归锁（2026-11-20 冷启动修复）：gateway 启动时 hooks.json 缺失
+/// → `load_from_dir` 建待命桥（旧语义 = None 无热更载体，落盘要等「重启
+/// 建桥」）→ 不重启、不重建，落盘 Stop prompt 钩子（Dashboard `hooks.set`
+/// / agent `hooks` 工具同一条写盘路径）→ 分发入口 `current_events` 即刻
+/// 捡到。坏文件启动 → 修好 → 同链激活（fail-open 待命不吞后续修复）。
+/// 失效方向（文件清空/删除）由
+/// cov_tests::current_events_hot_reload_three_branches ③ 钉死。
+#[test]
+fn cold_start_bridge_picks_up_first_save_immediately() {
+    let dir = tempdir();
+    let cfg = dir.join("config");
+    let proj = dir.join("ws");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // 冷启动：无 hooks.json → 待命桥（旧语义在此返回 None = 无热更载体）。
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(bridge.current_events().total_scripts(), 0);
+
+    // 首次设置（会话圈定 Stop prompt 钩子——用户场景形态）落盘。
+    std::fs::write(
+        cfg.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{"type": "prompt", "prompt": "继续检查代码是否正确"}],
+                    "scope": {"sessions": ["s-cold"]}
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // 同一桥（不重启不重建）分发入口即刻生效。
+    let events = bridge.current_events();
+    assert_eq!(
+        stop_hits_for(&events, "agent:main:session:s-cold"),
+        1,
+        "冷启动待命桥对首次落盘即刻生效（无重启中间态）"
+    );
+    assert_eq!(stop_hits_for(&events, "agent:main:session:other"), 0);
+
+    // 坏文件启动 → 修好 → 同链激活。
+    std::fs::write(cfg.join("hooks.json"), "{broken").unwrap();
+    let bad_bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
+    assert_eq!(
+        bad_bridge.current_events().total_scripts(),
+        0,
+        "坏文件 = 空快照待命"
+    );
+    std::fs::write(
+        cfg.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {"Stop": [{"hooks": [{"type": "prompt", "prompt": "自查"}]}]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        bad_bridge.current_events().total_scripts(),
+        1,
+        "坏文件待命桥在文件修好后即刻激活"
     );
 
-    // ④ 空脚本 → None。
-    std::fs::write(cfg.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
-    assert!(
-        CcHookBridge::load_from_dir(&cfg, proj).is_none(),
-        "空脚本 = None（旧语义）"
-    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2533,7 +2617,7 @@ async fn merged_global_and_session_hooks_fire_per_session() {
     });
     std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     // s-1 会话：全局 + 会话圈定组都触发。
     use crate::hooks::ToolHook as _;
@@ -2661,7 +2745,7 @@ async fn session_end_fires_scoped_hook_then_purges_storage() {
         }
     });
     std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
 
     // purge 前快照可见（matches_session 过滤分账）。
     assert_eq!(
@@ -2742,7 +2826,7 @@ async fn bridge_turn_end_injects_seeded_prompt_hook() {
     });
     std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
     let mk_end = |key: &str| HookTurnEnd {
         session_key: key.to_string(),
         channel: "web".to_string(),
@@ -2806,7 +2890,7 @@ async fn shell_continue_takes_precedence_over_prompt_inject() {
     });
     std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
     let end = HookTurnEnd {
         session_key: "agent:main:session:s-mix".to_string(),
         channel: "web".to_string(),
@@ -2846,7 +2930,7 @@ async fn purge_removes_prompt_hooks_from_bridge_memory() {
     });
     std::fs::write(cfg.join("hooks.json"), doc.to_string()).unwrap();
 
-    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("bridge");
+    let bridge = CcHookBridge::load_from_dir(&cfg, proj.clone());
     let end = HookTurnEnd {
         session_key: "agent:main:session:s-doomed".to_string(),
         channel: "web".to_string(),

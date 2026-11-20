@@ -162,7 +162,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            response_degradation: parking_lot::Mutex::new(None),
+            response_degradation: parking_lot::Mutex::new(HashMap::new()),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: Some(outbound_tx),
@@ -302,6 +302,7 @@ impl AgentLoop {
             user_profile_cache: parking_lot::RwLock::new(((None, None), String::new())),
             warm_candidates: parking_lot::Mutex::new(HashMap::new()),
             small_model: parking_lot::RwLock::new(None),
+            small_model_resolver: parking_lot::RwLock::new(None),
             spawn_slot: parking_lot::RwLock::new(None),
             loop_origin: parking_lot::RwLock::new("main".to_string()),
             voice_prompt: parking_lot::RwLock::new(None),
@@ -857,7 +858,7 @@ impl AgentLoop {
         //    Err（回合错误收尾）时错误文本已作为 assistant 行落盘（finalize
         //    内部），出站携带同一文本——旧迷你循环 LLM 失败出站
         //    `[LLM error: ...]` 的对应物，错误不静默。
-        let final_reply = match self
+        let finalized = self
             .finalize_turn_shared(
                 &instance,
                 &cont.session_key,
@@ -874,8 +875,18 @@ impl AgentLoop {
                 task_source_node.as_deref(),
                 &events,
             )
-            .await
-        {
+            .await;
+        // 降级注记消费（BUG-20261120-020）：续行轮与普通轮（finish_message）
+        // 同源——本回合终局由 fallback 备选产出时（写侧 chat_call_escalating
+        // 成功末尾已按本会话键落注记），直发出站前取件拼接标注。此前续行
+        // 终局直发绕过 finish_message 注记无人消费：降级续行回复丢标注，
+        // 注记残留槽里直到下轮写侧成功调用才清。错误收尾臂（Err）不消费
+        // 不标注——普通轮 err=Some 同口径；空文本不标注——普通轮 empty
+        // 早退同口径。
+        let final_reply = match finalized {
+            Ok(text) if !text.is_empty() => {
+                self.annotate_with_degradation_note(&cont.session_key, text)
+            }
             Ok(text) => text,
             Err(e) => e,
         };
@@ -1091,6 +1102,21 @@ impl AgentLoop {
     /// `Some(false)`；落盘留痕回执（💤 暂停排队/拒绝弹回——由 gate 侧
     /// GateOutcome::Immediate 携带）透传；终局回复 None（旧规则：
     /// user/assistant 占行）。
+    /// 降级注记取件 + 拼接（单一真相源，BUG-20261120-013 格式 / 020 收口）：
+    /// 从注记槽取走本会话键的降级注记（取件即清）并追加到回复末尾；槽空
+    /// 原样返回。消费闸（终局、非回执、非错误文案、非空文本）归调用方——
+    /// 两条生产消费路径共用：finish_message（普通轮终局）/
+    /// run_continuation_turn（续行轮终局直发前）。写侧唯一 =
+    /// chat_call_escalating 成功末尾按会话键入表（length_escalation）。
+    fn annotate_with_degradation_note(&self, session_key: &str, response: String) -> String {
+        match self.response_degradation.lock().remove(session_key) {
+            Some(note) => {
+                format!("{response}\n\n---\n> ⚠️ 主模型不可用，本次回复由备选应答（{note}）")
+            }
+            None => response,
+        }
+    }
+
     pub(crate) async fn finish_message(
         &self,
         msg: &nemesis_types::channel::InboundMessage,
@@ -1135,16 +1161,15 @@ impl AgentLoop {
             response
         };
 
-        // 降级用户面标注（fallback 链末跳）：仅终局回复（非回执、非错误
-        // 文案）消费注记——排队回执/slash 确认（receipt=true）与错误文案
-        // （err=Some）既不背标注也不消费槽。取件即清，只改展示面：对话
-        // 历史已在 run_loop 按原文落盘；RPC correlation 前缀在本注记之前
-        // 组装，寻址语义不受影响。
-        let response = if err.is_none()
-            && !receipt
-            && let Some(note) = self.response_degradation.lock().take()
-        {
-            format!("{response}\n\n---\n> ⚠️ 主模型不可用，本次回复由备选应答（{note}）")
+        // 降级用户面标注（fallback 链末跳，按会话键取件——BUG-20261120-013）：
+        // 仅终局回复（非回执、非错误文案）消费**本会话键**的注记——排队
+        // 回执/slash 确认（receipt=true）与错误文案（err=Some）既不背标注
+        // 也不消费槽。取件即清，只改展示面：对话历史已在 run_loop 按原文
+        // 落盘；RPC correlation 前缀在本注记之前组装，寻址语义不受影响。
+        // 取件与拼接格式单一真相源见 [`Self::annotate_with_degradation_note`]
+        // （续行终局共用——BUG-20261120-020）。
+        let response = if err.is_none() && !receipt {
+            self.annotate_with_degradation_note(&msg.session_key, response)
         } else {
             response
         };

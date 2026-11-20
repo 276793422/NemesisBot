@@ -128,10 +128,10 @@ describe('HookView 总览', () => {
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('2 个钩子'))).toBe(true)
   })
 
-  it('冷启动首次保存：无桥形态 → toast 提示需重启一次（复核三修回归）', async () => {
-    // Agent 启动时 hooks.json 缺失（load_from_dir 不建桥）→ 首次保存只
-    // 落盘、无热更载体，提示「重启 Agent 后生效」；对照暖启动默认 mock
-    // （exists:true/total:2）保存提示「下条消息生效」。
+  it('冷启动形态首次保存：即刻生效 toast（2026-11-20 桥恒在回归）', async () => {
+    // gateway 启动时 hooks.json 缺失（exists:false 形态）→ 首次保存与后续
+    // 保存同语义：桥恒在（load_from_dir 缺失/空/坏也建桥待命），toast 恒
+    // 「保存后下条消息生效」，无「重启」分支文案。
     requestMock.mockImplementation((_m: string, cmd: string) => {
       if (cmd === 'get') {
         return Promise.resolve({ content: '{}', exists: false, valid: true, error: null, summary: { total: 0 } })
@@ -144,9 +144,10 @@ describe('HookView 总览', () => {
     await ta.setValue(VALID_HOOKS)
     await w.findAll('button').find(b => b.text() === '保存原文')!.trigger('click')
     await flushPromises()
-    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('重启 Agent') && t.message.includes('2 个钩子'))).toBe(true)
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('下条消息生效') && t.message.includes('2 个钩子'))).toBe(true)
+    expect(useToast().toasts.some(t => t.message.includes('重启'))).toBe(false)
 
-    // 暖启动对照：桥在 → 下条消息生效（恢复默认 mock）。
+    // 暖启动对照（exists:true）：同一文案（语义统一，无双轨提示）。
     useToast().toasts.splice(0)
     requestMock.mockImplementation((_m: string, cmd: string) => {
       if (cmd === 'get') {

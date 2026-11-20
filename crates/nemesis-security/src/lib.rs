@@ -64,6 +64,8 @@ pub mod resolver;
 #[cfg(feature = "scanner")]
 pub mod scanner;
 #[cfg(feature = "security")]
+pub mod sensitive_read;
+#[cfg(feature = "security")]
 pub mod session_allow_all;
 #[cfg(feature = "security")]
 pub mod shell_bleed;

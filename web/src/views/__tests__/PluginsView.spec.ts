@@ -319,6 +319,7 @@ describe('WASM 加载纪律反转（2026-10-22：安装 ≠ 加载，开关记�
       enabled: true, loaded: true, wasm_sha256: 'a'.repeat(64), min_tier: 'normal',
       egress: ['api.example.com'], x_secret: ['api_key'],
       takes_over: ['web_fetch'],
+      origin: 'bootstrap:test-registry',
       tool: { name: 'plugin.translate.translate', description: '文本翻译', operation_type: 'network', min_tier: 'normal' },
     },
     {
@@ -365,6 +366,23 @@ describe('WASM 加载纪律反转（2026-10-22：安装 ≠ 加载，开关记�
     const goneCard = w.findAll('.plugin-card').find(c => c.text().includes('gone'))
     expect(goneCard!.text()).toContain('载荷目录缺失')
     expect(goneCard!.find('input[type="checkbox"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('来源徽标（P0-5）：origin 在场行显示「来源:」徽标；缺席行不显示', async () => {
+    mockWasmRows()
+    const w = await mountView()
+    // translate 带 origin=bootstrap:test-registry → 徽标在场，title 讲清语义
+    const bootCard = w.findAll('.plugin-card').find(c => c.text().includes('translate'))
+    expect(bootCard!.text()).toContain('来源: bootstrap:test-registry')
+    const badge = bootCard!.findAll('.plugin-badge').find(b => b.text().includes('来源'))
+    expect(badge).toBeTruthy()
+    expect(badge!.attributes('title')).toContain('bootstrap')
+    // activity / gone 无 origin 字段 → 不渲染来源徽标
+    const offCard = w.findAll('.plugin-card').find(c => c.text().includes('activity'))
+    expect(offCard!.text()).not.toContain('来源:')
+    const goneCard = w.findAll('.plugin-card').find(c => c.text().includes('gone'))
+    expect(goneCard!.text()).not.toContain('来源:')
     w.unmount()
   })
 

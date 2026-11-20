@@ -326,8 +326,8 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
             );
             let enabled_of = |slug: &str| switches.get(slug).is_some_and(|sw| sw.enabled);
             let list_head = format!(
-                "{:<24} {:<12} {:<20} {:<8} {:<16} INSTALLED_AT",
-                "SLUG", "VERSION", "TRUST", "ENABLED", "SIGNED_BY"
+                "{:<24} {:<12} {:<20} {:<8} {:<16} {:<24} INSTALLED_AT",
+                "SLUG", "VERSION", "TRUST", "ENABLED", "SIGNED_BY", "ORIGIN"
             );
             println!("{list_head}");
             for (slug, e) in &lf.plugins {
@@ -343,13 +343,16 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                 } else {
                     e.signed_by.clone()
                 };
+                // P0-5 来源标记：bootstrap:<源名> = agent 自举装；`-` = 手动/手拷。
+                let origin = e.origin.clone().unwrap_or_else(|| "-".to_string());
                 println!(
-                    "{:<24} {:<12} {:<20} {:<8} {:<16} {}",
+                    "{:<24} {:<12} {:<20} {:<8} {:<16} {:<24} {}",
                     slug,
                     e.version,
                     e.trust,
                     if enabled_of(slug) { "on" } else { "off" },
                     signer,
+                    origin,
                     ts
                 );
             }
@@ -384,6 +387,11 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                 } else {
                     entry.signed_by.clone()
                 }
+            );
+            // P0-5 来源标记（bootstrap:<源名> = agent 自举装；`-` = 手动/手拷）。
+            println!(
+                "origin      : {}",
+                entry.origin.clone().unwrap_or_else(|| "-".to_string())
             );
             let payload_dir = manager.plugins_dir().join(&slug);
             println!("payload_dir : {}", payload_dir.display());

@@ -231,6 +231,61 @@ impl nemesis_agent::r#loop::ProviderReloader for ModelProviderReloader {
         )))
     }
 }
+
+/// `agents.small_model` 杂务通道装配单一真相源（2026-11-20 C2 热生效收编）：
+/// 别名解析 + provider 构造一步到位。装配期（main 主 loop / spec 项目
+/// loop）与热换 resolver 闭包（注入 AgentLoop，config 新代发布时重跑）
+/// 共用本函数——改槽语义永不漂移。失败（解析/构造）= warn + `None`
+///（调用方诚实跳过/保留旧槽，绝不阻断装配）。
+pub(super) fn resolve_small_model_slot(
+    cfg: &nemesis_config::Config,
+    small_ref: &str,
+    workspace: &std::path::Path,
+) -> Option<(
+    std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+    String,
+)> {
+    match nemesis_config::resolve_model_config(cfg, small_ref) {
+        Ok(resolution) => {
+            let factory_cfg = nemesis_providers::factory::FactoryConfig {
+                proxy: resolution.proxy.clone(),
+                stream_mode: resolution.stream_mode.clone(),
+                cache_breakpoints: resolution.cache_breakpoints,
+                extra_body: resolution.extra_body.clone(),
+                llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+                api_key: resolution.api_key.clone(),
+                api_base: resolution.api_base.clone(),
+                workspace: workspace.to_string_lossy().to_string(),
+                connect_mode: resolution.connect_mode.clone(),
+                protocol: resolution.protocol.clone(),
+                timeout_secs: resolution.timeout_secs,
+                account_id: String::new(),
+                headers: HashMap::new(),
+            };
+            match nemesis_providers::factory::create_provider(&factory_cfg) {
+                Ok(provider) => {
+                    let adapter = ProviderAdapter::new(provider, resolution.model_name.clone());
+                    Some((std::sync::Arc::new(adapter), resolution.model_name))
+                }
+                Err(e) => {
+                    warn!(
+                        "[AgentFactory] agents.small_model '{}': provider create failed ({}); chores fall back to the main model",
+                        small_ref, e
+                    );
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                "[AgentFactory] agents.small_model '{}' not resolvable ({}); chores fall back to the main model",
+                small_ref, e
+            );
+            None
+        }
+    }
+}
+
 /// Build SharedToolConfig from shared resources + fresh config.
 ///
 /// Extracted from build_agent_loop so both main and cluster agents
@@ -449,6 +504,12 @@ pub(super) fn build_shared_tool_config(
         // 字段注：开关开+词表非空=自定义词表，其余=内置默认词表）。
         exec_deny_custom_enabled: cfg.tools.exec.enable_deny_patterns,
         exec_deny_custom_patterns: cfg.tools.exec.custom_deny_patterns.clone(),
+        // exec 热读源（2026-11-20 C4 热生效语义）：gateway home 的
+        // config.json——ExecTool 消费点现读 `tools.exec` 段，改键下次
+        // 执行即生效（无需重启）。上方两字段退化为首次快照前的兜底；
+        // executor 分离子进程不带本字段 = 构造期值旧行为（per-call
+        // 子进程每次装配本就读新 config，无热读必要）。
+        exec_config_path: Some(shared.home.join("config.json")),
         // workspace 写租约（`agents.lease_enabled` 默认开）——
         // 装配期消费：Some = register_shared_tools 把写类工具换成租约守
         // 卫包装（跨主 loop / 项目 loop / executor 子进程互斥写）。持
@@ -1225,15 +1286,14 @@ pub(crate) fn register_connector_governance(
 /// 会话钩子自管面：`hooks` 工具（HOOK 会话圈定批次三）——单工具多
 /// action（add/delete/list），sid 取 `context.session_key`（结构上只能给
 /// 自己设），写 `hooks.json` 的 scope 圈定工具专属组（统一存储 RMW API
-/// 原子落盘）。`cc_bridge` 在场 = 桥内容比对热更即时生效；None = 冷启动
-/// 无桥，工具响应诚实提示「重启 Agent 后生效」。add/delete 静态 FileWrite
+/// 原子落盘）。落盘即热更（2026-11-20 即刻生效语义：桥恒在，见
+/// `cc_hooks::load_from_dir`）。add/delete 静态 FileWrite
 /// （HIGH → 审批卡）；list 投影 internal 只读直通。仅主 gateway loop /
 /// 项目 loop 调用（集群走 `register_tools_and_mcp` 公共路径天然排除；
 /// run/acp headless 不装）。
 pub(crate) fn register_hooks_tool(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     shared: &Arc<SharedResources>,
-    cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 ) {
     #[cfg(feature = "security")]
     nemesis_security::types::declare_tool_operation(
@@ -1243,7 +1303,7 @@ pub(crate) fn register_hooks_tool(
     let config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
     agent_loop.register_plugin_tool(
         crate::hooks_tool::TOOL_NAME.to_string(),
-        Arc::new(crate::hooks_tool::HooksTool::new(config_dir, cc_bridge)),
+        Arc::new(crate::hooks_tool::HooksTool::new(config_dir)),
     );
     info!("[AgentFactory] hooks tool registered (session-scoped hooks self-management)");
 }

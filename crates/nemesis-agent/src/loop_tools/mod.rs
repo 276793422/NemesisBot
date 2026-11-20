@@ -102,6 +102,10 @@ mod exec_async_signal_tests;
 // 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
 #[cfg(test)]
 mod exec_deny_tests;
+// exec 段两键热读测试（2026-11-20 C4 热生效语义）：path 缺席=构造期
+// 旧行为 / mtime 现读 / 读坏保持上次值 / 装配臂同源语义 / execute 端到端。
+#[cfg(test)]
+mod exec_hot_read_tests;
 // env 槽硬校验回归（BUG-20261116-025）：空键/含 `=` 键/含 NUL 键值
 // 诚实 Err（std Command::env panic 面前置拦截），execute 面红证锁。
 #[cfg(test)]

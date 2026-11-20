@@ -60,18 +60,21 @@ pub fn load_openclaw_config(config_path: &Path) -> Result<HashMap<String, Value>
 pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
     let mut warnings = Vec::new();
 
-    // Start with default NemesisBot config
+    // 骨架 = fresh-write 迁移路径的整份 config，必须与出厂缺省收敛同值
+    // （onboard 走 config.default.json 模板，迁移走本骨架——两条全新安装
+    // 路径不得分叉）。max_tokens 引 capability 单一真相源；security/mcp
+    // 显式落出厂值：缺段会让消费方缺席语义（unwrap_or(true) /
+    // unwrap_or(false)）各自漂移（BUG-20261120-016——8192 是 d083e51e
+    // 已定性的撞顶截断形态、安全管线被缺席语义点亮、MCP 子系统被静默关）。
     let mut config = serde_json::json!({
         "agents": {
             "defaults": {
                 "workspace": "",
                 "restrict_to_workspace": true,
                 "llm": "zhipu/glm-4.7-flash",
-                "max_tokens": 8192,
+                "max_tokens": nemesis_types::capability::DEFAULT_MAX_TOKENS,
                 "temperature": 0.7,
                 "max_tool_iterations": 100,
-                // mirrors nemesisbot/config/config.default.json —
-                // migrated workspaces are new workspaces and get the new default.
                 "concurrent_request_mode": "steer",
                 "queue_size": 8
             }
@@ -89,7 +92,11 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
             "web": {"enabled": true, "host": "0.0.0.0", "port": 8080, "path": "/ws", "heartbeat_interval": 30, "session_timeout": 3600}
         },
         "model_list": [],
-        "gateway": {"host": "0.0.0.0", "port": 18790}
+        "gateway": {"host": "0.0.0.0", "port": 18790},
+        // 出厂姿态镜像：security=false（default_config() 与模板一致）/
+        // mcp=true（模板显式值）——显式落键而非依赖缺席语义（见上注释）。
+        "security": {"enabled": false},
+        "mcp": {"enabled": true}
     });
 
     // Process agents.defaults

@@ -204,9 +204,15 @@ impl AgentLoop {
                     source_node: None,
                     task_id: None,
                     sync_via: None,
-                    note_kind: None,
-                    // 429 重试进度 = 系统进度回执，非回合产物。瞬态帧
-                    // 不落盘 → 不占行号锚（行号锚漂移根修）。
+                    // 限流进度帧走压缩注记同款 note_kind 豁免（2026-11-20）：
+                    // 出站投影 role=system（不触发前端完成语义——此前
+                    // role=assistant 会让 receive handler flush 进行中时间线
+                    // + 清 busy，用户观察为「回执打断中间流程 + 停止按钮
+                    // 消失 + 回复到场后回执永久留屏」）。前端渲染为折叠
+                    // 徽标（noteKind=rate_limit，带倒计时），终局回复到场
+                    // 扫除。receipt:true 瞬态帧不落盘 → 不占行号锚（行号锚
+                    // 漂移根修）。
+                    note_kind: Some("rate_limit".to_string()),
                     receipt: true,
                     occupies: Some(false),
                 },

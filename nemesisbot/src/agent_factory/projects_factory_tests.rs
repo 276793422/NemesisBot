@@ -64,6 +64,7 @@ fn entry_for(id: &str, dir: &Path) -> ProjectEntry {
         created_at: "2026-09-08T00:00:00Z".to_string(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     }
 }
 

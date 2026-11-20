@@ -85,6 +85,12 @@ pub(crate) fn guard_chat_outbound(
     let Some(plugin) = plugin else {
         return content;
     };
+    if mode == ChatScanMode::Redact {
+        // Redact 臂整段走工具出侧同款入口层（rescan_pair + 命中审计链
+        // 台账单一真相源——rescan_pair 摘要上浮后入口层职责，BUG 对齐
+        // 合并语义）；Off/Log 观测臂仍走 _with 纯组装核。
+        return super::output_rescan::rescan_tool_output(Some(plugin), "chat_outbound", content);
+    }
     guard_chat_outbound_with(
         plugin.credential_scanner(),
         plugin.dlp_engine(),
@@ -129,9 +135,11 @@ pub(crate) fn guard_chat_outbound_with(
             content
         }
         ChatScanMode::Redact => {
-            // 与工具出侧复扫同源同语义（is_enforcing 授权——扫描器 action
-            // 为观测档时命中不改写），单一真相源 output_rescan::rescan_pair。
-            super::output_rescan::rescan_pair(credential, dlp, "chat_outbound", content)
+            // 纯组装核（测试直扫双扫描器组合断言脱敏语义）。生产 wrapper
+            // 的 Redact 臂走 output_rescan::rescan_tool_output 入口层——
+            // 同一 rescan_pair 内核外加命中审计链台账（摘要上浮后的
+            // 入口层职责），两臂脱敏结果字节一致。
+            super::output_rescan::rescan_pair(credential, dlp, "chat_outbound", content).0
         }
     }
 }

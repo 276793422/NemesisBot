@@ -150,8 +150,13 @@ impl SqliteAgentsStore {
         Self { db }
     }
 
-    /// Upsert（元数据级全量写；状态转移必须走 [`Self::transition_status`]，
-    /// 防止并发两阶段创建相互覆盖状态）。
+    /// Upsert（元数据级全量写；既有行的 `status` **不在**更新射程——
+    /// 状态转移必须走 [`Self::transition_status`]。BUG-20261120-015：
+    /// 冲突分支此前把快照里的 status 原样写回（`status=excluded.status`），
+    /// 文档契约没有实现兜底——调用方 get→改元数据→upsert 全量写回的
+    /// 陈旧快照会把 sweep 刚推进的 active 打回 provisioning，或把迁移
+    /// 编排刚置入的 migrating 冻结改写回 active（冻结闸失守）。新行
+    /// status 仍随 INSERT 落初始值，两阶段创建链路不受影响）。
     #[cfg(feature = "sqlite")]
     pub fn upsert(&self, record: &AgentRecord) -> Result<(), String> {
         self.db.with_conn(|conn| {
@@ -162,7 +167,7 @@ impl SqliteAgentsStore {
                  created_at, updated_at, last_active_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
                  ON CONFLICT(agent_id) DO UPDATE SET
-                    name=excluded.name, kind=excluded.kind, status=excluded.status,
+                    name=excluded.name, kind=excluded.kind,
                     persona_refs=excluded.persona_refs,
                     memory_namespace=excluded.memory_namespace,
                     exec_root=excluded.exec_root, home_path=excluded.home_path,

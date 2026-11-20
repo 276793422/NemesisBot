@@ -262,3 +262,179 @@ async fn chore_completion_falls_back_to_main_without_small() {
     assert_eq!(out, "MAIN CHORE OUTPUT");
     assert_eq!(main_log.models(), vec!["main-model".to_string()]);
 }
+
+// ---------- C2 热生效（2026-11-20）：small_model 槽热换 ----------
+//
+// 假 resolver（不造真 provider）：按键原文返回带标记的 RecordingProvider，
+// 观察面 = 槽的 name 与 resolver 调用计数。
+
+/// 热换测试夹具：tempdir config.json + set_config_path（绑定即强制发布代）。
+fn hot_swap_fixture(dir: &std::path::Path, small_ref: &str) -> AgentLoop {
+    let cfg_path = dir.join("config.json");
+    let body = format!(r#"{{"agents":{{"small_model":"{small_ref}"}}}}"#);
+    std::fs::write(&cfg_path, body).unwrap();
+    let main_log = std::sync::Arc::new(CallLog::default());
+    let al = AgentLoop::new(
+        Box::new(RecordingProvider::new(main_log, "MAIN")),
+        test_config(),
+    );
+    al.set_config_path(cfg_path);
+    al
+}
+
+/// 按键原文造新 provider 的假 resolver（name = `name-<ref>`，观察换槽）。
+fn tagged_resolver(
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> std::sync::Arc<
+    dyn Fn(&nemesis_config::Config, &str) -> Option<(Arc<dyn LlmProvider>, String)> + Send + Sync,
+> {
+    std::sync::Arc::new(move |_cfg: &nemesis_config::Config, r: &str| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let small = Arc::new(RecordingProvider::new(
+            std::sync::Arc::new(CallLog::default()),
+            &format!("RESP-{r}"),
+        ));
+        Some(small_slot(small, &format!("name-{r}")))
+    })
+}
+
+/// 未注入 resolver = 装配期形态冻结（旧语义）：改键 + 新代发布不动槽。
+#[tokio::test]
+async fn hot_swap_resolver_not_injected_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = hot_swap_fixture(dir.path(), "ref-a");
+    let small = Arc::new(RecordingProvider::new(
+        std::sync::Arc::new(CallLog::default()),
+        "SMALL",
+    ));
+    al.set_small_model_with_ref(Some(small_slot(small, "name-ref-a")), "ref-a");
+
+    // 改盘换键 → 新代发布 → sync 无 resolver 直接返回。
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"agents":{"small_model":"ref-b"}}"#,
+    )
+    .unwrap();
+    al.check_config_reload();
+    let (p, name) = al.small_model_slot().expect("槽应保持");
+    assert_eq!(name, "name-ref-a", "未注入 resolver = 形态冻结");
+    assert!(std::sync::Arc::strong_count(&p) >= 1, "provider 仍被槽持有");
+}
+
+/// 键变化 → 新代发布 → resolver 现构造换槽（provider+name 绑定换）。
+#[tokio::test]
+async fn hot_swap_picks_up_key_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = hot_swap_fixture(dir.path(), "ref-a");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    al.set_small_model_resolver(tagged_resolver(calls.clone()));
+    let small = Arc::new(RecordingProvider::new(
+        std::sync::Arc::new(CallLog::default()),
+        "SMALL",
+    ));
+    al.set_small_model_with_ref(Some(small_slot(small, "name-ref-a")), "ref-a");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"agents":{"small_model":"ref-b"}}"#,
+    )
+    .unwrap();
+    al.check_config_reload();
+    let (_, name) = al.small_model_slot().expect("热换后槽应在场");
+    assert_eq!(name, "name-ref-b", "键变化 → resolver 重建换槽");
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "resolver 恰好调用一次"
+    );
+}
+
+/// 键删除/清空 → 清槽（杂务回落主模型）。
+#[tokio::test]
+async fn hot_swap_clears_slot_when_key_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = hot_swap_fixture(dir.path(), "ref-a");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    al.set_small_model_resolver(tagged_resolver(calls.clone()));
+    let small = Arc::new(RecordingProvider::new(
+        std::sync::Arc::new(CallLog::default()),
+        "SMALL",
+    ));
+    al.set_small_model_with_ref(Some(small_slot(small, "name-ref-a")), "ref-a");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(dir.path().join("config.json"), r#"{"agents":{}}"#).unwrap();
+    al.check_config_reload();
+    assert!(
+        al.small_model_slot().is_none(),
+        "键删除 → 清槽（诚实回退主模型）"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// resolver 失败（解析/构造失败 → None）= 保留旧槽 + warn（坏配置不打掉
+/// 好槽；下轮新代发布重试）。
+#[tokio::test]
+async fn hot_swap_failure_keeps_old_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = hot_swap_fixture(dir.path(), "ref-a");
+    al.set_small_model_resolver(std::sync::Arc::new(
+        |_cfg: &nemesis_config::Config, _r: &str| -> Option<(Arc<dyn LlmProvider>, String)> {
+            None // 模拟 resolve/create 失败
+        },
+    ));
+    let small = Arc::new(RecordingProvider::new(
+        std::sync::Arc::new(CallLog::default()),
+        "SMALL",
+    ));
+    al.set_small_model_with_ref(Some(small_slot(small.clone(), "name-ref-a")), "ref-a");
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"agents":{"small_model":"ref-broken"}}"#,
+    )
+    .unwrap();
+    al.check_config_reload();
+    let (_, name) = al.small_model_slot().expect("失败保旧：槽仍在场");
+    assert_eq!(name, "name-ref-a", "resolver 失败 → 保留旧槽");
+    let _ = small; // 句柄存活证明旧 provider 未被清
+}
+
+/// 新代发布但键未变 → 零成本原样返回（resolver 不调、槽对象不动——
+/// Arc ptr_eq 证同一实例）。
+#[tokio::test]
+async fn hot_swap_key_unchanged_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = hot_swap_fixture(dir.path(), "ref-a");
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    al.set_small_model_resolver(tagged_resolver(calls.clone()));
+    let small = Arc::new(RecordingProvider::new(
+        std::sync::Arc::new(CallLog::default()),
+        "SMALL",
+    ));
+    al.set_small_model_with_ref(Some(small_slot(small, "name-ref-a")), "ref-a");
+    let (before, _) = al.small_model_slot().unwrap();
+
+    // 无关键变化（新键）→ 新代发布 → 键比对相等 → 不动槽。
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"agents":{"small_model":"ref-a"},"unrelated":1}"#,
+    )
+    .unwrap();
+    al.check_config_reload();
+    let (after, name) = al.small_model_slot().unwrap();
+    assert_eq!(name, "name-ref-a");
+    assert!(
+        std::sync::Arc::ptr_eq(&before, &after),
+        "键未变 → 槽对象原样（零成本）"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "键未变 → resolver 不调用"
+    );
+}

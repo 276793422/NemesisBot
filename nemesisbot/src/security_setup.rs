@@ -192,6 +192,30 @@ pub(crate) async fn build_security_plugin(
         security_config.preexec_scan_enabled = b;
         info!("[Security] preexec_scan_enabled: {}", b);
     }
+    // 敏感读名单扩展项（2026-11-20 批 4）：顶层键 `sensitive_read_names`
+    // （字符串数组）。与内置指令文件族（AGENT.md/CLAUDE.md 等，见
+    // nemesis-security sensitive_read 模块）合并去重；命中 FileRead →
+    // force_approval 强制人工审批（审批卡必到人）。构造期唯一生效
+    // （热语义跟随 C5 立场：安全名单不热载，改名单重启 Agent 生效），
+    // 与 ssrf_allowed_hosts 同款。缺键 = 仅内置名单。
+    if let Some(names) = sec_json
+        .as_ref()
+        .and_then(|v| v.get("sensitive_read_names"))
+        .and_then(|x| x.as_array())
+    {
+        let extra: Vec<String> = names
+            .iter()
+            .filter_map(|n| n.as_str())
+            .map(String::from)
+            .collect();
+        if !extra.is_empty() {
+            info!(
+                "[Security] sensitive_read_names: {} extra entries merged with builtin list",
+                extra.len()
+            );
+            security_config.sensitive_read_names = extra;
+        }
+    }
     // （扩展计划）：子进程环境凭据清洗开关（默认开）。进程级静态，
     // 三处 spawn 点（agent loop exec/run_checks 闸 + nemesis-tools
     // shell/async_shell）统一查询；缺键 = 开（旧行为的唯偏离点是多剥

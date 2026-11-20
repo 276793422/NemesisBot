@@ -4470,6 +4470,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "nemesis-types",
  "nemesis-utils",
  "serde",
  "serde_json",

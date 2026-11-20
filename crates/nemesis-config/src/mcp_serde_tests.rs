@@ -170,6 +170,81 @@ fn mcpservers_scalar_entry_is_loud_err_not_panic() {
     );
 }
 
+// 混合形状（servers 与 mcpServers 并存）——BUG-20261120-011
+
+/// 混合形状必须吸收合并：servers 数组条目 + mcpServers 条目全部在册。
+/// 修复前 servers 键绝对优先、mcpServers 块被静默丢弃——CLI `mcp add` 在
+/// mcpServers 形状文件上补建空 servers 数组写出混合形状，重启后外部条目
+/// 全体消失（Dashboard typed 落盘同理），无任何告警。
+#[test]
+fn mixed_shape_merges_mcpservers_into_servers() {
+    let json = r#"{
+        "enabled": true,
+        "servers": [{"name": "a", "command": "x"}],
+        "mcpServers": {
+            "b": {"command": "y"},
+            "c": {"url": "http://h/mcp", "transport_type": "http"}
+        }
+    }"#;
+    let cfg: McpConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        cfg.servers.len(),
+        3,
+        "混合形状必须合并，不得静默丢弃 mcpServers 条目"
+    );
+    let names: Vec<&str> = cfg.servers.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["a", "b", "c"],
+        "servers 数组条目在前，mcpServers 条目按序追加"
+    );
+}
+
+/// 混合形状同名冲突：servers 数组条目胜出（本项目标准形状优先），
+/// mcpServers 同名条目丢弃，不产生重复挂载。
+#[test]
+fn mixed_shape_name_conflict_servers_array_wins() {
+    let json = r#"{
+        "enabled": true,
+        "servers": [{"name": "a", "command": "x"}],
+        "mcpServers": {"a": {"command": "y"}, "b": {"command": "z"}}
+    }"#;
+    let cfg: McpConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.servers.len(), 2, "同名只保留 servers 数组条目");
+    assert_eq!(cfg.servers[0].name, "a");
+    assert_eq!(cfg.servers[0].command, "x", "同名冲突 servers 数组胜出");
+    assert_eq!(cfg.servers[1].name, "b");
+}
+
+/// 混合形状的 mcpServers 标量条目同纪律：loud Err 不 panic（与独占
+/// 形状 BUG-20261117-055 同守卫，两臂共用解析器后天然一致）。
+#[test]
+fn mixed_shape_mcpservers_scalar_entry_is_loud_err() {
+    let err =
+        serde_json::from_str::<McpConfig>(r#"{"servers":[],"mcpServers":{"bad":"npx -y thing"}}"#)
+            .expect_err("混合形状标量条目必须 Err")
+            .to_string();
+    assert!(err.contains("bad"), "文案点名 key: {err}");
+}
+
+/// loader 端到端：混合形状文件经真实 load_mcp_config 合并（Dashboard /
+/// manager 同路径），非仅反序列化层。
+#[test]
+fn load_mcp_config_mixed_shape_merges_via_loader() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.mcp.json");
+    std::fs::write(
+        &path,
+        r#"{"enabled":true,"servers":[{"name":"cli","command":"node"}],"mcpServers":{"fs":{"command":"npx"}}}"#,
+    )
+    .unwrap();
+    let cfg = load_mcp_config(&path).unwrap();
+    assert_eq!(cfg.servers.len(), 2, "loader 必须合并两形状");
+    let names: Vec<&str> = cfg.servers.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["cli", "fs"]);
+}
+
 // 空/残缺配置容忍
 
 #[test]

@@ -1120,7 +1120,31 @@ impl SecurityAuditor {
                         true
                     }
                 };
-                if !flag_blocked {
+                // P1-4 命令替换放行臂二次校验（与 sensitive flag 臂同构，
+                // 含 BUG-20261118-094 豁免镜像）：记忆规则是粗归约形态，
+                // 替换体静态不可解析——命中即跳过本条自动放行（fall
+                // through 到人工卡）。pattern 含替换形态 = 显式意志豁免。
+                let subst_blocked = matches!(
+                    req.op_type,
+                    OperationType::ProcessExec | OperationType::ProcessSpawn
+                ) && matcher::has_command_substitution(&req.target)
+                    && !rule.pattern.contains("$(")
+                    && !rule.pattern.contains('`');
+                if subst_blocked {
+                    let event = AuditEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        request: req.clone(),
+                        decision: "require_approval".to_string(),
+                        reason: format!(
+                            "command substitution blocked auto-allow rule ({})",
+                            rule.pattern
+                        ),
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        policy_rule: "command_substitution".to_string(),
+                    };
+                    self.log_audit_event(&event);
+                }
+                if !flag_blocked && !subst_blocked {
                     self.allowed_count.fetch_add(1, Ordering::SeqCst);
                     let event = AuditEvent {
                         event_id: uuid::Uuid::new_v4().to_string(),
@@ -1675,7 +1699,11 @@ impl SecurityAuditor {
             return (
                 SecurityDecision::RequireApproval,
                 reason.to_string(),
-                "preexec_scan".to_string(),
+                // 中性通道名（2026-11-20）：force_approval 旗标现有多来源
+                //（preexec 脚本扫描 / 敏感读名单 / connector override），
+                // 具体来源在 reason 文本内（"pre-exec script scan: ..." /
+                // "sensitive read: ..."）。
+                "force_approval".to_string(),
             );
         }
         inner
@@ -1905,6 +1933,26 @@ impl SecurityAuditor {
                                     rule.pattern
                                 ),
                                 "sensitive_flag".to_string(),
+                            );
+                        }
+                        // P1-4 命令替换放行臂二次校验（与 sensitive flag
+                        // 同构）：allow 规则匹配的是替换前的字面文本，
+                        // `$(…)`/反引号体的实际执行内容对静态模式不可见
+                        // （`echo $(echo Y2F0|base64 -d)` 归一化后不含
+                        // `cat`）——命中即不放行，降级弹卡。规则 pattern
+                        // 本身含替换形态 = 用户显式放行动态构造，豁免
+                        // （BUG-20261118-094 同款逻辑）。
+                        if matcher::has_command_substitution(&req.target)
+                            && !rule.pattern.contains("$(")
+                            && !rule.pattern.contains('`')
+                        {
+                            return (
+                                SecurityDecision::RequireApproval,
+                                format!(
+                                    "command substitution behind allow rule `{}` (动态构造命令静态不可解析，需要人工确认)",
+                                    rule.pattern
+                                ),
+                                "command_substitution".to_string(),
                             );
                         }
                     }

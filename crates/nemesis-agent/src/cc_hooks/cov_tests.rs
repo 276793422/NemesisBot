@@ -196,32 +196,37 @@ fn script_outcome_dialect_semantics() {
 }
 
 // ---------------------------------------------------------------------------
-// load_from_dir：缺文件 = None；空配置 = None；有效 = Some
+// load_from_dir：恒建桥（2026-11-20 即刻生效语义）——缺文件/坏文件 = 待命
+// 桥（空快照）；空配置/有效 = 装载
 // ---------------------------------------------------------------------------
 
 #[test]
 fn load_from_dir_fail_open_semantics() {
     let dir = tempfile::tempdir().unwrap();
-    // 没有 hooks.json = 没配（静默 None）。
-    assert!(CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf()).is_none());
+    // 没有 hooks.json = 待命桥（静默；空快照 + 热更闸在场）。
+    let cold = CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf());
+    assert_eq!(cold.current_events().total_scripts(), 0, "缺文件 = 空快照");
+    assert!(cold.hooks_path.is_some(), "热更闸在场");
 
-    // 存在但非法 JSON → warn + None（fail-open）。
+    // 存在但非法 JSON → warn + 待命桥（fail-open：空快照 + 坏文记账）。
     std::fs::write(dir.path().join(HOOKS_FILE), "{broken").unwrap();
-    assert!(CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf()).is_none());
+    let bad = CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf());
+    assert_eq!(bad.current_events().total_scripts(), 0, "坏文件 = 空快照");
+    assert!(bad.seen_raw.lock().unwrap().is_some(), "坏文记账");
 
-    // 合法但 0 脚本 → None。
+    // 合法但 0 脚本 → 空快照桥。
     std::fs::write(dir.path().join(HOOKS_FILE), r#"{"hooks":{}}"#).unwrap();
-    assert!(CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf()).is_none());
+    let empty = CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf());
+    assert_eq!(empty.current_events().total_scripts(), 0);
 
-    // 有脚本 → Some。
+    // 有脚本 → 装载。
     std::fs::write(
         dir.path().join(HOOKS_FILE),
         r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
     )
     .unwrap();
     let bridge = CcHookBridge::load_from_dir(dir.path(), dir.path().to_path_buf());
-    assert!(bridge.is_some());
-    assert_eq!(bridge.unwrap().current_events().total_scripts(), 1);
+    assert_eq!(bridge.current_events().total_scripts(), 1);
 }
 
 // ---------------------------------------------------------------------------

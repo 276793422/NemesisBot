@@ -4123,6 +4123,7 @@ async fn test_handle_tool_call_with_security_block() {
         approval_timeout_secs: 300,
         log_all_operations: true,
         preexec_scan_enabled: false,
+        sensitive_read_names: Vec::new(),
         file_rules: vec![SecurityRule {
             pattern: ".*".to_string(),
             action: "deny".to_string(),
@@ -4187,6 +4188,7 @@ fn output_preview_sanitizer_masks_real_credential_when_plugin_present() {
         approval_timeout_secs: 300,
         log_all_operations: true,
         preexec_scan_enabled: false,
+        sensitive_read_names: Vec::new(),
         file_rules: vec![],
         dir_rules: vec![],
         process_rules: vec![],
@@ -9690,6 +9692,90 @@ fn test_b30_cap_passthrough_records_projection_for_session_consistency() {
     assert!(
         seen.content.chars().count() < total && seen.content.contains("exec"),
         "投影 None 的 10000 字符 turn 重算为有界形态（记录义务的依据）"
+    );
+}
+
+/// P1-3（B30 自查收口，2026-11-19）：`mcp_*` 命名工具的超长
+/// 结果回灌**有界**。自查结论（落档）：mcp 两形态（惰性供给 `mcp_call`
+/// 解包 → 内层 `mcp_*` 递归 dispatch（同批号）；直连供给 `mcp_*` 直进
+/// registry）在 LLM 循环尾汇入**同一** `apply_tool_guards` 闸——闸对
+/// 工具名无关（`prune_tool_result_with_cap` 的 tool_name 只进 marker
+/// 文案），零旁路（dispatch 返回原始结果是契约：闸在回灌面不在返回值）。
+/// 本测试以 `mcp_echo` 假工具走两段真实链钉住：① dispatch 接受 mcp_*
+/// 命名并执行（返回原始超长结果）；② 回灌闸把 30000 字符整成有界形态
+/// （marker 带真实工具名）；③ history 保留原文（X1 可恢复性语义），
+/// 默认 cap（8000）与 const 重算同构 → 不记投影（ledger 零漂移）。
+#[tokio::test]
+async fn test_b30_mcp_named_tool_result_backfill_is_bounded() {
+    struct BigEcho;
+    #[async_trait]
+    impl Tool for BigEcho {
+        async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+            Ok("x".repeat(30_000))
+        }
+    }
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.register_tool("mcp_echo".to_string(), Box::new(BigEcho));
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let tc = ToolCallInfo {
+        id: "tc_mcp".to_string(),
+        name: "mcp_echo".to_string(),
+        arguments: "{}".to_string(),
+    };
+
+    // ① dispatch 面真实链：mcp_* 命名被接受并执行。W1 #46 起 dispatch
+    // 尾对 mcp_* 族套不可信包裹（security.untrusted_wrap 缺省开）——
+    // 返回值 = 包裹壳 + 原文（+41 标记开销）；「原始结果直达返回值」
+    // 契约修正为「原文直达返回值（套壳不截断）」：封顶闸仍在回灌面。
+    let raw = agent_loop.handle_tool_call(&tc, &context).await;
+    let raw_for_history = raw.clone();
+    assert_ne!(
+        raw,
+        "x".repeat(30_000),
+        "mcp_* 族调度尾必套不可信包裹（W1 #46 缺省开）"
+    );
+    assert_eq!(
+        super::chat_guard::strip_untrusted_wrap(&raw),
+        "x".repeat(30_000),
+        "剥包裹后原文 30k 直达返回值（封顶闸在回灌面，不在 dispatch 返回值）"
+    );
+
+    // ② 回灌面真实闸：默认 cap 下超长 mcp 结果回灌有界。
+    let instance = AgentInstance::new(test_config());
+    let mut tg = crate::turn_guard::TurnGuard::new();
+    let succeeded = agent_loop
+        .apply_tool_guards(&instance, &context, &tc, raw, &mut tg, false)
+        .await;
+    assert!(succeeded, "30k 'x' 不含错误标记 = 成功流");
+
+    let history = instance.get_history();
+    let tool_turn = history
+        .iter()
+        .rev()
+        .find(|t| t.role == "tool")
+        .expect("tool turn in history");
+    assert_eq!(
+        tool_turn.content, raw_for_history,
+        "history 保留原文（X1 可恢复性语义——原文=dispatch 返回值，含包裹壳）"
+    );
+    assert_eq!(
+        tool_turn.tool_name.as_deref(),
+        Some("mcp_echo"),
+        "重算自足：tool_name 落 turn（marker 用真实工具名）"
+    );
+    assert!(
+        tool_turn.tool_result_projection.is_none(),
+        "默认 cap 8000 与 const 重算同构 → 不记投影（纯重算语义零漂移）"
+    );
+    // ③ 模型实际所见（provider 侧）有界：重算路径产出裁剪形态 + marker。
+    let model_face = tool_turn.model_facing_content();
+    let n = model_face.chars().count();
+    assert!(n < 30_000, "回灌必须小于原文（有界）：{n}");
+    assert!(n <= 8000, "回灌 ≤ cap 预算（默认 8000）：{n}");
+    assert!(
+        model_face.contains("结果过长已截断：mcp_echo"),
+        "marker 必须带真实工具名 mcp_echo：{}",
+        &model_face[..n.min(200)]
     );
 }
 

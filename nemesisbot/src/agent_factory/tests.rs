@@ -1565,6 +1565,7 @@ fn project_entry(dir: &std::path::Path) -> ProjectEntry {
         created_at: "2026-09-25T00:00:00Z".to_string(),
         instructions_trusted: true,
         extra_dirs: Vec::new(),
+        missing_since: None,
     }
 }
 
