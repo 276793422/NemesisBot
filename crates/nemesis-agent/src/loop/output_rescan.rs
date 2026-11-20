@@ -60,6 +60,16 @@ pub(crate) fn rescan_tool_output(
     );
     for hit in &hits {
         let decision = if hit.redacted { "redacted" } else { "observed" };
+        let summary = format!(
+            "output rescan: {} match(es), rules=[{}]; {}",
+            hit.count,
+            hit.rules.join(","),
+            if hit.redacted {
+                "content redacted"
+            } else {
+                "observe-only (action != block/redact), content untouched"
+            }
+        );
         let recorded = plugin.append_direct_audit_event(
             hit.kind,
             tool_name,
@@ -67,16 +77,16 @@ pub(crate) fn rescan_tool_output(
             "agent_loop",
             tool_name,
             decision,
-            &format!(
-                "output rescan: {} match(es), rules=[{}]; {}",
-                hit.count,
-                hit.rules.join(","),
-                if hit.redacted {
-                    "content redacted"
-                } else {
-                    "observe-only (action != block/redact), content untouched"
-                }
-            ),
+            &summary,
+        );
+        // #53 安全事件流（W3 批一）：出侧复扫命中 = 敏感数据流出尝试，
+        // High 级告警（脱敏/观测档都算——观测档意味着明文进了上下文）。
+        nemesis_security::alert::emit(
+            nemesis_security::AlertKind::OutboundRescanHit,
+            nemesis_security::AlertLevel::High,
+            "",
+            tool_name,
+            format!("{}: {summary}", hit.kind),
         );
         if recorded.is_none() {
             tracing::debug!(

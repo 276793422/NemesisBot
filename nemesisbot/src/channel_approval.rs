@@ -220,6 +220,17 @@ impl ChannelApprovalManager {
                         if !won {
                             continue;
                         }
+                        // #53 安全事件流（W3 批一）：IM 拒绝 = High 告警。
+                        // 会话维度用 channel/chat_id（IM 卡无 session_key）。
+                        if verb == "deny" {
+                            nemesis_security::alert::emit(
+                                nemesis_security::AlertKind::ApprovalDenied,
+                                nemesis_security::AlertLevel::High,
+                                &format!("{}/{}", msg.channel, msg.chat_id),
+                                "",
+                                format!("IM approval denied by user: {id}"),
+                            );
+                        }
                         let verdict = match verb {
                             "approve" => ApprovalVerdict::approved(),
                             _ => ApprovalVerdict::denied(),
@@ -308,6 +319,19 @@ impl ChannelApprovalManager {
                     short_id,
                     entry.id
                 );
+                // #53：stale 拒绝也是真实用户裁决，照常告警。
+                if !approved {
+                    nemesis_security::alert::emit(
+                        nemesis_security::AlertKind::ApprovalDenied,
+                        nemesis_security::AlertLevel::High,
+                        &format!("{}/{}", msg.channel, msg.chat_id),
+                        &entry.operation,
+                        format!(
+                            "stale IM denial: {} {} (gateway restarted since raised)",
+                            entry.operation, entry.target
+                        ),
+                    );
+                }
                 let action = if approved { "批准" } else { "拒绝" };
                 format!("🔐 审批 {short_id}：已{action}（重启前请求，原操作已失效，仅记账留痕）。")
             }
@@ -597,6 +621,16 @@ impl ApprovalManager for ChannelApprovalManager {
                                 "[ChannelApproval] approval journal timeout record failed for {request_id}: {e}"
                             );
                         }
+                        // #53：超时真裁决（回执赢竞速走上一臂，不重复告警）。
+                        nemesis_security::alert::emit(
+                            nemesis_security::AlertKind::ApprovalTimeout,
+                            nemesis_security::AlertLevel::High,
+                            &format!("{}/{}", ctx.channel, ctx.chat_id),
+                            operation,
+                            format!(
+                                "IM approval timed out after {timeout_secs}s: {operation} {target}"
+                            ),
+                        );
                         // None = 无 journal（审批可用性不绑 tasks.db）；Ok(true)
                         // = 正常超时裁决。两者都通知摘牌（诚实不悬挂）。
                         // 超时自动拒绝也是一次裁决——通知对话摘牌（诚实不悬挂）。

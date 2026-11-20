@@ -37,12 +37,32 @@ impl EstopState {
         self.engaged.store(true, Ordering::Release);
         // watch::send 出错只可能是无订阅者，忽略。
         let _ = self.tx.send(true);
+        // #53 安全事件流（W3 批一）：急停触发 = CRITICAL。emit 永不
+        // panic（fire-and-forget），同步上下文（托盘线程/CLI 跨进程）无
+        // runtime 时 webhook 静默跳过、jsonl 照常落盘。
+        #[cfg(feature = "security")]
+        nemesis_security::alert::emit(
+            nemesis_security::AlertKind::EstopTriggered,
+            nemesis_security::AlertLevel::Critical,
+            "",
+            "estop",
+            "estop engaged: all agent activity frozen",
+        );
     }
 
     /// 释放急停：下一条消息起 agent 恢复正常处理。
     pub fn release(&self) {
         self.engaged.store(false, Ordering::Release);
         let _ = self.tx.send(false);
+        // #53：释放 = Low（恢复通知面，非风险事件）。
+        #[cfg(feature = "security")]
+        nemesis_security::alert::emit(
+            nemesis_security::AlertKind::EstopReleased,
+            nemesis_security::AlertLevel::Low,
+            "",
+            "estop",
+            "estop released",
+        );
     }
 
     /// 当前是否处于急停状态。

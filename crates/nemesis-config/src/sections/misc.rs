@@ -788,6 +788,71 @@ pub struct SecurityFlagConfig {
     /// #25 网关流控（默认关）。
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
+    /// #53 安全事件流（W3 批一 2026-11-20）：告警出口/规则/防风暴参数。
+    /// None = 全默认（enabled=true、无 webhook、内置「critical 级全量
+    /// 告警」规则、cooldown 60s、budget 20/min）。见 [`SecurityAlertsConfig`]。
+    #[serde(default)]
+    pub alerts: Option<SecurityAlertsConfig>,
+}
+
+/// #53 安全事件流配置（`security.alerts` 段，W3 批一）。
+///
+/// 缺省 = 告警常开（观测面零风险）但零出口配置（无 webhook 时只剩 SSE
+/// 与 jsonl 落盘两出口）。`rules` 空时启用内置规则「level=critical 全量
+/// 告警」；用户规则非空则完全替代内置（想两者兼得就显式写两条）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecurityAlertsConfig {
+    /// 总闸（缺省 true——告警是观测面，不拦截不改动，默认开）。
+    pub enabled: bool,
+    /// webhook 出站 URL 列表（POST JSON envelope，5s 超时失败即弃不
+    /// 重试）。URL 属配置层信任（与 model api_base 同语义）。
+    pub webhooks: Vec<String>,
+    /// 同 (rule, session_key) 限频窗口秒数（缺省 60；0 视为缺省）。
+    pub cooldown_secs: u64,
+    /// 每出口每分钟最多派发条数，超出聚合 digest（缺省 20；0 = 不限）。
+    pub budget_per_min: u32,
+    /// 用户告警规则（空 = 内置「critical 全量」；非空 = 完全替代）。
+    pub rules: Vec<AlertRuleConfig>,
+}
+
+impl Default for SecurityAlertsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            webhooks: Vec::new(),
+            cooldown_secs: 0,
+            budget_per_min: 0,
+            rules: Vec::new(),
+        }
+    }
+}
+
+/// #53 单条告警规则：事件 JSON 记录上的一组 AND 条件 + 动作列表。
+///
+/// 条件求值复用 [`crate::eval_rules`] 的 `get_field`/`match_value` 原语
+/// （W2 批③收编的单一真相源）；字段路径作用于告警事件序列化记录
+/// （kind/level/ts_ms/session_key/tool/summary）。批一动作词表只有
+/// `"alert"`；未知动作在装配期 WARN 剥除（批二 #56 处置动作接力）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlertRuleConfig {
+    /// 规则 id（cooldown 键的一部分，非空）。
+    pub id: String,
+    /// AND 条件组（全过才算命中；op 词表 equals/contains/regex/exists/gt）。
+    pub when: Vec<crate::eval_rules::Condition>,
+    /// 动作列表（批一仅 `"alert"`）。
+    pub actions: Vec<String>,
+}
+
+impl Default for AlertRuleConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            when: Vec::new(),
+            actions: vec!["alert".to_string()],
+        }
+    }
 }
 
 impl Default for SecurityFlagConfig {
@@ -800,6 +865,7 @@ impl Default for SecurityFlagConfig {
             untrusted_wrap: true,
             result_scan: default_result_scan_mode(),
             rate_limit: RateLimitConfig::default(),
+            alerts: None,
         }
     }
 }

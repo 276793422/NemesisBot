@@ -108,6 +108,19 @@ impl MemoryContentGate for GatewayMemoryContentGate {
             // 上方已对双零信号提前返回 None，此臂不可达。
             (false, false) => unreachable!("both signals clean but quarantine triggered"),
         };
+        // #53 安全事件流（W3 批一）：记忆隔离入区 = High 告警（投毒尝试
+        // 落库面）。summary 只带信号类别与来源，不回带命中原文（内容面
+        // 不进告警流，与台账 hash-only 纪律同向）。
+        nemesis_security::alert::emit(
+            nemesis_security::AlertKind::MemoryQuarantine,
+            nemesis_security::AlertLevel::High,
+            "",
+            source,
+            format!(
+                "memory content quarantined: reason={reason}, signals={matched}",
+                matched = matched.join(",")
+            ),
+        );
         Some(QuarantineRecord::new(reason.to_string(), matched, source))
     }
 }

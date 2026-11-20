@@ -809,6 +809,12 @@
   background: var(--error-bg);
 }
 
+/* #53 安全事件流：high 档（琥珀红——介于 warn 与 critical 之间） */
+.system-alert-item.is-high {
+  border-color: var(--error);
+  background: var(--warning-bg);
+}
+
 .system-alert-text {
   flex: 1;
   min-width: 0;

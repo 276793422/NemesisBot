@@ -35,7 +35,10 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 2026-11-15：'browser_event' = 浏览器接管编排操作事件（spawn/attach/
 // release/close/detect，agent_build.rs sink → EventHub），执行单元【浏览器】
 // TAB 日志子页签实时并入 + 列表卡即时刷新（AI 动作路走 tool_event 不在此）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event']
+// 2026-11-20：'security_alert'/'security_alert_digest' = #53 安全事件流
+//（alert hub SSE 出口 + gateway digest 泵），AppLayout 安全告警条消费
+//（voice-setup/expert-degraded 三度同款白名单坑）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event', 'security_alert', 'security_alert_digest']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

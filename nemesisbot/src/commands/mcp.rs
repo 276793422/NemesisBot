@@ -657,7 +657,31 @@ Remove it first: nemesisbot mcp remove {}",
             };
             let text = pre::definition_text(&server);
             let scan = pre::scan_text(&text, rules.as_ref());
-            match pre::decide(mode, allowlisted, &scan, confirm_scan_risk) {
+            let decision = pre::decide(mode, allowlisted, &scan, confirm_scan_risk);
+            // #53 安全事件流（W3 批一）：装前扫描命中即告警（High）——
+            // 确认放行/待确认/强拒都是风险面；零命中 Allow 不告警。
+            if !scan.is_clean() {
+                let verdict_word = match &decision {
+                    pre::PreinstallDecision::Allow => "confirm-accepted",
+                    pre::PreinstallDecision::AllowAllowlisted => "allowlisted",
+                    pre::PreinstallDecision::RequireConfirm => {
+                        "require-confirm (denied this attempt)"
+                    }
+                    pre::PreinstallDecision::Reject => "rejected (enforced)",
+                };
+                nemesis_security::alert::emit(
+                    nemesis_security::AlertKind::McpPreinstallRisk,
+                    nemesis_security::AlertLevel::High,
+                    "",
+                    "mcp_add",
+                    format!(
+                        "MCP preinstall scan hit for '{}': {verdict_word}; findings: {}",
+                        req.name,
+                        scan.findings_summary().join("; ")
+                    ),
+                );
+            }
+            match decision {
                 pre::PreinstallDecision::Allow | pre::PreinstallDecision::AllowAllowlisted => {
                     if !scan.is_clean() && !allowlisted {
                         // confirm 放行：落 allowlist 留痕 + 风险明示。

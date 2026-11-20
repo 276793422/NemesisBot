@@ -323,6 +323,14 @@ impl SecurityPlugin {
                     error = %e,
                     "[Security] audit chain disk replay failed: {e}; continuing with fresh chain state"
                 );
+                // #53：链回载失败 = 篡改/损坏信号，CRITICAL 告警（W3 批一）。
+                crate::alert::emit(
+                    crate::alert::AlertKind::ChainVerifyFailed,
+                    crate::alert::AlertLevel::Critical,
+                    "",
+                    "audit_chain",
+                    format!("audit chain disk replay failed: {e}"),
+                );
             }
             Some(chain)
         } else {
@@ -1320,11 +1328,25 @@ impl SecurityPlugin {
         reason: &str,
         policy: &str,
     ) {
-        let mut guard = self.audit_logger.write();
-        if let Some(ref mut logger) = *guard {
-            let event_id = format!("evt-{}", uuid::Uuid::new_v4());
-            logger.log_event(
-                &event_id, decision, operation, user, source, target, danger, reason, policy,
+        {
+            let mut guard = self.audit_logger.write();
+            if let Some(ref mut logger) = *guard {
+                let event_id = format!("evt-{}", uuid::Uuid::new_v4());
+                logger.log_event(
+                    &event_id, decision, operation, user, source, target, danger, reason, policy,
+                );
+            }
+        }
+        // #53 安全事件流（W3 批一）：denied 漏斗是 ①–⑦ 层拦截的单一汇聚
+        // 点——观测者形态只多发一份告警事件，不动拦截语义。管线事件无会话
+        // 语境（session_key 空）。
+        if decision == "denied" {
+            crate::alert::emit(
+                crate::alert::AlertKind::PipelineIntercept,
+                crate::alert::AlertLevel::parse(danger).unwrap_or(crate::alert::AlertLevel::Medium),
+                "",
+                operation,
+                format!("{policy}: {reason}"),
             );
         }
     }

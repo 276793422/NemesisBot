@@ -277,6 +277,24 @@ impl AgentLoop {
         count: u32,
         context: &RequestContext,
     ) -> Option<bool> {
+        // #53 安全事件流（W3 批一）：终级硬停触发即告警（CRITICAL）——
+        // nudge 阶梯耗尽本身就是事件，无论用户随后是否批准续跑。放 asker
+        // 检查之前：headless/exec 形态（asker 缺席→fail-closed 停轮）同样
+        // 记账。
+        #[cfg(feature = "security")]
+        {
+            let tool = sig.split('\x00').next().unwrap_or("tool");
+            nemesis_security::alert::emit(
+                nemesis_security::AlertKind::LoopGovernance,
+                nemesis_security::AlertLevel::Critical,
+                &context.session_key,
+                tool,
+                format!(
+                    "doom-loop terminal stop: {tool} failed {count} times with the same \
+                     signature; intervention ladder exhausted"
+                ),
+            );
+        }
         let asker = self.question_asker()?;
         let tool = sig.split('\x00').next().unwrap_or("tool").to_string();
         let request = nemesis_types::agent::QuestionRequest {

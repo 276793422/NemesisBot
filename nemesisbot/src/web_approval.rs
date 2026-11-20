@@ -23,6 +23,33 @@ use std::time::Duration;
 
 use nemesis_types::agent::{AgentEvent, ApprovalResponder};
 
+/// #53 安全事件流（W3 批一）：审批拒绝/超时告警（fire-and-forget）。
+/// 本模块整体 `#[cfg(feature = "security")]` 门控，`nemesis_security` 恒在。
+fn alert_denial(
+    kind: nemesis_security::AlertKind,
+    operation: &str,
+    session_key: &str,
+    summary: String,
+) {
+    nemesis_security::alert::emit(
+        kind,
+        nemesis_security::AlertLevel::High,
+        session_key,
+        operation,
+        summary,
+    );
+}
+
+/// 从台账 payload 提取 session_key（缺省空串——无来源上下文的卡）。
+fn payload_session_key_of(entry: &nemesis_types::approval_journal::ApprovalJournalEntry) -> String {
+    entry
+        .payload
+        .get("session_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// 一条等待裁决的审批请求：元数据（`approval.pending` 列表用）+ 裁决回传
 /// 通道（`approval.respond` 取出后 send；mpsc 在 async handler 侧 send 无需
 /// runtime）。通道载荷是 `ApprovalVerdict`（拒绝可携带用户备注）。
@@ -335,6 +362,18 @@ impl WebApprovalManager {
                      approval was raised; decision recorded for audit, original operation is gone"
                 );
                 if let Some(e) = entry {
+                    // #53：stale 拒绝也是真实用户裁决，照常告警。
+                    if !approved {
+                        alert_denial(
+                            nemesis_security::AlertKind::ApprovalDenied,
+                            &e.operation,
+                            &payload_session_key_of(&e),
+                            format!(
+                                "stale respond denied: {} {} (gateway restarted since raised)",
+                                e.operation, e.target
+                            ),
+                        );
+                    }
                     self.notify_stale_decision(request_id, &e, approved);
                 }
                 self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
@@ -707,6 +746,15 @@ impl WebApprovalManager {
                                 "[WebApproval] approval journal timeout record failed for {request_id}: {e}"
                             );
                         }
+                        // #53：超时真裁决（respond 赢竞速走上一臂，不重复告警）。
+                        alert_denial(
+                            nemesis_security::AlertKind::ApprovalTimeout,
+                            operation,
+                            session_key,
+                            format!(
+                                "approval timed out after {timeout_secs}s: {operation} {target}"
+                            ),
+                        );
                         // None = 无 journal（审批可用性不绑 tasks.db，同
                         // journal_record_pending 立场）；Ok(true) = 正常超时
                         // 裁决。两者都广播 timeout。
@@ -791,6 +839,18 @@ impl ApprovalResponder for WebApprovalManager {
                  raced); verdict not delivered"
             );
             return Err(format!("approval already decided: {request_id}"));
+        }
+        // #53：用户拒绝 = High 告警（批准不告警——审批卡本身已是可见面）。
+        if !approved {
+            alert_denial(
+                nemesis_security::AlertKind::ApprovalDenied,
+                &entry.operation,
+                &entry.session_key,
+                format!(
+                    "approval denied by user: {} {}",
+                    entry.operation, entry.target
+                ),
+            );
         }
         if entry.tx.send(verdict).is_err() {
             // 等待方已退出（requester 线程提前收场）：台账已持裁决，审计面
@@ -992,6 +1052,15 @@ impl ApprovalResponder for WebApprovalManager {
                 // 摘卡，本侧不假广播）。
                 skipped += 1;
                 continue;
+            }
+            // #53：批量拒绝逐卡告警。
+            if !approved {
+                alert_denial(
+                    nemesis_security::AlertKind::ApprovalDenied,
+                    &entry.operation,
+                    &entry.session_key,
+                    format!("batch denial: {} {}", entry.operation, entry.target),
+                );
             }
             // 逐卡构造同值 verdict（ApprovalVerdict 非 Copy）。
             let card_verdict = if approved {

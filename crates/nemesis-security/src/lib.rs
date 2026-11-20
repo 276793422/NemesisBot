@@ -18,6 +18,8 @@
 //! - ClamAV virus scanner integration
 
 #[cfg(feature = "security")]
+pub mod alert;
+#[cfg(feature = "security")]
 pub mod approval;
 #[cfg(feature = "security")]
 pub mod approval_auto;
@@ -78,6 +80,8 @@ pub mod types;
 #[cfg(feature = "security")]
 pub mod vault;
 
+#[cfg(feature = "security")]
+pub use alert::{AlertDigest, AlertKind, AlertLevel, SecurityAlertEvent};
 #[cfg(feature = "security")]
 pub use approval::{ApprovalManager, ApprovalRequest, ApprovalStatus, MultiProcessApprovalManager};
 #[cfg(feature = "security")]

@@ -620,6 +620,52 @@ pub(crate) async fn init_services(
                 }
             })
         });
+        // #53 安全事件流装配（W3 批一）：configure + SSE 出口注册 + digest
+        // 水泵。security feature 闸下（告警子系统随安全中间件裁剪）。
+        #[cfg(feature = "security")]
+        {
+            let alerts_cfg = cfg
+                .security
+                .as_ref()
+                .and_then(|s| s.alerts.clone())
+                .unwrap_or_default();
+            nemesis_security::alert::configure(
+                &alerts_cfg,
+                common::workspace_path(&home)
+                    .join("logs")
+                    .join("security_alerts"),
+            );
+            let hub_for_alert = web_server.event_hub().clone();
+            nemesis_security::alert::register_outlet(
+                "sse",
+                Arc::new(move |event: &nemesis_security::SecurityAlertEvent| {
+                    hub_for_alert.publish(
+                        "security_alert",
+                        serde_json::to_value(event).unwrap_or_default(),
+                    );
+                }),
+            );
+            let hub_for_digest = web_server.event_hub().clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    if !terminal_loop_tick(terminal_cancel_token(), tick.tick()).await {
+                        break;
+                    }
+                    for d in nemesis_security::alert::take_pending_digests() {
+                        hub_for_digest.publish(
+                            "security_alert_digest",
+                            serde_json::to_value(&d).unwrap_or_default(),
+                        );
+                        warn!(
+                            "[security-alert] digest outlet={} suppressed={} last={}: {}",
+                            d.outlet, d.suppressed, d.last_kind, d.last_summary
+                        );
+                    }
+                }
+            });
+        }
         // 降级泵：恒开（登记表空转成本 ≈ 一次空锁）。interval 首 tick 立即
         // 到达，登记表为空，零告警。
         {

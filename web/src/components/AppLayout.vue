@@ -15,6 +15,7 @@ import { useCredentials } from '../composables/useCredentials'
 import { useCanvas } from '../composables/useCanvas'
 import { useEditorMode } from '../composables/useEditorMode'
 import { useSystemAlerts } from '../composables/useSystemAlerts'
+import { useSecurityAlerts } from '../composables/useSecurityAlerts'
 import { useExpertDegraded } from '../composables/useExpertDegraded'
 // 皮肤结构皮肤（v2）：槽位由引擎渲染（skinHasSlot 判定在场，CSS-only
 // 包全部回落原生）；投影 + 动作白名单在此装配一次（模块单例）。
@@ -34,6 +35,8 @@ const { initCanvas } = useCanvas()
 const { initEditorMode } = useEditorMode()
 // M2：系统级降级告警条单例订阅（SSE system-alert：磁盘水位 + 写失败聚合）。
 const { systemAlerts, initSystemAlerts, dismiss: dismissSystemAlert } = useSystemAlerts()
+// #53 安全事件流：安全告警事件卡单例订阅（SSE security_alert + digest）。
+const { securityAlerts, initSecurityAlerts, dismiss: dismissSecurityAlert } = useSecurityAlerts()
 // 专家降级 toast 单例订阅（SSE expert-degraded；服务端 notify=true 才发）。
 const { initExpertDegraded } = useExpertDegraded()
 
@@ -51,6 +54,7 @@ onMounted(() => {
   initCanvas()
   initEditorMode()
   initSystemAlerts()
+  initSecurityAlerts()
   initExpertDegraded()
   if (skinHasSlot('sidebar') || skinHasSlot('statusbar')) ensureSkinMeta()
 })
@@ -77,6 +81,23 @@ onMounted(() => {
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <span style="font-weight:600;">NemesisBot</span>
+      </div>
+
+      <!-- #53 安全事件流：安全告警事件卡（critical 红 / high 琥珀红 /
+           其余琥珀；同 kind+会话聚合计数；最多 6 条最新；手动关闭） -->
+      <div v-if="securityAlerts.length" class="system-alert-bar security-alert-bar" role="alert">
+        <div
+          v-for="item in securityAlerts"
+          :key="item.id"
+          class="system-alert-item"
+          :class="item.level === 'critical' ? 'is-critical' : item.level === 'high' ? 'is-high' : 'is-warn'"
+        >
+          <span class="system-alert-icon">{{ item.level === 'critical' ? '🛑' : '🛡️' }}</span>
+          <span class="system-alert-text">
+            <template v-if="item.count > 1">[×{{ item.count }}] </template>{{ item.message }}
+          </span>
+          <button class="system-alert-close" title="关闭" @click="dismissSecurityAlert(item.id)">×</button>
+        </div>
       </div>
 
       <!-- M2：系统级降级告警条（磁盘水位 + 关键写失败聚合；critical 红 /

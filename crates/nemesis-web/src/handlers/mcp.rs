@@ -217,6 +217,20 @@ fn scan_gate_verdict(
         return ScanGateVerdict::Allow;
     }
 
+    // #53 安全事件流（W3 批一）：装前扫描命中即告警（High）——无论后续
+    // 裁决是确认放行、待确认还是强拒，命中面都是风险信号。
+    let findings = scan.findings_summary();
+    nemesis_security::alert::emit(
+        nemesis_security::AlertKind::McpPreinstallRisk,
+        nemesis_security::AlertLevel::High,
+        "",
+        "mcp_add",
+        format!(
+            "MCP preinstall scan hit for '{name}': {}",
+            findings.join("; ")
+        ),
+    );
+
     match pre::decide(mode, false, &scan, confirm_scan_risk) {
         pre::PreinstallDecision::Allow | pre::PreinstallDecision::AllowAllowlisted => {
             if confirm_scan_risk {
