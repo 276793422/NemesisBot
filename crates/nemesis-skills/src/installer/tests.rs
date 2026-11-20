@@ -263,12 +263,33 @@ fn test_skill_origin_deserialization() {
     assert_eq!(origin.installed_version, "2.0");
 }
 
+// BUG-20261120-034：写点迁移 nemesis_utils::write_file_atomic 后，helper
+// 自含 create_dir_all(parent)——缺失父目录不再报错而是补建（旧裸写
+// 语义「坏路径=失败」两测试随之改写；路径全部收进 tempdir，杜绝旧形态
+// 误写真实盘根的污染面）。
 #[test]
-fn test_write_origin_tracking_nonexistent_dir() {
+fn test_write_origin_tracking_missing_parent_dir_created() {
     let dir = tempfile::tempdir().unwrap();
     let installer = SkillInstaller::new(&dir.path().to_string_lossy());
-    let result = installer.write_origin_tracking("/nonexistent/path/skill", "test", "skill", "1.0");
-    assert!(result.is_err());
+    let skill_dir = dir.path().join("skills").join("new-skill");
+    assert!(!skill_dir.exists());
+    installer
+        .write_origin_tracking(&skill_dir.to_string_lossy(), "test", "skill", "1.0")
+        .unwrap();
+    assert!(skill_dir.join(".skill-origin.json").exists());
+}
+
+#[test]
+fn test_write_origin_tracking_deep_missing_parents_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
+    let skill_dir = dir.path().join("a").join("b").join("c").join("deep-skill");
+    assert!(!skill_dir.exists());
+    installer
+        .write_origin_tracking(&skill_dir.to_string_lossy(), "github", "deep-skill", "2.0")
+        .unwrap();
+    let data = std::fs::read_to_string(skill_dir.join(".skill-origin.json")).unwrap();
+    assert!(data.contains("deep-skill"));
 }
 
 #[tokio::test]
@@ -1079,17 +1100,9 @@ fn test_write_origin_tracking_creates_file_v2() {
     assert!(data.contains("2.0.0"));
 }
 
-#[test]
-fn test_write_origin_tracking_invalid_dir() {
-    let installer = SkillInstaller::new("/tmp/nonexistent_skill_test_dir");
-    let result = installer.write_origin_tracking(
-        "/tmp/nonexistent_skill_test_dir/skills/nope",
-        "github",
-        "nope",
-        "1.0",
-    );
-    assert!(result.is_err());
-}
+// 旧 test_write_origin_tracking_invalid_dir（断言缺失父目录报错）已并入
+// 上方两个 missing_parent_dir_created 测试——BUG-20261120-034 原子写迁移
+// 后该失败语义不复存在（helper 自含 create_dir_all）。
 
 #[test]
 fn test_get_origin_tracking_corrupted_file() {
