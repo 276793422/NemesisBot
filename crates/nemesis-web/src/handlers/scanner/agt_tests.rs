@@ -214,3 +214,37 @@ async fn agt_update_db_inner_prefers_data_dir_and_fails_without_freshclam() {
         .unwrap_err();
     assert!(err2.contains("freshclam not found"), "err2: {err2}");
 }
+
+// BUG-20261121-021：批量引擎检查名清单按名字典序——engines 是 HashMap，
+// 迭代序跨进程随机（RandomState 每进程换种），无序 collect 直出 =
+// `scanner check` 结果数组顺序随重启漂移；与 build_all_engines_status
+// 的 sort_by(name) 口径对齐。点名路径单元素透传、空表返回空。
+
+#[test]
+fn agt_scanner_check_names_deterministic_order() {
+    let mk = |names: &[&str]| -> std::collections::HashMap<String, serde_json::Value> {
+        names
+            .iter()
+            .map(|n| (n.to_string(), serde_json::json!({ "type": "clamav" })))
+            .collect()
+    };
+
+    // 多引擎：输出按字典序（与插入序/HashMap 迭代序无关）。
+    let engines = mk(&["zulu", "alpha", "mike", "bravo"]);
+    let names = ordered_engine_check_names(None, &engines);
+    assert_eq!(names, vec!["alpha", "bravo", "mike", "zulu"]);
+
+    // 点名路径：单元素透传（不查表也放行——探测层 None=continue 语义）。
+    let names = ordered_engine_check_names(Some("zulu"), &engines);
+    assert_eq!(names, vec!["zulu"]);
+
+    // 点名 + 空 map：同上透传（历史行为：逐名 get 缺失 continue）。
+    let empty: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    let names = ordered_engine_check_names(Some("any"), &empty);
+    assert_eq!(names, vec!["any"]);
+
+    // 批量 + 空 map：空清单（无引擎无输出）。
+    let names = ordered_engine_check_names(None, &empty);
+    assert!(names.is_empty());
+}

@@ -195,6 +195,25 @@ fn build_engine_response(
     engine_json
 }
 
+/// 批量检查的目标引擎名清单——**按名字典序**（确定性纪律）：engines 是
+/// HashMap，迭代序跨进程随机（RandomState 每进程换种；与
+/// routing/session_key.rs identity_links 同族问题），无序 collect 直出 =
+/// `scanner check` 结果数组顺序随重启漂移。同文件 build_all_engines_status
+/// 已按名排序，本位点 BUG-20261121-021 漏排。单引擎点名路径序无关。
+fn ordered_engine_check_names(
+    target_name: Option<&str>,
+    engines: &std::collections::HashMap<String, serde_json::Value>,
+) -> Vec<String> {
+    match target_name {
+        Some(name) => vec![name.to_string()],
+        None => {
+            let mut names: Vec<String> = engines.keys().cloned().collect();
+            names.sort();
+            names
+        }
+    }
+}
+
 fn build_all_engines_status(workspace: &str) -> Result<Vec<serde_json::Value>, String> {
     let path = scanner_config_path(workspace);
     let cfg =
@@ -284,11 +303,12 @@ impl ScannerHandler {
         let results = update_scanner_config(workspace, |cfg| {
             let enabled_set: HashSet<&str> = cfg.enabled.iter().map(|s| s.as_str()).collect();
 
-            let names_to_check: Vec<String> = if let Some(ref name) = target_name {
-                vec![name.clone()]
-            } else {
-                cfg.engines.keys().cloned().collect()
-            };
+            // 确定性纪律（BUG-20261121-021）：engines 是 HashMap，迭代序跨
+            // 进程随机（RandomState 每进程换种），无序 collect 直出 = 结果
+            // 数组顺序随重启漂移。同文件 build_all_engines_status 已按名排
+            // 序，此处对齐同款口径（点名路径序无关，原样透传）。
+            let names_to_check: Vec<String> =
+                ordered_engine_check_names(target_name.as_deref(), &cfg.engines);
 
             let mut results = Vec::new();
 
