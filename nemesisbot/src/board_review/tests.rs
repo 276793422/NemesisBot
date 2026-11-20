@@ -3353,6 +3353,132 @@ async fn p2a_capability_fail_blocks_blind_same_target_redispatch() {
     let details = decide.details.as_deref().unwrap_or("");
     assert!(details.contains("escalate_human"), "{details}");
     assert!(details.contains("capability_fail_same_target"), "{details}");
+    // 转人工清账（BUG-20261120-024 回归锁）：能力类停车必须清熔断账本
+    // （fail_streak.rs 不变量「非重派终态清账」）——resume_entry 指引的
+    // review.retrigger 复评不清账，残留计数会把人工修好后的同签名再败
+    // 推到「同因熔断」误报（未重派的停车轮被当作无收敛重派轮计数）。
+    assert_eq!(
+        fail_streak_ledger_count(&deps.workspace, issue.id),
+        None,
+        "能力类转人工后账本必须已清（非重派终态清账不变量）"
+    );
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+/// 读熔断账本中某单的计数（None = 无条目/文件缺失——清账后的形态）。
+fn fail_streak_ledger_count(workspace: &std::path::Path, issue_id: i64) -> Option<u32> {
+    let raw = std::fs::read_to_string(workspace.join("board").join("fail_streaks.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    v.get("issues")?
+        .get(issue_id.to_string())?
+        .get("count")
+        .and_then(|c| c.as_u64())
+        .map(|c| c as u32)
+}
+
+/// 预算超限转人工清账（BUG-20261120-024 回归锁，与能力类臂同不变量）：
+/// resume_entry 指引「调大 board.budget.* 后 retrigger 复评」，复评不清账
+/// 时旧计数会把调预算后的正常重派轮提前推到「同因熔断」。
+#[tokio::test]
+async fn budget_breach_escalation_clears_fail_streak_ledger() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, _ws) = review_deps("budget-breach-clear");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board": {"max_redispatch": 9, "budget": {"max_total_redispatch": 1}}}"#,
+    )
+    .unwrap();
+    let issue = issue_in_review(
+        &deps.store,
+        "预算超限清账",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
+        "## 结论\n交付完成",
+    );
+    // 2 条完结派发行：全链计数 2 > max_total_redispatch=1 → 发车前预算闸
+    // 停车（无 fail_class 评论 → 能力类/冻结闸不拦，臂序在预算闸之前）。
+    for tid in ["task-bb-1", "task-bb-2"] {
+        deps.store
+            .insert_dispatch(
+                tid,
+                issue.id,
+                "node-b",
+                &nemesis_board::Actor::agent("node-a"),
+            )
+            .unwrap();
+        deps.store
+            .finish_dispatch(tid, nemesis_board::models::dispatch_state::DONE)
+            .unwrap();
+    }
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("预算超限停车必须闭环不报错");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "预算超限停车保持 in_review"
+    );
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        2,
+        "预算超限停车不发车"
+    );
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("自动重派预算超限")),
+        "必须有预算超限停车评论：{comments:?}"
+    );
+    // 转人工清账：预算停车后账本无本单条目。
+    assert_eq!(
+        fail_streak_ledger_count(&deps.workspace, issue.id),
+        None,
+        "预算超限转人工后账本必须已清（非重派终态清账不变量）"
+    );
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+/// 重派目标决策失败转人工清账（BUG-20261120-024 回归锁，无派发历史手工单
+/// 形态）：pick_redispatch_target Err（无历史派发记录）→ ⛔ 转人工，账本
+/// 必须同步清（人工派发/复评后不被旧计数推到误熔断）。
+#[tokio::test]
+async fn target_pick_failed_escalation_clears_fail_streak_ledger() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, _ws) = review_deps("target-pick-fail-clear");
+    // 零派发历史（手工转入 in_review）+ 锚点 FAIL → round=0 仍在预算内
+    // 走 Redispatch，pick 无历史记录 Err → target_pick_failed 停车。
+    let issue = issue_in_review(
+        &deps.store,
+        "目标决策失败清账",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
+        "## 结论\n交付完成",
+    );
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("目标决策失败停车必须闭环不报错");
+    assert!(reviewed);
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview,
+        "目标决策失败停车保持 in_review"
+    );
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("确定重派目标失败")),
+        "必须有目标决策失败停车评论：{comments:?}"
+    );
+    // 转人工清账：停车后账本无本单条目（记账臂在 pick 之前已 +1，
+    // 不清则残留）。
+    assert_eq!(
+        fail_streak_ledger_count(&deps.workspace, issue.id),
+        None,
+        "目标决策失败转人工后账本必须已清（非重派终态清账不变量）"
+    );
     let _ = std::fs::remove_dir_all(&deps.home);
 }
 
