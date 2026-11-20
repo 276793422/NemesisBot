@@ -66,7 +66,7 @@ pub struct HostServices {
     /// out_rgba: 输出缓冲区（调用者分配），写入 RGBA 数据
     /// out_rgba_len: 输出缓冲区大小（字节）
     /// out_width/out_height: 写入图像尺寸
-    /// 返回: 0=成功, 负数=错误（1=参数无效, -2=解码失败, -3=缓冲区不足）
+    /// 返回: 0=成功, 负数=错误（-1=参数无效, -2=解码失败, -3=缓冲区不足）
     pub decode_png: Option<
         extern "C" fn(
             png_data: *const u8,
