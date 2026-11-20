@@ -65,7 +65,12 @@ pub fn load_registry(workspace: &Path) -> Result<Vec<GoalEntry>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let body = std::fs::read_to_string(&path).map_err(|e| format!("read registry failed: {e}"))?;
+    // BUG-20261120-025 横向同族收口：走 read_config_string 剥前导 UTF-8 BOM
+    // （记事本保存形态）——registry.json 是用户可手编持久化面，裸
+    // read_to_string 的 BOM 前缀会让 serde_json 报 expected value →
+    // goals 列表全灭（错误引导用户删文件 = 丢注册表）。
+    let body = nemesis_utils::fsutil::read_config_string(&path)
+        .map_err(|e| format!("read registry failed: {e}"))?;
     serde_json::from_str(&body).map_err(|e| format!("parse registry failed: {e}"))
 }
 
@@ -102,7 +107,7 @@ pub fn read_goal_md(workspace: &Path, id: &str) -> Result<Option<String>, String
         return Ok(None);
     }
     std::fs::read_to_string(&path)
-        .map(Some)
+        .map(|s| Some(nemesis_utils::fsutil::strip_bom(&s).to_string()))
         .map_err(|e| format!("read goal.md failed: {e}"))
 }
 
@@ -125,6 +130,9 @@ pub fn read_evals_tail(workspace: &Path, id: &str, n: usize) -> Vec<EvalRecord> 
     let Ok(body) = std::fs::read_to_string(evals_path(workspace, id)) else {
         return out;
     };
+    // 同族收口（BUG-20261120-025）：剥 BOM——jsonl 首行带 BOM 会被逐行解析
+    // 误判损坏静默跳过，丢第一条评估记录。
+    let body = nemesis_utils::fsutil::strip_bom(&body);
     for line in body.lines() {
         if line.trim().is_empty() {
             continue;

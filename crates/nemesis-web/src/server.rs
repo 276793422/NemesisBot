@@ -2740,7 +2740,13 @@ pub async fn pump_agent_events(
                         );
                         match frame.to_json() {
                             Ok(bytes) => {
-                                if let Err(e) = session_manager.broadcast(session_id, &bytes).await
+                                // 必达帧带上限等待（BUG-20261120-022）：宿主是
+                                // 全局 agent 事件泵单任务，无界等待会让单个慢
+                                // 客户端连坐卡死全部会话的事件交付（139 要杀的
+                                // 形态）；超时丢弃，带持久化的帧前端可自愈。
+                                if let Err(e) = session_manager
+                                    .broadcast_bounded(session_id, &bytes, WS_BROADCAST_TIMEOUT)
+                                    .await
                                 {
                                     tracing::debug!(
                                         session_id = %session_id,
@@ -2789,7 +2795,11 @@ pub async fn pump_agent_events(
                         );
                         match frame.to_json() {
                             Ok(bytes) => {
-                                if let Err(e) = session_manager.broadcast(session_id, &bytes).await
+                                // 同 deliverables 臂：必达帧带上限等待（BUG-20261120-022），
+                                // 事件泵单任务宿主不被慢客户端连坐。
+                                if let Err(e) = session_manager
+                                    .broadcast_bounded(session_id, &bytes, WS_BROADCAST_TIMEOUT)
+                                    .await
                                 {
                                     tracing::debug!(
                                         session_id = %session_id,
@@ -2883,7 +2893,11 @@ pub async fn pump_agent_events(
                             let result = if droppable {
                                 session_manager.broadcast_droppable(session_id, &bytes)
                             } else {
-                                session_manager.broadcast(session_id, &bytes).await
+                                // 非可丢臂带上限等待（BUG-20261120-022）：
+                                // 事件泵单任务宿主不被慢客户端连坐卡死。
+                                session_manager
+                                    .broadcast_bounded(session_id, &bytes, WS_BROADCAST_TIMEOUT)
+                                    .await
                             };
                             if let Err(e) = result {
                                 tracing::debug!(

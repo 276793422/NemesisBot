@@ -264,6 +264,10 @@ impl ConfigHandler {
         home: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 形状闸：`[]` 走 visit_seq 零元素臂 = 全默认合法值，round-trip 闸
+        // （空数组零叶子无丢失）也拦不住——先 loud 拒绝非 object 文档
+        //（BUG-20261120-027：不拦则整档配置静默重置为出厂默认）。
+        crate::handlers::require_object(data, "config")?;
         // 编辑器整档保存语义：闭包整体替换（锁在 update_config 内）。
         // get 响应是脱敏形态（api_key/token 等掩码为 `****` 串）：UI 回存
         // 时掩码值必须还原为存量原值，绝不落盘掩码——channels.save 同款
@@ -332,6 +336,16 @@ impl ConfigHandler {
             let reserialized = serde_json::to_value(&*config)
                 .map_err(|e| format!("failed to serialize config: {}", e))?;
             match json_path_get(&reserialized, path) {
+                None if !subtree_has_payload(value) => {
+                    // skip_serializing_if 字段（projects.instruction_trust /
+                    // agents.lazy_tool_schema / security 策略串 / model extras
+                    // 空表等）写「无载荷值」（""/null/false/{}/[]）后回读键
+                    // 消失 = typed 缺省持久化形态（未配置 = 落消费方缺省），
+                    // 不是未知键——与 config.save 的 subtree_has_payload 豁免
+                    // 同款无损语义（BUG-20261120-026：SettingsView「默认」
+                    // 选项 value="" 被误报 unknown config field，isolated
+                    // 无法经 UI 切回默认）。
+                }
                 None => return Err(format!("unknown config field: {}", path)),
                 Some(actual) if actual != value && !numeric_normalized_equal(actual, value) => {
                     return Err(format!(

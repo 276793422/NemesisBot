@@ -950,7 +950,9 @@ impl SkillsHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 整档替换语义；锁在 update_skills_config 内。
+        // 形状闸：`[]` 走 visit_seq = 全默认 SkillsConfig 静默重置
+        //（BUG-20261120-027）。整档替换语义；锁在 update_skills_config 内。
+        crate::handlers::require_object(data, "skills config")?;
         update_skills_config(workspace, |cfg| {
             *cfg = serde_json::from_value(data.clone())
                 .map_err(|e| format!("invalid skills config: {}", e))?;

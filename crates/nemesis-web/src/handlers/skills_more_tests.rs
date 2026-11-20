@@ -790,11 +790,14 @@ async fn test_skills_config_save_null_value() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
 
+    // BUG-20261120-027：非 object 文档（含 null）在形状闸 loud 拒绝——
+    // 此前 null 落 from_value 报 invalid skills config，数组形态则静默重置。
     let err = handler
         .handle_cmd("config.save", Some(serde_json::Value::Null), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("invalid skills config"));
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("null"), "{err}");
 }
 
 // source.list — multiple github + ordering

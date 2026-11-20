@@ -583,6 +583,49 @@ async fn test_broadcast_releases_shard_guard_during_backpressure() {
     blocked.abort();
 }
 
+/// broadcast_bounded（BUG-20261120-022）：满 hi 通道超时 Err（慢客户端
+/// 隔离墙语义，不再像裸 broadcast 永久背压）；无队列/无会话 Err 且不 panic。
+#[tokio::test]
+async fn test_broadcast_bounded_timeout_and_missing_session() {
+    let mgr = SessionManager::with_default_timeout();
+    let session = mgr.create_session();
+    // 无写者测试队列（cap=1）：填满后 bounded 必超时。
+    let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(1);
+    mgr.set_send_queue(&session.id, Arc::new(queue));
+
+    // 填满 hi 唯一槽。
+    mgr.broadcast(&session.id, b"fill")
+        .await
+        .expect("fill send");
+
+    // 满通道：短超时必 Err，错误带隔离墙语义标签。
+    let t0 = std::time::Instant::now();
+    let err = mgr
+        .broadcast_bounded(
+            &session.id,
+            b"backpressured",
+            std::time::Duration::from_millis(80),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("backlog timeout"), "err: {err}");
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_millis(60),
+        "must actually wait the timeout, elapsed={:?}",
+        t0.elapsed()
+    );
+
+    // 无会话：Err（debug 级语义，同 droppable）。
+    let err = mgr
+        .broadcast_bounded("no-such-session", b"x", std::time::Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("session not found or no send queue"),
+        "err: {err}"
+    );
+}
+
 // cleanup 线程双重失职的行为锁，两段断言各钉一面。
 //
 // 旧缺陷一（活性缺失）：start_cleanup 用 `DashMap::clone()` 把映射交给

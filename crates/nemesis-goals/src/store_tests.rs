@@ -3,7 +3,7 @@
 use crate::state::{EvalRecord, GoalCreatedBy, GoalEntry, GoalStatus};
 use crate::store::{
     alloc_id, append_eval, goal_md_path, goals_dir, load_registry, read_evals_tail, read_goal_md,
-    remove_goal, save_registry, update_registry, write_goal_md,
+    registry_path, remove_goal, save_registry, update_registry, write_goal_md,
 };
 
 fn tmp_ws() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -192,4 +192,59 @@ fn remove_goal_three_way_cleanup() {
     assert!(read_evals_tail(&ws, "G1", 10).is_empty());
     // 不存在的 id = Err
     assert!(remove_goal(&ws, "G9").is_err());
+}
+
+// BUG-20261120-025 横向同族回归锁：记事本「带 BOM 的 UTF-8」保存形态——
+// 旧形态裸 read_to_string 的前导 \u{FEFF} 会让 serde_json 报错（registry
+// 全灭）/BOM 杂质进 goal.md 内容（LLM 上下文）/jsonl 首行误判损坏静默跳过。
+// 三个读取面都必须对 BOM 前缀文件照常工作（read_config_string/strip_bom
+// 单一真相源，BUG-20261115-036 同族纪律）。
+#[test]
+fn bom_prefixed_registry_loads() {
+    let (_d, ws) = tmp_ws();
+    save_registry(&ws, &[mk_entry("G1", GoalStatus::Active)]).unwrap();
+    let path = registry_path(&ws);
+    let plain = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("\u{feff}{plain}")).unwrap();
+    let loaded = load_registry(&ws).expect("BOM 前缀注册表必须照常加载");
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].id, "G1");
+}
+
+#[test]
+fn bom_prefixed_goal_md_content_is_stripped() {
+    let (_d, ws) = tmp_ws();
+    std::fs::create_dir_all(goals_dir(&ws)).unwrap();
+    let path = goal_md_path(&ws, "G1");
+    std::fs::write(&path, "\u{feff}目标正文").unwrap();
+    let md = read_goal_md(&ws, "G1").unwrap().expect("goal.md 存在");
+    assert!(!md.contains('\u{feff}'), "BOM 不得进 goal.md 内容");
+    assert_eq!(md, "目标正文");
+}
+
+#[test]
+fn bom_prefixed_evals_first_line_not_dropped() {
+    let (_d, ws) = tmp_ws();
+    for i in 0..2u64 {
+        append_eval(
+            &ws,
+            "G1",
+            &EvalRecord {
+                at_ms: 1_000 + i as i64,
+                round: i + 1,
+                verdict: "continue".to_string(),
+                gap: None,
+                model: "test-model".to_string(),
+                duration_ms: 100,
+                raw_excerpt: String::new(),
+            },
+        )
+        .unwrap();
+    }
+    let path = goals_dir(&ws).join("G1.evals.jsonl");
+    let plain = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("\u{feff}{plain}")).unwrap();
+    let tail = read_evals_tail(&ws, "G1", 10);
+    assert_eq!(tail.len(), 2, "BOM 前缀不得吞掉 jsonl 首条评估记录");
+    assert_eq!(tail[0].round, 1);
 }

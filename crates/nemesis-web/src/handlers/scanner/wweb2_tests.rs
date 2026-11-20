@@ -123,6 +123,22 @@ async fn mark_op_dedup_then_finish_allows_restart() {
 
 // cmd_cancel 三态
 
+/// BUG-20261120-027 回归锁：scanner `config.save` 收 `[]` 曾走 serde
+/// visit_seq 零元素臂 = 全默认 ScannerFullConfig——扫描器配置被静默重置
+/// 还回 saved:true。形状闸必须在反序列化前拦下。
+#[tokio::test]
+async fn scanner_config_save_array_payload_loud_rejected() {
+    use crate::ws_router::ModuleHandler;
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let err = ScannerHandler::new()
+        .handle_cmd("config.save", Some(serde_json::json!([])), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+}
+
 #[tokio::test]
 async fn cmd_cancel_no_active_op_errors() {
     let err = ScannerHandler::new()

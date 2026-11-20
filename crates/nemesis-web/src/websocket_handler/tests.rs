@@ -873,6 +873,13 @@ impl futures::Sink<axum::extract::ws::Message> for MockSink {
                     .unwrap()
                     .push_back("__CLOSE__".to_string());
             }
+            axum::extract::ws::Message::Ping(_) => {
+                // Ping 帧同款哨兵（BUG-20261120-021 ping 信号线契约面）。
+                this.frames
+                    .lock()
+                    .unwrap()
+                    .push_back("__PING__".to_string());
+            }
             _ => {}
         }
         Ok(())
@@ -899,6 +906,7 @@ impl futures::Sink<axum::extract::ws::Message> for MockSink {
 async fn writer_prioritizes_hi_over_lo_and_batches_flush() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(16);
     let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(16);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
     let (done_tx, _done_rx) = tokio::sync::watch::channel(false);
     let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
@@ -917,6 +925,7 @@ async fn writer_prioritizes_hi_over_lo_and_batches_flush() {
         sink,
         hi_rx,
         lo_rx,
+        ping_rx,
         close_rx,
         done_tx,
         "t".into(),
@@ -955,6 +964,7 @@ async fn writer_prioritizes_hi_over_lo_and_batches_flush() {
 async fn writer_exits_when_channels_closed_and_signals_done() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
     let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
@@ -965,6 +975,7 @@ async fn writer_exits_when_channels_closed_and_signals_done() {
         MockSink::default(),
         hi_rx,
         lo_rx,
+        ping_rx,
         close_rx,
         done_tx,
         "t".into(),
@@ -985,6 +996,7 @@ async fn writer_exits_when_channels_closed_and_signals_done() {
 async fn writer_feed_failure_signals_done() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
     let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
 
@@ -1000,6 +1012,7 @@ async fn writer_feed_failure_signals_done() {
         sink,
         hi_rx,
         lo_rx,
+        ping_rx,
         close_rx,
         done_tx,
         "t".into(),
@@ -1022,6 +1035,7 @@ async fn writer_feed_failure_signals_done() {
 async fn writer_close_request_drains_pending_then_sends_close_frame() {
     let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
     let (_lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (_ping_tx, ping_rx) = mpsc::channel::<()>(1);
     let (done_tx, done_rx) = tokio::sync::watch::channel(false);
     let (close_tx, close_rx) = tokio::sync::watch::channel(false);
 
@@ -1035,6 +1049,7 @@ async fn writer_close_request_drains_pending_then_sends_close_frame() {
         sink,
         hi_rx,
         lo_rx,
+        ping_rx,
         close_rx,
         done_tx,
         "t".into(),
@@ -1053,6 +1068,125 @@ async fn writer_close_request_drains_pending_then_sends_close_frame() {
         got,
         vec!["hi-frame".to_string(), "__CLOSE__".to_string()],
         "在途 hi 帧先送达，Close 帧最后（biased 序 close 臂不抢在途必达帧）"
+    );
+}
+
+/// ping 信号线（BUG-20261120-021）：ping 臂 biased 序最低——已排队数据帧
+/// 先出，随后 Ping 帧出站；ping_tx 单独 drop 不退出 writer（退出判定只看
+/// 数据通道），数据通道关了才收尾。
+#[tokio::test]
+async fn writer_sends_ping_frame_after_pending_data() {
+    let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (ping_tx, ping_rx) = mpsc::channel::<()>(1);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+    let (_close_tx, close_rx) = tokio::sync::watch::channel(false);
+
+    hi_tx.send(b"first".to_vec()).await.unwrap();
+    ping_tx.try_send(()).unwrap();
+
+    let sink = MockSink::default();
+    let frames = sink.frames.clone();
+    tokio::spawn(super::run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        ping_rx,
+        close_rx,
+        done_tx,
+        "t".into(),
+    ));
+
+    // Ping 帧哨兵到达 = ping 臂已消费信号；此时数据帧必须已先行。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let saw_ping = loop {
+        let snapshot: Vec<String> = frames.lock().unwrap().iter().cloned().collect();
+        if snapshot.iter().any(|f| f == "__PING__") {
+            break snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "ping frame must be delivered, got {snapshot:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(
+        saw_ping,
+        vec!["first".to_string(), "__PING__".to_string()],
+        "数据帧先于 ping（biased 序 ping 臂最低优先）"
+    );
+
+    // ping_tx drop 不退出 writer（数据通道仍活——ping 通道不参与退出判定）。
+    drop(ping_tx);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !*done_rx.borrow(),
+        "ping channel close alone must not exit writer"
+    );
+
+    // 数据通道关闭才收尾。
+    drop(hi_tx);
+    drop(lo_tx);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !*done_rx.borrow() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "writer must exit after data channels close"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// send_bounded：空通道即刻入队（Ok）；满通道短超时 Err（慢客户端隔离墙，
+/// 错误信息带语义标签）；消费后恢复可写。
+#[tokio::test]
+async fn test_send_queue_send_bounded_ok_and_timeout() {
+    let (queue, mut hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(1);
+
+    queue
+        .send_bounded(b"one".to_vec(), std::time::Duration::from_secs(1))
+        .await
+        .expect("empty channel: immediate enqueue");
+
+    // 满通道（cap=1 且唯一槽未被消费）：短超时必 Err。
+    let t0 = std::time::Instant::now();
+    let err = queue
+        .send_bounded(b"two".to_vec(), std::time::Duration::from_millis(80))
+        .await
+        .unwrap_err();
+    assert!(err.contains("backlog timeout"), "err: {err}");
+    assert!(err.contains("slow/dead client isolation"), "err: {err}");
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_millis(60),
+        "must actually wait the timeout, elapsed={:?}",
+        t0.elapsed()
+    );
+
+    // 消费腾出槽位后恢复可写。
+    assert_eq!(hi_rx.recv().await.unwrap(), b"one".to_vec());
+    queue
+        .send_bounded(b"three".to_vec(), std::time::Duration::from_secs(1))
+        .await
+        .expect("drained channel: writable again");
+}
+
+/// SendQueue::ping()：非阻塞不 panic（cap 1 连发两次，第二次槽满即弃）；
+/// 信号进 ping 通道，不经 hi/lo 数据通道。
+#[tokio::test]
+async fn test_send_queue_ping_nonblocking_not_hi_channel() {
+    let (queue, mut hi_rx, mut lo_rx, _done_tx) = SendQueue::test_channels(16);
+
+    queue.ping();
+    queue.ping(); // cap 1：第二次槽满即弃，不 panic 不阻塞。
+
+    // 数据通道无帧（ping 走独立信号线）。
+    assert!(
+        hi_rx.try_recv().is_err(),
+        "ping must not go through the hi channel"
+    );
+    assert!(
+        lo_rx.try_recv().is_err(),
+        "ping must not go through the lo channel"
     );
 }
 

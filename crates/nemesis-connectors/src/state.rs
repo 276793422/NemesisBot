@@ -74,7 +74,11 @@ pub fn load_tool_state(workspace: &Path, connector_id: &str) -> ToolPolicyState 
     let Ok(path) = state_path(workspace, connector_id) else {
         return ToolPolicyState::default();
     };
-    match std::fs::read_to_string(&path) {
+    // BUG-20261120-025 横向同族收口：走 read_config_string 剥前导 UTF-8 BOM
+    // （记事本保存形态）——sidecar 是停用位/例外意志的持久化面，裸读的
+    // BOM 前缀会让 parse 失败走下方空表降级臂 = 意志静默丢失（本函数注释
+    // 点名的「意志丢失风险」被 BOM 直接触发，且降级臂只 WARN 一声）。
+    match nemesis_utils::fsutil::read_config_string(&path) {
         Ok(text) => match serde_json::from_str::<ToolPolicyState>(&text) {
             Ok(state) => state,
             Err(e) => {

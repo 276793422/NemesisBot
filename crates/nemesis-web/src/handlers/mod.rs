@@ -727,6 +727,37 @@ pub(crate) fn restore_masked_named_fields(
     }
 }
 
+/// 整档 typed save 入口的形状闸：配置文档必须是 JSON object。
+///
+/// serde 派生 struct 的 `Deserialize` 同时实现 `visit_map` 与 `visit_seq`——
+/// 把 `[]` 喂给全字段带 default 的 struct 会走 `visit_seq` 零元素臂，得到
+/// 「全字段落 default」的**合法**值（`from_value` 不报错）。不拦的话，畸形
+/// 载荷会静默把整档配置重置为出厂默认还回 `saved:true`（BUG-20261120-027：
+/// `config.save []` 实测清空 model_list/API key/端口）。字符串形态
+/// `"{ }"` 走不了 visit_seq（诚实报错），唯独数组形态有洞——在 save 入口
+/// 统一 object 闸封死。
+pub(crate) fn require_object(data: &serde_json::Value, what: &str) -> Result<(), String> {
+    if data.is_object() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} must be a JSON object, got {}",
+            json_type_name(data)
+        ))
+    }
+}
+
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// Resolve a path relative to the workspace, preventing path traversal.
 pub fn resolve_path(workspace: &str, relative: &str) -> Result<PathBuf, String> {
     // Reject paths that look absolute (drive letter or leading slash)

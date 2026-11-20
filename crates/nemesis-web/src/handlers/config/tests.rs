@@ -378,3 +378,138 @@ async fn config_set_field_unknown_path_still_loud_rejected() {
         .unwrap_err();
     assert!(err.contains("unknown config field"), "{err}");
 }
+
+/// BUG-20261120-026 回归锁：`projects.instruction_trust` 带
+/// `skip_serializing_if = "String::is_empty"`——SettingsView「默认」选项
+/// value="" 写入后回读键消失，旧严格校验误报 unknown config field 并拒绝
+/// 落盘，isolated 无法经 UI 切回默认。空值叶子消失 = typed 缺省持久化形态，
+/// 必须放行（与 config.save 的 is_empty_leaf 豁免同款语义）。
+#[tokio::test]
+async fn config_set_field_empty_string_on_skip_serializing_field_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    // isolated（非空）先落盘——正常路径不受豁免影响。
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "projects.instruction_trust",
+                "value": "isolated"
+            })),
+            &ctx,
+        )
+        .await
+        .expect("isolated set_field must pass")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert_eq!(cfg["projects"]["instruction_trust"], "isolated");
+
+    // 切回默认（""）：键从回读消失（skip_serializing_if）= 未配置 = 默认
+    // annotate，不得误报 unknown config field。
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "projects.instruction_trust",
+                "value": ""
+            })),
+            &ctx,
+        )
+        .await
+        .expect("empty-string reset must pass (skip_serializing_if 豁免)")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert!(
+        cfg["projects"]["instruction_trust"].is_null(),
+        "reset 后键应消失（typed 缺省形态），前端以 || '' 读作默认"
+    );
+}
+
+/// 同族：`Option<bool>` + `skip_serializing_if = "Option::is_none"`
+/// （agents.lazy_tool_schema）写 null（显式清空表态）——同款豁免放行。
+#[tokio::test]
+async fn config_set_field_null_on_skip_option_field_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "agents.lazy_tool_schema",
+                "value": true
+            })),
+            &ctx,
+        )
+        .await
+        .expect("Some(true) set_field must pass")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert_eq!(cfg["agents"]["lazy_tool_schema"], true);
+
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "agents.lazy_tool_schema",
+                "value": null
+            })),
+            &ctx,
+        )
+        .await
+        .expect("null 清空表态 must pass (Option::is_none 豁免)")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert!(
+        cfg["agents"]["lazy_tool_schema"].is_null(),
+        "清空后键应消失（未表态 = 交给 tier 裁决矩阵）"
+    );
+}
+
+/// BUG-20261120-027 回归锁：config.save 收 `[]` 曾走 serde visit_seq 零元素
+/// 臂 = 「全字段落 default」的合法 Config，整档配置被静默重置为出厂默认还回
+/// `saved:true`（真机 fuzz 实测 model_list/API key/端口全丢；`"{ }"` 字符串
+/// 形态倒是诚实拒绝——唯独数组形态有洞）。形状闸必须在 from_value 之前
+/// loud 拒绝非 object 文档。
+#[tokio::test]
+async fn config_save_array_payload_loud_rejected_and_disk_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    // 先落一份带判别标记的非默认配置（make_ctx 写的默认档被它覆盖）。
+    let seeded = serde_json::json!({
+        "model_list": [
+            { "model": "vendor/alpha", "api_key": "sk-real-key", "api_base": "http://127.0.0.1:1" }
+        ],
+        "gateway": { "port": 49399 }
+    });
+    std::fs::write(
+        dir.path().join("config.json"),
+        serde_json::to_string_pretty(&seeded).unwrap(),
+    )
+    .unwrap();
+
+    let err = handler
+        .handle_cmd("save", Some(serde_json::json!([])), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be a JSON object"), "{err}");
+    assert!(err.contains("array"), "{err}");
+
+    // 盘上判别字段原样保留——不是出厂默认形态。
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        on_disk["gateway"]["port"], 49399,
+        "seeded port must survive the rejected save"
+    );
+    assert_eq!(
+        on_disk["model_list"][0]["api_key"], "sk-real-key",
+        "seeded api_key must survive the rejected save"
+    );
+}

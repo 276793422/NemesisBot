@@ -37,7 +37,17 @@ pub fn load(path: &Path) -> Result<CronStoreData, String> {
     if !path.exists() {
         return Ok(CronStoreData::new_v1());
     }
-    let data = std::fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
+    // 走 read_config_string 剥前导 UTF-8 BOM（BUG-20261120-025）：jobs.json
+    // 是用户可手工编辑的持久化面（legacy 迁移机制的存在即证明手编 store 在
+    // 野外存在），记事本「带 BOM 的 UTF-8」保存形态下裸 read_to_string 的
+    // 前导 \u{FEFF} 会让 parse 的 `starts_with('[')` 判定走偏 + serde_json
+    // 报 expected value at line 1 → load 失败置毒 → start()/save 全拒 =
+    // 全部定时任务停摆，用户照报错删文件即丢任务清单（BUG-20261115-036
+    // discipline 臂同构失败链）。read_config_string 是剥 BOM 单一真相源
+    // （nemesis-utils fsutil 纪律锚：所有用户可编辑 JSON/TOML 配置读取点
+    // 一律走它）；BOM 前缀的 legacy 裸数组迁移同样被掐死，同函数同愈。
+    let data =
+        nemesis_utils::fsutil::read_config_string(path).map_err(|e| format!("read: {}", e))?;
     parse(&data)
 }
 

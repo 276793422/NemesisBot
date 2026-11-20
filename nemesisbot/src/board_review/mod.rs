@@ -2262,6 +2262,13 @@ async fn review_issue(
                         "[BoardReview] issue {issue_id} 能力类失败（{fc}）+ 同目标重派（unlimited_mode 告警继续）"
                     );
                 } else {
+                    // 转人工清账（fail_streak.rs 不变量「非重派终态清账」，与
+                    // token_budget/worker_loop/熔断/UNSURE/Freeze 五臂同纪律）：
+                    // 不清则计数跨人工干预轮累积——resume_entry 指引的
+                    // review.retrigger 不清账，人工修好后同签名再败一两轮就被
+                    // 旧计数推到「同因熔断」误报（未重派的停车轮被当作
+                    // 无收敛重派轮计数）。
+                    fail_streaks.clear(issue_id);
                     // U-A：停车现场落盘。
                     let handoff_note = park_with_handoff(
                         deps,
@@ -2398,6 +2405,9 @@ async fn review_issue(
                         "[BoardReview] issue {issue_id} 预算超限（unlimited_mode 仅告警继续）：{breach}"
                     );
                 } else {
+                    // 转人工清账（非重派终态，同上方五臂纪律：调大预算后
+                    // review.retrigger 复评不被旧计数推到误熔断）。
+                    fail_streaks.clear(issue_id);
                     // U-A：停车现场落盘。
                     let handoff_note = park_with_handoff(
                         deps,
@@ -2479,6 +2489,8 @@ async fn review_issue(
                     target
                 }
                 Err(e) => {
+                    // 转人工清账（非重派终态，同上方五臂纪律）。
+                    fail_streaks.clear(issue_id);
                     let msg = format!("⛔ 验收未通过，确定重派目标失败：{e}（请人工派发或处置）");
                     store.add_comment(NewComment {
                         issue_id,
@@ -2571,6 +2583,9 @@ async fn review_issue(
                         info!("[BoardReview] issue {issue_id} 重派竞态让位（在途派发已接管）：{e}");
                         return Ok(true);
                     }
+                    // 转人工清账（非重派终态，同上方五臂纪律；estop/竞态让位
+                    // 两臂不清——让位链未终态，estop 全臂一致保持旧计数）。
+                    fail_streaks.clear(issue_id);
                     let msg = format!("⛔ 验收未通过，自动重派失败：{e}（请人工派发或处置）");
                     store.add_comment(NewComment {
                         issue_id,

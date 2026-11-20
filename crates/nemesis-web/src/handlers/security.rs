@@ -435,6 +435,9 @@ impl SecurityHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
+        // 形状闸：`[]` 走 visit_seq = 全默认 SecurityConfig 静默重置并热翻
+        // 审批免打扰（BUG-20261120-027）。
+        crate::handlers::require_object(data, "security config")?;
         let config: nemesis_config::SecurityConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid security config: {}", e))?;
         // 锁在 update_security_config 内（整档回存与 config.json 编辑臂同基准）。
