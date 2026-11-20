@@ -127,6 +127,10 @@ crate::debug_redact::impl_redacted_debug!(WebSocketChannelConfig {
 struct ActiveConnection {
     send_tx: tokio::sync::mpsc::UnboundedSender<String>,
     client_id: String,
+    /// 连接两个任务的 AbortHandle（[reader, writer]）。latest-wins 驱逐时
+    /// abort 旧连接任务（对已结束任务 abort 是无害 no-op）；reader 正常退
+    /// 出不 abort writer——走通道关闭的自然收尾，保住 close 帧握手。
+    tasks: [tokio::task::AbortHandle; 2],
 }
 
 /// 连接 ID 序号：进程内单调，同纳秒两次生成也唯一。
@@ -158,6 +162,10 @@ fn generate_client_id() -> String {
 /// Accepts one client at a time on `{host}:{port}{path}`. Inbound messages
 /// are published to the message bus; outbound messages are written to the
 /// connected WebSocket client via a send-queue.
+///
+/// 换槽语义（BUG-20261120-036）：新连接通过升级+鉴权+准入闸后 latest-wins
+/// 驱逐旧连接（旧连接可能已死或完全静默——半开 TCP 无流量时旧形态的
+/// 「占用即拒绝」会永久卡死通道槽，恢复只能重启 gateway）。
 pub struct WebSocketChannel {
     base: Arc<BaseChannel>,
     config: WebSocketChannelConfig,
@@ -278,17 +286,6 @@ impl Channel for WebSocketChannel {
                             continue;
                         }
 
-                        // Single-client check
-                        {
-                            let guard = active_conn.lock();
-                            if guard.is_some() {
-                                warn!(addr = %remote_addr, "[WebSocketChannel] rejected: client already connected");
-                                drop(guard);
-                                // Just drop the stream — client gets connection reset
-                                continue;
-                            }
-                        }
-
                         // WebSocket upgrade (with optional path check and auth)
                         // 升级等待必须有界——TCP 连上不发
                         // HTTP 升级请求的静默连接（本地扫描/挂死客户端）旧实现
@@ -375,52 +372,8 @@ impl Channel for WebSocketChannel {
                             tokio::sync::mpsc::unbounded_channel::<String>();
                         let client_id = generate_client_id();
 
-                        // Store active connection
-                        {
-                            let mut guard = active_conn.lock();
-                            *guard = Some(ActiveConnection {
-                                send_tx: send_tx.clone(),
-                                client_id: client_id.clone(),
-                            });
-                        }
-
-                        info!(client_id = %client_id, addr = %remote_addr, "[WebSocketChannel] client connected");
-
-                        // Send welcome message
-                        let welcome = ServerMessage::message(
-                            "system",
-                            format!(
-                                "Connected to NemesisBot WebSocket channel. Client ID: {client_id}"
-                            ),
-                        );
-                        if let Ok(json) = serde_json::to_string(&welcome) {
-                            let _ = send_tx.send(json);
-                        }
-
-                        // Spawn writer task
-                        tokio::spawn(async move {
-                            let mut sink = sink;
-                            while let Some(data) = send_rx.recv().await {
-                                // BUG-20261115-016：有界写，超时与发送失败同走 break
-                                if tokio::time::timeout(
-                                    std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
-                                    sink.send(Message::Text(data.into())),
-                                )
-                                .await
-                                .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            // close 也有界（同一挂死连接上 close 同样可永远 pending）
-                            let _ = tokio::time::timeout(
-                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
-                                sink.close(),
-                            )
-                            .await;
-                        });
-
-                        // Spawn reader task
+                        // Spawn reader task（先于 writer：其句柄要交给 writer
+                        // 的死亡联动与槽位存管）
                         let read_active_conn = Arc::clone(&active_conn);
                         let read_bus = bus_sender.clone();
                         let read_send_tx = send_tx.clone();
@@ -475,6 +428,93 @@ impl Channel for WebSocketChannel {
                             }
                             info!(client_id = %read_client_id, "[WebSocketChannel] client disconnected");
                         });
+
+                        // Spawn writer task
+                        // BUG-20261120-036：写死亡联动清理——writer 因写超时/写
+                        // 失败退出（对端读停/半开连接，BUG-20261115-016 有界写
+                        // 的 break 臂）时，旧形态只结束 writer 自身：reader 仍
+                        // 挂在 stream.next() 上继续处理僵尸入站，active_conn 槽
+                        // 被死连接占用到对端 TCP 真正断开为止（笔记本休眠等场
+                        // 景可达小时级），期间出站全部诚实报错、通道不可用。
+                        // 现在 death 臂 abort reader + client_id 守卫清槽（与
+                        // reader 正常退出清理同款守卫，连接交错下不误清新槽）。
+                        let write_active_conn = Arc::clone(&active_conn);
+                        let writer_client_id = client_id.clone();
+                        let reader_abort = read_task.abort_handle();
+                        let write_task = tokio::spawn(async move {
+                            let mut sink = sink;
+                            let mut write_died = false;
+                            while let Some(data) = send_rx.recv().await {
+                                // BUG-20261115-016：有界写，超时与发送失败同走 break
+                                if tokio::time::timeout(
+                                    std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                    sink.send(Message::Text(data.into())),
+                                )
+                                .await
+                                .is_err()
+                                {
+                                    write_died = true;
+                                    break;
+                                }
+                            }
+                            if write_died {
+                                reader_abort.abort();
+                                let mut guard = write_active_conn.lock();
+                                if let Some(ref conn) = *guard
+                                    && conn.client_id == writer_client_id
+                                {
+                                    *guard = None;
+                                }
+                            }
+                            // close 也有界（同一挂死连接上 close 同样可永远 pending）
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(WS_WRITE_TIMEOUT_SECS),
+                                sink.close(),
+                            )
+                            .await;
+                        });
+
+                        // Store active connection（同一临界区内 latest-wins 驱逐）
+                        // BUG-20261120-036：旧形态「已占用即拒绝新连接」在完全
+                        // 静默的半开客户端（休眠/崩溃无 RST，双向零流量）下形成
+                        // 僵尸槽——新旧连接都无流量触发清理，槽被永久占住，恢复
+                        // 只能重启 gateway。改为 latest-wins 驱逐：新连接换槽时
+                        // abort 旧连接 reader/writer（对已结束任务是无害 no-op），
+                        // 旧 client_id 的迟到出站走既有死目标软失败。驱逐只发生
+                        // 在升级+鉴权+准入闸全过之后，扫描器/未授权连接进不到这
+                        // 一步（无 auth 部署的「任意客户端换槽」是该形态下的语义
+                        // 选择：可自愈恢复优先于对静默旧连接的保留）。
+                        {
+                            let mut guard = active_conn.lock();
+                            if let Some(old) = guard.as_ref() {
+                                for h in &old.tasks {
+                                    h.abort();
+                                }
+                                warn!(
+                                    old_client_id = %old.client_id,
+                                    new_client_id = %client_id,
+                                    "[WebSocketChannel] evicting previous connection (latest-wins: previous client dead or silent)"
+                                );
+                            }
+                            *guard = Some(ActiveConnection {
+                                send_tx: send_tx.clone(),
+                                client_id: client_id.clone(),
+                                tasks: [read_task.abort_handle(), write_task.abort_handle()],
+                            });
+                        }
+
+                        info!(client_id = %client_id, addr = %remote_addr, "[WebSocketChannel] client connected");
+
+                        // Send welcome message
+                        let welcome = ServerMessage::message(
+                            "system",
+                            format!(
+                                "Connected to NemesisBot WebSocket channel. Client ID: {client_id}"
+                            ),
+                        );
+                        if let Ok(json) = serde_json::to_string(&welcome) {
+                            let _ = send_tx.send(json);
+                        }
 
                         // Track reader task for clean shutdown
                         reader_tasks.lock().push(read_task);
