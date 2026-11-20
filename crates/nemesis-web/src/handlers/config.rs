@@ -332,6 +332,16 @@ impl ConfigHandler {
             let reserialized = serde_json::to_value(&*config)
                 .map_err(|e| format!("failed to serialize config: {}", e))?;
             match json_path_get(&reserialized, path) {
+                None if !subtree_has_payload(value) => {
+                    // skip_serializing_if 字段（projects.instruction_trust /
+                    // agents.lazy_tool_schema / security 策略串 / model extras
+                    // 空表等）写「无载荷值」（""/null/false/{}/[]）后回读键
+                    // 消失 = typed 缺省持久化形态（未配置 = 落消费方缺省），
+                    // 不是未知键——与 config.save 的 subtree_has_payload 豁免
+                    // 同款无损语义（BUG-20261120-026：SettingsView「默认」
+                    // 选项 value="" 被误报 unknown config field，isolated
+                    // 无法经 UI 切回默认）。
+                }
                 None => return Err(format!("unknown config field: {}", path)),
                 Some(actual) if actual != value && !numeric_normalized_equal(actual, value) => {
                     return Err(format!(

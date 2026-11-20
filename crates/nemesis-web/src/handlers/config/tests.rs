@@ -378,3 +378,93 @@ async fn config_set_field_unknown_path_still_loud_rejected() {
         .unwrap_err();
     assert!(err.contains("unknown config field"), "{err}");
 }
+
+/// BUG-20261120-026 回归锁：`projects.instruction_trust` 带
+/// `skip_serializing_if = "String::is_empty"`——SettingsView「默认」选项
+/// value="" 写入后回读键消失，旧严格校验误报 unknown config field 并拒绝
+/// 落盘，isolated 无法经 UI 切回默认。空值叶子消失 = typed 缺省持久化形态，
+/// 必须放行（与 config.save 的 is_empty_leaf 豁免同款语义）。
+#[tokio::test]
+async fn config_set_field_empty_string_on_skip_serializing_field_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    // isolated（非空）先落盘——正常路径不受豁免影响。
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "projects.instruction_trust",
+                "value": "isolated"
+            })),
+            &ctx,
+        )
+        .await
+        .expect("isolated set_field must pass")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert_eq!(cfg["projects"]["instruction_trust"], "isolated");
+
+    // 切回默认（""）：键从回读消失（skip_serializing_if）= 未配置 = 默认
+    // annotate，不得误报 unknown config field。
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "projects.instruction_trust",
+                "value": ""
+            })),
+            &ctx,
+        )
+        .await
+        .expect("empty-string reset must pass (skip_serializing_if 豁免)")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert!(
+        cfg["projects"]["instruction_trust"].is_null(),
+        "reset 后键应消失（typed 缺省形态），前端以 || '' 读作默认"
+    );
+}
+
+/// 同族：`Option<bool>` + `skip_serializing_if = "Option::is_none"`
+/// （agents.lazy_tool_schema）写 null（显式清空表态）——同款豁免放行。
+#[tokio::test]
+async fn config_set_field_null_on_skip_option_field_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let handler = ConfigHandler::new();
+
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "agents.lazy_tool_schema",
+                "value": true
+            })),
+            &ctx,
+        )
+        .await
+        .expect("Some(true) set_field must pass")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert_eq!(cfg["agents"]["lazy_tool_schema"], true);
+
+    handler
+        .handle_cmd(
+            "set_field",
+            Some(serde_json::json!({
+                "path": "agents.lazy_tool_schema",
+                "value": null
+            })),
+            &ctx,
+        )
+        .await
+        .expect("null 清空表态 must pass (Option::is_none 豁免)")
+        .expect("set_field returns payload");
+    let cfg = get_config(&handler, &ctx).await;
+    assert!(
+        cfg["agents"]["lazy_tool_schema"].is_null(),
+        "清空后键应消失（未表态 = 交给 tier 裁决矩阵）"
+    );
+}
