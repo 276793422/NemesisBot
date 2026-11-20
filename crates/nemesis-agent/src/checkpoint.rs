@@ -1545,6 +1545,12 @@ impl CheckpointStore {
     /// 单会话与存量数据行为逐字节不变。其他会话路径不做指纹比对（封印态
     /// 通常=现盘态，冲突语义是「波及」而非「外部修改」；若其文件确被外部
     /// 改动，仍默认拒绝，只是标签归入波及面）。
+    ///
+    /// BUG-20261120-044 补闸：git 全树面的回退窗口内**未声明**偏离（exec
+    /// 副作用等不经 snapshot 声明的写）同样可能是其他会话产生的——按
+    /// begin-tree 窗口归因（`attribute_window_change`）落到其他会话 turn
+    /// 窗口的，补进 `other_session_paths` 同待遇（默认拒绝）；归因不出 /
+    /// 本会话 / 老数据（session=None）= 维持既有 silent 语义（回退本意）。
     pub fn conflict_scan_scoped(
         &self,
         from_turn: usize,
@@ -1566,6 +1572,16 @@ impl CheckpointStore {
         let mut other_seen: HashSet<String> = HashSet::new();
         // restore 同款守卫：from_turn 后无 checkpoint → no-op（锁内一次性赋值）。
         let has_post;
+        // （BUG-20261120-044）回退窗口内各 turn 的 (turn, session, tree) 三元组
+        // （tree Some 才有归因价值）。git 全树面的 in-window 未声明偏离此前被
+        // 一律归为「回退本意」零闸碾过——多会话共享索引时产生者可以是**其他
+        // 会话**（其 exec 副作用不经 snapshot 声明，other_session_paths 的声明
+        // 面收集不到），须按窗口归属补闸。
+        let window_trees: Vec<(usize, Option<String>, String)>;
+        // BUG-20261120-044：target 树条目（最新 tree ≤ from_turn）的归属
+        // 会话——首对差异（target → 首棵窗口树）归属 target 条目所属 turn
+        // 的执行窗口（即回退锚 turn 本身）。
+        let target_meta: Option<(Option<String>, String)>;
         {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
@@ -1605,6 +1621,17 @@ impl CheckpointStore {
                     }
                 }
             }
+            window_trees = all
+                .iter()
+                .filter(|c| c.turn > from_turn)
+                .filter_map(|c| c.tree.clone().map(|t| (c.turn, c.session.clone(), t)))
+                .collect();
+            target_meta = all
+                .iter()
+                .filter(|c| c.turn <= from_turn)
+                .rev()
+                .find(|c| c.tree.is_some())
+                .map(|c| (c.session.clone(), c.tree.clone().unwrap()));
         }
         report.other_session_paths = other_paths;
         let declared: std::collections::HashSet<String> =
@@ -1667,14 +1694,45 @@ impl CheckpointStore {
                 let _op = gb.op_lock.lock();
                 gb.open()
             };
+            let window_pairs: Vec<(Option<String>, String)> = window_trees
+                .into_iter()
+                .map(|(_, session, tree)| (session, tree))
+                .collect();
+            let mut window_waves: Vec<String> = Vec::new();
             let (extra, extra_new) = match opened {
                 // open 失败 = 全树 diff 预检不可用，按既有降级语义取空集
-                // （预检不误报，与 tree_diff_unchecked 内部失败同路）。
+                // （预检不误报，与 tree_diff_unchecked 内部失败同路）；归因
+                // 随之不可用 = 不补闸（silent 语义，与未编译形态同路）。
                 Ok(mut repo) => {
-                    Self::tree_diff_unchecked(&mut repo, &target_hex, &reference_hex, &excluded)
+                    let (extra, extra_new, in_window) = Self::tree_diff_unchecked(
+                        &mut repo,
+                        &target_hex,
+                        &reference_hex,
+                        &excluded,
+                    );
+                    // BUG-20261120-044：回退窗口内未声明偏离逐一归因——产生
+                    // 它的 turn 窗口属于**其他会话**时，与声明路径同待遇进
+                    // other_session_paths（默认拒绝，force 显式强过）。归因
+                    // 不出 / 本会话 / 老数据（session=None）= 维持既有 silent
+                    // 语义（回退本意）。
+                    for rel in in_window {
+                        if let Some(owner) = Self::attribute_window_change(
+                            &repo,
+                            &window_pairs,
+                            &target_hex,
+                            target_meta.as_ref().and_then(|(s, _)| s.as_deref()),
+                            &rel,
+                        ) && is_other_session(&owner, rewind_session)
+                            && !report.other_session_paths.contains(&rel)
+                        {
+                            window_waves.push(rel);
+                        }
+                    }
+                    (extra, extra_new)
                 }
                 Err(_) => (Vec::new(), Vec::new()),
             };
+            report.other_session_paths.extend(window_waves);
             for p in extra {
                 if !report.unchecked_paths.contains(&p) {
                     report.unchecked_paths.push(p);
@@ -1690,49 +1748,52 @@ impl CheckpointStore {
         }
         // checkpoint-git 关：全树 diff 段不编译，has_post 消费面消失。
         #[cfg(not(feature = "checkpoint-git"))]
-        let _ = (has_post, declared);
+        let _ = (has_post, declared, window_trees, target_meta);
         report
     }
 
-    /// target..现状 全树 diff 中「偏离发生在最新 begin 之后」的未声明
-    /// 路径集，返回 `(unchecked, unchecked_new)` 双集合：前者 = target
-    /// 树已有该路径（恢复/覆盖历史态）；后者 = target 树没有（Added，
-    /// restore 将物理擦除——「会话结束后新出现」的外部文件保护面）。
-    /// 参照判定：路径在 target 与 reference（最新 begin tree）里
-    /// 状态一致 = 偏离在 begin 后产生（trailing/外部，不可区分）；已偏离
-    /// = 回退区间内变更（agent 本意）。任何失败 = 空集（预检降级，不误
-    /// 报）。libgit2 借用规则同 git_restore：先可变（write_current_tree）
-    /// 再拿 immutable Tree 句柄。
+    /// target..现状 全树 diff 中未声明路径的三分集合
+    /// `(unchecked, unchecked_new, in_window)`：前两者 = target 与 reference
+    /// （最新 begin tree）树态一致（偏离在 begin 后产生，trailing/外部不可
+    /// 区分）——前者 target 已有该路径（恢复/覆盖历史态，可见性语义），
+    /// 后者 target 没有（Added，restore 将物理擦除——「会话结束后新出现」
+    /// 的外部文件保护面）；第三项 = target..reference 间**已偏离**的未声明
+    /// 路径（BUG-20261120-044：单会话世界观 = 回退本意，但多会话共享索引
+    /// 下产生者可以是其他会话——单列交调用方按窗口归因，归属其他会话时
+    /// 补进波及面）。任何失败 = 空集（预检降级，不误报）。libgit2 借用
+    /// 规则同 git_restore：先可变（write_current_tree）再拿 immutable Tree
+    /// 句柄。
     #[cfg(feature = "checkpoint-git")]
     fn tree_diff_unchecked(
         repo: &mut git2::Repository,
         target_hex: &str,
         reference_hex: &str,
         declared: &std::collections::HashSet<String>,
-    ) -> (Vec<String>, Vec<String>) {
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
         let cur_hex = match Self::write_current_tree(repo) {
             Ok(h) => h,
-            Err(_) => return (Vec::new(), Vec::new()),
+            Err(_) => return (Vec::new(), Vec::new(), Vec::new()),
         };
         let (Ok(target_oid), Ok(reference_oid), Ok(cur_oid)) = (
             git2::Oid::from_str(target_hex),
             git2::Oid::from_str(reference_hex),
             git2::Oid::from_str(&cur_hex),
         ) else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         };
         let (Ok(target_tree), Ok(reference_tree), Ok(cur_tree)) = (
             repo.find_tree(target_oid),
             repo.find_tree(reference_oid),
             repo.find_tree(cur_oid),
         ) else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         };
         let Ok(diff) = repo.diff_tree_to_tree(Some(&target_tree), Some(&cur_tree), None) else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         };
         let mut out = Vec::new();
         let mut new_out = Vec::new();
+        let mut in_window = Vec::new();
         for delta in diff.deltas() {
             let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
                 continue;
@@ -1753,9 +1814,52 @@ impl CheckpointStore {
                 } else {
                     out.push(rel);
                 }
+            } else {
+                // BUG-20261120-044：target..reference 间已偏离——单会话世
+                // 界观 = 回退本意；多会话共享索引下产生者可以是其他会话
+                // （其 exec 副作用不经 snapshot 声明，声明面波及收集不到）。
+                // 单列交调用方按窗口归因。
+                in_window.push(rel);
             }
         }
-        (out, new_out)
+        (out, new_out, in_window)
+    }
+
+    /// BUG-20261120-044：in-window 未声明偏离的窗口归因。begin tree 是
+    /// turn **开始**态——turn 的工作落在它与下一棵 begin tree 之间，故沿
+    /// （target tree → 窗口内各 begin tree，turn 升序）逐对比较该路径状态，
+    /// 第一对出现差异时把差异归属**前一棵树所属 turn 的执行窗口**，
+    /// introducer = 前一棵树的归属会话（首对的前树 = target 条目，其窗口
+    /// 即回退锚 turn 本身——target 通常就是发起会话的锚 turn begin 树）。
+    /// 树不可解析（oid 失效/对象缺失）= 跳过该对且 prev 保持（blame-next：
+    /// 差异落到下一对，宁可误闸 force 可过，不可漏闸静默碾）。返回 None =
+    /// 全窗口树态一致或全部树不可解析——不归因不闸，保持既有 silent 语义。
+    #[cfg(feature = "checkpoint-git")]
+    fn attribute_window_change(
+        repo: &git2::Repository,
+        window: &[(Option<String>, String)],
+        target_hex: &str,
+        target_session: Option<&str>,
+        rel: &str,
+    ) -> Option<Option<String>> {
+        let path = std::path::Path::new(rel);
+        let state_of = |hex: &str| -> Option<Option<git2::Oid>> {
+            let tree = repo.find_tree(git2::Oid::from_str(hex).ok()?).ok()?;
+            Some(tree.get_path(path).ok().map(|e| e.id()))
+        };
+        let mut prev = target_hex.to_string();
+        let mut prev_session = target_session.map(str::to_string);
+        for (session, hex) in window {
+            let (Some(a), Some(b)) = (state_of(&prev), state_of(hex)) else {
+                continue; // 树不可解析：该对弃判，prev 保持
+            };
+            if a != b {
+                return Some(prev_session);
+            }
+            prev = hex.clone();
+            prev_session = session.clone();
+        }
+        None
     }
 
     /// 声明路径是否落在工作区内（git 影子树的覆盖范围）。相对路径恒在内；
