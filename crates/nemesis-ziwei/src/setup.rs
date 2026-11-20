@@ -1083,7 +1083,11 @@ impl SetupManager {
                         }
                         for i in 0..bytes.len() {
                             if match_pattern(bytes, i, &pat) {
-                                let rva = sec.rva + i as u32;
+                                // saturating 防 u32 加法溢出（同族：损坏
+                                // PE 节基址近顶 + 节内偏移可溢出，debug
+                                // panic / release 回绕成小 RVA——与
+                                // ziwei-rev recover/xref/nopsled 同一修复族）
+                                let rva = sec.rva.saturating_add(i as u32);
                                 let mut row = site_row(rva);
                                 row["section"] = json!(sec.name);
                                 hits.push(row);
@@ -2685,11 +2689,14 @@ fn semantic_names(workspace: &Path, profile_id: &str) -> std::collections::HashM
 }
 
 /// 首个可执行节界（locate/gaps 的覆盖范围基线；可执行节缺席 = None）。
+/// saturating 防 u32 加法溢出（同族）：损坏 PE 节基址近顶时回绕会产出
+/// lo>hi 退化区间，向下污染 locate/gaps 的界判定与差集运算——与
+/// container::pe_text_bounds（analyze 路径，已饱和）语义对齐。
 fn text_bounds(img: &ImageMap) -> Option<(u32, u32)> {
     img.sections
         .iter()
         .find(|(s, _)| s.is_executable())
-        .map(|(s, _)| (s.rva, s.rva + s.vsize))
+        .map(|(s, _)| (s.rva, s.rva.saturating_add(s.vsize)))
 }
 
 // ── 管道分块读（windows）────────────────────────────────────────────────

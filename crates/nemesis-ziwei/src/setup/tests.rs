@@ -1954,3 +1954,95 @@ fn find_pid_by_name_and_main_module_locate_own_process() {
     // 不存在的 pid：快照失败诚实报错
     assert!(main_module(0x7FFF_FFFF).is_err());
 }
+
+// ── 恶意 PE：节基址近顶 u32 加法溢出族（saturating 同族修复回归）────────
+//
+// ziwei-rev 同族（recover/xref/nopsled/container::pe_text_bounds）早已
+// saturating 并有 arithmetic_overflow_tests 钉住；本组钉 nemesis-ziwei
+// 侧的三个消费面（query_search 命中 RVA / text_bounds / query_gaps）。
+
+/// 近顶 .text RVA 的恶意夹具：正常 seed 三件套建好后，覆写盘上 exe 的
+/// .text 节表（vsize@0x190 / rva@0x194，fixture 布局 sh=0x188）+ 重存
+/// 更晚时间戳快照（analyze 取 latest = 恶意形态）。
+/// .text rva=0xFFFF_FFE5：entry/export/pdata（0x1000..0x2080）全部甩出界，
+/// nopsled 是种子唯一可达来源——.text blob 头部预埋 4×0x90（游程起点
+/// 偏移 0，rva+0 界内；原 0x20 的 8×0x90 游程 saturating 后恰等于界顶
+/// 被诚实丢弃，不可作种子）。
+fn seed_analyze_env_corrupted_rva(ws: &std::path::Path, id: &str) {
+    let text_rva: u32 = 0xFFFF_FFE5;
+
+    // 先建正常三件套（draft + exe + 正常快照），再覆写 exe 与快照为恶意形态
+    seed_analyze_env(ws, id);
+
+    let mut file = fixture_pe_file();
+    file[0x190..0x194].copy_from_slice(&0x1000u32.to_le_bytes());
+    file[0x194..0x198].copy_from_slice(&text_rva.to_le_bytes());
+    std::fs::write(ws.join("dummy.exe"), &file).unwrap();
+
+    let mut text = fixture_text();
+    text[0x00..0x04].copy_from_slice(&[0x90u8; 4]);
+    let pe = nemesis_ziwei_rev::pe::PeInfo::parse(&file).unwrap();
+    let meta = SnapshotMeta {
+        profile_id: id.to_string(),
+        ts_rfc3339: "2026-11-02T00:00:00Z".to_string(), // 晚于正常夹具快照 → latest
+        pid: 7,
+        module_base: 0x140000000,
+        machine: pe.machine,
+        exe_path: ws.join("dummy.exe").display().to_string(),
+        sections: pe.sections.clone(),
+    };
+    SnapshotStore::new(ws, id)
+        .save(
+            &meta,
+            &file,
+            &[
+                (".text".to_string(), text),
+                (".rdata".to_string(), fixture_rdata()),
+            ],
+            2_000, // ts 目录名：晚于正常夹具的 1000 → latest 选中恶意快照
+        )
+        .unwrap();
+}
+
+#[test]
+fn text_bounds_saturates_near_max_rva() {
+    use super::text_bounds;
+
+    let ws = temp_ws("tb-sat");
+    let id = "zw-pro-dtbsat";
+    seed_analyze_env_corrupted_rva(&ws, id);
+    let file = std::fs::read(ws.join("dummy.exe")).unwrap();
+    let pe = nemesis_ziwei_rev::pe::PeInfo::parse(&file).unwrap();
+    let img = nemesis_ziwei_rev::pe::ImageMap::new(pe, vec![(".text".to_string(), fixture_text())])
+        .unwrap();
+    // 修复前：rva+vsize 回绕 → (0xFFFF_FFE5, 0x0FE5)（lo>hi 退化区间，
+    // 向下污染 locate/gaps 界判定与差集）；修复后饱和到界顶。
+    assert_eq!(text_bounds(&img), Some((0xFFFF_FFE5, 0xFFFF_FFFF)));
+    cleanup(&ws);
+}
+
+#[test]
+fn corrupted_pe_search_and_gaps_saturate_no_panic() {
+    let ws = temp_ws("q-sat");
+    let id = "zw-pro-dqsat";
+    seed_analyze_env_corrupted_rva(&ws, id);
+    let mgr = SetupManager::new();
+    mgr.analyze(&ws)
+        .expect("恶意 rva 夹具 analyze 应成功（种子=nopsled 头部游程）");
+
+    // query_search bytes：首个 0xCC 命中在偏移 0x1B → 0xFFFF_FFE5+0x1B
+    // 溢出——修复前 debug panic / release 回绕成 0x0；修复后饱和
+    // 0xFFFF_FFFF 诚实展示。
+    let out = mgr.query_search(&ws, "bytes", "cc").unwrap();
+    assert!(out["count"].as_u64().unwrap() >= 1, "{out}");
+    assert_eq!(out["hits"][0]["site"], "0xFFFFFFFF", "{out}");
+
+    // query_gaps：text_bounds 消费方（修复前回绕退化区间污染差集与
+    // e-s 减法）——界合法且差集不炸。
+    let gaps = mgr.query_gaps(&ws).unwrap();
+    assert!(
+        gaps["text_bounds"].as_str().unwrap().contains("0xFFFFFFE5"),
+        "{gaps}"
+    );
+    cleanup(&ws);
+}
