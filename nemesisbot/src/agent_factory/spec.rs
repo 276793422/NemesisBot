@@ -562,17 +562,15 @@ pub fn build_agent_loop_from_spec(
         }
     }
     // cc_hooks 与主 loop 同一份 workspace config 目录（用户级 hook 方言
-    // 跨项目一致）；相对路径锚项目目录。
+    // 跨项目一致）；相对路径锚项目目录。恒建桥（即刻生效语义，同主 loop）。
     let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
     // 件2：桥句柄提升到构建作用域——spawn 闭包发 SubagentStart/Stop 用。
-    let mut project_cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> = None;
-    if let Some(bridge) =
-        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, project_dir.clone())
-    {
-        agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
-        project_cc_bridge = Some(std::sync::Arc::clone(&bridge));
-        bridge.register(&agent_loop);
-    }
+    let bridge =
+        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, project_dir.clone());
+    agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
+    let project_cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        Some(std::sync::Arc::clone(&bridge));
+    bridge.register(&agent_loop);
     // Todo 收尾提醒：同主 loop——项目会话正是 todowrite 忘
     // 收尾的重灾区。todo 是 bot 域会话态数据，锚主 workspace（与下方
     // TodoToolConfig 同根；不落用户项目工作树）。注册在用户 hooks 桥
@@ -881,9 +879,9 @@ pub fn build_agent_loop_from_spec(
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
     // 会话钩子自管面：hooks 工具与主 loop 同源（写同一份 hooks.json 的
-    // scope 圈定组；项目会话同样只能给自己设）。桥缺席 = 冷启动诚实
-    // 「重启后生效」（项目 loop 桥未建时）。
-    register_hooks_tool(&agent_loop, shared, project_cc_bridge.clone());
+    // scope 圈定组；项目会话同样只能给自己设）。落盘即热更（桥恒在，
+    // 即刻生效语义）。
+    register_hooks_tool(&agent_loop, shared);
     // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
     // ASM-08：装配自检（与主/集群 loop 同一闸，=甲）。

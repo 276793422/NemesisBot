@@ -110,7 +110,7 @@ fn json_type_name(v: &serde_json::Value) -> &'static str {
 }
 
 fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig, String> {
-    let obj = match v {
+    let mut obj = match v {
         serde_json::Value::Object(o) => o,
         _ => return Err("MCP config must be a JSON object".to_string()),
     };
@@ -125,54 +125,43 @@ fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig,
             #[serde(default = "default_mcp_timeout", deserialize_with = "flexible_i64")]
             timeout: i64,
         }
+        // 标准形状优先；mcpServers 键并存时**吸收合并**（BUG-20261120-011）：
+        // 此前 mcpServers 块被静默丢弃——CLI `mcp add` 在 mcpServers 形状
+        // 文件上补建空 servers 数组写出混合形状，重启后外部条目全体消失
+        // （Dashboard typed 落盘同理），全程零告警。同名单冲突以 servers
+        // 数组为准；合并结果 WARN 可观测。
+        let mcpservers_value = obj.remove("mcpServers");
         let shape: StandardShape =
             serde_json::from_value(serde_json::Value::Object(obj)).map_err(|e| e.to_string())?;
+        let mut servers = shape.servers;
+        if let Some(ms) = mcpservers_value {
+            let foreign = parse_mcp_servers_value(&ms)?;
+            let mut absorbed = 0usize;
+            let mut skipped = 0usize;
+            for s in foreign {
+                if servers.iter().any(|e| e.name == s.name) {
+                    skipped += 1;
+                } else {
+                    servers.push(s);
+                    absorbed += 1;
+                }
+            }
+            if absorbed > 0 || skipped > 0 {
+                warn!(
+                    "[MCP] config 同时含 servers 与 mcpServers：已合并 {absorbed} 个 mcpServers 条目；\
+                     {skipped} 个同名条目以 servers 数组为准被丢弃"
+                );
+            }
+        }
         return Ok(McpConfig {
             enabled: shape.enabled,
-            servers: shape.servers,
+            servers,
             timeout: shape.timeout,
         });
     }
 
     if let Some(ms) = obj.get("mcpServers") {
-        let mut servers = Vec::new();
-        match ms {
-            serde_json::Value::Object(map) => {
-                for (key, sv) in map {
-                    // 标量/数组条目 loud Err（BUG-20261117-055）：旧形态
-                    // `entry.get("name").is_none()` 对非对象恒真 → 走
-                    // `entry["name"] = ...` 下标赋值——serde_json 的
-                    // IndexMut 对非 object/Null 容器是 panic（"cannot access
-                    // key in JSON scalar"），一条标量条目把整个 config 解析
-                    // 打崩。本函数其余畸形形态全部 Err 返回（"must be a
-                    // JSON object" / "must be an object or array" / 逐 key
-                    // from_value 报错），此路径是唯一漏网的 panic 面。
-                    if !sv.is_object() {
-                        return Err(format!(
-                            "mcpServers[{key}] 必须是 server 配置对象（got {}）",
-                            json_type_name(sv)
-                        ));
-                    }
-                    let mut entry = sv.clone();
-                    if entry.get("name").is_none() {
-                        entry["name"] = serde_json::Value::String(key.clone());
-                    }
-                    servers.push(
-                        serde_json::from_value::<McpServerConfig>(entry)
-                            .map_err(|e| format!("mcpServers[{key}]: {e}"))?,
-                    );
-                }
-            }
-            serde_json::Value::Array(arr) => {
-                for (i, sv) in arr.iter().enumerate() {
-                    servers.push(
-                        serde_json::from_value::<McpServerConfig>(sv.clone())
-                            .map_err(|e| format!("mcpServers[{i}]: {e}"))?,
-                    );
-                }
-            }
-            _ => return Err("`mcpServers` must be an object or array".to_string()),
-        }
+        let servers = parse_mcp_servers_value(ms)?;
         // 外部生态配置文件的语义是「配置存在即启用」；顶层 enabled 显式声明则优先。
         let enabled = obj.get("enabled").and_then(|b| b.as_bool()).unwrap_or(true);
         return Ok(McpConfig {
@@ -192,6 +181,49 @@ fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig,
         servers: Vec::new(),
         timeout: default_mcp_timeout(),
     })
+}
+
+/// `mcpServers` 值（map / array）→ server 条目列表（map 缺 name 从 key 取）。
+/// [`mcp_config_from_value`] 的独占形状臂与混合形状合并臂共用。
+/// 标量/数组形态标量条目 loud Err（BUG-20261117-055 同守卫）：旧形态
+/// `entry.get("name").is_none()` 对非对象恒真 → 走 `entry["name"] = ...`
+/// 下标赋值——serde_json 的 IndexMut 对非 object/Null 容器是 panic
+/// （"cannot access key in JSON scalar"），一条标量条目把整个 config 解析
+/// 打崩。本函数其余畸形形态全部 Err 返回。
+fn parse_mcp_servers_value(
+    ms: &serde_json::Value,
+) -> std::result::Result<Vec<McpServerConfig>, String> {
+    let mut servers = Vec::new();
+    match ms {
+        serde_json::Value::Object(map) => {
+            for (key, sv) in map {
+                if !sv.is_object() {
+                    return Err(format!(
+                        "mcpServers[{key}] 必须是 server 配置对象（got {}）",
+                        json_type_name(sv)
+                    ));
+                }
+                let mut entry = sv.clone();
+                if entry.get("name").is_none() {
+                    entry["name"] = serde_json::Value::String(key.clone());
+                }
+                servers.push(
+                    serde_json::from_value::<McpServerConfig>(entry)
+                        .map_err(|e| format!("mcpServers[{key}]: {e}"))?,
+                );
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (i, sv) in arr.iter().enumerate() {
+                servers.push(
+                    serde_json::from_value::<McpServerConfig>(sv.clone())
+                        .map_err(|e| format!("mcpServers[{i}]: {e}"))?,
+                );
+            }
+        }
+        _ => return Err("`mcpServers` must be an object or array".to_string()),
+    }
+    Ok(servers)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

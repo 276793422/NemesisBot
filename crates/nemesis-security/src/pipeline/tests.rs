@@ -495,6 +495,39 @@ fn test_declared_tool_pipeline_lookup_first() {
     assert_eq!(plugin.tool_danger_level(probe), "CRITICAL");
 }
 
+/// BUG-20261120-010 回归钉：动态 MCP 工具（`mcp_{server}_{tool}` 命名，
+/// adapter.rs 统一前缀）的 url 参数必须过 Layer 6 SSRF——此前
+/// extract_url catch-all 对 mcp_* 前缀整体失明，web_fetch 拦得住的
+/// 回环/metadata 目标经 MCP fetch 类工具全放行。只开 SSRF 层拿干净
+/// 信号；回环 IP 字面量免 DNS，判定确定性。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_ssrf_layer_covers_dynamic_mcp_tool_url() {
+    let probe = "mcp_probe_fetch";
+    crate::types::declare_tool_operation(probe, OperationType::FileRead);
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        injection_enabled: false,
+        command_guard_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: true,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    let inv = ToolInvocation {
+        tool_name: probe.to_string(),
+        args: serde_json::json!({"url": "http://127.0.0.1:49000/internal"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, deny) = plugin.execute(&inv);
+    crate::types::undeclare_tool_operation(probe);
+    assert!(!allowed, "dynamic mcp_* tool url must pass Layer 6 SSRF");
+    let deny = deny.expect("ssrf deny info");
+    assert_eq!(deny.layer, "ssrf");
+}
+
 #[test]
 fn test_xss_in_content_blocked() {
     let plugin = make_plugin();

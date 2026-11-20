@@ -731,6 +731,21 @@ pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
         // cluster_rpc's peer_id is resolved by the internal cluster peer registry,
         // not through DNS. SSRF protection does not apply to internal cluster routing.
         "cluster_rpc" => String::new(),
+        // 动态 MCP 工具（`mcp_{server}_{tool}` 命名，nemesis-mcp adapter.rs
+        // 三处统一前缀）此前落 catch-all → Layer 6 对其 url/source 参数整体
+        // 失明：发现面装一个 fetch 类 MCP server，LLM 可控 url 任指内网/
+        // metadata 端点——web_fetch 拦得住的形态 MCP 动态工具全放行
+        // （mcp_discover HTTP 臂同构缺口；browser 臂「横向扫描漏网」同族
+        // 教训）。prefix 臂与 mcp_discover 同语义同闸（url → source
+        // fallback；无 url 字段 = 空串照常跳过；带 url 字段但语义非网络
+        // 目标的工具被一并检查，保守方向同 browser 臂先例）。FileRead 基线
+        // 档位是独立维度（治理补全计划明示延后），本臂不改变 op 档。
+        _ if tool_name.starts_with("mcp_") => args
+            .get("url")
+            .or_else(|| args.get("source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         _ => String::new(),
     }
 }

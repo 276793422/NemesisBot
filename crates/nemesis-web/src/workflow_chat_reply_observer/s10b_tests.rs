@@ -270,3 +270,80 @@ async fn build_completed_reply_without_workflow_def_dumps_node_results() {
     );
     assert!(reply.starts_with('{'), "pretty JSON dump: {}", reply);
 }
+
+// BUG-20261120-012 red proof: an evicted chat execution must still release
+// its serialization guard. `emit` is fire-and-forget (tokio::spawn) — the
+// terminal state lands in the tracking map (evictable) BEFORE the observer
+// runs, and `create_execution`'s eviction pass can eat the just-terminated
+// chat execution inside that window. The observer's `get_execution` → None
+// arm used to return early WITHOUT `take_guard`, leaving the guard parked
+// in `pending_guards` forever → the per-workflow chat mutex deadlocks
+// permanently (every later message on that workflow hangs in acquire).
+// Bare engine (no persistence): eviction truly removes the execution, so
+// `get_execution` misses memory AND disk.
+#[tokio::test]
+async fn evicted_chat_execution_still_releases_pending_guard() {
+    let _home = crate::test_home::lock_home();
+    let wf_name = unique_wf("evict");
+    let engine = WorkflowEngine::new();
+    // Take the chat-state handle before the engine moves into the observer.
+    let chat_state = engine.workflow_chat_state().clone();
+    engine
+        .register_workflow(terminal_workflow(&wf_name))
+        .expect("register");
+
+    // Chat execution, marked terminal via the public API (cross-crate tests
+    // cannot touch the private executions map; cancel accepts Running).
+    let exec = engine
+        .create_execution(
+            &wf_name,
+            HashMap::new(),
+            Some(wf_chat_trigger(&wf_name, "sess-evict")),
+        )
+        .await
+        .expect("create chat exec");
+    engine
+        .cancel_execution(&exec.id)
+        .await
+        .expect("mark terminal");
+
+    // Flood past the tracking cap (engine-private MAX_TRACKED_EXECUTIONS =
+    // 256): the cancelled chat exec is the only terminal victim, so the
+    // eviction loop eats it.
+    for _ in 0..266 {
+        engine
+            .create_execution(&wf_name, HashMap::new(), None)
+            .await
+            .expect("flood exec");
+    }
+    assert!(
+        engine.get_execution(&exec.id).await.is_none(),
+        "precondition: chat execution was evicted from tracking"
+    );
+
+    // Send side arrived first: guard parked in pending_guards.
+    let guard = chat_state.acquire(&wf_name).await;
+    chat_state.store_guard(&exec.id, guard);
+
+    // Observer arrives after the eviction → the None arm must release.
+    let obs = make_observer(engine);
+    obs.on_event(WorkflowEvent::Cancelled {
+        execution_id: exec.id.clone(),
+        workflow_name: wf_name.clone(),
+        timestamp: Local::now(),
+    })
+    .await;
+
+    // Pre-fix this acquire hangs forever and the timeout fires → red.
+    let reacquired = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        chat_state.acquire(&wf_name),
+    )
+    .await;
+    assert!(
+        reacquired.is_ok(),
+        "workflow chat mutex for {} permanently deadlocked: guard leaked \
+         in pending_guards after eviction (BUG-20261120-012)",
+        wf_name
+    );
+}

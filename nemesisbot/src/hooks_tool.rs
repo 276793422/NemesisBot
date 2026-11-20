@@ -9,8 +9,9 @@
 //! 存储与生效链路（统一存储）：写 `hooks.json` 的工具专属组（scope 圈定
 //! 单会话；[`add_session_hook`] 等 RMW API 原子写，与 Dashboard hooks.set
 //! 共享文件互斥）→ 桥（`CcHookBridge`）按内容比对热更在下次分发时捡到
-//! （工具不直改桥内存，单一写入路径）。桥缺席（此前无任何钩子的冷启动）
-//! = 已落盘但无热更载体，诚实提示「重启 Agent 后生效」。
+//! （工具不直改桥内存，单一写入路径）。桥恒在（2026-11-20 即刻生效语义：
+//! `load_from_dir` 缺失/坏文件也建桥待命）——落盘即热更，下条消息起生效，
+//! 无「重启」中间态。
 //!
 //! 注册面：仅主 gateway loop（`register_hooks_tool`）；集群走
 //! `register_tools_and_mcp` 公共路径天然排除；run/acp headless 不装。
@@ -21,7 +22,6 @@
 //! tier Normal+。
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use nemesis_agent::cc_hooks::{
     HookEntryView, PROMPT_HOOK_EVENTS, SESSION_HOOK_EVENTS, WEB_SESSION_KEY_PREFIX,
@@ -41,16 +41,11 @@ pub(crate) const MAX_TIMEOUT_SECS: u64 = 600;
 pub struct HooksTool {
     /// `<workspace>/config`（hooks.json 落位目录）。
     config_dir: PathBuf,
-    /// 主 loop 的 cc 桥（None = 冷启动无钩子，无热更载体——响应诚实降级）。
-    bridge: Option<Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 }
 
 impl HooksTool {
-    pub fn new(
-        config_dir: PathBuf,
-        bridge: Option<Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
-    ) -> Self {
-        Self { config_dir, bridge }
+    pub fn new(config_dir: PathBuf) -> Self {
+        Self { config_dir }
     }
 
     /// 当前会话的裸 sid（存储键；整键兜底——桥侧 lookup 同款双形态）。
@@ -218,13 +213,11 @@ fn render_entry(view: &HookEntryView) -> String {
     )
 }
 
-/// 桥在/不在的生效语义文案（None = 冷启动无热更载体，诚实降级）。
-fn activation_note(bridge: Option<&Arc<nemesis_agent::cc_hooks::CcHookBridge>>) -> &'static str {
-    if bridge.is_some() {
-        "落盘即热更，下条消息起生效。"
-    } else {
-        "已落盘；Agent 启动时未加载钩子桥（冷启动），重启 Agent 后生效。"
-    }
+/// 生效语义文案（2026-11-20 即刻生效语义：桥恒在——gateway 主/项目 loop
+/// 装配时 `load_from_dir` 恒建桥（缺失/坏文件也建桥待命），落盘后热更闸
+/// 下次分发即捡到）。
+fn activation_note() -> &'static str {
+    "落盘即热更，下条消息起生效。"
 }
 
 #[async_trait::async_trait]
@@ -379,7 +372,7 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                 );
                 let mut out = format!(
                     "已为当前会话添加钩子 {id}（{event}）{clamped_note}\n{rendered}\n{}",
-                    activation_note(self.bridge.as_ref()),
+                    activation_note(),
                 );
                 if !prompt.is_empty() {
                     // 提示词型钩子的语义说明（永续循环 = 每轮结束 Stop 钩点
@@ -406,7 +399,7 @@ impl nemesis_agent::r#loop::Tool for HooksTool {
                             "已删除当前会话钩子 {id}（{}）\n{}\n{}",
                             view.event,
                             render_entry(&view),
-                            activation_note(self.bridge.as_ref()),
+                            activation_note(),
                         ))
                     }
                     Err(e) => {

@@ -61,11 +61,10 @@ const rawJson = ref('')
 const hooksExists = ref(false)
 const hooksValid = ref(true)
 const hooksError = ref<string | null>(null)
-// 冷启动（复核三修 2026-09-24）：Agent 进程启动时无桥可热更——hooks.json
-// 缺失 / 解析失败 / 零脚本任一形态，load_from_dir 都不建桥（cc_hooks.rs
-// 既有语义）。此后首次保存只落盘，需重启一次才进热更态。取页面加载时
-// 的文件状态作代理：保存不改它（无桥会话内保存永远无桥）。
-const coldStart = ref(false)
+// 即刻生效（2026-11-20）：桥恒在——gateway 启动时 hooks.json 缺失 / 空文件 /
+// 解析失败也建桥待命（cc_hooks.rs `load_from_dir` 恒建桥语义），首次保存
+// 落盘后热更闸下次分发即捡到，无「重启建桥」中间态（原 2026-09-24 冷启动
+// 分流提示退役）。
 const entries = ref<Record<string, HookEntry[]>>(emptyEntries())
 const rawSaving = ref(false)
 const editorSaving = ref(false)
@@ -139,8 +138,6 @@ async function loadHooks() {
     hooksExists.value = !!data?.exists
     hooksValid.value = data?.valid !== false
     hooksError.value = data?.error || null
-    coldStart.value =
-      !data?.exists || data?.valid === false || (data?.summary?.total ?? 0) === 0
     entries.value = parseEntries(rawJson.value)
   } catch (e: any) {
     toast.error('加载 hooks.json 失败: ' + e)
@@ -161,13 +158,9 @@ async function saveContent(content: string, label: string) {
     hooksExists.value = true
     hooksValid.value = true
     hooksError.value = null
-    // 冷启动（Agent 启动时无桥）首次保存：文件已落盘但无热更载体，需重启
-    // 一次；之后（桥已存在）保存即下条消息生效。
-    toast.success(
-      coldStart.value
-        ? `已保存（${data?.summary?.total ?? 0} 个钩子）。首次添加：重启 Agent 后生效，之后保存即下条消息生效`
-        : `已保存（${data?.summary?.total ?? 0} 个钩子）。保存后下条消息生效`,
-    )
+    // 即刻生效（桥恒在）：落盘后热更闸下次分发即捡到——首保与后续保存
+    // 同语义，无「重启」分支。
+    toast.success(`已保存（${data?.summary?.total ?? 0} 个钩子）。保存后下条消息生效`)
     return true
   } catch (e: any) {
     // 后端语义校验拒绝 —— 错误串就是 parse 详情，文件未动。
@@ -427,8 +420,8 @@ onMounted(() => {
         <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-3);">
           每条钩子 = 执行体类型（仅 Stop 事件可选提示词型）+ 触发工具（可选，留空对全部工具生效）+
           命令/提示词 + 超时（命令型）+ 作用会话（可选，不选 = 全部会话生效）。保存时后端做方言
-          语义校验，校验失败不落盘；保存后下条消息自动生效（桥内热更；Agent 启动时无钩子配置的
-          首次保存需重启一次）。
+          语义校验，校验失败不落盘；保存后下条消息自动生效（桥内热更；首次保存同样即刻生效，
+          无需重启）。
         </p>
         <div v-for="ev in EVENTS" :key="ev.id" class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header" style="justify-content: space-between;">
@@ -511,7 +504,7 @@ onMounted(() => {
         </div>
         <div class="card">
           <div class="card-body" style="display: flex; justify-content: flex-end; gap: var(--space-2); align-items: center;">
-            <span style="color: var(--text-muted); font-size: var(--text-xs);">保存后下条消息生效（首次添加需重启）</span>
+            <span style="color: var(--text-muted); font-size: var(--text-xs);">保存后下条消息生效</span>
             <button class="btn btn-primary" @click="saveEditor" :disabled="editorSaving">
               {{ editorSaving ? '保存中…' : '保存全部钩子' }}
             </button>

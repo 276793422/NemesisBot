@@ -382,13 +382,18 @@ pub struct AgentLoop {
     /// Active model name, kept in sync with the provider above.
     /// Separated from `config.model` so runtime swaps don't need `&mut self`.
     active_model: parking_lot::RwLock<String>,
-    /// 降级注记槽（fallback 用户面标注第三跳）：[`AgentLoop::chat_call_escalating`]
-    /// 每次成功调用后从 provider 取件覆盖（last-call wins，None=清除）；
-    /// `finish_message` 终局回复取件消费（receipt/err 不消费——排队回执/
-    /// slash 确认/错误文案不背标注）。诚实边界：跨会话并行 turn
-    /// （`max_concurrent_turns>0`）极端交错下 loop 级槽可能串帧——默认
-    /// reject/queue 形态恒串行，fallback 又是稀有事件，v1 接受。
-    response_degradation: parking_lot::Mutex<Option<String>>,
+    /// 降级注记表（fallback 用户面标注第三跳，按会话键隔离——
+    /// BUG-20261120-013）：[`AgentLoop::chat_call_escalating`] 每次成功
+    /// 调用后从 provider 取件按 session_key 覆盖（last-call wins，
+    /// None=清除该会话条目）；`finish_message` 终局回复按本会话键取件
+    /// 消费（receipt/err 不消费——排队回执/slash 确认/错误文案不背
+    /// 标注）。旧形态是 loop 级单槽 `Option<String>`：V5 统一泵跨会话
+    /// 并发是结构不变量（并发模式只管同会话忙处置），两会话 turn 重叠
+    /// 在默认配置即成立，A 会话落槽的注记会被 B 会话先到的终局偷走、
+    /// A 自己的披露丢失——旧注释「默认 reject/queue 形态恒串行」的
+    /// 接受前提与泵结构不符，改按会话键隔离根修（各写各键，取件只
+    /// 认本键）。
+    response_degradation: parking_lot::Mutex<HashMap<String, String>>,
     /// Tool registry: name -> tool implementation.
     /// Each tool is wrapped in `Arc` so the map can be cloned and shared
     /// with spawned tasks without requiring `Box` clone support.
@@ -958,7 +963,7 @@ impl AgentLoop {
         Self {
             provider: parking_lot::RwLock::new(Arc::from(provider)),
             active_model: parking_lot::RwLock::new(config.model.clone()),
-            response_degradation: parking_lot::Mutex::new(None),
+            response_degradation: parking_lot::Mutex::new(HashMap::new()),
             tools: parking_lot::RwLock::new(HashMap::new()),
             config,
             outbound_tx: None,

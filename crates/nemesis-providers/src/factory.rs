@@ -332,15 +332,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
             };
             Arc::new(CodexCliProvider::new(cli_cfg))
         }
-        ProviderType::GitHubCopilot => {
-            let copilot_cfg = GitHubCopilotConfig {
-                uri: sel.api_base,
-                connect_mode: sel.connect_mode,
-                default_model: sel.model,
-                ..Default::default()
-            };
-            Arc::new(GitHubCopilotProvider::new(copilot_cfg))
-        }
+        ProviderType::GitHubCopilot => Arc::new(GitHubCopilotProvider::new(copilot_config(&sel))),
         ProviderType::HttpCompat => {
             let http_cfg = HttpProviderConfig {
                 name: "http-compat".to_string(),
@@ -367,6 +359,22 @@ fn opt_proxy(cfg: &FactoryConfig) -> Option<String> {
         None
     } else {
         Some(cfg.proxy.clone())
+    }
+}
+
+/// Copilot lane 装配（提取纯函数供透传链测试，decide_output 同款可测性
+/// 先例）。BUG-20261120-014：此前 `..Default::default()` 落 serde 默认
+/// 120s 且工厂不透传 `sel.timeout_secs`——per-model 超时是「配置可见但
+/// 执行失效」的死配置，lane 默认 120s 也违反 P3A「全 lane 统一默认
+/// 600s」超时阶梯（外层 `config_watch` 按同一 per-model 值 +30s 余量跟随，
+/// 内层修正后阶梯序不破）。修复 = 与其余三分支同源：`effective_timeout`
+/// （0=未设置落 600，>0 透传显式值）。
+fn copilot_config(sel: &ProviderSelection) -> GitHubCopilotConfig {
+    GitHubCopilotConfig {
+        uri: sel.api_base.clone(),
+        connect_mode: sel.connect_mode.clone(),
+        default_model: sel.model.clone(),
+        timeout_secs: effective_timeout(sel.timeout_secs),
     }
 }
 

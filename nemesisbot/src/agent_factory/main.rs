@@ -408,14 +408,11 @@ pub fn build_agent_loop(
             ),
         }
     }
-    // hooks.json 方言层——workspace config 目录下有 hooks.json
-    // 就加载并挂上（工具钩子 + 生命周期钩子）。集群 agent 不挂（远端节点跑
-    // 本地用户任务，hook 拦截语义不跨节点复制——挂账决策）。加载失败 =
-    // warn + 跳过（fail-open，见 cc_hooks::load_from_dir）。
-    let mut cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> = None;
-    #[allow(unused_assignments)]
-    let mut cc_bridge_for_daily: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
-        None;
+    // hooks.json 方言层——恒建桥挂上（工具钩子 + 生命周期钩子；2026-11-20
+    // 即刻生效语义：缺失/坏文件也建桥待命，首个钩子落盘下次分发即生效，
+    // 无「重启建桥」中间态）。集群 agent 不挂（远端节点跑
+    // 本地用户任务，hook 拦截语义不跨节点复制——挂账决策）。解析失败 =
+    // warn + 空快照待命（fail-open，见 cc_hooks::load_from_dir）。
     // 路径收编：hooks.json 落位 <workspace>/config/hooks.json
     // （nemesis-path 真相源）；legacy <home>/config/hooks.json copy-once 迁移。
     let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
@@ -423,16 +420,19 @@ pub fn build_agent_loop(
         &shared.home.join("config"),
         &ws_config_dir,
     );
-    if let Some(bridge) =
-        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, shared.workspace_dir())
-    {
-        // SessionEnd 触发用（启动清理删除的会话逐个触发）。
-        cc_bridge = Some(std::sync::Arc::clone(&bridge));
-        cc_bridge_for_daily = Some(std::sync::Arc::clone(&bridge));
-        // PreCompact/PostCompact 触发用（loop.rs 压缩流水线经 cc_bridge 调桥）。
-        agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
-        bridge.register(&agent_loop);
-    }
+    let bridge = nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(
+        &ws_config_dir,
+        shared.workspace_dir(),
+    );
+    // hooks 工具装配（register_hooks_tool）用。
+    let cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        Some(std::sync::Arc::clone(&bridge));
+    // SessionEnd 触发用（daily 清理删除的会话逐个触发）。
+    let cc_bridge_for_daily: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
+        Some(std::sync::Arc::clone(&bridge));
+    // PreCompact/PostCompact 触发用（loop.rs 压缩流水线经 cc_bridge 调桥）。
+    agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
+    bridge.register(&agent_loop);
     // Todo 收尾提醒：终答案接受后清单还有未完成项 → 注入
     // 一次性提醒再答一轮（lifecycle hook；stop_hook_active 自限每 turn
     // 一次 + MAX_TURN_END_CONTINUES 封顶 fail-open）。注册在用户 hooks 桥
@@ -1126,7 +1126,7 @@ pub fn build_agent_loop(
     register_connector_governance(&agent_loop, shared);
     // 会话钩子自管面：hooks 工具（只能给自己设；桥在场 = 热更即时生效）。
     // 挂在 connector governance 之后（独立面，无 connectors 依赖）。
-    register_hooks_tool(&agent_loop, shared, cc_bridge.clone());
+    register_hooks_tool(&agent_loop, shared);
     // 紫微系统.2：profile.tools[] → 动态工具注册（poll_report 可调；
     // call_fn/hook_capture 诚实报 实装中）。config 闸同 WSAPI 门关；
     // profile 新增后经 `ziwei.refresh` 幂等重注册（先清 zw_* 再装）。

@@ -11,10 +11,10 @@
  *    验证（嵌套方言 group.hooks[0].command + scope.sessions）→ 总览作用域
  *    徽标（.hooks-detail-scope 单会话=标题）→ 原文 TAB 手写 scope 往返 →
  *    结构化 TAB 读回（空数组 scope = 全部会话投影）。
- * 2) 运行时：冷启动语义（gateway 启动时 hooks.json 缺失 = 无桥，首次保存
- *    只落盘不生效——诚实降级）→ restartGateway 建桥（load_from_dir 任一
- *    在场即建桥分支）→ UI 保存的圈定钩子（UserPromptSubmit）在圈定会话
- *    实弹触发（marker 落盘）、他话零触发（圈定排除）。
+ * 2) 运行时：即刻生效语义（2026-11-20 冷启动修复——gateway 启动时 hooks.json
+ *    缺失 = 待命桥，load_from_dir 恒建桥；首次保存**不重启**直接触发）→
+ *    UI 保存的圈定钩子（UserPromptSubmit）在圈定会话实弹触发（marker 落盘）、
+ *    他话零触发（圈定排除）→ restartGateway 后同钩子仍触发（启动装载持久化）。
  *
  * 实弹载体用 UserPromptSubmit（任意用户消息触发，零工具零审批——mock LLM
  * 的 exec 路由会撞审批 ask 规则引入无关交互），场景等价于实录里的 PreToolUse
@@ -184,7 +184,7 @@ test('HookView 编辑面：添加圈定钩子 → 落盘 → 总览徽标 → �
   await page.context().close()
 })
 
-test('HookView 冷启动语义 + 重启建桥 + 圈定钩子运行时实弹', async ({ browser }) => {
+test('HookView 即刻生效语义 + 冷启动首保实弹 + 圈定钩子运行时实弹', async ({ browser }) => {
   test.setTimeout(240_000) // restartGateway 预算 150s + 触发轮次
   fs.mkdirSync(path.dirname(MARKER), { recursive: true })
   const page = await newAuthedPage(browser)
@@ -193,7 +193,7 @@ test('HookView 冷启动语义 + 重启建桥 + 圈定钩子运行时实弹', as
   const sidC = await seedSession(page, 'Hooks-E2E-C')
   const sidD = await seedSession(page, 'Hooks-E2E-D')
   // 物化（同测试 1：零消息会话不进 sessions.list；此消息发生在 hooks.json
-  // 落盘之前 = 无桥零触发，不污染 marker 基线）。
+  // 落盘之前 = 空快照零触发，不污染 marker 基线）。
   await wsChatSend(page, sidC, 'Hooks-E2E-C 物化种子')
   await wsChatSend(page, sidD, 'Hooks-E2E-D 物化种子')
 
@@ -216,29 +216,30 @@ test('HookView 冷启动语义 + 重启建桥 + 圈定钩子运行时实弹', as
   const saved = JSON.parse((got.data as { content: string }).content)
   expect(saved.hooks?.UserPromptSubmit?.[0]?.scope?.sessions).toEqual([sidC])
 
-  // R0 冷启动语义：gateway 启动时 hooks.json 不存在 = 无桥（load_from_dir
-  // 双缺返回 None）——首次保存只落盘，诚实降级「重启生效」，不触发。
+  // R0 即刻生效（2026-11-20 冷启动修复回归）：gateway 启动时 hooks.json
+  // 不存在 = 待命桥（load_from_dir 恒建桥）——首次保存**不重启**直接触发
+  // （旧语义在此只落盘、等重启建桥）。触发走 wsChatSend（页面级 token 直开
+  // WS），页面停留在 #/hooks 即可。
   const cold0 = markerCount()
-  const coldReply = await wsChatSend(page, sidC, 'Hooks-E2E 冷启动触发（不应生效）')
-  expect(coldReply).toContain('E2E_MOCK_TEXT_REPLY')
-  await page.waitForTimeout(2_000)
-  expect(markerCount()).toBe(cold0)
+  await wsChatSend(page, sidC, 'Hooks-E2E 冷启动即刻触发')
+  const cold1 = await pollMarker(cold0 + 1)
+  expect(cold1, `冷启动首保未即刻触发（marker ${cold0} -> ${cold1}）`).toBeGreaterThanOrEqual(
+    cold0 + 1,
+  )
 
-  // 重启建桥（hooks.json 在场 → load_from_dir 建桥分支）。后续触发走
-  // wsChatSend（页面级 token 直开 WS），页面停留在 #/hooks 即可，无需 reload。
-  await restartGateway()
-
-  // R1 圈定会话：UI 保存的钩子实弹触发（marker 落盘全链闭环）。
-  const warm0 = markerCount()
-  await wsChatSend(page, sidC, 'Hooks-E2E 暖触发')
-  const warm1 = await pollMarker(warm0 + 1)
-  expect(warm1, `marker 未增长（${warm0} -> ${warm1}）`).toBeGreaterThanOrEqual(warm0 + 1)
-
-  // R2 其他会话：圈定排除，零触发。
+  // R1 其他会话：圈定排除，零触发。
   const other0 = markerCount()
   await wsChatSend(page, sidD, 'Hooks-E2E 他话触发（应被圈定排除）')
   await page.waitForTimeout(2_000)
   expect(markerCount()).toBe(other0)
+
+  // R2 重启持久化：重启后同一 hooks.json 启动装载，钩子仍触发。
+  await restartGateway()
+
+  const warm0 = markerCount()
+  await wsChatSend(page, sidC, 'Hooks-E2E 重启后触发')
+  const warm1 = await pollMarker(warm0 + 1)
+  expect(warm1, `重启后 marker 未增长（${warm0} -> ${warm1}）`).toBeGreaterThanOrEqual(warm0 + 1)
 
   await page.context().close()
 })

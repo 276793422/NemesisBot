@@ -139,7 +139,15 @@ async fn call_escalating(
 ) -> Result<LlmResponse, String> {
     let provider = loop_.provider.read().clone();
     loop_
-        .chat_call_escalating(0, &provider, model, Vec::new(), options, Vec::new())
+        .chat_call_escalating(
+            0,
+            &provider,
+            model,
+            Vec::new(),
+            options,
+            Vec::new(),
+            "agent:main:session:esc-test",
+        )
         .await
 }
 
@@ -379,7 +387,15 @@ async fn call_escalating_with_tools(
 ) -> Result<LlmResponse, String> {
     let provider = loop_.provider.read().clone();
     loop_
-        .chat_call_escalating(0, &provider, model, Vec::new(), options, tools)
+        .chat_call_escalating(
+            0,
+            &provider,
+            model,
+            Vec::new(),
+            options,
+            tools,
+            "agent:main:session:esc-tools-test",
+        )
         .await
 }
 
