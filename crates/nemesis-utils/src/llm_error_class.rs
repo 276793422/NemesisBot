@@ -226,9 +226,18 @@ pub fn extract_http_status(msg: &str) -> Option<u16> {
     // 在该语境恒 miss——"HTTP/1.1 503..." 纯状态行形态分类落 None，fallback
     // 不轮转；(?i) 同时让原始大小写文本直调时的 "Status:"/"HTTP" 首字母
     // 大写形态也命中。
+    //
+    // 尾随数字界（BUG-20261121-001）：捕获 3 位后必须紧跟**非数字或串尾**
+    // （`(?:[^\d]|$)`），否则整段不是状态码（"status 4290" 按前 3 位截取
+    // 会把嵌码误路由 429→RateLimit 进 cooldown+退避梯子）——与
+    // [`class_by_message`] 词表层 `\b429\b`（BUG-20261107-019 纪律）同族
+    // 对齐。regex crate（RE2 家族）不支持 lookahead，`(?!\d)` 会编译失败
+    // 被 `.ok()?` 静默吞成全 None——边界只能表达成消费式字符类；合法
+    // 3 位形态（后随非数字/串尾）行为零变化，截取失败则整体落 None 走
+    // 词表分支，词表 `\b429\b` 同样不命中长数字 →两层语义一致地诚实不分类。
     let patterns = [
-        regex::Regex::new(r"(?i)status[:\s]+(\d{3})").ok()?,
-        regex::Regex::new(r"(?i)HTTP[/\s]+\d*\.?\d*\s+(\d{3})").ok()?,
+        regex::Regex::new(r"(?i)status[:\s]+(\d{3})(?:[^\d]|$)").ok()?,
+        regex::Regex::new(r"(?i)HTTP[/\s]+\d*\.?\d*\s+(\d{3})(?:[^\d]|$)").ok()?,
     ];
 
     for p in &patterns {
