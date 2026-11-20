@@ -39,6 +39,11 @@ pub mod message;
 // 的统一定义——1 MiB 丢头保尾，防高吞吐输出 OOM。
 pub mod pipe_cap;
 pub mod platform;
+// 代理 URL 日志脱敏（SEC-002 口径，BUG-20261120-018 收口）：代理 URL 可
+// 携带 userinfo 凭据，日志/错误上下文只落 scheme 不落完整 URL——全仓
+// Proxy::all 消费面 Ok/Err 日志臂单一真相源（channels/providers/voice 同
+// 依赖）。纯字符串函数零依赖，不设 feature 门。
+pub mod proxy_redact;
 pub mod sanitize;
 pub mod skills;
 // fire-and-forget spawn 收尸单一真相源（BUG-20261117-087：std Child drop

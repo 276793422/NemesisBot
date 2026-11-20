@@ -325,19 +325,15 @@ fn prepare_extract_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 代理 URL 日志脱敏（SEC-002 口径，BUG-20261115-005）：代理 URL 可携带
-/// userinfo 凭据（http://user:pass@host:port），日志/错误上下文只落
-/// scheme 不落完整 URL——nemesis-config proxy_file 读侧 WARN 同款口径
-///（config crate 不在 voice 依赖面，本地同名形态；含 with_context 错误链
-/// 面——anyhow Display 会把 context 一并打进日志）。
+/// 代理 URL 日志脱敏（SEC-002 口径）：代理 URL 可携带 userinfo 凭据
+///（http://user:pass@host:port），日志/错误上下文只落 scheme 不落完整
+/// URL——含 with_context 错误链面（anyhow Display 会把 context 一并打进
+/// 日志）。005 期（BUG-20261115-005）为 crate 本地同形态实现，现已收口
+/// 到 nemesis_utils::proxy_redact 单一真相源（BUG-20261120-018）；本
+/// 包装保留 download 门与 crate 内调用点形态。
 #[cfg(feature = "download")]
 pub(crate) fn redact_proxy_for_log(proxy_url: &str) -> String {
-    let scheme = proxy_url.trim().split("://").next().unwrap_or("");
-    if scheme.is_empty() {
-        "<unknown-scheme>".to_string()
-    } else {
-        format!("{scheme}://<redacted>")
-    }
+    nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url)
 }
 
 #[cfg(all(target_os = "windows", feature = "download"))]

@@ -108,7 +108,14 @@ impl WhatsAppChannel {
                     client_builder = client_builder.proxy(proxy);
                 }
                 Err(e) => {
-                    warn!("[WhatsAppChannel] invalid proxy URL '{}': {}", proxy_url, e);
+                    // proxy 是 opt_secret（userinfo 凭据面，SEC-002 口径，
+                    // 与 Debug 脱敏同判）——日志只落 scheme 不落完整 URL，
+                    // 不落原值（BUG-20261120-018：telegram 同形位点 005 已
+                    // 修，本位点同族漏网；单一真相源 nemesis_utils::proxy_redact）。
+                    warn!(
+                        "[WhatsAppChannel] invalid proxy URL ({}): {e}",
+                        nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url)
+                    );
                 }
             }
         }

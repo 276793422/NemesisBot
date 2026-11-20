@@ -74,7 +74,10 @@ fn build_client(timeout_secs: u64, proxy: Option<&str>) -> reqwest::Client {
             Ok(p) => builder = builder.proxy(p),
             Err(e) => {
                 tracing::warn!(
-                    proxy = %proxy_url,
+                    // proxy 是 userinfo 凭据面（SEC-002 口径）——结构化字段
+                    // 只落脱敏形态，不落原值（BUG-20261120-018：005 横扫
+                    // 漏网位点；单一真相源 nemesis_utils::proxy_redact）。
+                    proxy = %nemesis_utils::proxy_redact::redact_proxy_for_log(proxy_url),
                     error = %e,
                     "Codex provider: invalid proxy URL, using direct connection"
                 );
