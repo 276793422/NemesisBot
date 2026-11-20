@@ -198,7 +198,13 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                     "allowed origins"
                 }
             );
-            println!("Changes will be automatically reloaded within 30 seconds.");
+            // 诚实化（BUG-20261121-004）：旧文案「Changes will be
+            // automatically reloaded within 30 seconds.」是谎言——gateway
+            // 的 CorsLayer 在启动时静态构建，无任何热载机制，改配置需
+            // 重启（web_init.rs 装配注释同口径）。
+            println!(
+                "Note: the running gateway builds its CORS layer at startup — restart it for this change to take effect."
+            );
         }
 
         CorsAction::Remove { origin, cdn } => {
@@ -318,62 +324,52 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
                 return Ok(());
             }
 
-            let cfg = load_or_create_cors(&cors_path)?;
+            // 判定单一真相源（BUG-20261121-004）：typed CORSConfig +
+            // `nemesis_web::cors::origin_allowed`——与真实装配层
+            // （cors_layer_from_manager 的 predicate）及运行期咨询面
+            // （CORSManager::check_origin）逐字节同源。旧手写判定已删——
+            // 它与真实层分裂（CDN `*domain` 前缀怪分支 / contains
+            // ("localhost:") 宽匹配 / 裸域名后缀匹配无 scheme 概念），
+            // validate 说 ALLOWED 浏览器实际被拒。typed parse 失败即报错
+            // （gateway 启动时 CORSManager::new 同样拒绝该文件——一致性
+            // 优于宽松续跑）。
+            let data = nemesis_utils::fsutil::read_config_string(&cors_path)?;
+            let cfg: nemesis_web::cors::CORSConfig = serde_json::from_str(&data).map_err(|e| {
+                anyhow::anyhow!(
+                    "Invalid CORS config at {} (gateway would fail to start): {}",
+                    cors_path.display(),
+                    e
+                )
+            })?;
 
-            // Check explicit allowed origins
-            let mut allowed = false;
+            let allowed = nemesis_web::cors::origin_allowed(&cfg, &origin);
+
+            // 来源标注（仅展示，不影响判定；探测顺序与 origin_allowed
+            // 一致）。CDN 探测剥 scheme 取 host 后做精确/子域后缀匹配，
+            // 对齐 origin_allowed 的 Url host 语义。
             let mut match_source = String::new();
-
-            if let Some(origins) = cfg.get("allowed_origins").and_then(|v| v.as_array()) {
-                for o in origins {
-                    if o.as_str() == Some(&origin) {
-                        allowed = true;
-                        match_source = "allowed_origins".to_string();
-                        break;
-                    }
-                }
-            }
-
-            // Check CDN domains
-            if !allowed
-                && let Some(cdns) = cfg.get("allowed_cdn_domains").and_then(|v| v.as_array())
+            if (cfg.development_mode || cfg.allow_localhost)
+                && (origin.starts_with("http://localhost:")
+                    || origin.starts_with("http://127.0.0.1:"))
             {
-                for c in cdns {
-                    if let Some(domain) = c.as_str()
-                        && (origin == domain
-                            || origin.ends_with(&format!(".{}", domain))
-                            || origin.starts_with(&format!("*{}", domain)))
-                    {
-                        allowed = true;
-                        match_source = "allowed_cdn_domains".to_string();
-                        break;
-                    }
-                }
-            }
-
-            // Check dev mode / localhost
-            if !allowed {
-                let dev_mode = cfg
-                    .get("development_mode")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let allow_localhost = cfg
-                    .get("allow_localhost")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-
-                if dev_mode || allow_localhost {
-                    let lower = origin.to_lowercase();
-                    if lower.starts_with("http://localhost")
-                        || lower.starts_with("http://127.0.0.1")
-                        || lower.contains("localhost:")
-                    {
-                        allowed = true;
-                        match_source = if dev_mode {
-                            "development_mode + localhost".to_string()
-                        } else {
-                            "allow_localhost".to_string()
-                        };
+                match_source = if cfg.development_mode {
+                    "development_mode + localhost".to_string()
+                } else {
+                    "allow_localhost".to_string()
+                };
+            } else if cfg.allowed_origins.iter().any(|o| o == &origin) {
+                match_source = "allowed_origins".to_string();
+            } else {
+                let host = origin
+                    .strip_prefix("https://")
+                    .or_else(|| origin.strip_prefix("http://"))
+                    .and_then(|rest| rest.split(['/', '?', '#']).next());
+                if let Some(host) = host {
+                    for cdn in &cfg.allowed_cdn_domains {
+                        if host == cdn || host.ends_with(&format!(".{cdn}")) {
+                            match_source = "allowed_cdn_domains".to_string();
+                            break;
+                        }
                     }
                 }
             }

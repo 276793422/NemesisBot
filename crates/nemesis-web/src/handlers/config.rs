@@ -407,7 +407,11 @@ impl ConfigHandler {
         let mgr = Self::cors_manager(ctx)?;
         mgr.add_origin(origin)
             .map_err(|e| format!("failed to add origin: {}", e))?;
-        Ok(Some(serde_json::json!({ "added": true, "origin": origin })))
+        // 生效时机诚实化（BUG-20261121-004）：CorsLayer 启动时静态构建，
+        // 写盘改动需重启 gateway——调用方不能从 added:true 误推热生效。
+        Ok(Some(
+            serde_json::json!({ "added": true, "origin": origin, "note": "restart gateway to take effect" }),
+        ))
     }
 
     fn cors_remove(
@@ -419,7 +423,7 @@ impl ConfigHandler {
         mgr.remove_origin(origin)
             .map_err(|e| format!("failed to remove origin: {}", e))?;
         Ok(Some(
-            serde_json::json!({ "removed": true, "origin": origin }),
+            serde_json::json!({ "removed": true, "origin": origin, "note": "restart gateway to take effect" }),
         ))
     }
 
@@ -432,7 +436,7 @@ impl ConfigHandler {
         mgr.set_development_mode(enabled)
             .map_err(|e| format!("failed to set development mode: {}", e))?;
         Ok(Some(
-            serde_json::json!({ "toggled": true, "development_mode": enabled }),
+            serde_json::json!({ "toggled": true, "development_mode": enabled, "note": "restart gateway to take effect" }),
         ))
     }
 }

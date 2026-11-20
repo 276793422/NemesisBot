@@ -18,6 +18,18 @@ use tracing;
 // CORSConfig
 
 /// Persistent CORS configuration, serialised as JSON.
+///
+/// **接线状态注记（BUG-20261121-004）**：九键中只有
+/// `allowed_origins` / `allow_localhost` / `development_mode` /
+/// `allowed_cdn_domains` 参与真实 CORS 层判定（`origin_allowed`）；
+/// `allow_no_origin` 只作用于咨询面（`check_origin`——装配层对无
+/// `Origin` 头的请求本不经 CORS 判定，语义自然成立）。
+/// `allowed_methods` / `allowed_headers` / `allow_credentials` /
+/// `max_age` 四键**当前未被任何 CorsLayer 消费**——接线它们会把
+/// methods/headers 从现硬编码形态（GET/POST/PUT/DELETE/OPTIONS +
+/// Any headers）收窄到配置值（默认 GET,POST + Content-Type,
+/// Authorization），属破坏性行为变更，独立决策项；四键序列化照常
+/// 持盘（不丢用户配置），消费是后续增强。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CORSConfig {
     /// Origins that are always allowed (exact string match).
@@ -25,18 +37,23 @@ pub struct CORSConfig {
     pub allowed_origins: Vec<String>,
 
     /// HTTP methods permitted in CORS preflight responses.
+    /// **未接线**：真实层硬编码 GET/POST/PUT/DELETE/OPTIONS（见结构体
+    /// 注记；接线 = 行为收窄，独立决策项）。
     #[serde(default = "default_methods")]
     pub allowed_methods: Vec<String>,
 
     /// HTTP headers permitted in CORS preflight responses.
+    /// **未接线**：真实层为 Any（同上）。
     #[serde(default = "default_headers")]
     pub allowed_headers: Vec<String>,
 
     /// Whether to send `Access-Control-Allow-Credentials: true`.
+    /// **未接线**：真实层不发该头（接线属行为放宽，独立决策项）。
     #[serde(default = "default_true")]
     pub allow_credentials: bool,
 
-    /// `Access-Control-Max-Age` value in seconds.
+    /// `Access-Control-Max-Age` value in seconds. **未接线**：真实层不发
+    /// 该头。
     #[serde(default = "default_max_age")]
     pub max_age: u64,
 
@@ -139,37 +156,7 @@ impl CORSManager {
     /// `allow_no_origin` flag.
     pub fn check_origin(&self, origin: &str) -> bool {
         let cfg = self.config.read();
-
-        // No Origin header ------------------------------------------------
-        if origin.is_empty() {
-            return cfg.allow_no_origin;
-        }
-
-        // Development mode / localhost ------------------------------------
-        if (cfg.development_mode || cfg.allow_localhost)
-            && (origin.starts_with("http://localhost:") || origin.starts_with("http://127.0.0.1:"))
-        {
-            return true;
-        }
-
-        // Exact match in allowed_origins ----------------------------------
-        if cfg.allowed_origins.iter().any(|o| o == origin) {
-            return true;
-        }
-
-        // CDN subdomain matching ------------------------------------------
-        for cdn in &cfg.allowed_cdn_domains {
-            if let Ok(parsed) = url::Url::parse(origin)
-                && let Some(host) = parsed.host_str()
-            {
-                // Exact CDN match or proper subdomain (".cdn" prefix).
-                if host == cdn || host.ends_with(&format!(".{cdn}")) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        origin_allowed(&cfg, origin)
     }
 
     // Runtime mutation
@@ -258,6 +245,46 @@ impl CORSManager {
 
 // Static CORS layer helpers (preserved from original implementation)
 
+/// Origin 判定单一真相源（BUG-20261121-004）：`CORSManager::check_origin`
+/// 与真实 CorsLayer 装配（`cors_layer_from_manager` 的 predicate）共用，
+/// 消除「咨询面说 ALLOWED、浏览器实际被拒」的判定分裂。
+///
+/// 判定顺序：空 origin（`allow_no_origin`）→ development_mode/allow_localhost
+/// 的 localhost 任意端口 → 显式 origins 精确匹配 → CDN 域精确/子域
+/// （`Url` 提取 host，杜绝 `evil.com` 伪装后缀）。
+pub fn origin_allowed(cfg: &CORSConfig, origin: &str) -> bool {
+    // No Origin header ------------------------------------------------
+    if origin.is_empty() {
+        return cfg.allow_no_origin;
+    }
+
+    // Development mode / localhost ------------------------------------
+    if (cfg.development_mode || cfg.allow_localhost)
+        && (origin.starts_with("http://localhost:") || origin.starts_with("http://127.0.0.1:"))
+    {
+        return true;
+    }
+
+    // Exact match in allowed_origins ----------------------------------
+    if cfg.allowed_origins.iter().any(|o| o == origin) {
+        return true;
+    }
+
+    // CDN subdomain matching ------------------------------------------
+    for cdn in &cfg.allowed_cdn_domains {
+        if let Ok(parsed) = url::Url::parse(origin)
+            && let Some(host) = parsed.host_str()
+        {
+            // Exact CDN match or proper subdomain (".cdn" prefix).
+            if host == cdn || host.ends_with(&format!(".{cdn}")) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Build a CORS layer for development (allows all origins).
 pub fn dev_cors_layer() -> CorsLayer {
     CorsLayer::new()
@@ -308,8 +335,17 @@ pub fn restrictive_cors_layer() -> CorsLayer {
 /// Build a CORS layer from a [`CORSManager`], respecting its configuration.
 ///
 /// When `development_mode` is enabled, this is equivalent to [`dev_cors_layer`].
-/// Otherwise only the explicitly allowed origins (plus localhost origins when
-/// `allow_localhost` is set) are permitted.
+/// Otherwise origin judgment goes through [`origin_allowed`] — the same
+/// single source of truth as [`CORSManager::check_origin`] — so explicit
+/// origins, `allow_localhost` (any port) and CDN subdomains all apply to the
+/// real wire behavior (BUG-20261121-004: the previous implementation folded
+/// localhost into a fixed five-port enumeration and silently dropped CDN
+/// domains entirely, leaving those two config keys dead at the assembly
+/// layer).
+///
+/// `allowed_methods` / `allowed_headers` / `allow_credentials` / `max_age`
+/// stay hard-wired (see [`CORSConfig`] wiring notes) — wiring them would
+/// narrow the current header surface and is a separate decision.
 pub fn cors_layer_from_manager(mgr: &CORSManager) -> CorsLayer {
     let cfg = mgr.config();
 
@@ -317,19 +353,23 @@ pub fn cors_layer_from_manager(mgr: &CORSManager) -> CorsLayer {
         return dev_cors_layer();
     }
 
-    // Collect all allowed origins.
-    let mut origins: Vec<String> = cfg.allowed_origins.clone();
-
-    // When localhost is allowed, add common dev ports so the CorsLayer can
-    // respond correctly to preflight requests.
-    if cfg.allow_localhost {
-        for port in ["3000", "5173", "8080", "8000", "4173"] {
-            origins.push(format!("http://localhost:{port}"));
-            origins.push(format!("http://127.0.0.1:{port}"));
-        }
-    }
-
-    production_cors_layer(&origins)
+    CorsLayer::new()
+        .allow_origin(tower_http::cors::AllowOrigin::predicate(
+            move |origin, _parts| {
+                origin
+                    .to_str()
+                    .map(|o| origin_allowed(&cfg, o))
+                    .unwrap_or(false)
+            },
+        ))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any)
 }
 
 // Tests
