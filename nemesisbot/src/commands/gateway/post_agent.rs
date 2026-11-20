@@ -506,8 +506,11 @@ pub(crate) async fn init_post_agent(
             // U-B（无人值守）：LLM 端点不可用恢复探针——封存期周期
             // 最小 completion 探测（TCP 通 ≠ LLM 活），解封边沿读中断档案
             // 逐单续做（复评/续拆/项目收口）。estop 挂起时不探测（优先级
-            // 更高）；probe_interval_secs=0 只封存不探测。全部节点装配，
-            // loop 内角色闸（worker 只记账不续做）。
+            // 更高）；probe_interval_secs=0 只封存不探测。装配点在 master
+            // 闸内（本 cluster_ok 块即角色闸），worker 不装配（BUG-20261120-041
+            // 注释失真修正：worker 进程内封存态无触发路径——封存三闸与
+            // record_llm_failure 调用方全在 master 路径，装配只会空转）；
+            // 模块内 is_master 闸仍是续做分派的独立守卫（resume_dispatchable）。
             crate::board_unavailable::spawn_unavailable_probe(
                 crate::board_unavailable::UnavailableProbeDeps {
                     review: (*replay_sweep_deps).clone(),
