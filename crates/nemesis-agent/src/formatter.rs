@@ -95,12 +95,28 @@ fn resolve_config(config_path: Option<&Path>) -> (FormatOnSaveConfig, bool) {
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     match parsed {
         Some(v) => {
-            let cfg = v
+            // 形状闸（BUG-20261120-031，visit_seq 家族收口）：非 object 段值
+            // （如 `[]`）喂 serde derive 会走 visit_seq 零元素臂 = 合法
+            // 「全默认」——用户写的 formatters/timeout 静默丢失零诊断。
+            // loud warn 后按未配置处理（enabled=false），行为面维持模块
+            // 「格式化永不拖垮工具调用」纪律（诊断在日志，不炸工具链）。
+            let cfg = match v
                 .get("agents")
                 .and_then(|a| a.get("defaults"))
                 .and_then(|d| d.get("format_on_save"))
-                .and_then(|s| serde_json::from_value::<FormatOnSaveConfig>(s.clone()).ok())
-                .unwrap_or_default();
+            {
+                None => FormatOnSaveConfig::default(),
+                Some(s) => {
+                    if let Err(e) = nemesis_utils::json_shape::ensure_object(s, "format_on_save") {
+                        tracing::warn!(
+                            "[FormatOnSave] agents.defaults.format_on_save 形状非法（{e}），按未配置处理（enabled=false）"
+                        );
+                        FormatOnSaveConfig::default()
+                    } else {
+                        serde_json::from_value::<FormatOnSaveConfig>(s.clone()).unwrap_or_default()
+                    }
+                }
+            };
             // executor 分离（Layer 1/2）开启 → 格式化诚实停用（见模块注释）。
             let executor_on = v
                 .get("executor")
