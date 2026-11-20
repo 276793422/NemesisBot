@@ -196,6 +196,11 @@ pub fn validate(pkg: &mut PersonaPackage) -> Result<(), String> {
     if pkg.soul_md.is_empty() {
         return Err("soul_md 为空".into());
     }
+    // 小写归一（BUG-20261120-042 横向同族）：pkg.role 来自 LLM 生成 JSON
+    // （schema enum worker/manager），大小写不受控——此前词表判断大小写
+    // 敏感，"Worker" 变体整包被拒重试；与 node.update_identity role 编辑
+    // 同款归一口径，归一后落规范小写形态。
+    pkg.role = pkg.role.trim().to_ascii_lowercase();
     if pkg.role != "worker" && pkg.role != "manager" {
         return Err(format!("role 必须 worker/manager，模型给出 '{}'", pkg.role));
     }

@@ -31,6 +31,35 @@ fn validate_enforces_role_enum() {
     assert_eq!(pkg.tags, vec!["a".to_string()]);
 }
 
+/// BUG-20261120-042 回归锁：LLM 生成 JSON 的 role 大小写不受控
+/// （"Worker"/"Manager" 变体），词表判断此前大小写敏感 → 整包被拒重试
+/// （浪费一轮 LLM 重试且模型可能反复输出同形态）。修复后归一为规范小写
+/// 并通过；真非法词（无论大小写）仍拒绝。
+#[test]
+fn validate_normalizes_role_case_before_enum_check() {
+    let make = |role: &str| PersonaPackage {
+        node_name: "x".into(),
+        display_name: "X".into(),
+        emoji: "🤖".into(),
+        role: role.into(),
+        category: "dev".into(),
+        tags: vec![],
+        identity_md: "# X\nwho".into(),
+        soul_md: "# Rules\n- a".into(),
+        expertise_md: String::new(),
+        coverage: None,
+    };
+    let mut pkg = make("Worker");
+    assert!(validate(&mut pkg).is_ok());
+    assert_eq!(pkg.role, "worker");
+    let mut mgr = make("  Manager  ");
+    assert!(validate(&mut mgr).is_ok());
+    assert_eq!(mgr.role, "manager");
+    let mut boss = make("BOSS");
+    assert!(validate(&mut boss).is_err());
+    assert_eq!(boss.role, "boss", "归一发生在枚举拒绝之前");
+}
+
 #[test]
 fn unwrap_single_key_handles_wrapped_args() {
     let wrapped =
