@@ -550,7 +550,15 @@ impl PluginManifest {
                 "manifest exceeds {MANIFEST_MAX_BYTES} bytes"
             )));
         }
-        Self::parse(&raw)
+        // 盘上已签名插件的形态含根级 `signature` 表（`plugin sign` 回填；
+        // install ⑧ 落位写原文）——结构解析与 verify_manifest 同纪律先剥
+        // （deny_unknown_fields 对未知根键 loud 拒，不剥 = 签名插件的全部
+        // load_from_dir 消费面——disk_manifest/config 面/wasm.list/flow 声明
+        // 面/自举搜索/CLI info——报「unknown field signature」炸或降级）。
+        // strip_signature 对无签名文本是恒等变换（toml_edit 格式保留）；
+        // 畸形 TOML 原样透传给 parse 报错，错误路径不变。
+        let (canonical, _) = crate::trust::strip_signature(&raw);
+        Self::parse(&canonical)
     }
 
     /// 解析 + 结构校验（返回 manifest 与原始文本；签名校验见 `trust`）。

@@ -688,6 +688,40 @@ async fn disk_manifest_reads_payload_dir() {
         .unwrap_or_else(|| panic!("missing dir"));
 }
 
+/// BUG-20261120-043 回归锁（端到端消费面）：已签名插件（盘上 plugin.toml
+/// 含根级 `[signature]` 表——`plugin sign` 回填、install ⑧ 落位写原文）
+/// 的 disk_manifest / set_config_key 必须照常工作。修复前 load_from_dir
+/// 直吃原文 → deny_unknown_fields 报「unknown field signature」→ 签名
+/// 插件的配置面全炸。
+#[tokio::test(flavor = "multi_thread")]
+async fn disk_manifest_and_config_key_work_for_signed_plugin() {
+    crate::test_support::ensure_host_dll();
+    let (_ws, mgr) = crate::test_support::default_manager();
+    let dir = mgr.plugin_dir("signed-m");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let signed = format!(
+        "{}\n[signature]\nalgorithm = \"ed25519\"\npublic-key = \"{}\"\nsignature = \"{}\"\n",
+        manifest_raw("signed-m", "tool", ""),
+        "b".repeat(64),
+        "c".repeat(128),
+    );
+    std::fs::write(dir.join("plugin.toml"), &signed).expect("write");
+    let m = mgr.disk_manifest("signed-m").expect("signed read");
+    assert_eq!(m.slug, "signed-m");
+    // config 面同源（set_config_key 内部走 disk_manifest 对账 schema）。
+    // signed-m 夹具无 config-schema 声明键——用「未声明键」的 loud 拒绝
+    // 证明 disk_manifest 已成功解析（修复前错误是 parse unknown field，
+    // 修复后错误是 key not declared——错误形态翻转即修复证据）。
+    let err = mgr
+        .set_config_key("signed-m", "ghost", "v")
+        .err()
+        .unwrap_or_else(|| panic!("undeclared key"));
+    assert!(
+        err.to_string().contains("key not declared"),
+        "parse must succeed for signed manifest, got: {err}"
+    );
+}
+
 // -- 总开关 / 审计 ----------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]

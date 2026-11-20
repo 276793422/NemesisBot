@@ -725,3 +725,33 @@ fn load_from_dir_missing_and_oversize_and_ok() {
     let (m, _) = PluginManifest::load_from_dir(dir.path()).expect("ok");
     assert_eq!(m.slug, "demo");
 }
+
+/// BUG-20261120-043 回归锁：盘上已签名插件（`plugin sign` 回填根级
+/// `[signature]` 表；install ⑧ 落位写原文）经 load_from_dir 必须解析成功
+/// ——结构解析与 verify_manifest 同纪律先剥 signature（deny_unknown_fields
+/// 对未知根键 loud 拒；修复前签名插件的 disk_manifest/config 面/wasm.list/
+/// flow 声明面/自举搜索全部报「unknown field signature」炸或降级）。
+/// 同时钉住 parse 直吃含 signature 原文仍拒（strip 语义在 load_from_dir
+/// 与 verify_manifest 两个入口，不在裸 parse）。
+#[test]
+fn load_from_dir_signed_manifest_strips_signature_table() {
+    let dir = tempfile::tempdir().expect("tmp");
+    let signed = format!(
+        "{}\n[signature]\nalgorithm = \"ed25519\"\npublic-key = \"{}\"\nsignature = \"{}\"\nsigned-at = \"2026-11-20T00:00:00Z\"\n",
+        tool_toml(),
+        "b".repeat(64),
+        "c".repeat(128),
+    );
+    std::fs::write(dir.path().join("plugin.toml"), &signed).expect("write");
+    let (m, canonical) = PluginManifest::load_from_dir(dir.path()).expect("signed parses");
+    assert_eq!(m.slug, "demo");
+    // 返回文本 = 剥离后规范形态（signature 表不进结构面）。
+    assert!(!canonical.contains("[signature]"));
+
+    // 裸 parse 直吃含 signature 原文仍拒（deny_unknown_fields 语义保持）。
+    let err = parse_err(&signed);
+    assert!(
+        err.contains("signature"),
+        "bare parse must still reject unknown root key: {err}"
+    );
+}
