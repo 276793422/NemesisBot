@@ -733,15 +733,16 @@ impl EmailChannel {
                                             let (from, subject, message_id) =
                                                 parse_email_headers_static(&headers);
 
-                                            // Check seen
+                                            // Check seen（BUG-20261120-023：只查不插——
+                                            // 入表推迟到 STORE 成功后的发布承诺点。早插
+                                            // 会把「STORE 失败未发布」的邮件挡在下轮
+                                            // 之外 = 静默永久丢失；修后语义 = 延迟一轮
+                                            // 整体重试。空串不可作键："" 键会让所有无
+                                            // Message-ID 邮件互相误吞。）
                                             {
-                                                let mut map = seen_uids.write();
+                                                let map = seen_uids.read();
                                                 if !message_id.is_empty() && map.contains_key(&message_id) {
                                                     continue;
-                                                }
-                                                if !message_id.is_empty() {
-                                                    map.insert(message_id.clone(), true);
-                                                    Self::prune_seen_uids(&mut map);
                                                 }
                                             }
 
@@ -758,6 +759,17 @@ impl EmailChannel {
                                                 Err(e) => {
                                                     warn!(error = %e, uid = %uid,
                                                         "[EmailChannel] failed to fetch email body");
+                                                    // body 毒丸入表（既有语义保留，插入点
+                                                    // 随 BUG-20261120-023 迁移）：envelope
+                                                    // 可解析但 body 恒失败的邮件（如 literal
+                                                    // 超帽）不再每轮重试。空 message_id 不可
+                                                    // 入表（"" 键互吞），退化为每轮重试+warn
+                                                    //（有界、可观测）。
+                                                    if !message_id.is_empty() {
+                                                        let mut map = seen_uids.write();
+                                                        map.insert(message_id.clone(), true);
+                                                        Self::prune_seen_uids(&mut map);
+                                                    }
                                                     continue;
                                                 }
                                             };
@@ -787,11 +799,33 @@ impl EmailChannel {
                                                 Self::prune_sender_map(&sender_map);
                                             }
 
-                                            // Mark as seen（UID STORE：与上同源，
-                                            // 免疫 MSN 重编号）
-                                            let _ = conn
+                                            // Mark as seen（UID STORE：与上同源，免疫
+                                            // MSN 重编号）——发布门禁（BUG-20261120-023）：
+                                            // STORE 失败不得照常发布。空 Message-ID 邮件
+                                            // 的唯一跨轮询去重防线就是服务器侧 \Seen
+                                            //（seen_uids 按 message_id 键，空串不可作键）；
+                                            // 吞错 STORE + 照常发布 = 邮件留在 UNSEEN，
+                                            // 每轮 poll 重复 FETCH + 重复发布（READ-ONLY
+                                            // 邮箱等持续失败形态 = 默认 30s 一条的无限重复
+                                            // 风暴）。修后：发布 ⟹ STORE 成功 ⟹ 下轮
+                                            // SEARCH UNSEEN 不再返回 = 恰好一次结构性成立；
+                                            // 瞬时失败退化为延迟一轮重试。非空 message_id
+                                            // 的 seen_uids 入表同步推迟到此点（承诺点入表
+                                            // =「本轮必发布或下轮可重试」）。
+                                            if conn
                                                 .send_command(&uid_store_seen_cmd(&uid))
-                                                .await;
+                                                .await
+                                                .is_err()
+                                            {
+                                                warn!(uid = %uid,
+                                                    "[EmailChannel] failed to mark email as seen (STORE failed); deferring publish to next poll");
+                                                continue;
+                                            }
+                                            if !message_id.is_empty() {
+                                                let mut map = seen_uids.write();
+                                                map.insert(message_id.clone(), true);
+                                                Self::prune_seen_uids(&mut map);
+                                            }
 
                                             // 收件必须发布到总线进
                                             // agent loop——此前整条收件路径到「标已读 +
@@ -834,6 +868,14 @@ impl EmailChannel {
                                                 chat_id = %chat_id,
                                                 "[EmailChannel] Received email"
                                             );
+                                        } else {
+                                            // envelope FETCH 失败不得静默（BUG-20261120-023
+                                            // 可观测性补齐）：邮件留在 UNSEEN 每轮重试，
+                                            // 修前零日志（body 失败有 warn、envelope 失败
+                                            // 静默，不对称）——如 header literal 超帽的
+                                            // 毒丸邮件会无限静默重试。
+                                            warn!(uid = %uid,
+                                                "[EmailChannel] failed to fetch email envelope; will retry next poll");
                                         }
                                     }
                                 }

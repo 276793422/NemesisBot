@@ -1340,3 +1340,148 @@ fn test_rfc2047_subject_flattens_crlf_before_encoding() {
         "CRLF must be flattened before encoding"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261120-023：STORE \Seen 发布门禁（吞错 STORE + 照常发布 = 重复风暴）
+// ---------------------------------------------------------------------------
+
+/// 多轮询假 IMAP 服务器骨架（accept 循环——每轮 poll 一条新连接）。
+///
+/// 共享态：`store_no_first`（第一次 STORE 返回 NO，其后 OK 并置 seen 标记）
+/// 与 `seen`（置位后 SEARCH 返回空——模拟服务器侧 \Seen 生效）。
+/// `store_always_no=true` 时 STORE 恒 NO、seen 永不置位（READ-ONLY 邮箱形态）。
+/// 邮件**无 Message-ID 行**（进程内 seen_uids 无法兜底的形态——D1 主证）。
+async fn spawn_fake_imap_store_gate(always_no: bool) -> std::net::SocketAddr {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let seen = std::sync::Arc::new(AtomicBool::new(false));
+    let store_count = std::sync::Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen_srv = seen.clone();
+    let count_srv = store_count.clone();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let (rd, mut wr) = stream.into_split();
+            let mut rd = BufReader::new(rd);
+            let mut line = String::new();
+            if wr.write_all(b"* OK IMAP4rev1 ready\r\n").await.is_err() {
+                return;
+            }
+            loop {
+                line.clear();
+                if rd.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                let resp = if line.contains("LOGIN") {
+                    "NB001 OK LOGIN\r\n".to_string()
+                } else if line.contains("SELECT") {
+                    "NB002 OK SELECT\r\n".to_string()
+                } else if line.contains("SEARCH") {
+                    if seen_srv.load(Ordering::SeqCst) {
+                        "* SEARCH\r\nNB003 OK SEARCH\r\n".to_string()
+                    } else {
+                        "* SEARCH 1\r\nNB003 OK SEARCH\r\n".to_string()
+                    }
+                } else if line.contains("BODY[HEADER") {
+                    // 无 Message-ID 行的 header literal（{55} = 实际字节数）：
+                    // message_id 解析为空串 → seen_uids 不可兜底
+                    "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {55}\r\n\
+                     From: Alice <alice@example.com>\r\n\
+                     Subject: Hello there\r\n\
+                     )\r\n\
+                     NB004 OK FETCH\r\n"
+                        .to_string()
+                } else if line.contains("BODY[TEXT]") {
+                    "* 1 FETCH (BODY[TEXT] {10}\r\nHello body\r\n)\r\nNB005 OK FETCH\r\n"
+                        .to_string()
+                } else if line.contains("STORE") {
+                    let n = count_srv.fetch_add(1, Ordering::SeqCst);
+                    if always_no || n == 0 {
+                        "NB006 NO STORE failed\r\n".to_string()
+                    } else {
+                        seen_srv.store(true, Ordering::SeqCst);
+                        "NB006 OK STORE\r\n".to_string()
+                    }
+                } else if line.contains("LOGOUT") {
+                    "NB007 OK LOGOUT\r\n".to_string()
+                } else {
+                    "NB999 OK\r\n".to_string()
+                };
+                if wr.write_all(resp.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    addr
+}
+
+fn store_gate_config(addr: std::net::SocketAddr) -> EmailConfig {
+    EmailConfig {
+        imap_host: addr.ip().to_string(),
+        imap_port: addr.port(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        poll_interval: 1, // 每秒一轮——观察重复投递/恰好一次语义
+        ..Default::default()
+    }
+}
+
+/// D1 主证（修复前红）：STORE 恒 NO（READ-ONLY 邮箱形态）+ 邮件无
+/// Message-ID（seen_uids 无法兜底）→ 修复前吞错 STORE 照常发布，邮件永远
+/// UNSEEN = 每轮 poll 重复发布（默认 30s 一条的无限风暴）；修复后 STORE
+/// 失败不得发布——窗口内零发布。
+#[tokio::test]
+async fn test_poll_loop_store_failure_never_publishes() {
+    let addr = spawn_fake_imap_store_gate(true).await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let ch = EmailChannel::new(store_gate_config(addr), tx).unwrap();
+    ch.start().await.unwrap();
+
+    let leaked = tokio::time::timeout(std::time::Duration::from_millis(3500), rx.recv()).await;
+    assert!(
+        leaked.is_err(),
+        "STORE failure must defer publish (no duplicate storm), got: {leaked:?}"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+/// D1 恢复面（修复前红）：第一次 STORE NO（瞬时失败）、其后 OK → 修复前
+/// 两轮各发布一次（吞错 + 空Message-ID 无进程内去重 = 恰好重复）；修复后
+/// 第一轮不发布、第二轮 STORE 成功后发布 = 窗口内**恰好一条**。
+#[tokio::test]
+async fn test_poll_loop_store_transient_failure_exactly_once() {
+    let addr = spawn_fake_imap_store_gate(false).await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let ch = EmailChannel::new(store_gate_config(addr), tx).unwrap();
+    ch.start().await.unwrap();
+
+    // 窗口 3.5s ≥ 3 轮 poll（1s 间隔）：第 1 轮 STORE NO 不发布、第 2 轮
+    // STORE OK 发布、第 3 轮 SEARCH 空。恰好 1 条。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3500);
+    let mut count = 0usize;
+    let mut dupes = Vec::new();
+    while std::time::Instant::now() < deadline {
+        let remain = deadline.saturating_duration_since(std::time::Instant::now());
+        match tokio::time::timeout(remain, rx.recv()).await {
+            Ok(Ok(msg)) => {
+                count += 1;
+                dupes.push(msg.content);
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(
+        count, 1,
+        "transient STORE failure must yield exactly-once delivery, got {count}: {dupes:?}"
+    );
+
+    ch.stop().await.unwrap();
+}
