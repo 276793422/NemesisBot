@@ -45,6 +45,9 @@ pub enum McpAction {
         /// Timeout in seconds
         #[arg(short, long, default_value_t = 30)]
         timeout: u64,
+        /// 装前扫描命中时确认放行（风险自担；落 allowlist，同定义再接入免重复确认）
+        #[arg(long)]
+        confirm_scan_risk: bool,
     },
     /// Remove a MCP server
     Remove {
@@ -521,10 +524,14 @@ fn cmd_list(mcp_cfg_path: &std::path::Path) -> Result<()> {
 fn cmd_add(
     mcp_cfg_path: &std::path::Path,
     config_json_path: &std::path::Path,
+    workspace: &std::path::Path,
     req: &AddRequest,
+    confirm_scan_risk: bool,
 ) -> Result<()> {
     let dir = mcp_cfg_path.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
+    // security feature 关 = 装前扫描不编译（门内消费，占位防 unused）。
+    let _ = (workspace, confirm_scan_risk);
 
     let mut cfg = if mcp_cfg_path.exists() {
         serde_json::from_str::<serde_json::Value>(&nemesis_utils::fsutil::read_config_string(
@@ -578,6 +585,75 @@ Remove it first: nemesisbot mcp remove {}",
     {
         cfg["servers"] = serde_json::json!([]);
     }
+
+    // #14 装前扫描门（W2 批三，2026-11-20 拍板）：新接入定义双信号扫描
+    // （注入检测 + eval 规则）× 模式裁决。命中：On = 拒绝本次、重发加
+    // --confirm-scan-risk；Enforced = 硬拒；confirm 放行落 allowlist
+    // （同定义再接入免重复确认）。security feature 关 = 门不编译。
+    #[cfg(feature = "security")]
+    {
+        use nemesis_config::PreinstallScanMode;
+        use nemesis_security::preinstall as pre;
+
+        let raw = std::fs::read_to_string(config_json_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let mode = nemesis_config::resolve_preinstall_scan(raw.as_ref());
+        if mode != PreinstallScanMode::Off {
+            let allowlist = pre::Allowlist::new(pre::Allowlist::path_in_workspace(workspace));
+            let fingerprint = pre::definition_fingerprint(&server);
+            let allowlisted = allowlist.contains(&fingerprint);
+            let rules_path = nemesis_path::resolve_eval_rules_path_in_workspace(workspace);
+            let rules = match nemesis_config::eval_rules::load_rules(&rules_path) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "装前扫描规则文件加载失败——规则信号缺席（注入检测照常）"
+                    );
+                    None
+                }
+            };
+            let text = pre::definition_text(&server);
+            let scan = pre::scan_text(&text, rules.as_ref());
+            match pre::decide(mode, allowlisted, &scan, confirm_scan_risk) {
+                pre::PreinstallDecision::Allow | pre::PreinstallDecision::AllowAllowlisted => {
+                    if !scan.is_clean() && !allowlisted {
+                        // confirm 放行：落 allowlist 留痕 + 风险明示。
+                        allowlist
+                            .add(pre::AllowlistEntry {
+                                fingerprint,
+                                name: req.name.clone(),
+                                verdict: "confirmed-risk-accepted".to_string(),
+                                added_at: pre::now_rfc3339(),
+                            })
+                            .map_err(anyhow::Error::msg)?;
+                        eprintln!("⚠ 装前扫描命中（已确认放行，风险自担）：");
+                        for f in scan.findings_summary() {
+                            eprintln!("  - {f}");
+                        }
+                    }
+                }
+                pre::PreinstallDecision::RequireConfirm => {
+                    let findings = scan.findings_summary().join("\n  - ");
+                    tracing::info!(name = %req.name, "MCP 装前扫描命中——CLI 待确认");
+                    anyhow::bail!(
+                        "装前扫描命中，拒绝接入「{}」（重发加 --confirm-scan-risk 确认放行，风险自担）：\n  - {findings}",
+                        req.name
+                    );
+                }
+                pre::PreinstallDecision::Reject => {
+                    let findings = scan.findings_summary().join("\n  - ");
+                    tracing::warn!(name = %req.name, "MCP 装前扫描强制拒绝（Enforced）");
+                    anyhow::bail!(
+                        "装前扫描命中且安全档位为强制（命中不可确认放行），拒绝接入「{}」：\n  - {findings}",
+                        req.name
+                    );
+                }
+            }
+        }
+    }
+
     cfg["servers"]
         .as_array_mut()
         .expect("just normalized to array")
@@ -1103,6 +1179,7 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
             args,
             env,
             timeout,
+            confirm_scan_risk,
         } => {
             let req = AddRequest::build(
                 &name,
@@ -1114,7 +1191,13 @@ pub fn run(action: McpAction, local: bool) -> Result<()> {
                 &env,
                 timeout,
             )?;
-            cmd_add(&mcp_cfg_path, &common::config_path(&home), &req)?;
+            cmd_add(
+                &mcp_cfg_path,
+                &common::config_path(&home),
+                &common::workspace_path(&home),
+                &req,
+                confirm_scan_risk,
+            )?;
         }
         McpAction::Remove { name } => cmd_remove(&mcp_cfg_path, &name)?,
         McpAction::Test { name } => {

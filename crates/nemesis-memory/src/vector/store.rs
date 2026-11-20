@@ -284,6 +284,10 @@ impl VectorStore {
                     type_filter.contains(&doc.entry.entry_type)
                 }
             })
+            // #47 记忆投毒隔离：带 quarantine 章的条目对召回面不可见
+            // （章随 metadata 镜像进 vector；管理面 list/release 走
+            // get_by_id / list_entries 原始读，不过本闸）。
+            .filter(|doc| !crate::quarantine::is_quarantined(&doc.entry.metadata))
             .filter_map(|doc| {
                 let sim = cosine_similarity(query_embedding, &doc.embedding);
                 if sim >= min_score {

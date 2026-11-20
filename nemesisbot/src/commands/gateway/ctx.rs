@@ -1423,6 +1423,13 @@ impl GatewayCtx {
                         &memory_data_dir,
                         &config_dir,
                     ));
+                // #47 记忆投毒隔离：写入前双信号扫描（注入检测 + eval 规则），
+                // 可疑记忆入库隔离留取证（W2 批三）。
+                #[cfg(all(feature = "memory", feature = "security"))]
+                crate::memory_content_gate::install_content_gate(
+                    &mgr,
+                    &common::workspace_path(&home),
+                );
                 info!(
                     "[Gateway] Memory manager created (data_dir={})",
                     memory_data_dir.display()

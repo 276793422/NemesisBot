@@ -203,7 +203,7 @@ pub fn build_executor_channel_with_extra_roots(
     // 与旧行为一致）；读失败（无 config.json 等）= None → Basic 档位表
     // （= 旧缺省 false）。sandbox/strict 探针仍走 ConfigHandle（显式键，
     // 语义不变）。
-    let raw = nemesis_utils::fsutil::read_config_string(&crate::common::config_path(home))
+    let raw = nemesis_utils::fsutil::read_config_string(crate::common::config_path(home))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     // 读失败（无 config.json 等）= None → resolver 按 Basic 档位表（= 旧缺省 false）。

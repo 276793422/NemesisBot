@@ -18,6 +18,7 @@
     }
   },
   "executor": {
+    "enabled": false,
     "sandbox": false,
     "persistent": {
       "enabled": false,

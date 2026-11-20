@@ -136,6 +136,13 @@ pub async fn assemble(home: &Path) -> Result<McpServeAssembly, String> {
                 &memory_data_dir,
                 &config_dir,
             ));
+            // #47 记忆投毒隔离：与 gateway ctx 同源双信号内容闸（MCP 出口
+            // 不是安全旁路——memory_write 同样要过隔离扫描）。
+            #[cfg(feature = "security")]
+            crate::memory_content_gate::install_content_gate(
+                &mgr,
+                &crate::common::workspace_path(home),
+            );
             Some(Arc::new(
                 nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr),
             ))

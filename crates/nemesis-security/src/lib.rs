@@ -58,6 +58,8 @@ pub mod pipeline;
 #[cfg(feature = "security")]
 pub mod preexec;
 #[cfg(feature = "security")]
+pub mod preinstall;
+#[cfg(feature = "security")]
 pub mod resolver;
 #[cfg(feature = "scanner")]
 pub mod scanner;

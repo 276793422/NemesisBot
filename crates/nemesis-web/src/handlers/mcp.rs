@@ -50,11 +50,11 @@ impl ModuleHandler for McpHandler {
             "servers" => self.servers(workspace),
             "server.add" => {
                 let data = data.ok_or("missing data")?;
-                self.server_add(workspace, &data)
+                self.server_add(workspace, ctx.home.as_deref(), &data)
             }
             "server.update" => {
                 let data = data.ok_or("missing data")?;
-                self.server_update(workspace, &data)
+                self.server_update(workspace, ctx.home.as_deref(), &data)
             }
             "server.delete" => {
                 let data = data.ok_or("missing data")?;
@@ -141,6 +141,127 @@ fn is_http_transport(t: &str) -> bool {
     matches!(t, "http" | "streamable_http" | "streamable-http")
 }
 
+// ---------------------------------------------------------------------------
+// #14 装前扫描门（W2 批三，2026-11-20 拍板：新 MCP server 首次接入 →
+// eval 规则扫描 + 人工确认卡 → allowlist）
+// ---------------------------------------------------------------------------
+
+/// RequireConfirm 中止哨兵：server_update 的 update_mcp_config 闭包内扫描
+/// 裁决要求确认时返回的 Err 文案——外层凭捕获的 verdict 区分「确认中止」
+/// 与真实错误（确认载荷必须以 Ok 形态返回，前端才渲染确认卡而非报错）。
+/// NUL 环绕避免与用户可见错误文案撞车。
+#[cfg(feature = "security")]
+const SCAN_CONFIRM_ABORT: &str = "\u{0}scan-confirm-abort\u{0}";
+
+/// 扫描门裁决（server.add / server.update 共用）。
+#[cfg(feature = "security")]
+enum ScanGateVerdict {
+    /// 干净 / 已在 allowlist → 放行。
+    Allow,
+    /// 命中但用户 confirm 放行——接入成功后须落 allowlist 留痕
+    /// （同定义再接入免重复确认）。
+    AllowByConfirm { fingerprint: String },
+    /// 命中未确认 → 调用方返回确认载荷（前端确认卡，重发带
+    /// `confirm_scan_risk: true`）。
+    RequireConfirm {
+        findings: Vec<String>,
+        fingerprint: String,
+    },
+    /// Enforced 档命中硬拒（confirm 也放不了行）。
+    Reject(String),
+}
+
+/// #14 装前扫描裁决：Off 短路 → allowlist 判等（先于扫描，已确认定义免
+/// 扫描成本）→ 双信号扫描（注入检测 + eval 规则）→ [`decide`] 纯函数裁决。
+/// 规则文件缺失/损坏 = 规则信号缺席（WARN + 注入检测照常），接入不被
+/// 规则文件状态绑架（裁决兜底在 decide 的 mode 语义）。
+#[cfg(feature = "security")]
+fn scan_gate_verdict(
+    workspace: &str,
+    home: Option<&str>,
+    definition: &serde_json::Value,
+    name: &str,
+    confirm_scan_risk: bool,
+) -> ScanGateVerdict {
+    use nemesis_config::PreinstallScanMode;
+    use nemesis_security::preinstall as pre;
+
+    // 模式：raw config 读 security.preinstall_scan（strict 档 → Enforced；
+    // home 缺席 = 无 config 可读 → resolver 缺省 = Off = 现形态）。
+    let raw = home.and_then(|h| crate::handlers::config::read_raw_config(h).ok());
+    let mode = nemesis_config::resolve_preinstall_scan(raw.as_ref());
+    if mode == PreinstallScanMode::Off {
+        return ScanGateVerdict::Allow;
+    }
+
+    let allowlist = pre::Allowlist::new(pre::Allowlist::path_in_workspace(Path::new(workspace)));
+    let fingerprint = pre::definition_fingerprint(definition);
+    if allowlist.contains(&fingerprint) {
+        return ScanGateVerdict::Allow;
+    }
+
+    let rules_path = nemesis_path::resolve_eval_rules_path_in_workspace(Path::new(workspace));
+    let rules = match nemesis_config::eval_rules::load_rules(&rules_path) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "装前扫描规则文件加载失败——规则信号缺席（注入检测照常）"
+            );
+            None
+        }
+    };
+    let text = pre::definition_text(definition);
+    let scan = pre::scan_text(&text, rules.as_ref());
+    if scan.is_clean() {
+        return ScanGateVerdict::Allow;
+    }
+
+    match pre::decide(mode, false, &scan, confirm_scan_risk) {
+        pre::PreinstallDecision::Allow | pre::PreinstallDecision::AllowAllowlisted => {
+            if confirm_scan_risk {
+                ScanGateVerdict::AllowByConfirm { fingerprint }
+            } else {
+                ScanGateVerdict::Allow
+            }
+        }
+        pre::PreinstallDecision::RequireConfirm => {
+            tracing::info!(name = %name, findings = ?scan.findings_summary(), "MCP 装前扫描命中——待人工确认");
+            ScanGateVerdict::RequireConfirm {
+                findings: scan.findings_summary(),
+                fingerprint,
+            }
+        }
+        pre::PreinstallDecision::Reject => {
+            let findings = scan.findings_summary().join("；");
+            tracing::warn!(name = %name, findings = %findings, "MCP 装前扫描强制拒绝（Enforced）");
+            ScanGateVerdict::Reject(format!(
+                "MCP server '{name}' 装前扫描命中且安全档位为强制（命中不可确认放行）：{findings}"
+            ))
+        }
+    }
+}
+
+/// AllowByConfirm 落 allowlist（verdict 留痕 + added_at；幂等；写失败
+/// WARN 不阻断接入——同定义再接入重新确认，方向安全）。
+#[cfg(feature = "security")]
+fn record_scan_confirm(workspace: &str, name: &str, fingerprint: &str) {
+    let allowlist = nemesis_security::preinstall::Allowlist::new(
+        nemesis_security::preinstall::Allowlist::path_in_workspace(Path::new(workspace)),
+    );
+    if let Err(e) = allowlist.add(nemesis_security::preinstall::AllowlistEntry {
+        fingerprint: fingerprint.to_string(),
+        name: name.to_string(),
+        verdict: "confirmed-risk-accepted".to_string(),
+        added_at: nemesis_security::preinstall::now_rfc3339(),
+    }) {
+        tracing::warn!(
+            error = %e,
+            "装前扫描确认记录写入失败（接入继续；同定义再接入将重新确认）"
+        );
+    }
+}
+
 impl McpHandler {
     fn status(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_mcp_config(workspace)?;
@@ -185,6 +306,7 @@ impl McpHandler {
     fn server_add(
         &self,
         workspace: &str,
+        _home: Option<&str>,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
@@ -269,6 +391,41 @@ impl McpHandler {
                 )
             });
         }
+        // #14 装前扫描门（W2 批三）：最终形态定义（normalize 后）接入前
+        // 双信号扫描——命中按模式裁决（On=待确认 / Enforced=硬拒）。
+        // AllowByConfirm 的 allowlist 落记在写盘成功后（接入失败不记）。
+        #[cfg(feature = "security")]
+        let confirm_scan_risk = data
+            .get("confirm_scan_risk")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        #[cfg(feature = "security")]
+        let mut pending_confirm: Option<String> = None;
+        #[cfg(feature = "security")]
+        {
+            let definition = serde_json::to_value(&server)
+                .map_err(|e| format!("serialize server definition: {e}"))?;
+            match scan_gate_verdict(workspace, _home, &definition, &name, confirm_scan_risk) {
+                ScanGateVerdict::Allow => {}
+                ScanGateVerdict::AllowByConfirm { fingerprint } => {
+                    pending_confirm = Some(fingerprint);
+                }
+                ScanGateVerdict::RequireConfirm {
+                    findings,
+                    fingerprint,
+                } => {
+                    return Ok(Some(serde_json::json!({
+                        "added": false,
+                        "scan_risk": true,
+                        "require_confirm": true,
+                        "name": name,
+                        "findings": findings,
+                        "fingerprint": fingerprint,
+                    })));
+                }
+                ScanGateVerdict::Reject(msg) => return Err(msg),
+            }
+        }
         // 锁在 update_mcp_config 内：权威去重 + push 全程串行（source_add
         // 同款——检测窗口内他人写入不丢）。
         update_mcp_config(workspace, |config| {
@@ -278,6 +435,10 @@ impl McpHandler {
             config.servers.push(server);
             Ok(())
         })?;
+        #[cfg(feature = "security")]
+        if let Some(fingerprint) = pending_confirm {
+            record_scan_confirm(workspace, &name, &fingerprint);
+        }
         // 缺陷 17：sanitize 前缀碰撞写面 warn（与加载面
         // McpManager::load_config 同源 helper）——碰撞名热重载只挂首个、
         // 启动挂载工具键互相覆盖；纯可观测提示不拒绝（名字本身合法）。
@@ -300,12 +461,21 @@ impl McpHandler {
     fn server_update(
         &self,
         workspace: &str,
+        _home: Option<&str>,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
-        // 锁在 update_mcp_config 内：patch 字段全程串行（掩码还原要读存量
-        // 同名条目，读→改→写一事务）。
-        update_mcp_config(workspace, |config| {
+        // #14 装前扫描门（W2 批三）：patch 后的最终定义在闭包内扫描——
+        // 裁决出闭包（FnOnce 可变捕获）；RequireConfirm 以哨兵 Err 中止
+        // 事务（不落盘），外层凭 verdict 转确认载荷（Ok 形态）。
+        #[cfg(feature = "security")]
+        let confirm_scan_risk = data
+            .get("confirm_scan_risk")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        #[cfg(feature = "security")]
+        let mut scan_verdict: Option<ScanGateVerdict> = None;
+        let update_result = update_mcp_config(workspace, |config| {
             let server = config
                 .servers
                 .iter_mut()
@@ -410,8 +580,48 @@ impl McpHandler {
                     )
                 });
             }
+            // #14 装前扫描门：patch 后定义（掩码已还原为真值）扫描裁决；
+            // 非放行裁决中止事务（Err = update_mcp_config abort 不落盘）。
+            #[cfg(feature = "security")]
+            {
+                let definition = serde_json::to_value(&*server)
+                    .map_err(|e| format!("serialize server definition: {e}"))?;
+                let verdict =
+                    scan_gate_verdict(workspace, _home, &definition, &name, confirm_scan_risk);
+                match &verdict {
+                    ScanGateVerdict::Allow | ScanGateVerdict::AllowByConfirm { .. } => {}
+                    ScanGateVerdict::RequireConfirm { .. } => {
+                        return Err(SCAN_CONFIRM_ABORT.to_string());
+                    }
+                    ScanGateVerdict::Reject(msg) => return Err(msg.clone()),
+                }
+                scan_verdict = Some(verdict);
+            }
             Ok(())
-        })?;
+        });
+        // RequireConfirm：事务已中止（哨兵 Err），转确认载荷（Ok 形态——
+        // 前端渲染确认卡，重发带 confirm_scan_risk: true）。
+        #[cfg(feature = "security")]
+        if let Some(ScanGateVerdict::RequireConfirm {
+            findings,
+            fingerprint,
+        }) = scan_verdict
+        {
+            return Ok(Some(serde_json::json!({
+                "updated": false,
+                "scan_risk": true,
+                "require_confirm": true,
+                "name": name,
+                "findings": findings,
+                "fingerprint": fingerprint,
+            })));
+        }
+        update_result?;
+        // AllowByConfirm：更新成功后落 allowlist（同定义再接入免重复确认）。
+        #[cfg(feature = "security")]
+        if let Some(ScanGateVerdict::AllowByConfirm { fingerprint }) = scan_verdict {
+            record_scan_confirm(workspace, &name, &fingerprint);
+        }
         Ok(Some(serde_json::json!({ "updated": true, "name": name })))
     }
 

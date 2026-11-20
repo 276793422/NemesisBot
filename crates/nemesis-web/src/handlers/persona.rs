@@ -1801,6 +1801,35 @@ pub fn convert_agent_content(content: &str) -> ConvertedPersona {
 
 pub struct PersonaHandler;
 
+/// #16 提示词安全常态化触发（人格变更后，W2 批三 2026-11-20 拍板）。
+/// `security.prompt_eval.on_persona_change` 闸（缺省 false——编辑高频
+/// 路径默认不跑，用户显式开才生效）；detached fire-and-forget（沙盒内
+/// 自评，报告落 `<home>/workspace/logs/eval/`，流水落 prompt_eval.log）。
+/// 评估对象 = workspace 根人格四件（IDENTITY/SOUL/USER/AGENT，在场的
+/// 拼接）——activate/restore 后根文件即新人格；file.save 存量人格时根
+/// 文件未变，评估的是生效面（保存内容激活时自会被再次评估），诚实边界。
+fn trigger_persona_eval(workspace: &str, ctx: &RequestContext) {
+    let Some(home) = ctx.home.as_deref() else {
+        return;
+    };
+    let raw = crate::handlers::config::read_raw_config(home).ok();
+    if !nemesis_config::resolve_prompt_eval(raw.as_ref()).on_persona_change {
+        return;
+    }
+    let mut persona_text = String::new();
+    for name in ["IDENTITY.md", "SOUL.md", "USER.md", "AGENT.md"] {
+        if let Ok(content) = std::fs::read_to_string(std::path::Path::new(workspace).join(name)) {
+            persona_text.push_str(&content);
+            persona_text.push('\n');
+        }
+    }
+    if persona_text.trim().is_empty() {
+        return;
+    }
+    let _ =
+        nemesis_utils::prompt_eval::trigger_prompt_eval(std::path::Path::new(home), &persona_text);
+}
+
 #[async_trait::async_trait]
 impl ModuleHandler for PersonaHandler {
     fn module_name(&self) -> &str {
@@ -1845,11 +1874,13 @@ impl ModuleHandler for PersonaHandler {
                 validate_persona_name(&name)?;
                 let result = self.cmd_activate(workspace, &name)?;
                 restart_agent(ctx)?;
+                trigger_persona_eval(workspace, ctx);
                 Ok(result)
             }
             "restore" => {
                 let result = self.cmd_activate(workspace, "default")?;
                 restart_agent(ctx)?;
+                trigger_persona_eval(workspace, ctx);
                 Ok(result)
             }
             "remove" => {
@@ -1884,7 +1915,9 @@ impl ModuleHandler for PersonaHandler {
                 let content = get_str(&d, "content")?;
                 validate_persona_name(&name)?;
                 validate_persona_file(&file)?;
-                self.cmd_file_save(workspace, &name, &file, &content)
+                let result = self.cmd_file_save(workspace, &name, &file, &content)?;
+                trigger_persona_eval(workspace, ctx);
+                Ok(result)
             }
             "shop.browse" => self.cmd_shop_browse(workspace, data.as_ref()).await,
             "shop.search" => self.cmd_shop_search(workspace, data.as_ref()).await,

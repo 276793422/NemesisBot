@@ -448,3 +448,88 @@ fn w2_level_as_str_roundtrip_with_parse() {
     assert_eq!(SecurityLevel::Standard.as_str(), "standard");
     assert_eq!(SecurityLevel::Strict.as_str(), "strict");
 }
+
+// ---------------------------------------------------------------------------
+// W2 批三：#16 prompt_eval / #14 preinstall_scan 解析
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w2b3_resolve_prompt_eval_defaults_and_overrides() {
+    // 键缺席 → 常态化缺省：on_onboard=true（默认开），on_persona_change=
+    // false（编辑高频路径默认不跑）。
+    let d = resolve_prompt_eval(None);
+    assert!(d.on_onboard, "onboard 后自动评估缺省开（常态化语义）");
+    assert!(!d.on_persona_change, "人格编辑触发缺省关");
+    assert_eq!(d, resolve_prompt_eval(Some(&serde_json::json!({}))));
+    assert_eq!(
+        d,
+        resolve_prompt_eval(Some(&serde_json::json!({"security": {}})))
+    );
+    // 显式键照读（档位是起点不是锁死）。
+    let both_on = resolve_prompt_eval(Some(&serde_json::json!(
+        {"security": {"prompt_eval": {"on_onboard": true, "on_persona_change": true}}}
+    )));
+    assert!(both_on.on_onboard && both_on.on_persona_change);
+    let both_off = resolve_prompt_eval(Some(&serde_json::json!(
+        {"security": {"prompt_eval": {"on_onboard": false}}}
+    )));
+    assert!(!both_off.on_onboard, "显式关压过缺省开");
+    assert!(!both_off.on_persona_change);
+    // 非布尔值（写坏）→ 按缺省，不 panic。
+    let garbage = resolve_prompt_eval(Some(&serde_json::json!(
+        {"security": {"prompt_eval": {"on_onboard": "yes"}}}
+    )));
+    assert!(garbage.on_onboard);
+    assert!(!garbage.on_persona_change);
+}
+
+#[test]
+fn w2b3_resolve_preinstall_scan_mode() {
+    use super::PreinstallScanMode;
+    // 缺省（basic、键缺席）= Off = 现形态零突变。
+    assert_eq!(resolve_preinstall_scan(None), PreinstallScanMode::Off);
+    assert_eq!(
+        resolve_preinstall_scan(Some(&serde_json::json!({}))),
+        PreinstallScanMode::Off
+    );
+    assert_eq!(
+        resolve_preinstall_scan(Some(&serde_json::json!(
+            {"security": {"level": "basic"}}
+        ))),
+        PreinstallScanMode::Off
+    );
+    // 显式 enabled=true（非 strict）→ On。
+    assert_eq!(
+        resolve_preinstall_scan(Some(&serde_json::json!(
+            {"security": {"preinstall_scan": {"enabled": true}}}
+        ))),
+        PreinstallScanMode::On
+    );
+    // 显式 enabled=false / 非布尔 → Off。
+    assert_eq!(
+        resolve_preinstall_scan(Some(&serde_json::json!(
+            {"security": {"preinstall_scan": {"enabled": false}}}
+        ))),
+        PreinstallScanMode::Off
+    );
+    assert_eq!(
+        resolve_preinstall_scan(Some(&serde_json::json!(
+            {"security": {"preinstall_scan": {"enabled": "on"}}}
+        ))),
+        PreinstallScanMode::Off
+    );
+    // strict 档 → Enforced（显式键压不过档位强制）。
+    let strict = serde_json::json!({"security": {"level": "strict"}});
+    assert_eq!(
+        resolve_preinstall_scan(Some(&strict)),
+        PreinstallScanMode::Enforced
+    );
+    let strict_off = serde_json::json!(
+        {"security": {"level": "strict", "preinstall_scan": {"enabled": false}}}
+    );
+    assert_eq!(
+        resolve_preinstall_scan(Some(&strict_off)),
+        PreinstallScanMode::Enforced,
+        "强制不可关"
+    );
+}

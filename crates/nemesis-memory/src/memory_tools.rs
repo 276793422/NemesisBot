@@ -466,11 +466,42 @@ impl MemoryToolExecutor {
             tags,
         };
 
+        // #47 记忆投毒隔离：写入前扫描，命中 = 照常入库但盖 quarantine 章
+        // （隔离态：召回面全过滤、留取证现场），对模型诚实回执。
+        let mut episode = episode;
+        let quarantine_notice = match self
+            .manager
+            .scan_content_public(&episode.content, "agent-memory_store")
+        {
+            Some(record) => {
+                let matched = record.matched.clone();
+                crate::quarantine::mark_quarantine(&mut episode.metadata, &record);
+                Some(matched)
+            }
+            None => None,
+        };
+
         match self.manager.append_episode(episode.clone()).await {
-            Ok(id) => MemoryToolResult::ok(format!(
-                "Episodic memory stored successfully (ID: {}, session: {})",
-                id, session_key
-            )),
+            Ok(id) => {
+                let base = format!(
+                    "Episodic memory stored successfully (ID: {}, session: {})",
+                    id, session_key
+                );
+                match quarantine_notice {
+                    Some(matched) => {
+                        let what = if matched.is_empty() {
+                            "安全规则".to_string()
+                        } else {
+                            matched.join(", ")
+                        };
+                        MemoryToolResult::ok(format!(
+                            "{base}\n[记忆隔离] 该内容命中记忆投毒检测（{what}），\
+                             已隔离入库：不参与召回，等待人工放行。"
+                        ))
+                    }
+                    None => MemoryToolResult::ok(base),
+                }
+            }
             Err(e) => MemoryToolResult::err(format!("failed to store episodic memory: {}", e)),
         }
     }
@@ -495,6 +526,29 @@ impl MemoryToolExecutor {
                 })
                 .unwrap_or_default();
 
+            // #47 记忆投毒隔离——graph 臂命中**诚实拒绝**不落盘（v1 裁剪的
+            // 刻意不对称：图结构没有可隔离的「条目元数据」位——triple 无章
+            // 可盖，半吊子隔离比拒绝更危险）。
+            let mut scan_text = format!("{entity_name}\n{entity_type}");
+            for v in properties.values() {
+                scan_text.push('\n');
+                scan_text.push_str(v);
+            }
+            if let Some(record) = self
+                .manager
+                .scan_content_public(&scan_text, "agent-memory_store")
+            {
+                return MemoryToolResult::err(format!(
+                    "[记忆隔离] 图记忆内容命中记忆投毒检测（{}），已拒绝写入：\
+                     图结构无隔离位，命中内容不落盘（可改写内容后重试）。",
+                    if record.matched.is_empty() {
+                        "安全规则".to_string()
+                    } else {
+                        record.matched.join(", ")
+                    }
+                ));
+            }
+
             let entity = crate::graph::GraphEntity {
                 name: entity_name.clone(),
                 typ: entity_type.clone(),
@@ -518,6 +572,23 @@ impl MemoryToolExecutor {
         let object = args["triple_object"].as_str().unwrap_or("").to_string();
 
         if !subject.is_empty() && !predicate.is_empty() && !object.is_empty() {
+            // #47：triple 臂同款诚实拒绝（扫描三元组拼接文本）。
+            let scan_text = format!("{subject}\n{predicate}\n{object}");
+            if let Some(record) = self
+                .manager
+                .scan_content_public(&scan_text, "agent-memory_store")
+            {
+                return MemoryToolResult::err(format!(
+                    "[记忆隔离] 图三元组命中记忆投毒检测（{}），已拒绝写入：\
+                     图结构无隔离位，命中内容不落盘（可改写内容后重试）。",
+                    if record.matched.is_empty() {
+                        "安全规则".to_string()
+                    } else {
+                        record.matched.join(", ")
+                    }
+                ));
+            }
+
             let confidence = args["confidence"].as_f64().unwrap_or(1.0);
             let confidence = if confidence > 0.0 && confidence <= 1.0 {
                 confidence

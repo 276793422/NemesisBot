@@ -3,6 +3,8 @@
 //! Commands: status, documents, document.get, document.save,
 //!           env.check, env.setup, config.get, config.set,
 //!           stats, entries.list, entries.search, entries.store,
+//!           entries.get, entries.delete, entries.update,
+//!           entries.quarantine_list, entries.quarantine_release,
 //!           model.install
 
 use crate::handlers::{
@@ -17,6 +19,14 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+// #47 隔离章键（W2 批三）：与 nemesis_memory::quarantine::META_QUARANTINE
+// 同源字面量——JSONL 直读臂在 memory feature 关闭时也要能识别既有章
+// （章随 metadata 持久化，读面不依赖 manager 在场）。
+#[cfg(feature = "memory")]
+use nemesis_memory::quarantine::META_QUARANTINE;
+#[cfg(not(feature = "memory"))]
+const META_QUARANTINE: &str = "quarantine";
 
 pub struct MemoryHandler;
 
@@ -57,6 +67,8 @@ impl ModuleHandler for MemoryHandler {
             "entries.get",
             "entries.delete",
             "entries.update",
+            "entries.quarantine_list",
+            "entries.quarantine_release",
             "model.install",
             "vector.status",
             "vector.search",
@@ -148,6 +160,14 @@ impl ModuleHandler for MemoryHandler {
                 let id = crate::handlers::get_str(&data, "id")?;
                 let content = crate::handlers::get_str(&data, "content")?;
                 self.entries_update(workspace, &id, &content, ctx).await
+            }
+            // #47 隔离管理面（W2 批三）：清单（全内容 + 章）+ 人工放行
+            // （摘章 → 召回恢复；episodic 臂归 memory_tools 工具面）。
+            "entries.quarantine_list" => self.entries_quarantine_list(workspace, ctx).await,
+            "entries.quarantine_release" => {
+                let data = data.ok_or("missing data")?;
+                let id = crate::handlers::get_str(&data, "id")?;
+                self.entries_quarantine_release(&id, ctx).await
             }
 
             // Enhanced memory: model management ---
@@ -996,6 +1016,15 @@ impl MemoryHandler {
                 continue;
             }
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+                // #47 隔离章过滤：JSONL 直读臂与 manager 臂同口径（召回面
+                // 不见隔离条目；章随 metadata 持久化）。
+                if entry
+                    .get("metadata")
+                    .and_then(|m| m.get(META_QUARANTINE))
+                    .is_some()
+                {
+                    continue;
+                }
                 let text = entry
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -1028,6 +1057,8 @@ impl MemoryHandler {
         // prefetch) and persists via the adapter at the manager's own JSONL.
         // Pre-fix this command raw-appended to <workspace>/memory/vector/ —
         // a path no reader ever loaded.
+        // #47 隔离批：走 store_entry_checked——命中照常入库（隔离态），
+        // 命中章投影给前端做诚实回执。
         #[cfg(feature = "memory")]
         if let Some(mgr) = ctx.state.memory_manager.as_ref()
             && mgr.is_vector_enabled()
@@ -1036,11 +1067,21 @@ impl MemoryHandler {
                 nemesis_memory::types::MemoryType::LongTerm,
                 content.to_string(),
             );
-            let id = mgr
-                .store_entry(entry)
+            let (id, hit) = mgr
+                .store_entry_checked(entry)
                 .await
                 .map_err(|e| format!("store entry error: {}", e))?;
-            return Ok(Some(serde_json::json!({ "id": id, "stored": true })));
+            let quarantine = hit.as_ref().map(|r| {
+                serde_json::json!({
+                    "reason": r.reason, "matched": r.matched,
+                    "at": r.at, "source": r.source,
+                })
+            });
+            return Ok(Some(serde_json::json!({
+                "id": id, "stored": true,
+                "quarantined": hit.is_some(),
+                "quarantine": quarantine,
+            })));
         }
         // Manager present but vector off → fall through to the raw
         // append: the in-memory general store (LocalStore) is not
@@ -1059,11 +1100,26 @@ impl MemoryHandler {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Local::now().to_rfc3339();
 
+        // #47 隔离批（fallback 臂同源）：manager 在场（vector 关）也过内容闸
+        // ——命中照常落 JSONL 但盖章（章随 metadata 持久化，召回面识别）。
+        let mut metadata = serde_json::Map::new();
+        let mut quarantined = false;
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && let Some(record) = mgr.scan_content_public(content, "wsapi")
+        {
+            metadata.insert(
+                META_QUARANTINE.to_string(),
+                serde_json::Value::String(record.encode()),
+            );
+            quarantined = true;
+        }
+
         let entry = serde_json::json!({
             "id": id,
             "type": "long_term",
             "content": content,
-            "metadata": {},
+            "metadata": metadata,
             "tags": [],
             "score": 0.0,
             "created_at": now,
@@ -1084,7 +1140,9 @@ impl MemoryHandler {
         file.write_all(line.as_bytes())
             .map_err(|e| format!("failed to write: {}", e))?;
 
-        Ok(Some(serde_json::json!({ "id": id, "stored": true })))
+        Ok(Some(serde_json::json!({
+            "id": id, "stored": true, "quarantined": quarantined,
+        })))
     }
 
     /// Fetch ONE entry with FULL content (`entries.list` truncates content to
@@ -1218,14 +1276,160 @@ impl MemoryHandler {
                 nemesis_memory::types::MemoryType::LongTerm,
                 content.to_string(),
             );
-            let new_id = mgr
-                .store_entry(entry)
+            // #47 隔离批：编辑 = 内容变更 → 重新过内容闸（store_entry_checked
+            // 语义同 entries_store；命中照常入库隔离态 + 章投影）。
+            let (new_id, hit) = mgr
+                .store_entry_checked(entry)
                 .await
                 .map_err(|e| format!("store entry error: {}", e))?;
-            return Ok(Some(serde_json::json!({ "id": new_id, "updated": true })));
+            let quarantine = hit.as_ref().map(|r| {
+                serde_json::json!({
+                    "reason": r.reason, "matched": r.matched,
+                    "at": r.at, "source": r.source,
+                })
+            });
+            return Ok(Some(serde_json::json!({
+                "id": new_id, "updated": true,
+                "quarantined": hit.is_some(),
+                "quarantine": quarantine,
+            })));
         }
         let _ = workspace;
         Err("强化记忆未启用，无法编辑条目（需要重新生成向量）；可删除后重新添加".to_string())
+    }
+
+    /// #47 隔离清单（管理面）：manager 在场走 `list_quarantined`（keyword +
+    /// vector 合并视图，全内容不截断章）；manager 缺席回落 JSONL 直扫
+    /// （quarantine 章键过滤——章随 metadata 持久化，读面不依赖 manager）。
+    async fn entries_quarantine_list(
+        &self,
+        workspace: &str,
+        ctx: &crate::ws_router::RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        // 臂条件与 entries_store 同源镜像：manager 在场且 vector 启用才走
+        // manager 臂——vector 关时 store 落 JSONL（回嵌延迟），list/release
+        // 若仍走 manager 臂会读到空 store 假「隔离区为空」（e2e 实录）。
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled()
+        {
+            let entries = mgr
+                .list_quarantined()
+                .await
+                .map_err(|e| format!("quarantine list error: {}", e))?;
+            let items: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| {
+                    truncate_entry_content(serde_json::json!({
+                        "id": e.id,
+                        "type": e.typ.to_string(),
+                        "content": e.content,
+                        "metadata": e.metadata,
+                        "tags": e.tags,
+                        "created_at": e.created_at.to_rfc3339(),
+                        "updated_at": e.updated_at.to_rfc3339(),
+                    }))
+                })
+                .collect();
+            let total = items.len();
+            return Ok(Some(
+                serde_json::json!({ "entries": items, "total": total }),
+            ));
+        }
+
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
+        if !jsonl_path.exists() {
+            return Ok(Some(serde_json::json!({ "entries": [], "total": 0 })));
+        }
+        let content = std::fs::read_to_string(&jsonl_path)
+            .map_err(|e| format!("failed to read vector store: {}", e))?;
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
+                && entry
+                    .get("metadata")
+                    .and_then(|m| m.get(META_QUARANTINE))
+                    .is_some()
+            {
+                items.push(truncate_entry_content(entry));
+            }
+        }
+        let total = items.len();
+        Ok(Some(
+            serde_json::json!({ "entries": items, "total": total }),
+        ))
+    }
+
+    /// #47 人工放行：摘章（manager 在场走 `release_quarantined` 双存储同步；
+    /// manager 缺席 = JSONL 行级改写摘章）。未隔离/不存在 = 诚实错误。
+    async fn entries_quarantine_release(
+        &self,
+        id: &str,
+        ctx: &crate::ws_router::RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        // 臂条件与 entries_store 同源镜像（见 entries_quarantine_list 注记）。
+        #[cfg(feature = "memory")]
+        if let Some(mgr) = ctx.state.memory_manager.as_ref()
+            && mgr.is_vector_enabled()
+        {
+            let record = mgr
+                .release_quarantined(id)
+                .await
+                .map_err(|e| format!("quarantine release error: {}", e))?;
+            return Ok(Some(serde_json::json!({
+                "id": id,
+                "released": record.is_some(),
+                "quarantine": record,
+            })));
+        }
+
+        // manager 缺席：JSONL 行级改写（与 entries_delete 同款原子重写纪律）。
+        let workspace = require_workspace(ctx)?;
+        migrate_legacy_vector_store(workspace);
+        let jsonl_path = vector_store_jsonl_path(workspace);
+        if !jsonl_path.exists() {
+            return Ok(Some(serde_json::json!({ "id": id, "released": false })));
+        }
+        let content = std::fs::read_to_string(&jsonl_path)
+            .map_err(|e| format!("failed to read vector store: {}", e))?;
+        let mut released = false;
+        let mut kept = String::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let mut parsed = serde_json::from_str::<serde_json::Value>(trimmed).ok();
+            let is_target = parsed
+                .as_ref()
+                .and_then(|e| e.get("id").and_then(|v| v.as_str()).map(|s| s == id))
+                .unwrap_or(false);
+            if is_target
+                && let Some(entry) = parsed.as_mut()
+                && let Some(metadata) = entry.get_mut("metadata").and_then(|m| m.as_object_mut())
+                && metadata.remove(META_QUARANTINE).is_some()
+            {
+                released = true;
+                kept.push_str(
+                    &serde_json::to_string(entry).map_err(|e| format!("serialize error: {e}"))?,
+                );
+                kept.push('\n');
+                continue;
+            }
+            kept.push_str(trimmed);
+            kept.push('\n');
+        }
+        if released {
+            let _guard = jsonl_write_lock().lock().unwrap();
+            nemesis_utils::write_file_atomic(&jsonl_path.to_string_lossy(), kept.as_bytes(), 0o644)
+                .map_err(|e| format!("failed to rewrite {}: {e}", jsonl_path.display()))?;
+        }
+        Ok(Some(serde_json::json!({ "id": id, "released": released })))
     }
 }
 

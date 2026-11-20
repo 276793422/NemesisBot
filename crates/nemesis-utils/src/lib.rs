@@ -42,6 +42,9 @@ pub mod message;
 // 的统一定义——1 MiB 丢头保尾，防高吞吐输出 OOM。
 pub mod pipe_cap;
 pub mod platform;
+// 提示词安全常态化触发（W2 批三 #16）：人格资产变更后 detached spawn
+// `eval prompt`（fire-and-forget；非 Windows 恒 no-op + SKIP 落日志）。
+pub mod prompt_eval;
 pub mod sanitize;
 pub mod skills;
 // fire-and-forget spawn 收尸单一真相源（BUG-20261117-087：std Child drop

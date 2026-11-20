@@ -217,7 +217,7 @@ pub(crate) async fn build_security_plugin(
     // 非法值」区分度）。非法值 WARN + 按解析结果（basic）盖章；config
     // 读失败 = basic（与装配行为一致，不阻塞启动）。
     let (sec_level, invalid_level) = {
-        let raw = nemesis_utils::fsutil::read_config_string(&common::config_path(home))
+        let raw = nemesis_utils::fsutil::read_config_string(common::config_path(home))
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         nemesis_config::resolve_security_level_checked(raw.as_ref())

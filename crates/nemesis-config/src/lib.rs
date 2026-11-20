@@ -918,6 +918,74 @@ pub fn resolve_executor_enabled(cfg: Option<&serde_json::Value>) -> bool {
         .unwrap_or_else(|| resolve_security_level(cfg).executor_enabled_default())
 }
 
+// ---------------------------------------------------------------------------
+// #16 提示词安全常态化 / #14 装前扫描（W2 批三，2026-11-20 拍板）
+// ---------------------------------------------------------------------------
+
+/// #16 提示词安全常态化解析后的触发设置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromptEvalSettings {
+    /// onboard 完成后自动对人格文件（IDENTITY/SOUL/USER/AGENT 拼接）跑
+    /// `eval prompt`。缺省 **true**（常态化 = 默认开；非 Windows/沙盒未
+    /// 就绪由触发点诚实 SKIP 落日志，不阻塞 onboard 流程）。
+    pub on_onboard: bool,
+    /// 人格编辑保存（activate/restore/file.save）时触发。缺省 **false**
+    /// （编辑高频路径默认不跑——用户显式开才生效）。
+    pub on_persona_change: bool,
+}
+
+/// #16：raw config JSON 读取 `security.prompt_eval`（键/段缺席 → 缺省
+/// on_onboard=true, on_persona_change=false；显式键照读，档位是起点不是
+/// 锁死）。
+pub fn resolve_prompt_eval(cfg: Option<&serde_json::Value>) -> PromptEvalSettings {
+    let pe = cfg
+        .and_then(|v| v.get("security"))
+        .and_then(|s| s.get("prompt_eval"));
+    let flag = |key: &str, default: bool| -> bool {
+        pe.and_then(|v| v.get(key))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(default)
+    };
+    PromptEvalSettings {
+        on_onboard: flag("on_onboard", true),
+        on_persona_change: flag("on_persona_change", false),
+    }
+}
+
+/// #14 MCP 装前扫描模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreinstallScanMode {
+    /// 关闭（现形态：接入不扫描）。
+    Off,
+    /// 开：扫描命中（注入检测或规则）→ 拒绝并要求确认——调用方重发带
+    /// `confirm_scan_risk: true` 放行（审计留痕，风险自担）。
+    On,
+    /// 强制（strict 档）：命中 → 硬拒，confirm 也放不了行；显式
+    /// `enabled: false` 不生效——强制不可关。
+    Enforced,
+}
+
+/// #14：raw config JSON 读取 `security.preinstall_scan`。strict 档 →
+/// [`PreinstallScanMode::Enforced`]（显式键压不过档位强制）；非 strict：
+/// 显式 `enabled == true` → [`PreinstallScanMode::On`]，否则 Off（缺省 =
+/// 现形态，升级零行为突变）。
+pub fn resolve_preinstall_scan(cfg: Option<&serde_json::Value>) -> PreinstallScanMode {
+    if resolve_security_level(cfg).preinstall_scan_required() {
+        return PreinstallScanMode::Enforced;
+    }
+    let enabled = cfg
+        .and_then(|v| v.get("security"))
+        .and_then(|s| s.get("preinstall_scan"))
+        .and_then(|p| p.get("enabled"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
+    if enabled {
+        PreinstallScanMode::On
+    } else {
+        PreinstallScanMode::Off
+    }
+}
+
 /// #25 网关流控解析后的运行参数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RateLimitSettings {

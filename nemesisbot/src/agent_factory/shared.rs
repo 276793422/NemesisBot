@@ -1511,12 +1511,15 @@ pub(super) fn memory_manager_for_data_dir(
     data_dir: &std::path::Path,
 ) -> Option<Arc<nemesis_memory::manager::MemoryManager>> {
     shared.memory_manager.as_ref()?;
-    Some(Arc::new(
-        nemesis_memory::manager::MemoryManager::with_config_dir(
-            data_dir,
-            &shared.workspace_dir().join("config"),
-        ),
-    ))
+    let mgr = Arc::new(nemesis_memory::manager::MemoryManager::with_config_dir(
+        data_dir,
+        &shared.workspace_dir().join("config"),
+    ));
+    // #47 记忆投毒隔离：命名空间/项目域与主 workspace 同源双信号内容闸
+    //（项目域不旁路）。
+    #[cfg(feature = "security")]
+    crate::memory_content_gate::install_content_gate(&mgr, &shared.workspace_dir());
+    Some(mgr)
 }
 /// 距下一个本地午夜的秒数（naive 墙钟差，不做时区查找）。
 ///

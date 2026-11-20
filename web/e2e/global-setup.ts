@@ -174,6 +174,20 @@ function patchMainConfig(): void {
   agents.defaults = defaults
   config.agents = agents
 
+  // W2 批三（#47 记忆投毒隔离）：开启强化记忆让 gateway 装配 MemoryManager
+  //（无 ONNX 插件自动降级 basic，闲置无副作用）——记忆内容闸 + 隔离区
+  // spec（memory-scan-visual）依赖 manager 在场。
+  const memory = (config.memory ?? {}) as Record<string, unknown>
+  memory.enabled = true
+  config.memory = memory
+
+  // W2 批三（#14 MCP 装前扫描）：显式开启扫描档（缺省 Off = 现形态零突变，
+  // memory-scan-visual 的 RequireConfirm 链路依赖 On）。合并写保留其余
+  // security 键不动。
+  const security = (config.security ?? {}) as Record<string, unknown>
+  security.preinstall_scan = { enabled: true }
+  config.security = security
+
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2))
   } catch (e) {

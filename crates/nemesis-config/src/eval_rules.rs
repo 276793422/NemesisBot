@@ -6,11 +6,14 @@
 //! 自动种子 + 原子写 + 覆写前 `.json.bak` 备份）与内置默认集
 //! [`DEFAULT_RULES_JSON`]（编译期内嵌，唯一定义源 `eval_rules_default.json`）。
 //!
-//! 求值半边（assess/match 原语）与 home 路径布局（`rules_file_path`）留在
-//! `nemesisbot::eval_assessor`——后者 `pub use` 本模块全部公开项，CLI
-//! （commands/eval_rules.rs）与评估链（commands/eval.rs）调用点零迁移。
-//! WSAPI `security.eval_rules.*`（Dashboard 评估规则管理 TAB）直接消费本
-//! 模块——handler 侧不存在第二份规则结构真相。
+//! 求值原语（[`get_field`]/[`match_value`]/[`json_equal`]/[`field_exists`]/
+//! [`scan_record`]+[`ScanHit`]）随批三收编本模块——单记录规则扫描（#14
+//! MCP 装前扫描）与全报告评估（`nemesisbot::eval_assessor`）共用同一套
+//! op 语义，杜绝两处实现漂移。assess 的预编译正则主路径仍在
+//! `nemesisbot::eval_assessor`（后者 `use` 本模块原语 + `pub use` 数据
+//! 模型，CLI（commands/eval_rules.rs）与评估链（commands/eval.rs）调用
+//! 点零迁移）。WSAPI `security.eval_rules.*`（Dashboard 评估规则管理
+//! TAB）直接消费本模块——handler 侧不存在第二份规则结构真相。
 //!
 //! 文件位置 `<home>/workspace/config/eval_rules.json`：路径归 nemesisbot
 //! （workspace 布局是宿主的关注点），本模块只认调用方给的绝对路径。
@@ -238,4 +241,139 @@ pub fn save_rules(path: &Path, file: &RulesFile) -> Result<()> {
     let content = serde_json::to_string_pretty(file).context("serialize rules")?;
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
         .map_err(anyhow::Error::msg)
+}
+
+// ---------------------------------------------------------------------------
+// 求值原语（批三收编：单记录扫描与全报告评估共用）
+// ---------------------------------------------------------------------------
+
+/// 点路径取值：`findings.injection.is_injection` 逐层下钻。
+/// 任一层缺失 → None。数组字段整体返回，由 op 层处理"任一元素"。
+pub fn get_field<'a>(record: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut cur = record;
+    for seg in path.split('.') {
+        cur = cur.get(seg)?;
+    }
+    Some(cur)
+}
+
+/// 单条件对单值匹配。数组字段（equals/contains/regex/gt）任一元素命中即成立；
+/// 空数组不成立。
+pub fn match_value(cond: &Condition, value: &serde_json::Value) -> bool {
+    if let Some(arr) = value.as_array() {
+        return arr.iter().any(|el| match_value(cond, el));
+    }
+    match cond.op.as_str() {
+        // exists 在 match_value 之前短路：null 视为不存在（见 field_exists）。
+        "exists" => true,
+        "equals" => json_equal(&cond.value, value),
+        "contains" => match (cond.value.as_str(), value.as_str()) {
+            (Some(needle), Some(hay)) => hay.contains(needle),
+            _ => false,
+        },
+        "regex" => match (cond.value.as_str(), value.as_str()) {
+            (Some(pat), Some(text)) => regex::Regex::new(pat)
+                .map(|re| re.is_match(text))
+                .unwrap_or(false),
+            _ => false,
+        },
+        "gt" => match (cond.value.as_f64(), value.as_f64()) {
+            (Some(threshold), Some(n)) => n > threshold,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// equals：任意 JSON 值精确比较（数字走 as_f64 避免 1 vs 1.0 整浮差异）。
+pub fn json_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    if a.is_number() && b.is_number() {
+        return a.as_f64() == b.as_f64();
+    }
+    a == b
+}
+
+/// exists 的字段存在判定：JSON `null` 视为不存在。
+/// tool_trace 的 findings 把"引擎未命中"序列化为显式 null
+/// （`"credentials_in": null`）——若 null 也算存在，每份健康报告都会
+/// 误命中 cred-in-args 等三条规则（实测踩坑）。null = 无值；
+/// 想显式匹配 null 用 `{"op":"equals","value":null}`。
+pub fn field_exists(record: &serde_json::Value, path: &str) -> bool {
+    matches!(get_field(record, path), Some(v) if !v.is_null())
+}
+
+/// str 字节截断的 char-boundary 安全版（多字节字符不 panic——
+/// 项目已知陷阱，见 memory: str-slice-multibyte-panic）。
+pub fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let mut i = index;
+        while i > 0 && !s.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+}
+
+/// 截断显示用的安全截断点（多字节字符不 panic；CLI list 摘要 / 扫描
+/// 命中证据共用）。
+pub fn truncation_point(s: &str, max: usize) -> usize {
+    floor_char_boundary(s, max)
+}
+
+/// 单条规则命中（[`scan_record`] 的返回项）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ScanHit {
+    pub rule_id: String,
+    pub description: String,
+    pub level: String,
+    /// 原始记录摘录（400 字符 char-boundary 安全截断）。
+    pub evidence: String,
+}
+
+/// 单记录规则扫描（批三新增）：`source == "subject"` 且启用的规则逐条
+/// 求值（记录内 AND），命中即产出 [`ScanHit`]。min_count 在单记录语境下
+/// 按 1 处理（多条计数是 assess 全报告语义，单点扫描面没有"多条"可言）。
+///
+/// `rules = None`（规则文件缺失/损坏等）→ 空结果：规则面 fail-open，
+/// 注入检测等其他信号面照常工作——是否因"无规则"而拒绝由调用方决定
+/// （#14 装前扫描的 decide 层持有该裁决）。
+///
+/// 典型 record 形态：`{"text": <待扫文本>}`——默认 subject 规则
+/// （`subject-static-inject`）的字段即 `text`。
+pub fn scan_record(record: &serde_json::Value, rules: Option<&RulesFile>) -> Vec<ScanHit> {
+    let Some(file) = rules else {
+        return Vec::new();
+    };
+    let mut hits = Vec::new();
+    for rule in &file.rules {
+        if !rule.enabled || rule.source != "subject" {
+            continue;
+        }
+        let matched = rule.conditions.iter().all(|c| {
+            if c.op == "exists" {
+                return field_exists(record, &c.field);
+            }
+            get_field(record, &c.field)
+                .map(|v| match_value(c, v))
+                .unwrap_or(false)
+        });
+        if matched {
+            // 证据摘录优先取 record 的 `text` 字段（subject 扫描的规范
+            // 形态，给人读原文）；无 text 字段回落整条记录的序列化。
+            let evidence = get_field(record, "text")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| serde_json::to_string(record).unwrap_or_default());
+            let cut = truncation_point(&evidence, 400);
+            hits.push(ScanHit {
+                rule_id: rule.id.clone(),
+                description: rule.description.clone(),
+                level: rule.level.clone(),
+                evidence: evidence[..cut].to_string(),
+            });
+        }
+    }
+    hits
 }

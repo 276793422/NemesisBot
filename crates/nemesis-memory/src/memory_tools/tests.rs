@@ -2242,10 +2242,12 @@ async fn test_list_episodes_error_branch() {
         )
         .await;
     assert!(!result.success);
+    // （#47 隔离批）get_recent_episodes 改为 get_session 全读 + 先过滤再取
+    // 尾窗（隔离 episode 不占窗口槽位）——错误面文本随内部调用路径同源更新。
     assert!(
         result
             .content
-            .contains("failed to list episodes: episodic get_recent boom"),
+            .contains("failed to list episodes: episodic get_session boom"),
         "got: {}",
         result.content
     );

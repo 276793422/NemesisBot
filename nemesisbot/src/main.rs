@@ -222,6 +222,10 @@ mod loop_state_tool;
 /// 暴露给 Claude Code / Cursor 等客户端； 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。
 mod mcp_serve;
+/// #47 记忆投毒隔离的内容闸桥（W2 批三）：注入检测 + eval 规则双信号
+/// 扫描，挂 `MemoryManager::set_content_gate`——可疑记忆入库隔离留取证。
+#[cfg(all(feature = "memory", feature = "security"))]
+mod memory_content_gate;
 /// 原生插件装载闸 + 签名策略（四个本地 C-ABI 插件 DLL 的统一裁决点）：
 /// 开关文件 `<workspace>/config/plugins_native.json`（nemesis-config
 /// plugins_native）+ 与 exe 自验同源的三态签名矩阵（enforce=拒载 /

@@ -193,7 +193,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     // typed 字段直读**：serde `#[serde(default)]` 把「键缺席」物化成
     // Default（enabled=false），档位联动会静默失效。钳制两面共用
     // `RateLimitConfig::settings()` 投影，行为一致。
-    let raw = nemesis_utils::fsutil::read_config_string(&crate::common::config_path(&home))
+    let raw = nemesis_utils::fsutil::read_config_string(crate::common::config_path(&home))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     let settings = nemesis_config::resolve_rate_limit(raw.as_ref());

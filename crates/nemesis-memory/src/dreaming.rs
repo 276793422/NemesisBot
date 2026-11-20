@@ -714,6 +714,12 @@ pub async fn run_sweep(
     now: DateTime<Local>,
 ) -> Result<SweepReport, String> {
     let entries = manager.list_all_entries().await?;
+    // #47 记忆投毒隔离：隔离条目不进 sweep（不被 merge/promote/expire 处置
+    // ——隔离态等待人工放行/删除，宿主产出不该碰它们）。
+    let entries: Vec<_> = entries
+        .into_iter()
+        .filter(|e| !crate::quarantine::is_quarantined(&e.metadata))
+        .collect();
     let mut report = SweepReport {
         total_entries: entries.len(),
         ..Default::default()

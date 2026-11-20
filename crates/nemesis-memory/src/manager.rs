@@ -109,6 +109,8 @@ pub struct MemoryManager {
     data_dir: PathBuf,
     /// 召回质量闸（项2 P2；gateway 装配期注入，缺席 = 过滤直通）。
     recall_gate: RwLock<Option<Arc<crate::recall_gate::RecallGate>>>,
+    /// 内容闸（#47 记忆投毒隔离；gateway 装配期注入，缺席 = 写入直通）。
+    content_gate: RwLock<Option<Arc<dyn crate::quarantine::MemoryContentGate>>>,
 }
 
 impl MemoryManager {
@@ -132,6 +134,7 @@ impl MemoryManager {
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
             recall_gate: RwLock::new(None),
+            content_gate: RwLock::new(None),
         }
     }
 
@@ -158,6 +161,7 @@ impl MemoryManager {
             enabled: RwLock::new(true),
             data_dir: config.data_dir.clone(),
             recall_gate: RwLock::new(None),
+            content_gate: RwLock::new(None),
         })
     }
 
@@ -344,6 +348,7 @@ impl MemoryManager {
             enabled: RwLock::new(true),
             data_dir: PathBuf::new(),
             recall_gate: RwLock::new(None),
+            content_gate: RwLock::new(None),
         }
     }
 
@@ -368,6 +373,50 @@ impl MemoryManager {
             None => hits,
             Some(g) => g.filter(query, hits).await,
         }
+    }
+
+    // -- 内容闸（#47 记忆投毒隔离）------------------------------------------
+
+    /// 注入内容闸（gateway 装配期调用；重复调用 = 替换）。闸缺席 = 写入
+    /// 直通（升级零行为突变）。
+    pub fn set_content_gate(&self, gate: Arc<dyn crate::quarantine::MemoryContentGate>) {
+        *self.content_gate.write() = Some(gate);
+    }
+
+    /// 扫描一条待写入文本（内部 helper）：闸缺席 = None（直通）。
+    fn scan_content(
+        &self,
+        content: &str,
+        source: &str,
+    ) -> Option<crate::quarantine::QuarantineRecord> {
+        let gate = self.content_gate.read().clone();
+        gate?.scan(content, source)
+    }
+
+    /// 扫描面公开形态（memory_tools episodic 臂消费：append_episode 不经
+    /// store_common，工具层自己扫描 + 盖章 + 诚实回执）。
+    pub fn scan_content_public(
+        &self,
+        content: &str,
+        source: &str,
+    ) -> Option<crate::quarantine::QuarantineRecord> {
+        self.scan_content(content, source)
+    }
+
+    /// 隔离过滤（keyword 臂）：召回结果剔除带 quarantine 章的条目，
+    /// total 同步收缩（vector 臂在 store 层过滤——章随 metadata 镜像）。
+    fn filter_quarantined(result: &mut SearchResult) {
+        let before = result.entries.len();
+        result
+            .entries
+            .retain(|s| !crate::quarantine::is_quarantined(&s.entry.metadata));
+        if result.entries.len() != before {
+            tracing::debug!(
+                dropped = before - result.entries.len(),
+                "[Memory] quarantined entries filtered from recall result"
+            );
+        }
+        result.total = result.entries.len();
     }
 
     // -- Lifecycle ----------------------------------------------------------
@@ -484,21 +533,47 @@ impl MemoryManager {
 
     // -- General store operations ------------------------------------------
 
-    /// Store a new memory entry and return its ID.
-    ///
-    /// Silently succeeds when disabled (mirrors Go behaviour).
-    /// When the vector store is initialized, the entry is also stored in the
-    /// vector store for semantic search (mirrors Go's vectorStoreAdapter).
-    pub async fn store_entry(&self, entry: Entry) -> Result<String, String> {
+    /// 写入公共路径：内容闸扫描（命中 = **照常入库但盖 quarantine 章**——
+    /// 隔离态：召回面全过滤、留取证现场，拒收丢证据）+ keyword store 主写 +
+    /// vector 镜像。返回 `(id, 命中章)`；`None` = 干净直通（或闸未装配）。
+    async fn store_common(
+        &self,
+        mut entry: Entry,
+        source: &str,
+    ) -> Result<(String, Option<crate::quarantine::QuarantineRecord>), String> {
         if !self.is_enabled() {
-            return Ok(String::new());
+            return Ok((String::new(), None));
+        }
+        let hit = self.scan_content(&entry.content, source);
+        if let Some(record) = &hit {
+            crate::quarantine::mark_quarantine(&mut entry.metadata, record);
         }
         let id = self.store.store(entry.clone()).await?;
 
         // Also store in the vector store if initialized (adapter pattern)
         self.store_entry_to_vector(&entry, &id);
 
-        Ok(id)
+        Ok((id, hit))
+    }
+
+    /// Store a new memory entry and return its ID.
+    ///
+    /// Silently succeeds when disabled (mirrors Go behaviour).
+    /// When the vector store is initialized, the entry is also stored in the
+    /// vector store for semantic search (mirrors Go's vectorStoreAdapter).
+    pub async fn store_entry(&self, entry: Entry) -> Result<String, String> {
+        self.store_common(entry, "memory-store")
+            .await
+            .map(|(id, _)| id)
+    }
+
+    /// 带命中投影的写入（WSAPI `memory.entries_store` 消费）：入库照常
+    /// 完成（隔离态），命中章返回给调用方做诚实回执。
+    pub async fn store_entry_checked(
+        &self,
+        entry: Entry,
+    ) -> Result<(String, Option<crate::quarantine::QuarantineRecord>), String> {
+        self.store_common(entry, "wsapi").await
     }
 
     /// Store a memory entry (Go-style `Manager.Store`).
@@ -507,15 +582,9 @@ impl MemoryManager {
     /// When the vector store is initialized, the entry is also stored in the
     /// vector store for semantic search (mirrors Go's vectorStoreAdapter).
     pub async fn store(&self, entry: Entry) -> Result<String, String> {
-        if !self.is_enabled() {
-            return Ok(String::new());
-        }
-        let id = self.store.store(entry.clone()).await?;
-
-        // Also store in the vector store if initialized (adapter pattern)
-        self.store_entry_to_vector(&entry, &id);
-
-        Ok(id)
+        self.store_common(entry, "memory-store")
+            .await
+            .map(|(id, _)| id)
     }
 
     /// Helper: store an entry in the vector store if it is initialized.
@@ -639,8 +708,10 @@ impl MemoryManager {
             }
         }
 
-        // Fallback to keyword search
-        self.store.query(query, memory_type, limit).await
+        // Fallback to keyword search（隔离条目对召回面不可见）
+        let mut result = self.store.query(query, memory_type, limit).await?;
+        Self::filter_quarantined(&mut result);
+        Ok(result)
     }
 
     /// Auto-inject retrieval (`prefetch_memory_context` in nemesis-agent):
@@ -835,14 +906,18 @@ impl MemoryManager {
             return res;
         }
 
-        // Fallback: keyword search over the general store.
-        self.store.query(query, None, limit).await
+        // Fallback: keyword search over the general store（隔离条目不可见）。
+        let mut result = self.store.query(query, None, limit).await?;
+        Self::filter_quarantined(&mut result);
+        Ok(result)
     }
 
     /// Retrieve a memory entry by ID.
     ///
     /// Checks the keyword store first, then falls back to the vector store
     /// if initialized (mirrors Go's vectorStoreAdapter).
+    /// 隔离条目对召回面不可见（#47；人工放行走 [`Self::release_quarantined`]
+    /// ——那是唯一能看见章的面）。
     pub async fn get(&self, id: &str) -> Result<Option<Entry>, String> {
         if !self.is_enabled() {
             return Ok(None);
@@ -850,6 +925,9 @@ impl MemoryManager {
 
         // Try keyword store first
         if let Some(entry) = self.store.get(id).await? {
+            if crate::quarantine::is_quarantined(&entry.metadata) {
+                return Ok(None);
+            }
             return Ok(Some(entry));
         }
 
@@ -857,6 +935,7 @@ impl MemoryManager {
         let vs_guard = self.vector_store.read();
         if let Some(ref vs) = *vs_guard
             && let Some(ve) = vs.get_by_id(id)
+            && !crate::quarantine::is_quarantined(&ve.metadata)
         {
             return Ok(Some(Entry {
                 id: ve.id,
@@ -1197,17 +1276,27 @@ impl MemoryManager {
     }
 
     /// Get recent episodes for a session with a limit.
+    /// 隔离 episode 不占最近窗口槽位（先过滤再取尾窗——隔离行不挤掉干净行）。
     pub async fn get_recent_episodes(
         &self,
         session_key: &str,
         limit: usize,
     ) -> Result<Vec<Episode>, String> {
-        self.episodic.get_recent(session_key, limit).await
+        let mut eps = self.episodic.get_session(session_key).await?;
+        filter_quarantined_episodes(&mut eps);
+        let limit = if limit == 0 { 10 } else { limit };
+        if eps.len() > limit {
+            eps = eps.split_off(eps.len() - limit);
+        }
+        Ok(eps)
     }
 
     /// Search episodic memories by text query.
+    /// 隔离 episode 对召回面不可见（#47）。
     pub async fn search_episodic(&self, query: &str, limit: usize) -> Result<Vec<Episode>, String> {
-        self.episodic.search(query, limit).await
+        let mut eps = self.episodic.search(query, limit).await?;
+        filter_quarantined_episodes(&mut eps);
+        Ok(eps)
     }
 
     /// Delete all episodes for a session. Also removes corresponding
@@ -1302,6 +1391,124 @@ impl MemoryManager {
         self.episodic.list_sessions().await
     }
 
+    // -- 隔离管理面（#47 记忆投毒隔离；WSAPI entries.quarantine_* 消费）-----
+
+    /// 隔离条目清单（管理面）：[`Self::list_all_entries`] 合并视图 +
+    /// quarantine 章过滤（`is_quarantined` fail-closed——章损坏也在列）。
+    /// 与召回面过滤不同，这里就是「看隔离区」的管理视图，不做二次脱敏。
+    pub async fn list_quarantined(&self) -> Result<Vec<Entry>, String> {
+        let all = self.list_all_entries().await?;
+        Ok(all
+            .into_iter()
+            .filter(|e| crate::quarantine::is_quarantined(&e.metadata))
+            .collect())
+    }
+
+    /// 放行一条隔离的 general/vector 记忆：摘章 + [`Self::update_entry`]
+    /// （keyword store 整体替换 + vector 镜像 metadata patch，正文未变不重
+    /// 嵌入）。keyword store 缺席（生产 per-run 内存态常态）时 vector 镜像
+    /// 兜底——update 的 delete+store 形态对缺席条目自动落 insert。
+    ///
+    /// 返回被摘除的章（`None` = 条目不存在）；条目在但未隔离 = Err（诚实
+    /// 拒绝，不伪装放行成功）。放行面是唯一能越过 `get()` 隔离过滤的面。
+    pub async fn release_quarantined(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::quarantine::QuarantineRecord>, String> {
+        let mut entry = match self.store.get(id).await? {
+            Some(e) => e,
+            None => {
+                // keyword store 缺：vector 镜像兜底（get_by_id 原始读，
+                // 无 recall 过滤）。守卫纪律同 get()：Arc 外提。
+                let vs = self.vector_store_cloned();
+                match vs.as_ref().and_then(|v| v.get_by_id(id)) {
+                    Some(ve) => Entry {
+                        id: ve.id,
+                        typ: parse_memory_type_from_str(&ve.entry_type),
+                        content: ve.content,
+                        metadata: ve.metadata,
+                        tags: ve.tags,
+                        score: Some(ve.score),
+                        created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
+                            .map(|dt| dt.with_timezone(&chrono::Local))
+                            .unwrap_or_else(|_| chrono::Local::now()),
+                        updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
+                            .map(|dt| dt.with_timezone(&chrono::Local))
+                            .unwrap_or_else(|_| chrono::Local::now()),
+                    },
+                    None => return Ok(None),
+                }
+            }
+        };
+        if !crate::quarantine::is_quarantined(&entry.metadata) {
+            return Err(format!("entry {id} is not quarantined"));
+        }
+        let record = crate::quarantine::parse_quarantine(&entry.metadata);
+        crate::quarantine::unmark_quarantine(&mut entry.metadata);
+        entry.updated_at = chrono::Local::now();
+        self.update_entry(entry).await?;
+        Ok(record)
+    }
+
+    /// 隔离 episode 清单（管理面）：全 session 扫描 + 章过滤（低频管理
+    /// 操作，逐 session 读全量可承受）。
+    pub async fn list_quarantined_episodes(&self) -> Result<Vec<Episode>, String> {
+        let mut out = Vec::new();
+        for session_key in self.episodic.list_sessions().await? {
+            for ep in self.episodic.get_session(&session_key).await? {
+                if crate::quarantine::is_quarantined(&ep.metadata) {
+                    out.push(ep);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// 放行一条隔离 episode：`delete_by_id` 删旧行 + 同 id vector 镜像
+    /// 删除 + 摘章后以**新 id** 重 append（episode 行不可原位改；重嵌入
+    /// 可接受——管理面低频操作；append_episode 会重建 vector 镜像）。
+    ///
+    /// 返回被摘除的章（`None` = 条目不存在）；在但未隔离 = Err（同
+    /// [`Self::release_quarantined`] 口径）。
+    pub async fn release_quarantined_episode(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::quarantine::QuarantineRecord>, String> {
+        // 全 session 扫描定位（id → episode）。
+        let mut found: Option<Episode> = None;
+        for session_key in self.episodic.list_sessions().await? {
+            for ep in self.episodic.get_session(&session_key).await? {
+                if ep.id == id {
+                    found = Some(ep);
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        let Some(mut episode) = found else {
+            return Ok(None);
+        };
+        if !crate::quarantine::is_quarantined(&episode.metadata) {
+            return Err(format!("episode {id} is not quarantined"));
+        }
+        let record = crate::quarantine::parse_quarantine(&episode.metadata);
+        crate::quarantine::unmark_quarantine(&mut episode.metadata);
+
+        // 删旧行 + 同 id vector 镜像（守卫纪律同 delete_by_id：外提 Arc）。
+        self.episodic.delete_by_id(id).await?;
+        if let Some(vs) = self.vector_store_cloned() {
+            vs.delete_entry(id);
+        }
+
+        // 新 id 重 append。
+        episode.id = uuid::Uuid::new_v4().to_string();
+        episode.timestamp = chrono::Local::now();
+        self.append_episode(episode).await?;
+        Ok(record)
+    }
+
     // -- Graph operations --------------------------------------------------
 
     /// Add a knowledge-graph triple.
@@ -1392,6 +1599,18 @@ fn parse_memory_type_from_str(s: &str) -> MemoryType {
         "graph" => MemoryType::Graph,
         "daily" => MemoryType::Daily,
         _ => MemoryType::LongTerm,
+    }
+}
+
+/// 隔离过滤（episodic 召回面）：剔除带 quarantine 章的 episode。
+fn filter_quarantined_episodes(eps: &mut Vec<Episode>) {
+    let before = eps.len();
+    eps.retain(|e| !crate::quarantine::is_quarantined(&e.metadata));
+    if eps.len() != before {
+        tracing::debug!(
+            dropped = before - eps.len(),
+            "[Memory] quarantined episodes filtered from recall result"
+        );
     }
 }
 

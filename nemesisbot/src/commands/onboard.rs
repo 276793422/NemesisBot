@@ -428,6 +428,38 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
         println!("  BOOTSTRAP.md removed");
     }
 
+    // --- Step 10c: #16 提示词安全常态化——onboard 后自动评估人格文件
+    // （W2 批三，2026-11-20 拍板）。`security.prompt_eval.on_onboard` 闸
+    // （缺省 true）；detached fire-and-forget（沙盒内自评，报告落
+    // logs/eval/，触发流水落 logs/prompt_eval.log），失败不打扰 onboard
+    // 主流程（非 Windows/沙盒未就绪由触发点诚实 SKIP 落日志）。
+    {
+        let raw_cfg = nemesis_utils::fsutil::read_config_string(common::config_path(home))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        if nemesis_config::resolve_prompt_eval(raw_cfg.as_ref()).on_onboard {
+            let mut persona_text = String::new();
+            for name in ["IDENTITY.md", "SOUL.md", "USER.md", "AGENT.md"] {
+                if let Ok(content) = std::fs::read_to_string(workspace_dir.join(name)) {
+                    persona_text.push_str(&content);
+                    persona_text.push('\n');
+                }
+            }
+            if persona_text.trim().is_empty() {
+                tracing::info!("[Onboard] prompt-eval skipped: no persona files to scan");
+            } else {
+                match nemesis_utils::prompt_eval::trigger_prompt_eval(home, &persona_text) {
+                    nemesis_utils::prompt_eval::PromptEvalTrigger::Spawned => {
+                        println!("  Prompt security evaluation started (async, sandbox)");
+                    }
+                    nemesis_utils::prompt_eval::PromptEvalTrigger::Skipped(reason) => {
+                        tracing::info!("[Onboard] prompt-eval skipped: {reason}");
+                    }
+                }
+            }
+        }
+    }
+
     // --- Step 11: Web and WebSocket configuration ---
     println!("  Web and WebSocket configuration set");
 

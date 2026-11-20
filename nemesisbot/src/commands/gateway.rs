@@ -210,7 +210,7 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
 ///
 /// 读失败 = 按缺省档位 Basic 报告（与装配行为一致），不阻塞启动。
 pub(crate) fn log_security_level_posture(home: &std::path::Path) {
-    let raw = nemesis_utils::fsutil::read_config_string(&crate::common::config_path(home))
+    let raw = nemesis_utils::fsutil::read_config_string(crate::common::config_path(home))
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
     let (level, invalid) = nemesis_config::resolve_security_level_checked(raw.as_ref());

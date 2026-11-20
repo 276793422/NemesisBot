@@ -462,9 +462,68 @@ async function deleteMgmtEntry(entry: any) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// #47 记忆投毒隔离：隔离区（入库但被隔离的记忆，不参与召回，可人工放行）
+// ---------------------------------------------------------------------------
+
+const quarantineEntries = ref<any[]>([])
+const quarantineTotal = ref(0)
+const quarantineLoading = ref(false)
+const releasingId = ref('')
+
+async function loadQuarantineEntries() {
+  quarantineLoading.value = true
+  try {
+    const data = await request('memory', 'entries.quarantine_list', {})
+    quarantineEntries.value = data?.entries || []
+    quarantineTotal.value = data?.total || 0
+  } catch (e: any) {
+    toast.error('加载隔离记忆失败: ' + e)
+  }
+  quarantineLoading.value = false
+}
+
+async function releaseQuarantineEntry(entry: any) {
+  if (!window.confirm('确定放行这条被隔离的记忆吗？放行后将恢复参与召回。')) return
+  releasingId.value = entry.id
+  try {
+    await request('memory', 'entries.quarantine_release', { id: entry.id })
+    toast.success('记忆已放行（恢复参与召回）')
+    await loadQuarantineEntries()
+  } catch (e: any) {
+    toast.error('放行失败: ' + e)
+  }
+  releasingId.value = ''
+}
+
+// 隔离记录投影：章值形态 = encode() 后的 JSON 字符串（manager/JSONL 两臂
+// 同源），JSON.parse 还原对象；退化臂（encode 失败落 reason 纯文本）直接展示。
+function quarantineInfo(entry: any): string {
+  const raw = entry?.metadata?.quarantine
+  if (!raw) return ''
+  let q: any = raw
+  if (typeof raw === 'string') {
+    try {
+      q = JSON.parse(raw)
+    } catch {
+      return raw.slice(0, 120)
+    }
+  }
+  if (typeof q !== 'object' || q === null) return String(q).slice(0, 120)
+  const parts: string[] = []
+  if (q.reason) parts.push('原因: ' + q.reason)
+  if (Array.isArray(q.matched) && q.matched.length) parts.push('命中: ' + q.matched.join(', '))
+  if (q.source) parts.push('来源: ' + q.source)
+  if (q.at) parts.push('时间: ' + q.at)
+  return parts.join(' · ')
+}
+
 // 切到自动注入 TAB 时刷新条目列表（外部/agent 侧可能新增过）。
 watch(activeTab, t => {
-  if (t === 'autoinject') void loadMgmtEntries()
+  if (t === 'autoinject') {
+    void loadMgmtEntries()
+    void loadQuarantineEntries()
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1076,36 @@ onUnmounted(() => {
             <div v-if="mgmtResults === null && mgmtEntries.length > 0" style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-2) var(--space-3);">
               <span style="color: var(--text-muted); font-size: var(--text-xs);">已显示 {{ mgmtEntries.length }} / 共 {{ mgmtTotal }} 条</span>
               <button v-if="mgmtTotal > mgmtEntries.length" class="btn btn-sm" @click="loadMoreMgmtEntries">加载更多</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 卡 4：隔离区（#47 记忆投毒隔离——可疑记忆入库隔离留取证，人工放行） -->
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0;">🦠 隔离区</h3>
+            <button class="btn btn-sm" @click="loadQuarantineEntries">刷新</button>
+          </div>
+          <div class="card-body">
+            <p style="color: var(--text-secondary); font-size: var(--text-xs); margin: 0 0 var(--space-3);">
+              写入时被安全扫描（注入检测 / eval 规则）判为可疑的记忆会入库隔离——保留取证现场但不参与召回。确认无害后可放行恢复召回。
+              <span v-if="quarantineTotal > 0" style="color: var(--warning, #e6a23c); font-weight: 600;">当前 {{ quarantineTotal }} 条待处理。</span>
+            </p>
+            <div v-if="quarantineLoading" style="text-align: center; padding: var(--space-3);">
+              <div class="spinner spinner-sm" style="margin: 0 auto;"></div>
+            </div>
+            <div v-else style="border: 1px solid var(--border); border-radius: var(--radius-md); max-height: 320px; overflow-y: auto;">
+              <div v-if="quarantineEntries.length === 0" class="empty-state" style="padding: var(--space-4);"><p>隔离区为空</p></div>
+              <div v-for="entry in quarantineEntries" :key="entry.id" style="padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); font-size: var(--text-sm);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-2);">
+                  <span style="flex: 1; word-break: break-all;">{{ entry.content }}</span>
+                  <button class="btn btn-sm btn-primary" style="flex-shrink: 0;" :disabled="releasingId === entry.id" @click="releaseQuarantineEntry(entry)">
+                    {{ releasingId === entry.id ? '放行中...' : '放行' }}
+                  </button>
+                </div>
+                <div v-if="quarantineInfo(entry)" style="color: var(--warning, #e6a23c); font-size: var(--text-xs); margin-top: 2px; word-break: break-all;">🦠 {{ quarantineInfo(entry) }}</div>
+                <div style="color: var(--text-muted); font-size: var(--text-xs); margin-top: 2px;">{{ (entry.id || '').substring(0, 8) }}<template v-if="entry.created_at"> · {{ entry.created_at }}</template></div>
+              </div>
             </div>
           </div>
         </div>

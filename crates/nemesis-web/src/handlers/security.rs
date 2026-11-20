@@ -160,6 +160,8 @@ impl ModuleHandler for SecurityHandler {
             "eval_rules.remove",
             "eval_rules.set_enabled",
             "eval_rules.reset",
+            // #16 提示词安全常态化观测面（W2 批三）：prompt 评估报告清单。
+            "prompt_eval.list",
             "session_allow",
             "session_allow_status",
             "signature_verify_status",
@@ -274,6 +276,11 @@ impl ModuleHandler for SecurityHandler {
                 self.eval_rules_set_enabled(workspace, id, enabled)
             }
             "eval_rules.reset" => self.eval_rules_reset(workspace),
+            // #16 提示词安全常态化观测面（W2 批三）：自动/手动 prompt 评估
+            // 报告清单（<workspace>/logs/eval/*_prompt/assessment.json 投影
+            // ——`eval prompt` 的 slug 恒为 "prompt"，onboard/persona 自动
+            // 触发与 CLI 手动跑同目录形态）。
+            "prompt_eval.list" => self.prompt_eval_list(workspace),
             // 免打扰开关状态（运行期投影透传；config.get 的 approvals
             // 段是持久真相源，enabled 可能已被 config.save 热翻）。
             "approvals.status" => Ok(Some(Self::approvals_status())),
@@ -681,6 +688,54 @@ impl SecurityHandler {
             .map_err(|e| format!("failed to load eval rules: {e}"))?;
         let json = serde_json::to_value(&file).map_err(|e| format!("failed to serialize: {e}"))?;
         Ok(Some(json))
+    }
+
+    /// #16 提示词安全常态化观测面（W2 批三）：prompt 评估报告清单。
+    /// 扫描 `<workspace>/logs/eval/` 下 `*_prompt` 报告目录，读
+    /// assessment.json 投影结论 + 命中明细；目录名前缀
+    /// （YYYYMMDD_HHMMSS）即时间（新→旧倒序）。报告缺失/损坏 →
+    /// assessment=null 诚实占位（评估可能还在跑或已损坏）。
+    fn prompt_eval_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let eval_root = PathBuf::from(workspace).join("logs").join("eval");
+        let mut entries: Vec<(String, serde_json::Value)> = Vec::new();
+        let Ok(dirs) = std::fs::read_dir(&eval_root) else {
+            return Ok(Some(serde_json::json!({ "reports": [], "total": 0 })));
+        };
+        for dir_entry in dirs.flatten() {
+            let name = dir_entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with("_prompt") || !dir_entry.path().is_dir() {
+                continue;
+            }
+            let assessment = std::fs::read_to_string(dir_entry.path().join("assessment.json"))
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .unwrap_or(serde_json::Value::Null);
+            entries.push((name, assessment));
+        }
+        // read_dir 顺序是平台实现细节——按目录名（时间戳前缀）倒序。
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        let reports: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(name, a)| {
+                let ts = name
+                    .split('_')
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                serde_json::json!({
+                    "dir": name,
+                    "ts": ts,
+                    "conclusion": a.get("conclusion"),
+                    "matched_rules": a.get("matched_rules").cloned().unwrap_or(serde_json::json!([])),
+                    "gaps": a.get("gaps").cloned().unwrap_or(serde_json::json!([])),
+                    "legacy_report": a.get("legacy_report").cloned().unwrap_or(serde_json::json!(false)),
+                })
+            })
+            .collect();
+        let total = reports.len();
+        Ok(Some(
+            serde_json::json!({ "reports": reports, "total": total }),
+        ))
     }
 
     fn eval_rules_add(

@@ -13,6 +13,9 @@ pub mod graph;
 pub mod local_store;
 pub mod manager;
 pub mod memory_tools;
+// #47 记忆投毒隔离（W2 批三）：可疑记忆隔离态入库（metadata 章 +
+// 召回面全过滤 + 人工放行）；扫描器由宿主侧注入（MemoryContentGate）。
+pub mod quarantine;
 pub mod recall_gate;
 pub mod retrieval;
 pub mod store;
@@ -36,6 +39,10 @@ mod w5_recency_protect_tests;
 // 项2 P2 召回质量闸（RecallGate mock 语义 + manager 挂载面）测试。
 #[cfg(test)]
 mod recall_gate_tests;
+
+// #47 记忆投毒隔离（章编解码 fail-closed / gate mock 写入隔离 / 放行可召回）测试。
+#[cfg(test)]
+mod quarantine_tests;
 
 // re-export 壳放独立文件（BUG-20261106-014：inline mod { body } 形态违反
 // 「测试代码放独立文件」纪律，check-inline-tests.sh 形态 E 补齐后必拦）。

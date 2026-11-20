@@ -6,7 +6,7 @@
 //! standard → build（升级零行为突变）。独立夹具（不复用 tests.rs 的
 //! cluster 门夹具——本模块无 feature 门，默认构建必跑）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{SharedResources, build_agent_loop};
@@ -32,7 +32,7 @@ fn unique_home(tag: &str) -> PathBuf {
     dir
 }
 
-fn write_config(home: &PathBuf, level: Option<&str>) {
+fn write_config(home: &Path, level: Option<&str>) {
     let mut sec = serde_json::json!({});
     if let Some(l) = level {
         sec["level"] = serde_json::json!(l);
@@ -55,9 +55,9 @@ fn write_config(home: &PathBuf, level: Option<&str>) {
     .unwrap();
 }
 
-fn shared_for(home: &PathBuf) -> Arc<SharedResources> {
+fn shared_for(home: &Path) -> Arc<SharedResources> {
     Arc::new(SharedResources {
-        home: home.clone(),
+        home: home.to_path_buf(),
         ..Default::default()
     })
 }

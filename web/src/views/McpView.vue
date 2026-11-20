@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { safeExternalUrl } from '../utils/url'
@@ -30,6 +30,11 @@ const showDetailDialog = ref(false)
 const editingServer = ref<string | null>(null)
 const detailServer = ref<McpServer | null>(null)
 const confirmDeleteName = ref('')
+// #14 MCP 装前扫描：命中时的确认放行卡片（RequireConfirm Ok 载荷 →
+// 用户确认 → 同 payload + confirm_scan_risk:true 重发；取消 = 留在表单
+// 可改定义——定义任一字节变化 = 新指纹 = 重新扫描）。
+const scanFindings = ref<{ name: string; findings: string[] } | null>(null)
+const scanBoxEl = ref<HTMLElement | null>(null)
 
 const TRANSPORT_TYPES = [
   { id: 'stdio', name: 'STDIO', desc: '本地命令行进程' },
@@ -76,11 +81,13 @@ async function loadServers() {
 function openAdd() {
   editingServer.value = null
   form.value = defaultForm()
+  scanFindings.value = null
   showAddDialog.value = true
 }
 
 function openEdit(s: McpServer) {
   editingServer.value = s.name
+  scanFindings.value = null
   form.value = {
     name: s.name,
     transport_type: s.transport_type || 'stdio',
@@ -102,7 +109,7 @@ function showDetail(s: McpServer) {
   showDetailDialog.value = true
 }
 
-async function saveServer() {
+async function saveServer(confirmRisk = false) {
   if (!form.value.name || !form.value.url) {
     toast.warn('请填写名称和 URL/命令')
     return
@@ -125,18 +132,34 @@ async function saveServer() {
   if (form.value.tagsText) {
     payload.tags = form.value.tagsText.split(',').map((t: string) => t.trim()).filter(Boolean)
   }
+  if (confirmRisk) {
+    payload.confirm_scan_risk = true
+  }
 
   try {
+    let data: any
     if (editingServer.value) {
-      await request('mcp', 'server.update', payload)
+      data = await request('mcp', 'server.update', payload)
+    } else {
+      data = await request('mcp', 'server.add', payload)
+    }
+    // 装前扫描命中（安全档位非强制）：后端 Ok 载荷要求人工确认。
+    if (data && data.require_confirm) {
+      scanFindings.value = { name: data.name || form.value.name, findings: Array.isArray(data.findings) ? data.findings : [] }
+      // 卡片在表单折叠线下方——滚入视口（用户直接看到命中详情与放行按钮）
+      void nextTick(() => scanBoxEl.value?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+      return
+    }
+    scanFindings.value = null
+    if (editingServer.value) {
       toast.success('已更新')
     } else {
-      await request('mcp', 'server.add', payload)
       toast.success('已添加')
     }
     showAddDialog.value = false
     await loadServers()
   } catch (e: any) {
+    // 强制档位硬拒（命中不可确认放行）= Err 分支，toast 展示拒绝原因。
     toast.error((editingServer.value ? '更新' : '添加') + '失败: ' + e)
   }
 }
@@ -228,7 +251,7 @@ onMounted(async () => {
 
       <!-- Add/Edit dialog -->
       <div v-if="showAddDialog" class="modal-backdrop" @click.self="showAddDialog = false">
-        <div class="modal" style="max-width: 540px;">
+        <div class="modal modal-scrollable" style="max-width: 540px;">
           <div class="modal-header">
             <h3>{{ editingServer ? '编辑' : '添加' }} MCP 服务器</h3>
             <button class="modal-close" @click="showAddDialog = false">&times;</button>
@@ -281,9 +304,23 @@ onMounted(async () => {
               <input class="form-input" v-model="form.tagsText" placeholder="例如: 文件系统, 本地" style="width: 100%;">
             </div>
           </div>
+          <!-- #14 装前扫描命中确认卡：覆盖在表单之上（modal 内、footer 前） -->
+          <div v-if="scanFindings" ref="scanBoxEl" class="scan-confirm-box">
+            <div class="scan-confirm-title">⚠ 装前安全扫描命中</div>
+            <ul class="scan-confirm-list">
+              <li v-for="(f, i) in scanFindings.findings" :key="i">{{ f }}</li>
+            </ul>
+            <p class="scan-confirm-note">
+              「{{ scanFindings.name }}」的定义命中可疑模式。确认放行将记录到本地 allowlist（同一定义再接入免重复确认）；安全档位为强制时无法确认放行。修改定义任意内容后保存将重新扫描。
+            </p>
+            <div class="scan-confirm-actions">
+              <button class="btn btn-sm" @click="scanFindings = null">取消</button>
+              <button class="btn btn-sm btn-danger" @click="saveServer(true)">确认放行（风险自担）</button>
+            </div>
+          </div>
           <div class="modal-footer">
             <button class="btn btn-sm" @click="showAddDialog = false">取消</button>
-            <button class="btn btn-sm btn-primary" @click="saveServer" :disabled="!form.name || !form.url">{{ editingServer ? '保存' : '添加' }}</button>
+            <button class="btn btn-sm btn-primary" @click="saveServer()" :disabled="!form.name || !form.url">{{ editingServer ? '保存' : '添加' }}</button>
           </div>
         </div>
       </div>
@@ -391,5 +428,49 @@ onMounted(async () => {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+/* #14 装前扫描命中确认卡 */
+/* 长表单视口内滚动：确认卡滚入可见（默认 modal 可超视口，footer 沉到折叠线下） */
+.modal-scrollable {
+  max-height: calc(100vh - 120px);
+  display: flex;
+  flex-direction: column;
+}
+.modal-scrollable .modal-body {
+  overflow-y: auto;
+}
+.scan-confirm-box {
+  margin: 0 var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--warning, #e6a23c);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning, #e6a23c) 8%, transparent);
+}
+.scan-confirm-title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--warning, #e6a23c);
+  margin-bottom: var(--space-2);
+}
+.scan-confirm-list {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-5);
+  font-size: var(--text-xs);
+  color: var(--text);
+}
+.scan-confirm-list li {
+  margin-bottom: 2px;
+  word-break: break-all;
+}
+.scan-confirm-note {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.scan-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 </style>

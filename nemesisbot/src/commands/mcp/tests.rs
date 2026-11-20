@@ -42,7 +42,13 @@ fn add_stdio(
     timeout: u64,
 ) -> anyhow::Result<()> {
     let req = super::AddRequest::build(name, Some(command), None, None, &[], args, env, timeout)?;
-    super::cmd_add(cfg, main_cfg, &req)
+    super::cmd_add(
+        cfg,
+        main_cfg,
+        &main_cfg.parent().unwrap().join("workspace"),
+        &req,
+        false,
+    )
 }
 
 #[test]
@@ -690,6 +696,22 @@ fn main_cfg_of(tmp: &TempDir) -> std::path::PathBuf {
     tmp.path().join("config.json")
 }
 
+/// #14 装前扫描门的 allowlist workspace 根（测试用临时目录同款推导）。
+fn workspace_of(tmp: &TempDir) -> std::path::PathBuf {
+    tmp.path().join("workspace")
+}
+
+/// cmd_add 测试统一入口（workspace 根 + confirm=false——测试 config.json
+/// 无 preinstall_scan 键 = Off = 门短路，与既有用例语义零变化）。
+fn cmd_add_test(
+    cfg: &std::path::Path,
+    main_cfg: &std::path::Path,
+    tmp: &TempDir,
+    req: &AddRequest,
+) -> anyhow::Result<()> {
+    super::cmd_add(cfg, main_cfg, &workspace_of(tmp), req, false)
+}
+
 // ------------------------- sync_mcp_master_switch -------------------------
 
 // 契约更新：sync_mcp_master_switch 的参数现在**就是**主配置
@@ -934,6 +956,7 @@ fn test_s11b_run_sync_arms() {
             args: Some("-c,print(1)".into()),
             env: vec![],
             timeout: 5,
+            confirm_scan_risk: false,
         },
         false,
     )
@@ -1760,7 +1783,7 @@ mod w1_http_add {
             &[],
         )
         .unwrap();
-        super::cmd_add(&cfg, &main_cfg_of(&tmp), &req).unwrap();
+        cmd_add_test(&cfg, &main_cfg_of(&tmp), &tmp, &req).unwrap();
 
         let data: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -1826,7 +1849,7 @@ mod w1_http_add {
             &[],
         )
         .unwrap();
-        super::cmd_add(&cfg, &main_cfg_of(&tmp), &req).unwrap();
+        cmd_add_test(&cfg, &main_cfg_of(&tmp), &tmp, &req).unwrap();
 
         let data: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -1918,6 +1941,7 @@ mod w1_http_add {
                 args: None,
                 env: vec![],
                 timeout: 30,
+                confirm_scan_risk: false,
             },
             false,
         )
@@ -1955,6 +1979,7 @@ mod w1_http_add {
                 args: None,
                 env: vec![],
                 timeout: 30,
+                confirm_scan_risk: false,
             },
             false,
         )
@@ -2280,8 +2305,8 @@ fn r14_add_duplicate_is_loud_error() {
     let cfg = make_empty_mcp_config(&tmp);
     let root_cfg = tmp.path().join("config.json");
     let req = AddRequest::build("pet", Some("python"), None, None, &[], None, &[], 30).unwrap();
-    cmd_add(&cfg, &root_cfg, &req).unwrap(); // 首次成功
-    let err = cmd_add(&cfg, &root_cfg, &req).unwrap_err(); // 重名 = Err
+    cmd_add(&cfg, &root_cfg, &workspace_of(&tmp), &req, false).unwrap(); // 首次成功
+    let err = cmd_add(&cfg, &root_cfg, &workspace_of(&tmp), &req, false).unwrap_err(); // 重名 = Err
     assert!(err.to_string().contains("already exists"), "实际: {err}");
     // 同名条目未被重复追加。
     let data = std::fs::read_to_string(&cfg).unwrap();
@@ -2344,7 +2369,7 @@ mod cov_m {
         let main_cfg = tmp.path().join("config.json");
         let req = AddRequest::build("cov-x", Some("node"), None, None, &[], None, &[], 30)
             .expect("stdio request builds");
-        let res = cmd_add(&cfg_path, &main_cfg, &req);
+        let res = cmd_add(&cfg_path, &main_cfg, &workspace_of(&tmp), &req, false);
         assert!(
             res.is_err(),
             "损坏 config.mcp.json 必须 Err，got: {:?}",
@@ -2398,7 +2423,8 @@ mod cov_m {
             15,
         )
         .expect("http request builds");
-        cmd_add(&cfg_path, &main_cfg, &req).expect("add with hint headers must succeed");
+        cmd_add(&cfg_path, &main_cfg, &workspace_of(&tmp), &req, false)
+            .expect("add with hint headers must succeed");
         // 落盘面：headers 原样保存。
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
@@ -2419,10 +2445,10 @@ mod cov_m {
         let main_cfg = tmp.path().join("config.json");
         let first = AddRequest::build("pet.v2", Some("node"), None, None, &[], None, &[], 5)
             .expect("build first");
-        cmd_add(&cfg_path, &main_cfg, &first).expect("first add ok");
+        cmd_add(&cfg_path, &main_cfg, &workspace_of(&tmp), &first, false).expect("first add ok");
         let second = AddRequest::build("pet-v2", Some("node"), None, None, &[], None, &[], 5)
             .expect("build second");
-        cmd_add(&cfg_path, &main_cfg, &second).expect("second add ok");
+        cmd_add(&cfg_path, &main_cfg, &workspace_of(&tmp), &second, false).expect("second add ok");
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
         assert_eq!(

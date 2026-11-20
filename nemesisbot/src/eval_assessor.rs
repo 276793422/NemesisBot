@@ -31,13 +31,18 @@ pub fn rules_file_path(home: &Path) -> std::path::PathBuf {
 }
 
 // ── 数据半边（serde 模型/结构校验/解析/文件 IO/内置默认集）单一真相源已
-// 收编 `nemesis-config::eval_rules`（WSAPI security.eval_rules.* 与 CLI
-// 同源校验，handler 侧不存在第二份规则结构真相）。re-export 保持旧调用点
-// （CLI eval_rules / eval.rs / 测试）路径不变。
+// 收编 `nemesis-config::eval_rules`；求值原语（get_field/match_value/
+// json_equal/field_exists）与 scan_record/ScanHit 随批三同收编——assess
+// 内联循环与 #14 装前扫描共用同一套 op 语义，杜绝两处实现漂移。
+// re-export 保持旧调用点（CLI eval_rules / eval.rs / 测试）路径不变。
 pub use nemesis_config::eval_rules::{
     Condition, DEFAULT_RULES_JSON, Rule, RulesFile, load_rules, parse_rules, parse_rules_lenient,
-    save_rules, validate_rule,
+    save_rules, truncation_point, validate_rule,
 };
+// 求值原语仅供本模块（assess 内联循环 / evaluate_record 单测）消费——
+// 私有 use 足够；单测经 `use super::*` 同作用域直取。（json_equal 只被
+// match_value 内部消费，本模块不再直引。）
+use nemesis_config::eval_rules::{field_exists, floor_char_boundary, get_field, match_value};
 // CURRENT_RULES_VERSION 仅被本模块测试消费（lib 生产面不用）——单独
 // re-export 供 `use super::*` 的 tests.rs 直取，非 test 构建下静默。
 #[allow(unused_imports)]
@@ -61,52 +66,6 @@ fn level_rank(level: &str) -> u8 {
     }
 }
 
-/// 点路径取值：`findings.injection.is_injection` 逐层下钻。
-/// 任一层缺失 → None。数组字段整体返回，由 op 层处理"任一元素"。
-fn get_field<'a>(record: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-    let mut cur = record;
-    for seg in path.split('.') {
-        cur = cur.get(seg)?;
-    }
-    Some(cur)
-}
-
-/// 单条件对单值匹配。数组字段（equals/contains/regex/gt）任一元素命中即成立；
-/// 空数组不成立。
-fn match_value(cond: &Condition, value: &serde_json::Value) -> bool {
-    if let Some(arr) = value.as_array() {
-        return arr.iter().any(|el| match_value(cond, el));
-    }
-    match cond.op.as_str() {
-        // exists 在 match_value 之前短路：null 视为不存在（见 field_exists）。
-        "exists" => true,
-        "equals" => json_equal(&cond.value, value),
-        "contains" => match (cond.value.as_str(), value.as_str()) {
-            (Some(needle), Some(hay)) => hay.contains(needle),
-            _ => false,
-        },
-        "regex" => match (cond.value.as_str(), value.as_str()) {
-            (Some(pat), Some(text)) => regex::Regex::new(pat)
-                .map(|re| re.is_match(text))
-                .unwrap_or(false),
-            _ => false,
-        },
-        "gt" => match (cond.value.as_f64(), value.as_f64()) {
-            (Some(threshold), Some(n)) => n > threshold,
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
-/// equals：任意 JSON 值精确比较（数字走 as_f64 避免 1 vs 1.0 整浮差异）。
-fn json_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    if a.is_number() && b.is_number() {
-        return a.as_f64() == b.as_f64();
-    }
-    a == b
-}
-
 /// 单条记录对全部 conditions 求值（记录内 AND）。
 /// ⚠ 评估主路径不经过这里（assess 用预编译正则的内联循环，见 修复）——
 /// 保留给单测直测求值原语语义（op 矩阵测试）。生产代码不要新增调用点，
@@ -121,34 +80,6 @@ fn evaluate_record(conditions: &[Condition], record: &serde_json::Value) -> bool
             .map(|v| match_value(c, v))
             .unwrap_or(false)
     })
-}
-
-/// exists 的字段存在判定：JSON `null` 视为不存在。
-/// tool_trace 的 findings 把"引擎未命中"序列化为显式 null
-/// （`"credentials_in": null`）——若 null 也算存在，每份健康报告都会
-/// 误命中 cred-in-args 等三条规则（实测踩坑）。null = 无值；
-/// 想显式匹配 null 用 `{"op":"equals","value":null}`。
-fn field_exists(record: &serde_json::Value, path: &str) -> bool {
-    matches!(get_field(record, path), Some(v) if !v.is_null())
-}
-
-/// str 字节截断的 char-boundary 安全版（多字节字符不 panic——
-/// 项目已知陷阱，见 memory: str-slice-multibyte-panic）。
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        s.len()
-    } else {
-        let mut i = index;
-        while i > 0 && !s.is_char_boundary(i) {
-            i -= 1;
-        }
-        i
-    }
-}
-
-/// 截断显示用的安全截断点（多字节字符不 panic；CLI list 摘要用）。
-pub fn truncation_point(s: &str, max: usize) -> usize {
-    floor_char_boundary(s, max)
 }
 
 /// host 归一化（`_whitelisted` 注入用）：小写 + 去尾点。DNS 解析器可能报
