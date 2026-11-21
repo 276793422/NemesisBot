@@ -471,6 +471,17 @@ impl Channel for MatrixChannel {
                                     continue;
                                 }
 
+                                // BUG-20261121-055：msgtype 闸对齐 process_sync_events
+                                // （331 行）——两套解析此前只有 event_type/sender_allowed
+                                // 收编了单点，msgtype 检查漏收编：m.image/m.file/m.video
+                                // 的 body 是文件名、m.notice 是其他 bot 的系统通知（回
+                                // 环风险）、m.emote 是动作文本，全部当聊天文本喂 agent。
+                                // 只放行 m.text 与慢路径同口径。
+                                let msg_type = event["content"]["msgtype"].as_str().unwrap_or("");
+                                if msg_type != "m.text" {
+                                    continue;
+                                }
+
                                 let content = event["content"]["body"].as_str().unwrap_or("");
                                 if content.is_empty() {
                                     continue;
