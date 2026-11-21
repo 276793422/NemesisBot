@@ -83,6 +83,13 @@ impl RouteResolver {
     /// default。与 config 转换点（agent_factory build_route_resolver）对
     /// guild/team 空串=None 的既有语义同构：不完整的约束 = 无约束。完整
     /// 约束原样保留（精确匹配语义不变）。
+    ///
+    /// guild/team 约束同族归一（BUG-20261121-026）：Some("")/Some(" ")
+    /// 形态 find_guild/find_team_match 对 trim 空不命中，而 find_account_match /
+    /// find_channel_wildcard_match 的 `is_some()` 判定把该绑定一并挡死
+    /// ⇒ 约束落空 × 全路径禁入 = 死绑定。生产转换点只挡纯空串
+    /// （`!is_empty()`），whitespace 串透传；本归一把「不完整约束 =
+    /// 无约束」统一到全部四个约束字段，手工构造路径同防。
     pub fn new(config: RouteConfig) -> Self {
         let bindings = config
             .bindings
@@ -99,6 +106,18 @@ impl RouteResolver {
                 if !kind_ok || !id_ok {
                     b.match_peer_kind = None;
                     b.match_peer_id = None;
+                }
+                if b.match_guild_id
+                    .as_deref()
+                    .is_some_and(|g| g.trim().is_empty())
+                {
+                    b.match_guild_id = None;
+                }
+                if b.match_team_id
+                    .as_deref()
+                    .is_some_and(|t| t.trim().is_empty())
+                {
+                    b.match_team_id = None;
                 }
                 b
             })
