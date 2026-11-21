@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
-use crate::base::{BaseChannel, Channel};
+use crate::base::{BaseChannel, Channel, EventDedup};
 
 /// Initial backoff duration for reconnect.
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -175,54 +175,8 @@ struct FeishuEventHeader {
     event_type: Option<String>,
 }
 
-/// 事件去重缓存（BUG-20261121-048）：飞书事件推送是 at-least-once 语义
-/// （平台对未确认/断线窗口事件重推，官方各语言 SDK 均内置 event_id 去重）。
-/// 本通道 FeishuEventHeader 定义了 event_id 却从未消费——每次重推重复喂
-/// agent（重复轮次烧 token，同 discord BUG-20261121-042 实害族）。有界
-/// FIFO 淘汰防长跑内存无界；event_id 缺失（schema 1.0 老形态）保守放行。
-struct EventDedup {
-    state: parking_lot::Mutex<EventDedupState>,
-    cap: usize,
-}
-
-#[derive(Default)]
-struct EventDedupState {
-    seen: std::collections::HashSet<String>,
-    order: std::collections::VecDeque<String>,
-}
-
-impl EventDedup {
-    /// 默认容量：按飞书单 bot 5 QPS 限频 × 多分钟窗口粗算，1024 足够
-    /// 覆盖重推窗口且内存上限可忽略（~百 KB 级）。
-    const DEFAULT_CAP: usize = 1024;
-
-    fn new() -> Self {
-        Self::with_cap(Self::DEFAULT_CAP)
-    }
-
-    fn with_cap(cap: usize) -> Self {
-        Self {
-            state: parking_lot::Mutex::new(EventDedupState::default()),
-            cap: cap.max(1),
-        }
-    }
-
-    /// 首次出现返回 true（放行并记录）；重复返回 false（应丢弃）。
-    /// 超 cap 淘汰最老条目（FIFO）。
-    fn check_and_record(&self, event_id: &str) -> bool {
-        let mut st = self.state.lock();
-        if !st.seen.insert(event_id.to_string()) {
-            return false;
-        }
-        st.order.push_back(event_id.to_string());
-        while st.order.len() > self.cap {
-            if let Some(old) = st.order.pop_front() {
-                st.seen.remove(&old);
-            }
-        }
-        true
-    }
-}
+// EventDedup 已提升至 crate::base（BUG-20261121-051：单一真相源，slack
+// BUG-20261121-051 同批共享；本文件经 use crate::base::EventDedup 使用）。
 
 /// Feishu channel using WebSocket mode.
 pub struct FeishuChannel {

@@ -1,8 +1,12 @@
-//! Slack Socket Mode channel (events API, slash commands, thread support).
+//! Slack Socket Mode channel (events API, thread support).
 //!
 //! Uses Slack's Socket Mode for receiving events and the Web API for
-//! sending messages. Supports thread replies, file download, and
-//! reaction-based acknowledgment (eyes on receive, checkmark on reply).
+//! sending messages. Supports thread replies and reaction-based
+//! acknowledgment (checkmark on reply; the ack store is populated via
+//! `store_pending_ack`, currently unwired — eyes-on-receive is not
+//! implemented). Slash-command / interactive envelopes are acked
+//! (protocol contract, BUG-20261121-052) but their payloads are not
+//! processed; file download is not implemented (media is always empty).
 
 #![allow(dead_code)] // channel API client — full schema mirrored from Go, parts unused
 use async_trait::async_trait;
@@ -16,11 +20,18 @@ use tracing::{debug, error, info, warn};
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
-use crate::base::{BaseChannel, Channel};
+use crate::base::{BaseChannel, Channel, EventDedup};
 
 const SLACK_API_BASE: &str = "https://slack.com/api";
 const MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Socket Mode 写侧句柄类型（`handle_envelope` 统一 ack 的落点；测试用
+/// 同型 client split sink 直接驱动该单元）。
+type WsSink = futures::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::tungstenite::Message,
+>;
 
 // ---------------------------------------------------------------------------
 // Slack API types
@@ -88,6 +99,8 @@ pub struct SlackChannel {
     bot_user_id: Arc<parking_lot::RwLock<String>>,
     pending_acks: dashmap::DashMap<String, SlackMessageRef>,
     transcriber: parking_lot::RwLock<Option<Arc<dyn crate::base::VoiceTranscriber>>>,
+    /// 事件幂等集（BUG-20261121-051：同 ts 双投递/平台重推收敛）。
+    event_dedup: Arc<EventDedup>,
     /// Bus sender for publishing inbound messages.
     bus_sender: broadcast::Sender<InboundMessage>,
 }
@@ -116,6 +129,7 @@ impl SlackChannel {
             bot_user_id: Arc::new(parking_lot::RwLock::new(String::new())),
             pending_acks: dashmap::DashMap::new(),
             transcriber: parking_lot::RwLock::new(None),
+            event_dedup: Arc::new(EventDedup::new()),
             bus_sender,
         })
     }
@@ -251,6 +265,7 @@ impl SlackChannel {
         let bot_user_id = self.bot_user_id.clone();
         let allow_from = self.config.allow_from.clone();
         let running = self.running.clone();
+        let event_dedup = self.event_dedup.clone();
         let bus_sender = self.bus_sender.clone();
 
         tokio::spawn(async move {
@@ -354,63 +369,19 @@ impl SlackChannel {
                         _ => continue,
                     };
 
-                    let payload: serde_json::Value = match serde_json::from_str(&text) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            warn!("[SlackChannel] failed to parse message: {e}");
-                            continue;
-                        }
-                    };
-
-                    let envelope_type = payload["type"].as_str().unwrap_or("");
-
-                    match envelope_type {
-                        "hello" => {
-                            debug!("[SlackChannel] Socket Mode hello received");
-                        }
-
-                        "events_api" => {
-                            // Acknowledge the envelope
-                            let envelope_id = payload["envelope_id"].as_str().unwrap_or("");
-                            if !envelope_id.is_empty() {
-                                let ack = serde_json::json!({ "envelope_id": envelope_id });
-                                if let Err(e) = ws_tx
-                                    .send(tokio_tungstenite::tungstenite::Message::Text(
-                                        serde_json::to_string(&ack).unwrap().into(),
-                                    ))
-                                    .await
-                                {
-                                    error!("[SlackChannel] failed to send ack: {e}");
-                                    break 'inner true;
-                                }
-                            }
-
-                            // Extract the event
-                            let event = &payload["payload"]["event"];
-                            if let Some(inbound) =
-                                Self::parse_slack_event(event, &bot_user_id, &allow_from)
-                            {
-                                debug!(
-                                    "[SlackChannel] message from {} in channel {}",
-                                    inbound.sender_id, inbound.chat_id
-                                );
-                                if bus_sender.send(inbound).is_err() {
-                                    warn!(
-                                        "[SlackChannel] failed to publish inbound message (no receivers)"
-                                    );
-                                }
-                            }
-                        }
-
-                        "disconnect" => {
-                            let reason = payload["reason"].as_str().unwrap_or("unknown");
-                            info!("[SlackChannel] disconnect request: {reason}");
-                            break 'inner true;
-                        }
-
-                        _ => {
-                            debug!("[SlackChannel] envelope type: {envelope_type}");
-                        }
+                    // BUG-20261121-052：信封处理提取为可测单元——统一 ack
+                    // + events_api 解析发布（含 BUG-20261121-051 ts 幂等）。
+                    if Self::handle_envelope(
+                        &text,
+                        &mut ws_tx,
+                        &bot_user_id,
+                        &allow_from,
+                        &event_dedup,
+                        &bus_sender,
+                    )
+                    .await
+                    {
+                        break 'inner true;
                     }
                 };
 
@@ -427,33 +398,112 @@ impl SlackChannel {
         });
     }
 
+    /// 处理单个 Socket Mode 信封（BUG-20261121-052 重构为可测单元）。
+    ///
+    /// 契约（官方 Socket Mode 协议）：**所有携带 `envelope_id` 的信封必须
+    /// 在 3 秒内回 ack**（`{"envelope_id": ...}`），未 ack 的信封 Slack 必
+    /// 重推（重推风暴）。hello/disconnect 不带 envelope_id 天然豁免。旧实
+    /// 现只在 events_api 臂 ack——slash_commands / interactive 等信封从不
+    /// ack（模块头宣称支持 slash commands 而实际连 ack 契约都不满足）。
+    /// 修复后 ack 统一在信封层，事件解析发布在后（仅 events_api 臂）。
+    ///
+    /// 返回 true = 应重连（disconnect 信封 / ack 写失败）。
+    async fn handle_envelope(
+        text: &str,
+        ws_tx: &mut WsSink,
+        bot_user_id: &Arc<parking_lot::RwLock<String>>,
+        allow_from: &[String],
+        event_dedup: &EventDedup,
+        bus_sender: &broadcast::Sender<InboundMessage>,
+    ) -> bool {
+        let payload: serde_json::Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("[SlackChannel] failed to parse message: {e}");
+                return false;
+            }
+        };
+
+        let envelope_type = payload["type"].as_str().unwrap_or("");
+
+        // 统一信封 ack（BUG-20261121-052）
+        let envelope_id = payload["envelope_id"].as_str().unwrap_or("");
+        if !envelope_id.is_empty() {
+            let ack = serde_json::json!({ "envelope_id": envelope_id });
+            if let Err(e) = ws_tx
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    serde_json::to_string(&ack).unwrap().into(),
+                ))
+                .await
+            {
+                error!("[SlackChannel] failed to send ack: {e}");
+                return true;
+            }
+        }
+
+        match envelope_type {
+            "hello" => {
+                debug!("[SlackChannel] Socket Mode hello received");
+            }
+
+            "events_api" => {
+                // Extract the event
+                let event = &payload["payload"]["event"];
+                if let Some(inbound) =
+                    Self::parse_slack_event(event, bot_user_id, allow_from, event_dedup)
+                {
+                    debug!(
+                        "[SlackChannel] message from {} in channel {}",
+                        inbound.sender_id, inbound.chat_id
+                    );
+                    if bus_sender.send(inbound).is_err() {
+                        warn!("[SlackChannel] failed to publish inbound message (no receivers)");
+                    }
+                }
+            }
+
+            "disconnect" => {
+                let reason = payload["reason"].as_str().unwrap_or("unknown");
+                info!("[SlackChannel] disconnect request: {reason}");
+                return true;
+            }
+
+            _ => {
+                debug!("[SlackChannel] envelope type: {envelope_type}");
+            }
+        }
+
+        false
+    }
+
     /// Parses a Slack event into an InboundMessage.
     fn parse_slack_event(
         event: &serde_json::Value,
         bot_user_id: &Arc<parking_lot::RwLock<String>>,
         allow_from: &[String],
+        event_dedup: &EventDedup,
     ) -> Option<InboundMessage> {
         let event_type = event["type"].as_str()?;
         if event_type != "message" && event_type != "app_mention" {
             return None;
         }
 
-        // Handle message_changed subtype
-        let subtype = event["subtype"].as_str();
-        let msg_data = match subtype {
-            Some("message_changed") => event.get("message")?,
-            Some(_) => return None,
-            None => event,
-        };
-
-        // Filter out bot messages
-        if msg_data.get("bot_id").is_some() {
+        // BUG-20261121-051：非空 subtype 整类丢弃——message_changed（编辑
+        // / 链接 unfurl 更新）重灌 = 同一条消息二次喂 agent（discord
+        // BUG-20261121-042 同族裁决：编辑与 unfurl 都是重复形态，不重灌
+        // ——同日 R2160 已定全局立场，本通道对齐）；message_deleted /
+        // channel_join / message_replied 等其余 subtype 本就无 agent 消费
+        // 语义。
+        if event["subtype"].as_str().is_some() {
             return None;
         }
 
-        let user_id = msg_data["user"]
-            .as_str()
-            .or_else(|| event["user"].as_str())?;
+        // Filter out bot messages
+        if event.get("bot_id").is_some() {
+            return None;
+        }
+
+        let user_id = event["user"].as_str()?;
 
         // Filter out own messages
         let bot_id = bot_user_id.read().clone();
@@ -468,20 +518,25 @@ impl SlackChannel {
         }
 
         let channel = event["channel"].as_str()?;
-        let text = msg_data["text"].as_str().unwrap_or("");
+        let text = event["text"].as_str().unwrap_or("");
         if text.is_empty() {
             return None;
         }
 
-        let ts = msg_data["ts"]
-            .as_str()
-            .or_else(|| event["ts"].as_str())
-            .unwrap_or("0");
+        let ts = event["ts"].as_str().unwrap_or("0");
 
-        let thread_ts = msg_data["thread_ts"]
-            .as_str()
-            .or_else(|| event["thread_ts"].as_str())
-            .map(|s| s.to_string());
+        // BUG-20261121-051：ts 级幂等闸——同一条消息的 message 与
+        // app_mention 双投递（双订阅结构性双事件，同 channel+ts）与平台
+        // 重推（ack 未达窗口，R1316 遗留加固项）都在此收敛为一次，放行
+        // 前最后一道闸（只对将要发布的消息记账）。ts 缺失（守恒默认
+        // "0"）保守放行宁重复不丢（feishu BUG-048 同款取舍）。
+        let dedup_key = format!("{channel}/{ts}");
+        if ts != "0" && !event_dedup.check_and_record(&dedup_key) {
+            debug!("[SlackChannel] duplicate event dropped (ts {ts} in {channel})");
+            return None;
+        }
+
+        let thread_ts = event["thread_ts"].as_str().map(|s| s.to_string());
 
         let mut metadata = HashMap::new();
         metadata.insert("ts".to_string(), ts.to_string());
