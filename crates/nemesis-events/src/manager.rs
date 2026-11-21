@@ -183,7 +183,10 @@ pub(crate) struct ProbeOutcome {
     pub detail: String,
 }
 
-/// 字节上限截断（char boundary 安全）+ 截断注记（诚实不静默吞字）。
+/// 字节上限截断（char boundary 安全）+ 截断注记（诚实不静默吞字）。注记
+/// 报**实际保留**字节数 `cut` 而非上限 `max`——多字节字符跨界回退后两者
+/// 可差 1-3 字节，报 max 就是谎报（BUG-20261121-034，同 BUG-20261118-165
+/// 「注记数字必须为真」纪律）。
 fn truncate_annotated(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -192,7 +195,7 @@ fn truncate_annotated(s: &str, max: usize) -> String {
     while cut > 0 && !s.is_char_boundary(cut) {
         cut -= 1;
     }
-    format!("{}…[已截断 {}B→{}B]", &s[..cut], s.len(), max)
+    format!("{}…[已截断 {}B→{}B]", &s[..cut], s.len(), cut)
 }
 
 /// disk 使用率解析（已用 % 口径，与 cpu/mem 统一）。`watch_path` 给定 =

@@ -95,7 +95,9 @@ pub struct WatchSpec {
     /// sys：触发阈值（使用率 ≥ above 触发一次）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub above: Option<f64>,
-    /// sys：滞回回落阈值（< below 才回 normal 可再触发；缺省 above-10）。
+    /// sys：滞回回落阈值（< below 才回 normal 可再触发；缺省 above-10，
+    /// above ≤ 10 时取 above 的一半——钳 0 会让滞回永不回落，见
+    /// BUG-20261121-033；须在 (0, above) 开区间，越界加载期剔除）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub below: Option<f64>,
     /// probe：探测形态（http | tcp | command）。http up = 2xx；tcp up = 连接
@@ -150,11 +152,18 @@ impl WatchSpec {
         self.debounce_ms.unwrap_or(DEFAULT_DEBOUNCE_MS)
     }
 
-    /// sys 滞回回落阈值（缺省 above-10，钳 0）。
+    /// sys 滞回回落阈值。缺省 above-10；above ≤ 10 时旧实现的 `(above-10)
+    /// .max(0.0)` 钳到 0——「value < below」对使用率口径（值域 [0,100]，
+    /// 负值不可达，0 < 0 恒假）永不成立，规则首次触发后永久卡 firing、
+    /// 事实死亡（BUG-20261121-033）。缺省解析改为：above-10 > 0 用
+    /// above-10（above > 10 行为零变化），否则取 above 的一半（恒 > 0 且
+    /// < above，滞回可回落、可再触发）。
     pub fn sys_below_or_default(&self) -> Option<f64> {
         match self.below {
             Some(b) => Some(b),
-            None => self.above.map(|a| (a - 10.0).max(0.0)),
+            None => self
+                .above
+                .map(|a| if a - 10.0 > 0.0 { a - 10.0 } else { a * 0.5 }),
         }
     }
 
@@ -300,18 +309,24 @@ pub fn validate(rules: Vec<EventRule>) -> LoadedRules {
                     r.watch.metric.as_deref(),
                     Some("cpu") | Some("mem") | Some("disk")
                 );
-                let above_ok = r.watch.above.is_some_and(|v| (0.0..=100.0).contains(&v));
+                // above > 0（BUG-20261121-033）：使用率口径下 above=0 = 恒触发
+                // 且滞回永不可回落——规则触发一次后永久卡 firing，事实死亡。
+                let above_ok = r.watch.above.is_some_and(|v| v > 0.0 && v <= 100.0);
                 if !metric_ok || !above_ok {
                     out.warnings.push(format!(
-                        "{tag}: sys 规则须 watch.metric（cpu|mem|disk）+ watch.above（0-100 使用率%），剔除"
+                        "{tag}: sys 规则须 watch.metric（cpu|mem|disk）+ watch.above（0-100 使用率%，须 >0），剔除"
                     ));
                     continue;
                 }
                 if let (Some(above), Some(below)) = (r.watch.above, r.watch.below)
-                    && below >= above
+                    && (below >= above || below <= 0.0)
                 {
+                    // below ≥ above 与 below ≤ 0 同族（BUG-20261121-033）：使用率
+                    // 值域 [0,100]，「value < below」在两种形态下都不可达——滞回
+                    // 永不回 normal，规则首次触发后死亡。校验按自身声明的不变量
+                    // 收口：below 须在 (0, above) 开区间。
                     out.warnings.push(format!(
-                        "{tag}: watch.below（{below}）须低于 watch.above（{above}）否则滞回永不回 normal，剔除"
+                        "{tag}: watch.below（{below}）须在 (0, {above}) 开区间内（≤0 与 ≥above 都会让滞回永不回 normal，规则触发一次后死亡），剔除"
                     ));
                     continue;
                 }

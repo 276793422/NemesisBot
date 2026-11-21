@@ -256,6 +256,36 @@ fn sys_rules_require_metric_and_above_with_below_below_above() {
     assert!(out.warnings.iter().any(|w| w.contains("below")));
 }
 
+#[test]
+fn sys_below_non_positive_and_zero_above_rejected_default_stays_recoverable() {
+    // BUG-20261121-033：使用率口径值域 [0,100]——below ≤ 0（显式 0/负值）
+    // 与 above=0（恒触发）都让「value < below」不可达，滞回永不回 normal，
+    // 规则首次触发后永久卡 firing、事实死亡。校验按自身声明的不变量收口：
+    // below 须在 (0, above) 开区间、above 须 > 0；缺省解析保证可回落
+    // （above ≤ 10 取 above 一半而非钳 0）。
+    let out = validate(vec![
+        sys_rule(Some("cpu"), Some(90.0), Some(0.0)), // below=0：永不回落
+        sys_rule(Some("mem"), Some(90.0), Some(-5.0)), // below 负值：永不回落
+        sys_rule(Some("cpu"), Some(0.0), None),       // above=0：恒触发且不可回落
+        sys_rule(Some("cpu"), Some(8.0), None),       // 低阈值合法：缺省 below = 4 可回落
+    ]);
+    assert_eq!(out.rules.len(), 1);
+    assert_eq!(out.rules[0].watch.above, Some(8.0));
+    assert_eq!(
+        out.rules[0].watch.sys_below_or_default(),
+        Some(4.0),
+        "above ≤ 10 的缺省 below 取一半（可回落），不再钳 0"
+    );
+    assert_eq!(out.warnings.len(), 3);
+    assert!(
+        out.warnings
+            .iter()
+            .all(|w| w.contains("below") || w.contains(">0")),
+        "警告须点名 below 区间 / above>0 缺口: {:?}",
+        out.warnings
+    );
+}
+
 // ── 事件源扩展 P2：probe 探测源 + cron 砍单 ──────────────────────────
 
 fn probe_rule(
