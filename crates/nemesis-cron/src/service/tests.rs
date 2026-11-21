@@ -5201,3 +5201,120 @@ fn test_bug_20261119_189_status_no_abba_with_running_holder() {
         Err(_) => panic!("status() 与持 running 的 start 临界区并发时死锁（ABBA 锁序倒置回归）"),
     }
 }
+
+/// BUG-20261121-067 红证：手动执行写回不得推进 `updated_at_ms`。
+///
+/// `updated_at_ms` 前进是执行后 retain 的「执行期被并发 patch」代理信号
+/// （BUG-20261118-151 判定）。手动执行（`execute_job` → `run_job_execution`）
+/// 是运行态记账（last_run/last_status/history），非定义变更——旧代码推进它
+/// 后，交错窗口会让 `patched_during_exec` 误判为 true → 成功单发
+/// （delete_after_run）逃过 retain 删除，滞留为 disabled 僵尸条目：
+///
+/// 手动 handler 持 on_job 槽位锁 5s（覆盖 at 到期 +2.5s 与 ≥1 个 tick）→
+/// 定时触发完成 due 收集+快照（updated_at=创建值）后阻塞在 on_job 锁上 →
+/// 手动 handler 返回、写回落盘（旧代码在此推进 updated_at_ms）→ 门栓放行
+/// 定时 handler（等待 manual_writeback_done，把 manual 写回钉在其执行窗口内、
+/// 执行后 patched_during_exec 读取之前）→ 旧代码：误判 patched → retain 跳过
+/// 删除 + at 停摆臂把任务滞留为 disabled；新代码：updated_at 未动 → 判定
+/// false → 成功单发照常删除。
+#[test]
+fn test_bug_20261121_067_manual_exec_does_not_masquerade_as_patch_for_retain() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = std::sync::Arc::new(CronService::new(&path));
+    let job = svc
+        .add_job(
+            "one-shot-manual-race",
+            CronSchedule {
+                kind: "at".to_string(),
+                at_ms: Some(Local::now().timestamp_millis() + 2_500),
+                every_ms: None,
+                expr: None,
+                tz: None,
+            },
+            "fire me",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    let job_id = job.id.clone();
+    let created_updated_at = job.updated_at_ms;
+
+    let entry_count = std::sync::Arc::new(AtomicUsize::new(0));
+    let manual_writeback_done = std::sync::Arc::new(AtomicBool::new(false));
+    {
+        let count = std::sync::Arc::clone(&entry_count);
+        let done = std::sync::Arc::clone(&manual_writeback_done);
+        svc.set_on_job(move |_cb| {
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // 第 1 次进入 = 手动执行：持 on_job 槽位锁睡 5s——覆盖 at
+                // 到期（+2.5s）与至少一个 tick，保证定时触发先完成 due
+                // 收集+快照并阻塞在本锁上，随后手动写回落进其执行窗口。
+                std::thread::sleep(Duration::from_millis(5_000));
+            } else {
+                // 第 2 次进入 = 定时触发：等手动执行写回确认（含旧代码的
+                // updated_at_ms 推进落盘）后再返回——把 manual 写回钉在
+                // 执行后 patched_during_exec 读取之前。
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            Ok("done".to_string())
+        });
+    }
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        svc.arm();
+        svc.start().await.unwrap();
+    });
+
+    // 手动执行（独占 on_job 槽位锁；handler 内睡 5s 期间定时触发到点、
+    // 收集、快照、阻塞在 on_job 锁上）。
+    let svc_t = std::sync::Arc::clone(&svc);
+    let id_t = job_id.clone();
+    let done_t = std::sync::Arc::clone(&manual_writeback_done);
+    let manual_thread = std::thread::spawn(move || {
+        svc_t.execute_job(&id_t).unwrap();
+        done_t.store(true, Ordering::SeqCst);
+    });
+    manual_thread.join().unwrap();
+
+    // 修复不变量直断：手动执行（运行态记账）不得推进定义时间戳。
+    let after_manual = svc.get_job(&job_id).unwrap();
+    assert_eq!(
+        after_manual.updated_at_ms, created_updated_at,
+        "手动执行不得推进 updated_at_ms（BUG-20261121-067：它是 BUG-20261118-151 \
+         patched_during_exec 的代理信号，推进即误判）"
+    );
+
+    // 成功单发（执行期未被真 patch）执行后必须被 retain 删除；旧代码在
+    // manual 写回推进 updated_at_ms → patched_during_exec 误判 → 滞留
+    // disabled（enabled=false + last_status=ok + next_run=None）。
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match svc.get_job(&job_id) {
+            None => break,
+            Some(j) if !j.enabled && j.state.last_status.as_deref() == Some("ok") => {
+                panic!(
+                    "BUG-20261121-067: 手动执行推进 updated_at_ms 使 patched_during_exec \
+                     误判，成功单发逃过 retain 删除（滞留 disabled）: next_run={:?}",
+                    j.state.next_run_at_ms
+                );
+            }
+            Some(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timeout waiting for one-shot fire; job={job_id:?}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    svc.stop();
+}

@@ -467,7 +467,10 @@ impl CronService {
                         // update_job/toggle_job/enable_job 都写 updated_at_ms；
                         // 快照之前的 patch 已反映在快照里，updated_at 相等不
                         // 误判；remove_job 后 find 落 None，is_some_and 诚实
-                        // 给 false）。此判定封 retain 删除条件的最后一个口子：
+                        // 给 false；手动执行 run_job_execution 刻意**不**写
+                        // updated_at_ms——它是运行态记账非定义 mutator，写了会
+                        // 在交错窗口误判 patched（BUG-20261121-067））。此判定
+                        // 封 retain 删除条件的最后一个口子：
                         // 旧形态只豁免「patch 换入 enabled 调度」（next_run=
                         // Some），patch 换入 enabled=false（disabled 不排程 →
                         // next_run=None）的「停用+改期保留」意图照删——用户
@@ -1666,7 +1669,15 @@ fn run_job_execution(
         let mut s = store.lock();
         if let Some(job) = s.jobs.iter_mut().find(|j| j.id == job_id) {
             job.state.last_run_at_ms = Some(now_ms);
-            job.updated_at_ms = Local::now().timestamp_millis();
+            // 不推进 updated_at_ms（BUG-20261121-067）：updated_at 前进是执行
+            // 后 retain 的「执行期被并发 patch」代理信号（BUG-20261118-151 判
+            // 定，patch/update/toggle/enable 四个定义 mutator 专属）。手动执行
+            // 是运行态记账（last_run/last_status/history），推进它会让交错窗
+            // 口——手动 handler 持 on_job 槽位锁期间定时触发完成 due 收集+快
+            // 照并阻塞在 on_job 锁上，手动写回落进定时 handler 的执行窗口——
+            // 把 patched_during_exec 误判为 true，成功单发（delete_after_run）
+            // 逃过 retain 删除，滞留为 disabled 僵尸条目。回归锁
+            // tests::test_bug_20261121_067_manual_exec_does_not_masquerade_as_patch_for_retain。
             match &handler_result {
                 Some(Ok(_)) | None => {
                     job.state.last_status = Some("executed".to_string());
