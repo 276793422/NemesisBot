@@ -968,3 +968,62 @@ async fn test_get_return_cycle_preserves_node_count() {
     pool.close();
     server.abort();
 }
+
+// BUG-20261121-066 回归钉：per-node limit 并发不超卖。旧实现 double-check
+// 放锁后才 dial，dial 的 async 窗口内并发 get 同一 node 全部重复过检，
+// dial 成功后逐一 inc——max_conns_per_node=2 被并发超卖到 5。修复后占坑
+// 在 check 临界区内原子完成，并发竞争串行化在 node_counts 锁上。
+#[tokio::test]
+async fn test_pool_per_node_limit_concurrent_no_oversell() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    // Accept multiple connections concurrently
+    let server = tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+    let pool = std::sync::Arc::new(Pool::new(AsyncPoolConfig {
+        max_conns: 100,
+        max_conns_per_node: 2,
+        ..Default::default()
+    }));
+
+    // 5 个并发 get 同一 node：修复前全部过 double-check 后逐个 dial 成功
+    // （成功 5 = 超卖）；修复后前 2 个占坑成功、后 3 个 per-node Err。
+    let mut handles = Vec::new();
+    for _ in 0..5 {
+        let pool = pool.clone();
+        let addr = addr.clone();
+        handles.push(tokio::spawn(
+            async move { pool.get("node-c66", &addr).await },
+        ));
+    }
+    let mut ok = 0usize;
+    let mut limit_err = 0usize;
+    for h in handles {
+        match h.await.unwrap() {
+            Ok((_key, conn)) => {
+                assert!(conn.is_active());
+                ok += 1;
+            }
+            Err(e) => {
+                assert!(
+                    e.contains("per-node limit"),
+                    "并发失败应全是 per-node limit， got: {e}"
+                );
+                limit_err += 1;
+            }
+        }
+    }
+    assert_eq!(
+        ok, 2,
+        "并发超卖回归：成功数必须等于 max_conns_per_node（2），旧实现为 5"
+    );
+    assert_eq!(limit_err, 3);
+
+    // 账面终态一致性：node_count = 成功连接数（全借出未归还）
+    assert_eq!(pool.get_stats().node_conns.get("node-c66"), Some(&2));
+    assert_eq!(pool.active_connection_count(), 2);
+
+    pool.close();
+    server.abort();
+}

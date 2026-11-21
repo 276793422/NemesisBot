@@ -315,7 +315,7 @@ impl Pool {
 
         // Double-check: re-verify limits after acquiring permit
         {
-            let counts = self.node_counts.lock();
+            let mut counts = self.node_counts.lock();
             if let Some(&count) = counts.get(node_id)
                 && count >= self.config.max_conns_per_node
             {
@@ -326,13 +326,32 @@ impl Pool {
                     node_id
                 ));
             }
+            // BUG-20261121-066：占坑必须在同一临界区完成。旧实现 check 后
+            // 放锁才 dial，dial 的 async 窗口内并发 get 同一 node 全部重复
+            // 过检（counts 未变），dial 成功后逐一 inc_node_count——per-node
+            // 上限被并发超卖（max_conns_per_node=3 实际可到 3+N，N=并发数），
+            // BUG-20261119-204 钉死的「node_count = 借出+池内」不变量在此被
+            // check-then-act 竞态破坏（同族方向：假限流失效，这次是上限放水
+            // 而非账面虚低）。占坑提前到 check 临界区内，dial 失败在下方
+            // 回吐（dec_node_count 既有 saturating 释放路径），成功路径账面
+            // 与旧实现完全一致。
+            *counts.entry(node_id.to_string()).or_insert(0) += 1;
         }
 
         // Dial new connection
-        let conn = self.dial(node_id, address).await?;
+        let conn = match self.dial(node_id, address).await {
+            Ok(c) => c,
+            Err(e) => {
+                // dial 失败：回吐占坑（node_count）；信号量 permit 随 drop
+                // 自动归还（forget 尚未发生）。
+                self.dec_node_count(node_id);
+                return Err(e);
+            }
+        };
 
-        // Update counts
-        self.inc_node_count(node_id);
+        // Update counts（node_count 已在占坑临界区提前 +1，此处只补
+        // active_count——两账的 +1 时机分裂是占坑方案的自然形态，最终账面
+        // 与「dial 成功后双 +1」等价）。
         self.active_count.fetch_add(1, Ordering::SeqCst);
 
         // Forget the permit (it stays consumed until connection is removed)
@@ -553,12 +572,6 @@ impl Pool {
             .map_err(|e| format!("conn start failed for {}: {}", address, e))?;
 
         Ok(conn)
-    }
-
-    /// Increment the connection count for a node.
-    fn inc_node_count(&self, node_id: &str) {
-        let mut counts = self.node_counts.lock();
-        *counts.entry(node_id.to_string()).or_insert(0) += 1;
     }
 
     /// Decrement the connection count for a node.
