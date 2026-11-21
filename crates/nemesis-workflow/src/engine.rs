@@ -1279,16 +1279,18 @@ impl WorkflowEngine {
     /// sub_workflow 跨 workflow 引用环检测（注册期闸）。
     ///
     /// [`crate::nodes:SubWorkflowNodeExecutor`] 经
-    /// `engine.run(name, input, None)` 触发子执行——`TriggerSource::None` 的
-    /// `depth_from_trigger` = 0，[`MAX_RECURSION_DEPTH`] 闸只数 `AgentTool`
-    /// 帧，sub_workflow 链完全绕过。而 `parser::validate` 只查**单 workflow**
-    /// DAG（跨 workflow 引用零检查），因此 A→B→A（甚至单 workflow 自引用
-    /// A→A）两个定义各自合法、都能注册，运行期 A→B→A→… 无限 spawn 子执行：
-    /// 每层新 Execution + checkpoint + JSONL persist + call_stack 帧，直到
-    /// 内存/磁盘耗尽。跨 workflow 引用环只可能经 [`Self::register_workflow`]
-    /// / [`Self::persist_workflow`]（新增或覆盖引用边）形成——两个入口同闸
-    /// 即全覆盖（unregister 只删边不成环；盘上互环定义组加载时后者被拒，
-    /// 前者引用的目标不存在 → run 时 `WorkflowNotFound` 诚实失败）。
+    /// `engine.run(name, input, Some(TriggerSource::SubWorkflow { .. }))`
+    /// 触发子执行（BUG-20261121-024 起：触发源带父执行身份三元组随行）——
+    /// 本变体的 `depth_from_trigger` = 0，[`MAX_RECURSION_DEPTH`] 闸只数
+    /// `AgentTool` 帧，sub_workflow 链完全绕过。而 `parser::validate` 只查
+    /// **单 workflow** DAG（跨 workflow 引用零检查），因此 A→B→A（甚至单
+    /// workflow 自引用 A→A）两个定义各自合法、都能注册，运行期 A→B→A→…
+    /// 无限 spawn 子执行：每层新 Execution + checkpoint + JSONL persist +
+    /// call_stack 帧，直到内存/磁盘耗尽。跨 workflow 引用环只可能经
+    /// [`Self::register_workflow`] / [`Self::persist_workflow`]（新增或覆盖
+    /// 引用边）形成——两个入口同闸即全覆盖（unregister 只删边不成环；盘上
+    /// 互环定义组加载时后者被拒，前者引用的目标不存在 → run 时
+    /// `WorkflowNotFound` 诚实失败）。
     ///
     /// 引用收集含 parallel/loop 复合子节点（运行时经 registry 同样分派到
     /// SubWorkflowNodeExecutor）。未注册目标放行（既有语义：run 时诚实

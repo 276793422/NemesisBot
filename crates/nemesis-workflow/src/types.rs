@@ -187,6 +187,28 @@ pub enum TriggerSource {
         /// of the same workflow-chat conversation.
         session_key: String,
     },
+    /// Triggered by a parent workflow's `sub_workflow` node
+    /// ([`crate::nodes:SubWorkflowNodeExecutor`] → `engine.run`).
+    ///
+    /// 身份三元组随行（A4 归因穿透同戒律，BUG-20261112-115 第四面）：子执行
+    /// 内 tool 节点经 `SecureExecutor` 消费 `WorkflowIdentity` ——审批卡按
+    /// chat_id 路由回触发会话、会话级豁免按 session_key 裁决、审计归因
+    /// `wf_trigger`/attrib 五元随行。旧实现子执行以 `trigger_source: None`
+    /// 起跑，身份从构造即全空。`parent_execution_id` 保留父链（子执行自身
+    /// id 仍是 `wf_instance`；根链经此字段 + 审计 metadata 可回查）。
+    SubWorkflow {
+        /// 父执行的 execution id（审计归因回查父链）。
+        parent_execution_id: String,
+        /// 触发会话键（继承父执行 identity.session_key）。
+        #[serde(default)]
+        session_key: String,
+        /// 触发对话 id（审批卡路由回源会话；继承父执行 identity.chat_id）。
+        #[serde(default)]
+        chat_id: String,
+        /// 触发者 id（继承父执行 identity.sender_id）。
+        #[serde(default)]
+        sender_id: String,
+    },
 }
 
 impl TriggerSource {
@@ -202,6 +224,7 @@ impl TriggerSource {
             Self::WebUI { .. } => "web-ui",
             Self::Event { .. } => "event",
             Self::WorkflowChat { .. } => "workflow-chat",
+            Self::SubWorkflow { .. } => "sub_workflow",
         }
     }
 
@@ -231,6 +254,12 @@ impl TriggerSource {
                 session_key,
                 ..
             } => (session_key.clone(), chat_id.clone(), String::new()),
+            Self::SubWorkflow {
+                session_key,
+                chat_id,
+                sender_id,
+                ..
+            } => (session_key.clone(), chat_id.clone(), sender_id.clone()),
             _ => (String::new(), String::new(), String::new()),
         }
     }

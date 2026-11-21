@@ -853,6 +853,134 @@ async fn resume_rebuild_preserves_workflow_identity_for_downstream_tool_node() {
     assert_eq!(got.recursion_depth, 2);
 }
 
+/// BUG-20261121-024 回归（BUG-20261112-115 第四面）：sub_workflow 子执行
+/// 身份链断裂——旧实现 SubWorkflowNodeExecutor 调
+/// `engine.run(name, sub_input, None)`，子执行以 trigger_source = None
+/// 起跑，`identity_triple().unwrap_or_default()` 从构造即全空：子 workflow
+/// 内 tool 节点的审批卡断路由（chat_id 空）、会话级豁免失效（session_key
+/// 空）、审计归因五元清空。机制不同于前三面（resume 重建 / parallel /
+/// loop 都是 `WorkflowContext::new` 漏传，本面是 TriggerSource 槽位空缺），
+/// BUG-115 横向排查按 `WorkflowContext::new(` 位点枚举所以漏掉。修复 =
+/// SubWorkflowNodeExecutor 构造 `TriggerSource::SubWorkflow`（父执行身份
+/// 三元组随行）。本测试钉死：根执行带 AgentTool 身份 → 子执行 tool 节点
+/// 收到的 identity 三键继承 + trigger_label="sub_workflow" +
+/// recursion_depth=0（递归闸只数 AgentTool 帧，语义不变）+ 子执行
+/// trigger_source 是 SubWorkflow{parent_execution_id=父执行 id}。
+#[tokio::test]
+async fn sub_workflow_child_tool_node_inherits_trigger_identity() {
+    use crate::nodes::{RealToolNodeExecutor, SecureExecutor};
+
+    struct SubWfCapturingSecure {
+        captured: Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>>,
+    }
+    #[async_trait::async_trait]
+    impl SecureExecutor for SubWfCapturingSecure {
+        async fn execute(
+            &self,
+            _node_id: &str,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+            identity: &crate::context::WorkflowIdentity,
+        ) -> nemesis_tools::types::ToolResult {
+            *self.captured.lock().unwrap() = Some(identity.clone());
+            nemesis_tools::types::ToolResult::success("ok")
+        }
+    }
+
+    let captured: Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let engine = WorkflowEngine::new_arc();
+    engine.node_executors.register(
+        "tool",
+        Arc::new(RealToolNodeExecutor::new_with_secure_executor(
+            Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+            Arc::new(SubWfCapturingSecure {
+                captured: captured.clone(),
+            }),
+        )),
+    );
+
+    // 子工作流：单个 tool 节点（捕获型 SecureExecutor）。
+    let mut tool_node = make_node("probe", "tool", vec![]);
+    tool_node.config = HashMap::from([("name".to_string(), serde_json::json!("anything"))]);
+    engine
+        .register_workflow(make_workflow("bug24_child_wf", vec![tool_node]))
+        .unwrap();
+
+    // 父工作流：sub_workflow 节点引用子工作流。
+    let mut sub = make_node("call_child", "sub_workflow", vec![]);
+    sub.config = HashMap::from([
+        ("workflow".to_string(), serde_json::json!("bug24_child_wf")),
+        ("input".to_string(), serde_json::json!({"k": "v"})),
+    ]);
+    engine
+        .register_workflow(make_workflow("bug24_parent_wf", vec![sub]))
+        .unwrap();
+
+    // 根触发带 AgentTool 身份（生产 agent 经 workflow 工具发起的形态）。
+    let trigger = TriggerSource::AgentTool {
+        tool_call_id: "tc-024".to_string(),
+        recursion_depth: 2,
+        session_key: "agent:main:session:s-024".to_string(),
+        chat_id: "chat-024".to_string(),
+        sender_id: "user-024".to_string(),
+    };
+    let parent = engine
+        .run("bug24_parent_wf", HashMap::new(), Some(trigger))
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Completed);
+
+    let got = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("secure executor in child workflow must have captured identity");
+    // 三键继承根触发身份（审批卡路由 / 会话级豁免的身份来源）。
+    assert_eq!(
+        got.session_key, "agent:main:session:s-024",
+        "child tool node session_key must inherit from root trigger"
+    );
+    assert_eq!(got.chat_id, "chat-024");
+    assert_eq!(got.sender_id, "user-024");
+    // 子执行自身身份：workflow_name 指向子工作流、trigger_label=sub_workflow、
+    // execution_id 是子执行自己的 id、递归深度 0（SubWorkflow 不计 AgentTool 帧）。
+    assert_eq!(got.workflow_name, "bug24_child_wf");
+    assert_eq!(got.trigger_label, "sub_workflow");
+    assert_eq!(
+        got.recursion_depth, 0,
+        "SubWorkflow trigger must map to depth 0 (recursion gate counts AgentTool frames only)"
+    );
+    let child_exec_id = parent
+        .node_results
+        .get("call_child")
+        .and_then(|r| r.metadata.get("execution_id"))
+        .and_then(|v| v.as_str())
+        .expect("sub_workflow node must record child execution_id")
+        .to_string();
+    assert_eq!(got.execution_id, child_exec_id);
+    assert_ne!(got.execution_id, parent.id);
+
+    // 子执行落盘形态：trigger_source 是 SubWorkflow 且 parent_execution_id
+    // 指回父执行 id（审计归因父链可回查）。
+    let child_exec = engine
+        .get_execution(&child_exec_id)
+        .await
+        .expect("child execution recorded");
+    match child_exec.trigger_source {
+        Some(TriggerSource::SubWorkflow {
+            parent_execution_id,
+            ..
+        }) => {
+            assert_eq!(parent_execution_id, parent.id);
+        }
+        other => panic!(
+            "child trigger_source must be SubWorkflow, got {:?}",
+            other.map(|t| t.label().to_string())
+        ),
+    }
+}
+
 // -----------------------------------------------------------------------
 // list_executions tests
 // -----------------------------------------------------------------------

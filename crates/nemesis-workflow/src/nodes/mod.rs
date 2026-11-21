@@ -14,7 +14,7 @@ use nemesis_providers::router::LLMProvider;
 use nemesis_providers::types::{ChatOptions, LLMResponse, Message};
 
 use crate::context::WorkflowContext;
-use crate::types::{ExecutionState, NodeDef, NodeResult};
+use crate::types::{ExecutionState, NodeDef, NodeResult, TriggerSource};
 
 /// Trait for executing a workflow node.
 ///
