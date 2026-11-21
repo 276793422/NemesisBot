@@ -40,10 +40,19 @@ pub(crate) enum GateOutcome {
     /// （⏳ 排队 / ⚡ 插话 / slash 静态确认——前端不占行号锚）；
     /// `Some(true)` = 落盘留痕（💤 暂停排队回执的 system 行、忙时回绝
     /// 成对的 bounce 行）；`None` = 不带帧键（旧行为）。
+    ///
+    /// `note_kind`（2026-11-20 插话打断感根修）：瞬态回执的展示形态标记，
+    /// 直通 `OutboundMeta.note_kind` → server 投影 role=system → 前端
+    /// 完成清算（清 busy / 冻结时间线 / 扫停止按钮）不再误触发。只标
+    /// **busy 期间发射、必被在途回合终局回复跟扫**的四个臂（/compact /clear
+    /// 忽略、远程派发忽略、⏳ 排队、⚡ 插话）= `Some("busy_receipt")`；
+    /// 其余（slash 确认 / 落盘留痕 bounce 等）保持 `None`（渲染与清算
+    /// 语义不变——idle 时发 slash 回执无完成语义可误触，无需改族）。
     Immediate {
         agent_id: String,
         response: String,
         occupies: Option<bool>,
+        note_kind: Option<&'static str>,
     },
     /// （cron 合闸）：同 job 重复 tick 在 busy 闸被丢弃——
     /// 无回执、无落盘（cron tick 是系统自消息，D-2 用户消息留痕契约不适
@@ -444,6 +453,7 @@ impl AgentLoop {
                 agent_id,
                 response,
                 occupies,
+                note_kind: _,
             } => (agent_id, response, None, occupies),
             GateOutcome::Coalesced { cron_job_id } => {
                 // （cron 合闸）：串行回退路径同语义——静默丢弃，
@@ -464,13 +474,13 @@ impl AgentLoop {
                 // ⏳ 前置回执打 receipt=true（系统回执非终局），真回复 false。
                 // 两帧都是瞬态回执（落盘只有 user 行），occupies=Some(false)
                 // 不占行号锚（行号锚漂移根修）。
-                self.finish_message(&msg, receipt, None, false, true, Some(false))
+                self.finish_message(&msg, receipt, None, false, true, Some(false), None)
                     .await;
                 let response = self
                     .handle_maintenance(kind, &session_key, &msg.channel, &msg.chat_id)
                     .await;
                 self.release_session(&session_key);
-                self.finish_message(&msg, response, None, false, false, Some(false))
+                self.finish_message(&msg, response, None, false, false, Some(false), None)
                     .await;
                 (String::new(), String::new(), None, None)
             }
@@ -779,6 +789,9 @@ impl AgentLoop {
                         .to_string(),
                     // 瞬态回执：不落盘，前端不占行号锚。
                     occupies: Some(false),
+                    // busy 期间发射 → 徽标帧（role=system 投影），终局回复
+                    // 到场扫除；不以 assistant 身份误触发完成清算。
+                    note_kind: Some("busy_receipt"),
                 };
             }
             return GateOutcome::Maintenance {
@@ -800,6 +813,8 @@ impl AgentLoop {
                     response: "⏳ 会话正在处理消息，本次远程派发已忽略，请稍后再试".to_string(),
                     // 瞬态回执：不落盘，前端不占行号锚。
                     occupies: Some(false),
+                    // busy 期间发射 → 徽标帧（同 ⏳ 排队臂）。
+                    note_kind: Some("busy_receipt"),
                 };
             }
             return GateOutcome::UserDispatch {
@@ -821,6 +836,8 @@ impl AgentLoop {
                 response,
                 // 瞬态回执：不落盘，前端不占行号锚。
                 occupies: Some(false),
+                // slash 族静态确认：idle 时发射，无完成语义可误触，不改族。
+                note_kind: None,
             };
         }
 
@@ -861,6 +878,8 @@ impl AgentLoop {
                 response,
                 // 瞬态回执：不落盘，前端不占行号锚。
                 occupies: Some(false),
+                // slash 族静态确认：idle 时发射，无完成语义可误触，不改族。
+                note_kind: None,
             };
         }
 
@@ -885,6 +904,8 @@ impl AgentLoop {
                         .to_string(),
                     // 瞬态回执：不落盘，前端不占行号锚。
                     occupies: Some(false),
+                    // slash 族静态确认：idle 时发射，无完成语义可误触，不改族。
+                    note_kind: None,
                 };
             };
             let response = match sub {
@@ -916,6 +937,8 @@ impl AgentLoop {
                 response,
                 // 瞬态回执：不落盘，前端不占行号锚。
                 occupies: Some(false),
+                // slash 族静态确认：idle 时发射，无完成语义可误触，不改族。
+                note_kind: None,
             };
         }
 
@@ -926,6 +949,8 @@ impl AgentLoop {
                 response,
                 // 瞬态回执：不落盘，前端不占行号锚。
                 occupies: Some(false),
+                // slash 族静态确认：idle 时发射，无完成语义可误触，不改族。
+                note_kind: None,
             };
         }
 
@@ -967,6 +992,8 @@ impl AgentLoop {
                         // 落盘留痕：同正文已写 jsonl system 行（persist 前置）——
                         // 前端占行号锚（帧 role=assistant 但对应落盘行）。
                         occupies: Some(true),
+                        // 落盘留痕族：非 busy 闸发射（暂停期入口），不改族。
+                        note_kind: None,
                     };
                 }
                 Err(why) => {
@@ -991,6 +1018,8 @@ impl AgentLoop {
                         // 落盘留痕：bounce 行已成对落盘（user + assistant）——
                         // 前端占行号锚（本地回显对应用户行，本帧对应 bounce 行）。
                         occupies: Some(true),
+                        // 落盘留痕族：非 busy 闸发射（暂停期入口），不改族。
+                        note_kind: None,
                     };
                 }
             }
@@ -1021,6 +1050,9 @@ impl AgentLoop {
                         // 落盘留痕：bounce 行已成对落盘（user + assistant）——
                         // 前端占行号锚（本地回显对应用户行，本帧对应 bounce 行）。
                         occupies: Some(true),
+                        // 落盘留痕族：live 帧与落盘 bounce 行须同渲染（assistant
+                        // 气泡），改徽标会 live/历史分叉——有意不改（2026-11-20）。
+                        note_kind: None,
                     };
                 }
                 ConcurrentMode::Queue | ConcurrentMode::Steer => {
@@ -1083,6 +1115,11 @@ impl AgentLoop {
                                 // 瞬态回执：不落盘（排队消息的 user 行由重放
                                 // 时物化，届时也无回声帧——前端本地回显已对账）。
                                 occupies: Some(false),
+                                // busy 期间发射 → 徽标帧（role=system 投影，
+                                // 插话打断感根修）：完成清算（清 busy / 冻结
+                                // 时间线 / 扫停止按钮）不触发；终局回复到场
+                                // 由前端扫除。
+                                note_kind: Some("busy_receipt"),
                             };
                         }
                         crate::inbox::EnqueueOutcome::QueuedForNextStep => {
@@ -1097,6 +1134,11 @@ impl AgentLoop {
                                 // 瞬态回执：不落盘（插话 jsonl 行在注入时落，无回声帧
                                 // ——前端本地回显已对账）。
                                 occupies: Some(false),
+                                // busy 期间发射 → 徽标帧（role=system 投影，
+                                // 插话打断感根修，同 ⏳ 排队臂）：完成清算不
+                                // 触发——回执不再打断中间流程 / 扫停止按钮，
+                                // 注入时刻另有落盘 steer_inject 注记。
+                                note_kind: Some("busy_receipt"),
                             };
                         }
                         crate::inbox::EnqueueOutcome::Rejected => {
@@ -1118,6 +1160,10 @@ impl AgentLoop {
                                 // 落盘留痕：bounce 行已成对落盘（user + assistant）——
                                 // 前端占行号锚（本地回显对应用户行，本帧对应 bounce 行）。
                                 occupies: Some(true),
+                                // 落盘留痕族：live 帧与落盘 bounce 行须同渲染
+                                // （assistant 气泡），改徽标会 live/历史分叉——
+                                // 有意不改（2026-11-20）。
+                                note_kind: None,
                             };
                         }
                         crate::inbox::EnqueueOutcome::RejectedSoft => {
@@ -1136,6 +1182,10 @@ impl AgentLoop {
                                 response: SOFT_FULL_MESSAGE.to_string(),
                                 // 落盘留痕：bounce 行已成对落盘（同上）。
                                 occupies: Some(true),
+                                // 落盘留痕族：live 帧与落盘 bounce 行须同渲染
+                                // （assistant 气泡），改徽标会 live/历史分叉——
+                                // 有意不改（2026-11-20）。
+                                note_kind: None,
                             };
                         }
                     }

@@ -9033,6 +9033,7 @@ fn test_gate_busy_reject_mode_bounces() {
             agent_id: _,
             response,
             occupies: _,
+            note_kind: _,
         } => response,
         _ => panic!("expected Immediate busy bounce in Reject mode"),
     };
@@ -9253,7 +9254,13 @@ fn test_gate_busy_queue_mode_parks_in_next_turn() {
             agent_id: _,
             response,
             occupies: _,
-        } => response,
+            note_kind,
+        } => {
+            // 插话打断感根修（2026-11-20）：busy 闸回执必须带徽标标记
+            // ——帧以 role=system 投影，前端完成清算不误触发。
+            assert_eq!(note_kind, Some("busy_receipt"));
+            response
+        }
         _ => panic!("expected Immediate queue receipt"),
     };
     assert!(response.contains("已排队"), "receipt: {response}");
@@ -9285,12 +9292,302 @@ fn test_gate_busy_steer_mode_parks_bang_in_next_step() {
             agent_id: _,
             response,
             occupies: _,
-        } => response,
+            note_kind,
+        } => {
+            // 插话打断感根修（2026-11-20）：⚡ 插话回执同族徽标帧。
+            assert_eq!(note_kind, Some("busy_receipt"));
+            response
+        }
         _ => panic!("expected Immediate steer receipt"),
     };
     assert!(response.contains("紧急插话"), "receipt: {response}");
     assert_eq!(agent_loop.inbox.pending(&session_key), (0, 1));
     agent_loop.release_session(&session_key);
+}
+
+/// busy 闸 ⚡/⏳ 回执带徽标标记 vs slash/落盘留痕回执不带（渲染族分野
+/// ——2026-11-20 插话打断感根修回归锁）：busy 期间发射、必被在途回合
+/// 终局回复跟扫的四臂 = busy_receipt；idle 可发的 slash 确认与落盘留痕
+/// bounce 保持 None（assistant 渲染不变）。
+#[test]
+fn test_gate_busy_receipt_note_kind_family() {
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+
+    // busy 闸臂（Steer 模式非 ! 前缀 = 排队臂）→ busy_receipt。
+    let msg = make_inbound("普通排队消息", "web", "chat1", "user1", "");
+    let (_, session_key) = agent_loop.route_message(&msg);
+    assert!(agent_loop.try_acquire_session(&session_key));
+    match agent_loop.gate_inbound(&msg) {
+        GateOutcome::Immediate {
+            note_kind: Some("busy_receipt"),
+            ..
+        } => {}
+        other => panic!("queue receipt must be busy_receipt: {other:?}"),
+    }
+
+    // slash 确认臂（先于 busy 闸短路）→ None（assistant 渲染语义不变）。
+    let slash = make_inbound("/help", "web", "chat1", "user1", "");
+    match agent_loop.gate_inbound(&slash) {
+        GateOutcome::Immediate {
+            note_kind: None, ..
+        } => {}
+        other => panic!("slash receipt must stay None: {other:?}"),
+    }
+    agent_loop.release_session(&session_key);
+}
+
+/// 执行时把 `!` steer 消息排进 inbox（插话注入注记测试专用夹具）。
+struct SteerEnqueueNoteStubTool {
+    inbox: crate::inbox::SharedInbox,
+    session_key: String,
+    steer_content: String,
+}
+
+#[async_trait]
+impl Tool for SteerEnqueueNoteStubTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        self.inbox.enqueue(
+            &self.session_key,
+            crate::inbox::QueuedMessage {
+                msg: nemesis_types::channel::InboundMessage {
+                    channel: "web".to_string(),
+                    sender_id: "tester".to_string(),
+                    chat_id: "chat1".to_string(),
+                    content: self.steer_content.clone(),
+                    media: vec![],
+                    session_key: self.session_key.clone(),
+                    correlation_id: String::new(),
+                    metadata: Default::default(),
+                    voice_playback: None,
+                },
+                timestamp: String::new(),
+                priority: crate::inbox::MessagePriority::Normal,
+            },
+        );
+        Ok("STEER_TOOL_OK".to_string())
+    }
+}
+
+/// 插话注入注记 + 插话专轮回应（2026-11-20 插话打断感根修，用户拍板件；
+/// 2026-11-21 三次改版——注记进 work 时间线 + 插话专轮）：steer 在轮边界
+/// 被认领的时刻，① jsonl 落一条 system 注记行（note_kind=steer_inject，
+/// 紧随插话 user 行、先于 assistant 终局行；前端聊天视图隐藏渲染，审计/
+/// 会话浏览器面照常）；② 实时徽标帧（note_kind=steer_inject + receipt=
+/// true + occupies=Some(true)，帧路由用插话自身的通道/聊天；前端 live
+/// 载体，并入 pendingWork 注记轮）；③ assistant 行 work 键带注记轮（「LLM
+/// 返回的过程」内可见插话落点）；④ 插话专轮收口回应实时出站
+/// （note_kind=steer_response + occupies=None 瞬态帧，不落 jsonl 行）且
+/// 记在注记轮的 steer_response 段；⑤ 插话回应不是终答——终答行 = 续跑
+/// 轮的主线收尾文本。
+#[tokio::test]
+async fn steer_injection_persists_note_and_emits_badge_frame() {
+    let key = format!(
+        "agent:test:session:steer_note_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![
+        // 第一轮：调工具（工具执行时插话进队）。
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: String::new(),
+            tool_calls: vec![ToolCallInfo {
+                id: "sc_1".to_string(),
+                name: "steer_enqueue".to_string(),
+                arguments: "{}".to_string(),
+            }],
+            finished: false,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        // 第二轮：插话专轮（claim 置位 + contract 注入），纯文本收口 =
+        // 中间回应（不落终答行）。
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "插话已消化".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        // 第三轮：续跑提醒（RESUME 注入）后的主线终答。
+        LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "主线任务完成".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+    agent_loop.register_tool(
+        "steer_enqueue".to_string(),
+        Box::new(SteerEnqueueNoteStubTool {
+            inbox: agent_loop.inbox.clone(),
+            session_key: key.clone(),
+            steer_content: "! 测试插话注入".to_string(),
+        }),
+    );
+
+    let msg = make_inbound("干第一轮活", "web", "chat1", "user1", &key);
+    let (_id, _resp, _err, _) = agent_loop.process_inbound_message(&msg).await;
+
+    // ① 实时徽标帧：note_kind=steer_inject + receipt + 占行锚 + 路由；
+    // 收口另有 steer_response 瞬态帧（occupies=None，不落 jsonl 行）。
+    let mut found_frame = false;
+    let mut found_response_frame = false;
+    while let Ok(frame) = outbound_rx.try_recv() {
+        if frame.meta.note_kind.as_deref() == Some("steer_inject") {
+            assert!(frame.meta.receipt, "徽标帧必须 receipt=true");
+            assert_eq!(frame.meta.occupies, Some(true), "注记行已落盘占行锚");
+            assert!(frame.content.contains("插话已注入"));
+            // 2026-11-21 形态改版：注记自带插话内容摘要（strip_steer_marker
+            // 后原文——「!」路由标记不进摘要）。
+            assert!(
+                frame.content.contains("测试插话注入"),
+                "注记必须自带插话内容摘要，实际：{}",
+                frame.content
+            );
+            assert_eq!(frame.chat_id, "chat1", "帧路由用插话自身 chat_id");
+            found_frame = true;
+        } else if frame.meta.note_kind.as_deref() == Some("steer_response") {
+            // 插话专轮收口帧（2026-11-21 三次改版）：中间回应即时出站。
+            assert!(frame.meta.receipt, "回应帧必须 receipt=true");
+            assert_eq!(
+                frame.meta.occupies, None,
+                "回应是瞬态帧不落 jsonl 行（落盘载体 = work 键）"
+            );
+            assert_eq!(frame.content, "插话已消化", "回应帧承载阶段收口文本");
+            assert_eq!(frame.chat_id, "chat1", "回应帧路由同插话 chat_id");
+            found_response_frame = true;
+        }
+    }
+    assert!(found_frame, "必须有 steer_inject 徽标帧");
+    assert!(found_response_frame, "必须有 steer_response 收口帧");
+
+    // ② jsonl：system 注记行在 steer user 行之后、assistant 终局行之前。
+    crate::test_home::ensure_redirected();
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&key);
+    let path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{safe_key}.jsonl"));
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+        .expect("session jsonl must exist")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let steer_idx = rows
+        .iter()
+        .position(|r| {
+            r["role"] == "user" && r["content"].as_str().unwrap_or("").contains("[steer]")
+        })
+        .expect("steer user row must be persisted");
+    let note_idx = rows
+        .iter()
+        .position(|r| r.get("note_kind").and_then(|v| v.as_str()) == Some("steer_inject"))
+        .expect("steer_inject note row must be persisted");
+    assert!(note_idx > steer_idx, "注记行在插话用户行之后");
+    assert_eq!(rows[note_idx]["role"], "system");
+    assert!(
+        rows[note_idx]["content"]
+            .as_str()
+            .unwrap()
+            .contains("插话已注入本轮思考")
+    );
+    // 落盘行同样自带插话内容摘要（历史回看可对内容）。
+    assert!(
+        rows[note_idx]["content"]
+            .as_str()
+            .unwrap()
+            .contains("测试插话注入")
+    );
+    let final_idx = rows
+        .iter()
+        .position(|r| r["role"] == "assistant")
+        .expect("assistant final row must be persisted");
+    assert!(final_idx > note_idx, "assistant 终局行在注记之后");
+    // 插话专轮批：回应文本不是终答——终答行 = 续跑轮的主线收尾；回应
+    // 不落独立 jsonl 行（瞬态帧 occupies=None）。
+    assert_eq!(
+        rows[final_idx]["content"].as_str(),
+        Some("主线任务完成"),
+        "终答行必须是续跑轮的主线文本，不是插话回应"
+    );
+    assert!(
+        rows.iter()
+            .all(|r| r.get("note_kind").and_then(|v| v.as_str()) != Some("steer_response")),
+        "steer_response 是瞬态帧，不得落 jsonl 行"
+    );
+
+    // ③ work 时间线注记轮（2026-11-21 二次改版：注记进「LLM 返回的过程」
+    // ——前端在时间线过程流渲染插话落点，独立注记行隐藏）。assistant 行
+    // work 键必须带注记轮（text/tools 皆空、steer_note 有值），且注记轮
+    // 带 steer_response 段（插话专轮批：回应记在注记轮上）。
+    let work = rows[final_idx]
+        .get("work")
+        .expect("steered turn carries work key");
+    let rounds = work["rounds"].as_array().expect("rounds array");
+    let note_round = rounds
+        .iter()
+        .find(|r| r.get("steer_note").is_some())
+        .expect("work timeline must contain steer note round");
+    assert!(
+        note_round["steer_note"]
+            .as_str()
+            .unwrap()
+            .contains("测试插话注入"),
+        "注记轮自带插话内容摘要"
+    );
+    assert_eq!(
+        note_round["text"].as_str(),
+        Some(""),
+        "注记轮无叙述（独立轮，不被输出/批次并入）"
+    );
+    assert!(
+        note_round["tools"].as_array().unwrap().is_empty(),
+        "注记轮无工具批次"
+    );
+    assert_eq!(
+        note_round["steer_response"].as_str(),
+        Some("插话已消化"),
+        "收口回应记在注记轮的 steer_response 段"
+    );
+    assert!(
+        rounds
+            .iter()
+            .all(|r| r["text"].as_str() != Some("插话已消化")),
+        "回应文本不得另开文本轮（只记在注记轮的 steer_response 段）"
+    );
 }
 
 /// Free session → Admitted: the gate acquires the session and mints the

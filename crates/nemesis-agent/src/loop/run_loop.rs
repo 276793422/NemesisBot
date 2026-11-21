@@ -50,6 +50,12 @@ pub(crate) struct TurnState {
     /// I1 (U7)：一次性 escape-hatch 闩（Accept 分支：终答在即但有未认领
     /// steer——多给一轮，防 `!` 刷屏无限续 turn）。
     pub(crate) steer_escape_used: bool,
+    /// 插话专轮（steer phase，2026-11-21）：阶段进行中闩。置位 = claim
+    /// 认领到非空批次且 turn 非首轮（`claim_steer_messages` 内）；清位 =
+    /// 纯文本收口（judge_final_answer Accept 臂专分支）。阶段内：claim
+    /// 短路（原子性——后续插话留队列，收口后排空）、纯文本响应 = 阶段
+    /// 收口而非 turn 终答、预算计数豁免纯文本轮（插话自身不计入）。
+    pub(crate) steer_phase_active: bool,
     /// L2：break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
     pub(crate) terminal_reason: Option<&'static str>,
     /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
@@ -94,6 +100,25 @@ pub(crate) const LENGTH_CONTINUE_PROMPT: &str = "Output limit reached. Continue 
 pub(crate) const STREAM_CONTINUE_PROMPT: &str = "Your previous response was interrupted mid-stream. \
      Continue exactly where you left off — no recap, no apology. \
      If you were writing a large file, break it into smaller writes.";
+
+/// 插话专轮语义包（瞬时 system 注入，不落盘；阶段每轮重建注入，阶段关
+/// 即消失——grace/repetition nudge 同族形态）。语义 = 当前处于用户插话
+/// 处理阶段：先完整处理插话内容（可调用全部工具，AgentLoop 零裁剪），
+/// 完成后给出插话回应文本（回应实时出站，随后回到原任务）。
+/// `[E2E_STEER_CONTRACT]` 前缀供 e2e mock LLM 判路由（对真实模型无害）。
+pub(crate) const STEER_PHASE_CONTRACT: &str = "[E2E_STEER_CONTRACT] You are now handling a \
+     mid-turn user interjection (steer). Fully handle the user's interjection first — you may \
+     call any tool exactly as usual. When the interjection is handled, reply with a SHORT \
+     standalone text answer addressing the interjection only (it is delivered to the user \
+     immediately as a mid-turn response). The original task resumes automatically right after \
+     your reply.";
+
+/// 插话阶段收口后的外层续跑引导（持久 user 消息，LENGTH_CONTINUE_PROMPT
+/// 家族同形态——不进气泡，尾随插话交换进入 LLM 上下文）。
+/// `[E2E_STEER_RESUME]` 前缀供 e2e mock LLM 判路由。
+pub(crate) const STEER_RESUME_PROMPT: &str = "[E2E_STEER_RESUME] The interjection has been \
+     handled and its answer was delivered to the user. Resume the original task exactly where \
+     you left off — no recap of the interjection exchange.";
 
 impl AgentLoop {
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
@@ -160,6 +185,7 @@ impl AgentLoop {
             degenerate_nudge_pending: None,
             repetition_nudge_pending: None,
             steer_escape_used: false,
+            steer_phase_active: false,
             terminal_reason: None,
             turn_end_continues: 0,
             pending_prompt_inject: None,
@@ -252,7 +278,7 @@ impl AgentLoop {
 
             // 器官 2（§4.2）：inbox claim → @file 展开 → URL 媒体预取 →
             // 附加链 → chat_log 落行。
-            self.claim_steer_messages(instance, context, &st).await;
+            self.claim_steer_messages(instance, context, &mut st).await;
 
             // 器官 3（§4.2）：memory 预取 + annotated build + 瞬时注入族 +
             // LLM pre-hooks + tool_defs + LlmRequest observer + boundary
@@ -317,7 +343,14 @@ impl AgentLoop {
                 }
             };
 
-            st.turns_used += 1;
+            // 插话专轮预算（2026-11-21 用户拍板：插话自身不计入，插话触发
+            // 的工具流程计入）——阶段内纯文本轮 = 收口轮，不计入；含工具
+            // 调用的轮照常计数。无滥用面：阶段内纯文本轮即收口（见
+            // judge_final_answer Accept 臂专分支），不可能连续纯文本轮
+            // 滞留阶段白嫖预算。
+            if !(st.steer_phase_active && response.tool_calls.is_empty()) {
+                st.turns_used += 1;
+            }
 
             // 器官 5（§4.2 → observer.rs）：LlmResponse observer 事件 +
             // data store 计价明细。
@@ -705,6 +738,42 @@ impl AgentLoop {
                         "",
                         response.reasoning_content.as_deref(),
                     );
+                    // 插话专轮收口（2026-11-21）：纯文本响应 = 阶段收口而非
+                    // turn 终答。① 中间回应实时出站：note frame
+                    // kind="steer_response"（role=system 投影、occupies=None
+                    // ——瞬态帧不落 jsonl 行，落盘载体是 work 键的
+                    // steer_response 段）+ work 时间线插话轮记回应段；
+                    // ② 清阶段闩；③ 排空队列：还有排队插话 → Continue
+                    // （下一轮顶 claim 开新阶段——先排空后回外层，避免外层
+                    // 刚续跑又被排队插话立刻打断）；④ 队列空 → 注入续跑
+                    // 引导（持久 user 消息，LENGTH_CONTINUE 家族同形态）→
+                    // Continue；⑤ return——插话回应不是终答：不经 canvas
+                    // 预检 / I1 escape / turn-end hook / Done。
+                    if st.steer_phase_active {
+                        st.steer_phase_active = false;
+                        self.work_recorder
+                            .record_steer_response(&context.session_key, &content);
+                        info!(
+                            "[AgentLoop] steer phase closed: mid-turn response delivered \
+                             ({} chars), session '{}'",
+                            content.len(),
+                            context.session_key
+                        );
+                        self.send_note_badge_frame(
+                            &context.channel,
+                            &context.chat_id,
+                            &context.session_key,
+                            "steer_response",
+                            &content,
+                            None,
+                        )
+                        .await;
+                        if self.inbox.has_next_step(&context.session_key) {
+                            return Some(TurnFlow::Continue);
+                        }
+                        instance.add_user_message(STEER_RESUME_PROMPT);
+                        return Some(TurnFlow::Continue);
+                    }
                     // P30（WS14）：canvas 块检出 + JS 语法预检。有问题且回灌
                     // 预算未尽 → 反馈落 user 消息续一轮（模型整条重发自纠，
                     // 与 length-continuation / turn-end hook 同一持久回灌
@@ -1030,9 +1099,15 @@ impl AgentLoop {
         &self,
         instance: &AgentInstance,
         context: &RequestContext,
-        st: &TurnState,
+        st: &mut TurnState,
     ) {
         let log_boundaries = st.log_boundaries;
+        // 插话专轮原子性（2026-11-21）：阶段进行中不再认领——后续插话留
+        // 队列，收口时排空（judge_final_answer Accept 臂专分支）。已开跑
+        // 的阶段不允许与后续插话合并（用户拍板：后续插话只能排队）。
+        if st.steer_phase_active {
+            return;
+        }
         // I1 (U7): inbox claim — before EVERY LLM call of this turn, take
         // all pending steer messages (next-step) into history as real user
         // messages (persisted: they ARE genuine user input). Placement
@@ -1046,6 +1121,19 @@ impl AgentLoop {
         // sha256s — and threw the first build away). One build, always.
         let steer_batch = self.inbox.claim_next_step(&context.session_key);
         if !steer_batch.is_empty() {
+            // 插话专轮置位（2026-11-21）：turn 非首轮（turns_used > 0）→
+            // 本批插话进专轮处理（LLM 先完整处理插话并即时回应，再回外层
+            // 续跑原任务）；首轮 claim 到的残留 = 新 turn 输入的一部分
+            // （存量语义——正常入站消息进首轮上下文），不置位。
+            if st.turns_used > 0 {
+                st.steer_phase_active = true;
+                info!(
+                    "[AgentLoop] steer phase armed: {} queued message(s) claimed at round \
+                     boundary (turns_used={})",
+                    steer_batch.len(),
+                    st.turns_used
+                );
+            }
             for m in &steer_batch {
                 // L4 (full review) + round-5: strip the marker via the
                 // SINGLE shared rule (inbox::strip_steer_marker) — it is a
@@ -1148,6 +1236,58 @@ impl AgentLoop {
                         &format!("len={}", m.msg.content.len()),
                     );
                 }
+            }
+            // 插话注入注记（2026-11-20 插话打断感修复；2026-11-21 二次改版
+            // ——用户拍板「注记插进 LLM 返回的过程中」）：注记同时进 work
+            // 时间线（record_steer_note 注记轮——前端在思考卡/工具行同一
+            // 过程流里渲染插话落点，独立注记行不再单独露出）+ jsonl 落盘
+            // system 行（note_kind="steer_inject"，占行锚；前端隐藏渲染，
+            // 会话浏览器/审计链照常可见）。文本自带插话内容摘要（strip_
+            // steer_marker 后原文按字符截断——@文件展开后的长文不进注记，
+            // byte 切片会多字节 panic）。实时徽标帧（role=system 投影）为
+            // live 载体，前端收到后并入 pendingWork 注记轮。终局回复只扫
+            // 瞬态 busy_receipt 徽标，注记随 work 键落盘保留。
+            let steer_summary = |raw: &str| -> String {
+                crate::tool_event_hook::truncate_chars(
+                    crate::inbox::strip_steer_marker(raw).trim(),
+                    50,
+                )
+            };
+            let note = if steer_batch.len() == 1 {
+                format!(
+                    "⚡ 插话已注入本轮思考：{}",
+                    steer_summary(&steer_batch[0].msg.content)
+                )
+            } else {
+                let summaries: Vec<String> = steer_batch
+                    .iter()
+                    .map(|m| steer_summary(&m.msg.content))
+                    .collect();
+                format!(
+                    "⚡ {} 条插话已注入本轮思考：{}",
+                    steer_batch.len(),
+                    summaries.join("；")
+                )
+            };
+            // 时间线注记轮：claim 在上一轮工具批次之后、下一轮 LLM 输出
+            // 之前——注记轮落时间线末尾即注入时刻；末轮分组规则要求叙述
+            // 或思考非空，注记轮（三者皆空）不会被后续工具批次复用。
+            self.work_recorder
+                .record_steer_note(&context.session_key, &note);
+            crate::chat_log::append_steer_inject_note(&context.session_key, &note);
+            // 帧路由用最后一条插话自身的通道/聊天（注入事件归属这批消息；
+            // 与 turn 上下文不一致的场景 = 插话来自另一端点）。
+            if let Some(last) = steer_batch.last() {
+                self.send_note_badge_frame(
+                    &last.msg.channel,
+                    &last.msg.chat_id,
+                    &context.session_key,
+                    "steer_inject",
+                    &note,
+                    // 注记行已落盘（system 行占行号锚）→ Some(true)。
+                    Some(true),
+                )
+                .await;
             }
         }
     }
@@ -1280,6 +1420,26 @@ impl AgentLoop {
                 role: "system".to_string(),
                 source: crate::replay::INJECTION_REPETITION_NUDGE.to_string(),
                 content: nudge.clone(),
+            });
+        }
+
+        // 插话专轮语义包（2026-11-21）：阶段内瞬时 system 注入（不落盘，
+        // 每阶段轮重建，阶段关即消失）。尾部追加——grace/repetition nudge
+        // 同族形态，保 T8 replay ledger 已记账索引不被位移。
+        if st.steer_phase_active {
+            messages.push(LlmMessage {
+                role: "system".to_string(),
+                content: STEER_PHASE_CONTRACT.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+                images: Vec::new(),
+            });
+            replay_injections.push(crate::replay::InjectionRecord {
+                index: messages.len() - 1,
+                role: "system".to_string(),
+                source: crate::replay::INJECTION_STEER_PHASE.to_string(),
+                content: STEER_PHASE_CONTRACT.to_string(),
             });
         }
 

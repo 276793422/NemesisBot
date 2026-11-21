@@ -1498,6 +1498,10 @@ mod turn_wal_loop_tests;
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// （插话专轮 2026-11-21）：claim 原子性 / 排空 / 预算豁免 / 续跑 / 首轮
+// 不置位行为测试（请求录制白盒 + 帧序黑盒）。
+#[cfg(test)]
+mod steer_phase_tests;
 // 预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
 #[cfg(test)]
 mod pre_pause_probe_tests;

@@ -199,7 +199,7 @@ impl AgentLoop {
         // ① 收据先发（系统回执 receipt=true——结果回灌才是终局）。
         // 瞬态帧不落盘（user 行在②落）→ Some(false) 不占行号锚。
         let receipt = format!("⏳ 已把编码任务派发给节点 {node_id}，完成后自动回复结果。");
-        self.finish_message(msg, receipt, None, false, true, Some(false))
+        self.finish_message(msg, receipt, None, false, true, Some(false), None)
             .await;
 
         // ② 会话一致性：user 行落盘（原命令原文——派发上下文可追溯）。
@@ -283,6 +283,7 @@ impl AgentLoop {
                         true,
                         false,
                         Some(false),
+                        None,
                     )
                     .await;
                 }
@@ -298,7 +299,7 @@ impl AgentLoop {
         // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
         // 本路径零落盘（同步结果不走续行回灌的落盘链）→ Some(false)
         // 不占行号锚。
-        self.finish_message(msg, result, None, true, false, Some(false))
+        self.finish_message(msg, result, None, true, false, Some(false), None)
             .await;
         drop(_busy_guard); // = release_session（同步出口；panic 展开由守卫兜底）
         // 排队消息排空（与 admitted/维护尾巴同源， 滞留修复）。

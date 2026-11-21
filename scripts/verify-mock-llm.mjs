@@ -14,6 +14,10 @@
  *           子代理胶囊视觉自测用；SPAWN2 先于 SPAWN 判——子串包含关系）
  *         - 最后一条 user 含 E2E_SLOW     → 慢速臂：延迟 20s 再文本回复
  *           （bg 子代理任务文本含此标记 → 子代理运行 ~20s，给 UI 截图留窗口）
+ *         - 请求含 E2E_STEER_CONTRACT     → 插话专轮回应（2026-11-21 插话
+ *           专轮批）：延迟 ~5s 纯文本收口（中间回应即时出站，非终答）
+ *         - 请求含 E2E_STEER_RESUME       → 续跑轮终答（延迟 STEER_RESUME_MS
+ *           默认 4s——收口回应帧与终局帧之间的 live 成对窗口）
  *         - 其余                          → 纯文本直答（E2E_MOCK_TEXT_REPLY 前缀）
  *     · 请求体 stream===true → 同样内容改走 SSE chunk 流（delta 拼接 + 终态帧
  *       + [DONE]），验证 gateway 侧流式聚合链路（stream_util::collect_stream_response）
@@ -65,6 +69,23 @@ const TEXT_REPLY = 'E2E_MOCK_TEXT_REPLY：这是 mock 模型的确定性直答�
 // 子代理保持 running ~20s，给子代理胶囊视觉自测留截图窗口。
 const SLOW_MS = 20_000
 
+// 慢速工具臂（E2E_SLOW_TOOL 标记，2026-11-20 插话打断感修复 GUI 自测）：
+// 延迟应答 + sleep 工具调用 → 多轮 turn。⚠️ 机制注记（2026-11-21 插话
+// 专轮批改版）：check_steer_skip_batch 让路机制已全移除——已下发的工具
+// 批次恒执行，sleep 在无插话与有插话两流里都真执行（3s）；插话在轮边界
+// （sleep 完成后、返回前）被 claim 进插话专轮，contract marker 路由见下。
+const SLOW_TOOL_MS = Number(process.env.SLOW_TOOL_MS ?? 8_000)
+
+// 插话专轮回应延迟（2026-11-21 插话专轮批）：contract marker 路由——专轮
+// 请求含 [E2E_STEER_CONTRACT]（尾部 system 注入，每阶段轮重建）。延迟应答
+// 给 live 时间线注记行 + 回应行的成对渲染留确定性截图窗口；纯文本回应 =
+// 阶段收口（steer_response 瞬态帧即时出站，非终答）。
+const STEER_REPLY_MS = Number(process.env.STEER_REPLY_MS ?? 5_000)
+// 续跑轮延迟（2026-11-21 e2e 截图窗口）：收口回应帧（steer_response）与
+// 终局回复帧之间的 live 时间线成对窗口 = 本延迟——0 则两帧同秒到达，
+// Playwright 轮询窗（~100ms）永远赶不上 live 成对态。
+const STEER_RESUME_MS = Number(process.env.STEER_RESUME_MS ?? 4_000)
+
 // 子代理胶囊视觉自测的 spawn 任务文本（含 E2E_SLOW 标记 → 子代理 LLM
 // 调用走慢速臂，注册表 running 行维持 ~20s；两条任务文本可区分）。
 const SPAWN_TASKS = {
@@ -85,8 +106,22 @@ function lastUserText(body) {
   return typeof last.content === 'string' ? last.content : JSON.stringify(last.content ?? '')
 }
 
+// 插话专轮 marker 扫描（2026-11-21 插话专轮批）：contract/RESUME 都是
+// 尾部 system 注入（不落盘、每阶段轮重建），lastUserText 看不到——扫全
+// 消息体序列化文本。
+function bodyHasMarker(body, marker) {
+  return JSON.stringify(body?.messages ?? []).includes(marker)
+}
+
+const STEER_REPLY_TEXT = 'E2E_STEER_ACK：插话已收到，边界说明已纳入后续处理（中间回应，主线继续）。'
+const STEER_RESUME_TEXT = 'E2E_STEER_MAIN_DONE：主线任务已完成（插话已消化后继续收尾）。'
+
 function routeRequest(body) {
   if (lastRole(body) === 'tool') return 'final'
+  // 插话专轮路由（2026-11-21）：marker 扫描先于 lastUserText 各臂——
+  // RESUME 只在阶段关后出现（与 contract 互斥），先判谁都不冲突。
+  if (bodyHasMarker(body, '[E2E_STEER_RESUME]')) return 'steer_resume'
+  if (bodyHasMarker(body, '[E2E_STEER_CONTRACT]')) return 'steer_reply'
   const text = lastUserText(body)
   if (text.includes('E2E_WF_GEN')) return 'wf_create'
   if (text.includes('E2E_TOOL_EXEC')) return 'exec_tool'
@@ -101,6 +136,8 @@ function routeRequest(body) {
   // 边角 spec 验证丢弃徽标与 tail 起点语义；秒级跑完自终，steerable=false。
   if (text.includes('E2E_TOOL_BG_BIG')) return 'bg_tool_big'
   if (text.includes('E2E_TOOL_BG')) return 'bg_tool'
+  // SLOW_TOOL 必须先于 SLOW 判——'E2E_SLOW_TOOL' 包含 'E2E_SLOW' 子串。
+  if (text.includes('E2E_SLOW_TOOL')) return 'slow_tool'
   if (text.includes('E2E_SLOW')) return 'slow_text'
   return 'text'
 }
@@ -151,6 +188,37 @@ function messagePayload(route, body) {
       usage: { prompt_tokens: 800, completion_tokens: 60, total_tokens: 860 },
     }
   }
+  // 插话专轮回应（2026-11-21 插话专轮批）：纯文本 = 阶段收口（中间回应
+  // 即时出站 steer_response 瞬态帧，落注记轮 work 键；非终答——随后注入
+  // RESUME 续跑）。
+  if (route === 'steer_reply') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: STEER_REPLY_TEXT },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 600, completion_tokens: 50, total_tokens: 650 },
+    }
+  }
+  // 续跑轮（2026-11-21 插话专轮批）：RESUME 提醒在场的即时终答——外层
+  // 主线无缝收尾。
+  if (route === 'steer_resume') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: STEER_RESUME_TEXT },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 700, completion_tokens: 55, total_tokens: 755 },
+    }
+  }
   if (route === 'wf_create') {
     return {
       ...base,
@@ -177,8 +245,43 @@ function messagePayload(route, body) {
       usage: { prompt_tokens: 500, completion_tokens: 120, total_tokens: 620 },
     }
   }
-  if (route === 'exec_tool') {
+  // 慢速工具臂（插话 GUI 自测）：延迟应答 + sleep 工具调用（LOW 风险免
+  // 审批）→ 多轮 turn。sleep 真执行 3s（让路机制已移除）；轮边界 claim
+  // 进插话专轮（steer_reply 臂）。轮 2 尾部 role=tool → final 直答
+  // （无插话基线流）。
+  if (route === 'slow_tool') {
     return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_mock_slow_sleep',
+                type: 'function',
+                function: {
+                  name: 'sleep',
+                  // gateway 主 loop 的 sleep 工具 schema 单一真相源 =
+                  // loop_tools/misc.rs SleepTool::parameters()（required
+                  // seconds，数值秒；BUG-20261112-107 已删 duration 死别名，
+                  // execute 只读 seconds）。传 duration 会撞 args 校验失败
+                  // 回灌（校验在 ToolEventHook 之前 → 无工具事件无工具行，
+                  // 轮 2 请求尾部 role=tool 走 instant final 臂）。
+                  arguments: JSON.stringify({ seconds: 3 }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
+  if (route === 'exec_tool') {    return {
       ...base,
       choices: [
         {
@@ -387,7 +490,10 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(messagePayload(route, body ?? {})))
       }
       // 慢速臂：延迟应答（JSON 与 SSE 两路同延迟）。
-      if (route === 'slow_text') setTimeout(respond, SLOW_MS)
+      if (route === 'slow_tool') setTimeout(respond, SLOW_TOOL_MS)
+      else if (route === 'slow_text') setTimeout(respond, SLOW_MS)
+      else if (route === 'steer_reply') setTimeout(respond, STEER_REPLY_MS)
+      else if (route === 'steer_resume') setTimeout(respond, STEER_RESUME_MS)
       else respond()
     })
     return

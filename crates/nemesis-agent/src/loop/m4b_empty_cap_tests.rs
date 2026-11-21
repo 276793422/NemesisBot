@@ -112,6 +112,7 @@ fn fresh_state() -> TurnState {
         degenerate_nudge_pending: None,
         repetition_nudge_pending: None,
         steer_escape_used: false,
+        steer_phase_active: false,
         terminal_reason: None,
         turn_end_continues: 0,
         pending_prompt_inject: None,

@@ -1125,6 +1125,10 @@ impl AgentLoop {
         check_sent_in_round: bool,
         receipt: bool,
         occupies: Option<bool>,
+        // 展示形态标记直通 OutboundMeta.note_kind（2026-11-20 插话打断感
+        // 根修）：busy 回执 Some("busy_receipt") → server 投影 role=system
+        // → 前端完成清算不误触发；其余 None（旧行为）。
+        note_kind: Option<&str>,
     ) {
         let response = match err {
             Some(ref e) => {
@@ -1223,12 +1227,13 @@ impl AgentLoop {
                     source_node: None,
                     task_id: None,
                     sync_via: None,
-                    note_kind: None,
                     // 回执标记由调用点声明语义（busy 排队/slash 确认=true，
                     // 终局回复=false）——消费方按会话键等终局回复时跳过回执。
                     receipt,
                     // 帧占行真相由调用点声明（行号锚漂移根修）。
                     occupies,
+                    // 展示形态标记随行（busy_receipt → role=system 投影）。
+                    note_kind: note_kind.map(str::to_string),
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -1476,6 +1481,7 @@ impl AgentLoop {
                     false,
                     true,
                     Some(false),
+                    None,
                 )
                 .await;
             }
@@ -1513,6 +1519,7 @@ impl AgentLoop {
                 agent_id: _,
                 response,
                 occupies,
+                note_kind,
             } => {
                 // Busy receipt / busy bounce / queue-full / slash
                 // reply — publish inline. Never touches
@@ -1523,7 +1530,9 @@ impl AgentLoop {
                 // 跳过——NB-1 实录：queue-ack 被当终局回复 → 57ms
                 // 空交付 completed。occupies 由 gate 侧按落盘真相
                 // 盖章（瞬态回执 Some(false) / 落盘留痕 Some(true)）。
-                self.finish_message(msg, response, None, false, true, occupies)
+                // note_kind 随行（busy_receipt → role=system 投影，
+                // 完成清算不误触发——2026-11-20 插话打断感根修）。
+                self.finish_message(msg, response, None, false, true, occupies, note_kind)
                     .await;
             }
             GateOutcome::Coalesced { cron_job_id } => {
@@ -1559,7 +1568,7 @@ impl AgentLoop {
                         // （可能是 LLM 摘要）= 终局（receipt=false）。两帧都
                         // 是瞬态回执（落盘只有 user 行）→ Some(false) 不占
                         // 行号锚（行号锚漂移根修）。
-                        this.finish_message(&m, receipt, None, false, true, Some(false))
+                        this.finish_message(&m, receipt, None, false, true, Some(false), None)
                             .await;
                         let response = this
                             .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
@@ -1570,7 +1579,7 @@ impl AgentLoop {
                         // 永久滞留 next_turn——与 admitted 尾部共用
                         // drain_next_turn_queue 对称排空。
                         this.drain_next_turn_queue(&session_key).await;
-                        this.finish_message(&m, response, None, false, false, Some(false))
+                        this.finish_message(&m, response, None, false, false, Some(false), None)
                             .await;
                     },
                     &sk,
@@ -1604,7 +1613,7 @@ impl AgentLoop {
                     async move {
                         let (_, response, err) = this.process_ungated(&m).await;
                         // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
-                        this.finish_message(&m, response, err, true, false, None)
+                        this.finish_message(&m, response, err, true, false, None, None)
                             .await;
                     },
                     &sk,
@@ -1618,7 +1627,7 @@ impl AgentLoop {
                     async move {
                         let (_, response, err) = this.process_admitted(&m, admission).await;
                         // 终局回复已由 turn 内部落盘 → None 旧规则（占行）。
-                        this.finish_message(&m, response, err, true, false, None)
+                        this.finish_message(&m, response, err, true, false, None, None)
                             .await;
                     },
                     &sk,

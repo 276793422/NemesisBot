@@ -339,3 +339,169 @@ fn test_finish_takes_only_own_key() {
     assert_eq!(tl.rounds.len(), 1);
     assert_eq!(tl.rounds[0].text, "父内容");
 }
+
+// --- 插话注入注记轮（2026-11-21 用户反馈改版：注记进时间线过程流）---
+
+#[test]
+fn test_steer_note_round_not_reused_by_tools_or_output() {
+    // 注记轮（三者皆空）不得被后续工具批次复用（末轮分组规则要求叙述或
+    // 思考非空），也不得被后续输出并入（push_round_output 恒开新轮）——
+    // 注记独立成轮，时序锚 = 注入时刻。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.push_round_output(SK, "第一轮叙述", "");
+    rec.tool_started(SK, "c1", "exec", "");
+    rec.tool_finished(SK, "c1", true, 1, "");
+    rec.record_steer_note(SK, "⚡ 插话已注入本轮思考：补充边界");
+    // 注记后的工具批次：开纯工具轮（不误挂注记轮）。
+    rec.tool_started(SK, "c2", "grep", "pat");
+    rec.tool_finished(SK, "c2", true, 2, "hits");
+    // 注记后的输出：开新轮。
+    rec.push_round_output(SK, "继续处理", "");
+
+    let tl = rec.finish(SK).expect("timeline");
+    assert_eq!(tl.rounds.len(), 4, "叙述轮/注记轮/纯工具轮/输出轮");
+    assert_eq!(
+        tl.rounds[1].steer_note.as_deref(),
+        Some("⚡ 插话已注入本轮思考：补充边界")
+    );
+    assert!(tl.rounds[1].text.is_empty());
+    assert!(tl.rounds[1].reasoning.is_empty());
+    assert!(tl.rounds[1].tools.is_empty(), "注记轮无工具");
+    assert_eq!(tl.rounds[2].tools.len(), 1, "注记后批次开纯工具轮");
+    assert_eq!(tl.rounds[2].steer_note, None);
+    assert_eq!(tl.rounds[3].text, "继续处理");
+    assert!(tl.rounds[0].steer_note.is_none());
+}
+
+#[test]
+fn test_steer_note_only_round_persists_via_finish_and_snapshot() {
+    // claim 后直答（无中间轮）：仅注记轮 → finish 返回单轮时间线（行带
+    // work 键，前端折叠块可见插话落点）；快照同样可见（执行中切回恢复面）。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.record_steer_note(SK, "⚡ 插话已注入本轮思考：换思路");
+    let v = rec.snapshot_json(SK).expect("snapshot");
+    assert_eq!(
+        v["rounds"][0]["steer_note"],
+        "⚡ 插话已注入本轮思考：换思路"
+    );
+    let tl = rec.finish(SK).expect("note-only turn carries work key");
+    assert_eq!(tl.rounds.len(), 1);
+    assert_eq!(
+        tl.rounds[0].steer_note.as_deref(),
+        Some("⚡ 插话已注入本轮思考：换思路")
+    );
+    assert!(tl.rounds[0].text.is_empty());
+    assert!(tl.rounds[0].tools.is_empty());
+    // 落盘序列化：正常轮省略 steer_note 键（skip_serializing_if）。
+    let v = serde_json::to_value(&tl).unwrap();
+    assert!(v["rounds"][0].get("steer_note").is_some());
+    let plain = WorkRound {
+        text: "t".to_string(),
+        reasoning: String::new(),
+        tools: Vec::new(),
+        steer_note: None,
+        steer_response: None,
+    };
+    let v = serde_json::to_value(&plain).unwrap();
+    assert!(v.get("steer_note").is_none(), "无注记轮省略键");
+}
+
+#[test]
+fn test_steer_note_session_gated_and_truncation_respected() {
+    // 无桶（未 begin）忽略；桶满置 truncated 诚实注记。
+    let rec = WorkRecorder::default();
+    rec.record_steer_note(SK, "无桶忽略");
+    assert!(rec.finish(SK).is_none());
+
+    rec.begin(SK);
+    for i in 0..MAX_WORK_ROUNDS {
+        rec.push_round_output(SK, &format!("r{i}"), "");
+    }
+    rec.record_steer_note(SK, "超限拒绝");
+    let tl = rec.finish(SK).expect("timeline");
+    assert_eq!(tl.rounds.len(), MAX_WORK_ROUNDS);
+    assert!(tl.truncated);
+    assert!(tl.rounds.iter().all(|r| r.steer_note.is_none()));
+}
+
+// --- 插话专轮回应（2026-11-21 插话专轮批：回应记在注记轮上）---
+
+#[test]
+fn test_steer_response_lands_on_note_round_reverse_find() {
+    // 收口回应反查最近的未回注记轮：注记轮后有中间输出/批次也不偏移
+    // （反查按 steer_note 在场 + 未回，不按位置）。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.push_round_output(SK, "工具前叙述", "");
+    rec.record_steer_note(SK, "⚡ 插话已注入本轮思考：换思路");
+    // 专轮内的工具批次与叙述照常累加（反查必须跳过它们）。
+    rec.tool_started(SK, "c1", "exec", "");
+    rec.tool_finished(SK, "c1", true, 3, "ok");
+    rec.push_round_output(SK, "专轮内叙述", "");
+    rec.record_steer_response(SK, "插话回应：好的，换思路");
+
+    let tl = rec.finish(SK).expect("timeline");
+    let note_idx = tl
+        .rounds
+        .iter()
+        .position(|r| r.steer_note.is_some())
+        .expect("note round");
+    assert_eq!(
+        tl.rounds[note_idx].steer_response.as_deref(),
+        Some("插话回应：好的，换思路"),
+        "回应记在注记轮上（反查跳过中间轮）"
+    );
+    assert!(
+        tl.rounds
+            .iter()
+            .enumerate()
+            .all(|(i, r)| i == note_idx || r.steer_response.is_none()),
+        "其余轮不带回应段"
+    );
+}
+
+#[test]
+fn test_steer_response_second_call_targets_next_note_round() {
+    // 两段专轮：第二次 record_steer_response 反查到第二个注记轮（第一个
+    // 已有回应不再命中）——排空场景下两段回应各归各轮。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.record_steer_note(SK, "插话一");
+    rec.record_steer_response(SK, "回应一");
+    rec.record_steer_note(SK, "插话二");
+    rec.record_steer_response(SK, "回应二");
+
+    let tl = rec.finish(SK).expect("timeline");
+    assert_eq!(tl.rounds.len(), 2);
+    assert_eq!(tl.rounds[0].steer_note.as_deref(), Some("插话一"));
+    assert_eq!(tl.rounds[0].steer_response.as_deref(), Some("回应一"));
+    assert_eq!(tl.rounds[1].steer_note.as_deref(), Some("插话二"));
+    assert_eq!(tl.rounds[1].steer_response.as_deref(), Some("回应二"));
+}
+
+#[test]
+fn test_steer_response_fallback_appends_when_no_note_round() {
+    // 无注记轮可回（注记轮被 MAX_WORK_ROUNDS 截断的极端场景）→ 追加独立
+    // 回应轮兜底；超限则诚实拒绝（truncated，不追加）。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.record_steer_response(SK, "无注记轮兜底");
+    let tl = rec.finish(SK).expect("timeline");
+    assert_eq!(tl.rounds.len(), 1);
+    assert!(tl.rounds[0].steer_note.is_none());
+    assert_eq!(tl.rounds[0].steer_response.as_deref(), Some("无注记轮兜底"));
+
+    // 超限兜底：满桶 + 无注记轮 → truncated、不追加。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    for i in 0..MAX_WORK_ROUNDS {
+        rec.push_round_output(SK, &format!("r{i}"), "");
+    }
+    rec.record_steer_response(SK, "超限拒绝");
+    let tl = rec.finish(SK).expect("timeline");
+    assert_eq!(tl.rounds.len(), MAX_WORK_ROUNDS);
+    assert!(tl.truncated);
+    assert!(tl.rounds.iter().all(|r| r.steer_response.is_none()));
+}

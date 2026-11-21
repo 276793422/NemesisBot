@@ -174,6 +174,7 @@ async fn finish_message_skips_publish_when_already_sent() {
         true,
         false,
         None,
+        None,
     )
     .await;
     assert!(
@@ -182,8 +183,16 @@ async fn finish_message_skips_publish_when_already_sent() {
     );
 
     // 标记已按会话清除：下一次发布照常。
-    al.finish_message(&msg, "goes through".to_string(), None, true, false, None)
-        .await;
+    al.finish_message(
+        &msg,
+        "goes through".to_string(),
+        None,
+        true,
+        false,
+        None,
+        None,
+    )
+    .await;
     let got = orx.recv().await.unwrap();
     assert_eq!(got.content, "goes through");
 }
@@ -500,7 +509,7 @@ async fn finish_message_appends_degradation_note_and_consumes_slot() {
         "glm-4.7 → http-compat/glm-5.3-flash".to_string(),
     );
 
-    al.finish_message(&msg, "最终回复".to_string(), None, false, false, None)
+    al.finish_message(&msg, "最终回复".to_string(), None, false, false, None, None)
         .await;
     let got = orx.recv().await.unwrap();
     assert!(
@@ -521,7 +530,7 @@ async fn finish_message_appends_degradation_note_and_consumes_slot() {
     );
 
     // 表已清：下一帧不带注记。
-    al.finish_message(&msg, "第二条".to_string(), None, false, false, None)
+    al.finish_message(&msg, "第二条".to_string(), None, false, false, None, None)
         .await;
     let got2 = orx.recv().await.unwrap();
     assert_eq!(got2.content, "第二条");
@@ -547,6 +556,7 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
         false,
         true,
         Some(false),
+        None,
     )
     .await;
     let got = orx.recv().await.unwrap();
@@ -566,6 +576,7 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
         true,
         false,
         None,
+        None,
     )
     .await;
     let got = orx.recv().await.unwrap();
@@ -582,7 +593,7 @@ async fn finish_message_receipt_and_error_do_not_consume_note() {
     );
 
     // 随后终局回复正常消费。
-    al.finish_message(&msg, "终局".to_string(), None, true, false, None)
+    al.finish_message(&msg, "终局".to_string(), None, true, false, None, None)
         .await;
     let got = orx.recv().await.unwrap();
     assert!(
@@ -618,8 +629,16 @@ async fn finish_message_degradation_note_is_session_keyed_not_global() {
 
     // B 会话终局先到：从未降级，不得背注记。
     let msg_b = inbound("hello", "web", "covuser", "agent:main:session:covsteal-b");
-    al.finish_message(&msg_b, "B的回复".to_string(), None, false, false, None)
-        .await;
+    al.finish_message(
+        &msg_b,
+        "B的回复".to_string(),
+        None,
+        false,
+        false,
+        None,
+        None,
+    )
+    .await;
     let got_b = orx.recv().await.unwrap();
     assert!(
         !got_b.content.contains("备选应答"),
@@ -629,8 +648,16 @@ async fn finish_message_degradation_note_is_session_keyed_not_global() {
 
     // A 会话终局后到：注记必须落在真实降级方 A，披露不得丢失。
     let msg_a = inbound("hello", "web", "covuser", "agent:main:session:covsteal-a");
-    al.finish_message(&msg_a, "A的回复".to_string(), None, false, false, None)
-        .await;
+    al.finish_message(
+        &msg_a,
+        "A的回复".to_string(),
+        None,
+        false,
+        false,
+        None,
+        None,
+    )
+    .await;
     let got_a = orx.recv().await.unwrap();
     assert!(
         got_a.content.contains("备选应答") && got_a.content.contains("a → b"),

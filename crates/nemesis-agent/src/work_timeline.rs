@@ -12,7 +12,9 @@
 //! `emit_round_output`（tool_batch 每轮先叙述后工具的发布序，叙述与思考
 //! 皆空的轮不发——纯工具轮由 [`WorkRecorder::tool_started`] 的分组规则
 //! 自动成轮）；ToolStarted/ToolFinished 在
-//! [`crate::tool_event_hook::ToolEventHook`]。
+//! [`crate::tool_event_hook::ToolEventHook`]；插话注入注记在 claim
+//! （[`WorkRecorder::record_steer_note`]，2026-11-21 用户反馈改版——注记
+//! 进时间线，前端在过程流里看插话落点）。
 //! 实时 WS 推送与落盘时间线是同一发射点的两个投影，无第二份转换逻辑。
 //!
 //! # 分组规则（一轮一个工具批次）
@@ -85,6 +87,21 @@ pub struct WorkRound {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reasoning: String,
     pub tools: Vec<WorkToolRecord>,
+    /// 插话注入注记（2026-11-21 用户反馈改版：「注记进 LLM 返回的过程」）
+    /// ——claim_steer_messages 时刻的注记轮（text/reasoning/tools 皆空、
+    /// 本字段有值），前端在时间线内思考卡/工具行同一过程流渲染插话落点。
+    /// 时序锚 = 注入发生在上一轮工具批次之后、下一轮 LLM 输出之前；末轮
+    /// 分组规则要求叙述或思考非空，注记轮不会被后续工具批次误挂。旧 jsonl
+    /// 缺省 None（serde default 宽容读）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_note: Option<String>,
+    /// 插话专轮回应（2026-11-21 插话专轮批）：插话阶段收口时模型给出的
+    /// 中间回应文本——记在注记轮上（同轮先 steer_note 后 steer_response，
+    /// 前端在注记行下方渲染回应段）。落盘载体 = work 键（不落独立 jsonl
+    /// 行、不进气泡——用户拍板形态：消息流保持单条终局回复）。旧 jsonl
+    /// 缺省 None（serde default 宽容读）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_response: Option<String>,
 }
 
 /// 落盘 / 快照形态的时间线（chat_log assistant 行 `"work"` 键的值）。
@@ -133,6 +150,8 @@ impl RecordingWork {
                 text: String::new(),
                 reasoning: String::new(),
                 tools: Vec::new(),
+                steer_note: None,
+                steer_response: None,
             });
         }
         self.rounds.last_mut()
@@ -180,6 +199,65 @@ impl WorkRecorder {
             text: text.to_string(),
             reasoning: reasoning.to_string(),
             tools: Vec::new(),
+            steer_note: None,
+            steer_response: None,
+        });
+    }
+
+    /// 插话注入注记（claim_steer_messages 同点喂入，2026-11-21 用户反馈
+    /// 改版）：追加一个**注记轮**（text/reasoning/tools 皆空、steer_note
+    /// 有值）。时序正确性：claim 在上一轮工具批次之后、下一轮 LLM 输出
+    /// 之前——注记轮落时间线末尾即注入时刻；末轮分组规则要求叙述或思考
+    /// 非空，注记轮不会被后续工具批次复用，后续输出照常开新轮。仅注记轮
+    /// 的 turn（claim 后直答）finish 返回该单轮时间线——前端折叠块内可见
+    /// 插话落点。无桶（未 begin / 已 finish）忽略；超限置 truncated。
+    pub fn record_steer_note(&self, session_key: &str, note: &str) {
+        let mut buckets = self.0.lock();
+        let Some(w) = buckets.get_mut(session_key) else {
+            return;
+        };
+        if w.rounds.len() >= MAX_WORK_ROUNDS {
+            w.truncated = true;
+            return;
+        }
+        w.rounds.push(WorkRound {
+            text: String::new(),
+            reasoning: String::new(),
+            tools: Vec::new(),
+            steer_note: Some(note.to_string()),
+            steer_response: None,
+        });
+    }
+
+    /// 插话专轮回应（judge_final_answer Accept 臂收口分支同点喂入，
+    /// 2026-11-21 插话专轮批）：把插话阶段的收口回应文本记到**注记轮**
+    /// 上（从末尾反查最近一个 steer_note 在场且尚未记回应的轮；找不到 =
+    /// 追加独立回应轮兜底——注记轮被 MAX_WORK_ROUNDS 截断的极端场景）。
+    /// 无桶（未 begin / 已 finish）忽略；兜底追加超限置 truncated。
+    pub fn record_steer_response(&self, session_key: &str, response: &str) {
+        let mut buckets = self.0.lock();
+        let Some(w) = buckets.get_mut(session_key) else {
+            return;
+        };
+        if let Some(r) = w
+            .rounds
+            .iter_mut()
+            .rev()
+            .find(|r| r.steer_note.is_some() && r.steer_response.is_none())
+        {
+            r.steer_response = Some(response.to_string());
+            return;
+        }
+        if w.rounds.len() >= MAX_WORK_ROUNDS {
+            w.truncated = true;
+            return;
+        }
+        w.rounds.push(WorkRound {
+            text: String::new(),
+            reasoning: String::new(),
+            tools: Vec::new(),
+            steer_note: None,
+            steer_response: Some(response.to_string()),
         });
     }
 
@@ -242,8 +320,10 @@ impl WorkRecorder {
         rec.running = false;
     }
 
-    /// turn 终局：按会话键取走该键的时间线（桶移除）。无桶 / 无中间轮
-    /// （直答）= None → 行不带 `work` 键。ended_at 取此刻。
+    /// turn 终局：按会话键取走该键的时间线（桶移除）。无桶 / 无任何轮
+    /// （纯直答）= None → 行不带 `work` 键；仅注记轮（插话 claim 后直答）
+    /// 返回单轮时间线 → 行带 work 键（前端折叠块内可见插话落点）。
+    /// ended_at 取此刻。
     pub fn finish(&self, session_key: &str) -> Option<WorkTimeline> {
         let w = self.0.lock().remove(session_key)?;
         if w.rounds.is_empty() {

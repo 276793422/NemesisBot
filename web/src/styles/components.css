@@ -524,6 +524,31 @@
   word-break: break-word;
 }
 
+/* 长用户消息折叠（2026-11-20）：截断 + 底部渐隐（mask-image，不依赖
+   额外盖层元素——overflow:hidden 会裁掉 ::after 盖层）；展开态无限制。 */
+.message-bubble .message-text.user-collapsed {
+  max-height: 16rem;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+}
+
+/* 折叠切换按钮：user 气泡是 accent 底白字，按钮用半透明白底同族。 */
+.msg-collapse-toggle {
+  display: block;
+  margin-top: var(--space-1);
+  background: rgba(255, 255, 255, 0.18);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: var(--text-xs);
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.msg-collapse-toggle:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
 .message.user .message-bubble {
   background: var(--accent);
   color: #FFFFFF;

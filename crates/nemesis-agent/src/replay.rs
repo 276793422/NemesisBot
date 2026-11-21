@@ -53,6 +53,10 @@ pub const INJECTION_GRACE_NUDGE: &str = "grace_nudge";
 pub const INJECTION_DEGENERATE_NUDGE: &str = "degenerate_nudge";
 /// Ledger source tag: the prose-repetition nudge (transient, appended).
 pub const INJECTION_REPETITION_NUDGE: &str = "repetition_nudge";
+/// Ledger source tag (steer phase, 2026-11-21): the mid-turn interjection
+/// contract (transient system injection, re-built every phase round, gone
+/// once the phase closes).
+pub const INJECTION_STEER_PHASE: &str = "steer_phase";
 /// Ledger source tag (voice): the playback-mode suffix appended to the last
 /// user message's content — a mutation, not a standalone message.
 pub const INJECTION_VOICE_APPEND: &str = "voice_append";

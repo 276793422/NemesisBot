@@ -834,6 +834,30 @@ function rateLimitTailLabel(msg: ChatMessage): string {
   return remaining > 0 ? `等待 ${remaining} 秒` : '重试中…'
 }
 
+// --- 忙碌回执徽标 + 插话注入注记（2026-11-20 插话打断感修复）-----------
+// 忙碌期瞬态回执（⚡ 插话已接收 / ⏳ 排队中 / ⏳ /compact /clear 已忽略 /
+// ⏳ 远端派发已忽略）此前 role=assistant——回执帧到场即触发完成语义：
+// setBusy(false)（停止按钮消失）+ flushPendingWork 挂载（进行中时间线被
+// 冻结到回执上）+ 永久留屏——插话像"把 AI 打断了、AI 先答了一句再没下文"。
+// 修复后后端盖 note_kind=busy_receipt → server.rs 投影 role=system，完成
+// 语义分支天然不触发（busy/停止按钮/排队徽标全程存活），徽标化渲染，
+// 终局回复到场统一扫除（单条 AI 回复消化一切）。与 rate_limit 同族形态：
+// 压缩徽标同款折叠小徽标，静态灰系（过程反馈，非异常警示）。
+
+/** 忙碌回执徽标谓词（瞬态不落盘，终局回复/错误帧扫除）。 */
+function isBusyReceiptNote(msg: ChatMessage): boolean {
+  return msg.noteKind === 'busy_receipt'
+}
+
+/** 插话注入注记谓词（2026-11-21 二次改版：注记进 work 时间线过程流）。
+ *  注记行照常入列（jsonl 占行锚——锚位/rewind 数学不动、sync 重放/历史
+ *  合并对齐不受影响），渲染层整行隐藏（v-for 行 v-show）——插话落点的
+ *  可见面 = assistant 行 work 键注记轮（WorkTimelineBlock 过程流内）。
+ *  谓词保留供 v-show 与 isProcessRow（无头像语义不变）。 */
+function isSteerInjectNote(msg: ChatMessage): boolean {
+  return msg.noteKind === 'steer_inject'
+}
+
 // --- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）-------------
 // role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/Turn WAL 续轮，
 // 后端按 sender_id=="system" 推导落 `system_notice` 键；cron tick 行带既有
@@ -851,7 +875,7 @@ function isSystemNotice(msg: ChatMessage): boolean {
  *  细条（头像没出现 = 还在跑；头像出现 = 答案到了），与 live 占位行（无
  *  头像）同一语义。 */
 function isProcessRow(msg: ChatMessage): boolean {
-  return isCompactNote(msg) || isRateLimitNote(msg) || isSystemNotice(msg)
+  return isCompactNote(msg) || isRateLimitNote(msg) || isBusyReceiptNote(msg) || isSteerInjectNote(msg) || isSystemNotice(msg)
 }
 
 /** 通知条图标：cron tick ⏰ / 其他系统注入 ⚙。 */
@@ -940,6 +964,27 @@ const expandedCompactNotes = reactive(new Set<ChatMessage>())
 function toggleCompactNote(msg: ChatMessage) {
   if (expandedCompactNotes.has(msg)) expandedCompactNotes.delete(msg)
   else expandedCompactNotes.add(msg)
+}
+
+// --- 长用户消息折叠（2026-11-20 用户需求）：用户消息超阈值默认折叠，
+// 「展开全文/收起」切换。与压缩注记同款 Set 身份记法；仅 role=user 生效
+// （assistant 走 markdown 长文滚动，不在本需求射程）。阈值：600 字符或
+// 18 行任一超即折叠——日常长日志/长粘贴都命中，普通消息零影响。
+const expandedUserMessages = reactive(new Set<ChatMessage>())
+const USER_COLLAPSE_CHARS = 600
+const USER_COLLAPSE_LINES = 18
+function isLongUserMessage(msg: ChatMessage): boolean {
+  if (msg.role !== 'user') return false
+  const c = msg.content ?? ''
+  if (c.length > USER_COLLAPSE_CHARS) return true
+  return c.split('\n').length > USER_COLLAPSE_LINES
+}
+function isUserMessageCollapsed(msg: ChatMessage): boolean {
+  return isLongUserMessage(msg) && !expandedUserMessages.has(msg)
+}
+function toggleUserMessage(msg: ChatMessage) {
+  if (expandedUserMessages.has(msg)) expandedUserMessages.delete(msg)
+  else expandedUserMessages.add(msg)
 }
 
 // --- 滚动跟随（2026-11-09 滚动/焦点/选择批）---------------------------
@@ -1273,6 +1318,26 @@ function handleWSMessage(data: any) {
         if (data.data.note_kind === 'rate_limit') {
           chatStore.removeRateLimitNotes()
         }
+        // 插话注入注记（2026-11-21 二次改版——用户拍板「注记插进 LLM 返回
+        // 的过程中」）：live 载体帧并入进行中时间线（pendingWork 注记轮），
+        // 前端在思考卡/工具行同一过程流里渲染插话落点；消息行照常入列
+        // （jsonl 占行锚——锚位/rewind 数学不动），渲染层隐藏（模板
+        // v-show），独立注记行不再露出。仅 receive 帧摄取——sync 重放不
+        // 调用（live 帧已在缓冲，重放再摄取成双份）；断线窗口丢失由
+        // assistant 行 work 键兜底（后端 finish 落盘同源）。
+        if (data.data.note_kind === 'steer_inject') {
+          chatStore.ingestSteerNote(String(data.data.content ?? ''))
+        }
+        // 插话专轮收口回应（2026-11-21 插话专轮批）：瞬态帧（occupies=None，
+        // 不落 jsonl 行、无行锚）——只摄取进进行中时间线（注记轮
+        // steer_response 段，WorkTimelineBlock 注记行下方渲染），不入列消息
+        // 行（无行锚的 system 行永不被扫除，会悬挂）、不触发完成语义；历史
+        // 回看由 assistant 行 work 键的同名段兜底（后端 finish 落盘同源）。
+        // sync 重放分支不摄取（live 已在缓冲，重放再摄取成双份）。
+        if (data.data.note_kind === 'steer_response') {
+          chatStore.ingestSteerResponse(String(data.data.content ?? ''))
+          return
+        }
         // Skip addMessage if the watchdog already recovered this exact
         // response from session_log (late-arriving live frame, same tail).
         const isDuplicateRecovery =
@@ -1358,6 +1423,12 @@ function handleWSMessage(data: any) {
           if (!String(incomingContent ?? '').startsWith('⏳')) {
             chatStore.removeRateLimitNotes()
           }
+          // 忙碌回执徽标（2026-11-20 插话打断感修复）：终局回复到场 =
+          // 单条 AI 回复消化插话+原任务完成——全部 ⚡/⏳ 回执徽标扫除
+          // （sync 补拉恢复的过期徽标同样被此处收走）。无需前缀豁免：
+          // busy_receipt 谓词只认 note_kind，回执帧本身已是 role=system，
+          // 不会进入本分支；能进来的必是真终局回复。
+          chatStore.removeBusyReceiptNotes()
           clearWatchdog()
           // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
           refreshUsage()
@@ -1406,6 +1477,9 @@ function handleWSMessage(data: any) {
         chatStore.removeCompactRunningNotes()
         // 限流进度徽标（2026-11-20）：错误帧同样终结 turn——进度徽标扫除。
         chatStore.removeRateLimitNotes()
+        // 忙碌回执徽标（2026-11-20 插话打断感修复）：错误帧同样终结 turn
+        // ——⚡/⏳ 回执扫除（错误即终局，回执无理由独留）。
+        chatStore.removeBusyReceiptNotes()
         clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
@@ -1420,6 +1494,8 @@ function handleWSMessage(data: any) {
       // turn 错误不走此帧——这是 WS 坏帧兜底通道，罕见但对称补齐成本为零）。
       chatStore.removeCompactRunningNotes()
       chatStore.removeRateLimitNotes()
+      // 忙碌回执徽标（2026-11-20）：WS 坏帧兜底通道同构终局扫除。
+      chatStore.removeBusyReceiptNotes()
       chatStore.clearInflightTurn(effectiveSid.value)
     }
   }
@@ -1615,6 +1691,11 @@ async function syncMissedChat() {
       // 重放与活帧的赛窗：sync 在途时新帧可能已从 live 通道到达并推进游标
       //——seq ≤ 游标的重放帧跳过，避免双渲染。
       if (typeof ev.seq === 'number' && ev.seq <= lastChatSeq) continue
+      // 插话专轮收口回应帧（2026-11-21 插话专轮批）：重放完全跳过——瞬态
+      // 帧不落盘（重放按磁盘行序回放，环内迟到帧不该落成可见行），live
+      // 路径已在缓冲摄取，再摄取成双份。断线窗口丢失由 assistant 行 work
+      // 键的同名段兜底（后端 finish 落盘同源）。
+      if (ev.note_kind === 'steer_response') continue
       if (ev.kind === 'tool' && ev.tool) {
         // P1a（2026-09-21）：补拉的 tool 条目转回工具事件（与实时帧同一
         // 转换）——断线重连窗口内的工具流程不再丢：ToolStarted 落补拉
@@ -1670,9 +1751,13 @@ async function syncMissedChat() {
       // 限流进度徽标（2026-11-20）：单例同 receive 分支——重放窗口多条
       // 进度帧只留最新一条；重放里 assistant 行到场同样扫除（限流已恢复，
       // 过期进度徽标必须让位于终局回复；⏳ 排队收据例外不适用——那是
-      // assistant 前缀豁免，进度徽标谓词只认 note_kind）。
-      if (ev.note_kind === 'rate_limit' || ev.role === 'assistant') {
+      // assistant 前缀豁免，进度徽标谓词只认 note_kind）。忙碌回执徽标
+      // 同理（2026-11-20 插话打断感修复）：重放里 assistant 行到场 =
+      // 终局回复已发生，⚡/⏳ 回执全部过期扫除；steer_inject 不在扫除
+      // 之列——落盘保留语义。
+      if (ev.note_kind === 'rate_limit' || ev.note_kind === 'busy_receipt' || ev.role === 'assistant') {
         chatStore.removeRateLimitNotes()
+        chatStore.removeBusyReceiptNotes()
       }
       chatStore.addMessage({
         role: ev.role,
@@ -3864,7 +3949,17 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div v-for="(msg, idx) in chatStore.messages" :key="idx" class="message" :class="msg.role">
+      <!-- 插话注入注记行（2026-11-21 二次改版）整行隐藏：注记已并入 work
+           时间线（「LLM 返回的过程」内渲染插话落点），独立注记行不再露出；
+           行保留在 messages 数组（jsonl 占行锚/对齐合并数学不动），仅显示
+           面归零（v-show display:none，不占布局）。 -->
+      <div
+        v-for="(msg, idx) in chatStore.messages"
+        :key="idx"
+        v-show="!isSteerInjectNote(msg)"
+        class="message"
+        :class="msg.role"
+      >
         <!-- A4（2026-11-19 头像语义）：过程行（压缩注记/系统通知）不渲染
              头像——头像只属于答案，过程一律细条。 -->
         <div v-if="!isProcessRow(msg)" class="message-avatar">{{ getAvatar(msg.role) }}</div>
@@ -3909,6 +4004,20 @@ onUnmounted(() => {
             <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
             <span class="compact-note-timer">{{ rateLimitTailLabel(msg) }}</span>
           </div>
+          <!-- 忙碌回执徽标（2026-11-20 插话打断感修复）：⚡ 插话已接收 /
+               ⏳ 排队 / ⏳ /compact /clear 忽略 / ⏳ 派发忽略——后端
+               note_kind=busy_receipt，role=system 投影，瞬态不落盘。徽标化
+               后完成语义分支不触发（busy/停止按钮存活），终局回复到场
+               统一扫除（单条 AI 回复消化插话+原任务）。静态灰系折叠
+               徽标，无倒计时（title 带全文）。 -->
+          <div
+            v-else-if="isBusyReceiptNote(msg)"
+            class="compact-note busy-receipt-note"
+            :title="msg.content"
+          >
+            <span class="compact-note-glyph" aria-hidden="true">{{ msg.content.startsWith('⚡') ? '⚡' : '⏳' }}</span>
+            <span class="compact-note-label">{{ compactNoteLabel(msg).replace(/^[⚡⏳]\s*/, '') }}</span>
+          </div>
           <!-- 系统通知条（2026-11-16 系统注入消息渲染成用户气泡 BUG）：
                role=user 的系统注入行（后台任务完成唤醒/审批裁决回灌/WAL
                续轮 system_notice + cron tick cron_job_id）渲染折叠单行
@@ -3927,7 +4036,18 @@ onUnmounted(() => {
           </div>
           <div v-else class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
-            <div v-else class="message-text">{{ msg.content }}</div>
+            <!-- 长用户消息折叠（2026-11-20）：超阈值默认 max-height 截断 +
+                 底部渐隐（mask-image），「展开全文/收起」按钮切换。短消息
+                 按钮不渲染（isLongUserMessage false），渲染零变化。 -->
+            <template v-else>
+              <div class="message-text" :class="{ 'user-collapsed': isUserMessageCollapsed(msg) }">{{ msg.content }}</div>
+              <button
+                v-if="isLongUserMessage(msg)"
+                type="button"
+                class="msg-collapse-toggle"
+                @click="toggleUserMessage(msg)"
+              >{{ isUserMessageCollapsed(msg) ? '展开全文' : '收起' }}</button>
+            </template>
             <span v-if="msg.imageCount" class="msg-image-chip" title="消息附带图片">📷 {{ msg.imageCount }}</span>
           </div>
           <!-- N5: 本 turn 的交付物卡片（present_files 登记，「该看什么」产物
@@ -5232,6 +5352,18 @@ onUnmounted(() => {
   cursor: default;
 }
 .compact-note.rate-limit-note:hover {
+  filter: none;
+}
+
+/* 忙碌回执徽标（2026-11-20 插话打断感修复）：压缩徽标同族形态，中性
+   灰系（过程反馈：⚡ 插话已接收 / ⏳ 排队中——不是异常警示也不是发言）。
+   静态无倒计时，终局回复到场即被扫除。 */
+.compact-note.busy-receipt-note {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: default;
+}
+.compact-note.busy-receipt-note:hover {
   filter: none;
 }
 

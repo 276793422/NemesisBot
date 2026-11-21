@@ -104,11 +104,22 @@ export interface WorkToolEntry {
 }
 
 export interface WorkRoundEntry {
-  /** 模型该轮过程叙述。空串 = 纯工具轮 / thinking-only 轮（叙述空）。 */
+  /** 模型该轮过程叙述。空串 = 纯工具轮 / thinking-only 轮（叙述空）/
+   *  插话注入注记轮（steer_note 有值，text/tools 皆空）。 */
   text: string
   /** 该轮思考链（后端 reasoning_content 归一形态；空/旧数据省略）。 */
   reasoning?: string
   tools: WorkToolEntry[]
+  /** 插话注入注记（2026-11-21 用户反馈改版：注记进时间线过程流）——
+   *  claim 时刻的注记轮（后端 WorkRecorder::record_steer_note 同形镜像），
+   *  渲染在思考卡/工具行之前（注入发生在上一轮工具之后、下一轮输出
+   *  之前）。旧数据/普通轮省略。 */
+  steer_note?: string
+  /** 插话专轮回应（2026-11-21 插话专轮批，后端 WorkRound.steer_response
+   *  同形镜像）——插话阶段收口时模型给出的中间回应文本，记在注记轮上，
+   *  渲染在注记行下方。瞬态 receive 帧与落盘 work 键两路同形。旧数据/
+   *  普通轮省略。 */
+  steer_response?: string
 }
 
 export interface WorkTimeline {
@@ -577,6 +588,15 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = messages.value.filter(m => m.noteKind !== 'rate_limit')
   }
 
+  /** 忙碌回执徽标移除（2026-11-20 插话打断感修复）：noteKind="busy_receipt"
+   *  （⚡ 插话/⏳ 排队等忙碌期瞬态回执，role=system 投影，不落盘）。终局
+   *  回复/错误帧到场时调用——回执是过程反馈不是发言，答案到场即让位。
+   *  排队态多条回执合法共存（非单例），统一在此扫除。 */
+  function removeBusyReceiptNotes() {
+    if (!messages.value.some(m => m.noteKind === 'busy_receipt')) return
+    messages.value = messages.value.filter(m => m.noteKind !== 'busy_receipt')
+  }
+
   // --- 2026-10-30 Work 时间线摄取（三路共用：实时 push / chat.sync 补拉 /
   // chat.work_current 活查询）---
 
@@ -617,6 +637,42 @@ export const useChatStore = defineStore('chat', () => {
     }
     const w = ensurePendingWork()
     w.rounds.push({ text: content, reasoning: reasoning || undefined, tools: [] })
+    w.ended_at_ms = Date.now()
+  }
+
+  /** 摄取插话注入注记（2026-11-21 用户反馈改版：注记进「LLM 返回的
+   *  过程」）。claim 时刻的注记轮（text/tools 皆空、steer_note 有值），
+   *  与后端 record_steer_note 同构：恒开新轮（末轮分组规则要求叙述或
+   *  思考非空，注记轮不会被后续工具批次复用；输出照常开新轮）。时序锚
+   *  = 注入发生在上一轮工具之后、下一轮输出之前，落时间线末尾即注入
+   *  时刻。live 载体 = steer_inject receive 帧（ChatPanel 会话过滤后
+   *  调用）；sync 重放不调用（pendingWork 已有 live 注记，重放再摄取
+   *  会双份；断线窗口丢失由 assistant 行 work 键兜底）。 */
+  function ingestSteerNote(note: string) {
+    if (!note) return
+    const w = ensurePendingWork()
+    w.rounds.push({ text: '', tools: [], steer_note: note })
+    w.ended_at_ms = Date.now()
+  }
+
+  /** 摄取插话专轮收口回应（2026-11-21 插话专轮批）。与后端
+   *  record_steer_response 同构：反查最近的「有注记且未记回应」的轮落
+   *  steer_response 段（注记轮后的中间轮不偏移——两段专轮各归各轮）；
+   *  无注记轮可落（live 注记帧丢失等）追加独立回应轮兜底。live 载体 =
+   *  steer_response receive 帧（瞬态，不落盘行——落盘载体是 assistant 行
+   *  work 键的同名段，历史回看经 work 键渲染）。 */
+  function ingestSteerResponse(response: string) {
+    if (!response) return
+    const w = ensurePendingWork()
+    for (let i = w.rounds.length - 1; i >= 0; i--) {
+      const r = w.rounds[i]
+      if (r.steer_note && !r.steer_response) {
+        r.steer_response = response
+        w.ended_at_ms = Date.now()
+        return
+      }
+    }
+    w.rounds.push({ text: '', tools: [], steer_response: response })
     w.ended_at_ms = Date.now()
   }
 
@@ -797,6 +853,7 @@ export const useChatStore = defineStore('chat', () => {
     consumeReplayRow,
     removeCompactRunningNotes,
     removeRateLimitNotes,
+    removeBusyReceiptNotes,
     markInflightTurn,
     clearInflightTurn,
     inflightTurnOf,
@@ -805,6 +862,8 @@ export const useChatStore = defineStore('chat', () => {
     isBusy,
     setBusy,
     ingestWorkRoundText,
+    ingestSteerNote,
+    ingestSteerResponse,
     ingestWorkToolStart,
     ingestWorkToolFinish,
     /** B3：流式思考增量摄取 + 清空（ChatPanel think_* 相位帧入口）。 */

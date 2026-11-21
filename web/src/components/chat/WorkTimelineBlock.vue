@@ -51,6 +51,11 @@ const runningCount = computed(
 const thinkCount = computed(
   () => props.work.rounds.filter(r => r.reasoning).length,
 )
+// 插话注入注记轮数（2026-11-21 用户反馈改版：注记进时间线过程流；头部
+// ⚡ N 徽标让折叠态可发现插话落点——展开即见「自己的插话在哪里」）。
+const steerCount = computed(
+  () => props.work.rounds.filter(r => r.steer_note).length,
+)
 
 // --- 用时（live 每秒走表；落地取 ended_at_ms 定格）---
 const nowTick = ref(Date.now())
@@ -126,9 +131,13 @@ function openBg(t: WorkToolEntry) {
   if (id >= 0) router.push({ path: '/executors', query: { tab: 'processes', focus: String(id) } })
 }
 
-// 新内容到达（轮数或工具数增长）→ 通知宿主贴底（live 态才有意义）。
+// 新内容到达（轮数或工具数增长，或注记轮补上收口回应）→ 通知宿主贴底
+//（live 态才有意义；回应落在既有注记轮上——轮数不变，单独计入）。
 watch(
-  () => props.work.rounds.length + props.work.rounds.reduce((n, r) => n + r.tools.length, 0),
+  () =>
+    props.work.rounds.length +
+    props.work.rounds.reduce((n, r) => n + r.tools.length, 0) +
+    props.work.rounds.reduce((n, r) => n + (r.steer_response ? 1 : 0), 0),
   () => {
     if (props.live) emit('grown')
   },
@@ -165,6 +174,7 @@ watch(liveTailSig, () => {
       <span class="wt-icon">⚒</span>
       <span class="wt-title">用时 {{ formatDuration(durationMs) }}</span>
       <span v-if="live" class="wt-badge wt-live"><span class="wt-dot"></span>进行中</span>
+      <span v-if="steerCount" class="wt-badge wt-steer">⚡ {{ steerCount }}</span>
       <span v-if="thinkCount" class="wt-badge wt-think">💭 {{ thinkCount }}</span>
       <span v-if="runningCount" class="wt-badge wt-running">运行中 {{ runningCount }}</span>
       <span v-if="failedCount" class="wt-badge wt-failed">失败 {{ failedCount }}</span>
@@ -176,6 +186,22 @@ watch(liveTailSig, () => {
         <!-- B4（2026-11-09）轮内时序修正：思考 → 应答 → 操作（真实时间流
              顺序——思考先于叙述产生）。此前思考折叠卡排在叙述之后，与模型
              实际产出顺序相反。 -->
+        <!-- 插话注入注记轮（2026-11-21 用户反馈改版：注记进「LLM 返回的
+             过程」）——独立轮渲染在过程流内（claim 发生在上一轮工具之后、
+             本轮内容之前），用户一眼看到自己的插话在哪里被消化、后续思考
+             块的出现不再突兀。 -->
+        <div v-if="r.steer_note" class="wt-steer-note">{{ r.steer_note }}</div>
+        <!-- 插话专轮收口回应（2026-11-21 插话专轮批）：后端
+             record_steer_response 反查最近未回注记轮——回应记在注记轮上，
+             本行紧随注记行成对渲染（「我的插话 → 中间回应」相邻可读；注记轮
+             恒为裸轮，无思考/工具夹层）。回应是模型的对话内容 → 主文本色
+             （与 wt-round-text 同语义），标签头沿琥珀家族与注记成对。无注记
+             轮的兜底轮（截断极端场景）由本行独立渲染。瞬态 receive 帧与落盘
+             work 键两路同形。 -->
+        <div v-if="r.steer_response" class="wt-steer-response">
+          <span class="wt-steer-tag">⚡ 回应</span>
+          <span class="wt-steer-response-body">{{ r.steer_response }}</span>
+        </div>
         <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户决策：思考
              是可看不可刷的次级内容，65k 级长文不默认展开）；正文 pre-wrap，
              高度钳制滚动——万级 token 思考不撑爆时间线。 -->
@@ -278,6 +304,43 @@ watch(liveTailSig, () => {
 .wt-truncated {
   color: #c98a2b;
   background: rgba(201, 138, 43, 0.12);
+}
+/* 插话注入注记（2026-11-21 用户反馈改版）：头部计数徽标 + 过程流内注记
+   行。琥珀暖色 = 「用户的插话落点」——区别于思考（紫）/工具（accent）/
+   失败（红），一眼认出「我的插话在这里被消化」。 */
+span.wt-badge.wt-steer {
+  color: #c98a2b;
+  background: rgba(201, 138, 43, 0.12);
+}
+.wt-steer-note {
+  color: #c98a2b;
+  background: rgba(201, 138, 43, 0.08);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: var(--text-xs, 12px);
+  line-height: 1.5;
+  word-break: break-word;
+}
+/* 插话专轮收口回应（2026-11-21 插话专轮批）：注记行正下方成对渲染。回应
+   是模型的中间对话内容 → 主文本色（wt-round-text 同语义），标签头沿琥珀
+   家族与注记行成对可见。 */
+.wt-steer-response {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 8px;
+  font-size: var(--text-sm, 13px);
+  line-height: 1.5;
+}
+.wt-steer-tag {
+  flex: none;
+  color: #c98a2b;
+  font-size: var(--text-xs, 12px);
+}
+.wt-steer-response-body {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 /* 思考链（批次二 2026-10-31）：头部计数徽标 + 正文折叠卡。元素限定选择
    器——徽标 span 与 details 共用 wt-think 类名但形态不同。紫色系 = 「思

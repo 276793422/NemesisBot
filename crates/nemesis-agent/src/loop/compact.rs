@@ -931,7 +931,7 @@ impl AgentLoop {
         // drop）——采用/回执是快段，先摘再发 ✓ 保证回执到场时后端已非
         // running（30s 轮询不会在 ✓ 后复活徽标）。
         let _in_flight = self.register_compaction_in_flight(session_key, COMPACT_IN_PROGRESS_NOTE);
-        self.send_compaction_receipt(
+        self.send_note_badge_frame(
             channel,
             chat_id,
             session_key,
@@ -1064,7 +1064,7 @@ impl AgentLoop {
                 // 历史零痕迹）；限频防重试风暴刷屏（与成功完成注记同档位闸，
                 // 先到先得）。
                 if self.compaction_note_gate(session_key, CompactReason::AutoSummarize.note_tag()) {
-                    self.send_compaction_receipt(
+                    self.send_note_badge_frame(
                         channel,
                         chat_id,
                         session_key,
@@ -1119,7 +1119,7 @@ impl AgentLoop {
             // 失败回执（2026-11-09 徽标化）：仅实时不落盘（无事发生 = 历史
             // 零痕迹），限频防重试风暴刷屏（同弃用回执闸）。
             if self.compaction_note_gate(session_key, CompactReason::AutoSummarize.note_tag()) {
-                self.send_compaction_receipt(
+                self.send_note_badge_frame(
                     channel,
                     chat_id,
                     session_key,
@@ -1240,7 +1240,7 @@ impl AgentLoop {
     ) {
         crate::chat_log::append_compaction_note(session_key, content);
         // 完成注记已落盘（system 行占行号锚）→ Some(true)（行号锚漂移根修）。
-        self.send_compaction_receipt(
+        self.send_note_badge_frame(
             channel,
             chat_id,
             session_key,
@@ -1251,7 +1251,8 @@ impl AgentLoop {
         .await;
     }
 
-    /// 实时压缩徽标帧（2026-11-09）：`receipt=true` + note_kind——web 通道
+    /// 实时系统徽标帧（2026-11-09 压缩注记首用，2026-11-20 更名泛化——
+    /// 插话注入注记同源共用）：`receipt=true` + note_kind——web 通道
     /// 映射 role="system"（不触发前端回合完成语义）且帧带 note_kind 键
     /// （前端徽标渲染与 chat.sync 断线补拉同形态，切走切回不再变蓝字长文）。
     /// meta.session_key 传原始会话键——环记录键与帧 session_id 都从它推导
@@ -1260,7 +1261,7 @@ impl AgentLoop {
     /// `occupies`：帧占行真相（行号锚漂移根修）——完成注记（落盘
     /// `append_compaction_note` system 行）传 `Some(true)`；开始/弃用/失败
     /// 徽标仅实时不落盘传 `None`（system 角色旧规则本就不占行，零/零对齐）。
-    async fn send_compaction_receipt(
+    pub(crate) async fn send_note_badge_frame(
         &self,
         channel: &str,
         chat_id: &str,
@@ -1486,7 +1487,7 @@ impl AgentLoop {
         // 已清，30s 轮询不会在 ✓ 后复活徽标（与自动路径同 race-free 语义）。
         let _in_flight =
             self.register_compaction_in_flight(session_key, COMPACT_IN_PROGRESS_NOTE_MANUAL);
-        self.send_compaction_receipt(
+        self.send_note_badge_frame(
             channel,
             chat_id,
             session_key,

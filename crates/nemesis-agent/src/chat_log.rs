@@ -312,6 +312,34 @@ pub fn append_compaction_note(session_key: &str, content: &str) {
     );
 }
 
+/// 插话注入注记追加入口（2026-11-20 插话打断感修复；2026-11-21 二次改版
+/// ——注记进 work 时间线）：system 行 + `"note_kind": "steer_inject"` 标记。
+/// 注记的**渲染真相** = 同 turn assistant 行 work 键的注记轮
+/// （WorkRecorder::record_steer_note——前端在时间线过程流里看插话落点）；
+/// 本 jsonl 行是会话日志/审计面的持久真相（前端聊天视图隐藏渲染），文本
+/// 自带插话内容摘要（如「⚡ 插话已注入本轮思考：<摘要>」）。实时帧由
+/// claim_steer_messages 经同一 note_kind 发出（live 载体，前端并入
+/// pendingWork）。
+pub fn append_steer_inject_note(session_key: &str, content: &str) {
+    write_chat_entry(
+        session_key,
+        "system",
+        content,
+        None,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+        false,
+        None,
+        Some("steer_inject"),
+        None,
+    );
+}
+
 /// Write core shared by all append variants (single source of truth for the
 /// jsonl entry shape). `images` non-empty → extra `"images"` array field.
 /// `file_changes` non-empty → extra `"file_changes"` array field (D3).

@@ -129,7 +129,7 @@ test('MCP 装前扫描确认卡 + 记忆隔离区全链', async ({ browser }) =>
   const listRes = await wsapi(page, 'memory', 'entries.list', { offset: 0, limit: 50 })
   expect(listRes.ok, `entries.list 失败: ${listRes.error}`).toBeTruthy()
   const contents = ((listRes.data as any)?.entries ?? []).map((e: any) => String(e.content ?? ''))
-  expect(contents.some((c) => c.includes(BAIT))).toBe(true)
+  expect(contents.some((c: string) => c.includes(BAIT))).toBe(true)
 
   // 放行后的条目清理（隔离已摘，普通删除即可）
   const entry = ((listRes.data as any)?.entries ?? []).find((e: any) =>
