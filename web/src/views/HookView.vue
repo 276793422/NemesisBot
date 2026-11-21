@@ -472,36 +472,42 @@ onMounted(() => {
                   {{ scopeLabel(e) }} ▾
                 </button>
                 <span style="color: var(--text-muted); font-size: var(--text-xs);">作用会话（不选 = 全部会话生效）</span>
-                <Teleport to="body">
-                  <div
-                    v-if="pickerFor && pickerFor.ev === ev.id && pickerFor.idx === i"
-                    ref="pickerRoot"
-                    class="hooks-scope-picker"
-                    :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
-                  >
-                    <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
-                    <div class="hooks-scope-list">
-                      <label v-for="s in pickerRows" :key="s.id" class="hooks-scope-item">
-                        <input type="checkbox" :checked="pickerDraft.includes(s.id)" @change="togglePickerSid(s.id)" />
-                        <span class="hooks-scope-item-title">{{ s.title || s.id }}</span>
-                        <span v-if="s.projectId" class="hooks-scope-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
-                        <span class="hooks-scope-item-sid">{{ s.id }}</span>
-                      </label>
-                      <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
-                    </div>
-                    <div class="hooks-scope-picker-footer">
-                      <span style="color: var(--text-muted); font-size: var(--text-xs);">已选 {{ pickerDraft.length }} 个（不选 = 全部会话）</span>
-                      <div style="display: flex; gap: var(--space-2);">
-                        <button class="btn btn-sm" @click="pickerDraft = []">清空</button>
-                        <button class="btn btn-sm btn-primary" @click="applyPicker">完成</button>
-                      </div>
-                    </div>
-                  </div>
-                </Teleport>
               </div>
             </div>
           </div>
         </div>
+        <!-- 作用会话 picker（BUG-20261122-004）：单实例，提升在双层 v-for
+             （EVENTS × 钩子条目）之外——template ref 在 v-for 作用域内会被
+             Vue 3 数组化，watch 定位算式读 offsetHeight 得 undefined →
+             pickerPos 全 NaN → 向上翻转/视口钳制静默死码（锚点近视口底部
+             时弹层 footer 不可达）。picker 内容只依赖 pickerFor/pickerDraft
+             等组件级状态，不引用循环局部变量，可安全提升。 -->
+        <Teleport to="body">
+          <div
+            v-if="pickerFor"
+            ref="pickerRoot"
+            class="hooks-scope-picker"
+            :style="{ top: pickerPos.top + 'px', left: pickerPos.left + 'px' }"
+          >
+            <input class="form-input" style="width: 100%;" v-model="pickerSearch" placeholder="按标题 / sid 搜索会话…" />
+            <div class="hooks-scope-list">
+              <label v-for="s in pickerRows" :key="s.id" class="hooks-scope-item">
+                <input type="checkbox" :checked="pickerDraft.includes(s.id)" @change="togglePickerSid(s.id)" />
+                <span class="hooks-scope-item-title">{{ s.title || s.id }}</span>
+                <span v-if="s.projectId" class="hooks-scope-item-badge">{{ projectBadgeOf(s.id) ?? '📁' }}</span>
+                <span class="hooks-scope-item-sid">{{ s.id }}</span>
+              </label>
+              <div v-if="!pickerRows.length" style="padding: var(--space-3); color: var(--text-muted); font-size: var(--text-xs);">无匹配会话</div>
+            </div>
+            <div class="hooks-scope-picker-footer">
+              <span style="color: var(--text-muted); font-size: var(--text-xs);">已选 {{ pickerDraft.length }} 个（不选 = 全部会话）</span>
+              <div style="display: flex; gap: var(--space-2);">
+                <button class="btn btn-sm" @click="pickerDraft = []">清空</button>
+                <button class="btn btn-sm btn-primary" @click="applyPicker">完成</button>
+              </div>
+            </div>
+          </div>
+        </Teleport>
         <div class="card">
           <div class="card-body" style="display: flex; justify-content: flex-end; gap: var(--space-2); align-items: center;">
             <span style="color: var(--text-muted); font-size: var(--text-xs);">保存后下条消息生效</span>

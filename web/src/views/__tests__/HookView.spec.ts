@@ -355,10 +355,11 @@ describe('HookView 会话圈定（scope.sessions，2026-11-16）', () => {
     const preBlock = w.findAll('.card').find(c => c.text().includes('PreToolUse'))!
     await preBlock.findAll('button.hooks-scope-btn').at(0)!.trigger('click')
     await flushPromises()
-    // 已选 1 → 清空 → 完成。
+    // 已选 1 → 清空 → 完成。（picker 内容 2026-11-22 BUG-20261122-004 起
+    // 提升到卡片外——清空/完成按钮在 wrapper 层定位，不再在 preBlock 内。）
     expect(w.text()).toContain('已选 1 个')
-    await preBlock.findAll('button').find(b => b.text() === '清空')!.trigger('click')
-    await preBlock.findAll('button').find(b => b.text() === '完成')!.trigger('click')
+    await w.findAll('button').find(b => b.text() === '清空')!.trigger('click')
+    await w.findAll('button').find(b => b.text() === '完成')!.trigger('click')
     expect(w.text()).toContain('全部会话')
     expect(w.text()).not.toContain('已圈')
 
@@ -366,5 +367,20 @@ describe('HookView 会话圈定（scope.sessions，2026-11-16）', () => {
     await flushPromises()
     const written = JSON.parse(requestMock.mock.calls.find(c => c[1] === 'set')![2].content)
     expect(written.hooks.PreToolUse[0].scope).toBeUndefined()
+  })
+
+  it('BUG-20261122-004 回归锁：pickerRoot 单元素 ref + pickerPos 有限值（修复前 Teleport 在双层 v-for 内，ref 被数组化 → watch 定位 NaN 死码）', async () => {
+    requestMock.mockImplementation(withSessions({
+      get: () => Promise.resolve({ content: SCOPED_HOOKS, exists: true, valid: true, summary: { total: 1 } }),
+      set: () => Promise.resolve({ summary: { total: 1 } }),
+    }))
+    const w = await mountView('设置')
+    const preBlock = w.findAll('.card').find(c => c.text().includes('PreToolUse'))!
+    await preBlock.findAll('button.hooks-scope-btn').at(0)!.trigger('click')
+    await flushPromises()
+    const vm = w.vm as any
+    expect(Array.isArray(vm.pickerRoot)).toBe(false)
+    expect(Number.isNaN(vm.pickerPos?.top)).toBe(false)
+    expect(Number.isNaN(vm.pickerPos?.left)).toBe(false)
   })
 })
