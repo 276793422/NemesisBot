@@ -19,12 +19,12 @@
 //! |---|---|---|
 //! | [`system`] | 主 system prompt 段落池（Pre/Post 两层 17 段） | nemesis-agent |
 //! | [`tools`] | 工具描述两档查表（49 lean + 37 full） | nemesis-agent |
-//! | [`subagents`] | 子代理十角色模板 | nemesis-agent |
+//! | [`subagents`] | 子代理十七角色模板（目录 + 分档供给） | nemesis-agent |
 //! | [`slash`] | 内置 slash 深度模板（评审/排障/修复） | nemesis-agent |
-//! | [`aux`] | 内部调用点文案（compact 九段式/合并/标题/快照两节） | nemesis-agent |
+//! | [`aux`] | 内部调用点文案（compact 六节结构化摘要/合并/标题/快照两节） | nemesis-agent |
 //! | [`guardian`] | 安全闸审计提示词 | nemesis-security |
-//! | [`forge`] | Forge 产物质量评审 + 技能/脚本生成提示词 | nemesis-forge |
-//! | [`board`] | 看板 planner/review/项目总结/冲突硬解 | nemesis-board / nemesisbot |
+//! | [`forge`] | Forge 产物质量评审 + 语义分析 + 技能生成/修复/蒸馏提示词 | nemesis-forge |
+//! | [`board`] | 看板 planner/review（双档 + lens 分镜 + 回滚先例块）/重规划/验收标准起草/规格蒸馏/项目总结/冲突硬解 | nemesis-board / nemesisbot |
 //! | [`workflow`] | 工作流分类/抽取节点提示词 | nemesis-workflow |
 //! | [`spawn`] | 旧版子代理单句 system prompt（字节保留） | nemesis-tools |
 //! | [`persona_gen`] | 集群人格生成三阶段（extract/author/audit） | nemesis-web |
