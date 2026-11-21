@@ -231,6 +231,25 @@ fn test_split_message_multiline() {
     assert_eq!(lines[0], "line1\nline2\nline3");
 }
 
+/// 分隔符位于 idx 0（前导换行/空格的超长文）不产出空行——空 PRIVMSG 是
+/// 协议违规（服务器回 412 ERR_NOTEXTGIVEN），且 send() 的 `?` 会让整条
+/// 消息投递失败（discord 同款 BUG-20261121-044）。
+#[test]
+fn test_split_message_leading_separator_no_empty_line() {
+    let long = format!("\n{}", "x".repeat(800));
+    let lines = IRCChannel::split_message(&long, 400);
+    assert!(!lines.is_empty());
+    assert!(
+        lines.iter().all(|l| !l.is_empty()),
+        "空行会撞 412 ERR_NOTEXTGIVEN 且中断整条投递: {lines:?}"
+    );
+
+    // 空格前导同款。
+    let long2 = format!(" {}", "y".repeat(800));
+    let lines2 = IRCChannel::split_message(&long2, 400);
+    assert!(lines2.iter().all(|l| !l.is_empty()));
+}
+
 #[test]
 fn test_irc_config_default() {
     let cfg = IRCConfig::default();

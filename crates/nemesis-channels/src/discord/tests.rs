@@ -295,3 +295,134 @@ fn test_resume_opcode_constants_align_with_protocol() {
     assert_eq!(super::opcode::INVALID_SESSION, 9);
     assert_eq!(super::opcode::HELLO, 10);
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261121-041/042/043/044 回归锁
+// ---------------------------------------------------------------------------
+
+/// Bind 127.0.0.1:0，对每个进来的请求回同一份固定 HTTP 响应，直到 listener
+/// 被 drop（telegram spawn_status_mock 同族，无新 dev-dep）。
+fn spawn_gateway_mock(status_line: &'static str, body: &'static str) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    port
+}
+
+/// BUG-20261121-041 回归锁：fetch_gateway_bot_url status 闸（R736 同款，
+/// 单一真相源）——401 合法 JSON 体必须报「HTTP 401」+ 透传服务器 message，
+/// 不得吞成 missing url；200+url 形态与 v10 查询串拼装钉死；200 缺 url
+/// 与 401 报错形态区分。
+#[tokio::test]
+async fn fetch_gateway_bot_url_status_gate_and_url_shape() {
+    // 200 + url → Ok 且带 v10/encoding=json 查询串。
+    let port = spawn_gateway_mock("HTTP/1.1 200 OK", r#"{"url":"wss://gateway.discord.gg"}"#);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let url = super::fetch_gateway_bot_url(&http, &format!("http://127.0.0.1:{port}/api"), "tok")
+        .await
+        .unwrap();
+    assert_eq!(url, "wss://gateway.discord.gg/?v=10&encoding=json");
+
+    // 401 合法 JSON → Err 点名 HTTP status + 服务器 message（修复前活路径
+    // 把它吞成 "missing 'url' in gateway response"）。
+    let port = spawn_gateway_mock(
+        "HTTP/1.1 401 Unauthorized",
+        r#"{"message":"401: Unauthorized","code":0}"#,
+    );
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let err = super::fetch_gateway_bot_url(&http, &format!("http://127.0.0.1:{port}/api"), "tok")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("HTTP 401"), "须点名 status: {err}");
+    assert!(
+        err.contains("401: Unauthorized"),
+        "须透传服务器 message: {err}"
+    );
+
+    // 200 但缺 url → 明确报缺键（与 status 失败形态区分）。
+    let port = spawn_gateway_mock("HTTP/1.1 200 OK", r#"{"message":"ok"}"#);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let err = super::fetch_gateway_bot_url(&http, &format!("http://127.0.0.1:{port}/api"), "tok")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("missing 'url'"), "缺键形态: {err}");
+}
+
+/// BUG-20261121-042 回归锁：进站事件白名单只认 MESSAGE_CREATE——
+/// MESSAGE_UPDATE（编辑/embed unfurl）不得进 inbound。
+#[test]
+fn is_inbound_event_whitelist() {
+    assert!(super::is_inbound_event("MESSAGE_CREATE"));
+    assert!(!super::is_inbound_event("MESSAGE_UPDATE"));
+    assert!(!super::is_inbound_event("READY"));
+    assert!(!super::is_inbound_event("RESUMED"));
+    assert!(!super::is_inbound_event("TYPING_START"));
+    assert!(!super::is_inbound_event(""));
+}
+
+/// BUG-20261121-043 回归锁：start/stop 必须维护 base running 旗标
+/// （trait is_running 契约面——manager 的运行中守卫读它，恒 false 时守卫
+/// 对本通道失效）；api_base 指 loopback 死端口（连接拒绝，零外网），
+/// URL fetch 重试循环随 stop 退出。二次 start 走幂等守卫诚实跳过。
+#[tokio::test]
+async fn start_stop_maintain_base_running_flag_and_guard_duplicate_start() {
+    let config = DiscordConfig {
+        token: "test-token".to_string(),
+        api_base: "http://127.0.0.1:1".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(16);
+    let ch = DiscordChannel::new_with_client(config, tx, reqwest::Client::new()).unwrap();
+    assert!(!ch.base.is_running());
+
+    ch.start().await.unwrap();
+    assert!(
+        ch.base.is_running(),
+        "start 成功后 trait is_running 必须为 true（BUG-20261121-043）"
+    );
+    assert!(*ch.running.read());
+
+    // 幂等守卫：已运行时二次 start 诚实跳过（不 spawn 第二个 gateway loop）。
+    ch.start().await.unwrap();
+    assert!(ch.base.is_running());
+
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 后 trait is_running 必须为 false"
+    );
+    assert!(!*ch.running.read());
+}
+
+/// BUG-20261121-044 回归锁：分隔符位于 idx 0（前导换行/空格的超长文）
+/// 不产出空 chunk——空 chunk 送 Discord 400「Cannot send an empty
+/// message」，且 send() 的 `?` 短路会让整条消息投递失败。
+#[test]
+fn split_message_leading_separator_no_empty_chunk() {
+    let long = format!("\n{}", "x".repeat(3000));
+    let chunks = DiscordChannel::split_message(&long, 2000);
+    assert!(!chunks.is_empty());
+    assert!(
+        chunks.iter().all(|c| !c.is_empty()),
+        "空 chunk 会撞 Discord 400 且中断整条投递: {chunks:?}"
+    );
+
+    // 空格前导同款。
+    let long2 = format!(" {}", "y".repeat(3000));
+    let chunks2 = DiscordChannel::split_message(&long2, 2000);
+    assert!(chunks2.iter().all(|c| !c.is_empty()));
+}
