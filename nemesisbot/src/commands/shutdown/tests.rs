@@ -572,3 +572,79 @@ mod probes {
         });
     }
 }
+
+// ===========================================================================
+// resolve_shutdown_port（BUG-20261122-009 回归锁）：裸 `as u16` 截断家族
+// 漏网站点收口——config `channels.web.port: 70000` 曾经 `as_u64().unwrap_
+// or(8080)` + `port as u16` 静默回绕成 4464，把 POST /api/internal（含
+// X-Auth-Token 凭据头）发给回绕端口的无关本机服务。真相源 =
+// nemesis_config::config_port_to_u16（gateway 装配侧同字段早已消费）。
+// ===========================================================================
+
+#[test]
+fn resolve_shutdown_port_valid_port_ok() {
+    let cfg = serde_json::json!({"channels": {"web": {"port": 49000}}});
+    assert_eq!(resolve_shutdown_port(&cfg), Ok(49000));
+}
+
+#[test]
+fn resolve_shutdown_port_missing_key_defaults_8080() {
+    // 缺键 = 默认 8080（既有约定不变）。
+    let cfg = serde_json::json!({});
+    assert_eq!(resolve_shutdown_port(&cfg), Ok(8080));
+}
+
+#[test]
+fn resolve_shutdown_port_null_value_defaults_8080() {
+    // 显式 null 与缺键同语义（旧 as_u64() None → unwrap_or(8080) 等价）。
+    let cfg = serde_json::json!({"channels": {"web": {"port": null}}});
+    assert_eq!(resolve_shutdown_port(&cfg), Ok(8080));
+}
+
+#[test]
+fn resolve_shutdown_port_out_of_range_loud_rejected() {
+    // 修复前：70000 as u16 = 4464 静默回绕（token 泄漏给回绕端口的无关
+    // 本机服务）；修复后 = Err 诚实拒绝走 HTTP 臂。
+    let cfg = serde_json::json!({"channels": {"web": {"port": 70000}}});
+    let err = resolve_shutdown_port(&cfg).expect_err("越域必须 loud 拒绝");
+    assert!(err.contains("越域"), "错误须含越域定性，实际: {err}");
+}
+
+#[test]
+fn resolve_shutdown_port_negative_loud_rejected() {
+    // -1 旧形态 as_u64() → None → 静默回落 8080（打错门）；新形态拒绝。
+    let cfg = serde_json::json!({"channels": {"web": {"port": -1}}});
+    assert!(resolve_shutdown_port(&cfg).is_err());
+}
+
+#[test]
+fn resolve_shutdown_port_string_form_accepted_matches_flexible_i64() {
+    // 字符串形态必须接受：gateway typed 侧 deserialize_flexible_i64 兼容
+    // 历史 CLI 写入的字符串端口——raw 读侧若拒字符串会制造「gateway 跑着、
+    // shutdown 拒发」的口径分裂。
+    let cfg = serde_json::json!({"channels": {"web": {"port": "49152"}}});
+    assert_eq!(resolve_shutdown_port(&cfg), Ok(49152));
+}
+
+#[test]
+fn resolve_shutdown_port_non_numeric_rejected() {
+    // 非整数形态（字符串非数字 / 浮点 / 对象）= 诚实拒绝，不静默回落。
+    for bad in [
+        serde_json::json!({"channels": {"web": {"port": "abc"}}}),
+        serde_json::json!({"channels": {"web": {"port": 80.5}}}),
+        serde_json::json!({"channels": {"web": {"port": {"x": 1}}}}),
+    ] {
+        assert!(
+            resolve_shutdown_port(&bad).is_err(),
+            "非法形态必须拒绝: {bad}"
+        );
+    }
+}
+
+#[test]
+fn resolve_shutdown_port_zero_passthrough_matches_truth_source() {
+    // 0 = config_port_to_u16 真相源透传（Ok(0)）——与 gateway 装配侧同一
+    // 裁决；本命令 POST 端口 0 连接失败走 unreachable 臂，不特判。
+    let cfg = serde_json::json!({"channels": {"web": {"port": 0}}});
+    assert_eq!(resolve_shutdown_port(&cfg), Ok(0));
+}
