@@ -998,8 +998,12 @@ pub(super) fn exec_timeout_secs(v: Option<u64>) -> u64 {
 
 /// exec 超时解析（带部署侧上限）：缺省 30s；请求值 clamp 到 `cap`
 /// （config `tools.exec.max_timeout_secs` 的生效值，0/缺省=600）。
+/// BUG-20261121-062：显式 0 同样视作缺省（全仓「0 视作缺省」惯例——
+/// 旧形态 `unwrap_or` 不拦 `Some(0)`，0 秒墙钟 = 命令必然被立即收尸，
+/// 与 schema "default 30" 承诺相悖；同族先例 capability.rs/workflow io
+/// 的 `filter(>0)` 手法）。
 pub(super) fn exec_timeout_secs_capped(v: Option<u64>, cap: u64) -> u64 {
-    v.unwrap_or(30).min(cap)
+    v.filter(|n| *n > 0).unwrap_or(30).min(cap)
 }
 
 /// ExecTool 输出成败判定的**统一定义**（协议消费者共用）：三种失败
@@ -1624,6 +1628,8 @@ impl Tool for RunChecksTool {
         let timeout_secs = val
             .get("timeout")
             .and_then(|v| v.as_u64())
+            // BUG-20261121-062：0 视作缺省（同 exec_timeout_secs_capped）。
+            .filter(|n| *n > 0)
             .unwrap_or(600)
             .min(600);
         // 显式 env 槽（vault 计划方案 A）：全部 stage 共用同一份
@@ -1987,7 +1993,12 @@ impl Tool for RunScriptTool {
             .get("script")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'script' argument")?;
-        let timeout_secs = val.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60);
+        // BUG-20261121-062：0 视作缺省（同 exec_timeout_secs_capped）。
+        let timeout_secs = val
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0)
+            .unwrap_or(60);
         let cwd = val
             .get("cwd")
             .and_then(|v| v.as_str())

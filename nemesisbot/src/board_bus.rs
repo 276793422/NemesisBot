@@ -259,10 +259,14 @@ fn handle_approval_ask_register(
         risk_level: str_field(&env.body, "risk_level"),
         reason: str_field(&env.body, "reason"),
         issue_number: env.body.get("issue_number").and_then(|v| v.as_i64()),
+        // BUG-20261121-062：0 视作缺省——0 秒会让 remote approval 的
+        // 存活判定（elapsed < timeout）恒 false，审批卡立即过期；源头
+        // security_setup 构造已防 0，读侧顺手同款防御统一惯例。
         timeout_secs: env
             .body
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0)
             .unwrap_or(300),
         created_at: std::time::Instant::now(),
     };
