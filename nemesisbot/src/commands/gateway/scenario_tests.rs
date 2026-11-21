@@ -210,6 +210,19 @@ async fn wait_assistant(stream: &mut WsStream, sid: &str, contains: &str, timeou
     .expect(&what);
 }
 
+/// 等一帧 busy 徽标回执（排队 ⏳ / 插话 ⚡ 回执带 note_kind=busy_receipt，
+/// 2026-11-20 插话打断感修复起由 server 投影成 role=system 徽标帧——
+/// 不再以 assistant 气泡投帧），并核对 note_kind 标记本身。
+async fn wait_busy_receipt(stream: &mut WsStream, sid: &str, contains: &str, timeout: Duration) {
+    let what = format!("busy_receipt frame [{sid}] ~ \"{contains}\"");
+    ws_recv_matching(stream, timeout, &what, |v| {
+        test_harness::chat_receive_match(v, Some(sid), Some("system"), contains)
+            && v["data"]["note_kind"].as_str() == Some("busy_receipt")
+    })
+    .await
+    .expect(&what);
+}
+
 /// chat.history_request → message/chat/history 帧 → (role, content) 行序。
 /// 历史读的是磁盘 chat_log（与前端切会话加载同一真相源）。
 async fn fetch_history(stream: &mut WsStream, sid: &str) -> Vec<(String, String)> {
@@ -411,8 +424,10 @@ async fn s2_same_session_queue_preserves_and_answers() {
     gw.wait_remaining(1, "first turn LLM request").await;
     chat_send(&mut conn, "消息二", "scn-q").await;
 
-    // 排队回执即时（同会话忙处置；不阻塞在 turn 上）。
-    wait_assistant(&mut conn, "scn-q", "已排队", Duration::from_secs(3)).await;
+    // 排队回执即时（同会话忙处置；不阻塞在 turn 上）。回执带
+    // note_kind=busy_receipt，以 role=system 徽标帧投递（终局回答仍是
+    // assistant 气泡——两种形态分开等）。
+    wait_busy_receipt(&mut conn, "scn-q", "已排队", Duration::from_secs(3)).await;
     // 两条回答按序完成。
     wait_assistant(&mut conn, "scn-q", "一-完成", Duration::from_secs(15)).await;
     wait_assistant(&mut conn, "scn-q", "二-完成", Duration::from_secs(15)).await;
