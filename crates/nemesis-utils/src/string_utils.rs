@@ -43,15 +43,26 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Generate a random hex ID (16 hex chars from 8 random bytes).
+/// Generate a 16-hex-char ID derived from (wall clock, per-process sequence).
+///
+/// 唯一性契约来自双输入（BUG-20261122-001）：Windows SystemTime 刷新粒度
+/// 粗（毫秒级——`file.rs::atomic_tmp_path` 同根因实证：同 tick 内两次取时
+/// 出拿相同 nanos），纯时间戳输入在同 tick 内两次调用必然哈希出相同输出
+/// （确定性碰撞，非概率碰撞）。进程内单调序数经 AtomicU64 混入：同 tick
+/// 两次调用输入必不相同（奇数常数乘法是 u64 双射，XOR 进相同 nanos 后仍
+/// 两两相异），splitmix64 终结器是双射 → 全长 16 hex 输出确定性互异；
+/// `random_short_id` 截前 8 hex（32 位空间），残余碰撞概率 2^-32 与任何
+/// 32 位随机 id 同阶。**非加密随机**：值可由时间+序数推演，勿用于凭据。
 pub fn random_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    // Use a simple hash-based approach for deterministic-ish randomness
-    let mut hash = nanos as u64;
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut hash = (nanos as u64) ^ seq.wrapping_mul(0x9e37_79b9_7f4a_7c15);
     hash ^= hash >> 33;
     hash = hash.wrapping_mul(0xff51afd7ed558ccd);
     hash ^= hash >> 33;
