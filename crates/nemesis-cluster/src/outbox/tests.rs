@@ -717,6 +717,93 @@ fn request_pull_defers_while_assembling() {
     assert!(outbox_dir(&ws).join("task-a").join("entry.json").exists());
 }
 
+/// 在 cluster_logs 里以**指定目录名**伪造执行记录（make_task_records 的
+/// 受控变体：跨设备多轮测试需要钉死各轮时间戳的先后）。
+fn make_task_records_with_dir_name(ws: &Path, device: &str, dir_name: &str, content: &str) {
+    let dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(ws)
+        .join(device)
+        .join(dir_name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("00.request.md"), content).unwrap();
+    std::fs::write(dir.join("01.AI.Response.raw.json"), br#"{"x":1}"#).unwrap();
+}
+
+/// （BUG-20261121-061）同任务多轮跨设备并存（重派 / 中继链）：request_pull
+/// 必须推**字典序最新轮**（ts 前缀定宽 = 时间序），而非 read_dir 平台序
+/// 首匹配——首匹配在 NTFS（设备名字典序）上恒选 device-a 的旧轮；旧轮入队
+/// 后条目幂等 + master 对已归档任务停拉，device-b 的新轮永久不可达（粘滞）。
+/// 摘除跨设备取新（改回首匹配）此测试在 NTFS 上必红（旧轮内容断言失败）。
+#[test]
+fn request_pull_picks_newest_round_across_devices() {
+    let ws = temp_ws("pull_xdev");
+    // 旧轮在字典序靠前的设备、新轮在靠后的设备（NTFS 首匹配 = 旧轮）。
+    make_task_records_with_dir_name(
+        &ws,
+        "node-a",
+        "2026-01-01_00-00-00-001_task-x61",
+        "stale-round",
+    );
+    make_task_records_with_dir_name(
+        &ws,
+        "node-b",
+        "2026-01-02_00-00-00-002_task-x61",
+        "fresh-round",
+    );
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    assert_eq!(ob.request_pull("task-x61"), "queued");
+    let dir = outbox_dir(&ws).join("task-x61");
+    assert!(dir.join("entry.json").exists(), "pull 命中必须入队");
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.source_node, "node-b", "必须取新轮所在设备");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("payload").join("00.request.md")).unwrap(),
+        "fresh-round",
+        "必须推字典序最新轮（粘滞链：推旧轮后新轮永久不可达）"
+    );
+}
+
+/// （BUG-20261121-061 同族）启动清扫 ③ 残留补入队：同任务多轮跨设备并存
+/// 时按 task_id 分组取**最新轮**入队，而非 read_dir 首匹配设备——entry.json
+/// 幂等闸会把首匹配错选固化。时间戳用 now 相对值（F-NEW-3 年龄闸 24h，
+/// 硬编码历史日期会被正确判超龄跳过）；两轮都在窗内，新旧由秒差决定。
+#[test]
+fn sweep_startup_backfills_newest_round_across_devices() {
+    let ws = temp_ws("sweep_xdev");
+    let ts = |secs_ago: i64| {
+        (chrono::Local::now() - chrono::Duration::seconds(secs_ago))
+            .format("%Y-%m-%d_%H-%M-%S-%3f")
+            .to_string()
+    };
+    make_task_records_with_dir_name(
+        &ws,
+        "node-a",
+        &format!("{}_task-s61", ts(30)),
+        "stale-round",
+    );
+    make_task_records_with_dir_name(&ws, "node-b", &format!("{}_task-s61", ts(5)), "fresh-round");
+    let ob = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    ob.sweep_startup();
+    let dir = outbox_dir(&ws).join("task-s61");
+    assert!(dir.join("entry.json").exists(), "窗内残留必须补入队");
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.source_node, "node-b", "必须取新轮所在设备");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("payload").join("00.request.md")).unwrap(),
+        "fresh-round",
+        "补入队必须取字典序最新轮（entry.json 幂等闸会固化首匹配错选）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // /：通用推送 push_transfer_dir（基线推送与 outbox 共用真相源）
 // ---------------------------------------------------------------------------
