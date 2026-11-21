@@ -14,14 +14,19 @@ pub fn correlation_id(channel: &str, chat_id: &str) -> String {
 
 /// Format an RPC response with correlation ID prefix.
 pub fn format_rpc_response(correlation_id: &str, content: &str) -> String {
-    format!("[rpc:{}] {}", correlation_id, content)
+    format!(
+        "{}{}] {}",
+        crate::constants::RPC_CORRELATION_PREFIX,
+        correlation_id,
+        content
+    )
 }
 
 /// Extract correlation ID from RPC response prefix.
 pub fn extract_rpc_correlation_id(content: &str) -> Option<(&str, &str)> {
-    if content.starts_with("[rpc:") {
+    if content.starts_with(crate::constants::RPC_CORRELATION_PREFIX) {
         let end = content.find(']')?;
-        let id = &content[5..end];
+        let id = &content[crate::constants::RPC_CORRELATION_PREFIX.len()..end];
         let rest = content.get(end + 1..)?.trim_start();
         Some((id, rest))
     } else {

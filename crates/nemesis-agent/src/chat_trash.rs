@@ -46,11 +46,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use nemesis_path::{default_path_manager, resolve_trash_sessions_dir_in_workspace};
 use serde_json::json;
 
+use crate::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use crate::chat_log::{self, SessionMeta};
 use crate::session::SessionStore;
-
-/// web 会话键前缀（改名恢复只认这个前缀；其余 = 复合通道键）。
-const WEB_SESSION_KEY_PREFIX: &str = "agent:main:session:";
 
 /// `trash.json` 清单。全部字段带 default：清单损坏/缺字段不炸列表。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

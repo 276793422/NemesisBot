@@ -17,6 +17,7 @@
 //! 已耗 token（spent.tokens = 现值 − 基线，只算 loop 期间）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_loop::{
     LoopBudget, LoopState, LoopStatus, list_loops, load_loop, loops_dir, save_loop,
 };
@@ -49,7 +50,8 @@ fn resolve_session_key(data: &serde_json::Value) -> Result<String, String> {
         .filter(|s| !s.is_empty())
     {
         return Ok(format!(
-            "agent:main:session:{}",
+            "{}{}",
+            WEB_SESSION_KEY_PREFIX,
             nemesis_agent::session::SessionStore::sanitize_session_id(sid)
         ));
     }

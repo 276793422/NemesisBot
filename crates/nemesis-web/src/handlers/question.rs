@@ -10,6 +10,7 @@
 //! 二选一，都给诚实报错）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 
 pub struct QuestionHandler;
 
@@ -42,7 +43,8 @@ impl ModuleHandler for QuestionHandler {
             .filter(|s| !s.is_empty())
         {
             let session_key = format!(
-                "agent:main:session:{}",
+                "{}{}",
+                WEB_SESSION_KEY_PREFIX,
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
             Some(crate::handlers::projects::resolve_session_loop(

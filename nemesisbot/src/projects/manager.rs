@@ -9,6 +9,7 @@
 //! project_path， 落地）；owner_index 是启动期从 sidecar 扫出的内存缓存，
 //! 的 sessions.create / fork 增量维护。
 
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,7 +92,7 @@ pub fn route_decision(msg: &InboundMessage, owner: Option<&str>) -> RouteDecisio
 /// `_`→`:`；chat_log 存盘时 `:` 落盘成 `_`，带下划线的合法 sid 靠前缀区分）。
 pub fn session_key_from_stem(stem: &str) -> String {
     if let Some(rest) = stem.strip_prefix("agent_main_session_") {
-        format!("agent:main:session:{rest}")
+        format!("{}{}", WEB_SESSION_KEY_PREFIX, rest)
     } else {
         stem.replace('_', ":")
     }

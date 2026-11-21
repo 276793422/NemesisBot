@@ -5,10 +5,11 @@
 //!           tts, stt_start, stt_stop, speakers, devices,
 //!           engine_start, engine_stop, pipeline_start, pipeline_stop
 
-#[cfg(target_os = "windows")]
 use crate::handlers::require_workspace;
 use crate::server::WS_BROADCAST_TIMEOUT;
 use crate::ws_router::{ModuleHandler, RequestContext};
+#[cfg(target_os = "windows")]
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 #[cfg(target_os = "windows")]
 use nemesis_voice::EchoCanceller; // trait needed to call SpeexAec::process
 #[cfg(target_os = "windows")]
@@ -3109,7 +3110,8 @@ impl VoiceHandler {
                 // 共享同一变换（UUID 下 sanitize 恒等，但形态一变两边就漂移，
                 // 症状是接力静默不接管）。
                 format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 )
             }) {

@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::events::EventHub;
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 
 /// 每会话保留的最近 chat 帧条数（补拉重放窗口）。
 pub const SESSION_REPLAY_CAP: usize = 200;
@@ -112,7 +113,7 @@ pub fn publish_global_ephemeral(event_type: &str, data: serde_json::Value) {
 fn publish_activity(session_key: &str, seq: u64, kind: &str) {
     if let Some(hub) = EVENT_HUB.get() {
         let sid = session_key
-            .strip_prefix("agent:main:session:")
+            .strip_prefix(WEB_SESSION_KEY_PREFIX)
             .unwrap_or(session_key);
         hub.publish(
             "chat.activity",

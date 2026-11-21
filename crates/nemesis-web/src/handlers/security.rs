@@ -2,6 +2,7 @@
 
 use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -116,7 +117,8 @@ pub(crate) fn session_allow_enabled_keys() -> std::collections::HashSet<String> 
 ///（sessions.list 行 `id` 字段）。
 fn derive_session_key(session_id: &str) -> String {
     format!(
-        "agent:main:session:{}",
+        "{}{}",
+        WEB_SESSION_KEY_PREFIX,
         nemesis_agent::session::SessionStore::sanitize_session_id(session_id)
     )
 }

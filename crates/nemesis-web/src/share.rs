@@ -15,6 +15,7 @@
 //! 撤销兜底）；无防爬限流（自托管边界）。
 
 use crate::api_handlers::AppState;
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -214,7 +215,7 @@ pub async fn handle_api_share(
     // + session_title（scan_session_logs 全目录全量解析）同步直跑 tokio
     // worker，分享链接被多人打开即放大占位。spawn_blocking 移出
     // （read_chat_log_async 同款纪律）。
-    let key = format!("agent:main:session:{}", entry.session_id);
+    let key = format!("{}{}", WEB_SESSION_KEY_PREFIX, entry.session_id);
     let sid = entry.session_id.clone();
     let (rows, title) = {
         let ws = workspace.clone();

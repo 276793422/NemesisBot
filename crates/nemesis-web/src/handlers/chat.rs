@@ -15,6 +15,7 @@
 //! WsRouter 只接 `type=="request"`。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_agent::r#loop::AgentLoop;
 use std::sync::Arc;
 
@@ -71,7 +72,8 @@ impl ModuleHandler for ChatHandler {
                 .ok_or("missing session_id (chat.sync replays a specific session)")?
                 .to_string();
             let session_key = format!(
-                "agent:main:session:{}",
+                "{}{}",
+                WEB_SESSION_KEY_PREFIX,
                 nemesis_agent::session::SessionStore::sanitize_session_id(&sync_session)
             );
             let after_seq = data
@@ -95,7 +97,8 @@ impl ModuleHandler for ChatHandler {
             .ok_or_else(|| "missing session_id".to_string())?
             .to_string();
         let session_key = format!(
-            "agent:main:session:{}",
+            "{}{}",
+            WEB_SESSION_KEY_PREFIX,
             nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
         );
         // H1（2026-09-05）：todo_get 是只读文件读取，不需要 AgentLoop——
@@ -419,7 +422,7 @@ pub(crate) fn read_session_todos(
     let s = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
     let path = nemesis_path::session_todo_file_in_workspace(
         std::path::Path::new(workspace),
-        &format!("agent:main:session:{s}"),
+        &format!("{}{}", WEB_SESSION_KEY_PREFIX, s),
     );
     match std::fs::read_to_string(&path) {
         Ok(body) => match serde_json::from_str(&body) {

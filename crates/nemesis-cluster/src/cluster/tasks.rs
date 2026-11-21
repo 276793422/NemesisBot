@@ -490,7 +490,11 @@ impl Cluster {
 
         bus.publish_inbound(BusInboundMessage {
             channel: "system".into(),
-            sender_id: format!("cluster_continuation:{}", task_id),
+            sender_id: format!(
+                "{}{}",
+                nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX,
+                task_id
+            ),
             chat_id: format!("{}:{}", task.original_channel, task.original_chat_id),
             content: String::new(),
             metadata: std::collections::HashMap::new(),
@@ -1668,7 +1672,11 @@ pub(super) async fn publish_continuation_to_bus(
     }
     bus.publish_inbound(BusInboundMessage {
         channel: "system".into(),
-        sender_id: format!("cluster_continuation:{}", task_id),
+        sender_id: format!(
+            "{}{}",
+            nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX,
+            task_id
+        ),
         chat_id: String::new(),
         content: content.to_string(),
         metadata,

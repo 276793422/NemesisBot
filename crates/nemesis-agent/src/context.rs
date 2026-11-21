@@ -161,7 +161,12 @@ impl RequestContext {
             && let Some(ref cid) = self.correlation_id
             && !cid.is_empty()
         {
-            return format!("[rpc:{}] {}", cid, message);
+            return format!(
+                "{}{}] {}",
+                nemesis_types::constants::RPC_CORRELATION_PREFIX,
+                cid,
+                message
+            );
         }
         message.to_string()
     }

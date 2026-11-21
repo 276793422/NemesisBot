@@ -22,6 +22,7 @@
 use crate::handlers::require_workspace;
 use crate::handlers::shell_open;
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -725,7 +726,8 @@ impl ModuleHandler for FsHandler {
             .filter(|s| !s.is_empty())
         {
             let session_key = format!(
-                "agent:main:session:{}",
+                "{}{}",
+                WEB_SESSION_KEY_PREFIX,
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
             if let Some(root) = crate::handlers::projects::project_root_for_session(&session_key) {

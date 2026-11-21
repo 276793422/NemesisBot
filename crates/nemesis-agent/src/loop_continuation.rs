@@ -1597,7 +1597,11 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             channel: String::new(),
             chat_id: String::new(),
             sender_id: "continuation".to_string(),
-            content: format!("cluster_continuation:{}", task_id),
+            content: format!(
+                "{}{}",
+                nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX,
+                task_id
+            ),
         }
         .to_conversation_event();
         mgr.emit_sync(event).await;

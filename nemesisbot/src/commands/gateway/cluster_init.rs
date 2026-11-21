@@ -2042,7 +2042,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
 
                     let inbound = nemesis_types::channel::InboundMessage {
                         channel: "system".to_string(),
-                        sender_id: format!("cluster_continuation:{}", task_id),
+                        sender_id: format!(
+                            "{}{}",
+                            nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX,
+                            task_id
+                        ),
                         chat_id: String::new(),
                         content: fail_text.to_string(),
                         media: vec![],

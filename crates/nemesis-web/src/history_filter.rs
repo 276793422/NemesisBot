@@ -15,6 +15,7 @@
 //! `bus.publish_outbound`（message_type="history"），与 loop 的
 //! outbound_tx 在 gateway 出站桥**同点汇合**，投递语义不变。
 
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 use nemesis_agent::history::{HistoryRequest, history_response_json};
 use nemesis_bus::{Filter, FilterDecision};
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
@@ -66,10 +67,11 @@ impl HistoryFilter {
         let session_key = if msg.session_key.is_empty() {
             match msg.metadata.get("session_id") {
                 Some(sid) if !sid.is_empty() => format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 ),
-                _ => "agent:main:session:legacy".to_string(),
+                _ => format!("{}legacy", WEB_SESSION_KEY_PREFIX),
             }
         } else {
             msg.session_key.clone()

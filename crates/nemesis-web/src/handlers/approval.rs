@@ -7,6 +7,7 @@
 //! 依赖，未装配（headless / 旧装配）时诚实报「未装配」。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
+use nemesis_agent::cc_hooks::WEB_SESSION_KEY_PREFIX;
 
 pub struct ApprovalHandler;
 
@@ -52,7 +53,8 @@ impl ModuleHandler for ApprovalHandler {
                 .filter(|s| !s.is_empty())
             {
                 let session_key = format!(
-                    "agent:main:session:{}",
+                    "{}{}",
+                    WEB_SESSION_KEY_PREFIX,
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
                 Some(crate::handlers::projects::resolve_session_loop(

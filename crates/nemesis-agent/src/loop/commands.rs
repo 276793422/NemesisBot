@@ -163,7 +163,8 @@ impl AgentLoop {
         // conversation's history wouldn't reload).
         let session_key = match msg.metadata.get("session_id") {
             Some(sid) if !sid.is_empty() => format!(
-                "agent:main:session:{}",
+                "{}{}",
+                crate::cc_hooks::WEB_SESSION_KEY_PREFIX,
                 crate::session::SessionStore::sanitize_session_id(sid)
             ),
             _ => format!("agent:{}:session:legacy", agent_id),

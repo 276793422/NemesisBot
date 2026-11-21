@@ -737,7 +737,11 @@ impl AgentLoop {
             channel: cont.channel.clone(),
             chat_id: cont.chat_id.clone(),
             sender_id: "continuation".to_string(),
-            content: format!("cluster_continuation:{task_id}"),
+            content: format!(
+                "{}{}",
+                nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX,
+                task_id
+            ),
         })
         .await;
 
@@ -1198,11 +1202,16 @@ impl AgentLoop {
 
         if let Some(ref tx) = self.outbound_tx {
             // For RPC channel, add correlation ID prefix if not already present.
+            let rpc_tag = format!(
+                "{}{}]",
+                nemesis_types::constants::RPC_CORRELATION_PREFIX,
+                msg.correlation_id
+            );
             let final_content = if msg.channel == "rpc"
                 && !msg.correlation_id.is_empty()
-                && !response.starts_with(&format!("[rpc:{}]", msg.correlation_id))
+                && !response.starts_with(&rpc_tag)
             {
-                format!("[rpc:{}] {}", msg.correlation_id, response)
+                format!("{rpc_tag} {response}")
             } else {
                 response
             };

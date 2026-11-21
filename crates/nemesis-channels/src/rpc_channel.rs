@@ -246,7 +246,7 @@ impl RPCChannel {
     /// Parses the correlation ID from a `[rpc:<id>]` prefix in content.
     /// Returns `Some((correlation_id, rest_of_content))` if the prefix is found.
     pub fn parse_rpc_prefix(content: &str) -> Option<(String, String)> {
-        let rest = content.strip_prefix("[rpc:")?;
+        let rest = content.strip_prefix(nemesis_types::constants::RPC_CORRELATION_PREFIX)?;
         let end = rest.find(']')?;
         if end == 0 {
             return None;
