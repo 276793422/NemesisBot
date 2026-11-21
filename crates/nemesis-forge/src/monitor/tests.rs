@@ -1599,3 +1599,40 @@ fn test_evaluate_artifact_splits_long_session_across_deploy_point() {
     assert_eq!(snap.samples_after, 1);
     assert_eq!(snap.samples_before, 1);
 }
+
+#[test]
+fn test_evaluate_outcomes_huge_window_days_clamped_no_panic() {
+    // BUG-20261122-015：monitor_window_days 是 u32，全域 4.29e9 天远超
+    // DateTime 减法溢出带 ~9.6e7 天——裸喂 chrono 的巨值配置让实效评估
+    // 每次调用 panic。修复 = time_bounds::MAX_AGE_DAYS 上界钳制（R735
+    // 姊妹站点同款：episodic/cycle_store/experience_store/trace_store/
+    // reflector）。u32::MAX 是修复前必 panic 的探针值（构造不越
+    // TimeDelta 上限 1.07e11，panic 落在减法）。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.monitor_window_days = u32::MAX;
+    let monitor = DeploymentMonitor::new(cfg, registry);
+
+    let trace = make_trace(1, 10, &["file_read"], false);
+    // 修复前此处 panic（chrono 减法越界）；修复后钳制为 36500 天窗口，
+    // 「now」轨迹在窗内 → 过滤臂正常走完；空 registry → 无 artifact，
+    // outcomes 为空。
+    let outcomes = monitor.evaluate_outcomes(&[trace]);
+    assert!(outcomes.is_empty());
+}
+
+#[test]
+fn test_evaluate_outcomes_zero_window_semantics_preserved() {
+    // 钳制不得改变显式 0 语义（BUG-20261121-064 契约：显式 0 = 窗口
+    // 归零诚实空转，不静默改回默认）——0.min(MAX) == 0，同断言兜底。
+    let registry = Arc::new(Registry::new(crate::types::RegistryConfig::default()));
+    let mut cfg = ForgeConfig::default();
+    cfg.learning.monitor_window_days = 0;
+    let monitor = DeploymentMonitor::new(cfg, registry);
+
+    let trace = make_trace(1, 10, &["file_read"], false);
+    let outcomes = monitor.evaluate_outcomes(&[trace]);
+    // 窗口 0 → since=now，轨迹时间戳（早于 evaluate 时刻）恒被滤出
+    // recent_traces → 早退空 outcomes（诚实空转，非 panic）。
+    assert!(outcomes.is_empty());
+}

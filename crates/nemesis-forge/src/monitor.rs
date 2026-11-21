@@ -196,8 +196,12 @@ impl DeploymentMonitor {
         let window_days = self.config.learning.monitor_window_days;
 
         // Filter traces within the observation window
-        // （window_days 是 u32：as i64 恒正，4.29e9 天 < Duration::days
-        // 恐慌带 ~1.07e14——无回绕/恐慌面，无需钳制。）
+        // （window_days 是 u32：as i64 恒正无回绕面；但 u32 全域 4.29e9
+        // 天远超 DateTime 减法溢出带 ~9.6e7 天——巨值配置令实效评估每次
+        // 调用 panic。上界钳制单一真相源 time_bounds::MAX_AGE_DAYS
+        // （R735 姊妹站点同款；0 语义不变——显式 0 仍诚实空转）。
+        // BUG-20261122-015。）
+        let window_days = window_days.min(nemesis_utils::time_bounds::MAX_AGE_DAYS as u32);
         let since = chrono::Local::now() - chrono::Duration::days(window_days as i64);
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()
