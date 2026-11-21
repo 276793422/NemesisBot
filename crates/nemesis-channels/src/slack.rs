@@ -555,7 +555,25 @@ impl Channel for SlackChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261121-050：幂等双启守卫 + base 旗标接线（telegram
+        // BUG-20261110-037 / discord BUG-20261121-043 / feishu
+        // BUG-20261121-046 同构家族第四批）——无守卫的重复 start 会
+        // spawn 多个并行 Socket Mode loop 每条消息 N 倍喂 agent；trait
+        // is_running()（读 base 旗标）恒 false 使 manager 运行中守卫失效。
+        if self.base.is_running() {
+            info!("[SlackChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
+
         info!("[SlackChannel] starting (Socket Mode)");
+
+        // 先置位再 spawn（BUG-20261121-050 附带顺序修复：旧顺序
+        // start_socket_mode_loop 先于 running=true，spawn 的循环首行读
+        // running=false 即自杀退出 = 通道假死；discord BUG-20261121-043
+        // 同款顺序形态修复）。
+        *self.running.write() = true;
+        self.base.set_running(true);
+        self.base.set_enabled(true);
 
         // Validate bot token
         match self.validate_bot_token().await {
@@ -571,8 +589,6 @@ impl Channel for SlackChannel {
         // Start Socket Mode loop
         self.start_socket_mode_loop();
 
-        *self.running.write() = true;
-        self.base.set_enabled(true);
         info!("[SlackChannel] started");
         Ok(())
     }
@@ -580,6 +596,8 @@ impl Channel for SlackChannel {
     async fn stop(&self) -> Result<()> {
         info!("[SlackChannel] stopping");
         *self.running.write() = false;
+        // BUG-20261121-050：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
         Ok(())
     }

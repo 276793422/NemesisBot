@@ -397,3 +397,30 @@ async fn test_direct_reply_errcode_zero_ok() {
         .await
         .expect("errcode=0 应成功");
 }
+
+/// BUG-20261121-050 回归锁：stop 必须对称清 base running 旗标（trait
+/// is_running 契约面——manager 运行中守卫读它，stop 后残留 true 会让
+/// 通道再也无法被 start_all 启动）；手动置位模拟 start 家族模板的置位
+/// 效果（修复前 stop 不清 base，本测试红）。start 幂等守卫与
+/// set_running(true) 接线无法零外网锁住（start 全路径含钉钉 API 调用、
+/// 无 api 注入能力）——诚实边界：代码与 feishu b046 完整锁定的家族
+/// 模板逐字同构。
+#[tokio::test]
+async fn b050_stop_clears_base_running_flag() {
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(16);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    ch.base.set_running(true);
+    *ch.running.write() = true;
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 必须清 base 旗标（BUG-20261121-050）"
+    );
+    assert!(!*ch.running.read());
+}

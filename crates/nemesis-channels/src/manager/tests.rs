@@ -1898,6 +1898,7 @@ fn w4c_valid_init_config() -> ChannelInitConfig {
             verification_token: "vt".to_string(),
             encrypt_key: "ek".to_string(),
             allow_from: vec![],
+            api_base: String::new(),
         });
     }
     #[cfg(feature = "dingtalk")]
@@ -2127,6 +2128,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             verification_token: String::new(),
             encrypt_key: String::new(),
             allow_from: vec![],
+            api_base: String::new(),
         }),
         #[cfg(feature = "dingtalk")]
         dingtalk: Some(crate::dingtalk::DingTalkConfig {

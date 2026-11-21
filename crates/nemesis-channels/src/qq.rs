@@ -786,8 +786,19 @@ impl Channel for QQChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261121-050：幂等双启守卫 + base 旗标接线（telegram
+        // BUG-20261110-037 / discord BUG-20261121-043 / feishu
+        // BUG-20261121-046 同构家族第四批）——无守卫的重复 start 会
+        // spawn 多个并行 receive loop 每条消息 N 倍喂 agent；trait
+        // is_running()（读 base 旗标）恒 false 使 manager 运行中守卫失效。
+        if self.base.is_running() {
+            info!("[QQChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
+
         info!("[QQChannel] starting QQ bot");
         *self.running.write() = true;
+        self.base.set_running(true);
         self.base.set_enabled(true);
 
         // Try to obtain access token
@@ -806,6 +817,8 @@ impl Channel for QQChannel {
     async fn stop(&self) -> Result<()> {
         info!("[QQChannel] stopping QQ bot");
         *self.running.write() = false;
+        // BUG-20261121-050：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
 
         if let Some(tx) = self.cancel_tx.lock().take() {

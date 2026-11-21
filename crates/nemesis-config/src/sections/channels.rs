@@ -163,6 +163,10 @@ pub struct FeishuConfig {
     pub allow_from: Vec<String>,
     #[serde(default)]
     pub sync_to: Vec<String>,
+    /// API base（BUG-20261121-045）：空/缺省 = 官方默认 open.feishu.cn；
+    /// Lark 国际版配 https://open.larksuite.com。
+    #[serde(default)]
+    pub api_base: String,
 }
 impl_redacted_debug!(FeishuConfig {
     plain { enabled, app_id, allow_from, sync_to }
