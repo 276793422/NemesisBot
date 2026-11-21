@@ -343,3 +343,41 @@ async fn bom_prefixed_config_json_still_enables_format_on_save() {
         "BOM 前缀 config.json 的 format_on_save 必须照常生效，out: {out}"
     );
 }
+
+/// BUG-20261120-031 回归锁：`format_on_save` 段为非 object 形态（数组/标量）
+/// 按未配置处理（enabled=false、零副作用、不 panic）。visit_seq 家族洞：
+/// 非 object 段值喂 serde derive 会走 visit_seq 零元素臂 = 合法「全默认」
+/// ——用户写的 formatters/timeout 静默丢失零诊断。修复 = ensure_object
+/// 形状闸 + loud warn 后按未配置处理。诚实边界：warn 在日志面，行为面
+/// 修复前后等价——本锁钉的是契约（不炸 / 不意外启用 / 文件不动），闸被
+/// 退化回静默 unwrap_or_default 时本锁不红（行为等价是刻意设计）。
+#[tokio::test]
+async fn non_object_format_on_save_section_falls_back_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ugly.rs");
+    std::fs::write(&file, "fn a(){let x=1;}\n").unwrap();
+
+    for shape in [
+        serde_json::json!([]),
+        serde_json::json!(["rustfmt"]),
+        serde_json::json!("yes"),
+        serde_json::json!(42),
+    ] {
+        let config_path = write_config(dir.path(), config_json(shape.clone(), None));
+        let out = format_on_save(
+            Some(config_path.clone()),
+            &file.to_string_lossy(),
+            "wrote file",
+        )
+        .await;
+        assert_eq!(
+            out, "wrote file",
+            "shape {shape} must not trigger formatting"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "fn a(){let x=1;}\n",
+            "shape {shape} must not touch the file"
+        );
+    }
+}

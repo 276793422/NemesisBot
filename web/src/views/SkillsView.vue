@@ -149,15 +149,26 @@ async function uninstallSkill(name: string) {
   }
 }
 
+// 搜索请求代际计数（BUG-20261120-032）：三个触发点（输入框 Enter、搜索
+// 按钮、分类芯片）中 Enter 与分类芯片不受 :disabled="searching" 闸——搜索
+// 在飞期间再次触发会并发第二个请求；skills.search 走远程 registry（秒级
+// 窗口），慢的旧回包后到会把已显示的新结果覆盖成旧查询的结果（列表与
+// 输入框错位且不自愈）。每次搜索取自增代际，回包只在自己仍是最新代际时
+// 落盘；clearSearch 同步作废在飞搜索（返回浏览后慢回包不得回填结果）。
+let searchSeq = 0
+
 async function searchSkills() {
   if (!searchQuery.value) return
   isBrowseMode.value = false
+  const seq = ++searchSeq
   searching.value = true
   try {
     const data = await request('skills', 'search', { query: searchQuery.value })
+    if (seq !== searchSeq) return
     searchResults.value = data?.results || []
     if (data?.message) toast.info(data.message)
   } catch (e: any) {
+    if (seq !== searchSeq) return
     toast.error('搜索失败: ' + e)
   }
   searching.value = false
@@ -291,6 +302,7 @@ function clearSearch() {
   searchQuery.value = ''
   searchResults.value = []
   isBrowseMode.value = true
+  searchSeq++
   browseSkills()
 }
 

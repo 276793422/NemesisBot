@@ -37,7 +37,12 @@ use super::GatewayCtx;
 use super::print_agent_startup_info;
 #[cfg(all(feature = "board", feature = "cluster"))]
 use super::{advertise_host_for, select_lan_ip_for_advertisement};
-#[cfg(any(feature = "health", feature = "heartbeat"))]
+// 消费方对称门控（BUG-20261121-027 横向排查补）：本文件 adapters:: 的
+// 消费点在 health（HealthServerAdapter 注入）/ heartbeat（心跳 bus/handler
+// /state_manager 装配）/ devices（DeviceService 注入 + Layer B 接线）三个
+// 门内——devices-only 裁剪组合此前无导入可解析，:328/:373 E0433 编译红
+//（既有断裂，BUG-20261121-027 裁剪验证时实测暴露）。
+#[cfg(any(feature = "health", feature = "heartbeat", feature = "devices"))]
 use crate::adapters;
 use crate::common;
 
@@ -165,6 +170,17 @@ pub(crate) async fn init_services(
             }
         }
         heartbeat_service.set_bus(Arc::new(HeartbeatBusAdapter { bus: bus.clone() }));
+
+        // State manager 接线（BUG-20261121-027）：心跳 tick 需要 last
+        // channel 解析回复去向（channel:chat_id），spawn 子代理的 origin
+        // channel/chat_id 也从这里继承。零接线时 tick 拿 None → ("","") →
+        // 下方 handler fallback cli:direct → 心跳异步子任务结果 outbound
+        // 到不存在的 "cli" 通道被 dispatch 丢弃——HEARTBEAT.md 模板钦定
+        // spawn 是回传主路径。与 devices 通知的 Layer B 接线（下方
+        // device_service.set_state_manager）同构。
+        heartbeat_service.set_state_manager(Arc::new(adapters::AgentLastChannelProvider::new(
+            agent_adapter.clone(),
+        )));
 
         // Handler: calls agent_loop.process_heartbeat() synchronously via block_in_place.
         // Mirrors Go's `createHeartbeatHandler()` in bot_service.go:

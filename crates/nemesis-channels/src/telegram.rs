@@ -30,8 +30,12 @@ const TELEGRAM_SPLIT_BUDGET: usize = 3500;
 ///
 /// Telegram Bot API 标准模式单文件 20MB 硬上限，64MB = 3x 余量；
 /// local Bot API server 模式可传 GB 级文件，超帽在读入中途诚实断开
-/// 而不是灌满进程内存（BUG-20261115-025，http_cap 单一真相源）。
-const VOICE_DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+/// 而不是灌满进程内存（BUG-20261115-025，http_cap 单一真相源；
+/// BUG-20261121-037：photo/audio/document 下载路径
+/// fetch_file_attachment 同帽换装——025 修复文档宣称该路径「经
+/// download_file 共享同一路径」已被覆盖，实际它从初版起就是独立的
+/// 内联裸读实现，从未被 025 修复触达）。
+const MEDIA_DOWNLOAD_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Thinking cancel mechanism
@@ -520,10 +524,14 @@ impl TelegramChannel {
     }
 
     fn api_url(&self, method: &str) -> String {
-        format!(
-            "{}/bot{}/{}",
-            self.config.api_base, self.config.token, method
-        )
+        // api_base 尾斜杠归一：与 TelegramApi::new（polling 路径）同纪律
+        // （BUG-20261109-012）。012 修复认定「telegram 2 拼接点集中在
+        // TelegramApi::new」，漏了本方法——getMe/sendMessage/
+        // editMessageText/sendChatAction 全走这里，尾斜杠 config 下
+        // getMe 失败 = start() 直接 Err（通道起不来），sendMessage 失败
+        // = 收得到消息回不了。
+        let base = self.config.api_base.trim_end_matches('/');
+        format!("{base}/bot{}/{}", self.config.token, method)
     }
 
     /// Calls the Telegram getUpdates API for long polling.
@@ -923,16 +931,23 @@ impl TelegramChannel {
         let file_path = body["result"]["file_path"].as_str()?;
 
         // Step 2: download bytes（官方文件命名空间：{base}/file/bot{token}/{path}）
-        let bytes = http
-            .get(api.file_url(file_path))
-            .send()
-            .await
-            .ok()?
-            .error_for_status()
-            .ok()?
-            .bytes()
-            .await
-            .ok()?;
+        // 有帽读取（BUG-20261121-037）：此前裸 `.bytes()` 把整个文件灌进
+        // 内存——025 修复只触达 download_voice_file，本路径（photo/audio/
+        // document 三媒体共用）从初版起就是独立内联裸读，local Bot API
+        // 模式 GB 级文件直接灌满进程内存。换装 read_body_capped 后超帽
+        // 在读入中途断开（内存峰值=已到达前缀），Err 经 `.ok()?` 走既有
+        // 诚实降级路径（received 文案）。
+        let bytes = nemesis_utils::http_cap::read_body_capped(
+            http.get(api.file_url(file_path))
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?,
+            MEDIA_DOWNLOAD_LIMIT_BYTES,
+        )
+        .await
+        .ok()?;
         if bytes.is_empty() {
             return None;
         }
@@ -995,7 +1010,7 @@ impl TelegramChannel {
         // （Telegram Bot API 标准模式单文件上限 20MB；local Bot API server
         // 模式可达 GB 级）。64MB 帽对标准模式余量充足；local 模式超帽文件
         // 诚实报 exceeds limit（读入中途断开，内存峰值=已到达前缀）。
-        let bytes = nemesis_utils::http_cap::read_body_capped(resp, VOICE_DOWNLOAD_LIMIT_BYTES)
+        let bytes = nemesis_utils::http_cap::read_body_capped(resp, MEDIA_DOWNLOAD_LIMIT_BYTES)
             .await
             .map_err(|e| api.redact(e))?;
         std::fs::write(local_path, &bytes).map_err(|e| e.to_string())

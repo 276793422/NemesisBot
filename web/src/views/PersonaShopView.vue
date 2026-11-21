@@ -425,12 +425,21 @@ function renderMd(text: string): string {
   return renderMarkdownHtml(text)
 }
 
+// items 请求代际计数（BUG-20261120-032）：search（Enter/按钮，均无
+// disabled 闸）与 browse（division pill/空关键词回车）可在对方在飞期间
+// 触发——shop.* 走远程 GitHub 上游（秒级窗口），慢的旧回包后到会把已
+// 渲染的新列表覆盖成旧请求的结果（不自愈）。browse/search 各取自增代际，
+// 回包只在自己仍是最新代际时落盘与清除 loading；慢回包整体丢弃。
+let itemsSeq = 0
+
 async function browse() {
+  const seq = ++itemsSeq
   loading.value = true
   try {
     const data = await request('persona', 'shop.browse', {
       division: selectedDivision.value || undefined,
     })
+    if (seq !== itemsSeq) return
     applySource(data)
     items.value = data.items || []
     recommendSections.value = data.recommend_sections || []
@@ -442,9 +451,10 @@ async function browse() {
     // 下载/雇佣的安装态翻转由调用点就地补丁（不等下次全量 browse）。
     if (!selectedDivision.value) shopItems.value = items.value
   } catch (e: any) {
+    if (seq !== itemsSeq) return
     toast.error('加载失败: ' + (e.message || e))
   } finally {
-    loading.value = false
+    if (seq === itemsSeq) loading.value = false
   }
 }
 
@@ -452,17 +462,20 @@ async function search() {
   if (!searchQuery.value.trim()) {
     return browse()
   }
+  const seq = ++itemsSeq
   loading.value = true
   try {
     const data = await request('persona', 'shop.search', {
       query: searchQuery.value,
     })
+    if (seq !== itemsSeq) return
     applySource(data)
     items.value = data.items || []
   } catch (e: any) {
+    if (seq !== itemsSeq) return
     toast.error('搜索失败: ' + (e.message || e))
   } finally {
-    loading.value = false
+    if (seq === itemsSeq) loading.value = false
   }
 }
 

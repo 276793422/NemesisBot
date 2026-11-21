@@ -168,6 +168,65 @@ action = "builtin.noop"
     assert_eq!(c.id, "ok");
 }
 
+// BUG-20261121-031：find_connector 直达快路径把 id 原样 join 进注册目录
+// ——id 来自 LLM 工具入参/WSAPI，含 `..`、`\`、盘符形态时读注册表外任意
+// connector.toml。入口 validate_id 关死后越界 id 必 Invalid 且不发起目录
+// 外读取。
+#[test]
+fn find_connector_rejects_path_traversal_id() {
+    let ws = tmpws();
+    // 目录外诱饵：合法形态的 connector.toml 放在 `<ws>/../evil-connector/`，
+    // 若无校验 `../evil-connector` 直达即中（跨 workspace 加载）。
+    let outside_dir = ws.path().parent().unwrap().join("evil-connector");
+    std::fs::create_dir_all(&outside_dir).expect("mkdir outside");
+    std::fs::write(
+        outside_dir.join(MANIFEST_FILE),
+        r#"[connector]
+id = "evil-connector"
+name = "evil"
+version = "0.1.0"
+kind = "local"
+
+[[op]]
+id = "noop"
+risk = "low"
+class = "read"
+action = "builtin.noop"
+"#,
+    )
+    .expect("write outside manifest");
+
+    for hostile in [
+        "../evil-connector",
+        "..\\evil-connector",
+        "a/b",
+        "c:evil-connector",
+        "con",
+    ] {
+        let err = find_connector(ws.path(), hostile).expect_err("越界/非法 id 必拒");
+        match err {
+            ConnectorLookupError::Invalid { id, error } => {
+                assert_eq!(id, hostile);
+                assert!(
+                    error.contains("非法") || error.contains("保留"),
+                    "错误要指出字符集/保留名原因: {error}"
+                );
+            }
+            other => panic!("expected Invalid for `{hostile}`, got {other:?}"),
+        }
+    }
+
+    // 诱饵注册表外定义未被消费为 connector（校验在读取之前——变体断言
+    // 已证；这里再证合法 id 照常工作，正常路径零误伤）。
+    write_connector(&ws, "good-c", &min_toml_for("good-c"));
+    let c = find_connector(ws.path(), "good-c")
+        .expect("good-c 正常解析")
+        .0;
+    assert_eq!(c.id, "good-c");
+
+    let _ = std::fs::remove_dir_all(&outside_dir);
+}
+
 #[test]
 fn find_op_by_id() {
     let ws = tmpws();

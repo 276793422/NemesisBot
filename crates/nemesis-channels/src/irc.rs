@@ -189,10 +189,19 @@ impl IRCChannel {
             let limit = nemesis_types::utils::floor_char_boundary(remaining, max_len);
             // Try newline
             if let Some(idx) = remaining[..limit].rfind('\n') {
-                lines.push(remaining[..idx].to_string());
+                // 分隔符位于 idx 0（前导换行的超长文）时左段为空——空
+                // PRIVMSG 是协议违规（服务器回 412 ERR_NOTEXTGIVEN），且
+                // send() 的 `?` 会让整条消息投递失败。跳过空段（与
+                // nemesis_types::utils::split_message_utf16 的 filter(>0)
+                // 家族形态一致；discord 同款 BUG-20261121-044）。
+                if idx > 0 {
+                    lines.push(remaining[..idx].to_string());
+                }
                 remaining = &remaining[idx + 1..];
             } else if let Some(idx) = remaining[..limit].rfind(' ') {
-                lines.push(remaining[..idx].to_string());
+                if idx > 0 {
+                    lines.push(remaining[..idx].to_string());
+                }
                 remaining = &remaining[idx + 1..];
             } else {
                 lines.push(remaining[..limit].to_string());

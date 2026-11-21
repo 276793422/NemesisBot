@@ -163,14 +163,15 @@ fn release_builtin_persona(workspace: &str, id: &str) -> Result<(), String> {
         if out.exists() {
             continue;
         }
-        std::fs::write(&out, contents)
+        // 原子写（同 BUG-20261121-020 家族：撕裂存档文件会被 activate 恢复）。
+        nemesis_utils::write_file_atomic(&out.to_string_lossy(), contents, 0o644)
             .map_err(|e| format!("failed to write personas/{id}/{name}: {e}"))?;
         released += 1;
     }
     // 模板缺件（如 HEARTBEAT.md）按 shop.download 同款语义补齐
     let heartbeat = out_root.join("HEARTBEAT.md");
     if !heartbeat.exists() {
-        std::fs::write(&heartbeat, "")
+        nemesis_utils::write_file_atomic(&heartbeat.to_string_lossy(), b"", 0o644)
             .map_err(|e| format!("failed to write personas/{id}/HEARTBEAT.md: {e}"))?;
     }
     tracing::debug!(persona = %id, released, "[Persona] builtin persona released to workspace");
@@ -190,20 +191,47 @@ fn write_persona_files(workspace: &str, id: &str, content: &str) -> Result<(), S
     let dir = resolve_path(workspace, &format!("personas/{}", id))?;
     let converted = convert_agent_content(content);
     std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create dir: {}", e))?;
-    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)
-        .map_err(|e| format!("failed to write IDENTITY.md: {}", e))?;
-    std::fs::write(dir.join("SOUL.md"), &converted.soul)
-        .map_err(|e| format!("failed to write SOUL.md: {}", e))?;
-    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)
-        .map_err(|e| format!("failed to write AGENT.md: {}", e))?;
-    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)
-        .map_err(|e| format!("failed to write TOOLS.md: {}", e))?;
-    std::fs::write(dir.join("HEARTBEAT.md"), "")
+    // 人格存档文件统一原子写（2026-11-21 BUG-20261121-020 家族根修）：裸写
+    // 半截文件会被 list 呈现、被 activate 恢复进工作区活体。写序保持
+    // PERSONA.json 压轴（上方注释的 marker 语义不因原子化改变）。
+    nemesis_utils::write_file_atomic(
+        &dir.join("IDENTITY.md").to_string_lossy(),
+        converted.identity.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write IDENTITY.md: {}", e))?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("SOUL.md").to_string_lossy(),
+        converted.soul.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write SOUL.md: {}", e))?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("AGENT.md").to_string_lossy(),
+        converted.agent_full.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write AGENT.md: {}", e))?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("TOOLS.md").to_string_lossy(),
+        converted.tools_full.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write TOOLS.md: {}", e))?;
+    nemesis_utils::write_file_atomic(&dir.join("HEARTBEAT.md").to_string_lossy(), b"", 0o644)
         .map_err(|e| format!("failed to write HEARTBEAT.md: {}", e))?;
-    std::fs::write(dir.join("raw.md"), content)
-        .map_err(|e| format!("failed to write raw.md: {}", e))?;
-    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)
-        .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("raw.md").to_string_lossy(),
+        content.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write raw.md: {}", e))?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("PERSONA.json").to_string_lossy(),
+        converted.persona_json.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
     Ok(())
 }
 
@@ -1599,8 +1627,13 @@ pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
         if src.exists() {
             let content = std::fs::read_to_string(&src)
                 .map_err(|e| format!("failed to read {}: {}", file, e))?;
-            std::fs::write(default_dir.join(file), &content)
-                .map_err(|e| format!("failed to write {}: {}", file, e))?;
+            // 原子写（BUG-20261121-020 家族）。
+            nemesis_utils::write_file_atomic(
+                &default_dir.join(file).to_string_lossy(),
+                content.as_bytes(),
+                0o644,
+            )
+            .map_err(|e| format!("failed to write {}: {}", file, e))?;
         }
     }
 
@@ -1629,8 +1662,13 @@ pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
     });
     let json_str = serde_json::to_string_pretty(&persona_json)
         .map_err(|e| format!("failed to serialize PERSONA.json: {}", e))?;
-    std::fs::write(default_dir.join("PERSONA.json"), json_str)
-        .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
+    // 原子写（BUG-20261121-020 家族）。
+    nemesis_utils::write_file_atomic(
+        &default_dir.join("PERSONA.json").to_string_lossy(),
+        json_str.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("failed to write PERSONA.json: {}", e))?;
 
     let active = serde_json::json!({"name": "default"});
     let active_str = serde_json::to_string_pretty(&active)
@@ -1684,8 +1722,15 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
             if src.exists() {
                 let content = std::fs::read_to_string(&src)
                     .map_err(|e| format!("archive: failed to read {}: {}", file, e))?;
-                std::fs::write(archive_dir.join(file), &content)
-                    .map_err(|e| format!("archive: failed to write {}: {}", file, e))?;
+                // 原子写（BUG-20261121-020）：裸写撕裂的存档文件（崩溃窗中途
+                // 断电/进程被杀）会在「重激活同名人格」（current==name 跳过
+                // 归档）时被 Step 3 原样恢复成活体人格——撕裂内容直接上线。
+                nemesis_utils::write_file_atomic(
+                    &archive_dir.join(file).to_string_lossy(),
+                    content.as_bytes(),
+                    0o644,
+                )
+                .map_err(|e| format!("archive: failed to write {}: {}", file, e))?;
             }
         }
         // Archive directories (memory/)
@@ -1732,7 +1777,13 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
             if let Some(parent) = dst.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            std::fs::write(&dst, &content)
+            // 原子写（BUG-20261121-020）：这些是工作区活体人格文件（下次
+            // AgentInstance 装配 system prompt 的直接来源）。裸写中途崩溃 =
+            // 半截文件上线；且用户随后改激活别人格时 Step 1 会把半截文件
+            // 归档进旧人格存档，永久污染。原子写把撕裂窗收窄到「文件级
+            // 完整、文件间混合」——后者由 _active.json 压轴标记语义兜底
+            //（标记仍指旧人格时重激活同名人格即可无损自愈）。
+            nemesis_utils::write_file_atomic(&dst.to_string_lossy(), content.as_bytes(), 0o644)
                 .map_err(|e| format!("restore: failed to write {}: {}", file, e))?;
         }
     }
@@ -1754,7 +1805,12 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
     if !memory_file.exists() {
         let _ = std::fs::create_dir_all(&memory_dir);
         let default = "# 长期记忆\n\n（此文件存储应该跨会话持久化保存的重要信息。）\n\n## 用户信息\n\n（关于用户的重要事实）\n\n## 偏好\n\n（随时间了解到的用户偏好）\n\n## 重要笔记\n\n（需要记住的事情）\n";
-        let _ = std::fs::write(&memory_file, default);
+        // 原子写（BUG-20261121-020 家族；best-effort 语义保持不变）。
+        let _ = nemesis_utils::write_file_atomic(
+            &memory_file.to_string_lossy(),
+            default.as_bytes(),
+            0o644,
+        );
     }
 
     let path = resolve_path(workspace, "personas/_active.json")?;
@@ -2173,13 +2229,20 @@ impl PersonaHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, content).map_err(|e| format!("failed to write {}: {}", file, e))?;
+        // 原子写（BUG-20261121-020 家族）：存档副本与下方活体同步两路都
+        // 是人格状态文件——撕裂存档被 activate 恢复、撕裂活体直接上线。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o644)
+            .map_err(|e| format!("failed to write {}: {}", file, e))?;
 
         let active = self.read_active(workspace).unwrap_or_default();
         if active == name {
             let root_path = resolve_path(workspace, file)?;
-            std::fs::write(&root_path, content)
-                .map_err(|e| format!("failed to sync to root: {}", e))?;
+            nemesis_utils::write_file_atomic(
+                &root_path.to_string_lossy(),
+                content.as_bytes(),
+                0o644,
+            )
+            .map_err(|e| format!("failed to sync to root: {}", e))?;
         }
 
         Ok(Some(serde_json::json!({"saved": true, "name": file})))
@@ -2770,8 +2833,13 @@ async fn expert_hire_payload(workspace: &str, id: &str) -> Result<serde_json::Va
         match fetch_builtin_raw_online(id).await {
             Ok(content) => {
                 std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create dir: {e}"))?;
-                std::fs::write(&raw_path, &content)
-                    .map_err(|e| format!("failed to write raw.md（保存原文失败）: {e}"))?;
+                // 原子写（BUG-20261121-020 家族：raw.md 是雇佣取材真相源存档）。
+                nemesis_utils::write_file_atomic(
+                    &raw_path.to_string_lossy(),
+                    content.as_bytes(),
+                    0o644,
+                )
+                .map_err(|e| format!("failed to write raw.md（保存原文失败）: {e}"))?;
                 content
             }
             Err(live_err) => match builtin_persona_raw(id) {
@@ -2786,8 +2854,13 @@ async fn expert_hire_payload(workspace: &str, id: &str) -> Result<serde_json::Va
                     let (content, _source) = fetch_agent_content(id).await?;
                     std::fs::create_dir_all(&dir)
                         .map_err(|e| format!("failed to create dir: {e}"))?;
-                    std::fs::write(&raw_path, &content)
-                        .map_err(|e| format!("failed to write raw.md（保存原文失败）: {e}"))?;
+                    // 原子写（BUG-20261121-020 家族）。
+                    nemesis_utils::write_file_atomic(
+                        &raw_path.to_string_lossy(),
+                        content.as_bytes(),
+                        0o644,
+                    )
+                    .map_err(|e| format!("failed to write raw.md（保存原文失败）: {e}"))?;
                     content
                 }
             },

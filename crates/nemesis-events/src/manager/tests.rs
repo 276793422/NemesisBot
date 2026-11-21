@@ -459,6 +459,37 @@ async fn webhook_payload_oversize_truncated() {
     assert!(p.contains("…["));
 }
 
+#[test]
+fn truncate_annotated_reports_actual_retained_bytes() {
+    // BUG-20261121-034：注记报实际保留字节数 cut，不报上限 max——多字节
+    // 字符跨界回退后两者可差 1-3 字节，报 max 是谎报（BUG-20261118-165
+    // 「注记数字必须为真」同纪律）。
+    // 4 字节字符跨 max=1024 边界：1021 个 ASCII + 2 个 4 字节字符（1029B）
+    // ——1024 落在首字符（1021..1025）内部，cut 必须回退到 1021。
+    let s = format!("{}{}", "x".repeat(1021), "𩸽𩸽");
+    assert_eq!(s.len(), 1029);
+    let out = truncate_annotated(&s, 1024);
+    let note = out
+        .split("…[已截断 ")
+        .nth(1)
+        .expect("截断注记在场")
+        .to_string();
+    let arrow = note.split("→").nth(1).expect("→N B 形态").to_string();
+    let claimed: usize = arrow
+        .trim_end_matches("B]")
+        .parse()
+        .expect("注记数字可解析");
+    let prefix_len = out.find('…').expect("省略号在场");
+    assert_eq!(
+        claimed, prefix_len,
+        "注记保留字节数必须等于实际前缀字节数（修复前报 max=1024，实际保留 <1024）"
+    );
+    // 纯 ASCII 截断：cut == max，注记数字 == 上限（行为不变面）
+    let ascii_out = truncate_annotated(&"x".repeat(2000), 1024);
+    assert!(ascii_out.contains("→1024B]"));
+    assert!(ascii_out.starts_with(&"x".repeat(1024)));
+}
+
 #[tokio::test]
 async fn proc_matches_lines_and_renders_line_job_id() {
     let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
@@ -587,6 +618,33 @@ fn sys_hysteresis_trigger_quiet_fall_and_retrigger() {
     assert_eq!(st.pending["sy1"].count(), 1);
     // 再过阈 → 第二次触发
     st.sample_sys(&sample(91.0), 4000);
+    assert_eq!(st.stats.sys_triggered, 2);
+}
+
+#[test]
+fn sys_low_threshold_default_below_recovers_and_refires() {
+    // BUG-20261121-033 行为面：above=8（≤10）旧缺省 below = (8-10).max(0)=0
+    // →「value < 0」对使用率口径不可达，首次触发后永久卡 firing、永不
+    // 再触发。缺省解析改 above 一半（=4）后滞回可回落、可再触发。
+    let mut st = ManagerState::new(DEFAULT_GLOBAL_HOURLY_CAP);
+    let mut r = sys_rule("sylow", "cpu", 8.0, 4.0);
+    r.watch.below = None; // 走缺省臂：sys_below_or_default() = above/2 = 4.0
+    st.rules = vec![r];
+    let sample = |cpu: f32| SysSample {
+        cpu,
+        mem_percent: 0.0,
+        disks: vec![],
+    };
+    // ≥8 → 触发
+    st.sample_sys(&sample(30.0), 0);
+    assert_eq!(st.stats.sys_triggered, 1);
+    // firing 期 10（≥ 缺省 below 4）→ 维持 firing 不重复推
+    st.sample_sys(&sample(10.0), 1000);
+    assert_eq!(st.stats.sys_triggered, 1);
+    // 3 < 4 → 回 normal（静默）
+    st.sample_sys(&sample(3.0), 2000);
+    // 再次 ≥8 → 第二次触发（修复前：below=0 时此臂永不发生，规则事实死亡）
+    st.sample_sys(&sample(30.0), 3000);
     assert_eq!(st.stats.sys_triggered, 2);
 }
 
@@ -1258,11 +1316,13 @@ fn content_baseline_history_match_triggers_once_and_does_not_replay() {
 #[tokio::test]
 async fn pump_sys_sampling_exposes_sys_current_and_snapshot_carries_it() {
     // 泵级真采样：sys 规则在场 → 懒闸开（2s 采样粒度）→ last_sys 覆写 →
-    // snapshot.sys_current 透传；above=0 同时验证触发面（0.0 基态 ≥ 0 触发，
-    // below=-1 恒不回落——below ≥ above 的规则会被校验剔除）。
+    // snapshot.sys_current 透传。触发面用 mem above=1（任何已启动系统的
+    // 内存使用率恒 >1%，首采样必过阈）保持确定性——旧用例的 above=0/
+    // below=-1 退化形态（恒触发 + 永不回落）恰是 BUG-20261121-033 收口的
+    // 不变量违例，加载期已被剔除，不可再作锚。
     let dir = tempfile::tempdir().unwrap();
     let rules_path = dir.path().join("events.json");
-    let mut r = sys_rule("sy1", "cpu", 0.0, -1.0);
+    let mut r = sys_rule("sy1", "mem", 1.0, 0.5);
     r.deliver.merge_window_secs = Some(0);
     r.deliver.cooldown_secs = Some(0);
     crate::rules::save_rules(&rules_path, &[r]).unwrap();
@@ -1310,7 +1370,7 @@ async fn pump_sys_sampling_exposes_sys_current_and_snapshot_carries_it() {
     );
     assert!(
         hits.load(Ordering::SeqCst) >= 1,
-        "above=0 规则必须触发投递；contents: {:?}",
+        "mem above=1 规则必须触发投递（任何真实系统首采样必过阈）；contents: {:?}",
         contents.lock().unwrap()
     );
     handle.abort();

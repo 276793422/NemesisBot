@@ -4,8 +4,9 @@ import { useRouter } from 'vue-router'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
-// 安全总览页（十层页面化 2026-11-10；⑪⑫⑬ 编号 2026-11-14 用户拍板）：
-// 十三层状态表（行跳对应页）+ 只读
+// 安全总览页（十层页面化 2026-11-10；⑪⑫⑬ 编号 2026-11-14 拍板；
+// 2026-11-21 重指：⑬=危险闸，凭据隔离撤号列尾）：
+// 闸门状态表（①…⑬ + 不占号的凭据隔离行，行跳对应页）+ 只读
 // 状态区（estop/Plan/Full Access/免打扰——用户拍板 2：总览只显示状态，
 // 操作面留侧栏/ChatPanel/审批页）+ 全局总闸（即时生效，编辑走设置页）+
 // 审计链校验 + 高级 JSON 编辑器（自旧 SecurityView 迁移，唯一写入口）。
@@ -158,13 +159,25 @@ const ROWS: LayerRow[] = [
   },
   {
     num: '⑬',
+    title: '危险闸',
+    to: '/security/hard-gates',
+    status: () => {
+      const d = overview.value?.exec_deny ?? {}
+      if (!d.available) return { label: '不可读', tone: 'na' }
+      if (d.custom_replacement) return { label: '自定义词表', tone: 'warn' }
+      return { label: `${(d.total ?? 0) - (d.disabled ?? 0)}/${d.total ?? 0} 条生效`, tone: 'on' }
+    },
+    summary: () => 'exec 工具内容级词表：内置规则逐条开关 + 自定义正则追加',
+  },
+  {
+    num: '',
     title: '凭据隔离',
     to: '/vault',
     status: () => {
       const v = overview.value?.vault ?? {}
       return v.exists ? { label: '已初始化', tone: 'on' } : { label: '未初始化', tone: 'na' }
     },
-    summary: () => '凭据加密托管（工具凭据槽注入，明文 key 不进提示词）',
+    summary: () => '凭据加密托管（工具凭据槽注入，明文 key 不进提示词）——基础设施面，不占闸号',
   },
 ]
 
@@ -263,9 +276,9 @@ onMounted(async () => {
       </div>
 
       <div v-if="!loading">
-        <!-- 十层状态表 -->
+        <!-- 防线状态表（①…⑬ 闸门 + 不占号的凭据隔离行） -->
         <div class="card" style="margin-bottom: var(--space-4);">
-          <div class="card-header"><h3>十层防线</h3></div>
+          <div class="card-header"><h3>防线总览</h3></div>
           <div class="card-body" style="padding: 0;">
             <div class="table-wrap">
               <table data-test="layers-table">

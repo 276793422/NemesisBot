@@ -94,7 +94,13 @@ fn test_parse_and_dispatch_event() {
         event_type: None,
     };
 
-    DingTalkChannel::parse_and_dispatch_event(&event, &tx, &session_webhooks, &[]);
+    DingTalkChannel::parse_and_dispatch_event(
+        &event,
+        &tx,
+        &session_webhooks,
+        &[],
+        &EventDedup::new(),
+    );
 
     let inbound = rx.try_recv().unwrap();
     assert_eq!(inbound.channel, "dingtalk");
@@ -139,6 +145,7 @@ fn test_parse_and_dispatch_event_filtered() {
         &tx,
         &session_webhooks,
         &["allowed_staff".to_string()],
+        &EventDedup::new(),
     );
 
     assert!(rx.try_recv().is_err());
@@ -159,7 +166,13 @@ fn test_parse_and_dispatch_event_unhandled_type() {
         event_type: None,
     };
 
-    DingTalkChannel::parse_and_dispatch_event(&event, &tx, &session_webhooks, &[]);
+    DingTalkChannel::parse_and_dispatch_event(
+        &event,
+        &tx,
+        &session_webhooks,
+        &[],
+        &EventDedup::new(),
+    );
     assert!(rx.try_recv().is_err());
 }
 
@@ -206,7 +219,13 @@ fn test_session_webhook_shared_between_task_clone_and_read_path() {
         ),
         event_type: None,
     };
-    DingTalkChannel::parse_and_dispatch_event(&event, &event_tx, &task_side_map, &[]);
+    DingTalkChannel::parse_and_dispatch_event(
+        &event,
+        &event_tx,
+        &task_side_map,
+        &[],
+        &EventDedup::new(),
+    );
 
     // 结构体侧读路径（send() 同源表达式）：必须看到任务侧写入的 webhook。
     assert_eq!(
@@ -317,6 +336,9 @@ async fn test_direct_reply_transport_error_redacts_access_token() {
 // ---------------------------------------------------------------------------
 
 /// 拉起恒回指定 errcode 信封的 webhook 替身（HTTP 恒 200）。
+// axum 是 wecom feature 的 optional 依赖（BUG-20261119-181 测试镜像 wecom
+// 同族协议检查时借用）——单独 `--features dingtalk` 编译红，挂 wecom 守卫。
+#[cfg(feature = "wecom")]
 async fn spawn_dingtalk_errcode_server(errcode: i64) -> std::net::SocketAddr {
     let app = axum::Router::new().route(
         "/robot/send",
@@ -332,6 +354,7 @@ async fn spawn_dingtalk_errcode_server(errcode: i64) -> std::net::SocketAddr {
     addr
 }
 
+#[cfg(feature = "wecom")]
 #[tokio::test]
 async fn test_direct_reply_errcode_nonzero_is_loud_error() {
     let addr = spawn_dingtalk_errcode_server(310_000).await;
@@ -356,6 +379,7 @@ async fn test_direct_reply_errcode_nonzero_is_loud_error() {
     );
 }
 
+#[cfg(feature = "wecom")]
 #[tokio::test]
 async fn test_text_reply_errcode_nonzero_is_loud_error() {
     let addr = spawn_dingtalk_errcode_server(310_000).await;
@@ -375,6 +399,7 @@ async fn test_text_reply_errcode_nonzero_is_loud_error() {
     assert!(err.to_string().contains("errcode=310000"));
 }
 
+#[cfg(feature = "wecom")]
 #[tokio::test]
 async fn test_direct_reply_errcode_zero_ok() {
     let addr = spawn_dingtalk_errcode_server(0).await;
@@ -390,4 +415,129 @@ async fn test_direct_reply_errcode_zero_ok() {
     ch.send_direct_reply(&url, "hello")
         .await
         .expect("errcode=0 应成功");
+}
+
+/// BUG-20261121-050 回归锁：stop 必须对称清 base running 旗标（trait
+/// is_running 契约面——manager 运行中守卫读它，stop 后残留 true 会让
+/// 通道再也无法被 start_all 启动）；手动置位模拟 start 家族模板的置位
+/// 效果（修复前 stop 不清 base，本测试红）。start 幂等守卫与
+/// set_running(true) 接线无法零外网锁住（start 全路径含钉钉 API 调用、
+/// 无 api 注入能力）——诚实边界：代码与 feishu b046 完整锁定的家族
+/// 模板逐字同构。
+#[tokio::test]
+async fn b050_stop_clears_base_running_flag() {
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(16);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    ch.base.set_running(true);
+    *ch.running.write() = true;
+    ch.stop().await.unwrap();
+    assert!(
+        !ch.base.is_running(),
+        "stop 必须清 base 旗标（BUG-20261121-050）"
+    );
+    assert!(!*ch.running.read());
+}
+
+/// BUG-20261121-053 回归锁：同 eventId 重推收敛——钉钉 Stream EVENT 在客
+/// 户端未及时消费时网关侧重试重推，headers.event_id 旧代码解析但零消费
+/// （半成品形态），同事件双喂 agent（红证实测 log/r2163_red_b053.log：旧
+/// 代码下两次 dispatch 双双入站）。修复后第二条必须被幂等闸丢弃。
+#[test]
+fn b053_duplicate_event_id_second_delivery_dropped() {
+    let (tx, mut rx) = broadcast::channel(16);
+    let session_webhooks = dashmap::DashMap::new();
+    let dedup = EventDedup::new();
+    let mk = || StreamEvent {
+        headers: Some(StreamEventHeaders {
+            event_type: Some("dingtalk.oapi.capi.conversation.message.receive".to_string()),
+            event_id: Some("evt-dup-1".to_string()),
+            message_id: None,
+        }),
+        data: Some(
+            serde_json::json!({
+                "senderStaffId": "staff-123",
+                "conversationId": "conv-456",
+                "text": { "content": "Hello DingTalk" }
+            })
+            .to_string(),
+        ),
+        event_type: None,
+    };
+    DingTalkChannel::parse_and_dispatch_event(&mk(), &tx, &session_webhooks, &[], &dedup);
+    assert!(rx.try_recv().is_ok(), "首个事件必须放行");
+    DingTalkChannel::parse_and_dispatch_event(&mk(), &tx, &session_webhooks, &[], &dedup);
+    assert!(
+        rx.try_recv().is_err(),
+        "同 eventId 重推必须被幂等闸丢弃（BUG-20261121-053）"
+    );
+}
+
+/// BUG-20261121-053 回归锁：不同 eventId 互不影响；eventId 缺失 fallback
+/// messageId；两者皆缺失保守放行（宁重复不丢，feishu BUG-048 同款取舍）。
+#[test]
+fn b053_distinct_ids_and_missing_id_pass() {
+    let (tx, mut rx) = broadcast::channel(16);
+    let session_webhooks = dashmap::DashMap::new();
+    let dedup = EventDedup::new();
+    let mk = |event_id: Option<&str>, message_id: Option<&str>| StreamEvent {
+        headers: Some(StreamEventHeaders {
+            event_type: Some("dingtalk.oapi.capi.conversation.message.receive".to_string()),
+            event_id: event_id.map(|s| s.to_string()),
+            message_id: message_id.map(|s| s.to_string()),
+        }),
+        data: Some(
+            serde_json::json!({
+                "senderStaffId": "staff-123",
+                "conversationId": "conv-456",
+                "text": { "content": "Hello DingTalk" }
+            })
+            .to_string(),
+        ),
+        event_type: None,
+    };
+    // 不同 eventId 互不影响
+    DingTalkChannel::parse_and_dispatch_event(
+        &mk(Some("evt-a"), None),
+        &tx,
+        &session_webhooks,
+        &[],
+        &dedup,
+    );
+    DingTalkChannel::parse_and_dispatch_event(
+        &mk(Some("evt-b"), None),
+        &tx,
+        &session_webhooks,
+        &[],
+        &dedup,
+    );
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_ok(), "不同 eventId 必须互不影响");
+    // eventId 缺失 → fallback messageId（同 messageId 重推被丢）
+    DingTalkChannel::parse_and_dispatch_event(
+        &mk(None, Some("msg-1")),
+        &tx,
+        &session_webhooks,
+        &[],
+        &dedup,
+    );
+    assert!(rx.try_recv().is_ok(), "messageId fallback 必须生效");
+    DingTalkChannel::parse_and_dispatch_event(
+        &mk(None, Some("msg-1")),
+        &tx,
+        &session_webhooks,
+        &[],
+        &dedup,
+    );
+    assert!(rx.try_recv().is_err(), "同 messageId 重推必须被丢");
+    // 两者皆缺失 → 保守放行
+    DingTalkChannel::parse_and_dispatch_event(&mk(None, None), &tx, &session_webhooks, &[], &dedup);
+    DingTalkChannel::parse_and_dispatch_event(&mk(None, None), &tx, &session_webhooks, &[], &dedup);
+    assert!(rx.try_recv().is_ok(), "ID 全缺失必须保守放行");
+    assert!(rx.try_recv().is_ok(), "ID 全缺失保守放行（宁重复不丢）");
 }

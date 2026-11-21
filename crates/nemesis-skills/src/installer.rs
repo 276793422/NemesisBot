@@ -845,7 +845,9 @@ impl SkillInstaller {
             "Skill '{}' installed from {} @ {} ({} files, trust={})",
             plan.slug,
             plan.source,
-            &plan.commit[..plan.commit.len().min(12)],
+            // commit 来自远端 registry 响应（未验 hex），短显走字符边界安全
+            // 惯用法（同 :816 short_commit）——字节切片在多字节字符中间 panic。
+            plan.commit.chars().take(12).collect::<String>(),
             plan.files.len(),
             plan.trust
         );
@@ -1385,7 +1387,15 @@ impl SkillInstaller {
         let data = serde_json::to_string_pretty(&origin).map_err(NemesisError::Serialization)?;
 
         let origin_path = Path::new(skill_dir).join(".skill-origin.json");
-        std::fs::write(&origin_path, data).map_err(NemesisError::Io)?;
+        // 统一原子写入（BUG-20261120-034）：裸 fs::write（截断直写）背离
+        // 记账文件家族纪律（skills.lock.json 同目录先例——BUG-20261025-45
+        // 「记账文件不等于低风险」；config/credentials/session/events 全族
+        // 已走 nemesis_utils::write_file_atomic）——写中段进程死亡/断电 =
+        // origin 撕裂，read_origin serde 解析失败，该技能升级流程报错卡死
+        // 直至手动重装。唯一临时名 + sync_all 先于 rename + 失败清理；
+        // 0o644：来源元数据非机密（与 skills.lock.json 同级）。
+        nemesis_utils::write_file_atomic(&origin_path.to_string_lossy(), data.as_bytes(), 0o644)
+            .map_err(|e| NemesisError::Io(std::io::Error::other(e)))?;
 
         debug!(
             "Wrote origin tracking for '{}' from '{}' version '{}'",

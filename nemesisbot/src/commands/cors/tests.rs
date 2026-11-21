@@ -213,42 +213,110 @@ fn test_cors_validate_localhost_allowed() {
     let cfg = default_cors_config();
     assert_eq!(cfg["allow_localhost"], true);
 
-    // Localhost should be allowed when allow_localhost is true
-    let lower = "http://localhost:8080";
-    let is_localhost = lower.starts_with("http://localhost")
-        || lower.starts_with("http://127.0.0.1")
-        || lower.contains("localhost:");
-    assert!(is_localhost);
+    // 判定语义对齐 nemesis_web::cors::origin_allowed（真实装配层单一
+    // 真相源，BUG-20261121-004）：localhost 任意端口放行（旧装配层只认
+    // 5 常见端口）；大小写敏感精确前缀（大写 LOCALHOST / contains 宽
+    // 匹配不命中——旧手写判定语义已删，浏览器 Origin host 规范小写，
+    // 实践零影响）。
+    let typed: nemesis_web::cors::CORSConfig = serde_json::from_value(cfg).unwrap();
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "http://localhost:8080"
+    ));
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "http://localhost:9999"
+    ));
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "http://127.0.0.1:49000"
+    ));
+    assert!(!nemesis_web::cors::origin_allowed(
+        &typed,
+        "http://LOCALHOST:5173"
+    ));
+    assert!(!nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://evil.com?x=localhost:1"
+    ));
 }
 
 #[test]
 fn test_cors_validate_cdn_domain_match() {
-    let domain = "cdn.example.com";
-    let origin = "static.cdn.example.com";
-    let matches = origin.ends_with(&format!(".{}", domain));
-    assert!(matches);
+    let mut cfg = default_cors_config();
+    if let Some(arr) = cfg
+        .get_mut("allowed_cdn_domains")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.push(serde_json::Value::String("cdn.example.com".to_string()));
+    }
+    let typed: nemesis_web::cors::CORSConfig = serde_json::from_value(cfg).unwrap();
+    // CDN 精确 + 子域命中（host 提取形态，对齐真实层）。
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://cdn.example.com"
+    ));
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://static.cdn.example.com"
+    ));
+    // 伪装后缀不命中。
+    assert!(!nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://fake-cdn.example.com"
+    ));
+    assert!(!nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://cdn.example.com.evil.io"
+    ));
 }
 
 #[test]
 fn test_cors_validate_cdn_wildcard_match() {
-    let domain = "cdn.example.com";
-    let origin = "*.cdn.example.com";
-    // The code checks: origin.ends_with(".cdn.example.com") → "*.cdn.example.com" ends with ".cdn.example.com" → true
-    let pattern = format!("*{}", domain);
-    let matches = origin == domain
-        || origin.ends_with(&format!(".{}", domain))
-        || origin.starts_with(&pattern);
-    assert!(matches); // Ends with ".cdn.example.com"
+    // BUG-20261121-004 语义更新：`*domain` 通配前缀是旧手写判定的怪
+    // 分支（真实 CORS 层无通配语义），接线 origin_allowed 后不再有
+    // 显式通配分支——测试从「钉死怪逻辑」翻转为「钉死怪逻辑已删」。
+    // 注：`https://*.cdn.example.com` 这种病态 URL（`*` 非 DNS 合法
+    // 字符，浏览器发不出）会被 url crate 容忍且 host 后缀巧合命中
+    // 后缀匹配——实践无害，不为病态输入收窄判定；裸串
+    // `*.cdn.example.com`（非 URL，Url::parse 失败）DENIED。
+    let mut cfg = default_cors_config();
+    if let Some(arr) = cfg
+        .get_mut("allowed_cdn_domains")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.push(serde_json::Value::String("cdn.example.com".to_string()));
+    }
+    let typed: nemesis_web::cors::CORSConfig = serde_json::from_value(cfg).unwrap();
+    assert!(!nemesis_web::cors::origin_allowed(
+        &typed,
+        "*.cdn.example.com"
+    ));
+    // 真实语义仍由合法形态兑现：精确与子域命中。
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://cdn.example.com"
+    ));
+    assert!(nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://static.cdn.example.com"
+    ));
 }
 
 #[test]
 fn test_cors_validate_cdn_no_match() {
-    let domain = "cdn.example.com";
-    let origin = "https://other.com";
-    let matches = origin == domain
-        || origin.ends_with(&format!(".{}", domain))
-        || origin.starts_with(&format!("*{}", domain));
-    assert!(!matches);
+    let mut cfg = default_cors_config();
+    if let Some(arr) = cfg
+        .get_mut("allowed_cdn_domains")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.push(serde_json::Value::String("cdn.example.com".to_string()));
+    }
+    let typed: nemesis_web::cors::CORSConfig = serde_json::from_value(cfg).unwrap();
+    assert!(!nemesis_web::cors::origin_allowed(
+        &typed,
+        "https://other.com"
+    ));
 }
 
 #[test]
@@ -916,7 +984,7 @@ mod run_arm {
                 &home,
                 json!({
                     "allowed_origins": ["https://app.test"],
-                    "allowed_cdn_domains": ["cdn.test", "*.wild.test"],
+                    "allowed_cdn_domains": ["cdn.test"],
                     "development_mode": false,
                     "allow_localhost": false
                 }),
@@ -929,10 +997,10 @@ mod run_arm {
                 false,
             )
             .expect("exact origin ok");
-            // cdn 精确命中。
+            // cdn 精确命中（带 scheme——合法 Origin 形态）。
             run(
                 CorsAction::Validate {
-                    origin: "cdn.test".into(),
+                    origin: "https://cdn.test".into(),
                 },
                 false,
             )
@@ -940,19 +1008,28 @@ mod run_arm {
             // cdn 子域命中（.cdn.test 后缀）。
             run(
                 CorsAction::Validate {
-                    origin: "static.cdn.test".into(),
+                    origin: "https://static.cdn.test".into(),
                 },
                 false,
             )
             .expect("cdn subdomain ok");
-            // 通配 *wild.test 前缀命中。
+            // 伪装后缀（host 非 *.cdn.test 形态）→ DENIED。
             run(
                 CorsAction::Validate {
-                    origin: "*wild.test".into(),
+                    origin: "https://fake-cdn.test".into(),
                 },
                 false,
             )
-            .expect("wildcard prefix ok");
+            .expect("cdn suffix disguise denied ok");
+            // BUG-20261121-004 语义更新：裸域名 / `*wild.test` 通配前缀
+            // 是旧手写判定才有的怪形态（无 scheme 概念 / `*domain` 分支），
+            // 真实 CORS 层收到的 Origin 永带 scheme 且无通配语义——接线
+            // 单一真相源 origin_allowed 后两者 DENIED（与浏览器实际行为
+            // 一致；旧 validate 说 ALLOWED 是假象）。
+            for bad in ["cdn.test", "static.cdn.test", "*wild.test"] {
+                run(CorsAction::Validate { origin: bad.into() }, false)
+                    .unwrap_or_else(|_| panic!("裸域名/通配形态 {bad} → DENIED"));
+            }
             // 都不命中 + localhost 关 → DENIED。
             run(
                 CorsAction::Validate {
@@ -980,7 +1057,7 @@ mod run_arm {
             for origin in [
                 "http://localhost:8080",
                 "http://127.0.0.1:49000",
-                "http://LOCALHOST:5173",
+                "http://localhost:9999",
             ] {
                 run(
                     CorsAction::Validate {
@@ -990,6 +1067,17 @@ mod run_arm {
                 )
                 .expect("localhost 允许分支");
             }
+            // BUG-20261121-004 语义更新：大写 LOCALHOST 是旧手写判定的
+            // contains("localhost:") 宽匹配产物；真实层判定（origin_allowed）
+            // 小写精确前缀（浏览器发出的 Origin host 规范化为小写，实践零
+            // 影响）——大写形态 DENIED，不再混进允许分支。
+            run(
+                CorsAction::Validate {
+                    origin: "http://LOCALHOST:5173".into(),
+                },
+                false,
+            )
+            .expect("大写 LOCALHOST → DENIED 分支");
 
             // dev_mode=true 时 localhost 也放行（development_mode + localhost）。
             write_cors(

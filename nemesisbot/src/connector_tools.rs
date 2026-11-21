@@ -654,8 +654,6 @@ pub struct ConnectorInvokeTool {
     budget: Arc<BudgetGuard>,
     /// tool 绑定回灌句柄（Arc 定型后注入，同 code_run）。
     loop_ref: parking_lot::RwLock<Option<Weak<AgentLoop>>>,
-    /// action 账本互斥（load→mutate→save 串行化；磁盘为权威依据，无内存缓存）。
-    order_lock: parking_lot::Mutex<()>,
     /// 集群 RPC 通道（agent_factory 注入，与 cluster_rpc 工具同源闭包；
     /// 缺省 None = target_node 诚实报错）。
     remote_call_fn: parking_lot::RwLock<Option<RemoteCallFn>>,
@@ -685,7 +683,6 @@ impl ConnectorInvokeTool {
             security,
             budget,
             loop_ref: parking_lot::RwLock::new(None),
-            order_lock: parking_lot::Mutex::new(()),
             remote_call_fn: parking_lot::RwLock::new(None),
             invocation_depth: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -1827,7 +1824,24 @@ impl ConnectorInvokeTool {
         // 成功体是 connector 回执（可能带数据），全量读后仍走 HTTP_BODY_CAP
         // 显示帽与回提炼。
         let text = if status.is_success() {
-            resp.text().await.unwrap_or_default()
+            // BUG-20261120-037：2xx 头已到达 = 对端已受理（write 类大概率已
+            // 生效，预算不得回吐——Failed 臂会 release）；body 传输中断 =
+            // 返回数据不完整，不得伪装「成功返回 0 字节」（旧
+            // unwrap_or_default 静默吞错，模型把残缺响应当真、凭条把传输
+            // 异常记成正常 executed——与 read_error_body「不伪装完整错误
+            // 体」纪律同族不对称）→ UnknownOutcome 保留账目（决策表第四臂）。
+            match resp.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    return Ok(InvocationOutcome::UnknownOutcome {
+                        summary: "HTTP 响应体读取中断（结果不完整）".to_string(),
+                        result_text: format!(
+                            "HTTP {status} 响应已受理，但响应体读取中断——返回数据不完整\
+                             （可能被截断）；预算占用保留。错误: {e}"
+                        ),
+                    });
+                }
+            }
         } else {
             nemesis_utils::http_cap::read_error_body(resp).await
         };
@@ -2176,7 +2190,10 @@ impl ConnectorInvokeTool {
             })?;
         let ts = chrono::Utc::now().to_rfc3339();
         // 账本互斥：load→mutate→save 串行（磁盘真相源，无内存缓存）。
-        let _guard = self.order_lock.lock();
+        // BUG-20261120-035：锁必须是进程级单例（ledger::ledger_write_lock）
+        // ——主 loop 与项目 loop 各持一份工具实例，per-instance 锁罩不住
+        // 跨实例交错 RMW（后 save 整文件覆盖 = 丢单/资金凭空重复）。
+        let _guard = nemesis_connectors::ledger::ledger_write_lock();
         let mut ledger = nemesis_connectors::ledger::load_ledger(&self.workspace)?;
         let order = match side {
             "buy" => ledger.buy(&symbol, qty, price, &ts),

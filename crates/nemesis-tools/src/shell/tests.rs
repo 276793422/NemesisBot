@@ -1275,3 +1275,95 @@ async fn test_timeout_kills_child_tree() {
         "超时命令的子进程未被终止（孤儿存活，marker 已落盘）"
     );
 }
+
+// ============================================================
+// 内置 deny 词表元数据完整性（2026-11-20 危险闸页面，单一真相源自钉）
+// ============================================================
+
+/// 词表表契约：非空 / name 全表唯一 / category+severity 值域固定 /
+/// reason 非空 / pattern 全部可编译。危险闸页面（WSAPI exec_deny_list）
+/// 与拒绝消息直接消费这四元组——在真相源 crate 钉死，消费方漂移先红这里。
+#[test]
+fn builtin_deny_entries_metadata_contract() {
+    let table = DEFAULT_EXEC_DENY_ENTRIES;
+    assert!(table.len() >= 40, "词表应 ≥40 条，got {}", table.len());
+    let mut names: Vec<&str> = table.iter().map(|e| e.name).collect();
+    let total = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), total, "deny 词条 name 必须全表唯一");
+    const CATEGORIES: &[&str] = &[
+        "destructive",
+        "system",
+        "privilege",
+        "exfiltration",
+        "remote",
+        "rce",
+        "package",
+        "container",
+        "git",
+        "obfuscation",
+    ];
+    const SEVERITIES: &[&str] = &["high", "medium", "low"];
+    for e in table {
+        assert!(
+            CATEGORIES.contains(&e.category),
+            "词条 {} category 值域外: {}",
+            e.name,
+            e.category
+        );
+        assert!(
+            SEVERITIES.contains(&e.severity),
+            "词条 {} severity 值域外: {}",
+            e.name,
+            e.severity
+        );
+        assert!(!e.reason.is_empty(), "词条 {} reason 不得为空", e.name);
+        assert!(!e.name.is_empty());
+        regex::Regex::new(e.pattern)
+            .unwrap_or_else(|err| panic!("词条 {} pattern 编译失败: {err}", e.name));
+    }
+}
+
+/// 关键模式在场（词表误清空/误删条目时先红）：destructive / privilege /
+/// git / rce / exfiltration 五类各至少一条代表模式。
+#[test]
+fn builtin_deny_entries_key_patterns_present() {
+    let joined = DEFAULT_EXEC_DENY_ENTRIES
+        .iter()
+        .map(|e| e.pattern)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for key in [
+        r"\brm\s",     // destructive
+        r"\bsudo\b",   // privilege
+        r"git\s+push", // git
+        r"\beval\b",   // rce/obfuscation
+        r"\bssh\b.*@", // remote（外传跳板——本子系统的起因条目）
+    ] {
+        assert!(joined.contains(key), "默认词表必须含 {key} 相关模式");
+    }
+}
+
+/// default_deny_patterns() 投影条数与词表一致（消费方兼容投影面；
+/// 投影产物是编译后的 Regex——可编译性已由元数据契约测试覆盖）。
+#[test]
+fn default_deny_patterns_projects_all_entries() {
+    let projected = default_deny_patterns();
+    assert_eq!(
+        projected.len(),
+        DEFAULT_EXEC_DENY_ENTRIES.len(),
+        "投影条数必须与词表一致（全部可编译）"
+    );
+}
+
+/// 写侧校验 helper（WSAPI exec_deny_set 消费）：空串拒 / 坏正则拒 /
+/// 好正则过。
+#[test]
+fn validate_deny_extra_pattern_contract() {
+    assert!(super::validate_deny_extra_pattern("").is_err());
+    assert!(super::validate_deny_extra_pattern("   ").is_err());
+    assert!(super::validate_deny_extra_pattern("([unclosed").is_err());
+    assert!(super::validate_deny_extra_pattern(r"forbidden_binary\.exe").is_ok());
+    assert!(super::validate_deny_extra_pattern(r"rm\s+-rf").is_ok());
+}

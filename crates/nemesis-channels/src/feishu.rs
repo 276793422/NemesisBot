@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
-use crate::base::{BaseChannel, Channel};
+use crate::base::{BaseChannel, Channel, EventDedup};
 
 /// Initial backoff duration for reconnect.
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -28,6 +28,12 @@ const DEFAULT_WS_PING_INTERVAL_SECS: u64 = 30;
 /// 整个读循环（select 单臂卡住 = Pong/Ping/关停全停），有界超时让既有
 /// break/return 语义可达，重连臂接管。家族值对齐 IRC WRITE_TIMEOUT_SECS。
 const WS_WRITE_TIMEOUT_SECS: u64 = 30;
+
+/// 默认 API 域名（国内飞书）。BUG-20261121-045：模块宣称「Feishu/Lark
+/// channel」但此前全部 5 处 URL 硬编码 open.feishu.cn——国际版 Lark
+/// （open.larksuite.com，同 API 形态）用户完全不可用（宣称与代码事实族，
+/// 同 BUG-036/037/040）。现 api_base 可配：config 缺省/空 = 此默认。
+pub const DEFAULT_API_BASE: &str = "https://open.feishu.cn";
 
 /// Feishu channel configuration.
 /// SEC-002（BUG-20261111-068）：app_secret / verification_token /
@@ -44,6 +50,22 @@ pub struct FeishuConfig {
     pub encrypt_key: String,
     /// Allowed sender IDs.
     pub allow_from: Vec<String>,
+    /// API base（BUG-20261121-045）：空/缺省 = [`DEFAULT_API_BASE`]；
+    /// Lark 国际版配 `https://open.larksuite.com`。
+    pub api_base: String,
+}
+
+impl Default for FeishuConfig {
+    fn default() -> Self {
+        Self {
+            app_id: String::new(),
+            app_secret: String::new(),
+            verification_token: String::new(),
+            encrypt_key: String::new(),
+            allow_from: Vec::new(),
+            api_base: DEFAULT_API_BASE.to_string(),
+        }
+    }
 }
 
 crate::debug_redact::impl_redacted_debug!(FeishuConfig {
@@ -153,6 +175,9 @@ struct FeishuEventHeader {
     event_type: Option<String>,
 }
 
+// EventDedup 已提升至 crate::base（BUG-20261121-051：单一真相源，slack
+// BUG-20261121-051 同批共享；本文件经 use crate::base::EventDedup 使用）。
+
 /// Feishu channel using WebSocket mode.
 pub struct FeishuChannel {
     base: BaseChannel,
@@ -164,6 +189,8 @@ pub struct FeishuChannel {
     bus_sender: broadcast::Sender<InboundMessage>,
     /// Cancellation sender for the receive loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// 入站事件去重（BUG-20261121-048）：按 header.event_id。
+    event_dedup: Arc<EventDedup>,
 }
 
 impl FeishuChannel {
@@ -172,20 +199,40 @@ impl FeishuChannel {
         config: FeishuConfig,
         bus_sender: broadcast::Sender<InboundMessage>,
     ) -> Result<Self> {
+        Self::new_with_client(config, bus_sender, crate::base::outbound_http_client()?)
+    }
+
+    /// 可注入 HTTP client 的构造器（家族惯例：discord/telegram 同款——
+    /// 回归锁 loopback mock 零外网依赖的前置基建）。
+    pub fn new_with_client(
+        mut config: FeishuConfig,
+        bus_sender: broadcast::Sender<InboundMessage>,
+        http: reqwest::Client,
+    ) -> Result<Self> {
         if config.app_id.is_empty() || config.app_secret.is_empty() {
             return Err(NemesisError::Channel(
                 "feishu app_id and app_secret are required".to_string(),
             ));
         }
 
+        // BUG-20261121-045：api_base 单一漏斗——空/缺省回落官方默认
+        // （Lark 国际版经 config 配 open.larksuite.com），尾斜杠构造期
+        // 归一（discord BUG-20261109-012 同款：双斜杠路径会让全部 API
+        // 断链）。
+        if config.api_base.is_empty() {
+            config.api_base = DEFAULT_API_BASE.to_string();
+        }
+        config.api_base = config.api_base.trim_end_matches('/').to_string();
+
         Ok(Self {
             base: BaseChannel::new("feishu"),
             config,
-            http: crate::base::outbound_http_client()?,
+            http,
             running: Arc::new(parking_lot::RwLock::new(false)),
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),
+            event_dedup: Arc::new(EventDedup::new()),
         })
     }
 
@@ -198,7 +245,10 @@ impl FeishuChannel {
 
         let resp = self
             .http
-            .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+            .post(format!(
+                "{}/open-apis/auth/v3/tenant_access_token/internal",
+                self.config.api_base
+            ))
             .json(&params)
             .send()
             .await
@@ -250,7 +300,7 @@ impl FeishuChannel {
 
         let resp = self
             .http
-            .post("https://open.feishu.cn/open-apis/im/v1/messages")
+            .post(format!("{}/open-apis/im/v1/messages", self.config.api_base))
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
             .json(&params)
@@ -258,12 +308,38 @@ impl FeishuChannel {
             .await
             .map_err(|e| NemesisError::Channel(format!("feishu send failed: {e}")))?;
 
-        if !resp.status().is_success() {
-            let body = nemesis_utils::http_cap::read_error_body(resp).await;
-            return Err(NemesisError::Channel(format!("feishu send error: {body}")));
+        // BUG-20261121-047：飞书 OpenAPI 响应体统一形态 {"code": i64,
+        // "msg": str, "data": ...}，「code 非 0 表示失败」（官方文档）——
+        // 业务拒绝（机器人不在群 230002 / 用户不可用 230013 / 限频 230020 /
+        // 缺权限 230027 等）可以 HTTP 2xx + code!=0 形态出现，此前只查
+        // HTTP status 会把发送失败静默当成功（agent 假报已回复，用户收
+        // 不到消息）。code 判定优先于 status；解析失败（HTML 错误页等
+        // 非 JSON 形态）也诚实报错而非当成功。全部失败路径保持
+        // "feishu send error" 前缀（is_send_rejected 契约面：token 类
+        // 失败触发刷新重试一次）。body 截断防错误页打爆日志。
+        let status = resp.status();
+        let body_text = resp.text().await.map_err(|e| {
+            NemesisError::Channel(format!(
+                "feishu send error: HTTP {status}: read body failed: {e}"
+            ))
+        })?;
+        let capped: String = body_text.chars().take(1024).collect();
+        let parsed: std::result::Result<ApiResponse<serde_json::Value>, _> =
+            serde_json::from_str(&body_text);
+        match parsed {
+            Ok(body) if body.code != 0 => Err(NemesisError::Channel(format!(
+                "feishu send error: code={} msg={}",
+                body.code,
+                body.msg.unwrap_or_default()
+            ))),
+            Ok(_) if !status.is_success() => Err(NemesisError::Channel(format!(
+                "feishu send error: HTTP {status}: {capped}"
+            ))),
+            Ok(_) => Ok(()),
+            Err(e) => Err(NemesisError::Channel(format!(
+                "feishu send error: HTTP {status}: body parse failed: {e}: {capped}"
+            ))),
         }
-
-        Ok(())
     }
 
     /// 出站 token 自愈骨架：tenant_access_token 有效期约 2h，共享槽唯一
@@ -340,7 +416,7 @@ impl FeishuChannel {
     async fn get_ws_endpoint(&self) -> Result<(String, u64)> {
         let resp = self
             .http
-            .post("https://open.feishu.cn/callback/ws/endpoint")
+            .post(format!("{}/callback/ws/endpoint", self.config.api_base))
             .json(&serde_json::json!({
                 "AppID": self.config.app_id,
                 "AppSecret": self.config.app_secret,
@@ -384,7 +460,22 @@ impl FeishuChannel {
         event_json: &serde_json::Value,
         bus_sender: &broadcast::Sender<InboundMessage>,
         allow_from: &[String],
+        dedup: &EventDedup,
     ) {
+        // BUG-20261121-048：at-least-once 重推去重——header.event_id 在场
+        // 时查重（重复 = 平台重推，静默丢弃）；缺失（schema 1.0 老形态/
+        // 非 v2 事件）保守放行，宁重复不丢。
+        if let Some(id) = event_json
+            .get("header")
+            .and_then(|h| h.get("event_id"))
+            .and_then(|v| v.as_str())
+            && !id.is_empty()
+            && !dedup.check_and_record(id)
+        {
+            debug!(event_id = %id, "[FeishuChannel] duplicate event dropped (at-least-once redelivery)");
+            return;
+        }
+
         // Schema 2.0 format
         let event = match event_json.get("event") {
             Some(e) => e,
@@ -517,6 +608,7 @@ impl FeishuChannel {
         let running = self.running.clone();
         let bus_sender = self.bus_sender.clone();
         let allow_from = self.config.allow_from.clone();
+        let event_dedup = self.event_dedup.clone();
 
         tokio::spawn(async move {
             let mut cancel_rx = cancel_rx;
@@ -527,50 +619,15 @@ impl FeishuChannel {
                     break;
                 }
 
-                // Step 1: Get access token
-                let token_params = serde_json::json!({
-                    "app_id": config.app_id,
-                    "app_secret": config.app_secret,
-                });
-
-                let token_result = http
-                    .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
-                    .json(&token_params)
-                    .send()
-                    .await;
-
-                let _token = match token_result {
-                    Ok(resp) => {
-                        if let Ok(body) = resp.json::<ApiResponse<TenantTokenResponse>>().await {
-                            if body.code == 0 {
-                                body.data.map(|d| d.tenant_access_token).unwrap_or_default()
-                            } else {
-                                warn!(code = body.code, "[FeishuChannel] auth error, backing off");
-                                tokio::select! {
-                                    _ = tokio::time::sleep(backoff) => {}
-                                    _ = &mut cancel_rx => break,
-                                }
-                                backoff = (backoff * 2).min(MAX_BACKOFF);
-                                continue;
-                            }
-                        } else {
-                            String::new()
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "[FeishuChannel] auth request failed, backing off");
-                        tokio::select! {
-                            _ = tokio::time::sleep(backoff) => {}
-                            _ = &mut cancel_rx => break,
-                        }
-                        backoff = (backoff * 2).min(MAX_BACKOFF);
-                        continue;
-                    }
-                };
+                // BUG-20261121-049：旧 Step 1（auth 取 token 存 `_token`）
+                // 已删除——token 从未被消费（endpoint API 用 AppID/AppSecret
+                // in-body 鉴权、WS 连接无 token 依赖），每轮重连白打一次
+                // auth 请求；token 的实际生产路径 = start() 的一次 refresh
+                // + 出站发送空槽惰性补种（send_with_fresh_token）。
 
                 // Step 2: Get WebSocket endpoint
                 let endpoint_result = http
-                    .post("https://open.feishu.cn/callback/ws/endpoint")
+                    .post(format!("{}/callback/ws/endpoint", config.api_base))
                     .json(&serde_json::json!({
                         "AppID": config.app_id,
                         "AppSecret": config.app_secret,
@@ -672,6 +729,7 @@ impl FeishuChannel {
                                                     &event_json,
                                                     &bus_sender,
                                                     &allow_from,
+                                                    &event_dedup,
                                                 );
                                             }
                                         }
@@ -687,6 +745,7 @@ impl FeishuChannel {
                                                         &event_json,
                                                         &bus_sender,
                                                         &allow_from,
+                                                        &event_dedup,
                                                     );
                                                 }
                                             } else {
@@ -696,6 +755,7 @@ impl FeishuChannel {
                                                         &event_json,
                                                         &bus_sender,
                                                         &allow_from,
+                                                        &event_dedup,
                                                     );
                                                 }
                                             }
@@ -820,14 +880,32 @@ impl Channel for FeishuChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261121-046：幂等双启守卫（telegram BUG-20261110-037 /
+        // discord BUG-20261121-043 同构第三实锤）——无守卫的重复 start
+        // 会 spawn 多个并行 receive loop，各自连 WS 各自发布 inbound，
+        // 每条消息 N 倍喂 agent。
+        if self.base.is_running() {
+            info!("[FeishuChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
+
         info!("[FeishuChannel] starting Feishu channel (WebSocket mode)");
         *self.running.write() = true;
+        // BUG-20261121-046：trait is_running()（读 base 旗标）此前恒 false，
+        // 违反「start 成功后、stop 前为 running」契约——manager 的运行中
+        // 守卫（ChannelManager::start_all 读 trait is_running）对本通道失效。
+        self.base.set_running(true);
         self.base.set_enabled(true);
 
-        // Try to obtain access token
+        // Try to obtain access token。失败不阻断启动：出站发送时
+        // send_with_fresh_token 空槽惰性补种（BUG-20261121-049：旧文案
+        // 「will retry in receive loop」不实——receive loop 已无 auth 步，
+        // token 从不在此消费）。
         match self.refresh_token().await {
             Ok(token) => info!(token_len = token.len(), "[FeishuChannel] authenticated"),
-            Err(e) => warn!(error = %e, "[FeishuChannel] auth failed (will retry in receive loop)"),
+            Err(e) => {
+                warn!(error = %e, "[FeishuChannel] auth failed (outbound sends will lazily refresh token)")
+            }
         }
 
         // Start the WebSocket receive loop
@@ -840,6 +918,8 @@ impl Channel for FeishuChannel {
     async fn stop(&self) -> Result<()> {
         info!("[FeishuChannel] stopping Feishu channel");
         *self.running.write() = false;
+        // BUG-20261121-046：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
 
         if let Some(tx) = self.cancel_tx.lock().take() {

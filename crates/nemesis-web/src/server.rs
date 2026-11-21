@@ -1232,12 +1232,30 @@ impl WebServer {
         // 这批 relay 路由（set_relay 注入后），却被上面的 route_layer 覆盖且
         // 不在豁免清单——auth_token 非空时 relay 整体 401。修复 = 豁免清单
         // 增补五条 relay 自有信任边界路径（批次三 dashboard 端点保持鉴权）。
-        // CORS three-state（2026-10-16 hardening）：显式 origin 列表 → 生产
-        // 层；显式 allow_all → dev 层（`*`）；二者皆无 → restrictive（拒绝
-        // 跨域）。旧「空列表 = allow-all」缺省已废除——配置缺失不再静默
-        // 变成 `*`。dashboard/独立页/share 都是同源服务，restrictive 不影响
-        // 内建流；跨端开发场景走 development_mode 显式放开。
-        let cors_mode = if !self.config.cors_origins.is_empty() {
+        // CORS 装配四态（BUG-20261121-004，2026-10-16 hardening 的扩展）：
+        // cors_manager 在位（gateway 生产装配经 set_cors_manager 注入）→
+        // managed 层，config.cors.json 完整语义生效（显式 origins 精确 ∨
+        // allow_localhost 任意端口 ∨ CDN 子域 ∨ development_mode 分流），
+        // 判定单一真相源 origin_allowed（与 CORSManager::check_origin /
+        // CLI `cors validate` 同源）。此前三态只读 WebServerConfig 两快照
+        // 字段，manager 的 allow_localhost/CDN 在装配层是死键。
+        // manager None（测试字面量装配/无 CORS 配置启动）→ 回落旧三态：
+        // 显式 origin 列表 → 生产层；显式 allow_all → dev 层（`*`）；二者
+        // 皆无 → restrictive（拒绝跨域）。旧「空列表 = allow-all」缺省已
+        // 废除——配置缺失不再静默变成 `*`。dashboard/独立页/share 都是同
+        // 源服务，restrictive 不影响内建流；跨端开发场景走 development_mode
+        // 显式放开。
+        let cors_mode = if let Some(mgr) = self.cors_manager.as_ref() {
+            let cfg = mgr.config();
+            tracing::info!(
+                origins = cfg.allowed_origins.len(),
+                development_mode = cfg.development_mode,
+                allow_localhost = cfg.allow_localhost,
+                cdn_domains = cfg.allowed_cdn_domains.len(),
+                "[WebServer] CORS: managed config (config.cors.json)"
+            );
+            crate::cors::cors_layer_from_manager(mgr)
+        } else if !self.config.cors_origins.is_empty() {
             tracing::info!(
                 origins = self.config.cors_origins.len(),
                 "[WebServer] CORS: production (explicit allowlist)"

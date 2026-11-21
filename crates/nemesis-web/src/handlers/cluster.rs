@@ -1523,10 +1523,18 @@ impl ClusterHandler {
             updated["name"] = serde_json::json!(name);
         }
         if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
-            let role = role.trim().to_string();
-            // "coordinator" 为规范词表；"manager" 为前端展示词表别名（归一走 NodeRole::from_role_str）。
-            if NodeRole::from_role_str(&role) != NodeRole::Coordinator && role != "worker" {
-                return Err("role must be 'coordinator'/'manager' or 'worker'".to_string());
+            // 小写归一（BUG-20261120-042 横向同族）：此前词表判断与
+            // from_role_str（trim+lowercase）大小写口径劈叉——"Worker" 被拒
+            // 而 "Coordinator" 被收；同函数 professions/tier/backend 三字段
+            // 全部小写归一，role 是唯一异类。归一后词表显式枚举
+            // （coordinator/manager/master 收进 Coordinator 槽，worker 为
+            // worker），运行时槽与 peers.toml 持久化都落规范小写形态。
+            let role = role.trim().to_ascii_lowercase();
+            if !matches!(
+                role.as_str(),
+                "coordinator" | "manager" | "master" | "worker"
+            ) {
+                return Err("role must be 'coordinator'/'manager'/'master' or 'worker'".to_string());
             }
             cluster.set_role(&role);
             updated["role"] = serde_json::json!(role);
@@ -1636,7 +1644,9 @@ impl ClusterHandler {
                     node.name = name.trim().to_string();
                 }
                 if let Some(role) = data.get("role").and_then(|v| v.as_str()) {
-                    node.role = role.trim().to_string();
+                    // 与上方校验臂同款小写归一（BUG-20261120-042 横向同族）：
+                    // 校验臂早退保证到此必为合法词，这里只做形态归一。
+                    node.role = role.trim().to_ascii_lowercase();
                 }
                 if let Some(category) = data.get("category").and_then(|v| v.as_str()) {
                     node.category = category.trim().to_string();

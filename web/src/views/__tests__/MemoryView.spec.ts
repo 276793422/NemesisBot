@@ -546,6 +546,52 @@ describe('MemoryView 强化记忆 TAB：内容与测试卡（gap 补测）', () 
     w.unmount()
   })
 
+  it('并发条目搜索：慢的旧回包不覆盖新结果（BUG-20261120-032）', async () => {
+    const w = await mountView('强化记忆')
+    const vm = w.vm as any
+    const resolvers: ((v: any) => void)[] = []
+    requestMock.mockImplementation((_m: string, cmd: string) => cmd === 'entries.search'
+      ? new Promise(resolve => { resolvers.push(resolve) })
+      : Promise.resolve({}))
+    vm.entriesSearchQuery = 'old'
+    const p1 = vm.searchEntries()
+    await flushPromises()
+    vm.entriesSearchQuery = 'new'
+    const p2 = vm.searchEntries()
+    await flushPromises()
+    expect(resolvers.length).toBe(2)
+    // 乱序回包：new 先回、old 后回——旧回包不得覆盖
+    resolvers[1]({ results: [{ id: 'r2', content: '新命中', type: 'fact' }] })
+    await flushPromises()
+    resolvers[0]({ results: [{ id: 'r1', content: '旧命中', type: 'note' }] })
+    await flushPromises()
+    await Promise.all([p1, p2])
+    expect(vm.entriesSearchResults.map((r: any) => r.id)).toEqual(['r2'])
+    w.unmount()
+  })
+
+  it('管理页搜索清空后慢回包不回填（BUG-20261120-032）', async () => {
+    const w = await mountView('强化记忆')
+    const vm = w.vm as any
+    let resolveSearch!: (v: any) => void
+    requestMock.mockImplementation((_m: string, cmd: string) => cmd === 'entries.search'
+      ? new Promise(resolve => { resolveSearch = resolve })
+      : Promise.resolve({}))
+    vm.mgmtSearchQuery = 'x'
+    const p = vm.searchMgmtEntries()
+    await flushPromises()
+    // 清空关键词 + 再次触发 → 同步清结果并作废在飞请求
+    vm.mgmtSearchQuery = ''
+    await vm.searchMgmtEntries()
+    await flushPromises()
+    expect(vm.mgmtResults).toBe(null)
+    resolveSearch({ results: [{ id: 'late', content: '迟到命中', type: 'note' }] })
+    await flushPromises()
+    await p
+    expect(vm.mgmtResults).toBe(null)
+    w.unmount()
+  })
+
   it('存储测试条目：空文本提示、成功清空并刷新、失败提示', async () => {
     const w = await mountView('强化记忆')
     const vm = w.vm as any

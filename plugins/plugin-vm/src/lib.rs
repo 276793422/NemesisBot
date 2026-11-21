@@ -42,6 +42,9 @@ mod resources;
 #[cfg(test)]
 mod resource_tests;
 
+#[cfg(test)]
+mod drift_tests;
+
 use std::ffi::{CStr, CString};
 use std::io;
 use std::os::raw::{c_char, c_int};
@@ -52,8 +55,10 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
-use vm_display::{HostVmDisplayVTable, PluginVmInfo, HOST_VM_DISPLAY_ABI_VERSION,
-    INIT_ERR_ABI_MISMATCH, INIT_ERR_INTERNAL, INIT_ERR_INVALID_ARG};
+use vm_display::{
+    HostVmDisplayVTable, PluginVmInfo, HOST_VM_DISPLAY_ABI_VERSION, INIT_ERR_ABI_MISMATCH,
+    INIT_ERR_INTERNAL, INIT_ERR_INVALID_ARG,
+};
 
 // ---------------------------------------------------------------------------
 // 帧协议常量（与网关 shim 同数值：上行 1 MiB / 下行 16 MiB）
@@ -111,9 +116,7 @@ fn query_vnc_port(agent_id: &str) -> Option<u16> {
     if rc <= 0 {
         log(
             3,
-            &format!(
-                "display_port_query({agent_id}) = {rc}（-1 未知 / -2 未运行 / -3 无显示）"
-            ),
+            &format!("display_port_query({agent_id}) = {rc}（-1 未知 / -2 未运行 / -3 无显示）"),
         );
         return None;
     }
@@ -266,10 +269,7 @@ pub unsafe extern "C" fn plugin_vm_display_init(
 /// 无（纯入口）。
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn plugin_vm_display_free() {
-    let taken = STATE
-        .lock()
-        .ok()
-        .and_then(|mut st| st.take());
+    let taken = STATE.lock().ok().and_then(|mut st| st.take());
     let Some(state) = taken else {
         return; // 未初始化 / 已释放：幂等 no-op
     };
@@ -431,13 +431,14 @@ async fn handle_session(stream: TcpStream) {
     };
 
     tokio::join!(down, up);
-    audit("session_close", &format!("{{\"session_id\":{:?}}}", meta.session_id));
+    audit(
+        "session_close",
+        &format!("{{\"session_id\":{:?}}}", meta.session_id),
+    );
 }
 
 /// 读 meta 行（\n 结尾；超限 = Err）。
-async fn read_meta_line(
-    reader: &mut OwnedReadHalf,
-) -> Result<String, io::Error> {
+async fn read_meta_line(reader: &mut OwnedReadHalf) -> Result<String, io::Error> {
     let mut line = Vec::with_capacity(128);
     let mut byte = [0u8; 1];
     loop {
@@ -480,10 +481,7 @@ async fn read_frame(reader: &mut OwnedReadHalf) -> Result<Vec<u8>, io::Error> {
 }
 
 /// 长度前缀帧写。
-async fn write_frame(
-    writer: &mut OwnedWriteHalf,
-    data: &[u8],
-) -> Result<(), io::Error> {
+async fn write_frame(writer: &mut OwnedWriteHalf, data: &[u8]) -> Result<(), io::Error> {
     writer.write_all(&(data.len() as u32).to_be_bytes()).await?;
     writer.write_all(data).await
 }

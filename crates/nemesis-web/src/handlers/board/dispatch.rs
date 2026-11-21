@@ -1933,13 +1933,22 @@ fn normalize_dispatch_role(
     required_role: Option<&str>,
     required_tags: &[String],
 ) -> (Option<String>, Vec<String>) {
-    match required_role.map(str::trim) {
+    // 词表判断小写归一（BUG-20261120-042）：planner LLM 输出的角色词大小写
+    // 不受控（"Worker"/"COORDINATOR"），词表判断此前大小写敏感——词表内角色
+    // 带大写即被误判词表外转标签：严格匹配全灭（无节点宣告该标签）+ 松弛
+    // 阶梯丢标签后 role=None → coordinator 可接 worker 任务（角色纪律静默
+    // 旁路），而认领闸（eq_ignore_ascii_case）与 rank_peers（双侧小写）都
+    // 是大小写不敏感——同一输入派发面与认领面语义劈叉。四个匹配面共用本
+    // 归一定义，在此对齐口径；词表内角色值小写化返回（required_backend
+    // 解析期小写归一先例；下游 rank_peers/明细/认领闸本就大小写不敏感，
+    // 归一纯为判类正确与展示一致）。
+    match required_role.map(str::trim).map(str::to_ascii_lowercase) {
         Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
             let mut tags = required_tags.to_vec();
-            tags.push(r.to_string());
+            tags.push(r);
             (None, tags)
         }
-        Some(r) if !r.is_empty() => (Some(r.to_string()), required_tags.to_vec()),
+        Some(r) if !r.is_empty() => (Some(r), required_tags.to_vec()),
         _ => (None, required_tags.to_vec()),
     }
 }
@@ -2085,15 +2094,11 @@ pub(super) fn pick_fallback_target(
 
     // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
-    //    角色丢标签」，行为不变）。角色归一沿用严格匹配（词表外角色词
-    //    已在严格匹配里转 tags，这里只需认 worker/coordinator）。
-    let candidates = matcher_candidates(store, cluster);
-    let load = store.count_active_dispatch_by_worker().unwrap_or_default();
-    // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
-    //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
     //    角色丢标签」，行为不变）。角色归一走统一定义
     //    normalize_dispatch_role（词表外角色词转 tags——此前这里独家丢词，
     //    松弛丢标签后零约束，任意在线节点可接单）。
+    let candidates = matcher_candidates(store, cluster);
+    let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     let (role, tags) =
         normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
     let base = nemesis_board::MatchInput {

@@ -9187,6 +9187,42 @@ fn w5_rank_out_of_vocab_role_and_empty_tags_detail() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BUG-20261120-042 回归锁：词表判断小写归一。角色词带大写（"Worker"——
+/// planner LLM 输出大小写不受控）此前被误判词表外转标签：严格匹配全灭 +
+/// 松弛丢标签后 role=None（coordinator 可接 worker 任务，角色纪律静默旁
+/// 路）；而认领闸与 rank_peers 角色比对都是大小写不敏感——同一输入派发面
+/// 与认领面语义劈叉。修复后 "Worker" = 角色 Some("worker")，纯角色命中。
+#[cfg(feature = "cluster")]
+#[test]
+fn w5_rank_in_vocab_role_capitalized_is_role_not_tag() {
+    let dir = unique_dir("w5-rank-case");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let cluster = offline_cluster(&dir, "w5-rank-case-c");
+
+    // worker 节点无任何 tags：issue 要求 "Worker"（大写）——修复前被转成
+    // 标签 "Worker" 全灭；修复后按角色命中（rank_peers 角色比对双侧小写）。
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-w", &[], &[]);
+    let ranked =
+        super::rank_dispatch_candidates(&store, &cluster, &bare_issue(Some("Worker"), &[]));
+    assert_eq!(
+        ranked,
+        vec!["node-w".to_string()],
+        "大写词表内角色必须按角色匹配而非转标签：{ranked:?}"
+    );
+
+    // 明细镜像：coordinator 候选报 role≠worker（角色语义），不得报
+    // 「缺标签 worker」（标签语义 = 词表误判形态）。
+    let detail = super::match_failure_detail(
+        &bare_issue(Some("Worker"), &[]),
+        &[cand("node-c", "coordinator", &[])],
+    );
+    assert!(detail.contains("role≠worker"), "{detail}");
+    assert!(!detail.contains("缺标签"), "{detail}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// 自动派发内核（2914-2943）：assignee=Worker 但 assignee_id 缺失 →
 /// false（2918-2920）；正常指派 + peer 在线 + RPC client → 派出返回
 /// true（2921-2927）。

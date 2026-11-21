@@ -152,3 +152,48 @@ fn memory_only_mode_without_workspace() {
         .join(format!("{safe}.dedup.json"));
     assert!(!path.exists());
 }
+
+// BUG-20261121-007 回归锁：sidecar 走 write_file_atomic 统一出口——
+// 落盘后无 .tmp 残留（失败清理臂纪律），盘上字节直接可解析为 v1 schema
+// （原子 rename 保证读到的要么是完整旧文件要么是完整新文件，无撕裂态）。
+
+#[tokio::test]
+async fn sidecar_write_is_atomic_no_tmp_residue_valid_json() {
+    let _g = table_guard!();
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("workspace");
+    reset_for_tests();
+    set_workspace_for_tests(Some(ws.clone()));
+
+    let sk = unique_session("atomic");
+    for i in 0..5 {
+        insert(&sk, &format!("cm-{i}"), i as u64);
+    }
+
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(&sk);
+    let sessions_dir = nemesis_path::resolve_sessions_dir_in_workspace(&ws);
+    let path = sessions_dir.join(format!("{safe}.dedup.json"));
+    assert!(path.exists(), "sidecar 必须落盘");
+
+    // 原子写纪律：目录里除 sidecar 本体外不得有任何 .tmp 残留
+    // （write_file_atomic 失败清理臂；裸 fs::write 无此约束也无此保障）。
+    let residue: Vec<_> = std::fs::read_dir(&sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| *n != format!("{safe}.dedup.json"))
+        .collect();
+    assert!(
+        residue.is_empty(),
+        "sidecar 目录不得有临时文件残留: {residue:?}"
+    );
+
+    // 盘上字节直接可解析（不依赖内存态加载路径）且 schema 形态正确。
+    let body = std::fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&body).expect("盘上内容必须是完整 JSON");
+    assert_eq!(v["v"], 1, "schema 版本字段");
+    let items = v["items"].as_array().expect("items 必须是数组");
+    assert_eq!(items.len(), 5, "5 次 insert 全量在盘");
+
+    reset_for_tests();
+}

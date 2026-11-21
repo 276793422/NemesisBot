@@ -187,6 +187,18 @@ pub fn find_connector(
     workspace: &Path,
     id: &str,
 ) -> Result<(ValidatedConnector, ConnectorTrust), ConnectorLookupError> {
+    // id 路径安全单点（BUG-20261121-031）：下方直达快路径把 id 原样 join
+    // 进注册目录——id 来自 LLM 工具入参（connector_invoke）/WSAPI/CLI，
+    // 含 `..`、`\`、盘符形态时读注册表外任意 connector.toml（跨 workspace
+    // 加载连接器定义）。create_connector 已保证注册目录名与清单 id 同字符
+    // 集，扫描兜底轨按已验清单 id 匹配——入口校验零功能损失，与
+    // state::state_path 同族防线。
+    crate::manifest::validate_id(id, "connector id").map_err(|error| {
+        ConnectorLookupError::Invalid {
+            id: id.to_string(),
+            error,
+        }
+    })?;
     let dir = workspace.join(CONNECTORS_DIR).join(id);
     let manifest_path = dir.join(MANIFEST_FILE);
     if !manifest_path.exists() {

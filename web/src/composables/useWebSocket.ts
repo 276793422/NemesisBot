@@ -18,6 +18,14 @@ let heartbeatInterval: ReturnType<typeof setInterval> | null = null
 // 重连，否则显式断开后定时器仍触发 connect()，连接“死而复生”。
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+// BUG-20261121-005 半开连接检测：heartbeat ping 有配套 pong（后端
+// handle_system_module 对 heartbeat.ping 回 {system,heartbeat,pong} 帧），
+// 此前端从不消费 pong——休眠唤醒/网络切换后的半开 TCP 下 send() 静默进
+// 内核缓冲，status 恒 connected，chat.send 永久无响应（带 reqId 的 WSAPI
+// 30s 超时报错，chat.send 这类 message 帧只能干等）。ping 后一个完整
+// 心跳周期（30s）未见 pong → 判半开，主动断开走重连循环。
+let pendingPing = false
+
 // Extra query params appended to the WS URL on connect (e.g.
 // `workflow_chat=<index>&pwd=<password>` for the standalone
 // workflow-chat page). Persists across reconnects.
@@ -62,6 +70,19 @@ function startHeartbeat() {
   stopHeartbeat()
   heartbeatInterval = setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      if (pendingPing) {
+        // BUG-20261121-005 半开臂：上个周期的 ping 没等到 pong → 判半开。
+        // W7 纪律：先摘模块状态再 close——FakeWS/真浏览器 close() 触发的
+        // 迟到 onclose 被 ws !== sock 守卫拦住，不会重复走断线路径。
+        const dead = ws
+        ws = null
+        stopHeartbeat()
+        notifyStatus('disconnected')
+        try { dead.close() } catch {}
+        reconnect()
+        return
+      }
+      pendingPing = true
       ws.send(JSON.stringify({
         type: 'system',
         module: 'heartbeat',
@@ -131,6 +152,7 @@ export function connect(
     sock.onopen = () => {
       console.log('[NemesisAPI] WebSocket connected')
       reconnectDelay = 1000
+      pendingPing = false
       notifyStatus('connected')
       flushQueue()
       startHeartbeat()
@@ -139,6 +161,13 @@ export function connect(
     sock.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
+
+        // BUG-20261121-005：服务端对 heartbeat.ping 回 pong 帧（无 reqId，
+        // handleWSResponse 不消费）——在此解除半开嫌疑，不进 handlers 分发。
+        if (data.type === 'system' && data.module === 'heartbeat' && data.cmd === 'pong') {
+          pendingPing = false
+          return
+        }
 
         // 1. Handle response-type messages (useWSAPI Promise routing)
         if (handleWSResponse(data)) return
@@ -162,6 +191,7 @@ export function connect(
       if (ws !== sock) return
       ws = null
       stopHeartbeat()
+      pendingPing = false
 
       if (!manualClose) {
         notifyStatus('disconnected')
@@ -253,12 +283,20 @@ export function sendHistoryRequest(
 export function disconnect() {
   manualClose = true
   stopHeartbeat()
+  pendingPing = false
   // W2：取消已排程的重连——manualClose 只拦回调内的老检查点，
   // 不取消的话定时器到点仍会 connect()（显式断开后连接复活）。
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+  // BUG-20261121-006：手动 disconnect = 终结/切换语义（logout 换认证会话、
+  // standalone connectChat 换 workflow 会话）。断线期间 sendRaw 积压的旧
+  // 消息不得经下次 connect 的 onopen flushQueue 复活——否则 logout 前的
+  // chat.send 以新认证身份突然发出（auth.ts W3「旧会话轮次状态不带入下个
+  // 登录周期」的漏网面）；standalone 切索引时旧积压错位进新会话。自动重连
+  // 路径不经 disconnect()，断线重连的 flush 语义不变。
+  messageQueue.length = 0
   if (ws) {
     ws.close()
     ws = null

@@ -78,6 +78,25 @@ pub fn ledger_path(workspace: &Path) -> std::path::PathBuf {
     workspace.join(LEDGER_REL)
 }
 
+// 账本写互斥（进程级）：下单是调用方组装的 load→mutate→save RMW，单文件
+// JSON 无内存缓存——两个写者交错 = 后 save 者整文件覆盖（前者的订单与
+// 资金变动静默丢失，纸面资金凭空重复）。写者不止一个 ConnectorInvokeTool
+// 实例：主 loop 与每个项目 loop 各持一份工具实例（治理资产锚同一主
+// workspace，见 register_connector_governance）——per-instance 锁罩不住
+// 跨实例交错（BUG-20261120-035），必须进程级单例。镜像
+// nemesis-config::config_write_lock 的取锁纪律：**只在命令臂最外层取
+// 一次**，guard 存活覆盖整段 RMW（从 load 到 save 落盘）；Mutex 非重入，
+// 勿嵌套；读路径不入锁（rename 原子性保证读到完整旧值或完整新值）。
+// 跨进程（CLI connector invoke 单发）仍是既有边界，不在本锁射程。
+static LEDGER_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 取账本写串行锁。用法：写臂首行 `let _serial =
+/// nemesis_connectors::ledger::ledger_write_lock();`，guard 存活到 save
+/// 落盘为止。见上方锁注释的取锁纪律（只在写臂取、勿嵌套）。
+pub fn ledger_write_lock() -> parking_lot::MutexGuard<'static, ()> {
+    LEDGER_WRITE_LOCK.lock()
+}
+
 /// 载入账本：缺文件 = 全新模拟账本（零账号 demo 常态）；损坏 = 诚实 Err
 /// （损坏静默当空会让后续 save 销毁真账本——与全仓数据纪律一致）。
 pub fn load_ledger(workspace: &Path) -> Result<BrokerLedger, String> {
@@ -130,14 +149,25 @@ impl BrokerLedger {
         price: f64,
         ts: &str,
     ) -> Result<OrderRecord, String> {
-        // NaN-safe 非正判断：NaN 不满足 > 0.0，必须拒绝。
-        if qty <= 0.0 || qty.is_nan() {
-            return Err(format!("买入数量必须为正（收到 {qty}）"));
+        // 非有限值全拒（BUG-20261121-030）：NaN 不满足 > 0.0；±inf 漏过旧
+        // `qty <= 0.0 || qty.is_nan()` 闸——inf 数量入成本核算只会产出失真
+        // 文案，闸收口为 is_finite 单点。
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err(format!("买入数量非法（须为正的有限数，收到 {qty}）"));
         }
-        if price < 0.0 || price.is_nan() {
-            return Err(format!("价格非法（收到 {price}）"));
+        if !price.is_finite() || price < 0.0 {
+            return Err(format!("价格非法（须为非负的有限数，收到 {price}）"));
         }
         let cost = r2(qty * price);
+        // r2 的 ×100 放大对近界有限输入可溢出（qty=1、price=1e307 →
+        // 1e309=inf）：拒单而不是把 inf 记进账本——cash=inf 后资金闸
+        // `cash < cost` 对一切有限 cost 永假（inf < inf == false），账本
+        // 资金检查永久失效（BUG-20261121-030 主体）。
+        if !cost.is_finite() {
+            return Err(format!(
+                "订单金额溢出（qty×price ≈ {qty:.3e} × {price:.3e}），已拒单"
+            ));
+        }
         if self.cash < cost {
             return Err(format!("模拟资金不足：需 {cost:.2}，可用 {:.2}", self.cash));
         }
@@ -174,14 +204,15 @@ impl BrokerLedger {
         price: f64,
         ts: &str,
     ) -> Result<OrderRecord, String> {
-        // NaN-safe 非正判断：NaN 不满足 > 0.0，必须拒绝。
-        if qty <= 0.0 || qty.is_nan() {
-            return Err(format!("卖出数量必须为正（收到 {qty}）"));
+        // 非有限值全拒（BUG-20261121-030，与 buy 同款 is_finite 收口）。
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err(format!("卖出数量非法（须为正的有限数，收到 {qty}）"));
         }
-        // 负价/NaN 价与 buy 同款闸——缺闸时负价卖出
-        // proceeds 为负直接扣现金（账本可被工具调用面推成负余额）。
-        if price < 0.0 || price.is_nan() {
-            return Err(format!("价格非法（收到 {price}）"));
+        // 负价/非有限价与 buy 同款闸——缺闸时负价卖出
+        // proceeds 为负直接扣现金（账本可被工具调用面推成负余额）；+inf
+        // 价卖出 proceeds=inf 记账同样毁账（BUG-20261121-030 同族）。
+        if !price.is_finite() || price < 0.0 {
+            return Err(format!("价格非法（须为非负的有限数，收到 {price}）"));
         }
         let Some(pos) = self.positions.get_mut(symbol) else {
             return Err(format!("无 {symbol} 持仓，无法卖出"));
@@ -193,6 +224,12 @@ impl BrokerLedger {
             ));
         }
         let proceeds = r2(qty * price);
+        // r2 ×100 放大溢出同闸（见 buy）：拒单不动账。
+        if !proceeds.is_finite() {
+            return Err(format!(
+                "卖出金额溢出（qty×price ≈ {qty:.3e} × {price:.3e}），已拒单"
+            ));
+        }
         self.cash = r2(self.cash + proceeds);
         pos.qty -= qty;
         if pos.qty <= 0.0 {

@@ -52,11 +52,7 @@ fn resource_get_abi_return_codes() {
         let mut ptr: *const u8 = std::ptr::null();
         let mut len: usize = 0;
 
-        let rc = plugin_vm_resource_get(
-            c"build-vm-image.sh".as_ptr(),
-            &mut ptr,
-            &mut len,
-        );
+        let rc = plugin_vm_resource_get(c"build-vm-image.sh".as_ptr(), &mut ptr, &mut len);
         assert_eq!(rc, RESOURCE_GET_OK);
         assert!(!ptr.is_null() && len > 0, "ok 时必须填 out");
 
@@ -67,15 +63,15 @@ fn resource_get_abi_return_codes() {
         );
 
         // ABSENT 臂按 cfg 分派验证（同一构建里两 guest 要么在场要么缺席）。
-        let guest_rc = plugin_vm_resource_get(
-            c"guest/x86_64/nemesis-guest".as_ptr(),
-            &mut ptr,
-            &mut len,
-        );
+        let guest_rc =
+            plugin_vm_resource_get(c"guest/x86_64/nemesis-guest".as_ptr(), &mut ptr, &mut len);
         #[cfg(embed_guest_x86_64)]
         assert_eq!(guest_rc, RESOURCE_GET_OK, "cfg 已发射 → ABI 也必须 ok");
         #[cfg(not(embed_guest_x86_64))]
-        assert_eq!(guest_rc, RESOURCE_GET_ABSENT, "cfg 未发射 → ABI 必须 ABSENT");
+        assert_eq!(
+            guest_rc, RESOURCE_GET_ABSENT,
+            "cfg 未发射 → ABI 必须 ABSENT"
+        );
 
         // null 全家 → UNKNOWN，不 panic。
         assert_eq!(

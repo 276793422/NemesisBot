@@ -1651,3 +1651,186 @@ fn test_account_binding_survives_account_id_normalization_drift() {
     );
     assert_eq!(route.agent_id, "wa-agent");
 }
+
+// BUG-20261121-026 回归锁：guild/team 空/空白约束死绑定。
+// 旧实现 new() 的完整性归一只覆盖 peer（kind/id），guild/team 的
+// Some("")/Some(" ") 无人归一——find_guild/find_team_match 对 trim 空
+// 不命中，而 find_account_match / find_channel_wildcard_match 的
+// `is_some()` 判定把该绑定一并挡死 ⇒ 约束落空 × 全路径禁入 = 死绑定
+// 静默脱靶 default。归一后「不完整约束 = 无约束」语义统一到四个约束
+// 字段（空约束绑定应落 account 级匹配）。
+#[test]
+fn test_bug_20261121026_empty_guild_constraint_falls_to_account_match() {
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "acc-agent".to_string(),
+            match_channel: "web".to_string(),
+            match_account_id: "default".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: Some(String::new()),
+            match_team_id: None,
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "acc-agent".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "web".to_string(),
+        account_id: "default".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("user1".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.matched_by, "binding.account",
+        "空 guild 约束 = 无约束，绑定必须落 account 级匹配（旧实现死绑定落 default）"
+    );
+    assert_eq!(route.agent_id, "acc-agent");
+}
+
+#[test]
+fn test_bug_20261121026_whitespace_guild_and_team_constraints_fall_to_wildcard() {
+    // 生产转换点（agent_factory build_route_resolver）只挡纯空串
+    // （!is_empty()），whitespace 串 " " 透传——同款死绑定。空白
+    // guild+team 双约束归一后应落 channel wildcard 匹配。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "wild-agent".to_string(),
+            match_channel: "web".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: Some("   ".to_string()),
+            match_team_id: Some("  ".to_string()),
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "wild-agent".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "web".to_string(),
+        account_id: "any-account".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("user1".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.matched_by, "binding.channel",
+        "空白 guild/team 约束 = 无约束，绑定必须落 wildcard 匹配（旧实现死绑定落 default）"
+    );
+    assert_eq!(route.agent_id, "wild-agent");
+}
+
+#[test]
+fn test_bug_20261121026_empty_team_constraint_falls_to_account_match() {
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "acc-agent".to_string(),
+            match_channel: "web".to_string(),
+            match_account_id: "default".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: None,
+            match_team_id: Some(String::new()),
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "acc-agent".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "web".to_string(),
+        account_id: "default".to_string(),
+        peer_kind: Some("direct".to_string()),
+        peer_id: Some("user1".to_string()),
+        parent_peer_id: None,
+        parent_peer_kind: None,
+        guild_id: None,
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.matched_by, "binding.account",
+        "空 team 约束 = 无约束，绑定必须落 account 级匹配（旧实现死绑定落 default）"
+    );
+    assert_eq!(route.agent_id, "acc-agent");
+}
+
+#[test]
+fn test_bug_20261121026_real_guild_constraint_still_matches_guild_path() {
+    // 归一只清空/空白约束，完整约束的精确匹配语义不变（防归一过宽）。
+    let resolver = RouteResolver::new(RouteConfig {
+        bindings: vec![AgentBinding {
+            agent_id: "guild-agent".to_string(),
+            match_channel: "discord".to_string(),
+            match_account_id: "*".to_string(),
+            match_peer_kind: None,
+            match_peer_id: None,
+            match_guild_id: Some("guild-123".to_string()),
+            match_team_id: None,
+        }],
+        agents: vec![
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "guild-agent".to_string(),
+                is_default: false,
+            },
+        ],
+        dm_scope: "main".to_string(),
+    });
+    let input = RouteInput {
+        channel: "discord".to_string(),
+        account_id: "default".to_string(),
+        peer_kind: Some("channel".to_string()),
+        peer_id: Some("chan-1".to_string()),
+        parent_peer_kind: None,
+        parent_peer_id: None,
+        guild_id: Some("guild-123".to_string()),
+        team_id: None,
+        identity_links: HashMap::new(),
+    };
+    let route = resolver.resolve(&input);
+    assert_eq!(
+        route.matched_by, "binding.guild",
+        "完整 guild 约束照常走 guild 命中（归一不得过宽清掉非空约束）"
+    );
+    assert_eq!(route.agent_id, "guild-agent");
+}

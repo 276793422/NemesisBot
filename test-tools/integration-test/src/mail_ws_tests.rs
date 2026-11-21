@@ -5,8 +5,9 @@
 //! 1. `mail.status` 槽空 = `{loaded:false, hint}` **非报错**（状态查询的职责
 //!    就是暴露装载状态，前端空态卡数据源）；
 //! 2. `mail.config_get`/`config_set` 先于句柄闸（插件缺席也要能配——空态卡
-//!    「先配好再装载」引导闭环）：缺文件读 `{}`、写整体落盘 + 重启生效 note、
-//!    非 object 配置 loud 拒；
+//!    「先配好再装载」引导闭环）：缺文件读 `{}`、写整体落盘 + 热装载二态
+//!    note（写盘恒 ok「已保存」；DLL 缺席 = loaded:false + load_error 诚实
+//!    回传，非命令失败）、非 object 配置 loud 拒；
 //! 3. 全部业务命令（send/list/read/mark_read/delete/stats/record/addr_*）
 //!    与未知命令槽空统一诚实报错「mail 插件未装载…」——不给探测面信号差
 //!    （未知命令的区分信号在 handle 闸之后，槽空时同样吃装载报错）。
@@ -121,22 +122,36 @@ pub async fn test_mail_wsapi_surface(ws: &TestWorkspace, _bin: &Path) -> Vec<Tes
         )),
     }
 
-    // ── 4. config_set 写入 + note（重启生效）+ 盘面 + config_get 往返 ──
+    // ── 4. config_set 写入 + note（热装载二态诚实）+ 盘面 + config_get 往返 ──
+    // 热装载契约（20261120）：写盘恒 ok+「已保存」，note 二态——装载成功
+    // 「已保存并即时装载」（loaded:true）；失败（本环境无 plugin_mail DLL，
+    // 恒走此臂）loaded:false + load_error 回传 + note 引导重试。装载失败
+    // 非命令失败——盘面/往返断言在后，写盘真相独立成立。
     let probe = json!({"enabled": true, "smtp": {"enabled": false}});
     let (dat, err) = api
         .call("mail", "config_set", Some(json!({"config": probe})))
         .await;
     let wrote_ok = matches!(&dat, Some(v) if v.get("ok").and_then(|x| x.as_bool()) == Some(true)
-        && v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("重启"));
+    && v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("已保存")
+    && match v.get("loaded").and_then(|x| x.as_bool()) {
+        Some(true) => {
+            v.get("note").and_then(|x| x.as_str()).unwrap_or("").contains("即时装载")
+        }
+        Some(false) => v
+            .get("load_error")
+            .and_then(|x| x.as_str())
+            .is_some_and(|e| !e.is_empty()),
+        None => false, // 热装载契约恒带 loaded 键——缺席即契约漂移哨兵
+    });
     if wrote_ok {
         results.push(pass(
             &format!("{suite}/config_set_write"),
-            "mail.config_set 写入成功 + 重启生效 note",
+            "mail.config_set 写入成功 + 热装载二态诚实 note",
         ));
     } else {
         results.push(fail(
             &format!("{suite}/config_set_write"),
-            format!("mail.config_set 应 ok+重启 note，得 dat={dat:?} err={err:?}"),
+            format!("mail.config_set 应 ok+已保存+loaded 二态 note，得 dat={dat:?} err={err:?}"),
         ));
     }
     // 盘面真相（pretty JSON 落盘）。

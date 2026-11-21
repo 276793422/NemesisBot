@@ -1279,16 +1279,18 @@ impl WorkflowEngine {
     /// sub_workflow 跨 workflow 引用环检测（注册期闸）。
     ///
     /// [`crate::nodes:SubWorkflowNodeExecutor`] 经
-    /// `engine.run(name, input, None)` 触发子执行——`TriggerSource::None` 的
-    /// `depth_from_trigger` = 0，[`MAX_RECURSION_DEPTH`] 闸只数 `AgentTool`
-    /// 帧，sub_workflow 链完全绕过。而 `parser::validate` 只查**单 workflow**
-    /// DAG（跨 workflow 引用零检查），因此 A→B→A（甚至单 workflow 自引用
-    /// A→A）两个定义各自合法、都能注册，运行期 A→B→A→… 无限 spawn 子执行：
-    /// 每层新 Execution + checkpoint + JSONL persist + call_stack 帧，直到
-    /// 内存/磁盘耗尽。跨 workflow 引用环只可能经 [`Self::register_workflow`]
-    /// / [`Self::persist_workflow`]（新增或覆盖引用边）形成——两个入口同闸
-    /// 即全覆盖（unregister 只删边不成环；盘上互环定义组加载时后者被拒，
-    /// 前者引用的目标不存在 → run 时 `WorkflowNotFound` 诚实失败）。
+    /// `engine.run(name, input, Some(TriggerSource::SubWorkflow { .. }))`
+    /// 触发子执行（BUG-20261121-024 起：触发源带父执行身份三元组随行）——
+    /// 本变体的 `depth_from_trigger` = 0，[`MAX_RECURSION_DEPTH`] 闸只数
+    /// `AgentTool` 帧，sub_workflow 链完全绕过。而 `parser::validate` 只查
+    /// **单 workflow** DAG（跨 workflow 引用零检查），因此 A→B→A（甚至单
+    /// workflow 自引用 A→A）两个定义各自合法、都能注册，运行期 A→B→A→…
+    /// 无限 spawn 子执行：每层新 Execution + checkpoint + JSONL persist +
+    /// call_stack 帧，直到内存/磁盘耗尽。跨 workflow 引用环只可能经
+    /// [`Self::register_workflow`] / [`Self::persist_workflow`]（新增或覆盖
+    /// 引用边）形成——两个入口同闸即全覆盖（unregister 只删边不成环；盘上
+    /// 互环定义组加载时后者被拒，前者引用的目标不存在 → run 时
+    /// `WorkflowNotFound` 诚实失败）。
     ///
     /// 引用收集含 parallel/loop 复合子节点（运行时经 registry 同样分派到
     /// SubWorkflowNodeExecutor）。未注册目标放行（既有语义：run 时诚实
@@ -2044,9 +2046,11 @@ impl WorkflowEngine {
         // 路径的终态落 **Failed + 原因注记**（PLAN 口径「超时 → cancel +
         // 终态 Failed 带原因注记」），与用户主动取消（Cancelled）区分。
         // 调度返回后立即 abort 看门狗（正常完成的执行不得被迟到触发误杀
-        // ——abort 前 token 已从 cancel_tokens 摘除，即便竞态 fire 也无
-        // 消费方；迟到触发但调度已返回 Completed 的工作照实记 Completed
-        // ——工作真做完了，事后改判 Failed 才是造假）。0 = 关。
+        // ——abort 在调度返回后才可能触发竞态 fire，此时 token 仍在
+        // cancel_tokens 表内（摘除已挪到终态 insert 之后，BUG-20261120-038），
+        // 迟到 fire 的旗标/信号无消费方，flag 在 abort 后读取只影响
+        // Cancelled 臂的改判；迟到触发但调度已返回 Completed 的工作照实记
+        // Completed——工作真做完了，事后改判 Failed 才是造假）。0 = 关。
         let wall_clock_watchdog = {
             let budget = self
                 .wall_clock_budget_secs
@@ -2115,8 +2119,11 @@ impl WorkflowEngine {
             None => (false, 0),
         };
 
-        // Token is no longer needed; remove from map.
-        self.cancel_tokens.remove(&execution.id);
+        // BUG-20261120-038：token 摘除不得在此（早于终态 insert）——窗口内
+        // cancel_execution 查不到 token 会走「token 缺席臂」自己发 Cancelled
+        // 事件 + settle（BUG-20261114-035 exactly-once 双发违约），随后本函数
+        // 收口又发真终态事件。摘除挪到下方内存终态 insert 之后（token 在场
+        // = cancel_execution 全程走 had_inflight_token 臂，收口唯一）。
 
         let now = Local::now();
 
@@ -2240,6 +2247,10 @@ impl WorkflowEngine {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
         }
+        // BUG-20261120-038：token 摘除必须在终态 insert 之后——insert 落地
+        // 即刻 state 检查就能拒绝 cancel_execution，token 缺席臂（自发
+        // Cancelled 事件 + settle）从此不可达，exactly-once 无窗口。
+        self.cancel_tokens.remove(&execution.id);
 
         // Emit terminal-state event. Only the four terminal states are
         // observable here (Waiting is non-terminal from the engine's POV —
@@ -3127,7 +3138,10 @@ impl WorkflowEngine {
         )
         .await;
 
-        self.cancel_tokens.remove(&execution.id);
+        // BUG-20261120-038：token 摘除挪到下方内存终态 insert 之后（与
+        // run_async 同纪律）——摘早了，窗口内 cancel_execution 查不到
+        // token 会自发 Cancelled 事件 + settle，随后本尾段再发真终态
+        // 事件 = exactly-once 双发违约。
 
         if let Some((handle, _, _)) = &wall_clock_watchdog {
             handle.abort();
@@ -3244,6 +3258,10 @@ impl WorkflowEngine {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
         }
+        // BUG-20261120-038：token 摘除在终态 insert 之后（run_async 同款
+        // 纪律）——窗口内 cancel_execution 走 had_inflight_token 臂不自发
+        // 事件，收口唯一。
+        self.cancel_tokens.remove(&execution.id);
 
         // BUG-20261114-035：resume 收口与 run_async 首跑同契约发终态
         // 事件。此前缺失 = Waiting 恢复后的完成/失败/取消对观察者不可见
@@ -3330,7 +3348,9 @@ impl WorkflowEngine {
 
         // 用户取消与子执行结果竞态：取消优先。
         if cancel_token.is_cancelled() {
-            self.cancel_tokens.remove(&execution.id);
+            // BUG-20261120-038：token 摘除挪进 settle_resume_outcome（终态
+            // insert 之后）——此处摘早了，窗口内 cancel_execution 查不到
+            // token 会自发 Cancelled 事件，与收口事件双发。
             execution.state = ExecutionState::Cancelled;
             execution.ended_at = Some(Local::now());
             return Ok(self.settle_resume_outcome(execution, None).await);
@@ -3354,7 +3374,7 @@ impl WorkflowEngine {
                     .get_mut(waiting_node_id)
                     .expect("waiting_id 来自同一 map，必然存在");
                 result.output = child_outputs;
-                self.cancel_tokens.remove(&execution.id);
+                // BUG-20261120-038：token 摘除挪进 settle_resume_outcome。
                 execution.state = ExecutionState::Waiting;
                 execution.ended_at = None;
                 let waiting = smallest_waiting_node_id(&execution.node_results);
@@ -3386,7 +3406,7 @@ impl WorkflowEngine {
                 result.state = ExecutionState::Failed;
                 result.error = Some(msg.clone());
                 result.ended_at = Local::now();
-                self.cancel_tokens.remove(&execution.id);
+                // BUG-20261120-038：token 摘除挪进 settle_resume_outcome。
                 execution.state = ExecutionState::Failed;
                 execution.error = Some(msg);
                 execution.ended_at = Some(Local::now());
@@ -3488,6 +3508,11 @@ impl WorkflowEngine {
             let mut execs = self.executions.write().await;
             execs.insert(execution.id.clone(), execution.clone());
         }
+        // BUG-20261120-038：token 摘除在终态 insert 之后（与 run_async /
+        // resume 公共尾段同纪律）——此前各臂先摘再 settle，窗口内
+        // cancel_execution 查不到 token 走缺席臂自发 Cancelled 事件 +
+        // settle，随后收口再发真终态事件 = exactly-once 双发违约。
+        self.cancel_tokens.remove(&execution.id);
         // BUG-20261114-035：早期收口臂（sub_workflow 子终态同步 /
         // 取消竞态）同样发终态事件——观察者契约与公共尾段一致；
         // Waiting 臂（嵌套审批）不发声。

@@ -162,6 +162,28 @@ fn extract_status_forms() {
     assert_eq!(extract_http_status("no status here"), None);
 }
 
+#[test]
+fn extract_status_requires_trailing_digit_boundary() {
+    // BUG-20261121-001 红证锚：extract 层 `(\d{3})` 无尾随数字界，
+    // "status 4290" 按前 3 位截取 → 429 → RateLimit（cooldown+限流退避
+    // 梯子误路由）——词表层 `\b429\b`（BUG-20261107-019 纪律）已堵，
+    // extract 层同族漏网。修复 = 3 位后必须紧跟非数字/串尾（`(?:[^\d]|$)`；
+    // regex crate 不支持 lookahead，不能写 `(?!\d)`）：4+ 位数字整段落
+    // None 走词表分支，词表 `\b429\b` 同样不命中长数字 → 诚实不分类
+    // （两层一致）。修复前前两个断言分别返回 Some(429)、classify 返回
+    // RateLimit。
+    assert_eq!(extract_http_status("status 4290"), None);
+    assert_eq!(extract_http_status("HTTP/1.1 4290"), None);
+    assert_eq!(classify_llm_error("status 4290"), None);
+    // 4+ 位但前 3 位非限流码同样不截取（截了也是错码——"20000" 截 200
+    // 虽无害，但截取行为本身就是错的，一并钉死）。
+    assert_eq!(extract_http_status("status: 20000"), None);
+    // 合法 3 位形态零回归（后随串尾/标点/空白/字母）。
+    assert_eq!(extract_http_status("status 429"), Some(429));
+    assert_eq!(extract_http_status("status: 503."), Some(503));
+    assert_eq!(extract_http_status("HTTP/1.1 429 Too Many"), Some(429));
+}
+
 // ---- U-B（端点不可用封存）：连接类失败判定 ----
 
 #[test]

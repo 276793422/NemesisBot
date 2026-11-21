@@ -2328,7 +2328,42 @@ async fn test_node_update_identity_invalid_role_errors() {
         )
         .await
         .unwrap_err();
-    assert!(err.contains("role must be 'coordinator'/'manager' or 'worker'"));
+    assert!(err.contains("role must be 'coordinator'/'manager'/'master' or 'worker'"));
+}
+
+/// BUG-20261120-042 回归锁（横向同族）：角色编辑小写归一。此前词表判断与
+/// from_role_str（trim+lowercase）大小写口径劈叉——"Worker"（大写）被拒
+/// 而 "Coordinator" 被收；同函数 professions/tier/backend 三字段全部小写
+/// 归一，role 是唯一异类。修复后大小写变体统一收词表并落规范小写形态。
+#[tokio::test]
+async fn test_node_update_identity_role_capitalized_normalized() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx_with_cluster(&dir);
+
+    let result = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"role":"Worker"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["role"], "worker");
+    assert_eq!(result["current_role"], "worker");
+
+    let result = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"role":"  Coordinator  "})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["role"], "coordinator");
+    assert_eq!(result["current_role"], "coordinator");
 }
 
 #[tokio::test]

@@ -120,6 +120,7 @@ fn feishu_config_debug_redacts_three_secrets() {
         verification_token: SECRET.into(),
         encrypt_key: SECRET.into(),
         allow_from: vec![],
+        api_base: String::new(),
     };
     let out = format!("{c:?}");
     assert_redacted(&out, "FeishuConfig");

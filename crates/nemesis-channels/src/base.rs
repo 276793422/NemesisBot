@@ -523,7 +523,19 @@ pub(crate) fn peer_allowed(allow_from: &[String], peer_ip: &str) -> bool {
             continue;
         }
         if let Some(prefix) = entry.strip_suffix('*') {
-            if peer_ip.starts_with(prefix) {
+            // BUG-20261121-022 段边界闸：无分隔符尾的手滑写法（`192.168.1*`
+            // 漏尾点）用字符 starts_with 会把 `192.168.11.x` / `192.168.100.x`
+            // 误放进白名单——`1` 是 `11`/`100` 的字符串前缀，段边界撞名，
+            // 对端网络准入假放行。要求 prefix 以分隔符结尾（契约形态
+            // `192.168.1.*` / IPv6 hextet `fd00::*`）或 peer_ip 在边界处
+            // 恰是 `.`/`:`（`192.168.1*` 照常放行 `192.168.1.50`、拒绝
+            // `192.168.11.5`；IPv6 `fd00:a*` 放行 `fd00:a::1`、拒绝
+            // `fd00:aa::1`）。收紧方向：契约形态行为不变，只可能更严。
+            let boundary_ok = prefix.ends_with('.')
+                || prefix.ends_with(':')
+                || peer_ip.as_bytes().get(prefix.len()) == Some(&b'.')
+                || peer_ip.as_bytes().get(prefix.len()) == Some(&b':');
+            if peer_ip.starts_with(prefix) && boundary_ok {
                 return true;
             }
         } else if peer_ip == entry {
@@ -630,6 +642,62 @@ where
     R: tokio_tungstenite::tungstenite::client::IntoClientRequest + Unpin,
 {
     ws_connect_bounded_with_timeout(target, WS_HANDSHAKE_TIMEOUT).await
+}
+
+// ---------------------------------------------------------------------------
+// 通道事件幂等集（单一真相源）
+// ---------------------------------------------------------------------------
+
+/// 通道事件去重缓存（BUG-20261121-048 引入于 feishu，BUG-20261121-051
+/// 提升为 crate 级单一真相源供多通道共享——复制粘贴家族演化正是
+/// BUG-20261121-050 四通道漂移的根因形态，新通道一律 import 本件不再
+/// 各自复制）。语义：推送型通道的事件投递是 at-least-once（平台重推/
+/// 双订阅双事件），按幂等键去重防同一条消息重复喂 agent；有界 FIFO
+/// 淘汰防长跑内存无界；键缺失保守放行宁重复不丢。
+pub(crate) struct EventDedup {
+    state: parking_lot::Mutex<EventDedupState>,
+    cap: usize,
+}
+
+#[derive(Default)]
+struct EventDedupState {
+    seen: std::collections::HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl EventDedup {
+    /// 默认容量：按推送型通道单 bot 限频 × 多分钟窗口粗算，1024 足够
+    /// 覆盖重推窗口且内存上限可忽略（~百 KB 级）。
+    const DEFAULT_CAP: usize = 1024;
+
+    #[allow(dead_code)] // 与 ws_connect_bounded 同房规：默认构建形态无消费通道
+    pub(crate) fn new() -> Self {
+        Self::with_cap(Self::DEFAULT_CAP)
+    }
+
+    #[allow(dead_code)] // 同上；测试用小 cap 验证 FIFO 链
+    pub(crate) fn with_cap(cap: usize) -> Self {
+        Self {
+            state: parking_lot::Mutex::new(EventDedupState::default()),
+            cap: cap.max(1),
+        }
+    }
+
+    /// 首次出现返回 true（放行并记录）；重复返回 false（应丢弃）。
+    /// 超 cap 淘汰最老条目（FIFO）。
+    pub(crate) fn check_and_record(&self, event_id: &str) -> bool {
+        let mut st = self.state.lock();
+        if !st.seen.insert(event_id.to_string()) {
+            return false;
+        }
+        st.order.push_back(event_id.to_string());
+        while st.order.len() > self.cap {
+            if let Some(old) = st.order.pop_front() {
+                st.seen.remove(&old);
+            }
+        }
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

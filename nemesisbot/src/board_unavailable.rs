@@ -14,9 +14,11 @@
 //! - **probe_interval_secs=0** = 只封存不探测（恢复靠人工
 //!   `board.unavailable.release` 或端点恢复后的自然评审成功）。
 //!
-//! 探针 spawn 于 gateway 装配（post_agent.rs 恢复同块）；全部节点装配
-//! 但 loop 内角色闸——非 master 只记账不续做（board 写路径是 master 专属，
-//! worker 镜像不跑评审/拆解）。
+//! 探针 spawn 于 gateway 装配（post_agent.rs master 闸块内）——仅 master
+//! 角色节点装配（BUG-20261120-041 注释失真修正）：worker 进程内封存态无
+//! 触发路径（封存三闸与 `record_llm_failure` 调用方全在 master 路径），
+//! worker 侧装配只会空转；loop 内 `is_master` 闸仍是续做分派的独立守卫
+//! （`resume_dispatchable`——装配点之外的纵深防御）。
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -1388,36 +1388,59 @@ fn r10_wsapi_request(
         .map_err(|e| format!("frame write: {e}"))?;
 
     // 读一帧服务端响应（server→client 不掩码；支持 7/16/64-bit 三档长度）。
+    // BUG-20261120-021 横向补齐：服务端加了 Ping 保活（writer tick 空闲臂发
+    // Message::Ping）——旧单帧读取撞上 Ping（opcode 0x9）直接报错
+    // 「unexpected ws opcode 0x09」；按 RFC6455 回掩码 Pong 后继续读，
+    // 直到拿到 text/close。
     fn read_exact_n(s: &mut std::net::TcpStream, n: usize) -> Result<Vec<u8>, String> {
         let mut buf = vec![0u8; n];
         s.read_exact(&mut buf)
             .map_err(|e| format!("ws read: {e}"))?;
         Ok(buf)
     }
-    let hdr = read_exact_n(&mut s, 2)?;
-    let opcode = hdr[0] & 0x0f;
-    if opcode != 0x1 && opcode != 0x8 {
-        return Err(format!("unexpected ws opcode {opcode:#04x}"));
-    }
-    let len7 = (hdr[1] & 0x7f) as usize;
-    let plen = match len7 {
-        126 => {
-            let ext = read_exact_n(&mut s, 2)?;
-            u16::from_be_bytes([ext[0], ext[1]]) as usize
+    let (opcode, raw) = loop {
+        let hdr = read_exact_n(&mut s, 2)?;
+        let opcode = hdr[0] & 0x0f;
+        let len7 = (hdr[1] & 0x7f) as usize;
+        let plen = match len7 {
+            126 => {
+                let ext = read_exact_n(&mut s, 2)?;
+                u16::from_be_bytes([ext[0], ext[1]]) as usize
+            }
+            127 => {
+                let ext = read_exact_n(&mut s, 8)?;
+                u64::from_be_bytes(ext.try_into().unwrap()) as usize
+            }
+            n => n,
+        };
+        if opcode == 0x9 {
+            // Ping → 掩码 Pong（同 payload 回显）+ 继续读下一帧。
+            let ping_payload = read_exact_n(&mut s, plen)?;
+            let mut pong = Vec::with_capacity(ping_payload.len() + 8);
+            pong.push(0x8au8);
+            pong.push(0x80u8 | ping_payload.len() as u8);
+            pong.extend_from_slice(&mask);
+            pong.extend(
+                ping_payload
+                    .iter()
+                    .zip(mask.iter().cycle())
+                    .map(|(b, m)| b ^ m),
+            );
+            s.write_all(&pong).map_err(|e| format!("pong write: {e}"))?;
+            continue;
         }
-        127 => {
-            let ext = read_exact_n(&mut s, 8)?;
-            u64::from_be_bytes(ext.try_into().unwrap()) as usize
+        if opcode != 0x1 && opcode != 0x8 {
+            return Err(format!("unexpected ws opcode {opcode:#04x}"));
         }
-        n => n,
+        if plen > 1024 * 1024 {
+            return Err(format!("response payload too large: {plen}"));
+        }
+        let raw = read_exact_n(&mut s, plen)?;
+        break (opcode, raw);
     };
     if opcode == 0x8 {
         return Err("connection closed by server".into());
     }
-    if plen > 1024 * 1024 {
-        return Err(format!("response payload too large: {plen}"));
-    }
-    let raw = read_exact_n(&mut s, plen)?;
     serde_json::from_slice(&raw)
         .map_err(|e| format!("response json: {e}: {}", String::from_utf8_lossy(&raw)))
 }

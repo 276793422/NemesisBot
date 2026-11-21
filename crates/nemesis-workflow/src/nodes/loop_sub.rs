@@ -293,7 +293,7 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
         &self,
         node: &NodeDef,
         context: &HashMap<String, serde_json::Value>,
-        _wf_ctx: &WorkflowContext,
+        wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
 
@@ -351,10 +351,23 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
             }
         }
 
-        // Execute sub-workflow via engine
+        // Execute sub-workflow via engine.
+        // BUG-20261121-024（BUG-20261112-115 第四面）：触发源带
+        // `TriggerSource::SubWorkflow`——父执行身份三元组随行下行。旧实现传
+        // `None`，子执行 `identity_triple().unwrap_or_default()` 从构造即全
+        // 空：子 workflow 内 tool 节点的审批卡断路由（chat_id 空）、会话级
+        // 豁免失效（session_key 空）、审计归因五元清空。
+        // `depth_from_trigger` 对本变体仍映射 0（递归闸只数 AgentTool 帧，
+        // 子 workflow 环依赖注册期 `check_subworkflow_cycle` 闸，语义不变）。
+        let trigger = TriggerSource::SubWorkflow {
+            parent_execution_id: wf_ctx.identity().execution_id.clone(),
+            session_key: wf_ctx.identity().session_key.clone(),
+            chat_id: wf_ctx.identity().chat_id.clone(),
+            sender_id: wf_ctx.identity().sender_id.clone(),
+        };
         let exec_result = self
             .engine
-            .run(workflow_name, sub_input, None)
+            .run(workflow_name, sub_input, Some(trigger))
             .await
             .map_err(|e| e.to_string())?;
 

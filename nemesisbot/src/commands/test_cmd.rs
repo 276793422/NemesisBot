@@ -349,7 +349,11 @@ async fn run_dashboard(host: &str, port: u16, token: &str) -> Result<()> {
 
     let backend_url = format!("http://{}:{}", host, port);
     println!("  Backend:    {}", backend_url);
-    println!("  Token:      {}...", &token[..token.len().min(4)]);
+    // token 为 clap 用户入参（任意字符串），字符边界安全短显。
+    println!(
+        "  Token:      {}...",
+        token.chars().take(4).collect::<String>()
+    );
     println!();
 
     // Dashboard data

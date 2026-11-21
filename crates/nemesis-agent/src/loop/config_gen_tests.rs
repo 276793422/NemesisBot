@@ -312,3 +312,21 @@ fn l18_concurrent_republish_and_readers_smoke() {
         "烟测结束读者见最新代内容"
     );
 }
+
+/// BUG-20261120-030 回归锁：世代准备层 `[]` 文档必须 loud 拒（此前只做
+/// 语法校验，`[]` 作为「合法空配置」发布世代——全部 section 访问器静默
+/// 落默认降级，零诊断）。object 闸在发布前拦下，走 last-known-good 臂。
+#[test]
+fn l19_prepare_rejects_array_payload() {
+    let loop_ = fresh_loop();
+    // PreparedConfig 无 Debug，不能用 expect_err——match 模式取 Err。
+    let err = match loop_.prepare_config_generation(b"[]".to_vec()) {
+        Ok(p) => panic!(
+            "array payload unexpectedly prepared ({} bytes)",
+            p.raw.len()
+        ),
+        Err(e) => e,
+    };
+    assert!(err.contains("must be a JSON object"), "err={err}");
+    assert!(err.contains("array"), "err={err}");
+}

@@ -38,7 +38,12 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // 2026-11-20：'security_alert'/'security_alert_digest' = #53 安全事件流
 //（alert hub SSE 出口 + gateway digest 泵），AppLayout 安全告警条消费
 //（voice-setup/expert-degraded 三度同款白名单坑）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event', 'security_alert', 'security_alert_digest']
+// 2026-11-21：'mailbox.updated' / 'mail.sent' = 邮箱事件族（SMTP 落信 →
+// 插件 notify_mail_in → post_agent.rs publish_global_event 广播；发信回执
+// 走 mail.sent toast）。MailboxView 订阅 + 后端发布都在而白名单缺席 = 落信
+// 不实时刷新 + 回执 toast 永不出现（voice-setup/expert-degraded 后第三例
+// 白名单坑；SSE 是 mailbox 唯一实时传输，无 WS push 兜底）。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'approval-remote-requested', 'approval-remote-resolved', 'question-asked', 'question-resolved', 'credential-requested', 'credential-resolved', 'board.plan_started', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'session.updated', 'editor-mode', 'chat.activity', 'canvas.open', 'provider_stream_event', 'selfupdate-progress', 'voice-setup', 'system-alert', 'expert-degraded', 'browser_event', 'security_alert', 'security_alert_digest', 'mailbox.updated', 'mail.sent']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

@@ -766,6 +766,9 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         "channels.feishu.encrypt_key",
                     ),
                     allow_from: cfg.channels.feishu.allow_from.clone(),
+                    // api_base（BUG-20261121-045）：空 = 通道侧回落官方默认；
+                    // Lark 国际版经 config 配 open.larksuite.com
+                    api_base: cfg.channels.feishu.api_base.clone(),
                 })
             } else {
                 None

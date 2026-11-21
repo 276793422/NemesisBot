@@ -774,30 +774,51 @@ impl LifecycleService for DeviceServiceAdapter {
 #[cfg(feature = "devices")]
 impl nemesis_services::DeviceService for DeviceServiceAdapter {}
 
-/// 设备通知的 last channel 供给器：从 AgentLoopServiceAdapter 实时取
-/// agent loop 持有的 WorkspaceStateManager（Layer B）。
+/// 设备通知 / 心跳服务的 last channel 供给器：从 AgentLoopServiceAdapter
+/// 实时取 agent loop 持有的 WorkspaceStateManager（Layer B）。
 ///
 /// 不缓存：state manager 独立实例内存态只在 new 时读盘一次，agent 每轮
 /// turn 写入的是 loop 自己那份实例——必须经 getter 共享同一实例实时读。
-#[cfg(feature = "devices")]
+/// struct 本体在两消费方 feature 任一开启时编译（devices=设备通知路由，
+/// heartbeat=心跳 tick 的渠道解析，BUG-20261121-027）；两个 trait impl
+/// 各自挂本方 feature 门，读路径单一真相源（inherent helper）。
+#[cfg(any(feature = "devices", feature = "heartbeat"))]
 pub struct AgentLastChannelProvider {
     adapter: Arc<AgentLoopServiceAdapter>,
 }
 
-#[cfg(feature = "devices")]
+#[cfg(any(feature = "devices", feature = "heartbeat"))]
 impl AgentLastChannelProvider {
     pub fn new(adapter: Arc<AgentLoopServiceAdapter>) -> Self {
         Self { adapter }
+    }
+
+    fn last_channel_from_loop(&self) -> String {
+        self.adapter
+            .current()
+            .and_then(|al| al.state_manager())
+            .map(|m| m.get_last_channel())
+            .unwrap_or_default()
     }
 }
 
 #[cfg(feature = "devices")]
 impl nemesis_devices::service::LastChannelProvider for AgentLastChannelProvider {
     fn get_last_channel(&self) -> String {
-        self.adapter
-            .current()
-            .and_then(|al| al.state_manager())
-            .map(|m| m.get_last_channel())
-            .unwrap_or_default()
+        self.last_channel_from_loop()
+    }
+}
+
+/// heartbeat 心跳的 StateManager 同体供给（BUG-20261121-027）：gateway
+/// 装配此前零接线——tick 永远拿 None → ("","") → handler fallback
+/// cli:direct → 心跳 spawn 的子代理 origin channel/chat_id 一并继承
+/// cli:direct → 子任务结果 outbound 到不存在的 "cli" 通道，被
+/// ChannelManager::dispatch_outbound 丢弃（dropped_not_found）。HEARTBEAT.md
+/// 模板钦定 spawn 是异步回传主路径，此断裂 = 心跳异步子任务结果永远
+/// 到不了用户。与 devices 通知的 Layer B 接线同构。
+#[cfg(feature = "heartbeat")]
+impl nemesis_heartbeat::service::StateManager for AgentLastChannelProvider {
+    fn get_last_channel(&self) -> String {
+        self.last_channel_from_loop()
     }
 }

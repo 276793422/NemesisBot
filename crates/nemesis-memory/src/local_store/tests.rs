@@ -488,6 +488,14 @@ contract_on_tfidf!(
     crate::contract_tests::contract_query_limit_respected_total_kept
 );
 contract_on_tfidf!(
+    contract_tfidf_query_limit_zero_defaults,
+    crate::contract_tests::contract_query_limit_zero_defaults
+);
+contract_on_tfidf!(
+    contract_tfidf_list_limit_zero_unlimited,
+    crate::contract_tests::contract_list_limit_zero_unlimited
+);
+contract_on_tfidf!(
     contract_tfidf_query_ranks_full_overlap_first,
     crate::contract_tests::contract_query_ranks_full_overlap_first
 );
@@ -566,7 +574,8 @@ async fn tfidf_store_duplicate_id_replaces() {
 
 #[tokio::test]
 async fn tfidf_query_limit_zero_uses_default_ten() {
-    // 本地语义：query limit=0 视为默认档 10（LocalStore 是 take(0)——两族相反）。
+    // 本地语义：query limit=0 视为默认档 10（BUG-20261121-038 起 LocalStore
+    // 同口径——两族统一，另有 contract_query_limit_zero_defaults 双后端锁）。
     let dir = tempfile::tempdir().unwrap();
     let store = TfIdfLocalStore::new(dir.path().join("store.jsonl"))
         .await
@@ -584,7 +593,8 @@ async fn tfidf_query_limit_zero_uses_default_ten() {
 
 #[tokio::test]
 async fn tfidf_list_limit_zero_is_unlimited() {
-    // 本地语义：list limit=0 = 不限（LocalStore 是 take(0)——两族相反）。
+    // 本地语义：list limit=0 = 不限（BUG-20261121-038 起 LocalStore
+    // 同口径——两族统一，另有 contract_list_limit_zero_unlimited 双后端锁）。
     let dir = tempfile::tempdir().unwrap();
     let store = TfIdfLocalStore::new(dir.path().join("store.jsonl"))
         .await

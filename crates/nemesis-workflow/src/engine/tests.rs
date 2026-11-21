@@ -853,6 +853,134 @@ async fn resume_rebuild_preserves_workflow_identity_for_downstream_tool_node() {
     assert_eq!(got.recursion_depth, 2);
 }
 
+/// BUG-20261121-024 回归（BUG-20261112-115 第四面）：sub_workflow 子执行
+/// 身份链断裂——旧实现 SubWorkflowNodeExecutor 调
+/// `engine.run(name, sub_input, None)`，子执行以 trigger_source = None
+/// 起跑，`identity_triple().unwrap_or_default()` 从构造即全空：子 workflow
+/// 内 tool 节点的审批卡断路由（chat_id 空）、会话级豁免失效（session_key
+/// 空）、审计归因五元清空。机制不同于前三面（resume 重建 / parallel /
+/// loop 都是 `WorkflowContext::new` 漏传，本面是 TriggerSource 槽位空缺），
+/// BUG-115 横向排查按 `WorkflowContext::new(` 位点枚举所以漏掉。修复 =
+/// SubWorkflowNodeExecutor 构造 `TriggerSource::SubWorkflow`（父执行身份
+/// 三元组随行）。本测试钉死：根执行带 AgentTool 身份 → 子执行 tool 节点
+/// 收到的 identity 三键继承 + trigger_label="sub_workflow" +
+/// recursion_depth=0（递归闸只数 AgentTool 帧，语义不变）+ 子执行
+/// trigger_source 是 SubWorkflow{parent_execution_id=父执行 id}。
+#[tokio::test]
+async fn sub_workflow_child_tool_node_inherits_trigger_identity() {
+    use crate::nodes::{RealToolNodeExecutor, SecureExecutor};
+
+    struct SubWfCapturingSecure {
+        captured: Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>>,
+    }
+    #[async_trait::async_trait]
+    impl SecureExecutor for SubWfCapturingSecure {
+        async fn execute(
+            &self,
+            _node_id: &str,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+            identity: &crate::context::WorkflowIdentity,
+        ) -> nemesis_tools::types::ToolResult {
+            *self.captured.lock().unwrap() = Some(identity.clone());
+            nemesis_tools::types::ToolResult::success("ok")
+        }
+    }
+
+    let captured: Arc<std::sync::Mutex<Option<crate::context::WorkflowIdentity>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let engine = WorkflowEngine::new_arc();
+    engine.node_executors.register(
+        "tool",
+        Arc::new(RealToolNodeExecutor::new_with_secure_executor(
+            Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+            Arc::new(SubWfCapturingSecure {
+                captured: captured.clone(),
+            }),
+        )),
+    );
+
+    // 子工作流：单个 tool 节点（捕获型 SecureExecutor）。
+    let mut tool_node = make_node("probe", "tool", vec![]);
+    tool_node.config = HashMap::from([("name".to_string(), serde_json::json!("anything"))]);
+    engine
+        .register_workflow(make_workflow("bug24_child_wf", vec![tool_node]))
+        .unwrap();
+
+    // 父工作流：sub_workflow 节点引用子工作流。
+    let mut sub = make_node("call_child", "sub_workflow", vec![]);
+    sub.config = HashMap::from([
+        ("workflow".to_string(), serde_json::json!("bug24_child_wf")),
+        ("input".to_string(), serde_json::json!({"k": "v"})),
+    ]);
+    engine
+        .register_workflow(make_workflow("bug24_parent_wf", vec![sub]))
+        .unwrap();
+
+    // 根触发带 AgentTool 身份（生产 agent 经 workflow 工具发起的形态）。
+    let trigger = TriggerSource::AgentTool {
+        tool_call_id: "tc-024".to_string(),
+        recursion_depth: 2,
+        session_key: "agent:main:session:s-024".to_string(),
+        chat_id: "chat-024".to_string(),
+        sender_id: "user-024".to_string(),
+    };
+    let parent = engine
+        .run("bug24_parent_wf", HashMap::new(), Some(trigger))
+        .await
+        .unwrap();
+    assert_eq!(parent.state, ExecutionState::Completed);
+
+    let got = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("secure executor in child workflow must have captured identity");
+    // 三键继承根触发身份（审批卡路由 / 会话级豁免的身份来源）。
+    assert_eq!(
+        got.session_key, "agent:main:session:s-024",
+        "child tool node session_key must inherit from root trigger"
+    );
+    assert_eq!(got.chat_id, "chat-024");
+    assert_eq!(got.sender_id, "user-024");
+    // 子执行自身身份：workflow_name 指向子工作流、trigger_label=sub_workflow、
+    // execution_id 是子执行自己的 id、递归深度 0（SubWorkflow 不计 AgentTool 帧）。
+    assert_eq!(got.workflow_name, "bug24_child_wf");
+    assert_eq!(got.trigger_label, "sub_workflow");
+    assert_eq!(
+        got.recursion_depth, 0,
+        "SubWorkflow trigger must map to depth 0 (recursion gate counts AgentTool frames only)"
+    );
+    let child_exec_id = parent
+        .node_results
+        .get("call_child")
+        .and_then(|r| r.metadata.get("execution_id"))
+        .and_then(|v| v.as_str())
+        .expect("sub_workflow node must record child execution_id")
+        .to_string();
+    assert_eq!(got.execution_id, child_exec_id);
+    assert_ne!(got.execution_id, parent.id);
+
+    // 子执行落盘形态：trigger_source 是 SubWorkflow 且 parent_execution_id
+    // 指回父执行 id（审计归因父链可回查）。
+    let child_exec = engine
+        .get_execution(&child_exec_id)
+        .await
+        .expect("child execution recorded");
+    match child_exec.trigger_source {
+        Some(TriggerSource::SubWorkflow {
+            parent_execution_id,
+            ..
+        }) => {
+            assert_eq!(parent_execution_id, parent.id);
+        }
+        other => panic!(
+            "child trigger_source must be SubWorkflow, got {:?}",
+            other.map(|t| t.label().to_string())
+        ),
+    }
+}
+
 // -----------------------------------------------------------------------
 // list_executions tests
 // -----------------------------------------------------------------------
@@ -6492,4 +6620,234 @@ fn test_cron_next_fire_at_honors_legacy_expression_alias() {
         config: HashMap::from([("expression".to_string(), json!("0 9 * * *"))]),
     };
     assert!(super::cron_next_fire_at_from_trigger(&not_cron).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261120-038 回归锁：收口段 cancel token 摘除时机。
+//
+// 修复前：run_async / resume 公共尾段在终态 insert 之前摘 token，
+// settle_resume_outcome 的各臂（取消竞态/嵌套 Waiting/子执行失败）更是在
+// 调 settle 之前就摘——「摘除 → 终态 insert」之间（内含 checkpoint + persist
+// 文件 IO，毫秒级窗口）并发 cancel_execution 查不到 token，走「token 缺席
+// 臂」自己翻 Cancelled + 发 Cancelled 事件 + settle 账本；随后收口 insert
+// 真终态 + 再发终态事件 = BUG-20261114-035 exactly-once 双发违约，且内存
+// 记录被收口覆盖（cancel 写的 Cancelled 与收口终态分叉，restore_waiting_
+// after_failed_resume 的 BUG-20261114-008 注释承认该并发取消合法）。
+//
+// 修复后：token 摘除统一挪到终态 insert 之后——收口全程 token 在场，
+// cancel_execution 恒走 had_inflight_token 臂（只翻状态、不发事件、不
+// settle），终态事件唯一。
+//
+// 窗口注入：GatedCheckpointStore 第一次 save() 挂闸等放行（settle 的
+// checkpoint 在 persist/insert 之前），测试在闸内调 cancel_execution——
+// 修复前该调用落在缺席臂（Cancelled 事件），修复后落在 had 臂（零事件）。
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::checkpoint::{CheckpointMeta, StoreError};
+
+struct GatedCheckpointStore {
+    inner: InMemoryCheckpointStore,
+    gate_consumed: AtomicBool,
+    entered: AtomicBool,
+    release: tokio::sync::Notify,
+}
+
+impl GatedCheckpointStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemoryCheckpointStore::new(),
+            gate_consumed: AtomicBool::new(false),
+            entered: AtomicBool::new(false),
+            release: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl CheckpointStore for GatedCheckpointStore {
+    async fn save(&self, checkpoint: Checkpoint) -> Result<String, StoreError> {
+        // 只拦第一次 save（settle 的收口 checkpoint）；后续 save（窗口内
+        // cancel_execution 的 terminal checkpoint）直接放行防死锁。
+        if !self.gate_consumed.swap(true, Ordering::SeqCst) {
+            self.entered.store(true, Ordering::SeqCst);
+            self.release.notified().await;
+        }
+        self.inner.save(checkpoint).await
+    }
+    async fn load(
+        &self,
+        execution_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Checkpoint, StoreError> {
+        self.inner.load(execution_id, checkpoint_id).await
+    }
+    async fn latest(&self, execution_id: &str) -> Result<Option<Checkpoint>, StoreError> {
+        self.inner.latest(execution_id).await
+    }
+    async fn list(&self, execution_id: &str) -> Result<Vec<CheckpointMeta>, StoreError> {
+        self.inner.list(execution_id).await
+    }
+    async fn delete(&self, execution_id: &str, checkpoint_id: &str) -> Result<(), StoreError> {
+        self.inner.delete(execution_id, checkpoint_id).await
+    }
+    async fn list_executions(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.list_executions().await
+    }
+}
+
+/// settle 收口窗口内的并发取消不得自发 Cancelled 事件（exactly-once）。
+#[tokio::test]
+async fn test_settle_window_cancel_keeps_token_and_emits_once() {
+    let engine = WorkflowEngine::new_arc();
+    let gate = std::sync::Arc::new(GatedCheckpointStore::new());
+    engine.set_checkpoint_store(gate.clone());
+
+    let recorder = std::sync::Arc::new(RecordingObserver::new("g38_recorder"));
+    engine
+        .event_manager()
+        .register(std::sync::Arc::clone(&recorder) as std::sync::Arc<dyn WorkflowObserver>)
+        .await;
+
+    // 复刻 resume 临界区形态：Running 记录 + 装 cancel token。
+    engine
+        .register_workflow(make_workflow(
+            "g38_wf",
+            vec![make_node("n1", "llm", vec![])],
+        ))
+        .unwrap();
+    let mut exec = Execution::new("g38_wf".to_string(), HashMap::new());
+    exec.state = ExecutionState::Running;
+    let exec_id = exec.id.clone();
+    {
+        let mut execs = engine.executions.write().await;
+        execs.insert(exec_id.clone(), exec);
+    }
+    engine
+        .cancel_tokens
+        .insert(exec_id.clone(), tokio_util::sync::CancellationToken::new());
+
+    // spawn settle（模拟子执行失败臂的 Failed 收口形态）。
+    let engine2 = engine.clone();
+    let exec_id2 = exec_id.clone();
+    let settle_handle = tokio::spawn(async move {
+        let mut e = engine2.get_execution(&exec_id2).await.unwrap();
+        e.state = ExecutionState::Failed;
+        e.error = Some("child failed".to_string());
+        e.ended_at = Some(chrono::Local::now());
+        engine2.settle_resume_outcome(e, None).await
+    });
+
+    // 等 settle 进入 checkpoint 闸 → 窗口内并发取消。修复后：token 在场
+    // → had_inflight_token 臂 → 不发事件；修复前：token 已摘 → 缺席臂 →
+    // 自发 Cancelled 事件（双发第一响）。
+    while !gate.entered.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let cancel_result = engine.cancel_execution(&exec_id).await;
+    assert!(
+        cancel_result.is_ok(),
+        "窗口内取消必须成功: {cancel_result:?}"
+    );
+    gate.release.notify_waiters();
+    let settled = settle_handle.await.unwrap();
+    assert_eq!(settled.state, ExecutionState::Failed);
+    assert_eq!(settled.error.as_deref(), Some("child failed"));
+
+    // 事件唯一性：恰一个 failed、零 cancelled（修复前双发：cancelled +
+    // failed）。
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let kinds = recorder.event_kinds();
+    assert!(
+        !kinds.contains(&"cancelled"),
+        "窗口内取消不得自发 Cancelled 事件（exactly-once）: {kinds:?}"
+    );
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "failed").count(),
+        1,
+        "终态事件必须唯一: {kinds:?}"
+    );
+
+    // 收口后 token 已摘（窗口闭合的可观察面）+ 终态记录拒绝再取消。
+    assert!(
+        !engine.cancel_tokens.contains_key(&exec_id),
+        "收口完成 token 必须已摘"
+    );
+    assert!(matches!(
+        engine.cancel_execution(&exec_id).await,
+        Err(EngineError::InvalidState(_))
+    ));
+}
+
+/// BUG-20261120-038 真实链路：sub_workflow 子执行失败臂的收口窗口内并发
+/// 取消——修复前（臂在 settle 前摘 token）窗口内 cancel_execution 走缺席
+/// 臂自发 Cancelled 事件，随后 settle 再发 Failed 事件 = 双发；修复后
+/// token 在场到终态 insert 之后，事件唯一。
+#[tokio::test]
+async fn test_subworkflow_failed_arm_settle_window_cancel_emits_once() {
+    let engine = WorkflowEngine::new_arc();
+    let recorder = std::sync::Arc::new(RecordingObserver::new("g38b_recorder"));
+    engine
+        .event_manager()
+        .register(std::sync::Arc::clone(&recorder) as std::sync::Arc<dyn WorkflowObserver>)
+        .await;
+
+    let (parent_id, child_id) = setup_parent_waiting_on_subworkflow(&engine).await;
+
+    // 子执行翻 Failed（模拟子执行失败——resume 父执行走失败同步臂）。
+    {
+        let mut execs = engine.executions.write().await;
+        let child = execs.get_mut(&child_id).unwrap();
+        child.state = ExecutionState::Failed;
+        child.error = Some("child boom".to_string());
+        child.ended_at = Some(chrono::Local::now());
+    }
+
+    // setup 的 run 已结束（其 checkpoint 写入发生在无 store / 原.store 阶段），
+    // 换上闸 store 拉宽 settle 收口窗口。
+    let gate = std::sync::Arc::new(GatedCheckpointStore::new());
+    engine.set_checkpoint_store(gate.clone());
+
+    let engine2 = engine.clone();
+    let pid = parent_id.clone();
+    let resume_handle = tokio::spawn(async move {
+        engine2
+            .resume_execution(
+                &pid,
+                HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+            )
+            .await
+    });
+    while !gate.entered.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let cancel_result = engine.cancel_execution(&parent_id).await;
+    assert!(
+        cancel_result.is_ok(),
+        "窗口内取消必须成功: {cancel_result:?}"
+    );
+    gate.release.notify_waiters();
+    let resumed = resume_handle
+        .await
+        .expect("resume task must not panic")
+        .expect("resume must succeed");
+    assert_eq!(resumed.state, ExecutionState::Failed);
+
+    // 事件唯一性：恰一个 failed、零 cancelled。
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let kinds = recorder.event_kinds();
+    assert!(
+        !kinds.contains(&"cancelled"),
+        "收口窗口内取消不得自发 Cancelled 事件（exactly-once）: {kinds:?}"
+    );
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "failed").count(),
+        1,
+        "终态事件必须唯一: {kinds:?}"
+    );
+    assert!(
+        !engine.cancel_tokens.contains_key(&parent_id),
+        "收口完成 token 必须已摘"
+    );
 }

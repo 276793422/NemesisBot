@@ -202,15 +202,23 @@ async function installModelTier(tier: string, label: string) {
   }
 }
 
+// 搜索请求代际计数（BUG-20261120-032 同族）：Enter 与搜索按钮均可在
+// 在飞期间再次触发——慢的旧回包后到会把新结果覆盖成旧查询的结果。
+// 回包只在自己仍是最新代际时落盘。
+let entriesSearchSeq = 0
+
 async function searchEntries() {
   if (!entriesSearchQuery.value.trim()) return
+  const seq = ++entriesSearchSeq
   try {
     const data = await request('memory', 'entries.search', {
       query: entriesSearchQuery.value,
       limit: 20,
     })
+    if (seq !== entriesSearchSeq) return
     entriesSearchResults.value = data?.results || []
   } catch (e: any) {
+    if (seq !== entriesSearchSeq) return
     toast.error('搜索失败: ' + e)
   }
 }
@@ -400,18 +408,26 @@ async function addMgmtEntry() {
   mgmtAdding.value = false
 }
 
+// 同 BUG-20261120-032 同族代际围栏：清空分支同步作废在飞搜索（清空后
+// 慢回包不得把已清掉的 mgmtResults 重新填回来）。
+let mgmtSearchSeq = 0
+
 async function searchMgmtEntries() {
   if (!mgmtSearchQuery.value.trim()) {
+    mgmtSearchSeq++
     mgmtResults.value = null
     return
   }
+  const seq = ++mgmtSearchSeq
   try {
     const data = await request('memory', 'entries.search', {
       query: mgmtSearchQuery.value,
       limit: 20,
     })
+    if (seq !== mgmtSearchSeq) return
     mgmtResults.value = data?.results || []
   } catch (e: any) {
+    if (seq !== mgmtSearchSeq) return
     toast.error('搜索失败: ' + e)
   }
 }

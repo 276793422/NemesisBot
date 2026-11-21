@@ -1144,3 +1144,74 @@ async fn test_remove_non_active_persona_no_restart() {
         "非活动人格删除不影响 agent，不得重启"
     );
 }
+
+// BUG-20261121-020 回归锁：activate 归档/恢复链路字节保真（A→B→A）。
+// archive/restore 两条链路统一走 write_file_atomic——撕裂是崩溃窗行为，
+// 单测无法注入进程崩溃，但 A→B→A 字节保真钉住两条链路的内容完整性：
+// 归档写错内容/恢复写错内容/半截写入（长度不符）立刻红。同时断言原子写
+// 不留 `.tmp-` 前缀临时残留（写序中途失败会清理，正常路径零残留）。
+#[tokio::test]
+async fn test_activate_round_trip_preserves_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().to_path_buf();
+    seed_default_persona(&ws);
+    {
+        let ctx = make_ctx(&dir);
+        let h = PersonaHandler::new();
+        let _ = h.handle_cmd("current", None, &ctx).await.unwrap();
+    }
+    // 根上放一份可逐字节比对的 default 人格原文
+    let orig_identity = "# I am DEFAULT-original\n\n正文一行。\n";
+    let orig_soul = "soul-default-original\n";
+    std::fs::write(ws.join("IDENTITY.md"), orig_identity).unwrap();
+    std::fs::write(ws.join("SOUL.md"), orig_soul).unwrap();
+    create_persona_dir(&ws, "dev", "Dev", "🛠", "dev persona");
+
+    let ctx = make_ctx_with_agent(&dir);
+    let h = PersonaHandler::new();
+
+    // A(default) → B(dev)
+    h.handle_cmd("activate", Some(serde_json::json!({"name": "dev"})), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(ws.join("IDENTITY.md"))
+            .unwrap()
+            .contains("# Dev"),
+        "切到 dev 后根 IDENTITY.md 应为 dev 内容"
+    );
+
+    // B → A：default 原文必须经归档链路字节保真回到根
+    h.handle_cmd(
+        "activate",
+        Some(serde_json::json!({"name": "default"})),
+        &ctx,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = std::fs::read_to_string(ws.join("IDENTITY.md")).unwrap();
+    let soul = std::fs::read_to_string(ws.join("SOUL.md")).unwrap();
+    assert_eq!(id, orig_identity, "A→B→A 后根 IDENTITY.md 必须逐字节还原");
+    assert_eq!(soul, orig_soul, "A→B→A 后根 SOUL.md 必须逐字节还原");
+
+    // 归档存档同样保真（下次重激活同名人格的恢复源）
+    let archived = std::fs::read_to_string(ws.join("personas/default/IDENTITY.md")).unwrap();
+    assert_eq!(archived, orig_identity, "归档副本必须与原文逐字节一致");
+
+    // 正常路径零临时残留（根 + 归档目录）
+    for check_dir in [ws.clone(), ws.join("personas/default")] {
+        let leftovers: Vec<_> = std::fs::read_dir(&check_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "{:?} 不应残留原子写临时文件: {:?}",
+            check_dir,
+            leftovers.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+}

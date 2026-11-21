@@ -155,9 +155,9 @@ async function runUnlockTest() {
 <template>
   <div class="page-vault">
     <SecurityLayerHeader
-      num="⑬"
+      num=""
       title="凭据隔离"
-      duty="第⑬道闸 凭据隔离（Vault）：API key 等凭据加密托管（AES-256-GCM，DPAPI/Argon2id 派生），工具凭据槽注入替代明文入参——凭据不进提示词、不进日志、不进上下文。"
+      duty="凭据隔离（Vault）：API key 等凭据加密托管（AES-256-GCM，DPAPI/Argon2id 派生），工具凭据槽注入替代明文入参——凭据不进提示词、不进日志、不进上下文。基础设施面，不占闸门编号（⑬ 为危险闸）。"
     />
     <div class="page-body">
       <div style="display: flex; flex-direction: column; gap: var(--space-4);">

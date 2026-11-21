@@ -441,4 +441,6 @@ pub fn get_approval_result_value() -> Option<String> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod drift_tests;
+#[cfg(test)]
 mod tests;

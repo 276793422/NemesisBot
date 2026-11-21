@@ -450,15 +450,43 @@ fn write_converted_persona(workspace: &str, id: &str, content: &str) -> Result<(
     let dir = std::path::Path::new(workspace).join(format!("personas/{}", id));
     std::fs::create_dir_all(&dir)?;
 
-    std::fs::write(dir.join("PERSONA.json"), &converted.persona_json)?;
-    std::fs::write(dir.join("IDENTITY.md"), &converted.identity)?;
-    std::fs::write(dir.join("SOUL.md"), &converted.soul)?;
-    std::fs::write(dir.join("AGENT.md"), &converted.agent_full)?;
-    std::fs::write(dir.join("TOOLS.md"), &converted.tools_full)?;
+    // 人格存档文件统一原子写（2026-11-21 BUG-20261121-020 家族根修，与 web
+    // shop.download 臂同款；撕裂存档会被 activate 恢复成活体人格）。
+    nemesis_utils::write_file_atomic(
+        &dir.join("PERSONA.json").to_string_lossy(),
+        converted.persona_json.as_bytes(),
+        0o644,
+    )
+    .map_err(anyhow::Error::msg)?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("IDENTITY.md").to_string_lossy(),
+        converted.identity.as_bytes(),
+        0o644,
+    )
+    .map_err(anyhow::Error::msg)?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("SOUL.md").to_string_lossy(),
+        converted.soul.as_bytes(),
+        0o644,
+    )
+    .map_err(anyhow::Error::msg)?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("AGENT.md").to_string_lossy(),
+        converted.agent_full.as_bytes(),
+        0o644,
+    )
+    .map_err(anyhow::Error::msg)?;
+    nemesis_utils::write_file_atomic(
+        &dir.join("TOOLS.md").to_string_lossy(),
+        converted.tools_full.as_bytes(),
+        0o644,
+    )
+    .map_err(anyhow::Error::msg)?;
 
     // 空心跳文件与 web shop.download 对齐：缺失/空 HEARTBEAT.md 会让心跳
     // 服务跳过 LLM，之后 web activate 本人格时根 HEARTBEAT.md 被清掉不补。
-    std::fs::write(dir.join("HEARTBEAT.md"), "")?;
+    nemesis_utils::write_file_atomic(&dir.join("HEARTBEAT.md").to_string_lossy(), b"", 0o644)
+        .map_err(anyhow::Error::msg)?;
 
     Ok(())
 }

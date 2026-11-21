@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
-use crate::base::{BaseChannel, Channel};
+use crate::base::{BaseChannel, Channel, EventDedup};
 
 /// Initial backoff duration for reconnect.
 const INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -164,6 +164,8 @@ pub struct DingTalkChannel {
     bus_sender: broadcast::Sender<InboundMessage>,
     /// Cancellation sender for the stream loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// eventId 级事件幂等集（BUG-20261121-053，crate::base 单一真相源）。
+    event_dedup: Arc<EventDedup>,
 }
 
 impl DingTalkChannel {
@@ -190,6 +192,7 @@ impl DingTalkChannel {
             access_token: Arc::new(parking_lot::RwLock::new(String::new())),
             bus_sender,
             cancel_tx: parking_lot::Mutex::new(None),
+            event_dedup: Arc::new(EventDedup::new()),
         })
     }
 
@@ -345,6 +348,7 @@ impl DingTalkChannel {
         bus_sender: &broadcast::Sender<InboundMessage>,
         session_webhooks: &dashmap::DashMap<String, String>,
         allow_from: &[String],
+        event_dedup: &EventDedup,
     ) {
         let event_type = event
             .headers
@@ -392,6 +396,23 @@ impl DingTalkChannel {
         // Check allow list
         if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
             debug!(sender_id = %sender_id, "[DingTalkChannel] message filtered by allow_list");
+            return;
+        }
+
+        // BUG-20261121-053：eventId 级幂等闸（feishu BUG-20261121-048 event_id /
+        // slack BUG-20261121-051 ts 同族机制，crate::base::EventDedup 单一真相
+        // 源）——headers.event_id 此前解析但零消费（半成品形态），钉钉 Stream
+        // EVENT 在客户端未及时消费时网关侧重试重推，同事件双喂 agent（红证实
+        // 测 log/r2163_red_b053.log）。eventId 缺失 fallback messageId，再缺失
+        // 保守放行（宁重复不丢）。放行位置：allow_from 之后，只对真正入站的
+        // 消息占槽（与 slack 同位）。
+        let dedup_key = event
+            .headers
+            .as_ref()
+            .and_then(|h| h.event_id.as_deref().or(h.message_id.as_deref()))
+            .unwrap_or("");
+        if !dedup_key.is_empty() && !event_dedup.check_and_record(dedup_key) {
+            debug!(event_id = %dedup_key, "[DingTalkChannel] duplicate event dropped");
             return;
         }
 
@@ -478,6 +499,7 @@ impl DingTalkChannel {
         let bus_sender = self.bus_sender.clone();
         let session_webhooks = self.session_webhooks.clone();
         let allow_from = self.config.allow_from.clone();
+        let event_dedup = self.event_dedup.clone();
 
         tokio::spawn(async move {
             let mut cancel_rx = cancel_rx;
@@ -597,8 +619,19 @@ impl DingTalkChannel {
                                                 {
                                                     Ok(resp) if resp.status().is_success() => {
                                                         let status = resp.status();
-                                                        let body_text =
-                                                            resp.text().await.unwrap_or_default();
+                                                        // BUG-20261120-037：body 读取中断不得
+                                                        // 吞成空串当「无事发生」——旧
+                                                        // unwrap_or_default 经
+                                                        // poll_response_is_empty(200, "") 判
+                                                        // 空 continue 静默，丢事件零痕迹。WARN
+                                                        // 留痕后跳过本轮，下一轮 poll 继续。
+                                                        let body_text = match resp.text().await {
+                                                            Ok(t) => t,
+                                                            Err(e) => {
+                                                                warn!("[DingTalkChannel] poll 响应体读取失败（连接中断），本轮跳过: {e}");
+                                                                continue;
+                                                            }
+                                                        };
                                                         // 204 No Content / 空 body = 网关无事
                                                         // 件正常态，安静跳过——此前 204 落进
                                                         // 解析臂，空 body 双重解析失败 = 每秒
@@ -622,6 +655,7 @@ impl DingTalkChannel {
                                                                     &bus_sender,
                                                                     &session_webhooks,
                                                                     &allow_from,
+                                                                    &event_dedup,
                                                                 );
                                                             }
                                                         } else if let Ok(event) =
@@ -634,6 +668,7 @@ impl DingTalkChannel {
                                                                 &bus_sender,
                                                                 &session_webhooks,
                                                                 &allow_from,
+                                                                &event_dedup,
                                                             );
                                                         } else {
                                                             // 畸形 200 body = 在飞事件静默丢失，必须留痕（对齐下方非 200 warn 风格）
@@ -670,6 +705,16 @@ impl DingTalkChannel {
                                     );
                                     backoff = INITIAL_BACKOFF;
                                 }
+                            } else {
+                                // BUG-20261121-054：open 200 非 JSON body（HTML
+                                // 错误页/截断流）此前 `if let Ok` 无 else 静默落
+                                // 循环尾退避——连接建立失败零痕迹，违反同文件
+                                // poll 臂「畸形 200 body 必须留痕」钦定原则。
+                                // json() 消耗 resp 故原文不可得，留痕事件+位点；
+                                // body 明细可后续改 text()+from_str 时补。
+                                warn!(
+                                    "[DingTalkChannel] stream open returned 200 with non-JSON body, backing off"
+                                );
                             }
                         } else {
                             let status = resp.status();
@@ -713,8 +758,19 @@ impl Channel for DingTalkChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261121-050：幂等双启守卫 + base 旗标接线（telegram
+        // BUG-20261110-037 / discord BUG-20261121-043 / feishu
+        // BUG-20261121-046 同构家族第四批）——无守卫的重复 start 会
+        // spawn 多个并行 stream loop 每条消息 N 倍喂 agent；trait
+        // is_running()（读 base 旗标）恒 false 使 manager 运行中守卫失效。
+        if self.base.is_running() {
+            info!("[DingTalkChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
+
         info!("[DingTalkChannel] starting DingTalk channel (Stream Mode)");
         *self.running.write() = true;
+        self.base.set_running(true);
         self.base.set_enabled(true);
 
         // Try to get access token
@@ -733,6 +789,8 @@ impl Channel for DingTalkChannel {
     async fn stop(&self) -> Result<()> {
         info!("[DingTalkChannel] stopping DingTalk channel");
         *self.running.write() = false;
+        // BUG-20261121-050：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
 
         if let Some(tx) = self.cancel_tx.lock().take() {

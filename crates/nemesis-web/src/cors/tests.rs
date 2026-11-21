@@ -398,3 +398,128 @@ fn new_tolerates_utf8_bom_config_file() {
         mgr.list_origins()
     );
 }
+
+// origin_allowed 单一真相源（BUG-20261121-004 接线回归）----------------
+
+#[test]
+fn origin_allowed_explicit_localhost_cdn_and_denials() {
+    let cfg = sample_config();
+    // 显式精确。
+    assert!(origin_allowed(&cfg, "https://example.com"));
+    assert!(origin_allowed(&cfg, "https://app.example.com"));
+    // localhost 任意端口（allow_localhost 默认 true）——旧装配层只认
+    // 固定 5 端口枚举。
+    assert!(origin_allowed(&cfg, "http://localhost:9999"));
+    assert!(origin_allowed(&cfg, "http://127.0.0.1:1"));
+    // CDN 精确 + 子域——旧装配层完全丢弃 CDN 域。
+    assert!(origin_allowed(&cfg, "https://cdn.example.com"));
+    assert!(origin_allowed(&cfg, "https://abc.cdn.example.com"));
+    // 伪装后缀不命中。
+    assert!(!origin_allowed(&cfg, "https://fake-cdn.example.com"));
+    assert!(!origin_allowed(&cfg, "https://cdn.example.com.evil.io"));
+    // 非白名单拒。
+    assert!(!origin_allowed(&cfg, "https://other.io"));
+}
+
+#[test]
+fn origin_allowed_localhost_gate_and_no_origin() {
+    let cfg = CORSConfig {
+        allow_localhost: false,
+        ..CORSConfig::default()
+    };
+    assert!(!origin_allowed(&cfg, "http://localhost:3000"));
+    // 空 origin 咨询面：allow_no_origin 各自成立。
+    assert!(origin_allowed(&cfg, ""));
+    let cfg2 = CORSConfig {
+        allow_no_origin: false,
+        ..CORSConfig::default()
+    };
+    assert!(!origin_allowed(&cfg2, ""));
+}
+
+#[test]
+fn check_origin_matches_origin_allowed() {
+    // 委托一致性：CORSManager::check_origin ≡ origin_allowed(snapshot)。
+    let mgr = CORSManager {
+        config: RwLock::new(sample_config()),
+        config_path: PathBuf::from("/tmp/test_cors.json"),
+    };
+    let snapshot = mgr.config();
+    for o in [
+        "https://example.com",
+        "http://localhost:4321",
+        "https://x.cdn.example.com",
+        "https://evil.test",
+        "",
+    ] {
+        assert_eq!(mgr.check_origin(o), origin_allowed(&snapshot, o));
+    }
+}
+
+// cors_layer_from_manager 真实层行为（BUG-20261121-004 接线回归）--------
+//
+// 旧实现把 localhost 折成固定 5 端口枚举、CDN 域被静默丢弃——下面的
+// oneshot 断言把 predicate 判定钉在真实层：CDN 子域 / localhost 任意
+// 端口经层放行（ACAO 头在场），非白名单拒绝（无 ACAO 头）。
+
+async fn layer_emits_acao(layer: CorsLayer, origin: &str) -> bool {
+    use tower::{Layer, ServiceExt};
+    let svc = layer.layer(tower::service_fn(
+        |_req: http::Request<axum::body::Body>| async {
+            Ok::<_, std::convert::Infallible>(axum::response::Response::new(
+                axum::body::Body::empty(),
+            ))
+        },
+    ));
+    let req = http::Request::builder()
+        .header("Origin", origin)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = svc.oneshot(req).await.expect("oneshot");
+    resp.headers()
+        .contains_key(http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+}
+
+#[tokio::test]
+async fn managed_layer_wires_cdn_and_any_port_localhost() {
+    // CDN 子域经真实层放行（旧层：无 ACAO = 浏览器拒——死键实锤形态）。
+    let mgr = CORSManager {
+        config: RwLock::new(sample_config()),
+        config_path: PathBuf::from("/tmp/test_cors.json"),
+    };
+    assert!(
+        layer_emits_acao(cors_layer_from_manager(&mgr), "https://abc.cdn.example.com").await,
+        "CDN 子域必须经真实层放行（接线回归）"
+    );
+    // localhost 非常见端口（旧层 5 端口枚举外的 9999）放行。
+    assert!(
+        layer_emits_acao(cors_layer_from_manager(&mgr), "http://localhost:9999").await,
+        "localhost 任意端口必须经真实层放行（接线回归）"
+    );
+    // 显式 origin 照旧。
+    assert!(
+        layer_emits_acao(cors_layer_from_manager(&mgr), "https://example.com").await,
+        "显式 origin 照旧放行"
+    );
+    // 非白名单拒。
+    assert!(
+        !layer_emits_acao(cors_layer_from_manager(&mgr), "https://evil.test").await,
+        "非白名单 origin 必须拒绝（无 ACAO 头）"
+    );
+}
+
+#[tokio::test]
+async fn managed_layer_development_mode_allows_all() {
+    let cfg = CORSConfig {
+        development_mode: true,
+        ..CORSConfig::default()
+    };
+    let mgr = CORSManager {
+        config: RwLock::new(cfg),
+        config_path: PathBuf::from("/tmp/test_cors.json"),
+    };
+    assert!(
+        layer_emits_acao(cors_layer_from_manager(&mgr), "https://anything.test").await,
+        "development_mode 必须放行任意 origin"
+    );
+}

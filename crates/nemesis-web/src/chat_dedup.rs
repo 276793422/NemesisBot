@@ -111,17 +111,21 @@ fn load_sidecar(workspace: &Path, session_key: &str, entry: &mut DedupEntry) {
 }
 
 /// sidecar 整体重写（insert 后调用；条目 ≤128，小 JSON）。失败 = warn 保留
-/// 内存态（重启后窗口缺这几条 = 幂等窗口短暂收窄，可接受）。
+/// 内存态（重启后窗口缺这几条 = 幂等窗口短暂收窄，可接受）。写盘走
+/// write_file_atomic（R2061 原子写家族统一出口，BUG-20261121-007）：
+/// .tmp-{pid}-{seq}-{nanos} + create_new + sync 先于 rename——裸
+/// fs::write 中途崩（断电/kill）会把记账 sidecar 撕成半截 JSON，重启加载
+/// 恒走「损坏 → 空窗口」降级臂，幂等窗口整段丢失；helper 内含
+/// create_dir_all（目录缺失/已建两态都覆盖）+ symlink 保链（session_logs
+/// 目录若被用户 dotfile 化不被换成普通文件）。
 fn persist(workspace: &Path, session_key: &str, items: &VecDeque<(String, u64)>) {
     let path = sidecar_path(workspace, session_key);
-    if let Some(parent) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(path = %path.display(), error = %e, "[chat_dedup] sidecar dir create failed");
-        return;
-    }
     let body = serde_json::json!({ "v": 1, "items": items });
-    if let Err(e) = std::fs::write(&path, body.to_string()) {
+    if let Err(e) = nemesis_utils::file::write_file_atomic(
+        &path.to_string_lossy(),
+        body.to_string().as_bytes(),
+        0o644, // 同目录 chat_log 会话文件同款权限（0o644 家族惯例）
+    ) {
         tracing::warn!(path = %path.display(), error = %e, "[chat_dedup] sidecar write failed");
     }
 }

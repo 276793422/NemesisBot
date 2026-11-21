@@ -474,3 +474,70 @@ async fn send_internal_command_cross_origin_redirect_not_followed() {
         "重定向目标不得收到任何请求（旧形态跟随路径 hits=1 且 Ok 假成功）"
     );
 }
+
+// ===========================================================================
+// BUG-20261120-037：2xx 响应 body 读断连不得吞成空串假成功。旧形态
+// `resp.text().await.unwrap_or_default()` 在对端发完 200 头后 body 中途
+// 断连时静默落空串 → `from_str("")` 失败 → `json!({})` 假成功——estop
+// status 拿空对象状态失真。修复 = text() Err 上抛「读取 Gateway 响应体
+// 失败」（BUG-20261029-153 同族：providers 8 处已修，本位点家族残余）。
+// ===========================================================================
+
+/// 半截响应 mock（BUG-153 红证踩坑实录同款纪律）：先读满整个请求
+/// （头边界 + Content-Length body），再写 200 + 夸大 Content-Length +
+/// 截断 body，最后 drop——干净 FIN 让 EOF 落在 body 中途；带未读数据的
+/// close 在 Windows 发 RST 会把响应头一起冲掉（错误浮现在 send() 而非
+/// body 读，红证区分度归零）。
+fn start_truncated_body_mock() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        // 读满请求：循环到头边界出现且 body 按声明长度读尽。
+        let mut raw: Vec<u8> = Vec::new();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stream.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            raw.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&raw);
+            let Some(hdr_end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let declared = text
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().ok())
+                })
+                .flatten()
+                .unwrap_or(0);
+            if raw.len() >= hdr_end + 4 + declared {
+                break;
+            }
+        }
+        // 200 头声明 5000 字节，实发 40 字节后 drop → 客户端 body 读 Err。
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n{\"status\":\"engaged\",\"partial\":true",
+        );
+    });
+    port
+}
+
+#[tokio::test]
+async fn send_internal_command_get_json_body_read_failure_is_error_not_empty_object() {
+    let port = start_truncated_body_mock();
+    let result =
+        send_internal_command_get_json(&format!("http://127.0.0.1:{port}"), "tok", "estop_status")
+            .await;
+    let err = result.expect_err("body 读断连必须 Err——Ok(空对象) 是 BUG-20261120-037 假成功");
+    assert!(
+        err.to_string().contains("读取 Gateway 响应体失败"),
+        "错误要指明 body 读取失败（非字段缺失误导）: {err}"
+    );
+}

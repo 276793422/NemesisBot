@@ -565,4 +565,6 @@ pub extern "C" fn plugin_free() {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod drift_tests;
+#[cfg(test)]
 mod tests;

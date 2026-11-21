@@ -125,6 +125,10 @@ impl MemoryStore for LocalStore {
         memory_type: Option<MemoryType>,
         limit: usize,
     ) -> Result<SearchResult, String> {
+        // limit=0 语义与 TfIdfLocalStore::query 对齐：0 = 默认 10，而非 take(0) 恒空
+        //（BUG-20261121-038：trait 双实现的 limit 语义必须一致，否则换 store 后端时
+        // 同一调用方拿到相反结果——WSAPI memory.entries_search 显式传 0 即恒空）。
+        let limit = if limit == 0 { 10 } else { limit };
         let query_tokens = tokenize(query);
         let guard = self.entries.read();
 
@@ -193,11 +197,12 @@ impl MemoryStore for LocalStore {
         offset: usize,
     ) -> Result<Vec<Entry>, String> {
         let guard = self.entries.read();
+        // limit=0 = 取尽（与 TfIdfLocalStore::list 对齐；0 在 take() 里是「取零条」恒空）。
         let filtered: Vec<Entry> = guard
             .iter()
             .filter(|e| memory_type.is_none() || e.typ == memory_type.unwrap())
             .skip(offset)
-            .take(limit)
+            .take(if limit > 0 { limit } else { usize::MAX })
             .cloned()
             .collect();
         Ok(filtered)

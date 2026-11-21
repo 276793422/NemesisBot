@@ -104,6 +104,10 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/audit', name: 'layer-audit', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'audit' } }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/guardian', name: 'guardian', component: () => import('../views/SecurityGuardianView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/approval', name: 'approval', component: () => import('../views/SecurityApprovalView.vue') }] : []),
+  // 危险闸（2026-11-20）：确定性硬闸家族聚合页（工具执行词表本期；注册表
+  // 路径/URL 硬闸等后续入页）。后端 security.exec_deny_* 挂 security feature
+  // ——与安全域同一 VITE_FEATURE_SECURITY 门控。
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/hard-gates', name: 'hard-gates', component: () => import('../views/HardGatesView.vue') }] : []),
   { path: '/security', redirect: '/security-overview' },
   // L7c (2026-10-13)：凭据 Vault 管理页（后端 vault handler 挂 security
   // feature——与安全域同一 VITE_FEATURE_SECURITY 门控）。

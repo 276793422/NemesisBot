@@ -257,6 +257,121 @@ async fn p20_conflict_scan_tree_diff_agent_span_change_not_unchecked() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// conflict_scan_scoped：git 全树面 in-window 未声明偏离的窗口归因
+// （BUG-20261120-044）——多会话共享索引下，其他会话 turn 内的 exec 副作用
+// 不在声明面（other_session_paths 声明收集不到）、又在树 diff 的
+// t≠r 分支被静默跳过，A 的 rewind 跨 B 的 turn 时零闸碾掉 B 的文件。修复 =
+// 按 begin-tree 窗口归因，归属其他会话的补进波及面（默认拒绝）。
+// ---------------------------------------------------------------------------
+
+/// B 的 turn 内未声明副作用（exec 形态）：session-a 回退跨 B 的 turn 时，
+/// 该路径必须进 other_session_paths（默认拒绝、force 可强过），而非零闸
+/// 静默碾过。begin tree 是 turn 开始态 → 差异对 (tree2(B), tree3(A)) 归属
+/// 前一棵树所属 turn2 = session-b。
+#[tokio::test]
+async fn p20_scoped_in_window_other_session_side_effect_gated() {
+    let (_d, root) = p20_git_root();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin_for_session(1, "A t1", Some("session-a")); // tree1 = {code.txt: v1}
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    store
+        .snapshot_for_session(&modify("code.txt"), Some("session-a"))
+        .await;
+    store.seal_turn(1);
+    store.begin_for_session(2, "B t2", Some("session-b")); // tree2 = {code.txt: v2}
+    std::fs::write(root.join("side_effect.txt"), "B shell noise").unwrap(); // B turn 内未声明副作用
+    store.begin_for_session(3, "A t3", Some("session-a")); // tree3 = {code.txt: v2, side_effect.txt}
+
+    let report = store.conflict_scan_scoped(1, Some("session-a"));
+    assert!(
+        report.conflicts.is_empty(),
+        "code.txt 已封印指纹=现盘，零冲突: {:?}",
+        report.conflicts
+    );
+    assert!(
+        report
+            .other_session_paths
+            .contains(&"side_effect.txt".to_string()),
+        "B 的 in-window 未声明副作用必须进波及面（默认拒绝）: {:?}",
+        report.other_session_paths
+    );
+    assert_eq!(
+        report.other_session_paths.len(),
+        1,
+        "一条路径一个判定，不得重复: {:?}",
+        report.other_session_paths
+    );
+    assert!(
+        !report
+            .unchecked_paths
+            .contains(&"side_effect.txt".to_string()),
+        "已进波及面的路径不得再以 unchecked 身份出现: {:?}",
+        report.unchecked_paths
+    );
+}
+
+/// 同会话自己的 in-window 副作用 = 回退本意，保持 silent（行为保持面——
+/// 修复不得把单会话语义误闸）。
+#[tokio::test]
+async fn p20_scoped_in_window_own_session_side_effect_silent() {
+    let (_d, root) = p20_git_root();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin_for_session(1, "A t1", Some("session-a")); // tree1 = {code.txt: v1}
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    store
+        .snapshot_for_session(&modify("code.txt"), Some("session-a"))
+        .await;
+    store.seal_turn(1);
+    store.begin_for_session(2, "A t2", Some("session-a")); // tree2
+    std::fs::write(root.join("side_effect.txt"), "A shell noise").unwrap(); // 本会话副作用
+    store.begin_for_session(3, "A t3", Some("session-a")); // tree3
+
+    let report = store.conflict_scan_scoped(1, Some("session-a"));
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert!(
+        report.other_session_paths.is_empty(),
+        "本会话 in-window 副作用 = 回退本意，不得闸: {:?}",
+        report.other_session_paths
+    );
+    assert!(
+        report.unchecked_paths.is_empty(),
+        "回退区间内本会话副作用不算 unchecked: {:?}",
+        report.unchecked_paths
+    );
+}
+
+/// 老数据混合形态：窗口内产生 turn 是旧全局语义 begin()（session=None）
+/// → 不可归属按同会话处理（fn 文档约定在树面同样成立），保持 silent。
+#[tokio::test]
+async fn p20_scoped_in_window_unattributable_none_session_silent() {
+    let (_d, root) = p20_git_root();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin_for_session(1, "A t1", Some("session-a")); // tree1 = {code.txt: v1}
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    store
+        .snapshot_for_session(&modify("code.txt"), Some("session-a"))
+        .await;
+    store.seal_turn(1);
+    store.begin(2, "legacy t2"); // 旧全局语义（session=None）；tree2
+    std::fs::write(root.join("side_effect.txt"), "legacy side effect").unwrap();
+    store.begin_for_session(3, "A t3", Some("session-a")); // tree3
+
+    let report = store.conflict_scan_scoped(1, Some("session-a"));
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert!(
+        report.other_session_paths.is_empty(),
+        "session=None 不可归属 = 按同会话 silent: {:?}",
+        report.other_session_paths
+    );
+}
+
 /// 声明路径已报冲突（外部删除形态）时，树 diff 面不得把同一路径再塞进
 /// unchecked_paths（一份路径一个判定，消费面不重复计数）。
 #[tokio::test]

@@ -1238,9 +1238,10 @@ async fn test_websocket_client_sends_invalid_json_gets_error() {
 }
 
 #[tokio::test]
-async fn test_websocket_second_client_rejected_when_one_connected() {
-    use futures::StreamExt;
+async fn test_websocket_second_client_evicts_previous_bug036() {
+    use futures::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
 
     let port = find_free_port();
     let (bus_tx, _) = tokio::sync::broadcast::channel::<InboundMessage>(64);
@@ -1255,29 +1256,77 @@ async fn test_websocket_second_client_rejected_when_one_connected() {
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // First client connects
+    // BUG-20261120-036：旧形态「已占用即拒绝」在完全静默的半开客户端（休
+    // 眠/崩溃无 RST，双向零流量）下形成僵尸槽——新连接永远被拒，恢复只能
+    // 重启 gateway。新语义 = latest-wins 驱逐：第二个客户端换槽成功，旧连
+    // 接 reader/writer 被 abort（socket 落盘关闭），出站槽归新客户端。
+
+    // First client connects and consumes its welcome (驱逐前缓冲内的最后
+    // 一帧——此后该连接上任何帧都是异常)。
     let url = format!("ws://127.0.0.1:{port}/ws");
     let (ws1, _) = connect_async(url.clone()).await.unwrap();
-    let (_w1, _r1) = ws1.split();
-
-    // Give server time to register first connection
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Second client tries to connect — server should drop the TCP connection
-    let result =
-        tokio::time::timeout(std::time::Duration::from_millis(500), connect_async(url)).await;
-
-    // Either times out, errors, or connects then immediately closes.
-    // All three outcomes are acceptable for this assertion.
-    match result {
-        Err(_) => {}     // timeout
-        Ok(Err(_)) => {} // connection error
-        Ok(Ok((ws2, _))) => {
-            // Even if connected, server should drop quickly
-            let (_w2, mut r2) = ws2.split();
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), r2.next()).await;
+    let (mut w1, mut r1) = ws1.split();
+    let mut got_a_welcome = false;
+    for _ in 0..10 {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), r1.next()).await {
+            Ok(Some(Ok(Message::Text(_)))) => {
+                got_a_welcome = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue,
+            _ => break,
         }
     }
+    assert!(got_a_welcome, "first client must receive welcome");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Second client connects — must be accepted (latest-wins eviction)
+    let (ws2, _) = connect_async(url)
+        .await
+        .expect("second client must be accepted (latest-wins eviction)");
+    let (_w2, mut r2) = ws2.split();
+
+    // New client gets a welcome message
+    let mut got_welcome = false;
+    for _ in 0..10 {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), r2.next()).await {
+            Ok(Some(Ok(Message::Text(_)))) => {
+                got_welcome = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue,
+            _ => break,
+        }
+    }
+    assert!(
+        got_welcome,
+        "second client must receive welcome after eviction"
+    );
+
+    // Slot now belongs to client 2: outbound send succeeds
+    assert!(
+        w4c_wait_send_state(&ch, true, 3000).await.is_none(),
+        "slot must route to the second client after eviction"
+    );
+
+    // Old client's tasks were aborted: socket closes — client 1 observes
+    // closure (error/close) within bounded time and never more Text frames.
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match r1.next().await {
+                Some(Ok(Message::Text(_))) => return false,
+                Some(Ok(_)) => continue,
+                Some(Err(_)) | None => return true,
+            }
+        }
+    })
+    .await
+    .expect("evicted client must observe closure within 5s");
+    assert!(
+        closed,
+        "evicted client must not receive further Text frames"
+    );
+    let _ = w1.send(Message::Close(None)).await; // socket likely dead; ignore
 
     ch.stop().await.unwrap();
 }
@@ -1719,6 +1768,11 @@ async fn s2_websocket_send_dead_sender_returns_disconnected_err() {
     *ch.active_conn.lock() = Some(ActiveConnection {
         send_tx: dead_tx,
         client_id: "s2-test-client".to_string(),
+        // 模拟槽无真实任务——立即完成的 no-op 任务句柄占位（abort no-op）
+        tasks: [
+            tokio::task::spawn(async {}).abort_handle(),
+            tokio::task::spawn(async {}).abort_handle(),
+        ],
     });
     ch.base.set_running(true);
 
@@ -1750,6 +1804,11 @@ async fn bug192_send_mismatched_chat_id_soft_fails() {
     *ch.active_conn.lock() = Some(ActiveConnection {
         send_tx: tx,
         client_id: "client-new".to_string(),
+        // 模拟槽无真实任务——立即完成的 no-op 任务句柄占位（abort no-op）
+        tasks: [
+            tokio::task::spawn(async {}).abort_handle(),
+            tokio::task::spawn(async {}).abort_handle(),
+        ],
     });
     ch.base.set_running(true);
 
@@ -1782,6 +1841,11 @@ async fn bug192_send_matching_chat_id_delivers() {
     *ch.active_conn.lock() = Some(ActiveConnection {
         send_tx: tx,
         client_id: "client-cur".to_string(),
+        // 模拟槽无真实任务——立即完成的 no-op 任务句柄占位（abort no-op）
+        tasks: [
+            tokio::task::spawn(async {}).abort_handle(),
+            tokio::task::spawn(async {}).abort_handle(),
+        ],
     });
     ch.base.set_running(true);
 
@@ -1809,6 +1873,11 @@ async fn bug192_send_non_prefixed_chat_id_delivers() {
     *ch.active_conn.lock() = Some(ActiveConnection {
         send_tx: tx,
         client_id: "client-cur".to_string(),
+        // 模拟槽无真实任务——立即完成的 no-op 任务句柄占位（abort no-op）
+        tasks: [
+            tokio::task::spawn(async {}).abort_handle(),
+            tokio::task::spawn(async {}).abort_handle(),
+        ],
     });
     ch.base.set_running(true);
 

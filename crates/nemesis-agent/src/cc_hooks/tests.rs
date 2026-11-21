@@ -170,6 +170,21 @@ fn parse_rejects_garbage() {
     assert!(parse_cc_hooks("42").is_err());
 }
 
+/// BUG-20261120-029 回归锁：CcEvents 全字段 default，`[]` 曾从 serde
+/// visit_seq 零元素臂溜过 = 全空 hooks 静默生效（还 Ok），违背模块
+/// 「手写坏配置 loud 拒绝」纪律。形状闸必须在反序列化前拦下。
+#[test]
+fn parse_rejects_array_payload_loud() {
+    let err = parse_cc_hooks("[]").expect_err("array payload must be rejected");
+    assert!(err.contains("must be a JSON object"), "err={err}");
+    assert!(err.contains("array"), "err={err}");
+    // 外层 `{"hooks": []}` 同洞（事件体取内层数组）。
+    let err = parse_cc_hooks(r#"{"hooks": []}"#).expect_err("nested array must be rejected");
+    assert!(err.contains("array"), "err={err}");
+    // null 同样 loud 拒（此前经 visit_* 类型不符误打误撞报错，闸后语义统一）。
+    assert!(parse_cc_hooks("null").is_err());
+}
+
 // ---------------------------------------------------------------------------
 // 会话圈定（scope.sessions，2026-11-16 HOOK 会话维度批次一）
 // ---------------------------------------------------------------------------

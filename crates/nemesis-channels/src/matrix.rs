@@ -362,8 +362,19 @@ impl Channel for MatrixChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261121-050：幂等双启守卫 + base 旗标接线（telegram
+        // BUG-20261110-037 / discord BUG-20261121-043 / feishu
+        // BUG-20261121-046 同构家族第四批）——无守卫的重复 start 会
+        // spawn 多个并行 sync loop 每条消息 N 倍喂 agent；trait
+        // is_running()（读 base 旗标）恒 false 使 manager 运行中守卫失效。
+        if self.base.is_running() {
+            info!("[MatrixChannel] already running, skipping duplicate start");
+            return Ok(());
+        }
+
         info!("[MatrixChannel] starting Matrix channel");
         *self.running.write() = true;
+        self.base.set_running(true);
         self.base.set_enabled(true);
 
         let bus = self.bus_sender.clone();
@@ -460,6 +471,17 @@ impl Channel for MatrixChannel {
                                     continue;
                                 }
 
+                                // BUG-20261121-055：msgtype 闸对齐 process_sync_events
+                                // （331 行）——两套解析此前只有 event_type/sender_allowed
+                                // 收编了单点，msgtype 检查漏收编：m.image/m.file/m.video
+                                // 的 body 是文件名、m.notice 是其他 bot 的系统通知（回
+                                // 环风险）、m.emote 是动作文本，全部当聊天文本喂 agent。
+                                // 只放行 m.text 与慢路径同口径。
+                                let msg_type = event["content"]["msgtype"].as_str().unwrap_or("");
+                                if msg_type != "m.text" {
+                                    continue;
+                                }
+
                                 let content = event["content"]["body"].as_str().unwrap_or("");
                                 if content.is_empty() {
                                     continue;
@@ -498,6 +520,8 @@ impl Channel for MatrixChannel {
     async fn stop(&self) -> Result<()> {
         info!("[MatrixChannel] stopping Matrix channel");
         *self.running.write() = false;
+        // BUG-20261121-050：对称清 base 旗标（契约面见 start 内注释）。
+        self.base.set_running(false);
         self.base.set_enabled(false);
         Ok(())
     }

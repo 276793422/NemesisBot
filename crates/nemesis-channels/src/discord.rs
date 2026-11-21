@@ -54,6 +54,52 @@ fn can_resume_session(session_id: Option<&str>, seq: Option<u64>) -> bool {
     session_id.is_some_and(|s| !s.is_empty()) && seq.is_some()
 }
 
+/// 进站事件白名单（BUG-20261121-042 单一裁决点，dispatch 与测试共用）：
+/// 只认 MESSAGE_CREATE。MESSAGE_UPDATE 会在编辑**和 embed unfurl**（贴
+/// 链接后 Discord 自动补嵌入）时携带同一 content 重发——全量放行 = 同
+/// 内容重复喂 agent（每次贴链接必双回复）；模块文档契约只承诺
+/// MESSAGE_CREATE。
+fn is_inbound_event(event_name: &str) -> bool {
+    event_name == "MESSAGE_CREATE"
+}
+
+/// GET {api_base}/gateway/bot → WebSocket URL（status 闸单一真相源，
+/// BUG-20261121-041）。Discord 401/403（token 失效/无 intent 授权）的
+/// 响应体是 `{"message": "401: Unauthorized", "code": 0}` 合法 JSON——
+/// 不查 status 会把真因吞成 "missing 'url' in gateway response"，token
+/// 失效事故被引向「API 变更了？」的排查方向（R736 审计判定）。gateway
+/// 循环（活路径）与 `get_gateway_url`（诊断路径）共用本函数。
+async fn fetch_gateway_bot_url(
+    http: &reqwest::Client,
+    api_base: &str,
+    token: &str,
+) -> Result<String> {
+    let url = format!("{api_base}/gateway/bot");
+    let resp = http
+        .get(&url)
+        .header("Authorization", format!("Bot {token}"))
+        .send()
+        .await
+        .map_err(|e| NemesisError::Channel(format!("discord gateway request failed: {e}")))?;
+    let status = resp.status();
+    let resp: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| NemesisError::Channel(format!("discord gateway parse failed: {e}")))?;
+    if !status.is_success() {
+        let msg = resp["message"].as_str().unwrap_or("unknown error");
+        return Err(NemesisError::Channel(format!(
+            "discord gateway failed: HTTP {status}: {msg}"
+        )));
+    }
+
+    let ws_url = resp["url"]
+        .as_str()
+        .ok_or_else(|| NemesisError::Channel("missing 'url' in gateway response".to_string()))?;
+
+    Ok(format!("{ws_url}/?v=10&encoding=json"))
+}
+
 /// Build a Discord gateway RESUME (opcode 6) payload——断线重连时携带
 /// 旧 session_id + 最后收到的 seq，服务器补投断线窗口内的 replayed
 /// DISPATCH 事件后回 RESUMED（协议语义：消息不丢）。
@@ -317,10 +363,18 @@ impl DiscordChannel {
             let limit = nemesis_types::utils::floor_char_boundary(remaining, max_len);
             // Try to split at newline
             if let Some(idx) = remaining[..limit].rfind('\n') {
-                chunks.push(remaining[..idx].to_string());
+                // BUG-20261121-044：分隔符位于 idx 0（前导换行的超长文）时
+                // 左段为空——空 chunk 送 Discord 400「Cannot send an empty
+                // message」，且 send() 的 `?` 会让整条消息投递失败。跳过
+                // 空段，剩余照常切。
+                if idx > 0 {
+                    chunks.push(remaining[..idx].to_string());
+                }
                 remaining = &remaining[idx + 1..];
             } else if let Some(idx) = remaining[..limit].rfind(' ') {
-                chunks.push(remaining[..idx].to_string());
+                if idx > 0 {
+                    chunks.push(remaining[..idx].to_string());
+                }
                 remaining = &remaining[idx + 1..];
             } else {
                 chunks.push(remaining[..limit].to_string());
@@ -340,36 +394,12 @@ impl DiscordChannel {
     }
 
     /// Gets the WebSocket gateway URL from the Discord API.
+    ///
+    /// 诊断路径薄壳（BUG-20261121-041 起）——实现单一真相源在
+    /// `fetch_gateway_bot_url`（含 R736 status 闸），gateway 循环活路径
+    /// 与本函数共用。
     async fn get_gateway_url(&self) -> Result<String> {
-        let url = format!("{}/gateway/bot", self.config.api_base);
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", format!("Bot {}", self.config.token))
-            .send()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("discord gateway request failed: {e}")))?;
-        // status 闸（R736）：Discord 401/403（token 失效/无 intent 授权）的
-        // 响应体是 `{"message": "401: Unauthorized", "code": 0}` 合法 JSON——
-        // 不查 status 会把真因吞成 "missing 'url' in gateway response"，
-        // token 过期事故被引向「API 变更了？」的排查方向。
-        let status = resp.status();
-        let resp: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("discord gateway parse failed: {e}")))?;
-        if !status.is_success() {
-            let msg = resp["message"].as_str().unwrap_or("unknown error");
-            return Err(NemesisError::Channel(format!(
-                "discord gateway failed: HTTP {status}: {msg}"
-            )));
-        }
-
-        let ws_url = resp["url"].as_str().ok_or_else(|| {
-            NemesisError::Channel("missing 'url' in gateway response".to_string())
-        })?;
-
-        Ok(format!("{ws_url}/?v=10&encoding=json"))
+        fetch_gateway_bot_url(&self.http, &self.config.api_base, &self.config.token).await
     }
 
     /// Starts the WebSocket gateway receive loop in a background task.
@@ -393,30 +423,23 @@ impl DiscordChannel {
         tokio::spawn(async move {
             let mut backoff = INITIAL_BACKOFF;
 
-            // Fetch initial gateway URL
-            let gateway_url = {
-                let url = format!("{api_base}/gateway/bot");
-                let resp: serde_json::Value = match http
-                    .get(&url)
-                    .header("Authorization", format!("Bot {token}"))
-                    .send()
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        error!("[DiscordChannel] failed to get gateway URL: {e}");
-                        return;
-                    }
+            // BUG-20261121-041：gateway URL 首取与 WS 连接同一重试纪律——
+            // 修复前任何失败（含网络抖动与 401/403 token 失效）都 `return`
+            // = 通道永久死亡零重试；且活路径缺 R736 status 闸（闸落在
+            // 零调用的 get_gateway_url 死码上），401/403 合法 JSON 体被吞
+            // 成 "missing URL"。重试尊重 running（stop 立刻退出）。
+            let gateway_url = loop {
+                if !*running.read() {
+                    return;
                 }
-                .json()
-                .await
-                .unwrap_or_default();
-
-                match resp["url"].as_str() {
-                    Some(u) => format!("{u}/?v=10&encoding=json"),
-                    None => {
-                        error!("[DiscordChannel] missing URL in gateway response");
-                        return;
+                match fetch_gateway_bot_url(&http, &api_base, &token).await {
+                    Ok(u) => break u,
+                    Err(e) => {
+                        warn!(
+                            "[DiscordChannel] gateway URL fetch failed: {e}, retrying in {backoff:?}"
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(MAX_BACKOFF);
                     }
                 }
             };
@@ -632,7 +655,12 @@ impl DiscordChannel {
                                     info!("[DiscordChannel] bot ready: {username}");
                                 }
 
-                                "MESSAGE_CREATE" | "MESSAGE_UPDATE" => {
+                                // BUG-20261121-042：进站白名单只认
+                                // MESSAGE_CREATE——MESSAGE_UPDATE 在编辑与
+                                // embed unfurl 时携带同一 content 重发，
+                                // 放行即同内容重复 agent 轮次（每次贴链接
+                                // 必双回复）。裁决点=is_inbound_event。
+                                e if is_inbound_event(e) => {
                                     if let Some(inbound) =
                                         Self::parse_gateway_message(d, &bot_user_id, &allow_from)
                                             .await
@@ -808,13 +836,28 @@ impl Channel for DiscordChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261121-043：幂等启动守卫（telegram BUG-20261110-037 同款
+        // 纪律）——重复 start 会 spawn 第二个 gateway loop，双 IDENTIFY
+        // 同 token 互踢 session。已运行时诚实跳过。
+        if self.base.is_running() {
+            info!("[DiscordChannel] already running; skipping duplicate start");
+            return Ok(());
+        }
         info!("[DiscordChannel] starting bot");
+
+        // 先置位再 spawn：gateway loop 与 URL fetch 循环都以 running 为
+        // 生存旗标，spawn 后再置位存在「task 先跑读到 false → 自杀」窗口
+        // （tokio 多线程调度下 spawn 即可能并发执行）。
+        *self.running.write() = true;
+        self.base.set_enabled(true);
+        // BUG-20261121-043：此前从未 set_running——trait is_running()（读
+        // base running 旗标）恒 false，违反「start 成功后、stop 前为
+        // running」契约，manager 的运行中守卫对本通道失效。
+        self.base.set_running(true);
 
         // Start the WebSocket gateway receive loop
         self.start_gateway_loop();
 
-        *self.running.write() = true;
-        self.base.set_enabled(true);
         info!("[DiscordChannel] bot connected");
         Ok(())
     }
@@ -823,6 +866,7 @@ impl Channel for DiscordChannel {
         info!("[DiscordChannel] stopping bot");
         *self.running.write() = false;
         self.base.set_enabled(false);
+        self.base.set_running(false);
 
         Ok(())
     }

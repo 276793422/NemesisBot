@@ -1893,6 +1893,44 @@ fn test_bug054_peer_allowed_multiple_entries_and_trim() {
     assert!(!peer_allowed(&list, "8.8.8.8"), "空白条目不构成放行");
 }
 
+/// BUG-20261121-022：无分隔符尾的手滑通配写法（`192.168.1*` 漏尾点）的
+/// 段边界闸——字符 starts_with 把 `192.168.11.x`/`192.168.100.x` 误放进
+/// 白名单（`1` 是 `11`/`100` 的字符串前缀）。边界后恰是 `.`/`:` 才放行；
+/// IPv6 hextet 同族（`fd00:a*` 放 `fd00:a::1`、拒 `fd00:aa::1`）。
+#[test]
+fn test_bug20261121022_peer_allowed_prefix_segment_boundary() {
+    let list = vec!["192.168.1*".to_string()];
+    assert!(
+        peer_allowed(&list, "192.168.1.50"),
+        "边界后是 . 的段内命中（意图尾段）"
+    );
+    assert!(
+        !peer_allowed(&list, "192.168.11.5"),
+        "段边界撞名拒绝（11 段字符串延续）"
+    );
+    assert!(
+        !peer_allowed(&list, "192.168.100.7"),
+        "段边界撞名拒绝（100 段字符串延续）"
+    );
+
+    let v6 = vec!["fd00:a*".to_string()];
+    assert!(peer_allowed(&v6, "fd00:a::1"), "IPv6 hextet 边界命中");
+    assert!(!peer_allowed(&v6, "fd00:aa::1"), "IPv6 hextet 延续拒绝");
+
+    // 契约形态（分隔符尾）行为不变：`192.168.1.*` / `fd00::*` 恒按旧语义。
+    let dotted = vec!["192.168.1.*".to_string()];
+    assert!(peer_allowed(&dotted, "192.168.1.50"), "契约形态照常命中");
+    assert!(
+        !peer_allowed(&dotted, "192.168.10.5"),
+        "契约形态既有边界不回退（1. 与 10. 不同段）"
+    );
+    let v6full = vec!["fd00::*".to_string()];
+    assert!(
+        peer_allowed(&v6full, "fd00::abc"),
+        "IPv6 分隔符尾契约形态命中"
+    );
+}
+
 // -- sanitize_event_field 纯函数 --
 
 #[test]

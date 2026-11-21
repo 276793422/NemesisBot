@@ -12,8 +12,30 @@ pub fn loops_dir(workspace: &Path) -> PathBuf {
     workspace.join("loops")
 }
 
-fn loop_path(dir: &Path, id: &str) -> PathBuf {
-    dir.join(format!("{id}.json"))
+/// loop id 路径安全校验（BUG-20261121-032）：WSAPI/CLI 的 id 是外部输入，
+/// 含 `..`、`\`、盘符形态（`c:foo` 在 join 语义下整段换基）时 load/save/
+/// remove 可达 loops 目录外（remove 面 = 删任意 .json 文件；load 面 =
+/// 目录外 JSON 存在性/可解析性探针）。合法 id 由 [`alloc_id`] 分配为
+/// `L<digits>`；手放状态文件名限同字符集 `[a-zA-Z0-9_-]{1,64}`（点也拒
+/// ——文件名形态恒为 `{id}.json`，id 本身无需带点）。
+fn validate_loop_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 64 {
+        return Err(format!("loop id `{id}` 长度非法（1..=64）"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "loop id `{id}` 含非法字符（只允许字母/数字/-/_——拒绝路径分隔符与越界形态）"
+        ));
+    }
+    Ok(())
+}
+
+fn loop_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
+    validate_loop_id(id)?;
+    Ok(dir.join(format!("{id}.json")))
 }
 
 /// 原子写单条 loop 状态——委托全仓唯一权威 helper
@@ -27,14 +49,16 @@ fn loop_path(dir: &Path, id: &str) -> PathBuf {
 /// 资产）。
 pub fn save_loop(dir: &Path, st: &LoopState) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create loops dir failed: {e}"))?;
-    let path = loop_path(dir, &st.id);
+    // st.id 同闸（validate_loop_id）：状态文件内容里的 id 也可能是手放/
+    // 伪造的越界形态（update 命令 load 后原样 save 即写回该路径）。
+    let path = loop_path(dir, &st.id)?;
     let body = serde_json::to_string_pretty(st).map_err(|e| format!("serialize failed: {e}"))?;
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
 }
 
 /// 读单条（None = 文件不存在）。
 pub fn load_loop(dir: &Path, id: &str) -> Result<Option<LoopState>, String> {
-    let path = loop_path(dir, id);
+    let path = loop_path(dir, id)?;
     if !path.exists() {
         return Ok(None);
     }
@@ -74,7 +98,7 @@ pub fn list_loops(dir: &Path) -> Vec<LoopState> {
 
 /// 删除状态文件（返回是否确实存在）。
 pub fn remove_loop(dir: &Path, id: &str) -> Result<bool, String> {
-    let path = loop_path(dir, id);
+    let path = loop_path(dir, id)?;
     if !path.exists() {
         return Ok(false);
     }

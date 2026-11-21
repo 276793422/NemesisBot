@@ -314,8 +314,15 @@ pub fn parse_locations(result: &Value) -> Vec<Loc> {
             .and_then(|u| u.as_str())?;
         let range = v.get("targetRange").or_else(|| v.get("range"))?;
         let start = range.get("start")?;
-        let line = start.get("line").and_then(|l| l.as_u64())? as u32;
-        let character = start.get("character").and_then(|c| c.as_u64())? as u32;
+        // BUG-20261121-025：wire 数值域闸（裸 `as u32` 回绕族）——line/
+        // character 来自线上 JSON，超 u32 域的值裸 `as` 会回绕成**另一个
+        // 合法范围内的错值**，静默骗过 `position_to_byte` 的越界诚实闸
+        // （设计意图：错位偏移绝不能静默通过，见其 doc）。同 crate 威胁
+        // 模型（崩溃/被替换的语言服务器宣告巨型 Content-Length 等）下
+        // 其他字段全有闸，位置数值同罪。超域 = 畸形条目跳过（本模块
+        // tolerant 解析既定语义），`u32::try_from` 单点闸。
+        let line = u32::try_from(start.get("line").and_then(|l| l.as_u64())?).ok()?;
+        let character = u32::try_from(start.get("character").and_then(|c| c.as_u64())?).ok()?;
         Some(Loc {
             path: uri_to_path(uri),
             line,
@@ -408,10 +415,12 @@ pub fn parse_workspace_edit(result: &Value) -> Vec<FileEdits> {
                 let new_text = e.get("newText")?.as_str()?.to_string();
                 let pos = |p: Option<&Value>| -> Option<(u32, u32)> {
                     let p = p?;
-                    Some((
-                        p.get("line")?.as_u64()? as u32,
-                        p.get("character")?.as_u64()? as u32,
-                    ))
+                    // BUG-20261121-025 同款 wire 数值域闸（超 u32 域 = 畸形
+                    // 条目跳过，不裸 `as` 回绕成合法错值）——本函数的产出
+                    // 经 apply_text_edits → replace_range 落盘，错位 = 静默
+                    // 写坏文件。
+                    let field = |k: &str| u32::try_from(p.get(k)?.as_u64()?).ok();
+                    Some((field("line")?, field("character")?))
                 };
                 Some(TextEdit {
                     range_start: pos(range.get("start"))?,
@@ -616,12 +625,11 @@ impl Diagnostic {
 pub fn parse_publish_diagnostics(params: &Value) -> Option<(String, Vec<Diagnostic>)> {
     let uri = params.get("uri")?.as_str()?.to_string();
     let items = params.get("diagnostics")?.as_array()?;
+    // BUG-20261121-025 同款 wire 数值域闸（超 u32 域 = 畸形条目跳过）。
     let pos = |p: Option<&Value>| -> Option<(u32, u32)> {
         let p = p?;
-        Some((
-            p.get("line")?.as_u64()? as u32,
-            p.get("character")?.as_u64()? as u32,
-        ))
+        let field = |k: &str| u32::try_from(p.get(k)?.as_u64()?).ok();
+        Some((field("line")?, field("character")?))
     };
     let diags = items
         .iter()
