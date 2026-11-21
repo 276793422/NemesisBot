@@ -473,13 +473,17 @@ fn budget_allows(st: &mut HubState, outlet: &str, event: &SecurityAlertEvent) ->
                 last: None,
             });
         let expired = now.duration_since(w.window_start) >= Duration::from_secs(60);
+        // 先快照旧窗口值（BUG-20261121-072：digest 聚合的是翻滚前被压掉的
+        // 计数——reset 放在快照前会把 suppressed_before 恒清成 0，emit 驱动
+        // 的翻滚永不落 digest），后翻滚。
+        let snap = (expired, w.suppressed, w.last.clone());
         if expired {
             w.window_start = now;
             w.sent = 0;
             w.suppressed = 0;
             w.last = None;
         }
-        (expired, w.suppressed, w.last.clone())
+        snap
     };
     let (expired, suppressed_before, last_before) = snapshot;
     if expired && suppressed_before > 0 {

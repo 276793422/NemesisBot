@@ -250,6 +250,72 @@ fn digest_materializes_on_window_expiry_via_pump() {
     reset_for_tests();
 }
 
+/// emit 驱动的窗口翻滚（生产风暴持续期的主形态：泵 tick 之前新告警先到）
+/// 必须在 budget_allows 翻滚点物化 digest——BUG-20261121-072 红证：
+/// 修复前 reset 在 snapshot 之前执行，suppressed_before 恒 0，digest 被静默吞掉。
+#[test]
+fn digest_materializes_on_emit_driven_rollover() {
+    let _serial = TEST_LOCK.lock();
+    reset_for_tests();
+    let mut cfg = minimal_cfg(Vec::new());
+    cfg.budget_per_min = 1;
+    configure(&cfg, std::env::temp_dir().join("alert-test-emit-rollover"));
+    let counter = Arc::new(AtomicUsize::new(0));
+    register_outlet("test", capture_outlet(counter.clone()));
+    // 窗口 1：第一条派发，第二/三条超限压制（不同 session 绕开 cooldown）。
+    emit(
+        AlertKind::EstopTriggered,
+        AlertLevel::Critical,
+        "a",
+        "",
+        "first",
+    );
+    emit(
+        AlertKind::EstopTriggered,
+        AlertLevel::Critical,
+        "b",
+        "",
+        "overflowed-1",
+    );
+    emit(
+        AlertKind::EstopTriggered,
+        AlertLevel::Critical,
+        "c",
+        "",
+        "overflowed-2",
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    // 把窗口推过期（模拟 60s 流逝），然后新 emit 走 budget_allows 翻滚路径。
+    {
+        let mut st = HUB.lock();
+        for (_, w) in st.budgets.iter_mut() {
+            w.window_start = Instant::now() - Duration::from_secs(120);
+        }
+    }
+    emit(
+        AlertKind::EstopTriggered,
+        AlertLevel::Critical,
+        "d",
+        "",
+        "post-rollover",
+    );
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "翻滚后预算重置，新事件派发"
+    );
+    // 翻滚时旧窗口的 2 条压制必须落 digest（take_pending_digests 消费）。
+    let digests = take_pending_digests();
+    assert_eq!(
+        digests.len(),
+        1,
+        "emit 驱动翻滚必须物化旧窗口 digest（BUG-20261121-072）"
+    );
+    assert_eq!(digests[0].suppressed, 2);
+    assert_eq!(digests[0].last_summary, "overflowed-2");
+    reset_for_tests();
+}
+
 // ---------------------------------------------------------------------------
 // jsonl 落盘
 // ---------------------------------------------------------------------------
