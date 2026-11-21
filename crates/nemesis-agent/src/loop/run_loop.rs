@@ -56,6 +56,14 @@ pub(crate) struct TurnState {
     /// 短路（原子性——后续插话留队列，收口后排空）、纯文本响应 = 阶段
     /// 收口而非 turn 终答、预算计数豁免纯文本轮（插话自身不计入）。
     pub(crate) steer_phase_active: bool,
+    /// 插话专轮豁免预算（BUG-20261122-002）：已豁免（不计 turns_used）的
+    /// steer 纯文本轮数。豁免意图 = 插话回应不烧任务预算，合法消耗远低
+    /// 于上限（收口 1 轮 + canvas 回灌 ≤3 + 空内容 nudge ≤3）；预算耗尽后
+    /// 豁免失效、turns_used 照常增长 → max_turns 闸恢复兜底。无此闸时
+    /// 策略槽（FinalJudgePolicy）恒返 RetryWithNudge 的纯文本轮既不进
+    /// Accept 臂（闩不清）又豁免计数 → turns_used 冻结 → 无限 LLM 轮
+    /// （builtin 裁决空内容有 empty_final_count 预算，不受此面影响）。
+    pub(crate) steer_exempt_rounds: u32,
     /// L2：break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
     pub(crate) terminal_reason: Option<&'static str>,
     /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
@@ -81,6 +89,12 @@ pub(crate) struct TurnState {
 /// max_tokens 截断续写预算上限（organ 6）——真超限的大文件要给出清晰
 /// 报错，而不是无限续写。
 const MAX_LENGTH_CONTINUATIONS: u32 = 5;
+
+/// 插话专轮豁免轮预算（BUG-20261122-002）——合法序列上限远低于此值
+/// （收口 1 轮 + canvas 回灌 ≤3 + 空内容 nudge ≤3），只拦病态恒拒循环
+/// （策略槽对纯文本候选恒返 RetryWithNudge：闩不清 + 豁免冻结
+/// turns_used → max_turns 闸失效）。预算耗尽 = 豁免失效，轮照常计入。
+const MAX_STEER_EXEMPT_ROUNDS: u32 = 8;
 
 /// M4-B（A13）：空内容撞 cap 的续写容忍上限——第 1 次按截断续写（偶发
 /// 瞬态），连续第 2 次提前停轮（诚实报错），不再烧剩余 length-continuation
@@ -186,6 +200,7 @@ impl AgentLoop {
             repetition_nudge_pending: None,
             steer_escape_used: false,
             steer_phase_active: false,
+            steer_exempt_rounds: 0,
             terminal_reason: None,
             turn_end_continues: 0,
             pending_prompt_inject: None,
@@ -345,11 +360,19 @@ impl AgentLoop {
 
             // 插话专轮预算（2026-11-21 用户拍板：插话自身不计入，插话触发
             // 的工具流程计入）——阶段内纯文本轮 = 收口轮，不计入；含工具
-            // 调用的轮照常计数。无滥用面：阶段内纯文本轮即收口（见
-            // judge_final_answer Accept 臂专分支），不可能连续纯文本轮
-            // 滞留阶段白嫖预算。
-            if !(st.steer_phase_active && response.tool_calls.is_empty()) {
+            // 调用的轮照常计数。豁免带独立预算（BUG-20261122-002，
+            // MAX_STEER_EXEMPT_ROUNDS）：策略槽可对纯文本候选恒返
+            // RetryWithNudge——此类轮不进 Accept 臂（闩不清）、又落进本
+            // 豁免 → turns_used 冻结、max_turns 闸永不触发（builtin 裁决
+            // 空内容有 empty_final_count 预算不受影响）。预算耗尽 = 豁免
+            // 失效、轮恢复计入，max_turns 闸兜底终局。
+            if !(st.steer_phase_active
+                && response.tool_calls.is_empty()
+                && st.steer_exempt_rounds < MAX_STEER_EXEMPT_ROUNDS)
+            {
                 st.turns_used += 1;
+            } else {
+                st.steer_exempt_rounds += 1;
             }
 
             // 器官 5（§4.2 → observer.rs）：LlmResponse observer 事件 +

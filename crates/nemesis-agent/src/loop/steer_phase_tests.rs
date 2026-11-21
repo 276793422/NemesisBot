@@ -353,3 +353,90 @@ async fn steer_phase_first_round_claim_does_not_arm() {
     assert!(saw_inject, "首轮 claim 照发注记帧");
     assert!(!saw_response, "无专轮 = 无收口帧");
 }
+
+/// 恒拒终答裁决策略（BUG-20261122-002 回归注入）：对任何候选终答恒返
+/// RetryWithNudge——模拟策略槽（WASM 对接面）的病态/缺陷实现。
+struct AlwaysRetryPolicy;
+
+#[async_trait::async_trait]
+impl crate::r#loop::policy::FinalJudgePolicy for AlwaysRetryPolicy {
+    async fn judge(
+        &self,
+        _input: &crate::r#loop::policy::FinalJudgeInput,
+    ) -> crate::r#loop::policy::FinalJudgeVerdict {
+        crate::r#loop::policy::FinalJudgeVerdict::RetryWithNudge(
+            "policy 恒拒（BUG-20261122-002 回归注入）".to_string(),
+        )
+    }
+}
+
+/// BUG-20261122-002 回归：策略槽恒返 RetryWithNudge 时，steer 阶段内
+/// 纯文本轮不得无限豁免。
+///
+/// 修复前路径：恒拒 → 纯文本轮不进 Accept 臂（闩不清）→ 落进预算豁免
+///（旧条件只看 `tool_calls.is_empty()`）→ turns_used 冻结 → max_turns
+/// 闸永不触发 → 无限 LLM 轮（builtin 裁决空内容有 empty_final_count
+/// 预算不受影响；本面专由自定义 policy 触发）。
+///
+/// 修复后：豁免带独立预算 MAX_STEER_EXEMPT_ROUNDS(8)，耗尽后轮恢复计入
+/// → max_turns 闸兜底终局（grace 一轮后暂停文案收轮）。
+///
+/// 时序推演（max_turns=3）：R1 工具轮计数（=1）+入队插话；R2 专轮置位，
+/// 纯文本被恒拒——豁免 1..8（R2..R9）；R10 预算尽轮计入（=2）；R11 计入
+/// （=3）；R12 顶闸命中 → grace → R12 计入（=4）；R13 顶闸 grace 已耗
+/// → 暂停终局。LLM 调用总数 = 12（ScriptProvider 供给 2 个脚本响应后由
+/// 「No more responses」兜底臂接管，兜底臂同为纯文本照样推进）。
+#[tokio::test]
+async fn steer_phase_exempt_budget_bounds_policy_always_retry_loop() {
+    let key = uniq_key("exemptcap");
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(32);
+    let request_log: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let provider = ScriptProvider::new(
+        vec![resp_tool("t1", "steer_enqueue_a"), resp_text("尝试回应")],
+        request_log.clone(),
+    );
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config_max_turns(3),
+        outbound_tx,
+        ConcurrentMode::Steer,
+        8,
+        0,
+    );
+    agent_loop.register_tool(
+        "steer_enqueue_a".to_string(),
+        Box::new(SteerEnqueueTool {
+            inbox: agent_loop.inbox.clone(),
+            session_key: key.clone(),
+            steer_content: "! 补充边界说明".to_string(),
+        }),
+    );
+    agent_loop.set_final_judge_policy(std::sync::Arc::new(AlwaysRetryPolicy));
+
+    let msg = make_inbound("干第一轮活", &key);
+    let (_id, resp, err, _) = agent_loop.process_inbound_message(&msg).await;
+    // 有界终局：不无限循环，预算暂停文案收轮。
+    assert!(err.is_none(), "turn must not error: {err:?}");
+    assert!(
+        resp.contains("轮工具调用后暂停"),
+        "豁免预算耗尽后必须由 max_turns 闸兜底终局: {resp}"
+    );
+
+    // 判别器：LLM 调用总数 = 12（时序推演见函数注释）。修复前此循环
+    // 无界（测试挂起/超时）；任何让轮数偏离 12 的实现变化都应触发重审。
+    let calls = request_log.lock().unwrap().clone();
+    assert_eq!(
+        calls.len(),
+        12,
+        "豁免预算(8)+计入轮(2)+grace(1)+工具轮(1) = 12 次调用"
+    );
+
+    // 辅证：恒拒下闩从未清 → 全程无 steer_response 收口帧。
+    let mut saw_response = false;
+    while let Ok(frame) = outbound_rx.try_recv() {
+        if frame.meta.note_kind.as_deref() == Some("steer_response") {
+            saw_response = true;
+        }
+    }
+    assert!(!saw_response, "恒拒策略下专轮永不收口，无收口帧");
+}
