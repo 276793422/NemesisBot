@@ -696,7 +696,7 @@ async fn t_bug_20261115_025_voice_download_over_cap_aborts() {
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap();
-    let total = VOICE_DOWNLOAD_LIMIT_BYTES + 1;
+    let total = MEDIA_DOWNLOAD_LIMIT_BYTES + 1;
     std::thread::spawn(move || {
         let Ok((mut stream, _)) = listener.accept() else {
             return;
@@ -738,6 +738,85 @@ async fn t_bug_20261115_025_voice_download_over_cap_aborts() {
         "错误必须来自帽（实际: {err}）"
     );
     assert!(!dest.exists(), "超帽不得落盘");
+}
+
+// BUG-20261121-037 回归锁：fetch_file_attachment（photo/audio/document
+// 下载路径）有帽读取——025 修复文档宣称本路径「经 download_file 共享
+// 同一路径」已被覆盖，实际它从初版起就是独立的内联裸读（.bytes()），
+// 025 修复从未触达：local Bot API 模式 GB 级文件直接灌满进程内存。
+// 换装 read_body_capped 后超帽在读入中途断开 → None（诚实降级），
+// 且断言 uploads 目录无残留落盘（断开先于 fs::write）。
+#[tokio::test]
+async fn t_bug_20261121_037_attachment_download_over_cap_aborts() {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let total = MEDIA_DOWNLOAD_LIMIT_BYTES + 1;
+    let download_prefix = "/file/botTKN123".to_string();
+    std::thread::spawn(move || {
+        // 两轮：getFile（返回 file_path）+ 文件下载（64MB+1 灌流；
+        // reqwest Client::new() 默认无读超时，None 必来自帽而非超时）。
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+            if path.ends_with("/getFile") {
+                let body =
+                    br#"{"ok":true,"result":{"file_id":"big","file_path":"docs/big.bin","file_size":0}}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(body);
+            } else if path.starts_with(&download_prefix) {
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+                );
+                if stream.write_all(head.as_bytes()).is_err() {
+                    return;
+                }
+                let chunk = [0u8; 65536];
+                let mut sent: u64 = 0;
+                while sent < total {
+                    // 客户端在超帽点断开 → 写失败返回 = 预期路径
+                    if stream.write_all(&chunk).is_err() {
+                        return;
+                    }
+                    sent += chunk.len() as u64;
+                }
+            } else {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                );
+            }
+        }
+    });
+
+    let uploads = tempfile::tempdir().expect("uploads tempdir");
+    let client = reqwest::Client::new();
+    let api = TelegramApi::new(&format!("http://{addr}"), "TKN123");
+    let att = TelegramChannel::fetch_file_attachment(
+        Some(&client),
+        Some(&api),
+        "big-doc-id",
+        "document",
+        "bin",
+        uploads.path(),
+    )
+    .await;
+    assert!(att.is_none(), "超帽必须诚实降级 None");
+    let leftover: Vec<String> = std::fs::read_dir(uploads.path())
+        .expect("uploads dir readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leftover.is_empty(), "超帽不得落盘: {leftover:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1186,35 @@ fn telegram_api_base_trailing_slash_normalized() {
     let plain = TelegramApi::new("https://api.telegram.org", "123:abc");
     assert_eq!(api.url_base, plain.url_base);
     assert_eq!(api.file_url_base, plain.file_url_base);
+}
+
+// BUG-20261121-036 回归锁：api_url（方法调用路径）尾斜杠归一——012 修复
+// 只归一了 TelegramApi::new（polling 路径），认定「telegram 2 拼接点集中
+// 在 TelegramApi::new」漏了本方法：getMe/sendMessage/editMessageText/
+// sendChatAction 全走 api_url 裸拼，尾斜杠 config 下 getMe 失败 =
+// start() 直接 Err（通道起不来），sendMessage 失败 = 收得到回不了。
+#[test]
+fn telegram_api_url_trailing_slash_normalized() {
+    let mk = |api_base: &str| {
+        TelegramChannel::new_with_client(
+            TelegramConfig {
+                api_base: api_base.to_string(),
+                token: "123:abc".to_string(),
+                ..Default::default()
+            },
+            broadcast::channel::<InboundMessage>(16).0,
+            reqwest::Client::new(),
+        )
+        .expect("channel")
+    };
+    let url = mk("https://api.telegram.org/").api_url("getMe");
+    assert!(!url.contains("//bot"), "方法 URL 不得残留双斜杠: {url}");
+    assert!(
+        url.starts_with("https://api.telegram.org/bot123:abc/getMe"),
+        "方法 URL 归一形态: {url}"
+    );
+    // 无尾斜杠形态幂等（归一前后一致）
+    assert_eq!(url, mk("https://api.telegram.org").api_url("getMe"));
 }
 
 #[test]
