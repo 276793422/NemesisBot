@@ -50,6 +50,11 @@ nemesis-taskstore = { workspace = true }
 # MCP sanitize 前缀碰撞检测单一真相源（handlers/mcp.rs server_add 写面
 # warn，与 nemesis-mcp manager 加载面同源 helper；2026-10-16 第十四轮）。
 nemesis-mcp = { workspace = true }
+# exec deny 词表真相源（handlers/security.rs exec_deny_list/set：内置词表
+# 元数据投影 + 自定义正则校验；2026-11-20 危险闸）。生产 lib 消费——不能
+# 停留 dev-dependencies（集成测试拉起的 plain lib 编译无 dev-deps，生产
+# 构建同理）；crate 已在图内（nemesis-agent → nemesis-tools），零新增。
+nemesis-tools = { workspace = true }
 # WASM 插件管理面（handlers/plugins_wasm.rs；`plugins-wasm` feature 门控，
 # nemesisbot feature 转发）。
 nemesis-plugins-wasm = { workspace = true, optional = true }
@@ -207,10 +212,6 @@ bytes = "1"
 # 仅测试用，不进生产依赖图）。
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite = { workspace = true }
-# Phase 3 覆盖率（2026-08-25）：server setter 全扫测试要构造
-# WorkflowEngine::new_integrated 的 ToolRegistry 参数（仅测试用，
-# 不进生产依赖图）。
-nemesis-tools = { workspace = true }
 # Phase 3 覆盖率（2026-08-25）：sse_chat handler 测试用 wiremock 起 SSE 假
 # LLM 后端（与 nemesis-providers 同版本），全程进程内无 TCP 端口竞争。
 wiremock = "0.6"

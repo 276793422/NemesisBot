@@ -135,6 +135,8 @@ async fn overview_empty_workspace_projects_all_defaults() {
     assert_eq!(resp["signature"]["injected"], false);
     assert_eq!(resp["global"]["available"], false);
     assert_eq!(resp["executor"]["available"], false);
+    // ⑬ 危险闸快照：home 缺席 = 诚实降级（同 global/executor 臂）。
+    assert_eq!(resp["exec_deny"]["available"], false);
     // ⑦ scanner：无 config.scanner.json = 空投影。
     assert_eq!(resp["scanner"]["enabled"], false);
     assert_eq!(resp["scanner"]["total"], 0);

@@ -119,12 +119,12 @@ impl StreamTeeState {
 pub struct ExecTool {
     workspace: String,
     restrict: bool,
-    /// 编译好的 deny 词表（2026-11-08 接线激活 `tools.exec.*`）。`new`
-    /// = 内置默认词表（`nemesis_tools::shell::DEFAULT_EXEC_DENY_PATTERNS`
-    /// 单一真相源）；`new_with_config` 接自定义词表（空表回落默认）。
-    /// **刻意不提供「清空全部词表」的构造形态**——shell 级词表是防御
-    /// 纵深的一道，全放行开关风险远大于收益。
-    deny_patterns: Vec<regex::Regex>,
+    /// 编译好的 deny 词表（2026-11-08 接线激活 `tools.exec.*`；2026-11-20
+    /// 元数据化）。`new` = 内置默认词表（`nemesis_tools::shell::
+    /// DEFAULT_EXEC_DENY_ENTRIES` 单一真相源）；`new_with_config` 接自定义
+    /// 词表（空表回落默认）。**刻意不提供「清空全部词表」的构造形态**——
+    /// shell 级词表是防御纵深的一道，全放行开关风险远大于收益。
+    deny_entries: Vec<CompiledDenyEntry>,
     /// 执行中输出流 hook（2026-11-08）：None = 旧行为（默认构造——基线
     /// 注册、executor 分离路径、全部既有测试逐字节不变）。
     hook: Option<ExecOutputHook>,
@@ -157,6 +157,9 @@ pub struct ExecTool {
     /// 热读失败 warn 一次性闸：mtime/config 读失败每次消费都会走到——
     /// 首次 warn 留痕，后续 debug 防刷屏；读成功后复位重上膛。
     hot_read_warned: std::sync::atomic::AtomicBool,
+    /// deny 拦截审计钩子（2026-11-20 危险闸页面，见 [`DenyAuditHook`]）。
+    /// None = 旧行为（只 WARN 日志，无审计链记账）。
+    deny_audit_hook: Option<DenyAuditHook>,
 }
 
 /// exec 生效运行时值（2026-11-20 C4 热读载体）：deny 词表 + timeout
@@ -165,50 +168,148 @@ pub struct ExecTool {
 /// pub(super)：热读语义测试（`exec_hot_read_tests`）直接消费字段。
 pub(super) struct ExecRuntimeCfg {
     pub(super) max_timeout_secs: u64,
-    pub(super) deny_patterns: Vec<regex::Regex>,
+    pub(super) deny_entries: Vec<CompiledDenyEntry>,
 }
 
-/// 编译 deny 词表：`custom` 非空 = 自定义词表（无效 regex 跳过 + warn）；
-/// None / 空 = 内置默认词表。两个 exec 工具（同步/异步）共用同一编译
-/// 语义（nemesis-tools `ShellTool::new_with_config` 同款，但**收窄**：
-/// 不实现 Go 版 `enable=false` 的全放行臂——调用方永远拿不到空词表工具）。
-fn compile_deny_patterns(custom: Option<&[&str]>) -> Vec<regex::Regex> {
-    let (patterns, source): (&[&str], &str) = match custom {
-        Some(p) if !p.is_empty() => (p, "custom"),
-        _ => (
-            nemesis_tools::shell::DEFAULT_EXEC_DENY_PATTERNS,
-            "builtin default",
-        ),
-    };
-    let compiled: Vec<regex::Regex> = patterns
-        .iter()
-        .filter_map(|p| match regex::Regex::new(p) {
-            Ok(re) => Some(re),
-            Err(e) => {
-                tracing::warn!("[Tools] invalid deny pattern {:?} ({}): {}", p, source, e);
+/// deny 拦截审计钩子（2026-11-20 危险闸页面）：参数 (命令前 200 字符,
+/// 规则 name)。装配期注入（`SharedToolConfig.deny_audit_hook` →
+/// registry 分发 → `with_deny_audit_hook`），bot 侧从 SecurityPipeline
+/// 构造（调 `append_direct_audit_event` 落审计链）。None = 诚实降级
+/// （WARN 日志恒在场，不依赖本钩子）。
+pub type DenyAuditHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// 编译后的 deny 词条（2026-11-20 危险闸元数据化）：内置词条带
+/// name/category/severity/reason 元数据（拒绝消息与危险闸页面消费）；
+/// 自定义/追加条目 name 形如 `custom:N` / `extra:N`——结构上不可能
+/// 伪装内置名（`deny_disabled` 只认内置 name，过滤臂自然无视）。
+/// pub：[`build_effective_deny`] 是 pub 合成函数（WSAPI 保存面同源
+/// 验证），返回类型必须同级可见。
+#[derive(Debug, Clone)]
+pub struct CompiledDenyEntry {
+    pub name: String,
+    pub category: String,
+    pub severity: String,
+    pub reason: String,
+    pub regex: regex::Regex,
+}
+
+impl CompiledDenyEntry {
+    /// 内置词条编译（nemesis-tools 单一真相源投影；pattern 全部有效——
+    /// 该 crate 测试钉死，这里防御性逐条 warn 丢弃）。
+    fn builtin(e: &nemesis_tools::shell::DenyEntry) -> Option<Self> {
+        match regex::Regex::new(e.pattern) {
+            Ok(regex) => Some(Self {
+                name: e.name.to_string(),
+                category: e.category.to_string(),
+                severity: e.severity.to_string(),
+                reason: e.reason.to_string(),
+                regex,
+            }),
+            Err(err) => {
+                tracing::warn!("[Tools] invalid builtin deny pattern {:?}: {}", e.name, err);
                 None
             }
-        })
-        .collect();
-    if compiled.is_empty() {
-        // 自定义词表全部编译失败 = 连一条防线都不剩——回落默认词表，
-        // 不静默变全放行。
-        tracing::warn!(
-            "[Tools] all {} deny patterns failed to compile — falling back to builtin defaults",
-            source
-        );
-        return nemesis_tools::shell::DEFAULT_EXEC_DENY_PATTERNS
+        }
+    }
+
+    /// 自定义/追加正则编译：name = `{tag}:{下标}`（不可伪装内置名）。
+    fn dynamic(pattern: &str, tag: &str, idx: usize) -> Option<Self> {
+        match regex::Regex::new(pattern) {
+            Ok(regex) => Some(Self {
+                name: format!("{tag}:{idx}"),
+                category: "custom".to_string(),
+                severity: "medium".to_string(),
+                reason: format!("自定义规则：{pattern}"),
+                regex,
+            }),
+            Err(err) => {
+                tracing::warn!("[Tools] invalid {tag} deny pattern #{idx} {pattern:?}: {err}");
+                None
+            }
+        }
+    }
+}
+
+/// 内置默认词表编译（42 条单一真相源投影）。
+fn builtin_deny_entries() -> Vec<CompiledDenyEntry> {
+    nemesis_tools::shell::DEFAULT_EXEC_DENY_ENTRIES
+        .iter()
+        .filter_map(CompiledDenyEntry::builtin)
+        .collect()
+}
+
+/// 生效词表合成（2026-11-20 危险闸语义，单一纯函数，热读路径消费）：
+/// 1. base = 内置默认；`enable_deny_patterns` 开 + custom 非空 = 整表
+///    替换（高级出口，UI 不暴露；全失败回落内置——现语义不变）；
+/// 2. `deny_disabled` 按 name 过滤（只关点名的条目，其余防线保留）；
+/// 3. `deny_extra` 追加（编译失败逐条丢弃 + warn，不清空不回落——
+///    内置未关条目防线仍在，不存在全放行形态）。
+///
+/// pub：WSAPI 保存面（nemesis-web exec_deny_tests）以同一函数验证
+/// 「盘上 config 形态可被同源消费」——合成语义单点，不复制。
+pub fn build_effective_deny(exec: &nemesis_config::ExecConfig) -> Vec<CompiledDenyEntry> {
+    let base = if exec.enable_deny_patterns && !exec.custom_deny_patterns.is_empty() {
+        let compiled: Vec<CompiledDenyEntry> = exec
+            .custom_deny_patterns
             .iter()
-            .filter_map(|p| regex::Regex::new(p).ok())
+            .enumerate()
+            .filter_map(|(i, p)| CompiledDenyEntry::dynamic(p, "custom", i))
             .collect();
+        if compiled.is_empty() {
+            tracing::warn!(
+                "[Tools] all custom deny patterns failed to compile — falling back to builtin defaults"
+            );
+            builtin_deny_entries()
+        } else {
+            info!(
+                "[Tools] exec custom deny patterns active ({} entries)",
+                compiled.len()
+            );
+            compiled
+        }
+    } else {
+        builtin_deny_entries()
+    };
+    let mut effective: Vec<CompiledDenyEntry> = base
+        .into_iter()
+        .filter(|e| !exec.deny_disabled.iter().any(|d| d == &e.name))
+        .collect();
+    for (i, p) in exec.deny_extra.iter().enumerate() {
+        if let Some(entry) = CompiledDenyEntry::dynamic(p, "extra", i) {
+            effective.push(entry);
+        }
     }
-    if source == "custom" {
-        info!(
-            "[Tools] exec custom deny patterns active ({} entries)",
-            compiled.len()
-        );
+    effective
+}
+
+/// 构造期词表编译（旧 `compile_deny_patterns` 形态——custom 非空 =
+/// 替换、否则内置默认；**不含** deny_disabled/extra——这两个键经热读
+/// 路径生效（`exec_config_path` 在场），构造期值只是热读失败时的兜底
+/// 快照。registry 装配臂与 `new_with_config` 消费）。
+fn compile_deny_patterns(custom: Option<&[&str]>) -> Vec<CompiledDenyEntry> {
+    match custom {
+        Some(p) if !p.is_empty() => {
+            let compiled: Vec<CompiledDenyEntry> = p
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| CompiledDenyEntry::dynamic(s, "custom", i))
+                .collect();
+            if compiled.is_empty() {
+                // 自定义词表全部编译失败 = 连一条防线都不剩——回落默认词表，
+                // 不静默变全放行。
+                tracing::warn!(
+                    "[Tools] all custom deny patterns failed to compile — falling back to builtin defaults"
+                );
+                return builtin_deny_entries();
+            }
+            info!(
+                "[Tools] exec custom deny patterns active ({} entries)",
+                compiled.len()
+            );
+            compiled
+        }
+        _ => builtin_deny_entries(),
     }
-    compiled
 }
 
 /// `env` 槽 schema（vault 计划方案 A，2026-11-11）：exec / run_script /
@@ -267,7 +368,7 @@ impl ExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
-            deny_patterns: compile_deny_patterns(None),
+            deny_entries: compile_deny_patterns(None),
             hook: None,
             max_timeout_secs: 600,
             editor_gate: None,
@@ -275,6 +376,7 @@ impl ExecTool {
             exec_config_path: None,
             runtime_cache: std::sync::Mutex::new(None),
             hot_read_warned: std::sync::atomic::AtomicBool::new(false),
+            deny_audit_hook: None,
         }
     }
 
@@ -291,7 +393,7 @@ impl ExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
-            deny_patterns: compile_deny_patterns(custom_deny_patterns),
+            deny_entries: compile_deny_patterns(custom_deny_patterns),
             hook: None,
             max_timeout_secs: 600,
             editor_gate: None,
@@ -299,6 +401,7 @@ impl ExecTool {
             exec_config_path: None,
             runtime_cache: std::sync::Mutex::new(None),
             hot_read_warned: std::sync::atomic::AtomicBool::new(false),
+            deny_audit_hook: None,
         }
     }
 
@@ -310,7 +413,7 @@ impl ExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
-            deny_patterns: compile_deny_patterns(None),
+            deny_entries: compile_deny_patterns(None),
             hook: Some(hook),
             max_timeout_secs: 600,
             editor_gate: None,
@@ -318,6 +421,7 @@ impl ExecTool {
             exec_config_path: None,
             runtime_cache: std::sync::Mutex::new(None),
             hot_read_warned: std::sync::atomic::AtomicBool::new(false),
+            deny_audit_hook: None,
         }
     }
 
@@ -364,6 +468,14 @@ impl ExecTool {
         self
     }
 
+    /// deny 拦截审计钩子链式注入（2026-11-20 危险闸页面；registry 从
+    /// `SharedToolConfig.deny_audit_hook` 提取分发）。None = 旧行为
+    /// （只 WARN 日志，无审计链记账——基线/测试/exec_worker 默认构造）。
+    pub fn with_deny_audit_hook(mut self, hook: Option<DenyAuditHook>) -> Self {
+        self.deny_audit_hook = hook;
+        self
+    }
+
     /// 生效运行时值快照（2026-11-20 C4 热读）：path 在场 → 每次消费前
     /// mtime 检测，首读或 mtime 变化才 load_config 重读 `tools.exec` 段
     /// 重编词表；读失败诚实降级保持上次生效值（缓存空 = 构造期值）+
@@ -373,7 +485,7 @@ impl ExecTool {
         let Some(path) = self.exec_config_path.as_ref() else {
             return ExecRuntimeCfg {
                 max_timeout_secs: self.max_timeout_secs,
-                deny_patterns: self.deny_patterns.clone(),
+                deny_entries: self.deny_entries.clone(),
             };
         };
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -387,7 +499,7 @@ impl ExecTool {
         {
             return ExecRuntimeCfg {
                 max_timeout_secs: cfg.max_timeout_secs,
-                deny_patterns: cfg.deny_patterns.clone(),
+                deny_entries: cfg.deny_entries.clone(),
             };
         }
         // 首读 / mtime 变化 / mtime 丢失 → 现读。
@@ -397,7 +509,7 @@ impl ExecTool {
                     m,
                     ExecRuntimeCfg {
                         max_timeout_secs: fresh.max_timeout_secs,
-                        deny_patterns: fresh.deny_patterns.clone(),
+                        deny_entries: fresh.deny_entries.clone(),
                     },
                 ));
                 self.hot_read_warned
@@ -410,12 +522,12 @@ impl ExecTool {
                 if let Some((_, cfg)) = cache.as_ref() {
                     ExecRuntimeCfg {
                         max_timeout_secs: cfg.max_timeout_secs,
-                        deny_patterns: cfg.deny_patterns.clone(),
+                        deny_entries: cfg.deny_entries.clone(),
                     }
                 } else {
                     ExecRuntimeCfg {
                         max_timeout_secs: self.max_timeout_secs,
-                        deny_patterns: self.deny_patterns.clone(),
+                        deny_entries: self.deny_entries.clone(),
                     }
                 }
             }
@@ -424,21 +536,14 @@ impl ExecTool {
 
     /// 现读 config.json `tools.exec` 段 → 生效值。语义与 registry 装配
     /// 臂同源：`enable_deny_patterns` 开 + 词表非空 = 自定义词表，其余
-    /// = 内置默认词表（无全放行形态）；`max_timeout_secs` 0/缺省 = 600。
-    /// 读失败 = None（调用方降级，不炸工具）。
+    /// = 内置默认词表（无全放行形态）；2026-11-20 危险闸语义 =
+    /// [`build_effective_deny`]（disabled 按 name 过滤 + extra 追加）；
+    /// `max_timeout_secs` 0/缺省 = 600。读失败 = None（调用方降级，
+    /// 不炸工具）。
     pub(super) fn read_exec_runtime(path: &std::path::Path) -> Option<ExecRuntimeCfg> {
         let cfg = nemesis_config::load_config(path).ok()?;
         let exec = &cfg.tools.exec;
-        let deny_patterns = if exec.enable_deny_patterns && !exec.custom_deny_patterns.is_empty() {
-            let patterns: Vec<&str> = exec
-                .custom_deny_patterns
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
-            compile_deny_patterns(Some(&patterns))
-        } else {
-            compile_deny_patterns(None)
-        };
+        let deny_entries = build_effective_deny(exec);
         let max_timeout_secs = if exec.max_timeout_secs > 0 {
             exec.max_timeout_secs
         } else {
@@ -446,7 +551,7 @@ impl ExecTool {
         };
         Some(ExecRuntimeCfg {
             max_timeout_secs,
-            deny_patterns,
+            deny_entries,
         })
     }
 
@@ -468,21 +573,51 @@ impl ExecTool {
     /// 本方法保留给 deny 语义测试（`exec_deny_tests` 等经 pub(super)
     /// 访问基线词表行为——比对语义与 deny_hit_in 同源）。
     #[cfg(test)]
-    pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
-        deny_hit_in(&self.deny_patterns, command)
+    pub(super) fn deny_hit(&self, command: &str) -> Option<CompiledDenyEntry> {
+        deny_hit_in(&self.deny_entries, command).cloned()
     }
 }
 
 /// deny 词表命中检查（大小写不敏感——命令统一小写后比对，regex 词表
-/// 自带 `\b` 词边界与 `(?i)` 内联开关）。命中 = Some(首个命中的
-/// pattern 原文)，供拒绝消息引用。[`ExecTool`] 热读路径（快照词表）
+/// 自带 `\b` 词边界与 `(?i)` 内联开关）。命中 = Some(首个命中的词条，
+/// 拒绝消息带 name/reason 元数据)。[`ExecTool`] 热读路径（快照词表）
 /// 与 [`AsyncExecTool`] 构造期路径共用同一比对语义。
-pub(super) fn deny_hit_in(patterns: &[regex::Regex], command: &str) -> Option<String> {
+pub(super) fn deny_hit_in<'a>(
+    entries: &'a [CompiledDenyEntry],
+    command: &str,
+) -> Option<&'a CompiledDenyEntry> {
     let lowered = command.to_lowercase();
-    patterns
-        .iter()
-        .find(|re| re.is_match(&lowered))
-        .map(|re| re.as_str().to_string())
+    entries.iter().find(|e| e.regex.is_match(&lowered))
+}
+
+/// deny 拒绝消息（2026-11-20 危险闸页面）：带规则 name + 人话 reason +
+/// 管理页指引（Owner 可在页面关单条解锁合法运维场景）。路径与侧栏编号
+/// 一致（2026-11-21 编号定版：⑬ = 危险闸）。
+pub(crate) fn deny_denied_message(entry: &CompiledDenyEntry) -> String {
+    format!(
+        "Command blocked by deny rule '{}': {}（命中危险命令词表，已拒绝执行；可在 安全 → ⑬危险闸 → 工具执行词表 中调整）",
+        entry.name, entry.reason
+    )
+}
+
+/// deny 命中统一收口（2026-11-20 留痕同批修——此前拦截无痕）：WARN 日志
+/// （target=security，规则名/类别/档位 + 命令前 200 字符）+ 审计链闭包
+/// （装配期注入，None = 诚实降级只有 WARN）→ 返回拒绝消息。命令预览按
+/// 字符截断（多字节安全）。
+fn deny_reject(command: &str, entry: &CompiledDenyEntry, hook: Option<&DenyAuditHook>) -> String {
+    let preview: String = command.chars().take(200).collect();
+    tracing::warn!(
+        target: "security",
+        "[exec-deny] rule={} category={} severity={} command={}",
+        entry.name,
+        entry.category,
+        entry.severity,
+        preview
+    );
+    if let Some(h) = hook {
+        h(&preview, &entry.name);
+    }
+    deny_denied_message(entry)
 }
 
 #[async_trait]
@@ -529,14 +664,12 @@ impl Tool for ExecTool {
         // 下次执行即生效）；path 缺席 = 构造期字段旧行为。
         let runtime = self.runtime_snapshot();
 
-        // deny 词表检查（2026-11-08 接线激活）——spawn 前第一道 shell 级
-        // 词表闸（安全 8 层 pipeline 仍在 dispatch 前跑过，这里是工具层
-        // 纵深）。命中即拒，拒绝消息带 pattern 原文（模型可换方法）。
-        if let Some(hit) = deny_hit_in(&runtime.deny_patterns, command) {
-            return Err(format!(
-                "Command blocked by deny pattern: {}（命中危险命令词表，已拒绝执行）",
-                hit
-            ));
+        // deny 词表检查（2026-11-08 接线激活；2026-11-20 危险闸：命中
+        // 带 name/reason 元数据 + WARN 日志 + 审计链闭包——spawn 前第一道
+        // shell 级词表闸，安全 8 层 pipeline 仍在 dispatch 前跑过，这里是
+        // 工具层纵深。命中即拒，模型可换方法；Owner 可在危险闸页关单条）。
+        if let Some(hit) = deny_hit_in(&runtime.deny_entries, command) {
+            return Err(deny_reject(command, hit, self.deny_audit_hook.as_ref()));
         }
 
         let timeout_secs = exec_timeout_secs_capped(
@@ -2055,9 +2188,11 @@ pub struct AsyncExecTool {
     workspace: String,
     restrict: bool,
     /// deny 词表（与 [`ExecTool`] 同源同语义——见 [`compile_deny_patterns`]）。
-    deny_patterns: Vec<regex::Regex>,
+    deny_entries: Vec<CompiledDenyEntry>,
     /// editor 开关（Full Access）围栏闸（见 [`ExecTool::editor_gate`]）。
     editor_gate: Option<EditorGate>,
+    /// deny 拦截审计钩子（见 [`ExecTool::deny_audit_hook`]）。
+    deny_audit_hook: Option<DenyAuditHook>,
 }
 
 impl AsyncExecTool {
@@ -2065,8 +2200,9 @@ impl AsyncExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
-            deny_patterns: compile_deny_patterns(None),
+            deny_entries: compile_deny_patterns(None),
             editor_gate: None,
+            deny_audit_hook: None,
         }
     }
 
@@ -2080,8 +2216,9 @@ impl AsyncExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
-            deny_patterns: compile_deny_patterns(custom_deny_patterns),
+            deny_entries: compile_deny_patterns(custom_deny_patterns),
             editor_gate: None,
+            deny_audit_hook: None,
         }
     }
 
@@ -2091,8 +2228,15 @@ impl AsyncExecTool {
         self
     }
 
-    pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
-        deny_hit_in(&self.deny_patterns, command)
+    /// deny 拦截审计钩子链式注入（同 [`ExecTool::with_deny_audit_hook`]）。
+    pub fn with_deny_audit_hook(mut self, hook: Option<DenyAuditHook>) -> Self {
+        self.deny_audit_hook = hook;
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn deny_hit(&self, command: &str) -> Option<CompiledDenyEntry> {
+        deny_hit_in(&self.deny_entries, command).cloned()
     }
 }
 
@@ -2143,12 +2287,10 @@ impl Tool for AsyncExecTool {
             .and_then(|v| v.as_str())
             .ok_or("Missing 'command' argument")?;
 
-        // deny 词表检查（与 ExecTool 同源同语义——异步启动也是执行）。
-        if let Some(hit) = self.deny_hit(command) {
-            return Err(format!(
-                "Command blocked by deny pattern: {}（命中危险命令词表，已拒绝执行）",
-                hit
-            ));
+        // deny 词表检查（与 ExecTool 同源同语义——异步启动也是执行；
+        // 2026-11-20 留痕同批修）。
+        if let Some(hit) = deny_hit_in(&self.deny_entries, command) {
+            return Err(deny_reject(command, hit, self.deny_audit_hook.as_ref()));
         }
 
         let cwd = val

@@ -4203,6 +4203,56 @@ fn test_typed_save_roundtrip_preserves_untyped_per_model_keys() {
 }
 
 #[test]
+fn test_typed_save_roundtrip_preserves_untyped_exec_keys() {
+    // tools.exec 段未建模键（手编实验参数 / 未来版本新增键）在 typed
+    // load→save round-trip 后必须原样保留。没有 `#[serde(flatten)] extra`
+    // 时，任何 update_config 经手 tools.exec 段的 typed 保存（危险闸
+    // exec_deny_set 等）都会把这些键静默抹掉（ModelConfig.extra 同款根修）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let raw = serde_json::json!({
+        "tools": {
+            "exec": {
+                "enable_deny_patterns": true,
+                "deny_disabled": ["ssh_remote_login"],
+                "some_future_key": { "tuning": [1, 2, 3] }
+            }
+        }
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let mut cfg = crate::load_config(&path).unwrap();
+    crate::save_config(&path, &mut cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let exec = &after["tools"]["exec"];
+    assert_eq!(exec["enable_deny_patterns"], true);
+    assert_eq!(
+        exec["deny_disabled"],
+        serde_json::json!(["ssh_remote_login"])
+    );
+    assert_eq!(
+        exec["some_future_key"]["tuning"][2], 3,
+        "未建模键 round-trip 保留"
+    );
+
+    // 纯 typed exec 段（无 unknown 键）不产生 extra 噪音键
+    let dir2 = tempfile::tempdir().unwrap();
+    let path2 = dir2.path().join("config.json");
+    let raw2 = serde_json::json!({
+        "tools": { "exec": { "max_timeout_secs": 120 } }
+    });
+    std::fs::write(&path2, serde_json::to_string_pretty(&raw2).unwrap()).unwrap();
+    let mut cfg2 = crate::load_config(&path2).unwrap();
+    crate::save_config(&path2, &mut cfg2).unwrap();
+    let after2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path2).unwrap()).unwrap();
+    let exec2 = after2["tools"]["exec"].as_object().unwrap();
+    assert!(!exec2.contains_key("extra"), "extra 不应作为实体键落盘");
+}
+
+#[test]
 fn test_typed_entry_without_unknown_keys_serializes_without_extra_noise() {
     // 无 unknown 键的条目：typed → JSON 不应出现新增键（既有快照/形态兼容）。
     let mc = ModelConfig {
@@ -4289,6 +4339,70 @@ fn test_typed_save_absent_state_does_not_pin_lazy_schema_or_disable_wasm() {
         "未表态不得落幽灵禁用: {}",
         after["plugins"]
     );
+}
+
+// ============================================================
+// ExecConfig 危险闸两键（deny_disabled / deny_extra，2026-11-20）
+// ============================================================
+
+#[test]
+fn test_exec_config_deny_gate_keys_roundtrip() {
+    // 危险闸页面写盘的两键（tools.exec.deny_disabled / deny_extra）在
+    // typed load→save round-trip 后必须原样保留——exec 词表热读每轮
+    // 消费，任何 typed 保存（dashboard config/security handler 等）丢键
+    // = 页面保存静默失效。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let raw = serde_json::json!({
+        "tools": {
+            "exec": {
+                "enable_deny_patterns": true,
+                "deny_disabled": ["ssh_remote_login", "docker_exec"],
+                "deny_extra": ["forbidden_binary\\.exe", "mycorp_block\\.sh"]
+            }
+        }
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let mut cfg = crate::load_config(&path).unwrap();
+    let exec = &cfg.tools.exec;
+    assert_eq!(
+        exec.deny_disabled,
+        vec!["ssh_remote_login".to_string(), "docker_exec".to_string()]
+    );
+    assert_eq!(exec.deny_extra.len(), 2);
+    assert_eq!(exec.deny_extra[0], r"forbidden_binary\.exe");
+
+    crate::save_config(&path, &mut cfg).unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let exec_after = &after["tools"]["exec"];
+    assert_eq!(
+        exec_after["deny_disabled"].as_array().unwrap().len(),
+        2,
+        "deny_disabled round-trip 保留: {exec_after}"
+    );
+    assert_eq!(
+        exec_after["deny_extra"].as_array().unwrap().len(),
+        2,
+        "deny_extra round-trip 保留: {exec_after}"
+    );
+    assert_eq!(exec_after["deny_extra"][0], r"forbidden_binary\.exe");
+}
+
+#[test]
+fn test_exec_config_deny_gate_keys_default_empty() {
+    // 缺键形态（老配置零迁移）：deny_disabled / deny_extra 缺席 = 空 vec
+    // （serde default），enable_deny_patterns 缺席 = false——旧行为字节不变。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let raw = serde_json::json!({ "tools": {} });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+    let cfg = crate::load_config(&path).unwrap();
+    assert!(cfg.tools.exec.deny_disabled.is_empty());
+    assert!(cfg.tools.exec.deny_extra.is_empty());
+    assert!(!cfg.tools.exec.enable_deny_patterns);
+    assert!(cfg.tools.exec.custom_deny_patterns.is_empty());
 }
 
 // ============================================================

@@ -329,6 +329,42 @@ pub(super) fn build_shared_tool_config(
     #[cfg(not(feature = "security"))]
     let editor_gate = None::<std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>;
 
+    // deny 拦截审计钩子（2026-11-20 危险闸）：exec 词表命中落 Merkle
+    // 审计链——工具层拦截此前无痕（8 层放行无记录 + 工具层纯 Err 返回，
+    // 用户查不到「谁拦的」）。estop 审计钩子同款直记先例
+    // （append_direct_audit_event；链未启用/追加失败 = None，内部已
+    // warn + 工具层 WARN 恒在场，此处 debug 兜底）。target 只落命令前
+    // 200 字符预览（deny_reject 已截断，凭据扫描在 8 层照常覆盖命令
+    // 全文，审计面无绕过新语义）。
+    #[cfg(feature = "security")]
+    let deny_audit_hook: Option<nemesis_agent::loop_tools::DenyAuditHook> = shared
+        .security_plugin
+        .as_ref()
+        .map(|plugin| {
+            let plugin = std::sync::Arc::clone(plugin);
+            std::sync::Arc::new(move |command: &str, rule: &str| {
+                let reason = format!("deny rule '{rule}' hit（危险命令词表拦截，已拒绝执行）");
+                if plugin
+                    .append_direct_audit_event(
+                        "exec",
+                        "exec",
+                        "agent",
+                        "tool_layer",
+                        command,
+                        "deny",
+                        &reason,
+                    )
+                    .is_none()
+                {
+                    tracing::debug!(
+                        "[AgentFactory] exec-deny audit event not recorded (chain disabled or append failed); tracing fallback only"
+                    );
+                }
+            }) as nemesis_agent::loop_tools::DenyAuditHook
+        });
+    #[cfg(not(feature = "security"))]
+    let deny_audit_hook = None::<nemesis_agent::loop_tools::DenyAuditHook>;
+
     let config = nemesis_agent::SharedToolConfig {
         workspace: Some(workspace_dir.to_string_lossy().to_string()),
         // bot 域产物根：None = 回落 workspace。本装配器的所有调用方
@@ -504,6 +540,9 @@ pub(super) fn build_shared_tool_config(
         // 字段注：开关开+词表非空=自定义词表，其余=内置默认词表）。
         exec_deny_custom_enabled: cfg.tools.exec.enable_deny_patterns,
         exec_deny_custom_patterns: cfg.tools.exec.custom_deny_patterns.clone(),
+        // deny 审计钩子（2026-11-20 危险闸）：SecurityPlugin 在场时构造
+        // （落审计链）；None = security feature 裁剪/插件缺席 = 只 WARN。
+        deny_audit_hook,
         // exec 热读源（2026-11-20 C4 热生效语义）：gateway home 的
         // config.json——ExecTool 消费点现读 `tools.exec` 段，改键下次
         // 执行即生效（无需重启）。上方两字段退化为首次快照前的兜底；

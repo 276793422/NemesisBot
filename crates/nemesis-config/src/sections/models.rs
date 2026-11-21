@@ -303,6 +303,18 @@ pub struct ExecConfig {
     pub enable_deny_patterns: bool,
     #[serde(default)]
     pub custom_deny_patterns: Vec<String>,
+    /// deny 词表逐条关闭名单（2026-11-20 危险闸页面）：内置词条 `name`
+    /// 列表，命中判定时跳过。增量覆盖语义——只关点名的条目，其余防线
+    /// 保留（替代「手抄整表」的产品形态；旧 `custom_deny_patterns` 整表
+    /// 替换键保留为高级出口，UI 不暴露）。未知 name 消费点忽略（版本
+    /// 漂移容忍）。
+    #[serde(default)]
+    pub deny_disabled: Vec<String>,
+    /// 追加自定义 deny 正则（2026-11-20 危险闸页面）：与内置词表**叠加**
+    /// 生效（name 形如 `extra:N`，不可伪装内置名）。编译失败逐条丢弃
+    /// + warn，不清空不回落——内置未关条目防线仍在。
+    #[serde(default)]
+    pub deny_extra: Vec<String>,
     /// exec 同步阻塞超时上限（秒）。0/缺省 = 600（旧行为字节不变）；
     /// 配正数时生效且下限保护（<30 视作 30，防止部署侧配出必然超时）。
     /// 上限高度 = estop 残留窗口（estop 只拒新 dispatch 不打断在飞
@@ -310,6 +322,19 @@ pub struct ExecConfig {
     /// `timeout` 参数语义不变（缺省 30，超过上限被 clamp）。
     #[serde(default)]
     pub max_timeout_secs: u64,
+    /// 段内未建模键保真（ModelConfig.extra / PluginsHostConfig.extra 同款
+    /// round-trip 机制）：没有这个 flatten 时，任何 typed 保存经手
+    /// `tools.exec` 段（危险闸 `exec_deny_set` 等 update_config 闭包）都会
+    /// 把手编实验键 / 未来版本新增键静默抹掉。BTreeMap 键序确定
+    /// （HashMap 每进程随机种子 → 同一份 config 两次保存字节不同，无谓
+    /// diff / mtime reload 抖动）；空表序列化跳过（输出与既有形态字节
+    /// 一致）。
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl ExecConfig {

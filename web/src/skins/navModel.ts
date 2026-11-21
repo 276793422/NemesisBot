@@ -59,6 +59,9 @@ const ITEM_FEATURE: Record<string, string> = {
   'layer-audit': 'SECURITY',
   guardian: 'SECURITY',
   approval: 'SECURITY',
+  // 危险闸（2026-11-20）：确定性硬闸家族聚合页（工具执行词表等），后端
+  // security.exec_deny_* 挂 security feature。
+  'hard-gates': 'SECURITY',
   // 邮箱页（邮件基础设施 2026-11-18，mail feature / VITE_FEATURE_MAIL 门控）：
   // mail.* WSAPI 管理面（mailbox 列表/读信/写信/地址注册制）。
   mailbox: 'MAIL',
@@ -225,18 +228,21 @@ export const NAV_GROUPS: NavGroupModel[] = [
       // ⑦ 病毒扫描：独立子系统页归组（路由/组件不动，label 加层号）。
       { id: 'scanner', label: '⑦病毒扫描', route: '/scanner', icon: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z' },
       { id: 'layer-audit', label: '⑧审计链', route: '/security/layer/audit', icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8' },
-      // ⑨沙盒保留层号（真实第 9 层兜底红线）；虚拟化是管线外独立子系统页。
+      // ⑨沙盒保留层号（真实第 9 层兜底红线）。⑩-⑬（2026-11-21 用户拍板）：
+      // 侧栏标签与页头编号对齐——⑩虚拟化 ⑪Guardian ⑫人工审批 ⑬危险闸，
+      // 侧栏同号两处一字不差；凭据隔离不占闸号（组尾裸名）。
       { id: 'sandbox', label: '⑨沙盒', route: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
-      { id: 'vm', label: '虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
-      // 附加机制两页（管线外独立机制，⑪⑫ 序号 2026-11-17 移除——层号
-      // 到 ⑨ 兜底为止，侧栏不再暗示 13 步管线；总览层表编号体系不动）：
+      { id: 'vm', label: '⑩虚拟化', route: '/vm', icon: 'M2 3h20v14H2zM8 21h8M12 17v4' },
       // LLM judge 语义二审 + 人工审批（eval 评估规则暂放 Approval 页一节，
       // 位置后议）。
-      { id: 'guardian', label: 'Guardian 二审', route: '/security/guardian', icon: 'M9 12l2 2 4-4M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
-      { id: 'approval', label: '人工审批', route: '/security/approval', icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM17 11l2 2 4-4' },
+      { id: 'guardian', label: '⑪Guardian 二审', route: '/security/guardian', icon: 'M9 12l2 2 4-4M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
+      { id: 'approval', label: '⑫人工审批', route: '/security/approval', icon: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M8.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM17 11l2 2 4-4' },
+      // ⑬ 危险闸（2026-11-20 建页；2026-11-21 定 ⑬ 号）：确定性硬闸家族
+      // 聚合页（工具执行词表本期；注册表路径/URL 硬闸等后续入页）。
+      { id: 'hard-gates', label: '⑬危险闸', route: '/security/hard-gates', icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5' },
       // L7c：凭据隔离（原名「凭据」易与 ④凭据扫描混淆，2026-11-16 用户
-      // 拍板更名；组尾；VITE_FEATURE_SECURITY 门控）。⑬ 序号 2026-11-17
-      // 移除（管线外附加机制不占层号，侧栏与总览层表编号体系解耦）。
+      // 拍板更名；组尾；VITE_FEATURE_SECURITY 门控；2026-11-21 撤闸号——
+      // ⑬ 让位危险闸，凭据托管是基础设施不是拦截闸）。
       { id: 'vault', label: '凭据隔离', route: '/vault', icon: 'M18 8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v2zm-6 4a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h7zM4 6v.01M8 6v.01' },
     ],
   },

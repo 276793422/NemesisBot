@@ -1,6 +1,6 @@
 //! Security handler — config.get/config.save/audit/stats/signature_verify_status.
 
-use crate::handlers::require_workspace;
+use crate::handlers::{require_home, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -167,6 +167,10 @@ impl ModuleHandler for SecurityHandler {
             "overview",
             "command_blocklist",
             "credential_rules",
+            // 危险闸页面（2026-11-20）：工具执行词表（内置 deny 元数据化 +
+            // 逐条开关 + 自定义追加；exec 热读即刻生效）。
+            "exec_deny_list",
+            "exec_deny_set",
         ]
     }
 
@@ -312,6 +316,34 @@ impl ModuleHandler for SecurityHandler {
             // 第④层页：内置凭据规则名只读快照（§2.7 核实：32 条 OnceLock
             // 纯硬编码，无 config 扩展面）。
             "credential_rules" => Ok(Some(Self::credential_rules())),
+            // ── 危险闸页面（2026-11-20）：工具执行词表 ─────────────────
+            // list = 内置词条元数据 + 逐条 enabled 投影 + 自定义追加表；
+            // set = 两键全量提交（写侧清洗校验 + 事务落盘；exec 热读
+            // mtime 让改动下次执行即生效，无需重启）。
+            // ⚠ 路径维度 = home（config.json 在 home 根）——exec 工具热读
+            // `shared.home.join("config.json")`（agent_factory/shared.rs），
+            // 与全站 config 读写 handler（channels/forge/models）同口径；
+            // 传 workspace 会写 `{home}/workspace/config.json`，保存永不
+            // 生效（第二轮自查抓出的缺陷，2026-11-21 修复）。
+            "exec_deny_list" => Ok(Some(self.exec_deny_list(require_home(ctx)?)?)),
+            "exec_deny_set" => {
+                let data = data.ok_or("missing data")?;
+                let parse_list = |key: &str| -> Vec<String> {
+                    data.get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                Ok(Some(self.exec_deny_set(
+                    require_home(ctx)?,
+                    parse_list("disabled"),
+                    parse_list("extra"),
+                )?))
+            }
             _ => Err(format!("unknown command: security.{}", cmd)),
         }
     }
@@ -800,7 +832,8 @@ impl SecurityHandler {
     // feature 耦合，scanner/sandbox/vm 模块门控裁掉时本命令仍可用（对应
     // 段落投影降级形态）。全部只读，无写入口。
 
-    /// `security.overview`：总览页聚合快照（十层启停态 + 按 policy 聚合的
+    /// `security.overview`：总览页聚合快照（闸门启停态（①…⑬ + 凭据
+    /// 隔离行）+ 按 policy 聚合的
     /// 拦截计数 + 链在场态 + estop/Plan/Full Access/免打扰/签名快照）。
     fn overview(
         &self,
@@ -817,6 +850,7 @@ impl SecurityHandler {
             "approvals": Self::approvals_status(),
             "guardian": Self::guardian_snapshot(workspace),
             "vault": Self::vault_snapshot(workspace),
+            "exec_deny": Self::exec_deny_snapshot(ctx),
             "signature": self.signature_verify_status(ctx),
             "scanner": Self::scanner_snapshot(workspace),
             "global": Self::global_switch_snapshot(ctx),
@@ -1046,13 +1080,71 @@ impl SecurityHandler {
         })
     }
 
-    /// ⑬ 凭据 Vault 快照（总览页行状态）：加密存储文件在场态
+    /// 凭据 Vault 快照（总览页行状态）：加密存储文件在场态
     /// （`<workspace>/config/vault.enc`）。vault 无「装配」半边（子系统
-    /// 恒在），初始化与否由存储文件存在性表达。
+    /// 恒在），初始化与否由存储文件存在性表达。不占闸门编号（2026-11-21
+    /// 起 ⑬ = 危险闸，凭据托管是基础设施不是拦截闸）。
     fn vault_snapshot(workspace: &str) -> serde_json::Value {
         let path = nemesis_path::resolve_vault_path_in_workspace(Path::new(workspace));
         serde_json::json!({
             "exists": path.exists(),
+        })
+    }
+
+    /// ⑬ 危险闸快照（总览页行状态）：工具执行词表生效面——内置词表
+    /// 条数 + 被关条数（`deny_disabled` ∩ 内置名，按唯一名计数——手编
+    /// config 重复名不去重会把 disabled 顶过 total 显示负数；未知名不
+    /// 计入）+ 追加规则数；`custom_deny_patterns` 整表替换态 = flag 开 +
+    /// 词表非空（镜像 `build_effective_deny` 与 `exec_deny_list` 的
+    /// `custom_replacement_active` 语义——替换不激活时内置条目开关仍参
+    /// 与生效表）。home 缺席/主 config 读不了 = `available:false`（诚实
+    /// 降级，同 global_switch_snapshot 形态）。
+    fn exec_deny_snapshot(ctx: &RequestContext) -> serde_json::Value {
+        let total = nemesis_tools::shell::DEFAULT_EXEC_DENY_ENTRIES.len();
+        let Some(home) = ctx.state.home.as_deref() else {
+            return serde_json::json!({ "available": false, "total": total });
+        };
+        let Ok(raw) = crate::handlers::config::read_raw_config(home) else {
+            return serde_json::json!({ "available": false, "total": total });
+        };
+        let exec = raw.get("tools").and_then(|t| t.get("exec"));
+        // 替换态判定与消费侧同源（exec.rs build_effective_deny /
+        // security.rs exec_deny_list）：enable_deny_patterns 开 + 非空；
+        // flag 缺席按 false（serde default）。
+        let custom_replacement = exec
+            .and_then(|e| e.get("enable_deny_patterns"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            && exec
+                .and_then(|e| e.get("custom_deny_patterns"))
+                .and_then(|v| v.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false);
+        let builtin_names: std::collections::HashSet<&str> =
+            nemesis_tools::shell::DEFAULT_EXEC_DENY_ENTRIES
+                .iter()
+                .map(|e| e.name)
+                .collect();
+        let disabled = exec
+            .and_then(|e| e.get("deny_disabled"))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                let named: std::collections::HashSet<&str> =
+                    a.iter().filter_map(|n| n.as_str()).collect();
+                named.intersection(&builtin_names).count()
+            })
+            .unwrap_or(0);
+        let extra = exec
+            .and_then(|e| e.get("deny_extra"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        serde_json::json!({
+            "available": true,
+            "total": total,
+            "disabled": disabled,
+            "extra": extra,
+            "custom_replacement": custom_replacement,
         })
     }
 
@@ -1162,6 +1254,95 @@ impl SecurityHandler {
             "note": "内置规则表为编译期静态表（无 config 扩展面），只读呈现；类别分组由前端按规则名映射",
         })
     }
+
+    /// 危险闸页面数据（2026-11-20 工具执行词表）：内置词条元数据
+    /// （name/category/severity/reason/pattern，nemesis-tools 单一真相源）、
+    /// 逐条 enabled 投影（`tools.exec.deny_disabled` 取反）、自定义追加表
+    /// （`tools.exec.deny_extra`）。
+    ///
+    /// 高级出口当前态一并可见（custom 整表替换键 UI 不暴露，但激活时前端
+    /// 诚实注记）。
+    ///
+    /// `home` = 配置根（config.json 所在目录，home 根而非 workspace）——
+    /// 与 exec 工具热读路径 `shared.home.join("config.json")` 同一文件。
+    fn exec_deny_list(&self, home: &str) -> Result<serde_json::Value, String> {
+        let cfg = super::config::load_config(home)?;
+        let exec = &cfg.tools.exec;
+        let entries: Vec<serde_json::Value> = nemesis_tools::shell::DEFAULT_EXEC_DENY_ENTRIES
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "name": e.name,
+                    "category": e.category,
+                    "severity": e.severity,
+                    "reason": e.reason,
+                    "pattern": e.pattern,
+                    "enabled": !exec.deny_disabled.iter().any(|d| d == e.name),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "entries": entries,
+            "extra": exec.deny_extra,
+            "custom_replacement": exec.custom_deny_patterns,
+            "custom_replacement_active": exec.enable_deny_patterns
+                && !exec.custom_deny_patterns.is_empty(),
+        }))
+    }
+
+    /// 危险闸保存：两键**全量提交**（disabled + extra 整体覆写——前端持
+    /// 全量状态，增量语义在消费侧）。写侧清洗：未知 name 过滤（消费侧本
+    /// 就容忍，这里防脏数据积累；去重防重复条目）、extra 上限 50、空串/
+    /// 坏正则 fail loud（用户当场改，不等下次 exec 才静默丢弃）。事务落盘
+    /// （config_write_lock 罩全程）；exec 工具每次执行前 mtime 热读
+    /// config.json——保存即刻生效，无需重启。
+    ///
+    /// `home` = 配置根（config.json 所在目录，home 根而非 workspace）——
+    /// 与 exec 工具热读路径 `shared.home.join("config.json")` 同一文件。
+    fn exec_deny_set(
+        &self,
+        home: &str,
+        disabled: Vec<String>,
+        extra: Vec<String>,
+    ) -> Result<serde_json::Value, String> {
+        const EXTRA_MAX: usize = 50;
+        if extra.len() > EXTRA_MAX {
+            return Err(format!(
+                "自定义规则最多 {EXTRA_MAX} 条（got {}）",
+                extra.len()
+            ));
+        }
+        let known: std::collections::HashSet<&str> =
+            nemesis_tools::shell::DEFAULT_EXEC_DENY_ENTRIES
+                .iter()
+                .map(|e| e.name)
+                .collect();
+        let mut seen_names = std::collections::HashSet::new();
+        let disabled_clean: Vec<String> = disabled
+            .into_iter()
+            .filter(|n| known.contains(n.as_str()) && seen_names.insert(n.clone()))
+            .collect();
+        let mut seen_patterns = std::collections::HashSet::new();
+        let mut extra_clean: Vec<String> = Vec::with_capacity(extra.len());
+        for (i, p) in extra.iter().enumerate() {
+            let trimmed = p.trim();
+            nemesis_tools::shell::validate_deny_extra_pattern(trimmed)
+                .map_err(|e| format!("第 {} 条自定义规则无效：{e}", i + 1))?;
+            if seen_patterns.insert(trimmed.to_string()) {
+                extra_clean.push(trimmed.to_string());
+            }
+        }
+        super::config::update_config(home, |cfg| {
+            cfg.tools.exec.deny_disabled = disabled_clean;
+            cfg.tools.exec.deny_extra = extra_clean;
+            Ok(())
+        })?;
+        Ok(serde_json::json!({
+            "saved": true,
+            "hot": true,
+            "note": "exec 工具每次执行前热读 config.json，改动即刻生效（无需重启）",
+        }))
+    }
 }
 
 /// eval_rules.add/update 的 `data.rule` 载荷提取（单点：字段缺失/形态错
@@ -1224,3 +1405,8 @@ mod rule_mgmt_tests;
 // 降级臂）+ command_blocklist / credential_rules 只读快照契约。
 #[cfg(test)]
 mod overview_tests;
+
+// 危险闸页面（2026-11-20）：exec_deny_list 契约投影 + exec_deny_set
+// 清洗/校验/abort 语义 + 与 agent 生效表合成函数的盘上形态同源验证。
+#[cfg(test)]
+mod exec_deny_tests;

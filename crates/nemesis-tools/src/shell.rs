@@ -84,80 +84,361 @@ pub fn resolve_posix_shell_path(interpreter: &str) -> String {
     }
 }
 
-/// Default exec deny patterns (raw regex strings) — **单一真相源**。
+/// 内置 exec deny 词条（**单一真相源**，2026-11-20 危险闸元数据化）。
 ///
-/// 【核实 2026-11-08】生产 `exec` / `exec_async` 工具走
-/// `nemesis-agent::loop_tools` 版实现（本 crate 的 `ShellTool` 当前无生产
-/// 注册路径，见其结构体注记）。deny 词表必须跨两处实现同源——否则
-/// 「词表防线在生产路径上长什么样」出现两套答案。公开为 `const` 供
-/// loop_tools 侧引用；本 crate 的 `default_deny_patterns()` 亦从此编译。
+/// 【核实 2026-11-08】生产 `exec` 工具走 `nemesis-agent::loop_tools` 版
+/// 实现（本 crate 的 `ShellTool` 当前无生产注册路径，见其结构体注记）。
+/// deny 词表必须跨两处实现同源——否则「词表防线在生产路径上长什么样」
+/// 出现两套答案。公开供 loop_tools 侧引用；本 crate 的
+/// `default_deny_patterns()` 亦从此投影。
 /// 这些模式镜像 Go 版 `defaultDenyPatterns`。
-pub const DEFAULT_EXEC_DENY_PATTERNS: &[&str] = &[
-    // Destructive file operations
-    r"\brm\s+-[rf]{1,2}\b",
-    r"\bdel\s+/[fq]\b",
-    r"\brmdir\s+/s\b",
-    r"\b(format|mkfs|diskpart)\b\s",
-    r"\bdd\s+if=",
-    r">\s*/dev/sd[a-z]\b",
-    // System control
-    r"\b(shutdown|reboot|poweroff)\b",
-    // Fork bomb
-    r":\(\)\s*\{.*\};\s*:",
-    // Command substitution
-    r"\$\([^)]+\)",
-    r"\$\{[^}]+\}",
-    r"`[^`]+`",
-    // Pipe to shell
-    r"\|\s*sh\b",
-    r"\|\s*bash\b",
-    // Chained rm
-    r";\s*rm\s+-[rf]",
-    r"&&\s*rm\s+-[rf]",
-    r"\|\|\s*rm\s+-[rf]",
-    // Redirection exploits
-    r">\s*/dev/null\s*>&?\s*\d?",
-    r"<<\s*(?i)EOF",
-    // Subshell data exfiltration
-    r"\$\(\s*cat\s+",
-    r"\$\(\s*curl\s+",
-    r"\$\(\s*wget\s+",
-    r"\$\(\s*which\s+",
-    // Privilege escalation
-    r"\bsudo\b",
-    r"\bchmod\s+[0-7]{3,4}\b",
-    r"\bchown\b",
-    r"\bpkill\b",
-    r"\bkillall\b",
-    r"\bkill\s+-[9]\b",
-    // Remote code execution
-    r"\bcurl\b.*\|\s*(sh|bash)",
-    r"\bwget\b.*\|\s*(sh|bash)",
-    // Package management
-    r"\bnpm\s+install\s+-g\b",
-    r"\bpip\s+install\s+--user\b",
-    r"\bapt\s+(install|remove|purge)\b",
-    r"\byum\s+(install|remove)\b",
-    r"\bdnf\s+(install|remove)\b",
-    // Container escape
-    r"\bdocker\s+run\b",
-    r"\bdocker\s+exec\b",
-    // Git force push
-    r"\bgit\s+push\b",
-    r"\bgit\s+force\b",
-    // Remote access
-    r"\bssh\b.*@",
-    // Code execution
-    r"\beval\b",
-    r"\bsource\s+.*\.sh\b",
+///
+/// 元数据字段（2026-11-20 危险闸页面）：
+/// - `name`：稳定标识（`tools.exec.deny_disabled` 按 name 关条目；全表
+///   唯一，改名 = 破坏用户已保存的关闭配置，视同破坏性变更）；
+/// - `category`/`severity`：前端危险闸页呈现用（值域钉死在测试）；
+/// - `reason`：一句话人话（拒绝消息 + 前端说明列直接呈现）；
+/// - `pattern`：原正则（迁移不改语义，历史命中行为逐字节不变）。
+#[derive(Debug, Clone, Copy)]
+pub struct DenyEntry {
+    pub name: &'static str,
+    pub category: &'static str,
+    pub severity: &'static str,
+    pub reason: &'static str,
+    pub pattern: &'static str,
+}
+
+/// 内置 deny 词条表（42 条）。
+pub const DEFAULT_EXEC_DENY_ENTRIES: &[DenyEntry] = &[
+    // -- Destructive file operations --------------------------------------
+    DenyEntry {
+        name: "rm_recursive_force",
+        category: "destructive",
+        severity: "high",
+        reason: "递归或强制删除文件（rm -r/-f）",
+        pattern: r"\brm\s+-[rf]{1,2}\b",
+    },
+    DenyEntry {
+        name: "del_force_quiet",
+        category: "destructive",
+        severity: "high",
+        reason: "Windows 强制或静默删除（del /f /q）",
+        pattern: r"\bdel\s+/[fq]\b",
+    },
+    DenyEntry {
+        name: "rmdir_tree",
+        category: "destructive",
+        severity: "high",
+        reason: "Windows 递归删除目录树（rmdir /s）",
+        pattern: r"\brmdir\s+/s\b",
+    },
+    DenyEntry {
+        name: "disk_format",
+        category: "destructive",
+        severity: "high",
+        reason: "磁盘格式化或分区工具（format/mkfs/diskpart）",
+        pattern: r"\b(format|mkfs|diskpart)\b\s",
+    },
+    DenyEntry {
+        name: "dd_raw_write",
+        category: "destructive",
+        severity: "high",
+        reason: "dd 裸写设备或镜像（dd if=）",
+        pattern: r"\bdd\s+if=",
+    },
+    DenyEntry {
+        name: "raw_block_redirect",
+        category: "destructive",
+        severity: "high",
+        reason: "重定向直写裸块设备（> /dev/sdX）",
+        pattern: r">\s*/dev/sd[a-z]\b",
+    },
+    // -- System control ----------------------------------------------------
+    DenyEntry {
+        name: "power_control",
+        category: "system",
+        severity: "high",
+        reason: "系统关机/重启/断电（shutdown/reboot/poweroff）",
+        pattern: r"\b(shutdown|reboot|poweroff)\b",
+    },
+    DenyEntry {
+        name: "fork_bomb",
+        category: "system",
+        severity: "high",
+        reason: "fork 炸弹（自我复制的无限进程）",
+        pattern: r":\(\)\s*\{.*\};\s*:",
+    },
+    // -- Obfuscation（命令替换/展开——防外传与伪装的经典载体）----------------
+    DenyEntry {
+        name: "cmd_substitution",
+        category: "obfuscation",
+        severity: "medium",
+        reason: "命令替换 $(...)（结果不可见地进入命令行）",
+        pattern: r"\$\([^)]+\)",
+    },
+    DenyEntry {
+        name: "var_expansion",
+        category: "obfuscation",
+        severity: "low",
+        reason: "变量展开 ${...}（内容不透明）",
+        pattern: r"\$\{[^}]+\}",
+    },
+    DenyEntry {
+        name: "backtick_substitution",
+        category: "obfuscation",
+        severity: "medium",
+        reason: "反引号命令替换（结果不可见地进入命令行）",
+        pattern: r"`[^`]+`",
+    },
+    // -- Pipe to shell ------------------------------------------------------
+    DenyEntry {
+        name: "pipe_to_sh",
+        category: "rce",
+        severity: "high",
+        reason: "输出直接管道进 sh 执行",
+        pattern: r"\|\s*sh\b",
+    },
+    DenyEntry {
+        name: "pipe_to_bash",
+        category: "rce",
+        severity: "high",
+        reason: "输出直接管道进 bash 执行",
+        pattern: r"\|\s*bash\b",
+    },
+    // -- Chained rm ----------------------------------------------------------
+    DenyEntry {
+        name: "chained_rm_semi",
+        category: "destructive",
+        severity: "high",
+        reason: "链式命令中夹带递归/强制删除（; rm -r）",
+        pattern: r";\s*rm\s+-[rf]",
+    },
+    DenyEntry {
+        name: "chained_rm_and",
+        category: "destructive",
+        severity: "high",
+        reason: "链式命令中夹带递归/强制删除（&& rm -r）",
+        pattern: r"&&\s*rm\s+-[rf]",
+    },
+    DenyEntry {
+        name: "chained_rm_or",
+        category: "destructive",
+        severity: "high",
+        reason: "链式命令中夹带递归/强制删除（|| rm -r）",
+        pattern: r"\|\|\s*rm\s+-[rf]",
+    },
+    // -- Redirection exploits -------------------------------------------------
+    DenyEntry {
+        name: "devnull_redirect",
+        category: "obfuscation",
+        severity: "low",
+        reason: "输出丢弃重定向（> /dev/null，吞掉执行证据）",
+        pattern: r">\s*/dev/null\s*>&?\s*\d?",
+    },
+    DenyEntry {
+        name: "heredoc_eof",
+        category: "obfuscation",
+        severity: "low",
+        reason: "heredoc 输入（多行内容不透明）",
+        pattern: r"<<\s*(?i)EOF",
+    },
+    // -- Subshell data exfiltration --------------------------------------------
+    DenyEntry {
+        name: "subshell_cat",
+        category: "exfiltration",
+        severity: "medium",
+        reason: "子 shell 读取文件内容（$(cat ...) 外传载体）",
+        pattern: r"\$\(\s*cat\s+",
+    },
+    DenyEntry {
+        name: "subshell_curl",
+        category: "exfiltration",
+        severity: "high",
+        reason: "子 shell 拉取网络内容（$(curl ...) 外传载体）",
+        pattern: r"\$\(\s*curl\s+",
+    },
+    DenyEntry {
+        name: "subshell_wget",
+        category: "exfiltration",
+        severity: "high",
+        reason: "子 shell 拉取网络内容（$(wget ...) 外传载体）",
+        pattern: r"\$\(\s*wget\s+",
+    },
+    DenyEntry {
+        name: "subshell_which",
+        category: "exfiltration",
+        severity: "medium",
+        reason: "子 shell 探测命令路径（$(which ...) 侦察）",
+        pattern: r"\$\(\s*which\s+",
+    },
+    // -- Privilege escalation ---------------------------------------------------
+    DenyEntry {
+        name: "sudo",
+        category: "privilege",
+        severity: "high",
+        reason: "提权执行（sudo）",
+        pattern: r"\bsudo\b",
+    },
+    DenyEntry {
+        name: "chmod",
+        category: "privilege",
+        severity: "medium",
+        reason: "批量改权限位（chmod 数字模式）",
+        pattern: r"\bchmod\s+[0-7]{3,4}\b",
+    },
+    DenyEntry {
+        name: "chown",
+        category: "privilege",
+        severity: "medium",
+        reason: "改文件属主（chown）",
+        pattern: r"\bchown\b",
+    },
+    DenyEntry {
+        name: "pkill",
+        category: "privilege",
+        severity: "medium",
+        reason: "按名批量杀进程（pkill）",
+        pattern: r"\bpkill\b",
+    },
+    DenyEntry {
+        name: "killall",
+        category: "privilege",
+        severity: "medium",
+        reason: "按名批量杀进程（killall）",
+        pattern: r"\bkillall\b",
+    },
+    DenyEntry {
+        name: "kill9",
+        category: "privilege",
+        severity: "medium",
+        reason: "强制杀进程（kill -9）",
+        pattern: r"\bkill\s+-[9]\b",
+    },
+    // -- Remote code execution ----------------------------------------------------
+    DenyEntry {
+        name: "curl_pipe_shell",
+        category: "rce",
+        severity: "high",
+        reason: "下载内容直接管道进 shell 执行（curl | sh）",
+        pattern: r"\bcurl\b.*\|\s*(sh|bash)",
+    },
+    DenyEntry {
+        name: "wget_pipe_shell",
+        category: "rce",
+        severity: "high",
+        reason: "下载内容直接管道进 shell 执行（wget | sh）",
+        pattern: r"\bwget\b.*\|\s*(sh|bash)",
+    },
+    // -- Package management ---------------------------------------------------------
+    DenyEntry {
+        name: "npm_global_install",
+        category: "package",
+        severity: "medium",
+        reason: "全局安装 npm 包（污染系统环境）",
+        pattern: r"\bnpm\s+install\s+-g\b",
+    },
+    DenyEntry {
+        name: "pip_user_install",
+        category: "package",
+        severity: "medium",
+        reason: "用户级安装 pip 包（pip install --user）",
+        pattern: r"\bpip\s+install\s+--user\b",
+    },
+    DenyEntry {
+        name: "apt_install_remove",
+        category: "package",
+        severity: "medium",
+        reason: "apt 包安装/卸载/清除",
+        pattern: r"\bapt\s+(install|remove|purge)\b",
+    },
+    DenyEntry {
+        name: "yum_install_remove",
+        category: "package",
+        severity: "medium",
+        reason: "yum 包安装/卸载",
+        pattern: r"\byum\s+(install|remove)\b",
+    },
+    DenyEntry {
+        name: "dnf_install_remove",
+        category: "package",
+        severity: "medium",
+        reason: "dnf 包安装/卸载",
+        pattern: r"\bdnf\s+(install|remove)\b",
+    },
+    // -- Container escape --------------------------------------------------------------
+    DenyEntry {
+        name: "docker_run",
+        category: "container",
+        severity: "medium",
+        reason: "启动容器（docker run，逃逸面）",
+        pattern: r"\bdocker\s+run\b",
+    },
+    DenyEntry {
+        name: "docker_exec",
+        category: "container",
+        severity: "medium",
+        reason: "进入运行中容器执行命令（docker exec）",
+        pattern: r"\bdocker\s+exec\b",
+    },
+    // -- Git force push ------------------------------------------------------------
+    DenyEntry {
+        name: "git_push",
+        category: "git",
+        severity: "medium",
+        reason: "推送远端仓库（git push，外传面）",
+        pattern: r"\bgit\s+push\b",
+    },
+    DenyEntry {
+        name: "git_force",
+        category: "git",
+        severity: "high",
+        reason: "强制覆盖历史（git force）",
+        pattern: r"\bgit\s+force\b",
+    },
+    // -- Remote access ------------------------------------------------------------
+    DenyEntry {
+        name: "ssh_remote_login",
+        category: "remote",
+        severity: "medium",
+        reason: "SSH 远程登录（ssh user@host，外传跳板面；运维需要时可在危险闸关闭本条）",
+        pattern: r"\bssh\b.*@",
+    },
+    // -- Code execution ------------------------------------------------------------
+    DenyEntry {
+        name: "eval_cmd",
+        category: "rce",
+        severity: "high",
+        reason: "动态执行字符串命令（eval）",
+        pattern: r"\beval\b",
+    },
+    DenyEntry {
+        name: "source_sh",
+        category: "rce",
+        severity: "high",
+        reason: "加载执行外部脚本（source *.sh）",
+        pattern: r"\bsource\s+.*\.sh\b",
+    },
 ];
 
 /// Default deny patterns compiled from regex strings.
 fn default_deny_patterns() -> Vec<Regex> {
-    DEFAULT_EXEC_DENY_PATTERNS
+    DEFAULT_EXEC_DENY_ENTRIES
         .iter()
-        .filter_map(|p| Regex::new(p).ok())
+        .filter_map(|e| Regex::new(e.pattern).ok())
         .collect()
+}
+
+/// 危险闸自定义正则写侧校验（2026-11-20，WSAPI `security.exec_deny_set`
+/// 消费）：空串拒绝 + 编译检查。写侧 fail loud（用户当场改）优于消费侧
+/// 静默丢弃（build_effective_deny 对坏条目是逐条丢弃 + warn——那是版本
+/// 漂移容忍，不是录入通道的语义）。真相源 crate 承载，regex 依赖不外溢。
+pub fn validate_deny_extra_pattern(pattern: &str) -> Result<(), String> {
+    if pattern.trim().is_empty() {
+        return Err("规则为空".to_string());
+    }
+    Regex::new(pattern)
+        .map(|_| ())
+        .map_err(|e| format!("正则编译失败：{e}"))
 }
 
 /// Shell command execution tool with safety validation.

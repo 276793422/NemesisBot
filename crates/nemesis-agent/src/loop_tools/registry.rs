@@ -217,12 +217,19 @@ pub struct SharedToolConfig {
     /// `false`（含缺席默认）= **内置默认危险命令词表生效**（与接线前
     /// 行为逐字节一致），`true` = 启用下方自定义词表（空表仍回落默认）。
     /// **「全放行」不暴露为 config 面**——shell 级词表是防御纵深的一道，
-    /// 关闭它的开关风险远大于收益；真要放行单命令请走审批规则。
+    /// 关闭它的开关风险远大于收益；生产热读路径（`exec_config_path`）
+    /// 消费完整危险闸语义（`deny_disabled` 按 name 关单条 + `deny_extra`
+    /// 追加，2026-11-20 危险闸页面——Owner 的合法出口是页面关单条，
+    /// 其余 37+ 条防线保留），本字段语义退化为热读失败时的兜底快照。
     pub exec_deny_custom_enabled: bool,
     /// exec deny 自定义词表（config `tools.exec.custom_deny_patterns`，
     /// regex；仅 `exec_deny_custom_enabled = true` 时消费，非空 = 替换
     /// 内置默认词表，空 = 回落内置默认）。
     pub exec_deny_custom_patterns: Vec<String>,
+    /// deny 拦截审计钩子（2026-11-20 危险闸页面）：命中即调（命令前
+    /// 200 字符 + 规则 name），bot 侧从 SecurityPipeline 构造（落审计
+    /// 链）。None = 旧行为（只 WARN 日志——基线/测试/exec_worker）。
+    pub deny_audit_hook: Option<exec::DenyAuditHook>,
     /// exec 热读源（2026-11-20 C4 热生效语义）：Some(config.json 路径)
     /// = ExecTool 消费点现读 `tools.exec` 段（deny 词表 + max_timeout，
     /// 改键下次执行即生效，无需重启——上方两字段的装配期值退化为首次
@@ -296,6 +303,10 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "exec_deny_custom_patterns",
                 &self.exec_deny_custom_patterns.len(),
+            )
+            .field(
+                "deny_audit_hook",
+                &self.deny_audit_hook.as_ref().map(|_| "DenyAuditHook"),
             )
             .field(
                 "exec_config_path",
@@ -743,10 +754,12 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         // （注册表缺席）= 树杀旧行为字节不变。
         // 热读源（2026-11-20 C4）：Some = 消费点现读 `tools.exec` 段
         // （改键下次执行即生效）；None = 上方构造期值旧行为。
+        // deny 审计钩子（2026-11-20 危险闸）：Some = 命中落审计链。
         .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600))
         .with_editor_gate(editor_gate.clone())
         .with_background_registry(config.background_registry.clone())
-        .with_exec_config_path(config.exec_config_path.clone());
+        .with_exec_config_path(config.exec_config_path.clone())
+        .with_deny_audit_hook(config.deny_audit_hook.clone());
         tools.insert("exec".to_string(), Box::new(exec_tool));
         // [SEALED 2026-11-08] exec_async 封存（用户拍板，实现保留不删除）。
         // 根因：fire-and-forget（管道只接不排，64KB 写满即死锁）+ 无
@@ -1084,6 +1097,7 @@ pub fn register_extended_tools(
         hardware_policy: None,
         exec_deny_custom_enabled: false,
         exec_deny_custom_patterns: Vec::new(),
+        deny_audit_hook: None,
         exec_config_path: None,
         workspace_lease: None,
         plan_present: None,
