@@ -867,6 +867,52 @@ fn test_fix_path_quoting_copy_with_spaces() {
     );
 }
 
+// BUG-20261122-014 回归锁：路径含 cmd 元字符时保持引号原形态——引号已
+// 保护 & | < > ^ ( ) 的字面语义，去引号（仅转义空格）会让元字符裸露成
+// 命令连接/重定向符，行为翻转且与 guard_command 审计面形态漂移。
+#[test]
+fn test_fix_path_quoting_preserves_ampersand_path() {
+    let original = r#"del "C:\a & b.txt""#;
+    let result = ShellTool::fix_windows_path_quoting(original);
+    assert_eq!(
+        result, original,
+        "Ampersand path must stay quoted verbatim, got: {}",
+        result
+    );
+}
+
+#[test]
+fn test_fix_path_quoting_preserves_pipe_and_redirect_paths() {
+    let pipe = r#"type "x | y.txt""#;
+    assert_eq!(
+        ShellTool::fix_windows_path_quoting(pipe),
+        pipe,
+        "Pipe char path must stay quoted"
+    );
+    let redirect = r#"copy "a > b.txt" "D:\dst""#;
+    assert_eq!(
+        ShellTool::fix_windows_path_quoting(redirect),
+        redirect,
+        "Redirect char path must stay quoted"
+    );
+}
+
+#[test]
+fn test_fix_path_quoting_preserves_parens_and_caret() {
+    let parens = r#"dir "C:\dir (1)\file.txt""#;
+    assert_eq!(
+        ShellTool::fix_windows_path_quoting(parens),
+        parens,
+        "Parenthesized dir name must stay quoted"
+    );
+    let caret = r#"type "a^b.txt""#;
+    assert_eq!(
+        ShellTool::fix_windows_path_quoting(caret),
+        caret,
+        "Caret in path must stay quoted"
+    );
+}
+
 #[test]
 fn test_allowlist_multiple_patterns() {
     let mut tool = make_tool();
