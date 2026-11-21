@@ -26,10 +26,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // 夹具
 // ---------------------------------------------------------------------------
 
-fn source_with(name: &str, repo: &str, locals: &[&str]) -> ModelSource {
+fn source_with(category: &str, name: &str, repo: &str, locals: &[&str]) -> ModelSource {
     ModelSource {
         name: name.to_string(),
-        category: "test".to_string(),
+        category: category.to_string(),
         repo: repo.to_string(),
         description: String::new(),
         files: locals
@@ -176,6 +176,7 @@ fn ensure_stt_model_local_files_hit_returns_dir_without_network() {
     let cfg = cfg_with_model_dir(
         tmp.path(),
         vec![source_with(
+            "stt",
             "sensevoice-small",
             "user/sv",
             &["model_sherpa.onnx", "tokens.txt"],
@@ -191,6 +192,7 @@ fn ensure_stt_model_auto_download_disabled_bails() {
     let mut cfg = cfg_with_model_dir(
         tmp.path(),
         vec![source_with(
+            "stt",
             "sensevoice-small",
             "user/sv",
             &["model_sherpa.onnx"],
@@ -225,7 +227,12 @@ fn ensure_vad_model_local_files_hit_returns_first_file_path() {
 
     let cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("silero_vad", "user/vad", &["silero_vad.onnx"])],
+        vec![source_with(
+            "vad",
+            "silero_vad",
+            "user/vad",
+            &["silero_vad.onnx"],
+        )],
     );
     let got = ensure_vad_model(&cfg).unwrap();
     // VAD 返回的是模型**文件**路径（不是目录）
@@ -249,7 +256,10 @@ fn ensure_vad_model_empty_files_source_bails_not_panics() {
     // 对空 files 判「未安装」，此处应诚实 bail 而非 panic。
     crate::test_util::ensure_global_subscriber();
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = cfg_with_model_dir(tmp.path(), vec![source_with("silero_vad", "user/vad", &[])]);
+    let cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![source_with("vad", "silero_vad", "user/vad", &[])],
+    );
     let err = format!("{:#}", ensure_vad_model(&cfg).unwrap_err());
     assert!(err.contains("no files"), "{err}");
 }
@@ -260,13 +270,13 @@ fn ensure_vad_model_empty_files_source_bails_not_panics() {
 /// `model_source_installed`（空 files = 无法验证 = 未安装）。修复前这些测试
 /// 走到 `unwrap_err()` 即 panic（Ok(..) unwrap_err）。
 macro_rules! empty_files_bail_test {
-    ($fn_name:ident, $ensure:expr, $model_name:expr) => {
+    ($fn_name:ident, $ensure:expr, $category:expr, $model_name:expr) => {
         #[test]
         fn $fn_name() {
             let tmp = tempfile::tempdir().unwrap();
             let mut cfg = cfg_with_model_dir(tmp.path(), vec![]);
             let name = $model_name(&cfg).to_string();
-            cfg.models.sources = vec![source_with(&name, "user/model", &[])];
+            cfg.models.sources = vec![source_with($category, &name, "user/model", &[])];
             let err = format!("{:#}", ($ensure)(&cfg).unwrap_err());
             assert!(err.contains("no files"), "{err}");
         }
@@ -275,26 +285,31 @@ macro_rules! empty_files_bail_test {
 empty_files_bail_test!(
     ensure_stt_model_empty_files_source_bails,
     ensure_stt_model,
+    "stt",
     |c: &AppConfig| c.stt.model_name.clone()
 );
 empty_files_bail_test!(
     ensure_tts_model_empty_files_source_bails,
     ensure_tts_model,
+    "tts",
     |c: &AppConfig| c.tts.model_name.clone()
 );
 empty_files_bail_test!(
     ensure_punct_model_empty_files_source_bails,
     ensure_punct_model,
+    "punct",
     |c: &AppConfig| c.punct.model_name.clone()
 );
 empty_files_bail_test!(
     ensure_speaker_model_empty_files_source_bails,
     ensure_speaker_model,
+    "speaker",
     |c: &AppConfig| c.speaker.model_name.clone()
 );
 empty_files_bail_test!(
     ensure_stt_stream_model_empty_files_source_bails,
     ensure_stt_stream_model,
+    "stt_stream",
     |c: &AppConfig| c.stt_stream.model_name.clone()
 );
 
@@ -307,7 +322,7 @@ fn ensure_tts_model_local_files_hit_returns_dir() {
 
     let mut cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("kokoro", "user/k", &["model.onnx"])],
+        vec![source_with("tts", "kokoro", "user/k", &["model.onnx"])],
     );
     cfg.tts.model_name = "kokoro".to_string();
     assert_eq!(ensure_tts_model(&cfg).unwrap(), dir);
@@ -336,6 +351,7 @@ fn ensure_punct_model_local_files_hit_returns_dir() {
     let cfg = cfg_with_model_dir(
         tmp.path(),
         vec![source_with(
+            "punct",
             "ct-transformer-zh-en",
             "user/p",
             &["model.onnx"],
@@ -365,7 +381,12 @@ fn ensure_speaker_model_local_files_hit_returns_dir() {
 
     let mut cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])],
+        vec![source_with(
+            "speaker",
+            "3dspeaker",
+            "user/sp",
+            &["campplus.onnx"],
+        )],
     );
     cfg.speaker.model_name = "3dspeaker".to_string();
     assert_eq!(ensure_speaker_model(&cfg).unwrap(), dir);
@@ -720,6 +741,7 @@ fn ensure_stt_model_downloads_when_missing_then_returns_dir() {
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
             vec![source_with(
+                "stt",
                 "sensevoice-small",
                 "user/sv",
                 &["model_sherpa.onnx"],
@@ -769,6 +791,7 @@ fn ensure_stt_model_download_failure_propagates_err() {
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
             vec![source_with(
+                "stt",
                 "sensevoice-small",
                 "user/sv",
                 &["model_sherpa.onnx"],
@@ -801,7 +824,12 @@ fn ensure_vad_model_downloads_when_missing_then_returns_file_path() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("silero_vad", "user/vad", &["silero_vad.onnx"])],
+            vec![source_with(
+                "vad",
+                "silero_vad",
+                "user/vad",
+                &["silero_vad.onnx"],
+            )],
         );
         cfg.models.mirror.base = server_uri;
 
@@ -826,7 +854,12 @@ fn ensure_vad_model_download_failure_propagates_err() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("silero_vad", "user/vad", &["silero_vad.onnx"])],
+            vec![source_with(
+                "vad",
+                "silero_vad",
+                "user/vad",
+                &["silero_vad.onnx"],
+            )],
         );
         cfg.models.mirror.base = server_uri;
 
@@ -868,7 +901,7 @@ fn ensure_tts_model_downloads_when_missing_then_returns_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("kokoro", "user/k", &["model.onnx"])],
+            vec![source_with("tts", "kokoro", "user/k", &["model.onnx"])],
         );
         cfg.tts.model_name = "kokoro".to_string();
         cfg.models.mirror.base = server_uri;
@@ -894,7 +927,7 @@ fn ensure_tts_model_download_failure_propagates_err() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("kokoro", "user/k", &["model.onnx"])],
+            vec![source_with("tts", "kokoro", "user/k", &["model.onnx"])],
         );
         cfg.tts.model_name = "kokoro".to_string();
         cfg.models.mirror.base = server_uri;
@@ -916,6 +949,7 @@ fn ensure_punct_model_auto_download_disabled_bails() {
     let mut cfg = cfg_with_model_dir(
         tmp.path(),
         vec![source_with(
+            "punct",
             "ct-transformer-zh-en",
             "user/p",
             &["model.onnx"],
@@ -942,6 +976,7 @@ fn ensure_punct_model_downloads_when_missing_then_returns_dir() {
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
             vec![source_with(
+                "punct",
                 "ct-transformer-zh-en",
                 "user/p",
                 &["model.onnx"],
@@ -973,6 +1008,7 @@ fn ensure_punct_model_download_failure_propagates_err() {
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
             vec![source_with(
+                "punct",
                 "ct-transformer-zh-en",
                 "user/p",
                 &["model.onnx"],
@@ -1005,7 +1041,12 @@ fn ensure_speaker_model_downloads_when_missing_then_returns_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])],
+            vec![source_with(
+                "speaker",
+                "3dspeaker",
+                "user/sp",
+                &["campplus.onnx"],
+            )],
         );
         cfg.speaker.model_name = "3dspeaker".to_string();
         cfg.models.mirror.base = server_uri;
@@ -1033,7 +1074,12 @@ fn ensure_speaker_model_download_failure_propagates_err() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])],
+            vec![source_with(
+                "speaker",
+                "3dspeaker",
+                "user/sp",
+                &["campplus.onnx"],
+            )],
         );
         cfg.speaker.model_name = "3dspeaker".to_string();
         cfg.models.mirror.base = server_uri;
@@ -1359,7 +1405,7 @@ fn ensure_model_by_name_local_hit_returns_dir_without_network() {
     let cfg = cfg_with_model_dir(
         tmp.path(),
         vec![
-            source_with("variant-a", "user/a", &["model.onnx"]),
+            source_with("tts", "variant-a", "user/a", &["model.onnx"]),
             ModelSource {
                 name: "variant-b".to_string(),
                 category: "tts".to_string(),
@@ -1402,8 +1448,8 @@ fn ensure_model_by_name_category_mismatch_bails() {
         "{:#}",
         ensure_model_by_name(&cfg, "tts", "mixed-up").unwrap_err()
     );
-    assert!(err.contains("属于类别 'stt'"), "{err}");
-    assert!(err.contains("与请求的类别 'tts' 不符"), "{err}");
+    assert!(err.contains("只在类别 'stt' 中声明"), "{err}");
+    assert!(err.contains("不在请求的类别 'tts' 中"), "{err}");
 }
 
 #[test]
@@ -1425,6 +1471,104 @@ fn ensure_model_by_name_missing_files_with_no_autodownload_bails() {
         ensure_model_by_name(&cfg, "tts", "variant-b").unwrap_err()
     );
     assert!(err.contains("auto_download is disabled"), "{err}");
+}
+
+// --- 跨类别同名（BUG-20261121-070 回归锁） ---------------------------------
+// sources 数组允许同名条目分属不同类别（合法 TOML 形态）。修复前：
+// ensure_model_by_name / 六 ensure_*_model 用 name-only 查找，先声明的他类
+// 条目会挡住本类条目（catalog 复合判定显示未安装、点安装恒 bail = 安装
+// 死锁）或取错 files 清单；ensure_model_core 对空 files source 零跑下载后
+// 无条件 Ok = Ready 假成功（BUG-145 家族判据漏网）。
+
+#[test]
+fn ensure_model_by_name_cross_category_same_name_compound_hit() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 先声明 vad/shared（他类挡路条目），后声明 tts/shared（真目标）
+    let dir = tmp.path().join("data").join("tts").join("shared");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("model.onnx"), b"m").unwrap();
+    std::fs::write(dir.join("tokens.txt"), b"t").unwrap();
+
+    let cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![
+            ModelSource {
+                name: "shared".to_string(),
+                category: "vad".to_string(),
+                repo: "user/v".to_string(),
+                description: String::new(),
+                files: files("silero_vad.onnx", "silero_vad.onnx"),
+            },
+            ModelSource {
+                name: "shared".to_string(),
+                category: "tts".to_string(),
+                repo: "user/b".to_string(),
+                description: String::new(),
+                files: files2("model.onnx", "tokens.txt"),
+            },
+        ],
+    );
+    // 修复前：name-only find 命中 vad/shared → bail「属于类别 'vad'」
+    let got = ensure_model_by_name(&cfg, "tts", "shared").unwrap();
+    assert_eq!(got, dir);
+}
+
+#[test]
+fn ensure_stt_model_category_scoped_lookup_ignores_cross_category_same_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    // 先声明 tts/shared（文件不在场），后声明 stt/shared（文件齐）；
+    // ensure_stt_model 必须按 stt 类别的清单判定，不被 tts 条目带偏。
+    let dir = tmp.path().join("data").join("stt").join("shared");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("model.onnx"), b"m").unwrap();
+
+    let mut cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![
+            ModelSource {
+                name: "shared".to_string(),
+                category: "tts".to_string(),
+                repo: "user/b".to_string(),
+                description: String::new(),
+                files: files2("model.onnx", "tokens.txt"),
+            },
+            ModelSource {
+                name: "shared".to_string(),
+                category: "stt".to_string(),
+                repo: "user/s".to_string(),
+                description: String::new(),
+                files: files("model.onnx", "model.onnx"),
+            },
+        ],
+    );
+    cfg.stt.model_name = "shared".to_string();
+    cfg.models.auto_download = false;
+    // 修复前：name-only find 命中 tts/shared 清单 → check 失败（tokens.txt
+    // 不在场）→ bail「not found and auto_download is disabled」
+    let got = ensure_stt_model(&cfg).unwrap();
+    assert_eq!(got, dir);
+}
+
+#[test]
+fn ensure_model_by_name_empty_files_source_bails_not_fakes_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![ModelSource {
+            name: "empty-list".to_string(),
+            category: "tts".to_string(),
+            repo: "user/e".to_string(),
+            description: String::new(),
+            files: Vec::new(),
+        }],
+    );
+    cfg.models.auto_download = true;
+    // 修复前：core 空 files 零跑下载后无条件 Ok(空目录) = Ready 假成功
+    let err = format!(
+        "{:#}",
+        ensure_model_by_name(&cfg, "tts", "empty-list").unwrap_err()
+    );
+    assert!(err.contains("declares no files"), "{err}");
 }
 
 #[test]

@@ -281,6 +281,19 @@ impl AppConfig {
     pub fn find_model_source(&self, name: &str) -> Option<&ModelSource> {
         self.models.sources.iter().find(|s| s.name == name)
     }
+
+    /// 类别内复合键查找（`(category, name)` 精确命中）。
+    ///
+    /// `find_model_source` 是 name-only 模糊查找（跨类别同名时先声明者赢），
+    /// 供展示/诊断用；**安装面一律走本方法**——`model_source_installed` 与
+    /// `ensure_*_model` 的复合判据同源，防止「catalog 显示未安装（复合判定）
+    /// 而点安装被先声明的他类同名条目挡住」的判定/行为分叉。
+    pub fn find_model_source_in(&self, category: &str, name: &str) -> Option<&ModelSource> {
+        self.models
+            .sources
+            .iter()
+            .find(|s| s.name == name && s.category == category)
+    }
 }
 
 /// 就地改写 config.toml 文本中 `[<category>]` 节的 `model_name` 行（`voice.set_model`

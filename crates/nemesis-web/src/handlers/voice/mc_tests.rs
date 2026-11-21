@@ -219,12 +219,12 @@ fn set_model_error_surface_unknown_variant_category_mismatch_and_missing_config(
         .unwrap_err();
     assert!(err.contains("不在 config [models.sources] 目录中"), "{err}");
 
-    // 类别与变体不符（stt-a 是 stt，请求成 tts）
+    // 类别与变体不符（stt-a 只在 stt 类别声明，请求成 tts）
     let err = VoiceHandler::new()
         .cmd_set_model(&voice_dir, "tts", "stt-a")
         .unwrap_err();
-    assert!(err.contains("属于类别 'stt'"), "{err}");
-    assert!(err.contains("与请求的类别 'tts' 不符"), "{err}");
+    assert!(err.contains("只在类别 'stt' 中声明"), "{err}");
+    assert!(err.contains("不在请求的类别 'tts' 中"), "{err}");
 
     // 非法类别（不在 SETTABLE 白名单）
     let err = VoiceHandler::new()
@@ -240,6 +240,56 @@ fn set_model_error_surface_unknown_variant_category_mismatch_and_missing_config(
         .cmd_set_model(&empty, "tts", "tts-a")
         .unwrap_err();
     assert!(err.contains("Run setup first"), "{err}");
+}
+
+/// BUG-20261121-070 回归锁：sources 数组允许同名条目跨类别（合法 TOML 形态）。
+/// name-only 旧形态会被先声明的 vad/dual 挡住——已安装的 tts/dual 报
+/// 「属于类别 'vad'」无法设为当前；复合键命中后 tts/dual 正常改写成功，
+/// 另一类别（vad）配置不受影响。
+#[test]
+fn set_model_cross_category_same_name_compound_hit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let voice_dir = tmp.path().join("voice");
+    std::fs::create_dir_all(&voice_dir).unwrap();
+    std::fs::write(voice_dir.join("config.toml"), cross_category_config_toml()).unwrap();
+    // 安装 tts/dual 的全部声明文件（vad/dual 不装——不该影响 tts 侧判定）
+    let dir = voice_dir.join("data").join("tts").join("dual");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("model.onnx"), b"m").unwrap();
+
+    let out = VoiceHandler::new()
+        .cmd_set_model(&voice_dir, "tts", "dual")
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["success"], true);
+    assert_eq!(out["category"], "tts");
+    assert_eq!(out["name"], "dual");
+
+    let cfg = nemesis_voice::AppConfig::load(&voice_dir.join("config.toml")).unwrap();
+    assert_eq!(cfg.tts.model_name, "dual");
+    assert_eq!(cfg.vad.model_name, "vad-a");
+}
+
+/// minimal_config_toml 基础上追加跨类别同名双条目（vad/dual 先声明挡路 +
+/// tts/dual 后声明真目标）。
+fn cross_category_config_toml() -> String {
+    let mut s = String::from(minimal_config_toml());
+    s.push_str(
+        r#"
+[[models.sources]]
+name = "dual"
+category = "vad"
+repo = "u/dv"
+files = [{ local = "vad.onnx", remote = "v.onnx" }]
+
+[[models.sources]]
+name = "dual"
+category = "tts"
+repo = "u/dt"
+files = [{ local = "model.onnx", remote = "m.onnx" }]
+"#,
+    );
+    s
 }
 
 #[test]
