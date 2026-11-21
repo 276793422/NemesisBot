@@ -239,3 +239,35 @@ fn cov_download_via_http_flips_download_info_lines() {
         "TOKENIZER-BYTES-COV"
     );
 }
+
+// ---- BUG-20261122-003：形状闸（visit_seq 零元素臂）回归锁 ----
+//
+// EmbeddingConfig 全字段带 default，`[]` 文档曾从 serde visit_seq 零元素
+// 臂静默通过 = 「全默认 EmbeddingConfig」（enabled=false）且带 info!
+// 「loaded」日志——增强记忆静默自禁，连解析失败 error! 臂都不经过。
+
+#[test]
+fn embedding_config_from_str_rejects_array_document() {
+    let err = embedding_config_from_str("[]").unwrap_err();
+    assert!(err.contains("must be a JSON object"), "err={err}");
+    assert!(err.contains("array"), "err={err}");
+}
+
+#[test]
+fn embedding_config_from_str_rejects_scalar_documents() {
+    for content in ["null", "\"emb\"", "42", "true"] {
+        let err = embedding_config_from_str(content).unwrap_err();
+        assert!(
+            err.contains("must be a JSON object"),
+            "content={content} err={err}"
+        );
+    }
+}
+
+#[test]
+fn embedding_config_from_str_still_accepts_object_document() {
+    // 最小 object（字段全 default，缺键合法）——闸不误伤。
+    let cfg = embedding_config_from_str(r#"{"enabled": true}"#).expect("object doc parses");
+    assert!(cfg.enabled, "判别字段确从文档消费（非 vacuous Ok）");
+    assert_eq!(cfg.auto_inject_top_k, 3, "其余字段仍落 default");
+}

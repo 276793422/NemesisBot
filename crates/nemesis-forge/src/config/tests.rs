@@ -329,3 +329,45 @@ fn save_forge_config_routes_through_atomic_helper() {
         "save_forge_config 必须经 write_file_atomic 落盘（关键配置写入唯一权威 helper）"
     );
 }
+
+// ---- BUG-20261122-003：形状闸（visit_seq 零元素臂）回归锁 ----
+//
+// ForgeConfig 全字段带 default，`[]` 文档曾从 serde visit_seq 零元素臂
+// 静默通过 = 「全默认 ForgeConfig」合法值——绕过 load_forge_config 的
+// lenient WARN 臂，用户 forge 调参被静默无视零诊断。
+
+#[test]
+fn forge_config_from_str_rejects_array_document() {
+    let err = forge_config_from_str("[]").unwrap_err();
+    assert!(err.contains("must be a JSON object"), "err={err}");
+    assert!(err.contains("array"), "err={err}");
+}
+
+#[test]
+fn forge_config_from_str_rejects_scalar_documents() {
+    for content in ["null", "\"forge\"", "42", "true"] {
+        let err = forge_config_from_str(content).unwrap_err();
+        assert!(
+            err.contains("must be a JSON object"),
+            "content={content} err={err}"
+        );
+    }
+}
+
+#[test]
+fn forge_config_from_str_still_accepts_object_document() {
+    // 最小 object（字段全 default，缺键合法）——闸不误伤。
+    let cfg = forge_config_from_str(r#"{"enabled": true}"#).expect("object doc parses");
+    assert!(cfg.enabled, "判别字段确从文档消费（非 vacuous Ok）");
+    // 其余字段仍落 default。
+    assert_eq!(cfg.collection.max_experiences, 10_000);
+}
+
+#[test]
+fn forge_config_from_str_syntax_error_loud() {
+    let err = forge_config_from_str("{not valid").unwrap_err();
+    assert!(
+        !err.contains("must be a JSON object"),
+        "语法错误通道: {err}"
+    );
+}

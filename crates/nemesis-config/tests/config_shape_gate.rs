@@ -48,3 +48,103 @@ fn load_config_still_accepts_object_document() {
     // 判别字段确从文档消费（不是 vacuous Ok）。
     assert!(cfg.agents.image_downscale, "default image_downscale=true");
 }
+
+// ---- BUG-20261122-003：独立配置 loader 同族横扫补位 ----
+//
+// load_config 主入口 030 已闸；config.security.json / config.scanner.json /
+// ConfigLoader::load_from_file 同洞漏网（SecurityConfig 25 字段全 default、
+// ScannerFullConfig 全 default、Config 全 default——`[]` 走 serde visit_seq
+// 零元素臂 = 「全默认」合法值，用户配置静默无视零诊断）。mcp / skills 两
+// 位点天然免疫（mcp 自定义 Deserialize 有 object 守卫；skills 带 flatten
+// 字段，derive 只生成 visit_map）——免疫锁一并钉住防退化。
+
+fn write_named(dir: &tempfile::TempDir, name: &str, content: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+#[test]
+fn load_security_config_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let err =
+        nemesis_config::load_security_config(&write_named(&dir, "config.security.json", "[]"))
+            .unwrap_err();
+    let ConfigError::Validation(msg) = err else {
+        panic!("expected Validation error, got {err:?}");
+    };
+    assert!(msg.contains("must be a JSON object"), "msg={msg}");
+    assert!(msg.contains("array"), "msg={msg}");
+}
+
+#[test]
+fn load_scanner_config_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = nemesis_config::load_scanner_config(&write_named(&dir, "config.scanner.json", "[]"))
+        .unwrap_err();
+    let ConfigError::Validation(msg) = err else {
+        panic!("expected Validation error, got {err:?}");
+    };
+    assert!(msg.contains("must be a JSON object"), "msg={msg}");
+    assert!(msg.contains("array"), "msg={msg}");
+}
+
+#[test]
+fn load_from_file_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = nemesis_config::ConfigLoader::load_from_file(&write_named(&dir, "config.json", "[]"))
+        .unwrap_err();
+    let ConfigError::Validation(msg) = err else {
+        panic!("expected Validation error, got {err:?}");
+    };
+    assert!(msg.contains("must be a JSON object"), "msg={msg}");
+    assert!(msg.contains("array"), "msg={msg}");
+}
+
+#[test]
+fn security_config_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    // 最小 object（字段全 default，缺键合法）——闸不误伤合法文档。
+    let cfg = nemesis_config::load_security_config(&write_named(
+        &dir,
+        "config.security.json",
+        r#"{"default_action": "allow"}"#,
+    ))
+    .expect("object doc parses");
+    assert_eq!(cfg.default_action, "allow", "判别字段确从文档消费");
+}
+
+#[test]
+fn scanner_config_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = nemesis_config::load_scanner_config(&write_named(
+        &dir,
+        "config.scanner.json",
+        r#"{"engines": {"clamav": {"enabled": true}}}"#,
+    ))
+    .expect("object doc parses");
+    assert!(cfg.engines.contains_key("clamav"), "判别字段确从文档消费");
+}
+
+/// 免疫锁：config.mcp.json 的 `[]` 由自定义 Deserialize 的 object 守卫
+/// loud 拒绝（既有防线，钉住防退化）。
+#[test]
+fn load_mcp_config_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let err =
+        nemesis_config::load_mcp_config(&write_named(&dir, "config.mcp.json", "[]")).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("must be a JSON object"), "msg={msg}");
+}
+
+/// 免疫锁：SkillsFullConfig 带 flatten 字段，serde derive 只生成 visit_map
+/// ——`[]` 天然 loud 失败（若未来去掉 flatten 字段，本锁红 = 洞重开）。
+#[test]
+fn load_skills_config_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = nemesis_config::load_skills_config(&write_named(&dir, "config.skills.json", "[]"))
+        .unwrap_err();
+    let msg = err.to_string();
+    // serde_json 对数组文档喂 deserialize_map 的错误形态（非 object 闸文案）。
+    assert!(!msg.is_empty(), "loud 失败即可，文案形态不钉死");
+}

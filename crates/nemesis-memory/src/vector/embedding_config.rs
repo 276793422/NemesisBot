@@ -289,7 +289,7 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
     }
 
     match nemesis_utils::fsutil::read_config_string(&path) {
-        Ok(content) => match serde_json::from_str::<EmbeddingConfig>(&content) {
+        Ok(content) => match embedding_config_from_str(&content) {
             Ok(config) => {
                 info!(
                     "[EmbeddingConfig] Embedding config loaded from {}",
@@ -315,6 +315,22 @@ pub fn load_embedding_config(config_dir: &Path) -> EmbeddingConfig {
             EmbeddingConfig::default()
         }
     }
+}
+
+/// 解析（形状闸 + typed 解析），lenient loader 的统一解析通道。
+///
+/// BUG-20261122-003（BUG-20261120-030 同族横扫补位）：EmbeddingConfig 全
+/// 字段带 default，`[]` 文档走 serde visit_seq 零元素臂 = 「全默认
+/// EmbeddingConfig」（enabled=false）**静默成功**且带着 info!「loaded」
+/// 日志——增强记忆静默自禁，连下方 load 的解析失败 error! 臂都不经过。
+/// 形状错（数组/标量文档）统一 Err 进 error! 臂。语义单一真相源 =
+/// nemesis_utils::json_shape。
+pub(crate) fn embedding_config_from_str(
+    content: &str,
+) -> std::result::Result<EmbeddingConfig, String> {
+    let value: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
+    nemesis_utils::json_shape::ensure_object(&value, "embedding config file")?;
+    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// Save embedding configuration back to disk.
