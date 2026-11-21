@@ -546,12 +546,29 @@ pub fn append_peer_to_file_with_name(
     rpc_port: u16,
 ) -> Result<(), ConfigError> {
     // 写串行锁：peers.toml 与 web 侧 update_peers_node（[node] 段 RMW，持同
-    // 把 config_write_lock）是同一文件的两个写者——本函数的读→插→写快照
+    // 把 config_write_lock）是同一文件的多个写者——本函数的读→插→写快照
     // 若不互斥，update 写回时会把本插入的 [peers.X] 冲掉（同类横扫四期，
     // ）。锁取在本函数而非 save_static_config：后者被 update_*
     // 事务入口在锁内调用，非重入 Mutex 会死锁。调用方不得已持有
-    // config_write_lock（嵌套即死锁）。
+    // config_write_lock 时改调 [`append_peer_to_file_with_name_locked`]
+    // （嵌套即死锁）。
     let _cfg_serial = nemesis_config::config_write_lock();
+    append_peer_to_file_with_name_locked(path, peer_id, address, role, category, name, rpc_port)
+}
+
+/// [`append_peer_to_file_with_name`] 的**锁内变体**：调用方必须已持
+/// `config_write_lock`（BUG-20261121-071：upgrade_peer_in_peers_toml
+/// 事务入口持锁罩全程，其 persist 分支经本变体落盘，杜绝非重入嵌套死锁）。
+/// 条目形态与加锁语义与外层完全同源。
+pub(crate) fn append_peer_to_file_with_name_locked(
+    path: &Path,
+    peer_id: &str,
+    address: &str,
+    role: &str,
+    category: &str,
+    name: Option<&str>,
+    rpc_port: u16,
+) -> Result<(), ConfigError> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -738,6 +755,11 @@ pub fn load_or_create_config(path: &Path, node_id: &str) -> StaticConfig {
 ///
 /// Returns true if the file was modified (id was missing and got written).
 pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
+    // 写串行锁（BUG-20261121-071 同族横扫第二处）：本函数的读→插→写快照
+    // 与 append/remove/update_peers_node/upgrade 是同一文件的多个写者——
+    // 家族不变量要求同锁互斥。启动期首写（id 缺失）与并发身份编辑交错时
+    // 不互斥即丢一方改动；id 已设走 ：no-op 快速臂，锁只罩真实写路径。
+    let _cfg_serial = nemesis_config::config_write_lock();
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
