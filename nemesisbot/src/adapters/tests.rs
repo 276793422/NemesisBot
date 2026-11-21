@@ -1028,3 +1028,63 @@ async fn wiring_after_stop_stashes_and_replays_on_rebuild() {
     );
     adapter.stop().expect("stop");
 }
+
+// -------------------------------------------------------------------------
+// AgentLastChannelProvider → heartbeat StateManager（BUG-20261121-027）
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "heartbeat")]
+#[tokio::test]
+async fn test_agent_last_channel_provider_serves_heartbeat_state_manager() {
+    // 供给半链行为锁：provider → adapter.current() → loop.state_manager()
+    // → WorkspaceStateManager 实时读（与 devices LastChannelProvider 同一
+    // 读路径单一真相源）。消费半链（state manager → tick → handler 收到
+    // 真实渠道）由 nemesis-heartbeat s1_tests 钉死（"telegram:7" →
+    // ("telegram","7")）；gateway init_services 的 set_state_manager 装配
+    // 行编译期被本 impl 锁死（拆 impl 则装配行类型不成立）。
+    let tmp = tempfile::tempdir().unwrap();
+    let sm = nemesis_state::workspace_state::WorkspaceStateManager::new(tmp.path());
+    sm.set_last_channel("telegram:42").unwrap();
+
+    let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
+    let mut al = nemesis_agent::r#loop::AgentLoop::new_bus(
+        Box::new(MockLlmProvider),
+        nemesis_agent::types::AgentConfig {
+            model: "test-model".to_string(),
+            system_prompt: Some("test".to_string()),
+            system_prompt_split: None,
+            max_turns: 1,
+            tools: vec![],
+            ..Default::default()
+        },
+        outbound_tx,
+        nemesis_agent::r#loop::ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    al.set_state_manager(sm);
+    let al = Arc::new(al);
+    let bus = Arc::new(nemesis_bus::MessageBus::new());
+    let adapter = Arc::new(AgentLoopServiceAdapter::new(
+        al,
+        make_test_shared(&bus),
+        bus,
+        Arc::new(parking_lot::RwLock::new(None)),
+    ));
+    let state: Arc<dyn nemesis_heartbeat::service::StateManager> =
+        Arc::new(AgentLastChannelProvider::new(adapter));
+    assert_eq!(state.get_last_channel(), "telegram:42");
+
+    // 无 state manager 的 loop → 空串（诚实 fallback：tick 侧 parse 空串
+    // 得 ("","") → gateway handler 才走自己的 cli:direct fallback）。
+    let bus2 = Arc::new(nemesis_bus::MessageBus::new());
+    let adapter2 = Arc::new(AgentLoopServiceAdapter::new(
+        make_test_agent_loop(),
+        make_test_shared(&bus2),
+        bus2,
+        Arc::new(parking_lot::RwLock::new(None)),
+    ));
+    let state2: Arc<dyn nemesis_heartbeat::service::StateManager> =
+        Arc::new(AgentLastChannelProvider::new(adapter2));
+    assert_eq!(state2.get_last_channel(), "");
+}
