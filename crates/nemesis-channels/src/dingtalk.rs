@@ -625,10 +625,19 @@ impl DingTalkChannel {
                                                         // poll_response_is_empty(200, "") 判
                                                         // 空 continue 静默，丢事件零痕迹。WARN
                                                         // 留痕后跳过本轮，下一轮 poll 继续。
-                                                        let body_text = match resp.text().await {
-                                                            Ok(t) => t,
+                                                        // BUG-20261121-056：poll 成功体有帽
+                                                        // 读取（BUG-20261115-024 挂账收尾：
+                                                        // 通道出站面成功体裸 text() 是 024
+                                                        // 横向排查「后续轮收口」名单成员）。
+                                                        // 4MB 帽 = poll 批量事件合法载荷（KB
+                                                        // 级）× 大余量；超帽读入中途断开，
+                                                        // 内存峰值 = 已到达前缀。失败/超帽
+                                                        // 同走 037 诚实臂。
+                                                        const POLL_BODY_CAP: u64 = 4 * 1024 * 1024;
+                                                        let body_text = match nemesis_utils::http_cap::read_body_capped(resp, POLL_BODY_CAP).await {
+                                                            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                                                             Err(e) => {
-                                                                warn!("[DingTalkChannel] poll 响应体读取失败（连接中断），本轮跳过: {e}");
+                                                                warn!("[DingTalkChannel] poll 响应体读取失败（连接中断或超限），本轮跳过: {e}");
                                                                 continue;
                                                             }
                                                         };

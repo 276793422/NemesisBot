@@ -318,11 +318,21 @@ impl FeishuChannel {
         // "feishu send error" 前缀（is_send_rejected 契约面：token 类
         // 失败触发刷新重试一次）。body 截断防错误页打爆日志。
         let status = resp.status();
-        let body_text = resp.text().await.map_err(|e| {
-            NemesisError::Channel(format!(
-                "feishu send error: HTTP {status}: read body failed: {e}"
-            ))
-        })?;
+        // BUG-20261121-056：send 成功体有帽读取（BUG-20261115-024 挂账收尾：
+        // 通道出站面成功体裸 text() 是 024 横向排查「后续轮收口」名单成员——
+        // 失控端点 200 态灌内存的面与 provider 同构）。4MB 帽 = send 回执
+        // 合法载荷（KB 级）× 大余量；超帽读入中途断开。错误映射保持
+        // "feishu send error" 前缀契约（is_send_rejected 只认 token 类
+        // 子串，超帽/传输失败不触发刷新重试）。
+        const SEND_BODY_CAP: u64 = 4 * 1024 * 1024;
+        let body_text = nemesis_utils::http_cap::read_body_capped(resp, SEND_BODY_CAP)
+            .await
+            .map_err(|e| {
+                NemesisError::Channel(format!(
+                    "feishu send error: HTTP {status}: read body failed: {e}"
+                ))
+            })
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())?;
         let capped: String = body_text.chars().take(1024).collect();
         let parsed: std::result::Result<ApiResponse<serde_json::Value>, _> =
             serde_json::from_str(&body_text);
