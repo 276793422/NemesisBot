@@ -33,9 +33,11 @@ pub struct GenerateImageTool {
     model: String,
     /// 单请求墙钟预算秒数（`tools.image_gen.timeout_secs`）。
     timeout_secs: u64,
-    /// workspace 根（绝对路径）——绑定会话的 `agents/<id>/home` 所在树
-    /// （本 loop 的 workspace 根：主/集群 = 主 workspace，项目 = 项目目录）。
-    /// 产物根运行时按会话解析（2026-11-12 会话资产区）：绑定会话 =
+    /// workspace 根（绝对路径）——绑定会话的 `agents/<id>/home` 所在树。
+    /// 装配点恒注入主 workspace（2026-11-16 污染修复：会话资产区树统一
+    /// 锚主 workspace，不随 loop workspace_root 走——项目 loop 经三 loop
+    /// 统一注册面同样接 generate_image，产物也不落项目目录）。产物根
+    /// 运行时按会话解析（2026-11-12 会话资产区）：绑定会话 =
     /// `<homes_root>/agents/<id>/home/images`。
     homes_root: PathBuf,
     /// 未绑定会话的全局回退根（恒主 workspace——存量行为：产物落

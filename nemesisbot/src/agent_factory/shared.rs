@@ -1467,8 +1467,8 @@ pub(super) fn register_tools_and_mcp(
                 let timeout = cfg_guard.tools.image_gen.effective_timeout_secs();
                 // 会话资产区（2026-11-12）双根：homes_root = 主 workspace
                 // （2026-11-16 污染修复：会话资产区树统一锚主 workspace，
-                // 恒定不随 loop workspace_root 走——项目会话若未来接
-                // generate_image 也不落项目目录）；fallback_root = 主
+                // 恒定不随 loop workspace_root 走——项目 loop 经统一注册
+                // 面同样接 generate_image，产物也不落项目目录）；fallback_root = 主
                 // workspace（未绑定存量会话产物落全局 images/，行为零变化）。
                 let homes_root = shared.workspace_dir().to_path_buf();
                 let fallback_root = shared.workspace_dir().to_path_buf();
