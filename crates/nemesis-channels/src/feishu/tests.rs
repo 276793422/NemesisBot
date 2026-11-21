@@ -148,6 +148,48 @@ fn test_parse_and_publish_event_filtered() {
     assert!(rx.try_recv().is_err());
 }
 
+/// BUG-20261121-057 回归锁：条目侧卫生 trim——config 手滑空白
+///（`" u_allowed "`）与净形态等价命中，空白条目照常拦截非白名单者。
+#[test]
+fn b057_allow_from_entry_whitespace_still_matches() {
+    let (tx, mut rx) = broadcast::channel(256);
+
+    let event = serde_json::json!({
+        "header": {"event_id": "evt_ws1", "event_type": "im.message.receive_v1"},
+        "event": {
+            "message": {
+                "chat_id": "oc_test",
+                "message_id": "om_ws1",
+                "message_type": "text",
+                "content": "{\"text\":\"hi\"}",
+                "chat_type": "p2p"
+            },
+            "sender": {"sender_id": {"user_id": "u_allowed"}}
+        }
+    });
+
+    // 条目带前导/尾随空白：sender 在白名单（trim 后命中）→ 放行。
+    FeishuChannel::parse_and_publish_event(
+        &event,
+        &tx,
+        &[" u_allowed ".to_string()],
+        &EventDedup::new(),
+    );
+    assert!(rx.try_recv().is_ok(), "空白条目必须与净形态等价命中");
+
+    // 同一空白条目：sender 不在白名单 → 照常拦截。
+    let mut blocked = event.clone();
+    blocked["header"]["event_id"] = serde_json::json!("evt_ws2");
+    blocked["event"]["sender"]["sender_id"]["user_id"] = serde_json::json!("u_other");
+    FeishuChannel::parse_and_publish_event(
+        &blocked,
+        &tx,
+        &[" u_allowed ".to_string()],
+        &EventDedup::new(),
+    );
+    assert!(rx.try_recv().is_err(), "空白条目不得放行非白名单者");
+}
+
 #[test]
 fn test_extract_json_from_protobuf() {
     // Test with embedded JSON in binary data

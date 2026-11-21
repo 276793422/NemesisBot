@@ -77,6 +77,41 @@ fn test_is_allowed_at_prefix_compound_sender() {
     assert!(ch.is_allowed("123456|username"));
 }
 
+// BUG-20261121-057 回归锁：条目侧卫生 trim——配置手滑空白（前导/尾随）
+// 不得静默击穿白名单（同文件 peer_allowed 已确立条目 trim 口径，此前
+// 两族闸卫生标准分裂）。trim 只加宽不收紧：无空白条目行为逐字节不变。
+
+#[test]
+fn test_is_allowed_entry_whitespace_still_matches() {
+    let ch = BaseChannel::with_allow_list(
+        "test",
+        vec![" alice".into(), "bob ".into(), "\tcarol\t".into()],
+    );
+    assert!(ch.is_allowed("alice"), "前导空白条目必须命中");
+    assert!(ch.is_allowed("bob"), "尾随空白条目必须命中");
+    assert!(ch.is_allowed("carol"), "两侧 Tab 空白条目必须命中");
+    assert!(!ch.is_allowed("dave"), "非白名单仍拒绝");
+}
+
+#[test]
+fn test_is_allowed_entry_whitespace_with_at_prefix() {
+    // trim 先于 @ 剥离：`" @alice"` → trim → `@alice` → 剥 @ → alice
+    let ch = BaseChannel::with_allow_list("test", vec![" @alice".into()]);
+    assert!(ch.is_allowed("alice"));
+    assert!(ch.is_allowed("123|alice"), "@ 剥离后的用户名臂照常");
+}
+
+#[test]
+fn allow_list_contains_trims_entries() {
+    let list = vec![" u1 ".to_string(), "u2".to_string()];
+    assert!(crate::base::allow_list_contains(&list, "u1"));
+    assert!(crate::base::allow_list_contains(&list, "u2"));
+    assert!(!crate::base::allow_list_contains(&list, "u3"));
+    // 空表 = 无条目可命中（「空=全放行」语义在调用点的 is_empty 闸，
+    // helper 只做条目匹配——与各调用点 `!allow_from.is_empty() &&` 联动）。
+    assert!(!crate::base::allow_list_contains(&[], "any"));
+}
+
 #[test]
 fn test_is_allowed_compound_allowlist_matches_id_part() {
     // Compound allowlist entry "123456|correct_user" matches senderID "123456|username"

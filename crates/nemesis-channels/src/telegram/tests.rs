@@ -1239,6 +1239,27 @@ fn test_allowlist_username_case_insensitive() {
 }
 
 #[test]
+fn test_allowlist_entry_whitespace_still_matches() {
+    // BUG-20261121-057：条目侧卫生 trim——配置手滑空白不得静默击穿
+    // 白名单（trim 与 @ 剥离同臂；空白形态与净形态等价命中）
+    assert!(super::telegram_allowlisted(
+        &[" @alice ".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(super::telegram_allowlisted(
+        &["123 ".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(!super::telegram_allowlisted(
+        &[" 456 ".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+}
+
+#[test]
 fn test_allowlist_no_numeric_prefix_collision() {
     // BUG-20261109-032②：裸前缀臂已删——allowed "1234" 不得命中
     // "123456|bob"（Telegram 顺序发号使数字前缀碰撞现实可得，

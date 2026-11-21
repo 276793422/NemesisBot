@@ -135,7 +135,9 @@ fn redact_token(msg: impl std::fmt::Display, token: &str) -> String {
 ///   `==` 与 `id|` 前缀臂完整覆盖，此臂唯一增量是错误放行。
 fn telegram_allowlisted(allow_from: &[String], sender_id: &str, username: Option<&str>) -> bool {
     allow_from.iter().any(|a| {
-        let a = a.trim_start_matches('@');
+        // 条目侧卫生 trim（BUG-20261121-057）：手滑空白不得静默击穿
+        // 白名单（与 base::peer_allowed / allow_list_contains 同口径）。
+        let a = a.trim().trim_start_matches('@');
         // 全形态精确（条目写全 `"id|user"` 复合、裸 id sender、无用户名
         // sender 形态）
         if sender_id == a {

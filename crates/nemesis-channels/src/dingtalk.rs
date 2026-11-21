@@ -393,8 +393,8 @@ impl DingTalkChannel {
             .unwrap_or("unknown")
             .to_string();
 
-        // Check allow list
-        if !allow_from.is_empty() && !allow_from.contains(&sender_id) {
+        // Check allow list（BUG-20261121-057：条目侧 trim，收编单点匹配）
+        if !allow_from.is_empty() && !crate::base::allow_list_contains(allow_from, &sender_id) {
             debug!(sender_id = %sender_id, "[DingTalkChannel] message filtered by allow_list");
             return;
         }

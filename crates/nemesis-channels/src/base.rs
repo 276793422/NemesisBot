@@ -405,8 +405,11 @@ impl BaseChannel {
         let (id_part, user_part) = split_sender_id(sender_id);
 
         for allowed in &self.allow_list {
+            // 条目侧卫生 trim（BUG-20261121-057）：配置手滑空白（`" alice"` /
+            // `"alice "`）不得静默击穿白名单——与 peer_allowed 的条目 trim
+            // 口径一致。原始串比较臂保留（行为严格加宽，无回退风险）。
             // Strip leading '@' from allowed value for username matching
-            let trimmed = allowed.trim_start_matches('@');
+            let trimmed = allowed.trim().trim_start_matches('@');
             let (allowed_id, allowed_user) = split_sender_id(trimmed);
 
             if sender_id == allowed
@@ -502,8 +505,18 @@ impl BaseChannel {
 }
 
 // ---------------------------------------------------------------------------
-// 对端 IP 准入判定（单一真相源）
+// 身份 allow_from 条目精确匹配（单一真相源）+ 对端 IP 准入判定
 // ---------------------------------------------------------------------------
+
+/// 身份 allow_from 条目精确匹配单点（BUG-20261121-057）：条目侧卫生
+/// trim——config 数组是人写形态，手滑空白不得静默击穿白名单（同文件
+/// peer_allowed 已确立条目 trim 口径，两族闸卫生标准此前分裂）。sender
+/// 是平台侧机器形态（各通道闸前已按平台约定归一），不做 trim。
+/// 注意：`@` 剥离是 telegram/IRC/base.is_allowed 各自的平台语义，不在
+/// 此处统一（矩阵句柄/Bluesky handle 的 `@` 含义按平台各异）。
+pub(crate) fn allow_list_contains(allow_from: &[String], sender_id: &str) -> bool {
+    allow_from.iter().any(|entry| entry.trim() == sender_id)
+}
 
 /// 对端 IP 准入判定（maixcam BUG-20261110-054 接线；websocket
 /// BUG-20261118-155 同族共用——两处定义漂移过一次后收编单点）。

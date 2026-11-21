@@ -217,7 +217,7 @@ impl OneBotChannel {
     /// allow_from 白名单判定（家族惯例：空 = 全放行；精确匹配 QQ user_id）。
     /// 单独成 fn 供单元测试（qq handle_c2c_message 先例）。
     fn sender_allowed(allow_from: &[String], user_id: &str) -> bool {
-        allow_from.is_empty() || allow_from.iter().any(|a| a == user_id)
+        allow_from.is_empty() || crate::base::allow_list_contains(allow_from, user_id)
     }
 
     /// Checks if a message ID is a duplicate.

@@ -357,7 +357,7 @@ impl BlueskyChannel {
         }
 
         let sender_handle = author["handle"].as_str().unwrap_or("unknown");
-        if !allow_from.is_empty() && !allow_from.iter().any(|a| a == sender_handle) {
+        if !allow_from.is_empty() && !crate::base::allow_list_contains(allow_from, sender_handle) {
             return false;
         }
 
