@@ -680,7 +680,9 @@ async fn install_via_github_funnel(
     if !outcome.commit.is_empty() {
         println!(
             "  Pinned commit: {}",
-            &outcome.commit[..outcome.commit.len().min(12)]
+            // commit 来自远端 registry 响应（未验 hex），字符边界安全短显
+            //（字节切片在多字节字符中间 panic）。
+            outcome.commit.chars().take(12).collect::<String>()
         );
     }
     println!("  Trust: {}", outcome.trust);

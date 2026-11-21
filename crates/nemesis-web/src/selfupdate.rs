@@ -245,6 +245,20 @@ pub fn commit_matches(current_short: &str, target_full: &str) -> bool {
     !current_short.is_empty() && !target_full.is_empty() && target_full.starts_with(current_short)
 }
 
+/// 字符边界安全截断（最多取前 `max` 字节；`max` 落在多字节字符中间时向回
+/// 退到最近边界）。日志/人读消息里的 commit、摘要短显专用——来源是磁盘
+/// 文件（pending.json / journal）的字符串可被篡改/损坏成任意合法 UTF-8，
+/// 展示性截断必须无条件不 panic（模块契约：损坏 → 诚实清理/拒绝，不崩）。
+/// 上游已验 ASCII（40-hex release body 提取、验签清单字段）传进来行为
+/// 不变（纯 ASCII 时逐字节同旧 `&s[..len().min(max)]`）。
+pub fn trunc_prefix(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// 包内 version.txt 的 `Commit: <sha>` 行提取（40 hex 全量）。
 /// 「Commit Date: …」行因冒号前多一段不匹配，天然跳过。
 pub fn extract_commit_from_version_txt(txt: &str) -> Option<String> {
@@ -396,7 +410,7 @@ pub fn load_pending(exe: &Path) -> Option<PendingUpdate> {
         Ok(sha) => {
             tracing::warn!(
                 "[SelfUpdate] 待装包 sha256 复验不匹配（meta {} vs 实际 {sha}），清空 updates/ 重来",
-                &pending.zip_sha256[..pending.zip_sha256.len().min(12)]
+                trunc_prefix(&pending.zip_sha256, 12)
             );
             clear_updates_dir(exe);
             None
@@ -1162,7 +1176,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                 clear_journal_logged(workspace);
                 boot_log_info(&format!(
                     "[SelfUpdate] 启动自检通过：当前 commit 命中目标 {}，更新收口",
-                    &journal.target_commit[..journal.target_commit.len().min(12)]
+                    trunc_prefix(&journal.target_commit, 12)
                 ));
                 #[cfg(feature = "selfupdate")]
                 sweep_staging_after_boot(exe);
@@ -1863,18 +1877,23 @@ impl SelfUpdateManager {
 
     /// 下载待装包（WSAPI `selfupdate.download` 的执行体；调用方负责放进
     /// tokio 任务——受理即回）。幂等语义：pending 已就绪直接返回；在途下载
-    /// 中重复调用幂等受理。estop 生效 = 拒绝（下载段同受急停冻结）。
+    /// 中重复调用幂等受理。estop 生效 = 拒绝（下载段同受急停冻结），闸在
+    /// 最前——「pending 已就绪」幂等早退与 force 新鲜度豁免均不越闸。
     ///
     /// `force`（强制更新）：跳过「pending 已就绪」幂等早退——
     /// 存量 pending 可能就是残包，强制更新必须重拉。新鲜度闸仅此一道；
     /// estop/单飞锁照常。
     pub async fn download(&self, current_commit: &str, force: bool) -> Result<String, String> {
+        if self.estop.is_engaged() {
+            self.audit_event("selfupdate", "denied", "download: estop engaged");
+            return Err("急停（estop）生效中：更新下载被冻结。释放急停后重试。".to_string());
+        }
         let exe_path = std::env::current_exe().map_err(|e| format!("取 current_exe 失败：{e}"))?;
         if !force && let Some(p) = load_pending(&exe_path) {
             return Ok(format!(
                 "待装包已就绪（{}，commit {}，{}MB）：直接【开始更新】即可。",
                 p.release_tag,
-                &p.target_commit[..p.target_commit.len().min(12)],
+                trunc_prefix(&p.target_commit, 12),
                 p.size_bytes / (1024 * 1024)
             ));
         }
@@ -1884,10 +1903,6 @@ impl SelfUpdateManager {
                 "allowed",
                 "download: force (freshness gate bypassed)",
             );
-        }
-        if self.estop.is_engaged() {
-            self.audit_event("selfupdate", "denied", "download: estop engaged");
-            return Err("急停（estop）生效中：更新下载被冻结。释放急停后重试。".to_string());
         }
         match self.download_flight.try_lock() {
             Ok(_g) => {

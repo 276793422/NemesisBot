@@ -131,7 +131,7 @@ fn run_status(workspace: &Path) -> Result<()> {
                 if p.target_commit.is_empty() {
                     "<unknown>"
                 } else {
-                    &p.target_commit[..p.target_commit.len().min(12)]
+                    nemesis_web::selfupdate::trunc_prefix(&p.target_commit, 12)
                 },
                 p.size_bytes / (1024 * 1024),
                 chrono_fmt_ms(p.downloaded_at_ms),

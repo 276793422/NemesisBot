@@ -106,6 +106,21 @@ fn commit_matches_prefix_and_empty_semantics() {
     assert!(!commit_matches("0123456", ""), "目标未知 = 不命中");
 }
 
+/// 短显截断字符边界安全：磁盘文件（pending.json / journal）字符串可被
+/// 篡改/损坏成任意合法 UTF-8，展示性截断必须无条件不 panic。纯 ASCII
+/// 输入与旧 `&s[..len().min(max)]` 逐字节一致。
+#[test]
+fn trunc_prefix_char_boundary_safe() {
+    assert_eq!(trunc_prefix("0123456789abcdef", 12), "0123456789ab");
+    assert_eq!(trunc_prefix("short", 12), "short");
+    assert_eq!(trunc_prefix("", 12), "");
+    // max 恰在多字节字符边界（4×3=12）
+    assert_eq!(trunc_prefix("中文中文中文你好", 12), "中文中文");
+    // max 落在多字节字符中间 → 回退到最近边界（旧实现 panic 点）
+    assert_eq!(trunc_prefix("aaaaaaaaaaa中文", 12), "aaaaaaaaaaa");
+    assert_eq!(trunc_prefix("中", 12), "中");
+}
+
 #[test]
 fn version_txt_commit_extraction() {
     let real = "NemesisBot Nightly Build\n========================\nBuild Date : 2026-10-13 00:00:00 UTC\nCommit     : 0123456789ABCDEF0123456789ABCDEF01234567\nBranch     : main\n";
@@ -211,6 +226,25 @@ fn boot_recovery_restarting_commit_hit_success() {
     assert_eq!(
         r.action, "update_success",
         "命中目标 = 收口成功: {:?}",
+        r.detail
+    );
+    assert!(load_journal(&ws).is_none(), "成功后 journal 清除");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// journal.target_commit 多字节污染（合法 UTF-8，字节 12 落在字符中间）：
+/// 成功收口路径的短显日志不得 panic（旧实现字节切片越界崩 gateway 启动），
+/// 照常 update_success + journal 清除。
+#[test]
+fn boot_recovery_multibyte_target_commit_no_panic() {
+    let ws = tmp_dir("boot-multibyte");
+    // 11 ASCII + 多字节：字节 12 恰在字符中间——旧 `&s[..len().min(12)]` panic 点
+    let target = "aaaaaaaaaaa污染目标提交哈希多字节字段";
+    save_journal(&ws, &journal("restarting", target, "nowhere.old")).unwrap();
+    let r = recover_on_boot_in(&ws, target, std::path::Path::new("unused.exe"));
+    assert_eq!(
+        r.action, "update_success",
+        "命中目标 = 收口成功（不 panic）: {:?}",
         r.detail
     );
     assert!(load_journal(&ws).is_none(), "成功后 journal 清除");
@@ -1679,6 +1713,28 @@ mod gated {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// meta 字段被污染成合法 JSON + 合法 UTF-8 多字节（篡改/损坏形态）：
+    /// sha 复验不匹配臂的短显日志不得 panic（旧实现字节 12 切片越界崩），
+    /// 照常 None + 整清——损坏 → 诚实清理，不崩。
+    #[test]
+    fn pending_multibyte_meta_sha_mismatch_clears_no_panic() {
+        let dir = tmp_dir("pending-multibyte");
+        let exe = dir.join("nemesisbot.exe");
+        std::fs::create_dir_all(updates_dir(&exe)).unwrap();
+        std::fs::write(pending_package_path(&exe, TARGET_ASSET), b"zip").unwrap();
+        let mut p = sample_pending();
+        // 11 ASCII + 多字节：字节 12 恰落在字符中间——旧 `&s[..len().min(12)]` panic 点
+        p.zip_sha256 = "aaaaaaaaaaa中文污染摘要字段".to_string();
+        p.target_commit = "bbbbbbbbbbb污染目标提交哈希".to_string();
+        save_pending(&exe, &p).expect("save meta");
+        assert!(
+            load_pending(&exe).is_none(),
+            "污染 meta → sha 不匹配 = None（不 panic）"
+        );
+        assert!(updates_dir_is_empty(&exe), "污染 meta → updates/ 整清重来");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// meta 在 zip 不在（正常顺序见不到的异常现场）→ None + 整清。
     #[test]
     fn pending_meta_without_zip_clears_updates_dir() {
@@ -1704,6 +1760,35 @@ mod gated {
         let m = manager_for(tmp_dir("dl-estop"), estop);
         let err = m.download("0123456", false).await.unwrap_err();
         assert!(err.contains("estop"), "estop 闸拒下载: {err}");
+    }
+
+    /// estop 生效 + pending 已就绪：download 必须拒绝——estop 闸在最前，
+    /// 「pending 已就绪」幂等早退不得越闸（契约「下载段同受急停冻结」）。
+    /// 共享 updates/ 面持锁串行 + 首尾清场（窗口最短化）。
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn download_denied_by_estop_even_with_pending_ready() {
+        let _shared = UPDATES_SHARED_LOCK.lock().await;
+        let exe_path = std::env::current_exe().unwrap();
+        clear_updates_dir(&exe_path);
+        let dir = updates_dir(&exe_path);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(pending_package_path(&exe_path, TARGET_ASSET), b"zip-bytes").unwrap();
+        save_pending(&exe_path, &sample_pending()).expect("save meta");
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        estop.trigger();
+        let m = manager_for(tmp_dir("dl-estop-pending"), estop);
+        let err = m.download("0123456", false).await.unwrap_err();
+        assert!(
+            err.contains("estop"),
+            "estop 闸拒下载，pending 就绪也不例外: {err}"
+        );
+        assert!(
+            load_pending(&exe_path).is_some(),
+            "estop 拒绝不动 pending（释放急停后可直接装）"
+        );
+        clear_updates_dir(&exe_path);
+        let _ = std::fs::remove_dir_all(&m.workspace);
     }
 
     // apply 全链路主体：Windows + Linux 同一份 cfg 编译体（Linux
@@ -2805,6 +2890,45 @@ mod gated {
         let err = m.download("0123456", true).await.unwrap_err();
         assert!(err.contains("estop"), "{err}");
 
+        let _ = std::fs::remove_dir_all(&m.workspace);
+    }
+
+    /// pending meta 字段多字节污染 + download「pending 已就绪」幂等早退臂：
+    /// 就绪文案构造不得 panic（旧实现字节 12 切片越界崩 WSAPI 任务）。sha
+    /// 对齐使 load_pending 成功返回 Some 才能走到早退臂；共享 updates/ 面
+    /// 持锁串行 + 首尾清场（窗口最短化）。
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn download_pending_ready_with_multibyte_meta_no_panic() {
+        let _shared = UPDATES_SHARED_LOCK.lock().await;
+        let exe_path = std::env::current_exe().unwrap();
+        clear_updates_dir(&exe_path);
+        let zip = b"zip-bytes";
+        let dir = updates_dir(&exe_path);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(pending_package_path(&exe_path, TARGET_ASSET), zip).unwrap();
+        let p = PendingUpdate {
+            asset: TARGET_ASSET.to_string(),
+            release_tag: "v0-multibyte".to_string(),
+            // 11 ASCII + 多字节：字节 12 恰在字符中间——旧实现 panic 点
+            target_commit: "aaaaaaaaaaa中文污染提交".to_string(),
+            zip_sha256: sha256_hex(zip), // 匹配 → load_pending Some → 走早退臂
+            size_bytes: zip.len() as u64,
+            downloaded_at_ms: now_ms(),
+        };
+        save_pending(&exe_path, &p).expect("save meta");
+        let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+        let m = manager_for(tmp_dir("dl-multibyte"), estop);
+        let ok = m
+            .download("0123456", false)
+            .await
+            .expect("pending 就绪早退不得 panic");
+        assert!(ok.contains("待装包已就绪"), "{ok}");
+        assert!(
+            ok.contains("aaaaaaaaaaa"),
+            "多字节 commit 回退到最近边界短显: {ok}"
+        );
+        clear_updates_dir(&exe_path);
         let _ = std::fs::remove_dir_all(&m.workspace);
     }
 

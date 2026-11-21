@@ -845,7 +845,9 @@ impl SkillInstaller {
             "Skill '{}' installed from {} @ {} ({} files, trust={})",
             plan.slug,
             plan.source,
-            &plan.commit[..plan.commit.len().min(12)],
+            // commit 来自远端 registry 响应（未验 hex），短显走字符边界安全
+            // 惯用法（同 :816 short_commit）——字节切片在多字节字符中间 panic。
+            plan.commit.chars().take(12).collect::<String>(),
             plan.files.len(),
             plan.trust
         );
