@@ -670,3 +670,64 @@ fn c7_diagnostic_to_json_shape() {
     let d2 = Diagnostic { source: None, ..d };
     assert!(d2.to_json()["source"].is_null());
 }
+
+/// BUG-20261121-025 回归锁：wire 位置值裸 `as u32` 回绕族。line/character
+/// 来自线上 JSON——超 u32 域的值裸 `as` 回绕成**另一个合法范围内的错值**
+/// （如 2^32+5 → 5），静默骗过 `position_to_byte` 的越界诚实闸（其 doc
+/// 明言错位偏移绝不能静默通过——rename 应用链会拿回绕值 replace_range
+/// 写坏文件）。修复 = `u32::try_from(...).ok()`：超域条目按本模块 tolerant
+/// 解析既定语义**整条跳过**（畸形条目跳过不致命），域内值无损。
+#[test]
+fn bug20261121025_wire_position_u32_overflow_entries_skipped() {
+    let oob_line: u64 = 1 << 32; // u32::MAX + 1
+    let oob_char: u64 = u32::MAX as u64 + 7;
+    let in_line: u64 = 5;
+    let in_char: u64 = 12;
+
+    // --- parse_locations：超域条目跳过、域内条目原样、混合列表只留合法 ---
+    assert!(parse_locations(&loc_json("file:///a.rs", oob_line, in_char)).is_empty());
+    assert!(parse_locations(&loc_json("file:///a.rs", in_line, oob_char)).is_empty());
+    // 回归锚点：裸 as 的回绕形态必须与跳过形态可区分（oob_line 回绕成 0，
+    // 跳过形态不产条目——旧实现这里会得到 line=0 的假条目）。
+    let mixed = serde_json::json!([
+        loc_json("file:///bad.rs", oob_line, in_char),
+        loc_json("file:///good.rs", in_line, in_char)
+    ]);
+    let locs = parse_locations(&mixed);
+    assert_eq!(locs.len(), 1, "超域条目必须整条跳过，不得回绕混入");
+    assert_eq!(locs[0].path, "/good.rs");
+    assert_eq!(locs[0].line, 5);
+    assert_eq!(locs[0].character, 12);
+
+    // --- parse_workspace_edit：超域 TextEdit 丢弃，同文件域内 TextEdit 留 ---
+    let result = serde_json::json!({
+        "changes": {
+            "file:///a.rs": [
+                te(oob_line, 0, oob_line, 3, "WRAPPED"),
+                te(0, 4, 0, 7, "ok")
+            ]
+        }
+    });
+    let edits = parse_workspace_edit(&result);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(
+        edits[0].edits.len(),
+        1,
+        "超域 TextEdit 必须丢弃（旧实现回绕成 line=0 与域内条目撞位或错位替换）"
+    );
+    assert_eq!(edits[0].edits[0].new_text, "ok");
+
+    // --- parse_publish_diagnostics：超域诊断条目跳过 ---
+    let diag_oob = serde_json::json!({
+        "uri": "file:///a.rs",
+        "diagnostics": [
+            {"range": {"start": {"line": oob_line, "character": 0}, "end": {"line": oob_line, "character": 1}}, "message": "wrapped"},
+            {"range": {"start": {"line": 2, "character": 1}, "end": {"line": 2, "character": 4}}, "severity": 2, "message": "fine"}
+        ]
+    });
+    let (uri, diags) = parse_publish_diagnostics(&diag_oob).expect("uri/diagnostics present");
+    assert_eq!(uri_key(&uri), uri_key("file:///a.rs"));
+    assert_eq!(diags.len(), 1, "超域诊断条目必须跳过");
+    assert_eq!(diags[0].message, "fine");
+    assert_eq!(diags[0].range_start, (2, 1));
+}
