@@ -149,14 +149,25 @@ impl BrokerLedger {
         price: f64,
         ts: &str,
     ) -> Result<OrderRecord, String> {
-        // NaN-safe 非正判断：NaN 不满足 > 0.0，必须拒绝。
-        if qty <= 0.0 || qty.is_nan() {
-            return Err(format!("买入数量必须为正（收到 {qty}）"));
+        // 非有限值全拒（BUG-20261121-030）：NaN 不满足 > 0.0；±inf 漏过旧
+        // `qty <= 0.0 || qty.is_nan()` 闸——inf 数量入成本核算只会产出失真
+        // 文案，闸收口为 is_finite 单点。
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err(format!("买入数量非法（须为正的有限数，收到 {qty}）"));
         }
-        if price < 0.0 || price.is_nan() {
-            return Err(format!("价格非法（收到 {price}）"));
+        if !price.is_finite() || price < 0.0 {
+            return Err(format!("价格非法（须为非负的有限数，收到 {price}）"));
         }
         let cost = r2(qty * price);
+        // r2 的 ×100 放大对近界有限输入可溢出（qty=1、price=1e307 →
+        // 1e309=inf）：拒单而不是把 inf 记进账本——cash=inf 后资金闸
+        // `cash < cost` 对一切有限 cost 永假（inf < inf == false），账本
+        // 资金检查永久失效（BUG-20261121-030 主体）。
+        if !cost.is_finite() {
+            return Err(format!(
+                "订单金额溢出（qty×price ≈ {qty:.3e} × {price:.3e}），已拒单"
+            ));
+        }
         if self.cash < cost {
             return Err(format!("模拟资金不足：需 {cost:.2}，可用 {:.2}", self.cash));
         }
@@ -193,14 +204,15 @@ impl BrokerLedger {
         price: f64,
         ts: &str,
     ) -> Result<OrderRecord, String> {
-        // NaN-safe 非正判断：NaN 不满足 > 0.0，必须拒绝。
-        if qty <= 0.0 || qty.is_nan() {
-            return Err(format!("卖出数量必须为正（收到 {qty}）"));
+        // 非有限值全拒（BUG-20261121-030，与 buy 同款 is_finite 收口）。
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err(format!("卖出数量非法（须为正的有限数，收到 {qty}）"));
         }
-        // 负价/NaN 价与 buy 同款闸——缺闸时负价卖出
-        // proceeds 为负直接扣现金（账本可被工具调用面推成负余额）。
-        if price < 0.0 || price.is_nan() {
-            return Err(format!("价格非法（收到 {price}）"));
+        // 负价/非有限价与 buy 同款闸——缺闸时负价卖出
+        // proceeds 为负直接扣现金（账本可被工具调用面推成负余额）；+inf
+        // 价卖出 proceeds=inf 记账同样毁账（BUG-20261121-030 同族）。
+        if !price.is_finite() || price < 0.0 {
+            return Err(format!("价格非法（须为非负的有限数，收到 {price}）"));
         }
         let Some(pos) = self.positions.get_mut(symbol) else {
             return Err(format!("无 {symbol} 持仓，无法卖出"));
@@ -212,6 +224,12 @@ impl BrokerLedger {
             ));
         }
         let proceeds = r2(qty * price);
+        // r2 ×100 放大溢出同闸（见 buy）：拒单不动账。
+        if !proceeds.is_finite() {
+            return Err(format!(
+                "卖出金额溢出（qty×price ≈ {qty:.3e} × {price:.3e}），已拒单"
+            ));
+        }
         self.cash = r2(self.cash + proceeds);
         pos.qty -= qty;
         if pos.qty <= 0.0 {

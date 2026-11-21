@@ -165,6 +165,43 @@ fn create_loop_build_error_aborts_without_write() {
     assert_eq!(alloc_id(dir.path()), "L1", "作废号不留死档，下分配从头起");
 }
 
+// BUG-20261121-032：id 路径安全——`../`、`\`、盘符形态经 loop_path join
+// 可达 loops 目录外（remove 面 = 删任意 .json；load 面 = 目录外文件存在
+// 性/可解析性探针）。入口校验关死后越界 id 必 Err 且目录外目标文件原封
+// 不动；save 侧 st.id 同闸（伪造内容里的越界 id 不得借此落盘写文件）。
+#[test]
+fn loop_id_rejects_traversal_and_stays_in_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    // 目录外诱饵文件：若无校验，remove_loop(dir, "../target") 会删掉它。
+    let outside = dir.path().join("target.json");
+    std::fs::write(&outside, "{}").unwrap();
+
+    assert!(
+        load_loop(dir.path(), "../target").is_err(),
+        "load 越界 id 必拒"
+    );
+    assert!(
+        remove_loop(dir.path(), "../target").is_err(),
+        "remove 越界 id 必拒"
+    );
+    assert!(outside.exists(), "越界 id 不得删目录外文件");
+
+    let mut s = st("L1", "k");
+    s.id = "..\\evil".to_string();
+    assert!(
+        save_loop(dir.path(), &s).is_err(),
+        "save 侧 st.id 同闸（越界 id 状态文件不得落盘）"
+    );
+    let s = st("c:evil", "k");
+    assert!(save_loop(dir.path(), &s).is_err(), "盘符形态同拒");
+
+    // 合法形态不受影响（roundtrip 照常）。
+    let s = st("L1", "k");
+    save_loop(dir.path(), &s).unwrap();
+    assert!(load_loop(dir.path(), "L1").unwrap().is_some());
+    assert!(remove_loop(dir.path(), "L1").unwrap());
+}
+
 #[test]
 fn status_terminal_and_str_roundtrip() {
     assert!(LoopStatus::Done.is_terminal());
