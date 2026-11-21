@@ -281,7 +281,9 @@ pub struct ContextBuilder {
 pub struct SkillInfo {
     /// Skill name.
     pub name: String,
-    /// Skill description or first line of SKILL.md.
+    /// Frontmatter `description:`（nemesis-skills 同源提取）；无
+    /// frontmatter 的旧文件回落首个内容行剥 `#`；frontmatter 缺
+    /// description 字段则留空（渲染 "(no description)"）。
     pub description: String,
     /// Whether the skill is active.
     pub active: bool,
@@ -446,13 +448,30 @@ impl ContextBuilder {
                         && let Ok(content) = std::fs::read_to_string(&skill_md)
                     {
                         let name = entry.file_name().to_string_lossy().to_string();
-                        let description = content
-                            .lines()
-                            .find(|l| !l.trim().is_empty())
-                            .unwrap_or("")
-                            .trim_start_matches('#')
-                            .trim()
-                            .to_string();
+                        // BUG-20261122-013：SKILL.md 首非空行恒为 YAML
+                        // frontmatter 的 `---` 开栏（全部内建模板 + forge
+                        // 生成技能都带 frontmatter），旧「首行剥 #」启发式
+                        // 让所有技能描述在 system prompt Loaded Skills 段
+                        // 渲染成字面 "---"。frontmatter 描述提取复用
+                        // nemesis-skills 单一真相源（learned::extract_
+                        // description，引号剥离同源）；带 frontmatter 但无
+                        // description 字段 → 空（渲染 "(no description)"，
+                        // 不回落首行启发式——首行仍是 `---`）；无 frontmatter
+                        // → 保留旧行为（首个内容行剥 # 作描述）。
+                        let extracted = nemesis_skills::learned::extract_description(&content);
+                        let description = if !extracted.is_empty() {
+                            extracted
+                        } else if content.trim_start().starts_with("---") {
+                            String::new()
+                        } else {
+                            content
+                                .lines()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("")
+                                .trim_start_matches('#')
+                                .trim()
+                                .to_string()
+                        };
                         self.skills_info.push(SkillInfo {
                             name,
                             description,

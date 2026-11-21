@@ -1270,3 +1270,76 @@ fn bug279_skills_section_render_order_stable() {
     let zeta_pos = prompt.find("**zeta**").expect("zeta bullet rendered");
     assert!(alpha_pos < zeta_pos, "skills 段必须按名字典序渲染");
 }
+
+// BUG-20261122-013 回归锁：SKILL.md 首非空行恒为 frontmatter 的 `---`
+// 开栏（全部内建模板 + forge 生成技能都带 frontmatter），旧「首行剥 #」
+// 启发式让所有技能描述在 system prompt Loaded Skills 段渲染成字面
+// "---"。修复后：frontmatter description 提取（nemesis-skills 同源）/
+// 无 frontmatter 保留旧行为 / frontmatter 缺 description 留空。
+#[test]
+fn bug20261122_013_skills_description_frontmatter_aware() {
+    let tmp = TempDir::new().unwrap();
+    let skills_dir = tmp.path().join("skills");
+
+    // 带 frontmatter 带 description（内建模板/forge 生成的主流形态）。
+    let with_fm = skills_dir.join("weather");
+    std::fs::create_dir_all(&with_fm).unwrap();
+    std::fs::write(
+        with_fm.join("SKILL.md"),
+        "---\nname: weather\ndescription: Get current weather and forecasts.\nhomepage: https://example.com\n---\n\n# Weather\n\nBody here.\n",
+    )
+    .unwrap();
+
+    // 无 frontmatter（旧文件形态）——旧行为保留：首个内容行剥 #。
+    let plain = skills_dir.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("SKILL.md"), "# Plain skill\n\nBody.\n").unwrap();
+
+    // 带 frontmatter 但缺 description 字段——留空（不回落首行，首行仍是 ---）。
+    let fm_no_desc = skills_dir.join("no_desc");
+    std::fs::create_dir_all(&fm_no_desc).unwrap();
+    std::fs::write(
+        fm_no_desc.join("SKILL.md"),
+        "---\nname: no_desc\nversion: 1.0\n---\n\n# No Desc\n",
+    )
+    .unwrap();
+
+    let mut builder = ContextBuilder::new(tmp.path());
+    builder.load_skills(&skills_dir);
+
+    let find = |name: &str| {
+        builder
+            .get_skills_info()
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.description.clone())
+    };
+
+    assert_eq!(
+        find("weather").as_deref(),
+        Some("Get current weather and forecasts."),
+        "frontmatter description 必须被提取而非渲染 ---"
+    );
+    assert_eq!(
+        find("plain").as_deref(),
+        Some("Plain skill"),
+        "无 frontmatter 文件保留旧首行启发式行为"
+    );
+    assert_eq!(
+        find("no_desc").as_deref(),
+        Some(""),
+        "frontmatter 缺 description 留空（渲染侧出 (no description)）"
+    );
+
+    // 端到端：Loaded Skills 段不再出现字面 "---" 描述。
+    let prompt = builder.build_system_prompt(false);
+    assert!(
+        !prompt.contains("**weather**: ---"),
+        "Loaded Skills 段不得渲染字面 --- 描述: {}",
+        prompt
+    );
+    assert!(
+        prompt.contains("**weather**: Get current weather and forecasts."),
+        "frontmatter 描述应进 system prompt"
+    );
+}
