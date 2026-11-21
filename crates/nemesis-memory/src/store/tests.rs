@@ -510,13 +510,23 @@ contract_on_local!(
     contract_local_close_ok,
     crate::contract_tests::contract_close_ok
 );
+contract_on_local!(
+    contract_local_query_limit_zero_defaults,
+    crate::contract_tests::contract_query_limit_zero_defaults
+);
+contract_on_local!(
+    contract_local_list_limit_zero_unlimited,
+    crate::contract_tests::contract_list_limit_zero_unlimited
+);
 
 // ---- LocalStore 本地语义锁（契约边界之外，见 contract_tests 模块头）----
 
 #[tokio::test]
-async fn local_store_query_limit_zero_returns_empty_entries() {
-    // 本地语义：limit=0 = take(0)，entries 空但 total 保留全量命中数
-    //（TfIdfLocalStore 把 0 视为默认档 10——两族相反，勿混同）。
+async fn local_store_query_limit_zero_uses_default_ten() {
+    // 本地语义（BUG-20261121-038 对齐后）：limit=0 视为默认档 10——与
+    // TfIdfLocalStore / VectorStore / memory_tools 家族主流口径一致
+    //（旧形态 take(0) 恒空已废除：WSAPI 显式传 0 曾得到 total>0 +
+    // entries=[] 的表观数据丢失形态）。
     let store = LocalStore::new();
     for _i in 0..3 {
         store
@@ -526,7 +536,7 @@ async fn local_store_query_limit_zero_returns_empty_entries() {
     }
     let res = store.query("lopaa", None, 0).await.unwrap();
     assert_eq!(res.total, 3, "total 仍是全量命中数");
-    assert!(res.entries.is_empty(), "limit=0 = take(0)");
+    assert_eq!(res.entries.len(), 3, "limit=0 走默认档，不全空");
 }
 
 #[tokio::test]
@@ -547,14 +557,18 @@ async fn local_store_store_duplicate_id_appends() {
 }
 
 #[tokio::test]
-async fn local_store_list_limit_zero_returns_empty() {
-    // 本地语义：list limit=0 = take(0)（TfIdf 视 0 为不限——两族相反）。
+async fn local_store_list_limit_zero_is_unlimited() {
+    // 本地语义（BUG-20261121-038 对齐后）：list limit=0 = 不限——与
+    // TfIdfLocalStore 一致（旧形态 take(0) 恒空已废除）。
     let store = LocalStore::new();
-    store
-        .store(make_entry(MemoryType::LongTerm, "solo"))
-        .await
-        .unwrap();
-    assert!(store.list(None, 0, 0).await.unwrap().is_empty());
+    for name in ["solo-a", "solo-b", "solo-c"] {
+        store
+            .store(make_entry(MemoryType::LongTerm, name))
+            .await
+            .unwrap();
+    }
+    let all = store.list(None, 0, 0).await.unwrap();
+    assert_eq!(all.len(), 3, "limit=0 = 取尽");
 }
 
 #[tokio::test]

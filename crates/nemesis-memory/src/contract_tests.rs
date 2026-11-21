@@ -7,14 +7,14 @@
 //! 契约边界（明确**不**锁的部分，属各后端本地语义，由各自测试文件钉死）：
 //! - `store` 重复 id：LocalStore 追加（Vec 语义，同 id 双条目）、TfIdfLocalStore
 //!   替换（Map 语义）——两族行为相反，更新入口请用 `update`。
-//! - `query` / `list` 的 `limit = 0`：LocalStore 视为 take(0)（空结果）、
-//!   TfIdfLocalStore 视为默认档（query→10 / list→不限）。
 //! - `list` 排序：LocalStore 保持插入序、TfIdfLocalStore 按 created_at 倒序。
 //! - `delete` 的归档 sidecar：TfIdfLocalStore 专属（archive-on-forget）。
 //!
 //! 所以本契约只断言两后端**必须一致**的面：roundtrip / query 匹配与排序 /
-//! 类型过滤 / limit 截断（limit>0）/ update 原位替换与缺失即插入 / delete
-//! 幂等性 / list 成员与分页。
+//! 类型过滤 / limit 截断（limit>0）/ **limit=0 缺省语义**（query→默认档 10、
+//! list→不限；BUG-20261121-038 起纳入统一契约——旧形态 LocalStore take(0)
+//! 恒空与 TfIdf 相反，WSAPI 显式传 0 曾得到 total>0 + entries=[] 的表观
+//! 数据丢失）/ update 原位替换与缺失即插入 / delete 幂等性 / list 成员与分页。
 
 use crate::store::MemoryStore;
 use crate::types::{Entry, MemoryType};
@@ -100,6 +100,39 @@ pub async fn contract_query_type_filter<S: MemoryStore>(s: &S) {
     assert_eq!(res.total, 1, "类型过滤后恰一条");
     assert_eq!(res.entries[0].entry.id, "ct-t2");
     assert_eq!(res.entries[0].entry.typ, MemoryType::ShortTerm);
+}
+
+/// query limit=0：默认档 10（两后端统一语义，BUG-20261121-038——旧
+/// LocalStore take(0) 恒空形态废除）。3 条命中全数返回。
+pub async fn contract_query_limit_zero_defaults<S: MemoryStore>(s: &S) {
+    for i in 0..3 {
+        s.store(entry_with_id(
+            &format!("ct-zq{i}"),
+            MemoryType::LongTerm,
+            "vanilla orchid",
+        ))
+        .await
+        .unwrap();
+    }
+    let res = s.query("vanilla", None, 0).await.unwrap();
+    assert_eq!(res.total, 3, "total 仍是全量命中数");
+    assert_eq!(res.entries.len(), 3, "limit=0 走默认档，不全空");
+}
+
+/// list limit=0：取尽（两后端统一语义，BUG-20261121-038——旧
+/// LocalStore take(0) 恒空形态废除）。
+pub async fn contract_list_limit_zero_unlimited<S: MemoryStore>(s: &S) {
+    for i in 0..3 {
+        s.store(entry_with_id(
+            &format!("ct-zl{i}"),
+            MemoryType::LongTerm,
+            "vanilla pod",
+        ))
+        .await
+        .unwrap();
+    }
+    let all = s.list(None, 0, 0).await.unwrap();
+    assert_eq!(all.len(), 3, "limit=0 = 取尽");
 }
 
 /// query limit 截断（limit > 0）：entries 截到 limit，total 保留全量命中数。
