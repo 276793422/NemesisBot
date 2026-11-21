@@ -617,6 +617,61 @@ async fn test_memory_config_set_embedding_content_validated_and_atomic() {
     assert_eq!(std::fs::read_to_string(&emb_path).unwrap(), good);
 }
 
+/// BUG-20261122-007 回归锁：`[]`（标量同理）对全 default EmbeddingConfig
+/// 是「typed 解析成功但语义全默认」（serde visit_seq 零元素臂）——原 037
+/// typed 预检放行落盘「保存成功」，加载期才被 loader 侧形状闸
+/// （BUG-20261122-003）error! 臂拒收，保存/加载口径分裂。修复 = object
+/// 形状闸前置，坏形态与坏 JSON 同待遇：loud 拒在编辑器、文件不覆写。
+#[tokio::test]
+async fn test_memory_config_set_embedding_content_array_document_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    ensure_config_dir(ws);
+    write_config(ws);
+    let handler = MemoryHandler;
+    let ctx = make_ctx(&dir);
+    let emb_path = ws.join("config").join("config.enhanced_memory.json");
+
+    let good = r#"{"enabled":true,"active":"local-onnx"}"#;
+    handler
+        .handle_cmd(
+            "config.set",
+            Some(serde_json::json!({ "embedding_config_content": good })),
+            &ctx,
+        )
+        .await
+        .expect("合法内容先落盘")
+        .expect("updated 应答");
+
+    // `[]` 数组文档：typed 预检对它「成功」——形状闸必须拦下。
+    let err = handler
+        .handle_cmd(
+            "config.set",
+            Some(serde_json::json!({ "embedding_config_content": "[]" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("形状非法"), "got: {err}");
+    assert_eq!(
+        std::fs::read_to_string(&emb_path).unwrap(),
+        good,
+        "`[]` 不得覆写既有配置"
+    );
+
+    // 标量文档同闸。
+    let err = handler
+        .handle_cmd(
+            "config.set",
+            Some(serde_json::json!({ "embedding_config_content": "42" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("形状非法"), "got: {err}");
+    assert_eq!(std::fs::read_to_string(&emb_path).unwrap(), good);
+}
+
 // config.set / config.get — auto_inject flags (UI entry gap)
 
 /// Set both flags, then read back through `load_embedding_config` — the

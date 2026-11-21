@@ -148,3 +148,71 @@ fn load_skills_config_rejects_array_document_loud() {
     // serde_json 对数组文档喂 deserialize_map 的错误形态（非 object 闸文案）。
     assert!(!msg.is_empty(), "loud 失败即可，文案形态不钉死");
 }
+
+// ---- BUG-20261122-006：proxy 独立配置 loader 家族横扫补位 ----
+//
+// config.proxy.json / config.proxy_keys.json 两个独立 loader（proxy_file.rs /
+// proxy_keys_file.rs）同洞漏网：ProxyFileConfig / ProxyKeysFile 全字段
+// `#[serde(default)]` 无 flatten，`[]` 走 visit_seq 零元素臂 = 「全默认」
+// 合法值。proxy 静默无视零诊断；keys 更重——鉴权 key 表静默清空、调用方
+// 无 WARN 回落主 token（权限隔离静默失效）。修复 = ensure_object 前置，
+// 失败进既有 Err 臂（调用方 WARN + 按未配置走，不阻断启动）。
+
+#[test]
+fn load_proxy_file_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    // load(config_dir) 收目录、内部 join 文件名（proxy_config_path）——写完
+    // 文件传目录，不能传文件路径（会再 join 出不存在的嵌套路径 → Ok(None)）。
+    let content_path = write_named(&dir, "config.proxy.json", "[]");
+    assert!(content_path.exists());
+    let err = nemesis_config::proxy_file::load(dir.path()).unwrap_err();
+    assert!(err.contains("形状非法"), "got: {err}");
+    assert!(err.contains("array") || err.contains("数组"), "got: {err}");
+    // 标量文档同闸。
+    for content in ["null", "42", "\"p\""] {
+        std::fs::write(&content_path, content).unwrap();
+        let err = nemesis_config::proxy_file::load(dir.path()).unwrap_err();
+        assert!(err.contains("形状非法"), "content={content} got: {err}");
+    }
+}
+
+#[test]
+fn load_proxy_file_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(
+        &dir,
+        "config.proxy.json",
+        r#"{"env": {"http_proxy": "http://127.0.0.1:8080"}}"#,
+    );
+    let cfg = nemesis_config::proxy_file::load(dir.path())
+        .expect("object doc parses")
+        .expect("file exists => Some");
+    assert_eq!(
+        cfg.env.http_proxy, "http://127.0.0.1:8080",
+        "判别字段确从文档消费"
+    );
+}
+
+#[test]
+fn load_proxy_keys_file_rejects_array_document_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(&dir, "config.proxy_keys.json", "[]");
+    let err = nemesis_config::proxy_keys_file::load(dir.path()).unwrap_err();
+    assert!(err.contains("形状非法"), "got: {err}");
+    assert!(err.contains("array") || err.contains("数组"), "got: {err}");
+}
+
+#[test]
+fn load_proxy_keys_file_still_accepts_object_document() {
+    let dir = tempfile::tempdir().unwrap();
+    write_named(
+        &dir,
+        "config.proxy_keys.json",
+        r#"{"keys": [{"name": "a", "key": "nbk_test"}]}"#,
+    );
+    let cfg = nemesis_config::proxy_keys_file::load(dir.path())
+        .expect("object doc parses")
+        .expect("file exists => Some");
+    assert_eq!(cfg.keys.len(), 1, "判别字段确从文档消费");
+    assert_eq!(cfg.keys[0].name, "a");
+}

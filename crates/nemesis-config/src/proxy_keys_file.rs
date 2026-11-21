@@ -68,7 +68,12 @@ pub fn proxy_keys_config_path(config_dir: &Path) -> PathBuf {
 }
 
 /// 读取 key 文件。`Ok(None)` = 文件不存在（未配置；**绝不因此落盘**）；
-/// `Err` = 文件在但损坏/不可读（调用方 WARN + 按未配置走）。
+/// `Err` = 文件在但损坏/不可读/形状非法（调用方 WARN + 按未配置走）。
+///
+/// BUG-20261122-006（BUG-20261122-003 家族横扫漏网）：ProxyKeysFile 全字
+/// 段 default 无 flatten，`[]` 文档走 visit_seq 零元素臂 = 「空 key 表」
+/// 合法值——鉴权 key 表静默清空、调用方无 WARN 回落主 token（权限隔离
+/// 静默失效）。object 形状闸在 typed 解析前拦下（030 家族纪律）。
 pub fn load(config_dir: &Path) -> Result<Option<ProxyKeysFile>, String> {
     let path = proxy_keys_config_path(config_dir);
     let content = match nemesis_utils::fsutil::read_config_string(&path) {
@@ -76,7 +81,12 @@ pub fn load(config_dir: &Path) -> Result<Option<ProxyKeysFile>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("读取 {} 失败：{e}", path.display())),
     };
-    serde_json::from_str::<ProxyKeysFile>(&content)
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("代理 key 配置 {} 解析失败：{e}", path.display()))?;
+    if let Err(e) = nemesis_utils::json_shape::ensure_object(&value, "proxy keys config file") {
+        return Err(format!("代理 key 配置 {} 形状非法：{e}", path.display()));
+    }
+    serde_json::from_value::<ProxyKeysFile>(value)
         .map(Some)
         .map_err(|e| format!("代理 key 配置 {} 解析失败：{e}", path.display()))
 }

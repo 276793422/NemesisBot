@@ -270,7 +270,30 @@ fn migrate_legacy_instances(
         // unwrap_or_default 空壳迁移并删除原文件 = 用户插件实例配置静默
         // 永久丢失。读失败臂 continue 保文件重试，两失败形态处置必须
         // 对称：损坏文件诚实跳过（WARN 注明），下次读再试。
-        let legacy = match serde_json::from_str::<LegacyInstanceFile>(&content) {
+        // BUG-20261122-007：`[]`（或标量）对全 default LegacyInstanceFile 是
+        // 「typed 解析成功但语义全空」（serde visit_seq 零元素臂）——空壳
+        // 迁移 + 删除原文件 = 用户旧实例配置静默永久丢失，正是 035 修复
+        // 「解析失败 ≠ 空配置」要防的另一形态（解析成功 = 空配置）。形状闸
+        // 前置对齐 035 语义：非 object 诚实跳过 WARN 保留。
+        let legacy_value: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    path = %legacy_path.display(),
+                    error = %e,
+                    "[WasmPlugin] 旧实例文件解析失败——跳过迁移（文件保留，下次读重试）"
+                );
+                continue;
+            }
+        };
+        if !legacy_value.is_object() {
+            tracing::warn!(
+                path = %legacy_path.display(),
+                "[WasmPlugin] 旧实例文件非 object 形态——跳过迁移（文件保留，防空壳迁移误删原文件）"
+            );
+            continue;
+        }
+        let legacy = match serde_json::from_value::<LegacyInstanceFile>(legacy_value) {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!(
