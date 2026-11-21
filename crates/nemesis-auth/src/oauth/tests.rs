@@ -2026,6 +2026,47 @@ async fn bug344_silent_connection_does_not_block_callback_loop() {
 }
 
 #[tokio::test]
+// BUG-20261121-039 红证：TCP 无消息边界——请求行分两段到达
+// （首段只有 "GET /auth/call" 前缀）时，旧实现单次 read 把半截请求当
+// 完整解析 → 路径不匹配 → Ok(None) 连接被静默丢弃（无任何响应，浏览器
+// 只见 ERR_EMPTY_RESPONSE），真回调被无声吞掉。不变量：读循环聚合到
+// 头块终结/EOF 再解析，分段到达的合法回调照常被服务。
+async fn bug20261121_039_split_arrival_request_still_served() {
+    let cfg = OAuthProviderConfig::openai();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client = tokio::spawn(async move {
+        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // 请求行分段写：首段是残缺路径，50ms 后补余下全文
+        //（sleep 保证两段作为独立分段到达——服务端首次 read 只见前缀）。
+        sock.write_all(b"GET /auth/call").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        sock.write_all(b"back?code=splt39&state=st39 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = vec![0u8; 4096];
+        let n = sock.read(&mut buf).await.unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).to_string()
+    });
+
+    // 直接调 wait_for_callback（无外层 300s 兜底）——测试自带超时，
+    // 旧实现（半截请求被丢弃后永久等下一个连接）在此红出而非挂死。
+    let code = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        cfg.wait_for_callback(&listener, "st39"),
+    )
+    .await
+    .expect("分段到达的请求必须被聚合后服务（BUG-20261121-039）")
+    .unwrap();
+    assert_eq!(code, "splt39");
+
+    let resp = client.await.unwrap();
+    assert!(resp.contains("200 OK"), "{resp}");
+    assert!(resp.contains("Authentication successful"), "{resp}");
+}
+
+#[tokio::test]
 async fn wait_for_callback_no_code_param_errors() {
     let cfg = OAuthProviderConfig::openai();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

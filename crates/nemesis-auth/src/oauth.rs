@@ -17,6 +17,10 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 /// GET，10s 上限只淘汰静默/挂死连接（本地扫描、健康检查），不伤真回调。
 const CALLBACK_CONN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 单个回调请求的累计读取上限（read-cap 纪律同族）：读循环必须带帽
+/// 防异常本地客户端灌流。请求行 + 常规头远低于此值。
+const CALLBACK_REQUEST_CAP: usize = 64 * 1024;
+
 /// 带 bounded 超时的共享 HTTP client（a：reqwest 默认
 /// client 零超时，挂死端点会让 `auth login` 无限卡住）。
 ///
@@ -338,12 +342,28 @@ impl OAuthProviderConfig {
         use tokio::io::AsyncReadExt;
         use tokio::io::AsyncWriteExt;
 
-        let mut buf = vec![0u8; 4096];
-        let n = stream.read(&mut buf).await.map_err(|e| {
-            CallbackFailure::PerConnection(format!("reading callback request: {}", e))
-        })?;
+        // 请求读取必须循环到头块终结（\r\n\r\n）或 EOF——TCP 无消息边界，
+        // 单次 read 可能只拿到请求行前缀（如 "GET /auth/callb"），半截请求
+        // 按完整解析 → 路径不匹配 → 连接被静默丢弃（无任何响应，浏览器只
+        // 见 ERR_EMPTY_RESPONSE），真回调被无声吞掉（BUG-20261121-039）。
+        // 帽 CALLBACK_REQUEST_CAP 防异常客户端灌流；10s 单连接墙钟上限
+        // （CALLBACK_CONN_TIMEOUT）在外层已有界化整个循环。
+        let mut buf: Vec<u8> = Vec::with_capacity(4096);
+        loop {
+            let mut chunk = [0u8; 4096];
+            let n = stream.read(&mut chunk).await.map_err(|e| {
+                CallbackFailure::PerConnection(format!("reading callback request: {}", e))
+            })?;
+            if n == 0 {
+                break; // EOF：解析手头已有数据（请求行可能已完整）
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() >= CALLBACK_REQUEST_CAP {
+                break;
+            }
+        }
 
-        let request = String::from_utf8_lossy(&buf[..n]);
+        let request = String::from_utf8_lossy(&buf);
 
         // Parse the HTTP request line: GET /auth/callback?code=...&state=... HTTP/1.1
         let request_line = request.lines().next().unwrap_or("");
