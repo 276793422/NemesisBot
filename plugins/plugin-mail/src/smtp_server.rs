@@ -382,18 +382,30 @@ async fn read_data(
 fn extract_envelope_addr(rest: Option<&str>) -> String {
     let raw = rest.unwrap_or("");
     let trimmed = raw.trim();
-    let addr = if let (Some(s), Some(e)) = (trimmed.find('<'), trimmed.rfind('>')) {
-        &trimmed[s + 1..e]
-    } else {
-        trimmed
+    // BUG-20261122-008：`s < e` 序守卫必须显式——`find('<')` 与
+    // `rfind('>')` 各自独立，"abc>def<" 形态（'<' 在 '>' 之后）产出逆序
+    // 区间 `&trimmed[s+1..e]` = slice range panic（远程可触发：一行
+    // MAIL FROM 即崩会话任务）。括号次序不合法 = 按无括号形态走裸地址
+    // 回落（smtp_envelope_safe 拍平），协议面回 250 继续会话。
+    let addr = match (trimmed.find('<'), trimmed.rfind('>')) {
+        (Some(s), Some(e)) if s < e => &trimmed[s + 1..e],
+        _ => trimmed,
     };
     smtp_envelope_safe(extract_email_address(addr))
 }
 
 /// 大小写不敏感前缀剥离（RFC 5321 动词不分大小写；返回前缀后的剩余部分）。
 fn strip_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&s[prefix.len()..])
+    let sb = s.as_bytes();
+    let pb = prefix.as_bytes();
+    // BUG-20261122-008：比较必须走 bytes 面——旧形态 `s[..prefix.len()]`
+    // 只有字节长度守卫（`s.len() >= prefix.len()`），prefix 是 ASCII 动词
+    // 而 `s` 是网络行，CJK 开头行字节 prefix.len() 落在多字节字符中间 =
+    // str 切片 panic（远程一行 "邮……" 即崩会话任务）。bytes 切片恒安全；
+    // 比较成功 ⇒ 前 pb.len() 字节恰为 ASCII prefix ⇒ str 侧
+    // `&s[pb.len()..]` 必在字符边界（web handlers/logs.rs:736 同族先例）。
+    if sb.len() >= pb.len() && sb[..pb.len()].eq_ignore_ascii_case(pb) {
+        Some(&s[pb.len()..])
     } else {
         None
     }
