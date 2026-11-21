@@ -37,13 +37,22 @@ pub fn extract_pem_block(text: &str) -> Option<Vec<u8>> {
 }
 
 /// 从文件字节提取证书 DER（PEM 含 BEGIN 标记优先按 PEM 解；否则按裸 DER；
-/// 都不是 = 明确报错，不做静默截取）。
+/// 都不是 = 明确报错，不做静默截取）。多证书链 PEM（≥2 个 CERTIFICATE 块）
+/// 按模块头诚实边界明确报错——链文件惯例 leaf 在前，静默截取第一块会把
+/// leaf 当信任锚装进 Root 库（BUG-20261121-040）。
 pub fn cert_der_from_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
     if let Ok(text) = std::str::from_utf8(bytes)
         && text.contains(PEM_BEGIN)
-        && let Some(der) = extract_pem_block(text)
     {
-        return Ok(der);
+        let blocks = text.matches(PEM_BEGIN).count();
+        if blocks > 1 {
+            bail!(
+                "PEM 含 {blocks} 个 CERTIFICATE 块（多证书链包不支持，请先拆出要安装的单一证书）"
+            );
+        }
+        if let Some(der) = extract_pem_block(text) {
+            return Ok(der);
+        }
     }
     if is_der_certificate(bytes) {
         return Ok(bytes.to_vec());

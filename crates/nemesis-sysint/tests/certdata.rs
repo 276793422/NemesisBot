@@ -47,7 +47,8 @@ fn extract_pem_block_roundtrip_and_edge_cases() {
     }
     let pem = format!("-----BEGIN CERTIFICATE-----\n{wrapped}-----END CERTIFICATE-----\n");
     assert_eq!(extract_pem_block(&pem), Some(der.clone()), "折行 PEM 提取");
-    // 前后噪声（链文件多证书形态：取第一块）。
+    // 前后噪声（提取器取第一块的原始语义；多证书链在入口层
+    // cert_der_from_bytes 明确拒绝，见下方多证书测试）。
     let noisy = format!("noise\n{pem}\nmore noise");
     assert_eq!(extract_pem_block(&noisy), Some(der.clone()));
     // 畸形：有 BEGIN 无 END。
@@ -74,6 +75,27 @@ fn cert_der_from_bytes_matrix() {
     // 垃圾 → 明确报错（不静默截取）。
     let garbage = b"hello world, definitely not a certificate";
     assert!(cert_der_from_bytes(garbage).is_err());
+}
+
+/// BUG-20261121-040 回归锁：多证书链 PEM 明确报错，不静默截取第一块
+/// （链文件惯例 leaf 在前，截取会把 leaf 当信任锚装进信任库）；
+/// 证书+私钥捆绑文件（单一 CERTIFICATE 块）不受影响照常提取。
+#[test]
+fn cert_der_from_bytes_multi_cert_pem_explicitly_rejected() {
+    let der = fake_der(4);
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+    let one = format!("-----BEGIN CERTIFICATE-----\n{b64}\n-----END CERTIFICATE-----\n");
+    // 双证书链 PEM → 报错且点明多证书链。
+    let chain = format!("{one}{one}");
+    let err = cert_der_from_bytes(chain.as_bytes())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("多证书链包"), "报错须点明多证书链: {err}");
+    // 证书+私钥捆绑（单 CERTIFICATE 块 + 非 CERTIFICATE 块）→ 照常提取。
+    let bundle =
+        format!("{one}-----BEGIN RSA PRIVATE KEY-----\naaa\n-----END RSA PRIVATE KEY-----\n");
+    assert_eq!(cert_der_from_bytes(bundle.as_bytes()).unwrap(), der);
 }
 
 #[test]
