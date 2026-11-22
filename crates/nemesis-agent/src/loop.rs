@@ -657,6 +657,12 @@ pub struct AgentLoop {
     /// 键分桶（BUG-20261106-039：spawn/评审/续行与父 turn 并发共用本
     /// loop）；无桶 = 喂入静默忽略，未装配路径零开销。
     work_recorder: crate::work_timeline::WorkRecorder,
+    /// wip 侧车（批二 A，2026-11-22）：turn 内执行现场逐事件落盘 + 重启
+    /// 打断后下一轮一次性注入「中断现场恢复」。Arc 与 ToolEventHook 共享
+    /// 同一实例（factory 经 [`Self::wip_journal`] 取 clone 注入 hook）；
+    /// 注册点=turn 起点（`run_agent_loop_internal`），detached 子代理/
+    /// 集群 worker 不注册 = 零写由构造保证。
+    wip_journal: crate::wip_journal::WipJournal,
     /// 会话级强度 override（G3，2026-11-09）：session_key → reasoning_effort
     /// （off/low/medium/high）。`chat.set_effort` 写入，仅内存态（重启清空
     /// 回落 config 模型级值）；取值点 run_loop chat_opts 组装处，优先级
@@ -1067,6 +1073,7 @@ impl AgentLoop {
             agent_event_tx: parking_lot::RwLock::new(None),
             session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
+            wip_journal: crate::wip_journal::WipJournal::default(),
             effort_overrides: parking_lot::RwLock::new(HashMap::new()),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
@@ -1206,6 +1213,18 @@ impl AgentLoop {
         // （落盘为准，与 tx 在场与否无关），再发实时事件（观察面）。
         self.work_recorder
             .push_round_output(session_key, content, reasoning);
+        // wip 侧车：中间叙述文本逐事件落盘（registry 未注册 = 静默忽略；
+        // 截断口径 = TEXT_PREVIEW_CAP 单一真相源，正文场景比工具预览宽）。
+        self.wip_journal.append(
+            session_key,
+            crate::wip_journal::WipEvent::Text {
+                ts: crate::wip_journal::WipEvent::now_ms(),
+                text: crate::tool_event_hook::truncate_chars(
+                    content,
+                    crate::wip_journal::TEXT_PREVIEW_CAP,
+                ),
+            },
+        );
         if let Some(tx) = self.agent_event_tx.read().as_ref() {
             // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
             let _ = tx.send(nemesis_types::agent::AgentEvent::RoundText {
@@ -1220,6 +1239,12 @@ impl AgentLoop {
     /// Work 时间线累加器共享句柄（factory 注入 ToolEventHook 用）。
     pub fn work_recorder(&self) -> crate::work_timeline::WorkRecorder {
         self.work_recorder.clone()
+    }
+
+    /// wip 侧车共享句柄（factory 注入 ToolEventHook 用；work_recorder
+    /// 同款共享形态）。
+    pub fn wip_journal(&self) -> crate::wip_journal::WipJournal {
+        self.wip_journal.clone()
     }
 
     /// hooks 方言桥句柄（资源看板 hooks_global 类目数据源，2026-11-17
@@ -1276,6 +1301,18 @@ impl AgentLoop {
         );
         self.work_recorder
             .tool_finished(session_key, call_id, false, duration_ms, &preview);
+        // wip 侧车：中断事实落盘（ok=false；hook 被急停 select 臂 drop
+        // 发不出 ToolEnd，这里按同一口径补写——现场含失败/中断标记）。
+        self.wip_journal.append(
+            session_key,
+            crate::wip_journal::WipEvent::ToolEnd {
+                ts: crate::wip_journal::WipEvent::now_ms(),
+                call_id: call_id.to_string(),
+                ok: false,
+                dur_ms: duration_ms,
+                result: preview.clone(),
+            },
+        );
         if let Some(tx) = self.agent_event_tx.read().as_ref() {
             // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
             let _ = tx.send(nemesis_types::agent::AgentEvent::ToolFinished {
@@ -1498,6 +1535,11 @@ mod turn_wal_loop_tests;
 // 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// （wip 侧车 2026-11-22）：loop 级咬合测试——真实 turn 路径「注册 →
+// hook 追加 → 折叠」生命周期、中断现场注入进 LLM 请求、折叠后不幽灵
+// 注入、错误收尾同样折叠。Journal 纯函数面归 wip_journal/tests.rs。
+#[cfg(test)]
+mod wip_turn_tests;
 // （插话专轮 2026-11-21）：claim 原子性 / 排空 / 预算豁免 / 续跑 / 首轮
 // 不置位行为测试（请求录制白盒 + 帧序黑盒）。
 #[cfg(test)]

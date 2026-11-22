@@ -115,7 +115,11 @@ pub fn onboard_default(home: &Path, local: bool, mode: OnboardMode) -> anyhow::R
                 );
                 obj.insert(
                     "detail_level".to_string(),
-                    serde_json::Value::String("full".to_string()),
+                    // 出厂即精简档（2026-11-22 detail_level 值域根治批）：
+                    // 此前硬编码 "full" 把模板值冲掉，新装机器开箱即全文档位
+                    // LLM 请求日志（与 675MB 日志体积根因同源）。精简档保留
+                    // 结构化摘要，全量档由用户显式改。
+                    serde_json::Value::String("truncated".to_string()),
                 );
             }
             println!("  LLM logging enabled");

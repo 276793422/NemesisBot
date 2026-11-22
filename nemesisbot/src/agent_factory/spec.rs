@@ -418,6 +418,7 @@ pub fn build_agent_loop_from_spec(
                 tx,
                 agent_loop.work_recorder(),
                 agent_loop.output_preview_sanitizer(),
+                agent_loop.wip_journal(),
             ),
         ));
     }

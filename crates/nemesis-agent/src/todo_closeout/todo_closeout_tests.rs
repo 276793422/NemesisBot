@@ -1,8 +1,9 @@
-//! todo 收尾提醒 hook 测试（2026-09-24）。
+//! todo 收尾提醒 hook 测试（2026-09-24；2026-11-22 语义反转随批更新）。
 //!
-//! 覆盖：① 未完成清单 → Continue + 提醒点名未完成项；② 全 completed →
-//! Stop；③ 清单文件缺失 → Stop；④ 清单损坏 → Stop（fail-open）；⑤
-//! `stop_hook_active` 自限跳过；⑥ 写读同源回归——真实 `TodoWriteTool`
+//! 覆盖：① 未完成清单 → Continue + 提醒点名未完成项且方向=继续执行；
+//! ② 全 completed → Stop；③ 清单文件缺失 → Stop；④ 清单损坏 → Stop
+//! （fail-open）；⑤ 首拦模板=「继续用工具执行」、⑥ `stop_hook_active`
+//! 升级模板（不再是自限跳过）；⑦ 写读同源回归——真实 `TodoWriteTool`
 //! 落盘的文件 hook 必须读到（sanitize/路径同构，F）。
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,6 +69,10 @@ async fn unfinished_list_blocks_stop_with_reminder() {
     match hook_with(&ws).on_turn_end(&turn_end(false)).await {
         TurnEndDecision::Continue { feedback } => {
             assert!(feedback.contains("todowrite"), "reminder names the tool");
+            assert!(
+                feedback.contains("继续用工具执行"),
+                "first block commands resuming work, not reporting: {feedback}"
+            );
             assert!(
                 feedback.contains("汇总报告"),
                 "reminder names the in_progress item: {feedback}"
@@ -136,8 +141,8 @@ async fn malformed_json_stops_fail_open() {
 }
 
 #[tokio::test]
-async fn stop_hook_active_skips() {
-    let ws = unique_workspace("self_limit");
+async fn stop_hook_active_escalates_instead_of_skipping() {
+    let ws = unique_workspace("escalation");
     write_via_tool(
         &ws,
         &serde_json::json!({
@@ -147,11 +152,55 @@ async fn stop_hook_active_skips() {
     )
     .await;
 
-    // 本轮已被任何 hook Continue 过一次（stop_hook_active=true）→ 自限跳过。
-    assert!(matches!(
-        hook_with(&ws).on_turn_end(&turn_end(true)).await,
-        TurnEndDecision::Stop
-    ));
+    // v2 语义反转：本轮已被 Continue 过一次（stop_hook_active=true）不再是
+    // 自限跳过，而是升级拦停——模板从「继续执行」换成「列证据或继续干活」，
+    // 第 3 次停车由 loop 侧 MAX_TURN_END_CONTINUES=2 硬封顶放行。
+    match hook_with(&ws).on_turn_end(&turn_end(true)).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(
+                feedback.contains("再次"),
+                "escalation names the repeated stop: {feedback}"
+            );
+            assert!(
+                feedback.contains("证据清单"),
+                "escalation demands evidence for user-domain blocks: {feedback}"
+            );
+            assert!(
+                !feedback.contains("继续用工具执行，不要以汇报收摊"),
+                "escalation must not repeat the first-block template verbatim: {feedback}"
+            );
+        }
+        TurnEndDecision::Stop => {
+            panic!("escalation must still block (loop cap fail-opens the 3rd)")
+        }
+        TurnEndDecision::Inject { .. } => {
+            panic!("todo closeout reminder must Continue, never Inject")
+        }
+    }
+}
+
+#[tokio::test]
+async fn first_block_and_escalation_templates_differ() {
+    // 同一清单两种停车状态产出不同模板（首拦=继续执行，升级=列证据/继续）。
+    let ws = unique_workspace("templates_differ");
+    write_via_tool(
+        &ws,
+        &serde_json::json!({
+            "todos": [{"content": "跨模板项", "status": "pending"}]
+        })
+        .to_string(),
+    )
+    .await;
+
+    let first = match hook_with(&ws).on_turn_end(&turn_end(false)).await {
+        TurnEndDecision::Continue { feedback } => feedback,
+        _ => panic!("first stop must Continue"),
+    };
+    let second = match hook_with(&ws).on_turn_end(&turn_end(true)).await {
+        TurnEndDecision::Continue { feedback } => feedback,
+        _ => panic!("second stop must escalate with Continue"),
+    };
+    assert_ne!(first, second, "two stages must use distinct templates");
 }
 
 #[tokio::test]

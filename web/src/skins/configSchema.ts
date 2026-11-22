@@ -106,7 +106,7 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   // ---- logging ----
   'logging.llm.enabled': { label: '记录 LLM 请求日志', type: 'boolean' },
   'logging.llm.log_dir': { label: 'LLM 日志目录', type: 'string' },
-  'logging.llm.detail_level': { label: 'LLM 日志详细度', type: 'enum', options: ['summary', 'full'] },
+  'logging.llm.detail_level': { label: 'LLM 日志详细度', type: 'enum', options: ['full', 'truncated'] },
   'logging.llm.save_raw': { label: '保存原始请求/响应', type: 'boolean' },
   'logging.general.enabled': { label: '启用文件日志', type: 'boolean' },
   'logging.general.enable_console': { label: '控制台输出', type: 'boolean' },

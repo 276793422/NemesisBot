@@ -790,6 +790,17 @@ impl AgentLoop {
                     "# Branch Context（分支前情提要）\n{summary}\n\n(以上是本会话建立时被遗弃部分的结构化前情提要——那些内容不在本会话上下文里，供理解背景用；其中未完成事项与结论供参考，勿当作已确认事实。)"
                 ));
             }
+            // wip 侧车「中断现场恢复」节（批二 A，2026-11-22）：上一 turn
+            // 被硬杀（gateway 重启/崩溃）时，turn 起点消费暂存的执行现场
+            // （逐事件事实记录）整 turn 注入。peek 语义——同一 turn 多轮
+            // 构建注入同一文本（字节稳定，续轮上下文不丢现场）；清理收口
+            // 在 finalize_turn_shared 折叠。内容随既有 InjectionRecord 台账
+            // 落账 → replay 一致（同 transient 注入既有机制）。
+            if let Some(sk) = session_key
+                && let Some(scene) = self.wip_journal.pending_for(sk)
+            {
+                sections.push(crate::wip_journal::render_injection_section(&scene));
+            }
             // (refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —
             // deterministic (same state ⇒ identical bytes, so the merged

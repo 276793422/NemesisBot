@@ -315,6 +315,17 @@ impl AgentLoop {
         self.turn_file_changes.lock().remove(session_key);
         self.turn_deliverables.lock().remove(session_key);
 
+        // wip 侧车 turn 起点两步（批二 A，2026-11-22）：① 先消费上一轮
+        // 遗留现场（读盘→渲染→挂 pending 注入表，**不删文件**——删除收口
+        // 在 register 截断与 fold，连续硬杀现场不回退）；② 再注册本轮
+        // 写入器（截断旧文件——遗留现场字节已进 pending，本轮从空文件写
+        // 自己的事件）。空 session_key（detached/旧续行快照形态）两步内部
+        // 自 no-op。注册表未命中 = 本 turn 的 hook 追加零写（detached 子
+        // 代理不进本函数）。
+        let wip_root = self.session_homes_root();
+        self.wip_journal.consume_previous(&wip_root, session_key);
+        self.wip_journal.register(&wip_root, session_key);
+
         // （聊天切会话竞态）：user 行落盘职责已上移到调用方——
         // process_admitted 在预处理链之前落原始文本（「接纳即落盘」，消除
         // 早切回空视图），process_system_message 落 [System:...] 行（内容
@@ -619,6 +630,13 @@ impl AgentLoop {
                 system_notice: None,
             },
         );
+
+        // wip 侧车折叠（批二 A，2026-11-22）：assistant 行落盘成功 = 现场
+        // 已持久化进会话记录 → 删 wip 文件 + pending 兜底清理。本函数是
+        // turn 收尾单一收口：正常/错误/急停收尾都到达（错误轮上方已先冲刷
+        // 中间正文，现场不丢）；turn-end hook 续轮走 Continue 提前返回、
+        // 永远到不了这里（结构保证续轮不折叠）。
+        self.wip_journal.fold(session_key);
 
         // 交付物实时面——落盘**之后**发布（与 emit_session_created 同一
         // 纪律：persisted 先于 pushed）。web pump → SSE `deliverables` + WS

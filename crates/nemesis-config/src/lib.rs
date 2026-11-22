@@ -1099,8 +1099,8 @@ fn default_heartbeat_interval_minutes() -> i64 {
 fn default_max_results() -> i64 {
     5
 }
-fn default_detail_level() -> String {
-    "full".to_string()
+fn default_detail_level() -> LlmDetailLevel {
+    LlmDetailLevel::Full
 }
 fn default_log_level() -> String {
     "INFO".to_string()

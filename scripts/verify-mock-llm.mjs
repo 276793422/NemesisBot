@@ -75,6 +75,10 @@ const SLOW_MS = 20_000
 // 批次恒执行，sleep 在无插话与有插话两流里都真执行（3s）；插话在轮边界
 // （sleep 完成后、返回前）被 claim 进插话专轮，contract marker 路由见下。
 const SLOW_TOOL_MS = Number(process.env.SLOW_TOOL_MS ?? 8_000)
+// sleep 工具时长（slow_tool 臂）：默认 3s；wip-resume.spec 传大值（如 12s）
+// 拉宽「tool_start 已落盘 → sleep 进行中」的硬杀窗口，保证 taskkill 落在
+// 工具执行期而非工具结束后。
+const SLOW_TOOL_SLEEP_SECS = Number(process.env.SLOW_TOOL_SLEEP_SECS ?? 3)
 
 // 插话专轮回应延迟（2026-11-21 插话专轮批）：contract marker 路由——专轮
 // 请求含 [E2E_STEER_CONTRACT]（尾部 system 注入，每阶段轮重建）。延迟应答
@@ -185,14 +189,18 @@ function recordEvidence(body) {
   const hasCapabilities = text.includes('action=capabilities') || text.includes('node_type')
   const hasTargetYaml = text.includes('trigger_type')
   const hasOpenFiles = text.includes('Open Files (client-reported)')
-  const line = `${new Date().toISOString()} last_role=${lastRole(body)} route=${routeRequest(body)} wf_edit_section=${hasSection} yaml_like=${hasTargetYaml} caps_like=${hasCapabilities} open_files=${hasOpenFiles} msgs=${(body?.messages ?? []).length}\n`
+  // wip 侧车注入节（2026-11-22 批二 A 验收）：LLM 请求是否携带
+  // 「Interrupted Turn Scene（中断现场恢复）」瞬态节——wip-resume.spec
+  // 据此断言中断现场真进了 LLM 请求（后端注入链真实生效）。
+  const hasWipScene = text.includes('Interrupted Turn Scene')
+  const line = `${new Date().toISOString()} last_role=${lastRole(body)} route=${routeRequest(body)} wf_edit_section=${hasSection} yaml_like=${hasTargetYaml} caps_like=${hasCapabilities} open_files=${hasOpenFiles} wip_scene=${hasWipScene} msgs=${(body?.messages ?? []).length}\n`
   try {
     fs.appendFileSync(EVIDENCE, line)
   } catch {
     /* 证据文件写不进不影响服务 */
   }
   // 把完整请求 dump 下来（V4/V8/I5 人工核对注入内容）
-  if (hasSection || hasOpenFiles) {
+  if (hasSection || hasOpenFiles || hasWipScene) {
     try {
       fs.writeFileSync(EVIDENCE.replace(/\.log$/, '.last-request.json'), JSON.stringify(body, null, 2))
     } catch {
@@ -393,7 +401,7 @@ function messagePayload(route, body) {
                   // execute 只读 seconds）。传 duration 会撞 args 校验失败
                   // 回灌（校验在 ToolEventHook 之前 → 无工具事件无工具行，
                   // 轮 2 请求尾部 role=tool 走 instant final 臂）。
-                  arguments: JSON.stringify({ seconds: 3 }),
+                  arguments: JSON.stringify({ seconds: SLOW_TOOL_SLEEP_SECS }),
                 },
               },
             ],
@@ -404,7 +412,8 @@ function messagePayload(route, body) {
       usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
     }
   }
-  if (route === 'exec_tool') {    return {
+  if (route === 'exec_tool') {
+    return {
       ...base,
       choices: [
         {

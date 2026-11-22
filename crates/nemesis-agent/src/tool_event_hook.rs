@@ -46,6 +46,8 @@ pub(crate) fn truncate_chars(s: &str, cap: usize) -> String {
 /// 把工具调度事件发布到 broadcast 通道的观察 hook。
 /// 同时喂 Work 时间线累加器（与 tx 发射同点同源——落盘真相源
 /// 与实时观察面同一发射点，无第二份转换逻辑；recorder 未 begin = 忽略）。
+/// 同点喂 wip 侧车（批二 A）：turn 内执行现场逐事件落盘，registry 未注册
+/// 的 session_key（detached 子代理/集群 worker）= 静默忽略零写。
 pub struct ToolEventHook {
     tx: broadcast::Sender<AgentEvent>,
     work: crate::work_timeline::WorkRecorder,
@@ -55,6 +57,11 @@ pub struct ToolEventHook {
     /// = 预览原样截断，行为不变。只作用于**预览副本**——返回给 dispatch
     /// 的原始 result 不经此处（权威复扫在 dispatch 尾，语义不变）。
     sanitize: Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>>,
+    /// wip 侧车共享句柄——必须与 AgentLoop 同一实例（loop 注册、hook 追加；
+    /// 两实例 = 注册表不互通 = 零写）。`new_with_sanitizer` 第 4 参强制
+    /// 生产装配点显式传值（防 FactoryConfig stream_mode 式静默漏接——
+    /// 编译器兜底）。
+    wip: crate::wip_journal::WipJournal,
 }
 
 impl ToolEventHook {
@@ -66,16 +73,24 @@ impl ToolEventHook {
             tx,
             work,
             sanitize: None,
+            wip: crate::wip_journal::WipJournal::default(),
         }
     }
 
     /// 带出侧复扫同源净化器的构造形态（生产装配用；见字段注释）。
+    /// `wip` 必须传 `agent_loop.wip_journal()`（同一 Arc 实例）。
     pub fn new_with_sanitizer(
         tx: broadcast::Sender<AgentEvent>,
         work: crate::work_timeline::WorkRecorder,
         sanitize: Option<std::sync::Arc<dyn Fn(&str, &str) -> String + Send + Sync>>,
+        wip: crate::wip_journal::WipJournal,
     ) -> Self {
-        Self { tx, work, sanitize }
+        Self {
+            tx,
+            work,
+            sanitize,
+            wip,
+        }
     }
 }
 
@@ -111,18 +126,25 @@ impl ToolHook for ToolEventHook {
         let tool = call.name.clone();
 
         // 无订阅者时 send 返回 Err——观察者通道空转是常态，静默忽略。
-        self.work.tool_started(
+        let args_preview = truncate_chars(&call.arguments, ARGS_PREVIEW_CAP);
+        self.work
+            .tool_started(&session_key, &call_id, &tool, &args_preview);
+        // wip 侧车：工具调度事实落盘（registry 未注册 = 静默忽略）。
+        self.wip.append(
             &session_key,
-            &call_id,
-            &tool,
-            &truncate_chars(&call.arguments, ARGS_PREVIEW_CAP),
+            crate::wip_journal::WipEvent::ToolStart {
+                ts: crate::wip_journal::WipEvent::now_ms(),
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                args: args_preview.clone(),
+            },
         );
         let _ = self.tx.send(AgentEvent::ToolStarted {
             session_key: session_key.clone(),
             chat_id: chat_id.clone(),
             call_id: call_id.clone(),
             tool: tool.clone(),
-            args_preview: truncate_chars(&call.arguments, ARGS_PREVIEW_CAP),
+            args_preview,
         });
 
         // 优先用 dispatch 入口时刻计时（含安全段
@@ -151,12 +173,20 @@ impl ToolHook for ToolEventHook {
             None => result.clone(),
         };
 
-        self.work.tool_finished(
+        let result_preview = truncate_chars(&preview_source, RESULT_PREVIEW_CAP);
+        self.work
+            .tool_finished(&session_key, &call_id, ok, duration_ms, &result_preview);
+        // wip 侧车：工具结束事实落盘（与 work 时间线同一预览口径——
+        // 已净化 + 已截断，不落复扫前原文）。
+        self.wip.append(
             &session_key,
-            &call_id,
-            ok,
-            duration_ms,
-            &truncate_chars(&preview_source, RESULT_PREVIEW_CAP),
+            crate::wip_journal::WipEvent::ToolEnd {
+                ts: crate::wip_journal::WipEvent::now_ms(),
+                call_id: call_id.clone(),
+                ok,
+                dur_ms: duration_ms,
+                result: result_preview.clone(),
+            },
         );
         let _ = self.tx.send(AgentEvent::ToolFinished {
             session_key,
@@ -165,7 +195,7 @@ impl ToolHook for ToolEventHook {
             tool,
             duration_ms,
             ok,
-            result_preview: truncate_chars(&preview_source, RESULT_PREVIEW_CAP),
+            result_preview,
         });
 
         result

@@ -572,6 +572,103 @@ describe('SettingsView 日志 TAB（gap 补测）', () => {
     expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'logging.general.file', value: 'logs/app.log' })
     w.unmount()
   })
+
+  it('detail_level 只剩 full/truncated（summary 退役）+ 重启生效/自愈回写提示（批二 C②）', async () => {
+    const w = await mountView()
+    await toTab(w, '日志')
+    const detail = w.findAll('select.form-select').find(s => s.findAll('option').some(o => o.element.value === 'truncated'))!
+    // summary 档退役：下拉只剩两档（B 批 schema 对齐的前端契约面）
+    expect(detail.findAll('option').map(o => o.element.value)).toEqual(['full', 'truncated'])
+    // B 批 typed 根治的注记在场
+    expect(w.text()).toContain('重启生效。历史遗留的 summary 档已按 truncated 生效')
+    expect(w.text()).toContain('自愈回写')
+    // save_raw 提示带重启生效
+    expect(w.text()).toContain('已禁用（默认）；重启生效。')
+    w.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 批二 C①：数据治理 TAB 占用摘要条（logs.usage on-demand）。展开首拉、
+// 手动刷新、不轮询；缺席族渲染 '—'；失败 toast 不阻塞页面。
+// ---------------------------------------------------------------------------
+
+describe('SettingsView 占用摘要条（logs.usage，批二 C①）', () => {
+  const usagePayload = {
+    families: {
+      session_logs: { bytes: 1536, entries: 3 },
+      terminal: { bytes: 512, entries: 1 },
+      // 其余 14 族刻意缺席 → 前端 '—'（后端缺席族恒 0/0，这里锁前端防御分支）
+    },
+    total_bytes: 2048,
+    total_entries: 4,
+  }
+
+  it('默认未加载不发请求；展开逐族首拉 → 总量 formatBytes + 16 行 + 缺席族 —；收起不再拉', async () => {
+    requestMock.mockImplementation(makeFixedImpl(cfg(), { usage: () => usagePayload }))
+    const w = await mountView()
+    await toTab(w, '数据治理')
+    // 初始：未加载、逐族折叠缺席、零请求（懒触发契约）
+    expect(w.find('[data-test="usage-total"]').exists()).toBe(false)
+    expect(w.text()).toContain('未加载')
+    expect(w.find('[data-test="usage-families"]').exists()).toBe(false)
+    expect(requestMock.mock.calls.filter(c => c[0] === 'logs' && c[1] === 'usage').length).toBe(0)
+
+    await w.find('[data-test="usage-toggle"]').trigger('click')
+    await flushPromises()
+    const calls = requestMock.mock.calls.filter(c => c[1] === 'usage')
+    expect(calls.length).toBe(1)
+    expect(calls[0][0]).toBe('logs')
+    expect(w.find('[data-test="usage-total"]').text()).toBe('2.0 KB') // formatBytes(2048)
+    const rows = w.findAll('[data-test="usage-family-value"]')
+    expect(rows.length).toBe(16)
+    expect(rows.some(r => r.text() === '1.5 KB · 3 件')).toBe(true) // formatBytes(1536)
+    expect(rows.some(r => r.text() === '512 B · 1 件')).toBe(true)
+    expect(rows.filter(r => r.text() === '—').length).toBe(14)
+
+    // 收起：折叠消失、不再发请求（已有数据不自动重拉——无轮询契约）
+    await w.find('[data-test="usage-toggle"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="usage-families"]').exists()).toBe(false)
+    expect(requestMock.mock.calls.filter(c => c[1] === 'usage').length).toBe(1)
+    w.unmount()
+  })
+
+  it('刷新按钮手动重拉；加载态按钮文案「统计中…」且禁用', async () => {
+    requestMock.mockImplementation(makeFixedImpl(cfg(), { usage: () => usagePayload }))
+    const w = await mountView()
+    await toTab(w, '数据治理')
+    await w.find('[data-test="usage-toggle"]').trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'usage').length).toBe(1)
+
+    // 刷新：第二次拉取
+    await w.find('[data-test="usage-refresh"]').trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'usage').length).toBe(2)
+    expect(w.find('[data-test="usage-total"]').text()).toBe('2.0 KB')
+    expect((w.find('[data-test="usage-refresh"]').element as HTMLButtonElement).disabled).toBe(false)
+    expect(w.find('[data-test="usage-refresh"]').text()).toBe('刷新')
+    w.unmount()
+  })
+
+  it('usage 失败 → error toast「占用统计失败」，总量保持未加载', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'get') return Promise.resolve(cfg())
+      if (cmd === 'cors.list') return Promise.resolve({ origins: [], development_mode: false })
+      if (cmd === 'lease_status') return Promise.resolve({ supported: false })
+      if (cmd === 'usage') return Promise.reject(new Error('sweep busy'))
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await toTab(w, '数据治理')
+    await w.find('[data-test="usage-toggle"]').trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('占用统计失败') && t.message.includes('sweep busy'))).toBe(true)
+    expect(w.find('[data-test="usage-total"]').exists()).toBe(false)
+    expect(w.text()).toContain('未加载')
+    w.unmount()
+  })
 })
 
 describe('SettingsView Agent TAB 批次 4 键与实验区（gap 补测）', () => {

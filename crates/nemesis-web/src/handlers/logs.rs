@@ -46,6 +46,7 @@ impl ModuleHandler for LogsHandler {
             "spill_cleanup",
             "history_search",
             "history_reindex",
+            "usage",
         ]
     }
 
@@ -259,6 +260,15 @@ impl ModuleHandler for LogsHandler {
             "history_reindex" => tokio::task::spawn_blocking(move || LogsHandler.history_reindex())
                 .await
                 .map_err(|e| format!("logs.history_reindex task join failed: {e}"))?,
+            // C（2026-11-22 批二）：十六族日志占用统计（数据治理 TAB 占用
+            // 条）。on-demand 递归游走，request_logs 675MB 级单次打开可接受
+            // ——重活移阻塞线程（本文件顶部纪律）。
+            "usage" => {
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.usage(&ws))
+                    .await
+                    .map_err(|e| format!("logs.usage task join failed: {e}"))?
+            }
             _ => Err(format!("unknown command: logs.{}", cmd)),
         }
     }
@@ -274,6 +284,42 @@ fn opt_u64(data: &Option<serde_json::Value>, field: &str, default: usize) -> usi
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
         .unwrap_or(default)
+}
+
+/// 递归统计一棵目录树（bytes = 文件字节合计，entries = 文件件数；目录
+/// 本身不计数）。显式栈（族树最深三层，栈仅防患）；条目不可读 = 诚实
+/// 跳过（usage 是尽力而为的统计面，不反向报错）。
+fn walk_dir_stats(path: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut entries = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(p),
+                Ok(ft) if ft.is_file() => {
+                    if let Ok(md) = entry.metadata() {
+                        bytes += md.len();
+                        entries += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (bytes, entries)
+}
+
+/// 单文件统计（heartbeat 形态）：在场文件 =（size, 1）；缺席/非文件 = 0/0。
+fn file_stats(path: &Path) -> (u64, u64) {
+    match std::fs::metadata(path) {
+        Ok(md) if md.is_file() => (md.len(), 1),
+        _ => (0, 0),
+    }
 }
 
 fn request_log_dir(workspace: &str) -> PathBuf {
@@ -1969,6 +2015,87 @@ impl LogsHandler {
             "oldest": st.oldest,
         })))
     }
+
+    /// C（2026-11-22 批二）：十六族日志占用统计（数据治理 TAB 占用条）。
+    /// on-demand 递归游走，返回每族 `{bytes, entries}`；族→路径映射与
+    /// 清扫器 `nemesisbot::logs_sweeper::sweep_workspace_logs` 同构（可独立
+    /// resolver 的族复用 nemesis-path 写端真相源，无 resolver 的族与写端
+    /// 同构拼装——清扫侧真相源在 nemesisbot crate，本表是读侧镜像）。
+    /// `entries` = 递归文件件数（目录不计数；heartbeat 单文件在场=1；
+    /// ziwei 三根合计）。族缺席 = 0/0（诚实上报，不区分「没开过」与
+    /// 「TTL 刚清完」）。纯只读，不动任何文件。
+    fn usage(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let ws = Path::new(workspace);
+        let logs_root = nemesis_path::logs_dir_in_workspace(ws);
+        let mut families = serde_json::Map::new();
+        let mut total_bytes = 0u64;
+        let mut total_entries = 0u64;
+        let mut push = |name: &str, stats: (u64, u64)| {
+            total_bytes += stats.0;
+            total_entries += stats.1;
+            families.insert(
+                name.to_string(),
+                serde_json::json!({ "bytes": stats.0, "entries": stats.1 }),
+            );
+        };
+        // 十四目录族（次序 = 清扫器 sweep_workspace_logs 同构）。
+        for (name, dir) in [
+            (
+                "session_logs",
+                nemesis_path::resolve_session_logs_dir_in_workspace(ws),
+            ),
+            (
+                "boundary",
+                nemesis_path::resolve_boundary_events_dir_in_workspace(ws),
+            ),
+            (
+                "request_logs",
+                nemesis_path::resolve_request_logs_dir_in_workspace(ws),
+            ),
+            ("terminal", logs_root.join("terminal")),
+            ("event_ledger", logs_root.join("event_ledger")),
+            (
+                "trash",
+                nemesis_path::resolve_trash_sessions_dir_in_workspace(ws),
+            ),
+            (
+                "gateway",
+                nemesis_path::resolve_gateway_logs_dir_in_workspace(ws),
+            ),
+            (
+                "cluster_logs",
+                nemesis_path::resolve_cluster_logs_dir_in_workspace(ws),
+            ),
+            ("eval", logs_root.join("eval")),
+            ("capture", logs_root.join("capture")),
+            ("dreaming", logs_root.join("dreaming")),
+            ("calibration", logs_root.join("calibration")),
+            ("deliveries", logs_root.join("deliveries")),
+            ("exec_checkpoints", logs_root.join("exec_checkpoints")),
+        ] {
+            push(name, walk_dir_stats(&dir));
+        }
+        // 非目录形态两族：heartbeat 已知单文件；ziwei 混合三根
+        // （logs/ziwei + reports/ziwei-verify + reports/ziwei-recover，
+        // reports/{dest} 用户点名输出不在族内——清扫器同口径）。
+        push("heartbeat", file_stats(&logs_root.join("heartbeat.log")));
+        let mut zy = (0u64, 0u64);
+        for root in [
+            logs_root.join("ziwei"),
+            ws.join("reports").join("ziwei-verify"),
+            ws.join("reports").join("ziwei-recover"),
+        ] {
+            let part = walk_dir_stats(&root);
+            zy.0 += part.0;
+            zy.1 += part.1;
+        }
+        push("ziwei", zy);
+        Ok(Some(serde_json::json!({
+            "families": families,
+            "total_bytes": total_bytes,
+            "total_entries": total_entries,
+        })))
+    }
 }
 
 /// G3: retention config with the same default as `AgentDefaults`
@@ -2765,3 +2892,9 @@ mod agt_tests;
 // 后再 perspective 过滤/first 兜底。旧 first-match 在 NTFS 恒取最旧轮。
 #[cfg(test)]
 mod cluster_task_detail_tests;
+
+// C（2026-11-22 批二）：logs.usage 十六族占用统计——族表齐全恰 16、
+// 逐族 bytes/entries 与盘上实测一致（单文件族/混合根族/缺席全零）、
+// totals=逐族合计。命令本体无 feature 门，测试同门。
+#[cfg(test)]
+mod usage_tests;
