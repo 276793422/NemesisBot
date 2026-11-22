@@ -133,6 +133,10 @@ mod web_fetch_tests;
 // BUG-20261115-009 回归锁：带凭据 search client 的跨源重定向终停行为级测试。
 #[cfg(test)]
 mod web_search_redirect_tests;
+// BUG-20261122-018 回归锁：percent_decode/url_decode_query_param multibyte
+// UTF-8 整体重组（逐字节 as char Latin-1 映射 → uddg 解包非 ASCII 乱码）。
+#[cfg(test)]
+mod web_decode_utf8_tests;
 // BUG-20261122-016 回归锁：web_search 生产实现响应状态闸（非 2xx 报错而非
 // 静默零结果——Brave serde(default) 空成功 / DDG 验证码页零命中假无结果）。
 #[cfg(test)]

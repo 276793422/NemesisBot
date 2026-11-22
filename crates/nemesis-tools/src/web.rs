@@ -741,25 +741,39 @@ fn url_decode_query_param(url: &str, param: &str) -> Option<String> {
 
     for part in query_part.split('&') {
         if let Some(encoded_value) = part.strip_prefix(&prefix) {
-            // Basic percent-decoding
-            let mut result = String::new();
-            let mut chars = encoded_value.chars();
-            while let Some(c) = chars.next() {
-                if c == '%' {
-                    let hex: String = chars.by_ref().take(2).collect();
-                    if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                        result.push(byte as char);
-                    } else {
-                        result.push('%');
-                        result.push_str(&hex);
+            // percent-decoding 按 UTF-8 字节序列整体重组（BUG-20261122-018，
+            // 同族先例 oauth.rs url_decode / wechat.rs percent_decode）：
+            // 旧形态逐字节 `byte as char` 是 Latin-1 映射——multibyte 序列
+            //（`中` = %E4%B8%AD）被拆成三个独立码位产出 mojibake，web_search
+            // 的 uddg 解包对一切非 ASCII 目标 URL 产出乱码。字节收集后
+            // from_utf8_lossy：合法 UTF-8 正确还原，非法序列 U+FFFD 诚实
+            // 降级；`+` 视作空格，非法 % 序列原样保留。
+            let bytes = encoded_value.as_bytes();
+            let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'%' if i + 2 < bytes.len() => {
+                        let hex_part = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                        if let Ok(v) = u8::from_str_radix(hex_part, 16) {
+                            out.push(v);
+                            i += 3;
+                        } else {
+                            out.push(b'%');
+                            i += 1;
+                        }
                     }
-                } else if c == '+' {
-                    result.push(' ');
-                } else {
-                    result.push(c);
+                    b'+' => {
+                        out.push(b' ');
+                        i += 1;
+                    }
+                    b => {
+                        out.push(b);
+                        i += 1;
+                    }
                 }
             }
-            return Some(result);
+            return Some(String::from_utf8_lossy(&out).into_owned());
         }
     }
     None

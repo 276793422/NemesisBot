@@ -135,6 +135,31 @@ fn test_url_decode_query_param_missing() {
     assert_eq!(result, None);
 }
 
+// BUG-20261122-018 回归锁：multibyte UTF-8 必须整体重组——旧形态逐字节
+// `byte as char`（Latin-1 映射）把 `中`（%E4%B8%AD）拆成三个独立码位，
+// web_search 的 uddg 解包对非 ASCII 目标 URL 产出 mojibake。
+#[test]
+fn test_url_decode_query_param_utf8() {
+    let url = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fzh.wikipedia.org%2Fwiki%2F%E4%B8%AD%E8%8F%AF%E6%B0%91%E5%9C%8B&rpt=foo";
+    let result = url_decode_query_param(url, "uddg");
+    assert_eq!(
+        result,
+        Some("https://zh.wikipedia.org/wiki/中華民國".to_string())
+    );
+    // 非法 UTF-8 序列 → U+FFFD 诚实降级（不伪造码位）。
+    let bad = "https://duckduckgo.com/l/?uddg=%FF%FE&q=1";
+    assert_eq!(
+        url_decode_query_param(bad, "uddg"),
+        Some("\u{FFFD}\u{FFFD}".to_string())
+    );
+    // 尾部残缺 % 序列原样保留（不吞字符不产出控制字符）。
+    let trunc = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fa%4";
+    assert_eq!(
+        url_decode_query_param(trunc, "uddg"),
+        Some("https://a%4".to_string())
+    );
+}
+
 // Test the DuckDuckGo extract_results method
 #[test]
 fn test_duckduckgo_extract_results_empty() {
