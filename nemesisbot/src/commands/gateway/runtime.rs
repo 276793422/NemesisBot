@@ -1892,6 +1892,18 @@ pub(crate) async fn run_runtime(
         taiwei_started.elapsed().as_secs(),
     );
 
+    // 停机收口 cron 调度循环（BUG-20261122-041，同族第四例：heartbeat r9 /
+    // devices BUG-20261114-015 / 集群推送循环 BUG-20261114-019）：
+    // CronService::start() spawn 的 1s tick 触发循环 detached 存活，
+    // `stop()`（running=false + abort 句柄）此前全仓零调用——不收口则循环
+    // 横跨整个 drain+teardown 排空窗继续 fire：到期 job 向 bus 注入新 turn
+    // 对抗 drain 归零、autopilot 建单写 board.db、dreaming sweep 写盘；
+    // bus.close() 后 publish 静默丢而 run history 照记 ok（假成功）；最后
+    // poll 注册新 TimerEntry = 停机 panic（家族既证失败形态）。必须先于
+    // drain 停：排空窗内 fire 的新 turn 会令 in-flight 归零判定失真。
+    cron_service.lock().unwrap().stop();
+    info!("[Gateway] Cron scheduler stopped");
+
     // W6（2026-10-25 加固）：优雅
     // 停机 drain——先关入口（draining 闸：外部通道新消息诚实回执，内部
     // 通道静默丢），再有界等在途 turn 归零，然后才 teardown。超时明示

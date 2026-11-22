@@ -1092,3 +1092,67 @@ fn test_bug_cjk_job_id_detached_execute_no_panic() {
     // 避免 Windows 上 TempDir 清理撞进行中的落盘句柄（断言不依赖该写回）。
     std::thread::sleep(Duration::from_millis(200));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261122-041：stop() 后触发循环必须终止（gateway 停机收口契约）
+// ---------------------------------------------------------------------------
+
+/// 判别形态：停机前作业正常 fire 一次（证明循环活着），stop() 后新增的
+/// 即将到期作业在 ≥2 个 tick 窗口内**永不 fire**。此前 stop() 全仓零调用
+/// （gateway 停机序列漏收口），循环 detached 横跨 drain+teardown 排空窗
+/// 继续注入 turn / 写盘；本契约是停机接线的行为锚点。
+#[tokio::test]
+async fn test_w1b_stop_terminates_fire_loop_no_fires_after_stop() {
+    let (_dir, path) = tmp_store_path("cron.json");
+    let svc = CronService::new(&path);
+    let fired = Arc::new(AtomicUsize::new(0));
+    let fired2 = fired.clone();
+    svc.set_on_job(move |_j| {
+        fired2.fetch_add(1, Ordering::SeqCst);
+        Ok("ok".to_string())
+    });
+
+    // 停机前作业：~1.2s 后到期，at 作业 fire 后自删（delete_after_run
+    // 默认 true），不给停机后的观测窗口留噪声。
+    svc.add_job(
+        "pre_stop",
+        at_schedule(Local::now().timestamp_millis() + 1200),
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+
+    svc.arm();
+    svc.start().await.unwrap();
+    let mut waited = 0u64;
+    while fired.load(Ordering::SeqCst) == 0 && waited < 5000 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        waited += 100;
+    }
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "pre-stop job must fire exactly once"
+    );
+
+    // 停机收口。之后补一个 300ms 后到期的作业：循环已死则永不 fire；
+    // 回归形态（循环仍活）下 1s tick 会收集它 → fired=2，断言必红。
+    svc.stop();
+    svc.add_job(
+        "post_stop",
+        at_schedule(Local::now().timestamp_millis() + 300),
+        "m",
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        1,
+        "no fires may happen after stop()"
+    );
+}
