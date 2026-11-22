@@ -507,6 +507,17 @@ pub fn mask_sensitive(value: &str) -> String {
 }
 
 /// Check whether a field name is considered sensitive and should be masked.
+///
+/// 全等匹配语义（非 contains）：「token」包含匹配会误伤 `tokens_used`/
+/// `token_count` 之类统计字段，把 UI 数字变 `****`。复合命名的凭据字段
+/// 必须逐个显式进名单（BUG-20261122-043：此前漏 `verification_token`/
+/// `channel_secret`/`channel_access_token`/`encoding_aes_key`/`private_key`/
+/// `imap_password`/`smtp_password` 七个——channels.config 输出把飞书验证
+/// token、LINE 签名密钥/访问令牌、企业微信回调 AES key、nostr 64-hex 私钥、
+/// 邮件 IMAP/SMTP 明文密码原文回传前端）。**新增字段时 mask 与 restore
+/// 自动对称**：`restore_masked_named_fields` 共用本名单，不会把掩码持久化。
+/// `client_key_path` 类**路径**字段刻意不进名单（路径非凭据值，mask 掉
+/// 会破坏 UI 显示文件位置的能力）。
 pub fn is_sensitive_field(field_name: &str) -> bool {
     matches!(
         field_name.to_lowercase().as_str(),
@@ -521,6 +532,13 @@ pub fn is_sensitive_field(field_name: &str) -> bool {
             | "bot_token"
             | "app_token"
             | "client_secret"
+            | "verification_token"
+            | "channel_secret"
+            | "channel_access_token"
+            | "encoding_aes_key"
+            | "private_key"
+            | "imap_password"
+            | "smtp_password"
     )
 }
 

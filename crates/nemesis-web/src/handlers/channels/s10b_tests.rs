@@ -174,3 +174,69 @@ fn mask_sensitive_fields_masks_sensitive_and_recurses() {
     assert_eq!(out["nested"]["plain"], "visible");
     assert_eq!(out["list"][0]["secret"], "0123****9abc");
 }
+
+// BUG-20261122-043 回归：复合命名凭据字段的脱敏名单缺口。is_sensitive_field
+// 是全等匹配语义（contains 会误伤 tokens_used 等统计字段），此前漏
+// verification_token（feishu）/ channel_secret + channel_access_token（line）/
+// encoding_aes_key（wecom）/ private_key（nostr 64-hex 私钥）/
+// imap_password + smtp_password（email 明文密码）七个真实存在的 typed
+// config 字段——channels.config 输出把它们的原文回传前端。
+#[test]
+fn composite_named_credential_fields_are_masked() {
+    let v = serde_json::json!({
+        "feishu": { "verification_token": "feishu-verify-token-long" },
+        "line": {
+            "channel_secret": "line-channel-secret-1234",
+            "channel_access_token": "line-channel-access-token-long"
+        },
+        "wecom": { "encoding_aes_key": "wecom-aes-key-43-chars-long-here" },
+        "nostr": { "private_key": "00aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd" },
+        "email": { "imap_password": "imap-passphrase-123", "smtp_password": "smtp-passphrase-456" },
+        // 路径字段刻意不 mask（路径非凭据值，mask 破坏 UI 显示文件位置）。
+        "mtls": { "client_key_path": "C:/certs/client.key" },
+        // 统计字段不因 contains 语义误伤（全等匹配守卫）。
+        "usage": { "tokens_used": 12345 }
+    });
+    let out = mask_sensitive_fields(v);
+    assert_eq!(out["feishu"]["verification_token"], "feis****long");
+    assert_eq!(out["line"]["channel_secret"], "line****1234");
+    assert_eq!(out["line"]["channel_access_token"], "line****long");
+    assert_eq!(out["wecom"]["encoding_aes_key"], "weco****here");
+    assert_eq!(out["nostr"]["private_key"], "00aa****55dd");
+    assert_eq!(out["email"]["imap_password"], "imap****-123");
+    assert_eq!(out["email"]["smtp_password"], "smtp****-456");
+    assert_eq!(
+        out["mtls"]["client_key_path"], "C:/certs/client.key",
+        "路径字段不 mask"
+    );
+    assert_eq!(out["usage"]["tokens_used"], 12345, "统计字段不误伤");
+}
+
+// mask/restore 对称闭环（restore_masked_named_fields 与 mask 共用
+// is_sensitive_field 名单）：「查看（掩码）→ 保存」循环必须把新名单字段的
+// 掩码还原成原值，而不是把 `****` 字符串持久化成真值（比泄漏更糟的静默
+// 配置破坏面）。
+#[test]
+fn composite_named_fields_restore_masked_values_roundtrip() {
+    let existing = serde_json::json!({
+        "feishu": { "verification_token": "feishu-verify-token-long" },
+        "nostr": { "private_key": "00aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd" },
+        "email": { "smtp_password": "smtp-passphrase-456" }
+    });
+    let mut incoming = serde_json::json!({
+        "feishu": { "verification_token": "feis****-long" },
+        "nostr": { "private_key": "00aa****55dd" },
+        "email": { "smtp_password": "smtp****-456" }
+    });
+    crate::handlers::restore_masked_named_fields(&mut incoming, &existing)
+        .expect("masked values must restore from existing");
+    assert_eq!(
+        incoming["feishu"]["verification_token"],
+        "feishu-verify-token-long"
+    );
+    assert_eq!(
+        incoming["nostr"]["private_key"],
+        "00aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd"
+    );
+    assert_eq!(incoming["email"]["smtp_password"], "smtp-passphrase-456");
+}
