@@ -90,6 +90,9 @@ impl LifecycleHook for TodoCloseoutHook {
             unfinished.len()
         );
         TurnEndDecision::Continue {
+            // todo 内容是模型转写的工具产物文本（可含对话注入的标记），
+            // 进自帧前过闭合标签逃逸——大小写折叠 `</system-reminder>` 变体
+            // 同样构成闭合（BUG-20261123-006，统一实现同源）。
             feedback: format!(
                 "<system-reminder>\n你要结束本轮，但本会话的 todo 清单还有 {} 项未完成：\n{}\n\
                  请先如实收尾再给最终答复：\n\
@@ -98,7 +101,10 @@ impl LifecycleHook for TodoCloseoutHook {
                  2. 确实还没做/本轮不做的项：标记改回 pending，并在答复里如实说明进度与剩余工作。\n\
                  不要虚报完成；清单状态必须与实际一致。\n</system-reminder>",
                 unfinished.len(),
-                unfinished.join("\n")
+                nemesis_utils::sanitize::escape_closing_tag(
+                    &unfinished.join("\n"),
+                    "system-reminder"
+                )
             ),
         }
     }

@@ -909,9 +909,19 @@ impl AgentLoop {
             if sections.is_empty() {
                 None
             } else {
+                // 帧级闭合标签逃逸（BUG-20261123-006）：全部 sections 在
+                // 唯一包装点统一过 `</system-reminder>`（大小写折叠）逃逸
+                // ——skills digest / memory hits / branch summary / 用户画像
+                // 等各 section 的内容源含仓库可控或对话派生文本，散点逐段
+                // 逃逸会漏（未来新增 section 同样自动覆盖）。良性内容零命中
+                // → 字节不变，prompt cache 前缀不受影响；已逃逸形态
+                //（`<\/...>`）不匹配 needle，双层逃逸不会叠加。
                 let merged = format!(
                     "<system-reminder>\n{}\n</system-reminder>",
-                    sections.join("\n\n")
+                    nemesis_utils::sanitize::escape_closing_tag(
+                        &sections.join("\n\n"),
+                        "system-reminder"
+                    )
                 );
                 self.skills_digest_state
                     .should_inject("", &merged) // stateless since round-5

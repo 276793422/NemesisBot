@@ -1577,6 +1577,10 @@ mod f1_plan_mode_tests;
 // 横幅 / trusted verbatim + 运行中热更新）测试。
 #[cfg(test)]
 mod n7_instruction_trust_tests;
+// 合并 system-reminder 帧级闭合标签逃逸（大小写折叠，
+// BUG-20261123-006）测试。
+#[cfg(test)]
+mod frame_escape_tests;
 // present_plan 计划审批（批准翻 build + 驳回/
 // 超时结构性停轮 + ModeChanged 广播 + 供给双闸）循环级测试。
 #[cfg(test)]
