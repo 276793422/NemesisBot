@@ -250,6 +250,14 @@ impl Transport for StdioTransport {
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
+        // env 窄版闸（家族闸纪律：三方进程 spawn 点显式接闸——BUG-20261123-011
+        // 横向修齐）：三方 MCP server 不继承 bot 内部命名空间变量
+        // （NEMESISBOT_VAULT_PASSPHRASE 主口令通道等）。刻意放显式 env 注入
+        // **之前**——config env 是用户点名注入（vault:/env: 引用现查），闸后
+        // 注入永不误杀；闸只剥继承面。父进程侧 `NEMESISBOT_BROWSER_PROFILE`
+        // 回落读取（上方）不受影响（闸剥的是子进程 env，不碰本进程）。
+        let _stripped_env = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
+
         // Inject environment variables.
         // vault（计划）：env VALUE 支持 vault:/env:/yaml:
         // 引用，spawn 前现查（discover 一次性路径同走本 transport，单一
