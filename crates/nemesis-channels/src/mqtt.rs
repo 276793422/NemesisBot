@@ -521,10 +521,14 @@ impl MqttChannel {
                 let mut metadata = HashMap::new();
                 metadata.insert("mqtt_topic".to_string(), chat_id.clone());
                 metadata.insert("mqtt_qos".to_string(), (publish.qos as u8).to_string());
-                let inbound =
-                    InboundMessage::user_ingress(base.name().to_string(), sender, chat_id, content)
-                        .with_session_key(chat_id.clone())
-                        .with_metadata_map(metadata);
+                let inbound = InboundMessage::user_ingress(
+                    base.name().to_string(),
+                    sender,
+                    chat_id.clone(),
+                    content,
+                )
+                .with_session_key(chat_id)
+                .with_metadata_map(metadata);
                 if let Err(e) = bus_sender.send(inbound) {
                     warn!(error = %e, "[MqttChannel] 入站消息发布到总线失败");
                 }

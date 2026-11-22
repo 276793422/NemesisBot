@@ -249,11 +249,10 @@ async fn run_mock_broker(
                         write_puback(&mut writer, pkid).await;
                     }
                 }
-                0x40 => {
-                    // client 对 broker 下发 QoS1 包的 PUBACK
-                    if scripted_sent {
-                        scripted_acked = true;
-                    }
+                // client 对 broker 下发 QoS1 包的 PUBACK（未脚本化发送的包
+                // 不记账——守卫在 arm 上，未命中落 `_ => {}` 同空转）
+                0x40 if scripted_sent => {
+                    scripted_acked = true;
                 }
                 0xC0 => write_pingresp(&mut writer).await, // PINGREQ → PINGRESP
                 _ => {}

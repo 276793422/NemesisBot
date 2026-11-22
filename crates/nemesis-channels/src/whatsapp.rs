@@ -278,7 +278,7 @@ impl WhatsAppChannel {
 
                                         // Check allow list
                                         if !allow_from.is_empty()
-                                            && !crate::base::allow_list_contains(allow_from, &sender_id)
+                                            && !crate::base::allow_list_contains(&allow_from, &sender_id)
                                         {
                                             debug!(sender_id = %sender_id, "[WhatsAppChannel] message filtered by allow_list");
                                             continue;

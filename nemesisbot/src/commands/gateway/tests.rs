@@ -8513,3 +8513,28 @@ async fn cov_ci_iroh_peer_address_passthrough_and_rpc_port_placeholder() {
         "iroh 地址必须原样入册"
     );
 }
+
+// -------------------------------------------------------------------------
+// mqtt_qos_checked（BUG-20261122-029）：qos i64→u8 验域必须在宽域先行——
+// 裸 `as u8` 会把 256/257/258 回绕成 0/1/2，恰好穿过 MqttChannel::new 的
+// `> 2` 响亮拒绝闸（BUG-20261117-085 aec_filter_length 同形：cast 先于
+// 验域让回绕残差值「假装合法过闸」）。
+// -------------------------------------------------------------------------
+
+#[cfg(feature = "channels-mqtt")]
+#[test]
+fn test_mqtt_qos_checked_rejects_wrap_residue() {
+    // mod-256 回绕残差族（256/257/258 → 0/1/2 恰好合法化）必须拒绝
+    assert_eq!(super::web_init::mqtt_qos_checked(256), None);
+    assert_eq!(super::web_init::mqtt_qos_checked(257), None);
+    assert_eq!(super::web_init::mqtt_qos_checked(258), None);
+    assert_eq!(super::web_init::mqtt_qos_checked(512), None);
+    // 负值 / 普通越界（构造期原本会响亮拒绝的值域）同样拒绝
+    assert_eq!(super::web_init::mqtt_qos_checked(-1), None);
+    assert_eq!(super::web_init::mqtt_qos_checked(3), None);
+    assert_eq!(super::web_init::mqtt_qos_checked(255), None);
+    // 合法值 0/1/2 透传
+    assert_eq!(super::web_init::mqtt_qos_checked(0), Some(0));
+    assert_eq!(super::web_init::mqtt_qos_checked(1), Some(1));
+    assert_eq!(super::web_init::mqtt_qos_checked(2), Some(2));
+}

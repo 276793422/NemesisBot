@@ -1021,14 +1021,15 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             mqtt: if cfg.channels.mqtt.enabled {
                 // broker_port i64 → u16：越界（<1 / >65535）不静默回绕（65536→0、
                 // -1→65535 会变成连错误端口的无尽重连循环），越界即拒绝启用该
-                // 通道并 loud error——对齐 qos 越界构造期响亮拒绝的风格。
+                // 通道并 loud error。qos 同款：mqtt_qos_checked 宽域验域先行
+                // （BUG-20261122-029）。
                 let mqtt_port = cfg.channels.mqtt.broker_port;
                 if !(1..=65535).contains(&mqtt_port) {
                     tracing::error!(
                         "[Gateway] channels.mqtt.broker_port={mqtt_port} 越界（有效范围 1..=65535），mqtt 通道不启用"
                     );
                     None
-                } else {
+                } else if let Some(mqtt_qos) = mqtt_qos_checked(cfg.channels.mqtt.qos) {
                     Some(nemesis_channels::mqtt::MqttChannelConfig {
                         broker_host: cfg.channels.mqtt.broker_host.clone(),
                         broker_port: mqtt_port as u16,
@@ -1044,12 +1045,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                             "channels.mqtt.password",
                         ),
                         // i64 → u64 钳负值为 0（as 转译负数会回绕；keep_alive 0
-                        // = 关闭保活、reconnect 0 由通道侧抬到 1s）。qos 越界
-                        // （负/超 2）不钳——MqttChannel::new 构造期响亮拒绝。
+                        // = 关闭保活、reconnect 0 由通道侧抬到 1s）。qos 验域在
+                        // 宽域先行（上方 mqtt_qos_checked，BUG-20261122-029）。
                         keep_alive_secs: cfg.channels.mqtt.keep_alive_secs.max(0) as u64,
                         clean_session: cfg.channels.mqtt.clean_session,
                         reconnect_delay_secs: cfg.channels.mqtt.reconnect_delay_secs.max(0) as u64,
-                        qos: cfg.channels.mqtt.qos as u8,
+                        qos: mqtt_qos,
                         topics: cfg
                             .channels
                             .mqtt
@@ -1069,6 +1070,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         client_cert_path: cfg.channels.mqtt.client_cert_path.clone(),
                         client_key_path: cfg.channels.mqtt.client_key_path.clone(),
                     })
+                } else {
+                    tracing::error!(
+                        "[Gateway] channels.mqtt.qos={} 越界（有效值 0/1/2），mqtt 通道不启用",
+                        cfg.channels.mqtt.qos
+                    );
+                    None
                 }
             } else {
                 None
@@ -1242,6 +1249,20 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         bridge_client_launch,
         channel_manager: channel_manager_for_wiring,
     })
+}
+
+/// mqtt qos i64 → u8 宽域验域（BUG-20261122-029：裸 `as u8` 会把
+/// 256/257/258 回绕成 0/1/2，恰好穿过 MqttChannel::new 的 `> 2` 响亮拒绝
+/// 闸——构造期「越界不钳」意图被 cast 打穿；BUG-20261117-085
+/// aec_filter_length 同形。同文件 broker_port/imap_port 验域先行的同款
+/// 习语）。越界返回 None = 通道不启用，loud error 由调用点发。
+#[cfg(feature = "channels-mqtt")]
+pub(super) fn mqtt_qos_checked(qos: i64) -> Option<u8> {
+    if (0..=2).contains(&qos) {
+        Some(qos as u8)
+    } else {
+        None
+    }
 }
 
 /// bus 出站广播 → ChannelManager mpsc 桥（**先订阅再
