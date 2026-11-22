@@ -320,6 +320,15 @@ pub struct DashboardWindowData {
     pub web_host: String,
 }
 
+/// NEMESISBOT_FORCE_HEADLESS 宽容解析（BUG-20261122-027）：值集 = 项目
+/// 宽容布尔惯例（单一真相源 `nemesis_utils::env_flag::parse_env_bool`，
+/// `true/t/1/yes/on` 任意大小写）——旧形态仅认字面 `1`，设 `true`/`yes`
+/// 静默无效。缺席 = 不强制。
+fn force_headless_requested(v: Option<&str>) -> bool {
+    v.and_then(nemesis_utils::env_flag::parse_env_bool)
+        .unwrap_or(false)
+}
+
 /// Run the child process mode — full handshake flow.
 ///
 /// Mirrors Go RunChildMode exactly:
@@ -337,14 +346,15 @@ pub async fn run_child_mode() -> Result<(), String> {
     let window_type = get_window_type().ok_or("window-type not specified")?;
 
     // Allow forcing headless mode via environment variable (for testing)
-    let window_type = if env::var("NEMESISBOT_FORCE_HEADLESS").as_deref() == Ok("1")
-        && window_type == "approval"
-    {
-        eprintln!("[Child] Forced headless mode via NEMESISBOT_FORCE_HEADLESS=1");
-        "headless".to_string()
-    } else {
-        window_type
-    };
+    let window_type =
+        if force_headless_requested(env::var("NEMESISBOT_FORCE_HEADLESS").ok().as_deref())
+            && window_type == "approval"
+        {
+            eprintln!("[Child] Forced headless mode via NEMESISBOT_FORCE_HEADLESS");
+            "headless".to_string()
+        } else {
+            window_type
+        };
 
     eprintln!(
         "[Child] Child ID: {}, Window Type: {}",

@@ -7,7 +7,8 @@
 //!
 //! 配置（环境变量， 同模式运行时配置）：
 //! - `NEMESIS_REVOCATION_URL`：云端 base URL（如 `http://127.0.0.1:7878`）。
-//! - `NEMESIS_STRICT_OFFLINE`：`1`/`true` = strict 模式（断网/拉取失败且无缓存 → `Unknown` → 调用方拒）。
+//! - `NEMESIS_STRICT_OFFLINE`：宽容布尔真值（`1`/`true`/`t`/`yes`/`on`，任意大小写）=
+//!   strict 模式（断网/拉取失败且无缓存 → `Unknown` → 调用方拒）。
 //!
 //! **soft-fail 默认**：未配置 URL / 拉取失败 → 用旧缓存；无缓存 → `Unknown`（调用方按 soft-fail 放行）。
 
@@ -67,9 +68,19 @@ fn revocation_url() -> Option<String> {
 }
 
 /// strict 模式（断网/拉取失败且无缓存 → 拒）。pub：verify_bytes 按此处置 Unknown。
+///
+/// 值集 = 项目宽容布尔惯例（单一真相源 [`nemesis_utils::env_flag::parse_env_bool`]，
+/// 2026-11-22 提升）：`true/t/1/yes/on`（任意大小写）= strict；
+/// `false/f/0/no/off` 与缺席/未识别值 = soft-fail（BUG-20261122-027：旧
+/// 形态仅认 `1`/`true`，按项目惯例设 `yes`/`on` 被静默无视——安全姿态
+/// 旗标 fail-open 方向的假硬化）。
 pub fn strict_offline() -> bool {
-    std::env::var("NEMESIS_STRICT_OFFLINE")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    strict_offline_from(std::env::var("NEMESIS_STRICT_OFFLINE").ok().as_deref())
+}
+
+/// 纯决策核（env 无关，单测钉值集）。
+fn strict_offline_from(v: Option<&str>) -> bool {
+    v.and_then(nemesis_utils::env_flag::parse_env_bool)
         .unwrap_or(false)
 }
 

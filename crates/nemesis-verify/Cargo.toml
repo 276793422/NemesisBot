@@ -12,6 +12,8 @@ crate-type = ["lib", "cdylib"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# env 布尔旗标宽容解析单一真相源（BUG-20261122-027：NEMESIS_STRICT_OFFLINE 值集对齐项目惯例）
+nemesis-utils = { workspace = true }
 # v4：ECDSA P-256 + SHA-256（RFC 6979 确定式签名）
 p256 = { workspace = true }
 ecdsa = { workspace = true }

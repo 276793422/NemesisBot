@@ -452,15 +452,13 @@ pub fn apply_env_overrides(config: &mut Config) {
 
 /// 布尔 env 覆盖的宽容识别。
 ///
-/// 识别集：`true/false/t/f/1/0`（= Go `strconv.ParseBool` 全集，大小写
-/// 不敏感）+ `yes/no/on/off`（项目宽容布尔惯例，同 `normalize_stream_value`
-/// 的出发点）。其余值返回 `None`——调用方保留 config 文件值并 warn。
+/// 委托 [`nemesis_utils::env_flag::parse_env_bool`]（BUG-20261122-027 单一
+/// 真相源提升：值集 `true/false/t/f/1/0`（= Go `strconv.ParseBool` 全集，
+/// 大小写不敏感）+ `yes/no/on/off`（项目宽容布尔惯例，同
+/// `normalize_stream_value` 的出发点））。其余值返回 `None`——调用方保留
+/// config 文件值并 warn。
 fn parse_env_bool(v: &str) -> Option<bool> {
-    match v.trim().to_ascii_lowercase().as_str() {
-        "true" | "t" | "1" | "yes" | "on" => Some(true),
-        "false" | "f" | "0" | "no" | "off" => Some(false),
-        _ => None,
-    }
+    nemesis_utils::env_flag::parse_env_bool(v)
 }
 
 /// Load embedded default config.

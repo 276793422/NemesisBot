@@ -4,6 +4,11 @@
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
 pub mod env_sanitize;
+// env 布尔旗标宽容解析（BUG-20261122-027）：项目宽容布尔惯例单一真相源
+// （true/t/1/yes/on | false/f/0/no/off，大小写不敏感）——config env 覆盖层、
+// v4 验签 strict 旗标、desktop child headless 旗标同源消费；程序内部协议
+// 标记（"1" 字面契约）不走本函数。
+pub mod env_flag;
 // 单机实例身份（W1 #31，2026-11-19）：workspace/identity.json 持久
 // instance_id——审计链（hash v2）/启动日志的归属锚点。
 pub mod instance_identity;

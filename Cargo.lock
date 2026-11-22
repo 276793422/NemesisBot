@@ -4833,6 +4833,7 @@ dependencies = [
  "cms",
  "der 0.7.10",
  "ecdsa",
+ "nemesis-utils",
  "p256",
  "rand 0.8.6",
  "reqwest",

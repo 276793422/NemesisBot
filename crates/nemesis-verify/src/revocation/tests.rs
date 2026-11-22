@@ -220,12 +220,23 @@ fn crl_with(version: u64, entries: Vec<CrlEntry>) -> Crl {
 #[test]
 fn strict_offline_env_parsing() {
     let _g = TEST_LOCK.lock().unwrap();
+    // BUG-20261122-027 起值集 = 项目宽容布尔惯例（true/t/1/yes/on |
+    // false/f/0/no/off）；旧形态「只认 1/true」已废弃（yes/on 静默无效
+    // = 安全姿态旗标假硬化）。
     for (val, expect) in [
         ("1", true),
         ("true", true),
-        ("TRUE", true), // eq_ignore_ascii_case
+        ("TRUE", true), // eq_ignore_ascii_case 经 trim+lowercase 归一
+        ("t", true),
+        ("yes", true), // 惯例值（旧形态静默无视）
+        ("on", true),  // 惯例值（旧形态静默无视）
+        (" 1 ", true), // 两端 trim
         ("0", false),
-        ("yes", false), // 只认 1/true
+        ("false", false),
+        ("no", false),
+        ("off", false),
+        ("garbage", false),
+        ("", false),
     ] {
         unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", val) };
         assert_eq!(strict_offline(), expect, "NEMESIS_STRICT_OFFLINE={val}");
@@ -778,4 +789,23 @@ fn snapshot_load_roundtrip_and_reject() {
         .unwrap()
         .verifying_key();
     assert!(load_crl_snapshot(&json, &stranger_vk).is_err());
+}
+
+/// BUG-20261122-027：strict 旗标值集 = 项目宽容布尔惯例（纯决策核，
+/// env 无关）。旧形态仅认 `1`/`true`，按惯例设 `yes`/`on` 被静默无视。
+#[test]
+fn strict_offline_accepts_convention_bool_set() {
+    for v in ["1", "true", "TRUE", "t", "yes", "YES", "on", " true "] {
+        assert!(
+            strict_offline_from(Some(v)),
+            "strict_offline_from({v:?}) must be true"
+        );
+    }
+    for v in ["0", "false", "no", "off", "f", "", "   ", "garbage"] {
+        assert!(
+            !strict_offline_from(Some(v)),
+            "strict_offline_from({v:?}) must be false"
+        );
+    }
+    assert!(!strict_offline_from(None), "absent = soft-fail");
 }

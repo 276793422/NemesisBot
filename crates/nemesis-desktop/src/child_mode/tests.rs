@@ -1387,3 +1387,22 @@ fn test_run_headless_auto_approve_loopback_sends_approval() {
     assert_eq!(payload["request_id"], "req");
     server.stop();
 }
+
+/// BUG-20261122-027：FORCE_HEADLESS 值集 = 项目宽容布尔惯例（旧形态仅认
+/// 字面 "1"，true/yes 静默无效）。纯决策核，env 无关。
+#[test]
+fn force_headless_accepts_convention_bool_set() {
+    for v in ["1", "true", "TRUE", "yes", "on", "t"] {
+        assert!(
+            force_headless_requested(Some(v)),
+            "force_headless_requested({v:?}) must be true"
+        );
+    }
+    for v in ["0", "false", "no", "off", "", "garbage"] {
+        assert!(
+            !force_headless_requested(Some(v)),
+            "force_headless_requested({v:?}) must be false"
+        );
+    }
+    assert!(!force_headless_requested(None), "absent = not forced");
+}
